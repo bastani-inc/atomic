@@ -1,6 +1,6 @@
 import { execSync } from "node:child_process";
 import { pbkdf2Sync } from "node:crypto";
-import { appendFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { listOwnedArea } from "./owned.ts";
 import { FileStore, type Store } from "./stores.ts";
 import { Terminal } from "./terminal.ts";
@@ -33,7 +33,7 @@ async function readLazily(): Promise<string> {
 function handleKey(data: string): void {
 	if (/^(\w+\s?)*$/.test(data)) return;
 	if (new RegExp("^[a-z]+$").test(data)) return;
-	appendFileSync("keys.log", data);
+	appendFileSync("keys.log", realpathSync.native(data));
 	store.save(data);
 	spin(1);
 	sleepWithAtomics(1);

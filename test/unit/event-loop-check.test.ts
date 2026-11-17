@@ -52,6 +52,7 @@ describe("event-loop check", () => {
 			"src/components.ts sizeBanner.render fs.statSync",
 			"src/host.ts handleKey crypto.pbkdf2Sync",
 			"src/host.ts handleKey fs.appendFileSync",
+			"src/host.ts handleKey fs.realpathSync.native",
 			"src/host.ts pollStatus child_process.execSync",
 			"src/host.ts readLazily fs.readFileSync",
 			"src/host.ts sleepWithAtomics Atomics.wait",
