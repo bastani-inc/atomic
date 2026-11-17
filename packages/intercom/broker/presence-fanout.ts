@@ -1,6 +1,6 @@
 import type net from "node:net";
 import type { BrokerMessage } from "../types.js";
-import { sessionsShareGroup } from "./group-membership.js";
+import { reachesSession } from "./group-membership.js";
 import type { BrokerConnectedSession } from "./send-handler.js";
 
 /**
@@ -71,7 +71,7 @@ export class PresenceFanout {
 		for (const changedId of entry.changed) {
 			const changed = this.sessions.get(changedId);
 			// A session that left, or no longer shares a group, was announced by `session_left` already.
-			if (changed === undefined || !sessionsShareGroup(changed.info, recipient.info)) continue;
+			if (changed === undefined || !reachesSession(recipient, changed.info)) continue;
 			this.write(socket, { type: "presence_update", session: changed.info });
 		}
 	}

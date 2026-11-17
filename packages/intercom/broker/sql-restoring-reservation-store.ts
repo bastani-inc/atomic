@@ -24,6 +24,7 @@ import type {
 	RestoringReservationTakeWakeResult,
 	StateStoreInvalidReason,
 } from "./multinode-state-store.js";
+import { reservationAdmitsSender } from "./group-membership.js";
 import { isReleasedReservationKey } from "./released-children.js";
 import { addMissingColumns } from "./sql-add-column.js";
 import { ensureBrokerSchema } from "./sql-schema.js";
@@ -324,7 +325,7 @@ export async function openSqlRestoringReservationStore({
 				(row) =>
 					row.age_ms <= staleAfterMs &&
 					(JSON.parse(row.targets_json) as string[]).includes(target) &&
-					(row.owner_session_id === sender.sessionId || sender.groups.includes(row.reservation_group)),
+					(row.owner_session_id === sender.sessionId || reservationAdmitsSender(sender, row.reservation_group)),
 			);
 			if (found === undefined) return { status: "none" };
 			return { status: found.gone_json === null ? "reserved" : "gone", reservation: reservationOf(found) };
