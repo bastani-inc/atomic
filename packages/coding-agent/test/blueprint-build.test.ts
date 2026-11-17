@@ -291,13 +291,13 @@ describe("blueprint build: environment and $ENVRC (#4588)", () => {
 			`initialize: |\n  echo "API_URL=http://localhost:9" >> "$ENVRC"\n  echo "export EXTRA='two words'" >> "$ENVRC"\n`,
 		);
 		await runBlueprintBuild([repo], config());
-		const prefix = sessionEnvironmentPrefix(path("store"), [repo.root]);
+		const prefix = await sessionEnvironmentPrefix(path("store"), [repo.root]);
 		assert.ok(prefix !== undefined);
 		const shown = spawnSync("bash", ["-c", `${prefix}\nenv | grep -E '^(API_URL|EXTRA)=' | sort`], {
 			encoding: "utf8",
 		});
 		assert.equal(shown.stdout, "API_URL=http://localhost:9\nEXTRA=two words\n");
-		assert.equal(sessionEnvironmentPrefix(path("store"), [path("repos", "unrelated")]), undefined);
+		assert.equal(await sessionEnvironmentPrefix(path("store"), [path("repos", "unrelated")]), undefined);
 	});
 
 	test("a session's shell prefix joins the user's prefix and the blueprint environment of its restored worktrees (#4588)", async () => {
@@ -311,17 +311,17 @@ describe("blueprint build: environment and $ENVRC (#4588)", () => {
 				getCwd: () => repo.root,
 			},
 		};
-		const prefix = shellCommandPrefixFor(session as never, "USER_PREFIX=1");
+		const prefix = await shellCommandPrefixFor(session as never, "USER_PREFIX=1");
 		assert.ok(prefix?.startsWith("USER_PREFIX=1\n"));
-		assert.equal(shellCommandPrefixFor(session as never, undefined)?.startsWith("set -a"), true);
+		assert.equal((await shellCommandPrefixFor(session as never, undefined))?.startsWith("set -a"), true);
 		const shown = spawnSync("bash", ["-c", `${prefix}\necho "$USER_PREFIX $FROM_BLUEPRINT"`], {
 			encoding: "utf8",
 			env: { PATH: process.env.PATH ?? "" },
 		});
 		assert.equal(shown.stdout, "1 yes\n");
 		const bare = { ...session, sessionManager: { getWorktreeRootMappings: () => [], getCwd: () => repo.root } };
-		assert.equal(shellCommandPrefixFor(bare as never, undefined), undefined);
-		assert.equal(shellCommandPrefixFor({ ...session, _storageAgentDir: undefined } as never, "x"), "x");
+		assert.equal(await shellCommandPrefixFor(bare as never, undefined), undefined);
+		assert.equal(await shellCommandPrefixFor({ ...session, _storageAgentDir: undefined } as never, "x"), "x");
 	});
 
 	test("$ENVRC is reset at the start of every build (#4588)", async () => {
@@ -334,7 +334,7 @@ describe("blueprint build: environment and $ENVRC (#4588)", () => {
 		blueprint(repo.root, `maintenance: 'echo "[${"$"}{LEFTOVER:-unset}]" >> "$MARKERS"'\n`);
 		await runBlueprintBuild([repo], config());
 		assert.deepEqual(ran(), ["[1]", "[unset]"]);
-		assert.equal(sessionEnvironmentPrefix(path("store"), [repo.root]), undefined);
+		assert.equal(await sessionEnvironmentPrefix(path("store"), [repo.root]), undefined);
 	});
 
 	test("the build's temporary $ENVRC file does not outlive it (#4588)", async () => {
@@ -1736,7 +1736,7 @@ describe("blueprint build: the environment kept for sessions (#4588)", () => {
 		blueprint(repo.root, 'initialize: echo >> "$ENVRC"\n');
 		assert.equal((await runBlueprintBuild([repo], config())).status, "success");
 		assert.equal(existsSync(file), false);
-		assert.equal(sessionEnvironmentPrefix(path("store"), [repo.root]), undefined);
+		assert.equal(await sessionEnvironmentPrefix(path("store"), [repo.root]), undefined);
 	});
 });
 
