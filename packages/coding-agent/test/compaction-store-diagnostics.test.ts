@@ -17,6 +17,7 @@ import {
 	writeRecoveryDiagnosticSidecar,
 	writeSuccessDiagnosticSidecar,
 } from "../src/core/compaction/range-planner-diagnostics.js";
+import { flushDebugLog } from "../src/core/debug.js";
 import { convertToLlm } from "../src/core/messages.js";
 import type { SessionEntry } from "../src/core/session-manager.js";
 import { SessionManager } from "../src/core/session-manager.js";
@@ -396,14 +397,15 @@ describe("sidecar location (#4543)", () => {
 		assert.equal(stored.rawResponseChars, MAX_DIAGNOSTIC_TEXT_CHARS + 10);
 	});
 
-	function debugRecords() {
+	async function debugRecords() {
+		await flushDebugLog();
 		return readFileSync(getDebugLogPath(), "utf-8")
 			.trim()
 			.split("\n")
 			.map((line) => JSON.parse(line) as { area: string; event: string; data: { path: string; code?: string } });
 	}
 
-	test("a failed directory creation is returned as no path and recorded once in the debug log (#4543)", () => {
+	test("a failed directory creation is returned as no path and recorded once in the debug log (#4543)", async () => {
 		const agentDir = useAgentDirectory();
 		vi.stubEnv("ATOMIC_DEBUG", "1");
 		const blocker = join(agentDir, "blocker");
@@ -414,7 +416,7 @@ describe("sidecar location (#4543)", () => {
 		);
 
 		assert.equal(path, undefined);
-		const records = debugRecords();
+		const records = await debugRecords();
 		assert.equal(records.length, 1);
 		assert.equal(records[0].area, "storage");
 		assert.equal(records[0].event, "compaction-diagnostic-unwritable");
@@ -422,7 +424,7 @@ describe("sidecar location (#4543)", () => {
 		assert.ok(records[0].data.code);
 	});
 
-	test("a failed file write beside a session file is recorded once in the debug log (#4543)", () => {
+	test("a failed file write beside a session file is recorded once in the debug log (#4543)", async () => {
 		const agentDir = useAgentDirectory();
 		vi.stubEnv("ATOMIC_DEBUG", "1");
 		const missing = join(agentDir, "missing");
@@ -430,7 +432,7 @@ describe("sidecar location (#4543)", () => {
 		const path = writeDiagnosticSidecar(failureContext({ sessionFilePath: join(missing, "s.jsonl") }));
 
 		assert.equal(path, undefined);
-		const records = debugRecords();
+		const records = await debugRecords();
 		assert.equal(records.length, 1);
 		assert.equal(records[0].event, "compaction-diagnostic-unwritable");
 		assert.equal(records[0].data.code, "ENOENT");

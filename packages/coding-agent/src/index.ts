@@ -431,6 +431,7 @@ export {
 	type DebugArea,
 	type DebugFields,
 	type DebugValue,
+	flushDebugLog,
 	getDebugLogFailure,
 	isDebugEnabled,
 	reportDebug,

@@ -7,6 +7,7 @@ import {
 	appendDebugRecord,
 	DEBUG_AREA_VARIABLES,
 	type DebugArea,
+	flushDebugLog,
 	getDebugLogFailure,
 	isDebugEnabled,
 	reportDebug,
@@ -233,18 +234,18 @@ process.stdout.write(String(isDebugEnabled("workflow")) + "|" + String(isDebugEn
 
 describe("reportDebug (#4360)", () => {
 	test("writes nothing anywhere while every source is off", async () => {
-		await withDebugLog("off", (log) => {
+		await withDebugLog("off", async (log) => {
 			const own = vi.fn();
 			for (const area of AREAS) reportDebug(area, "probe", { value: 1 }, own);
 			assert.equal(own.mock.calls.length, 0);
-			assert.equal(log.exists(), false);
+			assert.equal(await log.exists(), false);
 		});
 	});
 
 	test.each(DEBUG_MODE_SOURCES)(
 		"in debug mode from %s, appends one JSON line per event to the debug log",
 		async (source) => {
-			await withDebugLog(source, (log) => {
+			await withDebugLog(source, async (log) => {
 				const own = vi.fn();
 				const before = Date.now();
 				reportDebug(
@@ -255,7 +256,7 @@ describe("reportDebug (#4360)", () => {
 				);
 				reportDebug("workflow", "second", {});
 				assert.equal(own.mock.calls.length, 0, "the area variable is not set");
-				const records = log.records();
+				const records = await log.records();
 				assert.deepEqual(
 					records.map(({ area, event, data }) => ({ area, event, data })),
 					[
@@ -274,32 +275,32 @@ describe("reportDebug (#4360)", () => {
 	);
 
 	test("an area's own variable keeps its own output and does not write the debug log", async () => {
-		await withDebugLog("off", (log) => {
+		await withDebugLog("off", async (log) => {
 			vi.stubEnv("ATOMIC_WORKFLOW_DEBUG", "1");
 			const own = vi.fn();
 			reportDebug("workflow", "event", { value: 1 }, own);
 			reportDebug("model-routing", "event", { value: 1 }, own);
 			assert.equal(own.mock.calls.length, 1, "only the area whose variable is set");
-			assert.equal(log.exists(), false);
+			assert.equal(await log.exists(), false);
 		});
 	});
 
 	test("with both on, the event reaches the debug log and the area's own output", async () => {
-		await withDebugLog("setting", (log) => {
+		await withDebugLog("setting", async (log) => {
 			vi.stubEnv("ATOMIC_MODEL_ROUTING_DEBUG", "1");
 			const own = vi.fn();
 			reportDebug("model-routing", "event", { value: 1 }, own);
 			reportDebug("model-routing", "without-own-output", {});
 			assert.equal(own.mock.calls.length, 1);
 			assert.deepEqual(
-				areaRecords(log, "model-routing").map((record) => record.event),
+				(await areaRecords(log, "model-routing")).map((record) => record.event),
 				["event", "without-own-output"],
 			);
 		});
 	});
 
 	test("redacts credentials and bounds long text, never adding to what the caller passed", async () => {
-		await withDebugLog("setting", (log) => {
+		await withDebugLog("setting", async (log) => {
 			const token = `sk-${"a".repeat(30)}`;
 			reportDebug("workflow", "redacted", {
 				message: `send failed: Authorization: Bearer ${token}`,
@@ -308,7 +309,7 @@ describe("reportDebug (#4360)", () => {
 				limit: "y".repeat(2_000),
 				short: "kept as is",
 			});
-			const [record] = areaRecords(log, "workflow");
+			const [record] = await areaRecords(log, "workflow");
 			assert.ok(record);
 			const text = JSON.stringify(record);
 			assert.equal(text.includes(token), false, text);
@@ -321,7 +322,7 @@ describe("reportDebug (#4360)", () => {
 	});
 
 	test("redacts GitHub tokens and private key blocks, and leaves look-alikes alone", async () => {
-		await withDebugLog("setting", (log) => {
+		await withDebugLog("setting", async (log) => {
 			const body = "A1b2C3d4E5f6G7h8I9j0";
 			const cases: Record<string, readonly [string, string]> = {
 				ghp: [`push rejected ${`ghp_${body}`}, try again`, "push rejected [redacted], try again"],
@@ -355,7 +356,7 @@ describe("reportDebug (#4360)", () => {
 				"shapes",
 				Object.fromEntries(Object.entries(cases).map(([key, [input]]) => [key, input])),
 			);
-			const [record] = areaRecords(log, "workflow");
+			const [record] = await areaRecords(log, "workflow");
 			assert.deepEqual(
 				record?.data,
 				Object.fromEntries(Object.entries(cases).map(([key, [, output]]) => [key, output])),
@@ -364,20 +365,22 @@ describe("reportDebug (#4360)", () => {
 	});
 
 	test("creates the agent directory when it does not exist yet", async () => {
-		await withDebugLog("setting", (log) => {
+		await withDebugLog("setting", async (log) => {
 			const nested = join(log.agentDir, "not", "yet");
 			vi.stubEnv("ATOMIC_CODING_AGENT_DIR", nested);
 			reportDebug("pool", "created", {});
+			await flushDebugLog();
 			assert.equal(existsSync(join(nested, "atomic-debug.log")), true);
 		});
 	});
 
-	test("appendDebugRecord writes one redacted line to the file it is given", () => {
+	test("appendDebugRecord writes one redacted line to the file it is given", async () => {
 		const directory = makeTempDirectory("atomic-debug-record-");
 		try {
 			const path = join(directory, "deeper", "trace.jsonl");
 			appendDebugRecord(path, { step: "one", secret: `token=${"b".repeat(20)}` });
 			appendDebugRecord(path, { step: "two" });
+			await flushDebugLog();
 			const lines = readFileSync(path, "utf8")
 				.trimEnd()
 				.split("\n")
@@ -392,24 +395,24 @@ describe("reportDebug (#4360)", () => {
 describe("model routing area (#4360)", () => {
 	test("prints to stderr for its own variable and writes the debug log in debug mode", async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		await withDebugLog("off", (log) => {
+		await withDebugLog("off", async (log) => {
 			reportModelRoutingDebug("off message");
 			vi.stubEnv("ATOMIC_MODEL_ROUTING_DEBUG", "1");
 			reportModelRoutingDebug("own message");
-			assert.equal(log.exists(), false);
+			assert.equal(await log.exists(), false);
 		});
 		assert.deepEqual(warn.mock.calls, [["own message"]]);
 		for (const source of DEBUG_MODE_SOURCES)
-			await withDebugLog(source, (log) => {
+			await withDebugLog(source, async (log) => {
 				reportModelRoutingDebug(`fallback from ${source}`);
-				assert.deepEqual(areaRecords(log, "model-routing"), [
+				assert.deepEqual(await areaRecords(log, "model-routing"), [
 					{ event: "routing", data: { message: `fallback from ${source}` } },
 				]);
 			});
 		assert.equal(warn.mock.calls.length, 1, "debug mode alone prints nothing");
-		await withDebugLog("off", (log) => {
+		await withDebugLog("off", async (log) => {
 			reportModelRoutingDebug("injected", { ATOMIC_MODEL_ROUTING_DEBUG: "1" });
-			assert.equal(log.exists(), false);
+			assert.equal(await log.exists(), false);
 		});
 		assert.deepEqual(warn.mock.calls[1], ["injected"], "the environment it is given decides");
 	});
@@ -417,13 +420,15 @@ describe("model routing area (#4360)", () => {
 
 describe("pooled-watch area (#4360)", () => {
 	test("its own variable traces next to the pool journal, or to the file it names, as before", async () => {
-		await withDebugLog("off", (log) => {
+		await withDebugLog("off", async (log) => {
 			const journal = join(log.agentDir, "pool", "journal.sqlite");
 			configurePooledWatchTrace(journal, "coordinator");
 			tracePooledWatch("before", { key: "k0" });
+			await flushDebugLog();
 			assert.equal(existsSync(join(log.agentDir, "pool", "pooled-watch-trace.jsonl")), false);
 			vi.stubEnv("ATOMIC_DEBUG_POOLED_WATCH", "1");
 			tracePooledWatch("coordinator.watch.open", { watch: "w1", worker: 3 });
+			await flushDebugLog();
 			const beside = readFileSync(join(log.agentDir, "pool", "pooled-watch-trace.jsonl"), "utf8")
 				.trimEnd()
 				.split("\n")
@@ -438,8 +443,9 @@ describe("pooled-watch area (#4360)", () => {
 			const named = join(log.agentDir, "named-trace.jsonl");
 			vi.stubEnv("ATOMIC_DEBUG_POOLED_WATCH", named);
 			tracePooledWatch("root.reconnect.start", { key: "k1" });
+			await flushDebugLog();
 			assert.equal(JSON.parse(readFileSync(named, "utf8")).step, "root.reconnect.start");
-			assert.equal(log.exists(), false, "the area variable does not write the debug log");
+			assert.equal(await log.exists(), false, "the area variable does not write the debug log");
 		});
 	});
 
@@ -449,15 +455,15 @@ describe("pooled-watch area (#4360)", () => {
 			vi.resetModules();
 			const fresh = await import("../../packages/workflows/src/workers/pooled-watch-trace.js");
 			fresh.tracePooledWatch("root.reconnect.start", { key: "k" });
-			assert.equal(log.exists(), false);
+			assert.equal(await log.exists(), false);
 		});
 	});
 
 	test.each(DEBUG_MODE_SOURCES)("debug mode from %s traces to the debug log with the process role", async (source) => {
-		await withDebugLog(source, (log) => {
+		await withDebugLog(source, async (log) => {
 			configurePooledWatchTrace(join(log.agentDir, "journal.sqlite"), "worker:7");
 			tracePooledWatch("worker.watch.opened", { watch: "w2", event: "turn" });
-			assert.deepEqual(areaRecords(log, "pooled-watch"), [
+			assert.deepEqual(await areaRecords(log, "pooled-watch"), [
 				{ event: "worker.watch.opened", data: { role: "worker:7", watch: "w2", event: "turn" } },
 			]);
 			assert.equal(existsSync(join(log.agentDir, "pooled-watch-trace.jsonl")), false);
@@ -486,6 +492,36 @@ describe("pool area (#4360)", () => {
 	});
 });
 
+describe("debug log writes", () => {
+	const EXITING_CHILD_TIMEOUT_MS = 60_000;
+	test("writes every record when the process exits right after reporting it", {
+		timeout: EXITING_CHILD_TIMEOUT_MS,
+	}, () => {
+		const agentDir = makeTempDirectory("atomic-debug-exit-");
+		try {
+			const script = `import { reportDebug } from ${JSON.stringify(join(process.cwd(), "packages/coding-agent/src/core/debug.ts"))};
+for (const event of ["first", "second", "third"]) reportDebug("pool", event, {});
+process.exit(0);`;
+			const result = spawnSyncCollect([bunExecutable(), "-e", script], {
+				env: createChildProcessEnvironment(undefined, {
+					...process.env,
+					ATOMIC_DEBUG: "1",
+					ATOMIC_CODING_AGENT_DIR: agentDir,
+				}),
+			});
+			assert.equal(result.exitCode, 0, result.stderr.toString());
+			const events = readFileSync(join(agentDir, "atomic-debug.log"), "utf8")
+				.trimEnd()
+				.split("\n")
+				.map((line) => (JSON.parse(line) as { event: string }).event);
+			for (const event of ["first", "second", "third"]) assert.ok(events.includes(event), `${event} was written`);
+			assert.deepEqual([...new Set(events)], ["first", "second", "third"], "in the order they were reported");
+		} finally {
+			removeTempDirectory(agentDir);
+		}
+	});
+});
+
 describe("debug log failures (#4360)", () => {
 	test("an unwritable debug log is recorded once as a typed error and never thrown", async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -496,6 +532,7 @@ describe("debug log failures (#4360)", () => {
 			assert.equal(getDebugLogFailure(), undefined);
 			reportDebug("pool", "first", {});
 			reportDebug("pool", "second", {});
+			await flushDebugLog();
 			const failure = getDebugLogFailure();
 			assert.ok(failure instanceof DebugLogUnwritableError);
 			assert.ok(failure instanceof DebugError);

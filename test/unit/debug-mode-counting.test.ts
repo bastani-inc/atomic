@@ -21,6 +21,16 @@ vi.mock("node:fs", async (importOriginal) => {
 	};
 });
 
+// Debug records are appended asynchronously; count those appends the same way.
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	const appendFile = ((...args: Parameters<typeof actual.appendFile>) => {
+		appends.count += 1;
+		return actual.appendFile(...args);
+	}) as typeof actual.appendFile;
+	return { ...actual, appendFile, default: { ...actual, appendFile } };
+});
+
 // The setup files loaded the storage adapter with the real node:fs. Load every module this test drives afresh, in one
 // module graph, so the adapter sees the mocked node:fs and every area shares one debug setting.
 vi.resetModules();
@@ -99,7 +109,7 @@ async function count(source: DebugModeSource | "off") {
 	return withDebugLog(source, async (log) => {
 		appends.count = 0;
 		const poolLine = await triggerEveryArea(log.agentDir);
-		const records = log.records();
+		const records = await log.records();
 		return {
 			poolLine,
 			appends: appends.count,

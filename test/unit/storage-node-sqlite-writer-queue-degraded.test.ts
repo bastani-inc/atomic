@@ -873,8 +873,10 @@ test("in debug mode each writers'-queue degradation reaches the debug log once, 
 			actual.unlinkSync(target);
 		}) as typeof fs.unlinkSync);
 		await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('kept')"));
-		await vi.waitFor(() => assert.equal(areaRecords(log, "storage").length, 2), { timeout: DEBUG_RECORD_WAIT_MS });
-		assert.deepEqual(areaRecords(log, "storage"), [
+		await vi.waitFor(async () => assert.equal((await areaRecords(log, "storage")).length, 2), {
+			timeout: DEBUG_RECORD_WAIT_MS,
+		});
+		assert.deepEqual(await areaRecords(log, "storage"), [
 			{
 				event: "writer-queue-degraded",
 				data: {
@@ -895,7 +897,11 @@ test("in debug mode each writers'-queue degradation reaches the debug log once, 
 				},
 			},
 		]);
-		assert.equal(JSON.stringify(log.records()).includes("secret reason"), false, "the cause's message stays out");
+		assert.equal(
+			JSON.stringify(await log.records()).includes("secret reason"),
+			false,
+			"the cause's message stays out",
+		);
 	});
 });
 
@@ -910,7 +916,7 @@ test("with debug mode off a writers'-queue degradation writes no debug log (#436
 		});
 		assert.equal(getWriterQueueDegradation(database).length, 1);
 		for (let index = 0; index < 10; index++) await turn();
-		assert.equal(log.exists(), false);
+		assert.equal(await log.exists(), false);
 	});
 });
 

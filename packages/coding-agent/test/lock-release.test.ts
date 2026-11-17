@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, it, vi } from "vitest";
 import { ENV_AGENT_DIR, getDebugLogPath } from "../src/config.js";
+import { flushDebugLog } from "../src/core/debug.js";
 import { withInstallLock } from "../src/core/package-manager-lock.ts";
 
 /** While set, releasing a lock rejects as proper-lockfile does for a lock it considers compromised. */
@@ -36,7 +37,8 @@ afterEach(() => {
 	rmSync(sandbox, { recursive: true, force: true });
 });
 
-function releaseFailures(): Array<{ lock: string; code: string }> {
+async function releaseFailures(): Promise<Array<{ lock: string; code: string }>> {
+	await flushDebugLog();
 	if (!existsSync(getDebugLogPath())) return [];
 	return readFileSync(getDebugLogPath(), "utf8")
 		.split("\n")
@@ -52,7 +54,7 @@ it("returns an operation's result when releasing its lock fails afterwards, and 
 
 	assert.equal(await withInstallLock(installPath, async () => "installed"), "installed");
 
-	assert.deepEqual(releaseFailures(), [{ lock: installPath, code: "ERELEASED" }]);
+	assert.deepEqual(await releaseFailures(), [{ lock: installPath, code: "ERELEASED" }]);
 });
 
 it("reports a failed operation's own error when releasing its lock also fails (#5090)", async () => {
@@ -66,11 +68,11 @@ it("reports a failed operation's own error when releasing its lock also fails (#
 		/install failed/,
 	);
 
-	assert.deepEqual(releaseFailures(), [{ lock: installPath, code: "ERELEASED" }]);
+	assert.deepEqual(await releaseFailures(), [{ lock: installPath, code: "ERELEASED" }]);
 });
 
 it("logs nothing when the lock releases cleanly (#5090)", async () => {
 	assert.equal(await withInstallLock(join(sandbox, "packages", "demo"), async () => 1), 1);
 
-	assert.deepEqual(releaseFailures(), []);
+	assert.deepEqual(await releaseFailures(), []);
 });

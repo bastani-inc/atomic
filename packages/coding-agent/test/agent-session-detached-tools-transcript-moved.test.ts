@@ -549,7 +549,7 @@ describe("a call whose turn the transcript moved past (#4580)", () => {
 
 			assert.equal(tool.aborts.length, 1, "the stale call's work was cancelled");
 			assert.match(tool.aborts[0] ?? "", /^AbortError: .*moved past/);
-			const [record, ...rest] = log.records().filter((entry) => entry.event === "stale-detached-call");
+			const [record, ...rest] = (await log.records()).filter((entry) => entry.event === "stale-detached-call");
 			assert.equal(rest.length, 0);
 			assert.equal(record?.area, "workflow");
 			assert.equal(record?.data.toolCallId, "ci-1");
@@ -631,7 +631,7 @@ describe("a call whose turn the transcript moved past (#4580)", () => {
 
 			assert.deepEqual(toolResultIds(moved.sessionManager), []);
 			assert.deepEqual(projectedRoles(moved), ["user", "assistant", "user"]);
-			const records = log.records().filter((entry) => entry.event === "stale-detached-call");
+			const records = (await log.records()).filter((entry) => entry.event === "stale-detached-call");
 			assert.equal(records.length, 1);
 			assert.equal(records[0]?.data.toolCallId, "ci-1");
 			assert.equal(records[0]?.data.reason, "transcript-moved");
