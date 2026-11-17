@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { beforeAll, test } from "vitest";
 import { AtomicWorkingLoader } from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-agent-events.ts";
+import { WorkingRunMeter } from "../../packages/coding-agent/src/modes/interactive/components/working-run-meter.ts";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
 import { ProgramStatusReporter } from "../../packages/coding-agent/src/modes/interactive/program-status-reporter.js";
 import { setThemeInstance } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
@@ -29,6 +30,7 @@ test("the real InteractiveMode turn_start path resets the default loader phase a
 			() => undefined,
 		),
 		workingMessage: undefined,
+		workingRunMeter: new WorkingRunMeter(),
 		loadingAnimation: loader,
 	} as unknown as InteractiveModeBase;
 	try {
@@ -75,6 +77,7 @@ test("turn_start resets extension cadence and fences delegate callbacks after re
 			() => undefined,
 		),
 		workingMessage: undefined,
+		workingRunMeter: new WorkingRunMeter(),
 		loadingAnimation: loader,
 	} as unknown as InteractiveModeBase;
 	try {
@@ -130,6 +133,7 @@ test("turn_end removes the main Atomic loader and fences its 88ms callback befor
 		ui,
 		workingVisible: true,
 		workingMessage: undefined,
+		workingRunMeter: new WorkingRunMeter(),
 		loadingAnimation: undefined,
 		settingsManager: { getClearOnShrink: () => false },
 		statusContainer: {
@@ -202,6 +206,7 @@ test("turn_end removes a delegated extension loader and fences its callback befo
 		ui,
 		workingVisible: true,
 		workingMessage: undefined,
+		workingRunMeter: new WorkingRunMeter(),
 		loadingAnimation: undefined,
 		settingsManager: { getClearOnShrink: () => false },
 		statusContainer: {

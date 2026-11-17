@@ -19,7 +19,7 @@ import { attachInteractiveEngineHost } from "../interactive-engine/extension-ui-
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { KeybindingsReloadCoordinator } from "../rpc/rpc-keybindings-reload.ts";
 import { messageComponents, statusComponents } from "./chat-message-count.ts";
-import type { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
+import { type AtomicWorkingLoader, DEFAULT_WORKING_MESSAGE } from "./components/atomic-working-status.ts";
 import { mainComposerHintSegments } from "./components/main-composer-keys.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import type { TranscriptOverlayReserve } from "./components/reserved-bottom-overlay.ts";
@@ -359,12 +359,13 @@ export class InteractiveModeBase {
 	loadingAnimation: Loader | AtomicWorkingLoader | undefined = undefined;
 
 	workingMessage: string | undefined = undefined;
+	lastWorkingMessage: string | undefined = undefined;
 
 	workingVisible = true;
 
 	workingIndicatorOptions: LoaderIndicatorOptions | undefined = undefined;
 
-	readonly defaultWorkingMessage = "Working";
+	readonly defaultWorkingMessage = DEFAULT_WORKING_MESSAGE;
 
 	readonly defaultHiddenThinkingLabel = "Thinking...";
 

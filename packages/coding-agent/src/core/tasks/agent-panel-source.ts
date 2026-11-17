@@ -455,7 +455,9 @@ function rawSourceError(error: unknown): Error {
 
 const drainedPromises = new WeakSet<Promise<unknown>>();
 const MAX_DRAIN_DEPTH = 32;
-let drainDepth = 0;
+const MAX_DRAIN_STEPS = 256;
+const drainQueue: Array<{ readonly value: unknown; readonly seen?: Set<object> }> = [];
+let draining = false;
 const unattachablePromises = new WeakSet<Promise<unknown>>();
 let unattachableGuardInstalled = false;
 
@@ -469,14 +471,43 @@ function markUnattachable(promise: Promise<unknown>): void {
 	});
 }
 
-function drainCaught(value: unknown, seen?: Set<object>): void {
-	if (drainDepth >= MAX_DRAIN_DEPTH) return;
-	drainDepth++;
+function attachNativePromise(promise: Promise<unknown>, seen?: Set<object>): void {
+	if (drainedPromises.has(promise)) return;
+	drainedPromises.add(promise);
 	try {
-		drainThenable(value, seen);
-	} catch {
+		thenNativePromise(
+			promise,
+			(result: unknown) => drainCaught(result),
+			(error: unknown) => drainCaught(error),
+		);
+	} catch (error) {
+		drainCaught(error, seen ?? new Set([promise]));
+	}
+}
+
+function drainCaught(value: unknown, seen?: Set<object>): void {
+	if ((typeof value !== "object" && typeof value !== "function") || value === null) return;
+	if (types.isPromise(value)) {
+		attachNativePromise(value, seen);
+		return;
+	}
+	if (drainQueue.length < MAX_DRAIN_STEPS) {
+		drainQueue.push({ value, seen });
+	}
+	if (draining) return;
+	draining = true;
+	let steps = 0;
+	try {
+		while (drainQueue.length > 0 && steps < MAX_DRAIN_STEPS) {
+			const next = drainQueue.shift()!;
+			steps++;
+			try {
+				drainThenable(next.value, next.seen);
+			} catch {}
+		}
+		drainQueue.length = 0;
 	} finally {
-		drainDepth--;
+		draining = false;
 	}
 }
 
@@ -499,17 +530,7 @@ function thenNativePromise(
 function drainThenable(value: unknown, seen?: Set<object>): boolean {
 	if ((typeof value !== "object" && typeof value !== "function") || value === null) return false;
 	if (types.isPromise(value)) {
-		if (drainedPromises.has(value)) return true;
-		drainedPromises.add(value);
-		try {
-			thenNativePromise(
-				value,
-				(result: unknown) => drainCaught(result),
-				(error: unknown) => drainCaught(error),
-			);
-		} catch (error) {
-			drainCaught(error, seen ?? new Set([value]));
-		}
+		attachNativePromise(value, seen);
 		return true;
 	}
 	if (seen?.has(value)) return true;
@@ -544,45 +565,66 @@ interface SettledSourceResult {
 function settleSourceResult(value: unknown): Promise<SettledSourceResult> {
 	return new Promise<SettledSourceResult>((resolve, reject) => {
 		const pending = new Set<object>();
-		const settle = (result: unknown): void => {
-			if ((typeof result !== "object" && typeof result !== "function") || result === null) {
-				resolve({ value: result });
-				return;
-			}
-			if (pending.has(result)) {
-				reject(new TypeError("Agent panel source returned a cyclic thenable."));
-				return;
-			}
-			pending.add(result);
-			let settled = false;
-			const accept = (next: unknown) => {
-				if (settled) {
-					drainCaught(next);
+		let depth = 0;
+		const settle = (initial: unknown): void => {
+			let current: unknown = initial;
+			while (true) {
+				if ((typeof current !== "object" && typeof current !== "function") || current === null) {
+					resolve({ value: current });
 					return;
 				}
-				settled = true;
-				settle(next);
-			};
-			const fail = (error: unknown) => {
-				drainCaught(error);
-				if (settled) return;
-				settled = true;
-				reject(error);
-			};
-			try {
-				if (types.isPromise(result)) {
-					thenNativePromise(result, accept, fail);
+				if (pending.has(current)) {
+					reject(new TypeError("Agent panel source returned a cyclic thenable."));
 					return;
 				}
-				const then = (result as { readonly then?: unknown }).then;
-				if (typeof then !== "function") {
-					drainCaught(then);
-					resolve({ value: result });
+				if (depth >= MAX_DRAIN_DEPTH) {
+					drainCaught(current);
+					reject(new RangeError("Agent panel source exceeded maximum thenable depth."));
 					return;
 				}
-				drainCaught(Reflect.apply(then, result, [accept, fail]));
-			} catch (error) {
-				fail(error);
+				pending.add(current);
+				depth++;
+				let settled = false;
+				let syncCall = true;
+				let syncNext: { readonly value: unknown } | undefined;
+				const accept = (next: unknown) => {
+					if (settled) {
+						drainCaught(next);
+						return;
+					}
+					settled = true;
+					if (syncCall) {
+						syncNext = { value: next };
+						return;
+					}
+					settle(next);
+				};
+				const fail = (error: unknown) => {
+					drainCaught(error);
+					if (settled) return;
+					settled = true;
+					reject(error);
+				};
+				try {
+					if (types.isPromise(current)) {
+						syncCall = false;
+						thenNativePromise(current, accept, fail);
+						return;
+					}
+					const then = (current as { readonly then?: unknown }).then;
+					if (typeof then !== "function") {
+						drainCaught(then);
+						resolve({ value: current });
+						return;
+					}
+					drainCaught(Reflect.apply(then, current, [accept, fail]));
+				} catch (error) {
+					fail(error);
+					if (syncNext === undefined) return;
+				}
+				syncCall = false;
+				if (syncNext === undefined) return;
+				current = syncNext.value;
 			}
 		};
 		settle(value);

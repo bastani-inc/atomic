@@ -139,6 +139,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private mirroringPersistedModelDefault = false;
 	private pendingEnabledModelsSync: { patterns: string[] | null } | undefined;
 	private streaming = false;
+	private panelCounts = { total: 0, needsInput: 0 };
 	private compacting = false;
 	/** Whether the engine's session waits out an automatic retry's backoff; the engine's state snapshot omits it. */
 	private retrying = false;
@@ -270,6 +271,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.client.onGenerationEnded((event) => {
 			this.retiredResourceGenerations.add(event.generation);
 			if (event.generation === this.client.getGeneration()) {
+				this.panelCounts = { total: 0, needsInput: 0 };
 				this.updateResources({});
 				this.mirrorBackgroundCompaction(IDLE_BACKGROUND_COMPACTION_STATE);
 			}
@@ -285,7 +287,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		// session/model/bash behavior do not need to implement unrelated transport
 		// surfaces.
 		this.client.onInteractiveEngineMessage?.((message) => {
+			if (message.type === "engine_agent_panel_state") {
+				this.panelCounts = { total: message.total, needsInput: message.needsInput };
+				return;
+			}
 			if (message.type === "engine_extension_ui_reset") {
+				this.panelCounts = { total: 0, needsInput: 0 };
 				this.hostExtensionUIReset?.();
 				return;
 			}
@@ -305,6 +312,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				});
 			});
 		});
+	}
+
+	get agentPanelCounts(): Readonly<{ total: number; needsInput: number }> {
+		return this.panelCounts;
 	}
 
 	override get session(): AgentSession {
