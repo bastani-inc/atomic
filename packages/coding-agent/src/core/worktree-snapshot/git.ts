@@ -288,7 +288,7 @@ async function isDirectory(path: string): Promise<boolean> {
 
 async function pathExists(path: string): Promise<boolean> {
 	try {
-		await access(path);
+		await stat(path);
 		return true;
 	} catch {
 		return false;
