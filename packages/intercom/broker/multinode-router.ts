@@ -1225,29 +1225,31 @@ export class MultiNodeRouter {
 
 	/**
 	 * Whether another broker holds the live presence of `targetIdentity`: a registration of that identity is connected
-	 * there. Asked behind this broker's own registrations and departures of the identity. A database that fails or does
-	 * not answer within `REMOTE_SESSIONS_BOUND_MS` counts as no.
+	 * there. Read behind what this broker already queued for the identity, without holding up what it queues next, so a
+	 * slow read never delays a later registration of it. A database that fails or does not answer within
+	 * `REMOTE_SESSIONS_BOUND_MS` counts as no, and its late answer is ignored.
 	 */
 	identityPresentElsewhere(targetIdentity: string): Promise<boolean> {
 		if (this.closed) return Promise.resolve(false);
+		const earlier = this.serials.get(targetIdentity) ?? Promise.resolve();
 		return new Promise((resolve) => {
 			const bound = setTimeout(() => resolve(false), REMOTE_SESSIONS_BOUND_MS);
 			bound.unref?.();
-			this.serial(targetIdentity, async () => {
-				try {
-					const read = await this.state.leases.read({ kind: "presence", targetIdentity });
-					resolve(
-						read.status === "found" &&
-							read.lease.holderId !== this.brokerId &&
-							read.lease.ageMs < BROKER_LEASE_STALE_AFTER_MS,
-					);
-				} catch (error) {
-					resolve(false);
-					throw error;
-				} finally {
-					clearTimeout(bound);
-				}
-			});
+			void earlier
+				.then(() => this.state.leases.read({ kind: "presence", targetIdentity }))
+				.then(
+					(read) =>
+						resolve(
+							read.status === "found" &&
+								read.lease.holderId !== this.brokerId &&
+								read.lease.ageMs < BROKER_LEASE_STALE_AFTER_MS,
+						),
+					(error: Error) => {
+						this.report(error);
+						resolve(false);
+					},
+				)
+				.finally(() => clearTimeout(bound));
 		});
 	}
 
