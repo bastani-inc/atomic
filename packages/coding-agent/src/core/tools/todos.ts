@@ -12,7 +12,7 @@
 
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
-import { markBuiltinToolRenderers } from "./builtin-renderers.js";
+import { withBuiltinToolBlockRenderers } from "./builtin-renderers.js";
 import { executeTodoToolAction } from "./todos-execute.ts";
 import { getTodosDirLabel } from "./todos-paths.ts";
 import { renderTodoCall, renderTodoResult } from "./todos-render.ts";
@@ -29,7 +29,7 @@ export function createTodoToolDefinition(
 ): ToolDefinition<typeof TodoParams, TodoToolDetails> {
 	const todosDirLabel = getTodosDirLabel(cwd);
 
-	return markBuiltinToolRenderers<ToolDefinition<typeof TodoParams, TodoToolDetails>>({
+	return withBuiltinToolBlockRenderers<ToolDefinition<typeof TodoParams, TodoToolDetails>>({
 		name: "todo",
 		concurrency: "exclusive",
 		label: "Todo",

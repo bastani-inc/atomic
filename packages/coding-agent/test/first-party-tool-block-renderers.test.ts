@@ -8,6 +8,7 @@ import type { ToolRenderContext } from "../src/core/extensions/types.js";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { createAskUserQuestionToolDefinition } from "../src/core/tools/ask-user-question/ask-user-question.ts";
 import type { QuestionnaireResult, QuestionParams } from "../src/core/tools/ask-user-question/tool/types.ts";
+import { createToolDefinition } from "../src/core/tools/index.ts";
 import { codemodeRenderers } from "../src/extensions/codemode/renderer.js";
 import { AssistantMessageComponent, interruptedNotice } from "../src/modes/interactive/components/assistant-message.js";
 import { keyHint, keyText } from "../src/modes/interactive/components/keybinding-hints.js";
@@ -50,6 +51,31 @@ function plain(component: Component, width: number): string[] {
 	assert.ok(rows.every((row) => !/\x1b\[(?:[\d;]*;)?48[;:]/u.test(row)));
 	return rows.map(stripVTControlCharacters).map((row) => row.trimEnd());
 }
+
+test("the runtime notebook edit wrapper preserves canonical tool blocks (#5350)", () => {
+	for (const path of ["src/sum.ts", "analysis.ipynb"]) {
+		const definition = createToolDefinition("edit", "/project");
+		const row = new ToolExecutionComponent(
+			"edit",
+			"wrapped-edit",
+			{ path, edits: [{ oldText: "old", newText: "new" }] },
+			{},
+			definition,
+			{ requestRender() {} } as TUI,
+			"/project",
+		);
+		try {
+			row.setArgsComplete();
+			row.updateResult({ content: [], details: { diff: "-1 old\n+1 new" }, isError: false });
+			for (const width of [80, 160]) {
+				const rows = plain(row, width).filter(Boolean);
+				assert.deepEqual(rows, [` ● Edit(${path})`, "   ⎿  +1 −1", "      -1  old", "      +1  new"]);
+			}
+		} finally {
+			row.dispose();
+		}
+	}
+});
 
 test("codemode keeps its header on one row without flattening the full script (#5350)", () => {
 	const code = [

@@ -22,5 +22,5 @@ test("read errors are not syntax-highlighted as requested file contents", () => 
 	component.updateResult({ content: [{ type: "text", text: error }], details: undefined, isError: true }, false);
 	const rendered = component.render(120).join("\n");
 	expect(stripAnsi(rendered)).toContain(error);
-	expect(rendered).toContain(theme.fg("toolOutput", error));
+	expect(rendered).toContain(theme.fg("error", error));
 });

@@ -146,10 +146,10 @@ test.each(components)("$name renders at outputPad 0 and 1", ({ create }) => {
 	const component = create(0);
 	const lines = renderLines(component);
 	assert.ok(lines.length > 0);
-	assert.deepEqual(
-		lines.filter((line) => line.startsWith(" ")),
-		[],
-	);
+	assert.ok(!lines[0]!.startsWith(" "));
+	if (component instanceof ToolExecutionComponent) {
+		assert.ok(lines.slice(1).every((line) => line.startsWith("  ⎿  ") || line.startsWith("     ")));
+	}
 	component.setOutputPad(1);
 	assert.deepEqual(
 		renderLines(component),

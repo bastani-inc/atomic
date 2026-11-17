@@ -59,7 +59,7 @@ function mainChat() {
 		workingVisible: true,
 		workingMessage: undefined,
 		lastWorkingMessage: undefined,
-		defaultWorkingMessage: "Working...",
+		defaultWorkingMessage: "Working…",
 		workingIndicatorOptions: undefined,
 		workingIndicatorEmbedded: false,
 		loadingAnimation: undefined,
@@ -166,11 +166,7 @@ describe("one working line in the main chat, a stage chat and a subagent view (#
 			assert.deepEqual(lines(), Array(3).fill("∀ Brewed for 9s · ↓ 120 tokens"));
 
 			await all({ type: "agent_start" });
-			assert.deepEqual(lines(), [
-				"∀ Working...",
-				"∀ Working... (0s · ↓ 120 tokens)",
-				"∀ Working... (0s · ↓ 120 tokens)",
-			]);
+			assert.deepEqual(lines(), ["∀ Working…", "∀ Working… (0s · ↓ 120 tokens)", "∀ Working… (0s · ↓ 120 tokens)"]);
 		} finally {
 			for (const view of views) view.dispose();
 		}

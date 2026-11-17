@@ -86,15 +86,15 @@ describe("ToolExecutionComponent parity", () => {
 	});
 
 	test.each([
-		[0, undefined],
-		[4_200, "4.2s"],
-		[59_999, "59s"],
-		[60_000, "1m 0s"],
-		[90_900, "1m 30s"],
-		[3_599_999, "59m 59s"],
-		[3_600_000, "1h 0m"],
-		[7_384_900, "2h 3m"],
-	])("formats bash duration %d as %s in the shared header (#5224)", (ms, formatted) => {
+		[0, undefined, undefined],
+		[4_200, "4s", "4.2s"],
+		[59_999, "59s", "59s"],
+		[60_000, "1m 0s", "1m 0s"],
+		[90_900, "1m 30s", "1m 30s"],
+		[3_599_999, "59m 59s", "59m 59s"],
+		[3_600_000, "1h 0m", "1h 0m"],
+		[7_384_900, "2h 3m", "2h 3m"],
+	])("formats running and settled bash duration %d (#5350)", (ms, running, formatted) => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
 		const component = new ToolExecutionComponent(
@@ -110,12 +110,13 @@ describe("ToolExecutionComponent parity", () => {
 		component.updateResult({ content: [], isError: false }, true);
 		vi.advanceTimersByTime(ms);
 		component.invalidate();
-		const suffix = formatted === undefined ? "" : ` · ${formatted}`;
-		assert.equal(stripAnsi(component.render(120)[1] ?? "").trim(), `∀ Bash(work)${suffix}`);
+		const active = stripAnsi(component.render(120).join("\n"));
+		expect(active).toContain(running ? `∀ Bash(work) · ${running}` : "∀ Bash(work)");
+		expect(active).not.toMatch(/Elapsed|Took|Observed for/);
 		component.updateResult({ content: [], isError: false }, false);
 		const completed = stripAnsi(component.render(120).join("\n"));
-		assert.equal(stripAnsi(component.render(120)[1] ?? "").trim(), `● Bash(work)${suffix}`);
-		assert.doesNotMatch(completed, /Elapsed|Took|Observed for/);
+		expect(completed).toContain(formatted ? `● Bash(work) · ${formatted}` : "● Bash(work)");
+		expect(completed).not.toMatch(/Elapsed|Took|Observed for/);
 		vi.advanceTimersByTime(1000);
 		component.invalidate();
 		expect(stripAnsi(component.render(120).join("\n"))).toBe(completed);
@@ -265,9 +266,9 @@ describe("ToolExecutionComponent parity", () => {
 		);
 		component.updateResult({ content: [], details: { diff: "+1 after", firstChangedLine: 1 }, isError: false });
 		const rawRendered = component.render(120).join("\n");
-		expect(rawRendered).toMatch(/\x1b\[48;/);
+		expect(rawRendered).not.toMatch(/\x1b\[48;/);
 		const rendered = stripAnsi(rawRendered);
-		expect(rendered).toContain("edit");
+		expect(rendered).toContain("● Edit(README.md)");
 		expect(rendered).toContain("README.md");
 		expect(rendered).not.toContain(":1");
 	});
@@ -338,8 +339,8 @@ describe("ToolExecutionComponent parity", () => {
 
 		const rendered = stripAnsi(component.render(200).join("\n"));
 		expect(rendered.match(/Full output:/g)?.length ?? 0).toBe(1);
-		assert.match(rendered, /line-4000[^\n]*\n\s*⎿ {2}Truncated: showing 3000 of 4000 lines · Full output:/);
-		assert.doesNotMatch(rendered, /line-4000[^\n]*\n[^\S\n]*\n/);
+		assert.match(rendered, /line-4000[^\n]*\n {3}⎿ {2}Truncated: showing 3000 of 4000 lines\. Full output:/);
+		assert.doesNotMatch(rendered, /line-4000[^\n]*\n\s*\n/);
 		expect(rendered).toContain("Truncated: showing 3000 of 4000 lines");
 		expect(rendered).not.toContain("[Showing lines 1001-4000 of 4000. Full output:");
 	});
@@ -378,9 +379,9 @@ describe("ToolExecutionComponent parity", () => {
 			component.updateResult({ ...result, isError: false }, false);
 
 			// Wide enough for the path alone (plus row padding), too narrow for the path beside its label.
-			const lines = component.render(fullOutputPath.length + 6);
+			const lines = component.render(fullOutputPath.length + 8);
 			const plain = lines.map((line) => stripAnsi(line).trim());
-			assert.ok(plain.includes(fullOutputPath), plain);
+			assert.ok(plain.includes(`⎿  ${fullOutputPath}`), plain);
 			// Wider than the terminal, the path still wraps; its link target keeps it whole.
 			const narrow = component.render(40).join("\n");
 			assert.ok(narrow.includes(`\x1b]8;;${pathToFileURL(resolve(fullOutputPath)).href}`), narrow);
@@ -436,8 +437,8 @@ describe("ToolExecutionComponent parity", () => {
 			vi.advanceTimersByTime(4_200);
 			component.updateResult({ ...yielded, durationMs }, false);
 			const rendered = stripAnsi(component.render(120).join("\n"));
-			assert.match(rendered, /● Bash\(sleep 60\) · background/);
-			assert.match(rendered, /⎿ {2}Running in background · ↓ to manage/);
+			assert.ok(rendered.includes("● Bash(sleep 60) · background"), rendered);
+			assert.match(rendered, /⎿ {2}Running in background/);
 			assert.doesNotMatch(rendered, /Took|Observed for|Elapsed/);
 			component.dispose();
 		}
@@ -455,7 +456,8 @@ describe("ToolExecutionComponent parity", () => {
 		);
 		component.updateResult({ content: [{ type: "text", text: "hello" }], details: undefined, isError: false }, false);
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered.match(/Read\(README\.md\)/g)?.length ?? 0).toBe(1);
+		expect(rendered.match(/● Read\(README\.md\)/g)?.length ?? 0).toBe(1);
+		expect(rendered).toContain("Read 1 line");
 	});
 
 	test("renders read calls with null offset and limit as full-file reads (#9996)", () => {
@@ -622,14 +624,14 @@ describe("ToolExecutionComponent parity", () => {
 			process.cwd(),
 		);
 		const collapsed = stripAnsi(component.render(300).join("\n"));
-		assert.ok(collapsed.includes('custom_tool(query="atomic"'));
-		assert.ok(collapsed.includes("..."));
+		assert.ok(collapsed.includes("custom_tool(query=atomic"));
+		assert.ok(collapsed.includes("…"));
 		assert.ok(!collapsed.includes(longValue));
 		component.setExpanded(true);
 		const expanded = stripAnsi(component.render(300).join("\n"));
-		assert.ok(expanded.includes("  query: atomic"));
+		assert.ok(expanded.includes("query: atomic"));
 		assert.ok(expanded.includes(longValue));
-		assert.ok(expanded.includes("    two"));
+		assert.ok(expanded.includes("two"));
 		assert.ok(!expanded.includes("\u001b[2J"));
 	});
 
@@ -687,27 +689,24 @@ describe("ToolExecutionComponent parity", () => {
 			process.cwd(),
 		);
 		assert.equal(stripAnsi(component.render(120)[1] ?? "").trim(), "∀ Write(README.md)");
+		component.setArgsComplete();
 		component.updateResult({ content: [{ type: "text", text: "Wrote 2 lines" }], isError: false });
 		component.setExpanded(true);
 		const rendered = stripAnsi(component.render(120).join("\n"));
 		expect(rendered).toContain("one");
 		expect(rendered).toContain("two");
 		expect(rendered).not.toContain("two\n\n");
+		component.dispose();
 	});
 
-	test("renders streamed partial arguments once per frame, with the latest arguments (#5224)", () => {
+	test("renders streamed partial arguments once per frame, with the latest arguments (#9265)", () => {
 		const write = createWriteToolDefinition(process.cwd());
-		const writePreview: NonNullable<typeof write.renderCall> = (args) => {
-			const { path = "", content = "" } = args as { path?: string; content?: string };
-			const lines = content.trimEnd().split("\n");
-			return new Text(`Write(${path} · ${lines.length} total · ${lines.at(-1)})`, 0, 0);
-		};
 		let renderCalls = 0;
 		const counted: typeof write = {
 			...write,
 			renderCall: (...args) => {
 				renderCalls++;
-				return writePreview(...args);
+				return write.renderCall!(...args);
 			},
 		};
 		let renderRequests = 0;
@@ -731,7 +730,7 @@ describe("ToolExecutionComponent parity", () => {
 			"tool-10",
 			{ path: "src/file.ts", content },
 			{},
-			{ ...write, renderCall: writePreview },
+			write,
 			tui,
 			".",
 		);
@@ -743,18 +742,22 @@ describe("ToolExecutionComponent parity", () => {
 		component.updateArgs(final);
 		const next = stripAnsi(component.render(120).join("\n"));
 		assert.equal(renderCalls - callsBefore, 2);
-		assert.ok(next.includes("201 total"));
+		assert.match(next, /∀ Write\(src\/file\.ts\)/);
+		assert.doesNotMatch(next, /const tail/);
 		assert.equal(
 			next,
-			stripAnsi(
-				new ToolExecutionComponent("write", "t", final, {}, { ...write, renderCall: writePreview }, tui, ".")
-					.render(120)
-					.join("\n"),
-			),
+			stripAnsi(new ToolExecutionComponent("write", "t", final, {}, write, tui, ".").render(120).join("\n")),
 		);
 		// Rendering again without new arguments does not run the renderer.
 		component.render(120);
 		assert.equal(renderCalls - callsBefore, 2);
+		component.setArgsComplete();
+		component.updateResult({ content: [], isError: false });
+		assert.match(stripAnsi(component.render(120).join("\n")), /Wrote 201 lines/);
+		component.setExpanded(true);
+		assert.match(stripAnsi(component.render(120).join("\n")), /const tail = 2/);
+		component.dispose();
+		direct.dispose();
 	});
 
 	test("trims trailing blank display lines from read results", () => {

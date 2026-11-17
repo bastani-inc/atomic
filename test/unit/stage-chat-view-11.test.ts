@@ -66,44 +66,47 @@ describe("StageChatView", () => {
 			onClose: () => {},
 		});
 
-		emit({ type: "agent_start" } as unknown as AgentSessionEvent);
-		emit({
-			type: "message_start",
-			message: { role: "assistant", content: [] },
-		} as unknown as AgentSessionEvent);
-		emit({
-			type: "message_update",
-			assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "checking" },
-		} as unknown as AgentSessionEvent);
-		emit({
-			type: "message_update",
-			assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "I will inspect it." },
-		} as unknown as AgentSessionEvent);
-		emit({
-			type: "message_update",
-			assistantMessageEvent: {
-				type: "toolcall_end",
-				contentIndex: 2,
-				toolCall: { type: "toolCall", id: "t-snapshot", name: "read", arguments: { path: "src/index.ts" } },
-			},
-		} as unknown as AgentSessionEvent);
+		try {
+			emit({ type: "agent_start" } as unknown as AgentSessionEvent);
+			emit({
+				type: "message_start",
+				message: { role: "assistant", content: [] },
+			} as unknown as AgentSessionEvent);
+			emit({
+				type: "message_update",
+				assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "checking" },
+			} as unknown as AgentSessionEvent);
+			emit({
+				type: "message_update",
+				assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "I will inspect it." },
+			} as unknown as AgentSessionEvent);
+			emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_end",
+					contentIndex: 2,
+					toolCall: { type: "toolCall", id: "t-snapshot", name: "read", arguments: { path: "src/index.ts" } },
+				},
+			} as unknown as AgentSessionEvent);
 
-		assert.equal(
-			view._transcript.some((entry) => entry.role === "thinking" && entry.text === "checking"),
-			true,
-		);
-		assert.equal(
-			view._transcript.some((entry) => entry.role === "assistant" && entry.text === "I will inspect it."),
-			true,
-		);
-		assert.equal(
-			view._transcript.some((entry) => entry.role === "tool" && entry.toolCallId === "t-snapshot"),
-			true,
-		);
-		assert.match(view.render(96).join("\n"), /I will inspect it/);
-		assert.match(view.render(96).map(stripAnsi).join("\n"), /Read\(src\/index\.ts\)/);
-		assert.doesNotMatch(view.render(96).map(stripAnsi).join("\n"), /Checking the machinery/);
-		view.dispose();
+			assert.equal(
+				view._transcript.some((entry) => entry.role === "thinking" && entry.text === "checking"),
+				true,
+			);
+			assert.equal(
+				view._transcript.some((entry) => entry.role === "assistant" && entry.text === "I will inspect it."),
+				true,
+			);
+			assert.equal(
+				view._transcript.some((entry) => entry.role === "tool" && entry.toolCallId === "t-snapshot"),
+				true,
+			);
+			assert.match(view.render(96).join("\n"), /I will inspect it/);
+			assert.match(stripAnsi(view.render(96).join("\n")), /Read\(src\/index\.ts\)/);
+			assert.doesNotMatch(view.render(96).map(stripAnsi).join("\n"), /Checking the machinery/);
+		} finally {
+			view.dispose();
+		}
 	});
 
 	test("deduplicates locally submitted user messages echoed by SDK", async () => {
@@ -341,7 +344,7 @@ describe("StageChatView", () => {
 			toolName: "bash",
 			args: { command: "bun test" },
 		} as AgentSessionEvent);
-		assert.match(view.render(96).map(stripAnsi).join("\n"), /Working\.\.\./);
+		assert.match(view.render(96).map(stripAnsi).join("\n"), /Working…/);
 
 		emit({
 			type: "tool_execution_end",
@@ -350,7 +353,7 @@ describe("StageChatView", () => {
 			result: { content: [{ type: "text", text: "ok" }], details: {} },
 			isError: false,
 		} as AgentSessionEvent);
-		assert.match(view.render(96).map(stripAnsi).join("\n"), /Working\.\.\./);
+		assert.match(view.render(96).map(stripAnsi).join("\n"), /Working…/);
 		view.dispose();
 	});
 
@@ -407,9 +410,9 @@ describe("StageChatView", () => {
 					toolCall: { type: "toolCall", id: "read-1", name: "read", arguments: {} },
 				},
 			} as AgentSessionEvent);
-			assert.match(stripAnsi(view.render(96).join("\n")), /Schlepping\.\.\./);
+			assert.match(stripAnsi(view.render(96).join("\n")), /Schlepping…/);
 			emit({ type: "turn_end" } as AgentSessionEvent);
-			assert.doesNotMatch(stripAnsi(view.render(96).join("\n")), /Working\.\.\.|Schlepping\.\.\./);
+			assert.doesNotMatch(stripAnsi(view.render(96).join("\n")), /Working…|Schlepping…/);
 			view.dispose();
 		} finally {
 			Math.random = previousRandom;

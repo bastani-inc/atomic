@@ -10,7 +10,7 @@ import { attachLineReader } from "../../utils/lines.ts";
 import type { ManagedToolError } from "../../utils/managed-tool-errors.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
-import { markBuiltinToolRenderers } from "./builtin-renderers.js";
+import { withBuiltinToolBlockRenderers } from "./builtin-renderers.js";
 import { resolveToCwd } from "./path-utils.ts";
 import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.ts";
 import { loadNativeSearchBinding, type NativeGrepMatch } from "./search-native.ts";
@@ -216,7 +216,7 @@ export function createGrepToolDefinition(
 	options?: GrepToolOptions,
 ): ToolDefinition<typeof grepSchema, GrepToolDetails | undefined> {
 	const customOps = options?.operations;
-	return markBuiltinToolRenderers<ToolDefinition<typeof grepSchema, GrepToolDetails | undefined>>({
+	return withBuiltinToolBlockRenderers<ToolDefinition<typeof grepSchema, GrepToolDetails | undefined>>({
 		name: "grep",
 		label: "grep",
 		description: `Search file contents for a pattern. Returns matching lines with file paths and line numbers. Respects .gitignore. Output is truncated to ${DEFAULT_LIMIT} matches or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Long lines are truncated to ${GREP_MAX_LINE_LENGTH} chars.`,
