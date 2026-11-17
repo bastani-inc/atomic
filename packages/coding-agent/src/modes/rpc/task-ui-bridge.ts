@@ -1,4 +1,4 @@
-import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import { type TuiMouseEvent, type TuiMouseEventResult, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import {
@@ -179,6 +179,9 @@ export async function showTaskInspector(
 								return line + " ".repeat(Math.max(0, width - visibleWidth(line)));
 							});
 						},
+						// A full-screen page draws from the top row, so the click's row is the page's.
+						handleMouse: (event: TuiMouseEvent): TuiMouseEventResult | undefined =>
+							fullscreen ? inspector.handleMouse(event) : undefined,
 						handleInput: (data: string) => {
 							if (!isPhysicalCtrlC(data)) return inspector.handleInput(data);
 							closed = true;

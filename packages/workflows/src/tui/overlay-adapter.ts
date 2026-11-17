@@ -20,6 +20,7 @@ import type {
 	ChatSessionViewportSettings,
 	ReadonlyFooterDataProvider,
 } from "@bastani/atomic";
+import type { TuiMouseEvent, TuiMouseEventResult } from "@bastani/atomic-tui";
 import type {
 	PiCustomComponent,
 	PiCustomOverlayFactoryTui,
@@ -309,6 +310,11 @@ export function buildGraphOverlayAdapter(
 		const unsubscribe = subscribeStoreInvalidation(store, onStoreUpdate);
 		return {
 			render: (width: number) => view.render(width),
+			handleMouse: (event: TuiMouseEvent): TuiMouseEventResult | undefined => {
+				const result = view.handleMouse(event);
+				if (result?.handled === true) tui.requestRender?.();
+				return result;
+			},
 			handleInput: (data: string): boolean => {
 				const consumed = view.handleInput(data);
 				if (consumed) tui.requestRender?.();

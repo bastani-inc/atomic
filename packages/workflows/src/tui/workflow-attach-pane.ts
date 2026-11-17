@@ -14,7 +14,14 @@ import {
 	type ReadonlyFooterDataProvider,
 	TRANSCRIPT_JUMP_TO_END_URL,
 } from "@bastani/atomic";
-import type { Component, EditorComponent, EditorTheme, TUI } from "@bastani/atomic-tui";
+import type {
+	Component,
+	EditorComponent,
+	EditorTheme,
+	TUI,
+	TuiMouseEvent,
+	TuiMouseEventResult,
+} from "@bastani/atomic-tui";
 import type { PostMortemUnavailableReason } from "../runs/foreground/postmortem-stage-chat.js";
 import type { StageControlHandle, StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { stageQueuedUserMessageCount } from "../runs/foreground/stage-queued-user-messages.js";
@@ -585,6 +592,11 @@ export class WorkflowAttachPane implements Component {
 			return this.chatView.render(width);
 		}
 		return this.graphView.render(width);
+	}
+	/** A click in an attached stage chat: the chat draws from the pane's top row. */
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (!this.visible || this.mode !== "stage-chat" || !this.chatView) return undefined;
+		return this.chatView.handleMouse(event);
 	}
 	handleInput(data: string): boolean | undefined {
 		this._flushStoreUpdate();

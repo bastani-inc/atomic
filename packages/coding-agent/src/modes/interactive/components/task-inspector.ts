@@ -1,5 +1,14 @@
 import { stripVTControlCharacters } from "node:util";
-import { type Component, getKeybindings, Input, matchesKey, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import {
+	type Component,
+	getKeybindings,
+	Input,
+	matchesKey,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
+	truncateToWidth,
+	visibleWidth,
+} from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import {
 	type AgentPanelAnswerOptions,
@@ -190,6 +199,8 @@ export class TaskInspector implements Component {
 	private inputTask?: TaskRecord;
 	/** The open transcript of the selected task, on the shared chat stack. */
 	private transcript?: TaskTranscriptPage;
+	/** The frame row the open transcript started on in the last `renderViewport`, while one was drawn. */
+	private transcriptTop: number | undefined;
 	private status = "";
 	/** A failure shown once on the task pages, until the next key. */
 	private failureNotice = "";
@@ -770,6 +781,17 @@ export class TaskInspector implements Component {
 		}
 		if (current()) this.requestRender();
 	}
+	/** A click on a block header in an open transcript expands or collapses that block. */
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		const transcript = this.transcript;
+		const top = this.transcriptTop;
+		if (transcript?.handleMouse === undefined || top === undefined || this.helpOpen) return undefined;
+		if (this.navigation.focus.kind !== "detail") return undefined;
+		if (!transcript.handleMouse({ ...event, y: event.y - top })) return undefined;
+		this.requestRender();
+		return { handled: true };
+	}
+
 	/** Every key belongs to the inspector except the host's thinking toggle when it leaves that alone. */
 	handleInput(data: string): boolean {
 		const keys = getKeybindings();
@@ -1404,7 +1426,11 @@ export class TaskInspector implements Component {
 		return this.renderViewport(width, Math.max(3, (process.stdout.rows || 24) - 5));
 	}
 	private renderTranscriptPage(width: number, budget: number, transcript: TaskTranscriptPage): string[] {
-		if (transcript.handlesBack()) return transcript.render(width, budget);
+		this.transcriptTop = undefined;
+		if (transcript.handlesBack()) {
+			this.transcriptTop = 0;
+			return transcript.render(width, budget);
+		}
 		const task = this.selected();
 		const fitWidth = (line: string) => truncateToWidth(line, Math.max(1, width));
 
@@ -1486,6 +1512,7 @@ export class TaskInspector implements Component {
 		const statusRows = this.taskStatusRows(width);
 		const room = Math.max(1, budget - header.length - footer.length - failure.length - statusRows.length);
 		const body = transcript.render(width, room);
+		this.transcriptTop = header.length;
 		return [
 			...header,
 			...body,
@@ -1498,6 +1525,7 @@ export class TaskInspector implements Component {
 	renderViewport(width: number, budget: number): string[] {
 		if (this.transcript && this.navigation.focus.kind === "detail")
 			return this.renderTranscriptPage(width, budget, this.transcript);
+		this.transcriptTop = undefined;
 		const style = themedNavKeyStyle();
 		if (this.helpOpen) {
 			const detailOpen = this.navigation.focus.kind === "detail";

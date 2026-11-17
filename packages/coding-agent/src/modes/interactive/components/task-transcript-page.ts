@@ -3,6 +3,7 @@ import {
 	matchesKey,
 	Text,
 	type KeybindingsManager as TuiKeybindingsManager,
+	type TuiMouseEvent,
 } from "@bastani/atomic-tui";
 import { type HeldPrompt, heldPrompts } from "../../../core/extensions/held-prompts.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
@@ -87,6 +88,8 @@ export interface TaskTranscriptPage {
 	/** Interrupts the task's current turn; the task keeps running and waits for its next message. */
 	interrupt(): Promise<TaskViewResult<undefined>>;
 	render(width: number, rows: number): string[];
+	/** A single click at row `event.y` of the last frame `render` drew; true when the page acted on it. */
+	handleMouse?(event: TuiMouseEvent): boolean;
 	invalidate(): void;
 	dispose(): void;
 }
@@ -181,6 +184,8 @@ async function settled<T>(read: T | Promise<T>): Promise<T> {
  */
 export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private readonly elapsedClocks: TaskElapsedClocks;
+	/** How many rows the transcript took at the top of the last frame. */
+	private bodyRows = 0;
 	readonly chat: ChatSessionHost;
 	private loadStatus = "Loading transcript…";
 	/** Loading and failure notes, then why the chat is read-only when it is. */
@@ -433,9 +438,18 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		return handled;
 	}
 
+	/** A single click on a block header in the transcript expands or collapses that block. */
+	handleMouse(event: TuiMouseEvent): boolean {
+		if (this.chat.hasTaskInspector || event.y < 0 || event.y >= this.bodyRows) return false;
+		const handled = this.chat.handleBodyClick(event);
+		if (handled) this.requestRender();
+		return handled;
+	}
+
 	/** The chat box of a stage chat: the transcript, then pending, working, usage, the named editor and the footer. */
 	render(width: number, rows: number): string[] {
 		const viewport = Math.max(1, rows);
+		this.bodyRows = 0;
 		if (this.chat.hasTaskInspector) {
 			const footer = this.chat.taskInspectorFullscreen ? [] : this.chat.renderFooter(width);
 			const shownFooter = footer.slice(0, viewport - 1);
@@ -457,6 +471,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		const working = reserve(this.chat.renderWorkingStatus(width), true);
 		const usage = reserve(this.chat.renderUsage(width));
 		const body = remaining > 0 ? this.chat.renderBody(width, remaining) : [];
+		this.bodyRows = body.length;
 		return [...body, ...pending, ...working, ...usage, ...editor, ...footer];
 	}
 

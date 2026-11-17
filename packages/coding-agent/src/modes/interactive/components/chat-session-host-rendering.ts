@@ -44,6 +44,12 @@ export function renderChatSessionBody<TExtraEntry extends ChatTranscriptEntryLik
 	// Kept as the same string while it is unchanged, so every entry's key compares it by reference.
 	const settingsKey = chatRenderSettingsCacheKey(state);
 	if (settingsKey !== state.transcriptRenderSettingsKey) state.transcriptRenderSettingsKey = settingsKey;
+	// Ctrl+O sets every block, including those a click expanded or collapsed.
+	const toolsExpanded = state.getChatRenderSettings?.()?.toolOutputExpanded === true;
+	if (state.expandedOverridesFor !== toolsExpanded) {
+		state.expandedOverridesFor = toolsExpanded;
+		state.expandedOverrides = new WeakMap();
+	}
 	if (state.transcript.length > 0) {
 		components.push(state.transcriptComponent);
 	}
@@ -338,7 +344,11 @@ export function renderChatSessionEntry<TExtraEntry extends ChatTranscriptEntryLi
 	}
 	if (isChatMessageEntry(entry)) {
 		const isStreaming = isChatSessionStreaming(state) && state.liveChat.isStreamingAssistantEntry(entry);
-		const options = chatMessageRenderOptions(state, isStreaming);
+		const expanded = state.expandedOverrides.get(entry);
+		const options =
+			expanded === undefined
+				? chatMessageRenderOptions(state, isStreaming)
+				: { ...chatMessageRenderOptions(state, isStreaming), toolOutputExpanded: expanded };
 		const component = renderChatMessageEntry(
 			streamingWindowedEntry(state, entry, isStreaming),
 			entry.kind === "tool" || entry.kind === "custom" ? { ...options, ui: entryTui(state, entry) } : options,

@@ -18,7 +18,7 @@
  *  - packages/coding-agent/docs/tui.md (the @bastani/atomic-tui component contract)
  */
 
-import type { Component, Focusable } from "@bastani/atomic-tui";
+import type { Component, Focusable, TuiMouseEvent, TuiMouseEventResult } from "@bastani/atomic-tui";
 import { fitStageChatFrame, planStageChatFrame } from "./stage-chat-layout.js";
 import {
 	renderBlockedBody,
@@ -109,12 +109,25 @@ export class StageChatView implements Component, Focusable {
 	private _unsubscribeFooterData!: StageChatViewContext["_unsubscribeFooterData"];
 	private _unregisterStageUiHost!: StageChatViewContext["_unregisterStageUiHost"];
 
+	/** The frame rows the stage's transcript took in the last render, while the plain chat was drawn. */
+	private transcriptRows: { readonly top: number; readonly rows: number } | undefined;
+
 	constructor(opts: StageChatViewOpts) {
 		initializeStageChatView(this._ctx(), opts);
 	}
 
+	/** A single click on a block header in the stage's transcript expands or collapses that block. */
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		const region = this.transcriptRows;
+		if (region === undefined || event.y < region.top || event.y >= region.top + region.rows) return undefined;
+		if (!this.chatHost.handleBodyClick({ ...event, y: event.y - region.top })) return undefined;
+		this.requestRender?.();
+		return { handled: true };
+	}
+
 	render(width: number): string[] {
 		const ctx = this._ctx();
+		this.transcriptRows = undefined;
 		if (this.chatHost.hasTaskInspector) {
 			const taskWidth = Math.max(1, width);
 			const rows = viewLineCount(ctx);
@@ -216,6 +229,10 @@ export class StageChatView implements Component, Focusable {
 			bodyLines = renderReadOnlyArchiveBody(ctx, w, bodyBudget, stage, renderTranscript);
 		} else {
 			bodyLines = renderTranscript(bodyBudget);
+			this.transcriptRows = {
+				top: headerLines.length + sepLines.length,
+				rows: Math.min(bodyLines.length, bodyBudget),
+			};
 		}
 		const visibleBodyLines = bodyLines.slice(0, bodyBudget);
 		const lines = [
@@ -228,6 +245,8 @@ export class StageChatView implements Component, Focusable {
 			...visibleEditorLines,
 			...visibleFooterLines,
 		];
+		// A frame taller than the view loses rows from its top, and the transcript rows with them.
+		if (lines.length > totalRows) this.transcriptRows = undefined;
 		return fitStageChatFrame(lines, totalRows, blankLine(w));
 	}
 

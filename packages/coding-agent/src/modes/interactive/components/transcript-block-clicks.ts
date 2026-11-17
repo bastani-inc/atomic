@@ -73,6 +73,20 @@ function isHeaderRow(lines: readonly string[], row: number): boolean {
 }
 
 /**
+ * The blocks a click on row `row` of `siblings[index]`, whose rows are `lines`, expands or collapses: the block and,
+ * for a group summary or one of its calls, the whole group. Undefined unless the row is part of a block's header.
+ */
+export function clickedBlocks(
+	siblings: readonly Component[],
+	index: number,
+	lines: readonly string[],
+	row: number,
+): readonly ClickExpandableBlock[] | undefined {
+	const unit = clickUnit(siblings, index);
+	return unit !== undefined && isHeaderRow(lines, row) ? unit : undefined;
+}
+
+/**
  * Expand or collapse the block whose header row a single left click landed on, among `siblings` stacked in order.
  * Clicks in a block's body are left to text selection, so selecting body text works as everywhere else.
  * `owner` is the container the siblings belong to; it is reported as the click's handler.
@@ -88,8 +102,8 @@ export function handleTranscriptBlockClick(
 	const hit = locate(event.width, event.y);
 	if (!hit) return undefined;
 	const index = siblings.indexOf(hit.component);
-	const unit = index === -1 ? undefined : clickUnit(siblings, index);
-	if (!unit || !isHeaderRow(hit.component.render(event.width), hit.row)) return undefined;
+	const unit = index === -1 ? undefined : clickedBlocks(siblings, index, hit.component.render(event.width), hit.row);
+	if (!unit) return undefined;
 	const expand = !unit[0]!.isExpanded();
 	for (const block of unit) block.setExpanded(expand);
 	onToggled?.(expand);

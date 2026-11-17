@@ -13,6 +13,7 @@ import {
 } from "@bastani/atomic-tui";
 import { isUserPromptRow } from "./jump-to-latest.ts";
 import { disposeRenderer as disposeComponent } from "./renderer-disposal.js";
+import { clickedBlocks } from "./transcript-block-clicks.ts";
 import { WheelScrollAccelerator } from "./wheel-scroll-accelerator.ts";
 
 /**
@@ -73,6 +74,9 @@ interface TranscriptRowLayout {
 
 /** `ensureBlockCache` found every block current. */
 const UNCHANGED = Number.POSITIVE_INFINITY;
+
+/** Stands in for an entry with no block, so blocks keep their positions in a click's sibling list. */
+const EMPTY_COMPONENT: Component = { render: () => [], invalidate: () => {} };
 
 /**
  * A run of rows inside a windowed component, tagged with the identity of the
@@ -248,6 +252,35 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 			},
 		};
 		return this.measuredRows;
+	}
+
+	/**
+	 * The entries whose blocks a single click on row `row` of the transcript at `width` expands or collapses, and
+	 * whether it expands them. Undefined unless the row is part of a block's header; only a windowed transcript, one
+	 * built with a cache key, can tell.
+	 */
+	clickedEntries(
+		width: number,
+		row: number,
+	): { readonly entries: readonly TEntry[]; readonly expand: boolean } | undefined {
+		if (!this.supportsRowWindow || row < 0) return undefined;
+		this.measureRows(width);
+		const blocks = this.blockCache;
+		const index = indexAtOrBefore(this.layout.starts, row);
+		const block = blocks[index];
+		if (block === undefined) return undefined;
+		const bodyRow = row - (this.layout.starts[index] ?? 0) - (block.spaced ? 1 : 0);
+		if (bodyRow < 0 || bodyRow >= block.body.length) return undefined;
+		const components = blocks.map((candidate) => candidate?.component ?? EMPTY_COMPONENT);
+		const unit = clickedBlocks(components, index, block.body, bodyRow);
+		if (unit === undefined) return undefined;
+		const entryOf = new Map<Component, TEntry>();
+		for (const candidate of blocks) if (candidate !== undefined) entryOf.set(candidate.component, candidate.entry);
+		const entries = unit.flatMap((component) => {
+			const entry = entryOf.get(component);
+			return entry === undefined ? [] : [entry];
+		});
+		return { entries, expand: !unit[0]!.isExpanded() };
 	}
 
 	requestEntryRender(entry: TEntry): void {
@@ -500,6 +533,8 @@ export class ScrollableComponentViewport implements Component {
 	private lastComponentSegments: readonly (readonly RowWindowSegment[] | undefined)[] = [];
 	private lastComponentRowCounts: readonly number[] = [];
 	private lastWidth = 0;
+	/** Where the last frame drew content: its first stack row, and the frame rows the pinned prompt took above it. */
+	private lastPaint: { readonly start: number; readonly pinRows: number; readonly contentRows: number } | undefined;
 	private maxScroll = 0;
 	/**
 	 * Absolute row `scrollTo` asked for, still waiting for the render that can
@@ -728,6 +763,7 @@ export class ScrollableComponentViewport implements Component {
 				: undefined;
 		const pin = pinned === undefined ? [] : [truncateToWidth(pinned, contentWidth, "")];
 		const contentRows = this.visibleRows - indicator.length - pin.length;
+		this.lastPaint = { start, pinRows: pin.length, contentRows };
 		const visible = [
 			...pin,
 			...this.renderVisibleRows(componentRows, start, start + contentRows).map(withoutTerminalControl),
@@ -736,6 +772,33 @@ export class ScrollableComponentViewport implements Component {
 		const painted = this.paintScrollbar(visible, width, scrollbar, { lineCount, start, maxScroll });
 		if (start < this.visibleRows) this.options.onNearTop?.();
 		return [...painted, ...indicator];
+	}
+
+	/**
+	 * The component the last frame drew on frame row `row`, the row inside that component, and the width it was laid
+	 * out at. Undefined for the pinned prompt row, the jump-to-latest row and rows past the content.
+	 */
+	componentAtRow(
+		row: number,
+	): { readonly component: Component; readonly row: number; readonly width: number } | undefined {
+		const paint = this.lastPaint;
+		if (paint === undefined) return undefined;
+		const contentRow = row - paint.pinRows;
+		if (contentRow < 0 || contentRow >= paint.contentRows) return undefined;
+		let stackRow = paint.start + contentRow;
+		for (let index = 0; index < this.lastComponentRowCounts.length; index++) {
+			const rows = this.lastComponentRowCounts[index] ?? 0;
+			const component = this.components[index];
+			if (stackRow < rows)
+				return component === undefined ? undefined : { component, row: stackRow, width: this.lastWidth };
+			stackRow -= rows;
+		}
+		return undefined;
+	}
+
+	/** The first stack row the last frame drew, for holding the view where it is. */
+	firstVisibleRow(): number | undefined {
+		return this.lastPaint?.start;
 	}
 
 	/** Stops the timer that hides an `"auto"` scrollbar. */

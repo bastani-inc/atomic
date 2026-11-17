@@ -1,4 +1,4 @@
-import type { Component, Focusable } from "@bastani/atomic-tui";
+import type { Component, Focusable, TuiMouseEvent } from "@bastani/atomic-tui";
 import type { AgentSessionEvent, CompactionReason } from "../../../core/agent-session.js";
 import { repairOrphanToolResults } from "../../../core/messages.ts";
 import { SessionManager } from "../../../core/session-manager.ts";
@@ -56,6 +56,7 @@ import type {
 } from "./chat-session-host-types.ts";
 import { firstRawUserExactText, syncFirstUserEntry } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
+import { isSingleLeftClick } from "./single-click.ts";
 import { TaskInspector } from "./task-inspector.js";
 import { renderTaskFooter } from "./task-list.js";
 import type { TaskTranscriptEnvironment } from "./task-transcript-page.ts";
@@ -512,6 +513,30 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 
 	bodyScrollFromBottom(): number {
 		return this.state.bodyViewport.getScrollFromBottom();
+	}
+
+	/**
+	 * A single click at row `event.y` of the body the last `renderBody` drew: on a block's header it expands or collapses
+	 * that block, or a group summary and its calls, and returns true. Expanding while the body follows its end holds
+	 * the view where it is, so the header stays under the pointer.
+	 */
+	handleBodyClick(event: TuiMouseEvent): boolean {
+		if (!isSingleLeftClick(event)) return false;
+		const state = this.state;
+		const hit = state.bodyViewport.componentAtRow(event.y);
+		if (hit === undefined || hit.component !== state.transcriptComponent) return false;
+		const clicked = state.transcriptComponent.clickedEntries(hit.width, hit.row);
+		if (clicked === undefined) return false;
+		for (const entry of clicked.entries) {
+			state.expandedOverrides.set(entry, clicked.expand);
+			state.entryRevisions.set(entry, (state.entryRevisions.get(entry) ?? 0) + 1);
+		}
+		const first = state.bodyViewport.firstVisibleRow();
+		if (clicked.expand && state.bodyViewport.getScrollFromBottom() === 0 && first !== undefined) {
+			state.bodyViewport.scrollTo(first);
+		}
+		state.requestRender?.();
+		return true;
 	}
 
 	bodyMaxScroll(): number {
