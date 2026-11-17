@@ -79,6 +79,9 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 		handlePromptInput(ctx, data);
 		return true;
 	}
+	if (!readOnlyArchive && !isBlocked(ctx) && ctx.chatHost.hasTransientModal) {
+		return ctx.chatHost.handleInput(data);
+	}
 	if (ctx.promptState && !promptCardShown(ctx) && matchesKey(data, Key.enter)) {
 		if (!ctx.chatHost.hasInputText()) {
 			ctx.dismissedPromptId = null;

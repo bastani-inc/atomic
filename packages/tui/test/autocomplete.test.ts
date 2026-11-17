@@ -505,6 +505,18 @@ describe("CombinedAutocompleteProvider", () => {
 			assert.ok(values.includes("@link.txt"));
 		});
 
+		test("an @ row names a path only when its name does not already show it (#5224)", async () => {
+			setupFolder(baseDir, {
+				dirs: ["src"],
+				files: { "math.py": "x", "src/math_test.py": "y" },
+			});
+			const provider = new CombinedAutocompleteProvider([], baseDir, requireFdPath());
+			const line = "@math";
+			const result = await getSuggestions(provider, [line], 0, line.length);
+			const rows = (result?.items ?? []).map((item) => `${item.label} :: ${item.description ?? ""}`).sort();
+			assert.deepStrictEqual(rows, ["math.py :: ", "math_test.py :: src/math_test.py"]);
+		});
+
 		test("returns the same @ suggestions when the cwd path contains the query", async () => {
 			const normalBaseDir = join(rootDir, "cwd-normal");
 			const queryInPathBaseDir = join(rootDir, "cwd-plan-repro");
