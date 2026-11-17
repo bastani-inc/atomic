@@ -10,6 +10,7 @@ import type { SqliteDatabase, SqliteRow } from "@bastani/atomic/storage";
 import type { AdvisoryLock } from "@bastani/atomic-natives";
 import type { AttemptLease } from "../durable/journal/sql-shared-pool.js";
 import { StaleWorkLeaseError } from "../shared/worker-pool-errors.js";
+import { openThreadedSqliteDatabase } from "./ship-shard-thread.js";
 
 /** The root's own lock, held while its shard is open: one process at a time opens a root's local journal. */
 async function tryRootLock(path: string): Promise<AdvisoryLock | null> {
@@ -147,6 +148,13 @@ CREATE TABLE IF NOT EXISTS ship_events(
 	work TEXT NOT NULL, generation INTEGER NOT NULL, epoch INTEGER NOT NULL,
 	event_key TEXT NOT NULL, payload TEXT NOT NULL, digest TEXT NOT NULL, at INTEGER NOT NULL,
 	batch TEXT,
+	UNIQUE(work, generation, event_key)
+);
+CREATE TABLE IF NOT EXISTS ship_rows(
+	local_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+	work TEXT NOT NULL, generation INTEGER NOT NULL, epoch INTEGER NOT NULL,
+	event_key TEXT NOT NULL, payload TEXT NOT NULL, digest TEXT NOT NULL, at INTEGER NOT NULL,
+	batch TEXT,
 	op TEXT NOT NULL DEFAULT 'checkpoint', session TEXT, result_seq INTEGER,
 	UNIQUE(work, generation, event_key)
 );
@@ -163,8 +171,6 @@ CREATE TABLE IF NOT EXISTS ship_lease(
 );
 CREATE TABLE IF NOT EXISTS ship_root(root TEXT PRIMARY KEY, opens INTEGER NOT NULL);
 `;
-
-const GENERATION_UNIQUE_RE = /UNIQUE\s*\(\s*work\s*,\s*generation\s*,\s*event_key\s*\)/i;
 
 export function shipDigest(payload: string): string {
 	return createHash("sha256").update(payload).digest("hex");
@@ -234,45 +240,27 @@ export class ShipShard {
 		if (lock === null) throw new Error(`Checkpoint shard is already open by another process: ${path}`);
 		let database: SqliteDatabase | undefined;
 		try {
-			database = await openNodeSqliteDatabase(path);
+			database = path === ":memory:" ? await openNodeSqliteDatabase(path) : await openThreadedSqliteDatabase(path);
 			await database.exec(SHIP_SHARD_SCHEMA);
-			const table = await database.get<SqliteRow & { sql: string | null }>(
-				`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ship_events'`,
-			);
-			if (table?.sql !== null && table?.sql !== undefined && !GENERATION_UNIQUE_RE.test(table.sql)) {
-				await database.transaction(async (tx) => {
-					await tx.run(`ALTER TABLE ship_events RENAME TO ship_events_legacy`);
-					await tx.run(
-						`CREATE TABLE ship_events(
-							local_seq INTEGER PRIMARY KEY AUTOINCREMENT,
-							work TEXT NOT NULL, generation INTEGER NOT NULL, epoch INTEGER NOT NULL,
-							event_key TEXT NOT NULL, payload TEXT NOT NULL, digest TEXT NOT NULL, at INTEGER NOT NULL,
-							batch TEXT,
-							op TEXT NOT NULL DEFAULT 'checkpoint', session TEXT, result_seq INTEGER,
-							UNIQUE(work, generation, event_key)
-						)`,
-					);
-					await tx.run(
-						`INSERT INTO ship_events(local_seq, work, generation, epoch, event_key, payload, digest, at, batch)
-						SELECT local_seq, work, generation, epoch, event_key, payload, digest, at, batch FROM ship_events_legacy`,
-					);
-					await tx.run(`DROP TABLE ship_events_legacy`);
-				});
-			}
-			// A journal an earlier build wrote holds checkpoints only: each row it left is one, as the column's default says.
+
 			const columns = new Set(
 				(await database.all<SqliteRow & { name: string }>(`SELECT name FROM pragma_table_info('ship_events')`)).map(
 					(row) => String(row.name),
 				),
 			);
-			for (const [column, type] of [
-				["op", "TEXT NOT NULL DEFAULT 'checkpoint'"],
-				["session", "TEXT"],
-				["result_seq", "INTEGER"],
-			] as const)
-				if (!columns.has(column)) await database.exec(`ALTER TABLE ship_events ADD COLUMN ${column} ${type}`);
+			await database.transaction(async (tx) => {
+				await tx.run(
+					`INSERT INTO ship_rows(work, generation, epoch, event_key, payload, digest, at, batch, op, session, result_seq)
+					SELECT work, generation, epoch, event_key, payload, digest, at, batch,
+						${columns.has("op") ? "op" : "'checkpoint'"},
+						${columns.has("session") ? "session" : "NULL"},
+						${columns.has("result_seq") ? "result_seq" : "NULL"}
+					FROM ship_events ORDER BY local_seq`,
+				);
+				await tx.run(`DELETE FROM ship_events`);
+			});
 			await database.run(
-				`DELETE FROM ship_events WHERE NOT EXISTS (SELECT 1 FROM ship_lease l WHERE l.work = ship_events.work AND l.generation = ship_events.generation)`,
+				`DELETE FROM ship_rows WHERE NOT EXISTS (SELECT 1 FROM ship_lease l WHERE l.work = ship_rows.work AND l.generation = ship_rows.generation)`,
 			);
 			await database.run(
 				`DELETE FROM ship_sessions WHERE NOT EXISTS (SELECT 1 FROM ship_lease l WHERE l.work = ship_sessions.work AND l.generation = ship_sessions.generation)`,
@@ -313,7 +301,7 @@ export class ShipShard {
 				lease.id,
 			);
 			if (stored !== undefined && lease.generation < Number(stored.generation)) return;
-			await tx.run(`DELETE FROM ship_events WHERE work = ? AND generation < ?`, lease.id, lease.generation);
+			await tx.run(`DELETE FROM ship_rows WHERE work = ? AND generation < ?`, lease.id, lease.generation);
 			await tx.run(`DELETE FROM ship_sessions WHERE work = ? AND generation < ?`, lease.id, lease.generation);
 			await tx.run(`DELETE FROM ship_cursor WHERE work = ? AND generation < ?`, lease.id, lease.generation);
 			await tx.run(
@@ -357,7 +345,7 @@ export class ShipShard {
 			this.assertHeld(root, lease);
 			await this.assertStoredLease(tx, root, lease);
 			const existing = await tx.get<SqliteRow & { local_seq: number; digest: string; result_seq: number | null }>(
-				`SELECT local_seq, digest, result_seq FROM ship_events WHERE work = ? AND generation = ? AND event_key = ?`,
+				`SELECT local_seq, digest, result_seq FROM ship_rows WHERE work = ? AND generation = ? AND event_key = ?`,
 				lease.id,
 				lease.generation,
 				key,
@@ -375,7 +363,7 @@ export class ShipShard {
 			}
 			const lastSeq = session === undefined ? undefined : await this.writeSession(tx, lease, session);
 			const inserted = await tx.get<SqliteRow & { local_seq: number }>(
-				`INSERT INTO ship_events(work, generation, epoch, event_key, payload, digest, at, op, session, result_seq)
+				`INSERT INTO ship_rows(work, generation, epoch, event_key, payload, digest, at, op, session, result_seq)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING local_seq`,
 				lease.id,
 				lease.generation,
@@ -478,8 +466,8 @@ export class ShipShard {
 	async holdsSession(lease: Pick<AttemptLease, "id" | "generation">, session?: string): Promise<boolean> {
 		const row = await this.database.get(
 			session === undefined
-				? `SELECT 1 AS held FROM ship_events WHERE work = ? AND generation = ? AND op <> 'checkpoint' LIMIT 1`
-				: `SELECT 1 AS held FROM ship_events WHERE work = ? AND generation = ? AND session = ? LIMIT 1`,
+				? `SELECT 1 AS held FROM ship_rows WHERE work = ? AND generation = ? AND op <> 'checkpoint' LIMIT 1`
+				: `SELECT 1 AS held FROM ship_rows WHERE work = ? AND generation = ? AND session = ? LIMIT 1`,
 			...(session === undefined ? [lease.id, lease.generation] : [lease.id, lease.generation, session]),
 		);
 		return row !== undefined;
@@ -489,7 +477,7 @@ export class ShipShard {
 	async forgetSessions(lease: Pick<AttemptLease, "id" | "generation">): Promise<void> {
 		await this.database.run(
 			`DELETE FROM ship_sessions WHERE work = ? AND generation = ?
-			AND NOT EXISTS (SELECT 1 FROM ship_events e WHERE e.work = ship_sessions.work AND e.generation = ship_sessions.generation)`,
+			AND NOT EXISTS (SELECT 1 FROM ship_rows e WHERE e.work = ship_sessions.work AND e.generation = ship_sessions.generation)`,
 			lease.id,
 			lease.generation,
 		);
@@ -507,7 +495,7 @@ export class ShipShard {
 
 	async pendingSeqs(lease: Pick<AttemptLease, "id" | "generation">): Promise<number[]> {
 		const rows = await this.database.all<SqliteRow & { local_seq: number }>(
-			`SELECT local_seq FROM ship_events WHERE work = ? AND generation = ? ORDER BY local_seq`,
+			`SELECT local_seq FROM ship_rows WHERE work = ? AND generation = ? ORDER BY local_seq`,
 			lease.id,
 			lease.generation,
 		);
@@ -517,7 +505,7 @@ export class ShipShard {
 	async seal(lease: Pick<AttemptLease, "id" | "generation">, maxBatch: number): Promise<ShipBatchRows | undefined> {
 		return this.database.transaction(async (tx) => {
 			const sealed = await tx.get<SqliteRow & { batch: string }>(
-				`SELECT batch FROM ship_events WHERE work = ? AND generation = ? AND batch IS NOT NULL ORDER BY local_seq LIMIT 1`,
+				`SELECT batch FROM ship_rows WHERE work = ? AND generation = ? AND batch IS NOT NULL ORDER BY local_seq LIMIT 1`,
 				lease.id,
 				lease.generation,
 			);
@@ -543,7 +531,7 @@ export class ShipShard {
 			}
 			const id = shipBatchId(this.root, lease, events);
 			await tx.run(
-				`UPDATE ship_events SET batch = ? WHERE work = ? AND generation = ? AND local_seq BETWEEN ? AND ?`,
+				`UPDATE ship_rows SET batch = ? WHERE work = ? AND generation = ? AND local_seq BETWEEN ? AND ?`,
 				id,
 				lease.id,
 				lease.generation,
@@ -556,7 +544,7 @@ export class ShipShard {
 
 	async pendingCount(lease: Pick<AttemptLease, "id" | "generation">): Promise<number> {
 		const row = await this.database.get<SqliteRow & { n: number }>(
-			`SELECT COUNT(*) AS n FROM ship_events WHERE work = ? AND generation = ?`,
+			`SELECT COUNT(*) AS n FROM ship_rows WHERE work = ? AND generation = ?`,
 			lease.id,
 			lease.generation,
 		);
@@ -572,7 +560,7 @@ export class ShipShard {
 			SqliteRow & { work: string; generation: number; worker: string; epoch: number }
 		>(
 			`SELECT l.work, l.generation, l.worker, l.epoch
-			FROM ship_lease l WHERE EXISTS (SELECT 1 FROM ship_events e WHERE e.work = l.work AND e.generation = l.generation)`,
+			FROM ship_lease l WHERE EXISTS (SELECT 1 FROM ship_rows e WHERE e.work = l.work AND e.generation = l.generation)`,
 		);
 		return rows.map((row) => ({
 			lease: { id: row.work, generation: Number(row.generation), worker: row.worker, epoch: Number(row.epoch) },
@@ -585,7 +573,7 @@ export class ShipShard {
 		...params: (string | number)[]
 	): Promise<ShipEvent[]> {
 		const rows = await executor.all<ShipEventRow>(
-			`SELECT local_seq, work, generation, epoch, event_key, payload, digest, at, op FROM ship_events ${where}`,
+			`SELECT local_seq, work, generation, epoch, event_key, payload, digest, at, op FROM ship_rows ${where}`,
 			...params,
 		);
 		return rows.map(shipEventOf);
@@ -594,7 +582,7 @@ export class ShipShard {
 	async shipped(lease: Pick<AttemptLease, "id" | "generation">, localSeq: number, at = Date.now()): Promise<void> {
 		await this.database.transaction(async (tx) => {
 			await tx.run(
-				`DELETE FROM ship_events WHERE work = ? AND generation = ? AND (local_seq = ? OR (batch IS NOT NULL AND local_seq <= ?))`,
+				`DELETE FROM ship_rows WHERE work = ? AND generation = ? AND (local_seq = ? OR (batch IS NOT NULL AND local_seq <= ?))`,
 				lease.id,
 				lease.generation,
 				localSeq,
@@ -615,7 +603,7 @@ export class ShipShard {
 
 	async discard(lease: Pick<AttemptLease, "id" | "generation">, localSeq: number): Promise<void> {
 		await this.database.run(
-			`DELETE FROM ship_events WHERE work = ? AND generation = ? AND local_seq = ?`,
+			`DELETE FROM ship_rows WHERE work = ? AND generation = ? AND local_seq = ?`,
 			lease.id,
 			lease.generation,
 			localSeq,
@@ -625,7 +613,7 @@ export class ShipShard {
 	async fence(lease: Pick<AttemptLease, "id" | "generation">, at = Date.now()): Promise<void> {
 		if (this.leases.get(lease.id)?.lease.generation === lease.generation) this.leases.delete(lease.id);
 		await this.database.transaction(async (tx) => {
-			await tx.run(`DELETE FROM ship_events WHERE work = ? AND generation = ?`, lease.id, lease.generation);
+			await tx.run(`DELETE FROM ship_rows WHERE work = ? AND generation = ?`, lease.id, lease.generation);
 			await tx.run(`DELETE FROM ship_sessions WHERE work = ? AND generation = ?`, lease.id, lease.generation);
 			const stored = await tx.get<SqliteRow & { generation: number }>(
 				`SELECT generation FROM ship_lease WHERE work = ?`,
@@ -706,7 +694,7 @@ export class ShipShard {
 
 async function holdsNothing(database: SqliteDatabase): Promise<boolean> {
 	try {
-		return (await database.get(`SELECT 1 AS present FROM ship_events LIMIT 1`)) === undefined;
+		return (await database.get(`SELECT 1 AS present FROM ship_rows LIMIT 1`)) === undefined;
 	} catch {
 		return false;
 	}
@@ -714,7 +702,7 @@ async function holdsNothing(database: SqliteDatabase): Promise<boolean> {
 
 function holdsNothingSync(connection: DatabaseSync): boolean {
 	try {
-		return connection.prepare(`SELECT 1 AS present FROM ship_events LIMIT 1`).get() === undefined;
+		return connection.prepare(`SELECT 1 AS present FROM ship_rows LIMIT 1`).get() === undefined;
 	} catch {
 		return false;
 	}

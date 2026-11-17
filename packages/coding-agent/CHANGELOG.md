@@ -30,6 +30,9 @@
 - Fixed a session that ended staying in memory for as long as a timer, connection or other long-lived resource that an extension started while the session was in use, as a service started once and shared by later sessions does.
 - Fixed each `/reload` keeping the extensions it replaced in memory for as long as the session ran: every new generation of the session's extensions kept the one before it, so each reload added about 10 MB that was never released.
 - On a busy Windows machine, a shell command or a subagent's named-worktree checkout that finished is no longer reported as failed with `Windows stdin worker stop was not confirmed` ([#5340](https://github.com/bastani-inc/atomic/pull/5340))
+- Fixed the libSQL / Turso example in the storage guide crashing the process on Windows without an error message when it closed a local file database: the native `libsql` 0.5 driver closed the connection's SQLite handle twice. The example now holds a statement while each connection closes, and for a local file `close()` runs two garbage collections before it resolves, so the file is released when `close()` returns, as `@bastani/atomic-storage-libsql` does. See [Bring your own driver](docs/storage.md#bring-your-own-driver) ([#5325](https://github.com/bastani-inc/atomic/issues/5325))
+- Replacing a submission echo with a prompt rewritten by an `input` hook, or inserting a custom message ahead of a streaming reply, now touches only the tail of the chat container instead of scanning the whole transcript, keeping prompt swaps fast in long sessions ([#5323](https://github.com/bastani-inc/atomic/issues/5323))
+- Corrected new-message counts when a transcript insertion or removal is followed by another change that restores its earlier child count ([#5323](https://github.com/bastani-inc/atomic/issues/5323))
 
 ## [0.9.88] - 2026-11-16
 
