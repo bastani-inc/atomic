@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { getDocsPath } from "../src/config.js";
 import { getDefaultSessionDirPath } from "../src/core/session-manager-paths.js";
@@ -263,14 +263,10 @@ describe("buildSystemPrompt", () => {
 		}
 	});
 
-	test("routes model advice and automation requests to evidence and domain-specific tools", () => {
+	test("routes automation requests to domain-specific tools and sends no one to model benchmarks", () => {
 		const prompt = buildSystemPrompt({ cwd: process.cwd(), contextFiles: [], skills: [] });
-		assert.match(prompt, /When the user asks which model to choose for a task/);
-		assert.match(prompt, /models\/model-selection\.md/);
-		assert.match(prompt, /models\/evals\.md/);
-		assert.match(prompt, /https:\/\/artificialanalysis\.ai\//);
-		assert.match(prompt, /relevant benchmark charts and methodology/);
-		assert.match(prompt, /If live evidence is unavailable, label the dated docs snapshot/);
+		assert.doesNotMatch(prompt, /When the user asks which model to choose for a task/);
+		assert.doesNotMatch(prompt, /model-selection\.md|evals\.md|artificialanalysis\.ai|benchmark/);
 		assert.match(
 			prompt,
 			/For computer use on native desktop apps and OS dialogs on macOS, Windows and Linux, use the bundled agent-desktop skill and one-shot `agent-desktop` commands/,
@@ -508,7 +504,9 @@ describe("buildSystemPrompt", () => {
 		});
 
 		test("names where history lives, derived from the agent directory and the project", () => {
-			const agentDir = mkdtempSync(join(tmpdir(), "atomic-prompt-agent-"));
+			const root = mkdtempSync(join(tmpdir(), "atomic-prompt-agent-"));
+			const agentDir = join(root, "agent");
+			mkdirSync(agentDir, { recursive: true });
 			const previous = process.env.ATOMIC_CODING_AGENT_DIR;
 			process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
 			try {
@@ -516,7 +514,7 @@ describe("buildSystemPrompt", () => {
 				const prompt = buildSystemPrompt({ selectedTools: ["read"], contextFiles: [], skills: [], cwd: project });
 				const start = prompt.indexOf("**Session memory**");
 				const guidance = prompt.slice(start, prompt.indexOf("\n- ", start));
-				const workflowsDir = join(dirname(agentDir), "workflows");
+				const workflowsDir = join(agentDir, "workflows");
 
 				assert.ok(guidance.includes(join(workflowsDir, "journal.sqlite")));
 				assert.ok(
@@ -533,7 +531,7 @@ describe("buildSystemPrompt", () => {
 			} finally {
 				if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 				else process.env.ATOMIC_CODING_AGENT_DIR = previous;
-				rmSync(agentDir, { recursive: true, force: true });
+				rmSync(root, { recursive: true, force: true });
 			}
 		});
 	});

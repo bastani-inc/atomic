@@ -79,7 +79,7 @@ describe.skipIf(postgresSkipReason !== undefined)("atomic storage join against P
 						assert.deepEqual(JSON.parse(settings).storage, {
 							adapter: POSTGRES_ADAPTER_PACKAGE,
 							options: { url },
-							secrets: { password: { file: `agent/${tokenName}` } },
+							secrets: { password: { file: `${tokenName}` } },
 						});
 						const status = await collectStorageStatus({ cwd: root, agentDir, probe: true });
 						const journal = status.domains.find((domain) => domain.domain === "journal");

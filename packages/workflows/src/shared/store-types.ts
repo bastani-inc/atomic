@@ -556,7 +556,6 @@ export interface StageSnapshot {
 	/** Per-model fallback attempt outcomes. */
 	modelAttempts?: readonly import("./types.js").WorkflowModelAttempt[];
 	rateLimits?: readonly import("./types.js").WorkflowProviderRateLimit[];
-	routerSelection?: import("@bastani/atomic").ModelRouterOutput;
 	/**
 	 * The latest readiness decision after a steer: whether the decision model advanced the stage, kept it open, or the
 	 * user was asked, with its probabilities, model, and the typed error when the decision failed. Live only.

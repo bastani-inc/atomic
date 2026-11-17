@@ -1,12 +1,12 @@
 import { constants } from "node:fs";
 import { access } from "node:fs/promises";
-import { dirname, isAbsolute, join } from "node:path";
 import { getAgentDir, SettingsManager } from "@bastani/atomic";
 import {
 	loadStorageAdapter,
 	StorageAdapterLoadError,
 	StorageConfigError,
 	type StorageSelection,
+	secretFilePath,
 } from "@bastani/atomic/storage";
 import { type RunJournalOption, selectRunJournal } from "../durable/journal/resolution.js";
 import type { RunJournal } from "../durable/journal/types.js";
@@ -63,10 +63,7 @@ export async function sharedSelectionProblems(
 	for (const [secret, ref] of Object.entries(selection.secrets ?? {})) {
 		if ("env" in ref) {
 			if (process.env[ref.env] === undefined) problems.push(sharedPoolProblems.secretUnavailable(secret, ref));
-		} else if (
-			"file" in ref &&
-			!(await readable(isAbsolute(ref.file) ? ref.file : join(dirname(agentDir), ref.file)))
-		)
+		} else if ("file" in ref && !(await readable(secretFilePath(ref.file, agentDir))))
 			problems.push(sharedPoolProblems.secretUnavailable(secret, ref));
 	}
 	return problems;
