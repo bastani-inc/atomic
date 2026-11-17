@@ -9,6 +9,7 @@ import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { loadTaskOwnTranscriptHistory, taskTranscriptSource } from "../../core/tasks/supervisor.js";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { CustomMessageComponent } from "../interactive/components/custom-message.ts";
+import { disposeRenderer, runRendererCleanup } from "../interactive/components/renderer-disposal.js";
 import { ToolBlock } from "../interactive/components/tool-block.ts";
 import { ToolExecutionComponent } from "../interactive/components/tool-execution.ts";
 import { RETAINED_TOOL_RENDERERS, retainedToolRenderer } from "../interactive/components/tool-renderer-scope.js";
@@ -358,9 +359,9 @@ export class EngineRenderService {
 		const record = this.records.get(id);
 		if (!record) return;
 		this.records.delete(id);
-		if (record.kind === "tool") record.stopOwnerWatch?.();
-		record.component.dispose();
-		record.tui.stop();
+		if (record.kind === "tool") runRendererCleanup(record.stopOwnerWatch);
+		disposeRenderer(record.component);
+		runRendererCleanup(() => record.tui.stop());
 	}
 
 	private send(message: InteractiveEngineMessage): void {

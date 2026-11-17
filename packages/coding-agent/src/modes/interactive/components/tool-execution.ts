@@ -5,9 +5,12 @@ import {
 	getCapabilities,
 	Image,
 	Spacer,
+	sliceByColumn,
+	stripTerminalSequences,
 	Text,
 	type TUI,
 	truncateToWidth,
+	visibleWidth,
 } from "@bastani/atomic-tui";
 import type { TSchema } from "typebox";
 import type { ToolDefinition, ToolRenderContext, ToolRenderers } from "../../../core/extensions/types.ts";
@@ -20,6 +23,7 @@ import { terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { CodeHighlighter, theme } from "../theme/theme.js";
 import { watchAtomicWorkingClock } from "./atomic-working-status.ts";
 import { keyHint, keyHintIfBound, keyText } from "./keybinding-hints.js";
+import { disposeRenderer, runRendererCleanup } from "./renderer-disposal.js";
 import {
 	collapseToolBlockLines,
 	componentNeedsWorkingClock,
@@ -48,7 +52,6 @@ type RenderableToolResult = Omit<AgentToolResult<unknown>, "details"> & {
 	durationMs?: number;
 };
 type RenderableImageContent = Extract<RenderableToolResult["content"][number], { type: "image" }>;
-type DisposableRendererComponent = Component & { dispose?: () => void };
 /** Keep isolated-engine image components stable so pi-tui can reuse Kitty uploads. */
 interface RenderedImageSpec {
 	data: string;
@@ -226,6 +229,7 @@ export class ToolExecutionComponent extends Container {
 	 * frames runs its renderer once per frame, not once per delta (earendil-works/pi#9265).
 	 */
 	updateArgs(args: unknown): void {
+		if (this.disposed) return;
 		this.args = args;
 		this.argsPending = true;
 		this.ui.requestRender();
@@ -246,6 +250,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	setArgsComplete(): void {
+		if (this.disposed) return;
 		if (this.argsComplete) return;
 		this.argsComplete = true;
 		this.updateDisplay();
@@ -253,6 +258,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	updateResult(result: RenderableToolResult, isPartial = false): void {
+		if (this.disposed) return;
 		this.result = result;
 		this.isPartial = isPartial;
 		if (!isPartial)
@@ -263,12 +269,14 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	setExpanded(expanded: boolean): void {
+		if (this.disposed) return;
 		if (this.expanded === expanded) return;
 		this.expanded = expanded;
 		this.updateDisplay();
 	}
 
 	setGroupRole(role: ToolGroupRole): void {
+		if (this.disposed) return;
 		if (
 			this.groupRole.kind === role.kind &&
 			(role.kind !== "head" ||
@@ -285,17 +293,20 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	setOutputPad(outputPad: number): void {
+		if (this.disposed) return;
 		this.outputPad = outputPad;
 		this.updateDisplay();
 	}
 
 	setShowImages(show: boolean): void {
+		if (this.disposed) return;
 		if (this.showImages === show) return;
 		this.showImages = show;
 		this.updateDisplay();
 	}
 
 	setImageWidthCells(width: number): void {
+		if (this.disposed) return;
 		const nextWidth = Math.max(1, Math.floor(width));
 		if (this.imageWidthCells === nextWidth) return;
 		this.imageWidthCells = nextWidth;
@@ -303,6 +314,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	override invalidate(): void {
+		if (this.disposed) return;
 		super.invalidate();
 		this.updateDisplay();
 	}
@@ -318,9 +330,18 @@ export class ToolExecutionComponent extends Container {
 		this.resultRendererComponent = undefined;
 		this.clearRendererStateTimer(SUBAGENT_RESULT_ANIMATION_TIMER_KEY, SUBAGENT_RESULT_ANIMATION_CLEANUP_KEY);
 		this.clearRendererStateTimer("interval");
+		this.rendererState = {};
+		this.contentContainer.clear();
+		this.imageComponents = [];
+		this.imageSpacers = [];
+		this.renderedImageSpecs = [];
+		this.args = undefined;
+		this.result = undefined;
+		this.clear();
 	}
 
 	override render(width: number): string[] {
+		if (this.disposed) return [];
 		if (this.argsPending) this.updateDisplay();
 		this.syncWorkingClock();
 		if (this.hideComponent || width < 1 || (!this.expanded && this.groupRole.kind === "hidden")) return [];
@@ -380,8 +401,11 @@ export class ToolExecutionComponent extends Container {
 	private needsWorkingClock(): boolean {
 		if (this.disposed) return false;
 		if (this.isPartial) return true;
-		if (this.resultRendererComponent && isToolBlock(this.resultRendererComponent))
-			return componentNeedsWorkingClock(this.resultRendererComponent);
+		if (this.result)
+			return (
+				componentNeedsWorkingClock(this.resultRendererComponent) ||
+				(this.getRenderShell() === "self" && componentNeedsWorkingClock(this.callRendererComponent))
+			);
 		if (this.callRendererComponent && isToolBlock(this.callRendererComponent))
 			return componentNeedsWorkingClock(this.callRendererComponent);
 		return (
@@ -406,7 +430,22 @@ export class ToolExecutionComponent extends Container {
 		}
 	}
 
+	private canonicalCallTitle(call: Component): Component {
+		return {
+			invalidate: () => call.invalidate(),
+			render: (width) => {
+				const line = call.render(width + 4).find((row) => stripTerminalSequences(row).trim().length > 0);
+				if (line === undefined) return [terminalDisplayText(this.toolDefinition?.label ?? this.toolName)];
+				const prefix = /^ *[∀●✗◼!⏸›] /u.exec(stripTerminalSequences(line))?.[0];
+				return prefix
+					? [sliceByColumn(line, visibleWidth(prefix), width)]
+					: [terminalDisplayText(this.toolDefinition?.label ?? this.toolName)];
+			},
+		};
+	}
+
 	private updateDisplay(): void {
+		if (this.disposed) return;
 		this.argsPending = false;
 		this.hideComponent = false;
 		this.contentContainer.clear();
@@ -482,10 +521,21 @@ export class ToolExecutionComponent extends Container {
 		const staticElapsed = formatToolBlockElapsed(this.currentElapsedMs(), { isRunning: true, subTenDecimal: false });
 		const staticMeta = presentation?.meta?.filter((part) => part !== staticElapsed) ?? [];
 		if (details && isToolBlock(details)) this.contentContainer.addChild(details);
-		else if (isToolBlock(call)) this.contentContainer.addChild(call);
 		else if (selfRendered) {
 			this.contentContainer.addChild(call);
 			if (details) this.contentContainer.addChild(details);
+		} else if (isToolBlock(call)) {
+			if (this.result === undefined) this.contentContainer.addChild(call);
+			else {
+				const title = this.canonicalCallTitle(call);
+				this.contentContainer.addChild({
+					invalidate: () => title.invalidate(),
+					render: (width) =>
+						new ToolBlock({ status: this.blockStatus(), title, details, outputPad: this.outputPad }).render(
+							width,
+						),
+				});
+			}
 		} else {
 			this.contentContainer.addChild({
 				invalidate() {
@@ -529,6 +579,7 @@ export class ToolExecutionComponent extends Container {
 				});
 				if (image.mimeType !== "image/png") {
 					ensurePngTranscoder(() => {
+						if (this.disposed) return;
 						this.invalidate();
 						this.ui.requestRender();
 					});
@@ -574,15 +625,12 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private disposeRendererComponent(component: Component | undefined): void {
-		(component as DisposableRendererComponent | undefined)?.dispose?.();
+		disposeRenderer(component);
 	}
 
 	private clearRendererStateTimer(timerKey: string, cleanupKey?: string): void {
 		const cleanup = cleanupKey ? this.rendererState[cleanupKey] : undefined;
-		if (typeof cleanup === "function") {
-			cleanup();
-			return;
-		}
+		if (typeof cleanup === "function") runRendererCleanup(() => cleanup());
 		const timer = this.rendererState[timerKey];
 		if (timer === undefined) return;
 		clearInterval(timer as ReturnType<typeof setInterval>);

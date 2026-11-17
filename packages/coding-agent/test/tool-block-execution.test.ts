@@ -162,6 +162,83 @@ test("PowerShell keeps its shell identity when using the shared default renderer
 	}
 });
 
+test("ordinary custom results remain visible after a canonical pending call (#5350)", () => {
+	vi.useFakeTimers();
+	const component = new ToolExecutionComponent(
+		"sample",
+		"canonical-call-custom-result",
+		{ secret: "must remain hidden" },
+		{},
+		{
+			...definition,
+			renderCall: () => new ToolBlock({ status: "running", title: "Private title", args: "redacted", outputPad: 0 }),
+			renderResult: () => new Text("Custom projected result", 0, 0),
+		},
+		ui,
+		"/workspace",
+	);
+	try {
+		component.updateResult({ content: [{ type: "text", text: "raw private result" }], isError: false });
+		const text = component.render(80).map(stripTerminalSequences).join("\n");
+		assert.match(text, /● Private title\(redacted\)/);
+		assert.match(text, /⎿ {2}Custom projected result/);
+		assert.doesNotMatch(text, /∀|must remain hidden|raw private result/);
+		assert.equal(vi.getTimerCount(), 0);
+	} finally {
+		component.dispose();
+		vi.useRealTimers();
+	}
+});
+
+test("closed tool rows release every renderer and ignore late updates even if a disposer fails (#5350)", () => {
+	vi.useFakeTimers();
+	const repaint = vi.fn();
+	const resultDisposed = vi.fn();
+	let calls = 0;
+	const component = new ToolExecutionComponent(
+		"sample",
+		"closed-row",
+		{},
+		{},
+		{
+			...definition,
+			renderCall: (_args, _theme, context) => {
+				calls++;
+				const state = context.state as { interval?: ReturnType<typeof setInterval> };
+				state.interval ??= setInterval(() => {}, 1_000);
+				return {
+					render: () => ["Sample()"],
+					invalidate() {},
+					dispose() {
+						throw new Error("private disposal detail");
+					},
+				};
+			},
+			renderResult: () => ({ render: () => ["done"], invalidate() {}, dispose: resultDisposed }),
+		},
+		{ requestRender: repaint } as TUI,
+		"/workspace",
+	);
+	try {
+		component.updateResult({ content: [], isError: false });
+		assert.doesNotThrow(() => component.dispose());
+		assert.equal(resultDisposed.mock.calls.length, 1);
+		assert.equal(vi.getTimerCount(), 0);
+		const before = calls;
+		const beforePaint = repaint.mock.calls.length;
+		component.invalidate();
+		component.setExpanded(true);
+		component.updateArgs({ late: true });
+		component.updateResult({ content: [], isError: false });
+		assert.deepEqual(component.render(80), []);
+		assert.equal(calls, before);
+		assert.equal(repaint.mock.calls.length, beforePaint);
+	} finally {
+		component.dispose();
+		vi.useRealTimers();
+	}
+});
+
 test("default extension headers use their registered label (#5224)", () => {
 	const component = new ToolExecutionComponent(
 		"sample",

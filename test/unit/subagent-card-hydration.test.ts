@@ -331,14 +331,14 @@ test("a resumed child continues in its original card and the run-control calls r
 	const [launch, pause, kill, resume, quit, unknown, resumeAgain, ...rest] = rebuildCards(manager, true);
 	assert.equal(rest.length, 0);
 	assert.match(launch!, /● Agent\(hyres · task for hyres\) ⎿ Done/);
-	assert.match(pause!, /subagent pause hyres:0 ⎿ ‖ Paused · hyres/);
+	assert.match(pause!, /Agent\(pause · hyres:0\) ⎿ ⏸ Paused · hyres/);
 	assert.match(kill!, /✗ The subagent action "kill" was removed\. Use \{ action: "quit", id \}/);
-	assert.match(resume!, /▶ Resumed · hyres hyres:0 · task-hyres-2 continues in its original launch card/);
-	assert.match(quit!, /■ Quit \(resumable\) · hyres/);
+	assert.match(resume!, /✓ Resumed · hyres hyres:0 · task-hyres-2 continues in its original launch card/);
+	assert.match(quit!, /◼ Quit \(resumable\) · hyres/);
 	assert.match(unknown!, /✗ Unknown subagent 'hyres:9'/);
-	assert.match(resumeAgain!, /▶ Resumed · hyres/);
+	assert.match(resumeAgain!, /✓ Resumed · hyres/);
 	const showingChildState = [launch, pause, kill, resume, quit, unknown, resumeAgain].filter((card) =>
-		/^● Agent\(|^∀ Agent\(/.test(card!),
+		/⎿ (?:Running|Done|Failed|Stopped)\b/u.test(card!),
 	);
 	assert.deepEqual(showingChildState, [launch], "only the original card shows the child, once");
 	await store.close();

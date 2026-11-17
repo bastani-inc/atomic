@@ -30,6 +30,7 @@
 
 ### Fixed
 
+- Custom results remain visible after a pending tool block finishes. Closing or rebuilding chats no longer revives disposed renderers, disposes a reused component too early, or lets one cleanup failure block other rows. Failed message renderers keep their raw body private, and custom messages no longer gain duplicate blank rows ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Switching sessions no longer flashes tool output from a different chat while a renderer starts. Attached chats use the executing child's tool renderers when available, and unavailable child-only renderers show a warning instead of raw private fields ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Running tool timers and child-specific renderers now follow the session shown in attached chats. Tool state badges no longer mistake a command's printed status words or permission errors for cancellation or rejection, and a failed custom result renderer keeps its hidden raw output private ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - A prompt typed while Atomic starts is no longer sent twice on Windows: a stray cursor report reached the startup input as F3, left a "C" in the editor and sent it with the next prompt. F1–F5 and Page Up/Down sent as `ESC [ [ …` no longer type a letter into the startup input

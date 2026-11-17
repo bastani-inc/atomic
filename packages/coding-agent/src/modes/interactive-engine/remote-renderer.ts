@@ -300,6 +300,7 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 }
 
 export class RemoteCustomMessageComponent extends RemoteRenderer {
+	readonly ownsLeadingSpacer = true;
 	private readonly message: CustomMessage<unknown>;
 	private contentDigest: string | undefined;
 	private expanded = false;

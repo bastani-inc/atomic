@@ -114,6 +114,17 @@ test("prefilled catalog search edits from the end", () => {
 	assert.match(stripVTControlCharacters(browser.render(80).join("\n")), /Search: worke/);
 });
 
+test("agent control calls use the shared display name without changing tool arguments (#5350)", () => {
+	initTheme("dark", false);
+	for (const action of ["status", "pause", "resume", "quit"] as const) {
+		const args = { action, id: "own:0" };
+		const before = JSON.stringify(args);
+		const call = renderSubagentToolCall(args, theme, { toolCallId: `control-${action}`, state: {}, invalidate() {} });
+		assert.equal(stripVTControlCharacters(call.render(80).join("\n")).trim(), `Agent(${action} · own:0)`);
+		assert.equal(JSON.stringify(args), before);
+	}
+});
+
 test("background receipt is readable without changing model-facing task identity", () => {
 	initTheme("dark");
 	const result = taskToolResult({
