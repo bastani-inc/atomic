@@ -8,6 +8,7 @@ import {
 	readdirSync,
 	readFileSync,
 	realpathSync,
+	renameSync,
 	rmSync,
 	statSync,
 	writeFileSync,
@@ -90,6 +91,7 @@ interface SettledStorageHome {
 	readonly sharedStoragePath: string;
 	readonly adoptedClaim?: string;
 	readonly provisionalWithoutSettings?: boolean;
+	readonly rejectedParentAdoption?: boolean;
 }
 
 interface StorageHomeCacheKey {
@@ -752,6 +754,7 @@ interface StorageOwner {
 	readonly directoryIdentity?: string;
 	readonly decisionId?: string;
 	readonly homeIdentity?: boolean;
+	readonly legacyTargets?: readonly string[];
 }
 
 function storageDecisionMetadata(path: string): Pick<StorageHomeDecision, "id" | "targets"> | undefined {
@@ -808,7 +811,9 @@ function readStorageOwner(file: string): StorageOwner | undefined {
 		(owner.identity !== undefined && typeof owner.identity !== "string") ||
 		(owner.directoryIdentity !== undefined && typeof owner.directoryIdentity !== "string") ||
 		(owner.decisionId !== undefined && typeof owner.decisionId !== "string") ||
-		(owner.homeIdentity !== undefined && typeof owner.homeIdentity !== "boolean")
+		(owner.homeIdentity !== undefined && typeof owner.homeIdentity !== "boolean") ||
+		(owner.legacyTargets !== undefined &&
+			(!Array.isArray(owner.legacyTargets) || owner.legacyTargets.some((target) => typeof target !== "string")))
 	) {
 		throw new Error(`Invalid storage owner at ${file}`);
 	}
@@ -847,11 +852,21 @@ function currentStorageOwnerPath(owner: StorageOwner, claimDirectory = dirname(o
 			const ownTargets = targets.filter((target) =>
 				containsPath(physicalCandidate, canonicalPath(resolve(candidate, target))),
 			);
+			const legacyTargets = owner.legacyTargets;
+			const unownedTargets =
+				legacyTargets === undefined
+					? ownTargets
+					: ownTargets.filter(
+							(target) =>
+								!legacyTargets.some((legacy) =>
+									pathsEqual(resolve(candidate, legacy), resolve(candidate, target)),
+								) || !hasRelativeTargetEntries(claimDirectory, candidate, [target], true),
+						);
 			if (
 				hasOwnStoreEntries(candidate, claimDirectory, []) ||
-				(atRecordedPath
+				(owner.legacyTargets === undefined && atRecordedPath
 					? hasOwnTargetEntries(candidate, claimDirectory, ownTargets)
-					: hasRelativeTargetEntries(candidate, candidate, ownTargets, true))
+					: hasRelativeTargetEntries(candidate, candidate, unownedTargets, true))
 			)
 				return;
 			matches = atRecordedPath ? recorded : fallback;
@@ -876,6 +891,28 @@ function currentStorageOwnerPath(owner: StorageOwner, claimDirectory = dirname(o
 	return matches.length === 1 ? matches[0] : undefined;
 }
 
+function refreshStorageOwner(file: string, owner: StorageOwner, agentPath: string, claimDirectory: string): void {
+	const current = { ...storageOwner(agentPath, claimDirectory), path: owner.path, legacyTargets: owner.legacyTargets };
+	if (
+		current.identity === owner.identity &&
+		current.directoryIdentity === owner.directoryIdentity &&
+		current.decisionId === owner.decisionId &&
+		current.relativePath === owner.relativePath &&
+		current.homeIdentity === owner.homeIdentity
+	)
+		return;
+	const staged = `${file}.${randomUUID()}.tmp`;
+	try {
+		writeFileSync(staged, `${JSON.stringify(current)}\n`, { flag: "wx", mode: 0o600 });
+		renameSync(staged, file);
+	} catch {
+	} finally {
+		try {
+			rmSync(staged, { force: true });
+		} catch {}
+	}
+}
+
 function parentStorageOwner(parent: string): string | undefined {
 	const owner = readStorageOwner(join(parent, PARENT_CLAIM_FILE));
 	return owner === undefined
@@ -892,10 +929,19 @@ function applyStorageHomeDecision(decision: StorageHomeDecision, agentPath: stri
 	const workflows = join(decision.home, "workflows");
 	const claim = join(decision.home, PARENT_CLAIM_FILE);
 	const preferred = canonicalPath(parentStorageOwner(decision.home) ?? decision.parentOwner);
-	claimFileAtomically(claim, `${JSON.stringify(storageOwner(preferred, decision.home))}\n`);
+	const legacyTargets = (storageDecisionMetadata(preferred)?.targets ?? []).filter(
+		(target) =>
+			containsPath(canonicalPath(preferred), canonicalPath(resolve(preferred, target))) &&
+			existsSync(resolve(preferred, target)) &&
+			hasRelativeTargetEntries(decision.home, preferred, [target], true),
+	);
+	claimFileAtomically(claim, `${JSON.stringify({ ...storageOwner(preferred, decision.home), legacyTargets })}\n`);
 	const winner = readStorageOwner(claim);
 	if (winner === undefined) throw new Error(`Cannot claim storage home at ${claim}`);
 	const winnerPath = currentStorageOwnerPath(winner, decision.home);
+	if (winnerPath !== undefined && sameDirectory(winnerPath, agentPath)) {
+		refreshStorageOwner(claim, winner, agentPath, decision.home);
+	}
 	if (isDirectory(workflows) || !pathsEqual(canonicalPath(workflows), canonicalPath(agentPath))) {
 		mkdirSync(workflows, { recursive: true });
 		const legacyClaim = join(workflows, ADOPTION_CLAIM_FILE);
@@ -911,7 +957,7 @@ function applyStorageHomeDecision(decision: StorageHomeDecision, agentPath: stri
 	}
 	return winnerPath !== undefined && sameDirectory(winnerPath, agentPath)
 		? createStorageHomeEntry(decision.home, claim)
-		: createStorageHomeEntry(agentPath);
+		: { ...createStorageHomeEntry(agentPath), rejectedParentAdoption: true };
 }
 
 function resolveStorageHomeEntry(agentDir?: string, settings?: StorageHomeSettings): SettledStorageHome {
@@ -1106,6 +1152,14 @@ export function storagePathBaseDir(path: string, agentDir: string, settings?: St
 	const target = normalizeRelativeTarget(path, getHomeDir());
 	if (target === undefined) return home;
 	const agentPath = normalizeAgentDirPath(agentDir);
+	const ownTarget = resolve(agentPath, target);
+	if (
+		entry.rejectedParentAdoption &&
+		!pathsEqual(ownTarget, agentPath) &&
+		containsPath(canonicalPath(agentPath), canonicalPath(ownTarget)) &&
+		existsSync(ownTarget)
+	)
+		return applyStorageTargetDecision({ agentPath, target, decision: { home: agentPath, parentOwner: agentPath } });
 	const parent = dirname(agentPath);
 	const claimDir = sameDirectory(home, agentPath) ? dirname(canonicalPath(agentPath)) : canonicalPath(home);
 	const key = createHash("sha256")

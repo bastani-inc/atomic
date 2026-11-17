@@ -1,5 +1,16 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, type PathLike, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	cpSync,
+	existsSync,
+	mkdirSync,
+	type PathLike,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -8,6 +19,7 @@ type FaultCode = "EPERM" | "EACCES" | "EROFS" | "EIO";
 
 const fsFaults = vi.hoisted(() => ({
 	readOnlyDirs: new Map<string, FaultCode>(),
+	renameTargets: new Map<string, FaultCode>(),
 	unreadableFiles: new Map<string, FaultCode>(),
 	unreadableOpenDirs: new Map<string, FaultCode>(),
 }));
@@ -57,6 +69,10 @@ vi.mock("node:fs", async (original) => {
 			return fs.linkSync(...args);
 		},
 		renameSync: (...args: Parameters<typeof fs.renameSync>) => {
+			if (typeof args[1] === "string") {
+				const code = fsFaults.renameTargets.get(resolve(args[1]));
+				if (code !== undefined) throw errnoException(code, "rename", args[1]);
+			}
 			const match = matchingReadOnlyDir(args[0]) ?? matchingReadOnlyDir(args[1]);
 			if (match !== undefined) throw errnoException(match.code, "rename", String(args[1]));
 			return fs.renameSync(...args);
@@ -107,6 +123,7 @@ let root: string;
 
 beforeEach(() => {
 	fsFaults.readOnlyDirs.clear();
+	fsFaults.renameTargets.clear();
 	fsFaults.unreadableFiles.clear();
 	fsFaults.unreadableOpenDirs.clear();
 	root = makeTempDirectory("storage-read-only-");
@@ -126,6 +143,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	fsFaults.readOnlyDirs.clear();
+	fsFaults.renameTargets.clear();
 	fsFaults.unreadableFiles.clear();
 	fsFaults.unreadableOpenDirs.clear();
 	vi.unstubAllEnvs();
@@ -398,4 +416,211 @@ test("an EACCES opendirSync failure while scanning for a missing or moved owner 
 		kind: "sqlite",
 		path: join(sibling, "team.sqlite"),
 	});
+});
+
+const REFRESH_FAULT_CODES: readonly FaultCode[] = ["EPERM", "EACCES", "EROFS", "EIO"];
+
+test.each(REFRESH_FAULT_CODES)(
+	"a moved and renamed owner keeps its parent store and preserves an intact parent claim when owner refresh fails with %s on staged write or rename (#5242)",
+	async (code) => {
+		const home = join(root, `refresh-fault-home-${code.toLowerCase()}`);
+		useHome(home);
+		const original = join(root, `refresh-fault-parent-${code.toLowerCase()}`);
+		const moved = join(root, `refresh-fault-moved-${code.toLowerCase()}`);
+		const agent = join(original, "a1");
+		const sibling = join(original, "sibling");
+		mkdirSync(agent, { recursive: true });
+		mkdirSync(sibling, { recursive: true });
+		writeFileSync(join(agent, "settings.json"), JSON.stringify({ defaultThinkingLevel: "medium" }));
+
+		const sessionId = "66666666-6666-4666-8666-666666666666";
+		const initialStore = await resolveSessionStore(root, {
+			agentDir: agent,
+			sessionStore: { kind: "sqlite", path: join(original, "workflows", "journal.sqlite") },
+		});
+		await initialStore.create({ id: sessionId, version: 4, createdAt: "2026-11-16T00:00:00.000Z", cwd: root }, []);
+		await initialStore.close();
+
+		assert.equal(storageHomeDir(agent, {}), original);
+		assert.equal(storageHomeDir(sibling, {}), sibling);
+		assert.equal(defaultSessionDatabasePath(agent, {}), join(original, "workflows", "journal.sqlite"));
+
+		cpSync(original, moved, { recursive: true });
+		rmSync(original, { recursive: true });
+		const current = join(moved, "main");
+		const movedSibling = join(moved, "sibling");
+		renameSync(join(moved, "a1"), current);
+
+		const claimFile = join(moved, ".atomic-storage-parent-owner");
+		const claimBeforeRefresh = readFileSync(claimFile, "utf8");
+		assert.equal(JSON.parse(claimBeforeRefresh).relativePath, "a1");
+
+		fsFaults.readOnlyDirs.set(moved, code);
+		resetStorageHomeCacheForTests();
+
+		const expectedSessionDb = join(moved, "workflows", "journal.sqlite");
+		const expectedJournalDir = join(moved, "workflows", "journal");
+		assert.equal(storageHomeDir(current, {}), moved);
+		assert.equal(defaultSessionDatabasePath(current, {}), expectedSessionDb);
+		assert.equal(defaultJournalStoreDirectory(current, {}), expectedJournalDir);
+		assert.deepEqual(selectSessionStorage(root, { agentDir: current, settings: {} }), {
+			kind: "sqlite",
+			path: expectedSessionDb,
+		});
+		assert.equal(readFileSync(claimFile, "utf8"), claimBeforeRefresh);
+		assert.deepEqual(
+			readdirSync(moved).filter((entry) => entry.endsWith(".tmp")),
+			[],
+		);
+		assert.equal(storageHomeDir(movedSibling, {}), movedSibling);
+
+		fsFaults.readOnlyDirs.clear();
+		fsFaults.renameTargets.set(resolve(claimFile), code);
+		resetStorageHomeCacheForTests();
+
+		assert.equal(storageHomeDir(current, {}), moved);
+		assert.equal(defaultSessionDatabasePath(current, {}), expectedSessionDb);
+		assert.equal(readFileSync(claimFile, "utf8"), claimBeforeRefresh);
+		assert.deepEqual(
+			readdirSync(moved).filter((entry) => entry.endsWith(".tmp")),
+			[],
+		);
+
+		resetStorageHomeCacheForTests();
+		const restoredStore = await resolveSessionStore(root, { agentDir: current, settings: {} });
+		try {
+			assert.equal(restoredStore.descriptor.location, expectedSessionDb);
+			assert.equal((await restoredStore.readHeader(sessionId))?.id, sessionId);
+		} finally {
+			await restoredStore.close();
+		}
+
+		resetStorageHomeCacheForTests();
+		const status = await collectStorageStatus({ cwd: root, agentDir: current, probe: true });
+		for (const domain of status.domains) {
+			assert.equal(domain.error, undefined, `unexpected ${domain.domain} error: ${domain.error}`);
+		}
+		assert.equal(
+			status.domains.find((domain) => domain.domain === "sessions")?.selection,
+			`SQLite ${expectedSessionDb}`,
+		);
+		assert.equal(readFileSync(claimFile, "utf8"), claimBeforeRefresh);
+		assert.deepEqual(
+			readdirSync(moved).filter((entry) => entry.endsWith(".tmp")),
+			[],
+		);
+
+		fsFaults.renameTargets.clear();
+		resetStorageHomeCacheForTests();
+		assert.equal(storageHomeDir(current, {}), moved);
+		assert.equal(JSON.parse(readFileSync(claimFile, "utf8")).relativePath, "main");
+	},
+);
+
+test("sibling and clone lookups do not refresh another owner's parent claim record (#5242)", async () => {
+	const home = join(root, "self-only-refresh-home");
+	useHome(home);
+	const original = join(root, "self-only-refresh-parent");
+	const moved = join(root, "self-only-refresh-moved");
+	const agent = join(original, "a1");
+	const sibling = join(original, "sibling");
+	mkdirSync(agent, { recursive: true });
+	mkdirSync(sibling, { recursive: true });
+	mkdirSync(join(original, "workflows"), { recursive: true });
+	writeFileSync(join(original, "workflows", "journal.sqlite"), "");
+	writeFileSync(join(agent, "settings.json"), JSON.stringify({ defaultThinkingLevel: "high" }));
+
+	assert.equal(storageHomeDir(agent, {}), original);
+
+	cpSync(original, moved, { recursive: true });
+	rmSync(original, { recursive: true });
+	const current = join(moved, "main");
+	const movedSibling = join(moved, "sibling");
+	renameSync(join(moved, "a1"), current);
+	resetStorageHomeCacheForTests();
+
+	const claimFile = join(moved, ".atomic-storage-parent-owner");
+	const staleClaimRaw = readFileSync(claimFile, "utf8");
+	const staleClaim = JSON.parse(staleClaimRaw) as { identity?: string; relativePath?: string };
+	assert.equal(staleClaim.relativePath, "a1");
+
+	assert.equal(storageHomeDir(movedSibling, {}), movedSibling);
+	assert.equal(defaultSessionDatabasePath(movedSibling, {}), join(movedSibling, "workflows", "journal.sqlite"));
+	assert.equal(coLocatesWorkflowStore(movedSibling, {}), true);
+	assert.deepEqual(selectSessionStorage(root, { agentDir: movedSibling, settings: {} }), {
+		kind: "sqlite",
+		path: join(movedSibling, "workflows", "journal.sqlite"),
+	});
+	const siblingStore = await resolveSessionStore(root, { agentDir: movedSibling, settings: {} });
+	try {
+		assert.equal(siblingStore.descriptor.location, join(movedSibling, "workflows", "journal.sqlite"));
+	} finally {
+		await siblingStore.close();
+	}
+	assert.equal(readFileSync(claimFile, "utf8"), staleClaimRaw);
+
+	resetStorageHomeCacheForTests();
+	assert.equal(storageHomeDir(current, {}), moved);
+	const refreshedClaimRaw = readFileSync(claimFile, "utf8");
+	const refreshedClaim = JSON.parse(refreshedClaimRaw) as { identity?: string; relativePath?: string };
+	assert.equal(refreshedClaim.relativePath, "main");
+	assert.notEqual(refreshedClaim.identity, staleClaim.identity);
+
+	const oldNameClone = join(moved, "a1");
+	const backupClone = join(moved, "main-backup");
+	cpSync(current, oldNameClone, { recursive: true });
+	cpSync(current, backupClone, { recursive: true });
+	resetStorageHomeCacheForTests();
+
+	assert.equal(storageHomeDir(oldNameClone, {}), oldNameClone);
+	assert.equal(storageHomeDir(backupClone, {}), backupClone);
+	assert.equal(readFileSync(claimFile, "utf8"), refreshedClaimRaw);
+	assert.equal(storageHomeDir(current, {}), moved);
+});
+
+test("a rejected clone with its own relative session store retains that store when the parent directory is read-only (#5242)", async () => {
+	const home = join(root, "ro-parent-rejected-clone-home");
+	useHome(home);
+	const original = join(root, "ro-parent-rejected-clone-parent");
+	const moved = join(root, "ro-parent-rejected-clone-moved");
+	const agent = join(original, "a1");
+	const settings = { sessions: { storage: { dir: "sessions" } } };
+	mkdirSync(join(agent, "sessions"), { recursive: true });
+	mkdirSync(join(original, "sessions"), { recursive: true });
+	mkdirSync(join(original, "workflows"), { recursive: true });
+	writeFileSync(join(agent, "sessions", "old.jsonl"), "{}\n");
+	writeFileSync(join(original, "workflows", "journal.sqlite"), "");
+	writeFileSync(join(agent, "settings.json"), JSON.stringify(settings));
+	assert.equal(defaultSessionDatabasePath(agent, settings), join(original, "workflows", "journal.sqlite"));
+
+	cpSync(original, moved, { recursive: true });
+	rmSync(original, { recursive: true });
+	const current = join(moved, "a1");
+	const currentSettings = { sessions: { storage: { dir: "new-sessions" } } };
+	mkdirSync(join(moved, "new-sessions"), { recursive: true });
+	mkdirSync(join(current, "new-sessions"), { recursive: true });
+	writeFileSync(join(current, "settings.json"), JSON.stringify(currentSettings));
+
+	const sessionId = "99999999-9999-4999-8999-999999999999";
+	const store = await resolveSessionStore(root, {
+		agentDir: current,
+		sessionStore: { kind: "jsonl", dir: join(current, "new-sessions") },
+	});
+	await store.create({ id: sessionId, version: 4, createdAt: "2026-11-16T00:00:00.000Z", cwd: root }, []);
+	await store.close();
+
+	fsFaults.readOnlyDirs.set(moved, "EACCES");
+	resetStorageHomeCacheForTests();
+
+	assert.equal(defaultSessionDatabasePath(current, currentSettings), join(current, "workflows", "journal.sqlite"));
+	assert.deepEqual(selectSessionStorage(root, { agentDir: current, settings: currentSettings }), {
+		kind: "jsonl",
+		dir: join(current, "new-sessions"),
+	});
+	const restored = await resolveSessionStore(root, { agentDir: current, settings: currentSettings });
+	try {
+		assert.equal((await restored.readHeader(sessionId))?.id, sessionId);
+	} finally {
+		await restored.close();
+	}
 });
