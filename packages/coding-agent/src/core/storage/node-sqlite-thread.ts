@@ -1,3 +1,5 @@
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import type { SqliteRow, SqliteValue } from "./database.js";
 import { sqliteDialect } from "./dialect.js";
@@ -16,6 +18,11 @@ const STATEMENT_CACHE_SIZE = 128;
 const CONNECTION_SOURCE = `
 const { parentPort, workerData } = require("node:worker_threads");
 process.emitWarning = () => {};
+if (workerData.nativeBinding !== undefined) {
+	try {
+		require(workerData.nativeBinding).raiseCurrentThreadPriority();
+	} catch {}
+}
 let DatabaseSync;
 try {
 	({ DatabaseSync } = require("node:sqlite"));
@@ -231,6 +238,31 @@ export class ConnectionLoadError extends Error {
 	}
 }
 
+let nativeBinding: string | null | undefined;
+
+/**
+ * Where the native binding loads from, for a connection thread on Windows to raise its own priority with. Woken for
+ * each request, a thread at normal priority waits behind every busy thread for a scheduler quantum once the CPUs are
+ * oversubscribed, up to 190 ms a request on Windows Server; above normal it runs as soon as it is woken (#5376). The
+ * binding is found as the storage adapter's open lock finds it: from this module, or beside the standalone binary.
+ * Undefined on other platforms and when it cannot be found: the thread then runs at normal priority.
+ */
+function threadPriorityBinding(): string | undefined {
+	if (process.platform !== "win32") return undefined;
+	if (nativeBinding === undefined) {
+		nativeBinding = null;
+		for (const base of [import.meta.url, pathToFileURL(process.execPath).href]) {
+			try {
+				nativeBinding = createRequire(base).resolve("@bastani/atomic-natives");
+				break;
+			} catch {
+				// Not found from here; the next base, or normal priority.
+			}
+		}
+	}
+	return nativeBinding ?? undefined;
+}
+
 /** A connection running on its own worker thread. */
 export class ThreadConnection {
 	/** The path the connection was opened with, as its caller gave it. */
@@ -261,6 +293,7 @@ export class ThreadConnection {
 				readOnly: options.readOnly,
 				nowSql: `SELECT ${sqliteDialect.nowMs} AS now`,
 				statementCacheSize: STATEMENT_CACHE_SIZE,
+				nativeBinding: threadPriorityBinding(),
 			},
 		});
 		this.worker.on("message", (reply: ConnectionReply) => this.receive(reply));

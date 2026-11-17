@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { afterEach, test } from "vitest";
@@ -132,4 +133,15 @@ test("a closed connection that stays referenced keeps nothing its closer held (#
 	await collectEverythingTracked(closers);
 	assert.deepEqual(closers.uncollected(), [], "the closed connection keeps the session that closed it");
 	await assert.rejects(database.run("INSERT INTO t VALUES (1)"), /closed/);
+});
+
+test("a connection's thread raises only its own scheduling priority, never the caller's (#5376)", async () => {
+	const { currentThreadPriority } = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+		currentThreadPriority(): number;
+	};
+	const before = currentThreadPriority();
+	const database = await open(databasePath());
+	await database.transaction((transaction) => transaction.run("CREATE TABLE t(v)"));
+	assert.equal(currentThreadPriority(), before, "the calling thread keeps its priority");
+	assert.equal(before, 0, "at normal priority");
 });

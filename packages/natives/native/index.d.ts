@@ -319,6 +319,12 @@ export interface CurrentAction {
   text: string
 }
 
+/**
+ * The calling thread's priority relative to its process's priority class on Windows (0 is normal, 1 above normal);
+ * 0 on other platforms.
+ */
+export declare function currentThreadPriority(): number
+
 export interface Cursor {
   generation: string
   sequence: string
@@ -751,6 +757,12 @@ export interface PtyStartOptions {
   commandTransport?: string
   closeStdinAfterCommand?: boolean
 }
+
+/**
+ * Raises the calling thread, and only it, to above-normal priority on Windows; returns whether it did. Does nothing
+ * and returns false on other platforms, where raising a thread's priority needs a privilege a process lacks.
+ */
+export declare function raiseCurrentThreadPriority(): boolean
 
 /**
  * Renames `from` to `to` only while nothing is at `to` (#5193): `false`, with nothing moved, when something is there,

@@ -13,6 +13,7 @@ pub(crate) mod spawn;
 pub mod subagent_control;
 pub mod task;
 pub mod task_supervisor;
+pub mod thread_priority;
 
 #[macro_export]
 macro_rules! env_uint {

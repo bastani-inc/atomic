@@ -3,6 +3,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";
 import type { SqliteDatabase } from "../../../packages/coding-agent/src/core/storage/database.js";
 import {
@@ -34,34 +35,29 @@ function parseOptions(argv: readonly string[]): Options {
 	};
 }
 
-/** Records each turn of the event loop with a `setImmediate` chain: the longest gap is the longest block. */
+/**
+ * The longest block of the event loop, from a 1 ms timer's lateness. A timer rather than a `setImmediate` chain: the
+ * loop sleeps between turns, as the interactive host's does, so a reply from a connection's thread has to wake it.
+ * A loop kept busy never sleeps and hides that wake-up, which on a busy Windows host is most of a request's time.
+ */
 class TurnProbe {
-	private last = performance.now();
-	private running = true;
-	private longest = 0;
+	private readonly histogram = monitorEventLoopDelay({ resolution: 1 });
 
 	constructor() {
-		const turn = () => {
-			const now = performance.now();
-			this.longest = Math.max(this.longest, now - this.last);
-			this.last = now;
-			if (this.running) setImmediate(turn);
-		};
-		setImmediate(turn);
+		this.histogram.enable();
 	}
 
 	reset(): void {
-		this.last = performance.now();
-		this.longest = 0;
+		this.histogram.reset();
 	}
 
 	async read(): Promise<number> {
-		await new Promise<void>((resolve) => setImmediate(resolve));
-		return this.longest;
+		await new Promise<void>((resolve) => setTimeout(resolve, 2));
+		return this.histogram.max / 1e6;
 	}
 
 	stop(): void {
-		this.running = false;
+		this.histogram.disable();
 	}
 }
 
