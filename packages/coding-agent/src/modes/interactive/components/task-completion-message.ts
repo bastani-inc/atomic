@@ -3,7 +3,7 @@ import { type Component, truncateToWidth, wrapTextWithAnsi } from "@bastani/atom
 import type { TaskCompletionNotice, TaskNoticeLine } from "../../../core/tasks/completion.js";
 import { theme } from "../theme/theme.js";
 import { keyHintIfBound } from "./keybinding-hints.js";
-import { NoticeLine, type NoticeLineSpec } from "./notice-line.js";
+import { NoticeLine, type NoticeLineSpec } from "./notice-line.ts";
 
 const NOTICE_LINE_STATUSES = new Set(["success", "failure", "stopped", "warning", "paused"]);
 
