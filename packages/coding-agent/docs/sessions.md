@@ -76,7 +76,7 @@ For the JSONL file format and SessionManager API, see [Session Format](/session-
 
 | Command | Description |
 |---------|-------------|
-| `/resume` | Browse and select previous sessions |
+| `/resume [id]` | Browse previous sessions and resumable workflow runs, or resume one by id |
 | `/new` | Start a new session |
 | `/name <name>` | Set the current session display name |
 | `/session` | Show session info |
@@ -89,7 +89,11 @@ For the JSONL file format and SessionManager API, see [Session Format](/session-
 
 ## Resuming and Deleting Sessions
 
-`/resume` opens an interactive session picker for the current project. `atomic -r` opens the same picker at startup.
+`/resume` opens an interactive picker titled **Resume**. It shows the current project's sessions under **Sessions**, then, when any exist, the project's resumable workflow runs under **Workflow runs**, including runs left by an earlier session or interrupted by a restart. Each group shows its count and lists its newest entries first. ↑ and ↓ move across both groups, and typing filters both. The hint reads `space preview · enter resume · type to search · esc cancel`, followed by the keys the selected row supports, such as `tab scope`, `ctrl+r rename` and `ctrl+d delete`. `tab scope` widens only the Sessions list beyond the current folder; workflow runs always come from the current project. `atomic -r` opens the same picker at startup with sessions only.
+
+`/resume <id>` resumes a session or workflow run directly. It accepts an exact session or run id, or a unique 8-character hexadecimal prefix of either; an ambiguous prefix resumes nothing. If the workflow list cannot be read, an exact saved session id still works, and prefixes are refused. Neither form takes flags.
+
+Enter on a workflow run resumes it; a completed run opens read-only. When the run's workflow definition changed since it started, `/resume` and `/resume <id>` first ask `Workflow definition changed since this run started · enter resume with the new definition · esc cancel`. Enter resumes with the new definition, and Esc cancels. A run id from another project asks whether to fork the run into the current directory. Ctrl+D on a workflow run deletes it after the same confirmation as a session. Runs that are still executing or still owned by a live process are refused, and runs live in this session are not offered for deletion.
 
 Text typed before a startup picker or question appears waits in the prompt as a draft. If you were typing an unfinished line, its Enter does not pick a session or submit an empty startup input. Press ↑ or ↓ to choose in the picker, or type into its search field, before confirming. In a startup text input, type your answer and press Enter. An answer left in a cancelled or timed-out text input joins your draft. At the "Fork this session into current directory? [y/N]" question, answer `y` or `n` explicitly if you were typing a prompt or an earlier line was kept as a draft. After startup, review the draft and press Enter to send it.
 
