@@ -4,7 +4,7 @@ description: Operate native desktop applications on macOS, Windows and Linux thr
 hidden: true
 metadata:
     github-path: skills/agent-desktop
-    github-ref: refs/tags/v1.3.0
+    github-ref: refs/tags/v1.3.1
     github-repo: https://github.com/vercel-labs/agent-desktop
     github-tree-sha: ef953179861334f07a7ec948f1d34401de17b9b0
 name: agent-desktop
