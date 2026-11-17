@@ -240,6 +240,7 @@ test.each([
 	"rename-then-move",
 	"move-then-rename-with-target-alias",
 	"move-with-legacy-claim",
+	"move-then-rename-after-other-profile",
 ])("an adopter keeps history beside pre-existing in-directory JSONL sessions after %s (#5242)", async (operation) => {
 	const original = join(root, "relative-jsonl-parent");
 	const moved = join(root, "moved-relative-jsonl-parent");
@@ -267,6 +268,13 @@ test.each([
 		status: "completed",
 	});
 	await journal.close();
+	if (operation === "move-then-rename-after-other-profile") {
+		const sibling = join(original, "a2");
+		mkdirSync(sibling);
+		mkdirSync(join(original, "workflows", "pool"), { recursive: true });
+		writeFileSync(join(original, "workflows", "pool", "host-id.adopted-by"), `${agent}\n`);
+		assert.equal(defaultSessionDatabasePath(sibling, {}), join(sibling, "workflows", "journal.sqlite"));
+	}
 	assert.equal(defaultSessionDatabasePath(agent, settings), join(original, "workflows", "journal.sqlite"));
 	assert.deepEqual(selectSessionStorage(root, { agentDir: agent, settings }), {
 		kind: "jsonl",

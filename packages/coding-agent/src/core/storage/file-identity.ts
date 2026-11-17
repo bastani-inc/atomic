@@ -929,7 +929,11 @@ function applyStorageHomeDecision(decision: StorageHomeDecision, agentPath: stri
 	const workflows = join(decision.home, "workflows");
 	const claim = join(decision.home, PARENT_CLAIM_FILE);
 	const preferred = canonicalPath(parentStorageOwner(decision.home) ?? decision.parentOwner);
-	const legacyTargets = (storageDecisionMetadata(preferred)?.targets ?? []).filter(
+	const ownerTargets = new Set([
+		...(storageDecisionMetadata(preferred)?.targets ?? []),
+		...configuredRelativeTargets(preferred, getHomeDir(), undefined, false),
+	]);
+	const legacyTargets = [...ownerTargets].filter(
 		(target) =>
 			containsPath(canonicalPath(preferred), canonicalPath(resolve(preferred, target))) &&
 			existsSync(resolve(preferred, target)) &&
