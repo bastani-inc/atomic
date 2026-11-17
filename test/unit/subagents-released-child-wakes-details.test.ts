@@ -11,11 +11,15 @@ import {
 	SUBAGENT_RELEASED_CHILD_WAKE_EVENT,
 } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
 import { subagentWakeKey } from "../../packages/subagents/src/runs/foreground/released-children.js";
-import { subagentChildRecordOf } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
+import {
+	observeSubagentChildRecord,
+	subagentChildRecordOf,
+} from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
 import {
 	SUBAGENT_CHILD_RECORD_TYPE,
 	SUBAGENT_CHILD_RELEASED_STATUS,
 	type SubagentChildRecord,
+	subagentChildRecordFailures,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import type {
 	SubagentChildRestoreDeps,
@@ -147,6 +151,31 @@ test("a broker notice delivers an intercom wake with a fresh id for the named ch
 		],
 		"the intercom wake prompts the child",
 	);
+	stop();
+});
+
+test("a broker notice for a named child whose record no open session holds is counted, not thrown", async () => {
+	const { ctx, ownerSessionId } = await ownerWith([{}]);
+	const events = bus();
+	const dispatcher = new AgentWakeDispatcher();
+	const stop = bindReleasedChildWakes(deps, ctx, events, dispatcher);
+	// Its latest record was saved by a copy of the owner's session that is not open in this process any more.
+	observeSubagentChildRecord(record(ownerSessionId, { taskId: "task-lost" }), false, {
+		entryId: "entry-of-a-closed-copy",
+		sessionId: ownerSessionId,
+	});
+	const before = subagentChildRecordFailures.count;
+	const listener = events.listeners.get(SUBAGENT_RELEASED_CHILD_WAKE_EVENT)?.[0];
+	assert.ok(listener);
+
+	listener({ childName: "named-child" });
+
+	assert.equal(subagentChildRecordFailures.count, before + 1);
+	assert.deepEqual(
+		[subagentChildRecordFailures.last?.code, subagentChildRecordFailures.last?.fields.childId],
+		["child-record-unreadable", "run:0"],
+	);
+	assert.deepEqual(restoreState.calls, [], "nothing is woken");
 	stop();
 });
 

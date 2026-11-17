@@ -9,6 +9,7 @@ import { createAgentSession } from "../src/core/sdk.js";
 import type { CreateAgentSessionOptions } from "../src/core/sdk-types.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { keptChildNoticeCount } from "../src/core/tasks/child-command-owner.js";
 import { TASK_COMPLETION_MESSAGE_TYPE } from "../src/core/tasks/completion.js";
 import type { OperationId, TaskId, TaskResult } from "../src/core/tasks/contracts.js";
 import { getOwnerTaskStore } from "../src/core/tasks/owner-store.js";
@@ -187,21 +188,37 @@ function tempRoot(): string {
 }
 
 for (const name of runnableShells) {
-	test(`subagent ${name} background tasks run in the main chat parent's /tasks and stay waitable`, async () => {
+	test(`subagent ${name} background tasks run in the parent's owner, stay out of the parent's /tasks and stay waitable`, async () => {
 		const root = tempRoot();
 		const parent = await newSession(root);
 		const { child } = await childOf(parent, root);
+		const parentShell = await startBackground(parent, name);
 
 		const id = await startBackground(child, name);
 
-		assert.deepEqual(ownerTaskIds(parent), [id], "the parent owner holds the child's shell");
+		assert.deepEqual(ownerTaskIds(parent), [parentShell, id], "the parent owner runs the child's shell");
+		const store = getOwnerTaskStore(parent);
 		await vi.waitFor(
 			() =>
 				assert.ok(
-					getOwnerTaskStore(parent)?.tasks.some((task) => task.ref.taskId === id),
-					"the parent's /tasks store shows the child's shell",
+					store?.ownerTasks.some((task) => task.ref.taskId === id),
+					"the owner's tasks hold the child's shell",
 				),
 			{ timeout: 10000 },
+		);
+		assert.deepEqual(
+			store?.tasks.map((task) => task.ref.taskId),
+			[parentShell],
+			"the parent's /tasks lists only its own shell",
+		);
+		assert.deepEqual(
+			store?.backgroundTasks.map((task) => task.ref.taskId),
+			[parentShell],
+		);
+		assert.equal(
+			store?.ownerTasks.find((task) => task.ref.taskId === id)?.launchedBy,
+			child.sessionManager.getSessionId(),
+			"the shell names the child's session",
 		);
 		const polled = await tool(child, name).execute("poll", { action: "wait", id, budgetMs: 0 });
 		assert.equal((polled.details as BashToolDetails).observation?.kind, "yielded");
@@ -233,10 +250,35 @@ test("a subagent can only wait on or kill the shells it launched", async () => {
 	assert.equal((parentView.details as BashToolDetails).observation?.kind, "settled");
 });
 
-test("child shell completion notifies the child while it runs and the parent after it ends", async () => {
+/** The subagent `child` runs again in its own session, as a resume reopens it. */
+async function resumeChild(parent: AgentSession, root: string, child: AgentSession) {
+	const inherited = parent.extensionRunner.createContext().getChildSessionOptions!({ cwd: root });
+	return newSession(root, {
+		...inherited,
+		sessionManager: child.sessionManager,
+		settingsManager: SettingsManager.inMemory(),
+		resourceLoader: createTestResourceLoader(),
+		tools: ["bash", "powershell", "kill"],
+		subagentPolicy: childPolicy(new AbortController().signal),
+	});
+}
+
+function intentRecorded(owner: AgentSession, taskId: TaskId): boolean {
+	return owner.sessionManager
+		.getEntries()
+		.some(
+			(entry) =>
+				entry.type === "custom" &&
+				entry.customType === "task-completion-intent" &&
+				(entry.data as { taskId?: string } | undefined)?.taskId === taskId,
+		);
+}
+
+test("a subagent's shell notice reaches only that subagent: while it runs, and when it runs again after it ended", async () => {
 	const root = tempRoot();
 	const parent = await newSession(root);
 	const { child, endExecution } = await childOf(parent, root);
+	const childId = child.sessionManager.getSessionId();
 
 	const whileRunning = await startBackground(child, nativeShell);
 	await release(parent, whileRunning);
@@ -245,12 +287,24 @@ test("child shell completion notifies the child while it runs and the parent aft
 
 	const afterEnd = await startBackground(child, nativeShell);
 	endExecution();
+	await child.closeSessionTasks();
+	child.dispose();
 	await release(parent, afterEnd);
-	await vi.waitFor(() => assert.equal(completionNotices(parent, afterEnd), 1), { timeout: 10000 });
-	assert.equal(completionNotices(child, afterEnd), 0);
+	await vi.waitFor(() => assert.ok(intentRecorded(parent, afterEnd)), { timeout: 10000 });
+	await vi.waitFor(() => assert.equal(keptChildNoticeCount(parent.getAgentTaskHost(), childId), 1), {
+		timeout: 10000,
+	});
+	assert.equal(completionNotices(parent, afterEnd), 0, "the parent never receives the subagent's notice");
+	assert.equal(acknowledgedBy(parent, afterEnd), false, "it is kept until the subagent takes it");
+
+	const resumed = await resumeChild(parent, root, child);
+	await vi.waitFor(() => assert.equal(completionNotices(resumed, afterEnd), 1), { timeout: 10000 });
+	await vi.waitFor(() => assert.ok(acknowledgedBy(parent, afterEnd)), { timeout: 10000 });
+	assert.equal(completionNotices(parent, afterEnd), 0);
+	assert.equal(keptChildNoticeCount(parent.getAgentTaskHost(), childId), 0);
 });
 
-test("child shells outlive the child session and remain in the parent's /tasks", async () => {
+test("child shells outlive the child session in the parent's owner", async () => {
 	const root = tempRoot();
 	const parent = await newSession(root);
 	const { child, endExecution } = await childOf(parent, root);
@@ -266,7 +320,7 @@ test("child shells outlive the child session and remain in the parent's /tasks",
 	assert.equal((settled.details as BashToolDetails).exitCode, 3);
 });
 
-test("workflow-stage subagent shells land in the stage's /tasks without rebinding the stage owner", async () => {
+test("workflow-stage subagent shells run in the stage's owner without rebinding it, and their notices never reach the stage", async () => {
 	const root = tempRoot();
 	const boundary = new WorkflowStageAdmissionBoundary();
 	cleanups.push(() => boundary.close());
@@ -291,6 +345,12 @@ test("workflow-stage subagent shells land in the stage's /tasks without rebindin
 	const childTask = await startBackground(child, nativeShell);
 	assert.deepEqual(ownerTaskIds(stage), [childTask]);
 
+	assert.deepEqual(
+		getOwnerTaskStore(stage)?.tasks.map((task) => task.ref.taskId),
+		[],
+		"the stage's /tasks does not list its worker's shell",
+	);
+
 	endExecution();
 	const stageTask = await startBackground(stage, nativeShell);
 	await release(stage, stageTask);
@@ -298,11 +358,50 @@ test("workflow-stage subagent shells land in the stage's /tasks without rebindin
 	await vi.waitFor(
 		() => {
 			assert.ok(acknowledgedBy(stage, stageTask), "the stage outbox delivers the stage's own completion");
-			assert.ok(acknowledgedBy(stage, childTask), "the stage outbox delivers the ended child's completion");
+			assert.ok(intentRecorded(stage, childTask), "the ended child's completion is recorded");
+			assert.equal(keptChildNoticeCount(stageHost, child.sessionManager.getSessionId()), 1);
 		},
 		{ timeout: 10000 },
 	);
+	assert.equal(completionNotices(stage, childTask), 0, "the ended child's completion never reaches the stage");
+	assert.equal(acknowledgedBy(stage, childTask), false, "it is kept for the child");
 	assert.equal(completionNotices(child, stageTask), 0, "stage completions still reach the stage");
+});
+
+test("a stage's notice built while the stage closes is kept for the stage, never routed to the chat that launched the workflow", async () => {
+	const root = tempRoot();
+	const boundary = new WorkflowStageAdmissionBoundary();
+	cleanups.push(() => boundary.close());
+	const routed: unknown[] = [];
+	const context = {
+		...workflowStageContext(boundary),
+		lateMessageRouter: {
+			routeMessage: (message: unknown) => void routed.push(message),
+			routeMessages: (messages: readonly unknown[]) => void routed.push(...messages),
+		},
+	};
+	const stage = await newSession(root, { orchestrationContext: context });
+	const id = await startBackground(stage, nativeShell);
+	const { supervisor } = stage.getAgentTaskHost().ownerBinding;
+	const readOutput = supervisor.readTaskOutput.bind(supervisor);
+	const building = Promise.withResolvers<void>();
+	const closed = Promise.withResolvers<void>();
+	vi.spyOn(supervisor, "readTaskOutput").mockImplementation(async (...args) => {
+		building.resolve();
+		await closed.promise;
+		return readOutput(...args);
+	});
+
+	await release(stage, id);
+	await building.promise;
+	boundary.seal();
+	closed.resolve();
+	await vi.waitFor(() => assert.ok(intentRecorded(stage, id)), { timeout: 10000 });
+	await new Promise((resolve) => setTimeout(resolve, 100));
+
+	assert.deepEqual(routed, [], "the notice never takes the late route to another session");
+	assert.equal(completionNotices(stage, id), 0);
+	assert.equal(acknowledgedBy(stage, id), false, "the stage keeps it for its next session");
 });
 
 function workflowStageContext(
@@ -433,7 +532,7 @@ test("a live worker receives the completion of its shell while its workflow stag
 	assert.deepEqual(boundary?.takeParkedTaskSettlements(), [], "the stage's next session is not handed it again");
 });
 
-test("a worker's shell completion that its route cannot take waits for its released stage's next session (#4639)", async () => {
+test("a worker's shell completion that its route cannot take is kept for the worker, never for its released stage's next session", async () => {
 	const root = tempRoot();
 	const { context, stage, stageHost, worker, id, endExecution, parentCommandTaskOwner } =
 		await stageWithWorkerShell(root);
@@ -454,14 +553,8 @@ test("a worker's shell completion that its route cannot take waits for its relea
 
 	const boundary = context.kind === "workflow-stage" ? context.messageAdmission?.boundary : undefined;
 	assert.ok(boundary);
-	await vi.waitFor(
-		() =>
-			assert.deepEqual(
-				boundary.takeParkedTaskSettlements().map((parked) => parked.receipt.taskId),
-				[id],
-			),
-		{ timeout: 10000 },
-	);
+	await vi.waitFor(() => assert.equal(keptChildNoticeCount(stageHost, workerId), 1), { timeout: 10000 });
+	assert.deepEqual(boundary.takeParkedTaskSettlements(), [], "the stage's next session is never handed it");
 });
 
 test("a live worker hears that its released stage's close stopped its shell (#4639)", async () => {

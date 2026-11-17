@@ -3,7 +3,10 @@ import { ChildProcess, spawn } from "node:child_process";
 import { PassThrough } from "node:stream";
 import { setImmediate } from "node:timers/promises";
 import { expect, it, vi } from "vitest";
+import { startHostProcessesThroughChildProcess } from "../../../test/helpers/host-spawn.js";
 import { execCommand } from "../src/core/exec.ts";
+
+startHostProcessesThroughChildProcess();
 
 vi.mock("node:child_process", async (importOriginal) => ({
 	...(await importOriginal<typeof ChildProcessModule>()),
