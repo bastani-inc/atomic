@@ -91,7 +91,7 @@ interface SettledStorageHome {
 	readonly sharedStoragePath: string;
 	readonly adoptedClaim?: string;
 	readonly provisionalWithoutSettings?: boolean;
-	readonly rejectedParentAdoption?: boolean;
+	readonly rejectedParentAdoption?: { readonly legacyTargets: readonly string[] };
 }
 
 interface StorageHomeCacheKey {
@@ -959,9 +959,14 @@ function applyStorageHomeDecision(decision: StorageHomeDecision, agentPath: stri
 			throw new Error(`Conflicting storage home ownership at ${legacyClaim}`);
 		}
 	}
-	return winnerPath !== undefined && sameDirectory(winnerPath, agentPath)
-		? createStorageHomeEntry(decision.home, claim)
-		: { ...createStorageHomeEntry(agentPath), rejectedParentAdoption: true };
+	if (winnerPath !== undefined && sameDirectory(winnerPath, agentPath))
+		return createStorageHomeEntry(decision.home, claim);
+	const weakCandidate =
+		(winner.decisionId !== undefined && storageDecisionMetadata(agentPath)?.id === winner.decisionId) ||
+		(winner.directoryIdentity !== undefined && fileIdentity(agentPath) === winner.directoryIdentity);
+	return weakCandidate && winner.legacyTargets !== undefined
+		? { ...createStorageHomeEntry(agentPath), rejectedParentAdoption: { legacyTargets: winner.legacyTargets } }
+		: createStorageHomeEntry(agentPath);
 }
 
 function resolveStorageHomeEntry(agentDir?: string, settings?: StorageHomeSettings): SettledStorageHome {
@@ -1157,8 +1162,13 @@ export function storagePathBaseDir(path: string, agentDir: string, settings?: St
 	if (target === undefined) return home;
 	const agentPath = normalizeAgentDirPath(agentDir);
 	const ownTarget = resolve(agentPath, target);
+	const rejected = entry.rejectedParentAdoption;
 	if (
-		entry.rejectedParentAdoption &&
+		rejected !== undefined &&
+		!rejected.legacyTargets.some(
+			(legacy) =>
+				pathsEqual(resolve(agentPath, legacy), ownTarget) && existsSync(resolve(dirname(agentPath), target)),
+		) &&
 		!pathsEqual(ownTarget, agentPath) &&
 		containsPath(canonicalPath(agentPath), canonicalPath(ownTarget)) &&
 		existsSync(ownTarget)

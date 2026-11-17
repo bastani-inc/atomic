@@ -51,6 +51,108 @@ function useHome(home: string): void {
 	resetStorageHomeCacheForTests();
 }
 
+test('a host-id sibling with explicit sessions.storage.dir "sessions" beside older default JSONL keeps reading parent sessions (#5242)', async () => {
+	const parent = join(root, "host-owner-parent");
+	const owner = join(parent, "a1");
+	const sibling = join(parent, "a2");
+	const settings = { sessions: { storage: { dir: "sessions" } } };
+	mkdirSync(owner, { recursive: true });
+	mkdirSync(sibling);
+	writeFileSync(join(owner, "settings.json"), JSON.stringify({ defaultModel: "model" }));
+	writeFileSync(join(sibling, "settings.json"), JSON.stringify(settings));
+	const localId = "00000000-0000-4000-8000-000000000000";
+	const parentId = "11111111-1111-4111-8111-111111111111";
+	for (const [dir, id] of [
+		[join(sibling, "sessions"), localId],
+		[join(parent, "sessions"), parentId],
+	] as const) {
+		const store = await resolveSessionStore(root, { agentDir: sibling, sessionStore: { kind: "jsonl", dir } });
+		try {
+			await store.create({ id, version: 4, createdAt: "2026-11-16T00:00:00.000Z", cwd: root }, []);
+		} finally {
+			await store.close();
+		}
+	}
+	mkdirSync(join(parent, "workflows", "pool"), { recursive: true });
+	writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
+	writeFileSync(join(parent, "workflows", "pool", "host-id"), "host\n");
+	writeFileSync(join(parent, "workflows", "pool", "host-id.adopted-by"), `${owner}\n`);
+	for (const startOwner of [false, true, false]) {
+		resetStorageHomeCacheForTests();
+		if (startOwner) assert.equal(defaultSessionDatabasePath(owner, {}), join(parent, "workflows", "journal.sqlite"));
+		assert.equal(defaultSessionDatabasePath(sibling, settings), join(sibling, "workflows", "journal.sqlite"));
+		assert.deepEqual(selectSessionStorage(root, { agentDir: sibling, settings }), {
+			kind: "jsonl",
+			dir: join(parent, "sessions"),
+		});
+		const restored = await resolveSessionStore(root, { agentDir: sibling, settings });
+		try {
+			assert.equal((await restored.readHeader(parentId))?.id, parentId);
+			assert.equal(await restored.readHeader(localId), undefined);
+		} finally {
+			await restored.close();
+		}
+	}
+});
+
+test.each(["backup-copy", "legacy-record"])(
+	"an undecided adopter after a copied-parent move, rename and %s keeps reading the adopted parent session directory (#5242)",
+	async (variant) => {
+		const original = join(root, "undecided-parent");
+		const moved = join(root, "moved-undecided-parent");
+		const agent = join(original, "a1");
+		const settings = { sessions: { storage: { dir: "sessions" } } };
+		mkdirSync(agent, { recursive: true });
+		writeFileSync(join(agent, "settings.json"), JSON.stringify(settings));
+		const localId = "00000000-0000-4000-8000-000000000000";
+		const parentId = "11111111-1111-4111-8111-111111111111";
+		for (const [dir, id] of [
+			[join(agent, "sessions"), localId],
+			[join(original, "sessions"), parentId],
+		] as const) {
+			const store = await resolveSessionStore(root, { agentDir: agent, sessionStore: { kind: "jsonl", dir } });
+			try {
+				await store.create({ id, version: 4, createdAt: "2026-11-16T00:00:00.000Z", cwd: root }, []);
+			} finally {
+				await store.close();
+			}
+		}
+		mkdirSync(join(original, "workflows"), { recursive: true });
+		writeFileSync(join(original, "workflows", "journal.sqlite"), "");
+		resetStorageHomeCacheForTests();
+		assert.equal(defaultSessionDatabasePath(agent, settings), join(original, "workflows", "journal.sqlite"));
+		assert.deepEqual(selectSessionStorage(root, { agentDir: agent, settings }), {
+			kind: "jsonl",
+			dir: join(original, "sessions"),
+		});
+		if (variant === "legacy-record") {
+			const claim = join(original, ".atomic-storage-parent-owner");
+			const owner = JSON.parse(readFileSync(claim, "utf8")) as { legacyTargets?: readonly string[] };
+			delete owner.legacyTargets;
+			writeFileSync(claim, JSON.stringify(owner));
+		}
+		cpSync(original, moved, { recursive: true });
+		rmSync(original, { recursive: true });
+		const current = join(moved, "main");
+		renameSync(join(moved, "a1"), current);
+		if (variant === "backup-copy") cpSync(current, join(moved, "main-backup"), { recursive: true });
+		for (let start = 0; start < 2; start++) {
+			resetStorageHomeCacheForTests();
+			assert.deepEqual(selectSessionStorage(root, { agentDir: current, settings }), {
+				kind: "jsonl",
+				dir: join(moved, "sessions"),
+			});
+			const restored = await resolveSessionStore(root, { agentDir: current, settings });
+			try {
+				assert.equal((await restored.readHeader(parentId))?.id, parentId);
+				assert.equal(await restored.readHeader(localId), undefined);
+			} finally {
+				await restored.close();
+			}
+		}
+	},
+);
+
 test.each(["move", "share"])(
 	"the default storage home follows the current HOME after a %s of its agent directory (#5242)",
 	async (operation) => {
