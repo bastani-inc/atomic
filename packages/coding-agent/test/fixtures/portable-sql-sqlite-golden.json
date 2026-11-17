@@ -8,6 +8,12 @@
 		},
 		{
 			"type": "index",
+			"name": "snapshot_blobs_inline_size",
+			"tbl_name": "snapshot_blobs",
+			"sql": "CREATE INDEX snapshot_blobs_inline_size ON snapshot_blobs (chunks, hash) WHERE chunks = 0 AND length(data) > 1048576"
+		},
+		{
+			"type": "index",
 			"name": "snapshot_carried_refs_hash",
 			"tbl_name": "snapshot_carried_refs",
 			"sql": "CREATE INDEX snapshot_carried_refs_hash ON snapshot_carried_refs (hash)"
@@ -47,6 +53,12 @@
 			"name": "team_snapshot_blobs_age",
 			"tbl_name": "team_snapshot_blobs",
 			"sql": "CREATE INDEX team_snapshot_blobs_age ON team_snapshot_blobs (created_at, hash)"
+		},
+		{
+			"type": "index",
+			"name": "team_snapshot_blobs_inline_size",
+			"tbl_name": "team_snapshot_blobs",
+			"sql": "CREATE INDEX team_snapshot_blobs_inline_size ON team_snapshot_blobs (chunks, hash) WHERE chunks = 0 AND length(data) > 1048576"
 		},
 		{
 			"type": "index",
@@ -350,9 +362,9 @@
 		},
 		{
 			"type": "trigger",
-			"name": "snapshot_blobs_chunks_delete",
+			"name": "snapshot_blobs_chunks_delete_all",
 			"tbl_name": "snapshot_blobs",
-			"sql": "CREATE TRIGGER snapshot_blobs_chunks_delete AFTER DELETE ON snapshot_blobs WHEN OLD.chunks > 0 BEGIN DELETE FROM snapshot_blob_chunks WHERE hash = OLD.hash; END"
+			"sql": "CREATE TRIGGER snapshot_blobs_chunks_delete_all AFTER DELETE ON snapshot_blobs BEGIN DELETE FROM snapshot_blob_chunks WHERE hash = OLD.hash; END"
 		},
 		{
 			"type": "trigger",
@@ -380,9 +392,9 @@
 		},
 		{
 			"type": "trigger",
-			"name": "team_snapshot_blobs_chunks_delete",
+			"name": "team_snapshot_blobs_chunks_delete_all",
 			"tbl_name": "team_snapshot_blobs",
-			"sql": "CREATE TRIGGER team_snapshot_blobs_chunks_delete AFTER DELETE ON team_snapshot_blobs WHEN OLD.chunks > 0 BEGIN DELETE FROM team_snapshot_blob_chunks WHERE hash = OLD.hash; END"
+			"sql": "CREATE TRIGGER team_snapshot_blobs_chunks_delete_all AFTER DELETE ON team_snapshot_blobs BEGIN DELETE FROM team_snapshot_blob_chunks WHERE hash = OLD.hash; END"
 		},
 		{
 			"type": "trigger",
@@ -523,6 +535,12 @@
 			"name": "snapshot_blobs_age",
 			"tbl_name": "snapshot_blobs",
 			"sql": "CREATE INDEX snapshot_blobs_age ON snapshot_blobs (created_at, hash)"
+		},
+		{
+			"type": "index",
+			"name": "snapshot_blobs_inline_size",
+			"tbl_name": "snapshot_blobs",
+			"sql": "CREATE INDEX snapshot_blobs_inline_size ON snapshot_blobs (chunks, hash) WHERE chunks = 0 AND length(data) > 1048576"
 		},
 		{
 			"type": "index",
@@ -694,9 +712,9 @@
 		},
 		{
 			"type": "trigger",
-			"name": "snapshot_blobs_chunks_delete",
+			"name": "snapshot_blobs_chunks_delete_all",
 			"tbl_name": "snapshot_blobs",
-			"sql": "CREATE TRIGGER snapshot_blobs_chunks_delete AFTER DELETE ON snapshot_blobs WHEN OLD.chunks > 0 BEGIN DELETE FROM snapshot_blob_chunks WHERE hash = OLD.hash; END"
+			"sql": "CREATE TRIGGER snapshot_blobs_chunks_delete_all AFTER DELETE ON snapshot_blobs BEGIN DELETE FROM snapshot_blob_chunks WHERE hash = OLD.hash; END"
 		},
 		{
 			"type": "trigger",
