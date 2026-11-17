@@ -16,9 +16,9 @@ import { classifyPlannerFailure, isProviderPolicyRefusalResponse, syntheticError
 import { plannerRequestModel, type RangePlannerOptions } from "./range-planner.js";
 import { writeDiagnosticSidecar } from "./range-planner-diagnostics.js";
 import {
+	collectFileOpsFromMessage,
 	computeFileLists,
 	createFileOps,
-	extractFileOpsFromMessage,
 	type FileOperations,
 	formatFileOperations,
 	normalizeFileOpPath,
@@ -199,6 +199,16 @@ export function preparePiSummaryCompaction(
 	cwd?: string,
 	plannedCut?: PiSummaryPlannedCut,
 ): PiSummaryPreparation | undefined {
+	return collectPiSummaryCompaction(pathEntries, settings, (path) => normalizeFileOpPath(path, cwd), plannedCut);
+}
+
+/** {@link preparePiSummaryCompaction} with each file operation's path given as `normalize` returns it. */
+function collectPiSummaryCompaction(
+	pathEntries: SessionEntry[],
+	settings: PiSummarySettings,
+	normalize: (path: string) => string,
+	plannedCut?: PiSummaryPlannedCut,
+): PiSummaryPreparation | undefined {
 	if (pathEntries.at(-1)?.type === "compaction") return undefined;
 	const projection = buildSessionProjection(pathEntries);
 	const contextEntries = buildContextEntries(pathEntries);
@@ -246,12 +256,12 @@ export function preparePiSummaryCompaction(
 			if (key in previousDetails) {
 				const files = (previousDetails as { readFiles?: string[]; modifiedFiles?: string[] })[key];
 				if (Array.isArray(files))
-					for (const file of files) if (typeof file === "string") target.add(normalizeFileOpPath(file, cwd));
+					for (const file of files) if (typeof file === "string") target.add(normalize(file));
 			}
 		}
 	}
 	for (const message of [...messagesToSummarize, ...turnPrefixMessages])
-		extractFileOpsFromMessage(message, fileOps, cwd);
+		collectFileOpsFromMessage(message, fileOps, normalize);
 	return {
 		firstKeptEntryId: cut < entries.length ? entries[cut].sourceEntry.id : null,
 		messagesToSummarize,
@@ -360,7 +370,7 @@ export async function runPiSummaryFallback(
 	options: RangePlannerOptions & { signal?: AbortSignal; cwd?: string; plannedCut?: PiSummaryPlannedCut },
 ): Promise<PiSummaryResult> {
 	// File operations are collected as written and resolved against the cwd afterwards, without blocking.
-	const collected = preparePiSummaryCompaction(entries, settings, undefined, options.plannedCut);
+	const collected = collectPiSummaryCompaction(entries, settings, (path) => path, options.plannedCut);
 	if (!collected) throw new Error("No compactable history for pi summary fallback");
 	const preparation = { ...collected, fileOps: await normalizeFileOpsAsync(collected.fileOps, options.cwd) };
 	const model = plannerRequestModel(planner);

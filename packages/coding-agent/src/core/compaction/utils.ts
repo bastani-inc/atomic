@@ -31,8 +31,17 @@ export function createFileOps(): FileOperations {
  * Extract file operations from direct and recorded nested tool calls.
  */
 export function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOperations, cwd?: string): void {
+	collectFileOpsFromMessage(message, fileOps, (path) => normalizeFileOpPath(path, cwd));
+}
+
+/** {@link extractFileOpsFromMessage} with each path given as `normalize` returns it. */
+export function collectFileOpsFromMessage(
+	message: AgentMessage,
+	fileOps: FileOperations,
+	normalize: (path: string) => string,
+): void {
 	if (message.role === "toolResult") {
-		for (const call of message.nestedCalls?.calls ?? []) addFileOp(call.name, call.arguments, fileOps, cwd);
+		for (const call of message.nestedCalls?.calls ?? []) addFileOp(call.name, call.arguments, fileOps, normalize);
 		return;
 	}
 	if (message.role !== "assistant") return;
@@ -43,7 +52,7 @@ export function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOp
 		if (!("type" in block) || block.type !== "toolCall") continue;
 		if (!("arguments" in block) || !("name" in block)) continue;
 
-		addFileOp(block.name, block.arguments as Record<string, unknown> | undefined, fileOps, cwd);
+		addFileOp(block.name, block.arguments as Record<string, unknown> | undefined, fileOps, normalize);
 	}
 }
 
@@ -51,11 +60,11 @@ function addFileOp(
 	name: string,
 	args: Record<string, unknown> | undefined,
 	fileOps: FileOperations,
-	cwd?: string,
+	normalize: (path: string) => string,
 ): void {
 	const path = typeof args?.path === "string" ? args.path : undefined;
 	if (!path) return;
-	const normalizedPath = normalizeFileOpPath(path, cwd);
+	const normalizedPath = normalize(path);
 	if (name === "read") fileOps.read.add(normalizedPath);
 	else if (name === "write") fileOps.written.add(normalizedPath);
 	else if (name === "edit") fileOps.edited.add(normalizedPath);
