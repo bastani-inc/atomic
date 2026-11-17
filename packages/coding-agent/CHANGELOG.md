@@ -57,6 +57,7 @@
 - Corrected new-message counts when a transcript insertion or removal is followed by another change that restores its earlier child count ([#5323](https://github.com/bastani-inc/atomic/issues/5323))
 - Concurrent snapshot restores and cleanup for one repository no longer race while Git reads or changes its worktree registrations, which could fail with a missing `locked` or `commondir` file. Checkouts and verification still run in parallel ([#4951](https://github.com/bastani-inc/atomic/issues/4951))
 - Workspace Git commands now receive their full timeout budget, and reported timeout durations stay accurate when the system clock changes.
+- On Windows, a queued SQLite writer no longer fails with `writer-queue-unusable` when another process deletes its stale ticket while it is being refreshed. The writer recreates the ticket in its existing queue position and continues waiting. Other permission failures still report an error ([#4316](https://github.com/bastani-inc/atomic/issues/4316))
 
 ## [0.9.88] - 2026-11-16
 
