@@ -19,6 +19,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { getAgentConfigPaths, getAgentDir, getProjectConfigPaths } from "../../config.js";
 import { parseJsonFileContent } from "../../utils/json.ts";
 import type { IntercomBrokerControl, RestartOutcome } from "../intercom-broker-control.js";
+import { prepareLockTakeover } from "../lock-holder.ts";
 import { resolvePackageStorageAdapter } from "../package-manager-storage-adapters.js";
 import { selectSessionSetting, selectSessionStorage } from "../session-storage.js";
 import { SettingsManager } from "../settings-manager.ts";
@@ -490,6 +491,7 @@ export async function joinSharedDatabase(
 	await checkConnectionWithin(target, agentDir, connectionTimeoutMs);
 
 	const unchanged = "Nothing was changed: the previous selection and its token are kept.";
+	await prepareLockTakeover(`${settingsPath}.lock`);
 	const published = withGlobalSettings(agentDir, unchanged, (settings) => {
 		const previous = settings.storage;
 		// Without a token there is nothing to compare, so no token file is read.
@@ -785,6 +787,10 @@ export async function leaveTeamWith(
 	const empty: TeamLeaveResult = { settingsPath, removed: [], kept: [], deletedTokenFiles: [], keptTokenFiles: [] };
 	if (!existsSync(settingsPath)) return empty;
 	const trusted = projectTrust(cwd, agentDir);
+	await Promise.all([
+		prepareLockTakeover(`${settingsPath}.lock`),
+		prepareLockTakeover(`${projectSettingsPathOf(cwd)}.lock`),
+	]);
 	const outcome = withGlobalSettings(agentDir, unchanged, (global) => {
 		const project = isSameFile(settingsPath, projectSettingsPathOf(cwd))
 			? readIndependentProjectSettings(cwd, settingsPath)

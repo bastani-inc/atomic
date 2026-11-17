@@ -16,7 +16,7 @@ import { accessSync, constants, mkdirSync, readFileSync, renameSync, rmSync, wri
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { killProcessTree } from "../../../utils/shell.ts";
-import { type TakeoverMutex, takeTakeoverMutex } from "../../lock-takeover.ts";
+import { prepareTakeoverMutex, type TakeoverMutex, takeTakeoverMutex } from "../../lock-takeover.ts";
 import { processStartToken, readProcessStartToken } from "../../process-start-token.ts";
 import { rootKey } from "./ledger.ts";
 import { stepProcessWatcher } from "./process.ts";
@@ -236,8 +236,9 @@ async function settleOtherBuild(file: string, root: string, options: SettleOther
 		await delay(BUILD_LOCK_POLL_MS, options.signal);
 		return true;
 	};
-	let mutex = takeBuildMutex(file);
-	while (mutex === undefined && (await wait("another Atomic process's blueprint build"))) mutex = takeBuildMutex(file);
+	let mutex = await takeBuildMutex(file);
+	while (mutex === undefined && (await wait("another Atomic process's blueprint build")))
+		mutex = await takeBuildMutex(file);
 	try {
 		const warnings = await settleLock(file, root, options, wait);
 		// Without the mutex, the process that holds it builds, though it may not have written its lock yet.
@@ -325,13 +326,14 @@ const UNLOCKABLE: TakeoverMutex = { owned: () => true, release: () => {} };
  * directory cannot be made or written to could not be written either, and a lock that cannot be written never stops a
  * build.
  */
-function takeBuildMutex(file: string): TakeoverMutex | undefined {
+async function takeBuildMutex(file: string): Promise<TakeoverMutex | undefined> {
 	try {
 		mkdirSync(dirname(file), { recursive: true });
 		accessSync(dirname(file), constants.W_OK);
 	} catch {
 		return UNLOCKABLE;
 	}
+	await prepareTakeoverMutex(file);
 	return takeTakeoverMutex(file, 0);
 }
 

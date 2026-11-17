@@ -25,7 +25,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { putBack, removeAside, takeTakeoverMutex } from "./lock-takeover.ts";
+import { prepareTakeoverMutex, putBack, removeAside, takeTakeoverMutex } from "./lock-takeover.ts";
 import { processStartToken, readProcessStartToken } from "./process-start-token.ts";
 import { SessionAlreadyOpenError } from "./session-manager-errors.js";
 
@@ -192,9 +192,10 @@ process.on("exit", () => {
 });
 
 export async function prepareSessionClaim(sessionId: string, options: { readonly agentDir: string }): Promise<void> {
-	const holder = claimHolder(claimPath(options.agentDir, sessionId));
+	const path = claimPath(options.agentDir, sessionId);
+	const holder = claimHolder(path);
 	const judged = holder?.host === hostname() && holder.pid !== process.pid && holder.started !== undefined;
-	await Promise.all([readProcessStartToken(process.pid), judged ? readProcessStartToken(holder.pid) : undefined]);
+	await Promise.all([prepareTakeoverMutex(path), judged ? readProcessStartToken(holder.pid) : undefined]);
 }
 
 function claimHolder(path: string): ClaimRecord | undefined {

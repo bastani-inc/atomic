@@ -499,10 +499,11 @@ export class SettingsManager {
 	private enqueueWrite(scope: SettingsScope, task: () => void): void {
 		const owner = settingsWriteOwner.getStore() ?? ownedSettingsManagers.get(this);
 		this.writeQueue = this.writeQueue
-			.then(() => {
+			.then(async () => {
 				if (scope === "project") {
 					this.assertProjectTrustedForWrite();
 				}
+				await this.storage.prepareWriteLock?.(scope);
 				task();
 				this.clearModifiedScope(scope);
 				recordSettingsWrite(owner, scope);

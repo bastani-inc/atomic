@@ -16,7 +16,7 @@ import {
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { createModuleRequire } from "../utils/module-require.ts";
-import { processStartToken } from "./process-start-token.ts";
+import { processStartToken, readProcessStartToken } from "./process-start-token.ts";
 
 /*
  * Every removal of another process's lock goes through one mutex per lock (#5161): the takeover of a lock whose
@@ -120,6 +120,16 @@ export function processMayRun(record: ProcessRecord): boolean {
 	const started = record.started === undefined ? undefined : processStartToken(record.pid);
 	if (started !== undefined) return started === record.started;
 	return processAlive(record.pid);
+}
+
+export async function prepareProcessRecord(record: ProcessRecord | undefined): Promise<void> {
+	if (record === undefined || record.host !== hostname() || record.started === undefined) return;
+	await readProcessStartToken(record.pid);
+}
+
+export async function prepareTakeoverMutex(lockPath: string): Promise<void> {
+	const owner = readMutexOwner(takeoverMutexPath(lockPath));
+	await Promise.all([readProcessStartToken(process.pid), prepareProcessRecord(owner)]);
 }
 
 /** Which directory `path` is now, or undefined when none is there or it is being removed. */

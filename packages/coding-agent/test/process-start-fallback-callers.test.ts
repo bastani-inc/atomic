@@ -15,6 +15,7 @@ import {
 	processStartToken,
 	readProcessStartToken,
 	setNativeProcessCreationTimeForTesting,
+	setProcessCreationTimeQueryForTesting,
 } from "../src/core/process-start-token.ts";
 import { claimSession, prepareSessionClaim } from "../src/core/session-claims.ts";
 import {
@@ -42,10 +43,27 @@ beforeEach(() => {
 
 afterEach(async () => {
 	while (cleanups.length > 0) await cleanups.pop()?.();
+	setProcessCreationTimeQueryForTesting(undefined);
 	setNativeLocksForTesting(undefined);
 	setNativeProcessCreationTimeForTesting(undefined);
 	rmSync(agentDir, { recursive: true, force: true });
 });
+
+function watchEventLoop(): { stop(): number } {
+	let last = performance.now();
+	let longestStallMs = 0;
+	const timer = setInterval(() => {
+		const now = performance.now();
+		longestStallMs = Math.max(longestStallMs, now - last);
+		last = now;
+	}, 5);
+	return {
+		stop: () => {
+			clearInterval(timer);
+			return Math.max(longestStallMs, performance.now() - last);
+		},
+	};
+}
 
 async function runningProcess(): Promise<{ readonly pid: number; readonly start: string | undefined }> {
 	const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
@@ -285,6 +303,70 @@ describe("callers reading starts without the native module (#5315)", () => {
 			const claim = JSON.parse(readFileSync(claimFilePath, "utf8")) as { pid: number; started?: string };
 			assert.equal(claim.pid, process.pid);
 			assert.equal(claim.started, own);
+		},
+		POWERSHELL_READS_TIMEOUT_MS,
+	);
+
+	test.skipIf(!windows)(
+		"preparing a settings save never holds up the event loop, spawns nothing with the native reader, and falls back to pid when a query times out (#5315)",
+		async () => {
+			const later = await runningProcess();
+			const settingsPath = join(agentDir, "settings.json");
+			const lockPath = `${settingsPath}.lock`;
+			writeFileSync(settingsPath, "{}");
+			mkdirSync(lockPath, { recursive: true });
+			writeFileSync(
+				lockHolderPath(lockPath),
+				JSON.stringify({ host: hostname(), pid: later.pid, started: GONE_START, lock: lockHolder(lockPath) }),
+			);
+
+			const countFile = join(agentDir, "queries");
+			setProcessCreationTimeQueryForTesting({
+				file: process.execPath,
+				args: () => ["-e", `require("fs").appendFileSync(${JSON.stringify(countFile)}, "x")`],
+			});
+			const withNative = SettingsManager.fromStorage(new FileSettingsStorage(agentDir, agentDir));
+			withNative.setTheme("dark");
+			await withNative.flush();
+			assert.deepEqual(withNative.drainErrors(), []);
+			assert.equal(existsSync(countFile), false);
+			setProcessCreationTimeQueryForTesting(undefined);
+
+			mkdirSync(lockPath, { recursive: true });
+			writeFileSync(
+				lockHolderPath(lockPath),
+				JSON.stringify({ host: hostname(), pid: later.pid, started: GONE_START, lock: lockHolder(lockPath) }),
+			);
+			setNativeProcessCreationTimeForTesting(null);
+			const loop = watchEventLoop();
+			const startedAt = performance.now();
+			const withoutNative = SettingsManager.fromStorage(new FileSettingsStorage(agentDir, agentDir));
+			withoutNative.setTheme("light");
+			await withoutNative.flush();
+			const saveMs = performance.now() - startedAt;
+			const longestStallMs = loop.stop();
+			assert.deepEqual(withoutNative.drainErrors(), []);
+			assert.ok(
+				longestStallMs < saveMs / 2,
+				`the event loop stalled for ${Math.round(longestStallMs)} ms of the save's ${Math.round(saveMs)} ms`,
+			);
+
+			mkdirSync(lockPath, { recursive: true });
+			writeFileSync(
+				lockHolderPath(lockPath),
+				JSON.stringify({ host: hostname(), pid: later.pid, started: GONE_START, lock: lockHolder(lockPath) }),
+			);
+			setNativeProcessCreationTimeForTesting(null);
+			setProcessCreationTimeQueryForTesting({
+				file: process.execPath,
+				args: () => ["-e", "setInterval(() => {}, 1000)"],
+			});
+			const timedOut = SettingsManager.fromStorage(new FileSettingsStorage(agentDir, agentDir));
+			timedOut.setTheme("dark");
+			await timedOut.flush();
+			const errors = timedOut.drainErrors();
+			assert.equal(errors.length, 1);
+			assert.equal((errors[0]?.error as NodeJS.ErrnoException | undefined)?.code, "ELOCKED");
 		},
 		POWERSHELL_READS_TIMEOUT_MS,
 	);

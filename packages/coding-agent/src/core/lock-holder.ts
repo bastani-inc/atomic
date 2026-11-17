@@ -4,6 +4,8 @@ import { hostname } from "node:os";
 import {
 	HOLDER_TEMP_STALE_MS,
 	lockHolderPath,
+	prepareProcessRecord,
+	prepareTakeoverMutex,
 	processMayRun,
 	putBack,
 	removeAside,
@@ -11,7 +13,7 @@ import {
 	takeTakeoverMutex,
 } from "./lock-takeover.ts";
 
-export { HOLDER_TEMP_STALE_MS, lockHolderPath };
+export { HOLDER_TEMP_STALE_MS, lockHolderPath, prepareTakeoverMutex };
 
 import { lockHolder } from "./lock-wait.ts";
 import { processStartToken } from "./process-start-token.ts";
@@ -72,6 +74,10 @@ function readHolderRecord(lockPath: string): LockHolderRecord | undefined {
 	} catch {
 		return undefined;
 	}
+}
+
+export async function prepareLockTakeover(lockPath: string): Promise<void> {
+	await Promise.all([prepareTakeoverMutex(lockPath), prepareProcessRecord(readHolderRecord(lockPath))]);
 }
 
 /**

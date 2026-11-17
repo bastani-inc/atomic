@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { releaseLock } from "../lock-release.ts";
-import { takeTakeoverMutex } from "../lock-takeover.ts";
+import { prepareTakeoverMutex, takeTakeoverMutex } from "../lock-takeover.ts";
 import { renameWithRetry } from "../rename-retry.ts";
 import { deferRestorePhase, noteRestoreFetch, timeRestorePhase } from "../resume/timings.ts";
 import {
@@ -1254,6 +1254,7 @@ type LfsClaim =
  */
 async function claimPendingLfs(git: GitRunOptions, marker: string): Promise<LfsClaim> {
 	const locks = await Promise.all(["HEAD.lock", "index.lock"].map((name) => worktreeGitPath(git, name)));
+	await prepareTakeoverMutex(marker);
 	const mutex = takeTakeoverMutex(marker, 0);
 	if (mutex === undefined) return { kind: "running" };
 	try {
