@@ -379,6 +379,8 @@ describe("the workflow tool row renders the same wherever a chat shows it (#5224
 				const text = plain(main).join("\n");
 				assert.match(text, /Workflow\(ralph · fix the login bug\)/);
 				assert.match(text, /⎿ {2}∀ Running · 1\/3 stages/);
+				assert.match(plain(main)[2] ?? "", /^ {3}⎿ {2}∀ Running · 1\/3 stages/);
+				assert.doesNotMatch(text, /⎿\s+⎿/);
 				assert.equal(text.includes("╭"), false, "no rounded panel of its own");
 			});
 		}

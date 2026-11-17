@@ -613,6 +613,10 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		return startChatSessionExternalPromptLifecycle(this.state);
 	}
 
+	/**
+	 * Picks up the run a followed session is part-way through: its working line names a verb and counts the run's
+	 * elapsed time and output from where it began, as a chat that saw its `agent_start` does.
+	 */
 	hydrateRunningTurn(messages: readonly MeteredRunMessage[], streaming?: MeteredRunMessage): void {
 		if (this.state.disposed) return;
 		if (!this.state.workingLifecycleActive) startChatSessionWorkingLifecycle(this.state);

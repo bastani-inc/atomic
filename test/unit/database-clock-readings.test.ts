@@ -98,7 +98,9 @@ async function sharedRoot(leaseMs: number) {
 	});
 	const { work, boundary } = poolWorkFixture();
 	await queue.enqueue(acquired.lease, work, boundary);
-	assert.ok(await queue.claim(acquired.lease, "host/w0", [work], leaseMs));
+	const claimed = await queue.claim(acquired.lease, "host/w0", [work], leaseMs);
+	assert.ok(claimed);
+	await queue.heartbeat(acquired.lease, claimed, leaseMs, async () => {});
 	return j;
 }
 
@@ -133,6 +135,7 @@ test("the fleet counts a root's leased child for as long as it counts the root a
 	for (let start = T + 59_997; start <= T + 60_002; start++) {
 		const [root, ...more] = await movingFrom(start, () => readFleetDemand(j));
 		assert.deepEqual(more, []);
+		assert.equal(root?.started, root?.leased, "started and leased counts use the same clock reading");
 		assert.ok(
 			root !== undefined && (root.blocked || root.leased === 1),
 			`from ${start - T} ms: ${JSON.stringify(root)}`,
@@ -147,6 +150,38 @@ test("a shared pool's stats report each leased child renewed and expiring one wh
 		const [lease] = stats?.leases ?? [];
 		assert.ok(lease !== undefined);
 		assert.equal(lease.renewedAgoMs + lease.expiresInMs, 60_000, `from ${start - T} ms: ${JSON.stringify(lease)}`);
+	}
+});
+
+test("a host's first report shows its checkpoint shipping and its children's progress (#4768)", async () => {
+	const j = await sharedRoot(60_000);
+	const shared = await SqlSharedPool.open(j, await openSqlPoolQueue(j));
+	const [held] = (await readSharedPoolStats(j, "root"))?.leases ?? [];
+	assert.ok(held !== undefined);
+	const shipping = { lagMs: 1_500, pending: 4 };
+	for (let start = T + 1_000; start < T + 1_005; start++) {
+		const host = `host-${start - T}`;
+		await movingFrom(start, () =>
+			shared.reportHost({
+				host,
+				labels: {},
+				git: "unavailable",
+				restore: false,
+				workers: 1,
+				maxWorkers: 1,
+				roots: ["root"],
+				busy: 1,
+				shipping,
+				progress: [{ work: held.work, agoMs: 0, checkpoints: 2 }],
+			}),
+		);
+		pin(start + 10);
+		const reported = (await readSharedPoolStats(j, "root"))?.hosts.find((entry) => entry.host === host);
+		assert.deepEqual(
+			[reported?.shipping, reported?.progress],
+			[shipping, [{ work: held.work, agoMs: 0, checkpoints: 2 }]],
+			`from ${start - T} ms`,
+		);
 	}
 });
 

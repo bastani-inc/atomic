@@ -268,7 +268,7 @@ export class SelectorState<T> {
 	move(delta: number, wrap = true): void {
 		if (!Number.isInteger(delta) || delta === 0) return;
 		const count = this.visible.length;
-		if (count === 0 || delta === 0) return;
+		if (count === 0) return;
 		this.revision++;
 		const step = Math.sign(delta) as -1 | 1;
 		if (!wrap) {
