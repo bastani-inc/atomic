@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -85,7 +86,8 @@ import {
 	configuredRequestAuthStatus,
 	type ProviderConfigInput,
 	resolveCompatibilityRequestConfig,
-	resolveConfiguredModelHeaders,
+	resolveCompatibilityRequestConfigAsync,
+	resolveConfiguredModelHeadersAsync,
 	validateExtensionProvider,
 } from "./provider-composer.ts";
 import { withDiscoveredModels, withPersonalizedCatalog, withRemoteCatalog } from "./remote-catalog-provider.ts";
@@ -176,7 +178,10 @@ export class ModelRuntime implements Models {
 	private snapshot: ModelRuntimeSnapshot = createEmptyModelRuntimeSnapshot();
 	private snapshotGeneration = 0;
 	private catalogInputsGeneration = 0;
+	private ownCatalogInputsGeneration = 0;
 	private observedModelsFileToken: string | undefined;
+	private modelsFileObservations: Promise<void> = Promise.resolve();
+	private sameTickModelsFileObservation: Promise<string> | undefined;
 	private readonly externalProviderAuthStatuses = new Map<string, AuthStatus>();
 	private readonly externalStatusCredentials = new Map<string, Credential | undefined>();
 	private readonly availabilityCredentials = new Map<string, Credential | undefined>();
@@ -215,7 +220,9 @@ export class ModelRuntime implements Models {
 		this.rebuildProviders();
 	}
 	static async create(options: CreateModelRuntimeOptions = {}): Promise<ModelRuntime> {
-		const credentials = new RuntimeCredentials(options.credentials ?? DefaultAuthStorage.create(options.authPath));
+		const credentials = new RuntimeCredentials(
+			options.credentials ?? (await DefaultAuthStorage.createAsync(options.authPath)),
+		);
 		const modelsPath =
 			options.modelsPath === null ? undefined : (options.modelsPath ?? join(getAgentDir(), "models.json"));
 		const config = await ModelConfig.load(modelsPath);
@@ -667,6 +674,14 @@ export class ModelRuntime implements Models {
 			this.extensionProviders.get(model.provider),
 		);
 	}
+	getCompatibilityRequestConfigAsync(model: Model<Api>): Promise<CompatibilityRequestConfig> {
+		model = normalizeModelProvider(model);
+		return resolveCompatibilityRequestConfigAsync(
+			model,
+			this.config.getProvider(model.provider),
+			this.extensionProviders.get(model.provider),
+		);
+	}
 
 	isUsingOAuth(providerId: string): boolean {
 		this.syncStoredCredentialChanges();
@@ -820,8 +835,7 @@ export class ModelRuntime implements Models {
 	 * already replaced, and the pass's late publish overwrites the newer state
 	 * with them.
 	 *
-	 * Every mutation source bumps this counter, which is why callers need only
-	 * this one number rather than a growing tuple of per-input keys:
+	 * Every mutation source bumps this counter:
 	 *
 	 * - credential writes — `login`, `logout`, `saveCredential`,
 	 *   `setRuntimeApiKey`, `removeRuntimeApiKey`, an external
@@ -833,16 +847,24 @@ export class ModelRuntime implements Models {
 	 *
 	 * The first two are this runtime's own writes and bump where they happen.
 	 * The third is an external edit nothing here observes, so reading the
-	 * generation samples the file and bumps when its content moved since the
-	 * last sample. That read is synchronous so the answer belongs to the same
-	 * tick as the decision that depends on it, and it hashes content rather
-	 * than trusting an mtime: a same-size rewrite inside one filesystem
-	 * timestamp tick — an edited key, a renamed model — is exactly the change a
-	 * shared pass must not hide.
+	 * generation reads the file and bumps when its content moved since the
+	 * last read. It hashes content rather than trusting an mtime: a same-size
+	 * rewrite inside one filesystem timestamp tick — an edited key, a renamed
+	 * model — is exactly the change a shared pass must not hide.
 	 */
 	getCatalogInputsGeneration(): number {
-		this.observeModelsFile();
+		this.observeModelsFileSync();
 		return this.catalogInputsGeneration;
+	}
+
+	async getCatalogInputsGenerationAsync(): Promise<number> {
+		await this.observeModelsFile();
+		return this.catalogInputsGeneration;
+	}
+
+	readCatalogInputsKey(): Promise<string> {
+		const generation = this.ownCatalogInputsGeneration;
+		return this.observeModelsFile().then((modelsFile) => `${generation}:${modelsFile}`);
 	}
 
 	/**
@@ -851,23 +873,53 @@ export class ModelRuntime implements Models {
 	 */
 	private markCatalogInputsChanged(): void {
 		this.catalogInputsGeneration += 1;
+		this.ownCatalogInputsGeneration += 1;
 	}
 
-	/** Bump the generation when models.json changed since the last observation. */
-	private observeModelsFile(): void {
-		const token = this.readModelsFileToken();
-		if (this.observedModelsFileToken === token) return;
-		const first = this.observedModelsFileToken === undefined;
-		this.observedModelsFileToken = token;
-		// The first observation is a baseline, not a change: no pass can predate it.
-		if (!first) this.markCatalogInputsChanged();
+	private applyObservedModelsFileToken(token: string): string {
+		if (this.observedModelsFileToken !== token) {
+			const first = this.observedModelsFileToken === undefined;
+			this.observedModelsFileToken = token;
+			// The first observation is a baseline, not a change: no pass can predate it.
+			if (!first) this.catalogInputsGeneration += 1;
+		}
+		return token;
 	}
 
-	private readModelsFileToken(): string {
+	private observeModelsFileSync(): string {
+		return this.applyObservedModelsFileToken(this.readModelsFileTokenSync());
+	}
+
+	private observeModelsFile(): Promise<string> {
+		if (this.sameTickModelsFileObservation) return this.sameTickModelsFileObservation;
+		const observation = this.modelsFileObservations.then(async () =>
+			this.applyObservedModelsFileToken(await this.readModelsFileToken()),
+		);
+		this.modelsFileObservations = observation.then(() => undefined);
+		this.sameTickModelsFileObservation = observation;
+		queueMicrotask(() => {
+			if (this.sameTickModelsFileObservation === observation) this.sameTickModelsFileObservation = undefined;
+		});
+		return observation;
+	}
+
+	private readModelsFileTokenSync(): string {
 		if (!this.modelsPath) return "none";
 		try {
 			return createHash("sha1")
 				.update(readFileSync(normalizePath(this.modelsPath)))
+				.digest("hex");
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			return code === "ENOENT" ? "missing" : `unreadable:${code ?? "unknown"}`;
+		}
+	}
+
+	private async readModelsFileToken(): Promise<string> {
+		if (!this.modelsPath) return "none";
+		try {
+			return createHash("sha1")
+				.update(await readFile(normalizePath(this.modelsPath)))
 				.digest("hex");
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
@@ -1116,8 +1168,12 @@ export class ModelRuntime implements Models {
 		return this.streaming.cancelDeferred(model, handle, options);
 	}
 
-	private operationHeaders(model: AnyModel, headers: ProviderHeaders, env?: Record<string, string>): ProviderHeaders {
-		const configured = resolveConfiguredModelHeaders(
+	private async operationHeaders(
+		model: AnyModel,
+		headers: ProviderHeaders,
+		env?: Record<string, string>,
+	): Promise<ProviderHeaders> {
+		const configured = await resolveConfiguredModelHeadersAsync(
 			model,
 			this.config.getProvider(model.provider),
 			this.extensionProviders.get(model.provider),
@@ -1134,7 +1190,7 @@ export class ModelRuntime implements Models {
 		return this.models.generateImages(model, context, {
 			...options,
 			transformHeaders: async (headers) => {
-				const prepared = this.operationHeaders(model, headers, options?.env);
+				const prepared = await this.operationHeaders(model, headers, options?.env);
 				return (await options?.transformHeaders?.(prepared)) ?? prepared;
 			},
 		} as ModelsImagesApiOptions<TApi>);
@@ -1148,7 +1204,7 @@ export class ModelRuntime implements Models {
 		return this.models.classify(model, context, {
 			...options,
 			transformHeaders: async (headers) => {
-				const prepared = this.operationHeaders(model, headers, options?.env);
+				const prepared = await this.operationHeaders(model, headers, options?.env);
 				return (await options?.transformHeaders?.(prepared)) ?? prepared;
 			},
 		});

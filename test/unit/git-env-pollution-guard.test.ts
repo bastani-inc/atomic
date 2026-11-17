@@ -54,35 +54,35 @@ afterEach(() => {
 	rmSync(fixtureDir, { recursive: true, force: true });
 });
 
-test("full worktree lifecycle stays scrubbed and only writes shared core.hooksPath", () => {
-	runGitChecked(fixtureDir, ["init", "--quiet", "--initial-branch=main"]);
-	runGitChecked(fixtureDir, ["config", "--local", "user.name", "Atomic Fixture"]);
-	runGitChecked(fixtureDir, ["config", "--local", "user.email", "fixture@example.com"]);
+test("full worktree lifecycle stays scrubbed and only writes shared core.hooksPath", async () => {
+	await runGitChecked(fixtureDir, ["init", "--quiet", "--initial-branch=main"]);
+	await runGitChecked(fixtureDir, ["config", "--local", "user.name", "Atomic Fixture"]);
+	await runGitChecked(fixtureDir, ["config", "--local", "user.email", "fixture@example.com"]);
 	writeFileSync(join(fixtureDir, "tracked.txt"), "fixture\n");
 	mkdirSync(join(fixtureDir, ".husky"));
 	writeFileSync(join(fixtureDir, ".husky", "pre-commit"), "#!/bin/sh\n");
-	runGitChecked(fixtureDir, ["add", "."]);
-	runGitChecked(fixtureDir, ["commit", "--no-gpg-sign", "-m", "fixture"]);
+	await runGitChecked(fixtureDir, ["add", "."]);
+	await runGitChecked(fixtureDir, ["commit", "--no-gpg-sign", "-m", "fixture"]);
 
 	const configPath = join(fixtureDir, ".git", "config");
-	const keysBefore = runGitChecked(fixtureDir, ["config", "--file", configPath, "--name-only", "--list"])
+	const keysBefore = (await runGitChecked(fixtureDir, ["config", "--file", configPath, "--name-only", "--list"]))
 		.trim()
 		.split("\n")
 		.filter(Boolean);
-	const setup = createWorktrees(fixtureDir, "hostile/nested", 1, { symlinkDirectories: [] });
+	const setup = await createWorktrees(fixtureDir, "hostile/nested", 1, { symlinkDirectories: [] });
 	const worktree = setup.worktrees[0]!;
 	assert.equal(worktree.path, join(fixtureDir, ".atomic", "worktrees", "hostile+nested-0"));
-	assert.equal(runGitChecked(worktree.path, ["branch", "--show-current"]).trim(), "worktree-hostile+nested-0");
+	assert.equal((await runGitChecked(worktree.path, ["branch", "--show-current"])).trim(), "worktree-hostile+nested-0");
 	assert.equal(readFileSync(join(fixtureDir, ".atomic", "worktrees", ".gitignore"), "utf8"), "*\n");
-	cleanupWorktrees(setup);
-	cleanupWorktrees(setup);
+	await cleanupWorktrees(setup);
+	await cleanupWorktrees(setup);
 	assert.equal(existsSync(worktree.path), false);
 	assert.notEqual(
-		runGitChecked(fixtureDir, ["branch", "--list", "worktree-hostile+nested-0"]).trim(),
+		(await runGitChecked(fixtureDir, ["branch", "--list", "worktree-hostile+nested-0"])).trim(),
 		"worktree-hostile+nested-0",
 	);
 
-	const keysAfter = runGitChecked(fixtureDir, ["config", "--file", configPath, "--name-only", "--list"])
+	const keysAfter = (await runGitChecked(fixtureDir, ["config", "--file", configPath, "--name-only", "--list"]))
 		.trim()
 		.split("\n")
 		.filter(Boolean);

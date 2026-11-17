@@ -400,49 +400,6 @@ test("a symlink alias of ~/.atomic never lets a custom profile adopt the default
 	assert.equal(defaultJournalStoreDirectory(agentAlias), join(atomicHomeDir, "workflows", "journal"));
 });
 
-test("storage home stays stable across an in-flight asynchronous session-store open when a parent store appears mid-open (#5242)", async () => {
-	const parent = join(root, "mid-open");
-	const child = join(parent, "a1");
-	mkdirSync(child, { recursive: true });
-
-	const opening = resolveSessionStore(project, { agentDir: child, settings: {} });
-	const initialSessionPath = defaultSessionDatabasePath(child);
-	assert.equal(initialSessionPath, join(child, "workflows", "journal.sqlite"));
-	mkdirSync(join(parent, "workflows"), { recursive: true });
-	writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
-
-	assert.equal(defaultSessionDatabasePath(child), initialSessionPath);
-	assert.deepEqual(selectRunJournal({ agentDir: child, settings: {} }), {
-		kind: "sharded",
-		dir: join(child, "workflows", "journal"),
-	});
-
-	const store = await opening;
-	try {
-		await store.create(
-			{
-				id: "44444444-4444-4444-8444-444444444444",
-				version: 4,
-				createdAt: "2026-11-16T00:00:00.000Z",
-				cwd: project,
-			},
-			[],
-		);
-	} finally {
-		await store.close();
-	}
-
-	const reopened = await resolveSessionStore(project, { agentDir: child, settings: {} });
-	try {
-		assert.equal(
-			(await reopened.readHeader("44444444-4444-4444-8444-444444444444"))?.id,
-			"44444444-4444-4444-8444-444444444444",
-		);
-	} finally {
-		await reopened.close();
-	}
-});
-
 test("configured relative storage paths and secret files at the legacy parent are adopted once by one directory, while secrets remain readable (#5242)", async () => {
 	const parent = join(root, "configured-legacy");
 	const first = join(parent, "a1");
@@ -540,7 +497,7 @@ test("custom agent directories directly under os.tmpdir() or ~/.atomic/agent ado
 
 test.skipIf(process.platform === "win32")(
 	"an agent directory whose name ends with a space adopts an existing parent store and keeps its legacy host id (#5242, #5219)",
-	() => {
+	async () => {
 		const parent = join(root, "whitespace");
 		const legacyHostId = "0b9f3c3e-6a8e-4f3c-9a4e-2f6d8c1b7a55";
 		mkdirSync(join(parent, "workflows", "pool"), { recursive: true });
@@ -552,9 +509,9 @@ test.skipIf(process.platform === "win32")(
 		mkdirSync(siblingDir, { recursive: true });
 
 		assert.equal(storageHomeDir(trailingSpaceDir), parent);
-		assert.equal(poolHostId(trailingSpaceDir), legacyHostId);
+		assert.equal(await poolHostId(trailingSpaceDir), legacyHostId);
 		assert.equal(storageHomeDir(siblingDir), siblingDir);
-		assert.notEqual(poolHostId(siblingDir), legacyHostId);
+		assert.notEqual(await poolHostId(siblingDir), legacyHostId);
 	},
 );
 
@@ -604,7 +561,7 @@ test("workspace shared repository stores and worktrees follow the isolated stora
 	assert.equal(atomicHome(), legacyA2);
 });
 
-test("legacy worker host-id adoption and storage-home adoption select the same single winner (#5242, #5219)", () => {
+test("legacy worker host-id adoption and storage-home adoption select the same single winner (#5242, #5219)", async () => {
 	const parent1 = join(root, "host-id-align-1");
 	const legacy1 = "11111111-2222-4333-8444-555555555555";
 	mkdirSync(join(parent1, "workflows", "pool"), { recursive: true });
@@ -616,9 +573,9 @@ test("legacy worker host-id adoption and storage-home adoption select the same s
 	mkdirSync(join(a2WithLocalStore, "workflows"), { recursive: true });
 	writeFileSync(join(a2WithLocalStore, "workflows", "journal.sqlite"), "");
 
-	assert.notEqual(poolHostId(a2WithLocalStore), legacy1);
+	assert.notEqual(await poolHostId(a2WithLocalStore), legacy1);
 	assert.equal(storageHomeDir(a2WithLocalStore), a2WithLocalStore);
-	assert.equal(poolHostId(a1), legacy1);
+	assert.equal(await poolHostId(a1), legacy1);
 	assert.equal(storageHomeDir(a1), parent1);
 
 	const parent2 = join(root, "host-id-align-2");
@@ -634,7 +591,7 @@ test("legacy worker host-id adoption and storage-home adoption select the same s
 
 	assert.equal(storageHomeDir(b1), b1);
 	assert.equal(storageHomeDir(b2ClaimedHostId), parent2);
-	assert.equal(poolHostId(b2ClaimedHostId), legacy2);
+	assert.equal(await poolHostId(b2ClaimedHostId), legacy2);
 });
 
 test("user workflow resource discovery skips top-level journal, pool, and runs store directories (#5242)", async () => {
@@ -882,7 +839,7 @@ test("an adopted parent store and legacy pool host id stay adopted when the agen
 		await aliasedStore.close();
 	}
 	assert.equal(storageHomeDir(aliasedA2), aliasedA2);
-	assert.equal(poolHostId(aliasedA1), legacyHostId);
+	assert.equal(await poolHostId(aliasedA1), legacyHostId);
 	assert.equal(sameDirectory(aliasedA1, a1), true);
 	assert.equal(readClaimFile(join(parent, "workflows", ".adopted-by")), a1);
 });

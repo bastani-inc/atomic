@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { matchesKey, truncateToWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
@@ -7,16 +6,17 @@ import { openCompletedDurableWorkflow } from "../durable/completed-inspection.js
 import { formatResumableWorkflowList } from "../durable/resume-catalog.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import { type DurableWorkflowDeleteOutcome, deleteDurableWorkflowIfSafe } from "../durable/retention-policy.js";
-import { isSdkReleasedRunAdoptable } from "../durable/sdk-recovery-scope.js";
+import { isSdkReleasedRunAdoptableAsync } from "../durable/sdk-recovery-scope.js";
 import { requireStoreDurableBackend } from "../durable/store-backend.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
+import { pathExists } from "../shared/path-exists.js";
 import { resolveRunIdTarget } from "../shared/run-id.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import { store as defaultStore, type Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowDefinition } from "../shared/types.js";
 import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
-import { workflowDefinitionSource, workflowSource } from "../shared/workflow-source.js";
+import { recordedWorkflowDefinitionSource, workflowSource } from "../shared/workflow-source.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { openWorkflowResumeSelector } from "../tui/workflow-resume-selector.js";
 import { definitionDigest } from "../workers/definitions.js";
@@ -63,7 +63,7 @@ export function cleanEntryChangeReason(reason: string | undefined): string | und
 		reason
 			.split("\n")
 			.map((line) => line.trim())
-			.find((line) => line.length > 0 && !/^at\s+.+(?::\d+:\d+\)?|\((?:native|<anonymous>)\))$/.test(line)) ?? "";
+			.find((line) => line.length > 0 && !/^at\s+\S.*(?::\d+:\d+\)?|\((?:native|<anonymous>)\))$/.test(line)) ?? "";
 	const withoutPrefix = firstLine
 		.replace(/^Failed to resume durable workflow [^:]+:\s*/i, "")
 		.replace(/^(Error|[A-Z][A-Za-z]*Error):\s*/, "")
@@ -86,7 +86,7 @@ export function isEditedEntryModuleRefusal(message: string | undefined): boolean
 	}
 	const cleaned = cleanEntryChangeReason(message);
 	if (!cleaned || /Invalid worker placement configuration/i.test(cleaned)) return false;
-	const sinceRoot = /^Since root [^ ]+ started,\s*(.+?)\.?$/i.exec(cleaned);
+	const sinceRoot = /^Since root [^ ]+ started, ?(.+?)\.?$/i.exec(cleaned);
 	const clauseList = sinceRoot ? sinceRoot[1]! : cleaned.replace(/\.$/, "");
 	const parts = clauseList
 		.split(";")
@@ -98,38 +98,38 @@ export function isEditedEntryModuleRefusal(message: string | undefined): boolean
 	);
 }
 
-function resolveSavedSourcePath(
+async function resolveSavedSourcePath(
 	savedPath: string,
 	recordedCwd: string | undefined,
 	fallbackCwd: string | undefined,
-): string {
+): Promise<string> {
 	const baseCwd = recordedCwd ?? fallbackCwd ?? process.cwd();
 	if (recordedCwd !== undefined && fallbackCwd !== undefined && fallbackCwd !== recordedCwd) {
 		const rel = relative(recordedCwd, resolve(recordedCwd, savedPath));
 		if (rel.length > 0 && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)) {
 			const relocated = resolve(fallbackCwd, rel);
-			if (existsSync(relocated)) return relocated;
+			if (await pathExists(relocated)) return relocated;
 		}
 	}
 	return resolve(baseCwd, savedPath);
 }
 
-function resolveWorkflowCandidatePath(
+async function resolveWorkflowCandidatePath(
 	savedPath: string,
 	recordedCwd: string | undefined,
 	fallbackCwd: string | undefined,
 	registeredDef: WorkflowDefinition | undefined,
-): string {
+): Promise<string> {
 	const registeredPath = registeredDef !== undefined ? workflowSource(registeredDef) : undefined;
 	if (
 		registeredPath !== undefined &&
-		existsSync(registeredPath) &&
+		(await pathExists(registeredPath)) &&
 		(fallbackCwd === undefined || recordedCwd === undefined || fallbackCwd === recordedCwd)
 	) {
 		return registeredPath;
 	}
-	const candidatePath = resolveSavedSourcePath(savedPath, recordedCwd, fallbackCwd);
-	if (!existsSync(candidatePath) && registeredPath !== undefined) {
+	const candidatePath = await resolveSavedSourcePath(savedPath, recordedCwd, fallbackCwd);
+	if (!(await pathExists(candidatePath)) && registeredPath !== undefined) {
 		return registeredPath;
 	}
 	return candidatePath;
@@ -147,11 +147,12 @@ export async function findEditedWorkerEntryModuleReason(
 	const recordedCwd = handle.workflowCwd ?? handle.invocationCwd;
 	const registeredDef = runtime?.registry?.get?.(handle.name);
 	const workflowSourceEntry =
-		handle.definitionSource ?? (registeredDef !== undefined ? workflowDefinitionSource(registeredDef) : undefined);
+		handle.definitionSource ??
+		(registeredDef !== undefined ? await recordedWorkflowDefinitionSource(registeredDef) : undefined);
 	const descriptions: string[] = [];
 	if (workflowSourceEntry !== undefined) {
 		try {
-			const candidatePath = resolveWorkflowCandidatePath(
+			const candidatePath = await resolveWorkflowCandidatePath(
 				workflowSourceEntry.path,
 				recordedCwd,
 				fallbackCwd,
@@ -169,7 +170,7 @@ export async function findEditedWorkerEntryModuleReason(
 	if (definitions && definitions.length > 0) {
 		for (const source of definitions) {
 			try {
-				const resolvedPath = resolveSavedSourcePath(source.path, recordedCwd, fallbackCwd);
+				const resolvedPath = await resolveSavedSourcePath(source.path, recordedCwd, fallbackCwd);
 				const currentDigest = await definitionDigest(resolvedPath);
 				if (currentDigest !== source.digest) {
 					const name = `${source.path}#${source.exportName || "default"}`;
@@ -532,13 +533,15 @@ function isExplicitResumeCandidate(
 }
 
 /** A run released by its previous session moves to the session resuming it; every other run keeps its owner. */
-function releasedRunAdoption(
+async function releasedRunAdoption(
 	workflowId: string,
 	ctx: PiEventContext,
 	runtime: ExtensionRuntime,
-): { readonly modelOwner?: string } {
+): Promise<{ readonly modelOwner?: string }> {
 	const handle = runtime.durableBackend().getLoadableWorkflow(workflowId);
-	return handle !== undefined && isSdkReleasedRunAdoptable(handle, ctx.cwd) ? { modelOwner: workflowCaller(ctx) } : {};
+	return handle !== undefined && (await isSdkReleasedRunAdoptableAsync(handle, ctx.cwd))
+		? { modelOwner: workflowCaller(ctx) }
+		: {};
 }
 
 function crossProjectConfirmation(
@@ -603,6 +606,8 @@ async function resumeDurableTarget(
 		}
 	}
 	if (!isResumeContextActive(ctx, deps.isGenerationCurrent)) return true;
+	const adoption = await releasedRunAdoption(workflowId, ctx, runtime);
+	if (!isResumeContextActive(ctx, deps.isGenerationCurrent)) return true;
 	const runResume = (opts: DurableResumeCommandOptions) =>
 		runtime.resumeDurableWorkflow(workflowId, {
 			policy: workflowPolicyFromContext(ctx),
@@ -610,7 +615,7 @@ async function resumeDurableTarget(
 			...crossProjectConfirmation(ctx, deps.isGenerationCurrent),
 			onBeforeResume: (runId, forkedFrom) =>
 				injectWorkflowResumeSummary(deps.pi, ctx, runId, undefined, forkedFrom, runtime.durableBackend()),
-			...releasedRunAdoption(workflowId, ctx, runtime),
+			...adoption,
 			...opts,
 		});
 	let result = await runResume(effectiveOptions);

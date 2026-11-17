@@ -1,11 +1,9 @@
-import { existsSync, readFileSync } from "node:fs";
 import { activityMonitor } from "./activity.js";
 import type { ExtractedContent } from "./extract.js";
 import { findReadableConfigPath } from "./config-paths.ts";
-import { createOwnerState } from "./owner-state.js";
+import { createAsyncOwnerState, readWebSearchConfigFile } from "./gemini-web-config.ts";
 
 const PERPLEXITY_API_URL = "https://api.perplexity.ai/chat/completions";
-const CONFIG_PATH = findReadableConfigPath();
 
 const RATE_LIMIT = {
 	maxRequests: 10,
@@ -37,16 +35,8 @@ interface WebSearchConfig {
 	perplexityApiKey?: unknown;
 }
 
-const loadConfig = createOwnerState<WebSearchConfig>(() => {
-	if (!existsSync(CONFIG_PATH)) return {};
-
-	const content = readFileSync(CONFIG_PATH, "utf-8");
-	try {
-		return JSON.parse(content) as WebSearchConfig;
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		throw new Error(`Failed to parse ${CONFIG_PATH}: ${message}`);
-	}
+const loadConfig = createAsyncOwnerState<WebSearchConfig>(async () => {
+	return (await readWebSearchConfigFile<WebSearchConfig>()) ?? {};
 });
 
 function normalizeApiKey(value: unknown): string | null {
@@ -55,13 +45,14 @@ function normalizeApiKey(value: unknown): string | null {
 	return normalized.length > 0 ? normalized : null;
 }
 
-function getApiKey(): string {
-	const config = loadConfig();
+async function getApiKey(): Promise<string> {
+	const config = await loadConfig();
 	const key = normalizeApiKey(process.env.PERPLEXITY_API_KEY) ?? normalizeApiKey(config.perplexityApiKey);
 	if (!key) {
+		const configPath = await findReadableConfigPath();
 		throw new Error(
 			"Perplexity API key not found. Either:\n" +
-			`  1. Create ${CONFIG_PATH} with { "perplexityApiKey": "your-key" }\n` +
+			`  1. Create ${configPath} with { "perplexityApiKey": "your-key" }\n` +
 			"  2. Set PERPLEXITY_API_KEY environment variable\n" +
 			"Get a key at https://perplexity.ai/settings/api"
 		);
@@ -92,8 +83,8 @@ function validateDomainFilter(domains: string[]): string[] {
 	});
 }
 
-export function isPerplexityAvailable(): boolean {
-	const config = loadConfig();
+export async function isPerplexityAvailable(): Promise<boolean> {
+	const config = await loadConfig();
 	return !!(normalizeApiKey(process.env.PERPLEXITY_API_KEY) ?? normalizeApiKey(config.perplexityApiKey));
 }
 
@@ -109,7 +100,7 @@ export async function searchWithPerplexity(query: string, options: SearchOptions
 		windowMs: RATE_LIMIT.windowMs,
 	});
 
-	const apiKey = getApiKey();
+	const apiKey = await getApiKey();
 	const numResults = Math.min(options.numResults ?? 5, 20);
 
 	const requestBody: Record<string, unknown> = {

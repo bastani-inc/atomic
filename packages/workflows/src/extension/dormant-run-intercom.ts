@@ -2,7 +2,7 @@ import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "
 import { durableWorkflowRunSnapshots } from "../durable/completed-catalog.js";
 import { JournalDurableBackend, JournalOwnershipError } from "../durable/journal/journal-backend.js";
 import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS, isDurableWorkflowResumable } from "../durable/resume-eligibility.js";
-import { canonicalDirectory } from "../durable/sdk-recovery-scope.js";
+import { canonicalDirectoryAsync } from "../durable/sdk-recovery-scope.js";
 import {
 	pendingStageSenderGroup,
 	workflowInvocationGroupRefusal,
@@ -214,6 +214,8 @@ export function registerDormantRunIntercomRoutes(
 		if (backend === undefined || current !== generation || disposed) return;
 		const cwd = ctx?.cwd ?? ctx?.sessionManager?.getCwd?.();
 		if (cwd === undefined) return;
+		const canonicalCwd = await canonicalDirectoryAsync(cwd);
+		if (current !== generation || disposed) return;
 		const recheckMs = deps.recheckMs ?? DORMANT_RUN_RECHECK_MS;
 		const heldUntil = prepared?.heldUntil ?? Date.now() + FOREIGN_LIVE_WORKFLOW_WINDOW_MS + recheckMs;
 		const held: string[] = [];
@@ -226,7 +228,7 @@ export function registerDormantRunIntercomRoutes(
 				handle.status !== "running" ||
 				(handle.rootWorkflowId !== undefined && handle.rootWorkflowId !== runId) ||
 				handle.invocationCwd === undefined ||
-				canonicalDirectory(handle.invocationCwd) !== canonicalDirectory(cwd) ||
+				(await canonicalDirectoryAsync(handle.invocationCwd)) !== canonicalCwd ||
 				!isDurableWorkflowResumable(handle)
 			)
 				continue;

@@ -1,9 +1,22 @@
 import { createHash } from "node:crypto";
+import { promisify } from "node:util";
 import { type Credential, OAUTH_REFRESH_LOCK_HOLD_MS, OAUTH_REFRESH_TIMEOUT_MS } from "@bastani/atomic-ai";
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	realpath as realpathCallback,
+	realpathSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "fs";
+import { chmod, mkdir, readFile, rm, stat, writeFile } from "fs/promises";
 import { basename, dirname, join } from "path";
 import lockfile, { type LockOptions } from "proper-lockfile";
 import { getAgentDir } from "../config.js";
+import { pathExists } from "../utils/path-exists.ts";
 import { normalizePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import type { AuthStorageData } from "./auth-storage.ts";
@@ -11,7 +24,7 @@ import { normalizeProviderKeys } from "./azure-provider-compat.js";
 import { releaseLock, releaseLockSync } from "./lock-release.ts";
 import { guardLockRemoval } from "./lock-takeover.js";
 import { type LockWait, waitForLock, waitForLockSync } from "./lock-wait.ts";
-import { renameReplacing } from "./rename-retry.ts";
+import { renameReplacing, renameReplacingAsync } from "./rename-retry.ts";
 
 export type LockResult<T> = {
 	result: T;
@@ -86,6 +99,19 @@ function resolveExistingAuthPath(path: string): string {
 	}
 }
 
+const realpathAsync = promisify(realpathCallback);
+
+async function resolveExistingAuthPathAsync(path: string): Promise<string> {
+	for (let attempt = 1; ; attempt++) {
+		try {
+			return await realpathAsync(path);
+		} catch (error) {
+			const code = error instanceof Error && "code" in error ? error.code : undefined;
+			if (code !== "ENOENT" || attempt === REALPATH_ATTEMPTS || !(await pathExists(path))) throw error;
+		}
+	}
+}
+
 /**
  * How long a session waits for a provider lock another session holds. A live holder keeps it while its token
  * exchange runs (up to OAUTH_REFRESH_LOCK_HOLD_MS) and then waits for the auth file lock to commit; a dead one
@@ -117,6 +143,16 @@ function describeFileVersion(path: string): string {
 	}
 }
 
+async function describeFileVersionAsync(path: string): Promise<string> {
+	try {
+		const stats = await stat(path, { bigint: true });
+		return `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}`;
+	} catch (error) {
+		const code = error instanceof Error && "code" in error ? String(error.code) : "unknown";
+		return code === "ENOENT" || code === "ENOTDIR" ? "absent" : `unreadable:${code}`;
+	}
+}
+
 export interface AuthStorageBackend {
 	/**
 	 * Read the current credential snapshot WITHOUT acquiring the exclusive write
@@ -133,6 +169,8 @@ export interface AuthStorageBackend {
 	 */
 	read?(): string | undefined;
 	version?(): string;
+	readAsync?(): Promise<string | undefined>;
+	versionAsync?(): Promise<string>;
 	deleteProvider?(provider: string): string | undefined;
 	deleteProviderAsync?(provider: string): Promise<string | undefined>;
 	modifyProviderAsync?(
@@ -144,7 +182,34 @@ export interface AuthStorageBackend {
 	withLockAsync<T>(fn: (current: string | undefined) => Promise<LockResult<T>>): Promise<T>;
 }
 
-export class FileAuthStorageBackend implements AuthStorageBackend {
+export interface AsyncAuthStorageReads {
+	readAsync?(): Promise<string | undefined>;
+	versionAsync?(): Promise<string>;
+}
+
+interface SynchronousAuthStorageReads {
+	read?(): string | undefined;
+	version?(): string;
+}
+
+class SynchronousAuthStorageReadsAdapter implements AsyncAuthStorageReads {
+	readonly readAsync?: () => Promise<string | undefined>;
+	readonly versionAsync?: () => Promise<string>;
+
+	constructor(backend: SynchronousAuthStorageReads) {
+		const { read, version } = backend;
+		if (read) this.readAsync = async () => read.call(backend);
+		if (version) this.versionAsync = async () => version.call(backend);
+	}
+}
+
+export function asyncAuthStorageReads(backend: AuthStorageBackend): AsyncAuthStorageReads {
+	return typeof backend.readAsync === "function" || typeof backend.versionAsync === "function"
+		? backend
+		: new SynchronousAuthStorageReadsAdapter(backend);
+}
+
+export class FileAuthStorageBackend implements AuthStorageBackend, AsyncAuthStorageReads {
 	private declare authPath: string;
 	private declare readPaths: string[];
 
@@ -158,9 +223,9 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		fn: (current: Credential | undefined) => Promise<Credential | undefined>,
 		signal?: AbortSignal,
 	): Promise<LockResult<Credential | undefined>> {
-		this.ensureParentDir();
-		this.ensureFileExists();
-		const providerPath = `${resolveExistingAuthPath(this.authPath)}.${createHash("sha256").update(provider).digest("hex")}`;
+		await this.ensureParentDirAsync();
+		await this.ensureFileExistsAsync();
+		const providerPath = `${await resolveExistingAuthPathAsync(this.authPath)}.${createHash("sha256").update(provider).digest("hex")}`;
 		let compromised: Error | undefined;
 		const release = await this.acquireProviderLock(
 			providerPath,
@@ -177,7 +242,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		try {
 			signal?.throwIfAborted();
 			if (compromised) throw compromised;
-			const originalData = JSON.parse(this.readMergedAuth() ?? "{}") as AuthStorageData;
+			const originalData = JSON.parse((await this.readMergedAuthAsync()) ?? "{}") as AuthStorageData;
 			const original = JSON.stringify(originalData[provider]);
 			const next = await fn(originalData[provider]);
 			// Even when another process took over the provider lock meanwhile, `next` may be a token rotation the
@@ -217,6 +282,13 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		}
 	}
 
+	private async ensureParentDirAsync(): Promise<void> {
+		const dir = dirname(this.authPath);
+		if (!(await pathExists(dir))) {
+			await mkdir(dir, { recursive: true, mode: 0o700 });
+		}
+	}
+
 	/**
 	 * Creates an empty auth.json when there is none. The create is exclusive, so it never replaces a file another
 	 * process has just saved credentials to (#5161).
@@ -229,6 +301,16 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 			throw error;
 		}
 		chmodSync(this.authPath, 0o600);
+	}
+
+	private async ensureFileExistsAsync(): Promise<void> {
+		try {
+			await writeFile(this.authPath, "{}", { ...AUTH_FILE_WRITE_OPTIONS, flag: "wx" });
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "EEXIST") return;
+			throw error;
+		}
+		await chmod(this.authPath, 0o600);
 	}
 
 	private getRetryableLockErrorCode(error: unknown): "ELOCKED" | "EPERM" | undefined {
@@ -281,7 +363,12 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 	}
 
 	/** How a save waits for the lock of the resolved auth file `path`; `retryEperm` decides whether a Windows EPERM is retried. */
-	private authFileLockWait(path: string, holderWaitMs: number, staleMs: number, retryEperm: () => boolean): LockWait {
+	private authFileLockWait(
+		path: string,
+		holderWaitMs: number,
+		staleMs: number,
+		retryEperm: () => boolean,
+	): Omit<LockWait, "takeOver"> {
 		return {
 			lockPath: `${path}.lock`,
 			staleMs,
@@ -310,6 +397,19 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 			const readPath = this.readPaths[i]!;
 			if (!existsSync(readPath)) continue;
 			const parsed = JSON.parse(stripBom(readFileSync(readPath, "utf-8"))) as AuthStorageData;
+			merged = { ...merged, ...normalizeProviderKeys(parsed) };
+			found = true;
+		}
+		return found ? JSON.stringify(merged, null, 2) : undefined;
+	}
+
+	private async readMergedAuthAsync(): Promise<string | undefined> {
+		let merged: AuthStorageData = {};
+		let found = false;
+		for (let i = this.readPaths.length - 1; i >= 0; i--) {
+			const readPath = this.readPaths[i]!;
+			if (!(await pathExists(readPath))) continue;
+			const parsed = JSON.parse(stripBom(await readFile(readPath, "utf-8"))) as AuthStorageData;
 			merged = { ...merged, ...normalizeProviderKeys(parsed) };
 			found = true;
 		}
@@ -346,12 +446,39 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		}
 	}
 
+	private async writeAtomicAsync(content: string, requestedPath = this.authPath): Promise<void> {
+		const path = (await pathExists(requestedPath))
+			? await resolveExistingAuthPathAsync(requestedPath)
+			: requestedPath;
+		const dir = dirname(path);
+		const mode = (await pathExists(path)) ? (await stat(path)).mode & 0o777 : AUTH_FILE_WRITE_OPTIONS.mode;
+		const tempPath = join(dir, `.${`auth.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`}.tmp`);
+		try {
+			await writeFile(tempPath, content, { ...AUTH_FILE_WRITE_OPTIONS, mode });
+			await chmod(tempPath, mode);
+			await renameReplacingAsync(tempPath, path);
+		} catch (error) {
+			try {
+				if (await pathExists(tempPath)) await rm(tempPath, { force: true });
+			} catch {}
+			throw error;
+		}
+	}
+
 	read(): string | undefined {
 		return this.readMergedAuth();
 	}
 
+	async readAsync(): Promise<string | undefined> {
+		return this.readMergedAuthAsync();
+	}
+
 	version(): string {
 		return this.readPaths.map((path) => describeFileVersion(path)).join("|");
+	}
+
+	async versionAsync(): Promise<string> {
+		return (await Promise.all(this.readPaths.map((path) => describeFileVersionAsync(path)))).join("|");
 	}
 
 	/** Each existing auth file once, by its real path, so a symlinked alias is never locked twice (pi #11655). */
@@ -359,6 +486,14 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		return [
 			...new Set(this.readPaths.filter((path) => existsSync(path)).map((path) => resolveExistingAuthPath(path))),
 		].sort();
+	}
+
+	private async existingResolvedReadPathsAsync(): Promise<string[]> {
+		const resolved: string[] = [];
+		for (const path of this.readPaths) {
+			if (await pathExists(path)) resolved.push(await resolveExistingAuthPathAsync(path));
+		}
+		return [...new Set(resolved)].sort();
 	}
 
 	deleteProvider(provider: string): string | undefined {
@@ -379,12 +514,12 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 	}
 
 	async deleteProviderAsync(provider: string): Promise<string | undefined> {
-		const paths = this.existingResolvedReadPaths();
+		const paths = await this.existingResolvedReadPathsAsync();
 		const releases: Array<{ path: string; release: () => Promise<void> }> = [];
 		try {
 			for (const path of paths) {
 				// Lock the resolved file so symlinked aliases share one lock (pi #11655).
-				const resolved = resolveExistingAuthPath(path);
+				const resolved = await resolveExistingAuthPathAsync(path);
 				// A stale lock is removed only under the takeover mutex, while it is still stale (#5161).
 				const guard = guardLockRemoval(`${resolved}.lock`, AUTH_FILE_ASYNC_LOCK_STALE_MS);
 				try {
@@ -406,12 +541,12 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 				}
 			}
 			for (const path of paths) {
-				const data = JSON.parse(stripBom(readFileSync(path, "utf-8"))) as AuthStorageData;
+				const data = JSON.parse(stripBom(await readFile(path, "utf-8"))) as AuthStorageData;
 				if (!(provider in data)) continue;
 				delete data[provider];
-				this.writeAtomic(JSON.stringify(data, null, 2), path);
+				await this.writeAtomicAsync(JSON.stringify(data, null, 2), path);
 			}
-			return this.readMergedAuth();
+			return await this.readMergedAuthAsync();
 		} finally {
 			for (const { path, release } of releases.reverse()) await releaseLock(release, path);
 		}
@@ -438,8 +573,13 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		}
 	}
 
-	async withLockAsync<T>(fn: (current: string | undefined) => Promise<LockResult<T>>): Promise<T> {
-		this.ensureParentDir();
+	async withLockAsync<T>(
+		fn: (current: string | undefined) => Promise<LockResult<T>>,
+		options: { readonly synchronousWait?: boolean } = {},
+	): Promise<T> {
+		await this.ensureParentDirAsync();
+		const staleMs = options.synchronousWait ? AUTH_FILE_SYNC_LOCK_STALE_MS : AUTH_FILE_ASYNC_LOCK_STALE_MS;
+		const holderWaitMs = options.synchronousWait ? AUTH_FILE_SYNC_LOCK_WAIT_MS : AUTH_FILE_LOCK_WAIT_MS;
 
 		let release: (() => Promise<void>) | undefined;
 		let lockCompromised = false;
@@ -451,38 +591,33 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		};
 
 		try {
-			if (!existsSync(this.authPath)) {
-				this.ensureFileExists();
+			if (!(await pathExists(this.authPath))) {
+				await this.ensureFileExistsAsync();
 			}
 			let epermRetries = 0;
 			// Lock the resolved file so symlinked aliases share one lock (pi #11655).
-			const resolved = resolveExistingAuthPath(this.authPath);
+			const resolved = await resolveExistingAuthPathAsync(this.authPath);
 			release = await waitForLock(
 				(fs) =>
 					lockfile.lock(resolved, {
 						realpath: false,
 						retries: 0,
-						stale: AUTH_FILE_ASYNC_LOCK_STALE_MS,
+						stale: staleMs,
 						fs,
 						onCompromised: (err) => {
 							lockCompromised = true;
 							lockCompromisedError = err;
 						},
 					}),
-				this.authFileLockWait(
-					resolved,
-					AUTH_FILE_LOCK_WAIT_MS,
-					AUTH_FILE_ASYNC_LOCK_STALE_MS,
-					() => ++epermRetries <= 5,
-				),
+				this.authFileLockWait(resolved, holderWaitMs, staleMs, () => ++epermRetries <= 5),
 			);
 
 			throwIfCompromised();
-			const current = this.readMergedAuth();
+			const current = await this.readMergedAuthAsync();
 			const { result, next } = await fn(current);
 			throwIfCompromised();
 			if (next !== undefined) {
-				this.writeAtomic(next);
+				await this.writeAtomicAsync(next);
 			}
 			throwIfCompromised();
 			return result;
@@ -494,11 +629,15 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 	}
 }
 
-export class InMemoryAuthStorageBackend implements AuthStorageBackend {
+export class InMemoryAuthStorageBackend implements AuthStorageBackend, AsyncAuthStorageReads {
 	private value: string | undefined;
 	private pendingWrite: Promise<void> = Promise.resolve();
 
 	read(): string | undefined {
+		return this.value;
+	}
+
+	async readAsync(): Promise<string | undefined> {
 		return this.value;
 	}
 

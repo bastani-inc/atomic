@@ -3,14 +3,15 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
 
-const appends = vi.hoisted(() => ({ count: 0, failListingOf: undefined as string | undefined }));
+const appends = vi.hoisted(() => ({ count: 0, flushing: false, failListingOf: undefined as string | undefined }));
 
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>();
 	return {
 		...actual,
 		appendFileSync: (...args: Parameters<typeof actual.appendFileSync>) => {
-			appends.count += 1;
+			// A flush writes appends already counted when they were queued for the writer thread.
+			if (!appends.flushing) appends.count += 1;
 			return actual.appendFileSync(...args);
 		},
 		readdirSync: ((path: import("node:fs").PathLike, ...rest: unknown[]) => {
@@ -19,6 +20,20 @@ vi.mock("node:fs", async (importOriginal) => {
 			return (actual.readdirSync as (...args: unknown[]) => unknown)(path, ...rest);
 		}) as typeof actual.readdirSync,
 	};
+});
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	const appendFile = ((...args: Parameters<typeof actual.appendFile>) => {
+		appends.count += 1;
+		return actual.appendFile(...args);
+	}) as typeof actual.appendFile;
+	const readdir = ((path: import("node:fs").PathLike, ...rest: unknown[]) => {
+		if (String(path) === appends.failListingOf)
+			return Promise.reject(Object.assign(new Error("EMFILE: injected"), { code: "EMFILE" }));
+		return (actual.readdir as (...args: unknown[]) => unknown)(path, ...rest);
+	}) as typeof actual.readdir;
+	return { ...actual, appendFile, readdir, default: { ...actual, appendFile, readdir } };
 });
 
 // The setup files loaded the storage adapter with the real node:fs. Load every module this test drives afresh, in one
@@ -39,6 +54,31 @@ const { configurePooledWatchTrace, tracePooledWatch } = await import(
 	"../../packages/workflows/src/workers/pooled-watch-trace.js"
 );
 const { withDebugLog } = await import("../helpers/debug-mode.js");
+// Debug records written without waiting go through the diagnostic writer thread, where this test's node:fs mock does
+// not reach, so each append queued for that thread counts as one write.
+const { DiagnosticWriter } = await import("../../packages/coding-agent/src/core/diagnostic-writer.js");
+
+const { append, flushSync } = DiagnosticWriter.prototype;
+
+function countWriterAppends(): void {
+	vi.spyOn(DiagnosticWriter.prototype, "append").mockImplementation(function (
+		this: InstanceType<typeof DiagnosticWriter>,
+		...args: Parameters<typeof append>
+	) {
+		appends.count += 1;
+		return append.apply(this, args);
+	});
+	vi.spyOn(DiagnosticWriter.prototype, "flushSync").mockImplementation(function (
+		this: InstanceType<typeof DiagnosticWriter>,
+	) {
+		appends.flushing = true;
+		try {
+			flushSync.call(this);
+		} finally {
+			appends.flushing = false;
+		}
+	});
+}
 
 type DebugModeSource = "setting" | "ATOMIC_DEBUG";
 
@@ -96,10 +136,11 @@ async function triggerEveryArea(agentDir: string): Promise<string | undefined> {
 
 async function count(source: DebugModeSource | "off") {
 	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	countWriterAppends();
 	return withDebugLog(source, async (log) => {
 		appends.count = 0;
 		const poolLine = await triggerEveryArea(log.agentDir);
-		const records = log.records();
+		const records = await log.records();
 		return {
 			poolLine,
 			appends: appends.count,

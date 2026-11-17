@@ -9,7 +9,7 @@ import { createHarness } from "./suite/harness.js";
 
 vi.mock("../src/utils/shell.js", async (importOriginal) => {
 	const shell = await importOriginal<typeof import("../src/utils/shell.js")>();
-	return { ...shell, isPowerShellAvailable: () => true };
+	return { ...shell, isPowerShellAvailable: () => true, isPowerShellAvailableAsync: async () => true };
 });
 
 const launchShell = process.platform === "win32" ? "powershell" : "bash";

@@ -26,6 +26,7 @@ export {
 	WORKSPACE_WRITE_TOOL_NAMES,
 	workspaceSandboxDenial,
 	workspaceSessionCwd,
+	workspaceSessionCwdAsync,
 } from "./session.ts";
 export type { Workspace, WorkspaceOptions, WorkspaceSandbox } from "./spec.ts";
 export { assertWorkspace, isWorkspace, workspace } from "./spec.ts";

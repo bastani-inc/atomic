@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { test } from "vitest";
 import { isWorkflowRunResumable } from "../../packages/workflows/src/durable/resume-eligibility.ts";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.ts";
-import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifacts.ts";
+import {
+	ENV_WORKFLOW_ARTIFACT_DIR,
+	refreshWorkflowArtifactPresence,
+} from "../../packages/workflows/src/shared/workflow-artifacts.ts";
 import { selectRunsForPicker } from "../../packages/workflows/src/tui/session-picker.ts";
 
 function makeRun(over: Partial<RunSnapshot>): RunSnapshot {
@@ -113,8 +116,10 @@ test("resume picker production filtering hides a run whose referenced artifact d
 			resumable: true,
 			result: { transcript_path: referenced },
 		});
+		await refreshWorkflowArtifactPresence([run], [run]);
 		assert.equal(selectRunsForPicker([run], "", true, Date.now(), "resume").length, 0);
 		await mkdir(join(root, "runs", runId), { recursive: true });
+		await refreshWorkflowArtifactPresence([run], [run]);
 		assert.equal(selectRunsForPicker([run], "", true, Date.now(), "resume").length, 1);
 	} finally {
 		if (previousRoot === undefined) delete process.env[ENV_WORKFLOW_ARTIFACT_DIR];

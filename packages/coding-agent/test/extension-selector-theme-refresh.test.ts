@@ -213,6 +213,7 @@ describe("selector theme refresh (#5237)", () => {
 			),
 			new TrustSelectorComponent({
 				cwd: resolve("/project"),
+				trustPath: resolve("/project"),
 				savedDecision: { path: resolve("/project"), decision: true },
 				projectTrusted: true,
 				onSelect: () => {},

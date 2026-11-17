@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, vi } from "vitest";
 import { createGraphStoreSnapshot } from "../../packages/workflows/src/shared/graph-store-snapshot.js";
 import type { Store } from "../../packages/workflows/src/shared/store-public-types.js";
+import { untilRunRegistered } from "../helpers/fake-timer-io.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { assert, createStore, run, test, workflow } from "./executor-shared.js";
@@ -71,6 +72,7 @@ describe("a graph snapshot shows every field of a stage the executor edits after
 			{ durableBackend: backend, detachWhen: watching },
 		);
 		const stale = followGraphSnapshots(started.store);
+		await untilRunRegistered(started.store, backend);
 		await vi.advanceTimersByTimeAsync(10_000);
 		started.service.finishAll();
 		let finished = false;

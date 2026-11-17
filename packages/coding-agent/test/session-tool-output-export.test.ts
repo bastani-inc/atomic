@@ -6,12 +6,10 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
 	chmodSync,
-	closeSync,
 	existsSync,
 	lstatSync,
 	mkdirSync,
 	mkdtempSync,
-	openSync,
 	readdirSync,
 	readFileSync,
 	readlinkSync,
@@ -19,8 +17,8 @@ import {
 	statSync,
 	symlinkSync,
 	writeFileSync,
-	writeSync,
 } from "node:fs";
+import { type FileHandle, open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
@@ -42,15 +40,28 @@ import { createHarness, getMessageText, type Harness } from "./suite/harness.js"
 
 useTemporaryAgentDir();
 
-vi.mock("node:fs", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("node:fs")>();
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
 	return {
 		...actual,
-		writeSync: vi.fn(actual.writeSync),
-		openSync: vi.fn(actual.openSync),
-		closeSync: vi.fn(actual.closeSync),
-		rmSync: vi.fn(actual.rmSync),
+		open: vi.fn(actual.open),
+		rm: vi.fn(actual.rm),
 	};
+});
+
+const actualFsPromises = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+
+function observePartialFiles(observe: (handle: FileHandle) => void): void {
+	vi.mocked(open).mockImplementation((async (...args: Parameters<typeof actualFsPromises.open>) => {
+		const handle = await actualFsPromises.open(...args);
+		if (String(args[0]).endsWith(".partial")) observe(handle);
+		return handle;
+	}) as typeof open);
+}
+
+afterEach(() => {
+	vi.mocked(open).mockImplementation(actualFsPromises.open);
+	vi.mocked(rm).mockImplementation(actualFsPromises.rm);
 });
 
 const directories: string[] = [];
@@ -303,17 +314,14 @@ test("an export holds one carried output at a time, writing each entry before it
 		events.push("read");
 		return getBlob(sessionId, hash);
 	};
-	const actualWrite = (await vi.importActual<typeof import("node:fs")>("node:fs")).writeSync;
-	vi.mocked(writeSync).mockImplementation(((...args: Parameters<typeof actualWrite>) => {
-		events.push("write");
-		return actualWrite(...args);
-	}) as never);
-	let path: string;
-	try {
-		path = await harness.session.exportToJsonl(join(directory, "export.jsonl"));
-	} finally {
-		vi.mocked(writeSync).mockImplementation(actualWrite as never);
-	}
+	observePartialFiles((handle) => {
+		const write = handle.write.bind(handle) as (...args: unknown[]) => Promise<unknown>;
+		handle.write = ((...args: unknown[]) => {
+			events.push("write");
+			return write(...args);
+		}) as FileHandle["write"];
+	});
+	const path = await harness.session.exportToJsonl(join(directory, "export.jsonl"));
 
 	assert.equal(references(fileLines(path)).filter((reference) => reference.base64 !== undefined).length, 3);
 	assert.equal(events.filter((event) => event === "read").length, 3);
@@ -376,49 +384,45 @@ test("an export for sharing ends with the share context, chained to the last ent
 test("an export closes the file it opened, whether it succeeds or fails (#4379)", async () => {
 	const directory = temporaryDirectory("atomic-tool-output-export-close-");
 	const { store, harness } = await sessionWithOutputs(directory, 2);
-	const opened = vi.mocked(openSync);
-	const closed = vi.mocked(closeSync);
-	opened.mockClear();
-	closed.mockClear();
+	let opened: number[] = [];
+	let closed: number[] = [];
+	observePartialFiles((handle) => {
+		opened.push(handle.fd);
+		const close = handle.close.bind(handle);
+		handle.close = () => {
+			closed.push(handle.fd);
+			return close();
+		};
+	});
 
 	await harness.session.exportToJsonl(join(directory, "export.jsonl"));
-	const descriptors = opened.mock.results.map((result) => result.value as number);
-	assert.equal(descriptors.length, 1);
-	assert.deepEqual(
-		closed.mock.calls.map(([descriptor]) => descriptor),
-		descriptors,
-	);
+	assert.equal(opened.length, 1);
+	assert.deepEqual(closed, opened);
 
-	opened.mockClear();
-	closed.mockClear();
+	opened = [];
+	closed = [];
 	store.getBlob = async () => {
 		throw new Error("disk read failed");
 	};
 	await assert.rejects(harness.session.exportToJsonl(join(directory, "failed.jsonl")), /disk read failed/);
-	assert.deepEqual(
-		closed.mock.calls.map(([descriptor]) => descriptor),
-		opened.mock.results.map((result) => result.value as number),
-	);
+	assert.equal(opened.length, 1);
+	assert.deepEqual(closed, opened);
 });
 
 test("a failure to open the file is the export's failure alone, with nothing to clean up (#4379)", async () => {
 	const directory = temporaryDirectory("atomic-tool-output-export-unopenable-");
 	const { harness } = await sessionWithOutputs(directory, 1);
 	const failure = Object.assign(new Error("no permission"), { code: "EACCES" });
-	const actualOpen = (await vi.importActual<typeof import("node:fs")>("node:fs")).openSync;
-	vi.mocked(openSync).mockImplementationOnce((() => {
-		throw failure;
-	}) as never);
+	vi.mocked(open).mockImplementation((async (...args: Parameters<typeof actualFsPromises.open>) => {
+		if (String(args[0]).endsWith(".partial")) throw failure;
+		return actualFsPromises.open(...args);
+	}) as typeof open);
 
-	try {
-		await assert.rejects(harness.session.exportToJsonl(join(directory, "export.jsonl")), (error) => {
-			assert.equal(error, failure);
-			assert.equal("cleanupCause" in (error as object), false, "removing a file that was never made is no failure");
-			return true;
-		});
-	} finally {
-		vi.mocked(openSync).mockImplementation(actualOpen as never);
-	}
+	await assert.rejects(harness.session.exportToJsonl(join(directory, "export.jsonl")), (error) => {
+		assert.equal(error, failure);
+		assert.equal("cleanupCause" in (error as object), false, "removing a file that was never made is no failure");
+		return true;
+	});
 });
 
 test("a failure to remove the partial file is attached to the export's failure, which stays the error (#4379)", async () => {
@@ -429,20 +433,16 @@ test("a failure to remove the partial file is attached to the export's failure, 
 	store.getBlob = async () => {
 		throw failure;
 	};
-	const actualRemove = (await vi.importActual<typeof import("node:fs")>("node:fs")).rmSync;
-	vi.mocked(rmSync).mockImplementationOnce((() => {
-		throw removal;
-	}) as never);
+	vi.mocked(rm).mockImplementation((async (...args: Parameters<typeof actualFsPromises.rm>) => {
+		if (String(args[0]).endsWith(".partial")) throw removal;
+		return actualFsPromises.rm(...args);
+	}) as typeof rm);
 
-	try {
-		await assert.rejects(harness.session.exportToJsonl(join(directory, "export.jsonl")), (error) => {
-			assert.equal(error, failure);
-			assert.equal((error as { cleanupCause?: unknown }).cleanupCause, removal);
-			return true;
-		});
-	} finally {
-		vi.mocked(rmSync).mockImplementation(actualRemove as never);
-	}
+	await assert.rejects(harness.session.exportToJsonl(join(directory, "export.jsonl")), (error) => {
+		assert.equal(error, failure);
+		assert.equal((error as { cleanupCause?: unknown }).cleanupCause, removal);
+		return true;
+	});
 });
 
 const modeOf = (path: string) => statSync(path).mode & 0o777;

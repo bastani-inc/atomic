@@ -62,7 +62,7 @@ test("classifier runtime failure falls back to current chat once without leaking
 		assert.equal(result.fallback?.from, "decision-test/classifier");
 		assert.equal(result.fallback?.reason, "Classifier returned no valid decision.");
 		assert.equal(chat.mock.calls.length, 1);
-		const notes = areaRecords(log, "decision");
+		const notes = await areaRecords(log, "decision");
 		assert.equal(notes.length, 1);
 		assert.doesNotMatch(JSON.stringify(result) + JSON.stringify(notes), /private-key-material/);
 	});
@@ -110,7 +110,7 @@ test("classifier provider refusal falls back to current chat once", async () => 
 		assert.equal(result.model, "decision-test/chat");
 		assert.equal(result.fallback?.from, "decision-test/classifier");
 		assert.equal(chat.mock.calls.length, 1);
-		const notes = areaRecords(log, "decision");
+		const notes = await areaRecords(log, "decision");
 		assert.equal(notes.length, 1);
 		assert.doesNotMatch(JSON.stringify(result) + JSON.stringify(notes), /private body/);
 	});
@@ -126,7 +126,7 @@ test("classifier overflow note names the status and error type but not the body"
 					'System One API error (400): {"detail":{"error_type":"max_tokens_exceeded","echo":"private"}}',
 			})),
 		);
-		const message = String(areaRecords(log, "decision")[0]?.data.message);
+		const message = String((await areaRecords(log, "decision"))[0]?.data.message);
 		assert.match(message, /Classifier decision failed \(HTTP 400 max_tokens_exceeded\); falling back/);
 		assert.doesNotMatch(message, /private/);
 	});

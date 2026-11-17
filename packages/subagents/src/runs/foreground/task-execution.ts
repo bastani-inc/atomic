@@ -23,11 +23,12 @@ import type {
 import type { TaskTranscriptSource } from "../../../../coding-agent/src/core/tasks/supervisor.js";
 import type { AgentConfig } from "../../agents/agents.js";
 import { sendTaskTranscriptMessage } from "../../intercom/task-message.js";
+import { checkLaunchCwd } from "../../shared/launch-cwd.js";
 import { taskRecordModel } from "../../shared/model-info.js";
 import type { IntercomEventBus, RunSyncOptions, SingleResult, SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
 import { launchRequestedModel } from "../shared/model-fallback.js";
-import type { ExecutionScheduler } from "../shared/parallel-utils.js";
+import { type ExecutionScheduler, isExecutionTicket } from "../shared/parallel-utils.js";
 import {
 	recordSubagentStartProgress,
 	SUBAGENT_START_ATTEMPTS,
@@ -386,13 +387,14 @@ export function subagentRunSchedule(runId: string): ExecutionSchedule | undefine
 
 /** Remember the scheduler the child's run dispatched it on, so its resume waits for a slot in that run. */
 export function rememberSubagentChildSchedule(runId: string, index: number, schedule: ExecutionSchedule): void {
+	const shared = isExecutionTicket(schedule) ? schedule.scheduler : schedule;
 	let members = runSchedules.get(runId);
 	if (members === undefined) {
 		members = new Map();
 		runSchedules.set(runId, members);
 	}
 	if (!members.has(index)) scheduleCount++;
-	members.set(index, schedule);
+	members.set(index, shared);
 }
 
 function forgetChildSchedule(runId: string, index: number): void {
@@ -541,9 +543,11 @@ export async function runAgentTask(input: {
 	};
 	let dispatched = false;
 	let admittedTaskId: TaskId | undefined;
+	const ticket = isExecutionTicket(input.schedule) ? input.schedule : undefined;
+	const runSchedule = ticket ? ticket.scheduler : input.schedule;
 	const runId = input.options.runId;
 	const index = input.options.index ?? 0;
-	if (input.schedule) rememberSubagentChildSchedule(runId, index, input.schedule);
+	if (runSchedule) rememberSubagentChildSchedule(runId, index, runSchedule);
 	// The host skips a queued dispatch once its task was cancelled: record how a child that never started ended.
 	const settleSkipped = async (taskId: TaskId) => {
 		const queued = queuedChildren.get(taskId);
@@ -583,6 +587,7 @@ export async function runAgentTask(input: {
 		scheduled = true;
 		input.schedule(() =>
 			dispatch().finally(() => {
+				if (!dispatched) ticket?.onEntered();
 				if (!dispatched && admittedTaskId !== undefined) void settleSkipped(admittedTaskId);
 				release();
 			}),
@@ -600,6 +605,7 @@ export async function runAgentTask(input: {
 				...(input.intentTask === undefined ? {} : { intentTask: input.intentTask }),
 				options: {
 					...input.options,
+					cwdVerdict: undefined,
 					signal: undefined,
 					interruptSignal: undefined,
 					intercomDetachSignal: undefined,
@@ -613,307 +619,332 @@ export async function runAgentTask(input: {
 				...(input.heartbeatMs === undefined ? {} : { heartbeatMs: input.heartbeatMs }),
 				onTerminal: launch.onTerminal,
 				// It waits for a slot in its run, as its original launch did.
-				...(input.schedule ? { schedule: input.schedule } : {}),
+				...(runSchedule ? { schedule: runSchedule } : {}),
 				...(input.outputText ? { outputText: input.outputText } : {}),
 				recordChild: launch.recordChild,
 				forked,
 				operation: `${input.options.runId}:${input.options.index ?? 0}:resume:${randomUUID()}`,
 			}),
 	});
-	const started = await input.host.startAgentTask(
-		{
-			kind: "agent",
-			agent: input.agent,
-			task: input.intentTask ?? input.task,
-			cwd: input.options.cwd ?? input.cwd,
-			...(requestedModel ? { requestedModel } : {}),
-			...(input.heartbeatMs === undefined ? {} : { heartbeatMs: input.heartbeatMs }),
-		},
-		(input.operation ?? `${input.options.runId}:${input.options.index ?? 0}`) as OperationId,
-		(context) => {
-			dispatched = true;
-			queuedChildren.delete(context.ref.taskId);
-			// This execution owns the child's worktree now; a stopped child's worktree was kept for it until here.
-			claimRunWorktree(runId, index);
-			const cleaned = Promise.withResolvers<Cleanup>();
-			let executionBound = false;
-			const ownerClosed = () =>
-				context.signal.aborted && (context.signal.reason === "owner-close" || context.signal.reason === "shutdown");
-			const recordChild = (
-				state: SubagentChildRecordInput["state"],
-				terminalStatus?: string,
-				heldMessages?: SubagentChildPendingMessages,
-				waitingOn?: SubagentChildRecordInput["waitingOn"],
-				releasedIntercomId?: string,
-			) =>
-				recordChildTask(
-					context.ref.taskId,
-					state,
-					terminalStatus,
-					heldMessages,
-					undefined,
-					waitingOn,
-					releasedIntercomId,
-				);
-			const childId = subagentChildId(runId, index);
-			const wokenWith = input.options.wakeToolResultIds ?? [];
-			// Results answering no pending call reach it as follow-ups, which a stop keeps as its pending messages.
-			const answeredByTurn = new Set((input.options.resumeToolResults ?? []).map((result) => result.toolCallId));
-			const clearDelivered = (toolCallIds: readonly string[]) => {
-				const delivered = toolCallIds.filter((toolCallId) => wokenWith.includes(toolCallId));
-				return delivered.length === 0
-					? Promise.resolve()
-					: (input.recordChild?.clearHeldToolResults?.(childId, delivered) ?? Promise.resolve());
-			};
-			// From here until its first turn starts the child is starting, and says where (never merely "running").
-			const dispatchedAt = Date.now();
-			let startText: string | undefined;
-			let lastStartStep: SubagentStartProgress["step"] | undefined;
-			const reportStart = (progress: SubagentStartProgress | undefined) => {
-				recordSubagentStartProgress(context.ref.taskId, progress);
-				// A start ends started only once its task was dispatched; one that failed earlier keeps its last step.
-				if (progress === undefined && lastStartStep !== "dispatching-task") return;
-				lastStartStep = progress?.step;
-				const text =
-					progress === undefined
-						? "started its first turn"
-						: `${sessionStartStepText(progress.step)} (attempt ${progress.attempt} of ${SUBAGENT_START_ATTEMPTS}${progress.stalled ? `, after a start that stalled ${sessionStartStepText(progress.stalled.step)}` : ""})`;
-				if (text === startText) return;
-				startText = text;
-				context.reportActivity({
-					reportId: `${context.ref.taskId}:start-${randomUUID()}`,
-					change: { kind: "action", tool: "start", text },
+	const cwdVerdict =
+		input.options.cwdVerdict?.path === childCwd
+			? input.options.cwdVerdict
+			: await checkLaunchCwd(childCwd).catch((error: unknown) => {
+					ticket?.release();
+					throw error;
 				});
-			};
-			reportStart({
-				step: "opening-session",
-				attempt: 1,
-				launchedAt: dispatchedAt,
-				startedAt: dispatchedAt,
-				stepStartedAt: dispatchedAt,
-			});
-			const result = registered.promise.then(async (): Promise<TaskResult> => {
-				try {
-					const ownerSessionId = input.recordChild?.ownerSessionId;
-					const child = await input.runtime.runSync(input.cwd, input.agents, input.agent, input.task, {
-						...input.options,
-						// A background child is released while it waits, and its owner wakes it (#4326).
-						...(input.options.releaseWhenWaiting === undefined &&
-						ownerSessionId !== undefined &&
-						input.wait?.kind !== "foreground"
-							? { releaseWhenWaiting: subagentReleasePolicy() }
-							: {}),
-						onBeforeRelease: () =>
-							reserveReleasedChildTargets(input.options, childSession.childSessionId, undefined, false),
-						signal: context.signal,
-						taskExecution: {
-							signal: context.signal,
-							reportActivity: context.reportActivity,
-							bindTranscript: (session) =>
-								context.bindTranscript(
-									taskTranscriptSource(
-										session,
-										input.options.runId,
-										input.options.intercomSessionName,
-										input.options.intercomEvents,
-									),
-								),
-							setExtensionStatus: context.setExtensionStatus,
-							clearExtensionStatuses: context.clearExtensionStatuses,
-							bindChildSession: (session) => {
-								childSession = {
-									childSessionId: session.sessionId,
-									...(session.sessionFile ? { childSessionFile: session.sessionFile } : {}),
-								};
-								recordChild("running");
-							},
-							bindChildLaunch: (launch) => {
-								childLaunch = {
-									...(launch.model ? { launchModel: launch.model } : {}),
-									...(launch.thinking ? { launchThinkingLevel: launch.thinking } : {}),
-									launchLeafId: launch.leafId,
-									...(launch.leafSeq === undefined ? {} : { launchLeafSeq: launch.leafSeq }),
-								};
-								recordChild("running");
-							},
-							// What its session saved is cleared at once; a stop leaves the rest held for its resume (#5012).
-							toolResultsSaved: (toolCallIds) => void clearDelivered(toolCallIds),
-							reportStart: (progress) =>
-								reportStart(progress === undefined ? undefined : { ...progress, launchedAt: dispatchedAt }),
-							onExecution: (execution) => {
-								executionBound = true;
-								trackChildClosing(childId, execution.cleanup);
-								void execution.cleanup.then(cleaned.resolve, (error) =>
-									cleaned.resolve({
-										kind: "failed",
-										resources: [{ resource: "agent-session", code: "CleanupFailed", message: String(error) }],
-									}),
-								);
-							},
-							yieldTaskWait: () => {
-								parentObserving = false;
-								if (yieldWait) yieldWait("intercom-coordination");
-								else pendingYield = true;
-							},
-							isParentObserving: () => parentObserving,
-						},
+	const started = await input.host
+		.startAgentTask(
+			{
+				kind: "agent",
+				agent: input.agent,
+				task: input.intentTask ?? input.task,
+				cwd: input.options.cwd ?? input.cwd,
+				...(requestedModel ? { requestedModel } : {}),
+				...(input.heartbeatMs === undefined ? {} : { heartbeatMs: input.heartbeatMs }),
+			},
+			(input.operation ?? `${input.options.runId}:${input.options.index ?? 0}`) as OperationId,
+			(context) => {
+				dispatched = true;
+				queuedChildren.delete(context.ref.taskId);
+				// This execution owns the child's worktree now; a stopped child's worktree was kept for it until here.
+				claimRunWorktree(runId, index);
+				const cleaned = Promise.withResolvers<Cleanup>();
+				let executionBound = false;
+				const ownerClosed = () =>
+					context.signal.aborted &&
+					(context.signal.reason === "owner-close" || context.signal.reason === "shutdown");
+				const recordChild = (
+					state: SubagentChildRecordInput["state"],
+					terminalStatus?: string,
+					heldMessages?: SubagentChildPendingMessages,
+					waitingOn?: SubagentChildRecordInput["waitingOn"],
+					releasedIntercomId?: string,
+				) =>
+					recordChildTask(
+						context.ref.taskId,
+						state,
+						terminalStatus,
+						heldMessages,
+						undefined,
+						waitingOn,
+						releasedIntercomId,
+					);
+				const childId = subagentChildId(runId, index);
+				const wokenWith = input.options.wakeToolResultIds ?? [];
+				// Results answering no pending call reach it as follow-ups, which a stop keeps as its pending messages.
+				const answeredByTurn = new Set((input.options.resumeToolResults ?? []).map((result) => result.toolCallId));
+				const clearDelivered = (toolCallIds: readonly string[]) => {
+					const delivered = toolCallIds.filter((toolCallId) => wokenWith.includes(toolCallId));
+					return delivered.length === 0
+						? Promise.resolve()
+						: (input.recordChild?.clearHeldToolResults?.(childId, delivered) ?? Promise.resolve());
+				};
+				// From here until its first turn starts the child is starting, and says where (never merely "running").
+				const dispatchedAt = Date.now();
+				let startText: string | undefined;
+				let lastStartStep: SubagentStartProgress["step"] | undefined;
+				const reportStart = (progress: SubagentStartProgress | undefined) => {
+					recordSubagentStartProgress(context.ref.taskId, progress);
+					// A start ends started only once its task was dispatched; one that failed earlier keeps its last step.
+					if (progress === undefined && lastStartStep !== "dispatching-task") return;
+					lastStartStep = progress?.step;
+					const text =
+						progress === undefined
+							? "started its first turn"
+							: `${sessionStartStepText(progress.step)} (attempt ${progress.attempt} of ${SUBAGENT_START_ATTEMPTS}${progress.stalled ? `, after a start that stalled ${sessionStartStepText(progress.stalled.step)}` : ""})`;
+					if (text === startText) return;
+					startText = text;
+					context.reportActivity({
+						reportId: `${context.ref.taskId}:start-${randomUUID()}`,
+						change: { kind: "action", tool: "start", text },
 					});
-					if (child.model !== undefined || child.thinking !== undefined)
-						context.reportActivity({
-							reportId: "terminal-model",
-							change: { kind: "model", model: taskRecordModel(child.model), thinking: child.thinking },
+				};
+				reportStart({
+					step: "opening-session",
+					attempt: 1,
+					launchedAt: dispatchedAt,
+					startedAt: dispatchedAt,
+					stepStartedAt: dispatchedAt,
+				});
+				const result = registered.promise.then(async (): Promise<TaskResult> => {
+					try {
+						const ownerSessionId = input.recordChild?.ownerSessionId;
+						const running = input.runtime.runSync(input.cwd, input.agents, input.agent, input.task, {
+							...input.options,
+							cwdVerdict,
+							// A background child is released while it waits, and its owner wakes it (#4326).
+							...(input.options.releaseWhenWaiting === undefined &&
+							ownerSessionId !== undefined &&
+							input.wait?.kind !== "foreground"
+								? { releaseWhenWaiting: subagentReleasePolicy() }
+								: {}),
+							onBeforeRelease: () =>
+								reserveReleasedChildTargets(input.options, childSession.childSessionId, undefined, false),
+							signal: context.signal,
+							taskExecution: {
+								signal: context.signal,
+								reportActivity: context.reportActivity,
+								bindTranscript: (session) =>
+									context.bindTranscript(
+										taskTranscriptSource(
+											session,
+											input.options.runId,
+											input.options.intercomSessionName,
+											input.options.intercomEvents,
+										),
+									),
+								setExtensionStatus: context.setExtensionStatus,
+								clearExtensionStatuses: context.clearExtensionStatuses,
+								bindChildSession: (session) => {
+									childSession = {
+										childSessionId: session.sessionId,
+										...(session.sessionFile ? { childSessionFile: session.sessionFile } : {}),
+									};
+									recordChild("running");
+								},
+								bindChildLaunch: (launch) => {
+									childLaunch = {
+										...(launch.model ? { launchModel: launch.model } : {}),
+										...(launch.thinking ? { launchThinkingLevel: launch.thinking } : {}),
+										launchLeafId: launch.leafId,
+										...(launch.leafSeq === undefined ? {} : { launchLeafSeq: launch.leafSeq }),
+									};
+									recordChild("running");
+								},
+								// What its session saved is cleared at once; a stop leaves the rest held for its resume (#5012).
+								toolResultsSaved: (toolCallIds) => void clearDelivered(toolCallIds),
+								reportStart: (progress) =>
+									reportStart(progress === undefined ? undefined : { ...progress, launchedAt: dispatchedAt }),
+								onExecution: (execution) => {
+									executionBound = true;
+									trackChildClosing(childId, execution.cleanup);
+									void Promise.allSettled([result])
+										.then(() => execution.cleanup)
+										.then(cleaned.resolve, (error) =>
+											cleaned.resolve({
+												kind: "failed",
+												resources: [
+													{ resource: "agent-session", code: "CleanupFailed", message: String(error) },
+												],
+											}),
+										);
+								},
+								yieldTaskWait: () => {
+									parentObserving = false;
+									if (yieldWait) yieldWait("intercom-coordination");
+									else pendingYield = true;
+								},
+								isParentObserving: () => parentObserving,
+							},
 						});
-					const stopped = takeSubagentChildStop(context.ref.taskId);
-					const stoppedByControl = stopped !== undefined && child.status === "interrupted";
-					// The only resumable pause run control did not request is the owner's workflow stage pausing.
-					const stoppedByStagePause =
-						!stoppedByControl &&
-						child.status === "interrupted" &&
-						context.signal.aborted &&
-						context.signal.reason === "pause";
-					const endedForGood = ownerClosed() && input.recordChild?.ownerEndedForGood?.() === true;
-					// Released while it waits (#4326): resumable, woken by a tool result, a message or resume.
-					const released = child.released !== undefined && !stoppedByControl && !endedForGood;
-					// Run control marked it stopped before it stopped it; a child that ended otherwise is not stopped.
-					if (stopped !== undefined && !stoppedByControl) unparkRunWorktree(runId, index);
-					// A child that stays restorable is marked stopped before its dispatch's hold is released.
-					if (released || stoppedByStagePause || (ownerClosed() && !endedForGood)) parkRunWorktree(runId, index);
-					if (endedForGood || child.status === "killed") forgetRunMembership(runId, index);
-					if (released) forgetChildSchedule(runId, index);
-					if (released && child.released) {
-						// The record goes first: a result forwarded before it would find the child still recorded running.
-						recordChild(
-							"terminal",
-							SUBAGENT_CHILD_RELEASED_STATUS,
-							pendingMessagesOfResult(child),
-							child.released.waitingOn,
-							child.released.intercomId,
-						);
-						if (ownerSessionId !== undefined) {
-							const dispatcher = input.wakeDispatcher ?? agentWakeDispatcher();
-							const wakeKey = subagentWakeKey(ownerSessionId, childId);
-							scheduleReleasedReplyTimeouts(dispatcher, wakeKey, child.released.waitingOn);
-							forwardDetachedResults(dispatcher, wakeKey, child.released.calls, child.released.waitingOn);
-						}
-						void reserveReleasedChildTargets(
-							input.options,
-							childSession.childSessionId,
-							child.released.intercomId,
-						);
-						const holdMessages = input.recordChild?.holdMessages;
-						if (ownerSessionId !== undefined && holdMessages !== undefined)
-							routeReleasedChildShellCompletions(
-								child.released,
-								holdMessages,
+						ticket?.onEntered();
+						const child = await running;
+						if (child.model !== undefined || child.thinking !== undefined)
+							context.reportActivity({
+								reportId: "terminal-model",
+								change: { kind: "model", model: taskRecordModel(child.model), thinking: child.thinking },
+							});
+						const stopped = takeSubagentChildStop(context.ref.taskId);
+						const stoppedByControl = stopped !== undefined && child.status === "interrupted";
+						// The only resumable pause run control did not request is the owner's workflow stage pausing.
+						const stoppedByStagePause =
+							!stoppedByControl &&
+							child.status === "interrupted" &&
+							context.signal.aborted &&
+							context.signal.reason === "pause";
+						const endedForGood = ownerClosed() && input.recordChild?.ownerEndedForGood?.() === true;
+						// Released while it waits (#4326): resumable, woken by a tool result, a message or resume.
+						const released = child.released !== undefined && !stoppedByControl && !endedForGood;
+						// Run control marked it stopped before it stopped it; a child that ended otherwise is not stopped.
+						if (stopped !== undefined && !stoppedByControl) unparkRunWorktree(runId, index);
+						// A child that stays restorable is marked stopped before its dispatch's hold is released.
+						if (released || stoppedByStagePause || (ownerClosed() && !endedForGood))
+							parkRunWorktree(runId, index);
+						if (endedForGood || child.status === "killed") forgetRunMembership(runId, index);
+						if (released) forgetChildSchedule(runId, index);
+						if (released && child.released) {
+							// The record goes first: a result forwarded before it would find the child still recorded running.
+							recordChild(
+								"terminal",
+								SUBAGENT_CHILD_RELEASED_STATUS,
+								pendingMessagesOfResult(child),
+								child.released.waitingOn,
+								child.released.intercomId,
+							);
+							if (ownerSessionId !== undefined) {
+								const dispatcher = input.wakeDispatcher ?? agentWakeDispatcher();
+								const wakeKey = subagentWakeKey(ownerSessionId, childId);
+								scheduleReleasedReplyTimeouts(dispatcher, wakeKey, child.released.waitingOn);
+								forwardDetachedResults(dispatcher, wakeKey, child.released.calls, child.released.waitingOn);
+							}
+							void reserveReleasedChildTargets(
+								input.options,
+								childSession.childSessionId,
+								child.released.intercomId,
+							);
+							const holdMessages = input.recordChild?.holdMessages;
+							if (ownerSessionId !== undefined && holdMessages !== undefined)
+								routeReleasedChildShellCompletions(
+									child.released,
+									holdMessages,
+									ownerSessionId,
+									childId,
+									input.wakeDispatcher ?? agentWakeDispatcher(),
+								);
+						} else if (!ownerClosed())
+							recordChild(
+								"terminal",
+								stoppedByControl
+									? stopped
+									: stoppedByStagePause
+										? SUBAGENT_CHILD_STAGE_PAUSED_STATUS
+										: child.status,
+								// A child that stays resumable keeps what it had queued and not read, for its resume.
+								stoppedByControl || stoppedByStagePause ? pendingMessagesOfResult(child) : undefined,
+							);
+						else if (endedForGood) recordChild("terminal", SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
+						// Its owner closed, which ends nothing: it stays restorable, with what it had queued and not read.
+						else if (child.pendingMessages?.length)
+							recordChild("running", undefined, pendingMessagesOfResult(child));
+						const settled = released || !ownerClosed();
+						if (settled && (released || child.status === "ok")) void clearDelivered(wokenWith);
+						else if (settled && (stoppedByControl || stoppedByStagePause))
+							void clearDelivered(wokenWith.filter((toolCallId) => !answeredByTurn.has(toolCallId)));
+						input.onTerminal?.(child);
+						if (
+							ownerSessionId !== undefined &&
+							settled &&
+							!stoppedByControl &&
+							!stoppedByStagePause &&
+							child.status !== "killed"
+						)
+							wakeForResultsHeldDuringRun(
+								input.wakeDispatcher ?? agentWakeDispatcher(),
 								ownerSessionId,
 								childId,
-								input.wakeDispatcher ?? agentWakeDispatcher(),
+								context.ref.taskId,
+								wokenWith,
 							);
-					} else if (!ownerClosed())
-						recordChild(
-							"terminal",
-							stoppedByControl
-								? stopped
-								: stoppedByStagePause
-									? SUBAGENT_CHILD_STAGE_PAUSED_STATUS
-									: child.status,
-							// A child that stays resumable keeps what it had queued and not read, for its resume.
-							stoppedByControl || stoppedByStagePause ? pendingMessagesOfResult(child) : undefined,
-						);
-					else if (endedForGood) recordChild("terminal", SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
-					// Its owner closed, which ends nothing: it stays restorable, with what it had queued and not read.
-					else if (child.pendingMessages?.length)
-						recordChild("running", undefined, pendingMessagesOfResult(child));
-					const settled = released || !ownerClosed();
-					if (settled && (released || child.status === "ok")) void clearDelivered(wokenWith);
-					else if (settled && (stoppedByControl || stoppedByStagePause))
-						void clearDelivered(wokenWith.filter((toolCallId) => !answeredByTurn.has(toolCallId)));
-					input.onTerminal?.(child);
-					if (
-						ownerSessionId !== undefined &&
-						settled &&
-						!stoppedByControl &&
-						!stoppedByStagePause &&
-						child.status !== "killed"
-					)
-						wakeForResultsHeldDuringRun(
-							input.wakeDispatcher ?? agentWakeDispatcher(),
-							ownerSessionId,
-							childId,
-							context.ref.taskId,
-							wokenWith,
-						);
-					const text = input.outputText?.(child) ?? getSingleResultOutput(child);
-					if (!released) retainTaskOutput(child, text, context.ref);
-					const bytes = Buffer.from(text);
-					context.reportActivity({
-						reportId: "terminal-output",
-						change: { kind: "output", offset: "0", bytesBase64: bytes.toString("base64") },
-					});
-					const output = {
-						ownerId: context.ref.ownerId,
-						taskId: context.ref.taskId,
-						artifactId: `output:${context.ref.taskId}`,
-						byteCount: String(bytes.length),
-						omittedRanges: [],
-					};
-					if (child.status === "killed") return { kind: "cancelled", cause: "user", output };
-					// The task host's resumable stop: the child is not running and not ended, and nothing of it stays live.
-					// It was released, not paused: its parent is told what it waits on, and that it wakes by itself (#5031).
-					if (released)
-						return {
-							kind: "cancelled",
-							cause: "pause",
-							output,
-							released: {
-								waitingOn: (child.released?.waitingOn ?? []).map(({ toolCallId, toolName }) => ({
-									toolCallId,
-									toolName,
-								})),
-							},
+						const text = input.outputText?.(child) ?? getSingleResultOutput(child);
+						if (!released) await retainTaskOutput(child, text, context.ref);
+						const bytes = Buffer.from(text);
+						context.reportActivity({
+							reportId: "terminal-output",
+							change: { kind: "output", offset: "0", bytesBase64: bytes.toString("base64") },
+						});
+						const output = {
+							ownerId: context.ref.ownerId,
+							taskId: context.ref.taskId,
+							artifactId: `output:${context.ref.taskId}`,
+							byteCount: String(bytes.length),
+							omittedRanges: [],
 						};
-					if (child.interrupted)
-						return {
-							kind: "cancelled",
-							// Pause and quit are typed resumable stops; a fresh-start handoff stays parent-handoff.
-							cause: stoppedByControl
-								? stopped === "quit"
-									? "quit"
-									: "pause"
-								: stoppedByStagePause
-									? "pause"
-									: input.options.interruptSignal?.aborted
-										? "parent-handoff"
-										: "owner-close",
-							output,
-						};
-					return child.status === "ok"
-						? { kind: "completed", output }
-						: {
-								kind: "failed",
-								code: "AgentFailed",
-								message: child.error ?? child.envelope ?? "Agent failed",
+						if (child.status === "killed") return { kind: "cancelled", cause: "user", output };
+						// The task host's resumable stop: the child is not running and not ended, and nothing of it stays live.
+						// It was released, not paused: its parent is told what it waits on, and that it wakes by itself (#5031).
+						if (released)
+							return {
+								kind: "cancelled",
+								cause: "pause",
+								output,
+								released: {
+									waitingOn: (child.released?.waitingOn ?? []).map(({ toolCallId, toolName }) => ({
+										toolCallId,
+										toolName,
+									})),
+								},
+							};
+						if (child.interrupted)
+							return {
+								kind: "cancelled",
+								// Pause and quit are typed resumable stops; a fresh-start handoff stays parent-handoff.
+								cause: stoppedByControl
+									? stopped === "quit"
+										? "quit"
+										: "pause"
+									: stoppedByStagePause
+										? "pause"
+										: input.options.interruptSignal?.aborted
+											? "parent-handoff"
+											: "owner-close",
 								output,
 							};
-				} catch (error) {
-					if (takeSubagentChildStop(context.ref.taskId) !== undefined) unparkRunWorktree(runId, index);
-					if (!ownerClosed()) recordChild("terminal", "error");
-					else if (input.recordChild?.ownerEndedForGood?.()) {
-						forgetRunMembership(runId, index);
-						recordChild("terminal", SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
+						return child.status === "ok"
+							? { kind: "completed", output }
+							: {
+									kind: "failed",
+									code: "AgentFailed",
+									message: child.error ?? child.envelope ?? "Agent failed",
+									output,
+								};
+					} catch (error) {
+						if (takeSubagentChildStop(context.ref.taskId) !== undefined) unparkRunWorktree(runId, index);
+						if (!ownerClosed()) recordChild("terminal", "error");
+						else if (input.recordChild?.ownerEndedForGood?.()) {
+							forgetRunMembership(runId, index);
+							recordChild("terminal", SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
+						}
+						throw error;
+					} finally {
+						ticket?.onEntered();
+						recordSubagentStartProgress(context.ref.taskId, undefined);
+						// A refusal before session admission has no session resources to reap.
+						if (!executionBound) cleaned.resolve({ kind: "reaped" });
 					}
-					throw error;
-				} finally {
-					recordSubagentStartProgress(context.ref.taskId, undefined);
-					// A refusal before session admission has no session resources to reap.
-					if (!executionBound) cleaned.resolve({ kind: "reaped" });
-				}
-			});
-			return { result, cleanup: cleaned.promise };
-		},
-		schedule,
-	);
-	if (!started.ok) return { kind: "unstarted", reason: { kind: "rejected", error: started.error } };
+				});
+				return { result, cleanup: cleaned.promise };
+			},
+			schedule,
+		)
+		.catch((error: unknown) => {
+			ticket?.release();
+			throw error;
+		});
+	if (!started.ok) {
+		ticket?.release();
+		return { kind: "unstarted", reason: { kind: "rejected", error: started.error } };
+	}
 	admittedTaskId = started.value.taskId;
 	// Its execution waits for `registered`, so nothing it records can precede this. Pause and quit then find a child
 	// still queued behind its concurrency limit, and run control never reads a resumed child's previous task id.
@@ -942,6 +973,8 @@ export async function runAgentTask(input: {
 		registered.resolve();
 	});
 	registered.resolve();
+	ticket?.onObserved();
+	if (ticket) await ticket.admitted;
 	const observed = await observation.finally(() => {
 		parentObserving = false;
 		input.options.intercomDetachSignal?.removeEventListener("abort", yieldForIntercom);

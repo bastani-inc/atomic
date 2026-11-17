@@ -96,13 +96,13 @@ appendFileSync(
 	assert.ok(existsSync(namedLangOnly.path));
 	vi.stubEnv("LC_ALL", "en_US.UTF-8");
 
-	const setup = createWorktrees(repo, "locale-isolated", 1, { agents: ["worker"] });
+	const setup = await createWorktrees(repo, "locale-isolated", 1, { agents: ["worker"] });
 	try {
 		const isolatedPath = setup.worktrees[0]!.path;
 		git(repo, "worktree", "remove", "--force", isolatedPath);
-		recreateWorktree(setup, setup.worktrees[0]!, "locale-isolated", { agent: "worker" });
+		await recreateWorktree(setup, setup.worktrees[0]!, "locale-isolated", { agent: "worker" });
 	} finally {
-		cleanupWorktrees(setup);
+		await cleanupWorktrees(setup);
 	}
 
 	const entries = readFileSync(hookLog, "utf8")

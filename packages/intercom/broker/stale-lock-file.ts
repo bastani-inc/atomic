@@ -12,9 +12,20 @@ import {
   writeFileSync,
   writeSync,
 } from "fs";
+import {
+  type FileHandle,
+  link,
+  open,
+  readdir,
+  readFile,
+  readlink,
+  stat,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { hostname } from "os";
 import { basename, dirname, join } from "path";
-import { renameWithRetry } from "./rename-retry.js";
+import { renameWithRetry, renameWithRetryAsync } from "./rename-retry.js";
 
 /**
  * A parked file is renamed, read and removed at once, so one parked longer than this was left by a process that
@@ -33,11 +44,26 @@ export function readFileOrUndefined(path: string): string | undefined {
   }
 }
 
+export async function readFileOrUndefinedAsync(path: string): Promise<string | undefined> {
+  try {
+    return await readFile(path, "utf-8");
+  } catch {
+    return undefined;
+  }
+}
+
 function removeFile(path: string): void {
   try {
     unlinkSync(path);
   } catch {
     // Already removed.
+  }
+}
+
+async function removeFileAsync(path: string): Promise<void> {
+  try {
+    await unlink(path);
+  } catch {
   }
 }
 
@@ -54,6 +80,21 @@ export function createLockFile(path: string, content: string): boolean {
     removeFile(made);
   }
   return linked ?? createExclusively(path, content);
+}
+
+export async function createLockFileAsync(path: string, content: string): Promise<boolean> {
+  const made = `${path}.${Date.now()}.${randomUUID()}.new`;
+  await writeFile(made, content, { flag: "wx" });
+  let linked: boolean | undefined;
+  try {
+    await link(made, path);
+    linked = true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") linked = false;
+  } finally {
+    await removeFileAsync(made);
+  }
+  return linked ?? createExclusivelyAsync(path, content);
 }
 
 function createExclusively(path: string, content: string): boolean {
@@ -80,9 +121,42 @@ function createExclusively(path: string, content: string): boolean {
   return true;
 }
 
+async function createExclusivelyAsync(path: string, content: string): Promise<boolean> {
+  const marker = `${writingMarkerPrefix(path)}${await ownIdentityAsync()}.${randomUUID().slice(0, 8)}`;
+  await writeFile(marker, "");
+  let handle: FileHandle;
+  try {
+    handle = await open(path, "wx");
+  } catch (error) {
+    await removeFileAsync(marker);
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
+  }
+  let bound = marker;
+  try {
+    const stats = await handle.stat({ bigint: true });
+    bound = `${marker}.${stats.ino}-${stats.birthtimeNs}`;
+    await renameWithRetryAsync(marker, bound);
+    await handle.writeFile(content);
+  } finally {
+    await handle.close();
+  }
+  await removeFileAsync(bound);
+  return true;
+}
+
 function fileIdentity(path: string): string | undefined {
   try {
     const stats = statSync(path, { bigint: true });
+    return `${stats.ino}-${stats.birthtimeNs}`;
+  } catch {
+    return undefined;
+  }
+}
+
+async function fileIdentityAsync(path: string): Promise<string | undefined> {
+  try {
+    const stats = await stat(path, { bigint: true });
     return `${stats.ino}-${stats.birthtimeNs}`;
   } catch {
     return undefined;
@@ -114,10 +188,32 @@ function writingMarkers(path: string): WritingMarker[] {
   return found;
 }
 
+async function writingMarkersAsync(path: string): Promise<WritingMarker[]> {
+  const prefix = basename(writingMarkerPrefix(path));
+  const found: WritingMarker[] = [];
+  for (const name of await readdir(dirname(path))) {
+    if (!name.startsWith(prefix)) continue;
+    const parsed = WRITING_MARKER.exec(name.slice(prefix.length));
+    const state =
+      parsed === null ? "unknown" : await processStateAsync(Number(parsed[1]), parsed[2] ?? "", parsed[3] ?? "", true);
+    found.push({ path: join(dirname(path), name), pid: parsed === null ? undefined : Number(parsed[1]), state, file: parsed?.[4] });
+  }
+  return found;
+}
+
 export function removeDeadWritingMarkers(path: string): void {
   const file = fileIdentity(path);
   for (const marker of writingMarkers(path)) {
     if (marker.state === "abandoned" && (marker.file === undefined || marker.file === file)) removeFile(marker.path);
+  }
+}
+
+export async function removeDeadWritingMarkersAsync(path: string): Promise<void> {
+  const file = await fileIdentityAsync(path);
+  for (const marker of await writingMarkersAsync(path)) {
+    if (marker.state === "abandoned" && (marker.file === undefined || marker.file === file)) {
+      await removeFileAsync(marker.path);
+    }
   }
 }
 
@@ -138,10 +234,30 @@ export function hostIdentity(): string {
   return ownHost;
 }
 
+export async function hostIdentityAsync(): Promise<string> {
+  if (ownHost === undefined) {
+    let source = `host:${hostname()}`;
+    if (process.platform === "linux") {
+      try {
+        const boot = (await readFile("/proc/sys/kernel/random/boot_id", "utf-8")).trim();
+        source = `linux:${boot}:${await readlink("/proc/self/ns/pid")}`;
+      } catch {}
+    }
+    ownHost = createHash("sha256").update(source).digest("hex").slice(0, 12);
+  }
+  return ownHost;
+}
+
 export function ownIdentity(): string {
   const start = processStart(process.pid);
   const token = start === undefined ? "x" : createHash("sha256").update(start).digest("hex").slice(0, 12);
   return `${process.pid}.${token}.${hostIdentity()}`;
+}
+
+export async function ownIdentityAsync(): Promise<string> {
+  const start = await processStartAsync(process.pid);
+  const token = start === undefined ? "x" : createHash("sha256").update(start).digest("hex").slice(0, 12);
+  return `${process.pid}.${token}.${await hostIdentityAsync()}`;
 }
 
 export function completeLines(content: string | undefined): string | undefined {
@@ -177,6 +293,30 @@ export function removeFileIfUnchanged(path: string, inspected: string | undefine
   return false;
 }
 
+export async function removeFileIfUnchangedAsync(path: string, inspected: string | undefined): Promise<boolean> {
+  const parked = `${path}.${Date.now()}.${randomUUID()}.stale`;
+  try {
+    await renameWithRetryAsync(path, parked);
+  } catch {
+    return false;
+  }
+  const moved = await readFileOrUndefinedAsync(parked);
+  if (moved === inspected) {
+    await removeFileAsync(parked);
+    unknownSince.delete(path);
+    return true;
+  }
+  if (await putBackAsync(parked, path, moved)) {
+    await removeFileAsync(parked);
+  } else if (!warnedParked.has(path)) {
+    warnedParked.add(path);
+    process.emitWarning(
+      `A lock that replaced the stale ${path} while it was being removed could not be put back and is left as ${parked} (#5220).`,
+    );
+  }
+  return false;
+}
+
 function putBack(parked: string, path: string, moved: string | undefined): boolean {
   try {
     linkSync(parked, path);
@@ -186,6 +326,20 @@ function putBack(parked: string, path: string, moved: string | undefined): boole
   }
   try {
     return createExclusively(path, moved);
+  } catch {
+    return false;
+  }
+}
+
+async function putBackAsync(parked: string, path: string, moved: string | undefined): Promise<boolean> {
+  try {
+    await link(parked, path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST" || moved === undefined) return false;
+  }
+  try {
+    return await createExclusivelyAsync(path, moved);
   } catch {
     return false;
   }
@@ -219,6 +373,19 @@ export function processStart(pid: number): string | undefined {
   }
 }
 
+export async function processStartAsync(pid: number): Promise<string | undefined> {
+  if (process.platform !== "linux") return undefined;
+  try {
+    const statText = await readFile(`/proc/${pid}/stat`, "utf-8");
+    const started = statText.slice(statText.lastIndexOf(")") + 2).split(" ")[19];
+    const boot = (await readFile("/proc/sys/kernel/random/boot_id", "utf-8")).trim();
+    if (started === undefined || !/^\d+$/.test(started) || boot === "") return undefined;
+    return `${boot}/${started}`;
+  } catch {
+    return undefined;
+  }
+}
+
 export function holderRecord(): string {
   return `${process.pid}\n${processStart(process.pid) ?? ""}\n${hostIdentity()}\n`;
 }
@@ -230,6 +397,21 @@ export function processState(pid: number, start: string, host: string, hashedSta
   if (!isProcessAlive(pid)) return "abandoned";
   if (start === "" || start === "x") return "held";
   const started = processStart(pid);
+  if (started === undefined) return "held";
+  const now = hashedStart ? createHash("sha256").update(started).digest("hex").slice(0, 12) : started;
+  return now === start ? "held" : "abandoned";
+}
+
+export async function processStateAsync(
+  pid: number,
+  start: string,
+  host: string,
+  hashedStart: boolean,
+): Promise<HolderState> {
+  if (host !== "" && host !== (await hostIdentityAsync())) return "unknown";
+  if (!isProcessAlive(pid)) return "abandoned";
+  if (start === "" || start === "x") return "held";
+  const started = await processStartAsync(pid);
   if (started === undefined) return "held";
   const now = hashedStart ? createHash("sha256").update(started).digest("hex").slice(0, 12) : started;
   return now === start ? "held" : "abandoned";
@@ -251,15 +433,31 @@ export function isAbandoned(path: string, written: string | undefined): boolean 
   return holderState(path, written) === "abandoned";
 }
 
-function pendingWritingMarkers(path: string, written: string | undefined, file: string | undefined): WritingMarker[] {
+function filterPendingWritingMarkers(
+  markers: WritingMarker[],
+  written: string | undefined,
+  file: string | undefined,
+): WritingMarker[] {
   const lines = (written ?? "").split("\n");
   const complete = written?.endsWith("\n") === true && (lines.length >= 4 || /^\d+$/.test(lines[1] ?? ""));
   const recorded = pidOf(completeLines(written));
-  return writingMarkers(path).filter((marker) =>
+  return markers.filter((marker) =>
     marker.file === undefined
       ? written === ""
       : marker.file === file && !(complete && recorded !== undefined && marker.pid === recorded),
   );
+}
+
+function pendingWritingMarkers(path: string, written: string | undefined, file: string | undefined): WritingMarker[] {
+  return filterPendingWritingMarkers(writingMarkers(path), written, file);
+}
+
+async function pendingWritingMarkersAsync(
+  path: string,
+  written: string | undefined,
+  file: string | undefined,
+): Promise<WritingMarker[]> {
+  return filterPendingWritingMarkers(await writingMarkersAsync(path), written, file);
 }
 
 function isAbsent(error: unknown): boolean {
@@ -293,6 +491,32 @@ export function writerState(path: string, written: string | undefined): HolderSt
   return "abandoned";
 }
 
+export async function writerStateAsync(path: string, written: string | undefined): Promise<HolderState | undefined> {
+  let file: string;
+  try {
+    const stats = await stat(path, { bigint: true });
+    file = `${stats.ino}-${stats.birthtimeNs}`;
+  } catch (error) {
+    return isAbsent(error) ? "held" : "unknown";
+  }
+  if (written === undefined) return "unknown";
+  let markers: WritingMarker[];
+  try {
+    markers = await pendingWritingMarkersAsync(path, written, file);
+  } catch (error) {
+    return isAbsent(error) ? "held" : "unknown";
+  }
+  if (markers.length === 0) return undefined;
+  if (markers.some((marker) => marker.state === "held")) return "held";
+  if (markers.some((marker) => marker.state === "unknown")) return "unknown";
+  const bound = markers.filter((marker) => marker.file === file);
+  if (bound.length === 0) return undefined;
+  if ((await readFileOrUndefinedAsync(path)) !== written || (await fileIdentityAsync(path)) !== file) return "held";
+  const recorded = pidOf(completeLines(written));
+  if (recorded === undefined || isProcessAlive(recorded)) return undefined;
+  return "abandoned";
+}
+
 let unknownHolderWaitMs = 30_000;
 
 export function setUnknownHolderWaitForTesting(ms: number | undefined): void {
@@ -316,22 +540,30 @@ function isDirectory(path: string): boolean {
   }
 }
 
-export function unknownHolderAdvice(path: string): string {
-  const file = fileIdentity(path);
-  const written = readFileOrUndefined(path);
-  let markers: WritingMarker[] = [];
+async function isDirectoryAsync(path: string): Promise<boolean> {
   try {
-    markers = pendingWritingMarkers(path, written, file);
-  } catch {}
+    return (await stat(path)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function formatUnknownHolderAdvice(
+  path: string,
+  written: string | undefined,
+  markers: WritingMarker[],
+  directory: boolean,
+  foreignHolder: boolean,
+): string {
   const blockingMarkers = markers.filter((marker) => marker.state === "unknown");
   const recoveryFiles = [...blockingMarkers.map((marker) => marker.path), path];
   const recoveryPaths = recoveryFiles.join(" and ");
   const ownershipPaths = recoveryFiles.map((name) => JSON.stringify(name)).join(" ");
-  const chownCommand = isDirectory(path) ? "sudo chown -R $USER" : "sudo chown $USER";
+  const chownCommand = directory ? "sudo chown -R $USER" : "sudo chown $USER";
   const why =
     written === undefined
       ? "this user cannot read it, as when another user (for example `sudo atomic`) created it"
-      : blockingMarkers.length > 0 || recordsForeignHolder(path)
+      : blockingMarkers.length > 0 || foreignHolder
         ? "it names a process on another host or in another container sharing this agent directory, which cannot be checked from here"
         : markers.some((marker) => marker.state === "abandoned")
           ? "it may have been left empty by a process killed before recording its holder"
@@ -339,13 +571,43 @@ export function unknownHolderAdvice(path: string): string {
   return `The lock ${path} is held by a process this one cannot check: ${why} (#5220). If no such process is using it, remove ${recoveryPaths}, or, if another user (as \`sudo atomic\`) left it, give it to your user (for example \`${chownCommand} ${ownershipPaths}\`).`;
 }
 
+export function unknownHolderAdvice(path: string): string {
+  const file = fileIdentity(path);
+  const written = readFileOrUndefined(path);
+  let markers: WritingMarker[] = [];
+  try {
+    markers = pendingWritingMarkers(path, written, file);
+  } catch {}
+  return formatUnknownHolderAdvice(path, written, markers, isDirectory(path), recordsForeignHolder(path));
+}
+
+export async function unknownHolderAdviceAsync(path: string): Promise<string> {
+  const file = await fileIdentityAsync(path);
+  const written = await readFileOrUndefinedAsync(path);
+  let markers: WritingMarker[] = [];
+  try {
+    markers = await pendingWritingMarkersAsync(path, written, file);
+  } catch {}
+  return formatUnknownHolderAdvice(
+    path,
+    written,
+    markers,
+    await isDirectoryAsync(path),
+    await recordsForeignHolderAsync(path),
+  );
+}
+
 function recordsForeignHolder(path: string): boolean {
   const host = (completeLines(readFileOrUndefined(path)) ?? "").split("\n")[2] ?? "";
   return host !== "" && host !== hostIdentity();
 }
 
-export function unknownHolderWaitedOut(path: string, written: string | undefined): boolean {
-  const identity = fileIdentity(path);
+async function recordsForeignHolderAsync(path: string): Promise<boolean> {
+  const host = (completeLines(await readFileOrUndefinedAsync(path)) ?? "").split("\n")[2] ?? "";
+  return host !== "" && host !== (await hostIdentityAsync());
+}
+
+function checkUnknownHolderWait(path: string, written: string | undefined, identity: string | undefined): boolean {
   if (identity === undefined) {
     unknownSince.delete(path);
     return false;
@@ -356,6 +618,14 @@ export function unknownHolderWaitedOut(path: string, written: string | undefined
     return false;
   }
   return Date.now() - current.since >= unknownHolderWaitMs;
+}
+
+export function unknownHolderWaitedOut(path: string, written: string | undefined): boolean {
+  return checkUnknownHolderWait(path, written, fileIdentity(path));
+}
+
+export async function unknownHolderWaitedOutAsync(path: string, written: string | undefined): Promise<boolean> {
+  return checkUnknownHolderWait(path, written, await fileIdentityAsync(path));
 }
 
 export function removeLeftoverParkedFiles(lockPath: string): void {
@@ -372,9 +642,28 @@ export function removeLeftoverParkedFiles(lockPath: string): void {
   }
 }
 
+export async function removeLeftoverParkedFilesAsync(lockPath: string): Promise<void> {
+  const directory = dirname(lockPath);
+  const prefix = `${basename(lockPath)}.`;
+  for (const name of await readdir(directory)) {
+    if (name.startsWith(`${prefix}writing.`) || name.includes(".writing.")) continue;
+    const parkedAt = name.startsWith(prefix) ? PARKED_SUFFIX.exec(name)?.[1] : undefined;
+    if (parkedAt === undefined) continue;
+    const path = join(directory, name);
+    const pid = pidOf(await readFileOrUndefinedAsync(path));
+    const leftover = pid === undefined ? Date.now() - Number(parkedAt) > PARKED_FILE_MAX_AGE_MS : !isProcessAlive(pid);
+    if (leftover) await removeFileAsync(path);
+  }
+}
+
 export interface LockTakeover {
   owned(): boolean;
   release(): void;
+}
+
+export interface AsyncLockTakeover {
+  owned(): boolean | Promise<boolean>;
+  release(): void | Promise<void>;
 }
 
 export function takeOverStaleLock(
@@ -393,5 +682,24 @@ export function takeOverStaleLock(
     removeFileIfUnchanged(lockPath, inspected);
   } finally {
     takeover.release();
+  }
+}
+
+export async function takeOverStaleLockAsync(
+  lockPath: string,
+  inspected: string | undefined,
+  isStale: (current: string | undefined) => boolean | Promise<boolean>,
+  takeTakeover: () => AsyncLockTakeover | undefined | Promise<AsyncLockTakeover | undefined>,
+): Promise<void> {
+  const takeover = await takeTakeover();
+  if (takeover === undefined) return;
+  try {
+    await removeLeftoverParkedFilesAsync(lockPath);
+    const current = await readFileOrUndefinedAsync(lockPath);
+    if (current !== inspected || !(await isStale(current)) || !(await takeover.owned())) return;
+    await removeDeadWritingMarkersAsync(lockPath);
+    await removeFileIfUnchangedAsync(lockPath, inspected);
+  } finally {
+    await takeover.release();
   }
 }

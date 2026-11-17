@@ -1,7 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { readdir, readlink, realpath, rm, rmdir, stat } from "node:fs/promises";
+import { mkdir, readdir, readlink, realpath, rm, rmdir, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
@@ -14,13 +13,13 @@ import { openThreadedSqliteDatabase } from "./ship-shard-thread.js";
 
 /** The root's own lock, held while its shard is open: one process at a time opens a root's local journal. */
 async function tryRootLock(path: string): Promise<AdvisoryLock | null> {
-	const { tryAdvisoryLock } = await import("@bastani/atomic-natives");
-	return tryAdvisoryLock(`${path}.lock`, 0);
+	const { tryAdvisoryLockAsync } = await import("@bastani/atomic-natives");
+	return tryAdvisoryLockAsync(`${path}.lock`, 0);
 }
 
 async function tryOpenLock(location: string): Promise<AdvisoryLock | null> {
-	const { tryAdvisoryLock } = await import("@bastani/atomic-natives");
-	return tryAdvisoryLock(`${location}-open.lock`, 0);
+	const { tryAdvisoryLockAsync } = await import("@bastani/atomic-natives");
+	return tryAdvisoryLockAsync(`${location}-open.lock`, 0);
 }
 
 export function shipJournalDirectory(stateDirectory: string, journalIdentity: string): string {
@@ -235,7 +234,7 @@ export class ShipShard {
 	}
 
 	private static async openUnlocked(path: string, root: string, now?: () => number): Promise<ShipShard> {
-		if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
+		if (path !== ":memory:") await mkdir(dirname(path), { recursive: true });
 		const lock = path === ":memory:" ? undefined : await tryRootLock(path);
 		if (lock === null) throw new Error(`Checkpoint shard is already open by another process: ${path}`);
 		let database: SqliteDatabase | undefined;

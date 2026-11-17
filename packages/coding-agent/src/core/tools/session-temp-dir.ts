@@ -22,13 +22,15 @@ import {
 	lstatSync,
 	mkdirSync,
 	mkdtempSync,
+	realpath as realpathCallback,
 	realpathSync,
 	rmSync,
 	type Stats,
 } from "node:fs";
-import { lstat, mkdir, realpath, rm } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { promisify } from "node:util";
 import { APP_NAME, getAgentDir } from "../../config.js";
 import { getErrnoCode } from "./errno.ts";
 import {
@@ -224,32 +226,6 @@ function isVerificationPending(error: unknown): error is TempDirRefusedError {
 	return error instanceof TempDirRefusedError && error.reason === VERIFICATION_PENDING_REASON;
 }
 
-let syncChecksStartVerification = true;
-
-function attemptWithoutBackgroundVerification<T>(attempt: () => T): T {
-	syncChecksStartVerification = false;
-	try {
-		return attempt();
-	} finally {
-		syncChecksStartVerification = true;
-	}
-}
-
-async function afterVerification<T>(attempt: () => T): Promise<T> {
-	const verified = new Set<string>();
-	for (;;) {
-		try {
-			return attemptWithoutBackgroundVerification(attempt);
-		} catch (error) {
-			if (!isVerificationPending(error)) throw error;
-			if (verified.has(error.path)) throw new TempDirRefusedError(error.path, "its ownership could not be verified");
-			verified.add(error.path);
-			const refusal = await verifyWindowsDirectorySecurityAsync(error.path);
-			if (refusal !== undefined) throw new TempDirRefusedError(error.path, refusal);
-		}
-	}
-}
-
 /**
  * Confirm one existing component is a directory this account owns, at mode 0700.
  *
@@ -280,7 +256,7 @@ function verifyOwnedDirectory(path: string, known?: Stats, strict = false): void
 		throw new TempDirRefusedError(path, "it is not a directory");
 	}
 	if (process.platform === "win32") {
-		const refusal = verifyWindowsDirectorySecurity(path, { startVerification: syncChecksStartVerification });
+		const refusal = verifyWindowsDirectorySecurity(path);
 		if (refusal !== undefined) {
 			throw new TempDirRefusedError(path, refusal);
 		}
@@ -426,17 +402,23 @@ export function ensurePrivateTempDir(...segments: string[]): string {
 export async function ensurePrivateTempDirAsync(...segments: string[]): Promise<string> {
 	const parts = privateSegmentParts(segments);
 	const key = privateTempDirKey(parts);
-	const known = rememberedPrivateTempDir(key);
-	if (known !== undefined) {
-		return known;
-	}
-	for (const attempt of privateTempDirAttempts(parts)) {
+	const attempts = privateTempDirAttemptsAsync(parts);
+	const known = await rememberedPrivateTempDirAsync(key);
+	if (known !== undefined) return known;
+	for (const attempt of attempts) {
 		try {
-			return await afterVerification(() => rememberPrivateTempDir(key, attempt(), parts.length));
+			return await rememberPrivateTempDirAsync(key, await attempt(), parts.length);
 		} catch {}
 	}
-	return rememberPrivateTempDir(key, privateTempFallback(segments, parts), parts.length);
+	const fallback = privateTempFallbackTail.then(() => privateTempFallbackAsync(segments, parts));
+	privateTempFallbackTail = fallback.then(
+		() => {},
+		() => {},
+	);
+	return rememberPrivateTempDirAsync(key, await fallback, parts.length);
 }
+
+let privateTempFallbackTail: Promise<void> = Promise.resolve();
 
 function privateTempDirKey(parts: readonly string[]): string {
 	return JSON.stringify([process.env.XDG_RUNTIME_DIR ?? "", resolve(getAgentDir()), resolve(tmpdir()), parts]);
@@ -594,10 +576,7 @@ export function assertPrivateDirectory(path: string): void {
 }
 
 export function assertPrivateDirectoryAsync(path: string): Promise<void> {
-	const resolvedPath = resolve(path);
-	return process.platform === "win32"
-		? verifyWindowsOwnedDirectoryAsync(resolvedPath)
-		: afterVerification(() => assertPrivateDirectory(resolvedPath));
+	return verifyOwnedDirectoryAsync(resolve(path), undefined, true);
 }
 
 /**
@@ -723,50 +702,30 @@ async function ensureWindowsOwnedDirectoryAsync(path: string, options: { backgro
 	await verifyWindowsOwnedDirectoryAsync(path, options);
 }
 
-async function ensureWindowsLeafDirectoryAsync(path: string, preserveExistingLeaf: boolean): Promise<void> {
-	if (!preserveExistingLeaf) {
-		try {
-			if (!(await lstat(path)).isDirectory()) await rm(path, { force: true });
-		} catch {}
-	}
-	await ensureWindowsOwnedDirectoryAsync(path);
-}
-
-async function baseTempDirsAsync(): Promise<BaseTempDirs> {
-	const raw = tmpdir();
-	if (cachedBaseTempDirs?.raw === raw) return cachedBaseTempDirs;
-	let canonical: string;
-	try {
-		canonical = await realpath(raw);
-	} catch {
-		canonical = raw;
-	}
-	cachedBaseTempDirs = { raw, canonical };
-	return cachedBaseTempDirs;
-}
-
 export async function ensureTempDirAsync(
 	dir: string,
 	options: { preserveExistingLeaf?: boolean } = {},
 ): Promise<string> {
 	const resolvedDir = resolve(dir);
-	if (process.platform !== "win32") return afterVerification(() => ensureTempDir(resolvedDir, options));
 	const base = await baseTempDirsAsync();
 	const checkedDir = canonicalTempChild(resolvedDir, base);
 	if (checkedDir !== undefined) {
+		const prefix = `${base.canonical}${sep}`;
 		const parts = checkedDir
-			.slice(base.canonical.length + sep.length)
+			.slice(prefix.length)
 			.split(sep)
-			.filter(Boolean);
+			.filter((part) => part.length > 0);
 		let current = base.canonical;
 		for (const part of parts.slice(0, -1)) {
 			current = join(current, part);
-			await ensureWindowsOwnedDirectoryAsync(current);
+			await ensureOwnedDirectoryAsync(current);
 		}
-		await ensureWindowsLeafDirectoryAsync(checkedDir, options.preserveExistingLeaf ?? false);
-	} else {
+		if (options.preserveExistingLeaf) await ensureOwnedDirectoryAsync(checkedDir);
+		else await ensureLeafDirectoryAsync(checkedDir);
+	} else if (!(ensuredDirs.has(resolvedDir) && (await isRealDirectoryAsync(resolvedDir)))) {
 		await mkdir(dirname(resolvedDir), { recursive: true, mode: SESSION_TEMP_DIR_MODE });
-		await ensureWindowsLeafDirectoryAsync(resolvedDir, options.preserveExistingLeaf ?? false);
+		if (options.preserveExistingLeaf) await ensureOwnedDirectoryAsync(resolvedDir);
+		else await ensureLeafDirectoryAsync(resolvedDir);
 	}
 	ensuredDirs.add(resolvedDir);
 	return resolvedDir;
@@ -833,7 +792,7 @@ export function acquireProtectedPaths(paths: readonly string[]): ProtectedPathLe
 export function setActiveSessionTempId(sessionId: string): string {
 	activeSessionId = sessionId;
 	if (process.platform === "win32") {
-		startPrivateRootVerification();
+		void startPrivateRootVerification();
 	}
 	return resolveSessionTempDirPath(sessionId);
 }
@@ -852,6 +811,10 @@ function startPrivateRootVerification(): void {
 	}).catch(() => undefined);
 }
 
+export function isProtectedSessionTempDir(path: string): boolean {
+	return protectedPathCounts.has(path);
+}
+
 /** Directories this process must not reap: session temp trees and live tool-results. */
 export function getProtectedSessionTempDirs(): ReadonlySet<string> {
 	return new Set(protectedPathCounts.keys());
@@ -868,4 +831,239 @@ export function resetSessionTempDirStateForTesting(): void {
 	fallbackDirectoryIdentities.clear();
 	privateTempDirs.clear();
 	resetWindowsDirectorySecurityStateForTesting();
+}
+
+const realpathAsync = promisify(realpathCallback);
+
+async function baseTempDirsAsync(): Promise<BaseTempDirs> {
+	const raw = tmpdir();
+	if (cachedBaseTempDirs?.raw === raw) {
+		return cachedBaseTempDirs;
+	}
+	let canonical = raw;
+	try {
+		canonical = await realpathAsync(raw);
+	} catch {}
+	cachedBaseTempDirs = { raw, canonical };
+	return cachedBaseTempDirs;
+}
+
+async function isRealDirectoryAsync(path: string): Promise<boolean> {
+	try {
+		const stat = await lstat(path);
+		return stat.isDirectory() && !stat.isSymbolicLink();
+	} catch {
+		return false;
+	}
+}
+
+async function verifyOwnedDirectoryAsync(path: string, known?: Stats, strict = false): Promise<void> {
+	let stat = known ?? (await lstat(path));
+	if (stat.isSymbolicLink()) {
+		throw new TempDirRefusedError(path, "it is a symbolic link");
+	}
+	if (!stat.isDirectory()) {
+		throw new TempDirRefusedError(path, "it is not a directory");
+	}
+	if (process.platform === "win32") {
+		await verifyWindowsOwnedDirectoryAsync(path);
+		return;
+	}
+	const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+	if (typeof uid === "number" && stat.uid !== uid) {
+		throw new TempDirRefusedError(path, "it is owned by another account");
+	}
+	if ((stat.mode & 0o777) === SESSION_TEMP_DIR_MODE) {
+		return;
+	}
+	if (strict && (stat.mode & 0o077) !== 0) {
+		throw new TempDirRefusedError(path, "it is accessible to other accounts");
+	}
+	try {
+		await chmod(path, SESSION_TEMP_DIR_MODE);
+		stat = await lstat(path);
+	} catch {
+		throw new TempDirRefusedError(path, "its permissions could not be tightened");
+	}
+	if ((stat.mode & 0o777) !== SESSION_TEMP_DIR_MODE) {
+		throw new TempDirRefusedError(path, "its permissions could not be tightened");
+	}
+}
+
+async function ensureOwnedDirectoryAsync(path: string, strict = false): Promise<void> {
+	let stat: Stats | undefined;
+	try {
+		stat = await lstat(path);
+	} catch {
+		stat = undefined;
+	}
+	if (stat === undefined) {
+		try {
+			await mkdir(path, { recursive: false, mode: SESSION_TEMP_DIR_MODE });
+		} catch (error) {
+			if (getErrnoCode(error) !== "EEXIST") {
+				throw new TempDirRefusedError(path, "it could not be created");
+			}
+		}
+		await verifyOwnedDirectoryAsync(path, undefined, strict);
+		return;
+	}
+	await verifyOwnedDirectoryAsync(path, stat, strict);
+}
+
+async function isUntouchablePrivateRootAsync(path: string): Promise<boolean> {
+	try {
+		const stat = await lstat(path);
+		if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
+		const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+		return (uid === undefined || stat.uid === uid) && (stat.mode & 0o077) === 0;
+	} catch {
+		return false;
+	}
+}
+
+async function ensurePrivateChainAsync(
+	checkedBase: string,
+	returnedBase: string,
+	parts: readonly string[],
+): Promise<string> {
+	let current = checkedBase;
+	for (const part of parts) {
+		current = join(current, part);
+		await ensureOwnedDirectoryAsync(current, true);
+	}
+	return join(returnedBase, ...parts);
+}
+
+async function rememberedPrivateTempDirAsync(key: string): Promise<string | undefined> {
+	const known = privateTempDirs.get(key);
+	if (known !== undefined && (await stillPrivateAsync(known))) {
+		return known.path;
+	}
+	privateTempDirs.delete(key);
+	return undefined;
+}
+
+async function rememberPrivateTempDirAsync(key: string, path: string, depth: number): Promise<string> {
+	try {
+		const directories: PrivateDirectoryIdentity[] = [];
+		let current = path;
+		for (let component = 0; component <= depth; component++) {
+			directories.push(await privateDirectoryIdentityAsync(current));
+			current = dirname(current);
+		}
+		const runtimeDir = process.env.XDG_RUNTIME_DIR;
+		if (process.platform !== "win32" && runtimeDir && current === resolve(runtimeDir)) {
+			directories.push(await privateDirectoryIdentityAsync(current));
+		}
+		privateTempDirs.set(key, { path, directories: directories.reverse() });
+	} catch {}
+	return path;
+}
+
+async function privateDirectoryIdentityAsync(path: string): Promise<PrivateDirectoryIdentity> {
+	const stat = await lstat(path, { bigint: true });
+	if (stat.isSymbolicLink() || !stat.isDirectory()) {
+		throw new TempDirRefusedError(path, "it is not a real directory");
+	}
+	return { path, dev: stat.dev, ino: stat.ino, birthtimeNs: stat.birthtimeNs };
+}
+
+async function stillPrivateAsync(known: KnownPrivateTempDir): Promise<boolean> {
+	for (const directory of known.directories) {
+		if (!(await stillPrivateDirectoryAsync(directory))) return false;
+	}
+	return true;
+}
+
+async function stillPrivateDirectoryAsync(known: PrivateDirectoryIdentity): Promise<boolean> {
+	try {
+		const stat = await lstat(known.path, { bigint: true });
+		if (
+			stat.isSymbolicLink() ||
+			!stat.isDirectory() ||
+			stat.dev !== known.dev ||
+			stat.ino !== known.ino ||
+			stat.birthtimeNs !== known.birthtimeNs
+		) {
+			return false;
+		}
+		if (process.platform === "win32") return true;
+		const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+		return (uid === undefined || stat.uid === BigInt(uid)) && (stat.mode & 0o077n) === 0n;
+	} catch {
+		return false;
+	}
+}
+
+function privateTempDirAttemptsAsync(parts: readonly string[]): Array<() => Promise<string>> {
+	const attempts: Array<() => Promise<string>> = [];
+	const runtimeDir = process.env.XDG_RUNTIME_DIR;
+	if (process.platform !== "win32" && runtimeDir && isAbsolute(runtimeDir)) {
+		const root = resolve(runtimeDir);
+		attempts.push(async () => {
+			if (!(await isUntouchablePrivateRootAsync(root))) {
+				throw new TempDirRefusedError(root, "it is not private to this account");
+			}
+			const app = sanitizeTempPathComponent(APP_NAME, "atomic");
+			return await ensurePrivateChainAsync(root, root, [app, ...parts]);
+		});
+	}
+	const cacheDir = resolve(getAgentDir(), "cache");
+	attempts.push(async () => {
+		await mkdir(cacheDir, { recursive: true, mode: SESSION_TEMP_DIR_MODE });
+		return await ensurePrivateChainAsync(cacheDir, cacheDir, ["tmp", ...parts]);
+	});
+	attempts.push(async () => {
+		const base = await baseTempDirsAsync();
+		const rootName = getTempRootDir().slice(base.raw.length + sep.length);
+		return await ensurePrivateChainAsync(base.canonical, base.raw, [rootName, ...parts]);
+	});
+	return attempts;
+}
+
+async function privateTempFallbackAsync(segments: readonly string[], parts: readonly string[]): Promise<string> {
+	for (let attempt = 0; attempt < 2; attempt++) {
+		try {
+			if (privateTempFallbackDir === undefined) {
+				privateTempFallbackDir = await mkdtemp(join(tmpdir(), `${sanitizeTempPathComponent(APP_NAME, "atomic")}-`));
+				fallbackDirectoryIdentities.clear();
+				fallbackDirectoryIdentities.set(
+					privateTempFallbackDir,
+					await privateDirectoryIdentityAsync(privateTempFallbackDir),
+				);
+			} else {
+				const rootIdentity = fallbackDirectoryIdentities.get(privateTempFallbackDir);
+				if (rootIdentity === undefined || !(await stillPrivateDirectoryAsync(rootIdentity))) {
+					throw new TempDirRefusedError(privateTempFallbackDir, "it changed after creation");
+				}
+			}
+			let current = privateTempFallbackDir;
+			for (const part of parts) {
+				current = join(current, part);
+				const known = fallbackDirectoryIdentities.get(current);
+				if (known !== undefined) {
+					if (!(await stillPrivateDirectoryAsync(known)))
+						throw new TempDirRefusedError(current, "it changed after creation");
+				} else {
+					await mkdir(current, { mode: SESSION_TEMP_DIR_MODE });
+					fallbackDirectoryIdentities.set(current, await privateDirectoryIdentityAsync(current));
+				}
+			}
+			return current;
+		} catch {
+			privateTempFallbackDir = undefined;
+			fallbackDirectoryIdentities.clear();
+		}
+	}
+	throw new TempDirRefusedError(join(tmpdir(), ...segments), "no directory private to this account could be created");
+}
+
+async function ensureLeafDirectoryAsync(dir: string): Promise<void> {
+	try {
+		if (!(await lstat(dir)).isDirectory()) {
+			await rm(dir, { force: true });
+		}
+	} catch {}
+	await ensureOwnedDirectoryAsync(dir);
 }

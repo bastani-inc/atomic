@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { getProjectConfigDirs } from "../config.js";
 import { isPathWithin } from "../utils/paths.ts";
@@ -9,15 +9,15 @@ import { resourceInternals } from "./resource-loader-internals.ts";
 import { getLoaderAgentDirs } from "./resource-loader-paths.ts";
 import { createSourceInfo, getSyntheticPathSource, isSyntheticPath, type SourceInfo } from "./source-info.ts";
 
-export function applyExtensionSourceInfo(
+export async function applyExtensionSourceInfo(
 	loader: DefaultResourceLoader,
 	extensions: Extension[],
 	metadataByPath: Map<string, PathMetadata>,
-): void {
+): Promise<void> {
 	for (const extension of extensions) {
 		const sourceInfo =
-			findSourceInfoForPath(loader, extension.path, undefined, metadataByPath) ??
-			getDefaultSourceInfoForPath(loader, extension.path);
+			(await findSourceInfoForPath(loader, extension.path, undefined, metadataByPath)) ??
+			(await getDefaultSourceInfoForPath(loader, extension.path));
 		extension.sourceInfo = {
 			...sourceInfo,
 			configurationOrigin: sourceInfo.configurationOrigin ?? extension.sourceInfo.configurationOrigin,
@@ -31,12 +31,12 @@ export function applyExtensionSourceInfo(
 	}
 }
 
-export function findSourceInfoForPath(
+export async function findSourceInfoForPath(
 	loader: DefaultResourceLoader,
 	resourcePath: string,
 	extraSourceInfos?: Map<string, SourceInfo>,
 	metadataByPath?: Map<string, PathMetadata>,
-): SourceInfo | undefined {
+): Promise<SourceInfo | undefined> {
 	if (!resourcePath) {
 		return undefined;
 	}
@@ -71,7 +71,10 @@ export function findSourceInfoForPath(
 	return undefined;
 }
 
-export function getDefaultSourceInfoForPath(loader: DefaultResourceLoader, filePath: string): SourceInfo {
+export async function getDefaultSourceInfoForPath(
+	loader: DefaultResourceLoader,
+	filePath: string,
+): Promise<SourceInfo> {
 	const state = resourceInternals(loader);
 	const syntheticSource = getSyntheticPathSource(filePath);
 	if (syntheticSource) {
@@ -114,6 +117,6 @@ export function getDefaultSourceInfoForPath(loader: DefaultResourceLoader, fileP
 		source: "local",
 		scope: "temporary",
 		origin: "top-level",
-		baseDir: statSync(normalizedPath).isDirectory() ? normalizedPath : resolve(normalizedPath, ".."),
+		baseDir: (await stat(normalizedPath)).isDirectory() ? normalizedPath : resolve(normalizedPath, ".."),
 	};
 }

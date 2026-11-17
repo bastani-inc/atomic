@@ -1,5 +1,4 @@
-import { statSync } from "node:fs";
-import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { CONFIG_DIR_NAME } from "@bastani/atomic";
 import { prepareInspectionStoreSnapshot, readInspectionStoreSnapshot } from "../shared/inspection-store-snapshot.js";
@@ -51,9 +50,9 @@ function isTransientRenameHold(err: unknown): boolean {
 	return err !== null && typeof err === "object" && retryableRenameFailures.has(err);
 }
 
-function isExistingDirectory(path: string): boolean {
+async function isExistingDirectory(path: string): Promise<boolean> {
 	try {
-		return statSync(path, { throwIfNoEntry: false })?.isDirectory() === true;
+		return (await stat(path)).isDirectory();
 	} catch {
 		return false;
 	}
@@ -75,7 +74,7 @@ async function renameStatusFile(tmpPath: string, targetPath: string): Promise<vo
 			if (!isRetryableRenameError(err)) {
 				throw err;
 			}
-			targetIsDirectory ??= isExistingDirectory(targetPath);
+			targetIsDirectory ??= await isExistingDirectory(targetPath);
 			if (targetIsDirectory) {
 				throw err;
 			}

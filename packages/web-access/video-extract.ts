@@ -1,18 +1,15 @@
 import { reportOwnedWebDiagnostic } from "./diagnostics.js";
-import { createOwnerState } from "./owner-state.js";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { access, readFile, readdir, stat } from "node:fs/promises";
 import { resolve, extname, basename, join, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { activityMonitor } from "./activity.js";
 import { isGeminiWebAvailable, queryWithCookies } from "./gemini-web.js";
+import { createAsyncOwnerState, readWebSearchConfigFile } from "./gemini-web-config.ts";
 import { queryGeminiApiWithVideo, getApiKey, API_BASE } from "./gemini-api.js";
 import { extractHeadingTitle, type ExtractedContent, type ExtractOptions, type FrameResult } from "./extract.js";
 import { readExecError, trimErrorText, mapFfmpegError } from "./utils.js";
-import { findReadableConfigPath } from "./config-paths.ts";
 import { runBunSubprocess } from "./subprocess.ts";
 
-const CONFIG_PATH = findReadableConfigPath();
 const UPLOAD_BASE = "https://generativelanguage.googleapis.com/upload/v1beta";
 
 const DEFAULT_VIDEO_PROMPT = `Extract the complete content of this video. Include:
@@ -74,17 +71,11 @@ const VIDEO_CONFIG_DEFAULTS: VideoConfig = {
 	maxSizeMB: 50,
 };
 
-const loadVideoConfig = createOwnerState<VideoConfig>(() => {
-	if (!existsSync(CONFIG_PATH)) return { ...VIDEO_CONFIG_DEFAULTS };
-
-	const rawText = readFileSync(CONFIG_PATH, "utf-8");
-	let raw: { video?: { enabled?: boolean; preferredModel?: string; maxSizeMB?: number } };
-	try {
-		raw = JSON.parse(rawText) as { video?: { enabled?: boolean; preferredModel?: string; maxSizeMB?: number } };
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		throw new Error(`Failed to parse ${CONFIG_PATH}: ${message}`);
-	}
+const loadVideoConfig = createAsyncOwnerState<VideoConfig>(async () => {
+	const raw = await readWebSearchConfigFile<{
+		video?: { enabled?: boolean; preferredModel?: string; maxSizeMB?: number };
+	}>();
+	if (!raw) return { ...VIDEO_CONFIG_DEFAULTS };
 
 	const v = raw.video ?? {};
 	return {
@@ -98,8 +89,8 @@ const loadVideoConfig = createOwnerState<VideoConfig>(() => {
  * Resolve a local video path. Returns null for input that is not a local video file; throws when it is
  * one that cannot be analysed because of the `video` settings.
  */
-export function isVideoFile(input: string): VideoFileInfo | null {
-	const config = loadVideoConfig();
+export async function isVideoFile(input: string): Promise<VideoFileInfo | null> {
+	const config = await loadVideoConfig();
 
 	const isFilePath = isAbsolute(input) || input.startsWith("./") || input.startsWith("../") || input.startsWith(".\\") || input.startsWith("..\\") || input.startsWith("file://");
 	if (!isFilePath) return null;
@@ -118,36 +109,39 @@ export function isVideoFile(input: string): VideoFileInfo | null {
 	if (!mimeType) return null;
 	if (!config.enabled) throw new Error(`${input}: video extraction is disabled (video.enabled)`);
 
-	const absolutePath = resolveFilePath(filePath);
+	const absolutePath = await resolveFilePath(filePath);
 	if (!absolutePath) return null;
 
-	let stat: ReturnType<typeof statSync>;
+	let fileStat: Awaited<ReturnType<typeof stat>>;
 	try {
-		stat = statSync(absolutePath);
+		fileStat = await stat(absolutePath);
 	} catch {
 		return null;
 	}
-	if (!stat.isFile()) return null;
+	if (!fileStat.isFile()) return null;
 
 	const maxBytes = config.maxSizeMB * 1024 * 1024;
-	if (stat.size > maxBytes) {
+	if (fileStat.size > maxBytes) {
 		throw new Error(`${input} exceeds the ${config.maxSizeMB} MB video limit (video.maxSizeMB)`);
 	}
 
-	return { absolutePath, mimeType, sizeBytes: stat.size };
+	return { absolutePath, mimeType, sizeBytes: fileStat.size };
 }
 
-function resolveFilePath(filePath: string): string | null {
+async function resolveFilePath(filePath: string): Promise<string | null> {
 	const absolutePath = resolve(filePath);
-	if (existsSync(absolutePath)) return absolutePath;
+	try {
+		await access(absolutePath);
+		return absolutePath;
+	} catch {}
 
 	const dir = dirname(absolutePath);
 	const base = basename(absolutePath);
-	if (!existsSync(dir)) return null;
 
 	try {
+		const entries = await readdir(dir);
 		const normalizedBase = normalizeSpaces(base);
-		const match = readdirSync(dir).find(f => normalizeSpaces(f) === normalizedBase);
+		const match = entries.find(f => normalizeSpaces(f) === normalizedBase);
 		return match ? join(dir, match) : null;
 	} catch {
 		return null;
@@ -163,7 +157,7 @@ export async function extractVideo(
 	signal?: AbortSignal,
 	options?: ExtractOptions,
 ): Promise<ExtractedContent | null> {
-	const config = loadVideoConfig();
+	const config = await loadVideoConfig();
 	const effectivePrompt = options?.prompt ?? DEFAULT_VIDEO_PROMPT;
 	const effectiveModel = options?.model ?? config.preferredModel;
 	const displayName = basename(info.absolutePath);
@@ -268,7 +262,7 @@ async function tryVideoGeminiApi(
 	model: string,
 	signal?: AbortSignal,
 ): Promise<ExtractedContent | null> {
-	const apiKey = getApiKey();
+	const apiKey = await getApiKey();
 	if (!apiKey) return null;
 	if (signal?.aborted) return null;
 

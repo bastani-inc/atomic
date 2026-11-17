@@ -67,17 +67,33 @@ describe("model catalog refresh across a models.json change", () => {
 		writeModels(modelsPath, "old-key", "old-model");
 		const runtime = await createRuntime(modelsPath);
 		const start = runtime.getCatalogInputsGeneration();
+		expect(typeof start).toBe("number");
 
 		// Nothing in the runtime writes this file, so the generation samples it. A
 		// same-length rewrite is the case an mtime or a size would miss.
 		expect(runtime.getCatalogInputsGeneration()).toBe(start);
+		expect(await runtime.getCatalogInputsGenerationAsync()).toBe(start);
 		writeModels(modelsPath, "new-key", "new-model");
 		const afterEdit = runtime.getCatalogInputsGeneration();
 		expect(afterEdit).toBeGreaterThan(start);
+		expect(await runtime.getCatalogInputsGenerationAsync()).toBe(afterEdit);
 
 		// Rewriting the same content is not a change, so repeated reads keep sharing.
 		writeModels(modelsPath, "new-key", "new-model");
 		expect(runtime.getCatalogInputsGeneration()).toBe(afterEdit);
+		expect(await runtime.getCatalogInputsGenerationAsync()).toBe(afterEdit);
+	});
+
+	it("gives requests in the same tick one key, and a request after an edit another", async () => {
+		const modelsPath = createModelsPath();
+		writeModels(modelsPath, "old-key", "old-model");
+		const runtime = await createRuntime(modelsPath);
+
+		const [first, second] = await Promise.all([runtime.readCatalogInputsKey(), runtime.readCatalogInputsKey()]);
+		expect(second).toBe(first);
+
+		writeModels(modelsPath, "new-key", "new-model");
+		expect(await runtime.readCatalogInputsKey()).not.toBe(first);
 	});
 
 	it("does not answer a post-edit request with the pass that loaded the old models.json", async () => {
@@ -147,7 +163,10 @@ describe("model catalog refresh across a models.json change", () => {
 		const selectorController = new AbortController();
 		const startupRefresh = refreshModelCatalogs(runtime, { signal: startupController.signal });
 		await waitForPasses(() => passes, 1);
+		const keyReads = vi.spyOn(runtime, "readCatalogInputsKey");
 		const selectorRefresh = refreshModelCatalogs(runtime, { signal: selectorController.signal });
+		await keyReads.mock.results[0]?.value;
+		await new Promise((resolve) => setImmediate(resolve));
 
 		expect(passes).toBe(1);
 

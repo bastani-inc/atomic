@@ -16,13 +16,13 @@ describe("subagent result intercom helpers", () => {
 		assert.equal(resolveSubagentResultStatus({ status: "skipped" }), "failed");
 	});
 
-	test("a result payload reports the parent's direct children and nothing below them", () => {
+	test("a result payload reports the parent's direct children and nothing below them", async () => {
 		const children: SubagentResultIntercomChild[] = [
 			{ agent: "worker-a", status: "completed", index: 0, summary: "done a" },
 			{ agent: "worker-b", status: "failed", index: 1, summary: "  " },
 		];
 
-		const payload = buildSubagentResultIntercomPayload({
+		const payload = await buildSubagentResultIntercomPayload({
 			to: "orchestrator",
 			runId: "root",
 			mode: "parallel",
@@ -43,8 +43,8 @@ describe("subagent result intercom helpers", () => {
 		assert.doesNotMatch(payload.message, /Nested subagents:/);
 	});
 
-	test("grouped intercom status is cancelled only when every child is interrupted with abort", () => {
-		const cancelled = buildSubagentResultIntercomPayload({
+	test("grouped intercom status is cancelled only when every child is interrupted with abort", async () => {
+		const cancelled = await buildSubagentResultIntercomPayload({
 			to: "orchestrator",
 			runId: "cancel",
 			mode: "parallel",
@@ -57,7 +57,7 @@ describe("subagent result intercom helpers", () => {
 		assert.match(cancelled.message, /^Status: cancelled$/m);
 		assert.match(cancelled.message, /Children: 2 cancelled/);
 
-		const errorNamedAbort = buildSubagentResultIntercomPayload({
+		const errorNamedAbort = await buildSubagentResultIntercomPayload({
 			to: "orchestrator",
 			runId: "error-abort",
 			mode: "single",
@@ -66,7 +66,7 @@ describe("subagent result intercom helpers", () => {
 		assert.match(errorNamedAbort.message, /^Status: failed$/m);
 		assert.doesNotMatch(errorNamedAbort.message, /Status: cancelled/);
 
-		const empty = buildSubagentResultIntercomPayload({
+		const empty = await buildSubagentResultIntercomPayload({
 			to: "orchestrator",
 			runId: "empty",
 			mode: "parallel",
@@ -77,13 +77,13 @@ describe("subagent result intercom helpers", () => {
 	});
 
 	// PR #2974: parent cancellation takes precedence without erasing the killed child's result.
-	test("a killed child and parent-cancelled sibling report grouped cancellation in either order", () => {
+	test("a killed child and parent-cancelled sibling report grouped cancellation in either order", async () => {
 		const children: SubagentResultIntercomChild[] = [
 			{ agent: "worker", status: "killed", summary: "Killed. This child cannot be resumed." },
 			{ agent: "reviewer", status: "interrupted", cause: "abort", summary: "Run cancelled by parent." },
 		];
 		for (const ordered of [children, [...children].reverse()]) {
-			const payload = buildSubagentResultIntercomPayload({
+			const payload = await buildSubagentResultIntercomPayload({
 				to: "orchestrator",
 				runId: "mixed-kill-cancel",
 				mode: "parallel",
@@ -96,8 +96,8 @@ describe("subagent result intercom helpers", () => {
 		}
 	});
 
-	test("a mixed completed and parent-cancelled set reports Status: cancelled", () => {
-		const payload = buildSubagentResultIntercomPayload({
+	test("a mixed completed and parent-cancelled set reports Status: cancelled", async () => {
+		const payload = await buildSubagentResultIntercomPayload({
 			to: "orchestrator",
 			runId: "mixed-complete-cancel",
 			mode: "parallel",

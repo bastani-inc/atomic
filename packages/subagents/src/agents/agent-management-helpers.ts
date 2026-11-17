@@ -67,18 +67,18 @@ export function allAgents(d: { builtin: AgentConfig[]; user: AgentConfig[]; proj
 	return [...d.builtin, ...d.user, ...d.project];
 }
 
-export function availableNames(cwd: string, discovery: AgentDiscoveryOptions): string[] {
-	const d = discoverAgentsAll(cwd, discovery);
+export async function availableNames(cwd: string, discovery: AgentDiscoveryOptions): Promise<string[]> {
+	const d = await discoverAgentsAll(cwd, discovery);
 	return [...new Set(allAgents(d).map((agent) => agent.name))].sort((a, b) => a.localeCompare(b));
 }
 
-export function findAgents(
+export async function findAgents(
 	name: string,
 	cwd: string,
 	discovery: AgentDiscoveryOptions,
 	scope: AgentScope = "both",
-): AgentConfig[] {
-	const d = discoverAgentsAll(cwd, discovery);
+): Promise<AgentConfig[]> {
+	const d = await discoverAgentsAll(cwd, discovery);
 	const raw = name.trim();
 	const sanitized = sanitizeName(raw);
 	return allAgents(d)
@@ -86,14 +86,14 @@ export function findAgents(
 		.sort((a, b) => a.source.localeCompare(b.source));
 }
 
-export function nameExistsInScope(
+export async function nameExistsInScope(
 	cwd: string,
 	discovery: AgentDiscoveryOptions,
 	scope: ManagementScope,
 	name: string,
 	excludePath?: string,
-): boolean {
-	const d = discoverAgentsAll(cwd, discovery);
+): Promise<boolean> {
+	const d = await discoverAgentsAll(cwd, discovery);
 	return (scope === "user" ? d.user : d.project).some(
 		(agent) => agent.name === name && agent.filePath !== excludePath,
 	);
@@ -117,11 +117,20 @@ export function fallbackModelsWarning(
 		: undefined;
 }
 
-export function skillsWarning(cwd: string, skills: string[] | undefined, catalog?: SkillCatalog): string | undefined {
+async function missingFilesystemSkills(cwd: string, skills: string[]): Promise<string[]> {
+	const available = new Set((await discoverAvailableSkills(cwd)).map((entry) => entry.name));
+	return skills.filter((skill) => !available.has(skill));
+}
+
+export async function skillsWarning(
+	cwd: string,
+	skills: string[] | undefined,
+	catalog?: SkillCatalog,
+): Promise<string | undefined> {
 	if (!skills || skills.length === 0) return undefined;
 	const missing = catalog
-		? resolveSkillsFromCatalog(skills, catalog, cwd).missing
-		: skills.filter((skill) => !new Set(discoverAvailableSkills(cwd).map((entry) => entry.name)).has(skill));
+		? (await resolveSkillsFromCatalog(skills, catalog, cwd)).missing
+		: await missingFilesystemSkills(cwd, skills);
 	return missing.length ? `Warning: skills not found: ${missing.join(", ")}.` : undefined;
 }
 

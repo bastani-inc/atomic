@@ -9,6 +9,7 @@ import {
 	setCapabilityOverrides,
 	type TuiInputListener,
 	type WheelScrollLines,
+	WindowedContainer,
 } from "@bastani/atomic-tui";
 import type { AgentSessionQueuePauseControl } from "../../core/agent-session-methods.ts";
 import type { MarkdownTransformer } from "../../core/extensions/types.ts";
@@ -63,7 +64,7 @@ import type {
 	ExtensionDialogComponent,
 	InteractiveModeOptions,
 } from "./interactive-mode-types.ts";
-import { StartupChatContainer } from "./interactive-startup-chat-container.ts";
+import { finishChatHistory, StartupChatContainer } from "./interactive-startup-chat-container.ts";
 import type { InteractiveSubmission } from "./interactive-submission.ts";
 import {
 	createInteractiveTui,
@@ -688,10 +689,15 @@ export class InteractiveModeBase {
 			// what gets painted is the transcript, not the focused dialog.
 			while (this.renderer.hasOverlayEntries) this.renderer.hideOverlay();
 			if (isViewportTUI(this.renderer)) this.renderer.setLayoutRoot(this.documentContainer);
+			finishChatHistory(this.chatContainer);
 		}
 		// `resume-hint` keeps whatever the alternate screen held: the prior
 		// shell contents reappear and shutdown prints only the resume line.
-		this.ui.stop({ preserveScreen: isFullscreen && fullscreenExitOutput === "resume-hint" });
+		this.ui.stop({
+			preserveScreen: isFullscreen && fullscreenExitOutput === "resume-hint",
+			writeInSlices: this.writeExitOutputInSlices,
+		});
+		if (this.writeExitOutputInSlices) this.exitOutputWritten = this.ui.whenStopped();
 		this.disposeMarkitDiagnosticSink();
 		this.disposeDeprecationWarningSink();
 	}
@@ -740,7 +746,7 @@ export class InteractiveModeBase {
 		this.ui = createInteractiveTuiReference(() => this.renderer);
 		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
 		this.headerContainer = new Container();
-		this.documentContainer = new Container();
+		this.documentContainer = new WindowedContainer();
 		this.documentContainer.addChild(this.headerContainer);
 		this.chatContainer = new StartupChatContainer(isChatMessageComponent);
 		this.documentContainer.addChild(this.chatContainer);
@@ -833,5 +839,7 @@ export class InteractiveModeBase {
 	 * repaint the final frame while the process is exiting.
 	 */
 	isShuttingDown = false;
+	writeExitOutputInSlices = false;
+	exitOutputWritten: Promise<void> | undefined;
 	installChangeWarningShown = false;
 }

@@ -10,6 +10,7 @@ import { FileAuthStorageBackend } from "../src/core/auth-storage-backends.js";
 type RealpathOverride = (path: string, call: number) => string;
 
 const realpath = vi.hoisted(() => ({ override: undefined as RealpathOverride | undefined, calls: 0 }));
+const resolved = realpath;
 
 vi.mock("fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof nodeFs>();
@@ -20,7 +21,32 @@ vi.mock("fs", async (importOriginal) => {
 		},
 		{ native: actual.realpathSync.native },
 	) as typeof actual.realpathSync;
-	return { ...actual, realpathSync };
+	// The asynchronous lock resolves with the callback form, which matches realpathSync's result on every platform.
+	const realpathCallback = Object.assign(
+		(path: nodeFs.PathLike, callback: (error: NodeJS.ErrnoException | null, resolvedPath?: string) => void) => {
+			realpath.calls += 1;
+			if (!realpath.override) return actual.realpath(path, callback);
+			let resolvedPath: string;
+			try {
+				resolvedPath = realpath.override(String(path), realpath.calls);
+			} catch (error) {
+				queueMicrotask(() => callback(error as NodeJS.ErrnoException));
+				return;
+			}
+			queueMicrotask(() => callback(null, resolvedPath));
+		},
+		{ native: actual.realpath.native },
+	) as typeof actual.realpath;
+	return { ...actual, realpathSync, realpath: realpathCallback };
+});
+
+vi.mock("fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	const realpath = (async (path: nodeFs.PathLike) => {
+		resolved.calls += 1;
+		return resolved.override ? resolved.override(String(path), resolved.calls) : actual.realpath(path);
+	}) as typeof actual.realpath;
+	return { ...actual, realpath, default: { ...actual, realpath } };
 });
 
 const RUNAWAY_CALLS = 50;

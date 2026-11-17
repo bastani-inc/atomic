@@ -1,4 +1,5 @@
 import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 
 /**
  * A spawned broker announces its real pid, so a parent that cannot watch the process it spawned can tell a broker that
@@ -60,6 +61,15 @@ export function retractBrokerStartAnnouncement(env: NodeJS.ProcessEnv = process.
 	}
 }
 
+function parseBrokerStartAnnouncement(text: string, announcement: BrokerStartAnnouncement): number | undefined {
+	// A complete line only: a write still in progress is read as nothing yet.
+	if (!text.endsWith("\n")) return undefined;
+	const [token, pid, ...rest] = text.trim().split(/\s+/u);
+	if (token !== announcement.token || rest.length > 0) return undefined;
+	const parsed = Number(pid);
+	return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 /** Parent side: the pid this spawn's broker announced, or undefined until it has, or when the file is another spawn's. */
 export function readBrokerStartAnnouncement(announcement: BrokerStartAnnouncement): number | undefined {
 	let text: string;
@@ -68,10 +78,17 @@ export function readBrokerStartAnnouncement(announcement: BrokerStartAnnouncemen
 	} catch {
 		return undefined;
 	}
-	// A complete line only: a write still in progress is read as nothing yet.
-	if (!text.endsWith("\n")) return undefined;
-	const [token, pid, ...rest] = text.trim().split(/\s+/u);
-	if (token !== announcement.token || rest.length > 0) return undefined;
-	const parsed = Number(pid);
-	return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+	return parseBrokerStartAnnouncement(text, announcement);
+}
+
+export async function readBrokerStartAnnouncementAsync(
+	announcement: BrokerStartAnnouncement,
+): Promise<number | undefined> {
+	let text: string;
+	try {
+		text = await readFile(announcement.path, "utf-8");
+	} catch {
+		return undefined;
+	}
+	return parseBrokerStartAnnouncement(text, announcement);
 }

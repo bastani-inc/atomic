@@ -33,13 +33,19 @@ function replaceTabs(text: string): string {
 	return text.replace(/\t/g, "   ");
 }
 
+const MAX_HIGHLIGHTED_WORD_EDITS = 64;
+
 /**
  * Compute word-level diff and render with inverse on changed parts.
  * Uses diffWords which groups whitespace with adjacent words for cleaner highlighting.
  * Strips leading whitespace from inverse to avoid highlighting indentation.
  */
-function renderIntraLineDiff(oldContent: string, newContent: string): { removedLine: string; addedLine: string } {
-	const wordDiff = Diff.diffWords(oldContent, newContent);
+function renderIntraLineDiff(
+	oldContent: string,
+	newContent: string,
+): { removedLine: string; addedLine: string } | undefined {
+	const wordDiff = Diff.diffWords(oldContent, newContent, { maxEditLength: MAX_HIGHLIGHTED_WORD_EDITS });
+	if (!wordDiff) return undefined;
 
 	let removedLine = "";
 	let addedLine = "";
@@ -127,17 +133,13 @@ export function renderDiff(diffText: string, _options: RenderDiffOptions = {}): 
 
 			// Only do intra-line diffing when there's exactly one removed and one added line
 			// (indicating a single line modification). Otherwise, show lines as-is.
-			if (removedLines.length === 1 && addedLines.length === 1) {
-				const removed = removedLines[0];
-				const added = addedLines[0];
-
-				const { removedLine, addedLine } = renderIntraLineDiff(
-					replaceTabs(removed.content),
-					replaceTabs(added.content),
-				);
-
-				result.push(theme.fg("toolDiffRemoved", `-${removed.lineNum} ${removedLine}`));
-				result.push(theme.fg("toolDiffAdded", `+${added.lineNum} ${addedLine}`));
+			const intraLine =
+				removedLines.length === 1 && addedLines.length === 1
+					? renderIntraLineDiff(replaceTabs(removedLines[0].content), replaceTabs(addedLines[0].content))
+					: undefined;
+			if (intraLine) {
+				result.push(theme.fg("toolDiffRemoved", `-${removedLines[0].lineNum} ${intraLine.removedLine}`));
+				result.push(theme.fg("toolDiffAdded", `+${addedLines[0].lineNum} ${intraLine.addedLine}`));
 			} else {
 				// Show all removed lines first, then all added lines
 				for (const removed of removedLines) {

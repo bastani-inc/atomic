@@ -1,6 +1,6 @@
 import type { AgentConfig } from "../../agents/agents.js";
 import type { Details, SubagentToolResult } from "../../shared/types.js";
-import type { SubagentParamsLike, TaskParam } from "./subagent-executor-types.js";
+import { type SubagentParamsLike, TASK_EXECUTION_TICKETS, type TaskParam } from "./subagent-executor-types.js";
 
 export function validateExecutionInput(
 	params: SubagentParamsLike,
@@ -96,8 +96,11 @@ function expandTopLevelTaskCounts(tasks: TaskParam[]): { tasks?: TaskParam[]; er
 		if (rawCount !== undefined && (typeof rawCount !== "number" || !Number.isInteger(rawCount) || rawCount < 1)) {
 			return { error: `tasks[${taskIndex}].count must be an integer >= 1` };
 		}
-		const { count: _count, ...concreteTask } = task;
-		for (let repeat = 0; repeat < (rawCount ?? 1); repeat++) expanded.push({ ...concreteTask });
+		const { count: _count, [TASK_EXECUTION_TICKETS]: tickets, ...concreteTask } = task;
+		for (let repeat = 0; repeat < (rawCount ?? 1); repeat++) {
+			const ticket = tickets?.[repeat];
+			expanded.push(ticket ? { ...concreteTask, [TASK_EXECUTION_TICKETS]: [ticket] } : { ...concreteTask });
+		}
 	}
 	return { tasks: expanded };
 }

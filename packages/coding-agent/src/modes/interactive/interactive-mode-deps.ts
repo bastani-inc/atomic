@@ -108,18 +108,23 @@ export { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 export { recordTimeSinceReset } from "../../core/timings.ts";
 export type { TruncationResult } from "../../core/tools/truncate.ts";
 export {
+	getProjectTrustPathAsync,
 	hasProjectConfigDir,
 	hasProjectTrustInputs,
 	hasTrustRequiringProjectResources,
+	hasTrustRequiringProjectResourcesAsync,
 	ProjectTrustStore,
 } from "../../core/trust-manager.ts";
 export {
+	getCachedChangelog,
 	getChangelogHighlights,
 	getChangelogPath,
 	getEntriesForVersion,
 	getNewEntries,
 	normalizeChangelogLinks,
 	parseChangelog,
+	parseChangelogAsync,
+	preloadChangelog,
 } from "../../utils/changelog.ts";
 export { copyToClipboard } from "../../utils/clipboard.js";
 export { parseGitUrl } from "../../utils/git.ts";
@@ -152,7 +157,7 @@ export { CountdownTimer } from "./components/countdown-timer.ts";
 export { CustomEditor } from "./components/custom-editor.ts";
 export { CustomMessageComponent } from "./components/custom-message.ts";
 export { DynamicBorder } from "./components/dynamic-border.ts";
-export { EarendilAnnouncementComponent } from "./components/earendil-announcement.ts";
+export { EarendilAnnouncementComponent, loadEarendilAnnouncementImage } from "./components/earendil-announcement.ts";
 export { ExtensionEditorComponent } from "./components/extension-editor.ts";
 export { ExtensionInputComponent } from "./components/extension-input.ts";
 export { ExtensionSelectorComponent } from "./components/extension-selector.ts";
@@ -179,6 +184,7 @@ export {
 	getMarkdownTheme,
 	getThemeByName,
 	onThemeChange,
+	refreshCustomThemes,
 	setRegisteredThemes,
 	stopThemeWatcher,
 	Theme,

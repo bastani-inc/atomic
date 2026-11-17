@@ -472,14 +472,14 @@ test("the fork's handle keeps lineage and bindings, clears ownership and failure
 	assert.equal(relative.cwd, join(process.cwd(), "relative/dir"));
 });
 
-test("validateForkOptions accepts valid options and names each invalid one (#4321)", () => {
+test("validateForkOptions accepts valid options and names each invalid one (#4321)", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "fork-options-"));
 	const file = join(directory, "file.txt");
 	writeFileSync(file, "x");
 	try {
 		const runId = testRunId("options");
-		validateForkOptions("sdk", runId, {});
-		validateForkOptions("sdk", runId, {
+		await validateForkOptions("sdk", runId, {});
+		await validateForkOptions("sdk", runId, {
 			fromStage: "a.b",
 			inputs: {},
 			cwd: directory,
@@ -487,7 +487,7 @@ test("validateForkOptions accepts valid options and names each invalid one (#432
 			definition,
 			signal: new AbortController().signal,
 		});
-		validateForkOptions("cli", runId, { carryMessages: "before" });
+		await validateForkOptions("cli", runId, { carryMessages: "before" });
 		const expectedText: Record<string, string> = {
 			runId: "a run id or 8-character prefix",
 			fromStage: "a stage path from listForkPoints",
@@ -497,39 +497,35 @@ test("validateForkOptions accepts valid options and names each invalid one (#432
 			definition: "a workflow definition created with workflow()",
 			signal: "an AbortSignal",
 		};
-		const invalid = (field: string, value: unknown) => {
-			const error = (() => {
-				try {
-					validateForkOptions(
-						"sdk",
-						field === "runId" ? value : runId,
-						field === "runId" ? {} : { [field]: value },
-					);
-				} catch (failure) {
-					return failure;
-				}
-				return undefined;
-			})();
+		const invalid = async (field: string, value: unknown) => {
+			const error = await validateForkOptions(
+				"sdk",
+				field === "runId" ? value : runId,
+				field === "runId" ? {} : { [field]: value },
+			).then(
+				() => undefined,
+				(failure: unknown) => failure,
+			);
 			assert.ok(error instanceof ForkConfigError, `${field}=${String(value)}`);
 			assert.deepEqual(error.issues, [{ field, expected: expectedText[field] }]);
 			assert.equal(error.expected, expectedText[field]);
 			if (field !== "cwd") assert.equal(Object.hasOwn(error, "cause"), false, field);
 			return error;
 		};
-		for (const value of [undefined, 7, "", "   "]) invalid("runId", value);
-		for (const value of ["", 7]) invalid("fromStage", value);
-		for (const value of [null, [], "text", 7]) invalid("inputs", value);
-		for (const value of ["", 7, file]) invalid("cwd", value);
+		for (const value of [undefined, 7, "", "   "]) await invalid("runId", value);
+		for (const value of ["", 7]) await invalid("fromStage", value);
+		for (const value of [null, [], "text", 7]) await invalid("inputs", value);
+		for (const value of ["", 7, file]) await invalid("cwd", value);
 		assert.ok(
-			invalid("cwd", join(directory, "missing")).cause instanceof Error,
+			(await invalid("cwd", join(directory, "missing"))).cause instanceof Error,
 			"a missing directory keeps its cause",
 		);
 		for (const value of [file, "", 7, ["not-a-path"]])
-			assert.equal(Object.hasOwn(invalid("cwd", value), "cause"), false, String(value));
-		for (const value of ["later", 1]) invalid("carryMessages", value);
-		for (const value of [{}, "workflow"]) invalid("definition", value);
-		for (const value of [null, {}, "signal"]) invalid("signal", value);
-		const all = invalid("runId", "");
+			assert.equal(Object.hasOwn(await invalid("cwd", value), "cause"), false, String(value));
+		for (const value of ["later", 1]) await invalid("carryMessages", value);
+		for (const value of [{}, "workflow"]) await invalid("definition", value);
+		for (const value of [null, {}, "signal"]) await invalid("signal", value);
+		const all = await invalid("runId", "");
 		assert.equal(all.source, "sdk");
 	} finally {
 		rmSync(directory, { recursive: true, force: true });

@@ -29,6 +29,27 @@ vi.mock("fs", async (importOriginal) => {
 	return { ...actual, writeFileSync };
 });
 
+vi.mock("fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	const writeFile = (async (
+		file: Parameters<typeof actual.writeFile>[0],
+		data: string,
+		options?: Parameters<typeof actual.writeFile>[2],
+	) => {
+		if (diskFull.enabled && typeof file === "string" && diskFull.tempFile.test(file)) {
+			diskFull.failures += 1;
+			await actual.writeFile(file, String(data).slice(0, 8), options);
+			throw Object.assign(new Error(`ENOSPC: no space left on device, write '${file}'`), {
+				code: "ENOSPC",
+				errno: -28,
+				syscall: "write",
+			});
+		}
+		await actual.writeFile(file, data, options);
+	}) as typeof actual.writeFile;
+	return { ...actual, writeFile, default: { ...actual, writeFile } };
+});
+
 const STORED = { anthropic: { type: "api_key", key: "anthropic-key" } };
 
 const posixOnly = process.platform === "win32" ? it.skip : it;

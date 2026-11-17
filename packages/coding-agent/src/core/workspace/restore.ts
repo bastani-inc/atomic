@@ -1,6 +1,5 @@
-import { existsSync } from "node:fs";
 import { WorkspaceBindingError, WorkspaceRestoreError } from "./errors.ts";
-import { assertWorkspaceGitAvailable, gitOutput, runWorkspaceGit } from "./git.ts";
+import { assertWorkspaceGitAvailable, gitOutput, pathExists, runWorkspaceGit } from "./git.ts";
 import { withRepositoryLock } from "./lease.ts";
 import {
 	type BoundWorkspace,
@@ -140,7 +139,7 @@ export async function restoreRecordedWorkspace(
 			reason,
 			fields: { repo: binding.repo, branch: binding.branch, worktree: binding.worktree, repository },
 		});
-	if (local && !existsSync(binding.repository)) throw missing("repository-missing", binding.repository);
+	if (local && !(await pathExists(binding.repository))) throw missing("repository-missing", binding.repository);
 	const repository = await openWorkspaceRepository(local ? binding.repository : binding.repo, signal);
 	const worktree = await ensureWorktree(
 		repository,

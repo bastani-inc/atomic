@@ -37,7 +37,7 @@ describe("getApiKeyAndHeaders header suppression markers", () => {
 		const registry = new ModelRegistry(
 			fakeModelRuntime({
 				getAuth: async () => undefined,
-				getCompatibilityRequestConfig: () => ({
+				getCompatibilityRequestConfigAsync: async () => ({
 					authHeader: false,
 					headers: { "x-keep": "kept", "x-suppress": null },
 				}),

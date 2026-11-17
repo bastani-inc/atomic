@@ -4,6 +4,7 @@ import {
 	configureHttpDispatcher,
 	decisionSettingScopes,
 	getAvailableThemes,
+	refreshCustomThemes,
 	SettingsSelectorComponent,
 	setDebugSetting,
 	ToolExecutionComponent,
@@ -45,7 +46,8 @@ InteractiveModeBase.prototype.showSelector = function (
 	this.ui.requestRender();
 };
 
-InteractiveModeBase.prototype.showSettingsSelector = function (this: InteractiveModeBase): void {
+InteractiveModeBase.prototype.showSettingsSelector = async function (this: InteractiveModeBase): Promise<void> {
+	const availableThemes = getAvailableThemes();
 	this.showSelector((done) => {
 		const { decisionModelScope, autoAdvanceAfterSteerScope } = decisionSettingScopes(
 			this.settingsManager.getProjectSettings(),
@@ -80,7 +82,7 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				compactionModelScope,
 				currentTheme: this.themeController.getThemeSelection() || "dark",
 				terminalTheme: this.themeController.getTerminalTheme(),
-				availableThemes: getAvailableThemes(),
+				availableThemes,
 				hideThinkingBlock: this.hideThinkingBlock,
 				mermaidRenderingMode: this.settingsManager.getMermaidRenderingMode(),
 				latexRenderingEnabled: this.settingsManager.getLatexRenderingEnabled(),
@@ -281,4 +283,6 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 		);
 		return { component, focus: component.getSettingsList() };
 	});
+	await refreshCustomThemes();
+	availableThemes.splice(0, availableThemes.length, ...getAvailableThemes());
 };

@@ -108,6 +108,8 @@ export interface Terminal {
 	// Write output to terminal
 	write(data: string): void;
 
+	flush?(): Promise<void>;
+
 	// Get terminal dimensions
 	get columns(): number;
 	get rows(): number;
@@ -159,6 +161,27 @@ export function resolveEscapeTimeoutMs(env: NodeJS.ProcessEnv = process.env): nu
 	return DEFAULT_ESCAPE_TIMEOUT_MS;
 }
 
+function createWriteLog(target: string): ((data: string) => void) | undefined {
+	if (!target) return undefined;
+	const now = new Date();
+	const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}-${String(now.getMinutes()).padStart(2, "0")}-${String(now.getSeconds()).padStart(2, "0")}`;
+	const logPath = fs.promises.stat(target).then(
+		(stats) => (stats.isDirectory() ? path.join(target, `tui-${ts}-${process.pid}.log`) : target),
+		// Not an existing directory - use as-is (file path)
+		() => target,
+	);
+	let appending: Promise<void> = Promise.resolve();
+	return (data) => {
+		appending = appending.then(async () => {
+			try {
+				await fs.promises.appendFile(await logPath, data, { encoding: "utf8" });
+			} catch {
+				// Ignore logging errors
+			}
+		});
+	};
+}
+
 /**
  * Real terminal using process.stdin/stdout
  */
@@ -182,20 +205,7 @@ export class ProcessTerminal implements Terminal {
 	private programStatusSupported = false;
 	/** The support query was sent and its DA1 sentinel has not arrived yet. */
 	private programStatusQueryPending = false;
-	private writeLogPath = (() => {
-		const env = getTuiEnvValue("TUI_WRITE_LOG") || "";
-		if (!env) return "";
-		try {
-			if (fs.statSync(env).isDirectory()) {
-				const now = new Date();
-				const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}-${String(now.getMinutes()).padStart(2, "0")}-${String(now.getSeconds()).padStart(2, "0")}`;
-				return path.join(env, `tui-${ts}-${process.pid}.log`);
-			}
-		} catch {
-			// Not an existing directory - use as-is (file path)
-		}
-		return env;
-	})();
+	private writeLog = createWriteLog(getTuiEnvValue("TUI_WRITE_LOG") || "");
 
 	get kittyProtocolActive(): boolean {
 		return this._kittyProtocolActive;
@@ -550,13 +560,12 @@ export class ProcessTerminal implements Terminal {
 
 	write(data: string): void {
 		process.stdout.write(data);
-		if (this.writeLogPath) {
-			try {
-				fs.appendFileSync(this.writeLogPath, data, { encoding: "utf8" });
-			} catch {
-				// Ignore logging errors
-			}
-		}
+		this.writeLog?.(data);
+	}
+
+	flush(): Promise<void> {
+		if (process.stdout.writableLength === 0 || process.stdout.destroyed) return Promise.resolve();
+		return new Promise((resolve) => process.stdout.write("", () => resolve()));
 	}
 
 	get columns(): number {

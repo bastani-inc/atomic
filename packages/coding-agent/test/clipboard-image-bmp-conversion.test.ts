@@ -46,15 +46,24 @@ vi.mock("child_process", async () => {
 	const actual = await vi.importActual<typeof import("child_process")>("child_process");
 	return {
 		...actual,
-		spawnSync: vi.fn((command: string, args: string[]) => {
-			if (command === "wl-paste" && args.includes("--list-types")) {
-				return { status: 0, stdout: Buffer.from("image/bmp\n"), error: null };
-			}
-			if (command === "wl-paste" && args.includes("image/bmp")) {
-				return { status: 0, stdout: Buffer.from(createTinyBmp1x1Red24bpp()), error: null };
-			}
-			return { status: 1, stdout: Buffer.alloc(0), error: null };
-		}),
+		execFile: vi.fn(
+			(
+				command: string,
+				args: string[],
+				_options: unknown,
+				callback: (error: Error | null, stdout: Buffer, stderr: Buffer) => void,
+			) => {
+				if (command === "wl-paste" && args.includes("--list-types")) {
+					callback(null, Buffer.from("image/bmp\n"), Buffer.alloc(0));
+					return;
+				}
+				if (command === "wl-paste" && args.includes("image/bmp")) {
+					callback(null, Buffer.from(createTinyBmp1x1Red24bpp()), Buffer.alloc(0));
+					return;
+				}
+				callback(new Error("failed"), Buffer.alloc(0), Buffer.alloc(0));
+			},
+		),
 	};
 });
 

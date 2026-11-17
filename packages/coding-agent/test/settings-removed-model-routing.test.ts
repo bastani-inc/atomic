@@ -6,7 +6,7 @@ import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, it, type MockInstance, vi } from "vitest";
 import { ENV_AGENT_DIR } from "../src/config.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
-import { runMigrations } from "../src/migrations.js";
+import { runMigrations, runMigrationsAsync } from "../src/migrations.js";
 import { clearDeprecationWarningsForTests, setDeprecationWarningSink } from "../src/utils/deprecation.js";
 import { runCliProcess } from "./cli-test-helpers.js";
 
@@ -89,6 +89,24 @@ describe("startup removes a saved modelRouting setting from the settings file on
 		runMigrations(cwd, { projectTrusted: true });
 		assert.deepEqual(readJson(projectPath()), { theme: "light" }, "trusting the project removes it");
 		assert.equal(notices().length, 1, notices().join("\n"));
+	});
+
+	it("removes it from a project trusted after startup with the asynchronous migrations, keeping other keys, and says so once", async () => {
+		mkdirSync(join(cwd, ".atomic"));
+		const content = JSON.stringify({ modelRouting: ROUTING, theme: "light" });
+		writeFileSync(projectPath(), content);
+		runMigrations(cwd, { projectTrusted: false });
+		assert.equal(readFileSync(projectPath(), "utf-8"), content);
+
+		await runMigrationsAsync(cwd, { projectTrusted: true });
+		assert.deepEqual(readJson(projectPath()), { theme: "light" }, "trusting the project removes it");
+		const shown = notices();
+		assert.equal(shown.length, 1, shown.join("\n"));
+		assert.match(shown[0]!, /Removed the "modelRouting" setting from project settings/);
+
+		nextProcess();
+		await runMigrationsAsync(cwd, { projectTrusted: true });
+		assert.deepEqual(notices(), [], "a later start shows nothing");
 	});
 
 	it("creates no settings file where there was none", () => {

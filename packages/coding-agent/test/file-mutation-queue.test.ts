@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createEditTool } from "../src/core/tools/edit.ts";
-import { withFileMutationQueue } from "../src/core/tools/file-mutation-queue.ts";
+import { withFileMutationQueue, withResolvingFileMutationQueue } from "../src/core/tools/file-mutation-queue.ts";
 import { createWriteTool } from "../src/core/tools/write.ts";
 
 function delay(ms: number): Promise<void> {
@@ -51,6 +51,30 @@ describe("withFileMutationQueue", () => {
 
 		await Promise.all([first, second]);
 		expect(order).toEqual(["first:start", "first:end", "second:start", "second:end"]);
+	});
+
+	it("keeps call order while an earlier operation's path is still resolving", async () => {
+		const order: string[] = [];
+		const path = "/tmp/file-mutation-queue-resolving";
+
+		const first = withResolvingFileMutationQueue(
+			async () => {
+				await delay(30);
+				return path;
+			},
+			async (resolved) => {
+				order.push(`first:${resolved}`);
+			},
+		);
+		const second = withResolvingFileMutationQueue(
+			async () => path,
+			async (resolved) => {
+				order.push(`second:${resolved}`);
+			},
+		);
+
+		await Promise.all([first, second]);
+		expect(order).toEqual([`first:${path}`, `second:${path}`]);
 	});
 
 	it("allows different files to proceed in parallel", async () => {

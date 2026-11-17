@@ -21,6 +21,7 @@ describe("agent shell git PATH (#4322)", () => {
 	let emptyDir: string;
 	let gitBinDir: string;
 	let getShellEnv: typeof import("../src/utils/shell.js").getShellEnv;
+	let getShellEnvAsync: typeof import("../src/utils/shell.js").getShellEnvAsync;
 
 	function writeExecutable(path: string, body: string): void {
 		mkdirSync(join(path, ".."), { recursive: true });
@@ -52,7 +53,7 @@ describe("agent shell git PATH (#4322)", () => {
 		vi.stubEnv("PATH", emptyDir);
 		vi.stubEnv("GIT_EXEC_PATH", undefined);
 		vi.resetModules();
-		({ getShellEnv } = await import("../src/utils/shell.js"));
+		({ getShellEnv, getShellEnvAsync } = await import("../src/utils/shell.js"));
 	});
 
 	afterEach(() => {
@@ -128,5 +129,13 @@ describe("agent shell git PATH (#4322)", () => {
 		);
 		const result = spawnSync("/bin/sh", ["-c", "git --check-helpers"], { env: getShellEnv(), encoding: "utf-8" });
 		assert.equal(result.stdout.trim(), `portable git ${join(binDir, "git", "libexec", "git-core")}`);
+	});
+
+	it("resolves the provisioned git asynchronously with the same PATH and environment", async () => {
+		writeProvisionedGit();
+		const syncEnv = getShellEnv();
+		const asyncEnv = await getShellEnvAsync();
+		assert.equal(pathOf(asyncEnv), pathOf(syncEnv));
+		assert.equal(asyncEnv.GIT_EXEC_PATH, syncEnv.GIT_EXEC_PATH);
 	});
 });

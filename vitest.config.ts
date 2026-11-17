@@ -82,14 +82,16 @@ const project = (
  * running beside it would be measured too: with sharding's longest-first order it started beside about five other
  * pool files, and its p99 lag reached 105.6 ms of its 100 ms bound (run 40577049870). It is its own project with a
  * later `groupOrder`, so vitest runs it after every other integration file of the run (or shard) has finished, with
- * nothing beside it. `npm run test:integration` selects both projects.
+ * nothing beside it. `npm run test:integration` selects it with the integration and UI gate projects.
  */
 const loadGate = "test/integration/workflow-pool-load-gate.test.ts";
+
+const uiGate = "test/integration/interactive-event-loop-guard.test.ts";
 
 /**
  * One project per suite directory, so the CI job split and the
  * diagnostics artifact names all survive the move off `bun test <dir>`
- * unchanged, plus the integration load gate on its own (above).
+ * unchanged, plus the two integration gates on their own (above).
  *
  * All projects use native setup: the CI project now executes the minified
  * extension/native binary boundary instead of limiting itself to source inspection.
@@ -105,10 +107,11 @@ export default defineConfig({
 		projects: [
 			project("unit", "test/unit/**/*.test.ts"),
 			project("integration", "test/integration/**/*.test.ts", {
-				exclude: [loadGate],
+				exclude: [loadGate, uiGate],
 				extraSetupFiles: [packagedWorkerSetup],
 			}),
 			project("integration-load-gate", loadGate, { groupOrder: 1 }),
+			project("integration-ui-gate", uiGate, { groupOrder: 2 }),
 			project("ci", "test/ci/**/*.test.ts"),
 		],
 	},

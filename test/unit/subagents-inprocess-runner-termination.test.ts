@@ -71,7 +71,7 @@ test("terminate_child_attempt prefers the live terminator over the raw token pat
 	try {
 		const control = new SubagentControlRuntime({ path: "parent", depth: 0 }, root);
 		control.registerAgents([sampleAgent()]);
-		const admitted = control.admitChildSession(sampleSpec(root), { path: "parent", depth: 0 }).admitted;
+		const admitted = (await control.admitChildSession(sampleSpec(root), { path: "parent", depth: 0 })).admitted;
 		assert.ok(admitted);
 
 		let release!: () => void;

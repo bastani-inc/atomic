@@ -159,12 +159,14 @@ async function perform(work) {
 }
 
 let performed = 0;
+let polled = false;
 try {
 	await request({ kind: "ready" });
 	for (;;) {
 		let work;
 		try {
 			const control = await observeControl();
+			polled = true;
 			if (control.state !== "running") {
 				await delay(25);
 				continue;
@@ -172,8 +174,11 @@ try {
 			work = await request({ kind: "claim" });
 		} catch (error) {
 			// Once the root run ends it releases its lease and refuses further polls as stale; a
-			// worker whose work is done stays connected and idle until the test closes the pool.
-			if (performed === 0) throw error;
+			// worker whose work is done stays connected and idle until the test closes the pool. So does
+			// one that polled the pool while every child went to other workers, as a loaded host can
+			// schedule them.
+			const rootEnded = polled && error?.code === "stale_lease";
+			if (performed === 0 && !rootEnded) throw error;
 			break;
 		}
 		if (!work) {

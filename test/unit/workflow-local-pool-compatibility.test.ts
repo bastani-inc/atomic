@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
@@ -14,6 +14,29 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
+
+/** Journals opened by path or selection, and those whose close has finished. */
+const journals = vi.hoisted(() => ({ opened: 0, closed: 0 }));
+
+vi.mock("../../packages/workflows/src/durable/journal/resolution.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../packages/workflows/src/durable/journal/resolution.js")>();
+	return {
+		...actual,
+		async resolveRunJournal(...args: Parameters<typeof actual.resolveRunJournal>) {
+			const journal = await actual.resolveRunJournal(...args);
+			journals.opened++;
+			const close = journal.close.bind(journal);
+			journal.close = async () => {
+				try {
+					await close();
+				} finally {
+					journals.closed++;
+				}
+			};
+			return journal;
+		},
+	};
+});
 
 test("root-local control registries are accepted for pooled resume (#3869)", async () => {
 	const journal = await resolveRunJournal({ journal: { memory: true } });
@@ -107,8 +130,11 @@ test.each(["changed", "closure"])("%s definitions fail before launching workers 
 		assert.equal(pool.workerPids.length, 0);
 	} finally {
 		await pool.close();
+		const openAfterPoolClosed = journals.opened - journals.closed;
 		await backend.close();
 		removeTempDirectory(directory);
+		// The coordinator's own journal is closed once the pool says it closed: only the run's journal is still open.
+		assert.equal(openAfterPoolClosed, 1);
 	}
 });
 

@@ -342,6 +342,8 @@ describe("ctx.tool admitted execution barrier", () => {
 	});
 
 	test("first observed failure cancels remaining admitted work", async () => {
+		const firstEntered = Promise.withResolvers<void>();
+		const secondEntered = Promise.withResolvers<void>();
 		const firstRelease = Promise.withResolvers<void>();
 		const secondRelease = Promise.withResolvers<void>();
 		const firstError = new Error("first admitted failure");
@@ -354,10 +356,12 @@ describe("ctx.tool admitted execution barrier", () => {
 				outputs: {},
 				run: async (ctx) => {
 					void ctx.tool("first-failure", {}, async () => {
+						firstEntered.resolve();
 						await firstRelease.promise;
 						throw firstError;
 					});
 					void ctx.tool("second-failure", {}, async () => {
+						secondEntered.resolve();
 						await secondRelease.promise;
 						throw secondError;
 					});
@@ -367,6 +371,7 @@ describe("ctx.tool admitted execution barrier", () => {
 			{},
 		);
 
+		await Promise.all([firstEntered.promise, secondEntered.promise]);
 		secondRelease.resolve();
 		await sleep(0);
 		firstRelease.resolve();

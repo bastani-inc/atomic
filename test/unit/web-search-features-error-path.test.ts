@@ -51,6 +51,7 @@ interface MessageObservation {
 
 interface RegisteredState {
 	fetchAllContent: ReturnType<typeof vi.fn>;
+	clearCloneCache: ReturnType<typeof vi.fn>;
 	handlers: Map<string, EventHandler>;
 	buildReturn: SearchReturnBuilder | null;
 	messages: MessageObservation[];
@@ -61,6 +62,7 @@ interface RegisteredState {
 const state = vi.hoisted(
 	(): RegisteredState => ({
 		fetchAllContent: vi.fn(),
+		clearCloneCache: vi.fn(),
 		handlers: new Map(),
 		buildReturn: null,
 		messages: [],
@@ -74,7 +76,7 @@ vi.mock("../../packages/web-access/extract.js", () => ({
 }));
 
 vi.mock("../../packages/web-access/github-extract.js", () => ({
-	clearCloneCache: vi.fn(),
+	clearCloneCache: state.clearCloneCache,
 }));
 
 vi.mock("../../packages/web-access/content-tools.js", () => ({
@@ -187,6 +189,8 @@ function createPi(
 
 function setup(options: Parameters<typeof createPi>[0] = {}): ExtensionAPI {
 	state.fetchAllContent.mockReset();
+	state.clearCloneCache.mockReset();
+	state.clearCloneCache.mockResolvedValue(undefined);
 	state.fetchSignal = null;
 	state.handlers.clear();
 	state.buildReturn = null;
@@ -333,4 +337,19 @@ test("sibling shutdown preserves a pending fetch until its own owner closes", as
 	assert.equal(firstSignal.aborted, true);
 	admission.resolve();
 	await waitForNotifications();
+});
+
+test("session_start activates the session before clone-cache directory deletion finishes (#5377)", async () => {
+	const cleanup = deferred<void>();
+	setup();
+	state.clearCloneCache.mockReturnValue(cleanup.promise);
+	const starting = startSession();
+	try {
+		await buildBackgroundFetch();
+		await waitForNotifications();
+		assert.equal(state.messages[0]?.customType, "web-search-content-ready");
+	} finally {
+		cleanup.resolve();
+		await starting;
+	}
 });

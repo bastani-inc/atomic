@@ -1,6 +1,6 @@
-import { existsSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { sliceHead } from "@bastani/atomic";
+import { pathExists } from "../../shared/path-exists.js";
 import type {
 	StageOptions,
 	StagePromptOptions,
@@ -79,13 +79,17 @@ export function taskBaseDir(options: Pick<WorkflowTaskExecutionOptions, "chainDi
 }
 
 /** The instruction naming the files a task reads; `requireFiles` refuses a file that does not exist. */
-export function taskReadInstruction(options: WorkflowTaskExecutionOptions, requireFiles: boolean): string {
+export async function taskReadInstruction(
+	options: WorkflowTaskExecutionOptions,
+	requireFiles: boolean,
+): Promise<string> {
 	if (options.reads === false || options.reads === undefined || options.reads.length === 0) return "";
 	const baseDir = taskBaseDir(options);
 	const files = options.reads.map((file) => resolveWorkflowPath(file, baseDir));
-	const missing = requireFiles ? files.find((file) => !existsSync(file)) : undefined;
-	if (missing !== undefined) {
-		throw new Error(`atomic-workflows: referenced artifact does not exist: ${missing}`);
+	if (requireFiles) {
+		for (const file of files)
+			if (!(await pathExists(file)))
+				throw new Error(`atomic-workflows: referenced artifact does not exist: ${file}`);
 	}
 	return `[Read from: ${files.join(", ")}]\n\n`;
 }
