@@ -8,6 +8,27 @@ import { bunExecutable, spawnSyncCollect } from "../../../test/helpers/runtime.j
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
 const MANAGER_MODULE = fileURLToPath(new URL("../src/core/settings-manager.ts", import.meta.url));
+const LOCK_DIRECTORY_MODULE = fileURLToPath(new URL("../src/core/settings-lock-directory.ts", import.meta.url));
+const UNPUBLISHED_CREATION_MS = 400;
+
+function heldCreations(paths: { trigger: string; settings: string; seen: string }, holdMs: number): string {
+	return `import { Worker } from "node:worker_threads";
+import { gateLockDirectoryPublication } from ${JSON.stringify(LOCK_DIRECTORY_MODULE)};
+const gate = new SharedArrayBuffer(4);
+gateLockDirectoryPublication(gate);
+new Worker(\`
+const { workerData } = require("node:worker_threads");
+const { existsSync, readFileSync, writeFileSync } = require("node:fs");
+const pause = new Int32Array(new SharedArrayBuffer(4));
+while (!existsSync(workerData.trigger)) Atomics.wait(pause, 0, 0, 5);
+Atomics.wait(pause, 0, 0, workerData.holdMs);
+writeFileSync(workerData.seen, readFileSync(workerData.settings, "utf8"));
+const gate = new Int32Array(workerData.gate);
+Atomics.store(gate, 0, 1);
+Atomics.notify(gate, 0);
+\`, { eval: true, workerData: { ...${JSON.stringify(paths)}, gate, holdMs: ${holdMs} } }).unref();
+`;
+}
 /** A real Bun child process that saves and exits. */
 const EXITING_CHILD_TIMEOUT_MS = 60_000;
 
@@ -124,6 +145,54 @@ process.exit(3);`;
 		assert.equal(result.exitCode, 0, result.stderr.toString());
 		assert.equal(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")).theme, "dark");
 		assert.equal(existsSync(join(agentDir, "settings.json.lock")), false);
+	},
+	EXITING_CHILD_TIMEOUT_MS,
+);
+
+it(
+	"writes a setting at exit once its lock directory's creation is published, however long that takes",
+	() => {
+		const settings = join(agentDir, "settings.json");
+		const lock = join(agentDir, "settings.json.lock");
+		const seen = join(directory, "seen.json");
+		const script = `${heldCreations({ trigger: lock, settings, seen }, UNPUBLISHED_CREATION_MS)}
+import { watch } from "node:fs";
+import { SettingsManager } from ${JSON.stringify(MANAGER_MODULE)};
+const watcher = watch(${JSON.stringify(agentDir)}, (_event, name) => {
+	if (name === "settings.json.lock") process.exit(0);
+});
+const manager = SettingsManager.create(${JSON.stringify(cwd)}, ${JSON.stringify(agentDir)}, { projectTrusted: false });
+manager.setTheme("dark");
+await manager.flush();
+watcher.close();
+process.exit(3);`;
+		const result = spawnSyncCollect([bunExecutable(), "-e", script]);
+		assert.equal(result.exitCode, 0, result.stderr.toString());
+		assert.equal(JSON.parse(readFileSync(settings, "utf8")).theme, "dark");
+		assert.equal(existsSync(lock), false);
+		assert.equal(JSON.parse(readFileSync(seen, "utf8")).theme, "light");
+	},
+	EXITING_CHILD_TIMEOUT_MS,
+);
+
+it(
+	"never writes through another process's settings lock at exit while its own creation attempt is unpublished",
+	() => {
+		const settings = join(agentDir, "settings.json");
+		const lock = join(agentDir, "settings.json.lock");
+		const seen = join(directory, "seen.json");
+		mkdirSync(lock);
+		const script = `${heldCreations({ trigger: lock, settings, seen }, UNPUBLISHED_CREATION_MS)}
+import { SettingsManager } from ${JSON.stringify(MANAGER_MODULE)};
+const manager = SettingsManager.create(${JSON.stringify(cwd)}, ${JSON.stringify(agentDir)}, { projectTrusted: false });
+manager.setTheme("dark");
+setTimeout(() => process.exit(0), ${UNPUBLISHED_CREATION_MS / 2});
+await manager.flush();
+process.exit(3);`;
+		const result = spawnSyncCollect([bunExecutable(), "-e", script]);
+		assert.equal(result.exitCode, 0, result.stderr.toString());
+		assert.equal(JSON.parse(readFileSync(settings, "utf8")).theme, "light");
+		assert.equal(existsSync(lock), true);
 	},
 	EXITING_CHILD_TIMEOUT_MS,
 );

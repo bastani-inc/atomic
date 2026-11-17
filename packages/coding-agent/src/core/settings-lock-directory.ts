@@ -9,24 +9,30 @@ const CLAIMED = 4;
 const CREATOR_SOURCE = `
 const { parentPort } = require("node:worker_threads");
 const { mkdirSync } = require("node:fs");
-parentPort.on("message", ({ id, path, state }) => {
+parentPort.on("message", ({ id, path, state, gate }) => {
   const slot = new Int32Array(state);
   if (Atomics.compareExchange(slot, 0, ${QUEUED}, ${CREATING}) !== ${QUEUED}) {
     parentPort.postMessage({ id, claimed: true });
     return;
   }
+  let failure;
   try {
     mkdirSync(path);
-    Atomics.store(slot, 0, ${CREATED});
-    Atomics.notify(slot, 0);
-    parentPort.postMessage({ id });
   } catch (error) {
-    Atomics.store(slot, 0, ${FAILED});
-    Atomics.notify(slot, 0);
-    parentPort.postMessage({ id, code: error && error.code, message: String(error && error.message) });
+    failure = { code: error && error.code, message: String(error && error.message) };
   }
+  if (gate) Atomics.wait(new Int32Array(gate), 0, 0);
+  Atomics.store(slot, 0, failure ? ${FAILED} : ${CREATED});
+  Atomics.notify(slot, 0);
+  parentPort.postMessage(failure ? { id, ...failure } : { id });
 });
 `;
+
+let publicationGate: SharedArrayBuffer | undefined;
+
+export function gateLockDirectoryPublication(gate: SharedArrayBuffer | undefined): void {
+	publicationGate = gate;
+}
 
 interface CreatorReply {
 	readonly id: number;
@@ -85,17 +91,13 @@ export function createLockDirectory(path: string): LockDirectoryCreation {
 	});
 	const worker = creatorWorker();
 	if (pending.size === 1) worker.ref();
-	worker.postMessage({ id, path, state });
+	worker.postMessage({ id, path, state, gate: publicationGate });
 	return { created, state: new Int32Array(state) };
 }
 
-export function lockDirectoryCreatedBeforeExit(
-	creation: LockDirectoryCreation,
-	timeoutMs: number,
-): boolean | undefined {
+export function lockDirectoryCreatedBeforeExit(creation: LockDirectoryCreation): boolean {
 	const previous = Atomics.compareExchange(creation.state, 0, QUEUED, CLAIMED);
 	if (previous === QUEUED || previous === CLAIMED) return false;
-	if (previous === CREATING) Atomics.wait(creation.state, 0, CREATING, timeoutMs);
-	const settled = Atomics.load(creation.state, 0);
-	return settled === CREATED ? true : settled === FAILED ? false : undefined;
+	while (Atomics.load(creation.state, 0) === CREATING) Atomics.wait(creation.state, 0, CREATING);
+	return Atomics.load(creation.state, 0) === CREATED;
 }
