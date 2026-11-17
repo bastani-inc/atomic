@@ -12,6 +12,7 @@ import {
 	sourceError,
 	stopAgentPanelItem,
 	subscribeAgentPanel,
+	taskPanelItems,
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import { bindOwnerTaskStore, setTaskTurnInterrupted } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
@@ -1533,6 +1534,26 @@ test("dismissed finished items stay dismissed across a failed source read (#5239
 		assert.deepEqual(agentPanelItems(session), []);
 	} finally {
 		hub.dispose();
+	}
+});
+
+test("native task projection preserves the caller's dismissed ids while showing live tasks (#5239)", async () => {
+	const fixture = taskFixture();
+	try {
+		await fixture.start("worker one");
+		const id = fixture.store.tasks[0]!.ref.taskId;
+		const dismissed = new Set([id]);
+		const source = ownerTaskViewSource(fixture.store);
+		assert.deepEqual(
+			taskPanelItems(source, dismissed).map((item) => item.id),
+			[`task:${id}`],
+		);
+		assert.deepEqual([...dismissed], [id]);
+		await fixture.settle();
+		assert.deepEqual(taskPanelItems(source, dismissed), []);
+		assert.deepEqual([...dismissed], [id]);
+	} finally {
+		await fixture.dispose();
 	}
 });
 

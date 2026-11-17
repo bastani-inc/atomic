@@ -386,17 +386,12 @@ export function taskPanelItems(
 ): AgentPanelItem[] {
 	const topLevelOnly = options.topLevelOnly ?? true;
 	const hasDismissed = dismissed.size > 0;
-	const mutableDismissed = dismissed instanceof Set ? dismissed : undefined;
 	const sourceClocks = taskClockOf(source);
 	const items: AgentPanelItem[] = [];
 	for (const task of source.backgroundTasks) {
 		if (topLevelOnly && task.parentTaskId !== undefined) continue;
 		const finishedState = task.execution.kind === "settled";
-		if (!finishedState) {
-			mutableDismissed?.delete(task.ref.taskId);
-		} else if (hasDismissed && dismissed.has(task.ref.taskId)) {
-			continue;
-		}
+		if (finishedState && hasDismissed && dismissed.has(task.ref.taskId)) continue;
 		items.push(taskPanelItem(task, sourceClocks));
 	}
 	return items;

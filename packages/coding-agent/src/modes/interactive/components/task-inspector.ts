@@ -1730,8 +1730,13 @@ export class TaskInspector implements Component {
 									key.action === "app.list.filter",
 							)
 							.flatMap((key) => {
-								if (key.action === "app.list.stop")
-									return [{ ...key, label: selected && rowFinished(selected) ? "dismiss" : "stop" }];
+								if (key.action === "app.list.stop") {
+									const finished =
+										selected?.kind === "task"
+											? selected.task.execution.kind === "settled"
+											: selected !== undefined && rowFinished(selected);
+									return [{ ...key, label: finished ? "dismiss" : "stop" }];
+								}
 								const asking =
 									!peekOpen && selected?.kind === "task" && selected.task.attention.kind === "input-needed";
 								if (asking && key.action === "app.list.peek") return [];
