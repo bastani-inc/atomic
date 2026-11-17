@@ -24,12 +24,116 @@ import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import { sanitizeToolTitleText } from "../shared/tool-payload-bounds.js";
-import { summarizeFailureText } from "./display-text.js";
+import { inertDisplayLine, summarizeFailureText } from "./display-text.js";
 import { panelItemsFromSnapshot } from "./panel-runs.js";
 import { type RunFailureSource, runFailureText } from "./run-display-state.js";
 import { runStateIndicator } from "./run-state-indicator.js";
 
-export type WorkflowsListingTarget = { kind: "run"; runId: string };
+export interface WorkflowsListingInvalidDefinition {
+	readonly name: string;
+	readonly source?: string;
+	readonly code: string;
+	readonly reason: string;
+	readonly message: string;
+}
+
+export type WorkflowsListingTarget =
+	| { kind: "run"; runId: string }
+	| { kind: "invalid-definition"; definition: WorkflowsListingInvalidDefinition };
+
+const FAILED_TO_LOAD_CODES: ReadonlySet<string> = new Set(["INVALID_DEFINITION", "IMPORT_FAILED", "PATH_NOT_FOUND"]);
+const NON_WORKFLOW_NAMED_EXPORT =
+	/\bexport "(?!default")[^"]+" rejected: (?:export is not an object|missing or incorrect __piWorkflow sentinel\b|workflow definition is not produced by workflow\b)/;
+const RAW_SOURCE = Symbol("workflow.invalidDefinition.rawSource");
+
+type InvalidDefinitionWithRawSource = WorkflowsListingInvalidDefinition & {
+	readonly [RAW_SOURCE]?: string;
+};
+
+function definitionNameFromSource(source: string | undefined, code: string): string {
+	if (source === undefined || source.trim() === "") return code.toLowerCase();
+	const base = source.split(/[\\/]/).pop() ?? source;
+	return base.replace(/\.(?:[cm]?[jt]s|tsx)$/, "") || source;
+}
+
+function withoutSourcePrefix(reason: string, source: string | undefined): string {
+	if (source === undefined) return reason;
+	const prefix = `Failed to import "${source}": `;
+	return reason.startsWith(prefix) && reason.length > prefix.length ? reason.slice(prefix.length) : reason;
+}
+
+function invalidDefinitionDiscriminator(definition: WorkflowsListingInvalidDefinition): string {
+	const exported = /\bexport\s+(?:"(.+?)"\s+rejected:|"([^"]+)"|([^\s:]+)\s*:)/.exec(definition.message);
+	const exportKey = exported?.[1] ?? exported?.[2] ?? exported?.[3];
+	if (exportKey !== undefined) return exportKey;
+	if (definition.code === "INVALID_DEFINITION" || definition.source === undefined) return definition.reason;
+	return "";
+}
+
+function rawDefinitionSource(definition: WorkflowsListingInvalidDefinition): string {
+	return (definition as InvalidDefinitionWithRawSource)[RAW_SOURCE] ?? definition.source ?? definition.name;
+}
+
+function invalidDefinitionKey(definition: WorkflowsListingInvalidDefinition): string {
+	const encoded = JSON.stringify([
+		definition.code,
+		rawDefinitionSource(definition),
+		invalidDefinitionDiscriminator(definition),
+	]).replace(
+		/[\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g,
+		(char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
+	);
+	return `invalid-definition:${encoded}`;
+}
+
+function invalidDefinitionId(definition: WorkflowsListingInvalidDefinition, seen: Map<string, number>): string {
+	const key = invalidDefinitionKey(definition);
+	const count = seen.get(key) ?? 0;
+	seen.set(key, count + 1);
+	return count === 0 ? key : `${key}#${count}`;
+}
+
+export function invalidDefinitionsFromDiagnostics(
+	diagnostics: readonly {
+		readonly level: string;
+		readonly code: string;
+		readonly message: string;
+		readonly source?: string;
+	}[],
+): WorkflowsListingInvalidDefinition[] {
+	const entries: WorkflowsListingInvalidDefinition[] = [];
+	const indexByKey = new Map<string, number>();
+	for (const diagnostic of diagnostics) {
+		if (
+			diagnostic.level !== "error" ||
+			!FAILED_TO_LOAD_CODES.has(diagnostic.code) ||
+			(diagnostic.code === "INVALID_DEFINITION" && NON_WORKFLOW_NAMED_EXPORT.test(diagnostic.message))
+		) {
+			continue;
+		}
+		const source = diagnostic.source === undefined ? undefined : inertDisplayLine(diagnostic.source);
+		const rawMessage = withoutSourcePrefix(diagnostic.message, diagnostic.source);
+		const entry: WorkflowsListingInvalidDefinition = {
+			name: inertDisplayLine(definitionNameFromSource(diagnostic.source, diagnostic.code)),
+			...(source === undefined ? {} : { source }),
+			code: diagnostic.code,
+			reason: withoutSourcePrefix(summarizeFailureText(rawMessage).reason, source),
+			message: diagnostic.message,
+		};
+		if (diagnostic.source !== undefined) {
+			Object.defineProperty(entry, RAW_SOURCE, { value: diagnostic.source });
+		}
+		const key = invalidDefinitionKey(entry);
+		const existing = indexByKey.get(key);
+		if (existing !== undefined) {
+			entries[existing] = entry;
+		} else {
+			indexByKey.set(key, entries.length);
+			entries.push(entry);
+		}
+	}
+	return entries;
+}
 
 const RUN_STATUS_TEXT: Readonly<Record<RunSnapshot["status"], string>> = {
 	pending: "starting",
@@ -155,20 +259,21 @@ function startedAtRank(run: RunSnapshot): number {
 export function workflowsListingItems(
 	runs: readonly RunSnapshot[],
 	now = Date.now(),
+	invalidDefinitions: readonly WorkflowsListingInvalidDefinition[] = [],
 ): SelectorItem<WorkflowsListingTarget>[] {
 	const waiting = new Map(
 		panelItemsFromSnapshot(runs, now)
 			.filter((item) => item.state === "input")
 			.map((item) => [item.id, item.question ?? item.task] as const),
 	);
-	return [...topLevelWorkflowRuns(runs)]
+	const runItems = [...topLevelWorkflowRuns(runs)]
 		.sort((a, b) => startedAtRank(b) - startedAtRank(a))
 		.map((run): SelectorItem<WorkflowsListingTarget> => {
 			const status = effectiveRunStatus(run);
 			const state = runStateIndicator(run);
 			const statusText = state?.kind === "quit" ? "quit" : RUN_STATUS_TEXT[status];
 			const question = waiting.get(`run:${run.id}`);
-			const label = runRowLabel(run);
+			const label = inertDisplayLine(runRowLabel(run));
 			const tag =
 				question !== undefined
 					? "◆"
@@ -183,12 +288,27 @@ export function workflowsListingItems(
 				id: `run:${run.id}`,
 				value: { kind: "run", runId: run.id },
 				label,
-				description: runRowDescription(run, now, question, status),
+				description: inertDisplayLine(runRowDescription(run, now, question, status)),
 				tag,
 				tagTone: question !== undefined ? "warning" : RUN_TONE[status],
 				searchText: `${label} ${sanitizeToolTitleText(run.id)} ${statusText}`,
 			};
 		});
+	const seenInvalidIds = new Map<string, number>();
+	const definitionItems = invalidDefinitions
+		.map(
+			(definition): SelectorItem<WorkflowsListingTarget> => ({
+				id: invalidDefinitionId(definition, seenInvalidIds),
+				value: { kind: "invalid-definition", definition },
+				label: definition.name,
+				description: `failed to load · ${definition.reason}`,
+				tag: "✗",
+				tagTone: "error",
+				searchText: `${definition.name} ${definition.source ?? ""} failed ${definition.reason}`,
+			}),
+		)
+		.sort((a, b) => a.label.localeCompare(b.label));
+	return [...runItems, ...definitionItems];
 }
 
 export interface WorkflowsListingUi {
@@ -323,7 +443,8 @@ function renderCompactListing(
 		lines.push(line);
 		lines.push(`   ${style.muted(truncateToWidth(item.description ?? "", Math.max(1, width - 3)))}`);
 		if (selected && previewOpen && !state.getQuery()) {
-			const selectedRun = runs.find((run) => run.id === item.value.runId);
+			const target = item.value;
+			const selectedRun = target.kind === "run" ? runs.find((run) => run.id === target.runId) : undefined;
 			lines.push(...renderRunPreview(item, selectedRun, style, width));
 		}
 	}
@@ -357,6 +478,7 @@ export function openWorkflowsListing(
 	ui: WorkflowsListingUi,
 	source: {
 		readonly runs: () => readonly RunSnapshot[];
+		readonly invalidDefinitions?: () => readonly WorkflowsListingInvalidDefinition[];
 		readonly subscribe?: (listener: () => void) => () => void;
 		readonly initialId?: string;
 		readonly selectRunId?: string;
@@ -387,8 +509,9 @@ export function openWorkflowsListing(
 				if (settle(target)) done(undefined);
 			};
 			let cachedRuns = source.runs();
+			let cachedInvalidDefinitions = source.invalidDefinitions?.() ?? [];
 			let currentNow = Date.now();
-			let items = workflowsListingItems(cachedRuns, currentNow);
+			let items = workflowsListingItems(cachedRuns, currentNow, cachedInvalidDefinitions);
 			const style = listingStyle();
 			const search = new Input({ prompt: "⌕ ", placeholder: "Search…", placeholderStyle: style.dim });
 			const initialId = source.selectRunId !== undefined ? `run:${source.selectRunId}` : source.initialId;
@@ -463,7 +586,7 @@ export function openWorkflowsListing(
 				if ((!fromTick && Math.abs(now - currentNow) < LISTING_CLOCK_TICK_MS) || cachedRuns.length === 0)
 					return false;
 				currentNow = now;
-				const next = workflowsListingItems(cachedRuns, currentNow);
+				const next = workflowsListingItems(cachedRuns, currentNow, cachedInvalidDefinitions);
 				if (sameDescriptions(items, next)) return false;
 				items = next;
 				const before = selector.getVisible();
@@ -477,8 +600,9 @@ export function openWorkflowsListing(
 				if (itemsStale) {
 					itemsStale = false;
 					cachedRuns = source.runs();
+					cachedInvalidDefinitions = source.invalidDefinitions?.() ?? [];
 					currentNow = Date.now();
-					items = workflowsListingItems(cachedRuns, currentNow);
+					items = workflowsListingItems(cachedRuns, currentNow, cachedInvalidDefinitions);
 					selector.setItems(items);
 					if (!selector.getSelected()) previewOpen = false;
 					baseTop = selector.getTop();

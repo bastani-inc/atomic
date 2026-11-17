@@ -186,11 +186,11 @@ test("listing keeps the selected run selected when a newer run arrives (#3824)",
 	const alpha = makeRun({ id: "alpha", name: "Alpha", status: "running", startedAt: 300 });
 	const beta = makeRun({ id: "beta", name: "Beta", status: "running", startedAt: 200 });
 	const state = new SelectorState({ items: workflowsListingItems([alpha, beta], NOW) });
-	assert.equal(state.getSelected()?.value.runId, "alpha");
+	assert.deepEqual(state.getSelected()?.value, { kind: "run", runId: "alpha" });
 
 	const gamma = makeRun({ id: "gamma", name: "Gamma", status: "running", startedAt: 400 });
 	state.setItems(workflowsListingItems([alpha, beta, gamma], NOW));
-	assert.equal(state.getSelected()?.value.runId, "alpha");
+	assert.deepEqual(state.getSelected()?.value, { kind: "run", runId: "alpha" });
 	assert.equal(state.getSelectedIndex(), 1);
 });
 
@@ -203,7 +203,7 @@ test("listing moves from the re-anchored selection after a live refresh (#3824)"
 	const newer = makeRun({ id: "newer", status: "running", startedAt: 400 });
 	state.setItems(workflowsListingItems([newer, alpha, beta, gamma], NOW));
 	state.move(1);
-	assert.equal(state.getSelected()?.value.runId, "beta");
+	assert.deepEqual(state.getSelected()?.value, { kind: "run", runId: "beta" });
 });
 
 test("listing clamps the selection to the last row when the selected last run disappears (#3824)", () => {
@@ -213,11 +213,11 @@ test("listing clamps the selection to the last row when the selected last run di
 	const state = new SelectorState({ items: workflowsListingItems([alpha, beta, gamma], NOW) });
 	state.move(1);
 	state.move(1);
-	assert.equal(state.getSelected()?.value.runId, "gamma");
+	assert.deepEqual(state.getSelected()?.value, { kind: "run", runId: "gamma" });
 
 	state.setItems(workflowsListingItems([alpha, beta], NOW));
 	assert.equal(state.getSelectedIndex(), 1);
-	assert.equal(state.getSelected()?.value.runId, "beta");
+	assert.deepEqual(state.getSelected()?.value, { kind: "run", runId: "beta" });
 
 	state.setItems([]);
 	assert.equal(state.getSelectedIndex(), 0);
