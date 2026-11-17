@@ -98,7 +98,9 @@ async function sharedRoot(leaseMs: number) {
 	});
 	const { work, boundary } = poolWorkFixture();
 	await queue.enqueue(acquired.lease, work, boundary);
-	assert.ok(await queue.claim(acquired.lease, "host/w0", [work], leaseMs));
+	const claimed = await queue.claim(acquired.lease, "host/w0", [work], leaseMs);
+	assert.ok(claimed);
+	await queue.heartbeat(acquired.lease, claimed, leaseMs, async () => {});
 	return j;
 }
 
@@ -133,6 +135,7 @@ test("the fleet counts a root's leased child for as long as it counts the root a
 	for (let start = T + 59_997; start <= T + 60_002; start++) {
 		const [root, ...more] = await movingFrom(start, () => readFleetDemand(j));
 		assert.deepEqual(more, []);
+		assert.equal(root?.started, root?.leased, "started and leased counts use the same clock reading");
 		assert.ok(
 			root !== undefined && (root.blocked || root.leased === 1),
 			`from ${start - T} ms: ${JSON.stringify(root)}`,

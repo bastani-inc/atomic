@@ -1,5 +1,6 @@
 import { ensureStorageSchema, type SqliteExecutor, type SqliteRow, type StorageDialect } from "@bastani/atomic/storage";
 import { poolSchemaLedger, type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
+import { HANDOFF_OPERATION } from "./pool-attempt-operations.js";
 import { poolSchemaPresent } from "./pool-schema-probe.js";
 import type { SharedPoolFleetController, SharedPoolScaleEvent } from "./shared-pool-types.js";
 import { withoutUrlCredentials } from "./shared-store-health.js";
@@ -56,6 +57,7 @@ export interface FleetRootRow {
 	readonly root: string;
 	readonly ready: number;
 	readonly leased: number;
+	readonly started: number;
 	readonly sessionLimit?: number;
 	/** Budget-blocked, paused, or its root process stopped renewing its lease: it starts no child now. */
 	readonly blocked: boolean;
@@ -177,17 +179,21 @@ async function rootDemand(executor: SqliteExecutor, storage: SqlPoolStorage): Pr
 	// One reading of the clock: a root counted as running counts its children its own lease keeps live at that instant.
 	const now = "(SELECT now FROM clock)";
 	const rows = await executor.all<
-		SqliteRow & { root: string; config: string; blocked: number; ready: number; leased: number }
+		SqliteRow & { root: string; config: string; blocked: number; ready: number; leased: number; started: number }
 	>(
 		`WITH clock AS (SELECT ${storage.dialect.nowMs} AS now)
 		SELECT s.root, s.config,
 		(s.budget_blocked = 1 OR r.status != 'running' OR ${now} - l.renewed_at > p.timeout) AS blocked,
 		(SELECT COUNT(*) FROM ${runs}_work w WHERE w.root = s.root AND w.state = 'ready') AS ready,
-		(SELECT COUNT(*) FROM ${runs}_work w WHERE w.root = s.root AND w.state = 'leased' AND ${liveLease(now)}) AS leased
+		(SELECT COUNT(*) FROM ${runs}_work w WHERE w.root = s.root AND w.state = 'leased' AND ${liveLease(now)}) AS leased,
+		(SELECT COUNT(*) FROM ${runs}_work w WHERE w.root = s.root AND w.state = 'leased' AND ${liveLease(now)}
+			AND EXISTS (SELECT 1 FROM ${runs}_pool_operations o
+				WHERE o.work = w.id AND o.generation = w.generation AND o.operation != ?)) AS started
 		FROM ${runs}_pool_shared s JOIN ${runs} r ON r.run_id = s.root
 		JOIN ${storage.tables.leases} l ON l.run_id = s.root AND l.epoch = s.epoch
 		JOIN ${runs}_pool p ON p.root = s.root
 		WHERE r.status IN ('running', 'paused') ORDER BY ${storage.dialect.rowOrder("s")}`,
+		HANDOFF_OPERATION,
 	);
 	return rows.map((row) => {
 		const config = JSON.parse(row.config) as {
@@ -200,6 +206,7 @@ async function rootDemand(executor: SqliteExecutor, storage: SqlPoolStorage): Pr
 			root: row.root,
 			ready: Number(row.ready),
 			leased: Number(row.leased),
+			started: Number(row.started),
 			...(session === undefined ? {} : { sessionLimit: session }),
 			blocked: Number(row.blocked) === 1,
 			...(rateScopes.length === 0 ? {} : { rateScopes }),

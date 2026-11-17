@@ -604,10 +604,52 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 			);
 			const store = await SqlFleetStore.open(peerJournal);
 			const snapshot = await store.snapshot();
-			assert.deepEqual(snapshot.roots, [{ root: "root", ready: 2, leased: 1, sessionLimit: 2, blocked: false }]);
+			assert.deepEqual(snapshot.roots, [
+				{ root: "root", ready: 2, leased: 1, started: 0, sessionLimit: 2, blocked: false },
+			]);
 			assert.deepEqual([...snapshot.leased], [["h1", 1]]);
 			await shared.publishBudget(f.lease, true);
 			assert.equal((await store.snapshot()).roots[0]?.blocked, true);
+		});
+
+		test("fleet rate observations count started attempts, not restore renewals or earlier generations (#4768)", async (f) => {
+			const shared = await SqlSharedPool.open(f.journal, f.pool);
+			await shared.publishConfig(f.lease, sharedConfig);
+			await f.pool.enqueue(f.lease, work, boundary);
+			const peer = await SqlFleetStore.open(await f.peer());
+			const counts = async () => {
+				const [root] = (await peer.snapshot()).roots;
+				return [root?.leased, root?.started];
+			};
+			const claim = async () => {
+				const claimed = await f.pool.claim(f.lease, "h1/worker-1", [definition], 60_000);
+				assert.ok(claimed);
+				return claimed;
+			};
+			const restoring = await claim();
+			assert.deepEqual(await counts(), [1, 0]);
+			await f.pool.renew(f.lease, restoring, 60_000);
+			await f.pool.extend(f.lease, restoring, 60_000);
+			assert.deepEqual(await counts(), [1, 0], "lease maintenance during restore does not start the child");
+			assert.equal(await f.pool.releaseUnplaced(f.lease, restoring), true);
+			const started = await claim();
+			assert.deepEqual(await counts(), [1, 0], "a placement handoff does not confirm the next claim");
+			await f.pool.heartbeat(f.lease, started, 60_000, async () => {});
+			assert.deepEqual(await counts(), [1, 1], "the worker's first heartbeat starts the observation");
+			assert.equal(await f.pool.releaseExited(f.lease, started), true);
+			assert.deepEqual(await counts(), [0, 0]);
+			const replay = await claim();
+			assert.ok(replay.generation > started.generation);
+			assert.deepEqual(await counts(), [1, 0], "a previous generation's confirmation cannot start its replay");
+			await f.pool.heartbeat(f.lease, replay, 60_000, async () => {});
+			assert.deepEqual(await counts(), [1, 1]);
+			await f.pool.complete(f.lease, replay, {
+				runId: replay.childRunId,
+				status: "completed",
+				stages: [],
+				toolNodes: [],
+			});
+			assert.deepEqual(await counts(), [0, 0], "completed attempts stop contributing busy time");
 		});
 
 		test("fleet status reads the controller that holds the fleet's lease, its latest decisions and every rate limit, from any connection (#4768)", async (f) => {

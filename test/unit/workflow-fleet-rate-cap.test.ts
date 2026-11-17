@@ -20,7 +20,7 @@ function bucket(scope: string, requestsPerMinute: number, acquired: number, at: 
 }
 
 function limited(leased: number, ...scopes: string[]) {
-	return { leased, ready: 1_000, blocked: false, rateScopes: scopes };
+	return { leased, started: leased, ready: 1_000, blocked: false, rateScopes: scopes };
 }
 
 function observeSteady(
@@ -82,7 +82,10 @@ test("no rate cap before a minute of history, while no token is granted, or for 
 
 	const unlimited = new FleetRateCap();
 	for (let at = 0; at <= 5 * MINUTE; at += 10_000)
-		unlimited.observe([bucket("anthropic", 600, at / 100, at)], [{ leased: 4, ready: 0, blocked: false }]);
+		unlimited.observe(
+			[bucket("anthropic", 600, at / 100, at)],
+			[{ leased: 4, started: 4, ready: 0, blocked: false }],
+		);
 	assert.equal(unlimited.estimate(4), undefined, "no running root limits the scope");
 
 	const stopped = new FleetRateCap();
@@ -223,7 +226,7 @@ test("new hosts for unrelated work do not expand the warming quota allowance aga
 	const cap = new FleetRateCap();
 	const roots = [
 		{ ...limited(4, "p"), ready: 100 },
-		{ leased: 0, ready: 8, blocked: false },
+		{ leased: 0, started: 0, ready: 8, blocked: false },
 	];
 	const policy = resolveFleetPolicy({ maxHosts: 20, workersPerHost: 4 });
 	let state = INITIAL_FLEET_STATE;
@@ -265,8 +268,14 @@ test("fractional capacity for unrelated scopes cannot round warming hosts upward
 			[2, 957],
 			[6, 999],
 			[4, 897],
-		].map(([leased, ready]) => ({ leased: leased!, ready: ready!, blocked: false, rateScopes: ["p"] })),
-		{ leased: 2, ready: 10_000, blocked: false, rateScopes: ["q"] },
+		].map(([leased, ready]) => ({
+			leased: leased!,
+			started: leased!,
+			ready: ready!,
+			blocked: false,
+			rateScopes: ["p"],
+		})),
+		{ leased: 2, started: 2, ready: 10_000, blocked: false, rateScopes: ["q"] },
 	];
 	for (let at = 0; at <= MINUTE; at += 10_000)
 		cap.observe([bucket("q", 414, (at / 10_000) * 21, at)], [roots.at(-1)!]);
@@ -286,7 +295,7 @@ test("a scope limits only its own roots, leaving capacity for unlimited and disj
 			[
 				{ ...limited(4, "p"), ready: 20, blocked: false },
 				{ ...limited(8, "q"), ready: 40, blocked: false },
-				{ leased: 0, ready: 400, blocked: false },
+				{ leased: 0, started: 0, ready: 400, blocked: false },
 			],
 		);
 	assert.equal(
@@ -306,7 +315,7 @@ test("a rate-cap explanation names a scope that actually constrains the current 
 		);
 	cap.observe(
 		[bucket("p", 60, 70, 70_000), bucket("q", 120, 70, 70_000)],
-		[{ leased: 0, ready: 0, blocked: false, rateScopes: ["p"] }, limited(8, "q")],
+		[{ leased: 0, started: 0, ready: 0, blocked: false, rateScopes: ["p"] }, limited(8, "q")],
 	);
 	const estimate = cap.estimate(4)!;
 	assert.equal(estimate.hosts, 4);

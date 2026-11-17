@@ -27,15 +27,19 @@ vi.mock("node:sqlite", async (importOriginal) => {
 	return { ...actual, DatabaseSync: FleetClockDatabase };
 });
 
-for (const [initialHosts, unusedScope, bootMs] of [
-	[3, false, 0],
-	[8, false, 0],
-	[1, false, 0],
-	[1, true, 0],
-	[0, false, 90_000],
-	[0, false, 150_000],
+for (const [initialHosts, unusedScope, bootMs, restoreMs] of [
+	[3, false, 0, 0],
+	[8, false, 0, 0],
+	[1, false, 0, 0],
+	[1, true, 0, 0],
+	[0, false, 90_000, 0],
+	[0, false, 150_000, 0],
+	[0, false, 30_000, 90_000],
+	[0, false, 30_000, 150_000],
+	[0, false, 30_000, 30_000],
+	[0, false, 0, 90_000],
 ] as const) {
-	test(`a fleet starting with ${initialHosts} hosts${unusedScope ? " and an unused quota" : ""}${bootMs ? ` and a ${bootMs / 1_000}-second host boot` : ""} follows real token-waiting traffic with the default growth delay and through failover (#4768)`, async () => {
+	test(`a fleet starting with ${initialHosts} hosts${unusedScope ? " and an unused quota" : ""}${bootMs ? ` and a ${bootMs / 1_000}-second host boot` : ""}${restoreMs ? ` and a ${restoreMs / 1_000}-second leased restore` : ""} follows real token-waiting traffic with the default growth delay and through failover (#4768)`, async () => {
 		clock.now = 1_800_000_000_000;
 		vi.useFakeTimers({
 			toFake: ["Date", "performance", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
@@ -75,6 +79,7 @@ for (const [initialHosts, unusedScope, bootMs] of [
 				worker: string;
 				limiter: FleetRateLimiter;
 				due: number;
+				started: boolean;
 				work: NonNullable<Awaited<ReturnType<typeof queue.claim>>>;
 				active: boolean;
 			}[] = [];
@@ -106,7 +111,15 @@ for (const [initialHosts, unusedScope, bootMs] of [
 						const worker = `h${index}/w${slot}`;
 						const work = await queue.claim(lease, worker, [poolWorkFixture().work], 3_600_000);
 						assert.ok(work);
-						workers.push({ worker, work, limiter, due: clock.now, active: true });
+						if (restoreMs === 0) await queue.heartbeat(lease, work, 3_600_000, async () => {});
+						workers.push({
+							worker,
+							work,
+							limiter,
+							due: clock.now + restoreMs,
+							started: restoreMs === 0,
+							active: true,
+						});
 					}
 					await report(index);
 				}
@@ -146,10 +159,17 @@ for (const [initialHosts, unusedScope, bootMs] of [
 					clock.now += 1_000;
 					await vi.advanceTimersByTimeAsync(1_000);
 					await boot();
-					if (workers.length === 0)
-						assert.ok(hosts.length <= 1, "only one bootstrap host may be pending before any child runs");
+					if (initialHosts === 0 && !workers.some((worker) => worker.started))
+						assert.ok(
+							hosts.length <= 1,
+							"only one bootstrap host may exist before the first child starts drawing",
+						);
 					for (const worker of workers) {
 						if (!worker.active || worker.due > clock.now) continue;
+						if (!worker.started) {
+							await queue.heartbeat(lease, worker.work, 3_600_000, async () => {});
+							worker.started = true;
+						}
 						const wait = await worker.limiter.acquire("p", "m", worker.worker);
 						worker.due = clock.now + (wait > 0 ? wait : 10_000);
 					}
@@ -158,7 +178,7 @@ for (const [initialHosts, unusedScope, bootMs] of [
 						for (const [index, host] of hosts.entries()) if (host.state === "running") await report(index);
 				}
 			};
-			const settlingSeconds = bootMs > 0 ? (2 * bootMs) / 1_000 + 180 : 120;
+			const settlingSeconds = bootMs + restoreMs > 0 ? (2 * (bootMs + restoreMs)) / 1_000 + 180 : 120;
 			await advance(unusedScope ? 600 : settlingSeconds);
 			assert.ok(
 				targets.every((target) => target <= 3),
@@ -215,7 +235,10 @@ test("an unused quota needs a full running observation minute again after its ro
 	const cap = new FleetRateCap();
 	const root = { leased: 8, ready: 80, blocked: false, rateScopes: ["p"] };
 	const observe = (now: number, leased: number) => {
-		cap.observe([{ scope: "p", now, acquired: 0, waitingMs: 0, intervalMs: 1_000 }], [{ ...root, leased }]);
+		cap.observe(
+			[{ scope: "p", now, acquired: 0, waitingMs: 0, intervalMs: 1_000 }],
+			[{ ...root, leased, started: leased }],
+		);
 	};
 	for (let now = 0; now <= 20_000; now += 10_000) observe(now, 8);
 	for (let now = 30_000; now <= 90_000; now += 10_000) {
@@ -244,7 +267,7 @@ for (const [upgraded, countedCalls] of [
 			const older = await OlderRateBuckets.open(journal);
 			const current = upgraded ? await SqlRateBuckets.open(journal) : undefined;
 			const cap = new FleetRateCap();
-			const roots = [{ leased: 8, ready: 80, blocked: false, rateScopes: ["p"] }];
+			const roots = [{ leased: 8, started: 8, ready: 80, blocked: false, rateScopes: ["p"] }];
 			const shape = { intervalMs: 100, burst: 60 };
 			assert.deepEqual(await older.acquire("p", 50, shape), { granted: 50 });
 			cap.observe(await readFleetRateUsage(journal), roots);

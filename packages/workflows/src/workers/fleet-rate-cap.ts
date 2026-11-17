@@ -37,7 +37,10 @@ export interface FleetRateCapEstimate {
 	readonly scope: FleetRateCapScope;
 }
 
-export type FleetRateRoot = Pick<FleetRootRow, "ready" | "leased" | "blocked" | "sessionLimit" | "rateScopes">;
+export type FleetRateRoot = Pick<
+	FleetRootRow,
+	"ready" | "leased" | "started" | "blocked" | "sessionLimit" | "rateScopes"
+>;
 
 interface ScopeCapacity {
 	readonly status: FleetRateCapScope;
@@ -54,7 +57,7 @@ export class FleetRateCap {
 		this.roots = roots;
 		const busy = new Map<string, number>();
 		for (const root of roots)
-			for (const scope of root.rateScopes ?? []) busy.set(scope, (busy.get(scope) ?? 0) + root.leased);
+			for (const scope of root.rateScopes ?? []) busy.set(scope, (busy.get(scope) ?? 0) + root.started);
 		const at = usage[0]?.now ?? Date.now();
 		const readings = new Map(usage.map((row) => [row.scope, row]));
 		for (const [scope, running] of busy) {

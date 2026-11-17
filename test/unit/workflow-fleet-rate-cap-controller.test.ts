@@ -99,8 +99,11 @@ test.skipIf(process.platform === "win32")(
 			const { work, boundary } = poolWorkFixture(`child-${index}`);
 			await queue.enqueue(acquired.lease, work, boundary);
 		}
-		for (let slot = 0; slot < 4; slot++)
-			assert.ok(await queue.claim(acquired.lease, `h/w${slot}`, [poolWorkFixture().work], 60_000));
+		for (let slot = 0; slot < 4; slot++) {
+			const work = await queue.claim(acquired.lease, `h/w${slot}`, [poolWorkFixture().work], 60_000);
+			assert.ok(work);
+			await queue.heartbeat(acquired.lease, work, 60_000, async () => {});
+		}
 		await shared.reportHost({
 			host: "h",
 			labels: {},
@@ -180,8 +183,11 @@ test.skipIf(process.platform === "win32")(
 			await queue.enqueue(lease, work, boundary);
 		}
 		const definition = { definition: poolWorkFixture().work.definition, digest: poolWorkFixture().work.digest };
-		for (let worker = 1; worker <= 4; worker++)
-			assert.ok(await queue.claim(lease, `h1/worker-${worker}`, [definition], 60_000));
+		for (let worker = 1; worker <= 4; worker++) {
+			const work = await queue.claim(lease, `h1/worker-${worker}`, [definition], 60_000);
+			assert.ok(work);
+			await queue.heartbeat(lease, work, 60_000, async () => {});
+		}
 		await shared.reportHost({
 			host: "h1",
 			labels: {},
