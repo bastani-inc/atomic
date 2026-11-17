@@ -392,7 +392,10 @@ test("Bash and Wait families render running tail, collapsed tail, preserved inde
 			isPartial: false,
 		}),
 	);
-	assert.deepEqual(backgroundRows, [" ● Bash(npm test) · background", "   ⎿  Running in background · ↓ to manage"]);
+	assert.deepEqual(backgroundRows, [
+		" ● Bash(npm test) · background",
+		"   ⎿  Running in background · /tasks to manage",
+	]);
 
 	const waitRows = plain(
 		renderFamily({
@@ -994,7 +997,7 @@ test("waiting for approval is derived from trusted result details rather than ra
 	}
 });
 
-test("background shell hints require an available task row and follow live bindings (#5350)", () => {
+test("background shell hints point to /tasks, where shells are managed, and require an available task row (#5350)", () => {
 	const input = {
 		toolName: "bash",
 		args: { command: "sleep 40" },
@@ -1004,9 +1007,10 @@ test("background shell hints require an available task row and follow live bindi
 		canManageTask: (id: string) => id === "task-1",
 	};
 	setKeybindings(new KeybindingsManager({ "app.agents.focus": "ctrl+g" }));
-	assert.match(plain(renderFamily(input)).join("\n"), /ctrl\+g to manage/);
+	assert.match(plain(renderFamily(input)).join("\n"), /Running in background · \/tasks to manage/);
+	assert.doesNotMatch(plain(renderFamily(input)).join("\n"), /ctrl\+g/, "the agent panel does not list shells");
 	setKeybindings(new KeybindingsManager({ "app.agents.focus": [] }));
-	assert.doesNotMatch(plain(renderFamily(input)).join("\n"), /to manage/);
+	assert.match(plain(renderFamily(input)).join("\n"), /\/tasks to manage/);
 	setKeybindings(new KeybindingsManager());
 	assert.doesNotMatch(plain(renderFamily({ ...input, canManageTask: () => false })).join("\n"), /to manage/);
 });

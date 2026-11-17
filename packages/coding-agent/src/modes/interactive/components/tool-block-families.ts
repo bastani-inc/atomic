@@ -1,11 +1,5 @@
 import { sep } from "node:path";
-import {
-	type Component,
-	getImageDimensions,
-	getKeybindings,
-	truncateToWidth,
-	wrapTextWithAnsi,
-} from "@bastani/atomic-tui";
+import { type Component, getImageDimensions, truncateToWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
 import type { WaitOutcome } from "../../../core/tasks/contracts.js";
 import { generateDiffString } from "../../../core/tools/edit-diff.ts";
 import { splitReadLineSelector } from "../../../core/tools/read-selectors.ts";
@@ -30,7 +24,6 @@ import type { TruncationResult } from "../../../core/tools/truncate.ts";
 import { getCwdRelativePath, resolvePath, shortenHomePath } from "../../../utils/paths.ts";
 import { singleLineDisplayText, terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { type CodeHighlighter, getLanguageFromPath, highlightCode, type Theme, theme } from "../theme/theme.js";
-import { navEntryKeys } from "./nav-keys.ts";
 import { collapseToolBlockLines, TOOL_BLOCK_LIMITS, ToolBlockRecords, type ToolBlockStatus } from "./tool-block.ts";
 import { formatWorkingElapsed } from "./working-run-meter.ts";
 
@@ -1081,11 +1074,9 @@ function presentBash(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 
 	if (classified.kind === "background") {
 		const taskId = asString(asRecord(asRecord(input.result?.details)?.observation)?.taskId);
-		const key =
-			taskId && input.canManageTask?.(taskId)
-				? navEntryKeys(getKeybindings(), { action: "app.agents.focus", label: "to manage" })
-				: "";
-		const bgLine = `${theme.fg("text", "Running in background")}${key ? theme.fg("dim", ` · ${key} to manage`) : ""}`;
+		// Shells are managed in /tasks; the agent panel lists subagents and workflow runs only.
+		const manage = taskId !== undefined && taskId !== "" && input.canManageTask?.(taskId) === true;
+		const bgLine = `${theme.fg("text", "Running in background")}${manage ? theme.fg("dim", " · /tasks to manage") : ""}`;
 		const hasOutput = classified.output !== "" && classified.output !== EMPTY_OUTPUT_TEXT;
 		const outputLines = hasOutput
 			? collapseToolBlockLines(
