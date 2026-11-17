@@ -361,8 +361,8 @@ export async function flushWorkflowConsoleOutput(): Promise<void> {
 }
 
 /**
- * Restores stderr for every later console call and closes the log once its queued output is written; output already
- * routed stays in its file.
+ * Restores stderr for every later console call and closes the log once its directory is ready and its queued output is
+ * written; output already routed stays in its file.
  */
 export async function stopRoutingWorkflowConsoleOutput(): Promise<void> {
 	const state = routerBag()[ROUTER_KEY];
@@ -371,6 +371,7 @@ export async function stopRoutingWorkflowConsoleOutput(): Promise<void> {
 	state.failed = false;
 	const log = state.log;
 	state.log = undefined;
+	await state.directoryReady;
 	if (log === undefined) return;
 	while (log.writing !== undefined) await log.writing;
 	await closeLog(state, log);

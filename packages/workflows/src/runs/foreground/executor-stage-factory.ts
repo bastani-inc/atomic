@@ -179,17 +179,15 @@ export function createWorkflowStageFactory(input: {
 						forkFromEntryId:
 							stageOptions?.forkFromSessionId === undefined ? undefined : stageOptions.forkFromEntryId,
 					};
-		const groupOf = (stageOptions: StageOptions | undefined): string | undefined =>
-			stageOptions?.durableIntercomGroup ??
-			resolveStageGroup(replayOptionsOf(stageOptions), input.workflowIntercomGroup);
+		// One group for the stage: resolving a boolean subgroup again would name another.
+		const intercomGroup =
+			options?.durableIntercomGroup ?? resolveStageGroup(replayOptionsOf(options), input.workflowIntercomGroup);
 		const contextOptionsOf = (stageOptions: StageOptions | undefined): StageOptions | undefined => {
 			const replayStageOptions = replayOptionsOf(stageOptions);
-			const group = groupOf(stageOptions);
-			return replayStageOptions?.group === undefined || group === undefined
+			return replayStageOptions?.group === undefined || intercomGroup === undefined
 				? replayStageOptions
-				: { ...replayStageOptions, group };
+				: { ...replayStageOptions, group: intercomGroup };
 		};
-		const intercomGroup = groupOf(options);
 		const stageOptionsForContext = contextOptionsOf(options);
 		const pendingStageDeliveryAvailable = stageCanUseWorkflowPendingStageRoute(
 			stageOptionsForContext,

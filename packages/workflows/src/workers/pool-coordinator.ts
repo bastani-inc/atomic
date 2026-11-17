@@ -2497,7 +2497,7 @@ export class PoolCoordinator {
 		const logPath = join(this.logDirectory!, `${id}.log`);
 		this.logs.set(child, logPath);
 		// A worker whose log cannot be written still runs: its errors name the log and why it could not be written.
-		appendProcessLog(child.stderr, logPath, (failure) => this.logUnwritable(logPath, failure));
+		const log = appendProcessLog(child.stderr, logPath, (failure) => this.logUnwritable(logPath, failure));
 		const startupTimeoutMs = options.startupTimeoutMs;
 		const spawnedAt = performance.now();
 		let timedOutAt: number | undefined;
@@ -2527,7 +2527,8 @@ export class PoolCoordinator {
 				if (retired) return;
 				retired = true;
 				slot.exited.abort();
-				void Promise.race([closed, delay(STDERR_DRAIN_GRACE_MS)]).then(() =>
+				// The errors name why the log could not be written, which its opening says.
+				void Promise.all([Promise.race([closed, delay(STDERR_DRAIN_GRACE_MS)]), log.opened]).then(() =>
 					reject(
 						timedOutAt === undefined
 							? new WorkerStartupError({ logPath, logFailure: this.logFailures.get(logPath) })
@@ -2570,7 +2571,7 @@ export class PoolCoordinator {
 				if (held) this.held.add(held.id);
 				// Set when the reap leaves process groups running: the worker's health event, never its child's failure.
 				let unconfirmed: WorkerCleanupUnconfirmedError | undefined;
-				const cleanup = disconnected
+				const cleanup = Promise.all([disconnected, log.opened])
 					.then(() => lanes.settled())
 					.then(async () => {
 						try {

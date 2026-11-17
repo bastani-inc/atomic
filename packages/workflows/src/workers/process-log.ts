@@ -15,6 +15,8 @@ function asError(value: unknown): Error {
 
 /** A child process's stderr log. */
 export interface ProcessLog {
+	/** Settles once the log is open, or its failure has been reported. */
+	readonly opened: Promise<void>;
 	/** Stops writing the log, drains the process's stderr from then on, and resolves once the log's file is closed. */
 	close(): Promise<void>;
 }
@@ -53,7 +55,7 @@ export function appendProcessLog(
 			open.end();
 		});
 	};
-	if (stderr === null || stderr === undefined) return { close };
+	if (stderr === null || stderr === undefined) return { opened: opening, close };
 	stderr.on("error", fail);
 	opening = mkdir(dirname(logPath), { recursive: true }).then(
 		() => {
@@ -64,7 +66,7 @@ export function appendProcessLog(
 		},
 		(error: unknown) => fail(asError(error)),
 	);
-	return { close };
+	return { opened: opening, close };
 }
 
 /** Removes a process log and, when nothing else is left in it, its directory. */
