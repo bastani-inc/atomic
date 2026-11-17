@@ -1872,11 +1872,17 @@ test("public disposal aborts and drains active shell work and pending human inpu
 		release = resolve;
 	});
 	let aborted = false;
+	let markStarted!: () => void;
+	// The shell starts once its prefix and environment are read; disposal before that cancels it before it starts.
+	const started = new Promise<void>((resolve) => {
+		markStarted = resolve;
+	});
 	const input = session.extensionRunner.createContext().ui.input("pending");
 	const inputRejected = assert.rejects(input, { code: "HumanInputCancelled" });
 	const shell = session.executeBash("controlled", undefined, {
 		operations: {
 			exec: async (_command, _cwd, options) => {
+				markStarted();
 				await new Promise<void>((resolve) => {
 					options.signal!.addEventListener(
 						"abort",
@@ -1893,6 +1899,7 @@ test("public disposal aborts and drains active shell work and pending human inpu
 		},
 	});
 	try {
+		await started;
 		const closing = session.dispose();
 		let closed = false;
 		void closing.then(() => {
