@@ -176,30 +176,8 @@ export interface OwnedArea {
  */
 export const OWNED_ELSEWHERE: readonly OwnedArea[] = [
 	{
-		owner: "checkpoint shard writes off the main thread (the node:sqlite driver)",
-		paths: [
-			"packages/workflows/src/workers/ship-shard.ts",
-			"packages/coding-agent/src/core/storage/node-sqlite.ts",
-			"packages/coding-agent/src/core/storage/write-ahead-log.ts",
-		],
-	},
-	{
-		owner: "#5285 (Windows private temp directory ACLs and their callers)",
-		paths: [
-			"packages/coding-agent/src/core/tools/windows-directory-security.ts",
-			"packages/coding-agent/src/core/tools/session-temp-dir.ts",
-			"packages/coding-agent/src/core/tools/session-temp-cleanup.ts",
-			"packages/coding-agent/src/core/bash-executor.ts",
-			"packages/coding-agent/src/core/tools/output-accumulator.ts",
-			"packages/coding-agent/src/core/tools/oversized-tool-result.ts",
-			"packages/coding-agent/src/core/tools/persisted-output-file.ts",
-			"packages/coding-agent/src/core/package-manager-paths.ts",
-			"packages/coding-agent/src/core/storage/session/released-history-files.ts",
-			"packages/subagents/src/shared/artifacts.ts",
-			"packages/web-access/github-config.ts",
-			"packages/web-access/github-extract.ts",
-			"packages/workflows/builtin/",
-		],
+		owner: "#5376 (the node:sqlite storage driver off the event loop)",
+		paths: ["packages/coding-agent/src/core/storage/node-sqlite.ts"],
 	},
 ];
 
