@@ -44,6 +44,11 @@ const LEGACY_CONVERSION_WRITE_BYTES = 16 * SESSION_BLOB_CHUNK_BYTES;
 const LONGEST_WRITE_MS = 5_000;
 /** Converting and stamping 256 MiB took up to 134 s together beside other suites on loaded Windows runners. */
 const LEGACY_UPGRADE_TEST_TIMEOUT_MS = 300_000;
+/**
+ * Tests that fork jiti-loaded openers of the database: each fork loads the storage sources before it opens, and the
+ * slowest pass of the SIGKILL resume test, which forks two, took 26.7 s on a loaded Windows runner.
+ */
+const OPENER_FORKING_TEST_TIMEOUT_MS = 120_000;
 /** A heartbeat of another thread that comes this much later than its period means the whole host stood still. */
 const HOST_STALL_TICK_MS = 10;
 const HOST_STALL_MIN_MS = 50;
@@ -803,104 +808,120 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 			LEGACY_UPGRADE_TEST_TIMEOUT_MS,
 		);
 
-		test("a concurrent opener succeeds during a lazy 256 MiB conversion while mixed-layout blobs remain readable", async () => {
-			const database = await openDatabase();
-			const sessions = await SqlSessionStore.open(database);
-			closers.push(() => sessions.close());
-			await createSession(sessions, "session", []);
-			await database.exec(`DROP TABLE session_blobs; DROP TABLE session_blob_chunks;
+		test(
+			"a concurrent opener succeeds during a lazy 256 MiB conversion while mixed-layout blobs remain readable",
+			async () => {
+				const database = await openDatabase();
+				const sessions = await SqlSessionStore.open(database);
+				closers.push(() => sessions.close());
+				await createSession(sessions, "session", []);
+				await database.exec(`DROP TABLE session_blobs; DROP TABLE session_blob_chunks;
 				CREATE TABLE session_blobs (session_id TEXT NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL,
 				data BLOB NOT NULL, PRIMARY KEY (session_id, hash)) STRICT`);
-			const reader = await SqlSessionStore.open(database);
-			closers.push(() => reader.close());
-			const bytes = 256 * 1024 * 1024;
-			const digest = createHash("sha256");
-			const block = new Uint8Array(1024 * 1024);
-			for (let index = 0; index < 256; index++) digest.update(block);
-			const hash = digest.digest("hex");
-			await database.run(
-				"INSERT INTO session_blobs (session_id, hash, bytes, data) VALUES ('session', ?, ?, zeroblob(?))",
-				hash,
-				bytes,
-				bytes,
-			);
-			const old = textBlob("still legacy during conversion");
-			await database.run(
-				"INSERT INTO session_blobs (session_id, hash, bytes, data) VALUES ('session', ?, ?, ?)",
-				old.hash,
-				old.data.length,
-				old.data,
-			);
-			const fresh = textBlob("already chunked during conversion");
-			await reader.putBlob("session", fresh.data);
-			const migrator = startOpener(adapter, hash, "pause");
-			await migrator.wait("locked");
-			const contender = startOpener(adapter, hash);
-			await contender.wait("opening");
-			assert.deepEqual(await reader.getBlob("session", old.hash), old.data);
-			assert.deepEqual(await reader.getBlob("session", fresh.hash), fresh.data);
-			migrator.child.send("continue");
-			await migrator.wait("batch");
-			assert.equal(await contender.wait("opened"), "opened");
-			assert.deepEqual(await contender.exited, [0, null]);
-			migrator.child.send("continue");
-			assert.deepEqual(await migrator.wait("written"), { type: "written", hash });
-			assert.deepEqual(await migrator.exited, [0, null]);
-			assert.deepEqual(await database.get("PRAGMA integrity_check"), { integrity_check: "ok" });
-			assert.deepEqual(await reader.getBlob("session", old.hash), old.data);
-			assert.deepEqual(await reader.getBlob("session", fresh.hash), fresh.data);
-			const reopened = await SqlSessionStore.open(database);
-			closers.push(() => reopened.close());
-			assert.equal(
-				createHash("sha256")
-					.update((await reopened.getBlob("session", hash))!)
-					.digest("hex"),
-				hash,
-			);
-		}, 120_000);
+				const reader = await SqlSessionStore.open(database);
+				closers.push(() => reader.close());
+				const bytes = 256 * 1024 * 1024;
+				const digest = createHash("sha256");
+				const block = new Uint8Array(1024 * 1024);
+				for (let index = 0; index < 256; index++) digest.update(block);
+				const hash = digest.digest("hex");
+				await database.run(
+					"INSERT INTO session_blobs (session_id, hash, bytes, data) VALUES ('session', ?, ?, zeroblob(?))",
+					hash,
+					bytes,
+					bytes,
+				);
+				const old = textBlob("still legacy during conversion");
+				await database.run(
+					"INSERT INTO session_blobs (session_id, hash, bytes, data) VALUES ('session', ?, ?, ?)",
+					old.hash,
+					old.data.length,
+					old.data,
+				);
+				const fresh = textBlob("already chunked during conversion");
+				await reader.putBlob("session", fresh.data);
+				const migrator = startOpener(adapter, hash, "pause");
+				await migrator.wait("locked");
+				const contender = startOpener(adapter, hash);
+				await contender.wait("opening");
+				assert.deepEqual(await reader.getBlob("session", old.hash), old.data);
+				assert.deepEqual(await reader.getBlob("session", fresh.hash), fresh.data);
+				migrator.child.send("continue");
+				await migrator.wait("batch");
+				assert.equal(await contender.wait("opened"), "opened");
+				assert.deepEqual(await contender.exited, [0, null]);
+				migrator.child.send("continue");
+				assert.deepEqual(await migrator.wait("written"), { type: "written", hash });
+				assert.deepEqual(await migrator.exited, [0, null]);
+				assert.deepEqual(await database.get("PRAGMA integrity_check"), { integrity_check: "ok" });
+				assert.deepEqual(await reader.getBlob("session", old.hash), old.data);
+				assert.deepEqual(await reader.getBlob("session", fresh.hash), fresh.data);
+				const reopened = await SqlSessionStore.open(database);
+				closers.push(() => reopened.close());
+				assert.equal(
+					createHash("sha256")
+						.update((await reopened.getBlob("session", hash))!)
+						.digest("hex"),
+					hash,
+				);
+			},
+			OPENER_FORKING_TEST_TIMEOUT_MS,
+		);
 
-		test("resumes after SIGKILL between chunk batches without discarding legacy bytes or duplicating chunks", async () => {
-			const database = await openDatabase();
-			const sessions = await SqlSessionStore.open(database);
-			closers.push(() => sessions.close());
-			await createSession(sessions, "session", []);
-			await database.exec(`DROP TABLE session_blobs; DROP TABLE session_blob_chunks;
+		test(
+			"resumes after SIGKILL between chunk batches without discarding legacy bytes or duplicating chunks",
+			async () => {
+				const database = await openDatabase();
+				const sessions = await SqlSessionStore.open(database);
+				closers.push(() => sessions.close());
+				await createSession(sessions, "session", []);
+				await database.exec(`DROP TABLE session_blobs; DROP TABLE session_blob_chunks;
 				CREATE TABLE session_blobs (session_id TEXT NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL,
 				data BLOB NOT NULL, PRIMARY KEY (session_id, hash)) STRICT`);
-			const original = Buffer.alloc(32 * 1024 * 1024 + 17).fill(Buffer.from([0, 1, 127, 128, 255]));
-			const hash = createHash("sha256").update(original).digest("hex");
-			await database.run("INSERT INTO session_blobs VALUES ('session', ?, ?, ?)", hash, original.length, original);
-			const migrator = startOpener(adapter, hash, "pause-binary");
-			await migrator.wait("locked");
-			migrator.child.send("continue");
-			await migrator.wait("batch");
-			migrator.child.kill("SIGKILL");
-			await migrator.exited;
-			assert.deepEqual(await database.get("PRAGMA integrity_check"), { integrity_check: "ok" });
-			const pending = await database.get(
-				"SELECT chunks, length(data) AS bytes FROM session_blobs WHERE hash = ?",
-				hash,
-			);
-			assert.equal(Number(pending?.chunks), -1);
-			assert.equal(Number(pending?.bytes), original.length);
-			const progress = await database.get(
-				"SELECT count(*) AS chunks, sum(length(data)) AS bytes FROM session_blob_chunks",
-			);
-			assert.ok(Number(progress?.chunks) > 0);
-			assert.ok(Number(progress?.bytes) < original.length);
-			const resumed = startOpener(adapter, hash, "write-binary");
-			assert.deepEqual(await resumed.wait("written"), { type: "written", hash });
-			assert.deepEqual(await resumed.exited, [0, null]);
-			const upgraded = await SqlSessionStore.open(database);
-			closers.push(() => upgraded.close());
-			assert.deepEqual(await upgraded.getBlob("session", hash), new Uint8Array(original));
-			const complete = await database.get(
-				"SELECT chunks, length(data) AS bytes FROM session_blobs WHERE hash = ?",
-				hash,
-			);
-			assert.equal(Number(complete?.chunks), 33);
-			assert.equal(Number(complete?.bytes), 0);
-			assert.equal(Number((await database.get("SELECT count(*) AS chunks FROM session_blob_chunks"))?.chunks), 33);
-		}, 120_000);
+				const original = Buffer.alloc(32 * 1024 * 1024 + 17).fill(Buffer.from([0, 1, 127, 128, 255]));
+				const hash = createHash("sha256").update(original).digest("hex");
+				await database.run(
+					"INSERT INTO session_blobs VALUES ('session', ?, ?, ?)",
+					hash,
+					original.length,
+					original,
+				);
+				const migrator = startOpener(adapter, hash, "pause-binary");
+				await migrator.wait("locked");
+				migrator.child.send("continue");
+				await migrator.wait("batch");
+				migrator.child.kill("SIGKILL");
+				await migrator.exited;
+				assert.deepEqual(await database.get("PRAGMA integrity_check"), { integrity_check: "ok" });
+				const pending = await database.get(
+					"SELECT chunks, length(data) AS bytes FROM session_blobs WHERE hash = ?",
+					hash,
+				);
+				assert.equal(Number(pending?.chunks), -1);
+				assert.equal(Number(pending?.bytes), original.length);
+				const progress = await database.get(
+					"SELECT count(*) AS chunks, sum(length(data)) AS bytes FROM session_blob_chunks",
+				);
+				assert.ok(Number(progress?.chunks) > 0);
+				assert.ok(Number(progress?.bytes) < original.length);
+				const resumed = startOpener(adapter, hash, "write-binary");
+				assert.deepEqual(await resumed.wait("written"), { type: "written", hash });
+				assert.deepEqual(await resumed.exited, [0, null]);
+				const upgraded = await SqlSessionStore.open(database);
+				closers.push(() => upgraded.close());
+				assert.deepEqual(await upgraded.getBlob("session", hash), new Uint8Array(original));
+				const complete = await database.get(
+					"SELECT chunks, length(data) AS bytes FROM session_blobs WHERE hash = ?",
+					hash,
+				);
+				assert.equal(Number(complete?.chunks), 33);
+				assert.equal(Number(complete?.bytes), 0);
+				assert.equal(
+					Number((await database.get("SELECT count(*) AS chunks FROM session_blob_chunks"))?.chunks),
+					33,
+				);
+			},
+			OPENER_FORKING_TEST_TIMEOUT_MS,
+		);
 	});
 }
