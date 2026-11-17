@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { Usage } from "@bastani/atomic-ai/compat";
 import { redactCredentialShapes } from "../../utils/credential-redaction.js";
-import { messageIsLlmVisible } from "../messages.js";
+import { messageIsLlmVisible } from "../messages.ts";
 
 /** Share of the conversation the compactor keeps. A constant, not a setting. */
 export const COMPACTOR_COMPRESSION_RATIO = 0.5;
