@@ -165,6 +165,25 @@ test("a member that ends the shared transaction fails the members before it, and
 	assert.deepEqual(await rows(database), ["taken", "behind", "statement", "late"]);
 });
 
+test("a member that catches a group rollback cannot commit the next member and then reject it (#5321)", async () => {
+	const database = await openItems();
+	await database.run("INSERT INTO items VALUES ('taken')");
+	const outcomes = await Promise.allSettled([
+		database.transaction((tx) => tx.run("INSERT INTO items VALUES ('before')")),
+		database.transaction(async (tx) => {
+			await tx.run("INSERT OR ROLLBACK INTO items VALUES ('taken')").catch(() => {});
+		}),
+		database.transaction((tx) => tx.run("INSERT INTO items VALUES ('after')")),
+	]);
+	assert.deepEqual(
+		outcomes.map((outcome) => outcome.status),
+		["rejected", "rejected", "fulfilled"],
+	);
+	assert.ok((outcomes[0] as PromiseRejectedResult).reason instanceof StorageUnavailableError);
+	assert.ok((outcomes[1] as PromiseRejectedResult).reason instanceof StorageRollbackError);
+	assert.deepEqual(await rows(database), ["taken", "after"]);
+});
+
 test("a transaction's handle refuses statements once its callback returned (#5321)", async () => {
 	const database = await openItems();
 	let kept: Parameters<Parameters<SqliteDatabase["transaction"]>[0]>[0] | undefined;
@@ -179,6 +198,24 @@ test("a text parameter with a NUL character is refused before it reaches SQLite 
 	const database = await openItems();
 	await assert.rejects(database.run("INSERT INTO items VALUES (?)", "a\0b"), StorageInvalidTextError);
 	assert.deepEqual(await rows(database), []);
+});
+
+test("binary parameters backed by shared memory keep their call-time bytes inside and outside transactions (#5321)", async () => {
+	const database = await openItems("CREATE TABLE items (value BLOB)");
+	const bytes = new Uint8Array(new SharedArrayBuffer(1));
+	bytes[0] = 1;
+	const queued = database.run("INSERT INTO items VALUES (?)", bytes);
+	bytes[0] = 2;
+	await queued;
+	await database.transaction(async (tx) => {
+		const inserting = tx.run("INSERT INTO items VALUES (?)", bytes);
+		bytes[0] = 3;
+		await inserting;
+	});
+	assert.deepEqual(await database.all("SELECT hex(value) AS value FROM items ORDER BY rowid"), [
+		{ value: "01" },
+		{ value: "02" },
+	]);
 });
 
 test("closing runs what was queued first, then refuses new work (#5321)", async () => {

@@ -245,7 +245,7 @@ class ThreadedSqliteDatabase implements SqliteDatabase {
 	private statement(kind: StatementKind, sql: string, params: readonly SqliteValue[]): Promise<StatementValue> {
 		const invalidIndex = params.findIndex((value) => typeof value === "string" && value.includes("\0"));
 		if (invalidIndex !== -1) return Promise.reject(new StorageInvalidTextError(invalidIndex));
-		return this.request({ kind, sql, params });
+		return this.request({ kind, sql, params: snapshotParams(params) });
 	}
 
 	private createExecutor(active: () => boolean): SqliteExecutor {
@@ -356,29 +356,20 @@ class ThreadedSqliteDatabase implements SqliteDatabase {
 		}
 	}
 
-	private pipelined(sql: string): Promise<void> {
-		const sent = this.executor.exec(sql);
-		sent.catch(() => {});
-		return sent;
-	}
-
 	private async commitMembers(members: Member[]): Promise<void> {
 		const outcomes: Outcome[] = [];
-		const released: Promise<void>[] = [];
 		for (const member of members) {
 			const savepoint = `atomic_group_${outcomes.length}`;
-			const opened = this.pipelined(`SAVEPOINT ${savepoint}`);
 			let active = true;
 			try {
+				await this.executor.exec(`SAVEPOINT ${savepoint}`);
 				const value = await member.callback(this.createExecutor(() => active));
 				active = false;
-				await opened;
-				released.push(this.pipelined(`RELEASE ${savepoint}`));
+				await this.executor.exec(`RELEASE ${savepoint}`);
 				outcomes.push({ ok: true, value });
 			} catch (cause) {
 				active = false;
 				try {
-					await opened;
 					await this.executor.exec(`ROLLBACK TO ${savepoint}`);
 					await this.executor.exec(`RELEASE ${savepoint}`);
 				} catch (rollbackCause) {
@@ -391,7 +382,6 @@ class ThreadedSqliteDatabase implements SqliteDatabase {
 		let commitCause: unknown;
 		let committed = true;
 		try {
-			await Promise.all(released);
 			await this.executor.exec("COMMIT");
 		} catch (cause) {
 			committed = false;
