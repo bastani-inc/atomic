@@ -50,7 +50,9 @@ const placementCode = (error) => {
 	return null;
 };
 
-const childPath = fileURLToPath(new URL("./shared-pool-child.ts", import.meta.url));
+const childPath = fileURLToPath(
+	new URL(scenario === "scale" ? "./shared-pool-scale-child.ts" : "./shared-pool-child.ts", import.meta.url),
+);
 const exportName =
 	{
 		bound: "boundChild",

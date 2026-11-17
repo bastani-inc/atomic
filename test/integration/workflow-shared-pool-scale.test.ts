@@ -45,6 +45,7 @@ const CLEANUP_HEADROOM_MS = 30_000;
  * default. The case measures the shared store, not process startup, so its workers get the time they need.
  */
 const WORKER_STARTUP_TIMEOUT_MS = 240_000;
+const SCALE_MAX_SEMI_SPACE_MB = 1;
 
 interface Outcome {
 	readonly status: string;
@@ -98,6 +99,9 @@ async function runScale(url: string, hosts: number): Promise<void> {
 		mkdirSync(agentDir, { recursive: true });
 		return {
 			...process.env,
+			NODE_OPTIONS: [process.env.NODE_OPTIONS, `--max-semi-space-size=${SCALE_MAX_SEMI_SPACE_MB}`]
+				.filter(Boolean)
+				.join(" "),
 			SHARED_POOL_HOST: name,
 			SHARED_POOL_AGENT_DIR: agentDir,
 			SHARED_POOL_ADAPTER: libsql,
