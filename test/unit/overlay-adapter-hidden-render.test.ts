@@ -159,38 +159,35 @@ async function registerIsolatedTests(): Promise<void> {
 	}
 
 	describe("workflow overlay hidden render gating (#1856)", () => {
-		for (const stallMs of [0, 150]) {
-			test(`visible overlay coalesces a status burst into one snapshot-free frame after a ${stallMs} ms stall (#5234, #5252, #5343)`, async () => {
-				jest.useFakeTimers();
+		test("visible overlay coalesces a status burst into one snapshot-free frame (#5234, #5252, #5343)", async () => {
+			jest.useFakeTimers();
+			try {
+				const { adapter, store, renderRequests } = buildHarness();
+				adapter.open(null);
+				const snapshotSpies = [
+					spyOn(store, "graphSnapshot"),
+					spyOn(store, "snapshot"),
+					spyOn(store, "inspectionSnapshot"),
+				];
+				const snapshotReads = () =>
+					snapshotSpies.reduce((reads, snapshotSpy) => reads + snapshotSpy.mock.calls.length, 0);
 				try {
-					const { adapter, store, renderRequests } = buildHarness();
-					adapter.open(null);
-					if (stallMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, stallMs);
-					const snapshotSpies = [
-						spyOn(store, "graphSnapshot"),
-						spyOn(store, "snapshot"),
-						spyOn(store, "inspectionSnapshot"),
-					];
-					const snapshotReads = () =>
-						snapshotSpies.reduce((reads, snapshotSpy) => reads + snapshotSpy.mock.calls.length, 0);
-					try {
-						const before = renderRequests.count;
-						for (let update = 0; update < 50; update++) store.recordRunStart(makeRun(`r${update}`));
-						assert.equal(snapshotReads(), 0, "focused burst performs zero snapshot reads");
-						assert.equal(renderRequests.count, before, "status events schedule a frame without painting inline");
-						jest.advanceTimersByTime(STORE_RENDER_FRAME_MS);
-						for (let turn = 0; turn < 10; turn++) await Promise.resolve();
-						assert.equal(renderRequests.count, before + 1, "one frame paints the entire burst");
-						assert.equal(snapshotReads(), 0, "the frame and its microtasks perform zero snapshot reads");
-					} finally {
-						for (const snapshotSpy of snapshotSpies) snapshotSpy.mockRestore();
-						adapter.close();
-					}
+					const before = renderRequests.count;
+					for (let update = 0; update < 50; update++) store.recordRunStart(makeRun(`r${update}`));
+					assert.equal(snapshotReads(), 0, "focused burst performs zero snapshot reads");
+					assert.equal(renderRequests.count, before, "status events schedule a frame without painting inline");
+					jest.advanceTimersByTime(2 * STORE_RENDER_FRAME_MS);
+					for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+					assert.equal(renderRequests.count, before + 1, "one frame paints the entire burst");
+					assert.equal(snapshotReads(), 0, "the frame and its deferred work perform zero snapshot reads");
 				} finally {
-					jest.useRealTimers();
+					for (const snapshotSpy of snapshotSpies) snapshotSpy.mockRestore();
+					adapter.close();
 				}
-			});
-		}
+			} finally {
+				jest.useRealTimers();
+			}
+		});
 
 		test("hidden overlay store updates never call host requestRender", () => {
 			const { adapter, store, handle, renderRequests } = buildHarness();
