@@ -44,12 +44,12 @@ export function renderChatSessionBody<TExtraEntry extends ChatTranscriptEntryLik
 	// Kept as the same string while it is unchanged, so every entry's key compares it by reference.
 	const settingsKey = chatRenderSettingsCacheKey(state);
 	if (settingsKey !== state.transcriptRenderSettingsKey) state.transcriptRenderSettingsKey = settingsKey;
-	// Ctrl+O sets every block, including those a click expanded or collapsed.
+	// Ctrl+O sets every block, including those a click expanded or collapsed. A view that takes Ctrl+O itself drops
+	// the clicks' choices on each press; a setting changed elsewhere drops them once it is seen to change.
 	const toolsExpanded = state.getChatRenderSettings?.()?.toolOutputExpanded === true;
 	if (state.expandedOverridesFor !== toolsExpanded) {
 		state.expandedOverridesFor = toolsExpanded;
-		state.expandedOverrides = new Map();
-		state.expandedEntryOverrides = new WeakMap();
+		dropExpandedOverrides(state);
 	}
 	if (state.transcript.length > 0) {
 		components.push(state.transcriptComponent);
@@ -350,6 +350,14 @@ export function expandedOverride<TExtraEntry extends ChatTranscriptEntryLike>(
 ): boolean | undefined {
 	const key = toolCallKey(entry);
 	return key === undefined ? state.expandedEntryOverrides.get(entry) : state.expandedOverrides.get(key);
+}
+
+/** Forgets which blocks a click expanded or collapsed, so every block follows the chat's tool-output setting. */
+export function dropExpandedOverrides<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): void {
+	state.expandedOverrides = new Map();
+	state.expandedEntryOverrides = new WeakMap();
 }
 
 /** A name for `entry` that a repaint keeps: a tool call's id, which outlives its replaced entry objects, or the entry's. */

@@ -25,6 +25,7 @@ import {
 import { applyChatSessionAgentEvent, compactionStatusMessage } from "./chat-session-host-events.ts";
 import {
 	chatSessionWorkingMeta,
+	dropExpandedOverrides,
 	renderChatSessionBody,
 	renderChatSessionEditor,
 	renderChatSessionEntry,
@@ -538,7 +539,8 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		const layout = this.bodyLayout;
 		// A task's transcript the chat shows full-screen takes the click into its own transcript.
 		if (layout.taskView) return this.taskInspector?.handleMouse(event)?.handled === true;
-		if (event.y >= layout.transcriptRows) return false;
+		// While the prompt search or a completion menu owns input, a click on the transcript does nothing.
+		if (event.y >= layout.transcriptRows || hasChatSessionTransientModal(this.state)) return false;
 		const state = this.state;
 		const hit = state.bodyViewport.componentAtRow(event.y);
 		if (hit === undefined || hit.component !== state.transcriptComponent) return false;
@@ -554,6 +556,12 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		}
 		state.requestRender?.();
 		return true;
+	}
+
+	/** Ctrl+O was pressed: every block follows the tool-output setting again, including those a click set. */
+	toolOutputToggled(): void {
+		dropExpandedOverrides(this.state);
+		this.invalidate();
 	}
 
 	/**

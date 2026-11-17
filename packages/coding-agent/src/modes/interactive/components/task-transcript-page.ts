@@ -416,7 +416,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		if (keybindings.matches(data, "app.tools.expand")) {
 			if (this.env.setToolsExpanded === undefined) return false;
 			this.env.setToolsExpanded(this.env.getToolsExpanded?.() !== true);
-			this.chat.invalidate();
+			this.chat.toolOutputToggled();
 			this.requestRender();
 			return true;
 		}

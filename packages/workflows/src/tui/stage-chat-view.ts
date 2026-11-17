@@ -120,6 +120,8 @@ export class StageChatView implements Component, Focusable {
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		const region = this.transcriptRows;
 		if (region === undefined || event.y < region.top || event.y >= region.top + region.rows) return undefined;
+		// While a dialog the stage opened, its question or the key help owns input, a click on the transcript does nothing.
+		if (this.mountedCustomUi !== null || promptCardShown(this._ctx()) || this.helpOpen) return undefined;
 		if (!this.chatHost.handleBodyClick({ ...event, y: event.y - region.top })) return undefined;
 		this.requestRender?.();
 		return { handled: true };

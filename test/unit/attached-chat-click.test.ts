@@ -11,7 +11,10 @@ import { taskCompletionMessage } from "../../packages/coding-agent/src/core/task
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
-import { themedChatHostStyle } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
+import {
+	type TaskTranscriptEnvironment,
+	themedChatHostStyle,
+} from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { getEditorTheme, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskFixture } from "../helpers/task-projection.js";
 import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
@@ -69,13 +72,18 @@ function click(x: number, y: number, width: number, height: number): TuiMouseEve
 }
 
 /** A task's open transcript in the task inspector, over `session`, with live events from `emit`. */
-async function openTranscript(session: SessionManager, width = 100, height = 60) {
+async function openTranscript(
+	session: SessionManager,
+	width = 100,
+	height = 60,
+	overrides: Partial<TaskTranscriptEnvironment> = {},
+) {
 	initTheme("dark");
 	const keys = getKeybindings();
 	setKeybindings(new KeybindingsManager());
 	const fixture = taskFixture();
 	const listeners = new Set<(event: AgentSessionEvent) => void>();
-	const environment = taskTranscriptEnvironment();
+	const environment = taskTranscriptEnvironment(overrides);
 	const inspector = new TaskInspector(
 		fixture.store,
 		() => {},
@@ -115,7 +123,8 @@ async function openTranscript(session: SessionManager, width = 100, height = 60)
 		await fixture.dispose();
 		setKeybindings(keys);
 	};
-	return { screen, rowOf, clickOn, emit, dispose };
+	const press = (data: string) => inspector.handleInput(data);
+	return { screen, rowOf, clickOn, emit, press, dispose };
 }
 
 test("a running tool block a click expanded stays expanded as its live output arrives", async () => {
@@ -221,6 +230,29 @@ async function childSession(): Promise<SessionManager> {
 	});
 	return child;
 }
+
+test("pressing Ctrl+O twice before the next paint collapses a block a click expanded in a task transcript", async () => {
+	let toolsExpanded = false;
+	const chat = await openTranscript(await childSession(), 100, 60, {
+		getToolsExpanded: () => toolsExpanded,
+		setToolsExpanded: (expanded) => {
+			toolsExpanded = expanded;
+		},
+		getChatRenderSettings: () => ({ toolOutputExpanded: toolsExpanded }),
+	});
+	try {
+		const expanded = () => chat.screen().some((line) => line.trimEnd().endsWith("child line 1"));
+		assert.equal(chat.clickOn(/child-cmd/, "child-cmd")?.handled, true);
+		assert.ok(expanded(), chat.screen().join("\n"));
+
+		chat.press("\x0f");
+		chat.press("\x0f");
+		assert.equal(toolsExpanded, false);
+		assert.ok(!expanded(), chat.screen().join("\n"));
+	} finally {
+		await chat.dispose();
+	}
+});
 
 test("a click in a chat's open task transcript reaches the blocks of that transcript", async () => {
 	initTheme("dark");
