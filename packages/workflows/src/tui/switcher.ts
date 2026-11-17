@@ -16,6 +16,7 @@
 import { type StageDisplayStatus, stageDisplayStatus } from "../shared/stage-display-status.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 import { BOLD, hexBg, hexToAnsi, RESET } from "./color-utils.js";
+import { inertDisplayLine } from "./display-text.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { type RunStateIndicator, runStateColor } from "./run-state-indicator.js";
 import { statusColor, statusIcon } from "./status-helpers.js";
@@ -158,12 +159,12 @@ export function renderSwitcher(stages: readonly StageSnapshot[], state: Switcher
 		const icon = statusIcon(displayStatus);
 		const label = statusText(displayStatus);
 		const rowTextBudget = Math.max(8, innerWidth - 14);
-		const name = truncateToWidth(stage.name, rowTextBudget, "…");
+		const name = truncateToWidth(inertDisplayLine(stage.name), rowTextBudget, "…");
 
 		if (isSelected) {
 			const metaWidth = visibleWidth(label);
 			const nameBudget = Math.max(4, innerWidth - visibleWidth(`  ${icon} `) - metaWidth - 2);
-			const selectedName = truncateToWidthWithoutReset(stage.name, nameBudget, "…");
+			const selectedName = truncateToWidthWithoutReset(inertDisplayLine(stage.name), nameBudget, "…");
 			const prefix = `  ${icon} ${selectedName}`;
 			const visibleRow = `${prefix}${" ".repeat(Math.max(1, innerWidth - visibleWidth(`${prefix}${label}`) - 1))}${label} `;
 			const padded = padVisible(visibleRow, innerWidth);
