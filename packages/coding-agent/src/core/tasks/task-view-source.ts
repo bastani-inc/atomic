@@ -3,6 +3,7 @@ import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { CompactionReason } from "../agent-session.js";
 import { sessionEntryToContextMessages } from "../session-manager-history.ts";
 import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.ts";
+import { activeToolExecutionStarts, type ToolExecutionStart } from "../tool-execution-timing.ts";
 import { taskOutputText } from "./command-output.js";
 import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
 import { bindTaskClockSource } from "./live-elapsed.ts";
@@ -39,6 +40,7 @@ export interface TaskTranscriptView {
 	/** On the latest page: why the task's session is compacting at the time of the read. */
 	readonly compactionReason?: CompactionReason;
 	readonly compactionStartedAt?: number;
+	readonly activeToolStarts?: readonly ToolExecutionStart[];
 }
 
 /** How an open transcript of a task follows it: through its live session, or by reading it again. */
@@ -457,6 +459,8 @@ function transcriptView(
 	});
 	const compactionReason = cursor === undefined ? session.getCompactionReason?.() : undefined;
 	const compactionStartedAt = compactionReason === undefined ? undefined : session.chatSession?.compactionStartedAt;
+	const activeToolStarts =
+		cursor === undefined && session.chatSession !== undefined ? activeToolExecutionStarts(session.chatSession) : [];
 	return {
 		ok: true,
 		value: {
@@ -464,6 +468,7 @@ function transcriptView(
 			...(page.ok && page.value.nextCursor !== undefined ? { nextCursor: page.value.nextCursor } : {}),
 			...(compactionReason === undefined ? {} : { compactionReason }),
 			...(compactionStartedAt === undefined ? {} : { compactionStartedAt }),
+			...(activeToolStarts.length === 0 ? {} : { activeToolStarts }),
 		},
 	};
 }

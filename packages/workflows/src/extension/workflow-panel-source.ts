@@ -2,7 +2,7 @@ import type { AgentPanelItem, AgentPanelSource, WorkflowRunControlOutcome } from
 import type { StageControlHandle } from "../runs/foreground/stage-control-registry.js";
 import { runStageIndex } from "../shared/run-stage-index.js";
 import { readGraphStoreSnapshot } from "../shared/store-observation.js";
-import type { StoreSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import {
 	answerPanelRun,
@@ -27,6 +27,7 @@ export function workflowPanelSource(owner: WorkflowOwnerResources, deps: Workflo
 	let cachedViewedRuns = new Set<string>();
 	let cachedPendingSignature = "";
 	let cachedItems: AgentPanelItem[] = [];
+	const pendingStageLocations = new WeakMap<RunSnapshot, ReadonlyMap<string, number>>();
 	const listeners = new Set<() => void>();
 	let unsubscribeStore: (() => void) | undefined;
 	const handleSubscriptions = new Map<StageControlHandle, () => void>();
@@ -44,12 +45,21 @@ export function workflowPanelSource(owner: WorkflowOwnerResources, deps: Workflo
 			if (!owner.stageControlRegistry.has(run.id)) continue;
 			if (run.endedAt !== undefined && run.resumable !== true && run.blockedAt === undefined) continue;
 			const rawRun = owner.store.run(run.id);
+			const knownLocations = rawRun === undefined ? undefined : pendingStageLocations.get(rawRun);
+			const nextLocations = new Map<string, number>();
 			for (const stage of runStageIndex(run).unfinished) {
-				const rawStage = rawRun?.stages.find((candidate) => candidate.id === stage.id);
+				const knownPosition = knownLocations?.get(stage.id);
+				const position =
+					knownPosition !== undefined && rawRun?.stages[knownPosition]?.id === stage.id
+						? knownPosition
+						: rawRun?.stages.findIndex((candidate) => candidate.id === stage.id);
+				if (position !== undefined && position >= 0) nextLocations.set(stage.id, position);
+				const rawStage = position === undefined ? undefined : rawRun?.stages[position];
 				const recorded = rawStage === undefined ? 0 : stageTokens(rawStage);
 				const pending = pendingTokensOf(run.id, stage.id);
 				if (recorded > 0 || pending > 0) signature += `${run.id}:${stage.id}=${recorded}+${pending};`;
 			}
+			if (rawRun !== undefined) pendingStageLocations.set(rawRun, nextLocations);
 		}
 		return signature;
 	};

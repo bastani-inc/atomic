@@ -30,6 +30,7 @@ import {
 	waitForSupervisedCommand,
 } from "./bash-pty-native.js";
 import { applyBashSessionEnvironment, snapshotBashSessionEnvironment } from "./bash-session-environment.ts";
+import { markBuiltinToolRenderers } from "./builtin-renderers.js";
 import { OutputAccumulator } from "./output-accumulator.ts";
 import {
 	getTextOutput,
@@ -450,7 +451,7 @@ export function createBashToolDefinition(
 	const sessionTempDirOption = options?.sessionTempDir;
 	const resolveSessionTempDir = (): string | undefined =>
 		typeof sessionTempDirOption === "function" ? sessionTempDirOption() : sessionTempDirOption;
-	return {
+	return markBuiltinToolRenderers<ToolDefinition<typeof bashSchema, BashToolDetails | undefined, ToolTimerState>>({
 		name: "bash",
 		concurrency: (args) => (args.pty === true ? "exclusive" : "shared"),
 		detachable: (args) => args.action === "wait" && args.budgetMs === undefined,
@@ -739,7 +740,7 @@ export function createBashToolDefinition(
 			component.invalidate();
 			return component;
 		},
-	};
+	});
 }
 export function createBashTool(cwd: string, options?: BashToolOptions): AgentTool<typeof bashSchema> {
 	return wrapToolDefinition(createBashToolDefinition(cwd, options));

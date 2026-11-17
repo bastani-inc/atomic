@@ -28,6 +28,7 @@ export type {
 	ToolLoadout,
 	ToolLoadoutChanges,
 	ToolNamespace,
+	ToolRenderContext,
 	ToolRendererResolver,
 	ToolRenderers,
 	ToolScriptAccess,
@@ -194,6 +195,25 @@ export {
 } from "./modes/interactive/components/notice-line.ts";
 export { renderTaskFooter, TaskList, taskListSections } from "./modes/interactive/components/task-list.js";
 export { TaskRow } from "./modes/interactive/components/task-row.js";
+export {
+	collapseToolBlockLines,
+	isToolBlock,
+	TOOL_BLOCK_LIMITS,
+	ToolBlock,
+	ToolBlockGroup,
+	ToolBlockMarkdown,
+	ToolBlockRecords,
+	type ToolBlockSpec,
+	type ToolBlockStatus,
+} from "./modes/interactive/components/tool-block.ts";
+export {
+	type BuiltinToolBlockContentPart,
+	type BuiltinToolBlockInput,
+	type BuiltinToolBlockPresentation,
+	type BuiltinToolBlockResult,
+	builtinToolBlockPresentation,
+} from "./modes/interactive/components/tool-block-families.ts";
+export { formatToolActionSummary } from "./modes/interactive/components/tool-block-summary.ts";
 export {
 	applyAssistantMessageDelta,
 	beginStreamingAssistantMessage,
@@ -1170,6 +1190,7 @@ export {
 } from "./modes/index.ts";
 // UI components for extensions
 export {
+	AgentTokenMeter,
 	ArminComponent,
 	AssistantMessageComponent,
 	agentTokenTotal,

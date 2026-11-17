@@ -91,6 +91,9 @@ export class OwnerTaskStore {
 	get settlementOrder(): ReadonlyMap<TaskId, bigint> {
 		return this.settlements;
 	}
+	getTask(id: TaskId): TaskRecord | undefined {
+		return this.records.get(id);
+	}
 	/** Resolve only within the owner that authorized this store. */
 	resolveTask(id: TaskId): Result<TaskLease, WaitError> {
 		return this.supervisor.lookupTask(this.owner, id);

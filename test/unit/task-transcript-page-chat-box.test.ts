@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { getKeybindings, setKeybindings, visibleWidth } from "@bastani/atomic-tui";
+import { getKeybindings, setKeybindings, Text, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import type { ReadonlyFooterDataProvider } from "../../packages/coding-agent/src/core/footer-data-provider.js";
@@ -458,6 +458,39 @@ describe("a live subagent's chat box (#4640)", () => {
 		assert.match(list, /title-child-shell/);
 		assert.doesNotMatch(list, /title-parent-shell|title-grandchild-shell/);
 		page.dispose();
+	});
+
+	test("resolves tool and message renderers from the child session before the main chat (#5224)", async () => {
+		const childTool = { renderCall: () => new Text("child tool", 0, 0) };
+		const parentTool = { renderCall: () => new Text("parent tool", 0, 0) };
+		const childMessage = () => new Text("child message", 0, 0);
+		const parentMessage = () => new Text("parent message", 0, 0);
+		const { page, opened } = await livePage(
+			{
+				chatSession: {
+					...(await liveChatSession()),
+					getToolDefinition: (name: string) => (name === "contact_supervisor" ? childTool : undefined),
+					extensionRunner: {
+						getMessageRenderer: (name: string) => (name === "intercom_message" ? childMessage : undefined),
+					},
+				},
+			},
+			{
+				getChatRenderSettings: () => ({
+					getToolDefinition: () => parentTool,
+					getCustomMessageRenderer: () => parentMessage,
+				}),
+			},
+		);
+		try {
+			const settings = opened[0]?.getChatRenderSettings?.();
+			assert.equal(settings?.getToolDefinition?.("contact_supervisor"), childTool);
+			assert.equal(settings?.getCustomMessageRenderer?.("intercom_message"), childMessage);
+			assert.equal(settings?.getToolDefinition?.("other"), parentTool);
+			assert.equal(settings?.getCustomMessageRenderer?.("other"), parentMessage);
+		} finally {
+			page.dispose();
+		}
 	});
 
 	test("reads the subagent's git branch and watches it through the chat's footer data, until the page closes (#4640)", async () => {

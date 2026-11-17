@@ -9,7 +9,6 @@ import {
   sliceHead,
 } from "@bastani/atomic";
 import { Type } from "typebox";
-import { Text } from "@bastani/atomic-tui";
 import type { IntercomClient, SendResult } from "./broker/client.js";
 import type { Attachment, BrokerMultiNodeStatus, Message, SessionInfo, SessionDirectory, WorkflowStageRosterEntry, WorkflowFutureStageRosterEntry } from "./types.js";
 import { OutboundAsks } from "./outbound-asks.js";
@@ -21,13 +20,12 @@ import { appendEntryUnlessReleased, intercomCallMayDetach } from "./detachable-c
 import { requestParentAskHandoff } from "./parent-ask-handoff.js";
 import { ReleasedReplyHandoff, type ReplyWait, type ReplyWaitAdmission } from "./reply-waiter.ts";
 import { prepareReleasedReplyWait, releasedReplyHandoffResult } from "./released-reply-wait.js";
-import { renderIntercomResult } from "./result-renderers.js";
+import { renderIntercomCall, renderIntercomResult } from "./result-renderers.js";
 import {
   type ChildOrchestratorMetadata,
   formatAttachments,
   formatSessionListRow,
   getErrorMessage,
-  previewText,
   toError,
 } from "./intercom-utils.js";
 import type { ReplyTracker } from "./reply-tracker.js";
@@ -1734,24 +1732,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
       const result = await runIntercomOperation(executeAttempt, (token) => retryIdentities.discard(token), signal);
       return action === "send" && typeof to === "string" ? { ...result, structuredContent: scriptSendOutcome(to, result) } : result;
     },
-    renderCall(args, theme) {
-      const action = typeof args.action === "string" ? args.action : "intercom";
-      const target = typeof args.to === "string" && args.to.trim() ? args.to.trim() : undefined;
-      const messagePreview = previewText(args.message, 96);
-      const attachmentCount = Array.isArray(args.attachments) ? args.attachments.length : 0;
-      let text = theme.fg("toolTitle", theme.bold("intercom "));
-      text += theme.fg(action === "ask" ? "warning" : action === "reply" ? "success" : "accent", action);
-      if (target) {
-        text += " " + theme.fg("muted", "→") + " " + theme.fg("accent", target);
-      }
-      if (attachmentCount > 0) {
-        text += " " + theme.fg("dim", `(${attachmentCount} attachment${attachmentCount === 1 ? "" : "s"})`);
-      }
-      if (messagePreview) {
-        text += "\n  " + theme.fg("dim", messagePreview);
-      }
-      return new Text(text, 0, 0);
-    },
+    renderCall: renderIntercomCall,
     renderResult: renderIntercomResult,
   });
 }

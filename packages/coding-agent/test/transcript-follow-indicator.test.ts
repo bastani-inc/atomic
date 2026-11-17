@@ -27,9 +27,9 @@ describe("TranscriptFollowIndicator", () => {
 		expect(indicator.render(80)).toEqual([]);
 	});
 
-	test("renders a centered linked highlight row with the live key label", () => {
+	test("renders a centered linked rounded pill with the live key label (#5224)", () => {
 		const indicator = new TranscriptFollowIndicator({ isFollowing: () => false, keyLabel: () => "ctrl+end" });
-		const highlight = " ↓ jump to bottom · ctrl+end ";
+		const highlight = "╭─ ↓ jump to bottom · ctrl+end ─╮";
 		const highlightWidth = visibleWidth(highlight);
 		for (const width of [80, 41]) {
 			const rows = indicator.render(width);
@@ -44,7 +44,7 @@ describe("TranscriptFollowIndicator", () => {
 		expect(rows[0]).toContain(TRANSCRIPT_JUMP_TO_END_URL);
 		expect(rows[0]).toContain("ctrl+end");
 		expect(rows[0]).not.toContain("┌");
-		expect(rows[0]).toContain(BG_MARKER);
+		expect(rows[0]).not.toContain(BG_MARKER);
 	});
 
 	test("truncates the row to a narrow viewport and omits an empty key suffix", () => {
@@ -62,14 +62,17 @@ describe("TranscriptFollowIndicator", () => {
 		}
 	});
 
-	test("keeps the highlight unbroken across the truncation ellipsis", () => {
+	test("keeps the narrowed label and ellipsis inside one jump link without a background band (#5224)", () => {
 		const indicator = new TranscriptFollowIndicator({ isFollowing: () => false, keyLabel: () => "End" });
 		const row = indicator.render(20)[0] ?? "";
 
 		expect(row).toContain("...");
-		for (const segment of row.split("\x1b[0m").slice(1)) {
-			expect(segment.startsWith(BG_MARKER)).toBe(true);
-		}
+		expect(row).not.toContain(BG_MARKER);
+		expect(stripTerminalSequences(row)).not.toContain("╭");
+		expect(visibleWidth(row)).toBeLessThanOrEqual(20);
+		expect(row.match(/\u001b\]8;;/g)).toHaveLength(2);
+		expect(row.indexOf(TRANSCRIPT_JUMP_TO_END_URL)).toBeLessThan(row.indexOf("..."));
+		expect(row.lastIndexOf("\x1b]8;;\x1b\\")).toBeGreaterThan(row.indexOf("..."));
 	});
 });
 

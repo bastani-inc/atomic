@@ -704,7 +704,6 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 			assert.equal(stageStreaming, true, "Esc on stage ? overlay only closes the overlay");
 			assert.equal(subRunning, true, "Esc on subagent ? overlay only closes the overlay");
 
-			// 4. Esc interrupts the turn and renders the identical shared "Interrupted by user" notice (no PAUSED banner)
 			assert.equal(stageView.handleInput(ESC), true);
 			assert.equal(subInspector.handleInput(ESC), true);
 			await flush();
@@ -723,12 +722,12 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 			const stageAfterAbort = plain(stageView.render(100));
 			const subAfterAbort = plain(subInspector.renderViewport(100, 28));
 
-			const mainNotice = mainAfterAbort.find((line) => line.includes("Interrupted by user"));
-			const stageNotice = stageAfterAbort.find((line) => line.includes("Interrupted by user"));
-			const subNotice = subAfterAbort.find((line) => line.includes("Interrupted by user"));
-			assert.equal(mainNotice, " Interrupted by user");
-			assert.equal(stageNotice, mainNotice, "stage chat renders identical Interrupted by user notice");
-			assert.equal(subNotice, mainNotice, "subagent view renders identical Interrupted by user notice");
+			const mainNotice = mainAfterAbort.find((line) => line.includes("◼ Interrupted"));
+			const stageNotice = stageAfterAbort.find((line) => line.includes("◼ Interrupted"));
+			const subNotice = subAfterAbort.find((line) => line.includes("◼ Interrupted"));
+			assert.equal(mainNotice, " ◼ Interrupted");
+			assert.equal(stageNotice, mainNotice, "stage chat renders the same shared interruption notice");
+			assert.equal(subNotice, mainNotice, "subagent view renders the same shared interruption notice");
 			assert.doesNotMatch(
 				stageAfterAbort.join("\n"),
 				/❚❚\s+PAUSED|This workflow stage is paused/,

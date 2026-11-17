@@ -87,6 +87,18 @@ export {
 export { ThemeSelectorComponent } from "./theme-selector.ts";
 export { ThinkingSelectorComponent } from "./thinking-selector.ts";
 export { formatTokenCount, formatTokenSegment, type TokenSegmentMode } from "./token-segment.ts";
+export {
+	collapseToolBlockLines,
+	isToolBlock,
+	TOOL_BLOCK_LIMITS,
+	ToolBlock,
+	ToolBlockGroup,
+	ToolBlockMarkdown,
+	ToolBlockRecords,
+	type ToolBlockSpec,
+	type ToolBlockStatus,
+} from "./tool-block.ts";
+export { formatToolActionSummary } from "./tool-block-summary.ts";
 export { ToolExecutionComponent, type ToolExecutionOptions } from "./tool-execution.ts";
 export { TRANSCRIPT_JUMP_TO_END_URL, TranscriptFollowIndicator } from "./transcript-follow-indicator.ts";
 export { TreeSelectorComponent } from "./tree-selector.ts";
@@ -94,5 +106,5 @@ export { TrustSelectorComponent } from "./trust-selector.ts";
 export { UserMessageComponent } from "./user-message.ts";
 export { UserMessageSelectorComponent } from "./user-message-selector.ts";
 export { truncateToVisualLines, type VisualTruncateResult } from "./visual-truncate.ts";
-export { agentTokenTotal } from "./working-run-meter.ts";
+export { AgentTokenMeter, agentTokenTotal } from "./working-run-meter.ts";
 export { WorkingStatusComponent, type WorkingStatusComponentOptions } from "./working-status.ts";

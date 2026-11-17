@@ -268,6 +268,10 @@ return Promise.all(workers.map((session) => tools.intercom({ action: "send", to:
 
 `send`, `ask`, and `reply` accept an `attachments` array of `{ type, name, content, language? }` objects where `type` is `"file"`, `"snippet"`, or `"context"`. Attachment content is included in the recipient's agent-visible message body. When a parent-targeted foreground `ask` is terminally handed off at the source, the same ordered attachment array is retained and rendered with the question for the launching parent; duplicate names and content are not rewritten. Attachments are supported in the protocol but not in the ALT+M compose overlay.
 
+### Display metadata
+
+`Message.content` may include an optional `displayRanges` array of `{ start, end }` UTF-16 code-unit ranges into `content.text`. Senders such as `contact_supervisor` populate `displayRanges` so the inbound message card displays only the human-readable body while keeping the model-facing `content.text` unchanged. `displayRanges` is UI-only metadata: it does not affect routing, admission, or delivery idempotency, and when it is absent or any range is out of bounds, overlapping, or invalid, the card renders `content.text` in full.
+
 ### Message size limits
 
 A message's text can be at most **1 MiB** (UTF-8 bytes), and its text plus every attachment's name, language, and content at most **8 MiB**. Both the `intercom` tool and the broker refuse a larger message, which is not sent: `Intercom message text is <n> bytes, over the limit of 1048576 bytes (1 MiB); the message was not sent` or `Intercom message text and attachments total <n> bytes, over the limit of 8388608 bytes (8 MiB); the message was not sent`. To share more, save the content to a file and send its path.

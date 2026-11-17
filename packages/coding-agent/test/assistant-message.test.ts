@@ -252,7 +252,7 @@ describe("AssistantMessageComponent", () => {
 		);
 	});
 
-	test("wraps long aborted assistant messages to the render width", () => {
+	test("bounds long aborted assistant notices to one header row (#5350)", () => {
 		initTheme("dark");
 		const width = 48;
 		const component = new AssistantMessageComponent(
@@ -265,13 +265,14 @@ describe("AssistantMessageComponent", () => {
 
 		const lines = component.render(width);
 
-		expect(lines.length).toBeGreaterThan(2);
+		expect(lines.length).toBe(2);
+		assert.match(stripAnsi(lines.at(-1) ?? ""), /^ ◼ Interrupted/);
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 		}
 	});
 
-	test("an interrupted response ends with a muted 'Interrupted by user' line, whatever the provider or retry loop called it", () => {
+	test("an interrupted response ends with a stopped notice independent of provider wording (#5350)", () => {
 		initTheme("dark");
 		for (const errorMessage of [
 			undefined,
@@ -285,8 +286,9 @@ describe("AssistantMessageComponent", () => {
 			);
 			const lines = component.render(80);
 			const last = lines.filter((line) => stripAnsi(line).trim() !== "").at(-1) ?? "";
-			assert.equal(stripAnsi(last).trim(), "Interrupted by user", String(errorMessage));
-			assert.equal(last.includes(theme.fg("error", "Interrupted by user")), false, "not drawn as an error");
+			assert.equal(stripAnsi(last).trim(), "◼ Interrupted", String(errorMessage));
+			assert.equal(last.includes(theme.fg("error", "◼")), false, "not drawn as an error");
+			assert.ok(last.includes(theme.fg("muted", "◼")), "stopped marker is muted");
 		}
 		const retried = new AssistantMessageComponent(
 			createAssistantMessage([], { stopReason: "aborted", errorMessage: "Aborted after 2 retry attempts" }),
@@ -295,7 +297,7 @@ describe("AssistantMessageComponent", () => {
 			.render(80)
 			.map((line) => stripAnsi(line).trim())
 			.filter(Boolean);
-		assert.deepEqual(retriedText.slice(-1), ["Interrupted by user"], "an interrupt during retries reads the same");
+		assert.deepEqual(retriedText.slice(-1), ["◼ Interrupted"], "an interrupt during retries reads the same");
 	});
 
 	test("renders neutral truncation wording for a length stop", () => {

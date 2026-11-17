@@ -101,7 +101,7 @@ describe("StageChatView", () => {
 			true,
 		);
 		assert.match(view.render(96).join("\n"), /I will inspect it/);
-		assert.match(view.render(96).join("\n"), /read/);
+		assert.match(view.render(96).map(stripAnsi).join("\n"), /Read\(src\/index\.ts\)/);
 		assert.doesNotMatch(view.render(96).map(stripAnsi).join("\n"), /Checking the machinery/);
 		view.dispose();
 	});
@@ -314,7 +314,7 @@ describe("StageChatView", () => {
 		assert.equal(entry?.text.includes("ok"), true);
 		const renderedLines = view.render(96);
 		assert.match(renderedLines.join("\n"), /ok/);
-		const toolLine = renderedLines.find((line) => line.includes("$ bun test"));
+		const toolLine = renderedLines.map(stripAnsi).find((line) => line.includes("Bash(bun test)"));
 		assert.notEqual(toolLine, undefined);
 		view.dispose();
 	});

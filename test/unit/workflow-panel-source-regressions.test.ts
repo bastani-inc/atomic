@@ -323,6 +323,20 @@ test("workflowPanelSource adds in-flight attempt usage to recorded stage attempt
 	assert.equal(handleListeners.size, 0, "no handle subscription before source has subscribers");
 	assert.equal(source.items()[0]?.tokens, 322, "completed plan (122) + in-flight inspect (80 + 120 = 200)");
 
+	const rawRun = store.run("review")!;
+	const settledPlan = rawRun.stages[0]!;
+	let settledStageReads = 0;
+	Object.defineProperty(rawRun.stages, 0, {
+		configurable: true,
+		get() {
+			settledStageReads++;
+			return settledPlan;
+		},
+	});
+	for (let frame = 0; frame < 20; frame++) assert.equal(source.items()[0]?.tokens, 322);
+	assert.equal(settledStageReads, 0, "live usage refreshes do not scan the settled stage prefix");
+	Object.defineProperty(rawRun.stages, 0, { configurable: true, writable: true, value: settledPlan });
+
 	let notifications = 0;
 	const unsubscribe = source.subscribe(() => {
 		notifications++;

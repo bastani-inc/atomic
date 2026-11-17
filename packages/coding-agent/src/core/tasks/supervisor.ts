@@ -4,6 +4,7 @@ import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type * as native from "@bastani/atomic-natives";
 import { createModuleRequire } from "../../utils/module-require.ts";
 import type { AgentSession, AgentSessionEvent, CompactionReason } from "../agent-session.js";
+import type { MessageRenderer, ToolRenderers } from "../extensions/types.ts";
 import { currentResourceAdmission } from "../resource-admission-scope.ts";
 import type { ResourceAdmission, ResourcePermit } from "../sdk-types.ts";
 import type { SessionManager } from "../session-manager.ts";
@@ -43,7 +44,13 @@ export type ChatBoxSession = Pick<
 	| "compactionStartedAt"
 	| "isRetrying"
 	| "isBashRunning"
->;
+> & {
+	readonly getToolDefinition?: (toolName: string) => ToolRenderers | undefined;
+	readonly extensionRunner?: {
+		resolveToolRenderers?: (toolName: string, base: () => ToolRenderers | undefined) => ToolRenderers | undefined;
+		getMessageRenderer?: (customType: string) => MessageRenderer | undefined;
+	};
+};
 
 /** Messages a live session holds back until its turn ends. */
 export interface QueuedTaskMessages {
@@ -323,7 +330,8 @@ function entriesAfterInherited(
 ): ReturnType<TaskTranscriptSource["getEntries"]> {
 	const throughId = inherited?.throughId;
 	if (throughId === undefined || throughId === null) return entries;
-	return entries.slice(entries.findLastIndex((entry) => entry.id === throughId) + 1);
+	const index = entries.findLastIndex((entry) => entry.id === throughId);
+	return index < 0 ? [] : entries.slice(index + 1);
 }
 
 /** History the runner produced; a forked child's inherited parent entries are excluded. */
@@ -334,16 +342,22 @@ export function taskOwnTranscriptEntries(task: TaskLease): ReturnType<TaskTransc
 }
 
 /** {@link taskOwnTranscriptEntries}, read from the task's session store when its transcript keeps none in memory. */
-export async function loadTaskOwnTranscriptEntries(
-	task: TaskLease,
-): Promise<ReturnType<TaskTranscriptSource["getEntries"]> | undefined> {
+export async function loadTaskOwnTranscriptHistory(task: TaskLease): Promise<TaskTranscriptHistory | undefined> {
 	const state = environment.tasks.get(task);
 	const source = state?.transcript;
 	if (!state || !source) return undefined;
-	if (!source.loadHistory) return entriesAfterInherited(source.getEntries(), state.inherited);
+	if (!source.loadHistory) return { entries: entriesAfterInherited(source.getEntries(), state.inherited) };
 	const history = await source.loadHistory();
 	// What a transcript keeps when its saved history is gone is the task's own entries only.
-	return history.unavailable === undefined ? entriesAfterInherited(history.entries, state.inherited) : history.entries;
+	return history.unavailable === undefined
+		? { entries: entriesAfterInherited(history.entries, state.inherited) }
+		: { entries: history.entries, unavailable: history.unavailable };
+}
+
+export async function loadTaskOwnTranscriptEntries(
+	task: TaskLease,
+): Promise<ReturnType<TaskTranscriptSource["getEntries"]> | undefined> {
+	return (await loadTaskOwnTranscriptHistory(task))?.entries;
 }
 
 /** Promise rejections, setup throws and consumer exceptions may be arbitrary JavaScript values. */
