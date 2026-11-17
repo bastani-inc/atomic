@@ -469,6 +469,48 @@ test("inbound card collapses >4 rendered rows to 3 rows + hint and shows full bo
 	assert.ok(narrow.endsWith("…"));
 });
 
+test("embedded message cards compare sender paths with the receiving chat's cwd (#5350)", () => {
+	initTheme("dark", false);
+	const entry = {
+		from: { ...from, cwd: "/workspace/child" },
+		message: message("Fixture body"),
+		bodyText: "Fixture body",
+	};
+	const injected = buildIncomingCustomMessage(entry);
+	let renderer: ConstructorParameters<typeof CustomMessageComponent>[1];
+	intercom({
+		on() {},
+		registerTool() {},
+		registerCommand() {},
+		registerShortcut() {},
+		registerMessageRenderer(type: string, value: NonNullable<typeof renderer>) {
+			if (type === "intercom_message") renderer = value;
+		},
+		events: { on: () => () => {}, emit() {} },
+	} as never);
+	assert.ok(renderer);
+	const component = new CustomMessageComponent(
+		{ ...injected, role: "custom", timestamp: 1 },
+		renderer,
+		undefined,
+		1,
+		true,
+		[],
+		undefined,
+		undefined,
+		{ cwd: "/workspace/child" },
+	);
+	try {
+		const header = component
+			.render(160)
+			.map(stripTerminalSequences)
+			.find((row) => row.includes("Message from"))!;
+		assert.doesNotMatch(header, /workspace\/child/);
+	} finally {
+		component.dispose();
+	}
+});
+
 test("render-only Supervisor registration fills metadata-only tool definitions (#5350)", () => {
 	initTheme("dark", false);
 	let resolver: import("../../packages/coding-agent/src/core/extensions/types.ts").ToolRendererResolver | undefined;

@@ -847,14 +847,13 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				options.markdownTransformers,
 				messageEntry.messageId,
 				messageEntry.timestamp,
-				options.loadTaskTranscript
-					? {
-							loadTranscript: options.loadTaskTranscript,
-							...(options.hasTaskTranscript ? { hasTranscript: options.hasTaskTranscript } : {}),
-							requestRender: () => options.ui.requestRender(),
-							getToolDefinition: options.getToolDefinition,
-						}
-					: undefined,
+				{
+					...(options.loadTaskTranscript ? { loadTranscript: options.loadTaskTranscript } : {}),
+					...(options.hasTaskTranscript ? { hasTranscript: options.hasTaskTranscript } : {}),
+					requestRender: () => options.ui.requestRender(),
+					getToolDefinition: options.getToolDefinition,
+					cwd: options.cwd,
+				},
 			);
 			component.setExpanded(options.toolOutputExpanded ?? false);
 			return component;
