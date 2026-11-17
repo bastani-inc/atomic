@@ -42,7 +42,7 @@ class SelectorTerminal implements Terminal {
 	setProgramStatus(): void {}
 }
 
-async function openSettingsSelector() {
+async function openSettingsSelector(opened: (selector: SettingsSelectorComponent | undefined) => void = () => {}) {
 	const settingsManager = SettingsManager.inMemory({});
 	const chatModel = getModel("openai", "gpt-4o");
 	const compactionModel = getModel("openai", "gpt-4.1-mini");
@@ -99,7 +99,9 @@ async function openSettingsSelector() {
 	}) as unknown as InteractiveMode;
 	mode.ui = createInteractiveTuiReference(() => Reflect.get(mode, "renderer") as TUI);
 
-	await mode.showSettingsSelector();
+	const shown = mode.showSettingsSelector();
+	opened(selector);
+	await shown;
 	if (!selector) throw new Error("settings selector was not created");
 	return { mode, selector, session, settingsManager };
 }
@@ -111,6 +113,15 @@ beforeEach(() => {
 
 afterEach(() => {
 	setKeybindings(previousKeybindings);
+});
+
+test("/settings mounts its selector before the theme files are read, so the next keys reach it", async () => {
+	let mountedOnSubmit: SettingsSelectorComponent | undefined;
+	const { mode, selector } = await openSettingsSelector((opened) => {
+		mountedOnSubmit = opened;
+	});
+	expect(mountedOnSubmit).toBe(selector);
+	mode.ui.stop();
 });
 
 test("settings selector has no TUI mode row", async () => {

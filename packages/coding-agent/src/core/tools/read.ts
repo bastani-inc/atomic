@@ -10,7 +10,7 @@ import { parenthesizedKeyHint } from "../../modes/interactive/components/keybind
 import { getLanguageFromPath, highlightCode, type Theme } from "../../modes/interactive/theme/theme.js";
 import { processImage } from "../../utils/image-process.ts";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
-import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
+import { formatPathRelativeToCwdOrAbsolute, resolvePath as resolveUserPath } from "../../utils/paths.ts";
 import type {
 	ExtensionContext,
 	ToolDefinition,
@@ -248,11 +248,7 @@ export interface ReadRenderState {
  * Where the row's path resolves, without blocking the render. A path whose `@`-stripped, space-normalised spelling
  * differs from the literal one needs existence checks: those run in the background and redraw the row when done.
  */
-function resolveRenderedReadPath(
-	rawPath: string,
-	cwd: string,
-	context: ToolRenderContext<ReadRenderState>,
-): string | undefined {
+function resolveRenderedReadPath(rawPath: string, cwd: string, context: ToolRenderContext<ReadRenderState>): string {
 	const unambiguous = resolveToCwdIfUnambiguous(rawPath, cwd);
 	if (unambiguous !== undefined) return unambiguous;
 	const state = context.state;
@@ -266,7 +262,7 @@ function resolveRenderedReadPath(
 			context.invalidate();
 		});
 	}
-	return undefined;
+	return resolveUserPath(rawPath, cwd, { normalizeUnicodeSpaces: true, stripAtPrefix: true });
 }
 function getCompactReadClassification(
 	args: ReadRenderArgs | undefined,
@@ -276,7 +272,6 @@ function getCompactReadClassification(
 	const rawPath = str(args?.path);
 	if (!rawPath) return undefined;
 	const absolutePath = resolveRenderedReadPath(rawPath, cwd, context);
-	if (absolutePath === undefined) return undefined;
 	const fileName = basename(absolutePath);
 	if (fileName === "SKILL.md") {
 		return { kind: "skill", label: basename(dirname(absolutePath)) || fileName };

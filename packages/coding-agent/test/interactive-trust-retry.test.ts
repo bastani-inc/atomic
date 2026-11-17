@@ -68,3 +68,41 @@ it.each(["cancel", "save"] as const)("/trust retries a failed save and can %s (#
 		rmSync(directory, { recursive: true, force: true });
 	}
 });
+
+it("/trust mounts its selector before the trust file is read and gives it the keys typed meanwhile", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "atomic-trust-mount-"));
+	const agentDir = join(directory, "agent");
+	let mounted: { component: TrustSelectorComponent; focus: TrustSelectorComponent; dispose?: () => void } | undefined;
+	let closed = false;
+	const mode = {
+		sessionManager: { getCwd: () => directory },
+		runtimeHost: {
+			services: { agentDir },
+			session: {
+				extensionRunner: {
+					withProjectTrustPrompt: (_kind: string, _title: string, run: () => Promise<void>) => run(),
+				},
+			},
+		},
+		settingsManager: { isProjectTrusted: () => false },
+		showSelector: (create: (done: () => void) => NonNullable<typeof mounted>) => {
+			mounted = create(() => {
+				closed = true;
+				mounted?.dispose?.();
+			});
+		},
+		showStatus: () => {},
+		showError: (message: string) => assert.fail(message),
+		ui: { requestRender: () => {} },
+	};
+	try {
+		const shown = InteractiveModeBase.prototype.showTrustSelector.call(mode as never);
+		assert.ok(mounted, "the selector was not mounted on the submitting Enter");
+		mounted.focus.handleInput("\r");
+		await vi.waitFor(() => assert.equal(closed, true));
+		await shown;
+		assert.equal(new ProjectTrustStore(agentDir).get(directory), true);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});

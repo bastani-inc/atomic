@@ -47,8 +47,7 @@ InteractiveModeBase.prototype.showSelector = function (
 };
 
 InteractiveModeBase.prototype.showSettingsSelector = async function (this: InteractiveModeBase): Promise<void> {
-	// The theme list includes custom theme files added since they were last read.
-	await refreshCustomThemes();
+	const availableThemes = getAvailableThemes();
 	this.showSelector((done) => {
 		const { decisionModelScope, autoAdvanceAfterSteerScope } = decisionSettingScopes(
 			this.settingsManager.getProjectSettings(),
@@ -85,7 +84,7 @@ InteractiveModeBase.prototype.showSettingsSelector = async function (this: Inter
 				compactionModelScope,
 				currentTheme: this.themeController.getThemeSelection() || "dark",
 				terminalTheme: this.themeController.getTerminalTheme(),
-				availableThemes: getAvailableThemes(),
+				availableThemes,
 				hideThinkingBlock: this.hideThinkingBlock,
 				mermaidRenderingMode: this.settingsManager.getMermaidRenderingMode(),
 				latexRenderingEnabled: this.settingsManager.getLatexRenderingEnabled(),
@@ -292,4 +291,6 @@ InteractiveModeBase.prototype.showSettingsSelector = async function (this: Inter
 		);
 		return { component, focus: component.getSettingsList() };
 	});
+	await refreshCustomThemes();
+	availableThemes.splice(0, availableThemes.length, ...getAvailableThemes());
 };

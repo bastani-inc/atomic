@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { ScrollView } from "../src/components/scroll-view.ts";
+import { WindowedContainer } from "../src/components/windowed-container.ts";
 import type { Terminal } from "../src/terminal.ts";
 import type { Component } from "../src/tui.ts";
 import { TuiAltScreen } from "../src/tui-alt-screen.ts";
@@ -18,12 +19,16 @@ class RecordingTerminal implements Terminal {
 	columns = 80;
 	rows = 24;
 	readonly writes: Array<{ data: string; turn: number }> = [];
+	readonly exitRestores: string[] = [];
 	turn = 0;
 	start(_onInput: (data: string) => void, _onResize: () => void): void {}
 	stop(): void {}
 	async drainInput(_maxMs?: number, _idleMs?: number): Promise<void> {}
 	write(data: string): void {
 		this.writes.push({ data, turn: this.turn });
+	}
+	restoreOnExit(before: string, after: string): void {
+		this.exitRestores.push(before + after);
 	}
 	moveBy(_lines: number): void {}
 	hideCursor(): void {}
@@ -44,11 +49,49 @@ class Transcript implements Component {
 	invalidate(): void {}
 }
 
+class TranscriptEntry implements Component {
+	readonly lines: string[];
+	constructor(index: number) {
+		this.lines = Array.from({ length: 1 + (index % 7) }, (_, row) => `entry ${index} row ${row} \x1b[1mbold\x1b[22m`);
+	}
+	render(_width: number): string[] {
+		return this.lines;
+	}
+	invalidate(): void {}
+}
+
+class HiddenOutput extends WindowedContainer {
+	override render(_width: number): string[] {
+		return [];
+	}
+	protected override windowChildren(): readonly Component[] {
+		return [];
+	}
+}
+
+function windowedTranscript(): WindowedContainer {
+	const root = new WindowedContainer();
+	const history = new WindowedContainer();
+	for (let index = 0; index < TRANSCRIPT_LINES / 4; index++) history.addChild(new TranscriptEntry(index));
+	root.addChild(history);
+	const hidden = new HiddenOutput();
+	hidden.addChild(new TranscriptEntry(1));
+	root.addChild(hidden);
+	const notices = new WindowedContainer();
+	notices.addChild(new TranscriptEntry(2));
+	root.addChild(notices);
+	root.addChild(new TranscriptEntry(3));
+	return root;
+}
+
 /** Runs a fullscreen session over the transcript and returns what stopping it writes, by event-loop turn. */
-async function exitOutput(writeInSlices: boolean): Promise<RecordingTerminal["writes"]> {
+async function exitOutput(
+	writeInSlices: boolean,
+	layoutRoot: () => Component = () => new ScrollView(new Transcript(), { follow: "end", primary: true }),
+): Promise<RecordingTerminal["writes"]> {
 	const terminal = new RecordingTerminal();
 	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: false });
-	tui.setLayoutRoot(new ScrollView(new Transcript(), { follow: "end", primary: true }));
+	tui.setLayoutRoot(layoutRoot());
 	tui.start();
 	tui.renderNow();
 	const from = terminal.writes.length;
@@ -74,5 +117,32 @@ describe("quitting the fullscreen renderer", () => {
 		assert.ok(largest <= MAX_SLICED_WRITE_CHARACTERS, `the largest write carried ${largest} characters`);
 		const turns = new Set(sliced.map((write) => write.turn)).size;
 		assert.ok(turns > 1, "the transcript was written in a single event-loop turn");
+	});
+
+	it("writes a windowed transcript in slices with the same output as at once", async () => {
+		const sliced = await exitOutput(true, windowedTranscript);
+		const atOnce = await exitOutput(false, windowedTranscript);
+		assert.equal(sliced.map((write) => write.data).join(""), atOnce.map((write) => write.data).join(""));
+		assert.ok(new Set(sliced.map((write) => write.turn)).size > 1, "the transcript was written in a single turn");
+	});
+
+	it("restores autowrap and ends synchronized output when the process exits during the sliced write", async () => {
+		const terminal = new RecordingTerminal();
+		const tui = new TuiAltScreen(terminal, false, undefined, { mouse: false });
+		tui.setLayoutRoot(new ScrollView(new Transcript(), { follow: "end", primary: true }));
+		tui.start();
+		tui.renderNow();
+		const before = new Set(process.listeners("exit"));
+		tui.stop({ writeInSlices: true });
+		const exitDuringWrite = process.listeners("exit").filter((listener) => !before.has(listener));
+		for (const listener of exitDuringWrite) listener(1);
+		const restored = terminal.exitRestores.join("");
+		assert.ok(restored.includes("\x1b[?7h"), "autowrap stayed disabled");
+		assert.ok(restored.includes("\x1b[?2026l"), "synchronized output stayed open");
+		await tui.whenStopped();
+		assert.deepEqual(
+			process.listeners("exit").filter((listener) => !before.has(listener)),
+			[],
+		);
 	});
 });

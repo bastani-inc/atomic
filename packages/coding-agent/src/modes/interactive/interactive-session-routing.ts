@@ -1,4 +1,5 @@
 import { dirname } from "node:path";
+import type { Focusable } from "@bastani/atomic-tui";
 import { isResumeFailure } from "../../core/resume/failure.ts";
 import { worktreeRestoreNotices } from "../../core/session-worktree-snapshots.ts";
 import { canonicalizePathAsync } from "../../utils/paths.ts";
@@ -7,6 +8,7 @@ import { mountIdleStatus } from "./components/idle-status.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	APP_NAME,
+	type Component,
 	type ExtensionCommandContext,
 	getProjectTrustPathAsync,
 	hasTrustRequiringProjectResourcesAsync,
@@ -80,39 +82,83 @@ InteractiveModeBase.prototype.maybeSaveImplicitProjectTrustAfterReload = async f
 InteractiveModeBase.prototype.showTrustSelector = async function (this: InteractiveModeBase): Promise<void> {
 	const cwd = this.sessionManager.getCwd();
 	const trustStore = new ProjectTrustStore(this.runtimeHost.services.agentDir);
-	const [savedDecision, trustPath] = await Promise.all([trustStore.getEntryAsync(cwd), getProjectTrustPathAsync(cwd)]);
+	const trustData = Promise.all([trustStore.getEntryAsync(cwd), getProjectTrustPathAsync(cwd)]);
 	await withHostProjectTrustPrompt(
 		this.runtimeHost,
 		"select",
 		"Project trust",
 		() =>
-			new Promise<void>((resolve) => {
+			new Promise<void>((resolve, reject) => {
 				this.showSelector((done) => {
-					const selector = new TrustSelectorComponent({
-						cwd,
-						trustPath,
-						savedDecision,
-						projectTrusted: this.settingsManager.isProjectTrusted(),
-						onSelect: (selection) => {
-							trustStore.setManyAsync(selection.updates).then(
-								() => {
-									done();
-									this.showStatus(
-										`Saved trust decision: ${selection.trusted ? "trusted" : "untrusted"}. Restart ${APP_NAME} for this to take effect.`,
+					const heldInput: string[] = [];
+					let selector: TrustSelectorComponent | undefined;
+					let focused = false;
+					let closed = false;
+					const view: Component & Focusable = {
+						capturesViewportInput: true,
+						get focused() {
+							return focused;
+						},
+						set focused(value: boolean) {
+							focused = value;
+							if (selector) selector.focused = value;
+						},
+						render: (width) => selector?.render(width) ?? [],
+						invalidate: () => selector?.invalidate(),
+						handleInput: (data) => {
+							if (selector) selector.handleInput(data);
+							else heldInput.push(data);
+						},
+						handleMouse: (event) => selector?.handleMouse(event),
+					};
+					trustData.then(
+						([savedDecision, trustPath]) => {
+							if (closed) return;
+							const shown = new TrustSelectorComponent({
+								cwd,
+								trustPath,
+								savedDecision,
+								projectTrusted: this.settingsManager.isProjectTrusted(),
+								onSelect: (selection) => {
+									trustStore.setManyAsync(selection.updates).then(
+										() => {
+											done();
+											this.showStatus(
+												`Saved trust decision: ${selection.trusted ? "trusted" : "untrusted"}. Restart ${APP_NAME} for this to take effect.`,
+											);
+										},
+										(error: unknown) => {
+											shown.selector.retrySelection();
+											this.showError(error instanceof Error ? error.message : String(error));
+										},
 									);
 								},
-								(error: unknown) => {
-									selector.selector.retrySelection();
-									this.showError(error instanceof Error ? error.message : String(error));
+								onCancel: () => {
+									done();
+									this.ui.requestRender();
 								},
-							);
-						},
-						onCancel: () => {
-							done();
+							});
+							shown.focused = focused;
+							selector = shown;
+							for (const data of heldInput.splice(0)) {
+								if (closed) break;
+								shown.handleInput(data);
+							}
 							this.ui.requestRender();
 						},
-					});
-					return { component: selector, focus: selector, dispose: resolve };
+						(error: unknown) => {
+							reject(error);
+							done();
+						},
+					);
+					return {
+						component: view,
+						focus: view,
+						dispose: () => {
+							closed = true;
+							resolve();
+						},
+					};
 				});
 			}),
 	).catch((error: Error) => this.showError(error.message));

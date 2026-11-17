@@ -79,10 +79,11 @@ export function createLocalPowerShellOperations(binding?: {
 					: executeNativePty(encoded, cwd, execution);
 			}
 			const { spawn } = await import("node:child_process");
+			const shellEnv = options.env ?? (await getShellEnvAsync());
 			if (options.signal?.aborted) throw new Error("aborted");
 			const child = spawn(shell, [...args, script], {
 				cwd,
-				env: createChildProcessEnvironment(undefined, options.env ?? (await getShellEnvAsync())),
+				env: createChildProcessEnvironment(undefined, shellEnv),
 				windowsHide: true,
 			});
 			if (child.pid) trackDetachedChildPid(child.pid);

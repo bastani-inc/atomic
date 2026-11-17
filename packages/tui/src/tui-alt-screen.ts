@@ -75,6 +75,7 @@ const BEGIN_SYNCHRONIZED_OUTPUT = "\x1b[?2026h";
 const END_SYNCHRONIZED_OUTPUT = "\x1b[?2026l";
 const EXIT_TRANSCRIPT_START = `${BEGIN_SYNCHRONIZED_OUTPUT}${EXIT_ALT_SCREEN}${DISABLE_AUTOWRAP}`;
 const EXIT_TRANSCRIPT_END = `\x1b[0m${ENABLE_AUTOWRAP}\r\n\x1b[?25h${END_SYNCHRONIZED_OUTPUT}`;
+const EXIT_TRANSCRIPT_RESTORE = `\x1b[0m${ENABLE_AUTOWRAP}\x1b[?25h${END_SYNCHRONIZED_OUTPUT}`;
 const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:;[^\x07\x1b]*)?(?:\x07|\x1b\\))+/;
 const OSC133_PROMPT_START = /^\x1b\]133;A(?:;[^\x07\x1b]*)?(?:\x07|\x1b\\)/;
 const PAGE_SCROLL_OVERLAP = 4;
@@ -432,7 +433,16 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (options.preserveScreen) {
 			this.terminal.write(`${BEGIN_SYNCHRONIZED_OUTPUT}${EXIT_ALT_SCREEN}\x1b[?25h${END_SYNCHRONIZED_OUTPUT}`);
 		} else if (options.writeInSlices) {
-			this.stopOutput = this.writeTranscriptInSlices(++this.exitWrites).finally(restoreCapabilities);
+			const restoreOnExit = (): void => {
+				try {
+					this.terminal.restoreOnExit?.(EXIT_TRANSCRIPT_RESTORE, "");
+				} catch {}
+			};
+			process.on("exit", restoreOnExit);
+			this.stopOutput = this.writeTranscriptInSlices(++this.exitWrites).finally(() => {
+				process.off("exit", restoreOnExit);
+				restoreCapabilities();
+			});
 			return;
 		} else {
 			const width = Math.max(1, this.terminal.columns);

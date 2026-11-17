@@ -244,11 +244,13 @@ export function createLocalBashOperations(options?: {
 					},
 					false,
 				);
+			const shellEnv = env ?? (await getShellEnvAsync());
+			if (signal?.aborted) throw new Error("aborted");
 			const commandFromStdin = shellConfig.commandTransport === "stdin";
 			const child = spawn(shellConfig.shell, commandFromStdin ? shellConfig.args : [...shellConfig.args, command], {
 				cwd,
 				detached: process.platform !== "win32",
-				env: createChildProcessEnvironment(undefined, env ?? (await getShellEnvAsync())),
+				env: createChildProcessEnvironment(undefined, shellEnv),
 				stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
 				windowsHide: true,
 			});

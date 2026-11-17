@@ -819,6 +819,18 @@ describe("ToolExecutionComponent parity", () => {
 			absent: undefined,
 		},
 	] as const) {
+		test(`renders an @-mentioned ${scenario.title} read compactly on its first render`, () => {
+			const component = new ToolExecutionComponent(
+				"read",
+				`tool-compact-mention-${scenario.title}`,
+				{ path: `@${scenario.path}` },
+				{},
+				createReadToolDefinition(process.cwd()),
+				createFakeTui(),
+				process.cwd(),
+			);
+			expect(stripAnsi(component.render(120).join("\n"))).toContain(scenario.compact);
+		});
 		test(`renders ${scenario.title} read results compactly until expanded`, () => {
 			const component = new ToolExecutionComponent(
 				"read",
