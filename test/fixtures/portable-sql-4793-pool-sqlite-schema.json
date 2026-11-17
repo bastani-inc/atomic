@@ -7,6 +7,12 @@
 	},
 	{
 		"type": "index",
+		"name": "team_wf_runs_rate_waiting_age",
+		"tbl_name": "team_wf_runs_rate_waiting",
+		"sql": "CREATE INDEX team_wf_runs_rate_waiting_age ON team_wf_runs_rate_waiting(scope, updated_at, reporter)"
+	},
+	{
+		"type": "index",
 		"name": "team_wf_runs_resource_permits_active",
 		"tbl_name": "team_wf_runs_resource_permits",
 		"sql": "CREATE INDEX team_wf_runs_resource_permits_active ON team_wf_runs_resource_permits(kind, state, root)"
@@ -64,6 +70,12 @@
 		"name": "wf_runs_pool_activity_version",
 		"tbl_name": "wf_runs_pool_activity",
 		"sql": "CREATE INDEX wf_runs_pool_activity_version ON wf_runs_pool_activity(version)"
+	},
+	{
+		"type": "index",
+		"name": "wf_runs_rate_waiting_age",
+		"tbl_name": "wf_runs_rate_waiting",
+		"sql": "CREATE INDEX wf_runs_rate_waiting_age ON wf_runs_rate_waiting(scope, updated_at, reporter)"
 	},
 	{
 		"type": "index",
@@ -231,13 +243,13 @@
 		"type": "table",
 		"name": "team_wf_runs_rate_buckets",
 		"tbl_name": "team_wf_runs_rate_buckets",
-		"sql": "CREATE TABLE team_wf_runs_rate_buckets(\n\t\t\t\tscope TEXT PRIMARY KEY, tat INTEGER NOT NULL, interval_ms REAL NOT NULL, burst INTEGER NOT NULL,\n\t\t\t\tcooldown_until INTEGER NOT NULL DEFAULT 0, kind TEXT, updated_at INTEGER\n\t\t\t, acquired REAL NOT NULL DEFAULT 0)"
+		"sql": "CREATE TABLE team_wf_runs_rate_buckets(\n\t\t\t\tscope TEXT PRIMARY KEY, tat INTEGER NOT NULL, interval_ms REAL NOT NULL, burst INTEGER NOT NULL,\n\t\t\t\tcooldown_until INTEGER NOT NULL DEFAULT 0, kind TEXT, updated_at INTEGER\n\t\t\t, acquired REAL NOT NULL DEFAULT 0, waiting_ms REAL NOT NULL DEFAULT 0, waiting_gc_at INTEGER NOT NULL DEFAULT 0, waiting_epoch INTEGER NOT NULL DEFAULT 0)"
 	},
 	{
 		"type": "table",
 		"name": "team_wf_runs_rate_waiting",
 		"tbl_name": "team_wf_runs_rate_waiting",
-		"sql": "CREATE TABLE team_wf_runs_rate_waiting(\n\t\t\t\tscope TEXT NOT NULL, reporter TEXT NOT NULL, total_ms REAL NOT NULL,\n\t\t\t\tPRIMARY KEY(scope, reporter)\n\t\t\t)"
+		"sql": "CREATE TABLE team_wf_runs_rate_waiting(\n\t\t\t\tscope TEXT NOT NULL, reporter TEXT NOT NULL, total_ms REAL NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0, epoch INTEGER NOT NULL DEFAULT 0,\n\t\t\t\tPRIMARY KEY(scope, reporter)\n\t\t\t)"
 	},
 	{
 		"type": "table",
@@ -423,13 +435,13 @@
 		"type": "table",
 		"name": "wf_runs_rate_buckets",
 		"tbl_name": "wf_runs_rate_buckets",
-		"sql": "CREATE TABLE wf_runs_rate_buckets(\n\t\t\t\tscope TEXT PRIMARY KEY, tat INTEGER NOT NULL, interval_ms REAL NOT NULL, burst INTEGER NOT NULL,\n\t\t\t\tcooldown_until INTEGER NOT NULL DEFAULT 0, kind TEXT, updated_at INTEGER\n\t\t\t, acquired REAL NOT NULL DEFAULT 0)"
+		"sql": "CREATE TABLE wf_runs_rate_buckets(\n\t\t\t\tscope TEXT PRIMARY KEY, tat INTEGER NOT NULL, interval_ms REAL NOT NULL, burst INTEGER NOT NULL,\n\t\t\t\tcooldown_until INTEGER NOT NULL DEFAULT 0, kind TEXT, updated_at INTEGER\n\t\t\t, acquired REAL NOT NULL DEFAULT 0, waiting_ms REAL NOT NULL DEFAULT 0, waiting_gc_at INTEGER NOT NULL DEFAULT 0, waiting_epoch INTEGER NOT NULL DEFAULT 0)"
 	},
 	{
 		"type": "table",
 		"name": "wf_runs_rate_waiting",
 		"tbl_name": "wf_runs_rate_waiting",
-		"sql": "CREATE TABLE wf_runs_rate_waiting(\n\t\t\t\tscope TEXT NOT NULL, reporter TEXT NOT NULL, total_ms REAL NOT NULL,\n\t\t\t\tPRIMARY KEY(scope, reporter)\n\t\t\t)"
+		"sql": "CREATE TABLE wf_runs_rate_waiting(\n\t\t\t\tscope TEXT NOT NULL, reporter TEXT NOT NULL, total_ms REAL NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0, epoch INTEGER NOT NULL DEFAULT 0,\n\t\t\t\tPRIMARY KEY(scope, reporter)\n\t\t\t)"
 	},
 	{
 		"type": "table",

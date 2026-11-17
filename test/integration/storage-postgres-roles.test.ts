@@ -413,7 +413,8 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 			await running.createRun({ runId: "before", name: "w", cwd: "/", createdAt: 1, status: "running" });
 			const earlierRates = await SqlRateBuckets.open(running);
 			await earlierRates.acquire("p", 1, { intervalMs: 1_000, burst: 1 });
-			await earlierRates.poll([{ reporter: "h", scope: "p", waitingMs: 750 }]);
+			const waitingEpoch = await earlierRates.registerWaiting("p", "h");
+			await earlierRates.reportWaiting([{ reporter: "h", scope: "p", waitingMs: 750, epoch: waitingEpoch }]);
 			// A default open of that database finds the earlier tables where they are.
 			const found = await roles.open("owner");
 			assert.equal((await found.get("SELECT current_schema() AS schema"))?.schema, "public");
@@ -440,7 +441,7 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 			await grantRuntime(current, roles);
 			const migratedJournal = await SqlRunJournal.open(current, { prefix: PREFIX });
 			const migratedRates = await SqlRateBuckets.open(migratedJournal);
-			await migratedRates.poll([{ reporter: "h", scope: "p", waitingMs: 1_000 }]);
+			await migratedRates.reportWaiting([{ reporter: "h", scope: "p", waitingMs: 1_000, epoch: waitingEpoch }]);
 			assert.equal((await readFleetRateUsage(migratedJournal))[0]?.waitingMs, 1_000);
 			const statements: string[] = [];
 			await openEveryStore(async () => recording(await roles.open("runtime"), statements), PREFIX);

@@ -809,15 +809,52 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 						["h-new", { lagMs: 0, pending: 0 }],
 					],
 				);
-				await newerStores.buckets.poll([{ reporter: "h-new", scope: "anthropic", waitingMs: 750 }]);
-				await newerStores.buckets.poll([{ reporter: "h-new", scope: "anthropic", waitingMs: 750 }]);
-				await newerStores.buckets.poll([{ reporter: "h-new", scope: "anthropic", waitingMs: 500 }]);
+				const epoch = await newerStores.buckets.registerWaiting("anthropic", "h-new");
+				await newerStores.buckets.reportWaiting([{ reporter: "h-new", scope: "anthropic", waitingMs: 750, epoch }]);
+				await newerStores.buckets.reportWaiting([{ reporter: "h-new", scope: "anthropic", waitingMs: 750, epoch }]);
+				await newerStores.buckets.reportWaiting([{ reporter: "h-new", scope: "anthropic", waitingMs: 500, epoch }]);
 				assert.deepEqual(
 					(await readFleetRateUsage(newerJournal)).map((usage) => [usage.scope, usage.acquired, usage.waitingMs]),
 					[["anthropic", 3, 750]],
 					"0.9.88 hosts change neither counter, so their unmeasured waits make mixed-version caps more permissive",
 				);
 			});
+
+		test("concurrent rate reporters compact retired totals and reject late registrations and updates (#4768)", async (f) => {
+			const store = await SqlRateBuckets.open(f.journal);
+			await store.acquire("p", 0, { intervalMs: 1_000, burst: 1 });
+			const epochs = new Map<string, number>();
+			for (const reporter of ["old-a", "old-b"]) {
+				const epoch = await store.registerWaiting("p", reporter);
+				epochs.set(reporter, epoch);
+				await store.reportWaiting([{ scope: "p", reporter, waitingMs: 100, epoch }]);
+			}
+			const runs = sqlPoolStorage(f.journal)!.tables.runs;
+			await f.database.run(`UPDATE ${runs}_rate_waiting SET updated_at = 0`);
+			const other = await SqlRateBuckets.open(await f.peer());
+			const [one, two] = await Promise.all([
+				store.registerWaiting("p", "live-a"),
+				other.registerWaiting("p", "live-b"),
+			]);
+			await Promise.all([
+				store.reportWaiting([{ scope: "p", reporter: "live-a", waitingMs: 50, epoch: one }]),
+				other.reportWaiting([{ scope: "p", reporter: "live-b", waitingMs: 50, epoch: two }]),
+			]);
+			assert.equal(Number((await f.database.get(`SELECT COUNT(*) AS count FROM ${runs}_rate_waiting`))?.count), 2);
+			assert.equal((await readFleetRateUsage(f.journal))[0]?.waitingMs, 300);
+			assert.deepEqual(
+				(
+					await store.reportWaiting([
+						{ scope: "p", reporter: "old-a", waitingMs: 100, epoch: epochs.get("old-a")! },
+					])
+				).expired,
+				[{ scope: "p", reporter: "old-a" }],
+			);
+			const late = await other.registerWaiting("p", "old-a");
+			assert.notEqual(late, epochs.get("old-a"));
+			await store.reportWaiting([{ scope: "p", reporter: "old-a", waitingMs: 100, epoch: epochs.get("old-a")! }]);
+			assert.equal((await readFleetRateUsage(f.journal))[0]?.waitingMs, 300);
+		});
 
 		test("one fleet controller holds the lease and records under it until another takes it over", async (f) => {
 			const store = await SqlFleetStore.open(f.journal);

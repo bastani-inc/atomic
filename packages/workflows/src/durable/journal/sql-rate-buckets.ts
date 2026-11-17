@@ -40,8 +40,16 @@ const RATE_BUCKET = { audit: fencedPath("rate-bucket") } as const;
 
 export const RATE_BUCKET_ACQUIRED = "acquired";
 const RATE_BUCKET_WAITING = "rate_waiting";
+const RATE_WAITING_RETENTION_MS = 60 * 60_000;
+const RATE_WAITING_COMPACT_INTERVAL_MS = 60_000;
+const RATE_WAITING_COMPACT_BATCH = 256;
+
+export interface RateWaitingReportOutcome {
+	readonly expired: readonly { readonly scope: string; readonly reporter: string }[];
+}
 
 export interface RateBucketWaiting {
+	readonly epoch: number;
 	readonly reporter: string;
 	readonly scope: string;
 	readonly waitingMs: number;
@@ -66,10 +74,12 @@ export async function readRateBucketUsage(
 	if ((await executor.get(column.sql, ...column.params)) === undefined) return [];
 	const waitingTable = `${storage.tables.runs}_${RATE_BUCKET_WAITING}`;
 	const waitingProbe = storage.dialect.tableExists(waitingTable);
+	const retiredColumn = storage.dialect.columnExists(table, "waiting_ms");
+	const retired = (await executor.get(retiredColumn.sql, ...retiredColumn.params)) === undefined ? "0" : "waiting_ms";
 	const waiting =
 		(await executor.get(waitingProbe.sql, ...waitingProbe.params)) === undefined
-			? "0"
-			: `(SELECT COALESCE(SUM(total_ms), 0) FROM ${waitingTable} WHERE scope = ${table}.scope)`;
+			? retired
+			: `${retired} + (SELECT COALESCE(SUM(total_ms), 0) FROM ${waitingTable} WHERE scope = ${table}.scope)`;
 	const rows = await executor.all<
 		SqliteRow & { scope: string; acquired: number; waiting_ms: number; interval_ms: number; now: number }
 	>(
@@ -106,22 +116,30 @@ export class SqlRateBuckets {
 		const store = new SqlRateBuckets(storage);
 		const { int, real } = storage.dialect.types;
 		// A current schema runs no DDL, so a role with only DML privileges opens it (#5218).
-		const schema = { ledger: poolSchemaLedger(storage), domain: "rate-buckets", revision: 3 };
+		const schema = { ledger: poolSchemaLedger(storage), domain: "rate-buckets", revision: 4 };
 		const table = `CREATE TABLE IF NOT EXISTS ${store.table}(
 				scope TEXT PRIMARY KEY, tat ${int} NOT NULL, interval_ms ${real} NOT NULL, burst ${int} NOT NULL,
 				cooldown_until ${int} NOT NULL DEFAULT 0, kind TEXT, updated_at ${int}
 			)`;
 		// A schema that is current opens with reads alone, without a shared server's write lock (#4768).
 		const waitingTable = `CREATE TABLE IF NOT EXISTS ${store.waiting}(
-				scope TEXT NOT NULL, reporter TEXT NOT NULL, total_ms ${real} NOT NULL,
+				scope TEXT NOT NULL, reporter TEXT NOT NULL, total_ms ${real} NOT NULL, updated_at ${int} NOT NULL DEFAULT 0, epoch ${int} NOT NULL DEFAULT 0,
 				PRIMARY KEY(scope, reporter)
 			)`;
-		const columns = [RATE_BUCKET_ACQUIRED];
+		const index = `CREATE INDEX IF NOT EXISTS ${store.waiting}_age ON ${store.waiting}(scope, updated_at, reporter)`;
+		const columns = [
+			[store.table, RATE_BUCKET_ACQUIRED, real],
+			[store.table, "waiting_ms", real],
+			[store.table, "waiting_gc_at", int],
+			[store.table, "waiting_epoch", int],
+			[store.waiting, "updated_at", int],
+			[store.waiting, "epoch", int],
+		] as const;
 		if (
 			await poolSchemaPresent(
 				storage,
-				[table, waitingTable],
-				columns.map((column) => [store.table, column]),
+				[table, waitingTable, index],
+				columns.map(([table, column]) => [table, column]),
 			)
 		)
 			return store;
@@ -129,11 +147,12 @@ export class SqlRateBuckets {
 			ensureStorageSchema(tx, storage.dialect, schema, async () => {
 				await tx.exec(table);
 				await tx.exec(waitingTable);
-				for (const column of columns) {
-					const present = storage.dialect.columnExists(store.table, column);
+				for (const [table, column, type] of columns) {
+					const present = storage.dialect.columnExists(table, column);
 					if (!(await tx.get(present.sql, ...present.params)))
-						await tx.exec(`ALTER TABLE ${store.table} ADD COLUMN ${column} ${real} NOT NULL DEFAULT 0`);
+						await tx.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type} NOT NULL DEFAULT 0`);
 				}
+				await tx.exec(index);
 			}),
 		);
 		return store;
@@ -218,16 +237,94 @@ export class SqlRateBuckets {
 		]);
 	}
 
-	/** The shared cooldowns still running, and the worker hosts that reported within the fleet's live window. */
-	async poll(waiting: readonly RateBucketWaiting[] = []): Promise<RateBucketPoll> {
-		if (waiting.length > 0)
-			await this.write(
-				waiting.map((row) => ({
-					sql: `INSERT INTO ${this.waiting}(scope, reporter, total_ms) VALUES (?, ?, ?)
-						ON CONFLICT(scope, reporter) DO UPDATE SET total_ms = ${this.storage.dialect.greatest(`${this.waiting}.total_ms`, "excluded.total_ms")}`,
-					params: [row.scope, row.reporter, row.waitingMs],
-				})),
+	async registerWaiting(scope: string, reporter: string): Promise<number> {
+		await this.compactWaiting(scope);
+		const rows = await this.write([
+			{ sql: `UPDATE ${this.table} SET waiting_epoch = waiting_epoch + 1 WHERE scope = ?`, params: [scope] },
+			{
+				sql: `INSERT INTO ${this.waiting}(scope, reporter, total_ms, updated_at, epoch)
+					SELECT ?, ?, 0, ${this.now}, waiting_epoch FROM ${this.table} WHERE scope = ?
+					ON CONFLICT(scope, reporter) DO NOTHING`,
+				params: [scope, reporter, scope],
+			},
+			{ sql: `SELECT epoch FROM ${this.waiting} WHERE scope = ? AND reporter = ?`, params: [scope, reporter] },
+		]);
+		const row = rows.at(-1)?.[0];
+		if (row === undefined) throw new Error(`Cannot register waiting time for an unconfigured scope: ${scope}`);
+		return Number(row.epoch);
+	}
+
+	private async compactWaiting(scope: string): Promise<void> {
+		const now = "(SELECT now FROM clock)";
+		const due = `(waiting_gc_at = 0 OR waiting_gc_at > ${now} OR ${now} - waiting_gc_at >= ${RATE_WAITING_COMPACT_INTERVAL_MS})`;
+		const stale = `(updated_at < ${now} - ${RATE_WAITING_RETENTION_MS} OR updated_at > ${now} + ${RATE_WAITING_RETENTION_MS})`;
+		const eligible = `scope = ? AND ${due} AND EXISTS(SELECT 1 FROM ${this.waiting} WHERE scope = ? AND ${stale})`;
+		const found = await this.storage.read((read) =>
+			read.get(
+				`WITH clock AS (SELECT ${this.now} AS now) SELECT 1 AS due FROM ${this.table} WHERE ${eligible}`,
+				scope,
+				scope,
+			),
+		);
+		if (found === undefined) return;
+		await this.storage.transaction(async (tx) => {
+			const claimed = await tx.get(
+				`WITH clock AS (SELECT ${this.now} AS now)
+				UPDATE ${this.table} SET waiting_gc_at = ${now} WHERE ${eligible} RETURNING scope`,
+				scope,
+				scope,
 			);
+			if (claimed === undefined) return;
+			const rows = await tx.all<SqliteRow & { reporter: string; total_ms: number }>(
+				`WITH clock AS (SELECT ${this.now} AS now) SELECT reporter, total_ms FROM ${this.waiting}
+				WHERE scope = ? AND ${stale} ORDER BY updated_at, reporter LIMIT ${RATE_WAITING_COMPACT_BATCH}${this.storage.dialect.lockClause("update-skip-locked")}`,
+				scope,
+			);
+			if (rows.length === 0) return;
+			await tx.run(
+				`UPDATE ${this.table} SET waiting_ms = waiting_ms + ?, waiting_gc_at = CASE WHEN ? = ${RATE_WAITING_COMPACT_BATCH} THEN 0 ELSE waiting_gc_at END WHERE scope = ?`,
+				rows.reduce((sum, row) => sum + Number(row.total_ms), 0),
+				rows.length,
+				scope,
+			);
+			await tx.run(
+				`DELETE FROM ${this.waiting} WHERE scope = ? AND reporter IN (${rows.map(() => "?").join(",")})`,
+				scope,
+				...rows.map((row) => row.reporter),
+			);
+		});
+	}
+
+	async reportWaiting(waiting: readonly RateBucketWaiting[]): Promise<RateWaitingReportOutcome> {
+		if (waiting.length === 0) return { expired: [] };
+		for (const scope of [...new Set(waiting.map((row) => row.scope))].sort()) await this.compactWaiting(scope);
+		const ordered = [...waiting].sort((a, b) =>
+			a.scope < b.scope
+				? -1
+				: a.scope > b.scope
+					? 1
+					: a.reporter < b.reporter
+						? -1
+						: a.reporter > b.reporter
+							? 1
+							: 0,
+		);
+		const rows = await this.write(
+			ordered.map((row) => ({
+				sql: `UPDATE ${this.waiting} SET total_ms = ${this.storage.dialect.greatest("total_ms", "?")}, updated_at = ${this.now}
+				WHERE scope = ? AND reporter = ? AND epoch = ? RETURNING reporter`,
+				params: [row.waitingMs, row.scope, row.reporter, row.epoch],
+			})),
+		);
+		return {
+			expired: ordered.flatMap((row, index) =>
+				rows[index]!.length === 0 ? [{ scope: row.scope, reporter: row.reporter }] : [],
+			),
+		};
+	}
+
+	/** The shared cooldowns still running, and the worker hosts that reported within the fleet's live window. */
+	poll(): Promise<RateBucketPoll> {
 		return this.storage.read(async (executor) => {
 			// One reading of the clock, so a cooldown it finds running has time left at that reading.
 			const rows = await executor.all<SqliteRow & { scope: string; remaining: number }>(

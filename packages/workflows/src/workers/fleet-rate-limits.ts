@@ -5,6 +5,7 @@ import type {
 	RateBucketPoll,
 	RateBucketShape,
 	RateBucketWaiting,
+	RateWaitingReportOutcome,
 	SqlRateBuckets,
 } from "../durable/journal/sql-rate-buckets.js";
 import type { FleetRateLimit, FleetRateLimits } from "./fleet-rate-types.js";
@@ -110,8 +111,18 @@ export class LocalGcra {
 	}
 }
 
+type PendingWaitingReport = Omit<RateBucketWaiting, "epoch">;
+
+interface WaitingReporter {
+	readonly id: string;
+	readonly baseline: number;
+	reported: number;
+	registration?: Promise<number>;
+}
+
 interface ScopeState {
 	readonly waiting: FleetRateWaiting;
+	waitingReporter: WaitingReporter;
 	readonly shape: RateBucketShape;
 	readonly prefetch: number;
 	/** Tokens taken from the store and not handed out yet, usable until `expiresAt`. */
@@ -148,9 +159,11 @@ export interface FleetRateLimiterOptions {
 export class FleetRateLimiter {
 	private readonly scopes = new Map<string, ScopeState>();
 	private readonly requests = new Map<string, Map<string, { active: boolean }>>();
-	private readonly reporter = randomUUID();
-	private readonly reportedWaiting = new Map<string, number>();
-	private storePoll?: { readonly waiting: readonly RateBucketWaiting[]; readonly result: Promise<RateBucketPoll> };
+	private storePoll?: Promise<RateBucketPoll>;
+	private storeReport?: {
+		readonly waiting: readonly PendingWaitingReport[];
+		readonly result: Promise<RateWaitingReportOutcome>;
+	};
 	private liveHosts = 1;
 	private pollTimer?: NodeJS.Timeout;
 	private polling?: Promise<void>;
@@ -167,6 +180,7 @@ export class FleetRateLimiter {
 			const shape = bucketShape(limit);
 			this.scopes.set(scope, {
 				waiting: new FleetRateWaiting(),
+				waitingReporter: { id: randomUUID(), baseline: 0, reported: 0 },
 				shape,
 				prefetch: Math.min(shape.burst, limit.prefetch ?? Math.max(1, Math.ceil(options.slots / 2))),
 				tokens: 0,
@@ -209,9 +223,9 @@ export class FleetRateLimiter {
 		for (const state of this.scopes.values()) state.waiting.close(now);
 		await this.polling;
 		if (this.waitingReports().length === 0) return;
-		const pending = this.storePoll;
+		const pending = this.storeReport;
 		if (pending !== undefined) await within(pending.result, this.timeoutMs).catch(() => undefined);
-		if (this.storePoll === undefined) await this.poll();
+		if (this.storeReport === undefined) await this.flushWaiting().catch(() => {});
 	}
 
 	releaseRequest(worker: string, request: string): void {
@@ -231,44 +245,84 @@ export class FleetRateLimiter {
 		for (const state of this.scopes.values()) state.waiting.releaseWorker(worker, now);
 	}
 
-	private waitingReports(): RateBucketWaiting[] {
+	private waitingReports(): PendingWaitingReport[] {
 		const now = performance.now();
 		return [...this.scopes].flatMap(([scope, state]) => {
-			const waitingMs = state.waiting.total(now);
-			return waitingMs > (this.reportedWaiting.get(scope) ?? 0)
-				? [{ reporter: this.reporter, scope, waitingMs }]
-				: [];
+			const reporter = state.waitingReporter;
+			const waitingMs = state.waiting.total(now) - reporter.baseline;
+			return waitingMs > reporter.reported ? [{ reporter: reporter.id, scope, waitingMs }] : [];
 		});
 	}
 
-	/** Reads shared cooldowns, applied when the root shares them, and how many hosts the local fallback divides by. */
-	async poll(): Promise<void> {
-		try {
-			let polling = this.storePoll;
-			if (polling === undefined) {
-				polling = {
-					waiting: this.waitingReports(),
-					result: Promise.resolve().then(() => this.options.store.poll(polling!.waiting)),
-				};
-				this.storePoll = polling;
-				const finished = () => {
-					if (this.storePoll === polling) this.storePoll = undefined;
-				};
-				void polling.result.then(finished, finished);
-			}
-			const report = await within(polling.result, this.timeoutMs);
-			if (report === undefined) return;
-			for (const row of polling.waiting)
-				this.reportedWaiting.set(row.scope, Math.max(this.reportedWaiting.get(row.scope) ?? 0, row.waitingMs));
-			const { cooldowns, liveHosts } = report;
-			this.liveHosts = Math.max(1, liveHosts);
-			if (this.options.shareCooldowns && cooldowns.length > 0) {
-				const now = Date.now();
-				this.options.applyCooldowns(cooldowns.map((c) => cooldownObservation(c.scope, c.remainingMs, now)));
-			}
-		} catch {
-			// The store is unreachable: the last count stands, and cooldowns stay shared between this host's processes.
+	private async sendWaiting(waiting: readonly PendingWaitingReport[]): Promise<RateWaitingReportOutcome> {
+		const registered = await Promise.all(
+			waiting.map(async (row) => {
+				const state = this.scopes.get(row.scope)!;
+				const reporter = state.waitingReporter;
+				if (reporter.id !== row.reporter) return;
+				if (reporter.registration === undefined) {
+					const registration = Promise.resolve().then(() =>
+						this.options.store.registerWaiting(row.scope, row.reporter),
+					);
+					reporter.registration = registration;
+					void registration.catch(() => {
+						if (state.waitingReporter === reporter)
+							state.waitingReporter = { id: randomUUID(), baseline: reporter.baseline, reported: 0 };
+					});
+				}
+				return { ...row, epoch: await reporter.registration };
+			}),
+		);
+		return this.options.store.reportWaiting(registered.filter((row): row is RateBucketWaiting => row !== undefined));
+	}
+
+	private async flushWaiting(): Promise<void> {
+		let reporting = this.storeReport;
+		if (reporting === undefined) {
+			const waiting = this.waitingReports();
+			if (waiting.length === 0) return;
+			reporting = { waiting, result: Promise.resolve().then(() => this.sendWaiting(waiting)) };
+			this.storeReport = reporting;
+			const finished = () => {
+				if (this.storeReport === reporting) this.storeReport = undefined;
+			};
+			void reporting.result.then(finished, finished);
 		}
+		const outcome = await within(reporting.result, this.timeoutMs);
+		if (outcome === undefined) return;
+		for (const row of reporting.waiting) {
+			const state = this.scopes.get(row.scope)!;
+			const reporter = state.waitingReporter;
+			if (reporter.id !== row.reporter) continue;
+			if (outcome.expired.some((entry) => entry.scope === row.scope && entry.reporter === row.reporter)) {
+				state.waitingReporter = { id: randomUUID(), baseline: reporter.baseline + row.waitingMs, reported: 0 };
+			} else reporter.reported = Math.max(reporter.reported, row.waitingMs);
+		}
+	}
+
+	private async readStatus(): Promise<void> {
+		let polling = this.storePoll;
+		if (polling === undefined) {
+			polling = Promise.resolve().then(() => this.options.store.poll());
+			this.storePoll = polling;
+			const finished = () => {
+				if (this.storePoll === polling) this.storePoll = undefined;
+			};
+			void polling.then(finished, finished);
+		}
+		const report = await within(polling, this.timeoutMs);
+		if (report === undefined) return;
+		this.liveHosts = Math.max(1, report.liveHosts);
+		if (this.options.shareCooldowns && report.cooldowns.length > 0) {
+			const now = Date.now();
+			this.options.applyCooldowns(
+				report.cooldowns.map((cooldown) => cooldownObservation(cooldown.scope, cooldown.remainingMs, now)),
+			);
+		}
+	}
+
+	async poll(): Promise<void> {
+		await Promise.all([this.readStatus().catch(() => {}), this.flushWaiting().catch(() => {})]);
 	}
 
 	/** Shares a 429 cooldown this host recorded with every host of the fleet, when the root shares cooldowns. */

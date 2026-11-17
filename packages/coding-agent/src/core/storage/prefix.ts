@@ -145,6 +145,7 @@ export const POSTGRES_STORAGE_IDENTIFIER_SUFFIXES: readonly string[] = Object.fr
 	"wf_runs_pool_usage_totals_work_delete",
 	"wf_runs_rate_buckets",
 	"wf_runs_rate_waiting",
+	"wf_runs_rate_waiting_age",
 	"wf_runs_resource_limits",
 	"wf_runs_resource_owners",
 	"wf_runs_resource_permits",

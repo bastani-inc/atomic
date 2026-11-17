@@ -7,6 +7,7 @@ import {
 	type RateBucketPoll,
 	type RateBucketShape,
 	type RateBucketWaiting,
+	type RateWaitingReportOutcome,
 	readFleetRateUsage,
 	SqlRateBuckets,
 	waitFor,
@@ -111,9 +112,10 @@ test("a released worker cannot regain waiting time from an acquire still in flig
 	const reports: (readonly RateBucketWaiting[])[] = [];
 	const { store } = fakeStore(
 		() => reply.promise,
-		async (waiting = []) => {
+		undefined,
+		async (waiting) => {
 			reports.push(waiting);
-			return { cooldowns: [], liveHosts: 1 };
+			return { expired: [] };
 		},
 	);
 	const limiter = new FleetRateLimiter({
@@ -141,9 +143,10 @@ test("a canceled provider gate ends its recorded token wait (#4768)", async () =
 	const reports: (readonly RateBucketWaiting[])[] = [];
 	const { store } = fakeStore(
 		async () => ({ granted: 0, waitMs: 60_000, fits: 1, cooldownMs: 0 }),
-		async (waiting = []) => {
+		undefined,
+		async (waiting) => {
 			reports.push(waiting);
-			return { cooldowns: [], liveHosts: 1 };
+			return { expired: [] };
 		},
 	);
 	const limiter = new FleetRateLimiter({
@@ -179,10 +182,11 @@ test("an unsuccessful waiting report retains its cumulative total for the next p
 	const reports: (readonly RateBucketWaiting[])[] = [];
 	const { store } = fakeStore(
 		async () => ({ granted: 0, waitMs: 60_000, fits: 1, cooldownMs: 0 }),
-		async (waiting = []) => {
+		undefined,
+		async (waiting) => {
 			reports.push(waiting);
 			if (++polls === 1) throw new Error("not written");
-			return { cooldowns: [], liveHosts: 1 };
+			return { expired: [] };
 		},
 	);
 	const limiter = new FleetRateLimiter({
@@ -205,14 +209,173 @@ test("an unsuccessful waiting report retains its cumulative total for the next p
 	}
 });
 
-test("closing sends its final waiting total after an older timed-out poll answers (#4768)", async () => {
-	const old = Promise.withResolvers<RateBucketPoll>();
+test("a slow waiting report does not block shared cooldown and live-host refreshes (#4768)", async () => {
+	const applied: { provider: string; untilEpochMs: number }[] = [];
+	let unavailable = false;
+	const { store } = fakeStore(
+		async () => {
+			if (unavailable) throw new Error("unavailable");
+			return { granted: 0, waitMs: 60_000, fits: 1, cooldownMs: 0 };
+		},
+		async () => ({ cooldowns: [{ scope: "p", remainingMs: 5_000 }], liveHosts: 2 }),
+		() => new Promise<RateWaitingReportOutcome>(() => {}),
+	);
+	const limiter = new FleetRateLimiter({
+		store,
+		limits: { p: { requestsPerMinute: 60, burst: 1, prefetch: 1 } },
+		slots: 1,
+		shareCooldowns: true,
+		applyCooldowns: (observations) => applied.push(...observations),
+		timeoutMs: 20,
+	});
+	vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+	try {
+		await limiter.acquire("p", "m", "a");
+		await vi.advanceTimersByTimeAsync(1_000);
+		const polling = limiter.poll();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(applied[0]?.provider, "p", "cooldowns remain readable before the telemetry deadline expires");
+		await vi.advanceTimersByTimeAsync(20);
+		await polling;
+		unavailable = true;
+		await vi.advanceTimersByTimeAsync(60_000);
+		assert.equal(await limiter.acquire("p", "m", "a"), 0);
+		const localWait = await limiter.acquire("p", "m", "a");
+		assert.ok(localWait > 1_900 && localWait <= 2_000, "local fallback uses the refreshed count of two hosts");
+	} finally {
+		await vi.advanceTimersByTimeAsync(20);
+		vi.useRealTimers();
+	}
+});
+
+test("an expired reporter starts a new counter lifetime without replaying its old total (#4768)", async () => {
 	const reports: (readonly RateBucketWaiting[])[] = [];
 	const { store } = fakeStore(
 		async () => ({ granted: 0, waitMs: 60_000, fits: 1, cooldownMs: 0 }),
-		(waiting = []) => {
+		undefined,
+		async (waiting) => {
 			reports.push(waiting);
-			return reports.length === 1 ? old.promise : Promise.resolve({ cooldowns: [], liveHosts: 1 });
+			return { expired: reports.length === 2 ? waiting.map(({ scope, reporter }) => ({ scope, reporter })) : [] };
+		},
+	);
+	const registration = vi.spyOn(store, "registerWaiting");
+	const limiter = new FleetRateLimiter({
+		store,
+		limits: { p: { requestsPerMinute: 60 } },
+		slots: 1,
+		shareCooldowns: false,
+		applyCooldowns: () => {},
+	});
+	vi.useFakeTimers({ toFake: ["Date", "performance"] });
+	try {
+		await limiter.acquire("p", "m", "a");
+		for (let index = 0; index < 3; index++) {
+			await vi.advanceTimersByTimeAsync(1_000);
+			await limiter.poll();
+		}
+		assert.deepEqual(
+			reports.map((rows) => rows[0]?.waitingMs),
+			[1_000, 2_000, 1_000],
+		);
+		assert.equal(reports[0]?.[0]?.reporter, reports[1]?.[0]?.reporter);
+		assert.notEqual(reports[1]?.[0]?.reporter, reports[2]?.[0]?.reporter);
+		assert.equal(registration.mock.calls.length, 2);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("reporter rollover preserves waits accrued while the expired report was in flight (#4768)", async () => {
+	const expired = Promise.withResolvers<RateWaitingReportOutcome>();
+	const reports: (readonly RateBucketWaiting[])[] = [];
+	const { store } = fakeStore(
+		async () => ({ granted: 0, waitMs: 60_000, fits: 1, cooldownMs: 0 }),
+		undefined,
+		async (waiting) => {
+			reports.push(waiting);
+			return reports.length === 2 ? expired.promise : { expired: [] };
+		},
+	);
+	const limiter = new FleetRateLimiter({
+		store,
+		limits: { p: { requestsPerMinute: 60 } },
+		slots: 1,
+		shareCooldowns: false,
+		applyCooldowns: () => {},
+	});
+	vi.useFakeTimers({ toFake: ["Date", "performance"] });
+	try {
+		await limiter.acquire("p", "m", "a");
+		await vi.advanceTimersByTimeAsync(100);
+		await limiter.poll();
+		await vi.advanceTimersByTimeAsync(100);
+		const reporting = limiter.poll();
+		await sleep(5);
+		assert.equal(reports[1]?.[0]?.waitingMs, 200);
+		await vi.advanceTimersByTimeAsync(100);
+		expired.resolve({ expired: reports[1]!.map(({ scope, reporter }) => ({ scope, reporter })) });
+		await reporting;
+		await vi.advanceTimersByTimeAsync(100);
+		await limiter.poll();
+		assert.equal(reports[2]?.[0]?.waitingMs, 200, "a missing row cannot consume waiting after the sent snapshot");
+	} finally {
+		expired.resolve({ expired: [] });
+		vi.useRealTimers();
+	}
+});
+
+test("a failed reporter registration uses a new identity before any waiting update is sent (#4768)", async () => {
+	const reports: (readonly RateBucketWaiting[])[] = [];
+	const { store } = fakeStore(
+		async () => ({ granted: 0, waitMs: 60_000, fits: 1, cooldownMs: 0 }),
+		undefined,
+		async (waiting) => {
+			reports.push(waiting);
+			return { expired: [] };
+		},
+	);
+	const registration = vi
+		.spyOn(store, "registerWaiting")
+		.mockRejectedValueOnce(new Error("registration outcome unknown"));
+	const limiter = new FleetRateLimiter({
+		store,
+		limits: { p: { requestsPerMinute: 60 } },
+		slots: 1,
+		shareCooldowns: false,
+		applyCooldowns: () => {},
+	});
+	vi.useFakeTimers({ toFake: ["Date", "performance"] });
+	try {
+		await limiter.acquire("p", "m", "a");
+		await vi.advanceTimersByTimeAsync(1_000);
+		await limiter.poll();
+		assert.equal(reports.length, 0, "an unacknowledged registration sends no update");
+		await vi.advanceTimersByTimeAsync(1_000);
+		await limiter.poll();
+		assert.notEqual(
+			registration.mock.calls[0]?.[1],
+			registration.mock.calls[1]?.[1],
+			"a late registration cannot resurrect a reporter that has sent updates",
+		);
+		assert.equal(
+			reports[0]?.[0]?.waitingMs,
+			2_000,
+			"a registration retry preserves all previously unreported waiting",
+		);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("closing sends its final waiting total after an older timed-out report answers (#4768)", async () => {
+	const old = Promise.withResolvers<RateWaitingReportOutcome>();
+	const reports: (readonly RateBucketWaiting[])[] = [];
+	const { store } = fakeStore(
+		async () => ({ granted: 0, waitMs: 60_000, fits: 1, cooldownMs: 0 }),
+		undefined,
+		(waiting) => {
+			reports.push(waiting);
+			return reports.length === 1 ? old.promise : Promise.resolve({ expired: [] });
 		},
 	);
 	const limiter = new FleetRateLimiter({
@@ -225,16 +388,17 @@ test("closing sends its final waiting total after an older timed-out poll answer
 	});
 	vi.useFakeTimers({ toFake: ["Date", "performance"] });
 	try {
-		await limiter.poll();
 		await limiter.acquire("p", "m", "a");
+		await vi.advanceTimersByTimeAsync(100);
+		await limiter.poll();
 		await vi.advanceTimersByTimeAsync(1_000);
 		const closing = limiter.close();
 		await sleep(5);
-		old.resolve({ cooldowns: [], liveHosts: 1 });
+		old.resolve({ expired: [] });
 		await closing;
-		assert.equal(reports.at(-1)?.[0]?.waitingMs, 1_000, "the older empty poll cannot acknowledge the final total");
+		assert.equal(reports.at(-1)?.[0]?.waitingMs, 1_100, "an older report cannot acknowledge the final total");
 	} finally {
-		old.resolve({ cooldowns: [], liveHosts: 1 });
+		old.resolve({ expired: [] });
 		vi.useRealTimers();
 	}
 });
@@ -377,7 +541,8 @@ test("the journal's buckets grant a burst, then refuse with the wait, and a cool
 /** A store whose answers the test decides. */
 function fakeStore(
 	answer: (scope: string, count: number) => Promise<RateAcquireOutcome>,
-	poll?: (waiting?: readonly RateBucketWaiting[]) => Promise<RateBucketPoll>,
+	poll?: () => Promise<RateBucketPoll>,
+	reportWaiting?: (waiting: readonly RateBucketWaiting[]) => Promise<RateWaitingReportOutcome>,
 ) {
 	const calls: { scope: string; count: number; shaped: boolean }[] = [];
 	const cooldowns: { scope: string; remainingMs: number }[] = [];
@@ -390,6 +555,8 @@ function fakeStore(
 			cooldowns.push({ scope, remainingMs });
 		},
 		poll: poll ?? (async () => ({ cooldowns: [], liveHosts: 1 })),
+		registerWaiting: async () => 1,
+		reportWaiting: reportWaiting ?? (async () => ({ expired: [] })),
 	} as unknown as SqlRateBuckets;
 	return { store, calls, cooldowns };
 }
