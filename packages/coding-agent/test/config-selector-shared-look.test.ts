@@ -235,6 +235,49 @@ describe("package and resource picker on the shared look (#5224)", () => {
 		}
 	});
 
+	it("renders no more lines than the terminal has rows at every height from 7 to 40 (#5256)", () => {
+		const resolved = (count: number) =>
+			({
+				extensions: Array.from({ length: count }, (_, i) => ({
+					path: `/x/ext${i}.ts`,
+					enabled: true,
+					metadata: { source: "auto", scope: "user", origin: "top-level" },
+				})),
+				skills: [],
+				prompts: [],
+				themes: [],
+				workflows: [],
+			}) as never;
+		for (const count of [0, 1, 43]) {
+			for (const width of [30, 80]) {
+				for (let rows = 7; rows <= 40; rows++) {
+					for (const mode of ["top", "bottom", "query"] as const) {
+						const selector = new ConfigSelectorComponent(
+							{ global: resolved(count), project: resolved(0) },
+							{} as SettingsManager,
+							"/cwd",
+							"/agent",
+							() => {},
+							() => {},
+							() => {},
+							rows,
+						);
+						const list = selector.getResourceList();
+						if (mode === "bottom") for (let i = 0; i < count + 5; i++) list.handleInput("\x1b[B");
+						if (mode === "query") for (const key of "ext") list.handleInput(key);
+						const lines = selector.render(width).map((line) => stripTerminalSequences(line));
+						const tag = `${width}x${rows} n=${count} ${mode}`;
+						assert.ok(lines.length <= rows, `${tag}: ${lines.length} lines`);
+						assert.ok(
+							lines.some((line) => line.includes("Global Resources")),
+							`${tag}: title`,
+						);
+					}
+				}
+			}
+		}
+	});
+
 	it("fits the complete config frame after a narrow resize (#5256)", () => {
 		const empty = { extensions: [], skills: [], prompts: [], themes: [], workflows: [] };
 		const selector = new ConfigSelectorComponent(
