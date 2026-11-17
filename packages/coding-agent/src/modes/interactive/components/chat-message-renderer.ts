@@ -17,7 +17,7 @@ import {
 	type StreamingAssistantDelta,
 } from "../streaming-assistant-message.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
-import { AssistantMessageComponent } from "./assistant-message.ts";
+import { AssistantMessageComponent, hasAssistantVisibleContent } from "./assistant-message.ts";
 import { BashExecutionComponent } from "./bash-execution.ts";
 import { BranchSummaryMessageComponent } from "./branch-summary-message.ts";
 import { extractMessageText } from "./chat-session-host-utils.ts";
@@ -160,8 +160,7 @@ function inferInterruptedToolActivity(
 	beforeIndex: number,
 ): readonly string[] | undefined {
 	if (message.stopReason !== "aborted") return undefined;
-	if (message.content.some((content) => content.type === "toolCall")) return undefined;
-	if (message.content.length > 0) return undefined;
+	if (hasAssistantVisibleContent(message.content)) return undefined;
 	const trailingTools: ToolChatEntry[] = [];
 	for (let index = beforeIndex - 1; index >= 0; index -= 1) {
 		const entry = entries[index];
