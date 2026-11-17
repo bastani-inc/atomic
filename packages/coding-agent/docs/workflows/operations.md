@@ -1109,7 +1109,7 @@ workers: {
 }
 ```
 
-- **`requestsPerMinute`** is the rate across every host, not per host. A call to a model counts against its provider's limit and its own when both are set.
+- **`requestsPerMinute`** is the rate across every host, not per host. A call to a model counts against its provider's limit and its own when both are set. The shared journal keeps each limit's schedule in whole milliseconds, rounded up, so a limit whose interval (60 000 / `requestsPerMinute` ms) is not a whole number of milliseconds runs slightly below its rate, by at most a millisecond per journal request; it never runs above it, unless hosts of 0.9.88, which round down, share the limit.
 - **`burst`** is how many calls may start at once after a quiet spell. Default: ten seconds' worth of the rate, and at least one.
 - **`prefetch`** is how many calls' worth a host takes from the shared journal at a time. Default: half the root's workers on that host, rounded up. Higher values mean fewer journal writes but a less even split between hosts.
 - **`shareCooldowns: true`** sends every 429 cooldown a host records to the other hosts through the journal, so all of them hold that provider or model back until the cooldown ends. By default a cooldown holds back only the host that hit it.

@@ -15,6 +15,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - With `workers.checkpointShipping`, a worker host now also keeps its children's agent-stage session transcripts, the checkpoints that bill model usage, and those that carry worktree snapshots in its local journal and ships them with the children's checkpoints, so an agent-stage child no longer commits each step to the shared journal: about 0.4 shared-journal commits per step for checkpoints and transcripts, down from 3.4. A step that ends a stage returns once it is shipped, so the root's budget sees the stage's usage and the shared journal holds its transcript when the stage ends. If a host dies, the session writes it had not shipped are dropped with its unshipped steps, and the replay continues each session from what was shipped ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
 
+### Fixed
+
+- A fleet-wide rate limit whose interval (60 000 / `requestsPerMinute` ms) is not a whole number of milliseconds no longer lets the fleet run faster than its rate. The shared bucket kept its schedule in whole milliseconds rounded down, so each grant gave up to a millisecond's worth of calls more than the limit; it now rounds up, so such a limit runs at most a millisecond per journal request below its rate ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
+
 ## [0.9.88] - 2026-11-16
 
 ### Breaking Changes

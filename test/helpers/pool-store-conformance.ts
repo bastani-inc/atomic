@@ -891,6 +891,9 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 			const hosts = await Promise.all(
 				Array.from({ length: 6 }, async () => SqlRateBuckets.open(await f.peer(failures))),
 			);
+			// Each host has written to the bucket once, taking nothing, before the clock starts: the elapsed time is the
+			// acquires' own, not their connections' setup.
+			await Promise.all(hosts.map((store) => store.acquire("anthropic", 0, shape)));
 			const started = await databaseNow(f.database);
 			const outcomes = await Promise.all(
 				hosts.flatMap((store) => Array.from({ length: 25 }, () => store.acquire("anthropic", 1, shape))),
