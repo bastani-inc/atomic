@@ -8,7 +8,8 @@
  * command never stops.
  */
 import { Buffer } from "node:buffer";
-import { closeSync, createWriteStream, fchmodSync, fstatSync, openSync, type WriteStream } from "node:fs";
+import type { WriteStream } from "node:fs";
+import { type FileHandle, open } from "node:fs/promises";
 import { SESSION_TEMP_FILE_MODE } from "./session-temp-dir.ts";
 import { MAX_PERSISTED_OUTPUT_BYTES, PERSISTED_OUTPUT_TRUNCATION_MARKER } from "./tool-limits.js";
 
@@ -20,14 +21,14 @@ import { MAX_PERSISTED_OUTPUT_BYTES, PERSISTED_OUTPUT_TRUNCATION_MARKER } from "
  * umask took away, and the re-stat confirms it. Any failure throws, and every
  * caller turns that into "no spill file, no advertised path".
  */
-function openFileWithEnforcedMode(path: string): number {
-	const fd = openSync(path, "wx", SESSION_TEMP_FILE_MODE);
+async function openFileWithEnforcedMode(path: string): Promise<FileHandle> {
+	const fd = await open(path, "wx", SESSION_TEMP_FILE_MODE);
 	if (process.platform === "win32") {
 		return fd;
 	}
 	try {
-		fchmodSync(fd, SESSION_TEMP_FILE_MODE);
-		const stat = fstatSync(fd);
+		await fd.chmod(SESSION_TEMP_FILE_MODE);
+		const stat = await fd.stat();
 		if ((stat.mode & 0o777) !== SESSION_TEMP_FILE_MODE) {
 			throw new Error(`persisted output file ${path} could not be restricted to 0600`);
 		}
@@ -36,7 +37,7 @@ function openFileWithEnforcedMode(path: string): number {
 			throw new Error(`persisted output file ${path} is owned by another account`);
 		}
 	} catch (error) {
-		closeSync(fd);
+		await fd.close();
 		throw error;
 	}
 	return fd;
@@ -166,22 +167,26 @@ export class PersistedOutputFile {
 	private capReached = false;
 	private failure: Error | undefined;
 
-	constructor(path: string, options: PersistedOutputFileOptions = {}) {
+	private constructor(path: string, stream: WriteStream, options: PersistedOutputFileOptions = {}) {
 		this.path = path;
 		this.maxBytes = options.maxBytes ?? MAX_PERSISTED_OUTPUT_BYTES;
 		const markerBytes = Buffer.byteLength(PERSISTED_OUTPUT_TRUNCATION_MARKER, "utf8");
 		this.safeLimit = Math.max(0, this.maxBytes - markerBytes);
-		// Own the descriptor so the mode can be enforced before a single byte is
-		// written and before the path is handed to anyone: `mode` on open is only a
-		// request, which the process umask then narrows — a umask of 0o077 is
-		// harmless, but 0o777 leaves the file at 000 and the advertised path
-		// unreadable. Enforcing after close would be too late to fail closed.
-		const fd = openFileWithEnforcedMode(path);
-		const stream = createWriteStream(path, { fd, autoClose: true });
 		stream.on("error", (error: Error) => {
 			this.failure ??= error;
 		});
 		this.stream = stream;
+	}
+
+	/** Opens and verifies the owner-only file before returning a writer or advertising its path. */
+	static async create(path: string, options: PersistedOutputFileOptions = {}): Promise<PersistedOutputFile> {
+		const handle = await openFileWithEnforcedMode(path);
+		try {
+			return new PersistedOutputFile(path, handle.createWriteStream({ autoClose: true }), options);
+		} catch (error) {
+			await handle.close();
+			throw error;
+		}
 	}
 
 	/** Whether the cap was reached and the marker written. */

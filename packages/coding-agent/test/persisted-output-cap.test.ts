@@ -60,7 +60,7 @@ describe("persisted-output cap", () => {
 
 	it("stops a streaming spill file at the cap and marks the truncation", async () => {
 		const cap = markerBytes + 64;
-		const file = new PersistedOutputFile(join(sandbox, "streamed.log"), { maxBytes: cap });
+		const file = await PersistedOutputFile.create(join(sandbox, "streamed.log"), { maxBytes: cap });
 		for (let i = 0; i < 10; i++) {
 			file.write(Buffer.from("0123456789abcdef", "utf8"));
 		}
@@ -76,7 +76,7 @@ describe("persisted-output cap", () => {
 	});
 
 	it("writes a file smaller than the cap unchanged", async () => {
-		const file = new PersistedOutputFile(join(sandbox, "under-cap.log"), { maxBytes: markerBytes + 1024 });
+		const file = await PersistedOutputFile.create(join(sandbox, "under-cap.log"), { maxBytes: markerBytes + 1024 });
 		file.write("line one\n");
 		file.write(Buffer.from("line two\n", "utf8"));
 		assert.equal(file.truncated, false);
@@ -89,7 +89,7 @@ describe("persisted-output cap", () => {
 		const payload = "x".repeat(cap);
 		assert.equal(Buffer.byteLength(payload, "utf8"), cap);
 
-		const file = new PersistedOutputFile(join(sandbox, "exact-cap.log"), { maxBytes: cap });
+		const file = await PersistedOutputFile.create(join(sandbox, "exact-cap.log"), { maxBytes: cap });
 		for (let offset = 0; offset < payload.length; offset += 16) {
 			file.write(Buffer.from(payload.slice(offset, offset + 16), "utf8"));
 		}
@@ -103,7 +103,7 @@ describe("persisted-output cap", () => {
 	it("marks the truncation as soon as streaming input passes the cap by one byte", async () => {
 		const cap = markerBytes + 64;
 		const payload = "x".repeat(cap);
-		const file = new PersistedOutputFile(join(sandbox, "one-over-cap.log"), { maxBytes: cap });
+		const file = await PersistedOutputFile.create(join(sandbox, "one-over-cap.log"), { maxBytes: cap });
 		file.write(Buffer.from(payload, "utf8"));
 		assert.equal(file.truncated, false, "the cap itself is not a truncation");
 
@@ -125,7 +125,7 @@ describe("persisted-output cap", () => {
 		const emoji = Buffer.from("🙂", "utf8");
 		const filler = Buffer.from("a".repeat(cap - markerBytes - 2), "utf8");
 
-		const file = new PersistedOutputFile(join(sandbox, "split-char.log"), { maxBytes: cap });
+		const file = await PersistedOutputFile.create(join(sandbox, "split-char.log"), { maxBytes: cap });
 		file.write(filler);
 		file.write(emoji.subarray(0, 1));
 		file.write(Buffer.concat([emoji.subarray(1), Buffer.from("b".repeat(cap), "utf8")]));
@@ -148,7 +148,9 @@ describe("persisted-output cap", () => {
 
 	it("preserves raw continuation bytes before the truncation marker", async () => {
 		const cap = markerBytes + 4;
-		const file = new PersistedOutputFile(join(sandbox, "binary-continuations-at-cap.log"), { maxBytes: cap });
+		const file = await PersistedOutputFile.create(join(sandbox, "binary-continuations-at-cap.log"), {
+			maxBytes: cap,
+		});
 
 		file.write(Buffer.alloc(cap + 1, 0x80));
 		await file.close();
@@ -162,7 +164,7 @@ describe("persisted-output cap", () => {
 	it("does not treat an invalid UTF-8 lead as a character boundary", async () => {
 		const cap = markerBytes + 4;
 		const prefix = Buffer.from([0x61, 0x62, 0xc0, 0x80]);
-		const file = new PersistedOutputFile(join(sandbox, "invalid-lead-at-cap.log"), { maxBytes: cap });
+		const file = await PersistedOutputFile.create(join(sandbox, "invalid-lead-at-cap.log"), { maxBytes: cap });
 
 		file.write(Buffer.concat([prefix, Buffer.alloc(markerBytes + 1, 0x80)]));
 		await file.close();
@@ -193,7 +195,7 @@ describe("persisted-output cap", () => {
 		const payload = Buffer.concat([filler, emoji]);
 		assert.equal(payload.length, cap);
 
-		const file = new PersistedOutputFile(join(sandbox, "exact-cap-split.log"), { maxBytes: cap });
+		const file = await PersistedOutputFile.create(join(sandbox, "exact-cap-split.log"), { maxBytes: cap });
 		file.write(payload.subarray(0, payload.length - 2));
 		file.write(payload.subarray(payload.length - 2));
 		assert.equal(file.truncated, false);
@@ -206,7 +208,7 @@ describe("persisted-output cap", () => {
 		// 0xf0 followed by a non-continuation byte is not a UTF-8 sequence; holding
 		// it back forever, or decoding it, would corrupt binary command output.
 		const payload = Buffer.from([0x61, 0xf0, 0x00, 0xff, 0x62, 0x80]);
-		const file = new PersistedOutputFile(join(sandbox, "binary.log"), { maxBytes: markerBytes + 1024 });
+		const file = await PersistedOutputFile.create(join(sandbox, "binary.log"), { maxBytes: markerBytes + 1024 });
 		for (const byte of payload) {
 			file.write(Buffer.from([byte]));
 		}
@@ -216,17 +218,16 @@ describe("persisted-output cap", () => {
 		assert.deepEqual(readFileSync(file.path), payload);
 	});
 
-	it("refuses to create a spill file over anything that already exists", () => {
-		// Owning the descriptor moved this failure from an asynchronous stream error
-		// to a synchronous throw, which is what lets every caller fail closed before
-		// it has a path to advertise. A directory and a plain file both refuse.
+	it("refuses to create a spill file over anything that already exists", async () => {
+		// Verification must reject before a caller gets a writer and a path to
+		// advertise. A directory and a plain file both refuse.
 		const directoryPath = join(sandbox, "not-a-file");
 		mkdirSync(directoryPath, { recursive: true });
 		const occupiedPath = join(sandbox, "already-here.log");
 		writeFileSync(occupiedPath, "someone else's file");
 
-		assert.throws(() => new PersistedOutputFile(directoryPath, { maxBytes: markerBytes + 1024 }));
-		assert.throws(() => new PersistedOutputFile(occupiedPath, { maxBytes: markerBytes + 1024 }));
+		await assert.rejects(() => PersistedOutputFile.create(directoryPath, { maxBytes: markerBytes + 1024 }));
+		await assert.rejects(() => PersistedOutputFile.create(occupiedPath, { maxBytes: markerBytes + 1024 }));
 		assert.equal(readFileSync(occupiedPath, "utf8"), "someone else's file", "the existing file is untouched");
 	});
 
@@ -248,7 +249,7 @@ const { PersistedOutputFile } = await import(${JSON.stringify(join(packageRoot, 
 const { redirectOversizedToolResult } = await import(${JSON.stringify(join(packageRoot, "src/core/tools/oversized-tool-result.ts"))});
 const { DEFAULT_MAX_RESULT_SIZE_CHARS } = await import(${JSON.stringify(join(packageRoot, "src/core/tools/tool-limits.ts"))});
 
-const streamed = new PersistedOutputFile(join(${JSON.stringify(workDir)}, "streamed.log"));
+const streamed = await PersistedOutputFile.create(join(${JSON.stringify(workDir)}, "streamed.log"));
 streamed.write("hello");
 await streamed.close();
 

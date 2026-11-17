@@ -914,9 +914,11 @@ describe("asynchronous windows directory security reader (#5285)", () => {
 	it("does not evict a replacement directory's verified entry when the old directory's read later refuses (#5285)", async () => {
 		let finishOld: (security: WindowsDirectorySecurity) => void = () => {};
 		let reads = 0;
+		const started = Promise.withResolvers<void>();
 		setWindowsDirectorySecurityReaderForTesting(() => {
 			reads += 1;
 			if (reads === 1) {
+				started.resolve();
 				return new Promise<WindowsDirectorySecurity>((resolve) => {
 					finishOld = resolve;
 				});
@@ -924,6 +926,7 @@ describe("asynchronous windows directory security reader (#5285)", () => {
 			return security();
 		});
 		const oldRead = verifyWindowsDirectorySecurityAsync(dir);
+		await started.promise;
 		renameSync(dir, `${dir}-old`);
 		mkdirSync(dir);
 		try {
