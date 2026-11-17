@@ -61,6 +61,7 @@
 - `ChatTranscriptComponent` accepts a cache key made of parts, compared one by one, as well as a string, so a host can name what an entry renders from without building a string for every entry on every frame.
 - Workflow graphs open run details with `o`, including outputs, artifacts, events, nested blockers and logs. Broken workflow definitions appear beside runs in `/workflows`, with actionable error details and `/reload` guidance ([#5255](https://github.com/bastani-inc/atomic/pull/5255))
 - `SessionInfo` and `ctx.ui.hostSessionPicker()` rows accept optional `title`, `detail` and `canDelete` fields (`SessionInfo` also accepts `resumeKind: "workflow"` for workflow-run rows), and the picker request accepts `title` for the heading and `variant: "runs"` for rows that are not sessions, which leaves the folder scope, named-only filter and path keys out. See [Host-native session picker](docs/tui/reference.md#host-native-session-picker) ([#5256](https://github.com/bastani-inc/atomic/pull/5256))
+- `ToolBlockMarkdown` takes an optional default text style, such as a color, for the plain text it renders
 
 ### Changed
 
@@ -177,6 +178,7 @@
 - On Windows, a queued SQLite writer no longer fails with `writer-queue-unusable` when another process deletes its stale ticket while it is being refreshed. The writer recreates the ticket in its existing queue position and continues waiting. Other permission failures still report an error ([#4316](https://github.com/bastani-inc/atomic/issues/4316))
 - A resume after Atomic was killed during a blueprint build no longer builds the worktree again while a step of the killed build may still run there. A step Atomic had started but not yet recorded could not be stopped, so two builds ran in one worktree. A build Atomic was killed during is now cancelled and never continued: the next resume stops the steps the build recorded, sets the worktree aside, restores and builds a fresh worktree, and warns that a step may still be running in the set-aside worktree, naming it and the build's logs. No session or restore uses a set-aside worktree again, nothing is built in it even when the fresh restore fails, and it is removed once no process of yours works in it. Worktrees another session has taken over are left alone. A build whose lock cannot be written warns that a kill during it would go unnoticed. A build stopped by Ctrl-C or a signal, and Windows, are unchanged ([#5379](https://github.com/bastani-inc/atomic/issues/5379))
 - A folder scan that completes after a session was deleted no longer brings the deleted session back into `/resume` ([#5256](https://github.com/bastani-inc/atomic/pull/5256))
+- A finished agent's result preview in chat no longer shows Markdown markers such as `**`, backticks or `#`: the collapsed first line and the expanded result render bold, italic, code, headings, lists and links as the chat does, in the muted preview tone, and plain text under `NO_COLOR`
 
 ### Removed
 

@@ -1,6 +1,8 @@
 import {
 	type Component,
+	type DefaultTextStyle,
 	Markdown,
+	type MarkdownTheme,
 	stripTerminalSequences,
 	Text,
 	truncateToWidth,
@@ -236,8 +238,8 @@ export function isToolBlock(component: Component): component is ToolBlock | Tool
 
 export class ToolBlockMarkdown implements Component {
 	private readonly markdown: Markdown;
-	constructor(text: string) {
-		this.markdown = new Markdown(terminalDisplayText(text), 0, 0, getMarkdownTheme(), undefined, {
+	constructor(text: string, defaultTextStyle?: DefaultTextStyle) {
+		this.markdown = new Markdown(terminalDisplayText(text), 0, 0, getMarkdownTheme(), defaultTextStyle, {
 			hyperlinks: false,
 			images: false,
 		});
@@ -248,4 +250,26 @@ export class ToolBlockMarkdown implements Component {
 	render(width: number): string[] {
 		return width < 1 ? [] : this.markdown.render(width);
 	}
+}
+
+/** Wide enough that a preview's first row is cut to the width it is shown at, not wrapped before it. */
+const MARKDOWN_PREVIEW_ROW_WIDTH = 1024;
+
+/**
+ * Markdown as one-row previews: its rendered rows, unwrapped, without blank rows, code fences or heading markers, and
+ * with links as their text. Plain text takes `color`; bold, italic and code keep their emphasis within it.
+ */
+export function markdownPreviewRows(text: string, color: (text: string) => string): string[] {
+	const base = getMarkdownTheme();
+	const previewTheme: MarkdownTheme = {
+		...base,
+		heading: (value) => (/^#+\s*$/.test(stripTerminalSequences(value)) ? "" : base.heading(value)),
+		linkUrl: () => "",
+		codeBlockBorder: () => "",
+		codeBlockIndent: "",
+	};
+	return new Markdown(terminalDisplayText(text), 0, 0, previewTheme, { color }, { hyperlinks: false, images: false })
+		.render(MARKDOWN_PREVIEW_ROW_WIDTH)
+		.map((row) => row.trimEnd())
+		.filter((row) => stripTerminalSequences(row).trim().length > 0);
 }

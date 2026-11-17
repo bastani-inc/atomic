@@ -468,6 +468,90 @@ test("agent completion notices render agent-name finished/failed/stopped with el
 	setKeybindings(new KeybindingsManager());
 });
 
+function agentNotice(preview: string) {
+	return taskCompletionNotice(
+		envelope,
+		{ kind: "agent", title: "review", agentName: "debugger", metrics: { elapsedMs: 395_000 } },
+		preview,
+	);
+}
+
+test.each([80, 160])(
+	"an agent's result preview shows its Markdown styled, never its markers, at %i columns",
+	(width) => {
+		initTheme("dark");
+		setKeybindings(new KeybindingsManager());
+		const muted = theme.fg("muted", "\0").split("\0")[0]!;
+		const bold = theme.bold("\0").split("\0")[0]!;
+		const previews: readonly (readonly [string, string])[] = [
+			[
+				"**Medium — pending selection survives a scope reset**\nScope reset keeps the old identity.",
+				"Medium — pending selection survives a scope reset",
+			],
+			[
+				"Use `prepareSessionClaim`, see [the claim docs](https://example.com/claims) and **retry**.",
+				"Use prepareSessionClaim, see the claim docs and retry.",
+			],
+			["## Findings\n\nOne medium.", "Findings"],
+			["### Deep heading\n\nbody", "Deep heading"],
+			["```ts\nconst claim = await prepare();\n```", "const claim = await prepare();"],
+		];
+		for (const [preview, firstRow] of previews) {
+			const rows = new TaskCompletionMessage(agentNotice(preview), false).render(width);
+			assert.equal(stripVTControlCharacters(rows[1]!), `   ⎿  ${firstRow}`, preview);
+			assert.ok(
+				rows.every((row) => visibleWidth(row) <= width),
+				preview,
+			);
+			assert.doesNotMatch(stripVTControlCharacters(rows.join("\n")), /\*\*|`|\]\(|^ *#/m, preview);
+			assert.ok(rows[1]!.includes(muted), `${preview}: muted tone`);
+		}
+		const [, headline] = new TaskCompletionMessage(agentNotice(previews[0]![0]), false).render(width);
+		assert.ok(headline!.includes(`${bold}${muted}Medium`), "bold stays bold within the muted tone");
+		const expanded = new TaskCompletionMessage(
+			agentNotice("**Medium** finding with `code`\n\n- first\n- second"),
+			true,
+		)
+			.render(width)
+			.map((row) => stripVTControlCharacters(row));
+		assert.equal(expanded[1], "   ⎿  Medium finding with code");
+		assert.doesNotMatch(expanded.join("\n"), /\*\*|`/);
+		assert.ok(expanded.some((row) => /first$/.test(row)) && expanded.some((row) => /second$/.test(row)));
+	},
+);
+
+test("an agent's Markdown result preview is plain text under NO_COLOR", () => {
+	vi.stubEnv("NO_COLOR", "1");
+	onTestFinished(() => {
+		vi.unstubAllEnvs();
+	});
+	initTheme("dark");
+	setKeybindings(new KeybindingsManager());
+	const notice = agentNotice("**Medium** `claim` [docs](https://example.com/d)\nmore");
+	for (const expanded of [false, true]) {
+		const rows = new TaskCompletionMessage(notice, expanded).render(80);
+		assert.deepEqual(rows, rows.map(stripVTControlCharacters), `expanded=${expanded}`);
+		assert.equal(
+			rows[1],
+			expanded ? "   ⎿  Medium claim docs (https://example.com/d)" : "   ⎿  Medium claim docs",
+			`expanded=${expanded}`,
+		);
+	}
+});
+
+test("a styled result preview cut to the width keeps within it and closes its styles", () => {
+	initTheme("dark");
+	setKeybindings(new KeybindingsManager());
+	const notice = agentNotice(`**${"pending selection survives a scope reset ".repeat(5).trim()}** then \`code\``);
+	for (const width of [24, 40, 80]) {
+		const [, row] = new TaskCompletionMessage(notice, false).render(width);
+		assert.ok(visibleWidth(row!) <= width, `width ${width}`);
+		assert.match(stripVTControlCharacters(row!), /^ {3}⎿ {2}pending selection.*…$/);
+		assert.doesNotMatch(stripVTControlCharacters(row!), /\*/);
+		assert.ok(row!.endsWith("\u001b[0m"), `width ${width}: styles closed`);
+	}
+});
+
 test("agent completion previews emit no colour under NO_COLOR, like their notice line", async () => {
 	vi.stubEnv("NO_COLOR", "1");
 	onTestFinished(() => {
