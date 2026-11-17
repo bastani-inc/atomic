@@ -13,10 +13,13 @@ import { summarizeSession } from "./session-summary.js";
 import type {
 	SessionBlob,
 	SessionCompactionPoint,
+	SessionEntriesPage,
+	SessionEntriesQuery,
 	SessionEntryRange,
 	SessionListQuery,
 	SessionRecordHeader,
 	SessionResume,
+	SessionSearchIndex,
 	SessionSnapshot,
 	SessionStore,
 	SessionSummary,
@@ -51,6 +54,8 @@ export class LegacySessionStore implements SessionStore {
 	/** The wrapped store's blobs; a legacy session is converted before it stores one. */
 	readonly putBlob?: (sessionId: string, data: Uint8Array) => Promise<SessionBlob>;
 	readonly getBlob?: (sessionId: string, hash: string) => Promise<Uint8Array | undefined>;
+	readonly readEntryRange?: (sessionId: string, query: SessionEntriesQuery) => Promise<SessionEntriesPage>;
+	readonly searchIndex?: SessionSearchIndex;
 
 	constructor(inner: SessionStore, options: { readonly legacyDirectory: string; readonly databasePath: string }) {
 		this.inner = inner;
@@ -64,6 +69,28 @@ export class LegacySessionStore implements SessionStore {
 			};
 			this.getBlob = (sessionId, hash) => getBlob.call(inner, sessionId, hash);
 		}
+		const { readEntryRange, searchIndex } = inner;
+		if (readEntryRange !== undefined)
+			this.readEntryRange = async (sessionId, query) => {
+				query.signal?.throwIfAborted();
+				if ((await inner.readHeader(sessionId)) !== undefined) {
+					return readEntryRange.call(inner, sessionId, query);
+				}
+				if (!(await this.isDeleted(sessionId))) {
+					const legacy = await this.legacyStore();
+					if (legacy !== undefined) {
+						for (const file of (await this.legacyIndex()).get(sessionId) ?? []) {
+							try {
+								return await legacy.readFileEntryRange(file.location, query);
+							} catch (error) {
+								if (query.signal?.aborted) throw error;
+							}
+						}
+					}
+				}
+				return readEntryRange.call(inner, sessionId, query);
+			};
+		if (searchIndex !== undefined) this.searchIndex = searchIndex;
 	}
 
 	get descriptor(): StorageDescriptor {
@@ -156,7 +183,7 @@ export class LegacySessionStore implements SessionStore {
 		}
 		for await (const file of this.legacyFiles(query)) {
 			if (listed.has(file.header.id) || (await this.inner.readHeader(file.header.id)) !== undefined) continue;
-			const summary = await this.summarize(file.header.id);
+			const summary = await this.summarize(file.header.id, query.withoutSearchText === true);
 			if (summary === undefined) continue;
 			listed.add(summary.id);
 			yield summary;
@@ -272,29 +299,35 @@ export class LegacySessionStore implements SessionStore {
 	 * Listing rows are cached per store until a copy of the session changes on disk. A row is built
 	 * from bounded reads, not a full parse, so listing does not cost the size of the history.
 	 */
-	private async summarize(sessionId: string): Promise<SessionSummary | undefined> {
+	private async summarize(sessionId: string, withoutSearchText = false): Promise<SessionSummary | undefined> {
 		const copies = await Promise.all(
 			((await this.legacyIndex()).get(sessionId) ?? []).map(async (file) => ({
 				file,
 				stats: await stat(file.location).catch(() => undefined),
 			})),
 		);
-		const stamp = copies
+		const stamp = `${withoutSearchText ? "light:" : ""}${copies
 			.map(({ stats }) => (stats === undefined ? "missing" : `${stats.size}:${stats.mtimeMs}`))
-			.join("|");
-		const cached = this.summaries.get(sessionId);
+			.join("|")}`;
+		const key = `${withoutSearchText ? "light:" : ""}${sessionId}`;
+		const cached = this.summaries.get(key);
 		if (cached !== undefined && cached.stamp === stamp) return cached.summary ?? undefined;
 		let summary: SessionSummary | null = null;
 		for (const { file, stats } of copies) {
 			if (stats === undefined) continue;
 			try {
-				summary = await summarizeLegacySession(file, stats.size, stats.mtimeMs);
+				summary = await summarizeLegacySession(
+					file,
+					stats.size,
+					stats.mtimeMs,
+					withoutSearchText ? { whole: false } : undefined,
+				);
 				break;
 			} catch {
 				// Try the next copy.
 			}
 		}
-		this.summaries.set(sessionId, { stamp, summary });
+		this.summaries.set(key, { stamp, summary });
 		return summary ?? undefined;
 	}
 

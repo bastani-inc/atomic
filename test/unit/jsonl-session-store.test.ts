@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createReadStream } from "node:fs";
 import * as fs from "node:fs/promises";
 import {
 	appendFile,
@@ -31,7 +32,16 @@ import {
 	JsonlStoragePoisonedError,
 	SessionFormatVersionError,
 } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
+import { upgradeLegacySessionEntry } from "../../packages/coding-agent/src/core/storage/session/legacy-format.js";
 import { SESSION_FORMAT_VERSION } from "../../packages/coding-agent/src/core/storage/session/types.js";
+import { createHistoryRouter } from "../../packages/coding-agent/src/core/tools/history-protocol.js";
+import { renderRawEntryInWorker } from "../../packages/coding-agent/src/core/tools/history-regex-worker.js";
+import { renderedLines } from "../../packages/coding-agent/src/core/tools/history-session.js";
+
+vi.mock("node:fs", async (importOriginal) => {
+	const fs = await importOriginal<typeof import("node:fs")>();
+	return { ...fs, createReadStream: vi.fn(fs.createReadStream) };
+});
 
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const fs = await importOriginal<typeof import("node:fs/promises")>();
@@ -59,6 +69,7 @@ const entry = {
 	timestamp: header.createdAt,
 	name: " Name ",
 } as const;
+const LEGACY_ENTRY_CHARS = 2 * 1024 * 1024;
 
 async function withStore(body: (store: JsonlSessionStore, directory: string) => Promise<void>): Promise<void> {
 	const directory = await mkdtemp(join(tmpdir(), "jsonl-session-"));
@@ -206,6 +217,89 @@ it("bounds alternating writers to header, a 64-byte witness and newly appended b
 	}
 	assert.equal(overheads.length, 6);
 	assert.ok(overheads.every((overhead) => overhead === overheads[0]));
+});
+
+it("reads a tiny cold JSONL session as a transcript, not an unknown-size outline (#5250)", async () => {
+	await withStore(async (writer, directory) => {
+		await writer.create(header, [
+			entry,
+			{
+				type: "message",
+				id: "message",
+				parentId: entry.id,
+				timestamp: header.createdAt,
+				message: { role: "user", content: "tiny cold message", timestamp: Date.parse(header.createdAt) },
+			},
+		]);
+		const reader = await JsonlSessionStore.open(directory, { scanExisting: false });
+		try {
+			const router = createHistoryRouter({
+				cwd: header.cwd,
+				sessionStore: () => reader,
+				workflows: () => undefined,
+			});
+			const text = (await router.readSelected!("history://sessions/session", {})) ?? "";
+			assert.match(text, /tiny cold message/);
+			assert.doesNotMatch(text, /too long to read whole|Infinity/);
+		} finally {
+			await reader.close();
+		}
+	});
+});
+
+it("reads a cold JSONL range without counting the unused tail and learns its total at EOF (#5250)", async () => {
+	await withStore(async (writer, directory) => {
+		const count = 512;
+		await writer.create(
+			header,
+			Array.from({ length: count }, (_, index) => ({ ...entry, id: `e${index + 1}`, name: "x".repeat(1024) })),
+		);
+		const reader = await JsonlSessionStore.open(directory, { scanExisting: false });
+		try {
+			vi.mocked(createReadStream).mockClear();
+			const first = await reader.readEntryRange(header.id, { fromSeq: 1, toSeq: 1, maxChars: 1024 });
+			const bytes = vi.mocked(createReadStream).mock.results.reduce((sum, result) => {
+				assert.equal(result.type, "return");
+				return sum + (result.type === "return" ? result.value.bytesRead : 0);
+			}, 0);
+			assert.ok(bytes <= 4 * 64 * 1024, `a one-entry range streamed ${bytes} bytes`);
+			assert.deepEqual(
+				first.entries.map((item) => item.seq),
+				[1],
+			);
+			assert.equal(first.lastSeq, Number.POSITIVE_INFINITY, "a cold partial range does not invent an exact total");
+
+			const seqs = [1];
+			let page = first;
+			while (page.throughSeq < page.lastSeq) {
+				const fromSeq = page.throughSeq + 1;
+				page = await reader.readEntryRange(header.id, { fromSeq, toSeq: fromSeq + 63, maxChars: 16 * 1024 });
+				seqs.push(...page.entries.map((item) => item.seq));
+			}
+			assert.equal(page.lastSeq, count);
+			assert.deepEqual(
+				seqs,
+				Array.from({ length: count }, (_, index) => index + 1),
+			);
+			assert.equal((await reader.readEntryRange(header.id, { fromSeq: 1, toSeq: 1 })).lastSeq, count);
+			assert.equal((await writer.readEntryRange(header.id, { fromSeq: 1, toSeq: 1 })).lastSeq, count);
+
+			await writer.append(header.id, [{ ...entry, id: "appended" }], { expectSeq: count });
+			assert.equal(
+				(await reader.readEntryRange(header.id, { fromSeq: 1, toSeq: 1 })).lastSeq,
+				Number.POSITIVE_INFINITY,
+				"an append invalidates the previously counted total",
+			);
+			const appended = await reader.readEntryRange(header.id, { fromSeq: count + 1, toSeq: count + 1 });
+			assert.equal(appended.lastSeq, count + 1);
+			assert.deepEqual(
+				appended.entries.map((item) => item.entry.id),
+				["appended"],
+			);
+		} finally {
+			await reader.close();
+		}
+	});
 });
 
 it("rejects an already aborted listing before attempting to acquire the directory lock", async () => {
@@ -625,6 +719,106 @@ it("accepts another process's append after a last record without a newline only 
 			});
 		}
 		assert.equal(await readFile(path, "utf8"), content);
+	});
+});
+
+it("reads an oversized legacy JSONL entry without parsing it on the main thread (#5250)", async () => {
+	await withStore(async (store, directory) => {
+		const path = join(directory, "2026-10-15T00-00-00-000Z_legacy.jsonl");
+		const legacyHeader = { type: "session", version: 1, id: "legacy", timestamp: header.createdAt, cwd: "/project" };
+		const hookMessage = (content: string) => ({
+			type: "message",
+			timestamp: header.createdAt,
+			message: { role: "hookMessage", customType: "hook", content, display: true, timestamp: 1 },
+		});
+		const small = hookMessage("small hook text");
+		const big = hookMessage(`${"z ".repeat(LEGACY_ENTRY_CHARS / 2)}big hook tail`);
+		await writeFile(path, `${[legacyHeader, small, big].map((line) => JSON.stringify(line)).join("\n")}\n`);
+		const page = await store.readFileEntryRange(path, { fromSeq: 1, toSeq: 2, largeEntryBytes: 64 * 1024 });
+		assert.deepEqual(
+			page.entries.map((at) => at.seq),
+			[1, 2],
+		);
+		const [parsed, raw] = page.entries;
+		assert.equal(parsed?.rawChunks, undefined);
+		assert.deepEqual(parsed?.entry, upgradeLegacySessionEntry(legacyHeader, small as never, 1, path));
+		assert.ok(raw?.rawChunks, "the oversized legacy entry comes back as raw chunks");
+		assert.ok(Buffer.concat(raw.rawChunks).equals(Buffer.from(JSON.stringify(big))));
+		const rendered = await renderRawEntryInWorker(raw.rawChunks, 72, 60_000, undefined, raw.rawFormatVersion);
+		assert.ok(!("timedOut" in rendered));
+		assert.deepEqual(
+			new TextDecoder().decode(rendered.renderedUtf8).split("\n"),
+			renderedLines(upgradeLegacySessionEntry(legacyHeader, big as never, 2, path)),
+		);
+		assert.equal(rendered.outline.count, "customMessage");
+	});
+});
+
+it("reads any range of entries as a whole load does, through appends, blank lines and an unfinished last line (#5250)", async () => {
+	await withStore(async (store) => {
+		const named = (id: string) => ({ ...entry, id });
+		await store.create(
+			header,
+			Array.from({ length: 700 }, (_, index) => named(`e${index + 1}`)),
+		);
+		const path = await location(store);
+		const agree = async () => {
+			const whole = (await store.load(header.id)).entries;
+			for (const [fromSeq, toSeq] of [
+				[1, 3],
+				[255, 260],
+				[512, 514],
+				[690, 800],
+				[whole.length, whole.length],
+				[whole.length + 1, whole.length + 5],
+			] as const) {
+				const page = await store.readEntryRange(header.id, { fromSeq, toSeq });
+				assert.equal(page.lastSeq, whole.length);
+				assert.deepEqual(
+					page.entries.map((at) => [at.seq, at.entry]),
+					whole.slice(fromSeq - 1, toSeq).map((at, index) => [fromSeq + index, at]),
+				);
+				assert.equal(page.throughSeq, Math.max(fromSeq - 1, Math.min(toSeq, whole.length)));
+			}
+		};
+		await agree();
+		await store.append(header.id, [named("appended")], { expectSeq: 700 });
+		await agree();
+		await appendFile(path, ` \n${JSON.stringify(named("foreign"))}\n\n${JSON.stringify(named("unterminated"))}`);
+		await agree();
+		await appendFile(path, `\n${JSON.stringify(named("torn")).slice(0, 12)}`);
+		const warnings = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+		try {
+			await agree();
+		} finally {
+			warnings.mockRestore();
+		}
+		const capped = await store.readEntryRange(header.id, { fromSeq: 10, toSeq: 20, maxChars: 1 });
+		assert.deepEqual(
+			capped.entries.map((at) => at.seq),
+			[10],
+		);
+		assert.equal(capped.throughSeq, 10);
+	});
+});
+
+it("rebuilds its entry range index when the session file is rewritten in place (#5250)", async () => {
+	await withStore(async (store) => {
+		const named = (id: string) => ({ ...entry, id });
+		await store.create(
+			header,
+			Array.from({ length: 600 }, (_, index) => named(`e${index + 1}`)),
+		);
+		const path = await location(store);
+		assert.equal((await store.readEntryRange(header.id, { fromSeq: 550, toSeq: 550 })).entries[0]?.entry.id, "e550");
+		const [headerLine] = (await readFile(path, "utf8")).split("\n");
+		const rewritten = Array.from({ length: 600 }, (_, index) => JSON.stringify(named(`rewritten-${index + 1}`)));
+		await writeFile(path, `${headerLine}\n${rewritten.join("\n")}\n`);
+		const page = await store.readEntryRange(header.id, { fromSeq: 550, toSeq: 551 });
+		assert.deepEqual(
+			page.entries.map((at) => at.entry.id),
+			["rewritten-550", "rewritten-551"],
+		);
 	});
 });
 
