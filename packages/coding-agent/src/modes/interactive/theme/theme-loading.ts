@@ -9,7 +9,7 @@ import { assertThemeNameIsValid, parseThemeJsonContent } from "./theme-parse.ts"
 import type { ThemeJson } from "./theme-schema.ts";
 import { splitThemeColors, withThemeTokenFallbacks } from "./theme-tokens.ts";
 
-let BUILTIN_THEMES: Record<string, ThemeJson> | undefined;
+let BUILTIN_THEMES: { directory: string; themes: Record<string, ThemeJson> } | undefined;
 const registeredThemes = new Map<string, Theme>();
 /** The JSON each theme loaded from a file was made from, which exports read for its raw colors. */
 const themeSources = new WeakMap<Theme, ThemeJson>();
@@ -28,12 +28,16 @@ export interface ThemeInfo {
 }
 
 export function getBuiltinThemes(): Record<string, ThemeJson> {
+	return loadedBuiltinThemes().themes;
+}
+
+function loadedBuiltinThemes(): { directory: string; themes: Record<string, ThemeJson> } {
 	BUILTIN_THEMES ??= readBuiltinThemes();
 	return BUILTIN_THEMES;
 }
 
 /** Reads the bundled themes, once: {@link readThemeFiles} does before the first frame. */
-function readBuiltinThemes(): Record<string, ThemeJson> {
+function readBuiltinThemes(): { directory: string; themes: Record<string, ThemeJson> } {
 	const themesDir = getThemesDir();
 	const themes: Record<string, ThemeJson> = {};
 	for (const file of fs.readdirSync(themesDir).sort()) {
@@ -44,7 +48,7 @@ function readBuiltinThemes(): Record<string, ThemeJson> {
 		const themeJson = parseThemeJsonContent(themePath, fs.readFileSync(themePath, "utf-8"));
 		themes[themeJson.name] = themeJson;
 	}
-	return themes;
+	return { directory: themesDir, themes };
 }
 
 function getCustomThemeFiles(): Map<string, CustomThemeFile> {
@@ -127,7 +131,7 @@ export function getAvailableThemes(): string[] {
 }
 
 export function getAvailableThemesWithPaths(): ThemeInfo[] {
-	const themesDir = getThemesDir();
+	const builtinThemes = loadedBuiltinThemes();
 	const result: ThemeInfo[] = [];
 	const seen = new Set<string>();
 	const addTheme = (info: ThemeInfo) => {
@@ -138,8 +142,8 @@ export function getAvailableThemesWithPaths(): ThemeInfo[] {
 	addTheme({ name: SYSTEM_THEME_NAME, path: undefined });
 
 	// Built-in themes
-	for (const name of Object.keys(getBuiltinThemes())) {
-		addTheme({ name, path: path.join(themesDir, `${name}.json`) });
+	for (const name of Object.keys(builtinThemes.themes)) {
+		addTheme({ name, path: path.join(builtinThemes.directory, `${name}.json`) });
 	}
 
 	// Custom themes
