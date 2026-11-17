@@ -228,7 +228,9 @@ function factory(pi: ExtensionAPI): void {
 		return result;
 	};
 
-	registerWorkflowTool(pi, executeWorkflowToolWithAutoAttach, runtimeState.runWithLifecycleSuppressedForPolicy);
+	registerWorkflowTool(pi, executeWorkflowToolWithAutoAttach, runtimeState.runWithLifecycleSuppressedForPolicy, {
+		runs: owner.store,
+	});
 	registerWorkflowSlashCommand(pi, workflowCommands, {
 		owner,
 		runtimeProxy: runtimeState.runtimeProxy,

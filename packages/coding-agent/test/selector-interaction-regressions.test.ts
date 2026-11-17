@@ -498,6 +498,23 @@ describe("selector interaction and rendering regressions (#5237)", () => {
 		assert.deepEqual(multiChanges, ["two"]);
 	});
 
+	test("a selection callback can refresh rows without notifying itself again (#5237)", () => {
+		const changes: string[] = [];
+		const rows = makeItems(["alpha", "beta", "gamma"]);
+		const selector = new Selector<string>({
+			items: rows,
+			style: PLAIN_SELECTOR_STYLE,
+			onSelectionChange: (item) => {
+				changes.push(item?.id ?? "none");
+				if (changes.length < 3) selector.setItems([...rows]);
+			},
+		});
+
+		selector.handleInput("\x1b[B");
+		assert.deepEqual(changes, ["beta"]);
+		assert.equal(selector.getSelected()?.id, "beta");
+	});
+
 	test("clips rendered lines to the terminal width when escape codes split graphemes or tabs precede marks (#5237)", () => {
 		const splitKeycaps = "1\x1b[31m\ufe0f\u20e3".repeat(10);
 		const tabCombining = "\t\u0301".repeat(10);

@@ -3,10 +3,10 @@
  */
 
 import { constants as bufferConstants } from "node:buffer";
-import { spawn } from "node:child_process";
 import { constants as osConstants } from "node:os";
 import { StringDecoder } from "node:string_decoder";
 import { createChildProcessEnvironment, waitForChildProcess } from "../utils/child-process.ts";
+import { spawnHostProcess } from "../utils/host-spawn.ts";
 
 const DEFAULT_EXEC_MAX_BUFFER = Math.min(256 * 1024 * 1024, bufferConstants.MAX_STRING_LENGTH);
 const FORCE_KILL_DELAY_MS = 5000;
@@ -57,9 +57,9 @@ export async function execCommand(
 		throw new RangeError(`maxBuffer must be an integer between 0 and ${bufferConstants.MAX_STRING_LENGTH} bytes`);
 	}
 
-	const proc = spawn(command, args, {
+	// Without fork where that costs the host time in proportion to its memory (#5345).
+	const proc = spawnHostProcess(command, args, {
 		cwd,
-		shell: false,
 		// Pass the environment explicitly. Bun snapshots the process environment
 		// at startup for spawns that omit `env`, so an inherited default would
 		// still carry values this process deleted from `process.env` — including

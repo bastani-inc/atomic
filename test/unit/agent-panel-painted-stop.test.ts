@@ -137,3 +137,41 @@ test("x x on a run that finished between the presses sends no stop (#5224)", asy
 	});
 	assert.deepEqual(p.stopped, [], `stop sent for a finished run: ${JSON.stringify(p.stopped)}`);
 });
+
+test("one x aimed at the selected running run never dismisses another run a refresh moved the selection to (#5224)", async () => {
+	const p = panelHarness([run("run:a", "running"), run("run:b", "done")]);
+	await withFocusedPanel(
+		p.session,
+		async (panel) => {
+			const painted = paint(panel);
+			assert.match(painted, /❯ . a /, painted);
+			p.set([run("run:b", "done")]);
+			await microtasks();
+			panel.handleInput("x");
+		},
+		"run:a",
+	);
+	assert.equal(
+		dismissedAgentPanelItems(p.session).has("run:b"),
+		false,
+		"x aimed at the selected running a dismissed b",
+	);
+});
+
+test("x x aimed at the selected running run never stops another run a refresh moved the selection to (#5224)", async () => {
+	const p = panelHarness([run("run:a", "running"), run("run:b", "running")]);
+	await withFocusedPanel(
+		p.session,
+		async (panel) => {
+			const painted = paint(panel);
+			assert.match(painted, /❯ . a /, painted);
+			p.set([run("run:b", "running")]);
+			await microtasks();
+			panel.handleInput("x");
+			panel.handleInput("x");
+			await microtasks();
+		},
+		"run:a",
+	);
+	assert.deepEqual(p.stopped, [], `x x aimed at a stopped ${JSON.stringify(p.stopped)}`);
+});
