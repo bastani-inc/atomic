@@ -33,6 +33,8 @@
 - On a busy Windows machine, a shell command or a subagent's named-worktree checkout that finished is no longer reported as failed with `Windows stdin worker stop was not confirmed` ([#5340](https://github.com/bastani-inc/atomic/pull/5340))
 - On Windows, Atomic no longer freezes while it checks that a temp directory is private. The PowerShell read of each private root's owner and access list held the main thread, for a quarter to half a second on an idle machine and for seconds on a busy one, and timers, hooks and the interface stalled with it. The read now runs in the background and starts when a session starts. Bash spill files, saved tool results, temporary extension installs, subagent artifacts, the GitHub clone cache and design workflow artifacts wait for it without blocking. Every directory refused before is still refused ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
 - Private temporary storage is no longer reused through a directory link or a replaced root, including a Windows replacement with the same creation time. Temporary installs and caches fall back to another private directory instead ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
+- Replacing a submission echo with a prompt rewritten by an `input` hook, or inserting a custom message ahead of a streaming reply, now touches only the tail of the chat container instead of scanning the whole transcript, keeping prompt swaps fast in long sessions ([#5323](https://github.com/bastani-inc/atomic/issues/5323))
+- Corrected new-message counts when a transcript insertion or removal is followed by another change that restores its earlier child count ([#5323](https://github.com/bastani-inc/atomic/issues/5323))
 
 ## [0.9.88] - 2026-11-16
 
