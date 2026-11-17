@@ -13,6 +13,11 @@ const localRuntimeAuth = new WeakMap<
 	Pick<ModelRuntime, "getProviderAuthStatus" | "getApiKeyLoginProviderMetadata">
 >();
 
+interface ScopeSnapshot {
+	epoch: number;
+	synchronized: boolean;
+}
+
 interface RemoteModelRefreshOptions {
 	signal?: AbortSignal;
 	timeoutMs?: number;
@@ -30,28 +35,35 @@ export class RemoteModelCatalog {
 	private readonly providerAuthStatuses = new Map<string, AuthStatus>();
 	private refreshGeneration = 0;
 	private scopeEpoch = 0;
+	private pendingScopeSyncs = 0;
 
 	constructor(client: RpcClient) {
 		this.client = client;
 	}
 
-	getScopeEpoch(): number {
-		return this.scopeEpoch;
+	getScopeSnapshot(): ScopeSnapshot {
+		return { epoch: this.scopeEpoch, synchronized: this.pendingScopeSyncs === 0 };
 	}
 
-	setScopedModels(
+	async syncScopedModels(
 		scopedModels: ReadonlyArray<{ model: Model<Api>; thinkingLevel?: AgentSession["thinkingLevel"] }>,
-	): number {
-		this.scopeEpoch += 1;
+		synchronize: () => Promise<RpcModelCatalog>,
+	): Promise<void> {
+		const epoch = ++this.scopeEpoch;
+		this.pendingScopeSyncs += 1;
 		this.scopedModels = scopedModels.map((scoped) => ({
 			model: scoped.model,
 			...(scoped.thinkingLevel !== undefined ? { thinkingLevel: scoped.thinkingLevel } : {}),
 		}));
-		return this.scopeEpoch;
+		try {
+			this.apply(await synchronize(), { epoch, synchronized: true });
+		} finally {
+			this.pendingScopeSyncs -= 1;
+		}
 	}
 
-	apply(catalog: RpcModelCatalog, scopeEpoch = this.scopeEpoch): void {
-		this.applyModels(catalog, scopeEpoch);
+	apply(catalog: RpcModelCatalog, scope = this.getScopeSnapshot()): void {
+		this.applyModels(catalog, scope);
 		if (catalog.oauthProviders) this.oauthProviders = catalog.oauthProviders;
 		if (catalog.customAuthProviders) this.apiKeyLoginProviders = catalog.customAuthProviders;
 		if (catalog.providerAuthStatuses) {
@@ -61,9 +73,9 @@ export class RemoteModelCatalog {
 		}
 	}
 
-	applyModels(catalog: Pick<RpcModelCatalog, "models" | "scopedModels">, scopeEpoch = this.scopeEpoch): void {
+	applyModels(catalog: Pick<RpcModelCatalog, "models" | "scopedModels">, scope = this.getScopeSnapshot()): void {
 		this.models = catalog.models;
-		if (scopeEpoch === this.scopeEpoch) {
+		if (scope.synchronized && scope.epoch === this.scopeEpoch) {
 			this.scopedModels = catalog.scopedModels;
 		}
 	}
@@ -137,7 +149,7 @@ export class RemoteModelCatalog {
 
 	private async refresh(options: RemoteModelRefreshOptions = {}): Promise<ModelsRefreshResult> {
 		const generation = ++this.refreshGeneration;
-		const scopeEpoch = this.scopeEpoch;
+		const scope = this.getScopeSnapshot();
 		if (options.signal?.aborted) return { aborted: true, errors: new Map() };
 		const remoteRefresh = this.client.refreshModels({
 			// AbortSignal cannot cross the RPC boundary. Give the engine the same
@@ -149,7 +161,7 @@ export class RemoteModelCatalog {
 		});
 		const result = await this.waitForRefresh(remoteRefresh, options.signal);
 		if (!result || options.signal?.aborted) return { aborted: true, errors: new Map() };
-		if (generation === this.refreshGeneration) this.apply(result, scopeEpoch);
+		if (generation === this.refreshGeneration) this.apply(result, scope);
 		return {
 			aborted: result.aborted,
 			errors: new Map(result.errors.map(({ provider, message }) => [provider, new Error(message)])),

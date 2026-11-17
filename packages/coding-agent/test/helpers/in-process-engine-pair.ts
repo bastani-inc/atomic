@@ -1,6 +1,7 @@
 import { AgentSessionRuntime } from "../../src/core/agent-session-runtime.ts";
 import type { ExtensionFactory } from "../../src/core/extensions/index.ts";
 import type { SessionManager } from "../../src/core/session-manager.js";
+import { serializeSessionMutation } from "../../src/core/session-mutation-queue.ts";
 import { IsolatedInteractiveRuntime } from "../../src/modes/interactive-engine/isolated-runtime.ts";
 import type { JsonAgentSessionEvent } from "../../src/modes/json-event.ts";
 import { toJsonEvent } from "../../src/modes/json-event.ts";
@@ -219,6 +220,7 @@ export async function createEngineHostPair(
 		/** The host's own view of the session. Default: a private in-memory session, as with `--no-session`. */
 		hostSessionManager?: SessionManager;
 		hostSettingsManager?: HarnessOptions["settingsManager"];
+		serializeEngineCommands?: boolean;
 	},
 ): Promise<EngineHostPair> {
 	const lag = { toEngineMs: 0, toHostMs: 0 };
@@ -245,7 +247,11 @@ export async function createEngineHostPair(
 		output: (record) => client.engineOutput(record as RpcResponse),
 		detachCompaction: true,
 	});
-	client.attachEngine(handle);
+	client.attachEngine(
+		options.serializeEngineCommands
+			? (command) => serializeSessionMutation(engineRuntimeHost, () => handle(command))
+			: handle,
+	);
 	const unsubscribe = engine.session.subscribe((event) => client.engineOutput(toJsonEvent(event)));
 	const local = new AgentSessionRuntime(
 		hostHarness.session,

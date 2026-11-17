@@ -346,7 +346,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			const compactionRevision = this.backgroundCompactionRevision;
 			const modelEpoch = this.modelEpoch;
 			const thinkingEpoch = this.thinkingEpoch;
-			const scopeEpoch = this.remoteModelCatalog.getScopeEpoch();
+			const scope = this.remoteModelCatalog.getScopeSnapshot();
 			const state = await this.client.getState();
 			const catalog = await this.client.requestInternal<RpcModelCatalog>({
 				type: "get_available_models",
@@ -376,7 +376,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				await session.resourceLoader.reload();
 				if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			}
-			this.remoteModelCatalog.apply(catalog, scopeEpoch);
+			this.remoteModelCatalog.apply(catalog, scope);
 			this.remoteModelCatalog.patch(session);
 			if (modelEpoch === this.modelEpoch) {
 				(session.agent.state as { model?: Model<Api> }).model = state.model;
@@ -428,8 +428,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	}
 
 	override async logoutProvider(provider: string) {
+		const scope = this.remoteModelCatalog.getScopeSnapshot();
 		const result = await this.client.logoutProvider(provider);
-		this.remoteModelCatalog.applyModels({ models: result.models, scopedModels: result.scopedModels ?? [] });
+		this.remoteModelCatalog.applyModels({ models: result.models, scopedModels: result.scopedModels ?? [] }, scope);
 		await super.session.modelRuntime.reloadCredentials({ refreshAvailability: false });
 		super.session.modelRuntime.applyExternalProviderAuthStatus(provider, result.authStatus);
 		this.remoteModelCatalog.applyProviderAuthStatus(provider, result.authStatus);
@@ -997,27 +998,27 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					}));
 					const enabledModelsSync = this.pendingEnabledModelsSync;
 					this.pendingEnabledModelsSync = undefined;
-					const scopeEpoch = this.remoteModelCatalog.setScopedModels(nextScopedModels);
 					(session as unknown as { _scopedModels: typeof nextScopedModels })._scopedModels = nextScopedModels;
 					this.dispatchBestEffort(
 						"set scoped models",
-						serializeSessionMutation(session, async () => {
-							await this.settleEngineResync();
-							const deferredEnabledModels = enabledModelsSync ?? this.pendingEnabledModelsSync;
-							if (enabledModelsSync === undefined) this.pendingEnabledModelsSync = undefined;
-							const catalog = await this.client.requestInternal<RpcModelCatalog>({
-								type: "set_scoped_models",
-								models: nextScopedModels.map((scoped) => ({
-									provider: scoped.model.provider,
-									modelId: scoped.model.id,
-									...(scoped.thinkingLevel !== undefined ? { thinkingLevel: scoped.thinkingLevel } : {}),
-								})),
-								...(deferredEnabledModels !== undefined
-									? { enabledModels: deferredEnabledModels.patterns }
-									: {}),
-							});
-							this.remoteModelCatalog.apply(catalog, scopeEpoch);
-						}),
+						this.remoteModelCatalog.syncScopedModels(nextScopedModels, () =>
+							serializeSessionMutation(session, async () => {
+								await this.settleEngineResync();
+								const deferredEnabledModels = enabledModelsSync ?? this.pendingEnabledModelsSync;
+								if (enabledModelsSync === undefined) this.pendingEnabledModelsSync = undefined;
+								return this.client.requestInternal<RpcModelCatalog>({
+									type: "set_scoped_models",
+									models: nextScopedModels.map((scoped) => ({
+										provider: scoped.model.provider,
+										modelId: scoped.model.id,
+										...(scoped.thinkingLevel !== undefined ? { thinkingLevel: scoped.thinkingLevel } : {}),
+									})),
+									...(deferredEnabledModels !== undefined
+										? { enabledModels: deferredEnabledModels.patterns }
+										: {}),
+								});
+							}),
+						),
 					);
 				},
 			},
@@ -1351,9 +1352,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		const alreadyInScope = session.scopedModels.some(
 			(scoped) => scoped.model.provider === persistedModel.provider && scoped.model.id === persistedModel.id,
 		);
-		const scopeEpoch = this.remoteModelCatalog.getScopeEpoch();
+		const scope = this.remoteModelCatalog.getScopeSnapshot();
 		const catalog = await this.client.requestInternal<RpcModelCatalog>({ type: "get_available_models" });
-		this.remoteModelCatalog.apply(catalog, scopeEpoch);
+		this.remoteModelCatalog.apply(catalog, scope);
 		this.mirroringPersistedModelDefault = true;
 		try {
 			applyPersistedModelDefault(session, persistedModel, alreadyInScope);
