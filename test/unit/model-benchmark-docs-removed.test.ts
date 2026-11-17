@@ -52,12 +52,45 @@ test("the model benchmark docs are gone", () => {
 	assert.equal(existsSync(join(ROOT, "scripts", "extract-aa-benchmarks.ts")), false);
 });
 
+interface DocsRedirect {
+	readonly source: string;
+	readonly destination: string;
+}
+
+function docsRedirects(): DocsRedirect[] {
+	const docs = JSON.parse(readFileSync(join(ROOT, "packages/coding-agent/docs/docs.json"), "utf8")) as {
+		readonly redirects?: DocsRedirect[];
+	};
+	return docs.redirects ?? [];
+}
+
+/** The site's redirects from a removed page to a surviving one are the only place a removed path may still appear. */
+function withoutRemovedPageRedirects(file: string, text: string): string {
+	if (!file.endsWith(join("docs", "docs.json"))) return text;
+	const docs = JSON.parse(text) as { redirects?: DocsRedirect[] };
+	docs.redirects = (docs.redirects ?? []).filter(
+		(redirect) => !REMOVED_REFERENCES.some((reference) => redirect.source.endsWith(reference)),
+	);
+	return JSON.stringify(docs);
+}
+
+test("links to the removed model benchmark pages redirect to the models page", () => {
+	const redirects = new Map(docsRedirects().map((redirect) => [redirect.source, redirect.destination]));
+	for (const source of [
+		"/models/evals",
+		"/models/model-selection",
+		"/models/artificial-analysis-index",
+		"/models/pareto-efficiency",
+	])
+		assert.equal(redirects.get(source), "/models", source);
+});
+
 test("nothing reads or links to the removed model benchmark docs", () => {
 	const hits: string[] = [];
 	for (const scanned of SCANNED) {
 		for (const file of files(join(ROOT, scanned))) {
 			if (!/\.(ts|tsx|js|mjs|cjs|md|mdx|json|yaml|yml|sh)$/.test(file)) continue;
-			const text = readFileSync(file, "utf8");
+			const text = withoutRemovedPageRedirects(file, readFileSync(file, "utf8"));
 			for (const reference of REMOVED_REFERENCES) {
 				if (text.includes(reference)) hits.push(`${relative(ROOT, file)}: ${reference}`);
 			}

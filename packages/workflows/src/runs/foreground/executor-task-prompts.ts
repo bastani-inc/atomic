@@ -118,7 +118,14 @@ export function taskStageOptions(options: WorkflowTaskExecutionOptions): StageOp
 		artifacts: _artifacts,
 		...stageOptions
 	} = options;
-	return stageOptions;
+	return readsImages(options) ? { ...stageOptions, autoNeedsImageInput: true } : stageOptions;
+}
+
+/** Image files a model reads as images rather than text; an `auto` task that reads one needs a model that sees it. */
+const IMAGE_FILE = /\.(?:png|jpe?g|gif|webp)$/i;
+
+function readsImages(options: WorkflowTaskExecutionOptions): boolean {
+	return Array.isArray(options.reads) && options.reads.some((file) => IMAGE_FILE.test(file));
 }
 
 export function taskOptionsFromStep(

@@ -243,6 +243,11 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 	durableIntercomGroup?: string;
 	/** Internal durable source parents reused with `durableStageId`. */
 	durableParentIds?: readonly string[];
+	/**
+	 * Internal: the task reads image files, so `model: "auto"` must stand for a model that accepts image input: the
+	 * default model when it does, else the session's model when it does; otherwise the stage fails before a session opens.
+	 */
+	autoNeedsImageInput?: boolean;
 }
 
 // ---------------------------------------------------------------------------

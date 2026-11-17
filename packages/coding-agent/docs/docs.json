@@ -285,6 +285,22 @@
     {
       "source": "/mcp",
       "destination": "/mcp-servers"
+    },
+    {
+      "source": "/models/artificial-analysis-index",
+      "destination": "/models"
+    },
+    {
+      "source": "/models/pareto-efficiency",
+      "destination": "/models"
+    },
+    {
+      "source": "/models/evals",
+      "destination": "/models"
+    },
+    {
+      "source": "/models/model-selection",
+      "destination": "/models"
     }
   ]
 }

@@ -404,6 +404,17 @@ function splitStageContent(content: StageUserMessageContent): { text: string; im
 	return { text, images: images.length === 0 ? undefined : images };
 }
 
+/** Whether a model accepts image input; a bare model ID, whose capabilities are unknown here, is taken as accepting. */
+function acceptsImageInput(model: WorkflowModelValue | undefined): boolean {
+	if (typeof model !== "object" || model === null || !("input" in model)) return true;
+	const input = (model as { readonly input?: readonly string[] }).input;
+	return !Array.isArray(input) || input.includes("image");
+}
+
+function imageInputError(model: WorkflowModelValue | undefined): string {
+	return `This task reads images, but ${workflowModelId(model) ?? "the model"}, which "auto" stands for, does not accept image input, and neither does the current session's model. Set an image-capable default model with /model or the "defaultProvider" and "defaultModel" settings, or give the task an image-capable model.`;
+}
+
 /** `provider/id[:effort]` for what `model: "auto"` stands for, or undefined when nothing resolved it. */
 function autoModelReference(selected: WorkflowAutoModel | undefined): string | undefined {
 	const id = workflowModelId(selected?.model);
@@ -456,6 +467,8 @@ export class StageSessionController {
 	private scopedModelsPromise: Promise<WorkflowResolvedScopedModel[] | undefined> | undefined;
 	/** What `model: "auto"` stands for, `provider/id[:effort]`, resolved when the stage is created. */
 	private readonly autoModel: string | undefined;
+	/** Why `auto` has no model for this task: it reads images and no candidate accepts image input. */
+	private autoImageInputError: string | undefined;
 	private activeCandidateIndex: number | undefined;
 	private selectedModel: string | undefined;
 	private sharedModelRuntime: CreateAgentSessionOptions["modelRuntime"];
@@ -701,24 +714,34 @@ export class StageSessionController {
 
 	/** `provider/id:effort` for the model `model: "auto"` stands for: the user's default model, else the session's. */
 	private resolveAutoModel(): string | undefined {
-		return autoModelReference(this.modelCatalog?.autoModel?.());
+		const selected = this.modelCatalog?.autoModel?.();
+		if (this.effectiveStageOptions?.autoNeedsImageInput !== true || selected === undefined)
+			return autoModelReference(selected);
+		if (acceptsImageInput(selected.model)) return autoModelReference(selected);
+		// The task reads images: the session's model stands in when it sees them and the default model does not.
+		const current = this.modelCatalog?.currentModel;
+		if (current !== undefined && acceptsImageInput(current)) return workflowModelId(current);
+		this.autoImageInputError = imageInputError(selected.model);
+		return autoModelReference(selected);
 	}
 
 	/** The stage's primary model: the one it names, or what `auto` stands for, from its catalog or its session adapter. */
 	private async primaryModel(): Promise<WorkflowModelValue | undefined> {
 		const options = this.effectiveStageOptions;
 		if (options?.model !== "auto") return options?.model;
+		if (this.autoImageInputError !== undefined) throw new Error(this.autoImageInputError);
 		if (this.autoModel !== undefined) return this.autoModel;
 		const cwd = options.cwd ?? this.opts.defaultCwd;
 		const modelRuntime = options.modelRuntime ?? this.sharedModelRuntime;
-		const resolved = autoModelReference(
-			await this.opts.adapters.agentSession?.autoModel?.({
-				...(cwd === undefined ? {} : { cwd }),
-				...(options.agentDir === undefined ? {} : { agentDir: options.agentDir }),
-				...(options.settingsManager === undefined ? {} : { settingsManager: options.settingsManager }),
-				...(modelRuntime === undefined ? {} : { modelRuntime }),
-			}),
-		);
+		const selected = await this.opts.adapters.agentSession?.autoModel?.({
+			...(cwd === undefined ? {} : { cwd }),
+			...(options.agentDir === undefined ? {} : { agentDir: options.agentDir }),
+			...(options.settingsManager === undefined ? {} : { settingsManager: options.settingsManager }),
+			...(modelRuntime === undefined ? {} : { modelRuntime }),
+		});
+		if (options.autoNeedsImageInput === true && selected !== undefined && !acceptsImageInput(selected.model))
+			throw new Error(imageInputError(selected.model));
+		const resolved = autoModelReference(selected);
 		if (resolved !== undefined && this.meta.stageOptions?.model === "auto")
 			this.meta.stageOptions = { ...this.meta.stageOptions, model: resolved };
 		return resolved;

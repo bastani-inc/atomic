@@ -12,6 +12,7 @@ import {
 	workspaceSessionCwd,
 } from "@bastani/atomic";
 import { resolveStageGroup, stageHasIntercomAccess } from "../../shared/intercom-group.js";
+import { warnRemovedRoutingOption } from "../../shared/removed-routing-warning.js";
 import { forkStageSession, migrateLegacyStageSession, stageSessionStore } from "../../shared/stage-session-store.js";
 import type { StageExecutionMeta, StageOptions } from "../../shared/types.js";
 import { agentSessionAdapterDefaultCwd } from "./stage-runner-session-options.js";
@@ -67,6 +68,9 @@ interface RemovedRoutingStageOptions {
 	readonly routerSelection?: object;
 }
 
+/** Removed routing options a workflow author may still pass; the ones the runtime itself carried are not named. */
+const REMOVED_ROUTING_STAGE_OPTIONS = ["modelConstraints", "taskNeeds", "parallelSlot"] as const;
+
 export async function stripWorkflowOnlyOptions(
 	options: StageOptions | undefined,
 	defaultSessionDir: string | undefined,
@@ -76,6 +80,9 @@ export async function stripWorkflowOnlyOptions(
 ): Promise<CreateAgentSessionOptions> {
 	const classification = workflowSessionOptions(meta);
 	const orchestrationContext = workflowOrchestrationContext(meta, options, pendingStageDelivery);
+	if (options)
+		for (const option of REMOVED_ROUTING_STAGE_OPTIONS)
+			if (Object.hasOwn(options, option)) warnRemovedRoutingOption(option);
 	if (!options) {
 		return defaultSessionDir === undefined
 			? { orchestrationContext }
@@ -106,6 +113,7 @@ export async function stripWorkflowOnlyOptions(
 		durableStageId: _durableStageId,
 		durableIntercomGroup: _durableIntercomGroup,
 		durableParentIds: _durableParentIds,
+		autoNeedsImageInput: _autoNeedsImageInput,
 		sessionDir,
 		gitWorktreeDir: _gitWorktreeDir,
 		baseBranch: _baseBranch,

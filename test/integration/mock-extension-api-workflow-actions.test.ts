@@ -110,11 +110,14 @@ describe("MockExtensionAPI — tool run returns non-placeholder runId and termin
 		// stages is an empty array at dispatch time; the live snapshot lives on the store.
 		assert.equal(Array.isArray(r.stages), true);
 
-		// After the background promise settles, the store records a terminal status.
+		// After the background promise settles, the store records where the run stopped. This mock host has no model, so
+		// `auto` resolves to none and the stage's session has none: the run either ends or blocks, resumable once a model
+		// is configured. It never stays running with nothing recorded.
 		await waitForRun(r.runId, { store: defaultStore });
 		const settled = defaultStore.runs().find((run) => run.id === r.runId);
 		assert.notEqual(settled, undefined);
-		assert.ok(["completed", "failed"].includes(settled!.status));
+		const blocked = settled!.status === "running" && settled!.blockedAt !== undefined && settled!.error !== undefined;
+		assert.ok(["completed", "failed"].includes(settled!.status) || blocked, JSON.stringify(settled));
 	}, 15_000);
 
 	test("action='run' without adapters reports honest failure, not a stub", async () => {

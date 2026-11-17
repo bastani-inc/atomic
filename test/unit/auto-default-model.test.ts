@@ -28,6 +28,7 @@ import {
 } from "@bastani/atomic-ai/compat";
 import { Compile } from "typebox/compile";
 import { afterEach, test, vi } from "vitest";
+import { clearDeprecationWarningsForTests } from "../../packages/coding-agent/src/utils/deprecation.js";
 import { loadAgentsFromDirWithDiagnostics } from "../../packages/subagents/src/agents/agent-loaders.js";
 import { applyAgentConfig } from "../../packages/subagents/src/agents/agent-management-helpers.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
@@ -40,13 +41,20 @@ import type {
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import type { RunSyncOptions, SingleResult } from "../../packages/subagents/src/shared/types.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import {
+	createDurableStagePrimitive,
+	recordStageSessionCheckpoint,
+} from "../../packages/workflows/src/durable/stage-primitive.js";
 import { workflowModelCatalogFromContext } from "../../packages/workflows/src/extension/workflow-model-catalog.js";
 import { loadWorkflowModule } from "../../packages/workflows/src/extension/workflow-module-loader.js";
 import type { AgentSessionAdapter } from "../../packages/workflows/src/runs/foreground/stage-runner-types.js";
 import { createAgentSessionAdapter, run as sdkRun } from "../../packages/workflows/src/sdk-surface.js";
 import { admittedSessionAdapter } from "../../packages/workflows/src/workers/admission-binding.js";
 import { workerStageAdapter } from "../../packages/workflows/src/workers/pooled-stage-delivery.js";
-import { createStore, run, workflow } from "./executor-shared.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
+import { createStageControlRegistry, createStore, run, workflow } from "./executor-shared.js";
 import { createStageContext, makeMockSession, makeOpts } from "./stage-runner-helpers.js";
 
 /** A real parent session and a real child or stage session against local providers. */
@@ -64,7 +72,16 @@ const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 	vi.restoreAllMocks();
+	clearDeprecationWarningsForTests();
+	setDurableBackend(undefined);
 });
+
+/** The console warnings that name a removed routing option. */
+function routingWarnings(warn: { readonly mock: { readonly calls: readonly (readonly unknown[])[] } }): string[] {
+	return warn.mock.calls
+		.map((call) => String(call[0]))
+		.filter((message) => /modelRouting|modelConstraints|taskNeeds|parallelSlot/.test(message));
+}
 
 function tempDir(prefix: string): string {
 	const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -89,9 +106,17 @@ interface ProviderRequest {
 }
 
 /** Three available models and one whose provider has no credentials; every request is recorded. */
-async function models(fixture: { readonly failing?: readonly string[] } = {}) {
+async function models(fixture: { readonly failing?: readonly string[]; readonly textOnly?: readonly string[] } = {}) {
 	const base: Model<"anthropic-messages"> = { ...getModel("anthropic", "claude-sonnet-4-5")!, reasoning: true };
-	const model = (provider: string, id: string): Model<"anthropic-messages"> => ({ ...base, provider, id, name: id });
+	const model = (provider: string, id: string): Model<"anthropic-messages"> => ({
+		...base,
+		provider,
+		id,
+		name: id,
+		...(fixture.textOnly?.includes(`${provider}/${id}`)
+			? { input: ["text"] as Model<"anthropic-messages">["input"] }
+			: {}),
+	});
 	const defaultModel = model(HOME, "default-model");
 	const sessionModel = model(HOME, "session-model");
 	const fallbackModel = model(HOME, "fallback-model");
@@ -395,6 +420,48 @@ test("agent files and agent config updates that still set taskNeeds or modelCons
 	assert.equal(Object.hasOwn(updated, "taskNeeds"), false);
 });
 
+test("subagent calls that still pass modelConstraints or taskNeeds warn once per option, not per call", () => {
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	for (let call = 0; call < 3; call++) {
+		prepareSubagentArguments({ agent: "worker", task: "Task", modelConstraints: { allowedModels: ["x/y"] } });
+		prepareSubagentArguments({ tasks: [{ agent: "worker", task: "Task", taskNeeds: { work: "coding" } }] });
+	}
+	const warnings = routingWarnings(warn);
+	assert.equal(warnings.length, 2, warnings.join("\n"));
+	assert.ok(warnings.some((message) => message.includes('"modelConstraints"')));
+	assert.ok(warnings.some((message) => message.includes('"taskNeeds"')));
+	for (const message of warnings) assert.match(message, /ignored/);
+	prepareSubagentArguments({ agent: "worker", task: "Task" });
+	assert.equal(routingWarnings(warn).length, 2, "a call without removed fields does not warn");
+});
+
+test("agent files that still set modelConstraints or taskNeeds warn once that the fields are ignored", () => {
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	const dir = tempDir("atomic-auto-default-agent-warning-");
+	writeFileSync(
+		join(dir, "legacy.md"),
+		[
+			"---",
+			"name: legacy",
+			"description: Legacy",
+			"model: auto",
+			"modelConstraints:",
+			"  allowedModels:",
+			"    - x/y",
+			"taskNeeds:",
+			"  work: coding",
+			"---",
+			"Body",
+		].join("\n"),
+	);
+	loadAgentsFromDirWithDiagnostics(dir, "user");
+	loadAgentsFromDirWithDiagnostics(dir, "user");
+	const warnings = routingWarnings(warn);
+	assert.equal(warnings.length, 2, warnings.join("\n"));
+	assert.ok(warnings.some((message) => message.includes('"modelConstraints"')));
+	assert.ok(warnings.some((message) => message.includes('"taskNeeds"')));
+});
+
 test(
 	"an auto subagent's child session runs on the configured default model and effort",
 	async () => {
@@ -468,8 +535,8 @@ interface Admission {
 	readonly thinkingLevel: string | undefined;
 }
 
-async function stageFixture(settings: Settings) {
-	const m = await models();
+async function stageFixture(settings: Settings, fixture: Parameters<typeof models>[0] = {}) {
+	const m = await models(fixture);
 	const catalog = workflowModelCatalogFromContext(
 		{ model: m.sessionModel, thinkingLevel: "low", modelRegistry: m.registry, getDecisionModel: () => SESSION_ID },
 		undefined,
@@ -642,10 +709,196 @@ test("stages, tasks, chains and parallel steps still passing removed routing fie
 			return {};
 		},
 	});
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 	const result = await run(def, {}, { models: f.models, adapters: f.adapters, store: f.store });
 	assert.equal(result.status, "completed", result.error);
 	assert.equal(f.admissions.length, 4);
 	for (const admission of f.admissions) assert.deepEqual(admission, { model: DEFAULT_ID, thinkingLevel: "high" });
+	assert.deepEqual(f.requests, []);
+	const warnings = routingWarnings(warn);
+	assert.equal(warnings.length, 3, `one warning per removed option, not per stage:\n${warnings.join("\n")}`);
+	for (const option of ["taskNeeds", "modelConstraints", "parallelSlot"])
+		assert.ok(
+			warnings.some((message) => message.includes(`"${option}"`)),
+			option,
+		);
+});
+
+for (const textOnly of [[DEFAULT_ID], [DEFAULT_ID, SESSION_ID], []] as const) {
+	test(`an auto task that reads images with ${textOnly.length === 0 ? "an image-capable default" : textOnly.length === 1 ? "a text-only default" : "text-only default and session models"} runs on a model that sees them`, async () => {
+		const f = await stageFixture(WITH_DEFAULT, { textOnly });
+		const dir = tempDir("atomic-auto-default-images-");
+		const image = join(dir, "reference.png");
+		writeFileSync(image, "png");
+		const def = workflow({
+			name: "auto-reads-images",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.task("design", { prompt: "Match the reference.", model: "auto", reads: [image] });
+				await ctx.task("plain", { prompt: "No images here.", model: "auto" });
+				return {};
+			},
+		});
+		const result = await run(def, {}, { models: f.models, adapters: f.adapters, store: f.store });
+		if (textOnly.length === 2) {
+			assert.equal(result.status, "failed");
+			assert.match(result.error ?? "", /does not accept image input/);
+			assert.match(result.error ?? "", /defaultModel/);
+			assert.deepEqual(f.admissions, [], "no session opens on a model that cannot see the images");
+		} else {
+			assert.equal(result.status, "completed", result.error);
+			assert.deepEqual(f.admissions, [
+				textOnly.length === 1
+					? { model: SESSION_ID, thinkingLevel: undefined }
+					: { model: DEFAULT_ID, thinkingLevel: "high" },
+				{ model: DEFAULT_ID, thinkingLevel: "high" },
+			]);
+		}
+		assert.deepEqual(f.requests, []);
+	});
+}
+
+test("a live auto stage that is paused and resumed keeps its session and model", async () => {
+	setDurableBackend(await createMemoryTestBackend());
+	const settings: Settings = { ...WITH_DEFAULT };
+	const f = await stageFixture(settings);
+	const controls = createStageControlRegistry();
+	const started = Promise.withResolvers<void>();
+	let runId = "";
+	let rejectPrompt: (error: Error) => void = () => {};
+	const prompts: string[] = [];
+	const sessions: string[] = [];
+	const def = workflow({
+		name: "auto-resume",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			runId = ctx.runId ?? "";
+			await ctx.stage("work", { model: "auto" }).prompt("Original task");
+			return {};
+		},
+	});
+	const running = run(
+		def,
+		{},
+		{
+			models: f.models,
+			store: f.store,
+			stageControlRegistry: controls,
+			adapters: {
+				agentSession: {
+					async create(options: import("./stage-runner-helpers.js").StageSessionCreateOptions) {
+						sessions.push(
+							typeof options.model === "string"
+								? options.model
+								: `${options.model?.provider}/${options.model?.id}`,
+						);
+						return makeMockSession({
+							model: options.model,
+							async prompt(text) {
+								prompts.push(text);
+								if (prompts.length === 1) {
+									started.resolve();
+									return new Promise<string>((_, reject) => {
+										rejectPrompt = reject;
+									});
+								}
+								return "done";
+							},
+							async abort() {
+								rejectPrompt(new Error("paused"));
+							},
+						}).session;
+					},
+				},
+			},
+		},
+	);
+	await started.promise;
+	const handle = controls.forRun(runId)[0];
+	assert.ok(handle);
+	await handle.pause();
+	// The default changes while the stage is paused: the resumed stage keeps the session it already has.
+	settings.defaultModel = "fallback-model";
+	await handle.resume("Resumed task");
+	const result = await running;
+	assert.equal(result.status, "completed", result.error);
+	assert.deepEqual(prompts, ["Original task", "Resumed task"]);
+	assert.deepEqual(sessions, [DEFAULT_ID]);
+	assert.deepEqual(f.requests, []);
+});
+
+test("a restored stage checkpoint that still carries a legacy routerSelection replays and reruns auto on the default model", async () => {
+	const f = await stageFixture(WITH_DEFAULT);
+	const backend = await JournalTestBackend.create();
+	await backend.commitWorkflowRegistration({
+		workflowId: "auto",
+		name: "auto",
+		inputs: {},
+		createdAt: 1,
+		status: "running",
+	});
+	await recordStageSessionCheckpoint(
+		{ backend, workflowId: "auto", nextCheckpointId: () => "cp", nextReplayKey: () => "stage:test" },
+		{
+			id: "s",
+			name: "task",
+			status: "running",
+			parentIds: [],
+			toolEvents: [],
+			replayKey: "stage:test",
+			sessionId: "synthetic-session",
+			model: "x/old-routed",
+		},
+	);
+	const written = await backend.reopen();
+	const recorded = written.listCheckpoints("auto")[0];
+	assert.ok(recorded?.kind === "stage");
+	// A record written before routing was removed carries the routed selection.
+	await written.commitCheckpoint({
+		...recorded,
+		checkpointId: "legacy",
+		routerSelection: { model: "x/old-routed", effort: null },
+	} as typeof recorded);
+	const restored = await written.reopen();
+	const decoded = restored.listCheckpoints("auto").find((checkpoint) => checkpoint.checkpointId === "legacy");
+	assert.ok(decoded?.kind === "stage");
+	const seen: object[] = [];
+	const stage = createDurableStagePrimitive({
+		workflowId: "auto",
+		backend: restored,
+		nextReplayKey: () => "stage:test",
+		stage: (_name, options) => {
+			seen.push(options ?? {});
+			// The saved session is synthetic: readmit the stage without reopening it.
+			return createStageContext(
+				makeOpts({ models: f.models, adapters: f.adapters, stageOptions: { model: "auto" } }),
+			);
+		},
+	})("task", { model: "auto" });
+	await stage.prompt("Original prompt");
+	assert.equal(seen.length, 1);
+	assert.equal(Object.hasOwn(seen[0]!, "routerSelection"), false, "the legacy selection never reaches the stage");
+	assert.deepEqual(f.admissions, [{ model: DEFAULT_ID, thinkingLevel: "high" }]);
+	await restored.commitCheckpoint({
+		...decoded,
+		checkpointId: "completed",
+		output: "Saved result",
+		result: "Saved result",
+		topology: { ...decoded.topology!, status: "completed" },
+	});
+	const replayed = createDurableStagePrimitive({
+		workflowId: "auto",
+		backend: restored,
+		nextReplayKey: () => "stage:test",
+		stage: () => {
+			throw new Error("Replay must not construct a live stage");
+		},
+	})("task", { model: "auto" });
+	assert.equal(await replayed.prompt("Ignored on replay"), "Saved result");
 	assert.deepEqual(f.requests, []);
 });
 
@@ -884,6 +1137,27 @@ test("saved modelRouting and router settings load without error and are dropped"
 	assert.equal(Object.hasOwn(manager.getProjectSettings(), "modelRouting"), false);
 	assert.equal(settings.theme, "dark", "kept settings survive the migration");
 	assert.equal(manager.getDecisionModel(), "x/y", "the legacy decision-model name still migrates");
+});
+
+test("a modelRouting setting is dropped with one warning that its restrictions no longer apply", async () => {
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	const root = tempDir("atomic-auto-default-settings-warning-");
+	const agentDir = join(root, "agent");
+	const cwd = join(root, "project");
+	mkdirSync(agentDir, { recursive: true });
+	mkdirSync(join(cwd, ".atomic"), { recursive: true });
+	const saved = { modelRouting: { excludedProviders: ["anthropic"] } };
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify(saved));
+	writeFileSync(join(cwd, ".atomic", "settings.json"), JSON.stringify(saved));
+	const manager = SettingsManager.create(cwd, agentDir, { projectTrusted: true });
+	await manager.reload();
+	SettingsManager.inMemory(saved as Settings).applyOverrides(saved as Settings);
+	const warnings = routingWarnings(warn);
+	assert.equal(warnings.length, 1, warnings.join("\n"));
+	assert.match(warnings[0]!, /"modelRouting"/);
+	assert.match(warnings[0]!, /no longer limit/);
+	SettingsManager.inMemory({ theme: "dark" });
+	assert.equal(routingWarnings(warn).length, 1, "settings without the key do not warn");
 });
 
 test("SDK settings and overrides carrying modelRouting load and drop it", async () => {

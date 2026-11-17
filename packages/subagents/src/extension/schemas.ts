@@ -3,6 +3,7 @@
  */
 
 import { type Static, Type } from "typebox";
+import { warnRemovedRoutingOption } from "../shared/removed-routing-warning.js";
 import {
 	MAX_PARALLEL_TASKS,
 	REMOVED_SUBAGENT_ACTIONS,
@@ -293,6 +294,7 @@ const REMOVED_LAUNCH_FIELDS = ["taskNeeds", "modelConstraints"] as const;
 
 function withoutRemovedLaunchFields<T extends object>(value: T): T {
 	if (!REMOVED_LAUNCH_FIELDS.some((field) => Object.hasOwn(value, field))) return value;
+	for (const field of REMOVED_LAUNCH_FIELDS) if (Object.hasOwn(value, field)) warnRemovedRoutingOption(field);
 	const removed: ReadonlySet<string> = new Set(REMOVED_LAUNCH_FIELDS);
 	return Object.fromEntries(Object.entries(value).filter(([key]) => !removed.has(key))) as T;
 }

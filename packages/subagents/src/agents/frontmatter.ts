@@ -1,4 +1,8 @@
 import { parseFrontmatter as parseYamlFrontmatter } from "@bastani/atomic";
+import { warnRemovedRoutingOption } from "../shared/removed-routing-warning.js";
+
+/** Fields of the removed automatic model routing; a file that still sets them is told once that they are ignored. */
+const REMOVED_ROUTING_FIELDS: ReadonlySet<string> = new Set(["modelConstraints", "taskNeeds"]);
 
 /**
  * A frontmatter value as a real YAML parser produces it (upstream pi #7598
@@ -67,6 +71,7 @@ export function parseFrontmatter(content: string): ParsedAgentFrontmatter {
 	const raw = parsed.frontmatter;
 	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { frontmatter, body: parsed.body };
 	for (const [key, value] of Object.entries(raw)) {
+		if (REMOVED_ROUTING_FIELDS.has(key)) warnRemovedRoutingOption(key);
 		const narrowed = toFrontmatterValue(value);
 		if (narrowed !== undefined) frontmatter[key] = narrowed;
 	}
