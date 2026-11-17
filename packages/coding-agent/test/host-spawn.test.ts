@@ -136,10 +136,8 @@ describe.each(BACKENDS)("host processes started through %s", (backend) => {
 		assert.equal(child.kill("SIGKILL"), true);
 		assert.equal(child.killed, true);
 		const { code, signal } = await result;
-		assert.deepEqual(
-			{ code, signal },
-			process.platform === "win32" ? { code: 1, signal: null } : { code: null, signal: "SIGKILL" },
-		);
+		// Windows has no signals; child_process reports the one it ended the process with all the same.
+		assert.deepEqual({ code, signal }, { code: null, signal: "SIGKILL" });
 		assert.equal(child.kill("SIGKILL"), false, "an ended process is not signalled again");
 	});
 
