@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentSource } from "../../agents/agent-types.js";
 import type { RunSyncOptions, SingleResult } from "../../shared/types.js";
+import { isExecutionTicket } from "../shared/parallel-utils.js";
 import {
 	claimRunWorktree,
 	holdRunWorktree,
@@ -179,6 +180,9 @@ export function runOwnerlessChild(input: {
 			stoppedQueued.set(launchId, (resumed) =>
 				runOwnerlessChild({
 					...input,
+					...(input.schedule
+						? { schedule: isExecutionTicket(input.schedule) ? input.schedule.scheduler : input.schedule }
+						: {}),
 					forked,
 					task: resumed.message ? `${input.task}\n\n${resumed.message}` : input.task,
 					options: {
@@ -210,7 +214,7 @@ export function runOwnerlessChild(input: {
 		// This execution owns the child's worktree now; a stopped child's worktree was kept for it until here.
 		claimRunWorktree(runId, index);
 		try {
-			const child = await input.runSync(input.task, {
+			const running = input.runSync(input.task, {
 				...options,
 				signal,
 				onChildSession: (session) => {
@@ -230,6 +234,8 @@ export function runOwnerlessChild(input: {
 					record("running");
 				},
 			});
+			if (isExecutionTicket(input.schedule)) input.schedule.onEntered();
+			const child = await running;
 			const stopped = takeSubagentChildStop(launchId);
 			const stoppedByControl = stopped !== undefined && child.status === "interrupted";
 			const ownerClosed = !stoppedByControl && child.status === "interrupted" && input.ownerSignal?.aborted === true;
@@ -250,6 +256,7 @@ export function runOwnerlessChild(input: {
 			);
 			return child;
 		} catch (error) {
+			if (isExecutionTicket(input.schedule)) input.schedule.onEntered();
 			if (takeSubagentChildStop(launchId) !== undefined) unparkRunWorktree(runId, index);
 			// Its owner closed: its latest record stays `running`, so reopening the owner restores it.
 			if (input.ownerSignal?.aborted !== true) record("terminal", "error");
@@ -276,6 +283,7 @@ export function runOwnerlessChild(input: {
 					(dispatch) => {
 						const release = holdRunWorktree(runId, index);
 						schedule(() => dispatch().finally(release));
+						if (isExecutionTicket(schedule)) schedule.onObserved();
 					},
 					execute,
 				)
