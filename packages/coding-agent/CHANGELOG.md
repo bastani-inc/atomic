@@ -51,6 +51,7 @@
 
 ### Fixed
 
+- Read results keep image-capability warnings visible and use the chat's theme, including custom renderer hosts ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Model searches initially select the best match, and effort arrows work with SS3 terminal key sequences. Provider searches no longer match sign-in status or method text. Long dialog titles and options wrap instead of losing text, and selector hints show only available actions ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Isolated `/scoped-models` changes update both model searches and Ctrl+P cycling. Scope saves run in order and report failures, and engine reconnection no longer overwrites a newer model or reasoning choice. RPC model responses report saved defaults only for `persist: true` ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Pickers ignore a repeated Enter or click instead of answering twice, and an extension dialog shown again after another dialog repaints in the current theme. Ctrl+C cancels a filtered picker with Kitty and modifyOtherKeys keyboard protocols too; `/scoped-models` keeps its clear-search-first behavior ([#5224](https://github.com/bastani-inc/atomic/issues/5224))

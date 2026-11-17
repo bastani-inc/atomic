@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { Container } from "@bastani/atomic-tui";
+import { Container, Text } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import {
 	addChatTranscriptEntry,
 	ChatTranscriptComponent,
 } from "../src/modes/interactive/components/chat-transcript.ts";
+import { UserMessageComponent } from "../src/modes/interactive/components/user-message.ts";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 test("renderer-owned repaint preserves the cached component until its data changes (#5224)", () => {
 	const entry = { role: "tool", version: 0 };
@@ -158,5 +160,40 @@ test("a transcript keeps every row of a large expanded block (#5224)", () => {
 		assert.equal(rows.at(-1), "row");
 	} finally {
 		transcript.invalidate();
+	}
+});
+
+test("chat routes preserve user padding without duplicating message-owned spacing (#5239)", () => {
+	for (const name of ["dark", "light"] as const) {
+		initTheme(name, false);
+		for (const width of [80, 160]) {
+			const samples = [
+				{ role: "user" as const, component: new UserMessageComponent("Follow-up question") },
+				{
+					role: "custom" as const,
+					component: {
+						ownsLeadingSpacer: true,
+						invalidate() {},
+						render: () => ["", "Inbound message"],
+					},
+				},
+			];
+			for (const sample of samples) {
+				const first = new Text("Earlier reply", 0, 0);
+				const main = new Container();
+				addChatTranscriptEntry(main, first, "assistant");
+				addChatTranscriptEntry(main, sample.component, sample.role);
+				const attached = new ChatTranscriptComponent(
+					[{ role: "assistant", component: first }, sample],
+					(entry) => entry.component,
+					(entry) => entry.role,
+				);
+				try {
+					assert.deepEqual(attached.render(width), main.render(width), `${name}, ${width}, ${sample.role}`);
+				} finally {
+					attached.invalidate();
+				}
+			}
+		}
 	}
 });

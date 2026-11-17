@@ -310,13 +310,7 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		const rendered = component.render(width);
 		if (rendered.length === 0) return [];
 		const lines: string[] = [];
-		if (
-			index > 0 &&
-			needsLeadingSpacer(entry.role) &&
-			!ownsLeadingSpacer(component) &&
-			stripTerminalSequences(rendered[0] ?? "").trim() !== ""
-		)
-			lines.push("");
+		if (index > 0 && needsLeadingSpacer(entry.role) && !ownsLeadingSpacer(component)) lines.push("");
 		for (const line of rendered) lines.push(line);
 		return lines;
 	}
