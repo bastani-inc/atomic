@@ -206,13 +206,46 @@ fn acl_denied_lock_path_is_an_error_not_contention_5317() {
 #[cfg(windows)]
 #[test]
 fn delete_pending_is_contention_until_its_last_handle_closes_5317() {
-	use std::os::windows::ffi::OsStrExt;
-	use windows_sys::Win32::Storage::FileSystem::DeleteFileW;
+	use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+	use windows_sys::Win32::Storage::FileSystem::{
+		DELETE, FILE_DISPOSITION_INFO, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_STANDARD_INFO,
+		FileDispositionInfo, FileStandardInfo, GetFileInformationByHandleEx,
+		SetFileInformationByHandle,
+	};
 	let dir = scratch();
 	let path = dir.join("pending.lock");
-	let held = fs::File::create(&path).unwrap();
-	let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-	assert_ne!(unsafe { DeleteFileW(wide.as_ptr()) }, 0);
+	let held = fs::OpenOptions::new()
+		.read(true)
+		.write(true)
+		.create_new(true)
+		.access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE)
+		.open(&path)
+		.unwrap();
+	let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+	assert_ne!(
+		unsafe {
+			SetFileInformationByHandle(
+				held.as_raw_handle(),
+				FileDispositionInfo,
+				(&disposition as *const FILE_DISPOSITION_INFO).cast(),
+				std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+			)
+		},
+		0
+	);
+	let mut information = FILE_STANDARD_INFO::default();
+	assert_ne!(
+		unsafe {
+			GetFileInformationByHandleEx(
+				held.as_raw_handle(),
+				FileStandardInfo,
+				(&mut information as *mut FILE_STANDARD_INFO).cast(),
+				std::mem::size_of::<FILE_STANDARD_INFO>() as u32,
+			)
+		},
+		0
+	);
+	assert!(information.DeletePending, "the fixture holds a genuinely delete-pending file");
 	let exclusive = try_advisory_lock(path.to_string_lossy().into_owned(), 0);
 	let shared = try_shared_advisory_lock(path.to_string_lossy().into_owned(), 0);
 	let waiting_path = path.clone();
