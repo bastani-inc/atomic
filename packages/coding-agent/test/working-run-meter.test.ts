@@ -271,7 +271,7 @@ describe("working line time and tokens (#5224)", () => {
 
 			now = 20_000;
 			InteractiveModeBase.prototype.showWorkingLoaderNow.call(mode);
-			assert.match(renderedStatus(), /∀ Working\.\.\./);
+			assert.match(renderedStatus(), /∀ Working…/);
 			assert.doesNotMatch(renderedStatus(), /19s|120 tokens/);
 		} finally {
 			mode.stopWorkingLoader();
@@ -330,7 +330,7 @@ describe("working line time and tokens (#5224)", () => {
 			host.applyAgentEvent({ type: "agent_end", messages: [] } as never);
 			now = 20_000;
 			host.beginExternalPromptLifecycle();
-			assert.match(renderedStatus(), /∀ Working\.\.\./);
+			assert.match(renderedStatus(), /∀ Working…/);
 			assert.doesNotMatch(renderedStatus(), /19s|120 tokens/);
 		} finally {
 			host.dispose();
