@@ -205,6 +205,9 @@ export class RequestLedger<V> {
 	/** Ends the ledger: rejects every waiting request, oldest first, and every later one. Ending again does nothing. */
 	end(cause: unknown): void {
 		if (this.ended !== undefined) return;
+		// Kept for as long as the connection is: an error's stack, until formatted, keeps the functions of the frames it
+		// names, and so whatever they hold, such as a session that closed its store and ended.
+		if (cause instanceof Error) void cause.stack;
 		this.ended = { cause };
 		const waiting = [...this.waiting.values()];
 		this.waiting.clear();

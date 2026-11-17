@@ -4,6 +4,7 @@ import { monitorEventLoopDelay } from "node:perf_hooks";
 import { afterEach, test } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import { collectEverythingTracked, trackCollection } from "../helpers/collect-garbage.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 import { holdSqliteWriteLock } from "../helpers/sqlite-lock-holder.js";
 
@@ -112,4 +113,23 @@ test("a writer queued behind another process, holding the lock, and a same-proce
 	} finally {
 		if (!released) await other.release();
 	}
+});
+
+test("a closed connection that stays referenced keeps nothing its closer held (#5376)", async () => {
+	const database = await open(databasePath());
+	await database.run("CREATE TABLE t(v)");
+	const closers = trackCollection();
+	// A session that closes its store and ends, while something else keeps the store, as a module's state can.
+	await (async () => {
+		const session = { transcript: Array.from({ length: 1_000 }, (_, index) => `entry ${index}`) };
+		closers.track(session);
+		const dispose = async () => {
+			await database.close();
+			return session.transcript.length;
+		};
+		await dispose();
+	})();
+	await collectEverythingTracked(closers);
+	assert.deepEqual(closers.uncollected(), [], "the closed connection keeps the session that closed it");
+	await assert.rejects(database.run("INSERT INTO t VALUES (1)"), /closed/);
 });
