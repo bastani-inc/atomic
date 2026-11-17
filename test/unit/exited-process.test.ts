@@ -68,7 +68,9 @@ for (const matches of [false, true]) {
 		});
 		const childExited = once(child, "exit");
 		let release = async () => {};
+		let finished = false;
 		onTestFinished(async () => {
+			finished = true;
 			try {
 				child.kill("SIGKILL");
 				await childExited;
@@ -83,6 +85,10 @@ for (const matches of [false, true]) {
 		const keeping = keepProcessPidByStartTime(child.pid, matches ? recorded : String(BigInt(recorded) + 1n));
 		if (matches) {
 			release = await keeping;
+			if (finished) {
+				await release();
+				throw new Error("process PID retention completed after test cleanup");
+			}
 			child.kill("SIGKILL");
 			await childExited;
 			assert.throws(() => process.kill(child.pid!, 0), { code: "ESRCH" });

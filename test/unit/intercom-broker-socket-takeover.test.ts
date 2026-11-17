@@ -23,6 +23,7 @@ import {
 	readTextSync,
 	removePathSync,
 	removeTempDirectory,
+	type SpawnedProcess,
 	sleep,
 	spawnProcess,
 	spawnSyncCollect,
@@ -108,7 +109,7 @@ const socketPath = pathsModule.getBrokerSocketPath();
 const intercomDir = pathsModule.getIntercomDirPath();
 const pidPath = pathsModule.getBrokerPidPath();
 
-const directBrokerPids: number[] = [];
+const directBrokers = new Map<number, SpawnedProcess>();
 const liveClients: InstanceType<typeof IntercomClient>[] = [];
 
 beforeAll(() => {
@@ -173,6 +174,29 @@ async function terminate(pid: number): Promise<void> {
 	await waitUntil(() => !isAlive(pid), BROKER_BUDGET_MS);
 }
 
+async function terminateDirectBroker(broker: SpawnedProcess): Promise<void> {
+	const hasExited = () => broker.exitCode !== null || broker.signalCode !== null;
+	if (hasExited()) {
+		await broker.exited;
+		return;
+	}
+	try {
+		broker.kill("SIGTERM");
+	} catch {
+		return;
+	}
+	if (await waitUntil(hasExited, BROKER_BUDGET_MS)) {
+		await broker.exited;
+		return;
+	}
+	try {
+		broker.kill("SIGKILL");
+	} catch {}
+	if (await waitUntil(hasExited, BROKER_BUDGET_MS)) {
+		await broker.exited;
+	}
+}
+
 // Terminating each broker left running waits for it within BROKER_BUDGET_MS.
 afterEach(async () => {
 	for (const client of liveClients.splice(0)) {
@@ -182,9 +206,13 @@ afterEach(async () => {
 			// The broker may already be gone.
 		}
 	}
-	const pids = new Set([...startedBrokerPids(), ...directBrokerPids.splice(0)]);
+	const directPids = new Set(directBrokers.keys());
+	for (const broker of directBrokers.values()) await terminateDirectBroker(broker);
+	directBrokers.clear();
+	const pids = new Set(startedBrokerPids());
 	const recorded = recordedBrokerPid();
 	if (recorded !== undefined) pids.add(recorded);
+	for (const pid of directPids) pids.delete(pid);
 	for (const pid of pids) await terminate(pid);
 	removePathSync(intercomDir, { recursive: true, force: true, ...CLEANUP_RETRIES });
 	for (const file of [startsFile, firstStartMarker, gateFile]) removePathSync(file, { force: true });
@@ -228,7 +256,7 @@ function spawnBrokerDirectly() {
 		[process.execPath, spawnModule.getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")],
 		{ env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir }, stdout: "ignore", stderr: "pipe" },
 	);
-	if (broker.pid !== undefined) directBrokerPids.push(broker.pid);
+	if (broker.pid !== undefined) directBrokers.set(broker.pid, broker);
 	return broker;
 }
 

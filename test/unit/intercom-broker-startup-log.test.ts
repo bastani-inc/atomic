@@ -28,7 +28,7 @@ import {
 } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, onTestFinished, test } from "vitest";
 import {
@@ -472,9 +472,11 @@ describe("a broker behind a launcher that hides it", () => {
 		const nativeModule = fileURLToPath(new URL("../../packages/natives/native/index.js", import.meta.url));
 		const recordStart = `require('node:fs').writeFileSync(${JSON.stringify(creationTimePath)}, process.platform === 'win32' ? require(${JSON.stringify(nativeModule)}).processCreationTime(process.pid) : '1'); setInterval(() => { if (require('node:fs').existsSync(${JSON.stringify(stopGate)})) process.exit(0); }, 20);`;
 		let release = async () => {};
+		let finished = false;
 		onTestFinished(async () => {
+			finished = true;
 			try {
-				if (existsSync(creationTimePath)) writeFileSync(stopGate, "");
+				if (existsSync(dirname(creationTimePath))) writeFileSync(stopGate, "");
 			} finally {
 				await release();
 				removePathSync(creationTimePath, { force: true });
@@ -484,7 +486,12 @@ describe("a broker behind a launcher that hides it", () => {
 		await eventually(() => readBrokerStartAnnouncement(announced) !== undefined, PROMPT_EXIT_BOUND_MS);
 		const pid = readBrokerStartAnnouncement(announced);
 		assert.ok(pid !== undefined);
+		assert.equal(finished, false, "broker started after test cleanup");
 		release = await keepProcessPidByStartTime(pid, readFileSync(creationTimePath, "utf8"));
+		if (finished) {
+			await release();
+			throw new Error("broker PID retention completed after test cleanup");
+		}
 		return pid;
 	}
 
@@ -686,7 +693,9 @@ describe("broker startup failures name the log", () => {
 		const crashGate = `${identityPath}.crash`;
 		const nativeModule = fileURLToPath(new URL("../../packages/natives/native/index.js", import.meta.url));
 		let release = async () => {};
+		let finished = false;
 		onTestFinished(async () => {
+			finished = true;
 			try {
 				writeFileSync(crashGate, "");
 			} finally {
@@ -717,7 +726,12 @@ describe("broker startup failures name the log", () => {
 		crash.catch(() => {});
 		await eventually(() => existsSync(identityPath), PROMPT_EXIT_BOUND_MS);
 		const identity = JSON.parse(readFileSync(identityPath, "utf8")) as { pid: number; created: string };
+		assert.equal(finished, false, "broker started after test cleanup");
 		release = await keepProcessPidByStartTime(identity.pid, identity.created);
+		if (finished) {
+			await release();
+			throw new Error("broker PID retention completed after test cleanup");
+		}
 		writeFileSync(crashGate, "");
 		await crash;
 		assert.ok(reported);
