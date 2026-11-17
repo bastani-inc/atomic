@@ -26,7 +26,7 @@ const assistant = (
 });
 
 describe("working line end row (#5224)", () => {
-	test("the end row names the working verb in the past tense", () => {
+	test("the end row names the working verb in the past tense (#5224)", () => {
 		assert.equal(workedVerb("Schlepping..."), "Schlepped");
 		assert.equal(workedVerb("Baking at 350 kilobytes..."), "Baked");
 		assert.equal(workedVerb("Dillydallying..."), "Dillydallied");
@@ -41,7 +41,7 @@ describe("working line end row (#5224)", () => {
 		assert.equal(workedVerb(undefined), "Worked");
 	});
 
-	test("the end row shows the run's elapsed time and its tokens, pointing down", () => {
+	test("the end row shows the run's elapsed time and its tokens, pointing down (#5224)", () => {
 		const row = new AtomicWorkedStatusComponent({
 			message: "Brewing...",
 			snapshot: { elapsedMs: 134_000, tokens: 18_400, requesting: true },
@@ -59,7 +59,7 @@ describe("working line end row (#5224)", () => {
 });
 
 describe("working line token direction (#5224)", () => {
-	test("empty text and thinking starts keep the request arrow pointing up until content arrives", () => {
+	test("empty text and thinking starts keep the request arrow pointing up until content arrives (#5224)", () => {
 		const meter = new WorkingRunMeter(() => 3_000);
 		meter.start();
 		meter.settled(assistant(120, "toolUse", 1));
@@ -75,7 +75,7 @@ describe("working line token direction (#5224)", () => {
 		assert.equal(meter.snapshot()?.requesting, undefined);
 	});
 
-	test("a request waiting for its first block points up with the count frozen, then down once content streams", () => {
+	test("a request waiting for its first block points up with the count frozen, then down once content streams (#5224)", () => {
 		let now = 0;
 		const meter = new WorkingRunMeter(() => now);
 		meter.start();
@@ -115,7 +115,7 @@ describe("agent token total (#5224)", () => {
 		);
 	});
 
-	test("is the latest request's full input plus every output plus the streaming estimate", () => {
+	test("is the latest request's full input plus every output plus the streaming estimate (#5224)", () => {
 		const messages = [
 			{ role: "user", content: "go", timestamp: 1 },
 			assistant(200, "toolUse", 2, { input: 1_000, cacheRead: 500 }),
@@ -129,7 +129,7 @@ describe("agent token total (#5224)", () => {
 		);
 	});
 
-	test("a run in progress starts after the last finished answer and counts its settled output", () => {
+	test("a run in progress starts after the last finished answer and counts its settled output (#5224)", () => {
 		const messages = [
 			{ role: "user", content: "first", timestamp: 1_000 },
 			assistant(400, "stop", 2_000),

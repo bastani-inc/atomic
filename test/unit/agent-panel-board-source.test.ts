@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
 import { test, vi } from "vitest";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
@@ -113,6 +114,9 @@ test("agentPanelBoardSource subscribes to the extension hub only and reads exten
 			);
 			assert.ok(taskStoreReads > 0, "agentPanelItems still reads the task store");
 			items.pop();
+			items[0] = { ...items[0]!, state: "done" };
+			for (const listener of extListeners) listener();
+			const notificationsBeforeDismiss = boardNotifications;
 
 			board.dismiss?.("run:r1");
 			taskStoreReads = 0;
@@ -123,12 +127,14 @@ test("agentPanelBoardSource subscribes to the extension hub only and reads exten
 				["agent", "agent"],
 				"dismissing on the board source shares dismissals with the agent panel",
 			);
+			assert.equal(boardNotifications, notificationsBeforeDismiss + 1);
 		} finally {
 			unsubscribeBoard();
 			unsubscribePanel();
 		}
+		const notificationsAfterUnsubscribe = boardNotifications;
 		for (const listener of extListeners) listener();
-		assert.equal(boardNotifications, 2, "unsubscribed board listener is not invoked");
+		assert.equal(boardNotifications, notificationsAfterUnsubscribe, "unsubscribed board listener is not invoked");
 	} finally {
 		await fixture.dispose();
 	}
@@ -473,7 +479,11 @@ test("extension agent and shell items share one session clock across the agent p
 		inspector.open();
 		try {
 			const rendered = inspector.renderViewport(120, 20).join("\n");
-			assert.match(rendered, /1m 1s/, "opening /tasks must not jump the extension item's elapsed time back to 1s");
+			assert.match(
+				stripVTControlCharacters(rendered),
+				/ext-helper +check cluster +1m\b/,
+				"opening /tasks must not jump the extension item's elapsed time back to 1s",
+			);
 			assert.equal(agentPanelRows(session)[2]?.elapsedMs, 61_000);
 
 			state = "stopped";
@@ -524,7 +534,10 @@ test.each(["agent", "shell"] as const)(
 			);
 			try {
 				inspector.setBoardSource(agentPanelBoardSource(session));
-				assert.match(inspector.renderViewport(120, 20).join("\n"), /helper-0.*1m 1s/);
+				assert.match(
+					stripVTControlCharacters(inspector.renderViewport(120, 20).join("\n")),
+					/helper-0 +check +1m\b/,
+				);
 			} finally {
 				inspector.dispose();
 			}

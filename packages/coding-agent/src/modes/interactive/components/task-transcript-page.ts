@@ -1,10 +1,12 @@
 import { getKeybindings, type KeybindingsManager, matchesKey, Text } from "@bastani/atomic-tui";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
+import type { CustomMessage } from "../../../core/messages.ts";
 import { shortTaskTitle } from "../../../core/tasks/agent-panel-source.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import { type TaskElapsedClocks, taskClockRunning, taskClocksFor } from "../../../core/tasks/live-elapsed.ts";
+import { type TaskElapsedClocks, taskClockRunning, taskClocksFor } from "../../../core/tasks/live-elapsed.js";
 import { TaskMessageError } from "../../../core/tasks/message-error.js";
-import type { TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
+import { getOwnerTaskSession, isTaskTurnInterrupted, setTaskTurnInterrupted } from "../../../core/tasks/owner-store.js";
+import type { ChatBoxSession, TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
 import {
 	launchedTaskViewSource,
 	type TaskTranscriptView,
@@ -112,6 +114,43 @@ function withoutExtensionStatuses(data: ReadonlyFooterDataProvider): ReadonlyFoo
 	};
 }
 
+function defaultUnnamedSessionAlias(sessionId: string): string {
+	const normalized = sessionId.startsWith("session-") ? sessionId.slice("session-".length) : sessionId;
+	return `subagent-chat-${normalized}`;
+}
+
+function friendlyOriginIntercomMessage(
+	message: CustomMessage<unknown>,
+	owner: ChatBoxSession | undefined,
+): CustomMessage<unknown> {
+	const details = message.details as
+		| {
+				readonly from?: { readonly id?: string; readonly name?: string; readonly cwd?: string };
+		  }
+		| undefined;
+	if (!details?.from) return message;
+	const ownerSessionId = owner?.sessionManager?.getSessionId?.()?.trim();
+	if (!ownerSessionId) return message;
+	const ownerAlias = defaultUnnamedSessionAlias(ownerSessionId);
+	const rawName = details.from.name?.trim() ?? "";
+	const matchesOwnerAlias = rawName === ownerAlias;
+	const matchesOwnerId =
+		details.from.id === ownerSessionId && (rawName === "" || rawName === ownerSessionId || matchesOwnerAlias);
+	if (!matchesOwnerAlias && !matchesOwnerId) {
+		return message;
+	}
+	return {
+		...message,
+		details: {
+			...(message.details as object),
+			from: {
+				...details.from,
+				name: "main",
+			},
+		},
+	};
+}
+
 /** A subagent stopped resumably (`x x`, Ctrl+X Ctrl+K): a message resumes it, and never anything else. */
 export const STOPPED_NOTE = "Stopped · send to resume";
 
@@ -150,6 +189,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private readonly env: TaskTranscriptEnvironment;
 	private readonly requestRender: () => void;
 	private followed?: TaskTranscriptSource;
+	private followedSessionId?: string;
 	private unsubscribe?: () => void;
 	private cursor?: string;
 	private loading = false;
@@ -193,17 +233,32 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 						: undefined,
 					getToolDefinition: (toolName) => {
 						const session = this.followed?.chatSession;
-						return (
-							session?.extensionRunner?.resolveToolRenderers?.(toolName, () =>
-								session.getToolDefinition?.(toolName),
-							) ??
-							session?.getToolDefinition?.(toolName) ??
-							retainedToolRenderer(toolName, inherited?.getToolDefinition)
+						if (session?.getToolDefinition || session?.extensionRunner?.resolveToolRenderers) {
+							return (
+								session.extensionRunner?.resolveToolRenderers?.(toolName, () =>
+									session.getToolDefinition?.(toolName),
+								) ?? session.getToolDefinition?.(toolName)
+							);
+						}
+						const owner = getOwnerTaskSession(this.source) as ChatBoxSession | undefined;
+						return retainedToolRenderer(
+							toolName,
+							(name) =>
+								inherited?.getToolDefinition?.(name) ??
+								owner?.extensionRunner?.resolveToolRenderers?.(name, () => owner.getToolDefinition?.(name)) ??
+								owner?.getToolDefinition?.(name),
 						);
 					},
-					getCustomMessageRenderer: (customType) =>
-						this.followed?.chatSession?.extensionRunner?.getMessageRenderer?.(customType) ??
-						inherited?.getCustomMessageRenderer?.(customType),
+					getCustomMessageRenderer: (customType) => {
+						const owner = getOwnerTaskSession(this.source) as ChatBoxSession | undefined;
+						const base =
+							this.followed?.chatSession?.extensionRunner?.getMessageRenderer?.(customType) ??
+							inherited?.getCustomMessageRenderer?.(customType) ??
+							owner?.extensionRunner?.getMessageRenderer?.(customType);
+						if (!base || customType !== "intercom_message") return base;
+						return (message, renderOptions, renderTheme) =>
+							base(friendlyOriginIntercomMessage(message, owner), renderOptions, renderTheme);
+					},
 				};
 			},
 			...(env.footerData === undefined ? {} : { footerData: withoutExtensionStatuses(env.footerData) }),
@@ -352,15 +407,17 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 						? taskState(task) === "completed"
 							? "done"
 							: taskState(task)
-						: task.metrics?.elapsedMs === undefined
-							? "running"
-							: formatPanelElapsed(
-									this.elapsedClocks.elapsedMs(
-										task.ref.taskId,
-										task.metrics.elapsedMs,
-										taskClockRunning(task.execution.kind),
-									) ?? task.metrics.elapsedMs,
-								);
+						: isTaskTurnInterrupted(task)
+							? "stopped"
+							: task.metrics?.elapsedMs === undefined
+								? "running"
+								: formatPanelElapsed(
+										this.elapsedClocks.elapsedMs(
+											task.ref.taskId,
+											task.metrics.elapsedMs,
+											taskClockRunning(task.execution.kind),
+										) ?? task.metrics.elapsedMs,
+									);
 		const stopped = this.source.taskStopped?.(this.taskId) === true;
 		const label = [
 			name,
@@ -452,13 +509,20 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			return;
 		}
 		const session = follow?.session?.subscribe === undefined ? undefined : follow.session;
-		const sessionChanged = session !== this.followed;
+		const nextSessionId = follow?.session?.getSessionId?.();
+		const sameConversation =
+			this.followedSessionId !== undefined &&
+			nextSessionId !== undefined &&
+			nextSessionId === this.followedSessionId;
+		const sessionChanged =
+			session !== this.followed || (!sameConversation && nextSessionId !== this.followedSessionId);
 		if (sessionChanged) {
 			this.unsubscribe?.();
 			this.unsubscribe = undefined;
 			this.followed = session;
-			this.chat.resetFollowedSession();
+			this.chat.resetFollowedSession({ preserveWorkedRun: sameConversation && session === undefined });
 		}
+		this.followedSessionId = nextSessionId;
 		this.cursor = page.value.nextCursor;
 		this.chat.replaceMessages(page.value.messages, { preserveUnread: !sessionChanged });
 		this.chat.hydrateToolExecutionStarts(page.value.activeToolStarts ?? []);
@@ -470,7 +534,21 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		if (!sessionChanged || session === undefined) return;
 		this.chat.hydrateStreamingAssistantMessage(session.getStreamingMessage?.());
 		this.hydrateRunningTurn(session, page.value.messages);
+		let turnAborted = false;
 		this.unsubscribe = session.subscribe?.((event) => {
+			if (event.type === "agent_start" || event.type === "turn_start" || event.type === "message_start") {
+				turnAborted = false;
+				setTaskTurnInterrupted(this.source, this.taskId, false);
+			} else if (
+				event.type === "message_end" &&
+				(event.message as { role?: string; stopReason?: string }).role === "assistant" &&
+				(event.message as { stopReason?: string }).stopReason === "aborted"
+			) {
+				turnAborted = true;
+			} else if (event.type === "agent_end" && turnAborted && session.isRunning?.() !== true) {
+				turnAborted = false;
+				setTaskTurnInterrupted(this.source, this.taskId, true);
+			}
 			this.chat.applyAgentEvent(event);
 			this.requestRender();
 		});
@@ -479,8 +557,16 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	/** A page opened mid-turn missed `agent_start` and `queue_update`, so it reads the turn and the queue now. */
 	private hydrateRunningTurn(session: TaskTranscriptSource, messages: TaskTranscriptView["messages"]): void {
 		if (session.isRunning?.() === true) {
+			setTaskTurnInterrupted(this.source, this.taskId, false);
 			this.chat.beginExternalPromptLifecycle();
 			this.chat.hydrateRunningTurn(messages, session.getStreamingMessage?.());
+		} else if (session.isRunning?.() === false) {
+			const lastAssistant = [...messages]
+				.reverse()
+				.find((message): message is Extract<typeof message, { role: "assistant" }> => message.role === "assistant");
+			if (lastAssistant?.stopReason === "aborted") {
+				setTaskTurnInterrupted(this.source, this.taskId, true);
+			}
 		}
 		const queued = session.getQueuedMessages?.();
 		if (queued === undefined) return;

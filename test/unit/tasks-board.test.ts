@@ -141,9 +141,9 @@ test("/tasks groups subagents, shells and workflow runs as Needs input, Working 
 			groups,
 			"Needs input, then Working, then Done",
 		);
-		assert.match(text, /◆ ralph +Approve this plan\? +waiting 3m 0s/);
+		assert.match(text, /◆ ralph +Approve this plan\? +waiting 3m$/m);
 		assert.match(text, /∀ worker +Spawn lock fix/, "a working row shows Atomic's ∀");
-		assert.match(text, /✗ review-pr +stage verify · gate failed: 2 jobs +failed · 4m 0s/);
+		assert.match(text, /✗ review-pr +stage verify · gate failed: 2 jobs +failed · 4m$/m);
 		assert.match(
 			lines.at(-1) ?? "",
 			/^ {2}↑↓ select · space peek · enter\/→ open · x stop · \/ filter · esc\/← close · \? keys$/,
@@ -320,7 +320,7 @@ test("/tasks opens on its first row, a waiting run above a working subagent, and
 			.map((line) => stripVTControlCharacters(line).trimEnd())
 			.join("\n");
 		assert.match(text, /❯ ◆ ralph/, "the waiting run, the first row, is selected");
-		assert.match(text, /∀ worker +Spawn lock fix +1m 0s/, "/tasks counts from when another view first saw the task");
+		assert.match(text, /∀ worker +Spawn lock fix +1m$/m, "/tasks counts from when another view first saw the task");
 		inspector.dispose();
 	} finally {
 		await fixture.dispose();
@@ -367,8 +367,8 @@ test("/tasks reads a live board source once per paint, not again for each naviga
 		assert.match(h.text(), /❯ ✗ review-pr/);
 		assert.ok(reads <= 1, `one key and paint read the source ${reads} times`);
 		reads = 0;
-		elapsedMs = 181_000;
-		assert.match(h.text(), /waiting 3m 1s/, "a repaint reads the source's live clock without a store event");
+		elapsedMs = 240_000;
+		assert.match(h.text(), /waiting 4m$/m, "a repaint reads the source's live clock without a store event");
 		assert.ok(reads <= 1);
 	} finally {
 		await h.dispose();
@@ -404,7 +404,7 @@ test("/tasks reuses task snapshots while navigating and follows the next store e
 		assert.match(text(), /Second snapshot/);
 		await fixture.settle(0);
 		assert.match(text(), /1 working · 1 done/);
-		assert.match(text(), /First snapshot finished · x to dismiss/);
+		assert.match(text(), /First snapshot finished · x to acknowledge/);
 	} finally {
 		inspector.dispose();
 		await fixture.dispose();
@@ -428,6 +428,7 @@ test("/tasks sees a dismissal from another inspector without a task store event 
 	const text = () => inspectors[0]!.renderViewport(100, 12).map(stripVTControlCharacters).join("\n");
 	try {
 		assert.match(text(), /Shared finished task/);
+		inspectors[1]!.renderViewport(100, 12);
 		inspectors[1]!.handleInput("x");
 		assert.doesNotMatch(text(), /Shared finished task/);
 		assert.match(text(), /No background work/);
@@ -490,7 +491,7 @@ test("a run that finishes between the two presses of x is not dismissed unseen (
 		h.inspector.handleInput("x");
 		items[0] = { ...run, state: "done" };
 		h.runs.emit();
-		assert.match(h.text(), /build finished · x to dismiss/);
+		assert.match(h.text(), /build finished · x to acknowledge/);
 		h.inspector.handleInput("x");
 		assert.deepEqual(h.runs.calls.dismissed, [], "the press meant for stop only acknowledges");
 		assert.deepEqual(h.runs.calls.stopped, []);

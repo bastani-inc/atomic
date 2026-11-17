@@ -157,9 +157,13 @@ test("an armed stop whose task finishes is disarmed, the next x only acknowledge
 		assert.match(h.text(), /Press x again within 3s to stop Racing task/);
 		await h.fixture.settle();
 		h.fixture.store.drain();
-		assert.match(h.text(), /Racing task finished · x to dismiss/);
+		assert.match(h.text(), /Racing task finished · x to acknowledge/);
 		h.inspector.handleInput("x");
-		assert.match(h.text(), /Racing task/, "the press meant as the stop's second press keeps the row");
+		assert.match(
+			h.text(),
+			/Racing task finished · x to dismiss/,
+			"the press meant as the stop's second press keeps the row",
+		);
 		assert.equal(h.fixture.store.backgroundTasks.length, 1);
 		h.inspector.handleInput("x");
 		assert.doesNotMatch(h.text(), /Racing task/, "the finished row is dismissed");

@@ -193,7 +193,7 @@ export class ToolExecutionComponent extends Container {
 	private createCallFallback(): Component {
 		const label = this.toolDefinition?.label?.trim() || this.builtInToolDefinition?.label || this.toolName;
 		const args =
-			typeof this.args === "object" && this.args !== null
+			typeof this.args === "object" && this.args !== null && !Array.isArray(this.args)
 				? Object.entries(this.args)
 						.map(([key, value]) => {
 							const raw = typeof value === "string" ? value : (JSON.stringify(value) ?? "");

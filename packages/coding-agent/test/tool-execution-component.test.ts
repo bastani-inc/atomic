@@ -12,9 +12,18 @@ import { type BashOperations, createBashToolDefinition } from "../src/core/tools
 import { createReadTool, createReadToolDefinition } from "../src/core/tools/read.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 import { codemodeRenderers } from "../src/extensions/codemode/renderer.js";
-import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
+import { ToolExecutionComponent as BaseToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
+
+const toolRows = new Set<BaseToolExecutionComponent>();
+
+class ToolExecutionComponent extends BaseToolExecutionComponent {
+	constructor(...args: ConstructorParameters<typeof BaseToolExecutionComponent>) {
+		super(...args);
+		toolRows.add(this);
+	}
+}
 
 function createBaseToolDefinition(name = "custom_tool"): ToolDefinition {
 	return {
@@ -41,6 +50,8 @@ describe("ToolExecutionComponent parity", () => {
 	});
 
 	afterEach(() => {
+		for (const component of toolRows) component.dispose();
+		toolRows.clear();
 		vi.useRealTimers();
 		resetCapabilitiesCache();
 	});
@@ -404,7 +415,7 @@ describe("ToolExecutionComponent parity", () => {
 		}
 	});
 
-	test("bash renderer labels a command yielded to the background with how long it was observed", () => {
+	test("bash renderer labels a yielded command as background work in the shared header (#5224)", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
 		const yielded = {
@@ -669,7 +680,7 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).toContain("custom_tool");
 		expect(rendered).toContain("done");
 	});
-	test("trims trailing blank display lines from write previews", () => {
+	test("trims trailing blank display lines from expanded write results (#5224)", () => {
 		const component = new ToolExecutionComponent(
 			"write",
 			"tool-7",
@@ -689,14 +700,19 @@ describe("ToolExecutionComponent parity", () => {
 		component.dispose();
 	});
 
-	test("renders streamed partial arguments once per frame, with the latest arguments (#9265)", () => {
+	test("renders streamed partial arguments once per frame, with the latest arguments (#5224)", () => {
 		const write = createWriteToolDefinition(process.cwd());
+		const writePreview: NonNullable<typeof write.renderCall> = (args) => {
+			const { path = "", content = "" } = args as { path?: string; content?: string };
+			const lines = content.trimEnd().split("\n");
+			return new Text(`Write(${path} · ${lines.length} total · ${lines.at(-1)})`, 0, 0);
+		};
 		let renderCalls = 0;
 		const counted: typeof write = {
 			...write,
 			renderCall: (...args) => {
 				renderCalls++;
-				return write.renderCall!(...args);
+				return writePreview(...args);
 			},
 		};
 		let renderRequests = 0;
@@ -720,7 +736,7 @@ describe("ToolExecutionComponent parity", () => {
 			"tool-10",
 			{ path: "src/file.ts", content },
 			{},
-			write,
+			{ ...write, renderCall: writePreview },
 			tui,
 			".",
 		);
@@ -732,11 +748,15 @@ describe("ToolExecutionComponent parity", () => {
 		component.updateArgs(final);
 		const next = stripAnsi(component.render(120).join("\n"));
 		assert.equal(renderCalls - callsBefore, 2);
-		assert.match(next, /∀ Write\(src\/file\.ts\)/);
-		assert.doesNotMatch(next, /const tail/);
+		assert.match(next, /∀ Write\(src\/file\.ts · 201 total · const tail = 2;\)/);
+		assert.doesNotMatch(next, /const tail = 1/);
 		assert.equal(
 			next,
-			stripAnsi(new ToolExecutionComponent("write", "t", final, {}, write, tui, ".").render(120).join("\n")),
+			stripAnsi(
+				new ToolExecutionComponent("write", "t", final, {}, { ...write, renderCall: writePreview }, tui, ".")
+					.render(120)
+					.join("\n"),
+			),
 		);
 		// Rendering again without new arguments does not run the renderer.
 		component.render(120);

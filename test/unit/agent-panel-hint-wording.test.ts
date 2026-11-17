@@ -17,7 +17,7 @@ test("focused panel hints name open and back actions in live key order at both t
 		);
 		assert.equal(
 			renderNavHintLine(agentPanelKeys(undefined), width, style, keys),
-			"  ↑↓ select · esc/← back to prompt · ? keys",
+			"  ↑↓ select · enter/→ to open · esc/← back to prompt · ? keys",
 		);
 		assert.equal(
 			renderNavHintLine(agentPanelKeys({ ...row, state: "done" }), width, style, keys),

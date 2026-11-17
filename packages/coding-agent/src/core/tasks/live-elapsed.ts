@@ -5,6 +5,15 @@ export function taskClockRunning(state: Execution["kind"] | AgentPanelState): bo
 	return state === "running" || state === "cancelling" || state === "stopping" || state === "input";
 }
 
+export function liveElapsedFromRead(
+	reportedMs: number | undefined,
+	readAt: number,
+	running: boolean,
+	now = Date.now(),
+): number | undefined {
+	return reportedMs === undefined || !running ? reportedMs : reportedMs + Math.max(0, now - readAt);
+}
+
 type ElapsedClock = { since: number; displayed: number; frozen?: number; settled?: boolean; ended?: boolean };
 type ClockReference = {
 	readonly table: Map<string, WeakRef<ElapsedClock>>;

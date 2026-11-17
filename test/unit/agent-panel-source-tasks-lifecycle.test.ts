@@ -478,7 +478,8 @@ test("/tasks refuses a workflow reply when the pending prompt changed after the 
 			.renderPicker(120, 24)
 			.map((line) => stripVTControlCharacters(line))
 			.join("\n");
-		assert.match(afterRefusal, /Could not send the answer: The pending prompt changed before the answer was sent\./);
+		assert.match(afterRefusal, /The question changed; your reply was cleared\./);
+		assert.doesNotMatch(afterRefusal, /❯ yes/);
 		assert.equal(
 			wfStore.run("deploy-run")?.stages[0]?.pendingPrompt?.id,
 			"prompt-2",

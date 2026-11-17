@@ -9,9 +9,25 @@ import type {
 	WaitError,
 	WatchError,
 } from "./contracts.js";
-import { bindTaskClock, createManagedTaskClocks, taskClockRunning } from "./live-elapsed.ts";
+import {
+	bindTaskClock,
+	createManagedTaskClocks,
+	type TaskElapsedClocks,
+	taskClockOf,
+	taskClockRunning,
+	taskClocksFor,
+} from "./live-elapsed.js";
 import { sessionTasks } from "./session-scope.js";
-import type { OwnerLease, TaskLease, TaskSubscription, TaskSupervisor } from "./supervisor.js";
+import {
+	type OwnerLease,
+	type TaskLease,
+	type TaskSubscription,
+	type TaskSupervisor,
+	taskTranscriptSource,
+} from "./supervisor.js";
+
+const interruptedByClock = new WeakMap<TaskElapsedClocks, Set<TaskId>>();
+const storeByClock = new WeakMap<TaskElapsedClocks, WeakRef<OwnerTaskStore>>();
 
 /** Activity previews are bounded independently of authoritative session history. */
 export const TASK_ACTIVITY_LIMIT = 64;
@@ -44,6 +60,7 @@ export class OwnerTaskStore {
 	private omittedActivity = new Set<TaskId>();
 	private backgroundIds = new Set<TaskId>();
 	private settlements = new Map<TaskId, bigint>();
+	private turnInterruptedIds = new Set<TaskId>();
 	private readonly elapsedClocks = createManagedTaskClocks(this);
 	readonly anchors = new Map<TaskId, TaskAnchor>();
 	private current?: OwnerSnapshot;
@@ -52,6 +69,8 @@ export class OwnerTaskStore {
 	constructor(supervisor: TaskSupervisor, owner: OwnerLease) {
 		this.supervisor = supervisor;
 		this.owner = owner;
+		interruptedByClock.set(this.elapsedClocks, this.turnInterruptedIds);
+		storeByClock.set(this.elapsedClocks, new WeakRef(this));
 	}
 
 	get snapshot(): OwnerSnapshot | undefined {
@@ -129,6 +148,24 @@ export class OwnerTaskStore {
 		this.subscription?.dispose();
 		this.subscription = undefined;
 	}
+	setTurnInterrupted(id: TaskId, interrupted: boolean): void {
+		const record = this.records.get(id);
+		if (interrupted) {
+			if (record?.kind !== "agent" || record.execution.kind !== "running") return;
+			if (this.turnInterruptedIds.has(id)) return;
+			this.turnInterruptedIds.add(id);
+			this.elapsedClocks.elapsedMs(id, record.metrics?.elapsedMs, false);
+			this.panelRevisionValue++;
+			this.notify();
+			return;
+		}
+		if (!this.turnInterruptedIds.delete(id)) return;
+		if (record !== undefined && record.execution.kind === "running") {
+			this.elapsedClocks.elapsedMs(id, record.metrics?.elapsedMs, true);
+		}
+		this.panelRevisionValue++;
+		this.notify();
+	}
 	private reconcile(snapshot: OwnerSnapshot, events: readonly NativeEvent[]): void {
 		if (
 			this.current &&
@@ -159,6 +196,9 @@ export class OwnerTaskStore {
 			) {
 				this.panelRevisionValue++;
 			}
+			if (task.execution.kind !== "running") {
+				this.turnInterruptedIds.delete(task.ref.taskId);
+			}
 			if (
 				previous?.execution.kind !== "settled" &&
 				task.execution.kind !== "queued" &&
@@ -171,7 +211,7 @@ export class OwnerTaskStore {
 					this.elapsedClocks.elapsedMs(
 						task.ref.taskId,
 						task.metrics?.elapsedMs,
-						taskClockRunning(task.execution.kind),
+						taskClockRunning(task.execution.kind) && !this.turnInterruptedIds.has(task.ref.taskId),
 					);
 			}
 			if (isBackground(task.observation) || isBackground(previous?.observation)) {
@@ -186,6 +226,18 @@ export class OwnerTaskStore {
 					: task;
 			if (record !== previous) bindTaskClock(record, this.elapsedClocks);
 			this.records.set(task.ref.taskId, record);
+			if (
+				record.kind === "agent" &&
+				record.execution.kind === "running" &&
+				this.turnInterruptedIds.has(record.ref.taskId)
+			) {
+				const lease = this.resolveTask(record.ref.taskId);
+				const bound = lease.ok ? taskTranscriptSource(lease.value) : undefined;
+				if (bound?.ok && bound.value.session.isRunning?.() === true) {
+					this.turnInterruptedIds.delete(record.ref.taskId);
+					this.panelRevisionValue++;
+				}
+			}
 			if (task.execution.kind === "settled" && !this.settlements.has(task.ref.taskId))
 				this.settlements.set(task.ref.taskId, BigInt(snapshot.cursor.sequence));
 			if (!this.anchors.has(task.ref.taskId))
@@ -204,6 +256,7 @@ export class OwnerTaskStore {
 		const retained = new Set(snapshot.tasks.map((task) => task.ref.taskId));
 		for (const id of [...this.records.keys()]) {
 			if (retained.has(id)) continue;
+			this.turnInterruptedIds.delete(id);
 			this.records.delete(id);
 			this.panelRevisionValue++;
 			this.elapsedClocks.delete(id);
@@ -255,13 +308,35 @@ export class OwnerTaskStore {
 
 // Host adapters bind their existing session object, never a model-provided owner id.
 const sessionStores = new WeakMap<object, OwnerTaskStore>();
+const storeSessions = new WeakMap<object, WeakRef<object>>();
 const bindingListeners = new WeakMap<object, Set<() => void>>();
 export function bindOwnerTaskStore(session: object, store: OwnerTaskStore): void {
 	sessionStores.set(session, store);
+	const weakSession = new WeakRef(session);
+	storeSessions.set(store, weakSession);
+	const clocks = taskClockOf(store);
+	if (clocks !== undefined) storeSessions.set(clocks, weakSession);
 	for (const listener of bindingListeners.get(session) ?? []) listener();
 }
 export function getOwnerTaskStore(session: object): OwnerTaskStore | undefined {
 	return sessionStores.get(session);
+}
+export function getOwnerTaskSession(target: object): object | undefined {
+	const clocks = taskClockOf(target);
+	return (storeSessions.get(target) ?? (clocks === undefined ? undefined : storeSessions.get(clocks)))?.deref();
+}
+export function isTaskTurnInterrupted(task: TaskRecord): boolean {
+	if (task.kind !== "agent" || task.execution.kind !== "running") return false;
+	const clocks = taskClockOf(task);
+	return clocks !== undefined && interruptedByClock.get(clocks)?.has(task.ref.taskId) === true;
+}
+export function setTaskTurnInterrupted(target: object, id: TaskId, interrupted: boolean): void {
+	if (target instanceof OwnerTaskStore) {
+		target.setTurnInterrupted(id, interrupted);
+		return;
+	}
+	const clocks = taskClockOf(target) ?? taskClocksFor(target);
+	storeByClock.get(clocks)?.deref()?.setTurnInterrupted(id, interrupted);
 }
 
 /** Observe lazy producer binding without waiting for another tool/session event. */

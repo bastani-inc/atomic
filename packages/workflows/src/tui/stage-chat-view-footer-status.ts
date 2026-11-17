@@ -25,7 +25,7 @@ import {
 	trailingWidgetBorderChar,
 	widgetHintTargetLineIndex,
 } from "./stage-chat-view-render-helpers.js";
-import { isAbortableStreamingSession } from "./stage-chat-view-state.js";
+import { isAbortableStreamingSession, isBlocked } from "./stage-chat-view-state.js";
 import type { StageChatViewContext } from "./stage-chat-view-types.js";
 import {
 	applyStageLabelToEditorTopRule,
@@ -33,6 +33,19 @@ import {
 	resolvedStageName,
 } from "./stage-input-label.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
+
+interface HostTheme {
+	fg(color: string, text: string): string;
+	bold?(text: string): string;
+}
+
+function hostThemeOf(candidate: unknown): HostTheme | undefined {
+	return typeof candidate === "object" &&
+		candidate !== null &&
+		typeof (candidate as { fg?: unknown }).fg === "function"
+		? (candidate as HostTheme)
+		: undefined;
+}
 
 export function injectStageLabelIntoEditorTopRule(
 	ctx: StageChatViewContext,
@@ -57,11 +70,12 @@ export function injectStageLabelIntoEditorTopRule(
 						: stage.status;
 	const label = ["stage", cleanStageName, state].filter(Boolean).join(" · ");
 	const t = ctx.theme;
+	const hostTheme = hostThemeOf(ctx.piTheme);
 	return applyAttachedComposer(
 		{
-			accent: (text) => paint(text, t.accent),
-			text: (text) => paint(text, t.text),
-			dim: (text) => paint(text, t.dim),
+			accent: (text) => (hostTheme ? hostTheme.fg("accent", text) : paint(text, t.accent)),
+			text: (text) => (hostTheme ? hostTheme.fg("text", text) : paint(text, t.text)),
+			dim: (text) => (hostTheme ? hostTheme.fg("dim", text) : paint(text, t.dim)),
 		},
 		label,
 		ctx.chatHost.hasInputText() ? undefined : `${waiting ? "Answer" : "Message"} ${cleanStageName}…`,
@@ -166,6 +180,17 @@ export function sepRule(ctx: StageChatViewContext, width: number): string {
 
 export function stageNavKeyStyle(ctx: StageChatViewContext): NavKeyStyle {
 	const t = ctx.theme;
+	const hostTheme = hostThemeOf(ctx.piTheme);
+	if (hostTheme) {
+		return {
+			dim: (text) => hostTheme.fg("dim", text),
+			text: (text) => hostTheme.fg("text", text),
+			muted: (text) => hostTheme.fg("muted", text),
+			border: (text) => hostTheme.fg("borderMuted", text),
+			bold: (text) =>
+				typeof hostTheme.bold === "function" ? hostTheme.bold(text) : paint(text, t.text, { bold: true }),
+		};
+	}
 	return {
 		dim: (text) => paint(text, t.dim),
 		text: (text) => paint(text, t.text),
@@ -223,12 +248,13 @@ export function renderStageChatKeyOverlay(ctx: StageChatViewContext, width: numb
 
 export function renderStageChatHintLine(ctx: StageChatViewContext, width: number): string {
 	const keybindings = stageNavKeybindings(ctx);
+	const blocked = isBlocked(ctx);
 	const chatKeys = taskChatKeys(
 		"graph",
 		isStageChatInterruptible(ctx),
-		hasStageChatTasks(ctx),
+		!blocked && hasStageChatTasks(ctx),
 		ctx.setToolsExpanded !== undefined,
-	);
+	).filter((entry) => !blocked || entry.action !== APP_ACTION.keysHelp);
 	return renderNavHintLine(chatKeys, width, stageNavKeyStyle(ctx), keybindings);
 }
 
@@ -265,6 +291,40 @@ export function embedStageLabelInWidgetTopRule(
 	width: number,
 ): string[] {
 	return applyStageLabelToWidgetTopRule(ctx.theme, stageName, widgetLines, width);
+}
+
+export function embedCustomUiBackHint(
+	ctx: StageChatViewContext,
+	widgetLines: readonly string[],
+	width: number,
+): string[] {
+	const backKey = backToGraphKey(ctx);
+	if (!backKey || widgetLines.length < 2) return [...widgetLines];
+	let bottomBorderIndex = -1;
+	for (let index = widgetLines.length - 1; index >= 0; index -= 1) {
+		const plain = stripAnsi(widgetLines[index] ?? "").trim();
+		if (plain.length >= 2 && "╰└+".includes(plain[0] ?? "") && "╯┘+".includes(plain.at(-1) ?? "")) {
+			bottomBorderIndex = index;
+			break;
+		}
+	}
+	if (bottomBorderIndex < 0 || bottomBorderIndex + 1 >= widgetLines.length) return [...widgetLines];
+	const hintIndex = bottomBorderIndex + 1;
+	const hintLine = widgetLines[hintIndex] ?? "";
+	const hintPlain = stripAnsi(hintLine).trim();
+	if (hintPlain.length === 0 || hintPlain.includes(`${backKey} graph`)) return [...widgetLines];
+	const suffixPlain = ` · ${backKey} graph`;
+	const hostTheme = hostThemeOf(ctx.piTheme);
+	const suffixStyled = hostTheme ? hostTheme.fg("dim", suffixPlain) : paint(suffixPlain, ctx.theme.dim);
+	const suffixWidth = visibleWidth(suffixPlain);
+	const trimmedLine = hintLine.trimEnd();
+	const nextHint =
+		visibleWidth(trimmedLine) + suffixWidth <= width
+			? `${trimmedLine}${suffixStyled}`
+			: `${truncateToWidth(trimmedLine, Math.max(0, width - suffixWidth), "")}${suffixStyled}`;
+	const lines = [...widgetLines];
+	lines[hintIndex] = nextHint;
+	return lines;
 }
 
 export function embedOrchestratorReturnHintInWidget(

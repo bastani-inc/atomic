@@ -135,6 +135,16 @@ test("paused rows remain distinct from stopped rows (#5224)", () => {
 	assert.match(stopped, /❯ ◼ release.*stopped · 5s$/);
 });
 
+test("settled resumable subagents display stopped consistently with their panel rows (#5224)", () => {
+	for (const cause of ["pause", "quit"] as const) {
+		const task = taskRecord(`resumable-${cause}`);
+		task.execution = { kind: "settled", result: { kind: "cancelled", cause, output: task.output } };
+		const text = stripVTControlCharacters(renderBoardRow({ id: task.ref.taskId, kind: "task", task }, true, 160));
+		assert.match(text, /❯ ◼.*stopped/);
+		assert.doesNotMatch(text, /‖|paused/);
+	}
+});
+
 test("task rows omit invalid metrics and progress instead of displaying non-finite or negative numbers (#5224)", () => {
 	for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -5_000, 1e20]) {
 		const line = stripVTControlCharacters(

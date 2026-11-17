@@ -6,9 +6,9 @@ import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.t
 import { activeToolExecutionStarts, type ToolExecutionStart } from "../tool-execution-timing.ts";
 import { taskOutputText } from "./command-output.js";
 import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
-import { bindTaskClockSource } from "./live-elapsed.ts";
+import { bindTaskClockSource } from "./live-elapsed.js";
 import { TaskMessageError, TaskMessageTimeoutError } from "./message-error.js";
-import type { OwnerTaskStore, TaskActivity } from "./owner-store.js";
+import { isTaskTurnInterrupted, type OwnerTaskStore, type TaskActivity } from "./owner-store.js";
 import {
 	loadTaskOwnTranscriptEntries,
 	type TaskMessageDelivery,
@@ -347,13 +347,20 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 				return { ok: false, error: { message: "This task's turn cannot be interrupted from here." } };
 			try {
 				await interrupt.call(bound.value.session);
+				if (bound.value.session.isRunning?.() !== true) {
+					store.setTurnInterrupted(id, true);
+				}
 				return { ok: true, value: undefined };
 			} catch (error) {
 				return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } };
 			}
 		},
 		taskStopped(id) {
-			return taskResumer(store.supervisor)?.isStopped?.(id) === true;
+			const record = store.getTask(id);
+			return (
+				(record !== undefined && isTaskTurnInterrupted(record)) ||
+				taskResumer(store.supervisor)?.isStopped?.(id) === true
+			);
 		},
 		taskReadOnlyReason(id) {
 			const record = store.tasks.find((candidate) => candidate.ref.taskId === id);
@@ -390,7 +397,10 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			} catch (cause) {
 				throw new TaskMessageError("delivery-unconfirmed", { taskId: id, target }, { cause });
 			}
-			if (delivery.delivered) return;
+			if (delivery.delivered) {
+				store.setTurnInterrupted(id, false);
+				return;
+			}
 			if (delivery.reason === "unconfirmed")
 				throw new TaskMessageTimeoutError({
 					taskId: id,

@@ -5,7 +5,7 @@ import {
 	isBuiltinToolCallRenderer,
 	isBuiltinToolResultRenderer,
 	markBuiltinToolRenderers,
-} from "./builtin-renderers.ts";
+} from "./builtin-renderers.js";
 import type { createEditToolDefinition, EditOperations } from "./edit.ts";
 import { normalizeToLF } from "./edit-diff.ts";
 import { isNotebookPath, readEditableNotebookText, serializeEditedNotebookText } from "./notebook.ts";

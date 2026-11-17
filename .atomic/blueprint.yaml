@@ -46,6 +46,9 @@ knowledge:
       After changing SDK imports used by workflow graph views, run
       `npx vitest run --project unit test/unit/overlay-adapter-autowrap.test.ts test/unit/overlay-adapter-hidden-render.test.ts`:
       these wrappers run Bun children with isolated module mocks, which must expose each imported SDK name.
+      SDK tests that allocate an agentDir and load bundled packages call `linkSharedTranspileCache(agentDir)`
+      from `packages/coding-agent/test/helpers/shared-transpile-cache.ts` to reuse the suite's warmed compilation cache;
+      keep cold-cache coverage separate.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run

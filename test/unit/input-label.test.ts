@@ -162,7 +162,7 @@ describe("the shared chat input label (#4640)", () => {
 			focusedLine,
 			"─".repeat(80),
 		]);
-		assert.equal(decorated[1], "❯ \x1b_pi:c\x07\x1b_pi:fc\x07 \x1b_pi:/fc\x07\x1b[0m <dim>Message worker…</dim>");
+		assert.equal(decorated[1], "❯ \x1b_pi:c\x07\x1b_pi:fc\x07 \x1b_pi:/fc\x07\x1b[0m<dim>Message worker…</dim>");
 
 		const unclosedApcLine = `❯ ${"\x1b_".repeat(ADVERSARIAL_REPETITIONS)}`;
 		const startApcMs = performance.now();
@@ -209,7 +209,7 @@ describe("the shared chat input label (#4640)", () => {
 		]);
 		assert.equal(
 			decorated[1],
-			"❯ \x1b_pi:c\x07\x1b_pi:fc\x07 \x1b_pi:/fc\x07\x1b[27m\x1b[0m <dim>Message worker…</dim>",
+			"❯ \x1b_pi:c\x07\x1b_pi:fc\x07 \x1b_pi:/fc\x07\x1b[27m\x1b[0m<dim>Message worker…</dim>",
 		);
 	});
 });
