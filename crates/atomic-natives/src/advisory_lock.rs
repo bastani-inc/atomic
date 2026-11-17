@@ -152,9 +152,35 @@ pub fn try_advisory_lock(path: String, wait_ms: u32) -> napi::Result<Option<Advi
 	Ok(file.map(|file| AdvisoryLock { file: Some(file) }))
 }
 
+/// Asynchronous form of {@link tryAdvisoryLock}: acquires the exclusive advisory lock on a worker thread without
+/// blocking the JavaScript event loop.
+#[napi(js_name = "tryAdvisoryLockAsync")]
+pub async fn try_advisory_lock_async(
+	path: String,
+	wait_ms: u32,
+) -> napi::Result<Option<AdvisoryLock>> {
+	let file = napi::tokio::task::spawn_blocking(move || {
+		try_lock_file(Path::new(&path), Duration::from_millis(u64::from(wait_ms)))
+	})
+	.await
+	.map_err(|error| napi::Error::new(napi::Status::GenericFailure, error.to_string()))?
+	.map_err(napi_error)?;
+	Ok(file.map(|file| AdvisoryLock { file: Some(file) }))
+}
+
 /// Renames `from` to `to` only while nothing is at `to` (#5193): `false`, with nothing moved, when something is there,
 /// so a moved item is put back without ever replacing another. Throws on any other failure.
 #[napi(js_name = "renameNoReplace")]
 pub fn rename_no_replace_napi(from: String, to: String) -> napi::Result<bool> {
 	rename_no_replace(Path::new(&from), Path::new(&to)).map_err(napi_error)
+}
+
+/// Asynchronous form of {@link renameNoReplace}: renames `from` to `to` without replacing an existing destination on a
+/// worker thread without blocking the JavaScript event loop.
+#[napi(js_name = "renameNoReplaceAsync")]
+pub async fn rename_no_replace_async(from: String, to: String) -> napi::Result<bool> {
+	napi::tokio::task::spawn_blocking(move || rename_no_replace(Path::new(&from), Path::new(&to)))
+		.await
+		.map_err(|error| napi::Error::new(napi::Status::GenericFailure, error.to_string()))?
+		.map_err(napi_error)
 }
