@@ -156,7 +156,7 @@ import { startInteractiveEngineLiveness } from "./modes/interactive-engine/engin
 import { announceBlueprintBuildWaits } from "./modes/print-mode.ts";
 import { isRpcTransportFailure } from "./modes/rpc/rpc-transport-error.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
-import { loadShownDeprecationNotices } from "./utils/deprecation.ts";
+import { loadShownDeprecationNotices } from "./utils/deprecation.js";
 import {
 	readInteractiveEngineBootstrap,
 	takeInteractiveEngineBootstrapArg,
