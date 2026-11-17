@@ -643,7 +643,10 @@ export async function runSingleInProcess(
 		result.finalOutput = deliveredOutput;
 	}
 	forgetIfReleased(control, outcome);
-	await persistRequestedOutput(result, options, outputSnapshot);
+	result.outputMode = options.outputMode ?? "inline";
+	if (options.outputPath && result.status === "ok") {
+		await persistRequestedOutput(result, options, outputSnapshot);
+	}
 	const update: SubagentToolResult = {
 		content: [{ type: "text", text: result.finalOutput ?? "(no output)" }],
 		details: {
@@ -668,7 +671,6 @@ async function persistRequestedOutput(
 	options: RunSyncOptions,
 	outputSnapshot: SingleOutputSnapshot | undefined,
 ): Promise<void> {
-	result.outputMode = options.outputMode ?? "inline";
 	if (!options.outputPath || result.status !== "ok") return;
 	const resolved = await resolveSingleOutput(options.outputPath, result.finalOutput ?? "", outputSnapshot);
 	result.savedOutputPath = resolved.savedPath;

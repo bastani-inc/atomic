@@ -817,7 +817,7 @@ function repositoryWithSeed(): string {
 
 async function childWithDirtyWorktree(h: Harness, runId: string) {
 	const repo = repositoryWithSeed();
-	const setup = createWorktrees(repo, runId, 1);
+	const setup = await createWorktrees(repo, runId, 1);
 	const worktree = setup.worktrees[0];
 	assert.ok(worktree);
 	const run = registerRunWorktrees(runId, setup);
