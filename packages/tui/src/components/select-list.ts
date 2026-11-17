@@ -277,6 +277,11 @@ export class SelectList implements Component {
 		}
 	}
 
+	/** How many rows the list holds after its filter. */
+	getItemCount(): number {
+		return this.filteredItems.length;
+	}
+
 	getSelectedItem(): SelectItem | null {
 		const item = this.filteredItems[this.selectedIndex];
 		return item || null;

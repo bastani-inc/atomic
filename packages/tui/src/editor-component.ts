@@ -39,6 +39,9 @@ export interface EditorComponent extends Component {
 	/** Add text to history for up/down navigation */
 	addToHistory?(text: string): void;
 
+	/** Past prompts, newest first, for prompt history search */
+	getHistory?(): readonly string[];
+
 	// =========================================================================
 	// Advanced text manipulation (optional)
 	// =========================================================================

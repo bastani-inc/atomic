@@ -1,5 +1,5 @@
 import type { AutocompleteProvider, AutocompleteSuggestions } from "../autocomplete.ts";
-import { getKeybindings } from "../keybindings.ts";
+import { getKeybindings, type Keybinding } from "../keybindings.ts";
 import { decodePrintableKey, matchesKey } from "../keys.ts";
 import { KillRing } from "../kill-ring.ts";
 import { normalizePastedText } from "../paste.ts";
@@ -255,9 +255,19 @@ interface LayoutLine {
 	cursorPos?: number;
 }
 
+/** One key the open @ or / menu offers: the keybindings that trigger it and what it does. */
+export interface EditorAutocompleteHintEntry {
+	readonly actions: readonly Keybinding[];
+	readonly label: string;
+	/** Kept when a narrow line has to drop entries. */
+	readonly essential?: boolean;
+}
+
 export interface EditorTheme {
 	borderColor: (str: string) => string;
 	selectList: SelectListTheme;
+	/** Draws the one hint line under the open @ or / menu; without it the menu has no hint line. */
+	autocompleteHint?: (entries: readonly EditorAutocompleteHintEntry[], width: number) => string;
 }
 
 export interface EditorOptions {
@@ -449,6 +459,26 @@ export class Editor implements Component, Focusable {
 		this.cancelAutocomplete();
 		this.autocompleteProvider = provider;
 		this.setAutocompleteTriggerCharacters(provider.triggerCharacters ?? []);
+	}
+
+	private renderAutocompleteHint(width: number): string | undefined {
+		const render = this.theme.autocompleteHint;
+		const list = this.autocompleteList;
+		if (!render || !list) return undefined;
+		const entries: EditorAutocompleteHintEntry[] = [];
+		if (list.getItemCount() > 1) entries.push({ actions: ["tui.select.up", "tui.select.down"], label: "select" });
+		if (list.getSelectedItem()) {
+			entries.push({ actions: ["tui.input.tab"], label: "complete", essential: true });
+			const runs = this.autocompletePrefix.startsWith("/");
+			entries.push({ actions: ["tui.select.confirm"], label: runs ? "run" : "insert", essential: true });
+		}
+		entries.push({ actions: ["tui.select.cancel"], label: "close", essential: true });
+		return render(entries, width);
+	}
+
+	/** Past prompts for up/down and history search, newest first. */
+	getHistory(): readonly string[] {
+		return [...this.history];
 	}
 
 	/**
@@ -650,6 +680,8 @@ export class Editor implements Component, Focusable {
 		this.renderedAutocompleteHeight = 0;
 		if (this.autocompleteState && this.autocompleteList) {
 			const autocompleteResult = this.autocompleteList.render(contentWidth);
+			const hint = this.renderAutocompleteHint(contentWidth);
+			if (hint !== undefined) autocompleteResult.push(hint);
 			this.renderedAutocompleteHeight = autocompleteResult.length;
 			for (const line of autocompleteResult) {
 				const lineWidth = visibleWidth(line);
