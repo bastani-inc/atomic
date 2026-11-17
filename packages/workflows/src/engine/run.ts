@@ -710,10 +710,12 @@ async function executeRun(
 	const ownsCancellationRegistration = opts.signal === undefined && opts.cancellation !== undefined;
 	const tracker = new GraphFrontierTracker();
 	const inputConcurrency = resolveInputConcurrency(def.inputs, resolvedInputs);
-	const inputRuntimeDefaults = await mapInputWorktree(
-		resolveInputRuntimeDefaults(def, resolvedInputs, opts.workspace),
-		opts.worktreeRootMappings ?? [],
-	);
+	const inputDefaults = resolveInputRuntimeDefaults(def, resolvedInputs, opts.workspace);
+	// Only a run resumed with restores waits here to map its input worktree; any other run registers on this turn.
+	const inputRuntimeDefaults =
+		(opts.worktreeRootMappings ?? []).length === 0
+			? inputDefaults
+			: await mapInputWorktree(inputDefaults, opts.worktreeRootMappings ?? []);
 	const gitWorktreeSetupCacheOwner = createGitWorktreeSetupCacheOwner(opts.gitWorktreeSetupCache, runId);
 	const gitWorktreeSetupCache = gitWorktreeSetupCacheOwner.cache;
 	const workflowInvocationCwd = opts.cwd ?? process.cwd();

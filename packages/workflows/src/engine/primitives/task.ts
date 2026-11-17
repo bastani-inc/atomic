@@ -183,7 +183,8 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 		try {
 			const result = await runTaskOnce(options, async () => {
 				// The task's worktree is made from its directory where the run's restores put it.
-				const mapped = (await runtime.mapRestoredOptions?.(options)) ?? options;
+				const mapped =
+					runtime.mapRestoredOptions === undefined ? options : await runtime.mapRestoredOptions(options);
 				prepared = await prepareTaskWorktrees(
 					[{ ...mapped, name }],
 					{ ...mapped, worktree: true },
