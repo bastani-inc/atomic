@@ -196,6 +196,10 @@ export interface ClearedQueue extends QueuedTexts {
 	images?: QueuedImages;
 }
 
+export type UserMessageWithRawText = Extract<AgentMessage, { role: "user" }> & {
+	rawText?: string;
+};
+
 export function drainAgentMessageQueue(queue: PendingAgentMessageQueue | undefined): AgentMessage[] {
 	if (!queue) return [];
 	const drained: AgentMessage[] = [];

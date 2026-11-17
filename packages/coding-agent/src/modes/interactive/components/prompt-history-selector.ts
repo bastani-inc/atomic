@@ -10,6 +10,7 @@ export interface PromptHistoryEntry {
 /** A prompt of the current session as its history records it. */
 export interface SessionPrompt {
 	readonly text: string;
+	readonly expandedText?: string;
 	readonly sentAt?: number;
 }
 
@@ -18,7 +19,7 @@ const promptKey = (text: string): string => text.trim();
 interface PromptEntryLike {
 	readonly type: string;
 	readonly timestamp?: string;
-	readonly message?: { readonly role?: string; readonly content?: unknown };
+	readonly message?: { readonly role?: string; readonly content?: unknown; readonly rawText?: unknown };
 }
 
 function promptText(content: unknown): string {
@@ -36,10 +37,16 @@ export function sessionPromptsFromEntries(entries: readonly PromptEntryLike[]): 
 	const prompts: SessionPrompt[] = [];
 	for (const entry of entries) {
 		if (entry.type !== "message" || entry.message?.role !== "user") continue;
-		const text = promptText(entry.message.content);
+		const rawText = typeof entry.message.rawText === "string" ? entry.message.rawText : undefined;
+		const expandedText = promptText(entry.message.content);
+		const text = rawText?.trim() ? rawText : expandedText;
 		if (!text.trim()) continue;
 		const sentAt = entry.timestamp === undefined ? Number.NaN : Date.parse(entry.timestamp);
-		prompts.push(Number.isFinite(sentAt) ? { text, sentAt } : { text });
+		prompts.push({
+			text,
+			...(text !== expandedText && expandedText.trim() ? { expandedText } : {}),
+			...(Number.isFinite(sentAt) ? { sentAt } : {}),
+		});
 	}
 	return prompts;
 }
@@ -54,8 +61,11 @@ export function promptHistoryEntries(
 	sessionPrompts: readonly SessionPrompt[],
 ): PromptHistoryEntry[] {
 	const sentAt = new Map<string, number>();
+	const typedKeys = new Set(sessionPrompts.map((prompt) => promptKey(prompt.text)));
+	const expandedKeys = new Map<string, string>();
 	for (const prompt of sessionPrompts) {
 		const key = promptKey(prompt.text);
+		if (key && prompt.expandedText) expandedKeys.set(promptKey(prompt.expandedText), key);
 		if (!key || prompt.sentAt === undefined) continue;
 		sentAt.set(key, Math.max(sentAt.get(key) ?? 0, prompt.sentAt));
 	}
@@ -67,7 +77,11 @@ export function promptHistoryEntries(
 		seen.add(key);
 		entries.push(time === undefined ? { text: key } : { text: key, sentAt: time });
 	};
-	for (const text of history) add(text, sentAt.get(promptKey(text)));
+	for (const text of history) {
+		const key = promptKey(text);
+		const typed = typedKeys.has(key) ? key : (expandedKeys.get(key) ?? key);
+		add(typed, sentAt.get(typed));
+	}
 	const older = [...sessionPrompts]
 		.map((prompt, order) => ({ prompt, order }))
 		.sort((a, b) => (b.prompt.sentAt ?? 0) - (a.prompt.sentAt ?? 0) || b.order - a.order);

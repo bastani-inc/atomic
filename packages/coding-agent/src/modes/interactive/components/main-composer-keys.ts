@@ -18,7 +18,7 @@ export function mainComposerKeys(state: MainComposerKeyState): NavKey[] {
 		{ keys: "enter", label: "send the prompt" },
 		...(state.working ? [{ action: "app.interrupt", label: "interrupt the agent's turn" }] : []),
 		{ keys: "/", label: "commands, at the start of the prompt" },
-		{ keys: "@", label: "attach a file" },
+		{ keys: "@", label: "insert a file path" },
 		{ action: "app.history.search", label: "search past prompts" },
 		{ keys: "pgup/pgdn", label: "scroll" },
 		{ action: "tui.altScreen.bottom", label: "jump to the latest message" },

@@ -47,7 +47,9 @@ Compaction uses a still `∀` mark with elapsed time and the cancel key. Opening
 | Hidden shell command | `!!command` runs without sending output to the model |
 | External editor | CTRL+G opens `$VISUAL` or `$EDITOR` |
 
-The `@` and `/` menus end with one hint line naming the keys that work there: ↑↓ to select, Tab to complete, Enter to run a command or insert a path, and Esc to close.
+The `@` and `/` menus end with one hint line naming the keys that work there. Tab completes without sending. Enter inserts an `@` path; for a `/`-prefixed completion, including an absolute path, Enter submits the completed prompt. Remapped menu keys appear only when an app shortcut does not take them first.
+
+Ctrl+R searches the current chat's prompts, including prompts sent through templates or skills as you typed them. In writable subagent and workflow stage chats, the search uses that chat's transcript and sent messages. Esc clears the search, then closes it without changing your draft or interrupting the agent. Read-only chats keep their transcript scrolling keys and do not open prompt search.
 
 See [Keybindings](/keybindings) for all shortcuts and customization.
 
@@ -74,7 +76,7 @@ Startup typing does not apply to non-TTY input, print or RPC mode, or metadata c
 
 Type `/` in the editor to open command completion. Extensions can register custom commands, skills are available as `/skill:name`, and prompt templates expand via `/templatename`.
 
-`/settings` lists each setting with its value. Type to search; Enter or Space changes the selected setting, stepping a value in place or opening its picker (a value followed by `›`). The selected setting's description shows under the list, and Esc clears a search before it closes.
+`/settings` lists each setting with its value, shortening long labels first on narrow terminals. Type to search; Enter or Space changes the selected setting, stepping a value in place or opening its picker (a value followed by `›`). Right does not change or save a setting, including inside a value picker. The selected setting's description shows under the list, and Esc clears a search before it closes.
 
 | Command | Description |
 |---------|-------------|

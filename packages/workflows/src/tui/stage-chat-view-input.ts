@@ -55,6 +55,9 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 		handlePromptInput(ctx, data);
 		return true;
 	}
+	if (!readOnlyArchive && !isBlocked(ctx) && ctx.chatHost.hasTransientModal) {
+		return ctx.chatHost.handleInput(data);
+	}
 	if (handleToolsExpandInput(ctx, data)) return true;
 	if (readOnlyPromptArchive && handlePromptScrollInput(ctx, data, true)) {
 		return true;

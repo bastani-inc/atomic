@@ -144,6 +144,7 @@ On Windows, pressing the secondary mouse button in fullscreen pastes text from t
 | `app.exit` | `ctrl+d` | Exit (when editor empty) |
 | `app.suspend` | `ctrl+z` (`alt+z` on Windows) | Suspend to background; on Windows, open a PowerShell subshell |
 | `app.editor.external` | `ctrl+g` | Open in external editor (`$VISUAL` or `$EDITOR`) |
+| `app.history.search` | `ctrl+r` | Search past prompts: newest first, type to filter, Enter puts the prompt in the composer without sending it |
 | `app.clipboard.pasteImage` | `ctrl+v` (`alt+v`, `ctrl+v` on Windows and WSL) | Paste files on macOS, images, or text from clipboard |
 
 On macOS, files copied in Finder paste as their paths, one per line, instead of the file icon. In bash mode (input starting with `!`), the paths are shell-quoted and separated by spaces. When `app.clipboard.pasteImage` finds text rather than files or an image, Atomic inserts that clipboard text into the editor instead of reporting an image-paste failure.
@@ -192,7 +193,6 @@ Ctrl+C is the host's escape hatch whenever an engine-owned `ctx.ui.custom()` com
 | Keybinding id | Default | Description |
 |--------|---------|-------------|
 | `app.model.select` | `ctrl+l` | Open model selector |
-| `app.history.search` | `ctrl+r` | Search past prompts: newest first, type to filter, Enter puts the prompt in the composer without sending it |
 | `app.model.cycleForward` | `ctrl+p` | Cycle to next model |
 | `app.model.cycleBackward` | `shift+ctrl+p` | Cycle to previous model |
 | `app.thinking.cycle` | `shift+tab` | Cycle thinking level |

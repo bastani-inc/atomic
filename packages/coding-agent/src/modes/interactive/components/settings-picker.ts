@@ -44,6 +44,8 @@ export class SettingsPicker implements Component, Focusable {
 			emptyText: "No settings available",
 			closeOnSelect: false,
 			spaceConfirms: true,
+			rightConfirms: false,
+			minDescriptionWidth: 6,
 			confirmLabel: (item) => (item.value.submenu ? "open" : item.value.values?.length ? "change" : undefined),
 			selectedDetail: (item) => item.value.description,
 			onSelect: (item) => this.activate(item.value),

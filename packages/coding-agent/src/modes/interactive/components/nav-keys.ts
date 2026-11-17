@@ -191,10 +191,12 @@ export function renderAutocompleteHintLine(
 	style: NavKeyStyle,
 ): string {
 	const kept = entries.flatMap((entry) => {
-		const keys = entry.actions
-			.map((action) => keybindings.getKeys?.(action)?.[0])
-			.filter((key): key is string => key !== undefined)
-			.map(navKeyText);
+		const keys = (
+			entry.resolvedKeys ??
+			entry.actions
+				.map((action) => keybindings.getKeys?.(action)?.[0])
+				.filter((key): key is string => key !== undefined)
+		).map(navKeyText);
 		if (keys.length === 0) return [];
 		const text = keys.every((key) => key === "↑" || key === "↓") ? keys.join("") : keys.join("/");
 		return [{ key: { keys: text, label: entry.label } satisfies NavKey, essential: entry.essential === true }];

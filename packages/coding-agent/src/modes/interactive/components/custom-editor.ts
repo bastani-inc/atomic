@@ -1,6 +1,7 @@
 import {
 	CURSOR_MARKER,
 	Editor,
+	type EditorAutocompleteHintEntry,
 	type EditorOptions,
 	type EditorTheme,
 	isKeyRepeat,
@@ -131,12 +132,43 @@ export class CustomEditor extends Editor {
 	public onExtensionShortcut?: (data: string) => boolean;
 
 	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, options?: CustomEditorOptions) {
-		super(tui, theme, options);
+		const editorTheme = { ...theme };
+		super(tui, editorTheme, options);
 		this.keybindings = keybindings;
+		const renderHint = theme.autocompleteHint;
+		if (renderHint) {
+			editorTheme.autocompleteHint = (entries, width) => renderHint(this.autocompleteHintEntries(entries), width);
+		}
 		this.promptPrefix = options?.promptPrefix ?? "❯ ";
 		this.placeholder = options?.placeholder;
 		this.topRuleLabel = options?.topRuleLabel;
 		this.embedWorkingStatus = options?.embedWorkingStatus ?? false;
+	}
+
+	private autocompleteHintEntries(entries: readonly EditorAutocompleteHintEntry[]): EditorAutocompleteHintEntry[] {
+		const taken = new Set<string>();
+		for (const action of this.actionHandlers.keys()) {
+			if (action === "app.interrupt" || action === "app.exit" || action === "app.keys.help") continue;
+			for (const key of this.keybindings.getKeys(action)) taken.add(key);
+		}
+		for (const action of ["app.interrupt", "tui.editor.historyPrevious", "tui.editor.historyNext"] as const) {
+			for (const key of this.keybindings.getKeys(action)) taken.delete(key);
+		}
+		taken.delete("escape");
+		for (const key of this.keybindings.getKeys("app.clipboard.pasteImage")) taken.add(key);
+		for (const action of ["tui.select.pageUp", "tui.select.pageDown"] as const) {
+			for (const key of this.keybindings.getKeys(action)) taken.delete(key);
+		}
+		for (const action of ["tui.input.copy", "tui.editor.undo"] as const) {
+			for (const key of this.keybindings.getKeys(action)) taken.add(key);
+		}
+		return entries.map((entry) => ({
+			...entry,
+			resolvedKeys: entry.actions.flatMap((action) => {
+				const key = this.keybindings.getKeys(action).find((candidate) => !taken.has(candidate));
+				return key === undefined ? [] : [key];
+			}),
+		}));
 	}
 
 	setTopRuleLabel(label: (() => string | undefined) | undefined): void {

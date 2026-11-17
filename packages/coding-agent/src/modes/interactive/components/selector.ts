@@ -97,6 +97,8 @@ export interface SelectorOptions<T> {
 	readonly confirmLabel?: string | ((item: SelectorItem<T>) => string | undefined);
 	/** Space chooses the selected row like enter while the search is empty, and the hint shows `enter/space`. */
 	readonly spaceConfirms?: boolean;
+	readonly rightConfirms?: boolean;
+	readonly minDescriptionWidth?: number;
 	/** Dim text about the selected row, wrapped under the list. */
 	readonly selectedDetail?: (item: SelectorItem<T>) => string | undefined;
 	/** Hint label for esc when the search is empty. Default `cancel`. */
@@ -658,7 +660,7 @@ export class Selector<T> implements Component, Focusable {
 			return;
 		} else if (
 			kb.matches(data, "tui.select.confirm") ||
-			(kb.matches(data, "app.list.open") && !this.state.getQuery())
+			(this.options.rightConfirms !== false && kb.matches(data, "app.list.open") && !this.state.getQuery())
 		) {
 			this.confirm();
 			return;
@@ -920,7 +922,15 @@ export class Selector<T> implements Component, Focusable {
 			const isSelected = index === this.state.getSelectedIndex() && !item.disabled;
 			const parts = this.rowParts(item, index, isSelected, numbered, numberWidth, hasMarks, multi);
 			const indent = visibleWidth(parts.lead);
-			const labelRoom = Math.max(1, width - indent - 1);
+			const minDesc =
+				!twoLine && item.description && this.options.minDescriptionWidth !== undefined
+					? Math.max(1, this.options.minDescriptionWidth)
+					: undefined;
+			const reservedDesc =
+				minDesc !== undefined && width - indent - 1 - DESCRIPTION_GAP - minDesc >= 8
+					? DESCRIPTION_GAP + minDesc
+					: 0;
+			const labelRoom = Math.max(1, width - indent - 1 - reservedDesc);
 			const wrappedLabels = this.options.wrap ? wrapTextWithAnsi(item.label, labelRoom) : undefined;
 			const label = wrappedLabels
 				? (wrappedLabels[0] ?? "")
@@ -943,10 +953,12 @@ export class Selector<T> implements Component, Focusable {
 			let line = parts.lead + parts.label(label);
 			let used = indent + visibleWidth(label);
 			if (item.description && !twoLine) {
-				const column = Math.min(labelWidth, Math.max(visibleWidth(label), room - MIN_DESCRIPTION_WIDTH));
+				const minWidth = minDesc ?? MIN_DESCRIPTION_WIDTH;
+				const maxColumn = minDesc !== undefined ? room - DESCRIPTION_GAP - minWidth : room - minWidth;
+				const column = Math.min(labelWidth, Math.max(visibleWidth(label), maxColumn));
 				const gap = column - visibleWidth(label) + DESCRIPTION_GAP;
 				const descRoom = width - used - gap - tagWidth - 1;
-				if (descRoom >= MIN_DESCRIPTION_WIDTH) {
+				if (descRoom >= minWidth) {
 					const text = item.description.replace(/\s+/g, " ");
 					const description = visibleWidth(text) > descRoom ? truncateToWidth(text, descRoom) : text;
 					line += " ".repeat(gap) + this.style.muted(description);

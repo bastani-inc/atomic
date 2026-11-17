@@ -101,6 +101,7 @@ export class SelectSubmenu implements Component, Focusable {
 			search: searchable,
 			...(current === undefined ? {} : { initialId: current }),
 			cancelLabel: "back",
+			rightConfirms: false,
 			onSelect: (item) => onSelect(item.value),
 			onCancel,
 			...(onSelectionChange ? { onSelectionChange: (item) => item && onSelectionChange(item.value) } : {}),

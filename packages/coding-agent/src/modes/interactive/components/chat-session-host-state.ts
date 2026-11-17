@@ -39,6 +39,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly getAgentSession: (() => AgentSession | undefined) | undefined;
 	readonly getChatBoxSession: (() => ChatBoxSession | undefined) | undefined;
 	readonly getSessionMessages: (() => AgentSession["messages"] | undefined) | undefined;
+	readonly getPromptEntries: ChatSessionHostOpts<TExtraEntry>["getPromptEntries"];
 	readonly getTaskSource: (() => TaskViewSource | undefined) | undefined;
 	readonly isStreamingOverride: (() => boolean) | undefined;
 	readonly isPaused: (() => boolean) | undefined;
@@ -137,6 +138,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 		this.getAgentSession = opts.getAgentSession;
 		this.getChatBoxSession = opts.getChatBoxSession;
 		this.getSessionMessages = opts.getSessionMessages;
+		this.getPromptEntries = opts.getPromptEntries;
 		this.getTaskSource = opts.getTaskSource;
 		this.isStreamingOverride = opts.isStreaming;
 		this.workingLifecycleActive = opts.isStreaming?.() === true;

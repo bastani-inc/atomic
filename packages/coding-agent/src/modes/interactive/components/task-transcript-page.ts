@@ -180,6 +180,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			getChatRenderSettings: env.getChatRenderSettings,
 			...(env.footerData === undefined ? {} : { footerData: withoutExtensionStatuses(env.footerData) }),
 			getChatBoxSession: () => this.followed?.chatSession,
+			getPromptEntries: () =>
+				(this.followed ?? this.source.followTaskTranscript(this.taskId)?.session)?.getEntries(),
 			requestRender,
 			taskRowsInChat: false,
 			isStreaming: () => this.followed?.getStreamingMessage?.() !== undefined,
@@ -273,6 +275,11 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.chat.invalidate();
 			this.requestRender();
 			return true;
+		}
+		if (!this.chat.hasTaskInspector && this.chat.hasTransientModal) {
+			const handled = this.chat.handleInput(data);
+			this.requestRender();
+			return handled;
 		}
 		// A read-only chat scrolls and keeps its keys, but takes no typing: nothing it sends could reach the task.
 		if (!this.chat.hasTaskInspector && this.readOnlyReason() !== undefined && isTyping(data)) return true;
@@ -387,7 +394,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	}
 
 	handlesBack(): boolean {
-		return this.chat.hasTaskInspector;
+		return this.chat.hasTaskInspector || this.chat.hasTransientModal;
 	}
 
 	interruptible(): boolean {

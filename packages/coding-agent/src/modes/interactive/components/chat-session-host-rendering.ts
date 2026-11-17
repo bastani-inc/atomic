@@ -6,7 +6,12 @@ import {
 	type ChatMessageRenderOptions,
 	renderChatMessageEntry,
 } from "./chat-message-renderer.ts";
-import { setEditorBorderColor, setEditorFocused, setEditorPlaceholder } from "./chat-session-host-editor.ts";
+import {
+	setEditorBorderColor,
+	setEditorFocused,
+	setEditorPlaceholder,
+	syncChatSessionPromptSearch,
+} from "./chat-session-host-editor.ts";
 import { isChatSessionStreaming } from "./chat-session-host-runtime.ts";
 import type { ChatSessionHostState } from "./chat-session-host-state.ts";
 import type { ChatSessionHostEntry } from "./chat-session-host-types.ts";
@@ -117,7 +122,7 @@ export function renderChatSessionEditor<TExtraEntry extends ChatTranscriptEntryL
 	focused: boolean,
 ): string[] {
 	const disabled = state.isDisabled?.() === true;
-	if (!disabled && state.promptSearch) return state.promptSearch.render(width);
+	if (syncChatSessionPromptSearch(state)) return state.promptSearch!.render(width);
 	const agentSession = state.getAgentSession?.();
 	const ruleHex = state.style.editorRuleColor(disabled, agentSession, {
 		isBashMode: state.isBashMode,

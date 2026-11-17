@@ -17,7 +17,12 @@ import {
 	isProtectedStreamingCustomMessage,
 	queueProtectedStreamingCustomMessage,
 } from "./agent-session-persistent-custom-messages.ts";
-import type { PromptDisposition, PromptOptions, QueuedInputDisposition } from "./agent-session-types.js";
+import type {
+	PromptDisposition,
+	PromptOptions,
+	QueuedInputDisposition,
+	UserMessageWithRawText,
+} from "./agent-session-types.js";
 import {
 	formatNoApiKeyFoundMessage,
 	formatNoModelSelectedMessage,
@@ -137,6 +142,7 @@ export async function normalizeQueuedMessageImages(session: AgentSession, messag
 	// The admitted message is matched by its text when its reply is recovered.
 	if (session._admittedQueuedMessageAwaitingReply === session._getUserMessageText(message))
 		session._admittedQueuedMessageAwaitingReply = text;
+	if (text !== first.text) (message as UserMessageWithRawText).rawText ??= first.text;
 	message.content = [{ type: "text", text }, ...rest.filter((block) => block.type !== "image"), ...normalized.images];
 }
 
@@ -547,11 +553,13 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		messages = [];
 		const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: userText }];
 		userContent.push(...normalized.images);
-		messages.push({
+		const userMessage: UserMessageWithRawText = {
 			role: "user",
 			content: userContent,
+			...(text !== userText ? { rawText: text } : {}),
 			timestamp: Date.now(),
-		});
+		};
+		messages.push(userMessage);
 
 		// Inject any pending "nextTurn" messages as context alongside the user message
 		for (const msg of this._pendingNextTurnMessages) {

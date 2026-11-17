@@ -29,7 +29,10 @@ knowledge:
       Root suites run under vitest: `npm run test:unit`, `npm run test:integration`, or both with
       `npm run test:all`. The coding-agent suite is `npm run test --workspace=@bastani/atomic`, and the
       scripts/*.test.mjs tests run with `npm run test:scripts` (`node --test`). Build first: several
-      suites load the built packages.
+      suites load the built packages. The TUI autocomplete suite's @ cases need `fd` on PATH;
+      if the system provides `fdfind`, expose it as `fd` for that run so those cases do not skip.
+      Finish `npm run check` and builds before starting tests: they rewrite package dist files,
+      and concurrent imports can read incomplete provider exports.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run

@@ -77,17 +77,107 @@ describe("/settings on the shared picker (#5224)", () => {
 			},
 		);
 		picker.handleInput("\r");
+		assert.deepEqual(changes, ["auto-compact=false"]);
+		assert.match(
+			plain(picker.render(100)).find((line) => line.includes("Auto-compact")) ?? "",
+			/^ ❯ Auto-compact\s+false$/,
+		);
 		picker.handleInput(" ");
 		assert.deepEqual(changes, ["auto-compact=false", "auto-compact=true"]);
-		assert.match(plain(picker.render(100)).find((line) => line.includes("Auto-compact")) ?? "", /true$/);
+		assert.match(
+			plain(picker.render(100)).find((line) => line.includes("Auto-compact")) ?? "",
+			/^ ❯ Auto-compact\s+true$/,
+		);
 		for (const ch of "Setting 1") picker.handleInput(ch);
 		assert.ok(plain(picker.render(100)).some((line) => line.includes("⌕ Setting 1")));
 		assert.deepEqual(changes, ["auto-compact=false", "auto-compact=true"]);
 	});
 
+	it("keeps setting values visible at narrow widths (42-48 columns) and truncates long labels before hiding values", () => {
+		const narrowRows: SettingItem[] = [
+			{
+				id: "auto-compact",
+				label: "Auto-compact",
+				description: "Automatically compact context when it gets too large",
+				currentValue: "true",
+				values: ["true", "false"],
+			},
+			{
+				id: "background-compaction",
+				label: "Background compaction",
+				currentValue: "true",
+				values: ["true", "false"],
+			},
+			{
+				id: "background-compaction-threshold",
+				label: "Background compaction threshold",
+				currentValue: "75",
+				values: ["50", "75", "90"],
+			},
+			{
+				id: "model-thinking",
+				label: "Default thinking level per model",
+				currentValue: "none",
+				submenu: () => new Text("THINKING"),
+			},
+			{
+				id: "theme",
+				label: "Theme",
+				currentValue: "dark",
+				submenu: () => new Text("THEME"),
+			},
+		];
+		const picker = new SettingsPicker(
+			narrowRows,
+			() => {},
+			() => {},
+			{ title: "Settings", search: true },
+		);
+		for (const width of [42, 45, 48]) {
+			const out = plain(picker.render(width));
+			assert.ok(out.every((line) => line.length <= width));
+			assert.match(out.find((line) => line.includes("Auto-compact")) ?? "", /^ ❯ Auto-compact\s+true$/);
+			assert.match(out.find((line) => line.includes("Background compaction thres")) ?? "", /75$/);
+			assert.match(out.find((line) => line.includes("Default thinking level")) ?? "", /none ›$/);
+			assert.match(out.find((line) => line.includes("Theme")) ?? "", /^ {3}Theme\s+dark ›$/);
+		}
+	});
+
+	it("ignores right arrow on value and submenu rows while enter and space still activate", () => {
+		const changes: string[] = [];
+		let submenuOpened = 0;
+		const items = rows();
+		items[1] = {
+			...items[1]!,
+			submenu: () => {
+				submenuOpened++;
+				return new Text("THEME PICKER");
+			},
+		};
+		const picker = new SettingsPicker(
+			items,
+			(id, value) => changes.push(`${id}=${value}`),
+			() => {},
+			{ search: true },
+		);
+		picker.handleInput("\x1b[C");
+		assert.deepEqual(changes, []);
+		assert.match(
+			plain(picker.render(100)).find((line) => line.includes("Auto-compact")) ?? "",
+			/^ ❯ Auto-compact\s+true$/,
+		);
+
+		picker.handleInput("\x1b[B");
+		picker.handleInput("\x1b[C");
+		assert.equal(submenuOpened, 0);
+
+		picker.handleInput(" ");
+		assert.equal(submenuOpened, 1);
+	});
+
 	it("opens a row's picker in place, and its done value updates the row and returns to it", () => {
 		const changes: string[] = [];
-		let finish: ((value?: string) => void) | undefined;
+		let finish: ((value?: string, options?: { navigateTo?: string }) => void) | undefined;
 		const items = rows();
 		items[1] = {
 			...items[1]!,
@@ -111,6 +201,10 @@ describe("/settings on the shared picker (#5224)", () => {
 		const out = plain(picker.render(100));
 		assert.match(out.find((line) => line.includes("Theme")) ?? "", /^ ❯ Theme\s+light ›$/);
 		assert.deepEqual(changes, ["theme=light"]);
+
+		picker.handleInput("\r");
+		finish?.(undefined, { navigateTo: "auto-compact" });
+		assert.deepEqual(changes, ["theme=light", "auto-compact=false"]);
 	});
 
 	it("esc clears a search before it cancels, and updateValue changes a shown value", () => {
@@ -123,6 +217,9 @@ describe("/settings on the shared picker (#5224)", () => {
 		);
 		picker.updateValue("auto-compact", "false");
 		assert.match(plain(picker.render(100)).find((line) => line.includes("Auto-compact")) ?? "", /false$/);
+		picker.handleInput("z");
+		picker.selectItem("theme");
+		assert.match(plain(picker.render(100)).find((line) => line.includes("Theme")) ?? "", /^ ❯ Theme\s+dark ›$/);
 		picker.handleInput("z");
 		picker.handleInput("\x1b");
 		assert.equal(cancelled, 0);
@@ -162,4 +259,23 @@ describe("settings value pickers on the shared picker (#5224)", () => {
 			assert.ok(out.every((line) => line.length <= width));
 		});
 	}
+
+	it("ignores right arrow in a value picker while enter chooses the highlighted option", () => {
+		const chosen: string[] = [];
+		const submenu = new SelectSubmenu(
+			"Theme",
+			"Select a theme",
+			[
+				{ value: "dark", label: "dark" },
+				{ value: "light", label: "light" },
+			],
+			"light",
+			(value) => chosen.push(value),
+			() => {},
+		);
+		submenu.handleInput("\x1b[C");
+		assert.deepEqual(chosen, []);
+		submenu.handleInput("\r");
+		assert.deepEqual(chosen, ["light"]);
+	});
 });

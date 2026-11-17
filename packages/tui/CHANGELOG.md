@@ -6,7 +6,7 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ### Added
 
-- `EditorTheme.autocompleteHint` draws one hint line under the editor's open autocomplete menu from the entries the editor passes: select (when there is more than one row), complete, run or insert, and close. `Editor.getHistory()` returns the prompt history, newest first, and `SelectList.getItemCount()` the number of rows after its filter ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- `EditorTheme.autocompleteHint` draws one hint line under the editor's open autocomplete menu from the entries the editor passes: select (when there is more than one row), complete, run or insert, and close. An entry's optional `resolvedKeys` names keys that reach the menu when an app handles shortcuts first. `Editor.getHistory()` returns the prompt history, newest first, and `SelectList.getItemCount()` the number of rows after its filter ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Changed
 

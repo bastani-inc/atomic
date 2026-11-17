@@ -29,6 +29,7 @@ import {
 	type InterruptQueueHold,
 	normalizeInterruptAbortMessage,
 	priorityHoldCounts,
+	type UserMessageWithRawText,
 } from "./agent-session-types.js";
 import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.js";
 import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
@@ -88,7 +89,12 @@ export async function _queueSteer(
 	if (images) {
 		content.push(...images);
 	}
-	const message: AgentMessage = { role: "user", content, timestamp: Date.now() };
+	const message: UserMessageWithRawText = {
+		role: "user",
+		content,
+		...(typed !== undefined && typed !== text ? { rawText: typed } : {}),
+		timestamp: Date.now(),
+	};
 	if (images?.length) markQueuedMessageImages(message);
 	rememberLaneMessage(message, images);
 	this._queueAgentMessage(message, "steer");
@@ -113,7 +119,12 @@ export async function _queueFollowUp(
 	if (images) {
 		content.push(...images);
 	}
-	const message: AgentMessage = { role: "user", content, timestamp: Date.now() };
+	const message: UserMessageWithRawText = {
+		role: "user",
+		content,
+		...(typed !== undefined && typed !== text ? { rawText: typed } : {}),
+		timestamp: Date.now(),
+	};
 	if (images?.length) markQueuedMessageImages(message);
 	rememberLaneMessage(message, images);
 	this._queueAgentMessage(message, "followUp");

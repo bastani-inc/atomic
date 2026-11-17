@@ -258,6 +258,7 @@ interface LayoutLine {
 /** One key the open @ or / menu offers: the keybindings that trigger it and what it does. */
 export interface EditorAutocompleteHintEntry {
 	readonly actions: readonly Keybinding[];
+	readonly resolvedKeys?: readonly string[];
 	readonly label: string;
 	/** Kept when a narrow line has to drop entries. */
 	readonly essential?: boolean;
