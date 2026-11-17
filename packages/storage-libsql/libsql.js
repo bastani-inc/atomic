@@ -50,8 +50,8 @@ const REQUEST_TIMEOUT_MS = 30_000;
  * The wait before the first resend of the close of a stream abandoned in an outage (#5114); each later wait doubles, up
  * to `ABANDONED_STREAM_CLOSE_LAST_WAIT_MS`. A stream the server keeps holds its open transaction, and with it the
  * database's write lock, until the server expires it: every writer waits for the lock meanwhile, this process's and
- * every other's. A close the server answers, whatever the answer, is done. A request of the same client sends the
- * closes first, whatever the wait (`AbandonedStreams.before`).
+ * every other's. A close the server answers, whatever the answer, is done. Each request of the same client also sends
+ * the closes ahead of itself, whatever the wait (`AbandonedStreams.start` and `AbandonedStreams.beforeWrite`).
  */
 const ABANDONED_STREAM_CLOSE_FIRST_WAIT_MS = 250;
 /** The longest wait between two resends of abandoned stream closes. */
@@ -61,11 +61,15 @@ const ABANDONED_STREAM_CLOSE_LAST_WAIT_MS = 8_000;
  * stream lifetime (10 s in sqld); a server keeps no stream this long, so the close no longer frees anything.
  */
 const ABANDONED_STREAM_CLOSE_MAX_AGE_MS = 5 * 60_000;
-/**
- * How long one resend of an abandoned stream's close may go unanswered; a later resend tries again. A request that sends
- * the closes first waits no longer than this for them.
- */
+/** How long one resend of an abandoned stream's close may go unanswered; a later resend tries again. */
 const ABANDONED_STREAM_CLOSE_TIMEOUT_MS = 5_000;
+/**
+ * How long writes wait, in all, for a round of abandoned stream closes the server takes but does not answer. A server
+ * that is reachable answers a close at once, without waiting for any lock; one that has not answered by then may never
+ * answer, and a write that goes ahead waits on the server for the lock as it would have anyway. Writes wait no more
+ * until the server answers a close again.
+ */
+const ABANDONED_STREAM_CLOSE_WRITE_WAIT_MS = 2_000;
 /** The most abandoned stream closes kept for resending; the oldest is dropped past it, its stream long expired. */
 const MAX_ABANDONED_STREAM_CLOSES = 16;
 
@@ -128,6 +132,53 @@ async function closesNoStream(request) {
 	return closesStream(body, true);
 }
 
+/**
+ * Whether `request`, a Hrana pipeline or cursor request, may take the database's write lock, so it would wait on the
+ * server behind a lock an abandoned stream holds: it runs a statement that is not one `SELECT`, a sequence of
+ * statements, or SQL it stored earlier. A request without a body, such as a version check, takes no lock; one whose body
+ * is not JSON counts as a write.
+ * @param {Request} request an unread copy
+ */
+async function mayWrite(request) {
+	const text = await request.text();
+	if (text === "") return false;
+	/** @type {{ requests?: unknown, batch?: { steps?: unknown } }} */
+	let body;
+	try {
+		body = JSON.parse(text);
+	} catch {
+		return true;
+	}
+	/** @type {unknown[]} */
+	const statements = [];
+	const steps = (/** @type {unknown} */ batch) =>
+		Array.isArray(batch) ? batch.map((step) => /** @type {{ stmt?: unknown }} */ (step)?.stmt) : [];
+	for (const each of Array.isArray(body?.requests) ? body.requests : []) {
+		const { type, stmt, batch } = /** @type {{ type?: unknown, stmt?: unknown, batch?: { steps?: unknown } }} */ (each ?? {});
+		if (type === "sequence") return true;
+		if (type === "execute") statements.push(stmt);
+		else if (type === "batch") statements.push(...steps(batch?.steps));
+	}
+	statements.push(...steps(body?.batch?.steps));
+	return statements.some((stmt) => !readsOnly(/** @type {{ sql?: unknown }} */ (stmt)?.sql));
+}
+
+/** The keyword of a statement that only reads. */
+const READ_KEYWORD = /SELECT\b/iy;
+
+/**
+ * Whether `sql` is one `SELECT`, which never takes the write lock. SQL that is not text, as a statement stored earlier
+ * leaves it, may write.
+ * @param {unknown} sql
+ */
+function readsOnly(sql) {
+	if (typeof sql !== "string") return false;
+	const start = firstTokenStart(sql);
+	if (start === -1) return false;
+	READ_KEYWORD.lastIndex = start;
+	return READ_KEYWORD.test(sql) && isOneStatement(sql);
+}
+
 /** The answer a server gives a request that only closes a stream. */
 function closedResponse() {
 	return new Response(JSON.stringify({ baton: null, base_url: null, results: [{ type: "ok", response: { type: "close" } }] }), {
@@ -142,15 +193,22 @@ function closedResponse() {
  * and the server keeps the stream, with its open transaction and the write lock it holds, for the stream's whole
  * lifetime. Sending the close again as soon as the server is reachable ends the transaction there and frees the lock:
  * a timer sends the closes with growing waits while the client sends nothing else, and each request the client sends
- * sends them first, so the request never waits for a lock its own client's abandoned stream holds.
+ * sends them ahead of itself. A write waits for them (`beforeWrite`), so it does not queue on the server behind a lock
+ * its own client's abandoned stream holds; any other request goes at once.
  */
 class AbandonedStreams {
 	/** @type {{ url: string, headers: [string, string][], body: ArrayBuffer, since: number }[]} */
 	pending = [];
 	/** @type {ReturnType<typeof setTimeout> | undefined} */
 	timer;
+	/** Whether a round the timer started, or joined, is under way: the timer plans the next one when it ends. */
+	timerRound = false;
 	/** @type {Promise<boolean> | undefined} */
 	sending;
+	/** When the writes waiting for the round under way stop waiting for it. @type {number | undefined} */
+	waitUntil;
+	/** Whether a round left the writes waiting for it unanswered: writes wait no more until a close is answered. */
+	stalled = false;
 	wait = ABANDONED_STREAM_CLOSE_FIRST_WAIT_MS;
 	closed = false;
 
@@ -167,15 +225,19 @@ class AbandonedStreams {
 	}
 
 	/**
-	 * Sends the kept closes again after the current wait, unless a resend is already planned. A round that leaves a close
-	 * unanswered doubles the wait before the next one.
+	 * Sends the kept closes again after the current wait, unless a resend is already planned or the timer's round is under
+	 * way. A round the timer started that leaves a close unanswered doubles the wait before the next one, once; a round a
+	 * request started, which the timer joined, leaves it as it is.
 	 */
 	schedule() {
-		if (this.timer !== undefined || this.pending.length === 0) return;
+		if (this.timer !== undefined || this.timerRound || this.pending.length === 0) return;
 		this.timer = setTimeout(() => {
 			this.timer = undefined;
+			this.timerRound = true;
+			const joined = this.sending !== undefined;
 			void this.send().then((answered) => {
-				if (!answered) this.wait = Math.min(this.wait * 2, ABANDONED_STREAM_CLOSE_LAST_WAIT_MS);
+				this.timerRound = false;
+				if (!answered && !joined) this.wait = Math.min(this.wait * 2, ABANDONED_STREAM_CLOSE_LAST_WAIT_MS);
 				this.schedule();
 			});
 		}, this.wait);
@@ -183,29 +245,49 @@ class AbandonedStreams {
 		this.timer.unref();
 	}
 
+	/** Sends the kept closes ahead of a request that does not wait for them, unless a round is under way. */
+	start() {
+		if (this.pending.length > 0) void this.send();
+	}
+
 	/**
-	 * Sends the kept closes before a request of this client, and waits for them at most
-	 * `ABANDONED_STREAM_CLOSE_TIMEOUT_MS`. A server reachable again would otherwise take the request while the abandoned
-	 * stream still holds the write lock, and a write would wait for that lock until the next timed resend. A round that
-	 * fails here leaves the timer's wait as it is: the request finds the server unreachable on its own.
+	 * Sends the kept closes ahead of a write, unless a round is under way, and waits for the round. A server reachable
+	 * again would otherwise take the write while an abandoned stream still holds the write lock, and the write would wait
+	 * for that lock until the next timed resend. The writes waiting for one round wait for it at most
+	 * `ABANDONED_STREAM_CLOSE_WRITE_WAIT_MS` in all; a round still unanswered then stalls the closes, and no write waits
+	 * for them again until the server answers one. A round that fails at once costs nothing: the write finds the server
+	 * unreachable on its own. Rejects with the reason of `signal` when it aborts first; the round goes on.
+	 * @param {AbortSignal} signal
 	 */
-	async before() {
+	async beforeWrite(signal) {
 		if (this.pending.length === 0) return;
+		signal.throwIfAborted();
+		const round = this.send();
+		if (this.stalled) return;
+		this.waitUntil ??= performance.now() + ABANDONED_STREAM_CLOSE_WRITE_WAIT_MS;
+		const left = this.waitUntil - performance.now();
 		/** @type {ReturnType<typeof setTimeout> | undefined} */
 		let timer;
-		await Promise.race([
-			this.send(),
-			new Promise((resolve) => {
-				timer = setTimeout(resolve, ABANDONED_STREAM_CLOSE_TIMEOUT_MS);
-			}),
-		]);
-		clearTimeout(timer);
+		/** @type {(() => void) | undefined} */
+		let abort;
+		try {
+			const late = await new Promise((resolve, reject) => {
+				abort = () => reject(signal.reason);
+				signal.addEventListener("abort", abort, { once: true });
+				timer = setTimeout(() => resolve(true), Math.max(left, 0));
+				void round.then(() => resolve(false));
+			});
+			if (late && this.sending === round) this.stalled = true;
+		} finally {
+			clearTimeout(timer);
+			if (abort !== undefined) signal.removeEventListener("abort", abort);
+		}
 	}
 
 	/**
 	 * Sends each kept close again, in order, until one goes unanswered; an answered close is done, whatever it says, and
-	 * resets the wait. A close older than `ABANDONED_STREAM_CLOSE_MAX_AGE_MS` is given up. Resolves whether every kept
-	 * close was answered.
+	 * resets the wait and any stall. A close older than `ABANDONED_STREAM_CLOSE_MAX_AGE_MS` is given up. Joins the round
+	 * under way, if any. Resolves whether every kept close was answered.
 	 * @returns {Promise<boolean>}
 	 */
 	send() {
@@ -226,11 +308,13 @@ class AbandonedStreams {
 					return false;
 				}
 				this.wait = ABANDONED_STREAM_CLOSE_FIRST_WAIT_MS;
+				this.stalled = false;
 				this.pending = this.pending.filter((kept) => kept !== close);
 			}
 			return true;
 		})().finally(() => {
 			this.sending = undefined;
+			this.waitUntil = undefined;
 		});
 		return this.sending;
 	}
@@ -245,8 +329,9 @@ class AbandonedStreams {
 }
 
 /**
- * `fetch` that adds `headers` to every request the libSQL HTTP client sends, sends the closes `abandoned` keeps before
- * it, abandons a request after `REQUEST_TIMEOUT_MS`, and hands a stream's close that failed to `abandoned` for resending.
+ * `fetch` that adds `headers` to every request the libSQL HTTP client sends, sends the closes `abandoned` keeps ahead of
+ * it (a write waits for them), abandons a request after `REQUEST_TIMEOUT_MS`, wait included, and hands a stream's close
+ * that failed to `abandoned` for resending.
  * @param {[string, string][]} headers
  * @param {AbandonedStreams} abandoned
  * @returns {(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>}
@@ -257,10 +342,14 @@ function fetchWith(headers, abandoned) {
 		for (const [name, value] of headers) request.headers.set(name, value);
 		const copy = request.clone();
 		if (await closesNoStream(request.clone())) return closedResponse();
-		await abandoned.before();
 		const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+		const signal = init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
+		if (abandoned.pending.length > 0) {
+			if (await mayWrite(request.clone())) await abandoned.beforeWrite(signal);
+			else abandoned.start();
+		}
 		try {
-			return await fetch(request, { signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout });
+			return await fetch(request, { signal });
 		} catch (error) {
 			await abandoned.failed(copy).catch(() => {});
 			throw error;

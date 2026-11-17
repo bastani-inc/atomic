@@ -35,6 +35,8 @@ const CLOSE_MAX_AGE_MS = 5 * 60_000;
 const MAX_ABANDONED_STREAM_CLOSES = 16;
 /** How soon a process that only has a close waiting to be sent again exits. */
 const PROCESS_EXIT_BOUND_MS = 10_000;
+/** How long, in all, writes wait for a kept close that the server takes but leaves unanswered. */
+const CLOSE_WRITE_WAIT_MS = 2_000;
 
 async function within<T>(promise: Promise<T>, what: string, boundMs = RECOVERY_BOUND_MS): Promise<T> {
 	let timer: NodeJS.Timeout | undefined;
@@ -222,6 +224,26 @@ test("once the server is reachable, each kept close is sent once, the newest MAX
 	const resent = sent.slice(start);
 	assert.deepEqual(new Set(resent), new Set(abandoned.slice(1)), "the oldest close was dropped, the rest all sent");
 	assert.equal(resent.length, MAX_ABANDONED_STREAM_CLOSES, "each was sent once");
+}, 30_000);
+
+test("a kept close the server takes but leaves unanswered never holds up reads, and holds up writes once, for at most CLOSE_WRITE_WAIT_MS (#5114)", async () => {
+	const { database, control } = await abandonCloses(1);
+	// The server stops answering closes; the stream it kept expired meanwhile, so nothing waits for a lock.
+	control.mode = "hold";
+	for (let read = 0; read < 3; read++)
+		await within(database.all("SELECT n FROM events"), "a read", CLOSE_WRITE_WAIT_MS / 2);
+	await within(
+		database.run("INSERT INTO events VALUES (3)"),
+		"the first write",
+		CLOSE_WRITE_WAIT_MS + RECOVERY_BOUND_MS,
+	);
+	for (let write = 4; write < 6; write++)
+		await within(database.run(`INSERT INTO events VALUES (${write})`), "a later write", CLOSE_WRITE_WAIT_MS / 2);
+	await within(
+		database.batch!([{ sql: "INSERT INTO events VALUES (6)", params: [] }], { priority: true }),
+		"a later priority batch",
+		CLOSE_WRITE_WAIT_MS / 2,
+	);
 }, 30_000);
 
 test("closing the database stops resending its abandoned closes (#5114)", async () => {
