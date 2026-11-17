@@ -195,7 +195,7 @@ async function prepareOwnedAgentSessionServices(
 		}));
 	endTimingSpan(modelRuntimeSpan);
 	const settingsSpan = startTimingSpan("createAgentSessionServices.settingsManager");
-	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
+	const settingsManager = options.settingsManager ?? (await SettingsManager.createAsync(cwd, agentDir));
 	endTimingSpan(settingsSpan);
 	const resourceLoaderOptions = options.resourceLoaderOptions ?? {};
 	const defaultResourceLoader = new DefaultResourceLoader({

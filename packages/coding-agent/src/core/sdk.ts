@@ -280,7 +280,7 @@ async function sessionResumedOnThisNode(
 ): Promise<SessionManager | undefined> {
 	if (sessionManager === undefined || !sessionManager.isPersisted()) return sessionManager;
 	if (sessionManager.getLatestWorktreeSnapshots().size === 0) return sessionManager;
-	const settings = settingsManager ?? SettingsManager.create(process.cwd(), agentDir);
+	const settings = settingsManager ?? (await SettingsManager.createAsync(process.cwd(), agentDir));
 	const prepared = await prepareSessionResume(sessionManager, {
 		...sessionResumeOptions(
 			"create-agent-session",
@@ -345,7 +345,7 @@ async function constructAgentSession(
 	const modelRuntime = options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath }));
 	await modelRuntime.refresh({ allowNetwork: false });
 
-	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
+	const settingsManager = options.settingsManager ?? (await SettingsManager.createAsync(cwd, agentDir));
 	let sessionManager = suppliedSession;
 	if (!sessionManager) {
 		const sessionStore =
