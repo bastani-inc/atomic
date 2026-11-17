@@ -160,32 +160,39 @@ async function registerIsolatedTests(): Promise<void> {
 	}
 
 	describe("workflow overlay hidden render gating (#1856)", () => {
-		test("visible overlay coalesces a status burst into one frame (#5234)", async () => {
-			const { adapter, store, renderRequests } = buildHarness();
-			adapter.open(null);
-			const snapshotSpies = [
-				spyOn(store, "graphSnapshot"),
-				spyOn(store, "snapshot"),
-				spyOn(store, "inspectionSnapshot"),
-			];
-			const readsAtFrames: number[] = [];
-			renderRequests.onRender = () =>
-				readsAtFrames.push(snapshotSpies.reduce((reads, snapshotSpy) => reads + snapshotSpy.mock.calls.length, 0));
-			try {
-				const before = renderRequests.count;
-				for (let update = 0; update < 50; update++) store.recordRunStart(makeRun(`r${update}`));
-				for (const snapshotSpy of snapshotSpies) {
-					assert.equal(snapshotSpy.mock.calls.length, 0, "focused burst performs zero snapshot reads");
+		for (const stallMs of [0, 120]) {
+			test(`visible overlay coalesces a status burst into one snapshot-free frame after a ${stallMs} ms stall (#5234, #5343)`, async () => {
+				const { adapter, store, renderRequests } = buildHarness();
+				adapter.open(null);
+				const snapshotSpies = [
+					spyOn(store, "graphSnapshot"),
+					spyOn(store, "snapshot"),
+					spyOn(store, "inspectionSnapshot"),
+				];
+				const readsAtFrames: number[] = [];
+				renderRequests.onRender = () =>
+					queueMicrotask(() => {
+						readsAtFrames.push(
+							snapshotSpies.reduce((reads, snapshotSpy) => reads + snapshotSpy.mock.calls.length, 0),
+						);
+					});
+				try {
+					const before = renderRequests.count;
+					for (let update = 0; update < 50; update++) store.recordRunStart(makeRun(`r${update}`));
+					for (const snapshotSpy of snapshotSpies) {
+						assert.equal(snapshotSpy.mock.calls.length, 0, "focused burst performs zero snapshot reads");
+					}
+					assert.equal(renderRequests.count, before, "status events schedule a frame without painting inline");
+					if (stallMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, stallMs);
+					while (readsAtFrames.length === 0) await sleep(STORE_FRAME_POLL_MS);
+					await sleep(2 * STORE_FRAME_POLL_MS);
+					assert.deepEqual(readsAtFrames, [0], "one frame paints the entire burst, with zero snapshot reads");
+				} finally {
+					for (const snapshotSpy of snapshotSpies) snapshotSpy.mockRestore();
+					adapter.close();
 				}
-				assert.equal(renderRequests.count, before, "status events schedule a frame without painting inline");
-				while (readsAtFrames.length === 0) await sleep(STORE_FRAME_POLL_MS);
-				await sleep(2 * STORE_FRAME_POLL_MS);
-				assert.deepEqual(readsAtFrames, [0], "one frame paints the entire burst, with zero snapshot reads");
-			} finally {
-				for (const snapshotSpy of snapshotSpies) snapshotSpy.mockRestore();
-				adapter.close();
-			}
-		});
+			});
+		}
 
 		test("hidden overlay store updates never call host requestRender", () => {
 			const { adapter, store, handle, renderRequests } = buildHarness();
