@@ -36,6 +36,13 @@ async function executeBashOperation(
 	const controllers = this._bashAbortControllers.get(requestKey) ?? new Set<AbortController>();
 	controllers.add(abortController);
 	this._bashAbortControllers.set(requestKey, controllers);
+	const cancelBeforeStart = async (): Promise<BashResult> => {
+		controllers.delete(abortController);
+		if (controllers.size === 0) this._bashAbortControllers.delete(requestKey);
+		const cancelled: BashResult = { output: "", exitCode: undefined, cancelled: true, truncated: false };
+		if (options?.recordResult !== false) await this.recordBashResult(command, cancelled, options);
+		return cancelled;
+	};
 	// A user's shell command runs in the worktree too: it waits for a blueprint build still running there (#4748).
 	const subject = blueprintSubject(this);
 	if (blueprintBuildPending(subject)) {
@@ -44,15 +51,13 @@ async function executeBashOperation(
 			abortController.signal.throwIfAborted();
 		} catch (error) {
 			if (!abortController.signal.aborted) throw error;
-			controllers.delete(abortController);
-			if (controllers.size === 0) this._bashAbortControllers.delete(requestKey);
-			const cancelled: BashResult = { output: "", exitCode: undefined, cancelled: true, truncated: false };
-			if (options?.recordResult !== false) await this.recordBashResult(command, cancelled, options);
-			return cancelled;
+			return cancelBeforeStart();
 		}
 	}
 	// Apply command prefix if configured (e.g., "shopt -s expand_aliases" for alias support)
 	const prefix = await shellCommandPrefixFor(this, this.settingsManager.getShellCommandPrefix());
+	// A command cancelled while its prefix was read never starts.
+	if (abortController.signal.aborted) return cancelBeforeStart();
 	const shellPath = this.settingsManager.getShellPath();
 	const resolvedCommand = prefix ? `${prefix}\n${command}` : command;
 	const env = { ...getShellEnv() };

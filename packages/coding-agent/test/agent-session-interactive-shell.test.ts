@@ -67,16 +67,30 @@ test("custom operations override the Windows adapter", async () => {
 
 test("Windows interactive cancellation reaches the selected operations and clears its request", async () => {
 	Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+	const started = Promise.withResolvers<void>();
 	shells.exec.mockImplementationOnce(async (_command, _cwd, options) => {
 		await new Promise<void>((_resolve, reject) => {
 			options.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+			started.resolve();
 		});
 		return { exitCode: 0 };
 	});
 	const owner = session();
 	const run = executeBash.call(owner as AgentSessionInternalSurface, "command", undefined, { id: "cancel-me" });
+	await started.promise;
 	abortBash.call(owner as AgentSessionInternalSurface, "cancel-me");
 	expect((await run).cancelled).toBe(true);
+	expect(owner._bashAbortControllers.size).toBe(0);
+});
+
+test("a command cancelled before its shell starts never runs and clears its request", async () => {
+	const owner = session();
+	const run = executeBash.call(owner as AgentSessionInternalSurface, "command", undefined, { id: "cancel-early" });
+	abortBash.call(owner as AgentSessionInternalSurface, "cancel-early");
+	const result = await run;
+	expect(result).toEqual({ output: "", exitCode: undefined, cancelled: true, truncated: false });
+	expect(shells.exec).not.toHaveBeenCalled();
+	expect(owner.recordBashResult).toHaveBeenCalledWith("command", result, { id: "cancel-early" });
 	expect(owner._bashAbortControllers.size).toBe(0);
 });
 
