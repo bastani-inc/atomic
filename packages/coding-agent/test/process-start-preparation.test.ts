@@ -90,6 +90,72 @@ test("an older background answer cannot replace a synchronous takeover's newer s
 	assert.equal(queries, 2);
 });
 
+test("an expired pid's re-read keeps its answer when another pid finishes first (#5315)", async () => {
+	const pid = 2 ** 22 + 8;
+	const release = join(directory, "release-query");
+	let reads = 0;
+	setProcessCreationTimeQueryForTesting({
+		file: process.execPath,
+		args: (readingPid) => {
+			if (readingPid !== pid || ++reads === 1) return ["-e", `console.log("${CREATION_TIME}")`];
+			return [
+				"-e",
+				'const fs = require("node:fs"); const timer = setInterval(() => { if (fs.existsSync(process.argv[1])) { clearInterval(timer); console.log("132000000000000001"); } }, 10);',
+				release,
+			];
+		},
+	});
+	const original = await readProcessStartToken(pid);
+	assert.match(original ?? "", /^[0-9a-f]{12}$/);
+	const now = Date.now();
+	vi.spyOn(Date, "now").mockReturnValue(now + CACHE_EXPIRY_MS);
+	const first = readProcessStartToken(pid);
+	const second = readProcessStartToken(pid);
+	try {
+		assert.match((await readProcessStartToken(pid + 4)) ?? "", /^[0-9a-f]{12}$/);
+	} finally {
+		writeFileSync(release, "");
+	}
+	const refreshed = await first;
+	assert.match(refreshed ?? "", /^[0-9a-f]{12}$/);
+	assert.notEqual(refreshed, original);
+	assert.equal(await second, refreshed);
+	assert.equal(processStartToken(pid), refreshed);
+	assert.equal(await readProcessStartToken(pid), refreshed);
+	assert.equal(reads, 2);
+});
+
+test("an older background answer stays discarded after the newer start expires and is evicted (#5315)", async () => {
+	const pid = 2 ** 22 + 8;
+	const release = join(directory, "release-query");
+	let reads = 0;
+	setProcessCreationTimeQueryForTesting({
+		file: process.execPath,
+		args: (readingPid) => {
+			if (readingPid !== pid || ++reads > 1) return ["-e", `console.log("${CREATION_TIME}")`];
+			return [
+				"-e",
+				'const fs = require("node:fs"); const timer = setInterval(() => { if (fs.existsSync(process.argv[1])) { clearInterval(timer); console.log("132000000000000001"); } }, 10);',
+				release,
+			];
+		},
+	});
+	const background = readProcessStartToken(pid);
+	const latest = processStartTokenForSynchronousTakeover(pid);
+	assert.match(latest ?? "", /^[0-9a-f]{12}$/);
+	const now = Date.now();
+	vi.spyOn(Date, "now").mockReturnValue(now + CACHE_EXPIRY_MS);
+	try {
+		assert.match((await readProcessStartToken(pid + 4)) ?? "", /^[0-9a-f]{12}$/);
+	} finally {
+		writeFileSync(release, "");
+	}
+	assert.equal(await background, undefined);
+	assert.equal(processStartToken(pid), undefined);
+	assert.equal(await readProcessStartToken(pid), latest);
+	assert.equal(reads, 3);
+});
+
 test("a timed-out start read is remembered before another query is allowed (#5315)", async () => {
 	let queries = 0;
 	setProcessCreationTimeQueryForTesting({

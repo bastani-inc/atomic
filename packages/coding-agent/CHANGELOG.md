@@ -40,7 +40,6 @@
 - Private temporary storage is no longer reused through a directory link, a runtime directory opened to other accounts, or a replaced root, including a Windows replacement with the same creation time. Runtime directory paths with trailing separators or `..` cannot bypass the checks. Temporary installs and caches fall back to another private directory instead ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
 - Replacing a submission echo with a prompt rewritten by an `input` hook, or inserting a custom message ahead of a streaming reply, now touches only the tail of the chat container instead of scanning the whole transcript, keeping prompt swaps fast in long sessions ([#5323](https://github.com/bastani-inc/atomic/issues/5323))
 - Corrected new-message counts when a transcript insertion or removal is followed by another change that restores its earlier child count ([#5323](https://github.com/bastani-inc/atomic/issues/5323))
-- `atomic config` waits for queued settings writes before exiting, so closing it immediately after a resource toggle does not lose that change on Windows ([#5315](https://github.com/bastani-inc/atomic/issues/5315))
 
 ## [0.9.88] - 2026-11-16
 

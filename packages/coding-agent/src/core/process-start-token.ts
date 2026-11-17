@@ -138,7 +138,7 @@ let fallbackGeneration = 0;
 let fallbackBroken = false;
 let ownCreation: string | undefined;
 const fallbackReads = new Map<number, { readonly at: number; readonly created: string | undefined }>();
-const pendingReads = new Map<number, Promise<string | undefined>>();
+const pendingReads = new Map<number, { readonly reading: Promise<string | undefined>; superseded: boolean }>();
 const runningQueries = new Set<ChildProcess>();
 
 function knownFallbackCreation(pid: number): { readonly created: string | undefined } | undefined {
@@ -152,21 +152,25 @@ function readFallbackCreation(pid: number): Promise<string | undefined> {
 	const known = knownFallbackCreation(pid);
 	if (known !== undefined) return Promise.resolve(known.created);
 	const pending = pendingReads.get(pid);
-	if (pending !== undefined) return pending;
+	if (pending !== undefined) return pending.reading;
 	const generation = fallbackGeneration;
-	const previous = fallbackReads.get(pid);
-	const reading = queryCreationTime(pid).then((answer) => {
-		if (generation !== fallbackGeneration) return undefined;
-		pendingReads.delete(pid);
-		if (fallbackReads.get(pid) !== previous) return knownFallbackCreation(pid)?.created;
-		rememberFallbackCreation(pid, answer);
-		return answer.created;
-	});
-	pendingReads.set(pid, reading);
-	return reading;
+	const current = {
+		superseded: false,
+		reading: queryCreationTime(pid).then((answer) => {
+			if (generation !== fallbackGeneration) return undefined;
+			pendingReads.delete(pid);
+			if (current.superseded) return knownFallbackCreation(pid)?.created;
+			rememberFallbackCreation(pid, answer);
+			return answer.created;
+		}),
+	};
+	pendingReads.set(pid, current);
+	return current.reading;
 }
 
 function rememberFallbackCreation(pid: number, { created, unstartable }: FallbackAnswer): void {
+	const pending = pendingReads.get(pid);
+	if (pending !== undefined) pending.superseded = true;
 	fallbackBroken ||= unstartable;
 	const now = Date.now();
 	for (const [read, { at }] of fallbackReads) if (now - at >= FALLBACK_CACHE_MS) fallbackReads.delete(read);
