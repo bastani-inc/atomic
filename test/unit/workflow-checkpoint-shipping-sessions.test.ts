@@ -355,3 +355,31 @@ test("a stage that ends with a session ships its writes at once, without waiting
 		),
 	);
 });
+
+test("a local journal that cannot say what it holds of a session sends the attempt to the shared journal, once (#4768)", async () => {
+	const { shard } = await shardAt();
+	const fallbacks: ShippingFallback[] = [];
+	const shipping = shippingOf(shard, fakeShared().deliver, {
+		sessionState: async () => assert.fail("the attempt commits directly instead"),
+		onFallback: (fallback) => fallbacks.push(fallback),
+	});
+	await shipping.hold(LEASE, LEASE_MS);
+	const broken = new Error("disk I/O error");
+	shard.session = async () => {
+		throw broken;
+	};
+	let direct = 0;
+	const receipt = await shipping.commit(
+		LEASE,
+		append("a", 1, 3),
+		async () => {
+			direct++;
+			return { at: 1, lastSeq: 4 };
+		},
+		{ operation: "op-1" },
+	);
+	assert.deepEqual(receipt, { at: 1, lastSeq: 4 });
+	assert.equal(direct, 1);
+	assert.deepEqual(fallbacks, [{ workId: LEASE.id, error: broken }]);
+	assert.equal(shipping.isSyncOnly(LEASE), true);
+});

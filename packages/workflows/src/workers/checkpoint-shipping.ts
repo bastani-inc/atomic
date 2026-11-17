@@ -381,7 +381,8 @@ export class CheckpointShipping {
 		const attempt = this.attempts.get(lease.id);
 		if (attempt === undefined || attempt.lease.generation !== lease.generation) return;
 		if (attempt.fenced !== undefined) throw attempt.fenced;
-		if (!(await this.shard.holdsSession(lease, session))) return;
+		// A local journal that cannot say ships everything the attempt holds.
+		if (!(await this.shard.holdsSession(lease, session).catch(() => true))) return;
 		await this.flush(lease, URGENT_BATCH_CAP);
 	}
 
@@ -425,10 +426,12 @@ export class CheckpointShipping {
 		const billed = write.op === "checkpoint" ? poolCheckpointUsage(write.checkpoint!) : undefined;
 		const snapshots = checkpointSnapshots(write.checkpoint);
 		// A session the attempt did not create, nor write before, is taken up at the state the shared store holds it in.
-		const unknownSession =
-			write.session !== undefined &&
-			write.op !== "session-create" &&
-			(await this.knownSession(lease, write.session.session)) === false;
+		const known =
+			write.session === undefined || write.op === "session-create"
+				? true
+				: await this.knownSession(lease, write.session.session);
+		if (known === undefined) return this.commitDirect(lease, commitShared);
+		const unknownSession = !known;
 		if (
 			(snapshots.length > 0 && this.options.snapshotsStored === undefined) ||
 			(unknownSession && this.options.sessionState === undefined)
@@ -459,12 +462,15 @@ export class CheckpointShipping {
 		return { at: Date.now(), local: true, ...(accepted.lastSeq === undefined ? {} : { lastSeq: accepted.lastSeq }) };
 	}
 
-	/** Whether the local journal holds the state of `session` as the attempt's writes left it; undefined when unreadable. */
+	/**
+	 * Whether the local journal holds the state of `session` as the attempt's writes left it. Undefined when the local
+	 * journal failed to say: the attempt commits to the shared journal from then on.
+	 */
 	private async knownSession(lease: AttemptLease, session: string): Promise<boolean | undefined> {
 		try {
 			return (await this.shard.session(lease, session)) !== undefined;
-		} catch {
-			// The local journal's failure shows on the write itself, which falls back to the shared journal.
+		} catch (error) {
+			this.fallBack(lease, error as Error);
 			return undefined;
 		}
 	}
