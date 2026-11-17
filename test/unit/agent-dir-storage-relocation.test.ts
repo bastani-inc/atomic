@@ -11,6 +11,7 @@ import {
 	storagePathBaseDir,
 } from "../../packages/coding-agent/src/core/storage/file-identity.js";
 import { collectStorageStatus } from "../../packages/coding-agent/src/core/storage/storage-status.js";
+import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 let root: string;
@@ -223,6 +224,51 @@ test("a copied-and-moved parent retains ownership after filesystem identities ch
 	assert.equal(defaultSessionDatabasePath(sibling, {}), join(sibling, "workflows", "journal.sqlite"));
 });
 
+test("a copied-and-moved parent keeps adopted history beside pre-existing in-directory JSONL sessions (#5242)", async () => {
+	const original = join(root, "relative-jsonl-parent");
+	const moved = join(root, "moved-relative-jsonl-parent");
+	const agent = join(original, "a1");
+	const settings = { sessions: { storage: { dir: "sessions" } } };
+	mkdirSync(join(agent, "sessions"), { recursive: true });
+	writeFileSync(join(agent, "sessions", "old-default.jsonl"), "{}\n");
+	writeFileSync(join(agent, "settings.json"), JSON.stringify(settings));
+	const sessionId = "55555555-5555-4555-8555-555555555555";
+	const sessions = await resolveSessionStore(root, {
+		agentDir: agent,
+		sessionStore: { kind: "jsonl", dir: join(original, "sessions") },
+	});
+	await sessions.create({ id: sessionId, version: 4, createdAt: "2026-11-16T00:00:00.000Z", cwd: root }, []);
+	await sessions.close();
+	const journal = await resolveRunJournal({
+		agentDir: agent,
+		journal: { path: join(original, "workflows", "journal.sqlite") },
+	});
+	await journal.createRun({ runId: "relative-jsonl-run", name: "wf", cwd: root, createdAt: 1, status: "completed" });
+	await journal.close();
+	assert.equal(defaultSessionDatabasePath(agent, settings), join(original, "workflows", "journal.sqlite"));
+	cpSync(original, moved, { recursive: true });
+	rmSync(original, { recursive: true });
+	resetStorageHomeCacheForTests();
+	const current = join(moved, "a1");
+	assert.equal(defaultSessionDatabasePath(current, settings), join(moved, "workflows", "journal.sqlite"));
+	assert.deepEqual(selectSessionStorage(root, { agentDir: current, settings }), {
+		kind: "jsonl",
+		dir: join(moved, "sessions"),
+	});
+	const restoredSessions = await resolveSessionStore(root, { agentDir: current, settings });
+	try {
+		assert.equal((await restoredSessions.readHeader(sessionId))?.id, sessionId);
+	} finally {
+		await restoredSessions.close();
+	}
+	const restoredJournal = await resolveRunJournal({ agentDir: current, settings });
+	try {
+		assert.equal((await restoredJournal.getRun("relative-jsonl-run"))?.runId, "relative-jsonl-run");
+	} finally {
+		await restoredJournal.close();
+	}
+});
+
 test("a copied-and-moved parent with outward relative targets still retains its default history (#5242)", () => {
 	const original = join(root, "outward-parent");
 	const moved = join(root, "moved-outward-parent");
@@ -243,6 +289,51 @@ test("a copied-and-moved parent with outward relative targets still retains its 
 	resetStorageHomeCacheForTests();
 	assert.equal(defaultSessionDatabasePath(join(moved, "agent"), settings), join(moved, "workflows", "journal.sqlite"));
 });
+
+test.each(["copy-before-move", "copy-after-move"])(
+	"an adopter keeps session and workflow history with %s when its parent's filesystem identities change (#5242)",
+	async (operation) => {
+		const original = join(root, "cloned-parent");
+		const moved = join(root, "moved-cloned-parent");
+		const agent = join(original, "a1");
+		mkdirSync(agent, { recursive: true });
+		const sessionId = "66666666-6666-4666-8666-666666666666";
+		const sessions = await resolveSessionStore(root, {
+			agentDir: agent,
+			sessionStore: { kind: "sqlite", path: join(original, "workflows", "journal.sqlite") },
+		});
+		await sessions.create({ id: sessionId, version: 4, createdAt: "2026-11-16T00:00:00.000Z", cwd: root }, []);
+		await sessions.close();
+		const journal = await resolveRunJournal({
+			agentDir: agent,
+			journal: { path: join(original, "workflows", "journal.sqlite") },
+		});
+		await journal.createRun({ runId: "cloned-parent-run", name: "wf", cwd: root, createdAt: 1, status: "completed" });
+		await journal.close();
+		assert.equal(defaultSessionDatabasePath(agent, {}), join(original, "workflows", "journal.sqlite"));
+		if (operation === "copy-before-move") cpSync(agent, join(original, "a1-backup"), { recursive: true });
+		cpSync(original, moved, { recursive: true });
+		rmSync(original, { recursive: true });
+		const current = join(moved, "a1");
+		const clone = join(moved, "a1-backup");
+		if (operation === "copy-after-move") cpSync(current, clone, { recursive: true });
+		resetStorageHomeCacheForTests();
+		assert.equal(defaultSessionDatabasePath(clone, {}), join(clone, "workflows", "journal.sqlite"));
+		assert.equal(defaultSessionDatabasePath(current, {}), join(moved, "workflows", "journal.sqlite"));
+		const restoredSessions = await resolveSessionStore(root, { agentDir: current, settings: {} });
+		try {
+			assert.equal((await restoredSessions.readHeader(sessionId))?.id, sessionId);
+		} finally {
+			await restoredSessions.close();
+		}
+		const restoredJournal = await resolveRunJournal({ agentDir: current, settings: {} });
+		try {
+			assert.equal((await restoredJournal.getRun("cloned-parent-run"))?.runId, "cloned-parent-run");
+		} finally {
+			await restoredJournal.close();
+		}
+	},
+);
 
 test.each(["copy-before-rename", "copy-after-rename", "copy-to-old-name"])(
 	"a renamed adopter keeps its parent history with %s (#5242)",
@@ -329,6 +420,37 @@ test("a clone's SDK-selected local database prevents copied identities from taki
 		path: join(clone, "history.sqlite"),
 	});
 	const restored = await resolveSessionStore(root, { agentDir: clone, settings });
+	try {
+		assert.equal((await restored.readHeader(sessionId))?.id, sessionId);
+	} finally {
+		await restored.close();
+	}
+});
+
+test("a clone's new settings-file database keeps its own history after the adopter is removed (#5242)", async () => {
+	const parent = join(root, "configured-cloned-adopter");
+	const original = join(parent, "a1");
+	const clone = join(parent, "a2");
+	const settings = { sessions: { storage: { path: "clone.sqlite" } } };
+	mkdirSync(original, { recursive: true });
+	mkdirSync(join(parent, "workflows"));
+	writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
+	assert.equal(defaultSessionDatabasePath(original, {}), join(parent, "workflows", "journal.sqlite"));
+	cpSync(original, clone, { recursive: true });
+	writeFileSync(join(clone, "settings.json"), JSON.stringify(settings));
+	resetStorageHomeCacheForTests();
+	const sessionId = "77777777-7777-4777-8777-777777777777";
+	const own = await resolveSessionStore(root, { agentDir: clone });
+	await own.create({ id: sessionId, version: 4, createdAt: "2026-11-16T00:00:00.000Z", cwd: root }, []);
+	await own.close();
+	rmSync(original, { recursive: true });
+	resetStorageHomeCacheForTests();
+	assert.equal(defaultSessionDatabasePath(clone, settings), join(clone, "workflows", "journal.sqlite"));
+	assert.deepEqual(selectSessionStorage(root, { agentDir: clone }), {
+		kind: "sqlite",
+		path: join(clone, "clone.sqlite"),
+	});
+	const restored = await resolveSessionStore(root, { agentDir: clone });
 	try {
 		assert.equal((await restored.readHeader(sessionId))?.id, sessionId);
 	} finally {

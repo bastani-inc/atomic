@@ -823,6 +823,7 @@ function currentStorageOwnerPath(owner: StorageOwner, claimDirectory = dirname(o
 	)
 		return path;
 	const exact: string[] = [];
+	const recorded: string[] = [];
 	const fallback: string[] = [];
 	const consider = (candidate: string): void => {
 		if (!isDirectory(candidate)) return;
@@ -837,6 +838,7 @@ function currentStorageOwnerPath(owner: StorageOwner, claimDirectory = dirname(o
 				(owner.directoryIdentity === undefined || fileIdentity(candidate) !== owner.directoryIdentity)
 			)
 				return;
+			const atRecordedPath = sameDirectory(candidate, path);
 			const targets = [
 				...(metadata?.targets ?? []),
 				...configuredRelativeTargets(candidate, getHomeDir(), undefined, false),
@@ -847,10 +849,12 @@ function currentStorageOwnerPath(owner: StorageOwner, claimDirectory = dirname(o
 			);
 			if (
 				hasOwnStoreEntries(candidate, claimDirectory, []) ||
-				hasRelativeTargetEntries(candidate, candidate, ownTargets, true)
+				(atRecordedPath
+					? hasOwnTargetEntries(candidate, claimDirectory, ownTargets)
+					: hasRelativeTargetEntries(candidate, candidate, ownTargets, true))
 			)
 				return;
-			matches = fallback;
+			matches = atRecordedPath ? recorded : fallback;
 		}
 		if (!matches.some((match) => sameDirectory(match, candidate))) matches.push(candidate);
 	};
@@ -868,7 +872,7 @@ function currentStorageOwnerPath(owner: StorageOwner, claimDirectory = dirname(o
 			directory?.closeSync();
 		} catch {}
 	}
-	const matches = exact.length > 0 ? exact : fallback;
+	const matches = exact.length > 0 ? exact : recorded.length > 0 ? recorded : fallback;
 	return matches.length === 1 ? matches[0] : undefined;
 }
 
