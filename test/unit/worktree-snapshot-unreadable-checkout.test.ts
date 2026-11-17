@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { startHostProcessesThroughChildProcess } from "../helpers/host-spawn.js";
 import type { FilesystemFault } from "../helpers/worktree-snapshot-faults.js";
 
 /** Directories this process cannot list or enter, as `chmod 000` makes them on POSIX: injected where Git is started. */
@@ -31,6 +32,8 @@ import {
 	type WorktreeSnapshot,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/index.ts";
 import { assertCaptureUnreadable, assertUnreadablePath, GitSandbox } from "../helpers/worktree-snapshot.js";
+
+startHostProcessesThroughChildProcess();
 
 let sandbox: GitSandbox;
 beforeEach(() => {

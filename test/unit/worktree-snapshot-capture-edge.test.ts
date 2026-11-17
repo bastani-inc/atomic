@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { startHostProcessesThroughChildProcess } from "../helpers/host-spawn.js";
 import type { SpawnFault, SpawnRequest } from "../helpers/worktree-snapshot-faults.js";
 
 /** A hook that can fail one Git command the way Node reports it, or run another command in its place. */
@@ -49,6 +50,8 @@ import {
 	gitConfigPath,
 } from "../helpers/worktree-snapshot.js";
 import { gitCommand, isProcessRunning, runningCommand, systemError } from "../helpers/worktree-snapshot-faults.js";
+
+startHostProcessesThroughChildProcess();
 
 let sandbox: GitSandbox;
 beforeEach(() => {
