@@ -110,52 +110,6 @@ function holdPreparedRefTransaction(
 	};
 }
 
-function writeGermanGitCatalog(root: string): string {
-	const entries: Array<[string, string]> = [
-		["", "Content-Type: text/plain; charset=UTF-8\n"],
-		["initializing", "initialisiere"],
-	];
-	const count = entries.length;
-	const headerSize = 28;
-	const tableSize = count * 8;
-	const origTableOffset = headerSize;
-	const transTableOffset = origTableOffset + tableSize;
-	let stringOffset = transTableOffset + tableSize;
-	const origBuffers = entries.map(([key]) => Buffer.from(key, "utf8"));
-	const transBuffers = entries.map(([, value]) => Buffer.from(value, "utf8"));
-	const totalSize =
-		stringOffset +
-		origBuffers.reduce((sum, item) => sum + item.length + 1, 0) +
-		transBuffers.reduce((sum, item) => sum + item.length + 1, 0);
-	const catalog = Buffer.alloc(totalSize);
-	catalog.writeUInt32LE(0x950412de, 0);
-	catalog.writeUInt32LE(0, 4);
-	catalog.writeUInt32LE(count, 8);
-	catalog.writeUInt32LE(origTableOffset, 12);
-	catalog.writeUInt32LE(transTableOffset, 16);
-	catalog.writeUInt32LE(0, 20);
-	catalog.writeUInt32LE(stringOffset, 24);
-	for (let index = 0; index < count; index++) {
-		const original = origBuffers[index]!;
-		catalog.writeUInt32LE(original.length, origTableOffset + index * 8);
-		catalog.writeUInt32LE(stringOffset, origTableOffset + index * 8 + 4);
-		original.copy(catalog, stringOffset);
-		stringOffset += original.length + 1;
-	}
-	for (let index = 0; index < count; index++) {
-		const translated = transBuffers[index]!;
-		catalog.writeUInt32LE(translated.length, transTableOffset + index * 8);
-		catalog.writeUInt32LE(stringOffset, transTableOffset + index * 8 + 4);
-		translated.copy(catalog, stringOffset);
-		stringOffset += translated.length + 1;
-	}
-	const localeDir = join(root, "locale");
-	const moDir = join(localeDir, "de", "LC_MESSAGES");
-	mkdirSync(moDir, { recursive: true });
-	writeFileSync(join(moDir, "git.mo"), catalog);
-	return localeDir;
-}
-
 async function waitFor(target: string): Promise<void> {
 	const deadline = Date.now() + CHECKOUT_EVENT_TIMEOUT_MS;
 	while (!existsSync(target)) {
@@ -352,17 +306,10 @@ test(
 	"a localized external add between HEAD and index creation is not reused until checkout completes (#5202)",
 	async () => {
 		const { root, repo, target, entry } = makeRepo();
-		const localeDir = writeGermanGitCatalog(root);
-		const locale = process.platform === "win32" ? "de_DE.UTF-8" : "en_US.UTF-8";
 		const hold = holdBeforeIndex(repo, root);
 		const external = spawnProcess(["git", "-C", repo, "worktree", "add", "-b", "feat/recover", target], {
 			cwd: repo,
-			env: createGitEnvironment({
-				GIT_TEXTDOMAINDIR: localeDir,
-				LANGUAGE: "de",
-				LC_ALL: locale,
-				LANG: locale,
-			}),
+			env: createGitEnvironment({ LC_ALL: "C", LANGUAGE: "C" }),
 			stdout: "pipe",
 			stderr: "pipe",
 		});
@@ -371,7 +318,10 @@ test(
 			await external.exited;
 		});
 		await waitFor(hold.started);
-		assert.equal(readFileSync(join(entry, "locked"), "utf8").trim(), "initialisiere");
+		const marker = join(entry, "locked");
+		assert.equal(readFileSync(marker, "utf8").trim(), "initializing");
+		writeFileSync(marker, "initialisiere\n");
+		assert.equal(readFileSync(marker, "utf8").trim(), "initialisiere");
 		assert.equal(existsSync(join(entry, "index")), false);
 		assert.equal(existsSync(join(entry, "index.lock")), false);
 		const ready = join(root, "localized-waiter-ready");

@@ -304,7 +304,7 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 			},
 		});
 		if (named.error) return named.error;
-		const built = prepareExecutionContext({ params: named.params, ctx, signal, onUpdate, deps });
+		const built = await prepareExecutionContext({ params: named.params, ctx, signal, onUpdate, deps });
 		if (built.error) return built.error;
 		const prepared = built.prepared!;
 		// A named worktree is recorded with its child, like a `worktree: true` one, but never removed (#5202).

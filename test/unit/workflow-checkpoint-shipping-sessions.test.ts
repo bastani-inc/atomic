@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
-import type { PoolMutation } from "../../packages/workflows/src/durable/journal/pool-mutations.js";
+import {
+	type PoolMutation,
+	type PoolSessionAppend,
+	PoolSessionFold,
+	type PoolSessionMutation,
+} from "../../packages/workflows/src/durable/journal/pool-mutations.js";
 import type { PoolCommitReceipt } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import type { DurableCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import {
@@ -14,8 +19,10 @@ import {
 	SHIP_BATCH_MAX_PAYLOAD,
 	type ShipSessionState,
 	ShipShard,
+	shipDigest,
 	shipShardPath,
 } from "../../packages/workflows/src/workers/ship-shard.js";
+import { ShipShard as ReleasedShipShard } from "../fixtures/ship-shard-0.9.88/ship-shard.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 /**
@@ -288,6 +295,63 @@ test("a host that starts again ships the session writes it kept, and a supersede
 	assert.equal(await reopened.session(LEASE, "session"), undefined);
 });
 
+test("a rolled-back 0.9.88 host never recovers session rows as checkpoints (#5344)", async () => {
+	const { shard, path } = await shardAt();
+	const shipping = shippingOf(shard, async () => {
+		throw new Error("shared store unreachable");
+	});
+	await shipping.hold(LEASE, LEASE_MS);
+	await shipping.commit(LEASE, create("c", 1), noShared);
+	await shipping.commit(LEASE, append("a", 1, 1), noShared, { operation: "op-1" });
+	await shard.seal(LEASE, 64);
+	await shipping.close();
+	const released = await ReleasedShipShard.open(path, ROOT);
+	try {
+		assert.deepEqual(
+			await released.leftover(),
+			[],
+			"rollback replays unshipped work instead of retrying invalid batches",
+		);
+		assert.deepEqual(await released.pending(LEASE), []);
+	} finally {
+		await released.close();
+	}
+	const { shard: upgraded } = await shardAt(path);
+	assert.deepEqual(
+		(await upgraded.pending(LEASE)).map((row) => row.op),
+		["session-create", "session-append"],
+	);
+	assert.equal((await upgraded.seal(LEASE, 64))?.events.length, 2);
+});
+
+test("upgrading again takes the rolled-back host's checkpoints and drops superseded session rows (#5344)", async () => {
+	const { shard, path } = await shardAt();
+	await shard.hold(LEASE, LEASE_MS);
+	await shard.accept(ROOT, LEASE, "session", "{}", 1, { op: "session-create", session: "s", entries: 1 });
+	await shard.close();
+	const released = await ReleasedShipShard.open(path, ROOT);
+	const replacement = { ...LEASE, generation: 2 };
+	try {
+		assert.deepEqual(await released.leftover(), []);
+		await released.hold(replacement, LEASE_MS);
+		await released.accept(ROOT, replacement, "replacement-checkpoint", "{}", 2);
+		await released.seal(replacement, 64);
+	} finally {
+		await released.close();
+	}
+	const { shard: upgraded } = await shardAt(path);
+	assert.deepEqual(await upgraded.pending(LEASE), []);
+	assert.deepEqual(await upgraded.session(LEASE, "s"), undefined);
+	assert.deepEqual(
+		(await upgraded.pending(replacement)).map((row) => [row.key, row.op]),
+		[["replacement-checkpoint", "checkpoint"]],
+	);
+	assert.deepEqual(
+		(await upgraded.leftover()).map(({ lease }) => lease.generation),
+		[2],
+	);
+});
+
 test("a batch stops taking rows once their payloads pass the bound, and a larger row ships alone (#4768)", async () => {
 	const { shard } = await shardAt();
 	await shard.hold(LEASE, LEASE_MS);
@@ -304,6 +368,60 @@ test("a batch stops taking rows once their payloads pass the bound, and a larger
 		(await shard.seal(LEASE, 64))?.events.map((event) => event.key),
 		["b"],
 	);
+});
+
+test("session rows from the first session-shipping build migrate once with sealed batches and receipts (#5344)", async () => {
+	const directory = makeTempDirectory("ship-session-upgrade-");
+	directories.push(directory);
+	const path = join(directory, "legacy.sqlite");
+	const legacy = await openNodeSqliteDatabase(path);
+	await legacy.exec(`CREATE TABLE ship_events(
+		local_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+		work TEXT NOT NULL, generation INTEGER NOT NULL, epoch INTEGER NOT NULL,
+		event_key TEXT NOT NULL, payload TEXT NOT NULL, digest TEXT NOT NULL, at INTEGER NOT NULL,
+		batch TEXT, op TEXT NOT NULL DEFAULT 'checkpoint', session TEXT, result_seq INTEGER,
+		UNIQUE(work, generation, event_key)
+	);
+	CREATE TABLE ship_lease(work TEXT PRIMARY KEY, generation INTEGER NOT NULL, worker TEXT NOT NULL, epoch INTEGER NOT NULL);
+	CREATE TABLE ship_sessions(work TEXT NOT NULL, generation INTEGER NOT NULL, session TEXT NOT NULL, last_seq INTEGER NOT NULL, replay_key TEXT, PRIMARY KEY(work, generation, session));
+	INSERT INTO ship_lease VALUES ('work-1', 1, 'host/1', 3);
+	INSERT INTO ship_sessions VALUES ('work-1', 1, 's', 2, 'scope:stage');
+	INSERT INTO ship_events VALUES (17, 'work-1', 1, 3, 'created', '{}', 'd1', 1, 'sealed', 'session-create', 's', 1);
+	INSERT INTO ship_events VALUES (23, 'work-1', 1, 3, 'appended', '{}', '${shipDigest("{}")}', 2, 'sealed', 'session-append', 's', 2);`);
+	await legacy.close();
+	for (let open = 0; open < 2; open++) {
+		const { shard } = await shardAt(path);
+		await shard.hold(LEASE, LEASE_MS);
+		const batch = await shard.seal(LEASE, 64);
+		assert.ok(batch);
+		assert.equal(batch.id, "sealed");
+		assert.deepEqual(
+			batch.events.map((row) => [row.key, row.op]),
+			[
+				["created", "session-create"],
+				["appended", "session-append"],
+			],
+		);
+		assert.equal(
+			(
+				await shard.accept(ROOT, LEASE, "appended", "{}", 3, {
+					op: "session-append",
+					session: "s",
+					entries: 1,
+					expectSeq: 1,
+				})
+			).lastSeq,
+			2,
+		);
+		assert.deepEqual(await shard.session(LEASE, "s"), { lastSeq: 2, replayKey: "scope:stage" });
+		await shard.close();
+		const released = await ReleasedShipShard.open(path, ROOT);
+		try {
+			assert.deepEqual(await released.leftover(), []);
+		} finally {
+			await released.close();
+		}
+	}
 });
 
 test("a local journal an earlier build wrote is taken up with its checkpoints, as checkpoints (#4768)", async () => {
@@ -354,6 +472,22 @@ test("a stage that ends with a session ships its writes at once, without waiting
 			["session-create", "session-append", "checkpoint"],
 		),
 	);
+});
+
+test.each([
+	["create then append", create("c", 2), append("stale", 1, 1)],
+	["create then replace", create("c", 2), replace("stale", 1, 1)],
+	["append then append", append("a", 2, 3), append("stale", 1, 4)],
+	["append then replace", append("a", 2, 3), replace("stale", 1, 4)],
+	["replace then append", replace("r", 2, 3), append("stale", 1, 1)],
+] as const)("a batch refuses a discontinuous session sequence for %s (#5344)", async (_name, first, stale) => {
+	const fold = new PoolSessionFold(LEASE.id, async () =>
+		first.kind === "session-create" ? undefined : { work: LEASE.id, replay_key: "scope:stage" },
+	);
+	await fold.add(first as PoolSessionMutation | PoolSessionAppend);
+	const before = structuredClone(fold.writes());
+	await assert.rejects(fold.add(stale as PoolSessionMutation | PoolSessionAppend), { name: "SessionConflictError" });
+	assert.deepEqual(fold.writes(), before);
 });
 
 test("a local journal that cannot say what it holds of a session sends the attempt to the shared journal, once (#4768)", async () => {

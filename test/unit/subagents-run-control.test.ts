@@ -102,6 +102,7 @@ import {
 } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import { createExecutionScheduler } from "../../packages/subagents/src/runs/shared/parallel-utils.js";
 import { subagentStartHoldMs } from "../../packages/subagents/src/runs/shared/start-progress.js";
+import * as artifactStorage from "../../packages/subagents/src/shared/artifacts.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
 import {
 	type RunSyncOptions,
@@ -561,6 +562,49 @@ function resumedTaskId(result: SubagentToolResult): string {
 	assert.ok(taskId, text(result));
 	return taskId;
 }
+
+test("a stage closing during artifact preparation creates no child storage or authorization (#5285)", async () => {
+	const h = harness({ stage: true });
+	const entered = Promise.withResolvers<void>();
+	const artifacts = Promise.withResolvers<string>();
+	const readArtifacts = vi.spyOn(artifactStorage, "getArtifactsDir").mockImplementation(() => {
+		entered.resolve();
+		return artifacts.promise;
+	});
+	try {
+		const sessionDir = join(h.cwd, "not-created-after-close");
+		const pending = h.call({ agent: "worker", task: "do not start", sessionDir });
+		await entered.promise;
+		await h.stageBoundary!.close();
+		artifacts.resolve(join(h.cwd, "artifacts"));
+		const result = await pending;
+
+		assert.equal(result.isError, true);
+		assert.equal(existsSync(sessionDir), false, "closed preparation never creates its session root");
+		assert.deepEqual(h.authorizations, [], "closed preparation requests no supervisor authorization");
+		assert.deepEqual(h.runs, []);
+		assert.equal(h.deps.state.foregroundControls.size, 0);
+	} finally {
+		artifacts.resolve(join(h.cwd, "artifacts"));
+		readArtifacts.mockRestore();
+	}
+});
+
+test("an artifact preparation failure returns a subagent tool error (#5285)", async () => {
+	const h = harness();
+	const readArtifacts = vi
+		.spyOn(artifactStorage, "getArtifactsDir")
+		.mockRejectedValue(new Error("artifact storage unavailable"));
+	try {
+		const result = await h.call({ agent: "worker", task: "do not start" });
+		assert.equal(result.isError, true);
+		assert.match(text(result), /artifact storage unavailable/);
+		assert.deepEqual(h.runs, []);
+		assert.equal(h.deps.state.foregroundControls.size, 0);
+	} finally {
+		readArtifacts.mockRestore();
+	}
+});
 
 test("pause stops a running child resumably and holds sends to it until resume", async () => {
 	const h = harness();
