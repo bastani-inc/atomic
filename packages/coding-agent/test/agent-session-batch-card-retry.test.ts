@@ -588,3 +588,71 @@ test("a persistent batch retried before a stage's first prompt skips its saved p
 	assert.equal(contexts.length, 1);
 	for (const content of CONTENTS) assert.equal(contexts[0]!.split(content).length - 1, 1);
 });
+
+test("a stage-startup batch reuses a saved card after losing its acknowledgement and first read-back (#5318)", async () => {
+	const store = new MemorySessionStore();
+	const failure = new StorageTransientError(store.descriptor, {
+		code: "connection-lost",
+		outcome: "unknown",
+		attempts: 1,
+	});
+	let armed = false;
+	let lostAcknowledgement = false;
+	let failReadBack = false;
+	const faulty: SessionStore = Object.assign(Object.create(store) as SessionStore, {
+		async append(...args: Parameters<SessionStore["append"]>) {
+			const result = await store.append(...args);
+			if (
+				armed &&
+				!lostAcknowledgement &&
+				args[1].some((entry) => entry.type === "custom_message" && entry.content === CONTENTS[2])
+			) {
+				lostAcknowledgement = true;
+				failReadBack = true;
+				throw failure;
+			}
+			return result;
+		},
+		async readRange(...args: Parameters<MemorySessionStore["readRange"]>) {
+			if (failReadBack) {
+				failReadBack = false;
+				throw failure;
+			}
+			return store.readRange(...args);
+		},
+	});
+	const manager = await SessionManager.create(faulty, process.cwd());
+	const harness = await createHarness({
+		sessionManager: manager,
+		orchestrationContext: {
+			kind: "workflow-stage",
+			workflowRunId: crypto.randomUUID(),
+			workflowStageId: "uncertain-startup",
+			workflowStageName: "Uncertain startup",
+			constraints: { disableWorkflowTool: true },
+		},
+	});
+	harnesses.push(harness);
+	armed = true;
+	await assert.rejects(harness.session.sendCustomMessages(messages, sharedOptions), (error) => error === failure);
+	await harness.session.sendCustomMessages(messages, sharedOptions);
+	assertCardsSavedOnce(manager);
+	assertCardsSavedOnce(await SessionManager.open(store, manager.getSessionId()));
+	assert.deepEqual(
+		harness
+			.eventsOfType("message_end")
+			.flatMap((event) =>
+				event.message.role === "custom" && event.message.customType === CARD_TYPE ? [event.message.content] : [],
+			),
+		CONTENTS,
+	);
+	const contexts: string[] = [];
+	harness.setResponses([
+		(context) => {
+			contexts.push(JSON.stringify(context.messages));
+			return fauxAssistantMessage("completed the stage startup");
+		},
+	]);
+	await harness.session.prompt("perform the stage task");
+	for (const content of CONTENTS) assert.equal(contexts[0]!.split(content).length - 1, 1);
+});

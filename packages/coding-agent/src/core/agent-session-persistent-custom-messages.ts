@@ -39,6 +39,22 @@ const displayedExcludedCards = new WeakMap<AgentSession, Set<string>>();
 const failedCardWrites = new WeakMap<AgentSession["sessionManager"], () => Promise<void>>();
 const pendingCardWrites = new WeakMap<AgentSession["sessionManager"], Map<string, Promise<DurableDisplayCard>>>();
 
+export function refreshFailedCustomMessageWrites(manager: AgentSession["sessionManager"]): Promise<void> | undefined {
+	return failedCardWrites.get(manager)?.();
+}
+
+export function recordFailedCustomMessageWrite(manager: AgentSession["sessionManager"], error: unknown): void {
+	if (error instanceof SessionDeletedError) return;
+	failedCardWrites.set(manager, async () => {
+		try {
+			if (!(await manager.refreshFromStore())) throw error;
+		} catch (refreshError) {
+			if (!(refreshError instanceof SessionNotFoundError)) throw refreshError;
+		}
+		failedCardWrites.delete(manager);
+	});
+}
+
 export function customMessageOccurrences<T>(messages: CustomMessage<T>[]): CustomMessage<T>[] {
 	const counts = new Map<string, number>();
 	for (const message of messages) {
@@ -87,7 +103,7 @@ async function appendDisplayCardOccurrence(
 	message: CustomMessage,
 	delivery: ProtectedDelivery | undefined,
 ): Promise<DurableDisplayCard> {
-	await failedCardWrites.get(session.sessionManager)?.();
+	await refreshFailedCustomMessageWrites(session.sessionManager);
 	const card = { ...message, excludeFromContext: true } satisfies CustomMessage & { excludeFromContext: true };
 	const admitted = message as StageAdmittedCustomMessage;
 	// A retry after a failed flush must complete the already-appended occurrence
@@ -121,16 +137,7 @@ async function appendDisplayCardOccurrence(
 				admitted.stageAdmissionKey,
 			);
 		} catch (error) {
-			if (!(error instanceof SessionDeletedError)) {
-				failedCardWrites.set(manager, async () => {
-					try {
-						if (!(await manager.refreshFromStore())) throw error;
-					} catch (refreshError) {
-						if (!(refreshError instanceof SessionNotFoundError)) throw refreshError;
-					}
-					failedCardWrites.delete(manager);
-				});
-			}
+			recordFailedCustomMessageWrite(manager, error);
 			throw error;
 		}
 	}
