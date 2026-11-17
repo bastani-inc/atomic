@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -829,7 +830,7 @@ async function childWithDirtyWorktree(h: Harness, runId: string) {
 	assert.equal(runWorktreeRecord(runId, 0)?.path, worktree.path);
 	const draft = join(worktree.agentCwd, "draft.md");
 	writeFileSync(draft, "unsaved work\n");
-	return { taskId, worktree, draft };
+	return { taskId, worktree, draft, repo };
 }
 
 test("a released child's worktree with unsaved work is kept for its wake (#4326)", async () => {
@@ -848,12 +849,15 @@ test("a released child's worktree with unsaved work is kept for its wake (#4326)
 test("a child that finishes normally does not keep its worktree (#4326)", async () => {
 	const h = harness();
 	h.original = "completes";
-	const { taskId, worktree, draft } = await childWithDirtyWorktree(h, "wt-finished");
+	const { taskId, worktree, draft, repo } = await childWithDirtyWorktree(h, "wt-finished");
 	h.originalGate?.resolve();
 	await settled(h, taskId);
 	await h.waitForLatest("wt-finished:0", (record) => record.terminalStatus === "ok");
+	// Cleanup removes the checkout, then deletes its branch; until then Git still uses the fixture repository.
+	const branchListed = () =>
+		execFileSync("git", ["branch", "--list", worktree.branch], { cwd: repo, encoding: "utf8" }).trim() !== "";
 	const deadline = Date.now() + RECORD_WAIT_MS;
-	while (existsSync(worktree.path) && Date.now() < deadline) await sleep(10);
+	while ((existsSync(worktree.path) || branchListed()) && Date.now() < deadline) await sleep(10);
 
 	assert.equal(existsSync(draft), false, "a finished child's worktree goes with its run");
 });
