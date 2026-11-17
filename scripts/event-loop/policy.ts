@@ -280,9 +280,9 @@ export const SYNCHRONOUS_LOADER_HOOKS: readonly ReviewedSelector[] = [
 export const DURABLE_RECORDS: readonly ReviewedSelector[] = [
 	{
 		file: "packages/coding-agent/src/core/resume/blueprint/build-lock.ts",
-		name: "recordStepProcessDurably",
+		name: "writeBuildLocksDurably",
 		reason:
-			"names a blueprint step's process in its build lock as the step starts and ends, so a host killed mid-step always leaves a lock that lets the next resume stop the step's leftovers (#4748)",
+			"names a blueprint step's process in its build lock as the step starts and ends, and adds its start once read, so a host killed mid-step always leaves a lock that lets the next resume stop the step's leftovers (#4748)",
 	},
 ];
 

@@ -18,7 +18,7 @@ import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { killProcessTree } from "../../../utils/shell.ts";
 import { type AsyncTakeoverMutex, takeTakeoverMutexAsync } from "../../lock-takeover.ts";
-import { processStartToken, processStartTokenAsync } from "../../process-start-token.ts";
+import { processStartTokenAsync } from "../../process-start-token.ts";
 import { rootKey } from "./ledger.ts";
 import { stepProcessWatcher } from "./process.ts";
 
@@ -99,9 +99,9 @@ async function removeLock(file: string): Promise<void> {
  * Records in the locks at `files` that step process `pid` of this build started (`running`) or ended, synchronously
  * (#4748). A step's start must be on disk before control returns to what spawned it: a host killed while the step runs
  * then leaves a lock that names it, which the next build needs to stop it, and only a synchronous write guarantees
- * that. Its end is written the same way, so the writes keep their order. These are a build lock's only synchronous
- * calls, a deliberate exception to never blocking the event loop: reading the step's start and one small write per
- * lock, at each start and end of a step process.
+ * that. Its end is written the same way, so the writes keep their order. When the step started is read without
+ * blocking and written once read, while that step still runs; a lock written before then names the step without its
+ * start, which a later build treats as a step it cannot prove.
  */
 function recordStepProcessDurably(
 	files: readonly string[],
@@ -111,9 +111,22 @@ function recordStepProcessDurably(
 	running: boolean,
 ): void {
 	if (running) {
-		const start = processStartToken(pid);
-		steps.set(pid, { ...(start === undefined ? { pid } : { pid, start }), at: Date.now() });
+		const step: LockedProcess = { pid, at: Date.now() };
+		steps.set(pid, step);
+		void processStartTokenAsync(pid).then((start) => {
+			if (start === undefined || steps.get(pid) !== step) return;
+			steps.set(pid, { ...step, start });
+			writeBuildLocksDurably(files, holder, steps);
+		});
 	} else steps.delete(pid);
+	writeBuildLocksDurably(files, holder, steps);
+}
+
+function writeBuildLocksDurably(
+	files: readonly string[],
+	holder: LockedProcess,
+	steps: ReadonlyMap<number, LockedProcess>,
+): void {
 	const lock: BuildLock = { host: HOST, ...holder, steps: [...steps.values()] };
 	for (const file of files) {
 		try {
@@ -421,6 +434,7 @@ export async function withBuildLocks<T>(
 	try {
 		return await stepProcessWatcher.run(watch, build);
 	} finally {
+		steps.clear();
 		for (const file of files) if ((await readLock(file))?.pid === process.pid) await removeLock(file);
 	}
 }
