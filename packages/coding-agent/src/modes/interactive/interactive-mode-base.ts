@@ -19,7 +19,7 @@ import { attachInteractiveEngineHost } from "../interactive-engine/extension-ui-
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { KeybindingsReloadCoordinator } from "../rpc/rpc-keybindings-reload.ts";
 import { messageComponents, statusComponents } from "./chat-message-count.ts";
-import type { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
+import { type AtomicWorkingLoader, DEFAULT_WORKING_MESSAGE } from "./components/atomic-working-status.ts";
 import { mainComposerHintSegments } from "./components/main-composer-keys.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import type { TranscriptOverlayReserve } from "./components/reserved-bottom-overlay.ts";
@@ -360,12 +360,13 @@ export class InteractiveModeBase {
 	loadingAnimation: Loader | AtomicWorkingLoader | undefined = undefined;
 
 	workingMessage: string | undefined = undefined;
+	lastWorkingMessage: string | undefined = undefined;
 
 	workingVisible = true;
 
 	workingIndicatorOptions: LoaderIndicatorOptions | undefined = undefined;
 
-	readonly defaultWorkingMessage = "Working";
+	readonly defaultWorkingMessage = DEFAULT_WORKING_MESSAGE;
 
 	readonly defaultHiddenThinkingLabel = "Thinking...";
 
@@ -491,7 +492,11 @@ export class InteractiveModeBase {
 	// Extension UI state
 	// Extension dialogs shown in the editor slot (select, confirm, input, editor, inline custom).
 	// The last entry is visible; see pushExtensionDialog().
-	extensionDialogs: Array<{ component: ExtensionDialogComponent; blocked: BlockedStatus | undefined }> = [];
+	extensionDialogs: Array<{
+		component: ExtensionDialogComponent;
+		blocked: BlockedStatus | undefined;
+		release?: () => void;
+	}> = [];
 	/** Numbers the program status sources of blocking overlays, so closing one keeps the others. */
 	nextBlockingOverlayId = 0;
 	/**
@@ -586,9 +591,14 @@ export class InteractiveModeBase {
 	 * the previous one again. Every dialog stays answerable, so no dialog promise is left pending,
 	 * and dialogs opened from inside another dialog (for example a confirm from a custom component) work.
 	 */
-	pushExtensionDialog(component: ExtensionDialogComponent, blocked?: BlockedStatus, focus = true): void {
+	pushExtensionDialog(
+		component: ExtensionDialogComponent,
+		blocked?: BlockedStatus,
+		focus = true,
+		release?: () => void,
+	): void {
 		this.disposeActiveSelector();
-		this.extensionDialogs.push({ component, blocked });
+		this.extensionDialogs.push({ component, blocked, release });
 		this.showTopExtensionDialog(focus);
 	}
 

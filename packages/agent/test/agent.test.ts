@@ -857,6 +857,32 @@ describe("Agent", () => {
 		}
 	});
 
+	it("promptQueuedMessages() sends queued follow-ups after a non-assistant tail, without a turn before them", async () => {
+		const requests: string[][] = [];
+		const agent = new Agent({
+			streamFn: (_model, context) => {
+				requests.push(
+					context.messages.flatMap((message) =>
+						message.role === "user" && typeof message.content === "string" ? [message.content] : [],
+					),
+				);
+				const stream = createAssistantMessageEventStream();
+				queueMicrotask(() => {
+					stream.push({ type: "done", reason: "stop", message: createAssistantMessage("Processed") });
+				});
+				return stream;
+			},
+		});
+		agent.state.messages = [createUserMessage("Context cleared")];
+		agent.followUp(createUserMessage("Follow-up"));
+
+		await expect(agent.promptQueuedMessages()).resolves.toBe(true);
+
+		expect(requests).toEqual([["Context cleared", "Follow-up"]]);
+		await expect(agent.promptQueuedMessages()).resolves.toBe(false);
+		expect(requests).toHaveLength(1);
+	});
+
 	it("keeps legacy prepareNextTurn signal callback behavior", async () => {
 		const schema = obj({});
 		const tool: AgentTool<typeof schema> = {

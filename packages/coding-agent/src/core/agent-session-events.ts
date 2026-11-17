@@ -60,10 +60,12 @@ import {
 	sessionLifetime,
 } from "./session-lifecycle-work.ts";
 import { assertSettingsWrites, ownedSettingsManagers } from "./settings-write-ownership.ts";
+import { observeToolExecutionTiming } from "./tool-execution-timing.ts";
 import { drainWindowsDirectorySecurityReads } from "./tools/windows-directory-security.ts";
 import { drainTerminalWorkflowSummaries } from "./workflow-summary-lifecycle.ts";
 
 export function _emit(this: AgentSession, event: AgentSessionEvent): void {
+	observeToolExecutionTiming(this, event);
 	for (const l of this._eventListeners) {
 		l(event);
 	}

@@ -79,8 +79,6 @@ describe("Copilot request-size overflow recovery", () => {
 				// Throwing produces the zero-usage error seen in the affected session.
 				throw new Error(COPILOT_413);
 			},
-			// The overflow recovery summarization runs on the compacted, image-free context.
-			() => fauxAssistantMessage("The old images have been reviewed. Continue with the recent task."),
 			(context) => {
 				// The retried request no longer carries the images, so it stays under the byte limit.
 				assert.ok(!JSON.stringify(context).includes('"type":"image"'));
@@ -90,7 +88,8 @@ describe("Copilot request-size overflow recovery", () => {
 
 		await harness.session.prompt(RECENT_PROMPT);
 
-		assert.equal(harness.faux.state.callCount, 3);
+		// The failed request and its retry: clearing the context calls no model.
+		assert.equal(harness.faux.state.callCount, 2);
 		assert.deepEqual(harness.eventsOfType("compaction_start"), [{ type: "compaction_start", reason: "overflow" }]);
 		const compactionEnd = harness.eventsOfType("compaction_end").at(-1);
 		assert.ok(compactionEnd);

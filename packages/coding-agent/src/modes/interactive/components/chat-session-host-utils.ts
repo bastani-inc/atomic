@@ -65,6 +65,48 @@ export function isUserMessageLike(message: unknown): message is { role: "user"; 
 	return isMessageLike(message) && message.role === "user";
 }
 
+export function exactTextOnlyUserPrompt(message: unknown): string | undefined {
+	if (!isUserMessageLike(message)) return undefined;
+	const content = message.content;
+	if (typeof content === "string") {
+		return content.trim().length > 0 ? content : undefined;
+	}
+	if (!Array.isArray(content) || content.length === 0) return undefined;
+	const parts: string[] = [];
+	for (const part of content) {
+		if (typeof part !== "object" || part === null || (part as { type?: unknown }).type !== "text") return undefined;
+		const text = (part as { text?: unknown }).text;
+		if (typeof text !== "string") return undefined;
+		parts.push(text);
+	}
+	const joined = parts.join("");
+	return joined.trim().length > 0 ? joined : undefined;
+}
+
+export function firstRawUserExactText(messages: readonly unknown[]): {
+	readonly seenUser: boolean;
+	readonly exactText: string | undefined;
+} {
+	for (const message of messages) {
+		if (!isUserMessageLike(message)) continue;
+		return { seenUser: true, exactText: exactTextOnlyUserPrompt(message) };
+	}
+	return { seenUser: false, exactText: undefined };
+}
+
+export function syncFirstUserEntry<TExtraEntry extends ChatTranscriptEntryLike>(state: {
+	readonly transcript: readonly ChatSessionHostEntry<TExtraEntry>[];
+	firstUserEntry: Extract<ChatMessageEntry, { kind: "user" }> | undefined;
+}): void {
+	for (const entry of state.transcript) {
+		if (isChatMessageEntry(entry) && entry.kind === "user") {
+			state.firstUserEntry = entry;
+			return;
+		}
+	}
+	state.firstUserEntry = undefined;
+}
+
 export function userMessageSignature(text: string): string {
 	return text.trim();
 }

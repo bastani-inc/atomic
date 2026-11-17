@@ -6,8 +6,9 @@
  * - `pi --mode json "prompt"` - JSON event stream
  */
 
+import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { AssistantMessage, ImageContent, ToolResultMessage } from "@bastani/atomic-ai/compat";
-import type { AgentSessionEvent } from "../core/agent-session.js";
+import type { AgentSession, AgentSessionEvent } from "../core/agent-session.js";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
 import type { ExtensionError } from "../core/extensions/index.js";
 import type { ToolDefinition } from "../core/extensions/types.ts";
@@ -53,6 +54,19 @@ function isCommandExtensionError(error: ExtensionError): boolean {
 /** A message the run could not save to its session (#4226): the run fails, but its answer still prints. */
 function isSessionSaveError(error: ExtensionError): boolean {
 	return error.extensionPath === "<session>" && error.event === "message_end";
+}
+
+/**
+ * The messages that end the run. A compaction that ran after the last turn leaves only its boundary message in
+ * context; the turn's answer or failure is then read from the session's branch, where it is kept.
+ */
+function messagesBeforeTrailingBoundary(session: AgentSession): readonly AgentMessage[] {
+	const messages = session.state.messages;
+	const last = messages[messages.length - 1];
+	if (last?.role !== "custom" || last.customType !== "compaction") return messages;
+	return session.sessionManager
+		.getBranch()
+		.flatMap((entry) => (entry.type === "message" && entry.message.role !== "system" ? [entry.message] : []));
 }
 
 function displayableCustomText(message: CustomMessage): string | undefined {
@@ -307,8 +321,9 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		}
 
 		const state = session.state;
-		const lastMessage = state.messages[state.messages.length - 1];
-		const lastAssistantMessage = [...state.messages].reverse().find((message) => message.role === "assistant") as
+		const finalMessages = messagesBeforeTrailingBoundary(session);
+		const lastMessage = finalMessages[finalMessages.length - 1];
+		const lastAssistantMessage = [...finalMessages].reverse().find((message) => message.role === "assistant") as
 			| AssistantMessage
 			| undefined;
 		const runAnswer =

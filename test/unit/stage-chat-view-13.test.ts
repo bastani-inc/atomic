@@ -675,7 +675,7 @@ describe("StageChatView", () => {
 		assert.ok(view._bodyScrollFromBottom > 0);
 		assert.doesNotMatch(visible, /Jump to latest/);
 		assert.ok(visible.includes("❯"), "composer must survive the tight viewport");
-		assert.match(visible, /← return to graph/);
+		assert.match(visible, /← graph/);
 		assert.equal(tight.length, 8);
 		view.dispose();
 	});

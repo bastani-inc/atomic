@@ -35,13 +35,12 @@ export interface ContextUsage {
 }
 
 export interface CompactOptions {
-	/** Fraction of compactable context to keep. 0.3 is aggressive, 0.7 is light. */
-	compression_ratio?: number;
-	/** Number of recent context-eligible messages to keep uncompressed. */
-	preserve_recent?: number;
-	/** Focus query for relevance-based pruning. Defaults to auto-detected session context. */
+	/** Instructions for this compaction: what to recover first, and a compactor model's query. */
 	query?: string;
-	/** Exact `provider/model` ID for this run only; overrides the `compactionModel` setting without saving it. */
+	/**
+	 * `auto` or an exact compactor model `provider/model` for this run only; overrides the `compactionModel` setting
+	 * without saving it.
+	 */
 	compactionModel?: string;
 	onComplete?: (result: VerbatimCompactionResult) => void;
 	onError?: (error: Error) => void;

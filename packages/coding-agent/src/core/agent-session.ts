@@ -11,11 +11,6 @@ import type { Agent, AgentMessage, AgentTool, ThinkingLevel } from "@bastani/ato
 import type { Api, AssistantMessage, Model } from "@bastani/atomic-ai/compat";
 import { installAgentSessionAccessors } from "./agent-session-accessors.ts";
 import { agentSessionAutoCompactionMethods } from "./agent-session-auto-compaction.ts";
-import {
-	agentSessionBackgroundCompactionMethods,
-	BackgroundCompactionRuntime,
-	installBackgroundCompactionAccessors,
-} from "./agent-session-background-compaction.ts";
 import { agentSessionBashMethods } from "./agent-session-bash.ts";
 import { agentSessionBoundaryMethods } from "./agent-session-boundaries.ts";
 import { agentSessionCompactionMethods } from "./agent-session-compaction.ts";
@@ -177,6 +172,7 @@ class AgentSessionBase {
 	protected _compactionStartedAt: number | undefined = undefined;
 	protected _manualCompactionPromise: Promise<VerbatimCompactionResult> | undefined = undefined;
 	protected _autoCompactionAbortController: AbortController | undefined = undefined;
+	protected _compactorAbortController: AbortController | undefined = undefined;
 	/** Resolves when the current automatic compaction has settled. */
 	protected _autoCompactionCompletion: Promise<void> | undefined = undefined;
 	protected _overflowRecoveryAttempted = false;
@@ -189,7 +185,7 @@ class AgentSessionBase {
 	protected _outputBudgetErrorContinuationAttempts = 0;
 	protected _postToolCompactionPreflightError: string | undefined = undefined;
 	protected _pendingPostToolCompactionGuard: PendingPostToolCompactionGuard | undefined = undefined;
-	protected _backgroundCompaction: BackgroundCompactionRuntime;
+	protected _sessionHistoryToolEnabled = false;
 	protected _terminatingToolCallIds = new Set<string>();
 	/** A positive stop callback keeps queued work pending until an explicit new run. */
 	protected _stopAfterTurnBlockedContinuation = false;
@@ -358,7 +354,6 @@ class AgentSessionBase {
 				}),
 		});
 		this._cacheWarmer = config.cacheWarmer;
-		this._backgroundCompaction = new BackgroundCompactionRuntime(config.compactionWake);
 		if (this._cacheWarmer)
 			this._cacheWarmer.onWarmed = (entry) =>
 				(this as unknown as import("./agent-session-methods.ts").AgentSessionInternalSurface)._emit({
@@ -555,7 +550,6 @@ export const AgentSession = AgentSessionBase as unknown as {
 };
 
 installAgentSessionAccessors(AgentSession.prototype as unknown as AgentSessionInternalSurface);
-installBackgroundCompactionAccessors(AgentSession.prototype as unknown as AgentSessionInternalSurface);
 Object.assign(
 	AgentSession.prototype,
 	agentSessionToolHooksMethods,
@@ -569,7 +563,6 @@ Object.assign(
 	agentSessionCompactionMethods,
 	agentSessionAutoCompactionMethods,
 	agentSessionPostToolCompactionMethods,
-	agentSessionBackgroundCompactionMethods,
 	agentSessionExtensionBindingsMethods,
 	agentSessionRecoveryMethods,
 	agentSessionDetachedToolMethods,

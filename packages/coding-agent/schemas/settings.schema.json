@@ -73,7 +73,7 @@
     },
     "compactionModel": {
       "type": "string",
-      "description": "Compaction model: \"auto\" or an empty string uses the session model, and an exact provider/model selects a registered chat model, classifier, or compactor."
+      "description": "Compaction model: \"auto\" or an empty string clears the context window at compaction and lets the agent recover from session history; an exact provider/model selects a registered compactor model, whose output replaces the context. A chat or classifier model saved here is reset to \"auto\"."
     },
     "defaultThinkingLevel": {
       "$ref": "#/$defs/ModelThinkingLevel"
@@ -174,83 +174,6 @@
           "maximum": 9007199254740991,
           "description": "Free context tokens below which automatic compaction starts.",
           "default": 16384
-        },
-        "compression_ratio": {
-          "type": "number",
-          "exclusiveMinimum": 0,
-          "exclusiveMaximum": 1,
-          "description": "Fraction of compactable transcript lines to keep.",
-          "default": 0.5
-        },
-        "preserve_recent": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740991,
-          "description": "Exact number of newest context-visible messages kept outside the compactable region.",
-          "default": 2
-        },
-        "keepContextShare": {
-          "type": "number",
-          "minimum": 0,
-          "maximum": 1,
-          "description": "Share of the keep target that <keepContext> spans may fill. Past it, whole spans lose protection and are compacted like other lines: older duplicates first, then the oldest spans, then the 3 most recent spans, and spans in the latest user message last.",
-          "default": 0.5
-        },
-        "query": {
-          "type": "string",
-          "description": "Relevance focus for selecting older lines to retain. Defaults to the last user message when omitted."
-        },
-        "planningTimeoutMs": {
-          "anyOf": [
-            {
-              "type": "number",
-              "minimum": 0
-            },
-            {
-              "type": "string",
-              "pattern": "^(?:[dD][iI][sS][aA][bB][lL][eE][dD]|[0-9]+(?:[mM][sS]|[smhSMH])?)$"
-            }
-          ],
-          "description": "Wall-clock limit on model planning in automatic compaction (every planner request, retry, trim, fallback model and credential lookup) as milliseconds, a duration such as \"5m\", or \"disabled\"; 0 or \"disabled\" disables it. When it runs out, post-tool and overflow compaction start a fresh context window and threshold compaction fails.",
-          "default": 300000
-        },
-        "modelOverrides": {
-          "type": "object",
-          "patternProperties": {
-            "^.*$": {
-              "type": "object",
-              "properties": {
-                "reserveTokens": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                },
-                "preserve_recent": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                }
-              }
-            }
-          },
-          "description": "Per-model overrides keyed by exact \"provider/modelId\" strings."
-        },
-        "background": {
-          "type": "boolean",
-          "description": "Compact older context in the background while the agent keeps working; blocking compaction only on overflow. False restores foreground compaction at the reserveTokens threshold.",
-          "default": true
-        },
-        "backgroundThresholdPercent": {
-          "type": "number",
-          "exclusiveMinimum": 0,
-          "exclusiveMaximum": 100,
-          "description": "Percentage of the context window at which background compaction starts. The reserveTokens threshold still compacts in the foreground when no background result is ready.",
-          "default": 75
-        },
-        "historyRecall": {
-          "type": "boolean",
-          "description": "Add a short Recalled context section to each compacted context: lines from this session's earlier compaction cycles, the project's other sessions and workflow runs that match the current task. False leaves the compacted context as the planner kept it.",
-          "default": true
         }
       }
     },

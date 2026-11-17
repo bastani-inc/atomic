@@ -289,12 +289,12 @@ async function createTestAgentSession(_options?: CreateAgentSessionOptions): Pro
 		},
 		async compact(): ReturnType<StageSessionRuntime["compact"]> {
 			return {
-				compactedText: "[User]: retained",
-				firstKeptEntryId: "kept",
+				compactedText: "Context cleared.",
+				firstKeptEntryId: null,
 				tokensBefore: 0,
-				promptVersion: 6,
-				parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "auto-detected" },
-				rung: "planned",
+				promptVersion: 7,
+				parameters: { query: "auto-detected" },
+				form: "cleared",
 				stats: {
 					linesBefore: 0,
 					linesDeleted: 0,

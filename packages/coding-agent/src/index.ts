@@ -41,6 +41,7 @@ export type {
 	ToolLoadout,
 	ToolLoadoutChanges,
 	ToolNamespace,
+	ToolRenderContext,
 	ToolRendererResolver,
 	ToolRenderers,
 	ToolScriptAccess,
@@ -74,6 +75,23 @@ export {
 export { JsonlSessionStore } from "./core/storage/session/jsonl-session-store.js";
 // Internal trusted-host task integration (not model authority).
 export { AgentTaskHost, type AgentTaskHostBinding, type AgentTaskRunnerFactory } from "./core/tasks/agent-adapter.js";
+export {
+	type AgentPanelActionResult,
+	type AgentPanelAnswerOptions,
+	type AgentPanelItem,
+	type AgentPanelOpenOptions,
+	type AgentPanelSession,
+	type AgentPanelSource,
+	type AgentPanelSourceRegistration,
+	type AgentPanelState,
+	agentPanelItems,
+	agentPanelTaskId,
+	answerAgentPanelItem,
+	dismissedAgentPanelItems,
+	openAgentPanelItem,
+	stopAgentPanelItem,
+	subscribeAgentPanel,
+} from "./core/tasks/agent-panel-source.ts";
 export {
 	isRetryableTaskError,
 	isTaskCleanupAdmissionTimeoutError,
@@ -130,7 +148,9 @@ export {
 } from "./core/tasks/message-error.js";
 export {
 	bindOwnerTaskStore,
+	getOwnerTaskSession,
 	getOwnerTaskStore,
+	isTaskTurnInterrupted,
 	OwnerTaskStore,
 	type TaskActivity,
 	watchOwnerTaskStoreBinding,
@@ -190,6 +210,25 @@ export {
 } from "./modes/interactive/components/notice-line.ts";
 export { renderTaskFooter, TaskList, taskListSections } from "./modes/interactive/components/task-list.js";
 export { TaskRow } from "./modes/interactive/components/task-row.js";
+export {
+	collapseToolBlockLines,
+	isToolBlock,
+	TOOL_BLOCK_LIMITS,
+	ToolBlock,
+	ToolBlockGroup,
+	ToolBlockMarkdown,
+	ToolBlockRecords,
+	type ToolBlockSpec,
+	type ToolBlockStatus,
+} from "./modes/interactive/components/tool-block.ts";
+export {
+	type BuiltinToolBlockContentPart,
+	type BuiltinToolBlockInput,
+	type BuiltinToolBlockPresentation,
+	type BuiltinToolBlockResult,
+	builtinToolBlockPresentation,
+} from "./modes/interactive/components/tool-block-families.ts";
+export { formatToolActionSummary } from "./modes/interactive/components/tool-block-summary.ts";
 export {
 	applyAssistantMessageDelta,
 	beginStreamingAssistantMessage,
@@ -352,7 +391,6 @@ export {
 } from "./core/auto-model.ts";
 export { type BashResult, executeBashWithOperations } from "./core/bash-executor.ts";
 export { getBuiltinPackagePaths } from "./core/builtin-packages.ts";
-export type { CompactionCacheMiss } from "./core/cache-stats.ts";
 export {
 	type CallbackActivityDescriptor,
 	type CallbackActivityKind,
@@ -368,57 +406,23 @@ export {
 	createGatewayBindingFetch,
 	type GatewayBindingFetchOptions,
 } from "./core/cloudflare-gateway-binding.ts";
-export {
-	BACKGROUND_COMPACTION_RESULT_TYPE,
-	type BackgroundCompactionResultRecord,
-	type BackgroundCompactionState,
-	type BackgroundCompactionStatus,
-	type CompactionReadyWake,
-	type CompactionWakeDispatcher,
-	DEFAULT_BACKGROUND_COMPACTION_THRESHOLD_PERCENT,
-	rehydrateBackgroundCompactionState,
-	type SerializedBackgroundCompactionState,
-	serializeBackgroundCompactionState,
-} from "./core/compaction/background-compaction.ts";
-export {
-	BackgroundCompactionCommitError,
-	BackgroundCompactionConfigError,
-	type BackgroundCompactionConfigReason,
-	type BackgroundCompactionConfigSource,
-	BackgroundCompactionDiscardedError,
-	type BackgroundCompactionDiscardReason,
-	BackgroundCompactionError,
-	type BackgroundCompactionErrorCode,
-	type BackgroundCompactionErrorFields,
-	BackgroundCompactionNotCompactableError,
-	BackgroundCompactionPersistError,
-	type BackgroundCompactionPhase,
-	BackgroundCompactionPlanningError,
-	isBackgroundCompactionCommitError,
-	isBackgroundCompactionConfigError,
-	isBackgroundCompactionDiscardedError,
-	isBackgroundCompactionError,
-	isBackgroundCompactionNotCompactableError,
-	isBackgroundCompactionPersistError,
-	isBackgroundCompactionPlanningError,
-	isRetryableBackgroundCompactionError,
-	isSerializedBackgroundCompactionError,
-	rehydrateBackgroundCompactionError,
-	type SerializedBackgroundCompactionError,
-	serializeBackgroundCompactionError,
-} from "./core/compaction/background-compaction-errors.ts";
 // Compaction
 export {
 	type BranchPreparation,
 	type BranchSummaryResult,
+	buildBoundaryText,
+	buildCompactorMessages,
+	COMPACTED_OUTPUT_MAX_TOKENS,
+	COMPACTOR_COMPRESSION_RATIO,
+	COMPACTOR_REQUEST_TIMEOUT_MS,
 	type CollectEntriesResult,
-	type CompactedTranscript,
-	type CompactionPlannerModel,
-	type CompactionPlanOptions,
-	type CompactionRung,
-	type CompactionRungResult,
-	type CompactionRunRequest,
-	type CompactionUrgency,
+	type CompactionBackend,
+	type CompactionForm,
+	type CompactionHistoryLocation,
+	type CompactionModelSelection,
+	CompactorFailure,
+	type CompactorMessage,
+	type CompactorRequest,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
 	DEFAULT_COMPACTION_SETTINGS,
@@ -428,20 +432,14 @@ export {
 	generateBranchSummary,
 	getLastAssistantUsage,
 	type LineRange,
-	type PlannerAuth,
-	type PlannerBudget,
-	type PlannerLimitClass,
-	type PlannerOutcome,
-	type PolicyRefusalPhase,
 	prepareBranchEntries,
 	prepareCompactionBoundary,
-	type ReleasedRange,
-	runVerbatimCompaction,
-	type SidecarDirectory,
+	requestCompactorOutput,
+	resolveCompactionModel,
+	SESSION_HISTORY_TOOL_NAME,
 	serializeConversation,
 	serializeConversationForCompaction,
 	shouldCompact,
-	startNewContextWindow,
 	type VerbatimCompactionDetails,
 	type VerbatimCompactionParameters,
 	type VerbatimCompactionPreparation,
@@ -859,7 +857,6 @@ export {
 } from "./core/session-worktree-snapshots.ts";
 export type { DefaultProjectTrust, QuietStartup } from "./core/settings-manager.ts";
 export {
-	type CompactionModelOverride,
 	type CompactionSettings,
 	type ImageSettings,
 	type PackageSource,
@@ -1165,8 +1162,11 @@ export {
 } from "./modes/index.ts";
 // UI components for extensions
 export {
+	AgentTokenMeter,
 	ArminComponent,
 	AssistantMessageComponent,
+	agentTokenTotal,
+	applyAttachedComposer,
 	applyInputLabelToEditorTopRule,
 	BashExecutionComponent,
 	BorderedLoader,
@@ -1181,6 +1181,7 @@ export {
 	type ChatSessionHostEntry,
 	type ChatSessionHostOpts,
 	type ChatSessionHostStyle,
+	type ChatSessionInterruptedTurnSnapshot,
 	type ChatSessionSubmitMode,
 	type ChatSessionViewportSettings,
 	ChatTranscriptComponent,
@@ -1234,6 +1235,7 @@ export {
 	ShowImagesSelectorComponent,
 	SkillInvocationMessageComponent,
 	selectorHintEntries,
+	TASK_CHAT_OVERLAY_KEYS,
 	ThemeSelectorComponent,
 	ThinkingSelectorComponent,
 	type TokenSegmentMode,
@@ -1242,6 +1244,7 @@ export {
 	TRANSCRIPT_JUMP_TO_END_URL,
 	TranscriptFollowIndicator,
 	TreeSelectorComponent,
+	taskChatKeys,
 	themeSelectorStyle,
 	truncateToVisualLines,
 	UsageMeterComponent,

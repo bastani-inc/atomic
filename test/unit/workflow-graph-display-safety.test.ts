@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { BackgroundCompactionPersistError } from "@bastani/atomic";
 import { StoragePayloadTooLargeError, StorageRollbackError, StorageUnavailableError } from "@bastani/atomic/storage";
 import {
 	type Component,
@@ -9,6 +8,11 @@ import {
 	visibleWidth,
 } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
+import {
+	type AgentPanelStyle,
+	renderAgentPanelRows,
+} from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { inspectRun } from "../../packages/workflows/src/runs/background/run-inspect.js";
 import { MAX_CAUSE_DEPTH } from "../../packages/workflows/src/shared/error-cause-chain.js";
 import { type SerializedError, serializeError } from "../../packages/workflows/src/shared/error-codec.js";
@@ -18,6 +22,7 @@ import { typedFailureDetail } from "../../packages/workflows/src/shared/typed-fa
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import type { GraphViewOpts } from "../../packages/workflows/src/tui/graph-view-types.js";
 import { renderNodeCard } from "../../packages/workflows/src/tui/node-card.js";
+import { panelItemsFromSnapshot } from "../../packages/workflows/src/tui/panel-runs.js";
 import { renderRunDetail } from "../../packages/workflows/src/tui/run-detail.js";
 import {
 	renderStageFailureDetailLines,
@@ -27,11 +32,21 @@ import {
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
 import { wrapPlainText } from "../../packages/workflows/src/tui/text-helpers.js";
 import { renderToolDetail } from "../../packages/workflows/src/tui/tool-detail.js";
-import { buildThemedWidgetLines, renderWidgetLines } from "../../packages/workflows/src/tui/widget.js";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import { defaultTheme, makeSnap, makeStage, makeStore } from "./overlay-graph-helpers.js";
 
 const { boundedToolPayloadText, TOOL_PAYLOAD_TRUNCATION_MARKER } = toolPayloadBounds;
+const panelStyle: AgentPanelStyle = {
+	dim: (text) => text,
+	text: (text) => text,
+	muted: (text) => text,
+	border: (text) => text,
+	bold: (text) => text,
+	accent: (text) => text,
+	success: (text) => text,
+	error: (text) => text,
+	warning: (text) => text,
+};
 
 function graphFor(stage: StageSnapshot, options: Partial<GraphViewOpts> = {}): GraphView {
 	return new GraphView({
@@ -136,7 +151,7 @@ test("display serialization bounds long property keys before quoting them (#5234
 	}
 });
 
-test.each(["card", "detail", "widget"])(
+test.each(["card", "detail", "panel"])(
 	"%s graph labels keep C1 controls inert without changing stored names (#5234)",
 	(surface) => {
 		const stage: StageSnapshot = { ...makeStage("stage"), status: "running", name: "model\u009b2JNAME" };
@@ -161,10 +176,15 @@ test.each(["card", "detail", "widget"])(
 			for (const theme of [undefined, defaultTheme])
 				assertSafeRows(renderRunDetail(detail.detail, { theme, width: 200, now: 2 }).split("\n"));
 		} else {
+			initTheme("dark");
 			assertSafeRows(
-				renderWidgetLines(
-					{ ...snap, runs: [{ ...snap.runs[0]!, toolNodes: [{ ...node, status: "running" }] }] },
+				renderAgentPanelRows(
+					panelItemsFromSnapshot({
+						...snap,
+						runs: [{ ...snap.runs[0]!, toolNodes: [{ ...node, status: "running" }] }],
+					}),
 					200,
+					panelStyle,
 				),
 			);
 		}
@@ -523,10 +543,8 @@ test("failure logs render a storage error's rollbackCause and extra envelope fie
 		new StorageUnavailableError({ adapter: "sqlite", location: "journal.sqlite" }, new Error("commit failed")),
 		rollbackFailure,
 	);
-	const compactionError = new BackgroundCompactionPersistError({ upToEntryId: "u3" }, { cause: rollbackError });
-	const detail = typedFailureDetail(compactionError);
+	const detail = typedFailureDetail(rollbackError);
 	assert.ok(detail !== undefined);
-	assert.deepEqual(detail.extra, { phase: "persist" });
 	const stage: StageSnapshot = {
 		...makeStage("verify"),
 		status: "failed",
@@ -535,14 +553,12 @@ test("failure logs render a storage error's rollbackCause and extra envelope fie
 		failureDetail: detail,
 	};
 	const lines = stageFailureLogLines(stage);
-	assert.ok(lines.some((line) => line.includes('"phase":"persist"')));
 	const rollbackHeadingIndex = lines.findIndex((line) => line.trim() === "during rollback:");
 	assert.ok(rollbackHeadingIndex >= 0, "expected during rollback: heading");
 	assert.ok(lines[rollbackHeadingIndex + 1]?.includes("StoragePayloadTooLargeError (payload-too-large)"));
 	const rendered = renderStageFailureDetailLines(stage, { theme: defaultTheme, width: 120, logs: true })
 		.map(stripTerminalSequences)
 		.join("\n");
-	assert.ok(rendered.includes('"phase":"persist"'));
 	assert.ok(rendered.includes("during rollback:"));
 	assert.ok(rendered.includes("StoragePayloadTooLargeError (payload-too-large)"));
 });
@@ -819,12 +835,11 @@ test.each([
 			assert.ok(detailText.includes("tool-"), "last tool event name is rendered");
 		}
 
-		for (const piTheme of [undefined, {} as never]) {
-			const widgetRows = buildThemedWidgetLines(snap, piTheme, 200, 2_000);
-			assertSafeRows(widgetRows);
-			assert.ok(widgetRows.join("\n").includes("pending-"), "widget pending stage name is rendered");
-		}
-		assertSafeRows(renderWidgetLines(snap, 200));
+		const panelRows = renderAgentPanelRows(panelItemsFromSnapshot(snap, 2_000), 200, panelStyle);
+		assertSafeRows(panelRows);
+		const narrowPanelRows = renderAgentPanelRows(panelItemsFromSnapshot(snap, 2_000), 52, panelStyle);
+		assertSafeRows(narrowPanelRows);
+		assert.ok(narrowPanelRows.join("\n").includes("active-"), "the narrow panel renders the current stage name");
 
 		for (const status of ["running", "failed", "paused", "completed"] as const) {
 			const statusRun = { ...run, status };

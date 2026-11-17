@@ -61,7 +61,7 @@ const assistant = (content: AssistantMessage["content"], stopReason: AssistantMe
 const verbatimDetails: VerbatimCompactionDetails = {
 	strategy: "verbatim-lines",
 	promptVersion: VERBATIM_COMPACTION_PROMPT_VERSION,
-	parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
+	parameters: { query: "test" },
 	stats: {
 		linesBefore: 2,
 		linesDeleted: 1,
@@ -71,7 +71,7 @@ const verbatimDetails: VerbatimCompactionDetails = {
 		tokensAfter: 50,
 		percentReduction: 50,
 	},
-	rung: "planned",
+	form: "cleared",
 };
 
 interface OpenTranscriptOptions {
@@ -108,6 +108,7 @@ async function openTranscript(transcript: TaskTranscriptSource, options: OpenTra
 	await fixture.start("Inspect the shared stack");
 	fixture.runners[0].context.bindTranscript(transcript);
 	inspector.handleInput(" ");
+	inspector.handleInput("\r");
 	await flush();
 	inspector.handleInput("\r");
 	await flush();
@@ -431,7 +432,7 @@ test("compaction boundaries, branch summaries and extension notices appear in a 
 		const text = host.text();
 		assert.match(text, /EXTENSION-NOTICE-TEXT/);
 		assert.doesNotMatch(text, /HIDDEN-CONTEXT-TEXT/);
-		assert.match(text, /Context compacted/);
+		assert.match(text, /⚛ Context cleared · 12.3k tokens/);
 		assert.match(text, /BRANCH-SUMMARY-TEXT|Branch summary/i);
 	} finally {
 		await host.dispose();
@@ -628,7 +629,7 @@ test("Esc interrupts a running subagent's turn from its chat and never leaves; �
 	});
 	const host = await openTranscript(transcript);
 	try {
-		assert.match(host.text(), /← task · esc interrupt · pgup\/pgdn scroll · ctrl\+o expand · \? keys/);
+		assert.match(host.text(), /← task · esc interrupt · pgup\/pgdn scroll · \? keys/);
 		host.inspector.handleInput("\x1b");
 		await flush();
 		assert.equal(interrupts, 1, "Esc interrupted the subagent's current turn");
@@ -686,7 +687,7 @@ test("a subagent's view shows a finished task's notice with the main chat's noti
 			"the subagent's view shows the notice line",
 		);
 		const main = new TaskCompletionMessage(notice, false).render(80).map((row) => stripVTControlCharacters(row));
-		assert.deepEqual(main, [line], "the main chat renders the same line");
+		assert.deepEqual(main, [` ${line}`], "the main chat renders the same line");
 	} finally {
 		await host.dispose();
 	}

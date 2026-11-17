@@ -1,9 +1,9 @@
 import { reportOwnedIntercomDiagnostic } from "./diagnostics.js";
-import { APP_NAME, type ExtensionAPI, type ExtensionContext, getEnvValue, type SessionStartEvent, sliceHead, type ToolDefinition } from "@bastani/atomic";
-import { Text } from "@bastani/atomic-tui";
+import { APP_NAME, type ExtensionAPI, type ExtensionContext, getEnvValue, type SessionStartEvent, type ToolDefinition } from "@bastani/atomic";
 import { Type } from "typebox";
 import { getExtensionContextOwner } from "./context-owner.js";
-import { renderIntercomToolResult } from "./result-renderers.js";
+import { renderContactSupervisorCall, renderIntercomCall, renderIntercomToolResult } from "./result-renderers.js";
+import { renderIntercomCustomMessage } from "./ui/inline-message.js";
 import { executeHeavyTool, runHeavyCommand, type HeavyHandle } from "./lazy-tool-execution.js";
 import { contactSupervisorCallMayDetach, intercomCallMayDetach } from "./detachable-calls.js";
 import { assertCurrentLifecycleLease, createLifecycleLease, retainSettledLifecycleCleanup, retireLifecycleLease, SerializedLifecycleForwarder, type LifecycleLease } from "./lifecycle-lease.js";
@@ -689,6 +689,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
           interview: Type.Optional(Type.Unknown()),
         }),
         execute: (...args) => executeHeavyTool(loadHeavy, "contact_supervisor", args),
+        renderCall: renderContactSupervisorCall,
         renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "contact_supervisor", args),
       });
     }
@@ -1142,11 +1143,27 @@ ${ASK_USAGE}
 			}, "intercom", args);
 		},
 		renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "intercom", args),
-		renderCall(args, theme) {
-			const input = args as { action?: string; to?: string; message?: string };
-			const target = input.to ? ` ${input.to}` : "";
-			return new Text(theme.fg("toolTitle", theme.bold(`intercom ${input.action ?? ""}`)) + theme.fg("accent", target), 0, 0);
-		},
+		renderCall: renderIntercomCall,
+	});
+	pi.registerMessageRenderer?.("intercom_message", renderIntercomCustomMessage);
+	pi.registerToolRenderer?.((toolName, next) => {
+		const registered = next();
+		if (registered?.renderCall || registered?.renderResult || registered?.renderShell === "self") return registered;
+		if (toolName === "contact_supervisor") {
+			return {
+				...registered,
+				renderCall: renderContactSupervisorCall,
+				renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "contact_supervisor", args),
+			};
+		}
+		if (toolName === "intercom") {
+			return {
+				...registered,
+				renderCall: renderIntercomCall,
+				renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "intercom", args),
+			};
+		}
+		return registered;
 	});
 	if (hasSubagentIntercomEnv()) {
 		pi.registerTool({
@@ -1185,16 +1202,7 @@ ${ASK_USAGE}
 			}),
 			execute: (...args) => executeHeavyTool(loadHeavy, "contact_supervisor", args),
 			renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "contact_supervisor", args),
-			renderCall(args, theme) {
-				const input = args as { reason?: string; message?: string; interview?: { title?: string } };
-				const reason = input.reason ?? "contact";
-				const title = input.interview?.title?.trim();
-				const preview = input.message?.trim();
-				let text = theme.fg("toolTitle", theme.bold("contact_supervisor ")) + theme.fg(reason === "need_decision" ? "warning" : reason === "progress_update" ? "muted" : "accent", reason);
-				if (title) text += " " + theme.fg("accent", title);
-				if (preview) text += "\n  " + theme.fg("dim", preview.length > 96 ? `${sliceHead(preview, 93)}...` : preview);
-				return new Text(text, 0, 0);
-			},
+			renderCall: renderContactSupervisorCall,
 		});
 	}
 

@@ -89,7 +89,7 @@ describe("the chat of a stage with a tool call pending (#4589)", () => {
 	test("a stage suspended on a tool call shows the call as pending, not interrupted (#4589)", async () => {
 		const view = await chatOfStage({ status: "suspended", wait: WAIT });
 
-		await vi.waitFor(() => assert.match(rendered(view), /\$ echo pending/));
+		await vi.waitFor(() => assert.match(rendered(view), /Bash\(echo pending\)/));
 
 		assert.doesNotMatch(rendered(view), INTERRUPTED);
 	});

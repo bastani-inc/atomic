@@ -1,3 +1,4 @@
+import { stripVTControlCharacters as stripAnsi } from "node:util";
 /**
  * The chat of a stage on a local worker runs its session commands on that stage's session in the
  * worker, as the chat of an in-process stage runs them on its own session (#3996).
@@ -61,6 +62,24 @@ test("/compact in the chat of a stage on a local worker compacts that stage's se
 	}
 });
 
+test("/compact instructions reach the session of a stage on a local worker, with no warning", async () => {
+	const requests: Array<string | undefined> = [];
+	const { view, state } = workerStageChat({
+		async compact(instructions?: string) {
+			requests.push(instructions);
+		},
+	});
+	try {
+		submitStageChatText(view, "/compact keep the API notes");
+		await vi.waitFor(() => assert.deepEqual(requests, ["keep the API notes"]));
+		await flush();
+		assert.doesNotMatch(view._statusMessage ?? "", /instructions/);
+		assert.deepEqual(state.promptCalls, [], "the command is not model input");
+	} finally {
+		view.dispose();
+	}
+});
+
 test("a ! command in the chat of a stage on a local worker runs on that stage's session and shows its output (#3996)", async () => {
 	const runs: { command: string; excludeFromContext: boolean | undefined }[] = [];
 	const { view, state } = workerStageChat({
@@ -107,7 +126,11 @@ test("/tasks in the chat of a stage on a local worker lists that stage's tasks f
 	});
 	const { view, state } = workerStageChat({ taskSource: () => tasks });
 	try {
-		assert.match(view.render(120).join("\n"), /1 shell running/, "the footer counts the worker's tasks");
+		assert.match(
+			stripAnsi(view.render(120).join("\n")),
+			/⧗ shell {2}npm run build/,
+			"the footer lists the worker's tasks",
+		);
 		submitStageChatText(view, "/tasks");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /npm run build/));
 		view.handleInput("\r");
@@ -177,6 +200,7 @@ test("a stop from a task's detail page that does not reach the worker says so, a
 		submitStageChatText(view, "/tasks");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /npm run build/));
 		view.handleInput(" ");
+		view.handleInput("\r");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /Inspect transcript/));
 		view.handleInput("\r");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /Transcript ·/));

@@ -589,6 +589,9 @@ export async function mountStageCustomUi(
 			: {}),
 		invalidate: () => rawComponent.invalidate?.(),
 		...(rawComponent.dispose !== undefined ? { dispose: () => rawComponent.dispose?.() } : {}),
+		...(typeof (rawComponent as PiCustomComponent).capturesBack === "function"
+			? { capturesBack: () => (rawComponent as PiCustomComponent).capturesBack?.() === true }
+			: {}),
 	};
 	if ("focused" in rawComponent) {
 		Object.defineProperty(component, "focused", {
