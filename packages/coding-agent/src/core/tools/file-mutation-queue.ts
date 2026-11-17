@@ -30,7 +30,22 @@ async function getMutationQueueKey(filePath: string): Promise<string> {
  * Operations for different files still run in parallel.
  */
 export async function withFileMutationQueue<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
+	return withResolvingFileMutationQueue(
+		async () => filePath,
+		() => fn(),
+	);
+}
+
+/**
+ * {@link withFileMutationQueue} for a path that still has to be resolved. The operation takes its place in the queue
+ * when this is called, so operations on one file keep their call order however long each path takes to resolve.
+ */
+export async function withResolvingFileMutationQueue<T>(
+	resolveFilePath: () => Promise<string>,
+	fn: (filePath: string) => Promise<T>,
+): Promise<T> {
 	const registration = registrationQueue.then(async () => {
+		const filePath = await resolveFilePath();
 		const key = await getMutationQueueKey(filePath);
 		const currentQueue = fileMutationQueues.get(key) ?? Promise.resolve();
 
@@ -41,17 +56,17 @@ export async function withFileMutationQueue<T>(filePath: string, fn: () => Promi
 		const chainedQueue = currentQueue.then(() => nextQueue);
 		fileMutationQueues.set(key, chainedQueue);
 
-		return { key, currentQueue, chainedQueue, releaseNext };
+		return { filePath, key, currentQueue, chainedQueue, releaseNext };
 	});
 	registrationQueue = registration.then(
 		() => undefined,
 		() => undefined,
 	);
 
-	const { key, currentQueue, chainedQueue, releaseNext } = await registration;
+	const { filePath, key, currentQueue, chainedQueue, releaseNext } = await registration;
 	await currentQueue;
 	try {
-		return await fn();
+		return await fn(filePath);
 	} finally {
 		releaseNext();
 		if (fileMutationQueues.get(key) === chainedQueue) {

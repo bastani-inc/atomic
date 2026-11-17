@@ -11,7 +11,12 @@ import { getLanguageFromPath, highlightCode, type Theme } from "../../modes/inte
 import { processImage } from "../../utils/image-process.ts";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
-import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import type {
+	ExtensionContext,
+	ToolDefinition,
+	ToolRenderContext,
+	ToolRenderResultOptions,
+} from "../extensions/types.ts";
 import { parseConflictBytes, registerConflictBlocks } from "./conflict-registry.ts";
 import {
 	buildDirectoryTree,
@@ -22,7 +27,7 @@ import {
 import { isReadableUrlPath } from "./fetch-url.ts";
 import { FileToolAbortedError } from "./file-tool-errors.ts";
 import { isNotebookPath, readEditableNotebookText } from "./notebook.ts";
-import { resolveReadPathAsync, resolveToCwd } from "./path-utils.ts";
+import { resolveReadPathAsync, resolveToCwdAsync, resolveToCwdIfUnambiguous } from "./path-utils.ts";
 import { applyReadLineSelection, extractDocumentMarkdown, isDocumentPath } from "./read-document-extract.ts";
 import {
 	type ReadLinePlan,
@@ -232,13 +237,46 @@ function getPiDocsClassification(absolutePath: string): CompactReadClassificatio
 	}
 	return undefined;
 }
+/** Renderer state of a `read` row, kept in `ToolRenderContext.state`. */
+export interface ReadRenderState {
+	/** The path being resolved for the row's label, as `cwd` and path joined by a NUL. */
+	resolving?: string;
+	/** Where that path resolved, once it has. */
+	resolved?: { readonly key: string; readonly path: string };
+}
+/**
+ * Where the row's path resolves, without blocking the render. A path whose `@`-stripped, space-normalised spelling
+ * differs from the literal one needs existence checks: those run in the background and redraw the row when done.
+ */
+function resolveRenderedReadPath(
+	rawPath: string,
+	cwd: string,
+	context: ToolRenderContext<ReadRenderState>,
+): string | undefined {
+	const unambiguous = resolveToCwdIfUnambiguous(rawPath, cwd);
+	if (unambiguous !== undefined) return unambiguous;
+	const state = context.state;
+	const key = `${cwd}\0${rawPath}`;
+	if (state.resolved?.key === key) return state.resolved.path;
+	if (state.resolving !== key) {
+		state.resolving = key;
+		void resolveToCwdAsync(rawPath, cwd).then((path) => {
+			if (state.resolving !== key) return;
+			state.resolved = { key, path };
+			context.invalidate();
+		});
+	}
+	return undefined;
+}
 function getCompactReadClassification(
 	args: ReadRenderArgs | undefined,
-	cwd: string,
+	context: ToolRenderContext<ReadRenderState>,
 ): CompactReadClassification | undefined {
+	const cwd = context.cwd;
 	const rawPath = str(args?.path);
 	if (!rawPath) return undefined;
-	const absolutePath = resolveToCwd(rawPath, cwd);
+	const absolutePath = resolveRenderedReadPath(rawPath, cwd, context);
+	if (absolutePath === undefined) return undefined;
 	const fileName = basename(absolutePath);
 	if (fileName === "SKILL.md") {
 		return { kind: "skill", label: basename(dirname(absolutePath)) || fileName };
@@ -316,11 +354,11 @@ function formatReadResult(
 	}
 	return text + imageWarning;
 }
-function archiveSelectorMemberExists(pathValue: string, cwd: string): boolean {
+async function archiveSelectorMemberExists(pathValue: string, cwd: string): Promise<boolean> {
 	const archive = parseArchiveSelector(pathValue);
 	if (!archive?.memberPath) return false;
 	try {
-		readArchiveSelector(resolveArchiveSelector(archive, cwd));
+		await readArchiveSelector(resolveArchiveSelector(archive, cwd));
 		return true;
 	} catch {
 		return false;
@@ -359,7 +397,7 @@ function appendReadSelectors(pathValue: string, selector: ReadLineSelector): str
 export function createReadToolDefinition(
 	cwd: string,
 	options?: ReadToolOptions,
-): ToolDefinition<typeof readSchema, ReadToolDetails | undefined> {
+): ToolDefinition<typeof readSchema, ReadToolDetails | undefined, ReadRenderState> {
 	const autoResizeImages = options?.autoResizeImages ?? true;
 	const fallbackResizeOptions = options?.resizeOptions;
 	const ops = options?.operations ?? defaultReadOperations;
@@ -378,12 +416,12 @@ export function createReadToolDefinition(
 			const resourceCtx = ctx as InternalResourceContext | undefined;
 			const executionCwd = ctx?.cwd || cwd;
 			const markerless = path.replace(/:raw(?=(:|$))/g, "").replace(/:conflicts(?=(:|$))/g, ""),
-				sqliteOriginal = sqliteSelectorForPath(markerless, executionCwd),
-				sqliteDirect = sqliteSelectorForPath(path, executionCwd),
+				sqliteOriginal = await sqliteSelectorForPath(markerless, executionCwd),
+				sqliteDirect = await sqliteSelectorForPath(path, executionCwd),
 				literalPath = await isExistingLiteralPath(path, executionCwd, ops),
 				splitSelector =
 					literalPath || sqliteOriginal?.rowId ? splitSelectorOr(path, markerless) : splitReadLineSelector(path);
-			const wholePath = literalPath || archiveSelectorMemberExists(path, executionCwd);
+			const wholePath = literalPath || (await archiveSelectorMemberExists(path, executionCwd));
 			const selector = wholePath
 				? { path }
 				: sqliteDirect && (sqliteDirect.table === "raw" || sqliteDirect.table === "conflicts")
@@ -416,7 +454,7 @@ export function createReadToolDefinition(
 					(async () => {
 						try {
 							const archive = parseArchiveSelector(effectivePath);
-							const sqlite = sqliteSelectorForPath(effectivePath, executionCwd);
+							const sqlite = await sqliteSelectorForPath(effectivePath, executionCwd);
 							if (isReadableUrlPath(effectivePath)) {
 								resolve(
 									await readUrlBranch({
@@ -485,7 +523,7 @@ export function createReadToolDefinition(
 							}
 							if (archive) {
 								const resolvedArchive = resolveArchiveSelector(archive, executionCwd);
-								const textContent = readArchiveSelector(resolvedArchive);
+								const textContent = await readArchiveSelector(resolvedArchive);
 								let allLines = textContent.split("\n");
 								if (conflictsOnly) {
 									let inConflict = false;
@@ -560,7 +598,7 @@ export function createReadToolDefinition(
 							}
 							if (isInternalUrl(effectivePath)) {
 								const sourcePath = effectivePath.startsWith("local://")
-									? resolveInternalSelector(effectivePath, executionCwd)
+									? await resolveInternalSelector(effectivePath, executionCwd)
 									: undefined;
 								if (sourcePath) {
 									resolve(
@@ -775,7 +813,7 @@ export function createReadToolDefinition(
 								if (conflictsOnly || notebookView) {
 									const buffer = await ops.readFile(absolutePath);
 									const textContent = notebookView
-										? readEditableNotebookText(absolutePath, effectivePath)
+										? await readEditableNotebookText(absolutePath, effectivePath)
 										: buffer.toString("utf-8");
 									// Formatted output reads LF-normalized lines. Keep raw reads on the source bytes so
 									// :raw preserves CRLF and terminal-newline bytes exactly.
@@ -904,7 +942,7 @@ export function createReadToolDefinition(
 		},
 		renderCall(args, theme, context) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			const classification = !context.expanded ? getCompactReadClassification(args, context.cwd) : undefined;
+			const classification = !context.expanded ? getCompactReadClassification(args, context) : undefined;
 			text.setText(
 				classification ? formatCompactReadCall(classification, args, theme) : formatReadCall(args, theme),
 			);

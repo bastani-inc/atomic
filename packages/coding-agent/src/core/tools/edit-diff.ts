@@ -7,7 +7,7 @@ import { constants } from "fs";
 import { access, readFile } from "fs/promises";
 import { splitBom } from "../../utils/text.ts";
 import { EditInputError, EditMatchError, EditTargetError } from "./file-tool-errors.ts";
-import { resolveToCwd } from "./path-utils.ts";
+import { resolveToCwdAsync } from "./path-utils.ts";
 
 export function normalizeToLF(text: string): string {
 	return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
@@ -724,7 +724,7 @@ export async function computeEditsDiff(
 	edits: Edit[],
 	cwd: string,
 ): Promise<EditDiffResult | EditDiffError> {
-	const absolutePath = resolveToCwd(path, cwd);
+	const absolutePath = await resolveToCwdAsync(path, cwd);
 
 	try {
 		// Check if file exists and is readable

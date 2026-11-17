@@ -6,7 +6,7 @@ import { type Static, Type } from "typebox";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
-import { pathExists, resolveToCwd } from "./path-utils.ts";
+import { pathExists, resolveToCwdAsync } from "./path-utils.ts";
 import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
@@ -132,7 +132,7 @@ export function createLsToolDefinition(
 
 				(async () => {
 					try {
-						const dirPath = resolveToCwd(path || ".", ctx?.cwd || cwd);
+						const dirPath = await resolveToCwdAsync(path || ".", ctx?.cwd || cwd);
 						// A limit of 0 would list nothing and report "(empty directory)", so it means 1.
 						const effectiveLimit = Math.max(1, Math.floor(limit ?? DEFAULT_LIMIT));
 

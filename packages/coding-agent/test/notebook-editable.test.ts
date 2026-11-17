@@ -99,9 +99,9 @@ describe("notebook editable projection", () => {
 				nbformat_minor: 5,
 			}),
 		);
-		const editable = readEditableNotebookText(file, "nb.ipynb");
+		const editable = await readEditableNotebookText(file, "nb.ipynb");
 		const edited = editable.replace("print(1)", "print(2)");
-		const json = serializeEditedNotebookText(file, "nb.ipynb", edited);
+		const json = await serializeEditedNotebookText(file, "nb.ipynb", edited);
 		expect(json).toContain("print(2)");
 		const parsed = JSON.parse(json);
 		expect(parsed.cells[0].source).toEqual(["print(2)\n"]);
@@ -120,9 +120,9 @@ describe("notebook editable projection", () => {
 				custom_top: { keep: true },
 			}),
 		);
-		const editable = readEditableNotebookText(file, "extra.ipynb");
+		const editable = await readEditableNotebookText(file, "extra.ipynb");
 		const parsed = JSON.parse(
-			serializeEditedNotebookText(file, "extra.ipynb", editable.replace("print(1)", "print(2)")),
+			await serializeEditedNotebookText(file, "extra.ipynb", editable.replace("print(1)", "print(2)")),
 		);
 		expect(parsed.custom_top).toEqual({ keep: true });
 	});
@@ -134,7 +134,7 @@ describe("notebook editable projection", () => {
 
 	it("readEditableNotebookText yields empty notebook for missing file", async () => {
 		const dir = await tempDir();
-		const text = readEditableNotebookText(join(dir, "missing.ipynb"), "missing.ipynb");
+		const text = await readEditableNotebookText(join(dir, "missing.ipynb"), "missing.ipynb");
 		expect(text).toBe(notebookToEditableText(emptyNotebook()));
 	});
 
@@ -155,6 +155,6 @@ describe("notebook editable projection", () => {
 		};
 		await writeFile(file, JSON.stringify(original));
 		await readFile(file, "utf8");
-		expect(readEditableNotebookText(file, "nb.ipynb")).toBe("# %% [code] cell:0\nz\n");
+		expect(await readEditableNotebookText(file, "nb.ipynb")).toBe("# %% [code] cell:0\nz\n");
 	});
 });

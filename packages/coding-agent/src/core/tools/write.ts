@@ -3,9 +3,9 @@ import { mkdir as fsMkdir, writeFile as fsWriteFile } from "fs/promises";
 import { dirname } from "path";
 import { type Static, Type } from "typebox";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
-import { withFileMutationQueue } from "./file-mutation-queue.ts";
+import { withResolvingFileMutationQueue } from "./file-mutation-queue.ts";
 import { FileToolAbortedError } from "./file-tool-errors.ts";
-import { resolveToCwd } from "./path-utils.ts";
+import { resolveToCwdAsync } from "./path-utils.ts";
 import { writeRenderers } from "./renderers/write.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
@@ -65,31 +65,33 @@ export function createWriteToolDefinition(
 			_onUpdate?,
 			ctx?: ExtensionContext,
 		) {
-			const absolutePath = resolveToCwd(path, ctx?.cwd || cwd);
-			const dir = dirname(absolutePath);
-			return withFileMutationQueue(absolutePath, async () => {
-				// Do not reject from an abort event listener here: that would release the
-				// mutation queue while an in-flight filesystem operation may still finish.
-				// Checking signal.aborted after each await observes the same aborts while
-				// keeping the queue locked until the current operation has settled.
-				const throwIfAborted = (): void => {
-					if (signal?.aborted) throw new FileToolAbortedError(signal.reason);
-				};
+			return withResolvingFileMutationQueue(
+				() => resolveToCwdAsync(path, ctx?.cwd || cwd),
+				async (absolutePath) => {
+					const dir = dirname(absolutePath);
+					// Do not reject from an abort event listener here: that would release the
+					// mutation queue while an in-flight filesystem operation may still finish.
+					// Checking signal.aborted after each await observes the same aborts while
+					// keeping the queue locked until the current operation has settled.
+					const throwIfAborted = (): void => {
+						if (signal?.aborted) throw new FileToolAbortedError(signal.reason);
+					};
 
-				throwIfAborted();
-				// Create parent directories if needed.
-				await ops.mkdir(dir);
-				throwIfAborted();
+					throwIfAborted();
+					// Create parent directories if needed.
+					await ops.mkdir(dir);
+					throwIfAborted();
 
-				// Write the file contents.
-				await ops.writeFile(absolutePath, content);
-				throwIfAborted();
+					// Write the file contents.
+					await ops.writeFile(absolutePath, content);
+					throwIfAborted();
 
-				return {
-					content: [{ type: "text", text: `Successfully wrote to ${path}` }],
-					details: undefined,
-				};
-			});
+					return {
+						content: [{ type: "text", text: `Successfully wrote to ${path}` }],
+						details: undefined,
+					};
+				},
+			);
 		},
 		...writeRenderers,
 	};

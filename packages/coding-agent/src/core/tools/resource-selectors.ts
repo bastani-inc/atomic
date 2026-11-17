@@ -1,13 +1,25 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
-import { deflateRawSync, gunzipSync, gzipSync, inflateRawSync } from "node:zlib";
+import { promisify } from "node:util";
+import {
+	deflateRaw as deflateRawCallback,
+	gunzip as gunzipCallback,
+	gzip as gzipCallback,
+	inflateRaw as inflateRawCallback,
+} from "node:zlib";
 import { isPathInside } from "../../utils/path-inside.ts";
 import { resolvePhysicalPath } from "../../utils/physical-path.ts";
 import { readConflictUrl } from "./conflict-registry.ts";
+import { pathExists } from "./path-utils.ts";
 import { loadNativeSearchBinding } from "./search-native.ts";
 import { plainShellWordMask } from "./shell-plain-words.ts";
 import { listTarMembers, writeTarMember } from "./tar-archive.ts";
+
+const deflateRaw = promisify(deflateRawCallback);
+const gunzip = promisify(gunzipCallback);
+const gzip = promisify(gzipCallback);
+const inflateRaw = promisify(inflateRawCallback);
 
 export interface ArchiveSelector {
 	archivePath: string;
@@ -145,15 +157,23 @@ function sqliteDatabase(): SqliteDatabaseConstructor {
 		);
 	}
 }
-function existingSqliteFile(path: string): boolean | undefined {
-	if (!existsSync(path)) return undefined;
-	return readFileSync(path).subarray(0, 16).toString("binary") === "SQLite format 3\0";
+const SQLITE_HEADER = "SQLite format 3\0";
+async function existingSqliteFile(path: string): Promise<boolean | undefined> {
+	if (!(await pathExists(path))) return undefined;
+	const file = await open(path, "r");
+	try {
+		const header = Buffer.alloc(SQLITE_HEADER.length);
+		const { bytesRead } = await file.read(header, 0, header.length, 0);
+		return header.subarray(0, bytesRead).toString("binary") === SQLITE_HEADER;
+	} finally {
+		await file.close();
+	}
 }
-export function sqliteSelectorForPath(value: string, cwd: string): SqliteSelector | undefined {
+export async function sqliteSelectorForPath(value: string, cwd: string): Promise<SqliteSelector | undefined> {
 	const selector = parseSqliteSelector(value);
 	if (!selector) return undefined;
 	const absolute = resolveContainedLocalPath(cwd, selector.databasePath, "SQLite selector");
-	if (existingSqliteFile(absolute) !== true) return undefined;
+	if ((await existingSqliteFile(absolute)) !== true) return undefined;
 	return { ...selector, databasePath: absolute };
 }
 
@@ -256,7 +276,7 @@ function zipEntryPayload(
 	assertZipRange(buf, start, compressedSize, label);
 	return buf.subarray(start, start + compressedSize);
 }
-export function readZipEntriesFromBuffer(buf: Buffer, label: string): Map<string, Buffer> {
+export async function readZipEntriesFromBuffer(buf: Buffer, label: string): Promise<Map<string, Buffer>> {
 	const entries = new Map<string, Buffer>();
 	let eocd = -1;
 	for (let i = buf.length - 22; i >= 0; i--)
@@ -288,7 +308,7 @@ export function readZipEntriesFromBuffer(buf: Buffer, label: string): Map<string
 			method === 0
 				? Buffer.from(data)
 				: method === 8
-					? inflateRawSync(data, { maxOutputLength: MAX_ARCHIVE_MEMBER_BYTES })
+					? await inflateRaw(data, { maxOutputLength: MAX_ARCHIVE_MEMBER_BYTES })
 					: (() => {
 							throw new Error(`Unsupported zip compression method ${method} for ${name}`);
 						})(),
@@ -296,16 +316,16 @@ export function readZipEntriesFromBuffer(buf: Buffer, label: string): Map<string
 	}
 	return entries;
 }
-export function readZipEntries(path: string): Map<string, Buffer> {
-	return readZipEntriesFromBuffer(readFileSync(path), path);
+export async function readZipEntries(path: string): Promise<Map<string, Buffer>> {
+	return readZipEntriesFromBuffer(await readFile(path), path);
 }
-function writeZipEntries(path: string, entries: Map<string, Buffer>): void {
+async function writeZipEntries(path: string, entries: Map<string, Buffer>): Promise<void> {
 	const locals: Buffer[] = [],
 		centrals: Buffer[] = [];
 	let offset = 0;
 	for (const [name, data] of entries) {
 		const nameBuf = Buffer.from(name),
-			compressed = deflateRawSync(data),
+			compressed = await deflateRaw(data),
 			crc = crc32(data);
 		const local = Buffer.alloc(30);
 		local.writeUInt32LE(0x04034b50, 0);
@@ -336,18 +356,18 @@ function writeZipEntries(path: string, entries: Map<string, Buffer>): void {
 	eocd.writeUInt16LE(entries.size, 10);
 	eocd.writeUInt32LE(centralSize, 12);
 	eocd.writeUInt32LE(offset, 16);
-	writeFileSync(path, Buffer.concat([...locals, ...centrals, eocd]));
+	await writeFile(path, Buffer.concat([...locals, ...centrals, eocd]));
 }
-function readTarBuffer(path: string): Buffer {
-	const raw = readFileSync(path);
+async function readTarBuffer(path: string): Promise<Buffer> {
+	const raw = await readFile(path);
 	if (raw.length > MAX_TAR_ARCHIVE_BYTES) throw new Error(`Archive too large: ${path}`);
-	const buf = isGzipTar(path) ? gunzipSync(raw, { maxOutputLength: MAX_TAR_ARCHIVE_BYTES }) : raw;
+	const buf = isGzipTar(path) ? await gunzip(raw, { maxOutputLength: MAX_TAR_ARCHIVE_BYTES }) : raw;
 	if (buf.length > MAX_TAR_ARCHIVE_BYTES) throw new Error(`Archive too large: ${path}`);
 	return buf;
 }
-function parseTar(path: string): Map<string, Buffer> {
+async function parseTar(path: string): Promise<Map<string, Buffer>> {
 	const entries = new Map<string, Buffer>();
-	for (const member of listTarMembers(readTarBuffer(path), path).members) {
+	for (const member of listTarMembers(await readTarBuffer(path), path).members) {
 		if (member.type === "5" || member.type === "g" || !member.name) continue;
 		if (member.data.length > MAX_ARCHIVE_MEMBER_BYTES) throw new Error(`Archive member too large: ${member.name}`);
 		entries.set(member.name, Buffer.from(member.data));
@@ -366,8 +386,8 @@ function listArchiveDirectory(names: Iterable<string>, memberPath: string): stri
 	return [...children].sort().slice(0, MAX_ARCHIVE_DIRECTORY_ENTRIES).join("\n");
 }
 
-function readZipSelector(path: string, memberPath: string): string {
-	const buf = readFileSync(path);
+async function readZipSelector(path: string, memberPath: string): Promise<string> {
+	const buf = await readFile(path);
 	let eocd = -1;
 	for (let i = buf.length - 22; i >= 0; i--)
 		if (buf.readUInt32LE(i) === 0x06054b50) {
@@ -401,7 +421,7 @@ function readZipSelector(path: string, memberPath: string): string {
 			method === 0
 				? Buffer.from(data)
 				: method === 8
-					? inflateRawSync(data, { maxOutputLength: MAX_ARCHIVE_MEMBER_BYTES })
+					? await inflateRaw(data, { maxOutputLength: MAX_ARCHIVE_MEMBER_BYTES })
 					: (() => {
 							throw new Error(`Unsupported zip compression method ${method} for ${name}`);
 						})()
@@ -413,9 +433,9 @@ function readZipSelector(path: string, memberPath: string): string {
 	throw new Error(`Archive member not found: ${memberPath}`);
 }
 
-export function readArchiveSelector(selector: ArchiveSelector): string {
+export async function readArchiveSelector(selector: ArchiveSelector): Promise<string> {
 	if (isZipArchive(selector.archivePath)) return readZipSelector(selector.archivePath, selector.memberPath);
-	const entries = parseTar(selector.archivePath);
+	const entries = await parseTar(selector.archivePath);
 	if (!selector.memberPath) return listArchiveDirectory(entries.keys(), "");
 	const data = entries.get(selector.memberPath);
 	if (data) {
@@ -430,8 +450,8 @@ function validateArchiveMemberPath(memberPath: string): void {
 	if (!memberPath || memberPath.startsWith("/") || memberPath.endsWith("/") || memberPath.split("/").includes(".."))
 		throw new Error(`Invalid archive member path: ${memberPath}`);
 }
-function writeZipEntrySelective(path: string, memberPath: string, data: Buffer): void {
-	const source = existsSync(path) ? readFileSync(path) : Buffer.alloc(0);
+async function writeZipEntrySelective(path: string, memberPath: string, data: Buffer): Promise<void> {
+	const source = (await pathExists(path)) ? await readFile(path) : Buffer.alloc(0);
 	const locals: Buffer[] = [],
 		centrals: Buffer[] = [];
 	let offset = 0;
@@ -473,9 +493,9 @@ function writeZipEntrySelective(path: string, memberPath: string, data: Buffer):
 		}
 	}
 	const tmp = `${path}.atomic-entry-${Date.now()}`;
-	writeZipEntries(tmp, new Map([[memberPath, data]]));
-	const built = readFileSync(tmp);
-	rmSync(tmp, { force: true });
+	await writeZipEntries(tmp, new Map([[memberPath, data]]));
+	const built = await readFile(tmp);
+	await rm(tmp, { force: true });
 	const eocdStart = built.length - 22,
 		localLen = built.readUInt32LE(eocdStart + 16),
 		centralSizeOne = built.readUInt32LE(eocdStart + 12);
@@ -491,20 +511,20 @@ function writeZipEntrySelective(path: string, memberPath: string, data: Buffer):
 	eocd.writeUInt16LE(centrals.length, 10);
 	eocd.writeUInt32LE(centralSize, 12);
 	eocd.writeUInt32LE(offset, 16);
-	writeFileSync(path, Buffer.concat([...locals, ...centrals, eocd]));
+	await writeFile(path, Buffer.concat([...locals, ...centrals, eocd]));
 }
 
-export function writeArchiveSelector(selector: ArchiveSelector, content: string): void {
+export async function writeArchiveSelector(selector: ArchiveSelector, content: string): Promise<void> {
 	validateArchiveMemberPath(selector.memberPath);
-	mkdirSync(dirname(selector.archivePath), { recursive: true });
+	await mkdir(dirname(selector.archivePath), { recursive: true });
 	if (isZipArchive(selector.archivePath)) {
-		writeZipEntrySelective(selector.archivePath, selector.memberPath, Buffer.from(content));
+		await writeZipEntrySelective(selector.archivePath, selector.memberPath, Buffer.from(content));
 		return;
 	}
 	const path = selector.archivePath;
-	const source = existsSync(path) ? readTarBuffer(path) : Buffer.alloc(0);
+	const source = (await pathExists(path)) ? await readTarBuffer(path) : Buffer.alloc(0);
 	const out = writeTarMember(source, selector.memberPath, Buffer.from(content), path);
-	writeFileSync(path, isGzipTar(path) ? gzipSync(out) : out);
+	await writeFile(path, isGzipTar(path) ? await gzip(out) : out);
 }
 const SEARCH_LINE_LIMIT = 512;
 function truncateSearchLine(line: string): string {
@@ -616,18 +636,18 @@ export function searchTextSelectorLines(
 		);
 }
 
-export function searchArchiveSelector(
+export async function searchArchiveSelector(
 	selector: ArchiveSelector,
 	pattern: string,
 	ignoreCase = false,
 	literal = false,
 	contextBefore = 1,
 	contextAfter = 3,
-): string {
+): Promise<string> {
 	if (isZipArchive(selector.archivePath) && selector.memberPath)
 		return searchTextSelectorLines(
 			`${selector.archivePath}:${selector.memberPath}`,
-			readArchiveSelector(selector),
+			await readArchiveSelector(selector),
 			pattern,
 			ignoreCase,
 			literal,
@@ -635,8 +655,8 @@ export function searchArchiveSelector(
 			contextAfter,
 		).join("\n");
 	const entries = isZipArchive(selector.archivePath)
-		? readZipEntries(selector.archivePath)
-		: parseTar(selector.archivePath);
+		? await readZipEntries(selector.archivePath)
+		: await parseTar(selector.archivePath);
 	const out: string[] = [];
 	for (const [name, data] of entries) {
 		if (selector.memberPath && name !== selector.memberPath) continue;
@@ -685,7 +705,7 @@ async function resolveViaRouter(
 	if (routed) return routed;
 	const resolved = await context?.resolveInternalUrl?.(value);
 	if (resolved) return resolved;
-	return resolveInternalSelector(value, cwd);
+	return await resolveInternalSelector(value, cwd);
 }
 function resolveContainedPath(root: string, pathValue: string, label: string): string {
 	const lexicalRoot = resolve(root),
@@ -699,26 +719,26 @@ function resolveContainedLocalPath(cwd: string, pathValue: string, label = "loca
 	return resolveContainedPath(cwd, pathValue, label);
 }
 
-function fallbackInternalPath(value: string, cwd: string): string | undefined {
+async function fallbackInternalPath(value: string, cwd: string): Promise<string | undefined> {
 	const skill = value.match(/^skill:\/\/([^/]+)(?:\/(.*))?$/);
 	if (skill) {
 		const name = skill[1] ?? "",
 			rest = skill[2] || "SKILL.md";
-		return [".agents/skills", "packages/subagents/skills", "packages/workflows/skills"]
-			.map((base) =>
-				resolveContainedPath(
-					resolveContainedLocalPath(cwd, base, "skill:// resource"),
-					`${name}/${rest}`,
-					"skill:// resource",
-				),
-			)
-			.find((candidate) => existsSync(candidate));
+		const candidates = [".agents/skills", "packages/subagents/skills", "packages/workflows/skills"].map((base) =>
+			resolveContainedPath(
+				resolveContainedLocalPath(cwd, base, "skill:// resource"),
+				`${name}/${rest}`,
+				"skill:// resource",
+			),
+		);
+		for (const candidate of candidates) if (await pathExists(candidate)) return candidate;
+		return undefined;
 	}
 	const local = value.match(/^local:\/\/(.+)$/);
 	if (local) return resolveContainedLocalPath(cwd, local[1] ?? "");
 	return undefined;
 }
-export function resolveInternalSelector(value: string, cwd: string): string | undefined {
+export async function resolveInternalSelector(value: string, cwd: string): Promise<string | undefined> {
 	return fallbackInternalPath(value, cwd);
 }
 export async function readInternalSelector(
@@ -732,9 +752,9 @@ export async function readInternalSelector(
 	if (Buffer.isBuffer(routed)) return routed.toString("utf8");
 	if (value.startsWith("conflict://")) return readConflictUrl(value, cwd);
 	const resolved = await resolveViaRouter(value, cwd, context);
-	if (!resolved || !existsSync(resolved))
+	if (!resolved || !(await pathExists(resolved)))
 		throw new Error(`Internal resource not found or no session router supports it: ${value}`);
-	return readFileSync(resolved, "utf8");
+	return readFile(resolved, "utf8");
 }
 export async function writeInternalSelector(
 	value: string,
@@ -751,8 +771,8 @@ export async function writeInternalSelector(
 	if (scheme) throw new Error(`${scheme}:// resources are read-only: ${value}`);
 	const resolved = await resolveViaRouter(value, cwd, context);
 	if (!resolved) throw new Error(`Unsupported writable internal resource without a session router: ${value}`);
-	mkdirSync(dirname(resolved), { recursive: true });
-	writeFileSync(resolved, content);
+	await mkdir(dirname(resolved), { recursive: true });
+	await writeFile(resolved, content);
 }
 export async function searchInternalSelector(
 	value: string,
@@ -1259,9 +1279,10 @@ function parseLooseJsonObject(content: string): Record<string, SqliteValue> {
 		]),
 	);
 }
-export function writeSqliteSelector(selector: SqliteSelector, content: string): string {
+export async function writeSqliteSelector(selector: SqliteSelector, content: string): Promise<string> {
 	if (!selector.table) throw new Error("SQLite write target must include a table name");
-	if (!existsSync(selector.databasePath)) throw new Error(`SQLite database does not exist: ${selector.databasePath}`);
+	if (!(await pathExists(selector.databasePath)))
+		throw new Error(`SQLite database does not exist: ${selector.databasePath}`);
 	if (content.trim() === "") {
 		if (!selector.rowId) throw new Error("SQLite empty content deletes a row only when a row id is present.");
 		const Database = sqliteDatabase();
