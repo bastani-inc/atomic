@@ -8,6 +8,7 @@ import {
 	queueHeldCustomMessages,
 	queueProtectedStreamingCustomMessage,
 	queueProtectedStreamingCustomMessages,
+	refreshFailedCustomMessageWrites,
 	triggerProtectedStreamingCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
 import { deliverQueuedInputIfIdle } from "./agent-session-prompt.ts";
@@ -17,6 +18,57 @@ import { TASK_COMPLETION_MESSAGE_TYPE } from "./tasks/completion.js";
 
 async function appendDurableStageAdmission<T>(session: AgentSession, message: CustomMessage<T>): Promise<void> {
 	await session._appendCustomMessage(message);
+}
+
+const pendingCustomMessageRetries = new WeakMap<AgentSession["sessionManager"], Map<string, Promise<void>>>();
+
+function coalesceUncertainCustomMessageCommit(
+	session: AgentSession,
+	messages: CustomMessage[],
+	commit: () => Promise<void>,
+): Promise<void> | undefined {
+	const keys = messages.flatMap((message) => {
+		const key = (message as StageAdmittedCustomMessage).stageAdmissionKey;
+		return key === undefined ? [] : [key];
+	});
+	if (keys.length === 0 || keys.length !== messages.length) return undefined;
+	const manager = session.sessionManager;
+	const signature = JSON.stringify(keys);
+	const pending = pendingCustomMessageRetries.get(manager) ?? new Map<string, Promise<void>>();
+	const existing = pending.get(signature);
+	if (existing !== undefined) return existing;
+	if (!keys.some((key) => hasUncertainCustomMessageWrite(manager, key))) return undefined;
+	const completion = commit();
+	pending.set(signature, completion);
+	pendingCustomMessageRetries.set(manager, pending);
+	const clear = () => {
+		if (pending.get(signature) === completion) pending.delete(signature);
+		if (pending.size === 0) pendingCustomMessageRetries.delete(manager);
+	};
+	void completion.then(clear, clear);
+	return completion;
+}
+
+function recoverUncertainCustomMessage<T>(
+	session: AgentSession,
+	message: CustomMessage<T>,
+): Promise<boolean> | undefined {
+	const key = (message as StageAdmittedCustomMessage).stageAdmissionKey;
+	if (key === undefined || !hasUncertainCustomMessageWrite(session.sessionManager, key)) return undefined;
+	return (async () => {
+		await refreshFailedCustomMessageWrites(session);
+		const stored = session.sessionManager
+			.getBranch()
+			.some(
+				(entry) =>
+					entry.type === "custom_message" &&
+					entry.stageAdmissionKey === key &&
+					entry.protectedReconciliation === undefined,
+			);
+		if (!stored) return false;
+		await session._appendCustomMessage(message);
+		return true;
+	})();
 }
 
 /** Cancel only the receiver's native operation; its original prompt owns continuation. */
@@ -106,14 +158,23 @@ function startTurnAfterInterrupt(session: AgentSession, starter: CustomMessage):
 }
 
 /** Commit one delivery whose source generation already granted admission. */
-export async function commitAdmittedCustomMessage<T>(
+export function commitAdmittedCustomMessage<T>(
 	session: AgentSession,
 	appMessage: CustomMessage<T>,
 	options?: SendMessageOptions,
 ): Promise<void> {
 	const owner = resolveWorkflowStageDeliveryTarget(session);
-	if (owner !== session) return commitAdmittedCustomMessage(owner, appMessage, options);
-	const self = session;
+	const commit = () => commitCustomMessage(owner, appMessage, options);
+	return coalesceUncertainCustomMessageCommit(owner, [appMessage], commit) ?? commit();
+}
+
+async function commitCustomMessage<T>(
+	self: AgentSession,
+	appMessage: CustomMessage<T>,
+	options?: SendMessageOptions,
+): Promise<void> {
+	const recovery = recoverUncertainCustomMessage(self, appMessage);
+	if (recovery !== undefined && (await recovery)) return;
 	if (holdsForFirstStagePrompt(self, appMessage, options)) {
 		await appendDurableStageAdmission(self, appMessage);
 		return;
@@ -236,15 +297,28 @@ export function _commitAdmittedCustomMessage<T>(
 }
 
 /** Commit a batch whose source generation already granted atomic admission. */
-export async function commitAdmittedCustomMessages<T>(
+export function commitAdmittedCustomMessages<T>(
 	session: AgentSession,
 	appMessages: CustomMessage<T>[],
 	options?: SendMessagesOptions,
 ): Promise<void> {
 	const owner = resolveWorkflowStageDeliveryTarget(session);
-	if (owner !== session) return commitAdmittedCustomMessages(owner, appMessages, options);
-	const self = session;
 	appMessages = customMessageOccurrences(appMessages);
+	const commit = () => commitCustomMessages(owner, appMessages, options);
+	return coalesceUncertainCustomMessageCommit(owner, appMessages, commit) ?? commit();
+}
+
+async function commitCustomMessages<T>(
+	self: AgentSession,
+	appMessages: CustomMessage<T>[],
+	options?: SendMessagesOptions,
+): Promise<void> {
+	const unrecovered: CustomMessage<T>[] = [];
+	for (const message of appMessages) {
+		const recovery = recoverUncertainCustomMessage(self, message);
+		if (recovery === undefined || !(await recovery)) unrecovered.push(message);
+	}
+	appMessages = unrecovered;
 	const useProtectedReconciliation =
 		options?.persistWhenStreaming === true && options.triggerTurn === true && options.excludeFromContext !== true;
 	const holdsTurn =
@@ -254,21 +328,23 @@ export async function commitAdmittedCustomMessages<T>(
 		options?.triggerTurn === true &&
 		(holdsTurnsForDetachedResults(self) || (holdsTurn && options.excludeFromContext === true));
 	const holdsStartupCards = appMessages.every((item) => holdsForFirstStagePrompt(self, item, options));
-	if (holdsStartupCards || (!useProtectedReconciliation && !usesHeldCards)) {
-		const stored = new Set(
-			self.sessionManager
-				.getBranch()
-				.flatMap((entry) =>
-					entry.type === "custom_message" && entry.stageAdmissionKey !== undefined
-						? [entry.stageAdmissionKey]
-						: [],
-				),
-		);
-		appMessages = appMessages.filter((message) => {
-			const key = (message as StageAdmittedCustomMessage).stageAdmissionKey;
-			return key === undefined || !stored.has(key) || hasUncertainCustomMessageWrite(self.sessionManager, key);
-		});
-	}
+	const stored = new Set(
+		self.sessionManager
+			.getBranch()
+			.flatMap((entry) =>
+				entry.type === "custom_message" &&
+				entry.stageAdmissionKey !== undefined &&
+				((entry.protectedReconciliation === undefined && entry.excludeFromContext !== true) ||
+					holdsStartupCards ||
+					(!useProtectedReconciliation && !usesHeldCards))
+					? [entry.stageAdmissionKey]
+					: [],
+			),
+	);
+	appMessages = appMessages.filter((message) => {
+		const key = (message as StageAdmittedCustomMessage).stageAdmissionKey;
+		return key === undefined || !stored.has(key) || hasUncertainCustomMessageWrite(self.sessionManager, key);
+	});
 	if (appMessages.length === 0) return;
 	if (holdsStartupCards) {
 		for (const item of appMessages) await appendDurableStageAdmission(self, item);
