@@ -27,9 +27,9 @@ describe("TranscriptFollowIndicator", () => {
 		expect(indicator.render(80)).toEqual([]);
 	});
 
-	test("renders a centered linked rounded pill with the live key label (#5224)", () => {
+	test("renders a centered linked pill with the live key label (#5224)", () => {
 		const indicator = new TranscriptFollowIndicator({ isFollowing: () => false, keyLabel: () => "ctrl+end" });
-		const highlight = "╭─ ↓ jump to bottom · ctrl+end ─╮";
+		const highlight = " ↓ jump to bottom · ctrl+end ";
 		const highlightWidth = visibleWidth(highlight);
 		for (const width of [80, 41]) {
 			const rows = indicator.render(width);
@@ -59,7 +59,7 @@ describe("TranscriptFollowIndicator", () => {
 			const bg = theme.getBgAnsi("selectedBg");
 			const at = row.indexOf(bg);
 			expect(at).toBeGreaterThanOrEqual(0);
-			const label = "╭─ ↓ 3 new messages · ctrl+end ─╮";
+			const label = " ↓ 3 new messages · ctrl+end ";
 			expect(stripTerminalSequences(row.slice(0, at))).toBe(" ".repeat(Math.floor((80 - visibleWidth(label)) / 2)));
 			expect(stripTerminalSequences(row.slice(row.lastIndexOf("\x1b[49m") + 5))).toBe("");
 		}

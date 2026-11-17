@@ -67,9 +67,9 @@ export function jumpToLatestLabel(newCount: number, keyLabel: string): string {
 export function jumpToLatestPill(newCount: number, keyLabel: string, maxWidth = Number.POSITIVE_INFINITY): string {
 	const label = jumpToLatestLabel(newCount, keyLabel);
 	const pill =
-		visibleWidth(label) + 6 > maxWidth
+		visibleWidth(label) + 2 > maxWidth
 			? theme.fg("text", truncateToWidth(label, Math.max(0, maxWidth)))
-			: `${theme.fg("borderAccent", "╭─ ")}${theme.fg("text", label)}${theme.fg("borderAccent", " ─╮")}`;
+			: theme.fg("text", ` ${label} `);
 	return process.env.NO_COLOR === undefined ? theme.bg("selectedBg", pill) : stripTerminalSequences(pill);
 }
 
