@@ -1,5 +1,4 @@
-import { existsSync } from "node:fs";
-import { stat } from "node:fs/promises";
+import { access, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { failureDebugFields, reportDebug } from "./debug.ts";
@@ -1158,7 +1157,13 @@ export async function resumeSessionWorktree(
 		}
 		const continuing = mapRestoredPath(cwd, mappings);
 		const recordedHere = selected !== undefined && left.some((checkout) => checkout.root === selected!.root);
-		const launch = recordedHere && !existsSync(continuing) && options.fallbackCwd !== undefined;
+		const launch =
+			recordedHere &&
+			options.fallbackCwd !== undefined &&
+			!(await access(continuing).then(
+				() => true,
+				() => false,
+			));
 		continuedIn = launch ? resolve(options.fallbackCwd!) : continuing;
 		for (const checkout of left) {
 			const record = unrestoredRecord(

@@ -1,6 +1,6 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { getAgentDir } from "../../config.js";
-import { resolvePhysicalPath } from "../../utils/physical-path.ts";
+import { resolvePhysicalPath, resolvePhysicalPathAsync } from "../../utils/physical-path.ts";
 import { sha256Hex } from "./env-hash.ts";
 import { unreadablePathError, WorkspaceRestoreError } from "./errors.ts";
 
@@ -26,6 +26,16 @@ export function canonicalizeWorktreePath(path: string): string {
 	const absolute = resolve(path);
 	try {
 		return resolvePhysicalPath(absolute);
+	} catch (error) {
+		throw unreadablePathError(absolute, error);
+	}
+}
+
+/** {@link canonicalizeWorktreePath} without blocking the event loop. */
+export async function canonicalizeWorktreePathAsync(path: string): Promise<string> {
+	const absolute = resolve(path);
+	try {
+		return await resolvePhysicalPathAsync(absolute);
 	} catch (error) {
 		throw unreadablePathError(absolute, error);
 	}

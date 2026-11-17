@@ -111,7 +111,7 @@ describe("a running holder whose start cannot be read now (#5141)", () => {
 			const tree = await sandbox.git(clone, "rev-parse", "HEAD^{tree}");
 			const mark = await gitPath("atomic-lfs-pending.json");
 			const locks = [await gitPath("HEAD.lock"), await gitPath("index.lock")];
-			const holder = { host: thisProcess().host, pid: await liveHolder(), start: RECORDED_START };
+			const holder = { host: (await thisProcess()).host, pid: await liveHolder(), start: RECORDED_START };
 			const pending = JSON.stringify({ head, tree, remotes: [remote], holder });
 			writeFileSync(mark, pending);
 			for (const lock of locks) writeFileSync(lock, "");

@@ -3,7 +3,7 @@ import { failureDebugFields, reportDebug } from "../debug.ts";
 import { readRepositoryConfig } from "./capture.ts";
 import { sha256Hex } from "./env-hash.ts";
 import { runGit } from "./git.ts";
-import { canonicalizeWorktreePath } from "./paths.ts";
+import { canonicalizeWorktreePathAsync } from "./paths.ts";
 import { repositoryIdOf, repositoryIdsOf } from "./repository-identity.ts";
 import type { WorktreeSnapshot } from "./types.ts";
 
@@ -13,8 +13,8 @@ import type { WorktreeSnapshot } from "./types.ts";
  * resume still recognises the checkout the session worked in. The namespace is outside `refs/heads` and `refs/tags`,
  * so `git push`, `git push --all` and `git push --tags` never send it.
  */
-function sessionSnapshotRef(sessionId: string, root: string): string {
-	return `refs/atomic/snapshots/${sessionId}/${sha256Hex(canonicalizeWorktreePath(root)).slice(0, 24)}`;
+function sessionSnapshotRef(sessionId: string, canonicalRoot: string): string {
+	return `refs/atomic/snapshots/${sessionId}/${sha256Hex(canonicalRoot).slice(0, 24)}`;
 }
 
 /**
@@ -34,8 +34,8 @@ function refDeletionNeeded(last: string | null | undefined): boolean {
 	return last !== null;
 }
 
-function writtenRefKey(root: string, ref: string): string {
-	return `${canonicalizeWorktreePath(root)}\0${ref}`;
+function writtenRefKey(canonicalRoot: string, ref: string): string {
+	return `${canonicalRoot}\0${ref}`;
 }
 
 /**
@@ -44,8 +44,9 @@ function writtenRefKey(root: string, ref: string): string {
  * as a ref name, and runs no Git when this process already pointed the ref to `commit`.
  */
 export async function keepSessionSnapshotCommit(sessionId: string, root: string, commit: string): Promise<void> {
-	const ref = sessionSnapshotRef(sessionId, root);
-	const key = writtenRefKey(root, ref);
+	const canonicalRoot = await canonicalizeWorktreePathAsync(root);
+	const ref = sessionSnapshotRef(sessionId, canonicalRoot);
+	const key = writtenRefKey(canonicalRoot, ref);
 	if (!refWriteNeeded(writtenRefs.get(key), commit)) return;
 	writtenRefs.delete(key);
 	const { exitCode } = await runGit(["update-ref", ref, commit], { cwd: root, allowExitCodes: [128] });
@@ -60,8 +61,9 @@ export async function keepSessionSnapshotCommit(sessionId: string, root: string,
 export async function releaseSessionSnapshotRefs(sessionId: string, roots: Iterable<string>): Promise<void> {
 	for (const root of roots) {
 		try {
-			const ref = sessionSnapshotRef(sessionId, root);
-			const key = writtenRefKey(root, ref);
+			const canonicalRoot = await canonicalizeWorktreePathAsync(root);
+			const ref = sessionSnapshotRef(sessionId, canonicalRoot);
+			const key = writtenRefKey(canonicalRoot, ref);
 			if (!refDeletionNeeded(writtenRefs.get(key))) continue;
 			writtenRefs.delete(key);
 			await runGit(["update-ref", "-d", ref], { cwd: root });
@@ -85,7 +87,8 @@ export async function holdsSessionSnapshotRef(
 	signal?: AbortSignal,
 ): Promise<boolean> {
 	try {
-		const { exitCode } = await runGit(["rev-parse", "--verify", "--quiet", sessionSnapshotRef(sessionId, root)], {
+		const ref = sessionSnapshotRef(sessionId, await canonicalizeWorktreePathAsync(root));
+		const { exitCode } = await runGit(["rev-parse", "--verify", "--quiet", ref], {
 			cwd: root,
 			signal,
 			allowExitCodes: [1, 128],

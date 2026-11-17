@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
 import {
+	access,
 	copyFile,
 	type FileHandle,
 	lstat,
@@ -34,7 +34,7 @@ import {
 	redactUrlCredentials,
 	runGit,
 } from "./git.ts";
-import { canonicalizeWorktreePath, captureIndexPath, defaultWorktreeSnapshotStoreDir } from "./paths.ts";
+import { canonicalizeWorktreePathAsync, captureIndexPath, defaultWorktreeSnapshotStoreDir } from "./paths.ts";
 import { isDeniedSnapshotPath, loadSnapshotPathPolicy, type SnapshotPathPolicy } from "./policy.ts";
 import { resolveWorktreeSnapshotSettings, type WorktreeSnapshotSettingsInput } from "./settings.ts";
 import type {
@@ -147,10 +147,10 @@ export async function locateCheckout(
 			case "not-a-repository":
 				return new WorkspaceSnapshotError("not-a-repository", dir);
 			case "unborn-head":
-				return new WorkspaceSnapshotError("unborn-head", canonicalizeWorktreePath(top));
+				return new WorkspaceSnapshotError("unborn-head", await canonicalizeWorktreePathAsync(top));
 			case "located":
 				return {
-					root: canonicalizeWorktreePath(top),
+					root: await canonicalizeWorktreePathAsync(top),
 					head,
 					gitDir,
 					userIndex: isAbsolute(index) ? index : resolve(dir, index),
@@ -188,7 +188,7 @@ async function locateCheckoutStepwise(
 ): Promise<Checkout | WorktreeSnapshotUnavailableReason> {
 	const top = await runGit(["rev-parse", "--show-toplevel"], { cwd: dir, signal, allowExitCodes: [128] });
 	if (top.exitCode !== 0) return new WorkspaceSnapshotError("not-a-repository", dir);
-	const root = canonicalizeWorktreePath(top.stdout.toString("utf8").replace(/\n$/, ""));
+	const root = await canonicalizeWorktreePathAsync(top.stdout.toString("utf8").replace(/\n$/, ""));
 	const head = await runGit(["rev-parse", "-q", "--verify", "HEAD^{commit}"], {
 		cwd: root,
 		signal,
@@ -411,7 +411,7 @@ async function writeCapturedTree(
 	const { root } = checkout;
 	const { index, userIndexPath } = capture;
 	const options: WorkingTreeOptions = { signal, modeTree };
-	if (!usableOutside(root, index)) return writeWorkingTree(checkout, settings, policy, scratch, options);
+	if (!(await usableOutside(root, index))) return writeWorkingTree(checkout, settings, policy, scratch, options);
 	const working = `${index}.${process.pid}.tmp`;
 	try {
 		const seed = await indexSeedOf(userIndexPath);
@@ -501,10 +501,10 @@ function readWorkingFiles(
  * Whether a private index at `index` may be used for the checkout at `root`: its path resolves, and it is outside the
  * checkout, which would otherwise capture the index's own files.
  */
-function usableOutside(root: string, index: string): boolean {
+async function usableOutside(root: string, index: string): Promise<boolean> {
 	let real: string;
 	try {
-		real = canonicalizeWorktreePath(index);
+		real = await canonicalizeWorktreePathAsync(index);
 	} catch {
 		return false;
 	}
@@ -727,6 +727,14 @@ async function fileBytes(path: string): Promise<number> {
 
 type PathOmission = Extract<WorktreeSnapshotOmission, { readonly path: string }>;
 
+/** Whether anything is at `path`, as `existsSync` answers: any failure to reach it is no. */
+function pathExists(path: string): Promise<boolean> {
+	return access(path).then(
+		() => true,
+		() => false,
+	);
+}
+
 /** How long checking the submodules of one capture may take; a submodule not checked by then is listed as unchecked. */
 export const SUBMODULE_CHECK_TIMEOUT_MS = 10_000;
 
@@ -737,7 +745,7 @@ export const SUBMODULE_CHECK_TIMEOUT_MS = 10_000;
  * as `submodule-unchecked` instead of failing the capture.
  */
 async function submoduleOmissions(root: string, signal?: AbortSignal): Promise<PathOmission[]> {
-	if (!existsSync(join(root, ".gitmodules"))) return [];
+	if (!(await pathExists(join(root, ".gitmodules")))) return [];
 	const bounded = AbortSignal.any([AbortSignal.timeout(SUBMODULE_CHECK_TIMEOUT_MS), ...(signal ? [signal] : [])]);
 	const unchecked = (path: string, error: unknown): PathOmission[] => {
 		if (signal?.aborted) throw error;
@@ -753,11 +761,16 @@ async function submoduleOmissions(root: string, signal?: AbortSignal): Promise<P
 	} catch (error) {
 		return unchecked(".gitmodules", error);
 	}
-	const checkedOut = [...new Set(paths)].sort().filter((path) => {
-		const fromRoot = relative(root, resolve(root, path));
-		const inside = fromRoot !== "" && fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot);
-		return inside && existsSync(join(root, fromRoot, ".git"));
-	});
+	const candidates = [...new Set(paths)].sort();
+	const present = await Promise.all(
+		candidates.map(async (path) => {
+			const fromRoot = relative(root, resolve(root, path));
+			const inside =
+				fromRoot !== "" && fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot);
+			return inside && (await pathExists(join(root, fromRoot, ".git")));
+		}),
+	);
+	const checkedOut = candidates.filter((_, index) => present[index]);
 	const results = await Promise.all(
 		checkedOut.map(async (path): Promise<PathOmission[]> => {
 			const git: GitRunOptions = { cwd: join(root, path), signal: bounded };
