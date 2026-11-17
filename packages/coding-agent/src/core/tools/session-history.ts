@@ -49,9 +49,10 @@ export function createSessionHistoryToolDefinition(
 		name,
 		label: "Session history",
 		description:
-			'Search or read this session\'s own history after its context was cleared. Pass {"pattern": "<regex>"} to search (each match names its line), then {"lines": "N-M"} to read a narrow range verbatim. Only this session\'s history is reachable.',
+			'Search or read this session\'s own history after its context was cleared. When the context-cleared message tells you to `search` or `read` `history://sessions/<id>` and those tools are not available, use this tool instead: pass {"pattern": "<regex>"} to search (each match names its line), then {"lines": "N-M"} to read a narrow range verbatim. Only this session\'s history is reachable.',
 		parameters: sessionHistorySchema,
-		promptSnippet: "Search and read this session's own history after a context clear",
+		promptSnippet:
+			"Search and read this session's own history after a context clear (use in place of search/read on history://sessions/<id>)",
 		execute: async (_toolCallId, { pattern, lines }) => {
 			const url = `history://sessions/${options.sessionId()}`;
 			const router = options.router();

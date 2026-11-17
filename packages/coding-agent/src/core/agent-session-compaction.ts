@@ -657,7 +657,7 @@ export function abortBranchSummary(this: AgentSession): void {
 export function _enableSessionHistoryTool(this: AgentSession): void {
 	if (this._sessionHistoryToolEnabled) return;
 	this._sessionHistoryToolEnabled = true;
-	this._refreshToolRegistry();
+	this._setActiveTools(this.getActiveToolNames());
 }
 export function setAutoCompactionEnabled(this: AgentSession, enabled: boolean): void {
 	this.settingsManager.setCompactionEnabled(enabled);

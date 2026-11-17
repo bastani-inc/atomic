@@ -73,7 +73,7 @@ See [Recalling earlier work](/sessions#recalling-earlier-work) for how `history:
 
 ### Agents without read or search
 
-Some agents cannot read their history with their own tools, such as a subagent or workflow stage whose tool allowlist leaves out `read` or `search`. After its first clear, such an agent gets one read-only tool, `session_history`, and keeps it when its session is resumed. `{"pattern": "<regex>"}` searches its own session's history and `{"lines": "N-M"}` reads a range of it. The tool reaches no other session, workflow run, file or project, and the agent's other tools stay as they were.
+Some agents cannot read their history with their own tools, such as a subagent or workflow stage whose tool allowlist leaves out `read` or `search`. After its first clear, such an agent gets one read-only tool, `session_history`, and a resumed session gets it whenever its resumed tools leave out `read` or `search`. `{"pattern": "<regex>"}` searches its own session's history and `{"lines": "N-M"}` reads a range of it. The tool reaches no other session, workflow run, file or project, and the agent's other tools stay as they were.
 
 ## Context compacted
 

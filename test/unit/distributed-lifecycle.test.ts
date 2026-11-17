@@ -383,15 +383,12 @@ test("feature suites skip with a typed reason when the ref lacks their interface
 	);
 	assert.ok(
 		isDistributedFeatureUnavailableError(
-			featureSkip(
-				"compaction",
-				capabilities({ members: { "atomic.AgentSessionRuntime": ["awaitBackgroundCompaction"] } }),
-			),
+			featureSkip("compaction", capabilities({ members: { "atomic.AgentSessionRuntime": ["compact"] } })),
 		),
 	);
 	assert.ok(
 		isDistributedScenarioPendingError(
-			featureSkip("compaction", capabilities({ members: { "atomic.AgentSession": ["awaitBackgroundCompaction"] } })),
+			featureSkip("compaction", capabilities({ members: { "atomic.AgentSession": ["compact"] } })),
 		),
 	);
 	assert.equal(featureSkip("smoke", capabilities()), undefined);
@@ -974,7 +971,7 @@ test("each feature probe names its issue, its capability and the exact interface
 			"restore-cold": ["#4245", "export GitProvisionError"],
 			"team-ci": ["#4320", "export TeamProfileError"],
 			"pool-scale": ["#4312", "export createRegistry (local worker pools)"],
-			compaction: ["#4330", "AgentSession.awaitBackgroundCompaction"],
+			compaction: ["#4330", "AgentSession.compact"],
 		},
 	);
 	const exports: Record<string, string> = {

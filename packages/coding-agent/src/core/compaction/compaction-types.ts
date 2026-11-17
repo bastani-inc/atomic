@@ -79,7 +79,7 @@ export interface VerbatimCompactionDetails {
 	/** Why the configured compactor was not used and the context was cleared instead. */
 	fallbackReason?: string;
 	history?: CompactionHistoryLocation;
-	/** How the boundary told the agent to reach its history; a resumed session restores the history tool from it. */
+	/** How the boundary told the agent to reach its history; a resumed session decides from its resumed tools. */
 	historyAccess?: HistoryAccess;
 	/**
 	 * Authoritative whole-context count, projected for display only. Populated by
