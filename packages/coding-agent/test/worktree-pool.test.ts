@@ -864,9 +864,13 @@ describe("a worktree whose blueprint build was cancelled (#5379)", () => {
 			assert.equal(cancelled, slot(snapshot, 0));
 			// The build of the worktree never finished, and its lock names a process that is gone; a step it started, which
 			// the lock does not name, still works there.
+			// A process of this user that cannot be read, such as another login's, keeps the worktree too when it started
+			// after the cancelled build. The build is recorded as starting later than anything this host runs now, so only
+			// what this test's own process does decides.
+			const startedAt = new Date(Date.now() + 60 * 60_000).toISOString();
 			await updateLedger(storeDir(), (ledger) => ({
 				...ledger,
-				roots: { ...ledger.roots, [rootKey(cancelled)]: { state: "running", at: new Date().toISOString() } },
+				roots: { ...ledger.roots, [rootKey(cancelled)]: { state: "running", at: startedAt } },
 			}));
 			const builder = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
 			await new Promise((resolve) => builder.once("exit", resolve));
