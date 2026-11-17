@@ -33,27 +33,30 @@ function isInside(root: string, path: string): boolean {
 	return rel !== "" && !rel.startsWith("..") && !rel.startsWith(sep);
 }
 
-test.skipIf(process.platform === "win32")("temp design artifacts use a directory only the current user owns", () => {
-	const { artifactDir } = prepareArtifactDir(sandbox);
-	assert.ok(isInside(sandbox, artifactDir), `${artifactDir} is inside the temp directory`);
-	for (let dir = dirname(artifactDir); isInside(sandbox, dir); dir = dirname(dir)) {
-		const stat = statSync(dir);
-		assert.equal(stat.uid, process.getuid!(), dir);
-		assert.equal(stat.mode & 0o077, 0, `${dir} has no group or other access`);
-	}
-});
+test.skipIf(process.platform === "win32")(
+	"temp design artifacts use a directory only the current user owns",
+	async () => {
+		const { artifactDir } = await prepareArtifactDir(sandbox);
+		assert.ok(isInside(sandbox, artifactDir), `${artifactDir} is inside the temp directory`);
+		for (let dir = dirname(artifactDir); isInside(sandbox, dir); dir = dirname(dir)) {
+			const stat = statSync(dir);
+			assert.equal(stat.uid, process.getuid!(), dir);
+			assert.equal(stat.mode & 0o077, 0, `${dir} has no group or other access`);
+		}
+	},
+);
 
 test.skipIf(process.platform === "win32")(
 	"a symbolic link in place of the temp design directory is not written through",
-	() => {
-		const { artifactDir: probe } = prepareArtifactDir(sandbox);
+	async () => {
+		const { artifactDir: probe } = await prepareArtifactDir(sandbox);
 		const base = dirname(probe);
 		rmSync(base, { recursive: true, force: true });
 		const elsewhere = join(sandbox, "planted");
 		mkdirSync(elsewhere, { mode: 0o700 });
 		symlinkSync(elsewhere, base, "dir");
 
-		prepareArtifactDir(sandbox);
+		await prepareArtifactDir(sandbox);
 		assert.deepEqual(readdirSync(elsewhere), [], "nothing is created through the planted link");
 	},
 );
