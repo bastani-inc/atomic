@@ -803,8 +803,11 @@ describe("AgentSession prompt characterization", () => {
 		const harness = await createHarness({ withConfiguredAuth: false });
 		harnesses.push(harness);
 
-		await expect(harness.session.prompt("hi")).rejects.toThrow(
-			`No API key found for ${harness.getModel().provider}.`,
-		);
+		const model = harness.getModel();
+		await assert.rejects(harness.session.prompt("hi"), (error: Error) => {
+			assert.equal(error.name, "NoUsableModelError");
+			assert.ok(error.message.startsWith(`No API key found for ${model.provider}: ${model.provider}/${model.id}`));
+			return true;
+		});
 	});
 });

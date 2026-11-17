@@ -85,9 +85,13 @@ import {
 	deliveryTargetIdentity,
 	messageFrameFor,
 	type RemoteSendRequest,
+	mayUseReturnPath,
+	type ReturnPathAuthority,
+	returnPathParty,
 	type SendClientMessage,
 	senderGroupIdentity,
 } from "./send-handler.js";
+import { type ReturnPathParty, returnPathClosedReason } from "./return-paths.js";
 import { deliverHeldToAsker } from "./ask-failures.js";
 import { brokerHostIdentity, isProcessAlive, processStartedAt } from "./broker-instance.js";
 import { type LostRecipientBounds, lostRecipientBounds, lostRecipientReason } from "./lost-recipients.js";
@@ -212,6 +216,8 @@ export interface MultiNodeHost {
 		onSettled: (written: boolean) => void,
 	): void;
 	readonly supervisorCache: SupervisorChannelCache;
+	/** This broker's return paths: a session here may answer a sender outside its groups whose message reached it here. */
+	readonly returnPaths?: ReturnPathAuthority;
 	/** This broker's own ask routes: an ask whose asker and recipient are both here is answered on the local path. */
 	readonly pendingQuestions: PendingQuestionIndex;
 	/** This broker's local accepted deliveries: a retry whose recipient moved to another broker is answered from them. */
@@ -1218,6 +1224,36 @@ export class MultiNodeRouter {
 	}
 
 	/**
+	 * Whether another broker holds the live presence of `targetIdentity`: a registration of that identity is connected
+	 * there. Read behind what this broker already queued for the identity, without holding up what it queues next, so a
+	 * slow read never delays a later registration of it. A database that fails or does not answer within
+	 * `REMOTE_SESSIONS_BOUND_MS` counts as no, and its late answer is ignored.
+	 */
+	identityPresentElsewhere(targetIdentity: string): Promise<boolean> {
+		if (this.closed) return Promise.resolve(false);
+		const earlier = this.serials.get(targetIdentity) ?? Promise.resolve();
+		return new Promise((resolve) => {
+			const bound = setTimeout(() => resolve(false), REMOTE_SESSIONS_BOUND_MS);
+			bound.unref?.();
+			void earlier
+				.then(() => this.state.leases.read({ kind: "presence", targetIdentity }))
+				.then(
+					(read) =>
+						resolve(
+							read.status === "found" &&
+								read.lease.holderId !== this.brokerId &&
+								read.lease.ageMs < BROKER_LEASE_STALE_AFTER_MS,
+						),
+					(error: Error) => {
+						this.report(error);
+						resolve(false);
+					},
+				)
+				.finally(() => clearTimeout(bound));
+		});
+	}
+
+	/**
 	 * The host names of the other brokers whose membership lease is live, for status reports. `undefined` when the
 	 * database fails or does not answer within `REMOTE_SESSIONS_BOUND_MS`.
 	 */
@@ -1511,6 +1547,25 @@ export class MultiNodeRouter {
 					const lease = agents.find((candidate) => presenceOf(candidate).session === info);
 					return lease === undefined ? undefined : returnAddressOf(presenceOf(lease).targetIdentity);
 				});
+			}
+			// A sender this one holds a return path to answers to its name only when nothing visible does.
+			const answerable = resolution.kind === "not_found"
+				? live.filter(
+						(lease) =>
+							isAgentRecipient(presenceOf(lease).session) &&
+							!agents.includes(lease) &&
+							this.holdsReturnPath(request, {
+								sessionId: presenceOf(lease).session.id,
+								identity: stableIdentity(presenceOf(lease).targetIdentity),
+							}),
+					)
+				: [];
+			if (answerable.length > 0) {
+				const answered = resolveSessionTarget(answerable.map((lease) => presenceOf(lease).session), request.target);
+				if (answered.kind !== "not_found") {
+					resolution = answered;
+					agents.push(...answerable);
+				}
 			}
 			if (resolution.kind === "resolved") {
 				const session = resolution.session;
@@ -1892,6 +1947,14 @@ export class MultiNodeRouter {
 		}
 	}
 
+	/** Whether this send may resolve `target` because its sender holds a return path to it, open or closed. */
+	private holdsReturnPath(request: RemoteSendRequest, target: ReturnPathParty): boolean {
+		return (
+			mayUseReturnPath(request.message, request.supervisorSend, request.from) &&
+			this.host.returnPaths?.holds(request.from, target) === true
+		);
+	}
+
 	/**
 	 * The sessions among `sessionIds` this send's `replyTo` answers: a recorded vertical crossing or an open ask route,
 	 * exactly as a local reply's candidates (`handleBrokerSend`). Such a session resolves by name across groups; the
@@ -1935,12 +1998,25 @@ export class MultiNodeRouter {
 			request,
 			sessions.map((session) => session.intercomSessionId),
 		);
-		const visible = sessions.filter(
+		const shown = sessions.filter(
 			(session) =>
 				reachesGroups(request.from, session.groups) ||
 				(request.supervisorSend && session.intercomSessionId === request.from.supervisorId) ||
 				replyAuthorized.has(session.intercomSessionId),
 		);
+		// A sender this one holds a return path to answers to its name only when nothing visible does.
+		const shownNames = new Set(shown.filter(isAgentRecipient).flatMap((session) => [session.name?.toLowerCase(), session.atomicSessionId]));
+		const answerable = shownNames.has(request.target.toLowerCase()) || shownNames.has(request.target)
+			? []
+			: sessions.filter(
+					(session) =>
+						!shown.includes(session) &&
+						this.holdsReturnPath(request, {
+							sessionId: session.intercomSessionId,
+							identity: stableIdentity(session.targetIdentity),
+						}),
+				);
+		const visible = [...shown, ...answerable];
 		const target = request.target.toLowerCase();
 		const agents = visible.filter(isAgentRecipient);
 		const candidates = [
@@ -1996,24 +2072,40 @@ export class MultiNodeRouter {
 		const verticalReply =
 			message.replyTo !== undefined &&
 			this.host.supervisorCache.matchReply(message.replyTo, from.info.id, target.sessionId);
-		if (!request.supervisorSend && !verticalReply && !correlatedReply && !reachesGroups(from, target.groups)) {
-			this.fail(request, from.reach === undefined ? TARGET_GROUP_REFUSAL : outsideReachReason(from.reach));
+		// A session answers a sender outside its reach whose message reached it here, within the return path's bounds.
+		const crossesGroups = !request.supervisorSend && !verticalReply && !correlatedReply && !reachesGroups(from, target.groups);
+		const answered: ReturnPathParty | undefined =
+			crossesGroups && mayUseReturnPath(message, request.supervisorSend, from)
+				? { sessionId: target.sessionId, identity: stableIdentity(target.identity) }
+				: undefined;
+		const returnPath = answered !== undefined && this.host.returnPaths?.use(from, answered, message.id) === true;
+		if (crossesGroups && !returnPath) {
+			this.fail(
+				request,
+				answered !== undefined && this.host.returnPaths?.closed(from, answered) === true
+					? returnPathClosedReason(request.clientMessage.to)
+					: from.reach === undefined
+						? TARGET_GROUP_REFUSAL
+						: outsideReachReason(from.reach),
+			);
 			return;
 		}
 		if (message.expectsReply === true && target.gates.replyCapability === "terminal") {
 			this.fail(request, TERMINAL_CHILD_ASK_REFUSAL);
 			return;
 		}
-		const frame: IntercomDeliveryFrame = request.supervisorSend
-			? { type: "message", from: from.info, message, channel: "supervisor" }
-			: {
-					type: "message",
-					from: from.info,
-					message,
-					...(from.reach === undefined
-						? {}
-						: { senderReach: { home: from.reach.home, reachable: [...from.reach.reachable] } }),
-				};
+		const senderIdentity = returnPathParty(from).identity;
+		const frame: IntercomDeliveryFrame = {
+			type: "message",
+			from: from.info,
+			message,
+			...(request.supervisorSend ? { channel: "supervisor" as const } : {}),
+			...(!request.supervisorSend && from.reach !== undefined
+				? { senderReach: { home: from.reach.home, reachable: [...from.reach.reachable] } }
+				: {}),
+			...(returnPath ? { returnPath: true as const } : {}),
+			...(senderIdentity === undefined ? {} : { senderIdentity }),
+		};
 		const enqueued = await this.reserveAndEnqueue(
 			{
 				messageId: message.id,
@@ -2511,7 +2603,8 @@ export class MultiNodeRouter {
 		if (frame.message.expectsReply === true && recipient.info.replyCapability === "terminal") {
 			return TERMINAL_CHILD_ASK_REFUSAL;
 		}
-		if (frame.channel === "supervisor") return undefined;
+		// The origin broker carried an answer on a return path it holds (its sender's message reached it there first).
+		if (frame.channel === "supervisor" || frame.returnPath === true) return undefined;
 		if (
 			frame.senderReach === undefined
 				? sameGroup(recipient.info, frame.from)
@@ -2559,6 +2652,13 @@ export class MultiNodeRouter {
 			if (frame.channel === "supervisor") {
 				this.host.supervisorCache.record(frame.message.id, frame.from.id, recipient.info.id);
 			}
+			// The sender's identity is the one its origin broker wrote; a frame from an older broker carries none.
+			this.host.returnPaths?.delivered(
+				recipient,
+				{ sessionId: frame.from.id, identity: frame.senderIdentity },
+				frame.from,
+				frame.message.id,
+			);
 			await this.wakeOrigin(inflight.row);
 		})().catch((error: Error) => {
 			this.report(error);
@@ -3029,4 +3129,9 @@ export class MultiNodeRouter {
 		await this.bus.close();
 		await this.state.close();
 	}
+}
+
+/** A target identity a return path can bind: a registration's return address, never a reusable bare session id. */
+function stableIdentity(targetIdentity: string): string | undefined {
+	return targetIdentity.startsWith('["return",') ? targetIdentity : undefined;
 }

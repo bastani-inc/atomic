@@ -23,6 +23,16 @@ interface LateStageReservation {
   context: IntercomContext;
 }
 
+/**
+ * The owning session's admission line: a closed stage's message is written in its own place, after the messages its
+ * sender left queued for the owner, so one sender's messages reach the owner in the order they arrived.
+ */
+export interface LateStageAdmissionOrder {
+  run<T>(operation: () => T | Promise<T>): Promise<T>;
+  /** The messages these senders left queued for the owner to go idle, taken in arrival order. */
+  takeQueuedFrom(senderIds: ReadonlySet<string>): LateStageMessage[];
+}
+
 function isSubagentRelayHandoff(entry: InboundMessageEntry): boolean {
   return entry.from.id === "subagent-control" || entry.from.id === "subagent-result";
 }
@@ -33,6 +43,7 @@ export function registerLateStageMessageRouter(
   getReplyTracker: () => ReplyTracker,
   getOwnerGroup: () => string = () => DEFAULT_GROUP,
   broadcastCopies: BroadcastCopies = new BroadcastCopies(),
+  order?: LateStageAdmissionOrder,
 ): void {
   pi.events.on(LATE_STAGE_MESSAGE_EVENT, (data) => {
     if (!data || typeof data !== "object") return;
@@ -74,9 +85,16 @@ export function registerLateStageMessageRouter(
     const delivery = accepted.some((message) => !isHistoryCard(message)) || event.options?.triggerTurn !== true
       ? event
       : { ...event, options: { ...event.options, triggerTurn: false } };
-    const ownedCompletion = event.batch && typeof pi.sendMessages === "function"
-      ? deliverAtomicBatch(pi, accepted, delivery, reservations, admission, tracker)
-      : deliverSequentially(pi, accepted, delivery, reservations, admission, tracker);
+    const deliver = (messages: LateStageMessage[]): Promise<void> =>
+      event.batch && typeof pi.sendMessages === "function"
+        ? deliverAtomicBatch(pi, messages, delivery, reservations, admission, tracker)
+        : deliverSequentially(pi, messages, delivery, reservations, admission, tracker);
+    const senders = new Set(
+      reservations.map(({ message }) => (message.details as InboundMessageEntry).from.id),
+    );
+    const ownedCompletion = order === undefined || senders.size === 0
+      ? deliver(accepted)
+      : order.run(() => deliver([...order.takeQueuedFrom(senders), ...accepted]));
     event.completion = Promise.all([ownedCompletion, ...joined]).then(() => {});
     return event.completion;
   });

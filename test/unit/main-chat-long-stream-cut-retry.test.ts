@@ -58,6 +58,7 @@ function createSession(options: { readonly fallbackModels?: readonly string[] } 
 		_fallbackModels: [...(options.fallbackModels ?? [])],
 		_fallbackAttemptedKeys: new Set<string>(),
 		_fallbackBlockedModels: [] as Model<Api>[],
+		_fallbackBlockedProviders: new Set<string>(),
 		_retryAttempt: 0,
 		_longStreamCutRetries: 0,
 		_retryPromise: undefined,
