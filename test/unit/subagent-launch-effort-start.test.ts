@@ -305,11 +305,16 @@ test(
 		giveUp.abort();
 		await launched;
 
-		assert.deepEqual(admission.requests, ["session", "session"], "the child waited on its parent's admission");
-		assert.deepEqual(admission.delegated, [undefined, true], "the child asked for a delegated permit");
-		const childWait = admission.signals[1];
-		assert.ok(childWait?.aborted, "the child's wait was cancelled when its budget ran out");
-		assert.ok(isSessionStartTimeoutError(childWait.reason), "with the typed timeout as its reason");
+		assert.deepEqual(
+			admission.requests,
+			["session", "session", "session"],
+			"the child waited on its parent's admission, and its retry did too",
+		);
+		assert.deepEqual(admission.delegated, [undefined, true, true], "the child asked for a delegated permit");
+		for (const childWait of admission.signals.slice(1)) {
+			assert.ok(childWait?.aborted, "each start's wait was cancelled when its budget ran out");
+			assert.ok(isSessionStartTimeoutError(childWait.reason), "with the typed timeout as its reason");
+		}
 		assert.equal(
 			outcome.kind,
 			"settled",
@@ -324,13 +329,18 @@ test(
 		assert.equal(error.phase, "admission");
 		assert.equal(error.step, "awaiting-admission");
 		assert.equal(error.timeoutMs, WEDGED_START_BUDGET_MS);
-		assert.equal(outcome.result.error, error.message);
+		// A stalled start is retried once; the retry stalled too, and the failure names both.
+		assert.match(
+			outcome.result.error ?? "",
+			/^Subagent did not start: its start stalled waiting for a resource-admission permit after \d+s and was retried once; the retry stalled waiting for a resource-admission permit after \d+s\./,
+		);
 		assert.deepEqual(fixture.requests, [], "its task never reached the provider");
 		assert.match(
 			statusWhileWaiting,
-			/worker_1 — error \((?:loaded|cold)\) · id effort-wedged:0 · Session start timed out: subagent effort-wedged\/worker_1 did not start within 10s/,
+			/worker_2 — error \((?:loaded|cold)\) · id effort-wedged:0 · Subagent did not start: its start stalled waiting for a resource-admission permit after \d+s and was retried once/,
 		);
 		assert.doesNotMatch(statusWhileWaiting, /running/);
+		assert.doesNotMatch(statusWhileWaiting, /worker_1/, "the stalled start is not listed beside its retry");
 		// The status card, which renders the structured groups rather than the text, explains the failure too.
 		initTheme("dark");
 		assert.ok(status);
@@ -343,7 +353,7 @@ test(
 			.map((line) => stripVTControlCharacters(line))
 			.join("\n");
 		assert.match(card, /Failed/);
-		assert.match(card, /Session start timed out/);
+		assert.match(card, /Subagent did not start: its start stalled/);
 	},
 	REAL_CHILD_SESSION_TIMEOUT_MS,
 );
