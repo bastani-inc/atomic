@@ -126,6 +126,31 @@ test("workspace timeouts larger than a native timer delay keep their full budget
 	assert.equal(settled.reason.elapsedMs, timeoutMs);
 });
 
+test("workspace timeouts beyond twice the native timer delay do not busy-loop (#5332)", async () => {
+	const nativeTimerLimitMs = 2_147_483_647;
+	const timeoutMs = 2 * nativeTimerLimitMs + 100;
+	const maximumCallbacks = Math.ceil(timeoutMs / nativeTimerLimitMs);
+	const schedule = globalThis.setTimeout;
+	let callbacks = 0;
+	vi.spyOn(globalThis, "setTimeout").mockImplementation((callback, delay) =>
+		schedule(() => {
+			assert.ok(++callbacks <= maximumCallbacks, "a long timeout must not repeatedly overflow into 1 ms timers");
+			callback();
+		}, delay),
+	);
+	const outcome = run(timeoutMs);
+	await vi.advanceTimersByTimeAsync(timeoutMs - 1);
+	assert.equal(terminationCount(), 0);
+	await vi.advanceTimersByTimeAsync(1);
+	assert.equal(terminationCount(), 1);
+	finish(null, "SIGTERM");
+	const [settled] = await outcome;
+	assert.equal(settled.status, "rejected");
+	assert.ok(settled.reason instanceof WorkspaceTimeoutError);
+	assert.equal(settled.reason.elapsedMs, timeoutMs);
+	assert.equal(vi.getTimerCount(), 0);
+});
+
 for (const wallClockJumpMs of [-60_000, 60_000]) {
 	test(`workspace timeout elapsed time ignores a wall clock jump of ${wallClockJumpMs} ms (#5332)`, async () => {
 		const outcome = run();
