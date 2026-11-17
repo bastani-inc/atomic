@@ -53,12 +53,16 @@ export class ReleasedReplyHandoff extends Error {
  */
 export class ReplyWaiterRegistry {
   private readonly waiters = new Map<string, ReplyWaiterRecord>();
-  private readonly maxPending: number;
+  private maxPending: number;
 
   constructor(
     private readonly timeoutMs: number = DEFAULT_REPLY_TIMEOUT_MS,
     maxPending: number = DEFAULT_MAX_PENDING_REPLY_WAITS,
   ) {
+    this.maxPending = Math.max(1, maxPending);
+  }
+
+  setMaxPending(maxPending: number): void {
     this.maxPending = Math.max(1, maxPending);
   }
 
