@@ -1,3 +1,4 @@
+import { writeSync } from "node:fs";
 import { join } from "path";
 import { getAgentConfigPaths, getAgentDir, getProjectConfigPaths } from "../config.js";
 import { settingsFileNoticeKey, warnDeprecation } from "../utils/deprecation.js";
@@ -232,7 +233,7 @@ export class SettingsManager {
 			for (const value of dropWrongTypedSettings(settings)) {
 				invalid.push({ ...value, path: path ?? storage.getFieldPath?.(scope, value.setting) });
 			}
-			return SettingsManager.migrateSettings(settings, path);
+			return SettingsManager.migrateSettings(settings, { path });
 		});
 		const settings = layers.reduceRight<Settings>((merged, layer) => deepMergeSettings(merged, layer), {});
 		return { settings, invalid };
@@ -331,25 +332,29 @@ export class SettingsManager {
 		}
 	}
 
-	/** Migrate old settings format to new format */
 	/**
-	 * `path` names the file the settings were read from: a warning about a setting it ignores is shown once across
-	 * starts while that setting keeps its value, and a removed routing setting's warning waits while startup still
-	 * removes that setting from the file (see `removeSavedModelRoutingSettings`).
+	 * Migrate old settings format to new format. `path` names the file the settings were read from: a warning about a
+	 * setting it ignores is shown once across starts while that setting keeps its value, and a removed routing setting's
+	 * warning waits while startup still removes that setting from the file (see `removeSavedModelRoutingSettings`).
+	 * `quiet` migrates without warning, for a save, which reports nothing a load has not.
 	 */
-	private static migrateSettings(settings: Record<string, unknown>, path?: string): Settings {
+	private static migrateSettings(
+		settings: Record<string, unknown>,
+		{ path, quiet = false }: { path?: string; quiet?: boolean } = {},
+	): Settings {
 		const file = path === undefined ? undefined : settingsFileNoticeKey(path);
 		const about = (value: unknown) => (file === undefined ? undefined : `${file}\0${JSON.stringify(value) ?? ""}`);
+		const warn = quiet ? () => {} : warnDeprecation;
 		// Migrate routerModel -> decisionModel before normalizing provider IDs.
 		if ("routerModel" in settings) {
 			if ("decisionModel" in settings) {
-				warnDeprecation('Ignored legacy "routerModel" because "decisionModel" is already set.', {
+				warn('Ignored legacy "routerModel" because "decisionModel" is already set.', {
 					once: about(settings.routerModel),
 				});
 			} else if (typeof settings.routerModel === "string" && settings.routerModel.trim() === settings.routerModel) {
 				settings.decisionModel = settings.routerModel;
 			} else {
-				warnDeprecation(
+				warn(
 					'Ignored invalid legacy "routerModel"; set "decisionModel" to an exact provider/model ID, "auto", or an empty string.',
 					{ once: about(settings.routerModel) },
 				);
@@ -358,7 +363,7 @@ export class SettingsManager {
 		}
 		// Automatic model routing was removed; its settings are dropped.
 		if ("modelRouting" in settings) {
-			warnDeprecation(
+			warn(
 				'Ignored removed setting "modelRouting": automatic model routing was removed, so "auto" runs your default model and its provider and model restrictions no longer limit "auto" or any fallback model.',
 				{ hold: file, once: about(settings.modelRouting) },
 			);
@@ -675,7 +680,13 @@ export class SettingsManager {
 					manager.storage.withPrimaryWriteLockAtExit(scope, persist);
 				else if (manager.storage.withPrimaryWriteLock) manager.storage.withPrimaryWriteLock(scope, persist);
 				else manager.storage.withLock(scope, persist);
-			} catch {}
+			} catch (error) {
+				// The process is exiting: say so synchronously, and never throw from its exit handler.
+				const reason = error instanceof Error ? error.message : String(error);
+				try {
+					writeSync(2, `Warning: Atomic could not save your ${scope} settings before exiting: ${reason}\n`);
+				} catch {}
+			}
 		}
 	}
 
@@ -701,7 +712,9 @@ export class SettingsManager {
 	): void {
 		const persist = (currentPrimary: string | undefined): string => {
 			const currentFileSettings = currentPrimary
-				? SettingsManager.migrateSettings(parseJsonFileContent(currentPrimary) as Record<string, unknown>)
+				? SettingsManager.migrateSettings(parseJsonFileContent(currentPrimary) as Record<string, unknown>, {
+						quiet: true,
+					})
 				: {};
 			const mergedSettings: Settings = { ...currentFileSettings };
 			for (const field of modifiedFields) {
@@ -791,7 +804,9 @@ export class SettingsManager {
 
 		const persist = (currentPrimary: string | undefined): string | undefined => {
 			const fileSettings = currentPrimary
-				? SettingsManager.migrateSettings(parseJsonFileContent(currentPrimary) as Record<string, unknown>)
+				? SettingsManager.migrateSettings(parseJsonFileContent(currentPrimary) as Record<string, unknown>, {
+						quiet: true,
+					})
 				: {};
 			const filePackages = update(fileSettings.packages ?? []);
 			return filePackages === undefined

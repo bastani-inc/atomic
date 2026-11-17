@@ -12,6 +12,7 @@ import {
 	readlinkSync,
 	realpath as realpathCallback,
 	realpathSync,
+	renameSync,
 	rmdirSync,
 	rmSync,
 	statSync,
@@ -175,22 +176,29 @@ export function writeSettingsFile(
 	const target = settingsFileTarget(path);
 	const mode = existsSync(target) ? statSync(target).mode & 0o777 : undefined;
 	const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+	// Before every attempt to replace it: a rename Windows refuses for a moment is tried again for about two seconds.
+	const assertUnchanged = () => {
+		if (expected !== undefined && contentIfPresent(target) !== expected.content)
+			throw new SettingsFileChangedError(path);
+	};
 	try {
 		writeFileSync(temporary, content, { encoding: "utf-8", ...(mode === undefined ? {} : { mode }) });
 		if (mode !== undefined) chmodSync(temporary, mode);
-		if (expected !== undefined && contentIfPresent(target) !== expected.content)
-			throw new SettingsFileChangedError(path);
 	} catch (error) {
 		rmSync(temporary, { force: true });
 		throw error;
 	}
 	try {
-		renameReplacing(temporary, target);
+		renameReplacing(temporary, target, process.platform, (from, to) => {
+			assertUnchanged();
+			renameSync(from, to);
+		});
 		return { mode: "replaced" };
 	} catch (error) {
 		rmSync(temporary, { force: true });
 		const reason = error as NodeJS.ErrnoException;
 		if (!UNREPLACEABLE_FILE_CODES.has(reason.code ?? "")) throw error;
+		assertUnchanged();
 		writeFileSync(target, content, "utf-8");
 		if (!inPlaceWrites.has(target)) inPlaceWrites.set(target, reason);
 		return { mode: "in-place", reason };
@@ -205,22 +213,28 @@ export async function writeSettingsFileAsync(
 	const target = await settingsFileTargetAsync(path);
 	const mode = (await pathExists(target)) ? (await fsPromises.stat(target)).mode & 0o777 : undefined;
 	const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+	const assertUnchanged = async () => {
+		if (expected !== undefined && (await readIfPresent(target)) !== expected.content)
+			throw new SettingsFileChangedError(path);
+	};
 	try {
 		await fsPromises.writeFile(temporary, content, { encoding: "utf-8", ...(mode === undefined ? {} : { mode }) });
 		if (mode !== undefined) await fsPromises.chmod(temporary, mode);
-		if (expected !== undefined && (await readIfPresent(target)) !== expected.content)
-			throw new SettingsFileChangedError(path);
 	} catch (error) {
 		await fsPromises.rm(temporary, { force: true });
 		throw error;
 	}
 	try {
-		await renameReplacingAsync(temporary, target);
+		await renameReplacingAsync(temporary, target, process.platform, async (from, to) => {
+			await assertUnchanged();
+			await fsPromises.rename(from, to);
+		});
 		return { mode: "replaced" };
 	} catch (error) {
 		await fsPromises.rm(temporary, { force: true });
 		const reason = error as NodeJS.ErrnoException;
 		if (!UNREPLACEABLE_FILE_CODES.has(reason.code ?? "")) throw error;
+		await assertUnchanged();
 		await fsPromises.writeFile(target, content, "utf-8");
 		if (!inPlaceWrites.has(target)) inPlaceWrites.set(target, reason);
 		return { mode: "in-place", reason };

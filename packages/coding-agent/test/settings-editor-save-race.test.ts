@@ -1,9 +1,20 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import fs, { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, it } from "vitest";
-import { FileSettingsStorage } from "../src/core/settings-storage.js";
+import { afterEach, beforeEach, describe, it, vi } from "vitest";
+import { SettingsManager } from "../src/core/settings-manager.js";
+import {
+	FileSettingsStorage,
+	SettingsFileChangedError,
+	writeSettingsFile,
+	writeSettingsFileAsync,
+} from "../src/core/settings-storage.js";
+import type { SettingsScope } from "../src/core/settings-types.js";
+
+const realRenameSync = fs.renameSync;
+const realRename = fs.promises.rename;
 
 /**
  * An editor saves settings.json without Atomic's lock. These tests save it the way an editor does while Atomic is
@@ -29,8 +40,41 @@ describe("a settings save keeps what an editor saved while it was writing", () =
 	});
 
 	afterEach(() => {
+		vi.restoreAllMocks();
+		syncBuiltinESMExports();
 		rmSync(root, { recursive: true, force: true });
 	});
+
+	/**
+	 * On Windows a rename another process's handle refuses (EPERM) is tried again for about two seconds. The editor saves
+	 * while the first attempt is refused.
+	 */
+	const onWindowsRefusingTheFirstRename = async <T>(run: () => T | Promise<T>): Promise<T> => {
+		const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+		Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+		const refuse = (to: string) => {
+			if (!to.endsWith(join("agent", "settings.json")) || refused) return false;
+			refused = true;
+			editorSave({ theme: "light", editorKey: "during the retry" });
+			return true;
+		};
+		let refused = false;
+		const eperm = () => Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" });
+		vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+			if (refuse(String(to))) throw eperm();
+			realRenameSync(from, to);
+		});
+		vi.spyOn(fs.promises, "rename").mockImplementation(async (from, to) => {
+			if (refuse(String(to))) throw eperm();
+			await realRename(from, to);
+		});
+		syncBuiltinESMExports();
+		try {
+			return await run();
+		} finally {
+			Object.defineProperty(process, "platform", platform);
+		}
+	};
 
 	it("merges its change into the editor's save instead of replacing it (withPrimaryWriteLock)", () => {
 		const storage = new FileSettingsStorage(cwd, agentDir);
@@ -86,5 +130,74 @@ describe("a settings save keeps what an editor saved while it was writing", () =
 			/changed while it was being saved/,
 		);
 		assert.deepEqual(readJson(), { theme: "light", save: calls });
+	});
+
+	it("does not replace a file an editor saved while Windows refused the first rename (writeSettingsFile)", async () => {
+		const read = readFileSync(globalPath(), "utf-8");
+		await onWindowsRefusingTheFirstRename(() =>
+			assert.throws(
+				() => writeSettingsFile(globalPath(), JSON.stringify({ theme: "dark", atomic: 1 }), { content: read }),
+				SettingsFileChangedError,
+			),
+		);
+		assert.deepEqual(readJson(), { theme: "light", editorKey: "during the retry" });
+	});
+
+	it("does not replace a file an editor saved while Windows refused the first rename (writeSettingsFileAsync)", async () => {
+		const read = readFileSync(globalPath(), "utf-8");
+		await onWindowsRefusingTheFirstRename(() =>
+			assert.rejects(
+				writeSettingsFileAsync(globalPath(), JSON.stringify({ theme: "dark", atomic: 1 }), { content: read }),
+				SettingsFileChangedError,
+			),
+		);
+		assert.deepEqual(readJson(), { theme: "light", editorKey: "during the retry" });
+	});
+
+	it("merges its change into a file an editor saved while Windows refused the first rename", async () => {
+		const storage = new FileSettingsStorage(cwd, agentDir);
+		await onWindowsRefusingTheFirstRename(() =>
+			storage.withPrimaryWriteLock("global", (current) => withKey(current, "defaultThinkingLevel", "high")),
+		);
+		assert.deepEqual(readJson(), { theme: "light", editorKey: "during the retry", defaultThinkingLevel: "high" });
+		await onWindowsRefusingTheFirstRename(() =>
+			storage.withPrimaryWriteLockAsync("global", (current) => withKey(current, "steeringMode", "all")),
+		);
+		assert.equal(readJson().steeringMode, "all");
+	});
+
+	it("says on stderr that a save at exit was given up to an editor, without throwing", () => {
+		/** An editor saves the file on every attempt, and the save started before exit never finishes. */
+		class EditorKeepsSaving extends FileSettingsStorage {
+			override async withPrimaryWriteLockAsync(): Promise<void> {
+				await new Promise<never>(() => {});
+			}
+			override withPrimaryWriteLockAtExit(
+				scope: SettingsScope,
+				fn: (currentPrimary: string | undefined) => string | undefined,
+			): void {
+				let save = 0;
+				super.withPrimaryWriteLockAtExit(scope, (current) => {
+					save += 1;
+					editorSave({ theme: "light", save });
+					return fn(current);
+				});
+			}
+		}
+		const manager = SettingsManager.fromStorage(new EditorKeepsSaving(cwd, agentDir));
+		manager.setTheme("solarized");
+		const written: string[] = [];
+		vi.spyOn(fs, "writeSync").mockImplementation((fd: number, text: unknown) => {
+			if (fd === 2) written.push(String(text));
+			return String(text).length;
+		});
+		syncBuiltinESMExports();
+		(SettingsManager as unknown as { saveUnsavedWritesAtExit(): void }).saveUnsavedWritesAtExit();
+		assert.equal(written.length, 1, "one line on stderr");
+		assert.match(
+			written[0]!,
+			/could not save your global settings before exiting: .*changed while it was being saved/,
+		);
+		assert.notEqual(readJson().theme, "solarized", "the editor's save stands");
 	});
 });

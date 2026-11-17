@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import chalk from "chalk";
 import { normalizePath } from "./paths.ts";
@@ -19,6 +19,8 @@ const SHOWN_STORE_KEY = "__atomicShownNotices";
 const SHOWN_NOTICES_FILE = "shown-notices.json";
 /** How many shown notices the record keeps, the most recent first to go last. */
 const SHOWN_NOTICES_LIMIT = 500;
+/** The record names which settings files Atomic read: readable by its owner only. */
+const SHOWN_NOTICES_MODE = 0o600;
 
 interface DeprecationOptions {
 	showInUi?: boolean;
@@ -40,7 +42,8 @@ interface ShownNotices {
 type DeprecationRegistry = typeof globalThis & {
 	[EMITTED_KEY]?: Set<string>;
 	[SINK_KEY]?: (message: string) => void;
-	[UI_PENDING_KEY]?: string[];
+	/** Warnings written to stderr that the next UI shows again; `once` is recorded as shown when it does. */
+	[UI_PENDING_KEY]?: { message: string; once?: string }[];
 	[HELD_KEY]?: Map<string, { message: string; options: DeprecationOptions }[]>;
 	[SHOW_ONCE_KEY]?: (identity: string) => boolean;
 	[SHOWN_STORE_KEY]?: ShownNotices;
@@ -63,20 +66,33 @@ export function warnDeprecation(message: string, options: DeprecationOptions = {
 		if (!held.some((warning) => warning.message === message)) held.push({ message, options });
 		return;
 	}
-	if (options.once !== undefined && state[SHOW_ONCE_KEY]?.(`${options.once}\0${message}`) === false) return;
+	const once = options.once === undefined ? undefined : `${options.once}\0${message}`;
+	if (once !== undefined && state[SHOWN_STORE_KEY]?.shown.has(noticeHash(once))) return;
 	state[EMITTED_KEY] ??= new Set<string>();
 	if (state[EMITTED_KEY].has(message)) return;
 	state[EMITTED_KEY].add(message);
 	const sink = state[SINK_KEY];
 	if (sink !== undefined) {
 		sink(message);
+		recordShown(once);
 		return;
 	}
 	console.warn(chalk.yellow(`Deprecation warning: ${message}`));
-	if (options.showInUi) {
+	// A notice shown once across starts must reach the UI too, which clears what was printed before it started.
+	if (options.showInUi || once !== undefined) {
 		state[UI_PENDING_KEY] ??= [];
-		state[UI_PENDING_KEY].push(message);
+		state[UI_PENDING_KEY].push({ message, once });
 	}
+}
+
+/** Record a notice shown once across starts as shown, now that it was delivered. */
+function recordShown(once: string | undefined): void {
+	const store = registry()[SHOWN_STORE_KEY];
+	if (once === undefined || store === undefined) return;
+	const hash = noticeHash(once);
+	if (store.shown.has(hash)) return;
+	store.shown.add(hash);
+	store.added.push(hash);
 }
 
 /**
@@ -87,7 +103,10 @@ export function setDeprecationWarningSink(sink: (message: string) => void): () =
 	const state = registry();
 	const previous = state[SINK_KEY];
 	state[SINK_KEY] = sink;
-	for (const message of state[UI_PENDING_KEY]?.splice(0) ?? []) sink(message);
+	for (const { message, once } of state[UI_PENDING_KEY]?.splice(0) ?? []) {
+		sink(message);
+		recordShown(once);
+	}
 	return () => {
 		if (state[SINK_KEY] === sink) state[SINK_KEY] = previous;
 	};
@@ -174,28 +193,38 @@ export function loadShownDeprecationNotices(agentDir: string): void {
 	const store: ShownNotices = { path, shown: new Set(readShownNotices(path)), added: [] };
 	state[SHOWN_STORE_KEY] = store;
 	state[SHOW_ONCE_KEY] = (identity) => {
-		const hash = noticeHash(identity);
-		if (store.shown.has(hash)) return false;
-		store.shown.add(hash);
-		store.added.push(hash);
+		if (store.shown.has(noticeHash(identity))) return false;
+		recordShown(identity);
 		return true;
 	};
 	if (saveShownAtExit) return;
 	saveShownAtExit = true;
-	process.once("exit", saveShownDeprecationNotices);
+	process.once("exit", () => {
+		// The warnings still held are shown first, so the record includes them.
+		showHeldDeprecationWarnings();
+		saveShownDeprecationNotices();
+	});
 }
 
 /** Save the notices shown since {@link loadShownDeprecationNotices}, keeping what other processes saved meanwhile. */
 export function saveShownDeprecationNotices(): void {
-	const store = registry()[SHOWN_STORE_KEY];
-	if (store === undefined || store.added.length === 0) return;
+	const state = registry();
+	const store = state[SHOWN_STORE_KEY];
+	if (store === undefined) return;
+	// Written to stderr by a process no UI took over (print, JSON or RPC mode): the user saw them there.
+	for (const { once } of state[UI_PENDING_KEY] ?? []) recordShown(once);
+	if (store.added.length === 0) return;
 	const added = new Set(store.added);
 	const shown = [...readShownNotices(store.path).filter((hash) => !added.has(hash)), ...store.added].slice(
 		-SHOWN_NOTICES_LIMIT,
 	);
 	const temporary = `${store.path}.${process.pid}.tmp`;
 	try {
-		writeFileSync(temporary, `${JSON.stringify({ shown }, null, 2)}\n`, "utf-8");
+		writeFileSync(temporary, `${JSON.stringify({ shown }, null, 2)}\n`, {
+			encoding: "utf-8",
+			mode: SHOWN_NOTICES_MODE,
+		});
+		chmodSync(temporary, SHOWN_NOTICES_MODE);
 		renameSync(temporary, store.path);
 		store.added = [];
 	} catch {
