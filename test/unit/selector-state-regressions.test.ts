@@ -57,6 +57,24 @@ test("disabled initial and replacement rows never hide an enabled choice (#5237)
 	assert.equal(replaced.getSelected()?.id, "enabled");
 });
 
+test("replacing rows keeps their identity before falling back to a preferred or nearby enabled row (#5237)", () => {
+	const rows = ["a", "b", "c", "d"].map((id) => ({ id, value: id, label: id }));
+	const state = new SelectorState({ items: rows, initialId: "c" });
+	state.setItems(rows, "a");
+	assert.equal(state.getSelected()?.id, "c");
+	state.setItems(rows.filter((item) => item.id !== "c"));
+	assert.equal(state.getSelected()?.id, "d");
+	state.setItems(
+		rows.filter((item) => item.id !== "d"),
+		"b",
+	);
+	assert.equal(state.getSelected()?.id, "b");
+	state.setItems(rows.map((item) => ({ ...item, disabled: item.id === "b" })));
+	assert.equal(state.getSelected()?.id, "c");
+	state.setItems(rows.map((item) => ({ ...item, disabled: item.id !== "a" })));
+	assert.equal(state.getSelected()?.id, "a");
+});
+
 test("invalid selection and movement numbers leave the highlighted row unchanged (#5237)", () => {
 	const state = new SelectorState({
 		items: ["a", "b", "c"].map((id) => ({ id, value: id, label: id })),
