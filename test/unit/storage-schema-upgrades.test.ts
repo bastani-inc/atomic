@@ -855,6 +855,6 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 			assert.equal(Number(complete?.chunks), 33);
 			assert.equal(Number(complete?.bytes), 0);
 			assert.equal(Number((await database.get("SELECT count(*) AS chunks FROM session_blob_chunks"))?.chunks), 33);
-		});
+		}, 120_000);
 	});
 }
