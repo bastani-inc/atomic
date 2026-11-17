@@ -9,6 +9,7 @@ import type { SessionEntry } from "../../packages/coding-agent/src/core/session-
 import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/core/storage/database.ts";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.ts";
+import { SNAPSHOT_BLOB_CHUNK_BYTES } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { createSession, messageEntry, syntheticSnapshot } from "../helpers/snapshot-reference-index.js";
 
@@ -141,6 +142,30 @@ describe("an older build on a snapshot store this build wrote (#5065)", () => {
 		assert.ok("refused" in (await readAsRelease0987(database, blob.hash)));
 		assert.deepEqual(await journal.snapshotBlobs.getBlob(blob.hash), blob.data);
 		await journal.close();
+	});
+
+	test("an older build refuses a database where collection moved a legacy blob to chunks, never reading it as empty (#5327)", async () => {
+		const database = await open();
+		await SqlSessionStore.open(database);
+		await database.exec(`DROP INDEX snapshot_blobs_age; DROP TABLE snapshot_blobs;
+			CREATE TABLE snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL) STRICT`);
+		const data = new Uint8Array(SNAPSHOT_BLOB_CHUNK_BYTES + 1).map((_, index) => (index * 31) & 255);
+		const hash = createHash("sha256").update(data).digest("hex");
+		await database.run("INSERT INTO snapshot_blobs VALUES (?, ?, ?)", hash, data.byteLength, data);
+		const sessions = await SqlSessionStore.open(database);
+
+		assert.deepEqual(await sessions.snapshotBlobs.collectGarbage({ graceSeconds: 0 }), []);
+
+		assert.equal(
+			Number((await database.get("SELECT chunks FROM snapshot_blobs WHERE hash = ?", hash))?.chunks),
+			Math.ceil(data.byteLength / SNAPSHOT_BLOB_CHUNK_BYTES),
+		);
+		const read = await readAsRelease0987(database, hash);
+		assert.ok(
+			"refused" in read,
+			`0.9.87 read the moved blob as ${(read as { blob?: Uint8Array }).blob?.byteLength} bytes`,
+		);
+		assert.deepEqual(await sessions.snapshotBlobs.getBlob(hash), data);
 	});
 
 	test("an older build's collection between this build's upgrade and its first collection loses no degraded pin (#5065)", async () => {

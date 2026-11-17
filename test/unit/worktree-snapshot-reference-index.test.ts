@@ -379,7 +379,7 @@ test("reopening a session store and run journal finds their index triggers and c
 			["session_entries_snapshot_pending", "session_entries"],
 			["session_entries_snapshot_refs", "session_entries"],
 			["session_entries_snapshot_refs_delete", "session_entries"],
-			["snapshot_blobs_chunks_delete", "snapshot_blobs"],
+			["snapshot_blobs_chunks_delete_all", "snapshot_blobs"],
 			["wf_events_snapshot_refs", "wf_events"],
 			["wf_events_snapshot_state", "wf_events"],
 			["wf_runs_snapshot_refs_delete", "wf_runs"],

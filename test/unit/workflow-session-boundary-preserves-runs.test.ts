@@ -1026,6 +1026,38 @@ describe("quit pauses and clears without closing the shared journal", () => {
 		assert.ok(await backend.prepareWorkflowCatalog());
 	});
 
+	test("session_shutdown(quit) leaves a run blocked on missing credentials at rest instead of failing the shutdown", async () => {
+		const handlers = captureHandlers();
+		await handlers.get("session_start")!({ reason: "startup" });
+		startBareRun("blocked-run", "blocked-boundary");
+		store.recordStageStart("blocked-run", {
+			id: "stage1",
+			name: "stage1",
+			status: "blocked",
+			parentIds: [],
+			toolEvents: [],
+		});
+		assert.equal(
+			store.recordRunBlocked("blocked-run", "No API key found for anthropic", {
+				failureKind: "auth",
+				failureCode: "missing_api_key",
+				failureRecoverability: "recoverable",
+				failureDisposition: "active_blocked",
+				failureMessage: "A required model provider API key is missing.",
+				failedStageId: "stage1",
+				resumable: true,
+			}),
+			true,
+		);
+
+		await handlers.get("session_shutdown")!({ reason: "quit" });
+
+		const run = store.runs().find((candidate) => candidate.id === "blocked-run");
+		assert.equal(run?.endedAt, undefined);
+		assert.equal(run?.resumable, true);
+		assert.equal(run?.failureDisposition, "active_blocked");
+	});
+
 	for (const reason of PRESERVE) {
 		test(`session_shutdown(${reason}) keeps the shared journal open`, async () => {
 			const backend = await readyDurability();

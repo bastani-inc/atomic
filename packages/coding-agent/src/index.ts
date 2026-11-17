@@ -247,6 +247,7 @@ export {
 	type SerializedGitHubCopilotError,
 	serializeGitHubCopilotError,
 } from "@bastani/atomic-ai";
+export { clampThinkingLevel, getSupportedThinkingLevels } from "@bastani/atomic-ai/compat";
 export { type Args, parseArgs } from "./cli/args.ts";
 // Config paths
 export {
@@ -611,6 +612,16 @@ export {
 } from "./core/mcp-servers.ts";
 export { convertToLlm } from "./core/messages.ts";
 export { modelCallUsage } from "./core/model-call-usage.ts";
+export {
+	type CredentialPartition,
+	formatNoUsableModelMessage,
+	NoUsableModelError,
+	partitionByCredentials,
+	providerOfModelReference,
+	type SkippedCandidate,
+	type SkippedModel,
+	type SkippedModelReason,
+} from "./core/model-credential-filter.ts";
 export type {
 	ModelFallbackFailureKind,
 	ModelFallbackFailureOptions,
@@ -619,6 +630,7 @@ export type {
 } from "./core/model-fallback-failures.ts";
 export {
 	errorMessage,
+	isProviderCredentialRejection,
 	isRetryableModelFailure,
 	isRetryableSameModelFailure,
 	isUnrecognizedModelFailure,
