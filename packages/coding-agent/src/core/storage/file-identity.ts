@@ -820,7 +820,11 @@ function readStorageOwner(file: string): StorageOwner | undefined {
 	return owner;
 }
 
-function currentStorageOwnerPath(owner: StorageOwner, claimDirectory = dirname(owner.path)): string | undefined {
+function currentStorageOwnerPath(
+	owner: StorageOwner,
+	claimDirectory = dirname(owner.path),
+	claimedTarget?: string,
+): string | undefined {
 	const path = owner.relativePath === undefined ? owner.path : resolve(claimDirectory, owner.relativePath);
 	if (
 		owner.identity === undefined ||
@@ -849,8 +853,11 @@ function currentStorageOwnerPath(owner: StorageOwner, claimDirectory = dirname(o
 				...configuredRelativeTargets(candidate, getHomeDir(), undefined, false),
 			];
 			const physicalCandidate = canonicalPath(candidate);
-			const ownTargets = targets.filter((target) =>
-				containsPath(physicalCandidate, canonicalPath(resolve(candidate, target))),
+			const ownTargets = targets.filter(
+				(target) =>
+					containsPath(physicalCandidate, canonicalPath(resolve(candidate, target))) &&
+					(claimedTarget === undefined ||
+						!pathsEqual(resolve(candidate, target), resolve(candidate, claimedTarget))),
 			);
 			const legacyTargets = owner.legacyTargets;
 			const unownedTargets =
@@ -1260,7 +1267,7 @@ function applyStorageTargetDecision(targetDecision: StorageTargetDecision, setti
 		}
 		owner ??= settings === undefined || !isDirectory(agentPath) ? storageOwner(decision.parentOwner) : undefined;
 		if (owner === undefined) throw new Error(`Cannot claim storage target at ${claim}`);
-		const ownerPath = currentStorageOwnerPath(owner, dirname(claim));
+		const ownerPath = currentStorageOwnerPath(owner, dirname(claim), target);
 		if (ownerPath !== undefined && sameDirectory(ownerPath, agentPath)) continue;
 		const fallback = resolve(agentPath, target);
 		if (

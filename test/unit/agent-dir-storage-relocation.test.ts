@@ -95,7 +95,63 @@ test('a host-id sibling with explicit sessions.storage.dir "sessions" beside old
 	}
 });
 
-test.each(["backup-copy", "backup-copy-via-junction", "legacy-record", "legacy-record-via-junction"])(
+test("a profile adopted at its junction's directory keeps reading the parent session directory after its physical directory moves across filesystems (#5242)", async () => {
+	const links = join(root, "links");
+	const physical = join(root, "physical");
+	const moved = join(root, "moved-physical");
+	const agent = join(physical, "a1");
+	const opened = join(links, "a1");
+	const settings = { sessions: { storage: { dir: "sessions" } } };
+	mkdirSync(agent, { recursive: true });
+	mkdirSync(links);
+	symlinkSync(agent, opened, "junction");
+	writeFileSync(join(agent, "settings.json"), JSON.stringify(settings));
+	const localId = "00000000-0000-4000-8000-000000000000";
+	const parentId = "11111111-1111-4111-8111-111111111111";
+	for (const [dir, id] of [
+		[join(agent, "sessions"), localId],
+		[join(links, "sessions"), parentId],
+	] as const) {
+		const store = await resolveSessionStore(root, { agentDir: opened, sessionStore: { kind: "jsonl", dir } });
+		try {
+			await store.create({ id, version: 4, createdAt: "2026-11-16T00:00:00.000Z", cwd: root }, []);
+		} finally {
+			await store.close();
+		}
+	}
+	mkdirSync(join(links, "workflows"));
+	writeFileSync(join(links, "workflows", "journal.sqlite"), "");
+	resetStorageHomeCacheForTests();
+	assert.equal(defaultSessionDatabasePath(opened, settings), join(links, "workflows", "journal.sqlite"));
+	assert.deepEqual(selectSessionStorage(root, { agentDir: opened, settings }), {
+		kind: "jsonl",
+		dir: join(links, "sessions"),
+	});
+	cpSync(physical, moved, { recursive: true });
+	rmSync(physical, { recursive: true });
+	rmSync(opened);
+	symlinkSync(join(moved, "a1"), opened, "junction");
+	for (let start = 0; start < 2; start++) {
+		resetStorageHomeCacheForTests();
+		assert.equal(defaultSessionDatabasePath(opened, settings), join(links, "workflows", "journal.sqlite"));
+		const restored = await resolveSessionStore(root, { agentDir: opened, settings });
+		try {
+			assert.equal((await restored.readHeader(parentId))?.id, parentId);
+			assert.equal(await restored.readHeader(localId), undefined);
+		} finally {
+			await restored.close();
+		}
+	}
+});
+
+test.each([
+	"backup-copy",
+	"backup-copy-via-junction",
+	"start-before-copy",
+	"start-before-copy-via-junction",
+	"legacy-record",
+	"legacy-record-via-junction",
+])(
 	"an undecided adopter after a copied-parent move, rename and %s keeps reading the adopted parent session directory (#5242)",
 	async (variant) => {
 		const original = join(root, "undecided-parent");
@@ -135,15 +191,33 @@ test.each(["backup-copy", "backup-copy-via-junction", "legacy-record", "legacy-r
 		rmSync(original, { recursive: true });
 		const current = join(moved, "main");
 		renameSync(join(moved, "a1"), current);
-		if (variant.startsWith("backup-copy")) cpSync(current, join(moved, "main-backup"), { recursive: true });
 		const links = join(root, "links");
 		const opened = variant.endsWith("-via-junction") ? join(links, "main") : current;
 		if (variant.endsWith("-via-junction")) {
 			mkdirSync(links, { recursive: true });
 			symlinkSync(current, opened, "junction");
 		}
+		if (variant.startsWith("start-before-copy")) {
+			resetStorageHomeCacheForTests();
+			assert.equal(defaultSessionDatabasePath(opened, settings), join(moved, "workflows", "journal.sqlite"));
+			const restored = await resolveSessionStore(root, { agentDir: opened, settings });
+			try {
+				assert.equal((await restored.readHeader(parentId))?.id, parentId);
+			} finally {
+				await restored.close();
+			}
+		}
+		if (variant.startsWith("backup-copy") || variant.startsWith("start-before-copy")) {
+			cpSync(current, join(moved, "main-backup"), { recursive: true });
+		}
 		for (let start = 0; start < 2; start++) {
 			resetStorageHomeCacheForTests();
+			if (!variant.startsWith("legacy-record")) {
+				assert.equal(
+					defaultSessionDatabasePath(opened, settings),
+					join(variant.startsWith("start-before-copy") ? moved : opened, "workflows", "journal.sqlite"),
+				);
+			}
 			assert.deepEqual(selectSessionStorage(root, { agentDir: opened, settings }), {
 				kind: "jsonl",
 				dir: join(moved, "sessions"),
