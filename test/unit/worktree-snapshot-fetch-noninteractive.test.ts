@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { startHostProcessesThroughChildProcess } from "../helpers/host-spawn.js";
 import type { SpawnRequest } from "../helpers/worktree-snapshot-faults.js";
 
 /** Every process the code under test starts, and whether each `git fetch` fails the way an unreachable remote does. */
@@ -31,6 +32,8 @@ import {
 	type WorktreeSnapshot,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/index.ts";
 import { GitSandbox, gitConfigPath } from "../helpers/worktree-snapshot.js";
+
+startHostProcessesThroughChildProcess();
 
 const REMOTE = "ssh://fake-host.invalid/team/repo.git";
 const MISSING_HEAD = "a".repeat(40);
