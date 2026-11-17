@@ -139,6 +139,60 @@ test.each([
 	},
 );
 
+test.each([true, false])(
+	"an idle stage answers an uncertain single-message retry and accepts a later prompt with applied=%s (#5318)",
+	async (applied) => {
+		const { harness, store, failure } = await uncertainHarness(true, applied);
+		const options = { triggerTurn: true, stageAdmissionKey: "uncertain-single-turn-key" };
+		await assert.rejects(harness.session.sendCustomMessage(original, options), (error) => error === failure);
+		const contexts: string[] = [];
+		harness.setResponses(
+			Array.from({ length: 4 }, () => (context) => {
+				contexts.push(JSON.stringify(context.messages));
+				return fauxAssistantMessage("completed the admitted stage input");
+			}),
+		);
+		await harness.session.prompt("perform the stage task");
+		assert.equal(contexts.length, 1);
+		assert.equal(contexts[0]!.includes(original.content), false, "the failed startup write was not consumed");
+		const settled = Promise.withResolvers<void>();
+		const unsubscribe = harness.session.subscribe((event) => {
+			if (event.type === "agent_settled") settled.resolve();
+		});
+		try {
+			await harness.session.sendCustomMessage(original, options);
+			await settled.promise;
+			await harness.session.agent.waitForIdle();
+		} finally {
+			unsubscribe();
+		}
+		assert.equal(harness.session.isStreaming, false);
+		assert.equal(contexts.length, 2, "the retry starts exactly one turn");
+		assert.equal(contexts[1]!.split(original.content).length - 1, 1, "the retry turn sees the card once");
+		await harness.session.prompt("accept a later stage task");
+		assert.equal(contexts.length, 3, "the stage accepts a later prompt");
+		assert.equal(contexts[2]!.split(original.content).length - 1, 1);
+		const reopened = await SessionManager.open(store, harness.sessionManager.getSessionId());
+		for (const manager of [harness.sessionManager, reopened]) {
+			assert.equal(
+				manager.getBranch().filter((entry) => entry.type === "custom_message" && entry.content === original.content)
+					.length,
+				1,
+				"the live and reopened branches each contain one card",
+			);
+		}
+		for (const type of ["message_start", "message_end"] as const) {
+			assert.equal(
+				harness
+					.eventsOfType(type)
+					.filter((event) => event.message.role === "custom" && event.message.content === original.content).length,
+				1,
+				"the card is displayed once",
+			);
+		}
+	},
+);
+
 test.each([undefined, false])(
 	"an uncertain ordinary batch retried while streaming keeps one input with triggerTurn=%s (#5318)",
 	async (triggerTurn) => {
