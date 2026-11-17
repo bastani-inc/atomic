@@ -274,6 +274,10 @@ export class SelectList implements Component {
 		}
 	}
 
+	getItemCount(): number {
+		return this.filteredItems.length;
+	}
+
 	getSelectedItem(): SelectItem | null {
 		const item = this.filteredItems[this.selectedIndex];
 		return item || null;

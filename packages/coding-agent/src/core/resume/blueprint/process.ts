@@ -43,6 +43,12 @@ export interface LoggedProcessOptions {
  */
 export const stepProcessWatcher = new AsyncLocalStorage<(pid: number, running: boolean) => void>();
 
+export const stepStartingWatcher = new AsyncLocalStorage<() => void>();
+
+export function buildProcessStarting(): void {
+	stepStartingWatcher.getStore()?.();
+}
+
 const STOPPED_PROCESS_TREE_WAIT_MS = 10_000;
 
 async function settleTree(tree: ProcessTreeContainment | undefined, stopped: boolean): Promise<void> {
@@ -78,6 +84,7 @@ export async function runLoggedProcess(
 	const startedAt = Date.now();
 	const copiesOutput = copiesOutputToLog(process.platform);
 	return new Promise<ProcessExit>((resolveExit, reject) => {
+		buildProcessStarting();
 		const child = spawn(run.command, [...run.args], {
 			cwd: run.cwd,
 			env: run.env,
