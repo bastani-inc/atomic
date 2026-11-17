@@ -1,5 +1,5 @@
 import { recordTimeSinceReset } from "./core/timings.ts";
-import { createModuleRequire } from "./utils/module-require.ts";
+import { createModuleRequire } from "./utils/module-require.js";
 
 export interface EarlyInputState {
 	text: string;

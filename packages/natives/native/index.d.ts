@@ -720,8 +720,9 @@ export interface OwnerSnapshot {
 }
 
 /**
- * How much input waits unread on this process's standard input: bytes on Unix and for a Windows pipe, input events
- * for a Windows console. `null` where the OS cannot say, such as for a closed handle.
+ * How much input waits unread on this process's standard input: bytes on Unix, input events for a Windows console.
+ * `null` where the OS cannot say without waiting: for a Windows pipe, whose peek waits behind a read already pending
+ * on it, and for a closed handle.
  */
 export declare function pendingStdinInput(): number | null
 
