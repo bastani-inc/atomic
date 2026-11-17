@@ -527,7 +527,10 @@ test(
 			assert.equal(outcome.kind, "restored");
 			assert.equal(outcome.kind === "restored" && outcome.intercomLive, false);
 			const [restoreNotice] = subagentChildRestoreNotices([outcome]);
-			assert.match(restoreNotice ?? "", /did not reconnect to Intercom.*unreachable until it reconnects/);
+			assert.match(
+				restoreNotice ?? "",
+				/is still starting: it has not registered on Intercom yet\. Messages sent to it now wait for it/,
+			);
 
 			// A delivery the child sent before the restart is waiting in the resumed session.
 			const timestamp = Date.now();

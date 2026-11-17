@@ -36,6 +36,29 @@ describe("StdinBuffer", () => {
 		return new Promise((resolve) => setTimeout(resolve, ms));
 	}
 
+	// libuv on Windows and the Linux console send F1-F5 as ESC [ [ A..E and some terminals Page Up/Down as ESC [ [ 5 ~.
+	// Splitting them at the second "[" typed their final letter into the editor.
+	describe("Linux-console function keys", () => {
+		it("emits ESC [ [ A..E as one sequence that matches its function key", () => {
+			processInput("\x1b[[A\x1b[[C\x1b[[E");
+			assert.deepStrictEqual(emittedSequences, ["\x1b[[A", "\x1b[[C", "\x1b[[E"]);
+			assert.ok(matchesKey(emittedSequences[1]!, "f3"));
+		});
+
+		it("emits ESC [ [ 5 ~ as one Page Up", () => {
+			processInput("a\x1b[[5~b");
+			assert.deepStrictEqual(emittedSequences, ["a", "\x1b[[5~", "b"]);
+			assert.ok(matchesKey(emittedSequences[1]!, "pageUp"));
+		});
+
+		it("waits for the rest of a function key split after ESC [ [", async () => {
+			processInput("\x1b[[");
+			assert.deepStrictEqual(emittedSequences, []);
+			processInput("B");
+			assert.deepStrictEqual(emittedSequences, ["\x1b[[B"]);
+		});
+	});
+
 	describe("Regular Characters", () => {
 		it("should pass through regular characters immediately", () => {
 			processInput("a");

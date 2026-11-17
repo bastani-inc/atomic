@@ -32,6 +32,11 @@ interface ContactSupervisorDeps {
 	mayDetachReplyWait?: () => boolean;
 	/** True unless the broker is known to route across machines; a call may start before its connection exists. */
 	mayAdmitReplyWait?: () => boolean;
+	/**
+	 * Register again with the supervisor capability the broker refused at this child's start: its supervisor may be
+	 * back. One attempt; a refusal now leaves the child as it was.
+	 */
+	retrySupervisorAuthorization?: () => Promise<void>;
 }
 
 export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSupervisorDeps): void {
@@ -163,6 +168,8 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
 
 			let connectedClient: IntercomClient;
 		try {
+			// A refused supervisor authorization is offered again first: its supervisor may be back since.
+			if (metadata.supervisorRefusal !== undefined) await deps.retrySupervisorAuthorization?.().catch(() => undefined);
 			connectedClient = await ensureConnected("tool");
 		} catch (error) {
 			return {
@@ -210,10 +217,19 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
           };
         }
 
+        // A child whose supervisor capability the broker kept refusing registered without it, so it has no supervisor
+        // channel: the broker refuses the send, and the result says why the channel is missing. Never an ordinary send
+        // instead, which would let a session holding no valid capability speak for the child.
+        const unverified = metadata.supervisorRefusal !== undefined && !connectedClient.supervisorSessionId;
+        const sendToSupervisor = (to: string, options: Parameters<IntercomClient["sendToSupervisor"]>[1]) =>
+          connectedClient.sendToSupervisor(to, options);
+        const unverifiedNote = unverified
+          ? ` (the broker refused this subagent's supervisor authorization when it registered: ${metadata.supervisorRefusal}. It retries the authorization when it next connects to Intercom)`
+          : "";
         if (reason === "progress_update") {
           const message = params.message as string;
           try {
-            const result = await connectedClient.sendToSupervisor(sendTo, {
+            const result = await sendToSupervisor(sendTo, {
               text: formatChildOrchestratorMessage("update", metadata, message),
             });
             // #4639: a supervisor that is a workflow stage without a live session gets it when its stage reopens.
@@ -221,7 +237,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
             if (!result.delivered && !queued) {
               const errorText = result.reason ?? "Session may not exist or has disconnected.";
               return {
-                content: [{ type: "text", text: `Message to "${metadata.orchestratorTarget}" was not delivered: ${errorText}` }],
+                content: [{ type: "text", text: `Message to "${metadata.orchestratorTarget}" was not delivered: ${errorText}${unverifiedNote}` }],
                 isError: true,
                 details: { messageId: result.id, delivered: false, reason: result.reason },
               };
@@ -238,7 +254,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
                 type: "text",
                 text: queued
                   ? `Progress update queued for supervisor ${metadata.orchestratorTarget}: its workflow stage has no live session now and receives it when it reopens`
-                  : `Progress update sent to supervisor ${metadata.orchestratorTarget}`,
+                  : `Progress update sent to supervisor ${metadata.orchestratorTarget}${unverifiedNote}`,
               }],
               isError: false,
               details: queued ? { messageId: result.id, delivered: false, queued: true } : { messageId: result.id, delivered: true },
@@ -267,7 +283,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
           const requestText = reason === "interview_request"
             ? formatChildOrchestratorMessage("interview", metadata, formatSupervisorInterviewRequest(supervisorInterview!, typeof params.message === "string" ? params.message : undefined))
             : formatChildOrchestratorMessage("ask", metadata, typeof params.message === "string" ? params.message : "");
-          const sendResult = await connectedClient.sendToSupervisor(sendTo, {
+          const sendResult = await sendToSupervisor(sendTo, {
             messageId: questionId,
             text: requestText,
             expectsReply: true,
@@ -275,7 +291,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
           // #4639: a question queued for a supervisor stage without a live session is asked when the stage reopens; its
           // reply ends this wait as a delivered question's does.
           if (!sendResult.delivered && sendResult.queued !== true) {
-            const errorText = sendResult.reason ?? "Session may not exist or has disconnected.";
+            const errorText = `${sendResult.reason ?? "Session may not exist or has disconnected."}${unverifiedNote}`;
             wait.cancel(new Error(`Message to "${metadata.orchestratorTarget}" was not delivered: ${errorText}`));
             return {
               content: [{ type: "text", text: `Message to "${metadata.orchestratorTarget}" was not delivered: ${errorText}` }],

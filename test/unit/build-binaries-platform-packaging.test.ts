@@ -75,6 +75,26 @@ test("every compiled target shares the syntax-minified application sidecar", () 
 	assertBuildScriptSyntax();
 });
 
+// The host platform's archive ships the bytecode build of the app with its cache; every other archive ships the plain
+// build. Both must be the same bundle, or one platform would run different code.
+test("the bytecode app build is the shared app build plus --bytecode, so every archive runs the same bundle", () => {
+	const buildScript = readFileSync(buildScriptPath, "utf8");
+	const plain = sharedAppBuildCommand(buildScript).trim();
+	const bytecode = buildScript
+		.split(/\r?\n/u)
+		.find((line) => line.includes("bun build") && line.includes("--bytecode") && line.includes("dist/bun/cli.js"))
+		?.trim();
+	assert.ok(bytecode, "missing bytecode app bundle command");
+	const flags = (command: string) =>
+		command
+			.replace(/--out(?:file|dir) \S+/u, "")
+			.split(/\s+/u)
+			.filter((flag) => flag !== "--bytecode")
+			.sort();
+	assert.deepEqual(flags(bytecode), flags(plain));
+	assertBuildScriptSyntax();
+});
+
 test("compiled launchers autoload package.json so extension dependencies resolve main and exports", () => {
 	const buildScript = readFileSync(buildScriptPath, "utf8");
 	const manifest = JSON.parse(readFileSync(packageManifestPath, "utf8")) as { scripts: Record<string, string> };

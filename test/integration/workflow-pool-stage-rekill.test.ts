@@ -4,7 +4,7 @@
  * leaves RECONNECTING as soon as the replacement has them.
  */
 import assert from "node:assert/strict";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SessionManager } from "@bastani/atomic";
@@ -26,6 +26,7 @@ import {
 	ROUNDS_RELEASE_FILE,
 	ROUNDS_STEER,
 	ROUNDS_TOOL_RELEASE_FILE,
+	roundsHoldingFile,
 } from "../fixtures/pool-rounds-child.js";
 import { rootOf, testRunId } from "../helpers/run-id.js";
 import { fileExists, makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
@@ -113,11 +114,16 @@ async function roundsPool(prefix: string, foreground = false, admission = false)
 					.map((entry) => ({ runId: candidate.id, stage: entry })),
 			)[0];
 	const generation = () => stage()?.stage.workerExecution?.generation ?? 0;
+	/** Whether a live worker's agent holds mid-turn, its first round done and the model call for the next begun. */
+	const holding = (): boolean =>
+		pool.workerPids.some((worker) => existsSync(join(directory, roundsHoldingFile(worker))));
 	const kill = (): number => {
 		const killed = generation();
 		const [worker] = pool.workerPids;
 		assert.ok(worker !== undefined, "no worker to kill");
 		process.kill(worker, "SIGKILL");
+		// A killed worker holds nothing, even while the pool still lists it.
+		rmSync(join(directory, roundsHoldingFile(worker)), { force: true });
 		return killed;
 	};
 	const close = async () => {
@@ -129,7 +135,7 @@ async function roundsPool(prefix: string, foreground = false, admission = false)
 		await backend.close();
 		removeTempDirectory(directory);
 	};
-	return { directory, backend, pool, store, execution, stage, generation, kill, close };
+	return { directory, backend, pool, store, execution, stage, generation, holding, kill, close };
 }
 
 /** The users' and the stage's own texts in the finished stage's session, in order. */
@@ -211,6 +217,9 @@ for (const scenario of ["chat closed at the first kill", "chat open throughout"]
 					observe,
 				);
 				if (scenario === "chat open throughout") {
+					// A steer sent between the first round's tool result and the next model call joins the turn at
+					// once, and a kill there leaves it taken by the killed attempt, not queued for the replacement.
+					await step("the agent holds mid-turn", live.holding, live.execution, observe);
 					await attach();
 					await handle!.steer(`${ROUNDS_STEER}-1`);
 					await handle!.followUp(`${ROUNDS_FOLLOW_UP}-1`);
@@ -219,6 +228,7 @@ for (const scenario of ["chat closed at the first kill", "chat open throughout"]
 				} else {
 					const killed = live.kill();
 					await step("replacement running", () => live.generation() > killed, live.execution, observe);
+					await step("the replacement holds mid-turn", live.holding, live.execution, observe);
 					await attach();
 					await handle!.steer(`${ROUNDS_STEER}-1`);
 					await handle!.followUp(`${ROUNDS_FOLLOW_UP}-1`);
@@ -228,15 +238,16 @@ for (const scenario of ["chat closed at the first kill", "chat open throughout"]
 				await rebound(live, handle!, live.kill(), targets, observe);
 				// The view rebinds from the watch, while the root's store learns the replacement's stage from
 				// its activity: right after a kill the store holds the replayed child run without its stage
-				// until that activity is applied. Wait for the store to show the stage on the attempt the
-				// view watches, so the status read below is the replacement's, not the gap's.
+				// until that activity is applied, and a replacement can publish the replayed stage pending,
+				// before it resumes the stage's session, and running only in a later publication. The stage
+				// still works its rounds once the store shows it running on the attempt the view watches; a
+				// replacement that never resumes it stalls here, and a stage that ended fails here.
 				await step(
-					"the store shows the replacement's stage",
-					() => live.generation() === handle!.placement.generation,
+					"the store shows the replacement working the stage's rounds",
+					() => live.generation() === handle!.placement.generation && live.stage()?.stage.status === "running",
 					live.execution,
 					observe,
 				);
-				assert.equal(live.stage()?.stage.status, "running", "the stage still works its rounds");
 				writeFileSync(join(live.directory, ROUNDS_RELEASE_FILE), "");
 				await step(
 					"stage finished",

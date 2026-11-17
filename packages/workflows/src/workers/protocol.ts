@@ -166,6 +166,11 @@ export type WorkerRequest = { readonly id: number } & (
 			 */
 			readonly attempt?: { readonly id: string; readonly generation: number };
 	  }
+	/**
+	 * The worker is about to read `sessionId` (any session it wrote, without one) from the shared journal: the pool ships
+	 * what the attempt wrote of it and kept in the host's local journal first (#4768).
+	 */
+	| { readonly kind: "session-sync"; readonly sessionId?: string }
 	| { readonly kind: "complete"; readonly result: PooledRunResult }
 	// One-way stage watch traffic (#3996); the coordinator does not reply to these.
 	| {

@@ -20,6 +20,8 @@ const capture = startEarlyInputCapture({
 		setRawMode() {},
 		setEncoding: (encoding) => input.setEncoding(encoding),
 		resume: () => input.resume(),
+		pause: () => input.pause(),
+		read: (size) => input.read(size),
 		on: (event, listener) => input.on(event, listener),
 		off: (event, listener) => input.off(event, listener),
 		removeListener: (event, listener) => input.removeListener(event, listener),
