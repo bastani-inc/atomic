@@ -3,6 +3,7 @@ import {
 	DecisionModelUnavailableError,
 	decide,
 	type ModelRoutingSettings,
+	providerOfModelReference,
 	routeExecutionModel,
 } from "@bastani/atomic";
 import type { RunJournalSettings } from "../durable/journal/resolution.js";
@@ -68,6 +69,9 @@ export function workflowModelCatalogFromContext(
 						...(registry.getProviderAuthStatus
 							? { getProviderAuthStatus: registry.getProviderAuthStatus.bind(registry) }
 							: {}),
+						...(registry.hasConfiguredAuth
+							? { hasConfiguredAuth: registry.hasConfiguredAuth.bind(registry) }
+							: {}),
 					},
 				},
 				task: input.task,
@@ -108,6 +112,19 @@ export function workflowModelCatalogFromContext(
 					},
 					autoAdvanceAfterSteer: () => autoAdvanceAfterSteerSetting(readSettings?.()),
 				}),
+		resolveProvider: (reference: string): string | undefined =>
+			providerOfModelReference(
+				reference,
+				live()
+					.modelRegistry?.getAll?.()
+					.map((model) => String(model.provider)),
+			),
+		hasCredentials: (provider: string): boolean => {
+			const registry = live().modelRegistry;
+			if (!registry?.getAll?.().some((model) => String(model.provider) === provider)) return true;
+			if (registry.hasConfiguredAuth) return registry.hasConfiguredAuth({ provider });
+			return registry.getAvailable().some((model) => String(model.provider) === provider);
+		},
 		listModels: async (): Promise<readonly WorkflowModelInfo[]> => {
 			const current = live();
 			const available =
