@@ -10,11 +10,14 @@ import { sanitizeTerminalText } from "../../../utils/terminal-text.ts";
 import { theme } from "../theme/theme.js";
 import { keyHintIfBound as keyHint } from "./keybinding-hints.js";
 
+const EMOJI_OR_IGNORABLE =
+	/(\p{RGI_Emoji}|\p{Extended_Pictographic}(?:\ufe0f|\p{Emoji_Modifier})*(?:\u200d\p{Extended_Pictographic}(?:\ufe0f|\p{Emoji_Modifier})*)+|[\p{Extended_Pictographic}\p{Emoji_Presentation}]\ufe0f)|\p{Default_Ignorable_Code_Point}/gv;
+
 /** Control removal and truncation apply only to terminal display, never task identity. */
 export function taskDisplayText(text: string): string {
 	if (!/[\x00-\x1f\x7f-\x9f\p{Default_Ignorable_Code_Point}\u2028\u2029]/u.test(text)) return text;
 	return sanitizeTerminalText(text)
-		.replace(/\p{Default_Ignorable_Code_Point}/gu, "")
+		.replace(EMOJI_OR_IGNORABLE, "$1")
 		.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, " ");
 }
 export function taskState(task: TaskRecord): string {

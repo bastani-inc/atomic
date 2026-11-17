@@ -54,7 +54,7 @@ test("the agent panel and a later view share one clock per task source (#5224)",
 	assert.equal(liveElapsedMs("restarted-clock", 9000, false, now + 7000), 9000);
 	assert.equal(
 		liveElapsedMs("restarted-clock", 1000, true, now + 8000),
-		1000,
-		"a task that runs again is seen afresh",
+		9000,
+		"a task that runs again continues from the time it reached, so paused time is not counted",
 	);
 });

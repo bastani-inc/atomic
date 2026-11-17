@@ -1,4 +1,5 @@
 import { test } from "vitest";
+import { WORKING_MESSAGE } from "../helpers/working-line.ts";
 import {
 	type AgentSessionEvent,
 	assert,
@@ -51,7 +52,7 @@ test("#4625: a stage chat reopened from another view mid-compaction shows the in
 		const reopened = mountStageChat(handle);
 		const rendered = stripAnsi(reopened.render(96).join("\n"));
 		assert.match(rendered, label, `${reason}: after the round trip`);
-		assert.doesNotMatch(rendered, /Working\.\.\./);
+		assert.doesNotMatch(rendered, WORKING_MESSAGE);
 		reopened.dispose();
 	}
 });
@@ -75,6 +76,6 @@ test("#4625: a stage chat reopened after its compaction ended in another view sh
 
 	const rendered = stripAnsi(reopened.render(96).join("\n"));
 	assert.doesNotMatch(rendered, /ompacting|to cancel\)/);
-	assert.match(rendered, /Working\.\.\./);
+	assert.match(rendered, WORKING_MESSAGE);
 	reopened.dispose();
 });

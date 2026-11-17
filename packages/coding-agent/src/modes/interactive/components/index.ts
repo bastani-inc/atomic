@@ -80,6 +80,10 @@ export { SessionSelectorComponent } from "./session-selector.ts";
 export { type SettingsCallbacks, type SettingsConfig, SettingsSelectorComponent } from "./settings-selector.ts";
 export { ShowImagesSelectorComponent } from "./show-images-selector.ts";
 export { SkillInvocationMessageComponent } from "./skill-invocation-message.ts";
+export {
+	TASK_CHAT_OVERLAY_KEYS,
+	taskChatKeys,
+} from "./task-inspector.ts";
 export { ThemeSelectorComponent } from "./theme-selector.ts";
 export { ThinkingSelectorComponent } from "./thinking-selector.ts";
 export { formatTokenCount, formatTokenSegment, type TokenSegmentMode } from "./token-segment.ts";
@@ -90,4 +94,5 @@ export { TrustSelectorComponent } from "./trust-selector.ts";
 export { UserMessageComponent } from "./user-message.ts";
 export { UserMessageSelectorComponent } from "./user-message-selector.ts";
 export { truncateToVisualLines, type VisualTruncateResult } from "./visual-truncate.ts";
+export { agentTokenTotal } from "./working-run-meter.ts";
 export { WorkingStatusComponent, type WorkingStatusComponentOptions } from "./working-status.ts";

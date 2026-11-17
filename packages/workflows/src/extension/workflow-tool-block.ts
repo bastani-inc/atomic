@@ -7,12 +7,15 @@ import type { ThemeColor } from "@bastani/atomic";
 import { formatTokenCount, formatTokenSegment, keyHintIfBound, sliceHead } from "@bastani/atomic";
 import { visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
 import { meter_run, type RunUsageTree } from "../shared/budget-meter.js";
+import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { StoreInvalidationListener } from "../shared/store-public-types.js";
 import type { RunSnapshot, StageSnapshot, StageStatus } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import { boundedToolText, TOOL_PAYLOAD_VALUE_LIMIT } from "../shared/tool-payload-bounds.js";
 import type { WorkflowOutputValues } from "../shared/types.js";
+import { authoritativeWorkflowChildRunId, type RunsById } from "../shared/workflow-run-ownership.js";
 import { summarizeFailureText, withoutStackFrames } from "../tui/display-text.js";
+import { findWaitingInTree, runFailureText } from "../tui/run-display-state.js";
 import { truncateToWidth } from "../tui/text-helpers.js";
 import type { PiRenderComponent } from "./public-types.js";
 import { displayLine, runAskLine, type WorkflowCallLabel, type WorkflowToolArgs } from "./render-call.js";
@@ -30,7 +33,10 @@ const PLAIN_THEME: WorkflowBlockTheme = { fg: (_color, text) => text, bold: (tex
 export function workflowBlockTheme(theme: unknown): WorkflowBlockTheme {
 	const candidate = theme as Partial<WorkflowBlockTheme> | undefined;
 	return typeof candidate?.fg === "function" && typeof candidate.bold === "function"
-		? (candidate as WorkflowBlockTheme)
+		? {
+				fg: (color, text) => candidate.fg!(color, text),
+				bold: (text) => candidate.bold!(text),
+			}
 		: PLAIN_THEME;
 }
 
@@ -71,14 +77,7 @@ const STAGE_TONES: Readonly<Record<StageStatus, WorkflowResultTone>> = {
 	skipped: "stopped",
 };
 
-const TERMINAL_RUN_STATUSES = new Set<RunSnapshot["status"]>([
-	"completed",
-	"failed",
-	"blocked",
-	"skipped",
-	"cancelled",
-	"killed",
-]);
+const TERMINAL_RUN_STATUSES = new Set<RunSnapshot["status"]>(["completed", "skipped", "cancelled", "killed"]);
 
 const SETTLED_STAGE_STATUSES = new Set<StageStatus>(["completed", "failed", "skipped"]);
 const FIRST_PREFIX = "  ⎿  ";
@@ -110,6 +109,48 @@ export function shortReason(text: string | undefined): string | undefined {
 	if (first === undefined) return undefined;
 	const reason = summarizeFailureText(first).reason;
 	return reason.length > ERROR_PREVIEW_LIMIT ? `${sliceHead(reason, ERROR_PREVIEW_LIMIT - 1)}…` : reason;
+}
+
+function shortPrompt(text: string | undefined): string | undefined {
+	if (text === undefined) return undefined;
+	const line = displayLine(sliceHead(text, ERROR_SCAN_LIMIT));
+	if (line.length === 0) return undefined;
+	return line.length > ERROR_PREVIEW_LIMIT ? `${sliceHead(line, ERROR_PREVIEW_LIMIT - 1)}…` : line;
+}
+
+function runsByIdFromSource(source: Pick<WorkflowRunSource, "run"> | undefined, rootRun: RunSnapshot): RunsById {
+	return {
+		get: (runId) => (runId === rootRun.id ? (source?.run(runId) ?? rootRun) : source?.run(runId)),
+	};
+}
+
+function descendantRunIds(
+	source: WorkflowRunSource | undefined,
+	runId: string,
+	rootRun: RunSnapshot | undefined,
+): Set<string> {
+	const ids = new Set<string>();
+	if (source === undefined) return ids;
+	const queue: Array<{ readonly id: string; readonly run: RunSnapshot | undefined }> = [
+		{ id: runId, run: rootRun ?? source.run(runId) },
+	];
+	for (let index = 0; index < queue.length; index++) {
+		const current = queue[index]!;
+		for (const child of source.childRuns(current.id)) {
+			if (!ids.has(child.id) && child.id !== runId) {
+				ids.add(child.id);
+				queue.push({ id: child.id, run: child });
+			}
+		}
+		for (const stage of current.run?.stages ?? []) {
+			const childId = authoritativeWorkflowChildRunId(stage);
+			if (childId !== undefined && !ids.has(childId) && childId !== runId) {
+				ids.add(childId);
+				queue.push({ id: childId, run: source.run(childId) });
+			}
+		}
+	}
+	return ids;
 }
 
 function join(...parts: readonly (string | undefined)[]): string {
@@ -147,15 +188,24 @@ function stageProgress(run: { readonly stages: readonly StageSnapshot[] }): stri
 }
 
 /** The `⎿` line for a run, from its live snapshot. */
-export function summarizeRun(run: RunSnapshot, tokens: number, now: number): WorkflowResultSummary {
+export function summarizeRun(
+	run: RunSnapshot,
+	tokens: number,
+	now: number,
+	runsById?: RunsById,
+): WorkflowResultSummary {
 	const progress = stageProgress(run);
 	const tokenText = tokens > 0 ? `${formatTokenCount(tokens)} tokens` : undefined;
-	switch (run.status) {
+	switch (effectiveRunStatus(run)) {
 		case "pending":
 		case "running": {
-			const waiting = stageWhere(run, (stage) => stage.status === "awaiting_input");
+			const waiting = findWaitingInTree(run, runsById);
 			if (waiting !== undefined) {
-				return { tone: "warning", text: join(`Waiting for input at ${displayLine(waiting.name)}`, progress) };
+				const where = waiting.stageName === undefined ? "" : ` at ${displayLine(waiting.stageName)}`;
+				return {
+					tone: "warning",
+					text: join(`Waiting for input${where}`, progress, shortPrompt(waiting.question)),
+				};
 			}
 			return {
 				tone: "running",
@@ -165,7 +215,8 @@ export function summarizeRun(run: RunSnapshot, tokens: number, now: number): Wor
 		case "paused": {
 			const at = stageWhere(run, (stage) => stage.status === "paused" || stage.status === "running");
 			const where = at === undefined ? "" : ` at ${displayLine(at.name)}`;
-			if (run.exitReason === "quit") return { tone: "stopped", text: join(`Stopped${where}`, progress) };
+			if (run.exitReason === "quit" || run.quitAt !== undefined)
+				return { tone: "stopped", text: join(`Stopped${where}`, progress) };
 			return { tone: "paused", text: join(`Paused${where}`, progress) };
 		}
 		case "completed":
@@ -181,16 +232,21 @@ export function summarizeRun(run: RunSnapshot, tokens: number, now: number): Wor
 			const stage = failedStageName(run);
 			return {
 				tone: "failure",
-				text: join(stage === undefined ? "Failed" : `Failed at ${stage}`, shortReason(run.error ?? run.exitReason)),
+				text: join(
+					stage === undefined ? "Failed" : `Failed at ${stage}`,
+					shortReason(runFailureText(run) ?? run.exitReason),
+				),
 			};
 		}
 		case "blocked": {
-			const stage = stageWhere(run, (s) => s.status === "blocked" || s.status === "failed");
+			const stage =
+				(run.failedStageId === undefined ? undefined : stageWhere(run, (s) => s.id === run.failedStageId)) ??
+				stageWhere(run, (s) => s.status === "blocked" || s.status === "failed");
 			return {
 				tone: "warning",
 				text: join(
 					stage === undefined ? "Blocked" : `Blocked at ${displayLine(stage.name)}`,
-					shortReason(run.error ?? run.exitReason),
+					shortReason(runFailureText(run) ?? run.exitReason),
 				),
 			};
 		}
@@ -250,7 +306,13 @@ function controlSummary(result: { status: string; message: string; code?: string
 /** The `⎿` line for any workflow tool result, given the run's live snapshot when it has one. */
 export function summarizeWorkflowResult(
 	result: WorkflowRegisteredToolResult | null | undefined,
-	view: { readonly errorText?: string; readonly run?: RunSnapshot; readonly tokens?: number; readonly now: number },
+	view: {
+		readonly errorText?: string;
+		readonly run?: RunSnapshot;
+		readonly runsById?: RunsById;
+		readonly tokens?: number;
+		readonly now: number;
+	},
 ): WorkflowResultSummary {
 	if (result === null || result === undefined || typeof result.action !== "string") {
 		const reason = shortReason(view.errorText);
@@ -262,7 +324,7 @@ export function summarizeWorkflowResult(
 	switch (result.action) {
 		case "run":
 			return view.run !== undefined
-				? summarizeRun(view.run, view.tokens ?? 0, view.now)
+				? summarizeRun(view.run, view.tokens ?? 0, view.now, view.runsById)
 				: summarizeRunResult(result as Extract<WorkflowRegisteredToolResult, { action: "run" }>);
 		case "list":
 			return result.items.length === 0
@@ -432,7 +494,7 @@ function runDetailLines(
 	const error = run?.error ?? ("error" in result ? result.error : undefined);
 	if (error !== undefined && error.length > 0) lines.push(theme.bold("Error"), `  ${shortReason(error) ?? ""}`);
 	const runId = run?.id ?? ("runId" in result ? result.runId : undefined);
-	if (runId) lines.push(theme.fg("dim", `run ${runId} · /workflow status ${runId}`));
+	if (runId) lines.push(theme.fg("dim", `run ${displayLine(runId)} · /workflows ${displayLine(runId)}`));
 	return lines;
 }
 
@@ -461,6 +523,7 @@ export class WorkflowToolResultBlock implements PiRenderComponent {
 	private followedRunId: string | undefined;
 	private unsubscribe: (() => void) | undefined;
 	private lastRun: RunSnapshot | undefined;
+	private trackedRunIds = new Set<string>();
 	private shown: string | undefined;
 
 	constructor(
@@ -477,6 +540,7 @@ export class WorkflowToolResultBlock implements PiRenderComponent {
 			this.stopFollowing();
 			this.followedRunId = runId;
 			this.lastRun = undefined;
+			this.trackedRunIds.clear();
 		}
 		this.refreshRun();
 		if (runId !== undefined && this.unsubscribe === undefined && !this.runEnded()) this.follow(runId);
@@ -492,10 +556,11 @@ export class WorkflowToolResultBlock implements PiRenderComponent {
 		if (this.followedRunId === undefined || this.source === undefined) return;
 		const run = this.source.run(this.followedRunId);
 		if (run !== undefined) this.lastRun = run;
+		this.trackedRunIds = descendantRunIds(this.source, this.followedRunId, this.lastRun);
 	}
 
 	private runEnded(): boolean {
-		return this.lastRun !== undefined && TERMINAL_RUN_STATUSES.has(this.lastRun.status);
+		return this.lastRun !== undefined && TERMINAL_RUN_STATUSES.has(effectiveRunStatus(this.lastRun));
 	}
 
 	private follow(runId: string): void {
@@ -513,9 +578,9 @@ export class WorkflowToolResultBlock implements PiRenderComponent {
 	}
 
 	private touches(runId: string, changes: readonly { readonly runId: string }[]): boolean {
-		if (changes.some((change) => change.runId === runId)) return true;
-		const children = new Set(this.source?.childRuns(runId).map((child) => child.id) ?? []);
-		return changes.some((change) => children.has(change.runId));
+		if (changes.some((change) => change.runId === runId || this.trackedRunIds.has(change.runId))) return true;
+		const current = descendantRunIds(this.source, runId, this.lastRun);
+		return changes.some((change) => current.has(change.runId));
 	}
 
 	private stopFollowing(): void {
@@ -531,7 +596,13 @@ export class WorkflowToolResultBlock implements PiRenderComponent {
 		const run = this.lastRun;
 		return summarizeWorkflowResult(this.result, {
 			...(this.view.isError && this.view.errorText !== undefined ? { errorText: this.view.errorText } : {}),
-			...(run === undefined ? {} : { run, tokens: runTokens(this.source, run, now) }),
+			...(run === undefined
+				? {}
+				: {
+						run,
+						runsById: runsByIdFromSource(this.source, run),
+						tokens: runTokens(this.source, run, now),
+					}),
 			now,
 		});
 	}

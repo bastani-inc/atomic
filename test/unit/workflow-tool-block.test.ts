@@ -24,7 +24,7 @@ import {
 } from "../../packages/workflows/src/extension/workflow-tool-block.js";
 import { registerWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool-registration.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import type { Store } from "../../packages/workflows/src/shared/store-public-types.js";
+import type { Store, StoreInvalidationListener } from "../../packages/workflows/src/shared/store-public-types.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 
 const RUN_ID = "wf-run-1";
@@ -265,7 +265,348 @@ describe("the workflow tool's result line (#5224)", () => {
 		assert.match(text, /Inputs\n\s+prompt: fix the login bug/);
 		assert.match(text, /Stages\n\s+✓ plan · 1s\n\s+✓ implement · 2s\n\s+✓ review · 1s/);
 		assert.match(text, /Outputs\n\s+summary: fixed the bug/);
-		assert.match(text, /run wf-run-1 · \/workflow status wf-run-1/);
+		assert.match(text, /run wf-run-1 · \/workflows wf-run-1/);
+		assert.doesNotMatch(text, /\/workflow status/);
+	});
+
+	test("returned failed or blocked status overrides raw completed status and prefers returned summary over caught stage error (#5224)", () => {
+		const failedStore = runningStore();
+		failedStore.recordStageEnd(
+			RUN_ID,
+			stage("implement", "failed", { error: "Error: process exited with code 1\n    at run (x.ts:1:1)" }),
+		);
+		failedStore.recordRunEnd(RUN_ID, "completed", {
+			status: "failed",
+			summary: "Tests failed in 2 packages",
+		});
+		const failedLine = plain(block(failedStore).render(160))[0]!;
+		assert.match(failedLine, /✗ Failed at implement · Tests failed in 2 packages/);
+		assert.doesNotMatch(failedLine, /process exited with code 1|Completed/);
+
+		const blockedStore = runningStore();
+		blockedStore.recordStageEnd(RUN_ID, stage("implement", "failed", { error: "Error: missing deploy token" }));
+		blockedStore.recordRunEnd(RUN_ID, "completed", {
+			status: "needs_human",
+			remaining_work: "Provide staging credentials",
+		});
+		const blockedLine = plain(block(blockedStore).render(160))[0]!;
+		assert.match(blockedLine, /! Blocked at implement · Provide staging credentials/);
+		assert.doesNotMatch(blockedLine, /missing deploy token|Completed/);
+	});
+
+	test("root pendingPrompt and canonical nested waiting questions are shown while superseded and orphaned children are ignored (#5224)", () => {
+		const rootPromptStore = runningStore();
+		rootPromptStore.editRun(RUN_ID, (run) => {
+			run.pendingPrompt = {
+				id: "prompt-root",
+				kind: "confirm",
+				message: "Approve deployment window?",
+				createdAt: START + 1500,
+			};
+			return { run: true };
+		});
+		assert.match(
+			plain(block(rootPromptStore).render(160))[0]!,
+			/! Waiting for input · 1\/3 stages · Approve deployment window\?/,
+		);
+
+		const nestedStore = createStore();
+		nestedStore.recordRunStart({
+			id: RUN_ID,
+			name: "ralph",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			startedAt: START,
+			stages: [
+				stage("compose", "completed", {
+					workflowChild: {
+						runId: "child-current",
+						workflow: "child",
+						alias: "child",
+						status: "completed",
+						outputs: {},
+					},
+					workflowChildRun: { runId: "child-stale", workflow: "child", alias: "child" },
+				}),
+				stage("deploy", "running", {
+					workflowChildRun: { runId: "child-live", workflow: "deploy-child", alias: "deploy-child" },
+				}),
+			],
+		});
+		nestedStore.recordRunStart({
+			id: "child-current",
+			name: "child",
+			inputs: {},
+			status: "completed",
+			parentRunId: RUN_ID,
+			parentStageId: "compose",
+			rootRunId: RUN_ID,
+			toolNodes: [],
+			startedAt: START,
+			endedAt: START + 500,
+			stages: [stage("done", "completed")],
+		});
+		nestedStore.recordRunStart({
+			id: "child-stale",
+			name: "child",
+			inputs: {},
+			status: "running",
+			parentRunId: RUN_ID,
+			parentStageId: "compose",
+			rootRunId: RUN_ID,
+			toolNodes: [],
+			startedAt: START,
+			stages: [
+				stage("stale-ask", "awaiting_input", {
+					pendingPrompt: {
+						id: "p-stale",
+						kind: "confirm",
+						message: "Stale prompt must not appear",
+						createdAt: START + 100,
+					},
+				}),
+			],
+		});
+		nestedStore.recordRunStart({
+			id: "child-orphan",
+			name: "orphan",
+			inputs: {},
+			status: "running",
+			parentRunId: RUN_ID,
+			parentStageId: "deploy",
+			rootRunId: RUN_ID,
+			toolNodes: [],
+			startedAt: START,
+			stages: [
+				stage("orphan-ask", "awaiting_input", {
+					pendingPrompt: {
+						id: "p-orphan",
+						kind: "confirm",
+						message: "Orphan prompt must not appear",
+						createdAt: START + 100,
+					},
+				}),
+			],
+		});
+		nestedStore.recordRunStart({
+			id: "child-live",
+			name: "deploy-child",
+			inputs: {},
+			status: "running",
+			parentRunId: RUN_ID,
+			parentStageId: "deploy",
+			rootRunId: RUN_ID,
+			toolNodes: [],
+			startedAt: START,
+			stages: [stage("prep", "running")],
+		});
+		const cleanLine = plain(block(nestedStore).render(160))[0]!;
+		assert.match(cleanLine, /∀ Running · 1\/2 stages/);
+		assert.doesNotMatch(cleanLine, /Stale prompt|Orphan prompt|Waiting for input/);
+
+		let repaints = 0;
+		const row = block(nestedStore, () => {
+			repaints += 1;
+		});
+		nestedStore.recordStageStart(
+			"child-live",
+			stage("sub-deploy", "running", {
+				workflowChildRun: { runId: "grandchild-live", workflow: "sub", alias: "sub" },
+			}),
+		);
+		nestedStore.recordRunStart({
+			id: "grandchild-live",
+			name: "sub",
+			inputs: {},
+			status: "running",
+			parentRunId: "child-live",
+			parentStageId: "sub-deploy",
+			rootRunId: RUN_ID,
+			toolNodes: [],
+			startedAt: START + 1000,
+			stages: [
+				stage("confirm-region", "awaiting_input", {
+					pendingPrompt: {
+						id: "p-grandchild",
+						kind: "confirm",
+						message: "Ship to prod-eu?",
+						createdAt: START + 1200,
+					},
+				}),
+			],
+		});
+		assert.equal(repaints, 1);
+		assert.match(
+			plain(row.render(160))[0]!,
+			/! Waiting for input at confirm-region · 1\/2 stages · Ship to prod-eu\?/,
+		);
+
+		nestedStore.recordStageAwaitingInput("child-orphan", "orphan-ask", true, START + 1300);
+		assert.equal(repaints, 1);
+
+		nestedStore.removeRun("grandchild-live");
+		assert.equal(repaints, 2);
+		assert.match(plain(row.render(160))[0]!, /∀ Running · 1\/2 stages/);
+	});
+
+	test("deep descendant removals invalidate waiting summaries without a fixed nesting cutoff (#5224)", () => {
+		const store = createStore();
+		const runIds = [RUN_ID, ...Array.from({ length: 9 }, (_, index) => `nested-${index + 1}`)];
+		for (const [index, runId] of runIds.entries()) {
+			const childId = runIds[index + 1];
+			store.recordRunStart({
+				id: runId,
+				name: runId,
+				inputs: {},
+				status: "running",
+				startedAt: START,
+				toolNodes: [],
+				...(index === 0 ? {} : { parentRunId: runIds[index - 1]!, parentStageId: "nested", rootRunId: RUN_ID }),
+				stages: childId
+					? [
+							stage("nested", "running", {
+								workflowChildRun: { runId: childId, workflow: "child", alias: "child" },
+							}),
+						]
+					: [
+							stage("deep-ask", "awaiting_input", {
+								pendingPrompt: { id: "deep-prompt", kind: "confirm", message: "Continue?", createdAt: START },
+							}),
+						],
+			});
+		}
+		const snapshots = new Map(runIds.map((runId) => [runId, store.run(runId)!] as const));
+		const listeners = new Set<StoreInvalidationListener>();
+		const source = {
+			run: (runId: string) => snapshots.get(runId),
+			childRuns: (parentRunId: string) => [...snapshots.values()].filter((run) => run.parentRunId === parentRunId),
+			subscribeInvalidation(listener: StoreInvalidationListener) {
+				listeners.add(listener);
+				return () => {
+					listeners.delete(listener);
+				};
+			},
+		};
+		let repaints = 0;
+		const row = new WorkflowToolResultBlock(source, workflowBlockTheme(undefined)).update(STARTED, {
+			expanded: false,
+			isError: false,
+			invalidate: () => {
+				repaints += 1;
+			},
+		});
+		try {
+			assert.match(plain(row.render(160))[0]!, /Waiting for input at deep-ask/);
+			const removedId = runIds.at(-1)!;
+			snapshots.delete(removedId);
+			for (const listener of listeners) listener([{ runId: removedId }]);
+			assert.equal(repaints, 1);
+			assert.doesNotMatch(plain(row.render(160))[0]!, /Waiting for input/);
+		} finally {
+			row.dispose();
+		}
+	});
+
+	test("failed and blocked runs update when resumed or retried and release subscriptions once completed (#5224)", () => {
+		const store = runningStore();
+		let repaints = 0;
+		const row = block(store, () => {
+			repaints += 1;
+		});
+		store.recordStageEnd(RUN_ID, stage("implement", "failed", { error: "Error: transient failure" }));
+		store.recordRunEnd(RUN_ID, "failed", undefined, "Error: transient failure", {
+			failedStageId: "implement",
+			resumable: true,
+		});
+		const afterFail = repaints;
+		assert.match(plain(row.render(160))[0]!, /✗ Failed at implement · transient failure/);
+
+		store.recordRunStart({
+			id: RUN_ID,
+			name: "ralph",
+			inputs: { prompt: "fix the login bug" },
+			status: "running",
+			toolNodes: [],
+			startedAt: START,
+			stages: [
+				stage("plan", "completed", { startedAt: START, endedAt: START + 1000 }),
+				stage("implement", "running", { startedAt: START + 2000 }),
+				stage("review", "pending"),
+			],
+		});
+		assert.ok(repaints > afterFail);
+		assert.match(plain(row.render(160))[0]!, /∀ Running · 1\/3 stages/);
+
+		const afterResume = repaints;
+		store.recordRunBlocked(RUN_ID, "Rate limit exceeded", {
+			failureKind: "rate_limit",
+			failureRecoverability: "recoverable",
+			failureDisposition: "active_blocked",
+			failureMessage: "Rate limit exceeded",
+			failedStageId: "implement",
+			resumable: true,
+		});
+		assert.ok(repaints > afterResume);
+		assert.match(plain(row.render(160))[0]!, /! Blocked at implement · Rate limit exceeded/);
+
+		const afterBlock = repaints;
+		store.recordRunStart({
+			id: RUN_ID,
+			name: "ralph",
+			inputs: { prompt: "fix the login bug" },
+			status: "running",
+			toolNodes: [],
+			startedAt: START,
+			stages: [
+				stage("plan", "completed", { startedAt: START, endedAt: START + 1000 }),
+				stage("implement", "completed", { startedAt: START + 2000, endedAt: START + 3000 }),
+				stage("review", "completed", { startedAt: START + 3000, endedAt: START + 4000 }),
+			],
+		});
+		vi.setSystemTime(START + 4000);
+		store.recordRunEnd(RUN_ID, "completed", { summary: "fixed after retry" });
+		assert.ok(repaints > afterBlock);
+		assert.match(plain(row.render(160))[0]!, /✓ Completed in 4s · 3 stages/);
+
+		const settled = repaints;
+		store.editRun(RUN_ID, () => ({ run: true }));
+		assert.equal(repaints, settled);
+	});
+
+	test("theme and source method receivers stay bound when invoked by the block (#5224)", () => {
+		class BoundTheme {
+			prefix = "[";
+			suffix = "]";
+			fg(_color: string, text: string): string {
+				return `${this.prefix}${text}${this.suffix}`;
+			}
+			bold(text: string): string {
+				return `${this.prefix}${text}${this.suffix}`;
+			}
+		}
+		const adapted = workflowBlockTheme(new BoundTheme());
+		const { fg, bold } = adapted;
+		assert.equal(fg("accent", "x"), "[x]");
+		assert.equal(bold("y"), "[y]");
+		const store = runningStore();
+		class BoundSource {
+			inner = store;
+			run(runId: string) {
+				return this.inner.run(runId);
+			}
+			childRuns(parentRunId: string) {
+				return this.inner.childRuns(parentRunId);
+			}
+			subscribeInvalidation(listener: Parameters<Store["subscribeInvalidation"]>[0]) {
+				return this.inner.subscribeInvalidation(listener);
+			}
+		}
+		const row = new WorkflowToolResultBlock(new BoundSource(), adapted, {
+			now: () => START + 4_000,
+		}).update(STARTED, { expanded: false, isError: false });
+		assert.match(plain(row.render(160))[0]!, /Running · 1\/3 stages/);
+		row.dispose();
 	});
 
 	test("disposing the row stops following its run", () => {

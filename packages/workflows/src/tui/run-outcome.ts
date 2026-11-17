@@ -1,11 +1,7 @@
 import { stripVTControlCharacters } from "node:util";
 import { sliceHead } from "@bastani/atomic";
 import type { WorkflowArtifact, WorkflowSerializableValue } from "../shared/authoring-contract-stage.js";
-import {
-	actionableReturnedStatusText,
-	effectiveRunStatus,
-	structuredRecoverableWorkflowFailure,
-} from "../shared/returned-run-status.js";
+import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import {
@@ -13,15 +9,24 @@ import {
 	TOOL_PAYLOAD_TRUNCATION_MARKER,
 	TOOL_PAYLOAD_VALUE_LIMIT,
 } from "../shared/tool-payload-bounds.js";
-import { authoritativeWorkflowChildRunId, reciprocalWorkflowRootRunId } from "../shared/workflow-run-ownership.js";
+import type { RunsById } from "../shared/workflow-run-ownership.js";
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
 import { inertDisplayLine, inertDisplayText, NO_FAILURE_REASON, summarizeFailureText } from "./display-text.js";
 import type { GraphTheme } from "./graph-theme.js";
+import {
+	findWaitingInTree,
+	isTerminalOrBlockedRun,
+	isWaitingStage,
+	runFailureText,
+	validChildRunForStage,
+	type WaitingRunTarget,
+} from "./run-display-state.js";
 import { stageFailureLogLines } from "./stage-failure-detail.js";
 import { fmtDuration } from "./status-helpers.js";
 import { truncateToWidth, visibleWidth, wrapPlainText } from "./text-helpers.js";
 
 export { summarizeFailureText, withoutStackFrames } from "./display-text.js";
+export { findWaitingInTree, runFailureText, type WaitingRunTarget };
 
 export type RunOutcomeState = "completed" | "failed" | "stopped" | "paused" | "waiting" | "blocked" | "running";
 
@@ -82,44 +87,10 @@ function padVisible(text: string, width: number): string {
 	return pad > 0 ? `${text}${" ".repeat(pad)}` : text;
 }
 
-function isTerminalOrBlockedRun(run: RunSnapshot): boolean {
-	const status = effectiveRunStatus(run);
-	return (
-		status === "completed" ||
-		status === "skipped" ||
-		status === "failed" ||
-		status === "cancelled" ||
-		status === "killed" ||
-		status === "blocked" ||
-		run.quitAt !== undefined
-	);
-}
-
-function validChildRunForStage(
-	stage: StageSnapshot,
-	parentRun: RunSnapshot,
-	rootRunId: string,
-	runsById: ReadonlyMap<string, RunSnapshot>,
-	visited: Set<string>,
-): RunSnapshot | undefined {
-	const childId = authoritativeWorkflowChildRunId(stage);
-	if (childId === undefined || visited.has(childId)) return undefined;
-	const child = runsById.get(childId);
-	if (
-		child === undefined ||
-		child.parentRunId !== parentRun.id ||
-		child.parentStageId !== stage.id ||
-		reciprocalWorkflowRootRunId(runsById, child.id) !== rootRunId
-	) {
-		return undefined;
-	}
-	return child;
-}
-
 function pendingRunPromptInTree(
 	run: RunSnapshot,
 	rootRunId: string,
-	runsById: ReadonlyMap<string, RunSnapshot>,
+	runsById: RunsById,
 	visited = new Set<string>(),
 ): string | undefined {
 	if (visited.has(run.id) || isTerminalOrBlockedRun(run)) return undefined;
@@ -138,22 +109,13 @@ function pendingRunPromptInTree(
 function hasWaitingInTree(
 	run: RunSnapshot,
 	rootRunId: string,
-	runsById: ReadonlyMap<string, RunSnapshot>,
+	runsById: RunsById,
 	visited = new Set<string>(),
 ): boolean {
-	if (visited.has(run.id) || isTerminalOrBlockedRun(run)) return false;
-	visited.add(run.id);
-	if (run.pendingPrompt !== undefined || run.stages.some(isWaiting)) return true;
-	for (const stage of run.stages) {
-		const child = validChildRunForStage(stage, run, rootRunId, runsById, visited);
-		if (child !== undefined && hasWaitingInTree(child, rootRunId, runsById, visited)) {
-			return true;
-		}
-	}
-	return false;
+	return findWaitingInTree(run, runsById, rootRunId, visited) !== undefined;
 }
 
-function outcomeState(run: RunSnapshot, runsById: ReadonlyMap<string, RunSnapshot>): RunOutcomeState {
+function outcomeState(run: RunSnapshot, runsById: RunsById): RunOutcomeState {
 	switch (effectiveRunStatus(run)) {
 		case "completed":
 		case "skipped":
@@ -170,10 +132,6 @@ function outcomeState(run: RunSnapshot, runsById: ReadonlyMap<string, RunSnapsho
 		default:
 			return hasWaitingInTree(run, run.id, runsById) ? "waiting" : "running";
 	}
-}
-
-function isWaiting(stage: StageSnapshot): boolean {
-	return stage.status === "awaiting_input" || stage.pendingPrompt !== undefined || stage.inputRequest !== undefined;
 }
 
 export function outputValueLine(value: WorkflowSerializableValue | undefined): string {
@@ -230,7 +188,7 @@ function stageReason(stage: Pick<StageSnapshot, "error" | "failureMessage">): st
 }
 
 function stageBlockerOf(stage: StageSnapshot, id: string): RunOutcomeBlocker | undefined {
-	if (isWaiting(stage)) {
+	if (isWaitingStage(stage)) {
 		const question = stage.pendingPrompt?.message ?? stage.inputRequest?.questions[0]?.question;
 		return {
 			kind: "awaiting_input",
@@ -372,19 +330,10 @@ export function buildRunOutcome(run: RunSnapshot, now = Date.now(), runs: readon
 	if (!runsById.has(run.id)) runsById.set(run.id, run);
 	const state = outcomeState(run, runsById);
 	const blockers = blockersOf(run, state, runsById);
-	const failedStage =
-		run.stages.find((stage) => stage.id === run.failedStageId) ??
-		run.stages.find((stage) => stage.status === "failed");
 	const failedBlockerReason = blockers.find(
 		(blocker) => blocker.kind === "failed" || blocker.kind === "blocked",
 	)?.reason;
-	const failureText =
-		actionableReturnedStatusText(run.result) ??
-		run.error ??
-		run.failureMessage ??
-		failedStage?.error ??
-		failedStage?.failureMessage ??
-		structuredRecoverableWorkflowFailure(run)?.error;
+	const failureText = runFailureText(run);
 	const pendingRunQuestion = state === "waiting" ? pendingRunPromptInTree(run, run.id, runsById) : undefined;
 	const reason =
 		state === "failed" || state === "blocked"

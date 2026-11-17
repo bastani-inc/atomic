@@ -2,6 +2,7 @@
 
 import assert from "node:assert/strict";
 import { beforeAll, test } from "vitest";
+import { stripAnsi } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host-utils.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import {
 	installLifecycleFakeClock,
@@ -223,8 +224,12 @@ test("public interrupt stops the working lifecycle and fences its captured callb
 
 test("turn and terminal stops immediately repaint and fence stale event throttles", () => {
 	const stopCases = [
-		{ name: "turn_end", stop: (host) => host.applyAgentEvent({ type: "turn_end" } as never) },
-		{ name: "agent_end", stop: (host) => host.applyAgentEvent({ type: "agent_end", messages: [] } as never) },
+		{ name: "turn_end", stop: (host) => host.applyAgentEvent({ type: "turn_end" } as never), after: [] },
+		{
+			name: "agent_end",
+			stop: (host) => host.applyAgentEvent({ type: "agent_end", messages: [] } as never),
+			after: ["", " ∀ Worked for 0s".padEnd(64)],
+		},
 	] as const;
 
 	for (const stopCase of stopCases) {
@@ -249,7 +254,7 @@ test("turn and terminal stops immediately repaint and fence stale event throttle
 			assert.equal(timers.timeoutCount(), 0, stopCase.name);
 			assert.equal(timers.intervalCount(), 0, stopCase.name);
 			assert.equal(host.hasAnimationTick(), false, stopCase.name);
-			assert.deepEqual(host.renderWorkingStatus(64), [], stopCase.name);
+			assert.deepEqual(host.renderWorkingStatus(64).map(stripAnsi), stopCase.after, stopCase.name);
 
 			staleThrottle();
 			timers.advanceBy(160);
@@ -316,5 +321,64 @@ test("non-reduced in-flight host construction first renders the regular pulse ph
 		timers.restore();
 		if (previousReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
 		else process.env.ATOMIC_REDUCED_MOTION = previousReducedMotion;
+	}
+});
+
+test("delta-only message_update and thinking_delta events flip the token arrow down and count streaming tokens, and shrinking input after compaction updates the total (#5224)", () => {
+	const previousRandom = Math.random;
+	const timers = installLifecycleFakeClock();
+	Math.random = () => 0;
+	const host = makeLifecycleHost();
+	try {
+		host.applyAgentEvent({ type: "agent_start" } as never);
+		host.applyAgentEvent({ type: "turn_start" } as never);
+		host.applyAgentEvent({
+			type: "message_start",
+			message: { role: "assistant", content: [] },
+		} as never);
+		host.applyAgentEvent({
+			type: "message_update",
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "a".repeat(400) },
+		} as never);
+		assert.equal(workingLine(host), " ∀ Schlepping... (0s · ↓ 100 tokens)");
+
+		host.applyAgentEvent({
+			type: "message_end",
+			message: {
+				role: "assistant",
+				content: [{ type: "text", text: "a".repeat(400) }],
+				usage: { input: 500, output: 100, cacheRead: 0, cacheWrite: 0 },
+				stopReason: "toolUse",
+			},
+		} as never);
+		host.applyAgentEvent({ type: "turn_end" } as never);
+		host.applyAgentEvent({ type: "turn_start" } as never);
+		assert.equal(workingLine(host), " ∀ Schlepping... (0s · ↑ 600 tokens)");
+
+		host.applyAgentEvent({
+			type: "message_start",
+			message: { role: "assistant", content: [] },
+		} as never);
+		host.applyAgentEvent({
+			type: "thinking_delta",
+			delta: "b".repeat(80),
+		} as never);
+		assert.equal(workingLine(host), " ∀ Schlepping... (0s · ↓ 620 tokens)");
+
+		host.applyAgentEvent({
+			type: "message_end",
+			message: {
+				role: "assistant",
+				content: [{ type: "thinking", thinking: "b".repeat(80) }],
+				usage: { input: 200, output: 20, cacheRead: 0, cacheWrite: 0 },
+				stopReason: "stop",
+			},
+		} as never);
+		host.applyAgentEvent({ type: "agent_end", messages: [] } as never);
+		assert.equal(host.renderWorkingStatus(64).map(stripAnsi)[1]?.trim(), "∀ Schlepped for 0s · ↓ 320 tokens");
+	} finally {
+		host.dispose();
+		timers.restore();
+		Math.random = previousRandom;
 	}
 });

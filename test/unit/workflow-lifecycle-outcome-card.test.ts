@@ -49,6 +49,21 @@ function startRun(store: ReturnType<typeof createStore>, id: string, stages: Sta
 }
 
 describe("workflow completion card: outputs and diagnostics (#5224)", () => {
+	test("expanded workflow notices use the shared connector without a separate frame (#5224)", async () => {
+		const { store, sent, card } = setup();
+		startRun(store, "run-shared-notice");
+		store.recordRunEnd("run-shared-notice", "completed", { summary: "ready" });
+		await Promise.resolve();
+		const notice = sent.find((message) => message.details?.kind === "completed");
+		assert.ok(notice);
+		const rows = card(notice);
+		assert.match(rows[0]!, /● Workflow "ralph" completed/);
+		const outputPad = rows[0]!.indexOf("●");
+		assert.ok(rows[1]!.startsWith(`${" ".repeat(outputPad)}  ⎿  run `));
+		assert.doesNotMatch(rows.join("\n"), /[╭╮╰╯│]/);
+		assert.match(rows.join("\n"), /outputs\s+summary: ready/);
+	});
+
 	test("a completed run's card shows its declared outputs and the artifacts its stages collected", async () => {
 		const { store, sent, card } = setup();
 		startRun(store, "run-ok", [
@@ -70,7 +85,7 @@ describe("workflow completion card: outputs and diagnostics (#5224)", () => {
 		assert.ok(notice, "a completion notice was sent");
 		const text = card(notice).join("\n");
 		assert.match(text, /outputs\s+summary: Fixed the benchmark · prNumber: 5236/);
-		assert.match(text, /artifacts\s+diff \/repo\/\.atomic\/impl\.patch · 3 files · \+40 −2/);
+		assert.match(text, /artifact\s+diff \/repo\/\.atomic\/impl\.patch · 3 files · \+40 −2/);
 		assert.match(text, /\+1 more/);
 		assert.match(text, /\/workflows run-ok, then o: run details/);
 		for (const line of card(notice, 80)) assert.ok(visibleWidth(line) <= 80, line);
@@ -86,7 +101,7 @@ describe("workflow completion card: outputs and diagnostics (#5224)", () => {
 		const notice = sent.find((message) => message.details?.kind === "failed");
 		assert.ok(notice);
 		const text = card(notice).join("\n");
-		assert.match(text, /error\s+verify gate failed: 2 jobs/);
+		assert.match(text, /reason\s+verify gate failed: 2 jobs/);
 		assert.doesNotMatch(text, /at verifyStage/);
 		assert.match(text, /full log: \/workflows run-bad, then o and l/);
 		assert.ok(notice.details);

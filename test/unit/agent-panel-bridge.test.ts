@@ -928,7 +928,7 @@ test("in-process and RPC open_agent_panel catch handlers format null and hostile
 			const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
 			const inputListeners: Array<(data: string) => { consume?: boolean } | undefined> = [];
 			const warnings: string[] = [];
-			const editor = { getText: () => "" };
+			const editor = { getText: () => "", onAction() {} };
 			const fakeMode = Object.create(InteractiveModeBase.prototype) as InteractiveModeBase;
 			fakeMode.addTuiInputListener = (listener) => {
 				inputListeners.push(listener);
@@ -943,9 +943,7 @@ test("in-process and RPC open_agent_panel catch handlers format null and hostile
 			fakeMode.editor = editor as never;
 			fakeMode.editorContainer = { children: [editor] } as never;
 			fakeMode.isBashMode = false;
-			fakeMode.defaultEditor = {
-				onAction() {},
-			} as never;
+			fakeMode.defaultEditor = editor as never;
 			Object.defineProperty(fakeMode, "session", { value: session });
 			fakeMode.createExtensionUIContext = () => ({}) as never;
 			fakeMode.showExtensionCustom = async () => {

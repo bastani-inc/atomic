@@ -28,15 +28,24 @@ test.each(["running", "missing"])(
 			state: "done",
 		};
 		let items = [finished];
-		hub.register({ items: () => items, subscribe: () => () => {} });
+		let notify = () => {};
+		hub.register({
+			items: () => items,
+			subscribe: (listener) => {
+				notify = listener;
+				return () => {};
+			},
+		});
 		const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
 		try {
 			assert.equal(agentPanelHasRows(session), true);
 			now += AGENT_PANEL_DROP_MS + 1;
 			assert.equal(agentPanelHasRows(session), false);
 			items = change === "running" ? [{ ...finished, state: "running" }] : [];
+			notify();
 			agentPanelRows(session);
 			items = [finished];
+			notify();
 			assert.deepEqual(
 				agentPanelRows(session).map((row) => row.id),
 				[finished.id],

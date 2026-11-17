@@ -1,4 +1,10 @@
-import type { AgentPanelActionResult, AgentPanelAnswerOptions, AgentPanelItem, AgentPanelState } from "@bastani/atomic";
+import {
+	type AgentPanelActionResult,
+	type AgentPanelAnswerOptions,
+	type AgentPanelItem,
+	type AgentPanelState,
+	sliceHead,
+} from "@bastani/atomic";
 import type { WorkflowOwnerResources } from "../extension/workflow-owner-resources.js";
 import { workflowAnswerAction } from "../extension/workflow-tool-answer.js";
 import { createWorkflowGraphExpander, settledStageCount } from "../shared/expanded-workflow-graph.js";
@@ -10,19 +16,48 @@ import {
 } from "../shared/prompt-answer.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { createRunIndicatorStatusResolver } from "../shared/run-indicator-status.js";
+import { runStageIndex } from "../shared/run-stage-index.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
+import { store as defaultStore } from "../shared/store.js";
+import { currentWorkflowStore } from "../shared/store-factory.js";
+import type { Store } from "../shared/store-public-types.js";
 import type { RunSnapshot, RunStatus, StageSnapshot, StoreSnapshot, WorkflowNotice } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import { sanitizeToolDisplayText } from "../shared/tool-payload-bounds.js";
-import { findSnapshotRun, findSnapshotStage, isPublishedSnapshotArray } from "../shared/workflow-run-ownership.js";
+import {
+	authoritativeWorkflowChildRunId,
+	findSnapshotRun,
+	findSnapshotStage,
+	isPublishedSnapshotArray,
+	reciprocalWorkflowRootRunId,
+} from "../shared/workflow-run-ownership.js";
 import {
 	type PendingInputAffordance,
 	pendingInputAffordance,
 	stripTerminalControls,
 } from "./pending-input-affordance.js";
-import { markWorkflowRunViewed, resolveViewedWorkflowRuns, viewedWorkflowRuns } from "./viewed-runs.js";
+import {
+	viewedWorkflowRuns as baseViewedWorkflowRuns,
+	markWorkflowRunViewed,
+	resolveViewedWorkflowRuns,
+} from "./viewed-runs.js";
 
-export { markWorkflowRunViewed, viewedWorkflowRuns };
+export { markWorkflowRunViewed };
+
+const storesByViewed = new WeakMap<Set<string>, Store>();
+
+export function viewedWorkflowRuns(store: object = defaultStore): Set<string> {
+	const set = baseViewedWorkflowRuns(store);
+	const resolved = store === defaultStore ? currentWorkflowStore() : store;
+	if (typeof (resolved as Store).run === "function") storesByViewed.set(set, resolved as Store);
+	return set;
+}
+
+function resolveStore(scope?: Set<string> | object): Store | undefined {
+	if (scope instanceof Set) return storesByViewed.get(scope) ?? currentWorkflowStore();
+	if (scope !== undefined && typeof (scope as Store).run === "function") return scope as Store;
+	return currentWorkflowStore();
+}
 
 const REASON_WIDTH = 120;
 export const PANEL_RUN_PREFIX = "run:";
@@ -46,7 +81,7 @@ function oneLine(text: string | undefined): string | undefined {
 	if (raw === undefined) return undefined;
 	const line = inertLine(raw);
 	if (line.length === 0) return undefined;
-	return line.length > REASON_WIDTH ? `${line.slice(0, REASON_WIDTH - 1)}…` : line;
+	return line.length > REASON_WIDTH ? `${sliceHead(line, REASON_WIDTH - 1)}…` : line;
 }
 
 function currentStage(stages: readonly StageSnapshot[]): StageSnapshot | undefined {
@@ -77,7 +112,7 @@ function choicesOf(
 	if (owner === undefined) return undefined;
 	if (stageId === null) {
 		const prompt = owner.pendingPrompt;
-		return prompt?.id === promptId && prompt.choices?.length ? prompt.choices.map(inertLine) : undefined;
+		return prompt?.id === promptId && prompt.choices?.length ? [...prompt.choices] : undefined;
 	}
 	const stage = findSnapshotStage(owner.stages, stageId);
 	if (stage === undefined) return undefined;
@@ -86,21 +121,144 @@ function choicesOf(
 		if (request.questions.length !== 1) return undefined;
 		const single = request.questions[0];
 		if (single === undefined || single.multiSelect === true) return undefined;
-		if (single.options.length > 0) return single.options.map((option) => inertLine(option.label));
+		if (single.options.length > 0) return single.options.map((option) => option.label);
 	}
 	const prompt = stage.pendingPrompt?.id === promptId ? stage.pendingPrompt : undefined;
-	return prompt?.choices?.length ? prompt.choices.map(inertLine) : undefined;
+	return prompt?.choices?.length ? [...prompt.choices] : undefined;
 }
 
 type PromptIdentity = PendingInputAffordance["identity"];
 
-/** The id an item gives its question, so an answer typed for it is refused once the run asks something else. */
 function serializePromptIdentity(identity: PromptIdentity): string {
 	return JSON.stringify(identity);
 }
 
 export function panelRunId(id: string): string | undefined {
 	return id.startsWith(PANEL_RUN_PREFIX) ? id.slice(PANEL_RUN_PREFIX.length) : undefined;
+}
+
+function isSettledStage(stage: StageSnapshot): boolean {
+	return stage.status === "completed" || stage.status === "failed" || stage.status === "skipped";
+}
+
+function stageTokens(stage: StageSnapshot): number {
+	if (stage.replayed === true || stage.modelAttempts === undefined) return 0;
+	let total = 0;
+	for (const attempt of stage.modelAttempts) {
+		const usage = attempt.usage;
+		if (usage === undefined) continue;
+		const input =
+			typeof usage.input === "number" && Number.isFinite(usage.input) && usage.input > 0 ? usage.input : 0;
+		const output =
+			typeof usage.output === "number" && Number.isFinite(usage.output) && usage.output > 0 ? usage.output : 0;
+		total += Math.round(input + output);
+	}
+	return total;
+}
+
+interface SettledTokenPrefix {
+	scannedCount: number;
+	settledTokens: number;
+}
+
+const settledTokenPrefixes = new WeakMap<RunSnapshot, SettledTokenPrefix>();
+
+function runDirectTokens(
+	run: RunSnapshot,
+	rawRun: RunSnapshot | undefined,
+	delegatedStageIds?: ReadonlySet<string>,
+): number {
+	let total = 0;
+	const source = rawRun !== undefined && !isPublishedSnapshotArray(rawRun.stages) ? rawRun : undefined;
+	if (source !== undefined && (delegatedStageIds === undefined || delegatedStageIds.size === 0)) {
+		let prefix = settledTokenPrefixes.get(source);
+		if (prefix === undefined || prefix.scannedCount > source.stages.length) {
+			prefix = { scannedCount: 0, settledTokens: 0 };
+			settledTokenPrefixes.set(source, prefix);
+		}
+		while (prefix.scannedCount < source.stages.length) {
+			const candidate = source.stages[prefix.scannedCount]!;
+			if (!isSettledStage(candidate) || authoritativeWorkflowChildRunId(candidate) !== undefined) break;
+			prefix.settledTokens += stageTokens(candidate);
+			prefix.scannedCount++;
+		}
+		total = prefix.settledTokens;
+		for (let index = prefix.scannedCount; index < source.stages.length; index++) {
+			const candidate = source.stages[index]!;
+			if (authoritativeWorkflowChildRunId(candidate) !== undefined) continue;
+			total += stageTokens(candidate);
+		}
+	} else {
+		const target = source ?? run;
+		const stages = isPublishedSnapshotArray(target.stages) ? runStageIndex(target).unfinished : target.stages;
+		for (const stage of stages) {
+			if (delegatedStageIds?.has(stage.id)) continue;
+			total += stageTokens(stage);
+		}
+	}
+	const wrapUp = (source ?? run).budgetState?.wrapUpUsage;
+	if (wrapUp !== undefined) {
+		const input =
+			typeof wrapUp.input === "number" && Number.isFinite(wrapUp.input) && wrapUp.input > 0 ? wrapUp.input : 0;
+		const output =
+			typeof wrapUp.output === "number" && Number.isFinite(wrapUp.output) && wrapUp.output > 0 ? wrapUp.output : 0;
+		total += Math.round(input + output);
+	}
+	const accounted = (source ?? run).budgetState?.accounting?.tokens ?? (source ?? run).budgetState?.tokens?.reading;
+	if (typeof accounted === "number" && Number.isFinite(accounted) && accounted > total) {
+		total = Math.round(accounted);
+	}
+	return total;
+}
+
+function runTreeTokens(
+	root: RunSnapshot,
+	childrenByParent: ReadonlyMap<string, readonly RunSnapshot[]> | undefined,
+	runById: ReadonlyMap<string, RunSnapshot> | undefined,
+	store: Store | undefined,
+): number {
+	const lookupRaw = (candidate: RunSnapshot): RunSnapshot | undefined =>
+		isPublishedSnapshotArray(candidate.stages) ? store?.run(candidate.id) : candidate;
+	if (childrenByParent === undefined || !childrenByParent.has(root.id) || runById === undefined) {
+		return runDirectTokens(root, lookupRaw(root));
+	}
+	const visiting = new Set<string>();
+	const expandedChildren = new Set<string>();
+	const rootOwnerByRunId = new Map<string, string | undefined>();
+	const rootOwnerFor = (runId: string): string | undefined => {
+		if (rootOwnerByRunId.has(runId)) return rootOwnerByRunId.get(runId);
+		const owner = reciprocalWorkflowRootRunId(runById, runId);
+		rootOwnerByRunId.set(runId, owner);
+		return owner;
+	};
+	const visit = (run: RunSnapshot): number => {
+		if (visiting.has(run.id)) return 0;
+		visiting.add(run.id);
+		const children = childrenByParent.get(run.id);
+		let delegatedStageIds: Set<string> | undefined;
+		let childTokens = 0;
+		if (children !== undefined) {
+			const runRoot = rootOwnerFor(run.id);
+			const index = runStageIndex(run);
+			for (const childRun of children) {
+				if (expandedChildren.has(childRun.id) || childRun.parentStageId === undefined) continue;
+				if (childRun.stages.length + childRun.toolNodes.length === 0) continue;
+				if (runRoot === undefined || rootOwnerFor(childRun.id) !== runRoot) continue;
+				const parentStage =
+					index.unfinished.find((stage) => stage.id === childRun.parentStageId) ??
+					findSnapshotStage(run.stages, childRun.parentStageId);
+				if (parentStage === undefined || authoritativeWorkflowChildRunId(parentStage) !== childRun.id) continue;
+				expandedChildren.add(childRun.id);
+				delegatedStageIds ??= new Set();
+				delegatedStageIds.add(parentStage.id);
+				childTokens += visit(childRun);
+			}
+		}
+		const ownTokens = runDirectTokens(run, lookupRaw(run), delegatedStageIds);
+		visiting.delete(run.id);
+		return ownTokens + childTokens;
+	};
+	return visit(root);
 }
 
 interface CachedPanelRun {
@@ -142,10 +300,6 @@ function toStoreSnapshot(runsOrSnapshot: readonly RunSnapshot[] | StoreSnapshot)
 	return { snapshot: { ...snapshot, runs: snapshot.runs.map((run) => ({ ...run })) }, cacheKey: undefined };
 }
 
-/**
- * One item per top-level run, in launch order. A run opened from the panel (in `scope`'s viewed runs) is marked viewed,
- * so a finished one can leave the panel.
- */
 export function panelItemsFromSnapshot(
 	runsOrSnapshot: readonly RunSnapshot[] | StoreSnapshot,
 	now = Date.now(),
@@ -153,6 +307,7 @@ export function panelItemsFromSnapshot(
 ): AgentPanelItem[] {
 	const { snapshot, cacheKey } = toStoreSnapshot(runsOrSnapshot);
 	const viewed = resolveViewedWorkflowRuns(scope);
+	const store = resolveStore(scope);
 	if (viewed.size > 0) {
 		const liveRunIds = new Set(snapshot.runs.map((run) => run.id));
 		for (const id of viewed) if (!liveRunIds.has(id)) viewed.delete(id);
@@ -170,21 +325,49 @@ export function panelItemsFromSnapshot(
 	}
 
 	const runs = snapshot.runs;
+	let childrenByParent: Map<string, RunSnapshot[]> | undefined;
+	for (const candidate of runs) {
+		if (candidate.parentRunId === undefined) continue;
+		childrenByParent ??= new Map();
+		const list = childrenByParent.get(candidate.parentRunId);
+		if (list === undefined) childrenByParent.set(candidate.parentRunId, [candidate]);
+		else list.push(candidate);
+	}
+	const runById = childrenByParent === undefined ? undefined : new Map(runs.map((run) => [run.id, run]));
 	const indicator = createRunIndicatorStatusResolver(runs);
 	const expand = createWorkflowGraphExpander(snapshot);
 
 	const built: CachedPanelRun[] = topLevelWorkflowRuns(runs).map((run): CachedPanelRun => {
-		const stages = expand(run.id).stages;
-		const stage = currentStage(stages);
+		const index =
+			cacheKey !== undefined && run.toolNodes.length === 0 && !childrenByParent?.has(run.id)
+				? runStageIndex(run)
+				: undefined;
+		const graph = index === undefined ? expand(run.id) : undefined;
+		const stages = graph?.stages ?? run.stages;
+		const settled = index?.settled ?? settledStageCount(stages);
 		const status = effectiveRunStatus(run);
+		const stage =
+			currentStage(index?.unfinished ?? stages) ??
+			(status === "blocked" ? stages.find((candidate) => candidate.status === "failed") : undefined);
+		const tools = graph?.tools ?? run.toolNodes;
+		const runningTool = tools.find((candidate) => candidate.status === "running");
 		const quit = run.exitReason === "quit" || run.quitAt !== undefined;
-		const state = panelState(status, !quit && indicator(run) === "awaiting_input", run.endedAt === undefined);
+		const state = quit
+			? "stopped"
+			: panelState(status, indicator(run) === "awaiting_input", run.endedAt === undefined);
+		const tool =
+			runningTool ??
+			(stage === undefined && (quit || state === "stopped" || state === "paused")
+				? (tools.find((candidate) => candidate.status === "cancelled" || candidate.status === "failed") ??
+					tools.at(-1))
+				: undefined);
+		const endedAt = run.endedAt ?? (quit ? (run.quitAt ?? run.pausedAt) : undefined);
 		const affordance = state === "input" ? pendingInputAffordance(run, runs) : undefined;
 		const question = affordance?.message;
 		const promptId = affordance === undefined ? undefined : serializePromptIdentity(affordance.identity);
 		const choices = affordance === undefined ? undefined : choicesOf(runs, affordance.identity);
 		const reason =
-			state === "failed"
+			state === "failed" || status === "blocked"
 				? oneLine(
 						run.error ??
 							stages.find((candidate) => candidate.status === "failed")?.error ??
@@ -192,15 +375,32 @@ export function panelItemsFromSnapshot(
 							run.exitReason,
 					)
 				: undefined;
-		const stageLabel = stage === undefined ? undefined : `stage ${inertLine(stage.name)}`;
+		const stageLabel =
+			stage !== undefined
+				? `stage ${inertLine(stage.name)}`
+				: tool === undefined
+					? undefined
+					: `tool ${inertLine(tool.name)}`;
 		const task =
 			state === "input"
 				? (question ?? stageLabel ?? "waiting for input")
 				: state === "failed"
 					? (reason ?? "failed")
-					: (stageLabel ?? "");
-		const total = stages.length;
-		const showProgress = (state === "running" || state === "paused" || state === "done") && total > 0;
+					: status === "blocked"
+						? [stageLabel, reason].filter(Boolean).join(" · ")
+						: (stageLabel ?? "");
+		const progressStages =
+			runningTool !== undefined && settled === stages.length && runStageIndex(run).settled < run.stages.length
+				? run.stages
+				: stages;
+		const done = progressStages === stages ? settled : runStageIndex(run).settled;
+		const total = progressStages.length;
+		const showProgress =
+			status !== "blocked" &&
+			(state === "running" || state === "paused" || state === "done") &&
+			total > 0 &&
+			!(runningTool !== undefined && done >= total);
+		const tokens = runTreeTokens(run, childrenByParent, runById, store);
 		const item: AgentPanelItem = {
 			id: `${PANEL_RUN_PREFIX}${run.id}`,
 			kind: "workflow",
@@ -208,12 +408,13 @@ export function panelItemsFromSnapshot(
 			name: inertLine(run.name),
 			task,
 			elapsedMs: elapsedRunMs(run, run.endedAt ?? now),
-			...(showProgress ? { progress: { done: settledStageCount(stages), total } } : {}),
+			...(tokens > 0 ? { tokens } : {}),
+			...(showProgress ? { progress: { done, total } } : {}),
 			...(question === undefined ? {} : { question }),
 			...(state === "input" && choices?.length ? { choices } : {}),
 			...(promptId === undefined ? {} : { promptId }),
 			...(reason === undefined ? {} : { reason }),
-			...(run.endedAt === undefined ? {} : { endedAt: run.endedAt }),
+			...(endedAt === undefined ? {} : { endedAt }),
 		};
 		return { run, item };
 	});
@@ -230,10 +431,6 @@ function sameChoices(expected: readonly string[] | undefined, actual: readonly s
 	return expected.length === current.length && expected.every((choice, index) => choice === current[index]);
 }
 
-/**
- * Answers a run's item with `text`, only when the run still asks the question `options` names: its prompt id, and the
- * question and choices shown. An answer typed for an earlier question is refused, never sent to a later one.
- */
 export async function answerPanelRun(
 	id: string,
 	text: string,

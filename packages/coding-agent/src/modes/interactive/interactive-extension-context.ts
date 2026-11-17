@@ -185,6 +185,7 @@ InteractiveModeBase.prototype.createExtensionUIContext = function (this: Interac
 		setStatus: (key, text) => this.setExtensionStatus(key, text),
 		setWorkingMessage: (message) => {
 			this.workingMessage = message;
+			this.lastWorkingMessage = message;
 			if (this.loadingAnimation) {
 				this.loadingAnimation.setMessage(message ?? this.defaultWorkingMessage);
 			}

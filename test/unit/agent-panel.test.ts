@@ -74,6 +74,7 @@ const ROWS: AgentPanelRow[] = [
 		name: "ralph",
 		task: "stage implement",
 		elapsedMs: 12 * 60_000,
+		tokens: 61_000,
 		progress: { done: 3, total: 5 },
 	},
 	{ id: "task:c", kind: "agent", state: "done", name: "worker", task: "picker clamp", elapsedMs: 6 * 60_000 },
@@ -181,7 +182,7 @@ test("panel rows show glyph, name, task, elapsed and tokens, right-aligned at 16
 		[
 			"  ∀ worker  fix shipping batches  41m · ↓ 96.1k tokens",
 			"  ∀ debugger  #5220 spawn lock  18m · ↓ 87.4k tokens",
-			"  ∀ ralph  ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱  3/5 stages · implement  12m",
+			"  ∀ ralph  ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱  3/5 stages  12m · ↓ 61.0k tokens",
 			"  ✓ worker  picker clamp  done · 6m",
 		],
 	);
@@ -342,7 +343,7 @@ test("x stops a running row only on a second press within three seconds and dism
 	assert.equal(calls.at(-1), "dismiss task:c");
 	assert.equal(
 		stripVTControlCharacters(renderAgentPanelHint(focus, 160, plain, new KeybindingsManager())),
-		"  ↑↓ select · enter/→ open · x dismiss · esc/← back to prompt · ? keys",
+		"  ↑↓ select · enter/→ to open · x dismiss · esc/← back to prompt · ? keys",
 	);
 	press("?");
 	assert.equal(focus.helpOpen, true);
@@ -359,7 +360,7 @@ test("a stop confirmation keeps terminal controls in a source's name inert (#522
 	press("x");
 	const hint = renderAgentPanelHint(focus, 160, plain, new KeybindingsManager());
 	assert.doesNotMatch(hint, /[\x1b\x07\u202e]/u);
-	assert.match(hint, /changed-title/);
+	assert.match(stripVTControlCharacters(hint), /^ {2}Press x again within 3s to stop/);
 });
 
 test("rows whose name, task or stage label starts with combining marks stay within terminal width (#5224)", () => {

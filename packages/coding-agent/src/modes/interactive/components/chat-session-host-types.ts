@@ -103,6 +103,7 @@ export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike
 	/** Custom hosts may retain live task rows; interactive stage chat uses footer-only status. */
 	taskRowsInChat?: boolean;
 	isStreaming?: () => boolean;
+	workingTokenCount?: () => number | undefined;
 	isPaused?: () => boolean;
 	isDisabled?: () => boolean;
 	isBashRunning?: () => boolean;

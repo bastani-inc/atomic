@@ -1023,7 +1023,11 @@ test("async items and subscribe callbacks that return rejected promises are drai
 			items.map((item) => item.id),
 			[healthyItem.id],
 		);
-		assert.equal(reports.length, 2);
+		assert.equal(
+			reports.length,
+			3,
+			"the failed subscription, the failed items and one bad row are each reported once",
+		);
 		assert.deepEqual(unhandled, []);
 	} finally {
 		process.off("unhandledRejection", onUnhandled);

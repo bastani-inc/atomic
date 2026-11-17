@@ -485,7 +485,7 @@ describe("workflow diagnostic surfaces, text safety, and listing wiring (#5224)"
 		const singleArtNotice = sent.find((message) => message.details?.runId === "run-single-art");
 		assert.ok(singleArtNotice?.details);
 		const singleArtText = renderCard(singleArtNotice.details);
-		assert.match(singleArtText, /artifacts\s+output \/repo\/out\/only\.md/);
+		assert.match(singleArtText, /artifact\s+output \/repo\/out\/only\.md/);
 		assert.doesNotMatch(singleArtText, /\+\d+ more/);
 		assert.doesNotMatch(singleArtText, /\boutputs\b/);
 		assert.doesNotMatch(singleArtText, /\berror\b/);
@@ -508,7 +508,7 @@ describe("workflow diagnostic surfaces, text safety, and listing wiring (#5224)"
 		assert.ok(blockedNotice?.details);
 		assert.equal(blockedNotice.details.kind, "blocked");
 		const blockedCardText = renderCard(blockedNotice.details);
-		assert.match(blockedCardText, /error\s+Needs manual security sign-off/);
+		assert.match(blockedCardText, /reason\s+Needs manual security sign-off/);
 		assert.doesNotMatch(blockedCardText, /at check/);
 		assert.match(blockedCardText, /full log: \/workflows run-blocked, then o and l/);
 		assert.doesNotMatch(blockedCardText, /\boutputs\b/);
@@ -519,7 +519,7 @@ describe("workflow diagnostic surfaces, text safety, and listing wiring (#5224)"
 			reason: undefined,
 			error: "Error: fallback error text\n    at step (/repo/sec.ts:1:1)",
 		});
-		assert.match(fallbackErrorCardText, /error\s+fallback error text/);
+		assert.match(fallbackErrorCardText, /reason\s+fallback error text/);
 		assert.doesNotMatch(fallbackErrorCardText, /at step/);
 	});
 });
