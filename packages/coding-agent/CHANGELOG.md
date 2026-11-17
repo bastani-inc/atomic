@@ -2,9 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Clarified in `codemode`'s description, system-prompt guidance, and `searchTools()`/`describeTool()` hints that `subagent`, `workflow`, and other model-only tools (plus `intercom`'s model-only actions) cannot be called from inside a `codemode` script, and should be called directly as separate top-level tools when available in the session
+
 ### Fixed
 
-- Snapshot collection no longer holds a SQLite or libSQL database's write lock for seconds while it records the age of worktree-snapshot blobs stored before blobs had one. It stamped up to 256 of them in one transaction, whatever their size, and stamping rewrites each blob whole, so one 256 MiB blob held the lock for 3 to 6 seconds on Windows and every other write to the store waited. A transaction now stamps at most 16 MiB of blobs. A larger blob is moved into 1 MiB chunks, 16 MiB per transaction, and stays readable throughout; a collection stopped part way finishes the move next time and leaves no chunks behind. As storing a snapshot over 1 MiB already does, moving one marks the journal so that builds from before chunked blobs refuse the database ([#5327](https://github.com/bastani-inc/atomic/pull/5327))
+- A fast foreground shell command no longer delivers a stray `Background shell completed` notice after its own result when the command exits before Atomic has finished starting it. The model was shown the command's result a second time, as a background shell's, in chats and workflow stages alike ([#5333](https://github.com/bastani-inc/atomic/pull/5333))
+- Worktree-snapshot maintenance no longer rewrites a whole large legacy blob just to record its unknown age. Refreshing or storing it again leaves that age for collection, which stamps at most 16 MiB of small blobs per transaction and moves every inline blob over 1 MiB into chunks regardless of age, writing at most 16 MiB per chunk transaction. Blobs remain readable during conversion. Publishing the chunks still frees the old inline pages under the write lock in time proportional to the blob's size. Interrupted moves resume on the next collection, and deleting a blob removes its partial chunks even when an older client deletes it. A completed move marks the journal so builds from before chunked blobs refuse the database ([#5327](https://github.com/bastani-inc/atomic/pull/5327))
 
 ## [0.9.88] - 2026-11-16
 
