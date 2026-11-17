@@ -31,7 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Workflow worktree setup, git commands, worktree setup hooks, worker pools and workflow console logs no longer block the terminal UI while they run; the SDK's `setupGitWorktree` is unchanged
-- Stages using `model: "auto"` keep the selected model in adapter metadata after worktree setup, and SDK default-model selection reads settings without blocking the interface ([#5377](https://github.com/bastani-inc/atomic/pull/5377))
+- SDK default-model selection reads settings without blocking the interface ([#5377](https://github.com/bastani-inc/atomic/pull/5377))
 - A long run of spaces in a rubric criterion heading no longer stalls rubric parsing
 - A fleet-wide rate limit whose interval (60 000 / `requestsPerMinute` ms) is not a whole number of milliseconds no longer lets the fleet run faster than its rate. The shared bucket kept its schedule in whole milliseconds rounded down, so each grant gave up to a millisecond's worth of calls more than the limit; it now rounds up, so such a limit runs at most a millisecond per journal request below its rate ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
 - `stage.setThinkingLevel()` called before a stage's first prompt no longer fails the run with `stage AgentSession property "thinkingLevel" is unavailable until the SDK session has been created`; the level applies when the stage's session opens.
