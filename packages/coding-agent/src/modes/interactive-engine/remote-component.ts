@@ -70,10 +70,13 @@ class RemoteComponent implements Component {
 	private readonly componentId: string;
 	private readonly runtime: RemoteComponentRuntime;
 	private readonly requestRender: () => void;
+	private readonly paintNow: () => void;
 	private readonly getRows: () => number;
 	private readonly getHostMode: () => TuiMode;
 	private readonly getRenderSettings: () => EngineHostRenderSettings | undefined;
 	private renderSettingsKey = "";
+	/** The frame request sent with the latest key; the frame answering it paints at once, as a local key does. */
+	private keyFrameRequestId = 0;
 
 	constructor(
 		componentId: string,
@@ -83,10 +86,12 @@ class RemoteComponent implements Component {
 		getHostMode: () => TuiMode,
 		handlesInternalUiAction = false,
 		getRenderSettings: () => EngineHostRenderSettings | undefined = () => undefined,
+		paintNow: () => void = requestRender,
 	) {
 		this.componentId = componentId;
 		this.runtime = runtime;
 		this.requestRender = requestRender;
+		this.paintNow = paintNow;
 		this.getRows = getRows;
 		this.getHostMode = getHostMode;
 		this.handlesInternalUiAction = handlesInternalUiAction;
@@ -98,10 +103,7 @@ class RemoteComponent implements Component {
 		// A renderer switch in the host changes the mode the engine component lays itself out for.
 		const hostMode = this.getHostMode();
 		const renderSettings = this.getRenderSettings();
-		const renderSettingsKey =
-			renderSettings === undefined
-				? ""
-				: `${renderSettings.hideThinkingBlock}|${renderSettings.toolOutputExpanded}|${renderSettings.fullscreenScrollbar}|${renderSettings.fullscreenWheelScrollLines}`;
+		const renderSettingsKey = renderSettingsCacheKey(renderSettings);
 		if (
 			!this.disposed &&
 			(this.dirty ||
@@ -110,20 +112,7 @@ class RemoteComponent implements Component {
 				hostMode !== this.hostMode ||
 				renderSettingsKey !== this.renderSettingsKey)
 		) {
-			this.width = width;
-			this.rows = rows;
-			this.hostMode = hostMode;
-			this.renderSettingsKey = renderSettingsKey;
-			this.dirty = false;
-			this.runtime.sendEngineCommand({
-				type: "engine_custom_render",
-				componentId: this.componentId,
-				requestId: ++this.requestId,
-				width,
-				rows,
-				hostMode,
-				...(renderSettings === undefined ? {} : { renderSettings }),
-			});
+			this.requestFrame(width, rows, hostMode, renderSettings, renderSettingsKey);
 		}
 		// The engine child re-renders asynchronously; until the fresh frame
 		// arrives, the previous frame may be wrapped for an older terminal
@@ -151,13 +140,48 @@ class RemoteComponent implements Component {
 			this.resolveInput(requestId, false);
 		}
 		// Engine commands are delivered in order, so a frame requested now is
-		// rendered by the child only AFTER it has applied this input. Pipelining
-		// the request keeps keypress latency at a single round trip and repaints
-		// components that never self-invalidate, instead of waiting for a
-		// child-side invalidate (or an unrelated refresh) to trigger a frame.
-		this.dirty = true;
-		this.requestRender();
+		// rendered by the child only AFTER it has applied this input. Asking for
+		// it with the key, rather than on the next paced host render, keeps the
+		// keypress at a single round trip, and repaints components that never
+		// self-invalidate.
+		if (this.width > 0) {
+			const renderSettings = this.getRenderSettings();
+			this.requestFrame(
+				this.width,
+				this.getRows(),
+				this.getHostMode(),
+				renderSettings,
+				renderSettingsCacheKey(renderSettings),
+			);
+			this.keyFrameRequestId = this.requestId;
+		} else {
+			this.dirty = true;
+			this.requestRender();
+		}
 		return result;
+	}
+
+	private requestFrame(
+		width: number,
+		rows: number,
+		hostMode: TuiMode,
+		renderSettings: EngineHostRenderSettings | undefined,
+		renderSettingsKey: string,
+	): void {
+		this.width = width;
+		this.rows = rows;
+		this.hostMode = hostMode;
+		this.renderSettingsKey = renderSettingsKey;
+		this.dirty = false;
+		this.runtime.sendEngineCommand({
+			type: "engine_custom_render",
+			componentId: this.componentId,
+			requestId: ++this.requestId,
+			width,
+			rows,
+			hostMode,
+			...(renderSettings === undefined ? {} : { renderSettings }),
+		});
 	}
 
 	resolveInput(requestId: number, handled: boolean | undefined): void {
@@ -177,6 +201,11 @@ class RemoteComponent implements Component {
 		this.appliedRequestId = requestId;
 		this.lines = lines;
 		this.scrollRequest = scrollRequest;
+		if (this.keyFrameRequestId !== 0 && requestId >= this.keyFrameRequestId) {
+			this.keyFrameRequestId = 0;
+			this.paintNow();
+			return;
+		}
 		this.requestRender();
 	}
 
@@ -199,6 +228,12 @@ class RemoteComponent implements Component {
 		if (notifyEngine)
 			this.runtime.sendEngineCommand({ type: "engine_custom_dispose", componentId: this.componentId });
 	}
+}
+
+function renderSettingsCacheKey(renderSettings: EngineHostRenderSettings | undefined): string {
+	return renderSettings === undefined
+		? ""
+		: `${renderSettings.hideThinkingBlock}|${renderSettings.toolOutputExpanded}|${renderSettings.fullscreenScrollbar}|${renderSettings.fullscreenWheelScrollLines}`;
 }
 
 function overlayOptions(options: SerializableOverlayOptions | undefined): OverlayOptions | undefined {
@@ -444,6 +479,7 @@ export class RemoteComponentController {
 		if (this.mounted.has(componentId)) return;
 		if (widgetKey) {
 			let getRows = () => 24;
+			let paintNow = () => this.ui.requestRender();
 			const component = new RemoteComponent(
 				componentId,
 				this.runtime,
@@ -452,6 +488,7 @@ export class RemoteComponentController {
 				() => this.hostMode(),
 				handlesInternalUiAction,
 				() => this.tuiRendererLifecycle.chatRenderSettings?.(),
+				() => paintNow(),
 			);
 			const unsubscribeWidgetRelease = this.ui.onWidgetRelease?.(widgetKey, () => this.releaseWidget(widgetKey));
 			this.mounted.set(componentId, {
@@ -467,6 +504,7 @@ export class RemoteComponentController {
 				widgetKey,
 				(tui) => {
 					getRows = () => tui.terminal.rows;
+					paintNow = () => tui.requestImmediateRender();
 					return component;
 				},
 				{ placement: widgetPlacement, ...(widgetScroll ? { scroll: widgetScroll } : {}) },
@@ -485,6 +523,7 @@ export class RemoteComponentController {
 						() => this.hostMode(),
 						handlesInternalUiAction,
 						() => this.tuiRendererLifecycle.chatRenderSettings?.(),
+						() => tui.requestImmediateRender(),
 					);
 					mounted = { component, done, engineDone: false, handlesCtrlC, handlesInternalUiAction };
 					this.mounted.set(componentId, mounted);

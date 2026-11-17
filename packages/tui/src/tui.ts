@@ -488,6 +488,11 @@ export interface TUI extends Component {
 	stop(options?: TuiStopOptions): void;
 	renderNow(force?: boolean): void;
 	requestRender(force?: boolean): void;
+	/**
+	 * Render on the next tick, ahead of the frame pacing `requestRender` applies: for a frame that answers the user's own
+	 * keystroke, as the renderer does after it routes a key.
+	 */
+	requestImmediateRender(): void;
 	addInputListener(listener: TuiInputListener): () => void;
 	removeInputListener(listener: TuiInputListener): void;
 	onTerminalColorSchemeChange(listener: (scheme: TerminalColorScheme) => void): () => void;
@@ -1041,7 +1046,7 @@ export abstract class TuiBase extends Container implements TUI {
 		process.nextTick(() => this.scheduleRender());
 	}
 
-	private requestImmediateRender(): void {
+	requestImmediateRender(): void {
 		this.cancelRenderTimer();
 		this.renderRequested = true;
 		if (this.immediateRenderScheduled) return;
