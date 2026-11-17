@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "vitest";
 import { type Options, prepareBenchmarkState, runSample, type Target } from "../../scripts/perf/startup/benchmark.ts";
+import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
 import { moduleDir } from "../helpers/runtime.js";
 
 const repoRoot = join(moduleDir(import.meta.url), "../..");
@@ -128,7 +129,7 @@ if (process.argv.some((arg) => arg === "--internal-engine-prewarm" || arg === "-
 			);
 		} finally {
 			for (const [name, value] of runnerVariables) process.env[name] = value;
-			rmSync(root, { recursive: true, force: true });
+			await removeTempRootReleasingBroker(root, join(root, "state", "checkout", "warm-agent"));
 		}
 	},
 	TEST_TIMEOUT_MS,
