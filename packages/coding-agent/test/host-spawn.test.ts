@@ -192,6 +192,39 @@ describe.each(BACKENDS)("host processes started through %s", (backend) => {
 	});
 });
 
+test.skipIf(process.platform !== "linux")(
+	"a native host process stays unreaped until its close was handled, so a signal to its group reaches only what it started (#5345)",
+	async () => {
+		vi.stubEnv(HOST_SPAWN_ENV, undefined);
+		try {
+			// The process starts a grandchild in its own group that keeps the output open, then exits.
+			const child = spawnHostProcess(
+				node,
+				[
+					"-e",
+					"const c=require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:['ignore','inherit','ignore']});process.stdout.write(String(c.pid)+'\\n');process.exit(0)",
+				],
+				{ detached: true, stdio: ["ignore", "pipe", "ignore"] },
+			);
+			const exited = new Promise<void>((resolve) => child.on("exit", () => resolve()));
+			const closed = ended(child);
+			const grandchild = await new Promise<number>((resolve) =>
+				child.stdout?.once("data", (chunk: Buffer) => resolve(Number.parseInt(chunk.toString("utf8"), 10))),
+			);
+			await exited;
+			assert.equal(running(child.pid!), true, "the exited process is not reaped while its output is still open");
+			process.kill(-child.pid!, "SIGKILL");
+			await closed;
+			await waitGone(grandchild);
+			assert.equal(running(grandchild), false);
+			await waitGone(child.pid!);
+			assert.equal(running(child.pid!), false, "the process is reaped once its close was handled");
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	},
+);
+
 describe("where host processes start", () => {
 	test("natively only on Linux with the native start, unless child_process is asked for", () => {
 		const platforms: readonly NodeJS.Platform[] = ["linux", "darwin", "win32", "freebsd", "android"];

@@ -24,6 +24,16 @@ function sessionSnapshotRef(sessionId: string, root: string): string {
  */
 const writtenRefs = new Map<string, string | null>();
 
+/** Whether pointing a ref to `commit` must run Git, given the commit this process last wrote to it (null: deleted). */
+function refWriteNeeded(last: string | null | undefined, commit: string): boolean {
+	return last !== commit;
+}
+
+/** Whether deleting a ref must run Git, given what this process last made of it. */
+function refDeletionNeeded(last: string | null | undefined): boolean {
+	return last !== null;
+}
+
 function writtenRefKey(root: string, ref: string): string {
 	return `${canonicalizeWorktreePath(root)}\0${ref}`;
 }
@@ -36,7 +46,7 @@ function writtenRefKey(root: string, ref: string): string {
 export async function keepSessionSnapshotCommit(sessionId: string, root: string, commit: string): Promise<void> {
 	const ref = sessionSnapshotRef(sessionId, root);
 	const key = writtenRefKey(root, ref);
-	if (writtenRefs.get(key) === commit) return;
+	if (!refWriteNeeded(writtenRefs.get(key), commit)) return;
 	writtenRefs.delete(key);
 	const { exitCode } = await runGit(["update-ref", ref, commit], { cwd: root, allowExitCodes: [128] });
 	if (exitCode === 0) writtenRefs.set(key, commit);
@@ -52,7 +62,7 @@ export async function releaseSessionSnapshotRefs(sessionId: string, roots: Itera
 		try {
 			const ref = sessionSnapshotRef(sessionId, root);
 			const key = writtenRefKey(root, ref);
-			if (writtenRefs.get(key) === null) continue;
+			if (!refDeletionNeeded(writtenRefs.get(key))) continue;
 			writtenRefs.delete(key);
 			await runGit(["update-ref", "-d", ref], { cwd: root });
 			writtenRefs.set(key, null);

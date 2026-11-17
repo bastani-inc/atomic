@@ -2050,6 +2050,23 @@ mod tests {
 	#[cfg(target_os = "linux")]
 	#[test]
 	fn a_host_holding_a_gigabyte_starts_commands_without_a_fork_of_it_5345() {
+		// Measured in a test process of its own, so the memory it holds never slows the forks of tests running
+		// alongside it, such as the PTY ones.
+		const MEASURING: &str = "ATOMIC_TEST_COMMAND_START_MEASURING";
+		if std::env::var_os(MEASURING).is_none() {
+			let status = std::process::Command::new(std::env::current_exe().unwrap())
+				.args([
+					"--exact",
+					"task_supervisor::process::tests::a_host_holding_a_gigabyte_starts_commands_without_a_fork_of_it_5345",
+					"--nocapture",
+					"--test-threads=1",
+				])
+				.env(MEASURING, "1")
+				.status()
+				.unwrap();
+			assert!(status.success(), "the measuring test process failed");
+			return;
+		}
 		let held = vec![1u8; HOST_MEMORY_BYTES];
 		let (actor, owner) = command_owner();
 		let mut starts: Vec<Duration> = (0..COMMAND_STARTS)

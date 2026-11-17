@@ -67,13 +67,17 @@ export const HOST_SPAWN_ENV = "ATOMIC_HOST_SPAWN";
  * Where a host process starts: through the native module on Linux when it provides the native start and
  * {@link HOST_SPAWN_ENV} is not `child-process`, and through `child_process` in every other case.
  */
-export function chooseHostSpawnBackend(choice: {
+export function chooseHostSpawnBackend({
+	platform,
+	nativeAvailable,
+	override,
+}: {
 	readonly platform: NodeJS.Platform;
 	readonly nativeAvailable: boolean;
 	readonly override: string | undefined;
 }): HostSpawnBackend {
-	if (choice.override === "child-process") return "child-process";
-	return choice.platform === "linux" && choice.nativeAvailable ? "native" : "child-process";
+	if (override === "child-process") return "child-process";
+	return platform === "linux" && nativeAvailable ? "native" : "child-process";
 }
 
 type StartHostProcess = typeof native.startHostProcess;
@@ -93,14 +97,19 @@ function loadNativeStart(): StartHostProcess | null {
 	return nativeStart;
 }
 
+/**
+ * Whether {@link chooseHostSpawnBackend}'s answer depends on the native start being available: only then is the
+ * native module loaded, and taking it as unavailable otherwise does not change the answer.
+ */
+function nativeStartMatters(platform: NodeJS.Platform, override: string | undefined): boolean {
+	return platform === "linux" && override !== "child-process";
+}
+
 /** Where host processes of this process start now. */
 export function hostSpawnBackend(): HostSpawnBackend {
 	const override = process.env[HOST_SPAWN_ENV];
-	// The native module is only loaded where it would be used.
-	if (override === "child-process" || process.platform !== "linux") {
-		return chooseHostSpawnBackend({ platform: process.platform, nativeAvailable: false, override });
-	}
-	return chooseHostSpawnBackend({ platform: process.platform, nativeAvailable: loadNativeStart() !== null, override });
+	const nativeAvailable = nativeStartMatters(process.platform, override) && loadNativeStart() !== null;
+	return chooseHostSpawnBackend({ platform: process.platform, nativeAvailable, override });
 }
 
 function stdioOf(options: HostSpawnOptions): readonly [HostStdio, HostStdio, HostStdio] {

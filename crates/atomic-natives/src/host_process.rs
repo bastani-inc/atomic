@@ -229,11 +229,18 @@ mod linux {
 		stdout_open: AtomicBool,
 		stderr_open: AtomicBool,
 		pidfd: Option<OwnedFd>,
-		callback: Mutex<Option<EventCallback>>,
+		callback: Mutex<Option<Sink>>,
 		/// Whether the host released the process (after its `close`, or by dropping the handle) and whether the
 		/// output thread finished with it: the second of the two reaps it.
 		host_released: AtomicBool,
 		releases: AtomicU8,
+	}
+
+	/// Where a process's events go: the host's callback, or a test's channel.
+	pub(super) enum Sink {
+		Host(EventCallback),
+		#[cfg(test)]
+		Probe(std::sync::mpsc::Sender<HostProcessEvent>),
 	}
 
 	fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -283,7 +290,7 @@ mod linux {
 		}
 		#[allow(deprecated)]
 		pub(super) fn refer(&self, env: &Env, keep_alive: bool) -> napi::Result<()> {
-			if let Some(callback) = locked(&self.callback).as_mut() {
+			if let Some(Sink::Host(callback)) = locked(&self.callback).as_mut() {
 				if keep_alive {
 					callback.refer(env)?;
 				} else {
@@ -299,8 +306,15 @@ mod linux {
 				HostProcessEventKind::Exit => self.exit_sent.store(true, Ordering::Release),
 				_ => {},
 			}
-			if let Some(callback) = locked(&self.callback).as_ref() {
-				callback.call(event, ThreadsafeFunctionCallMode::NonBlocking);
+			match locked(&self.callback).as_ref() {
+				Some(Sink::Host(callback)) => {
+					callback.call(event, ThreadsafeFunctionCallMode::NonBlocking);
+				},
+				#[cfg(test)]
+				Some(Sink::Probe(probe)) => {
+					let _ = probe.send(event);
+				},
+				None => {},
 			}
 		}
 		fn emit_exit(&self, status: ExitStatus) {
@@ -443,19 +457,14 @@ mod linux {
 			stdout_open: AtomicBool::new(stdout.is_some()),
 			stderr_open: AtomicBool::new(stderr.is_some()),
 			pidfd: pidfd_open(pid),
-			callback: Mutex::new(Some(on_event)),
+			callback: Mutex::new(Some(Sink::Host(on_event))),
 			host_released: AtomicBool::new(false),
 			releases: AtomicU8::new(0),
 		});
 		let worker = shared.clone();
-		let started = std::thread::Builder::new().name("host-process".into()).spawn(move || {
-			let supervised = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-				supervise(stdin, stdout, stderr, &worker);
-			}));
-			if supervised.is_err() {
-				recover(&worker);
-			}
-		});
+		let started = std::thread::Builder::new()
+			.name("host-process".into())
+			.spawn(move || output_thread(&worker, |shared| supervise(stdin, stdout, stderr, shared)));
 		if let Err(error) = started {
 			// No thread can reap it: end and reap it here rather than leave it running unowned.
 			let mut child = SpawnedChild::new(pid);
@@ -464,6 +473,15 @@ mod linux {
 			return Err(to_error(error));
 		}
 		Ok(HostProcess { pid: pid as u32, shared })
+	}
+
+	/// The output thread: `work` moves the process's input and output to its end; if it panics, [`recover`] still ends,
+	/// reports and releases the process.
+	fn output_thread(shared: &Shared, work: impl FnOnce(&Shared)) {
+		let worked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(shared)));
+		if worked.is_err() {
+			recover(shared);
+		}
 	}
 
 	/// After the output thread failed: ends the process if it still runs, reports what the host has not been told,
@@ -648,5 +666,76 @@ mod linux {
 		}
 		drop(stdin);
 		shared.finish();
+	}
+
+	#[cfg(test)]
+	mod tests {
+		use super::*;
+		use std::sync::mpsc;
+
+		/// A `sleep` started as the host starts processes, with output pipes it never closes, and its shared state
+		/// reporting to a channel.
+		fn sleeping() -> (Arc<Shared>, mpsc::Receiver<HostProcessEvent>) {
+			let request = SpawnRequest::new(
+				std::ffi::OsStr::new("sleep"),
+				[OsString::from("30")],
+				crate::spawn::child_environment(true, []),
+				None,
+				false,
+				SignalDefaults::All,
+			)
+			.unwrap();
+			let pipes = crate::spawn::stdio_pipes().unwrap();
+			let pid = spawn(
+				&request,
+				[pipes.child[0].as_raw_fd(), pipes.child[1].as_raw_fd(), pipes.child[2].as_raw_fd()],
+				None,
+			)
+			.unwrap();
+			std::mem::forget(pipes);
+			let (sender, receiver) = mpsc::channel();
+			let shared = Arc::new(Shared {
+				pid,
+				input: Mutex::new(Input { chunks: VecDeque::new(), ended: false, closed: false }),
+				wake: unsafe { OwnedFd::from_raw_fd(libc::eventfd(0, libc::EFD_CLOEXEC)) },
+				reaped: AtomicBool::new(false),
+				exit_sent: AtomicBool::new(false),
+				stdout_open: AtomicBool::new(true),
+				stderr_open: AtomicBool::new(true),
+				pidfd: pidfd_open(pid),
+				callback: Mutex::new(Some(Sink::Probe(sender))),
+				host_released: AtomicBool::new(false),
+				releases: AtomicU8::new(0),
+			});
+			(shared, receiver)
+		}
+
+		fn running(pid: libc::pid_t) -> bool {
+			unsafe { libc::kill(pid, 0) == 0 }
+		}
+
+		#[test]
+		fn an_output_thread_that_panics_still_ends_reports_and_reaps_its_process() {
+			let (shared, events) = sleeping();
+			let worker = shared.clone();
+			let thread = std::thread::spawn(move || {
+				output_thread(&worker, |_| panic!("an output thread failed"));
+			});
+			assert!(thread.join().is_ok(), "the panic does not end the thread unhandled");
+			let events: Vec<HostProcessEvent> = events.try_iter().collect();
+			assert_eq!(
+				events.iter().map(|event| &event.kind).collect::<Vec<_>>(),
+				[
+					&HostProcessEventKind::Exit,
+					&HostProcessEventKind::StdoutEnd,
+					&HostProcessEventKind::StderrEnd
+				]
+			);
+			assert_eq!(events[0].signal, Some(libc::SIGKILL), "the process that still ran was killed");
+			assert!(running(shared.pid), "the process stays unreaped until the host released it");
+			shared.release_by_host();
+			assert!(!running(shared.pid), "the host's release reaped it");
+			assert!(!shared.kill(libc::SIGKILL, false), "a reaped process is not signalled");
+		}
 	}
 }

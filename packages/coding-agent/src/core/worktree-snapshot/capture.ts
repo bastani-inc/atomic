@@ -124,8 +124,7 @@ const LOCATE_CHECKOUT = [
 
 /**
  * The checkout containing `dir` and its HEAD commit, or the reason it has none: Git is missing, `dir` is outside a
- * work tree, or the repository has no commits. One Git process reads all of it; output it cannot split into its lines,
- * such as a path with a line break, is read again one question at a time.
+ * work tree, or the repository has no commits. One Git process reads all of it ({@link lookupOutcome}).
  */
 export async function locateCheckout(
 	dir: string,
@@ -142,20 +141,44 @@ export async function locateCheckout(
 	try {
 		const located = await runGit(LOCATE_CHECKOUT, { cwd: dir, signal, allowExitCodes: [1, 128] });
 		const output = located.stdout.toString("utf8");
-		// Nothing printed: no work tree contains `dir`, which `--show-toplevel`, the first question, reports at once.
-		if (located.exitCode === 128 && output === "") return new WorkspaceSnapshotError("not-a-repository", dir);
 		const lines = output.replace(/\n$/, "").split("\n");
-		if (located.exitCode !== 128 && lines.length === (located.exitCode === 0 ? 4 : 3)) {
-			const [top = "", gitDir = "", index = "", head] = lines;
-			const root = canonicalizeWorktreePath(top);
-			if (head === undefined) return new WorkspaceSnapshotError("unborn-head", root);
-			return { root, head, gitDir, userIndex: isAbsolute(index) ? index : resolve(dir, index) };
+		const [top = "", gitDir = "", index = "", head = ""] = lines;
+		switch (lookupOutcome(located.exitCode, output === "", lines.length)) {
+			case "not-a-repository":
+				return new WorkspaceSnapshotError("not-a-repository", dir);
+			case "unborn-head":
+				return new WorkspaceSnapshotError("unborn-head", canonicalizeWorktreePath(top));
+			case "located":
+				return {
+					root: canonicalizeWorktreePath(top),
+					head,
+					gitDir,
+					userIndex: isAbsolute(index) ? index : resolve(dir, index),
+				};
+			case "stepwise":
+				return await locateCheckoutStepwise(dir, signal);
 		}
-		return await locateCheckoutStepwise(dir, signal);
 	} catch (error) {
 		if (isGitUnavailableError(error)) return error;
 		throw error;
 	}
+}
+
+/**
+ * What the single lookup's exit code and output say. Exit code 128 with nothing printed: no work tree contains the
+ * directory, which `--show-toplevel`, the first question, reports at once. Exit code 0 with four lines: the checkout and
+ * its HEAD; exit code 1 with three: a checkout whose HEAD has no commit. Anything else, such as a path with a line
+ * break, is asked again one question at a time.
+ */
+function lookupOutcome(
+	exitCode: number,
+	nothingPrinted: boolean,
+	lineCount: number,
+): "not-a-repository" | "unborn-head" | "located" | "stepwise" {
+	if (exitCode === 128 && nothingPrinted) return "not-a-repository";
+	if (exitCode === 0 && lineCount === 4) return "located";
+	if (exitCode === 1 && lineCount === 3) return "unborn-head";
+	return "stepwise";
 }
 
 /** {@link locateCheckout} one question at a time, for output the single lookup cannot be split by. */
