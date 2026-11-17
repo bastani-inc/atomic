@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 /**
  * View-latency benchmark: keystroke-to-paint and stream-chunk-to-paint latency of the main chat, an attached workflow
- * stage chat, an attached subagent chat and the `/tasks` list, measured on the built CLI in a real pseudo-terminal
- * under the same load.
+ * stage chat, an attached subagent chat (opened from `/tasks` and from the agent panel) and the `/tasks` list,
+ * measured on the built CLI in a real pseudo-terminal under the same load.
  *
  * The load: a resumed session of `--entries` entries (10,000 by default) streaming in the main chat, `--stages`
  * workflow stages forked from it streaming in parallel, `--subagents` background subagents forked from it streaming,
@@ -37,7 +37,7 @@ import { ViewLatencyModelServer } from "./model-server.js";
 import { startPty } from "./pty.js";
 import { BenchScreen } from "./screen.js";
 
-type ViewName = "main" | "stage" | "subagent" | "tasks";
+type ViewName = "main" | "stage" | "subagent" | "panel" | "tasks";
 
 interface Options {
 	readonly label: string;
@@ -115,7 +115,7 @@ function parseOptions(argv: readonly string[]): Options {
 		if (!Number.isFinite(parsed) || parsed < 0) throw new Error(`--${name} needs a non-negative number`);
 		return parsed;
 	};
-	const views = (value("views") ?? "main,stage,subagent,tasks").split(",") as ViewName[];
+	const views = (value("views") ?? "main,stage,subagent,panel,tasks").split(",") as ViewName[];
 	return {
 		label: value("label") ?? "run",
 		repo: resolve(value("repo") ?? join(scriptDir, "..", "..", "..")),
@@ -164,11 +164,18 @@ const includes =
 	(lines: readonly string[]): boolean =>
 		lines.some((line) => line.includes(needle));
 
+const TASK_LIST_HINT = "space peek";
+const PANEL_HINT = "back to prompt";
+
+function panelSubagentSelected(lines: readonly string[]): boolean {
+	return lines.some((line) => line.startsWith("❯ ") && line.includes(SUBAGENT_NAME));
+}
+
 /** The title of the selected `/tasks` row, without its status and clock, which change on their own. */
 function selectedTaskTitle(lines: readonly string[]): string | undefined {
 	for (const line of lines) {
-		const match = /›\s+(.+?)(?:\s{2,}|$)/.exec(line);
-		if (match) return match[1];
+		const match = /^ ❯ (.+?)\s{3,}(.+?)(?:\s{2,}|$)/.exec(line);
+		if (match) return `${match[1]} ${match[2]}`;
 	}
 	return undefined;
 }
@@ -371,18 +378,29 @@ async function enterView(bench: Bench, view: ViewName, screen: BenchScreen): Pro
 			await screen.waitFor(includes("open stage chat"), 15_000, "the workflow graph");
 			await sleep(500);
 			bench.writeKey(KEY.enter);
-			await screen.waitFor(includes("[stage: "), 15_000, "the attached stage chat");
+			await screen.waitFor(includes("← graph"), 15_000, "the attached stage chat");
 			return;
 		case "subagent":
 			await bench.submit("/tasks");
-			await screen.waitFor(includes("Background tasks"), 15_000, "the task list");
+			await screen.waitFor(includes(TASK_LIST_HINT), 15_000, "the task list");
 			await sleep(500);
 			bench.writeKey(KEY.enter);
-			await screen.waitFor(includes("[subagent: "), 15_000, "the subagent chat");
+			await screen.waitFor(includes("← tasks"), 15_000, "the subagent chat");
+			return;
+		case "panel":
+			bench.writeKey(KEY.down);
+			await screen.waitFor(includes(PANEL_HINT), 15_000, "the agent panel");
+			for (let row = 0; row < 8 && !panelSubagentSelected(screen.lines()); row++) {
+				bench.writeKey(KEY.down);
+				await sleep(300);
+			}
+			if (!panelSubagentSelected(screen.lines())) throw new Error("no subagent row in the agent panel");
+			bench.writeKey(KEY.enter);
+			await screen.waitFor(includes("← main chat"), 15_000, "the subagent chat opened from the agent panel");
 			return;
 		case "tasks":
 			await bench.submit("/tasks");
-			await screen.waitFor(includes("Background tasks"), 15_000, "the task list");
+			await screen.waitFor(includes(TASK_LIST_HINT), 15_000, "the task list");
 			return;
 	}
 }
@@ -400,14 +418,21 @@ async function leaveView(bench: Bench, view: ViewName, screen: BenchScreen): Pro
 			return;
 		case "subagent":
 			bench.writeKey(KEY.left);
-			await screen.waitFor(includes("Background tasks"), 15_000, "the task list after the subagent chat");
+			await screen.waitFor(includes(TASK_LIST_HINT), 15_000, "the task list after the subagent chat");
 			await sleep(300);
 			bench.writeKey(KEY.escape);
-			await screen.waitFor((lines) => !includes("Background tasks")(lines), 15_000, "the main chat");
+			await screen.waitFor((lines) => !includes(TASK_LIST_HINT)(lines), 15_000, "the main chat");
+			return;
+		case "panel":
+			bench.writeKey(KEY.left);
+			await screen.waitFor(includes(PANEL_HINT), 15_000, "the agent panel after the subagent chat");
+			await sleep(300);
+			bench.writeKey(KEY.escape);
+			await screen.waitFor((lines) => !includes(PANEL_HINT)(lines), 15_000, "the main chat");
 			return;
 		case "tasks":
 			bench.writeKey(KEY.escape);
-			await screen.waitFor((lines) => !includes("Background tasks")(lines), 15_000, "the main chat");
+			await screen.waitFor((lines) => !includes(TASK_LIST_HINT)(lines), 15_000, "the main chat");
 			return;
 	}
 }
