@@ -1,10 +1,13 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { mapRestoredPath, mapRestoredPathAsync } from "../session-worktree-snapshots.ts";
-import type { WorktreeRootMapping } from "../worktree-snapshot/types.ts";
+import type { PathContinuation, WorktreeRootMapping } from "../worktree-snapshot/types.ts";
 
 /** The restores that apply to the paths resolved by the current work: its own, after those of any work it runs in. */
 const scopedMappings = new AsyncLocalStorage<readonly WorktreeRootMapping[]>();
+
+/** Where the current session continued instead of checkouts it worked in, which its file tools follow (#5379). */
+const scopedContinuations = new AsyncLocalStorage<readonly PathContinuation[]>();
 
 /** Whether `child` is `parent` or a path below it. */
 export function isInside(parent: string, child: string): boolean {
@@ -27,12 +30,12 @@ export function withWorktreeRootMappings<T>(
 	mappings: readonly WorktreeRootMapping[],
 	work: () => T,
 	outer: readonly WorktreeRootMapping[] = currentWorktreeRootMappings(),
+	continuations?: readonly PathContinuation[],
 ): T {
 	const restoredHere = new Set(mappings.map((mapping) => resolve(mapping.from)));
-	return scopedMappings.run(
-		[...outer.filter((mapping) => !restoredHere.has(resolve(mapping.from))), ...mappings],
-		work,
-	);
+	const scoped = () =>
+		scopedMappings.run([...outer.filter((mapping) => !restoredHere.has(resolve(mapping.from))), ...mappings], work);
+	return continuations === undefined ? scoped() : scopedContinuations.run(continuations, scoped);
 }
 
 /** The notices of checkouts the current work's sessions and runs hold only part of, or continued without (#4738). */
@@ -73,7 +76,12 @@ export async function mapPathForCwdAsync(path: string, cwd: string): Promise<str
 	return mapped === resolve(path) ? path : mapped;
 }
 
-function mappingsForCwd(cwd: string): readonly WorktreeRootMapping[] {
+/**
+ * The restores, then the directories the session went on in instead of checkouts it worked in (#5379), that apply to
+ * paths resolved in `cwd`: a path under a working directory the session left follows it to where it continued.
+ */
+function mappingsForCwd(cwd: string): readonly Pick<WorktreeRootMapping, "from" | "to">[] {
 	const base = resolve(cwd);
-	return currentWorktreeRootMappings().filter((mapping) => !isInside(resolve(mapping.from), base));
+	const applies = (mapping: Pick<WorktreeRootMapping, "from">) => !isInside(resolve(mapping.from), base);
+	return [...currentWorktreeRootMappings().filter(applies), ...(scopedContinuations.getStore() ?? []).filter(applies)];
 }

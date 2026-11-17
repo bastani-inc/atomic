@@ -496,15 +496,21 @@ export async function releaseSessionWorktrees(sessionManager: SessionManager): P
 }
 
 /** `path` rewritten through each restore in order: a path under `from` moves to the same place under `to`. */
-export function mapRestoredPath(path: string, mappings: readonly WorktreeRootMapping[]): string {
+export function mapRestoredPath(path: string, mappings: readonly Pick<WorktreeRootMapping, "from" | "to">[]): string {
 	return runCanonicalSteps(restoredPath(path, mappings));
 }
 
-export function mapRestoredPathAsync(path: string, mappings: readonly WorktreeRootMapping[]): Promise<string> {
+export function mapRestoredPathAsync(
+	path: string,
+	mappings: readonly Pick<WorktreeRootMapping, "from" | "to">[],
+): Promise<string> {
 	return runCanonicalStepsAsync(restoredPath(path, mappings));
 }
 
-function* restoredPath(path: string, mappings: readonly WorktreeRootMapping[]): CanonicalSteps<string> {
+function* restoredPath(
+	path: string,
+	mappings: readonly Pick<WorktreeRootMapping, "from" | "to">[],
+): CanonicalSteps<string> {
 	let mapped = resolve(path);
 	let next = 0;
 	while (next < mappings.length) {
@@ -1251,6 +1257,8 @@ export async function resumeSessionWorktree(
 				checkout.reason,
 				continuedIn,
 				launch ? "launch" : "recorded",
+				undefined,
+				launch && checkout.root === selected?.root ? continuing : undefined,
 			);
 			await sessionManager.appendWorktreeSnapshot(
 				checkout.root,

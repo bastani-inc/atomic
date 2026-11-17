@@ -103,7 +103,12 @@ import type {
 	SessionStore,
 } from "./storage/session/types.js";
 import { WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
-import type { WorktreeRootMapping, WorktreeSnapshot, WorktreeUnrestored } from "./worktree-snapshot/types.ts";
+import type {
+	PathContinuation,
+	WorktreeRootMapping,
+	WorktreeSnapshot,
+	WorktreeUnrestored,
+} from "./worktree-snapshot/types.ts";
 
 /** How many times one append reads the store's new tail and tries again before its failure stands (#4970). */
 const MAX_APPEND_RECONCILES = 3;
@@ -1012,6 +1017,11 @@ export class SessionManager {
 	/** Restores recorded on the active branch, oldest first: work recorded under `from` continues under `to`. */
 	getWorktreeRootMappings(): WorktreeRootMapping[] {
 		return this.historyIndex.worktreeRootMappings(this.leafId, this.byId, this.branchLinks);
+	}
+
+	/** Where the session continued instead of checkouts it worked in, on the active branch (#5379). */
+	getWorktreePathContinuations(): PathContinuation[] {
+		return this.historyIndex.worktreePathContinuations(this.leafId, this.byId, this.branchLinks);
 	}
 
 	/** Every snapshot record in the session, by id. */
