@@ -3,7 +3,12 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createOwnerState } from "./owner-state.js";
 import { dirname, extname, isAbsolute, join, relative, resolve as resolvePath, sep as pathSep } from "node:path";
-import { assertPrivateDirectoryAsync, createChildProcessEnvironment, killProcessTree } from "@bastani/atomic";
+import {
+	assertPrivateDirectoryAsync,
+	containProcessTree,
+	createChildProcessEnvironment,
+	killProcessTree,
+} from "@bastani/atomic";
 import { activityMonitor } from "./activity.js";
 import type { ExtractedContent } from "./extract.js";
 import { flattenTruncatedString } from "./flat-string.js";
@@ -134,6 +139,8 @@ function execClone(args: string[], paths: ClonePaths, timeoutMs: number, signal?
 			child.stdin?.destroy();
 			child.stdout?.destroy();
 			child.stderr?.destroy();
+			if (!failed && !stopped) tree?.release();
+			tree?.close();
 			if (failed) {
 				void removeOwnedClone(paths).then(() => resolve(null), reject);
 				return;
@@ -145,10 +152,14 @@ function execClone(args: string[], paths: ClonePaths, timeoutMs: number, signal?
 			child.stdin?.destroy();
 			child.stdout?.destroy();
 			child.stderr?.destroy();
-			if (child.pid !== undefined && child.pid !== process.pid) {
-				killProcessTree(child.pid);
+			if (!tree?.terminate()) {
+				if (child.pid !== undefined && child.pid !== process.pid) {
+					killProcessTree(child.pid);
+				}
+				if (process.platform !== "win32" || child.pid === undefined) {
+					child.kill("SIGKILL");
+				}
 			}
-			child.kill("SIGKILL");
 			if (exited || child.pid === undefined) finish(true);
 		};
 		const onAbort = () => stop();
@@ -159,6 +170,7 @@ function execClone(args: string[], paths: ClonePaths, timeoutMs: number, signal?
 			stdio: ["ignore", "pipe", "pipe"],
 			env: createChildProcessEnvironment(),
 		});
+		const tree = child.pid === undefined || child.pid === process.pid ? undefined : containProcessTree(child.pid);
 		const timer = setTimeout(stop, timeoutMs);
 		child.on("error", () => finish(true));
 		child.on("exit", (code, exitSignal) => {

@@ -655,6 +655,12 @@ export type {
 	ResolvedResource,
 } from "./core/package-manager.ts";
 export { DefaultPackageManager } from "./core/package-manager.ts";
+// Shell utilities
+export {
+	containProcessTree,
+	type ProcessTreeContainment,
+	processTreeEnded,
+} from "./core/process-tree-containment.ts";
 export { formatProjectTrustPrompt } from "./core/project-trust.ts";
 export {
 	applyProviderRateLimitObservation,
@@ -1343,7 +1349,6 @@ export {
 } from "./utils/managed-tool-errors.ts";
 export { detectSupportedImageMimeTypeFromFile } from "./utils/mime.ts";
 export { isPathInside, type PathInsideApi } from "./utils/path-inside.ts";
-// Shell utilities
 export { getPowerShellConfig, getShellConfig, killProcessTree } from "./utils/shell.ts";
 // Terminal-safe display text
 export { terminalDisplayText } from "./utils/terminal-text.ts";

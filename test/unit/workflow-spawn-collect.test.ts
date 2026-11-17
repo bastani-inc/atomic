@@ -1,5 +1,42 @@
 import assert from "node:assert/strict";
-import { test } from "vitest";
+import { test, vi } from "vitest";
+
+const containment = vi.hoisted(() => ({
+	events: [] as string[],
+	enabled: false,
+	terminateResult: true,
+	onTerminate: undefined as (() => void) | undefined,
+}));
+
+vi.mock("@bastani/atomic", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@bastani/atomic")>();
+	return {
+		...actual,
+		containProcessTree: (pid: number) => {
+			if (!containment.enabled) {
+				const fn = (actual as { containProcessTree?: (p: number) => unknown }).containProcessTree;
+				return fn?.(pid);
+			}
+			containment.events.push(`contain:${pid > 0}`);
+			return {
+				terminate: () => {
+					containment.events.push("terminate");
+					containment.onTerminate?.();
+					return containment.terminateResult;
+				},
+				activeProcesses: () => 0,
+				release: () => {
+					containment.events.push("release");
+					return true;
+				},
+				close: () => {
+					containment.events.push("close");
+				},
+			};
+		},
+	};
+});
+
 import { spawnCollect } from "../../packages/workflows/src/runs/shared/spawn-collect.js";
 
 const node = process.execPath;
@@ -131,5 +168,50 @@ test("settles promptly on timeout and maxBuffer when a background grandchild hol
 			await new Promise<void>((resolve) => setTimeout(resolve, 10));
 		}
 		assert.throws(() => process.kill(grandchildPid, 0), { code: "ESRCH" });
+	}
+});
+
+test("uses process-tree containment to terminate descendants when root already exited and releases on normal exit (#5377)", async () => {
+	containment.enabled = true;
+	containment.events = [];
+	containment.onTerminate = undefined;
+	try {
+		const ok = await spawnCollect(node, ["-e", "process.stdout.write('done')"], {
+			cwd: process.cwd(),
+			env: process.env,
+			timeout: GENEROUS_TIMEOUT_MS,
+			maxBuffer: 1024,
+		});
+		assert.equal(ok.stdout, "done");
+		assert.deepEqual(containment.events, ["contain:true", "release", "close"]);
+
+		containment.events = [];
+		let grandchildPid = 0;
+		containment.onTerminate = () => {
+			if (grandchildPid > 0 && process.platform !== "win32") {
+				try {
+					process.kill(grandchildPid, "SIGKILL");
+				} catch {}
+			}
+		};
+		const rootExitedTimeout = await spawnCollect(
+			node,
+			[
+				"-e",
+				"const { spawn } = require('node:child_process'); const g = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setTimeout(() => {}, 30000);\"], { stdio: 'inherit', detached: true }); process.stdout.write(String(g.pid)); process.exit(0);",
+			],
+			{ cwd: process.cwd(), env: process.env, timeout: 150, maxBuffer: 1024 },
+		);
+		grandchildPid = Number(rootExitedTimeout.stdout.trim());
+		if (grandchildPid > 0 && process.platform !== "win32") {
+			try {
+				process.kill(grandchildPid, "SIGKILL");
+			} catch {}
+		}
+		assert.equal(errorCode(rootExitedTimeout.error), "ETIMEDOUT");
+		assert.deepEqual(containment.events, ["contain:true", "terminate", "close"]);
+	} finally {
+		containment.enabled = false;
+		containment.onTerminate = undefined;
 	}
 });

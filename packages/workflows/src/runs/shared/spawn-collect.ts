@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { killProcessTree } from "@bastani/atomic";
+import { containProcessTree, killProcessTree, type ProcessTreeContainment } from "@bastani/atomic";
 
 const SIGKILL_ESCALATION_MS = 100;
 
@@ -48,10 +48,15 @@ export function spawnCollect(
 		let stopped = false;
 		let killTimer: ReturnType<typeof setTimeout> | undefined;
 		let child: ChildProcess;
+		let tree: ProcessTreeContainment | undefined;
 		const startedAt = Date.now();
 		const killTree = () => {
+			if (tree?.terminate()) return;
 			if (child.pid !== undefined && child.pid !== process.pid) {
 				killProcessTree(child.pid);
+			}
+			if (process.platform !== "win32" || child.pid === undefined) {
+				child.kill("SIGKILL");
 			}
 		};
 		const finish = (status: number | null, signal: NodeJS.Signals | null) => {
@@ -62,6 +67,8 @@ export function spawnCollect(
 			// The runtime's own `timeout` may end the process before the timer below reports it.
 			if (error === undefined && signal !== null && Date.now() - startedAt >= options.timeout)
 				error = codedError(command, "ETIMEDOUT");
+			if (!stopped && error === undefined) tree?.release();
+			tree?.close();
 			const reported = error ?? inputError;
 			resolve({
 				stdout: Buffer.concat(stdout).toString("utf8"),
@@ -77,23 +84,26 @@ export function spawnCollect(
 			child.stdin?.destroy();
 			child.stdout?.destroy();
 			child.stderr?.destroy();
+			if (tree?.terminate()) {
+				if (exited || child.pid === undefined) finish(null, "SIGTERM");
+				return;
+			}
 			if (process.platform !== "win32" && child.pid !== undefined && child.pid !== process.pid) {
 				try {
 					process.kill(-child.pid, "SIGTERM");
 				} catch {}
+				child.kill("SIGTERM");
+			} else if (child.pid !== undefined && child.pid !== process.pid) {
+				killProcessTree(child.pid);
 			} else {
-				killTree();
+				child.kill("SIGTERM");
 			}
-			child.kill("SIGTERM");
 			if (exited || child.pid === undefined) {
 				killTree();
 				finish(null, "SIGTERM");
 				return;
 			}
-			killTimer ??= setTimeout(() => {
-				killTree();
-				child.kill("SIGKILL");
-			}, SIGKILL_ESCALATION_MS);
+			killTimer ??= setTimeout(killTree, SIGKILL_ESCALATION_MS);
 		};
 		try {
 			child = spawn(command, [...args], {
@@ -105,6 +115,7 @@ export function spawnCollect(
 				windowsHide: true,
 				stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
 			});
+			tree = child.pid === undefined || child.pid === process.pid ? undefined : containProcessTree(child.pid);
 		} catch (spawnError) {
 			resolve({
 				stdout: "",

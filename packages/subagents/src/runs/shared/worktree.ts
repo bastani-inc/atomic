@@ -4,7 +4,13 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { createChildProcessEnvironment, createGitEnvironment, isPathInside, killProcessTree } from "@bastani/atomic";
+import {
+	containProcessTree,
+	createChildProcessEnvironment,
+	createGitEnvironment,
+	isPathInside,
+	killProcessTree,
+} from "@bastani/atomic";
 import { performPostCreationSetup } from "./worktree-post-create.js";
 import { findCanonicalGitRoot } from "./worktree-root.js";
 export interface WorktreeSetup {
@@ -125,6 +131,7 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 			detached: process.platform !== "win32",
 			windowsHide: true,
 		});
+		const tree = child.pid === undefined || child.pid === process.pid ? undefined : containProcessTree(child.pid);
 		const stdoutChunks: Buffer[] = [];
 		const stderrChunks: Buffer[] = [];
 		let stdoutBytes = 0;
@@ -148,6 +155,8 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 				timedOut = true;
 				spawnError = Object.assign(new Error(`spawn ${command} ETIMEDOUT`), { code: "ETIMEDOUT" });
 			}
+			if (!stopped && !spawnError) tree?.release();
+			tree?.close();
 			const reported = spawnError ?? inputError;
 			resolve({
 				stdout: Buffer.concat(stdoutChunks).toString("utf-8"),
@@ -163,10 +172,14 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 			child.stdin?.destroy();
 			child.stdout?.destroy();
 			child.stderr?.destroy();
-			if (child.pid !== undefined && child.pid !== process.pid) {
-				killProcessTree(child.pid);
+			if (!tree?.terminate()) {
+				if (child.pid !== undefined && child.pid !== process.pid) {
+					killProcessTree(child.pid);
+				}
+				if (process.platform !== "win32" || child.pid === undefined) {
+					child.kill("SIGKILL");
+				}
 			}
-			child.kill("SIGKILL");
 			if (exited || child.pid === undefined) finish(null);
 		};
 		const timer =
