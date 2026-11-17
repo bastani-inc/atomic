@@ -142,10 +142,18 @@ InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveMode
 	const disposeWorkflowActivity = observeLocalWorkflowActivity(this.runtimeHost, session, (frame) => {
 		if (this.session === session) this.programStatus.handleWorkflowActivity(frame);
 	});
+	const panelUi = this.runtimeHost instanceof IsolatedInteractiveRuntime ? undefined : this.createExtensionUIContext();
 	const disposeAgentPanel =
-		this.runtimeHost instanceof IsolatedInteractiveRuntime
+		panelUi === undefined
 			? () => {}
-			: bindAgentPanel(session, this.createExtensionUIContext());
+			: bindAgentPanel(session, panelUi, undefined, {
+					custom: (factory, options) => this.showExtensionCustom(factory, options),
+					getChatRenderSettings: panelUi.getChatRenderSettings,
+					getFooterDataProvider: panelUi.getFooterDataProvider,
+					getToolsExpanded: panelUi.getToolsExpanded,
+					setToolsExpanded: panelUi.setToolsExpanded,
+					notify: panelUi.notify,
+				});
 	this.unsubscribe = () => {
 		unsubscribe();
 		disposeWorkflowActivity();

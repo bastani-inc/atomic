@@ -210,6 +210,8 @@ export type InteractiveEngineCommand =
 			hostMode?: TuiMode;
 	  }
 	| { type: "engine_custom_input"; componentId: string; requestId: number; data: string }
+	/** A single left click the host drew on the component, at the row and column within it and its drawn size. */
+	| { type: "engine_custom_click"; componentId: string; x: number; y: number; width: number; height: number }
 	| { type: "engine_custom_copy_result"; componentId: string; requestId: number; error?: string }
 	| { type: "engine_custom_scroll"; componentId: string; state: WidgetScrollState }
 	| { type: "engine_custom_dispose"; componentId: string }
@@ -745,6 +747,10 @@ export function parseEngineExplicitQuitCommand(line: string): EngineExplicitQuit
 	return parseJsonObject(line)?.type === "engine_explicit_quit" ? { type: "engine_explicit_quit" } : undefined;
 }
 
+function isCellCount(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
 export function parseInteractiveEngineCommand(line: string): InteractiveEngineCommand | undefined {
 	const value = parseJsonObject(line);
 	if (!value || typeof value.type !== "string" || typeof value.componentId !== "string") return undefined;
@@ -793,6 +799,21 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 	}
 	if (value.type === "engine_custom_input" && typeof value.requestId === "number" && typeof value.data === "string")
 		return { type: value.type, componentId: value.componentId, requestId: value.requestId, data: value.data };
+	if (
+		value.type === "engine_custom_click" &&
+		isCellCount(value.x) &&
+		isCellCount(value.y) &&
+		isCellCount(value.width) &&
+		isCellCount(value.height)
+	)
+		return {
+			type: value.type,
+			componentId: value.componentId,
+			x: value.x,
+			y: value.y,
+			width: value.width,
+			height: value.height,
+		};
 	if (
 		value.type === "engine_custom_copy_result" &&
 		typeof value.requestId === "number" &&

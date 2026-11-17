@@ -7,6 +7,8 @@ import {
 	type TUI,
 	TuiMainScreen,
 	type TuiMode,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
 } from "@bastani/atomic-tui";
 import { getAgentDir } from "../../config.js";
 import { runCallback, runSynchronousCallback } from "../../core/callback-activity.ts";
@@ -453,6 +455,40 @@ export class EngineCustomUiService {
 					requestId: command.requestId,
 					handled,
 				});
+				if (record.paintAfterInput === true) {
+					record.paintAfterInput = false;
+					this.paintComponent(command.componentId);
+				}
+				break;
+			}
+			case "engine_custom_click": {
+				const { x, y, width, height } = command;
+				record.handlingInput = true;
+				try {
+					runSynchronousCallback({ kind: "renderer", name: command.componentId }, () => {
+						const handleMouse = record.component.handleMouse as
+							| ((event: TuiMouseEvent) => TuiMouseEventResult | undefined)
+							| undefined;
+						handleMouse?.call(record.component, {
+							type: "click",
+							button: "left",
+							x,
+							y,
+							screenX: x,
+							screenY: y,
+							width,
+							height,
+							shift: false,
+							alt: false,
+							ctrl: false,
+							clickCount: 1,
+						});
+					});
+				} catch {
+					// A click a component fails to handle changes nothing; the host keeps its frame.
+				} finally {
+					record.handlingInput = false;
+				}
 				if (record.paintAfterInput === true) {
 					record.paintAfterInput = false;
 					this.paintComponent(command.componentId);

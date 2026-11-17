@@ -10,6 +10,7 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 - `TUI.requestImmediateRender()` renders on the next tick, ahead of the frame pacing `requestRender()` applies, for a frame that answers the user's own keystroke.
 - Slash-command autocomplete suggestions can set `completeOnConfirm: false` to submit the typed input on Enter until the user navigates the suggestion list. Tab still accepts the highlighted completion ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - `Markdown` accepts per-instance `hyperlinks: false` to display links as text and URLs without OSC 8, and `images: false` to display image placeholders. Other Markdown instances keep their existing behavior ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- `Container.childAtRow(width, row)` returns the child drawn at a row of the container's last render at that width, the row inside that child and the child's height
 
 ### Changed
 

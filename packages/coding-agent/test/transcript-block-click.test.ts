@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
-import type { AgentMessage } from "@bastani/atomic-agent-core";
 import { type AssistantMessage, fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import {
 	Container,

@@ -1,11 +1,10 @@
-import {
-	type Component,
-	stripTerminalSequences,
-	type TuiMouseDispatchResult,
-	type TuiMouseEvent,
-} from "@bastani/atomic-tui";
+import { type Component, type Container, stripTerminalSequences, type TuiMouseEvent } from "@bastani/atomic-tui";
 import { keyText } from "./keybinding-hints.js";
+import { isSingleLeftClick } from "./single-click.ts";
 import type { ToolGroupRole } from "./tool-block.ts";
+
+/** What a container's mouse handler returns: the component that handled the event, and where it is drawn. */
+export type ContainerMouseResult = ReturnType<Container["handleMouse"]>;
 
 /** A transcript block, such as a tool call or a finished-agent card, that a click on its header expands and collapses. */
 export interface ClickExpandableBlock extends Component {
@@ -83,9 +82,8 @@ export function handleTranscriptBlockClick(
 	siblings: readonly Component[],
 	locate: (width: number, row: number) => { readonly component: Component; readonly row: number } | undefined,
 	event: TuiMouseEvent,
-): TuiMouseDispatchResult | undefined {
-	if (event.type !== "click" || event.button !== "left" || event.shift || event.alt || event.ctrl) return undefined;
-	if ((event.clickCount ?? 1) !== 1) return undefined;
+): ContainerMouseResult {
+	if (!isSingleLeftClick(event)) return undefined;
 	const hit = locate(event.width, event.y);
 	if (!hit) return undefined;
 	const index = siblings.indexOf(hit.component);

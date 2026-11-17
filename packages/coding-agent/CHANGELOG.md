@@ -54,6 +54,7 @@
 - `ensurePrivateTempDirAsync()` and `assertPrivateDirectoryAsync()` for extensions and SDK integrations: they create or check a directory private to the current account without blocking, waiting for the Windows owner and access-list check ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
 - `ChatTranscriptComponent` accepts a cache key made of parts, compared one by one, as well as a string, so a host can name what an entry renders from without building a string for every entry on every frame.
 - `SessionInfo` and `ctx.ui.hostSessionPicker()` rows accept optional `title`, `detail` and `canDelete` fields (`SessionInfo` also accepts `resumeKind: "workflow"` for workflow-run rows), and the picker request accepts `title` for the heading and `variant: "runs"` for rows that are not sessions, which leaves the folder scope, named-only filter and path keys out. See [Host-native session picker](docs/tui/reference.md#host-native-session-picker) ([#5256](https://github.com/bastani-inc/atomic/pull/5256))
+- In the fullscreen main chat, a click on the header of a tool block, grouped-call summary or finished-agent card expands or collapses that block alone. Clicks in a block's output still select text, and Ctrl+O still sets every block at once. A click on a row of the agent panel below the prompt opens it, as Enter does
 
 ### Changed
 

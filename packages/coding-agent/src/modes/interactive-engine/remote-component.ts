@@ -1,7 +1,16 @@
-import type { Component, OverlayHandle, OverlayOptions, TUI, TuiMode } from "@bastani/atomic-tui";
+import type {
+	Component,
+	OverlayHandle,
+	OverlayOptions,
+	TUI,
+	TuiMode,
+	TuiMouseEvent,
+	TuiMouseEventResult,
+} from "@bastani/atomic-tui";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import type { WidgetScrollRequest, WidgetScrollState } from "../../core/extensions/ui-types.js";
 import { copyToClipboard } from "../../utils/clipboard.js";
+import { isSingleLeftClick } from "../interactive/components/single-click.ts";
 import type { IsolatedInteractiveRuntime } from "./isolated-runtime.js";
 import type {
 	EngineBlockedStatus,
@@ -123,6 +132,23 @@ class RemoteComponent implements Component {
 		// width. Clamp so a resize never replays overflowing lines (pi-tui
 		// crashes on any rendered line wider than the terminal).
 		return this.frameClamp.clamp(this.lines, width);
+	}
+
+	/**
+	 * Forward a single click to the engine component, at its row and column there. Presses, drags and multi-clicks stay
+	 * with the host's text selection.
+	 */
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (this.disposed || !isSingleLeftClick(event)) return undefined;
+		this.runtime.sendEngineCommand({
+			type: "engine_custom_click",
+			componentId: this.componentId,
+			x: Math.max(0, Math.floor(event.x)),
+			y: Math.max(0, Math.floor(event.y)),
+			width: Math.max(0, Math.floor(event.width)),
+			height: Math.max(0, Math.floor(event.height)),
+		});
+		return { handled: true };
 	}
 
 	handleInput(data: string): Promise<boolean | undefined> {

@@ -1,0 +1,181 @@
+import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
+import type { Component, TuiMouseEvent, TuiMouseEventResult } from "@bastani/atomic-tui";
+import { afterEach, beforeAll, test } from "vitest";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
+import {
+	type AgentPanelItem,
+	AgentPanelSourceHub,
+} from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
+import type { TaskRecord } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
+import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { bindAgentPanel, showAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
+import type { TaskInspectorUi } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
+import { taskRecord } from "../helpers/task-record.js";
+
+type MouseComponent = Component & {
+	handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined;
+	dispose?(): void;
+};
+
+beforeAll(() => initTheme("dark"));
+
+const disposers: Array<() => void> = [];
+afterEach(() => {
+	for (const dispose of disposers.splice(0)) dispose();
+});
+
+function agent(id: string): TaskRecord {
+	return { ...taskRecord(id), agentName: "worker", title: `job ${id}` };
+}
+
+function workflow(id: string, name: string): AgentPanelItem {
+	return { id, kind: "workflow", state: "running", name, task: "stage build", progress: { done: 1, total: 3 } };
+}
+
+/** A session whose panel lists `tasks` (subagents) and `runs` (workflow runs that record what opened them). */
+function panelSession(tasks: readonly TaskRecord[], runs: readonly AgentPanelItem[]) {
+	const opened: string[] = [];
+	const hub = new AgentPanelSourceHub();
+	hub.register({ items: () => runs, subscribe: () => () => {}, open: (id) => opened.push(id) });
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	const store = {
+		tasks,
+		backgroundTasks: tasks,
+		ownerTasks: tasks,
+		ownerBackgroundTasks: tasks,
+		settlementOrder: new Map(),
+		panelRevision: 1,
+		taskRecord: (id: string) => tasks.find((task) => task.ref.taskId === id),
+		recentActivity: () => [],
+		activityOmitted: () => false,
+		subscribe: () => () => {},
+	};
+	bindOwnerTaskStore(session, store as never);
+	return { session, opened };
+}
+
+function click(component: MouseComponent, y: number, width: number, height: number) {
+	return component.handleMouse?.({
+		type: "click",
+		button: "left",
+		x: 4,
+		y,
+		screenX: 4,
+		screenY: 30 + y,
+		width,
+		height,
+		shift: false,
+		alt: false,
+		ctrl: false,
+		clickCount: 1,
+	});
+}
+
+const plain = (lines: readonly string[]) => lines.map((line) => stripVTControlCharacters(line).trimEnd());
+
+function mountWidget(session: object, inspector?: TaskInspectorUi) {
+	let widget: MouseComponent | undefined;
+	const dispose = bindAgentPanel(
+		session as never,
+		{
+			setWidget(_key: string, content: unknown) {
+				widget = typeof content === "function" ? (content({} as never, {} as never) as MouseComponent) : undefined;
+			},
+			requestRender() {},
+		} as never,
+		undefined,
+		inspector,
+	);
+	disposers.push(dispose);
+	if (!widget) throw new Error("the panel did not mount");
+	return widget;
+}
+
+const noInspector: TaskInspectorUi = {
+	custom: async () => {
+		throw new Error("no task view is expected here");
+	},
+};
+
+for (const width of [80, 160]) {
+	test(`a click on a row of the panel below the prompt opens that row, and main and +N more open nothing, at ${width} columns`, () => {
+		const { session, opened } = panelSession(
+			[agent("a1"), agent("a2"), agent("a3")],
+			[workflow("run:first", "first-run"), workflow("run:second", "second-run")],
+		);
+		const widget = mountWidget(session, noInspector);
+		const lines = plain(widget.render(width));
+		assert.equal(lines[0], "  ● main", lines.join("\n"));
+		const more = lines.findIndex((line) => /^ {2}\+\d+ more$/.test(line));
+		assert.notEqual(more, -1, lines.join("\n"));
+		const second = lines.findIndex((line) => line.includes("second-run"));
+		const first = lines.findIndex((line) => line.includes("first-run"));
+		assert.ok(first !== -1 || second !== -1, lines.join("\n"));
+		const target = first !== -1 ? { row: first, id: "run:first" } : { row: second, id: "run:second" };
+
+		assert.equal(click(widget, more, width, lines.length), undefined, "+N more opens nothing");
+		assert.deepEqual(opened, []);
+		click(widget, 0, width, lines.length);
+		assert.deepEqual(opened, [], "the main row is where the reader already is");
+		assert.equal(click(widget, target.row, width, lines.length)?.handled, true);
+		assert.deepEqual(opened, [target.id]);
+	});
+}
+
+test("a click on a row of the focused panel opens it, and a click on main returns to the prompt", async () => {
+	const { session, opened } = panelSession([agent("a1")], [workflow("run:first", "first-run")]);
+	const run = (row: (lines: readonly string[]) => number) =>
+		showAgentPanel(session as never, {
+			custom: async (factory) => {
+				let finish = () => {};
+				const finished = new Promise<void>((resolve) => {
+					finish = resolve;
+				});
+				const component = (await factory(
+					{ requestRender() {} } as never,
+					theme,
+					new KeybindingsManager(),
+					finish as never,
+				)) as MouseComponent;
+				const lines = plain(component.render(80));
+				click(component, row(lines), 80, lines.length);
+				await Promise.race([finished, new Promise((resolve) => setTimeout(resolve, 50))]);
+				component.dispose?.();
+				return undefined as never;
+			},
+		});
+
+	await run((lines) => lines.findIndex((line) => line.includes("first-run")));
+	assert.deepEqual(opened, ["run:first"]);
+
+	opened.length = 0;
+	let closedWithoutOpening = false;
+	await showAgentPanel(session as never, {
+		custom: async (factory) => {
+			let finish = () => {};
+			const finished = new Promise<void>((resolve) => {
+				finish = resolve;
+			});
+			const component = (await factory(
+				{ requestRender() {} } as never,
+				theme,
+				new KeybindingsManager(),
+				finish as never,
+			)) as MouseComponent;
+			const lines = plain(component.render(80));
+			const main = lines.findIndex((line) => line.endsWith("● main"));
+			assert.notEqual(main, -1, lines.join("\n"));
+			click(component, main, 80, lines.length);
+			closedWithoutOpening = await Promise.race([
+				finished.then(() => true),
+				new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 50)),
+			]);
+			component.dispose?.();
+			return undefined as never;
+		},
+	});
+	assert.equal(closedWithoutOpening, true, "main closes the panel");
+	assert.deepEqual(opened, []);
+});

@@ -1,4 +1,4 @@
-import { matchesKey, truncateToWidth } from "@bastani/atomic-tui";
+import { matchesKey, type TuiMouseEvent, type TuiMouseEventResult, truncateToWidth } from "@bastani/atomic-tui";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import {
 	type AgentPanelItem,
@@ -26,11 +26,13 @@ import {
 	AGENT_PANEL_DROP_MS,
 	AGENT_PANEL_FOCUSED_ROWS,
 	AGENT_PANEL_IDLE_ROWS,
+	AGENT_PANEL_MAIN_ID,
 	AgentPanelFocus,
 	AgentPanelModel,
 	type AgentPanelRow,
 	type AgentPanelStyle,
 	agentPanelKeys,
+	agentPanelRowIdAtLine,
 	isFinishedPanelRow,
 	panelTaskId,
 	renderAgentPanelHint,
@@ -38,6 +40,7 @@ import {
 } from "../interactive/components/agent-panel.ts";
 import { atomicWorkingFrame } from "../interactive/components/atomic-working-status.ts";
 import { renderNavKeyOverlay } from "../interactive/components/nav-keys.ts";
+import { isSingleLeftClick } from "../interactive/components/single-click.ts";
 import { dismissedTasks } from "../interactive/components/task-dismissal.ts";
 import { taskDisplayText } from "../interactive/components/task-row.js";
 import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
@@ -460,6 +463,8 @@ export function bindAgentPanel(
 	ui: Pick<ExtensionUIContext, "setWidget" | "requestRender"> &
 		Partial<Pick<ExtensionUIContext, "onWidgetRelease" | "notify">>,
 	onCounts?: (counts: AgentPanelCounts) => void,
+	/** Where a click on a row opens that row's view; without it the rows take no clicks. */
+	inspector?: TaskInspectorUi,
 ): () => void {
 	boundSessions.add(session);
 	const state = panelState(session);
@@ -582,6 +587,21 @@ export function bindAgentPanel(
 						cachedRows = undefined;
 						cachedHiddenBelow = -1;
 						cachedLines = [];
+					},
+					handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+						if (!visible || inspector === undefined || !isSingleLeftClick(event)) return undefined;
+						const id = agentPanelRowIdAtLine(
+							currentRows,
+							{ hiddenBelow: currentHiddenBelow, showMain: currentMain },
+							event.y,
+						);
+						if (id === undefined) return undefined;
+						// The main row is the chat the reader is already in.
+						if (id === AGENT_PANEL_MAIN_ID) return { handled: true };
+						const row = currentRows.find((candidate) => candidate.id === id);
+						if (row === undefined) return undefined;
+						openPanelRow(session, inspector, materializePanelItem(row), report).catch(report);
+						return { handled: true };
 					},
 					render(width: number) {
 						if (!visible) return [];
@@ -732,6 +752,32 @@ export function bindAgentPanel(
 	};
 }
 
+/**
+ * Open a panel row's view, as Enter on the focused row does: a subagent's chat, or the view its source opens, such as a
+ * workflow run. Leaving that view returns to the focused panel with the row selected.
+ */
+async function openPanelRow(
+	session: AgentPanelSession & object,
+	ui: TaskInspectorUi,
+	item: AgentPanelItem,
+	report: (error: unknown) => void,
+): Promise<void> {
+	const store = getOwnerTaskStore(session);
+	const taskId = panelTaskId(item);
+	const back = () => showAgentPanel(session, ui, item.id);
+	if (taskId !== undefined && store !== undefined) {
+		if ((await showTaskInspector(ui, store, taskId, { chat: true, backLabel: "main chat" })) === "back") await back();
+		return;
+	}
+	const opened = openAgentPanelItem(session, item.id, {
+		onReturn: () => {
+			back().catch(report);
+		},
+	});
+	if (opened) panelState(session).viewed.add(item.id);
+	else ui.notify?.(`Could not open ${safeLabel(item.name)}.`, "warning");
+}
+
 export async function showAgentPanel(
 	session: AgentPanelSession & object,
 	ui: TaskInspectorUi,
@@ -792,27 +838,7 @@ export async function showAgentPanel(
 				const focus = new AgentPanelFocus(keys, {
 					open(row) {
 						const item = materializePanelItem(row);
-						const taskId = panelTaskId(item);
-						const back = () => showAgentPanel(session, ui, item.id);
-						if (taskId !== undefined && store !== undefined)
-							next = async () => {
-								if (
-									(await showTaskInspector(ui, store, taskId, { chat: true, backLabel: "main chat" })) ===
-									"back"
-								)
-									await back();
-							};
-						else {
-							next = async () => {
-								const opened = openAgentPanelItem(session, item.id, {
-									onReturn: () => {
-										back().catch(report);
-									},
-								});
-								if (opened) state.viewed.add(item.id);
-								else ui.notify?.(`Could not open ${safeLabel(item.name)}.`, "warning");
-							};
-						}
+						next = () => openPanelRow(session, ui, item, report);
 						finish();
 					},
 					stop(row) {
@@ -897,6 +923,23 @@ export async function showAgentPanel(
 					invalidate() {
 						cachedRows = undefined;
 						cachedRowLines = [];
+					},
+					handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+						if (focus.helpOpen || !isSingleLeftClick(event)) return undefined;
+						const id = agentPanelRowIdAtLine(
+							currentRows,
+							{ selectedId: focus.selectedId, scroll: focus.scroll, showMain: focus.showMain },
+							event.y,
+						);
+						if (id === undefined) return undefined;
+						try {
+							focus.click(id);
+							syncTick();
+						} catch (error) {
+							report(error);
+						}
+						tui.requestRender();
+						return { handled: true };
 					},
 					render(width: number) {
 						try {
