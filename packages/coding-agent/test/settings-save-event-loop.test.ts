@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -103,6 +103,27 @@ process.exit(3);`;
 		const result = spawnSyncCollect([bunExecutable(), "-e", script]);
 		assert.equal(result.exitCode, 0, result.stderr.toString());
 		assert.equal(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")).theme, "dark");
+	},
+	EXITING_CHILD_TIMEOUT_MS,
+);
+
+it(
+	"writes a setting whose save has just created the settings lock as the process exits",
+	() => {
+		const script = `import { watch } from "node:fs";
+import { SettingsManager } from ${JSON.stringify(MANAGER_MODULE)};
+const watcher = watch(${JSON.stringify(agentDir)}, (_event, name) => {
+	if (name === "settings.json.lock") process.exit(0);
+});
+const manager = SettingsManager.create(${JSON.stringify(cwd)}, ${JSON.stringify(agentDir)}, { projectTrusted: false });
+manager.setTheme("dark");
+await manager.flush();
+watcher.close();
+process.exit(3);`;
+		const result = spawnSyncCollect([bunExecutable(), "-e", script]);
+		assert.equal(result.exitCode, 0, result.stderr.toString());
+		assert.equal(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")).theme, "dark");
+		assert.equal(existsSync(join(agentDir, "settings.json.lock")), false);
 	},
 	EXITING_CHILD_TIMEOUT_MS,
 );

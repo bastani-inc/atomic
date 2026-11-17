@@ -1,8 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { getAgentConfigPaths, getProjectConfigPaths } from "./config.js";
 import { FileAuthStorageBackend } from "./core/auth-storage-backends.ts";
 import { normalizeAzureSettings, normalizeProviderKeys } from "./core/azure-provider-compat.js";
+import { failureDebugFields, reportDebug } from "./core/debug.ts";
 import type { Settings } from "./core/settings-types.ts";
 import { parseJsonFileContent, stripJsonComments } from "./utils/json.ts";
 
@@ -38,8 +39,23 @@ export function migrateAzureProvider(cwd: string, options?: { projectTrusted?: b
 						...(next !== undefined && { next }),
 					};
 				});
-			} catch {}
+			} catch (error) {
+				reportMigrationFailure(path, error);
+			}
 		}
+	}
+}
+
+function reportMigrationFailure(path: string, error: unknown): void {
+	reportDebug("storage", "azure-migration-skipped", { path, ...failureDebugFields(error) });
+}
+
+async function exists(path: string): Promise<boolean> {
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
 	}
 }
 
@@ -50,16 +66,22 @@ export async function migrateAzureProviderAsync(cwd: string, options?: { project
 			...(options?.projectTrusted === true ? getProjectConfigPaths(cwd, filename) : []),
 		];
 		for (const path of new Set(paths)) {
+			if (!(await exists(path))) continue;
 			try {
 				if (transformAzureConfigContent(filename, await readFile(path, "utf-8")) === undefined) continue;
-				await new FileAuthStorageBackend(path, []).withLockAsync(async () => {
-					const next = transformAzureConfigContent(filename, await readFile(path, "utf-8"));
-					return {
-						result: undefined,
-						...(next !== undefined && { next }),
-					};
-				});
-			} catch {}
+				await new FileAuthStorageBackend(path, []).withLockAsync(
+					async () => {
+						const next = transformAzureConfigContent(filename, await readFile(path, "utf-8"));
+						return {
+							result: undefined,
+							...(next !== undefined && { next }),
+						};
+					},
+					{ synchronousWait: true },
+				);
+			} catch (error) {
+				reportMigrationFailure(path, error);
+			}
 		}
 	}
 }

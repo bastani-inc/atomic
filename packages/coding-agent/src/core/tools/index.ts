@@ -133,7 +133,7 @@ import type { AgentTool } from "@bastani/atomic-agent-core";
 import type { TSchema } from "typebox";
 import { isPowerShellAvailable, isPowerShellAvailableAsync } from "../../utils/shell.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
-import { createAskUserQuestionToolDefinition } from "./ask-user-question/index.ts";
+import { createLoadedAskUserQuestionToolDefinition } from "./ask-user-question/index.ts";
 import { type BashToolOptions, createBashTool, createBashToolDefinition } from "./bash.js";
 import { createEditTool, createEditToolDefinition, type EditToolOptions } from "./edit.ts";
 import { createFindTool, createFindToolDefinition, type FindToolOptions } from "./find.ts";
@@ -263,7 +263,7 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 		case "ls":
 			return createLsToolDefinition(cwd, options?.ls);
 		case "ask_user_question":
-			return createAskUserQuestionToolDefinition();
+			return createLoadedAskUserQuestionToolDefinition();
 		case "todo":
 			return createTodoToolDefinition(cwd);
 		default:
@@ -292,7 +292,7 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 		case "ls":
 			return createLsTool(cwd, options?.ls);
 		case "ask_user_question":
-			return wrapToolDefinition(createAskUserQuestionToolDefinition());
+			return wrapToolDefinition(createLoadedAskUserQuestionToolDefinition());
 		case "todo":
 			return wrapToolDefinition(createTodoToolDefinition(cwd));
 		default:
@@ -331,7 +331,7 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): B
 		find: createFindToolDefinition(cwd, options?.find),
 		search: createSearchToolDefinition(cwd, options?.search),
 		ls: createLsToolDefinition(cwd, options?.ls),
-		ask_user_question: createAskUserQuestionToolDefinition(),
+		ask_user_question: createLoadedAskUserQuestionToolDefinition(),
 		todo: createTodoToolDefinition(cwd),
 	};
 	if (isPowerShellAvailable()) {
@@ -371,7 +371,7 @@ export function createAllTools(cwd: string, options?: ToolsOptions): BuiltinTool
 		find: createFindTool(cwd, options?.find),
 		search: createSearchTool(cwd, options?.search),
 		ls: createLsTool(cwd, options?.ls),
-		ask_user_question: wrapToolDefinition(createAskUserQuestionToolDefinition()),
+		ask_user_question: wrapToolDefinition(createLoadedAskUserQuestionToolDefinition()),
 		todo: wrapToolDefinition(createTodoToolDefinition(cwd)),
 	};
 	if (isPowerShellAvailable()) {

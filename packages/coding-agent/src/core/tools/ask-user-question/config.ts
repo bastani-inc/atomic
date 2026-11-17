@@ -12,7 +12,7 @@ interface GuidanceFields {
 	promptGuidelines?: string[];
 }
 
-interface AskUserQuestionConfig {
+export interface AskUserQuestionConfig {
 	guidance?: GuidanceFields;
 }
 
@@ -41,6 +41,11 @@ export function loadConfig(): AskUserQuestionConfig {
 	}
 	void refreshConfig();
 	return loaded;
+}
+
+export function loadedConfig(): AskUserQuestionConfig {
+	void refreshConfig();
+	return loaded ?? {};
 }
 
 function readConfigSync(): AskUserQuestionConfig {

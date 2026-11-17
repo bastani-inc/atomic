@@ -359,12 +359,6 @@ export const GUARDED_CALLS: readonly ReviewedEdge[] = [
 		reason:
 			"reads settings only when the caller passes no settingsManager; every loader Atomic creates passes one (createAgentSessionServices, BuiltinResourceLoader, a reload's candidate), so only SDK code that omits it takes this call",
 	},
-	{
-		from: { file: "packages/coding-agent/src/core/tools/ask-user-question/config.ts", name: "loadConfig" },
-		to: { file: "packages/coding-agent/src/core/tools/ask-user-question/config.ts", name: "readConfigSync" },
-		reason:
-			"reads the config file only before any read of it has finished; createAgentSession reads it before it creates a tool, so only SDK code that creates the ask_user_question definition first takes this call",
-	},
 ];
 
 /** Everything the check needs to know about the program it walks. */

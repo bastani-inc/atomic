@@ -601,8 +601,13 @@ export class FileAuthStorageBackend implements AuthStorageBackend, AsyncAuthStor
 		}
 	}
 
-	async withLockAsync<T>(fn: (current: string | undefined) => Promise<LockResult<T>>): Promise<T> {
+	async withLockAsync<T>(
+		fn: (current: string | undefined) => Promise<LockResult<T>>,
+		options: { readonly synchronousWait?: boolean } = {},
+	): Promise<T> {
 		await this.ensureParentDirAsync();
+		const staleMs = options.synchronousWait ? AUTH_FILE_SYNC_LOCK_STALE_MS : AUTH_FILE_ASYNC_LOCK_STALE_MS;
+		const holderWaitMs = options.synchronousWait ? AUTH_FILE_SYNC_LOCK_WAIT_MS : AUTH_FILE_LOCK_WAIT_MS;
 
 		let release: (() => Promise<void>) | undefined;
 		let lockCompromised = false;
@@ -625,19 +630,14 @@ export class FileAuthStorageBackend implements AuthStorageBackend, AsyncAuthStor
 					lockfile.lock(resolved, {
 						realpath: false,
 						retries: 0,
-						stale: AUTH_FILE_ASYNC_LOCK_STALE_MS,
+						stale: staleMs,
 						fs,
 						onCompromised: (err) => {
 							lockCompromised = true;
 							lockCompromisedError = err;
 						},
 					}),
-				this.authFileLockWait(
-					resolved,
-					AUTH_FILE_LOCK_WAIT_MS,
-					AUTH_FILE_ASYNC_LOCK_STALE_MS,
-					() => ++epermRetries <= 5,
-				),
+				this.authFileLockWait(resolved, holderWaitMs, staleMs, () => ++epermRetries <= 5),
 			);
 
 			throwIfCompromised();
