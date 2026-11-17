@@ -9,7 +9,11 @@ import {
 	getDurableBackendProcessOwner,
 	releaseDurableBackendsHeldBy,
 } from "../../packages/workflows/src/durable/backend-process-owner.js";
-import { initializeDurableBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import {
+	initializeDurableBackend,
+	initializeDurableBackendReadingSettings,
+	setDurableBackend,
+} from "../../packages/workflows/src/durable/factory.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
@@ -190,6 +194,23 @@ test("releasing a holder while its journal is still being selected closes what t
 	const holder = {};
 
 	const opening = initializeDurableBackend({ holder });
+	await releaseDurableBackendsHeldBy(holder);
+	const opened = await opening;
+
+	assert.equal(retainedBackendCount(), 0, "the released holder keeps no backend selected");
+	assert.equal(process.listenerCount("exit"), listenersBefore, "the backend opened for it was closed");
+	assert.notEqual(await initializeDurableBackend({ holder: {} }), opened);
+});
+
+test("releasing a holder while its journal settings are still being read closes what the open makes for it (#3743)", async () => {
+	setDurableBackend(undefined);
+	const directory = mkdtempSync(join(tmpdir(), "journal-released-reading-settings-"));
+	directories.push(directory);
+	process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = join(directory, "journal.sqlite");
+	const listenersBefore = process.listenerCount("exit");
+	const holder = {};
+
+	const opening = initializeDurableBackendReadingSettings({ holder, cwd: directory, agentDir: directory });
 	await releaseDurableBackendsHeldBy(holder);
 	const opened = await opening;
 

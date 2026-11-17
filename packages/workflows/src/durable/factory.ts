@@ -92,27 +92,27 @@ export async function initializeDurableBackend(options: DurableBackendOptions = 
 					projectTrusted: options.projectTrusted,
 				}).getSettings())
 			: undefined;
-	return openDurableBackend(options, settings);
+	return openDurableBackend(options, () => settings);
 }
 
 export async function initializeDurableBackendReadingSettings(
 	options: DurableBackendOptions = {},
 ): Promise<DurableWorkflowBackend> {
-	const settings =
-		options.journal === undefined ? (options.settings ?? (await readDurableJournalSettings(options))) : undefined;
-	return openDurableBackend(options, settings);
+	return openDurableBackend(options, () =>
+		options.journal === undefined ? (options.settings ?? readDurableJournalSettings(options)) : undefined,
+	);
 }
 
 async function openDurableBackend(
 	options: DurableBackendOptions,
-	settings: RunJournalSettings | undefined,
+	readSettings: () => RunJournalSettings | undefined | Promise<RunJournalSettings>,
 ): Promise<DurableWorkflowBackend> {
 	const owner = getDurableBackendProcessOwner();
 	const choice = options.journal;
 	const agentDir = options.agentDir ?? getAgentDir();
 	const abandonedBefore = options.abandonSignal?.aborted === true;
 	const holder = options.holder;
-	// Selecting the journal yields, and the holder can be released meanwhile; see `PendingDurableBackendOpen`.
+	// Reading settings and selecting the journal yield; the holder can be released meanwhile (`PendingDurableBackendOpen`).
 	let settle = (): void => {};
 	let fail = (_error: unknown): void => {};
 	const pending: PendingDurableBackendOpen | undefined =
@@ -132,7 +132,7 @@ async function openDurableBackend(
 	}
 	let selection: Awaited<ReturnType<typeof selectRunJournalAsync>>;
 	try {
-		selection = await selectRunJournalAsync({ agentDir, journal: choice, settings });
+		selection = await selectRunJournalAsync({ agentDir, journal: choice, settings: await readSettings() });
 	} catch (error) {
 		settle();
 		throw error;
