@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { setKeybindings, Text, visibleWidth } from "@bastani/atomic-tui";
-import { test } from "vitest";
+import { onTestFinished, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
@@ -277,6 +277,10 @@ test("a completion envelope names its task's kind only when it is known", () => 
 });
 
 test("a finished task's notice is one unshaded notice line at 80 and 160 columns, in both themes", () => {
+	vi.stubEnv("NO_COLOR", undefined);
+	onTestFinished(() => {
+		vi.unstubAllEnvs();
+	});
 	for (const mode of ["dark", "light"] as const) {
 		initTheme(mode);
 		const shell = taskCompletionNotice(
@@ -462,6 +466,25 @@ test("agent completion notices render agent-name finished/failed/stopped with el
 		/for the full result/,
 	);
 	setKeybindings(new KeybindingsManager());
+});
+
+test("agent completion previews emit no colour under NO_COLOR, like their notice line", () => {
+	vi.stubEnv("NO_COLOR", "1");
+	onTestFinished(() => {
+		vi.unstubAllEnvs();
+	});
+	initTheme("dark");
+	setKeybindings(new KeybindingsManager());
+	const notice = taskCompletionNotice(
+		envelope,
+		{ kind: "agent", title: "review", agentName: "debugger", metrics: { elapsedMs: 12_000 } },
+		"first finding\nsecond finding",
+	);
+	for (const expanded of [false, true]) {
+		const rows = new TaskCompletionMessage(notice, expanded).render(80);
+		assert.ok(rows.length > 1, `expanded=${expanded}: preview rows`);
+		assert.deepEqual(rows, rows.map(stripVTControlCharacters), `expanded=${expanded}`);
+	}
 });
 
 test.each([20, 80, 160])("expanded agent notices show every retained result line at width %i (#5342)", (width) => {

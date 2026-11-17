@@ -196,7 +196,7 @@ function isSelectorKeybindings(value: object | undefined): value is SelectorKeyb
 function isResumePromptTheme(
 	theme: object,
 ): theme is { readonly fg: (color: "warning" | "dim", text: string) => string } {
-	return "fg" in theme && typeof theme.fg === "function";
+	return typeof Reflect.get(theme, "fg") === "function";
 }
 
 function renderWorkflowDefinitionChangedPrompt(width: number, theme: object): string[] {
@@ -242,10 +242,10 @@ export async function confirmEditedWorkflowDefinition(
 				}
 				const candidate = typeof keybindings === "object" && keybindings !== null ? keybindings : undefined;
 				const baseKeybindings = isSelectorKeybindings(candidate) ? candidate : getKeybindings();
+				const inert = (action: string): boolean => action === "app.keys.help" || action === "app.list.open";
 				const confirmKeybindings: SelectorKeybindings = {
-					matches: (data, action) =>
-						action === "app.keys.help" ? false : (baseKeybindings?.matches(data, action) ?? false),
-					getKeys: (action) => (action === "app.keys.help" ? [] : (baseKeybindings?.getKeys?.(action) ?? [])),
+					matches: (data, action) => (inert(action) ? false : (baseKeybindings?.matches(data, action) ?? false)),
+					getKeys: (action) => (inert(action) ? [] : (baseKeybindings?.getKeys?.(action) ?? [])),
 				};
 				const selector = new Selector<boolean>({
 					title: WORKFLOW_DEFINITION_CHANGED_TITLE,

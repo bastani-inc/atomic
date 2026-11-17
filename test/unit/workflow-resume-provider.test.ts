@@ -5,12 +5,13 @@ import { join } from "node:path";
 import { setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, describe, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
-import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import type { PiCommandContext } from "../../packages/workflows/src/extension/public-types.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import {
 	WORKFLOW_DEFINITION_CHANGED_INLINE_PROMPT,
+	WORKFLOW_DEFINITION_CHANGED_TITLE,
 	type WorkflowRunControlDeps,
 } from "../../packages/workflows/src/extension/workflow-durable-resume-command.js";
 import { createWorkflowResumeProvider } from "../../packages/workflows/src/extension/workflow-resume-provider.js";
@@ -671,6 +672,95 @@ describe("workflow resume provider for unified /resume (#5256)", () => {
 		generationCurrent = false;
 		await provider.resumeFromPicker(editedRunId, enterCtx);
 		assert.equal(resumeSpy.mock.calls.length, 1, "retired generation must block resume");
+	});
+
+	test("the changed-definition prompt answers only the keys its line names, in the themed line and the confirm fallback (#5256)", async () => {
+		const backend = await createMemoryTestBackend();
+		setDurableBackend(backend);
+		const workDir = makeTempDir("resume-entry-keys-");
+		const workerFile = join(workDir, "worker-def.ts");
+		writeFileSync(workerFile, "export default { v: 1 };\n");
+		const initialDigest = await definitionDigest(workerFile);
+		writeFileSync(workerFile, "export default { v: 2 };\n");
+		const editedRunId = testRunId("edited-entry-keys");
+		await backend.commitWorkflowRegistration({
+			workflowId: editedRunId,
+			name: sampleDefinition.name,
+			inputs: {},
+			createdAt: 1_000,
+			updatedAt: 2_000,
+			status: "paused",
+			completedCheckpoints: 1,
+			invocationCwd: workDir,
+			resources: { definitions: [{ path: workerFile, exportName: "default", digest: initialDigest }] },
+		});
+		const runtime = createExtensionRuntime({ definitions: [sampleDefinition], store });
+		const resumeSpy = vi.spyOn(runtime, "resumeDurableWorkflow").mockResolvedValue({
+			ok: true,
+			runId: editedRunId,
+			workflowId: editedRunId,
+			name: sampleDefinition.name,
+			message: `Resumed ${editedRunId}`,
+		});
+		const provider = createWorkflowResumeProvider({
+			pi: {},
+			overlay: { open: () => undefined, toggle: () => undefined, close: () => undefined },
+			runtimeForContext: () => runtime,
+			ensureWorkflowResourcesLoaded: () => undefined,
+			context: () => ({ hasUI: true, cwd: workDir, ui: { notify: () => undefined } }),
+		});
+
+		let themedLines: string[] = [];
+		let unsettledAfterArrows = false;
+		const keysCtx: PiCommandContext = {
+			hasUI: true,
+			cwd: workDir,
+			ui: {
+				notify: () => undefined,
+				custom: async (factory) => {
+					let result: boolean | undefined;
+					const component = await factory(
+						{} as never,
+						theme as never,
+						new KeybindingsManager() as never,
+						(val) => {
+							result = val === true;
+						},
+					);
+					themedLines = component.render(160);
+					for (const key of ["\x1b[C", "\x1b[D", "\x1b[A", "\x1b[B", " ", "?"]) component.handleInput?.(key);
+					unsettledAfterArrows = result === undefined;
+					component.handleInput?.("\x1b");
+					return result;
+				},
+			},
+		};
+		await provider.resumeFromPicker(editedRunId, keysCtx);
+		assert.equal(unsettledAfterArrows, true, "keys the line does not name leave the prompt open");
+		assert.equal(resumeSpy.mock.calls.length, 0, "only Enter accepts the changed definition");
+		assert.deepEqual(
+			themedLines.map((line) => stripAnsi(line).trim()),
+			[WORKFLOW_DEFINITION_CHANGED_INLINE_PROMPT],
+		);
+		assert.match(WORKFLOW_DEFINITION_CHANGED_INLINE_PROMPT, / · enter .+ · esc .+$/);
+		assert.ok(themedLines[0]!.includes(theme.fg("warning", WORKFLOW_DEFINITION_CHANGED_TITLE)), "themed title");
+
+		const confirmCalls: string[][] = [];
+		const confirmCtx: PiCommandContext = {
+			hasUI: true,
+			cwd: workDir,
+			ui: {
+				notify: () => undefined,
+				confirm: async (title: string, message: string) => {
+					confirmCalls.push([title, message]);
+					return false;
+				},
+			},
+		};
+		await provider.resumeFromPicker(editedRunId, confirmCtx);
+		assert.equal(confirmCalls.length, 1);
+		assert.equal(confirmCalls[0]![1], WORKFLOW_DEFINITION_CHANGED_INLINE_PROMPT);
+		assert.equal(resumeSpy.mock.calls.length, 0);
 	});
 
 	test("deleteResumeEntry deletes inactive durable runs and refuses active or live-paused runs", async () => {

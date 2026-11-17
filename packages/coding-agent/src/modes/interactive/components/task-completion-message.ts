@@ -1,6 +1,13 @@
 import { stripVTControlCharacters } from "node:util";
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
-import { type Component, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
+import {
+	type Component,
+	stripTerminalSequences,
+	Text,
+	truncateToWidth,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "@bastani/atomic-tui";
 import type { ToolRenderContext, ToolRenderers } from "../../../core/extensions/types.ts";
 import type { TaskCompletionNotice, TaskNoticeLine } from "../../../core/tasks/completion.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
@@ -11,6 +18,10 @@ import { keyHint, keyHintIfBound, keyText } from "./keybinding-hints.js";
 import { NoticeLine, type NoticeLineSpec } from "./notice-line.ts";
 import { isToolBlock, ToolBlock, ToolBlockMarkdown, ToolBlockRecords, type ToolBlockStatus } from "./tool-block.ts";
 import { type BuiltinToolBlockContentPart, builtinToolBlockPresentation } from "./tool-block-families.ts";
+
+function previewRow(row: string): string {
+	return process.env.NO_COLOR === undefined ? row : stripTerminalSequences(row);
+}
 
 const NOTICE_LINE_STATUSES = new Set(["success", "failure", "stopped", "warning", "paused"]);
 const parsedNotices = new WeakMap<object, TaskCompletionNotice>();
@@ -673,7 +684,9 @@ export class TaskCompletionMessage implements Component {
 			return [
 				...(line === undefined ? [] : [line]),
 				...result.map((text, index) =>
-					truncateToWidth(theme.fg("muted", `${index === 0 ? "   ⎿  " : "      "}${text}`), width, "…"),
+					previewRow(
+						truncateToWidth(theme.fg("muted", `${index === 0 ? "   ⎿  " : "      "}${text}`), width, "…"),
+					),
 				),
 			];
 		}
@@ -689,13 +702,15 @@ export class TaskCompletionMessage implements Component {
 		const hint = hasMore ? keyHintIfBound("app.tools.expand", hintLabel) : "";
 		return [
 			...(line === undefined ? [] : [line]),
-			...(cutFirst ? [truncateToWidth(theme.fg("muted", `   ⎿  ${cutFirst}`), width, "…")] : []),
+			...(cutFirst ? [previewRow(truncateToWidth(theme.fg("muted", `   ⎿  ${cutFirst}`), width, "…"))] : []),
 			...(hint
 				? [
-						truncateToWidth(
-							`${cutFirst ? "      " : "   ⎿  "}${theme.fg("dim", "(")}${hint}${theme.fg("dim", ")")}`,
-							width,
-							"…",
+						previewRow(
+							truncateToWidth(
+								`${cutFirst ? "      " : "   ⎿  "}${theme.fg("dim", "(")}${hint}${theme.fg("dim", ")")}`,
+								width,
+								"…",
+							),
 						),
 					]
 				: []),
