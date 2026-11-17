@@ -109,6 +109,8 @@ function makeContext(cwd: string, subagentPolicy?: SubagentChildPolicy): Executo
 			getSessionFile: () => undefined,
 			getSessionId: () => "parent-session",
 			getLeafId: () => null,
+			getLastSeq: () => 0,
+			hasFullHistory: () => true,
 			getEntries: (): SessionEntry[] => [],
 		} as ExecutorContextForTest["sessionManager"],
 		orchestrationContext: undefined,
