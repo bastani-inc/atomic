@@ -94,8 +94,6 @@ CREATE TABLE IF NOT EXISTS ship_lease(
 );
 `;
 
-const JOURNAL_LOCK_WAIT_MS = 30_000;
-
 const GENERATION_UNIQUE_RE = /UNIQUE\s*\(\s*work\s*,\s*generation\s*,\s*event_key\s*\)/i;
 
 export function shipDigest(payload: string): string {
@@ -481,7 +479,7 @@ export class ShipShard {
 
 async function underJournalLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
 	if (path === ":memory:") return operation();
-	const lock = await openThreadedSqliteDatabase(`${dirname(path)}.lock`, JOURNAL_LOCK_WAIT_MS);
+	const lock = await openNodeSqliteDatabase(`${dirname(path)}.lock`);
 	try {
 		return await lock.transaction(() => operation());
 	} finally {

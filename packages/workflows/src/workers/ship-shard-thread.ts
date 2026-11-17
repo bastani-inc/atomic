@@ -183,13 +183,13 @@ class ThreadedSqliteDatabase implements SqliteDatabase {
 	private closed?: Promise<void>;
 	private lost?: Error;
 
-	constructor(path: string, busyTimeoutMs: number) {
+	constructor(path: string) {
 		this.descriptor = { adapter: "node-sqlite", location: path };
 		this.executor = this.createExecutor(() => true);
 		this.worker = new Worker(CONNECTION_SOURCE, {
 			eval: true,
 			execArgv: [],
-			workerData: { path: sqliteOpenPath(path), busyTimeoutMs, opened: OPENED },
+			workerData: { path: sqliteOpenPath(path), busyTimeoutMs: BUSY_TIMEOUT_MS, opened: OPENED },
 		});
 		this.opened = new Promise<StatementValue>((resolve, reject) =>
 			this.replies.set(OPENED, { resolve, reject }),
@@ -451,12 +451,9 @@ class ThreadedSqliteDatabase implements SqliteDatabase {
 	}
 }
 
-export async function openThreadedSqliteDatabase(
-	path: string,
-	busyTimeoutMs = BUSY_TIMEOUT_MS,
-): Promise<SqliteDatabase> {
+export async function openThreadedSqliteDatabase(path: string): Promise<SqliteDatabase> {
 	await mkdir(dirname(path), { recursive: true });
-	const database = new ThreadedSqliteDatabase(path, busyTimeoutMs);
+	const database = new ThreadedSqliteDatabase(path);
 	try {
 		await database.opened;
 	} catch (error) {
