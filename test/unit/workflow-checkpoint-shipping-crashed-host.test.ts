@@ -18,6 +18,7 @@ import { ShipShard, shipShardPath } from "../../packages/workflows/src/workers/s
 import {
 	crashHostThenRestart,
 	holdShards,
+	LATE_OPEN_GRACE_MS,
 	restartAsRoot,
 	restartAsWorkerHost,
 	setRunStatus,
@@ -27,7 +28,7 @@ import {
 } from "../helpers/crashed-ship-shards.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 import { libsql, PREFIX, stubWorker } from "../helpers/workflow-shared-pool-coordinator.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -266,6 +267,63 @@ test(
 				await stop();
 			}
 		} finally {
+			await journal.close();
+			removeTempDirectory(directory);
+		}
+	},
+	CRASHED_HOST_PROCESSES_TIMEOUT_MS,
+);
+
+test(
+	"a read-only opener waits for crashed journal removal through a symlink, then finds no file (#5317)",
+	async () => {
+		const directory = makeTempDirectory("ship-crashed-late-reader-");
+		mkdirSync(join(directory, "real-host"));
+		symlinkSync(
+			join(directory, "real-host"),
+			join(directory, "host"),
+			process.platform === "win32" ? "junction" : "dir",
+		);
+		const { agentDir, journal, path } = await crashedShardOfEndedRoot(directory);
+		let reading: Promise<SqliteDatabase> | undefined;
+		let settledDuringRemoval = false;
+		try {
+			shardRemovals.before = {
+				prefix: realpathSync(path),
+				run: async () => {
+					let settled = false;
+					reading = openNodeSqliteDatabase(pathToFileURL(path).href, { readOnly: true });
+					const settling = reading.then(
+						() => {
+							settled = true;
+						},
+						() => {
+							settled = true;
+						},
+					);
+					await Promise.race([settling, sleep(LATE_OPEN_GRACE_MS)]);
+					settledDuringRemoval = settled;
+				},
+			};
+			const stop = await restartAsRoot(agentDir)(journal);
+			try {
+				assert.ok(reading !== undefined, "the restarted host removed the ended run's journal");
+				assert.equal(
+					settledDuringRemoval,
+					false,
+					"a late read-only connection waits while the journal is being removed",
+				);
+				await assert.rejects(reading, /unable to open database file/i);
+				assert.deepEqual(shardFiles(path), [], "the late read-only connection leaves no journal behind");
+			} finally {
+				await stop();
+			}
+		} finally {
+			shardRemovals.before = undefined;
+			await reading?.then(
+				(database) => database.close(),
+				() => {},
+			);
 			await journal.close();
 			removeTempDirectory(directory);
 		}

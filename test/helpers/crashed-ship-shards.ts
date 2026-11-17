@@ -22,7 +22,7 @@ import { decodeStream, readStreamText, type SpawnedProcess, sleep, spawnProcess 
 const crashFixture = fileURLToPath(new URL("../fixtures/ship-shard-crash.mjs", import.meta.url));
 
 const CRASH_SHIPPING = { intervalMs: 2_000, maxBatch: 64, maxLagMs: 30_000 } as const;
-const LATE_OPEN_GRACE_MS = 50;
+export const LATE_OPEN_GRACE_MS = 50;
 
 export const shardRemovals = {
 	before: undefined as undefined | { readonly prefix: string; readonly run: () => Promise<void> },
@@ -337,7 +337,6 @@ export async function crashHostThenRestart(scenario: CrashedHostScenario): Promi
 		let openedDuringRemoval = false;
 		let lateOpening: Promise<SqliteDatabase> | undefined;
 		let lateUriOpening: Promise<SqliteDatabase> | undefined;
-		let lateReadOnlyOpening: Promise<SqliteDatabase> | undefined;
 		shardRemovals.before = {
 			prefix: realpathSync(shards.lateOpened.path),
 			run: async () => {
@@ -353,10 +352,6 @@ export async function crashHostThenRestart(scenario: CrashedHostScenario): Promi
 						return database;
 					},
 				);
-				lateReadOnlyOpening = openNodeSqliteDatabase(pathToFileURL(shards.lateOpened.path).href, {
-					readOnly: true,
-				});
-				lateReadOnlyOpening.catch(() => {});
 				await Promise.race([Promise.all([lateOpening, lateUriOpening]), sleep(LATE_OPEN_GRACE_MS)]);
 				openedDuringRemoval = openedBeforeUnlink;
 			},
@@ -419,9 +414,8 @@ export async function crashHostThenRestart(scenario: CrashedHostScenario): Promi
 				"a raw rollback journal a raw writable handle holds is kept",
 			);
 			assert.equal(rawRollbackWriter.prepare(`UPDATE ship_rows SET at = 3`).run().changes, 1);
-			assert.ok(lateOpening !== undefined && lateUriOpening !== undefined && lateReadOnlyOpening !== undefined);
+			assert.ok(lateOpening !== undefined && lateUriOpening !== undefined);
 			assert.equal(openedDuringRemoval, false, "a late opener waits while the journal is being removed");
-			await assert.rejects(lateReadOnlyOpening, /unable to open database file/i);
 			lateConnection = await lateOpening;
 			lateUriConnection = await lateUriOpening;
 			assert.ok(existsSync(shards.lateOpened.path), "the late opener's file exists on disk");
