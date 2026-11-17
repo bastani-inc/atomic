@@ -25,9 +25,8 @@
 
 import { spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
-import { dirname, win32 } from "node:path";
+import { dirname } from "node:path";
 import { createModuleRequire } from "../../utils/module-require.ts";
-import { getErrnoCode } from "./errno.ts";
 
 /** One DACL entry with its trustee resolved to a literal SID. */
 export interface WindowsAccessRule {
@@ -204,10 +203,6 @@ function readNatively(path: string): WindowsDirectorySecurity | null {
 	}
 }
 
-function samePowerShellProgram(left: string, right: string): boolean {
-	return win32.basename(left).toLowerCase() === win32.basename(right).toLowerCase();
-}
-
 /**
  * Read the security descriptor of `path`, or `undefined` when it cannot be
  * read (access denied, missing PowerShell, timeout). Callers treat
@@ -225,16 +220,17 @@ export function readWindowsDirectorySecurity(path: string): WindowsDirectorySecu
 export function readWindowsDirectorySecurityWithPowerShell(path: string): WindowsDirectorySecurity | undefined {
 	lastReadFailure = undefined;
 	const failures: string[] = [];
-	const timedOut: string[] = [];
+	const deadline = Date.now() + READ_SECURITY_TIMEOUT_MS;
 	for (const executable of powershellCandidates()) {
-		if (timedOut.some((program) => samePowerShellProgram(program, executable))) {
-			failures.push(`${executable}: not tried, the same program timed out`);
-			continue;
+		const remainingMs = deadline - Date.now();
+		if (remainingMs <= 0) {
+			failures.push("the PowerShell security read exhausted its timeout");
+			break;
 		}
 		const result = spawnSync(executable, ["-NoProfile", "-NonInteractive", "-Command", READ_SECURITY_SCRIPT], {
 			env: { ...process.env, ATOMIC_SECURITY_QUERY_PATH: path },
 			encoding: "utf8",
-			timeout: READ_SECURITY_TIMEOUT_MS,
+			timeout: remainingMs,
 			windowsHide: true,
 		});
 		if (result.error || result.status !== 0 || typeof result.stdout !== "string") {
@@ -243,9 +239,6 @@ export function readWindowsDirectorySecurityWithPowerShell(path: string): Window
 					typeof result.stderr === "string" ? result.stderr.trim().slice(0, 500) : result.stderr
 				}`,
 			);
-			if (getErrnoCode(result.error) === "ETIMEDOUT") {
-				timedOut.push(executable);
-			}
 			continue;
 		}
 		const parsed = parseSecurityOutput(result.stdout);
