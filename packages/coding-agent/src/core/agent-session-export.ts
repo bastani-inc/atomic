@@ -12,6 +12,7 @@ import {
 	writeSync,
 } from "node:fs";
 import { dirname } from "node:path";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.js";
 import { resolvePath } from "../utils/paths.ts";
@@ -283,7 +284,16 @@ function writeLine(file: number, text: string): void {
  */
 
 export function getLastAssistantText(this: AgentSession): string | undefined {
-	for (const message of this.messages.slice().reverse()) {
+	const inContext = lastAssistantText(this.messages);
+	if (inContext.found) return inContext.text;
+	// A compaction boundary leaves no earlier answer in context; the session's branch still holds it.
+	const branch = this.sessionManager.getBranch().flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
+	return lastAssistantText(branch).text;
+}
+
+/** The text of the last assistant reply in `messages`, and whether one was found. */
+function lastAssistantText(messages: readonly AgentMessage[]): { found: boolean; text?: string } {
+	for (const message of messages.slice().reverse()) {
 		if (message.role !== "assistant") continue;
 		const assistant = message as AssistantMessage;
 		let text = "";
@@ -291,10 +301,10 @@ export function getLastAssistantText(this: AgentSession): string | undefined {
 			if (content.type === "text") text += content.text;
 		}
 		const trimmed = text.trim();
-		if (trimmed) return trimmed;
-		if (assistant.stopReason === "stop") return undefined;
+		if (trimmed) return { found: true, text: trimmed };
+		if (assistant.stopReason === "stop") return { found: true };
 	}
-	return undefined;
+	return { found: false };
 }
 
 // =========================================================================

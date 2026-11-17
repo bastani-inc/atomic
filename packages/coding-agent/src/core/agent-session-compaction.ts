@@ -18,7 +18,6 @@ import {
 	compactedOutputTokenCap,
 	estimateTextTokens,
 	estimateTokens,
-	findCompactionSafePoint,
 	findUnansweredToolCall,
 	type HistoryAccess,
 	prepareCompactionBoundary,
@@ -71,6 +70,10 @@ function deepFreeze<T>(value: T): T {
 	}
 	return Object.freeze(value);
 }
+
+/** Why a manual compaction writes nothing while a tool call still waits for its result. */
+export const PENDING_TOOL_CALL_MESSAGE =
+	"A tool call is still waiting for its result; compact after it finishes, so the call and its result stay together";
 
 /** Replacement text from a compactor model or an extension. */
 interface CompactedReplacement {
@@ -391,14 +394,13 @@ async function writeBestEffortBackup(this: AgentSession, label: string): Promise
 /**
  * Back up the session and append a planned compaction as one boundary. The boundary text, with the history line
  * numbers it advertises, is built inside the append's queued mutation. Nothing else changes, so a failure here leaves
- * history and the in-memory context as they were. `coveredThroughEntryId` marks a boundary placed before a turn that
- * still waits on a tool result: that turn replays after the boundary. `signal` is checked inside the mutation: the
- * append is the commit point, so a cancel that arrives before it leaves the session unchanged.
+ * history and the in-memory context as they were. `signal` is checked inside the mutation: the append is the commit
+ * point, so a cancel that arrives before it leaves the session unchanged.
  */
 export async function appendVerbatimBoundary(
 	this: AgentSession,
 	planned: PlannedVerbatimCompaction,
-	options: { backupLabel: string; coveredThroughEntryId?: string; signal?: AbortSignal },
+	options: { backupLabel: string; signal?: AbortSignal },
 ): Promise<AppendedVerbatimBoundary> {
 	const backupPath = await writeBestEffortBackup.call(this, options.backupLabel);
 	const { signal } = options;
@@ -414,7 +416,7 @@ export async function appendVerbatimBoundary(
 		planned.tokensBefore,
 		buildPlannedBoundary(planned, sessionId, 0).details,
 		planned.usage,
-		options.coveredThroughEntryId,
+		undefined,
 		signal
 			? () => {
 					if (signal.aborted) throw new Error("Compaction cancelled");
@@ -476,17 +478,18 @@ export async function _applyVerbatimCompaction(
 	options: VerbatimCompactionApplyOptions,
 ): Promise<VerbatimCompactionResult | undefined> {
 	const branch = this.sessionManager.getBranch();
-	// A boundary never separates a tool call from its result. A call that has no result yet (a detached call's,
-	// #4580) keeps its turn after the boundary: the boundary covers only what precedes that turn.
-	const awaited = awaitedToolTurnEntryId(this);
-	const waiting = findUnansweredToolCall(branch, awaited) !== undefined;
-	const covered = waiting ? branch.slice(0, findCompactionSafePoint(branch, awaited) + 1) : branch;
-	const planned = await planVerbatimCompaction.call(this, options, covered);
+	// A boundary never separates a tool call from its result, and nothing replays after it: while a call still waits
+	// for its result (a detached call's, #4580), no boundary is written. The continuation that records the result
+	// clears the context instead, before its request.
+	if (findUnansweredToolCall(branch, awaitedToolTurnEntryId(this)) !== undefined) {
+		if (options.reason === "manual") throw new Error(PENDING_TOOL_CALL_MESSAGE);
+		return undefined;
+	}
+	const planned = await planVerbatimCompaction.call(this, options, branch);
 	if (!planned) return undefined;
 	const appended = await appendVerbatimBoundary.call(this, planned, {
 		backupLabel: options.backupLabel,
 		signal: options.abortController.signal,
-		...(waiting ? { coveredThroughEntryId: covered[covered.length - 1].id } : {}),
 	});
 	return finishVerbatimCommit.call(this, planned, appended, options.reason);
 }

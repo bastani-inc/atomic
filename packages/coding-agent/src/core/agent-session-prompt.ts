@@ -881,7 +881,7 @@ export async function _runAgentContinue(this: AgentSession): Promise<void> {
 	if (this._agentRunAbortRequested || sessionGenerationClosing.has(this) || sessionLifetime(this).aborted) return;
 	// Nothing continues past a detached call that has no result yet; the hand-back continues the turn (#4580).
 	if (holdsTurnsForDetachedResults(this)) return;
-	await this.agent.continue();
+	await this._continueAgentAfterCompactionCheck();
 	await this.waitForRetry();
 	await this._continueQueuedAgentMessages();
 }
@@ -915,7 +915,7 @@ export async function _runAgentContinuation(
 			if (this._disposed || lifetime.aborted || sessionGenerationClosing.has(this))
 				throw sessionClosedForDetachedTurn(this);
 			if (mode === "recovery") await this._continueQueuedAgentMessages();
-			else if (mode === "continue") await this.agent.continue();
+			else if (mode === "continue") await this._continueAgentAfterCompactionCheck();
 			await this.waitForRetry();
 			if (lifetime.aborted || sessionGenerationClosing.has(this)) return;
 			await this._continueQueuedAgentMessages();
@@ -975,7 +975,7 @@ export async function _continueQueuedAgentMessages(this: AgentSession): Promise<
 			!this._queuedMessagesPaused &&
 			this.agent.hasQueuedMessages()
 		) {
-			await this.agent.continue();
+			await this._continueAgentAfterCompactionCheck();
 			await this.waitForRetry();
 			await this._agentEventQueue;
 			await preparePriorityContinuation(this);

@@ -353,7 +353,7 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 		expect(runAutoCompactionSpy).toHaveBeenCalledWith("threshold", true);
 	});
 
-	it("does not retry non-Responses output-budget-like errors", async () => {
+	it("does not retry non-Responses output-budget-like errors, and compacts before the next request", async () => {
 		const previousAssistant = previousHighUsageAssistant();
 		const assistant = outputBudgetErrorAssistant(undefined, "openai-completions");
 		session.agent.state.messages = [
@@ -376,15 +376,19 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 			)
 			.mockResolvedValue();
 		const checkCompaction = (
-			session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> }
+			session as unknown as {
+				_checkCompaction: (message: AssistantMessage, skipAbortedCheck?: boolean) => Promise<void>;
+			}
 		)._checkCompaction.bind(session);
 
 		await checkCompaction(assistant);
+		expect(runAutoCompactionSpy).not.toHaveBeenCalled();
 
+		await checkCompaction(assistant, false);
 		expect(runAutoCompactionSpy).toHaveBeenCalledWith("threshold", false);
 	});
 
-	it("does not retry generic invalid request errors after threshold compaction", async () => {
+	it("does not retry generic invalid request errors, and compacts before the next request", async () => {
 		const previousAssistant = previousHighUsageAssistant();
 		const assistant = outputBudgetErrorAssistant(
 			`OpenAI API error (400): {"message":"Invalid schema for function 'bash': invalid request body","code":"invalid_request_body"}`,
@@ -409,11 +413,15 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 			)
 			.mockResolvedValue();
 		const checkCompaction = (
-			session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> }
+			session as unknown as {
+				_checkCompaction: (message: AssistantMessage, skipAbortedCheck?: boolean) => Promise<void>;
+			}
 		)._checkCompaction.bind(session);
 
 		await checkCompaction(assistant);
+		expect(runAutoCompactionSpy).not.toHaveBeenCalled();
 
+		await checkCompaction(assistant, false);
 		expect(runAutoCompactionSpy).toHaveBeenCalledWith("threshold", false);
 	});
 

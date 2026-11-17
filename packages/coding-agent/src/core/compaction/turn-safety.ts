@@ -42,16 +42,3 @@ export function findUnansweredToolCall(branch: readonly SessionEntry[], awaitedE
 	const awaited = branch.findIndex((entry) => entry.id === awaitedEntryId);
 	return awaited >= 0 && (unanswered === undefined || awaited < unanswered) ? awaited : unanswered;
 }
-
-/**
- * Path index of the last entry a compaction boundary may cover, or -1 when nothing is safe.
- *
- * Cuts before the earliest assistant message of the trailing tool run with an unanswered call
- * ({@link findUnansweredToolCall}), so a tool call and its result always stay on the same side of the boundary. A safe
- * point never lands on a label, which a branched copy drops.
- */
-export function findCompactionSafePoint(branch: readonly SessionEntry[], awaitedEntryId?: string): number {
-	let last = (findUnansweredToolCall(branch, awaitedEntryId) ?? branch.length) - 1;
-	while (last >= 0 && branch[last].type === "label") last--;
-	return last;
-}

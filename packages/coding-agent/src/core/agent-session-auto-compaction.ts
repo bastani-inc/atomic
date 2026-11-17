@@ -162,6 +162,8 @@ export async function _checkCompaction(
 	if (contextOverflow || recoverableLength) {
 		const willRetry = assistantMessage.stopReason !== "stop";
 		if (!willRetry) {
+			// A complete answer stays the session's last answer for its readers; the clear runs before the next request.
+			if (isLiveTurnCompletion) return;
 			await this._runAutoCompaction("overflow", false);
 			return;
 		}
@@ -247,6 +249,9 @@ export async function _checkCompaction(
 	}
 	if (shouldCompact(contextTokens, contextWindow, settings)) {
 		const willRetry = shouldRetryAfterThresholdCompaction(assistantMessage, desiredMaxOutput, isLiveTurnCompletion);
+		// A turn that is not retried keeps its answer as the session's last answer for its readers (the caller, RPC,
+		// a workflow stage). The clear runs just before the next model request instead.
+		if (!willRetry && isLiveTurnCompletion) return;
 		if (willRetry && isRetryWorthyOutputBudgetError(assistantMessage)) {
 			if (this._outputBudgetErrorContinuationAttempts >= MAX_OUTPUT_BUDGET_ERROR_CONTINUATION_ATTEMPTS) {
 				const errorMessage =
@@ -656,7 +661,39 @@ export async function _runAutoCompaction(
  * Toggle auto-compaction setting.
  */
 
+/**
+ * Clear the context just before a continuation sends its next request, when it is over the automatic trigger. A turn
+ * that ended over the trigger left its answer in context for its readers; this is where that clear happens for queued
+ * messages and for a detached tool's result, as the prompt check does for a new prompt. Resolves whether it cleared.
+ */
+export async function _compactBeforeContinuation(this: AgentSession): Promise<boolean> {
+	const model = this.model;
+	if (!model) return false;
+	const settings = this.settingsManager.getCompactionSettings(model);
+	if (!settings.enabled) return false;
+	if (
+		this._compactionAbortController !== undefined ||
+		this._manualCompactionPromise !== undefined ||
+		this._autoCompactionAbortController !== undefined
+	)
+		return false;
+	if (!shouldCompact(estimateContextTokens(this.agent.state.messages).tokens, model.contextWindow, settings))
+		return false;
+	return (await this._runAutoCompaction("threshold", false)) === "compacted";
+}
+
+/**
+ * Continue the agent after the pre-request check. After a clear, queued input is the next request's prompt, as a new
+ * prompt would be, rather than waiting behind a turn over the cleared context.
+ */
+export async function _continueAgentAfterCompactionCheck(this: AgentSession): Promise<void> {
+	if ((await this._compactBeforeContinuation()) && (await this.agent.promptQueuedMessages())) return;
+	await this.agent.continue();
+}
+
 export const agentSessionAutoCompactionMethods = {
+	_compactBeforeContinuation,
+	_continueAgentAfterCompactionCheck,
 	_awaitPendingPostCompactionContinuation,
 	_checkCompaction,
 	_dropTrailingAutoCompactionRetryAssistantIfPresent,

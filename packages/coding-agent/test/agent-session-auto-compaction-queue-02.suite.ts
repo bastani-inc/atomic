@@ -157,7 +157,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 		expect(errors).toEqual(["Post-compaction continuation failed: boom"]);
 	});
 
-	it("should trigger threshold compaction for error messages using last successful usage", async () => {
+	it("should trigger threshold compaction before the next request for error messages using last successful usage", async () => {
 		const model = session.model!;
 
 		// A successful assistant message with high token usage (near context limit)
@@ -222,11 +222,14 @@ describe("AgentSession auto-compaction queue resume", () => {
 			}
 		)._checkCompaction.bind(session);
 
+		// The turn that ended keeps the context; the clear is decided again before the next request.
 		await checkCompaction(errorAssistant);
+		expect(runAutoCompactionSpy).not.toHaveBeenCalled();
 
+		await checkCompaction(errorAssistant, false);
 		expect(runAutoCompactionSpy).toHaveBeenCalledWith("threshold", false);
 	});
-	it("should compact but not retry successful responses that report overflow-sized usage", async () => {
+	it("should compact before the next request, without a retry, after a successful response that reports overflow-sized usage", async () => {
 		const model = session.model!;
 		const successfulOverflow: AssistantMessage = {
 			role: "assistant",
@@ -264,10 +267,13 @@ describe("AgentSession auto-compaction queue resume", () => {
 			}
 		)._checkCompaction.bind(session);
 
+		// The completed answer stays in context for its readers; the clear runs before the next request.
 		await checkCompaction(successfulOverflow);
-
-		expect(runAutoCompactionSpy).toHaveBeenCalledWith("overflow", false);
+		expect(runAutoCompactionSpy).not.toHaveBeenCalled();
 		expect(session.agent.state.messages.at(-1)).toBe(successfulOverflow);
+
+		await checkCompaction(successfulOverflow, false);
+		expect(runAutoCompactionSpy).toHaveBeenCalledWith("overflow", false);
 	});
 
 	it("should not trigger threshold compaction for error messages when no prior usage exists", async () => {

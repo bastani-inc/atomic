@@ -45,27 +45,37 @@ describe("compaction clears the context window without calling a model", () => {
 
 	it("a ~1M-token context crossing the threshold is cleared with no model call and never degraded", async () => {
 		harness = await bigHarness();
-		harness.setResponses([fauxAssistantMessage("first answer")]);
+		const nextRequest: string[][] = [];
+		harness.setResponses([
+			fauxAssistantMessage("first answer"),
+			(context) => {
+				nextRequest.push(context.messages.map((message) => message.role));
+				return fauxAssistantMessage("second answer");
+			},
+		]);
 		// About 984k tokens of real context: the provider reports usage from what it was sent.
 		await harness.session.prompt(`start the long task\n${"word ".repeat(INCIDENT_TOKENS * 0.8)}`);
-		await vi.waitFor(() => assert.equal(harness?.eventsOfType("compaction_end").length, 1));
+		assert.equal(harness.eventsOfType("compaction_end").length, 0, "the answer stays in context for its readers");
+		let clearedContext: string[] = [];
+		harness.session.subscribe((event) => {
+			if (event.type === "compaction_end")
+				clearedContext = convertToLlm(harness!.session.messages).map((m) => m.role);
+		});
 
-		assert.equal(harness.faux.state.callCount, 1, "only the chat turn reached a provider");
+		await harness.session.prompt("continue");
+
+		assert.equal(harness.faux.state.callCount, 2, "only the two chat turns reached a provider");
 		const [end] = harness.eventsOfType("compaction_end");
 		assert.equal(end.reason, "threshold");
 		assert.equal(end.errorMessage, undefined);
 		assert.equal(end.result?.form, "cleared");
 		assert.ok((end.result?.tokensBefore ?? 0) >= INCIDENT_TOKENS - 1_000, String(end.result?.tokensBefore));
 		assert.equal(JSON.stringify(end).includes("degraded"), false);
-
-		const context = convertToLlm(harness.session.messages);
-		assert.deepEqual(
-			context.map((message) => message.role),
-			["system", "user"],
-			"the context is exactly the system prompt and one Context cleared message",
-		);
-		assert.ok(textOf(context[1]).startsWith("Context cleared."));
-		assert.equal(textOf(context[1]), end.result?.compactedText);
+		assert.deepEqual(clearedContext, ["system", "user"], "right after the clear: system prompt and one message");
+		assert.deepEqual(nextRequest, [["system", "user", "user"]], "the next request adds only the new prompt");
+		const boundary = convertToLlm(harness.session.messages)[1];
+		assert.ok(textOf(boundary).startsWith("Context cleared."));
+		assert.equal(textOf(boundary), end.result?.compactedText);
 	});
 
 	it("a provider context overflow clears the context and the retry carries exactly system + Context cleared", async () => {
@@ -189,22 +199,19 @@ describe("compaction clears the context window without calling a model", () => {
 		assert.equal(manual.form, "cleared", "a manual request still clears");
 	});
 
-	it("a pending tool call keeps its turn after the boundary, so no tool result is ever orphaned", async () => {
+	it("no boundary is written while a tool call waits for its result, so none is ever orphaned", async () => {
 		harness = await bigHarness();
 		const manager = harness.sessionManager;
-		const model = harness.getModel();
 		await manager.appendMessage({ role: "user", content: "run the slow tool", timestamp: 1 });
 		const call = fauxToolCall("slow_tool", {}, { id: "call-pending" });
-		await manager.appendMessage({ ...fauxAssistantMessage([call], { stopReason: "toolUse" }), model: model.id });
+		await manager.appendMessage(fauxAssistantMessage([call], { stopReason: "toolUse" }));
 		harness.session.agent.state.messages = manager.buildSessionContext().messages;
+		const internals = harness.session as AgentSessionInternalSurface;
 
-		await harness.session.compact();
-		const projected = manager.buildSessionContext().messages;
-		assert.deepEqual(
-			projected.map((message) => message.role),
-			["custom", "assistant"],
-			"the boundary sits before the turn that waits on its result",
-		);
+		await assert.rejects(harness.session.compact(), /still waiting for its result/u);
+		assert.equal(await internals._runAutoCompaction("threshold", false), "not_compactable");
+		assert.equal(manager.getEntries().filter((entry) => entry.type === "compaction").length, 0);
+
 		await manager.appendMessage({
 			role: "toolResult",
 			toolCallId: "call-pending",
@@ -213,37 +220,17 @@ describe("compaction clears the context window without calling a model", () => {
 			isError: false,
 			timestamp: 3,
 		});
+		harness.session.agent.state.messages = manager.buildSessionContext().messages;
+		await harness.session.compact();
+		const boundary = manager.getEntries().find((entry) => entry.type === "compaction");
+		assert.equal(boundary?.type === "compaction" ? boundary.coveredThroughEntryId : "missing", undefined);
 		const after = convertToLlm(manager.buildSessionContext().messages);
 		assert.doesNotThrow(() => assertToolPairingInvariant(after));
 		assert.deepEqual(
 			after.map((message) => message.role),
-			["user", "assistant", "toolResult"],
+			["user"],
+			"the call and its result are both behind the boundary",
 		);
-	});
-
-	it("with a tool call still pending, compacting again finds nothing new instead of clearing twice", async () => {
-		const seen: number[] = [];
-		harness = await createHarness({
-			models: [{ id: "big", contextWindow: WINDOW, maxTokens: 32_000 }],
-			settings: { retry: { enabled: false } },
-			extensionFactories: [
-				(pi) => {
-					pi.on("session_before_compact", (event) => {
-						seen.push(event.preparation.regionEntryIds.length);
-					});
-				},
-			],
-		});
-		const manager = harness.sessionManager;
-		await manager.appendMessage({ role: "user", content: "run the slow tool", timestamp: 1 });
-		const call = fauxToolCall("slow_tool", {}, { id: "call-pending" });
-		await manager.appendMessage(fauxAssistantMessage([call], { stopReason: "toolUse" }));
-		harness.session.agent.state.messages = manager.buildSessionContext().messages;
-
-		await harness.session.compact();
-		await assert.rejects(harness.session.compact(), /Nothing to compact/u);
-		assert.equal(manager.getEntries().filter((entry) => entry.type === "compaction").length, 1);
-		assert.deepEqual(seen, [1], "the hook saw the conversation once, not the same region twice");
 	});
 
 	it("compaction is planned only once streaming has stopped", async () => {

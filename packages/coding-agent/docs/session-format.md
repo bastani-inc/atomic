@@ -260,7 +260,7 @@ The rebuilt context contains one visible `custom` message with `customType: "com
 
 `details.form` is `"cleared"` or `"compacted"`. A compacted entry also has `details.backend` (`"compactor"` or `"extension"`) and, for a compactor, `details.model`. `details.fallbackReason` says why a configured compactor was not used. `details.history` gives the boundary's place in `history://sessions/<sessionId>`: `linesBefore`, `boundaryLine` and `totalLines`. `details.backupPath` is optional. See [Compaction reference](/compaction/reference#persistence-and-resume) for every field.
 
-A boundary written while a tool call was still waiting for its result also has `coveredThroughEntryId`, the last entry it covers. The waiting call's turn, from the entry after it to the boundary, replays unchanged after the compaction message, so the call can still receive its result.
+Atomic no longer writes a boundary while a tool call is still waiting for its result. A boundary from an earlier version written at such a point has `coveredThroughEntryId`, the last entry it covers; the waiting call's turn, from the entry after it to the boundary, replays unchanged after the compaction message.
 
 Boundaries written by earlier Atomic versions remain active and replay as written: their `summary` is a verbatim transcript with `(filtered N lines)` markers or a summary, a string `firstKeptEntryId` replays a kept tail, and `details` may carry `rung`, `backend` and other fields that are no longer written. Older sessions can also contain a `custom` entry with `customType: "atomic:background-compaction-result"` from the removed background compaction; it is ignored.
 
@@ -416,7 +416,7 @@ Entries form a tree:
 - With no active boundary, normal message, custom-message, and branch-summary entries are emitted verbatim.
 - With a boundary whose `firstKeptEntryId` is a string, which only boundaries from earlier versions have, Atomic emits a single custom-role `customType:"compaction"` message whose text is the durable string plus the losslessly serialized kept tail (the entries from that ID up to the boundary, with context edits applied and retained images kept as image blocks on that message), then the messages appended after the boundary. Kept-tail entries project no standalone messages of their own.
 - With `firstKeptEntryId: null`, Atomic emits the boundary and post-boundary messages but no pre-boundary ordinary message.
-- With `coveredThroughEntryId`, the entries after it and before the boundary follow the compaction message as ordinary messages, with context edits applied; an older `compaction` entry among them contributes nothing. On an earlier version's boundary with a kept tail, only the tail up to that entry is serialized into the compaction message.
+- With `coveredThroughEntryId`, which only boundaries from earlier versions have, the entries after it and before the boundary follow the compaction message as ordinary messages, with context edits applied; an older `compaction` entry among them contributes nothing. On an earlier version's boundary with a kept tail, only the tail up to that entry is serialized into the compaction message.
 - If a corrupt/foreign boundary's non-null `firstKeptEntryId` is absent, Atomic emits the boundary followed by post-boundary messages rather than resurrecting all older content.
 - Legacy `context_compaction` entries and non-verbatim `compaction` entries are skipped as inert archival records.
 ## Parsing Example

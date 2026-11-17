@@ -55,7 +55,7 @@ A successful run appends a `type:"compaction"` entry:
 | `summary` | The whole boundary message the model sees: the `Context cleared` or `Context compacted` text, any compacted text, the recovery instructions, and any `/compact` instructions |
 | `firstKeptEntryId` | Always `null`: no earlier message stays in context |
 | `tokensBefore` | The provider-aware whole-context count before the boundary, used for budgeting and the boundary line |
-| `coveredThroughEntryId` | Present when a tool call was still waiting for its result. The boundary covers the entries through this one, and the waiting call's turn replays after the boundary |
+| `coveredThroughEntryId` | Written only by earlier versions, while a tool call was still waiting for its result: the waiting call's turn replays after the boundary. A boundary is no longer written while a call waits |
 | `usage` | The compactor endpoint's usage, when it reported any |
 | `details.form` | `cleared` (no model call) or `compacted` (a compactor or an extension supplied text) |
 | `details.backend` | `compactor` or `extension`; present only on a `compacted` boundary |
