@@ -383,6 +383,7 @@ describe("a slow-starting broker beside a live one", { timeout: BROKER_TEST_TIME
 			spawned.catch(() => {});
 			let liveBroker: net.Server | undefined;
 			try {
+				// The socket the child yields to starts answering only once the child runs.
 				assert.ok(
 					await waitUntil(() => fileExistsSync(childRunning), BROKER_BUDGET_MS),
 					"the spawned child never ran",
