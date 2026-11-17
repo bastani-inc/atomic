@@ -14,6 +14,8 @@ export interface SubagentStartupMaintenance {
 /** How long after startup to defer the slow global session-artifact scan. */
 export const STARTUP_ARTIFACT_SCAN_DELAY_MS = 10 * 60 * 1000;
 
+const runningStartupCleanups = new WeakSet<SubagentStartupMaintenance>();
+
 function scheduleMacrotask(task: () => void): () => void {
 	let cancelled = false;
 	const handle = setImmediate(() => {
@@ -103,13 +105,18 @@ export function createSubagentStartupMaintenance(
 		cancelTasks.add(cancel);
 	};
 
-	return {
+	const maintenance: SubagentStartupMaintenance = {
 		scheduleStartupCleanup(onDone) {
 			schedule(() => {
 				swallowCleanup(() => cleanupOldSubagentRuntimeDirs(options.artifactCleanupDays));
 				scheduleDelayed(() => {
-					void cleanupAllArtifactDirs(options.artifactCleanupDays, contextSessionsRoots).catch(() => undefined);
-					onDone?.();
+					runningStartupCleanups.add(maintenance);
+					void cleanupAllArtifactDirs(options.artifactCleanupDays, contextSessionsRoots)
+						.catch(() => undefined)
+						.then(() => {
+							runningStartupCleanups.delete(maintenance);
+							onDone?.();
+						});
 				}, STARTUP_ARTIFACT_SCAN_DELAY_MS);
 			});
 		},
@@ -133,6 +140,7 @@ export function createSubagentStartupMaintenance(
 			cancelTasks.clear();
 		},
 	};
+	return maintenance;
 }
 
 /** Which session's maintenance runs the process's startup scans, which sessions wait to, and whether they ran. */
@@ -172,7 +180,7 @@ export function claimStartupCleanup(maintenance: SubagentStartupMaintenance): ()
 	else claim.waiting.add(maintenance);
 	return () => {
 		claim.waiting.delete(maintenance);
-		if (claim.holder !== maintenance) return;
+		if (claim.holder !== maintenance || runningStartupCleanups.has(maintenance)) return;
 		claim.holder = undefined;
 		if (claim.done) return;
 		const [next] = claim.waiting;

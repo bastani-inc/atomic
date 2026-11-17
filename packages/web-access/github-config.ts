@@ -46,6 +46,7 @@ export interface GitHubCloneConfig {
 }
 
 const configState = createOwnerState(() => ({
+	generation: 0,
 	cachedConfig: null as GitHubCloneConfig | null,
 	defaultClonePath: null as string | null,
 }));
@@ -57,8 +58,11 @@ const configState = createOwnerState(() => ({
  */
 export async function defaultGitHubClonePath(): Promise<string> {
 	const state = configState();
-	state.defaultClonePath ??= await ensurePrivateTempDirAsync(DEFAULT_GITHUB_CLONE_DIR);
-	return state.defaultClonePath;
+	if (state.defaultClonePath !== null) return state.defaultClonePath;
+	const generation = state.generation;
+	const clonePath = await ensurePrivateTempDirAsync(DEFAULT_GITHUB_CLONE_DIR);
+	if (state.generation !== generation) return clonePath;
+	return state.defaultClonePath ??= clonePath;
 }
 
 /** The default clone cache if one was chosen, else `null`. */
@@ -84,6 +88,7 @@ async function normalizeClonePath(value: unknown, fallback: () => Promise<string
 export async function loadGitHubConfig(): Promise<GitHubCloneConfig> {
 	const state = configState();
 	if (state.cachedConfig) return state.cachedConfig;
+	const generation = state.generation;
 
 	const defaults = {
 		enabled: true,
@@ -92,8 +97,9 @@ export async function loadGitHubConfig(): Promise<GitHubCloneConfig> {
 	};
 
 	if (!existsSync(CONFIG_PATH)) {
-		state.cachedConfig = { ...defaults, clonePath: await defaultGitHubClonePath() };
-		return state.cachedConfig;
+		const config = { ...defaults, clonePath: await defaultGitHubClonePath() };
+		if (state.generation === generation) state.cachedConfig = config;
+		return config;
 	}
 
 	const rawText = readFileSync(CONFIG_PATH, "utf-8");
@@ -107,13 +113,14 @@ export async function loadGitHubConfig(): Promise<GitHubCloneConfig> {
 
 	const gc = raw.githubClone ?? {};
 	const clonePath = await normalizeClonePath(gc.clonePath, defaultGitHubClonePath);
-	state.cachedConfig = {
+	const config = {
 		enabled: normalizeEnabled(gc.enabled, defaults.enabled),
 		maxRepoSizeMB: normalizePositiveNumber(gc.maxRepoSizeMB, defaults.maxRepoSizeMB),
 		cloneTimeoutSeconds: normalizePositiveNumber(gc.cloneTimeoutSeconds, defaults.cloneTimeoutSeconds),
 		clonePath,
 	};
-	return state.cachedConfig;
+	if (state.generation === generation) state.cachedConfig = config;
+	return config;
 }
 
 const NON_CODE_SEGMENTS = new Set([
@@ -216,6 +223,8 @@ export function parseGitHubUrl(url: string): GitHubUrlInfo | null {
 }
 
 export function resetGitHubConfig(): void {
-	configState().cachedConfig = null;
-	configState().defaultClonePath = null;
+	const state = configState();
+	state.generation += 1;
+	state.cachedConfig = null;
+	state.defaultClonePath = null;
 }

@@ -23,6 +23,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, it, vi } from "vitest";
+import { spawnSyncCollect } from "../../../test/helpers/runtime.ts";
 import { ENV_AGENT_DIR } from "../src/config.ts";
 import { getGitInstallPath, getNpmInstallRoot } from "../src/core/package-manager-paths.ts";
 import type { PackageLocationContext } from "../src/core/package-manager-types.ts";
@@ -35,6 +36,7 @@ import {
 	resetSessionTempDirStateForTesting,
 } from "../src/core/tools/session-temp-dir.ts";
 import {
+	powershellCandidates,
 	readWindowsDirectorySecurityAsync,
 	setWindowsDirectorySecurityReaderForTesting,
 } from "../src/core/tools/windows-directory-security.ts";
@@ -301,6 +303,76 @@ describe("temporary extension install directories", () => {
 			assert.notEqual(reopened, dir, "the cached leaf does not make a linked ancestor trustworthy");
 			assert.ok(!isPathInside(root, reopened), "the replacement link is not followed");
 			assertPrivateChain(reopened, sandbox);
+		},
+	);
+
+	it.skipIf(!isPosix)(
+		"refuses a remembered path whose ancestor becomes accessible to other accounts (#5285)",
+		async () => {
+			const dir = await ensurePrivateTempDirAsync("nested", "extensions");
+			const ancestor = dirname(dir);
+			chmodSync(ancestor, 0o770);
+
+			const reopened = await ensurePrivateTempDirAsync("nested", "extensions");
+			assert.notEqual(reopened, dir);
+			assert.ok(!isPathInside(ancestor, reopened));
+			assert.equal(statSync(ancestor).mode & 0o777, 0o770, "the refused ancestor is not repaired");
+		},
+	);
+
+	it.skipIf(isPosix)("refuses a replaced cached private root with the same creation time (#5285)", async () => {
+		const sid = "S-1-5-21-1001";
+		const root = await ensurePrivateTempDirAsync();
+		const original = lstatSync(root, { bigint: true });
+		renameSync(root, `${root}-original`);
+		mkdirSync(root);
+		const ticks = original.birthtimeNs / 100n + 621355968000000000n;
+		const restored = spawnSyncCollect(
+			[
+				powershellCandidates()[0]!,
+				"-NoProfile",
+				"-NonInteractive",
+				"-Command",
+				`[IO.Directory]::SetCreationTimeUtc($env:ATOMIC_SECURITY_QUERY_PATH, [datetime]::new(${ticks}L, [DateTimeKind]::Utc))`,
+			],
+			{ env: { ...process.env, ATOMIC_SECURITY_QUERY_PATH: root } },
+		);
+		assert.equal(restored.exitCode, 0, restored.stderr.toString());
+		const replacement = lstatSync(root, { bigint: true });
+		assert.equal(replacement.birthtimeNs, original.birthtimeNs, "the fixture reproduces creation-time tunneling");
+		assert.notEqual(replacement.ino, original.ino, "the replacement has a new file ID");
+		setWindowsDirectorySecurityReaderForTesting((path) => ({
+			currentSid: sid,
+			ownerSid: path === root ? "S-1-5-21-1002" : sid,
+			dacl: "D:",
+			accessRules: [],
+		}));
+
+		assert.notEqual(ensurePrivateTempDir(), root);
+		assert.notEqual(await ensurePrivateTempDirAsync(), root);
+	});
+
+	it.each(["synchronous", "asynchronous"] as const)(
+		"%s callers retire a fallback root replaced by a link (#5285)",
+		async (caller) => {
+			mkdirSync(join(agentDir, "cache"), { recursive: true });
+			writeFileSync(join(agentDir, "cache", "tmp"), "not a directory");
+			writeFileSync(getTempRootDir(), "not a directory");
+			const dir = await ensurePrivateTempDirAsync("nested", "extensions");
+			const root = dirname(dirname(dir));
+			const movedRoot = `${root}-original`;
+			renameSync(root, movedRoot);
+			symlinkSync(movedRoot, root, isPosix ? "dir" : "junction");
+
+			for (const name of ["fresh", "extensions"]) {
+				const reopened =
+					caller === "synchronous"
+						? ensurePrivateTempDir("nested", name)
+						: await ensurePrivateTempDirAsync("nested", name);
+				assert.ok(!isPathInside(root, reopened), "neither a new name nor a cached one follows the fallback link");
+				assertPrivateChain(reopened, sandbox);
+			}
+			assert.equal(existsSync(join(movedRoot, "nested", "fresh")), false, "nothing was created through the link");
 		},
 	);
 

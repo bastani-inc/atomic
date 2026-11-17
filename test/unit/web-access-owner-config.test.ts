@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, vi } from "vitest";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
@@ -9,6 +10,68 @@ vi.mock("../../packages/web-access/config-paths.ts", () => ({
 	findReadableConfigPath: () => config.path,
 	EXA_USAGE_PATH: "",
 }));
+
+test("a pending GitHub configuration load cannot repopulate its owner's reset cache (#5285)", async () => {
+	const directory = makeTempDirectory("web-owner-config-reset-");
+	config.path = join(directory, "web-search.json");
+	const key = Symbol.for("atomic.builtin-diagnostic-context.v1");
+	const host = globalThis as typeof globalThis & { [key]?: AsyncLocalStorage<object> };
+	const previous = host[key];
+	const context = new AsyncLocalStorage<object>();
+	host[key] = context;
+	const reporter = (owner: object) => Object.assign(() => {}, { [Symbol.for("atomic.builtin-owner.v1")]: owner });
+	const first = reporter({});
+	const second = reporter({});
+	vi.resetModules();
+	try {
+		const { loadGitHubConfig, resetGitHubConfig } = await import("../../packages/web-access/github-config.js");
+		const writeConfig = (maxRepoSizeMB: number) =>
+			writeFileSync(config.path, JSON.stringify({ githubClone: { clonePath: directory, maxRepoSizeMB } }));
+		writeConfig(100);
+		assert.equal((await context.run(second, loadGitHubConfig)).maxRepoSizeMB, 100);
+		const pending = context.run(first, loadGitHubConfig);
+		context.run(first, resetGitHubConfig);
+		writeConfig(200);
+		assert.equal((await pending).maxRepoSizeMB, 100, "the earlier caller keeps its own configuration");
+		assert.equal(
+			(await context.run(first, loadGitHubConfig)).maxRepoSizeMB,
+			200,
+			"reset invalidates the pending load",
+		);
+		assert.equal(
+			(await context.run(second, loadGitHubConfig)).maxRepoSizeMB,
+			100,
+			"another owner's cache is unchanged",
+		);
+	} finally {
+		host[key] = previous;
+		removeTempDirectory(directory);
+		vi.resetModules();
+	}
+});
+
+test("a reset discards the pending default GitHub clone path and missing-file configuration (#5285)", async () => {
+	const directory = makeTempDirectory("web-default-config-reset-");
+	config.path = join(directory, "web-search.json");
+	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", join(directory, "agent"));
+	vi.stubEnv("XDG_RUNTIME_DIR", "");
+	vi.resetModules();
+	try {
+		const { chosenDefaultGitHubClonePath, loadGitHubConfig, resetGitHubConfig } = await import(
+			"../../packages/web-access/github-config.js"
+		);
+		const pending = loadGitHubConfig();
+		resetGitHubConfig();
+		writeFileSync(config.path, JSON.stringify({ githubClone: { clonePath: directory, maxRepoSizeMB: 200 } }));
+		assert.equal((await pending).maxRepoSizeMB, 350, "the earlier caller keeps the missing-file defaults");
+		assert.equal(chosenDefaultGitHubClonePath(), null, "the earlier default-path read cannot repopulate the cache");
+		assert.equal((await loadGitHubConfig()).maxRepoSizeMB, 200, "the next load reads the new configuration");
+	} finally {
+		vi.unstubAllEnvs();
+		removeTempDirectory(directory);
+		vi.resetModules();
+	}
+});
 
 // #3105: shared imports retain per-owner caches, without changing credential discovery.
 test("provider configuration is cached per lifecycle owner and survives reporter replacement", async () => {
