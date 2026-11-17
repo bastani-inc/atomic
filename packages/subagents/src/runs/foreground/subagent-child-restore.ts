@@ -519,7 +519,7 @@ async function relaunchChild(
 			`agent "${record.agent}"${record.agentSource ? ` (${record.agentSource})` : ""} is no longer defined`,
 		);
 	const bridge = record.orchestratorTarget
-		? resolveIntercomBridge({
+		? await resolveIntercomBridge({
 				config: deps.config.intercomBridge,
 				context: record.forked ? "fork" : "fresh",
 				orchestratorTarget: resolveIntercomSessionTarget(

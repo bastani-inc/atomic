@@ -144,6 +144,188 @@ function prepareDurableAuthority(storagePath: string): Buffer | undefined {
 }
 
 /**
+ * Bounded in-memory operation authority used by the interactive host for
+ * inbound message deduplication and local subagent relay admission without
+ * touching disk or SQLite.
+ */
+export class InMemoryDeliveredMessageCache {
+	private readonly delivered = new Map<string, DeliveredMessage>();
+	private retainedBytes = 0;
+
+	constructor(
+		private readonly ttlMs = DELIVERED_MESSAGE_TTL_MS,
+		private readonly maxEntries = DELIVERED_MESSAGE_MAX_ENTRIES,
+		private readonly maxBytes = DELIVERED_MESSAGE_MAX_BYTES,
+	) {}
+
+	lookup(messageId: string, signature: string, now = Date.now()): DeliveredMessageMatch {
+		return validStoredString(signature) ? this.lookupEntry(messageId, signature, undefined, false, now) : "invalid";
+	}
+
+	lookupForTarget(
+		messageId: string,
+		signature: string,
+		targetIdentity: string,
+		now = Date.now(),
+	): DeliveredMessageMatch {
+		return validStoredString(signature) ? this.lookupEntry(messageId, signature, targetIdentity, true, now) : "invalid";
+	}
+
+	lookupQuestionTarget(
+		messageId: string,
+		signature: string,
+		senderGroupIdentity: string,
+		now = Date.now(),
+	): string | undefined {
+		if (!validStoredString(signature)) return undefined;
+		this.pruneMemory(now);
+		const delivered = this.delivered.get(messageId);
+		if (
+			delivered === undefined ||
+			delivered.state !== "accepted" ||
+			now - delivered.deliveredAt > this.ttlMs ||
+			delivered.signature !== signature ||
+			delivered.questionRoute?.senderGroupIdentity !== senderGroupIdentity
+		) {
+			return undefined;
+		}
+		return delivered.questionRoute.targetSessionId;
+	}
+
+	isQuestionAnswered(messageId: string): boolean {
+		return this.delivered.get(messageId)?.questionAnswered === true;
+	}
+
+	settleQuestion(messageId: string): void {
+		const delivered = this.delivered.get(messageId);
+		if (delivered === undefined || delivered.state !== "accepted" || delivered.questionRoute === undefined) return;
+		delivered.questionAnswered = true;
+	}
+
+	record(
+		messageId: string,
+		signature: string,
+		now = Date.now(),
+		targetIdentity?: string,
+	): DeliveredMessageRecordResult {
+		return this.recordEntry(messageId, { state: "accepted", deliveredAt: now, signature, targetIdentity });
+	}
+
+	recordQuestion(
+		messageId: string,
+		signature: string,
+		questionRoute: DeliveredQuestionRoute,
+		now = Date.now(),
+		targetIdentity?: string,
+	): DeliveredMessageRecordResult {
+		return this.recordEntry(messageId, {
+			state: "accepted",
+			deliveredAt: now,
+			signature,
+			targetIdentity,
+			questionRoute,
+		});
+	}
+
+	reserve(
+		messageId: string,
+		signature: string,
+		now = Date.now(),
+		targetIdentity?: string,
+	): DeliveredMessageRecordResult {
+		return this.recordEntry(messageId, { state: "reserved", deliveredAt: now, signature, targetIdentity });
+	}
+
+	reserveQuestion(
+		messageId: string,
+		signature: string,
+		questionRoute: DeliveredQuestionRoute,
+		now = Date.now(),
+		targetIdentity?: string,
+	): DeliveredMessageRecordResult {
+		return this.recordEntry(messageId, {
+			state: "reserved",
+			deliveredAt: now,
+			signature,
+			targetIdentity,
+			questionRoute,
+		});
+	}
+
+	accept(messageId: string, signature: string, targetIdentity?: string): DeliveredMessageAcceptResult {
+		if (!validStoredString(signature)) return "invalid";
+		const existing = this.delivered.get(messageId);
+		if (existing === undefined) return "invalid";
+		if (existing.signature !== signature || existing.targetIdentity !== targetIdentity) return "conflict";
+		existing.state = "accepted";
+		return "accepted";
+	}
+
+	forget(messageId: string, signature: string): void {
+		if (!validStoredString(signature)) return;
+		const delivered = this.delivered.get(messageId);
+		if (delivered?.signature === signature) {
+			this.retainedBytes -= entryByteSize(messageId, delivered);
+			this.delivered.delete(messageId);
+		}
+	}
+
+	close(): void {}
+
+	private lookupEntry(
+		messageId: string,
+		signature: string,
+		targetIdentity: string | undefined,
+		requireTargetIdentity: boolean,
+		now: number,
+	): DeliveredMessageMatch {
+		this.pruneMemory(now);
+		const delivered = this.delivered.get(messageId);
+		if (delivered === undefined || now - delivered.deliveredAt > this.ttlMs) return "miss";
+		if (delivered.signature !== signature) return "conflict";
+		if (requireTargetIdentity && delivered.targetIdentity !== targetIdentity) return "conflict";
+		if (delivered.state === "reserved") return "uncertain";
+		return "match";
+	}
+
+	private recordEntry(messageId: string, delivered: DeliveredMessage): DeliveredMessageRecordResult {
+		if (!validStoredString(messageId) || !validStoredString(delivered.signature)) return "invalid";
+		if (
+			!Number.isSafeInteger(delivered.deliveredAt) ||
+			delivered.deliveredAt < 0 ||
+			(delivered.targetIdentity !== undefined && !validStoredString(delivered.targetIdentity)) ||
+			(delivered.questionRoute !== undefined &&
+				(!validStoredString(delivered.questionRoute.targetSessionId) ||
+					!validStoredString(delivered.questionRoute.senderGroupIdentity)))
+		) {
+			return "invalid";
+		}
+		if (entryByteSize(messageId, delivered) > this.maxBytes) return "capacity";
+		this.pruneMemory(delivered.deliveredAt);
+		const existing = this.delivered.get(messageId);
+		if (existing !== undefined) {
+			if (existing.signature !== delivered.signature || existing.targetIdentity !== delivered.targetIdentity) {
+				return "conflict";
+			}
+			return existing.state === "accepted" ? "match" : "uncertain";
+		}
+		const size = entryByteSize(messageId, delivered);
+		if (this.delivered.size >= this.maxEntries || this.retainedBytes + size > this.maxBytes) return "capacity";
+		this.delivered.set(messageId, delivered);
+		this.retainedBytes += size;
+		return "recorded";
+	}
+
+	private pruneMemory(now: number): void {
+		for (const [messageId, delivered] of this.delivered) {
+			if (now - delivered.deliveredAt <= this.ttlMs) continue;
+			this.delivered.delete(messageId);
+			this.retainedBytes -= entryByteSize(messageId, delivered);
+		}
+	}
+}
+
+/**
  * Bounded durable operation authority. The broker uses a SQLite-backed instance;
  * tests may omit `storagePath` for an isolated in-memory authority. Durable
  * signatures are keyed SHA-256 HMACs, so message and attachment content never

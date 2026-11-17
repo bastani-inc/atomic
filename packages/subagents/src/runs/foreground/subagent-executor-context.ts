@@ -56,13 +56,13 @@ export function refuseSubagentChildDelegation(
 	};
 }
 
-export function prepareExecutionContext(input: {
+export async function prepareExecutionContext(input: {
 	params: SubagentParamsLike;
 	ctx: ExtensionContext;
 	signal: AbortSignal;
 	onUpdate?: (r: SubagentToolResult) => void;
 	deps: ResolvedExecutorDeps;
-}): ExecutionContextBuildResult {
+}): Promise<ExecutionContextBuildResult> {
 	const { params, ctx, signal, onUpdate, deps } = input;
 	const stageCloseSignal = ctx.orchestrationContext?.messageAdmission?.boundary.closeSignal;
 	const executionSignal = stageCloseSignal === undefined ? signal : AbortSignal.any([signal, stageCloseSignal]);
@@ -112,7 +112,7 @@ export function prepareExecutionContext(input: {
 		effectiveParams = applyAgentDefaultContext(effectiveParams, discoveredAgents);
 	}
 	const sessionName = resolveIntercomSessionTarget(deps.pi.getSessionName(), ctx.sessionManager.getSessionId());
-	const intercomBridge = resolveIntercomBridge({
+	const intercomBridge = await resolveIntercomBridge({
 		config: deps.config.intercomBridge,
 		context: effectiveParams.context,
 		orchestratorTarget: sessionName,
