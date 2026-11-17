@@ -3,7 +3,11 @@ import { randomUUID } from "node:crypto";
 import * as native from "@bastani/atomic-natives";
 import { test } from "vitest";
 import type * as C from "../../packages/coding-agent/src/core/tasks/contracts.js";
-import { TaskSupervisor, type WaitLease } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
+import {
+	type OwnerLease,
+	TaskSupervisor,
+	type WaitLease,
+} from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { sleep } from "../helpers/runtime.js";
 
 function value<T, E>(result: C.Result<T, E>): T {
@@ -447,6 +451,58 @@ test.runIf(process.platform !== "win32")(
 		} finally {
 			value(await h.supervisor.closeTaskOwner(h.owner, "session-close"));
 			actor.disposeSubscription(h.journal.lease);
+		}
+	},
+);
+
+test.runIf(process.platform !== "win32")(
+	"a command that exits before its start returns is reported settled only once its task resolves on its owner",
+	async () => {
+		// The native start returns on the JS thread only after it spawned the command, which may exit, and the owner's
+		// drain see it settled, first. Hold each start's result until its command has settled and that drain has run.
+		const nativeStart = native.TaskSupervisor.prototype.startCommandTask;
+		native.TaskSupervisor.prototype.startCommandTask = async function (
+			this: native.TaskSupervisor,
+			...args: Parameters<typeof nativeStart>
+		) {
+			const started = await nativeStart.apply(this, args);
+			if (started.ok) {
+				const deadline = Date.now() + 5000;
+				while (!this.taskSettlement(started.value).ok && Date.now() < deadline) await sleep(5);
+				// Past several of the owner's fallback drains, so its reconcile has seen the settlement.
+				await sleep(200);
+			}
+			return started;
+		};
+		const supervisor = new TaskSupervisor();
+		const scope: C.OwnerScope = { kind: "session", sessionId: randomUUID() };
+		let owner: OwnerLease | undefined;
+		const resolvedWhenSettled: boolean[] = [];
+		const host = supervisor.bindHostSession({
+			scope,
+			authorizeLaunch() {},
+			onTaskSettled(ref) {
+				resolvedWhenSettled.push(supervisor.lookupTask(owner!, ref.taskId).ok);
+			},
+			createRunner() {
+				throw new Error("command must not launch an agent runner");
+			},
+		});
+		owner = value(supervisor.openTaskOwner(host, scope));
+		try {
+			const task = value(
+				await supervisor.startCommandTask(
+					owner,
+					{ kind: "command", command: "true", terminal: { kind: "pipe" } },
+					operation(),
+				),
+			);
+			await eventually(() => resolvedWhenSettled.length > 0);
+			assert.deepEqual(resolvedWhenSettled, [true], "its host can resolve the task it is told settled");
+			assert.equal(value(supervisor.lookupTask(owner, supervisor.taskReference(task).taskId)), task);
+		} finally {
+			native.TaskSupervisor.prototype.startCommandTask = nativeStart;
+			value(await supervisor.closeTaskOwner(owner, "session-close"));
 		}
 	},
 );

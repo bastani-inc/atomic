@@ -6,6 +6,14 @@
 
 - `atomic worker status` and `/workflow status` show the fleet controller, its latest scale events, the fleet-wide rate limits and each worker host's checkpoint shipping lag, and when each running child last recorded a step. `atomic worker metrics` caps the hosts it asks for at what the fleet-wide rate limits keep busy, by the last 10 minutes of calls, and exports the cap as `rateCapHosts` and `atomic_fleet_rate_cap_hosts`. See [The scaling signal](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/docs/guides/worker-hosts.md#the-scaling-signal) ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
 
+### Changed
+
+- Clarified in `codemode`'s description, system-prompt guidance, and `searchTools()`/`describeTool()` hints that `subagent`, `workflow`, and other model-only tools (plus `intercom`'s model-only actions) cannot be called from inside a `codemode` script, and should be called directly as separate top-level tools when available in the session
+
+### Fixed
+
+- A fast foreground shell command no longer delivers a stray `Background shell completed` notice after its own result when the command exits before Atomic has finished starting it. The model was shown the command's result a second time, as a background shell's, in chats and workflow stages alike ([#5333](https://github.com/bastani-inc/atomic/pull/5333))
+
 ## [0.9.88] - 2026-11-16
 
 Atomic runs on its own libraries, workflows scale out to worker fleets on libSQL or PostgreSQL, and every screen shares one set of keys.
