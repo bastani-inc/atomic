@@ -45,6 +45,7 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"search",
 	"startHostProcess",
 	"tryAdvisoryLock",
+	"trySharedAdvisoryLock",
 	"windowsDirectorySecurity",
 	"windowsDirectorySecurityAsync",
 ] as const;
