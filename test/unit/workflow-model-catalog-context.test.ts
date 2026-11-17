@@ -69,29 +69,25 @@ test("workflow stage model catalog includes alternatives beyond the current mode
 	assert.equal(catalog.currentModel, current);
 });
 
-test("workflow stage auto routing refuses a host registry without classifier lookup instead of using built-in Jev", async () => {
-	const current = model("provider-a", "current");
+test("auto resolves to the configured default model, else the live session model, with no model request", () => {
+	const current = { ...model("provider-a", "current"), reasoning: true };
+	const alternate = { ...model("provider-b", "alternate"), reasoning: true };
 	const transport = vi.fn();
 	vi.stubGlobal("fetch", transport);
 	try {
-		const catalog = workflowModelCatalogFromContext({
+		const context = {
 			model: current,
-			getDecisionModel: () => "",
-			modelRegistry: {
-				getAvailable: () => [current],
-				getAll: () => [current],
-				streamSimple: () => {
-					throw new Error("no chat inference expected");
-				},
-				containsConfiguredCredential: async () => false,
-				getProviderAuth: async () => ({ auth: { apiKey: "synthetic-stored-key" } }),
-			},
-		});
-		assert.ok(catalog?.routeModel);
-		await assert.rejects(
-			catalog.routeModel({ task: "Actual task", stageName: "analyze", constraints: [] }),
-			/requires host routing, classifier model, and credential screening support/,
-		);
+			thinkingLevel: "low" as const,
+			modelRegistry: { getAvailable: () => [current, alternate] },
+		};
+		const withDefault = workflowModelCatalogFromContext(context, undefined, () => ({
+			defaultProvider: "provider-b",
+			defaultModel: "alternate",
+			defaultThinkingLevel: "high",
+		}));
+		assert.deepEqual(withDefault?.autoModel?.(), { model: alternate, thinkingLevel: "high" });
+		const withoutDefault = workflowModelCatalogFromContext(context, undefined, () => ({}));
+		assert.deepEqual(withoutDefault?.autoModel?.(), { model: current, thinkingLevel: "low" });
 		assert.equal(transport.mock.calls.length, 0);
 	} finally {
 		vi.unstubAllGlobals();

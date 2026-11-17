@@ -301,6 +301,7 @@ export async function planVerbatimCompaction(
 			sessionThinkingLevel: this.thinkingLevel,
 			isFallbackModelAllowed: this._isFallbackModelAllowed,
 			blockedModels: this._fallbackBlockedModels,
+			blockedProviders: this._fallbackBlockedProviders,
 		};
 		const run = await runVerbatimCompaction(preparation, model, {
 			...plan,

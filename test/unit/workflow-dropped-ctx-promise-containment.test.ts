@@ -22,9 +22,9 @@ const CALLS = [
 	{ call: "stage-prompt", label: "ctx.stage().prompt", reason: /prompt adapter failed/, rejections: 1 },
 	{
 		call: "stage-methods",
-		label: "ctx.stage() steer, followUp, sendUserMessage, setModel, setThinkingLevel, cycleModel, cycleThinkingLevel, navigateTree and compact",
+		label: "ctx.stage() steer, followUp, sendUserMessage, setModel, cycleModel, cycleThinkingLevel, navigateTree and compact",
 		reason: /prompt adapter not configured/,
-		rejections: 9,
+		rejections: 8,
 	},
 	{ call: "chain", label: "ctx.chain", reason: /prompt adapter failed/, rejections: 1 },
 	{ call: "parallel", label: "ctx.parallel", reason: /prompt adapter failed/, rejections: 1 },
