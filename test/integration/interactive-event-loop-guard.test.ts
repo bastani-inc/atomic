@@ -397,7 +397,11 @@ describe("the interactive host and engine keep their event loops responsive", ()
 				program.write(KEY.end);
 				await press(program, KEY.backspace, 20, TYPING_INTERVAL_MS);
 				await typeText(program, "with measurements", TYPING_INTERVAL_MS);
-				await sleep(500);
+				await program.waitForScreen(
+					(screen) => screen.includes("Refactor the session loader") && screen.includes("with measurements"),
+					10_000,
+					"the edited prompt",
+				);
 				program.write(KEY.clearLine);
 			});
 			assertWithinBudgets(result);
@@ -467,13 +471,27 @@ describe("the interactive host and engine keep their event loops responsive", ()
 				"resume",
 				{ args: ["--session", RESUMED_SESSION_ID], cwd: join(root, "project-resume") },
 				async (program) => {
+					await program.waitForScreen(
+						(screen) => screen.includes(`case-${RESUMED_TURNS - 1}`),
+						10_000,
+						"the resumed transcript's tail",
+					);
 					await press(program, KEY.pageUp, 30, 50);
 					program.write(KEY.transcriptTop);
-					await sleep(500);
+					await program.waitForScreen(
+						(screen) => screen.includes("Turn 0:"),
+						10_000,
+						"the resumed transcript's top",
+					);
 					await press(program, KEY.pageDown, 30, 50);
 					await press(program, KEY.wheelUp, 30, 30);
 					await press(program, KEY.wheelDown, 30, 30);
 					program.write(KEY.transcriptBottom);
+					await program.waitForScreen(
+						(screen) => screen.includes(`case-${RESUMED_TURNS - 1}`),
+						10_000,
+						"the resumed transcript's bottom",
+					);
 				},
 			);
 			assertWithinBudgets(result);

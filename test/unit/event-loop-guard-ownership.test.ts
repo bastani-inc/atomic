@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { type BlockRecord, blockOwner } from "../helpers/event-loop-guard-fixture.ts";
+import { OWNED_ELSEWHERE } from "../../scripts/event-loop/policy.js";
+import { type BlockRecord, blockOwner } from "../helpers/event-loop-guard-fixture.js";
 
 const areas = [
 	{ owner: "#5285", paths: ["packages/coding-agent/src/core/tools/windows-directory-security.ts"] },
@@ -36,6 +37,16 @@ test("a block whose every stack runs in another change's area belongs to that ch
 		"#5285",
 	);
 	assert.equal(blockOwner(block(["capture file:///x/dist/core/worktree-snapshot/capture.js:1"]), areas), "#5345");
+	for (const frame of [
+		"confirmRetiredShardUnused file:///repo/packages/workflows/src/workers/ship-shard.ts:120:5",
+		"confirmRetiredShardUnused file:///pkg/dist/builtin/workflows/src/workers/ship-shard.js:120:5",
+		"confirmRetiredShardUnused file:///pkg/dist/builtin/workflows/src/extension/index.bundle.mjs:9120:5",
+	]) {
+		assert.equal(
+			blockOwner(block(["prepare node:sqlite", frame]), OWNED_ELSEWHERE),
+			"#5376 (node:sqlite statements off the event loop)",
+		);
+	}
 });
 
 test("a block with any stack in this code's own modules, or in two areas, is not deferred", () => {
@@ -56,6 +67,33 @@ test("a block with any stack in this code's own modules, or in two areas, is not
 				["capture file:///x/dist/core/worktree-snapshot/capture.js:1"],
 			),
 			areas,
+		),
+		undefined,
+	);
+	assert.equal(
+		blockOwner(
+			{
+				type: "block",
+				role: "engine",
+				at: "2026-11-17T00:00:00.000Z",
+				durationMs: 400,
+				samples: 3,
+				hotFrames: [
+					{ count: 3, frame: "rebuildIndex file:///x/dist/builtin/workflows/src/fleet/controller.js:10" },
+				],
+				stacks: [
+					{
+						count: 3,
+						frames: [
+							"rebuildIndex file:///x/dist/builtin/workflows/src/fleet/controller.js:10",
+							"journalStep file:///x/dist/builtin/workflows/src/fleet/controller.js:40",
+							"commitAlone file:///x/dist/core/storage/node-sqlite.js:1500",
+							"runBatch file:///x/dist/core/storage/node-sqlite.js:1420",
+						],
+					},
+				],
+			},
+			OWNED_ELSEWHERE,
 		),
 		undefined,
 	);

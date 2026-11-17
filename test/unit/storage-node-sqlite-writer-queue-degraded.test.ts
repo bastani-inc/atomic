@@ -65,7 +65,7 @@ const { getWriterQueueDegradation, getWriterQueueStats, openNodeSqliteDatabase, 
 );
 // The adapter loads debug output at its first degradation. Load it now, in the same module graph, so each test's
 // degradations are reported while that test runs rather than when a slow first load finishes.
-await import("../../packages/coding-agent/src/core/debug.js");
+const { flushDebugLog } = await import("../../packages/coding-agent/src/core/debug.js");
 
 /** Debug records follow a degradation asynchronously; on a loaded machine they can take far longer than a turn. */
 const DEBUG_RECORD_WAIT_MS = 10_000;
@@ -996,6 +996,7 @@ test("with debug mode off a writers'-queue degradation writes no debug log (#436
 		});
 		assert.equal(getWriterQueueDegradation(database).length, 1);
 		for (let index = 0; index < 10; index++) await turn();
+		await flushDebugLog();
 		assert.equal(await log.exists(), false);
 	});
 });

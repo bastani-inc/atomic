@@ -315,11 +315,20 @@ test("restores the interactive keybindings after a standalone startup dialog", a
 
 test("omits the untrusted warning once the startup trust prompt is accepted", async () => {
 	const { mode, chatContainer, trust } = createMode({ holdTuiForStartupTrust: true });
+	const notices = (mode as unknown as { startupNoticesContainer: Container }).startupNoticesContainer;
 	startup.trustSettled.mockImplementation(async () => {
 		trust.granted = true;
 	});
 
 	await mode.init();
+	await vi.waitFor(() =>
+		assert.equal(
+			chatContainer.children.some(
+				(child) => child !== notices && child instanceof Container && child.children.length === 0,
+			),
+			false,
+		),
+	);
 
 	assert.equal(transcript(chatContainer).includes(TRUST_WARNING), false);
 });

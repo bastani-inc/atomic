@@ -256,13 +256,22 @@ export function describeBlock(block: BlockRecord): string {
  * `packages/coding-agent/src/core/tools/x.ts` and for `.../dist/core/tools/x.js`, `builtin/intercom/broker/y` for
  * `packages/intercom/broker/y.ts` and its copy under `dist/builtin/intercom/`.
  */
-function modulePathTail(path: string): string {
-	return path
-		.replaceAll("\\", "/")
-		.replace(/\.(?:[cm]?[jt]s)$/, "")
-		.replace(/^packages\/coding-agent\/src\//, "")
-		.replace(/^packages\/([^/]+)\/(?:src\/)?/, "builtin/$1/");
+function modulePathTails(path: string): string[] {
+	const normalized = path.replaceAll("\\", "/").replace(/\.(?:[cm]?[jt]s)$/, "");
+	if (normalized.startsWith("packages/coding-agent/src/")) {
+		return [normalized.slice("packages/coding-agent/src/".length)];
+	}
+	const match = /^packages\/([^/]+)\/(.+)$/.exec(normalized);
+	if (!match) return [normalized];
+	const [, pkg, rest] = match;
+	const tails = [`${pkg}/${rest}`, `builtin/${pkg}/${rest.replace(/^src\//, "")}`];
+	if (normalized === "packages/workflows/src/workers/ship-shard") {
+		tails.push("builtin/workflows/src/extension/index.bundle");
+	}
+	return tails;
 }
+
+const isApplicationFrame = (frame: string) => !frame.startsWith("… ") && !/\bnode:/.test(frame) && /[\\/]/.test(frame);
 
 /**
  * The open change that owns the code a block spent its samples in, when every hot frame it names lies in one such
@@ -272,13 +281,18 @@ export function blockOwner(
 	block: BlockRecord,
 	areas: readonly { readonly owner: string; readonly paths: readonly string[] }[],
 ): string | undefined {
-	const tails = areas.map((area) => ({ owner: area.owner, tails: area.paths.map(modulePathTail) }));
+	const tails = areas.map((area) => ({ owner: area.owner, tails: area.paths.flatMap(modulePathTails) }));
 	const ownerOfFrame = (frame: string) =>
 		tails.find((area) =>
 			area.tails.some((tail) => frame.replaceAll("\\", "/").includes(tail.endsWith("/") ? tail : `${tail}.`)),
 		)?.owner;
 	const owners = new Set<string | undefined>();
-	for (const stack of block.stacks) owners.add(stack.frames.map(ownerOfFrame).find((owner) => owner !== undefined));
+	for (const stack of block.stacks) {
+		const hot = stack.frames.find(isApplicationFrame);
+		owners.add(hot === undefined ? undefined : ownerOfFrame(hot));
+	}
+	const hottest = block.hotFrames.map((hot) => hot.frame).find(isApplicationFrame);
+	if (hottest !== undefined) owners.add(ownerOfFrame(hottest));
 	if (owners.size !== 1) return undefined;
 	return [...owners][0];
 }

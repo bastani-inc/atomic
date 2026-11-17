@@ -1055,6 +1055,8 @@ describe("workspace git runner (#3109)", () => {
 			order.push(outcome.kind);
 			assert.deepEqual(order, ["recorded", "exited"]);
 
+			const PID_FILE_WAIT_MS = 5_000;
+			const PID_FILE_POLL_MS = 10;
 			const pidFile = join(dirs.root, "unrecorded.pid");
 			const error = await rejection(
 				runWorkspaceProcess({
@@ -1063,7 +1065,11 @@ describe("workspace git runner (#3109)", () => {
 					cwd: dirs.root,
 					env: process.env,
 					onSpawn: async () => {
-						await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+						const deadline = Date.now() + PID_FILE_WAIT_MS;
+						while (!existsSync(pidFile) || readFileSync(pidFile, "utf-8").trim().length === 0) {
+							assert.ok(Date.now() < deadline, "the child did not write its pid file in time");
+							await new Promise((resolveWait) => setTimeout(resolveWait, PID_FILE_POLL_MS));
+						}
 						throw new Error("could not record the process");
 					},
 				}),

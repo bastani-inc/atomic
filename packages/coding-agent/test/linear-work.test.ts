@@ -2,58 +2,31 @@ import assert from "node:assert/strict";
 import chalk from "chalk";
 import { applyPatch, lineDiff, wordDiff } from "diff";
 import { beforeAll, describe, it } from "vitest";
-import { measureStringWork } from "../../tui/test/string-work.ts";
-import type { SessionInfo } from "../src/core/session-manager.ts";
-import { generateEditDiff, generateUnifiedPatch } from "../src/core/tools/edit-diff.ts";
-import { renderDiff } from "../src/modes/interactive/components/diff.ts";
-import { SelectorState } from "../src/modes/interactive/components/selector.ts";
-import { filterAndSortSessions } from "../src/modes/interactive/components/session-selector-search.ts";
-import { appendNewChildrenBeforeAttachedChild } from "../src/modes/interactive/interactive-child-ordering.ts";
-import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
-import { reconcileQueuedSubmissions, showSubmissionAsQueued } from "../src/modes/interactive/interactive-queueing.ts";
-import { StartupChatContainer } from "../src/modes/interactive/interactive-startup-chat-container.ts";
-import { getModelSelectorSearchText } from "../src/modes/interactive/model-search.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { measureStringWork } from "../../tui/test/string-work.js";
+import type { SessionInfo } from "../src/core/session-manager.js";
+import { generateEditDiff, generateUnifiedPatch } from "../src/core/tools/edit-diff.js";
+import { renderDiff } from "../src/modes/interactive/components/diff.js";
+import { SelectorState } from "../src/modes/interactive/components/selector.js";
+import { filterAndSortSessions } from "../src/modes/interactive/components/session-selector-search.js";
+import { appendNewChildrenBeforeAttachedChild } from "../src/modes/interactive/interactive-child-ordering.js";
+import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.js";
+import { reconcileQueuedSubmissions, showSubmissionAsQueued } from "../src/modes/interactive/interactive-queueing.js";
+import { StartupChatContainer } from "../src/modes/interactive/interactive-startup-chat-container.js";
+import { getModelSelectorSearchText } from "../src/modes/interactive/model-search.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 beforeAll(() => initTheme("dark"));
 
-/**
- * Input sizes ten times apart. A bound per unit of input that holds at both leaves no room for work that grows with
- * the square of the input.
- */
 const SIZES = [2_000, 20_000] as const;
-/**
- * Token comparisons per word of a modified line pair. Highlighting stops comparing once the lines need more edits than
- * a highlight can usefully show, so the comparisons left are a fixed number plus a few per word.
- */
 const WORD_COMPARISONS_PER_WORD = 4;
-/**
- * Line comparisons per line of a rewritten block, for the display diff and the patch together. Each diff stops once
- * the block needs more line edits than it would show line by line, so the comparisons left are a fixed number plus a
- * few per line.
- */
 const LINE_COMPARISONS_PER_LINE = 32;
-/**
- * Reads of the transcript's children per child when a prompt's replacement is appended before its echo: the children
- * are collected once, searched for the echo, filtered for the new ones, and scanned once to move them.
- */
-const SWAP_READS_PER_CHILD = 8;
-/** Classifications per child appended to the transcript: the appended child is classified once. */
+const SWAP_READS_PER_APPEND = 8;
 const CLASSIFICATIONS_PER_CHILD = 2;
-/**
- * String work per character of the session fields a query token searches: a field is lowercased once and scanned for
- * the token, and the name, summary and directory are fuzzy matched too when the token is not found literally.
- */
 const SESSION_SEARCH_WORK_PER_CHARACTER_PER_TOKEN = 3;
-/**
- * String work per character of a row's search text and query token: the text is joined from the row's fields once,
- * then lowercased, scanned by the greedy alignment and searched for contiguous occurrences once per token.
- */
 const SELECTOR_SEARCH_WORK_PER_CHARACTER_PER_TOKEN = 4;
 
 type Differ = { equals(left: string, right: string, options: object): boolean };
 
-/** Calls `run` and returns how many tokens `differ` compared meanwhile. Unlike a spy, it keeps no arguments. */
 function countComparisons(differ: Differ, run: () => void): number {
 	const own = Object.getOwnPropertyDescriptor(differ, "equals");
 	const compare = differ.equals;
@@ -71,18 +44,9 @@ function countComparisons(differ: Differ, run: () => void): number {
 	return comparisons;
 }
 
-/**
- * Element visits and keyed lookups per queued message when a queue update confirms the editor's copies: each listed
- * message is matched once against the previous listing, and each copy once against the messages the update added.
- */
 const QUEUE_WORK_PER_MESSAGE = 8;
-/** Queue lengths ten times apart, smaller than SIZES because showing each message as queued copies the queue. */
 const QUEUE_LENGTHS = [500, 5_000] as const;
 
-/**
- * Calls `run` and returns the collection work it did: elements Array indexOf scanned and splice moved, and Map lookups
- * and updates.
- */
 function measureCollectionWork(run: () => void): number {
 	const { indexOf, splice } = Array.prototype;
 	const { get, set } = Map.prototype;
@@ -113,7 +77,6 @@ function measureCollectionWork(run: () => void): number {
 	return work;
 }
 
-/** `count` words from a vocabulary of 997, the `index`th being word `offset + index * step`. */
 function words(count: number, step: number, offset: number): string {
 	return Array.from({ length: count }, (_, index) => `w${(offset + index * step) % 997}`).join(" ");
 }
@@ -126,6 +89,7 @@ describe("diff rendering does work linear in its input", () => {
 				assert.equal(renderDiff(diff).split("\n").length, 2);
 			});
 			const bound = WORD_COMPARISONS_PER_WORD * 2 * count;
+			assert.ok(made > 0);
 			assert.ok(made <= bound, `${count} words: ${made} token comparisons, bound ${bound}`);
 		}
 	});
@@ -141,6 +105,7 @@ describe("diff rendering does work linear in its input", () => {
 				assert.equal(applyPatch(base, patch), changed);
 			});
 			const bound = LINE_COMPARISONS_PER_LINE * 2 * count;
+			assert.ok(made > 0);
 			assert.ok(made <= bound, `${count} lines: ${made} line comparisons, bound ${bound}`);
 		}
 	});
@@ -159,6 +124,7 @@ describe("transcript append does work linear in the transcript", () => {
 				assert.equal(chat.countedChildren(), index + 1);
 			}
 			const bound = CLASSIFICATIONS_PER_CHILD * count;
+			assert.ok(classifications > 0);
 			assert.ok(classifications <= bound, `${count} children: ${classifications} classifications`);
 		}
 	});
@@ -181,8 +147,11 @@ describe("transcript append does work linear in the transcript", () => {
 			appendNewChildrenBeforeAttachedChild(chat, echo, () => chat.addChild(replacement));
 			assert.equal(chat.children.at(-2), replacement);
 			assert.equal(chat.children.at(-1), echo);
-			const bound = SWAP_READS_PER_CHILD * chat.children.length;
-			assert.ok(reads.count <= bound, `${count} children: ${reads.count} child reads, bound ${bound}`);
+			assert.ok(reads.count > 0);
+			assert.ok(
+				reads.count <= SWAP_READS_PER_APPEND,
+				`${count} children: ${reads.count} child reads, bound ${SWAP_READS_PER_APPEND}`,
+			);
 		}
 	});
 });
@@ -217,6 +186,7 @@ describe("selector search does work linear in its input", () => {
 			const { value, work } = measureStringWork(() => filterAndSortSessions(sessions, query, "relevance"));
 			assert.ok(value.length > 0);
 			const bound = SESSION_SEARCH_WORK_PER_CHARACTER_PER_TOKEN * tokens * searched;
+			assert.ok(work > 0);
 			assert.ok(work <= bound, `${count} sessions: ${work} string work, bound ${bound}`);
 		}
 	});
@@ -249,6 +219,7 @@ describe("model search does work linear in its input", () => {
 				0,
 			);
 			const bound = SELECTOR_SEARCH_WORK_PER_CHARACTER_PER_TOKEN * tokens * searched;
+			assert.ok(work > 0);
 			assert.ok(work <= bound, `${count} models: ${work} string work, bound ${bound}`);
 		}
 	});
@@ -271,6 +242,7 @@ describe("queue updates do work linear in the queue", () => {
 			const work = measureCollectionWork(() => reconcileQueuedSubmissions(mode, { steering: texts, followUp: [] }));
 			assert.deepEqual(mode.getAllQueuedMessages(), { steering: [], followUp: [] });
 			const bound = QUEUE_WORK_PER_MESSAGE * length;
+			assert.ok(work > 0);
 			assert.ok(work <= bound, `${length} messages: ${work} collection work, bound ${bound}`);
 		}
 	});

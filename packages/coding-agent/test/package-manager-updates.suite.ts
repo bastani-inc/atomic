@@ -320,11 +320,10 @@ describe("DefaultPackageManager", () => {
 				writeFileSync(join(legacyRoot, name, "package.json"), JSON.stringify({ name, version: "1.0.0" }));
 			}
 			settingsManager.setPackages(names.map((name) => `npm:${name}`));
-			// `npm root -g` takes a while, so every check is waiting on it at once.
+			const managerWithInternals = packageManager as object as PackageManagerInternals;
 			const runCommandCaptureSpy = vi
-				.spyOn(packageManager as any, "runCommandCapture")
-				.mockImplementation(async (...callArgs: unknown[]) => {
-					const [, args] = callArgs as [string, string[]];
+				.spyOn(managerWithInternals, "runCommandCapture")
+				.mockImplementation(async (_command, args) => {
 					if (args[0] !== "root") return '"2.0.0"';
 					await new Promise((resolve) => setTimeout(resolve, 100));
 					return legacyRoot;
@@ -333,7 +332,7 @@ describe("DefaultPackageManager", () => {
 			const updates = await packageManager.checkForAvailableUpdates();
 
 			expect(updates.map((update) => update.source).sort()).toEqual(names.map((name) => `npm:${name}`));
-			const rootLookups = runCommandCaptureSpy.mock.calls.filter(([, args]) => (args as string[])[0] === "root");
+			const rootLookups = runCommandCaptureSpy.mock.calls.filter(([, args]) => args[0] === "root");
 			expect(rootLookups).toEqual([
 				["npm", ["root", "-g"], expect.objectContaining({ timeoutMs: expect.any(Number) })],
 			]);

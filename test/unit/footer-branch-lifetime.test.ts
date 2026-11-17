@@ -297,7 +297,11 @@ test("unleased alternate reads remain fresh without retaining watchers", async (
 			await eventually(() => assert.equal(provider.getGitBranch(cwd), "second"));
 		}
 		assert.equal(observed.length, 0);
-		assert.equal(provider.getGitBranch(join(directory, "missing")), null);
+		const missing = join(directory, "missing");
+		await writeFileEnsuringDir(join(missing, ".git/HEAD"), "ref: refs/heads/present\n");
+		await eventually(() => assert.equal(provider.getGitBranch(missing), "present"));
+		rmSync(missing, { recursive: true, force: true });
+		await eventually(() => assert.equal(provider.getGitBranch(missing), null));
 	} finally {
 		provider.dispose();
 		rmSync(directory, { recursive: true, force: true });

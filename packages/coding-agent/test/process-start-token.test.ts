@@ -99,13 +99,11 @@ describe("the start of a process of this host (#5141)", () => {
 				} finally {
 					process.env.PATH = path;
 				}
-				// PowerShell that could not be started is not tried again.
 				assert.equal(await processStartTokenAsync(child.pid), undefined);
 			} finally {
 				await child.stop();
 			}
 		},
-		60_000,
 	);
 
 	test.skipIf(!windows)(
@@ -122,7 +120,6 @@ describe("the start of a process of this host (#5141)", () => {
 				await child.stop();
 			}
 		},
-		60_000,
 	);
 
 	test.skipIf(!windows)(
@@ -139,7 +136,6 @@ describe("the start of a process of this host (#5141)", () => {
 			// that process's start, which differs.
 			assert.notEqual(processStartToken(child.pid), start);
 		},
-		60_000,
 	);
 
 	test.skipIf(!windows)(
@@ -163,7 +159,6 @@ describe("the start of a process of this host (#5141)", () => {
 				await child.stop();
 			}
 		},
-		60_000,
 	);
 
 	test.skipIf(!windows)("a native reader that fails or answers nonsense gives no start (#5141)", () => {

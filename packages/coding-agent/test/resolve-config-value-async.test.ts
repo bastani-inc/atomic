@@ -7,7 +7,7 @@ import {
 	resolveConfigValue,
 	resolveConfigValueAsync,
 	resolveConfigValueUncachedAsync,
-} from "../src/core/resolve-config-value.ts";
+} from "../src/core/resolve-config-value.js";
 
 describe("resolveConfigValueAsync", () => {
 	let tempDir: string;
@@ -24,11 +24,9 @@ describe("resolveConfigValueAsync", () => {
 		vi.restoreAllMocks();
 	});
 
-	/** A command printing `value` that counts its runs in a file, with the file. */
 	function countingCommand(name: string, exit = 0): { command: string; runs: () => string } {
 		const counterFile = join(tempDir, name);
 		writeFileSync(counterFile, "0");
-		// Same complete escaping pass as above (CodeQL js/incomplete-sanitization).
 		const escapedPath = counterFile.replace(/\\/g, "/").replace(/[\\"]/g, "\\$&");
 		return {
 			command: `!sh -c 'count=$(cat "${escapedPath}"); echo $((count + 1)) > "${escapedPath}"; echo value; exit ${exit}'`,
@@ -79,17 +77,20 @@ describe("resolveConfigValueAsync", () => {
 		expect(runs()).toBe("2");
 	});
 
-	test("keeps the event loop running while a command runs", async () => {
-		if (process.platform === "win32") return;
+	const PROBE_INTERVAL_MS = 5;
+	const PROBE_SLEEP_SECONDS = 0.2;
+	const MIN_PROBE_TICKS = 5;
+
+	test.runIf(process.platform !== "win32")("keeps the event loop running while a command runs", async () => {
 		let ticks = 0;
 		const probe = setInterval(() => {
 			ticks += 1;
-		}, 5);
+		}, PROBE_INTERVAL_MS);
 		try {
-			expect(await resolveConfigValueAsync("!sleep 0.2; echo slow-value")).toBe("slow-value");
+			expect(await resolveConfigValueAsync(`!sleep ${PROBE_SLEEP_SECONDS}; echo slow-value`)).toBe("slow-value");
 		} finally {
 			clearInterval(probe);
 		}
-		expect(ticks).toBeGreaterThanOrEqual(5);
+		expect(ticks).toBeGreaterThanOrEqual(MIN_PROBE_TICKS);
 	});
 });

@@ -141,14 +141,14 @@ describe("DefaultPackageManager", () => {
 			});
 
 			const packagePath = join(agentDir, "npm", "node_modules", "pnpm-pkg");
-			vi.spyOn(packageManager as any, "runCommandSync").mockImplementation(() => {
+			const managerWithInternals = packageManager as object as PackageManagerInternals;
+			vi.spyOn(managerWithInternals, "runCommandSync").mockImplementation(() => {
 				throw new Error("legacy lookup unavailable");
 			});
-			vi.spyOn(packageManager as any, "runCommandCapture").mockRejectedValue(new Error("legacy lookup unavailable"));
+			vi.spyOn(managerWithInternals, "runCommandCapture").mockRejectedValue(new Error("legacy lookup unavailable"));
 			const runCommandSpy = vi
-				.spyOn(packageManager as any, "runCommand")
-				.mockImplementation(async (...callArgs: unknown[]) => {
-					const [command, args] = callArgs as [string, string[]];
+				.spyOn(managerWithInternals, "runCommand")
+				.mockImplementation(async (command, args) => {
 					expect(command).toBe("pnpm");
 					expect(args).toEqual([
 						"install",
@@ -337,8 +337,7 @@ describe("DefaultPackageManager", () => {
 			writeFileSync(join(packagePath, "package.json"), JSON.stringify({ name: "pnpm-pkg", version: "1.0.0" }));
 			writeFileSync(join(packagePath, "extensions", "index.ts"), "export default function() {};");
 
-			const pnpmList = (...callArgs: unknown[]): string => {
-				const [command, args] = callArgs as [string, string[]];
+			const pnpmList = (command: string, args: string[]): string => {
 				if (command !== "pnpm") {
 					throw new Error(`unexpected command ${command}`);
 				}
@@ -352,11 +351,12 @@ describe("DefaultPackageManager", () => {
 				}
 				throw new Error(`unexpected args ${args.join(" ")}`);
 			};
-			vi.spyOn(packageManager as any, "runCommandSync").mockImplementation(pnpmList);
-			vi.spyOn(packageManager as any, "runCommandCapture").mockImplementation(async (...callArgs: unknown[]) =>
-				pnpmList(...callArgs),
+			const managerWithInternals = packageManager as object as PackageManagerInternals;
+			vi.spyOn(managerWithInternals, "runCommandSync").mockImplementation(pnpmList);
+			vi.spyOn(managerWithInternals, "runCommandCapture").mockImplementation(async (command, args) =>
+				pnpmList(command, args),
 			);
-			const runCommandSpy = vi.spyOn(packageManager as any, "runCommand").mockResolvedValue(undefined);
+			const runCommandSpy = vi.spyOn(managerWithInternals, "runCommand").mockResolvedValue(undefined);
 
 			const result = await packageManager.resolve();
 
