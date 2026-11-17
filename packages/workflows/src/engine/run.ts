@@ -612,11 +612,10 @@ async function executeRun(
 	const copiedByFork = forkCopiedNodes(rootBackend, runId);
 	const existingRootHandle = opts.parentRun === undefined ? durableBackend.getWorkflow(runId) : undefined;
 	const isFreshLaunch = existingRootHandle === undefined && opts.continuation === undefined;
-	const initialBranch =
-		opts.workspace?.branch ??
-		opts.continuation?.source.branch ??
-		existingRootHandle?.branch ??
-		(isFreshLaunch ? await resolveInvocationGitBranch(opts.cwd ?? process.cwd()) : undefined);
+	const initialBranch = opts.workspace?.branch ?? opts.continuation?.source.branch ?? existingRootHandle?.branch;
+	// A fresh launch reads its checkout's branch off the event loop; the run is in the store, and quittable, meanwhile.
+	const freshLaunchBranch =
+		initialBranch === undefined && isFreshLaunch ? resolveInvocationGitBranch(opts.cwd ?? process.cwd()) : undefined;
 	const keepsCopiedParent = (parentId: string): boolean => keepsForkCopiedParent(copiedByFork, runSnapshot, parentId);
 	const runSnapshot: RunSnapshot = {
 		id: runId,
@@ -1645,6 +1644,12 @@ async function executeRun(
 	try {
 		workflowObservationRuntime(activeStore).startRun(runId);
 		activeStore.recordRunStart(runSnapshot);
+		void freshLaunchBranch?.then(
+			(branch) => {
+				if (branch !== undefined && runSnapshot.branch === undefined) runSnapshot.branch = branch;
+			},
+			() => {},
+		);
 		if (callerSignal?.aborted) onCallerAbort();
 		else callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
 		if (ownsCancellationRegistration) opts.cancellation?.register(runId, ownController);

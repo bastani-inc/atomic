@@ -71,13 +71,15 @@ describe("resume picker cost follows what changed, not how many sessions there a
 		assert.equal(realpathCalls(), 0);
 	});
 
-	it("resolves another spelling of a parent once per session, and a rebuild only resolves the parent again", () => {
+	it("resolves another spelling of a parent once per session, and a rebuild resolves nothing on the event loop", () => {
 		const rows = sessions(1000, (index) => (index === 5 ? "/tmp/resume-cost/./s-4.jsonl" : undefined));
-		buildSessionTree(rows);
+		const flat = flattenSessionTree(buildSessionTree(rows));
+		assert.equal(flat.find((node) => node.session.id === "s-5")?.depth, 1, "the other spelling names its parent");
 		assert.ok(realpathCalls() <= 1001, `${realpathCalls()} canonicalizations`);
 		vi.mocked(fs.realpathSync).mockClear();
 		buildSessionTree(rows);
-		assert.equal(realpathCalls(), 1);
+		// Symlinked spellings are resolved off the event loop, before the picker rebuilds; a rebuild reads none.
+		assert.equal(realpathCalls(), 0);
 	});
 
 	it("opens and clears a search over 1,000 sessions without touching the disk", () => {

@@ -28,8 +28,8 @@ function htmlText(html: string): string {
 }
 
 test.each([
-	{ title: "skill", path: `@${join(process.cwd(), "attio", "SKILL.md")}`, compact: "[skill] attio" },
-	{ title: "docs", path: `@${getReadmePath()}`, compact: "read docs README.md" },
+	{ title: "skill", path: `@${join(process.cwd(), "attio", "SKILL.md")}`, compact: "Read(attio/SKILL.md)" },
+	{ title: "docs", path: `@${getReadmePath()}`, compact: "Read(README.md)" },
 ])(
 	"an HTML export of a read renderer under another tool name shows an @-mentioned $title compactly",
 	({ path, compact }) => {
@@ -83,7 +83,7 @@ test("a read row whose path cannot be resolved under a restored checkout keeps i
 			},
 		);
 		await new Promise((resolve) => setTimeout(resolve, 50));
-		expect(rendered).toContain("[skill] loop");
+		expect(rendered).toContain("Read(loop/SKILL.md)");
 		expect(rejections).toEqual([]);
 	} finally {
 		process.off("unhandledRejection", onRejection);

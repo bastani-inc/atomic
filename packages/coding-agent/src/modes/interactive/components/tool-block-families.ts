@@ -294,7 +294,8 @@ function formatReadArgs(
 	args: Record<string, unknown> | undefined,
 	cwd: string,
 ): { display: string; startLine: number; basePath: string } {
-	const rawPath = asString(args?.path) ?? asString(args?.file_path) ?? "";
+	// An @-mentioned path reads the file it names, so it shows like any other read of that file.
+	const rawPath = (asString(args?.path) ?? asString(args?.file_path) ?? "").replace(/^@/, "");
 	if (!rawPath) return { display: "", startLine: 1, basePath: "" };
 	try {
 		const selector = splitReadLineSelector(rawPath);
