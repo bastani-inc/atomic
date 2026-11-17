@@ -687,6 +687,14 @@ export class PoolCoordinator {
 	 */
 	private readonly awaiting = new Map<string, number>();
 	private readonly pendingActivity = new Map<string, PoolActivityEntry>();
+	/**
+	 * Children whose enqueue the root has not been answered for yet: how many of their enqueues are in flight, and a
+	 * promise that settles once the last is answered. The root learns of a work from that answer and refuses activity of
+	 * a work it does not know, while a worker can claim the work as soon as it is queued (#5376).
+	 */
+	private readonly unanswered = new Map<string, { enqueues: number; readonly answered: PromiseWithResolvers<void> }>();
+	/** Each work of an unanswered child, by work id: its activity waits for the answer, which the root applies first. */
+	private readonly awaitingAnswer = new Map<string, string>();
 	private readonly sentRuns = new RunChangesEncoder();
 	private readonly batches = new Map<number, { readonly entries: readonly PoolActivityEntry[]; settle(): void }>();
 	/** The root's refusal of each work's latest refused publication, bound to the attempt that published it. */
@@ -926,12 +934,14 @@ export class PoolCoordinator {
 		this.counters.request(kind);
 		if ("id" in message) {
 			const command = message as CoordinatorCommand;
+			const answered = command.kind === "enqueue" ? this.answering(command.descriptor.childRunId) : undefined;
 			const handled = this.counters
 				.within(kind, () => this.execute(command))
 				.then(
 					(value) => this.port.send({ kind: "reply", id: command.id, value }),
 					(error: unknown) => this.port.send(failedCoordinatorReply(command.id, error)),
-				);
+				)
+				.finally(() => answered?.());
 			this.inflight.add(handled);
 			void handled.finally(() => this.inflight.delete(handled));
 			return;
@@ -1841,6 +1851,8 @@ export class PoolCoordinator {
 			if (retained) retained.enqueued = true;
 			return enqueued;
 		});
+		// Activity relayed for the work from another host waits for this answer too.
+		this.awaitAnswer(work.id, command.descriptor.childRunId);
 		// A retained earlier attempt counts as that incarnation's: attempts in this one start after it (#3979).
 		if (!this.attemptBase.has(work.id))
 			this.attemptBase.set(
@@ -1850,6 +1862,30 @@ export class PoolCoordinator {
 		if (work.state === "ready") this.idleClaims.wakeOne();
 		const result = await this.queue.result(this.root, work.id);
 		return { work, ...(result === undefined ? {} : { result }) };
+	}
+
+	/** Holds the activity of `childRunId`'s works until the returned callback says the root was sent the answer. */
+	private answering(childRunId: string): () => void {
+		const child = this.unanswered.get(childRunId) ?? { enqueues: 0, answered: Promise.withResolvers<void>() };
+		child.enqueues++;
+		this.unanswered.set(childRunId, child);
+		return () => {
+			if (--child.enqueues > 0) return;
+			this.unanswered.delete(childRunId);
+			let released = false;
+			for (const [workId, of] of this.awaitingAnswer)
+				if (of === childRunId) {
+					this.awaitingAnswer.delete(workId);
+					released ||= this.pendingActivity.has(workId);
+				}
+			child.answered.resolve();
+			if (released) this.scheduleFlush();
+		};
+	}
+
+	/** Holds `workId`'s activity while its child's enqueue is unanswered. */
+	private awaitAnswer(workId: string, childRunId: string): void {
+		if (this.unanswered.has(childRunId)) this.awaitingAnswer.set(workId, childRunId);
 	}
 
 	private async transport(request: number, payload: DeliveryPayload): Promise<void> {
@@ -1930,6 +1966,7 @@ export class PoolCoordinator {
 			return;
 		}
 		if (!this.publishing) return;
+		this.awaitAnswer(work.id, work.childRunId);
 		this.pendingActivity.set(work.id, { work: token(work), runs });
 		this.scheduleFlush();
 	}
@@ -1949,18 +1986,33 @@ export class PoolCoordinator {
 		}, wait);
 	}
 
-	/** Sends pending activity now; resolves once the root has applied it. */
+	/**
+	 * Sends pending activity now; resolves once the root has applied it. Activity of a work whose child's enqueue is
+	 * unanswered stays pending: it is sent after the answer, and the promise resolves once the root has applied it too.
+	 */
 	private flush(): Promise<void> {
 		clearTimeout(this.flushTimer);
 		this.flushTimer = undefined;
-		if (this.pendingActivity.size === 0 && !this.usageChanged) {
+		const answers = new Set<Promise<void>>();
+		for (const workId of this.pendingActivity.keys()) {
+			const childRunId = this.awaitingAnswer.get(workId);
+			const child = childRunId === undefined ? undefined : this.unanswered.get(childRunId);
+			if (child !== undefined) answers.add(child.answered.promise);
+		}
+		const sent = this.sendActivity();
+		return answers.size === 0 ? sent : Promise.all([sent, ...answers]).then(() => this.flush());
+	}
+
+	/** Sends the pending activity the root can apply; resolves once it has. */
+	private sendActivity(): Promise<void> {
+		const published = [...this.pendingActivity.values()].filter((entry) => !this.awaitingAnswer.has(entry.work.id));
+		if (published.length === 0 && !this.usageChanged) {
 			const last = [...this.batches.values()].at(-1);
 			return last === undefined ? Promise.resolve() : new Promise((resolve) => this.chainSettle(last, resolve));
 		}
 		this.lastFlushAt = performance.now();
 		const batch = ++this.batchSequence;
-		const published = [...this.pendingActivity.values()];
-		this.pendingActivity.clear();
+		for (const entry of published) this.pendingActivity.delete(entry.work.id);
 		const usage = this.usageChanged ? this.usageTotal : undefined;
 		this.usageChanged = false;
 		const settled = new Promise<void>((resolve) => this.batches.set(batch, { entries: published, settle: resolve }));
