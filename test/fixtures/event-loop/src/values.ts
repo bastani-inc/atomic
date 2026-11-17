@@ -29,7 +29,8 @@ export function existsByElement(path: string): boolean {
 export function nativeProcessQueries(pid: number): unknown[] {
 	const natives = requireModule("@bastani/atomic-natives") as {
 		processCreationTime(pid: number): string | null;
+		containProcessTree(pid: number): unknown;
 		tryAdvisoryLock(path: string): unknown;
 	};
-	return [natives.processCreationTime(pid), natives.tryAdvisoryLock("held.lock")];
+	return [natives.processCreationTime(pid), natives.containProcessTree(pid), natives.tryAdvisoryLock("held.lock")];
 }

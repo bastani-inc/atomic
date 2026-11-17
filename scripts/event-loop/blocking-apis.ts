@@ -38,12 +38,7 @@ const BUN_TYPES = "/node_modules/bun-types/";
  * Synchronous exports of `@bastani/atomic-natives` that wait on the file system, a lock or another process. Its
  * in-memory supervisor calls return at once and are not listed.
  */
-const BLOCKING_NATIVE_FUNCTIONS = new Set([
-	"tryAdvisoryLock",
-	"renameNoReplace",
-	"containProcessTree",
-	"killSupervisedProcessTrees",
-]);
+const BLOCKING_NATIVE_FUNCTIONS = new Set(["tryAdvisoryLock", "renameNoReplace", "killSupervisedProcessTrees"]);
 
 const NODE_SQLITE_MEMBERS = new Set(["exec", "prepare", "run", "get", "all", "iterate", "open", "close", "backup"]);
 const BUN_SQLITE_MEMBERS = new Set(["exec", "run", "query", "prepare", "get", "all", "values", "iterate", "close"]);
