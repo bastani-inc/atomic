@@ -41,7 +41,7 @@ const liteparseAdaptations: ReadonlyArray<readonly [atomic: string, canonical: s
 ];
 const liteparseCanonicalSkillSha256 = "c4982f937fe569cd109801e9c6f0bd80219df93835d9a206bae6958c5e3c841c";
 
-// vercel-labs/agent-desktop `skills/agent-desktop` at tag v1.3.0 (tree
+// vercel-labs/agent-desktop `skills/agent-desktop` at tag v1.3.1 (tree
 // ef953179861334f07a7ec948f1d34401de17b9b0) is a discovery stub; its references are
 // compiled into the CLI and printed by `agent-desktop skills get`, so only SKILL.md
 // is vendored. Its frontmatter is Atomic-owned and its body carries one documented
@@ -51,14 +51,14 @@ const liteparseCanonicalSkillSha256 = "c4982f937fe569cd109801e9c6f0bd80219df9383
 const agentDesktopUpstream = {
 	repo: "https://github.com/vercel-labs/agent-desktop",
 	path: "skills/agent-desktop",
-	ref: "refs/tags/v1.3.0",
+	ref: "refs/tags/v1.3.1",
 	treeSha: "ef953179861334f07a7ec948f1d34401de17b9b0",
 } as const;
 const agentDesktopSkillBodySha256 = "79f5c7734df27cf7f33de308dc0bc90e9d861eb541d138b2824f01f86d7b52de";
 const agentDesktopUpstreamSkillBodySha256 = "8306c49e2d17f9399704aba7ce5c6ca5d7a2b22b8de929bf5284063cbaf135cc";
 
 // pbakaus/impeccable authoritative `.pi/skills/impeccable` distribution:
-// skill-v4.8.2 at 035c8f319edd019936525a062fe99e83ca8d12c6 (engine 0.1.21)
+// skill-v4.9.1 at acb4cfe14470b1fdf51e855431af618d936b7db8 (engine 0.1.24)
 // prior skill-v4.1.1 `.agents` distribution at 5a149f3fdb1b5793f10567233b1dcab98fc305fd
 //
 // `scripts/bin/<os>-<arch>/` is deliberately absent: the engine binary is
@@ -87,6 +87,7 @@ reference/distill.md
 reference/doctor.md
 reference/document.md
 reference/extract.md
+reference/foundations.md
 reference/generate.md
 reference/harden.md
 reference/hooks.md
@@ -126,7 +127,7 @@ scripts/modern-screenshot.umd.js
 	.trim()
 	.split("\n");
 const impeccableExecutables = new Set(["scripts/impeccable"]);
-const IMPECCABLE_ENGINE_VERSION = "0.1.21";
+const IMPECCABLE_ENGINE_VERSION = "0.1.24";
 const IMPECCABLE_ENGINE_ASSETS = [
 	"impeccable-darwin-arm64",
 	"impeccable-darwin-x64",
@@ -310,7 +311,7 @@ describe("synced upstream skill trees", () => {
 			"scripts/live-browser-ignores.js",
 			"scripts/modern-screenshot.umd.js",
 		]);
-		assert.match(readFileSync(join(workflowSkills, "impeccable/SKILL.md"), "utf8"), /^version: 4\.8\.2\r?$/m);
+		assert.match(readFileSync(join(workflowSkills, "impeccable/SKILL.md"), "utf8"), /^version: 4\.9\.1\r?$/m);
 		assert.equal(
 			readFileSync(join(workflowSkills, "impeccable/scripts/VERSION"), "utf8").trim(),
 			IMPECCABLE_ENGINE_VERSION,
@@ -347,7 +348,7 @@ describe("synced upstream skill trees", () => {
 		]);
 	});
 
-	test("ships the exact Impeccable 4.8.2 tree with the pi distribution's launcher paths and modes", () => {
+	test("ships the exact Impeccable 4.9.1 tree with the pi distribution's launcher paths and modes", () => {
 		const skillRoot = join(workflowSkills, "impeccable");
 		assert.deepEqual(collectFiles(skillRoot, [], skillRoot).sort(), [...impeccableTree]);
 		// The `.pi` distribution names the launcher by its pi-native skill path and
@@ -358,8 +359,8 @@ describe("synced upstream skill trees", () => {
 		for (const [key, value] of [
 			["github-repo", "https://github.com/pbakaus/impeccable"],
 			["github-path", ".pi/skills/impeccable"],
-			["github-ref", "refs/tags/skill-v4.8.2"],
-			["github-tree-sha", "130fde11eff1474bfa3b3efb82a3f206e350e0f9"],
+			["github-ref", "refs/tags/skill-v4.9.1"],
+			["github-tree-sha", "f6a534b7ea9b5b189495c4b4af819f7c2bc9b083"],
 		] as const) {
 			assert.ok(frontmatter.split("\n").includes(`    ${key}: ${value}`));
 		}
@@ -401,13 +402,13 @@ describe("synced upstream skill trees", () => {
 		);
 	});
 
-	test("pins the agent-browser v0.42.0 discovery stub and provenance", () => {
+	test("pins the agent-browser v0.43.0 discovery stub and provenance", () => {
 		const skillRoot = join(subagentSkills, "agent-browser");
 		assert.deepEqual(collectFiles(skillRoot, [], skillRoot), ["SKILL.md"]);
 		const { frontmatter, body } = splitFrontmatter(canonicalText(readFileSync(join(skillRoot, "SKILL.md"))));
 		assert.equal(
 			sha256(body.replace(/^\n/u, "")),
-			"c626ad60ef89c45f580034fab99ccfb965c7019d9798f9934ffe9e9f2b07b6d8",
+			"f7d40c8f0e8794240d9b1728e9b2ea195c6044045c120986c45d216d4804a333",
 		);
 		assert.match(frontmatter, /^name: agent-browser$/mu);
 		assert.match(frontmatter, /^hidden: true$/mu);
@@ -415,8 +416,8 @@ describe("synced upstream skill trees", () => {
 		for (const [key, value] of [
 			["github-repo", "https://github.com/vercel-labs/agent-browser"],
 			["github-path", "skills/agent-browser"],
-			["github-ref", "refs/tags/v0.42.0"],
-			["github-tree-sha", "29ba9c12789b1c54ab76ad40e2472e646d141b85"],
+			["github-ref", "refs/tags/v0.43.0"],
+			["github-tree-sha", "cd4185523189fb04c1d24bea0100b6aa2ce7421e"],
 		] as const) {
 			assert.ok(frontmatter.split("\n").includes(`    ${key}: ${value}`));
 		}
@@ -478,7 +479,7 @@ describe("synced upstream skill trees", () => {
 		assert.doesNotMatch(readFileSync(join(liteparseSkill, "SKILL.md"), "utf8"), /effective-liteparse/u);
 	});
 
-	test("pins the agent-desktop v1.3.0 discovery stub with only its documented adaptation", () => {
+	test("pins the agent-desktop v1.3.1 discovery stub with only its documented adaptation", () => {
 		assert.deepEqual(collectFiles(agentDesktopSkill, [], agentDesktopSkill), ["SKILL.md"]);
 		const { frontmatter, body } = splitFrontmatter(canonicalText(readFileSync(join(agentDesktopSkill, "SKILL.md"))));
 		assert.equal(sha256(body), agentDesktopSkillBodySha256, "agent-desktop SKILL.md body drifted");
