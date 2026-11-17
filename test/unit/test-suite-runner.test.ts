@@ -302,25 +302,34 @@ const REAL_CONFIG = [
  */
 async function realVitestSuite(
 	files: Record<string, string>,
-	command: string[],
-): Promise<{ code: number; output: string; durations: string }> {
-	const dir = mkdtempSync(join(root, ".tmp-test-suite-runner-real-"));
+	command: string[] | ((directory: string) => string[]),
+	options: { cwd?: string; parentDirectory?: string } = {},
+): Promise<{ code: number; output: string; durations: string; lostWorkers: string }> {
+	const dir = mkdtempSync(join(options.parentDirectory ?? root, ".tmp-test-suite-runner-real-"));
 	const diagnostics = join(dir, "diagnostics");
 	for (const [name, contents] of Object.entries(files)) writeFileSync(join(dir, name), contents);
 	try {
+		const suiteCommand = typeof command === "function" ? command(dir) : command;
 		const spawned = spawnProcess(
-			[bunExecutable(), runner, "--label", "real suite", "--diagnostics-dir", diagnostics, "--", ...command],
-			{ cwd: dir, env: { ...process.env, GITHUB_STEP_SUMMARY: undefined }, stdout: "pipe", stderr: "pipe" },
+			[bunExecutable(), runner, "--label", "real suite", "--diagnostics-dir", diagnostics, "--", ...suiteCommand],
+			{
+				cwd: options.cwd ?? dir,
+				env: { ...process.env, GITHUB_STEP_SUMMARY: undefined },
+				stdout: "pipe",
+				stderr: "pipe",
+			},
 		);
 		const [stdout, stderr, code] = await Promise.all([
 			readStreamText(spawned.stdout),
 			readStreamText(spawned.stderr),
 			spawned.exited,
 		]);
+		const lostWorkersPath = join(diagnostics, "real-suite-lost-workers.jsonl");
 		return {
 			code,
 			output: stdout + stderr,
 			durations: await readText(join(diagnostics, "real-suite-durations.md")),
+			lostWorkers: (await fileExists(lostWorkersPath)) ? await readText(lostWorkersPath) : "",
 		};
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
@@ -424,6 +433,124 @@ test(
 		assert.notEqual(result.code, 0);
 		assert.match(result.output, /Test timed out in 50ms/);
 		assert.doesNotMatch(result.output, /Timeout headroom exhausted/);
+	},
+	REAL_VITEST_SUITE_TIMEOUT_MS,
+);
+
+const LOST_WORKER_CONFIG = [
+	'import { defineConfig } from "vitest/config";',
+	"export default defineConfig({",
+	`  test: { projects: [{ test: { name: "unit", root: import.meta.dirname, include: ["suite.test.ts"], globalSetup: [${JSON.stringify(join(root, "test/global-setup-lost-workers.ts"))}], testTimeout: 30_000 } }] },`,
+	"});",
+].join("\n");
+
+function expectedLostWorkerKillStatus(): RegExp {
+	return process.platform === "win32"
+		? /exited with code 1 \(0x1 exit status 1, cause ambiguous: TerminateProcess[^\n]*\) signal null after \d+ ms/
+		: /exited with code null \(killed \(out-of-memory killer or external kill\)\) signal SIGKILL after \d+ ms/;
+}
+
+test(
+	"a test worker that dies names its file and exit status in the suite output (#5325)",
+	async () => {
+		const result = await realVitestSuite(
+			{
+				"vitest.config.ts": LOST_WORKER_CONFIG,
+				"suite.test.ts": [
+					'import { test } from "vitest";',
+					'test("kills its own worker", () => { process.kill(process.pid, "SIGKILL"); });',
+				].join("\n"),
+			},
+			[process.execPath, join(root, "node_modules", "vitest", "vitest.mjs"), "--run", "--project", "unit"],
+		);
+		assert.notEqual(result.code, 0);
+		assert.match(result.output, /Worker exited unexpectedly/);
+		assert.match(result.output, /Lost test worker: suite\.test\.ts/);
+		assert.match(result.output, expectedLostWorkerKillStatus());
+		assert.match(result.output, /::error title=Lost test worker: real suite::suite\.test\.ts exited with code /);
+	},
+	REAL_VITEST_SUITE_TIMEOUT_MS,
+);
+
+test(
+	"a lost coding-agent test worker is attributed through its actual project config (#5325)",
+	async () => {
+		const agentDirectory = join(root, "packages", "coding-agent");
+		const result = await realVitestSuite(
+			{
+				"suite.test.ts": [
+					'import { test } from "vitest";',
+					"",
+					'test("kills its own worker", () => {',
+					'\tprocess.kill(process.pid, "SIGKILL");',
+					"});",
+					"",
+				].join("\n"),
+			},
+			(directory) => [
+				process.execPath,
+				join(root, "node_modules", "vitest", "vitest.mjs"),
+				"--run",
+				"--project",
+				"agent",
+				join(directory, "suite.test.ts"),
+			],
+			{ cwd: agentDirectory, parentDirectory: join(agentDirectory, "test") },
+		);
+		assert.notEqual(result.code, 0);
+		assert.match(result.output, /Worker exited unexpectedly/);
+		assert.match(result.output, /Lost test worker: test\/\.tmp-test-suite-runner-real-[^/]+\/suite\.test\.ts/);
+		assert.match(result.output, expectedLostWorkerKillStatus());
+		assert.match(
+			result.output,
+			/::error title=Lost test worker: real suite::test\/[^\n]*suite\.test\.ts exited with code /,
+		);
+		const records = result.lostWorkers
+			.trim()
+			.split("\n")
+			.map((line: string) => JSON.parse(line) as { files: string[] });
+		assert.equal(records.length, 1);
+		assert.match(records[0].files[0], /^test\/\.tmp-test-suite-runner-real-[^/]+\/suite\.test\.ts$/);
+	},
+	REAL_VITEST_SUITE_TIMEOUT_MS,
+);
+
+test(
+	"workers that stop normally report no lost worker (#5325)",
+	async () => {
+		const result = await realVitestSuite(
+			{
+				"vitest.config.ts": LOST_WORKER_CONFIG,
+				"suite.test.ts": REAL_SUITE,
+			},
+			[process.execPath, join(root, "node_modules", "vitest", "vitest.mjs"), "--run", "--project", "unit"],
+		);
+		assert.equal(result.code, 0, result.output);
+		assert.doesNotMatch(result.output, /Lost test worker/);
+	},
+	REAL_VITEST_SUITE_TIMEOUT_MS,
+);
+
+test(
+	"a test worker that exits with status 1 on its own is reported with its raw status, without claiming a kill (#5325)",
+	async () => {
+		const result = await realVitestSuite(
+			{
+				"vitest.config.ts": LOST_WORKER_CONFIG,
+				"suite.test.ts": [
+					'import { test } from "vitest";',
+					'test("exits its own worker", () => { process.reallyExit(1); });',
+				].join("\n"),
+			},
+			[process.execPath, join(root, "node_modules", "vitest", "vitest.mjs"), "--run", "--project", "unit"],
+		);
+		assert.notEqual(result.code, 0);
+		assert.match(
+			result.output,
+			/Lost test worker: suite\.test\.ts exited with code 1 \(0x1 exit status 1, cause ambiguous: [^\n]*process\.exit\(1\)[^\n]*\) signal null after \d+ ms/,
+		);
+		assert.doesNotMatch(result.output, /Lost test worker: [^\n]*killed/);
+		if (process.platform !== "win32") assert.doesNotMatch(result.output, /Lost test worker: [^\n]*TerminateProcess/);
 	},
 	REAL_VITEST_SUITE_TIMEOUT_MS,
 );

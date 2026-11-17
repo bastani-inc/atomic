@@ -7,6 +7,7 @@ import type { SqliteDatabase, SqliteRow } from "@bastani/atomic/storage";
 import type { AdvisoryLock } from "@bastani/atomic-natives";
 import type { AttemptLease } from "../durable/journal/sql-shared-pool.js";
 import { StaleWorkLeaseError } from "../shared/worker-pool-errors.js";
+import { openThreadedSqliteDatabase } from "./ship-shard-thread.js";
 
 /** The root's own lock, held while its shard is open: one process at a time opens a root's local journal. */
 async function tryRootLock(path: string): Promise<AdvisoryLock | null> {
@@ -223,7 +224,7 @@ export class ShipShard {
 		if (lock === null) throw new Error(`Checkpoint shard is already open by another process: ${path}`);
 		let database: SqliteDatabase | undefined;
 		try {
-			database = await openNodeSqliteDatabase(path);
+			database = path === ":memory:" ? await openNodeSqliteDatabase(path) : await openThreadedSqliteDatabase(path);
 			await database.exec(SHIP_SHARD_SCHEMA);
 
 			const columns = new Set(
