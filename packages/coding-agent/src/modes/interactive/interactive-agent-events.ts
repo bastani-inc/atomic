@@ -51,6 +51,44 @@ import { applyAssistantMessageDelta, beginStreamingAssistantMessage } from "./st
 
 /** Reasons that mean there is nothing to snapshot, which keep the session exactly as it behaves without snapshots. */
 const WORKSPACE_ABSENCE_CODES: ReadonlySet<string> = new Set(["not-installed", "not-a-repository", "unborn-head"]);
+interface MainTurnToolBatch {
+	readonly pending: Map<string, string>;
+	aborted: string[];
+}
+const mainTurnToolBatches = new WeakMap<InteractiveModeBase, MainTurnToolBatch>();
+
+function getMainTurnToolBatch(mode: InteractiveModeBase): MainTurnToolBatch {
+	let batch = mainTurnToolBatches.get(mode);
+	if (!batch) {
+		batch = { pending: new Map(), aborted: [] };
+		mainTurnToolBatches.set(mode, batch);
+	}
+	return batch;
+}
+
+function recordMainPendingTool(mode: InteractiveModeBase, toolCallId: string, toolName: string): void {
+	const trimmed = toolName.trim();
+	if (!trimmed) return;
+	const batch = getMainTurnToolBatch(mode);
+	if (batch.pending.size === 0 && batch.aborted.length > 0) batch.aborted = [];
+	batch.pending.set(toolCallId, trimmed);
+}
+
+function settleMainTurnTool(mode: InteractiveModeBase, toolCallId: string, toolName: string, isError: boolean): void {
+	const batch = mainTurnToolBatches.get(mode);
+	const resolved = (batch?.pending.get(toolCallId) ?? toolName).trim();
+	batch?.pending.delete(toolCallId);
+	if (!isError || !resolved) return;
+	const target = batch ?? getMainTurnToolBatch(mode);
+	if (!target.aborted.includes(resolved)) target.aborted.push(resolved);
+}
+
+function currentInterruptedMainTools(mode: InteractiveModeBase): readonly string[] | undefined {
+	const batch = mainTurnToolBatches.get(mode);
+	if (!batch) return undefined;
+	if (batch.pending.size > 0) return [...new Set(batch.pending.values())];
+	return batch.aborted.length > 0 ? [...new Set(batch.aborted)] : undefined;
+}
 
 InteractiveModeBase.prototype.maybeShowInstallChangeWarning = function (this: InteractiveModeBase): boolean {
 	if (this.installChangeWarningShown) return true;
@@ -138,6 +176,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			this.lastWorkingMessage = this.workingMessage;
 			this.workingRunMeter.start();
 			this.pendingTools.clear();
+			mainTurnToolBatches.delete(this);
 			endMainToolTurn(this);
 			if (this.settingsManager.getShowTerminalProgress()) {
 				this.ui.terminal.setProgress(true);
@@ -261,6 +300,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				);
 				this.ui.requestRender();
 			} else if (event.message.role === "user") {
+				mainTurnToolBatches.delete(this);
 				this.showSessionUserMessage(event.message);
 				this.updatePendingMessagesDisplay();
 				this.ui.requestRender();
@@ -295,6 +335,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 
 				for (const content of this.streamingMessage.content) {
 					if (content.type === "toolCall") {
+						recordMainPendingTool(this, content.id, content.name);
 						if (!this.pendingTools.has(content.id)) {
 							const component = createToolComponent(this, content.name, content.id, content.arguments);
 							component.setExpanded(this.toolOutputExpanded);
@@ -328,7 +369,20 @@ InteractiveModeBase.prototype.handleEvent = async function (
 					errorMessage = existingAbortMessage ?? "Interrupted by user";
 					this.streamingMessage.errorMessage = errorMessage;
 				}
-				this.streamingComponent.updateContent(this.streamingMessage, false);
+				const hasOwnToolCalls = this.streamingMessage.content.some((content) => content.type === "toolCall");
+				const interruptedActivity =
+					this.streamingMessage.stopReason === "aborted" &&
+					!hasOwnToolCalls &&
+					this.streamingMessage.content.length === 0
+						? currentInterruptedMainTools(this)
+						: undefined;
+				this.streamingComponent.updateContent(this.streamingMessage, false, interruptedActivity);
+				if (this.streamingMessage.stopReason === "aborted" || this.streamingMessage.stopReason === "error") {
+					mainTurnToolBatches.delete(this);
+				} else {
+					const batch = mainTurnToolBatches.get(this);
+					if (batch) batch.aborted = [];
+				}
 				endMainAssistantMessage(this, this.streamingMessage);
 
 				if (this.streamingMessage.stopReason === "aborted" || this.streamingMessage.stopReason === "error") {
@@ -371,6 +425,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			break;
 
 		case "tool_execution_start": {
+			recordMainPendingTool(this, event.toolCallId, event.toolName);
 			let component = this.pendingTools.get(event.toolCallId);
 			if (!component) {
 				component = createToolComponent(this, event.toolName, event.toolCallId, event.args);
@@ -394,6 +449,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 		}
 
 		case "tool_execution_end": {
+			settleMainTurnTool(this, event.toolCallId, event.toolName, event.isError);
 			if (event.isError) this.maybeShowInstallChangeWarning();
 			const component = this.pendingTools.get(event.toolCallId);
 			if (component) {
@@ -434,6 +490,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				this.streamingMessage = undefined;
 			}
 			this.pendingTools.clear();
+			mainTurnToolBatches.delete(this);
 			endMainToolTurn(this);
 			if (this.compactionQueuedMessages.length > 0 && !compactionInProgress) {
 				void this.session.agent.waitForIdle().then(() => this.flushCompactionQueue({ willRetry: false }));

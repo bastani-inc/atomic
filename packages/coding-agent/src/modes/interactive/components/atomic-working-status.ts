@@ -261,8 +261,7 @@ export class AtomicWorkingStatusComponent implements Component {
 	}
 
 	render(width: number): string[] {
-		const rawMessage = this.options.message ?? DEFAULT_WORKING_MESSAGE;
-		const message = rawMessage === "Working..." ? DEFAULT_WORKING_MESSAGE : rawMessage;
+		const message = this.options.message ?? DEFAULT_WORKING_MESSAGE;
 		const icon = atomicWorkingGlyph(this.options);
 		const styledMessage = noColorRequested()
 			? message

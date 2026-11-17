@@ -17,7 +17,7 @@ import type { ToolDefinition, ToolRenderContext, ToolRenderers } from "../../../
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { isBuiltinToolCallRenderer, isBuiltinToolResultRenderer } from "../../../core/tools/builtin-renderers.js";
 import { createAllToolDefinitions, type ToolName } from "../../../core/tools/index.js";
-import { formatToolCallWithArgs, getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
+import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
 import { ensurePngTranscoder } from "../../../utils/image-convert.ts";
 import { terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { CodeHighlighter, theme } from "../theme/theme.js";
@@ -527,6 +527,13 @@ export class ToolExecutionComponent extends Container {
 			this.hasRendererDefinition() && this.getRenderShell() === "self" && !(canonicalCall && canonicalResult);
 		const staticElapsed = formatToolBlockElapsed(this.currentElapsedMs(), { isRunning: true, subTenDecimal: false });
 		const staticMeta = presentation?.meta?.filter((part) => part !== staticElapsed) ?? [];
+		const connectedDetails =
+			details &&
+			!canonicalResult &&
+			!isToolBlock(details) &&
+			!("toolBlockKind" in details && details.toolBlockKind === "records")
+				? new ToolBlockRecords([details], { preserveConnectors: true })
+				: details;
 		if (details && isToolBlock(details)) this.contentContainer.addChild(details);
 		else if (selfRendered) {
 			this.contentContainer.addChild(call);
@@ -538,9 +545,12 @@ export class ToolExecutionComponent extends Container {
 				this.contentContainer.addChild({
 					invalidate: () => title.invalidate(),
 					render: (width) =>
-						new ToolBlock({ status: this.blockStatus(), title, details, outputPad: this.outputPad }).render(
-							width,
-						),
+						new ToolBlock({
+							status: this.blockStatus(),
+							title,
+							details: connectedDetails,
+							outputPad: this.outputPad,
+						}).render(width),
 				});
 			}
 		} else {
@@ -561,15 +571,7 @@ export class ToolExecutionComponent extends Container {
 						title: canonicalCall && presentation ? presentation.title : call,
 						args: canonicalCall ? presentation?.args : undefined,
 						meta,
-						body:
-							this.expanded && !canonicalCall && !callRenderer
-								? new Text(
-										formatToolCallWithArgs("", this.args, theme, true).split("\n").slice(1).join("\n"),
-										0,
-										0,
-									)
-								: undefined,
-						details,
+						details: connectedDetails,
 						outputPad: this.outputPad,
 					}).render(width);
 				},

@@ -39,8 +39,10 @@ knowledge:
       For focused root tests use `npm run test:unit -- test/unit/<file>.test.ts`;
       the test-suite-runner fixtures need npm's node_modules/.bin on PATH for their nested Vitest commands.
       Finish `npm run check` and `npm run build` before running suites that import built packages:
-      typechecking rebuilds dist in place and cleans provider data. `test/unit/storage-libsql-close-once.test.ts` runs native-driver close regressions
-      in child processes with glibc freed-memory poisoning on Linux, and checks file release directly on Windows.
+      typechecking rebuilds dist in place and cleans provider data. Before real CLI captures, run `npm run build`
+      to refresh builtin assets. Exercise `/tasks` and stage chats too: direct component tests do not cover
+      RPC-hosted widget renderer resolution. `test/unit/storage-libsql-close-once.test.ts` runs native-driver close
+      regressions in child processes with glibc freed-memory poisoning on Linux, and checks file release directly on Windows.
       Validate named-worktree permissions with a private default umask:
       `(umask 0022; npx --no-install vitest --run --project unit test/unit/subagents-named-worktree-locks.test.ts)`.
       Localized named-worktree recovery fixtures write the translated marker while Git is paused, so they do not

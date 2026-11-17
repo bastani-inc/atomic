@@ -281,7 +281,12 @@ test("worker metrics serves the scaling signal read without writes, and stops on
 	assert.equal(signals.listenerCount("SIGTERM"), 0);
 	assert.ok(asked.length >= 1);
 	for (const options of asked)
-		assert.deepEqual(options, { agentDir: "/agent", policy: { workersPerHost: 4 }, probeWrites: false });
+		assert.deepEqual(options, {
+			agentDir: "/agent",
+			policy: { workersPerHost: 4 },
+			probeWrites: false,
+			rateHistory: true,
+		});
 	await assert.rejects(fetch(`http://${address}/scaling`));
 });
 

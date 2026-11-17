@@ -101,11 +101,13 @@ export function componentNeedsWorkingClock(component: Component | undefined): bo
 export class ToolBlockRecords implements Component {
 	readonly toolBlockKind = "records";
 	private readonly records: readonly (string | Component)[];
+	private readonly options: { preserveConnectors?: boolean };
 	isWorking(): boolean {
 		return this.records.some((record) => typeof record !== "string" && componentNeedsWorkingClock(record));
 	}
-	constructor(records: readonly (string | Component)[]) {
+	constructor(records: readonly (string | Component)[], options: { preserveConnectors?: boolean } = {}) {
 		this.records = records;
+		this.options = options;
 	}
 	invalidate(): void {
 		for (const record of this.records) if (typeof record !== "string") record.invalidate();
@@ -115,7 +117,15 @@ export class ToolBlockRecords implements Component {
 		const contentWidth = Math.max(1, width - DETAIL_PREFIX.length);
 		return this.records.flatMap((record) => {
 			const component = typeof record === "string" ? new Text(theme.fg("toolOutput", record), 0, 0) : record;
-			return component.render(contentWidth).map((line, index) => {
+			const lines = component.render(contentWidth);
+			if (
+				this.options.preserveConnectors &&
+				typeof record !== "string" &&
+				stripTerminalSequences(lines[0] ?? "").startsWith(DETAIL_FIRST_PREFIX) &&
+				lines.slice(1).every((line) => line.trim() === "" || stripTerminalSequences(line).startsWith(DETAIL_PREFIX))
+			)
+				return component.render(width).map((line) => truncateToWidth(line, width, "…"));
+			return lines.map((line, index) => {
 				const prefix = index === 0 ? DETAIL_FIRST_PREFIX : DETAIL_PREFIX;
 				return truncateToWidth(`${theme.fg("dim", prefix)}${line.trimEnd()}`, width, "…");
 			});
