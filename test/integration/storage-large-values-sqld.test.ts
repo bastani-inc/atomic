@@ -10,9 +10,11 @@ import {
 	StoragePayloadTooLargeError,
 	StorageUnavailableError,
 } from "../../packages/coding-agent/src/core/storage/errors.js";
+import { storageMigrationTable } from "../../packages/coding-agent/src/core/storage/prefix.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import {
 	SNAPSHOT_BLOB_CHUNK_BYTES,
+	SNAPSHOT_BLOB_DOMAIN,
 	SNAPSHOT_LEGACY_STAMP_BYTES,
 	SqlSnapshotBlobStore,
 	snapshotIndexTables,
@@ -127,26 +129,94 @@ for (const backend of storageBackends) {
 			LARGE_VALUE_TIMEOUT_MS,
 		);
 
+		test("upgrades a conditional blob-delete trigger so older clients delete partial chunks too (#5327)", async () => {
+			const scope = await backend.openScope();
+			try {
+				const database = await scope.connect();
+				const store = await SqlSnapshotBlobStore.open(database, scope.prefix);
+				const d = dialectOf(database);
+				const t = snapshotIndexTables(scope.prefix);
+				const oldTrigger = `${t.blobs}_chunks_delete`;
+				await database.exec(d.dropTrigger(`${t.blobs}_chunks_delete_all`, t.blobs, true));
+				await database.exec(
+					d.renderTrigger({
+						name: oldTrigger,
+						table: t.blobs,
+						timing: "AFTER",
+						event: "DELETE",
+						when: "OLD.chunks > 0",
+						statements: [`DELETE FROM ${t.blobChunks} WHERE hash = OLD.hash`],
+					}),
+				);
+				if (d.versionedMigrations)
+					await database.run(
+						`DELETE FROM ${storageMigrationTable(scope.prefix)} WHERE domain = ? AND version >= 5`,
+						SNAPSHOT_BLOB_DOMAIN,
+					);
+				const data = Uint8Array.from(randomBytes(2 * SNAPSHOT_BLOB_CHUNK_BYTES + 1));
+				const kept = { hash: "kept-chunked", data };
+				await store.putBlobs([kept]);
+				await database.run(
+					`INSERT INTO ${t.blobs} (hash, bytes, data, created_at, chunks) VALUES ('partial', ?, ?, 1, 0)`,
+					data.length,
+					data,
+				);
+				await database.run(
+					`INSERT INTO ${t.blobChunks} (hash, idx, data) VALUES ('partial', 0, ?)`,
+					data.subarray(0, SNAPSHOT_BLOB_CHUNK_BYTES),
+				);
+
+				const upgraded = await SqlSnapshotBlobStore.open(await scope.connect(), scope.prefix);
+				const trigger = d.schemaObjects([oldTrigger]);
+				assert.equal(await database.get(trigger.sql, ...trigger.params), undefined);
+				if (d.name === "postgres")
+					assert.equal(
+						await database.get(
+							"SELECT 1 FROM pg_proc WHERE pronamespace = current_schema()::regnamespace AND proname = ?",
+							d.identifier(`${oldTrigger}_fn`),
+						),
+						undefined,
+						"the retired conditional trigger function is removed too",
+					);
+				await database.run(`DELETE FROM ${t.blobs} WHERE hash = 'partial'`);
+				assert.equal(
+					await database.get(`SELECT hash FROM ${t.blobChunks} WHERE hash = 'partial' LIMIT 1`),
+					undefined,
+				);
+				assert.deepEqual(await upgraded.getBlob(kept.hash), data);
+			} finally {
+				await scope.close();
+			}
+		});
+
 		test(
-			"collection stamps blobs of unknown age, moves one too large to stamp in its row to chunks, and deletes the chunks a stopped move left (#5327)",
+			"collection stamps inline blobs of 1 MiB or less, moves inline blobs over 1 MiB to chunks, and deletes the chunks a stopped move left (#5327)",
 			async () => {
 				const scope = await backend.openScope();
 				try {
 					const database = await scope.connect();
 					const blobs = await SqlSnapshotBlobStore.open(database, scope.prefix);
 					const t = snapshotIndexTables(scope.prefix);
-					// Blobs as builds before blob ages left them: unknown ages, bytes in their rows. Together they take more
-					// than one stamping transaction. sqld refuses a row over 5,000,000 bytes, so none there is too large to
-					// stamp in its row, and no move to chunks can have stopped there.
 					const sqld = backend.name.includes("sqld");
-					const tooLarge = () => Uint8Array.from(randomBytes(SNAPSHOT_LEGACY_STAMP_BYTES + 1));
-					const legacy = [
-						...Array.from({ length: 5 }, (_, index) => ({
-							hash: `legacy-${index}`,
-							data: Uint8Array.from(randomBytes(4 * MiB)),
-						})),
-						...(sqld ? [] : [{ hash: "oversized", data: tooLarge() }]),
+					const oversizedBytes = sqld ? 2 * SNAPSHOT_BLOB_CHUNK_BYTES + 1 : SNAPSHOT_LEGACY_STAMP_BYTES + 1;
+					const inlineBlobs = Array.from({ length: 4 }, (_, index) => ({
+						hash: `inline-${index}`,
+						data: Uint8Array.from(randomBytes(SNAPSHOT_BLOB_CHUNK_BYTES - index)),
+						expectedChunks: 0,
+					}));
+					const chunkedBlobs = [
+						{
+							hash: "legacy-over-1mib",
+							data: Uint8Array.from(randomBytes(3 * SNAPSHOT_BLOB_CHUNK_BYTES + 17)),
+							expectedChunks: 4,
+						},
+						{
+							hash: "oversized",
+							data: Uint8Array.from(randomBytes(oversizedBytes)),
+							expectedChunks: Math.ceil(oversizedBytes / SNAPSHOT_BLOB_CHUNK_BYTES),
+						},
 					];
+					const legacy = [...inlineBlobs, ...chunkedBlobs];
 					const insert = (hash: string, data: Uint8Array, createdAt: number) =>
 						database.run(
 							`INSERT INTO ${t.blobs} (hash, bytes, data, created_at) VALUES (?, ?, ?, ?)`,
@@ -156,35 +226,33 @@ for (const backend of storageBackends) {
 							createdAt,
 						);
 					for (const { hash, data } of legacy) await insert(hash, data, 0);
-					if (!sqld) {
-						// One whose move to chunks stopped after its first chunk, and that was stamped in its row since.
-						const stopped = tooLarge();
-						await insert("stopped", stopped, 1);
-						await database.run(
-							`INSERT INTO ${t.blobChunks} (hash, idx, data) VALUES (?, 0, ?)`,
-							"stopped",
-							stopped.subarray(0, SNAPSHOT_BLOB_CHUNK_BYTES),
-						);
-					}
+					const stopped = Uint8Array.from(randomBytes(2 * SNAPSHOT_BLOB_CHUNK_BYTES + 1));
+					await insert("stopped", stopped, 1);
+					await database.run(
+						`INSERT INTO ${t.blobChunks} (hash, idx, data) VALUES (?, 0, ?)`,
+						"stopped",
+						stopped.subarray(0, SNAPSHOT_BLOB_CHUNK_BYTES),
+					);
 					const chunkRows = async () =>
 						Number(
 							(await database.get<{ count: number }>(`SELECT count(*) AS count FROM ${t.blobChunks}`))?.count,
 						);
-					const moved = Math.ceil((SNAPSHOT_LEGACY_STAMP_BYTES + 1) / SNAPSHOT_BLOB_CHUNK_BYTES);
+					const totalMovedChunks = chunkedBlobs.reduce((sum, blob) => sum + blob.expectedChunks, 0);
 
 					assert.deepEqual(
 						await blobs.collectGarbage({ graceSeconds: 0 }),
-						sqld ? [] : ["stopped"],
+						["stopped"],
 						"a stamped blob gets a grace window",
 					);
-					assert.equal(await chunkRows(), sqld ? 0 : moved, "the stopped move's chunk went with its blob");
+					assert.equal(await chunkRows(), totalMovedChunks, "the stopped move's chunk went with its blob");
 					const rows = await database.all<{ hash: string; created_at: number; chunks: number }>(
 						`SELECT hash, created_at, chunks FROM ${t.blobs}`,
 					);
 					assert.equal(rows.length, legacy.length);
+					const expectedByHash = new Map(legacy.map((blob) => [blob.hash, blob.expectedChunks]));
 					for (const row of rows) {
 						assert.ok(Number(row.created_at) > 0, `${row.hash} is stamped`);
-						const chunks = row.hash === "oversized" ? moved : 0;
+						const chunks = expectedByHash.get(row.hash) ?? -1;
 						assert.equal(Number(row.chunks), chunks, `${row.hash} has ${chunks} chunks`);
 					}
 					for (const { hash, data } of legacy) assert.deepEqual(await blobs.getBlob(hash), data);

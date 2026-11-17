@@ -175,7 +175,7 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 			await SqlSnapshotBlobStore.open(database);
 			// The blob table as builds before blob ages and chunks (#4954) created it.
 			await database.exec(
-				"DROP INDEX snapshot_blobs_age; DROP TRIGGER snapshot_blobs_chunks_delete; ALTER TABLE snapshot_blobs DROP COLUMN created_at; ALTER TABLE snapshot_blobs DROP COLUMN chunks",
+				"DROP INDEX snapshot_blobs_age; DROP INDEX snapshot_blobs_inline_size; DROP TRIGGER IF EXISTS snapshot_blobs_chunks_delete; DROP TRIGGER IF EXISTS snapshot_blobs_chunks_delete_all; ALTER TABLE snapshot_blobs DROP COLUMN created_at; ALTER TABLE snapshot_blobs DROP COLUMN chunks",
 			);
 			const old = textBlob("old blob with all index tables present");
 			await database.run("INSERT INTO snapshot_blobs VALUES (?, ?, ?)", old.hash, old.data.byteLength, old.data);
@@ -239,11 +239,12 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 			await database.exec(
 				"CREATE TABLE snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL) STRICT",
 			);
-			// Each fits in one stamping transaction, so it is stamped in its row; together they do not.
-			const blobs = [
-				legacyBlob(SNAPSHOT_LEGACY_STAMP_BYTES),
-				...Array.from({ length: 12 }, (_, index) => legacyBlob(3 * SNAPSHOT_BLOB_CHUNK_BYTES + index)),
+			const inlineBlobs = Array.from({ length: 18 }, (_, index) => legacyBlob(SNAPSHOT_BLOB_CHUNK_BYTES - index));
+			const chunkedBlobs = [
+				legacyBlob(SNAPSHOT_BLOB_CHUNK_BYTES + 1),
+				legacyBlob(3 * SNAPSHOT_BLOB_CHUNK_BYTES + 7),
 			];
+			const blobs = [...inlineBlobs, ...chunkedBlobs];
 			for (const blob of blobs)
 				await database.run("INSERT INTO snapshot_blobs VALUES (?, ?, ?)", blob.hash, blob.data.length, blob.data);
 			let written: number | undefined;
@@ -262,11 +263,17 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 				mostWritten > 0 && mostWritten <= SNAPSHOT_LEGACY_STAMP_BYTES,
 				`one write stamped ${mostWritten} bytes`,
 			);
-			const rows = await database.all("SELECT created_at, chunks, length(data) AS inline FROM snapshot_blobs");
-			assert.equal(rows.length, blobs.length);
-			for (const row of rows) {
-				assert.ok(Number(row.created_at) > 0);
-				assert.equal(Number(row.chunks), 0, "a legacy blob that fits in one stamping transaction stays in its row");
+			for (const blob of inlineBlobs) {
+				const state = await legacyState(database, blob.hash);
+				assert.ok(state.createdAt > 0);
+				assert.equal(state.chunks, 0, "an inline legacy blob of at most one chunk stays in its row");
+				assert.equal(state.inline, blob.data.length);
+			}
+			for (const blob of chunkedBlobs) {
+				const state = await legacyState(database, blob.hash);
+				assert.ok(state.createdAt > 0);
+				assert.equal(state.chunks, Math.ceil(blob.data.length / SNAPSHOT_BLOB_CHUNK_BYTES));
+				assert.equal(state.inline, 0);
 			}
 			for (const blob of blobs) assert.ok(blob.data.equals((await store.getBlob(blob.hash))!));
 		});
@@ -348,13 +355,20 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 			},
 		);
 
-		test("a legacy blob stored again after its move to chunks stopped leaves no chunk behind once collected (#5327)", async () => {
+		test("a legacy blob stored again after its move to chunks stopped finishes moving on the next collection and leaves no chunk behind once collected (#5327)", async () => {
 			const controller = new AbortController();
-			const { database, blob, store } = await oversizedLegacyBlob(async () => controller.abort());
+			const { database, blob, store, chunks } = await oversizedLegacyBlob(async () => controller.abort());
 			await assert.rejects(collectSnapshotGarbage(store, { graceSeconds: 0, signal: controller.signal }));
 			assert.ok((await legacyState(database, blob.hash)).chunkRows > 0);
-			// Storing it again restarts its age in its row, so no later collection moves it.
 			assert.equal(await (await SqlSnapshotBlobStore.open(database)).refreshBlobs([blob.hash]), true);
+			assert.equal((await legacyState(database, blob.hash)).createdAt, 0);
+			assert.deepEqual((await collectSnapshotGarbage(store, { graceSeconds: 0 })).deleted, []);
+			const moved = await legacyState(database, blob.hash);
+			assert.ok(moved.createdAt > 0);
+			assert.deepEqual(
+				{ chunks: moved.chunks, inline: moved.inline, chunkRows: moved.chunkRows, chunkBytes: moved.chunkBytes },
+				{ chunks, inline: 0, chunkRows: chunks, chunkBytes: blob.data.length },
+			);
 			assert.ok(blob.data.equals((await store.getBlob(blob.hash))!));
 			await database.run("UPDATE snapshot_blobs SET created_at = 1");
 			assert.deepEqual((await collectSnapshotGarbage(store, { graceSeconds: 0 })).deleted, [blob.hash]);
@@ -362,11 +376,11 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 		});
 
 		test.each([1, 3])(
-			"a legacy blob stored again after %i of the 3 chunk transactions of its move keeps its row and leaves no chunk behind (#5327)",
+			"a legacy blob stored again after %i of the 3 chunk transactions of its move still finishes moving to chunks (#5327)",
 			async (storedAfter) => {
 				let other: SqlSnapshotBlobStore | undefined;
 				let refreshed = false;
-				const { database, blob, store } = await oversizedLegacyBlob(async (transactions) => {
+				const { database, blob, store, chunks } = await oversizedLegacyBlob(async (transactions) => {
 					if (transactions !== storedAfter) return;
 					assert.equal(await other!.refreshBlobs([blob.hash]), true);
 					refreshed = true;
@@ -377,8 +391,8 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 				const kept = await legacyState(database, blob.hash);
 				assert.ok(kept.createdAt > 0);
 				assert.deepEqual(
-					{ chunks: kept.chunks, inline: kept.inline, chunkRows: kept.chunkRows },
-					{ chunks: 0, inline: blob.data.length, chunkRows: 0 },
+					{ chunks: kept.chunks, inline: kept.inline, chunkRows: kept.chunkRows, chunkBytes: kept.chunkBytes },
+					{ chunks, inline: 0, chunkRows: chunks, chunkBytes: blob.data.length },
 				);
 				assert.ok(blob.data.equals((await store.getBlob(blob.hash))!));
 			},
@@ -595,7 +609,6 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 				CREATE TABLE snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL) STRICT`);
 			await database.run("INSERT INTO snapshot_blobs VALUES (?, ?, ?)", hash, bytes, original);
 			const durations: number[] = [];
-			// The blob bytes each transaction of the snapshot maintenance writes, which is what holds the writer.
 			let maintenance = false;
 			let written = 0;
 			let mostWritten = 0;
@@ -670,7 +683,6 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 			process.stdout.write(
 				`${adapter}: 256 MiB deferred age index + stamp ${maintenanceMs.toFixed(0)} ms; longest write ${maintenanceWriteMs.toFixed(0)} ms; most blob bytes in one write ${mostWritten}\n`,
 			);
-			// The writer is held for the bytes one transaction writes: one batch's, never the whole blob's.
 			assert.ok(
 				mostWritten <= SNAPSHOT_LEGACY_STAMP_BYTES,
 				`one snapshot maintenance transaction wrote ${mostWritten} bytes of blobs`,

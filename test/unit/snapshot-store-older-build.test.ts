@@ -9,10 +9,7 @@ import type { SessionEntry } from "../../packages/coding-agent/src/core/session-
 import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/core/storage/database.ts";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.ts";
-import {
-	SNAPSHOT_BLOB_CHUNK_BYTES,
-	SNAPSHOT_LEGACY_STAMP_BYTES,
-} from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
+import { SNAPSHOT_BLOB_CHUNK_BYTES } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { createSession, messageEntry, syntheticSnapshot } from "../helpers/snapshot-reference-index.js";
 
@@ -150,10 +147,9 @@ describe("an older build on a snapshot store this build wrote (#5065)", () => {
 	test("an older build refuses a database where collection moved a legacy blob to chunks, never reading it as empty (#5327)", async () => {
 		const database = await open();
 		await SqlSessionStore.open(database);
-		// A blob table from before blob ages, through the sessions only, holding a blob too large to stamp in its row.
 		await database.exec(`DROP INDEX snapshot_blobs_age; DROP TABLE snapshot_blobs;
 			CREATE TABLE snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL) STRICT`);
-		const data = new Uint8Array(SNAPSHOT_LEGACY_STAMP_BYTES + 1).map((_, index) => (index * 31) & 255);
+		const data = new Uint8Array(SNAPSHOT_BLOB_CHUNK_BYTES + 1).map((_, index) => (index * 31) & 255);
 		const hash = createHash("sha256").update(data).digest("hex");
 		await database.run("INSERT INTO snapshot_blobs VALUES (?, ?, ?)", hash, data.byteLength, data);
 		const sessions = await SqlSessionStore.open(database);

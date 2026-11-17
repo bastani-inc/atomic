@@ -246,8 +246,9 @@ export const SNAPSHOT_COLLECTION_BATCH = 256;
  * The most bytes of legacy blobs one write transaction of a collection stamps or moves. A blob stored before blob ages
  * has an unknown age, which collection stamps; changing one column rewrites the whole row on SQLite and libSQL, its
  * blob included, and holds the writer for as long as that takes, so a stamping transaction stops at this many bytes of
- * blobs. A legacy blob larger than this is moved to chunks instead, at most this many bytes per transaction, and
- * stamped in the transaction that publishes its chunks, which rewrites only its header.
+ * blobs. An in-row blob larger than {@link SNAPSHOT_BLOB_CHUNK_BYTES} is moved to chunks regardless of age,
+ * at most this many bytes per transaction. Publishing frees its old value while holding the writer, with time
+ * proportional to that value's size.
  */
 export const SNAPSHOT_LEGACY_STAMP_BYTES = 16 * SNAPSHOT_BLOB_CHUNK_BYTES;
 
@@ -676,18 +677,14 @@ async function addBlobChunks(
 	if (!(await transaction.get(column.sql, ...column.params))) {
 		await transaction.exec(`ALTER TABLE ${t.blobs} ADD COLUMN chunks ${int} NOT NULL DEFAULT 0`);
 	}
-	// A deleted blob takes its chunks with it, in the statement that deletes it, whoever deletes it.
-	const trigger = dialect.schemaObjects([`${t.blobs}_chunks_delete`]);
+	const trigger = dialect.schemaObjects([`${t.blobs}_chunks_delete_all`]);
 	if (await transaction.get(trigger.sql, ...trigger.params)) return;
+	await transaction.exec(dialect.dropTrigger(`${t.blobs}_chunks_delete`, t.blobs, true));
 	await transaction.exec(
 		dialect.renderTrigger(
-			createTrigger(
-				`${t.blobs}_chunks_delete`,
-				"DELETE",
-				t.blobs,
-				[`DELETE FROM ${t.blobChunks} WHERE hash = OLD.hash`],
-				"OLD.chunks > 0",
-			),
+			createTrigger(`${t.blobs}_chunks_delete_all`, "DELETE", t.blobs, [
+				`DELETE FROM ${t.blobChunks} WHERE hash = OLD.hash`,
+			]),
 		),
 	);
 }
@@ -711,10 +708,6 @@ async function createSnapshotIndexTables(
 		// Unknown ages are stamped in short collection batches, never by rewriting the table at open.
 		await transaction.exec(`ALTER TABLE ${t.blobs} ADD COLUMN created_at ${int} NOT NULL DEFAULT 0`);
 	}
-	// A constant zero default identifies an upgraded table. Its age index is also deferred to collection.
-	if (age && String(age.default_value) !== "0") {
-		await transaction.exec(`CREATE INDEX IF NOT EXISTS ${t.blobs}_age ON ${t.blobs} (created_at, hash)`);
-	}
 	await transaction.exec(`
 		CREATE TABLE IF NOT EXISTS ${t.runRefs} (run_id ${text} NOT NULL, hash ${text} NOT NULL, PRIMARY KEY (run_id, hash))${keyed};
 		CREATE INDEX IF NOT EXISTS ${t.runRefs}_hash ON ${t.runRefs} (hash);
@@ -733,7 +726,15 @@ async function createSnapshotIndexTables(
 		CREATE TABLE IF NOT EXISTS ${t.sources} (source ${text} PRIMARY KEY, watermark ${int} NOT NULL, backfilled_through ${int} NOT NULL)${keyed};
 	`);
 	await addBlobChunks(transaction, t, dialect);
+	if (age && String(age.default_value) !== "0") await addBlobMaintenanceIndexes(transaction, t);
 	await addSessionRefColumns(transaction, t, prefix, dialect);
+}
+
+async function addBlobMaintenanceIndexes(transaction: SqliteExecutor, t: SnapshotIndexTables): Promise<void> {
+	await transaction.exec(`CREATE INDEX IF NOT EXISTS ${t.blobs}_age ON ${t.blobs} (created_at, hash)`);
+	await transaction.exec(
+		`CREATE INDEX IF NOT EXISTS ${t.blobs}_inline_size ON ${t.blobs} (chunks, hash) WHERE chunks = 0 AND length(data) > ${SNAPSHOT_BLOB_CHUNK_BYTES}`,
+	);
 }
 
 /** The columns of {@link SnapshotIndexTables.sessionRefs} that later builds added, with their types. */
@@ -909,7 +910,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			...Object.values(t).map((table) => dialect.tableExists(table)),
 			dialect.columnExists(t.blobs, "created_at"),
 			dialect.columnExists(t.blobs, "chunks"),
-			dialect.schemaObjects([`${t.blobs}_chunks_delete`]),
+			dialect.schemaObjects([`${t.blobs}_chunks_delete_all`]),
 			...SESSION_REF_COLUMNS.map((column) => dialect.columnExists(t.sessionRefs, column)),
 		];
 		const found = await Promise.all(probes.map((probe) => database.get(probe.sql, ...probe.params)));
@@ -941,6 +942,13 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 									version: 4,
 									up: (transaction: SqliteExecutor, dialect: StorageDialect) =>
 										addBlobChunks(transaction, t, dialect),
+								},
+								{
+									version: 5,
+									up: async (transaction: SqliteExecutor, dialect: StorageDialect) => {
+										await addBlobChunks(transaction, t, dialect);
+										await addBlobMaintenanceIndexes(transaction, t);
+									},
 								},
 							]
 						: []),
@@ -975,12 +983,13 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	/**
 	 * Stores every blob, in one transaction, or restarts the age of one stored already. A blob larger than
 	 * {@link SNAPSHOT_BLOB_CHUNK_BYTES} is stored as chunk rows and a header row that names how many, so no statement
-	 * binds more than one chunk (#4954); the chunks of a blob stored already are not written again.
+	 * binds more than one chunk (#4954); the chunks of a blob stored already are not written again. Unknown ages
+	 * remain protected until collection stamps them.
 	 */
 	async putBlobs(blobs: readonly SnapshotBlob[]): Promise<void> {
 		if (blobs.length === 0) return;
 		const now = this.dialect.nowSeconds;
-		const header = `INSERT INTO ${this.table} (hash, bytes, data, created_at, chunks) VALUES (?, ?, ?, ${now}, ?) ON CONFLICT(hash) DO UPDATE SET created_at = ${now}`;
+		const header = `INSERT INTO ${this.table} (hash, bytes, data, created_at, chunks) VALUES (?, ?, ?, ${now}, ?) ON CONFLICT(hash) DO UPDATE SET created_at = ${now} WHERE ${this.table}.created_at > 0`;
 		const chunk = `INSERT INTO ${this.tables.blobChunks} (hash, idx, data) SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM ${this.table} WHERE hash = ?) ON CONFLICT DO NOTHING`;
 		const statements: { sql: string; params: SqliteValue[] }[] = [];
 		let chunked = false;
@@ -1063,27 +1072,25 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		}
 		return offset === data.byteLength ? data : undefined;
 	}
-	/** Restarts the age of every stored hash in one statement on the database clock; false when any is missing. */
+	/** Refreshes stored hashes; unknown ages stay protected until collection stamps them. False when any is missing. */
 	async refreshBlobs(hashes: readonly string[]): Promise<boolean> {
 		const unique = [...new Set(hashes)];
 		if (unique.length === 0) return true;
-		// One request where the database takes batches: a server holds its write lock for that request only (#4768).
+		const requested = `hash IN (SELECT value FROM ${this.dialect.jsonValues("?")})`;
+		const params = [JSON.stringify(unique)];
+		const update = `UPDATE ${this.table} SET created_at = ${this.dialect.nowSeconds} WHERE ${requested} AND created_at > 0`;
+		const present = `SELECT hash FROM ${this.table} WHERE ${requested}`;
 		if (this.database.batch) {
-			const [refreshed] = await this.database.batch([
-				{
-					sql: `UPDATE ${this.table} SET created_at = unixepoch() WHERE hash IN (SELECT value FROM json_each(?)) RETURNING hash`,
-					params: [JSON.stringify(unique)],
-				},
+			const [, rows] = await this.database.batch([
+				{ sql: update, params },
+				{ sql: present, params },
 			]);
-			return refreshed!.length === unique.length;
+			return rows!.length === unique.length;
 		}
-		const { changes } = await this.database.transaction((transaction) =>
-			transaction.run(
-				`UPDATE ${this.table} SET created_at = ${this.dialect.nowSeconds} WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")})`,
-				JSON.stringify(unique),
-			),
-		);
-		return changes === unique.length;
+		return this.database.transaction(async (transaction) => {
+			await transaction.run(update, ...params);
+			return (await transaction.all(present, ...params)).length === unique.length;
+		});
 	}
 	async listBlobHashes(): Promise<readonly string[]> {
 		const rows = await this.database.all<{ hash: string }>(`SELECT hash FROM ${this.table}`);
@@ -1226,11 +1233,9 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	async sweep(options: SnapshotSweepOptions): Promise<readonly string[]> {
 		const t = this.tables;
 		options.signal?.throwIfAborted();
-		const ageIndex = this.dialect.schemaObjects([`${t.blobs}_age`]);
-		if (!(await this.database.get(ageIndex.sql, ...ageIndex.params))) {
-			await this.write(options.pace, (tx) =>
-				tx.exec(`CREATE INDEX IF NOT EXISTS ${t.blobs}_age ON ${t.blobs} (created_at, hash)`),
-			);
+		const indexes = this.dialect.schemaObjects([`${t.blobs}_age`, `${t.blobs}_inline_size`]);
+		if ((await this.database.all(indexes.sql, ...indexes.params)).length < 2) {
+			await this.write(options.pace, (tx) => addBlobMaintenanceIndexes(tx, t));
 		}
 		const unreferenced = `NOT EXISTS (
 				SELECT 1 FROM ${t.runRefs} AS ref WHERE ref.hash = ${t.blobs}.hash
@@ -1255,19 +1260,11 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
 				const page = await this.page(transaction, minimumAge, unreferenced, after);
 				if (page.length === 0) return { page, deleted: [] };
-				const rows = await transaction.all<SqliteRow & { hash: string; size: number }>(
-					`DELETE FROM ${t.blobs} WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")}) AND created_at > 0 AND created_at <= ${this.dialect.nowSeconds} - ? AND ${unreferenced} RETURNING hash, length(data) AS size`,
+				const rows = await transaction.all<SqliteRow & { hash: string }>(
+					`DELETE FROM ${t.blobs} WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")}) AND created_at > 0 AND created_at <= ${this.dialect.nowSeconds} - ? AND ${unreferenced} RETURNING hash`,
 					JSON.stringify(page.map((row) => row.hash)),
 					minimumAge,
 				);
-				// Only a legacy blob too large to stamp in its row can have chunks while its bytes are in its row: those a move
-				// to chunks wrote before it stopped, which the trigger that deletes a chunked blob's chunks leaves.
-				const unmoved = rows.filter((row) => Number(row.size) > SNAPSHOT_LEGACY_STAMP_BYTES);
-				if (unmoved.length > 0)
-					await this.dropStrayChunks(
-						transaction,
-						unmoved.map((row) => row.hash),
-					);
 				return { page, deleted: rows.map((row) => row.hash) };
 			});
 			if (batch === undefined) {
@@ -1279,7 +1276,6 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			deleted.push(...batch.deleted);
 			options.onBatch?.(batch.deleted);
 			if (batch.page.length < SNAPSHOT_COLLECTION_BATCH) {
-				// Stamp unknown ages after deletion finishes, so even graceSeconds: 0 never deletes a row just stamped.
 				await this.stampLegacyAges(options);
 				return deleted;
 			}
@@ -1290,24 +1286,31 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 
 	/**
 	 * Stamps every blob of unknown age with the database clock, in hash order, in write transactions of at most
-	 * {@link SNAPSHOT_LEGACY_STAMP_BYTES} of blobs, and moves each blob larger than that to chunks to stamp it, so no
-	 * transaction holds the writer longer than writing that many bytes takes, however large a legacy blob is.
+	 * {@link SNAPSHOT_LEGACY_STAMP_BYTES} of blobs. Moves every in-row blob larger than
+	 * {@link SNAPSHOT_BLOB_CHUNK_BYTES} to chunks regardless of age. Chunk writes have the same byte bound;
+	 * publishing also frees the old in-row value, whose cost grows with its size.
 	 */
 	private async stampLegacyAges(options: SnapshotIndexOptions): Promise<void> {
-		if (!(await this.database.get(`SELECT 1 FROM ${this.table} WHERE created_at = 0 LIMIT 1`))) return;
+		const oversized = `chunks = 0 AND length(data) > ${SNAPSHOT_BLOB_CHUNK_BYTES}`;
+		if (
+			!(await this.database.get(
+				`SELECT 1 FROM ${this.table} WHERE created_at = 0 UNION ALL SELECT 1 FROM ${this.table} WHERE ${oversized} LIMIT 1`,
+			))
+		)
+			return;
 		let after = "";
 		for (;;) {
 			options.signal?.throwIfAborted();
-			// `length` reads a blob's size from its row's header, not its bytes.
 			const page = await this.database.all<SqliteRow & { hash: string; size: number }>(
-				`SELECT hash, length(data) AS size FROM ${this.table} WHERE created_at = 0 AND hash > ? ORDER BY hash LIMIT ?`,
+				`SELECT hash, length(data) AS size FROM ${this.table} WHERE created_at = 0 AND hash > ? UNION ALL SELECT hash, length(data) AS size FROM ${this.table} WHERE ${oversized} AND created_at > 0 AND hash > ? ORDER BY hash LIMIT ?`,
+				after,
 				after,
 				SNAPSHOT_COLLECTION_BATCH,
 			);
 			let batch: string[] = [];
 			let bytes = 0;
 			for (const { hash, size } of page) {
-				const oversized = Number(size) > SNAPSHOT_LEGACY_STAMP_BYTES;
+				const oversized = Number(size) > SNAPSHOT_BLOB_CHUNK_BYTES;
 				if (batch.length > 0 && (oversized || bytes + Number(size) > SNAPSHOT_LEGACY_STAMP_BYTES)) {
 					await this.stampInRows(batch, options);
 					batch = [];
@@ -1340,17 +1343,14 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	}
 
 	/**
-	 * Moves the legacy blob `hash`, too large to stamp in its row, to chunks: its bytes are read once, without the write
-	 * lock, and written as chunks, at most {@link SNAPSHOT_LEGACY_STAMP_BYTES} of them per transaction, while the row
-	 * keeps them for every reader. The transaction that publishes the chunks also stamps the blob's age and empties its
-	 * row, which rewrites only the row's header, and makes the journal one that builds before chunked blobs refuse, as
-	 * {@link putBlobs} does. A move stopped part way leaves chunks the next one reuses: a blob's chunks hold the same
-	 * bytes whoever writes them.
+	 * Moves an in-row legacy blob to chunks regardless of age. Reads its bytes without the writer and writes at most
+	 * {@link SNAPSHOT_LEGACY_STAMP_BYTES} per transaction while readers retain the in-row value. Publishing stamps
+	 * its age and frees the old value under the writer, with time proportional to the freed size. It also marks the
+	 * journal as requiring chunk support, as {@link putBlobs} does. A stopped move leaves chunks the next move reuses.
 	 */
 	private async moveLegacyBlobToChunks(hash: string, options: SnapshotIndexOptions): Promise<void> {
 		const t = this.tables;
-		// Still in its row, with an unknown age.
-		const unmoved = `hash = ? AND created_at = 0 AND chunks = 0`;
+		const unmoved = `hash = ? AND chunks = 0 AND length(data) > ${SNAPSHOT_BLOB_CHUNK_BYTES}`;
 		const legacy = await this.database.get<SqliteRow & { data: Uint8Array }>(
 			`SELECT data FROM ${t.blobs} WHERE ${unmoved}`,
 			hash,
@@ -1364,7 +1364,6 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			const pending = await this.write(options.pace, async (transaction) => {
 				if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
 				if (!(await transaction.get(`SELECT 1 FROM ${t.blobs} WHERE ${unmoved}`, hash))) {
-					// Stamped in its row, or deleted, since: nobody finishes this move, so its chunks go now.
 					await this.dropStrayChunks(transaction, [hash]);
 					return false;
 				}
@@ -1382,7 +1381,6 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			await this.betweenBatches(options.pace);
 		}
 		options.signal?.throwIfAborted();
-		// Loaded only when a legacy blob is moved, as for putBlobs.
 		const journal = await import("../storage/journal-adoption.js");
 		await this.write(options.pace, async (transaction) => {
 			if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
@@ -1402,8 +1400,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 
 	/**
 	 * Deletes the chunks of the blobs `hashes` names whose rows hold their bytes themselves or are gone: chunks that a
-	 * move to chunks wrote before it stopped, its blob stamped in its row or deleted since. The trigger that deletes a
-	 * blob's chunks with it deletes only a chunked blob's.
+	 * move wrote before another writer deleted or replaced its row. Completed chunked blobs retain their chunks.
 	 */
 	private async dropStrayChunks(transaction: SqliteExecutor, hashes: readonly string[]): Promise<void> {
 		const t = this.tables;
