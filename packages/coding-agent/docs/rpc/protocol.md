@@ -322,6 +322,18 @@ Response:
 
 The `model` field is a full [Model](#model) object. With `persist: true`, the response data also includes `persistedDefaults` in the same format as [`set_model`](#set_model).
 
+#### set_scoped_models
+
+Replace the current session's model-cycling scope. Model searches limited to the scope and `cycle_model` use the new list immediately. An empty `models` list removes the cycling restriction. Unknown model references are ignored. Invalid thinking levels return an error without changing the scope.
+
+```json
+{"type": "set_scoped_models", "models": [{"provider": "openai", "modelId": "o3", "thinkingLevel": "high"}]}
+```
+
+Each entry requires `provider` and `modelId`; `thinkingLevel` is optional. The optional `enabledModels` field also updates the global saved model patterns. Omit it to leave saved settings unchanged, pass an array to replace them, or pass `null` to enable all models. Project settings remain unchanged.
+
+A successful response has `command: "set_scoped_models"` and the same catalog `data` as `get_available_models`, including the updated `scopedModels`.
+
 #### get_available_models
 
 List all configured models.

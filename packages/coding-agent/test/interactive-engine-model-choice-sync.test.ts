@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, test } from "vitest";
+import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
+import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
+import { RpcClient } from "../src/modes/rpc/rpc-client.ts";
 import { createEngineHostPair, type EngineHostPair } from "./helpers/in-process-engine-pair.ts";
+import { createHarness } from "./suite/harness.ts";
 
 const pairs: EngineHostPair[] = [];
 
@@ -128,3 +135,111 @@ test.each(["set", "cycle"] as const)(
 		assert.equal(pair.runtime.session.model?.id, current.id);
 	},
 );
+
+test.each(["setThinkingLevel", "cycleThinkingLevel", "engineMutation"] as const)(
+	"an engine resync does not overwrite a newer %s state (#5237)",
+	async (kind) => {
+		const pair = await modelPair();
+		const other = pair.engine.getModel("other-model")!;
+		const stateHeld = Promise.withResolvers<void>();
+		pair.holdHostTrafficFrom((record) => {
+			const matches = record.type === "response" && record.command === "get_state";
+			if (matches) stateHeld.resolve();
+			return matches;
+		});
+
+		const resync = pair.runtime.initializeFromEngine();
+		await stateHeld.promise;
+
+		let pendingHostChange: Promise<unknown> | undefined;
+		if (kind === "setThinkingLevel") {
+			pendingHostChange = pair.runtime.session.setThinkingLevel("high");
+		} else if (kind === "cycleThinkingLevel") {
+			pendingHostChange = pair.runtime.session.cycleThinkingLevel();
+		} else {
+			await pair.engine.session.setModel(other);
+			await pair.engine.session.setThinkingLevel("high");
+		}
+
+		await pair.releaseHostTraffic();
+		await Promise.all([resync, pendingHostChange]);
+		await pair.drain();
+
+		assert.equal(pair.runtime.session.model?.id, pair.engine.session.model?.id);
+		assert.equal(pair.runtime.session.thinkingLevel, pair.engine.session.thinkingLevel);
+		assert.notEqual(pair.runtime.session.thinkingLevel, "medium");
+	},
+);
+
+test("an engine resync over a child process does not overwrite a concurrent thinking level change (#5237)", async () => {
+	const hostHarness = await createHarness({
+		models: [
+			{ id: "current-model", reasoning: true },
+			{ id: "other-model", reasoning: true },
+		],
+	});
+	const childScript = join(hostHarness.tempDir, "engine-resync-child.mts");
+	const runtimeUrl = pathToFileURL(join(import.meta.dirname, "../src/core/agent-session-runtime.ts")).href;
+	const jsonEventUrl = pathToFileURL(join(import.meta.dirname, "../src/modes/json-event.ts")).href;
+	const handlerUrl = pathToFileURL(join(import.meta.dirname, "../src/modes/rpc/rpc-command-handler.ts")).href;
+	const schedulerUrl = pathToFileURL(join(import.meta.dirname, "../src/modes/rpc/rpc-input-scheduler.ts")).href;
+	const harnessUrl = pathToFileURL(join(import.meta.dirname, "./suite/harness.ts")).href;
+	writeFileSync(
+		childScript,
+		[
+			`import { createInterface } from "node:readline";`,
+			`import { AgentSessionRuntime } from ${JSON.stringify(runtimeUrl)};`,
+			`import { toJsonEvent } from ${JSON.stringify(jsonEventUrl)};`,
+			`import { createRpcCommandHandler } from ${JSON.stringify(handlerUrl)};`,
+			`import { createRpcInputScheduler } from ${JSON.stringify(schedulerUrl)};`,
+			`import { createHarness } from ${JSON.stringify(harnessUrl)};`,
+			`const out = (record) => process.stdout.write(JSON.stringify(record) + "\\n");`,
+			`const engine = await createHarness({ models: [{ id: "current-model", reasoning: true }, { id: "other-model", reasoning: true }] });`,
+			`await engine.session.bindExtensions({ shutdownHandler: () => {} });`,
+			`await engine.session.setModel(engine.getModel("current-model"));`,
+			`await engine.session.setThinkingLevel("low");`,
+			`const runtimeHost = new AgentSessionRuntime(engine.session, { cwd: engine.tempDir, agentDir: engine.tempDir }, async () => { throw new Error("unused"); });`,
+			`const handle = createRpcCommandHandler({ runtimeHost, getSession: () => engine.session, rebindSession: async () => {}, output: out, detachCompaction: true });`,
+			`engine.session.subscribe((event) => out(toJsonEvent(event)));`,
+			`const schedule = createRpcInputScheduler(async (line) => {`,
+			`	const response = await handle(JSON.parse(line));`,
+			`	if (response) out(response);`,
+			`});`,
+			`createInterface({ input: process.stdin }).on("line", schedule);`,
+		].join("\n"),
+	);
+
+	const client = new RpcClient({ cliPath: childScript, requestTimeoutMs: 30_000 });
+	await client.start();
+	try {
+		const local = new AgentSessionRuntime(
+			hostHarness.session,
+			{ cwd: hostHarness.tempDir, agentDir: hostHarness.tempDir } as never,
+			async () => {
+				throw new Error("unused runtime factory");
+			},
+		);
+		const runtime = new IsolatedInteractiveRuntime(
+			local,
+			async () => {
+				throw new Error("unused runtime factory");
+			},
+			client,
+		);
+		await runtime.session.bindExtensions({ shutdownHandler: () => {} });
+		await runtime.initializeFromEngine();
+		assert.equal(runtime.session.thinkingLevel, "low");
+
+		const resync = runtime.initializeFromEngine();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		const change = runtime.session.setThinkingLevel("high");
+		await Promise.all([resync, change]);
+
+		const state = await client.getState();
+		assert.equal(state.thinkingLevel, "high");
+		assert.equal(runtime.session.thinkingLevel, "high");
+	} finally {
+		await client.stop();
+		await hostHarness.cleanup().catch(() => {});
+	}
+});

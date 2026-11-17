@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { Container, getKeybindings, setKeybindings, type TuiMouseEvent, visibleWidth } from "@bastani/atomic-tui";
+import { getKeybindings, setKeybindings, type TuiMouseEvent, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.js";
-import { PLAIN_SELECTOR_STYLE, Selector, type SelectorItem } from "../src/modes/interactive/components/selector.js";
+import { navActionText } from "../src/modes/interactive/components/nav-keys.js";
+import {
+	fitHintEntries,
+	PLAIN_SELECTOR_STYLE,
+	Selector,
+	type SelectorItem,
+} from "../src/modes/interactive/components/selector.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 const DOWN = "\x1b[B";
@@ -346,38 +352,37 @@ describe("selector interaction and rendering regressions (#5237)", () => {
 		assert.deepEqual(chosen, ["openai/gpt-4o", "openai/gpt-4o"]);
 	});
 
-	test("ignores mouse press and click when the painted width differs from the mouse event width until re-rendered (#5237)", () => {
-		const chosen: string[] = [];
-		const selector = new Selector<string>({
-			title: "Pick",
-			subtitle: "word ".repeat(24).trim(),
-			items: makeItems(["a", "b", "c", "d", "e"]),
-			style: PLAIN_SELECTOR_STYLE,
-			onSelect: (item) => chosen.push(item.id),
-		});
-		const container = new Container();
-		container.addChild(selector);
+	test("handles mouse press and click when a wrapper forwards a mouse event wider than the rendered selector (#5237)", () => {
+		for (const [wrapWidth, innerWidth] of [
+			[80, 80],
+			[80, 76],
+		] as const) {
+			const chosen: string[] = [];
+			const selector = new Selector<string>({
+				items: makeItems(["a", "b", "c"]),
+				style: PLAIN_SELECTOR_STYLE,
+				onSelect: (item) => chosen.push(item.id),
+			});
+			const lines = selector.render(innerWidth);
+			const targetY = lines.findIndex((line) => plain(line).includes(" c"));
+			assert.ok(targetY >= 0);
 
-		const painted = container.render(80);
-		const targetY = painted.findIndex((line) => plain(line).includes("item") || plain(line).endsWith(" e"));
-		assert.ok(targetY >= 0);
+			const pressResult = selector.handleMouse(mouseEvent("press", targetY, wrapWidth, lines.length));
+			const clickResult = selector.handleMouse(mouseEvent("click", targetY, wrapWidth, lines.length));
+			assert.deepEqual(pressResult, { handled: true, focus: true });
+			assert.deepEqual(clickResult, { handled: true });
+			assert.deepEqual(chosen, ["c"]);
+		}
+	});
 
-		container.handleMouse(mouseEvent("press", targetY, 80, painted.length));
-		selector.setItems(makeItems(["x", "y", "a", "b", "c", "d", "e"]));
-		container.handleMouse(mouseEvent("wheel", 0, 30, painted.length, { wheelDelta: 1 }));
-
-		container.handleMouse(mouseEvent("press", targetY, 80, painted.length));
-		container.handleMouse(mouseEvent("click", targetY, 80, painted.length));
-		assert.deepEqual(chosen, []);
-
-		const repainted = container.render(80);
-		const repaintedY = repainted.findIndex((line) => plain(line).endsWith(" e"));
-		assert.ok(repaintedY >= 0);
-		container.handleMouse(mouseEvent("click", repaintedY, 80, repainted.length));
-		assert.deepEqual(chosen, []);
-		container.handleMouse(mouseEvent("press", repaintedY, 80, repainted.length));
-		container.handleMouse(mouseEvent("click", repaintedY, 80, repainted.length));
-		assert.deepEqual(chosen, ["e"]);
+	test("does not reserve tag space or cut a fitting label when a tag has zero visible width (#5237)", () => {
+		for (const tag of ["\u200b", "\u0301", "\x1b[0m", ""]) {
+			const selector = new Selector<string>({
+				items: [{ id: "a", value: "a", label: "abcdef", tag }],
+				style: PLAIN_SELECTOR_STYLE,
+			});
+			assert.equal(plain(selector.render(10)[0] ?? "").trimEnd(), " ❯ abcdef");
+		}
 	});
 
 	test("drops narrow tags that would render as a bare ellipsis while keeping short whole tags and 4-column prefixes (#5237)", () => {
@@ -449,10 +454,22 @@ describe("selector interaction and rendering regressions (#5237)", () => {
 		selector.clearSearch();
 		assert.deepEqual(changes, ["beta"]);
 
+		selector.setQuery("zzz");
+		assert.deepEqual(changes, ["beta", undefined]);
+		selector.clearSearch();
+		assert.deepEqual(changes, ["beta", undefined, "alpha"]);
+
+		selector.setItems(makeItems(["alpha", "beta", "gamma"]));
+		assert.deepEqual(changes, ["beta", undefined, "alpha"]);
+		selector.setItems(makeItems(["delta", "epsilon"]));
+		assert.deepEqual(changes, ["beta", undefined, "alpha", "delta"]);
+		selector.setItems(makeItems(["alpha", "beta", "gamma"]), "alpha");
+		assert.deepEqual(changes, ["beta", undefined, "alpha", "delta", "alpha"]);
+
 		const lines = selector.render(80);
 		const betaY = lines.findIndex((line) => plain(line).includes("beta"));
 		selector.handleMouse(mouseEvent("press", betaY, 80, lines.length));
-		assert.deepEqual(changes, ["beta"]);
+		assert.deepEqual(changes, ["beta", undefined, "alpha", "delta", "alpha", "beta"]);
 
 		const singleEnabled = new Selector<string>({
 			items: [
@@ -463,7 +480,7 @@ describe("selector interaction and rendering regressions (#5237)", () => {
 			onSelectionChange: (item) => changes.push(`single:${item?.id}`),
 		});
 		singleEnabled.handleMouse(mouseEvent("wheel", 0, 80, 10, { wheelDelta: 1 }));
-		assert.deepEqual(changes, ["beta"]);
+		assert.deepEqual(changes, ["beta", undefined, "alpha", "delta", "alpha", "beta"]);
 
 		const multiChanges: Array<string | undefined> = [];
 		const numberedMulti = new Selector<string>({
@@ -505,5 +522,99 @@ describe("selector interaction and rendering regressions (#5237)", () => {
 				}
 			}
 		}
+	});
+
+	test("refreshes focus-sensitive hints and notices, preserves label margin and non-essential extra confirm roles, and handles search digits and multi-select clicks (#5237)", () => {
+		const rows = makeItems(["alpha", "kappa"]);
+		let focusSelector!: Selector<string>;
+		focusSelector = new Selector<string>({
+			items: rows,
+			style: PLAIN_SELECTOR_STYLE,
+			extraKeys: [{ hint: { keys: "ctrl+x", label: "copy" }, enabled: () => focusSelector.focused, run: () => {} }],
+		});
+		assert.ok(!focusSelector.render(80).join("\n").includes("copy"));
+		focusSelector.focused = true;
+		assert.ok(focusSelector.render(80).join("\n").includes("copy"));
+
+		focusSelector.setNotice({ text: "fresh notice", tone: "muted" });
+		assert.ok(focusSelector.render(80).join("\n").includes("fresh notice"));
+
+		const longLabel = "abcdefghijklmnopqrstuvwxyz";
+		const marginSelector = new Selector<string>({
+			items: [{ id: "long", value: "long", label: longLabel }],
+			style: PLAIN_SELECTOR_STYLE,
+		});
+		assert.equal(
+			marginSelector.render(12).find((line) => line.startsWith(" ❯ ")),
+			` ❯ ${truncateToWidth(longLabel, 8)}`,
+		);
+
+		const kb = getKeybindings();
+		const room =
+			`${navActionText(kb, "tui.select.confirm")} choose · ${navActionText(kb, "tui.select.cancel")} cancel`.length;
+		const fitted = fitHintEntries(
+			[
+				{ action: "tui.select.confirm", label: "choose", role: "confirm" },
+				{ action: "tui.select.confirm", label: "copy", role: "extra" },
+				{ action: "tui.select.cancel", label: "cancel", role: "cancel" },
+			],
+			room,
+			kb,
+		);
+		assert.deepEqual(
+			fitted.map((entry) => entry.label),
+			["choose", "cancel"],
+		);
+
+		let numberedSelected = false;
+		const numberedSearch = new Selector<string>({
+			items: rows,
+			search: true,
+			numbered: true,
+			style: PLAIN_SELECTOR_STYLE,
+			onSelect: () => {
+				numberedSelected = true;
+			},
+		});
+		numberedSearch.handleInput("k");
+		assert.equal(numberedSearch.state.getQuery(), "k");
+		numberedSearch.clearSearch();
+		numberedSearch.handleInput("2");
+		assert.equal(numberedSelected, false);
+		assert.equal(numberedSearch.state.getQuery(), "2");
+
+		let confirmations = 0;
+		const multiMouse = new Selector<string>({
+			items: rows,
+			mode: "multi",
+			style: PLAIN_SELECTOR_STYLE,
+			onConfirm: () => {
+				confirmations++;
+			},
+		});
+		const multiLines = multiMouse.render(80);
+		const alphaY = multiLines.findIndex((line) => plain(line).includes("alpha"));
+		multiMouse.handleMouse(mouseEvent("press", alphaY, 80, multiLines.length));
+		multiMouse.handleMouse(mouseEvent("click", alphaY, 80, multiLines.length));
+		assert.equal(confirmations, 0);
+		assert.deepEqual(
+			multiMouse.state.getChecked().map((item) => item.id),
+			["alpha"],
+		);
+
+		kb.setUserBindings({ "tui.select.cancel": ["escape", "ctrl+c", "ctrl+shift+c"] });
+		let cancelled = false;
+		const customCancel = new Selector<string>({
+			items: rows,
+			search: true,
+			style: PLAIN_SELECTOR_STYLE,
+			onCancel: () => {
+				cancelled = true;
+			},
+		});
+		customCancel.handleInput("al");
+		customCancel.handleInput("\x1b[99;6u");
+		assert.equal(cancelled, false);
+		assert.equal(customCancel.state.getQuery(), "");
 	});
 });

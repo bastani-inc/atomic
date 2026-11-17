@@ -85,6 +85,7 @@ export interface SelectorOptions<T> {
 	readonly emptyText?: string;
 	/** Number the rows `1.` `2.`; digits 1–9 choose or toggle a row when there is no search box. */
 	readonly numbered?: boolean;
+	readonly wrap?: boolean;
 	/** The row selected first. Defaults to the first row marked `on`, else the first enabled row. */
 	readonly initialId?: string;
 	/** Rows checked first in a multi-select. */
@@ -382,8 +383,8 @@ export function selectorHintEntries<T>(
 	}
 	if (options.search) entries.push(tagHintEntry({ keys: "type", label: "to search" }, "to search"));
 	else if (options.numbered && enabledCount > 0) {
-		const last = Math.min(9, state.getVisible().length);
-		entries.push(tagHintEntry({ keys: last > 1 ? `1-${last}` : "1", label: "pick" }, "pick"));
+		const keys = numberedHintKeys(state.getVisible());
+		if (keys) entries.push(tagHintEntry({ keys, label: "pick" }, "pick"));
 	}
 	const cancel = firstKey(keybindings, "tui.select.cancel") || "esc";
 	entries.push({
@@ -447,6 +448,24 @@ function firstKey(keybindings: NavKeybindings, action: string): string {
 	return key ? navKeyText(key) : "";
 }
 
+function numberedHintKeys<T>(visible: readonly SelectorItem<T>[]): string {
+	const limit = Math.min(9, visible.length);
+	const ranges: string[] = [];
+	let start = 0;
+	for (let index = 0; index < limit; index++) {
+		if (!visible[index]?.disabled) {
+			if (start === 0) start = index + 1;
+		} else if (start !== 0) {
+			ranges.push(start === index ? `${start}` : `${start}-${index}`);
+			start = 0;
+		}
+	}
+	if (start !== 0) {
+		ranges.push(start === limit ? `${start}` : `${start}-${limit}`);
+	}
+	return ranges.join("/");
+}
+
 function clipSelectorLine(line: string, width: number): string {
 	let clipped = visibleWidth(line) > width ? truncateToWidth(line, width) : line;
 	let room = width;
@@ -469,7 +488,6 @@ export class Selector<T> implements Component, Focusable {
 	private subtitle?: string;
 	private notice?: { text: string; tone: SelectorTone };
 	private rowLines = new Map<number, string>();
-	private rowLinesWidth?: number;
 	private mousePressed?: string;
 	private closed = false;
 	private selectedId?: string;
@@ -585,7 +603,14 @@ export class Selector<T> implements Component, Focusable {
 		this.cachedRender = undefined;
 		const kb = this.options.keybindings ?? getKeybindings();
 		if (this.showingHelp) {
-			if (kb.matches(data, "tui.select.cancel") || kb.matches(data, "app.keys.help")) this.showingHelp = false;
+			if (matchesKey(data, "ctrl+c")) {
+				this.showingHelp = false;
+				this.closed = true;
+				this.mousePressed = undefined;
+				this.options.onCancel?.();
+			} else if (kb.matches(data, "tui.select.cancel") || kb.matches(data, "app.keys.help")) {
+				this.showingHelp = false;
+			}
 			return;
 		}
 		const selected = this.state.getSelected();
@@ -641,10 +666,6 @@ export class Selector<T> implements Component, Focusable {
 			return { handled: true, render: this.state.getSelected()?.id !== before };
 		}
 		if (event.button !== "left" || (event.type !== "press" && event.type !== "click")) return undefined;
-		if (this.rowLinesWidth !== event.width) {
-			this.mousePressed = undefined;
-			return { handled: true };
-		}
 		const id = this.rowLines.get(event.y);
 		if (id === undefined) {
 			this.mousePressed = undefined;
@@ -706,10 +727,8 @@ export class Selector<T> implements Component, Focusable {
 			cached.inputFocused === inputFocused
 		) {
 			this.rowLines = cached.rowLines;
-			this.rowLinesWidth = width;
 			return cached.lines;
 		}
-		this.rowLinesWidth = width;
 		if (this.showingHelp) {
 			this.rowLines.clear();
 			const title = this.options.helpTitle ?? this.title ?? "keys";
@@ -724,7 +743,13 @@ export class Selector<T> implements Component, Focusable {
 		const lines: string[] = [];
 		const inner = Math.max(1, width - 2);
 		if (this.title) {
-			lines.push(`  ${this.style.bold(this.style.text(truncateToWidth(this.title, Math.max(1, inner - 1))))}`);
+			if (this.options.wrap) {
+				for (const wrapped of wrapTextWithAnsi(this.title, inner)) {
+					lines.push(`  ${this.style.bold(this.style.text(wrapped))}`);
+				}
+			} else {
+				lines.push(`  ${this.style.bold(this.style.text(truncateToWidth(this.title, Math.max(1, inner - 1))))}`);
+			}
 		}
 		for (const line of (this.subtitle ?? "").split("\n")) {
 			if (!this.subtitle) break;
@@ -790,6 +815,7 @@ export class Selector<T> implements Component, Focusable {
 	private confirm(): void {
 		if (this.closed) return;
 		if (this.state.mode === "multi") {
+			if (this.state.getChecked().length === 0 && !this.state.getSelected()) return;
 			this.closed = true;
 			this.mousePressed = undefined;
 			this.options.onConfirm?.(this.state.getChecked());
@@ -852,19 +878,25 @@ export class Selector<T> implements Component, Focusable {
 			}
 			lastGroup = item.group;
 			const isSelected = index === this.state.getSelectedIndex() && !item.disabled;
-			this.rowLines.set(firstLine + lines.length, item.id);
 			const parts = this.rowParts(item, index, isSelected, numbered, numberWidth, hasMarks, multi);
 			const indent = visibleWidth(parts.lead);
 			const labelRoom = Math.max(1, width - indent - 1);
-			const label = visibleWidth(item.label) > labelRoom ? truncateToWidth(item.label, labelRoom) : item.label;
+			const wrappedLabels = this.options.wrap ? wrapTextWithAnsi(item.label, labelRoom) : undefined;
+			const label = wrappedLabels
+				? (wrappedLabels[0] ?? "")
+				: visibleWidth(item.label) > labelRoom
+					? truncateToWidth(item.label, labelRoom)
+					: item.label;
 			const tagRoom = Math.max(0, width - indent - visibleWidth(label) - 3);
-			const tagText = item.tag
-				? visibleWidth(item.tag) <= tagRoom
-					? item.tag
-					: tagRoom >= 4 && visibleWidth(truncateToWidth(item.tag, tagRoom - 3, "")) > 0
-						? truncateToWidth(item.tag, tagRoom)
-						: ""
-				: "";
+			const rawTagWidth = item.tag ? visibleWidth(item.tag) : 0;
+			const tagText =
+				item.tag && rawTagWidth > 0
+					? rawTagWidth <= tagRoom
+						? item.tag
+						: tagRoom >= 4 && visibleWidth(truncateToWidth(item.tag, tagRoom - 3, "")) > 0
+							? truncateToWidth(item.tag, tagRoom)
+							: ""
+					: "";
 			const tag = tagText ? this.style.tone(item.tagTone ?? "muted", tagText) : "";
 			const tagWidth = tagText ? visibleWidth(tagText) + 2 : 0;
 			const room = Math.max(1, width - indent - tagWidth - 1);
@@ -882,7 +914,14 @@ export class Selector<T> implements Component, Focusable {
 				}
 			}
 			if (tag) line += " ".repeat(Math.max(2, width - used - tagWidth + 1)) + tag;
+			this.rowLines.set(firstLine + lines.length, item.id);
 			lines.push(line);
+			if (wrappedLabels && wrappedLabels.length > 1) {
+				for (const continuation of wrappedLabels.slice(1)) {
+					this.rowLines.set(firstLine + lines.length, item.id);
+					lines.push(" ".repeat(indent) + parts.label(continuation));
+				}
+			}
 			if (item.description && twoLine) {
 				const description = truncateToWidth(item.description.replace(/\s+/g, " "), Math.max(1, width - indent - 1));
 				lines.push(" ".repeat(indent) + this.style.muted(description));
