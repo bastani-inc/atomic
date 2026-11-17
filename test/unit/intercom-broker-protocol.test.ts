@@ -20,6 +20,7 @@ import {
 	holdWrites,
 	PROTOCOL_2_FRAME_TYPES,
 	PROTOCOL_3_FRAME_TYPES,
+	PROTOCOL_4_FRAME_TYPES,
 	recordClientProtocol,
 	releaseHeldWrites,
 	writeMessageIfOpen,
@@ -221,6 +222,22 @@ describe("frames a broker writes to a client of protocol 1 (#4538)", () => {
 		recordClientProtocol(socket, range(1, 3));
 		recordClientProtocol(socket, range(1, 2));
 		assert.equal(clientHostsSessions(socket), false, "a client recorded again at protocol 2 no longer hosts");
+	});
+
+	test("only a client of protocol 4 is written the answers to a reach change (#5352)", () => {
+		assert.deepEqual([...PROTOCOL_4_FRAME_TYPES], ["reach_ack", "reach_failed"]);
+		const ack: BrokerOutboundFrame = { type: "reach_ack", requestId: "r1", reachable: [], groups: ["doc-a"] };
+		for (const [protocol, written] of [
+			[undefined, false],
+			[range(1, 3), false],
+			[range(1, 4), true],
+			[range(4, 9), true],
+		] as const) {
+			const { socket, frames } = recordingSocket();
+			if (protocol !== undefined) recordClientProtocol(socket, protocol);
+			assert.equal(writeMessageIfOpen(socket, ack), written, JSON.stringify(protocol));
+			assert.equal(frames.length, written ? 1 : 0);
+		}
 	});
 
 	test("a socket no client protocol was recorded for keeps receiving every frame", () => {

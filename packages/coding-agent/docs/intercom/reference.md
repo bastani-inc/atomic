@@ -213,9 +213,21 @@ Every session belongs to a non-empty set of intercom **groups**. Sessions with n
 - `join` adds one membership. `leave` removes the named membership, while bare `leave` resets the complete set to the startup home group.
 - `status` reports the complete membership set. `session_joined`/`session_left`/`presence_update` events are delivered whenever a membership change affects visibility.
 
-A session's home group is resolved with this precedence: explicit stage/task/subagent group > runtime-owned workflow invocation group or inherited launching-session group > env `ATOMIC_INTERCOM_GROUP` (legacy `PI_INTERCOM_GROUP`) > Intercom `config.json` `"group"` > the [project group](/intercom/operations#project-groups) `project:<owner>/<repo>` while multi-node routing is on > `"default"`. Workflow stage named groups and `group: true` are namespaced under `workflow:<rootRunId>/...`, preventing cross-run collisions while preserving sibling isolation. `group: "default"` remains the explicit non-owned escape. The invocation group has asymmetric exact-target control over its owned subgroups; ownership does not grant reverse or lateral access.
+A session's home group is resolved with this precedence: explicit stage/task/subagent group > runtime-owned workflow invocation group or inherited launching-session group > the `group` an SDK host set with [`createAgentSession({ intercom })`](/sdk#intercom-group-and-reach) > env `ATOMIC_INTERCOM_GROUP` (legacy `PI_INTERCOM_GROUP`) > Intercom `config.json` `"group"` > the [project group](/intercom/operations#project-groups) `project:<owner>/<repo>` while multi-node routing is on > `"default"`. Workflow stage named groups and `group: true` are namespaced under `workflow:<rootRunId>/...`, preventing cross-run collisions while preserving sibling isolation. `group: "default"` remains the explicit non-owned escape. The invocation group has asymmetric exact-target control over its owned subgroups; ownership does not grant reverse or lateral access.
 
 Supervisor coordination is granted by the launching parent and can cross groups only for that authorized relationship. Ordinary sends remain membership-isolated. Reconnects preserve authorized relationships; joining a group does not create one.
+
+#### Reach policies
+
+An SDK host can give a session a reach policy with [`createAgentSession({ intercom: { group, reachable } })`](/sdk#intercom-group-and-reach) and change `reachable` later with `session.intercom.setReachable(groups)`. For such a session:
+
+- It reaches sessions that belong to its home group, to one of its reachable groups, or to a subgroup under its home group (`<group>/…`, where its subagents run). It lists, sends to and asks only those, and the workflow stages it launched. A send or ask to any other session is refused with `Target session is outside this session's Intercom reach (…)`, or `Session not found` for a name it cannot see, and is never queued or held.
+- Reach is one way. A session that lists B's group reaches B, but B reaches it only if B's own policy or memberships allow it. A reply to an ask the session received is always delivered.
+- `groups` lists only its home and reachable groups, each with its session count, even when empty. `join` accepts only those names, `leave` can't remove the home group, bare `leave` returns to the home group, and a `list` or `status` peek is limited to the groups it reaches.
+- Narrowing `reachable` leaves any joined group that is no longer reachable. The change applies from the session's next call.
+- Its workflow stages and subagents each get a policy of their own: their group as home and no reachable groups. A subagent's requested `group` is placed under the session's home group. `contact_supervisor` keeps its capability-based route.
+
+The broker holds each session's policy and refuses an out-of-policy list, peek, `groups`, join, leave, presence update, send or ask itself, so a client that skips the tool cannot get around it. A session with a policy registers only with a broker of this version or later; an older broker is replaced automatically, and a broker that cannot be replaced fails the connection with `IntercomReachUnsupportedError` until `atomic intercom restart`. Sessions without a policy keep the membership rules above.
 
 ### send vs ask vs reply
 
@@ -296,7 +308,7 @@ Create `~/.atomic/agent/intercom/config.json`. The legacy `~/.pi/agent/intercom/
 | `confirmSend` | `false` | Show a confirmation dialog before non-reply sends from an interactive session with UI |
 | `replyHint` | `true` | Include reply instruction in incoming messages |
 | `status` | — | Optional custom status suffix shown after the automatic lifecycle status, for example `thinking · researching` |
-| `group` | `"default"`, or the project group while multi-node routing is on | Home intercom group for this session (see [Groups](/intercom/reference#groups)). Overridden by env `ATOMIC_INTERCOM_GROUP` / `PI_INTERCOM_GROUP` and by workflow/orchestrator per-session injection. |
+| `group` | `"default"`, or the project group while multi-node routing is on | Home intercom group for this session (see [Groups](/intercom/reference#groups)). Overridden by env `ATOMIC_INTERCOM_GROUP` / `PI_INTERCOM_GROUP`, by an SDK host's `intercom` option, and by workflow/orchestrator per-session injection. |
 
 The default `npx --no-install tsx` pair uses Atomic's own runtime and does not require `npx`, `tsx`, or `bun` on `PATH`. Explicit custom commands still work. For example, to use Bun from `PATH`:
 

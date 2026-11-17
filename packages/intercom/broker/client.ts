@@ -26,6 +26,7 @@ import type {
 	HostedSessionAssignment,
 	HostedSessionFrameItem,
 } from "../types.js";
+import { IntercomReachUnsupportedError } from "../reach-errors.js";
 import type { IntercomReachPolicy } from "../reach-policy.js";
 import { buildSendSignature, PendingSendRegistry, PendingSendTimeoutError } from "./pending-send-registry.js";
 import { readSubagentMessageSource } from "../source-ownership.js";
@@ -167,19 +168,7 @@ function sameReach(left: IntercomReachPolicy, right: IntercomReachPolicy): boole
 	);
 }
 
-/**
- * #5352: the broker this session registered with does not enforce reach policies (it is older than this version, and
- * replacing it failed), so the session is not registered. Run `atomic intercom restart` to replace the broker.
- */
-export class IntercomReachUnsupportedError extends Error {
-	readonly code = "reach_policy_unsupported";
-	constructor() {
-		super(
-			"This Intercom broker does not enforce reach policies, so this session is not registered with it. Run `atomic intercom restart` to replace the broker.",
-		);
-		this.name = "IntercomReachUnsupportedError";
-	}
-}
+export { IntercomReachUnsupportedError } from "../reach-errors.js";
 
 export interface ExpectedRouting {
   readonly acrossMachines: boolean;

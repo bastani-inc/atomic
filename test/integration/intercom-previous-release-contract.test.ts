@@ -214,7 +214,7 @@ describe("the 0.9.71 Intercom client against this version's broker (#4538)", () 
 		);
 	});
 
-	test("every frame type this version's broker writes is one the 0.9.71 client handles, or one of protocol 2 or 3 it is never sent (#4642)", () => {
+	test("every frame type this version's broker writes is one the 0.9.71 client handles, or one of protocol 2, 3 or 4 it is never sent (#4642, #5352)", () => {
 		const written = unionTypes(join(repoRoot, "packages/intercom/types.ts"), "BrokerMessage");
 		const answeredOnlyToTheBrokerWatchdogOrAControlClient = new Set(["health", "shutdown_ack"]);
 		const newer: ReadonlySet<string> = new Set([

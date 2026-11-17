@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `createAgentSession({ intercom: { group, reachable } })` gives a top-level session its own Intercom home group, ahead of `ATOMIC_INTERCOM_GROUP`, Intercom `config.json` and the project group, and the other groups it may reach; the session keeps its workflow extension. It lists, sends to, asks and joins only within those groups, can't leave its home group, and reach is one way, while replies to its asks still arrive. `session.intercom.setReachable(groups)` changes the reachable groups on the live session from its next Intercom call. Its workflow stages and subagents reach only their own groups, and the Intercom broker enforces the policy. ([#5352](https://github.com/bastani-inc/atomic/issues/5352))
+
 ### Changed
 
 - Clarified in `codemode`'s description, system-prompt guidance, and `searchTools()`/`describeTool()` hints that `subagent`, `workflow`, and other model-only tools (plus `intercom`'s model-only actions) cannot be called from inside a `codemode` script, and should be called directly as separate top-level tools when available in the session
