@@ -421,9 +421,10 @@ test.runIf(process.platform !== "win32")(
 				assert.equal(rows.length, 1, "one notice line");
 				assert.match(
 					stripVTControlCharacters(rows[0]!),
+					// The line ends with how long the command ran.
 					exitCode === 0
-						? /^● Background command ".*" completed \(exit code 0\)/
-						: new RegExp(`^✗ Background command ".*" failed \\(exit code ${exitCode}\\)`),
+						? /^● Background command ".*" completed \(exit code 0\) · \d+s$/
+						: new RegExp(`^✗ Background command ".*" failed \\(exit code ${exitCode}\\) · \\d+s$`),
 				);
 				assert.match(
 					new TaskCompletionMessage(notice, true).render(100).map(stripVTControlCharacters).join("\n"),

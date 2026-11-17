@@ -29,6 +29,8 @@ export type TaskCompletionEnvelope = {
 	 * owner's own tasks, whose notices this session receives. Intents saved by earlier versions lack it.
 	 */
 	launchedBy?: string;
+	/** How long a command ran, from its launch to its settlement; its notice line shows it. */
+	elapsedMs?: number;
 };
 
 /** The structured delivery identity of a settled task's completion notice. */
@@ -46,6 +48,7 @@ export function taskCompletionEnvelope(
 		display: false,
 		...(taskKind === undefined ? {} : { taskKind }),
 		...(receipt.launchedBy === undefined ? {} : { launchedBy: receipt.launchedBy }),
+		...(receipt.elapsedMs === undefined ? {} : { elapsedMs: receipt.elapsedMs }),
 	};
 }
 
@@ -88,7 +91,9 @@ export function taskNoticeLine(
 	const subject = task?.title ? task.title.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, 240) : undefined;
 	const facts = {
 		...(subject ? { subject } : {}),
-		...(task?.metrics?.elapsedMs === undefined ? {} : { elapsedMs: task.metrics.elapsedMs }),
+		...((task?.metrics?.elapsedMs ?? envelope.elapsedMs) === undefined
+			? {}
+			: { elapsedMs: task?.metrics?.elapsedMs ?? envelope.elapsedMs }),
 	};
 	const label = kind === "agent" ? "Agent" : kind === "command" ? "Background command" : "Task";
 	const exitCode =

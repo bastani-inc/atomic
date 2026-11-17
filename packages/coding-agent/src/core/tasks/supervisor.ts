@@ -497,6 +497,8 @@ export type LaunchMetadata = {
 	 * reported, before its native start resolves, and it must already name that session.
 	 */
 	readonly launchers: Map<string, string>;
+	/** When each command was launched, by launch operation: its completion notice says how long it ran. */
+	readonly launchedAt: Map<string, number>;
 	/** The close that ended the owner, which every task that close cancelled names (#4639). Kept past the close. */
 	ownerClose?: C.OwnerCloseCause;
 };
@@ -988,6 +990,7 @@ export class TaskSupervisor {
 						executionTimeouts: new Map(),
 						releases: new Map(),
 						launchers: new Map(),
+						launchedAt: new Map(),
 					},
 				};
 				this.#owners.set(owner, ownerState);
@@ -1078,6 +1081,7 @@ export class TaskSupervisor {
 		state.launches.executionTimeouts.delete(taskId);
 		state.launches.releases.delete(taskId);
 		state.launches.launchers.delete(operation);
+		state.launches.launchedAt.delete(operation);
 		if (state.commandStarts.get(operation)?.task === task) state.commandStarts.delete(operation);
 	}
 	#evicted(task: TaskLease): boolean {
@@ -1161,12 +1165,14 @@ export class TaskSupervisor {
 		// host code so reentrant drains or callback failures cannot redeliver.
 		state.settledTasks.add(ref.taskId);
 		const launchedBy = state.launches.launchers.get(operation);
+		const launchedAt = state.launches.launchedAt.get(operation);
 		state.host.binding.onTaskSettled(ref, {
 			taskId: receipt.taskId as C.TaskId,
 			cursor: cursor(receipt.cursor),
 			result: taskResult(receipt.result, receipt.taskId, state.launches),
 			completionId: receipt.completionId,
 			...(launchedBy === undefined ? {} : { launchedBy }),
+			...(launchedAt === undefined ? {} : { elapsedMs: Math.max(0, Date.now() - launchedAt) }),
 		});
 	}
 	async startCommandTask(
@@ -1230,8 +1236,10 @@ export class TaskSupervisor {
 			const { heartbeatMs, launchedBy, ...nativeIntent } = intent;
 			const cadence = heartbeatMs ?? state.host.binding.defaultHeartbeatMs?.();
 			// Named before the native start: the command can settle, and be reported, before that start resolves.
-			if (launchedBy !== undefined && !state.closing.signal.aborted)
-				state.launches.launchers.set(operation, launchedBy);
+			if (!state.closing.signal.aborted) {
+				if (launchedBy !== undefined) state.launches.launchers.set(operation, launchedBy);
+				state.launches.launchedAt.set(operation, Date.now());
+			}
 			provisional = rememberLaunchHeartbeat(state.launches, operation, cadence);
 			let started: Awaited<ReturnType<native.TaskSupervisor["startCommandTask"]>>;
 			try {
@@ -1311,7 +1319,10 @@ export class TaskSupervisor {
 		} finally {
 			this.#endCommandLaunch(state, operation, launch);
 			// A launch that admitted no task of its own names no launching session.
-			if (!registered) state.launches.launchers.delete(operation);
+			if (!registered) {
+				state.launches.launchers.delete(operation);
+				state.launches.launchedAt.delete(operation);
+			}
 			// A launch that admitted no task of its own keeps no provisional cadence (#4451).
 			if (state.launches.launchHeartbeats.get(operation) === provisional)
 				state.launches.launchHeartbeats.delete(operation);
@@ -1714,6 +1725,7 @@ export class TaskSupervisor {
 				state.launches.executionTimeouts.clear();
 				state.launches.releases.clear();
 				state.launches.launchers.clear();
+				state.launches.launchedAt.clear();
 			}
 		if (result.ok) {
 			for (const taskId of [...state.permits.keys()]) this.#releasePermit(state, taskId);

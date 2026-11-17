@@ -265,6 +265,8 @@ export type SettlementReceipt = {
 	completionId: string;
 	/** The session that launched the task in a shared owner (see {@link TaskRecord.launchedBy}). */
 	launchedBy?: string;
+	/** How long a command ran, from its launch to its settlement. */
+	elapsedMs?: number;
 };
 export type CancelReceipt = {
 	taskId: TaskId;
