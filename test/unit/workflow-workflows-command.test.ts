@@ -58,7 +58,7 @@ describe("/workflows (#5224)", () => {
 		for (const width of [80, 160]) {
 			assert.deepEqual(
 				sheet.render(width).map((line) => stripAnsi(line).trimEnd()),
-				["▔".repeat(width), "  Workflows", "  No workflows in this session.", "  Esc to close"],
+				["▔".repeat(width), "  Workflows", "  No workflows in this session.", "  esc to close"],
 			);
 		}
 		sheet.handleInput("x");

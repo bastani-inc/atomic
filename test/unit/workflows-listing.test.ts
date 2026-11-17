@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { getKeybindings, StdinBuffer, setKeybindings, TuiMainScreen } from "@bastani/atomic-tui";
+import { getKeybindings, StdinBuffer, setKeybindings, TuiMainScreen, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
@@ -915,4 +915,107 @@ test("/workflows keeps its chosen row when done synchronously disposes the mount
 	assert.deepEqual(await pending, { kind: "run", runId: "chosen" });
 	assert.equal(closed, 1);
 	assert.equal(releases, 1);
+});
+
+function mountListing(runs: readonly RunSnapshot[]) {
+	let component: PiCustomComponent | undefined;
+	let closed = 0;
+	const pending = openWorkflowsListing(
+		{
+			custom: (factory) =>
+				new Promise<undefined>((resolve) => {
+					component = factory({ requestRender() {}, terminal: { rows: 30 } }, undefined, undefined, () => {
+						closed++;
+						resolve(undefined);
+					}) as PiCustomComponent;
+				}),
+		},
+		{ runs: () => runs },
+	);
+	assert.ok(component);
+	return { component, pending, closed: () => closed };
+}
+
+test("an empty /workflows sheet names the configured close key and closes with it (#5224)", async () => {
+	initTheme("dark");
+	setKeybindings(new KeybindingsManager({ "tui.select.cancel": "ctrl+q" }));
+	const { component, pending, closed } = mountListing([]);
+	try {
+		const painted = stripVTControlCharacters(component.render(80).join("\n"));
+		assert.match(painted, /ctrl\+q to close/);
+		assert.doesNotMatch(painted, /esc/i);
+		component.handleInput?.("\x1b");
+		assert.equal(closed(), 0, "Esc no longer closes once cancel is remapped");
+		component.handleInput?.("\x11");
+		assert.equal(closed(), 1);
+		assert.equal(await pending, undefined);
+	} finally {
+		component.dispose?.();
+	}
+});
+
+test("Ctrl+C closes /workflows from a preview or a search in legacy, Kitty and modifyOtherKeys encodings (#5224)", async () => {
+	initTheme("dark");
+	const runs = [run({ id: "aaaa1111-2222", status: "running", startedAt: NOW, stages: stages(["running"]) })];
+	for (const ctrlC of ["\x03", "\x1b[99;5u", "\x1b[27;5;99~"]) {
+		for (const setup of ["preview", "search"] as const) {
+			const { component, pending, closed } = mountListing(runs);
+			try {
+				component.render(120);
+				if (setup === "preview") component.handleInput?.(" ");
+				else component.handleInput?.("r");
+				component.render(120);
+				component.handleInput?.(ctrlC);
+				assert.equal(closed(), 1, `${JSON.stringify(ctrlC)} closes the sheet from its ${setup}`);
+				assert.equal(await pending, undefined);
+			} finally {
+				component.dispose?.();
+			}
+		}
+	}
+});
+
+test("/workflows paints no foreground colour when NO_COLOR is set (#5224)", async () => {
+	vi.stubEnv("NO_COLOR", "1");
+	try {
+		initTheme("dark");
+		const runs = [
+			run({ id: "aaaa1111-2222", status: "running", startedAt: NOW, stages: stages(["completed", "running"]) }),
+			run({ id: "bbbb3333-4444", status: "failed", startedAt: NOW - 120_000, endedAt: NOW - 60_000 }),
+		];
+		const { component, pending } = mountListing(runs);
+		try {
+			component.handleInput?.(" ");
+			const raw = component.render(120).join("\n");
+			assert.match(stripVTControlCharacters(raw), /id aaaa1111-2222/);
+			assert.doesNotMatch(raw, /\x1b\[(?:3[0-7]|9[0-7]|38;)[0-9;]*m/, JSON.stringify(raw.slice(0, 400)));
+		} finally {
+			component.dispose?.();
+			await Promise.race([pending, Promise.resolve()]);
+		}
+	} finally {
+		vi.unstubAllEnvs();
+		initTheme("dark");
+	}
+});
+
+test("a narrow /workflows preview wraps the full run id instead of cutting it (#5224)", async () => {
+	initTheme("dark");
+	const id = "0f6c2b8e-1d4a-4c9b-9e2f-7a3b5c6d8e90";
+	const { component, pending } = mountListing([
+		run({ id, status: "running", startedAt: NOW, stages: stages(["running"]) }),
+	]);
+	try {
+		component.handleInput?.(" ");
+		const raw = component.render(40);
+		for (const line of raw) assert.ok(visibleWidth(line) <= 40, line);
+		const lines = raw.map((line) => stripVTControlCharacters(line));
+		const card = lines
+			.filter((line) => line.startsWith("  │ "))
+			.map((line) => line.slice(4).replace(/\s*│$/, "").trim());
+		assert.ok(card.join("").replace(/\s/g, "").includes(`id${id}`), card.join("\n"));
+	} finally {
+		component.dispose?.();
+		await Promise.race([pending, Promise.resolve()]);
+	}
 });

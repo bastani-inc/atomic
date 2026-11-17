@@ -8,7 +8,7 @@ A stage authored with `model: "auto"` runs the user's default model (`defaultPro
 
 ## Workflow run identifiers and the agent panel
 
-Workflow run identifiers are shown in full in status views, pickers and control messages. Selectors accept either the full 36-character UUID or its unique 8-character hexadecimal prefix. Other truncated forms are rejected. Colliding prefixes report the matching full UUIDs and require a full UUID; resolved results retain canonical identifiers.
+Status views and control messages show workflow run identifiers in full. `/workflows` rows show the 8-character prefix, and the run's Space preview shows the full identifier, wrapping it on narrow terminals. Selectors accept either the full 36-character UUID or its unique 8-character hexadecimal prefix. Other truncated forms are rejected. Colliding prefixes report the matching full UUIDs and require a full UUID; resolved results retain canonical identifiers.
 
 Stage selectors preserve exact stage IDs and names, composite `runId:stageId` IDs, and `tool:<argsHash>` IDs. Bare UUID stage IDs additionally accept a unique 8-character hexadecimal prefix across the expanded graph. Exact names take precedence. Partial names and truncated composite/tool IDs do not match; colliding UUID prefixes require the full stage UUID.
 
@@ -185,7 +185,7 @@ Surface behavior:
 
 `/workflows` shows this session's workflow runs under the title **Workflows**. With exactly one run it opens that run's graph. Otherwise it lists the runs newest first. Each row names the workflow and what tells the run apart (its label, else its first text input, else its short id), then its state: `running · stage 3/5 implement · 12m · $1.84`, `needs input · <question>` with `◆`, or a failed run's `✗` and one-line reason. Stopped runs show `◼`.
 
-Rows update while the list is open, keeping your search and selected run. Type to search, and press Space to preview the selected run. Enter on a run opens its graph, and `esc` at the graph's top comes back to the list. `esc` clears a typed search first; with an empty search it closes the list. With no runs it shows `No workflows in this session.` and `Esc to close`; Enter does nothing. Without an interactive terminal it prints the run list. Ask the agent to list installed definitions. Runs from earlier sessions and runs interrupted by a restart resume from `/resume`.
+Rows update while the list is open, keeping your search and selected run. Type to search, and press Space to preview the selected run. Enter on a run opens its graph, and `esc` at the graph's top comes back to the list. `esc` clears a typed search first; with an empty search it closes the list. With no runs it shows `No workflows in this session.` and the configured close key, `esc to close` by default; Enter does nothing. Without an interactive terminal it prints the run list. Ask the agent to list installed definitions. Runs from earlier sessions and runs interrupted by a restart resume from `/resume`.
 
 At the supported 40-column terminal minimum, attached stage chats keep the `← return to graph` hint. The TUI may truncate provider/model context to make room, but it keeps that context separate from the hierarchy hint so the controls stay readable.
 
