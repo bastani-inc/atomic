@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- A subagent of a session created with the SDK's `intercom` option gets its own Intercom policy: its group is its home and it reaches nothing else. It starts in the session's home group, and a requested `group` (including `true`) is placed under it, as `<home>/<group>` ([#5352](https://github.com/bastani-inc/atomic/issues/5352))
+
 ### Fixed
 
 - Fixed Atomic exiting with `child-record-unreadable` ("which is not open in this process") when a workflow stage that had launched a background subagent finished, failed or had its run ended. Closing the stage reads each child's latest record to record it `stage-closed`. That record was read only through the copies of the stage's session registered for it, which are held weakly and which a later copy of the session can replace, and the error escaped from the stage's close listener and ended the process. The stage now also reads its children's records through its own session. When the copy that saved a newer record is gone, the stage ends the child from the record its own session holds, updated with where the child stands as Atomic last saw it. A child that is still running instead ends once its task settles, and a child that was already killed, gone or `stage-closed` is left as it is. A child it can read no record of is counted as a record that could not be saved, and the stage's other children still end. Nothing that goes wrong while a stage closes ends the process or fails the close.
@@ -12,6 +16,7 @@
 - Fixed a background subagent that was slow to start showing only as `running` for many minutes, with no Intercom registration, metrics or output. A child that has not started its first turn now shows where its start is. `subagent status` gives the step and how long it and the start have run, `/tasks` and task heartbeats show the step as its current action, and the launch result and `status` name the child's Intercom target. A start that runs out of its start budget is shown as stalled with that step, retried once, and then fails with both stalls named. The launching session is told. The retry keeps the messages the stalled start had received before its first turn, and the task's cleanup covers the retry's session.
 - Fixed a subagent that started while the Intercom broker was briefly unreachable running its turns unregistered, invisible to `intercom list` and unreachable until it next used Intercom itself. Its start now waits in its `registering on Intercom` step and retries until it registers, within its start budget.
 - Fixed `contact_supervisor` reaching the wrong session. A background subagent named as its supervisor whichever session in the Atomic process had connected to Intercom last, such as another subagent or a workflow stage hosted in that process, instead of the session that launched it. Its updates and questions went to that session and never reached its parent. A child now names the Intercom id its launching session registered under, or that session's own name until it has one, and a child relaunched after a restart does the same.
+- On Windows, sessionless artifact storage waits for its private-directory check without pausing the main thread. A subagent cancelled during that check creates no child storage or supervisor authorization, and a storage failure returns a tool error. Startup artifact cleanup stays single-flight until its asynchronous work finishes, even if the session that started it ends ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
 
 ## [0.9.88] - 2026-11-16
 

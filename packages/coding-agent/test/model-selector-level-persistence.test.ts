@@ -7,6 +7,7 @@ import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-b
 import "../src/modes/interactive/interactive-model-routing.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
+import { createEngineHostPair, type EngineHostPair } from "./helpers/in-process-engine-pair.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
 
 const DOWN = "\x1b[B";
@@ -57,10 +58,13 @@ function openModelPicker(harness: Harness) {
 
 describe("/model ←→ reasoning level (#5224)", () => {
 	let harness: Harness | undefined;
+	let pair: EngineHostPair | undefined;
 
 	beforeAll(() => initTheme("dark"));
 	beforeEach(() => setKeybindings(new KeybindingsManager()));
-	afterEach(() => {
+	afterEach(async () => {
+		await pair?.cleanup();
+		pair = undefined;
 		harness?.cleanup();
 		harness = undefined;
 	});
@@ -127,5 +131,112 @@ describe("/model ←→ reasoning level (#5224)", () => {
 		assert.equal(harness.session.model?.id, "current-model");
 		assert.equal(harness.session.thinkingLevel, "low");
 		assert.equal(harness.settingsManager.getModelThinkingLevel(provider, "other-model"), undefined);
+	});
+
+	it("ignores a second selection while the first model switch is in flight (#5237)", async () => {
+		const { harness, provider } = await setUp();
+		const picker = openModelPicker(harness);
+		picker.picker.handleInput(DOWN);
+		picker.picker.handleInput(RIGHT);
+		picker.picker.handleInput(ENTER);
+		picker.picker.handleInput("\x1b[A");
+		picker.picker.handleInput(ENTER);
+		await vi.waitFor(() => assert.equal(picker.isClosed(), true));
+
+		assert.equal(harness.session.model?.id, "other-model");
+		assert.equal(harness.session.thinkingLevel, "medium");
+		assert.equal(harness.settingsManager.getModelThinkingLevel(provider, "other-model"), "medium");
+		assert.equal(harness.settingsManager.getModelThinkingLevel(provider, "current-model"), undefined);
+	});
+
+	it("ignores a second → enter burst on the same model while a slow model_select handler is running (#5237)", async () => {
+		const { harness, provider } = await setUp();
+		const { promise, resolve } = Promise.withResolvers<void>();
+		const originalEmitModelSelect = harness.session._emitModelSelect.bind(harness.session);
+		vi.spyOn(harness.session, "_emitModelSelect").mockImplementation(async (nextModel, previousModel, source) => {
+			await promise;
+			await originalEmitModelSelect(nextModel, previousModel, source);
+		});
+
+		const picker = openModelPicker(harness);
+		picker.picker.handleInput(DOWN);
+		picker.picker.handleInput(RIGHT);
+		picker.picker.handleInput(ENTER);
+		picker.picker.handleInput(RIGHT);
+		picker.picker.handleInput(ENTER);
+		resolve();
+		await vi.waitFor(() => assert.equal(picker.isClosed(), true));
+
+		assert.equal(harness.session.model?.id, "other-model");
+		assert.equal(harness.session.thinkingLevel, "medium");
+		assert.equal(harness.settingsManager.getModelThinkingLevel(provider, "other-model"), "medium");
+	});
+
+	it("applies the chosen level in the model switch mutation before model_select handlers run (#5237)", async () => {
+		const { harness, provider } = await setUp();
+		let levelDuringModelSelect: string | undefined;
+		const originalEmitModelSelect = harness.session._emitModelSelect.bind(harness.session);
+		vi.spyOn(harness.session, "_emitModelSelect").mockImplementation(async (nextModel, previousModel, source) => {
+			levelDuringModelSelect = harness.session.thinkingLevel;
+			await originalEmitModelSelect(nextModel, previousModel, source);
+			await harness.session.setThinkingLevel("high", { persist: true });
+		});
+
+		const picker = openModelPicker(harness);
+		picker.picker.handleInput(DOWN);
+		picker.picker.handleInput(RIGHT);
+		picker.picker.handleInput(ENTER);
+		await vi.waitFor(() => assert.equal(picker.isClosed(), true));
+
+		assert.equal(levelDuringModelSelect, "medium");
+		assert.equal(harness.session.model?.id, "other-model");
+		assert.equal(harness.session.thinkingLevel, "high");
+		assert.equal(harness.settingsManager.getModelThinkingLevel(provider, "other-model"), "high");
+	});
+
+	it("applies and persists the /model ←→ level through the isolated interactive runtime (#5237)", async () => {
+		pair = await createEngineHostPair({
+			models: [
+				{ id: "current-model", name: "Current Model", reasoning: true },
+				{ id: "other-model", name: "Other Model", reasoning: true },
+			],
+		});
+		await pair.engine.session.bindExtensions({ shutdownHandler: () => {} });
+		await pair.runtime.session.bindExtensions({ shutdownHandler: () => {} });
+		await pair.runtime.initializeFromEngine();
+
+		const current = pair.engine.getModel("current-model")!;
+		await pair.runtime.session.setModel(current);
+		await pair.runtime.session.setThinkingLevel("low");
+		await pair.drain();
+
+		const isolatedView = {
+			...pair.hostHarness,
+			session: pair.runtime.session,
+		} as Harness;
+		const picker = openModelPicker(isolatedView);
+		picker.picker.handleInput(DOWN);
+		assert.match(picker.row("other-model") ?? "", /other-model +low\b/);
+		picker.picker.handleInput(RIGHT);
+		assert.match(picker.row("other-model") ?? "", /other-model +medium\b/);
+		picker.picker.handleInput(ENTER);
+		await vi.waitFor(() => assert.equal(picker.isClosed(), true));
+
+		assert.deepEqual(picker.errors, []);
+		const command = pair.commandsReceived.find(
+			(command) => command.type === "set_model" && command.modelId === "other-model",
+		);
+		assert.ok(command?.type === "set_model");
+		assert.equal(command.thinkingLevel, "medium");
+		assert.equal(command.persist, true);
+		assert.equal(pair.runtime.session.model?.id, "other-model");
+		assert.equal(pair.runtime.session.thinkingLevel, "medium");
+		assert.equal(pair.engine.session.model?.id, "other-model");
+		assert.equal(pair.engine.session.thinkingLevel, "medium");
+		assert.equal(pair.engine.settingsManager.getModelThinkingLevel(current.provider, "other-model"), "medium");
+		assert.equal(pair.hostHarness.settingsManager.getModelThinkingLevel(current.provider, "other-model"), "medium");
+		assert.equal(pair.engine.settingsManager.getDefaultThinkingLevel(), "medium");
+		assert.equal(pair.hostHarness.settingsManager.getDefaultThinkingLevel(), "medium");
+		assert.ok(picker.status.some((line) => line.includes("other-model") && line.includes("medium")));
 	});
 });

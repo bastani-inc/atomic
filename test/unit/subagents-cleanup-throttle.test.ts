@@ -3,12 +3,12 @@ import fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@bastani/atomic";
-import { afterEach, describe, test } from "vitest";
+import { afterEach, describe, test, vi } from "vitest";
 import {
 	createSubagentStartupMaintenance,
 	STARTUP_ARTIFACT_SCAN_DELAY_MS,
 } from "../../packages/subagents/src/extension/startup-maintenance.ts";
-import { cleanupAllArtifactDirs } from "../../packages/subagents/src/shared/artifacts.js";
+import { cleanupAllArtifactDirs, getArtifactsDir } from "../../packages/subagents/src/shared/artifacts.js";
 import type { SubagentState } from "../../packages/subagents/src/shared/types.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -16,6 +16,7 @@ const AGENT_DIR_ENV = "ATOMIC_CODING_AGENT_DIR";
 
 const roots: string[] = [];
 const savedAgentDirEnv = process.env[AGENT_DIR_ENV];
+const savedRuntimeDirEnv = process.env.XDG_RUNTIME_DIR;
 
 function makeIsolatedSessionsRoot(): { agentDir: string; sessionsRoot: string } {
 	const agentDir = fs.mkdtempSync(join(tmpdir(), "atomic-cleanup-throttle-"));
@@ -23,6 +24,7 @@ function makeIsolatedSessionsRoot(): { agentDir: string; sessionsRoot: string } 
 	const sessionsRoot = join(agentDir, "sessions");
 	fs.mkdirSync(sessionsRoot, { recursive: true });
 	process.env[AGENT_DIR_ENV] = agentDir;
+	delete process.env.XDG_RUNTIME_DIR;
 	return { agentDir, sessionsRoot };
 }
 
@@ -60,25 +62,27 @@ function pi(): ExtensionAPI {
 afterEach(() => {
 	if (savedAgentDirEnv === undefined) delete process.env[AGENT_DIR_ENV];
 	else process.env[AGENT_DIR_ENV] = savedAgentDirEnv;
+	if (savedRuntimeDirEnv === undefined) delete process.env.XDG_RUNTIME_DIR;
+	else process.env.XDG_RUNTIME_DIR = savedRuntimeDirEnv;
 	for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
 describe("session artifact cleanup throttling", () => {
-	test("scans once, records a root marker, and skips rescans within the interval", () => {
+	test("scans once, records a root marker, and skips rescans within the interval", async () => {
 		const { sessionsRoot } = makeIsolatedSessionsRoot();
 		const staleFile = makeStaleSessionArtifacts(sessionsRoot, "session-a");
 
-		cleanupAllArtifactDirs(1);
+		await cleanupAllArtifactDirs(1);
 
 		assert.equal(fs.existsSync(staleFile), false, "first scan must remove stale artifacts");
 		assert.equal(fs.existsSync(join(sessionsRoot, ".last-cleanup")), true, "scan must record a root marker");
 
 		const staleAgain = makeStaleSessionArtifacts(sessionsRoot, "session-b");
-		cleanupAllArtifactDirs(1);
+		await cleanupAllArtifactDirs(1);
 		assert.equal(fs.existsSync(staleAgain), true, "a fresh root marker must skip the rescan");
 	});
 
-	test("rescans when the root marker is older than the cleanup interval", () => {
+	test("rescans when the root marker is older than the cleanup interval", async () => {
 		const { sessionsRoot } = makeIsolatedSessionsRoot();
 		const markerPath = join(sessionsRoot, ".last-cleanup");
 		fs.writeFileSync(markerPath, "0");
@@ -86,18 +90,18 @@ describe("session artifact cleanup throttling", () => {
 		fs.utimesSync(markerPath, old, old);
 		const staleFile = makeStaleSessionArtifacts(sessionsRoot, "session-a");
 
-		cleanupAllArtifactDirs(1);
+		await cleanupAllArtifactDirs(1);
 
 		assert.equal(fs.existsSync(staleFile), false, "an expired marker must allow the rescan");
 	});
 
-	test("skips the scan while another activation holds the cleanup lock", () => {
+	test("skips the scan while another activation holds the cleanup lock", async () => {
 		const { sessionsRoot } = makeIsolatedSessionsRoot();
 		const lockPath = join(sessionsRoot, ".cleanup.lock");
 		fs.writeFileSync(lockPath, String(Date.now()));
 		const staleFile = makeStaleSessionArtifacts(sessionsRoot, "session-a");
 
-		cleanupAllArtifactDirs(1);
+		await cleanupAllArtifactDirs(1);
 
 		assert.equal(fs.existsSync(staleFile), true, "a held lock must skip the concurrent scan");
 		assert.equal(fs.existsSync(lockPath), true, "the other holder's lock must remain in place");
@@ -108,7 +112,7 @@ describe("session artifact cleanup throttling", () => {
 		);
 	});
 
-	test("breaks a stale lock left behind by a crashed process", () => {
+	test("breaks a stale lock left behind by a crashed process", async () => {
 		const { sessionsRoot } = makeIsolatedSessionsRoot();
 		const lockPath = join(sessionsRoot, ".cleanup.lock");
 		fs.writeFileSync(lockPath, "0");
@@ -116,7 +120,7 @@ describe("session artifact cleanup throttling", () => {
 		fs.utimesSync(lockPath, old, old);
 		const staleFile = makeStaleSessionArtifacts(sessionsRoot, "session-a");
 
-		cleanupAllArtifactDirs(1);
+		await cleanupAllArtifactDirs(1);
 
 		assert.equal(fs.existsSync(staleFile), false, "a stale lock must be broken so cleanup can proceed");
 		assert.equal(fs.existsSync(lockPath), false, "the broken lock must be released after the scan");
@@ -124,13 +128,53 @@ describe("session artifact cleanup throttling", () => {
 });
 
 describe("startup maintenance artifact-scan deferral", () => {
-	test("defers the global artifact scan by the startup delay and stays cancellable via stop()", () => {
+	test("startup cleanup completes only after its sessionless artifact scan settles (#5285)", async () => {
+		makeIsolatedSessionsRoot();
+		const artifactsDir = await getArtifactsDir(null);
+		const staleFile = join(artifactsDir, "run_worker_output.md");
+		fs.writeFileSync(staleFile, "stale\n");
+		const old = new Date(Date.now() - 10 * DAY_MS);
+		fs.utimesSync(staleFile, old, old);
+		const tasks: Array<() => void> = [];
+		const maintenance = createSubagentStartupMaintenance(makeState(), {
+			artifactCleanupDays: 1,
+			scheduleMacrotask: (task) => {
+				tasks.push(task);
+				return () => undefined;
+			},
+			scheduleDelayed: (task) => {
+				tasks.push(task);
+				return () => undefined;
+			},
+		});
+		let done = false;
+		let staleAtCompletion: boolean | undefined;
+		try {
+			maintenance.scheduleStartupCleanup(() => {
+				staleAtCompletion = fs.existsSync(staleFile);
+				done = true;
+			});
+			tasks.shift()!();
+			tasks.shift()!();
+			assert.equal(done, false, "startup cleanup is still awaiting the sessionless scan");
+			await vi.waitFor(() => assert.equal(done, true));
+			assert.equal(staleAtCompletion, false, "completion includes the awaited sessionless scan");
+		} finally {
+			maintenance.stop();
+		}
+	});
+
+	test("defers the global artifact scan by the startup delay and stays cancellable via stop()", async () => {
 		const { sessionsRoot } = makeIsolatedSessionsRoot();
 		const staleFile = makeStaleSessionArtifacts(sessionsRoot, "session-a");
 		const state = makeState();
 		const macrotasks: Array<() => void> = [];
 		const delayed: Array<{ task: () => void; delayMs: number }> = [];
 		let cancelledDelayed = 0;
+		let complete: () => void = () => {};
+		const completed = new Promise<void>((resolve) => {
+			complete = resolve;
+		});
 		const maintenance = createSubagentStartupMaintenance(pi(), state, {
 			resultsDir: join(sessionsRoot, "results"),
 			artifactCleanupDays: 1,
@@ -148,7 +192,7 @@ describe("startup maintenance artifact-scan deferral", () => {
 		});
 
 		try {
-			maintenance.scheduleStartupCleanup();
+			maintenance.scheduleStartupCleanup(complete);
 			assert.equal(delayed.length, 0, "nothing is delayed before the startup macrotask runs");
 			assert.equal(macrotasks.length, 1);
 			macrotasks[0]!();
@@ -162,6 +206,7 @@ describe("startup maintenance artifact-scan deferral", () => {
 		assert.equal(cancelledDelayed, 1, "stop() must cancel the pending delayed scan");
 
 		delayed[0]!.task();
+		await completed;
 		assert.equal(fs.existsSync(staleFile), false, "the deferred task performs the real scan when it fires");
 	});
 });
