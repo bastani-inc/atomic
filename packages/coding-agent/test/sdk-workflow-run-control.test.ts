@@ -60,6 +60,7 @@ while (!existsSync(${gate})) await delay(25);`;
 import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
+import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.js";
 export default workflow({ name: ${JSON.stringify(workflowName(scenario))}, description: "Holds until released", inputs: {}, outputs: {}, run: async (ctx) => {
 await ctx.tool("prepare", {}, async () => "ready");
 ${hold}
@@ -75,6 +76,7 @@ beforeAll(async () => {
 	root = mkdtempSync(join(tmpdir(), "atomic-sdk-run-control-"));
 	const cwd = join(root, "project");
 	const agentDir = join(root, "agent");
+	linkSharedTranspileCache(agentDir);
 	const packageDir = join(root, "package");
 	const workflowsDir = join(packageDir, "workflows");
 	mkdirSync(join(cwd, ".atomic"), { recursive: true });

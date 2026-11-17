@@ -57,6 +57,7 @@ function writeWorkflow(path: string, name: string, resultPath?: string): void {
 		path,
 		`import { workflow } from "@bastani/atomic/workflows";
 import { writeFile } from "node:fs/promises";
+import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.js";
 export default workflow({ name: ${JSON.stringify(name)}, description: "SDK package workflow", inputs: {}, outputs: {}, run: async (ctx) => {
 await ctx.tool("write-fixture-result", {}, async () => {
 ${resultPath ? `await writeFile(${JSON.stringify(resultPath)}, "tracked SDK workflow result");` : ""}
@@ -73,6 +74,7 @@ test(
 		const root = mkdtempSync(join(tmpdir(), "atomic-sdk-package-workflows-"));
 		const cwd = join(root, "project");
 		const agentDir = join(root, "agent");
+		linkSharedTranspileCache(agentDir);
 		const packageDir = join(root, "package");
 		const workflowsDir = join(packageDir, "workflows");
 		const resultPath = join(root, "workflow-result.txt");
@@ -231,6 +233,7 @@ for (const workflowAccess of ["absent", "snapshot", "refresh"] as const) {
 		async () => {
 			const root = mkdtempSync(join(tmpdir(), "atomic-sdk-custom-workflows-"));
 			const agentDir = join(root, "agent");
+			linkSharedTranspileCache(agentDir);
 			const workflowPath = join(root, "custom.ts");
 			const disabledPath = join(root, "disabled.ts");
 			writeWorkflow(workflowPath, "sdk-custom-first");
@@ -301,6 +304,7 @@ test(
 		const root = mkdtempSync(join(tmpdir(), "atomic-sdk-untrusted-workflows-"));
 		const cwd = join(root, "project");
 		const agentDir = join(root, "agent");
+		linkSharedTranspileCache(agentDir);
 		const packageDir = join(root, "package");
 		let requests = 0;
 		const server = createServer((_request, response) => {

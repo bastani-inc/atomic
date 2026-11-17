@@ -16,6 +16,7 @@ import type { OperationId, TaskId, TaskResult } from "../src/core/tasks/contract
 import { getOwnerTaskStore } from "../src/core/tasks/owner-store.js";
 import type { BashToolDetails } from "../src/core/tools/bash.js";
 import { parkWorkflowStageForRelease, WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.js";
+import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.js";
 import { createTestResourceLoader } from "./utilities.js";
 
 vi.mock("../src/utils/shell.js", async (importOriginal) => {
@@ -185,6 +186,7 @@ function acknowledgedBy(owner: AgentSession, taskId: TaskId): boolean {
 
 function tempRoot(): string {
 	const root = mkdtempSync(join(tmpdir(), "atomic-child-shell-tasks-"));
+	linkSharedTranspileCache(root);
 	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
 	return root;
 }
