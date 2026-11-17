@@ -141,7 +141,7 @@ if (process.argv.some((arg) => arg === "--internal-engine-prewarm" || arg === "-
 	TEST_TIMEOUT_MS,
 );
 
-test("removes the sample tree once a process that was still running in its working directory exits", async () => {
+test("removes the sample tree once a process that was still running in its working directory exits (#5250)", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-startup-overlap-"));
 	const cwd = join(root, "cwd");
 	mkdirSync(cwd);

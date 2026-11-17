@@ -238,6 +238,7 @@ describe("bounded session reads (#5250)", () => {
 					get fromSeq(): number {
 						if (!replaced) {
 							replaced = true;
+							renameSync(path, `${path}.old`);
 							renameSync(`${path}.next`, path);
 						}
 						return 551;
