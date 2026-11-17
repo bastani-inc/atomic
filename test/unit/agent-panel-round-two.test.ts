@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
+import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import {
@@ -329,6 +330,8 @@ test("a source's viewed flag starts the finished workflow drop timer (#5239)", a
 
 test("an interrupted-but-running subagent is treated as live for x in the panel and stays in /tasks until stopped (#5239)", async () => {
 	initTheme("dark");
+	const previousKeys = getKeybindings();
+	setKeybindings(new KeybindingsManager());
 	const fixture = taskFixture();
 	try {
 		await fixture.start("Inspect concurrent spawn locks.");
@@ -377,6 +380,8 @@ test("an interrupted-but-running subagent is treated as live for x in the panel 
 					try {
 						const pickerText = inspector.renderPicker(100, 16).map(stripVTControlCharacters).join("\n");
 						assert.match(pickerText, /Inspect concurrent spawn locks\./);
+						assert.match(pickerText, /\bx stop\b/);
+						assert.doesNotMatch(pickerText, /\bx dismiss\b/);
 					} finally {
 						inspector.dispose();
 					}
@@ -392,5 +397,6 @@ test("an interrupted-but-running subagent is treated as live for x in the panel 
 		} as never);
 	} finally {
 		await fixture.dispose();
+		setKeybindings(previousKeys);
 	}
 });
