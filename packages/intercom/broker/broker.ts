@@ -330,6 +330,22 @@ function isRestoringRecipientAliasList(value: unknown): value is string[] {
   return Array.isArray(value) && value.length <= RESTORING_RECIPIENT_ALIASES_MAX && value.every((alias) => typeof alias === "string");
 }
 
+/** #5352: what a session hosted by one with a reach policy is told when it sends anything but a reply. */
+const HOSTED_REPLY_ONLY_REFUSAL =
+	"A session hosted by a session with an Intercom reach policy can only reply to an ask it received";
+
+/** #5352: a reply that must answer an ask its sender received. */
+function isPendingReply(clientMessage: SendClientMessage): boolean {
+	const message = clientMessage.message;
+	return (
+		clientMessage.type === "send" &&
+		clientMessage.requirePendingReply === true &&
+		isMessage(message) &&
+		message.replyTo !== undefined &&
+		message.expectsReply !== true
+	);
+}
+
 /** #5352: whether a host with a reach policy may host this session: each of its groups is reached or a workflow's. */
 function hostedWithinReach(reach: IntercomReachPolicy, item: ParsedHostedSession): boolean {
 	for (const group of normalizeGroups(item.session.groups, item.session.group)) {
@@ -2942,6 +2958,17 @@ class IntercomBroker {
 			if (typeof hostedSender !== "string") throw new Error("Invalid hostedSender");
 			if (this.hostedSessions.get(currentId)?.has(hostedSender) !== true) {
 				this.refuseHostedSender(socket, clientMessage, hostedSender);
+				break;
+			}
+			// #5352: a session hosted by one with a reach policy only answers the asks it received.
+			if (this.sessions.get(currentId)?.reach !== undefined && !isPendingReply(clientMessage)) {
+				const message = clientMessage.message;
+				writeMessageIfOpen(socket, {
+					type: "delivery_failed",
+					messageId: isMessage(message) ? message.id : "unknown",
+					...(typeof clientMessage.attemptId === "string" ? { attemptId: clientMessage.attemptId } : {}),
+					reason: HOSTED_REPLY_ONLY_REFUSAL,
+				});
 				break;
 			}
 			this.dispatchSend(socket, clientMessage, hostedSender);

@@ -230,9 +230,10 @@ test(
 		const joined = await a.intercom({ action: "join", group: homeB });
 		assert.equal(joined.isError ?? false, false, text(joined));
 
-		await a.session.intercom.setReachable([]);
+		const narrowing = a.session.intercom.setReachable([]);
 		const narrowed = await a.intercom({ action: "send", to: b.id, message: "out of reach again" });
 		assert.equal(narrowed.isError, true, text(narrowed));
+		await narrowing;
 		const status = await a.intercom({ action: "status" });
 		assert.deepEqual(status.structuredContent?.groups, [homeA], "the joined group was dropped with the reach");
 
@@ -267,6 +268,30 @@ test(
 		const send = await c.client.send(idA, { text: "forged" });
 		assert.equal(send.delivered, false);
 		assert.deepEqual(c.client.groups, [homeC]);
+
+		const now = Date.now();
+		const stage = (key: string, home: string) => ({
+			key,
+			session: {
+				name: key,
+				cwd,
+				model: "m",
+				pid: process.pid,
+				startedAt: now,
+				lastActivity: now,
+				groups: [home],
+				group: home,
+			},
+		});
+		await assert.rejects(
+			c.client.hostSessions([stage("into-a", homeA)]),
+			(error: Error & { code?: string }) => error.code === "invalid_hosted_session",
+		);
+		const [hosted] = await c.client.hostSessions([stage("in-a-workflow", `workflow:${randomUUID()}`)]);
+		assert.ok(hosted, "a session in a workflow group is hosted");
+		const asHosted = await c.client.send(idA, { text: "as a hosted session", hostedSender: hosted.sessionId });
+		assert.equal(asHosted.delivered, false);
+		assert.match(asHosted.reason ?? "", /can only reply to an ask it received/);
 
 		const legacy = await rawRegistration(group("legacy"));
 		cleanups.push(() => {

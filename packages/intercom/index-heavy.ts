@@ -556,20 +556,26 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
    * #5352: the host changed the session's reachable groups. Memberships outside them are dropped at once, so the next
    * call already uses the new reach, and the broker gets it before any later request on the connection.
    */
-  async function applyReach(): Promise<void> {
+  function applyReach(): Promise<void> {
     const reach = currentReachPolicy();
-    if (reach === undefined) return;
+    if (reach === undefined) return Promise.resolve();
+    let persisted: Promise<void> = Promise.resolve();
     if (joinedGroups !== null) {
       const narrowed = narrowMemberships(reach, [...joinedGroups]);
       if (narrowed.length !== joinedGroups.size) {
         setJoinedGroups(narrowed);
-        await persistJoinedGroups(narrowed.length === 1 ? null : narrowed);
+        persisted = persistJoinedGroups(narrowed.length === 1 ? null : narrowed);
       }
     }
+    // Written now, before this returns: a request made after it reaches the broker after the new reach.
     const active = client;
-    if (active === null || !active.isConnected()) return;
-    await active.syncReach();
-    if (client === active && joinedGroups !== null) setJoinedGroups(active.groups);
+    const synced =
+      active === null || !active.isConnected()
+        ? Promise.resolve()
+        : active.syncReach().then(() => {
+            if (client === active && joinedGroups !== null) setJoinedGroups(active.groups);
+          });
+    return Promise.all([persisted, synced]).then(() => {});
   }
   function currentIntercomGroups(): Set<string> {
     return joinedGroups === null
