@@ -433,8 +433,13 @@ describe("a workflow stage's model chain and credentials", () => {
 		}
 	});
 
-	for (const reportsModel of [false, true]) {
-		test(`an adapter that ${reportsModel ? "reports" : "omits"} its model and omits thinking level retains the applied stage effort (#3326)`, async () => {
+	for (const [reportsModel, requestEffort] of [
+		[false, false],
+		[false, true],
+		[true, false],
+		[true, true],
+	]) {
+		test(`an adapter that ${reportsModel ? "reports" : "omits"} its model and omits thinking level retains the ${requestEffort ? "requested" : "declared"} stage effort across releases (#3326)`, async () => {
 			const model: Model<"openai-completions"> = {
 				type: "chat",
 				provider: "p",
@@ -452,7 +457,7 @@ describe("a workflow stage's model chain and credentials", () => {
 			const dispatcher = new StageWakeDispatcher("run-credentials", undefined);
 			const wakeKey = stageWakeKey("run-credentials", "stage-credentials");
 			dispatcher.open({ runId: "run-credentials", stageId: "stage-credentials", wakeKey });
-			const opts = stageOpts(["p/a:low"], new Set(["p"]), [], new Map(), {
+			const opts = stageOpts([requestEffort ? "p/a:low" : "p/a:high"], new Set(["p"]), [], new Map(), {
 				modelConstraints: { allowedEfforts: ["high"] },
 				sessionStore: store,
 			});
@@ -473,10 +478,13 @@ describe("a workflow stage's model chain and credentials", () => {
 				listModels: async () => [{ provider: "p", id: "a", fullId: "p/a", model }],
 				hasCredentials: () => true,
 			};
-			let appliedEffort: StageSessionRuntime["thinkingLevel"];
-			const requestedEfforts: StageSessionRuntime["thinkingLevel"][] = [];
+			let appliedEffort: StageSessionRuntime["thinkingLevel"] | undefined;
+			let creations = 0;
+			const requestedEfforts: (StageSessionRuntime["thinkingLevel"] | undefined)[] = [];
 			opts.adapters.agentSession = {
 				async create(options) {
+					creations++;
+					appliedEffort = undefined;
 					const manager = options.sessionManager as SessionManager;
 					if (manager.getEntries().length === 0)
 						await manager.appendMessage({ role: "user", content: "init", timestamp: 1 });
@@ -496,18 +504,22 @@ describe("a workflow stage's model chain and credentials", () => {
 			};
 			const ctx = createStageContext(opts);
 			try {
-				await ctx.setThinkingLevel("high");
+				if (requestEffort) await ctx.setThinkingLevel("high");
 				assert.equal(await ctx.prompt("first"), "ok");
+				await ctx.release();
+				assert.equal(await ctx.prompt("reopened"), "ok");
 				await ctx.setThinkingLevel("low");
 				await assert.rejects(ctx.prompt("excluded"), /modelConstraints/);
-				assert.deepEqual(requestedEfforts, ["high"]);
+				assert.deepEqual(requestedEfforts, ["high", "high"]);
 				await ctx.setThinkingLevel("high");
 				assert.equal(await ctx.prompt("allowed"), "ok");
-				assert.deepEqual(requestedEfforts, ["high", "high"]);
-				await ctx.release();
-				await ctx.setThinkingLevel("high");
-				assert.equal(await ctx.prompt("reopened"), "ok");
 				assert.deepEqual(requestedEfforts, ["high", "high", "high"]);
+				await ctx.release();
+				assert.equal(ctx.thinkingLevel, "high");
+				assert.equal(await ctx.prompt("reopened again"), "ok");
+				assert.equal(await ctx.prompt("still open"), "ok");
+				assert.deepEqual(requestedEfforts, ["high", "high", "high", "high", "high"]);
+				assert.equal(creations, 3);
 			} finally {
 				await ctx.__dispose();
 			}

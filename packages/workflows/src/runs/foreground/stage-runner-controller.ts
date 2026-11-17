@@ -1446,7 +1446,10 @@ export class StageSessionController {
 		this.releasedWait = wait;
 		this.givenUp = wait;
 		this.reattachSessionId = current.sessionId;
-		this.releasedSettings = { model: current.model, thinkingLevel: current.thinkingLevel };
+		this.releasedSettings = {
+			model: current.model,
+			thinkingLevel: current.thinkingLevel ?? this.pendingThinkingLevel,
+		};
 		this.session = undefined;
 		this.sessionPromise = undefined;
 		this.resumeCurrentSession = false;
@@ -2929,20 +2932,30 @@ export class StageSessionController {
 		}
 		if (this.reattachSessionId !== undefined) {
 			const resumed = await this.createSession(undefined, consumer, { restoreSavedModel: true });
-			const restoredId = workflowModelId(resumed.model);
+			const restoredId =
+				workflowModelId(resumed.model ?? this.releasedSettings?.model) ??
+				(this.releasedSettings === undefined ? undefined : this.selectedModel);
+			const restoredThinkingLevel = resumed.thinkingLevel ?? this.pendingThinkingLevel;
 			const exactRestoredIndex =
 				restoredId === undefined
 					? -1
 					: candidates.findIndex(
-							(entry) => entry.id === restoredId && entry.reasoningLevel === resumed.thinkingLevel,
+							(entry) => entry.id === restoredId && entry.reasoningLevel === restoredThinkingLevel,
 						);
+			const retainedIndex =
+				this.releasedSettings !== undefined &&
+				this.activeCandidateIndex !== undefined &&
+				candidates[this.activeCandidateIndex]?.id === restoredId &&
+				restoredThinkingLevel === this.releasedSettings.thinkingLevel
+					? this.activeCandidateIndex
+					: undefined;
 			// An unspecified effort accepts the SDK's effective effort, but must not
 			// shadow a later candidate explicitly declaring the saved reasoning tier.
 			const restoredIndex =
 				exactRestoredIndex >= 0
 					? exactRestoredIndex
 					: candidates.findIndex((entry) => entry.id === restoredId && entry.reasoningLevel === undefined);
-			this.activeCandidateIndex = restoredIndex >= 0 ? restoredIndex : undefined;
+			this.activeCandidateIndex = restoredIndex >= 0 ? restoredIndex : retainedIndex;
 			this.selectedModel = restoredId ?? first.id;
 			this.resumeCurrentSession = true;
 			return resumed;
@@ -3324,6 +3337,8 @@ export class StageSessionController {
 		const attachedSession = session instanceof Promise ? await session : session;
 		this.reportStartupPhase("delivery-readiness");
 		try {
+			if (resumeOptions?.restoreSavedModel && attachedSession.thinkingLevel === undefined)
+				this.pendingThinkingLevel ??= this.releasedSettings?.thinkingLevel;
 			const thinkingLevel =
 				this.requestedThinkingLevel ??
 				(asAgentSession(attachedSession) === undefined ? this.pendingThinkingLevel : undefined);
