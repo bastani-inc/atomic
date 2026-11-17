@@ -26,7 +26,19 @@ test("Ctrl+R opens prompt search through the main editor's registered key handle
 		ui,
 		editorContainer: new Container(),
 		tuiInputSubscriptions: new Set(),
-		runtimeHost: { session: { sessionManager: { getEntries: () => [] } } },
+		runtimeHost: {
+			session: {
+				sessionManager: {
+					getEntries: () => [
+						{
+							type: "message",
+							timestamp: new Date().toISOString(),
+							message: { role: "user", content: [{ type: "text", text: "inspect the menu keys" }] },
+						},
+					],
+				},
+			},
+		},
 		showSelector(create: (done: () => void) => { component: Component; focus: Component }): void {
 			shown = create(() => closed++).component;
 		},

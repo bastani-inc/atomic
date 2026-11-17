@@ -6,10 +6,7 @@ import {
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 
 InteractiveModeBase.prototype.showPromptHistorySearch = function (this: InteractiveModeBase): void {
-	const entries = promptHistoryEntries(
-		this.editor.getHistory?.() ?? [],
-		sessionPromptsFromEntries(this.session.sessionManager.getEntries()),
-	);
+	const entries = promptHistoryEntries(sessionPromptsFromEntries(this.session.sessionManager.getEntries()));
 	this.showSelector((done) => {
 		let settled = false;
 		const selector = new PromptHistorySelectorComponent(entries, {

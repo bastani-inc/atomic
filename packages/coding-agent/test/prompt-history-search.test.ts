@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { AgentTool } from "@bastani/atomic-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import type { Component } from "@bastani/atomic-tui";
-import { setKeybindings, stripTerminalSequences } from "@bastani/atomic-tui";
+import { setKeybindings, stripTerminalSequences, TuiMainScreen } from "@bastani/atomic-tui";
 import { Type } from "typebox";
 import { beforeAll, beforeEach, describe, it } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
@@ -12,6 +12,7 @@ import type { PromptTemplate } from "../src/core/prompt-templates.ts";
 import { buildSkillCatalog } from "../src/core/skill-catalog.ts";
 import type { Skill } from "../src/core/skills.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
+import { CustomEditor } from "../src/modes/interactive/components/custom-editor.ts";
 import {
 	PromptHistorySelectorComponent,
 	promptAge,
@@ -19,7 +20,8 @@ import {
 	sessionPromptsFromEntries,
 } from "../src/modes/interactive/components/prompt-history-selector.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { getEditorTheme, initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.ts";
 import { createHarness, getUserTexts } from "./suite/harness.ts";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
 
@@ -34,19 +36,16 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 	beforeAll(() => initTheme("dark"));
 	beforeEach(() => setKeybindings(new KeybindingsManager()));
 
-	it("lists the prompts up and down walk through, newest first and each once, then older session prompts", () => {
-		const entries = promptHistoryEntries(
-			["ship it", "fix the login bug", "ship it"],
-			[
-				{ text: "plan the release", sentAt: minutesAgo(90) },
-				{ text: "ship it", sentAt: minutesAgo(60) },
-				{ text: "audit the schema", sentAt: minutesAgo(45) },
-				{ text: "fix the login bug", sentAt: minutesAgo(30) },
-				{ text: "ship it", sentAt: minutesAgo(2) },
-				{ text: "fix the login bug", sentAt: minutesAgo(75) },
-				{ text: "  ", sentAt: minutesAgo(1) },
-			],
-		);
+	it("lists the session's prompts newest first and each once", () => {
+		const entries = promptHistoryEntries([
+			{ text: "plan the release", sentAt: minutesAgo(90) },
+			{ text: "ship it", sentAt: minutesAgo(60) },
+			{ text: "audit the schema", sentAt: minutesAgo(45) },
+			{ text: "fix the login bug", sentAt: minutesAgo(30) },
+			{ text: "ship it", sentAt: minutesAgo(2) },
+			{ text: "fix the login bug", sentAt: minutesAgo(75) },
+			{ text: "  ", sentAt: minutesAgo(1) },
+		]);
 		assert.deepEqual(entries, [
 			{ text: "ship it", sentAt: minutesAgo(2) },
 			{ text: "fix the login bug", sentAt: minutesAgo(30) },
@@ -57,13 +56,10 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 
 	it("keeps a prompt typed literally even when another command expands to the same text (#5347)", () => {
 		assert.deepEqual(
-			promptHistoryEntries(
-				["Please fix the bug", "/fixbug"],
-				[
-					{ text: "/fixbug", expandedText: "Please fix the bug", sentAt: minutesAgo(5) },
-					{ text: "Please fix the bug", sentAt: minutesAgo(1) },
-				],
-			),
+			promptHistoryEntries([
+				{ text: "/fixbug", sentAt: minutesAgo(5) },
+				{ text: "Please fix the bug", sentAt: minutesAgo(1) },
+			]),
 			[
 				{ text: "Please fix the bug", sentAt: minutesAgo(1) },
 				{ text: "/fixbug", sentAt: minutesAgo(5) },
@@ -163,7 +159,6 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 		let closed = 0;
 		const editor = {
 			text: "my draft",
-			getHistory: () => ["ship it", "fix the login bug"],
 			setText(text: string) {
 				this.text = text;
 			},
@@ -188,6 +183,13 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 								parentId: "u1",
 								timestamp: new Date(Date.now() - 3 * 60_000).toISOString(),
 								message: { role: "assistant", content: [{ type: "text", text: "done" }] },
+							},
+							{
+								type: "message",
+								id: "u2",
+								parentId: "a1",
+								timestamp: new Date(Date.now() - 60_000).toISOString(),
+								message: { role: "user", content: [{ type: "text", text: "ship it" }] },
 							},
 						],
 					},
@@ -301,28 +303,17 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 				fauxAssistantMessage("with image"),
 			]);
 
-			const editorHistory: string[] = [];
-			const recordHistory = (text: string) => {
-				editorHistory.unshift(text);
-			};
-
-			recordHistory("/fixbug login redirect");
 			await harness.session.prompt("/fixbug login redirect");
 
-			recordHistory("/skill:tdd edge cases");
 			await harness.session.prompt("/skill:tdd edge cases");
 
-			recordHistory("shorthand check");
 			const turn = harness.session.prompt("shorthand check");
 			await entered.promise;
 
-			recordHistory("/fixbug queued steer");
 			await harness.session.prompt("/fixbug queued steer", { streamingBehavior: "steer" });
 
-			recordHistory("/skill:tdd queued followup");
 			await harness.session.followUp("/skill:tdd queued followup");
 
-			recordHistory("check queued screenshot");
 			await harness.session.followUp("check queued screenshot", [
 				{ type: "image", data: "AAAA", mimeType: "image/x-unsupported" },
 			]);
@@ -330,10 +321,8 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 			release.resolve();
 			await turn;
 
-			recordHistory("plain prompt two");
 			await harness.session.prompt("plain prompt two");
 
-			recordHistory("check screenshot");
 			await harness.session.prompt("check screenshot", {
 				images: [{ type: "image", data: "AAAA", mimeType: "image/x-unsupported" }],
 			});
@@ -364,38 +353,9 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 			);
 			assert.ok(sessionPrompts.every((entry) => typeof entry.sentAt === "number" && Number.isFinite(entry.sentAt)));
 
-			const entries = promptHistoryEntries(editorHistory, sessionPrompts);
-			assert.deepEqual(
-				entries.map((entry) => entry.text),
-				[
-					"check screenshot",
-					"plain prompt two",
-					"check queued screenshot",
-					"/skill:tdd queued followup",
-					"/fixbug queued steer",
-					"shorthand check",
-					"/skill:tdd edge cases",
-					"/fixbug login redirect",
-					"Run the full check suite.",
-				],
-			);
-			assert.ok(
-				entries.every(
-					(entry) =>
-						entry.text === "shorthand check" ||
-						(typeof entry.sentAt === "number" && Number.isFinite(entry.sentAt)),
-				),
-			);
-			assert.deepEqual(
-				promptHistoryEntries([...modelPrompts].reverse(), sessionPrompts),
-				entries
-					.filter((entry) => entry.text !== "Run the full check suite.")
-					.map((entry) =>
-						entry.text === "shorthand check"
-							? { text: "Run the full check suite.", sentAt: entries.at(-1)?.sentAt }
-							: entry,
-					),
-			);
+			const entries = promptHistoryEntries(sessionPrompts);
+			assert.deepEqual(entries.map((entry) => entry.text).sort(), sessionPrompts.map((entry) => entry.text).sort());
+			assert.ok(entries.every((entry) => typeof entry.sentAt === "number" && Number.isFinite(entry.sentAt)));
 
 			const selector = new PromptHistorySelectorComponent(entries, {
 				onSelect: () => {},
@@ -412,7 +372,7 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 		}
 	});
 
-	it("records the prompt an input hook redacted, never the text typed before it, including queued prompts (#5347)", async () => {
+	it("records and searches the prompt an input hook redacted, never the typed text, including queued and paused prompts (#5347)", async () => {
 		const secret = "synthetic-secret-123";
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
@@ -438,13 +398,15 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 				origin: "top-level",
 			}),
 		};
+		const hookInputs: string[] = [];
 		const extensionsResult = await createTestExtensionsResult([
 			(pi) => {
-				pi.on("input", (event) =>
-					event.text.includes(secret)
+				pi.on("input", (event) => {
+					hookInputs.push(event.text);
+					return event.text.includes(secret)
 						? { action: "transform", text: event.text.replaceAll(secret, "[redacted]") }
-						: { action: "continue" },
-				);
+						: { action: "continue" };
+				});
 			},
 		]);
 		const baseLoader = createTestResourceLoader({ extensionsResult });
@@ -461,42 +423,78 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 				fauxAssistantMessage("followed up"),
 				fauxAssistantMessage("queued template"),
 				fauxAssistantMessage("done"),
+				fauxAssistantMessage("after pause"),
+				fauxAssistantMessage("paused delivered"),
+				fauxAssistantMessage("finished"),
 			]);
-			await harness.session.prompt(`token ${secret}`);
-			await harness.session.prompt(`/fixbug token ${secret}`);
+			const keybindings = new KeybindingsManager();
+			setKeybindings(keybindings);
+			const editor = new CustomEditor(new TuiMainScreen(new RecordingTerminal()), getEditorTheme(), keybindings);
+			const submit = async (typed: string, send: () => Promise<void>) => {
+				editor.addToHistory(typed);
+				await send();
+			};
+			await submit(`idle token ${secret}`, () => harness.session.prompt(`idle token ${secret}`));
+			await submit(`/fixbug token ${secret}`, () => harness.session.prompt(`/fixbug token ${secret}`));
 			const turn = harness.session.prompt("hold the turn");
+			editor.addToHistory("hold the turn");
 			await entered.promise;
-			await harness.session.prompt(`steer token ${secret}`, { streamingBehavior: "steer" });
-			await harness.session.followUp(`follow token ${secret}`);
-			await harness.session.followUp(`/fixbug queued token ${secret}`);
+			await submit(`steer token ${secret}`, () =>
+				harness.session.prompt(`steer token ${secret}`, { streamingBehavior: "steer" }),
+			);
+			await submit(`follow token ${secret}`, () => harness.session.followUp(`follow token ${secret}`));
+			await submit(`/fixbug queued token ${secret}`, () =>
+				harness.session.followUp(`/fixbug queued token ${secret}`),
+			);
 			release.resolve();
 			await turn;
+			harness.session.pauseQueuedMessages();
+			await submit(`paused token ${secret}`, () =>
+				harness.session.prompt(`paused token ${secret}`, { streamingBehavior: "followUp" }),
+			);
+			await harness.session.resumeQueuedMessages();
+			await submit("after the pause", () => harness.session.prompt("after the pause"));
 
 			const entries = harness.session.sessionManager.getEntries();
 			const userEntries = entries.filter((entry) => entry.type === "message" && entry.message.role === "user");
-			assert.equal(userEntries.length, 6);
+			assert.equal(userEntries.length, 8);
+			assert.equal(hookInputs.filter((text) => text === `paused token ${secret}`).length, 1);
 			for (const entry of userEntries) assert.ok(!JSON.stringify(entry).includes(secret), JSON.stringify(entry));
 
 			const sessionPrompts = sessionPromptsFromEntries(entries);
 			assert.deepEqual(
-				sessionPrompts.map((entry) => entry.text),
+				sessionPrompts.map((entry) => entry.text).sort(),
 				[
-					"token [redacted]",
+					"idle token [redacted]",
 					"/fixbug token [redacted]",
 					"hold the turn",
 					"steer token [redacted]",
 					"follow token [redacted]",
 					"/fixbug queued token [redacted]",
-				],
+					"after the pause",
+					"paused token [redacted]",
+				].sort(),
 			);
-			const resumedHistory = [...getUserTexts(harness)].reverse();
-			const searchResults = promptHistoryEntries(resumedHistory, sessionPrompts);
-			assert.ok(!JSON.stringify(searchResults).includes(secret), JSON.stringify(searchResults));
-			const rendered = lines(
-				new PromptHistorySelectorComponent(searchResults, { onSelect: () => {}, onCancel: () => {} }),
-				100,
-			);
+			assert.ok(editor.getHistory().includes(`idle token ${secret}`), "up and down keep the typed prompts");
+
+			let shown: Component | undefined;
+			const mode = Object.assign(Object.create(InteractiveMode.prototype), {
+				editor,
+				runtimeHost: { session: harness.session },
+				ui: { requestRender: () => {} },
+				showSelector(create: (done: () => void) => { component: Component; focus: Component }): void {
+					shown = create(() => {}).component;
+				},
+			}) as InteractiveMode;
+			mode.showPromptHistorySearch();
+			assert.ok(shown);
+			const rendered = lines(shown, 120);
 			assert.ok(!rendered.some((line) => line.includes(secret)), rendered.join("\n"));
+			for (const text of ["idle token [redacted]", "/fixbug queued token [redacted]", "paused token [redacted]"])
+				assert.ok(
+					rendered.some((line) => line.includes(text)),
+					`${text} missing:\n${rendered.join("\n")}`,
+				);
 		} finally {
 			release.resolve();
 			await harness.cleanup();

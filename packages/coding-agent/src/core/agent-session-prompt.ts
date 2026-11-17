@@ -368,10 +368,32 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		// generation discards itself via its token/anchor checks either way.
 		this.abortSessionSummary();
 		// A controlled pause is an admission gate, including the idle gap after
-		// abort settles. Preserve the raw user payload without running input hooks,
-		// compaction, or a provider turn; explicit resume makes it eligible again.
+		// abort settles. Queue the payload as input hooks leave it, without
+		// compaction or a provider turn; explicit resume makes it eligible again.
 		if (this._queuedMessagesPaused) {
 			const delivery = options?.streamingBehavior === "followUp" ? "followUp" : "steer";
+			let pausedText = text;
+			let pausedImages = options?.images;
+			if (this._extensionRunner.hasHandlers("input")) {
+				const inputResult = await runInputHook(() =>
+					this._extensionRunner.emitInput(
+						text,
+						pausedImages,
+						options?.source ?? "interactive",
+						this.isStreaming ? options?.streamingBehavior : undefined,
+					),
+				);
+				assertCurrent();
+				if (inputResult.action === "handled") {
+					workflowDelivery?.delivered?.("handled");
+					preflightResult?.(true, "handled");
+					return;
+				}
+				if (inputResult.action === "transform") {
+					pausedText = inputResult.text;
+					pausedImages = inputResult.images ?? pausedImages;
+				}
+			}
 			const earlierAdmissions = admission.waitForTurn();
 			if (earlierAdmissions) await earlierAdmissions;
 			assertCurrent();
@@ -382,8 +404,8 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 				return;
 			}
 			if (held) stopWaiting(this, held);
-			if (delivery === "followUp") await this._queueFollowUp(text, options?.images);
-			else await this._queueSteer(text, options?.images);
+			if (delivery === "followUp") await this._queueFollowUp(pausedText, pausedImages, text);
+			else await this._queueSteer(pausedText, pausedImages, text);
 			workflowDelivery?.delivered?.(delivery);
 			preflightResult?.(true, "queued");
 			return;

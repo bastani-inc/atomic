@@ -49,7 +49,7 @@ Compaction uses a still `∀` mark with elapsed time and the cancel key. Opening
 
 The `@` and `/` menus end with one hint line naming the keys that work there. Tab completes without sending. Enter inserts an `@` path; for a `/`-prefixed completion, including an absolute path, Enter submits the completed prompt. Remapped menu keys appear only when an app shortcut or earlier menu action does not take them first.
 
-Ctrl+R searches the current chat's prompts, including prompts sent through templates or skills as you typed them. In writable subagent and workflow stage chats, the search uses that chat's transcript and sent messages. Esc clears the search, then closes it without changing your draft or interrupting the agent. While search or completion is open, its own hint line replaces the chat's normal keys. Read-only chats keep their transcript scrolling keys and do not open prompt search.
+Ctrl+R searches the prompts the current chat has recorded, newest first: prompts sent through templates or skills as you typed them, and a prompt an `input` hook rewrote as the hook left it. ↑ and ↓ still walk through what you typed. In writable subagent and workflow stage chats, the search uses that chat's transcript. Esc clears the search, then closes it without changing your draft or interrupting the agent. While search or completion is open, its own hint line replaces the chat's normal keys. Read-only chats keep their transcript scrolling keys and do not open prompt search.
 
 Prompt history keeps what you typed, including input rewritten by an extension before it reaches the model. An `input` hook does not erase the original from saved session history. Avoid typing secrets directly into prompts.
 

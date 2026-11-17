@@ -161,10 +161,7 @@ export function openChatSessionPromptSearch<TExtraEntry extends ChatTranscriptEn
 ): void {
 	const editor = state.editor;
 	if (!editor || state.isDisabled?.() === true) return;
-	const entries = promptHistoryEntries(
-		editor.getHistory?.() ?? [],
-		sessionPromptsFromEntries(promptEntriesForChatSession(state)),
-	);
+	const entries = promptHistoryEntries(sessionPromptsFromEntries(promptEntriesForChatSession(state)));
 	const close = () => {
 		state.promptSearch = undefined;
 		state.requestRender?.();

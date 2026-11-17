@@ -241,12 +241,16 @@ describe("ctrl+r in a subagent or stage chat behaves as in the main chat (#5224)
 		assert.ok(!plain(chat.renderEditor(100)).some((line) => line.includes("Search prompts")));
 	});
 
-	it("lists both the subagent transcript's prompts and messages sent from its view", async () => {
+	it("lists the subagent transcript's prompts, including a message sent from its view once its session records it", async () => {
 		const sent: string[] = [];
 		const sentAt = Date.now() - 7 * 60_000;
+		const entries = [userSessionEntry("u1", "audit the menus hint line", sentAt)];
 		const subagent = openSubagentInspector({
-			entries: [userSessionEntry("u1", "audit the menus hint line", sentAt)],
-			onSend: (text) => sent.push(text),
+			entries,
+			onSend: (text) => {
+				sent.push(text);
+				entries.push(userSessionEntry("u2", text, Date.now()));
+			},
 		});
 		try {
 			await flush();
