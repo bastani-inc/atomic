@@ -2,7 +2,11 @@ import { execFile } from "node:child_process";
 import { readdir, readFile, readlink, realpath, stat } from "node:fs/promises";
 import { sep } from "node:path";
 
-export async function processesWorkIn(path: string, since?: number): Promise<boolean> {
+export async function processesWorkIn(
+	path: string,
+	since?: number,
+	platform: NodeJS.Platform = process.platform,
+): Promise<boolean> {
 	let target: string;
 	try {
 		target = await realpath(path);
@@ -11,8 +15,8 @@ export async function processesWorkIn(path: string, since?: number): Promise<boo
 	}
 	const inside = (link: string) => link === target || link.startsWith(target.endsWith(sep) ? target : target + sep);
 	try {
-		if (process.platform === "linux") return await linuxProcessesWorkIn(inside, since);
-		if (process.platform === "darwin") return await openFilesInside(inside);
+		if (platform === "linux") return await linuxProcessesWorkIn(inside, since);
+		if (platform === "darwin") return await openFilesInside(inside);
 	} catch {}
 	return true;
 }
@@ -70,6 +74,8 @@ function gone(error: unknown): boolean {
 	return code === "ENOENT" || code === "ESRCH";
 }
 
+const UNREADABLE_ENTRY = / info error|\((?:readlink|l?stat): /;
+
 function openFilesInside(inside: (link: string) => boolean): Promise<boolean> {
 	const uid = String(process.getuid?.() ?? "");
 	return new Promise((resolve) => {
@@ -78,12 +84,15 @@ function openFilesInside(inside: (link: string) => boolean): Promise<boolean> {
 			["-w", "-n", "-P", "-u", uid, "-F", "n"],
 			{ encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024 * 1024 },
 			(error, stdout) => {
-				const complete = error === null || (error.code === 1 && !error.killed && error.signal == null);
-				if (!complete || stdout === "") {
+				if (error !== null || stdout === "") {
 					resolve(true);
 					return;
 				}
-				resolve(stdout.split("\n").some((line) => line.startsWith("n") && inside(line.slice(1))));
+				const names = stdout
+					.split("\n")
+					.filter((line) => line.startsWith("n"))
+					.map((line) => line.slice(1));
+				resolve(names.some((name) => UNREADABLE_ENTRY.test(name) || inside(name)));
 			},
 		);
 	});

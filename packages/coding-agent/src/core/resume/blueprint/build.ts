@@ -24,7 +24,6 @@ import {
 	type WorkspaceLedgerEntry,
 	workspaceKey,
 } from "./ledger.ts";
-import { buildStartWatcher } from "./process.ts";
 import { hostPlatform, parseBlueprint, selectDocument } from "./schema.ts";
 import { BLUEPRINT_STEP_TIMEOUT_MS, runSection, type StepContext, type StepFailure } from "./steps.ts";
 import type { BlueprintDocument, BlueprintPlatform, BlueprintWarning, ParsedBlueprint, RunStep } from "./types.ts";
@@ -593,7 +592,6 @@ async function executeBuild(
 		roots: new Map(),
 	};
 	const startedAt = new Date(now()).toISOString();
-	buildStartWatcher.getStore()?.();
 	await inPhase("ledger", "the build ledger could not be written", () =>
 		updateLedger(config.storeDir, (current) => ({
 			...current,

@@ -19,7 +19,7 @@ import { killProcessTree } from "../../../utils/shell.ts";
 import { prepareTakeoverMutex, type TakeoverMutex, takeTakeoverMutex } from "../../lock-takeover.js";
 import { processStartToken, readProcessStartToken } from "../../process-start-token.js";
 import { readLedger, rootKey } from "./ledger.ts";
-import { buildStartWatcher, stepProcessWatcher } from "./process.ts";
+import { stepProcessWatcher, stepStartingWatcher } from "./process.ts";
 
 interface LockedProcess {
 	readonly pid: number;
@@ -477,13 +477,19 @@ export async function withBuildLocks<T>(
 		}
 	};
 	// Written once a step starts a process, so a build that runs nothing, as for an untrusted worktree, writes nothing.
+	let started = false;
+	const starting = () => {
+		if (started) return;
+		started = true;
+		write();
+	};
 	const watch = (pid: number, running: boolean) => {
 		if (running) recordStep(steps, pid, write);
 		else steps.delete(pid);
 		write();
 	};
 	try {
-		return await buildStartWatcher.run(write, () => stepProcessWatcher.run(watch, build));
+		return await stepStartingWatcher.run(starting, () => stepProcessWatcher.run(watch, build));
 	} finally {
 		settled = true;
 		for (const file of files.keys()) if (readLock(file)?.pid === process.pid) removeLock(file);

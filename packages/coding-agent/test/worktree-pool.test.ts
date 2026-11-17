@@ -969,18 +969,29 @@ describe("a worktree whose blueprint build was cancelled (#5379)", () => {
 		},
 	);
 
-	test.skipIf(process.platform === "win32")(
-		"a resume neither waits on nor touches the live build of another session that now owns its old worktree (#5379)",
-		async () => {
+	for (const replacement of ["is restored", "cannot be restored"] as const) {
+		test(`a resume whose worktree another session took over, with a live build there, neither waits on nor touches that build, and its own checkout ${replacement} elsewhere (#5379)`, async () => {
 			const { snapshot, clone } = await recordedSnapshot();
 			const first = await sessionOf(clone, snapshot);
 			const old = await restoredRoot(first);
 			await releaseSessionWorktrees(first);
 			const second = await sessionOf(clone, snapshot);
 			assert.equal(await restoredRoot(second), old, "the other session took the idle worktree");
+			if (replacement === "cannot be restored") {
+				await renameWithRetry(sandbox.path("repo.git"), sandbox.path("repo-gone.git"));
+				rmSync(join(storeDir(), "repositories"), { recursive: true, force: true });
+			}
 			const builder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+			const step = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: old, stdio: "ignore" });
 			try {
 				const lock = await unfinishedBuild(old, { pid: builder.pid!, start: processStartToken(builder.pid!) });
+				writeFileSync(
+					lock,
+					JSON.stringify({
+						...JSON.parse(readFileSync(lock, "utf8")),
+						steps: [{ pid: step.pid, start: processStartToken(step.pid!), at: Date.now() }],
+					}),
+				);
 				const written = readFileSync(lock, "utf8");
 				const progress: string[] = [];
 				const stop = new AbortController();
@@ -992,13 +1003,23 @@ describe("a worktree whose blueprint build was cancelled (#5379)", () => {
 				assert.equal(prepared.status, "ready");
 				if (prepared.status !== "ready") return;
 				opened.push(prepared.sessionManager);
-				assert.equal(mapRestoredPath(clone, prepared.sessionManager.getWorktreeRootMappings()), slot(snapshot, 1));
+				const cwd = resolve(prepared.sessionManager.getCwd());
+				assert.equal(cwd === old || cwd.startsWith(`${old}${sep}`), false, `continues in ${cwd}`);
+				if (replacement === "is restored") {
+					assert.equal(
+						mapRestoredPath(clone, prepared.sessionManager.getWorktreeRootMappings()),
+						slot(snapshot, 1),
+					);
+				} else {
+					assert.equal(cwd, resolve(sandbox.root), "it continues where the resume started");
+				}
 				assert.deepEqual(
 					progress.filter((line) => line.startsWith("Waiting")),
 					[],
 				);
 				assert.equal(readFileSync(lock, "utf8"), written, "the other build's lock is untouched");
 				assert.equal(builder.exitCode === null && builder.signalCode === null, true, "its builder still runs");
+				assert.equal(step.exitCode === null && step.signalCode === null, true, "its step still runs");
 				assert.equal(await worktreeSetAside(storeDir(), old), false, "its worktree is not set aside");
 				assert.deepEqual(
 					prepared.notices.filter((notice) => notice.message.includes("cancelled")),
@@ -1006,9 +1027,10 @@ describe("a worktree whose blueprint build was cancelled (#5379)", () => {
 				);
 			} finally {
 				builder.kill("SIGKILL");
+				step.kill("SIGKILL");
 			}
-		},
-	);
+		});
+	}
 
 	test.skipIf(process.platform === "win32")(
 		"a cancelled build whose fresh restore fails leaves the session outside the set-aside worktree, building nothing there (#5379)",

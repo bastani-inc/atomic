@@ -1073,7 +1073,7 @@ async function setUpCheckoutBlueprints(
 		const checkout = checkoutOf(sessionManager, root, snapshot);
 		if (restoredNow.has(root)) restoredHere.push({ ...checkout, ready: lfs.ready(root) });
 		else if (isInside(storeDir, root)) {
-			if (!(await worktreeSetAside(storeDir, root)))
+			if (!(await pooledWorktreeOwnedElsewhere(storeDir, root, sessionManager.getSessionId())))
 				earlier.push({ ...checkout, ready: finishPendingLfs(lfs, root, options.signal) });
 		} else if (await isDirectory(root)) inPlace.push(checkout);
 	}
