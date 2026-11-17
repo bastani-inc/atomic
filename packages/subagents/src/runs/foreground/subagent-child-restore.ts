@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync } from "node:fs";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -33,6 +33,7 @@ import {
 import { childAllowsIntercom } from "../../intercom/supervisor-authorization.js";
 import { collectKnownModelProviders, toModelInfo } from "../../shared/model-info.js";
 import { createCandidateModelResolver } from "../../shared/model-resolution.js";
+import { pathExists } from "../../shared/path-exists.js";
 import {
 	getCurrentSubagentDepth,
 	type IntercomEventBus,
@@ -487,7 +488,7 @@ async function relaunchChild(
 	let cwd = mapRestoredPath(record.cwd, scope);
 	let sessionManager: SessionManager | undefined;
 	if (fresh) {
-		if (!existsSync(cwd)) return unrestorable(`its working directory no longer exists: ${cwd}`);
+		if (!(await pathExists(cwd))) return unrestorable(`its working directory no longer exists: ${cwd}`);
 		// A forked launch starts on the branch it prepared from its owner's conversation, never on a fresh context.
 		if (fresh.forkSession) {
 			const branch = await reopenChildSession(ctx, {
@@ -507,7 +508,7 @@ async function relaunchChild(
 		if ("reason" in reopened) return unrestorable(reopened.reason);
 		sessionManager = await continueChildWhereItWorked(ctx, cwd, reopened.sessionManager);
 		cwd = mapRestoredPath(sessionManager.getCwd(), scope);
-		if (!existsSync(cwd)) return unrestorable(`its working directory no longer exists: ${cwd}`);
+		if (!(await pathExists(cwd))) return unrestorable(`its working directory no longer exists: ${cwd}`);
 		const previousIntercomId = readPreviousIntercomId(sessionManager);
 		onReopened(previousIntercomId);
 		if (previousIntercomId) await hold?.add(previousIntercomId);
@@ -637,7 +638,7 @@ async function relaunchChild(
 		index: record.index,
 		sessionDir:
 			(fresh ? fresh.sessionDir : sessionManager?.getSessionDir()) ||
-			mkdtempSync(join(tmpdir(), "atomic-subagent-restore-")),
+			(await mkdtemp(join(tmpdir(), "atomic-subagent-restore-"))),
 		...(sessionManager ? { sessionManager, ...(fresh ? {} : { resumeSession: true }) } : {}),
 		...(fresh?.skills ? { skills: [...fresh.skills] } : {}),
 		...(fresh?.outputPath ? { outputPath: fresh.outputPath } : {}),

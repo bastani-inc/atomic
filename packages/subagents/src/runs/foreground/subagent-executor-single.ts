@@ -1,4 +1,4 @@
-import * as fs from "node:fs";
+import { rm } from "node:fs/promises";
 import * as path from "node:path";
 import { normalizeSkillInput } from "../../agents/skills.js";
 import { INTERCOM_BRIDGE_MARKER, resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.js";
@@ -64,10 +64,10 @@ function formatFailedSingleRunOutput(result: SingleResult, displayOutput: string
 	return lines.join("\n");
 }
 
-function cleanupTransientProgress(progressDir: string | undefined, artifactsEnabled: boolean): void {
+async function cleanupTransientProgress(progressDir: string | undefined, artifactsEnabled: boolean): Promise<void> {
 	if (!progressDir || artifactsEnabled) return;
 	try {
-		fs.rmSync(progressDir, { recursive: true, force: true });
+		await rm(progressDir, { recursive: true, force: true });
 	} catch {
 		// Scratch cleanup must never replace the child run's result or original error.
 	}
@@ -176,7 +176,7 @@ export async function runSinglePath(
 	// overwrite a project's own progress.md or collide with another child.
 	const progressDir = progress ? path.join(artifactsDir, "progress", runId) : undefined;
 	if (progressDir) {
-		writeInitialProgressFile(progressDir);
+		await writeInitialProgressFile(progressDir);
 		task = injectSingleProgressInstruction(task, progressDir);
 	}
 	task = injectSingleOutputInstruction(task, outputPath);
@@ -253,7 +253,7 @@ export async function runSinglePath(
 				interruptController.abort();
 			},
 			onDetachedExit: (result) => {
-				cleanupTransientProgress(progressDir, artifactConfig.enabled);
+				void cleanupTransientProgress(progressDir, artifactConfig.enabled);
 				if (result && workflowStageAcceptsDetachedNotification(detachedNotificationScope)) {
 					notifyDetachedForegroundChildExit({ pi: deps.pi, runId, mode: "single", index: 0, result });
 				}
@@ -273,6 +273,7 @@ export async function runSinglePath(
 		modelRoute?.assertCurrent();
 		if (ctx.getAgentTaskHost) {
 			let settledChild: SingleResult | undefined;
+			let progressCleanup: Promise<void> | undefined;
 			const response = await runAgentTask({
 				host: ctx.getAgentTaskHost(),
 				cwd: ctx.cwd,
@@ -288,7 +289,7 @@ export async function runSinglePath(
 				recordChild: createSubagentChildRecordSink(deps.pi, ctx),
 				onTerminal: (child) => {
 					settledChild = child;
-					cleanupTransientProgress(progressDir, artifactConfig.enabled);
+					progressCleanup = cleanupTransientProgress(progressDir, artifactConfig.enabled);
 				},
 				outputText: (child) =>
 					parentAsk && child.interrupted
@@ -300,6 +301,7 @@ export async function runSinglePath(
 							})
 						: getSingleResultOutput(child),
 			});
+			await progressCleanup;
 			if (!parentAsk || !settledChild?.interrupted)
 				return await taskToolResultWithOutput(response, ctx.getAgentTaskHost());
 			r = settledChild;
@@ -320,11 +322,11 @@ export async function runSinglePath(
 			}).result;
 		}
 	} catch (error) {
-		cleanupTransientProgress(progressDir, artifactConfig.enabled);
+		await cleanupTransientProgress(progressDir, artifactConfig.enabled);
 		throw error;
 	}
 	// Detached children still own this storage until their process closes.
-	if (!r.detached) cleanupTransientProgress(progressDir, artifactConfig.enabled);
+	if (!r.detached) await cleanupTransientProgress(progressDir, artifactConfig.enabled);
 	if (foregroundControl?.currentIndex === 0) {
 		foregroundControl.interrupt = undefined;
 		foregroundControl.currentActivityState = r.progress?.activityState;

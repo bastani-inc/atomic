@@ -810,7 +810,7 @@ export async function runAgentTask(input: {
 							wokenWith,
 						);
 					const text = input.outputText?.(child) ?? getSingleResultOutput(child);
-					if (!released) retainTaskOutput(child, text, context.ref);
+					if (!released) await retainTaskOutput(child, text, context.ref);
 					const bytes = Buffer.from(text);
 					context.reportActivity({
 						reportId: "terminal-output",
