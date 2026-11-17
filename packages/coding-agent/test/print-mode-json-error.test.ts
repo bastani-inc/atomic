@@ -37,6 +37,7 @@ function createRuntimeHost(message: AssistantMessage) {
 		subscribe: vi.fn(() => () => {}),
 		getToolDefinition: vi.fn(() => undefined),
 		prompt: vi.fn(async () => {}),
+		getPersistenceFailure: () => undefined,
 		reload: vi.fn(async () => {}),
 	};
 	return {

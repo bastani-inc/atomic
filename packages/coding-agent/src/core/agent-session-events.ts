@@ -6,7 +6,7 @@ import { releaseDetachedCallHolds, withoutDetachedPlaceholders } from "./agent-s
 import { heldInputView } from "./agent-session-held-input.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { clearNestedToolCalls, recordNestedToolCalls } from "./agent-session-nested-tools.js";
-import { recordPersistenceFailure } from "./agent-session-persistence-failures.ts";
+import { recordPersistenceFailure, runStoppedByConflict } from "./agent-session-persistence-failures.ts";
 import {
 	isProtectedStreamingCustomMessage,
 	markProtectedStreamingCustomMessageConsumed,
@@ -301,7 +301,9 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 	} finally {
 		// Agent-core has consumed this protected input already. Its durability
 		// boundary cannot be skipped by a fallible extension or session listener.
-		if (protectedMessage !== undefined) {
+		if (protectedMessage !== undefined && runStoppedByConflict(this) !== undefined) {
+			markProtectedStreamingCustomMessagePersistenceFailed(this, protectedMessage);
+		} else if (protectedMessage !== undefined) {
 			try {
 				await persistProtectedStreamingCustomMessage(this, protectedMessage);
 			} catch (error) {
@@ -322,7 +324,9 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 		let entryId: string | undefined;
 		try {
 			// Check if this is a custom message from extensions
-			if (event.message.role === "custom") {
+			if (runStoppedByConflict(this) !== undefined) {
+				this._messagesWithFailedPersistence.add(event.message);
+			} else if (event.message.role === "custom") {
 				const admitted = event.message as StageAdmittedCustomMessage;
 				if (protectedMessage === undefined) {
 					entryId = await this.sessionManager.appendCustomMessageEntry(

@@ -8,8 +8,22 @@
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { describeStorageError } from "./storage/errors.js";
+import { SessionConflictError } from "./storage/session/errors.js";
 
 const reportedPersistenceFailures = new WeakSet<object>();
+/** The conflict that stopped a session's run, with the failure it was recorded under. */
+const runConflicts = new WeakMap<object, { readonly failure: string; readonly conflict: SessionConflictError }>();
+
+/**
+ * #5135: the conflict that stopped the current run, when another process wrote to the session. Such a run saves
+ * nothing more: its later messages would land after the other process's entries, inside that process's turn.
+ */
+export function runStoppedByConflict(session: AgentSession): SessionConflictError | undefined {
+	const failure = session._persistenceFailure;
+	if (failure === undefined) return undefined;
+	const recorded = runConflicts.get(session);
+	return recorded?.failure === failure ? recorded.conflict : undefined;
+}
 
 /**
  * For queue barriers inside the agent loop: a message that could not be saved was already reported where its
@@ -30,6 +44,10 @@ export function recordPersistenceFailure(session: AgentSession, message: AgentMe
 	const failure = `could not persist the ${message.role} message: ${error instanceof Error ? describeStorageError(error) : String(error)}`;
 	const firstFailure = session._persistenceFailure === undefined;
 	session._persistenceFailure ??= failure;
+	if (firstFailure) runConflicts.delete(session);
+	if (error instanceof SessionConflictError && runStoppedByConflict(session) === undefined) {
+		runConflicts.set(session, { failure: session._persistenceFailure, conflict: error });
+	}
 	// #3105: disposal reports failures that interrupt it through its own rejection.
 	if (firstFailure && !session._disposed) {
 		session._extensionRunner.emitError({
@@ -47,6 +65,8 @@ export interface PersistenceFailure {
 	readonly error: string;
 	/** The run's messages the session holds in memory but could not save, oldest first. */
 	readonly unsavedMessages: readonly AgentMessage[];
+	/** Set when the run stopped because another process wrote to the session (#5135). */
+	readonly conflict?: SessionConflictError;
 }
 
 /**
@@ -59,7 +79,8 @@ function getPersistenceFailure(this: AgentSession): PersistenceFailure | undefin
 	const unsavedMessages = this.agent.state.messages.filter((message) =>
 		this._messagesWithFailedPersistence.has(message),
 	);
-	return { error, unsavedMessages };
+	const conflict = runStoppedByConflict(this);
+	return conflict === undefined ? { error, unsavedMessages } : { error, unsavedMessages, conflict };
 }
 
 export const agentSessionPersistenceFailureMethods = { getPersistenceFailure };

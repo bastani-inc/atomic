@@ -8,6 +8,7 @@
 
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { AssistantMessage, ImageContent, ToolResultMessage } from "@bastani/atomic-ai/compat";
+import { sessionConflictMessage } from "../cli/settings-startup.ts";
 import type { AgentSession, AgentSessionEvent } from "../core/agent-session.js";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
 import type { ExtensionError } from "../core/extensions/index.js";
@@ -221,6 +222,11 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 				await session.prompt(text);
 			} else {
 				await session.prompt(text, promptOptions);
+			}
+			const conflict = session.getPersistenceFailure()?.conflict;
+			if (conflict !== undefined) {
+				exitCode = 1;
+				console.error(sessionConflictMessage(conflict));
 			}
 		} finally {
 			// Final-output suppression is scoped to the most recent prompt so a
