@@ -261,6 +261,7 @@ describe("foreground intercom detach routing", () => {
 			const groupDetach = new AbortController();
 			const recovered: SingleResult[] = [];
 			const recoveredBoth = Promise.withResolvers<void>();
+			const launched = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
 			const launch = (index: number, target: string, gate: ReturnType<typeof deferred>) =>
 				runSync(dir, [bridgedAgent()], "fake-worker", target, {
 					cwd: dir,
@@ -271,6 +272,7 @@ describe("foreground intercom detach routing", () => {
 					intercomEvents: bus,
 					intercomDetachSignal: groupDetach.signal,
 					onIntercomDetachCommit: () => groupDetach.abort(),
+					onChildLaunch: () => launched[index]!.resolve(),
 					testSession: { output: "parallel child recovered", promptGate: gate.promise },
 					onDetachedExit: (result) => {
 						recovered.push(result);
@@ -279,7 +281,8 @@ describe("foreground intercom detach routing", () => {
 				});
 			const first = launch(0, "child-a", firstGate);
 			const sibling = launch(1, "child-b", secondGate);
-			await sleep(25);
+			// Setup checks the cwd asynchronously; a child cannot ask for a handoff until it has launched.
+			await Promise.all(launched.map((ready) => ready.promise));
 			await handoff(bus, { requestId: "parallel-question", childIntercomTarget: "child-a" });
 			const placeholders = await Promise.all([first, sibling]);
 			assert.ok(placeholders.every((result) => result.status === "continued"));
