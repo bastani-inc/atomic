@@ -43,7 +43,7 @@ function executionModeContract(prompt: string): void {
 	assert.doesNotMatch(prompt, /Only skip workflows|Sunk inline research|inline only if what remains is minimal/);
 }
 
-function verificationContract(prompt: string): void {
+function verificationContract(prompt: string, cwd: string): void {
 	assert.match(prompt, /For web or frontend flows[\s\S]*agent-browser/);
 	assert.match(
 		prompt,
@@ -106,7 +106,8 @@ function verificationContract(prompt: string): void {
 	assert.match(prompt, /`-p ios` session proves Mobile Safari behavior, not a native iOS app/);
 	assert.doesNotMatch(prompt, /PyAutoGUI|pyautogui/i);
 	assert.doesNotMatch(prompt, /uv run --with pyautogui/);
-	assert.doesNotMatch(prompt, /cua/i);
+	const guidance = prompt.replaceAll(cwd.replaceAll("\\", "\\\\"), "").replaceAll(cwd, "");
+	assert.doesNotMatch(guidance, /cua/i);
 	assert.doesNotMatch(prompt, /`workflow resume` re-runs the preflight/);
 	assert.match(
 		prompt,
@@ -124,8 +125,8 @@ function verificationContract(prompt: string): void {
 }
 
 for (const name of ["goal", "ralph"] as const) {
-	test(`${name} constructed worker, reviewer and final handoff preserve routing and fallback contracts`, async () => {
-		const cwd = await mkdtemp(join(tmpdir(), "verification-guidance-"));
+	test(`${name} constructed guidance preserves routing with a cua-named directory (#5233)`, async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "verification-guidance-cua-"));
 		try {
 			const ctx = makeMockCtx(
 				{
@@ -153,7 +154,7 @@ for (const name of ["goal", "ralph"] as const) {
 			);
 			for (const [stage, prompts] of entries) {
 				for (const prompt of prompts) {
-					verificationContract(prompt);
+					verificationContract(prompt, cwd);
 					executionModeContract(prompt);
 					if (stage === "pull-request") {
 						assert.match(prompt, /Local evidence collection does not authorize uploads/);

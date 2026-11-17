@@ -19,7 +19,10 @@ import {
 	TwoPressConfirm,
 } from "../../packages/coding-agent/src/modes/interactive/components/nav-keys.js";
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
-import { createStopAllChord } from "../../packages/coding-agent/src/modes/interactive/interactive-stop-all.js";
+import {
+	createStopAllChord,
+	createStopAllNotices,
+} from "../../packages/coding-agent/src/modes/interactive/interactive-stop-all.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskFixture } from "../helpers/task-projection.js";
 
@@ -75,7 +78,10 @@ test("one dim hint line names exactly the screen's keys and fits 80 and 160 colu
 	// Narrow terminals drop whole entries from the end instead of cutting one mid-word.
 	const narrow = renderNavHintLine(KEYS, 37, plainStyle, keys);
 	assert.equal(narrow, "  ↑↓ select · enter/→ open · x stop");
-	assert.ok(visibleWidth(renderNavHintLine(KEYS, 8, plainStyle, keys)) <= 8);
+	for (const width of [1, 2, 8]) {
+		const single = [{ keys: "esc", label: "cancel this picker" }];
+		assert.ok(visibleWidth(renderNavHintLine(single, width, plainStyle, keys)) <= width);
+	}
 });
 
 test("hints follow remaps, leave out unbound actions and never repeat a key two actions share (#5224)", () => {
@@ -314,11 +320,56 @@ test("an empty task list offers only the keys that do something (#5224)", () => 
 	try {
 		for (const width of [160, 80]) {
 			const lines = inspector.renderViewport(width, 12).map((line) => stripVTControlCharacters(line));
-			assert.equal(lines.at(-1), "  esc/← back · ? keys");
+			assert.equal(lines.at(-1), "  / filter · esc/← close · ? keys");
 		}
 	} finally {
 		inspector.dispose();
 		void fixture.dispose();
 		setKeybindings(previous);
 	}
+});
+
+test("stop-all notices show in the current view for one window and never in a transcript (#5224)", () => {
+	const calls: string[] = [];
+	let fire: (() => void) | undefined;
+	const timers = {
+		setTimeout: ((handler: () => void) => {
+			fire = handler;
+			return { unref() {} };
+		}) as unknown as typeof setTimeout,
+		clearTimeout: (() => {}) as typeof clearTimeout,
+	};
+	const isolated = createStopAllNotices(
+		{
+			setEngineNotice: (text) => calls.push(`engine:${text ?? "-"}`),
+			hasOverlay: () => true,
+			requestRender: () => {},
+		},
+		timers,
+	);
+	isolated.show("Press ctrl+x ctrl+k again");
+	assert.deepEqual(calls, ["engine:-", "engine:Press ctrl+x ctrl+k again"], "the isolated engine's views show it");
+	fire?.();
+	assert.equal(calls.at(-1), "engine:-", "it clears when its window closes");
+	calls.length = 0;
+	let overlay = false;
+	const local = createStopAllNotices(
+		{
+			setFooterStatus: (text) => calls.push(`footer:${text ?? "-"}`),
+			showToast: (text) => {
+				calls.push(`toast:${text}`);
+				return () => calls.push("toast:hidden");
+			},
+			hasOverlay: () => overlay,
+			requestRender: () => {},
+		},
+		timers,
+	);
+	local.show("Stopped 1 subagent.");
+	assert.deepEqual(calls, ["footer:-", "footer:Stopped 1 subagent."], "over the chat: the footer status only");
+	overlay = true;
+	local.show("Press again");
+	assert.ok(calls.includes("toast:Press again"), "over a fullscreen view: a floating line too");
+	local.clear();
+	assert.ok(calls.includes("toast:hidden"));
 });

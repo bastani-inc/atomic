@@ -1,7 +1,8 @@
 import { getKeybindings, type KeybindingsManager, matchesKey, Text } from "@bastani/atomic-tui";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
+import { shortTaskTitle } from "../../../core/tasks/agent-panel-source.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import { liveElapsedMs } from "../../../core/tasks/live-elapsed.ts";
+import { type TaskElapsedClocks, taskClockRunning, taskClocksFor } from "../../../core/tasks/live-elapsed.ts";
 import { TaskMessageError } from "../../../core/tasks/message-error.js";
 import type { TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
 import {
@@ -61,6 +62,9 @@ export interface TaskTranscriptPage {
 	handleInput(data: string): boolean;
 	/** Whether the reader is typing, so a key such as Left edits instead of leaving. */
 	hasDraft(): boolean;
+	hasTasks?(): boolean;
+	expandable?(): boolean;
+	canSend?(): boolean;
 	/** Whether the prompt's cursor is at its start, where ← leaves and keeps any draft for the return. */
 	cursorAtStart(): boolean;
 	/** Whether the page takes Escape and Left itself, as while its own task list is open. */
@@ -126,6 +130,7 @@ async function settled<T>(read: T | Promise<T>): Promise<T> {
  * the task through its Intercom target.
  */
 export class TaskAgentTranscriptPage implements TaskTranscriptPage {
+	private readonly elapsedClocks: TaskElapsedClocks;
 	readonly chat: ChatSessionHost;
 	private loadStatus = "Loading transcript…";
 	/** Loading and failure notes, then why the chat is read-only when it is. */
@@ -154,6 +159,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private disposed = false;
 
 	private readonly reportLate: (reason: string) => void;
+	private readonly echoedPrompt: string | undefined;
 
 	/** `reportLate` shows the reason a message failed after the reader left this transcript. */
 	constructor(
@@ -162,12 +168,15 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		env: TaskTranscriptEnvironment,
 		requestRender: () => void,
 		reportLate: (reason: string) => void = (reason) => env.notify?.(reason),
+		options: { readonly echoedPrompt?: string } = {},
 	) {
 		this.source = source;
+		this.elapsedClocks = taskClocksFor(source);
 		this.taskId = taskId;
 		this.env = env;
 		this.requestRender = requestRender;
 		this.reportLate = reportLate;
+		this.echoedPrompt = options.echoedPrompt;
 		this.chat = env.createChat({
 			style: env.style,
 			tui: env.tui,
@@ -281,6 +290,9 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			return true;
 		}
 		const keybindings = keybindingsOf(this.env.keybindings);
+		if (!this.chat.hasTaskInspector && keybindings.matches(data, "app.agents.focus") && !this.hasDraft()) {
+			return this.hasTasks() ? this.chat.openTasks() : true;
+		}
 		// The host owns thinking display; only its default physical key leaves the composer, as in a stage chat.
 		if (matchesKey(data, "ctrl+t") && keybindings.matches(data, "app.thinking.toggle")) return false;
 		if (keybindings.matches(data, "app.tools.expand")) {
@@ -322,11 +334,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		return [...body, ...pending, ...working, ...usage, ...editor, ...footer];
 	}
 
-	/**
-	 * The attached composer: accent rules naming the subagent, its task and its state (`debugger · #5220 spawn lock ·
-	 * 18m`), and a placeholder that says where typing goes (`Message debugger…`, or `Answer debugger…` while it waits on
-	 * a question).
-	 */
 	private decorateComposer(lines: readonly string[]): string[] {
 		const task = this.source.tasks.find((candidate) => candidate.ref.taskId === this.taskId);
 		const name = taskDisplayText(task?.agentName ?? this.sessionName() ?? "subagent");
@@ -342,16 +349,22 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 							: taskState(task)
 						: task.metrics?.elapsedMs === undefined
 							? "running"
-							: // The clock the agent panel and /tasks share, so all three agree.
-								formatPanelElapsed(
-									liveElapsedMs(task.ref.taskId, task.metrics.elapsedMs, task.execution.kind === "running") ??
+							: formatPanelElapsed(
+									this.elapsedClocks.elapsedMs(
+										task.ref.taskId,
 										task.metrics.elapsedMs,
+										taskClockRunning(task.execution.kind),
+									) ?? task.metrics.elapsedMs,
 								);
 		const stopped = this.source.taskStopped?.(this.taskId) === true;
-		const label = [name, task?.title ? taskDisplayText(task.title) : "", stopped ? "stopped" : (state ?? "")]
+		const label = [
+			name,
+			task?.title ? taskDisplayText(shortTaskTitle(task.title)) : "",
+			stopped ? "stopped" : (state ?? ""),
+		]
 			.filter(Boolean)
 			.join(" · ");
-		// A stopped subagent resumes only with a message the reader sends: its prompt says so.
+
 		const placeholder = stopped ? STOPPED_NOTE : `${waiting ? "Answer" : "Message"} ${name}…`;
 		return applyAttachedComposer(
 			{ accent: this.env.style.accent, text: this.env.style.text, dim: this.env.style.dim },
@@ -391,6 +404,18 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		return this.chat.hasInputText();
 	}
 
+	hasTasks(): boolean {
+		return this.chat.hasBackgroundTasks();
+	}
+
+	expandable(): boolean {
+		return this.env.setToolsExpanded !== undefined;
+	}
+
+	canSend(): boolean {
+		return this.source.sendTaskMessage !== undefined && this.readOnlyReason() === undefined;
+	}
+
 	cursorAtStart(): boolean {
 		return this.chat.inputCursorAtStart();
 	}
@@ -408,6 +433,21 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		if (interrupt === undefined)
 			return { ok: false, error: { message: "This task's turn cannot be interrupted from here." } };
 		return interrupt.call(this.source, this.taskId);
+	}
+
+	private displayMessages(page: TaskTranscriptView): TaskTranscriptView["messages"] {
+		const first = page.messages[0];
+		if (this.echoedPrompt === undefined || page.nextCursor !== undefined || first?.role !== "user") {
+			return page.messages;
+		}
+		const content = first.content;
+		const text =
+			typeof content === "string"
+				? content
+				: content.every((part) => part.type === "text")
+					? content.map((part) => (part.type === "text" ? part.text : "")).join("\n")
+					: undefined;
+		return text === this.echoedPrompt ? page.messages.slice(1) : page.messages;
 	}
 
 	private adoptLatestPage(page: TaskViewResult<TaskTranscriptView>): void {
@@ -429,7 +469,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.followed = session;
 			this.chat.resetFollowedSession();
 		}
-		this.chat.replaceMessages(page.value.messages);
+		this.chat.replaceMessages(this.displayMessages(page.value));
 		this.chat.hydrateToolExecutionStarts(page.value.activeToolStarts ?? []);
 		this.chat.hydrateCompactionStatus(
 			page.value.compactionReason,
@@ -471,7 +511,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 					return;
 				}
 				this.cursor = page.value.nextCursor;
-				this.chat.prependMessages(page.value.messages);
+				this.chat.prependMessages(this.displayMessages(page.value));
 			} catch (error) {
 				if (this.disposed) return;
 				this.cursor = undefined;

@@ -110,7 +110,7 @@ test("/tasks in the chat of a stage on a local worker lists that stage's tasks f
 	try {
 		assert.match(
 			stripAnsi(view.render(120).join("\n")),
-			/∀ shell {2}npm run build/,
+			/⧗ shell {2}npm run build/,
 			"the footer lists the worker's tasks",
 		);
 		submitStageChatText(view, "/tasks");
@@ -182,6 +182,7 @@ test("a stop from a task's detail page that does not reach the worker says so, a
 		submitStageChatText(view, "/tasks");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /npm run build/));
 		view.handleInput(" ");
+		view.handleInput("\r");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /Inspect transcript/));
 		view.handleInput("\r");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /Transcript ·/));

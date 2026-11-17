@@ -1,22 +1,71 @@
 import type { Component } from "@bastani/atomic-tui";
+import type { AgentPanelSession } from "../../../core/tasks/agent-panel-source.ts";
+import { type AgentPanelCounts, agentPanelCounts } from "../../rpc/agent-panel-bridge.ts";
 import { theme } from "../theme/theme.js";
 import { isNavHelpKey, type NavKey, type NavKeybindings, navActionText, renderNavKeyOverlay } from "./nav-keys.ts";
 
 export interface MainComposerKeyState {
+	readonly agentRows?: number;
+	readonly needsInput?: number;
 	readonly working: boolean;
 }
 
-export function mainComposerHintSegments(keybindings: NavKeybindings | undefined): string[] {
+export type MainComposerHintSource =
+	| Pick<MainComposerKeyState, "agentRows" | "needsInput">
+	| (AgentPanelSession & object)
+	| (() => AgentPanelCounts);
+
+const boundAgentCounts = new WeakMap<NavKeybindings, () => AgentPanelCounts>();
+
+export function bindMainComposerAgentRows(keybindings: NavKeybindings, count: () => AgentPanelCounts): void {
+	boundAgentCounts.set(keybindings, count);
+}
+
+function resolveAgentCounts(
+	keybindings: NavKeybindings | undefined,
+	source?: MainComposerHintSource,
+): AgentPanelCounts {
+	if (typeof source === "function") return source();
+	if (source !== undefined) {
+		if ("agentRows" in source && typeof source.agentRows === "number") {
+			return { total: source.agentRows, needsInput: source.needsInput ?? 0 };
+		}
+		return agentPanelCounts(source as AgentPanelSession & object);
+	}
+	return (keybindings && boundAgentCounts.get(keybindings)?.()) || { total: 0, needsInput: 0 };
+}
+
+function agentsSegment(keybindings: NavKeybindings | undefined, rows: number): string | undefined {
+	if (!Number.isFinite(rows) || rows <= 0) return undefined;
+	const count = Math.floor(rows);
+	if (count <= 0) return undefined;
+	const key = navActionText(keybindings, "app.agents.focus");
+	if (!key) return undefined;
+	return `${key} ${count} ${count === 1 ? "agent" : "agents"}`;
+}
+
+export function mainComposerHintSegments(
+	keybindings: NavKeybindings | undefined,
+	state?: MainComposerHintSource,
+): string[] {
 	const segments: string[] = [];
+	const counts = resolveAgentCounts(keybindings, state);
+	const agents = agentsSegment(keybindings, counts.total);
+	if (agents) {
+		segments.push(agents);
+		if (counts.needsInput > 0) segments.push(`${counts.needsInput} needs input`);
+	}
 	const help = navActionText(keybindings, "app.keys.help");
 	if (help) segments.push(`${help} keys`);
 	return segments;
 }
 
 export function mainComposerKeys(state: MainComposerKeyState): NavKey[] {
+	const agentRows = state.agentRows ?? 0;
 	return [
 		{ keys: "enter", label: "send the prompt" },
 		...(state.working ? [{ action: "app.interrupt", label: "interrupt the agent's turn" }] : []),
+		...(agentRows > 0 ? [{ action: "app.agents.focus", label: "agents, on an empty prompt" }] : []),
 		{ keys: "/", label: "commands, at the start of the prompt" },
 		{ keys: "pgup/pgdn", label: "scroll" },
 		{ action: "tui.altScreen.bottom", label: "jump to the latest message" },
@@ -39,9 +88,14 @@ export class MainComposerKeyOverlay implements Component {
 	}
 
 	render(width: number): string[] {
+		const current = this.state();
+		const state =
+			current.agentRows !== undefined
+				? current
+				: { ...current, agentRows: resolveAgentCounts(this.keybindings).total };
 		return renderNavKeyOverlay(
 			"keys",
-			mainComposerKeys(this.state()),
+			mainComposerKeys(state),
 			width,
 			{
 				dim: (text) => theme.fg("dim", text),

@@ -329,3 +329,86 @@ describe("workflow resume selector row presentation", () => {
 		assert.match(item!.session.allMessagesText, /crashed/);
 	});
 });
+
+describe("workflow resume picker rows: a title and one detail line (#5224)", () => {
+	const NOW = 10_000_000;
+
+	test("a live run's title names the workflow and its identity; its detail is status · stage · elapsed · cost", () => {
+		const run: RunSnapshot = {
+			...pausedLiveRun("run-ship", NOW - 60_000),
+			name: "ralph",
+			label: "fix the shipping benchmark",
+			startedAt: NOW - 3_000_000,
+			durationMs: 41 * 60_000,
+			stages: [
+				{ ...stage("plan", NOW - 2_000_000), status: "completed" },
+				{ ...stage("research", NOW - 1_900_000), status: "completed" },
+				{ ...stage("implement", NOW - 100_000), status: "running", endedAt: undefined },
+				{ ...stage("review", NOW), status: "pending", startedAt: undefined, endedAt: undefined },
+				{ ...stage("verify", NOW), status: "pending", startedAt: undefined, endedAt: undefined },
+			],
+			budgetState: { accounting: { cost: 1.84 } } as RunSnapshot["budgetState"],
+		};
+		const [item] = workflowResumeSelectorItems([run], [], [], undefined, undefined, NOW);
+		assert.equal(item?.session.title, "ralph · fix the shipping benchmark");
+		assert.equal(item?.session.detail, "paused · stage 3/5 implement · 41m · $1.84");
+	});
+
+	test("a finished run's detail says how long ago it ended; a failed run's says why", () => {
+		const completed = { ...entry("done-run", "completed", NOW - 2 * 3_600_000), name: "review-pr", label: "#5222" };
+		const failed = {
+			...entry("bad-run", "failed", NOW - 60_000),
+			name: "goal",
+			error: "Error: gate failed: 2 jobs\n    at run (x.ts:1:1)",
+		};
+		const items = workflowResumeSelectorItems([], [failed], [completed], undefined, undefined, NOW);
+		const byId = new Map(items.map((item) => [item.session.id, item.session]));
+		assert.equal(byId.get("done-run")?.title, "review-pr · #5222");
+		assert.equal(byId.get("done-run")?.detail, "✓ completed · 2h ago");
+		assert.equal(byId.get("bad-run")?.detail, "failed · 2 checkpoints · 1m ago · ✗ gate failed: 2 jobs");
+	});
+
+	test.each(["at least one reviewer rejected the change", "at capacity: the provider is overloaded"])(
+		"keeps literal failure reasons beginning with 'at': %s (#5256)",
+		(reason) => {
+			for (const field of ["error", "exitReason"] as const) {
+				for (const prefix of ["", "    at run (runner.ts:1:2)\n", "    at runner.ts:1:2\n"]) {
+					const [item] = workflowResumeSelectorItems(
+						[],
+						[{ ...entry("literal-reason", "failed"), [field]: prefix + reason }],
+						[],
+						undefined,
+						undefined,
+						NOW,
+					);
+					assert.ok(item?.session.detail?.endsWith(`✗ ${reason}`), `${field}: ${prefix + reason}`);
+				}
+			}
+		},
+	);
+
+	test("keeps Unicode intact when shortening a workflow failure reason (#5256)", () => {
+		const prefix = "x".repeat(58);
+		const [item] = workflowResumeSelectorItems(
+			[],
+			[{ ...entry("unicode-failure", "failed"), error: `Error: ${prefix}🚀 retry failed` }],
+			[],
+			undefined,
+			undefined,
+			NOW,
+		);
+		assert.ok(item?.session.detail?.endsWith(`✗ ${prefix}…`));
+	});
+
+	test("a saved run's detail says how far it got and whether it waits on an answer", () => {
+		const saved = { ...entry("saved-run", "paused", NOW - 120_000), completedCheckpoints: 4, pendingPrompts: 1 };
+		const [item] = workflowResumeSelectorItems([], [saved], [], undefined, undefined, NOW);
+		assert.equal(item?.session.detail, "paused · 4 checkpoints · waiting on 1 answer · 2m ago");
+	});
+
+	test("a run without a label or objective shows its short id in the title", () => {
+		const id = "11111111-1111-4111-8111-111111111111";
+		const [item] = workflowResumeSelectorItems([], [entry(id, "paused")], [], undefined, undefined, NOW);
+		assert.equal(item?.session.title, "paused-workflow · 11111111");
+	});
+});

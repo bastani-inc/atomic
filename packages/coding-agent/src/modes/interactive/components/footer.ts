@@ -9,6 +9,7 @@ import type { ContextUsage } from "../../../core/extensions/types.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { formatModelLabel } from "../../../core/model-label.ts";
 import type { TaskRecord } from "../../../core/tasks/contracts.js";
+import type { TaskElapsedClocks } from "../../../core/tasks/live-elapsed.ts";
 import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
 import {
 	addHistoryUsageToTotals,
@@ -277,6 +278,7 @@ export class FooterComponent implements Component {
 	private readonly navigationActive: () => boolean;
 	private readonly backgroundTasks: (() => readonly TaskRecord[]) | undefined;
 	private readonly hintSegments: (() => readonly string[]) | undefined;
+	private readonly backgroundTaskClocks: (() => TaskElapsedClocks | undefined) | undefined;
 	private branchCwd: string | undefined;
 	private releaseBranch: (() => void) | undefined;
 	private disposed = false;
@@ -289,6 +291,7 @@ export class FooterComponent implements Component {
 		navigationActive: () => boolean = () => false,
 		backgroundTasks?: () => readonly TaskRecord[],
 		hintSegments?: () => readonly string[],
+		backgroundTaskClocks?: () => TaskElapsedClocks | undefined,
 	) {
 		this.session = session;
 		this.footerData = footerData;
@@ -296,6 +299,7 @@ export class FooterComponent implements Component {
 		this.navigationActive = navigationActive;
 		this.backgroundTasks = backgroundTasks;
 		this.hintSegments = hintSegments;
+		this.backgroundTaskClocks = backgroundTaskClocks;
 	}
 
 	setSession(session: ChatBoxSession): void {
@@ -376,7 +380,9 @@ export class FooterComponent implements Component {
 			if (isDebugEnabled()) {
 				statusText += `${statusText ? " " : ""}${this.renderStyle.warning("debug")}`;
 			}
-			const hintItems = (this.hintSegments?.() ?? []).map((segment) => this.renderStyle.muted(segment));
+			const hintItems = (this.navigationActive() ? [] : (this.hintSegments?.() ?? [])).map((segment) =>
+				this.renderStyle.muted(segment),
+			);
 			const hintSeparator = this.renderStyle.dim(" · ");
 			const hints = hintItems.length > 0 ? `${statusText ? hintSeparator : ""}${hintItems.join(hintSeparator)}` : "";
 			if (statusText && hints) {
@@ -393,9 +399,8 @@ export class FooterComponent implements Component {
 		}
 		const statusRow = renderExtensionStatusRow(this.footerData.getExtensionStatuses(), width, this.renderStyle);
 		if (statusRow !== undefined) lines.push(statusRow);
-		// The main chat lists its background work in the agent panel; a stage or subagent chat lists its own here.
 		const tasks = this.backgroundTasks?.();
-		if (tasks !== undefined) lines.push(...renderTaskFooter(tasks, width));
+		if (tasks !== undefined) lines.push(...renderTaskFooter(tasks, width, this.backgroundTaskClocks?.()));
 		return lines;
 	}
 }

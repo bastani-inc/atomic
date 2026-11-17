@@ -62,8 +62,13 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 	ctx.piTheme = opts.piTheme;
 	ctx.piKeybindings = opts.piKeybindings;
 	ctx.piEditorFactory = opts.piEditorFactory;
-	ctx.getToolsExpanded = opts.getToolsExpanded;
-	ctx.setToolsExpanded = opts.setToolsExpanded;
+	let localToolsExpanded = false;
+	ctx.getToolsExpanded = opts.getToolsExpanded ?? (() => localToolsExpanded);
+	ctx.setToolsExpanded =
+		opts.setToolsExpanded ??
+		((expanded) => {
+			localToolsExpanded = expanded;
+		});
 	ctx.stageUiBroker = opts.stageUiBroker ?? stageUiBroker;
 	ctx.footerData = opts.footerData && stageFooterData(opts.footerData, ctx.stageUiBroker, opts.runId, opts.stageId);
 	ctx.canSubmitPrompt = opts.canSubmitPrompt;
@@ -77,6 +82,8 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 	ctx.promptScrollOffset = 0;
 	ctx.promptMaxScroll = 0;
 	ctx.promptVisibleRows = 0;
+	ctx.helpOpen = false;
+	ctx.interruptedByEscape = false;
 	ctx.localPaused = false;
 	ctx.lastObservedStageStatus = undefined;
 	ctx.lastObservedRunStatus = undefined;
@@ -234,6 +241,7 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 				await liveHandle(ctx)?.ensureAttached();
 			},
 			prompt: async (text, mode) => {
+				ctx.interruptedByEscape = false;
 				if (classifyChatCommand(text) === "skill") return submitStageSkillCommand(ctx, text, mode);
 				const handle = liveHandle(ctx);
 				if (!handle) throw new Error("no live handle on this stage");
@@ -288,6 +296,7 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 			resume: async (message, mode = "auto") => {
 				const handle = liveHandle(ctx);
 				if (!handle) throw new Error("no live handle on this stage");
+				ctx.interruptedByEscape = false;
 				ctx.localPaused = true;
 				let succeeded = false;
 				try {
@@ -370,8 +379,9 @@ function handleStoreUpdate(ctx: StageChatViewContext): void {
 	if (stage && stage.status === "paused" && !ctx.localPaused) {
 		ctx.localPaused = true;
 		changed = true;
-	} else if (stage && stage.status === "running" && ctx.localPaused) {
+	} else if (stage && stage.status === "running" && (ctx.localPaused || ctx.interruptedByEscape)) {
 		ctx.localPaused = false;
+		ctx.interruptedByEscape = false;
 		changed = true;
 	}
 	changed = absorbStageNotices(ctx, stage) || changed;
@@ -644,6 +654,7 @@ export function isStreaming(ctx: StageChatViewContext): boolean {
 
 /** Whether Escape interrupts the stage's turn: it streams, or its session waits out a retry's backoff between attempts. */
 export function isAbortableStreamingSession(ctx: StageChatViewContext): boolean {
+	if (isPaused(ctx) || ctx.interruptedByEscape) return false;
 	const agentSession = liveHandle(ctx)?.agentSession;
 	return isLiveHandleStreaming(ctx) || agentSession?.isStreaming === true || agentSession?.isRetrying === true;
 }

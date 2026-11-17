@@ -109,7 +109,6 @@ InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveMode
 	const disposeWorkflowActivity = observeLocalWorkflowActivity(this.runtimeHost, session, (frame) => {
 		if (this.session === session) this.programStatus.handleWorkflowActivity(frame);
 	});
-	// An isolated engine mounts the agent panel itself; an in-process session mounts it here.
 	const disposeAgentPanel =
 		this.runtimeHost instanceof IsolatedInteractiveRuntime
 			? () => {}
@@ -409,6 +408,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 		case "agent_end": {
 			const workedSnapshot = this.workingRunMeter.snapshot();
 			this.workingRunMeter.stop();
+			this.workingMessage = undefined;
 			const compactionInProgress = this.compactionActive;
 			if (!compactionInProgress && this.settingsManager.getShowTerminalProgress()) {
 				this.ui.terminal.setProgress(false);

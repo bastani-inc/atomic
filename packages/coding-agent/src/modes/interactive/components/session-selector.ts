@@ -7,7 +7,7 @@ import { DynamicBorder } from "./dynamic-border.ts";
 import { keyText } from "./keybinding-hints.js";
 import { type DeleteSessionFileResult, deleteSessionFile } from "./session-selector-delete.ts";
 import { SessionSelectorHeader } from "./session-selector-header.ts";
-import { SessionList } from "./session-selector-list.ts";
+import { SessionList, type SessionListVariant } from "./session-selector-list.ts";
 import type { NameFilter, SortMode } from "./session-selector-search.ts";
 import type { SessionScope, SessionsLoader } from "./session-selector-types.ts";
 
@@ -47,6 +47,10 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	private onCancel: () => void;
 	private requestRender: () => void;
 	private renameSession?: (session: SessionInfo, currentName: string | undefined) => Promise<void>;
+	private deleteSession?: (sessionId: string) => Promise<void>;
+	private deleteWorkflow?: (runId: string) => Promise<void>;
+	private variant: SessionListVariant = "sessions";
+	private deletedSessions = new Set<string>();
 	private currentLoading = false;
 	private allLoading = false;
 	private currentLoadSeq = 0;
@@ -74,15 +78,10 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	private buildBaseLayout(content: Component, options?: { showHeader?: boolean }): void {
 		this.clear();
 		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder((s) => theme.fg("accent", s)));
-		this.addChild(new Spacer(1));
-		if (options?.showHeader ?? true) {
-			this.addChild(this.header);
-			this.addChild(new Spacer(1));
-		}
+		this.addChild(new DynamicBorder((s) => theme.fg("borderMuted", s)));
+		if (options?.showHeader ?? true) this.addChild(this.header);
 		this.addChild(content);
-		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder((s) => theme.fg("accent", s)));
+		this.addChild(new DynamicBorder((s) => theme.fg("borderMuted", s)));
 	}
 
 	constructor(
@@ -95,6 +94,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		options?: {
 			renameSession?: (session: SessionInfo, currentName: string | undefined) => Promise<void>;
 			deleteSession?: (sessionId: string) => Promise<void>;
+			deleteWorkflow?: (runId: string) => Promise<void>;
 			showRenameHint?: boolean;
 			keybindings?: KeybindingsManager;
 			/**
@@ -104,6 +104,12 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			 * and keeps live rows visible if the loader later errors.
 			 */
 			initialSessions?: SessionInfo[];
+			/** What the picker lists; `runs` drops folder scope, name filtering and paths. Defaults to sessions. */
+			variant?: SessionListVariant;
+			/** The picker's title; defaults to "Resume", "Resume session" or "Resume workflow run". */
+			title?: string;
+			/** Whether Ctrl+D deletes a row. Defaults to true. */
+			canDelete?: boolean;
 		},
 		currentSession?: { id: string; directory: string },
 	) {
@@ -113,11 +119,19 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		this.allSessionsLoader = allSessionsLoader;
 		this.onCancel = onCancel;
 		this.requestRender = requestRender;
+		const variant = options?.variant ?? "sessions";
+		this.variant = variant;
+		if (variant === "mixed") {
+			this.sortMode = "recent";
+		}
 		this.header = new SessionSelectorHeader(this.scope, this.sortMode, this.nameFilter, this.requestRender);
 		const renameSession = options?.renameSession;
 		this.renameSession = renameSession;
+		this.deleteSession = options?.deleteSession;
+		this.deleteWorkflow = options?.deleteWorkflow;
 		this.canRename = !!renameSession;
-		this.header.setShowRenameHint(options?.showRenameHint ?? this.canRename);
+		this.header.setVariant(variant);
+		this.header.setTitle(options?.title);
 
 		// Create the session list. Seed with any provided initial rows so the very
 		// first frame is populated (kept minimal/in-memory by the caller) while the
@@ -134,6 +148,10 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		if (initialSessions !== undefined) {
 			this.currentSessions = initialSessions;
 		}
+		this.sessionList.setVariant(variant);
+		this.sessionList.setCanDelete(options?.canDelete ?? true);
+		this.sessionList.setCanRename(options?.showRenameHint ?? this.canRename);
+		this.sessionList.setNoticeProvider(() => this.header.getNotice());
 
 		this.buildBaseLayout(this.sessionList);
 
@@ -159,7 +177,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		this.sessionList.onToggleSort = () => this.toggleSortMode();
 		this.sessionList.onToggleNameFilter = () => this.toggleNameFilter();
 		this.sessionList.onRenameSession = (session) => {
-			if (!renameSession) return;
+			if (!renameSession || session.resumeKind === "workflow" || this.variant === "runs") return;
 			this.enterRenameMode(session);
 		};
 
@@ -168,9 +186,12 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			this.header.setShowPath(showPath);
 			this.requestRender();
 		};
-		this.sessionList.onDeleteConfirmationChange = (path) => {
-			this.header.setConfirmingDeletePath(path);
+		this.sessionList.onDeleteConfirmationChange = (path, isWorkflow) => {
+			this.header.setConfirmingDeletePath(path, isWorkflow);
 			this.requestRender();
+		};
+		this.sessionList.onDeletePendingChange = () => {
+			if (!this.disposed) this.requestRender();
 		};
 		this.sessionList.onError = (msg) => {
 			this.header.setStatusMessage({ type: "error", message: msg }, 3000);
@@ -181,7 +202,13 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		this.sessionList.onDeleteSession = async (sessionPath, session) => {
 			let result: DeleteSessionFileResult;
 			try {
-				if (options?.deleteSession) {
+				if (session.resumeKind === "workflow") {
+					if (!this.deleteWorkflow) {
+						throw new Error("Workflow deletion is not available");
+					}
+					await this.deleteWorkflow(session.id);
+					result = { ok: true, method: "store" };
+				} else if (options?.deleteSession) {
 					await options.deleteSession(session.id);
 					result = { ok: true, method: "store" };
 				} else {
@@ -193,23 +220,26 @@ export class SessionSelectorComponent extends Container implements Focusable {
 				result = { ok: false, method: "store", error: error instanceof Error ? error.message : String(error) };
 			}
 
+			if (this.disposed) return;
 			if (result.ok) {
+				this.deletedSessions.add(this.deletedKey(session));
 				if (this.currentSessions) {
-					this.currentSessions = this.currentSessions.filter((s) =>
-						options?.deleteSession ? s.id !== session.id : s.path !== sessionPath,
-					);
+					this.currentSessions = this.currentSessions.filter((s) => !this.isDeletedSession(s));
 				}
 				if (this.allSessions) {
-					this.allSessions = this.allSessions.filter((s) =>
-						options?.deleteSession ? s.id !== session.id : s.path !== sessionPath,
-					);
+					this.allSessions = this.allSessions.filter((s) => !this.isDeletedSession(s));
 				}
 
 				const sessions = this.scope === "all" ? (this.allSessions ?? []) : (this.currentSessions ?? []);
 				const showCwd = this.scope === "all";
 				this.sessionList.setSessions(sessions, showCwd);
 
-				const msg = result.method === "trash" ? "Session moved to trash" : "Session deleted";
+				const msg =
+					session.resumeKind === "workflow" || this.variant === "runs"
+						? "Workflow run deleted"
+						: result.method === "trash"
+							? "Session moved to trash"
+							: "Session deleted";
 				this.header.setStatusMessage({ type: "info", message: msg }, 2000);
 				await this.refreshSessionsAfterMutation();
 			} else {
@@ -284,6 +314,21 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		}
 	}
 
+	private deletedKey(session: SessionInfo): string {
+		if (session.resumeKind === "workflow" || this.variant === "runs") {
+			return `workflow:${session.id}`;
+		}
+		return this.deleteSession ? `session-id:${session.id}` : `session-path:${session.path}`;
+	}
+
+	private isDeletedSession(session: SessionInfo): boolean {
+		return this.deletedSessions.has(this.deletedKey(session));
+	}
+
+	private filterLoadedSessions(sessions: readonly SessionInfo[]): SessionInfo[] {
+		return sessions.filter((session) => isResumableSession(session) && !this.isDeletedSession(session));
+	}
+
 	private async loadScope(scope: SessionScope, reason: "initial" | "refresh" | "toggle"): Promise<void> {
 		const showCwd = scope === "all";
 
@@ -302,8 +347,8 @@ export class SessionSelectorComponent extends Container implements Focusable {
 
 		const onProgress: SessionListProgress = (loaded, total, partialSessions) => {
 			if (!isActive()) return;
-			if (partialSessions) {
-				const sessions = partialSessions.filter(isResumableSession);
+			if (partialSessions && reason !== "refresh") {
+				const sessions = this.filterLoadedSessions(partialSessions);
 				if (scope === "current") {
 					this.currentSessions = sessions;
 				} else {
@@ -319,9 +364,9 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		};
 
 		try {
-			const sessions = (
-				await (scope === "current" ? this.currentSessionsLoader(onProgress) : this.allSessionsLoader(onProgress))
-			).filter(isResumableSession);
+			const sessions = this.filterLoadedSessions(
+				await (scope === "current" ? this.currentSessionsLoader(onProgress) : this.allSessionsLoader(onProgress)),
+			);
 
 			if (!isActive()) return;
 
@@ -384,7 +429,13 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	}
 
 	private async refreshSessionsAfterMutation(): Promise<void> {
+		if (this.disposed) return;
 		await this.loadScope(this.scope, "refresh");
+	}
+
+	public async refreshSessions(): Promise<void> {
+		if (this.disposed) return;
+		await this.refreshSessionsAfterMutation();
 	}
 
 	private toggleScope(): void {
@@ -412,12 +463,18 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		// Invalidate any pending all-scope load so its seq check fails on resolve.
+		// Invalidate any pending load so its seq check fails on resolve.
+		this.currentLoadSeq += 1;
 		this.allLoadSeq += 1;
 		this.header.setStatusMessage(null);
 	}
 }
 
 function isResumableSession(session: SessionInfo): boolean {
-	return session.messageCount > 0 || session.hasName === true || session.summary !== undefined;
+	return (
+		session.resumeKind === "workflow" ||
+		session.messageCount > 0 ||
+		session.hasName === true ||
+		session.summary !== undefined
+	);
 }

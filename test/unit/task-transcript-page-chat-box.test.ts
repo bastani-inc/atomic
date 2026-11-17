@@ -46,7 +46,7 @@ const flush = async () => {
 const plain = (rows: readonly string[]) => rows.map((row) => stripVTControlCharacters(row));
 const text = (rows: readonly string[]) => plain(rows).join("\n");
 /** A chat's own active tasks, listed below its footer as agent-panel rows (#5224). */
-const taskRows = (rows: readonly string[]) => plain(rows).filter((row) => /^ {2}∀ /.test(row));
+const taskRows = (rows: readonly string[]) => plain(rows).filter((row) => /^ {2}[∀⧗] /.test(row));
 
 /** The attached composer's top rule: heavy, ending in its label and one rule glyph (#5224). */
 const labelRows = (rows: readonly string[]) => plain(rows).filter((row) => /^━+ .+ ━$/.test(row));
@@ -325,13 +325,13 @@ describe("a subagent's chat box rows (#4640)", () => {
 		await page.load();
 		const rows = plain(page.render(80, 12));
 		assert.equal(taskRows(rows).length, 2);
-		assert.match(rows.at(-1) ?? "", /^ {2}∀ /, "the rows close the chat box");
+		assert.match(rows.at(-1) ?? "", /^ {2}[∀⧗] /, "the rows close the chat box");
 		page.dispose();
 		const grandchild = subagentPage(treeSource(), "grandchild");
 		await grandchild.load();
 		assert.deepEqual(
 			taskRows(grandchild.render(80, 12)).map((row) => row.replace(/ {2,}/g, "  ").trimEnd()),
-			["  ∀ shell  title-grandchild-shell  running"],
+			["  ⧗ shell  title-grandchild-shell  running"],
 		);
 		grandchild.dispose();
 	});
@@ -649,7 +649,7 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 		assert.deepEqual(labelRows(rows), [], "the composer is hidden while the list is open");
 		assert.equal(taskRows(rows).length, 2);
 		assert.ok(
-			rows.some((row) => /esc\/← back/.test(row)),
+			rows.some((row) => /esc\/← close/.test(row)),
 			"the list's hint sits above the footer rows",
 		);
 		const [only, ...rest] = plain(page.render(80, 1));
@@ -675,6 +675,7 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 			const list = plain(page.render(80, 24));
 			assert.match(list.find((row) => row.includes(" ❯ ")) ?? "", new RegExp(` ❯ . \\S+ +${selected}\\b`));
 			page.handleInput(SPACE);
+			page.handleInput(ENTER);
 			await flush();
 			const detail = plain(page.render(80, 24));
 			assert.match(detail.join("\n"), new RegExp(`› ${selected}\\b`));
@@ -690,12 +691,14 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 		page.handleInput(ENTER);
 		await flush();
 		page.handleInput(SPACE);
+		page.handleInput(ENTER);
 		await flush();
 		assert.match(text(page.render(80, 24)), /title-child-shell|title-grandchild/);
 		assert.doesNotMatch(text(page.render(80, 24)), /^ Tasks\b/m, "a task's detail page replaced the list");
 		page.handleInput(LEFT);
 		assert.match(text(page.render(80, 24)), /^ Tasks\b/m);
 		page.handleInput(SPACE);
+		page.handleInput(ENTER);
 		page.handleInput(ESCAPE);
 		assert.match(text(page.render(80, 24)), /^ Tasks\b/m);
 		page.handleInput(ESCAPE);

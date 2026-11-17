@@ -9,8 +9,11 @@ import {
 	visibleWidth,
 } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
-import { renderAgentPanelRows } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
-import { PLAIN_SELECTOR_STYLE } from "../../packages/coding-agent/src/modes/interactive/components/selector.js";
+import {
+	type AgentPanelStyle,
+	renderAgentPanelRows,
+} from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { inspectRun } from "../../packages/workflows/src/runs/background/run-inspect.js";
 import { MAX_CAUSE_DEPTH } from "../../packages/workflows/src/shared/error-cause-chain.js";
 import { type SerializedError, serializeError } from "../../packages/workflows/src/shared/error-codec.js";
@@ -35,11 +38,16 @@ import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import { defaultTheme, makeSnap, makeStage, makeStore } from "./overlay-graph-helpers.js";
 
 const { boundedToolPayloadText, TOOL_PAYLOAD_TRUNCATION_MARKER } = toolPayloadBounds;
-const panelStyle = {
-	...PLAIN_SELECTOR_STYLE,
-	success: (text: string) => text,
-	error: (text: string) => text,
-	warning: (text: string) => text,
+const panelStyle: AgentPanelStyle = {
+	dim: (text) => text,
+	text: (text) => text,
+	muted: (text) => text,
+	border: (text) => text,
+	bold: (text) => text,
+	accent: (text) => text,
+	success: (text) => text,
+	error: (text) => text,
+	warning: (text) => text,
 };
 
 function graphFor(stage: StageSnapshot, options: Partial<GraphViewOpts> = {}): GraphView {
@@ -170,7 +178,17 @@ test.each(["card", "detail", "panel"])(
 			for (const theme of [undefined, defaultTheme])
 				assertSafeRows(renderRunDetail(detail.detail, { theme, width: 200, now: 2 }).split("\n"));
 		} else {
-			assertSafeRows(renderAgentPanelRows(panelItemsFromSnapshot(snap.runs, 2), 200, panelStyle, {}));
+			initTheme("dark");
+			assertSafeRows(
+				renderAgentPanelRows(
+					panelItemsFromSnapshot({
+						...snap,
+						runs: [{ ...snap.runs[0]!, toolNodes: [{ ...node, status: "running" }] }],
+					}),
+					200,
+					panelStyle,
+				),
+			);
 		}
 		assert.equal(JSON.stringify(snap), before);
 	},
@@ -823,9 +841,12 @@ test.each([
 			assert.ok(detailText.includes("tool-"), "last tool event name is rendered");
 		}
 
-		const panelRows = renderAgentPanelRows(panelItemsFromSnapshot(snap.runs, 2_000), 200, panelStyle, {});
+		const panelRows = renderAgentPanelRows(panelItemsFromSnapshot(snap, 2_000), 200, panelStyle);
 		assertSafeRows(panelRows);
 		assert.ok(panelRows.join("\n").includes("active-"), "panel current stage name is rendered");
+		const narrowPanelRows = renderAgentPanelRows(panelItemsFromSnapshot(snap, 2_000), 52, panelStyle);
+		assertSafeRows(narrowPanelRows);
+		assert.ok(narrowPanelRows.join("\n").includes("active-"), "the narrow panel renders the current stage name");
 		for (const item of workflowsListingItems(snap.runs, 2_000)) {
 			assertSafeRows([item.label, item.description ?? ""]);
 		}

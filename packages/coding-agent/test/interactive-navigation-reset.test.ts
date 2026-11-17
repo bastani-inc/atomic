@@ -110,6 +110,7 @@ test("queued previews and widgets come back after a session reset drops an open 
 	await new Promise((resolve) => setImmediate(resolve));
 	expect(frame(tui)).toContain("FOCUSED PANEL");
 	expect(frame(tui)).not.toContain("queued after reset");
+	expect(context.navigationInlineCustomUiDepth).toBe(1);
 
 	context.resetExtensionUI();
 	context.extensionWidgetsBelow.set("agents", new Text("AGENT ROW", 0, 0));
@@ -118,6 +119,8 @@ test("queued previews and widgets come back after a session reset drops an open 
 
 	const after = frame(tui);
 	expect(after).not.toContain("FOCUSED PANEL");
+	expect(context.navigationInlineCustomUiDepth).toBe(0);
+	expect(context.blockingInlineCustomUiDepth).toBe(0);
 	expect(after).toContain("Follow-up: queued after reset");
 	expect(after).toContain("AGENT ROW");
 });
@@ -143,6 +146,8 @@ test("a view whose cleanup fails still releases the screen it hid when a reset d
 	const after = frame(tui);
 	expect(after).not.toContain("FAILING VIEW");
 	expect(after).not.toContain("SECOND VIEW");
+	expect(context.navigationInlineCustomUiDepth).toBe(0);
+	expect(context.blockingInlineCustomUiDepth).toBe(0);
 	expect(after).toContain("Follow-up: queued after reset");
 });
 

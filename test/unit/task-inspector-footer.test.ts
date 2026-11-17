@@ -57,9 +57,10 @@ async function enter(inspector: TaskInspector) {
 	await flush();
 }
 
-/** Space: from the list, the selected task's detail page (#5224). */
+/** Space then Enter: from the list, the selected task's detail page (#5224). */
 async function peek(inspector: TaskInspector) {
 	inspector.handleInput(" ");
+	inspector.handleInput("\r");
 	await flush();
 }
 
@@ -68,7 +69,7 @@ test("task picker and detail show exact navigation hints and action rows (#4521)
 	try {
 		await h.fixture.start("Footer task");
 		assert.ok(
-			h.lines().includes("  ↑↓ select · space peek · enter/→ open · x stop · / filter · esc/← back · ? keys"),
+			h.lines().includes("  ↑↓ select · space peek · enter/→ open · x stop · / filter · esc/← close · ? keys"),
 		);
 		assert.doesNotMatch(h.lines().join("\n"), /› Inspect transcript/);
 		await peek(h.inspector);
@@ -125,7 +126,7 @@ test("shell transcript retains the note and exact footer at the bottom of its vi
 		const lines = h.lines(110, 30);
 		assert.equal(lines.length, 30);
 		assert.equal(lines.at(-2), "Earlier output omitted · showing retained 8 KiB tail");
-		assert.equal(lines.at(-1), "  ← task · pgup/pgdn scroll · ctrl+o expand · ? keys");
+		assert.equal(lines.at(-1), "  ← task · pgup/pgdn scroll · ? keys");
 		assert.ok(lines.slice(3, -2).some((line) => line === ""));
 	} finally {
 		await h.dispose();
@@ -146,7 +147,7 @@ test("agent transcript footer offers messaging only when the source supports it 
 			await enter(h.inspector);
 			assert.equal(h.lines(110, 30).at(-2), "━".repeat(110), "an attached composer has heavy rules (#5224)");
 			const footer = h.lines(110, 30).at(-1) ?? "";
-			assert.equal(footer, "  ← task · pgup/pgdn scroll · ctrl+o expand · ? keys");
+			assert.equal(footer, "  ← task · pgup/pgdn scroll · ? keys");
 			assert.doesNotMatch(footer, / · {2}· /);
 		} finally {
 			await h.dispose();
@@ -210,7 +211,7 @@ test("settled tasks do not offer a stop shortcut (#4521)", async () => {
 		await h.fixture.settle();
 		await flush();
 		const footer = h.lines().at(-1) ?? "";
-		assert.equal(footer, "  ↑↓ select · space peek · enter/→ open · x dismiss · / filter · esc/← back · ? keys");
+		assert.equal(footer, "  ↑↓ select · space peek · enter/→ open · x dismiss · / filter · esc/← close · ? keys");
 		await peek(h.inspector);
 		assert.equal(
 			h.lines().at(-1),
@@ -225,7 +226,7 @@ test("configured stop shortcut is shown on picker and detail instead of x (#4521
 	const h = await host(undefined, new KeybindingsManager({ "app.list.stop": "ctrl+k" }));
 	try {
 		await h.fixture.start("Configured stop");
-		assert.match(h.lines().at(-1) ?? "", /ctrl\+k stop · \/ filter · esc\/← back/);
+		assert.match(h.lines().at(-1) ?? "", /ctrl\+k stop · \/ filter · esc\/← close/);
 		await peek(h.inspector);
 		assert.match(h.lines().at(-1) ?? "", /ctrl\+k stop · pgup\/pgdn scroll/);
 		assert.doesNotMatch(h.lines().at(-1) ?? "", /x stop/);
@@ -259,7 +260,7 @@ test("an open agent transcript remains renderable after its task disappears (#45
 		await flush();
 		const lines = h.lines();
 		assert.match(lines[0] ?? "", /^Transcript · Task$/);
-		assert.equal(lines.at(-1), "  ← task · pgup/pgdn scroll · ctrl+o expand · ? keys");
+		assert.equal(lines.at(-1), "  ← task · pgup/pgdn scroll · ? keys");
 	} finally {
 		await h.dispose();
 	}
@@ -355,6 +356,7 @@ test("mounted transcript tolerates host settings callbacks being withdrawn (#452
 		};
 		await send(" ", 1);
 		await send("\r", 2);
+		await send("\r", 3);
 		ui.getChatRenderSettings = undefined;
 		const open = messages.findLast((message) => message.type === "engine_custom_open");
 		assert.ok(open && open.type === "engine_custom_open");
@@ -362,21 +364,21 @@ test("mounted transcript tolerates host settings callbacks being withdrawn (#452
 			serializeInteractiveEngineFrame({
 				type: "engine_custom_render",
 				componentId: open.componentId,
-				requestId: 3,
+				requestId: 4,
 				width: 100,
 				rows: 24,
 			}),
 		);
 		await flush();
-		const frame = messages.findLast((message) => message.type === "engine_custom_frame" && message.requestId === 3);
+		const frame = messages.findLast((message) => message.type === "engine_custom_frame" && message.requestId === 4);
 		assert.ok(frame && frame.type === "engine_custom_frame");
 		assert.match(frame.lines.map((line) => stripVTControlCharacters(line)).join("\n"), /Transcript/);
 		ui.getToolsExpanded = undefined;
-		await send("\x0f", 4);
+		await send("\x0f", 5);
 		ui.getToolsExpanded = () => false;
 		ui.setToolsExpanded = undefined;
-		await send("\x0f", 5);
-		await send("\x03", 6);
+		await send("\x0f", 6);
+		await send("\x03", 7);
 		await completion;
 	} finally {
 		service.dispose();
@@ -446,7 +448,8 @@ test("Ctrl+C during a picker-to-detail transition closes instead of reopening it
 		assert.ok(open && open.type === "engine_custom_open");
 		for (const [requestId, data] of [
 			[1, " "],
-			[2, "\x03"],
+			[2, "\r"],
+			[3, "\x03"],
 		] as const)
 			service.handleLine(
 				serializeInteractiveEngineFrame({

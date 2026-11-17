@@ -70,25 +70,24 @@ export class TreeList implements Component {
 		}
 	}
 
-	private getStatusLabels(): string {
-		let labels = "";
+	/** The view's state in words: which entries the filter keeps, and whether label times show. */
+	private getStatusLabels(): string[] {
+		const labels: string[] = [];
 		switch (this.state.filterMode) {
 			case "no-tools":
-				labels += " [no-tools]";
+				labels.push("no tool calls");
 				break;
 			case "user-only":
-				labels += " [user]";
+				labels.push("your messages only");
 				break;
 			case "labeled-only":
-				labels += " [labeled]";
+				labels.push("labeled only");
 				break;
 			case "all":
-				labels += " [all]";
+				labels.push("everything");
 				break;
 		}
-		if (this.state.showLabelTimestamps) {
-			labels += " [+label time]";
-		}
+		if (this.state.showLabelTimestamps) labels.push("label times");
 		return labels;
 	}
 
@@ -97,8 +96,9 @@ export class TreeList implements Component {
 		const lines: string[] = [];
 
 		if (state.filteredNodes.length === 0) {
-			lines.push(truncateToWidth(theme.fg("muted", "  No entries found"), width));
-			lines.push(truncateToWidth(theme.fg("muted", `  (0/0)${this.getStatusLabels()}`), width));
+			lines.push(truncateToWidth(theme.fg("dim", "  No entries match"), width));
+			const status = this.getStatusLabels();
+			if (status.length > 0) lines.push(truncateToWidth(theme.fg("dim", `  ${status.join(" · ")}`), width));
 			return lines;
 		}
 
@@ -118,7 +118,7 @@ export class TreeList implements Component {
 			const isSelected = i === state.selectedIndex;
 
 			// Build line: cursor + prefix + path marker + label + content
-			const cursor = isSelected ? theme.fg("accent", "› ") : "  ";
+			const cursor = isSelected ? theme.fg("accent", theme.bold("❯ ")) : "  ";
 
 			// If multiple roots, shift display (roots at 0, not 1)
 			const displayIndent = state.multipleRoots ? Math.max(0, flatNode.indent - 1) : flatNode.indent;
@@ -187,12 +187,15 @@ export class TreeList implements Component {
 		}
 
 		lines.push(...renderHorizontalViewport(renderedRows, width));
-		lines.push(
-			truncateToWidth(
-				theme.fg("muted", `  (${state.selectedIndex + 1}/${state.filteredNodes.length})${this.getStatusLabels()}`),
-				width,
-			),
-		);
+		// How many entries are out of view, and the view's state, the way every picker says it.
+		const above = startIndex;
+		const below = state.filteredNodes.length - endIndex;
+		const footer = [
+			above > 0 ? `↑ ${above} more` : "",
+			below > 0 ? `↓ ${below} more` : "",
+			...this.getStatusLabels(),
+		].filter(Boolean);
+		if (footer.length > 0) lines.push(truncateToWidth(theme.fg("dim", `  ${footer.join(" · ")}`), width));
 
 		return lines;
 	}

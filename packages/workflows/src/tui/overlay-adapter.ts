@@ -42,6 +42,7 @@ import type { StoreSnapshot } from "../shared/store-types.js";
 import { deriveGraphThemeFromPiTheme } from "./graph-theme.js";
 import type { OverlayTerminalOutput } from "./overlay-terminal-modes.js";
 import { remoteTerminalControlFrom, setTerminalAutowrap } from "./overlay-terminal-modes.js";
+import { markWorkflowRunViewed } from "./viewed-runs.js";
 import { WorkflowAttachPane } from "./workflow-attach-pane.js";
 import type { PostMortemHandleResolution } from "./workflow-attach-pane-types.js";
 import { WORKFLOW_STATUS_KEY } from "./workflow-status.js";
@@ -72,6 +73,14 @@ export interface GraphOverlayOpenOptions {
 	readonly onReturn?: () => void;
 }
 
+type GraphOverlayOpenAction<TReturn> = (
+	runId: string | null,
+	surface?: OverlayPiSurface,
+	stageId?: string,
+	stageRunId?: string,
+	openOptions?: GraphOverlayOpenOptions,
+) => TReturn;
+
 /**
  * Port exposed to the extension factory.
  * `open(runId)`  — bring the pane to front (creating it if needed).
@@ -83,13 +92,7 @@ export interface GraphOverlayOpenOptions {
  * and the picker overlay's connect-to-stage flow.
  */
 export interface GraphOverlayPort {
-	open(
-		runId: string | null,
-		surface?: OverlayPiSurface,
-		stageId?: string,
-		stageRunId?: string,
-		openOptions?: GraphOverlayOpenOptions,
-	): void;
+	open: GraphOverlayOpenAction<boolean> | GraphOverlayOpenAction<void>;
 	toggle(runId: string | null, surface?: OverlayPiSurface): void;
 	close(): void;
 }
@@ -331,8 +334,15 @@ export function buildGraphOverlayAdapter(
 		stageId?: string,
 		stageRunId?: string,
 		openOptions?: GraphOverlayOpenOptions,
-	): void {
+	): boolean {
 		pendingReturn = openOptions?.onReturn;
+		const markViewed = (): void => {
+			const targetRunId = runId ?? store.activeRunId() ?? store.runs().at(-1)?.id;
+			if (targetRunId === undefined) return;
+			markWorkflowRunViewed(targetRunId, store);
+			const rootRunId = store.run(targetRunId)?.rootRunId;
+			if (rootRunId) markWorkflowRunViewed(rootRunId, store);
+		};
 		const ui = surface?.ui ?? pi.ui;
 		observeHostCustomUi(ui);
 
@@ -344,7 +354,8 @@ export function buildGraphOverlayAdapter(
 			currentHandle.setHidden(false);
 			currentHandle.focus();
 			requestMountedRender?.();
-			return;
+			markViewed();
+			return true;
 		}
 		if (mounted) {
 			currentView?.retarget(runId, stageId, stageRunId);
@@ -356,11 +367,16 @@ export function buildGraphOverlayAdapter(
 			// Enter and the back keys all dead — if focus stayed on an underlying or
 			// previously-focused pane (issue #1120).
 			currentHandle?.focus();
-			return;
+			markViewed();
+			return true;
 		}
 
 		const custom = ui?.custom;
-		if (typeof custom !== "function") return;
+		if (typeof custom !== "function") {
+			pendingReturn = undefined;
+			clearHostCustomUiObservation();
+			return false;
+		}
 
 		let settled = false;
 		let finishThisMount: (() => void) | undefined;
@@ -454,7 +470,9 @@ export function buildGraphOverlayAdapter(
 			mounted = true;
 			updateTerminalAutowrap(true);
 			updateMainChatInputHint(readHostCustomUiActive(ui));
-			return makeComponent(view, tui);
+			const component = makeComponent(view, tui);
+			markViewed();
+			return component;
 		};
 
 		const options: PiCustomOverlayOptions = {
@@ -474,6 +492,7 @@ export function buildGraphOverlayAdapter(
 			},
 		};
 		void Promise.resolve(custom(factory, options)).catch(() => finishThisMount?.());
+		return true;
 	}
 
 	function toggle(runId: string | null, surface?: OverlayPiSurface): void {

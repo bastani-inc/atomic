@@ -64,6 +64,7 @@ export { JsonlSessionStore } from "./core/storage/session/jsonl-session-store.js
 export { AgentTaskHost, type AgentTaskHostBinding, type AgentTaskRunnerFactory } from "./core/tasks/agent-adapter.js";
 export {
 	type AgentPanelActionResult,
+	type AgentPanelAnswerOptions,
 	type AgentPanelItem,
 	type AgentPanelOpenOptions,
 	type AgentPanelSession,
@@ -1037,7 +1038,9 @@ export {
 export { boundOversizedText } from "./core/tools/oversized-tool-result.js";
 export {
 	assertPrivateDirectory,
+	assertPrivateDirectoryAsync,
 	ensurePrivateTempDir,
+	ensurePrivateTempDirAsync,
 	TempDirRefusedError,
 } from "./core/tools/session-temp-dir.ts";
 export {
@@ -1261,6 +1264,7 @@ export {
 	ShowImagesSelectorComponent,
 	SkillInvocationMessageComponent,
 	selectorHintEntries,
+	TASK_CHAT_OVERLAY_KEYS,
 	ThemeSelectorComponent,
 	ThinkingSelectorComponent,
 	type TokenSegmentMode,
@@ -1269,6 +1273,7 @@ export {
 	TRANSCRIPT_JUMP_TO_END_URL,
 	TranscriptFollowIndicator,
 	TreeSelectorComponent,
+	taskChatKeys,
 	themeSelectorStyle,
 	truncateToVisualLines,
 	UsageMeterComponent,

@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, readlinkSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
 import {
 	brokerHostIdentity,
+	createBrokerHostIdentityReader,
 	HOST_COMMAND_ATTEMPTS,
 	type HostIdentitySources,
 	isProcessAlive,
@@ -27,6 +27,7 @@ import {
 } from "../../packages/intercom/broker/multinode-state-store.js";
 import { PendingQuestionIndex } from "../../packages/intercom/broker/pending-question-index.js";
 import { SupervisorChannelCache } from "../../packages/intercom/broker/supervisor-channel.js";
+import { keptExitedPid } from "../helpers/exited-process.js";
 import {
 	openMemoryHeldSendFixture,
 	openMemoryKnownSessionFixture,
@@ -495,21 +496,73 @@ test("a process this one may not signal still counts as alive (#5038)", (context
 	assert.equal(isProcessAlive(1), true);
 });
 
-test("by default a broker uses the real host identity, so its next instance supersedes it (#5038)", async () => {
+test("by default a broker supersedes an instance with an independently read real host identity (#5038, #5343)", async () => {
 	const { start } = await crashedCluster();
 	const socket = "/real-host/broker.sock";
-	const { leases, router: previous } = await start({ instanceKey: socket, hostIdentity: undefined });
+	const { leases, router: previous } = await start({
+		instanceKey: socket,
+		hostIdentity: await brokerHostIdentity(systemSources()),
+	});
 	await start({ instanceKey: socket, hostIdentity: undefined, isProcessAlive: () => false });
 	assert.deepEqual(await leases.read({ kind: "broker", brokerId: previous.brokerId }), { status: "missing" });
 });
 
-test("the real host's identity is stable (#5038)", async () => {
-	const identity = await brokerHostIdentity();
-	assert.equal(await brokerHostIdentity(), identity);
+test("the real host's identity is stable across independent reads (#5038, #5343)", async () => {
+	const identity = await brokerHostIdentity(systemSources());
+	assert.ok(identity, "the real host provides an identity");
+	assert.equal(await brokerHostIdentity(systemSources()), identity);
 	if (process.platform === "linux") {
 		const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
 		assert.equal(identity, `${bootId}/${readlinkSync("/proc/self/ns/pid")}`);
 	}
+});
+
+test("default host identity reads share one promise and match an independent read (#5252, #5343)", async () => {
+	const first = brokerHostIdentity();
+	assert.equal(brokerHostIdentity(), first);
+	assert.equal(await first, await brokerHostIdentity(systemSources()));
+	assert.equal(brokerHostIdentity(), first);
+});
+
+test("host identity readers share pending and successful reads per config directory (#5252, #5343)", async () => {
+	const host = fakeSources({
+		platform: "darwin",
+		commands: { [MAC_SESSION]: "session-a", [MAC_IOREG]: '"IOPlatformUUID" = "machine-a"' },
+	});
+	let configDir = "/config/first";
+	const read = createBrokerHostIdentityReader(() => ({ ...host, configDir }));
+	const first = read();
+	assert.equal(read(), first, "concurrent brokers share the pending read");
+	assert.equal(await first, "machine-a/session-session-a");
+	assert.equal(read(), first, "a successful read stays cached");
+	assert.deepEqual(host.runs, ["sysctl", "ioreg"]);
+
+	configDir = "/config/second";
+	const second = read();
+	assert.notEqual(second, first, "different config directories have separate reads");
+	assert.equal(await second, await first);
+	assert.equal(read(), second);
+	assert.deepEqual(host.runs, ["sysctl", "ioreg", "sysctl", "ioreg"]);
+	configDir = "/config/first";
+	assert.equal(read(), first, "reading another directory does not evict this one");
+});
+
+test("an unsuccessful host identity read is evicted before the next broker retries (#5252, #5343)", async () => {
+	const commands: Record<string, string> = {};
+	const host = fakeSources({ platform: "darwin", commands });
+	const read = createBrokerHostIdentityReader(() => host);
+	const failed = read();
+	assert.equal(read(), failed, "concurrent brokers share even a failing read");
+	assert.equal(await failed, undefined);
+
+	commands[MAC_SESSION] = "session-a";
+	commands[MAC_IOREG] = '"IOPlatformUUID" = "machine-a"';
+	const retry = read();
+	assert.notEqual(retry, failed, "a broker retries after the failed read settles");
+	assert.equal(read(), retry);
+	assert.equal(await retry, "machine-a/session-session-a");
+	assert.equal(read(), retry, "the retry's successful identity stays cached");
+	assert.deepEqual(host.runs, ["sysctl", "sysctl", "ioreg"]);
 });
 
 test("clones with the same machine id started together are told apart by their boot (#5038)", async () => {
@@ -581,8 +634,10 @@ test("a broker records its own process id, and a membership without one is never
 
 test("a process counts as alive while it runs and dead once it exited (#5038)", async () => {
 	assert.equal(isProcessAlive(process.pid), true);
-	const child = spawn(process.execPath, ["-e", ""]);
-	const pid = child.pid!;
-	await new Promise((resolve) => child.once("exit", resolve));
-	assert.equal(isProcessAlive(pid), false);
+	const exited = await keptExitedPid();
+	try {
+		assert.equal(isProcessAlive(exited.pid), false);
+	} finally {
+		await exited.release();
+	}
 });

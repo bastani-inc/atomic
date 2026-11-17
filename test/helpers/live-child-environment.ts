@@ -11,6 +11,7 @@ import { ENV_AGENT_DIR } from "../../packages/coding-agent/src/config.js";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { resetSessionTempCleanupScheduleForTesting } from "../../packages/coding-agent/src/core/tools/session-temp-cleanup.js";
+import { waitForWindowsDirectorySecurityReadsForTesting } from "../../packages/coding-agent/src/core/tools/windows-directory-security.js";
 import type { RunSyncOptions } from "../../packages/subagents/src/shared/types.ts";
 import { settle } from "../../scripts/perf/idle-agents/scripted-model.js";
 import { removeTempRootReleasingBroker } from "./detached-broker.js";
@@ -105,11 +106,13 @@ export async function liveChildEnvironment(cleanups: Array<() => void>, liveOpti
 	 * Every child's session registers its extensions' providers on the shared runtime, which starts a catalog refresh in
 	 * the background whose credential checks each hold a timer until they finish: those refreshes are waited for. Every
 	 * new session also arms the one process-wide temp-directory sweep, a single debounced timer that is armed or not by
-	 * timing alone: that timer is cancelled. Then the counts must repeat.
+	 * timing alone: that timer is cancelled. On Windows a new session also starts verifying the private temp roots in the
+	 * background, a PowerShell process until the read ends: those reads are waited for. Then the counts must repeat.
 	 */
 	const settleResources = async () => {
 		await modelRuntime.whenRegistrationRefreshesSettled();
 		resetSessionTempCleanupScheduleForTesting();
+		await waitForWindowsDirectorySecurityReadsForTesting();
 		await settle();
 	};
 	return { root, faux, options, aborts, answers, blockStarted: () => blockStarted, settleResources };

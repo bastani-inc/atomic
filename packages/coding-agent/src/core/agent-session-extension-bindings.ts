@@ -53,6 +53,7 @@ import { applyToolModifiers } from "./settings-merge.js";
 import { getSkillCatalog } from "./skill-catalog.ts";
 import type { SlashCommandInfo } from "./slash-commands.js";
 import { createSyntheticSourceInfo } from "./source-info.ts";
+import { notifyAgentPanelSourceHubRebound } from "./tasks/agent-panel-source.ts";
 import { activatesOnRegistration, isRegisteredToolAllowed, isToolActivatable } from "./tool-selection.ts";
 import { getDefaultToolNames } from "./tools/index.js";
 import { trackTerminalWorkflowSummary } from "./workflow-summary-lifecycle.ts";
@@ -1042,6 +1043,7 @@ async function reloadOwnedGeneration(
 	// when reconstruction fails, and retain retiring cleanup through every step.
 	this._extensionRunner = candidateRunner;
 	this._workflows?.rebindObservers();
+	notifyAgentPanelSourceHubRebound(this);
 	retainedRuntimes.add(extensionsResult.runtime);
 	const failures: unknown[] = [];
 	try {

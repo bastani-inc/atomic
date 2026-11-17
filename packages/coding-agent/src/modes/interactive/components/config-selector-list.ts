@@ -6,6 +6,7 @@ import {
 	Input,
 	matchesKey,
 	truncateToWidth,
+	visibleWidth,
 } from "@bastani/atomic-tui";
 import { CONFIG_DIR_NAME } from "../../../config.js";
 import type { PathMetadata, ResolvedPaths, ResolvedResource } from "../../../core/package-manager.ts";
@@ -187,10 +188,32 @@ export class ResourceList implements Component, Focusable {
 		this.settingsManager = settingsManager;
 		this.cwd = cwd;
 		this.agentDir = agentDir;
-		this.searchInput = new Input();
+		this.searchInput = this.createSearchInput();
 		this.maxVisible = Math.max(5, (terminalHeight ?? 24) - 8);
 		this.buildFlatList();
 		this.filteredItems = [...this.flatItems];
+	}
+	private createSearchInput(): Input {
+		const input = new Input({
+			prompt: "⌕ ",
+			placeholder: "Search…",
+			placeholderStyle: (text) => theme.fg("dim", text),
+		});
+		input.focused = this._focused;
+		return input;
+	}
+	/** The rounded search box every picker shows. */
+	private renderSearch(width: number): string[] {
+		const boxWidth = Math.max(8, width - 2);
+		const field = Math.max(1, boxWidth - 4);
+		const content = this.searchInput.render(field)[0] ?? "";
+		const pad = " ".repeat(Math.max(0, field - visibleWidth(content)));
+		const border = (text: string) => theme.fg(this.searchInput.getValue() ? "muted" : "borderMuted", text);
+		return [
+			` ${border(`╭${"─".repeat(boxWidth - 2)}╮`)}`,
+			` ${border("│ ")}${content}${pad}${border(" │")}`,
+			` ${border(`╰${"─".repeat(boxWidth - 2)}╯`)}`,
+		];
 	}
 	setWriteScope(scope: "global" | "project"): void {
 		this.writeScope = scope;
@@ -288,8 +311,14 @@ export class ResourceList implements Component, Focusable {
 	}
 	invalidate(): void {}
 	render(width: number): string[] {
-		const lines = [...this.searchInput.render(width), ""];
-		if (this.filteredItems.length === 0) return [...lines, theme.fg("muted", "  No resources found")];
+		return this.renderList(width).map((line) => (visibleWidth(line) > width ? truncateToWidth(line, width) : line));
+	}
+	private renderList(width: number): string[] {
+		const lines = [...this.renderSearch(width), ""];
+		if (this.filteredItems.length === 0) {
+			const query = this.searchInput.getValue().trim();
+			return [...lines, theme.fg("dim", query ? `  No matches for "${query}"` : "  No resources found")];
+		}
 		const startIndex = Math.max(
 			0,
 			Math.min(this.selectedIndex - Math.floor(this.maxVisible / 2), this.filteredItems.length - this.maxVisible),
@@ -303,17 +332,19 @@ export class ResourceList implements Component, Focusable {
 			else if (entry.type === "subgroup")
 				lines.push(truncateToWidth(`    ${theme.fg("muted", entry.subgroup.label)}`, width, ""));
 			else {
-				const cursor = selected ? "> " : "  ";
-				const checkbox = entry.item.enabled ? theme.fg("success", "[x]") : theme.fg("dim", "[ ]");
-				const name = selected ? theme.bold(entry.item.displayName) : entry.item.displayName;
+				const cursor = selected ? theme.fg("accent", theme.bold("❯ ")) : "  ";
+				const checkbox = entry.item.enabled ? theme.fg("success", "[✓]") : theme.fg("dim", "[ ]");
+				const name = selected
+					? theme.fg("accent", theme.bold(entry.item.displayName))
+					: theme.fg("text", entry.item.displayName);
 				lines.push(truncateToWidth(`${cursor}    ${checkbox} ${name}`, width, "..."));
 			}
 		}
-		if (startIndex > 0 || endIndex < this.filteredItems.length) {
-			const itemCount = this.filteredItems.filter((entry) => entry.type === "item").length;
-			const current =
-				this.filteredItems.slice(0, this.selectedIndex).filter((entry) => entry.type === "item").length + 1;
-			lines.push(theme.fg("dim", `  (${current}/${itemCount})`));
+		const above = startIndex;
+		const below = this.filteredItems.length - endIndex;
+		if (above > 0 || below > 0) {
+			const parts = [above > 0 ? `↑ ${above} more` : "", below > 0 ? `↓ ${below} more` : ""].filter(Boolean);
+			lines.push(theme.fg("dim", `  ${parts.join(" · ")}`));
 		}
 		return lines;
 	}
@@ -350,7 +381,11 @@ export class ResourceList implements Component, Focusable {
 			return true;
 		}
 		if (kb.matches(data, "tui.select.cancel")) {
-			this.onCancel?.();
+			// Esc clears a search first, then closes, as in every picker; ctrl+c always closes.
+			if (this.searchInput.getValue() && !matchesKey(data, "ctrl+c")) {
+				this.searchInput = this.createSearchInput();
+				this.filterItems("");
+			} else this.onCancel?.();
 			return true;
 		}
 		if (matchesKey(data, "ctrl+c")) {

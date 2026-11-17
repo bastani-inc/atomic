@@ -159,6 +159,7 @@ test("stage task snapshot reattaches beyond launch-tool replay", async () => {
 		submitStageChatText(view, "/tasks");
 		await vi.waitFor(() => assert.match(stripAnsi(view.render(80).join("\n")), /survives pane detach/));
 		view.handleInput(" ");
+		view.handleInput("\r");
 		await vi.waitFor(() => assert.match(stripAnsi(view.render(80).join("\n")), /updated while detached/));
 		await fixture.settle();
 		assert.match(stripAnsi(view.render(80).join("\n")), /completed/i);

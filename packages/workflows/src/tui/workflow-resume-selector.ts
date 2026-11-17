@@ -1,4 +1,4 @@
-import type { SessionInfo } from "@bastani/atomic";
+import { type SessionInfo, sliceHead } from "@bastani/atomic";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import type { DurableWorkflowDeleteOutcome } from "../durable/retention-policy.js";
@@ -44,7 +44,7 @@ export type WorkflowResumeRefresh = () => Promise<{
 	readonly catalog: WorkflowResumeCatalogRows;
 }>;
 
-interface WorkflowResumeSelectorItem {
+export interface WorkflowResumeSelectorItem {
 	readonly result: Exclude<WorkflowResumeSelectorResult, { kind: "close" }>;
 	readonly session: SessionInfo;
 }
@@ -90,7 +90,68 @@ function workflowStatusPresentation(
 	return { label: status };
 }
 
-function liveRunSession(run: RunSnapshot, saved?: ResumableWorkflowEntry): WorkflowResumeSelectorItem {
+/** `12m`, `2h 5m`, `45s`. */
+function shortDuration(ms: number): string {
+	const seconds = Math.max(0, Math.round(ms / 1000));
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	if (minutes < 60) return `${minutes}m`;
+	const hours = Math.floor(minutes / 60);
+	return minutes % 60 ? `${hours}h ${minutes % 60}m` : `${hours}h`;
+}
+
+/** `2h ago`, `yesterday`. */
+function shortAgo(ms: number): string {
+	const minutes = Math.floor(Math.max(0, ms) / 60_000);
+	if (minutes < 1) return "just now";
+	if (minutes < 60) return `${minutes}m ago`;
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return `${hours}h ago`;
+	const days = Math.floor(hours / 24);
+	return days === 1 ? "yesterday" : `${days}d ago`;
+}
+
+/** A failure's first meaningful line, without its error class or stack, kept short. */
+function shortReason(text: string | undefined): string | undefined {
+	if (!text) return undefined;
+	const first =
+		text
+			.split("\n")
+			.map((line) => line.trim())
+			.find((line) => line.length > 0 && !/^at\s+.+(?::\d+:\d+\)?|\((?:native|<anonymous>)\))$/.test(line)) ?? "";
+	const clean = first.replace(/^(Error|[A-Z][A-Za-z]*Error):\s*/, "");
+	if (!clean) return undefined;
+	return clean.length > 60 ? `${sliceHead(clean, 59)}…` : clean;
+}
+
+/** `stage 3/5 implement`: the stage a run is on or stopped at. */
+function runStageText(run: RunSnapshot): string | undefined {
+	const total = run.stages.length;
+	if (total === 0) return undefined;
+	const current =
+		(run.failedStageId ? run.stages.find((stage) => stage.id === run.failedStageId) : undefined) ??
+		run.stages.find((stage) => stage.status === "running" || stage.status === "paused");
+	const settled = run.stages.filter((stage) => stage.status !== "pending" && stage.status !== "running").length;
+	const index = current ? run.stages.indexOf(current) + 1 : Math.min(total, settled);
+	return `stage ${index}/${total}${current ? ` ${current.name}` : ""}`;
+}
+
+function runElapsedMs(run: RunSnapshot, now: number): number {
+	if (run.durationMs !== undefined) return run.durationMs;
+	const end = run.endedAt ?? run.pausedAt ?? now;
+	return (run.accumulatedDurationMs ?? 0) + Math.max(0, end - run.startedAt - (run.pausedDurationMs ?? 0));
+}
+
+/** The row's first line: the workflow, then what this run is about, or its short id when nothing names it. */
+function workflowRowTitle(name: string, id: string, identity: string): string {
+	return `${name} · ${identity === id ? id.slice(0, 8) : identity}`;
+}
+
+function joinDetail(parts: readonly (string | undefined)[]): string {
+	return parts.filter((part): part is string => part !== undefined && part !== "").join(" · ");
+}
+
+function liveRunSession(run: RunSnapshot, now: number, saved?: ResumableWorkflowEntry): WorkflowResumeSelectorItem {
 	const completed = completedStageCount(run);
 	const total = run.stages.length;
 	const modified = new Date(latestRunTimestamp(run));
@@ -98,9 +159,23 @@ function liveRunSession(run: RunSnapshot, saved?: ResumableWorkflowEntry): Workf
 	const stageText = `${completed}/${total} stages`;
 	const identity = workflowIdentity(run.id, run.label ?? saved?.label, run.inputs);
 	const summary = run.summary ?? saved?.summary;
+	const cost = run.budgetState?.accounting?.cost;
+	const failed = run.status === "failed" || run.status === "blocked";
+	const reason = shortReason(run.error ?? run.exitReason);
+	const detail = joinDetail([
+		presentation.label,
+		runStageText(run),
+		run.endedAt !== undefined ? shortAgo(now - run.endedAt) : undefined,
+		shortDuration(runElapsedMs(run, now)),
+		cost !== undefined && cost > 0 ? `$${cost.toFixed(2)}` : undefined,
+		failed && reason ? `✗ ${reason}` : undefined,
+		summary?.replace(/\s+/g, " ").trim(),
+	]);
 	return {
 		result: { kind: "live", runId: run.id },
 		session: {
+			title: workflowRowTitle(run.name, run.id, identity),
+			detail,
 			path: `workflow-live:${run.id}`,
 			id: run.id,
 			cwd: "Live",
@@ -118,12 +193,30 @@ function liveRunSession(run: RunSnapshot, saved?: ResumableWorkflowEntry): Workf
 function durableWorkflowSession(
 	entry: ResumableWorkflowEntry,
 	kind: "durable" | "completed",
+	now: number,
 ): WorkflowResumeSelectorItem {
 	const presentation = workflowStatusPresentation(entry.status, kind);
 	const identity = workflowIdentity(entry.workflowId, entry.label, entry.inputs);
+	const reason =
+		entry.status === "failed" || entry.status === "blocked"
+			? shortReason(entry.error ?? entry.exitReason)
+			: undefined;
 	return {
 		result: { kind, workflowId: entry.workflowId },
 		session: {
+			title: workflowRowTitle(entry.name, entry.workflowId, identity),
+			detail: joinDetail([
+				presentation.label,
+				kind === "durable" && entry.completedCheckpoints > 0
+					? `${entry.completedCheckpoints} ${entry.completedCheckpoints === 1 ? "checkpoint" : "checkpoints"}`
+					: undefined,
+				entry.pendingPrompts > 0
+					? `waiting on ${entry.pendingPrompts} ${entry.pendingPrompts === 1 ? "answer" : "answers"}`
+					: undefined,
+				shortAgo(now - entry.updatedAt),
+				reason ? `✗ ${reason}` : undefined,
+				entry.summary?.replace(/\s+/g, " ").trim(),
+			]),
 			path: `workflow-${kind}:${entry.workflowId}`,
 			id: entry.workflowId,
 			cwd: kind === "completed" ? "Completed" : "Durable",
@@ -151,6 +244,7 @@ export function workflowResumeSelectorItems(
 	completedEntries: readonly ResumableWorkflowEntry[] = [],
 	sessionRuns?: readonly RunSnapshot[],
 	backend?: DurableWorkflowBackend,
+	now = Date.now(),
 ): WorkflowResumeSelectorItem[] {
 	const classifiedLiveRuns = liveRuns.map((run) => ({
 		run,
@@ -171,11 +265,11 @@ export function workflowResumeSelectorItems(
 	const savedEntries = new Map(completedEntries.map((entry) => [entry.workflowId, entry]));
 	for (const entry of durableEntries) savedEntries.set(entry.workflowId, entry);
 	return [
-		...eligibleLiveRuns.map((run) => liveRunSession(run, savedEntries.get(run.id))),
-		...visibleDurableEntries.map((entry) => durableWorkflowSession(entry, "durable")),
+		...eligibleLiveRuns.map((run) => liveRunSession(run, now, savedEntries.get(run.id))),
+		...visibleDurableEntries.map((entry) => durableWorkflowSession(entry, "durable", now)),
 		...completedEntries
 			.filter((entry) => !visibleLiveIds.has(entry.workflowId) && !durableIds.has(entry.workflowId))
-			.map((entry) => durableWorkflowSession(entry, "completed")),
+			.map((entry) => durableWorkflowSession(entry, "completed", now)),
 	].sort(compareResumeItemsByRecency);
 }
 export interface WorkflowResumeCatalogRows {
@@ -200,7 +294,14 @@ const EMPTY_CATALOG: WorkflowResumeCatalogRows = { durable: [], completed: [] };
 
 export const WORKFLOW_RESUME_PICKER_UNAVAILABLE =
 	"The workflow resume picker requires the host session-picker capability (ctx.ui.hostSessionPicker), " +
-	"which this host does not expose. Update @bastani/atomic, or resume directly with: /workflow resume <id>";
+	'which this host does not expose. Update @bastani/atomic, or ask the agent to resume the run with workflow({ action: "resume", runId: "<id>" }).';
+
+export function toWorkflowPickerRow(item: WorkflowResumeSelectorItem): PiHostSessionPickerRow {
+	return {
+		...toPickerRow(item.session),
+		canDelete: item.result.kind !== "live",
+	};
+}
 
 function toPickerRow(session: SessionInfo): PiHostSessionPickerRow {
 	return {
@@ -215,11 +316,13 @@ function toPickerRow(session: SessionInfo): PiHostSessionPickerRow {
 		allMessagesText: session.allMessagesText,
 		...(session.name !== undefined ? { name: session.name } : {}),
 		...(session.messageColor !== undefined ? { messageColor: session.messageColor } : {}),
+		...(session.title !== undefined ? { title: session.title } : {}),
+		...(session.detail !== undefined ? { detail: session.detail } : {}),
 	};
 }
 
 /**
- * Open the `/workflow resume` picker through the host session-picker
+ * Open the `/resume` workflow picker through the host session-picker
  * capability: the terminal host mounts the real `SessionSelectorComponent`,
  * so arrow-key navigation and search never cross the host⇄extension boundary
  * and stay instant even while this process hydrates the catalog or refreshes
@@ -247,6 +350,7 @@ export function openWorkflowResumeSelector(
 
 	let currentLiveRuns = liveRuns;
 	let resolvedCatalog: WorkflowResumeCatalogRows = EMPTY_CATALOG;
+	const deletedWorkflowIds = new Set<string>();
 	const liveItems = workflowResumeSelectorItems(
 		currentLiveRuns,
 		[],
@@ -262,11 +366,17 @@ export function openWorkflowResumeSelector(
 	let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 
 	const applyRows = (catalog: WorkflowResumeCatalogRows): void => {
-		resolvedCatalog = catalog;
+		resolvedCatalog =
+			deletedWorkflowIds.size === 0
+				? catalog
+				: {
+						durable: catalog.durable.filter((entry) => !deletedWorkflowIds.has(entry.workflowId)),
+						completed: catalog.completed.filter((entry) => !deletedWorkflowIds.has(entry.workflowId)),
+					};
 		const items = workflowResumeSelectorItems(
-			currentLiveRuns,
-			catalog.durable,
-			catalog.completed,
+			currentLiveRuns.filter((run) => !deletedWorkflowIds.has(run.id)),
+			resolvedCatalog.durable,
+			resolvedCatalog.completed,
 			options.sessionRuns?.(),
 			options.durableBackend?.(),
 		);
@@ -278,6 +388,8 @@ export function openWorkflowResumeSelector(
 	const handle = hostSessionPicker({
 		sessions: sessions.map(toPickerRow),
 		showRenameHint: false,
+		title: "Resume workflow run",
+		variant: "runs",
 		onDelete: async (path) => {
 			if (settled) return;
 			const target = resultByPath.get(path);
@@ -295,8 +407,8 @@ export function openWorkflowResumeSelector(
 				handle.error(outcome.message);
 				return;
 			}
-			resultByPath.delete(path);
-			sessions = sessions.filter((session) => session.path !== path);
+			deletedWorkflowIds.add(target.workflowId);
+			applyRows(resolvedCatalog);
 			handle.update(sessions.map(toPickerRow));
 		},
 	});

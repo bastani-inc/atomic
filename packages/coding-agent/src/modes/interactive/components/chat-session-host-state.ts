@@ -76,6 +76,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	workingMessage: string | undefined;
 	lastWorkingMessage: string | undefined = undefined;
 	workedRun: { readonly message: string | undefined; readonly snapshot: WorkingRunSnapshot } | undefined = undefined;
+	hydratedOutputOnly = false;
 	get workingFrame(): number {
 		return atomicWorkingFrame();
 	}

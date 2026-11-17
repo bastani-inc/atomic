@@ -45,7 +45,7 @@ class FakeTerminal implements Terminal {
 beforeAll(() => initTheme("dark"));
 
 for (const boundary of ["shortcut", "picker"] as const) {
-	test(`thinking ${boundary} displays persistence failures and remains available for retry`, async () => {
+	test(`thinking ${boundary} displays persistence failures and remains available for retry (#5237)`, async () => {
 		const store = new FailingStore();
 		const manager = await SessionManager.create(store, "/thinking-test");
 		const harness = await createHarness({ sessionManager: manager, models: [{ id: "reasoning", reasoning: true }] });
@@ -84,6 +84,7 @@ for (const boundary of ["shortcut", "picker"] as const) {
 				InteractiveModeBase.prototype.showThinkingSelector.call(mode as never);
 				assert.ok(picker);
 				picker.handleInput("\x1b[B");
+				picker.handleInput("\r");
 				picker.handleInput("\r");
 			}
 			await vi.waitFor(() => assert.equal(mode.showError.mock.calls.length, 1));

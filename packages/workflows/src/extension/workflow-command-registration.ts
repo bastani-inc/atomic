@@ -18,7 +18,6 @@ import { workflowPolicyFromContext } from "./workflow-policy.js";
 export const WORKFLOWS_COMMAND_DESCRIPTION = "Browse running and completed workflows";
 export const WORKFLOW_AUTHORING_COMMAND_DESCRIPTION = "Load the reference for writing workflow definitions";
 export const WORKFLOW_AUTHORING_CUSTOM_TYPE = "workflows:authoring-reference";
-export const WORKFLOW_AUTHORING_COLLAPSED_LINE = "› Loaded workflow authoring reference (ctrl+o to expand)";
 export const REMOVED_WORKFLOW_COMMAND_NOTICE =
 	"! /workflow was removed · use /workflows, /resume or ask the agent to run a workflow";
 

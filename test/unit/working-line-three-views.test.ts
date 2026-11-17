@@ -110,13 +110,15 @@ function stageChat() {
 	};
 }
 
-function subagentView() {
+function subagentView(workingTokenCount?: () => number | undefined) {
 	const host = new ChatSessionHost({
 		style: themedChatHostStyle(),
 		requestRender: () => {},
 		commands: { send: async () => {} },
+		...(workingTokenCount === undefined ? {} : { workingTokenCount }),
 	} as never);
 	return {
+		host,
 		apply: async (event: AgentSessionEvent) => {
 			host.applyAgentEvent(event);
 		},
@@ -137,7 +139,7 @@ describe("one working line in the main chat, a stage chat and a subagent view (#
 	});
 	afterEach(() => vi.useRealTimers());
 
-	test("the same events paint the same working line and end row in all three views; a stage chat and a subagent view count the agent's total", async () => {
+	test("the same events paint the same working line and end row in all three views; a stage chat and a subagent view count the agent's total (#5224)", async () => {
 		const views = [mainChat(), stageChat(), subagentView()];
 		const lines = () => views.map((view) => view.line());
 		const all = async (event: unknown) => {
@@ -169,6 +171,67 @@ describe("one working line in the main chat, a stage chat and a subagent view (#
 				"∀ Working... (0s · ↓ 120 tokens)",
 				"∀ Working... (0s · ↓ 120 tokens)",
 			]);
+		} finally {
+			for (const view of views) view.dispose();
+		}
+	});
+
+	test("delta-only message_update and thinking_delta switch the working line from requesting to receiving and count live tokens (#5224)", async () => {
+		let reportedTaskTokens = 0;
+		const sub = subagentView(() => reportedTaskTokens);
+		try {
+			await sub.apply({ type: "agent_start" } as AgentSessionEvent);
+			await sub.apply({ type: "turn_start" } as AgentSessionEvent);
+			vi.setSystemTime(1_003_000);
+			const firstTurn = assistant("step one", 120);
+			await sub.apply({ type: "message_end", message: firstTurn } as unknown as AgentSessionEvent);
+			await sub.apply({ type: "turn_end", message: firstTurn, toolResults: [] } as unknown as AgentSessionEvent);
+
+			vi.setSystemTime(1_004_000);
+			await sub.apply({ type: "turn_start" } as AgentSessionEvent);
+			assert.equal(sub.line(), "∀ Brewing... (4s · ↑ 120 tokens)");
+
+			const seed = {
+				...assistant("", 0),
+				content: [],
+			};
+			await sub.apply({ type: "message_start", message: seed } as unknown as AgentSessionEvent);
+			await sub.apply({
+				type: "message_update",
+				assistantMessageEvent: { type: "text_start", contentIndex: 0 },
+			} as unknown as AgentSessionEvent);
+			assert.equal(sub.line(), "∀ Brewing... (4s · ↑ 120 tokens)");
+
+			await sub.apply({
+				type: "message_update",
+				assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "abcdefgh" },
+			} as unknown as AgentSessionEvent);
+			assert.equal(sub.line(), "∀ Brewing... (4s · ↓ 122 tokens)");
+
+			reportedTaskTokens = 500;
+			assert.equal(sub.line(), "∀ Brewing... (4s · ↓ 502 tokens)");
+		} finally {
+			sub.dispose();
+		}
+	});
+
+	test("a subsequent run that ends before turn_start uses Worked instead of the previous run's verb (#5224)", async () => {
+		const views = [mainChat(), stageChat(), subagentView()];
+		const lines = () => views.map((view) => view.line());
+		const all = async (event: unknown) => {
+			for (const view of views) await view.apply(event as AgentSessionEvent);
+		};
+		try {
+			await all({ type: "agent_start" });
+			await all({ type: "turn_start" });
+			vi.setSystemTime(1_004_000);
+			await all({ type: "agent_end", messages: [] });
+			assert.deepEqual(lines(), Array(3).fill("∀ Brewed for 4s"));
+
+			await all({ type: "agent_start" });
+			vi.setSystemTime(1_006_000);
+			await all({ type: "agent_end", messages: [] });
+			assert.deepEqual(lines(), Array(3).fill("∀ Worked for 2s"));
 		} finally {
 			for (const view of views) view.dispose();
 		}

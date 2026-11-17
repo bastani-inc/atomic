@@ -24,13 +24,29 @@ knowledge:
       It needs Bun >= 1.4.4 on PATH. `npm run typecheck` runs the typecheck passes alone, and
       `npm run format` applies biome's formatting. If a direct Git commit cannot find `prek`,
       use `PATH="$PWD/node_modules/.bin:$PATH" git commit ...` so the installed hook finds the local binary.
+      Stage new API files, their tracked callers and their tests together: hooks hide unstaged tracked changes,
+      but the full typecheck still discovers untracked TypeScript files.
   - name: test
     contents: |
       Root suites run under vitest: `npm run test:unit`, `npm run test:integration`, or both with
       `npm run test:all`. The coding-agent suite is `npm run test --workspace=@bastani/atomic`, and the
-      scripts/*.test.mjs tests run with `npm run test:scripts` (`node --test`). Build first: several
-      suites load the built packages. Focused TUI tests run with `node --test packages/tui/test/<name>.test.ts`;
-      the TUI workspace's npm test script always expands its full test glob, even when a filename is appended.
+      scripts/*.test.mjs tests run with `npm run test:scripts` (`node --test`). The TUI package uses
+      `npm run test --workspace=@bastani/atomic-tui` (`node --test`), not a Vitest config.
+      Focused TUI tests run with `node --test packages/tui/test/<name>.test.ts`; the TUI workspace's
+      npm test script always expands its full test glob, even when a filename is appended.
+      Build first: several suites load the built packages. For focused root tests use
+      `npm run test:unit -- test/unit/<file>.test.ts`; the test-suite-runner fixtures need npm's
+      node_modules/.bin on PATH for their nested Vitest commands.
+      `test/unit/storage-libsql-close-once.test.ts` runs native-driver close regressions in child processes
+      with glibc freed-memory poisoning on Linux, and checks file release directly on Windows.
+      Validate named-worktree permissions with a private default umask:
+      `(umask 0022; npx --no-install vitest --run --project unit test/unit/subagents-named-worktree-locks.test.ts)`.
+      Localized named-worktree recovery fixtures write the translated marker while Git is paused, so they do not
+      require installed locales or a Git build with gettext support. Finish `npm run check` before running
+      suites that import built packages: typechecking rebuilds dist in place and cleans provider data.
+      After changing SDK imports used by workflow graph views, run
+      `npx vitest run --project unit test/unit/overlay-adapter-autowrap.test.ts test/unit/overlay-adapter-hidden-render.test.ts`:
+      these wrappers run Bun children with isolated module mocks, which must expose each imported SDK name.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run

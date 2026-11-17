@@ -1,6 +1,6 @@
 import { isKeyRelease } from "@bastani/atomic-tui";
 import { type StopAllBackgroundOutcome, stopAllBackgroundMessage } from "../../core/tasks/stop-all.ts";
-import { type NavKeybindings, navActionText, TwoPressConfirm } from "./components/nav-keys.ts";
+import { NAV_CONFIRM_WINDOW_MS, type NavKeybindings, navActionText, TwoPressConfirm } from "./components/nav-keys.ts";
 
 /** The footer status key the chord's notices show under, so they are seen over overlays too. */
 export const STOP_ALL_STATUS_KEY = "atomic.stop-all";
@@ -70,5 +70,49 @@ export function createStopAllChord(
 		if (host.keybindings.matches(data, "app.agents.chord")) chordOpen = true;
 		else cancelPending();
 		return undefined;
+	};
+}
+
+export interface StopAllNoticeSurfaces {
+	setEngineNotice?(text: string | undefined): void;
+	setFooterStatus?(text: string | undefined): void;
+	showToast?(text: string): () => void;
+	hasOverlay(): boolean;
+	requestRender(): void;
+}
+
+export function createStopAllNotices(
+	surfaces: StopAllNoticeSurfaces,
+	timers: { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout } = { setTimeout, clearTimeout },
+): { show(text: string): void; clear(): void } {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let hideToast: (() => void) | undefined;
+	const clear = () => {
+		if (timer !== undefined) timers.clearTimeout(timer);
+		timer = undefined;
+		hideToast?.();
+		hideToast = undefined;
+		surfaces.setEngineNotice?.(undefined);
+		surfaces.setFooterStatus?.(undefined);
+	};
+	return {
+		clear() {
+			clear();
+			surfaces.requestRender();
+		},
+		show(text) {
+			clear();
+			if (surfaces.setEngineNotice) surfaces.setEngineNotice(text);
+			else {
+				surfaces.setFooterStatus?.(text);
+				if (surfaces.hasOverlay()) hideToast = surfaces.showToast?.(text);
+			}
+			timer = timers.setTimeout(() => {
+				clear();
+				surfaces.requestRender();
+			}, NAV_CONFIRM_WINDOW_MS);
+			(timer as { unref?: () => void }).unref?.();
+			surfaces.requestRender();
+		},
 	};
 }

@@ -1,6 +1,7 @@
 import type { AssistantMessage } from "@bastani/atomic-ai";
 import { type Component, Spacer, Text, type TUI, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { TaskId } from "../../../core/tasks/contracts.js";
+import { taskClocksFor } from "../../../core/tasks/live-elapsed.ts";
 import { getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import { loadTaskOwnTranscriptHistory, taskTranscriptSource } from "../../../core/tasks/supervisor.js";
 import { getToolExecutionStartedAt } from "../../../core/tool-execution-timing.ts";
@@ -148,7 +149,9 @@ export function chatSessionWorkingMeta<TExtraEntry extends ChatTranscriptEntryLi
 	state: ChatSessionHostState<TExtraEntry>,
 ): WorkingRunSnapshot | undefined {
 	const snapshot = state.workingRunMeter.snapshot();
-	return snapshot === undefined ? undefined : { ...snapshot, tokens: chatSessionTokenCount(state) };
+	if (snapshot === undefined) return undefined;
+	if (state.hydratedOutputOnly && !(state.workingTokenCount?.() ?? 0)) return snapshot;
+	return { ...snapshot, tokens: chatSessionTokenCount(state) };
 }
 
 export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscriptEntryLike>(
@@ -246,6 +249,14 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 	const session = agentSession ?? state.getChatBoxSession?.();
 	state.footerNavigationActive = navigationActive || agentSession === undefined;
 	if (session && state.footerData) {
+		const taskSource = () => {
+			const currentAgent = state.getAgentSession?.();
+			const currentSession = currentAgent ?? state.getChatBoxSession?.();
+			return (
+				(currentAgent === undefined ? state.getTaskSource?.() : undefined) ??
+				(currentSession ? getOwnerTaskStore(currentSession) : undefined)
+			);
+		};
 		state.footer ??= new FooterComponent(
 			session,
 			state.footerData,
@@ -255,12 +266,12 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 				warning: (text) => state.style.accent(text),
 			},
 			() => state.footerNavigationActive,
-			// A stage or subagent chat lists its own active tasks below its prompt; the main chat has its agent panel.
-			// A task's session has no task store of its own: its footer lists the tasks the host shows for it.
-			() =>
-				(agentSession === undefined ? state.getTaskSource?.() : undefined)?.backgroundTasks ??
-				getOwnerTaskStore(session)?.backgroundTasks ??
-				[],
+			() => taskSource()?.backgroundTasks ?? [],
+			undefined,
+			() => {
+				const source = taskSource();
+				return source === undefined ? undefined : taskClocksFor(source);
+			},
 		);
 		state.footer.setSession(session);
 		return state.footer.render(width);

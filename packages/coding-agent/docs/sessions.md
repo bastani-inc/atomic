@@ -151,22 +151,27 @@ If Atomic exits while work is in flight, for example while background subagents 
 
 Non-interactive runs such as `atomic -p` do not recover interrupted work. It stays pending until the session is next resumed interactively.
 
+Each session is a two-line row: its name or first message, then its age, message count, folder (when listing all folders) and summary. The line at the bottom of the picker lists the keys that work at that moment. Workflow runs use the same two-line rows in the **Workflow runs** group.
+
 In the picker you can:
 
-- search by typing
+- resume the selected session with Enter, or with → while the search is empty
+- search by typing; the best match is selected as you type. Esc clears the search and keeps the selected session selected, and a second Esc closes the picker
+- preview the selected session with Space (on an empty search), and close the preview with Space or Esc. A search that matches nothing closes the preview
+- switch between this folder and all folders with Tab
 - toggle path display with CTRL+P
 - toggle sort mode with CTRL+S
 - filter to named sessions with CTRL+N
 - rename with CTRL+R
-- delete with CTRL+D, then confirm
+- delete with CTRL+D, then confirm with Enter (Esc keeps the session)
 
-JSONL stores use the `trash` CLI when available. Database stores delete the selected session record, not the database.
+JSONL stores use the `trash` CLI when available. Database stores delete the selected session record, not the database. The active session cannot be deleted. While a confirmed deletion runs, its row shows `Deleting…` and cannot be resumed or renamed. You can still resume another row or close the picker. Closing the picker does not undo a confirmed deletion.
 
 ### Session summaries
 
-Each row shows a short generated description of what the session was about in its own column, beside the session name or first message, so you can recognize a conversation without opening it. Atomic writes one after the agent goes idle, using the model the session is already configured with, and saves it as a `session_summary` entry in the selected store.
+When a summary is available and there is room, the picker's second line shows it after the age and message count. Press Space with an empty search to read more in the preview. Atomic writes this short description after the agent goes idle, using the model the session is already configured with, and saves it as a `session_summary` entry in the selected store.
 
-A summary describes the conversation up to a specific message and remains visible as newer messages arrive. A later branch summary retires it. "No summary available." means no summary has been generated for the current branch, generation failed, or it is still in flight. The session name and first message are never displaced by a summary, and the column only appears once at least one listed session has a summary. Summaries are also searchable along with the rest of the session text.
+A summary describes the conversation up to a specific message and remains visible as newer messages arrive. A later branch summary retires it. If no summary appears, generation may not have run for the current branch, may have failed, or may still be in flight. Rows without summaries show their usual metadata without a placeholder. Summaries never displace the session name or first message and are searchable along with the rest of the session text.
 
 Generation is best-effort and never blocks a turn or quitting. Opening or resuming a session in interactive or RPC mode also schedules generation if its summary is missing or stale. Atomic generates summaries only for saved sessions, so `--no-session` sessions never send a summary request. It also skips very short sessions, workflow stage sessions, and `--print` and JSON modes. The summary request's tokens and cost count toward the footer usage and `/session` as soon as the summary is saved. It cancels generation when you send the next message, switch sessions, or quit; failures are silent. Set `sessionSummary.enabled` to `false` to disable it.
 

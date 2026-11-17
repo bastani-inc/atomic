@@ -1,3 +1,6 @@
+import { resolve } from "node:path";
+import { Selector, type SelectorOptions } from "@bastani/atomic";
+import { getKeybindings } from "@bastani/atomic-tui";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { listOpenableCompletedWorkflows } from "../durable/completed-catalog.js";
 import { openCompletedDurableWorkflow } from "../durable/completed-inspection.js";
@@ -14,6 +17,7 @@ import type { RunSnapshot } from "../shared/store-types.js";
 import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { openWorkflowResumeSelector } from "../tui/workflow-resume-selector.js";
+import { definitionDigest } from "../workers/definitions.js";
 import type { ExtensionAPI, PiCommandContext, PiEventContext } from "./public-types.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
@@ -33,6 +37,201 @@ export interface WorkflowRunControlDeps {
 	/** Seed lifecycle state before the direct completed-inspection fallback restores history. */
 	beforeRestoreCompleted?: (snapshots: readonly RunSnapshot[]) => void;
 	owner?: WorkflowOwnerResources;
+	isGenerationCurrent?: () => boolean;
+}
+
+export const WORKFLOW_DEFINITION_CHANGED_TITLE = "Workflow definition changed since this run started";
+export const WORKFLOW_DEFINITION_CHANGED_CONFIRM_LABEL = "resume with the new definition";
+export const WORKFLOW_DEFINITION_CHANGED_CANCEL_LABEL = "cancel";
+export const WORKFLOW_DEFINITION_CHANGED_INLINE_PROMPT =
+	"Workflow definition changed since this run started · enter resume with the new definition · esc cancel";
+
+export function isResumeContextActive(ctx: PiCommandContext, isGenerationCurrent?: () => boolean): boolean {
+	if (isGenerationCurrent && !isGenerationCurrent()) return false;
+	const commandSignal = (ctx as { readonly signal?: AbortSignal }).signal;
+	if (commandSignal?.aborted === true) return false;
+	const sessionSignal = ctx.getCurrentSessionSignal?.() ?? ctx.sessionSignal;
+	if (sessionSignal?.aborted === true) return false;
+	return true;
+}
+
+export function cleanEntryChangeReason(reason: string | undefined): string | undefined {
+	if (!reason) return undefined;
+	const firstLine =
+		reason
+			.split("\n")
+			.map((line) => line.trim())
+			.find((line) => line.length > 0 && !/^at\s+.+(?::\d+:\d+\)?|\((?:native|<anonymous>)\))$/.test(line)) ?? "";
+	const withoutPrefix = firstLine
+		.replace(/^Failed to resume durable workflow [^:]+:\s*/i, "")
+		.replace(/^(Error|[A-Z][A-Za-z]*Error):\s*/, "")
+		.replace(/\.\s*Its recorded steps and queued children depend on these[\s\S]*$/i, ".")
+		.replace(/\.\s*An edited entry module can also be accepted:[\s\S]*$/i, ".")
+		.replace(/\.\s*Resume the root with [\s\S]*$/i, ".")
+		.replace(/\s+/g, " ")
+		.trim();
+	return withoutPrefix || undefined;
+}
+
+export function isEditedEntryModuleRefusal(message: string | undefined): boolean {
+	if (!message) return false;
+	if (
+		/Pool boundary identity conflict: child .+ was queued by an earlier run of root .+ with the entry module of (?:worker|workflow) definition/i.test(
+			message,
+		)
+	) {
+		return true;
+	}
+	const sinceRoot = /Since root [^ ]+ started, ([^.]+)\./i.exec(message);
+	if (sinceRoot) {
+		const parts = sinceRoot[1]!
+			.split(";")
+			.map((part) => part.trim())
+			.filter(Boolean);
+		return (
+			parts.length > 0 &&
+			parts.every((part) => /^the entry module of (?:worker|workflow) definition .+ was edited\b/i.test(part))
+		);
+	}
+	return (
+		/the entry module of (?:worker|workflow) definition .+ was edited\b/i.test(message) &&
+		!/\b(?:was added|is no longer listed|local workers were turned)\b/i.test(message)
+	);
+}
+
+export async function findEditedWorkerEntryModuleReason(
+	backend: DurableWorkflowBackend | undefined,
+	workflowId: string,
+	fallbackCwd?: string,
+): Promise<string | undefined> {
+	if (backend === undefined) return undefined;
+	const handle = backend.getWorkflow(workflowId);
+	const definitions = handle?.resources?.definitions;
+	if (!definitions || definitions.length === 0) return undefined;
+	const baseCwd = handle?.invocationCwd ?? fallbackCwd ?? process.cwd();
+	const descriptions: string[] = [];
+	for (const source of definitions) {
+		try {
+			const resolvedPath = resolve(baseCwd, source.path);
+			const currentDigest = await definitionDigest(resolvedPath);
+			if (currentDigest !== source.digest) {
+				const name = `${source.path}#${source.exportName || "default"}`;
+				descriptions.push(
+					`the entry module of worker definition ${name} was edited (sha256 ${source.digest.slice(0, 12)} to ${currentDigest.slice(0, 12)})`,
+				);
+			}
+		} catch {
+			return undefined;
+		}
+	}
+	if (descriptions.length === 0) return undefined;
+	return `Since root ${handle.workflowId} started, ${descriptions.join("; ")}.`;
+}
+
+export async function confirmEditedWorkflowDefinition(
+	ctx: PiCommandContext,
+	reason?: string,
+	isGenerationCurrent?: () => boolean,
+): Promise<"confirmed" | "cancelled" | "unavailable"> {
+	const policy = workflowPolicyFromContext(ctx);
+	if (!policy.allowHumanInput || ctx.hasUI === false) return "unavailable";
+	if (!isResumeContextActive(ctx, isGenerationCurrent)) return "cancelled";
+	const subtitle = cleanEntryChangeReason(reason);
+	const commandSignal = (ctx as { readonly signal?: AbortSignal }).signal;
+	const sessionSignal = ctx.getCurrentSessionSignal?.() ?? ctx.sessionSignal;
+	const signals = [commandSignal, sessionSignal].filter((sig): sig is AbortSignal => sig !== undefined);
+	const signal = signals.length === 0 ? undefined : signals.length === 1 ? signals[0] : AbortSignal.any(signals);
+
+	if (typeof ctx.ui?.custom === "function") {
+		const confirmed = await ctx.ui.custom(
+			(_tui, _theme, keybindings, done) => {
+				let settled = false;
+				const finish = (value: boolean): void => {
+					if (settled) return;
+					settled = true;
+					signal?.removeEventListener("abort", onAbort);
+					done(value);
+				};
+				const onAbort = (): void => finish(false);
+				if (signal?.aborted) {
+					finish(false);
+				} else {
+					signal?.addEventListener("abort", onAbort, { once: true });
+				}
+				const baseKeybindings =
+					(keybindings as unknown as SelectorOptions<boolean>["keybindings"]) ?? getKeybindings();
+				const confirmKeybindings: NonNullable<SelectorOptions<boolean>["keybindings"]> = {
+					matches: (data, action) =>
+						action === "app.keys.help" ? false : (baseKeybindings?.matches(data, action) ?? false),
+					getKeys: (action) => (action === "app.keys.help" ? [] : (baseKeybindings?.getKeys?.(action) ?? [])),
+				};
+				const selector = new Selector<boolean>({
+					title: WORKFLOW_DEFINITION_CHANGED_TITLE,
+					...(subtitle ? { subtitle } : {}),
+					items: [
+						{
+							id: "resume-with-new-definition",
+							value: true,
+							label: "Resume with the new definition",
+						},
+					],
+					confirmLabel: WORKFLOW_DEFINITION_CHANGED_CONFIRM_LABEL,
+					cancelLabel: WORKFLOW_DEFINITION_CHANGED_CANCEL_LABEL,
+					keybindings: confirmKeybindings,
+					onSelect: () => {
+						if (!isResumeContextActive(ctx, isGenerationCurrent)) {
+							finish(false);
+							return;
+						}
+						finish(true);
+					},
+					onCancel: () => finish(false),
+				});
+				return {
+					get capturesViewportInput() {
+						return selector.capturesViewportInput;
+					},
+					get focused() {
+						return selector.focused;
+					},
+					set focused(value: boolean) {
+						selector.focused = value;
+					},
+					render: (width: number) => selector.render(width),
+					invalidate: () => selector.invalidate(),
+					handleInput: (data: string) => {
+						if (!isResumeContextActive(ctx, isGenerationCurrent)) {
+							finish(false);
+							return true;
+						}
+						selector.handleInput(data);
+						return true;
+					},
+					dispose: () => {
+						signal?.removeEventListener("abort", onAbort);
+					},
+				};
+			},
+			{
+				overlay: false,
+				purpose: "prompt",
+				...(signal ? { signal } : {}),
+			},
+		);
+		if (confirmed !== true || !isResumeContextActive(ctx, isGenerationCurrent)) return "cancelled";
+		return "confirmed";
+	}
+	if (typeof ctx.ui?.confirm === "function") {
+		const message = subtitle
+			? `${subtitle}\n${WORKFLOW_DEFINITION_CHANGED_INLINE_PROMPT}`
+			: WORKFLOW_DEFINITION_CHANGED_INLINE_PROMPT;
+		const confirmed = await Promise.resolve(ctx.ui.confirm(WORKFLOW_DEFINITION_CHANGED_TITLE, message)).catch(
+			() => false,
+		);
+		if (confirmed !== true || !isResumeContextActive(ctx, isGenerationCurrent)) return "cancelled";
+		return "confirmed";
+	}
+	return "unavailable";
 }
 
 export interface WorkflowResumeCatalog {
@@ -67,22 +266,60 @@ export async function prepareWorkflowResumeCatalog(
 	suppressedLiveIds: ReadonlySet<string>,
 	target?: string,
 ): Promise<WorkflowResumeCatalog> {
+	const cleanTarget =
+		target === undefined
+			? undefined
+			: target
+					.replace(/^workflow-(?:live|durable|completed):/, "")
+					.trim()
+					.split(/\s+/)[0] || undefined;
 	const shared = await runtime.prepareDurableCatalog?.();
-	const prepared = shared?.resumable ?? (await runtime.prepareDurableResumable(target));
-	const fallbackBackend = shared === undefined ? runtime.durableBackend() : undefined;
-	const isDisplayLoadable = (entry: ResumableWorkflowEntry): boolean =>
-		fallbackBackend === undefined || fallbackBackend.isWorkflowLoadable(entry.workflowId);
+	let prepared = shared?.resumable ?? (await runtime.prepareDurableResumable(cleanTarget));
+	if (cleanTarget !== undefined && shared !== undefined) {
+		const matchedInShared = resolveRunIdTarget(
+			cleanTarget,
+			[...shared.resumable, ...shared.completed].map((entry) => entry.workflowId),
+		);
+		if (matchedInShared.kind === "not_found") {
+			const targeted = await runtime.prepareDurableResumable(cleanTarget);
+			const byId = new Map(prepared.map((entry) => [entry.workflowId, entry]));
+			for (const entry of targeted) byId.set(entry.workflowId, entry);
+			prepared = [...byId.values()];
+		}
+	}
+	const fallbackBackend = shared === undefined && cleanTarget === undefined ? runtime.durableBackend() : undefined;
+	const activeBackend = (): DurableWorkflowBackend | undefined => {
+		try {
+			return runtime.durableBackend();
+		} catch {
+			return fallbackBackend;
+		}
+	};
+	const isDisplayLoadable = (entry: ResumableWorkflowEntry): boolean => {
+		const backend = activeBackend();
+		return backend === undefined || backend.isWorkflowLoadable(entry.workflowId);
+	};
+	const matchedTargetId =
+		cleanTarget === undefined
+			? undefined
+			: (() => {
+					const resolution = resolveRunIdTarget(
+						cleanTarget,
+						prepared.map((entry) => entry.workflowId),
+					);
+					return resolution.kind === "exact" || resolution.kind === "unique_prefix" ? resolution.runId : undefined;
+				})();
 	// The durable catalog is already produced by `listResumableWorkflows()`, which
 	// applies `isDurableWorkflowResumable`; re-filtering here would only drop rows
 	// a hydrating backend has not yet materialized.
-	const resumable = filterSelectorDurableEntries(runtime, prepared).filter(
+	const resumable = filterSelectorDurableEntries(runtime, prepared, matchedTargetId).filter(
 		(entry) => !suppressedLiveIds.has(entry.workflowId) && isDisplayLoadable(entry),
 	);
 	const completed =
 		shared?.completed ??
 		(runtime.prepareCompletedDurable !== undefined
 			? await runtime.prepareCompletedDurable()
-			: await listOpenableCompletedWorkflows(fallbackBackend ?? runtime.durableBackend()));
+			: await listOpenableCompletedWorkflows(activeBackend() ?? runtime.durableBackend()));
 	return {
 		resumable,
 		completed: completed.filter((entry) => isDisplayLoadable(entry)),
@@ -152,26 +389,7 @@ export async function handleDurableResume(
 			fail(completedAttempt.message);
 			return true;
 		}
-		const result = await runtime.resumeDurableWorkflow(target, {
-			policy,
-			actor: "user",
-			...crossProjectConfirmation(ctx),
-			onBeforeResume: (runId, forkedFrom) =>
-				injectWorkflowResumeSummary(deps.pi, ctx, runId, undefined, forkedFrom, runtime.durableBackend()),
-			...releasedRunAdoption("workflowId" in resolved ? resolved.workflowId : target, ctx, runtime),
-			...resumeOptions,
-		});
-		if (result.ok) {
-			print(result.message);
-			if (policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
-		} else {
-			fail(
-				allOpenable.length === 0
-					? result.message
-					: `${result.message}\n\n${formatResumableWorkflowList(allOpenable)}`,
-			);
-		}
-		return true;
+		return await resumeDurableTarget(target, ctx, reporter, deps, runtime, resumeOptions, allOpenable);
 	}
 
 	if (allOpenable.length === 0) {
@@ -212,10 +430,12 @@ export async function handleDurableResume(
 function filterSelectorDurableEntries(
 	runtime: ExtensionRuntime,
 	entries: readonly ResumableWorkflowEntry[],
+	targetedRunId?: string,
 ): readonly ResumableWorkflowEntry[] {
 	const registry = runtime.registry as { has(name: string): boolean } | undefined;
 	if (registry === undefined) return entries;
 	return entries.filter((entry) => {
+		if (targetedRunId !== undefined && entry.workflowId === targetedRunId) return true;
 		const requiresDefinition = entry.status === "running" || entry.status === "failed" || entry.status === "blocked";
 		return !requiresDefinition || registry.has(entry.name);
 	});
@@ -277,7 +497,10 @@ function releasedRunAdoption(
 	return handle !== undefined && isSdkReleasedRunAdoptable(handle, ctx.cwd) ? { modelOwner: workflowCaller(ctx) } : {};
 }
 
-function crossProjectConfirmation(ctx: PiEventContext): {
+function crossProjectConfirmation(
+	ctx: PiEventContext,
+	isGenerationCurrent?: () => boolean,
+): {
 	confirmCrossProjectFork?: (cwd: string) => Promise<boolean>;
 	confirmProjectTrust?: (projectDir: string) => Promise<boolean>;
 	forkModelOwner?: string;
@@ -287,11 +510,14 @@ function crossProjectConfirmation(ctx: PiEventContext): {
 	return policy.allowInputPicker && confirm !== undefined
 		? {
 				forkModelOwner: workflowCaller(ctx),
-				confirmCrossProjectFork: (cwd) =>
-					confirm(
+				confirmCrossProjectFork: async (cwd) => {
+					if (!isResumeContextActive(ctx, isGenerationCurrent)) return false;
+					const confirmed = await confirm(
 						"Resume workflow",
 						`Workflow run found in different project: ${cwd}. Fork it into the current directory?`,
-					),
+					);
+					return confirmed === true && isResumeContextActive(ctx, isGenerationCurrent);
+				},
 				...projectTrustConfirmation(ctx, policy),
 			}
 		: {};
@@ -304,23 +530,143 @@ async function resumeDurableTarget(
 	deps: WorkflowRunControlDeps,
 	runtime: ExtensionRuntime,
 	resumeOptions: DurableResumeCommandOptions,
+	fallbackOpenable: readonly ResumableWorkflowEntry[] = [],
 ): Promise<boolean> {
-	const result = await runtime.resumeDurableWorkflow(workflowId, {
-		policy: workflowPolicyFromContext(ctx),
-		actor: "user",
-		...crossProjectConfirmation(ctx),
-		onBeforeResume: (runId, forkedFrom) =>
-			injectWorkflowResumeSummary(deps.pi, ctx, runId, undefined, forkedFrom, runtime.durableBackend()),
-		...releasedRunAdoption(workflowId, ctx, runtime),
-		...resumeOptions,
-	});
-	if (!result.ok) reporter.error(result.message);
-	else {
+	if (!isResumeContextActive(ctx, deps.isGenerationCurrent)) return true;
+	let effectiveOptions: DurableResumeCommandOptions = resumeOptions;
+	const backend = (() => {
+		try {
+			return runtime.durableBackend();
+		} catch {
+			return undefined;
+		}
+	})();
+	if (effectiveOptions.acceptEntryChanges !== true) {
+		const precheckReason = await findEditedWorkerEntryModuleReason(backend, workflowId, ctx.cwd);
+		if (precheckReason !== undefined) {
+			const decision = await confirmEditedWorkflowDefinition(ctx, precheckReason, deps.isGenerationCurrent);
+			if (decision === "unavailable") {
+				reporter.error(precheckReason);
+				return true;
+			}
+			if (decision === "cancelled") {
+				if (isResumeContextActive(ctx, deps.isGenerationCurrent)) {
+					reporter.info("Workflow resume cancelled.");
+				}
+				return true;
+			}
+			effectiveOptions = { ...effectiveOptions, acceptEntryChanges: true };
+		}
+	}
+	if (!isResumeContextActive(ctx, deps.isGenerationCurrent)) return true;
+	const runResume = (opts: DurableResumeCommandOptions) =>
+		runtime.resumeDurableWorkflow(workflowId, {
+			policy: workflowPolicyFromContext(ctx),
+			actor: "user",
+			...crossProjectConfirmation(ctx, deps.isGenerationCurrent),
+			onBeforeResume: (runId, forkedFrom) =>
+				injectWorkflowResumeSummary(deps.pi, ctx, runId, undefined, forkedFrom, runtime.durableBackend()),
+			...releasedRunAdoption(workflowId, ctx, runtime),
+			...opts,
+		});
+	let result = await runResume(effectiveOptions);
+	if (!result.ok && effectiveOptions.acceptEntryChanges !== true && isEditedEntryModuleRefusal(result.message)) {
+		const decision = await confirmEditedWorkflowDefinition(ctx, result.message, deps.isGenerationCurrent);
+		if (decision === "unavailable") {
+			reporter.error(result.message);
+			return true;
+		}
+		if (decision === "cancelled") {
+			if (isResumeContextActive(ctx, deps.isGenerationCurrent)) {
+				reporter.info("Workflow resume cancelled.");
+			}
+			return true;
+		}
+		if (!isResumeContextActive(ctx, deps.isGenerationCurrent)) return true;
+		result = await runResume({ ...effectiveOptions, acceptEntryChanges: true });
+	}
+	if (!result.ok) {
+		reporter.error(
+			fallbackOpenable.length === 0
+				? result.message
+				: `${result.message}\n\n${formatResumableWorkflowList(fallbackOpenable)}`,
+		);
+	} else {
 		reporter.info(result.message);
 		if (workflowPolicyFromContext(ctx).allowInputPicker) {
 			deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
 		}
 	}
+	return true;
+}
+
+export async function resumeFailedRunWithConfirmation(
+	stageRunId: string,
+	stageId: string | undefined,
+	ctx: PiCommandContext,
+	reporter: WorkflowCommandReporter,
+	deps: WorkflowRunControlDeps,
+	runtime: ExtensionRuntime,
+	resumeOptions: DurableResumeCommandOptions = {},
+): Promise<boolean> {
+	if (!isResumeContextActive(ctx, deps.isGenerationCurrent)) return true;
+	const policy = workflowPolicyFromContext(ctx);
+	let effectiveOptions: DurableResumeCommandOptions = resumeOptions;
+	const backend = (() => {
+		try {
+			return runtime.durableBackend();
+		} catch {
+			return undefined;
+		}
+	})();
+	if (effectiveOptions.acceptEntryChanges !== true) {
+		const precheckReason = await findEditedWorkerEntryModuleReason(backend, stageRunId, ctx.cwd);
+		if (precheckReason !== undefined) {
+			const decision = await confirmEditedWorkflowDefinition(ctx, precheckReason, deps.isGenerationCurrent);
+			if (decision === "unavailable") {
+				reporter.error(precheckReason);
+				return true;
+			}
+			if (decision === "cancelled") {
+				if (isResumeContextActive(ctx, deps.isGenerationCurrent)) {
+					reporter.info("Workflow resume cancelled.");
+				}
+				return true;
+			}
+			effectiveOptions = { ...effectiveOptions, acceptEntryChanges: true };
+		}
+	}
+	if (!isResumeContextActive(ctx, deps.isGenerationCurrent)) return true;
+	let continuation = await runtime.resumeFailedRun(stageRunId, stageId, {
+		policy,
+		actor: "user",
+		...effectiveOptions,
+	});
+	if (
+		!continuation.ok &&
+		effectiveOptions.acceptEntryChanges !== true &&
+		isEditedEntryModuleRefusal(continuation.message)
+	) {
+		const decision = await confirmEditedWorkflowDefinition(ctx, continuation.message, deps.isGenerationCurrent);
+		if (decision === "unavailable") {
+			reporter.error(continuation.message);
+			return true;
+		}
+		if (decision === "cancelled") {
+			if (isResumeContextActive(ctx, deps.isGenerationCurrent)) {
+				reporter.info("Workflow resume cancelled.");
+			}
+			return true;
+		}
+		if (!isResumeContextActive(ctx, deps.isGenerationCurrent)) return true;
+		continuation = await runtime.resumeFailedRun(stageRunId, stageId, {
+			policy,
+			actor: "user",
+			...effectiveOptions,
+			acceptEntryChanges: true,
+		});
+	}
+	continuation.ok ? reporter.info(continuation.message) : reporter.error(continuation.message);
 	return true;
 }
 

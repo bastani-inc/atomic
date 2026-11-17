@@ -438,25 +438,35 @@ const choice = await ctx.ui.custom<string | null>((tui, _theme, _kb, done) => {
 });
 ```
 
-Selector uses ↑↓ to select (wrapping) and pgup/pgdn to page. Enter chooses, and → chooses when the search is empty. Esc clears the search before it cancels, and ctrl+c always cancels. Options worth knowing:
+Keys: ↑↓ select (wrapping), pgup/pgdn page, home/end jump to the ends when there is no search box, enter choose, → choose when the search is empty, esc clears the search before it cancels, and ctrl+c always cancels. With mouse reporting, a click chooses a row (toggles it in a multi-select) and the wheel moves the selection, stopping at the ends. Options worth knowing:
 
 | Option | Effect |
 | --- | --- |
 | `layout: "two-line"` | Each description goes on the line under its label, for rows like sessions or runs. |
-| `mode: "multi"` | Checkboxes: space toggles, enter calls `onConfirm` with the checked rows. |
+| `wrap: true` | Wrap long titles and option labels instead of truncating them. Extension `select` and `confirm` dialogs enable this automatically. |
+| `mode: "multi"` | Checkboxes: space toggles, enter calls `onConfirm` with the checked rows. Confirming always stops the picker, whatever `closeOnSelect` says. |
+| `closeOnSelect: false` | Single-select only. Choosing a row calls `onSelect` and leaves the picker live, so enter or a click can choose again, for a picker that applies each choice and stays open. Default `true`. |
 | `numbered: true` | Rows are numbered; without a search box, digits 1–9 choose a row directly, or toggle it with `mode: "multi"`. |
 | `onPreview` | Space previews the selected row; the hint shows `space preview`. |
 | `onSelectionChange` | Reports the selected row when navigation or filtering changes its identity, or `undefined` when no enabled row matches. |
 | `extraKeys` | Keys of your own, each with a hint and an `enabled(item)` check, so a key that does nothing for the selected row is not shown. |
 | `group` on items | Rows with the same group are listed under a section label (hidden while searching). |
-| `disabled` on items | Drawn dim, skipped by ↑↓ and never chosen by enter or a mouse click. |
+| `disabled` on items | Drawn dim, skipped by ↑↓ and the wheel, and refused by enter and clicks. |
 | `mark` on items | `"on"`/`"off"` draw `●`/`○` for the current value; `"checked"`/`"unchecked"` draw `[✓]`/`[ ]` for a row enter switches on and off. |
 | `labelStyle` on items | Paints the label yourself, told whether the row is selected. |
+| `searchText` on items | Extra text that type-to-search matches. By default it is matched with the label, description and tag. |
+| `searchTextMode: "replace"` on items | Search matches only the item's `searchText`, not its label, description or tag. Use it when the shown text holds words a search should not find, such as a reasoning level. The default is `"extend"`. |
 | `subtitle` | Dim text under the title; each `\n` starts a line and long lines wrap. |
 
 Without a search box, `?` shows the picker's keys and `j`/`k` move like ↓/↑. Mouse input does not change or choose a row while this help is open. `setNotice({ text, tone })` shows a one-line status, such as a refresh result, under the list.
 
-Use `setItems()` to replace row data. When external data used by a custom `style` or an extra key's `enabled` callback changes, call `selector.invalidate()` before requesting a render. A row's `labelStyle` still runs on each render, so animated labels can update without replacing the rows.
+A picker stops taking keys and mouse input once it calls `onCancel`, once it calls `onConfirm`, and once it calls `onSelect` unless `closeOnSelect` is `false`. Repeated enter presses and clicks therefore reach your callback once, and a picker you keep on screen after that ignores every key, esc and ctrl+c included. If your callback can fail, for example while it saves the choice, call `selector.retrySelection()` when it does: the picker takes input again, so the user can choose again or press esc. Pair it with `setNotice()` to show the error.
+
+Use `setItems()` to replace row data. It keeps the selected enabled row by ID, then tries `preferId` if that row disappeared. If neither remains enabled, it scans forward from the previous list position, clamped to the new list, then backward if no enabled row follows. `onSelectionChange` fires only when the selected ID changes, so its callback can refresh the same rows without calling itself again. `SelectorState.items` and its list snapshots are read-only and frozen; replace direct assignments and mutations with `state.setItems(rows)`. Copy a snapshot with `[...state.items]` before editing the array. For persistent or multi-stage single-select pickers that replace rows after `onSelect`, pass `closeOnSelect: false` so subsequent navigation and cancellation remain available.
+
+When external data used by a custom `style` or an extra key's `enabled` callback changes, call `selector.invalidate()` before requesting a render. A row's `labelStyle` still runs on each render, so animated labels can update without replacing the rows.
+
+`SelectorState` holds a picker's search, selection and checked rows without drawing anything, and `selectorHintEntries(state, options)` returns the keys its hint line lists, so you can test a picker's behaviour without rendering it. `themeSelectorStyle()` returns the active theme's picker colours; pass `style: PLAIN_SELECTOR_STYLE` for output without colour.
 
 For live lists, call `selector.setItems(nextItems)` and then `tui.requestRender()`. Updates keep the search text and selected item by its `id`. If that item disappears, becomes disabled, or no longer matches the search, selection moves to the first enabled match. Checked items that disappear are removed from the selection.
 
@@ -836,6 +846,45 @@ export default function (pi: ExtensionAPI) {
 - **Pass `undefined`** to restore the default editor: `ctx.ui.setEditorComponent(undefined)`
 
 **Examples:** [modal-editor.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/modal-editor.ts)
+
+### Pattern 7b: Attached Composer
+
+A chat that talks to something other than the main agent should not look like the main chat. `applyAttachedComposer(style, label, placeholder, lines)` takes an editor's rendered lines and returns them in the form Atomic uses for subagent and workflow stage chats: heavy accent rules above and below the prompt, the top rule ending in a bold `label`, and a dim `placeholder` after the cursor while nothing is typed.
+
+```typescript
+import { applyAttachedComposer, CustomEditor, type ExtensionAPI, type Theme } from "@bastani/atomic";
+
+class ReviewerEditor extends CustomEditor {
+  appTheme?: Theme;
+
+  render(width: number): string[] {
+    const theme = this.appTheme;
+    if (theme === undefined) return super.render(width);
+    return applyAttachedComposer(
+      {
+        accent: (text) => theme.fg("accent", text),
+        text: (text) => theme.fg("text", text),
+        dim: (text) => theme.fg("dim", text),
+      },
+      "reviewer · checking the diff · 2m",
+      "Message reviewer…",
+      super.render(width),
+    );
+  }
+}
+
+export default function (pi: ExtensionAPI) {
+  pi.on("session_start", (_event, ctx) => {
+    ctx.ui.setEditorComponent((tui, editorTheme, keybindings) => {
+      const editor = new ReviewerEditor(tui, editorTheme, keybindings);
+      editor.appTheme = ctx.ui.theme;
+      return editor;
+    });
+  });
+}
+```
+
+It replaces only a plain editor rule or one that reads `↑ N more` or `↓ N more`: a first or last line that is not a rule, such as one your editor draws itself, is left as it is. A long label is cut with `…` to fit. Below `INPUT_LABEL_MIN_COLUMNS` (40) columns, the rules stay heavy without the label. Pass `undefined` for `label` or `placeholder` to leave either out.
 
 ## Key Rules
 

@@ -100,8 +100,10 @@ test("workflow compact picker retains exact owner context through empty, live an
 		tasks.store.drain();
 		stage.handleInput("\x1b[A");
 		assert.match(render(), /Second owner task/);
-		assert.match(render(), /provider\/resolved {2}low/, "the selected agent's model shows under its row");
 		stage.handleInput(" ");
+		await flush();
+		assert.match(render(), /provider\/resolved {2}low/, "the selected agent's model shows in its peek card");
+		stage.handleInput("\r");
 		await flush();
 		assert.match(render(), /Second owner task/);
 		assert.doesNotMatch(render(), /MCP:|gpt-6-astra|hidden parent chrome/);
@@ -112,6 +114,7 @@ test("workflow compact picker retains exact owner context through empty, live an
 		assert.ok(renders > before, "settlement invalidates the open picker");
 		assert.match(render(), /Tasks {2}1 working · 1 done/);
 		stage.handleInput(" ");
+		stage.handleInput("\r");
 		await flush();
 		assert.match(render(), /Second owner task/, "back and settlement preserve selection");
 		stage.handleInput("\x1b");

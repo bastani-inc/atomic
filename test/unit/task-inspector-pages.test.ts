@@ -68,6 +68,7 @@ async function host(
 
 async function drill(inspector: TaskInspector) {
 	inspector.handleInput(" ");
+	inspector.handleInput("\r");
 	await flush();
 	inspector.handleInput("\r");
 	await flush();
@@ -78,7 +79,7 @@ test("task picker and detail show page-specific hints and wheel moves selection 
 	try {
 		await h.fixture.start("First task");
 		await h.fixture.start("Second task");
-		assert.match(h.text(), /↑↓ select · space peek · enter\/→ open · x stop · \/ filter · esc\/← back · \? keys/);
+		assert.match(h.text(), /↑↓ select · space peek · enter\/→ open · x stop · \/ filter · esc\/← close · \? keys/);
 		const initial = h.inspector.navigation.selectedTaskId;
 		h.inspector.handleInput(up);
 		assert.notEqual(h.inspector.navigation.selectedTaskId, initial);
@@ -91,6 +92,7 @@ test("task picker and detail show page-specific hints and wheel moves selection 
 			});
 		h.fixture.store.drain();
 		h.inspector.handleInput(" ");
+		h.inspector.handleInput("\r");
 		await flush();
 		assert.match(h.text(), /↑↓ actions · enter\/→ select · x stop · pgup\/pgdn scroll · esc\/← back to list/);
 		const before = h.text(80, 10);
@@ -126,7 +128,7 @@ test("agent transcript footer offers messaging only when supported and fills the
 			const text = plain(lines);
 			assert.match(text, /^Transcript/);
 			assert.match(text, /hello transcript/);
-			assert.match(text, /← task · pgup\/pgdn scroll · ctrl\+o expand · \? keys/);
+			assert.match(text, /← task · pgup\/pgdn scroll · \? keys/);
 			assert.equal(lines.length, 30);
 			assert.ok(lines.every((line) => visibleWidth(line) <= 110));
 			h.inspector.invalidate();
@@ -218,6 +220,7 @@ test("store updates reload only the focused detail, and closing transcript reloa
 		changed();
 		assert.equal(reads, 0);
 		h.inspector.handleInput(" ");
+		h.inspector.handleInput("\r");
 		await flush();
 		assert.match(h.text(), /Initial prompt/);
 		detail = "Updated prompt";
@@ -247,6 +250,7 @@ test("a delayed stop failure remains visible below an open transcript (#4521)", 
 	try {
 		await h.fixture.start("Stop failure");
 		h.inspector.handleInput(" ");
+		h.inspector.handleInput("\r");
 		await flush();
 		h.inspector.handleInput("x");
 		h.inspector.handleInput("x");
@@ -387,6 +391,7 @@ test("mounted inspector inherits render settings and toggles only the host tool 
 			return plain(frame.lines);
 		};
 		await send(" ");
+		await send("\r");
 		await send("\r");
 		const collapsed = await render();
 		assert.doesNotMatch(collapsed, /BRIDGE THINKING|OUTPUT-0\b/);

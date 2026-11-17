@@ -119,7 +119,7 @@ Moved to [RPC protocol](/rpc/protocol#model).
 
 #### set_model
 
-Moved to [RPC protocol](/rpc/protocol#set_model).
+Switch to a specific model, with optional `thinkingLevel` (`"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, or `"max"`) and `persist`. See [RPC protocol](/rpc/protocol#set_model) for examples.
 
 #### cycle_model
 

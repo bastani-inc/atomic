@@ -95,7 +95,7 @@ Named workflow runs execute in the background. After launch you get the full run
 
 `/workflows` lists each run's state and progress. In a run's graph, `p` pauses the run, `r` resumes it, and `q` twice quits it while keeping it resumable; the hint line lists the keys that work at that moment.
 
-Each run has a row in the agent panel below the prompt with its stage progress, current stage and elapsed time; a waiting question shows on the row. Press ↓ on an empty prompt and Enter on the run's row to open its graph.
+Each run has a row in the agent panel below the prompt with its stage progress, current stage and elapsed time; a run waiting on one question shows it on the row; with several questions or a custom prompt, the row shows `needs input`. Press ↓ on an empty prompt and Enter on the run's row to open its graph.
 
 Human-in-the-loop prompts (`ctx.ui.input`, `confirm`, `select`, `editor`) surface in the graph viewer, not as chat modals. Open `/workflows <run-id>` and select the waiting node to answer them. The agent panel row shows that a run waits, and Enter on it opens the graph.
 

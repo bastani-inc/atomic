@@ -140,7 +140,7 @@ for (const live of [true, false]) {
 			});
 			assert.doesNotMatch(screen(page), /\bmodel\s|\bcompact\s|\bquit\s/, "main-chat commands do not apply here");
 			type(page, "skill:de");
-			await vi.waitFor(() => assert.match(screen(page), /→ skill:demo-skill/));
+			await vi.waitFor(() => assert.match(screen(page), /❯ skill:demo-skill/));
 			page.handleInput(TAB);
 			await vi.waitFor(() => assert.match(screen(page), /^❯ \/skill:demo-skill\s*$/m));
 		} finally {
@@ -208,7 +208,7 @@ test("a chat of a subagent launched by a stage on a local worker completes and e
 	const page = await openChat(true, sent, childCommands, throughWorker);
 	try {
 		type(page, "/skill:de");
-		await vi.waitFor(() => assert.match(screen(page), /→ skill:demo-skill\s+\[p\] Demo skill/));
+		await vi.waitFor(() => assert.match(screen(page), /❯ skill:demo-skill\s+\[p\] Demo skill/));
 		page.handleInput(TAB);
 		await vi.waitFor(() => assert.match(screen(page), /^❯ \/skill:demo-skill\s*$/m));
 		type(page, "go");

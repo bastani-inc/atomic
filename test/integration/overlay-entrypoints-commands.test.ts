@@ -171,8 +171,8 @@ describe("workflow resume — overlay integration", () => {
 			assert.equal(customCalls.length, 1);
 			assert.equal(customCalls[0]!.options.overlay, false);
 			const rendered = visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " ");
-			assert.match(rendered, /Resume Session/);
-			assert.match(rendered, /durable-picker-run\s+paused\s+durable-wf/);
+			assert.match(rendered, /Resume workflow run/);
+			assert.match(rendered, /durable-wf · durable-\s+paused · 1 checkpoint/);
 		} finally {
 			setDurableBackend(undefined);
 		}
@@ -209,8 +209,8 @@ describe("workflow resume — overlay integration", () => {
 			await delay(5);
 			assert.equal(customCalls.length, 1);
 			const rendered = visibleText(customCalls[0]!.component.render(80));
-			assert.match(rendered, /durable-after-completed\s+paused\s+durable-history/);
-			assert.doesNotMatch(rendered, /completed-local-/);
+			assert.match(rendered, /durable-history · durable-\s+paused · 1 checkpoint/);
+			assert.doesNotMatch(rendered, /done · /);
 		} finally {
 			setDurableBackend(undefined);
 		}
@@ -316,8 +316,8 @@ describe("workflow resume — overlay integration", () => {
 			await delay(5);
 			assert.ok(customCalls.length >= 1);
 			const text = visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " ");
-			assert.match(text, /live-run-\d+\s+paused\s+0\/0 stages/);
-			assert.match(text, /durable-alongside-live\s+paused\s+durable-cross-session/);
+			assert.match(text, /live-wf · live-run\s+paused/);
+			assert.match(text, /durable-cross-session · durable-\s+paused · 1 checkpoint/);
 			customCalls[0]!.component.handleInput?.("\u001b");
 			await handlerPromise;
 		} finally {
@@ -591,9 +591,9 @@ describe("/workflows and the removed /workflow connect and /workflow attach — 
 			assert.ok(customCalls.length >= 1);
 			assert.equal(customCalls[0]!.options.overlay, false);
 			const text = visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " ");
-			assert.match(text, /live-combined-\d+\s+paused\s+0\/0 stages/);
-			assert.match(text, /durable-combined-wf\s+paused\s+durable-newer-wf/);
-			assert.ok(text.indexOf("durable-combined-wf") < text.indexOf("live-combined-"));
+			assert.match(text, /live-older-wf · live-com\s+paused/);
+			assert.match(text, /durable-newer-wf · durable-\s+paused · 1 checkpoint/);
+			assert.ok(text.indexOf("durable-newer-wf") < text.indexOf("live-older-wf"));
 			customCalls[0]!.component.handleInput?.("\u001b");
 			await handlerPromise;
 		} finally {
@@ -623,8 +623,8 @@ describe("/workflows and the removed /workflow connect and /workflow attach — 
 		assert.ok(realCustomCalls.length >= 1);
 		assert.equal(realCustomCalls[0]!.options.overlay, false);
 		const text = visibleText(realCustomCalls[0]!.component.render(80));
-		assert.match(text, /Resume Session/);
-		assert.doesNotMatch(text, /Open workflow run/);
+		assert.match(text, /Resume workflow run/);
+		assert.doesNotMatch(text, /Open workflow run|Connect to workflow run/);
 	});
 
 	test("no-arg resume: dismissing shared selector does not open second live picker", async () => {
@@ -711,8 +711,8 @@ describe("/workflows and the removed /workflow connect and /workflow attach — 
 			await delay(10);
 			assert.ok(customCalls.length >= 1);
 			const text = visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " ");
-			assert.match(text, /live-hydrate-\d+\s+paused\s+0\/0 stages/);
-			assert.match(text, /durable-hydrate-wf\s+paused\s+durable-hydrate/);
+			assert.match(text, /live-hydrate-wf · live-hyd\s+paused/);
+			assert.match(text, /durable-hydrate · durable-\s+paused · 1 checkpoint/);
 			customCalls[0]!.component.handleInput?.("\u001b");
 			await handlerPromise;
 		} finally {
