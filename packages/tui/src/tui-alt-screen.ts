@@ -6,11 +6,13 @@ import {
 } from "./alt-screen-search.ts";
 import { AltScreenFlashContainer } from "./components/alt-screen-flash.ts";
 import { ScrollView } from "./components/scroll-view.ts";
+import { WindowedContainer, type WindowRows } from "./components/windowed-container.ts";
 import { getKeybindings } from "./keybindings.ts";
 import { isKeyRelease } from "./keys.ts";
 import {
 	getLayoutBoxesAt,
 	getScrollbarGeometry,
+	getScrollContentRows,
 	getScrollViewBox,
 	getScrollViewsAt,
 	type LayoutFrame,
@@ -521,11 +523,13 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private scrollToPrompt(direction: -1 | 1): void {
 		if (!this.currentLayout) return;
 		const scrollView = this.getPrimaryScrollView();
-		const lines = getScrollViewBox(this.currentLayout, scrollView)?.scrollContentLines;
+		// Prompts are found in every row, so windowed content renders what it has not yet, and is laid out again.
+		if (this.settleScrollContent(scrollView)) this.currentLayout = this.layoutFrame();
+		const lines = getScrollContentRows(getScrollViewBox(this.currentLayout, scrollView));
 		if (!lines) return;
 
 		for (let row = scrollView.scrollTop + direction; row >= 0 && row < lines.length; row += direction) {
-			if (!OSC133_PROMPT_START.test(lines[row] ?? "")) continue;
+			if (!OSC133_PROMPT_START.test(lines.at(row) ?? "")) continue;
 			scrollView.scrollTo(row);
 			this.requestRender();
 			return;
@@ -612,8 +616,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (!search) return false;
 		const scrollView = layout.primaryScrollView ?? this.implicitScrollView;
 		const box = getScrollViewBox(layout, scrollView);
-		const lines = box?.scrollContentLines;
-		if (!lines || !search.query.trim()) {
+		const rows = getScrollContentRows(box);
+		if (!rows || !search.query.trim()) {
 			search.matches = [];
 			search.selectedIndex = -1;
 			search.selectedKey = undefined;
@@ -623,6 +627,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 
 		const shouldRevealSelection = search.selectionMode !== "retain";
+		const lines = Array.isArray(rows) ? rows : Array.from({ length: rows.length }, (_, row) => rows.at(row) ?? "");
 		const result = search.index.search(lines, search.query);
 		const matches = result.matches;
 		search.matches = matches;
@@ -1169,7 +1174,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		);
 		if (visibleBottom < visibleTop) return undefined;
 		const pointerRow = Math.max(visibleTop, Math.min(visibleBottom, y));
-		const maxContentRow = Math.max(0, (box.scrollContentLines?.length ?? 1) - 1);
+		const maxContentRow = Math.max(0, (getScrollContentRows(box)?.length ?? 1) - 1);
 		return {
 			row: Math.max(0, Math.min(maxContentRow, scrollView.scrollTop + pointerRow - box.rect.y)),
 			col: Math.max(0, Math.min(box.rect.width - 1, x - box.rect.x)),
@@ -1190,8 +1195,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	private getSelectionSourceLine(point: SelectionPoint): string {
 		if (point.scrollView && this.currentLayout) {
-			const lines = getScrollViewBox(this.currentLayout, point.scrollView)?.scrollContentLines;
-			if (lines) return lines[point.row] ?? "";
+			const lines = getScrollContentRows(getScrollViewBox(this.currentLayout, point.scrollView));
+			if (lines) return lines.at(point.row) ?? "";
 		}
 		return this.previousScreen[point.row] ?? "";
 	}
@@ -1462,16 +1467,16 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private getActiveSelectionText(): string | undefined {
 		const selection = this.getSelectionBounds();
 		if (!selection) return undefined;
-		let sourceLines: readonly string[] = this.previousScreen;
+		let sourceLines: WindowRows = this.previousScreen;
 		if (selection.start.scrollView) {
 			if (!this.currentLayout) return undefined;
-			const box = getScrollViewBox(this.currentLayout, selection.start.scrollView);
-			if (!box?.scrollContentLines) return undefined;
-			sourceLines = box.scrollContentLines;
+			const rows = getScrollContentRows(getScrollViewBox(this.currentLayout, selection.start.scrollView));
+			if (!rows) return undefined;
+			sourceLines = rows;
 		}
 		const lines: string[] = [];
 		for (let row = selection.start.row; row <= selection.end.row; row++) {
-			const line = sourceLines[row] ?? "";
+			const line = sourceLines.at(row) ?? "";
 			const columns = this.getSelectionColumns(line, row, selection);
 			lines.push(
 				stripTerminalSequences(
@@ -1706,7 +1711,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (this.isCurrentSearchMatchOnRow(scrollView.scrollTop)) return screen;
 		const box = getScrollViewBox(layout, scrollView);
 		const clip = box?.clip;
-		const lines = box?.scrollContentLines;
+		const lines = getScrollContentRows(box);
 		if (!clip || !lines || clip.width <= 0 || clip.height < 2) return screen;
 		const pin = this.scrollPinnedPrompt;
 		const promptRow = turnPromptAbove(lines, scrollView.scrollTop, pin.isPrompt);
@@ -1725,15 +1730,29 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return result;
 	}
 
+	private layoutFrame(): LayoutFrame {
+		const width = Math.max(1, this.terminal.columns);
+		const height = Math.max(1, this.terminal.rows);
+		return renderLayoutFrame(this.layoutRoot ?? this.implicitScrollView, width, height, () => this.requestRender());
+	}
+
+	/** Renders the rows of the scroll view's windowed content that are not current; whether it has such content. */
+	private settleScrollContent(scrollView: ScrollView): boolean {
+		const box = this.currentLayout ? getScrollViewBox(this.currentLayout, scrollView) : undefined;
+		const content = box?.children[0]?.component;
+		if (!(content instanceof WindowedContainer)) return false;
+		content.settleRows();
+		return true;
+	}
+
 	protected override doRender(): void {
 		if (this.stopped || !this.altScreenActive) return;
 		const width = Math.max(1, this.terminal.columns);
 		const height = Math.max(1, this.terminal.rows);
-		const root = this.layoutRoot ?? this.implicitScrollView;
-		let nextLayout = renderLayoutFrame(root, width, height, () => this.requestRender());
-		if (this.refreshSearch(nextLayout)) {
-			nextLayout = renderLayoutFrame(root, width, height, () => this.requestRender());
-		}
+		// Search reads every row, so windowed content renders what it has not yet before it is laid out.
+		if (this.activeSearch?.query.trim()) this.settleScrollContent(this.getPrimaryScrollView());
+		let nextLayout = this.layoutFrame();
+		if (this.refreshSearch(nextLayout)) nextLayout = this.layoutFrame();
 		// Resolve fake cursors before highlighting and compositing, which only track SGR codes
 		let screen = this.resolveFakeCursors(nextLayout.lines.map((line) => line.replace(OSC133_ZONE_PREFIX, "")));
 		screen = this.applySearchHighlights(screen, nextLayout);
@@ -1834,14 +1853,14 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 }
 
 export function turnPromptAbove(
-	lines: readonly string[],
+	lines: WindowRows,
 	top: number,
 	isPrompt: (row: string) => boolean,
 ): string | undefined {
 	for (let start = Math.min(top, lines.length - 1); start >= 0; start--) {
-		if (!isPrompt(lines[start] ?? "")) continue;
+		if (!isPrompt(lines.at(start) ?? "")) continue;
 		for (let row = start; row < top; row++) {
-			const text = (lines[row] ?? "").replace(OSC133_ZONE_PREFIX, "");
+			const text = (lines.at(row) ?? "").replace(OSC133_ZONE_PREFIX, "");
 			if (text.replace(/\x1b\[[0-9;]*m/g, "").trim()) return text;
 		}
 		return undefined;

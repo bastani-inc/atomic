@@ -1,5 +1,6 @@
 import type { ScrollView } from "./components/scroll-view.ts";
 import { allocateStackSizes, visibleStackEntries } from "./components/stack.ts";
+import { WindowedContainer, type WindowRows } from "./components/windowed-container.ts";
 import { getLayoutNode } from "./layout-node.ts";
 import { cropKittyImageLine, getKittyImageMetadata, getMaxKittyImageRows, isImageLine } from "./terminal-image.ts";
 import { type Component, CURSOR_MARKER, compositeTuiLine } from "./tui.ts";
@@ -27,9 +28,13 @@ export interface LayoutBox {
 	children: LayoutBox[];
 	parent?: LayoutBox;
 	lines?: readonly string[];
+	/** The rows of content laid out as a window (a `WindowedContainer`), in place of `lines`. */
+	rows?: WindowRows;
 	lineOffset?: number;
 	scrollView?: ScrollView;
 	scrollContentLines?: readonly string[];
+	/** The rows of a scroll view's windowed content, in place of `scrollContentLines`. */
+	scrollContentRows?: WindowRows;
 	layer: number;
 }
 
@@ -136,6 +141,16 @@ function layoutComponent(
 	if (node.type === "scroll") {
 		const previousScrollTop = node.state.scrollTop;
 		const contentWidth = node.state.getContentWidth(safeWidth);
+		if (node.component instanceof WindowedContainer && height !== undefined) {
+			return layoutWindowedScroll(context, component, node.component, node.state as ScrollView, {
+				x,
+				y,
+				width: safeWidth,
+				height: Math.max(0, Math.floor(height)),
+				contentWidth,
+				clip,
+			});
+		}
 		const childBox = layoutComponent(
 			context,
 			node.component,
@@ -246,6 +261,56 @@ function layoutComponent(
 	return box;
 }
 
+/**
+ * A scroll view over windowed content: the content renders the rows the viewport shows, and keeps the content at the
+ * top in place while heights above it change.
+ */
+function layoutWindowedScroll(
+	context: LayoutContext,
+	component: Component,
+	content: WindowedContainer,
+	scrollView: ScrollView,
+	area: { x: number; y: number; width: number; height: number; contentWidth: number; clip: LayoutRect },
+): LayoutBox {
+	const rows = content.layoutWindow({
+		width: area.contentWidth,
+		top: scrollView.scrollTop,
+		height: area.height,
+		followEnd: scrollView.isFollowingEnd,
+		requestRender: context.requestRender,
+	});
+	scrollView.updateLayout(rows.length, area.height, context.requestRender, rows.top);
+	if (scrollView.primary || !context.primaryScrollView) context.primaryScrollView = scrollView;
+	const rect = { x: area.x, y: area.y, width: area.width, height: area.height };
+	const clip = intersect(area.clip, rect);
+	const contentRect = { x: area.x, y: area.y - scrollView.scrollTop, width: area.contentWidth, height: rows.length };
+	const contentBox: LayoutBox = {
+		component: content,
+		rect: contentRect,
+		clip: intersect(clip, contentRect),
+		children: [],
+		rows,
+		lineOffset: 0,
+		layer: 0,
+	};
+	const box: LayoutBox = {
+		component,
+		rect,
+		clip,
+		children: [contentBox],
+		scrollView,
+		scrollContentRows: rows,
+		layer: 0,
+	};
+	contentBox.parent = box;
+	return box;
+}
+
+/** The rows of a scroll view's content, however it was laid out. */
+export function getScrollContentRows(box: LayoutBox | undefined): WindowRows | undefined {
+	return box?.scrollContentRows ?? box?.scrollContentLines;
+}
+
 function replaceScrollbarCell(
 	line: string,
 	column: number,
@@ -280,7 +345,7 @@ function replaceScrollbarCell(
 export function getScrollbarGeometry(box: LayoutBox, includeHiddenAuto = false): ScrollbarGeometry | undefined {
 	if (!box.scrollView || box.rect.width <= 0 || box.rect.height <= 0) return undefined;
 
-	const contentHeight = box.children[0]?.rect.height ?? box.scrollContentLines?.length ?? 0;
+	const contentHeight = box.children[0]?.rect.height ?? getScrollContentRows(box)?.length ?? 0;
 	const trackHeight = box.rect.height;
 	const canRevealHiddenAuto = includeHiddenAuto && box.scrollView.scrollbar === "auto" && contentHeight > trackHeight;
 	if (!box.scrollView.isScrollbarVisible && !canRevealHiddenAuto) return undefined;
@@ -328,12 +393,13 @@ function paintScrollbar(box: LayoutBox, screen: string[], totalWidth: number): v
 }
 
 function paintBox(box: LayoutBox, screen: string[], totalWidth: number): void {
-	if (box.lines) {
+	const source = box.lines ?? box.rows;
+	if (source) {
 		const offset = box.lineOffset ?? 0;
 		const firstRow = Math.max(box.rect.y, box.clip.y, 0);
 		const lastRow = Math.min(box.rect.y + box.rect.height, box.clip.y + box.clip.height, screen.length);
 		for (let row = firstRow; row < lastRow; row++) {
-			const sourceLine = box.lines[offset + row - box.rect.y];
+			const sourceLine = source.at(offset + row - box.rect.y);
 			if (sourceLine === undefined) continue;
 			let line = sourceLine.replace(OSC133_ZONE_PREFIX, "");
 			const imageMetadata = getKittyImageMetadata(line);
@@ -356,14 +422,15 @@ function paintBox(box: LayoutBox, screen: string[], totalWidth: number): void {
 	}
 	for (const child of box.children) paintBox(child, screen, totalWidth);
 
-	if (box.scrollView && box.scrollContentLines && box.scrollView.scrollTop > 0 && box.rect.height > 0) {
+	const scrollContent = getScrollContentRows(box);
+	if (box.scrollView && scrollContent && box.scrollView.scrollTop > 0 && box.rect.height > 0) {
 		// Find the nearest image line above the viewport. Placeholder rows below an
 		// image line may contain padding, borders, or side-by-side text, so the search
 		// is bounded by the tallest registered image instead of by row content.
 		const scrollTop = box.scrollView.scrollTop;
 		const minRow = Math.max(0, scrollTop - getMaxKittyImageRows());
 		for (let imageRow = scrollTop - 1; imageRow >= minRow; imageRow--) {
-			const imageLine = box.scrollContentLines[imageRow] ?? "";
+			const imageLine = scrollContent.at(imageRow) ?? "";
 			if (!isImageLine(imageLine)) continue;
 			const metadata = getKittyImageMetadata(imageLine);
 			if (!metadata) continue;

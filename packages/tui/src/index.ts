@@ -76,6 +76,12 @@ export {
 	type StackOptions,
 	VStack,
 } from "./components/v-stack.ts";
+export {
+	WindowedContainer,
+	type WindowLayout,
+	type WindowRequest,
+	type WindowRows,
+} from "./components/windowed-container.ts";
 // Editor component interface (for custom editors)
 export type { EditorComponent } from "./editor-component.ts";
 // Fuzzy matching

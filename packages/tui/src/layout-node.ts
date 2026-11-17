@@ -29,8 +29,18 @@ export interface ScrollLayoutState {
 	readonly primary: boolean;
 	readonly overscroll: "chain" | "contain";
 	readonly viewportHeight: number;
+	readonly isFollowingEnd: boolean;
 	getContentWidth(width: number): number;
-	updateLayout(contentHeight: number, viewportHeight: number, requestRender: () => void): void;
+	/**
+	 * `anchoredScrollTop` is where the content that was at the top is now, when the content's height above it changed;
+	 * it replaces the scroll position unless the view follows the end.
+	 */
+	updateLayout(
+		contentHeight: number,
+		viewportHeight: number,
+		requestRender: () => void,
+		anchoredScrollTop?: number,
+	): void;
 }
 
 export interface ScrollLayoutNode {
