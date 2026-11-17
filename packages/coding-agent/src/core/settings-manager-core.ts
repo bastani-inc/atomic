@@ -253,6 +253,8 @@ export class SettingsManager {
 			}
 			delete settings.routerModel;
 		}
+		// Automatic model routing was removed; its settings are dropped.
+		delete settings.modelRouting;
 		settings = normalizeAzureSettings(settings as Settings) as Record<string, unknown>;
 		// Migrate queueMode -> steeringMode
 		if ("queueMode" in settings && !("steeringMode" in settings)) {

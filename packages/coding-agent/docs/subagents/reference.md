@@ -7,7 +7,7 @@ description: Fallback model resolution and reasoning-level contracts.
 
 ## Automatic model selection
 
-Builtin agents default to `model: "auto"`, choosing a concrete model and supported reasoning effort before each child starts. Custom agents can opt in with the same value:
+Builtin agents default to `model: "auto"`. Custom agents can use the same value in their `model` field, and a `subagent` call or an individual parallel task can pass it:
 
 ```ts
 subagent({
@@ -17,66 +17,13 @@ subagent({
 });
 ```
 
-The same value works on individual parallel tasks and in an agent definition's `model` field. A concrete call override wins over an agent's `auto` default. Omitting `model` keeps normal inheritance; it routes only when the effective agent model is `auto`. Each parallel task receives its own decision.
+`auto` stands for your default model: the `defaultProvider` and `defaultModel` [settings](/settings#model-&-thinking), which hold the model you last chose with `/model`, when that model has credentials. The child runs it at the agent's `thinking` level when the agent sets one; otherwise at the model's `modelThinkingLevels` entry, then `defaultThinkingLevel`, then `medium`. When no default model is configured or it is unavailable, the child runs the launching session's model at the session's thinking level, unless the agent sets its own `thinking`. Levels the model does not support are clamped.
 
-Workflow stages also support [prompt-based `model: "auto"`](/workflows/authoring#automatic-stage-model-selection), using the same decision provider and evaluation guidance. Stage model selection is separate from choosing which workflow to launch.
+No model is asked to choose, and the task does not affect which model runs. A concrete model on the call wins over an agent's `auto` default, and omitting `model` keeps normal inheritance. Workflow stages follow the same rule; see [stage `model: "auto"`](/workflows/authoring#automatic-stage-model-selection).
 
-Routing takes at most two short requests, described in [Model Selection](/models/model-selection#automatic-subagent-and-workflow-stage-routing): a chat model answers questions about the task, then the router chooses between a shortlist of models that each carry their own [Evals](/models/evals) results, seeing only those answers and never the task. Effort follows the task's difficulty.
+To run a role on another model, name it as `provider/model[:effort]` on the call, in the agent definition, or in a builtin override. The `taskNeeds` and `modelConstraints` fields of earlier releases are ignored when they are still passed.
 
-When you launch a subagent, fill in `taskNeeds` with everything you can judge; stated fields are not asked, and stating all six skips the task-reading request. To choose the contenders yourself, list them in `modelConstraints.allowedModels`; the eligible ones become the shortlist:
-
-```typescript
-subagent({
-  agent: "worker",
-  task: "Open Xcode, build the app and verify the settings screen by screenshot",
-  model: "auto",
-  taskNeeds: {
-    work: "computer_use", difficulty: "hard", mistakeCost: "moderate",
-    needsImages: true, longContext: false, latencySensitive: false,
-  },
-  modelConstraints: { allowedModels: ["anthropic/claude-opus-5-5", "openai-codex/gpt-6-astra"] },
-})
-```
-
-`work` is one of `computer_use`, `coding`, `code_review`, `codebase_lookup`, `research`, `business_workflow`, `math_science` or `writing`; `difficulty` is `trivial`, `easy`, `moderate`, `hard` or `very_hard`; `mistakeCost` is `negligible`, `low`, `moderate`, `high` or `severe`; `needsImages`, `longContext` (must hold a very large codebase or document set) and `latencySensitive` (a fast answer matters more than extra reasoning) are true or false. When listing candidates, prefer the user's subscription models over pay-per-token API models unless the user asked for API models or has none. To keep providers or models out of routing entirely, use the [`modelRouting`](/settings#modelrouting) setting. You do not need to attach eval records yourself.
-
-The agent's system prompt is not routing metadata. For a self-contained agent with no task, it remains the task fallback. The router weighs task-relevant evidence, cost, and latency rather than always choosing a benchmark winner or maximum effort. Benchmark measurement effort does not prescribe execution effort.
-
-The chat model reads the complete task; a task too large for its context window is read by the cheapest eligible model whose window holds it. If a classifier rejects the choice request, routing falls back to the current chat model. Fallbacks are silent unless `ATOMIC_MODEL_ROUTING_DEBUG=1`, which prints them with the HTTP status and error type, or [debug mode](/development#debugging), which writes them to the debug log. Hard `modelConstraints` are never truncated.
-
-The shared [`decisionModel`](/settings#decisionmodel) setting chooses the model making the decision, not the child model. Selection follows this order:
-
-1. An explicit registered classifier or chat model.
-2. The current chat model, including when `decisionModel` is unset or `auto`.
-
-Saved classifier credentials do not change this order. Neither routing nor child fallback changes the parent chat model or the `structured_output` tool.
-
-Each routing inference has a wall-clock deadline taken from the [`httpIdleTimeoutMs`](/settings#http) setting, 10 minutes by default, covering its corrective retries and any chat fallback. A slower decision fails like any other routing-inference failure. Cancel the request to stop sooner. Independent provider and credential-preparation limits still apply. Chat routing gets an initial attempt plus three corrective retries for malformed or schema-invalid answers. A classifier routing failure switches to the current chat model instead of repeating the classifier request. A valid answer stops repairs.
-
-The result records a primary `{ model, effort }`, up to two ordered `fallbacks`, each with its own model and effort, and `candidates`, every model the router could choose from after the routing settings, constraints, and the task's image and long-context needs. Atomic ranks three distinct eligible provider/model IDs, or all available IDs when fewer than three qualify. It selects each rank from the remaining models, excluding all efforts of earlier choices. A supported `"off"` is distinct from `null`, which means no configurable reasoning. The catalog reflects configured authentication, not proof of valid credentials, quota, or entitlement.
-
-The child does not start if no candidates are eligible, availability changes, or cancellation occurs. A classifier provider failure, missing credentials, unsupported classify operation, size rejection, or malformed answer switches to the current chat model. Transient provider failures are retried up to three times first. The chat model gets its own output-repair allowance. If routing inference fails completely, or Atomic cannot pick a model itself (the task needs images and no eligible model reads them, `allowedModels` lists more models than one routing request holds (roughly 100), or `evals.md` is missing), the child runs on the current chat model instead of failing, but only when that model is available and satisfies every routing constraint (such as `allowedModels` and effort, cost, context and input limits). Otherwise the launch fails. Invalid inputs, conflicting constraints, cancellation and stale-catalog failures never trigger fallback. No partial decision can launch a child. These switches are silent unless `ATOMIC_MODEL_ROUTING_DEBUG=1` is set or [debug mode](/development#debugging) is on.
-
-Router classification is one classify request for the prepared choices. If the provider rejects the request size, routing uses the current chat model. See [structured decision limits](/sdk/structured-decisions#provider-behavior-and-limits).
-
-Execution tries the ranked models in order before remaining configured fallbacks and the current chat model, subject to normal retry rules and hard constraints. Duplicate model IDs are attempted only at their first position. Each ranked candidate retains its selected effort. Ranking can require up to three selection passes. Metadata preserves the ordered decision separately from the model and effort actually used; workflow checkpoints restore that order without rerouting.
-
-Choose a router provider permitted to receive the task and agent name/description. Do not put secrets in them.
-
-### Hard model constraints
-
-For automatic routing, optional `modelConstraints` on a call, parallel task, or agent definition restricts eligible choices and execution fallbacks. All applicable restrictions must hold; a call cannot widen an agent's restrictions. Omit this object to use the full available catalog that your [`modelRouting`](/settings#modelrouting) settings allow.
-
-| Field | Meaning |
-| --- | --- |
-| `allowedModels` | Exact provider/model IDs permitted to receive the task. The [`modelRouting`](/settings#modelrouting) `allowedModels` and `excludedModels` settings still apply on top of this list |
-| `allowedProviders`, `excludedProviders` | Provider IDs whose models may or may never be used. On a call, setting either replaces the [`modelRouting`](/settings#modelrouting) provider settings for that call, so set them only when the user asks; in an agent definition they only narrow those settings |
-| `maxInputCost`, `maxOutputCost` | Maximum catalog price in USD per million input or output tokens, not a total spending cap. A `-fast` or `-ultrafast` model is compared at the service-tier price it is billed at |
-| `minContextWindow` | Minimum advertised context window in tokens |
-| `requiredInputs` | Required input types, `"text"` or `"image"` |
-| `allowedEfforts` | Permitted supported effort values, including `null` for non-reasoning models |
-
-Unknown keys and invalid limits fail validation. An empty eligible set stops the launch. These constraints do not turn a concrete model call into an automatic one. The catalog does not establish a latency SLA or a provider's privacy guarantees. Express hard provider restrictions through `allowedProviders`, `excludedProviders` or `allowedModels`; describe softer preferences in the task.
+A child on `auto` keeps a fallback chain: the agent's `fallbackModels`, then the launching session's model. See [Fallback models](#fallback-models).
 
 For a persistent builtin override, put this in your user or project settings:
 
@@ -85,16 +32,14 @@ For a persistent builtin override, put this in your user or project settings:
   "subagents": {
     "agentOverrides": {
       "worker": {
-        "modelConstraints": { "allowedEfforts": ["high"] }
+        "thinking": "high"
       }
     }
   }
 }
 ```
 
-Existing builtin overrides using the legacy `thinking` field restrict automatic ranking to that effort. They intersect with `modelConstraints`; conflicting restrictions stop before launch. Remaining configured fallbacks can still use explicit suffixes that override the legacy default, but cannot reinsert an already-ranked model at another effort. Actual `modelConstraints.allowedEfforts` restrictions apply to every candidate. A concrete model suffix still wins when you pin a model. User-authored agent definitions retain their existing behavior; use `modelConstraints.allowedEfforts` to constrain their automatic routing.
-
-Set a builtin override's `thinking` to `""` or `false` to clear an inherited legacy effort and let the router choose. This does not clear `modelConstraints.allowedEfforts`.
+A builtin override's `thinking` sets the effort its `auto` child runs at. Set it to `""` or `false` to clear an inherited effort and use the default thinking level.
 
 ## Fallback models
 
@@ -104,11 +49,9 @@ Define ordered `fallbackModels` to recover from retryable provider or model fail
 2. Configured fallbacks, in order.
 3. The current user-selected model, appended when available.
 
-With `model: "auto"`, the ranked second and third models come immediately after the primary, before steps 2 and 3. Fewer than three eligible models produce a shorter ranked list.
+With `model: "auto"`, the requested primary model is the model `auto` stands for.
 
-A child launched on a concrete model, named by the `subagent` call's `model` or by the agent's own `model`, runs only that model and the agent's own `fallbackModels`. It never falls back to the current user-selected model (step 3), to the settings `fallbackModels`, or to a chain inherited from a workflow stage. The model you name is the model that runs. A named model that is not available fails the launch, unless the agent's own `fallbackModels` has one that is, and a child restored after a restart keeps the model its launch named: it continues on a fallback it had moved to only while that fallback still meets its constraints, and otherwise goes back to the named model. To allow other models, list them in the agent's `fallbackModels`, or launch with `model: "auto"` and `modelConstraints.allowedModels`. When the named model and every fallback it may use fail, the child fails with an error that names the model and the provider's reason, and says no other model was used. This applies however the model fails: at the start, partway through the task, or on a context overflow that compaction cannot resolve. A child whose last turn ended in a model error is reported as failed, even when earlier turns succeeded.
-
-`modelConstraints` from the call and the agent definition apply to every fallback, also for a concrete-model launch and for a child that inherits the current model and the settings chain, and to the model a launch that names none starts on. A fallback that starts in place of an unavailable model must satisfy them at the effort it would run at. A candidate that does not satisfy all of them is skipped. A concrete model itself still runs as named.
+A child launched on a concrete model, named by the `subagent` call's `model` or by the agent's own `model`, runs only that model and the agent's own `fallbackModels`. It never falls back to the current user-selected model (step 3), to the settings `fallbackModels`, or to a chain inherited from a workflow stage. The model you name is the model that runs. A named model that is not available fails the launch, unless the agent's own `fallbackModels` has one that is, and a child restored after a restart keeps the model its launch named: it continues on a fallback it had moved to while that fallback is still available, and otherwise goes back to the named model. To allow other models, list them in the agent's `fallbackModels`. When the named model and every fallback it may use fail, the child fails with an error that names the model and the provider's reason, and says no other model was used. This applies however the model fails: at the start, partway through the task, or on a context overflow that compaction cannot resolve. A child whose last turn ended in a model error is reported as failed, even when earlier turns succeeded.
 
 A child that falls back to another model says so. Its result keeps the model it ran on and the model its launch asked for. The child keeps its own prompt, role and tools, and is told the model it now runs on. The `subagent` result, the completion notice and run status add a line such as `Model: ran on anthropic/claude-opus-4-8, not the requested openai/gpt-5.5:high.`, and the task heartbeat names both models.
 
@@ -122,7 +65,7 @@ Fallback does not retry refused tool calls, ordinary task or tool failures, vali
 
 There is no per-attempt idle watchdog or child wall-clock kill cap. Quiet provider responses may finish; only explicit termination or a provider failure supplies a retryable cause.
 
-For concrete-model calls, a known provider without configured auth is recorded as a skipped attempt. Unknown/custom providers are still attempted. For a child that names no model, this pre-admission check never filters out the final current user-selected model. Automatic routing additionally applies its eligible-model constraints to every fallback, including that model.
+For concrete-model calls, a known provider without configured auth is recorded as a skipped attempt. Unknown/custom providers are still attempted. For a child that names no model, this pre-admission check never filters out the final current user-selected model.
 
 A fallback may send the same prompt and context to a different provider. Choose models that meet your cost, privacy, and data-handling requirements. Each candidate can carry its own [reasoning effort](#reasoning-levels).
 

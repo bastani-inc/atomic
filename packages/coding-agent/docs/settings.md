@@ -11,7 +11,7 @@ Edit directly or use `/settings` for common options. Choosing a model or thinkin
 
 For editor completion and validation, add `"$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/settings.schema.json"` to `settings.json`. Atomic preserves `$schema` and settings it does not recognize, such as extension settings, when it saves.
 
-Atomic checks the type of each setting when it loads a settings file. A value of the wrong type, such as a string where a list belongs (`"extensions": "./my-ext.ts"` instead of `["./my-ext.ts"]`), is ignored: Atomic behaves as if it were not set, so the other settings file or the default applies. A list entry of the wrong type, such as a number in `fallbackModels` or in the legacy `skills.customDirectories` form, is dropped and the rest of the list is kept. Each settings file is checked on its own, so a wrong-typed value in an `.atomic` file lets the value in the matching `.pi` file apply. Each ignored value is reported once as a warning that names the file and the key, and again if it comes back after being fixed, for example `Invalid settings file ~/.atomic/agent/settings.json: "extensions" must be array of string; ignoring it.` Atomic never rewrites the file; fix the value to clear the warning. Values of the right type that break a narrower rule, such as an out-of-range number, are reported by the feature that uses them, as described for each setting below. So are wrong-typed values of settings that check their own values and stop the request instead of switching to something else: `decisionModel`, `compactionModel`, `modelRouting`, `storage`, `sessions`, `workflows`, `snapshots`, `httpIdleTimeoutMs`, `websocketConnectTimeoutMs` and `streamDeadlineMs`.
+Atomic checks the type of each setting when it loads a settings file. A value of the wrong type, such as a string where a list belongs (`"extensions": "./my-ext.ts"` instead of `["./my-ext.ts"]`), is ignored: Atomic behaves as if it were not set, so the other settings file or the default applies. A list entry of the wrong type, such as a number in `fallbackModels` or in the legacy `skills.customDirectories` form, is dropped and the rest of the list is kept. Each settings file is checked on its own, so a wrong-typed value in an `.atomic` file lets the value in the matching `.pi` file apply. Each ignored value is reported once as a warning that names the file and the key, and again if it comes back after being fixed, for example `Invalid settings file ~/.atomic/agent/settings.json: "extensions" must be array of string; ignoring it.` Atomic never rewrites the file; fix the value to clear the warning. Values of the right type that break a narrower rule, such as an out-of-range number, are reported by the feature that uses them, as described for each setting below. So are wrong-typed values of settings that check their own values and stop the request instead of switching to something else: `decisionModel`, `compactionModel`, `storage`, `sessions`, `workflows`, `snapshots`, `httpIdleTimeoutMs`, `websocketConnectTimeoutMs` and `streamDeadlineMs`.
 
 Saving an Atomic setting applies only the changed fields to the corresponding `.atomic` file; it does not copy untouched fallback fields out of `.pi`. Within an object setting such as `modelThinkingLevels` or `workflows`, only the changed key is written, so keys another running Atomic process saved are kept. To intentionally override an inherited array such as `packages`, set it in `.atomic`, including an explicit empty array (`"packages": []`) when the inherited list should be disabled.
 
@@ -59,8 +59,7 @@ See [Herdr](/herdr) for state aggregation, reporter conflicts, privacy, and Herd
 |---------|------|---------|-------------|
 | `defaultProvider` | string | - | Startup provider, saved automatically when you switch models interactively |
 | `defaultModel` | string | - | Startup model ID, saved automatically when you switch models interactively |
-| `decisionModel` | string | `""` | The model every decision uses: `model: "auto"` selection for workflow stages and subagents, `structured_output` calls that name no model, readiness after a steer, and `decide()`. An exact `provider/model` selects a registered chat or classifier model. `auto` and empty use the current chat model. Does not change the chat model. See [decisionModel](#decisionmodel). |
-| `modelRouting` | object | `{}` | Provider and model filters for the models `model: "auto"` may select: `allowedProviders` and `excludedProviders` (provider ID arrays), `allowedModels` and `excludedModels` (model ID or glob pattern arrays). Does not change `decisionModel`. See [modelRouting](#modelrouting). |
+| `decisionModel` | string | `""` | The model every decision uses: `structured_output` calls that name no model, workflow stage predictions, readiness after a steer, and `decide()`. An exact `provider/model` selects a registered chat or classifier model. `auto` and empty use the current chat model. Does not change the chat model. See [decisionModel](#decisionmodel). |
 | `defaultThinkingLevel` | string | - | Startup thinking level, saved automatically on interactive model/thinking changes: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`; clamped to the active model's supported levels |
 | `modelThinkingLevels` | object | - | Per-model startup thinking levels keyed by `"provider/modelId"`; updated automatically on interactive model/thinking changes, or configured from `/settings` → Default thinking level per model |
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
@@ -81,6 +80,8 @@ If it remains unsupported, Atomic does not silently switch providers:
 
 Normal automatic selection of an available authenticated model remains enabled if the provider is supported but its saved model is unknown or lacks configured authentication. It also remains enabled when either field is omitted. Valid extension-provider defaults can resolve after deferred extension loading. Update an unsupported pair or choose a model with `/model`.
 
+Subagents and workflow stages with `model: "auto"` run this default model when it has credentials, at the effort the agent or stage sets, otherwise at its `modelThinkingLevels` entry, then `defaultThinkingLevel`, then `medium`. Without a usable default model they run the launching session's model. See [Automatic model selection](/subagents/reference#automatic-model-selection).
+
 #### decisionModel
 
 ```json
@@ -91,7 +92,6 @@ Normal automatic selection of an available authenticated model remains enabled i
 
 The decision model is used by:
 
-- [workflow-stage `model: "auto"`](/workflows/authoring#automatic-stage-model-selection) and [subagent `model: "auto"`](/subagents/reference#automatic-model-selection) selection;
 - the `structured_output` tool when the call names no `model` (a classifier answers when the result schema is a finite Choice; otherwise the call's `fallbackModels` and then the current chat model answer);
 - [readiness after a steer](/workflows/operations#readiness-after-a-steer) in workflow stages, when `workflows.autoAdvanceAfterSteer` is on;
 - [predicted stage names](/workflows/operations#intercom-delivery-to-pending-workflow-stages) in workflows whose stage names the launch scan cannot read, and judgments of Intercom sends to paths outside a run's known stages;
@@ -103,47 +103,11 @@ Use `/settings` → **Decision model** to change the effective selection. If the
 
 An explicit ID other than `auto` is resolved through the current model registry: a registered classifier first, otherwise a chat model. Built-in gateway classifiers include `vercel-ai-gateway/typesafe-ai/jev`, `opencode/jev-1.13`, and `opencode/jev-1.13-free`; authenticate their provider before choosing them. An invalid explicit ID, image-generation model, non-string value, or surrounding whitespace fails the decision instead of silently changing providers. An explicit empty project value overrides a global selection and restores the current chat model.
 
-A failed explicit classifier routing attempt switches to the current chat model when one exists. That includes missing credentials, an unavailable classify operation, a provider size or context rejection, a refusal, and a malformed answer. Transient retries follow the provider operation and retry settings. Chat routing gets an initial attempt plus three corrective retries for invalid output, using the same context. Each routing inference must finish within a wall-clock deadline taken from [`httpIdleTimeoutMs`](#http), 10 minutes by default, covering its corrective retries and any chat fallback; otherwise routing fails like any other total inference failure. Cancel the request to stop sooner. Independent provider, credential-preparation, and enclosing tool-request limits still apply. The fallback can incur chat-provider charges. Cancellation does not trigger fallback.
+A failed explicit classifier decision switches to the current chat model when one exists. That includes missing credentials, an unavailable classify operation, a provider size or context rejection, a refusal, and a malformed answer. Transient retries follow the provider operation and retry settings. A chat model gets an initial attempt plus three corrective retries for invalid output, using the same context. Each decision must finish within a wall-clock deadline taken from [`httpIdleTimeoutMs`](#http), 10 minutes by default, covering its corrective retries and any chat fallback. Cancel the request to stop sooner. Independent provider, credential-preparation, and enclosing tool-request limits still apply. The fallback can incur chat-provider charges. Cancellation does not trigger fallback.
 
-A classifier `decisionModel` such as Jev only chooses between the shortlisted models and never receives the task; a chat model (`decisionModel` when it is one, otherwise the current chat model) reads the task to answer the routing questions. If the selected classifier rejects the request, routing switches to the current chat model.
+Classifier fallbacks are recovered automatically and are not printed to the terminal or added to the conversation. Turn on [debug mode](#debug-mode) to write them to the debug log.
 
-Routing fallbacks are recovered automatically and are not printed to the terminal or added to the conversation. Set `ATOMIC_MODEL_ROUTING_DEBUG=1` to print them while debugging model selection, or turn on [debug mode](#debug-mode) to write them to the debug log.
-
-This setting selects the model that makes each decision listed above. It does not directly select a child's execution model or change the selected chat model. An SDK `generateStructuredOutput()` call starts on it only when you pass `settings` and no `model`; otherwise the call uses only the models it names. The decision provider may be any registered classifier or chat model, never an image-generation model; execution `auto` selects only chat language models, including multimodal-input chat. The decision model's provider receives the decision context, so choose a provider permitted to process that data. Authenticate a pinned classifier with that provider's login, such as `/login typesafe` or `TYPESAFE_API_KEY` for TypeSafe Jev. See [Structured decisions](/sdk/structured-decisions) and [TypeSafe Jev](/providers#typesafe-jev).
-
-Remove secrets from routing tasks, inputs, and workflow descriptions/contracts before calling the tool. A routing-context credential error stops before inference or launch. Known configured credentials are screened even when they belong to a provider other than the decision model's. Remove the credential from the supplied context or registered definition, reload a changed definition, then retry explicitly. The guard does not detect every possible secret.
-
-#### modelRouting
-
-```json
-{
-  "modelRouting": {
-    "allowedProviders": ["github-copilot", "openai-codex", "anthropic"],
-    "excludedProviders": ["openrouter"],
-    "allowedModels": ["github-copilot/*", "anthropic/claude-sonnet-*", "openai-codex/gpt-6.1-sol"],
-    "excludedModels": ["*-fast"]
-  }
-}
-```
-
-Limits which models workflow stages and subagents with `model: "auto"` can be routed to, including builtin workflow stages that do not name a model. It filters the candidates only; the model that makes the decision is still `decisionModel`.
-
-- `allowedProviders`: when nonempty, only models from these providers are candidates.
-- `excludedProviders`: models from these providers are never candidates, even if they are also allowed.
-- `allowedModels`: when nonempty, only models matching one of these patterns are candidates.
-- `excludedModels`: models matching any of these patterns are never candidates, even if they are also allowed.
-
-Use provider IDs as shown by `/model` or `workflow({ action: "models" })`, such as `github-copilot`, `openai-codex`, `anthropic`, or `openrouter`. For example, to route only to your subscriptions, exclude the API-billed providers you have configured. The Claude subscription and the Anthropic API both use the `anthropic` provider, so the provider lists cannot separate them.
-
-Model patterns use the same format as [`enabledModels`](#models) and `--models`: a full `provider/model` ID, a bare model ID, or a glob such as `anthropic/claude-*` or `*sonnet*`. Matching is case-insensitive. A pattern without glob characters selects a single model ID, so use a glob to cover a family; a bare ID offered by several providers covers each of them, so use `provider/model` to pick one. A thinking suffix such as `anthropic/claude-opus-4-8:high` selects the model only; it does not limit the effort `auto` chooses. A candidate must pass every list. Patterns that match no available model are ignored, so an allowlist whose patterns match nothing leaves no candidate.
-
-A project list replaces the global list of the same name; the other lists are kept. A subagent call or workflow stage that sets `modelConstraints.allowedProviders` or `excludedProviders`, for example because you asked for a provider, uses its own lists instead of the provider lists here for that call. `allowedModels` and `excludedModels` always apply, and the call's own `modelConstraints.allowedModels` can only narrow them. Provider lists in an agent definition or inherited from a parent workflow only narrow these settings; they never lift an exclusion. The filters apply to the routed model, its ranked fallbacks, any other fallback models the stage or subagent would try, and the current chat model that `auto` falls back to when routing fails, so none of them can run a filtered-out model.
-
-If the filters leave no eligible model, the stage or subagent fails before launch with an error that names the settings involved, such as `modelRouting.allowedModels`; Atomic never falls back to the unfiltered catalog. A run resumed after you exclude a provider or model rejects a recorded selection that is no longer allowed instead of using it.
-
-These settings apply only to `model: "auto"`. A stage, task, or agent that names a concrete model, and its explicit fallback models, run as written.
-
-To audit a routing decision, the stage's `routerSelection` in `workflow({ action: "status", runId })` lists the chosen model and fallbacks, and `candidates` lists every model the router could choose from after these filters and the task's image and long-context needs. Subagent results carry the same `routerSelection`.
+This setting selects the model that makes each decision listed above. It does not select a subagent's or workflow stage's execution model, and it does not change the selected chat model. An SDK `generateStructuredOutput()` call starts on it only when you pass `settings` and no `model`; otherwise the call uses only the models it names. The decision provider may be any registered classifier or chat model, never an image-generation model. The decision model's provider receives the decision context, so choose a provider permitted to process that data. Authenticate a pinned classifier with that provider's login, such as `/login typesafe` or `TYPESAFE_API_KEY` for TypeSafe Jev. See [Structured decisions](/sdk/structured-decisions) and [TypeSafe Jev](/providers#typesafe-jev).
 
 #### thinkingBudgets
 
@@ -198,7 +162,7 @@ A fallback can only use a model whose provider has credentials. Extension-regist
 
 Fallback attempts are visible as model changes in the session transcript and as a fallback status in the UI. The model change records the model the turn asked for, the model that failed, and why. The fallback model's system prompt names the fallback model. In print mode (`-p`), each fallback is reported on stderr, and the run ends with `Model: ran on <fallback>, not the requested <model>.` Switching providers can change latency, billing, data-handling terms, and subscription/credit usage. Configure only providers you are comfortable sending the current conversation and tool context to.
 
-`enabledModels` is separate: it only controls the interactive Ctrl+P model cycle list and is not used as an implicit fallback chain. It does not limit `model: "auto"` routing; use [`modelRouting.allowedModels`](#modelrouting) for that.
+`enabledModels` is separate: it only controls the interactive Ctrl+P model cycle list and is not used as an implicit fallback chain.
 
 ### Fast models
 
@@ -454,7 +418,7 @@ When a provider requests a retry delay longer than `retry.provider.maxRetryDelay
 
 Atomic applies this timeout to the global HTTP dispatcher used by `fetch` and provider SDK HTTP clients. The default is 600,000 ms (10 minutes), which keeps slow long-context requests working while reclaiming stale idle connections. Atomic does not impose a separate fixed connect-phase timeout; connection failures surface through the provider and agent retry/error paths.
 
-The same value is the default wall-clock limit for one [structured decision](/sdk/structured-decisions#cancellation-and-failures): a `structured_output` call, a `generateStructuredOutput()` call, or one automatic model-selection inference. The limit covers every repair attempt, retry, and fallback together, so a model that streams for a long time cannot hold a workflow stage past it. A disabled idle timeout leaves those calls effectively unbounded. Schema-backed workflow stages can set their own limit with [`schemaTimeoutMs`](/workflows/api-reference#schematimeoutms).
+The same value is the default wall-clock limit for one [structured decision](/sdk/structured-decisions#cancellation-and-failures): a `structured_output` call, a `generateStructuredOutput()` call, or a `decide()` call. The limit covers every repair attempt, retry, and fallback together, so a model that streams for a long time cannot hold a workflow stage past it. A disabled idle timeout leaves those calls effectively unbounded. Schema-backed workflow stages can set their own limit with [`schemaTimeoutMs`](/workflows/api-reference#schematimeoutms).
 
 The `/settings` picker offers these presets:
 

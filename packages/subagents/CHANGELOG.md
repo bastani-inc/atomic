@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `model: "auto"`, which every builtin agent declares, now runs your default model at its default thinking level, or at the agent's own `thinking` when it sets one, and runs the launching session's model and thinking level when no default model is configured. No routing model is asked, so an `auto` launch starts without a routing request. An `auto` launch still falls back to the agent's `fallbackModels` and then to the session's model.
+- Removed `taskNeeds` and `modelConstraints` from the `subagent` tool, agent frontmatter, agent configs and builtin agent overrides, and `routerSelection` from subagent results. Tool calls, agent files and overrides that still set them keep working with the fields ignored, and an agent file that agent management rewrites drops them.
+
 ### Fixed
 
 - Fixed Atomic exiting with `child-record-unreadable` ("which is not open in this process") when a workflow stage that had launched a background subagent finished, failed or had its run ended. Closing the stage reads each child's latest record to record it `stage-closed`. That record was read only through the copies of the stage's session registered for it, which are held weakly and which a later copy of the session can replace, and the error escaped from the stage's close listener and ended the process. The stage now also reads its children's records through its own session. When the copy that saved a newer record is gone, the stage ends the child from the record its own session holds, updated with where the child stands as Atomic last saw it. A child that is still running instead ends once its task settles, and a child that was already killed, gone or `stage-closed` is left as it is. A child it can read no record of is counted as a record that could not be saved, and the stage's other children still end. Nothing that goes wrong while a stage closes ends the process or fails the close.

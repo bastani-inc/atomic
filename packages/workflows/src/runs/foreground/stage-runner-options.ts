@@ -55,6 +55,18 @@ async function stageResumeStore(
 	return store;
 }
 
+/**
+ * Stage options of the removed automatic model routing that older workflow definitions and journals may still carry.
+ * They are accepted, ignored and never reach the session.
+ */
+interface RemovedRoutingStageOptions {
+	readonly modelConstraints?: object;
+	readonly taskNeeds?: object;
+	readonly parallelSlot?: object;
+	readonly inheritedModelConstraints?: readonly object[];
+	readonly routerSelection?: object;
+}
+
 export async function stripWorkflowOnlyOptions(
 	options: StageOptions | undefined,
 	defaultSessionDir: string | undefined,
@@ -99,7 +111,7 @@ export async function stripWorkflowOnlyOptions(
 		baseBranch: _baseBranch,
 		group: _group,
 		...sessionOptions
-	} = options;
+	} = options as StageOptions & RemovedRoutingStageOptions;
 	// Bound here, before the session opens, so the session store, the session and its tools all use the bound worktree.
 	// A resumed session restores the binding its session recorded instead of resolving the workspace again.
 	const resumeStore =

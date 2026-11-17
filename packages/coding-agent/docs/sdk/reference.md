@@ -102,6 +102,22 @@ If no model is provided:
 
 > See [examples/sdk/02-custom-model.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/sdk/02-custom-model.ts)
 
+#### Resolving `model: "auto"`
+
+`resolveAutoModel({ settings, availableModels, sessionModel?, sessionThinkingLevel?, thinkingLevel? })` returns the `{ model, thinkingLevel }` that subagents and workflow stages run for `model: "auto"`, or `undefined` when there is none. It makes no model request. It picks the configured default model (`settings.defaultProvider` and `settings.defaultModel`) when it is in `availableModels`, at `thinkingLevel`, else that model's `modelThinkingLevels` entry, else `defaultThinkingLevel`, else `medium`. Without one it returns `sessionModel` at `thinkingLevel`, else `sessionThinkingLevel`. The level is clamped to what the model supports.
+
+```typescript
+import { resolveAutoModel, SettingsManager } from "@bastani/atomic";
+
+const auto = resolveAutoModel({
+  settings: SettingsManager.create(process.cwd()).getSettings(),
+  availableModels: await modelRuntime.getAvailable(),
+});
+if (auto) {
+  const { session } = await createAgentSession({ model: auto.model, thinkingLevel: auto.thinkingLevel, modelRuntime });
+}
+```
+
 #### Model catalog persistence and refresh
 
 `ModelRuntime.create()` restores cached catalogs from local persistence but does not download
@@ -178,7 +194,7 @@ const builtinsOnly = await ModelRuntime.create({ modelsPath: null });
 
 Use `generateStructuredOutput()` for one schema-validated semantic decision without starting an agent session. Pass optional exact `model` and `fallbackModels` IDs, `currentModel`, `modelRegistry`, `instructions`, `state`, and `schema`. Omit `model` to start with the current chat model, or with `decisionModel` when you pass `settings`; the current chat model is also the terminal fallback. With `settings`, `decisionModel` resolves as `decide()` resolves it, and a failure there rejects with a `DecisionError`. Atomic resolves each ID through the supplied registry: a chat model uses chat inference, and a registered classifier uses the generic classify operation. A catalog entry does not prove that the provider can serve the request. Classifiers run only when the schema is a finite Choice and are otherwise skipped. General calls derive choice questions from that schema. See [Structured decisions](/sdk/structured-decisions).
 
-Use `decide()` to ask the user's configured `decisionModel` typed Choice, yes/no and Score questions over your state. It returns typed answers, with probabilities when a classifier answered, and rejects with a `DecisionError`. Workflow-stage and subagent `model: "auto"` selection and workflow readiness after a steer decide through it; the `structured_output` tool starts on the same decision model. See [decide](/sdk/structured-decisions#decide).
+Use `decide()` to ask the user's configured `decisionModel` typed Choice, yes/no and Score questions over your state. It returns typed answers, with probabilities when a classifier answered, and rejects with a `DecisionError`. Workflow stage predictions and readiness after a steer decide through it; the `structured_output` tool starts on the same decision model. See [decide](/sdk/structured-decisions#decide).
 
 ### System Prompt
 
@@ -1075,7 +1091,7 @@ These helpers let extensions and SDK code follow [debug mode](/development#debug
 - `isDebugEnabled(area?, env?)` returns whether debug output is on: in debug mode for every area, and for `area` also while its own variable is set. Without `area`, only debug mode counts. `env` defaults to `process.env`.
 - `reportDebug(area, event, fields, ownOutput?, env?)` records one event. In debug mode it appends a JSON line to the debug log, with credentials redacted and long text cut to 2,000 characters. `fields` holds strings, numbers, booleans, `null` or lists of strings and numbers, never objects. While the area's own variable is set, `ownOutput` is called with the variable's value to write the event where that variable always has.
 - `appendDebugRecord(path, record)` appends one redacted JSON line to another debug file, such as a trace file.
-- `DEBUG_AREA_VARIABLES` maps each area (`workflow`, `model-routing`, `pooled-watch`, `pool`, `storage`) to its own environment variable, or `undefined`.
+- `DEBUG_AREA_VARIABLES` maps each area (`workflow`, `decision`, `pooled-watch`, `pool`, `storage`) to its own environment variable, or `undefined`. `decision`, `pool` and `storage` have none; they write only in debug mode.
 - `getDebugLogFailure()` returns the first `DebugLogUnwritableError` of this process, if writing a debug log ever failed.
 - `setDebugSetting(enabled)` turns debug mode on or off for this process and for child processes it starts afterwards. It does not save the `debug` setting.
 - `onDebugSettingChange(listener)` calls `listener` with each change of that value and returns a function that unsubscribes.
@@ -1104,6 +1120,7 @@ AgentSessionRuntime
 // Auth and Models
 AuthStorage
 ModelRegistry
+resolveAutoModel
 
 // Resource loading
 DefaultResourceLoader

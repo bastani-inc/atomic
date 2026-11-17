@@ -32,8 +32,6 @@ export interface TaskParam {
 	reads?: string[] | boolean;
 	progress?: boolean;
 	model?: string;
-	modelConstraints?: import("../../shared/model-constraints.js").ModelConstraints;
-	taskNeeds?: import("../../shared/model-constraints.js").TaskNeeds;
 	skill?: string | string[] | boolean;
 	group?: string | true;
 	heartbeatMs?: number;
@@ -69,8 +67,6 @@ export interface SubagentParamsLike {
 	artifacts?: boolean;
 	includeProgress?: boolean;
 	model?: string;
-	modelConstraints?: import("../../shared/model-constraints.js").ModelConstraints;
-	taskNeeds?: import("../../shared/model-constraints.js").TaskNeeds;
 	skill?: string | string[] | boolean;
 	group?: string | true;
 	output?: string | boolean;

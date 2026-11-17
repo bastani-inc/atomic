@@ -98,11 +98,9 @@ All builtin workflows allow Intercom coordination, including stages with narrow 
 
 Builtin stages report evidence and bounded results. Give each run a concrete objective and acceptance criteria; do not treat a completion claim as proof that validation passed.
 
-All nine builtins default to `model: "auto"` for every model stage, including review, scoring, repair and final handoff stages. This also applies when you import a builtin as a child with `ctx.workflow(...)`. Each stage routes independently from its actual prompt; reviewers may select the same model. Builtins no longer ship concrete fallback chains.
+All nine builtins default to `model: "auto"` for every model stage, including review, scoring, repair and final handoff stages. This also applies when you import a builtin as a child with `ctx.workflow(...)`. `auto` runs your default model, the one you last chose with `/model`, at its default thinking level, or the launching session's model when no default model is configured; reviewers therefore run the same model. Builtins ship no concrete fallback chains. To run builtin stages on another model, choose it with `/model` before launching. See [automatic stage models](/workflows/operations#automatic-stage-models).
 
-Use `/settings` → **Decision model** to choose the decision provider without changing your main-chat model. Unset and `auto` use the current chat model. A complete routing failure can still run the stage on that chat model when it satisfies the stage constraints; otherwise the stage stops before execution. Inspect `/workflow status <run-id>` and correct the reported router, credentials, or eligibility problem before retrying. See [automatic stage models](/workflows/operations#automatic-stage-models) for failure and resume behavior.
-
-Explicit `tournament` `models` inputs still assign attempt models in their supplied order, round-robin; an omitted or empty list uses automatic routing. Custom workflow definitions keep their existing defaults. For an explicit model, effort or capability requirement in your own stages, use the [stage model options](/workflows/authoring#automatic-stage-model-selection).
+Explicit `tournament` `models` inputs still assign attempt models in their supplied order, round-robin; an omitted or empty list runs every attempt on `auto`. Custom workflow definitions keep their existing defaults. For an explicit model, effort or capability requirement in your own stages, use the [stage model options](/workflows/authoring#automatic-stage-model-selection).
 
 ### Six composable pattern builtins
 

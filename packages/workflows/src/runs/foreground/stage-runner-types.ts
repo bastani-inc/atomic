@@ -202,7 +202,6 @@ export interface AgentSessionAdapter {
 export interface StageModelFallbackMeta {
 	readonly model?: string;
 	readonly thinkingLevel?: string;
-	readonly routerSelection?: import("@bastani/atomic").ModelRouterOutput;
 	readonly attemptedModels?: readonly string[];
 	readonly modelAttempts?: readonly WorkflowModelAttempt[];
 	readonly rateLimits?: readonly import("../../shared/types.js").WorkflowProviderRateLimit[];

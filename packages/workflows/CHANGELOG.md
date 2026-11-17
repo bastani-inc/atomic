@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- A stage with `model: "auto"`, the default of every builtin workflow's stages, now runs your default model at its default thinking level, or the launching session's model and thinking level when no default model is configured; `stage.setThinkingLevel()` sets another effort. No routing model is asked, and an `auto` stage's session opens without waiting for its first prompt. The SDK `run()` without a `models` catalog now runs `auto` stages too, on the configured default model. An `auto` stage still falls back to its `fallbackModels` and then to the session's model.
+- Removed `taskNeeds`, `modelConstraints` and `parallelSlot` from `StageOptions` and from task, chain and parallel options, `routerSelection` from `StageSnapshot`, `WorkflowTaskResult` and stage checkpoints, `WorkflowModelCatalogPort.routeModel()`, which `autoModel()` replaces, and `PiExecuteContext.getModelRouting`. Workflow definitions, TypeScript workflow files and journals that still carry these fields keep loading and running with them ignored. The builtin `ralph` reviewers no longer ask for different model families.
+
 ### Changed
 
 - The `workflow` tool's row in the chat now looks like every other tool's, instead of drawing its own rounded panels. A run reads `Workflow(<name> · <what it was asked>)` and the other actions `workflow <action> <target>`, each with one result line. A run's line follows the run until it ends (`∀ Running · 1/3 stages · ↓ 22.4k tokens`, `! Waiting for input at review`, `✓ Completed in 4s · 3 stages · 32.4k tokens`, `✗ Failed at review · <reason>`), and Ctrl+O expands the row to the run's inputs, stages and outputs ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
@@ -15,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- `stage.setThinkingLevel()` called before a stage's first prompt no longer fails the run with `stage AgentSession property "thinkingLevel" is unavailable until the SDK session has been created`; the level applies when the stage's session opens.
 - Fixed a session that ended for good, such as an SDK session that ran workflows and was disposed, staying in memory through the workflow hand-off kept for a session that might replace it.
 - Fixed each `/reload` keeping the previous copy of the workflows extension, and the extensions and session it reaches, in memory for as long as the session ran.
 - Workflow discovery checks the bundled workflows once per process. Startup checked them twice, and `/workflow reload` and every `/workflow resume` of a durable run checked them again, each time reading and scanning their sources: about 180 ms on Windows and 120 ms on Linux ([#5319](https://github.com/bastani-inc/atomic/issues/5319))

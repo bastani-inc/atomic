@@ -1469,12 +1469,7 @@ const testModel = {
 } as const;
 const routedModels: WorkflowModelCatalogPort = {
 	listModels: async () => [{ provider: "test", id: "model", fullId: "test/model", model: testModel }],
-	routeModel: async () => ({
-		routerSelection: { model: "test/model", effort: null },
-		modelOverride: "test/model",
-		assertCurrent() {},
-		allowsModel: () => true,
-	}),
+	autoModel: () => ({ model: testModel }),
 } as unknown as WorkflowModelCatalogPort;
 
 describe("nested builtin Goals bound to unrelated repositories (#3109)", () => {

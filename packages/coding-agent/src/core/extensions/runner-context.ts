@@ -68,7 +68,6 @@ export interface ExtensionContextSource {
 	compact(options?: CompactOptions): void;
 	getSystemPrompt(): string;
 	getDecisionModel?(): string;
-	getModelRouting?(): import("../settings-types.ts").ModelRoutingSettings;
 	getHttpIdleTimeoutMs?(): number;
 	getSkillCatalog?(): SkillCatalog;
 	getAgentTaskHost?(): import("../tasks/agent-adapter.js").AgentTaskHost;
@@ -376,10 +375,6 @@ export function createExtensionContext(source: ExtensionContextSource, owner: ob
 			source.assertActive();
 			if (!source.getDecisionModel) throw new DecisionModelUnavailableError({ reason: "host-unsupported" });
 			return source.getDecisionModel();
-		},
-		getModelRouting: () => {
-			source.assertActive();
-			return source.getModelRouting?.() ?? {};
 		},
 		...(source.getHttpIdleTimeoutMs
 			? {

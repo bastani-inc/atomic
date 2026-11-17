@@ -108,7 +108,6 @@ export interface StageEndPayload {
 	readonly sessionFile?: string;
 	readonly modelAttempts?: readonly WorkflowModelAttempt[];
 	readonly rateLimits?: readonly import("./types.js").WorkflowProviderRateLimit[];
-	readonly routerSelection?: import("@bastani/atomic").ModelRouterOutput;
 	readonly replayKey?: string;
 	readonly replayedFromStageId?: string;
 	readonly replayed?: boolean;
@@ -242,7 +241,6 @@ export async function appendStageEnd(
 		...(payload.sessionFile !== undefined ? { sessionFile: payload.sessionFile } : {}),
 		...(payload.modelAttempts !== undefined ? { modelAttempts: payload.modelAttempts } : {}),
 		...(payload.rateLimits !== undefined ? { rateLimits: payload.rateLimits } : {}),
-		...(payload.routerSelection !== undefined ? { routerSelection: payload.routerSelection } : {}),
 		...(payload.replayKey !== undefined ? { replayKey: payload.replayKey } : {}),
 		...(payload.replayedFromStageId !== undefined ? { replayedFromStageId: payload.replayedFromStageId } : {}),
 		...(payload.replayed !== undefined ? { replayed: payload.replayed } : {}),

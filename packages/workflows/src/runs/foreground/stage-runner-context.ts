@@ -157,7 +157,6 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 				artifactOptions = undefined;
 				artifactClosed = false;
 				artifactText = undefined;
-				if (effectiveStageOptions?.model === "auto") await controller.preparePrompt(promptText);
 			}
 			if (hasOutputArtifact && !structuredOutputCapture && !adapters.prompt) artifactOptions = outputOptions;
 			if (adapters.prompt) {
@@ -168,10 +167,7 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 				}
 				const rawText = await runCallback(
 					{ kind: "workflow.stage_adapter", name: `prompt:${stageName}`, runId, stageId },
-					() => {
-						controller.assertAutoExecutionCurrent();
-						return adapters.prompt!.prompt(promptText, meta);
-					},
+					() => adapters.prompt!.prompt(promptText, meta),
 				);
 				if (typeof rawText !== "string") return rawText as never;
 				adapterMessages = assistantMessage(rawText);
@@ -303,16 +299,11 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 		async complete(text, completeOpts) {
 			artifactOptions = undefined;
 			if (adapters.complete) {
-				if (effectiveStageOptions?.model === "auto" && completeOpts?.model === undefined)
-					await controller.preparePrompt(text);
 				lastFinalizedOutput = undefined;
 				lastFinalizedMessageCount = undefined;
 				lastAssistantText = await runCallback(
 					{ kind: "workflow.stage_adapter", name: `complete:${stageName}`, runId, stageId },
-					() => {
-						controller.assertAutoExecutionCurrent();
-						return adapters.complete!.complete(text, completeOpts, meta);
-					},
+					() => adapters.complete!.complete(text, completeOpts, meta),
 				);
 				adapterMessages = assistantMessage(lastAssistantText);
 				return lastAssistantText;
@@ -343,19 +334,16 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 
 		async steer(text) {
 			if (controller.holdWhileReleased(text, "steer")) return;
-			if (effectiveStageOptions?.model === "auto") await controller.preparePrompt(text);
 			await (await controller.ensureSession()).steer(text);
 		},
 
 		async followUp(text) {
 			if (controller.holdWhileReleased(text, "followUp")) return;
-			if (effectiveStageOptions?.model === "auto") await controller.preparePrompt(text);
 			await (await controller.ensureSession()).followUp(text);
 		},
 
 		async __queueUserText(text, kind, options) {
 			if (controller.holdWhileReleased(text, kind, options)) return;
-			if (effectiveStageOptions?.model === "auto") await controller.preparePrompt(text);
 			const session = await controller.ensureSession();
 			if (kind === "steer") await session.steer(text, undefined, options);
 			else await session.followUp(text, undefined, options);
@@ -468,7 +456,7 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 		},
 
 		async __ensureSession() {
-			if (controller.awaitingAutoPrompt || controller.isReleased()) return;
+			if (controller.isReleased()) return;
 			await controller.ensureSession();
 		},
 

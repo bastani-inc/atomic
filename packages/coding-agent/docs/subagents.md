@@ -56,7 +56,7 @@ The catalog uses the same effective discovery rules as execution, so overridden 
 
 ## Let Atomic choose the child model
 
-All builtin subagents default to `model: "auto"`. Atomic selects a model and reasoning effort from your available catalog using its shipped evaluation guidance before launching each child, favouring cheaper models for exploration and routine implementation and stronger ones for review and verification. You can also set `auto` on a custom agent or call. A concrete per-call model overrides the builtin default. Custom agents with no model keep their existing inheritance. See [Automatic model selection](/subagents/reference#automatic-model-selection) for configuration and failure handling.
+All builtin subagents default to `model: "auto"`, which runs your default model (the one you last chose with `/model`) at its default thinking level, or the launching session's model when no default model is configured. You can also set `auto` on a custom agent or call. A concrete per-call model overrides the builtin default. Custom agents with no model keep their existing inheritance. See [Automatic model selection](/subagents/reference#automatic-model-selection) for configuration and failure handling.
 
 ## Subagent execution is non-interactive
 
@@ -191,7 +191,7 @@ Atomic currently bundles these agents from `@bastani/subagents`:
 | `code-simplifier` | Simplify recently changed code under its behavior-preservation “doors” rubric. | Yes |
 | `worker` | Implement an approved task or handoff, validate the narrow change, and escalate product, architecture, or scope decisions to its supervisor. | Yes |
 
-Every bundled agent uses `model: "auto"`, without a pinned fallback chain. To pin a role, set `subagents.agentOverrides.<name>.model` in user or project settings, or pass a concrete `model` on one call. To restrict automatic choices, use `modelConstraints`, for example `{ "allowedEfforts": ["high"] }`. Routing and execution fallback do not change your main-chat model. A concrete `model` runs as named: the child falls back only to its agent's own `fallbackModels` that `modelConstraints` allow, and otherwise fails with an error that names the model. See [Fallback models](/subagents/reference#fallback-models).
+Every bundled agent uses `model: "auto"`, without a pinned fallback chain. To pin a role, set `subagents.agentOverrides.<name>.model` in user or project settings, or pass a concrete `model` on one call. Execution fallback does not change your main-chat model. A concrete `model` runs as named: the child falls back only to its agent's own `fallbackModels`, and otherwise fails with an error that names the model. See [Fallback models](/subagents/reference#fallback-models).
 
 Read-oriented agents inspect and report. `debugger`, `code-simplifier`, and `worker` can edit files, so give them an explicit scope and validation target. The debugger should apply and validate an in-scope fix, not stop at a proposed patch.
 
@@ -356,7 +356,7 @@ After a confirmed `x` stop settles, the owning chat receives a visible **stopped
 
 Atomic applies the same delegation policy to any parent chat or workflow stage that orchestrates subagents. A named agent uses the model and fallback sequence declared by its agent definition, so the orchestrator normally omits the subagent tool's explicit `model` argument. An override needs either the user's exact model request or a documented task-specific reason recorded before launch; model diversity alone is not enough.
 
-If an agent declares no model or fallback policy, the orchestrator consults the role guidance in [Model selection](/models/model-selection) and the measured per-evaluation scores in [Evals](/models/evals), then calls `workflow({ action: "models" })` when that tool is available. It may pin only a returned `fullId` and may add a thinking suffix only when the model entry lists that level. When the catalog tool is unavailable, the catalog is empty, or no catalog model matches the documented evidence and role constraints, the child stays unpinned and the orchestrator reports the limit instead of inventing a model or inspecting credentials.
+When a task needs a specific model, the orchestrator calls `workflow({ action: "models" })` when that tool is available. It may pin only a returned `fullId` and may add a thinking suffix only when the model entry lists that level. When the catalog tool is unavailable, the catalog is empty, or no catalog model fits, the child stays unpinned and the orchestrator reports the limit instead of inventing a model or inspecting credentials.
 
 Each workflow invocation automatically receives one stable, non-`"default"` Intercom group as typed admission policy. Its stages and delegated children carry that group across single, parallel, and follow-up work unless a call explicitly overrides `group`. Outside workflows, children inherit the launching session's resolved group. This isolates workflow runs from unrelated runs and the main chat while `contact_supervisor` retains its authorized cross-group route.
 

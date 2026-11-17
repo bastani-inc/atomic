@@ -21,8 +21,6 @@ For editor completion and validation of providers, models, and `compat` fields, 
 
 This page shows minimal and full `models.json` examples you can copy. [Models Configuration](/models-configuration) lists every provider, model, override, and compatibility field directly from the schema. For extended examples, derived variants, and API behavior, see the [Model configuration guide](/models/reference).
 
-For choosing which model to use rather than how to declare one, see [Model selection](/models/model-selection).
-
 ## Use classifier models
 
 Classifier models answer typed questions about JSON state instead of chatting. They do not appear in `/model`. Enable [codemode](/tools#codemode), list them with `models.getAvailableOfType("classifier")`, and call `models.classify(model, { state, questions })`. See [Codemode](/codemode#classify) for question and answer shapes.

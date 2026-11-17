@@ -2,8 +2,16 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed automatic model routing. `model: "auto"` in subagents, agent files, workflow stages and the builtin workflows and agents now runs your default model (`defaultProvider`/`defaultModel`, the model you last chose with `/model`) at its `modelThinkingLevels` entry or `defaultThinkingLevel` unless the caller sets an effort, or the current session's model and thinking level when no default is configured or it has no credentials. No model is asked to choose, so an `auto` launch makes no routing request. `decisionModel`, `decide()`, `generateStructuredOutput()` and the `structured_output` tool are unchanged.
+- Removed the `modelRouting` setting. Saved settings that still contain it load without an error and the key is dropped; a legacy `routerModel` key still migrates to `decisionModel`.
+- Removed the routing SDK exports `routeExecutionModel`, `AutoRoutingInferenceError`, `ModelRoute`, `ModelRoutingContext`, `RoutingInferenceBounds`, `ParallelSlot`, `ModelRouterOutput`, `ModelConstraints`, `ModelConstraintsSchema`, `parseModelConstraints`, `eligiblePair`, `setsProviders`, `TaskNeeds`, `TaskNeedsSchema`, `parseTaskNeeds`, `mergeTaskNeeds`, `WORK_KINDS`, `DIFFICULTY_LEVELS`, `MISTAKE_COST_LEVELS`, `WorkKind`, `Difficulty`, `MistakeCost`, `reportModelRoutingDebug` and `ModelRoutingSettings`, along with `SettingsManager.getModelRouting()`, `ExtensionContext.getModelRouting()`, and the `model-routing` debug area and its `ATOMIC_MODEL_ROUTING_DEBUG` variable. A decision classifier's fallback to the chat model is now recorded only in the debug log, under the new `decision` debug area.
+- Removed the model benchmark docs (`models/evals` and `models/model-selection`) and the script that refreshed them. When asked which model to choose, the system prompt no longer sends the agent to benchmark docs or benchmark sites.
+
 ### Added
 
+- `resolveAutoModel()` from `@bastani/atomic` returns the model and thinking level `model: "auto"` stands for, from the settings, the models that have credentials and the current session's model, without any model request
 - `ATOMIC_STARTUP_TRACE` names a file to which Atomic appends each startup milestone (process start, first paint, engine ready, first provider request) with its wall-clock time; an interactive session's engine writes to the same file
 
 ### Changed

@@ -152,8 +152,6 @@
             "group": "Models and providers",
             "pages": [
               "models",
-              "models/model-selection",
-              "models/evals",
               "custom-provider",
               "custom-provider/override",
               "custom-provider/registration",
@@ -287,14 +285,6 @@
     {
       "source": "/mcp",
       "destination": "/mcp-servers"
-    },
-    {
-      "source": "/models/artificial-analysis-index",
-      "destination": "/models/evals"
-    },
-    {
-      "source": "/models/pareto-efficiency",
-      "destination": "/models/evals"
     }
   ]
 }

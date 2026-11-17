@@ -3614,7 +3614,6 @@ test(
 			unconfirmedCleanups: 0,
 			permits: 0,
 			commandStarts: 0,
-			routerSelections: processWide.routerSelections,
 			requestedModels: processWide.requestedModels,
 			launchHeartbeats: processWide.launchHeartbeats,
 			executionTimeouts: processWide.executionTimeouts,
