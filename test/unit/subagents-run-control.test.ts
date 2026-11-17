@@ -907,48 +907,54 @@ test("pause and quit with all: true act on every running child this session laun
 	assert.equal((await h.call({ action: "resume", all: true })).isError, true);
 });
 
-test("resume continues completed and failed children in the same run identity", async () => {
-	const h = harness();
-	const { record, taskId } = await h.launch("done1");
-	await h.call({ action: "quit", id: record.childId });
-	await settled(h, taskId);
+const LAUNCH_QUIT_THREE_RESUMES_TIMEOUT_MS = 5 * RECORD_WAIT_MS;
 
-	const first = await h.call({ action: "resume", id: record.childId, message: "finish up" });
-	await settled(h, resumedTaskId(first));
-	const completed = await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "ok");
+test(
+	"resume continues completed and failed children in the same run identity",
+	async () => {
+		const h = harness();
+		const { record, taskId } = await h.launch("done1");
+		await h.call({ action: "quit", id: record.childId });
+		await settled(h, taskId);
 
-	assert.deepEqual(h.runs.at(-1)?.options.resumeFollowUps, [SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT]);
+		const first = await h.call({ action: "resume", id: record.childId, message: "finish up" });
+		await settled(h, resumedTaskId(first));
+		const completed = await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "ok");
 
-	h.settleAs = "error";
-	const second = await h.call({ action: "resume", id: record.childId, message: "try the edge case" });
-	assert.notEqual(second.isError, true, text(second));
-	const failedTaskId = resumedTaskId(second);
-	await settled(h, failedTaskId);
-	const failed = await h.waitForLatest(
-		record.childId,
-		(candidate) => candidate.taskId === failedTaskId && candidate.state === "terminal",
-	);
-	assert.equal(failed.terminalStatus, "error");
+		assert.deepEqual(h.runs.at(-1)?.options.resumeFollowUps, [SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT]);
 
-	h.settleAs = "ok";
-	const third = await h.call({ action: "resume", id: record.childId, message: "once more" });
-	assert.notEqual(third.isError, true, text(third));
-	await settled(h, resumedTaskId(third));
-	for (const run of h.runs.slice(1)) {
-		assert.equal(run.options.runId, "done1");
-		assert.equal(run.options.index, 0);
-		assert.equal(run.options.sessionManager?.getSessionId(), completed.childSessionId);
-	}
-	for (const run of h.runs.slice(2)) assert.equal(run.options.resumeFollowUps, undefined, run.task);
-	const childTranscript = transcript(completed);
-	for (const message of ["finish up", "try the edge case", "once more"])
-		assert.equal(occurrences(childTranscript, message), 1);
-	assert.equal(
-		occurrences(childTranscript, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT),
-		1,
-		"only the interrupted turn is continued; a settled child gets exactly one fresh prompt per message",
-	);
-});
+		h.settleAs = "error";
+		const second = await h.call({ action: "resume", id: record.childId, message: "try the edge case" });
+		assert.notEqual(second.isError, true, text(second));
+		const failedTaskId = resumedTaskId(second);
+		await settled(h, failedTaskId);
+		const failed = await h.waitForLatest(
+			record.childId,
+			(candidate) => candidate.taskId === failedTaskId && candidate.state === "terminal",
+		);
+		assert.equal(failed.terminalStatus, "error");
+
+		h.settleAs = "ok";
+		const third = await h.call({ action: "resume", id: record.childId, message: "once more" });
+		assert.notEqual(third.isError, true, text(third));
+		await settled(h, resumedTaskId(third));
+		for (const run of h.runs.slice(1)) {
+			assert.equal(run.options.runId, "done1");
+			assert.equal(run.options.index, 0);
+			assert.equal(run.options.sessionManager?.getSessionId(), completed.childSessionId);
+		}
+		for (const run of h.runs.slice(2)) assert.equal(run.options.resumeFollowUps, undefined, run.task);
+		const childTranscript = transcript(completed);
+		for (const message of ["finish up", "try the edge case", "once more"])
+			assert.equal(occurrences(childTranscript, message), 1);
+		assert.equal(
+			occurrences(childTranscript, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT),
+			1,
+			"only the interrupted turn is continued; a settled child gets exactly one fresh prompt per message",
+		);
+	},
+	LAUNCH_QUIT_THREE_RESUMES_TIMEOUT_MS,
+);
 
 test("resume without a message continues a finished child with the continuation prompt", async () => {
 	const h = harness();

@@ -55,6 +55,7 @@ import {
 	verifyWindowsDirectorySecurity,
 	verifyWindowsDirectorySecurityAsync,
 	type WindowsDirectorySecurity,
+	waitForWindowsDirectorySecurityReadsForTesting,
 } from "../src/core/tools/windows-directory-security.ts";
 
 const isWindows = process.platform === "win32";
@@ -1259,30 +1260,23 @@ describe("windows temp directories verified off the main thread (#5285)", () => 
 
 	it("session start verifies the private roots in the background, so a later synchronous caller finds them verified (#5285)", async () => {
 		const reads: Array<{ path: string; background: boolean | undefined }> = [];
-		setWindowsDirectorySecurityReaderForTesting(async (path, options) => {
-			reads.push({ path, background: options.background });
-			return security();
-		});
-		if (!isWindows) simulateWindows();
 		const agentDir = process.env.ATOMIC_CODING_AGENT_DIR ?? "";
 		const ownerRoot = getTempRootDir();
 		const cacheRoot = join(agentDir, "cache", "tmp");
+		setWindowsDirectorySecurityReaderForTesting(async (path, options) => {
+			reads.push({ path, background: options.background });
+			if (path === cacheRoot) await sleep(20);
+			return security();
+		});
+		if (!isWindows) simulateWindows();
 
 		setActiveSessionTempId("first-session");
-		await waitFor(() => reads.some((read) => read.path === ownerRoot));
+		await waitForWindowsDirectorySecurityReadsForTesting();
 		assert.equal(existsSync(agentDir), false, "session start never creates the agent directory's cache");
 
 		mkdirSync(cacheRoot, { recursive: true });
 		setActiveSessionTempId("prewarmed-session");
-		await waitFor(() => reads.some((read) => read.path === cacheRoot));
-		await waitFor(() => {
-			try {
-				getSessionTempDir("prewarmed-session");
-				return ensurePrivateTempDir("extensions").startsWith(`${cacheRoot}${sep}`);
-			} catch {
-				return false;
-			}
-		});
+		await waitForWindowsDirectorySecurityReadsForTesting();
 
 		const settledReads = reads.length;
 		assert.ok(getSessionTempDir("prewarmed-session").startsWith(`${ownerRoot}${sep}`));
