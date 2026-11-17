@@ -5,16 +5,23 @@
  */
 const EMITTED_KEY = "__atomicDeprecationWarnings";
 const SINK_KEY = "__atomicDeprecationSink";
+/** Installed by the host once it loaded which notices it already showed: whether this one is new. */
+const SHOW_ONCE_KEY = "__atomicShowNoticeOnce";
 
 type DeprecationRegistry = typeof globalThis & {
 	[EMITTED_KEY]?: Set<string>;
 	[SINK_KEY]?: (message: string) => void;
+	[SHOW_ONCE_KEY]?: (identity: string) => boolean;
 };
 
-/** Warn once per process that an option of the removed automatic model routing is ignored. */
-export function warnRemovedRoutingOption(option: string): void {
+/**
+ * Warn once per process that an option of the removed automatic model routing is ignored. With `saved`, naming a
+ * settings file and the values it keeps, the warning is shown once across starts while that file keeps those values.
+ */
+export function warnRemovedRoutingOption(option: string, saved?: string): void {
 	const message = `"${option}" is ignored: automatic model routing was removed, so "auto" runs your default model and provider or model restrictions no longer limit "auto" or any fallback model.`;
 	const registry = globalThis as DeprecationRegistry;
+	if (saved !== undefined && registry[SHOW_ONCE_KEY]?.(`${saved}\0${message}`) === false) return;
 	registry[EMITTED_KEY] ??= new Set<string>();
 	if (registry[EMITTED_KEY].has(message)) return;
 	registry[EMITTED_KEY].add(message);

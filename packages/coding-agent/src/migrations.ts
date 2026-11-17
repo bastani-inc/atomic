@@ -23,7 +23,12 @@ import {
 	migrateModelsJsonConfigValues,
 	migrateModelsJsonConfigValuesAsync,
 } from "./migrations-config-values.ts";
-import { warnDeprecation } from "./utils/deprecation.js";
+import {
+	holdDeprecationWarnings,
+	releaseDeprecationWarnings,
+	settingsFileNoticeKey,
+	warnDeprecation,
+} from "./utils/deprecation.js";
 import { parseJsonFileContent } from "./utils/json.ts";
 import { pathExists } from "./utils/path-exists.ts";
 import { stripBom } from "./utils/text.ts";
@@ -677,49 +682,76 @@ function warnRoutingSettingsRemoved(scope: SettingsScope, removed: RemovedRoutin
 	for (const notice of routingRemovalNotices(scope, removed)) warnDeprecation(notice, { showInUi: true });
 }
 
+/** Options of {@link removeSavedModelRoutingSettings}. */
+interface RoutingRemovalOptions {
+	projectTrusted?: boolean;
+	/**
+	 * A later call removes them again, as startup's migrations do: until then, a file this call cannot rewrite holds back
+	 * its "ignored" warning, so each file gets one notice, saying what happened to it.
+	 */
+	retryLater?: boolean;
+}
+
+/** Say what happened to a file's routing settings once: removed here, or ignored while it keeps them. */
+function settleRoutingNotice(
+	scope: SettingsScope,
+	path: string,
+	removed: RemovedRoutingSettings | undefined,
+	retryLater: boolean | undefined,
+): void {
+	const key = settingsFileNoticeKey(path);
+	if (removed !== undefined) {
+		warnRoutingSettingsRemoved(scope, removed);
+		releaseDeprecationWarnings(key, false);
+	} else if (retryLater) holdDeprecationWarnings(key);
+	else releaseDeprecationWarnings(key, true);
+}
+
 /**
  * Delete the saved settings of the removed automatic model routing (`modelRouting`, and `modelConstraints` and
  * `taskNeeds` in subagent overrides) from Atomic's global settings file and, when the project is trusted, from its
  * project settings file, and say so once. The file is rewritten under its settings lock, so settings another process
  * saves meanwhile are kept. A file that cannot be written keeps them, which loading it reports as ignored.
  */
-export function removeSavedModelRoutingSettings(cwd: string, options?: { projectTrusted?: boolean }): void {
+export function removeSavedModelRoutingSettings(cwd: string, options?: RoutingRemovalOptions): void {
 	const storage = new FileSettingsStorage(cwd, getAgentDir());
 	for (const [scope, path] of routingSettingsFiles(cwd, options)) {
-		if (!savesRoutingSettings(path)) continue;
 		let removed: RemovedRoutingSettings | undefined;
-		try {
-			storage.withPrimaryWriteLock(scope, (current) =>
-				withoutRoutingSettings(current, (deleted) => {
-					removed = deleted;
-				}),
-			);
-		} catch {
-			removed = undefined;
+		if (savesRoutingSettings(path)) {
+			try {
+				storage.withPrimaryWriteLock(scope, (current) =>
+					withoutRoutingSettings(current, (deleted) => {
+						removed = deleted;
+					}),
+				);
+			} catch {
+				removed = undefined;
+			}
 		}
-		warnRoutingSettingsRemoved(scope, removed);
+		settleRoutingNotice(scope, path, removed, options?.retryLater);
 	}
 }
 
 /** {@link removeSavedModelRoutingSettings} without blocking the event loop, for settings trusted after startup. */
 export async function removeSavedModelRoutingSettingsAsync(
 	cwd: string,
-	options?: { projectTrusted?: boolean },
+	options?: RoutingRemovalOptions,
 ): Promise<void> {
 	const storage = new FileSettingsStorage(cwd, getAgentDir());
 	for (const [scope, path] of routingSettingsFiles(cwd, options)) {
-		if (!(await savesRoutingSettingsAsync(path))) continue;
 		let removed: RemovedRoutingSettings | undefined;
-		try {
-			await storage.withPrimaryWriteLockAsync(scope, (current) =>
-				withoutRoutingSettings(current, (deleted) => {
-					removed = deleted;
-				}),
-			);
-		} catch {
-			removed = undefined;
+		if (await savesRoutingSettingsAsync(path)) {
+			try {
+				await storage.withPrimaryWriteLockAsync(scope, (current) =>
+					withoutRoutingSettings(current, (deleted) => {
+						removed = deleted;
+					}),
+				);
+			} catch {
+				removed = undefined;
+			}
 		}
-		warnRoutingSettingsRemoved(scope, removed);
+		settleRoutingNotice(scope, path, removed, options?.retryLater);
 	}
 }
 

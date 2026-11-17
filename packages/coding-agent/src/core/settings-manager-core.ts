@@ -1,6 +1,6 @@
 import { join } from "path";
 import { getAgentConfigPaths, getAgentDir, getProjectConfigPaths } from "../config.js";
-import { warnDeprecation } from "../utils/deprecation.js";
+import { settingsFileNoticeKey, warnDeprecation } from "../utils/deprecation.js";
 import { parseJsonFileContent } from "../utils/json.ts";
 import { normalizeAzureSettings } from "./azure-provider-compat.js";
 import { isDecisionConfigError } from "./decision/errors.js";
@@ -232,7 +232,7 @@ export class SettingsManager {
 			for (const value of dropWrongTypedSettings(settings)) {
 				invalid.push({ ...value, path: path ?? storage.getFieldPath?.(scope, value.setting) });
 			}
-			return SettingsManager.migrateSettings(settings);
+			return SettingsManager.migrateSettings(settings, path);
 		});
 		const settings = layers.reduceRight<Settings>((merged, layer) => deepMergeSettings(merged, layer), {});
 		return { settings, invalid };
@@ -332,16 +332,26 @@ export class SettingsManager {
 	}
 
 	/** Migrate old settings format to new format */
-	private static migrateSettings(settings: Record<string, unknown>): Settings {
+	/**
+	 * `path` names the file the settings were read from: a warning about a setting it ignores is shown once across
+	 * starts while that setting keeps its value, and a removed routing setting's warning waits while startup still
+	 * removes that setting from the file (see `removeSavedModelRoutingSettings`).
+	 */
+	private static migrateSettings(settings: Record<string, unknown>, path?: string): Settings {
+		const file = path === undefined ? undefined : settingsFileNoticeKey(path);
+		const about = (value: unknown) => (file === undefined ? undefined : `${file}\0${JSON.stringify(value) ?? ""}`);
 		// Migrate routerModel -> decisionModel before normalizing provider IDs.
 		if ("routerModel" in settings) {
 			if ("decisionModel" in settings) {
-				warnDeprecation('Ignored legacy "routerModel" because "decisionModel" is already set.');
+				warnDeprecation('Ignored legacy "routerModel" because "decisionModel" is already set.', {
+					once: about(settings.routerModel),
+				});
 			} else if (typeof settings.routerModel === "string" && settings.routerModel.trim() === settings.routerModel) {
 				settings.decisionModel = settings.routerModel;
 			} else {
 				warnDeprecation(
 					'Ignored invalid legacy "routerModel"; set "decisionModel" to an exact provider/model ID, "auto", or an empty string.',
+					{ once: about(settings.routerModel) },
 				);
 			}
 			delete settings.routerModel;
@@ -350,6 +360,7 @@ export class SettingsManager {
 		if ("modelRouting" in settings) {
 			warnDeprecation(
 				'Ignored removed setting "modelRouting": automatic model routing was removed, so "auto" runs your default model and its provider and model restrictions no longer limit "auto" or any fallback model.',
+				{ hold: file, once: about(settings.modelRouting) },
 			);
 			delete settings.modelRouting;
 		}
