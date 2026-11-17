@@ -1,19 +1,33 @@
 import assert from "node:assert/strict";
 import type * as ChildProcess from "node:child_process";
 import type * as Fs from "node:fs";
-import { afterEach, beforeEach, describe, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, win32 } from "node:path";
+import { afterAll, afterEach, beforeEach, describe, it, vi } from "vitest";
 
 type ShellModule = typeof import("../src/utils/shell.js");
 
-const { accessSyncMock, spawnSyncMock } = vi.hoisted(() => ({
+const { accessSyncMock, spawnSyncMock, standIns } = vi.hoisted(() => ({
 	accessSyncMock: vi.fn(),
 	spawnSyncMock: vi.fn(),
+	standIns: { directories: new Set<string>(), aliases: new Set<string>(), directory: "", danglingLink: "" },
 }));
 
-vi.mock("node:fs", async (importOriginal) => ({
-	...(await importOriginal<typeof Fs>()),
-	accessSync: accessSyncMock,
-}));
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof Fs>();
+	const lstatSync = ((path: Fs.PathLike, options?: Fs.StatSyncOptions) => {
+		if (standIns.directories.has(String(path))) return actual.lstatSync(standIns.directory);
+		if (standIns.aliases.has(String(path))) return actual.lstatSync(standIns.danglingLink);
+		return actual.lstatSync(path, options);
+	}) as typeof actual.lstatSync;
+	const statSync = ((path: Fs.PathLike, options?: Fs.StatSyncOptions) => {
+		if (standIns.aliases.has(String(path)))
+			throw Object.assign(new Error(`EACCES: permission denied, stat '${String(path)}'`), { code: "EACCES" });
+		return actual.statSync(path, options);
+	}) as typeof actual.statSync;
+	return { ...actual, accessSync: accessSyncMock, lstatSync, statSync };
+});
 
 vi.mock("child_process", async (importOriginal) => ({
 	...(await importOriginal<typeof ChildProcess>()),
@@ -21,6 +35,11 @@ vi.mock("child_process", async (importOriginal) => ({
 }));
 
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+const standInRoot = mkdtempSync(join(tmpdir(), "atomic-shell-path-stand-ins-"));
+standIns.directory = join(standInRoot, "directory");
+mkdirSync(standIns.directory);
+standIns.danglingLink = join(standInRoot, "dangling");
+symlinkSync(join(standInRoot, "missing"), standIns.danglingLink, process.platform === "win32" ? "junction" : undefined);
 const aliasesDir = "D:\\Users\\test\\AppData\\Local\\Microsoft\\WindowsApps";
 let shell: ShellModule;
 
@@ -41,6 +60,12 @@ beforeEach(async () => {
 afterEach(() => {
 	Object.defineProperty(process, "platform", platformDescriptor);
 	vi.unstubAllEnvs();
+	standIns.directories.clear();
+	standIns.aliases.clear();
+});
+
+afterAll(() => {
+	rmSync(standInRoot, { recursive: true, force: true });
 });
 
 // nodejs/node#36790: runnable Store aliases pass access(F_OK) but fail the extra
@@ -63,6 +88,31 @@ describe("Windows Store shell aliases", () => {
 		const alias = `${aliasesDir}\\bash.exe`;
 
 		assert.equal(shell.getShellConfig(alias).shell, alias);
+	});
+
+	it("returns a relative PATH entry's match as an absolute path, so it starts from any working directory (#5324)", () => {
+		vi.stubEnv("PATH", "relative-bin");
+
+		const found = shell.getPowerShellConfig().shell;
+
+		assert.equal(found, win32.resolve(process.cwd(), "relative-bin", "pwsh.exe"));
+		assert.ok(win32.isAbsolute(found), found);
+	});
+
+	it("skips a directory named like the executable earlier on PATH (#5324)", () => {
+		const shadowing = "D:\\first\\pwsh.exe";
+		standIns.directories.add(shadowing);
+		vi.stubEnv("PATH", `D:\\first;${aliasesDir}`);
+
+		assert.equal(shell.getPowerShellConfig().shell, `${aliasesDir}\\pwsh.exe`);
+	});
+
+	it("keeps a Store alias whose link target cannot be read (#5324)", () => {
+		const alias = `${aliasesDir}\\pwsh.exe`;
+		standIns.aliases.add(alias);
+		vi.stubEnv("PATH", aliasesDir);
+
+		assert.equal(shell.getPowerShellConfig().shell, alias);
 	});
 
 	it("still rejects PATH results that fail the existence check", () => {

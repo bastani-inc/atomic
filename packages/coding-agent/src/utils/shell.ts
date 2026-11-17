@@ -1,4 +1,4 @@
-import { accessSync, constants } from "node:fs";
+import { accessSync, constants, lstatSync, statSync } from "node:fs";
 import { delimiter, join, win32 } from "node:path";
 import { Worker } from "node:worker_threads";
 import { spawn, spawnSync } from "child_process";
@@ -41,6 +41,21 @@ function shellPathExists(path: string): boolean {
 	}
 }
 
+function isDirectoryEntry(path: string): boolean {
+	try {
+		const entry = lstatSync(path, { throwIfNoEntry: false });
+		if (entry === undefined || entry.isFile()) return false;
+		if (entry.isDirectory()) return true;
+		return entry.isSymbolicLink() && statSync(path, { throwIfNoEntry: false })?.isDirectory() === true;
+	} catch {
+		return false;
+	}
+}
+
+function executableCandidateExists(path: string): boolean {
+	return shellPathExists(path) && !isDirectoryEntry(path);
+}
+
 const MISSING_EXECUTABLE_RECHECK_MS = 30_000;
 
 interface ExecutableLookup {
@@ -53,7 +68,7 @@ const executablePathLookups = new Map<string, ExecutableLookup>();
 function isReusableLookup(lookup: ExecutableLookup): boolean {
 	return lookup.path === null
 		? Date.now() - lookup.checkedAt < MISSING_EXECUTABLE_RECHECK_MS
-		: shellPathExists(lookup.path);
+		: executableCandidateExists(lookup.path);
 }
 
 /**
@@ -61,7 +76,7 @@ function isReusableLookup(lookup: ExecutableLookup): boolean {
  * A missing executable is looked up again once its result is 30 seconds old.
  */
 function findExecutableOnPath(executable: string): string | null {
-	const key = `${executable}\0${process.env.PATH ?? ""}`;
+	const key = `${executable}\0${process.env.PATH ?? ""}\0${process.cwd()}`;
 	const cached = executablePathLookups.get(key);
 	if (cached && isReusableLookup(cached)) return cached.path;
 	const path = lookupExecutableOnPath(executable);
@@ -73,8 +88,8 @@ function lookupWindowsExecutableOnPath(executable: string): string | null {
 	for (const entry of (process.env.PATH ?? "").split(win32.delimiter)) {
 		const directory = entry.trim().replace(/^"(.*)"$/, "$1");
 		if (directory.length === 0) continue;
-		const candidate = win32.join(directory, executable);
-		if (shellPathExists(candidate)) return candidate;
+		const candidate = win32.resolve(process.cwd(), directory, executable);
+		if (executableCandidateExists(candidate)) return candidate;
 	}
 	return null;
 }

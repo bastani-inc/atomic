@@ -52,6 +52,8 @@ PowerShell discovery checks these locations in order:
 3. `powershell.exe` on `PATH`
 4. `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`
 
+On `PATH`, Atomic checks each directory in order and skips a directory that has the executable's name. A relative entry is taken relative to the directory Atomic started in, and the current directory is not searched unless it is on `PATH`.
+
 ## Custom Shell Path
 
 ```json
