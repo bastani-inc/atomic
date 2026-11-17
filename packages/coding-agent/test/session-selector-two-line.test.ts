@@ -497,11 +497,13 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 	});
 
 	it("mixed hints order core keys then live extras at 160 cols, collapse to core + ? keys at 80 cols, and open the ? help overlay (#5256)", () => {
-		const sessionRow = makeSession({ id: "s1", path: "/work/project/s1.jsonl" });
+		const modified = new Date(Date.now() - 2 * HOUR);
+		const sessionRow = makeSession({ id: "s1", path: "/work/project/s1.jsonl", modified });
 		const activeWorkflow = makeSession({
 			id: "s1",
 			path: "workflow-live:s1",
 			cwd: "Live",
+			modified,
 			resumeKind: "workflow",
 			canDelete: false,
 			title: "demo · active workflow",
@@ -511,6 +513,7 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 			id: "wf-del",
 			path: "workflow-durable:wf-del",
 			cwd: "Durable",
+			modified,
 			resumeKind: "workflow",
 			canDelete: true,
 			title: "demo · durable workflow",
