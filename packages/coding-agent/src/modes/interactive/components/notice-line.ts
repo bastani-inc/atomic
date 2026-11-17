@@ -47,6 +47,11 @@ function quoted(subject: string | undefined): string {
 	return subject === undefined || subject === "" ? "" : ` "${subject}"`;
 }
 
+function outcomeText(outcome: string): string {
+	const text = oneLine(outcome);
+	return text === "" ? "" : ` ${text}`;
+}
+
 function metaText(meta: readonly string[] | undefined): string {
 	const facts = (meta ?? []).map(oneLine).filter(Boolean);
 	return facts.length === 0 ? "" : ` · ${facts.join(" · ")}`;
@@ -55,7 +60,7 @@ function metaText(meta: readonly string[] | undefined): string {
 /** The notice as plain text, one line, as a screen reader or a log reads it. */
 export function noticeLineText(spec: NoticeLineSpec): string {
 	const subject = spec.subject === undefined ? undefined : oneLine(spec.subject);
-	return `${STATUS_MARKERS[spec.status].glyph} ${oneLine(spec.label)}${quoted(subject)} ${oneLine(spec.outcome)}${metaText(spec.meta)}`;
+	return `${STATUS_MARKERS[spec.status].glyph} ${oneLine(spec.label)}${quoted(subject)}${outcomeText(spec.outcome)}${metaText(spec.meta)}`;
 }
 
 /** The subject shortened so the whole line fits `width`, or undefined when even one character of it does not. */
@@ -88,7 +93,7 @@ export class NoticeLine implements Component {
 		if (width < 1) return [];
 		const marker = STATUS_MARKERS[this.spec.status];
 		const subject = fittedSubject(this.spec, width);
-		const head = `${marker.glyph} ${oneLine(this.spec.label)}${quoted(subject)} ${oneLine(this.spec.outcome)}`;
+		const head = `${marker.glyph} ${oneLine(this.spec.label)}${quoted(subject)}${outcomeText(this.spec.outcome)}`;
 		const meta = metaText(this.spec.meta);
 		const line = `${theme.fg(marker.color, marker.glyph)}${head.slice(marker.glyph.length)}${meta ? theme.fg("dim", meta) : ""}`;
 		const lines = [truncateToWidth(line, width, "…")];

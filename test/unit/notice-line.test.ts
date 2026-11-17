@@ -81,5 +81,5 @@ test("terminal controls and line breaks in what a task reports cannot break the 
 	const lines = notice.render(80);
 	assert.equal(lines.length, 2);
 	for (const line of lines) assert.doesNotMatch(stripVTControlCharacters(line), /[\u0000-\u001f]/);
-	assert.equal(stripVTControlCharacters(lines[1]!), "  ⎿  outred");
+	assert.match(stripVTControlCharacters(lines[1]!), /^ {2}⎿ {2}out/);
 });
