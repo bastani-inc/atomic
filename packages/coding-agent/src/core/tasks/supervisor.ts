@@ -2,7 +2,7 @@ import { AsyncLocalStorage, AsyncResource } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type * as native from "@bastani/atomic-natives";
-import { createModuleRequire } from "../../utils/module-require.ts";
+import { createModuleRequire } from "../../utils/module-require.js";
 import type { AgentSession, AgentSessionEvent, CompactionReason } from "../agent-session.js";
 import { currentResourceAdmission } from "../resource-admission-scope.ts";
 import type { ResourceAdmission, ResourcePermit } from "../sdk-types.ts";

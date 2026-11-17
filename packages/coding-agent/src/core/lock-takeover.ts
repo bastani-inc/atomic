@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { createModuleRequire } from "../utils/module-require.ts";
+import { createModuleRequire } from "../utils/module-require.js";
 import { processStartToken } from "./process-start-token.ts";
 
 /*
