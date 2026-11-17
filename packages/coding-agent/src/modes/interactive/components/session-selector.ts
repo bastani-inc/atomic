@@ -47,6 +47,8 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	private onCancel: () => void;
 	private requestRender: () => void;
 	private renameSession?: (session: SessionInfo, currentName: string | undefined) => Promise<void>;
+	private deleteSession?: (sessionId: string) => Promise<void>;
+	private deletedSessions = new Set<string>();
 	private currentLoading = false;
 	private allLoading = false;
 	private currentLoadSeq = 0;
@@ -117,6 +119,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		this.header = new SessionSelectorHeader(this.scope, this.sortMode, this.nameFilter, this.requestRender);
 		const renameSession = options?.renameSession;
 		this.renameSession = renameSession;
+		this.deleteSession = options?.deleteSession;
 		this.canRename = !!renameSession;
 		const variant = options?.variant ?? "sessions";
 		this.header.setVariant(variant);
@@ -204,15 +207,12 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			}
 
 			if (result.ok) {
+				this.deletedSessions.add(this.deleteSession ? session.id : sessionPath);
 				if (this.currentSessions) {
-					this.currentSessions = this.currentSessions.filter((s) =>
-						options?.deleteSession ? s.id !== session.id : s.path !== sessionPath,
-					);
+					this.currentSessions = this.currentSessions.filter((s) => !this.isDeletedSession(s));
 				}
 				if (this.allSessions) {
-					this.allSessions = this.allSessions.filter((s) =>
-						options?.deleteSession ? s.id !== session.id : s.path !== sessionPath,
-					);
+					this.allSessions = this.allSessions.filter((s) => !this.isDeletedSession(s));
 				}
 
 				const sessions = this.scope === "all" ? (this.allSessions ?? []) : (this.currentSessions ?? []);
@@ -294,6 +294,14 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		}
 	}
 
+	private isDeletedSession(session: SessionInfo): boolean {
+		return this.deletedSessions.has(this.deleteSession ? session.id : session.path);
+	}
+
+	private filterLoadedSessions(sessions: readonly SessionInfo[]): SessionInfo[] {
+		return sessions.filter((session) => isResumableSession(session) && !this.isDeletedSession(session));
+	}
+
 	private async loadScope(scope: SessionScope, reason: "initial" | "refresh" | "toggle"): Promise<void> {
 		const showCwd = scope === "all";
 
@@ -313,7 +321,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		const onProgress: SessionListProgress = (loaded, total, partialSessions) => {
 			if (!isActive()) return;
 			if (partialSessions) {
-				const sessions = partialSessions.filter(isResumableSession);
+				const sessions = this.filterLoadedSessions(partialSessions);
 				if (scope === "current") {
 					this.currentSessions = sessions;
 				} else {
@@ -329,9 +337,9 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		};
 
 		try {
-			const sessions = (
-				await (scope === "current" ? this.currentSessionsLoader(onProgress) : this.allSessionsLoader(onProgress))
-			).filter(isResumableSession);
+			const sessions = this.filterLoadedSessions(
+				await (scope === "current" ? this.currentSessionsLoader(onProgress) : this.allSessionsLoader(onProgress)),
+			);
 
 			if (!isActive()) return;
 

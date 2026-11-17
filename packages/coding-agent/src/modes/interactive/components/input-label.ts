@@ -1,5 +1,6 @@
 import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import { stripAnsi } from "./chat-session-host-utils.ts";
+import { renderComposerRule } from "./composer-rule.ts";
 
 /** Supported terminal floor for naming the session in a chat input's top rule. */
 export const INPUT_LABEL_MIN_COLUMNS = 40;
@@ -113,5 +114,122 @@ export function applyInputLabelToEditorTopRule(
 	if (!/^─+$/.test(plain) && overflow === undefined) return lines;
 	const decorated = decorateEditorTopLine(style, kind, name, topLine, plain, overflow);
 	if (decorated !== undefined) lines[0] = decorated;
+	return lines;
+}
+
+/** Colours of an attached composer: its rules in the accent, its label bold, its placeholder dim. */
+export interface AttachedComposerStyle {
+	accent(text: string): string;
+	text(text: string): string;
+	dim(text: string): string;
+}
+
+const HEAVY_RULE = "━";
+const PROMPT_GLYPH = "❯";
+
+function stripApc(text: string): string {
+	let start = text.indexOf("\x1b_");
+	if (start === -1) return text;
+	let out = "";
+	let cursor = 0;
+	while (start !== -1) {
+		const end = text.indexOf("\x07", start + 2);
+		if (end === -1) break;
+		out += text.slice(cursor, start);
+		cursor = end + 1;
+		start = text.indexOf("\x1b_", cursor);
+	}
+	return cursor === 0 ? text : out + text.slice(cursor);
+}
+
+function trimTrailingSpaces(line: string): string {
+	let sgrStart = line.length;
+	while (sgrStart >= 3 && line.charCodeAt(sgrStart - 1) === 0x6d) {
+		let index = sgrStart - 2;
+		while (index >= 0) {
+			const code = line.charCodeAt(index);
+			if ((code >= 0x30 && code <= 0x39) || code === 0x3b) index--;
+			else break;
+		}
+		if (index >= 1 && line.charCodeAt(index) === 0x5b && line.charCodeAt(index - 1) === 0x1b) {
+			sgrStart = index - 1;
+		} else {
+			break;
+		}
+	}
+	let spaceStart = sgrStart;
+	while (spaceStart > 0 && line.charCodeAt(spaceStart - 1) === 0x20) spaceStart--;
+	if (spaceStart === sgrStart) return line;
+	return line.slice(0, spaceStart) + line.slice(sgrStart);
+}
+
+/**
+ * The composer of a chat attached to a subagent or a workflow stage, so it never reads as the main chat's: heavy accent
+ * rules above and below the prompt, the top one ending in `label` (`debugger · #5220 spawn lock · 18m`), and, while
+ * nothing is typed, `placeholder` (`Message debugger…`) after the cursor. Call it on the editor's rendered lines. A
+ * plain or scrolled rule is replaced; any other first or last line is left as it is. Terminals narrower than
+ * {@link INPUT_LABEL_MIN_COLUMNS} keep the heavy rules without the label.
+ */
+export function applyAttachedComposer(
+	style: AttachedComposerStyle,
+	label: string | undefined,
+	placeholder: string | undefined,
+	editorLines: readonly string[],
+): string[] {
+	const lines = [...editorLines];
+	const top = lines[0];
+	const isRule = (line: string) => {
+		const plain = stripAnsi(line);
+		return /^─+$/.test(plain) || EDITOR_OVERFLOW_RE.test(plain);
+	};
+	// The editor may render rows below its bottom rule (an autocomplete list); the bottom rule is the last rule.
+	let bottomIndex = lines.length - 1;
+	while (bottomIndex > 0 && !isRule(lines[bottomIndex]!)) bottomIndex--;
+	if (top === undefined || bottomIndex < 1) return lines;
+	const width = visibleWidth(stripAnsi(top));
+	const overflowNote = isRule(top) ? EDITOR_OVERFLOW_RE.exec(stripAnsi(top))?.[2] : undefined;
+	if (isRule(top) && overflowNote === undefined) {
+		// The shared composer rule, in its attached form: heavy, accent, the label bold (#5224).
+		lines[0] = renderComposerRule(width, {
+			...(label === undefined
+				? {}
+				: { label: { plain: label, styled: `${BOLD}${style.text(label)}${NORMAL_INTENSITY}` } }),
+			color: style.accent,
+			heavy: true,
+		});
+	} else if (isRule(top)) {
+		const overflow = overflowNote;
+		const shown =
+			label === undefined || width < INPUT_LABEL_MIN_COLUMNS
+				? undefined
+				: truncateToWidth(
+						label,
+						Math.max(1, width - (overflow === undefined ? 0 : visibleWidth(overflow)) - 6),
+						"…",
+					);
+		const tail = shown === undefined ? "" : ` ${shown} `;
+		const fill = Math.max(0, width - visibleWidth(tail) - 1 - (overflow === undefined ? 0 : visibleWidth(overflow)));
+		lines[0] =
+			style.accent(HEAVY_RULE.repeat(fill)) +
+			(overflow === undefined ? "" : style.dim(overflow)) +
+			(shown === undefined ? "" : `${BOLD}${style.text(tail)}${NORMAL_INTENSITY}`) +
+			style.accent(
+				HEAVY_RULE.repeat(
+					Math.max(0, width - fill - visibleWidth(tail) - (overflow === undefined ? 0 : visibleWidth(overflow))),
+				),
+			);
+	}
+	const bottom = lines[bottomIndex]!;
+	if (isRule(bottom)) lines[bottomIndex] = style.accent(HEAVY_RULE.repeat(visibleWidth(stripAnsi(bottom))));
+	if (placeholder !== undefined && bottomIndex === 2) {
+		const line = lines[1]!;
+		const plain = stripAnsi(stripApc(line)).trimEnd();
+		if (plain === PROMPT_GLYPH || plain === `${PROMPT_GLYPH} `) {
+			const room = Math.max(0, width - visibleWidth(stripAnsi(line).trimEnd()) - 2);
+			const text = truncateToWidth(placeholder, room, "…");
+			const trimmed = trimTrailingSpaces(line);
+			lines[1] = `${trimmed} ${style.dim(text)}`;
+		}
+	}
 	return lines;
 }

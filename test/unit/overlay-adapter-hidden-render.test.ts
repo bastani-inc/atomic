@@ -14,7 +14,7 @@ async function registerIsolatedTests(): Promise<void> {
 	// Only ever reached inside the `bun test` child spawned below, where
 	// `bun:test`'s module registry is the real one. vitest has no equivalent.
 	const { mock, spyOn } = await import("bun:test");
-	const { stripTerminalSequences } = await import("@bastani/atomic-tui/dist/utils.js");
+	const { replaceControlCharacters, stripTerminalSequences } = await import("@bastani/atomic-tui/dist/utils.js");
 	class TestComponent {}
 	const [{ ScrollView }, { VStack }, { Input }] = await Promise.all([
 		import("@bastani/atomic-tui/dist/components/scroll-view.js"),
@@ -43,6 +43,7 @@ async function registerIsolatedTests(): Promise<void> {
 		},
 		decodeKittyPrintable: () => undefined,
 		matchesKey: (data: string, key: string) => data === key,
+		replaceControlCharacters,
 		stripTerminalSequences,
 		truncateToWidth: (text: string, width: number) => text.slice(0, width),
 		visibleWidth: (text: string) => text.length,
@@ -54,8 +55,14 @@ async function registerIsolatedTests(): Promise<void> {
 		"../../packages/coding-agent/src/core/model-label.js"
 	);
 	// The stage's input label is the shared chat-input label (#4640).
-	const { applyInputLabelToEditorTopRule, buildInputLabel, INPUT_LABEL_MIN_COLUMNS, inputLabelMarker, ruleOpenColor } =
-		await import("../../packages/coding-agent/src/modes/interactive/components/input-label.js");
+	const {
+		applyAttachedComposer,
+		applyInputLabelToEditorTopRule,
+		buildInputLabel,
+		INPUT_LABEL_MIN_COLUMNS,
+		inputLabelMarker,
+		ruleOpenColor,
+	} = await import("../../packages/coding-agent/src/modes/interactive/components/input-label.js");
 	// Pending-input labels cut long prompts with the shared surrogate-safe slice (#5097).
 	const { sliceHead } = await import("../../packages/coding-agent/src/core/tools/truncate.js");
 
@@ -66,6 +73,7 @@ async function registerIsolatedTests(): Promise<void> {
 		ChatSessionHost: TestComponent,
 		formatModelLabel,
 		MODEL_LABEL_SEPARATOR,
+		applyAttachedComposer,
 		applyInputLabelToEditorTopRule,
 		buildInputLabel,
 		INPUT_LABEL_MIN_COLUMNS,

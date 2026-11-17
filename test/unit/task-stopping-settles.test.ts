@@ -48,7 +48,7 @@ test("a stopped agent whose runner cannot confirm cleanup settles and leaves the
 		);
 		value(await supervisor.initialObservation(task, { kind: "background" }));
 		store.drain();
-		assert.equal(plain(renderTaskFooter(store.backgroundTasks, 80)), "Tasks  1 local agent running · /tasks");
+		assert.match(plain(renderTaskFooter(store.backgroundTasks, 80)), /^ {2}∀ worker {2}work +running$/);
 		assert.equal(value(await supervisor.cancelTask(task, "user")).decision, "cancellation-requested");
 		const deadline = Date.now() + 5000;
 		while (store.tasks[0]?.execution.kind !== "settled") {

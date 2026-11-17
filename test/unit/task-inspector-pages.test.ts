@@ -78,7 +78,7 @@ test("task picker and detail show page-specific hints and wheel moves selection 
 	try {
 		await h.fixture.start("First task");
 		await h.fixture.start("Second task");
-		assert.match(h.text(), /↑↓ select · enter\/→ open · space peek · x stop · esc\/← back · \? keys/);
+		assert.match(h.text(), /↑↓ select · space peek · enter\/→ open · x stop · \/ filter · esc\/← back · \? keys/);
 		const initial = h.inspector.navigation.selectedTaskId;
 		h.inspector.handleInput(up);
 		assert.notEqual(h.inspector.navigation.selectedTaskId, initial);
@@ -295,7 +295,7 @@ test("mounted inspector inherits render settings and toggles only the host tool 
 	let settingsReads = 0;
 	let gets = 0;
 	const sets: boolean[] = [];
-	let completion: Promise<void> | undefined;
+	let completion: Promise<unknown> | undefined;
 	try {
 		await fixture.start("Bridge chat");
 		const session = SessionManager.inMemory();

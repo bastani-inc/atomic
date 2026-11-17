@@ -19,7 +19,10 @@ import {
 	TwoPressConfirm,
 } from "../../packages/coding-agent/src/modes/interactive/components/nav-keys.js";
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
-import { createStopAllChord } from "../../packages/coding-agent/src/modes/interactive/interactive-stop-all.js";
+import {
+	createStopAllChord,
+	createStopAllNotices,
+} from "../../packages/coding-agent/src/modes/interactive/interactive-stop-all.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskFixture } from "../helpers/task-projection.js";
 
@@ -295,7 +298,7 @@ test("? opens the task list's key overlay and Esc closes it, keeping the list op
 		assert.equal(fixture.store.tasks[0]?.execution.kind, "running", "keys wait while the overlay is open");
 		inspector.handleInput("\x1b");
 		assert.doesNotMatch(frame(), /keys · tasks/);
-		assert.match(frame(), /Background tasks/);
+		assert.match(frame(), /^ Tasks\b/m);
 		assert.equal(closed, 0);
 	} finally {
 		inspector.dispose();
@@ -324,4 +327,49 @@ test("an empty task list offers only the keys that do something (#5224)", () => 
 		void fixture.dispose();
 		setKeybindings(previous);
 	}
+});
+
+test("stop-all notices show in the current view for one window and never in a transcript (#5224)", () => {
+	const calls: string[] = [];
+	let fire: (() => void) | undefined;
+	const timers = {
+		setTimeout: ((handler: () => void) => {
+			fire = handler;
+			return { unref() {} };
+		}) as unknown as typeof setTimeout,
+		clearTimeout: (() => {}) as typeof clearTimeout,
+	};
+	const isolated = createStopAllNotices(
+		{
+			setEngineNotice: (text) => calls.push(`engine:${text ?? "-"}`),
+			hasOverlay: () => true,
+			requestRender: () => {},
+		},
+		timers,
+	);
+	isolated.show("Press ctrl+x ctrl+k again");
+	assert.deepEqual(calls, ["engine:-", "engine:Press ctrl+x ctrl+k again"], "the isolated engine's views show it");
+	fire?.();
+	assert.equal(calls.at(-1), "engine:-", "it clears when its window closes");
+	calls.length = 0;
+	let overlay = false;
+	const local = createStopAllNotices(
+		{
+			setFooterStatus: (text) => calls.push(`footer:${text ?? "-"}`),
+			showToast: (text) => {
+				calls.push(`toast:${text}`);
+				return () => calls.push("toast:hidden");
+			},
+			hasOverlay: () => overlay,
+			requestRender: () => {},
+		},
+		timers,
+	);
+	local.show("Stopped 1 subagent.");
+	assert.deepEqual(calls, ["footer:-", "footer:Stopped 1 subagent."], "over the chat: the footer status only");
+	overlay = true;
+	local.show("Press again");
+	assert.ok(calls.includes("toast:Press again"), "over a fullscreen view: a floating line too");
+	local.clear();
+	assert.ok(calls.includes("toast:hidden"));
 });

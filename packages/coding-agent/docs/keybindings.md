@@ -10,23 +10,6 @@ After editing `keybindings.json`, run `/reload` in Atomic to apply the changes w
 
 For editor completion of every action id and validation of key syntax, add `"$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/keybindings.schema.json"` to `keybindings.json`. Atomic ignores `$schema` when it loads your bindings.
 
-## Workflow widget scrolling
-
-`app.workflows.scrollUp` defaults to `["alt+k", "alt+pageUp"]`; `app.workflows.scrollDown` defaults to `["alt+j", "alt+pageDown"]`. These scroll the main-chat workflow list without leaving the editor. Any other configured editor binding takes precedence, including the Vim Alt+J/K cursor bindings. Alt+Up remains available for queued messages.
-
-For example, replace both defaults and their aliases:
-
-```json
-{
-  "app.workflows.scrollUp": ["ctrl+alt+k"],
-  "app.workflows.scrollDown": ["ctrl+alt+j"]
-}
-```
-
-Use `[]` to disable an action, then `/reload`. On macOS, the widget labels Alt as Option; enable Option-as-Alt/Meta in your terminal. If a shortcut produces a character or is intercepted by your terminal or multiplexer, use the Page aliases or choose another binding. Wheel scrolling over the widget is independent of these shortcuts and requires fullscreen mouse reporting.
-
-Some differently named keys share terminal input: for example, Ctrl+H and Backspace, Ctrl+I and Tab, or Ctrl+M and Enter. Shared input stays with the editor, and ambiguous legacy shortcuts are omitted from the widget hint. A terminal sending distinct enhanced-protocol input may still use the workflow binding. For consistent behavior across terminals, choose an unambiguous binding or use the Page aliases rather than relying on that distinction.
-
 ## Key Format
 
 `modifier+key` where modifiers are `ctrl`, `shift`, `alt`, or `super` (combinable) and keys are:
@@ -247,12 +230,13 @@ The same keys move between the main chat, subagent chats, workflow graphs, stage
 | `app.list.peek` | `space` | Peek at the selected task |
 | `app.list.filter` | `/` | Filter the list by name |
 | `app.keys.help` | `?` | Show the keys of the current screen |
+| `app.agents.focus` | `down` | Focus the agent panel from an empty prompt; from a chat opened in the panel, go back to it |
 | `app.agents.chord` | `ctrl+x` | Start a background-work chord in the main chat |
 | `app.agents.stopAll` | `ctrl+k` | After the chord key: stop all background subagents and workflow runs (press twice to confirm) |
 | `app.tasks.open` | Unbound | Command-only `/tasks` route |
 | `app.tasks.input` | Unbound | Focus stdin only when the selected task has writable input |
 
-**Migrating from earlier versions:** `app.tasks.inspect` is now `app.list.open` and `app.tasks.cancel` is now `app.list.stop`; existing `keybindings.json` entries are migrated on startup. Ctrl+X used to return from a stage chat to its graph and from a graph to the main chat: use ← on an empty prompt in a stage chat and Esc in the graph instead. Esc used to close an idle stage chat and a subagent's transcript: there it now only interrupts, so use ← on an empty prompt. Stopping a task asked for `y`; press `x` a second time instead.
+**Migrating from earlier versions:** `app.tasks.inspect` is now `app.list.open` and `app.tasks.cancel` is now `app.list.stop`; existing `keybindings.json` entries are migrated on startup. Ctrl+X used to return from a stage chat to its graph and from a graph to the main chat: use ← on an empty prompt in a stage chat and Esc in the graph instead. Esc used to close an idle stage chat and a subagent's transcript: there it now only interrupts, so use ← on an empty prompt. Stopping a task asked for `y`; press `x` a second time instead. `app.workflows.scrollUp` and `app.workflows.scrollDown` (Alt+K/J) are gone with the workflow list they scrolled: workflow runs are rows of the agent panel.
 
 Mounted human-input prompts and the composer retain priority. Escape leaves stdin
 or task detail before leaving task focus. Unbound actions have no key hint.

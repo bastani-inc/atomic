@@ -189,7 +189,7 @@ test("tasks inspector excludes foreground work and retains previously background
 	);
 	try {
 		await fixture.start("Foreground-only task", undefined, false);
-		assert.match(plain(inspector.renderViewport(80, 24)), /No background tasks/);
+		assert.match(plain(inspector.renderViewport(80, 24)), /No background work/);
 		await fixture.settle(0);
 		await fixture.start("Background review");
 		assert.doesNotMatch(plain(inspector.renderViewport(80, 24)), /Foreground-only/);
@@ -197,7 +197,7 @@ test("tasks inspector excludes foreground work and retains previously background
 		await fixture.settle(1);
 		assert.equal(fixture.store.tasks.length, 2);
 		assert.equal(fixture.store.backgroundTasks.length, 1);
-		assert.match(plain(inspector.renderViewport(80, 24)), /Completed/);
+		assert.match(plain(inspector.renderViewport(80, 24)), /✓ worker +Background review +done/);
 		const reattached = new OwnerTaskStore(fixture.supervisor, fixture.owner);
 		try {
 			assert.ok(reattached.connect().ok);

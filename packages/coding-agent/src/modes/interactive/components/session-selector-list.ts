@@ -131,6 +131,7 @@ export class SessionList implements Component, Focusable {
 	private selectedIndex: number = 0;
 	private selectionTouched = false;
 	private pendingSelectedPath?: string;
+	private pendingSelectedId?: string;
 	private searchInput: Input;
 	private showCwd = false;
 	private sortMode: SortMode = "threaded";
@@ -139,6 +140,7 @@ export class SessionList implements Component, Focusable {
 	private showPath = false;
 	private confirmingDeleteSession: SessionInfo | null = null;
 	private deletingSessionPath?: string;
+	private deletingSessionId?: string;
 	private currentSession?: { id: string; directory?: string };
 	public onSelect?: (session: SessionInfo) => void;
 	public onCancel?: () => void;
@@ -203,10 +205,18 @@ export class SessionList implements Component, Focusable {
 	/** Empty the search with a fresh box, so its undo history cannot bring the old text back. */
 	private clearSearch(): void {
 		const selectedPath = this.getSelectedSessionPath();
+		const selectedId = this.getSelectedSessionId();
 		this.searchInput = this.createSearchInput();
 		this.filterSessions("");
-		const index = this.filteredSessions.findIndex((node) => node.session.path === selectedPath);
+		const index = this.findSessionIndex(selectedPath, selectedId);
 		if (index >= 0) this.selectedIndex = index;
+	}
+
+	private findSessionIndex(path: string | undefined, id?: string): number {
+		if (!path) return -1;
+		const byPath = this.filteredSessions.findIndex((node) => node.session.path === path);
+		if (byPath >= 0 || this.variant !== "runs" || !id) return byPath;
+		return this.filteredSessions.findIndex((node) => node.session.id === id);
 	}
 
 	setSortMode(sortMode: SortMode): void {
@@ -223,16 +233,19 @@ export class SessionList implements Component, Focusable {
 		const selectedPath = this.selectionTouched
 			? (this.pendingSelectedPath ?? this.getSelectedSessionPath())
 			: undefined;
+		const selectedId = this.selectionTouched ? (this.pendingSelectedId ?? this.getSelectedSessionId()) : undefined;
 		this.allSessions = sessions;
 		this.showCwd = showCwd;
 		this.filterSessions(this.searchInput.getValue());
 		if (!selectedPath) return;
-		const selectedIndex = this.filteredSessions.findIndex((node) => node.session.path === selectedPath);
+		const selectedIndex = this.findSessionIndex(selectedPath, selectedId);
 		if (selectedIndex >= 0) {
 			this.selectedIndex = selectedIndex;
 			this.pendingSelectedPath = undefined;
+			this.pendingSelectedId = undefined;
 		} else {
 			this.pendingSelectedPath = partial ? selectedPath : undefined;
+			this.pendingSelectedId = partial ? selectedId : undefined;
 		}
 	}
 
@@ -264,15 +277,22 @@ export class SessionList implements Component, Focusable {
 		this.onDeleteConfirmationChange?.(session?.path ?? null);
 	}
 
+	private isDeleting(session: SessionInfo): boolean {
+		if (this.deletingSessionPath === undefined) return false;
+		if (session.path === this.deletingSessionPath) return true;
+		return this.variant === "runs" && session.id === this.deletingSessionId;
+	}
+
 	private selectSession(): void {
 		const selected = this.filteredSessions[this.selectedIndex]?.session;
-		if (selected && selected.path !== this.deletingSessionPath) this.onSelect?.(selected);
+		if (selected && !this.isDeleting(selected)) this.onSelect?.(selected);
 	}
 
 	private async deleteSession(session: SessionInfo): Promise<void> {
 		const onDelete = this.onDeleteSession;
 		if (!onDelete || this.deletingSessionPath) return;
 		this.deletingSessionPath = session.path;
+		this.deletingSessionId = session.id;
 		this.onDeletePendingChange?.();
 		try {
 			await onDelete(session.path, session);
@@ -280,6 +300,7 @@ export class SessionList implements Component, Focusable {
 			this.onError?.(`Failed to delete: ${error instanceof Error ? error.message : String(error)}`);
 		} finally {
 			this.deletingSessionPath = undefined;
+			this.deletingSessionId = undefined;
 			this.onDeletePendingChange?.();
 		}
 	}
@@ -399,7 +420,7 @@ export class SessionList implements Component, Focusable {
 			const session = node.session;
 			const isSelected = i === this.selectedIndex;
 			const isConfirmingDelete = session === this.confirmingDeleteSession;
-			const isDeleting = session.path === this.deletingSessionPath;
+			const isDeleting = this.isDeleting(session);
 			const prefix = this.buildTreePrefix(node);
 			const continuation = this.buildTreeContinuation(node);
 			const cursor = isSelected ? theme.fg("accent", theme.bold("❯ ")) : "  ";
@@ -527,7 +548,7 @@ export class SessionList implements Component, Focusable {
 			});
 		}
 		if (selected && !query) entries.push({ keys: "space", label: this.previewOpen ? "close preview" : "preview" });
-		const selectedDeleting = selected?.session.path === this.deletingSessionPath;
+		const selectedDeleting = selected !== undefined && this.isDeleting(selected.session);
 		if (selected && !selectedDeleting) entries.push({ action: "tui.select.confirm", label: "resume" });
 		if (this.variant === "sessions") {
 			entries.push({ action: "tui.input.tab", label: this.showCwd ? "this folder" : "all" });
@@ -542,7 +563,7 @@ export class SessionList implements Component, Focusable {
 		}
 		if (selected && this.canRename && !selectedDeleting)
 			entries.push({ action: "app.session.rename", label: "rename" });
-		if (selected && this.canDelete && !this.deletingSessionPath)
+		if (selected && this.canDelete && !this.deletingSessionPath && !this.isCurrentSession(selected.session))
 			entries.push({ action: "app.session.delete", label: "delete" });
 		entries.push({ keys: "type", label: "to search" });
 		const cancel = navActionText(kb, "tui.select.cancel").split("/")[0] || "esc";
@@ -634,9 +655,10 @@ export class SessionList implements Component, Focusable {
 		// Rename selected session
 		if (kb.matches(keyData, "app.session.rename")) {
 			const selected = this.filteredSessions[this.selectedIndex];
-			if (selected && selected.session.path !== this.deletingSessionPath) {
+			if (selected && !this.isDeleting(selected.session)) {
 				this.selectionTouched = true;
 				this.pendingSelectedPath = selected.session.path;
+				this.pendingSelectedId = selected.session.id;
 				this.onRenameSession?.(selected.session);
 			}
 			return true;
@@ -656,6 +678,7 @@ export class SessionList implements Component, Focusable {
 
 		this.selectionTouched = true;
 		this.pendingSelectedPath = undefined;
+		this.pendingSelectedId = undefined;
 		// Up arrow
 		if (kb.matches(keyData, "tui.select.up")) {
 			this.selectedIndex = Math.max(0, this.selectedIndex - 1);
@@ -698,6 +721,7 @@ export class SessionList implements Component, Focusable {
 	private editSearch(keyData: string): void {
 		const before = this.searchInput.getValue().trim();
 		const previousPath = this.getSelectedSessionPath();
+		const previousId = this.getSelectedSessionId();
 		this.searchInput.handleInput(keyData);
 		const query = this.searchInput.getValue();
 		this.filterSessions(query);
@@ -706,7 +730,7 @@ export class SessionList implements Component, Focusable {
 			this.selectedIndex = 0;
 			return;
 		}
-		const kept = this.filteredSessions.findIndex((node) => node.session.path === previousPath);
+		const kept = this.findSessionIndex(previousPath, previousId);
 		this.selectedIndex = kept >= 0 ? kept : 0;
 	}
 }

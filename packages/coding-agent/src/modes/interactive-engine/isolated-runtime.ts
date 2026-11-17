@@ -134,6 +134,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	/** The engine prepares every resume of this session and builds its blueprints; this mirror only restores the same state. */
 	protected override resumeBlueprints: "build" | "skip" = "skip";
 	private readonly patchedSessions = new WeakSet<AgentSession>();
+	private readonly patchedSettingsManagers = new WeakSet<AgentSession["settingsManager"]>();
+	private mirroringPersistedModelDefault = false;
+	private pendingEnabledModelsSync: { patterns: string[] | null } | undefined;
 	private streaming = false;
 	private compacting = false;
 	/** Whether the engine's session waits out an automatic retry's backoff; the engine's state snapshot omits it. */
@@ -276,6 +279,14 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	async openTaskInspector(taskId?: string): Promise<void> {
 		await this.client.requestInternal({ type: "open_task_inspector", ...(taskId ? { taskId } : {}) });
 	}
+	/** Focuses the engine's agent panel, as ↓ on an empty main prompt does. */
+	async openAgentPanel(): Promise<void> {
+		await this.client.requestInternal({ type: "open_agent_panel" });
+	}
+	/** Shows (or, with `undefined`, clears) the Ctrl+X Ctrl+K notice in the engine's views, such as the workflow graph. */
+	async setStopAllNotice(text: string | undefined): Promise<void> {
+		await this.client.requestInternal({ type: "set_stop_all_notice", ...(text === undefined ? {} : { text }) });
+	}
 	/** The engine owns the session's tasks and workflow runs, so it stops them. */
 	async stopAllBackgroundWork(): Promise<StopAllBackgroundOutcome> {
 		return this.client.requestInternal<StopAllBackgroundOutcome>({ type: "stop_all_background" });
@@ -288,7 +299,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		const run = this.initializationTail
 			? this.initializationTail.then(() => this.initializeFromEngineGeneration(generation))
 			: this.initializeFromEngineGeneration(generation);
-		this.initializationTail = run.catch(() => {});
+		const tail = run.catch(() => {});
+		this.initializationTail = tail;
+		void tail.then(() => {
+			if (this.initializationTail === tail) this.initializationTail = undefined;
+		});
 		return run;
 	}
 
@@ -300,7 +315,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		if (this.disposed || (generation !== undefined && !this.isCurrentResourceGeneration(generation))) return;
 		try {
 			this.sessionStats.reset();
+			this.pendingEnabledModelsSync = undefined;
 			const compactionRevision = this.backgroundCompactionRevision;
+			const modelEpoch = this.modelEpoch;
+			const thinkingEpoch = this.thinkingEpoch;
+			const scopeEpoch = this.remoteModelCatalog.getScopeEpoch();
 			const state = await this.client.getState();
 			const catalog = await this.client.requestInternal<RpcModelCatalog>({
 				type: "get_available_models",
@@ -330,10 +349,14 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				await session.resourceLoader.reload();
 				if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			}
-			this.remoteModelCatalog.apply(catalog);
+			this.remoteModelCatalog.apply(catalog, scopeEpoch);
 			this.remoteModelCatalog.patch(session);
-			(session.agent.state as { model?: Model<Api> }).model = state.model;
-			session.agent.state.thinkingLevel = state.thinkingLevel;
+			if (modelEpoch === this.modelEpoch) {
+				(session.agent.state as { model?: Model<Api> }).model = state.model;
+			}
+			if (thinkingEpoch === this.thinkingEpoch) {
+				session.agent.state.thinkingLevel = state.thinkingLevel;
+			}
 			session.agent.steeringMode = state.steeringMode;
 			session.agent.followUpMode = state.followUpMode;
 			this.autoCompactionEnabled = state.autoCompactionEnabled;
@@ -761,6 +784,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		if (this.patchedSessions.has(session)) return;
 		this.patchedSessions.add(session);
 		this.patchSessionManager(session.sessionManager);
+		this.patchSettingsManager(session.settingsManager);
 		this.sessionStats.track(session);
 		Object.defineProperties(session, {
 			isStreaming: { configurable: true, get: () => this.streaming },
@@ -932,6 +956,39 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				configurable: true,
 				value: (beforeRelease?: () => void) => this.queuePause.resume(beforeRelease),
 			},
+			setScopedModels: {
+				configurable: true,
+				value: (scopedModels: Array<{ model: Model<Api>; thinkingLevel?: AgentSession["thinkingLevel"] }>) => {
+					const nextScopedModels = scopedModels.map((scoped) => ({
+						model: scoped.model,
+						...(scoped.thinkingLevel !== undefined ? { thinkingLevel: scoped.thinkingLevel } : {}),
+					}));
+					const enabledModelsSync = this.pendingEnabledModelsSync;
+					this.pendingEnabledModelsSync = undefined;
+					const scopeEpoch = this.remoteModelCatalog.setScopedModels(nextScopedModels);
+					(session as unknown as { _scopedModels: typeof nextScopedModels })._scopedModels = nextScopedModels;
+					this.dispatchBestEffort(
+						"set scoped models",
+						serializeSessionMutation(session, async () => {
+							await this.settleEngineResync();
+							const deferredEnabledModels = enabledModelsSync ?? this.pendingEnabledModelsSync;
+							if (enabledModelsSync === undefined) this.pendingEnabledModelsSync = undefined;
+							const catalog = await this.client.requestInternal<RpcModelCatalog>({
+								type: "set_scoped_models",
+								models: nextScopedModels.map((scoped) => ({
+									provider: scoped.model.provider,
+									modelId: scoped.model.id,
+									...(scoped.thinkingLevel !== undefined ? { thinkingLevel: scoped.thinkingLevel } : {}),
+								})),
+								...(deferredEnabledModels !== undefined
+									? { enabledModels: deferredEnabledModels.patterns }
+									: {}),
+							});
+							this.remoteModelCatalog.apply(catalog, scopeEpoch);
+						}),
+					);
+				},
+			},
 			setModel: {
 				configurable: true,
 				value: async (
@@ -958,6 +1015,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				configurable: true,
 				value: async (level: AgentSession["thinkingLevel"], options?: ModelMutationOptions) => {
 					return serializeSessionMutation(session, async () => {
+						if (this.initializationTail) await this.settleEngineResync();
 						const epoch = ++this.thinkingEpoch;
 						const result = await this.client.setThinkingLevelAck(level, options);
 						this.applyThinkingAck(session, epoch, result, options?.persist === true);
@@ -990,6 +1048,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				configurable: true,
 				value: async (options?: ModelMutationOptions) => {
 					return serializeSessionMutation(session, async () => {
+						if (this.initializationTail) await this.settleEngineResync();
 						const levels = session.getAvailableThinkingLevels();
 						if (levels.length <= 1) return undefined;
 						const current = levels.indexOf(session.thinkingLevel);
@@ -1234,6 +1293,21 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		});
 	}
 
+	private patchSettingsManager(settingsManager: AgentSession["settingsManager"]): void {
+		if (this.patchedSettingsManagers.has(settingsManager)) return;
+		this.patchedSettingsManagers.add(settingsManager);
+		const setEnabledModels = settingsManager.setEnabledModels.bind(settingsManager);
+		Object.defineProperty(settingsManager, "setEnabledModels", {
+			configurable: true,
+			value: (patterns: string[] | undefined) => {
+				setEnabledModels(patterns);
+				if (!this.mirroringPersistedModelDefault) {
+					this.pendingEnabledModelsSync = { patterns: patterns ? [...patterns] : null };
+				}
+			},
+		});
+	}
+
 	private async syncPersistedModelCatalog(
 		session: AgentSession,
 		model: Model<Api>,
@@ -1245,9 +1319,15 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		const alreadyInScope = session.scopedModels.some(
 			(scoped) => scoped.model.provider === persistedModel.provider && scoped.model.id === persistedModel.id,
 		);
+		const scopeEpoch = this.remoteModelCatalog.getScopeEpoch();
 		const catalog = await this.client.requestInternal<RpcModelCatalog>({ type: "get_available_models" });
-		this.remoteModelCatalog.apply(catalog);
-		applyPersistedModelDefault(session, persistedModel, alreadyInScope);
+		this.remoteModelCatalog.apply(catalog, scopeEpoch);
+		this.mirroringPersistedModelDefault = true;
+		try {
+			applyPersistedModelDefault(session, persistedModel, alreadyInScope);
+		} finally {
+			this.mirroringPersistedModelDefault = false;
+		}
 		const state = await this.client.getState();
 		if (persistedDefaults !== undefined) {
 			session.settingsManager.setModelThinkingLevel(

@@ -12,9 +12,9 @@ Malformed or schema-invalid chat routing answers receive up to three corrective 
 
 Replay reuses recorded results without routing. Resume of a saved auto stage retains its verified selection and revalidates it against the current catalog and restrictions before fresh session admission, without a hidden new decision. If it is no longer eligible, resume fails rather than choosing another model. See [authoring automatic stages](/workflows/authoring#automatic-stage-model-selection).
 
-## Workflow run identifiers and the BACKGROUND panel
+## Workflow run identifiers and the agent panel
 
-Workflow run identifiers are shown in full in status views, pickers, control messages, and the `BACKGROUND` panel. Selectors accept either the full 36-character UUID or its unique 8-character hexadecimal prefix. Other truncated forms are rejected. Colliding prefixes report the matching full UUIDs and require a full UUID; resolved results retain canonical identifiers.
+Workflow run identifiers are shown in full in status views, pickers and control messages. Selectors accept either the full 36-character UUID or its unique 8-character hexadecimal prefix. Other truncated forms are rejected. Colliding prefixes report the matching full UUIDs and require a full UUID; resolved results retain canonical identifiers.
 
 Stage selectors preserve exact stage IDs and names, composite `runId:stageId` IDs, and `tool:<argsHash>` IDs. Bare UUID stage IDs additionally accept a unique 8-character hexadecimal prefix across the expanded graph. Exact names take precedence. Partial names and truncated composite/tool IDs do not match; colliding UUID prefixes require the full stage UUID.
 
@@ -41,17 +41,17 @@ Credential-like candidate names are excluded from prediction requests, and sourc
 
 To verify a sticky update, inspect its per-stage `deliveryStates` in `intercom list` or `workflow({ action: "status", runId: "<rootRunId>" })`. Both list at most 5 states, those still needing action first; `deliveryStateCounts` totals every state. The future target's queued count includes messages retained for stages that have not started yet, even after delivery to earlier stages. It is not an unread count or proof of receipt by every stage. `delivered` confirms admission to stage context, not compliance with the update. A transport-only or older receipt appears as `receipt-unverified`; check the stage transcript before resending. See [pending delivery states](/intercom/reference#deferred-delivery-to-pending-stages) for skip reasons and recovery.
 
-### Reading and scrolling the panel
+### Runs in the agent panel
 
-At 80 columns and wider, each `BACKGROUND` card shows the full run identity, mode, progress, live-tool details, and elapsed/status metadata. Remaining row space may show pending stages. Each target appears exactly or is replaced by a `stage`-labeled canonical ID; `… N more` counts omitted stages. If neither form fits, the pending label is omitted rather than displacing existing metadata. Tool nodes are read-only durable graph nodes, not attachable stage chats.
+Each of the session's top-level workflow runs has a row in the [agent panel](/background-tasks#the-agent-panel) below the main chat's prompt:
 
-The widget uses at most **10 rows**, including its final scroll hint, and at most one third of the terminal height, rounded down with a one-row minimum. Scrolling over it moves only its list, even at either end. Scrolling outside it retains normal transcript behavior. A slim scrollbar appears only when the allocated area overflows; there is no numeric row-range counter. Every row stays reachable even when a multiline draft leaves only one widget row.
+```text
+  ∀ ralph     ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱  3/5 stages · implement      12m
+  ◆ review    approve the plan?                             needs input · 3m
+  ✗ deploy    stage build failed                            failed · 41m
+```
 
-From the main editor, use **Alt+K** to scroll up and **Alt+J** down one row. On macOS these are **Option+K/J**. **Alt+PageUp/PageDown** remain aliases. Configured editor bindings always win, including Vim-style Alt+J/K cursor bindings; Alt+Up still restores queued messages. Scrolling never takes focus from the editor. Customize `app.workflows.scrollUp` and `app.workflows.scrollDown` in [keybindings.json](/keybindings#workflow-widget-scrolling); arrays replace defaults, and `[]` disables an action. The list's final hint shows available bindings.
-
-Mouse scrolling requires Atomic's fullscreen renderer and terminal mouse reporting. On macOS, enable your terminal's Option-as-Alt or Option-as-Meta setting for these shortcuts. If the terminal emits a character instead, reserves a shortcut, or does not forward wheel events, use the Page aliases or remap the actions to keys your terminal sends. Linux and Windows terminals also vary; terminal and multiplexer settings can intercept input. Plain typing, arrows, and unmodified PageUp/PageDown retain their editor behavior.
-
-Below 80 columns, the widget collapses to one count line, truncated to fit. It omits run IDs, stage identities, targets, tool names, prompt text, and graph commands. Widen the terminal to scroll cards, or use `/workflows` to inspect runs at narrow widths.
+The row shows the run's state, its stage progress and current stage, a waiting question or a failure's reason, and its elapsed time. Press ↓ on an empty prompt, select the run and press Enter to open its graph. A finished run's row stays until you have opened the run, from the panel, `/tasks`, F2 or `/workflows`. `x` pressed twice stops a run as `/workflow quit` does; it stays resumable.
 
 Stage progress includes nested child workflows and updates as stages appear:
 
@@ -64,34 +64,17 @@ Stage progress includes nested child workflows and updates as stages appear:
 
 ### Pending questions and exact identities
 
-The `BACKGROUND` panel sits below the editor. When a visible root has exactly one displayable pending question, its card shows a quoted one-line preview and `Answer: /workflows <full-visible-root-UUID>`. Use the full UUID on that row. The preview strips terminal controls and fits within its cell budget. Nested prompts retain their real run, stage, and prompt owner, even though `/workflows` targets the visible root.
+When a run waits on one question, its agent panel row and its `/tasks` row show `◆`, `needs input` and the question, also when the question comes from a nested child workflow. In `/tasks`, Space on the run opens a card with the question, its numbered choices and a reply box, and Enter sends the reply to that question.
 
-Atomic keeps general needs-attention guidance instead when a root has multiple questions, missing descriptors, empty sanitized text, a multi-question questionnaire, or unproven nested ownership. Eligibility is per root, so one card can show a preview while another shows general guidance.
+When several questions wait at once, as from parallel stages, or when the question is a custom UI prompt (`ctx.ui.custom`), the row shows `needs input` and the current stage without a question or reply box. Press Enter on the row to open the graph and answer there. The graph, the stage chat and `workflow answer` stay available for every question. Question text has terminal controls removed and never enters the transcript or parent-model context. `workflowNotifications.notifyOn` is unchanged, and F2 still opens only the active workflow.
 
-Previews update or clear as questions are answered or cancelled. They never enter the transcript or parent-model context. `workflowNotifications.notifyOn` is unchanged. The graph, stage chat, and `workflow answer` remain available; F2 still opens only the active workflow, not every waiting row.
+A run that ended blocked shows as `stopped`: its row ages out like other finished rows, and `x` dismisses it.
 
 Status, run detail, dispatch confirmation, and run-picker cards wrap full IDs onto continuation rows. Run detail also wraps exact pending-stage addresses instead of ellipsizing them. Narrow status cards wrap the canonical stage ID or drop its display-name decoration, never show a partial ID. Borders stay closed at the minimum layout width; narrower terminals, including sub-30-column terminals, can hard-clip the box.
 
 An `AWAITING INPUT` banner has two identity rows: `？` with the full run id, then the workflow name and optional metadata. The question and options appear below it in the normal prompt UI.
 
 The `/workflows` run picker shows five runs at a time; use the arrow keys or mouse wheel to scroll through additional retained runs. Active runs come first, with runs waiting for input or blocked at the top, then running and paused runs, followed by ended runs (failed, cancelled, then completed); the newest run comes first within each group, and `/workflow status` lists runs in the same order.
-
-The rendered card shape at the 80-column breakpoint is:
-
-```text
-│   ●  339e05a4-2289-408e-9076-d1a348f582ae                                    │
-│     stage-output-transcript · chain · 2/3 · 12m                              │
-│                                                                              │
-│   ●  d4e5f6a1-77b2-4c31-9e0a-2f1c8b4d6e5f                                    │
-│     build-check · chain · 0/2 · 12m                                          │
-│                                                                              │
-│   ？  8f3a1c20-5b64-4d8e-a791-2c3f0e6b9d44                                   │
-│     review-and-merge · single · 0/1 · 12m                                    │
-│     "Approve the generated migration before deployment?"                     │
-│     Answer: /workflows 8f3a1c20-5b64-4d8e-a791-2c3f0e6b9d44                  │
-```
-
-Below the breakpoint the same run set is represented by the collapsed count line, for example ` ▾  4 background · 2 ● · 1 quit`; a tool-only run adds its live count, for example ` ▾  1 background · 1 ● · 1 tool`.
 
 ## Running Workflows
 
@@ -170,7 +153,7 @@ Withdrawing an SDK adapter cancels its current presentation, not the durable app
 
 <p align="center"><img src="../images/workflow-input-picker.png" alt="Workflow Input Picker" width="600" /></p>
 
-Graph node cards show each model stage's effective model and thinking level above its status, including after fallback and durable resume. Long model names are truncated first, preserving the complete thinking level and a canonical `-fast` model suffix. This suffix is model identity, not a separate fast-mode switch or proof of service tier. Thinking `off` is omitted; stages without a model show no model placeholder. Tool nodes retain their `durable tool` body, and the `BACKGROUND` summary is unchanged.
+Graph node cards show each model stage's effective model and thinking level above its status, including after fallback and durable resume. Long model names are truncated first, preserving the complete thinking level and a canonical `-fast` model suffix. This suffix is model identity, not a separate fast-mode switch or a service-tier guarantee. Thinking `off` is omitted; stages without a model show no model placeholder. Tool nodes retain their `durable tool` body.
 
 
 ## Workflow Commands
@@ -220,8 +203,8 @@ Surface behavior:
 - **Tool and node detail** - Attached stage chats match main chat's tool-detail expansion behavior while keeping expansion state local to the workflow UI context. Press Ctrl+O (the configurable `app.tools.expand` binding) to expand every visible workflow node and tool card, including single, parallel, and nested subagent progress, current tool activity, and artifact paths; press it again to collapse them. The toggle works for active, completed, and archived stage views, including at the supported 40-column terminal minimum. A mounted prompt, custom question, or other input-owning overlay keeps the key instead of changing it.
 - **Footer context** - An attached live stage chat shows its own current folder and Git branch and shows the live extension status lines that the stage's own session sets, such as the MCP server indicator, never the main chat's. Branch changes trigger a repaint through the host's cached footer provider. As in the main chat, the line with the stage's model, reasoning level, folder and branch shows only while the stage's agent is idle. While it works, that line shows the bound interrupt key, or nothing in the compact `/tasks` picker, which keeps this context; detail, transcript, input, and confirmation pages remain fullscreen.
 - **Working indicator** - Stage chat shows `∀` during accepted prompt startup and active work, including retained-session follow-ups. Retry, fallback, compaction, cancellation, and errors take precedence. `NO_COLOR` removes foreground colors; `ATOMIC_REDUCED_MOTION=1` makes the indicator static.
-- **Subagent statusline** - If a subagent is running while the fullscreen workflow graph is open, the graph statusline mirrors its summary so the run remains visible; hide the graph with `h`, leave it with `esc`, or reconnect later to return to the full below-editor widget.
-- **Run control** - Use `pause` and `resume` for resumable live work. Pause holds a stage's queued steering and follow-up items in place without dequeuing them or starting continuation; `resume` releases those items once in their existing per-queue order, but queue release alone does not start a model turn. `resume` on a non-paused run reopens the saved snapshot or overlay. Use `quit` to pause a live run gracefully while preserving it for `/workflow resume`. `/workflow pause` selects the active run by default, accepts a full run id or `--all`, and does not open a stage picker. `/workflow pause <run-id> <stage>` pauses only that stage, named by its id, name or unique id prefix, and `/workflow resume <run-id> <stage>` resumes it. The workflow tool's `stageId` does the same and also targets tool nodes.
+- **Subagent statusline** - If a subagent is running while the fullscreen workflow graph is open, the graph statusline mirrors its summary so the run remains visible; hide the graph with `h`, leave it with `esc`, or reconnect later. The run's agent panel row below the main chat's prompt shows it while the graph is closed.
+- **Run control** - Use `pause` and `resume` for resumable live work. Pause holds a stage's queued steering and follow-up items in place without dequeuing them or starting continuation; `resume` releases those items once in their existing per-queue order, but queue release alone does not start a model turn. `resume` on a non-paused run reopens the saved snapshot or overlay. Use `quit` to pause a live run gracefully while preserving it for `/workflow resume`. `/workflow pause` selects the active run by default, accepts a full run id or `--all`, and does not open a stage picker. `/workflow pause <run-id> <stage>` pauses only that stage, named by id, name or unique prefix by its id, name or unique id prefix, and `/workflow resume <run-id> <stage>` resumes it. The workflow tool's `stageId` does the same and also targets tool nodes.
 - **Rediscovery** - Use `/workflow reload` after adding, editing, installing, or removing workflow resources or package manifest workflow entries and you want Atomic to rediscover them in-process ([Reloading workflow resources](/workflows/operations#reloading-workflow-resources)).
 - **Status listing** - `/workflow status` lists all retained active and terminal top-level runs by default; implementation-owned nested child runs are flattened into their parent workflow rather than listed separately. `/workflow status --all` is retained as a compatibility alias.
 - **Status times** - `/workflow status <run-id>` displays `started` and `ended` in the system local timezone as `HH:mm:ss`. If they differ from your expected clock, check the timezone of the machine or container running Atomic and any inherited `TZ` environment setting. Elapsed durations and raw timestamps in structured results are unchanged.
@@ -472,7 +455,7 @@ Human input is runtime-only: call `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.sele
 
 Human-in-the-loop prompts from `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`, `ctx.ui.editor`, and `ctx.ui.custom<T>` appear as awaiting-input nodes in the workflow UI/graph viewer, not as ordinary chat modals. Workflow definitions do not declare HIL; runtime `ctx.ui.*` calls create prompt nodes. If the prompt lives inside an imported child workflow, it still appears in the same expanded parent graph so the user can focus and answer it without switching to a separate child status entry. When the attached stage has a pending prompt, its attribution banner is headed `AWAITING INPUT` and shows the full run id in a two-row identity block; the question and its options continue through the existing prompt UI below the banner.
 
-When the below-editor `BACKGROUND` panel can prove exactly one displayable pending question for a visible root, it also shows that question as a one-line preview with `/workflows <full-run-id>`. Multiple or unavailable questions keep the existing needs-attention guidance. Answer in the graph opened with `/workflows <run-id>`, its stage chat, or with `workflow answer`; the panel itself does not answer, restrict, or remove any of those paths.
+When a run waits on exactly one known question, its agent panel row shows it. Answer in the graph opened with `/workflows <run-id>`, its attached stage chat, or with `workflow answer`; the panel itself does not answer, restrict, or remove any of those paths.
 
 Use `/workflows <run-id>` (or F2), then press Enter on the focused node or click a graph node to focus and open or attach it for local answers. Custom widget prompts mount inside the attached stage chat and must be completed interactively with the widget's `done(value)` callback.
 

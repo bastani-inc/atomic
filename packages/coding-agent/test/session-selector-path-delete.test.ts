@@ -107,6 +107,27 @@ describe("session selector path/delete interactions", () => {
 		// session selector uses the global theme instance
 		initTheme("dark");
 	});
+	it("does not offer deletion for the active session (#5256)", () => {
+		const sessions = [makeSession({ id: "active" }), makeSession({ id: "other" })];
+		const selector = new SessionSelectorComponent(
+			async () => sessions,
+			async () => sessions,
+			() => {},
+			() => {},
+			() => {},
+			() => {},
+			{ keybindings, initialSessions: sessions, deleteSession: async () => {} },
+			{ id: "active", directory: dirname(sessions[0]!.path) },
+		);
+		try {
+			assert.doesNotMatch(stripAnsi(selector.render(300).at(-2) ?? ""), /ctrl\+d delete/);
+			selector.handleInput("\x1b[B");
+			assert.match(stripAnsi(selector.render(300).at(-2) ?? ""), /ctrl\+d delete/);
+		} finally {
+			selector.dispose();
+		}
+	});
+
 	it("deletes a SQLite session through its selected store after confirmation", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "session-selector-sqlite-"));
 		tempDirs.push(directory);
@@ -181,6 +202,73 @@ describe("session selector path/delete interactions", () => {
 			}
 		},
 	);
+
+	it("filters rows deleted in one scope from an already-running scan in the other scope (#5256)", async () => {
+		let catalog = [
+			makeSession({ id: "a", modified: new Date(3000), firstMessage: "session-a", allMessagesText: "session-a" }),
+			makeSession({ id: "b", modified: new Date(2000), firstMessage: "session-b", allMessagesText: "session-b" }),
+			makeSession({ id: "c", modified: new Date(1000), firstMessage: "session-c", allMessagesText: "session-c" }),
+		];
+		const staleSnapshot = [...catalog];
+		const allDeferred = createDeferred<SessionInfo[]>();
+		let emitAllProgress: ((loaded: number, total: number, partial?: readonly SessionInfo[]) => void) | undefined;
+		const deleted: string[] = [];
+		const resumed: string[] = [];
+		let allLoads = 0;
+
+		const selector = new SessionSelectorComponent(
+			async () => [...catalog],
+			async (onProgress) => {
+				allLoads++;
+				emitAllProgress = onProgress;
+				return allDeferred.promise;
+			},
+			(session) => resumed.push(session.id),
+			() => {},
+			() => {},
+			() => {},
+			{
+				keybindings,
+				initialSessions: catalog,
+				deleteSession: async (id) => {
+					deleted.push(id);
+					catalog = catalog.filter((session) => session.id !== id);
+				},
+			},
+		);
+		try {
+			await flushPromises();
+			selector.handleInput("\t");
+			assert.equal(allLoads, 1);
+			selector.handleInput("\t");
+			assert.equal(selector.getSessionList().getSelectedSessionId(), "a");
+
+			selector.handleInput(CTRL_D);
+			selector.handleInput("\r");
+			await flushPromises();
+			await flushPromises();
+			assert.deepEqual(deleted, ["a"]);
+			assert.equal(selector.getSessionList().getSelectedSessionId(), "b");
+
+			emitAllProgress?.(2, 3, staleSnapshot);
+			selector.handleInput("\t");
+			assert.doesNotMatch(stripAnsi(selector.render(160).join("\n")), /session-a/);
+			selector.handleInput("\t");
+
+			allDeferred.resolve(staleSnapshot);
+			await flushPromises();
+
+			selector.handleInput("\t");
+			await flushPromises();
+			selector.handleInput("\x1b[A");
+			assert.doesNotMatch(stripAnsi(selector.render(160).join("\n")), /session-a/);
+			selector.handleInput("\r");
+			assert.deepEqual(resumed, ["b"]);
+		} finally {
+			allDeferred.resolve(staleSnapshot);
+			selector.dispose();
+		}
+	});
 
 	it("does not treat Ctrl+Backspace as delete when search query is non-empty", async () => {
 		const sessions = [makeSession({ id: "a" }), makeSession({ id: "b" })];

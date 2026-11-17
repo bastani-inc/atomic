@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type { AgentSession, ExtensionContext, SessionEntry } from "@bastani/atomic";
 import { afterEach, describe, test } from "vitest";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
+import { registerSubagentChildRecordReader } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
 import {
 	createSubagentChildRecordSink,
 	readSubagentChildRecords,
@@ -22,6 +23,7 @@ import type {
 } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
+import { collectEverythingTracked, trackCollection } from "../helpers/collect-garbage.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 type StageOrchestration = NonNullable<StageSessionCreateOptions["orchestrationContext"]>;
@@ -379,6 +381,81 @@ describe("a workflow stage generation closing for good ends its subagent childre
 		const stage = h.stage("limited");
 		assert.deepEqual(await childStatuses(stage), { "paused-child": "paused", "quit-child": "quit" });
 		assert.equal((await killRun(h.runId, { store: h.store, cancellation: h.cancellation })).ok, true);
+		assert.equal(h.store.runs().find((snapshot) => snapshot.id === h.runId)?.status, "killed");
+		assert.equal(closedForGood(stage), true);
+		assert.deepEqual(await childStatuses(stage), { "paused-child": "stage-closed", "quit-child": "stage-closed" });
+	});
+
+	/**
+	 * Take away every open copy of `stage`'s session the child index reads records from, as when a later copy of the
+	 * session (a reopened stage's) was bound in its place and then closed and collected.
+	 */
+	async function loseRecordReaders(stage: string): Promise<void> {
+		const copies = trackCollection();
+		(() => {
+			const copy = {
+				getSessionId: () => `stage-${stage}`,
+				getEntry: () => undefined,
+				getLeafEntry: () => undefined,
+			};
+			copies.track(copy);
+			registerSubagentChildRecordReader(copy, true);
+		})();
+		await collectEverythingTracked(copies);
+		assert.equal(copies.collected(), 1, "the copy bound in place of the stage's session was collected");
+	}
+
+	/** Run `body`, and return the errors that escaped to the process as uncaught exceptions meanwhile. */
+	async function uncaughtDuring(body: () => Promise<void>): Promise<unknown[]> {
+		const uncaught: unknown[] = [];
+		const record = (error: unknown) => uncaught.push(error);
+		process.prependListener("uncaughtException", record);
+		try {
+			await body();
+			await new Promise<void>((resolve) => setImmediate(resolve));
+		} finally {
+			process.removeListener("uncaughtException", record);
+		}
+		return uncaught;
+	}
+
+	test("a stage closing for good after its children's record readers are gone ends them without crashing the host", async () => {
+		const h = await startRun((stage) => {
+			stage("orphaned").children = stoppedChildren();
+			return singleStage("orphaned");
+		});
+		const stage = h.stage("orphaned");
+		await stage.started.promise;
+		await loseRecordReaders("orphaned");
+
+		const uncaught = await uncaughtDuring(async () => {
+			stage.released.resolve();
+			assert.equal((await h.execution).status, "completed");
+		});
+
+		assert.deepEqual(uncaught, [], "closing the stage threw nothing out of its close");
+		assert.equal(closedForGood(stage), true);
+		assert.deepEqual(await childStatuses(stage), { "paused-child": "stage-closed", "quit-child": "stage-closed" });
+	});
+
+	test("a resumably blocked stage whose children's record readers are gone ends them once the blocked run is killed", async () => {
+		const h = await startRun(
+			(stage) => {
+				stage("limited").children = stoppedChildren();
+				return singleStage("limited");
+			},
+			new Map([["limited", "HTTP 429 rate limit exceeded"]]),
+		);
+		await h.execution;
+		const stage = h.stage("limited");
+		assert.deepEqual(await childStatuses(stage), { "paused-child": "paused", "quit-child": "quit" });
+		await loseRecordReaders("limited");
+
+		const uncaught = await uncaughtDuring(async () => {
+			assert.equal((await killRun(h.runId, { store: h.store, cancellation: h.cancellation })).ok, true);
+		});
+
+		assert.deepEqual(uncaught, [], "ending the stage for good threw nothing out of its close");
 		assert.equal(h.store.runs().find((snapshot) => snapshot.id === h.runId)?.status, "killed");
 		assert.equal(closedForGood(stage), true);
 		assert.deepEqual(await childStatuses(stage), { "paused-child": "stage-closed", "quit-child": "stage-closed" });

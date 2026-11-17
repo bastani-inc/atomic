@@ -116,6 +116,8 @@ export type RpcCommand =
 	| { id?: string; type: "get_workflow_run_summary"; runId: string }
 	| { id?: string; type: "open_task_inspector"; taskId?: string }
 	| { id?: string; type: "stop_all_background" }
+	| { id?: string; type: "set_stop_all_notice"; text?: string }
+	| { id?: string; type: "open_agent_panel" }
 
 	// Model
 	| {
@@ -127,6 +129,12 @@ export type RpcCommand =
 			thinkingLevel?: ThinkingLevel;
 	  }
 	| { id?: string; type: "cycle_model"; direction?: "forward" | "backward"; persist?: boolean }
+	| {
+			id?: string;
+			type: "set_scoped_models";
+			models: Array<{ provider: string; modelId: string; thinkingLevel?: ThinkingLevel }>;
+			enabledModels?: string[] | null;
+	  }
 	| { id?: string; type: "get_available_models"; allowPartialResources?: boolean }
 	| { id?: string; type: "login_provider"; provider: string; authType?: "api_key" | "oauth"; loginId?: string }
 	| {
@@ -328,6 +336,8 @@ export type RpcResponse =
 	  }
 	| { id?: string; type: "response"; command: "get_workflow_run_summary"; success: true; data: WorkflowRunDetail }
 	| { id?: string; type: "response"; command: "open_task_inspector"; success: true }
+	| { id?: string; type: "response"; command: "open_agent_panel"; success: true }
+	| { id?: string; type: "response"; command: "set_stop_all_notice"; success: true }
 	| {
 			id?: string;
 			type: "response";
@@ -355,6 +365,13 @@ export type RpcResponse =
 				isScoped: boolean;
 				persistedDefaults?: RpcPersistedModelDefaults;
 			} | null;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "set_scoped_models";
+			success: true;
+			data: RpcModelCatalog;
 	  }
 	| {
 			id?: string;

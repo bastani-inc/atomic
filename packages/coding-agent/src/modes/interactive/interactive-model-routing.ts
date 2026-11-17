@@ -271,13 +271,13 @@ InteractiveModeBase.prototype.showModelsSelector = function (this: InteractiveMo
 			{
 				onChange: (enabledIds) => {
 					selectionChanged = true;
-					updateSessionModels(enabledIds);
 					const allEnabled =
 						enabledIds !== null &&
 						enabledIds.length === availableModels.length &&
 						enabledIds.every((id) => availableModelIds.has(id));
 					const newPatterns = enabledIds === null || allEnabled ? undefined : enabledIds;
 					this.settingsManager.setEnabledModels(newPatterns ? [...newPatterns] : undefined);
+					updateSessionModels(enabledIds);
 				},
 				onCancel: () => {
 					done();

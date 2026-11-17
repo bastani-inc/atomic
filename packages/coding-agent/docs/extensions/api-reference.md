@@ -729,6 +729,21 @@ Await `pi.appendEntry` before using the new entry. The promise resolves after th
 
 During a transactional reload's `session_start` handler, `pi.appendEntry`, `pi.setSessionName`, and `pi.setLabel` stage their writes instead. Awaiting them confirms staging; the writes and their notifications are published in call order only after reload succeeds. Rejected reloads discard these changes. Do not depend on reading the staged changes back during that handler.
 
+### pi.registerAgentPanelSource(source)
+
+Add background work to the [agent panel](/background-tasks#the-agent-panel). The registration returns `dispose()` and is also disposed when the extension reloads.
+
+- `items()` synchronously returns an array of `AgentPanelItem` rows. Call the listener from `subscribe(listener)` when rows change, and return an unsubscribe function. Apply pending changes before taking the snapshot `items()` returns, or notify after returning; a listener call made while `items()` runs is honoured once.
+- Give each row a stable, session-unique id such as `my-extension:job-1`. The id `main` and the `task:` prefix are reserved.
+- Set `kind` to `agent`, `shell` or `workflow`, and `state` to `running`, `queued`, `input`, `paused`, `stopping`, `done`, `failed` or `stopped`. `name` and `task` are strings.
+- Optional `elapsedMs` and `endedAt` are finite, non-negative milliseconds. `tokens` and `queued` are non-negative safe integers, at most `Number.MAX_SAFE_INTEGER`. `progress` holds finite, non-negative `done` and `total` values, and `choices` is an array of at most 128 strings.
+- Return at most 10,000 rows per source. Atomic ignores additional rows and warns once per registration. A row with more than 128 choices is hidden; keep longer lists in the view opened by `open()`.
+- Optional `open(id, { onReturn })` opens the item's view. Call `onReturn` when returning to the panel. `stop(id)` and `answer(id, text)` return promises resolving to `{ ok: true }` or `{ ok: false, reason: string }`.
+
+Keep `items()` and subscription callbacks short and synchronous. Compute `elapsedMs` when `items()` is called; Atomic advances a running row from that read until the next one and uses the reported value when it pauses or finishes. Publish a new change notification when that state changes.
+
+A malformed row is hidden without hiding valid rows beside it. If `items()` throws, that source's rows are hidden until a later update succeeds. Atomic reports a warning once per registration and keeps other sources usable. Fix the source and use `/reload` to register it again.
+
 ### pi.registerEntryRenderer(customType, renderer)
 
 Register a TUI renderer for durable custom entries created by `pi.appendEntry()`. These entries render in the transcript but do not enter model context.
@@ -902,7 +917,7 @@ pi.registerShortcut("ctrl+shift+p", {
 });
 ```
 
-Set `preferEditor: true` to skip a shortcut when another resolved editor binding uses that key. Omitting it preserves the usual extension conflict policy. Optional `keybinding` selects the keys for an existing named action from `keybindings.json` instead of the literal registration key; an empty action binding disables it. The builtin workflow extension uses `app.workflows.scrollUp` and `app.workflows.scrollDown` with `preferEditor: true`, so custom Vim editor bindings take precedence.
+Set `preferEditor: true` to skip a shortcut when another resolved editor binding uses that key. Omitting it preserves the usual extension conflict policy. Optional `keybinding` selects the keys for an existing named action from `keybindings.json` instead of the literal registration key; an empty action binding disables it.
 
 ### pi.registerFlag(name, options)
 
@@ -920,6 +935,70 @@ if (pi.getFlag("plan")) {
   // Plan mode enabled
 }
 ```
+
+### pi.registerAgentPanelSource(source)
+
+Add rows to the [agent panel](/background-tasks#the-agent-panel) below the main chat's prompt and to `/tasks`, as the builtin workflows extension adds its runs. The registration is released with the extension generation, and `/reload` re-registers it.
+
+```typescript
+import type { AgentPanelItem, ExtensionAPI } from "@bastani/atomic";
+
+declare function showDeploy(id: string, options: { onBack: () => void }): void;
+
+export default function (pi: ExtensionAPI) {
+  const listeners = new Set<() => void>();
+  let items: AgentPanelItem[] = [
+    { id: "deploys:42", kind: "workflow", state: "running", name: "deploy", task: "stage build", progress: { done: 1, total: 3 } },
+  ];
+  const changed = () => { for (const listener of listeners) listener(); };
+
+  pi.registerAgentPanelSource({
+    items: () => items,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    open(id, options) {
+      showDeploy(id, { onBack: () => options?.onReturn?.() });
+      return true;
+    },
+    async stop(id) {
+      items = items.map((item) => (item.id === id ? { ...item, state: "stopped", endedAt: Date.now() } : item));
+      changed();
+      return { ok: true };
+    },
+  });
+}
+```
+
+Here `showDeploy` stands for your extension's own view of an item. `items()` returns the source's current `AgentPanelItem`s. Call the `subscribe` listener whenever they may have changed; the host reads `items()` again and repaints. Keep `items()` cheap, because the panel and `/tasks` call it on every change. Each item has:
+
+| Field | Meaning |
+| --- | --- |
+| `id` | Unique in the session. Prefix it with your source's name, for example `deploys:42`; `task:` is reserved for the session's own tasks. |
+| `kind` | `"agent"`, `"shell"` or `"workflow"`. It decides the row's layout. |
+| `state` | `running`, `queued`, `input` (waits for an answer), `paused`, `stopping`, `done`, `failed` or `stopped`. It decides the glyph, the state word, the `/tasks` group and whether `x` stops or dismisses. |
+| `name`, `task` | The name and what it works on, for example `stage build`. |
+| `elapsedMs`, `tokens` | Shown on the right. Between your updates, the panel and `/tasks` share the advancing time of a running or paused agent or shell item. |
+| `progress` | `{ done, total }` stages, drawn as a bar. |
+| `question`, `choices` | What an `input` item asks, and its numbered choices. |
+| `promptId` | Optional opaque identity of that pending question. Change it for each new question, even when its text and choices repeat. |
+| `reason` | A failed item's one-line reason. |
+| `queued` | Messages typed to it that it has not taken yet. |
+| `endedAt` | When a finished item finished. |
+| `viewed` | For a finished `workflow` item, whether the user has opened it. A finished workflow row stays in the panel until it is viewed: opening it from the panel or `/tasks` counts, and a source sets `viewed: true` when the user opens the item another way. Finished `agent` and `shell` rows always fade and leave after three minutes. |
+
+Atomic strips terminal control sequences from the text fields before drawing them. An item with invalid fields is skipped, and `items()` or `subscribe` throwing is reported as an extension error. The source's other items, and the other sources, are still shown.
+
+The actions are optional:
+
+- `open(id, options)` runs on Enter or → on the row. Return `false` (or throw) when the item cannot be opened. `/tasks` then stays open and shows `Could not open <name>`. The focused agent panel reports the same failure as a warning. A failed open does not mark the item viewed, and a throw is also reported as an extension error. When the view you opened goes back one level, call `options.onReturn()`, so the panel or `/tasks` the user came from shows again.
+- `stop(id)` runs on the second `x` for an unfinished item. A finished item is dismissed by the host instead, with no call to your source.
+- `answer(id, text, options)` sends the reply typed in an `input` item's `/tasks` peek card. Offer `question` and `answer` only for questions that typed text can answer. `options` carries the `promptId`, `question` and `choices` last shown when the first reply character or numbered choice was entered. An empty draft can follow a newly shown question; a nonempty draft keeps its original identity, including after closing and reopening the card. Compare its `promptId` with the current pending question before delivering the reply, and return `{ ok: false, reason }` if they differ. This prevents a reply to an earlier question from answering its replacement.
+
+`stop` and `answer` resolve to `{ ok: true }`, or to `{ ok: false, reason }` to show `reason` to the user.
+
+The types are exported from `@bastani/atomic`: `AgentPanelSource`, `AgentPanelItem`, `AgentPanelState`, `AgentPanelActionResult`, `AgentPanelOpenOptions`, `AgentPanelAnswerOptions`, `AgentPanelSourceRegistration` and `AgentPanelSession`. The same rows are available outside extensions. `agentPanelItems(session)` returns the session's tasks and every source's items, `subscribeAgentPanel(session, listener)` notifies on any change, including after a reload, and `openAgentPanelItem`, `stopAgentPanelItem` and `answerAgentPanelItem` run the actions by item id. Obtain the item through `agentPanelItems(session)` before calling these helpers. When calling `answerAgentPanelItem(session, id, text, options)`, pass the question's captured `AgentPanelAnswerOptions` rather than reading a new item immediately before sending. Workflow rows require their captured `promptId`; omitting it or supplying only matching question text is refused, even if a replacement question has identical text. `dismissedAgentPanelItems(session)` is the session's set of dismissed ids, and `agentPanelTaskId(id)` returns the task id of a `task:` item.
 
 ### pi.getWorkflowHostModules()
 

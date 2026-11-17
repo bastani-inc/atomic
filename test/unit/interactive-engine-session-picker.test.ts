@@ -39,6 +39,7 @@ import { sleep } from "../helpers/runtime.js";
 
 const DOWN = "\x1b[B";
 const UP = "\x1b[A";
+const RIGHT = "\x1b[C";
 const ENTER = "\r";
 const ESCAPE = "\x1b";
 const CTRL_D = "\x04";
@@ -161,6 +162,13 @@ describe("engine_session_picker protocol", () => {
 				message: "delete failed",
 				deletePath: "workflow-durable:a",
 			},
+			{
+				type: "engine_session_picker_error",
+				componentId: "p1",
+				message: "delete failed",
+				deletePath: "workflow-durable:a",
+				deleteRequestId: 3,
+			},
 			{ type: "engine_session_picker_close", componentId: "p1" },
 		] as const) {
 			const parsed = parseInteractiveEngineMessage(serializeInteractiveEngineFrame(message));
@@ -209,6 +217,7 @@ describe("engine_session_picker protocol", () => {
 			{ type: "engine_session_picker_select", componentId: "p1", path: "workflow-durable:a" },
 			{ type: "engine_session_picker_cancel", componentId: "p1" },
 			{ type: "engine_session_picker_delete", componentId: "p1", path: "workflow-durable:a" },
+			{ type: "engine_session_picker_delete", componentId: "p1", path: "workflow-durable:a", deleteRequestId: 3 },
 		] as const) {
 			assert.deepEqual(parseInteractiveEngineCommand(serializeInteractiveEngineFrame(command)), command);
 		}
@@ -389,6 +398,110 @@ describe("host-native session picker (source-path)", () => {
 			}
 		},
 	);
+
+	test("late rejection from a released delete attempt does not unlock a retried delete of the same row (#5256)", async () => {
+		const bridge = makeBridge();
+		const deletes: string[] = [];
+		let rejectFirstAttempt!: (error: Error) => void;
+		let rejectSecondAttempt!: (error: Error) => void;
+		const handle = bridge.child.open({
+			sessions: [row("alpha")],
+			onDelete: (path) => {
+				deletes.push(path);
+				if (deletes.length === 1) {
+					handle.error("first refused");
+					return new Promise<void>((_resolve, reject) => {
+						rejectFirstAttempt = reject;
+					});
+				}
+				return new Promise<void>((_resolve, reject) => {
+					rejectSecondAttempt = reject;
+				});
+			},
+		});
+		await flush();
+		try {
+			const picker = bridge.mounts[0]!.component;
+			picker.handleInput(CTRL_D);
+			picker.handleInput(ENTER);
+			await flush();
+			assert.deepEqual(deletes, ["workflow-durable:alpha"], "attempt 1 started and reported error");
+
+			picker.handleInput(CTRL_D);
+			picker.handleInput(ENTER);
+			await flush();
+			assert.deepEqual(
+				deletes,
+				["workflow-durable:alpha", "workflow-durable:alpha"],
+				"attempt 2 is pending on the same path",
+			);
+
+			rejectFirstAttempt(new Error("late attempt 1 rejection"));
+			await flush();
+			handle.error("unrelated background error");
+			await flush();
+
+			picker.handleInput(ENTER);
+			picker.handleInput(RIGHT);
+			await flush();
+			assert.equal(bridge.mounts[0]!.resolved, false, "attempt 2 must remain locked after late attempt 1 reject");
+			assert.deepEqual(
+				bridge.childCommands.filter((command) => command.type === "engine_session_picker_select"),
+				[],
+				"neither Enter nor Right may emit select while attempt 2 is pending",
+			);
+
+			const deleteCommands = bridge.childCommands.filter(
+				(command) => command.type === "engine_session_picker_delete",
+			);
+			assert.equal(deleteCommands.length, 2, "two delete requests sent across the bridge");
+			const firstRequestId = deleteCommands[0]?.deleteRequestId;
+			const secondRequestId = deleteCommands[1]?.deleteRequestId;
+			assert.equal(typeof firstRequestId, "number", "first delete carries a numeric deleteRequestId");
+			assert.equal(typeof secondRequestId, "number", "second delete carries a numeric deleteRequestId");
+			assert.notEqual(firstRequestId, secondRequestId, "retried delete carries a distinct deleteRequestId");
+
+			rejectSecondAttempt(new Error("second refused"));
+			await flush();
+
+			const errorMessages = bridge.hostMessages.filter((message) => message.type === "engine_session_picker_error");
+			assert.deepEqual(
+				errorMessages.map((message) => ({
+					message: message.message,
+					deletePath: message.deletePath,
+					deleteRequestId: message.deleteRequestId,
+				})),
+				[
+					{
+						message: "first refused",
+						deletePath: "workflow-durable:alpha",
+						deleteRequestId: firstRequestId,
+					},
+					{
+						message: "Failed to delete: late attempt 1 rejection",
+						deletePath: "workflow-durable:alpha",
+						deleteRequestId: firstRequestId,
+					},
+					{
+						message: "unrelated background error",
+						deletePath: undefined,
+						deleteRequestId: undefined,
+					},
+					{
+						message: "Failed to delete: second refused",
+						deletePath: "workflow-durable:alpha",
+						deleteRequestId: secondRequestId,
+					},
+				],
+			);
+
+			picker.handleInput(ENTER);
+			assert.equal(await handle.result, "workflow-durable:alpha");
+		} finally {
+			bridge.controller.dispose();
+			bridge.child.dispose();
+		}
+	});
 
 	test("child-initiated close disposes the host mount and resolves undefined", async () => {
 		const bridge = makeBridge();

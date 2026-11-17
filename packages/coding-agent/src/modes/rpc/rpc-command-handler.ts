@@ -1,4 +1,5 @@
 import { normalizeProviderId } from "@bastani/atomic-ai";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import type { KeyId } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
@@ -8,8 +9,12 @@ import { serializeBackgroundCompactionState } from "../../core/compaction/backgr
 import { setDebugSetting } from "../../core/debug-setting.ts";
 import { KeybindingsManager } from "../../core/keybindings.ts";
 import { SessionManager } from "../../core/session-manager.ts";
+import { settingsWriteOwner } from "../../core/settings-write-ownership.ts";
 import { getSkillCatalog } from "../../core/skill-catalog.ts";
+import { sourceError } from "../../core/tasks/agent-panel-source.ts";
 import { stopAllBackgroundWork } from "../../core/tasks/stop-all.ts";
+import { STOP_ALL_STATUS_KEY } from "../interactive/interactive-stop-all.ts";
+import { showAgentPanel } from "./agent-panel-bridge.ts";
 import { RpcBashRequestOwners } from "./rpc-bash-request-owners.ts";
 import { outputExtensionLoadErrors } from "./rpc-extension-load-errors.ts";
 import type { RpcExtensionUICapabilities, RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
@@ -144,8 +149,22 @@ export function createRpcCommandHandler({
 					return createRpcErrorResponse(id, command.type, "Task inspection requires an interactive host");
 				const ui = session.extensionRunner.getUIContext();
 				void showEngineTaskInspector(session, engineTaskInspectorUi(ui, taskInspectorUi), command.taskId).catch(
-					(error: Error) => ui.notify(error.message, "error"),
+					(error: unknown) => ui.notify(sourceError(error).message, "error"),
 				);
+				return createRpcSuccessResponse(id, command.type);
+			}
+			case "open_agent_panel": {
+				if (!keybindings || !taskInspectorUi)
+					return createRpcErrorResponse(id, command.type, "The agent panel requires an interactive host");
+				const ui = session.extensionRunner.getUIContext();
+				void showAgentPanel(session, engineTaskInspectorUi(ui, taskInspectorUi)).catch((error: unknown) =>
+					ui.notify(sourceError(error).message, "error"),
+				);
+				return createRpcSuccessResponse(id, command.type);
+			}
+			case "set_stop_all_notice": {
+				// The host's Ctrl+X Ctrl+K notice, shown as an engine status so engine views (the workflow graph) show it.
+				session.extensionRunner.getUIContext().setStatus(STOP_ALL_STATUS_KEY, command.text);
 				return createRpcSuccessResponse(id, command.type);
 			}
 			case "stop_all_background": {
@@ -312,7 +331,7 @@ export function createRpcCommandHandler({
 					...(command.thinkingLevel !== undefined ? { thinkingLevel: command.thinkingLevel } : {}),
 				});
 				runtimeHost.resolveModelFallback();
-				const persistedDefaults = persistedModelDefaults(session, command.persist);
+				const persistedDefaults = persistedModelDefaults(session, command.persist === true);
 				return createRpcSuccessResponse(id, "set_model", {
 					...(session.model ?? model),
 					...(persistedDefaults ? { persistedDefaults } : {}),
@@ -325,7 +344,7 @@ export function createRpcCommandHandler({
 					command.persist === true ? { persist: true } : {},
 				);
 				runtimeHost.resolveModelFallbackAfterExplicitModelSelection(previousModel, result?.model);
-				const persistedDefaults = result ? persistedModelDefaults(session, command.persist) : undefined;
+				const persistedDefaults = result ? persistedModelDefaults(session, command.persist === true) : undefined;
 				return createRpcSuccessResponse(
 					id,
 					"cycle_model",
@@ -334,6 +353,44 @@ export function createRpcCommandHandler({
 			}
 			case "get_available_models":
 				return createRpcSuccessResponse(id, "get_available_models", createRpcModelCatalog(session));
+
+			case "set_scoped_models": {
+				const models = await session.modelRuntime.getAvailableSnapshot();
+				const scopedModels: Array<{ model: Model<Api>; thinkingLevel?: (typeof THINKING_LEVELS)[number] }> = [];
+				for (const entry of command.models) {
+					if (entry.thinkingLevel !== undefined && !THINKING_LEVELS.includes(entry.thinkingLevel)) {
+						return createRpcErrorResponse(
+							id,
+							"set_scoped_models",
+							`Invalid thinkingLevel: expected one of ${THINKING_LEVELS.join(", ")}`,
+						);
+					}
+					const model =
+						models.find((candidate) => candidate.provider === entry.provider && candidate.id === entry.modelId) ??
+						session.modelRuntime.getModel(entry.provider, entry.modelId);
+					if (model) {
+						scopedModels.push({
+							model,
+							...(entry.thinkingLevel !== undefined ? { thinkingLevel: entry.thinkingLevel } : {}),
+						});
+					}
+				}
+				session.setScopedModels(scopedModels);
+				if (command.enabledModels !== undefined) {
+					const nextEnabledModels = command.enabledModels === null ? undefined : [...command.enabledModels];
+					const currentEnabledModels = session.settingsManager.getGlobalSettings().enabledModels;
+					const unchanged =
+						nextEnabledModels === undefined
+							? currentEnabledModels === undefined
+							: currentEnabledModels !== undefined &&
+								currentEnabledModels.length === nextEnabledModels.length &&
+								currentEnabledModels.every((value, index) => value === nextEnabledModels[index]);
+					if (!unchanged) {
+						settingsWriteOwner.run(session, () => session.settingsManager.setEnabledModels(nextEnabledModels));
+					}
+				}
+				return createRpcSuccessResponse(id, "set_scoped_models", createRpcModelCatalog(session));
+			}
 
 			case "login_provider": {
 				const result =

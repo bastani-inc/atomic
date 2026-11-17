@@ -67,7 +67,9 @@ test("task picker and detail show exact navigation hints and action rows (#4521)
 	const h = await host();
 	try {
 		await h.fixture.start("Footer task");
-		assert.ok(h.lines().includes("  ↑↓ select · enter/→ open · space peek · x stop · esc/← back · ? keys"));
+		assert.ok(
+			h.lines().includes("  ↑↓ select · space peek · enter/→ open · x stop · / filter · esc/← back · ? keys"),
+		);
 		assert.doesNotMatch(h.lines().join("\n"), /› Inspect transcript/);
 		await peek(h.inspector);
 		assert.match(h.lines().join("\n"), /› Inspect transcript/);
@@ -142,7 +144,7 @@ test("agent transcript footer offers messaging only when the source supports it 
 			h.fixture.runners[0].context.bindTranscript(session);
 			await peek(h.inspector);
 			await enter(h.inspector);
-			assert.equal(h.lines(110, 30).at(-2), "─".repeat(110));
+			assert.equal(h.lines(110, 30).at(-2), "━".repeat(110), "an attached composer has heavy rules (#5224)");
 			const footer = h.lines(110, 30).at(-1) ?? "";
 			assert.equal(footer, "  ← task · pgup/pgdn scroll · ctrl+o expand · ? keys");
 			assert.doesNotMatch(footer, / · {2}· /);
@@ -194,7 +196,7 @@ test("opening the picker again replaces an open transcript (#4521)", async () =>
 		await enter(h.inspector);
 		assert.match(h.lines().join("\n"), /^Transcript/);
 		h.inspector.open();
-		assert.match(h.lines().join("\n"), /Background tasks/);
+		assert.match(h.lines().join("\n"), /^ Tasks\b/m);
 		assert.doesNotMatch(h.lines().join("\n"), /^Transcript/);
 	} finally {
 		await h.dispose();
@@ -208,7 +210,7 @@ test("settled tasks do not offer a stop shortcut (#4521)", async () => {
 		await h.fixture.settle();
 		await flush();
 		const footer = h.lines().at(-1) ?? "";
-		assert.equal(footer, "  ↑↓ select · enter/→ open · space peek · x dismiss · esc/← back · ? keys");
+		assert.equal(footer, "  ↑↓ select · space peek · enter/→ open · x dismiss · / filter · esc/← back · ? keys");
 		await peek(h.inspector);
 		assert.equal(
 			h.lines().at(-1),
@@ -223,7 +225,7 @@ test("configured stop shortcut is shown on picker and detail instead of x (#4521
 	const h = await host(undefined, new KeybindingsManager({ "app.list.stop": "ctrl+k" }));
 	try {
 		await h.fixture.start("Configured stop");
-		assert.match(h.lines().at(-1) ?? "", /ctrl\+k stop · esc\/← back/);
+		assert.match(h.lines().at(-1) ?? "", /ctrl\+k stop · \/ filter · esc\/← back/);
 		await peek(h.inspector);
 		assert.match(h.lines().at(-1) ?? "", /ctrl\+k stop · pgup\/pgdn scroll/);
 		assert.doesNotMatch(h.lines().at(-1) ?? "", /x stop/);
@@ -274,7 +276,7 @@ test("physical Ctrl+C closes the mounted inspector and is consumed (#4521)", asy
 		const message = parseInteractiveEngineMessage(line);
 		if (message) messages.push(message);
 	}, keys);
-	let completion: Promise<void> | undefined;
+	let completion: Promise<unknown> | undefined;
 	try {
 		await fixture.start("Close inspector");
 		completion = showTaskInspector({ custom: service.custom.bind(service) }, fixture.store);
@@ -328,7 +330,7 @@ test("mounted transcript tolerates host settings callbacks being withdrawn (#452
 		getToolsExpanded: () => false,
 		setToolsExpanded: () => {},
 	};
-	let completion: Promise<void> | undefined;
+	let completion: Promise<unknown> | undefined;
 	try {
 		await fixture.start("Changing host settings");
 		completion = showTaskInspector(ui, fixture.store);
@@ -432,7 +434,7 @@ test("Ctrl+C during a picker-to-detail transition closes instead of reopening it
 		const message = parseInteractiveEngineMessage(line);
 		if (message) messages.push(message);
 	}, keys);
-	let completion: Promise<void> | undefined;
+	let completion: Promise<unknown> | undefined;
 	let finished = false;
 	try {
 		await fixture.start("Transition close");

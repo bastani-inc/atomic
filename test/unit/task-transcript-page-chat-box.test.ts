@@ -44,7 +44,11 @@ const flush = async () => {
 };
 const plain = (rows: readonly string[]) => rows.map((row) => stripVTControlCharacters(row));
 const text = (rows: readonly string[]) => plain(rows).join("\n");
-const labelRows = (rows: readonly string[]) => plain(rows).filter((row) => row.includes("[subagent:"));
+/** A chat's own active tasks, listed below its footer as agent-panel rows (#5224). */
+const taskRows = (rows: readonly string[]) => plain(rows).filter((row) => /^ {2}∀ /.test(row));
+
+/** The attached composer's top rule: heavy, ending in its label and one rule glyph (#5224). */
+const labelRows = (rows: readonly string[]) => plain(rows).filter((row) => /^━+ .+ ━$/.test(row));
 
 function record(id: string, kind: TaskRecord["kind"], parent?: string, extra: Partial<TaskRecord> = {}): TaskRecord {
 	const taskId = id as TaskId;
@@ -146,7 +150,7 @@ function subagentPage(
 
 function select(component: { handleInput(data: string): boolean }, render: () => string[], pattern: RegExp): void {
 	for (let attempt = 0; attempt < 10; attempt++) {
-		const selected = plain(render()).find((row) => row.includes("│ › "));
+		const selected = plain(render()).find((row) => row.includes(" ❯ "));
 		if (selected !== undefined && pattern.test(selected)) return;
 		component.handleInput("\x1b[B");
 	}
@@ -197,54 +201,65 @@ afterEach(() => {
 	setKeybindings(previousKeybindings);
 });
 
-describe("a subagent's chat label (#4640)", () => {
-	test("names the subagent's session on its editor's top rule, above the prompt (#4640)", async () => {
-		const sessions = new Map([["child", session("child", "subagent-worker-aabcf28b-1")]]);
-		const page = subagentPage(treeSource(tree(), sessions));
+describe("a subagent's chat label (#4640, #5224)", () => {
+	test("names the subagent, its task and its state on the composer's heavy top rule, above the prompt (#5224)", async () => {
+		const page = subagentPage(treeSource());
 		await page.load();
 		const rows = plain(page.render(80, 12));
-		const top = rows.findIndex((row) => row.includes("[subagent:"));
-		assert.equal(labelRows(rows).length, 1);
-		assert.match(rows[top] ?? "", /^\[subagent: subagent-worker-aabcf28b-1\] ─+$/);
-		assert.equal(visibleWidth(rows[top] ?? ""), 80);
+		const [label] = labelRows(rows);
+		assert.match(label ?? "", /^━+ agent-child · title-child · running ━$/);
+		assert.equal(visibleWidth(label ?? ""), 80);
+		const top = rows.indexOf(label ?? "");
 		assert.ok(rows[top + 1]?.startsWith("❯"), "the prompt stays on the editor's content line");
+		assert.equal(rows[top + 2], "━".repeat(80), "the bottom rule is heavy too");
 		page.dispose();
 	});
 
-	test("falls back to the agent name, and shows no label without one (#4640)", async () => {
-		const page = subagentPage(treeSource());
-		await page.load();
-		assert.deepEqual(
-			labelRows(page.render(80, 12)).map((row) => row.replace(/─+$/, "")),
-			["[subagent: agent-child] "],
-		);
-		page.dispose();
+	test("falls back to the session's name, then to `subagent`, when the task has no agent name (#5224)", async () => {
+		const sessions = new Map([["child", session("child", "subagent-worker-aabcf28b-1")]]);
+		const named = subagentPage(treeSource([record("child", "agent", undefined, { agentName: undefined })], sessions));
+		await named.load();
+		assert.match(labelRows(named.render(80, 12))[0] ?? "", / subagent-worker-aabcf28b-1 · title-child · /);
+		named.dispose();
 		const unnamed = subagentPage(treeSource([record("child", "agent", undefined, { agentName: undefined })]));
 		await unnamed.load();
-		assert.deepEqual(labelRows(unnamed.render(80, 12)), []);
+		assert.match(labelRows(unnamed.render(80, 12))[0] ?? "", / subagent · title-child · /);
 		unnamed.dispose();
 	});
 
-	test("is left off below 40 columns and truncated with an ellipsis when the name does not fit (#4640)", async () => {
-		const name = `subagent-${"reviewer".repeat(8)}-1`;
-		const page = subagentPage(treeSource(tree(), new Map([["child", session("child", name)]])));
+	test("is left off below 40 columns and truncated with an ellipsis when it does not fit (#5224)", async () => {
+		const page = subagentPage(
+			treeSource([record("child", "agent", undefined, { title: "review ".repeat(20).trim() })]),
+		);
 		await page.load();
 		assert.deepEqual(labelRows(page.render(39, 12)), []);
+		assert.ok(plain(page.render(39, 12)).includes("━".repeat(39)), "narrow terminals keep the heavy rule");
 		const [narrow] = labelRows(page.render(40, 12));
-		assert.match(narrow ?? "", /^\[subagent: subagent-reviewer.*…\] ─*$/);
+		assert.match(narrow ?? "", /^━+ agent-child · review.*… ━$/);
 		assert.equal(visibleWidth(narrow ?? ""), 40);
 		page.dispose();
 	});
 
-	test("stays on a scrolled draft's `↑ N more` top rule, once (#4640)", async () => {
+	test("keeps a scrolled draft's `↑ N more` note on its top rule (#5224)", async () => {
 		const page = subagentPage(treeSource());
 		await page.load();
 		page.chat.setInputText(Array.from({ length: 40 }, (_, index) => `line ${index}`).join("\n"));
 		const rows = plain(page.render(80, 30));
-		const labeled = labelRows(rows);
-		assert.equal(labeled.length, 1);
-		assert.match(labeled[0] ?? "", /^\[subagent: agent-child\] ─+ ↑ \d+ more ─+$/);
-		assert.equal(visibleWidth(labeled[0] ?? ""), 80);
+		const top = rows.find((row) => row.includes("more") && row.startsWith("━"));
+		assert.match(top ?? "", /↑ \d+ more/);
+		assert.match(top ?? "", /agent-child · title-child · running/);
+		assert.equal(visibleWidth(top ?? ""), 80);
+		page.dispose();
+	});
+
+	test("says where typing goes, and that a stopped subagent resumes only with a message (#5224)", async () => {
+		const page = subagentPage(treeSource());
+		await page.load();
+		assert.ok(
+			plain(page.render(80, 12)).some(
+				(row) => row.replace(/\x1b_[^\x07]*\x07/g, "").replace(/ +/g, " ") === "❯ Message agent-child…",
+			),
+		);
 		page.dispose();
 	});
 });
@@ -261,7 +276,7 @@ describe("a subagent's chat box rows (#4640)", () => {
 		assert.equal(rows.length, 20);
 		const at = (name: string) => rows.indexOf(name);
 		const transcript = rows.findIndex((row) => row.includes("transcript of child"));
-		const label = rows.findIndex((row) => row.includes("[subagent: agent-child]"));
+		const label = rows.indexOf(labelRows(rows)[0] ?? "");
 		assert.ok(transcript >= 0 && transcript < at("PENDING"));
 		assert.deepEqual(
 			[at("PENDING"), at("WORKING"), at("USAGE"), label, at("FOOTER")],
@@ -277,18 +292,18 @@ describe("a subagent's chat box rows (#4640)", () => {
 		await page.load();
 		const kept = (rows: number) =>
 			plain(page.render(80, rows)).map((row) =>
-				row.includes("[subagent:") ? "LABEL" : row.startsWith("❯") ? "PROMPT" : row,
+				labelRows([row]).length > 0 ? "LABEL" : row.startsWith("❯") ? "PROMPT" : row,
 			);
 		assert.deepEqual(kept(1), ["LABEL"]);
 		assert.deepEqual(kept(0), ["LABEL"]);
-		assert.deepEqual(kept(3), ["LABEL", "PROMPT", "─".repeat(80)]);
-		assert.deepEqual(kept(4), ["LABEL", "PROMPT", "─".repeat(80), "FOOTER"]);
-		assert.deepEqual(kept(5), ["PENDING", "LABEL", "PROMPT", "─".repeat(80), "FOOTER"]);
-		assert.deepEqual(kept(6), ["PENDING", "WORKING", "LABEL", "PROMPT", "─".repeat(80), "FOOTER"]);
-		assert.deepEqual(kept(7), ["PENDING", "WORKING", "USAGE", "LABEL", "PROMPT", "─".repeat(80), "FOOTER"]);
+		assert.deepEqual(kept(3), ["LABEL", "PROMPT", "━".repeat(80)]);
+		assert.deepEqual(kept(4), ["LABEL", "PROMPT", "━".repeat(80), "FOOTER"]);
+		assert.deepEqual(kept(5), ["PENDING", "LABEL", "PROMPT", "━".repeat(80), "FOOTER"]);
+		assert.deepEqual(kept(6), ["PENDING", "WORKING", "LABEL", "PROMPT", "━".repeat(80), "FOOTER"]);
+		assert.deepEqual(kept(7), ["PENDING", "WORKING", "USAGE", "LABEL", "PROMPT", "━".repeat(80), "FOOTER"]);
 		const roomy = kept(8);
 		assert.equal(roomy.length, 8, "the transcript takes the one row left");
-		assert.deepEqual(roomy.slice(1), ["PENDING", "WORKING", "USAGE", "LABEL", "PROMPT", "─".repeat(80), "FOOTER"]);
+		assert.deepEqual(roomy.slice(1), ["PENDING", "WORKING", "USAGE", "LABEL", "PROMPT", "━".repeat(80), "FOOTER"]);
 		page.dispose();
 	});
 
@@ -308,11 +323,15 @@ describe("a subagent's chat box rows (#4640)", () => {
 		const page = subagentPage(treeSource());
 		await page.load();
 		const rows = plain(page.render(80, 12));
-		assert.equal(rows.at(-1), "Tasks  2 background tasks running · /tasks");
+		assert.equal(taskRows(rows).length, 2);
+		assert.match(rows.at(-1) ?? "", /^ {2}∀ /, "the rows close the chat box");
 		page.dispose();
 		const grandchild = subagentPage(treeSource(), "grandchild");
 		await grandchild.load();
-		assert.equal(plain(grandchild.render(80, 12)).at(-1), "Tasks  1 shell running · /tasks");
+		assert.deepEqual(
+			taskRows(grandchild.render(80, 12)).map((row) => row.replace(/ {2,}/g, "  ").trimEnd()),
+			["  ∀ shell  title-grandchild-shell  running"],
+		);
 		grandchild.dispose();
 	});
 });
@@ -338,7 +357,7 @@ test("repaints its footer as its parent's tasks change without rebuilding its tr
 			page.render(80, 12);
 		}
 		assert.equal(rebuilds.mock.calls.length, 0, "a task change rebuilds none of the transcript's rows");
-		assert.equal(plain(page.render(80, 12)).at(-1), "Tasks  7 background tasks running · /tasks");
+		assert.equal(plain(page.render(80, 12)).at(-1), "  +3 more", "seven rows: four shown, the rest folded");
 	} finally {
 		rebuilds.mockRestore();
 		page.dispose();
@@ -419,14 +438,12 @@ describe("a live subagent's chat box (#4640)", () => {
 	test("shows the usage meter above the label and the model and folder footer, then the task count, below it (#4640)", async () => {
 		const { page } = await livePage();
 		const rows = plain(page.render(100, 20));
-		const label = rows.findIndex((row) => row.includes("[subagent: subagent-worker-aabcf28b-1]"));
+		const label = rows.indexOf(labelRows(rows)[0] ?? "");
 		const usage = rows.findIndex((row) => row.includes("↑1.2k"));
 		assert.ok(usage >= 0 && usage === label - 1, "the usage meter sits right above the prompt's top rule");
 		assert.match(rows[usage] ?? "", /↓340 • \$0\.012 • 0\.8%\/200k \(auto\)$/);
-		assert.deepEqual(rows.slice(label + 3), [
-			`worker-model  low • ${LIVE_FOOTER_CWD} (feature)`,
-			"Tasks  2 background tasks running · /tasks",
-		]);
+		assert.equal(rows[label + 3], `worker-model  low • ${LIVE_FOOTER_CWD} (feature)`);
+		assert.equal(taskRows(rows.slice(label + 4)).length, 2);
 		page.dispose();
 	});
 
@@ -471,7 +488,7 @@ describe("a live subagent's chat box (#4640)", () => {
 	test("without footer data the subagent's footer counts its tasks and its usage meter still shows (#4640)", async () => {
 		const { page } = await livePage({}, { footerData: undefined });
 		const rows = plain(page.render(100, 20));
-		assert.equal(rows.at(-1), "Tasks  2 background tasks running · /tasks");
+		assert.equal(taskRows(rows).length, 2);
 		assert.ok(rows.some((row) => row.includes("↑1.2k")));
 		page.dispose();
 	});
@@ -507,7 +524,7 @@ describe("a live subagent's chat box (#4640)", () => {
 		await settled.load();
 		const rows = plain(settled.render(100, 20));
 		assert.ok(!rows.some((row) => row.includes("↑1.2k")));
-		assert.equal(rows.at(-1), "Tasks  2 background tasks running · /tasks");
+		assert.equal(taskRows(rows).length, 2);
 		page.dispose();
 		settled.dispose();
 	});
@@ -547,11 +564,14 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 		const rows = plain(page.render(80, 24));
 		assert.equal(rows.length, 24);
 		assert.deepEqual(labelRows(rows), [], "the composer is hidden while the list is open");
-		assert.equal(rows.at(-1), "Tasks  2 background tasks running · /tasks");
-		assert.match(rows.at(-2) ?? "", /esc\/← back/);
+		assert.equal(taskRows(rows).length, 2);
+		assert.ok(
+			rows.some((row) => /esc\/← back/.test(row)),
+			"the list's hint sits above the footer rows",
+		);
 		const [only, ...rest] = plain(page.render(80, 1));
 		assert.deepEqual(rest, []);
-		assert.notEqual(only, "Tasks  2 background tasks running · /tasks", "one row goes to the list, not the footer");
+		assert.doesNotMatch(only ?? "", /^ {2}∀ /, "one row goes to the list, not the footer");
 		const before = renders;
 		page.handleInput("\x1b[B");
 		assert.ok(renders > before, "a key on the list repaints");
@@ -570,7 +590,7 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 			page.handleInput(ENTER);
 			await flush();
 			const list = plain(page.render(80, 24));
-			assert.match(list.find((row) => row.includes("│ › ")) ?? "", new RegExp(`│ › ${selected} `));
+			assert.match(list.find((row) => row.includes(" ❯ ")) ?? "", new RegExp(` ❯ . \\S+ +${selected}\\b`));
 			page.handleInput(SPACE);
 			await flush();
 			const detail = plain(page.render(80, 24));
@@ -589,17 +609,17 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 		page.handleInput(SPACE);
 		await flush();
 		assert.match(text(page.render(80, 24)), /title-child-shell|title-grandchild/);
-		assert.doesNotMatch(text(page.render(80, 24)), /Background tasks/, "a task's detail page replaced the list");
+		assert.doesNotMatch(text(page.render(80, 24)), /^ Tasks\b/m, "a task's detail page replaced the list");
 		page.handleInput(LEFT);
-		assert.match(text(page.render(80, 24)), /Background tasks/);
+		assert.match(text(page.render(80, 24)), /^ Tasks\b/m);
 		page.handleInput(SPACE);
 		page.handleInput(ESCAPE);
-		assert.match(text(page.render(80, 24)), /Background tasks/);
+		assert.match(text(page.render(80, 24)), /^ Tasks\b/m);
 		page.handleInput(ESCAPE);
 		assert.equal(page.handlesBack(), false);
 		const chat = text(page.render(80, 24));
-		assert.doesNotMatch(chat, /Background tasks/);
-		assert.match(chat, /\[subagent: agent-child\]/);
+		assert.doesNotMatch(chat, /^ Tasks\b/m);
+		assert.match(chat, /agent-child · title-child/);
 		page.dispose();
 	});
 
@@ -623,7 +643,7 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 		assert.doesNotMatch(nested, /title-child-shell|title-parent-shell/);
 		page.handleInput(ESCAPE);
 		const grandchildChat = text(page.render(80, 24));
-		assert.match(grandchildChat, /\[subagent: agent-grandchild\]/);
+		assert.match(grandchildChat, /agent-grandchild · title-grandchild/);
 		assert.match(grandchildChat, /transcript of grandchild/);
 		assert.equal(page.handlesBack(), true, "the child's own task pages are still open");
 		page.dispose();
@@ -690,12 +710,12 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 			await type(inspector, "/tasks");
 			inspector.handleInput(ENTER);
 			await flush();
-			assert.match(text(inspector.renderViewport(80, 24)), /Background tasks/);
+			assert.match(text(inspector.renderViewport(80, 24)), /^ Tasks\b/m);
 			inspector.handleInput(back);
 			const chat = text(inspector.renderViewport(80, 24));
 			assert.match(chat, /Transcript · agent-child(?!-)/, "the key closed the subagent's list, not its chat");
-			assert.match(chat, /\[subagent: agent-child\]/);
-			assert.doesNotMatch(chat, /Background tasks/);
+			assert.match(chat, /agent-child · title-child/);
+			assert.doesNotMatch(chat, /^ Tasks\b/m);
 		}
 		inspector.handleInput(ESCAPE);
 		assert.match(text(inspector.renderViewport(80, 24)), /Transcript ·/, "Esc never leaves the chat (#5224)");

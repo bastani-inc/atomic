@@ -62,7 +62,9 @@ export class SessionPickerHostController {
 				this.mounted.get(message.componentId)?.setRows(message.sessions.map(sessionInfoFromPickerRow));
 				break;
 			case "engine_session_picker_error":
-				this.mounted.get(message.componentId)?.showError(message.message, message.deletePath);
+				this.mounted
+					.get(message.componentId)
+					?.showError(message.message, message.deletePath, message.deleteRequestId);
 				break;
 			case "engine_session_picker_close": {
 				const mount = this.mounted.get(message.componentId);
@@ -89,8 +91,13 @@ export class SessionPickerHostController {
 				this.mounted.delete(componentId);
 				this.runtime.sendEngineCommand({ type: "engine_session_picker_cancel", componentId });
 			},
-			onDelete: (path) => {
-				this.runtime.sendEngineCommand({ type: "engine_session_picker_delete", componentId, path });
+			onDelete: (path, deleteRequestId) => {
+				this.runtime.sendEngineCommand({
+					type: "engine_session_picker_delete",
+					componentId,
+					path,
+					deleteRequestId,
+				});
 			},
 		});
 		this.mounted.set(componentId, mount);

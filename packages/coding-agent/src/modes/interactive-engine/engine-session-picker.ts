@@ -28,7 +28,11 @@ interface ActivePicker {
  */
 export class EngineSessionPickerService {
 	private readonly active = new Map<string, ActivePicker>();
-	private readonly deleteContext = new AsyncLocalStorage<{ componentId: string; path: string }>();
+	private readonly deleteContext = new AsyncLocalStorage<{
+		componentId: string;
+		path: string;
+		deleteRequestId?: number;
+	}>();
 	private nextId = 0;
 	private readonly write: (line: string) => void;
 
@@ -75,7 +79,12 @@ export class EngineSessionPickerService {
 					type: "engine_session_picker_error",
 					componentId,
 					message,
-					...(context?.componentId === componentId ? { deletePath: context.path } : {}),
+					...(context?.componentId === componentId
+						? {
+								deletePath: context.path,
+								...(context.deleteRequestId !== undefined ? { deleteRequestId: context.deleteRequestId } : {}),
+							}
+						: {}),
 				});
 			},
 			close: () => {
@@ -105,13 +114,19 @@ export class EngineSessionPickerService {
 						componentId: command.componentId,
 						message: "Deletion is not supported for this picker",
 						deletePath: command.path,
+						...(command.deleteRequestId !== undefined ? { deleteRequestId: command.deleteRequestId } : {}),
 					});
 					break;
 				}
 				void Promise.resolve()
 					.then(() =>
-						this.deleteContext.run({ componentId: command.componentId, path: command.path }, () =>
-							record.onDelete?.(command.path),
+						this.deleteContext.run(
+							{
+								componentId: command.componentId,
+								path: command.path,
+								...(command.deleteRequestId !== undefined ? { deleteRequestId: command.deleteRequestId } : {}),
+							},
+							() => record.onDelete?.(command.path),
 						),
 					)
 					.catch((error: unknown) => {
@@ -122,6 +137,7 @@ export class EngineSessionPickerService {
 							componentId: command.componentId,
 							message: `Failed to delete: ${message}`,
 							deletePath: command.path,
+							...(command.deleteRequestId !== undefined ? { deleteRequestId: command.deleteRequestId } : {}),
 						});
 					});
 				break;

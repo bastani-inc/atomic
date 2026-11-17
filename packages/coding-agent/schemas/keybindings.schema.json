@@ -195,14 +195,6 @@
       "$ref": "#/$defs/KeybindingValue",
       "description": "Scroll viewport to bottom"
     },
-    "app.workflows.scrollUp": {
-      "$ref": "#/$defs/KeybindingValue",
-      "description": "Scroll workflows up"
-    },
-    "app.workflows.scrollDown": {
-      "$ref": "#/$defs/KeybindingValue",
-      "description": "Scroll workflows down"
-    },
     "app.interrupt": {
       "$ref": "#/$defs/KeybindingValue",
       "description": "Cancel or abort"

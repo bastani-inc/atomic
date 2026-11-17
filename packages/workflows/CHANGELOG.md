@@ -6,10 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- An attached stage chat's composer has heavy accent rules naming `stage · <name> · <state>` and a `Message <stage>…` placeholder (`Answer <stage>…` while it waits on a question), matching a subagent's chat ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+
 ### Fixed
 
 - Workflow resume picker failure summaries preserve Unicode when shortened and keep reasons beginning with "at ", rather than mistaking them for stack frames ([#5256](https://github.com/bastani-inc/atomic/pull/5256)).
 - Workflow resume cannot select a run while deleting it, and a stale refresh cannot restore a successfully deleted run to the picker ([#5256](https://github.com/bastani-inc/atomic/pull/5256)).
+- Workflow rows in the agent panel now count expanded nested, dynamic and fan-out stages, omit empty progress bars on tools-only runs, and show the choices for a pending single-select question. Run and stage names display terminal controls as inert text, and unchanged stage progress is reused between refreshes ([#5239](https://github.com/bastani-inc/atomic/pull/5239))
+- A reply sent from a workflow's `/tasks` card is refused if the pending question changed after typing began. SDK replies must include the captured prompt identity, so identical question text cannot direct an old reply to a replacement question ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+
+### Removed
+
+- The below-editor `BACKGROUND` workflow list and its Alt+K/J scrolling. Each run now has a row in the main chat's agent panel with its stage progress, current stage and any waiting input; Enter on it opens the graph ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ## [0.9.88] - 2026-11-16
 

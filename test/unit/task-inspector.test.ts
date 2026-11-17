@@ -22,7 +22,7 @@ test("inspector keeps selected live task reachable in a short viewport and confi
 		},
 	);
 	try {
-		assert.match(inspector.render(48).join("\n"), /No background tasks/);
+		assert.match(inspector.render(48).join("\n"), /No background work/);
 		await fixture.start("first");
 		await fixture.start("second");
 		inspector.handleInput("\x1b[A");
@@ -71,7 +71,7 @@ test("narrow inspector keeps the selected input-needed task visible", async () =
 		inspector.open(fixture.store.tasks[7].ref.taskId);
 		for (const width of [20, 21, 48]) {
 			const text = stripVTControlCharacters(inspector.renderViewport(width, 8).join("\n"));
-			assert.match(text, /› task-7/);
+			assert.match(text, /❯ ◆ .*task-7/);
 			assert.doesNotMatch(text, /task-0/);
 		}
 	} finally {
