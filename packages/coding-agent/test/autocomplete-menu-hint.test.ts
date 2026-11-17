@@ -183,6 +183,61 @@ describe("the @ and / menus' hint line in Atomic's theme (#5224)", () => {
 		});
 	}
 
+	it("does not name the exit key as cancel in an empty file-completion menu (#5347)", async () => {
+		const keybindings = new KeybindingsManager({ "tui.select.cancel": ["ctrl+d", "escape"] });
+		setKeybindings(keybindings);
+		const editor = new CustomEditor(new TuiMainScreen(new RecordingTerminal()), getEditorTheme(), keybindings);
+		let exits = 0;
+		editor.onAction("app.exit", () => exits++);
+		editor.setAutocompleteProvider({
+			getSuggestions: async () => ({
+				items: [
+					{ value: "README.md", label: "README.md" },
+					{ value: "src/", label: "src/" },
+				],
+				prefix: "",
+			}),
+			applyCompletion: (lines, cursorLine, cursorCol) => ({ lines, cursorLine, cursorCol }),
+		});
+		editor.handleInput("\t");
+		await flushAutocomplete();
+		assert.equal(editor.getText(), "");
+		assert.equal(plain(editor.render(120).at(-1) ?? ""), "↑↓ select · tab complete · enter insert · esc close");
+		editor.handleInput("\x04");
+		assert.equal(exits, 1);
+		assert.equal(editor.isShowingAutocomplete(), true);
+		editor.handleInput("\x1b");
+		assert.equal(editor.isShowingAutocomplete(), false);
+	});
+
+	it("does not name native macOS image paste as a menu action (#5347)", async () => {
+		const platform = Object.getOwnPropertyDescriptor(process, "platform");
+		assert.ok(platform);
+		Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
+		try {
+			const keybindings = new KeybindingsManager({
+				"app.clipboard.pasteImage": "ctrl+v",
+				"tui.select.confirm": ["super+v", "enter"],
+			});
+			setKeybindings(keybindings);
+			const editor = new CustomEditor(new TuiMainScreen(new RecordingTerminal()), getEditorTheme(), keybindings);
+			let pastes = 0;
+			editor.onPasteImage = () => pastes++;
+			editor.setAutocompleteProvider({
+				getSuggestions: async () => ({ items: [{ value: "/tree", label: "tree" }], prefix: "/" }),
+				applyCompletion: (lines, cursorLine, cursorCol) => ({ lines, cursorLine, cursorCol }),
+			});
+			editor.handleInput("/");
+			await flushAutocomplete();
+			assert.equal(plain(editor.render(120).at(-1) ?? ""), "tab complete · enter run · esc close");
+			editor.handleInput("\x1b[118;9u");
+			assert.equal(pastes, 1);
+			assert.equal(editor.isShowingAutocomplete(), true);
+		} finally {
+			Object.defineProperty(process, "platform", platform);
+		}
+	});
+
 	it("leaves out an entry whose keys are all unbound, so it never names a dead key", () => {
 		const unbound = new KeybindingsManager({ "tui.input.tab": [] });
 		assert.equal(plain(renderAutocompleteHint(ALL, 120, unbound)), "↑↓ select · enter run · esc close");
