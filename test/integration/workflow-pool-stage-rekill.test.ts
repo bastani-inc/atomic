@@ -228,15 +228,16 @@ for (const scenario of ["chat closed at the first kill", "chat open throughout"]
 				await rebound(live, handle!, live.kill(), targets, observe);
 				// The view rebinds from the watch, while the root's store learns the replacement's stage from
 				// its activity: right after a kill the store holds the replayed child run without its stage
-				// until that activity is applied. Wait for the store to show the stage on the attempt the
-				// view watches, so the status read below is the replacement's, not the gap's.
+				// until that activity is applied, and a replacement can publish the replayed stage pending,
+				// before it resumes the stage's session, and running only in a later publication. The stage
+				// still works its rounds once the store shows it running on the attempt the view watches; a
+				// replacement that never resumes it stalls here, and a stage that ended fails here.
 				await step(
-					"the store shows the replacement's stage",
-					() => live.generation() === handle!.placement.generation,
+					"the store shows the replacement working the stage's rounds",
+					() => live.generation() === handle!.placement.generation && live.stage()?.stage.status === "running",
 					live.execution,
 					observe,
 				);
-				assert.equal(live.stage()?.stage.status, "running", "the stage still works its rounds");
 				writeFileSync(join(live.directory, ROUNDS_RELEASE_FILE), "");
 				await step(
 					"stage finished",
