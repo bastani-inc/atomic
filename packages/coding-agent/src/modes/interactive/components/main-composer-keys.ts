@@ -35,6 +35,17 @@ function resolveAgentCounts(
 	return (keybindings && boundAgentCounts.get(keybindings)?.()) || { total: 0, needsInput: 0 };
 }
 
+function promptKeybindings(keybindings: NavKeybindings | undefined): NavKeybindings | undefined {
+	if (!keybindings) return undefined;
+	return {
+		matches: (data, action) => keybindings.matches(data, action),
+		getKeys: (action) => {
+			const keys = keybindings.getKeys?.(action) ?? [];
+			return action === "app.interrupt" ? keys : keys.filter((key) => key !== "esc" && key !== "escape");
+		},
+	};
+}
+
 function agentsSegment(keybindings: NavKeybindings | undefined, rows: number): string | undefined {
 	if (!Number.isFinite(rows) || rows <= 0) return undefined;
 	const count = Math.floor(rows);
@@ -50,12 +61,13 @@ export function mainComposerHintSegments(
 ): string[] {
 	const segments: string[] = [];
 	const counts = resolveAgentCounts(keybindings, state);
-	const agents = agentsSegment(keybindings, counts.total);
+	const promptKeys = promptKeybindings(keybindings);
+	const agents = agentsSegment(promptKeys, counts.total);
 	if (agents) {
 		segments.push(agents);
 		if (counts.needsInput > 0) segments.push(`${counts.needsInput} needs input`);
 	}
-	const help = navActionText(keybindings, "app.keys.help");
+	const help = navActionText(promptKeys, "app.keys.help");
 	if (help) segments.push(`${help} keys`);
 	return segments;
 }
@@ -104,7 +116,7 @@ export class MainComposerKeyOverlay implements Component {
 				border: (text) => theme.fg("borderMuted", text),
 				bold: (text) => theme.bold(text),
 			},
-			this.keybindings,
+			promptKeybindings(this.keybindings),
 		);
 	}
 

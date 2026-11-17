@@ -252,6 +252,223 @@ describe("attached subagent transcript header and live-key hint (#5224)", () => 
 			await fixture.dispose();
 		}
 	});
+
+	test("retains the full initial prompt in the transcript body when it overflows the one-line header, across resizes, multiline prompts, images, and parent history (#5224)", async () => {
+		const openAttachedInspector = async (
+			taskTitle: string,
+			messages: ReadonlyArray<{ role: string; content: unknown; timestamp: number }>,
+		) => {
+			const fixture = taskFixture();
+			await fixture.start(taskTitle);
+			const session = SessionManager.inMemory();
+			for (const message of messages) {
+				if (message.role === "custom") {
+					await session.appendCustomMessageEntry(
+						(message as { customType?: string }).customType ?? "intercom_message",
+						String(message.content),
+						true,
+					);
+				} else {
+					await session.appendMessage(message as never);
+				}
+			}
+			await session.appendMessage(createAssistantMessage("Working on it."));
+			fixture.runners[0]!.context.bindTranscript(
+				Object.assign(session, {
+					subscribe: () => () => {},
+					isRunning: () => false,
+				}),
+			);
+			const env = taskTranscriptEnvironment({
+				tui: makeTestTui(28),
+				keybindings: getKeybindings(),
+				getToolsExpanded: () => false,
+				setToolsExpanded: () => {},
+			});
+			const inspector = new TaskInspector(
+				ownerTaskViewSource(fixture.store),
+				() => {},
+				() => {},
+				undefined,
+				() => env,
+			);
+			inspector.openChat(fixture.store.tasks[0]!.ref.taskId);
+			await flush();
+			return {
+				inspector,
+				dispose: async () => {
+					inspector.dispose();
+					await fixture.dispose();
+				},
+			};
+		};
+
+		// 1. Long prompt beyond 80 and 160 columns keeps its tail sentinel in the body
+		const longPrompt = `${"Investigate concurrency race condition in task store ".repeat(3)}TAIL-SENTINEL-BEYOND-160`;
+		const longCase = await openAttachedInspector(longPrompt, [
+			{ role: "user", content: longPrompt, timestamp: 1_000 },
+		]);
+		try {
+			for (const width of [80, 160]) {
+				const rows = plain(longCase.inspector.renderViewport(width, 28));
+				assert.equal(rows[0], "  › from main");
+				assert.match(rows[1] ?? "", /^ {2}❯ Investigate concurrency race condition/);
+				assert.equal(
+					(rows[1] ?? "").includes("TAIL-SENTINEL-BEYOND-160"),
+					false,
+					`width ${width}: clipped header alone cannot fit the tail sentinel`,
+				);
+				const bodyText = rows
+					.slice(
+						2,
+						rows.findIndex((row) => row.includes("━")),
+					)
+					.join("\n");
+				assert.match(
+					bodyText,
+					/TAIL-SENTINEL-BEYOND-160/,
+					`width ${width}: transcript body retains the full long prompt including its tail`,
+				);
+			}
+		} finally {
+			await longCase.dispose();
+		}
+
+		// 2. Medium single-line prompt (96 chars) hides body duplicate at 160 cols, shows full body on resize to 80 cols, and hides again at 160 cols
+		const mediumPrompt = `${"Trace lock owner handoff across worker restarts and verify cleanup ".padEnd(76, "x")} RESIZE-TAIL-SENTINEL`;
+		const resizeCase = await openAttachedInspector(mediumPrompt, [
+			{ role: "user", content: mediumPrompt, timestamp: 1_000 },
+		]);
+		try {
+			const wideRows = plain(resizeCase.inspector.renderViewport(160, 28));
+			assert.ok((wideRows[1] ?? "").includes("RESIZE-TAIL-SENTINEL"), "160 cols: header fits full medium prompt");
+			const wideBody = wideRows
+				.slice(
+					2,
+					wideRows.findIndex((row) => row.includes("━")),
+				)
+				.join("\n");
+			assert.doesNotMatch(wideBody, /RESIZE-TAIL-SENTINEL/, "160 cols: body does not duplicate fitting prompt");
+
+			const narrowRows = plain(resizeCase.inspector.renderViewport(80, 28));
+			assert.equal((narrowRows[1] ?? "").includes("RESIZE-TAIL-SENTINEL"), false, "80 cols: header clips");
+			const narrowBody = narrowRows
+				.slice(
+					2,
+					narrowRows.findIndex((row) => row.includes("━")),
+				)
+				.join("\n");
+			assert.match(narrowBody, /RESIZE-TAIL-SENTINEL/, "80 cols: body renders full prompt on resize");
+
+			const wideAgainRows = plain(resizeCase.inspector.renderViewport(160, 28));
+			const wideAgainBody = wideAgainRows
+				.slice(
+					2,
+					wideAgainRows.findIndex((row) => row.includes("━")),
+				)
+				.join("\n");
+			assert.doesNotMatch(wideAgainBody, /RESIZE-TAIL-SENTINEL/, "160 cols again: body hides duplicate on widen");
+		} finally {
+			await resizeCase.dispose();
+		}
+
+		// 3. Multiline prompt retains all lines in the transcript body even when short
+		const multilinePrompt = "First line summary\nSecond line detail MULTILINE-TAIL-SENTINEL";
+		const multilineCase = await openAttachedInspector(multilinePrompt, [
+			{ role: "user", content: multilinePrompt, timestamp: 1_000 },
+		]);
+		try {
+			const rows = plain(multilineCase.inspector.renderViewport(120, 28));
+			const bodyText = rows
+				.slice(
+					2,
+					rows.findIndex((row) => row.includes("━")),
+				)
+				.join("\n");
+			assert.match(bodyText, /First line summary/);
+			assert.match(bodyText, /Second line detail MULTILINE-TAIL-SENTINEL/);
+		} finally {
+			await multilineCase.dispose();
+		}
+
+		// 4. User prompt with image content or preceded by parent history is kept in the body
+		const imagePrompt = "Short prompt with image";
+		const imageCase = await openAttachedInspector(imagePrompt, [
+			{
+				role: "user",
+				content: [
+					{ type: "text", text: imagePrompt },
+					{ type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+				],
+				timestamp: 1_000,
+			},
+		]);
+		try {
+			const rows = plain(imageCase.inspector.renderViewport(120, 28));
+			const bodyText = rows
+				.slice(
+					2,
+					rows.findIndex((row) => row.includes("━")),
+				)
+				.join("\n");
+			assert.match(bodyText, /Short prompt with image/);
+		} finally {
+			await imageCase.dispose();
+		}
+
+		const parentHistoryCase = await openAttachedInspector("Child task prompt", [
+			{ role: "user", content: "Parent context prompt", timestamp: 500 },
+			createAssistantMessage("Parent answer.", { timestamp: 800 }),
+			{ role: "user", content: "Child task prompt", timestamp: 1_000 },
+		]);
+		try {
+			const rows = plain(parentHistoryCase.inspector.renderViewport(120, 28));
+			const bodyText = rows
+				.slice(
+					2,
+					rows.findIndex((row) => row.includes("━")),
+				)
+				.join("\n");
+			assert.match(bodyText, /Parent context prompt/);
+			assert.match(bodyText, /Child task prompt/);
+		} finally {
+			await parentHistoryCase.dispose();
+		}
+
+		// 5. A pre-start custom message before the first user launch prompt still collapses the first user launch prompt when it fits the header, while keeping a later identical user follow-up visible
+		const prefacedPrompt = "Launch prompt after pre-start custom";
+		const prefacedCustomCase = await openAttachedInspector(prefacedPrompt, [
+			{
+				role: "custom",
+				customType: "intercom_message",
+				content: "Pre-start custom context",
+				display: true,
+				timestamp: 500,
+			} as never,
+			{ role: "user", content: prefacedPrompt, timestamp: 1_000 },
+			createAssistantMessage("Initial reply.", { timestamp: 1_500 }),
+			{ role: "user", content: prefacedPrompt, timestamp: 2_000 },
+		]);
+		try {
+			const wideRows = plain(prefacedCustomCase.inspector.renderViewport(120, 28));
+			assert.equal(wideRows[1], `  ❯ ${prefacedPrompt}`);
+			const wideBodyRows = wideRows.slice(
+				2,
+				wideRows.findIndex((row) => row.includes("━")),
+			);
+			assert.ok(
+				wideBodyRows.some((row) => row.includes("Pre-start custom context")),
+				"pre-start custom message stays visible",
+			);
+			assert.equal(
+				wideBodyRows.filter((row) => row.includes(prefacedPrompt)).length,
+				1,
+				"first user launch prompt collapses into the header while the later identical user follow-up stays visible in the body",
+			);
+		} finally {
+			await prefacedCustomCase.dispose();
+		}
+	});
 });
 
 describe("cross-view parity across main chat, stage chat, and subagent view (#5224)", () => {
@@ -556,6 +773,7 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 
 		const settledAssistant = createAssistantMessage("Started background sleep and waiting.", {
 			stopReason: "toolUse",
+			inputTokens: 100,
 			outputTokens: 409,
 			timestamp: 5_000,
 		});
@@ -625,11 +843,17 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 		await flush();
 
 		try {
+			const expectedTokens =
+				(settledAssistant.usage.input ?? 0) +
+				(settledAssistant.usage.cacheRead ?? 0) +
+				(settledAssistant.usage.cacheWrite ?? 0) +
+				(settledAssistant.usage.output ?? 0);
+			assert.equal(expectedTokens, 509);
 			const stageWorking = plain(stageView.render(100)).find((line) => line.includes("∀ "));
 			const subWorking = plain(subInspector.renderViewport(100, 24)).find((line) => line.includes("∀ "));
 
-			assert.equal(stageWorking, " ∀ Schlepping... (27s · ↓ 409 tokens)");
-			assert.equal(subWorking, " ∀ Schlepping... (27s · ↓ 409 tokens)");
+			assert.equal(stageWorking, ` ∀ Schlepping... (27s · ↓ ${expectedTokens} tokens)`);
+			assert.equal(subWorking, ` ∀ Schlepping... (27s · ↓ ${expectedTokens} tokens)`);
 		} finally {
 			stageView.dispose();
 			subInspector.dispose();
@@ -764,6 +988,155 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 				awaitingDecorated.some((line) => rawEscape.test(line)),
 				false,
 			);
+		}
+	});
+
+	test("remapping navigation, focus, expand, or help to Escape never steals physical Escape from attached subagent or stage chat (#5224)", async () => {
+		const remapped = new KeybindingsManager({
+			"app.nav.back": ["escape", "left"],
+			"app.keys.help": ["escape", "?"],
+			"app.agents.focus": ["escape", "down"],
+			"app.tools.expand": ["escape", "ctrl+o"],
+		});
+		setKeybindings(remapped);
+
+		const subFixture = taskFixture();
+		await subFixture.start("Check Escape priority in subagent chat");
+		const subSession = SessionManager.inMemory();
+		await subSession.appendMessage({
+			role: "user",
+			content: "Check Escape priority in subagent chat",
+			timestamp: 1_000,
+		});
+		let subRunning = true;
+		let subInterrupted = 0;
+		const subTranscript: TaskTranscriptSource = Object.assign(subSession, {
+			subscribe: () => () => {},
+			isRunning: () => subRunning,
+			async interruptTurn() {
+				subInterrupted += 1;
+				subRunning = false;
+			},
+		});
+		subFixture.runners[0]!.context.bindTranscript(subTranscript);
+		let subExpanded = false;
+		let subClosed = 0;
+		const subEnv = taskTranscriptEnvironment({
+			tui: makeTestTui(24),
+			keybindings: remapped,
+			getToolsExpanded: () => subExpanded,
+			setToolsExpanded: (next) => {
+				subExpanded = next;
+			},
+		});
+		const subInspector = new TaskInspector(
+			ownerTaskViewSource(subFixture.store),
+			() => {},
+			() => {
+				subClosed += 1;
+			},
+			undefined,
+			() => subEnv,
+		);
+		subInspector.openChat(subFixture.store.tasks[0]!.ref.taskId);
+		await flush();
+
+		const wfStore = createStore();
+		setupRun(wfStore, "run-esc", "stage-esc", "running");
+		const tasks = new PooledStageTaskSource(async () => ({ kind: "detail", detail: {} }));
+		const shell = { ...taskRecord("build", "command"), title: "sleep 30" };
+		tasks.apply({
+			tasks: [shell],
+			background: [shell.ref.taskId],
+			settlement: [],
+			activity: [],
+			stdin: [],
+			statuses: [],
+		});
+		let stageStreaming = true;
+		const { handle: stageBase, state: stageState } = makeHandle({
+			promptCalls: [],
+			steerCalls: [],
+			followUpCalls: [],
+			pauseCalls: 0,
+			resumeCalls: [],
+			get isStreaming() {
+				return stageStreaming;
+			},
+		});
+		const originalPause = stageBase.pause.bind(stageBase);
+		let stageDetached = 0;
+		let stageExpanded = false;
+		const stageView = new StageChatView({
+			store: wfStore,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-esc",
+			stageId: "stage-esc",
+			workflowName: "demo",
+			handle: {
+				...stageBase,
+				placement: { kind: "local-worker", workId: "work", generation: 1 },
+				taskSource: () => tasks,
+				async pause() {
+					stageStreaming = false;
+					await originalPause();
+					wfStore.recordStagePaused("run-esc", "stage-esc");
+				},
+			},
+			onDetach: () => {
+				stageDetached += 1;
+			},
+			onClose: () => {},
+			piTui: makeTestTui(24),
+			piTheme: theme,
+			piKeybindings: remapped,
+			getToolsExpanded: () => stageExpanded,
+			setToolsExpanded: (next) => {
+				stageExpanded = next;
+			},
+		});
+
+		try {
+			const subRunningHint = plain(subInspector.renderViewport(120, 24)).at(-1) ?? "";
+			const stageRunningHint = plain(stageView.render(120)).at(-1) ?? "";
+			assert.equal(
+				subRunningHint,
+				"  ← main chat · esc interrupt · pgup/pgdn scroll · ctrl+o expand · ? keys",
+				"subagent hint strips dead esc from remapped non-interrupt actions",
+			);
+			assert.equal(
+				stageRunningHint,
+				"  ← graph · ↓ agents · esc interrupt · pgup/pgdn scroll · ctrl+o expand · ? keys",
+				"stage hint strips dead esc from remapped non-interrupt actions",
+			);
+
+			assert.equal(subInspector.handleInput(ESC), true);
+			await flush();
+			assert.equal(subClosed, 0, "Esc in subagent chat never detaches via remapped app.nav.back");
+			assert.equal(subInterrupted, 1, "Esc in subagent chat interrupts the running turn");
+			assert.equal(subExpanded, false, "Esc in subagent chat does not toggle tool expansion");
+			const subAfterEsc = plain(subInspector.renderViewport(120, 24)).join("\n");
+			assert.doesNotMatch(subAfterEsc, /keys · task chat/, "Esc does not open remapped ? help overlay");
+
+			assert.equal(stageView.handleInput(ESC), true);
+			await flush();
+			assert.equal(stageDetached, 0, "Esc in stage chat never detaches via remapped app.nav.back");
+			assert.equal(stageState.pauseCalls, 1, "Esc in stage chat interrupts the running stage");
+			assert.equal(stageExpanded, false, "Esc in stage chat does not toggle remapped app.tools.expand");
+			const stageAfterEsc = plain(stageView.render(120)).join("\n");
+			assert.doesNotMatch(stageAfterEsc, /keys · stage chat/, "Esc does not open remapped ? help overlay");
+			assert.doesNotMatch(stageAfterEsc, /^ Tasks\b/m, "Esc does not open remapped ↓ task inspector");
+
+			assert.equal(stageView.handleInput("?"), true);
+			const stageOverlay = plain(stageView.render(120)).join("\n");
+			assert.match(stageOverlay, /keys · stage chat/);
+			assert.doesNotMatch(stageOverlay, /esc\/←\s+back, on an empty prompt/);
+			assert.equal(stageView.handleInput(ESC), true);
+			assert.doesNotMatch(plain(stageView.render(120)).join("\n"), /keys · stage chat/);
+		} finally {
+			stageView.dispose();
+			subInspector.dispose();
+			await subFixture.dispose();
 		}
 	});
 });

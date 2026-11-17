@@ -51,11 +51,12 @@ import type {
 	ChatSessionHostOpts,
 	ChatSessionSubmitMode,
 } from "./chat-session-host-types.ts";
+import { firstRawUserExactText, syncFirstUserEntry } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import { TaskInspector } from "./task-inspector.js";
 import { renderTaskFooter } from "./task-list.js";
 import type { TaskTranscriptEnvironment } from "./task-transcript-page.ts";
-import { type MeteredRunMessage, meteredOutputTokens, runInProgress } from "./working-run-meter.ts";
+import { type MeteredRunMessage, runInProgress } from "./working-run-meter.ts";
 
 export type {
 	ChatSessionHostBashRequest,
@@ -152,20 +153,43 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		return this.taskInspector?.handleInput(data) === true;
 	}
 	appendMessages(messages: readonly AgentSnapshotMessage[]): void {
+		const hadFirstUser = this.state.seenFirstRawUser;
+		if (!hadFirstUser && messages.length > 0) {
+			const firstUser = firstRawUserExactText(messages);
+			if (firstUser.seenUser) {
+				this.state.seenFirstRawUser = true;
+				this.state.firstUserEntryExactText = firstUser.exactText;
+			}
+		}
 		this.state.liveChat.appendMessages(messages);
+		if (!hadFirstUser && this.state.seenFirstRawUser) {
+			syncFirstUserEntry(this.state);
+		}
 	}
 
 	/** Earlier history, shown above every entry while a reader scrolled away from the end keeps their place. */
 	prependMessages(messages: readonly AgentSnapshotMessage[]): void {
+		const firstUser = firstRawUserExactText(messages);
+		if (firstUser.seenUser) {
+			this.state.seenFirstRawUser = true;
+			this.state.firstUserEntryExactText = firstUser.exactText;
+		}
 		const previousCount = countableTranscriptLength(this.state);
 		this.state.liveChat.prependMessages(messages);
+		if (firstUser.seenUser || this.state.firstUserEntry === undefined) {
+			syncFirstUserEntry(this.state);
+		}
 		this.state.newMessages.historyPrepended(countableTranscriptLength(this.state) - previousCount);
 		this.state.requestRender?.();
 	}
 
 	/** Replaces the conversation with `messages`, keeping the host's own extra entries. */
 	replaceMessages(messages: readonly AgentSnapshotMessage[]): void {
+		const firstUser = firstRawUserExactText(messages);
+		this.state.seenFirstRawUser = firstUser.seenUser;
+		this.state.firstUserEntryExactText = firstUser.exactText;
 		this.state.liveChat.replaceMessages(messages, this.state.extraEntries);
+		syncFirstUserEntry(this.state);
 		this.state.newMessages.replaced(countableTranscriptLength(this.state));
 		this.state.requestRender?.();
 	}
@@ -179,7 +203,9 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.workingMessage = undefined;
 		this.state.lastWorkingMessage = undefined;
 		this.state.workedRun = undefined;
-		this.state.hydratedOutputOnly = false;
+		this.state.seenFirstRawUser = false;
+		this.state.firstUserEntryExactText = undefined;
+		this.state.firstUserEntry = undefined;
 		if (this.state.statusMessage !== this.state.lastWarningMessage) this.state.statusMessage = "";
 		this.state.pendingSteeringMessages = [];
 		this.state.pendingFollowUpMessages = [];
@@ -230,10 +256,14 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		if (this.state.disposed) return false;
 		if (this.historyHydrated || this.state.transcript.length > this.state.extraEntries.length) return true;
 		this.historyHydrated = true;
+		const firstUser = firstRawUserExactText(messages);
+		this.state.seenFirstRawUser = firstUser.seenUser;
+		this.state.firstUserEntryExactText = firstUser.exactText;
 		const previousCount = countableTranscriptLength(this.state);
 		const extras = this.state.transcript.splice(0);
 		this.state.liveChat.appendMessages(messages);
 		this.state.transcript.push(...extras);
+		syncFirstUserEntry(this.state);
 		this.state.newMessages.historyPrepended(countableTranscriptLength(this.state) - previousCount);
 		this.state.requestRender?.();
 		return true;
@@ -528,21 +558,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		if (!this.state.workingLifecycleActive) startChatSessionWorkingLifecycle(this.state);
 		if (this.state.workingRunMeter.snapshot() === undefined) {
 			const run = runInProgress(messages, streaming);
-			if (run.startedAt !== undefined || streaming !== undefined || messages.length === 0) {
-				this.state.hydratedOutputOnly = false;
-				this.state.workingRunMeter.resume(run.startedAt, run.settledTokens, run.requesting);
-			} else {
-				let startedAt: number | undefined;
-				let settledTokens = 0;
-				for (const message of messages) {
-					if (typeof message.timestamp === "number" && message.timestamp > 0) {
-						startedAt = startedAt === undefined ? message.timestamp : Math.min(startedAt, message.timestamp);
-					}
-					if (message.role === "assistant") settledTokens += meteredOutputTokens(message);
-				}
-				this.state.hydratedOutputOnly = true;
-				this.state.workingRunMeter.resume(startedAt, settledTokens, false);
-			}
+			this.state.workingRunMeter.resume(run.startedAt, run.settledTokens, run.requesting);
 			if (streaming !== undefined) this.state.workingRunMeter.streaming(streaming);
 		}
 		if (this.state.workingMessage === undefined) {

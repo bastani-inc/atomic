@@ -220,6 +220,62 @@ test("Ctrl+X pressed twice restarts the chord, so Ctrl+X Ctrl+K after a stray Ct
 	assert.match(h.statuses.at(-1) ?? "", /again within 3s/);
 });
 
+test("stop-all chord never consumes physical Escape even when remapped, and disarms pending confirmation when chordAllowed becomes false (#5224)", async () => {
+	let now = 0;
+	let allowed = true;
+	const statuses: string[] = [];
+	let stops = 0;
+	const remapped = new KeybindingsManager({
+		"app.agents.chord": ["escape", "ctrl+x"],
+		"app.agents.stopAll": ["escape", "ctrl+k"],
+	});
+	const listener = createStopAllChord(
+		{
+			keybindings: remapped,
+			chordAllowed: () => allowed,
+			stopAll: async () => {
+				stops += 1;
+				return { agents: 1, shells: 0, workflowRuns: 0, failures: [] };
+			},
+			showStatus: (msg) => statuses.push(msg),
+			showWarning: (msg) => statuses.push(msg),
+			clearStatus: () => statuses.push("<cleared>"),
+		},
+		() => now,
+	);
+
+	// 1. Escape after Ctrl+X cancels the chord and passes through without arming stop-all
+	assert.equal(listener(CTRL_X), undefined);
+	assert.equal(listener("\x1b"), undefined, "Escape after Ctrl+X must cancel the chord and pass through");
+	assert.equal(statuses.length, 0);
+
+	// 2. Escape alone never opens the chord even when app.agents.chord includes escape
+	assert.equal(listener("\x1b"), undefined);
+	assert.equal(listener(CTRL_K), undefined, "Ctrl+K after Escape must not arm stop-all");
+	assert.equal(statuses.length, 0);
+
+	// 3. Arm confirmation with Ctrl+X Ctrl+K, then Escape cancels the pending confirmation
+	listener(CTRL_X);
+	assert.deepEqual(listener(CTRL_K), { consume: true });
+	assert.match(statuses.at(-1) ?? "", /Press ctrl\+x ctrl\+k again within 3s/);
+	assert.equal(listener("\x1b"), undefined);
+	assert.equal(statuses.at(-1), "<cleared>");
+
+	// 4. Arm confirmation again, then a key pressed while chordAllowed is false disarms confirmation
+	now += 500;
+	listener(CTRL_X);
+	assert.deepEqual(listener(CTRL_K), { consume: true });
+	allowed = false;
+	assert.equal(listener("a"), undefined);
+	assert.equal(statuses.at(-1), "<cleared>", "blocked dialog key disarms pending stop-all confirmation");
+	allowed = true;
+	now += 500;
+	listener(CTRL_X);
+	assert.deepEqual(listener(CTRL_K), { consume: true });
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(stops, 0, "chord after blocked dialog arms afresh instead of confirming stop-all");
+});
+
 test("a stop-all that cannot stop everything says what is left (#5224)", () => {
 	assert.equal(
 		stopAllBackgroundMessage({ agents: 0, shells: 0, workflowRuns: 0, failures: [] }),

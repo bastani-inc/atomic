@@ -5,7 +5,7 @@ import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { theme } from "../theme/theme.js";
 import { atomicWorkingFrame } from "./atomic-working-status.ts";
-import { LiveChatEntriesController } from "./chat-message-renderer.ts";
+import { type ChatMessageEntry, LiveChatEntriesController } from "./chat-message-renderer.ts";
 import type {
 	ChatSessionHostCommands,
 	ChatSessionHostEntry,
@@ -41,6 +41,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly getChatBoxSession: (() => ChatBoxSession | undefined) | undefined;
 	readonly getSessionMessages: (() => AgentSession["messages"] | undefined) | undefined;
 	readonly getTaskSource: (() => TaskViewSource | undefined) | undefined;
+	readonly echoedInitialPrompt: string | (() => string | undefined) | undefined;
 	readonly isStreamingOverride: (() => boolean) | undefined;
 	readonly workingTokenCount: (() => number | undefined) | undefined;
 	readonly isPaused: (() => boolean) | undefined;
@@ -76,7 +77,9 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	workingMessage: string | undefined;
 	lastWorkingMessage: string | undefined = undefined;
 	workedRun: { readonly message: string | undefined; readonly snapshot: WorkingRunSnapshot } | undefined = undefined;
-	hydratedOutputOnly = false;
+	seenFirstRawUser = false;
+	firstUserEntryExactText: string | undefined = undefined;
+	firstUserEntry: Extract<ChatMessageEntry, { kind: "user" }> | undefined = undefined;
 	get workingFrame(): number {
 		return atomicWorkingFrame();
 	}
@@ -145,6 +148,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 		this.getChatBoxSession = opts.getChatBoxSession;
 		this.getSessionMessages = opts.getSessionMessages;
 		this.getTaskSource = opts.getTaskSource;
+		this.echoedInitialPrompt = opts.echoedInitialPrompt;
 		this.isStreamingOverride = opts.isStreaming;
 		this.workingTokenCount = opts.workingTokenCount;
 		this.workingLifecycleActive = opts.isStreaming?.() === true;

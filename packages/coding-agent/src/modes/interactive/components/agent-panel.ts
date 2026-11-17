@@ -9,7 +9,14 @@ import type { TaskId } from "../../../core/tasks/contracts.js";
 import { bindTaskClock, TaskElapsedClocks, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.ts";
 import { getGlobalTheme } from "../theme/global-theme.ts";
 import { ATOMIC_WORKING_FRAMES, atomicWorkingGlyph } from "./atomic-working-status.ts";
-import { type NavKey, type NavKeybindings, type NavKeyStyle, renderNavHintLine, TwoPressConfirm } from "./nav-keys.ts";
+import {
+	type NavKey,
+	type NavKeybindings,
+	type NavKeyStyle,
+	navActionText,
+	renderNavHintLine,
+	TwoPressConfirm,
+} from "./nav-keys.ts";
 import { taskDisplayText } from "./task-row.js";
 
 export type AgentPanelRow = AgentPanelItem;
@@ -451,17 +458,51 @@ export interface AgentPanelActions {
 	close(): void;
 }
 
-export function agentPanelKeys(selected: AgentPanelRow | undefined): NavKey[] {
+const LITERAL_PANEL_KEYS: ReadonlySet<string> = new Set(["esc", "escape", "left", "up", "down", "home", "end"]);
+
+function focusedPanelKeybindings(
+	keybindings: NavKeybindings | undefined,
+	rowSelected = true,
+): NavKeybindings | undefined {
+	if (!keybindings) return undefined;
+	const liveKeys = (action: string): string[] =>
+		(keybindings.getKeys?.(action) ?? []).filter((key) => !LITERAL_PANEL_KEYS.has(key));
+	return {
+		matches: (data, action) => keybindings.matches(data, action),
+		getKeys: (action) => {
+			const keys = liveKeys(action);
+			if (action === "app.keys.help") return keys;
+			const helpKeys = new Set(liveKeys("app.keys.help"));
+			if (action === "app.list.open") return keys.filter((key) => !helpKeys.has(key));
+			if (action === "app.list.stop") {
+				const openKeys = rowSelected
+					? new Set(liveKeys("app.list.open").filter((key) => !helpKeys.has(key)))
+					: undefined;
+				return keys.filter((key) => !helpKeys.has(key) && !openKeys?.has(key));
+			}
+			return keys;
+		},
+	};
+}
+
+export function agentPanelKeys(selected: AgentPanelRow | undefined, keybindings?: NavKeybindings): NavKey[] {
+	const filtered = focusedPanelKeybindings(keybindings, selected !== undefined);
+	const actionEntry = (action: string, label: string): NavKey[] => {
+		if (!filtered) return [{ action, label }];
+		const text = navActionText(filtered, action);
+		return text ? [{ keys: text, label }] : [];
+	};
+	const includeHelp = filtered === undefined || (filtered.getKeys?.("app.keys.help")?.length ?? 0) > 0;
 	return [
 		{ keys: "↑↓", label: "select" },
 		...(selected === undefined
 			? []
 			: [
-					{ action: "app.list.open", label: "to open" },
-					{ action: "app.list.stop", label: isFinishedPanelRow(selected) ? "dismiss" : "stop" },
+					...actionEntry("app.list.open", "to open"),
+					...actionEntry("app.list.stop", isFinishedPanelRow(selected) ? "dismiss" : "stop"),
 				]),
 		{ keys: "esc/←", label: "back to prompt" },
-		{ action: "app.keys.help", label: "keys" },
+		...(includeHelp ? [{ action: "app.keys.help", label: "keys" }] : []),
 	];
 }
 
@@ -546,14 +587,21 @@ export class AgentPanelFocus {
 	}
 	handleInput(data: string, is: (data: string, key: string) => boolean): boolean {
 		if (this.helpOpen) {
+			this.stopConfirm.reset();
+			this.finishedWhileArmed = undefined;
 			if (is(data, "escape") || this.keys.matches(data, "app.keys.help")) this.helpOpen = false;
 			return true;
 		}
-		if (this.keys.matches(data, "app.keys.help")) {
-			this.helpOpen = true;
-			return true;
-		}
-		const stopKey = this.keys.matches(data, "app.list.stop");
+		const literalNav =
+			is(data, "escape") ||
+			is(data, "left") ||
+			is(data, "up") ||
+			is(data, "down") ||
+			is(data, "home") ||
+			is(data, "end");
+		const helpKey = !literalNav && this.keys.matches(data, "app.keys.help");
+		const openKey = !literalNav && !helpKey && this.keys.matches(data, "app.list.open");
+		const stopKey = !literalNav && !helpKey && !openKey && this.keys.matches(data, "app.list.stop");
 		if (!stopKey) {
 			this.stopConfirm.reset();
 			this.finishedWhileArmed = undefined;
@@ -585,12 +633,16 @@ export class AgentPanelFocus {
 			this.keepInView();
 			return true;
 		}
+		if (helpKey) {
+			this.helpOpen = true;
+			return true;
+		}
 		const row = this.selected();
-		if (this.selectionMovedUnseen && (stopKey || this.keys.matches(data, "app.list.open"))) {
+		if (this.selectionMovedUnseen && (stopKey || openKey)) {
 			this.stopConfirm.reset();
 			return true;
 		}
-		if (this.keys.matches(data, "app.list.open")) {
+		if (openKey) {
 			if (row === undefined) this.actions.close();
 			else this.actions.open(row);
 			return true;
@@ -628,17 +680,19 @@ export function renderAgentPanelHint(
 	style: AgentPanelStyle,
 	keybindings: NavKeybindings | undefined,
 ): string {
+	const selected = focus.selected();
+	const filtered = focusedPanelKeybindings(keybindings, selected !== undefined);
 	const finished = focus.finishedWhileArmed;
 	if (finished !== undefined) {
-		const key = keybindings?.getKeys?.("app.list.stop")?.[0] ?? "x";
+		const key = filtered?.getKeys?.("app.list.stop")?.[0] ?? "x";
 		return style.warning(truncateToWidth(`  ${panelText(finished.name)} finished · ${key} to dismiss`, width));
 	}
 	const pending = focus.pendingStop();
 	if (pending !== undefined) {
-		const key = keybindings?.getKeys?.("app.list.stop")?.[0] ?? "x";
+		const key = filtered?.getKeys?.("app.list.stop")?.[0] ?? "x";
 		return style.warning(truncateToWidth(`  Press ${key} again within 3s to stop ${panelText(pending.name)}`, width));
 	}
-	return renderNavHintLine(agentPanelKeys(focus.selected()), width, style, keybindings);
+	return renderNavHintLine(agentPanelKeys(selected, keybindings), width, style, filtered);
 }
 
 export function panelTaskId(row: Pick<AgentPanelRow, "id">): TaskId | undefined {

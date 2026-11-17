@@ -51,7 +51,6 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	const readOnlyPromptArchive = readOnlyArchive && stage?.promptFootprint !== undefined;
 
 	if (ctx.promptState && promptCardShown(ctx)) {
-		// Esc closes a choice or yes/no question back to the chat's prompt; the question stays pending (#5224).
 		if (isClosableQuestion(ctx.promptState.prompt.kind) && matchesKey(data, Key.escape)) {
 			ctx.dismissedPromptId = ctx.promptState.prompt.id;
 			return true;
@@ -65,14 +64,22 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 		handlePromptInput(ctx, data);
 		return true;
 	}
+	if (matchesKey(data, Key.escape)) {
+		if (ctx.chatHost.isCompacting() || ctx.chatHost.isBashRunning() || ctx.chatHost.isEditingBashCommand()) {
+			return ctx.chatHost.handleInput(data);
+		}
+		if (isAbortableStreamingSession(ctx)) {
+			ctx.interruptedByEscape = true;
+			void ctx.chatHost.interrupt({ restoreQueuedMessages: true });
+		}
+		return true;
+	}
 	if (handleToolsExpandInput(ctx, data)) return true;
 	if (readOnlyPromptArchive && handlePromptScrollInput(ctx, data, true)) {
 		return true;
 	}
 	if (handleStageChatJumpToBottom(ctx, data)) return true;
 	if (ctx.chatHost.handleScrollInput(data)) return true;
-	// The back key on an empty prompt returns to the graph, one level up; it never discards typed text.
-	// Enter on the empty prompt reopens a question closed with Esc.
 	if (ctx.promptState && !promptCardShown(ctx) && matchesKey(data, Key.enter) && !ctx.chatHost.hasInputText()) {
 		ctx.dismissedPromptId = null;
 		return true;
@@ -96,17 +103,6 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	if (!readOnlyArchive && !isBlocked(ctx) && isNavHelpKey(keybindings, data) && !ctx.chatHost.hasInputText()) {
 		ctx.helpOpen = true;
 		ctx.requestRender?.();
-		return true;
-	}
-	// Esc interrupts or cancels; it never leaves the stage chat.
-	if (matchesKey(data, Key.escape)) {
-		if (ctx.chatHost.isCompacting() || ctx.chatHost.isBashRunning() || ctx.chatHost.isEditingBashCommand()) {
-			return ctx.chatHost.handleInput(data);
-		}
-		if (isAbortableStreamingSession(ctx)) {
-			ctx.interruptedByEscape = true;
-			void ctx.chatHost.interrupt({ restoreQueuedMessages: true });
-		}
 		return true;
 	}
 	if (matchesKey(data, Key.ctrl("c"))) {

@@ -163,7 +163,7 @@ test("Space peeks at a waiting run's question; a number picks a choice and Enter
 		assert.match(text, /│ 1 Yes/);
 		assert.match(text, /│ 3 Stop the run/);
 		assert.match(text, /│ ❯/, "a reply input");
-		assert.match(text.split("\n").at(-1) ?? "", /1-3 choose · enter send · esc close/);
+		assert.equal(text.split("\n").at(-1)?.trim(), "↑↓ select · 1-3 choose · enter send · esc/← close");
 		h.inspector.handleInput("2");
 		assert.match(h.text(), /│ ❯ No, revise/);
 		h.inspector.handleInput(ENTER);
