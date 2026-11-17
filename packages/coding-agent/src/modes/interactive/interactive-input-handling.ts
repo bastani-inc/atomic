@@ -16,12 +16,12 @@ import {
 	remoteEngineProxyOwner,
 	remoteProxyHandlesCtrlC,
 } from "../interactive-engine/remote-input-ownership.ts";
-import { agentPanelHasRows, showAgentPanel } from "../rpc/agent-panel-bridge.ts";
+import { agentPanelCounts, agentPanelHasRows, showAgentPanel } from "../rpc/agent-panel-bridge.ts";
 import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
 import { agentPanelBoardSource, showTaskInspector } from "../rpc/task-ui-bridge.js";
 import { isChatSessionWorking } from "./components/footer.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
-import { MainComposerKeyOverlay } from "./components/main-composer-keys.ts";
+import { bindMainComposerAgentRows, MainComposerKeyOverlay } from "./components/main-composer-keys.ts";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.ts";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
 import { COMPACTION_ALREADY_IN_PROGRESS_WARNING } from "./interactive-bash-compact.ts";
@@ -35,7 +35,16 @@ import { handOffCompactionQueue, settleSubmission, showSubmissionAsQueued } from
 import { createStopAllChord, createStopAllNotices, STOP_ALL_STATUS_KEY } from "./interactive-stop-all.ts";
 import { theme } from "./theme/theme.js";
 
+function mainComposerPanelCounts(mode: InteractiveModeBase) {
+	return mode.runtimeHost instanceof IsolatedInteractiveRuntime
+		? mode.runtimeHost.agentPanelCounts
+		: agentPanelCounts(mode.session);
+}
+
 export function registerStartupInputListeners(mode: InteractiveModeBase): void {
+	if (mode.keybindings) {
+		bindMainComposerAgentRows(mode.keybindings, () => mainComposerPanelCounts(mode));
+	}
 	mode.addTuiInputListener(() =>
 		mode.builtInHeader instanceof StartupIdentityComponent ? void mode.builtInHeader.settle() : undefined,
 	);
@@ -107,12 +116,20 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 			clearStatus: () => notices.clear(),
 		}),
 	);
+	let agentPanelRequested = false;
 	this.addTuiInputListener((data) => {
 		if (isKeyRelease(data) || !this.keybindings.matches(data, "app.agents.focus")) return undefined;
 		if (this.ui.hasOverlay() || !this.editorContainer.children.includes(this.editor)) return undefined;
-		if (this.editor.getText() !== "" || this.isBashMode) return undefined;
+		if (this.editor !== this.defaultEditor || this.editor.getText() !== "" || this.isBashMode) return undefined;
+		if (agentPanelRequested || this.blockingInlineCustomUiDepth > 0) return { consume: true };
 		if (this.runtimeHost instanceof IsolatedInteractiveRuntime) {
-			void this.runtimeHost.openAgentPanel().catch((error: unknown) => this.showWarning(sourceError(error).message));
+			agentPanelRequested = true;
+			void this.runtimeHost
+				.openAgentPanel()
+				.catch((error: unknown) => this.showWarning(sourceError(error).message))
+				.finally(() => {
+					agentPanelRequested = false;
+				});
 			return { consume: true };
 		}
 		if (!agentPanelHasRows(this.session)) return undefined;
@@ -192,7 +209,10 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 			(_tui, _theme, keybindings, done) =>
 				new MainComposerKeyOverlay(
 					keybindings,
-					() => ({ working: isChatSessionWorking(this.session) }),
+					() => ({
+						agentRows: mainComposerPanelCounts(this).total,
+						working: isChatSessionWorking(this.session),
+					}),
 					() => done(),
 				),
 		);

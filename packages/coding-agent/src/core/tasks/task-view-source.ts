@@ -72,6 +72,8 @@ export interface TaskViewSource {
 	readonly tasks: readonly TaskRecord[];
 	readonly backgroundTasks: readonly TaskRecord[];
 	readonly settlementOrder: ReadonlyMap<TaskId, bigint>;
+	panelRevision?(): number | undefined;
+	taskRecord?(id: TaskId): TaskRecord | undefined;
 	recentActivity(id: TaskId): TaskActivity[];
 	activityOmitted(id: TaskId): boolean;
 	subscribe(listener: () => void): () => void;
@@ -149,6 +151,13 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 		get settlementOrder() {
 			return root.settlementOrder;
 		},
+		panelRevision: () => root.panelRevision?.(),
+		taskRecord(id) {
+			const task = root.taskRecord
+				? root.taskRecord(id)
+				: root.tasks.find((candidate) => candidate.ref.taskId === id);
+			return task?.parentTaskId === launcher ? task : undefined;
+		},
 		recentActivity: (id) => root.recentActivity(id),
 		activityOmitted: (id) => root.activityOmitted(id),
 		subscribe: (listener) => root.subscribe(listener),
@@ -203,6 +212,8 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 		get settlementOrder() {
 			return store.settlementOrder;
 		},
+		panelRevision: () => store.panelRevision,
+		taskRecord: (id) => store.taskRecord(id),
 		recentActivity: (id) => store.recentActivity(id),
 		activityOmitted: (id) => store.activityOmitted(id),
 		subscribe: (listener) => store.subscribe(listener),

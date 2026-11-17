@@ -729,21 +729,6 @@ Await `pi.appendEntry` before using the new entry. The promise resolves after th
 
 During a transactional reload's `session_start` handler, `pi.appendEntry`, `pi.setSessionName`, and `pi.setLabel` stage their writes instead. Awaiting them confirms staging; the writes and their notifications are published in call order only after reload succeeds. Rejected reloads discard these changes. Do not depend on reading the staged changes back during that handler.
 
-### pi.registerAgentPanelSource(source)
-
-Add background work to the [agent panel](/background-tasks#the-agent-panel). The registration returns `dispose()` and is also disposed when the extension reloads.
-
-- `items()` synchronously returns an array of `AgentPanelItem` rows. Call the listener from `subscribe(listener)` when rows change, and return an unsubscribe function. Apply pending changes before taking the snapshot `items()` returns, or notify after returning; a listener call made while `items()` runs is honoured once.
-- Give each row a stable, session-unique id such as `my-extension:job-1`. The id `main` and the `task:` prefix are reserved.
-- Set `kind` to `agent`, `shell` or `workflow`, and `state` to `running`, `queued`, `input`, `paused`, `stopping`, `done`, `failed` or `stopped`. `name` and `task` are strings.
-- Optional `elapsedMs` and `endedAt` are finite, non-negative milliseconds. `tokens` and `queued` are non-negative safe integers, at most `Number.MAX_SAFE_INTEGER`. `progress` holds finite, non-negative `done` and `total` values, and `choices` is an array of at most 128 strings.
-- Return at most 10,000 rows per source. Atomic ignores additional rows and warns once per registration. A row with more than 128 choices is hidden; keep longer lists in the view opened by `open()`.
-- Optional `open(id, { onReturn })` opens the item's view. Call `onReturn` when returning to the panel. `stop(id)` and `answer(id, text)` return promises resolving to `{ ok: true }` or `{ ok: false, reason: string }`.
-
-Keep `items()` and subscription callbacks short and synchronous. Compute `elapsedMs` when `items()` is called; Atomic advances a running row from that read until the next one and uses the reported value when it pauses or finishes. Publish a new change notification when that state changes.
-
-A malformed row is hidden without hiding valid rows beside it. If `items()` throws, that source's rows are hidden until a later update succeeds. Atomic reports a warning once per registration and keeps other sources usable. Fix the source and use `/reload` to register it again.
-
 ### pi.registerEntryRenderer(customType, renderer)
 
 Register a TUI renderer for durable custom entries created by `pi.appendEntry()`. These entries render in the transcript but do not enter model context.
@@ -971,21 +956,25 @@ export default function (pi: ExtensionAPI) {
 }
 ```
 
-Here `showDeploy` stands for your extension's own view of an item. `items()` returns the source's current `AgentPanelItem`s. Call the `subscribe` listener whenever they may have changed; the host reads `items()` again and repaints. Keep `items()` cheap, because the panel and `/tasks` call it on every change. Each item has:
+Here `showDeploy` stands for your extension's own view of an item. `items()` synchronously returns the source's current `AgentPanelItem`s. Call the `subscribe` listener whenever they may have changed; the host reads `items()` again and repaints. Apply pending changes before taking the snapshot `items()` returns, or notify after returning; a listener call made while `items()` runs is honoured once.
+
+Keep `items()` and subscription callbacks short and synchronous. Compute `elapsedMs` when `items()` is called; Atomic advances a running row from that read until the next one and uses the reported value when it pauses or finishes. Publish a new change notification when that state changes.
+
+Return at most 10,000 rows per source. Atomic ignores additional rows and warns once per registration. A row with more than 128 choices is hidden; keep longer lists in the view opened by `open()`. Each item has:
 
 | Field | Meaning |
 | --- | --- |
-| `id` | Unique in the session. Prefix it with your source's name, for example `deploys:42`; `task:` is reserved for the session's own tasks. |
+| `id` | Unique in the session. Prefix it with your source's name, for example `deploys:42`; `main` and the `task:` prefix are reserved. |
 | `kind` | `"agent"`, `"shell"` or `"workflow"`. It decides the row's layout. |
 | `state` | `running`, `queued`, `input` (waits for an answer), `paused`, `stopping`, `done`, `failed` or `stopped`. It decides the glyph, the state word, the `/tasks` group and whether `x` stops or dismisses. |
 | `name`, `task` | The name and what it works on, for example `stage build`. |
-| `elapsedMs`, `tokens` | Shown on the right. Between your updates, the panel and `/tasks` share the advancing time of a running or paused agent or shell item. |
-| `progress` | `{ done, total }` stages, drawn as a bar. |
+| `elapsedMs`, `tokens` | Shown on the right. `elapsedMs` is finite, non-negative milliseconds. `tokens` is a non-negative safe integer, at most `Number.MAX_SAFE_INTEGER`. Between your updates, the panel and `/tasks` share the advancing time of a running or paused agent or shell item. |
+| `progress` | Finite, non-negative `{ done, total }` stages, drawn as a bar. |
 | `question`, `choices` | What an `input` item asks, and its numbered choices. |
 | `promptId` | Optional opaque identity of that pending question. Change it for each new question, even when its text and choices repeat. |
 | `reason` | A failed item's one-line reason. |
-| `queued` | Messages typed to it that it has not taken yet. |
-| `endedAt` | When a finished item finished. |
+| `queued` | Messages typed to it that it has not taken yet. A non-negative safe integer. |
+| `endedAt` | When a finished item finished, in finite, non-negative epoch milliseconds. |
 | `viewed` | For a finished `workflow` item, whether the user has opened it. A finished workflow row stays in the panel until it is viewed: opening it from the panel or `/tasks` counts, and a source sets `viewed: true` when the user opens the item another way. Finished `agent` and `shell` rows always fade and leave after three minutes. |
 
 Atomic strips terminal control sequences from the text fields before drawing them. An item with invalid fields is skipped, and `items()` or `subscribe` throwing is reported as an extension error. The source's other items, and the other sources, are still shown.

@@ -4,6 +4,7 @@ import {
 	type AtomicWorkingPalette,
 	AtomicWorkingStatusComponent,
 	atomicWorkingFrame,
+	DEFAULT_WORKING_MESSAGE,
 } from "./atomic-working-status.ts";
 import type { WorkingRunSnapshot } from "./working-run-meter.ts";
 
@@ -28,7 +29,7 @@ export class WorkingStatusComponent implements Component {
 	}
 
 	render(width: number): string[] {
-		const message = this.options.message ?? "Working...";
+		const message = this.options.message ?? DEFAULT_WORKING_MESSAGE;
 		const spinnerColor = this.options.spinnerColor ?? ((text: string) => theme.fg("accent", text));
 		const messageColor = this.options.messageColor ?? ((text: string) => theme.fg("muted", text));
 		if (this.options.spinner !== undefined) {

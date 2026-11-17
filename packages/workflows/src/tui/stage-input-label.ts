@@ -6,6 +6,7 @@ import {
 	type InputLabelStyle,
 	inputLabelMarker,
 	ruleOpenColor,
+	terminalDisplayText,
 } from "@bastani/atomic";
 import { RESET } from "./color-utils.js";
 import { paint, stripAnsi } from "./stage-chat-view-render-helpers.js";
@@ -34,9 +35,10 @@ function stageLabelStyle(theme: StageInputLabelTheme): InputLabelStyle {
 	};
 }
 
-function resolvedStageName(stageName: string | undefined): string | undefined {
+export function resolvedStageName(stageName: string | undefined): string | undefined {
 	if (stageName === undefined || stageName.length === 0) return undefined;
-	return stageName;
+	const clean = terminalDisplayText(stageName).replace(/\s+/gu, " ").trim();
+	return clean.length === 0 ? undefined : clean;
 }
 
 function lineHasStageLabel(line: string): boolean {
@@ -66,7 +68,7 @@ export function applyStageLabelToEditorTopRule(
 	stageName: string | undefined,
 	editorLines: readonly string[],
 ): string[] {
-	return applyInputLabelToEditorTopRule(stageLabelStyle(theme), "stage", stageName, editorLines);
+	return applyInputLabelToEditorTopRule(stageLabelStyle(theme), "stage", resolvedStageName(stageName), editorLines);
 }
 
 type WidgetTopRule =

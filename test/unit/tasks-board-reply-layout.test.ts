@@ -276,6 +276,7 @@ test("a subagent waiting for input opens its detail and question route on Space 
 		);
 		inspector.setBoardSource(agentPanelBoardSource(f.session as never));
 		inspector.handleInput(SPACE);
+		inspector.handleInput(ENTER);
 		await flush();
 		const detail = inspector
 			.renderViewport(100, 24)
@@ -345,7 +346,9 @@ test("inline /tasks picker pins the reply line, Sending… and bottom border wit
 		for (let i = 0; i < 5; i++) inspector.handleInput("\x7f");
 		inspector.handleInput("5");
 		const afterClippedDigit = inspector.renderPicker(100, 40).map((line) => stripVTControlCharacters(line).trimEnd());
-		assert.doesNotMatch(afterClippedDigit.join("\n"), /❯ [5E]/);
+		assert.match(afterClippedDigit.join("\n"), /│ ❯ 5/);
+		assert.doesNotMatch(afterClippedDigit.join("\n"), /│ ❯ E/);
+		inspector.handleInput("\x7f");
 		inspector.handleInput("4");
 		const afterValidDigit = inspector.renderPicker(100, 40).map((line) => stripVTControlCharacters(line).trimEnd());
 		assert.ok(afterValidDigit.some((line) => /│ ❯ D\b/.test(line)));
@@ -359,6 +362,8 @@ test("inline /tasks picker pins the reply line, Sending… and bottom border wit
 		const filteredPicker = inspector.renderPicker(100, 40).map((line) => stripVTControlCharacters(line).trimEnd());
 		assert.ok(filteredPicker.some((line) => /1-3 choose/.test(line)));
 		inspector.handleInput("4");
+		assert.match(inspector.renderPicker(100, 40).map(stripVTControlCharacters).join("\n"), /│ ❯ 4/);
+		inspector.handleInput("\x7f");
 		inspector.handleInput("2");
 		failNext = true;
 		inspector.handleInput(ENTER);
@@ -397,8 +402,8 @@ test("inline /tasks picker pins the reply line, Sending… and bottom border wit
 	}
 });
 
-test("a peek card with 9 choices clips at 7 choices in a tall viewport and ignores digits 8 and 9 (#5224)", async () => {
-	const choices = Array.from({ length: 9 }, (_, index) => `choice-${index + 1}`);
+test("a peek card with 10 choices draws all 9 digit choices in a tall viewport and accepts digits 8 and 9 (#5224)", async () => {
+	const choices = Array.from({ length: 10 }, (_, index) => `choice-${index + 1}`);
 	const { source, answered } = runSource(
 		() => [waiting("run:nine", choices)],
 		async () => ({ ok: true }),
@@ -416,20 +421,19 @@ test("a peek card with 9 choices clips at 7 choices in a tall viewport and ignor
 			.renderViewport(100, 24)
 			.map((line) => stripVTControlCharacters(line).trimEnd())
 			.join("\n");
-		assert.match(tall, /│ 7 choice-7\b/);
-		assert.doesNotMatch(tall, /8 choice-8|9 choice-9/);
-		assert.match(tall, /1-7 choose/);
-		inspector.handleInput("8");
+		assert.match(tall, /│ 8 choice-8\b/);
+		assert.match(tall, /│ 9 choice-9\b/);
+		assert.doesNotMatch(tall, /10 choice-10/);
+		assert.match(tall, /1-9 choose/);
 		inspector.handleInput("9");
-		const afterClipped = inspector
+		const afterNine = inspector
 			.renderViewport(100, 24)
 			.map((line) => stripVTControlCharacters(line).trimEnd())
 			.join("\n");
-		assert.doesNotMatch(afterClipped, /choice-8|choice-9|❯ [89]/);
-		inspector.handleInput("7");
+		assert.match(afterNine, /│ ❯ choice-9\b/);
 		inspector.handleInput(ENTER);
 		await flush();
-		assert.deepEqual(answered, [["run:nine", "choice-7"]]);
+		assert.deepEqual(answered, [["run:nine", "choice-9"]]);
 		inspector.dispose();
 	} finally {
 		await f.dispose();

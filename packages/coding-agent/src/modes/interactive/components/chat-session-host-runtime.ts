@@ -40,6 +40,7 @@ export function startChatSessionWorkingLifecycle<TExtraEntry extends ChatTranscr
 	clearChatSessionAnimation(state);
 	clearChatSessionEventRender(state);
 	state.immediateEventRenderPending = true;
+	state.workedRun = undefined;
 	state.workingLifecycleActive = true;
 	state.workingLifecycleGeneration += 1;
 	state.workingFrame = 0;

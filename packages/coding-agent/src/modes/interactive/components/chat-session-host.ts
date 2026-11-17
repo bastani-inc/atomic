@@ -7,6 +7,7 @@ import type { TaskId } from "../../../core/tasks/contracts.js";
 import { taskClocksFor } from "../../../core/tasks/live-elapsed.ts";
 import { getOwnerTaskStore, type OwnerTaskStore, watchOwnerTaskStoreBinding } from "../../../core/tasks/owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
+import { pickWhimsicalWorkingMessage } from "../whimsical-messages.ts";
 import {
 	abortChatSessionBash,
 	abortChatSessionCompaction,
@@ -39,6 +40,7 @@ import {
 	reassertChatSessionExternalPromptLifecycle,
 	settleChatSessionPromptLifecycle,
 	startChatSessionExternalPromptLifecycle,
+	startChatSessionWorkingLifecycle,
 	stopChatSessionWorkingLifecycle,
 	syncChatSessionAnimationTick,
 } from "./chat-session-host-runtime.ts";
@@ -53,6 +55,7 @@ import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import { TaskInspector } from "./task-inspector.js";
 import { renderTaskFooter } from "./task-list.js";
 import type { TaskTranscriptEnvironment } from "./task-transcript-page.ts";
+import { type MeteredRunMessage, meteredOutputTokens, runInProgress } from "./working-run-meter.ts";
 
 export type {
 	ChatSessionHostBashRequest,
@@ -174,6 +177,9 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.compactionStartedAt = undefined;
 		this.state.sdkBusy = false;
 		this.state.workingMessage = undefined;
+		this.state.lastWorkingMessage = undefined;
+		this.state.workedRun = undefined;
+		this.state.hydratedOutputOnly = false;
 		if (this.state.statusMessage !== this.state.lastWarningMessage) this.state.statusMessage = "";
 		this.state.pendingSteeringMessages = [];
 		this.state.pendingFollowUpMessages = [];
@@ -387,12 +393,20 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		return renderChatSessionEditor(this.state, width, this.focused);
 	}
 
+	hasBackgroundTasks(): boolean {
+		return (this.taskSource?.backgroundTasks.length ?? 0) > 0;
+	}
+
 	renderTaskFooter(width: number): string[] {
 		if (this.taskSource === undefined) return [];
 		return renderTaskFooter(this.taskSource.backgroundTasks, width, taskClocksFor(this.taskSource));
 	}
-	renderFooter(width: number): string[] {
-		const footer = renderChatSessionFooter(this.state, width, this.hasTaskInspector && !this.taskInspectorFullscreen);
+	renderFooter(width: number, navigationActive = false): string[] {
+		const footer = renderChatSessionFooter(
+			this.state,
+			width,
+			navigationActive || (this.hasTaskInspector && !this.taskInspectorFullscreen),
+		);
 		return footer.length ? footer : this.renderTaskFooter(width);
 	}
 
@@ -496,6 +510,36 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	 */
 	beginExternalPromptLifecycle(): number | undefined {
 		return startChatSessionExternalPromptLifecycle(this.state);
+	}
+
+	hydrateRunningTurn(messages: readonly MeteredRunMessage[], streaming?: MeteredRunMessage): void {
+		if (this.state.disposed) return;
+		if (!this.state.workingLifecycleActive) startChatSessionWorkingLifecycle(this.state);
+		if (this.state.workingRunMeter.snapshot() === undefined) {
+			const run = runInProgress(messages, streaming);
+			if (run.startedAt !== undefined || streaming !== undefined || messages.length === 0) {
+				this.state.hydratedOutputOnly = false;
+				this.state.workingRunMeter.resume(run.startedAt, run.settledTokens, run.requesting);
+			} else {
+				let startedAt: number | undefined;
+				let settledTokens = 0;
+				for (const message of messages) {
+					if (typeof message.timestamp === "number" && message.timestamp > 0) {
+						startedAt = startedAt === undefined ? message.timestamp : Math.min(startedAt, message.timestamp);
+					}
+					if (message.role === "assistant") settledTokens += meteredOutputTokens(message);
+				}
+				this.state.hydratedOutputOnly = true;
+				this.state.workingRunMeter.resume(startedAt, settledTokens, false);
+			}
+			if (streaming !== undefined) this.state.workingRunMeter.streaming(streaming);
+		}
+		if (this.state.workingMessage === undefined) {
+			this.state.workingMessage = pickWhimsicalWorkingMessage();
+			this.state.lastWorkingMessage = this.state.workingMessage;
+		}
+		syncChatSessionAnimationTick(this.state);
+		this.state.requestRender?.();
 	}
 
 	/**

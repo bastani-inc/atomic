@@ -14,11 +14,11 @@ Below the main chat's prompt, the **agent panel** lists the session's running an
 ```text
   ∀ worker    fix shipping batches                         41m · ↓ 96.1k tokens
   ∀ debugger  #5220 spawn lock                             18m · ↓ 87.4k tokens
-  ∀ ralph     ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱  3/5 stages · implement      12m
+  ∀ ralph     ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱  3/5 stages         12m · ↓ 61.0k tokens
   ✓ worker    picker clamp                                  done · 6m
 ```
 
-- **Each row shows** the status, the agent's name (a workflow's name for a run, `shell` for a shell), what it works on, and how long it has run. Agents also show the tokens they have used. A workflow run shows its stage progress and current stage.
+- **Each row shows** the status, the agent's name (a workflow's name for a run, `shell` for a shell), what it works on, and how long it has run. Agents and workflow runs also show the tokens they have used. A workflow row shows stage progress; a waiting row shows its question instead.
 - **Status glyphs:**
   - `∀` running
   - `◆` needs input, with its question when it waits on one
@@ -29,6 +29,8 @@ Below the main chat's prompt, the **agent panel** lists the session's running an
   - `◼` stopped
 - **Finished rows** read dim after 30 seconds and leave after three minutes. A finished workflow run stays until you have opened it. Narrow terminals drop the token count and the stage bar.
 
+The main footer shows `↓ N agents` while the panel has rows, plus `N needs input` when any row waits for an answer. These counts include rows folded into `+N more` and use the current chat's tasks.
+
 Press **↓** on an empty prompt to focus the panel. It then works like every list:
 
 - **↑↓** select.
@@ -38,9 +40,9 @@ Press **↓** on an empty prompt to focus the panel. It then works like every li
 - **x** stops the selected item when pressed again within 3 seconds, and dismisses a finished row.
 - **Esc** or **←**, or ↑ past `● main`, returns to the prompt. **?** shows the keys.
 
-Going back from what you opened returns to the panel with the same row selected: **←** on a chat's empty prompt (or **↓**, as from the main prompt), or **Esc** or **←** in a workflow graph.
+Going back from what you opened returns to the main chat with the panel focused on the same row. The subagent chat's hint reads `← main chat`; press **←** on its empty prompt. A workflow graph uses **Esc** to return.
 
-A workflow stage chat or a subagent's chat lists its own active agents and shells below its prompt in the same row format.
+A workflow stage chat or a subagent's chat lists its own active agents and shells below its prompt in the same row format. Attached subagent chats identify the sender with `› from main` and echo the initial prompt. Their heavy composer rules name the recipient, task and state. Stage chats use `stage · <name>` labels. **?** on an empty prompt shows the chat's live keys. **Esc** interrupts without navigating away.
 
 If the panel warns that an extension source failed, its invalid rows are hidden while the other rows and chat remain usable. A source that cannot list its rows is hidden entirely. The warning appears once per source, including during startup. Fix or update the extension, then use `/reload` to register it again; new rows continue updating without reopening the panel. If a reload closes the focused panel, press ↓ on the empty prompt to open it again. A failed stop or answer reports the source's error without closing the chat.
 
@@ -51,8 +53,16 @@ Extension authors can add rows with [`pi.registerAgentPanelSource()`](/extension
 Run `/tasks` to inspect work without stopping it:
 
 - The list opens in the editor slot, with the conversation visible above it. It lists the subagents and shells that chat owns and the session's workflow runs, running and finished.
-- Its header counts them, for example `Tasks  1 needs input · 3 working · 2 done`, and the rows are grouped **Needs input**, **Working** and **Done**. Each row shows its status mark, its name and task, and on the right how long it has waited, run or took, with its tokens. A failed workflow run adds a short reason. The selected subagent also shows its model and what it is doing now.
-- Space on a workflow run opens a peek card under the row. A run waiting on one question shows the question, its visible numbered choices and a reply box. A run waiting on several questions or on a custom prompt has no reply box; open its graph to answer. A number fills in the corresponding visible choice; Enter sends the reply. Escape closes the card and keeps an unsent draft. While the reply is sending, the card shows `Sending…` and other keys are ignored until it finishes. Your first typed character or numbered choice binds the draft to the question last shown. An empty reply can start against a newly shown question. If the question changes after typing starts, the old reply is refused; clear the draft to start a new reply. When the question disappears, the card stops taking reply text and its list keys work again. Typing before any question is shown cannot answer it. A send failure keeps your reply while the inspector stays open. If you close it during a send or stop, a later failure appears in the chat. Space on a subagent or shell opens its detail page; a waiting subagent's **Open question** action takes you to its question.
+- Its header counts them, for example `Tasks  1 needs input · 3 working · 2 done`, and the rows are grouped **Needs input**, **Working** and **Done**. Each row is one line: its status mark (`⧗` for a running shell), its name and task, and on the right how long it has waited, run or took, with its tokens. A failed workflow run adds a short reason.
+- The hint line lists the keys that work on the selected row: `↑↓ select · space peek · enter/→ open · x stop · / filter · esc/← close · ? keys`. On a finished row `x` reads `dismiss`.
+- Space opens a peek card under the selected row, and the rest of the list stays in place:
+  - A workflow run waiting on one question shows the question, its numbered choices (as many as fit, up to nine) and a reply box. A number fills in that choice; Enter sends the reply. A run waiting on several questions or on a custom prompt has no reply box; open its graph to answer.
+  - Another workflow run shows its stage progress, its failure reason and its current stage.
+  - A subagent or shell shows its model, current action and usage. A waiting subagent also shows its question.
+  - A running subagent that waits on nothing has a reply box: Enter sends the text to it as a message.
+- On a card without a reply box, Space or Escape closes it. In a reply box, Space types a space; Escape, or Left at the start of the reply, closes the card. Up and Down close the card and move the selection. On a subagent's or shell's card, Enter or Right opens its detail page unless a reply is typed; a waiting subagent's detail page has an **Open question** action.
+- Escape closes the card and keeps an unsent draft. While a reply is sending, the card shows `Sending…` and other keys are ignored until it finishes. Your first typed character or numbered choice binds the draft to the question last shown, and typing before any question is shown cannot answer it. If the question changes before you press Enter, the reply is refused with a notice and kept for the question now shown: press Enter again to send it there, or clear the reply. When the question disappears, the card stops taking reply text and its list keys work again. A send failure keeps your reply while the inspector stays open. If you close it during a send or stop, a later failure appears in the chat.
+- Enter or Right on a row opens it: a workflow run's graph, a subagent's chat or a shell's output, or its detail page when no transcript is available.
 - `/` filters the list by name or task; Enter keeps the filter and Escape clears it.
 - Detail, transcript, input, and cancellation-confirmation pages use the full screen.
 - Escape returns to the picker with your selection preserved, then to chat.
@@ -240,12 +250,12 @@ The cadence is fixed when the task starts, and a running task's `/tasks` detail 
 
 | View | Controls |
 | --- | --- |
-| Task list | Up/Down selects; Enter or Right opens the task's chat (a shell's output, a workflow run's graph); Space opens a peek card for a workflow run, and the detail page of a subagent or shell; `/` filters; `x` stops the selected task or run when pressed twice within 3 seconds, and dismisses a finished one with one press; `?` lists the keys; Escape or Left returns to chat. |
+| Task list | Up/Down selects; Enter or Right opens the task's chat (a shell's output, a workflow run's graph); Space opens a peek card under the row; `/` filters; `?` lists the keys; Escape or Left closes the list and returns to chat. `x` stops the selected task or run when pressed twice within 3 seconds, and dismisses a finished one with one press. The second `x` only confirms the row the first one was pressed on. A task that finishes before the second `x` is not stopped or dismissed: the list shows `<name> finished · x to dismiss`, the next `x` only clears that notice, and the one after dismisses the row. |
 | Task detail | Up/Down selects an action; Enter activates it; PageUp/PageDown scrolls the body. |
 | Transcript | Scrolls like a workflow stage chat: it opens at the latest message and follows new output; PageUp/PageDown move one viewport; Ctrl+Home/Ctrl+End jump to the top and to the latest message; Ctrl+Up/Ctrl+Down jump between prompts; the mouse wheel scrolls (Alt+wheel five times faster). Earlier retained history loads as you scroll toward the top. |
 | Transcript display | A transcript opens with the chat's thinking and tool-output settings. Ctrl+T toggles thinking blocks, as in the chat, and Ctrl+O toggles the transcript's tool output. |
 | Message the agent | Type in the transcript's prompt and press Enter to send the text to the agent through Intercom. A finished subagent resumes in its own session with the message; one stopped for good shows a read-only chat with a one-line note. Up/Down, Home/End and Left/Right edit the prompt. |
-| Subagent chat | A subagent's chat has the chat box of a workflow stage chat with an **attached composer**: heavy accent rules above and below the prompt, the top one naming the subagent, its task and its state, for example `debugger · #5220 spawn lock · 18m` (`needs input` while it waits on a question). The empty prompt reads `Message debugger…` (`Answer debugger…` while it waits), and what you type goes to the subagent. Terminals narrower than 40 columns show the rules without the label. Opened from the agent panel, the chat has no title row and its hint reads `← agents · ↓ agents`; both keys return to the panel. A subagent you stopped with `x x` or Ctrl+X Ctrl+K reads `Stopped · send to resume`; sending a message resumes it. While the subagent runs in this session, its usage meter appears above the prompt, along with the working line and any queued messages; below the prompt, the model line shows once the subagent is idle; while it works there is no status line. Below the footer, the subagent's own running agents and shells are listed in the agent panel's row format. |
+| Subagent chat | A subagent's chat has the chat box of a workflow stage chat with an **attached composer**: heavy accent rules above and below the prompt, the top one naming the subagent, its task and its state, for example `debugger · #5220 spawn lock · 18m` (`needs input` while it waits on a question). The empty prompt reads `Message debugger…` (`Answer debugger…` while it waits), and what you type goes to the subagent. Terminals narrower than 40 columns show the rules without the label. Opened from the agent panel, the chat has no title row and Left returns to the main chat. When the subagent has tasks of its own, Down on an empty prompt opens that task list without leaving its chat. A subagent you stopped with `x x` or Ctrl+X Ctrl+K reads `Stopped · send to resume`; sending a message resumes it. While the subagent runs in this session, its usage meter appears above the prompt, along with the working line and any queued messages; below the prompt, the model line shows once the subagent is idle; while it works there is no status line. Below the footer, the subagent's own running agents and shells are listed in the agent panel's row format. |
 | Subagent's tasks | Type `/tasks` in a subagent's transcript to list that subagent's own tasks: the shells it ran and the subagents it launched, not the parent's. In a nested subagent's transcript, `/tasks` lists that subagent's tasks. Escape or Left on that list returns to the subagent's chat. |
 | Go back | Left on an empty prompt, or at the start of a typed one, goes back one level, to the list or detail page you opened the chat from; the hint line names it, and a typed draft comes back when you return. Escape or Left returns from detail to the list. In a subagent's transcript, Escape only interrupts the subagent's current turn: the subagent keeps running, waits for your next message or its own background work to wake it in the same session, and the footer shows `esc interrupt` only while it works. While a subagent's own task list is open, Escape and Left go back within that list first. |
 | Stop | In the list or on a task's detail page, `x` asks for a second press; pressing `x` again within 3 seconds stops the task, and any other key keeps it running. A stopped subagent stays resumable: its chat reads `Stopped · send to resume`, and sending a message resumes it in its own session. Ctrl+X Ctrl+K stops every background subagent, shell and workflow run at once, after the same second press. Remap the key with `app.list.stop`. |

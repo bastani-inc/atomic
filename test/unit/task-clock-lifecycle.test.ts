@@ -479,7 +479,7 @@ test("two stage chat hosts with the same pooled task id keep independent footer 
 	}
 });
 
-test("unmanaged source updates inspect only previously clocked task slots after warmup (#5233)", () => {
+test("unmanaged source updates inspect only previously clocked task slots after warmup (#5224)", () => {
 	initTheme("dark");
 	let reads = 0;
 	let notify = () => {};
@@ -507,7 +507,7 @@ test("unmanaged source updates inspect only previously clocked task slots after 
 	assert.ok(reads <= AGENT_PANEL_IDLE_ROWS * 10, `source changes read ${reads} task identities for four clocks`);
 });
 
-test("a delayed unmanaged settlement freezes the last display or final report without adding the observation gap (#5233)", () => {
+test("a delayed unmanaged settlement freezes the last display or final report without adding the observation gap (#5224)", () => {
 	let now = 100_000;
 	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
 	const running = taskRecord("late-settlement");
@@ -542,7 +542,7 @@ test("a delayed unmanaged settlement freezes the last display or final report wi
 	}
 });
 
-test("reordering many clocked tasks resolves moved slots in one scan and evicts missing clocks (#5233)", () => {
+test("reordering many clocked tasks resolves moved slots in one scan and evicts missing clocks (#5224)", () => {
 	let reads = 0;
 	let notify = () => {};
 	const records = Array.from({ length: 1_000 }, (_, index) => {

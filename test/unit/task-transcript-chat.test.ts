@@ -102,6 +102,7 @@ async function openTranscript(transcript: TaskTranscriptSource, options: OpenTra
 	await fixture.start("Inspect the shared stack");
 	fixture.runners[0].context.bindTranscript(transcript);
 	inspector.handleInput(" ");
+	inspector.handleInput("\r");
 	await flush();
 	inspector.handleInput("\r");
 	await flush();

@@ -23,6 +23,7 @@ export type TaskNavigationActions = {
 	input(task: TaskRecord): void;
 	stdinAvailable(task: TaskRecord): boolean;
 	openQuestion(route: PromptRoute): void;
+	currentTask?(taskId: TaskId): TaskRecord | undefined;
 };
 
 /** Shared focus state; activity updates never take ownership of editor input. */
@@ -30,7 +31,7 @@ export class TaskNavigation {
 	focus: TaskFocus = { kind: "composer" };
 	selectedTaskId?: TaskId;
 	private tasks: TaskRecord[] = [];
-	/** Every selectable row's id in display order: task ids and other sources' item ids, such as workflow runs. */
+
 	private order: string[] = [];
 	/** `x` stops a task only when pressed again on the same task within three seconds. */
 	readonly stopConfirm: TwoPressConfirm;
@@ -41,6 +42,7 @@ export class TaskNavigation {
 	finishedWhileArmed?: TaskRecord;
 	/** The press after a {@link finishedWhileArmed} task finished was swallowed; the next one dismisses it. */
 	finishedAcknowledged = false;
+	private readonly paintedExecution = new Map<TaskId, TaskRecord["execution"]["kind"]>();
 
 	private keys: KeybindingsManager;
 	private actions: TaskNavigationActions;
@@ -50,10 +52,6 @@ export class TaskNavigation {
 		this.stopConfirm = new TwoPressConfirm(now);
 	}
 
-	/**
-	 * The tasks, and every row's id in the order the list shows them. Rows that are not tasks (another source's items)
-	 * can be selected, but the task actions ignore them; their owner handles their keys.
-	 */
 	update(
 		tasks: readonly TaskRecord[],
 		order: readonly string[] = [
@@ -62,6 +60,8 @@ export class TaskNavigation {
 		].map((task) => task.ref.taskId),
 	): void {
 		this.tasks = [...tasks];
+		const retained = new Set(tasks.map((task) => task.ref.taskId));
+		for (const id of this.paintedExecution.keys()) if (!retained.has(id)) this.paintedExecution.delete(id);
 		this.order = [...order];
 		if (!this.order.includes(this.selectedTaskId ?? "")) this.selectedTaskId = this.order[0] as TaskId | undefined;
 		const armed = this.stopConfirm.pending();
@@ -78,10 +78,33 @@ export class TaskNavigation {
 		this.focus = { kind: "tasks" };
 	}
 
+	paint(tasks: readonly TaskRecord[]): void {
+		for (const task of tasks) this.paintedExecution.set(task.ref.taskId, task.execution.kind);
+	}
+
 	async activate(action: TaskDetailAction): Promise<void> {
-		const task = this.tasks.find((task) => task.ref.taskId === this.selectedTaskId);
+		const listed = this.tasks.find((task) => task.ref.taskId === this.selectedTaskId);
+		if (!listed) return;
+		const task = this.actions.currentTask ? this.actions.currentTask(listed.ref.taskId) : listed;
 		if (!task) return;
 		if (action === "transcript") return this.actions.transcript(task);
+		const armed = this.stopConfirm.pending();
+		if (
+			action === "cancel" &&
+			task.execution.kind === "settled" &&
+			armed !== undefined &&
+			armed !== task.ref.taskId
+		) {
+			this.stopConfirm.reset();
+			return;
+		}
+		const paintedKind = this.paintedExecution.get(task.ref.taskId) ?? listed.execution.kind;
+		if (action === "cancel" && task.execution.kind === "settled" && paintedKind !== "settled") {
+			this.stopConfirm.reset();
+			this.finishedWhileArmed = task;
+			this.finishedAcknowledged = true;
+			return;
+		}
 		if (task.execution.kind === "settled") {
 			if (action !== "cancel") return;
 			// The second press meant for a stop arrives after the task finished on its own: it only acknowledges the
@@ -106,7 +129,6 @@ export class TaskNavigation {
 		}
 	}
 
-	/** The selected row's id, which is a task id only when the row is a task. */
 	get selectedId(): string | undefined {
 		return this.selectedTaskId;
 	}

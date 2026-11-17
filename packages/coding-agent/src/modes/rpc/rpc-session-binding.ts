@@ -216,7 +216,11 @@ export class RpcSessionBinding {
 			return;
 		}
 
-		if (this.customUi) this.unsubscribeTasks = bindAgentPanel(session, session.extensionRunner.getUIContext());
+		if (this.customUi) {
+			this.unsubscribeTasks = bindAgentPanel(session, session.extensionRunner.getUIContext(), (counts) => {
+				this.writeEngineLine?.(serializeInteractiveEngineMessage({ type: "engine_agent_panel_state", ...counts }));
+			});
+		}
 		if (this.writeEngineLine) {
 			this.unsubscribeWorkflowActivity = forwardWorkflowActivity(session, this.writeEngineLine);
 		}

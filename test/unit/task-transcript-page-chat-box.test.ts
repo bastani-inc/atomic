@@ -31,6 +31,7 @@ import {
 } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
+import { WORKED_LINE, WORKING_LINE, WORKING_MESSAGE } from "../helpers/working-line.ts";
 import { makeTestTui } from "../support/fake-tui.js";
 
 const ESCAPE = "\x1b";
@@ -45,7 +46,7 @@ const flush = async () => {
 const plain = (rows: readonly string[]) => rows.map((row) => stripVTControlCharacters(row));
 const text = (rows: readonly string[]) => plain(rows).join("\n");
 /** A chat's own active tasks, listed below its footer as agent-panel rows (#5224). */
-const taskRows = (rows: readonly string[]) => plain(rows).filter((row) => /^ {2}∀ /.test(row));
+const taskRows = (rows: readonly string[]) => plain(rows).filter((row) => /^ {2}[∀⧗] /.test(row));
 
 /** The attached composer's top rule: heavy, ending in its label and one rule glyph (#5224). */
 const labelRows = (rows: readonly string[]) => plain(rows).filter((row) => /^━+ .+ ━$/.test(row));
@@ -324,13 +325,13 @@ describe("a subagent's chat box rows (#4640)", () => {
 		await page.load();
 		const rows = plain(page.render(80, 12));
 		assert.equal(taskRows(rows).length, 2);
-		assert.match(rows.at(-1) ?? "", /^ {2}∀ /, "the rows close the chat box");
+		assert.match(rows.at(-1) ?? "", /^ {2}[∀⧗] /, "the rows close the chat box");
 		page.dispose();
 		const grandchild = subagentPage(treeSource(), "grandchild");
 		await grandchild.load();
 		assert.deepEqual(
 			taskRows(grandchild.render(80, 12)).map((row) => row.replace(/ {2,}/g, "  ").trimEnd()),
-			["  ∀ shell  title-grandchild-shell  running"],
+			["  ⧗ shell  title-grandchild-shell  running"],
 		);
 		grandchild.dispose();
 	});
@@ -495,13 +496,62 @@ describe("a live subagent's chat box (#4640)", () => {
 
 	test("shows the working line from a turn already under way when the page opens, until the turn ends (#4640)", async () => {
 		const { page, live } = await livePage({ isRunning: () => true });
-		assert.ok(plain(page.render(100, 20)).some((row) => row.includes("Working")));
+		assert.ok(plain(page.render(100, 20)).some((row) => WORKING_LINE.test(row)));
 		for (const listener of live.listeners) listener({ type: "agent_end", messages: [] } as AgentSessionEvent);
-		assert.ok(!plain(page.render(100, 20)).some((row) => row.includes("Working")));
+		assert.ok(!plain(page.render(100, 20)).some((row) => WORKING_MESSAGE.test(row)));
+		assert.ok(plain(page.render(100, 20)).some((row) => WORKED_LINE.test(row)));
 		page.dispose();
 		const idle = await livePage({ isRunning: () => false });
-		assert.ok(!plain(idle.page.render(100, 20)).some((row) => row.includes("Working")));
+		assert.ok(!plain(idle.page.render(100, 20)).some((row) => WORKING_MESSAGE.test(row)));
 		idle.page.dispose();
+	});
+
+	test("a running subagent's working line counts the same tokens as its task row (#5224)", async () => {
+		let tokenCount = 87_400;
+		const live = { ...session("child", "subagent-worker-aabcf28b-1"), isRunning: () => true };
+		const baseSource = treeSource(tree(), new Map([["child", live]]));
+		const source = {
+			...baseSource,
+			get tasks() {
+				return tree().map((task) => (task.ref.taskId === "child" ? { ...task, metrics: { tokenCount } } : task));
+			},
+		};
+		const page = subagentPage(
+			source,
+			"child",
+			environment({ footerData, createChat: (opts) => new ChatSessionHost(opts) }),
+		);
+		await page.load();
+		const working = () => plain(page.render(100, 20)).find((row) => WORKING_LINE.test(row)) ?? "";
+		assert.match(working().trimEnd(), / · [↑↓] 87\.4k tokens\)$/);
+
+		for (const listener of live.listeners) {
+			listener({ type: "turn_start" } as AgentSessionEvent);
+			listener({
+				type: "message_start",
+				message: { role: "assistant", content: [] },
+			} as unknown as AgentSessionEvent);
+			listener({
+				type: "message_update",
+				assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "x".repeat(800) },
+			} as unknown as AgentSessionEvent);
+		}
+		assert.match(working().trimEnd(), / · ↓ 87\.6k tokens\)$/);
+
+		tokenCount = 12_000;
+		for (const listener of live.listeners) {
+			listener({
+				type: "message_end",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "x".repeat(800) }],
+					usage: { input: 10_000, output: 2_000, cacheRead: 0, cacheWrite: 0 },
+					stopReason: "stop",
+				},
+			} as unknown as AgentSessionEvent);
+		}
+		assert.match(working().trimEnd(), / · ↓ 12\.0k tokens\)$/);
+		page.dispose();
 	});
 
 	test("shows the messages already queued for the subagent when the page opens (#4640)", async () => {
@@ -566,7 +616,7 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 		assert.deepEqual(labelRows(rows), [], "the composer is hidden while the list is open");
 		assert.equal(taskRows(rows).length, 2);
 		assert.ok(
-			rows.some((row) => /esc\/← back/.test(row)),
+			rows.some((row) => /esc\/← close/.test(row)),
 			"the list's hint sits above the footer rows",
 		);
 		const [only, ...rest] = plain(page.render(80, 1));
@@ -592,6 +642,7 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 			const list = plain(page.render(80, 24));
 			assert.match(list.find((row) => row.includes(" ❯ ")) ?? "", new RegExp(` ❯ . \\S+ +${selected}\\b`));
 			page.handleInput(SPACE);
+			page.handleInput(ENTER);
 			await flush();
 			const detail = plain(page.render(80, 24));
 			assert.match(detail.join("\n"), new RegExp(`› ${selected}\\b`));
@@ -607,12 +658,14 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 		page.handleInput(ENTER);
 		await flush();
 		page.handleInput(SPACE);
+		page.handleInput(ENTER);
 		await flush();
 		assert.match(text(page.render(80, 24)), /title-child-shell|title-grandchild/);
 		assert.doesNotMatch(text(page.render(80, 24)), /^ Tasks\b/m, "a task's detail page replaced the list");
 		page.handleInput(LEFT);
 		assert.match(text(page.render(80, 24)), /^ Tasks\b/m);
 		page.handleInput(SPACE);
+		page.handleInput(ENTER);
 		page.handleInput(ESCAPE);
 		assert.match(text(page.render(80, 24)), /^ Tasks\b/m);
 		page.handleInput(ESCAPE);
