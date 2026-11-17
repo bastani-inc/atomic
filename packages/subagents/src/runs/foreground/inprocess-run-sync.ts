@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { parseSessionStartTimeoutMs, serializeSessionStartError } from "@bastani/atomic";
 import type { AgentConfig } from "../../agents/agent-types.js";
@@ -222,11 +222,51 @@ function unknownModelResult(agent: AgentConfig, task: string, candidate: string,
 	);
 }
 
+/** Where one launch stands in its run's admission order. */
+interface AdmissionTurn {
+	/** Settles once every launch of the run that started before this one has been admitted or has ended. */
+	readonly ready: Promise<void>;
+	release(): void;
+}
+
+const admissionQueues = new Map<string, Promise<void>>();
+
+/**
+ * A turn in the admission order of run `runId`. The control plane numbers a run's children in the order it admits
+ * them, and the checks a launch makes before admission are asynchronous, so a launch waits for the ones that started
+ * before it to be admitted, or to end, before it is admitted itself.
+ */
+function takeAdmissionTurn(runId: string): AdmissionTurn {
+	const ready = admissionQueues.get(runId) ?? Promise.resolve();
+	const released = Promise.withResolvers<void>();
+	const tail = ready.then(() => released.promise);
+	admissionQueues.set(runId, tail);
+	void tail.then(() => {
+		if (admissionQueues.get(runId) === tail) admissionQueues.delete(runId);
+	});
+	return { ready, release: () => released.resolve() };
+}
+
 export async function runSingleInProcess(
 	runtimeCwd: string,
 	agent: AgentConfig,
 	task: string,
 	options: RunSyncOptions,
+): Promise<SingleResult> {
+	const turn = takeAdmissionTurn(options.runId);
+	try {
+		return await launchSingleInProcess(runtimeCwd, agent, task, options, turn);
+	} finally {
+		turn.release();
+	}
+}
+
+async function launchSingleInProcess(
+	runtimeCwd: string,
+	agent: AgentConfig,
+	task: string,
+	options: RunSyncOptions,
+	turn: AdmissionTurn,
 ): Promise<SingleResult> {
 	const sessionStartTimeoutMs = parseSessionStartTimeoutMs(
 		options.sessionStartTimeoutMs,
@@ -234,8 +274,9 @@ export async function runSingleInProcess(
 		"sessionStartTimeoutMs",
 	);
 	const cwd = options.cwd ?? runtimeCwd;
-	if (!existsSync(cwd)) return refusedResult(agent, task, missingCwdMessage(cwd));
-	if (!statSync(cwd).isDirectory()) return refusedResult(agent, task, `cwd is not a directory: ${cwd}`);
+	const cwdStat = await stat(cwd).catch(() => undefined);
+	if (!cwdStat) return refusedResult(agent, task, missingCwdMessage(cwd));
+	if (!cwdStat.isDirectory()) return refusedResult(agent, task, `cwd is not a directory: ${cwd}`);
 	options.modelRoute?.assertCurrent();
 	const launchModel = options.modelOverride ?? agent.model ?? "";
 	// #4188: a launch that names a concrete model, in its call or its agent, runs that model and the fallbackModels its
@@ -482,7 +523,9 @@ export async function runSingleInProcess(
 				}
 			: undefined,
 	};
-	const admission = control.admitChildSession(spec, parent);
+	await turn.ready;
+	const admission = await control.admitChildSession(spec, parent);
+	turn.release();
 	if (!admission.admitted) return refusedResult(agent, task, admission.refusal?.reason ?? "child admission refused");
 	const startedAt = Date.now();
 	const neverAbort = new AbortController().signal;
