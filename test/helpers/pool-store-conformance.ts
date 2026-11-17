@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import type { SessionEntry } from "@bastani/atomic";
 import { dialectOf, type SqliteDatabase, type SqliteRow, type SqliteValue } from "@bastani/atomic/storage";
 import { describe } from "vitest";
@@ -1328,19 +1326,23 @@ interface Release0988Stores {
 	adopt(journal: SqlRunJournal): void;
 }
 
-async function release0988(): Promise<Release0988Stores> {
-	const fixture = (name: string) =>
-		pathToFileURL(join(import.meta.dirname, "../fixtures/shared-pool-0.9.88/durable/journal", name)).href;
-	const [internal, pool, buckets] = await Promise.all([
-		import(fixture("internal.ts")),
-		import(fixture("sql-shared-pool.ts")),
-		import(fixture("sql-rate-buckets.ts")),
-	]);
-	return {
-		SqlSharedPool: pool.SqlSharedPool,
-		SqlRateBuckets: buckets.SqlRateBuckets,
-		adopt: (journal) => internal.registerSqlPoolStorage(journal, sqlPoolStorage(journal)!),
-	};
+let release0988Promise: Promise<Release0988Stores> | undefined;
+
+function release0988(): Promise<Release0988Stores> {
+	const fixture = (name: string) => `../fixtures/shared-pool-0.9.88/durable/journal/${name}`;
+	if (release0988Promise === undefined) {
+		release0988Promise = (async () => {
+			const internal = await import(fixture("internal.ts"));
+			const pool = await import(fixture("sql-shared-pool.ts"));
+			const buckets = await import(fixture("sql-rate-buckets.ts"));
+			return {
+				SqlSharedPool: pool.SqlSharedPool,
+				SqlRateBuckets: buckets.SqlRateBuckets,
+				adopt: (journal) => internal.registerSqlPoolStorage(journal, sqlPoolStorage(journal)!),
+			};
+		})();
+	}
+	return release0988Promise;
 }
 
 function delay(ms: number): Promise<void> {
