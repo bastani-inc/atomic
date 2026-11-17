@@ -8,6 +8,7 @@ import {
 interface ActiveForm {
 	settled: boolean;
 	resolve: (values: Record<string, string> | undefined) => void;
+	reject: (error: Error) => void;
 }
 
 /** Child-side owner for host-native input forms. */
@@ -19,37 +20,52 @@ export class EngineInputFormService {
 		this.write = write;
 	}
 
-	open(request: HostInputFormRequest, signal?: AbortSignal): Promise<Record<string, string> | undefined> {
-		if (signal?.aborted) return Promise.resolve(undefined);
+	async open(request: HostInputFormRequest, signal?: AbortSignal): Promise<Record<string, string> | undefined> {
+		if (signal?.aborted) return undefined;
 		const componentId = `input_form_${++this.nextId}`;
+		const frame = serializeInteractiveEngineMessage({
+			type: "engine_input_form_open",
+			componentId,
+			title: request.title,
+			fields: request.fields,
+			...(request.heading !== undefined ? { heading: request.heading } : {}),
+			...(request.submitLabel !== undefined ? { submitLabel: request.submitLabel } : {}),
+		});
 		let resolveResult!: (values: Record<string, string> | undefined) => void;
-		const result = new Promise<Record<string, string> | undefined>((resolve) => {
+		let rejectResult!: (error: Error) => void;
+		const result = new Promise<Record<string, string> | undefined>((resolve, reject) => {
 			resolveResult = resolve;
+			rejectResult = reject;
 		});
 		const onAbort = () => {
-			this.send({ type: "engine_input_form_close", componentId });
 			record.resolve(undefined);
+			try {
+				this.send({ type: "engine_input_form_close", componentId });
+			} catch {}
+		};
+		const settle = (): boolean => {
+			if (record.settled) return false;
+			record.settled = true;
+			signal?.removeEventListener("abort", onAbort);
+			this.active.delete(componentId);
+			return true;
 		};
 		const record: ActiveForm = {
 			settled: false,
 			resolve: (values) => {
-				if (record.settled) return;
-				record.settled = true;
-				signal?.removeEventListener("abort", onAbort);
-				this.active.delete(componentId);
-				resolveResult(values);
+				if (settle()) resolveResult(values);
+			},
+			reject: (error) => {
+				if (settle()) rejectResult(error);
 			},
 		};
 		signal?.addEventListener("abort", onAbort, { once: true });
 		this.active.set(componentId, record);
-		this.send({
-			type: "engine_input_form_open",
-			componentId,
-			title: request.title,
-			fields: request.fields.map((field) => ({ ...field, choices: field.choices ? [...field.choices] : undefined })),
-			...(request.heading !== undefined ? { heading: request.heading } : {}),
-			...(request.submitLabel !== undefined ? { submitLabel: request.submitLabel } : {}),
-		});
+		try {
+			this.write(frame);
+		} catch (error) {
+			record.reject(error instanceof Error ? error : new Error(String(error)));
+		}
 		return result;
 	}
 
@@ -60,6 +76,7 @@ export class EngineInputFormService {
 		if (!record) return true;
 		if (command.type === "engine_input_form_submit") record.resolve(command.values);
 		else if (command.type === "engine_input_form_cancel") record.resolve(undefined);
+		else if (command.type === "engine_input_form_error") record.reject(new Error(command.message));
 		return true;
 	}
 

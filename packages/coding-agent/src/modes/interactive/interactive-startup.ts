@@ -233,8 +233,13 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		scrollbar: this.settingsManager.getFullscreenScrollbar(),
 		scrollbarThumbStyle: (text) => theme.bg("scrollbarThumb", text),
 	});
+	const pendingMessagesPreview = {
+		render: (width: number): string[] =>
+			this.navigationInlineCustomUiDepth > 0 ? [] : this.pendingMessagesContainer.render(width),
+		invalidate: (): void => this.pendingMessagesContainer.invalidate(),
+	};
 	const dock = new VStack([
-		{ component: this.pendingMessagesContainer, shrink: 1, minSize: 0 },
+		{ component: pendingMessagesPreview, shrink: 1, minSize: 0 },
 		{ component: this.statusContainer, shrink: 1, minSize: 0 },
 		{ component: this.widgetContainerAbove, shrink: 1, minSize: 0 },
 		{ component: this.usageMeter, shrink: 1, minSize: 1 },
@@ -249,7 +254,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	]);
 	this.mountInteractiveTui(this.ui, [
 		this.documentContainer,
-		this.pendingMessagesContainer,
+		pendingMessagesPreview,
 		this.statusContainer,
 		this.widgetContainerAbove,
 		this.usageMeter,

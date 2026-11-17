@@ -447,7 +447,10 @@ test("outer whitespace of a user message is trimmed, and other notices keep thei
 		"~ compaction → compacted",
 	);
 	const listing = { action: "stages" as const, runId: "r1", filter: "all", stages: [summarizeStage(stage())] };
-	assert.match(renderResult(listing).replace(/\x1b\[[0-9;]*m/g, ""), /\(s1\): completed\s+│/);
+	const rendered = renderResult(listing, { width: 80 }).replace(/\x1b\[[0-9;]*m/g, "");
+	assert.equal(rendered, "WORKFLOW STAGES: r1: all — theme (s1): completed");
+	assert.doesNotMatch(rendered, /[╭│╰]/u);
+	assert.ok(rendered.length <= 80);
 });
 
 test("the host decision port refuses a live host without a model registry", async () => {

@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { getKeybindings, setKeybindings, type TUI } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import { getReadmePath } from "../src/config.ts";
@@ -64,7 +64,11 @@ describe("unbound tool expansion hints", () => {
 				expected: "Read(.atomic/AGENTS.md)",
 				body: "resource body",
 			},
-			{ path: getReadmePath(), expected: "Read(README.md)", body: "docs body" },
+			{
+				path: getReadmePath(),
+				expected: `Read(${relative(process.cwd(), getReadmePath()).replace(/\\/g, "/")})`,
+				body: "docs body",
+			},
 		]) {
 			const target = component("read", { path: scenario.path }, createReadToolDefinition(process.cwd()));
 			target.updateResult({ content: [{ type: "text", text: scenario.body }], details: {}, isError: false }, false);

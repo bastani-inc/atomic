@@ -15,7 +15,6 @@ import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { Theme } from "../theme/theme.js";
 import { getEditorTheme } from "../theme/theme.js";
 
-/** Indent (cells) for a field's control, description, and error rows so they align under the field name. */
 const LABEL_INDENT = 2;
 
 export interface HostInputFormDelegate {
@@ -25,8 +24,106 @@ export interface HostInputFormDelegate {
 
 type Editable = Input | Editor;
 
+const BOOLEAN_TEXT = new Set(["true", "false", "1", "0", "on", "off"]);
+
 function isEditable(field: HostInputFormField): boolean {
 	return field.type !== "select" && field.type !== "boolean";
+}
+
+function sanitizeDisplayText(value: string, tabWidth = 4): string {
+	const stops = Math.max(1, Math.floor(tabWidth));
+	let out = "";
+	let column = 0;
+	for (const char of value) {
+		const code = char.codePointAt(0) ?? 0;
+		if (char === "\n") {
+			out += char;
+			column = 0;
+			continue;
+		}
+		if (char === "\t") {
+			const pad = stops - (column % stops);
+			out += " ".repeat(pad);
+			column += pad;
+			continue;
+		}
+		if (code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) {
+			const escaped = `\\x${code.toString(16).padStart(2, "0")}`;
+			out += escaped;
+			column += escaped.length;
+			continue;
+		}
+		out += char;
+		column += 1;
+	}
+	return out;
+}
+
+function sanitizeSingleLine(value: string): string {
+	return sanitizeDisplayText(value).replace(/\n/g, " ");
+}
+
+function rawColumn(line: string, displayColumn: number): number {
+	let column = 0;
+	let shown = 0;
+	let stop = 0;
+	for (const char of line) {
+		const code = char.codePointAt(0) ?? 0;
+		let width = char.length;
+		let advance = 1;
+		if (char === "\n") {
+			advance = -stop;
+		} else if (char === "\t") {
+			width = 4 - (stop % 4);
+			advance = width;
+		} else if (code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) {
+			width = 4;
+			advance = 4;
+		}
+		const next = shown + width;
+		if (next > displayColumn) return displayColumn - shown <= next - displayColumn ? column : column + char.length;
+		column += char.length;
+		shown = next;
+		stop += advance;
+	}
+	return column;
+}
+
+function stepRawColumn(line: string, column: number, direction: 1 | -1): number {
+	if (direction > 0) {
+		const code = line.codePointAt(column);
+		return code === undefined ? column : column + (code > 0xffff ? 2 : 1);
+	}
+	if (column <= 0) return 0;
+	const low = line.charCodeAt(column - 1);
+	const high = column >= 2 ? line.charCodeAt(column - 2) : 0;
+	return low >= 0xdc00 && low <= 0xdfff && high >= 0xd800 && high <= 0xdbff ? column - 2 : column - 1;
+}
+
+function withDisplayLines<T>(editor: Editor, action: () => T, keepCursor: boolean): T {
+	const state = Reflect.get(editor, "state") as { lines: string[]; cursorLine: number; cursorCol: number };
+	const savedLines = [...state.lines];
+	const savedLine = state.cursorLine;
+	const savedCol = state.cursorCol;
+	const currentLineText = savedLines[savedLine] ?? "";
+	const clampedCol = Math.max(0, Math.min(savedCol, currentLineText.length));
+	state.lines = savedLines.map((line) => sanitizeSingleLine(line));
+	state.cursorCol = sanitizeSingleLine(currentLineText.slice(0, clampedCol)).length;
+	const startCol = state.cursorCol;
+	try {
+		return action();
+	} finally {
+		const movedLine = state.cursorLine;
+		const movedCol = state.cursorCol;
+		const movedText = savedLines[movedLine] ?? "";
+		let column = keepCursor ? rawColumn(movedText, movedCol) : savedCol;
+		if (keepCursor && movedLine === savedLine && movedCol !== startCol && column === savedCol) {
+			column = stepRawColumn(movedText, savedCol, movedCol > startCol ? 1 : -1);
+		}
+		state.lines = savedLines;
+		state.cursorLine = keepCursor ? movedLine : savedLine;
+		state.cursorCol = column;
+	}
 }
 
 /** Host-owned form: all key handling and mutable editing state stay in the terminal process. */
@@ -43,6 +140,7 @@ export class HostInputFormComponent implements Component, Focusable {
 	private readonly delegate: HostInputFormDelegate;
 	private focusedIndex: number;
 	private invalid = new Set<number>();
+	private readonly reasons: Array<{ value: string; reason: string | undefined } | undefined> = [];
 	private _focused = true;
 
 	constructor(
@@ -67,13 +165,18 @@ export class HostInputFormComponent implements Component, Focusable {
 		this.editors = this.fields.map((field, index) => {
 			if (!isEditable(field)) return undefined;
 			if (field.type === "text") {
-				// Quiet the multi-line editor's top/bottom rules to the panel border tone
-				// so the inset text area blends with the form frame instead of shouting.
 				const editorTheme = { ...getEditorTheme(), borderColor: (segment: string) => theme.fg("border", segment) };
 				const editor = new Editor(tui, editorTheme, { paddingX: 0 });
 				editor.setText(field.initialValue);
-				editor.onChange = (text) => {
-					this.values[index] = text;
+				const initialLines = field.initialValue.split("\n");
+				const lastLineIdx = Math.max(0, initialLines.length - 1);
+				Reflect.set(editor, "state", {
+					lines: initialLines,
+					cursorLine: lastLineIdx,
+					cursorCol: (initialLines[lastLineIdx] ?? "").length,
+				});
+				editor.onChange = () => {
+					this.values[index] = editor.getExpandedText();
 				};
 				editor.disableSubmit = true;
 				return editor;
@@ -86,7 +189,7 @@ export class HostInputFormComponent implements Component, Focusable {
 			return input;
 		});
 		const firstInvalid = this.fields.findIndex(
-			(field, index) => this.invalidReason(field, this.values[index]!) !== undefined,
+			(_field, index) => this.invalidReason(index, this.currentValue(index)) !== undefined,
 		);
 		this.focusedIndex = firstInvalid >= 0 ? firstInvalid : 0;
 		this.syncFocus();
@@ -131,17 +234,18 @@ export class HostInputFormComponent implements Component, Focusable {
 	}
 
 	render(width: number): string[] {
-		const boxWidth = Math.max(1, width);
-		const inner = Math.max(2, boxWidth - 2);
-		const cw = Math.max(8, inner - 2);
+		const boxWidth = Math.max(1, Math.floor(width));
+		const inner = Math.max(0, boxWidth - 2);
+		const cw = Math.max(0, inner - 2);
 		const controlWidth = Math.max(1, cw - LABEL_INDENT);
-		const indent = " ".repeat(LABEL_INDENT);
+		const indent = " ".repeat(Math.min(LABEL_INDENT, cw));
 		const body: string[] = [];
 
 		const fieldCount = `${this.fields.length} ${this.fields.length === 1 ? "field" : "fields"}`;
-		const nameBudget = Math.max(4, cw - fieldCount.length - 5);
+		const safeTitle = sanitizeSingleLine(this.title);
+		const nameBudget = Math.max(1, cw - fieldCount.length - 5);
 		body.push(
-			this.theme.bold(this.theme.fg("text", truncateToWidth(this.title, nameBudget, "…"))) +
+			this.theme.bold(this.theme.fg("text", truncateToWidth(safeTitle, nameBudget, "…"))) +
 				this.theme.fg("dim", `  ·  ${fieldCount}`),
 		);
 		body.push("");
@@ -149,20 +253,23 @@ export class HostInputFormComponent implements Component, Focusable {
 		for (let index = 0; index < this.fields.length; index += 1) {
 			const field = this.fields[index]!;
 			const active = index === this.focusedIndex;
-			body.push(this.labelRow(field, active, cw));
+			const label = this.labelRow(field, index, active, cw);
+			body.push(label.line);
 			for (const line of this.renderField(field, index, controlWidth)) body.push(`${indent}${line}`);
-			if (field.description) {
+			if (label.wrappedInvalid !== undefined) {
+				const errColor = this.invalid.has(index) || !field.required ? "error" : "warning";
 				for (const line of wrapTextWithAnsi(
-					this.theme.fg("muted", field.description),
-					Math.max(1, cw - LABEL_INDENT),
+					this.theme.fg(errColor, `✗ ${label.wrappedInvalid}`),
+					Math.max(1, cw - indent.length),
 				)) {
 					body.push(`${indent}${line}`);
 				}
 			}
-			if (this.invalid.has(index)) {
-				body.push(
-					`${indent}${this.theme.fg("error", `✗ ${this.invalidReason(field, this.currentValue(index)) ?? "invalid"}`)}`,
-				);
+			if (field.description) {
+				const safeDesc = sanitizeSingleLine(field.description);
+				for (const line of wrapTextWithAnsi(this.theme.fg("muted", safeDesc), Math.max(1, cw - indent.length))) {
+					body.push(`${indent}${line}`);
+				}
 			}
 			body.push("");
 		}
@@ -171,7 +278,7 @@ export class HostInputFormComponent implements Component, Focusable {
 		body.push("");
 		body.push(this.footerRow());
 
-		return this.frame(body, inner, cw);
+		return this.frame(body, inner, cw, boxWidth);
 	}
 
 	invalidate(): void {
@@ -182,20 +289,36 @@ export class HostInputFormComponent implements Component, Focusable {
 		if (field.type === "select") {
 			const current = this.values[index];
 			return (field.choices ?? []).map(
-				(choice) => `${choice === current ? this.theme.fg("accent", "●") : this.theme.fg("dim", "○")} ${choice}`,
+				(choice) =>
+					`${choice === current ? this.theme.fg("accent", "●") : this.theme.fg("dim", "○")} ${sanitizeSingleLine(choice)}`,
 			);
 		}
 		if (field.type === "boolean") {
-			return [
-				this.values[index] === "true" ? this.theme.fg("accent", "● on") : "○ on",
-				this.values[index] === "false" ? this.theme.fg("accent", "● off") : "○ off",
-			];
+			const value = (this.values[index] ?? "").trim().toLowerCase();
+			const on = value === "true" || value === "1" || value === "on";
+			const off = value === "false" || value === "0" || value === "off";
+			return [on ? this.theme.fg("accent", "● on") : "○ on", off ? this.theme.fg("accent", "● off") : "○ off"];
 		}
 		const editor = this.editors[index];
 		if (!editor) return [""];
-		const rendered = editor.render(width);
 		if (this.currentValue(index) === "" && field.placeholder && this.focusedIndex !== index)
-			return [this.theme.fg("dim", field.placeholder)];
+			return [this.theme.fg("dim", sanitizeSingleLine(field.placeholder))];
+		if (editor instanceof Input) {
+			const rawValue = editor.getValue();
+			const rawCursor = Math.max(0, Math.min(Reflect.get(editor, "cursor") as number, rawValue.length));
+			const safeValue = sanitizeSingleLine(rawValue);
+			const safeCursor = sanitizeSingleLine(rawValue.slice(0, rawCursor)).length;
+			editor.setValue(safeValue);
+			Reflect.set(editor, "cursor", safeCursor);
+			try {
+				const rendered = editor.render(width);
+				return rendered.length > 0 ? rendered : [""];
+			} finally {
+				editor.setValue(rawValue);
+				Reflect.set(editor, "cursor", rawCursor);
+			}
+		}
+		const rendered = withDisplayLines(editor, () => editor.render(Math.max(3, width)), false);
 		return rendered.length > 0 ? rendered : [""];
 	}
 
@@ -214,9 +337,18 @@ export class HostInputFormComponent implements Component, Focusable {
 				return;
 			}
 			const before = editor.getCursor();
-			editor.handleInput(data);
+			withDisplayLines(editor, () => editor.handleInput(data), true);
 			const after = editor.getCursor();
 			if (after.line === before.line && after.col === before.col) this.moveFocus(verticalDirection);
+			return;
+		}
+		if (
+			field.type === "text" &&
+			editor instanceof Editor &&
+			(this.keybindings.matches(data, "tui.editor.pageUp") || this.keybindings.matches(data, "tui.editor.pageDown"))
+		) {
+			withDisplayLines(editor, () => editor.handleInput(data), true);
+			this.values[fieldIndex] = editor.getExpandedText();
 			return;
 		}
 		const continues =
@@ -237,9 +369,10 @@ export class HostInputFormComponent implements Component, Focusable {
 	private handleSelect(data: string, field: HostInputFormField): void {
 		const choices = field.choices ?? [];
 		if (choices.length === 0) return;
-		const current = Math.max(0, choices.indexOf(this.currentValue(this.focusedIndex)));
+		const current = choices.indexOf(this.currentValue(this.focusedIndex));
 		if (this.keybindings.matches(data, "tui.select.up") || this.keybindings.matches(data, "tui.editor.cursorLeft"))
-			this.values[this.focusedIndex] = choices[(current - 1 + choices.length) % choices.length]!;
+			this.values[this.focusedIndex] =
+				choices[current < 0 ? choices.length - 1 : (current - 1 + choices.length) % choices.length]!;
 		else if (
 			this.keybindings.matches(data, "tui.select.down") ||
 			this.keybindings.matches(data, "tui.editor.cursorRight") ||
@@ -261,7 +394,11 @@ export class HostInputFormComponent implements Component, Focusable {
 			this.keybindings.matches(data, "tui.editor.cursorLeft") ||
 			this.keybindings.matches(data, "tui.editor.cursorRight")
 		)
-			this.values[this.focusedIndex] = this.currentValue(this.focusedIndex) === "true" ? "false" : "true";
+			this.values[this.focusedIndex] = ["true", "1", "on"].includes(
+				this.currentValue(this.focusedIndex).trim().toLowerCase(),
+			)
+				? "false"
+				: "true";
 		else if (
 			this.keybindings.matches(data, "tui.select.confirm") ||
 			this.keybindings.matches(data, "tui.input.submit")
@@ -292,7 +429,7 @@ export class HostInputFormComponent implements Component, Focusable {
 	private submit(): void {
 		this.invalid = new Set<number>();
 		for (let index = 0; index < this.fields.length; index += 1)
-			if (this.invalidReason(this.fields[index]!, this.currentValue(index))) this.invalid.add(index);
+			if (this.invalidReason(index, this.currentValue(index))) this.invalid.add(index);
 		if (this.invalid.size > 0) {
 			this.focusedIndex = this.invalid.values().next().value ?? 0;
 			this.syncFocus();
@@ -305,11 +442,36 @@ export class HostInputFormComponent implements Component, Focusable {
 		this.delegate.onSubmit(values);
 	}
 
-	private invalidReason(field: HostInputFormField, value: string): string | undefined {
-		if (field.required && value.trim() === "") return "required";
-		if (field.type === "select" && value !== "" && !(field.choices ?? []).includes(value)) return "not in choices";
-		if ((field.type === "number" || field.type === "integer") && value !== "" && !Number.isFinite(Number(value)))
-			return "must be a number";
+	private invalidReason(index: number, value: string): string | undefined {
+		const cached = this.reasons[index];
+		if (cached?.value === value) return cached.reason;
+		const reason = this.computeInvalidReason(this.fields[index]!, value);
+		this.reasons[index] = { value, reason };
+		return reason;
+	}
+
+	private computeInvalidReason(field: HostInputFormField, value: string): string | undefined {
+		const empty = value.trim() === "";
+		if (field.required && empty) {
+			if (field.type === "select") return "choose one";
+			if (field.type === "boolean") return "choose on or off";
+			return "required";
+		}
+		if (empty) return undefined;
+		if (field.type === "select") {
+			return (field.choices ?? []).includes(value) ? undefined : "not in choices";
+		}
+		if (field.type === "boolean") {
+			return BOOLEAN_TEXT.has(value.trim().toLowerCase()) ? undefined : "must be on or off";
+		}
+		if (field.type === "integer") {
+			const n = Number(value);
+			if (!Number.isInteger(n)) return "must be a whole number";
+			return Number.isSafeInteger(n) ? undefined : `must be a whole number within ±${Number.MAX_SAFE_INTEGER}`;
+		}
+		if (field.type === "number") {
+			return Number.isFinite(Number(value)) ? undefined : "must be a number";
+		}
 		return undefined;
 	}
 
@@ -326,30 +488,55 @@ export class HostInputFormComponent implements Component, Focusable {
 		});
 	}
 	private currentValue(index: number): string {
-		const editor = this.editors[index];
-		return editor instanceof Input
-			? editor.getValue()
-			: editor instanceof Editor
-				? editor.getExpandedText()
-				: (this.values[index] ?? "");
+		return this.values[index] ?? "";
 	}
-	/** Field header: focus chevron + name (accent when active) with a right-aligned required/optional badge. */
-	private labelRow(field: HostInputFormField, active: boolean, cw: number): string {
-		const badgePlain = field.required ? "required" : "optional";
+	private labelRow(
+		field: HostInputFormField,
+		index: number,
+		active: boolean,
+		cw: number,
+	): { line: string; wrappedInvalid?: string } {
+		const safeName = sanitizeSingleLine(field.name);
+		const invalid = this.invalidReason(index, this.currentValue(index));
+		const safeInvalid = invalid !== undefined ? sanitizeSingleLine(invalid) : undefined;
+		const requiredness = field.required ? "required" : "optional";
+		const statusPlain = safeInvalid === undefined ? "✓" : `✗ ${safeInvalid}`;
+		const rawPrefix = safeInvalid === "required" ? "" : `${requiredness} · `;
+		const minNameCols = Math.min(visibleWidth(safeName), 4);
+		const fullBadgePlain = `${rawPrefix}${statusPlain}`;
+		let prefix = rawPrefix;
+		let badgeStatusPlain = statusPlain;
+		let wrappedInvalid: string | undefined;
+		if (2 + minNameCols + 1 + visibleWidth(fullBadgePlain) > cw) {
+			if (2 + minNameCols + 1 + visibleWidth(statusPlain) <= cw) {
+				prefix = "";
+			} else if (safeInvalid !== undefined) {
+				prefix = "";
+				badgeStatusPlain = "✗";
+				wrappedInvalid = safeInvalid;
+			}
+		}
+		const badgePlain = `${prefix}${badgeStatusPlain}`;
 		const marker = active ? this.theme.fg("accent", "▸") : " ";
-		const nameBudget = Math.max(4, cw - badgePlain.length - 3);
-		const nameShown = truncateToWidth(field.name, nameBudget, "…");
+		const nameBudget = Math.max(1, cw - visibleWidth(badgePlain) - 3);
+		const nameShown = truncateToWidth(safeName, nameBudget, "…");
 		const nameStyled = active
 			? this.theme.fg("accent", this.theme.bold(nameShown))
 			: this.theme.fg("text", nameShown);
-		const badge = field.required ? this.theme.fg("warning", badgePlain) : this.theme.fg("dim", badgePlain);
-		const gap = Math.max(1, cw - 2 - visibleWidth(nameShown) - badgePlain.length);
-		return `${marker} ${nameStyled}${" ".repeat(gap)}${badge}`;
+		const status =
+			safeInvalid === undefined
+				? this.theme.fg("success", badgeStatusPlain)
+				: this.theme.fg(this.invalid.has(index) || !field.required ? "error" : "warning", badgeStatusPlain);
+		const badge = `${prefix ? this.theme.fg("dim", prefix) : ""}${status}`;
+		const gap = Math.max(1, cw - 2 - visibleWidth(nameShown) - visibleWidth(badgePlain));
+		return {
+			line: `${marker} ${nameStyled}${" ".repeat(gap)}${badge}`,
+			wrappedInvalid,
+		};
 	}
 
-	/** Submit control rendered as a button pill; filled accent when focused, quiet outline otherwise. */
 	private submitRow(): string {
-		const label = this.submitLabel;
+		const label = sanitizeSingleLine(this.submitLabel);
 		const active = this.focusedIndex === this.fields.length;
 		const marker = active ? this.theme.fg("accent", "▸") : " ";
 		const pill = active
@@ -358,30 +545,37 @@ export class HostInputFormComponent implements Component, Focusable {
 		return `${marker} ${pill}`;
 	}
 
-	/** Key-hint footer with accent key chips and muted verbs. */
 	private footerRow(): string {
 		const key = (k: string): string => this.theme.fg("accent", k);
 		const dim = (t: string): string => this.theme.fg("dim", t);
-		const sep = dim("  ·  ");
-		return `${key("Tab")} ${dim("move")}${sep}${key("Enter")} ${dim("continue / run")}${sep}${key("Esc")} ${dim("cancel")}`;
+		const sep = dim(" · ");
+		const focused = this.fields[this.focusedIndex];
+		const enter = focused === undefined ? "submit" : focused.type === "text" ? "new line" : "next";
+		return `${key("enter")} ${dim(enter)}${sep}${key("tab")} ${dim("between fields")}${sep}${key("esc")} ${dim("cancel")}`;
 	}
 
-	/**
-	 * Wrap the pre-built body rows in a rounded panel. The title rides the top
-	 * border; each row gets one cell of interior padding on both sides. Rows are
-	 * padded (not truncated) unless they overflow, so an embedded editor's inline
-	 * cursor marker is never clipped away.
-	 */
-	private frame(body: readonly string[], inner: number, cw: number): string[] {
+	private frame(body: readonly string[], inner: number, cw: number, boxWidth: number): string[] {
 		const border = (glyph: string): string => this.theme.fg("border", glyph);
-		const title = this.heading ? ` ${this.theme.fg("accent", this.theme.bold(this.heading))} ` : "";
-		const top = `${border("╭")}${title}${border("─".repeat(Math.max(0, inner - visibleWidth(title))))}${border("╮")}`;
+		const safeHeading = sanitizeSingleLine(this.heading);
+		const headingClipped =
+			safeHeading.length > 0 && inner >= 2 ? truncateToWidth(safeHeading, Math.max(0, inner - 2), "…") : "";
+		const title = headingClipped.length > 0 ? ` ${this.theme.fg("accent", this.theme.bold(headingClipped))} ` : "";
+		const top = truncateToWidth(
+			`${border("╭")}${title}${border("─".repeat(Math.max(0, inner - visibleWidth(title))))}${border("╮")}`,
+			boxWidth,
+			"",
+		);
 		const rows = body.map((line) => {
+			if (boxWidth < 4) {
+				const clippedNarrow = truncateToWidth(line, inner, "");
+				const padNarrow = " ".repeat(Math.max(0, inner - visibleWidth(clippedNarrow)));
+				return truncateToWidth(`${border("│")}${clippedNarrow}${padNarrow}${border("│")}`, boxWidth, "");
+			}
 			const clipped = visibleWidth(line) > cw ? truncateToWidth(line, cw, "…") : line;
 			const pad = " ".repeat(Math.max(0, cw - visibleWidth(clipped)));
 			return `${border("│")} ${clipped}${pad} ${border("│")}`;
 		});
-		const bottom = `${border("╰")}${border("─".repeat(inner))}${border("╯")}`;
+		const bottom = truncateToWidth(`${border("╰")}${border("─".repeat(inner))}${border("╯")}`, boxWidth, "");
 		return [top, ...rows, bottom];
 	}
 }

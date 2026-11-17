@@ -251,7 +251,9 @@ test("a root run on a backend that is not a journal backend runs without a workf
 	const foreign = new Proxy(fixture.backend, {
 		getPrototypeOf: () => Object.prototype,
 		get(target, key) {
-			if (key === "withWorkflowLease") return undefined;
+			if (key === "withWorkflowLease" || key === Symbol.for("@bastani/workflows/journal-durable-backend")) {
+				return undefined;
+			}
 			const value = Reflect.get(target, key, target);
 			return typeof value === "function" ? value.bind(target) : value;
 		},

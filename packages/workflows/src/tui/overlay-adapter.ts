@@ -165,14 +165,8 @@ export function buildGraphOverlayAdapter(
 	// the chat scrollback, producing visible duplicates.
 	let currentHandle: PiOverlayHandle | null = null;
 	let mounted = false;
-
-	let returnTo: (() => void) | undefined;
-	const goBack = (): void => {
-		const back = returnTo;
-		returnTo = undefined;
-		hideMounted();
-		back?.();
-	};
+	let pendingReturn: (() => void) | undefined;
+	const goBack = (): void => hideMounted();
 	let finishMounted: (() => void) | null = null;
 	// Repaints the mounted overlay through its factory TUI. Needed on the
 	// hidden→visible flip: store updates while hidden intentionally skip
@@ -233,6 +227,7 @@ export function buildGraphOverlayAdapter(
 	}
 
 	function close(): void {
+		pendingReturn = undefined;
 		currentHandle?.hide();
 		updateTerminalAutowrap(false);
 		finishMounted?.();
@@ -265,6 +260,9 @@ export function buildGraphOverlayAdapter(
 	 */
 	function hideMounted(): void {
 		observedUi?.setStatus?.(MAIN_CHAT_INPUT_STATUS_KEY, undefined);
+		const onReturn = pendingReturn;
+		pendingReturn = undefined;
+		if (onReturn) queueMicrotask(onReturn);
 		if (currentHandle) {
 			currentView?.setVisible(false);
 			currentHandle.setHidden(true);
@@ -337,7 +335,7 @@ export function buildGraphOverlayAdapter(
 		stageRunId?: string,
 		openOptions?: GraphOverlayOpenOptions,
 	): boolean {
-		returnTo = openOptions?.onReturn;
+		pendingReturn = openOptions?.onReturn;
 		const markViewed = (): void => {
 			const targetRunId = runId ?? store.activeRunId() ?? store.runs().at(-1)?.id;
 			if (targetRunId === undefined) return;
@@ -375,7 +373,7 @@ export function buildGraphOverlayAdapter(
 
 		const custom = ui?.custom;
 		if (typeof custom !== "function") {
-			returnTo = undefined;
+			pendingReturn = undefined;
 			clearHostCustomUiObservation();
 			return false;
 		}
@@ -397,7 +395,7 @@ export function buildGraphOverlayAdapter(
 			const finish = (): void => {
 				if (settled) return;
 				settled = true;
-				returnTo = undefined;
+				pendingReturn = undefined;
 				observedUi?.setStatus?.(MAIN_CHAT_INPUT_STATUS_KEY, undefined);
 				currentView?.dispose();
 				currentView = null;

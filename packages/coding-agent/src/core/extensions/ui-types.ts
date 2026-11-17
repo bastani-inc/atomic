@@ -177,7 +177,7 @@ export interface HostInputFormField {
 	required?: boolean;
 	choices?: string[];
 	placeholder?: string;
-	/** Raw, display-ready initial value. */
+
 	initialValue: string;
 }
 

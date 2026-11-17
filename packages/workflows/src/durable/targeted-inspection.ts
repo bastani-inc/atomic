@@ -79,7 +79,7 @@ export async function inspectTargetedDurableWorkflow(
 	const crashed = handle.status === "running" && !live;
 	const resumeGuidance = crashed
 		? inspected.detail.resumable === true
-			? `This workflow appears to have crashed and is resumable. Resume it explicitly with /workflow resume ${resolvedWorkflowId}.`
+			? `This workflow appears to have crashed and is resumable. Resume ${resolvedWorkflowId} explicitly with /resume.`
 			: "This workflow appears to have crashed, but its retained state is not resumable."
 		: foreignLive
 			? "This workflow is actively running in another Atomic session. Inspect it here, but control it from its owner session."
@@ -102,7 +102,7 @@ export async function inspectTargetedDurableWorkflow(
 
 function terminalGuidance(status: string, workflowId: string, resumable: boolean): string {
 	if (resumable)
-		return `This retained workflow is ${status} and resumable. Resume it explicitly with /workflow resume ${workflowId}.`;
+		return `This retained workflow is ${status} and resumable. Resume ${workflowId} explicitly with /resume.`;
 	return `This retained workflow is ${status} and available for read-only inspection.`;
 }
 

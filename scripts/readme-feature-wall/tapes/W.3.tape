@@ -1,30 +1,26 @@
-# W.3 Inspect and control workflows
-# Exercise the common command path in one real session: list, inputs, launch,
-# status, then connect through the retained run picker.
 Set TypingSpeed 55ms
 Type "atomic"
 Sleep 500ms
 Enter
 Sleep 12s
 Set TypingSpeed 38ms
-Type "/workflow list"
+Type "Which workflows are installed?"
 Sleep 1s
 Enter
-Sleep 7s
-Type "/workflow inputs control-demo"
+Sleep 15s
+Type "What inputs does control-demo take?"
 Sleep 1s
 Enter
-Sleep 7s
-Type "/workflow control-demo subject=src-client.ts"
+Sleep 15s
+Type "Run control-demo with the workflow tool, with subject src-client.ts."
 Sleep 1s
 Enter
-Sleep 10s
-Type "/workflow status"
-Sleep 1s
-Enter
-Sleep 8s
+Sleep 20s
 Type "/workflows"
 Sleep 1s
 Enter
 Sleep 4s
+Type "p"
+Sleep 4s
+Type "r"
 Sleep 12s

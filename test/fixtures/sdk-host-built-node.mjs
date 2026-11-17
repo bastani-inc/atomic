@@ -81,9 +81,9 @@ const { session } = await createAgentSession({ ...options, ...(services ? { reso
 const failure = new Error("replacement rejected before session construction");
 const runtime = services ? new AgentSessionRuntime(session, services, async () => { throw failure; }) : undefined;
 try {
-	await session.prompt("/workflow sdk-host-durable --no-picker");
 	const tool = session.agent.state.tools.find((entry) => entry.name === "workflow");
 	assert.ok(tool);
+	await tool.execute("run", { action: "run", workflow: "sdk-host-durable", inputs: {} }, new AbortController().signal);
 	const pendingDeadline = Date.now() + DURABLE_PHASE_TIMEOUT_MS;
 	let pending;
 	do {

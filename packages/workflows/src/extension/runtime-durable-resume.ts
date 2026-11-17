@@ -231,8 +231,8 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			if (!resumed.ok) {
 				const next =
 					(await definitionResolver(undefined)(fork.definition.name, deps.runtimeCwd)) === undefined
-						? `Workflow "${fork.definition.name}" is not defined in this directory, so /workflow resume cannot start the fork here; fork the source again with /workflow fork ${fork.forkedFrom.runId}.`
-						: `Resume it with /workflow resume ${fork.runId}.`;
+						? `Workflow "${fork.definition.name}" is not defined in this directory, so /resume cannot start the fork here; fork the source again from /workflows ${fork.forkedFrom.runId}.`
+						: `Resume it with /resume ${fork.runId}.`;
 				return {
 					ok: true,
 					runId: fork.runId,

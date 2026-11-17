@@ -179,9 +179,16 @@ test.skipIf(process.platform === "win32")(
 			database.exec("PRAGMA busy_timeout = 5000");
 			await session.bindExtensions({});
 			const launchRunner = session.extensionRunner;
-			const command = launchRunner.getCommand("workflow");
-			assert.ok(command, "the /workflow command is registered on the real host");
-			await command.handler("pooled-root --no-picker", launchRunner.createCommandContext());
+			const workflowTool = () => {
+				const found = session?.agent.state.tools.find((entry) => entry.name === "workflow");
+				assert.ok(found, "the workflow tool is registered on the real host");
+				return found;
+			};
+			await workflowTool().execute(
+				"launch-pooled-root",
+				{ action: "run", workflow: "pooled-root", inputs: {} },
+				new AbortController().signal,
+			);
 			await waitUntil(
 				async () => (await startedChildren()).length === CHILDREN,
 				"every pooled child to run on a worker",
@@ -194,10 +201,13 @@ test.skipIf(process.platform === "win32")(
 			assert.equal(workBefore.length, CHILDREN);
 			for (const work of workBefore) assert.equal(work.state, "leased", JSON.stringify(work));
 
-			// `/workflow reload`: rediscovers definitions and replaces the session's workflow runtime.
-			const reloadCommand = session.extensionRunner.getCommand("workflow");
-			assert.ok(reloadCommand);
-			await reloadCommand.handler("reload", session.extensionRunner.createCommandContext());
+			// Workflow tool `reload`: rediscovers definitions and replaces the session's workflow runtime.
+			const reloadResult = await workflowTool().execute(
+				"reload-pooled-root",
+				{ action: "reload" },
+				new AbortController().signal,
+			);
+			assert.equal((reloadResult.details as { status?: string }).status, "ok");
 			// A preserving host `/reload`: retires the extension generation and starts the next one.
 			await session.reload({ reason: "reload", failOnExtensionErrors: true });
 			assert.notEqual(session.extensionRunner, launchRunner, "the host reload replaced the runner");

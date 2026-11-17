@@ -8,13 +8,11 @@ import {
 	fileExistsSync,
 	makeTempDirectory,
 	moduleDir,
-	sleep,
 	writeFileEnsuringDir,
 } from "../helpers/runtime.js";
 
 /** Three real source CLI children, each loading every builtin extension. */
 const CLI_CHILDREN_TIMEOUT_MS = 240_000;
-const STEP_TIMEOUT_MS = 60_000;
 
 const repositoryRoot = join(moduleDir(import.meta.url), "../..");
 const cliPath = join(repositoryRoot, "packages/coding-agent/src/cli.ts");
@@ -33,6 +31,7 @@ interface Scenario {
 	readonly root: string;
 	readonly project: string;
 	readonly agentDir: string;
+	readonly providerPath: string;
 	/** Written by the project workflow module's top-level code when it is imported. */
 	readonly marker: string;
 }
@@ -42,8 +41,35 @@ async function makeScenario(label: string): Promise<Scenario> {
 	const root = makeTempDirectory(`project-trust-workflow-${label}-`);
 	const project = join(root, "project");
 	const agentDir = join(root, "agent");
+	const providerPath = join(root, "trust-list-provider.ts");
 	const marker = join(root, "workflow-module-loaded");
 	await writeFileEnsuringDir(join(agentDir, "settings.json"), JSON.stringify({ onboardedVersion: "0.0.0" }));
+	await writeFileEnsuringDir(
+		providerPath,
+		[
+			'import { createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";',
+			"export default function (pi) {",
+			'  pi.registerProvider("trust-list-fixture", {',
+			'    api: "trust-list-fixture",',
+			'    apiKey: "fixture-only",',
+			'    baseUrl: "http://127.0.0.1:1/unused",',
+			'    models: [{ id: "fixture", name: "Fixture", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],',
+			"    streamSimple(model, context) {",
+			"      const stream = createAssistantMessageEventStream();",
+			'      const hasToolResult = context.messages.some((m) => m.role === "toolResult");',
+			"      const message = {",
+			'        role: "assistant", api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(),',
+			'        content: hasToolResult ? [{ type: "text", text: "done" }] : [{ type: "toolCall", id: "list-1", name: "workflow", arguments: { action: "list" } }],',
+			'        stopReason: hasToolResult ? "stop" : "toolUse",',
+			"        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },",
+			"      };",
+			'      queueMicrotask(() => { stream.push({ type: "done", reason: message.stopReason, message }); stream.end(); });',
+			"      return stream;",
+			"    },",
+			"  });",
+			"}",
+		].join("\n"),
+	);
 	await writeFileEnsuringDir(
 		join(project, ".atomic/workflows/marker.ts"),
 		[
@@ -59,43 +85,41 @@ async function makeScenario(label: string): Promise<Scenario> {
 			`});`,
 		].join("\n"),
 	);
-	return { root, project, agentDir, marker };
+	return { root, project, agentDir, providerPath, marker };
 }
 
-interface ListedWorkflows {
-	readonly details?: { readonly kind?: string; readonly entries?: readonly { readonly name: string }[] };
-}
-
-/** Starts a CLI child in the scenario's project, asks for `/workflow list`, and returns the names it listed. */
-async function listWorkflows(scenario: Scenario, args: readonly string[]): Promise<string[]> {
+async function listProjectWorkflows(scenario: Scenario, args: readonly string[]): Promise<string[]> {
 	const client = new RpcClient({
 		cliPath,
 		cwd: scenario.project,
 		runtimeExecutable: bunExecutable(),
-		args: [...args, "--offline", "--no-session"],
+		args: [
+			...args,
+			"--offline",
+			"--no-session",
+			"--extension",
+			scenario.providerPath,
+			"--provider",
+			"trust-list-fixture",
+			"--model",
+			"fixture",
+		],
 		env: {
 			...CLEARED_STORAGE_ENV,
 			ATOMIC_CODING_AGENT_DIR: scenario.agentDir,
 			ATOMIC_WORKFLOW_JOURNAL_PATH: join(scenario.root, "journal.sqlite"),
-			ANTHROPIC_API_KEY: "test-only-no-requests",
 		},
 	});
-	const listings: ListedWorkflows[] = [];
+	const listedNames: string[] = [];
 	try {
 		await client.start();
 		client.onEvent((event) => {
-			if (event.type !== "message_start") return;
-			const message = event.message as ListedWorkflows;
-			if (message.details?.kind === "list") listings.push(message);
+			if (event.type !== "tool_execution_end" || event.toolName !== "workflow") return;
+			const details = (event.result as { details?: { items?: Array<{ name: string }> } } | undefined)?.details;
+			for (const item of details?.items ?? []) listedNames.push(item.name);
 		});
-		await client.prompt("/workflow list");
-		const deadline = Date.now() + STEP_TIMEOUT_MS;
-		while (listings.length === 0) {
-			if (Date.now() > deadline)
-				throw new Error(`timed out waiting for the workflow listing.\nCLI stderr:\n${client.getStderr()}`);
-			await sleep(100);
-		}
-		return (listings[0]!.details?.entries ?? []).map((entry) => entry.name);
+		await client.promptAndWait("list workflows");
+		return listedNames;
 	} finally {
 		await client.stop();
 	}
@@ -108,7 +132,7 @@ test(
 		try {
 			const notApproved = await makeScenario("no-approve");
 			scenarios.push(notApproved);
-			const listedNotApproved = await listWorkflows(notApproved, ["--no-approve"]);
+			const listedNotApproved = await listProjectWorkflows(notApproved, ["--no-approve"]);
 			assert.equal(listedNotApproved.includes(WORKFLOW_NAME), false);
 			assert.equal(fileExistsSync(notApproved.marker), false);
 
@@ -118,13 +142,13 @@ test(
 				join(declined.agentDir, "trust.json"),
 				`${JSON.stringify({ [declined.project]: false }, null, 2)}\n`,
 			);
-			const listedDeclined = await listWorkflows(declined, []);
+			const listedDeclined = await listProjectWorkflows(declined, []);
 			assert.equal(listedDeclined.includes(WORKFLOW_NAME), false);
 			assert.equal(fileExistsSync(declined.marker), false);
 
 			const approved = await makeScenario("approve");
 			scenarios.push(approved);
-			const listedApproved = await listWorkflows(approved, ["--approve"]);
+			const listedApproved = await listProjectWorkflows(approved, ["--approve"]);
 			assert.ok(listedApproved.includes(WORKFLOW_NAME), listedApproved.join(", "));
 			assert.equal(fileExistsSync(approved.marker), true);
 		} finally {

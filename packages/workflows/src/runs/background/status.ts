@@ -492,7 +492,7 @@ export async function resumeRun(
 			snapshot,
 			resumed: resumedCopy,
 			mode: "snapshot",
-			message: `This failed run is marked resumable; use /workflow resume ${runId} to ask the durable backend to retry it or start a new workflow run.`,
+			message: `This failed run is marked resumable; use /resume ${runId} to ask the durable backend to retry it or start a new workflow run.`,
 		};
 	}
 	if (
@@ -662,8 +662,8 @@ async function pauseRunWithAction(
 				runId,
 				paused: [],
 				message: resumableElsewhere
-					? `Run ${runId} paused. Resume it with /workflow resume ${runId}, here or, once this process has exited, from a new Atomic process; untracked initialization or workflow code may still finish, but further workflow steps and completion wait for resume.`
-					: `Run ${runId} paused. Resume with /workflow resume on this live process; untracked initialization or workflow code may still finish, but further workflow steps and completion wait for resume. Cross-process resume requires durable checkpoint or pending prompt progress.`,
+					? `Run ${runId} paused. Resume it from /workflows ${runId}, here or, once this process has exited, with /resume ${runId} from a new Atomic process; untracked initialization or workflow code may still finish, but further workflow steps and completion wait for resume.`
+					: `Run ${runId} paused. Resume with /workflows ${runId} on this live process; untracked initialization or workflow code may still finish, but further workflow steps and completion wait for resume. Cross-process resume requires durable checkpoint or pending prompt progress.`,
 			};
 		}
 		const controlRuns = activeStore.runs().filter((candidate) => controlRunIds.includes(candidate.id));

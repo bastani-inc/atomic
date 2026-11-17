@@ -1551,7 +1551,7 @@ export class SqlPoolQueue {
 		}
 		if (entryEdited && options.acceptEntryChanges !== true)
 			throw new Error(
-				`Pool boundary identity conflict: child ${requested.childRunId} was queued by an earlier run of root ${lease.runId} with the entry module of worker definition ${requested.definition} at sha256 ${short(queued.digest)}, and the root now runs that module at sha256 ${short(requested.digest)}. Resume the root with /workflow resume ${lease.runId} --accept-entry-changes, or acceptEntryChanges: true in the SDK, to run the child with the edited module, or restore the module.`,
+				`Pool boundary identity conflict: child ${requested.childRunId} was queued by an earlier run of root ${lease.runId} with the entry module of worker definition ${requested.definition} at sha256 ${short(queued.digest)}, and the root now runs that module at sha256 ${short(requested.digest)}. Resume root ${lease.runId} from /resume and confirm the edited module, or pass acceptEntryChanges: true in the SDK, to run the child with the edited module, or restore the module.`,
 			);
 		const stored = storedDescriptor(json, await this.keepsWhole(tx, json));
 		await tx.run(

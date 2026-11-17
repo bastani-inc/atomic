@@ -62,7 +62,7 @@ On the machine that starts the runs, select the shared database for workflow run
 }
 ```
 
-Roots that `/workflow run` starts then run their pooled children on this machine's own workers and on every worker host. SDK runs pass `workers: { placement: "shared" }` instead. See [Workflow settings](/settings#local-worker-pools).
+Roots that the `workflow` tool starts then run their pooled children on this machine's own workers and on every worker host. SDK runs pass `workers: { placement: "shared" }` instead. See [Workflow settings](/settings#local-worker-pools).
 
 ## Stop, drain and status
 
@@ -85,7 +85,7 @@ The command never waits on a database that stops answering: after 5 seconds it p
 Atomic 0.9.88 upgrades a shared database's session schema the first time it opens it, and older Atomic versions then refuse that database with `StorageSchemaVersionError`. Upgrade every machine that shares the database together, in this order:
 
 1. Stop the fleet controllers and `atomic worker metrics`, so nothing adds hosts.
-2. Let running roots finish, or stop them and continue them after the upgrade with `/workflow resume`.
+2. Let running roots finish, or stop them and continue them after the upgrade from `/resume`.
 3. Drain the worker hosts with SIGTERM, and stop the Atomic sessions on the machines that start roots.
 4. Install 0.9.88 or later on every machine, including container images and the user data of scaling groups (`atomic update`, or `npm install -g @bastani/atomic`), and update the storage adapter with `atomic update --extensions`.
 5. Start the roots' machines, then the hosts, then the controllers.
@@ -424,4 +424,4 @@ docker run -d --name atomic-worker -e ATOMIC_DB=postgresql://atomic@db.example.c
 - **`degraded failures=… retry_in_ms=…`** means the host could not reach the database. It keeps running its children and tries again after 1 second, then twice as long after each further failure, up to 30 seconds, and prints `recovered` once it gets through. Its workers keep their children while each child's lease (`localWorkers.leaseMs`, 30 seconds by default) lasts. A child whose lease expires during a longer outage, or that writes a checkpoint while the database is unreachable, is replayed by another host from its last checkpoint.
 - **`shared store unknown` or `shared store degraded`**, or hosts that all turn `stale` at once, mean the database stopped answering or stopped committing writes. sqld 0.24.33 and earlier can stop taking writes from every client until it restarts ([tursodatabase/libsql#2286](https://github.com/tursodatabase/libsql/issues/2286)): start sqld with `--checkpoint-interval-s 60` (`SQLD_CHECKPOINT_INTERVAL_S=60`) to avoid it, and restart it if writes stay stuck. Hosts keep their running children meanwhile.
 - **PostgreSQL connection, TLS, pooler and cloud identity errors**: see [Troubleshooting](/guides/worker-fleets-postgres#troubleshooting) in the PostgreSQL fleet guide.
-- **A host never claims anything.** It runs a root's children only if it has the root's worker definitions at the same paths with the same entry module, and the root uses shared placement. Check `atomic worker status`, and `/workflow status <run>` on the root's machine.
+- **A host never claims anything.** It runs a root's children only if it has the root's worker definitions at the same paths with the same entry module, and the root uses shared placement. Check `atomic worker status`, and the run in `/workflows` on the root's machine.

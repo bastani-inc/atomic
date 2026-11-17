@@ -10,6 +10,7 @@ import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { defaultTheme, visibleText } from "./overlay-graph-helpers.js";
 
 const STAGE_FOOTER = "esc back  ·  ↵ open stage chat  ·  / stages";
+const COMPLETED_STAGE_FOOTER = "esc back  ·  ↵ open stage chat  ·  d details  ·  / stages";
 /** A focused tool node activates its read-only detail with the same key. */
 const TOOL_FOOTER = "esc back  ·  ↵ open tool detail  ·  / stages";
 /** Nothing focused can be activated: the `↵` segment drops out entirely. */
@@ -87,10 +88,10 @@ describe("tool graph chat hints", () => {
 
 		const nonAttachableView = viewFor([stage("summary", [], { status: "completed", attachable: false })]);
 		const nonAttachableText = visibleText(nonAttachableView.render(120));
-		assert.ok(nonAttachableText.includes(STAGE_FOOTER));
+		assert.ok(nonAttachableText.includes(COMPLETED_STAGE_FOOTER));
 
 		const compactToolText = visibleText(toolView.render(40));
-		assert.match(compactToolText, /esc(?:\/←)?\s+back/i);
+		assert.match(compactToolText, /\besc(?:\s+back)?\s*·/i);
 		assert.doesNotMatch(compactToolText, /stage chat/);
 		stageView.dispose();
 		toolView.dispose();

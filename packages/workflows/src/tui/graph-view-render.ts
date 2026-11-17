@@ -132,11 +132,11 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 					this._recordGraphNodeHitRects(bodyStart + this.lastGraphTopPad, this.lastGraphVisibleRows);
 					this._renderSwitcherOverlay(lines, run, frameWidth, bodyStart, bodyRows);
 				}
-				this._renderKeysHelpOverlay(lines, frameWidth, bodyStart, bodyRows);
 			} else {
 				this.graphNodeHitRects = [];
 				this.lastGraphViewport = null;
 			}
+			this._renderKeysHelpOverlay(lines, frameWidth, bodyStart, bodyRows);
 			this.graphLayout.paintScrollbar(lines, frameWidth);
 
 			return lines;
@@ -199,6 +199,15 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		if (this.toolDetail !== null) return this._toolDetailFrame(this.toolDetail, width);
 		const stage = this._stageDetailStage();
 		if (this.stageDetail === null || stage === undefined) return null;
+		const fullStage =
+			stage.modelAttempts !== undefined
+				? stage
+				: (this.store.run?.(this.stageDetail.runId)?.stages.find((s) => s.id === this.stageDetail!.stageId) ??
+					stage);
+		const detailStage =
+			fullStage === stage || fullStage.modelAttempts === undefined
+				? stage
+				: { ...stage, modelAttempts: fullStage.modelAttempts };
 		const safeWidth = Math.max(1, Math.floor(width));
 		const cached = this.stageDetailFrame;
 		if (
@@ -212,7 +221,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 			width: safeWidth,
 			blockWidth: safeWidth,
 			leftPad: 0,
-			lines: renderStageFailureDetailLines(stage, {
+			lines: renderStageFailureDetailLines(detailStage, {
 				theme: this.graphTheme,
 				width: safeWidth,
 				logs: this.stageDetail.logs,
@@ -312,7 +321,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		const body = [
 			this._centerCanvasContent(`  ${hexToAnsi(this.graphTheme.textMuted)}No active workflow run.${RESET}`, width),
 			this._centerCanvasContent(
-				`  ${hexToAnsi(this.graphTheme.dim)}Start one with ${hexToAnsi(this.graphTheme.accent)}/workflow <name>${RESET}${hexToAnsi(this.graphTheme.dim)} or press ${hexToAnsi(this.graphTheme.accent)}F2${RESET}${hexToAnsi(this.graphTheme.dim)} on an active run.${RESET}`,
+				`  ${hexToAnsi(this.graphTheme.dim)}Open ${hexToAnsi(this.graphTheme.accent)}/workflows${RESET}${hexToAnsi(this.graphTheme.dim)} or press ${hexToAnsi(this.graphTheme.accent)}F2${RESET}${hexToAnsi(this.graphTheme.dim)} on an active run.${RESET}`,
 				width,
 			),
 		];

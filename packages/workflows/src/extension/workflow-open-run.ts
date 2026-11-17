@@ -1,25 +1,18 @@
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { Store } from "../shared/store.js";
-import { deriveGraphTheme, type GraphTheme } from "../tui/graph-theme.js";
+import { subscribeStoreInvalidation } from "../shared/store-observation.js";
+import { deriveGraphTheme } from "../tui/graph-theme.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { renderSessionList } from "../tui/session-list.js";
-import { openSessionPicker } from "../tui/session-overlays.js";
-import {
-	closesWorkflowsEmptySheet,
-	renderWorkflowsEmptySheet,
-	WORKFLOWS_EMPTY_MESSAGE,
-} from "../tui/workflows-empty-sheet.js";
+import { openWorkflowsListing } from "../tui/workflows-listing.js";
 import type { PiCommandContext } from "./public-types.js";
-import type { PiCustomComponent, PiCustomOverlayFactoryTui, PiCustomOverlayFunction } from "./wiring.js";
 import { tokenizeWorkflowArgs, type WorkflowCommandReporter } from "./workflow-command-utils.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import { overlaySurfaceFromContext, resolveRunId, resolveStageTarget } from "./workflow-targets.js";
 
 export interface OpenWorkflowRunOptions {
 	readonly onReturn?: () => void;
-
 	readonly stageId?: string;
-
 	readonly stageRunId?: string;
 }
 
@@ -77,11 +70,7 @@ export async function handleWorkflowsCommand(
 		return;
 	}
 	const runs = topLevelWorkflowRuns(store.runs());
-	if (runs.length === 0) {
-		if (interactive && typeof ctx.ui?.custom === "function")
-			return await showWorkflowsEmptySheet(ctx.ui.custom, theme);
-		return reporter.info(WORKFLOWS_EMPTY_MESSAGE);
-	}
+	if (runs.length === 0 && !interactive) return reporter.info("No workflows in this session.");
 	if (!interactive) return reporter.info(renderSessionList(store.runs(), { theme, includeAll: true }));
 	if (runs.length === 1) {
 		openWorkflowRun(runs[0]!.id, ctx, deps);
@@ -89,38 +78,25 @@ export async function handleWorkflowsCommand(
 	}
 	if (typeof ctx.ui?.custom !== "function")
 		return reporter.info(renderSessionList(store.runs(), { theme, includeAll: true }));
-	const picked = await openSessionPicker(ctx.ui, store, theme, "connect", options.selectRunId);
-	if (picked.kind !== "connect") return;
-
-	const reopen = (): void => void handleWorkflowsCommand("", ctx, reporter, deps, { selectRunId: picked.runId });
-	openWorkflowRun(picked.runId, ctx, deps, { onReturn: reopen });
+	await showWorkflowsListing(ctx, reporter, deps, options.selectRunId);
 }
 
-function showWorkflowsEmptySheet(custom: PiCustomOverlayFunction, theme: GraphTheme): Promise<void> {
-	return new Promise<void>((resolve) => {
-		let settled = false;
-		const settle = (): void => {
-			if (settled) return;
-			settled = true;
-			resolve();
-		};
-		const factory = (
-			_tui: PiCustomOverlayFactoryTui,
-			_theme: unknown,
-			_keys: unknown,
-			done: (result: undefined) => void,
-		): PiCustomComponent => ({
-			render: (width: number) => renderWorkflowsEmptySheet(width, theme),
-			handleInput: (data: string): boolean => {
-				if (closesWorkflowsEmptySheet(data)) {
-					done(undefined);
-					settle();
-				}
-				return true;
-			},
-			invalidate: () => {},
-			dispose: settle,
-		});
-		void Promise.resolve(custom(factory, { overlay: false, purpose: "navigation" })).then(settle, settle);
+async function showWorkflowsListing(
+	ctx: PiCommandContext,
+	reporter: WorkflowCommandReporter,
+	deps: WorkflowsCommandDeps,
+	selectRunId?: string,
+): Promise<void> {
+	const { store } = deps;
+	const reopen = (): void => {
+		showWorkflowsListing(ctx, reporter, deps, picked?.runId).catch((error: unknown) =>
+			reporter.error(`/workflows failed: ${error instanceof Error ? error.message : String(error)}`),
+		);
+	};
+	const picked = await openWorkflowsListing(ctx.ui, {
+		runs: () => store.runs(),
+		subscribe: (listener) => subscribeStoreInvalidation(store, listener),
+		selectRunId,
 	});
+	if (picked?.kind === "run") openWorkflowRun(picked.runId, ctx, deps, { onReturn: reopen });
 }

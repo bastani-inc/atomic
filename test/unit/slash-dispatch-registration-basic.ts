@@ -1,261 +1,75 @@
 // @ts-nocheck
 import { describe, test } from "vitest";
-import {
-	BUNDLED_EXTENSION_SLASH_COMMANDS,
-	getBundledWorkflowArgumentCompletions,
-} from "../../packages/coding-agent/src/core/slash-commands.js";
-import type { PiArgumentCompletion } from "./slash-dispatch-utils.js";
+import { BUNDLED_EXTENSION_SLASH_COMMANDS } from "../../packages/coding-agent/src/core/slash-commands.js";
+import type { RegisteredCommand } from "./slash-dispatch-utils.js";
 import {
 	assert,
-	buildCtx,
 	buildMockPi,
 	installSlashDispatchTestHooks,
+	makeInflightRun,
 	runFactory,
-	WORKFLOW_COMMAND_OUTPUT_CUSTOM_TYPE,
+	store,
 } from "./slash-dispatch-utils.js";
 
 installSlashDispatchTestHooks();
 
 describe("factory command registration (real factory)", () => {
-	/** Import factory and call it with a mock pi whose registry contains known workflows. */
 	async function runFactoryWithMock(): Promise<RegisteredCommand[]> {
 		const { pi, commands } = buildMockPi();
 		await runFactory(pi);
 		return commands;
 	}
 
-	test.sequential("per-workflow slash aliases are not registered", async () => {
+	test.sequential("per-workflow slash aliases and /workflow are not registered (#5224)", async () => {
 		const commands = await runFactoryWithMock();
 		const names = commands.map((c) => c.name);
 		assert.equal(
 			names.some((name) => name.startsWith("workflow:")),
 			false,
 		);
+		assert.equal(names.includes("workflow"), false);
+		assert.deepEqual(
+			names.filter((name) => name.startsWith("workflow")),
+			["workflows", "workflow-authoring"],
+		);
 	});
 
-	test.sequential("base /workflow command registers quit without kill help", async () => {
+	test.sequential("registers /workflows and /workflow-authoring matching bundled fallback descriptions (#5224)", async () => {
 		const commands = await runFactoryWithMock();
-		const workflowCommand = commands.find((command) => command.name === "workflow");
-		assert.notEqual(workflowCommand, undefined);
-		assert.match(workflowCommand!.options.description, /quit/);
-		assert.doesNotMatch(workflowCommand!.options.description, /kill/);
+		const workflowsCommand = commands.find((command) => command.name === "workflows");
+		const authoringCommand = commands.find((command) => command.name === "workflow-authoring");
+		assert.notEqual(workflowsCommand, undefined);
+		assert.notEqual(authoringCommand, undefined);
+		assert.equal(workflowsCommand!.options.description, "Browse running and completed workflows");
+		assert.equal(authoringCommand!.options.description, "Load the reference for writing workflow definitions");
+
+		const bundledWorkflows = BUNDLED_EXTENSION_SLASH_COMMANDS.find((command) => command.name === "workflows");
+		const bundledAuthoring = BUNDLED_EXTENSION_SLASH_COMMANDS.find(
+			(command) => command.name === "workflow-authoring",
+		);
+		assert.equal(
+			BUNDLED_EXTENSION_SLASH_COMMANDS.some((command) => command.name === "workflow"),
+			false,
+		);
+		assert.equal(bundledWorkflows?.description, workflowsCommand!.options.description);
+		assert.equal(bundledAuthoring?.description, authoringCommand!.options.description);
+	});
+
+	test.sequential("/workflows argument completions offer only top-level session run IDs (#5224)", async () => {
+		const runId = "a1b2c3d4-0000-4000-8000-000000000001";
+		store.recordRunStart(makeInflightRun(runId));
+		const commands = await runFactoryWithMock();
+		const workflowsCmd = commands.find((c) => c.name === "workflows");
+		assert.notEqual(workflowsCmd, undefined);
+
+		const completions = (await workflowsCmd!.options.getArgumentCompletions?.("a1b2")) ?? [];
+		assert.deepEqual(completions, [
+			{
+				value: `${runId} `,
+				label: runId,
+				description: "test-wf — running",
+			},
+		]);
+		assert.equal(await workflowsCmd!.options.getArgumentCompletions?.(`${runId} `), null);
 	});
 });
-
-// ---------------------------------------------------------------------------
-// Completions include workflow names
-// ---------------------------------------------------------------------------
-
-describe("getArgumentCompletions includes workflow names", () => {
-	test.sequential("completions include admin subcommands and workflow names from registry", async () => {
-		const { pi, commands } = buildMockPi();
-		await runFactory(pi);
-
-		const workflowCmd = commands.find((c) => c.name === "workflow");
-		assert.notEqual(workflowCmd, undefined);
-
-		const completions = (await workflowCmd!.options.getArgumentCompletions?.("")) ?? [];
-		const labels = completions.map((c) => c.label);
-
-		assert.ok(labels.includes("list"));
-		assert.ok(labels.includes("status"));
-		assert.equal(labels.includes("connect"), false, "removed (#5224)");
-		assert.equal(labels.includes("attach"), false, "removed (#5224)");
-		assert.ok(labels.includes("pause"));
-		assert.equal(labels.includes("interrupt"), false);
-		assert.ok(labels.includes("quit"));
-		assert.equal(labels.includes("kill"), false);
-		assert.ok(labels.includes("resume"));
-		assert.ok(labels.includes("inputs"));
-		assert.ok(labels.includes("reload"));
-		assert.equal(labels.includes("session"), false);
-
-		assert.ok(labels.includes("fan-out-and-synthesize"));
-		assert.ok(labels.includes("tournament"));
-		assert.ok(labels.includes("open-claude-design"));
-	});
-
-	test.sequential("completions filter by partial prefix", async () => {
-		const { pi, commands } = buildMockPi();
-		await runFactory(pi);
-
-		const workflowCmd = commands.find((c) => c.name === "workflow");
-		const completions = (await workflowCmd!.options.getArgumentCompletions?.("li")) ?? [];
-		assert.equal(
-			completions.every((c) => c.label.startsWith("li")),
-			true,
-		);
-		assert.ok(completions.map((c) => c.label).includes("list"));
-	});
-
-	test.sequential("completions cover subcommand arguments without shadowing submit", async () => {
-		const { pi, commands } = buildMockPi();
-		await runFactory(pi);
-
-		const workflowCmd = commands.find((c) => c.name === "workflow");
-		const completions = workflowCmd!.options.getArgumentCompletions?.("pause -") ?? [];
-		assert.ok(completions.some((c) => c.value === "pause --all "));
-		assert.equal(
-			completions.some((c) => c.label === "-y" || c.label === "--yes"),
-			false,
-		);
-
-		const quitCompletions = workflowCmd!.options.getArgumentCompletions?.("quit -") ?? [];
-		assert.ok(quitCompletions.some((c) => c.value === "quit --all "));
-		assert.equal(
-			quitCompletions.some((c) => c.label === "-y" || c.label === "--yes"),
-			false,
-		);
-		assert.equal(
-			quitCompletions.some((c) => c.value.includes("kill")),
-			false,
-		);
-
-		const bundledQuit = getBundledWorkflowArgumentCompletions("quit -") ?? [];
-		assert.ok(bundledQuit.some((c) => c.value === "quit --all "));
-		assert.equal(
-			bundledQuit.some((c) => c.label === "-y" || c.label === "--yes"),
-			false,
-		);
-	});
-
-	test("bundled fallback completion and description expose quit without kill", () => {
-		const completions = getBundledWorkflowArgumentCompletions("") ?? [];
-		const labels = completions.map((completion) => completion.label);
-		assert.ok(labels.includes("quit"));
-		assert.equal(labels.includes("kill"), false);
-		assert.ok(labels.includes("pause"));
-		assert.equal(labels.includes("interrupt"), false);
-		const bundledPause = getBundledWorkflowArgumentCompletions("pause -") ?? [];
-		assert.ok(bundledPause.some((c) => c.value === "pause --all "));
-		assert.equal(
-			bundledPause.some((c) => c.label === "-y" || c.label === "--yes"),
-			false,
-		);
-
-		const workflowCommand = BUNDLED_EXTENSION_SLASH_COMMANDS.find((command) => command.name === "workflow");
-		assert.match(workflowCommand?.description ?? "", /quit/);
-		assert.doesNotMatch(workflowCommand?.description ?? "", /kill/);
-		assert.doesNotMatch(workflowCommand?.description ?? "", /interrupt/);
-	});
-
-	test.sequential("trailing-space completion does not throw on empty subcommand", async () => {
-		// Regression: typing `/workflow ` (just the slash command + space)
-		// forwards `partial = " "` to getArgumentCompletions, which used to
-		// fall through to `registry.get("")`, throwing
-		// `TypeError: normalizeWorkflowName: name must be a non-empty string`.
-		// The trailing-space case should produce the same admin + workflow-name
-		// menu as the no-args case (partial = "").
-		const { pi, commands } = buildMockPi();
-		await runFactory(pi);
-
-		const workflowCmd = commands.find((c) => c.name === "workflow");
-		let completions: PiArgumentCompletion[] | null | undefined;
-		await assert.doesNotReject(async () => {
-			completions = (await workflowCmd!.options.getArgumentCompletions?.(" ")) ?? null;
-		});
-		const labels = (completions ?? []).map((c) => c.label);
-		assert.ok(labels.includes("list"), "admin subcommands offered");
-		assert.ok(labels.includes("fan-out-and-synthesize"), "workflow names offered");
-	});
-});
-
-// ---------------------------------------------------------------------------
-// removed session namespace
-// ---------------------------------------------------------------------------
-
-describe("/workflow session namespace removed", () => {
-	test.sequential("/workflow session ... is not treated as a control namespace", async () => {
-		const { pi, commands } = buildMockPi();
-		await runFactory(pi);
-
-		const workflowCmd = commands.find((c) => c.name === "workflow");
-		const { ctx, messages } = buildCtx();
-		await workflowCmd!.options.handler("session kill abc12345", ctx);
-
-		const joined = messages.join("\n");
-		assert.match(joined, /Workflow not found: session/);
-		assert.doesNotMatch(joined, /Usage: \/workflow session/);
-	});
-});
-
-// ---------------------------------------------------------------------------
-// inputs subcommand via execute handler (factory-registered)
-// ---------------------------------------------------------------------------
-
-describe("inputs subcommand", () => {
-	test.sequential("/workflow inputs with no name prints usage", async () => {
-		const { pi, commands } = buildMockPi();
-		await runFactory(pi);
-
-		const workflowCmd = commands.find((c) => c.name === "workflow");
-		const { ctx, messages } = buildCtx();
-		await workflowCmd!.options.handler("inputs", ctx);
-
-		assert.ok(messages[0].includes("Usage:"));
-		assert.ok(messages[0].includes("inputs"));
-	});
-
-	test.sequential("/workflow inputs <unknown> prints workflow not found plus available", async () => {
-		const { pi, commands } = buildMockPi();
-		await runFactory(pi);
-
-		const workflowCmd = commands.find((c) => c.name === "workflow");
-		const { ctx, messages } = buildCtx();
-		await workflowCmd!.options.handler("inputs no-such-workflow-xyz", ctx);
-
-		assert.ok(messages[0].includes("no-such-workflow-xyz"));
-		assert.ok(messages[0].includes("Available:"));
-	});
-
-	test.sequential("/workflow inputs <known> shows schema", async () => {
-		const { pi, commands, sent } = buildMockPi();
-		await runFactory(pi);
-
-		const workflowCmd = commands.find((c) => c.name === "workflow");
-		const { ctx, messages } = buildCtx();
-		await workflowCmd!.options.handler("inputs tournament", ctx);
-
-		assert.ok(!messages[0].includes("Workflow not found"));
-		assert.ok(messages[0].includes("tournament"));
-		assert.equal(
-			sent.some((message) => message.customType === WORKFLOW_COMMAND_OUTPUT_CUSTOM_TYPE),
-			false,
-			"interactive schema output should continue using ctx.ui.notify",
-		);
-	});
-});
-
-// ---------------------------------------------------------------------------
-// /workflow fan-out-and-synthesize prompt=test dispatch (full factory path)
-// ---------------------------------------------------------------------------
-
-describe("/workflow <name> prompt=test dispatches run via factory", () => {
-	test.sequential("/workflow fan-out-and-synthesize dispatches run action (not unknown subcommand)", async () => {
-		const { pi, commands, sent } = buildMockPi();
-		await runFactory(pi);
-
-		const workflowCmd = commands.find((c) => c.name === "workflow");
-		const { ctx, messages } = buildCtx();
-
-		await workflowCmd!.options.handler("fan-out-and-synthesize prompt=test", ctx);
-
-		assert.equal(
-			messages.some((m) => m.includes("unknown subcommand")),
-			false,
-		);
-		// Success path: the dispatch confirmation is now emitted as a
-		// chat-surface `kind: "dispatch"` message (sendMessage), not a string
-		// through ctx.ui.notify. Either error wording in `messages` or a
-		// dispatch payload in `sent` counts as evidence the handler resolved.
-		const dispatchSent = sent.some((m) => (m.details as { kind?: string } | undefined)?.kind === "dispatch");
-		const errored = messages.some(
-			(m) => m.includes("completed") || m.includes("failed") || m.includes("Workflow not found"),
-		);
-		assert.equal(dispatchSent || errored, true);
-	});
-});
-
-// ---------------------------------------------------------------------------
-// /workflow <name> --help prints schema, skips dispatch
-// ---------------------------------------------------------------------------

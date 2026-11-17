@@ -21,7 +21,6 @@ import "../../packages/coding-agent/src/modes/interactive/interactive-extension-
 import "../../packages/coding-agent/src/modes/interactive/interactive-input-handling.ts";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
 import { getEditorTheme, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
-import { InlineFormEditor } from "../../packages/workflows/src/tui/inline-form-editor.ts";
 
 const DOWN = "\x1b[B";
 
@@ -329,20 +328,11 @@ describe("main composer agent panel hints and custom editor Down routing (#5239)
 
 		let inlineReceivedDown = 0;
 		mode.setCustomEditorComponent((tui, _theme, kb) => {
-			const inline = new InlineFormEditor(tui as { requestRender?: () => void }, {
-				formId: "test-form",
-				theme: {} as never,
-				keybindings: kb,
-				onExit: () => {},
-			});
+			const inline = new CustomEditor(tui, getEditorTheme(), kb);
 			const originalHandleInput = inline.handleInput.bind(inline);
 			inline.handleInput = (data: string) => {
 				if (data === DOWN) inlineReceivedDown += 1;
-				try {
-					return originalHandleInput(data);
-				} catch {
-					return false;
-				}
+				return originalHandleInput(data);
 			};
 			return inline as never;
 		});
@@ -353,10 +343,7 @@ describe("main composer agent panel hints and custom editor Down routing (#5239)
 		mode.editor.handleInput(DOWN);
 		assert.equal(inlineReceivedDown, 1);
 
-		const directInline = new InlineFormEditor(
-			{ requestRender: () => {} },
-			{ formId: "direct-form", theme: {} as never, keybindings, onExit: () => {} },
-		);
+		const directInline = new CustomEditor({ requestRender: () => {} } as TUI, getEditorTheme(), keybindings);
 		mode.editorComponentFactory = undefined;
 		mode.editor = directInline as never;
 		mode.editorContainer.clear();

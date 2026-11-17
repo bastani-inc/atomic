@@ -10,7 +10,7 @@ import type {
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { handleDurableResume } from "../../packages/workflows/src/extension/workflow-durable-resume-command.js";
 import { WorkflowInstanceOwnershipError } from "../../packages/workflows/src/extension/workflow-instance-owner.js";
-import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
+import { createWorkflowResumeProvider } from "../../packages/workflows/src/extension/workflow-resume-provider.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
 import { stageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
@@ -81,18 +81,27 @@ async function slashResume(
 ) {
 	const info: string[] = [];
 	const errors: string[] = [];
-	await handleRunControlCommand(
-		"resume",
-		[target],
-		ctx,
-		{ info: (message) => info.push(message), error: (message) => errors.push(message) },
-		{
-			pi,
-			overlay: { open: () => undefined, toggle: () => undefined, close: () => undefined },
-			runtimeForContext: () => runtime,
-			ensureWorkflowResourcesLoaded: () => undefined,
-		},
-	);
+	const provider = createWorkflowResumeProvider({
+		pi,
+		overlay: { open: () => undefined, toggle: () => undefined, close: () => undefined },
+		runtimeForContext: () => runtime,
+		ensureWorkflowResourcesLoaded: () => undefined,
+		context: () => ctx,
+	});
+	try {
+		await provider.resumeFromPicker(target, {
+			...ctx,
+			ui: {
+				...ctx.ui,
+				notify: (message, type) => {
+					if (type === "error") errors.push(message);
+					else info.push(message);
+				},
+			},
+		});
+	} catch (error) {
+		errors.push(error instanceof Error ? error.message : String(error));
+	}
 	return { info, errors };
 }
 
@@ -336,11 +345,13 @@ test.sequential("cross-project tool and headless resume give an actionable error
 	const original = structuredClone(backend.getWorkflow(runId));
 	const { runtime, execute } = setup();
 	const result = await slashResume(runtime, runId, slashContext(SUCCESSOR_SESSION));
-	assert.match(result.errors.join("\n"), /\/workflow resume.*interactive/);
-	await assert.rejects(
-		execute({ action: "resume", runId }, modelContext(PREVIOUS_SESSION)),
-		/\/workflow resume.*interactive/,
-	);
+	assert.match(result.errors.join("\n"), /\/resume in an interactive session/);
+	assert.doesNotMatch(result.errors.join("\n"), /\/workflow\b/);
+	await assert.rejects(execute({ action: "resume", runId }, modelContext(PREVIOUS_SESSION)), (error: Error) => {
+		assert.match(error.message, /\/resume in an interactive session/);
+		assert.doesNotMatch(error.message, /\/workflow\b/);
+		return true;
+	});
 	assert.deepEqual(backend.getWorkflow(runId), original);
 	assert.equal(store.runs().length, 0);
 });

@@ -566,7 +566,7 @@ export async function activatePublicPool(
 		throw new Error(
 			`Since root ${options.runId} started, ${refused.map((change) => change.description).join("; ")}. Its recorded steps and queued children depend on these, so restore them to resume it, or start a new run. The pool size (localWorkers.count) and the root's own limits (admission.limits and admission.host) can change between resumes.${
 				refused.some((change) => change.entry)
-					? ` An edited entry module can also be accepted: resume with /workflow resume ${options.runId} --accept-entry-changes, or acceptEntryChanges: true in the SDK, to replay the recorded steps and run the rest of each unfinished child with the edited module.`
+					? ` An edited entry module can also be accepted: resume from /resume and confirm the edited module, or pass acceptEntryChanges: true in the SDK, to replay the recorded steps and run the rest of each unfinished child with the edited module.`
 					: ""
 			}`,
 		);

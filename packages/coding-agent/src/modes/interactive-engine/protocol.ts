@@ -4,6 +4,7 @@ import { parseSerializedDecisionError, type SerializedDecisionError } from "../.
 import type { UIPromptEndEvent, UIPromptStartEvent } from "../../core/extensions/agent-events.ts";
 import type {
 	HostInputFormField,
+	HostInputFormRequest,
 	HostSessionPickerRow,
 	WidgetScrollRequest,
 	WidgetScrollState,
@@ -150,6 +151,7 @@ export type InteractiveEngineMessage =
 			heading?: string;
 			submitLabel?: string;
 	  }
+	| { type: "engine_input_form_refused"; componentId: string }
 	| { type: "engine_input_form_close"; componentId: string };
 /**
  * The host is quitting because the user asked to, not because a signal ended the
@@ -245,7 +247,8 @@ export type InteractiveEngineCommand =
 	| { type: "engine_session_picker_cancel"; componentId: string }
 	| { type: "engine_session_picker_delete"; componentId: string; path: string; deleteRequestId?: number }
 	| { type: "engine_input_form_submit"; componentId: string; values: Record<string, string> }
-	| { type: "engine_input_form_cancel"; componentId: string };
+	| { type: "engine_input_form_cancel"; componentId: string }
+	| { type: "engine_input_form_error"; componentId: string; message: string };
 
 const ACTIVITY_KINDS: readonly CallbackActivityKind[] = [
 	"extension.hook",
@@ -484,6 +487,29 @@ function parseJsonObject(line: string): JsonObject | undefined {
 	return isJsonObject(value) ? value : undefined;
 }
 
+export function readHostInputFormRequest(request: unknown): HostInputFormRequest | undefined {
+	let text: string | undefined;
+	try {
+		text = JSON.stringify(request);
+	} catch {
+		return undefined;
+	}
+	const value = text === undefined ? undefined : parseJsonObject(text);
+	return value === undefined ? undefined : parseHostInputFormRequest(value);
+}
+
+function parseHostInputFormRequest(value: JsonObject): HostInputFormRequest | undefined {
+	const fields = parseInputFormFields(value.fields);
+	return typeof value.title === "string" && fields
+		? {
+				title: value.title,
+				fields,
+				...(typeof value.heading === "string" ? { heading: value.heading } : {}),
+				...(typeof value.submitLabel === "string" ? { submitLabel: value.submitLabel } : {}),
+			}
+		: undefined;
+}
+
 export function parseInteractiveEngineMessage(line: string): InteractiveEngineMessage | undefined {
 	const value = parseJsonObject(line);
 	if (!value || typeof value.type !== "string") return undefined;
@@ -697,17 +723,11 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				? { type: value.type, componentId: value.componentId }
 				: undefined;
 		case "engine_input_form_open": {
-			const fields = parseInputFormFields(value.fields);
-			return typeof value.componentId === "string" && typeof value.title === "string" && fields
-				? {
-						type: value.type,
-						componentId: value.componentId,
-						title: value.title,
-						fields,
-						...(typeof value.heading === "string" ? { heading: value.heading } : {}),
-						...(typeof value.submitLabel === "string" ? { submitLabel: value.submitLabel } : {}),
-					}
-				: undefined;
+			if (typeof value.componentId !== "string") return undefined;
+			const request = parseHostInputFormRequest(value);
+			return request
+				? { type: value.type, componentId: value.componentId, ...request }
+				: { type: "engine_input_form_refused", componentId: value.componentId };
 		}
 		default:
 			return undefined;
@@ -792,6 +812,8 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 	}
 	if (value.type === "engine_session_picker_cancel") return { type: value.type, componentId: value.componentId };
 	if (value.type === "engine_input_form_cancel") return { type: value.type, componentId: value.componentId };
+	if (value.type === "engine_input_form_error" && typeof value.message === "string")
+		return { type: value.type, componentId: value.componentId, message: value.message };
 	if (value.type === "engine_input_form_submit") {
 		const values = parseStringRecord(value.values);
 		return values ? { type: value.type, componentId: value.componentId, values } : undefined;

@@ -135,8 +135,8 @@ test("ForkDefinitionMismatchError renders each reason as a stable message and hi
 
 test("ForkSourceBusyError renders each reason as a stable message and hint (#4321)", () => {
 	const retry = "Retry after the other fork or resume finishes.";
-	const quit = `Pause or quit the run (/workflow quit ${runId}), then fork it.`;
-	const leaseLost = `The fork lost its source claim before writing. Check /workflow status ${runId} and retry once the source is paused or idle.`;
+	const quit = `Pause or stop the run in /workflows ${runId}, then fork it.`;
+	const leaseLost = `The fork lost its source claim before writing. Check /workflows ${runId} and retry once the source is paused or idle.`;
 	assertCases([
 		{
 			error: new ForkSourceBusyError({ runId, reason: "fork-in-progress" }),
@@ -336,11 +336,11 @@ test("ForkConfigError renders every invalid option at once as a stable message a
 });
 
 test("ForkSourceNotFoundError renders each reason, its journal and the join command (#4321)", () => {
-	const nested = "pass a root run id from /workflow list (a nested workflow's run is forked through its root run)";
+	const nested = "pass a root run id from /workflows (a nested workflow's run is forked through its root run)";
 	const local = `This node uses a local-only journal and is not joined to the shared storage; run ${join} to fork runs started on other nodes, or ${nested}.`;
-	const list = "Pass a run id from /workflow list, or pass the journal that holds the run with the journal option.";
+	const list = "Pass a run id from /workflows, or pass the journal that holds the run with the journal option.";
 	const rootList =
-		"Pass a root run id from /workflow list (a nested workflow's run is forked through its root run), or pass the journal that holds the run with the journal option.";
+		"Pass a root run id from /workflows (a nested workflow's run is forked through its root run), or pass the journal that holds the run with the journal option.";
 	const matches = Array.from({ length: 12 }, (_, index) => `aaaaaaaa-0000-4000-8000-0000000000${10 + index}`);
 	assertCases([
 		{
@@ -397,8 +397,8 @@ test("ForkSourceNotFoundError renders each reason, its journal and the join comm
 });
 
 test("ForkSourceOwnershipError renders each reason as a stable message and hint (#4321)", () => {
-	const foreign = `Fork it from the session that started it, or ask the user to run /workflow fork ${runId}.`;
-	const unavailable = `Ask the user to run /workflow fork ${runId}.`;
+	const foreign = `Fork it from the session that started it, or ask the user to fork it in /workflows ${runId}.`;
+	const unavailable = `Ask the user to fork it in /workflows ${runId}.`;
 	assertCases([
 		{
 			error: new ForkSourceOwnershipError({ runId, reason: "foreign-owner" }),
@@ -451,7 +451,7 @@ function claimError(reason: ForkSessionClaimReason): ForkSessionClaimError {
 }
 
 test("ForkSessionClaimError renders each reason with the session, forked run and child as a stable message and hint (#4321)", () => {
-	const hint = `This enqueue attempt changed no session owners. Inspect /workflow status ${forkRunId} before retrying; resume only with the fork's original journal and session copies. Do not fork again or reassign session owners blindly.`;
+	const hint = `This enqueue attempt changed no session owners. Inspect /workflows ${forkRunId} before retrying; resume only with the fork's original journal and session copies. Do not fork again or reassign session owners blindly.`;
 	const because: Record<ForkSessionClaimReason, string> = {
 		"outside-scope": "its stage is outside the child's scope",
 		"owned-by-other-work": "another work owns it",
@@ -528,7 +528,7 @@ test("ForkJournalUnsupportedError and ForkCopyFailedError render stable messages
 });
 
 test("ForkPoolSessionsUnavailableError names where each placement keeps the fork's pool tables and how to fork instead (#4357)", () => {
-	const fromStage = `fork it from a stage before its child workflows ran with /workflow fork ${runId} --from <stage>`;
+	const fromStage = `fork it from a stage before its child workflows ran in /workflows ${runId}`;
 	const shared = `Nothing was written. No pool of run ${runId} ran on this journal; ${fromStage}.`;
 	const machine = `Nothing was written. Fork run ${runId} on the machine that ran its local workers, or ${fromStage}.`;
 	assertCases([
@@ -616,8 +616,8 @@ test("ForkCleanupError renders the step that failed, whose it was and what is le
 test("ForkJournalUnavailableError renders each phase, its journal and whether to retry or resume (#4321)", () => {
 	const status = "atomic storage status shows the storage in use.";
 	const retry = `Nothing was written and run ${runId} is unchanged; retry the fork once the journal is reachable. ${status}`;
-	const resume = `Fork run ${forkRunId} was written; resume it with /workflow resume ${forkRunId} once the journal is reachable instead of forking again. ${status}`;
-	const commit = `Fork run ${forkRunId} may have been written, and its copied stage sessions were kept. Once the journal is reachable, inspect that exact run with /workflow status ${forkRunId} and resume it with /workflow resume ${forkRunId} if it exists. Do not fork run ${runId} again before that check: a missing run does not prove the write will never land. ${status}`;
+	const resume = `Fork run ${forkRunId} was written; resume ${forkRunId} with /resume once the journal is reachable instead of forking again. ${status}`;
+	const commit = `Fork run ${forkRunId} may have been written, and its copied stage sessions were kept. Once the journal is reachable, inspect that exact run in /workflows ${forkRunId} and resume ${forkRunId} with /resume if it exists. Do not fork run ${runId} again before that check: a missing run does not prove the write will never land. ${status}`;
 	const confirmed = `Nothing to do: fork run ${forkRunId} was written and the fork continues. If the journal keeps failing, ${status}`;
 	const cause = new Error("Storage unavailable: libsql at libsql://journal");
 	const shared = { adapter: "libsql", scope: "shared" } as const;

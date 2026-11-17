@@ -516,7 +516,20 @@ function byCompletedAt(left: DurableCheckpoint, right: DurableCheckpoint): numbe
 	return left.completedAt - right.completedAt;
 }
 
+const JOURNAL_DURABLE_BACKEND = Symbol.for("@bastani/workflows/journal-durable-backend");
+
+export function isJournalDurableBackend(backend: unknown): backend is JournalDurableBackend {
+	return (
+		typeof backend === "object" &&
+		backend !== null &&
+		(backend as { [JOURNAL_DURABLE_BACKEND]?: boolean })[JOURNAL_DURABLE_BACKEND] === true &&
+		typeof (backend as { journal?: unknown }).journal === "object" &&
+		(backend as { journal?: unknown }).journal !== null
+	);
+}
+
 export class JournalDurableBackend<Journal extends RunJournal = RunJournal> implements DurableWorkflowBackend {
+	readonly [JOURNAL_DURABLE_BACKEND] = true;
 	readonly persistent: boolean;
 	private readonly projection = createJournalProjection();
 	private readonly sequences = new Map<string, number>();

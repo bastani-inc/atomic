@@ -524,7 +524,7 @@ const WorkflowsSettingsSchema = Type.Union(
 					{
 						placement: Type.Literal("shared", {
 							description:
-								'"shared": the pooled children of roots started with /workflow run also run on worker hosts (`atomic worker start`) that open the same shared journal. Requires localWorkers and a journal selected through a storage adapter such as libSQL / Turso.',
+								'"shared": the pooled children of roots started with the workflow tool also run on worker hosts (`atomic worker start`) that open the same shared journal. Requires localWorkers and a journal selected through a storage adapter such as libSQL / Turso.',
 						}),
 						claimWindowMs: Type.Optional(
 							Type.Integer({

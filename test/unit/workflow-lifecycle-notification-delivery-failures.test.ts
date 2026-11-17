@@ -126,7 +126,7 @@ describe("workflow lifecycle admission failure recovery", () => {
 			assert.ok(originalDetails);
 			assert.equal(
 				originalEnvelope.message.content,
-				'✓ Workflow "original \\"workflow\\" \\\\ raw" completed (run run-backoff). Inspect: /workflow status run-backoff',
+				'✓ Workflow "original \\"workflow\\" \\\\ raw" completed (run run-backoff). Inspect: /workflows run-backoff',
 			);
 			assert.equal(originalEnvelope.message.customType, LIFECYCLE_NOTICE_CUSTOM_TYPE);
 			assert.equal(originalEnvelope.message.display, true);

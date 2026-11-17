@@ -23,6 +23,7 @@ import {
 	messageStream,
 	registeredDecisionRuntime,
 } from "../helpers/structured-output.js";
+import { toolContext } from "../helpers/tool-context.js";
 import { journalEventTypes, journalWithAppendLatency } from "../helpers/workflow-ended-run-host.js";
 
 /** A real resource loader and SDK session, and a full session disposal. */
@@ -103,9 +104,15 @@ test(
 		});
 		try {
 			await session.bindExtensions({});
-			const command = session.extensionRunner.getCommand("workflow");
-			assert.ok(command, "the /workflow command must be registered on the real host");
-			await command.handler("quick --no-picker", session.extensionRunner.createCommandContext());
+			const tool = session.getToolDefinition("workflow");
+			assert.ok(tool, "the workflow tool must be registered on the real host");
+			await tool.execute(
+				"launch-quick",
+				{ action: "run", workflow: "quick", inputs: {} } as never,
+				new AbortController().signal,
+				undefined,
+				toolContext(session.extensionRunner.createContext()),
+			);
 			const runId = await ended.promise;
 
 			const disposal = await session.dispose().then(

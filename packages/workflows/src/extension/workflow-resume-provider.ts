@@ -76,7 +76,8 @@ function sanitizePickerGuidance(message: string): string {
 		.replace(/\/workflow\s+fork(?:\s+[\w-]+)?(?:\s+--from\s+[^\s,.;)`"]+)?/g, "/workflows")
 		.replace(/\/workflow\s+quit(?:\s+[\w-]+)?/g, "/workflows")
 		.replace(/\/workflow\s+(?:status|pause)(?:\s+[\w-]+)?/g, "/workflows")
-		.replace(/\/workflow\s+(?:connect|attach)(?:\s+[\w-]+)?/g, "/workflows");
+		.replace(/\/workflow\s+(?:connect|attach)(?:\s+[\w-]+)?/g, "/workflows")
+		.replace(/\/workflow\s+(list|inputs)\b/g, "workflow tool $1");
 }
 
 function formatPickerResumeError(targetId: string, message: string): string {

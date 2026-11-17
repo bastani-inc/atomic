@@ -27,6 +27,10 @@ describe("primitive prompt answer helpers", () => {
 			for (const value of choices) {
 				assert.deepEqual(coercePrimitivePromptAnswer({ kind: "select", choices }, value), { ok: true, value });
 			}
+			assert.deepEqual(coercePrimitivePromptAnswer({ kind: "select", choices }, "YeS"), {
+				ok: true,
+				value: choices[0],
+			});
 		}
 	});
 

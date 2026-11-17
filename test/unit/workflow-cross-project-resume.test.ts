@@ -84,7 +84,7 @@ for (const decision of [undefined, false, true] as const) {
 			);
 		} else {
 			assert.equal(result.reason, "different_project");
-			assert.match(result.message, decision === undefined ? /\/workflow resume.*interactive/i : /cancelled/i);
+			assert.match(result.message, decision === undefined ? /\/resume.*interactive/i : /cancelled/i);
 			assert.equal(store.runs().length, 0);
 		}
 	});

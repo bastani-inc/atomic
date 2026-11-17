@@ -1,5 +1,6 @@
 import { renderRoundedBoxLines } from "./chat-surface.js";
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
+import { inertDisplayLine, inertDisplayText } from "./display-text.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { truncateToWidth, visibleWidth, wrapPlainText } from "./text-helpers.js";
 
@@ -27,7 +28,8 @@ export interface WorkflowNoticeCardOpts {
 const MIN_CARD_WIDTH = 32;
 const FIELD_LABEL_WIDTH = 9;
 
-export function renderWorkflowNoticeCard(opts: WorkflowNoticeCardOpts): string[] {
+export function renderWorkflowNoticeCard(input: WorkflowNoticeCardOpts): string[] {
+	const opts = inertCardText(input);
 	const width = Math.max(1, Math.floor(opts.width));
 	if (width < MIN_CARD_WIDTH) return wrapPlainText(opts.fallbackText, width);
 
@@ -58,6 +60,24 @@ export function renderWorkflowNoticeCard(opts: WorkflowNoticeCardOpts): string[]
 		width,
 		...(theme ? { theme, accent } : {}),
 	});
+}
+
+function inertCardText(opts: WorkflowNoticeCardOpts): WorkflowNoticeCardOpts {
+	return {
+		...opts,
+		title: inertDisplayLine(opts.title),
+		headline: inertDisplayText(opts.headline),
+		fallbackText: inertDisplayText(opts.fallbackText),
+		...(opts.fields === undefined
+			? {}
+			: {
+					fields: opts.fields.map((field) =>
+						field.value === undefined ? field : { ...field, value: inertDisplayText(field.value) },
+					),
+				}),
+		...(opts.hints === undefined ? {} : { hints: opts.hints.map((hint) => inertDisplayLine(hint)) }),
+		...(opts.footer === undefined ? {} : { footer: inertDisplayText(opts.footer) }),
+	};
 }
 
 function appendHeadline(rows: string[], opts: WorkflowNoticeCardOpts, innerWidth: number): void {

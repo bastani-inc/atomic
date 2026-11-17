@@ -1,58 +1,108 @@
-import { ForkConfigError } from "../durable/fork-errors.js";
-import { inspectRun } from "../runs/background/status.js";
-import { renderInputsSchema } from "../shared/render-inputs-schema.js";
-import { resolveRunIndicatorStatuses } from "../shared/run-indicator-status.js";
-import { schemaIsRequired } from "../shared/schema-introspection.js";
-import type { WorkflowExecutionPolicy } from "../shared/types.js";
-import { emitChatSurface } from "../tui/chat-surface-message.js";
-import { deriveGraphTheme } from "../tui/graph-theme.js";
-import { openHostInputsForm } from "../tui/host-input-form.js";
-import { openInlineInputsForm } from "../tui/inline-form-overlay.js";
-import { openInputsPicker } from "../tui/inputs-overlay.js";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { getDocsPath, keyHintIfBound, ToolBlock, ToolBlockMarkdown } from "@bastani/atomic";
+import { stripTerminalSequences, Text } from "@bastani/atomic-tui";
+import { summarizeFailureText } from "../tui/display-text.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
-import { selectRunsForPicker } from "../tui/session-picker.js";
-import type { ExtensionAPI, PiArgumentCompletionResult, PiCommandContext } from "./public-types.js";
-import type { WorkflowInputEntry, WorkflowToolResult } from "./render-result.js";
-import type { ExtensionRuntime } from "./runtime.js";
-import {
-	completeToken,
-	runIdItems,
-	workflowArgumentCompletions,
-	workflowArgumentCompletionsNeedWorkflowResources,
-} from "./workflow-command-completions.js";
-import {
-	emitTerminalRunDetailSurface,
-	formatWorkflowReloadReport,
-	formatWorkflowResourceLoadWarning,
-} from "./workflow-command-surfaces.js";
+import type { ExtensionAPI, PiCommandContext } from "./public-types.js";
+import { completeToken, runIdItems } from "./workflow-command-completions.js";
 import {
 	createWorkflowCommandReporter,
-	emitWorkflowCommandOutput,
-	formatAvailableWorkflowNames,
-	parseWorkflowArgs,
 	registerWorkflowCommand,
-	tokenizeWorkflowArgs,
 	type WorkflowCommandHandler,
-	type WorkflowCommandOutputDetails,
 } from "./workflow-command-utils.js";
 import { handleWorkflowsCommand } from "./workflow-open-run.js";
 import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
-import { projectTrustConfirmation } from "./workflow-project-trust.js";
-import { normalizeWorkflowReloadReport, type WorkflowReloadReport } from "./workflow-reload-report.js";
-import { handleRunControlCommand, type WorkflowRunControlDeps } from "./workflow-run-control-command.js";
-import { overlaySurfaceFromContext, reloadFailureMessage, resolveRunId } from "./workflow-targets.js";
-import { workflowForkAction } from "./workflow-tool-fork.js";
+
+export const WORKFLOWS_COMMAND_DESCRIPTION = "Browse running and completed workflows";
+export const WORKFLOW_AUTHORING_COMMAND_DESCRIPTION = "Load the reference for writing workflow definitions";
+export const WORKFLOW_AUTHORING_CUSTOM_TYPE = "workflows:authoring-reference";
+export const REMOVED_WORKFLOW_COMMAND_NOTICE =
+	"! /workflow was removed · use /workflows, /resume or ask the agent to run a workflow";
 
 export interface WorkflowSlashCommandDeps {
-	runtimeProxy: ExtensionRuntime;
-	runtimeForContext: (ctx?: PiCommandContext) => ExtensionRuntime;
 	overlay: GraphOverlayPort;
-	reloadWorkflowResources: () => Promise<WorkflowReloadReport | undefined> | undefined;
-	ensureWorkflowResourcesLoaded: () => Promise<void> | void;
-	runWithLifecycleSuppressedForPolicy: <T>(policy: WorkflowExecutionPolicy, fn: () => Promise<T>) => Promise<T>;
-	runControl: WorkflowRunControlDeps;
 	owner?: WorkflowOwnerResources;
+}
+
+function authoringHeaderTitle(): string {
+	const hint = keyHintIfBound("app.tools.expand", "to expand");
+	return `Loaded workflow authoring reference${hint ? ` (${hint})` : ""}`;
+}
+
+export function formatWorkflowAuthoringCollapsedLine(): string {
+	return `› ${stripTerminalSequences(authoringHeaderTitle())}`;
+}
+
+const authoringRendererRegisteredHosts = new WeakSet<object>();
+
+export function registerWorkflowAuthoringMessageRenderer(pi: ExtensionAPI): void {
+	if (authoringRendererRegisteredHosts.has(pi)) return;
+	const register = pi.registerMessageRenderer;
+	if (typeof register !== "function") return;
+	register.call(pi, WORKFLOW_AUTHORING_CUSTOM_TYPE, (raw, options) => {
+		const message = raw as { content?: unknown } | undefined;
+		const content = typeof message?.content === "string" ? message.content : "";
+		const expanded = options?.expanded === true;
+		return new ToolBlock({
+			status: "info",
+			title: new Text(authoringHeaderTitle(), 0, 0),
+			...(expanded && content.length > 0 ? { body: new ToolBlockMarkdown(content) } : {}),
+		});
+	});
+	authoringRendererRegisteredHosts.add(pi);
+}
+
+function readWorkflowAuthoringReference(): Promise<string> {
+	return readFile(join(getDocsPath(), "workflows", "authoring.md"), "utf8");
+}
+
+function safeErrorReason(error: unknown): string {
+	return summarizeFailureText(error instanceof Error ? error.message : String(error)).reason;
+}
+
+async function handleWorkflowAuthoringCommand(args: string, ctx: PiCommandContext, pi: ExtensionAPI): Promise<void> {
+	const reporter = createWorkflowCommandReporter(ctx, workflowPolicyFromContext(ctx), pi);
+	const request = args.trim();
+	if (typeof pi.sendMessage !== "function") {
+		reporter.error("Could not load workflow authoring reference: session message API is unavailable.");
+		return;
+	}
+	if (request.length > 0 && typeof pi.sendUserMessage !== "function") {
+		reporter.error("Could not send workflow authoring request: user message API is unavailable.");
+		return;
+	}
+	let content: string;
+	try {
+		content = await readWorkflowAuthoringReference();
+	} catch (error) {
+		reporter.error(`Could not load workflow authoring reference: ${safeErrorReason(error)}`);
+		return;
+	}
+	const collapsedLine = formatWorkflowAuthoringCollapsedLine();
+	try {
+		await pi.sendMessage(
+			{
+				customType: WORKFLOW_AUTHORING_CUSTOM_TYPE,
+				content,
+				display: true,
+				details: { collapsed: collapsedLine },
+			},
+			{ triggerTurn: false },
+		);
+	} catch (error) {
+		reporter.error(`Could not load workflow authoring reference: ${safeErrorReason(error)}`);
+		return;
+	}
+	if (request.length > 0) {
+		const delivery = ctx.isIdle?.() === false ? { deliverAs: "steer" as const } : undefined;
+		try {
+			await pi.sendUserMessage!(request, delivery);
+		} catch (error) {
+			reporter.error(`Could not send workflow authoring request: ${safeErrorReason(error)}`);
+		}
+	}
 }
 
 export function registerWorkflowSlashCommand(
@@ -61,305 +111,38 @@ export function registerWorkflowSlashCommand(
 	deps: WorkflowSlashCommandDeps,
 ): void {
 	const owner = deps.owner ?? captureWorkflowOwnerResources();
-	deps = { ...deps, owner, runControl: { ...deps.runControl, owner } };
-	registerWorkflowCommand(
-		pi,
-		"workflow",
-		{
-			description:
-				"Run or inspect Atomic workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|quit|pause|resume|inputs|reload] [args] | /workflow fork <run> [--from <stage>]",
-			handler: (args, ctx) => workflowSlashHandler(args, ctx, pi, deps),
-			getArgumentCompletions: (
-				partial: string,
-			): PiArgumentCompletionResult | Promise<PiArgumentCompletionResult> => {
-				const buildCompletions = (): PiArgumentCompletionResult =>
-					workflowArgumentCompletions(partial, deps.runtimeProxy, owner.store);
-				if (!workflowArgumentCompletionsNeedWorkflowResources(partial)) return buildCompletions();
-				return Promise.resolve(deps.ensureWorkflowResourcesLoaded()).then(buildCompletions).catch(buildCompletions);
-			},
-		},
-		workflowCommands,
-	);
+	const { overlay } = deps;
+	registerWorkflowAuthoringMessageRenderer(pi);
+	workflowCommands.set("workflow", (_args, ctx) => {
+		const reporter = createWorkflowCommandReporter(ctx, workflowPolicyFromContext(ctx), pi);
+		reporter.info(REMOVED_WORKFLOW_COMMAND_NOTICE);
+	});
 	registerWorkflowCommand(
 		pi,
 		"workflows",
 		{
-			description: "Open this session's workflow runs. Usage: /workflows [run-id] [stage]",
+			description: WORKFLOWS_COMMAND_DESCRIPTION,
 			handler: async (args, ctx) => {
-				const owner = deps.owner ?? captureWorkflowOwnerResources();
 				const reporter = createWorkflowCommandReporter(ctx, workflowPolicyFromContext(ctx), pi);
-				await handleWorkflowsCommand(args, ctx, reporter, { overlay: deps.runControl.overlay, store: owner.store });
+				await handleWorkflowsCommand(args, ctx, reporter, {
+					overlay,
+					store: owner.store,
+				});
 			},
 			getArgumentCompletions: (partial) =>
 				/\s/.test(partial.trimStart()) ? null : completeToken(partial, runIdItems(owner.store)),
 		},
 		workflowCommands,
 	);
-}
-
-async function workflowSlashHandler(
-	args: string,
-	ctx: PiCommandContext,
-	pi: ExtensionAPI,
-	deps: WorkflowSlashCommandDeps,
-): Promise<void> {
-	const owner = deps.owner ?? captureWorkflowOwnerResources();
-	const { store } = owner;
-	const policy = workflowPolicyFromContext(ctx);
-	const reporter = createWorkflowCommandReporter(ctx, policy, pi);
-	const print = (msg: string): void => reporter.info(msg);
-	const fail = (msg: string): void => reporter.error(msg);
-	const withImplicitYesFlag = (tokens: string[]): string[] =>
-		tokens.some((t) => t === "--yes" || t === "-y") ? tokens : [...tokens, "-y"];
-	const ensureWorkflowResourcesVisible = async (): Promise<void> => {
-		try {
-			await deps.ensureWorkflowResourcesLoaded();
-		} catch (error) {
-			ctx.ui?.notify(formatWorkflowResourceLoadWarning(error), "warning");
-		}
-	};
-	const showWorkflowInputs = async (
-		workflowName: string,
-		command: WorkflowCommandOutputDetails["command"] = "inputs",
-	): Promise<void> => {
-		await ensureWorkflowResourcesVisible();
-		const result = await deps
-			.runtimeForContext(ctx)
-			.dispatch({ workflow: workflowName, inputs: {}, action: "inputs" }, { policy });
-		if (result.action !== "inputs" || !("inputs" in result)) return;
-		const inputResult = result as Extract<WorkflowToolResult, { action: "inputs" }>;
-		if (inputResult.error) {
-			fail(`${inputResult.error}\nAvailable: ${formatAvailableWorkflowNames(deps.runtimeProxy.registry.names())}`);
-			return;
-		}
-		const schemaText = renderInputsSchema(workflowName, inputResult.inputs, { theme: deriveGraphTheme({}) });
-		if (ctx.hasUI === false || policy.mode === "non_interactive")
-			emitWorkflowCommandOutput(pi, schemaText, { command, workflowName });
-		else print(schemaText);
-	};
-
-	const parts = tokenizeWorkflowArgs(args);
-	const subcommand = parts[0] ?? "";
-	if (subcommand === "connect" || subcommand === "attach") {
-		reporter.info(removedWorkflowSubcommandNotice(subcommand));
-		return;
-	}
-	if (subcommand === "resume") {
-		await handleRunControlCommand(subcommand, parts.slice(1), ctx, reporter, deps.runControl);
-		return;
-	}
-	if (!subcommand || subcommand === "list") {
-		await ensureWorkflowResourcesVisible();
-		const items = deps.runtimeProxy.registry.all().map((def) => ({
-			name: def.normalizedName,
-			description: def.description,
-			inputs: Object.entries(def.inputs).map(([iname, schema]) => ({
-				name: iname,
-				required: schemaIsRequired(schema),
-			})),
-		}));
-		emitChatSurface(pi, { kind: "list", entries: items });
-		return;
-	}
-	if (subcommand === "status") {
-		const target = parts[1];
-		if (target && !target.startsWith("--")) {
-			const resolved = resolveRunId(target, store);
-			if (resolved.kind === "malformed" || resolved.kind === "ambiguous") return fail(resolved.message);
-			if (resolved.kind === "not_found") {
-				const durable = await deps.runtimeForContext(ctx).inspectDurableWorkflow(target);
-				if (durable.kind !== "found") return fail(durable.message);
-				emitChatSurface(pi, { kind: "detail", detail: durable.detail });
-				return;
-			}
-			const inspected = inspectRun(resolved.runId, owner);
-			if (!inspected.ok) return fail(`Run not found: ${target}`);
-			const owningRunStatuses = Object.fromEntries(
-				store.graphSnapshot().runs.map((run) => [run.id, run.status] as const),
-			);
-			emitChatSurface(pi, { kind: "detail", detail: inspected.detail, owningRunStatuses });
-			return;
-		}
-		const capturedRuns = store.graphSnapshot().runs;
-		const rows = selectRunsForPicker(capturedRuns, "", true, Date.now());
-		const visibleRuns = rows.map((r) => r.run);
-		emitChatSurface(pi, {
-			kind: "status",
-			runs: visibleRuns,
-			indicatorStatuses: resolveRunIndicatorStatuses(visibleRuns, capturedRuns),
-		});
-		return;
-	}
-	if (subcommand === "reload") {
-		try {
-			const report = normalizeWorkflowReloadReport(await deps.reloadWorkflowResources());
-			const message = formatWorkflowReloadReport(report);
-			if (report.outcome === "applied") print(message);
-			else fail(message);
-		} catch (error) {
-			fail(reloadFailureMessage(error));
-		}
-		return;
-	}
-	if (subcommand === "pause") {
-		await handleRunControlCommand(subcommand, withImplicitYesFlag(parts.slice(1)), ctx, reporter, deps.runControl);
-		return;
-	}
-	if (subcommand === "quit") {
-		await handleRunControlCommand(subcommand, parts.slice(1), ctx, reporter, deps.runControl);
-		return;
-	}
-	if (subcommand === "fork") {
-		const parsed = parseWorkflowForkArgs(parts.slice(1));
-		if (parsed instanceof ForkConfigError) return fail(parsed.message);
-		await ensureWorkflowResourcesVisible();
-		const result = await workflowForkAction(
-			{ runId: parsed.runId, fromStage: parsed.fromStage },
-			{
-				getRuntime: () => deps.runtimeForContext(ctx),
-				policy,
-				source: "cli",
-				...projectTrustConfirmation(ctx, policy),
+	registerWorkflowCommand(
+		pi,
+		"workflow-authoring",
+		{
+			description: WORKFLOW_AUTHORING_COMMAND_DESCRIPTION,
+			handler: async (args, ctx) => {
+				await handleWorkflowAuthoringCommand(args, ctx, pi);
 			},
-		);
-		if (result.status === "failed") return fail(result.message);
-		print(result.message);
-		return;
-	}
-	if (subcommand === "inputs") {
-		const workflowName = parts[1] ?? "";
-		if (!workflowName) return fail("Usage: /workflow inputs <name>");
-		await showWorkflowInputs(workflowName);
-		return;
-	}
-
-	const workflowName = subcommand;
-	const inputTokens = parts.slice(1);
-	if (inputTokens.includes("--help")) {
-		await showWorkflowInputs(workflowName, "help");
-		return;
-	}
-	const inputs = parseWorkflowArgs(inputTokens);
-	const wantsPickerSkip = inputTokens.includes("--no-picker");
-	let mergedInputs = inputs;
-	let pickerWasShown = false;
-	const canOpenPicker =
-		policy.allowInputPicker &&
-		!wantsPickerSkip &&
-		(typeof ctx.ui?.hostInputForm === "function" ||
-			typeof ctx.ui?.setEditorComponent === "function" ||
-			typeof ctx.ui?.custom === "function");
-	if (canOpenPicker) {
-		await ensureWorkflowResourcesVisible();
-		const schemaResult = await deps
-			.runtimeForContext(ctx)
-			.dispatch({ workflow: workflowName, inputs: {}, action: "inputs" }, { policy });
-		const schema =
-			schemaResult.action === "inputs" && "inputs" in schemaResult
-				? (schemaResult as Extract<WorkflowToolResult, { action: "inputs" }>)
-				: undefined;
-		const fields = schema?.inputs ?? [];
-		const missingRequired = fields.some(
-			(f: WorkflowInputEntry) =>
-				f.required === true &&
-				(inputs[f.name] === undefined ||
-					(typeof inputs[f.name] === "string" && (inputs[f.name] as string).trim() === "")),
-		);
-		if (fields.length > 0 && (inputTokens.length === 0 || missingRequired)) {
-			pickerWasShown = true;
-			const pickerTheme = deriveGraphTheme({});
-			let pickerResult =
-				typeof ctx.ui?.hostInputForm === "function"
-					? await openHostInputsForm(ctx.ui, { workflowName, fields, prefilled: inputs })
-					: { kind: "unsupported" as const };
-			if (pickerResult.kind === "unsupported" && typeof ctx.ui?.setEditorComponent === "function") {
-				pickerResult = await openInlineInputsForm(pi, ctx, {
-					workflowName,
-					fields,
-					prefilled: inputs,
-					theme: pickerTheme,
-				});
-			}
-			if (pickerResult.kind === "unsupported" && typeof ctx.ui?.custom === "function") {
-				pickerResult = await openInputsPicker(ctx.ui, {
-					workflowName,
-					fields,
-					prefilled: inputs,
-					theme: pickerTheme,
-				});
-			}
-			if (pickerResult.kind === "cancel") return;
-			if (pickerResult.kind === "run") mergedInputs = pickerResult.values;
-		}
-	}
-
-	await ensureWorkflowResourcesVisible();
-	const result = await deps.runWithLifecycleSuppressedForPolicy(policy, () =>
-		deps
-			.runtimeForContext(ctx)
-			.dispatch({ workflow: workflowName, inputs: mergedInputs, action: "run" }, { policy, origin: "user" }),
+		},
+		workflowCommands,
 	);
-	if (result.action !== "run" || !("runId" in result)) return;
-	const runResult = result as Extract<WorkflowToolResult, { action: "run"; runId: string }>;
-	if (runResult.status === "failed" && runResult.runId === "") {
-		if (runResult.error?.toLowerCase().includes("not found")) {
-			fail(
-				`Workflow not found: ${workflowName}\nAvailable: ${formatAvailableWorkflowNames(deps.runtimeProxy.registry.names())}`,
-			);
-		} else {
-			fail(`Workflow "${workflowName}" failed: ${runResult.error ?? "unknown error"}`);
-		}
-		return;
-	}
-	if (runResult.status === "failed") {
-		fail(`Workflow "${workflowName}" failed: ${runResult.error ?? "unknown error"}`);
-		return;
-	}
-	if (ctx.hasUI === false || policy.mode === "non_interactive") {
-		emitTerminalRunDetailSurface(pi, workflowName, mergedInputs, runResult, owner);
-		return;
-	}
-	emitChatSurface(pi, { kind: "dispatch", workflowName, runId: runResult.runId, inputs: mergedInputs });
-	if (
-		(pickerWasShown && typeof ctx.ui?.custom === "function") ||
-		deps.runtimeProxy.registry.get(workflowName)?.autoAttach === true
-	) {
-		deps.overlay.open(runResult.runId, overlaySurfaceFromContext(ctx));
-	}
-}
-
-/** `/workflow fork <run> [--from <stage>]` arguments, or the typed error naming what is wrong with them. */
-export function parseWorkflowForkArgs(
-	tokens: readonly string[],
-): { readonly runId: string; readonly fromStage?: string } | ForkConfigError {
-	const positional: string[] = [];
-	let fromStage: string | undefined;
-	let invalidFrom = false;
-	for (let index = 0; index < tokens.length; index++) {
-		const token = tokens[index]!;
-		if (token === "--from") {
-			const value = tokens[index + 1];
-			if (value === undefined || value.startsWith("--") || fromStage !== undefined) invalidFrom = true;
-			else fromStage = value;
-			index++;
-		} else if (token.startsWith("--from=")) {
-			const value = token.slice("--from=".length);
-			if (value.length === 0 || fromStage !== undefined) invalidFrom = true;
-			else fromStage = value;
-		} else positional.push(token);
-	}
-	const issues: { readonly field: "runId" | "fromStage"; readonly expected: string }[] = [];
-	if (positional.length !== 1 || positional[0]!.startsWith("--"))
-		issues.push({
-			field: "runId",
-			expected: "exactly one run id or 8-character prefix: /workflow fork <run> [--from <stage>]",
-		});
-	if (invalidFrom) issues.push({ field: "fromStage", expected: "one stage path after --from" });
-	const [first, ...rest] = issues;
-	if (first !== undefined) return new ForkConfigError({ source: "cli", issues: [first, ...rest] });
-	return { runId: positional[0]!, ...(fromStage === undefined ? {} : { fromStage }) };
-}
-
-export function removedWorkflowSubcommandNotice(subcommand: "connect" | "attach"): string {
-	return `\`/workflow ${subcommand}\` was removed: use \`/workflows\`, or \u2193 to the agent panel.`;
 }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { resetCapabilitiesCache, setCapabilities, Text, type TUI } from "@bastani/atomic-tui";
 import { Type } from "typebox";
@@ -284,8 +284,7 @@ describe("ToolExecutionComponent parity", () => {
 			process.cwd(),
 		);
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered).toContain("Read(");
-		expect(rendered).toContain("README.md");
+		expect(rendered).toContain("Read(README.md)");
 	});
 
 	test("bash execute emits an initial empty partial update before output arrives", async () => {
@@ -412,7 +411,7 @@ describe("ToolExecutionComponent parity", () => {
 				vi.advanceTimersByTime(3_600_000);
 			}
 			component.updateResult({ content: [], isError: false, durationMs: 4_200 });
-			assert.ok(stripAnsi(component.render(120).join("\n")).includes("● Bash(sleep 4) · 4.2s"));
+			assert.equal(stripAnsi(component.render(120)[1] ?? "").trim(), "● Bash(sleep 4) · 4.2s");
 		}
 	});
 
@@ -516,8 +515,7 @@ describe("ToolExecutionComponent parity", () => {
 		);
 		component.updateResult({ content: [{ type: "text", text: "hello" }], details: undefined, isError: false }, false);
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered).toContain("Read(");
-		expect(rendered).toContain("README.md");
+		expect(rendered).toContain("Read(README.md)");
 		expect(rendered).toContain("override result");
 	});
 
@@ -691,8 +689,9 @@ describe("ToolExecutionComponent parity", () => {
 			createFakeTui(),
 			process.cwd(),
 		);
+		assert.equal(stripAnsi(component.render(120)[1] ?? "").trim(), "∀ Write(README.md)");
 		component.setArgsComplete();
-		component.updateResult({ content: [], isError: false });
+		component.updateResult({ content: [{ type: "text", text: "Wrote 2 lines" }], isError: false });
 		component.setExpanded(true);
 		const rendered = stripAnsi(component.render(120).join("\n"));
 		expect(rendered).toContain("one");
@@ -701,19 +700,14 @@ describe("ToolExecutionComponent parity", () => {
 		component.dispose();
 	});
 
-	test("renders streamed partial arguments once per frame, with the latest arguments (#5224)", () => {
+	test("renders streamed partial arguments once per frame, with the latest arguments (#9265)", () => {
 		const write = createWriteToolDefinition(process.cwd());
-		const writePreview: NonNullable<typeof write.renderCall> = (args) => {
-			const { path = "", content = "" } = args as { path?: string; content?: string };
-			const lines = content.trimEnd().split("\n");
-			return new Text(`Write(${path} · ${lines.length} total · ${lines.at(-1)})`, 0, 0);
-		};
 		let renderCalls = 0;
 		const counted: typeof write = {
 			...write,
 			renderCall: (...args) => {
 				renderCalls++;
-				return writePreview(...args);
+				return write.renderCall!(...args);
 			},
 		};
 		let renderRequests = 0;
@@ -737,7 +731,7 @@ describe("ToolExecutionComponent parity", () => {
 			"tool-10",
 			{ path: "src/file.ts", content },
 			{},
-			{ ...write, renderCall: writePreview },
+			write,
 			tui,
 			".",
 		);
@@ -749,15 +743,11 @@ describe("ToolExecutionComponent parity", () => {
 		component.updateArgs(final);
 		const next = stripAnsi(component.render(120).join("\n"));
 		assert.equal(renderCalls - callsBefore, 2);
-		assert.match(next, /∀ Write\(src\/file\.ts · 201 total · const tail = 2;\)/);
-		assert.doesNotMatch(next, /const tail = 1/);
+		assert.match(next, /∀ Write\(src\/file\.ts\)/);
+		assert.doesNotMatch(next, /const tail/);
 		assert.equal(
 			next,
-			stripAnsi(
-				new ToolExecutionComponent("write", "t", final, {}, { ...write, renderCall: writePreview }, tui, ".")
-					.render(120)
-					.join("\n"),
-			),
+			stripAnsi(new ToolExecutionComponent("write", "t", final, {}, write, tui, ".").render(120).join("\n")),
 		);
 		// Rendering again without new arguments does not run the renderer.
 		component.render(120);
@@ -806,8 +796,7 @@ describe("ToolExecutionComponent parity", () => {
 			false,
 		);
 		const collapsed = stripAnsi(component.render(120).join("\n"));
-		expect(collapsed).toContain("Read(");
-		expect(collapsed).toContain("notes.txt");
+		expect(collapsed).toContain("Read(notes.txt)");
 		expect(collapsed).not.toContain("hidden content");
 		component.setExpanded(true);
 		const expanded = stripAnsi(component.render(120).join("\n"));
@@ -850,7 +839,7 @@ describe("ToolExecutionComponent parity", () => {
 			title: "Atomic documentation",
 			path: getReadmePath(),
 			content: "Hidden docs content",
-			compact: "Read(README.md)",
+			compact: `Read(${relative(process.cwd(), getReadmePath()).replace(/\\/g, "/")})`,
 			hidden: "Hidden docs content",
 			absent: undefined,
 		},

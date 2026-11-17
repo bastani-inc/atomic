@@ -37,6 +37,7 @@ import {
 	messageStream,
 	registeredDecisionRuntime,
 } from "../helpers/structured-output.js";
+import { toolContext } from "../helpers/tool-context.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 /** Real resource loader, real SDK session, and a real `/reload` or `/new` transaction. */
@@ -187,9 +188,15 @@ for (const reason of ["reload", "startup"] as const) {
 			try {
 				await session.bindExtensions({});
 				const launchRunner = session.extensionRunner;
-				const command = launchRunner.getCommand("workflow");
-				assert.ok(command, "the /workflow command must be registered on the real host");
-				await command.handler("stale-ctx-repro --no-picker", launchRunner.createCommandContext());
+				const tool = launchRunner.getToolDefinition("workflow");
+				assert.ok(tool, "the workflow tool must be registered on the real host");
+				await tool.execute(
+					"launch-stale-ctx-repro",
+					{ action: "run", workflow: "stale-ctx-repro", inputs: {} } as never,
+					new AbortController().signal,
+					undefined,
+					toolContext(launchRunner.createContext()),
+				);
 				await waitFor(
 					() =>
 						findRun()?.toolNodes?.some(
@@ -306,9 +313,15 @@ test.each(["before", "after"] as const)(
 		try {
 			await session.bindExtensions({});
 			launchRunner = session.extensionRunner;
-			const command = session.extensionRunner.getCommand("workflow");
-			assert.ok(command);
-			await command.handler("stale-ctx-repro --no-picker", session.extensionRunner.createCommandContext());
+			const tool = session.extensionRunner.getToolDefinition("workflow");
+			assert.ok(tool);
+			await tool.execute(
+				"launch-stale-ctx-repro",
+				{ action: "run", workflow: "stale-ctx-repro", inputs: {} } as never,
+				new AbortController().signal,
+				undefined,
+				toolContext(session.extensionRunner.createContext()),
+			);
 			await waitFor(
 				() =>
 					findRun()?.toolNodes?.some((node) => node.name === "wait-for-release" && node.status === "running") ===
@@ -396,9 +409,15 @@ test(
 			const launchGeneration = resolveLaunch?.();
 			assert.ok(launchGeneration);
 			const launchRunner = session.extensionRunner;
-			const command = launchRunner.getCommand("workflow");
-			assert.ok(command);
-			await command.handler("stale-ctx-repro --no-picker", launchRunner.createCommandContext());
+			const tool = launchRunner.getToolDefinition("workflow");
+			assert.ok(tool);
+			await tool.execute(
+				"launch-stale-ctx-repro",
+				{ action: "run", workflow: "stale-ctx-repro", inputs: {} } as never,
+				new AbortController().signal,
+				undefined,
+				toolContext(launchRunner.createContext()),
+			);
 			await waitFor(
 				() =>
 					findRun()?.toolNodes?.some((node) => node.name === "wait-for-release" && node.status === "running") ===
@@ -468,9 +487,15 @@ test(
 		try {
 			await runtime.session.bindExtensions({ uiContext });
 			const launchRunner = runtime.session.extensionRunner;
-			const command = launchRunner.getCommand("workflow");
-			assert.ok(command, "the /workflow command must be registered on the real host");
-			await command.handler("stale-ctx-repro --no-picker", launchRunner.createCommandContext());
+			const tool = launchRunner.getToolDefinition("workflow");
+			assert.ok(tool, "the workflow tool must be registered on the real host");
+			await tool.execute(
+				"launch-stale-ctx-repro",
+				{ action: "run", workflow: "stale-ctx-repro", inputs: {} } as never,
+				new AbortController().signal,
+				undefined,
+				toolContext(launchRunner.createContext()),
+			);
 			await waitFor(
 				() =>
 					findRun()?.toolNodes?.some((node) => node.name === "wait-for-release" && node.status === "running") ===

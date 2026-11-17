@@ -15,9 +15,6 @@ import type {
 	RunResult as AuthoredRunResult,
 	WorkflowUIAdapter,
 } from "../../packages/workflows/src/shared/authoring-contract-ui.js";
-import type { InlineFormEditorOpts } from "../../packages/workflows/src/tui/inline-form-editor.js";
-import type { InlineFormState } from "../../packages/workflows/src/tui/inline-form-store.js";
-import type { InputsPickerState } from "../../packages/workflows/src/tui/inputs-picker-types.js";
 import type { truncateToWidth, WrappedPrefixedLinesOpts } from "../../packages/workflows/src/tui/text-helpers.js";
 
 test("current execution and inspection collections and UI methods are required", () => {
@@ -63,15 +60,8 @@ test("current configuration results and heartbeat records require their written 
 	assert.equal(emptyConfig.projectConfig, null);
 });
 
-test("current forms do not expose a submit-choice index", () => {
-	const formHasChoice: "submitChoiceIdx" extends keyof InlineFormState ? true : false = false;
-	const pickerHasChoice: "submitChoiceIdx" extends keyof InputsPickerState ? true : false = false;
-	assert.deepEqual([formHasChoice, pickerHasChoice], [false, false]);
-});
-
-test("current text and editor contracts exclude compatibility inputs", () => {
+test("current text contracts exclude compatibility inputs", () => {
 	const acceptsFourthArgument: 4 extends Parameters<typeof truncateToWidth>["length"] ? true : false = false;
 	const hasPreserveAnsi: "preserveAnsi" extends keyof WrappedPrefixedLinesOpts ? true : false = false;
-	const keybindingsOptional: object extends Pick<InlineFormEditorOpts, "keybindings"> ? true : false = false;
-	assert.deepEqual([acceptsFourthArgument, hasPreserveAnsi, keybindingsOptional], [false, false, false]);
+	assert.deepEqual([acceptsFourthArgument, hasPreserveAnsi], [false, false]);
 });

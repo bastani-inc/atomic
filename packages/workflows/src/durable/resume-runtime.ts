@@ -138,7 +138,7 @@ async function hasWorktreeSnapshots(backend: DurableWorkflowBackend, workflowId:
 }
 
 export function crossProjectResumeMessage(workflowId: string, cwd: string): string {
-	return `Workflow run found in different project: ${cwd}. Run /workflow resume ${workflowId} in an interactive session to fork it into the current directory, or open the original project to resume it.`;
+	return `Workflow run found in different project: ${cwd}. Use /resume in an interactive session to fork ${workflowId} into the current directory, or open the original project to resume it.`;
 }
 
 /** Serialize admission per durable identity, including callers from different runtime views. */
@@ -715,7 +715,7 @@ function alreadyRunningResult(name: string, workflowId: string): ResumeDurableRe
 	return {
 		ok: false,
 		reason: "not_resumable",
-		message: `Workflow "${name}" (${workflowId}) is already running in this session. See agents working and chat with or steer each stage using \`/workflows ${workflowId}\`; use \`/workflow quit ${workflowId}\` to pause the run for later resume.`,
+		message: `Workflow "${name}" (${workflowId}) is already running in this session. See agents working and chat with or steer each stage, or pause or stop the run, using \`/workflows ${workflowId}\`.`,
 	};
 }
 

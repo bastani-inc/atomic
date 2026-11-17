@@ -157,7 +157,7 @@ const MIN_LABEL_WITH_DESCRIPTION_WIDTH = 24;
 export class SelectorState<T> {
 	private _items: readonly SelectorItem<T>[];
 	readonly mode: "single" | "multi";
-	readonly maxVisible: number;
+	private _maxVisible: number;
 	private query = "";
 	private visible: readonly SelectorItem<T>[];
 	private selected = 0;
@@ -174,7 +174,7 @@ export class SelectorState<T> {
 		this._items = Object.freeze([...options.items]);
 		this.mode = options.mode ?? "single";
 		const maxVisible = options.maxVisible ?? DEFAULT_MAX_VISIBLE;
-		this.maxVisible = Number.isFinite(maxVisible) ? Math.max(1, Math.floor(maxVisible)) : DEFAULT_MAX_VISIBLE;
+		this._maxVisible = Number.isFinite(maxVisible) ? Math.max(1, Math.floor(maxVisible)) : DEFAULT_MAX_VISIBLE;
 		this.visible = Object.freeze([...this.items]);
 		for (const id of options.initialChecked ?? []) this.checked.add(id);
 		const initial =
@@ -188,6 +188,19 @@ export class SelectorState<T> {
 
 	get items(): readonly SelectorItem<T>[] {
 		return this._items;
+	}
+
+	get maxVisible(): number {
+		return this._maxVisible;
+	}
+
+	setMaxVisible(maxVisible: number): void {
+		if (!Number.isFinite(maxVisible)) return;
+		const next = Math.max(1, Math.floor(maxVisible));
+		if (next === this._maxVisible) return;
+		this._maxVisible = next;
+		this.revision++;
+		this.scrollToSelected();
 	}
 
 	getRevision(): number {
@@ -248,6 +261,8 @@ export class SelectorState<T> {
 		const browsed = this.visible[this.selected]?.id;
 		const position = this.selected;
 		this._items = Object.freeze([...items]);
+		const ids = new Set(items.map((item) => item.id));
+		for (const id of this.checked) if (!ids.has(id)) this.checked.delete(id);
 		this.visible = Object.freeze(this.query ? this.filter(this.query) : [...this.items]);
 		const find = (id: string | undefined) =>
 			id === undefined ? -1 : this.visible.findIndex((item) => item.id === id && !item.disabled);

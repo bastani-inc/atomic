@@ -65,14 +65,36 @@ InteractiveModeBase.prototype.beginHostInlineCustomUi = function (
 ): () => void {
 	let released = false;
 	this.blockingInlineCustomUiDepth++;
-	if (purpose === "navigation") this.navigationInlineCustomUiDepth = (this.navigationInlineCustomUiDepth ?? 0) + 1;
+	if (purpose === "navigation") {
+		this.navigationInlineCustomUiDepth = (this.navigationInlineCustomUiDepth ?? 0) + 1;
+		if (
+			this.blockingInlineCustomUiDepth <= this.navigationInlineCustomUiDepth &&
+			!this.runtimeHost?.session?.isStreaming &&
+			this.workingRunMeter?.snapshot() === undefined
+		) {
+			this.promptTurnWorkingLoaderActive = false;
+			if (this.loadingAnimation) this.stopWorkingLoader?.();
+		}
+		this.renderWidgets?.();
+	}
 	this.notifyHostCustomUiStateListeners();
 	return () => {
 		if (released) return;
 		released = true;
 		this.blockingInlineCustomUiDepth = Math.max(0, this.blockingInlineCustomUiDepth - 1);
-		if (purpose === "navigation")
+		if (purpose === "navigation") {
 			this.navigationInlineCustomUiDepth = Math.max(0, this.navigationInlineCustomUiDepth - 1);
+			if (
+				this.navigationInlineCustomUiDepth === 0 &&
+				(Boolean(this.runtimeHost?.session?.isStreaming) || this.workingRunMeter?.snapshot() !== undefined) &&
+				this.workingVisible &&
+				!this.loadingAnimation &&
+				!this.compactionActive
+			) {
+				this.showWorkingLoaderNow?.();
+			}
+			this.renderWidgets?.();
+		}
 		this.notifyHostCustomUiStateListeners();
 	};
 };

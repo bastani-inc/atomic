@@ -542,7 +542,7 @@ test("a fork of a run with local workers fails with ForkPoolSessionsUnavailableE
 			);
 			assert.equal(
 				error.hint,
-				`Nothing was written. Fork run ${source.runId} on the machine that ran its local workers, or fork it from a stage before its child workflows ran with /workflow fork ${source.runId} --from <stage>.`,
+				`Nothing was written. Fork run ${source.runId} on the machine that ran its local workers, or fork it from a stage before its child workflows ran in /workflows ${source.runId}.`,
 			);
 			return true;
 		},

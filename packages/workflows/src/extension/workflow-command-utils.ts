@@ -142,7 +142,7 @@ export function tokenizeWorkflowArgs(args: string): string[] {
 }
 
 export function parseWorkflowArgs(tokens: string[]): WorkflowInputValues {
-	const result: Record<string, WorkflowSerializableValue> = {};
+	const result: Record<string, WorkflowSerializableValue> = Object.create(null);
 	for (const token of tokens) {
 		if ((token.startsWith("{") && token.endsWith("}")) || (token.startsWith("[") && token.endsWith("]"))) {
 			try {
@@ -164,5 +164,5 @@ export function parseWorkflowArgs(tokens: string[]): WorkflowInputValues {
 			result[key] = value;
 		}
 	}
-	return result;
+	return { ...result };
 }

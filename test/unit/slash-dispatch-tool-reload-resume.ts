@@ -128,11 +128,20 @@ describe("tool run-control actions", () => {
 			const reload = result.details as Extract<WorkflowToolResult, { action: "reload" }>;
 			assert.equal(reload.status, "ok");
 			assert.match(reload.message, /Reloaded workflow resources/);
-			const workflowCmd = commands.find((command) => command.name === "workflow");
-			assert.ok(workflowCmd, "expected workflow command registration");
-			const completions = (await workflowCmd.options.getArgumentCompletions?.("tool-refresh-add")) ?? [];
 			assert.equal(
-				completions.some((completion) => completion.label === "tool-refresh-added"),
+				commands.some((command) => command.name === "workflow"),
+				false,
+			);
+			const listed = await registered.execute(
+				"tool-reload-list-call",
+				{ action: "list" },
+				undefined,
+				undefined,
+				{} as never,
+			);
+			const items = (listed.details as { items?: Array<{ name: string }> }).items ?? [];
+			assert.equal(
+				items.some((item) => item.name === "tool-refresh-added"),
 				true,
 			);
 		} finally {

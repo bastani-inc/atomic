@@ -1,18 +1,3 @@
-/**
- * Integration tests: custom registry shared by tool and slash commands.
- *
- * Proves that discoverWorkflows with a project-local workflow yields a registry
- * visible to:
- *   1. Tool dispatch (action='list' / 'inputs' / 'run')
- *   2. /workflow slash command (list output, completions)
- *   3. no per-workflow /workflow:<name> aliases; /workflow <name> dispatch path
- *
- * All consumers close over the same ExtensionRuntime (runtimeProxy pattern) —
- * the tests verify this shared-registry invariant end-to-end.
- *
- * cross-ref: pi-workflows RFC §5.2, §5.3, §5.7, §5.13
- */
-
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -241,10 +226,6 @@ describe("ExtensionRuntime with custom registry — tool dispatch", () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// 3. /workflow slash command — list and completions see custom registry
-// ---------------------------------------------------------------------------
-
 interface MockCmd {
 	name: string;
 	options: PiCommandOptions;
@@ -282,8 +263,6 @@ function makeMockApiForRuntime(): ExtensionAPI & {
 		},
 		registerMessageRenderer: () => undefined,
 		registerFlag: () => undefined,
-		// Chat surfaces dispatch via emitChatSurface → pi.sendMessage. Mirror
-		// the recipient so tests can introspect the new path.
 		sendMessage(msg: SentMessage) {
 			sent.push(msg);
 		},
@@ -298,35 +277,16 @@ function getCommand(commands: MockCmd[], name: string): MockCmd | undefined {
 	return commands.find((c) => c.name === name);
 }
 
-/**
- * Extract workflow names from any `kind: "list"` chat-surface payloads
- * captured by the mock's sendMessage hook.
- */
-function collectListEntryNames(sent: readonly SentMessage[]): string[] {
-	const names: string[] = [];
-	for (const msg of sent) {
-		const details = msg.details as { kind?: string; entries?: ReadonlyArray<{ name?: string }> } | undefined;
-		if (details?.kind !== "list") continue;
-		for (const entry of details.entries ?? []) {
-			if (typeof entry.name === "string") names.push(entry.name);
-		}
-	}
-	return names;
-}
-
-describe("/workflow slash command — bundled-and-custom shared registry", () => {
-	// The factory seeds the runtime from discoverStartupWorkflowsSync() synchronously,
-	// then upgrades async via discoverWorkflows(). For bundled workflows (always present)
-	// we can verify slash command and tool see the same registry synchronously.
+describe("registered workflow tool and /workflows command — bundled-and-custom shared registry", () => {
 	let mock: ReturnType<typeof makeMockApiForRuntime>;
 
-	beforeAll(() => {
+	beforeEach(() => {
+		defaultStore.clear();
 		mock = makeMockApiForRuntime();
 		factory(mock);
 	});
 
-	test("tool action='list' and /workflow list produce same workflow names (bundled)", async () => {
-		// Tool list
+	test("registered tool action='list' and startup registry produce same bundled workflow names (#5224)", async () => {
 		const toolExecute = mock.tools[0]!.opts.execute;
 		const toolOut = await toolExecute(
 			"test-tool-call",
@@ -338,26 +298,15 @@ describe("/workflow slash command — bundled-and-custom shared registry", () =>
 		const toolItems = (toolOut.details as { action: "list"; items: { name: string }[] }).items;
 		const toolWorkflows = toolItems.map((i) => i.name);
 
-		// Slash command list now emits via pi.sendMessage with a chat-surface
-		// payload `{ kind: "list", entries: [{ name }, …] }`. Extract entry
-		// names from the sent payload (and fall back to combined reply text
-		// for hosts without registerMessageRenderer).
-		const messages: string[] = [];
-		const cmd = getCommand(mock.commands, "workflow")!;
-		await cmd.options.handler("list", { ui: { notify: (m: string) => messages.push(m) } });
-		const listEntries = collectListEntryNames(mock.sent);
-		const combined = messages.join("\n");
+		assert.equal(getCommand(mock.commands, "workflow"), undefined);
+		assert.notEqual(getCommand(mock.commands, "workflows"), undefined);
 
 		for (const name of BUILTIN_WORKFLOW_NAMES) {
 			assert.ok(toolWorkflows.includes(name));
-			assert.ok(
-				listEntries.includes(name) || combined.includes(name),
-				`bundled workflow ${name} missing from slash list output`,
-			);
 		}
 	});
 
-	test("tool and /workflow list agree on the count of bundled workflows", async () => {
+	test("registered tool action='list' and action='inputs' agree on the count of bundled workflows (#5224)", async () => {
 		const toolExecute = mock.tools[0]!.opts.execute;
 		const toolOut = await toolExecute(
 			"test-tool-call",
@@ -368,67 +317,77 @@ describe("/workflow slash command — bundled-and-custom shared registry", () =>
 		);
 		const toolWorkflows = (toolOut.details as { action: "list"; items: { name: string }[] }).items.map((i) => i.name);
 
-		const messages: string[] = [];
-		const cmd = getCommand(mock.commands, "workflow")!;
-		await cmd.options.handler("list", { ui: { notify: (m: string) => messages.push(m) } });
-		const listEntries = collectListEntryNames(mock.sent);
-		const combined = messages.join("\n");
-
-		// All tool names appear in the slash command output (chat-surface
-		// payload via sendMessage, with combined-reply fallback).
 		for (const name of toolWorkflows) {
-			assert.ok(listEntries.includes(name) || combined.includes(name), `slash list output missing workflow ${name}`);
+			const inputsOut = await toolExecute(
+				`inputs-${name}`,
+				{ workflow: name, inputs: {}, action: "inputs" },
+				undefined,
+				undefined,
+				{} as never,
+			);
+			const details = inputsOut.details as { action: "inputs"; name: string; error?: string };
+			assert.equal(details.action, "inputs");
+			assert.equal(details.name, name);
+			assert.equal(details.error, undefined);
 		}
 	});
 
-	test("completions include all bundled workflow names (from shared runtimeProxy.registry)", async () => {
-		const cmd = getCommand(mock.commands, "workflow")!;
+	test("/workflows completions list active session runs from the shared store (#5224)", async () => {
+		const toolExecute = mock.tools[0]!.opts.execute;
+		const runOut = await toolExecute(
+			"test-tool-run-completion",
+			{ workflow: "loop-until-done", inputs: { prompt: "test", max_iterations: 1 }, action: "run" },
+			undefined,
+			undefined,
+			{} as never,
+		);
+		const runDetails = runOut.details as { action: "run"; runId: string };
+		const cmd = getCommand(mock.commands, "workflows")!;
 		const completions = (await cmd.options.getArgumentCompletions?.("")) ?? [];
 		const labels = completions.map((c) => c.label);
 
+		assert.ok(labels.includes(runDetails.runId));
 		for (const name of BUILTIN_WORKFLOW_NAMES) {
-			assert.ok(labels.includes(name));
+			assert.equal(labels.includes(name), false);
 		}
+		await waitForRun(runDetails.runId, { store: defaultStore });
 	});
 });
 
-// ---------------------------------------------------------------------------
-// 6. No /workflow:<name> aliases — /workflow <name> dispatches same runtime path as tool
-// ---------------------------------------------------------------------------
-
-describe("/workflow <name> dispatch — no per-workflow aliases", () => {
+describe("registered workflow tool dispatch and /workflows — no per-workflow aliases", () => {
 	let mock: ReturnType<typeof makeMockApiForRuntime>;
 
-	beforeAll(() => {
+	beforeEach(() => {
+		defaultStore.clear();
 		mock = makeMockApiForRuntime();
 		factory(mock);
 	});
 
 	test("per-workflow aliases are not registered", () => {
+		assert.equal(getCommand(mock.commands, "workflow"), undefined);
 		const alias = getCommand(mock.commands, "workflow:open-claude-design");
 		assert.equal(alias, undefined);
 	});
 
-	test("/workflow fan-out-and-synthesize execute produces output (completed or failed, not silent)", async () => {
-		const cmd = getCommand(mock.commands, "workflow");
-		assert.notEqual(cmd, undefined);
-		const messages: string[] = [];
-		const beforeSent = mock.sent.length;
-		await cmd!.options.handler("fan-out-and-synthesize prompt=test", {
-			ui: { notify: (m: string) => messages.push(m) },
-		});
-		// Success path: dispatch confirmation goes through pi.sendMessage with
-		// `{ kind: "dispatch", … }`. Failure paths still hit ctx.ui.notify. Either
-		// signal counts as "not silent".
-		const dispatchedSent = mock.sent
-			.slice(beforeSent)
-			.some((m) => (m.details as { kind?: string } | undefined)?.kind === "dispatch");
-		const errored = messages.some((m) => m.includes("completed") || m.includes("failed") || m.includes("Workflow"));
-		assert.equal(dispatchedSent || errored, true);
+	test("registered workflow tool fan-out-and-synthesize execute produces run output (#5224)", async () => {
+		const toolExecute = mock.tools[0]!.opts.execute;
+		const toolOut = await toolExecute(
+			"test-tool-fan-out",
+			{ workflow: "fan-out-and-synthesize", inputs: { prompt: "test", max_branches: 1 }, action: "run" },
+			undefined,
+			undefined,
+			{} as never,
+		);
+		const details = toolOut.details as { action: "run"; runId: string; status: string };
+		assert.equal(details.action, "run");
+		assert.ok(details.runId.length > 0);
+		await waitForRun(details.runId, { store: defaultStore });
+		const settled = defaultStore.runs().find((run) => run.id === details.runId);
+		assert.notEqual(settled, undefined);
+		assert.ok(["completed", "failed"].includes(settled!.status));
 	});
 
-	test("/workflow dispatch and tool dispatch reach same registry", async () => {
-		// Tool route: dispatch a remaining builtin with its required input.
+	test("registered workflow tool dispatch and /workflows reach same shared store (#5224)", async () => {
 		const toolExecute = mock.tools[0]!.opts.execute;
 		const toolOut = await toolExecute(
 			"test-tool-call",
@@ -438,19 +397,18 @@ describe("/workflow <name> dispatch — no per-workflow aliases", () => {
 			{} as never,
 		);
 		assert.equal(toolOut.details.action, "run");
+		const runId = (toolOut.details as { action: "run"; runId: string }).runId;
 
-		// Slash route must also produce action='run' (via runtimeProxy.dispatch).
-		// We can't directly inspect slash result since it only calls reply/print,
-		// but we can verify execute does NOT say "unknown subcommand".
-		const cmd = getCommand(mock.commands, "workflow");
+		const cmd = getCommand(mock.commands, "workflows");
 		const messages: string[] = [];
-		await cmd!.options.handler("loop-until-done prompt=test max_iterations=1", {
+		await cmd!.options.handler(runId, {
 			ui: { notify: (m: string) => messages.push(m) },
 		});
 		assert.equal(
-			messages.some((m) => m.includes("unknown subcommand")),
+			messages.some((m) => m.includes("Run not found")),
 			false,
 		);
+		await waitForRun(runId, { store: defaultStore });
 	});
 
 	test("no bundled workflow aliases are registered", () => {

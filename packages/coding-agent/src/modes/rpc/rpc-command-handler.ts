@@ -143,6 +143,7 @@ export function createRpcCommandHandler({
 		pending: pendingExtensionRequests ?? new Map(),
 	});
 	const bashOwners = new RpcBashRequestOwners(output);
+	let agentPanelShowing = false;
 	const getShortcutBindings = async () => {
 		if (keybindings) return keybindings.getEffectiveConfig();
 		fallbackShortcutKeybindings ??= new KeybindingsManager(
@@ -173,10 +174,14 @@ export function createRpcCommandHandler({
 			case "open_agent_panel": {
 				if (!keybindings || !taskInspectorUi)
 					return createRpcErrorResponse(id, command.type, "The agent panel requires an interactive host");
+				if (agentPanelShowing) return createRpcSuccessResponse(id, command.type);
+				agentPanelShowing = true;
 				const ui = session.extensionRunner.getUIContext();
-				void showAgentPanel(session, engineTaskInspectorUi(ui, taskInspectorUi)).catch((error: unknown) =>
-					ui.notify(sourceError(error).message, "error"),
-				);
+				void showAgentPanel(session, engineTaskInspectorUi(ui, taskInspectorUi))
+					.catch((error: unknown) => ui.notify(sourceError(error).message, "error"))
+					.finally(() => {
+						agentPanelShowing = false;
+					});
 				return createRpcSuccessResponse(id, command.type);
 			}
 			case "set_stop_all_notice": {

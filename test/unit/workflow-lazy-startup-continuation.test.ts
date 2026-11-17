@@ -8,16 +8,27 @@ import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { settleStartupWorkflowRecoveries } from "../../packages/workflows/src/extension/extension-lifecycle.js";
-import factory, { type ExtensionAPI, type PiCommandOptions } from "../../packages/workflows/src/extension/index.js";
+import { createWorkflowExtensionRuntimeState } from "../../packages/workflows/src/extension/extension-runtime-state.js";
+import factory, {
+	type ExtensionAPI,
+	type PiCommandContext,
+	type PiCommandOptions,
+	type PiToolOpts,
+	type WorkflowToolArgs,
+} from "../../packages/workflows/src/extension/index.js";
+import type { WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
 import { createExtensionRuntime, type ExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { buildRuntimeAdapters } from "../../packages/workflows/src/extension/wiring.js";
+import { createWorkflowCommandReporter } from "../../packages/workflows/src/extension/workflow-command-utils.js";
 import { assertWorkflowInstanceOwner } from "../../packages/workflows/src/extension/workflow-instance-owner.js";
+import { workflowPolicyFromContext } from "../../packages/workflows/src/extension/workflow-policy.js";
+import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
 import { cancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { jobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { killAllRuns } from "../../packages/workflows/src/runs/background/status.js";
 import type { SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
-import type { ChatSurfacePayload } from "../../packages/workflows/src/tui/chat-surface-message.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
 import {
@@ -35,7 +46,7 @@ interface SentMessage {
 	details?: unknown;
 }
 
-type Handler = (event?: unknown, ctx?: unknown) => Promise<void> | void;
+type Handler = (event?: unknown, ctx?: unknown) => unknown;
 
 const originalCwd = process.cwd();
 
@@ -69,12 +80,18 @@ function registerFactory(
 	handlers: Map<string, Handler>;
 	commands: Array<{ name: string; options: PiCommandOptions }>;
 	sent: SentMessage[];
+	tool: PiToolOpts<WorkflowToolArgs, WorkflowToolResult>;
+	resume: (runId: string, ctx: PiCommandContext) => Promise<boolean>;
 } {
 	const handlers = new Map<string, Handler>();
+	const eventLists = new Map<string, Handler[]>();
 	const commands: Array<{ name: string; options: PiCommandOptions }> = [];
 	const sent: SentMessage[] = [];
+	let tool: PiToolOpts<WorkflowToolArgs, WorkflowToolResult> | undefined;
 	const pi = {
-		registerTool: () => undefined,
+		registerTool: (opts: PiToolOpts<WorkflowToolArgs, WorkflowToolResult>) => {
+			tool = opts;
+		},
 		registerCommand: (name: string, options: PiCommandOptions) => {
 			commands.push({ name, options });
 		},
@@ -97,11 +114,43 @@ function registerFactory(
 				dispose: async () => undefined,
 			},
 		}),
-		on: (event: string, handler: Handler) => handlers.set(event, handler),
+		on: (event: string, handler: Handler) => {
+			const list = eventLists.get(event) ?? [];
+			list.push(handler);
+			eventLists.set(event, list);
+			handlers.set(event, async (ev, ctx) => {
+				let last: unknown;
+				for (const item of eventLists.get(event) ?? []) {
+					last = await item(ev, ctx);
+				}
+				return last;
+			});
+		},
 		...piOverrides,
 	} as unknown as ExtensionAPI;
+	const runtimeState = createWorkflowExtensionRuntimeState(pi, buildRuntimeAdapters(pi));
 	factory(pi);
-	return { handlers, commands, sent };
+	const overlay = { open: () => undefined, toggle: () => undefined, close: () => undefined };
+	return {
+		handlers,
+		commands,
+		sent,
+		tool: tool!,
+		resume: (runId: string, ctx: PiCommandContext) =>
+			handleRunControlCommand(
+				"resume",
+				[runId],
+				ctx,
+				createWorkflowCommandReporter(ctx, workflowPolicyFromContext(ctx), pi),
+				{
+					pi,
+					overlay,
+					runtimeForContext: runtimeState.runtimeForContext,
+					ensureWorkflowResourcesLoaded: runtimeState.ensureWorkflowResourcesLoaded,
+					beforeRestoreCompleted: runtimeState.beforeRestoreCompleted,
+				},
+			),
+	};
 }
 
 async function startSession(handlers: Map<string, Handler>, event: unknown, ctx: unknown): Promise<void> {
@@ -111,14 +160,6 @@ async function startSession(handlers: Map<string, Handler>, event: unknown, ctx:
 
 function inFlightEntry(runId: string, name = "config-restore-wf"): SessionEntry {
 	return { id: `${runId}-start`, type: "workflow.run.start", payload: { runId, name, inputs: {}, ts: 1 } };
-}
-
-function listPayload(sent: readonly SentMessage[]): ChatSurfacePayload | undefined {
-	const message = sent.find((entry) => {
-		const details = entry.details;
-		return typeof details === "object" && details !== null && "kind" in details && details.kind === "list";
-	});
-	return message?.details as ChatSurfacePayload | undefined;
 }
 
 async function writeWorkflowFixture(filePath: string, name: string): Promise<void> {
@@ -325,7 +366,7 @@ describe("workflow lazy-startup continuation fixes", () => {
 							},
 						},
 					};
-					const { handlers, commands } = registerFactory({
+					const { handlers, resume } = registerFactory({
 						sessionManager: { getCwd: () => projectB } as ExtensionAPI["sessionManager"],
 						refreshWorkflowResources: async () => [{ path: workflowPath, enabled: true }],
 					});
@@ -338,20 +379,18 @@ describe("workflow lazy-startup continuation fixes", () => {
 						if (ownership === "user") {
 							await assert.rejects(
 								async () =>
-									commands
-										.find((entry) => entry.name === "workflow")
-										?.options.handler?.(`resume ${runId}`, {
-											...ctx,
-											hasUI: false,
-										}),
-								/interactive session to fork it into the current directory/,
+									resume(runId, {
+										...ctx,
+										hasUI: false,
+									}),
+								/Use \/resume in an interactive session to fork .* into the current directory/,
 							);
 							await cleanupJobs();
 							assert.equal(prompts, 0);
 							assert.deepEqual(backend.getWorkflow(runId), before);
 							assert.equal(store.runs().length, 0);
 						}
-						await commands.find((entry) => entry.name === "workflow")?.options.handler?.(`resume ${runId}`, ctx);
+						await resume(runId, ctx);
 						await cleanupJobs();
 						if (ownership === "user") {
 							assert.equal(prompts, 1);
@@ -635,7 +674,7 @@ export default workflow({
 						},
 					},
 				};
-				const { handlers, commands } = registerFactory({
+				const { handlers, resume } = registerFactory({
 					refreshWorkflowResources: async () => [{ path: workflowPath, enabled: true }],
 				});
 				await startSession(handlers, { reason: "startup" }, ctx);
@@ -649,9 +688,7 @@ export default workflow({
 						store.runs().some((run) => run.id === runId),
 						false,
 					);
-					const command = commands.find((entry) => entry.name === "workflow");
-					assert.ok(command);
-					await command.options.handler?.(`resume ${runId}`, { hasUI: false, ui: ctx.ui });
+					await resume(runId, { hasUI: false, ui: ctx.ui });
 					await cleanupJobs();
 				}
 				assert.equal(backend.getWorkflow(runId)?.status, "completed", notices.join("\n"));
@@ -988,7 +1025,7 @@ export default workflow({
 					ui: { notify: (message: string) => notices.push(message) },
 				},
 			);
-			assert.match(notices.join("\n"), /durable catalog unavailable.*\/workflow resume/);
+			assert.match(notices.join("\n"), /durable catalog unavailable.*\/resume/);
 			assert.equal(store.runs().length, 0);
 		} finally {
 			process.chdir(originalCwd);
@@ -1081,15 +1118,13 @@ export default workflow({
 			const workflowPath = join(dir, "retry-workflow.ts");
 			await writeWorkflowFixture(workflowPath, "retry workflow");
 			let refreshCalls = 0;
-			const { commands, sent } = registerFactory({
+			const { tool } = registerFactory({
 				refreshWorkflowResources: async () => {
 					refreshCalls += 1;
 					if (refreshCalls === 1) throw new Error("transient refresh failure");
 					return [{ path: workflowPath, enabled: true }];
 				},
 			});
-			const workflowCmd = commands.find((command) => command.name === "workflow");
-			assert.ok(workflowCmd);
 			const notices: string[] = [];
 			const headlessCtx = {
 				hasUI: false,
@@ -1099,20 +1134,19 @@ export default workflow({
 					},
 				},
 			};
-			await workflowCmd.options.handler?.("list", headlessCtx);
+			await tool.execute("list-1", { action: "list" }, undefined, undefined, headlessCtx as never);
 			assert.equal(refreshCalls, 1);
 			assert.match(notices.join("\n"), /transient refresh failure/);
-			sent.length = 0;
-			await workflowCmd.options.handler?.("list", headlessCtx);
+			const listed = await tool.execute("list-2", { action: "list" }, undefined, undefined, headlessCtx as never);
 			assert.equal(refreshCalls, 2);
-			assert.equal(listPayload(sent)?.kind, "list");
-			assert.match(sent.map((entry) => entry.content ?? "").join("\n"), /retry-workflow/);
+			assert.equal(listed.details.action, "list");
+			assert.match(JSON.stringify(listed.details), /retry-workflow/);
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}
 	});
 
-	test("/workflow autocomplete falls back to admin completions when lazy discovery fails", async () => {
+	test("/workflows autocomplete completes current-session runs without forcing workflow discovery (#5224)", async () => {
 		let refreshCalls = 0;
 		const { commands } = registerFactory({
 			refreshWorkflowResources: async () => {
@@ -1120,20 +1154,29 @@ export default workflow({
 				throw new Error("discovery failed");
 			},
 		});
-		const workflowCmd = commands.find((command) => command.name === "workflow");
-		assert.ok(workflowCmd?.options.getArgumentCompletions);
+		const runId = testRunId("workflows-autocomplete-run");
+		store.recordRunStart({
+			id: runId,
+			name: "demo",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: Date.now(),
+		});
+		const workflowsCmd = commands.find((command) => command.name === "workflows");
+		assert.ok(workflowsCmd?.options.getArgumentCompletions);
 
-		const completions = await workflowCmd.options.getArgumentCompletions("");
+		const completions = await workflowsCmd.options.getArgumentCompletions(runId.slice(0, 8));
 
-		assert.equal(refreshCalls, 1);
+		assert.equal(refreshCalls, 0);
 		assert.ok(Array.isArray(completions));
-		assert.ok(completions.some((item) => item.value === "list "));
-		assert.ok(completions.some((item) => item.value === "resume "));
+		assert.ok(completions.some((item) => item.value === `${runId} `));
 	});
 
-	test("/workflow resume for paused live runs does not force workflow discovery", async () => {
+	test("resume for paused live runs does not force workflow discovery", async () => {
 		let refreshCalls = 0;
-		const { commands } = registerFactory({
+		const { resume } = registerFactory({
 			refreshWorkflowResources: async () => {
 				refreshCalls += 1;
 				throw new Error("discovery failed");
@@ -1150,10 +1193,8 @@ export default workflow({
 			startedAt: Date.now(),
 		});
 		assert.equal(store.recordRunPaused(runId), true);
-		const workflowCmd = commands.find((command) => command.name === "workflow");
-		assert.ok(workflowCmd);
 
-		await workflowCmd.options.handler?.(`resume ${runId}`, { hasUI: false, ui: { notify: () => undefined } });
+		await resume(runId, { hasUI: false, ui: { notify: () => undefined } });
 
 		assert.equal(refreshCalls, 0);
 		assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");
@@ -1209,7 +1250,7 @@ export default workflow({
 			const workflowPath = join(dir, "slash-resume-lazy.ts");
 			await writePromptWorkflowFixture(workflowPath, "slash-resume-lazy");
 			let refreshCalls = 0;
-			const { commands, sent } = registerFactory({
+			const { sent, resume } = registerFactory({
 				refreshWorkflowResources: async () => {
 					refreshCalls += 1;
 					return [{ path: workflowPath, enabled: true }];
@@ -1250,9 +1291,7 @@ export default workflow({
 				status: "failed",
 				resumable: true,
 			});
-			const workflowCmd = commands.find((command) => command.name === "workflow");
-			assert.ok(workflowCmd);
-			await workflowCmd.options.handler?.(`resume ${sourceRunId}`, {
+			await resume(sourceRunId, {
 				hasUI: false,
 				ui: { notify: () => undefined },
 			});
@@ -1352,7 +1391,7 @@ export default workflow({
 				}
 				await refreshStarted[index];
 			};
-			const { handlers, commands, sent } = registerFactory({
+			const { handlers, tool } = registerFactory({
 				refreshWorkflowResources: () => {
 					refreshCalls += 1;
 					let markStarted: () => void = () => undefined;
@@ -1382,10 +1421,11 @@ export default workflow({
 			assert.equal(refreshCalls, 2);
 			resolvers[1]?.([{ path: newPath, enabled: true }]);
 
-			const workflowCmd = commands.find((command) => command.name === "workflow");
-			assert.ok(workflowCmd);
-			await workflowCmd.options.handler?.("list", { hasUI: false, ui: { notify: () => undefined } });
-			const output = sent.map((entry) => entry.content ?? "").join("\n");
+			const listed = await tool.execute("list-after-supersede", { action: "list" }, undefined, undefined, {
+				hasUI: false,
+				ui: { notify: () => undefined },
+			} as never);
+			const output = JSON.stringify(listed.details);
 			assert.match(output, /new-workflow/);
 			assert.doesNotMatch(output, /old-workflow/);
 		} finally {

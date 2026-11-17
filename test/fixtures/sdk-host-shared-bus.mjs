@@ -49,9 +49,9 @@ try {
 	b = await create("b");
 	assert.notEqual(scopes[0], scopes[1]);
 	if (kind === "subclass") assert.equal(a.resourceLoader.getSystemPrompt(), policy);
-	await a.prompt("/workflow sdk-host-durable --no-picker");
 	let tool = a.agent.state.tools.find((entry) => entry.name === "workflow");
 	assert.ok(tool);
+	await tool.execute("run", { action: "run", workflow: "sdk-host-durable", inputs: {} }, new AbortController().signal);
 	const status = async () => (await tool.execute("status", { action: "status" }, new AbortController().signal)).details;
 	const deadline = Date.now() + 10_000;
 	let before;

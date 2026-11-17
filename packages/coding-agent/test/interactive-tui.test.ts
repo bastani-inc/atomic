@@ -815,7 +815,9 @@ describe("clear-on-shrink working status spacing", () => {
 	test("resetting extension UI uses the default Working interrupt label", () => {
 		setKeybindings(KeybindingsManager.create());
 		const setMessage = vi.fn();
-		const context = {
+		const context = Object.assign(Object.create(InteractiveMode.prototype), {
+			runtimeHost: { session: { isStreaming: false } },
+			ui: { requestRender: vi.fn() },
 			extensionDialogs: [],
 			extensionOverlays: new Set<() => void>(),
 			clearExtensionTerminalInputListeners: vi.fn(),
@@ -836,7 +838,7 @@ describe("clear-on-shrink working status spacing", () => {
 			setWorkingIndicator: vi.fn(),
 			loadingAnimation: { setMessage },
 			setHiddenThinkingLabel: vi.fn(),
-		};
+		});
 
 		workingLoaderPrototype.resetExtensionUI.call(context as unknown as Record<string, unknown>);
 

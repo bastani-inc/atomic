@@ -666,6 +666,7 @@ test("resetExtensionUI while the focused panel is open releases the single-fligh
 		assert.equal(widgets.size, 1);
 		const mode = Object.create(InteractiveModeBase.prototype) as InteractiveModeBase;
 		Object.assign(mode, {
+			runtimeHost: { session },
 			extensionDialogs: [],
 			extensionOverlays: new Set(),
 			editor: { getText: () => "", getExpandedText: () => "", setText() {} },

@@ -66,8 +66,15 @@ WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/issue-2074-evidence-XXXXXX")"
 PROJECT="$WORKDIR/project"
 STATE="$WORKDIR/state"
 AGENT="$WORKDIR/agent"
-mkdir -p "$PROJECT/.atomic/workflows" "$STATE" "$AGENT"
+mkdir -p "$PROJECT/.atomic/workflows" "$PROJECT/.atomic/extensions/workflow" "$STATE" "$AGENT"
 cp "$FIXTURES/$WORKFLOW_FIXTURE" "$PROJECT/.atomic/workflows/"
+cat >"$PROJECT/.atomic/extensions/workflow/config.json" <<'JSON'
+{
+  "workflowNotifications": {
+    "notifyOn": ["completed", "failed", "blocked"]
+  }
+}
+JSON
 
 step=0
 
@@ -183,14 +190,14 @@ await "issue-2074-model •" "the CLI to finish starting on the stand-in model" 
 save "cli-started"
 
 # 3. Launch the run. A named workflow launch dispatches to the background.
-type_command "/workflow $WORKFLOW_NAME"
+type_command "launch $WORKFLOW_NAME"
 await "started in background" "the run to be dispatched" 120
 save "run-dispatched"
 
 # 4. Open the graph overlay on the active run and record the node before
 #    anything is queued on it — the control for the badge below.
 tmux send-keys -t "$SESSION" F2
-await "open stage chat" "the workflow graph overlay" 60
+await "↵ open" "the workflow graph overlay" 60
 await "$STAGE_NAME" "the stage node" 60
 save "graph-before-queue"
 if capture | grep -qF -- "queued"; then
@@ -203,7 +210,7 @@ fi
 #    queueing them, and there would be no queue to lose.
 tmux send-keys -t "$SESSION" Enter
 await "$STAGE_TEXT" "the stage chat to open on a streaming turn" 120
-await "ctrl+x return to graph" "the stage chat footer" 30
+await "← graph" "the stage chat footer" 30
 save "stage-attached"
 
 # 6. Queue one message into each queue: Enter steers, ctrl+f follows up.
@@ -225,7 +232,7 @@ tmux clear-history -t "$SESSION"
 # 8. Leave the node. The queue is still live on the session, so the node the
 #    user is now looking at has to say so. Before the fix this row went back to
 #    the stage's dim "root" metadata and the queue became invisible.
-tmux send-keys -t "$SESSION" C-x
+tmux send-keys -t "$SESSION" Left
 await "$QUEUED_BADGE" "the detached stage node to badge its queued messages" 60
 save "detached-node-badge"
 

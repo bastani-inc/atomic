@@ -723,14 +723,24 @@ test.sequential(
 				watcherExecutions: readGlobalIncidentState(stateDir).agent?.watcherExecutions,
 			});
 
-			const slashCommand = secondExtension.commands.get("workflow");
-			assert.ok(slashCommand, "the /workflow command must be registered beside the public tool");
+			assert.equal(secondExtension.commands.has("workflow"), false);
+			assert.ok(secondExtension.commands.has("workflows"), "the /workflows command must be registered");
+			assert.ok(
+				secondExtension.commands.has("workflow-authoring"),
+				"the /workflow-authoring command must be registered",
+			);
 			let panelChanges = 0;
 			const unsubscribePanel = secondRuntime.agentPanelSourceHub.subscribe(() => panelChanges++);
-			await slashCommand.handler("global-publish-watch label=slash --no-picker", context as never);
+			await workflowTool(secondExtension).execute(
+				"post-reload-launch",
+				{ action: "run", workflow: "global-publish-watch", inputs: { label: "slash" } },
+				undefined,
+				undefined,
+				context as never,
+			);
 			await waitForCondition(
 				() => readGlobalIncidentState(stateDir).slash?.watcherRunning === true,
-				"the slash-command publish watcher to start",
+				"the post-reload publish watcher to start",
 			);
 			const slashRun = second.store
 				.runs()
@@ -740,15 +750,15 @@ test.sequential(
 			assert.ok(slashJobOwner);
 			trackedRunIds.add(slashRun.id);
 			trackedJobs.add(slashJobOwner.promise);
-			assert.equal(slashRun.origin, "user");
+			assert.equal(slashRun.origin, "agent");
 			assert.deepEqual(slashRun.stages, []);
 			assert.deepEqual(second.stageControlRegistry.forRun(slashRun.id), []);
 			unsubscribePanel();
-			assert.ok(panelChanges > 0, "slash and agent launches must both change the agent panel");
+			assert.ok(panelChanges > 0, "post-reload launches must change the agent panel");
 			assert.equal(
 				panelItems(secondRuntime).find((item) => item.id === `run:${slashRun.id}`)?.state,
 				"running",
-				"the slash-launched run is listed too",
+				"the post-reload run is listed too",
 			);
 			writeFileSync(join(stateDir, "slash.release"), "release", "utf8");
 			await waitForCondition(

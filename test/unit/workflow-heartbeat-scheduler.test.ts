@@ -788,7 +788,7 @@ describe("workflow heartbeat delivery", () => {
 		]);
 		assert.equal(send.details.workflowName, "audit-auth");
 		assert.match(send.content, /audit-auth/);
-		assert.ok(send.content.includes(`/workflow status ${runId}`), "the parent is told how to inspect the run");
+		assert.ok(send.content.includes(`/workflows ${runId}`), "the parent is told how to inspect the run");
 		assert.match(send.content, /This is a periodic alignment check\. Review whether the run is still on goal\./);
 		assert.ok(
 			send.content.includes("When steering or communication is useful, use Intercom."),

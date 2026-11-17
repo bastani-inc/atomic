@@ -39,8 +39,8 @@ afterEach(async () => {
 
 function workflowCommand(invocations: string[]): ExtensionFactory {
 	return (pi) => {
-		pi.registerCommand("workflow", {
-			description: "Manage workflow runs",
+		pi.registerCommand("workflows", {
+			description: "Browse running and completed workflows",
 			handler: async (args) => {
 				invocations.push(args);
 			},
@@ -123,7 +123,7 @@ async function createCompactingRig(
 		const runtime = rig.pair.runtime;
 		await runtime.waitUntilResourcesReady();
 		await waitFor("the engine command catalog", () =>
-			runtime.getRemoteCommands().some((command) => command.name === "workflow"),
+			runtime.getRemoteCommands().some((command) => command.name === "workflows"),
 		);
 	}
 	return rig;
@@ -164,9 +164,9 @@ for (const wiring of ["local", "isolated"] as const) {
 
 				const submit = (text: string) => rig.host.defaultEditor.onSubmit?.(text);
 				await submit("first prompt");
-				await submit("/workflow status");
+				await submit("/workflows status");
 				await submit("/settings");
-				await submit("/workflow status");
+				await submit("/workflows status");
 				await submit("second prompt");
 
 				assert.equal(rig.host.session.isCompacting, true, "compaction must still be running");
@@ -344,7 +344,7 @@ for (const wiring of ["local", "isolated"] as const) {
 
 			const submit = (text: string) => rig.host.defaultEditor.onSubmit?.(text);
 			await submit("typed first");
-			await submit("/workflow status");
+			await submit("/workflows status");
 			await waitFor("the session to hold the handed-off message", () =>
 				isDeepEqual(rig.engine.session.getSteeringMessages(), ["typed first"]),
 			);
@@ -394,7 +394,7 @@ describe("isolated host hand-off during manual compaction", () => {
 		const submit = (text: string) => rig.host.defaultEditor.onSubmit?.(text);
 		await submit("typed A");
 		await submit("typed B");
-		await submit("/workflow status");
+		await submit("/workflows status");
 		await waitFor("Alt+Up between the engine's queue updates", () => restoring !== undefined);
 		assert.equal(await restoring, 2);
 		const restored = rig.host.editor.getText();
@@ -570,17 +570,17 @@ describe("engine command catalog", () => {
 
 	test("only lets engine extension commands bypass the compaction queue (#4251)", () => {
 		const host = engineHost([
-			{ name: "workflow", source: "extension", sourceInfo },
+			{ name: "workflows", source: "extension", sourceInfo },
 			{ name: "skill:review", source: "skill", sourceInfo },
 			{ name: "fix-tests", source: "prompt", sourceInfo },
 		]);
 
-		assert.equal(isExtensionCommand.call(host, "/workflow status"), true);
-		assert.equal(isExtensionCommand.call(host, "/workflow"), true);
+		assert.equal(isExtensionCommand.call(host, "/workflows status"), true);
+		assert.equal(isExtensionCommand.call(host, "/workflows"), true);
 		assert.equal(isExtensionCommand.call(host, "/skill:review the diff"), false);
 		assert.equal(isExtensionCommand.call(host, "/fix-tests"), false);
 		assert.equal(isExtensionCommand.call(host, "/unknown"), false);
-		assert.equal(isExtensionCommand.call(host, "workflow status"), false);
+		assert.equal(isExtensionCommand.call(host, "workflows status"), false);
 	});
 });
 

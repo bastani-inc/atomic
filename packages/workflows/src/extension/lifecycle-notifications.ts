@@ -21,14 +21,18 @@ import type {
 	StoreSnapshot,
 	WorkflowActor,
 } from "../shared/store-types.js";
-import type { WorkflowOutputValues } from "../shared/types.js";
-import { deriveGraphThemeFromPiTheme, type GraphTheme } from "../tui/graph-theme.js";
-import { renderWorkflowNoticeCard, type WorkflowNoticeTone } from "../tui/workflow-notice-card.js";
+import { boundedToolPayloadText, boundedToolText } from "../shared/tool-payload-bounds.js";
+import type { WorkflowArtifact, WorkflowOutputValues } from "../shared/types.js";
+import { inertDisplayLine, inertDisplayText, summarizeFailureText } from "../tui/display-text.js";
+import { runFailureText } from "../tui/run-display-state.js";
+import { fmtDuration } from "../tui/status-helpers.js";
 import type { ExtensionAPI, PiMessageRenderComponent, PiMessageRenderer } from "./index.js";
 import { createLifecycleNoticeDelivery } from "./lifecycle-notification-delivery.js";
 
 export const LIFECYCLE_NOTICE_CUSTOM_TYPE = "workflows:lifecycle-notice";
 export const LIFECYCLE_NOTICE_SNIPPET_LIMIT = 240;
+const NOTICE_ARTIFACTS_SHOWN = 3;
+const NOTICE_DETAIL_CHARS = 4096;
 
 export type WorkflowLifecycleNoticeKind =
 	| "started"
@@ -79,6 +83,9 @@ export interface WorkflowLifecycleNoticeDetails {
 	readonly error?: string;
 	/** Partial declared outputs carried by an author-initiated terminal exit. */
 	readonly outputs?: WorkflowOutputValues;
+	readonly outputsPreview?: string;
+	readonly reason?: string;
+	readonly artifacts?: { readonly shown: readonly WorkflowLifecycleNoticeArtifact[]; readonly total: number };
 	readonly failedStageId?: string;
 	readonly toolNodeId?: string;
 	readonly toolName?: string;
@@ -94,6 +101,12 @@ export interface WorkflowLifecycleNoticeDetails {
 	/** Who launched the run, when the launch was attributed. */
 	readonly origin?: WorkflowActor;
 	readonly createdAt: number;
+}
+
+export interface WorkflowLifecycleNoticeArtifact {
+	readonly kind: string;
+	readonly path: string;
+	readonly detail?: string;
 }
 
 export interface WorkflowLifecycleNotificationState {
@@ -359,10 +372,10 @@ export function registerLifecycleNoticeRenderer(
 	const host = options.rendererHost ?? register;
 	if (rendererRegisteredHosts.has(host)) return;
 
-	const renderer: RawRenderer = (raw, options, piTheme) => {
+	const renderer: RawRenderer = (raw, options) => {
 		const message = raw as { details?: WorkflowLifecycleNoticeDetails };
 		if (!message.details) return undefined;
-		return makeNoticeComponent(message.details, themeFromRenderer(piTheme), options?.expanded === true);
+		return makeNoticeComponent(message.details, options?.expanded === true);
 	};
 
 	register(LIFECYCLE_NOTICE_CUSTOM_TYPE, renderer);
@@ -384,7 +397,7 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
 		return `▶ ${actor} started workflow "${workflowName}" (run ${details.runId}). It is running in the background; you will be notified when it completes.`;
 	}
 	if (details.kind === "completed") {
-		return `✓ Workflow "${workflowName}" completed (run ${details.runId})${origin}. Inspect: /workflow status ${details.runId}`;
+		return `✓ Workflow "${workflowName}" completed (run ${details.runId})${origin}. Inspect: /workflows ${details.runId}`;
 	}
 	if (details.kind === "failed") {
 		const stage = details.stageName ?? details.failedStageId ?? details.stageId;
@@ -393,21 +406,21 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
 		const errorText = details.error ? `: ${details.error}` : "";
 		const outputsText = formatLifecycleOutputs(details.outputs);
 		const outputSuffix = outputsText === undefined ? "" : ` Partial outputs: ${outputsText}`;
-		return `✗ Workflow "${workflowName}" failed (run ${details.runId}${failureSite})${origin}${errorText}${outputSuffix}. Inspect: /workflow status ${details.runId}`;
+		return `✗ Workflow "${workflowName}" failed (run ${details.runId}${failureSite})${origin}${errorText}${outputSuffix}. Inspect: /workflows ${details.runId}`;
 	}
 	if (details.kind === "blocked") {
 		const errorText = details.error ? `: ${details.error}` : "";
 		if (details.budgetExceeded === true) {
 			const dimension = details.budgetDimension === undefined ? "" : ` ${details.budgetDimension}`;
-			return `! Workflow "${workflowName}" stopped at its${dimension} budget limit (run ${details.runId})${origin}${errorText}. Summarize progress and the estimated next steps, then ask the user whether to proceed — prefer the ask_user_question tool when it is available — and after approval resume with a raised budget: workflow({ action: "resume", runId: "${details.runId}", budget: { ... } }). Inspect: /workflow status ${details.runId}`;
+			return `! Workflow "${workflowName}" stopped at its${dimension} budget limit (run ${details.runId})${origin}${errorText}. Summarize progress and the estimated next steps, then ask the user whether to proceed — prefer the ask_user_question tool when it is available — and after approval resume with a raised budget: workflow({ action: "resume", runId: "${details.runId}", budget: { ... } }). Inspect: /workflows ${details.runId}`;
 		}
 		const stateText = details.active === true ? "is blocked" : "ended blocked";
-		return `! Workflow "${workflowName}" ${stateText} (run ${details.runId})${origin}${errorText}. Unless the user has requested inline/no-workflow execution, resume or steer the run, or continue with a follow-up workflow. For an explicit inline switch, safely hold/stop the affected run, reconcile completed work and in-flight side effects, then continue inline without duplicate execution; completed work is not undone. Preserve safety, authorization and validation requirements. Resolve material ambiguity from the objective and repository evidence. Inspect: /workflow status ${details.runId}`;
+		return `! Workflow "${workflowName}" ${stateText} (run ${details.runId})${origin}${errorText}. Unless the user has requested inline/no-workflow execution, resume or steer the run, or continue with a follow-up workflow. For an explicit inline switch, safely hold/stop the affected run, reconcile completed work and in-flight side effects, then continue inline without duplicate execution; completed work is not undone. Preserve safety, authorization and validation requirements. Resolve material ambiguity from the objective and repository evidence. Inspect: /workflows ${details.runId}`;
 	}
 	if (details.kind === "budget_warning") {
 		const warningText = details.error ? `: ${details.error}` : "";
 		const dimension = details.budgetDimension ?? "duration";
-		return `! Workflow "${workflowName}" is approaching its ${dimension} budget (run ${details.runId})${origin}${warningText}. Inspect: /workflow status ${details.runId}`;
+		return `! Workflow "${workflowName}" is approaching its ${dimension} budget (run ${details.runId})${origin}${warningText}. Inspect: /workflows ${details.runId}`;
 	}
 	if (details.kind === "paused" || details.kind === "quit") {
 		const stopStage = details.stageName ?? details.stageId;
@@ -418,7 +431,7 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
 		const verb = details.kind === "paused" ? "paused" : "quit";
 		const noun = details.kind === "paused" ? "pause" : "stop";
 		const glyph = details.kind === "paused" ? "⏸" : "⏹";
-		return `${glyph} ${actor} ${verb} the ${scopeText} "${workflowName}" (run ${details.runId})${origin}${stageText}. This ${noun} was deliberate and user-requested; do not resume it or take over the work unless asked. Resume: /workflow resume ${details.runId}`;
+		return `${glyph} ${actor} ${verb} the ${scopeText} "${workflowName}" (run ${details.runId})${origin}${stageText}. This ${noun} was deliberate and user-requested; do not resume it or take over the work unless asked. Resume from /workflows ${details.runId}`;
 	}
 	if (details.kind === "resumed") {
 		const resumedStage = details.stageName ?? details.stageId;
@@ -459,12 +472,25 @@ function makeTerminalNotice(
 		: (run.error ??
 			returnedNoticeError(run, kind) ??
 			(kind === "blocked" || kind === "failed" ? run.exitReason : undefined));
+	const outputsPreview =
+		kind === "completed" && run.result !== undefined
+			? boundedToolPayloadText(run.result, LIFECYCLE_NOTICE_SNIPPET_LIMIT)
+			: undefined;
+	const displayFailure = kind === "failed" || kind === "blocked" ? (runFailureText(run) ?? error) : undefined;
+	const reason =
+		displayFailure === undefined
+			? undefined
+			: boundedToolText(summarizeFailureText(displayFailure).reason, LIFECYCLE_NOTICE_SNIPPET_LIMIT);
+	const artifacts = kind === "completed" ? collectNoticeArtifacts(run) : undefined;
 	return {
 		kind,
 		scope: "run",
 		runId: run.id,
 		workflowName: run.name,
 		status: effectiveRunStatus(run),
+		...(outputsPreview === undefined ? {} : { outputsPreview }),
+		...(reason === undefined ? {} : { reason }),
+		...(artifacts === undefined ? {} : { artifacts }),
 		...(activeBlocked ? { active: true } : {}),
 		...(run.exited === true && run.status === "failed" && run.resumable !== undefined
 			? { resumable: run.resumable }
@@ -690,33 +716,37 @@ function formatLifecycleOutputs(outputs: WorkflowOutputValues | undefined): stri
 	}
 }
 
-function makeNoticeComponent(
-	details: WorkflowLifecycleNoticeDetails,
-	theme: GraphTheme | undefined,
-	expanded: boolean,
-): PiMessageRenderComponent {
-	const text = formatWorkflowLifecycleNoticeText(details);
-	const line = new NoticeLine(lifecycleNoticeLine(details));
+function makeNoticeComponent(details: WorkflowLifecycleNoticeDetails, expanded: boolean): PiMessageRenderComponent {
+	const line = new NoticeLine(lifecycleNoticeLine(details), expanded);
+	let cachedWidth: number | undefined;
+	let cachedLines: string[] | undefined;
 	return {
 		render(width: number): string[] {
-			const head = line.render(width);
-			if (!expanded) return head;
-			// Width < 32 cannot carry rounded card chrome without exceeding the
-			// terminal, so the card helper falls back to wrapped plain text there.
-			return [...head, ...renderLifecycleNoticeCard(details, { width, theme, fallbackText: text })];
+			if (!Number.isFinite(width) || width < 1) return [];
+			const normalizedWidth = Math.floor(width);
+			if (cachedWidth !== normalizedWidth || cachedLines === undefined) {
+				cachedWidth = normalizedWidth;
+				cachedLines = line.render(normalizedWidth);
+			}
+			return cachedLines;
 		},
 		invalidate() {
-			/* stored lifecycle notices are immutable */
+			line.invalidate();
+			cachedWidth = undefined;
+			cachedLines = undefined;
 		},
 	};
 }
 
-/** The notice as the one line every finished task, agent and run reports with; ctrl+o adds its card under it. */
 export function lifecycleNoticeLine(details: WorkflowLifecycleNoticeDetails): NoticeLineSpec {
 	const stage = details.stageName ?? details.failedStageId ?? details.stageId;
-	const at = stage === undefined ? undefined : `at ${stage}`;
+	const at = stage === undefined ? undefined : `at ${inertDisplayLine(boundedToolText(stage, NOTICE_DETAIL_CHARS))}`;
 	const duration = formatDurationMs(details.durationMs);
-	const base = { label: details.scope === "stage" ? "Stage of workflow" : "Workflow", subject: details.workflowName };
+	const base = {
+		label: details.scope === "stage" ? "Stage of workflow" : "Workflow",
+		subject: inertDisplayLine(boundedToolText(details.workflowName, NOTICE_DETAIL_CHARS)),
+		detail: expandedNoticeDetails(details),
+	};
 	switch (details.kind) {
 		case "started":
 			return { ...base, status: "success", outcome: "started" };
@@ -724,7 +754,11 @@ export function lifecycleNoticeLine(details: WorkflowLifecycleNoticeDetails): No
 			return { ...base, status: "success", outcome: "resumed", ...(at === undefined ? {} : { meta: [at] }) };
 		case "failed": {
 			const tool = stage === undefined ? lifecycleToolOrigin(details) : undefined;
-			const where = at ?? (tool === undefined ? undefined : `at tool ${tool}`);
+			const where =
+				at ??
+				(tool === undefined
+					? undefined
+					: `at tool ${inertDisplayLine(boundedToolText(tool, NOTICE_DETAIL_CHARS))}`);
 			return {
 				...base,
 				status: "failure",
@@ -755,7 +789,12 @@ export function lifecycleNoticeLine(details: WorkflowLifecycleNoticeDetails): No
 		case "paused":
 			return { ...base, status: "paused", outcome: "paused", ...(at === undefined ? {} : { meta: [at] }) };
 		case "quit":
-			return { ...base, status: "stopped", outcome: "quit", ...(at === undefined ? {} : { meta: [at] }) };
+			return {
+				...base,
+				status: "stopped",
+				outcome: "was stopped",
+				meta: [at, duration].filter((fact): fact is string => fact !== undefined),
+			};
 		default:
 			return {
 				...base,
@@ -766,152 +805,84 @@ export function lifecycleNoticeLine(details: WorkflowLifecycleNoticeDetails): No
 	}
 }
 
-function renderLifecycleNoticeCard(
-	details: WorkflowLifecycleNoticeDetails,
-	opts: { width: number; theme?: GraphTheme; fallbackText: string },
-): string[] {
-	const tone: WorkflowNoticeTone = lifecycleNoticeTone(details.kind);
-	const title = lifecycleNoticeTitle(details.kind);
-	const glyph = lifecycleNoticeGlyph(details.kind);
+function noticeArtifactDetail(artifact: WorkflowArtifact): string | undefined {
+	if (artifact.captureError !== undefined)
+		return `not captured: ${boundedToolText(summarizeFailureText(artifact.captureError).reason, LIFECYCLE_NOTICE_SNIPPET_LIMIT)}`;
+	const size: string[] = [];
+	if (artifact.filesChanged !== undefined && Number.isFinite(artifact.filesChanged) && artifact.filesChanged >= 0) {
+		size.push(`${artifact.filesChanged} ${artifact.filesChanged === 1 ? "file" : "files"}`);
+	}
+	if (artifact.insertions !== undefined || artifact.deletions !== undefined) {
+		const insertions = Number.isFinite(artifact.insertions) ? Math.max(0, artifact.insertions ?? 0) : 0;
+		const deletions = Number.isFinite(artifact.deletions) ? Math.max(0, artifact.deletions ?? 0) : 0;
+		size.push(`+${insertions} −${deletions}`);
+	}
+	if (size.length > 0) return size.join(" · ");
+	if (artifact.diffStat === undefined) return undefined;
+	return boundedToolText(artifact.diffStat, LIFECYCLE_NOTICE_SNIPPET_LIMIT).split(/\r?\n/, 1)[0];
+}
+
+function collectNoticeArtifacts(run: RunSnapshot): WorkflowLifecycleNoticeDetails["artifacts"] {
+	let total = 0;
+	const shown: WorkflowLifecycleNoticeArtifact[] = [];
+	for (const stage of run.stages) {
+		const artifacts = stage.artifacts;
+		if (artifacts === undefined) continue;
+		total += artifacts.length;
+		const inspectionLimit = Math.min(artifacts.length, NOTICE_ARTIFACTS_SHOWN - shown.length);
+		for (let index = 0; index < inspectionLimit; index++) {
+			const artifact = artifacts[index];
+			if (artifact === undefined) continue;
+			const detail = noticeArtifactDetail(artifact);
+			shown.push({
+				kind: artifact.kind,
+				path: inertDisplayLine(boundedToolText(artifact.path, NOTICE_DETAIL_CHARS)),
+				...(detail === undefined ? {} : { detail: inertDisplayLine(detail) }),
+			});
+		}
+	}
+	return total > 0 ? { total, shown } : undefined;
+}
+
+function expandedNoticeDetails(details: WorkflowLifecycleNoticeDetails): string {
 	const stage = details.stageName ?? details.failedStageId ?? details.stageId;
 	const tool = stage === undefined ? lifecycleToolOrigin(details) : undefined;
-	const headline = lifecycleNoticeHeadline(details);
-	return renderWorkflowNoticeCard({
-		title,
-		glyph,
-		headline,
-		tone,
-		fields: [
-			{ label: "workflow", value: details.workflowName },
-			{ label: "run", value: details.runId },
-			{ label: "stage", value: stage },
-			{ label: "tool", value: tool },
-			{ label: "actor", value: details.actor, tone: "muted" },
-			{ label: "launched", value: details.origin, tone: "muted" },
-			{ label: "prompt", value: details.promptMessage, tone: "muted" },
-			{ label: "error", value: details.error, tone: "error" },
-			{
-				label: "partial outputs",
-				value: formatLifecycleOutputs(details.outputs),
-				tone: "muted",
-			},
-			{ label: "resumable", value: resumableFieldValue(details), tone: "muted" },
-			{ label: "duration", value: formatDurationMs(details.durationMs), tone: "muted" },
-		],
-		hints: [lifecycleNoticeHint(details)],
-		fallbackText: opts.fallbackText,
-		width: opts.width,
-		...(opts.theme ? { theme: opts.theme } : {}),
-	});
-}
-function lifecycleNoticeTone(kind: WorkflowLifecycleNoticeKind): WorkflowNoticeTone {
-	switch (kind) {
-		case "failed":
-			return "error";
-		case "blocked":
-		case "budget_warning":
-		case "awaiting_input":
-		case "paused":
-		case "quit":
-			return "warning";
-		default:
-			return "success";
+	const reason =
+		details.kind === "completed"
+			? undefined
+			: (details.reason ?? (details.error === undefined ? undefined : summarizeFailureText(details.error).reason));
+	const fields: readonly (readonly [string, string | undefined])[] = [
+		["run", details.runId],
+		["stage", stage],
+		["tool", tool],
+		["actor", details.actor],
+		["launched", details.origin],
+		["prompt", details.promptMessage === undefined ? undefined : boundedToolText(details.promptMessage)],
+		["reason", reason === undefined ? undefined : boundedToolText(reason, LIFECYCLE_NOTICE_SNIPPET_LIMIT)],
+		["outputs", details.outputsPreview],
+		["partial outputs", details.outputs === undefined ? undefined : boundedToolPayloadText(details.outputs)],
+		["resumable", details.resumable === undefined ? undefined : details.resumable ? "yes" : "no"],
+	];
+	const lines = fields.flatMap(([label, value]) =>
+		value === undefined ? [] : [`${label} ${inertDisplayText(boundedToolText(value, NOTICE_DETAIL_CHARS))}`],
+	);
+	if (details.artifacts !== undefined) {
+		for (const artifact of details.artifacts.shown.slice(0, NOTICE_ARTIFACTS_SHOWN)) {
+			lines.push(
+				inertDisplayLine(
+					`artifact ${artifact.kind} ${artifact.path}${artifact.detail ? ` · ${artifact.detail}` : ""}`,
+				),
+			);
+		}
+		const remaining = details.artifacts.total - Math.min(details.artifacts.shown.length, NOTICE_ARTIFACTS_SHOWN);
+		if (remaining > 0 && Number.isFinite(remaining)) lines.push(`… +${remaining} more artifacts`);
 	}
-}
-
-function lifecycleNoticeTitle(kind: WorkflowLifecycleNoticeKind): string {
-	switch (kind) {
-		case "started":
-			return "WORKFLOW STARTED";
-		case "failed":
-			return "WORKFLOW FAILED";
-		case "budget_warning":
-			return "WORKFLOW BUDGET WARNING";
-		case "awaiting_input":
-			return "WORKFLOW INPUT";
-		case "blocked":
-			return "WORKFLOW BLOCKED";
-		case "paused":
-			return "WORKFLOW PAUSED";
-		case "quit":
-			return "WORKFLOW QUIT";
-		case "resumed":
-			return "WORKFLOW RESUMED";
-		default:
-			return "WORKFLOW COMPLETE";
-	}
-}
-
-function lifecycleNoticeGlyph(kind: WorkflowLifecycleNoticeKind): string {
-	switch (kind) {
-		case "failed":
-			return "✗";
-		case "budget_warning":
-			return "!";
-		case "awaiting_input":
-			return "？";
-		case "blocked":
-			return "!";
-		case "paused":
-			return "⏸";
-		case "quit":
-			return "⏹";
-		case "started":
-		case "resumed":
-			return "▶";
-		default:
-			return "✓";
-	}
-}
-
-function lifecycleNoticeHeadline(details: WorkflowLifecycleNoticeDetails): string {
-	const name = details.workflowName;
-	const scope = details.scope === "stage" ? "Stage of workflow" : "Workflow";
-	switch (details.kind) {
-		case "started":
-			return `Workflow "${name}" started`;
-		case "failed":
-			return `Workflow "${name}" failed`;
-		case "budget_warning":
-			return `Workflow "${name}" is approaching its duration budget`;
-		case "awaiting_input":
-			return `Workflow "${name}" needs input`;
-		case "blocked":
-			if (details.budgetExceeded === true) return `Workflow "${name}" stopped at its budget limit`;
-			return `Workflow "${name}" ${details.active === true ? "is blocked" : "ended blocked"}`;
-		case "paused":
-			return `${scope} "${name}" paused`;
-		case "quit":
-			return `Workflow "${name}" quit`;
-		case "resumed":
-			return `${scope} "${name}" resumed`;
-		default:
-			return `Workflow "${name}" completed`;
-	}
-}
-
-function lifecycleNoticeHint(details: WorkflowLifecycleNoticeDetails): string {
-	if (details.kind === "awaiting_input") return `/workflows ${details.runId}`;
-	if (details.kind === "paused" || details.kind === "quit") return `/workflow resume ${details.runId}`;
-	if (details.kind === "blocked" && details.budgetExceeded === true) return `/workflow resume ${details.runId}`;
-	return `/workflow status ${details.runId}`;
-}
-
-function resumableFieldValue(details: WorkflowLifecycleNoticeDetails): string | undefined {
-	if (details.resumable === undefined) return undefined;
-	return details.resumable ? "yes" : "no";
+	lines.push(`/workflows ${inertDisplayLine(boundedToolText(details.runId, NOTICE_DETAIL_CHARS))}`);
+	return lines.join("\n");
 }
 
 function formatDurationMs(durationMs: number | undefined): string | undefined {
-	if (durationMs === undefined) return undefined;
-	if (durationMs < 1000) return `${durationMs}ms`;
-	const seconds = durationMs / 1000;
-	if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
-	const minutes = Math.floor(seconds / 60);
-	const remainder = Math.round(seconds % 60);
-	return `${minutes}m ${remainder}s`;
-}
-
-function themeFromRenderer(piTheme: unknown): GraphTheme | undefined {
-	return piTheme === undefined ? undefined : deriveGraphThemeFromPiTheme(piTheme);
+	return durationMs !== undefined && Number.isFinite(durationMs) && durationMs >= 0
+		? fmtDuration(durationMs)
+		: undefined;
 }

@@ -1259,3 +1259,136 @@ test("a fork of a run with an input worktree copies its sessions into the store 
 	assert.deepEqual(opened.stores.at(-2)?.cwd, "/source/worktree", "its sessions are read from the worktree's store");
 	assert.equal(opened.stores.at(-1)?.cwd, "/elsewhere", "and written to the new directory's own store");
 });
+
+test("graph stage forkTarget and fork succeed after module reload re-evaluates JournalDurableBackend (#5245)", async () => {
+	const backend = await createMemoryTestBackend();
+	const store = createStore();
+	const sourceId = testRunId("fork-after-reload");
+	let failSecond = true;
+	const leasedDuringResume: boolean[] = [];
+	const buildDefinition = (defineWorkflow: typeof workflow) =>
+		defineWorkflow({
+			name: "fork-after-reload",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				const runId = ctx.runId;
+				assert.ok(runId);
+				if (runId !== sourceId) leasedDuringResume.push(backend.hasWorkflowExecution(runId));
+				await ctx.stage("plan").prompt("plan");
+				await ctx.stage("explode").prompt("explode");
+				return {};
+			},
+		});
+	const adapters = {
+		prompt: {
+			prompt: async (text: string) => {
+				if (text === "explode" && failSecond) throw new Error("boom");
+				return text;
+			},
+		},
+	};
+	const initialResult = await run(
+		buildDefinition(workflow),
+		{},
+		{
+			runId: sourceId,
+			store,
+			durableBackend: backend,
+			adapters,
+			cwd: process.cwd(),
+		},
+	);
+	assert.equal(initialResult.status, "failed");
+	const stages = store.run(sourceId)!.stages;
+	const completedStage = stages.find((entry) => entry.name === "plan")!;
+	const failedStage = stages.find((entry) => entry.name === "explode")!;
+	assert.equal(completedStage.status, "completed");
+	assert.equal(failedStage.status, "failed");
+
+	const { JournalDurableBackend: InitialJournalDurableBackend } = await import(
+		"../../packages/workflows/src/durable/journal/journal-backend.js"
+	);
+	vi.resetModules();
+	const [
+		{ JournalDurableBackend: ReloadedJournalDurableBackend, isJournalDurableBackend },
+		{ workflow: reloadedWorkflow },
+		{ createExtensionRuntime: createReloadedRuntime },
+		{ createGraphStageActions: createReloadedActions },
+		{ captureWorkflowOwnerResources: captureReloadedOwner },
+		{ createJobTracker: createReloadedJobTracker },
+		{ durableForkTarget: reloadedDurableForkTarget, forkDurableRun: reloadedForkDurableRun },
+		{ isForkJournalUnsupportedError },
+	] = await Promise.all([
+		import("../../packages/workflows/src/durable/journal/journal-backend.js"),
+		import("../../packages/workflows/src/authoring/workflow.js"),
+		import("../../packages/workflows/src/extension/runtime.js"),
+		import("../../packages/workflows/src/extension/workflow-graph-stage-actions.js"),
+		import("../../packages/workflows/src/extension/workflow-owner-resources.js"),
+		import("../../packages/workflows/src/runs/background/job-tracker.js"),
+		import("../../packages/workflows/src/durable/fork-run.js"),
+		import("../../packages/workflows/src/durable/fork-errors.js"),
+	]);
+	assert.notEqual(ReloadedJournalDurableBackend, InitialJournalDurableBackend);
+
+	failSecond = false;
+	const reloadedDef = buildDefinition(reloadedWorkflow);
+	const jobs = createReloadedJobTracker();
+	const runtime = createReloadedRuntime({
+		definitions: [reloadedDef],
+		store,
+		jobs,
+		adapters,
+		cwd: process.cwd(),
+	});
+	const actions = createReloadedActions({
+		owner: { ...captureReloadedOwner(), store, jobs },
+		runtime: () => runtime,
+		context: () => ({ hasUI: true }),
+	});
+
+	const completedTarget = await actions.forkTarget!(sourceId, completedStage.id);
+	assert.deepEqual(completedTarget, { ok: true, stagePath: "plan", rerunToolSteps: 0, live: false });
+	const failedTarget = await actions.forkTarget!(sourceId, failedStage.id);
+	assert.deepEqual(failedTarget, { ok: true, stagePath: "explode", rerunToolSteps: 0, live: false });
+	assert.equal(isJournalDurableBackend?.(backend), true);
+
+	const forkedCompleted = await actions.fork!(sourceId, completedStage.id);
+	assert.equal(forkedCompleted.ok, true, forkedCompleted.message);
+	assert.ok(forkedCompleted.runId);
+	await jobs.get(forkedCompleted.runId)?.promise;
+	assert.equal(backend.getWorkflow(forkedCompleted.runId)?.status, "completed");
+	assert.equal(backend.getWorkflow(forkedCompleted.runId)?.forkedFrom?.stagePath, "plan");
+
+	const forkedFailed = await actions.fork!(sourceId, failedStage.id);
+	assert.equal(forkedFailed.ok, true, forkedFailed.message);
+	assert.ok(forkedFailed.runId);
+	await jobs.get(forkedFailed.runId)?.promise;
+	assert.equal(backend.getWorkflow(forkedFailed.runId)?.status, "completed");
+	assert.equal(backend.getWorkflow(forkedFailed.runId)?.forkedFrom?.stagePath, "explode");
+	assert.equal(leasedDuringResume.length >= 2, true);
+
+	const fakeBackend = {
+		getWorkflow: backend.getWorkflow.bind(backend),
+		journal: backend.journal,
+	} as unknown as typeof backend;
+	assert.equal(fakeBackend instanceof ReloadedJournalDurableBackend, false);
+	assert.equal(isJournalDurableBackend?.(fakeBackend), false);
+	const fakeError = await reloadedDurableForkTarget(fakeBackend, sourceId, completedStage.id).catch(
+		(failure: Error) => failure,
+	);
+	assert.equal(isForkJournalUnsupportedError(fakeError), true);
+
+	const nonAtomicBackend = await createMemoryTestBackend();
+	Object.defineProperty(nonAtomicBackend.journal, "createRunWithEvents", { value: undefined });
+	const readSpy = vi.spyOn(nonAtomicBackend.journal, "getRun");
+	const nonAtomicError = await reloadedForkDurableRun(nonAtomicBackend, {
+		source: "cli",
+		runId: sourceId,
+		carryMessages: "before",
+		definition: reloadedDef,
+	}).catch((failure: Error) => failure);
+	assert.equal(isForkJournalUnsupportedError(nonAtomicError), true);
+	assert.equal(readSpy.mock.calls.length, 0);
+});

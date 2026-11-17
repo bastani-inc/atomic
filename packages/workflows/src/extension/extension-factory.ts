@@ -7,7 +7,6 @@ import { subscribeIntercomControl } from "../intercom/result-intercom.js";
 import type { Store } from "../shared/store.js";
 import { registerChatSurfaceRenderer } from "../tui/chat-surface-message.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
-import { registerInlineFormRenderer } from "../tui/inline-form-overlay.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { buildGraphOverlayAdapter } from "../tui/overlay-adapter.js";
 import { installToolExecutionHooks } from "../tui/tool-execution-hooks.js";
@@ -46,7 +45,7 @@ function registerWorkflowMessageRenderers(pi: ExtensionAPI): void {
 	pi.registerMessageRenderer("workflow.run.end", (payload) =>
 		dynamicTextRenderComponent(() => renderRunSummary(payload as RunEndPayload)),
 	);
-	registerInlineFormRenderer(pi, deriveGraphTheme({}));
+	pi.registerMessageRenderer("workflows:input-form", () => null);
 	registerChatSurfaceRenderer(pi, deriveGraphTheme({}));
 }
 
@@ -246,21 +245,7 @@ function factory(pi: ExtensionAPI): void {
 	});
 	registerWorkflowSlashCommand(pi, workflowCommands, {
 		owner,
-		runtimeProxy: runtimeState.runtimeProxy,
-		runtimeForContext: runtimeState.runtimeForContext,
 		overlay,
-		reloadWorkflowResources: runtimeState.reloadWorkflowResources,
-		ensureWorkflowResourcesLoaded: runtimeState.ensureWorkflowResourcesLoaded,
-		runWithLifecycleSuppressedForPolicy: runtimeState.runWithLifecycleSuppressedForPolicy,
-		runControl: {
-			owner,
-			pi,
-			overlay,
-			runtimeForContext: runtimeState.runtimeForContext,
-			ensureWorkflowResourcesLoaded: runtimeState.ensureWorkflowResourcesLoaded,
-			beforeRestoreCompleted: runtimeState.beforeRestoreCompleted,
-			isGenerationCurrent: () => (liveGeneration()?.pi ?? pi) === pi && !ownerSessionClosing(),
-		},
 	});
 	registerWorkflowMessageRenderers(pi);
 	registerWorkflowLifecycleHandlers(pi, {

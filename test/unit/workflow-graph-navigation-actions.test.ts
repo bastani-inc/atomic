@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters as stripAnsi } from "node:util";
 import { describe, it, vi } from "vitest";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import type {
 	GraphForkTargetResult,
@@ -167,8 +168,11 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		},
 	);
 
-	it("Enter on a failed stage opens its failure detail with the reason and its actions, never a stack trace", () => {
+	it("Enter on a failed stage opens its failure detail with the reason, tokens and actions, never a stack trace", () => {
 		const failed = stage("verify", "failed", {
+			startedAt: 1_000,
+			endedAt: 241_000,
+			modelAttempts: [{ model: "mock", status: "failed", usage: { input: 10_000, output: 2_400 } }],
 			error: "gate failed: unit-tests (windows-x64, 2/5)\n    at runGate (gate.ts:12:3)",
 		});
 		const graph = view([failed], {
@@ -181,22 +185,17 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 			},
 		});
 		assert.match(hint(graph), /↵ open failure detail/);
+		assert.match(hint(graph), /d details/);
 		graph.handleInput(ENTER);
 		const text = graph
 			.render(160)
 			.map((line) => stripAnsi(line))
 			.join("\n");
-		assert.match(text, /✗ verify · failed/);
+		assert.match(text, /✗ verify · failed after 4m · 12\.4k tokens/);
 		assert.match(text, /Reason\s+gate failed: unit-tests \(windows-x64, 2\/5\)/);
 		assert.doesNotMatch(text, /at runGate/, "the summary keeps the stack under logs");
 		const detailHint = hint(graph);
-		for (const key of [
-			/esc back to graph/,
-			/r retry in place/,
-			/f fork from this stage \(reruns it\)/,
-			/t transcript/,
-			/l logs/,
-		]) {
+		for (const key of [/r retry from stage/, /f fork from stage/, /t transcript/, /l logs/, /esc back/]) {
 			assert.match(detailHint, key);
 		}
 		graph.handleInput("l");
@@ -210,6 +209,335 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		);
 		assert.match(hint(graph), /l summary/);
 		graph.dispose();
+	});
+
+	it("d on a completed stage opens its detail with completed header, fork/transcript/logs/back and no retry, while Enter opens its chat (#5224)", async () => {
+		const doneStage = stage("plan", "completed", {
+			startedAt: 1_000,
+			endedAt: 61_000,
+			result: "Plan approved\nsecond line",
+			modelAttempts: [{ model: "mock", status: "completed", usage: { input: 3_000, output: 1_200 } }],
+		});
+		const retry = vi.fn(async () => ({ ok: true, message: "retried" }));
+		const fork = vi.fn(async () => ({ ok: true, message: "Forked run-1 into run-2", runId: "run-2" }));
+		const forkTarget = vi.fn(async () => ({ ok: true, stagePath: "plan", rerunToolSteps: 0, live: false }));
+		const onStageAttach = vi.fn();
+		const onShowRun = vi.fn();
+		const graph = view([doneStage], {
+			piTui: { terminal: { rows: 40 } },
+			onStageAttach,
+			onShowRun,
+			stageActions: { retry, fork, forkTarget },
+		});
+		assert.match(hint(graph), /↵ open stage chat {2}· {2}d details/);
+		graph.handleInput(ENTER);
+		assert.deepEqual(onStageAttach.mock.calls[0], ["run-1", "plan"]);
+
+		graph.handleInput("d");
+		const text = graph
+			.render(160)
+			.map((line) => stripAnsi(line))
+			.join("\n");
+		assert.match(text, /✓ plan · completed in 1m · 4\.2k tokens/);
+		const detailHint = hint(graph).split("\n")[1];
+		assert.match(detailHint, /f fork from stage {2}· {2}t transcript {2}· {2}l logs {2}· {2}esc back/);
+		assert.doesNotMatch(detailHint, /retry/);
+
+		graph.handleInput("r");
+		assert.equal(retry.mock.calls.length, 0);
+
+		graph.handleInput("f");
+		await settle();
+		assert.match(hint(graph), /New run from plan\?/);
+		assert.match(hint(graph), /enter confirm {2}· {2}esc cancel/);
+		graph.handleInput(ENTER);
+		await settle();
+		assert.equal(fork.mock.calls.length, 1);
+		assert.equal(onShowRun.mock.calls[0]?.[0], "run-2");
+		graph.dispose();
+	});
+
+	it("p pauses a running run, r resumes a paused or blocked run, and q quits after a second press within 3s (#5224)", async () => {
+		const snap = makeSnap([stage("A", "running"), stage("B", "pending", {}, ["A"])]);
+		let notify = () => {};
+		const store = {
+			...makeStore(snap),
+			subscribeInvalidation: (listener: () => void) => {
+				notify = listener;
+				return () => {};
+			},
+		};
+		const pauseRun = vi.fn(async () => ({ ok: true, message: "Paused run-1" }));
+		const resumeRun = vi.fn(async () => ({ ok: true, message: "Resumed run-1" }));
+		const quitRun = vi.fn(async () => ({ ok: true, message: "Quit run-1" }));
+		const stop = vi.fn(async () => ({ ok: true, message: "Stopped A" }));
+		const graph = view([], {
+			store,
+			stageActions: { stop, pauseRun, resumeRun, quitRun },
+		});
+
+		const runningHint = hint(graph, 160).split("\n")[1];
+		assert.match(
+			runningHint,
+			/esc back {2}· {2}↵ open stage chat {2}· {2}↓ move {2}· {2}x stop stage {2}· {2}p pause run {2}· {2}q quit run/,
+		);
+		assert.doesNotMatch(runningHint, /r resume run|d details/);
+
+		graph.handleInput("r");
+		assert.equal(resumeRun.mock.calls.length, 0);
+
+		graph.handleInput("p");
+		assert.deepEqual(pauseRun.mock.calls[0], ["run-1"]);
+		await settle();
+		assert.match(hint(graph), /Paused run-1/);
+
+		snap.runs[0].status = "paused";
+		snap.runs[0].stages[0] = stage("A", "paused");
+		snap.version += 1;
+		notify();
+
+		const pausedHint = hint(graph, 160).split("\n")[1];
+		assert.match(pausedHint, /r resume run {2}· {2}q quit run/);
+		assert.doesNotMatch(pausedHint, /p pause run|x stop stage/);
+
+		graph.handleInput("p");
+		assert.equal(pauseRun.mock.calls.length, 1);
+
+		graph.handleInput("r");
+		assert.deepEqual(resumeRun.mock.calls[0], ["run-1"]);
+		await settle();
+
+		graph.handleInput("q");
+		assert.equal(quitRun.mock.calls.length, 0);
+		assert.match(hint(graph, 160).split("\n")[1], /q again to quit Test Run/);
+
+		snap.runs[0].status = "blocked";
+		snap.version += 1;
+		notify();
+		assert.doesNotMatch(
+			hint(graph, 160).split("\n")[1],
+			/q again to quit/,
+			"a run state change disarms the pending quit confirmation",
+		);
+		graph.handleInput("q");
+		assert.equal(quitRun.mock.calls.length, 0, "first press in the new state re-arms instead of quitting");
+		assert.match(hint(graph, 160).split("\n")[1], /q again to quit Test Run/);
+		graph.handleInput("q");
+		assert.deepEqual(quitRun.mock.calls[0], ["run-1"]);
+		await settle();
+		assert.match(hint(graph), /Quit run-1/);
+
+		for (const width of [80, 160]) {
+			const row = hint(graph, width).split("\n")[1];
+			assert.match(row, /\? keys/);
+			if (width === 80) {
+				assert.match(row, /r resume\b/);
+				assert.match(row, /q quit\b/);
+			} else {
+				assert.match(row, /r resume run/);
+				assert.match(row, /q quit run/);
+			}
+		}
+		graph.dispose();
+	});
+
+	it("renders all live keys in exact §4.3 order at 80 and 160 columns across running, paused, blocked, failed, completed and q-armed states (#5224)", () => {
+		const fullActions = {
+			stop: async () => ({ ok: true, message: "" }),
+			pauseRun: async () => ({ ok: true, message: "" }),
+			resumeRun: async () => ({ ok: true, message: "" }),
+			quitRun: async () => ({ ok: true, message: "" }),
+			retry: async () => ({ ok: true, message: "" }),
+			fork: async () => ({ ok: true, message: "" }),
+			forkTarget: async () => ({ ok: true as const, stagePath: "A", rerunToolSteps: 0, live: true }),
+		};
+
+		const scenarios = [
+			{
+				label: "running",
+				runStatus: "running",
+				stageStatus: "running",
+				expected160: [
+					"esc back",
+					"↵ open stage chat",
+					"↓ move",
+					"x stop stage",
+					"p pause run",
+					"q quit run",
+					"/ stages",
+					"f filter: all",
+					"? keys",
+					"h hide",
+				],
+				expected80Keys: ["esc", "↵", "↓", "x", "p", "q", "/", "f", "? keys", "h"],
+			},
+			{
+				label: "paused",
+				runStatus: "paused",
+				stageStatus: "paused",
+				expected160: [
+					"esc back",
+					"↵ open stage chat",
+					"↓ move",
+					"r resume run",
+					"q quit run",
+					"/ stages",
+					"f filter: all",
+					"? keys",
+					"h hide",
+				],
+				expected80Keys: ["esc", "↵", "↓", "r", "q", "/", "f", "? keys", "h"],
+			},
+			{
+				label: "blocked",
+				runStatus: "blocked",
+				stageStatus: "failed",
+				expected160: [
+					"esc back",
+					"↵ open failure detail",
+					"d details",
+					"↓ move",
+					"r resume run",
+					"q quit run",
+					"/ stages",
+					"f filter: all",
+					"? keys",
+					"h hide",
+				],
+				expected80Keys: ["esc", "↵", "d", "↓", "r", "q", "/", "f", "? keys", "h"],
+			},
+			{
+				label: "completed",
+				runStatus: "completed",
+				stageStatus: "completed",
+				endedAt: 2_000,
+				expected160: [
+					"esc back",
+					"↵ open stage chat",
+					"d details",
+					"↓ move",
+					"/ stages",
+					"f filter: all",
+					"? keys",
+					"h hide",
+				],
+				expected80Keys: ["esc", "↵", "d", "↓", "/", "f", "? keys", "h"],
+			},
+		];
+
+		for (const scenario of scenarios) {
+			const snap = makeSnap([stage("A", scenario.stageStatus), stage("B", "pending", {}, ["A"])]);
+			snap.runs[0].name = "ralph";
+			snap.runs[0].status = scenario.runStatus;
+			if (scenario.endedAt !== undefined) snap.runs[0].endedAt = scenario.endedAt;
+			const graph = view([], {
+				store: makeStore(snap),
+				onHide: () => {},
+				onStageAttach: () => {},
+				stageActions: fullActions,
+			});
+			try {
+				const row160 = hint(graph, 160).split("\n")[1];
+				let cursor160 = -1;
+				for (const token of scenario.expected160) {
+					const next = row160.indexOf(token, cursor160 + 1);
+					assert.ok(next > cursor160, `${scenario.label} 160 missing or out of order ${token} in: ${row160}`);
+					cursor160 = next;
+				}
+				const row80 = hint(graph, 80).split("\n")[1];
+				const parts80 = row80
+					.replace(/^.*│ GRAPH │\s*/, "")
+					.trim()
+					.split(/\s*·\s*/);
+				assert.equal(
+					parts80.length,
+					scenario.expected80Keys.length,
+					`${scenario.label} 80 segment count in: ${row80}`,
+				);
+				for (let index = 0; index < scenario.expected80Keys.length; index++) {
+					assert.ok(
+						parts80[index].startsWith(scenario.expected80Keys[index]),
+						`${scenario.label} 80 segment ${index} expected prefix ${scenario.expected80Keys[index]}, got ${parts80[index]}`,
+					);
+				}
+			} finally {
+				graph.dispose();
+			}
+		}
+
+		const armedSnap = makeSnap([stage("A", "running"), stage("B", "pending", {}, ["A"])]);
+		armedSnap.runs[0].name = "ralph";
+		const armedGraph = view([], {
+			store: makeStore(armedSnap),
+			onHide: () => {},
+			onStageAttach: () => {},
+			stageActions: fullActions,
+		});
+		try {
+			armedGraph.handleInput("q");
+			const row160 = hint(armedGraph, 160).split("\n")[1];
+			for (const token of [
+				"esc back",
+				"↵ open stage chat",
+				"↓ move",
+				"x stop stage",
+				"p pause run",
+				"q again to quit ralph",
+				"/ stages",
+				"f filter: all",
+				"? keys",
+				"h hide",
+			]) {
+				assert.ok(row160.includes(token), `q-armed 160 missing ${token} in: ${row160}`);
+			}
+			assert.ok(row160.indexOf("? keys") < row160.indexOf("h hide"), `? keys precedes h hide in: ${row160}`);
+
+			armedSnap.runs[0].name = "ralph-very-long-workflow-name";
+			const row80 = hint(armedGraph, 80).split("\n")[1];
+			assert.match(row80, /q again to quit ralph/);
+			assert.match(row80, /│ GRAPH │\s*esc back · /);
+			assert.match(row80, /· \? keys\b/);
+		} finally {
+			armedGraph.dispose();
+		}
+	});
+
+	it("tool detail lists home/end scrolling in its hint and key overlay and ignores unlisted h hide (#5224)", () => {
+		const onHide = vi.fn();
+		const snap = makeSnap([]);
+		snap.runs[0].toolNodes = [
+			{
+				kind: "tool",
+				id: "tool-1",
+				name: "bash",
+				status: "completed",
+				parentIds: [],
+				args: { cmd: "echo ok" },
+				result: "ok",
+				startedAt: 1,
+				endedAt: 2,
+			},
+		];
+		const graph = view([], {
+			store: makeStore(snap),
+			onHide,
+			piTui: { terminal: { rows: 40 } },
+		});
+		try {
+			graph.handleInput(ENTER);
+			const detailHint = hint(graph, 160).split("\n")[1];
+			assert.match(detailHint, /esc back to graph/);
+			assert.match(detailHint, /↑↓ pgup\/pgdn scroll/);
+			assert.match(detailHint, /home\/end/);
+			assert.doesNotMatch(detailHint, /h hide/);
+			graph.handleInput("h");
+			assert.equal(onHide.mock.calls.length, 0, "unlisted h does not hide from inside tool detail");
+			graph.handleInput("?");
+			const helpText = stripAnsi(graph.render(160).join("\n"));
+			assert.match(helpText, /home\/end/);
+		} finally {
+			graph.dispose();
+		}
 	});
 
 	it("r runs the host's retry on the failed stage, and t opens its transcript", async () => {
@@ -241,15 +569,15 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		const asking = hint(graph);
 		assert.match(
 			asking,
-			/Fork from verify: reruns it and 2 completed tool steps in a new run\. Stops this run first, resumably\./,
+			/New run from verify\? Reruns it and 2 completed tool steps in a new run\. Stops this run first, resumably\./,
 		);
-		assert.match(asking, /enter fork {2}· {2}esc cancel/);
+		assert.match(asking, /enter confirm {2}· {2}esc cancel/);
 		assert.equal(fork.mock.calls.length, 0, "nothing forks before Enter");
 		graph.handleInput(LEFT);
-		assert.match(hint(graph), /enter fork/, "Left does not cancel the confirmation (#5234)");
+		assert.match(hint(graph), /enter confirm/, "Left does not cancel the confirmation (#5234)");
 		graph.handleInput(ESC);
-		assert.doesNotMatch(hint(graph), /Fork from verify/, "Esc cancels the confirmation");
-		assert.match(hint(graph), /f fork from this stage/, "and stays in the detail");
+		assert.doesNotMatch(hint(graph), /New run from verify/, "Esc cancels the confirmation");
+		assert.match(hint(graph), /f fork from stage/, "and stays in the detail");
 		graph.handleInput("f");
 		await settle();
 		graph.handleInput(ENTER);
@@ -284,16 +612,16 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		graph.handleInput(ENTER);
 		graph.handleInput("f");
 		await settle();
-		assert.match(hint(graph), /enter fork/);
+		assert.match(hint(graph), /enter confirm/);
 		snap.runs[0].stages[0] = stage("verify", "running");
 		snap.version += 1;
 		notify();
-		assert.doesNotMatch(hint(graph), /Fork from verify|enter fork/);
+		assert.doesNotMatch(hint(graph), /New run from verify|enter confirm/);
 		snap.runs[0].stages[0] = stage("verify", "failed", { error: "failed again" });
 		snap.version += 1;
 		notify();
 		graph.handleInput(ENTER);
-		assert.doesNotMatch(hint(graph), /enter fork/);
+		assert.doesNotMatch(hint(graph), /enter confirm/);
 		graph.handleInput(ENTER);
 		assert.equal(fork.mock.calls.length, 0);
 		graph.dispose();
@@ -367,14 +695,14 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 			graph.handleInput(ENTER);
 			graph.handleInput("f");
 			await settle();
-			assert.match(hint(graph), /enter fork/);
+			assert.match(hint(graph), /enter confirm/);
 			snap.runs = [];
 			snap.version++;
 			notify();
 			graph.render(160);
 			graph.handleInput(ENTER);
 			assert.equal(fork.mock.calls.length, 0);
-			assert.doesNotMatch(hint(graph), /enter fork|retry in place/);
+			assert.doesNotMatch(hint(graph), /enter confirm|retry from stage/);
 		} finally {
 			graph.dispose();
 		}
@@ -395,7 +723,7 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		graph.handleInput(ENTER);
 		target.resolve({ ok: true, stagePath: "verify", rerunToolSteps: 0, live: false });
 		await settle();
-		assert.doesNotMatch(hint(graph), /Fork from verify|enter fork|Checking where/);
+		assert.doesNotMatch(hint(graph), /New run from verify|enter confirm|Checking where/);
 		graph.handleInput(ENTER);
 		assert.equal(fork.mock.calls.length, 0);
 		graph.dispose();
@@ -566,7 +894,7 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		graph.handleInput("f");
 		await settle();
 		assert.match(hint(graph), /A fork can't start at this stage/);
-		assert.doesNotMatch(hint(graph), /enter fork/);
+		assert.doesNotMatch(hint(graph), /enter confirm/);
 		graph.dispose();
 	});
 
@@ -786,6 +1114,88 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		}
 	});
 
+	it("at 40 columns the hint keeps esc back and the keys help as complete entries, including armed quit and remapped keys (#5224)", () => {
+		const actions = {
+			stop: async () => ({ ok: true, message: "" }),
+			pauseRun: async () => ({ ok: true, message: "" }),
+			resumeRun: async () => ({ ok: true, message: "" }),
+			quitRun: async () => ({ ok: true, message: "" }),
+		};
+		const defaults = makeFakeKeybindings();
+		const remapped = {
+			matches: (data, action) =>
+				action === APP_ACTION.listStop
+					? data === "s"
+					: action === APP_ACTION.keysHelp
+						? data === "\x1bOP"
+						: defaults.matches(data, action),
+			getKeys: (action) => (action === APP_ACTION.listStop ? ["s"] : action === APP_ACTION.keysHelp ? ["f1"] : []),
+		};
+		for (const scenario of [
+			{ label: "default", piKeybindings: defaults, help: "? keys", stop: "x", armed: false },
+			{ label: "armed quit", piKeybindings: defaults, help: "? keys", stop: "x", armed: true },
+			{ label: "remapped", piKeybindings: remapped, help: "f1 keys", stop: "s", armed: false },
+			{ label: "remapped armed quit", piKeybindings: remapped, help: "f1 keys", stop: "s", armed: true },
+		]) {
+			const snap = makeSnap([stage("A", "running"), stage("B", "pending", {}, ["A"])]);
+			snap.runs[0].name = "ralph";
+			const graph = view([], {
+				store: makeStore(snap),
+				piKeybindings: scenario.piKeybindings,
+				onHide: () => {},
+				onStageAttach: () => {},
+				stageActions: actions,
+			});
+			try {
+				if (scenario.armed) graph.handleInput("q");
+				const row = hint(graph, 40).split("\n")[1];
+				const segments = row
+					.replace(/^.*│ GRAPH │\s*/, "")
+					.trim()
+					.split(/\s+·\s+/);
+				assert.equal(segments[0], "esc back", `${scenario.label}: ${row}`);
+				assert.ok(segments.includes(scenario.help), `${scenario.label} keeps ${scenario.help}: ${row}`);
+				const complete = new Set(["esc back", "↵", "↓", scenario.stop, "p", "q", "/", "f", scenario.help, "h"]);
+				for (const segment of segments) {
+					assert.ok(
+						complete.has(segment) || (scenario.armed && /^q again\b/.test(segment)),
+						`${scenario.label} shows only complete entries, got "${segment}" in: ${row}`,
+					);
+				}
+				if (scenario.armed) {
+					assert.ok(
+						segments.some((segment) => /^q again\b/.test(segment)),
+						`${scenario.label} keeps the armed quit: ${row}`,
+					);
+				}
+			} finally {
+				graph.dispose();
+			}
+		}
+		const completedSnap = makeSnap([stage("A", "completed")]);
+		completedSnap.runs[0].name = "ralph";
+		completedSnap.runs[0].status = "completed";
+		completedSnap.runs[0].endedAt = 2_000;
+		const completedGraph = view([], {
+			store: makeStore(completedSnap),
+			piKeybindings: new KeybindingsManager({ "app.list.stop": "h" }),
+			onHide: () => {},
+			onStageAttach: () => {},
+			stageActions: actions,
+		});
+		try {
+			const row = hint(completedGraph, 40).split("\n")[1];
+			const segments = row
+				.replace(/^.*│ GRAPH │\s*/, "")
+				.trim()
+				.split(/\s+·\s+/);
+			assert.equal(segments[0], "esc back", `completed run with stop on h: ${row}`);
+			assert.ok(segments.includes("? keys"), `completed run with stop on h keeps ? keys: ${row}`);
+		} finally {
+			completedGraph.dispose();
+		}
+	});
+
 	it("at 80 columns the hint keeps the keys that act on this stage ahead of / stages and h hide, and lists each arrow once", () => {
 		const graph = view(
 			[stage("A", "completed"), stage("B", "running", {}, ["A"]), stage("C", "running", {}, ["A"])],
@@ -799,8 +1209,7 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		const narrow = hint(graph, 80).split("\n")[1];
 		assert.match(narrow, /x stop\b/, "a stoppable stage keeps x");
 		assert.match(narrow, /f filter: running/, "a filter other than all stays visible");
-		assert.doesNotMatch(narrow, /\/ stages|h hide/, "the always-available keys drop first");
-		assert.match(narrow, /\? keys/);
+		assert.match(narrow, /\/.*·.*f filter: running.*·.*\? keys.*·.*h/, "all live keys stay on the narrow hint line");
 		assert.equal(narrow.split("←").length - 1, 0, "← does nothing on the first sibling");
 		assert.match(narrow, /esc back/, "only Esc leaves the graph");
 		assert.match(hint(graph, 160), /↑→ move/, "only the arrows that move: up to A, right to C");
