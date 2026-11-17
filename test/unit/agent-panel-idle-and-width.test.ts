@@ -8,6 +8,8 @@ import {
 	openAgentPanelItem,
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import {
+	AGENT_PANEL_DROP_MS,
+	AGENT_PANEL_IDLE_ROWS,
 	type AgentPanelRow,
 	type AgentPanelStyle,
 	renderAgentPanelRows,
@@ -40,38 +42,123 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-test("a finished workflow run that stays until viewed stops the panel's tick once it has faded (#5239)", () => {
+test("a finished workflow run that stays until viewed stops the panel's tick once it has faded (#5224)", () => {
 	initTheme("dark");
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
-	let now = 1_000_000;
+	let now = 1_800_000_000_000;
 	vi.spyOn(Date, "now").mockImplementation(() => now);
+	const retainedCount = AGENT_PANEL_IDLE_ROWS + 1;
+	for (const count of [1, retainedCount]) {
+		const hub = new AgentPanelSourceHub();
+		const ended = Array.from(
+			{ length: count },
+			(_, index): AgentPanelItem => ({
+				id: `run:old-${index}`,
+				kind: "workflow",
+				state: "done",
+				name: `release-${index}`,
+				task: "",
+				elapsedMs: 60_000,
+				endedAt: now - 3 * 24 * 60 * 60_000,
+			}),
+		);
+		hub.register({ items: () => ended, subscribe: () => () => {} });
+		const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+		let renders = 0;
+		let mountedWidget: { render(width: number): string[] } | undefined;
+		let latestCounts: AgentPanelCounts | undefined;
+		const dispose = bindAgentPanel(
+			session,
+			{
+				setWidget(_key: string, factory?: () => { render(width: number): string[] }) {
+					mountedWidget = factory?.();
+				},
+				requestRender() {
+					renders++;
+				},
+			} as never,
+			(counts) => {
+				latestCounts = counts;
+			},
+		);
+		try {
+			assert.deepEqual(latestCounts, { total: count, needsInput: 0 });
+			assert.ok(mountedWidget);
+			const initialLines = mountedWidget.render(80).map((line) => stripVTControlCharacters(line));
+			assert.equal(initialLines.length, count === 1 ? 1 : AGENT_PANEL_IDLE_ROWS + 1);
+			if (count > AGENT_PANEL_IDLE_ROWS) {
+				assert.match(initialLines.at(-1) ?? "", /\+1 more/);
+			}
+			for (let second = 0; second < 3600; second++) {
+				now += 1000;
+				vi.advanceTimersByTime(1000);
+			}
+			assert.ok(
+				renders > 0 && renders < 120,
+				`an idle hour with ${count} retained workflow(s) repaints only until faded, got ${renders}`,
+			);
+			assert.equal(vi.getTimerCount(), 0);
+		} finally {
+			dispose();
+			hub.dispose();
+		}
+	}
+
 	const hub = new AgentPanelSourceHub();
-	const ended: AgentPanelItem = {
-		id: "run:old",
-		kind: "workflow",
+	const retainedWorkflows = Array.from(
+		{ length: AGENT_PANEL_IDLE_ROWS },
+		(_, index): AgentPanelItem => ({
+			id: `run:kept-${index}`,
+			kind: "workflow",
+			state: "done",
+			name: `kept-${index}`,
+			task: "",
+			elapsedMs: 60_000,
+			endedAt: now - 3 * 24 * 60 * 60_000,
+		}),
+	);
+	const expiringHidden: AgentPanelItem = {
+		id: "ext:expiring-hidden",
+		kind: "agent",
 		state: "done",
-		name: "release",
-		task: "",
-		elapsedMs: 60_000,
-		endedAt: now - 3 * 24 * 60 * 60_000,
+		name: "worker-done",
+		task: "done",
+		elapsedMs: 5_000,
+		endedAt: now - 1_000,
 	};
-	hub.register({ items: () => [ended], subscribe: () => () => {} });
+	hub.register({ items: () => [...retainedWorkflows, expiringHidden], subscribe: () => () => {} });
 	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
-	let renders = 0;
-	const dispose = bindAgentPanel(session, {
-		setWidget() {},
-		requestRender() {
-			renders++;
+	const countsHistory: AgentPanelCounts[] = [];
+	let widget: { render(width: number): string[] } | undefined;
+	const dispose = bindAgentPanel(
+		session,
+		{
+			setWidget(_key: string, factory?: () => { render(width: number): string[] }) {
+				widget = factory?.();
+			},
+			requestRender() {},
+		} as never,
+		(counts) => {
+			countsHistory.push(counts);
 		},
-	} as never);
+	);
 	try {
-		for (let second = 0; second < 3600; second++) {
+		assert.deepEqual(countsHistory, [{ total: AGENT_PANEL_IDLE_ROWS + 1, needsInput: 0 }]);
+		assert.ok(widget);
+		assert.match(stripVTControlCharacters(widget.render(80).at(-1) ?? ""), /\+1 more/);
+		const dropSeconds = Math.ceil(AGENT_PANEL_DROP_MS / 1000);
+		for (let second = 0; second < dropSeconds; second++) {
 			now += 1000;
 			vi.advanceTimersByTime(1000);
 		}
-		assert.ok(renders < 120, `an idle hour repaints only until the finished run has faded, got ${renders}`);
+		assert.deepEqual(countsHistory.at(-1), { total: AGENT_PANEL_IDLE_ROWS, needsInput: 0 });
+		const afterDropLines = widget.render(80).map((line) => stripVTControlCharacters(line));
+		assert.equal(afterDropLines.length, AGENT_PANEL_IDLE_ROWS);
+		assert.doesNotMatch(afterDropLines.at(-1) ?? "", /\+1 more/);
+		assert.equal(vi.getTimerCount(), 0);
 	} finally {
 		dispose();
+		hub.dispose();
 	}
 });
 
