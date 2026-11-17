@@ -8,8 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Breaking Changes
 
-- A stage with `model: "auto"`, the default of every builtin workflow's stages, now runs your default model at its default thinking level, or the launching session's model and thinking level when no default model is configured; `stage.setThinkingLevel()` sets another effort. No routing model is asked, and an `auto` stage's session opens without waiting for its first prompt. The SDK `run()` without a `models` catalog now runs `auto` stages too, on the configured default model. An `auto` stage still falls back to its `fallbackModels` and then to the session's model.
+- A stage with `model: "auto"`, the default of every builtin workflow's stages, now runs your default model at its default thinking level, or the launching session's model and thinking level when no default model is configured; `stage.setThinkingLevel()` sets another effort. No routing model is asked, and an `auto` stage's session opens without waiting for its first prompt. The SDK `run()` and worker hosts, which have no `models` catalog, now run `auto` stages too: on the configured default model, else the model given to `createAgentSessionAdapter()`, before the stage's `fallbackModels`. An `auto` stage in a session still falls back to its `fallbackModels` and then to the session's model.
 - Removed `taskNeeds`, `modelConstraints` and `parallelSlot` from `StageOptions` and from task, chain and parallel options, `routerSelection` from `StageSnapshot`, `WorkflowTaskResult` and stage checkpoints, `WorkflowModelCatalogPort.routeModel()`, which `autoModel()` replaces, and `PiExecuteContext.getModelRouting`. Workflow definitions, TypeScript workflow files and journals that still carry these fields keep loading and running with them ignored. The builtin `ralph` reviewers no longer ask for different model families.
+
+### Added
+
+- `AgentSessionAdapter.autoModel()` tells a run without a `models` catalog what `model: "auto"` stands for. `createAgentSessionAdapter()` implements it from the settings and credentials its stage sessions start with, and an adapter that spreads it (`{ ...createAgentSessionAdapter(), create }`) keeps it.
 
 ### Changed
 

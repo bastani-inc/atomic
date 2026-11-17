@@ -241,7 +241,7 @@ Invocation working directory for workflow-owned artifacts. It defaults to the ho
 readonly models?: WorkflowModelCatalogPort;
 ```
 
-Model catalog port for the invoking session, when the host provides one. `models.currentModel` is the user-selected session model; leading a stage's model chain with it (bare, without a `:thinking` suffix) runs the stage at the session's model and default thinking level. `models.listModels()` returns the available catalog. `models.autoModel?.()` returns `{ model, thinkingLevel? }`, the model and thinking level a `model: "auto"` stage runs, or `undefined`. A custom `WorkflowModelCatalogPort` passed to `run()` as `models` can implement `autoModel()`, which replaces the former `routeModel()`; without it an `auto` stage leaves the model to the stage's session factory, which starts on the configured default model. The field is absent when no host catalog exists (for example some detached executions), so definitions should treat it as optional and fall back to their own model configuration.
+Model catalog port for the invoking session, when the host provides one. `models.currentModel` is the user-selected session model; leading a stage's model chain with it (bare, without a `:thinking` suffix) runs the stage at the session's model and default thinking level. `models.listModels()` returns the available catalog. `models.autoModel?.()` returns `{ model, thinkingLevel? }`, the model and thinking level a `model: "auto"` stage runs, or `undefined`. A custom `WorkflowModelCatalogPort` passed to `run()` as `models` can implement `autoModel()`, which replaces the former `routeModel()`. Without a catalog that resolves it, an `auto` stage asks its session adapter's `autoModel()`; see [stage sessions and adapters](#stage-sessions-and-adapters). The field is absent when no host catalog exists (for example some detached executions), so definitions should treat it as optional and fall back to their own model configuration.
 
 ### `ctx.task(name, options)`
 
@@ -2037,8 +2037,11 @@ interface AgentSessionAdapter {
     options: StageSessionCreateOptions,
     meta?: StageExecutionMeta,
   ): Promise<StageSessionRuntime | StageSessionCreateResult>;
+  autoModel?(options: StageSessionCreateOptions): Promise<WorkflowAutoModel | undefined>;
 }
 ```
+
+`autoModel()` answers what `model: "auto"` stands for when the run's `models` catalog does not resolve it. The adapter `createAgentSessionAdapter()` returns implements it from the settings and credentials its sessions start with: the configured default model at its default thinking level, else the `model` and `thinkingLevel` in `baseOptions`. The stage then runs that model first, then its `fallbackModels`. An adapter without `autoModel()` leaves an `auto` stage's model to its own `create()`.
 
 Call `createAgentSessionAdapter(baseOptions)` yourself to apply the same `createAgentSession` options, such as `agentDir`, `modelRuntime`, or `settingsManager`, to every stage. Options set on an individual stage override `baseOptions`. `baseOptions` cannot set `sessionManager`, because every stage needs its own. A `cwd` in `baseOptions` applies to every stage that doesn't set its own, and session files saved through `sessionDir` record that directory.
 
@@ -2055,11 +2058,12 @@ await run(helloWorld, { name: "Atomic" }, {
   adapters: { agentSession: createAgentSessionAdapter({ agentDir: "/srv/atomic-agent" }) },
 });
 
-// Per-stage options on top of the default adapter.
+// Per-stage options on top of the default adapter. Spreading it keeps its `autoModel()`.
 const stageSessions = createAgentSessionAdapter();
 await run(helloWorld, { name: "Atomic" }, {
   adapters: {
     agentSession: {
+      ...stageSessions,
       create: (options, meta) =>
         stageSessions.create(meta?.stageName === "review" ? { ...options, cwd: "/srv/review" } : options, meta),
     },

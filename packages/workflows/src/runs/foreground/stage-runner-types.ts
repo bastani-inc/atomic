@@ -20,6 +20,7 @@ import type {
 	StageOptions,
 	StageSendUserMessageOptions,
 	StageUserMessageContent,
+	WorkflowAutoModel,
 	WorkflowExecutionMode,
 	WorkflowModelAttempt,
 	WorkflowModelCatalogPort,
@@ -197,6 +198,11 @@ export interface AgentSessionAdapter {
 		options: StageSessionCreateOptions,
 		meta?: StageExecutionMeta,
 	): Promise<StageSessionRuntime | StageSessionCreateResult>;
+	/**
+	 * What `model: "auto"` stands for in the sessions this adapter creates, for a run whose `models` catalog does not
+	 * resolve it: the user's default model, else the adapter's own model. No model request.
+	 */
+	autoModel?(options: StageSessionCreateOptions): Promise<WorkflowAutoModel | undefined>;
 }
 
 export interface StageModelFallbackMeta {

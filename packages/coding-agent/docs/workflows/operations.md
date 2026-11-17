@@ -4,7 +4,7 @@ Run and operate workflows from interactive chat or the workflow tool: identify r
 
 ## Automatic stage models
 
-A stage authored with `model: "auto"` runs the user's default model (`defaultProvider` and `defaultModel`, the model last chosen with `/model`) when it has credentials, otherwise the launching session's model. Atomic resolves it when the stage is created, without a model request, and records the resolved model on the stage in place of `auto`. The stage's `fallbackModels` follow it, then the launching session's model. Stage status shows the model and thinking level the stage actually ran. See [authoring automatic stages](/workflows/authoring#automatic-stage-model-selection).
+A stage authored with `model: "auto"` runs the user's default model (`defaultProvider` and `defaultModel`, the model last chosen with `/model`) when it has credentials, otherwise the launching session's model. Atomic resolves it without a model request, before the stage's first session, and records the resolved model on the stage in place of `auto`. The stage's `fallbackModels` follow it, then, in a session, the launching session's model. A run started through the SDK `run()` or on a worker uses the settings and credentials its stage sessions start with; the "session's model" there is the model given to `createAgentSessionAdapter()`, if any. Stage status shows the model and thinking level the stage actually ran. See [authoring automatic stages](/workflows/authoring#automatic-stage-model-selection).
 
 ## Workflow run identifiers and the BACKGROUND panel
 

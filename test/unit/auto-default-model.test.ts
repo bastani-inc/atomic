@@ -42,7 +42,10 @@ import { clearSubagentControls } from "../../packages/subagents/src/runs/inproce
 import type { RunSyncOptions, SingleResult } from "../../packages/subagents/src/shared/types.js";
 import { workflowModelCatalogFromContext } from "../../packages/workflows/src/extension/workflow-model-catalog.js";
 import { loadWorkflowModule } from "../../packages/workflows/src/extension/workflow-module-loader.js";
+import type { AgentSessionAdapter } from "../../packages/workflows/src/runs/foreground/stage-runner-types.js";
 import { createAgentSessionAdapter, run as sdkRun } from "../../packages/workflows/src/sdk-surface.js";
+import { admittedSessionAdapter } from "../../packages/workflows/src/workers/admission-binding.js";
+import { workerStageAdapter } from "../../packages/workflows/src/workers/pooled-stage-delivery.js";
 import { createStore, run, workflow } from "./executor-shared.js";
 import { createStageContext, makeMockSession, makeOpts } from "./stage-runner-helpers.js";
 
@@ -53,6 +56,9 @@ const HOME = "home";
 const LOCKED = "locked";
 const DEFAULT_ID = `${HOME}/default-model`;
 const SESSION_ID = `${HOME}/session-model`;
+const FALLBACK_ID = `${HOME}/fallback-model`;
+/** A failure the stage's fallback walk moves past. */
+const UNAVAILABLE = "503 Service Unavailable: the model is overloaded";
 
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -82,12 +88,13 @@ interface ProviderRequest {
 	readonly reasoning: string | undefined;
 }
 
-/** Two available models and one whose provider has no credentials; every request is recorded. */
-async function models() {
+/** Three available models and one whose provider has no credentials; every request is recorded. */
+async function models(fixture: { readonly failing?: readonly string[] } = {}) {
 	const base: Model<"anthropic-messages"> = { ...getModel("anthropic", "claude-sonnet-4-5")!, reasoning: true };
 	const model = (provider: string, id: string): Model<"anthropic-messages"> => ({ ...base, provider, id, name: id });
 	const defaultModel = model(HOME, "default-model");
 	const sessionModel = model(HOME, "session-model");
+	const fallbackModel = model(HOME, "fallback-model");
 	const lockedModel = model(LOCKED, "locked-model");
 	const runtime = await ModelRuntime.create({
 		credentials: AuthStorage.inMemory(),
@@ -99,17 +106,20 @@ async function models() {
 		const fullId = `${requestModel.provider}/${requestModel.id}`;
 		requests.push({ model: fullId, reasoning: options?.reasoning });
 		const stream = createAssistantMessageEventStream();
+		const failure = fixture.failing?.includes(fullId) ? UNAVAILABLE : undefined;
 		const message: AssistantMessage = {
 			role: "assistant",
-			content: [{ type: "text", text: `done on ${fullId}` }],
+			content: failure ? [] : [{ type: "text", text: `done on ${fullId}` }],
 			api: base.api,
 			provider: requestModel.provider,
 			model: requestModel.id,
 			usage: usage(),
-			stopReason: "stop",
+			stopReason: failure ? "error" : "stop",
+			...(failure ? { errorMessage: failure } : {}),
 			timestamp: Date.now(),
 		};
-		stream.push({ type: "done", reason: "stop", message });
+		if (failure) stream.push({ type: "error", reason: "error", error: message });
+		else stream.push({ type: "done", reason: "stop", message });
 		stream.end(message);
 		return stream;
 	};
@@ -117,7 +127,7 @@ async function models() {
 		api: base.api,
 		baseUrl: base.baseUrl,
 		apiKey: "home-key",
-		models: [defaultModel, sessionModel],
+		models: [defaultModel, sessionModel, fallbackModel],
 		streamSimple,
 	});
 	runtime.registerProvider(LOCKED, { api: base.api, baseUrl: base.baseUrl, models: [lockedModel], streamSimple });
@@ -125,7 +135,15 @@ async function models() {
 		runtime.unregisterProvider(HOME);
 		runtime.unregisterProvider(LOCKED);
 	});
-	return { runtime, registry: new ModelRegistry(runtime), defaultModel, sessionModel, lockedModel, requests };
+	return {
+		runtime,
+		registry: new ModelRegistry(runtime),
+		defaultModel,
+		sessionModel,
+		fallbackModel,
+		lockedModel,
+		requests,
+	};
 }
 
 const WITH_DEFAULT: Settings = { defaultProvider: HOME, defaultModel: "default-model", defaultThinkingLevel: "high" };
@@ -703,6 +721,141 @@ test(
 	},
 	REAL_SESSION_TIMEOUT_MS,
 );
+
+/** One `auto` stage through the public SDK `run()` and its default session adapter, with no `models` catalog. */
+async function sdkAutoStage(input: {
+	readonly settings: Settings;
+	readonly fallbackModels?: readonly string[];
+	/** The adapter's own model, as an SDK caller's `createAgentSessionAdapter({ model })` sets one. */
+	readonly adapterSessionModel?: boolean;
+	readonly failing?: readonly string[];
+	readonly wrap?: (adapter: AgentSessionAdapter) => AgentSessionAdapter;
+}) {
+	const m = await models({ failing: input.failing });
+	const cwd = tempDir("atomic-auto-default-sdk-adapter-");
+	mkdirSync(join(cwd, "agent"), { recursive: true });
+	const base = createAgentSessionAdapter({
+		cwd,
+		agentDir: join(cwd, "agent"),
+		modelRuntime: m.runtime,
+		settingsManager: SettingsManager.inMemory({
+			...input.settings,
+			retry: { enabled: false },
+			compaction: { enabled: false },
+		}),
+		builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+		...(input.adapterSessionModel ? { model: m.sessionModel, thinkingLevel: "low" as const } : {}),
+	});
+	const def = workflow({
+		name: "sdk-auto-adapter-stage",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			const fallbackModels = input.fallbackModels === undefined ? {} : { fallbackModels: [...input.fallbackModels] };
+			await ctx.stage("implement", { model: "auto", tools: [], ...fallbackModels }).prompt("Reply done.");
+			return {};
+		},
+	});
+	const result = await sdkRun(
+		def,
+		{},
+		{
+			cwd,
+			journal: { memory: true },
+			store: createStore(),
+			adapters: { agentSession: input.wrap ? input.wrap(base) : base },
+		},
+	);
+	return { result, requests: m.requests.map((request) => `${request.model}@${request.reasoning}`) };
+}
+
+test(
+	"an SDK auto stage with fallbackModels starts on the configured default model, not its first fallback",
+	async () => {
+		const { result, requests } = await sdkAutoStage({ settings: WITH_DEFAULT, fallbackModels: [FALLBACK_ID] });
+		assert.equal(result.status, "completed", result.error);
+		assert.deepEqual(requests, [`${DEFAULT_ID}@high`], "one stage turn on the default, no other request");
+	},
+	REAL_SESSION_TIMEOUT_MS,
+);
+
+test(
+	"an SDK auto stage runs the configured default model even when its session adapter names a model of its own",
+	async () => {
+		const { result, requests } = await sdkAutoStage({ settings: WITH_DEFAULT, adapterSessionModel: true });
+		assert.equal(result.status, "completed", result.error);
+		assert.deepEqual(requests, [`${DEFAULT_ID}@high`]);
+	},
+	REAL_SESSION_TIMEOUT_MS,
+);
+
+test(
+	"an SDK auto stage with no configured default starts on the adapter's session model before its fallbackModels",
+	async () => {
+		const { result, requests } = await sdkAutoStage({
+			settings: {},
+			adapterSessionModel: true,
+			fallbackModels: [FALLBACK_ID],
+		});
+		assert.equal(result.status, "completed", result.error);
+		assert.deepEqual(requests, [`${SESSION_ID}@low`]);
+	},
+	REAL_SESSION_TIMEOUT_MS,
+);
+
+test(
+	"an SDK auto stage with no configured default runs the adapter's session model",
+	async () => {
+		const { result, requests } = await sdkAutoStage({ settings: {}, adapterSessionModel: true });
+		assert.equal(result.status, "completed", result.error);
+		assert.deepEqual(requests, [`${SESSION_ID}@low`]);
+	},
+	REAL_SESSION_TIMEOUT_MS,
+);
+
+test(
+	"an SDK auto stage whose default model fails moves on to its fallbackModels in order",
+	async () => {
+		const { result, requests } = await sdkAutoStage({
+			settings: WITH_DEFAULT,
+			fallbackModels: [FALLBACK_ID],
+			failing: [DEFAULT_ID],
+		});
+		assert.equal(result.status, "completed", result.error);
+		assert.deepEqual(
+			requests.map((request) => request.split("@")[0]),
+			[DEFAULT_ID, FALLBACK_ID],
+		);
+	},
+	REAL_SESSION_TIMEOUT_MS,
+);
+
+test(
+	"an SDK auto stage keeps the default model through a session adapter that delegates to the default one",
+	async () => {
+		const { result, requests } = await sdkAutoStage({
+			settings: WITH_DEFAULT,
+			fallbackModels: [FALLBACK_ID],
+			wrap: (base) => ({ ...base, create: (options, meta) => base.create(options, meta) }),
+		});
+		assert.equal(result.status, "completed", result.error);
+		assert.deepEqual(requests, [`${DEFAULT_ID}@high`]);
+	},
+	REAL_SESSION_TIMEOUT_MS,
+);
+
+test("the admission and worker session adapters resolve auto through the adapter they wrap", async () => {
+	const resolved = { model: DEFAULT_ID, thinkingLevel: "high" as const };
+	const autoModel = vi.fn(async () => resolved);
+	const base: AgentSessionAdapter = { create: async () => Promise.reject(new Error("not created")), autoModel };
+	const wrappers = [
+		admittedSessionAdapter(base, {} as Parameters<typeof admittedSessionAdapter>[1]),
+		workerStageAdapter({ base } as Parameters<typeof workerStageAdapter>[0]),
+	];
+	for (const wrapped of wrappers) assert.deepEqual(await wrapped.autoModel?.({ cwd: "/stage" }), resolved);
+	assert.deepEqual(autoModel.mock.calls, [[{ cwd: "/stage" }], [{ cwd: "/stage" }]]);
+});
 
 // ---------------------------------------------------------------------------------------------------------------
 // Settings

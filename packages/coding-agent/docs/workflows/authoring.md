@@ -57,7 +57,7 @@ const result = await ctx.task("analyze", {
 });
 ```
 
-`ctx.stage("analyze", { model: "auto" }).prompt(text)` works too, and `model: "auto"` is accepted in chain or parallel shared options. Keep explicit user model and effort requests as concrete `provider/model[:effort]` values. Omitted model settings retain their existing defaults. An `auto` stage keeps a fallback chain: its `fallbackModels`, then the launching session's model. The `taskNeeds`, `modelConstraints` and `parallelSlot` options of earlier releases are ignored when they are still passed.
+`ctx.stage("analyze", { model: "auto" }).prompt(text)` works too, and `model: "auto"` is accepted in chain or parallel shared options. Keep explicit user model and effort requests as concrete `provider/model[:effort]` values. Omitted model settings retain their existing defaults. An `auto` stage keeps a fallback chain: its `fallbackModels`, then, in a session, the launching session's model. The `taskNeeds`, `modelConstraints` and `parallelSlot` options of earlier releases are ignored when they are still passed.
 
 See [automatic stage models](/workflows/operations#automatic-stage-models) for resume behavior.
 

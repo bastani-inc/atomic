@@ -336,6 +336,7 @@ export interface WorkerStageAdapterPorts {
 export function workerStageAdapter(ports: WorkerStageAdapterPorts): AgentSessionAdapter {
 	const { base, store, inbox, request, published, journal, root } = ports;
 	return {
+		...(base.autoModel === undefined ? {} : { autoModel: (options) => base.autoModel!(options) }),
 		async create(options, meta) {
 			if (!meta) throw new Error("Worker stage identity is required");
 			if (ports.shared !== undefined)

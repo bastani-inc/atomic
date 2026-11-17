@@ -25,10 +25,13 @@ import { join } from "node:path";
 import {
 	type CreateAgentSessionOptions,
 	type DefaultResourceLoaderInheritanceSnapshot,
+	getAgentDir,
 	isStaleExtensionContextError,
 	ModelRuntime,
 	noOpUIContext,
+	resolveAutoModel,
 	resolveRestoredModelReference,
+	SettingsManager,
 } from "@bastani/atomic";
 import { outsideWorkflowExecutions } from "../durable/execution-context-boundary.js";
 import type {
@@ -697,16 +700,15 @@ export function createAgentSessionAdapter(
 	/** Where stages created by this adapter raise their custom UI; the process's broker by default. */
 	stageUiBroker?: StageUiBroker,
 ): AgentSessionAdapter {
+	const withBaseOptions = (stageOptions: CreateAgentSessionOptions): CreateAgentSessionOptions => {
+		const options: CreateAgentSessionOptions = { ...baseOptions };
+		for (const [key, value] of Object.entries(stageOptions)) {
+			if (value !== undefined) Object.assign(options, { [key]: value });
+		}
+		return options;
+	};
 	const { agentSession } = buildRuntimeAdapters(
-		{
-			getChildSessionOptions: (stageOptions) => {
-				const options: CreateAgentSessionOptions = { ...baseOptions };
-				for (const [key, value] of Object.entries(stageOptions)) {
-					if (value !== undefined) Object.assign(options, { [key]: value });
-				}
-				return options;
-			},
-		},
+		{ getChildSessionOptions: withBaseOptions },
 		{
 			async createAgentSession(options, prepareOptions) {
 				if (options && !options.modelRuntime && typeof options.model === "string") {
@@ -721,6 +723,28 @@ export function createAgentSessionAdapter(
 			...(stageUiBroker === undefined ? {} : { stageUiBroker }),
 		},
 	);
+	// `auto` follows the settings and credentials these sessions start with; the adapter's own model is the session's.
+	agentSession!.autoModel = async (stageOptions) => {
+		const options = withBaseOptions(stageOptions);
+		const settingsManager =
+			options.settingsManager ??
+			SettingsManager.create(options.cwd ?? process.cwd(), options.agentDir ?? getAgentDir());
+		const runtime =
+			options.modelRuntime ??
+			(await ModelRuntime.create({
+				authPath: options.agentDir ? join(options.agentDir, "auth.json") : undefined,
+				modelsPath: options.agentDir ? join(options.agentDir, "models.json") : undefined,
+			}));
+		const selected = resolveAutoModel({
+			settings: settingsManager.getSettings(),
+			availableModels: await runtime.getAvailable(),
+			...(baseOptions.model === undefined ? {} : { sessionModel: baseOptions.model }),
+			...(baseOptions.thinkingLevel === undefined ? {} : { sessionThinkingLevel: baseOptions.thinkingLevel }),
+		});
+		return (
+			selected && { model: `${selected.model.provider}/${selected.model.id}`, thinkingLevel: selected.thinkingLevel }
+		);
+	};
 	// Session managers are created before this adapter sees a stage, so the runner applies the cwd first.
 	if (baseOptions.cwd !== undefined) setAgentSessionAdapterDefaultCwd(agentSession!, baseOptions.cwd);
 	return agentSession!;

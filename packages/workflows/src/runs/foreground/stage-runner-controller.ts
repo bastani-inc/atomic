@@ -41,6 +41,7 @@ import type {
 	StageOptions,
 	StageSendUserMessageOptions,
 	StageUserMessageContent,
+	WorkflowAutoModel,
 	WorkflowModelAttempt,
 	WorkflowModelCatalogPort,
 	WorkflowModelUsage,
@@ -403,6 +404,13 @@ function splitStageContent(content: StageUserMessageContent): { text: string; im
 	return { text, images: images.length === 0 ? undefined : images };
 }
 
+/** `provider/id[:effort]` for what `model: "auto"` stands for, or undefined when nothing resolved it. */
+function autoModelReference(selected: WorkflowAutoModel | undefined): string | undefined {
+	const id = workflowModelId(selected?.model);
+	if (id === undefined) return undefined;
+	return selected?.thinkingLevel === undefined ? id : `${id}:${selected.thinkingLevel}`;
+}
+
 export class StageSessionController {
 	private session: StageSessionRuntime | undefined;
 	private activeCreation: Promise<StageSessionRuntime> | undefined;
@@ -546,10 +554,15 @@ export class StageSessionController {
 		// Adapters and records see the model `auto` stood for, never `auto` itself.
 		if (this.autoModel !== undefined && meta.stageOptions?.model === "auto")
 			meta.stageOptions = { ...meta.stageOptions, model: this.autoModel };
-		// An unresolved `auto` names no model: the session factory picks the default one.
+		// Without a catalog that resolves `auto`, the session adapter resolves it before the stage's first session. An
+		// `auto` neither resolves names no model: the session factory picks the default one.
+		const adapterResolvesAuto =
+			effectiveStageOptions?.model === "auto" &&
+			this.autoModel === undefined &&
+			opts.adapters.agentSession?.autoModel !== undefined;
 		const namesModel =
 			effectiveStageOptions?.model !== undefined &&
-			(effectiveStageOptions.model !== "auto" || this.autoModel !== undefined);
+			(effectiveStageOptions.model !== "auto" || this.autoModel !== undefined || adapterResolvesAuto);
 		this.hasExplicitModelFallbackConfig = namesModel || (effectiveStageOptions?.fallbackModels?.length ?? 0) > 0;
 		this.bindAbortSignal();
 	}
@@ -688,10 +701,27 @@ export class StageSessionController {
 
 	/** `provider/id:effort` for the model `model: "auto"` stands for: the user's default model, else the session's. */
 	private resolveAutoModel(): string | undefined {
-		const selected = this.modelCatalog?.autoModel?.();
-		const id = workflowModelId(selected?.model);
-		if (id === undefined) return undefined;
-		return selected?.thinkingLevel === undefined ? id : `${id}:${selected.thinkingLevel}`;
+		return autoModelReference(this.modelCatalog?.autoModel?.());
+	}
+
+	/** The stage's primary model: the one it names, or what `auto` stands for, from its catalog or its session adapter. */
+	private async primaryModel(): Promise<WorkflowModelValue | undefined> {
+		const options = this.effectiveStageOptions;
+		if (options?.model !== "auto") return options?.model;
+		if (this.autoModel !== undefined) return this.autoModel;
+		const cwd = options.cwd ?? this.opts.defaultCwd;
+		const modelRuntime = options.modelRuntime ?? this.sharedModelRuntime;
+		const resolved = autoModelReference(
+			await this.opts.adapters.agentSession?.autoModel?.({
+				...(cwd === undefined ? {} : { cwd }),
+				...(options.agentDir === undefined ? {} : { agentDir: options.agentDir }),
+				...(options.settingsManager === undefined ? {} : { settingsManager: options.settingsManager }),
+				...(modelRuntime === undefined ? {} : { modelRuntime }),
+			}),
+		);
+		if (resolved !== undefined && this.meta.stageOptions?.model === "auto")
+			this.meta.stageOptions = { ...this.meta.stageOptions, model: resolved };
+		return resolved;
 	}
 
 	async setModel(model: NonNullable<CreateAgentSessionOptions["model"]>): Promise<void> {
@@ -2595,13 +2625,14 @@ export class StageSessionController {
 
 	private modelCandidates(): Promise<WorkflowResolvedModelCandidate[]> {
 		// `auto` keeps the current model as its last fallback; a model the author named runs only its own chain.
-		this.candidatesPromise ??= buildModelCandidatesFromCatalog({
-			primaryModel:
-				this.effectiveStageOptions?.model === "auto" ? this.autoModel : this.effectiveStageOptions?.model,
-			fallbackModels: this.effectiveStageOptions?.fallbackModels ?? [],
-			catalog: this.modelCatalog,
-			includeCurrentModel: this.autoModel !== undefined,
-		});
+		this.candidatesPromise ??= this.primaryModel().then((primaryModel) =>
+			buildModelCandidatesFromCatalog({
+				primaryModel,
+				fallbackModels: this.effectiveStageOptions?.fallbackModels ?? [],
+				catalog: this.modelCatalog,
+				includeCurrentModel: this.autoModel !== undefined,
+			}),
+		);
 		return this.candidatesPromise;
 	}
 
