@@ -2,8 +2,9 @@ import { getKeybindings, type KeybindingsManager, matchesKey, Text } from "@bast
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { shortTaskTitle } from "../../../core/tasks/agent-panel-source.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import { type TaskElapsedClocks, taskClockRunning, taskClocksFor } from "../../../core/tasks/live-elapsed.ts";
+import { type TaskElapsedClocks, taskClockRunning, taskClocksFor } from "../../../core/tasks/live-elapsed.js";
 import { TaskMessageError } from "../../../core/tasks/message-error.js";
+import { isTaskTurnInterrupted, setTaskTurnInterrupted } from "../../../core/tasks/owner-store.js";
 import type { TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
 import {
 	launchedTaskViewSource,
@@ -352,15 +353,17 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 						? taskState(task) === "completed"
 							? "done"
 							: taskState(task)
-						: task.metrics?.elapsedMs === undefined
-							? "running"
-							: formatPanelElapsed(
-									this.elapsedClocks.elapsedMs(
-										task.ref.taskId,
-										task.metrics.elapsedMs,
-										taskClockRunning(task.execution.kind),
-									) ?? task.metrics.elapsedMs,
-								);
+						: isTaskTurnInterrupted(task)
+							? "stopped"
+							: task.metrics?.elapsedMs === undefined
+								? "running"
+								: formatPanelElapsed(
+										this.elapsedClocks.elapsedMs(
+											task.ref.taskId,
+											task.metrics.elapsedMs,
+											taskClockRunning(task.execution.kind),
+										) ?? task.metrics.elapsedMs,
+									);
 		const stopped = this.source.taskStopped?.(this.taskId) === true;
 		const label = [
 			name,
@@ -460,7 +463,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.chat.resetFollowedSession();
 		}
 		this.cursor = page.value.nextCursor;
-		this.chat.replaceMessages(page.value.messages);
+		this.chat.replaceMessages(page.value.messages, { preserveUnread: !sessionChanged });
 		this.chat.hydrateToolExecutionStarts(page.value.activeToolStarts ?? []);
 		this.chat.hydrateCompactionStatus(
 			page.value.compactionReason,
@@ -470,7 +473,21 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		if (!sessionChanged || session === undefined) return;
 		this.chat.hydrateStreamingAssistantMessage(session.getStreamingMessage?.());
 		this.hydrateRunningTurn(session, page.value.messages);
+		let turnAborted = false;
 		this.unsubscribe = session.subscribe?.((event) => {
+			if (event.type === "agent_start" || event.type === "turn_start" || event.type === "message_start") {
+				turnAborted = false;
+				setTaskTurnInterrupted(this.source, this.taskId, false);
+			} else if (
+				event.type === "message_end" &&
+				(event.message as { role?: string; stopReason?: string }).role === "assistant" &&
+				(event.message as { stopReason?: string }).stopReason === "aborted"
+			) {
+				turnAborted = true;
+			} else if (event.type === "agent_end" && turnAborted && session.isRunning?.() !== true) {
+				turnAborted = false;
+				setTaskTurnInterrupted(this.source, this.taskId, true);
+			}
 			this.chat.applyAgentEvent(event);
 			this.requestRender();
 		});
@@ -479,8 +496,16 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	/** A page opened mid-turn missed `agent_start` and `queue_update`, so it reads the turn and the queue now. */
 	private hydrateRunningTurn(session: TaskTranscriptSource, messages: TaskTranscriptView["messages"]): void {
 		if (session.isRunning?.() === true) {
+			setTaskTurnInterrupted(this.source, this.taskId, false);
 			this.chat.beginExternalPromptLifecycle();
 			this.chat.hydrateRunningTurn(messages, session.getStreamingMessage?.());
+		} else if (session.isRunning?.() === false) {
+			const lastAssistant = [...messages]
+				.reverse()
+				.find((message): message is Extract<typeof message, { role: "assistant" }> => message.role === "assistant");
+			if (lastAssistant?.stopReason === "aborted") {
+				setTaskTurnInterrupted(this.source, this.taskId, true);
+			}
 		}
 		const queued = session.getQueuedMessages?.();
 		if (queued === undefined) return;

@@ -330,13 +330,13 @@ A parallel launch keeps a separate `Agent(...)` block for every child, in launch
 
 ## Task inspection
 
-Hosts with an owner task store expose `/tasks` and `/tasks <id>` for background agents and shells, including their retained terminal results. Foreground-only work is excluded. Enter opens detail; arrows select an explicit action. Cancel stops the selected task when `x` is pressed again within 3 seconds. Terminal tasks retain transcript inspection but omit foreground, cancellation, and stdin actions. Escape returns from detail or stdin before returning to the composer.
+Hosts with an owner task store expose `/tasks` and `/tasks <id>` for background agents and shells, including their retained terminal results. Foreground-only work is excluded. Enter or Right opens the selected task's chat or output, or its detail page when no transcript is available. Press `x` twice within 3 seconds to stop a running task, or once to dismiss a finished row. Escape returns one view at a time without stopping work.
 
-Cancelling a subagent from `/tasks` stops it for good: its row shows **Killed (non-resumable)** and `resume` refuses it. A paused or quit subagent's row shows **Paused · awaiting resume** (`‖`) instead of **Stopped**. To stop a child and keep it resumable, use `subagent({ action: "quit", id })` or `pause` instead.
+Stopping a subagent from `/tasks` uses `quit` and keeps it resumable. Its row shows **Stopped** (`◼`), and its chat reads `Stopped · send to resume`. Send a message from that chat, or use `subagent({ action: "resume", id })`, to continue it. A child whose owner ended, or whose saved state is unavailable, remains read-only.
 
-`/tasks` appears in slash-command autocomplete. The inspector groups agents and shells with counts, status symbols, and a highlighted selection. Task descriptions lead; the selected row shows secondary activity and tool counts. The header and footer remain visible in ordinary terminal sizes, with a compact fallback for short terminals.
+`/tasks` appears in slash-command autocomplete. The bottom sheet replaces the prompt area while the conversation remains visible above it. Its header counts **Needs input**, **Working** and **Done**, and each task occupies one line with a status mark, name, task and elapsed time. The header and footer remain visible in ordinary terminal sizes, with a compact fallback for short terminals.
 
-The list opens as a compact inline widget, like the `/workflows` list. Detail, transcript, input, and stop-confirmation pages are fullscreen; returning to the list preserves selection. Every agent row includes its resolved model and reasoning level when available, including completed background tasks.
+Space opens a peek card under the selected row without hiding the list. The card shows the model and reasoning level, current activity and usage when available. A working subagent also has a reply box; type a message and press Enter to send it. Detail, transcript and input pages use the full screen. Returning to the list preserves selection.
 
 While `/tasks` or its fullscreen transcript/detail view is active, Escape closes the list or detail view, or interrupts the subagent in its chat; it does not cancel a pending `ask_user_question`. The questionnaire waits out of the way and returns with its selection intact after task navigation closes. With no task view active, Escape cancels the questionnaire normally.
 
@@ -354,7 +354,7 @@ Type in a transcript's prompt and press Enter to message the child through its I
 
 Live transcripts refresh streaming text, tool results, and compaction status without reopening. Earlier pages remain anchored, and leaving the view does not affect execution.
 
-Detail views pin task identity, state, available metrics, and the selected action while PageUp/PageDown scrolls the body. Recent activity shows up to five retained tool actions; errors and input requests appear explicitly. Left returns to the previous view. On the detail page, `x` requests cancellation without bypassing confirmation or configured task bindings; on the list it does nothing, and in a transcript it is ordinary typing. Shell inspection shows a bounded output tail with omission markers.
+Detail views pin task identity, state, available metrics, and the selected action while PageUp/PageDown scrolls the body. Recent activity shows up to five retained tool actions; errors and input requests appear explicitly. Left returns to the previous view. On the list or detail page, `x` requests a stop without bypassing confirmation or configured task bindings. On a finished list row it dismisses the row; in a transcript it is ordinary typing. Shell inspection shows a bounded output tail with omission markers.
 
 After a confirmed `x` stop settles, the owning chat receives a visible **stopped** notification and the parent model receives the stop context, even if the child returns no final message. Repeated stops do not duplicate notifications or replace an already-recorded terminal result. Closing the owner still suppresses late completion delivery.
 

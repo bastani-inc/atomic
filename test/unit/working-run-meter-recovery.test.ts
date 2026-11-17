@@ -145,7 +145,7 @@ test("#5243: main-chat engine-loss diagnostic and idle prompt turn clear a stale
 		keybindings: new KeybindingsManager(),
 		defaultEditor: { onEscape: undefined as (() => void) | undefined, setWorkingStatusIndicator() {} },
 		setEditorWorkingStatusIndicator: undefined,
-		defaultWorkingMessage: "Working...",
+		defaultWorkingMessage: "Working…",
 		workingMessage: undefined,
 		workingVisible: true,
 		workingIndicatorOptions: undefined,

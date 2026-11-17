@@ -66,8 +66,11 @@ export function jumpToLatestLabel(newCount: number, keyLabel: string): string {
 
 export function jumpToLatestPill(newCount: number, keyLabel: string, maxWidth = Number.POSITIVE_INFINITY): string {
 	const label = jumpToLatestLabel(newCount, keyLabel);
-	if (visibleWidth(label) + 6 > maxWidth) return theme.fg("text", truncateToWidth(label, Math.max(0, maxWidth)));
-	return `${theme.fg("borderAccent", "╭─ ")}${theme.fg("text", label)}${theme.fg("borderAccent", " ─╮")}`;
+	const pill =
+		visibleWidth(label) + 6 > maxWidth
+			? theme.fg("text", truncateToWidth(label, Math.max(0, maxWidth)))
+			: `${theme.fg("borderAccent", "╭─ ")}${theme.fg("text", label)}${theme.fg("borderAccent", " ─╮")}`;
+	return process.env.NO_COLOR === undefined ? theme.bg("selectedBg", pill) : stripTerminalSequences(pill);
 }
 
 export function pinnedPromptLine(promptRow: string): string {

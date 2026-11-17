@@ -11,7 +11,7 @@ import {
 	handleFocusedOverlayInternalUiAction,
 	handleUrlActivation,
 } from "../src/modes/interactive/interactive-tui.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import { openBrowser } from "../src/utils/open-browser.ts";
 import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.ts";
 
@@ -44,7 +44,26 @@ describe("TranscriptFollowIndicator", () => {
 		expect(rows[0]).toContain(TRANSCRIPT_JUMP_TO_END_URL);
 		expect(rows[0]).toContain("ctrl+end");
 		expect(rows[0]).not.toContain("┌");
-		expect(rows[0]).not.toContain(BG_MARKER);
+		expect(rows[0]).toContain(BG_MARKER);
+	});
+
+	test("fills only the pill so overlaid transcript text cannot bleed through its spaces (#5350)", () => {
+		for (const name of ["dark", "light"] as const) {
+			initTheme(name, false);
+			const indicator = new TranscriptFollowIndicator({
+				isFollowing: () => false,
+				keyLabel: () => "ctrl+end",
+				newCount: () => 3,
+			});
+			const row = indicator.render(80)[0]!;
+			const bg = theme.getBgAnsi("selectedBg");
+			const at = row.indexOf(bg);
+			expect(at).toBeGreaterThanOrEqual(0);
+			const label = "╭─ ↓ 3 new messages · ctrl+end ─╮";
+			expect(stripTerminalSequences(row.slice(0, at))).toBe(" ".repeat(Math.floor((80 - visibleWidth(label)) / 2)));
+			expect(stripTerminalSequences(row.slice(row.lastIndexOf("\x1b[49m") + 5))).toBe("");
+		}
+		initTheme("dark", false);
 	});
 
 	test("truncates the row to a narrow viewport and omits an empty key suffix", () => {
@@ -67,7 +86,9 @@ describe("TranscriptFollowIndicator", () => {
 		const row = indicator.render(20)[0] ?? "";
 
 		expect(row).toContain("...");
-		expect(row).not.toContain(BG_MARKER);
+		expect(row).toContain(BG_MARKER);
+		for (const segment of row.split("\x1b[0m").slice(1))
+			expect(segment.startsWith(theme.getBgAnsi("selectedBg"))).toBe(true);
 		expect(stripTerminalSequences(row)).not.toContain("╭");
 		expect(visibleWidth(row)).toBeLessThanOrEqual(20);
 		expect(row.match(/\u001b\]8;;/g)).toHaveLength(2);

@@ -29,10 +29,13 @@ function harness(initial: AgentPanelItem[]) {
 	const opened: string[] = [];
 	const dismissed: string[] = [];
 	const answers: string[] = [];
+	let closed = 0;
 	const inspector = new TaskInspector(
 		ownerTaskViewSource(fixture.store),
 		() => {},
-		() => {},
+		() => {
+			closed++;
+		},
 	);
 	inspector.setBoardSource({
 		items: () => items,
@@ -60,6 +63,7 @@ function harness(initial: AgentPanelItem[]) {
 		opened,
 		dismissed,
 		answers,
+		closed: () => closed,
 		paint: (height = 24) => stripVTControlCharacters(inspector.renderViewport(100, height).join("\n")),
 		replace(next: AgentPanelItem[]) {
 			items = next;
@@ -120,11 +124,12 @@ test("a dismissed stopped run returns when the same id resumes (#5224)", async (
 test("the 80- and 160-column list and peek hints retain every live command in order (#5224)", async () => {
 	const h = harness([item("release", "running")]);
 	const hint = "↑↓ select · space peek · enter/→ open · x stop · / filter · esc/← close · ? keys";
+	const peekHint = "↑↓ select · enter/→ open · x stop · / filter · space/esc/← close · ? keys";
 	try {
 		for (const width of [80, 160]) {
 			assert.equal(stripVTControlCharacters(h.inspector.renderViewport(width, 24).at(-1)!).trim(), hint);
 			h.inspector.handleInput(" ");
-			assert.equal(stripVTControlCharacters(h.inspector.renderViewport(width, 24).at(-1)!).trim(), hint);
+			assert.equal(stripVTControlCharacters(h.inspector.renderViewport(width, 24).at(-1)!).trim(), peekHint);
 			h.inspector.handleInput("\x1b");
 		}
 	} finally {
@@ -136,7 +141,23 @@ test("a finished row keeps its dismissal and help keys at 80 columns (#5224)", a
 	const h = harness([item("release", "done")]);
 	try {
 		const line = stripVTControlCharacters(h.inspector.renderViewport(80, 24).at(-1)!).trim();
-		assert.equal(line, "↑↓ select·space peek·enter/→ open·x dismiss·/ filter·esc/← close·? keys");
+		assert.equal(line, "↑↓ select · space peek · enter/→ open · x dismiss · esc/← close · ? keys");
+	} finally {
+		await h.dispose();
+	}
+});
+
+test("Left on a non-editable peek closes only the card before closing the task sheet (#5224)", async () => {
+	const h = harness([item("release", "running")]);
+	try {
+		h.paint();
+		h.inspector.handleInput(" ");
+		assert.match(h.paint(), /╭─ release ─/);
+		h.inspector.handleInput("\x1b[D");
+		assert.equal(h.closed(), 0);
+		assert.doesNotMatch(h.paint(), /╭─ release ─/);
+		h.inspector.handleInput("\x1b[D");
+		assert.equal(h.closed(), 1);
 	} finally {
 		await h.dispose();
 	}

@@ -30,7 +30,10 @@ test("inspector keeps selected live task reachable in a short viewport and confi
 		inspector.handleInput("\x1b[B");
 		inspector.handleInput("\x1b[B");
 		assert.match(stripVTControlCharacters(inspector.renderViewport(48, 4).join("\n")), /› Cancel task/);
-		assert.match(stripVTControlCharacters(inspector.renderViewport(48, 4).join("\n")), /x stop/);
+		assert.match(
+			stripVTControlCharacters(inspector.renderViewport(48, 4).join("\n")),
+			/esc\/← back to list · \? keys$/,
+		);
 		// Cancelling asks for a second press within three seconds instead of a y/n page (#5224).
 		inspector.handleInput("\r");
 		assert.match(stripVTControlCharacters(inspector.render(80).join("\n")), /Press x again within 3s to stop/);
@@ -71,7 +74,7 @@ test("narrow inspector keeps the selected input-needed task visible", async () =
 		inspector.open(fixture.store.tasks[7].ref.taskId);
 		for (const width of [20, 21, 48]) {
 			const text = stripVTControlCharacters(inspector.renderViewport(width, 8).join("\n"));
-			assert.match(text, /❯ ◆ .*task-7/);
+			assert.match(text, /❯ ◆ .*Cont/);
 			assert.doesNotMatch(text, /task-0/);
 		}
 	} finally {

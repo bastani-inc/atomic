@@ -6,7 +6,13 @@ import {
 	agentPanelTaskId,
 } from "../../../core/tasks/agent-panel-source.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import { bindTaskClock, TaskElapsedClocks, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.ts";
+import {
+	bindTaskClock,
+	liveElapsedFromRead,
+	TaskElapsedClocks,
+	taskClockOf,
+	taskClockRunning,
+} from "../../../core/tasks/live-elapsed.js";
 import { getGlobalTheme } from "../theme/global-theme.ts";
 import { ATOMIC_WORKING_FRAMES, atomicWorkingGlyph } from "./atomic-working-status.ts";
 import {
@@ -196,6 +202,7 @@ export class AgentPanelModel {
 		}
 	}
 	withElapsed(row: AgentPanelRow, now = this.now(), state: AgentPanelState = row.state): AgentPanelRow {
+		row = this.baseOf(row);
 		if (state === "queued") return row;
 		const running = taskClockRunning(state);
 		if (row.kind === "workflow") {
@@ -205,7 +212,7 @@ export class AgentPanelModel {
 				since = now;
 				this.readAt.set(row, since);
 			}
-			const elapsedMs = row.elapsedMs + Math.max(0, now - since);
+			const elapsedMs = liveElapsedFromRead(row.elapsedMs, since, running, now);
 			return elapsedMs === row.elapsedMs ? row : this.copyOf(row, { ...row, elapsedMs });
 		}
 		const taskId = agentPanelTaskId(row.id) ?? row.id;
@@ -415,7 +422,7 @@ export function renderAgentPanelRows(
 		}
 		const rightWidth = cellWidth(shownQueued === undefined ? shownRight : shownRight + shownQueued);
 		const taskRoom = Math.max(0, width - fixed - rightWidth - 2);
-		const fittedTask = taskRoom >= 4 && task.length > 0 ? fitToWidth(task, taskRoom) : { text: "", width: 0 };
+		const fittedTask = taskRoom >= 8 && task.length > 0 ? fitToWidth(task, taskRoom) : { text: "", width: 0 };
 		const pad = Math.max(1, width - fixed - fittedTask.width - rightWidth);
 		const nameText = selected ? style.bold(style.text(head)) : paint(head);
 		const rightText = paint(shownRight) + (shownQueued === undefined ? "" : style.warning(shownQueued));
@@ -495,12 +502,10 @@ export function agentPanelKeys(selected: AgentPanelRow | undefined, keybindings?
 	const includeHelp = filtered === undefined || (filtered.getKeys?.("app.keys.help")?.length ?? 0) > 0;
 	return [
 		{ keys: "↑↓", label: "select" },
+		...actionEntry("app.list.open", "to open"),
 		...(selected === undefined
 			? []
-			: [
-					...actionEntry("app.list.open", "to open"),
-					...actionEntry("app.list.stop", isFinishedPanelRow(selected) ? "dismiss" : "stop"),
-				]),
+			: actionEntry("app.list.stop", isFinishedPanelRow(selected) ? "dismiss" : "stop")),
 		{ keys: "esc/←", label: "back to prompt" },
 		...(includeHelp ? [{ action: "app.keys.help", label: "keys" }] : []),
 	];
@@ -529,6 +534,7 @@ export class AgentPanelFocus {
 		this.selectionMovedUnseen = false;
 	}
 	update(rows: readonly AgentPanelRow[]): void {
+		const selectedIndex = this.rows.findIndex((row) => row.id === this.selectedId);
 		const ids = new Set([AGENT_PANEL_MAIN_ID]);
 		this.rows = rows.filter((row) => {
 			if (ids.has(row.id)) return false;
@@ -548,7 +554,8 @@ export class AgentPanelFocus {
 			this.finishedWhileArmed = undefined;
 		}
 		if (this.selectedId !== AGENT_PANEL_MAIN_ID && !rows.some((row) => row.id === this.selectedId)) {
-			this.selectedId = rows[0]?.id ?? AGENT_PANEL_MAIN_ID;
+			this.selectedId =
+				this.rows[Math.max(0, Math.min(selectedIndex, this.rows.length - 1))]?.id ?? AGENT_PANEL_MAIN_ID;
 			this.selectionMovedUnseen = true;
 		}
 		this.keepInView();
@@ -561,6 +568,9 @@ export class AgentPanelFocus {
 	}
 	selected(): AgentPanelRow | undefined {
 		return this.rows.find((row) => row.id === this.selectedId);
+	}
+	finishedAction(): "dismiss" | "acknowledge" {
+		return this.finishedAcknowledged ? "dismiss" : "acknowledge";
 	}
 	pendingStop(): AgentPanelRow | undefined {
 		const id = this.stopConfirm.pending();
@@ -654,7 +664,7 @@ export class AgentPanelFocus {
 				this.stopConfirm.reset();
 				return true;
 			}
-			if (isFinishedPanelRow(row) && this.paintedFinished.get(row.id) === false) {
+			if (isFinishedPanelRow(row) && this.paintedFinished.get(row.id) !== true) {
 				this.stopConfirm.reset();
 				this.finishedWhileArmed = row;
 				this.finishedAcknowledged = true;
@@ -685,7 +695,9 @@ export function renderAgentPanelHint(
 	const finished = focus.finishedWhileArmed;
 	if (finished !== undefined) {
 		const key = filtered?.getKeys?.("app.list.stop")?.[0] ?? "x";
-		return style.warning(truncateToWidth(`  ${panelText(finished.name)} finished · ${key} to dismiss`, width));
+		return style.warning(
+			truncateToWidth(`  ${panelText(finished.name)} finished · ${key} to ${focus.finishedAction()}`, width),
+		);
 	}
 	const pending = focus.pendingStop();
 	if (pending !== undefined) {

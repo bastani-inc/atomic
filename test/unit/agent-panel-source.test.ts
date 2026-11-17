@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 import {
 	type AgentPanelItem,
+	type AgentPanelSource,
 	AgentPanelSourceHub,
 	agentPanelItems,
 	agentPanelTaskId,
@@ -1280,3 +1281,211 @@ for (const location of ["next", "step", "done"] as const) {
 		}
 	});
 }
+
+test("resumed quit workflow runs and removed extension items are pruned from dismissedAgentPanelItems without restoring dismissed native tasks (#5239)", async () => {
+	const fixture = taskFixture();
+	try {
+		await fixture.start("settled background task");
+		await fixture.settle(0);
+		const taskId = fixture.store.tasks[0]!.ref.taskId;
+		const taskRowId = `task:${taskId}`;
+
+		const hub = new AgentPanelSourceHub();
+		let currentItems: AgentPanelItem[] = [
+			{ id: "run:r1", kind: "workflow", state: "stopped", name: "ralph", task: "stage implement" },
+			{ id: "run:gone", kind: "workflow", state: "done", name: "cleanup", task: "stage finish" },
+		];
+		let notify = () => {};
+		hub.register({
+			items: () => currentItems,
+			subscribe: (listener) => {
+				notify = listener;
+				return () => {};
+			},
+		});
+		const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+		bindOwnerTaskStore(session, fixture.store);
+
+		assert.deepEqual(
+			agentPanelItems(session).map((item) => item.id),
+			["run:r1", "run:gone", taskRowId],
+		);
+
+		dismissedAgentPanelItems(session).add("run:r1");
+		dismissedAgentPanelItems(session).add("run:gone");
+		dismissedAgentPanelItems(session).add(taskRowId);
+		assert.deepEqual(
+			agentPanelItems(session).map((item) => item.id),
+			[],
+		);
+
+		// Resume run:r1 (stopped -> running) and drop run:gone from the source; taskRowId stays settled in the store.
+		currentItems = [{ id: "run:r1", kind: "workflow", state: "running", name: "ralph", task: "stage implement" }];
+		notify();
+
+		assert.deepEqual(
+			agentPanelItems(session).map((item) => item.id),
+			["run:r1"],
+			"resumed workflow run is visible again while dismissed settled native task stays hidden",
+		);
+		assert.equal(dismissedAgentPanelItems(session).has("run:r1"), false, "resumed run is removed from dismissed set");
+		assert.equal(
+			dismissedAgentPanelItems(session).has("run:gone"),
+			false,
+			"absent extension id is pruned from dismissed set",
+		);
+		assert.equal(
+			dismissedAgentPanelItems(session).has(taskRowId),
+			true,
+			"native task id is preserved in dismissed set",
+		);
+	} finally {
+		await fixture.dispose();
+	}
+});
+
+test("well-behaved Promise subclasses returned by stop and answer keep their constructor and species (#5239)", async () => {
+	class CancelablePromise<T> extends Promise<T> {
+		cancelled = false;
+		cancel(): void {
+			this.cancelled = true;
+		}
+	}
+	const stopPromise = CancelablePromise.resolve({ ok: true as const }) as CancelablePromise<{ readonly ok: true }>;
+	const answerPromise = CancelablePromise.resolve({ ok: true as const }) as CancelablePromise<{ readonly ok: true }>;
+	const hub = new AgentPanelSourceHub();
+	hub.register({
+		items: () => [
+			{
+				id: "run:sub",
+				kind: "workflow",
+				state: "input",
+				name: "ralph",
+				task: "Approve?",
+				question: "Approve?",
+				promptId: "p1",
+			},
+		],
+		subscribe: () => () => {},
+		stop: () => stopPromise,
+		answer: () => answerPromise,
+	});
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	assert.deepEqual(await stopAgentPanelItem(session, "run:sub"), { ok: true });
+	assert.deepEqual(await answerAgentPanelItem(session, "run:sub", "yes", { promptId: "p1" }), { ok: true });
+
+	for (const candidate of [stopPromise, answerPromise]) {
+		assert.equal(candidate.constructor, CancelablePromise, "instance constructor remains CancelablePromise");
+		assert.equal(Object.hasOwn(candidate, "constructor"), false, "no own constructor property was defined");
+		const derived = candidate.then(() => 1);
+		assert.equal(derived instanceof CancelablePromise, true, "chained .then() still produces CancelablePromise");
+		assert.equal(typeof (derived as CancelablePromise<number>).cancel, "function");
+	}
+});
+
+test("duplicate item id errors strip terminal control sequences before reaching emitError or onError (#5239)", () => {
+	const hostileId = "dup\x1b]52;c;QUJD\x07\x1b[2J\u009b31m\u202e\u2028tail";
+	const row = (): AgentPanelItem => ({
+		id: hostileId,
+		kind: "agent",
+		state: "running",
+		name: "worker",
+		task: "check",
+	});
+
+	const emittedSingle: string[] = [];
+	const hubSingle = new AgentPanelSourceHub();
+	hubSingle.register({ items: () => [row(), row()], subscribe: () => () => {} });
+	agentPanelItems({
+		extensionRunner: {
+			getAgentPanelSourceHub: () => hubSingle,
+			emitError: (err) => emittedSingle.push(err.error),
+		},
+	});
+	assert.equal(emittedSingle.length, 1);
+	assert.equal(/[\x00-\x1f\x7f-\x9f\u202e\u2028\u2029]/u.test(emittedSingle[0]!), false, emittedSingle[0]);
+
+	const emittedCross: string[] = [];
+	const hubCross = new AgentPanelSourceHub();
+	hubCross.register({ items: () => [row()], subscribe: () => () => {} });
+	hubCross.register({ items: () => [row()], subscribe: () => () => {} });
+	agentPanelItems({
+		extensionRunner: {
+			getAgentPanelSourceHub: () => hubCross,
+			emitError: (err) => emittedCross.push(err.error),
+		},
+	});
+	assert.equal(emittedCross.length, 1);
+	assert.equal(/[\x00-\x1f\x7f-\x9f\u202e\u2028\u2029]/u.test(emittedCross[0]!), false, emittedCross[0]);
+});
+
+test("validateItem rejects non-string promptId and non-boolean viewed while keeping valid sibling rows (#5239)", () => {
+	const hub = new AgentPanelSourceHub();
+	hub.register({
+		items: () =>
+			[
+				{
+					id: "run:valid-before",
+					kind: "workflow",
+					state: "input",
+					name: "a",
+					task: "t",
+					promptId: "p-ok",
+					viewed: false,
+				},
+				{ id: "run:bad-prompt-num", kind: "workflow", state: "input", name: "b", task: "t", promptId: 42 },
+				{ id: "run:bad-viewed-str", kind: "workflow", state: "done", name: "c", task: "t", viewed: "true" },
+				{ id: "run:valid-after", kind: "workflow", state: "done", name: "d", task: "t", viewed: true },
+			] as unknown as readonly AgentPanelItem[],
+		subscribe: () => () => {},
+	});
+	const errors: string[] = [];
+	const rows = agentPanelItems({ extensionRunner: { getAgentPanelSourceHub: () => hub } }, (error) =>
+		errors.push(error.message),
+	);
+	assert.deepEqual(
+		rows.map((item) => ({ id: item.id, promptId: item.promptId, viewed: item.viewed })),
+		[
+			{ id: "run:valid-before", promptId: "p-ok", viewed: false },
+			{ id: "run:valid-after", promptId: undefined, viewed: true },
+		],
+	);
+	assert.deepEqual(errors, ["Invalid agent panel item."]);
+});
+
+test("openAgentPanelItem notifies subscribeAgentPanel listeners after marking the item viewed (#5239)", () => {
+	const hub = new AgentPanelSourceHub();
+	hub.register({
+		items: () => [{ id: "run:quiet-open", kind: "workflow", state: "done", name: "release", task: "ship" }],
+		subscribe: () => () => {},
+		open: () => true,
+	});
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	let notifications = 0;
+	const unsubscribe = subscribeAgentPanel(session, () => {
+		notifications++;
+	});
+	try {
+		assert.equal(openAgentPanelItem(session, "run:quiet-open"), true);
+		assert.equal(notifications, 1);
+	} finally {
+		unsubscribe();
+		hub.dispose();
+	}
+});
+
+test("non-function subscribe is reported as a hub failure and replayed to late error subscribers (#5239)", () => {
+	const hub = new AgentPanelSourceHub();
+	const badSource = {
+		items: () => [healthyItem],
+		subscribe: "invalid" as unknown as AgentPanelSource["subscribe"],
+	};
+	hub.register(badSource);
+	const replayed: string[] = [];
+	const unsub = hub.subscribe(
+		() => {},
+		(_source, error) => replayed.push(error.message),
+	);
+	unsub();
+	assert.deepEqual(replayed, ["Invalid agent panel source subscription."]);
+});

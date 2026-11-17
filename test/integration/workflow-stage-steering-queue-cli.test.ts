@@ -84,7 +84,7 @@ const QUEUED_BADGE = "✉ 2 queued";
 
 /** Footer hints that identify which of the overlay's two views is drawn. */
 const GRAPH_FOOTER = "↵ open";
-const CHAT_FOOTER = "← graph";
+const CHAT_FOOTER = "← graph · ";
 
 const ENTER = "\r";
 const CTRL_F = "\x06";

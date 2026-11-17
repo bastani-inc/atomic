@@ -218,10 +218,11 @@ export function applyAttachedComposer(
 		const line = lines[1]!;
 		const plain = stripAnsi(stripApc(line)).trimEnd();
 		if (plain === PROMPT_GLYPH || plain === `${PROMPT_GLYPH} `) {
-			const room = Math.max(0, width - visibleWidth(stripAnsi(line).trimEnd()) - 2);
-			const text = truncateToWidth(cleanPlaceholder, room, "…");
 			const trimmed = trimTrailingSpaces(line);
-			lines[1] = `${trimmed} ${style.dim(text)}`;
+			const separator = trimmed.includes("\x1b_pi:fc\x07") ? "" : " ";
+			const room = Math.max(0, width - visibleWidth(stripAnsi(line).trimEnd()) - separator.length - 1);
+			const text = truncateToWidth(cleanPlaceholder, room, "…");
+			lines[1] = `${trimmed}${separator}${style.dim(text)}`;
 		}
 	}
 	return lines;

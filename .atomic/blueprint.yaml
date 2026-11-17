@@ -41,13 +41,12 @@ knowledge:
       npx.cmd passes through cmd.exe and fails once the command exceeds its 8191-character limit.
       `test/unit/storage-libsql-close-once.test.ts` runs native-driver close regressions in child processes
       with glibc freed-memory poisoning on Linux, and checks file release directly on Windows.
-      Finish both `npm run check` and `npm run build` before suites that import compiled packages;
-      the check rebuilds dist in place and cleans provider data.
+      Finish `npm run check` and `npm run build` before running suites that import built packages:
+      typechecking rebuilds dist in place and cleans provider data.
       Validate named-worktree permissions with a private default umask:
       `(umask 0022; npx --no-install vitest --run --project unit test/unit/subagents-named-worktree-locks.test.ts)`.
       Localized named-worktree recovery fixtures write the translated marker while Git is paused, so they do not
-      require installed locales or a Git build with gettext support. Finish `npm run check` before running
-      suites that import built packages: typechecking rebuilds dist in place and cleans provider data.
+      require installed locales or a Git build with gettext support.
       Check terminal-display regressions on the supported Node 22 runtime too; newer Node versions can hide
       control-sequence stripping differences. If the local Node is newer, run
       `npm exec --yes --package=node@22.23.5 -- node node_modules/vitest/vitest.mjs run --project unit test/unit/workflow-tool-block.test.ts`.

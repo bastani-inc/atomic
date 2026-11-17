@@ -179,7 +179,7 @@ test("#4625: hiding and restoring the Working row keeps each compaction reason's
 
 			harness.mode.setWorkingVisible(true);
 			assert.match(harness.status(), label, `${reason}: restoring the Working row keeps the indicator`);
-			assert.doesNotMatch(harness.status(), /Working\.\.\./);
+			assert.doesNotMatch(harness.status(), /Working…/);
 			assert.equal(harness.mode.autoCompactionLoader, loader, `${reason}: the same loader stays in use`);
 			assert.equal(harness.statusChildren().filter((child) => child === loader).length, 1);
 			assert.equal(timers.intervalCount(), 1, `${reason}: one animation timer, none leaked`);
@@ -203,7 +203,7 @@ test("#4625: a compaction that ends while the Working row is hidden leaves nothi
 			await endCompaction(harness, reason);
 			harness.mode.setWorkingVisible(true);
 
-			assert.doesNotMatch(harness.status(), /ompacting|to cancel\)|Working\.\.\./, reason);
+			assert.doesNotMatch(harness.status(), /ompacting|to cancel\)|Working…/, reason);
 			assert.equal(harness.mode.autoCompactionLoader, undefined, reason);
 			assert.equal(harness.mode.loadingAnimation, undefined, reason);
 			assert.equal(harness.mode.defaultEditor.onEscape, escapeBefore, `${reason}: Esc handler restored`);
@@ -263,7 +263,7 @@ test("#4625: post-tool compaction keeps its indicator, not generic Working, when
 		hideThenRestoreWorkingRow(harness.mode);
 
 		assert.match(harness.status(), /Auto-compacting\.\.\. \(\d+s · esc to cancel\)/);
-		assert.doesNotMatch(harness.status(), /Working\.\.\./);
+		assert.doesNotMatch(harness.status(), /Working…/);
 		assert.equal(harness.mode.loadingAnimation, undefined, "generic Working must not claim the surface");
 
 		await endCompaction(harness, "threshold", true);
@@ -288,7 +288,7 @@ test("#4625: restoring the Working row still mounts it for a streaming turn when
 		harness.mode.setWorkingVisible(true);
 
 		assert.notEqual(harness.mode.loadingAnimation, undefined);
-		assert.match(harness.status(), /∀ .*Working\.\.\./);
+		assert.match(harness.status(), /∀ .*Working…/);
 		assert.equal(timers.intervalCount(), 1);
 
 		harness.session.isStreaming = false;
@@ -375,7 +375,7 @@ test("#4625: restoring the Working row for a streaming turn replaces stale statu
 		harness.mode.setWorkingVisible(true);
 
 		assert.doesNotMatch(harness.status(), /stale status row/);
-		assert.match(harness.status(), /∀ .*Working\.\.\./);
+		assert.match(harness.status(), /∀ .*Working…/);
 	} finally {
 		releaseTimers(harness);
 		timers.restore();

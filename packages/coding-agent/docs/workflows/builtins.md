@@ -59,7 +59,7 @@ Named workflow runs execute in the background. By default, after launch expect a
 
 For deliberately authored multi-item graphs, see [Task queues and software factories](/workflows/reliable-design#task-queues-and-software-factories). To start a workflow, use `workflow({ action: "run", workflow: "<name>", inputs: {...} })` after inspecting its required inputs with `workflow({ action: "inputs", workflow: "<name>" })`.
 
-The agent panel below the prompt lists top-level runs with their stage progress, current stage and elapsed time; a run that waits for input shows `◆` and, when it waits on one question, the question. Press ↓ on an empty prompt and Enter on a run to open its graph. Use `/workflows` for full details, including resumable quit runs. See [runs in the agent panel](/workflows/operations#runs-in-the-agent-panel).
+The agent panel below the prompt lists top-level runs with their stage progress, current stage and elapsed time; a run that waits for input shows `◆` and, when it waits on one question, the question. Press ↓ on an empty prompt and Enter on a run to open its graph. Open `/workflows` (or call `workflow({ action: "status" })`) for full details, including resumable quit runs. See [runs in the agent panel](/workflows/operations#runs-in-the-agent-panel).
 
 ## Atomic vs Claude Code Dynamic Workflows
 
@@ -79,7 +79,7 @@ Atomic's category is broader and more explicit: it is the loop engine for engine
 
 ## Built-in Workflows
 
-Atomic bundles nine workflows: six reusable control-flow patterns, two autonomous implementation loops, and one end-to-end design workflow. They are available in every session. Open `/workflows` to see the current set, and ask the agent for a workflow's inputs to inspect its contract before launch.
+Atomic bundles nine workflows: six reusable control-flow patterns, two autonomous implementation loops, and one end-to-end design workflow. They are available in every session. Ask the agent to list the current set, and ask for a workflow's inputs to inspect its contract before launch.
 
 All builtin workflows allow Intercom coordination, including stages with narrow tool lists such as the classifier and category actions. Parent tool allowlists, exclusions, `noTools`, and disabled builtins still apply; enabling a workflow does not restore caller-disabled Intercom.
 

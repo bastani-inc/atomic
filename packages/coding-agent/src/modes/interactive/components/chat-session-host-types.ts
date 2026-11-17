@@ -14,6 +14,14 @@ import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import type { ChatMessageEntry, ChatMessageRenderOptions } from "./chat-message-renderer.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
+import type { WorkingRunSnapshot } from "./working-run-meter.ts";
+
+export interface ChatSessionInterruptedTurnSnapshot {
+	readonly startedAt: number | undefined;
+	readonly settledTokens: number;
+	readonly lastWorkingMessage: string | undefined;
+	readonly workedRun: { readonly message: string | undefined; readonly snapshot: WorkingRunSnapshot } | undefined;
+}
 
 export interface ChatSessionHostStyle {
 	dim(text: string): string;

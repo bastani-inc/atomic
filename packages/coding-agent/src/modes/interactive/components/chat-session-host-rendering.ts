@@ -1,9 +1,13 @@
 import type { AssistantMessage } from "@bastani/atomic-ai";
 import { type Component, Spacer, Text, type TUI, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import { taskClocksFor } from "../../../core/tasks/live-elapsed.ts";
-import { getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
-import { loadTaskOwnTranscriptHistory, taskTranscriptSource } from "../../../core/tasks/supervisor.js";
+import { taskClocksFor } from "../../../core/tasks/live-elapsed.js";
+import { getOwnerTaskSession, getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
+import {
+	type ChatBoxSession,
+	loadTaskOwnTranscriptHistory,
+	taskTranscriptSource,
+} from "../../../core/tasks/supervisor.js";
 import { getToolExecutionStartedAt } from "../../../core/tool-execution-timing.ts";
 import { AtomicWorkedStatusComponent, DEFAULT_WORKING_MESSAGE } from "./atomic-working-status.ts";
 import {
@@ -280,7 +284,7 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 	return [];
 }
 
-const HEADER_PROMPT_ECHO_PREFIX_CELLS = 4;
+const HEADER_PROMPT_ECHO_PREFIX_CELLS = 3;
 
 function resolveEchoedInitialPrompt<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
@@ -379,6 +383,17 @@ function streamingWindowedEntry<TExtraEntry extends ChatTranscriptEntryLike>(
 	return { ...entry, message: { ...entry.message, content } };
 }
 
+function resolveRendererHostSession<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): ChatBoxSession | undefined {
+	const live = state.getAgentSession?.() ?? state.getChatBoxSession?.();
+	if (live !== undefined) {
+		state.lastRendererSession = new WeakRef(live);
+		return live;
+	}
+	return state.lastRendererSession?.deref();
+}
+
 function chatMessageRenderOptions<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	isStreaming: boolean,
@@ -387,11 +402,39 @@ function chatMessageRenderOptions<TExtraEntry extends ChatTranscriptEntryLike>(
 	return {
 		...inherited,
 		ui: toolTui(state),
-		cwd: state.getCwd?.() ?? state.getAgentSession?.()?.sessionManager.getCwd() ?? process.cwd(),
+		cwd:
+			state.getCwd?.() ??
+			state.getAgentSession?.()?.sessionManager.getCwd() ??
+			state.getChatBoxSession?.()?.sessionManager.getCwd() ??
+			process.cwd(),
 		markdownTheme: inherited?.markdownTheme ?? state.getMarkdownTheme?.(),
 		isStreaming,
 		showImages: inherited?.showImages ?? true,
 		groupBash: inherited?.groupBash ?? true,
+		getToolDefinition: (toolName: string) => {
+			const session = resolveRendererHostSession(state);
+			const taskSource = state.getTaskSource?.();
+			const owner =
+				taskSource === undefined ? undefined : (getOwnerTaskSession(taskSource) as ChatBoxSession | undefined);
+			return (
+				session?.extensionRunner?.resolveToolRenderers?.(toolName, () => session.getToolDefinition?.(toolName)) ??
+				session?.getToolDefinition?.(toolName) ??
+				inherited?.getToolDefinition?.(toolName) ??
+				owner?.extensionRunner?.resolveToolRenderers?.(toolName, () => owner.getToolDefinition?.(toolName)) ??
+				owner?.getToolDefinition?.(toolName)
+			);
+		},
+		getCustomMessageRenderer: (customType: string) => {
+			const session = resolveRendererHostSession(state);
+			const taskSource = state.getTaskSource?.();
+			const owner =
+				taskSource === undefined ? undefined : (getOwnerTaskSession(taskSource) as ChatBoxSession | undefined);
+			return (
+				session?.extensionRunner?.getMessageRenderer?.(customType) ??
+				inherited?.getCustomMessageRenderer?.(customType) ??
+				owner?.extensionRunner?.getMessageRenderer?.(customType)
+			);
+		},
 		getTaskRecord: (taskId: TaskId) => {
 			const session = state.getAgentSession?.() ?? state.getChatBoxSession?.();
 			const store = session === undefined ? undefined : getOwnerTaskStore(session);

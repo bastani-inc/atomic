@@ -29,7 +29,7 @@ import type { TodoFrontMatter, TodoRecord, TodoToolDetails } from "../../../core
 import type { TruncationResult } from "../../../core/tools/truncate.ts";
 import { getCwdRelativePath, resolvePath, shortenHomePath } from "../../../utils/paths.ts";
 import { singleLineDisplayText, terminalDisplayText } from "../../../utils/terminal-text.ts";
-import { type CodeHighlighter, getLanguageFromPath, highlightCode, theme } from "../theme/theme.js";
+import { type CodeHighlighter, getLanguageFromPath, highlightCode, type Theme, theme } from "../theme/theme.js";
 import { navEntryKeys } from "./nav-keys.ts";
 import { collapseToolBlockLines, TOOL_BLOCK_LIMITS, ToolBlockRecords, type ToolBlockStatus } from "./tool-block.ts";
 import { formatWorkingElapsed } from "./working-run-meter.ts";
@@ -59,6 +59,7 @@ export interface BuiltinToolBlockInput {
 	readonly argsComplete: boolean;
 	readonly elapsedMs?: number;
 	readonly highlighter?: CodeHighlighter;
+	readonly theme?: Pick<Theme, "fg" | "bold">;
 	readonly canManageTask?: (taskId: string) => boolean;
 }
 
@@ -95,10 +96,16 @@ class ToolBlockLines implements Component {
 class GutteredToolBlockLines implements Component {
 	private readonly entries: readonly { readonly lineNumber: number; readonly body: string }[];
 	private readonly gutterWidth: number;
+	private readonly activeTheme: Pick<Theme, "fg" | "bold">;
 
-	constructor(entries: readonly { readonly lineNumber: number; readonly body: string }[], gutterWidth: number) {
+	constructor(
+		entries: readonly { readonly lineNumber: number; readonly body: string }[],
+		gutterWidth: number,
+		activeTheme: Pick<Theme, "fg" | "bold"> = theme,
+	) {
 		this.entries = entries;
 		this.gutterWidth = gutterWidth;
+		this.activeTheme = activeTheme;
 	}
 
 	invalidate(): void {}
@@ -108,7 +115,7 @@ class GutteredToolBlockLines implements Component {
 		const prefixWidth = this.gutterWidth + 2;
 		if (width <= prefixWidth) {
 			return this.entries.flatMap(({ lineNumber, body }) => {
-				const gutter = theme.fg("dim", String(lineNumber).padStart(this.gutterWidth, " "));
+				const gutter = this.activeTheme.fg("dim", String(lineNumber).padStart(this.gutterWidth, " "));
 				return wrapTextWithAnsi(`${gutter}  ${body}`, width).map((part) => truncateToWidth(part, width, "…"));
 			});
 		}
@@ -116,7 +123,7 @@ class GutteredToolBlockLines implements Component {
 		const continuationPad = " ".repeat(prefixWidth);
 		const out: string[] = [];
 		for (const { lineNumber, body } of this.entries) {
-			const gutter = theme.fg("dim", String(lineNumber).padStart(this.gutterWidth, " "));
+			const gutter = this.activeTheme.fg("dim", String(lineNumber).padStart(this.gutterWidth, " "));
 			const wrapped = wrapTextWithAnsi(body, bodyWidth);
 			if (wrapped.length === 0) {
 				out.push(truncateToWidth(`${gutter}  `, width, "…"));
@@ -262,6 +269,7 @@ function renderGutteredLines(
 	rawPath?: string,
 	lineNumbers?: readonly number[],
 	highlighter?: CodeHighlighter,
+	activeTheme: Pick<Theme, "fg" | "bold"> = theme,
 ): Component {
 	if (lines.length === 0) return new ToolBlockLines([]);
 	const maxLine = lineNumbers?.length
@@ -277,9 +285,9 @@ function renderGutteredLines(
 		: undefined;
 	const entries = lines.map((line, index) => ({
 		lineNumber: lineNumbers?.[index] ?? startLine + index,
-		body: highlighted?.[index] ?? theme.fg("toolOutput", replaceTabs(line)),
+		body: highlighted?.[index] ?? activeTheme.fg("toolOutput", replaceTabs(line)),
 	}));
-	return new GutteredToolBlockLines(entries, gutterWidth);
+	return new GutteredToolBlockLines(entries, gutterWidth, activeTheme);
 }
 
 function formatReadArgs(
@@ -344,6 +352,7 @@ function shortReadErrorReason(text: string, details: Record<string, unknown> | u
 }
 
 function presentRead(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation {
+	const activeTheme = input.theme ?? theme;
 	const argsRecord = asRecord(input.args);
 	const { display, startLine, basePath } = formatReadArgs(argsRecord, input.cwd);
 	const isRunning = !input.result || input.isPartial;
@@ -361,7 +370,7 @@ function presentRead(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 			args: display,
 			status: "stopped",
 			meta: ["rejected"],
-			details: new ToolBlockLines([theme.fg("muted", "Not run")]),
+			details: new ToolBlockLines([activeTheme.fg("muted", "Not run")]),
 		};
 	}
 	if (isInterruptedResult(input.result)) {
@@ -377,7 +386,7 @@ function presentRead(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 	const rawText = extractRawText(input.result);
 	if (input.result?.isError || asRecord(details?.oversizedRead)?.blocked === true) {
 		const reason = shortReadErrorReason(rawText, details);
-		const errorLines = splitContentLines(rawText).map((line) => theme.fg("error", replaceTabs(line)));
+		const errorLines = splitContentLines(rawText).map((line) => activeTheme.fg("error", replaceTabs(line)));
 		return {
 			title: "Read",
 			args: display,
@@ -387,6 +396,11 @@ function presentRead(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 		};
 	}
 
+	const rawUnsupportedBy = asString(details?.imageUnsupportedByModel);
+	const unsupportedBy = rawUnsupportedBy ? singleLineDisplayText(rawUnsupportedBy).trim() : "";
+	const warningLine = unsupportedBy
+		? activeTheme.fg("warning", `[${unsupportedBy} does not support images; it saw a placeholder instead]`)
+		: undefined;
 	const imagePart = input.result?.content.find((part) => part.type === "image");
 	if (imagePart || /^Read image file \[/i.test(rawText)) {
 		const dimsFromImage =
@@ -401,35 +415,39 @@ function presentRead(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 			asNumber(details?.bytes) ?? (imagePart?.data ? Buffer.from(imagePart.data, "base64").byteLength : undefined);
 		const sizeText = bytes !== undefined ? formatToolBlockByteSize(bytes) : undefined;
 		const tail = [dimsText, sizeText].filter((item): item is string => Boolean(item)).join(" · ");
-		const line = `${theme.fg("text", "Read image")}${tail ? theme.fg("dim", ` · ${tail}`) : ""}`;
+		const line = `${activeTheme.fg("text", "Read image")}${tail ? activeTheme.fg("dim", ` · ${tail}`) : ""}`;
 		return {
 			title: "Read",
 			args: display,
 			status: "success",
 			meta: elapsed ? [elapsed] : undefined,
-			details: new ToolBlockLines([line]),
+			details: new ToolBlockLines(warningLine ? [line, warningLine] : [line], Boolean(warningLine)),
 		};
 	}
 
 	const { lines, lineNumbers } = parseReadLinesAndNumbers(rawText, startLine);
 	const lineCount = lines.length;
-	const summary = theme.fg("text", `Read ${theme.bold(String(lineCount))} ${lineCount === 1 ? "line" : "lines"}`);
+	const summary = activeTheme.fg(
+		"text",
+		`Read ${activeTheme.bold(String(lineCount))} ${lineCount === 1 ? "line" : "lines"}`,
+	);
 	if (!input.expanded || lineCount === 0) {
 		return {
 			title: "Read",
 			args: display,
 			status: "success",
 			meta: elapsed ? [elapsed] : undefined,
-			details: new ToolBlockLines([summary]),
+			details: new ToolBlockLines(warningLine ? [summary, warningLine] : [summary], Boolean(warningLine)),
 		};
 	}
 
+	const guttered = renderGutteredLines(lines, startLine, basePath, lineNumbers, input.highlighter, activeTheme);
 	return {
 		title: "Read",
 		args: display,
 		status: "success",
 		meta: elapsed ? [elapsed] : undefined,
-		details: renderGutteredLines(lines, startLine, basePath, lineNumbers, input.highlighter),
+		details: warningLine ? new ToolBlockRecords([guttered, new ToolBlockLines([warningLine], true)]) : guttered,
 	};
 }
 

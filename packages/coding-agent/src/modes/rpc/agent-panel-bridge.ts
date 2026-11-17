@@ -3,6 +3,7 @@ import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import {
 	type AgentPanelItem,
 	type AgentPanelSession,
+	type AgentPanelSourceHub,
 	agentPanelExtensionItems,
 	agentPanelSourceHubOf,
 	agentPanelSourcesGeneration,
@@ -18,7 +19,7 @@ import {
 	taskPanelState,
 	viewedAgentPanelItems,
 } from "../../core/tasks/agent-panel-source.ts";
-import { taskClockOf } from "../../core/tasks/live-elapsed.ts";
+import { taskClockOf, taskClockRunning } from "../../core/tasks/live-elapsed.js";
 import { getOwnerTaskStore, type OwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { ownerTaskViewSource } from "../../core/tasks/task-view-source.js";
 import {
@@ -53,7 +54,7 @@ type PanelRankCache = {
 	readonly store: OwnerTaskStore | undefined;
 	readonly revision: number;
 	readonly finishedRevision: number;
-	readonly hub: unknown;
+	readonly hub: AgentPanelSourceHub | undefined;
 	readonly generation: number;
 	readonly dismissed: ReadonlySet<string>;
 	readonly viewed: ReadonlySet<string>;
@@ -208,7 +209,7 @@ function rankPanelSession(
 		let rows: AgentPanelRow[] | undefined;
 		for (let index = start; index < end; index++) {
 			const current = cached.rows[index]!;
-			const base = materialize(current);
+			const base = materialize(state.model.baseOf(current));
 			const next = state.model.withElapsed(base);
 			if (
 				next === current ||
@@ -378,6 +379,7 @@ function sameUnfocusedRows(
 			a.task !== b.task ||
 			a.tokens !== b.tokens ||
 			a.queued !== b.queued ||
+			a.viewed !== b.viewed ||
 			elapsedSecond(a.elapsedMs) !== elapsedSecond(b.elapsedMs) ||
 			!sameProgress(a.progress, b.progress) ||
 			model.faded(a) !== model.faded(b)
@@ -386,6 +388,21 @@ function sameUnfocusedRows(
 		}
 	}
 	return true;
+}
+
+function panelRowsNeedClock(
+	rows: readonly AgentPanelRow[],
+	state: PanelState,
+	sharedViewed: ReadonlySet<string>,
+): boolean {
+	for (const row of rows) {
+		if (taskClockRunning(row.state)) return true;
+		if (!isFinishedPanelRow(row)) continue;
+		const kept =
+			row.kind === "workflow" && row.viewed !== true && !state.viewed.has(row.id) && !sharedViewed.has(row.id);
+		if (!kept || !state.model.faded(row)) return true;
+	}
+	return false;
 }
 
 export function bindAgentPanel(
@@ -586,14 +603,10 @@ export function bindAgentPanel(
 		ui.requestRender();
 	};
 	const rowsChangeWithTime = (rows: readonly AgentPanelRow[]): boolean => {
-		const sharedViewed = viewedAgentPanelItems(session);
-		for (const row of rows) {
-			if (!isFinishedPanelRow(row)) return true;
-			const kept =
-				row.kind === "workflow" && row.viewed !== true && !state.viewed.has(row.id) && !sharedViewed.has(row.id);
-			if (!kept || !state.model.faded(row)) return true;
-		}
-		return currentHiddenBelow > 0 && Number.isFinite(currentExpiresAt);
+		return (
+			panelRowsNeedClock(rows, state, viewedAgentPanelItems(session)) ||
+			(currentHiddenBelow > 0 && Number.isFinite(currentExpiresAt))
+		);
 	};
 	const scheduleUpdate = () => {
 		if (disposed) return;
@@ -704,6 +717,8 @@ export async function showAgentPanel(
 				let cachedFrame = -1;
 				let cachedFaded = -1;
 				let cachedRowLines: string[] = [];
+				let materializedScroll = 0;
+				let tick: ReturnType<typeof setInterval> | undefined;
 				const finish = () => {
 					if (finished) return;
 					finished = true;
@@ -772,12 +787,29 @@ export async function showAgentPanel(
 				});
 				focus.update(currentRows);
 				focus.enter(selectId);
+				const refreshRows = () => {
+					materializedScroll = focus.scroll;
+					currentRows = focusedRows(materializedScroll);
+					focus.update(currentRows);
+				};
+				const syncTick = () => {
+					const needed =
+						focus.pendingStop() !== undefined ||
+						panelRowsNeedClock(currentRows, state, viewedAgentPanelItems(session));
+					if (needed) {
+						tick ??= setInterval(refreshFocus, TICK_MS);
+						tick.unref?.();
+					} else if (tick !== undefined) {
+						clearInterval(tick);
+						tick = undefined;
+					}
+				};
 				const refreshFocus = () => {
 					if (disposed) return;
 					dirty = false;
 					try {
-						currentRows = focusedRows(focus.scroll);
-						focus.update(currentRows);
+						refreshRows();
+						syncTick();
 						tui.requestRender();
 					} catch (error) {
 						report(error);
@@ -794,8 +826,7 @@ export async function showAgentPanel(
 					});
 				};
 				const unsubscribe = subscribeAgentPanel(session, scheduleRefresh);
-				const tick = setInterval(refreshFocus, TICK_MS);
-				tick.unref?.();
+				syncTick();
 				return {
 					invalidate() {
 						cachedRows = undefined;
@@ -804,10 +835,10 @@ export async function showAgentPanel(
 					render(width: number) {
 						try {
 							const w = +width;
-							if (dirty) {
+							if (dirty || materializedScroll !== focus.scroll) {
 								dirty = false;
-								currentRows = focusedRows(focus.scroll);
-								focus.update(currentRows);
+								refreshRows();
+								syncTick();
 							}
 							if (focus.helpOpen)
 								return renderNavKeyOverlay(
@@ -882,6 +913,7 @@ export async function showAgentPanel(
 							focus.handleInput(data, (input, key) =>
 								matchesKey(input, key as Parameters<typeof matchesKey>[1]),
 							);
+							syncTick();
 						} catch (error) {
 							report(error);
 						}
@@ -891,7 +923,7 @@ export async function showAgentPanel(
 					dispose() {
 						if (disposed) return;
 						disposed = true;
-						clearInterval(tick);
+						if (tick !== undefined) clearInterval(tick);
 						unsubscribe();
 						if (!finished) queueMicrotask(finish);
 					},
