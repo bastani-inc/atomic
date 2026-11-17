@@ -595,6 +595,85 @@ describe("publishing the verified worktree", () => {
 	test("the same holds when Git numbered the moved worktree's admin name after another worktree of that name", () =>
 		stoppedAfterMove(true));
 
+	test("a restore stopped after the move deletes the moved worktree's files without holding the store's lock", async () => {
+		const { snapshot, blobs, storeDir, store } = await warmHost();
+		const into = sandbox.path("final");
+		const reason = new Error("stop after the move");
+		const controller = new AbortController();
+		let held = false;
+		const deletions: { readonly path: string; readonly held: boolean }[] = [];
+		const populated = (path: string) => existsSync(join(path, "dirty.txt"));
+		let moved = false;
+		faults.spawnHook = (args) => {
+			if (moved && !controller.signal.aborted) queueMicrotask(() => controller.abort(reason));
+			if (is(args, "worktree", "move")) moved = true;
+			const path = command(args).at(-1)!;
+			if (is(args, "worktree", "remove") && populated(path)) deletions.push({ path, held });
+			return undefined;
+		};
+		faults.rm = (path) => {
+			if (populated(path)) deletions.push({ path, held });
+		};
+		faults.lock = async (file, options, real) => {
+			const release = await real(file, options);
+			if (file !== store) return release;
+			held = true;
+			return async () => {
+				held = false;
+				await release();
+			};
+		};
+
+		const { error, warnings } = await restoreInto(snapshot, blobs, storeDir, into, controller.signal);
+
+		assert.equal(error, reason);
+		assert.equal(existsSync(into), false);
+		assert.ok(deletions.length > 0, "the moved worktree's files were deleted");
+		assert.deepEqual(
+			deletions.filter((deletion) => deletion.held),
+			[],
+		);
+		assert.equal(lists(await registered(store), into), false);
+		assert.deepEqual(retainedWarnings(warnings), []);
+		assert.deepEqual(readdirSync(join(storeDir, "restores")), []);
+		assert.deepEqual(
+			readdirSync(sandbox.root).filter((name) => name.startsWith(".final")),
+			[],
+		);
+	});
+
+	test("a restore stopped once it holds the store's lock to publish never asks Git to move its worktree", async () => {
+		const { snapshot, blobs, storeDir, store } = await warmHost();
+		const into = sandbox.path("final");
+		const id = uuid();
+		faults.uuids.push(id);
+		const staging = siblingStaging(into, id);
+		const reason = new Error("stop before the move");
+		const controller = new AbortController();
+		let verified = false;
+		faults.spawnHook = (args, cwd) => {
+			if (is(args, "write-tree") && cwd === staging) verified = true;
+			return undefined;
+		};
+		faults.lock = async (file, options, real) => {
+			const release = await real(file, options);
+			if (verified && file === store && !controller.signal.aborted) controller.abort(reason);
+			return release;
+		};
+
+		const { error, warnings } = await restoreInto(snapshot, blobs, storeDir, into, controller.signal);
+
+		assert.equal(error, reason);
+		assert.equal(
+			faults.spawns.some((spawned) => is(spawned.args, "worktree", "move")),
+			false,
+		);
+		assert.equal(existsSync(into), false);
+		assert.equal(existsSync(staging), false);
+		assert.deepEqual(retainedWarnings(warnings), []);
+		assert.deepEqual(readdirSync(join(storeDir, "restores")), []);
+	});
+
 	test("when the moved worktree cannot be removed after the stop, the warning names the target that keeps it", async () => {
 		const { snapshot, blobs, storeDir } = await warmHost();
 		const into = sandbox.path("final");
@@ -692,6 +771,87 @@ describe("publishing the verified worktree", () => {
 		assert.equal(error.code, "unreadable-path");
 		assert.equal(error.subject, into);
 		assert.equal((error.cause as NodeJS.ErrnoException).code, "EIO");
+	});
+
+	/** Fails, once, the first check of where Git moved the worktree: `git worktree list`, or resolving the target. */
+	function failCheckAfterMove(into: string, check: "list" | "realpath"): () => boolean {
+		let moved = false;
+		let failed = false;
+		faults.spawnHook = (args) => {
+			if (is(args, "worktree", "move")) moved = true;
+			if (check === "list" && moved && !failed && is(args, "worktree", "list")) {
+				failed = true;
+				return { command: "false", args: [] };
+			}
+			return undefined;
+		};
+		if (check === "realpath") {
+			faults.realpath = (path) => {
+				if (moved && !failed && path === into) {
+					failed = true;
+					throw Object.assign(new Error(`EIO: i/o error, realpath '${path}'`), {
+						code: "EIO",
+						syscall: "realpath",
+						path,
+					});
+				}
+			};
+		}
+		return () => failed;
+	}
+
+	for (const check of ["list", "realpath"] as const) {
+		test(`a restore whose ${check === "list" ? "listing of worktrees" : "resolution of the target"} fails after the move removes the worktree it moved there`, async () => {
+			const { snapshot, blobs, storeDir, store } = await warmHost();
+			const into = sandbox.path("final");
+			const admins = new Set(readdirSync(join(store, "worktrees")));
+			const failed = failCheckAfterMove(into, check);
+
+			const { error, warnings } = await restoreInto(snapshot, blobs, storeDir, into);
+
+			assert.equal(failed(), true);
+			if (check === "list") assert.ok(isWorkspaceGitError(error), String(error));
+			else assert.ok(isWorkspaceSnapshotError(error) && error.code === "unreadable-path", String(error));
+			assert.equal((error as { cleanupCause?: unknown }).cleanupCause, undefined);
+			assert.equal(existsSync(into), false, "the moved worktree is removed from the target");
+			assert.equal(lists(await registered(store), into), false);
+			assert.deepEqual(new Set(readdirSync(join(store, "worktrees"))), admins, "no admin entry is left behind");
+			assert.deepEqual(retainedWarnings(warnings), []);
+			assert.deepEqual(readdirSync(join(storeDir, "restores")), []);
+		});
+	}
+
+	test("when that check fails after Git moved the worktree inside another worktree of the store, only the nested one is removed", async () => {
+		const { snapshot, blobs, storeDir, store, warm } = await warmHost();
+		const into = sandbox.path("final");
+		const id = uuid();
+		faults.uuids.push(id);
+		const nested = join(into, basename(siblingStaging(into, id)));
+		const failed = failCheckAfterMove(into, "list");
+		const failList = faults.spawnHook!;
+		faults.spawnHook = (args, cwd, env) => {
+			if (is(args, "worktree", "move") && !command(args).includes(warm)) {
+				execFileSync("git", ["--git-dir", store, "worktree", "move", warm, into], {
+					env: { ...process.env, ...sandbox.executable.env },
+				});
+				writeFileSync(join(into, "keep.txt"), "user data\n");
+			}
+			return failList(args, cwd, env);
+		};
+
+		const { error, warnings } = await restoreInto(snapshot, blobs, storeDir, into);
+
+		assert.equal(failed(), true);
+		assert.ok(isWorkspaceGitError(error), String(error));
+		assert.equal((error as { cleanupCause?: unknown }).cleanupCause, undefined);
+		assert.equal(readFileSync(join(into, "keep.txt"), "utf8"), "user data\n");
+		assert.equal(readFileSync(join(into, "dirty.txt"), "utf8"), "recorded\n");
+		assert.equal(existsSync(nested), false);
+		const listed = await registered(store);
+		assert.equal(lists(listed, into), true, "the other worktree is still registered");
+		assert.equal(lists(listed, nested), false);
+		assert.deepEqual(retainedWarnings(warnings), []);
+		assert.deepEqual(readdirSync(join(storeDir, "restores")), []);
 	});
 });
 

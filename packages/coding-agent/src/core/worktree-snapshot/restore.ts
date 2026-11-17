@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, type Stats } from "node:fs";
-import { lstat, mkdir, open, readdir, readFile, realpath, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
@@ -465,20 +465,44 @@ async function sweepRestoreRecords(
 	}
 }
 
+async function movedWorktree(git: GitRunOptions, target: string, staging: string): Promise<string | undefined> {
+	const registered = await registeredWorktrees(git);
+	const destination = await physicalPath(target);
+	const nested = join(destination, basename(staging));
+	if (includesPath(registered, nested)) return nested;
+	return includesPath(registered, destination) ? target : undefined;
+}
+
 /**
  * Removes the worktree that this restore moved to its target before the restore failed or was stopped (#4748). Only
  * the restore that moved it calls this; the crash sweep never does, so a record that a successful restore could not
  * remove never costs the worktree it published.
  */
-async function removePublishedWorktree(record: RestoreRecord): Promise<void> {
+async function unpublishWorktree(record: RestoreRecord, path: string): Promise<string | undefined> {
 	const git: GitRunOptions = { cwd: dirname(record.store), env: { GIT_DIR: record.store } };
-	await runGit(["worktree", "remove", "--force", "--force", record.target], git);
-	await writing(record.target, null, () => rm(record.target, { recursive: true, force: true }));
+	const remove = () => runGit(["worktree", "remove", "--force", "--force", path], git);
+	const trash = await rename(path, record.staging).then(
+		() => record.staging,
+		() => undefined,
+	);
+	if (trash === undefined) {
+		await remove();
+		await writing(path, null, () => rm(path, { recursive: true, force: true }));
+	} else {
+		await remove().catch(async (error: unknown) => {
+			await rename(trash, path);
+			throw error;
+		});
+	}
+	if (!record.createdTarget && (await statIfPresent(record.target)) === undefined) {
+		await writing(record.target, null, () => mkdir(record.target, { recursive: true }));
+	}
+	return trash;
 }
 
 /**
  * Hold a crash record lock throughout staging and publication; preserve the primary failure if cleanup fails. The
- * action calls `published` once it has moved its worktree to the target, so a failure after that removes it too.
+ * action calls `placed` once it has moved its worktree to the target, so a failure after that removes it too.
  */
 async function withRestoreRecord(
 	storeDir: string,
@@ -487,7 +511,7 @@ async function withRestoreRecord(
 	snapshotId: string | null,
 	warn: (warning: WorktreeRestoreWarning) => void,
 	signal: AbortSignal | undefined,
-	action: (assertActive: () => void, published: () => void) => Promise<void>,
+	action: (assertActive: () => void, placed: (where: "target" | "unknown") => void) => Promise<void>,
 ): Promise<void> {
 	const recordsDir = join(storeDir, "restores");
 	const recordPath = join(recordsDir, `${id}.json`);
@@ -505,7 +529,7 @@ async function withRestoreRecord(
 		}),
 	);
 	let recorded = false;
-	let movedToTarget = false;
+	let moved: "target" | "unknown" | undefined;
 	let primary: unknown;
 	const assertActive = () => {
 		signal?.throwIfAborted();
@@ -527,8 +551,8 @@ async function withRestoreRecord(
 		);
 		recorded = true;
 		assertActive();
-		await action(assertActive, () => {
-			movedToTarget = true;
+		await action(assertActive, (where) => {
+			moved = where;
 		});
 		assertActive();
 		try {
@@ -540,17 +564,23 @@ async function withRestoreRecord(
 		primary = error;
 		if (recorded) {
 			try {
-				await withRepositoryLock(record.store, snapshotId, undefined, async () => {
-					if (movedToTarget) await removePublishedWorktree(record);
+				const trash = await withRepositoryLock(record.store, snapshotId, undefined, async () => {
 					await cleanRestoreRecord(record);
+					const git: GitRunOptions = { cwd: dirname(record.store), env: { GIT_DIR: record.store } };
+					const path =
+						moved === "unknown"
+							? await movedWorktree(git, record.target, record.staging)
+							: moved && record.target;
+					return path === undefined ? undefined : await unpublishWorktree(record, path);
 				});
+				if (trash !== undefined) await writing(trash, null, () => rm(trash, { recursive: true, force: true }));
 				await rm(recordPath);
 			} catch (cleanupCause) {
 				if (error instanceof Error)
 					Object.defineProperty(error, "cleanupCause", { value: cleanupCause, configurable: true });
 				warn({
 					code: "stale-restore-retained",
-					path: movedToTarget ? record.target : record.staging,
+					path: moved === undefined ? record.staging : record.target,
 					kind: "worktree",
 				});
 			}
@@ -2083,7 +2113,7 @@ async function publishWorktree(publish: PublishWorktree): Promise<string> {
 	const id = randomUUID();
 	const staging = stagingPath(storeDir, path, publish.into, id);
 	const record: RestoreRecord = { staging, target: path, store, createdTarget };
-	await withRestoreRecord(storeDir, id, record, snapshotId, warn, signal, async (assertActive, published) => {
+	await withRestoreRecord(storeDir, id, record, snapshotId, warn, signal, async (assertActive, placed) => {
 		await timeRestorePhase("materialize", () =>
 			materialize(git, store, staging, head, tree, scratch, snapshotId, signal),
 		);
@@ -2104,7 +2134,7 @@ async function publishWorktree(publish: PublishWorktree): Promise<string> {
 		assertActive();
 		await timeRestorePhase("publish", () =>
 			withRepositoryLock(store, snapshotId, signal, () =>
-				moveIntoPlace(publish, staging, createdTarget, snapshotId, published),
+				moveIntoPlace(publish, staging, createdTarget, snapshotId, placed),
 			),
 		);
 		assertActive();
@@ -2159,16 +2189,16 @@ async function verifyRestoredTree(
 
 /**
  * Moves the verified staging worktree to the restore's final path, never into a directory that appeared there, and
- * calls `published` once the worktree is registered at that path.
+ * calls `placed` once the worktree is registered at that path.
  */
 async function moveIntoPlace(
 	publish: PublishWorktree,
 	staging: string,
 	createdTarget: boolean,
 	snapshotId: string | null,
-	published: () => void,
+	placed: (where: "target" | "unknown") => void,
 ): Promise<void> {
-	const { git, path, warn } = publish;
+	const { git, path, warn, signal } = publish;
 	if (createdTarget) {
 		if ((await statIfPresent(path)) !== undefined) {
 			throw new WorkspaceRestoreError("unsafe-target", { snapshotId, target: path, reason: "not-empty" });
@@ -2179,24 +2209,29 @@ async function moveIntoPlace(
 	// `-f` replaces only a registration whose directory is gone, as a store restored from a CI cache keeps for the
 	// worktree its saving job built at this path (#4748); a directory at the path was refused above.
 	// The move and the check of where it went are never stopped midway (#4748): a Git killed mid-move leaves a worktree
-	// that neither the staging path nor `published` accounts for. Both are short; a stop is noticed right after them.
+	// that neither the staging path nor `placed` accounts for. Both are short; a stop is noticed right after them.
+	signal?.throwIfAborted();
 	await runGit(["worktree", "move", "-f", staging, path], { ...git, signal: undefined });
 	// Git moves *inside* an existing directory. If one appeared after our check, never return it as the
 	// verified worktree: remove only the nested worktree that Git registered and leave the user's files alone,
 	// even when that directory is itself a worktree of this store.
-	const registered = await registeredWorktrees({ ...git, signal: undefined });
-	const destination = await physicalPath(path);
-	const nested = join(destination, basename(staging));
-	if (includesPath(registered, destination) && !includesPath(registered, nested)) {
-		published();
+	let moved: string | undefined;
+	try {
+		moved = await movedWorktree({ ...git, signal: undefined }, path, staging);
+	} catch (error) {
+		placed("unknown");
+		throw error;
+	}
+	if (moved === path) {
+		placed("target");
 	} else {
 		const error = new WorkspaceRestoreError("unsafe-target", { snapshotId, target: path, reason: "not-empty" });
-		if (includesPath(registered, nested)) {
+		if (moved !== undefined) {
 			try {
-				await runGit(["worktree", "remove", "--force", "--force", nested], { ...git, signal: undefined });
+				await runGit(["worktree", "remove", "--force", "--force", moved], { ...git, signal: undefined });
 			} catch (cleanupCause) {
 				Object.defineProperty(error, "cleanupCause", { value: cleanupCause, configurable: true });
-				warn({ code: "stale-restore-retained", path: nested, kind: "worktree" });
+				warn({ code: "stale-restore-retained", path: moved, kind: "worktree" });
 			}
 		}
 		throw error;
