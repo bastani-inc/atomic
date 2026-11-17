@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a worker host crashing after a libSQL server rolled back a write batch. Batch execution now observes every statement, COMMIT and ROLLBACK result, so later timeout rejections cannot escape the reported storage failure. A batch whose COMMIT never ran is no longer reported as successful ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
+- Reused statements and write batches on `ws:` and `wss:` URLs now use WebSockets instead of attempting HTTP requests ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
+
 ## [0.9.88] - 2026-11-16
 
 ### Changed

@@ -66,11 +66,16 @@ test.skipIf(process.platform === "win32")(
 			coordinator: "in-process",
 		});
 		// The in-process coordinator forks the workers from this process, so their spawns and exit codes are observable.
-		const exits: { readonly pid: number | undefined; readonly code: number | null }[] = [];
+		const exits: {
+			readonly pid: number | undefined;
+			readonly code: number | null;
+			readonly signal: NodeJS.Signals | null;
+		}[] = [];
 		let spawns = 0;
 		// Workers whose request the coordinator refused because the root's lease is gone: its claim or its control
 		// request, whichever the worker sent first after the release (both check the root's lease).
 		const leaseLostReplies = new Set<number>();
+		const lateSendErrors = new Set<number>();
 		const emit = ChildProcess.prototype.emit as (
 			this: ChildProcess,
 			event: string | symbol,
@@ -89,12 +94,28 @@ test.skipIf(process.platform === "win32")(
 				this.send = ((message: object, ...rest: unknown[]) => {
 					// The refusal itself says the root's lease is gone: a stale root lease, typed across the IPC.
 					const refusal = (message as { readonly error?: SerializedError }).error;
-					if (refusal !== undefined && isStaleLeaseError(rehydrateError(refusal)) && pid !== undefined)
+					if (refusal !== undefined && isStaleLeaseError(rehydrateError(refusal)) && pid !== undefined) {
+						const firstForWorker = !leaseLostReplies.has(pid);
 						leaseLostReplies.add(pid);
+						const callback =
+							typeof rest.at(-1) === "function" ? (rest.at(-1) as (error: Error | null) => void) : undefined;
+						if (firstForWorker && callback !== undefined) {
+							this.once("disconnect", () => {
+								lateSendErrors.add(pid);
+								callback(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+							});
+							return send(message);
+						}
+					}
 					return send(message, ...rest);
 				}) as typeof this.send;
 			}
-			if (event === "exit") exits.push({ pid: this.pid, code: args[0] as number | null });
+			if (event === "exit")
+				exits.push({
+					pid: this.pid,
+					code: args[0] as number | null,
+					signal: (args[1] as NodeJS.Signals | null) ?? null,
+				});
 			return emit.call(this, event, ...args);
 		});
 		// Every wait shares the test's budget.
@@ -128,12 +149,18 @@ test.skipIf(process.platform === "win32")(
 				[...leaseLostReplies].some((pid) => workers.includes(pid)),
 				"the coordinator told a worker the root's lease is gone",
 			);
-			for (const pid of workers)
+			assert.ok(
+				[...lateSendErrors].some((pid) => workers.includes(pid)),
+				"a worker's disconnect raced with a send completion callback",
+			);
+			for (const pid of workers) {
+				const exit = exits.find((candidate) => candidate.pid === pid);
 				assert.equal(
-					exits.find((exit) => exit.pid === pid)?.code,
+					exit?.code,
 					0,
-					`worker ${pid} crashed on the released lease`,
+					`worker ${pid} crashed on the released lease (signal=${exit?.signal ?? "none"})`,
 				);
+			}
 			assert.equal(spawns, spawnedBefore, "no replacement was spawned for a worker that ended on a released lease");
 			await pool.close();
 		} finally {

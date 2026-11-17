@@ -29,7 +29,10 @@ knowledge:
       Root suites run under vitest: `npm run test:unit`, `npm run test:integration`, or both with
       `npm run test:all`. The coding-agent suite is `npm run test --workspace=@bastani/atomic`, and the
       scripts/*.test.mjs tests run with `npm run test:scripts` (`node --test`). Build first: several
-      suites load the built packages.
+      suites load the built packages. Run checks and tests sequentially: `npm run check` rebuilds
+      the forked packages that test subprocesses import.
+      Reproduce minimal Linux named-worktree fixtures with:
+      `(umask 022; LOCPATH=/nonexistent npx vitest run --project unit test/unit/subagents-named-worktree-locks.test.ts test/unit/subagents-named-worktree-recovery.test.ts)`.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run

@@ -8,6 +8,7 @@ import {
 	readFileSync,
 	realpathSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -153,6 +154,11 @@ function writeGermanGitCatalog(root: string): string {
 	const moDir = join(localeDir, "de", "LC_MESSAGES");
 	mkdirSync(moDir, { recursive: true });
 	writeFileSync(join(moDir, "git.mo"), catalog);
+	const cUtf8Dir = ["/usr/lib/locale/C.utf8", "/usr/lib/locale/C.UTF-8"].find((candidate) => existsSync(candidate));
+	if (cUtf8Dir) {
+		symlinkSync(cUtf8Dir, join(localeDir, "de_DE.UTF-8"));
+		symlinkSync(cUtf8Dir, join(localeDir, "de_DE.utf8"));
+	}
 	return localeDir;
 }
 
@@ -353,12 +359,14 @@ test(
 	async () => {
 		const { root, repo, target, entry } = makeRepo();
 		const localeDir = writeGermanGitCatalog(root);
-		const locale = process.platform === "win32" ? "de_DE.UTF-8" : "en_US.UTF-8";
+		const hasSyntheticLocale = existsSync(join(localeDir, "de_DE.UTF-8"));
+		const locale = process.platform === "win32" || hasSyntheticLocale ? "de_DE.UTF-8" : "en_US.UTF-8";
 		const hold = holdBeforeIndex(repo, root);
 		const external = spawnProcess(["git", "-C", repo, "worktree", "add", "-b", "feat/recover", target], {
 			cwd: repo,
 			env: createGitEnvironment({
 				GIT_TEXTDOMAINDIR: localeDir,
+				...(hasSyntheticLocale ? { LOCPATH: localeDir } : {}),
 				LANGUAGE: "de",
 				LC_ALL: locale,
 				LANG: locale,
