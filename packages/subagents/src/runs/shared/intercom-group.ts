@@ -13,10 +13,17 @@ function runtimeIntercomGroup(sessionId: string | undefined): string | undefined
 	return readRuntimeIntercomGroup(sessionId);
 }
 
+/** #5352: the Intercom policy of a session whose host set one, or of a workflow stage or subagent of such a session. */
+interface ChildGroupPolicy {
+	readonly home: string;
+	childGroup(requested: string | undefined): string;
+}
+
 interface OrchestrationCarrier {
 	orchestrationContext?: { intercomGroup?: string } | undefined;
 	subagentPolicy?: { intercomGroup?: string } | undefined;
 	sessionManager?: { getSessionId(): string } | undefined;
+	intercomPolicy?: ChildGroupPolicy | undefined;
 }
 
 /**
@@ -25,6 +32,9 @@ interface OrchestrationCarrier {
  * carries only the current group so children launched after `join` follow their parent.
  */
 export function inheritedIntercomGroup(ctx: OrchestrationCarrier | undefined): string | undefined {
+	// #5352: a session with a policy starts its children in its home group, never in a group it joined from its reach.
+	const policy = ctx?.intercomPolicy;
+	if (policy !== undefined) return policy.home;
 	const runtimeGroup = runtimeIntercomGroup(ctx?.sessionManager?.getSessionId());
 	if (runtimeGroup !== undefined) return runtimeGroup;
 	const policyGroup = ctx?.subagentPolicy?.intercomGroup;
@@ -39,8 +49,19 @@ export function inheritedIntercomGroup(ctx: OrchestrationCarrier | undefined): s
  * `true` resolves to `sharedAutoGroup` (a single UUID minted once per parallel
  * set) so every child in the set shares one isolated group. Returns undefined
  * when nothing applies, so the child inherits env/config/default itself.
+ * #5352: with a parent `policy`, the group is placed under the parent's home group.
  */
 export function resolveChildIntercomGroup(
+	explicit: string | true | undefined,
+	inherited: string | undefined,
+	sharedAutoGroup: string | undefined,
+	policy?: ChildGroupPolicy,
+): string | undefined {
+	const resolved = requestedChildIntercomGroup(explicit, inherited, sharedAutoGroup);
+	return policy === undefined ? resolved : policy.childGroup(resolved);
+}
+
+function requestedChildIntercomGroup(
 	explicit: string | true | undefined,
 	inherited: string | undefined,
 	sharedAutoGroup: string | undefined,

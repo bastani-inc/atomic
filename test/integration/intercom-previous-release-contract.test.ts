@@ -24,7 +24,7 @@ const { createMessageReader } = await import("../../packages/intercom/broker/fra
 const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
 const { queryIntercomBroker } = await import("../../packages/intercom/broker/control.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
-const { PROTOCOL_2_FRAME_TYPES, PROTOCOL_3_FRAME_TYPES } = await import(
+const { PROTOCOL_2_FRAME_TYPES, PROTOCOL_3_FRAME_TYPES, PROTOCOL_4_FRAME_TYPES } = await import(
 	"../../packages/intercom/broker/socket-writes.js"
 );
 
@@ -111,7 +111,7 @@ async function brokerRunning(): Promise<number> {
 		const query = await queryIntercomBroker(agentDir);
 		assert.equal(query.state, "running");
 		if (query.state === "running") {
-			assert.deepEqual(query.report.protocol, { min: 1, max: 3 });
+			assert.deepEqual(query.report.protocol, { min: 1, max: 4 });
 			pid = query.report.pid;
 		}
 	}, WAIT);
@@ -217,7 +217,11 @@ describe("the 0.9.71 Intercom client against this version's broker (#4538)", () 
 	test("every frame type this version's broker writes is one the 0.9.71 client handles, or one of protocol 2 or 3 it is never sent (#4642)", () => {
 		const written = unionTypes(join(repoRoot, "packages/intercom/types.ts"), "BrokerMessage");
 		const answeredOnlyToTheBrokerWatchdogOrAControlClient = new Set(["health", "shutdown_ack"]);
-		const newer: ReadonlySet<string> = new Set([...PROTOCOL_2_FRAME_TYPES, ...PROTOCOL_3_FRAME_TYPES]);
+		const newer: ReadonlySet<string> = new Set([
+			...PROTOCOL_2_FRAME_TYPES,
+			...PROTOCOL_3_FRAME_TYPES,
+			...PROTOCOL_4_FRAME_TYPES,
+		]);
 		assert.ok(written.size > 20, [...written].join(", "));
 		assert.deepEqual(
 			[...written].filter(

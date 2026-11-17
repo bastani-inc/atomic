@@ -18,7 +18,8 @@ import type { DeliveryFailureReasonCode, Message, SessionInfo } from "../types.j
 import { ASK_FAILURE_QUEUED, crashPoint } from "./crash-points.js";
 import type { DeliveredMessageCache } from "./delivered-message-cache.js";
 import { sameGroup } from "./group-isolation.js";
-import { sessionGroups } from "./group-membership.js";
+import { reachesGroups, reachesSession, type ReachSubject, sessionGroups } from "./group-membership.js";
+import { outsideReachReason, reachesAnyGroup, reachGroups } from "../reach-policy.js";
 import {
 	BROKER_LEASE_RENEW_INTERVAL_MS,
 	BROKER_LEASE_STALE_AFTER_MS,
@@ -402,9 +403,14 @@ function askKey(question: PendingQuestion): string {
 	return JSON.stringify([question.senderSessionId, question.targetSessionId, question.messageId]);
 }
 
-function sharesGroup(groups: ReadonlySet<string>, sender: SessionInfo): boolean {
-	const senderGroups = sessionGroups(sender);
-	return [...groups].some((group) => senderGroups.has(group));
+/**
+ * #5352: the groups a shared reservation admits a send from: the sender's memberships, and with a reach policy its home
+ * and reachable groups too.
+ */
+function reservationGroups(sender: ReachSubject): string[] {
+	const groups = new Set(sessionGroups(sender.info));
+	if (sender.reach !== undefined) for (const group of reachGroups(sender.reach)) groups.add(group);
+	return [...groups];
 }
 
 export class MultiNodeRouter {
@@ -1489,7 +1495,7 @@ export class MultiNodeRouter {
 			const visible = live.filter((lease) => {
 				const info = presenceOf(lease).session;
 				return (
-					sameGroup(info, from.info) ||
+					reachesSession(from, info) ||
 					(request.supervisorSend && info.id === from.supervisorId) ||
 					replyAuthorized.has(info.id)
 				);
@@ -1933,7 +1939,7 @@ export class MultiNodeRouter {
 		);
 		const visible = sessions.filter(
 			(session) =>
-				sharesGroup(new Set(session.groups), request.from.info) ||
+				reachesGroups(request.from, session.groups) ||
 				(request.supervisorSend && session.intercomSessionId === request.from.supervisorId) ||
 				replyAuthorized.has(session.intercomSessionId),
 		);
@@ -1992,8 +1998,8 @@ export class MultiNodeRouter {
 		const verticalReply =
 			message.replyTo !== undefined &&
 			this.host.supervisorCache.matchReply(message.replyTo, from.info.id, target.sessionId);
-		if (!request.supervisorSend && !verticalReply && !correlatedReply && !sharesGroup(target.groups, from.info)) {
-			this.fail(request, TARGET_GROUP_REFUSAL);
+		if (!request.supervisorSend && !verticalReply && !correlatedReply && !reachesGroups(from, target.groups)) {
+			this.fail(request, from.reach === undefined ? TARGET_GROUP_REFUSAL : outsideReachReason(from.reach));
 			return;
 		}
 		if (message.expectsReply === true && target.gates.replyCapability === "terminal") {
@@ -2002,7 +2008,15 @@ export class MultiNodeRouter {
 		}
 		const frame: IntercomDeliveryFrame = request.supervisorSend
 			? { type: "message", from: from.info, message, channel: "supervisor" }
-			: { type: "message", from: from.info, message };
+			: {
+					type: "message",
+					from: from.info,
+					message,
+					// #5352: the recipient's broker checks the delivery against the reach the origin decided it under.
+					...(from.reach === undefined
+						? {}
+						: { senderReach: { home: from.reach.home, reachable: [...from.reach.reachable] } }),
+				};
 		const enqueued = await this.reserveAndEnqueue(
 			{
 				messageId: message.id,
@@ -2134,7 +2148,7 @@ export class MultiNodeRouter {
 			socket: request.socket,
 			...(request.attemptId === undefined ? {} : { attemptId: request.attemptId }),
 			senderSessionId: request.from.info.id,
-			senderGroups: [...sessionGroups(request.from.info)],
+			senderGroups: reservationGroups(request.from),
 			expectsReply: message.expectsReply === true,
 			resolveReplyTarget: request.resolveReplyTarget,
 			targetSessionId: target.sessionId,
@@ -2256,7 +2270,7 @@ export class MultiNodeRouter {
 		const { from, message } = request;
 		const lookup = await this.state.reservations.lookup(
 			normalizeTarget(request.target),
-			{ sessionId: from.info.id, groups: [...sessionGroups(from.info)] },
+			{ sessionId: from.info.id, groups: reservationGroups(from) },
 			BROKER_LEASE_STALE_AFTER_MS,
 		);
 		if (lookup.status === "none" || lookup.status === "invalid") return false;
@@ -2497,7 +2511,13 @@ export class MultiNodeRouter {
 		if (frame.message.expectsReply === true && recipient.info.replyCapability === "terminal") {
 			return TERMINAL_CHILD_ASK_REFUSAL;
 		}
-		if (frame.channel === "supervisor" || sameGroup(recipient.info, frame.from)) return undefined;
+		if (frame.channel === "supervisor") return undefined;
+		if (
+			frame.senderReach === undefined
+				? sameGroup(recipient.info, frame.from)
+				: reachesAnyGroup(frame.senderReach, sessionGroups(recipient.info))
+		)
+			return undefined;
 		const replyTo = frame.message.replyTo;
 		if (replyTo === undefined) return TARGET_GROUP_REFUSAL;
 		if (recipient.supervisorId === frame.from.id) return undefined;

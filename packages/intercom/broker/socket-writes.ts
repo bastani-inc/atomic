@@ -5,6 +5,7 @@ import { writeMessage } from "./framing.js";
 import {
 	type BrokerProtocolRange,
 	HOSTED_SESSIONS_PROTOCOL,
+	REACH_POLICY_PROTOCOL,
 	VERIFIED_REGISTRATION_PROTOCOL,
 } from "./protocol-version.js";
 
@@ -87,10 +88,18 @@ export const PROTOCOL_3_FRAME_TYPES: ReadonlySet<BrokerOutboundFrame["type"]> = 
 	"hosted_sessions_ack",
 ]);
 
+/** #5352: frames of protocol 4, written only to a client that registered speaking it. */
+export const PROTOCOL_4_FRAME_TYPES: ReadonlySet<BrokerOutboundFrame["type"]> = new Set<BrokerOutboundFrame["type"]>([
+	"reach_ack",
+	"reach_failed",
+]);
+
 /** Sockets whose client registered speaking protocol 1 only. */
 const protocol1Clients = new WeakSet<net.Socket>();
 /** #4642: sockets whose client registered speaking protocol 3 or later. */
 const hostingClients = new WeakSet<net.Socket>();
+/** #5352: sockets whose client registered speaking protocol 4 or later. */
+const reachClients = new WeakSet<net.Socket>();
 
 /** Record the protocol range the client on `socket` registered with, before anything is written to it. */
 export function recordClientProtocol(socket: net.Socket, protocol: BrokerProtocolRange): void {
@@ -98,6 +107,8 @@ export function recordClientProtocol(socket: net.Socket, protocol: BrokerProtoco
 	else protocol1Clients.delete(socket);
 	if (protocol.max >= HOSTED_SESSIONS_PROTOCOL) hostingClients.add(socket);
 	else hostingClients.delete(socket);
+	if (protocol.max >= REACH_POLICY_PROTOCOL) reachClients.add(socket);
+	else reachClients.delete(socket);
 }
 
 /** #4642: whether the client on `socket` registered speaking protocol 3, so it may host sessions. */
@@ -108,6 +119,7 @@ export function clientHostsSessions(socket: net.Socket): boolean {
 /** Whether the client on `socket` knows the type of `message`. */
 function clientKnows(socket: net.Socket, message: BrokerOutboundFrame): boolean {
 	if (PROTOCOL_3_FRAME_TYPES.has(message.type)) return hostingClients.has(socket);
+	if (PROTOCOL_4_FRAME_TYPES.has(message.type)) return reachClients.has(socket);
 	return !(protocol1Clients.has(socket) && PROTOCOL_2_FRAME_TYPES.has(message.type));
 }
 

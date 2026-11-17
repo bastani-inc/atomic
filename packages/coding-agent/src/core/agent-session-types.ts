@@ -282,6 +282,8 @@ export interface AgentSessionConfig {
 	 */
 	contextProjectionTransform?: (messages: AgentMessage[]) => AgentMessage[];
 	orchestrationContext?: OrchestrationContext;
+	/** #5352: the session's Intercom home group and reach, from its host or from the session that started it. */
+	intercomPolicy?: import("./intercom-policy.ts").SessionIntercomPolicy;
 	/** Resolved worktree snapshot settings; default: the settings manager's `snapshots.*`. */
 	worktreeSnapshots?: import("./worktree-snapshot/types.ts").WorktreeSnapshotSettings;
 }

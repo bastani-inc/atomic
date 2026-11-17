@@ -38,6 +38,7 @@ import {
 	rollbackFactoryAcquisitions,
 } from "./extensions/loader-rollback.ts";
 import { getModelFastRoute, streamWithFastRoute, withFastRouteStreamOptions } from "./fast-model-routing.ts";
+import { SessionIntercomPolicy, validateIntercomSessionOptions } from "./intercom-policy.ts";
 import { markLifecycleTiming } from "./lifecycle-timings.ts";
 import {
 	isMandatoryResourceLoader,
@@ -168,6 +169,19 @@ function removeUnownedModelHeaders(
  * });
  * ```
  */
+/**
+ * #5352: a child of a session with an Intercom policy gets its own: its stage or subagent group, else its parent's
+ * home, and nothing reachable. A top-level session gets the one its host set, if any.
+ */
+function sessionIntercomPolicyFor(options: CreateAgentSessionOptions): SessionIntercomPolicy | undefined {
+	const parent = options.parentIntercomPolicy;
+	if (parent !== undefined) {
+		const own = options.subagentPolicy?.intercomGroup ?? options.orchestrationContext?.intercomGroup;
+		return SessionIntercomPolicy.forChild(own !== undefined && own.trim().length > 0 ? own : parent.home, parent);
+	}
+	return options.intercom === undefined ? undefined : SessionIntercomPolicy.fromOptions(options.intercom);
+}
+
 export async function createAgentSession(options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> {
 	return createScopedSession(options, false);
 }
@@ -188,6 +202,7 @@ function createScopedSession(
 	let releaseWhenIdle: ReleaseWhenIdleOptions | undefined;
 	try {
 		releaseWhenIdle = parseReleaseWhenIdle(options.releaseWhenIdle);
+		if (options.intercom !== undefined) validateIntercomSessionOptions(options.intercom);
 	} catch (error) {
 		return Promise.reject(error);
 	}
@@ -503,6 +518,7 @@ async function constructAgentSession(
 				: options.tools === undefined
 					? undefined
 					: [...options.tools];
+	const intercomPolicy = sessionIntercomPolicyFor(options);
 	const subagentPolicy =
 		options.subagentPolicy && (options.subagentPolicy.depth ?? 0) >= 1
 			? {
@@ -871,6 +887,7 @@ async function constructAgentSession(
 						resourceAdmission: options.resourceAdmission,
 						workspace,
 						parentUsageSink: reportChildUsage,
+						...(intercomPolicy === undefined ? {} : { parentIntercomPolicy: intercomPolicy }),
 					},
 					child,
 					session.getAllTools().map((tool) => tool.name),
@@ -893,6 +910,7 @@ async function constructAgentSession(
 			sessionStartEvent: options.sessionStartEvent,
 			orchestrationContext: options.orchestrationContext,
 			subagentPolicy,
+			intercomPolicy,
 			parentCommandTaskOwner: options.parentCommandTaskOwner,
 			inheritedHistory: options.inheritedHistory,
 			resourceAdmission: options.resourceAdmission ?? undefined,

@@ -232,6 +232,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				task.group ?? input.setIntercomGroup,
 				inheritedIntercomGroup(input.ctx),
 				input.sharedAutoIntercomGroup,
+				input.ctx.intercomPolicy,
 			),
 			onDetachedExit: (result) => input.onDetachedExit?.(index, result),
 			intercomDetachSignal: intercomDetachController.signal,

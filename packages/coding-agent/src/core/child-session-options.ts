@@ -77,5 +77,9 @@ export function inheritChildSessionOptions(
 			parentGate && childGate
 				? (model, effort) => parentGate(model, effort) && childGate(model, effort)
 				: (parentGate ?? childGate),
+		// #5352: a child of a session with an Intercom policy reaches only its own group, whatever it asks for.
+		...(parent.parentIntercomPolicy === undefined
+			? {}
+			: { parentIntercomPolicy: parent.parentIntercomPolicy, intercom: undefined }),
 	};
 }

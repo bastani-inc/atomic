@@ -33,7 +33,7 @@ import {
   type ReleasedChildWakeNotice,
   waitForIntercomPeer,
 } from "./session-recovery.js";
-import { APP_NAME, createGitEnvironment, type ExtensionAPI, IntercomRoutingMismatchError, IntercomRoutingUnavailableError, isIntercomBrokerStopTimeoutError, isIntercomBrokerUpgradeError, isIntercomRoutingChangedError, isIntercomRoutingMismatchError, isIntercomRoutingUnavailableError, isProjectGroupError, type ExtensionContext, processStorageEnvironment, reportDebug, type SessionEntry, sessionScopedExtensionState } from "@bastani/atomic";
+import { APP_NAME, createGitEnvironment, type ExtensionAPI, IntercomRoutingMismatchError, IntercomRoutingUnavailableError, isIntercomBrokerStopTimeoutError, isIntercomBrokerUpgradeError, isIntercomRoutingChangedError, isIntercomRoutingMismatchError, isIntercomRoutingUnavailableError, isProjectGroupError, type ExtensionContext, type IntercomPolicyView, processStorageEnvironment, reportDebug, type SessionEntry, sessionScopedExtensionState } from "@bastani/atomic";
 import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -41,6 +41,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
 	IntercomClient,
 	IntercomPendingStageRouteRefusedError,
+	IntercomReachUnsupportedError,
 	type PendingStageMessageRequest,
 	type PendingStageMessageResult,
 	type PendingStageNotificationRequest,
@@ -53,8 +54,10 @@ import {
   agreedProtocol,
   BROKER_PROTOCOL,
   decideBrokerProtocol,
+  REACH_POLICY_PROTOCOL,
   VERIFIED_REGISTRATION_PROTOCOL,
 } from "./broker/protocol-version.js";
+import { childReachPolicy, createReachPolicy, type IntercomReachPolicy, narrowMemberships } from "./reach-policy.js";
 import { localOnlyBrokerWarning, warnLocalOnlyBrokerWithoutUi } from "./local-only-broker.js";
 import { RECIPIENT_SAVING_REPORT_INTERVAL_MS } from "./retry-policy.js";
 import { IntercomRuntimeInactiveError } from "./runtime-inactive-error.js";
@@ -225,6 +228,15 @@ function isPendingStageRouteRegistrationEvent(value: unknown): value is PendingS
     event.capability.length > 0
   );
 }
+/** #5352: the session's Intercom policy, when its host set one; a context that can no longer be read has none. */
+function readIntercomPolicy(ctx: ExtensionContext): IntercomPolicyView | undefined {
+  try {
+    return ctx.intercomPolicy;
+  } catch {
+    return undefined;
+  }
+}
+
 export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: IntercomExtensionTestOverrides = {}) {
   const inheritedIntercomSessionId = process.env[INTERCOM_SESSION_ID_ENV];
   const restoreIntercomSessionIdEnv = (): void => {
@@ -284,6 +296,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   let localOnlyWarned = false;
   let terminalHomeGroupError: Error | null = null;
   let joinedGroups: Set<string> | null = null;
+  /** #5352: the session's Intercom policy from its host, and the unregister of this instance's reach applier. */
+  let intercomPolicy: IntercomPolicyView | undefined;
+  let stopApplyingReach: (() => void) | undefined;
   const sessionMemberships = sessionScopedExtensionState<Map<string, readonly string[]>>(
     pi.lifecycleScope ?? pi.events ?? pi,
     "intercom:session-memberships:v1",
@@ -356,7 +371,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     report: ({ error, retrying, attempt, peers }) =>
       reportReleasedStageFailure("released-stage-reconnect-failed", error, { retrying, attempt, peers }),
     prepare: () => startBrokerIfNeeded(connectAbort.signal),
-    createClient: (returnAddress) => new IntercomClient(returnAddress),
+    // #5352: the connection hosting a session's released stages carries a reach too, so the broker confines them.
+    createClient: (returnAddress) =>
+      new IntercomClient(returnAddress, {
+        reach: () => (currentReachPolicy() === undefined ? undefined : childReachPolicy(returnAddress)),
+      }),
     cwd: () => getLiveContext()?.cwd ?? process.cwd(),
     relay: (from, message, channel) => {
       // A released stage's copy of a broadcast this session already has, its own or another stage's, is not relayed.
@@ -484,6 +503,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       if (agreed === undefined || agreed < VERIFIED_REGISTRATION_PROTOCOL) {
         unverified = new IntercomRoutingUnavailableError("unsupported", "register", { cause: upgradeFailure });
       }
+      // #5352: a session with a reach policy registers only with a broker that enforces it.
+      if (intercomPolicy !== undefined && (agreed === undefined || agreed < REACH_POLICY_PROTOCOL)) {
+        throw new IntercomReachUnsupportedError();
+      }
     } catch (error) {
       if (!isIntercomRoutingUnavailableError(error)) throw error;
       unverified = error;
@@ -524,6 +547,30 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const liveContext = getLiveContext();
     return resolveHomeGroup(config, liveContext, projectGroupOf(liveContext));
   }
+  /** #5352: the reach policy this session registers with: its home group and the groups its host lets it reach. */
+  function currentReachPolicy(): IntercomReachPolicy | undefined {
+    const policy = intercomPolicy;
+    return policy === undefined ? undefined : createReachPolicy(resolveSessionHomeGroup(), policy.reachable);
+  }
+  /**
+   * #5352: the host changed the session's reachable groups. Memberships outside them are dropped at once, so the next
+   * call already uses the new reach, and the broker gets it before any later request on the connection.
+   */
+  async function applyReach(): Promise<void> {
+    const reach = currentReachPolicy();
+    if (reach === undefined) return;
+    if (joinedGroups !== null) {
+      const narrowed = narrowMemberships(reach, [...joinedGroups]);
+      if (narrowed.length !== joinedGroups.size) {
+        setJoinedGroups(narrowed);
+        await persistJoinedGroups(narrowed.length === 1 ? null : narrowed);
+      }
+    }
+    const active = client;
+    if (active === null || !active.isConnected()) return;
+    await active.syncReach();
+    if (client === active && joinedGroups !== null) setJoinedGroups(active.groups);
+  }
   function currentIntercomGroups(): Set<string> {
     return joinedGroups === null
       ? normalizeGroups(undefined, resolveSessionHomeGroup())
@@ -536,7 +583,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     joinedGroups = normalizeGroups(groups);
     const sessionId = currentSessionId;
     if (!sessionId) return;
-    setRuntimeIntercomGroup(sessionId, currentIntercomGroup());
+    // #5352: a session with a policy starts its children in its home group, never in a group it joined from its reach.
+    setRuntimeIntercomGroup(sessionId, intercomPolicy === undefined ? currentIntercomGroup() : resolveSessionHomeGroup());
     sessionMemberships.set(sessionId, [...joinedGroups]);
   }
   function clearJoinedGroups(): void {
@@ -559,11 +607,14 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   }
   function persistedJoinedGroups(ctx: ExtensionContext): readonly string[] | undefined {
     try {
-      return readIntercomSessionMemberships(
+      const groups = readIntercomSessionMemberships(
         ctx.sessionManager.getEntries(),
         ctx.sessionManager.getSessionId(),
         resolveSessionHomeGroup(),
       );
+      // #5352: a session reopened with a narrower reach rejoins only the groups it still reaches.
+      const reach = currentReachPolicy();
+      return groups === undefined || reach === undefined ? groups : narrowMemberships(reach, groups);
     } catch {
       return undefined;
     }
@@ -1617,6 +1668,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 			preferredSessionId,
 			acknowledgesReceipt: true,
 			connectTimeoutMs: testOverrides.connectTimeoutMs?.(sessionIdAtStart),
+			reach: currentReachPolicy,
 		});
           client = nextClient;
           attachClientHandlers(nextClient);
@@ -1975,6 +2027,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     },
     setRuntimeContext: (value) => {
       if (value !== null && connectAbort.signal.aborted) connectAbort = new AbortController();
+      stopApplyingReach?.();
+      stopApplyingReach = undefined;
+      intercomPolicy = value === null ? undefined : readIntercomPolicy(value);
+      stopApplyingReach = intercomPolicy?.onReachableChange(() => applyReach());
       brokerRouting = null;
       homeRoutedAcrossMachines = null;
       defaultGroupWarned = false;
@@ -2031,7 +2087,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const retainedMemberships = event.reason === "reload"
       ? sessionMemberships.get(ctx.sessionManager.getSessionId())
       : persistedJoinedGroups(ctx);
-    if (retainedMemberships) setJoinedGroups(retainedMemberships);
+    const reach = currentReachPolicy();
+    if (retainedMemberships) setJoinedGroups(reach === undefined ? retainedMemberships : narrowMemberships(reach, retainedMemberships));
     const pendingStageDelivery = ctx.orchestrationContext?.kind === "workflow-stage" ? ctx.orchestrationContext.pendingStageDelivery : undefined;
     if (pendingStageDelivery === undefined) {
       // An admitted child registers at startup so its supervisor and peers can
@@ -2115,6 +2172,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     ...replyWaits,
     confirmSend: config.confirmSend,
     homeGroup: resolveSessionHomeGroup,
+    reachPolicy: currentReachPolicy,
     multiNodeRouting,
     setJoinedGroups: async (groups) => {
       setJoinedGroups(groups);

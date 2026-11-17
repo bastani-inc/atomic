@@ -1,7 +1,7 @@
 import type net from "node:net";
 import { hasGroup } from "../group.js";
-import type { DeliveryFailureReasonCode, SessionInfo } from "../types.js";
-import { sessionGroups } from "./group-membership.js";
+import type { DeliveryFailureReasonCode } from "../types.js";
+import { type HoldSender, holdAdmitsSender } from "./group-membership.js";
 import { type IntercomRecipientGoneError, SubagentRecipientOwnerSuspendedError } from "./recipient-gone-errors.js";
 import { ReleasedChildReservationError } from "./released-child-errors.js";
 import { isReleasedReservationKey, normalizeReservationTarget, releasedReservationKey } from "./released-children.js";
@@ -346,19 +346,15 @@ export class RestoringRecipients {
 	 */
 	admit(
 		target: string,
-		sender: { readonly id: string; readonly info: SessionInfo },
+		sender: HoldSender,
 		held: HeldSend,
 		canHold: boolean,
 	): RestoringRecipientAdmission {
 		const candidates = this.byTarget.get(normalizeTarget(target));
 		if (candidates === undefined) return { kind: "none" };
-		let senderGroups: ReadonlySet<string> | undefined;
 		let reservation: Reservation | undefined;
 		for (const candidate of candidates) {
-			if (candidate.ownerSessionId !== sender.id) {
-				senderGroups ??= sessionGroups(sender.info);
-				if (!hasGroup(senderGroups, candidate.group)) continue;
-			}
+			if (candidate.ownerSessionId !== sender.id && !holdAdmitsSender(sender, candidate.group)) continue;
 			reservation = candidate;
 			break;
 		}

@@ -26,6 +26,7 @@ import type {
 	HostedSessionAssignment,
 	HostedSessionFrameItem,
 } from "../types.js";
+import type { IntercomReachPolicy } from "../reach-policy.js";
 import { buildSendSignature, PendingSendRegistry, PendingSendTimeoutError } from "./pending-send-registry.js";
 import { readSubagentMessageSource } from "../source-ownership.js";
 import { isMessage, isSessionInfo } from "./client-message-validation.js";
@@ -157,6 +158,29 @@ const HELD_SEND_GRACE_MS = 5000;
 /** #5145: how many outcomes a client remembers hearing, so a second copy of one is not heard again. */
 const HEARD_OUTCOMES_MAX = 1_000;
 
+/** #5352: whether two reach policies hold the same home and reachable groups, in the same order. */
+function sameReach(left: IntercomReachPolicy, right: IntercomReachPolicy): boolean {
+	return (
+		left.home === right.home &&
+		left.reachable.length === right.reachable.length &&
+		left.reachable.every((group, index) => right.reachable[index] === group)
+	);
+}
+
+/**
+ * #5352: the broker this session registered with does not enforce reach policies (it is older than this version, and
+ * replacing it failed), so the session is not registered. Run `atomic intercom restart` to replace the broker.
+ */
+export class IntercomReachUnsupportedError extends Error {
+	readonly code = "reach_policy_unsupported";
+	constructor() {
+		super(
+			"This Intercom broker does not enforce reach policies, so this session is not registered with it. Run `atomic intercom restart` to replace the broker.",
+		);
+		this.name = "IntercomReachUnsupportedError";
+	}
+}
+
 export interface ExpectedRouting {
   readonly acrossMachines: boolean;
   /**
@@ -206,6 +230,11 @@ export interface IntercomClientOptions {
 	 * (#4561), looked up at each connection, since a broker that replaces another may record a different one (#5040).
 	 */
 	readonly brokerSocketPath?: string;
+	/**
+	 * #5352: the session's current reach policy, read when the client registers and by {@link IntercomClient.syncReach}.
+	 * The broker holds the policy and refuses everything outside it; a broker that does not enforce it is refused.
+	 */
+	readonly reach?: () => IntercomReachPolicy | undefined;
 }
 
 export interface ReleasedChildReply {
@@ -463,6 +492,11 @@ export class IntercomClient extends EventEmitter {
 	private readonly connectTimeoutMs: number;
 	private readonly explicitBrokerSocketPath: string | undefined;
 	private readonly brokerAgentDir: string;
+	/** #5352: the session's current reach policy, from its host. */
+	private readonly reachSource: (() => IntercomReachPolicy | undefined) | undefined;
+	/** #5352: the reach the broker holds for this registration, as last sent: in `register` or a `set_reach`. */
+	private sentReach: IntercomReachPolicy | undefined;
+	private readonly pendingReach = new Map<string, { resolve(): void; reject(error: Error): void }>();
 	/** #3761: the broker of the current registration echoed `acknowledgesReceipt`, so it understands `received`. */
 	private brokerAcknowledgesReceipt = false;
 	/**
@@ -569,6 +603,7 @@ export class IntercomClient extends EventEmitter {
 		this.multiplexesPendingStageRoutes = options.multiplexesPendingStageRoutes === true;
 		this.explicitBrokerSocketPath = options.brokerSocketPath;
 		this.brokerAgentDir = getAgentDir();
+		this.reachSource = options.reach;
 	}
 
   private get brokerSocketPath(): string {
@@ -588,6 +623,8 @@ export class IntercomClient extends EventEmitter {
     for (const pending of this.pendingWorkflowInvocationClaims.values()) pending.reject(error);
     for (const pending of this.pendingStageRouteRegistrations.values()) pending.reject(error);
     for (const pending of this.pendingBrokerStatus.values()) pending.reject(error);
+    for (const pending of this.pendingReach.values()) pending.reject(error);
+    this.pendingReach.clear();
     this.pendingLists.clear();
     this.pendingGroupLists.clear();
     this.pendingSupervisorAuthorizations.clear();
@@ -817,11 +854,14 @@ export class IntercomClient extends EventEmitter {
           return;
         }
         try {
+          const reach = this.reachSource?.();
+          this.sentReach = reach;
           writeMessage(socket, {
             ...(expectedRouting?.verify === true
               ? { type: "register_verified", expectedRouting: { acrossMachines: expectedRouting.acrossMachines } }
               : { type: "register" }),
             session,
+            ...(reach === undefined ? {} : { reach: { home: reach.home, reachable: [...reach.reachable] } }),
             protocol: { ...BROKER_PROTOCOL },
             ...(registrationGroup !== undefined ? { registrationGroup } : {}),
 			returnAddress: this.returnAddress,
@@ -899,6 +939,7 @@ export class IntercomClient extends EventEmitter {
             && brokerMessage.multiNodeRouting !== "unavailable")
           || (brokerMessage.extendsSaves !== undefined && brokerMessage.extendsSaves !== true)
           || (brokerMessage.marksEndedChildren !== undefined && brokerMessage.marksEndedChildren !== true)
+          || (brokerMessage.enforcesReach !== undefined && brokerMessage.enforcesReach !== true)
           || (brokerMessage.protocol !== undefined && !isBrokerProtocolRange(brokerMessage.protocol as JsonWireValue))) {
           throw new Error("Invalid registered message");
         }
@@ -914,6 +955,11 @@ export class IntercomClient extends EventEmitter {
           && (brokerMessage.multiNodeRouting !== "off") !== expected.acrossMachines
         ) {
           this.emit("_registration_failed", new IntercomRoutingChangedError(expected.acrossMachines));
+          break;
+        }
+        // #5352: a session with a reach policy never stays registered with a broker that would not enforce it.
+        if (this.sentReach !== undefined && brokerMessage.enforcesReach !== true) {
+          this.emit("_registration_failed", new IntercomReachUnsupportedError());
           break;
         }
         this._sessionId = brokerMessage.sessionId;
@@ -934,6 +980,8 @@ export class IntercomClient extends EventEmitter {
         this.brokerExtendsSaves = this.brokerAcknowledgesReceipt && brokerMessage.extendsSaves === true;
         this.brokerMarksEndedChildren = brokerMessage.marksEndedChildren === true;
         this._brokerProtocol = protocolRangeOf(brokerMessage.protocol as BrokerProtocolRange | undefined);
+        // #5352: a reach the host changed while this registration was in flight is sent before anything else.
+        void this.syncReach().catch(() => {});
         this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
         break;
       }
@@ -1365,6 +1413,34 @@ export class IntercomClient extends EventEmitter {
         pending.resolve(brokerMessage.group);
         break;
       }
+      case "reach_ack": {
+        const { requestId, groups, reachable } = brokerMessage;
+        if (
+          typeof requestId !== "string" ||
+          !Array.isArray(groups) ||
+          !groups.every((group) => typeof group === "string") ||
+          !Array.isArray(reachable) ||
+          !reachable.every((group) => typeof group === "string")
+        ) {
+          throw new Error("Invalid reach_ack message");
+        }
+        const pending = this.pendingReach.get(requestId);
+        if (!pending) return;
+        this.pendingReach.delete(requestId);
+        this._groups = normalizeGroups(groups);
+        pending.resolve();
+        break;
+      }
+      case "reach_failed": {
+        if (typeof brokerMessage.requestId !== "string" || typeof brokerMessage.reason !== "string") {
+          throw new Error("Invalid reach_failed message");
+        }
+        const pending = this.pendingReach.get(brokerMessage.requestId);
+        if (!pending) return;
+        this.pendingReach.delete(brokerMessage.requestId);
+        pending.reject(new Error(brokerMessage.reason));
+        break;
+      }
       case "membership_ack": {
         const { requestId, groups } = brokerMessage;
         if (typeof requestId !== "string" || !Array.isArray(groups) || !groups.every((group) => typeof group === "string")) {
@@ -1558,6 +1634,42 @@ export class IntercomClient extends EventEmitter {
       } catch (error) {
         clearTimeout(timeout);
         this.pendingBrokerStatus.delete(requestId);
+        reject(toError(error));
+      }
+    });
+  }
+
+  /**
+   * #5352: send the session's current reach to the broker when it differs from the one the broker holds. The frame is
+   * written before this returns, so every request made after it is decided under the new reach. Resolves once the
+   * broker applied it, at once when nothing changed, and at once while not registered: the next registration carries it.
+   */
+  syncReach(): Promise<void> {
+    const reach = this.reachSource?.();
+    const sent = this.sentReach;
+    if (reach === undefined || sent === undefined || !this._sessionId || sameReach(sent, reach)) return Promise.resolve();
+    let socket: net.Socket;
+    try {
+      socket = this.requireActiveSocket();
+    } catch {
+      return Promise.resolve();
+    }
+    const requestId = randomUUID();
+    return new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (!this.pendingReach.delete(requestId)) return;
+        void this.requestTimeout(socket, new Error("Reach update timeout")).then(reject);
+      }, GROUP_REQUEST_TIMEOUT_MS);
+      this.pendingReach.set(requestId, {
+        resolve: () => { clearTimeout(timeout); resolve(); },
+        reject: (error) => { clearTimeout(timeout); reject(error); },
+      });
+      try {
+        writeMessage(socket, { type: "set_reach", requestId, reachable: [...reach.reachable] });
+        this.sentReach = reach;
+      } catch (error) {
+        clearTimeout(timeout);
+        this.pendingReach.delete(requestId);
         reject(toError(error));
       }
     });

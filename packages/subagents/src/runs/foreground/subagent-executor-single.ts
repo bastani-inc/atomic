@@ -245,7 +245,12 @@ export async function runSinglePath(
 			intercomSessionName: childIntercomTarget,
 			supervisorAuthorization,
 			orchestratorIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
-			intercomGroup: resolveChildIntercomGroup(params.group, inheritedIntercomGroup(ctx), undefined),
+			intercomGroup: resolveChildIntercomGroup(
+				params.group,
+				inheritedIntercomGroup(ctx),
+				undefined,
+				ctx.intercomPolicy,
+			),
 			onParentAskHandoff: (request) => {
 				if (parentAsk) return;
 				request.taskContext = handoffTaskContext;

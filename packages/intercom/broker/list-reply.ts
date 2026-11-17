@@ -1,3 +1,4 @@
+import type { IntercomReachPolicy } from "../reach-policy.js";
 import type { SessionInfo, WorkflowFutureStageRosterEntry, WorkflowStageRosterEntry } from "../types.js";
 import { sessionsInGroup, sessionsVisibleTo } from "./group-membership.js";
 
@@ -15,6 +16,8 @@ export interface SessionsReply {
 export interface ListReplyRequest {
 	readonly requestId: string;
 	readonly requesterInfo: SessionInfo;
+	/** #5352: the requester's reach policy, which decides the sessions it sees. */
+	readonly requesterReach?: IntercomReachPolicy;
 	readonly selectedGroup: string | undefined;
 	readonly localSessions: () => SessionDirectoryView;
 	/** Present only in multi-node mode; sessions connected through other nodes are live peers too. */
@@ -38,7 +41,7 @@ export function replyToList(request: ListReplyRequest): void {
 				? []
 				: selectedGroup !== undefined
 					? sessionsInGroup(sessions, selectedGroup)
-					: sessionsVisibleTo(sessions, request.requesterInfo);
+					: sessionsVisibleTo(sessions, request.requesterInfo, request.requesterReach);
 		request.write({
 			type: "sessions",
 			requestId: request.requestId,

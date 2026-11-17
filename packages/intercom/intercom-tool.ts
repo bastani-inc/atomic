@@ -36,6 +36,7 @@ import { resolveSessionTarget, resolveSessionTargetId, resolveSessionTargetIdIn,
 import { createConcurrencyGate } from "./route-connect-gate.js";
 import { DEFAULT_GROUP, normalizeGroup, normalizeGroups, validateRuntimeGroup } from "./group.js";
 import { DEFAULT_GROUP_WARNING } from "./project-group.js";
+import { canJoin, canLeave, canPeek, type IntercomReachPolicy } from "./reach-policy.js";
 import { parseWorkflowStageTarget, withWorkflowStageTargetFinalSegment } from "./workflow-stage-target.js";
 import { isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
 import { RetryIdentityReservations, type RetryIdentityAttempt, RetryTokenError } from "./retry-identity.js";
@@ -313,6 +314,8 @@ interface IntercomToolDeps {
   syncPresenceIdentity(sessionId: string): void;
   resolveSessionTarget?(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
   homeGroup(): string;
+  /** #5352: the session's reach policy, when its host set one; the broker enforces it, the tool explains it first. */
+  reachPolicy?(): IntercomReachPolicy | undefined;
   /** Whether the broker routes across machines, so `default` is shared with every teammate's sessions. */
   multiNodeRouting?(): boolean;
   /** Record the memberships after a `join`/`leave`; settles once they are saved with the session (#4079). */
@@ -332,6 +335,23 @@ interface IntercomToolDeps {
   cancelReplyWait?(askId: string): void;
   /** Internal test seam for exercising retry pressure before public tool side effects. */
   retryIdentityMaxEntries?: number;
+}
+
+/**
+ * #5352: why a session with a reach policy may not run this group action, or undefined when it may. The broker refuses
+ * the same requests; this explains the refusal before the call reaches it.
+ */
+function toolReachRefusal(reach: IntercomReachPolicy, action: string, group: string | undefined): string | undefined {
+	const requested = typeof group === "string" && group.trim().length > 0 ? group.trim() : undefined;
+	if (requested === undefined) return undefined;
+	const scope = `home group ${reach.home}; reachable groups: ${reach.reachable.join(", ") || "none"}`;
+	if (action === "join" && !canJoin(reach, requested))
+		return `Group "${requested}" is outside this session's Intercom reach (${scope}). It can join only those groups.`;
+	if (action === "leave" && !canLeave(reach, requested))
+		return `This session's home group "${reach.home}" can't be left.`;
+	if ((action === "list" || action === "status") && !canPeek(reach, requested))
+		return `Group "${requested}" is outside this session's Intercom reach (${scope}), so it cannot be listed.`;
+	return undefined;
 }
 
 export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): void {
@@ -648,6 +668,12 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
         }
       }
 
+      const reach = deps.reachPolicy?.();
+      const reachRefusal = reach === undefined ? undefined : toolReachRefusal(reach, action, group);
+      if (reachRefusal !== undefined) {
+        return { content: [{ type: "text", text: reachRefusal }], isError: true, details: { error: true } };
+      }
+
       switch (action) {
         case "join": {
           let targetGroup: string;
@@ -792,7 +818,8 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             }
 
 			const otherSessions = ownSessions.filter((session) => session.id !== mySessionId);
-			const currentSection = `**Current session** (groups: ${ownGroups.join(", ")}):\n${formatSessionListRow(currentSession, currentSession.cwd, true)}`;
+			const reachSection = reach === undefined ? "" : `; reachable: ${reach.reachable.join(", ") || "none"}`;
+			const currentSection = `**Current session** (groups: ${ownGroups.join(", ")}${reachSection}):\n${formatSessionListRow(currentSession, currentSession.cwd, true)}`;
 			const visibleRows = [
 				...otherSessions.map((session) => formatSessionListRow(session, currentSession.cwd, false)),
 				...ownDirectory.workflowStages.map(formatWorkflowStageRow),

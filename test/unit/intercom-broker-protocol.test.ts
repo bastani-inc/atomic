@@ -33,7 +33,7 @@ const range = (min: number, max: number): BrokerProtocolRange => ({ min, max });
 
 describe("deciding what to do with a running broker (#4538)", () => {
 	test("this version speaks protocol 1, the 0.9.71 wire, through protocol 3, and a broker without a range is protocol 1 (#4642)", () => {
-		assert.deepEqual(BROKER_PROTOCOL, range(1, 3));
+		assert.deepEqual(BROKER_PROTOCOL, range(1, 4));
 		assert.deepEqual(LEGACY_BROKER_PROTOCOL, range(1, 1));
 		assert.equal(VERIFIED_REGISTRATION_PROTOCOL, 2);
 		assert.equal(HOSTED_SESSIONS_PROTOCOL, 3);

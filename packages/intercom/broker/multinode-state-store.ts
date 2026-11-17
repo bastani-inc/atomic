@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { SqliteDatabase } from "@bastani/atomic/storage";
-import type { BrokerMessage, ClientMessage, SessionInfo } from "../types.js";
+import type { BrokerMessage, ClientMessage, ReachPolicyFrame, SessionInfo } from "../types.js";
 import { isReleasedReservationKey } from "./released-children.js";
 
 /**
@@ -40,7 +40,13 @@ export const OUTBOX_EXPIRED_REASON = `The recipient did not return within the kn
 } days; the queued message expired undelivered`;
 
 /** The exact frame a broker writes to a recipient's socket; a cross-node delivery writes the same frame. */
-export type IntercomDeliveryFrame = Extract<BrokerMessage, { type: "message" }>;
+export type IntercomDeliveryFrame = Extract<BrokerMessage, { type: "message" }> & {
+	/**
+	 * #5352: the sender's reach policy when it has one, so the recipient's broker checks the delivery against it. Kept
+	 * between brokers only: the frame written to the recipient is rebuilt without it.
+	 */
+	readonly senderReach?: ReachPolicyFrame;
+};
 
 /**
  * #4386: a reply to a subagent released while it waited on the question, for the subagent's owner. The owner's broker
