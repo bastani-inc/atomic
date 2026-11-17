@@ -201,19 +201,35 @@ test("a rebuilt session hydrates every background launch card from its child rec
 	const manager = await SessionManager.create(store, process.cwd());
 	const t = new TranscriptBuilder(manager, process.cwd());
 	const states: Array<[string, Partial<SubagentChildRecord>, RegExp]> = [
-		["hyrun", { state: "running" }, /∀ Running in background/],
-		["hypause", { state: "terminal", terminalStatus: "paused" }, /‖ Paused · awaiting resume/],
-		["hyquit", { state: "terminal", terminalStatus: "quit" }, /‖ Quit · paused · awaiting resume/],
+		["hyrun", { state: "running" }, /∀ Agent\(hyrun · task for hyrun\) ⎿ Running/],
+		[
+			"hypause",
+			{ state: "terminal", terminalStatus: "paused" },
+			/⏸ Agent\(hypause · task for hypause\) ⎿ Paused · awaiting resume/,
+		],
+		[
+			"hyquit",
+			{ state: "terminal", terminalStatus: "quit" },
+			/⏸ Agent\(hyquit · task for hyquit\) ⎿ Quit · paused · awaiting resume/,
+		],
 		[
 			"hystagepause",
 			{ state: "terminal", terminalStatus: "stage-paused" },
-			/‖ Paused with its workflow stage · awaiting resume/,
+			/⏸ Agent\(hystagepause · task for hystagepause\) ⎿ Paused with its workflow stage · awaiting resume/,
 		],
-		["hydone", { state: "terminal", terminalStatus: "ok" }, /✓ Completed/],
-		["hyfail", { state: "terminal", terminalStatus: "error" }, /✗ Failed/],
-		["hykill", { state: "terminal", terminalStatus: "killed" }, /✗ Terminal · killed/],
-		["hygone", { state: "terminal", terminalStatus: "gone" }, /✗ Terminal · gone after a restart/],
-		["hystage", { state: "terminal", terminalStatus: "stage-closed" }, /✗ Terminal · its workflow stage ended/],
+		["hydone", { state: "terminal", terminalStatus: "ok" }, /● Agent\(hydone · task for hydone\) ⎿ Done/],
+		["hyfail", { state: "terminal", terminalStatus: "error" }, /✗ Agent\(hyfail · task for hyfail\) ⎿ Failed/],
+		["hykill", { state: "terminal", terminalStatus: "killed" }, /◼ Agent\(hykill · task for hykill\) ⎿ Stopped/],
+		[
+			"hygone",
+			{ state: "terminal", terminalStatus: "gone" },
+			/✗ Agent\(hygone · task for hygone\) ⎿ Failed · gone after a restart/,
+		],
+		[
+			"hystage",
+			{ state: "terminal", terminalStatus: "stage-closed" },
+			/✗ Agent\(hystage · task for hystage\) ⎿ Failed · its workflow stage ended/,
+		],
 	];
 	for (const [runId] of states) {
 		await t.launch(runId, `task-${runId}`);
@@ -228,7 +244,7 @@ test("a rebuilt session hydrates every background launch card from its child rec
 	assert.equal(cards.length, states.length);
 	states.forEach(([runId, , expected], index) => {
 		assert.match(cards[index]!, expected, `${runId}: ${cards[index]}`);
-		assert.doesNotMatch(cards[index]!, /Launched in background|Stopped/, `${runId} is not a launch-time snapshot`);
+		assert.doesNotMatch(cards[index]!, /Launched in background/, `${runId} is not a launch-time snapshot`);
 	});
 	await store.close();
 });
@@ -250,10 +266,14 @@ test("opening a fork does not replace the original session's newer child state w
 		taskId: "task-forkedcard",
 	});
 	bindSubagentChildCards({ sessionManager: original });
-	assert.match(rebuildCards(original)[0]!, /✓ Completed/);
+	assert.match(rebuildCards(original)[0]!, /● Agent\(forkedcard · task for forkedcard\) ⎿ Done/);
 
 	bindSubagentChildCards({ sessionManager: fork });
-	assert.match(rebuildCards(original)[0]!, /✓ Completed/, "the original's card keeps its newer state");
+	assert.match(
+		rebuildCards(original)[0]!,
+		/● Agent\(forkedcard · task for forkedcard\) ⎿ Done/,
+		"the original's card keeps its newer state",
+	);
 	await store.close();
 });
 
@@ -310,16 +330,15 @@ test("a resumed child continues in its original card and the run-control calls r
 	bindSubagentChildCards({ sessionManager: manager });
 	const [launch, pause, kill, resume, quit, unknown, resumeAgain, ...rest] = rebuildCards(manager, true);
 	assert.equal(rest.length, 0);
-	assert.match(launch!, /✓ Completed · resumed/);
-	assert.match(launch!, /task-hyres-3/, "the original card follows the child's latest task");
-	assert.match(pause!, /subagent pause hyres:0 ‖ Paused · hyres/);
+	assert.match(launch!, /● Agent\(hyres · task for hyres\) ⎿ Done/);
+	assert.match(pause!, /Agent\(pause · hyres:0\) ⎿ ⏸ Paused · hyres/);
 	assert.match(kill!, /✗ The subagent action "kill" was removed\. Use \{ action: "quit", id \}/);
-	assert.match(resume!, /▶ Resumed · hyres hyres:0 · task-hyres-2 continues in its original launch card/);
-	assert.match(quit!, /■ Quit \(resumable\) · hyres/);
+	assert.match(resume!, /✓ Resumed · hyres hyres:0 · task-hyres-2 continues in its original launch card/);
+	assert.match(quit!, /◼ Quit \(resumable\) · hyres/);
 	assert.match(unknown!, /✗ Unknown subagent 'hyres:9'/);
-	assert.match(resumeAgain!, /▶ Resumed · hyres/);
+	assert.match(resumeAgain!, /✓ Resumed · hyres/);
 	const showingChildState = [launch, pause, kill, resume, quit, unknown, resumeAgain].filter((card) =>
-		/Completed|Running in background|Launched in background/.test(card!),
+		/⎿ (?:Running|Done|Failed|Stopped)\b/u.test(card!),
 	);
 	assert.deepEqual(showingChildState, [launch], "only the original card shows the child, once");
 	await store.close();
@@ -356,7 +375,10 @@ test("an expanded launch card shows the child's own saved transcript (#3760)", a
 	assert.doesNotMatch(rebuildCards(manager, false)[0]!, /Audit the parser/, "collapsed cards stay compact");
 	const cards = buildCards(manager, true);
 	const expanded = await eventually(() => paint(cards)[0]!, /Parser audit is half done/);
-	assert.match(expanded, /‖ Paused · awaiting resume[\s\S]*│ › Audit the parser │ Parser audit is half done/);
+	assert.match(
+		expanded,
+		/⏸ Agent\(hytx · task for hytx\) ⎿ Paused · awaiting resume ⎿ Prompt Audit the parser ⎿ Tool calls \(none\) ⎿ Result Parser audit is half done/,
+	);
 	await store.close();
 });
 
@@ -382,7 +404,7 @@ test("an expanded card of a running child shows messages it saves after the card
 	await sleep(RUNNING_TRANSCRIPT_REFRESH_MS + 100);
 	assert.match(
 		paint(cards)[0]!,
-		/│ › Audit the lexer/,
+		/Prompt Audit the lexer/,
 		"a card keeps what it read while it reads the transcript again",
 	);
 	await childSession.appendMessage({
@@ -396,7 +418,7 @@ test("an expanded card of a running child shows messages it saves after the card
 		timestamp: Date.now(),
 	});
 	const expanded = await eventually(() => paint(cards)[0]!, /Lexer audit found two bugs/);
-	assert.match(expanded, /│ › Audit the lexer │ Lexer audit found two bugs/);
+	assert.match(expanded, /Prompt Audit the lexer ⎿ Tool calls \(none\) ⎿ Result Lexer audit found two bugs/);
 	await store.close();
 });
 
@@ -447,7 +469,7 @@ test("a workflow stage transcript hydrates its launch cards from the stage sessi
 	try {
 		assert.equal(await host.loadSession(store, stage.getSessionId()), true);
 		const body = () => stripVTControlCharacters(host.renderBody(140, 200).join("\n")).replace(/\s+/g, " ");
-		const text = await eventually(body, /✗ Terminal · its workflow stage ended/);
+		const text = await eventually(body, /✗ Agent\(hystg · task for hystg\) ⎿ Failed · its workflow stage ended/);
 		assert.doesNotMatch(text, /Launched in background/);
 	} finally {
 		host.dispose();
@@ -474,10 +496,10 @@ test("atomic --session hydrates launch cards once the isolated engine loads the 
 	const host = isolatedEngineHost(manager, undefined);
 	const body = () => stripVTControlCharacters(host.chat.render(140).join("\n")).replace(/\s+/g, " ");
 	try {
-		await eventually(body, /"agent": "hyiso"/);
+		await eventually(body, /subagent\(agent=hyiso · task=task for hyiso\)/);
 		host.loadSubagentRenderer();
-		const text = await eventually(body, /‖ Paused · awaiting resume/);
-		assert.doesNotMatch(text, /Launched in background|"agent": "hyiso"/);
+		const text = await eventually(body, /⏸ Agent\(hyiso · task for hyiso\) ⎿ Paused · awaiting resume/);
+		assert.doesNotMatch(text, /Launched in background|subagent\(agent=/);
 	} finally {
 		host.dispose();
 		await store.close();
@@ -514,12 +536,12 @@ test("atomic --session shows the child's saved transcript in an expanded launch 
 
 	const host = isolatedEngineHost(manager, definition as ToolRenderers);
 	try {
-		await eventually(host.painted, /‖ Paused · awaiting resume/);
+		await eventually(host.painted, /⏸ Agent\(hyisotx · task for hyisotx\) ⎿ Paused · awaiting resume/);
 		for (const card of host.cards) card.setExpanded(true);
 		const expanded = await eventually(host.painted, /Changelog index is partway done/);
 		assert.match(
 			expanded,
-			/‖ Paused · awaiting resume[\s\S]*│ › Index the changelog │ Changelog index is partway done/,
+			/⏸ Agent\(hyisotx · task for hyisotx\) ⎿ Paused · awaiting resume ⎿ Prompt Index the changelog ⎿ Tool calls \(none\) ⎿ Result Changelog index is partway done/,
 		);
 	} finally {
 		host.dispose();
@@ -544,7 +566,7 @@ test("atomic --session redraws a resumed child's original card in place when its
 
 	const host = isolatedEngineHost(manager, definition as ToolRenderers);
 	try {
-		await eventually(host.painted, /‖ Paused · awaiting resume/);
+		await eventually(host.painted, /⏸ Agent\(hyisores · task for hyisores\) ⎿ Paused · awaiting resume/);
 		createSubagentChildRecordSink(
 			{
 				appendEntry: async (type, data) => {
@@ -560,7 +582,7 @@ test("atomic --session redraws a resumed child's original card in place when its
 			state: "running",
 			taskId: "task-hyisores-2",
 		});
-		const resumed = await eventually(host.painted, /∀ Running in background · resumed/);
+		const resumed = await eventually(host.painted, /∀ Agent\(hyisores · task for hyisores\) ⎿ Running/);
 		assert.doesNotMatch(resumed, /Paused/);
 		assert.equal(host.cards.length, 1);
 	} finally {
@@ -598,7 +620,10 @@ test("/resume redraws a resumed child's original card in place when its record c
 		toolOutputExpanded: false,
 		getToolDefinition: (name) => (name === "subagent" ? definition : undefined),
 	});
-	assert.match(stripVTControlCharacters(card.render(140).join("\n")), /‖ Paused · awaiting resume/);
+	assert.match(
+		stripVTControlCharacters(card.render(140).join("\n")),
+		/⏸ Agent\(hyresume · task for hyresume\)\s+⎿\s+Paused · awaiting resume/,
+	);
 	createSubagentChildRecordSink(
 		{
 			appendEntry: async (type, data) => {
@@ -614,7 +639,7 @@ test("/resume redraws a resumed child's original card in place when its record c
 		state: "running",
 		taskId: "task-hyresume-2",
 	});
-	assert.match(painted, /∀ Running in background · resumed/);
+	assert.match(painted, /∀ Agent\(hyresume · task for hyresume\) ⎿ Running/);
 	await store.close();
 });
 

@@ -14,11 +14,6 @@ function render(details: SubagentNotifyDetails, expanded = false): { raw: string
 	return { raw, plain: stripAnsi(raw) };
 }
 
-function backgroundPrefix(token: "toolSuccessBg" | "toolErrorBg" | "toolPendingBg"): string {
-	const probe = "background-probe";
-	return theme.bg(token, probe).split(probe, 1)[0] ?? "";
-}
-
 beforeEach(() => {
 	initTheme("dark");
 	setKeybindings(new KeybindingsManager({ "app.tools.expand": "ctrl+o" }));
@@ -38,24 +33,19 @@ test("completion notifications render as status-colored tool blocks without losi
 	});
 	const failed = render({ agent: "debugger", status: "failed", resultPreview: "failure detail" });
 	const interrupted = render({ agent: "debugger", status: "interrupted", resultPreview: "stopped" });
-	const successBackground = backgroundPrefix("toolSuccessBg");
-	const errorBackground = backgroundPrefix("toolErrorBg");
-	const pendingBackground = backgroundPrefix("toolPendingBg");
 
-	assert.notEqual(successBackground, "");
-	assert.notEqual(errorBackground, "");
-	assert.notEqual(pendingBackground, "");
-	assert.notEqual(successBackground, errorBackground);
-	assert.notEqual(successBackground, pendingBackground);
-	assert.notEqual(errorBackground, pendingBackground);
-	assert.ok(completed.raw.includes(successBackground), "completed notification uses the success tool background");
-	assert.ok(failed.raw.includes(errorBackground), "failed notification uses the error tool background");
-	assert.ok(interrupted.raw.includes(pendingBackground), "interrupted notification uses the pending tool background");
-	assert.match(completed.plain, /✓ debugger completed · task 1\/2 · 1m 5s/);
+	assert.ok(!completed.raw.includes("\u001b[48;"), "completed notification has no background shading");
+	assert.ok(!failed.raw.includes("\u001b[48;"), "failed notification has no background shading");
+	assert.ok(!interrupted.raw.includes("\u001b[48;"), "interrupted notification has no background shading");
+	assert.ok(completed.raw.includes(theme.fg("success", "●")), "completed notification uses success glyph");
+	assert.ok(failed.raw.includes(theme.fg("error", "✗")), "failed notification uses error glyph");
+	assert.ok(interrupted.raw.includes(theme.fg("muted", "◼")), "interrupted notification uses stopped glyph");
+	assert.match(completed.plain, /● debugger completed · task 1\/2 · 1m 5s/);
 	assert.match(completed.plain, /⎿ {2}summary line/);
 	assert.match(completed.plain, /ctrl\+o full notification/);
 	assert.match(completed.plain, /session file: \/tmp\/sessions\/child\.jsonl/);
 	assert.match(failed.plain, /✗ debugger failed/);
+	assert.match(interrupted.plain, /◼ debugger interrupted/);
 });
 
 test("tool-block rendering preserves collapsed and expanded preview behavior", () => {

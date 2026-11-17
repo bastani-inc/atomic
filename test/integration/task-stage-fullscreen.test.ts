@@ -62,9 +62,10 @@ test("workflow /tasks owns the full viewport and input until returning to stage 
 		for (const key of "/tasks") stage.handleInput(key);
 		stage.handleInput("\r");
 		await flush();
-		assert.match(stripAnsi(stage.render(80).join("\n")), /Background tasks/);
+		assert.match(stripAnsi(stage.render(80).join("\n")), /^ Tasks\b/m);
 		assert.doesNotMatch(stripAnsi(stage.render(80).join("\n")), /PARENT_CHROME/);
-		stage.handleInput(" "); // Space peeks at the task's detail page (#5224)
+		stage.handleInput(" ");
+		stage.handleInput("\r"); // Space then Enter opens the task's detail page (#5224)
 		await flush();
 		stage.handleInput("\r");
 		await flush();
@@ -89,7 +90,7 @@ test("workflow /tasks owns the full viewport and input until returning to stage 
 		stage.handleInput("\x1b[D"); // ← on the empty prompt: transcript -> detail
 		assert.match(stripAnsi(stage.render(100).join("\n")), /Inspect transcript/);
 		stage.handleInput("\x1b"); // detail -> list
-		assert.match(stripAnsi(stage.render(100).join("\n")), /Background tasks/);
+		assert.match(stripAnsi(stage.render(100).join("\n")), /^ Tasks\b/m);
 		stage.handleInput("\x1b"); // list -> stage chat
 		assert.match(stripAnsi(stage.render(100).join("\n")), /PARENT_CHROME/);
 		assert.equal(closes, 0);
@@ -172,6 +173,7 @@ test.runIf(process.platform !== "win32")(
 				assert.doesNotMatch(list, new RegExp(`(?:AGENT|SHELL)_${other.stageId}`));
 				stage.handleInput("\x1b[B"); // select the shell
 				stage.handleInput(" ");
+				stage.handleInput("\r");
 				await flush();
 				stage.handleInput("\r");
 				await flush();

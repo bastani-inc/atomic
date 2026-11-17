@@ -289,7 +289,8 @@ test("confirmed inspector x stop notifies the parent once after cleanup, without
 		assert.ok((await host.observeAgentLaunch(started.value.taskId)).ok);
 		store.drain();
 		inspector.open(started.value.taskId);
-		inspector.handleInput(" "); // the task's detail page (#4521, #5224)
+		inspector.handleInput(" ");
+		inspector.handleInput("\r"); // the task's detail page (#4521, #5224)
 		inspector.handleInput("x");
 		assert.match(stripVTControlCharacters(inspector.render(100).join("\n")), /Review the stop path/);
 		assert.equal(signal?.aborted, false, "x alone must not cancel");
@@ -372,7 +373,7 @@ test("session closure still suppresses its children's cancellation notifications
 });
 
 test.runIf(process.platform !== "win32")(
-	"background shells deliver one shaded completion card with retained output",
+	"background shells deliver one compact completion notice with retained output (#5224)",
 	async () => {
 		initTheme("dark");
 		const sessionManager = SessionManager.inMemory();
@@ -419,12 +420,12 @@ test.runIf(process.platform !== "win32")(
 				assert.ok(notice);
 				const rows = new TaskCompletionMessage(notice, false).render(100);
 				assert.equal(rows.length, 1, "one notice line");
+				assert.ok(!rows.join("").includes("\x1b[48;"));
 				assert.match(
 					stripVTControlCharacters(rows[0]!),
-					// The line ends with how long the command ran.
 					exitCode === 0
-						? /^● Background command ".*" completed \(exit code 0\) · \d+s$/
-						: new RegExp(`^✗ Background command ".*" failed \\(exit code ${exitCode}\\) · \\d+s$`),
+						? /^ ● Background command ".*" completed \(exit code 0\) · \d+s$/
+						: new RegExp(`^ ✗ Background command ".*" failed \\(exit code ${exitCode}\\) · \\d+s$`),
 				);
 				assert.match(
 					new TaskCompletionMessage(notice, true).render(100).map(stripVTControlCharacters).join("\n"),

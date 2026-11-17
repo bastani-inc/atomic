@@ -1,9 +1,10 @@
-import { stripVTControlCharacters } from "node:util";
-import { type Component, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
+import { type Component, Text, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import { terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { type ThemeColor, theme } from "../theme/theme.js";
+import { ToolBlock } from "./tool-block.ts";
 
 /** How the subject of a notice ended or stands. A started subject reads as `success`. */
-export type NoticeStatus = "success" | "failure" | "stopped" | "warning" | "paused";
+export type NoticeStatus = "success" | "failure" | "stopped" | "warning" | "paused" | "running" | "info";
 
 /**
  * One notice line: what finished, how it ended, and a few dim facts. Background commands, subagents, workflow runs
@@ -24,20 +25,22 @@ export interface NoticeLineSpec {
 }
 
 /** The marker and colour of each status, so a status reads without colour too. */
-const STATUS_MARKERS: Readonly<Record<NoticeStatus, { readonly glyph: string; readonly color: ThemeColor }>> = {
+export const STATUS_MARKERS: Readonly<Record<NoticeStatus, { readonly glyph: string; readonly color: ThemeColor }>> = {
 	success: { glyph: "●", color: "success" },
 	failure: { glyph: "✗", color: "error" },
 	stopped: { glyph: "◼", color: "muted" },
 	warning: { glyph: "!", color: "warning" },
 	paused: { glyph: "⏸", color: "muted" },
+	running: { glyph: "∀", color: "accent" },
+	info: { glyph: "›", color: "muted" },
 };
 
-const DETAIL_FIRST_PREFIX = "  ⎿  ";
-const DETAIL_PREFIX = "     ";
+export const DETAIL_FIRST_PREFIX = "  ⎿  ";
+export const DETAIL_PREFIX = "     ";
 
 /** One line of display text: no terminal controls, no line breaks. */
 function oneLine(value: string): string {
-	return stripVTControlCharacters(value)
+	return terminalDisplayText(value)
 		.replace(/[\x00-\x1f\x7f-\x9f]/g, " ")
 		.replace(/ {2,}/g, " ")
 		.trim();
@@ -91,24 +94,16 @@ export class NoticeLine implements Component {
 
 	render(width: number): string[] {
 		if (width < 1) return [];
-		const marker = STATUS_MARKERS[this.spec.status];
-		const subject = fittedSubject(this.spec, width);
-		const head = `${marker.glyph} ${oneLine(this.spec.label)}${quoted(subject)}${outcomeText(this.spec.outcome)}`;
-		const meta = metaText(this.spec.meta);
-		const line = `${theme.fg(marker.color, marker.glyph)}${head.slice(marker.glyph.length)}${meta ? theme.fg("dim", meta) : ""}`;
-		const lines = [truncateToWidth(line, width, "…")];
-		const detail = this.spec.detail === undefined ? "" : stripVTControlCharacters(this.spec.detail).trimEnd();
-		if (!this.expanded || detail === "") return lines;
-		const detailWidth = Math.max(1, width - DETAIL_PREFIX.length);
-		const wrapped = detail
-			.split("\n")
-			.flatMap((text) =>
-				wrapTextWithAnsi(text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, " ").trimEnd(), detailWidth),
-			);
-		for (const [index, text] of wrapped.entries()) {
-			const prefix = index === 0 ? DETAIL_FIRST_PREFIX : DETAIL_PREFIX;
-			lines.push(truncateToWidth(theme.fg("muted", `${prefix}${text}`), width, "…"));
-		}
-		return lines;
+		const subject = fittedSubject(this.spec, Math.max(1, width - 1));
+		const title = `${oneLine(this.spec.label)}${quoted(subject)}${outcomeText(this.spec.outcome)}`;
+		const detail =
+			this.spec.detail === undefined ? "" : terminalDisplayText(this.spec.detail).replaceAll("\t", "    ").trimEnd();
+		const safeDetail = detail.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, " ");
+		return new ToolBlock({
+			status: this.spec.status,
+			title: new Text(title, 0, 0),
+			meta: this.spec.meta?.map(oneLine).filter(Boolean),
+			details: this.expanded && safeDetail !== "" ? new Text(theme.fg("muted", safeDetail), 0, 0) : undefined,
+		}).render(width);
 	}
 }

@@ -5,7 +5,10 @@ import { stripVTControlCharacters } from "node:util";
 import { Container, getKeybindings, setKeybindings, Text } from "@bastani/atomic-tui";
 import { afterAll, beforeAll, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
-import { AtomicWorkingLoader } from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.ts";
+import {
+	AtomicWorkingLoader,
+	DEFAULT_WORKING_MESSAGE,
+} from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.ts";
 import { WorkingRunMeter } from "../../packages/coding-agent/src/modes/interactive/components/working-run-meter.js";
 import "../../packages/coding-agent/src/modes/interactive/interactive-agent-events.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-extension-runtime.ts";
@@ -101,7 +104,7 @@ function makeHarness(): Harness {
 			getClearOnShrink: () => false,
 		},
 		session,
-		createWorkingLoader: () => new AtomicWorkingLoader(ui, undefined, String, "Working..."),
+		createWorkingLoader: () => new AtomicWorkingLoader(ui, undefined, String, DEFAULT_WORKING_MESSAGE),
 		clearWorkingLoader: InteractiveModeBase.prototype.clearWorkingLoader,
 		stopWorkingLoader: InteractiveModeBase.prototype.stopWorkingLoader,
 		showWorkingLoaderNow: InteractiveModeBase.prototype.showWorkingLoaderNow,
@@ -179,7 +182,7 @@ test("#4625: hiding and restoring the Working row keeps each compaction reason's
 
 			harness.mode.setWorkingVisible(true);
 			assert.match(harness.status(), label, `${reason}: restoring the Working row keeps the indicator`);
-			assert.doesNotMatch(harness.status(), /Working\.\.\./);
+			assert.doesNotMatch(harness.status(), /Working…/);
 			assert.equal(harness.mode.autoCompactionLoader, loader, `${reason}: the same loader stays in use`);
 			assert.equal(harness.statusChildren().filter((child) => child === loader).length, 1);
 			assert.equal(timers.intervalCount(), 1, `${reason}: one animation timer, none leaked`);
@@ -203,7 +206,7 @@ test("#4625: a compaction that ends while the Working row is hidden leaves nothi
 			await endCompaction(harness, reason);
 			harness.mode.setWorkingVisible(true);
 
-			assert.doesNotMatch(harness.status(), /ompacting|to cancel\)|Working\.\.\./, reason);
+			assert.doesNotMatch(harness.status(), /ompacting|to cancel\)|Working…/, reason);
 			assert.equal(harness.mode.autoCompactionLoader, undefined, reason);
 			assert.equal(harness.mode.loadingAnimation, undefined, reason);
 			assert.equal(harness.mode.defaultEditor.onEscape, escapeBefore, `${reason}: Esc handler restored`);
@@ -263,7 +266,7 @@ test("#4625: post-tool compaction keeps its indicator, not generic Working, when
 		hideThenRestoreWorkingRow(harness.mode);
 
 		assert.match(harness.status(), /Auto-compacting\.\.\. \(\d+s · esc to cancel\)/);
-		assert.doesNotMatch(harness.status(), /Working\.\.\./);
+		assert.doesNotMatch(harness.status(), /Working…/);
 		assert.equal(harness.mode.loadingAnimation, undefined, "generic Working must not claim the surface");
 
 		await endCompaction(harness, "threshold", true);
@@ -288,7 +291,7 @@ test("#4625: restoring the Working row still mounts it for a streaming turn when
 		harness.mode.setWorkingVisible(true);
 
 		assert.notEqual(harness.mode.loadingAnimation, undefined);
-		assert.match(harness.status(), /∀ .*Working\.\.\./);
+		assert.match(harness.status(), /∀ .*Working…/);
 		assert.equal(timers.intervalCount(), 1);
 
 		harness.session.isStreaming = false;
@@ -375,7 +378,7 @@ test("#4625: restoring the Working row for a streaming turn replaces stale statu
 		harness.mode.setWorkingVisible(true);
 
 		assert.doesNotMatch(harness.status(), /stale status row/);
-		assert.match(harness.status(), /∀ .*Working\.\.\./);
+		assert.match(harness.status(), /∀ .*Working…/);
 	} finally {
 		releaseTimers(harness);
 		timers.restore();

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { getKeybindings, setKeybindings, visibleWidth } from "@bastani/atomic-tui";
+import { getKeybindings, setKeybindings, Text, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import type { ReadonlyFooterDataProvider } from "../../packages/coding-agent/src/core/footer-data-provider.js";
@@ -29,8 +29,10 @@ import {
 	TaskCommandOutputPage,
 	type TaskTranscriptEnvironment,
 } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
+import { ToolExecutionComponent } from "../../packages/coding-agent/src/modes/interactive/components/tool-execution.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
+import { WORKED_LINE, WORKING_LINE, WORKING_MESSAGE } from "../helpers/working-line.ts";
 import { makeTestTui } from "../support/fake-tui.js";
 
 const ESCAPE = "\x1b";
@@ -44,7 +46,11 @@ const flush = async () => {
 };
 const plain = (rows: readonly string[]) => rows.map((row) => stripVTControlCharacters(row));
 const text = (rows: readonly string[]) => plain(rows).join("\n");
-const labelRows = (rows: readonly string[]) => plain(rows).filter((row) => row.includes("[subagent:"));
+/** A chat's own active tasks, listed below its footer as agent-panel rows (#5224). */
+const taskRows = (rows: readonly string[]) => plain(rows).filter((row) => /^ {2}[∀⧗] /.test(row));
+
+/** The attached composer's top rule: heavy, ending in its label and one rule glyph (#5224). */
+const labelRows = (rows: readonly string[]) => plain(rows).filter((row) => /^━+ .+ ━$/.test(row));
 
 function record(id: string, kind: TaskRecord["kind"], parent?: string, extra: Partial<TaskRecord> = {}): TaskRecord {
 	const taskId = id as TaskId;
@@ -146,7 +152,7 @@ function subagentPage(
 
 function select(component: { handleInput(data: string): boolean }, render: () => string[], pattern: RegExp): void {
 	for (let attempt = 0; attempt < 10; attempt++) {
-		const selected = plain(render()).find((row) => row.includes("│ › "));
+		const selected = plain(render()).find((row) => row.includes(" ❯ "));
 		if (selected !== undefined && pattern.test(selected)) return;
 		component.handleInput("\x1b[B");
 	}
@@ -197,54 +203,65 @@ afterEach(() => {
 	setKeybindings(previousKeybindings);
 });
 
-describe("a subagent's chat label (#4640)", () => {
-	test("names the subagent's session on its editor's top rule, above the prompt (#4640)", async () => {
-		const sessions = new Map([["child", session("child", "subagent-worker-aabcf28b-1")]]);
-		const page = subagentPage(treeSource(tree(), sessions));
+describe("a subagent's chat label (#4640, #5224)", () => {
+	test("names the subagent, its task and its state on the composer's heavy top rule, above the prompt (#5224)", async () => {
+		const page = subagentPage(treeSource());
 		await page.load();
 		const rows = plain(page.render(80, 12));
-		const top = rows.findIndex((row) => row.includes("[subagent:"));
-		assert.equal(labelRows(rows).length, 1);
-		assert.match(rows[top] ?? "", /^\[subagent: subagent-worker-aabcf28b-1\] ─+$/);
-		assert.equal(visibleWidth(rows[top] ?? ""), 80);
+		const [label] = labelRows(rows);
+		assert.match(label ?? "", /^━+ agent-child · title-child · running ━$/);
+		assert.equal(visibleWidth(label ?? ""), 80);
+		const top = rows.indexOf(label ?? "");
 		assert.ok(rows[top + 1]?.startsWith("❯"), "the prompt stays on the editor's content line");
+		assert.equal(rows[top + 2], "━".repeat(80), "the bottom rule is heavy too");
 		page.dispose();
 	});
 
-	test("falls back to the agent name, and shows no label without one (#4640)", async () => {
-		const page = subagentPage(treeSource());
-		await page.load();
-		assert.deepEqual(
-			labelRows(page.render(80, 12)).map((row) => row.replace(/─+$/, "")),
-			["[subagent: agent-child] "],
-		);
-		page.dispose();
+	test("falls back to the session's name, then to `subagent`, when the task has no agent name (#5224)", async () => {
+		const sessions = new Map([["child", session("child", "subagent-worker-aabcf28b-1")]]);
+		const named = subagentPage(treeSource([record("child", "agent", undefined, { agentName: undefined })], sessions));
+		await named.load();
+		assert.match(labelRows(named.render(80, 12))[0] ?? "", / subagent-worker-aabcf28b-1 · title-child · /);
+		named.dispose();
 		const unnamed = subagentPage(treeSource([record("child", "agent", undefined, { agentName: undefined })]));
 		await unnamed.load();
-		assert.deepEqual(labelRows(unnamed.render(80, 12)), []);
+		assert.match(labelRows(unnamed.render(80, 12))[0] ?? "", / subagent · title-child · /);
 		unnamed.dispose();
 	});
 
-	test("is left off below 40 columns and truncated with an ellipsis when the name does not fit (#4640)", async () => {
-		const name = `subagent-${"reviewer".repeat(8)}-1`;
-		const page = subagentPage(treeSource(tree(), new Map([["child", session("child", name)]])));
+	test("is left off below 40 columns and truncated with an ellipsis when it does not fit (#5224)", async () => {
+		const page = subagentPage(
+			treeSource([record("child", "agent", undefined, { title: "review ".repeat(20).trim() })]),
+		);
 		await page.load();
 		assert.deepEqual(labelRows(page.render(39, 12)), []);
+		assert.ok(plain(page.render(39, 12)).includes("━".repeat(39)), "narrow terminals keep the heavy rule");
 		const [narrow] = labelRows(page.render(40, 12));
-		assert.match(narrow ?? "", /^\[subagent: subagent-reviewer.*…\] ─*$/);
+		assert.match(narrow ?? "", /^━+ agent-child · review.*… ━$/);
 		assert.equal(visibleWidth(narrow ?? ""), 40);
 		page.dispose();
 	});
 
-	test("stays on a scrolled draft's `↑ N more` top rule, once (#4640)", async () => {
+	test("keeps a scrolled draft's `↑ N more` note on its top rule (#5224)", async () => {
 		const page = subagentPage(treeSource());
 		await page.load();
 		page.chat.setInputText(Array.from({ length: 40 }, (_, index) => `line ${index}`).join("\n"));
 		const rows = plain(page.render(80, 30));
-		const labeled = labelRows(rows);
-		assert.equal(labeled.length, 1);
-		assert.match(labeled[0] ?? "", /^\[subagent: agent-child\] ─+ ↑ \d+ more ─+$/);
-		assert.equal(visibleWidth(labeled[0] ?? ""), 80);
+		const top = rows.find((row) => row.includes("more") && row.startsWith("━"));
+		assert.match(top ?? "", /↑ \d+ more/);
+		assert.match(top ?? "", /agent-child · title-child · running/);
+		assert.equal(visibleWidth(top ?? ""), 80);
+		page.dispose();
+	});
+
+	test("says where typing goes, and that a stopped subagent resumes only with a message (#5224)", async () => {
+		const page = subagentPage(treeSource());
+		await page.load();
+		assert.ok(
+			plain(page.render(80, 12)).some(
+				(row) => row.replace(/\x1b_[^\x07]*\x07/g, "").replace(/ +/g, " ") === "❯ Message agent-child…",
+			),
+		);
 		page.dispose();
 	});
 });
@@ -261,7 +278,7 @@ describe("a subagent's chat box rows (#4640)", () => {
 		assert.equal(rows.length, 20);
 		const at = (name: string) => rows.indexOf(name);
 		const transcript = rows.findIndex((row) => row.includes("transcript of child"));
-		const label = rows.findIndex((row) => row.includes("[subagent: agent-child]"));
+		const label = rows.indexOf(labelRows(rows)[0] ?? "");
 		assert.ok(transcript >= 0 && transcript < at("PENDING"));
 		assert.deepEqual(
 			[at("PENDING"), at("WORKING"), at("USAGE"), label, at("FOOTER")],
@@ -277,18 +294,18 @@ describe("a subagent's chat box rows (#4640)", () => {
 		await page.load();
 		const kept = (rows: number) =>
 			plain(page.render(80, rows)).map((row) =>
-				row.includes("[subagent:") ? "LABEL" : row.startsWith("❯") ? "PROMPT" : row,
+				labelRows([row]).length > 0 ? "LABEL" : row.startsWith("❯") ? "PROMPT" : row,
 			);
 		assert.deepEqual(kept(1), ["LABEL"]);
 		assert.deepEqual(kept(0), ["LABEL"]);
-		assert.deepEqual(kept(3), ["LABEL", "PROMPT", "─".repeat(80)]);
-		assert.deepEqual(kept(4), ["LABEL", "PROMPT", "─".repeat(80), "FOOTER"]);
-		assert.deepEqual(kept(5), ["PENDING", "LABEL", "PROMPT", "─".repeat(80), "FOOTER"]);
-		assert.deepEqual(kept(6), ["PENDING", "WORKING", "LABEL", "PROMPT", "─".repeat(80), "FOOTER"]);
-		assert.deepEqual(kept(7), ["PENDING", "WORKING", "USAGE", "LABEL", "PROMPT", "─".repeat(80), "FOOTER"]);
+		assert.deepEqual(kept(3), ["LABEL", "PROMPT", "━".repeat(80)]);
+		assert.deepEqual(kept(4), ["LABEL", "PROMPT", "━".repeat(80), "FOOTER"]);
+		assert.deepEqual(kept(5), ["PENDING", "LABEL", "PROMPT", "━".repeat(80), "FOOTER"]);
+		assert.deepEqual(kept(6), ["PENDING", "WORKING", "LABEL", "PROMPT", "━".repeat(80), "FOOTER"]);
+		assert.deepEqual(kept(7), ["PENDING", "WORKING", "USAGE", "LABEL", "PROMPT", "━".repeat(80), "FOOTER"]);
 		const roomy = kept(8);
 		assert.equal(roomy.length, 8, "the transcript takes the one row left");
-		assert.deepEqual(roomy.slice(1), ["PENDING", "WORKING", "USAGE", "LABEL", "PROMPT", "─".repeat(80), "FOOTER"]);
+		assert.deepEqual(roomy.slice(1), ["PENDING", "WORKING", "USAGE", "LABEL", "PROMPT", "━".repeat(80), "FOOTER"]);
 		page.dispose();
 	});
 
@@ -308,11 +325,15 @@ describe("a subagent's chat box rows (#4640)", () => {
 		const page = subagentPage(treeSource());
 		await page.load();
 		const rows = plain(page.render(80, 12));
-		assert.equal(rows.at(-1), "Tasks  2 background tasks running · /tasks");
+		assert.equal(taskRows(rows).length, 2);
+		assert.match(rows.at(-1) ?? "", /^ {2}[∀⧗] /, "the rows close the chat box");
 		page.dispose();
 		const grandchild = subagentPage(treeSource(), "grandchild");
 		await grandchild.load();
-		assert.equal(plain(grandchild.render(80, 12)).at(-1), "Tasks  1 shell running · /tasks");
+		assert.deepEqual(
+			taskRows(grandchild.render(80, 12)).map((row) => row.replace(/ {2,}/g, "  ").trimEnd()),
+			["  ⧗ shell  title-grandchild-shell  running"],
+		);
 		grandchild.dispose();
 	});
 });
@@ -338,7 +359,7 @@ test("repaints its footer as its parent's tasks change without rebuilding its tr
 			page.render(80, 12);
 		}
 		assert.equal(rebuilds.mock.calls.length, 0, "a task change rebuilds none of the transcript's rows");
-		assert.equal(plain(page.render(80, 12)).at(-1), "Tasks  7 background tasks running · /tasks");
+		assert.equal(plain(page.render(80, 12)).at(-1), "  +3 more", "seven rows: four shown, the rest folded");
 	} finally {
 		rebuilds.mockRestore();
 		page.dispose();
@@ -419,14 +440,12 @@ describe("a live subagent's chat box (#4640)", () => {
 	test("shows the usage meter above the label and the model and folder footer, then the task count, below it (#4640)", async () => {
 		const { page } = await livePage();
 		const rows = plain(page.render(100, 20));
-		const label = rows.findIndex((row) => row.includes("[subagent: subagent-worker-aabcf28b-1]"));
+		const label = rows.indexOf(labelRows(rows)[0] ?? "");
 		const usage = rows.findIndex((row) => row.includes("↑1.2k"));
 		assert.ok(usage >= 0 && usage === label - 1, "the usage meter sits right above the prompt's top rule");
 		assert.match(rows[usage] ?? "", /↓340 • \$0\.012 • 0\.8%\/200k \(auto\)$/);
-		assert.deepEqual(rows.slice(label + 3), [
-			`worker-model  low • ${LIVE_FOOTER_CWD} (feature)`,
-			"Tasks  2 background tasks running · /tasks",
-		]);
+		assert.equal(rows[label + 3], `worker-model  low • ${LIVE_FOOTER_CWD} (feature)`);
+		assert.equal(taskRows(rows.slice(label + 4)).length, 2);
 		page.dispose();
 	});
 
@@ -440,6 +459,84 @@ describe("a live subagent's chat box (#4640)", () => {
 		assert.match(list, /title-child-shell/);
 		assert.doesNotMatch(list, /title-parent-shell|title-grandchild-shell/);
 		page.dispose();
+	});
+
+	test("resolves tool and message renderers from the child session before the main chat (#5224)", async () => {
+		const childTool = { renderCall: () => new Text("child tool", 0, 0) };
+		const parentTool = { renderCall: () => new Text("parent tool", 0, 0) };
+		const childMessage = vi.fn(() => new Text("child message", 0, 0));
+		const parentMessage = vi.fn(() => new Text("parent message", 0, 0));
+		const parentToolLookup = vi.fn(() => parentTool);
+		const { page, opened } = await livePage(
+			{
+				chatSession: {
+					...(await liveChatSession()),
+					getToolDefinition: (name: string) => (name === "contact_supervisor" ? childTool : undefined),
+					extensionRunner: {
+						getMessageRenderer: (name: string) => (name === "intercom_message" ? childMessage : undefined),
+					},
+				},
+			},
+			{
+				getChatRenderSettings: () => ({
+					getToolDefinition: parentToolLookup,
+					getCustomMessageRenderer: () => parentMessage,
+				}),
+			},
+		);
+		try {
+			const settings = opened[0]?.getChatRenderSettings?.();
+			assert.equal(settings?.getToolDefinition?.("contact_supervisor"), childTool);
+			const intercomRenderer = settings?.getCustomMessageRenderer?.("intercom_message");
+			assert.notEqual(intercomRenderer, parentMessage);
+			assert.deepEqual(
+				intercomRenderer?.(
+					{ role: "custom", customType: "intercom_message", content: "hi", display: true, timestamp: 1 },
+					{ expanded: false, outputPad: 0, keyText: () => "", keyHint: () => "" },
+					{} as never,
+				)
+					?.render(80)
+					.map((row) => row.trimEnd()),
+				["child message"],
+			);
+			assert.equal(childMessage.mock.calls.length, 1);
+			assert.equal(parentMessage.mock.calls.length, 0);
+			for (const toolName of ["other", "bash"]) {
+				const unavailable = settings?.getToolDefinition?.(toolName);
+				assert.notEqual(unavailable, parentTool);
+				const unavailableTool = new ToolExecutionComponent(
+					toolName,
+					"private-child-tool",
+					{ command: "PRIVATE_CHILD_ARGUMENTS" },
+					{ outputPad: 0 },
+					unavailable,
+					makeTestTui(24),
+					process.cwd(),
+				);
+				try {
+					for (const settled of [false, true]) {
+						if (settled) {
+							unavailableTool.updateResult({
+								content: [{ type: "text", text: "PRIVATE_CHILD_RESULT" }],
+								isError: false,
+							});
+						}
+						for (const expanded of [false, true]) {
+							unavailableTool.setExpanded(expanded);
+							const rendered = text(unavailableTool.render(80));
+							assert.match(rendered, /Tool renderer unavailable/);
+							assert.doesNotMatch(rendered, /PRIVATE_CHILD_ARGUMENTS|PRIVATE_CHILD_RESULT|parent tool/);
+						}
+					}
+				} finally {
+					unavailableTool.dispose();
+				}
+			}
+			assert.equal(parentToolLookup.mock.calls.length, 0);
+			assert.equal(settings?.getCustomMessageRenderer?.("other"), parentMessage);
+		} finally {
+			page.dispose();
+		}
 	});
 
 	test("reads the subagent's git branch and watches it through the chat's footer data, until the page closes (#4640)", async () => {
@@ -471,20 +568,69 @@ describe("a live subagent's chat box (#4640)", () => {
 	test("without footer data the subagent's footer counts its tasks and its usage meter still shows (#4640)", async () => {
 		const { page } = await livePage({}, { footerData: undefined });
 		const rows = plain(page.render(100, 20));
-		assert.equal(rows.at(-1), "Tasks  2 background tasks running · /tasks");
+		assert.equal(taskRows(rows).length, 2);
 		assert.ok(rows.some((row) => row.includes("↑1.2k")));
 		page.dispose();
 	});
 
 	test("shows the working line from a turn already under way when the page opens, until the turn ends (#4640)", async () => {
 		const { page, live } = await livePage({ isRunning: () => true });
-		assert.ok(plain(page.render(100, 20)).some((row) => row.includes("Working")));
+		assert.ok(plain(page.render(100, 20)).some((row) => WORKING_LINE.test(row)));
 		for (const listener of live.listeners) listener({ type: "agent_end", messages: [] } as AgentSessionEvent);
-		assert.ok(!plain(page.render(100, 20)).some((row) => row.includes("Working")));
+		assert.ok(!plain(page.render(100, 20)).some((row) => WORKING_MESSAGE.test(row)));
+		assert.ok(plain(page.render(100, 20)).some((row) => WORKED_LINE.test(row)));
 		page.dispose();
 		const idle = await livePage({ isRunning: () => false });
-		assert.ok(!plain(idle.page.render(100, 20)).some((row) => row.includes("Working")));
+		assert.ok(!plain(idle.page.render(100, 20)).some((row) => WORKING_MESSAGE.test(row)));
 		idle.page.dispose();
+	});
+
+	test("a running subagent's working line counts the same tokens as its task row (#5224)", async () => {
+		let tokenCount = 87_400;
+		const live = { ...session("child", "subagent-worker-aabcf28b-1"), isRunning: () => true };
+		const baseSource = treeSource(tree(), new Map([["child", live]]));
+		const source = {
+			...baseSource,
+			get tasks() {
+				return tree().map((task) => (task.ref.taskId === "child" ? { ...task, metrics: { tokenCount } } : task));
+			},
+		};
+		const page = subagentPage(
+			source,
+			"child",
+			environment({ footerData, createChat: (opts) => new ChatSessionHost(opts) }),
+		);
+		await page.load();
+		const working = () => plain(page.render(100, 20)).find((row) => WORKING_LINE.test(row)) ?? "";
+		assert.match(working().trimEnd(), / · [↑↓] 87\.4k tokens\)$/);
+
+		for (const listener of live.listeners) {
+			listener({ type: "turn_start" } as AgentSessionEvent);
+			listener({
+				type: "message_start",
+				message: { role: "assistant", content: [] },
+			} as unknown as AgentSessionEvent);
+			listener({
+				type: "message_update",
+				assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "x".repeat(800) },
+			} as unknown as AgentSessionEvent);
+		}
+		assert.match(working().trimEnd(), / · ↓ 87\.6k tokens\)$/);
+
+		tokenCount = 12_000;
+		for (const listener of live.listeners) {
+			listener({
+				type: "message_end",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "x".repeat(800) }],
+					usage: { input: 10_000, output: 2_000, cacheRead: 0, cacheWrite: 0 },
+					stopReason: "stop",
+				},
+			} as unknown as AgentSessionEvent);
+		}
+		assert.match(working().trimEnd(), / · ↓ 12k tokens\)$/);
+		page.dispose();
 	});
 
 	test("shows the messages already queued for the subagent when the page opens (#4640)", async () => {
@@ -507,7 +653,7 @@ describe("a live subagent's chat box (#4640)", () => {
 		await settled.load();
 		const rows = plain(settled.render(100, 20));
 		assert.ok(!rows.some((row) => row.includes("↑1.2k")));
-		assert.equal(rows.at(-1), "Tasks  2 background tasks running · /tasks");
+		assert.equal(taskRows(rows).length, 2);
 		page.dispose();
 		settled.dispose();
 	});
@@ -547,11 +693,14 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 		const rows = plain(page.render(80, 24));
 		assert.equal(rows.length, 24);
 		assert.deepEqual(labelRows(rows), [], "the composer is hidden while the list is open");
-		assert.equal(rows.at(-1), "Tasks  2 background tasks running · /tasks");
-		assert.match(rows.at(-2) ?? "", /esc\/← back/);
+		assert.equal(taskRows(rows).length, 2);
+		assert.ok(
+			rows.some((row) => /esc\/← close/.test(row)),
+			"the list's hint sits above the footer rows",
+		);
 		const [only, ...rest] = plain(page.render(80, 1));
 		assert.deepEqual(rest, []);
-		assert.notEqual(only, "Tasks  2 background tasks running · /tasks", "one row goes to the list, not the footer");
+		assert.doesNotMatch(only ?? "", /^ {2}∀ /, "one row goes to the list, not the footer");
 		const before = renders;
 		page.handleInput("\x1b[B");
 		assert.ok(renders > before, "a key on the list repaints");
@@ -570,8 +719,9 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 			page.handleInput(ENTER);
 			await flush();
 			const list = plain(page.render(80, 24));
-			assert.match(list.find((row) => row.includes("│ › ")) ?? "", new RegExp(`│ › ${selected} `));
+			assert.match(list.find((row) => row.includes(" ❯ ")) ?? "", new RegExp(` ❯ . \\S+ +${selected}\\b`));
 			page.handleInput(SPACE);
+			page.handleInput(ENTER);
 			await flush();
 			const detail = plain(page.render(80, 24));
 			assert.match(detail.join("\n"), new RegExp(`› ${selected}\\b`));
@@ -587,19 +737,21 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 		page.handleInput(ENTER);
 		await flush();
 		page.handleInput(SPACE);
+		page.handleInput(ENTER);
 		await flush();
 		assert.match(text(page.render(80, 24)), /title-child-shell|title-grandchild/);
-		assert.doesNotMatch(text(page.render(80, 24)), /Background tasks/, "a task's detail page replaced the list");
+		assert.doesNotMatch(text(page.render(80, 24)), /^ Tasks\b/m, "a task's detail page replaced the list");
 		page.handleInput(LEFT);
-		assert.match(text(page.render(80, 24)), /Background tasks/);
+		assert.match(text(page.render(80, 24)), /^ Tasks\b/m);
 		page.handleInput(SPACE);
+		page.handleInput(ENTER);
 		page.handleInput(ESCAPE);
-		assert.match(text(page.render(80, 24)), /Background tasks/);
+		assert.match(text(page.render(80, 24)), /^ Tasks\b/m);
 		page.handleInput(ESCAPE);
 		assert.equal(page.handlesBack(), false);
 		const chat = text(page.render(80, 24));
-		assert.doesNotMatch(chat, /Background tasks/);
-		assert.match(chat, /\[subagent: agent-child\]/);
+		assert.doesNotMatch(chat, /^ Tasks\b/m);
+		assert.match(chat, /agent-child · title-child/);
 		page.dispose();
 	});
 
@@ -623,7 +775,7 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 		assert.doesNotMatch(nested, /title-child-shell|title-parent-shell/);
 		page.handleInput(ESCAPE);
 		const grandchildChat = text(page.render(80, 24));
-		assert.match(grandchildChat, /\[subagent: agent-grandchild\]/);
+		assert.match(grandchildChat, /agent-grandchild · title-grandchild/);
 		assert.match(grandchildChat, /transcript of grandchild/);
 		assert.equal(page.handlesBack(), true, "the child's own task pages are still open");
 		page.dispose();
@@ -690,12 +842,12 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 			await type(inspector, "/tasks");
 			inspector.handleInput(ENTER);
 			await flush();
-			assert.match(text(inspector.renderViewport(80, 24)), /Background tasks/);
+			assert.match(text(inspector.renderViewport(80, 24)), /^ Tasks\b/m);
 			inspector.handleInput(back);
 			const chat = text(inspector.renderViewport(80, 24));
 			assert.match(chat, /Transcript · agent-child(?!-)/, "the key closed the subagent's list, not its chat");
-			assert.match(chat, /\[subagent: agent-child\]/);
-			assert.doesNotMatch(chat, /Background tasks/);
+			assert.match(chat, /agent-child · title-child/);
+			assert.doesNotMatch(chat, /^ Tasks\b/m);
 		}
 		inspector.handleInput(ESCAPE);
 		assert.match(text(inspector.renderViewport(80, 24)), /Transcript ·/, "Esc never leaves the chat (#5224)");

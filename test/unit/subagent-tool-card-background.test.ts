@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { type TUI, visibleWidth } from "@bastani/atomic-tui";
-import { Terminal } from "@xterm/headless";
 import { test } from "vitest";
 import type { ToolDefinition } from "../../packages/coding-agent/src/core/extensions/types.js";
 import type { ModelParallelResponse, TaskId, WaitId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { ToolExecutionComponent } from "../../packages/coding-agent/src/modes/interactive/components/tool-execution.js";
-import { initTheme, type ThemeBg, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
 import {
 	renderSubagentToolCall,
@@ -43,39 +42,16 @@ function createCard(args: SubagentParamsLike): ToolExecutionComponent {
 	);
 }
 
-async function assertFullBackground(lines: string[], width: number, background: ThemeBg): Promise<void> {
-	assert.equal(lines[0], "", "one unshaded spacer precedes the host card");
-	// Wrapped content may contain blank rows; padding is the card's outer frame.
-	assert.equal(stripVTControlCharacters(lines[1]!).trim(), "", "one top padding row");
-	assert.notEqual(stripVTControlCharacters(lines[2]!).trim(), "", "heading immediately follows padding");
-	assert.equal(stripVTControlCharacters(lines.at(-1)!).trim(), "", "one bottom padding row");
-	assert.notEqual(stripVTControlCharacters(lines.at(-2)!).trim(), "", "content immediately precedes padding");
-	const terminal = new Terminal({ cols: width, rows: lines.length + 1, allowProposedApi: true });
-	try {
-		// Let the terminal decode both the theme reference and the complete host-rendered ANSI.
-		await new Promise<void>((resolve) =>
-			terminal.write(`${theme.bg(background, " ")}\r\n${lines.join("\r\n")}`, resolve),
-		);
-		const expected = terminal.buffer.active.getLine(0)?.getCell(0);
-		assert.ok(expected && !expected.isBgDefault(), "the theme reference is shaded");
-		for (let row = 1; row < lines.length; row++) {
-			assert.equal(visibleWidth(lines[row]!), width, `row ${row} fills ${width} columns`);
-			for (let column = 0; column < width; column++) {
-				const cell = terminal.buffer.active.getLine(row + 1)?.getCell(column);
-				assert.ok(cell);
-				assert.deepEqual(
-					[cell.getBgColorMode(), cell.getBgColor()],
-					[expected.getBgColorMode(), expected.getBgColor()],
-					`row ${row}, column ${column}, width ${width}: ${JSON.stringify(lines[row])}`,
-				);
-			}
-		}
-	} finally {
-		terminal.dispose();
+function assertUnshadedToolBlock(lines: string[], width: number): void {
+	assert.equal(lines[0], "", "one unshaded spacer precedes the host block");
+	assert.notEqual(stripVTControlCharacters(lines[1] ?? "").trim(), "", "header immediately follows spacer");
+	assert.ok(!lines.join("").includes("\u001b[48;"), "no tool block row paints a background color");
+	for (const [index, line] of lines.entries()) {
+		assert.ok(visibleWidth(line) <= width, `row ${index} fits ${width} columns`);
 	}
 }
 
-test("single background launch shades every terminal cell after truncating a long task", async () => {
+test("single background launch renders unshaded Agent tool block with short task title", () => {
 	initTheme("dark");
 	const card = createCard({ agent: "worker", task: longTask });
 	try {
@@ -91,10 +67,10 @@ test("single background launch shades every terminal cell after truncating a lon
 		card.updateResult({ ...result, isError: false });
 		const lines = card.render(120);
 		const text = stripVTControlCharacters(lines.join("\n"));
-		assert.match(text, /workflows\/s\.\.\./);
-		assert.match(text, /∀ Launched in background/);
-		assert.match(text, /\/tasks to inspect output and manage tasks/);
-		await assertFullBackground(lines, 120, "toolSuccessBg");
+		assert.match(text, /∀ Agent\(worker · Intercom foreground smoke test only\.\)/);
+		assert.match(text, /⎿ {2}Running/);
+		assert.doesNotMatch(text, /\/tasks to inspect output and manage tasks|Do not edit files/);
+		assertUnshadedToolBlock(lines, 120);
 	} finally {
 		card.dispose();
 	}
@@ -112,7 +88,7 @@ test("subagent tool call heading truncates a long task with a styled ellipsis (#
 });
 
 for (const themeName of ["dark", "light"] as const) {
-	test(`single launch and result remain fully shaded through resize and expansion (${themeName})`, async () => {
+	test(`single launch and result remain unshaded and bounded through resize and expansion (${themeName})`, () => {
 		initTheme(themeName);
 		const args = { agent: "worker", task: `Inspect ${"界".repeat(60)} ${longTask}` };
 		const result = taskToolResult({
@@ -132,16 +108,15 @@ for (const themeName of ["dark", "light"] as const) {
 				card.setExpanded(state === "expanded");
 				for (const width of [120, 48, 12, 120]) {
 					const lines = card.render(width);
-					await assertFullBackground(
-						lines,
-						width,
-						state === "pending" || state === "partial" ? "toolPendingBg" : "toolSuccessBg",
-					);
+					assertUnshadedToolBlock(lines, width);
 					const text = stripVTControlCharacters(lines.join("\n"));
-					assert.equal(text.match(/^ +Agent\(/gm)?.length, 1, `${state} width ${width}:\n${text}`);
-					if (state !== "pending") assert.equal(text.match(/\/tasks/g)?.length, 1);
-					if (state === "expanded") assert.match(text.replace(/\s/g, ""), /task-fixture/);
-					else assert.doesNotMatch(text, /task-fixture|wait-fixture/);
+					if (width >= 20) {
+						assert.equal(text.match(/Agent\(/g)?.length, 1, `${state} width ${width}:\n${text}`);
+					}
+					assert.doesNotMatch(text, /\/tasks|wait-fixture/);
+					if (state === "expanded" && width >= 24) {
+						assert.match(text, /Prompt[\s\S]*Tool calls[\s\S]*Result/);
+					}
 				}
 			}
 			assert.equal(JSON.stringify({ args, result }), original, "rendering preserves execution inputs and receipts");
@@ -150,7 +125,7 @@ for (const themeName of ["dark", "light"] as const) {
 		}
 	});
 
-	test(`parallel launch and result share one full-width background after resize (${themeName})`, async () => {
+	test(`parallel launch and result render one unshaded block per child after resize (${themeName})`, () => {
 		initTheme(themeName);
 		const args = { tasks: [{ agent: "worker", task: longTask, count: 2 }] };
 		const response: ModelParallelResponse = {
@@ -189,25 +164,22 @@ for (const themeName of ["dark", "light"] as const) {
 		const original = JSON.stringify({ args, result });
 		const card = createCard(args);
 		try {
-			for (const width of [120, 48, 12, 120]) await assertFullBackground(card.render(width), width, "toolPendingBg");
+			for (const width of [120, 48, 12, 120]) assertUnshadedToolBlock(card.render(width), width);
 			card.updateResult(result);
 			for (const expanded of [false, true, false]) {
 				card.setExpanded(expanded);
 				for (const width of [120, 48, 12, 120]) {
 					const lines = card.render(width);
-					await assertFullBackground(lines, width, "toolErrorBg");
+					assertUnshadedToolBlock(lines, width);
 					const text = stripVTControlCharacters(lines.join("\n"));
-					assert.equal(
-						text.match(/^ +subagent(?: |$)/gm)?.length,
-						1,
-						`expanded ${expanded} width ${width}:\n${text}`,
-					);
-					assert.equal(text.match(/\/tasks/g)?.length, 1);
-					assert.match(text, /Launched\s+in\s+background/);
-					// Collapsed, a failed child's error is one line cut to the card width (#4697).
-					assert.match(text, expanded || width > 12 ? /Check\s+failed/ : / {3}Check ?\S*…/);
-					if (expanded) assert.match(text, /task-a[\s\S]*task-b/);
-					else assert.doesNotMatch(text, /task-a|task-b|wait-a/);
+					if (width >= 20) {
+						assert.equal(text.match(/Agent\(/g)?.length, 2, `expanded ${expanded} width ${width}:\n${text}`);
+					}
+					assert.doesNotMatch(text, /\/tasks|wait-a/);
+					if (width >= 48) {
+						assert.match(text, /Running/);
+						assert.match(text, /Failed · Check failed/);
+					}
 				}
 			}
 			assert.equal(
@@ -220,7 +192,7 @@ for (const themeName of ["dark", "light"] as const) {
 		}
 	});
 
-	test(`status card preserves its full host background through resize and expansion (${themeName})`, async () => {
+	test(`status card renders unshaded through resize and expansion (${themeName})`, () => {
 		initTheme(themeName);
 		const card = createCard({ action: "status", id: "43ad4599" });
 		const result = {
@@ -253,11 +225,11 @@ for (const themeName of ["dark", "light"] as const) {
 				card.setExpanded(expanded);
 				for (const width of [120, 48, 12, 120]) {
 					const lines = card.render(width);
-					await assertFullBackground(lines, width, "toolSuccessBg");
+					assertUnshadedToolBlock(lines, width);
 					const text = stripVTControlCharacters(lines.join("\n"));
-					assert.match(text, /Running/);
-					if (expanded) assert.match(text.replace(/\s/g, ""), /Residency:loaded/);
-					else assert.doesNotMatch(text, /Residency:|Session:/);
+					if (width >= 24) assert.match(text, /Running/);
+					if (expanded && width >= 48) assert.match(text.replace(/\s/g, ""), /Residency:loaded/);
+					else if (!expanded) assert.doesNotMatch(text, /Residency:|Session:/);
 				}
 			}
 		} finally {

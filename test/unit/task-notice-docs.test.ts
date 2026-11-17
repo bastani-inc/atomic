@@ -29,7 +29,7 @@ test("task notice docs describe unshaded lines and quit notices without a model 
 	assert.match(subagentReadme, /unshaded notice line with an outcome glyph and task title/);
 	assert.match(subagentReadme, /first result line\. Ctrl\+O expands the full retained result/);
 	initTheme("dark");
-	const task = { ...taskRecord("quit-docs"), title: "Trace the authentication flow" };
+	const task = { ...taskRecord("quit-docs"), title: "Trace the authentication flow", agentName: "debugger" };
 	const notice = taskCompletionNotice(
 		{
 			completionId: "quit-docs",

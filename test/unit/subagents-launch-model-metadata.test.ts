@@ -48,13 +48,18 @@ const lookup = {
 	hasConfiguredAuth: () => true,
 };
 
-function receiptText(result: SubagentToolResult): string {
+function statusText(result: SubagentToolResult): string {
 	return stripVTControlCharacters(
-		renderSubagentToolResult(result, { expanded: false, isPartial: false }, theme, {
-			toolCallId: "launch-model",
-			state: {},
-			invalidate() {},
-		})
+		renderSubagentToolResult(
+			{ ...result, details: { ...result.details!, taskResponse: undefined } },
+			{ expanded: false, isPartial: false },
+			theme,
+			{
+				toolCallId: "launch-model",
+				state: {},
+				invalidate() {},
+			},
+		)
 			.render(120)
 			.join("\n"),
 	);
@@ -123,7 +128,7 @@ test("background receipt retains the resolved inherited model before child sessi
 		assert.equal(updates[0]?.details?.progress?.[0]?.model, "fixture/inherited");
 		assert.equal(updates[0]?.details?.progress?.[0]?.thinking, "high");
 		const receipt = taskToolResult(response, host);
-		const text = receiptText(receipt);
+		const text = statusText(receipt);
 		assert.match(text, /fixture\/inherited {2}high/);
 		assert.doesNotMatch(text, /unavailable/);
 		assert.equal(receipt.details?.taskRecords?.length, 1);
@@ -137,11 +142,9 @@ test("launch and status cards show the selected child model and suffix, not the 
 		const receipt = taskToolResult(response, host);
 		assert.equal(receipt.details?.taskRecords?.[0]?.model, "fixture/pinned");
 		assert.equal(receipt.details?.taskRecords?.[0]?.thinking, "low");
-		for (const details of [receipt.details!, { ...receipt.details!, taskResponse: undefined }]) {
-			const text = receiptText({ ...receipt, details });
-			assert.match(text, /fixture\/pinned {2}low/);
-			assert.doesNotMatch(text, /fixture\/inherited| {2}high| {2}medium|unavailable/);
-		}
+		const text = statusText(receipt);
+		assert.match(text, /fixture\/pinned {2}low/);
+		assert.doesNotMatch(text, /fixture\/inherited| {2}high| {2}medium|unavailable/);
 	});
 });
 
@@ -149,8 +152,8 @@ test("launch reasoning is clamped to the selected model's capabilities", async (
 	await withQueuedLaunch({ agent: { model: "fixture/pinned:max" } }, ({ host, response }) => {
 		const receipt = taskToolResult(response, host);
 		assert.equal(receipt.details?.taskRecords?.[0]?.thinking, "high");
-		assert.match(receiptText(receipt), /fixture\/pinned {2}high/);
-		assert.doesNotMatch(receiptText(receipt), / {2}max/);
+		assert.match(statusText(receipt), /fixture\/pinned {2}high/);
+		assert.doesNotMatch(statusText(receipt), / {2}max/);
 	});
 });
 
@@ -165,14 +168,14 @@ test("unresolved candidates stay unavailable until the child session reports its
 			const receipt = taskToolResult(response, host);
 			assert.equal(receipt.details?.taskRecords?.[0]?.model, undefined);
 			assert.equal(receipt.details?.taskRecords?.[0]?.thinking, undefined);
-			assert.match(receiptText(receipt), /model \/ thinking unavailable/);
-			assert.doesNotMatch(receiptText(receipt), /fixture\/inherited|fixture\/missing| {2}high/);
+			assert.match(statusText(receipt), /model \/ thinking unavailable/);
+			assert.doesNotMatch(statusText(receipt), /fixture\/inherited|fixture\/missing| {2}high/);
 			release();
 			await terminal;
 			const current = taskToolResult(response, host);
 			assert.equal(current.details?.taskRecords?.[0]?.model, "fixture/pinned");
 			assert.equal(current.details?.taskRecords?.[0]?.thinking, "off");
-			assert.match(receiptText(current), /fixture\/pinned {2}off/);
+			assert.match(statusText(current), /fixture\/pinned {2}off/);
 		},
 	);
 });
@@ -182,7 +185,7 @@ test("later fallback settings replace admission metadata without changing the la
 		{ options: { testSession: { fallbackModel: "fixture/pinned", fallbackThinkingLevel: "off" } } },
 		async ({ host, response, release, terminal }) => {
 			const launch = taskToolResult(response, host);
-			assert.match(receiptText(launch), /fixture\/inherited {2}high/);
+			assert.match(statusText(launch), /fixture\/inherited {2}high/);
 			release();
 			const child = await terminal;
 			assert.equal(child.model, "fixture/pinned");
@@ -194,9 +197,9 @@ test("later fallback settings replace admission metadata without changing the la
 			assert.equal(observed.value.kind, "settled");
 			const receipt = taskToolResult({ kind: "admitted", observation: observed.value }, host);
 			assert.equal(receipt.details?.taskRecords?.[0]?.execution.kind, "settled");
-			assert.match(receiptText(receipt), /fixture\/pinned {2}off/);
-			assert.doesNotMatch(receiptText(receipt), /fixture\/inherited| {2}high/);
-			assert.match(receiptText(launch), /fixture\/inherited {2}high/);
+			assert.match(statusText(receipt), /fixture\/pinned {2}off/);
+			assert.doesNotMatch(statusText(receipt), /fixture\/inherited| {2}high/);
+			assert.match(statusText(launch), /fixture\/inherited {2}high/);
 		},
 	);
 });
@@ -206,8 +209,8 @@ test("a selected child model without known reasoning does not borrow the parent'
 		const receipt = taskToolResult(response, host);
 		assert.equal(receipt.details?.taskRecords?.[0]?.model, "fixture/pinned");
 		assert.equal(receipt.details?.taskRecords?.[0]?.thinking, undefined);
-		assert.match(receiptText(receipt), /fixture\/pinned/);
-		assert.doesNotMatch(receiptText(receipt), /fixture\/inherited| {2}high/);
+		assert.match(statusText(receipt), /fixture\/pinned/);
+		assert.doesNotMatch(statusText(receipt), /fixture\/inherited| {2}high/);
 	});
 });
 

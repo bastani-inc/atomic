@@ -154,7 +154,7 @@ describe("ask_user_question terminal escape sanitization (#5244)", () => {
 		);
 		assertNoControlEscapes(singleCustom.collapsed, "single.custom.collapsed");
 		assertNoControlEscapes(singleCustom.expanded, "single.custom.expanded");
-		assert.match(singleCustom.collapsed.map(stripAllowedStyling).join("\n"), /Which\? → typed/);
+		assert.match(singleCustom.collapsed.map(stripAllowedStyling).join("\n"), /Which\? → "typed"/);
 
 		const multiAnswered = renderRow(
 			multi,
@@ -184,8 +184,11 @@ describe("ask_user_question terminal escape sanitization (#5244)", () => {
 		assertNoControlEscapes(declined.collapsed, "declined.collapsed");
 		assertNoControlEscapes(declined.expanded, "declined.expanded");
 		const declinedText = declined.collapsed.map(stripAllowedStyling).join("\n");
-		assert.match(declinedText, /Declined · Nav \(A \/ B\)/);
-		assert.match(declinedText, /Declined · Pkg \(M \/ N\)/);
+		assert.deepEqual(
+			declinedText.split("\n").filter((line) => line.trim()),
+			[" ◼ Questions cancelled"],
+		);
+		assert.doesNotMatch(declinedText, /Nav|Pkg|Declined/);
 
 		const tool = createAskUserQuestionToolDefinition();
 		const fallbackRow = new ToolExecutionComponent(
@@ -252,14 +255,14 @@ describe("ask_user_question terminal escape sanitization (#5244)", () => {
 			.map(stripAllowedStyling)
 			.map((l) => l.trim())
 			.filter(Boolean);
-		assert.deepEqual(nonEmpty, ["Nav Step → Build it · notes: first second"]);
+		assert.deepEqual(nonEmpty, ["● Nav Step → Build it · notes: first second"]);
 
 		const declined = renderRow(params, { answers: [], cancelled: true }, "ws-declined");
 		const declinedNonEmpty = declined.collapsed
 			.map(stripAllowedStyling)
 			.map((l) => l.trim())
 			.filter(Boolean);
-		assert.deepEqual(declinedNonEmpty, ["Declined · Nav Step (Build it / Skip now)"]);
+		assert.deepEqual(declinedNonEmpty, ["◼ Questions cancelled"]);
 	});
 
 	test("transitions from answered summary to error result without duplicating error lines (#5244)", () => {

@@ -14,7 +14,7 @@ import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.js";
+import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.ts";
 
 const tempDirs: string[] = [];
 
@@ -26,6 +26,7 @@ const tempDirs: string[] = [];
  * (`EADDRINUSE` on `\\.\pipe\pi-intercom-…-atomic-agent`).
  */
 const isolatedBrokerAgentDir = mkdtempSync(join(tmpdir(), "ic-mandatory-broker-"));
+linkSharedTranspileCache(isolatedBrokerAgentDir);
 const previousAgentDirEnv = {
 	atomic: process.env.ATOMIC_CODING_AGENT_DIR,
 	pi: process.env.PI_CODING_AGENT_DIR,
@@ -35,6 +36,7 @@ delete process.env.PI_CODING_AGENT_DIR;
 
 function createTempDir(prefix: string): string {
 	const dir = mkdtempSync(join(tmpdir(), prefix));
+	linkSharedTranspileCache(join(dir, "agent"));
 	tempDirs.push(dir);
 	return dir;
 }
@@ -117,7 +119,6 @@ describe("trusted ordinary Intercom sessions", () => {
 			const cwd = createTempDir("ic-sdk-");
 			const agentDir = join(cwd, "agent");
 			mkdirSync(agentDir, { recursive: true });
-			linkSharedTranspileCache(agentDir);
 			const { session } = await createAgentSession({
 				cwd,
 				agentDir,
@@ -149,7 +150,6 @@ describe("trusted ordinary Intercom sessions", () => {
 		const cwd = createTempDir("ic-defer-");
 		const agentDir = join(cwd, "agent");
 		mkdirSync(agentDir, { recursive: true });
-		linkSharedTranspileCache(agentDir);
 		const services = await createAgentSessionServices({
 			cwd,
 			agentDir,
@@ -181,7 +181,6 @@ describe("trusted ordinary Intercom sessions", () => {
 		const cwd = createTempDir("ic-override-");
 		const agentDir = join(cwd, "agent");
 		mkdirSync(agentDir, { recursive: true });
-		linkSharedTranspileCache(agentDir);
 		const services = await createAgentSessionServices({
 			cwd,
 			agentDir,
@@ -209,7 +208,6 @@ describe("trusted ordinary Intercom sessions", () => {
 		const cwd = createTempDir("ic-replace-");
 		const agentDir = join(cwd, "agent");
 		mkdirSync(agentDir, { recursive: true });
-		linkSharedTranspileCache(agentDir);
 		const services = await createAgentSessionServices({
 			cwd,
 			agentDir,
@@ -247,7 +245,6 @@ describe("trusted ordinary Intercom sessions", () => {
 			const cwd = createTempDir(`ic-${loaderKind}-`);
 			const agentDir = join(cwd, "agent");
 			mkdirSync(agentDir, { recursive: true });
-			linkSharedTranspileCache(agentDir);
 			const extensionPath =
 				sourceKind === "cli" ? join(cwd, "spoof-intercom.ts") : join(cwd, ".atomic", "extensions", "spoof.ts");
 			mkdirSync(join(extensionPath, ".."), { recursive: true });
@@ -330,7 +327,6 @@ describe("trusted ordinary Intercom sessions", () => {
 		const cwd = createTempDir("ic-fresh-loader-");
 		const agentDir = join(cwd, "agent");
 		mkdirSync(agentDir, { recursive: true });
-		linkSharedTranspileCache(agentDir);
 		const baseLoader = new DefaultResourceLoader({
 			cwd,
 			agentDir,
@@ -379,7 +375,6 @@ describe("trusted ordinary Intercom sessions", () => {
 		const cwd = createTempDir("ic-forged-path-");
 		const agentDir = join(cwd, "agent");
 		mkdirSync(agentDir, { recursive: true });
-		linkSharedTranspileCache(agentDir);
 		const baseLoader = new DefaultResourceLoader({
 			cwd,
 			agentDir,

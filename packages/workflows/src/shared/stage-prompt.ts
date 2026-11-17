@@ -264,7 +264,9 @@ function answerSingle(question: StageInputQuestion, desired: string): BuiltAnswe
 	if (isChatSentinel(desired)) {
 		return answerChat(question);
 	}
-	const byLabel = question.options.find((option) => normalizeLabel(option.label) === normalized);
+	const byLabel =
+		question.options.find((option) => option.label === desired) ??
+		question.options.find((option) => normalizeLabel(option.label) === normalized);
 	if (byLabel) {
 		return { questionIndex: 0, question: question.question, kind: "option", answer: byLabel.label };
 	}
@@ -285,7 +287,9 @@ function answerMulti(question: StageInputQuestion, candidates: readonly string[]
 	const selected: string[] = [];
 	for (const candidate of candidates) {
 		const normalized = normalizeLabel(candidate);
-		const byLabel = question.options.find((option) => normalizeLabel(option.label) === normalized);
+		const byLabel =
+			question.options.find((option) => option.label === candidate) ??
+			question.options.find((option) => normalizeLabel(option.label) === normalized);
 		if (byLabel) {
 			if (!selected.includes(byLabel.label)) selected.push(byLabel.label);
 			continue;

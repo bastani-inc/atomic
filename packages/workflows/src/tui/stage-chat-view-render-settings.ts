@@ -19,12 +19,15 @@ export function stageChatRenderSettings(
 	opts: StageChatViewOpts,
 ): StageChatRenderSettings | undefined {
 	const inherited = opts.getChatRenderSettings?.();
+	const toolOutputExpanded = ctx.getToolsExpanded?.() ?? inherited?.toolOutputExpanded;
 	const stageSession = ctx.handle?.isDisposed === true ? undefined : ctx.handle?.agentSession;
-	if (!stageSession) return inherited;
+	if (!stageSession) {
+		return toolOutputExpanded === undefined ? inherited : { ...inherited, toolOutputExpanded };
+	}
 	const rendererHost = stageSession as MessageRendererHost;
 	return {
 		...inherited,
-		toolOutputExpanded: ctx.getToolsExpanded?.() ?? inherited?.toolOutputExpanded,
+		toolOutputExpanded,
 		getToolDefinition: (toolName) =>
 			stageSession.getToolDefinition(toolName) ?? inherited?.getToolDefinition?.(toolName),
 		getCustomMessageRenderer: (customType) =>
@@ -33,13 +36,32 @@ export function stageChatRenderSettings(
 	};
 }
 
+interface HostTheme {
+	fg(color: string, text: string): string;
+	bold?(text: string): string;
+}
+
+function hostThemeOf(candidate: unknown): HostTheme | undefined {
+	return typeof candidate === "object" &&
+		candidate !== null &&
+		typeof (candidate as { fg?: unknown }).fg === "function"
+		? (candidate as HostTheme)
+		: undefined;
+}
+
 export function chatHostStyle(ctx: StageChatViewContext): ChatSessionHostStyle {
+	const hostTheme = hostThemeOf(ctx.piTheme);
 	return {
-		dim: (text) => paint(text, ctx.theme.dim),
-		text: (text) => paint(text, ctx.theme.text),
-		textMuted: (text) => paint(text, ctx.theme.textMuted),
-		accent: (text) => paint(text, ctx.theme.accent),
-		accentBold: (text) => paint(text, ctx.theme.accent, { bold: true }),
+		dim: (text) => (hostTheme ? hostTheme.fg("dim", text) : paint(text, ctx.theme.dim)),
+		text: (text) => (hostTheme ? hostTheme.fg("text", text) : paint(text, ctx.theme.text)),
+		textMuted: (text) => (hostTheme ? hostTheme.fg("muted", text) : paint(text, ctx.theme.textMuted)),
+		accent: (text) => (hostTheme ? hostTheme.fg("accent", text) : paint(text, ctx.theme.accent)),
+		accentBold: (text) =>
+			hostTheme
+				? typeof hostTheme.bold === "function"
+					? hostTheme.bold(hostTheme.fg("accent", text))
+					: hostTheme.fg("accent", text)
+				: paint(text, ctx.theme.accent, { bold: true }),
 		workingIndicatorPalette: ctx.piTheme === undefined ? () => workingIndicatorPalette(ctx.theme) : undefined,
 		workingIndicatorUseGlobalTheme: ctx.piTheme !== undefined,
 		rule: (hex, text) => hexToAnsi(hex) + text + RESET,

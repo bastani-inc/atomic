@@ -35,7 +35,7 @@ describe("sessions recorded before #4328 still render", () => {
 			isError: false,
 		});
 		const rendered = render(component);
-		assert.ok(rendered.includes("edit"));
+		assert.ok(rendered.includes("Edit("));
 		assert.ok(rendered.includes("const value = 2;"));
 	});
 
@@ -71,7 +71,11 @@ describe("sessions recorded before #4328 still render", () => {
 			isError: false,
 		});
 		const rendered = render(component);
-		assert.ok(rendered.includes("write"));
-		assert.ok(rendered.includes("hello"));
+		assert.ok(rendered.includes("Write("));
+		assert.ok(rendered.includes("Wrote 1 line"));
+		assert.ok(!rendered.includes("hello"));
+		component.setExpanded(true);
+		assert.ok(render(component).includes("hello"));
+		component.dispose();
 	});
 });

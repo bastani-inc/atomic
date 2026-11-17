@@ -7,7 +7,7 @@ import type { ResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
-import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.js";
+import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.ts";
 
 const FIXTURE_CLEANUP_TIMEOUT_MS = 90_000;
 

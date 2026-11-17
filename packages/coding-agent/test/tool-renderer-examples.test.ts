@@ -80,12 +80,11 @@ describe("tool renderer examples", () => {
 		const minimalMode = await getSessionState(join(examplesDir, "minimal-mode.ts"), ["edit"]);
 		const definition = minimalMode.editToolDefinition;
 		assert(definition);
-		// The built-in edit renders its own shell; minimal mode's replacement renderers need the default one,
-		// which draws the tool background around the row.
 		assert.equal(definition.renderShell, "default");
-		assert.ok(renderEditTool(definition, tempDir).some((line) => line.includes("\x1b[48;")));
+		const rendered = renderEditTool(definition, tempDir);
+		assert.ok(!rendered.some((line) => line.includes("\x1b[48;")));
 		const { renderShell: _renderShell, ...inheritedShellDefinition } = definition;
-		assert.ok(!renderEditTool(inheritedShellDefinition, tempDir).some((line) => line.includes("\x1b[48;")));
+		assert.deepEqual(renderEditTool(inheritedShellDefinition, tempDir), rendered);
 	});
 });
 

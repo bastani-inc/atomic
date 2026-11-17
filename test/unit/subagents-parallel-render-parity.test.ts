@@ -70,20 +70,20 @@ describe("top-level parallel status reduction", () => {
 				if (withCompletedSibling) children.push(parallelChild("beta", "ok"));
 				const rendered = renderParallel(children, { expanded });
 				const header = rendered.split("\n")[0]!;
-				assert.match(header, expanded ? /^killed \(non-resumable\) parallel/ : /^■ parallel/);
+				assert.match(header, expanded ? /^killed \(non-resumable\) parallel/ : /^◼ parallel/);
 				assert.match(header, /killed \(non-resumable\)/i);
 				assert.match(header, withCompletedSibling ? /1\/2 done/ : /0\/1 done/);
-				assert.doesNotMatch(header, /✓|failed|^ok /);
+				assert.doesNotMatch(header, /●|failed|^ok /);
 			});
 		}
 	}
 
 	for (const [status, compact, expanded] of [
-		["ok", "✓", "ok"],
+		["ok", "●", "ok"],
 		["error", "✗", "failed"],
-		["interrupted", "■", "failed"],
-		["continued", "■", "failed"],
-		["skipped", "■", "failed"],
+		["interrupted", "◼", "failed"],
+		["continued", "◼", "failed"],
+		["skipped", "◼", "failed"],
 	] as const) {
 		test(`${status} groups retain their compact and expanded summaries`, () => {
 			const children = [parallelChild("alpha", status)];
@@ -101,7 +101,7 @@ describe("top-level parallel status reduction", () => {
 		const running = parallelChild("beta", "continued", { progressIndex: 1 });
 		running.progress!.status = "running";
 		assert.ok(renderParallel([killed, running]).startsWith("running parallel"));
-		assert.doesNotMatch(renderParallel([killed, running], { expanded: false }).split("\n")[0]!, /■|✓|killed/);
+		assert.doesNotMatch(renderParallel([killed, running], { expanded: false }).split("\n")[0]!, /◼|●|killed/);
 		assert.ok(renderParallel([killed], { parentAskYielded: true }).startsWith("yielded parallel"));
 	});
 
@@ -155,7 +155,7 @@ describe("top-level parallel status reduction", () => {
 		];
 		for (const expanded of [false, true]) {
 			const rendered = renderParallel(children, { parentAskYielded: true, expanded, content });
-			assert.match(rendered, expanded ? /yielded parallel/ : /■ parallel/);
+			assert.match(rendered, expanded ? /yielded parallel/ : /◼ parallel/);
 			assert.match(rendered, /Keep {2}this question verbatim\?/);
 			assert.match(rendered, /Start a fresh subagent/);
 			assert.doesNotMatch(rendered, /action.*resume/i);
