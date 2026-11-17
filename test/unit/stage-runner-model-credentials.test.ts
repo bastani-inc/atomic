@@ -66,7 +66,6 @@ function stageOpts(
 					}
 					let thinkingLevel: StageSessionRuntime["thinkingLevel"] = options.thinkingLevel ?? "medium";
 					const { session } = makeMockSession({
-						...(typeof rawModel === "object" && rawModel !== null ? { model: rawModel } : {}),
 						...(manager === undefined ? {} : { sessionId: manager.getSessionId() }),
 						setThinkingLevel(level) {
 							thinkingLevel = level;
@@ -601,7 +600,7 @@ describe("a workflow stage's model chain and credentials", () => {
 		}
 	});
 
-	test("an explicit stage chain filters candidates through eligiblePair constraints and fails closed when none qualify", async () => {
+	test("explicit stage chains honor every constraint when their adapter omits optional model metadata (#3326)", async () => {
 		const catalogModel = (
 			provider: string,
 			id: string,

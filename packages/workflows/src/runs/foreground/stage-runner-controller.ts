@@ -460,6 +460,7 @@ export class StageSessionController {
 	/** The restores of the run this stage belongs to, which every session it opens follows, wherever it reopens. */
 	private readonly runWorktreeRootMappings = currentWorktreeRootMappings();
 	private candidatesPromise: Promise<WorkflowResolvedModelCandidate[]> | undefined;
+	private explicitCandidateModels = new Map<string, WorkflowModelValue>();
 	private scopedModelsPromise: Promise<WorkflowResolvedScopedModel[] | undefined> | undefined;
 	private modelRoute: ModelRoute | undefined;
 	private routingPromise: Promise<void> | undefined;
@@ -2785,6 +2786,7 @@ export class StageSessionController {
 	}
 
 	private withExplicitConstraints(candidates: WorkflowResolvedModelCandidate[]): WorkflowResolvedModelCandidate[] {
+		this.explicitCandidateModels = new Map(candidates.map((candidate) => [candidate.id, candidate.value]));
 		const constraints = this.explicitModelConstraints();
 		if (constraints.length === 0 || candidates.length === 0) return candidates;
 		const allowed = candidates.filter((candidate) => this.candidateSatisfiesConstraints(candidate, constraints));
@@ -2841,8 +2843,12 @@ export class StageSessionController {
 		if (this.modelRoute) return;
 		const constraints = this.explicitModelConstraints();
 		if (constraints.length === 0) return;
-		const value = session.model ?? candidate?.value ?? this.currentModelValue();
-		const id = workflowModelId(value);
+		const selectedValue = session.model ?? candidate?.value ?? this.currentModelValue();
+		const id = workflowModelId(selectedValue);
+		const value =
+			typeof selectedValue === "string" && id !== undefined
+				? (this.explicitCandidateModels.get(id) ?? selectedValue)
+				: selectedValue;
 		if (
 			value === undefined ||
 			id === undefined ||
