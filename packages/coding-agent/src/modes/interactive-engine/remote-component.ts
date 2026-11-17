@@ -76,6 +76,9 @@ class RemoteComponent implements Component {
 	/** The engine's number for the frame in `lines`, and for the frame the last `render` returned. */
 	private frame: number | undefined;
 	private paintedFrame: number | undefined;
+	/** What the engine component drew on each row of `lines`, and of the frame the last `render` returned. */
+	private rowKeys: readonly string[] | undefined;
+	private paintedRowKeys: readonly string[] | undefined;
 	private dirty = true;
 	private disposed = false;
 	private readonly pendingInputs = new Map<number, PendingInput>();
@@ -135,6 +138,7 @@ class RemoteComponent implements Component {
 		// width. Clamp so a resize never replays overflowing lines (pi-tui
 		// crashes on any rendered line wider than the terminal).
 		this.paintedFrame = this.frame;
+		this.paintedRowKeys = this.rowKeys;
 		return this.frameClamp.clamp(this.lines, width);
 	}
 
@@ -142,12 +146,19 @@ class RemoteComponent implements Component {
 	 * Forward a single click to the engine component, at its row and column there. Presses, drags and multi-clicks stay
 	 * with the host's text selection.
 	 */
+	/** What the engine component drew on `row` of the frame this host painted, when it names its rows. */
+	paintedRowKey(row: number): string | undefined {
+		return this.paintedRowKeys?.[row];
+	}
+
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (this.disposed || !isSingleLeftClick(event) || this.paintedFrame === undefined) return undefined;
+		const rowKey = this.paintedRowKeys?.[Math.floor(event.y)];
 		this.runtime.sendEngineCommand({
 			type: "engine_custom_click",
 			componentId: this.componentId,
 			frame: this.paintedFrame,
+			...(rowKey === undefined ? {} : { rowKey }),
 			x: Math.max(0, Math.floor(event.x)),
 			y: Math.max(0, Math.floor(event.y)),
 			width: Math.max(0, Math.floor(event.width)),
@@ -248,11 +259,18 @@ class RemoteComponent implements Component {
 		this.dirty = true;
 	}
 
-	applyFrame(requestId: number, lines: string[], scrollRequest?: WidgetScrollRequest, frame?: number): void {
+	applyFrame(
+		requestId: number,
+		lines: string[],
+		scrollRequest?: WidgetScrollRequest,
+		frame?: number,
+		rowKeys?: readonly string[],
+	): void {
 		if (this.disposed || requestId < this.appliedRequestId) return;
 		this.appliedRequestId = requestId;
 		this.lines = lines;
 		this.frame = frame;
+		this.rowKeys = rowKeys;
 		this.scrollRequest = scrollRequest;
 		let answeredKey = false;
 		for (const inputId of [...this.answeredInputs]) {
@@ -481,7 +499,13 @@ export class RemoteComponentController {
 			case "engine_custom_frame":
 				this.mounted
 					.get(message.componentId)
-					?.component.applyFrame(message.requestId, message.lines, message.scrollRequest, message.frame);
+					?.component.applyFrame(
+						message.requestId,
+						message.lines,
+						message.scrollRequest,
+						message.frame,
+						message.rowKeys,
+					);
 				break;
 			case "engine_custom_input_result":
 				this.mounted.get(message.componentId)?.component.resolveInput(message.requestId, message.handled);

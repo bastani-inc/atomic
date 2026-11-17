@@ -1,4 +1,4 @@
-import * as fs from "node:fs";
+import { stat } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,18 +8,26 @@ export function getUserAgentDirs(): string[] {
 	return getAgentConfigPaths("agents");
 }
 
-export function isDirectory(p: string): boolean {
+export async function isDirectory(p: string): Promise<boolean> {
 	try {
-		return fs.statSync(p).isDirectory();
+		return (await stat(p)).isDirectory();
 	} catch {
 		return false;
 	}
 }
 
-export function findNearestProjectRoot(cwd: string): string | null {
+async function someDirectory(paths: readonly string[]): Promise<boolean> {
+	for (const p of paths) if (await isDirectory(p)) return true;
+	return false;
+}
+
+export async function findNearestProjectRoot(cwd: string): Promise<string | null> {
 	let currentDir = cwd;
 	while (true) {
-		if (getProjectConfigDirs(currentDir).some(isDirectory) || isDirectory(path.join(currentDir, ".agents"))) {
+		if (
+			(await someDirectory(getProjectConfigDirs(currentDir))) ||
+			(await isDirectory(path.join(currentDir, ".agents")))
+		) {
 			return currentDir;
 		}
 
@@ -37,27 +45,29 @@ export function getUserAgentSettingsPaths(): string[] {
 	return getAgentConfigPaths("settings.json");
 }
 
-export function getProjectAgentSettingsPath(cwd: string): string | null {
-	const projectRoot = findNearestProjectRoot(cwd);
+export async function getProjectAgentSettingsPath(cwd: string): Promise<string | null> {
+	const projectRoot = await findNearestProjectRoot(cwd);
 	return projectRoot ? path.join(getProjectConfigDirs(projectRoot)[0]!, "settings.json") : null;
 }
 
-export function getProjectAgentSettingsPaths(cwd: string): string[] {
-	const projectRoot = findNearestProjectRoot(cwd);
+export async function getProjectAgentSettingsPaths(cwd: string): Promise<string[]> {
+	const projectRoot = await findNearestProjectRoot(cwd);
 	return projectRoot ? getProjectConfigDirs(projectRoot).map((dir) => path.join(dir, "settings.json")) : [];
 }
 
-export function resolveNearestProjectAgentDirs(cwd: string): { readDirs: string[]; preferredDir: string | null } {
-	const projectRoot = findNearestProjectRoot(cwd);
+export async function resolveNearestProjectAgentDirs(
+	cwd: string,
+): Promise<{ readDirs: string[]; preferredDir: string | null }> {
+	const projectRoot = await findNearestProjectRoot(cwd);
 	if (!projectRoot) return { readDirs: [], preferredDir: null };
 
 	const legacyDir = path.join(projectRoot, ".agents");
 	const preferredDir = path.join(getProjectConfigDirs(projectRoot)[0]!, "agents");
 	const readDirs: string[] = [];
-	if (isDirectory(legacyDir)) readDirs.push(legacyDir);
+	if (await isDirectory(legacyDir)) readDirs.push(legacyDir);
 	for (const configDir of getProjectConfigDirs(projectRoot).reverse()) {
 		const agentsDir = path.join(configDir, "agents");
-		if (isDirectory(agentsDir)) readDirs.push(agentsDir);
+		if (await isDirectory(agentsDir)) readDirs.push(agentsDir);
 	}
 
 	return {

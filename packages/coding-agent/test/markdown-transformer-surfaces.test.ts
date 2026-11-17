@@ -186,15 +186,17 @@ describe("Markdown transformers on the changelog", () => {
 		return stripAnsi(host.chatContainer.render(100).join("\n"));
 	}
 
-	function renderChangelogCommand(extensions: Pick<Extension, "markdownTransformer">[]): string {
+	async function renderChangelogCommand(extensions: Pick<Extension, "markdownTransformer">[]): Promise<string> {
 		fixture.changelogPath = join(workDir, "CHANGELOG.md");
 		writeFileSync(
 			fixture.changelogPath,
 			"# Changelog\n\n## [2.0.0] - 2026-01-01\n\n### Fixed\n\n- :warning: Atomic fix\n",
 		);
 		const host = mode(extensions);
-		const command = Reflect.get(InteractiveMode.prototype, "handleChangelogCommand") as (this: typeof host) => void;
-		command.call(host);
+		const command = Reflect.get(InteractiveMode.prototype, "handleChangelogCommand") as (
+			this: typeof host,
+		) => Promise<void>;
+		await command.call(host);
 		return stripAnsi(host.chatContainer.render(100).join("\n"));
 	}
 
@@ -223,17 +225,19 @@ describe("Markdown transformers on the changelog", () => {
 		expect(rendered.match(/What's New/g)).toHaveLength(1);
 	});
 
-	test("a changelog transformer runs on /changelog", () => {
-		const rendered = renderChangelogCommand([extensionWith(replaceShortcodes, ["changelog"])]);
+	test("a changelog transformer runs on /changelog", async () => {
+		const rendered = await renderChangelogCommand([extensionWith(replaceShortcodes, ["changelog"])]);
 
 		expect(rendered).toContain("⚠ Atomic fix");
 		expect(rendered).not.toContain(":warning:");
 	});
 
-	test("a transformer registered for the default message types leaves the changelog unchanged", () => {
+	test("a transformer registered for the default message types leaves the changelog unchanged", async () => {
 		const defaults: readonly MarkdownMessageType[] = ["user", "assistant", "assistant-thinking"];
 
 		expect(renderStartupNotice([extensionWith(replaceShortcodes, defaults)])).toContain(":warning: Atomic change");
-		expect(renderChangelogCommand([extensionWith(replaceShortcodes, defaults)])).toContain(":warning: Atomic fix");
+		expect(await renderChangelogCommand([extensionWith(replaceShortcodes, defaults)])).toContain(
+			":warning: Atomic fix",
+		);
 	});
 });

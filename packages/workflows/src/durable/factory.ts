@@ -3,6 +3,7 @@ import { storageSelectionKey } from "@bastani/atomic/storage";
 import type { DurableWorkflowBackend } from "./backend.js";
 import {
 	getDurableBackendProcessOwner,
+	type PendingDurableBackendOpen,
 	resetDurableBackendProcessOwner,
 	type SelectedDurableBackend,
 } from "./backend-process-owner.js";
@@ -11,7 +12,7 @@ import {
 	openSelectedRunJournal,
 	type RunJournalOption,
 	type RunJournalSettings,
-	selectRunJournal,
+	selectRunJournalAsync,
 	withRunJournalConfigSource,
 } from "./journal/resolution.js";
 import "./journal/workflows-host-module.js";
@@ -74,22 +75,70 @@ function abandonOpening(
 		});
 }
 
+export async function readDurableJournalSettings(
+	options: Pick<DurableBackendOptions, "cwd" | "agentDir" | "projectTrusted"> = {},
+): Promise<RunJournalSettings> {
+	const manager = await SettingsManager.createAsync(options.cwd ?? process.cwd(), options.agentDir ?? getAgentDir(), {
+		projectTrusted: options.projectTrusted,
+	});
+	return manager.getSettings();
+}
+
 export async function initializeDurableBackend(options: DurableBackendOptions = {}): Promise<DurableWorkflowBackend> {
+	const settings =
+		options.journal === undefined
+			? (options.settings ??
+				SettingsManager.create(options.cwd ?? process.cwd(), options.agentDir ?? getAgentDir(), {
+					projectTrusted: options.projectTrusted,
+				}).getSettings())
+			: undefined;
+	return openDurableBackend(options, () => settings);
+}
+
+export async function initializeDurableBackendReadingSettings(
+	options: DurableBackendOptions = {},
+): Promise<DurableWorkflowBackend> {
+	return openDurableBackend(options, () =>
+		options.journal === undefined ? (options.settings ?? readDurableJournalSettings(options)) : undefined,
+	);
+}
+
+async function openDurableBackend(
+	options: DurableBackendOptions,
+	readSettings: () => RunJournalSettings | undefined | Promise<RunJournalSettings>,
+): Promise<DurableWorkflowBackend> {
 	const owner = getDurableBackendProcessOwner();
 	const choice = options.journal;
 	const agentDir = options.agentDir ?? getAgentDir();
-	const selection = selectRunJournal({
-		agentDir,
-		journal: choice,
-		settings:
-			choice === undefined
-				? (options.settings ??
-					SettingsManager.create(options.cwd ?? process.cwd(), agentDir, {
-						projectTrusted: options.projectTrusted,
-					}).getSettings())
-				: undefined,
-	});
+	const abandonedBefore = options.abandonSignal?.aborted === true;
 	const holder = options.holder;
+	let settle = (): void => {};
+	let fail = (_error: unknown): void => {};
+	const pending: PendingDurableBackendOpen | undefined =
+		holder === undefined
+			? undefined
+			: {
+					holder,
+					released: false,
+					settled: new Promise<void>((resolve, reject) => {
+						settle = resolve;
+						fail = reject;
+					}),
+				};
+	if (pending !== undefined) {
+		owner.pendingOpens ??= new Set();
+		owner.pendingOpens.add(pending);
+	}
+	let selection: Awaited<ReturnType<typeof selectRunJournalAsync>>;
+	try {
+		selection = await selectRunJournalAsync({ agentDir, journal: choice, settings: await readSettings() });
+	} catch (error) {
+		settle();
+		throw error;
+	} finally {
+		if (pending !== undefined) owner.pendingOpens?.delete(pending);
+	}
+	const releasedWhileSelecting = pending?.released === true;
 	const key =
 		"createRun" in selection
 			? selection
@@ -126,11 +175,24 @@ export async function initializeDurableBackend(options: DurableBackendOptions = 
 		holders: new Set(),
 		pinned: false,
 	};
-	if (existing === undefined) selected.set(key, entry);
-	if (holder === undefined) entry.pinned = true;
-	else entry.holders.add(holder);
+	if (!releasedWhileSelecting) {
+		if (existing === undefined) selected.set(key, entry);
+		if (holder === undefined) entry.pinned = true;
+		else entry.holders.add(holder);
+		settle();
+	} else if (existing !== undefined) {
+		settle();
+	} else {
+		entry.ready
+			.then(
+				() => entry.close?.(),
+				() => undefined,
+			)
+			.then(settle, fail);
+	}
 	callersOfOpening.set(entry, (callersOfOpening.get(entry) ?? 0) + 1);
-	options.abandonSignal?.addEventListener("abort", () => abandonOpening(selected, key, entry), { once: true });
+	if (options.abandonSignal?.aborted && !abandonedBefore) abandonOpening(selected, key, entry);
+	else options.abandonSignal?.addEventListener("abort", () => abandonOpening(selected, key, entry), { once: true });
 	const answered = options.onJournalAnswered;
 	if (answered !== undefined) {
 		void (entry.answered ?? entry.ready).then(

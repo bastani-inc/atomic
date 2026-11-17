@@ -487,7 +487,7 @@ export function validateSupervisorInterviewReply(value: unknown, interview: Supe
 }
 
 export function parseStructuredSupervisorReply(text: string, interview: SupervisorInterviewRequest): { value?: SupervisorInterviewReply; error?: string } | undefined {
-  const fencedMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const fencedMatch = text.match(/```(?:json)?([\s\S]*?)```/i);
   const candidate = (fencedMatch?.[1] ?? text).trim();
   if (!candidate.startsWith("{") && !candidate.startsWith("[")) {
     return undefined;

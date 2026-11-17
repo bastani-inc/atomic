@@ -297,7 +297,8 @@ describe("possible-stages admission wiring (D10)", () => {
 			{
 				registry: discovery.registry,
 				store,
-				resolvePossibleStageEntry: (normalizedName) => (normalizedName === "wired" ? source.filePath : undefined),
+				resolvePossibleStageEntry: async (normalizedName) =>
+					normalizedName === "wired" ? source.filePath : undefined,
 			},
 		);
 		let snapshot: RunSnapshot | undefined;
@@ -371,7 +372,7 @@ describe("possible-stages admission wiring (D10)", () => {
 				{
 					registry: discovery.registry,
 					store,
-					resolvePossibleStageEntry: (normalizedName) =>
+					resolvePossibleStageEntry: async (normalizedName) =>
 						normalizedName === "partial-scan" ? source.filePath : undefined,
 				},
 			);
@@ -404,7 +405,7 @@ describe("possible-stages admission wiring (D10)", () => {
 			{
 				registry: discovery.registry,
 				store,
-				resolvePossibleStageEntry: () => join(WIRE_DIR, "does-not-exist.ts"),
+				resolvePossibleStageEntry: async () => join(WIRE_DIR, "does-not-exist.ts"),
 			},
 		);
 		let snapshot: RunSnapshot | undefined;

@@ -1,4 +1,4 @@
-import { appendFileSync } from "node:fs";
+import { DiagnosticWriter } from "./diagnostic-writer.ts";
 
 export type LifecycleTimingLabel =
 	| "process-entry"
@@ -107,22 +107,37 @@ export interface LifecycleTraceLine {
 	readonly ppid: number;
 }
 
+let traceWriter: DiagnosticWriter | undefined;
+
+export function lifecycleTraceWritten(): Promise<void> {
+	return traceWriter?.written() ?? Promise.resolve();
+}
+
 /**
  * When `ATOMIC_STARTUP_TRACE` names a file, append this process's start and each lifecycle mark to it, one JSON line
- * each. A host and the engine child it starts inherit the variable, so one file holds both timelines. Does nothing
- * when the variable is unset or another diagnostic sink is already installed. Returns the function that uninstalls it.
+ * each. A host and the engine child it starts inherit the variable, so one file holds both timelines. Lines are
+ * appended off the event loop in mark order; whatever has not reached the file when the process exits is written then.
+ * Does nothing when the variable is unset or another diagnostic sink is already installed. Returns the function that
+ * uninstalls it.
  */
 export function installLifecycleTraceFromEnv(env: NodeJS.ProcessEnv = process.env): (() => void) | undefined {
 	const file = STARTUP_TRACE_ENV_NAMES.map((name) => env[name]).find((value) => value !== undefined && value !== "");
 	if (!file || getState().sink) return undefined;
+	const writer = new DiagnosticWriter(() => {});
+	traceWriter = writer;
 	const write = (label: LifecycleTraceLine["label"], epochMs: number): void => {
 		const line: LifecycleTraceLine = { label, epochMs, pid: process.pid, ppid: process.ppid };
-		try {
-			appendFileSync(file, `${JSON.stringify(line)}\n`);
-		} catch {
-			// Diagnostics must never alter the startup path they observe.
-		}
+		void writer.append(file, `${JSON.stringify(line)}\n`);
 	};
+	const writeRemainingAtExit = (): void => writer.flushSync();
+	process.once("exit", writeRemainingAtExit);
 	write("process-start", performance.timeOrigin);
-	return installLifecycleTimingSink((record) => write(record.label, performance.timeOrigin + performance.now()));
+	const uninstallSink = installLifecycleTimingSink((record) =>
+		write(record.label, performance.timeOrigin + performance.now()),
+	);
+	return () => {
+		uninstallSink();
+		process.removeListener("exit", writeRemainingAtExit);
+		if (traceWriter === writer) traceWriter = undefined;
+	};
 }

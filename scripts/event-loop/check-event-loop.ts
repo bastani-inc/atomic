@@ -1,0 +1,432 @@
+#!/usr/bin/env node
+import { type CallGraph, CallGraphBuilder, type EdgeKind, type GraphFunction } from "./call-graph.ts";
+import {
+	type EventLoopPolicy,
+	type FunctionSelector,
+	INTERACTIVE_HOST_POLICY,
+	type ReviewedSelector,
+} from "./policy.ts";
+import { ANALYSIS_TSCONFIG, openProject, REPO_ROOT } from "./program.ts";
+import { type Arrival, pathTo, type Reached, reach, registrationsByRegistrar } from "./reachability.ts";
+import { findBacktrackingRisks } from "./regex-safety.ts";
+
+export interface RegexFinding {
+	readonly file: string;
+	readonly line: number;
+	readonly pattern: string;
+	readonly flags: string;
+	readonly kind: string;
+	readonly reason: string;
+	readonly function: string;
+}
+
+export interface Violation {
+	readonly file: string;
+	readonly line: number;
+	readonly api: string;
+	readonly category: string;
+	readonly function: string;
+	readonly inAsyncFunction: boolean;
+	readonly ownedBy: string | undefined;
+	readonly path: readonly string[];
+}
+
+export interface EventLoopReport {
+	readonly violations: readonly Violation[];
+	readonly deferred: readonly Violation[];
+	readonly regexFindings: readonly RegexFinding[];
+	readonly analysisErrors: readonly string[];
+	readonly warnings: readonly string[];
+	readonly policyErrors: readonly string[];
+	readonly reachableFunctions: number;
+	readonly processFunctions: number;
+	readonly interactiveRoots: number;
+	readonly graph: CallGraph;
+	readonly interactive: Reached;
+}
+
+function selectorKey(selector: FunctionSelector): string {
+	return `${selector.file}#${selector.name}`;
+}
+
+function indexByName(graph: CallGraph): Map<string, number> {
+	const index = new Map<string, number>();
+	for (const fn of graph.functions) index.set(`${fn.file}#${fn.name}`, fn.id);
+	return index;
+}
+
+function describe(fn: GraphFunction): string {
+	return `${fn.file}:${fn.line} ${fn.name}`;
+}
+
+function describeArrival(graph: CallGraph, id: number, arrival: Arrival): string {
+	const fn = graph.functions[id];
+	switch (arrival.kind) {
+		case "root":
+			return `${describe(fn)} [${arrival.reason}]`;
+		case "edge":
+			return `${describe(fn)} (${arrival.edge})`;
+		case "registered":
+			return `${describe(fn)} (registered with ${arrival.sink} at line ${arrival.line})`;
+	}
+}
+
+function startupModuleNodes(graph: CallGraph, startupModules: readonly string[], policyErrors: string[]): Set<number> {
+	const files = new Set<string>();
+	const stack: string[] = [];
+	for (const file of startupModules) {
+		if (!graph.modules.has(file)) policyErrors.push(`STARTUP_MODULES: no module ${file}`);
+		else stack.push(file);
+	}
+	while (stack.length > 0) {
+		const file = stack.pop() as string;
+		if (files.has(file)) continue;
+		files.add(file);
+		for (const imported of graph.staticImports.get(file) ?? []) stack.push(imported);
+	}
+	const nodes = new Set<number>();
+	for (const file of files) {
+		const id = graph.modules.get(file);
+		if (id !== undefined) nodes.add(id);
+	}
+	return nodes;
+}
+
+export function analyzeEventLoop(graph: CallGraph, policy: EventLoopPolicy = INTERACTIVE_HOST_POLICY): EventLoopReport {
+	const byName = indexByName(graph);
+	const policyErrors: string[] = [];
+	const resolve = (selector: FunctionSelector, list: string): number | undefined => {
+		const id = byName.get(selectorKey(selector));
+		if (id === undefined) policyErrors.push(`${list}: no function ${selectorKey(selector)}`);
+		return id;
+	};
+	const reviewed = (entries: readonly ReviewedSelector[], list: string) => {
+		const map = new Map<number, string>();
+		for (const entry of entries) {
+			if (entry.reason.trim().length < 20) policyErrors.push(`${list}: ${selectorKey(entry)} needs a reason`);
+			const id = resolve(entry, list);
+			if (id !== undefined) map.set(id, entry.reason);
+		}
+		return map;
+	};
+
+	const registrations = registrationsByRegistrar(graph);
+	const entries = new Map<number, string>();
+	for (const selector of policy.processEntries) {
+		const id = resolve(selector, "PROCESS_ENTRIES");
+		if (id !== undefined) entries.set(id, "process entry");
+	}
+	const otherModes = reviewed(policy.otherModes, "OTHER_MODES");
+	const process = reach(graph, entries, { stopAt: otherModes, followRegistrations: true }, registrations);
+
+	const roots = new Map<number, string>();
+	for (const root of policy.interfaceRoots) {
+		for (const member of root.members) {
+			const implementations = graph.implementationsOf(root.file, root.type, member);
+			if (implementations.length === 0)
+				policyErrors.push(`INTERFACE_ROOTS: no implementation of ${root.type}.${member}`);
+			for (const id of implementations) roots.set(id, `${root.type}.${member}`);
+		}
+	}
+	for (const [id, reason] of reviewed(policy.interactiveRoots, "INTERACTIVE_ROOTS")) roots.set(id, reason);
+	for (const registration of graph.sinkRegistrations) {
+		if (!process.arrivals.has(registration.registrar)) continue;
+		if (registration.continuation && entries.has(registration.registrar)) continue;
+		const registrar = graph.functions[registration.registrar];
+		for (const callback of registration.callbacks) {
+			if (!roots.has(callback)) {
+				roots.set(
+					callback,
+					`registered with ${registration.sink} by ${registrar.name} at ${registrar.file}:${registration.line}`,
+				);
+			}
+		}
+	}
+	const startupOnly = reviewed(policy.startupOnly, "STARTUP_ONLY");
+	const exitOnly = reviewed(policy.exitOnly, "EXIT_ONLY");
+	for (const [id, reason] of exitOnly) startupOnly.set(id, reason);
+	const loaderHooks = reviewed(policy.synchronousLoaderHooks, "SYNCHRONOUS_LOADER_HOOKS");
+	for (const [id, reason] of loaderHooks) startupOnly.set(id, reason);
+	const durableRecords = reviewed(policy.durableRecords, "DURABLE_RECORDS");
+	for (const id of otherModes.keys()) startupOnly.set(id, "other mode");
+	const loadedAtStartup = startupModuleNodes(graph, policy.startupModules, policyErrors);
+	const guarded = new Set<string>();
+	for (const edge of policy.guardedCalls) {
+		if (edge.reason.trim().length < 20) policyErrors.push(`GUARDED_CALLS: ${selectorKey(edge.from)} needs a reason`);
+		const from = resolve(edge.from, "GUARDED_CALLS");
+		const to = resolve(edge.to, "GUARDED_CALLS");
+		if (from === undefined || to === undefined) continue;
+		if (!graph.functions[from].edges.has(to)) {
+			policyErrors.push(`GUARDED_CALLS: ${selectorKey(edge.from)} no longer calls ${selectorKey(edge.to)}`);
+		}
+		guarded.add(`${from}>${to}`);
+	}
+	const skipEdge = (from: number, to: number, edge: EdgeKind) =>
+		(edge === "import" && loadedAtStartup.has(to)) || guarded.has(`${from}>${to}`);
+	const interactive = reach(
+		graph,
+		roots,
+		{
+			stopAt: startupOnly,
+			followRegistrations: true,
+			skipEdge,
+		},
+		registrations,
+	);
+	for (const [list, entries] of [
+		["STARTUP_ONLY", policy.startupOnly],
+		["EXIT_ONLY", policy.exitOnly],
+		["SYNCHRONOUS_LOADER_HOOKS", policy.synchronousLoaderHooks],
+	] as const) {
+		for (const entry of entries) {
+			const id = byName.get(selectorKey(entry));
+			if (id !== undefined && !interactive.stoppedFrom.has(id)) {
+				policyErrors.push(
+					`${list}: ${describe(graph.functions[id])} is no longer reached from an interactive root`,
+				);
+			}
+		}
+	}
+	for (const id of durableRecords.keys()) {
+		if (!interactive.arrivals.has(id)) {
+			policyErrors.push(
+				`DURABLE_RECORDS: ${describe(graph.functions[id])} is no longer reached from an interactive root`,
+			);
+		}
+	}
+	for (const id of otherModes.keys()) {
+		if (!process.stoppedFrom.has(id)) {
+			policyErrors.push(
+				`OTHER_MODES: ${describe(graph.functions[id])} is no longer reached from the process entries`,
+			);
+		}
+	}
+	for (const edge of policy.guardedCalls) {
+		const from = byName.get(selectorKey(edge.from));
+		if (from !== undefined && !interactive.arrivals.has(from)) {
+			policyErrors.push(
+				`GUARDED_CALLS: ${describe(graph.functions[from])} is no longer reached from an interactive root`,
+			);
+		}
+	}
+
+	const inPath = (file: string, path: string) => (path.endsWith("/") ? file.startsWith(path) : file === path);
+	const pathEntryOf = (file: string) => {
+		for (const area of policy.ownedElsewhere) {
+			for (const path of area.paths ?? []) if (inPath(file, path)) return { owner: area.owner, entry: path };
+		}
+		return undefined;
+	};
+	const ownerOf = (file: string) => pathEntryOf(file)?.owner;
+	const ownedByFunction = new Map<number, { owner: string; entry: string }>();
+	for (const area of policy.ownedElsewhere) {
+		for (const selector of area.functions ?? []) {
+			const id = resolve(selector, "OWNED_ELSEWHERE");
+			if (id !== undefined) ownedByFunction.set(id, { owner: area.owner, entry: selectorKey(selector) });
+		}
+	}
+	const ownedFunctions = new Map(startupOnly);
+	for (const fn of graph.functions) {
+		const owner = ownerOf(fn.file);
+		if (owner !== undefined) ownedFunctions.set(fn.id, owner);
+	}
+	const withoutOwnedAreas = reach(
+		graph,
+		roots,
+		{
+			stopAt: ownedFunctions,
+			followRegistrations: true,
+			skipEdge,
+		},
+		registrations,
+	);
+	const throughOwnedArea = (id: number) => {
+		for (const step of pathTo(interactive, id)) {
+			const owned = pathEntryOf(graph.functions[step.id].file);
+			if (owned !== undefined) return owned;
+		}
+		return undefined;
+	};
+	const usedOwnedEntries = new Set<string>();
+	const findings: Violation[] = [];
+	for (const [id] of interactive.arrivals) {
+		const fn = graph.functions[id];
+		if (durableRecords.has(id)) continue;
+		const owned =
+			pathEntryOf(fn.file) ??
+			ownedByFunction.get(id) ??
+			(withoutOwnedAreas.arrivals.has(id) ? undefined : throughOwnedArea(id));
+		const ownedBy = owned?.owner;
+		if (owned !== undefined && fn.blocking.length > 0) usedOwnedEntries.add(`${owned.owner}\0${owned.entry}`);
+		for (const use of fn.blocking) {
+			findings.push({
+				file: fn.file,
+				line: use.line,
+				api: use.api.label,
+				category: use.api.category,
+				function: fn.name,
+				inAsyncFunction: fn.isAsync,
+				ownedBy,
+				path: pathTo(withoutOwnedAreas.arrivals.has(id) ? withoutOwnedAreas : interactive, id).map((step) =>
+					describeArrival(graph, step.id, step.arrival),
+				),
+			});
+		}
+	}
+	findings.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
+	const violations = findings.filter((finding) => finding.ownedBy === undefined);
+	const deferred = findings.filter((finding) => finding.ownedBy !== undefined);
+	const regexFindings: RegexFinding[] = [];
+	const analysisErrors: string[] = [];
+	const regexesSeen = new Set<string>();
+	const reviewedRegexUsed = new Set<string>();
+	const reviewedRegex = new Map(policy.reviewedRegexes.map((entry) => [`${entry.file}\0${entry.pattern}`, entry]));
+	for (const entry of policy.reviewedRegexes) {
+		if (entry.reason.trim().length < 20)
+			policyErrors.push(`REVIEWED_REGEXES: /${entry.pattern}/ in ${entry.file} needs a reason`);
+	}
+	for (const [id] of interactive.arrivals) {
+		const fn = graph.functions[id];
+		for (const use of fn.regexes) {
+			const file = use.file ?? fn.file;
+			if (ownerOf(file) !== undefined) continue;
+			const location = `${file}:${use.line}\0${use.pattern}\0${use.flags}`;
+			if (regexesSeen.has(location)) continue;
+			regexesSeen.add(location);
+			let risks: ReturnType<typeof findBacktrackingRisks>;
+			try {
+				risks = findBacktrackingRisks(use.pattern, use.flags);
+			} catch (error) {
+				analysisErrors.push(
+					`${file}:${use.line} ${fn.name} /${use.pattern}/${use.flags}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+				continue;
+			}
+			if (risks.length === 0) continue;
+			const key = `${file}\0${use.pattern}`;
+			if (reviewedRegex.has(key)) {
+				reviewedRegexUsed.add(key);
+				continue;
+			}
+			for (const risk of risks) {
+				regexFindings.push({
+					file,
+					line: use.line,
+					pattern: use.pattern,
+					flags: use.flags,
+					kind: risk.kind,
+					reason: risk.reason,
+					function: fn.name,
+				});
+			}
+		}
+	}
+	for (const [key, entry] of reviewedRegex) {
+		if (!reviewedRegexUsed.has(key)) {
+			policyErrors.push(
+				`REVIEWED_REGEXES: /${entry.pattern}/ in ${entry.file} is not flagged on an interactive path`,
+			);
+		}
+	}
+	const warnings: string[] = [];
+	for (const area of policy.ownedElsewhere) {
+		for (const entry of [...(area.paths ?? []), ...(area.functions ?? []).map(selectorKey)]) {
+			if (!usedOwnedEntries.has(`${area.owner}\0${entry}`)) {
+				policyErrors.push(`OWNED_ELSEWHERE: nothing left for ${area.owner} in ${entry}; remove the entry`);
+			}
+		}
+	}
+	return {
+		violations,
+		deferred,
+		regexFindings,
+		analysisErrors,
+		warnings,
+		policyErrors,
+		reachableFunctions: interactive.arrivals.size,
+		processFunctions: process.arrivals.size,
+		interactiveRoots: roots.size,
+		graph,
+		interactive,
+	};
+}
+
+export function buildCallGraph(
+	policy: EventLoopPolicy = INTERACTIVE_HOST_POLICY,
+	tsconfig = ANALYSIS_TSCONFIG,
+	repoRoot = REPO_ROOT,
+): { graph: CallGraph; close(): void } {
+	const opened = openProject(tsconfig, repoRoot);
+	try {
+		const graph = new CallGraphBuilder(opened.project, {
+			repoRoot,
+			isAnalyzedFile: policy.isAnalyzedFile,
+			sinks: policy.sinks,
+			detachedCallbacks: policy.detachedCallbacks,
+		}).build();
+		return { graph, close: () => opened.close() };
+	} catch (error) {
+		opened.close();
+		throw error;
+	}
+}
+
+function main(argv: readonly string[]): number {
+	const started = performance.now();
+	const { graph, close } = buildCallGraph();
+	try {
+		const report = analyzeEventLoop(graph);
+		const explain = argv.indexOf("--explain");
+		if (explain !== -1) {
+			const target = argv[explain + 1] ?? "";
+			const id = indexByName(graph).get(target);
+			if (id === undefined) {
+				console.error(`No function ${target}`);
+				return 2;
+			}
+			const chain = pathTo(report.interactive, id);
+			if (chain.length === 0) console.log(`${target} is not reachable from an interactive entry point.`);
+			for (const step of chain) console.log(describeArrival(graph, step.id, step.arrival));
+			return 0;
+		}
+		if (argv.includes("--json")) {
+			const { graph: _graph, interactive: _interactive, ...serializable } = report;
+			console.log(JSON.stringify(serializable, null, 2));
+		} else {
+			for (const violation of report.violations) {
+				console.log(`${violation.file}:${violation.line} ${violation.api} in ${violation.function}`);
+				if (argv.includes("--paths")) for (const step of violation.path) console.log(`    ${step}`);
+			}
+			if (argv.includes("--deferred")) {
+				for (const finding of report.deferred) {
+					console.log(
+						`${finding.file}:${finding.line} ${finding.api} in ${finding.function} [owned by ${finding.ownedBy}]`,
+					);
+				}
+			}
+			for (const finding of report.regexFindings) {
+				console.log(
+					`${finding.file}:${finding.line} /${finding.pattern}/${finding.flags} backtracks (${finding.kind}) in ${finding.function}: ${finding.reason}`,
+				);
+			}
+			for (const error of report.analysisErrors) console.log(`regex analysis failed: ${error}`);
+			for (const warning of report.warnings) console.log(`warning: ${warning}`);
+			for (const error of report.policyErrors) console.log(`policy: ${error}`);
+			console.log(
+				`event-loop check: ${report.violations.length} blocking call(s), ${report.deferred.length} more owned by open changes, reachable from ${report.interactiveRoots} interactive entry points (${report.reachableFunctions} of ${graph.functions.length} functions reachable, ${report.processFunctions} in the process) in ${((performance.now() - started) / 1000).toFixed(1)} s`,
+			);
+		}
+		const failed =
+			report.violations.length +
+			report.regexFindings.length +
+			report.analysisErrors.length +
+			report.policyErrors.length;
+		return failed > 0 ? 1 : 0;
+	} finally {
+		close();
+	}
+}
+
+if (import.meta.main ?? process.argv[1]?.endsWith("check-event-loop.ts")) {
+	process.exitCode = main(process.argv.slice(2));
+}

@@ -17,4 +17,4 @@ const scenarios = {
 } as const;
 
 const [scenario, root, module] = process.argv.slice(2) as [keyof typeof scenarios, string, WorktreeModule];
-process.stdout.write(JSON.stringify(scenarios[scenario](root, module)));
+process.stdout.write(JSON.stringify(await scenarios[scenario](root, module)));

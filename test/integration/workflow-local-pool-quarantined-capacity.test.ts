@@ -69,7 +69,7 @@ async function liveGroup(): Promise<{ readonly group: number; kill(): Promise<vo
 async function quarantine(admission: SqlResourceAdmission, group: number): Promise<void> {
 	const permit = await admission.acquire("process");
 	await permit.bindProcess!({ kind: "unix-process-group", id: group });
-	const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("alive");
+	const probe = vi.spyOn(admissionHost, "processGroupState").mockResolvedValue("alive");
 	const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
 	const pause = vi.spyOn(admissionHost, "reapPause").mockResolvedValue();
 	try {

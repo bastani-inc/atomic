@@ -22,13 +22,14 @@ describe("outputPad and externalEditor settings", () => {
 		}
 	});
 
-	it("defaults outputPad to 1 and clamps to 0 | 1", () => {
+	it("defaults outputPad to 1 and clamps to 0 | 1", async () => {
 		const manager = SettingsManager.create(projectDir, agentDir);
 		expect(manager.getOutputPad()).toBe(1);
 		manager.setOutputPad(0);
 		expect(manager.getOutputPad()).toBe(0);
 		manager.setOutputPad(1);
 		expect(manager.getOutputPad()).toBe(1);
+		await manager.flush();
 	});
 
 	it("prefers externalEditor setting over env vars and platform default", () => {

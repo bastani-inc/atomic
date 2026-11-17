@@ -20,6 +20,7 @@ import { exitedProcess } from "../../../test/helpers/exited-process.js";
 import { HOLDER_TEMP_STALE_MS } from "../src/core/lock-holder.ts";
 import {
 	guardLockRemoval,
+	guardLockRemovalSync,
 	putBack,
 	removeStaleLock,
 	setNativeLocksForTesting,
@@ -137,15 +138,16 @@ describe("removing a stale lock (#5161)", () => {
 describe("proper-lockfile's removal of a stale lock (#5161)", () => {
 	it("never removes the lock another process took after both judged the old one stale (#5161)", () => {
 		staleLock(lockPath);
-		const first = guardLockRemoval(lockPath, STALE_MS);
-		const second = guardLockRemoval(lockPath, STALE_MS);
+		const first = guardLockRemovalSync(lockPath, STALE_MS);
+		const second = guardLockRemovalSync(lockPath, STALE_MS);
 		// Both judged the lock stale; the first removes it and another process takes the lock.
 		first.fs.rmdirSync(lockPath);
 		assert.equal(existsSync(lockPath), false);
 		const taken = anotherProcessTakesTheLock();
 		second.fs.rmdirSync(lockPath);
 		assert.equal(lockHolder(lockPath), taken, "the second removal leaves the live lock");
-		const done = new Promise<NodeJS.ErrnoException | null>((settle) => second.fs.rmdir(lockPath, settle));
+		const third = guardLockRemoval(lockPath, STALE_MS);
+		const done = new Promise<NodeJS.ErrnoException | null>((settle) => third.fs.rmdir(lockPath, settle));
 		return done.then((error) => {
 			assert.equal(error, null);
 			assert.equal(lockHolder(lockPath), taken, "so does an asynchronous removal");
@@ -172,12 +174,14 @@ describe("proper-lockfile's removal of a stale lock (#5161)", () => {
 	});
 
 	it("lets the holder release its own fresh lock once it is taken (#5161)", async () => {
+		const syncGuard = guardLockRemovalSync(lockPath, STALE_MS);
+		mkdirSync(lockPath);
+		syncGuard.done();
+		syncGuard.fs.rmdirSync(lockPath);
+		assert.equal(existsSync(lockPath), false);
 		const guard = guardLockRemoval(lockPath, STALE_MS);
 		mkdirSync(lockPath);
 		guard.done();
-		guard.fs.rmdirSync(lockPath);
-		assert.equal(existsSync(lockPath), false);
-		mkdirSync(lockPath);
 		const error = await new Promise<NodeJS.ErrnoException | null>((settle) => guard.fs.rmdir(lockPath, settle));
 		assert.equal(error, null);
 		assert.equal(existsSync(lockPath), false);
@@ -187,7 +191,7 @@ describe("proper-lockfile's removal of a stale lock (#5161)", () => {
 		const guard = guardLockRemoval(lockPath, STALE_MS);
 		const other = join(directory, "other");
 		mkdirSync(other);
-		guard.fs.rmdirSync(other);
+		guardLockRemovalSync(lockPath, STALE_MS).fs.rmdirSync(other);
 		assert.equal(existsSync(other), false);
 		mkdirSync(other);
 		const error = await new Promise<NodeJS.ErrnoException | null>((settle) => guard.fs.rmdir(other, settle));

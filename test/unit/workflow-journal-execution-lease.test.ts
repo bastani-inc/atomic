@@ -314,12 +314,10 @@ test("quit retires a cancelled tool's executor without waiting for caught-cancel
 		assert.equal(controls.active(runId).length, 0);
 		assert.equal(backend.getWorkflow(runId)?.status, "paused");
 		backend.finishPause.resolve();
-		// Drain the current turn without releasing author cleanup or using a timeout.
-		const observed = Promise.withResolvers<"pending">();
-		setImmediate(() => observed.resolve("pending"));
-		assert.equal(await Promise.race([quitting.then(() => "quit" as const), observed.promise]), "quit");
+		// Author cleanup stays pending until the end of the test: a quit that waited for it would never settle.
+		const quit = await quitting;
 		assert.equal(bodySettled, false);
-		assert.equal((await quitting).ok, true);
+		assert.equal(quit.ok, true);
 		assert.equal(controls.runControl(runId), undefined);
 		assert.equal(jobs.get(runId), undefined);
 		assert.equal(await backend.workflowOwnership(runId), "available");

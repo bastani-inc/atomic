@@ -1,6 +1,7 @@
 import { readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
 import type { ToolDefinition } from "../extensions/types.ts";
 import { type ConflictBlock, conflictEntries, refreshConflictFile } from "./conflict-registry.ts";
+import { withFileMutationQueue, withResolvingFileMutationQueue } from "./file-mutation-queue.ts";
 import { WriteSelectorError } from "./file-tool-errors.ts";
 import {
 	type InternalResourceContext,
@@ -155,6 +156,14 @@ async function writeConflictSelector(path: string, content: string, cwd: string)
 	return { content: [{ type: "text", text: `Resolved conflict ${target}` }], details: undefined };
 }
 
+let classifying: Promise<unknown> = Promise.resolve();
+
+function inCallOrder<T>(classify: () => Promise<T>): Promise<T> {
+	const result = classifying.then(classify);
+	classifying = result.catch(() => undefined);
+	return result;
+}
+
 /**
  * Atomic's `write` on top of pi's: archive members, SQLite rows, `conflict://` resolutions and internal URLs are
  * written here, and `local://` resolves to its file before pi's write runs. Every other path goes to `definition`
@@ -176,23 +185,28 @@ export function withWriteSelectors(
 					"SQLite write selectors must not include query parameters.",
 					{ path },
 				);
-			const sqlite = sqliteSelectorForPath(path, executionCwd);
+			const sqlite = await inCallOrder(() => sqliteSelectorForPath(path, executionCwd));
 			if (!sqlite && parseSqliteSelector(path)?.table)
 				throw new WriteSelectorError("sqlite-not-found", `SQLite database not found or is not SQLite: ${path}`, {
 					path,
 				});
 			if (sqlite)
-				return {
-					content: [{ type: "text", text: writeSqliteSelector(sqlite, content) }],
+				return withFileMutationQueue(sqlite.databasePath, async () => ({
+					content: [{ type: "text", text: await writeSqliteSelector(sqlite, content) }],
 					details: { meta: { sourcePath: sqlite.databasePath } },
-				};
+				}));
 			const archive = parseArchiveSelector(path);
 			if (archive) {
-				const resolvedArchive = resolveArchiveSelector(archive, executionCwd);
-				writeArchiveSelector(resolvedArchive, content);
+				const archivePath = await withResolvingFileMutationQueue(
+					async () => (await resolveArchiveSelector(archive, executionCwd)).archivePath,
+					async (resolvedPath) => {
+						await writeArchiveSelector({ ...archive, archivePath: resolvedPath }, content);
+						return resolvedPath;
+					},
+				);
 				return {
 					content: [{ type: "text", text: `Successfully wrote to ${path}` }],
-					details: { resolvedPath: resolvedArchive.archivePath },
+					details: { resolvedPath: archivePath },
 				};
 			}
 			if (path.startsWith("conflict://")) return writeConflictSelector(path, content, executionCwd);
@@ -203,7 +217,7 @@ export function withWriteSelectors(
 					{ path },
 				);
 			if (!isInternalUrl(path)) return definition.execute(toolCallId, params, signal, onUpdate, ctx);
-			const sourcePath = path.startsWith("local://") ? resolveInternalSelector(path, executionCwd) : undefined;
+			const sourcePath = path.startsWith("local://") ? await resolveInternalSelector(path, executionCwd) : undefined;
 			if (sourcePath) return definition.execute(toolCallId, { ...params, path: sourcePath }, signal, onUpdate, ctx);
 			await writeInternalSelector(path, executionCwd, content, ctx as InternalResourceContext | undefined);
 			return { content: [{ type: "text", text: `Successfully wrote to ${path}` }], details: {} };

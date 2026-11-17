@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
 import { convertBufferWithMarkit, convertFileWithMarkit } from "../../utils/markit.js";
+import { pathExists } from "./path-utils.ts";
 import { type ReadLineRange, selectExactReadRanges, selectReadRanges } from "./read-selectors.ts";
 
 const DOCUMENT_EXTENSIONS = /\.(?:pdf|doc|docx|ppt|pptx|xls|xlsx|rtf|epub|ipynb)(?:$|[?#])/i;
@@ -194,7 +194,9 @@ function documentExtension(source: string): string {
 
 async function extractMarkitDocument(buffer: Buffer, source: string): Promise<string> {
 	const ext = documentExtension(source);
-	const result = existsSync(source) ? await convertFileWithMarkit(source) : await convertBufferWithMarkit(buffer, ext);
+	const result = (await pathExists(source))
+		? await convertFileWithMarkit(source)
+		: await convertBufferWithMarkit(buffer, ext);
 	return result.ok ? result.content : `[Cannot read ${ext} file: ${result.error || "conversion failed"}]`;
 }
 

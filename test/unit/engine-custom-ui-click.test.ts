@@ -151,3 +151,45 @@ test("a click on a frame the engine has since replaced is dropped", async () => 
 		bridge.child.dispose();
 	}
 });
+
+test("a click on a row whose item the engine replaced is dropped, even with the same text, and survives frames that only animate", async () => {
+	const bridge = makeBridge();
+	const received: TuiMouseEvent[] = [];
+	let item = "x";
+	let spinner = "|";
+	let engineTui: { renderNow(): void } | undefined;
+	try {
+		void bridge.child.custom((tui) => {
+			engineTui = tui as unknown as { renderNow(): void };
+			return {
+				render: () => [`${spinner} item`],
+				invalidate() {},
+				paintedRowKey: (row: number) => (row === 0 ? item : undefined),
+				handleMouse(event: TuiMouseEvent) {
+					received.push(event);
+					return { handled: true };
+				},
+			} as MouseComponent & { paintedRowKey(row: number): string | undefined };
+		});
+		for (let attempt = 0; attempt < 200 && bridge.host() === undefined; attempt++) await sleep(5);
+		const host = bridge.host();
+		assert.ok(host && engineTui);
+		host.render(60);
+		assert.deepEqual(host.render(60), ["| item"]);
+
+		// The engine draws another item with the same text; the host has not painted that yet.
+		item = "x2";
+		engineTui.renderNow();
+		host.handleMouse?.(mouse("click", 0));
+		assert.equal(received.length, 0, "the click was aimed at the item the host still shows");
+
+		assert.deepEqual(host.render(60), ["| item"]);
+		// A frame that only animates the row keeps the item: a click on the frame before it still lands.
+		spinner = "/";
+		engineTui.renderNow();
+		host.handleMouse?.(mouse("click", 0));
+		assert.equal(received.length, 1);
+	} finally {
+		bridge.child.dispose();
+	}
+});

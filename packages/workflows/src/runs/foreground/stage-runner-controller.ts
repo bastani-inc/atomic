@@ -17,7 +17,7 @@ import {
 	parkWorkflowStageForRelease,
 	partitionByCredentials,
 	providerOfModelReference,
-	reportDebug,
+	reportDebugAsync as reportDebug,
 	type SessionManager,
 	type SessionStore,
 	type StructuredOutputCapture,
@@ -554,12 +554,16 @@ export class StageSessionController {
 		}
 	}
 
+	private stageDefaultCwd: string | undefined;
+	private stageOptionsReady: Promise<void> | undefined;
+
 	constructor(
 		private readonly opts: StageRunnerOpts,
 		private readonly meta: StageExecutionMeta,
-		private readonly effectiveStageOptions: StageOptions | undefined,
+		private effectiveStageOptions: StageOptions | undefined,
 		private readonly structuredOutputCapture: StructuredOutputCapture<unknown> | undefined,
 	) {
+		this.stageDefaultCwd = opts.defaultCwd;
 		this.modelCatalog =
 			opts.models === undefined
 				? undefined
@@ -589,6 +593,17 @@ export class StageSessionController {
 
 	get currentSession(): StageSessionRuntime | undefined {
 		return this.session;
+	}
+
+	useStageOptions(options: StageOptions | undefined, defaultCwd: string): void {
+		this.effectiveStageOptions = options;
+		this.stageDefaultCwd = defaultCwd;
+		if (this.autoModel !== undefined && this.meta.stageOptions?.model === "auto")
+			this.meta.stageOptions = { ...this.meta.stageOptions, model: this.autoModel };
+	}
+
+	waitForStageOptions(ready: Promise<void>): void {
+		this.stageOptionsReady = ready;
 	}
 
 	get currentPromptStartIndex(): number | undefined {
@@ -802,6 +817,7 @@ export class StageSessionController {
 
 	/** The stage's session, created or reopened as needed. Reopening a released stage calls this directly. */
 	private async openSession(consumer: AgentSessionConsumer): Promise<StageSessionRuntime> {
+		if (this.stageOptionsReady !== undefined) await this.stageOptionsReady;
 		if (this.bindingCleanupFailure !== undefined) throw this.bindingCleanupFailure;
 		if (this.sessionShutdownPromise !== undefined) {
 			const generation = this.abortGeneration;
@@ -1665,7 +1681,7 @@ export class StageSessionController {
 	readReleasedMessages(): Promise<StageSessionRuntime["messages"]> {
 		const options = this.effectiveStageOptions;
 		return readStoredStageMessages(
-			{ ...options, cwd: options?.cwd ?? this.opts.defaultCwd },
+			{ ...options, cwd: options?.cwd ?? this.stageDefaultCwd },
 			this.opts.defaultSessionDir,
 			this.reattachSessionId!,
 		);
@@ -3164,7 +3180,7 @@ export class StageSessionController {
 			restoreSavedModel: resumeOptions?.restoreSavedModel,
 			reattachSessionId: this.reattachSessionId,
 			sharedModelRuntime: this.sharedModelRuntime,
-			defaultCwd: this.opts.defaultCwd,
+			defaultCwd: this.stageDefaultCwd,
 		});
 		let created: StageSessionRuntime | StageSessionCreateResult;
 		try {

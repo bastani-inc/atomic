@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { FSWatcher } from "node:fs";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +14,7 @@ import {
 	stopThemeWatcher,
 	theme,
 } from "../src/modes/interactive/theme/theme.js";
+import * as fsWatch from "../src/utils/fs-watch.js";
 
 const THEME_RELOAD_TIMEOUT_MS = 5_000;
 
@@ -42,6 +44,7 @@ describe("DefaultResourceLoader theme color mode", () => {
 	});
 
 	afterEach(() => {
+		vi.restoreAllMocks();
 		stopThemeWatcher();
 		onThemeChange(() => {});
 		setRegisteredThemes([]);
@@ -150,8 +153,11 @@ describe("DefaultResourceLoader theme color mode", () => {
 		await loader.reload();
 		setRegisteredThemes(loader.getThemes().themes);
 
+		const watching = vi.spyOn(fsWatch, "watchWithErrorHandlerAsync");
 		assert.deepEqual(setTheme("capability-test", true), { success: true });
 		assert.equal(theme.bg("userMessageBg", "x"), "\x1b[48;2;60;53;68mx\x1b[49m");
+		// The watcher is installed off the event loop (on Windows, once its path is resolved); edit once it watches.
+		await watching.mock.results.at(-1)?.value;
 
 		const reloaded = new Promise<void>((resolve) => onThemeChange(resolve));
 		writeFileSync(
@@ -161,6 +167,53 @@ describe("DefaultResourceLoader theme color mode", () => {
 		await vi.waitFor(() => reloaded, { timeout: THEME_RELOAD_TIMEOUT_MS });
 
 		assert.equal(theme.bg("userMessageBg", "x"), "\x1b[48;2;68;60;80mx\x1b[49m");
+	});
+
+	/** Registers the custom theme the watcher tests select, with its file in the agent's themes directory. */
+	async function registerWatchedTheme(): Promise<void> {
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
+		vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
+		mkdirSync(join(agentDir, "themes"), { recursive: true });
+		writeFileSync(join(agentDir, "themes", "capability-test.json"), JSON.stringify(themeJson));
+		const loader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager: SettingsManager.inMemory(),
+			noExtensions: true,
+			noSkills: true,
+			noPromptTemplates: true,
+			noContextFiles: true,
+		});
+		await loader.reload();
+		setRegisteredThemes(loader.getThemes().themes);
+	}
+
+	it("closes a theme watcher that is installed only after watching stopped", async () => {
+		await registerWatchedTheme();
+		const installed = Promise.withResolvers<FSWatcher | null>();
+		const close = vi.fn();
+		vi.spyOn(fsWatch, "watchWithErrorHandlerAsync").mockImplementation(() => installed.promise);
+
+		assert.deepEqual(setTheme("capability-test", true), { success: true });
+		stopThemeWatcher();
+		installed.resolve({ close } as unknown as FSWatcher);
+
+		await vi.waitFor(() => assert.equal(close.mock.calls.length, 1, "the late watcher is closed"));
+	});
+
+	it("closes a theme watcher whose error arrived before it was installed", async () => {
+		await registerWatchedTheme();
+		const installed = Promise.withResolvers<FSWatcher | null>();
+		const close = vi.fn();
+		vi.spyOn(fsWatch, "watchWithErrorHandlerAsync").mockImplementation((_path, _listener, onError) => {
+			onError(new Error("watch failed while its path was resolved"));
+			return installed.promise;
+		});
+
+		assert.deepEqual(setTheme("capability-test", true), { success: true });
+		installed.resolve({ close } as unknown as FSWatcher);
+
+		await vi.waitFor(() => assert.equal(close.mock.calls.length, 1, "the failed watcher is closed"));
 	});
 
 	it("applies strict validation on initial load and reload", async () => {

@@ -11,28 +11,28 @@ const pathRecorder = vi.hoisted(() => ({ active: false, paths: [] as string[] })
 
 // Record every path handed to the fs probes the artifact scan uses, so the test
 // can prove the global sessions roots are never touched with an isolated agentDir.
-vi.mock("node:fs", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("node:fs")>();
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
 	const record = (target: fs.PathLike): void => {
 		if (pathRecorder.active) pathRecorder.paths.push(String(target));
 	};
 	const patched = {
-		existsSync: ((...args: Parameters<typeof actual.existsSync>) => {
+		access: ((...args: Parameters<typeof actual.access>) => {
 			record(args[0]);
-			return actual.existsSync(...args);
-		}) as typeof actual.existsSync,
-		statSync: ((...args: Parameters<typeof actual.statSync>) => {
+			return actual.access(...args);
+		}) as typeof actual.access,
+		stat: ((...args: Parameters<typeof actual.stat>) => {
 			record(args[0]);
-			return actual.statSync(...args);
-		}) as typeof actual.statSync,
-		lstatSync: ((...args: Parameters<typeof actual.lstatSync>) => {
+			return actual.stat(...args);
+		}) as typeof actual.stat,
+		lstat: ((...args: Parameters<typeof actual.lstat>) => {
 			record(args[0]);
-			return actual.lstatSync(...args);
-		}) as typeof actual.lstatSync,
-		readdirSync: ((...args: Parameters<typeof actual.readdirSync>) => {
+			return actual.lstat(...args);
+		}) as typeof actual.lstat,
+		readdir: ((...args: Parameters<typeof actual.readdir>) => {
 			record(args[0]);
-			return actual.readdirSync(...args);
-		}) as typeof actual.readdirSync,
+			return actual.readdir(...args);
+		}) as typeof actual.readdir,
 	};
 	return { ...actual, ...patched, default: { ...actual, ...patched } };
 });
@@ -92,7 +92,7 @@ function isolatedContext(sessionDir: string): ExtensionContext {
 
 interface MaintenanceHarness {
 	maintenance: ReturnType<typeof createSubagentStartupMaintenance>;
-	runStartupScan: () => void;
+	runStartupScan: () => Promise<void>;
 }
 
 function makeMaintenance(resultsDir: string): MaintenanceHarness {
@@ -111,14 +111,23 @@ function makeMaintenance(resultsDir: string): MaintenanceHarness {
 			return () => undefined;
 		},
 	});
+	const completed = Promise.withResolvers<void>();
 	return {
-		maintenance,
-		runStartupScan: () => {
+		maintenance: {
+			...maintenance,
+			scheduleStartupCleanup: (onDone) =>
+				maintenance.scheduleStartupCleanup(() => {
+					onDone?.();
+					completed.resolve();
+				}),
+		},
+		runStartupScan: async () => {
 			for (const task of macrotasks.splice(0)) task();
 			pathRecorder.paths.length = 0;
 			pathRecorder.active = true;
 			try {
 				for (const task of delayed.splice(0)) task();
+				await completed.promise;
 			} finally {
 				pathRecorder.active = false;
 			}
@@ -133,7 +142,7 @@ afterEach(() => {
 });
 
 describe("agentDir isolation of the global artifact scan", () => {
-	test("scans only the context-provided sessions root, never the global roots", () => {
+	test("scans only the context-provided sessions root, never the global roots", async () => {
 		const globalDir = makeAgentDirWithStaleArtifacts("atomic-isolation-global-", "session-g");
 		process.env[AGENT_DIR_ENV] = globalDir.agentDir;
 		const isolated = makeAgentDirWithStaleArtifacts("atomic-isolation-agent-", SAFE_CWD);
@@ -143,7 +152,7 @@ describe("agentDir isolation of the global artifact scan", () => {
 		try {
 			maintenance.scheduleStartupCleanup();
 			maintenance.cleanupSessionArtifactsDeferred(isolatedContext(sessionDir));
-			runStartupScan();
+			await runStartupScan();
 		} finally {
 			maintenance.stop();
 		}
@@ -155,7 +164,7 @@ describe("agentDir isolation of the global artifact scan", () => {
 		assert.deepEqual(touchedGlobal, [], "no fs call may touch a path under the global sessions roots");
 	});
 
-	test("a custom standalone session dir never broadens cleanup into its parent's siblings", () => {
+	test("a custom standalone session dir never broadens cleanup into its parent's siblings", async () => {
 		const globalDir = makeAgentDirWithStaleArtifacts("atomic-isolation-global-", "session-g");
 		process.env[AGENT_DIR_ENV] = globalDir.agentDir;
 		const parent = fs.mkdtempSync(join(tmpdir(), "atomic-isolation-custom-"));
@@ -177,7 +186,7 @@ describe("agentDir isolation of the global artifact scan", () => {
 			try {
 				maintenance.scheduleStartupCleanup();
 				maintenance.cleanupSessionArtifactsDeferred(isolatedContext(customSessionDir));
-				runStartupScan();
+				await runStartupScan();
 			} finally {
 				maintenance.stop();
 			}
@@ -192,7 +201,7 @@ describe("agentDir isolation of the global artifact scan", () => {
 		}
 	});
 
-	test("a later default-session context resets the root back to the env/global derivation", () => {
+	test("a later default-session context resets the root back to the env/global derivation", async () => {
 		const globalDir = makeAgentDirWithStaleArtifacts("atomic-isolation-global-", "session-g");
 		process.env[AGENT_DIR_ENV] = globalDir.agentDir;
 		const isolated = makeAgentDirWithStaleArtifacts("atomic-isolation-agent-", SAFE_CWD);
@@ -211,7 +220,7 @@ describe("agentDir isolation of the global artifact scan", () => {
 			maintenance.scheduleStartupCleanup();
 			maintenance.cleanupSessionArtifactsDeferred(isolatedContext(sessionDir));
 			maintenance.cleanupSessionArtifactsDeferred(defaultContext);
-			runStartupScan();
+			await runStartupScan();
 		} finally {
 			maintenance.stop();
 		}
@@ -223,14 +232,14 @@ describe("agentDir isolation of the global artifact scan", () => {
 		);
 	});
 
-	test("falls back to the env/global derivation when the context supplies no isolated root", () => {
+	test("falls back to the env/global derivation when the context supplies no isolated root", async () => {
 		const globalDir = makeAgentDirWithStaleArtifacts("atomic-isolation-global-", "session-g");
 		process.env[AGENT_DIR_ENV] = globalDir.agentDir;
 
 		const { maintenance, runStartupScan } = makeMaintenance(join(globalDir.agentDir, "results"));
 		try {
 			maintenance.scheduleStartupCleanup();
-			runStartupScan();
+			await runStartupScan();
 		} finally {
 			maintenance.stop();
 		}

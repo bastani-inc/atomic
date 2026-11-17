@@ -1,18 +1,23 @@
-import { mkdirSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { getAgentDir, SettingsManager, selectProcessStorage } from "@bastani/atomic";
+import { getAgentDir, SettingsManager, selectProcessStorage, selectProcessStorageAsync } from "@bastani/atomic";
 import {
 	defaultJournalStoreDirectory,
+	defaultJournalStoreDirectoryAsync,
 	defaultSessionDatabasePath,
+	defaultSessionDatabasePathAsync,
 	defaultSharedStoragePath,
+	defaultSharedStoragePathAsync,
 	type RunJournalOption,
 	StorageConfigError,
 	StorageProvider,
 	type StorageSelection,
 	type StorageSettingsSelection,
 	selectStorage,
+	selectStorageAsync,
 	selectsDefaultJournalStore,
 	storagePathBaseDir,
+	storagePathBaseDirAsync,
 } from "@bastani/atomic/storage";
 import { MemoryRunJournal } from "./memory-run-journal.js";
 import { SqlRunJournal } from "./sql-run-journal.js";
@@ -66,6 +71,31 @@ export interface RunJournalResolutionOptions {
 	agentDir?: string;
 }
 
+function checkedRunJournal(journal: RunJournal): RunJournal {
+	if (
+		[
+			journal.createRun,
+			journal.getRun,
+			journal.listRuns,
+			journal.acquire,
+			journal.takeover,
+			journal.takeoverExpired,
+			journal.leaseState,
+			journal.renew,
+			journal.release,
+			journal.append,
+			journal.read,
+			journal.readKey,
+			journal.deleteOwnedRun,
+			journal.deleteRun,
+			journal.close,
+		].some((hook) => typeof hook !== "function")
+	) {
+		throw new StorageConfigError("sdk", "journal", "invalid-journal");
+	}
+	return journal;
+}
+
 export function selectRunJournal(options: RunJournalResolutionOptions = {}): StorageSelection | RunJournal {
 	const agentDir = options.agentDir ?? getAgentDir();
 	let loadedSettings = options.settings;
@@ -73,29 +103,7 @@ export function selectRunJournal(options: RunJournalResolutionOptions = {}): Sto
 		(loadedSettings ??= SettingsManager.create(process.cwd(), agentDir).getSettings());
 	if (options.journal !== undefined) {
 		if (options.journal !== null && typeof options.journal === "object" && "createRun" in options.journal) {
-			const journal = options.journal;
-			if (
-				[
-					journal.createRun,
-					journal.getRun,
-					journal.listRuns,
-					journal.acquire,
-					journal.takeover,
-					journal.takeoverExpired,
-					journal.leaseState,
-					journal.renew,
-					journal.release,
-					journal.append,
-					journal.read,
-					journal.readKey,
-					journal.deleteOwnedRun,
-					journal.deleteRun,
-					journal.close,
-				].some((hook) => typeof hook !== "function")
-			) {
-				throw new StorageConfigError("sdk", "journal", "invalid-journal");
-			}
-			return journal;
+			return checkedRunJournal(options.journal);
 		}
 		return selectStorage(options.journal, "sdk", "journal", () =>
 			defaultSessionDatabasePath(agentDir, getSettings()),
@@ -126,8 +134,59 @@ export function selectRunJournal(options: RunJournalResolutionOptions = {}): Sto
 	return resolved;
 }
 
+export async function selectRunJournalAsync(
+	options: RunJournalResolutionOptions = {},
+): Promise<StorageSelection | RunJournal> {
+	const agentDir = options.agentDir ?? getAgentDir();
+	let loadedSettings: Promise<RunJournalSettings> | undefined;
+	const getSettings = (): Promise<RunJournalSettings> =>
+		(loadedSettings ??=
+			options.settings === undefined
+				? SettingsManager.createAsync(process.cwd(), agentDir).then((manager) => manager.getSettings())
+				: Promise.resolve(options.settings));
+	if (options.journal !== undefined) {
+		if (options.journal !== null && typeof options.journal === "object" && "createRun" in options.journal) {
+			return checkedRunJournal(options.journal);
+		}
+		const journalOption = options.journal;
+		return selectStorageAsync(journalOption, "sdk", "journal", async () =>
+			defaultSessionDatabasePathAsync(agentDir, await getSettings()),
+		);
+	}
+	const processChoice = await selectProcessStorageAsync("journal", agentDir, undefined, getSettings);
+	if (processChoice !== undefined) {
+		origins.set(processChoice.selection, { source: processChoice.source, field: processChoice.field });
+		return processChoice.selection;
+	}
+	const settings = await getSettings();
+	const workflows = settings.workflows;
+	const journal = Array.isArray(workflows) ? undefined : workflows?.journal;
+	const value = journal !== undefined ? journal : settings.storage;
+	if (value === undefined || selectsDefaultJournalStore(journal)) {
+		return { kind: "sharded", dir: await defaultJournalStoreDirectoryAsync(agentDir, settings) };
+	}
+	const selection = await selectStorageAsync(
+		value,
+		"settings",
+		journal !== undefined ? "workflows.journal" : "storage",
+		() =>
+			journal !== undefined
+				? defaultSessionDatabasePathAsync(agentDir, settings)
+				: defaultSharedStoragePathAsync(agentDir, settings),
+	);
+	const resolved =
+		selection.kind === "sqlite" && !isAbsolute(selection.path)
+			? {
+					...selection,
+					path: join(await storagePathBaseDirAsync(selection.path, agentDir, settings), selection.path),
+				}
+			: selection;
+	origins.set(resolved, { source: "settings" });
+	return resolved;
+}
+
 export async function resolveRunJournal(options: RunJournalResolutionOptions = {}): Promise<RunJournal> {
-	let selection = selectRunJournal(options);
+	let selection = await selectRunJournalAsync(options);
 	const usesDefaultHome =
 		options.journal === undefined || !("path" in options.journal) || (options.journal.path ?? "") === "";
 	if (
@@ -135,8 +194,8 @@ export async function resolveRunJournal(options: RunJournalResolutionOptions = {
 		(selection.kind === "sharded" || selection.kind === "sqlite") &&
 		usesDefaultHome
 	) {
-		mkdirSync(options.agentDir ?? getAgentDir(), { recursive: true });
-		selection = selectRunJournal(options);
+		await mkdir(options.agentDir ?? getAgentDir(), { recursive: true });
+		selection = await selectRunJournalAsync(options);
 	}
 	return openSelectedRunJournal(selection, options.agentDir);
 }

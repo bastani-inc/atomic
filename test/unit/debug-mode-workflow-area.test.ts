@@ -218,13 +218,13 @@ async function capture(
 	source: "setting" | "ATOMIC_DEBUG" | "off",
 	ownVariable: boolean,
 	trigger: Trigger,
-): Promise<{ readonly log: ReturnType<DebugLogFixture["records"]>; readonly stderr: unknown[][] }> {
+): Promise<{ readonly log: Awaited<ReturnType<DebugLogFixture["records"]>>; readonly stderr: unknown[][] }> {
 	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 	try {
 		return await withDebugLog(source, async (log) => {
 			if (ownVariable) vi.stubEnv("ATOMIC_WORKFLOW_DEBUG", "1");
 			await trigger();
-			return { log: log.records(), stderr: [...warn.mock.calls] };
+			return { log: await log.records(), stderr: [...warn.mock.calls] };
 		});
 	} finally {
 		warn.mockRestore();

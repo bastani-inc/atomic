@@ -27,6 +27,8 @@ import { bunExecutable } from "../../../../../test/helpers/runtime.ts";
  * below the suite-wide per-test budget so a hang still fails as a test timeout.
  */
 const WATCHER_CHILD_TIMEOUT_MS = 10_000;
+/** Bound on the child's 10 ms waits for the theme watcher, well inside the child's own timeout. */
+const WATCHER_INSTALL_TURNS = 500;
 describe("issue #2791 fs.watch error event crashes process", () => {
 	let tempRoot: string;
 
@@ -74,6 +76,9 @@ process.env.ATOMIC_CODING_AGENT_DIR = ${JSON.stringify(agentDir)};
 
 const { setTheme, stopThemeWatcher } = await import(${JSON.stringify(themeModuleUrl)});
 setTheme("custom-test", true);
+
+// The watcher is installed off the event loop (on Windows, once its path is resolved).
+for (let turn = 0; !fsWatcher && turn < ${WATCHER_INSTALL_TURNS}; turn++) await new Promise((resolve) => setTimeout(resolve, 10));
 
 if (!fsWatcher) {
 	process.stderr.write("theme fs.watch was not called\\n");

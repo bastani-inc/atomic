@@ -119,6 +119,8 @@ export type InteractiveEngineMessage =
 			scrollRequest?: WidgetScrollRequest;
 			/** The frame's number, counting the component's frames from 1; a click names the frame it landed on. */
 			frame?: number;
+			/** What the component reports it drew on each row, for components that name their rows. */
+			rowKeys?: string[];
 	  }
 	| { type: "engine_custom_input_result"; componentId: string; requestId: number; handled: boolean }
 	| { type: "engine_custom_invalidate"; componentId: string }
@@ -220,6 +222,8 @@ export type InteractiveEngineCommand =
 			type: "engine_custom_click";
 			componentId: string;
 			frame: number;
+			/** What the frame drew on the clicked row, for a component that names its rows. */
+			rowKey?: string;
 			x: number;
 			y: number;
 			width: number;
@@ -654,6 +658,9 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 						requestId: value.requestId,
 						lines: value.lines,
 						...(isCellCount(value.frame) ? { frame: value.frame } : {}),
+						...(Array.isArray(value.rowKeys) && value.rowKeys.every((key) => typeof key === "string")
+							? { rowKeys: value.rowKeys as string[] }
+							: {}),
 						...(isJsonObject(value.scrollRequest) &&
 						typeof value.scrollRequest.version === "number" &&
 						typeof value.scrollRequest.scrollTop === "number"
@@ -825,6 +832,7 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 			type: value.type,
 			componentId: value.componentId,
 			frame: value.frame,
+			...(typeof value.rowKey === "string" ? { rowKey: value.rowKey } : {}),
 			x: value.x,
 			y: value.y,
 			width: value.width,

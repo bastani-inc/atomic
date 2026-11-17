@@ -72,11 +72,11 @@ function isCommandCatalog(
 	return "skillCommands" in value && Array.isArray(value.skillCommands);
 }
 
-let fdPath: string | null | undefined;
+let fdPath: Promise<string | null> | undefined;
 
 /** Located once per process: finding fd on `PATH` runs it, which a keystroke must not wait on each time. */
-function sharedFdPath(): string | null {
-	if (fdPath === undefined) fdPath = getToolPath("fd");
+function sharedFdPath(): Promise<string | null> {
+	fdPath ??= getToolPath("fd");
 	return fdPath;
 }
 
@@ -125,10 +125,11 @@ export function createSessionSkillAutocompleteProvider(
 				}
 				catalog = getSessionCommandCatalog(session);
 			}
+			const mentions = (lines[cursorLine] ?? "").slice(0, cursorCol).includes("@");
 			return createChatAutocompleteProvider(
 				[...BUILTIN_SLASH_COMMANDS.filter((command) => command.name === "tasks"), ...catalog.skillCommands],
 				catalog.cwd,
-				sharedFdPath(),
+				mentions ? await sharedFdPath() : null,
 			).getSuggestions(lines, cursorLine, cursorCol, options);
 		},
 		applyCompletion: (...args) => completion.applyCompletion(...args),

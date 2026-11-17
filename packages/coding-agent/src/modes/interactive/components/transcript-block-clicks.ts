@@ -7,7 +7,8 @@ export type ContainerMouseResult = ReturnType<Container["handleMouse"]>;
 
 /** A transcript block, such as a tool call or a finished-agent card, that a click on its header expands and collapses. */
 export interface ClickExpandableBlock extends Component {
-	readonly expandsOnClick: true;
+	/** Whether a click on the block's header expands it; a wrapper is a block only while it wraps one. */
+	readonly expandsOnClick: boolean;
 	isExpanded(): boolean;
 	setExpanded(expanded: boolean): void;
 	/**

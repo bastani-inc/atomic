@@ -38,7 +38,7 @@ import { openAICodexResponsesApi } from "./api/openai-codex-responses.lazy.ts";
 import { openAICompletionsApi } from "./api/openai-completions.lazy.ts";
 import { openAIResponsesApi } from "./api/openai-responses.lazy.ts";
 import { piMessagesApi } from "./api/pi-messages.lazy.ts";
-import { getEnvApiKey } from "./env-api-keys.ts";
+import { getDirectEnvApiKey } from "./env-api-keys.ts";
 import type { ModelsApiStreamOptions } from "./models.ts";
 import { builtinModels, getBuiltinModel, getBuiltinModels, getBuiltinProviders } from "./providers/all.ts";
 
@@ -226,7 +226,7 @@ function withEnvApiKey<TOptions extends StreamOptions>(
 	options: TOptions | undefined,
 ): TOptions | undefined {
 	if (hasExplicitApiKey(options?.apiKey)) return options;
-	const apiKey = getEnvApiKey(model.provider, options?.env);
+	const apiKey = getDirectEnvApiKey(model.provider, options?.env);
 	if (!apiKey || apiKey === AMBIENT_AUTH_MARKER) return options;
 	return { ...options, apiKey } as TOptions;
 }

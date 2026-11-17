@@ -50,10 +50,11 @@ const WORKFLOW_MODULE_GRAPH_RELOAD_TIMEOUT_MS = 120_000;
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const workflowsSrc = join(repoRoot, "packages/workflows/src");
 const graphEntry = join(repoRoot, "test/helpers/workflow-graph-generation.ts");
+let transpileCacheDir: string | undefined;
 const hostLoaderTransform = createTypeScriptSourceSpecifierTransform(
 	createJiti,
 	import.meta.url,
-	extensionLoaderTestHooks.getTranspileCacheDir,
+	() => transpileCacheDir,
 );
 
 const SINGLETON_SOURCES = {
@@ -163,8 +164,8 @@ function createTrackedEventBus(): {
 
 let graphGeneration = 0;
 
-function hostAliases(): Record<string, string> {
-	const aliases = { ...extensionLoaderTestHooks.getAliases() };
+async function hostAliases(): Promise<Record<string, string>> {
+	const aliases = { ...(await extensionLoaderTestHooks.getAliases()) };
 	delete aliases["@bastani/atomic"];
 	return aliases;
 }
@@ -180,6 +181,7 @@ async function evaluateWorkflowGraph(): Promise<WorkflowGeneration> {
 	// binary loader injects the same object via virtualModules; /reload must
 	// not re-evaluate `@bastani/atomic` into a second primitive.
 	const atomic = await import("@bastani/atomic");
+	transpileCacheDir = await extensionLoaderTestHooks.getTranspileCacheDir();
 	graphGeneration += 1;
 	const cacheKey = `${graphGeneration}:${Date.now()}:${Math.random()}`;
 	const jiti = createJiti(import.meta.url, {
@@ -187,7 +189,7 @@ async function evaluateWorkflowGraph(): Promise<WorkflowGeneration> {
 		tryNative: false,
 		fsCache: false,
 		transform: hostLoaderTransform,
-		alias: hostAliases(),
+		alias: await hostAliases(),
 		virtualModules: { "@bastani/atomic": atomic },
 	});
 
@@ -202,6 +204,7 @@ async function evaluateWorkflowGraph(): Promise<WorkflowGeneration> {
  * virtual module here would conceal the split that lost canonical bus identity.
  */
 async function evaluateInstalledWorkflowGraph(): Promise<WorkflowGeneration> {
+	transpileCacheDir = await extensionLoaderTestHooks.getTranspileCacheDir();
 	graphGeneration += 1;
 	const cacheKey = `installed:${graphGeneration}:${Date.now()}:${Math.random()}`;
 	const jiti = createJiti(import.meta.url, {
@@ -209,7 +212,7 @@ async function evaluateInstalledWorkflowGraph(): Promise<WorkflowGeneration> {
 		tryNative: false,
 		fsCache: false,
 		transform: hostLoaderTransform,
-		alias: extensionLoaderTestHooks.getAliases(),
+		alias: await extensionLoaderTestHooks.getAliases(),
 	});
 	return (await jiti.import(cacheBustedHref(graphEntry, cacheKey))) as WorkflowGeneration;
 }

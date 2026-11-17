@@ -61,7 +61,7 @@ describe("slash commands split their name at the first whitespace (#5192)", () =
 			assert.deepEqual(harness.session.messages, []);
 		});
 
-		test(`expands a skill whose arguments follow a ${label} (#5192)`, () => {
+		test(`expands a skill whose arguments follow a ${label} (#5192)`, async () => {
 			const tempDir = join(tmpdir(), `atomic-5192-skill-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 			mkdirSync(tempDir, { recursive: true });
 			cleanup.push(() => rmSync(tempDir, { recursive: true, force: true }));
@@ -76,7 +76,7 @@ describe("slash commands split their name at the first whitespace (#5192)", () =
 				sourceInfo: createSyntheticSourceInfo(filePath, { source: "local" }),
 			};
 
-			const expanded = expandSkillCommand(buildSkillCatalog([skill]), `/skill:tdd${separator}fix the\nbug`);
+			const expanded = await expandSkillCommand(buildSkillCatalog([skill]), `/skill:tdd${separator}fix the\nbug`);
 
 			assert.match(expanded, /^<skill name="tdd" /);
 			assert.ok(expanded.endsWith("</skill>\n\nfix the\nbug"), expanded);

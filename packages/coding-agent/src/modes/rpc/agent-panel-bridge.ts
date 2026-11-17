@@ -591,6 +591,15 @@ export function bindAgentPanel(
 						cachedHiddenBelow = -1;
 						cachedLines = [];
 					},
+					/** The id of the row last drawn on `row`, so a click on a row whose item changed is not taken. */
+					paintedRowKey(row: number): string | undefined {
+						if (!visible || painted === undefined) return undefined;
+						return agentPanelRowIdAtLine(
+							painted.rows,
+							{ hiddenBelow: painted.hiddenBelow, showMain: painted.main },
+							row,
+						);
+					},
 					handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 						if (!visible || inspector === undefined || painted === undefined || !isSingleLeftClick(event))
 							return undefined;
@@ -933,6 +942,12 @@ export async function showAgentPanel(
 					invalidate() {
 						cachedRows = undefined;
 						cachedRowLines = [];
+					},
+					/** The id of the row last drawn on `row`, so a click on a row whose item changed is not taken. */
+					paintedRowKey(row: number): string | undefined {
+						if (paintedFocus === undefined) return undefined;
+						const { rows, ...view } = paintedFocus;
+						return agentPanelRowIdAtLine(rows, view, row);
 					},
 					handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 						if (focus.helpOpen || paintedFocus === undefined || !isSingleLeftClick(event)) return undefined;

@@ -24,6 +24,7 @@ import type { Attachment, Message, SessionInfo } from "../../packages/intercom/t
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { registerExecutionParentAskHandoff } from "../../packages/subagents/src/runs/foreground/execution-parent-ask-handoff.js";
+import { checkLaunchCwd } from "../../packages/subagents/src/shared/launch-cwd.js";
 import type { SingleResult } from "../../packages/subagents/src/shared/types.js";
 import { sleep } from "../helpers/runtime.js";
 
@@ -1039,6 +1040,7 @@ for (const kind of ["intercom", "supervisor"] as const) {
 			const childTarget = "subagent-worker-joined-1";
 			const recovered: SingleResult[] = [];
 			const recoveredExit = Promise.withResolvers<SingleResult>();
+			const cwdVerdict = await checkLaunchCwd(dir);
 			const foreground = runSync(
 				dir,
 				[{ ...agentConfig(), systemPrompt: "Intercom orchestration channel" }],
@@ -1046,6 +1048,7 @@ for (const kind of ["intercom", "supervisor"] as const) {
 				"task",
 				{
 					cwd: dir,
+					cwdVerdict,
 					runId: "joined",
 					index: 0,
 					intercomSessionName: childTarget,

@@ -243,6 +243,7 @@ export interface StageRunnerOpts {
 	adapters: StageAdapters;
 	/** Options passed to ctx.stage(name, options?). Forwarded to createAgentSession except mcp. */
 	stageOptions?: StageOptions;
+	stageOptionsReady?: Promise<StageOptions | undefined>;
 	/** Run ID of the containing workflow execution — forwarded to session adapter metadata. */
 	runId: string;
 	/** Runtime-owned home group shared by this top-level workflow invocation. */

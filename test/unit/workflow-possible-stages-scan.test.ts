@@ -21,17 +21,21 @@ function writeFixture(name: string, source: string): string {
 	return filePath;
 }
 
-function scanFile(name: string, source: string, options?: { readonly maxDepth?: number }): PossibleStagesScanResult {
-	return scanPossibleStagesFromSource(writeFixture(name, source), options);
+async function scanFile(
+	name: string,
+	source: string,
+	options?: { readonly maxDepth?: number },
+): Promise<PossibleStagesScanResult> {
+	return await scanPossibleStagesFromSource(writeFixture(name, source), options);
 }
 
 // Regression #3001: warm/rest indexed maps must advertise names, not just hide warnings.
-test("#3001 builtin warm-first groups expose conservative names", () => {
+test("#3001 builtin warm-first groups expose conservative names", async () => {
 	for (const [name, expected] of [
 		["adversarial-verification", "verifier-*-*-*"],
 		["tournament", "judge-*-*-*-r*"],
 	]) {
-		const result = scanPossibleStagesFromSource(join(BUILTIN_DIR, `${name}.ts`));
+		const result = await scanPossibleStagesFromSource(join(BUILTIN_DIR, `${name}.ts`));
 		assert.ok(result.stages.includes(expected!), JSON.stringify(result));
 		assert.equal(
 			result.warnings.some((warning) => /"(?:warmSteps|restSteps)"/.test(warning)),
@@ -44,7 +48,7 @@ describe("#3001 call-scoped discovery metadata", () => {
 	for (const extension of ["ts", "js"]) {
 		for (const group of ["warmSteps", "restSteps"]) {
 			// Regression #3001: test each indexed group independently, including stripped non-null assertions.
-			test(`${extension} ${group} follows a named import alias without inventing other names`, () => {
+			test(`${extension} ${group} follows a named import alias without inventing other names`, async () => {
 				const stem = `metadata-${extension}-${group}`;
 				writeFixture(
 					`${stem}-helper.${extension}`,
@@ -56,7 +60,7 @@ describe("#3001 call-scoped discovery metadata", () => {
 					}
 				`,
 				);
-				const result = scanFile(
+				const result = await scanFile(
 					`${stem}.${extension}`,
 					`
 					import { fanOut as launch } from "./${stem}-helper.js"
@@ -79,7 +83,7 @@ describe("#3001 call-scoped discovery metadata", () => {
 		`const alias = launch; await alias(ctx, opaque(), { possibleStageNames: ["wrong"] });`,
 		`function nested(launch) { launch(ctx, opaque(), { possibleStageNames: ["wrong"] }); }`,
 	]) {
-		test(`unproven helper caller retains diagnostics: ${extra}`, () => {
+		test(`unproven helper caller retains diagnostics: ${extra}`, async () => {
 			writeFixture(
 				"opaque-helper.ts",
 				`export async function fanOut(ctx, steps, options) {
@@ -87,7 +91,7 @@ describe("#3001 call-scoped discovery metadata", () => {
 				await ctx.parallel(warmSteps, { possibleStageNames: options.possibleStageNames });
 			}`,
 			);
-			const result = scanFile(
+			const result = await scanFile(
 				"opaque-caller.ts",
 				`
 				import { fanOut as launch } from "./opaque-helper.js";
@@ -102,7 +106,7 @@ describe("#3001 call-scoped discovery metadata", () => {
 		});
 	}
 	// Regression #3001: renamed exports are not proof that all calls carry the named import's metadata.
-	test("#3001 renamed helper exports do not borrow another caller's metadata", () => {
+	test("#3001 renamed helper exports do not borrow another caller's metadata", async () => {
 		writeFixture(
 			"export-helper.ts",
 			`export async function fanOut(ctx, steps, options) {
@@ -111,7 +115,7 @@ describe("#3001 call-scoped discovery metadata", () => {
 		export { fanOut as another };
 		`,
 		);
-		const result = scanFile(
+		const result = await scanFile(
 			"export-caller.ts",
 			`
 			import { fanOut, another } from "./export-helper.js";
@@ -125,14 +129,14 @@ describe("#3001 call-scoped discovery metadata", () => {
 		assert.equal(result.warnings.length, 1);
 	});
 	// Regression #3001: a namespace use cannot be covered by another caller's literal list.
-	test("#3001 namespace helper calls retain diagnostics beside an annotated named import", () => {
+	test("#3001 namespace helper calls retain diagnostics beside an annotated named import", async () => {
 		writeFixture(
 			"namespace-helper.ts",
 			`export async function fanOut(ctx, steps, options) {
 			await ctx.parallel(opaque, { possibleStageNames: options.possibleStageNames });
 		}`,
 		);
-		const result = scanFile(
+		const result = await scanFile(
 			"namespace-caller.ts",
 			`
 			import { fanOut as launch } from "./namespace-helper.js";
@@ -147,8 +151,8 @@ describe("#3001 call-scoped discovery metadata", () => {
 		assert.equal(result.warnings.length, 1);
 	});
 	// Regression #3001: an options alias must not make stale caller metadata authoritative.
-	test("#3001 options alias mutation retains the opaque-array warning", () => {
-		const result = scanFile(
+	test("#3001 options alias mutation retains the opaque-array warning", async () => {
+		const result = await scanFile(
 			"metadata-mutation.ts",
 			`
 			async function fanOut(ctx, steps, options) {
@@ -172,8 +176,8 @@ for (const extension of ["ts", "js"]) {
 		"arguments[2].possibleStageNames = ['actual-*'];",
 		"const alias = arguments[2]; alias.possibleStageNames = ['actual-*'];",
 	]) {
-		test(`#3001 ${extension} arguments alias retains both warnings: ${access}`, () => {
-			const result = scanFile(
+		test(`#3001 ${extension} arguments alias retains both warnings: ${access}`, async () => {
+			const result = await scanFile(
 				`arguments-${extension}-${access.length}.${extension}`,
 				`
 				async function fan(ctx, steps, options) {
@@ -203,8 +207,8 @@ for (const extension of ["ts", "js"]) {
 		"ignored = options.possibleStageNames.splice(0, 1, 'actual-*')",
 		"{ ignored = (options.possibleStageNames = ['actual-*']) } = {}",
 	]) {
-		test(`#3001 ${extension} parameter side effect retains both warnings: ${initializer}`, () => {
-			const result = scanFile(
+		test(`#3001 ${extension} parameter side effect retains both warnings: ${initializer}`, async () => {
+			const result = await scanFile(
 				`parameter-${extension}-${initializer.length}.${extension}`,
 				`
 				async function fan(ctx, steps, options, ${initializer}) {
@@ -237,8 +241,8 @@ for (const extension of ["ts", "js"]) {
 		[`options.reset\`\${1}\`;`, "reset: function() { this.possibleStageNames = ['actual-*']; }"],
 		["const reset = options.reset; reset();", "reset: () => sideEffect()"],
 	]) {
-		test(`#3001 ${extension} options side effect retains both warnings: ${access}`, () => {
-			const result = scanFile(
+		test(`#3001 ${extension} options side effect retains both warnings: ${access}`, async () => {
+			const result = await scanFile(
 				`side-effect-${extension}-${access.length}.${extension}`,
 				`
 				async function fan(ctx, steps, options) {
@@ -294,8 +298,8 @@ for (const extension of ["ts", "js"]) {
 			"const { concurrency, ...rest } = options; const copy = rest; copy.possibleStageNames[0] = 'actual';",
 		],
 	]) {
-		test(`#3001 ${extension} ${variant} metadata write retains both warnings`, () => {
-			const result = scanFile(
+		test(`#3001 ${extension} ${variant} metadata write retains both warnings`, async () => {
+			const result = await scanFile(
 				`write-${extension}-${variant}.${extension}`,
 				`
 				async function fan(ctx, steps, options) {
@@ -330,8 +334,8 @@ for (const extension of ["ts", "js"]) {
 		"*possibleStageNames() {}",
 		"async *possibleStageNames() {}",
 	]) {
-		test(`#3001 ${extension} computed override retains both warnings: ${override}`, () => {
-			const result = scanFile(
+		test(`#3001 ${extension} computed override retains both warnings: ${override}`, async () => {
+			const result = await scanFile(
 				`computed-${extension}-${override.length}.${extension}`,
 				`
 				async function fan(ctx, steps, options) {
@@ -356,7 +360,7 @@ for (const extension of ["ts", "js"]) {
 // Regression #3001: expression-local names do not prove an imported helper is unused.
 for (const extension of ["ts", "js"]) {
 	for (const bound of [false, true]) {
-		test(`#3001 ${extension} ${bound ? "bound" : "exported"} function expressions retain both warnings`, () => {
+		test(`#3001 ${extension} ${bound ? "bound" : "exported"} function expressions retain both warnings`, async () => {
 			const stem = `expression-${extension}-${bound}`;
 			writeFixture(
 				`${stem}-helper.${extension}`,
@@ -370,7 +374,7 @@ for (const extension of ["ts", "js"]) {
 				${bound ? "export const fan = impl;" : ""}
 			`,
 			);
-			const result = scanFile(
+			const result = await scanFile(
 				`${stem}.${extension}`,
 				`
 				import { fan } from "./${stem}-helper.js";
@@ -386,7 +390,7 @@ for (const extension of ["ts", "js"]) {
 }
 
 // Regression #3001: use real package build output, not a hand-written JavaScript proxy.
-test("#3001 packaged builtin JavaScript discovers warm/rest names", () => {
+test("#3001 packaged builtin JavaScript discovers warm/rest names", async () => {
 	const bundled = join(BUILTIN_DIR, "..", "..", "coding-agent", "dist", "builtin", "workflows", "builtin");
 	for (const [name, patterns] of [
 		["adversarial-verification", ["verifier-*-*-*", "verifier-*-*-*-reask-*"]],
@@ -394,7 +398,7 @@ test("#3001 packaged builtin JavaScript discovers warm/rest names", () => {
 	] as const) {
 		const entry = join(bundled, `${name}.js`);
 		assert.ok(existsSync(entry), "Run npm run build before the unit suite");
-		const result = scanPossibleStagesFromSource(entry);
+		const result = await scanPossibleStagesFromSource(entry);
 		for (const pattern of patterns) assert.ok(result.stages.includes(pattern), JSON.stringify(result));
 		assert.equal(
 			result.warnings.some((warning) => /"(?:warmSteps|restSteps)"/.test(warning)),
@@ -404,10 +408,10 @@ test("#3001 packaged builtin JavaScript discovers warm/rest names", () => {
 });
 
 // Regression #3001: goal imports scoring prompts, not the warm-first helper from that same module.
-test("#3001 source and bundled goal do not warn on an unused annotated helper or invent its stages", () => {
+test("#3001 source and bundled goal do not warn on an unused annotated helper or invent its stages", async () => {
 	const bundled = join(BUILTIN_DIR, "..", "..", "coding-agent", "dist", "builtin", "workflows", "builtin");
 	for (const entry of [join(BUILTIN_DIR, "goal.ts"), join(bundled, "goal.js")]) {
-		const result = scanPossibleStagesFromSource(entry);
+		const result = await scanPossibleStagesFromSource(entry);
 		assert.ok(result.stages.includes("orchestrator-*"));
 		assert.deepEqual(result.warnings, []);
 		assert.equal(
@@ -422,8 +426,8 @@ test("#3001 source and bundled goal do not warn on an unused annotated helper or
 // ---------------------------------------------------------------------------
 
 describe("possible-stage scan — D2 name patterns", () => {
-	test("string literals stay literal; template holes become glob stars", () => {
-		const result = scanFile(
+	test("string literals stay literal; template holes become glob stars", async () => {
+		const result = await scanFile(
 			"d2.ts",
 			`
 				export default workflow({
@@ -444,8 +448,8 @@ describe("possible-stage scan — D2 name patterns", () => {
 		assert.deepEqual(result.warnings, []);
 	});
 
-	test("ctx.task contributes its name; chain/parallel steps contribute name fields", () => {
-		const result = scanFile(
+	test("ctx.task contributes its name; chain/parallel steps contribute name fields", async () => {
+		const result = await scanFile(
 			"steps.ts",
 			`
 				export default workflow({
@@ -467,8 +471,8 @@ describe("possible-stage scan — D2 name patterns", () => {
 		assert.deepEqual(result.stages, ["chain-a", "chain-b", "first", "reviewer-a", "reviewer-b"]);
 	});
 
-	test("step arrays built by .map() contribute their object name fields", () => {
-		const result = scanFile(
+	test("step arrays built by .map() contribute their object name fields", async () => {
+		const result = await scanFile(
 			"mapped-steps.ts",
 			`
 				export default workflow({
@@ -485,8 +489,8 @@ describe("possible-stage scan — D2 name patterns", () => {
 		assert.deepEqual(result.stages, ["branch-*"]);
 	});
 
-	test("typed step declarations built by .map() contribute their object name fields", () => {
-		const result = scanFile(
+	test("typed step declarations built by .map() contribute their object name fields", async () => {
+		const result = await scanFile(
 			"typed-mapped-steps.ts",
 			`
 				export default workflow({
@@ -504,8 +508,8 @@ describe("possible-stage scan — D2 name patterns", () => {
 		assert.deepEqual(result.stages, ["branch-*"]);
 	});
 
-	test("step factories: name shorthand binds to the call-site argument", () => {
-		const result = scanFile(
+	test("step factories: name shorthand binds to the call-site argument", async () => {
+		const result = await scanFile(
 			"factory-steps.ts",
 			`
 				export default workflow({
@@ -527,8 +531,8 @@ describe("possible-stage scan — D2 name patterns", () => {
 		assert.deepEqual(result.stages, ["completion-reviewer-*", "risk-reviewer-*"]);
 	});
 
-	test("objects carrying both name and stageName string fields are stage targets", () => {
-		const result = scanFile(
+	test("objects carrying both name and stageName string fields are stage targets", async () => {
+		const result = await scanFile(
 			"stage-records.ts",
 			`
 				export default workflow({
@@ -549,8 +553,8 @@ describe("possible-stage scan — D2 name patterns", () => {
 		assert.deepEqual(result.stages, ["after", "reviewer-error"]);
 	});
 
-	test("run-context aliases (workflowCtx, designContext chains) resolve their stage calls", () => {
-		const result = scanFile(
+	test("run-context aliases (workflowCtx, designContext chains) resolve their stage calls", async () => {
+		const result = await scanFile(
 			"aliased-ctx.ts",
 			`
 				export default workflow({
@@ -570,8 +574,8 @@ describe("possible-stage scan — D2 name patterns", () => {
 		assert.deepEqual(result.stages, ["discovery", "rebound"]);
 	});
 
-	test("ctx.tool marks tracked work without advertising a chat-stage target", () => {
-		const result = scanFile(
+	test("ctx.tool marks tracked work without advertising a chat-stage target", async () => {
+		const result = await scanFile(
 			"tool-only.ts",
 			`
 				export default workflow({
@@ -586,8 +590,8 @@ describe("possible-stage scan — D2 name patterns", () => {
 		assert.equal(result.hasTrackedNodes, true);
 	});
 
-	test("calls inside strings and comments are ignored", () => {
-		const result = scanFile(
+	test("calls inside strings and comments are ignored", async () => {
+		const result = await scanFile(
 			"noise.ts",
 			`
 				// ctx.stage("in-comment")
@@ -611,7 +615,7 @@ describe("possible-stage scan — D2 name patterns", () => {
 // ---------------------------------------------------------------------------
 
 describe("possible-stage scan — child definitions and boundaries", () => {
-	test("ctx.workflow follows relative imports and nests under the default boundary", () => {
+	test("ctx.workflow follows relative imports and nests under the default boundary", async () => {
 		writeFixture(
 			"wf-child.ts",
 			`
@@ -625,7 +629,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 				});
 			`,
 		);
-		const result = scanFile(
+		const result = await scanFile(
 			"wf-parent.ts",
 			`
 				import child from "./wf-child.js";
@@ -652,8 +656,8 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		assert.deepEqual(result.warnings, []);
 	});
 
-	test("ctx.workflow follows builtin barrel imports and nests builtin stages", () => {
-		const result = scanFile(
+	test("ctx.workflow follows builtin barrel imports and nests builtin stages", async () => {
+		const result = await scanFile(
 			"barrel-parent.ts",
 			`
 				import { ralph } from "@bastani/atomic/workflows/builtin";
@@ -671,7 +675,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		assert.ok(result.stages.includes("ralph-child/reviewer-a"), JSON.stringify(result.stages));
 	});
 
-	test("grandchildren nest transitively and maxDepth bounds the descent", () => {
+	test("grandchildren nest transitively and maxDepth bounds the descent", async () => {
 		writeFixture(
 			"depth-grandchild.ts",
 			`
@@ -711,14 +715,14 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 				});
 			`,
 		);
-		const full = scanPossibleStagesFromSource(parent);
+		const full = await scanPossibleStagesFromSource(parent);
 		assert.deepEqual(full.stages, [
 			"workflow:depth-child",
 			"workflow:depth-child/child-stage",
 			"workflow:depth-child/workflow:grandchild",
 			"workflow:depth-child/workflow:grandchild/grandchild-stage",
 		]);
-		const bounded = scanPossibleStagesFromSource(parent, { maxDepth: 2 });
+		const bounded = await scanPossibleStagesFromSource(parent, { maxDepth: 2 });
 		// The depth-2 boundary still materializes (the runtime spawns it before
 		// the child's maxDepth refusal), but the refused child's stages do not.
 		assert.deepEqual(bounded.stages, [
@@ -728,7 +732,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		]);
 	});
 
-	test("import cycles terminate and keep both files' stages", () => {
+	test("import cycles terminate and keep both files' stages", async () => {
 		writeFixture(
 			"cycle-b.ts",
 			`
@@ -743,7 +747,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 				});
 			`,
 		);
-		const result = scanFile(
+		const result = await scanFile(
 			"cycle-a.ts",
 			`
 				import b from "./cycle-b.js";
@@ -767,7 +771,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		]);
 	});
 
-	test("named-export and aliased-default child definitions nest instead of leaking flat", () => {
+	test("named-export and aliased-default child definitions nest instead of leaking flat", async () => {
 		writeFixture(
 			"named-grand.ts",
 			`
@@ -793,7 +797,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 				export default child;
 			`,
 		);
-		const result = scanFile(
+		const result = await scanFile(
 			"named-children-parent.ts",
 			`
 				import { grand } from "./named-grand.js";
@@ -816,7 +820,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		]);
 	});
 
-	test("wrapper modules with no visible definition fall back to the kebab boundary", () => {
+	test("wrapper modules with no visible definition fall back to the kebab boundary", async () => {
 		writeFixture(
 			"kebab-impl.ts",
 			`
@@ -838,7 +842,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 				export { def as default };
 			`,
 		);
-		const result = scanFile(
+		const result = await scanFile(
 			"kebab-parent.ts",
 			`
 				import camelChild from "./kebab-wrapper.js";
@@ -855,8 +859,8 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		assert.ok(result.stages.includes("workflow:camel-child/impl-step"), JSON.stringify(result.stages));
 	});
 
-	test("computed child references map to a glob boundary with a warning", () => {
-		const result = scanFile(
+	test("computed child references map to a glob boundary with a warning", async () => {
+		const result = await scanFile(
 			"computed-child.ts",
 			`
 				import { workflow } from "@bastani/atomic/workflows";
@@ -878,8 +882,8 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		);
 	});
 
-	test("unrecognized .map step builders warn instead of dropping silently", () => {
-		const result = scanFile(
+	test("unrecognized .map step builders warn instead of dropping silently", async () => {
+		const result = await scanFile(
 			"opaque-map.ts",
 			`
 				export default workflow({
@@ -898,7 +902,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		);
 	});
 
-	test("shipped-layout wrapper entries scan the definition module behind them", () => {
+	test("shipped-layout wrapper entries scan the definition module behind them", async () => {
 		// Regression (review round 2): the closure exclusion skipped definition
 		// modules, so a wrapper entry (bundled `export { x_default as default }`
 		// shape) scanned to an empty set with no warning.
@@ -923,12 +927,12 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 			`,
 		);
 		const entry = join(TEST_DIR, "wrapped-entry.ts");
-		const result = scanPossibleStagesFromSource(entry);
+		const result = await scanPossibleStagesFromSource(entry);
 		assert.deepEqual(result.stages, ["wrapped-step"]);
 		assert.deepEqual(result.warnings, []);
 	});
 
-	test("authored camelCase names normalize verbatim like the engine", () => {
+	test("authored camelCase names normalize verbatim like the engine", async () => {
 		writeFixture(
 			"camel-authored.ts",
 			`
@@ -941,7 +945,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 				});
 			`,
 		);
-		const result = scanFile(
+		const result = await scanFile(
 			"camel-parent.ts",
 			`
 				import camelChild from "./camel-authored.js";
@@ -960,7 +964,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		assert.ok(result.stages.includes("workflow:mycamelchild/s"), JSON.stringify(result.stages));
 	});
 
-	test("a member ctx.workflow call above the definition hides nothing", () => {
+	test("a member ctx.workflow call above the definition hides nothing", async () => {
 		writeFixture(
 			"mixed-def.ts",
 			`
@@ -976,7 +980,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 				});
 			`,
 		);
-		const result = scanFile(
+		const result = await scanFile(
 			"mixed-parent.ts",
 			`
 				import mixed from "./mixed-def.js";
@@ -1003,7 +1007,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		);
 	});
 
-	test("entries with non-literal names keep their own stages; children still nest", () => {
+	test("entries with non-literal names keep their own stages; children still nest", async () => {
 		// Regression (review round 3): a wrapper-entry heuristic keyed on
 		// `definitionName === undefined` re-rooted scans at imported children
 		// whenever the entry's authored name was a const or the call carried
@@ -1020,7 +1024,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 				});
 			`,
 		);
-		const constNamed = scanFile(
+		const constNamed = await scanFile(
 			"entry-const-name.ts",
 			`
 				import entryChild from "./entry-child.js";
@@ -1040,7 +1044,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 			"workflow:entry-child",
 			"workflow:entry-child/entry-child-step",
 		]);
-		const generic = scanFile(
+		const generic = await scanFile(
 			"entry-generic.ts",
 			`
 				import entryChild from "./entry-child.js";
@@ -1061,7 +1065,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		]);
 	});
 
-	test("non-literal child names resolve through local constants and never leak flat", () => {
+	test("non-literal child names resolve through local constants and never leak flat", async () => {
 		writeFixture(
 			"const-child.ts",
 			`
@@ -1075,7 +1079,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 				});
 			`,
 		);
-		const result = scanFile(
+		const result = await scanFile(
 			"const-child-parent.ts",
 			`
 				import constChild from "./const-child.js";
@@ -1093,7 +1097,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		assert.deepEqual(result.warnings, []);
 	});
 
-	test("wrapper children take the boundary from the authored definition behind the wrapper", () => {
+	test("wrapper children take the boundary from the authored definition behind the wrapper", async () => {
 		writeFixture(
 			"barrel-wrapper.ts",
 			`
@@ -1113,7 +1117,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 				});
 			`,
 		);
-		const result = scanFile(
+		const result = await scanFile(
 			"barrel-wrapper-parent.ts",
 			`
 				import fooChild from "./barrel-wrapper.js";
@@ -1135,7 +1139,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		);
 	});
 
-	test("re-export barrels (export { default as x } from ...) are followed", () => {
+	test("re-export barrels (export { default as x } from ...) are followed", async () => {
 		writeFixture(
 			"re-child.ts",
 			`
@@ -1154,7 +1158,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 				export { default as reviewFlow } from "./re-child.js";
 			`,
 		);
-		const result = scanFile(
+		const result = await scanFile(
 			"re-barrel-parent.ts",
 			`
 				import { reviewFlow } from "./re-barrel.js";
@@ -1172,8 +1176,8 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		assert.deepEqual(result.warnings, []);
 	});
 
-	test("adjacent template holes collapse to one glob star", () => {
-		const result = scanFile(
+	test("adjacent template holes collapse to one glob star", async () => {
+		const result = await scanFile(
 			"adjacent-holes.ts",
 			`
 				export default workflow({
@@ -1188,8 +1192,8 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		assert.deepEqual(result.stages, ["*", "review-*-*"]);
 	});
 
-	test("unicode and hex escapes decode in stage-name literals", () => {
-		const result = scanFile(
+	test("unicode and hex escapes decode in stage-name literals", async () => {
+		const result = await scanFile(
 			"escapes.ts",
 			`
 				export default workflow({
@@ -1205,7 +1209,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		assert.deepEqual(result.stages, ["café-1", "café-literal", "hexA"]);
 	});
 
-	test("function declarations of the factory do not hide real definitions", () => {
+	test("function declarations of the factory do not hide real definitions", async () => {
 		// Regression (review round 4): `function workflow(spec)` declarations
 		// counted as definition calls, so a bundled SDK chunk was excluded from
 		// closures and the entry re-root landed on the wrong module.
@@ -1242,11 +1246,11 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 				export { decl_default as default };
 			`,
 		);
-		const result = scanPossibleStagesFromSource(join(TEST_DIR, "decl-wrapper.ts"));
+		const result = await scanPossibleStagesFromSource(join(TEST_DIR, "decl-wrapper.ts"));
 		assert.deepEqual(result.stages, ["decl-step"]);
 	});
 
-	test("workflow factories reached through import aliases are recognized", () => {
+	test("workflow factories reached through import aliases are recognized", async () => {
 		writeFixture(
 			"alias-child.ts",
 			`
@@ -1259,7 +1263,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 				});
 			`,
 		);
-		const result = scanFile(
+		const result = await scanFile(
 			"alias-entry.ts",
 			`
 				import { workflow as wf } from "@bastani/atomic/workflows";
@@ -1282,8 +1286,8 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		]);
 	});
 
-	test("resolution failures warn and never throw; the partial set survives", () => {
-		const missingChild = scanFile(
+	test("resolution failures warn and never throw; the partial set survives", async () => {
+		const missingChild = await scanFile(
 			"missing-child-parent.ts",
 			`
 				import nothing from "./does-not-exist.js";
@@ -1306,7 +1310,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 			JSON.stringify(missingChild.warnings),
 		);
 
-		const unreadable = scanPossibleStagesFromSource(join(TEST_DIR, "missing-entry-file.ts"));
+		const unreadable = await scanPossibleStagesFromSource(join(TEST_DIR, "missing-entry-file.ts"));
 		assert.deepEqual(unreadable.stages, []);
 		assert.equal(unreadable.warnings.length > 0, true);
 	});
@@ -1329,22 +1333,22 @@ describe("possible-stage scan — determinism over builtin sources", () => {
 		"tournament",
 	] as const;
 
-	function scanBuiltin(name: string): PossibleStagesScanResult {
+	async function scanBuiltin(name: string): Promise<PossibleStagesScanResult> {
 		const entry = join(BUILTIN_DIR, `${name}.ts`);
 		assert.equal(existsSync(entry), true, `missing builtin source: ${entry}`);
-		return scanPossibleStagesFromSource(entry);
+		return await scanPossibleStagesFromSource(entry);
 	}
 
-	test("scan output is deterministic for every builtin", () => {
+	test("scan output is deterministic for every builtin", async () => {
 		for (const name of BUILTINS) {
-			const first = scanBuiltin(name);
-			const second = scanBuiltin(name);
+			const first = await scanBuiltin(name);
+			const second = await scanBuiltin(name);
 			assert.deepEqual(first, second, `nondeterministic scan for ${name}`);
 		}
 	});
 
-	test("ralph yields the research, orchestration, pull-request, and reviewer stage sets", () => {
-		const { stages } = scanBuiltin("ralph");
+	test("ralph yields the research, orchestration, pull-request, and reviewer stage sets", async () => {
+		const { stages } = await scanBuiltin("ralph");
 		for (const expected of [
 			"research-*",
 			"research-prompt-refinement-*",
@@ -1357,14 +1361,14 @@ describe("possible-stage scan — determinism over builtin sources", () => {
 		}
 	});
 
-	test("goal yields the orchestration, reviewer-error, and pull-request stage sets", () => {
-		const { stages } = scanBuiltin("goal");
+	test("goal yields the orchestration, reviewer-error, and pull-request stage sets", async () => {
+		const { stages } = await scanBuiltin("goal");
 		for (const expected of ["orchestrator-*", "reviewer-error", "pull-request"]) {
 			assert.ok(stages.includes(expected), `goal missing "${expected}": ${JSON.stringify(stages)}`);
 		}
 	});
 
-	test("the six pattern builtins yield their stage patterns", () => {
+	test("the six pattern builtins yield their stage patterns", async () => {
 		const expected: Record<(typeof BUILTINS)[number], readonly string[]> = {
 			"adversarial-verification": ["worker", "consolidate-findings-*", "repair-*"],
 			"classify-and-act": ["classifier", "action-*"],
@@ -1379,7 +1383,7 @@ describe("possible-stage scan — determinism over builtin sources", () => {
 		for (const name of BUILTINS) {
 			const required = expected[name];
 			if (required.length === 0) continue;
-			const { stages } = scanBuiltin(name);
+			const { stages } = await scanBuiltin(name);
 			for (const stage of required) {
 				assert.ok(stages.includes(stage), `${name} missing "${stage}": ${JSON.stringify(stages)}`);
 			}

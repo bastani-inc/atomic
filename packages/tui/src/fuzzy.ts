@@ -9,6 +9,10 @@ export interface FuzzyMatch {
 	score: number;
 }
 
+const WORD_BOUNDARY_BONUS = 10;
+const POSITION_PENALTY = 0.1;
+const BETTER_OCCURRENCE_SPAN = WORD_BOUNDARY_BONUS / POSITION_PENALTY;
+
 function scorePositions(textLower: string, positions: readonly number[]): number {
 	let score = 0;
 	let lastMatchIndex = -1;
@@ -29,11 +33,11 @@ function scorePositions(textLower: string, positions: readonly number[]): number
 
 		// Reward word boundary matches
 		if (i === 0 || /[\s\-_./:]/.test(textLower[i - 1]!)) {
-			score -= 10;
+			score -= WORD_BOUNDARY_BONUS;
 		}
 
 		// Slight penalty for later matches
-		score += i * 0.1;
+		score += i * POSITION_PENALTY;
 
 		lastMatchIndex = i;
 	}
@@ -66,10 +70,10 @@ function matchQuery(normalizedQuery: string, textLower: string): FuzzyMatch {
 
 	// The greedy alignment can scatter the query over an earlier, unrelated part of the text,
 	// e.g. "opus" in "openrouter openrouter/anthropic/claude-opus" takes o, p, u from "openrouter".
-	// Also score every contiguous occurrence and keep the best alignment.
+	const firstStart = textLower.indexOf(normalizedQuery);
 	for (
-		let start = textLower.indexOf(normalizedQuery);
-		start !== -1;
+		let start = firstStart;
+		start !== -1 && start - firstStart <= BETTER_OCCURRENCE_SPAN;
 		start = textLower.indexOf(normalizedQuery, start + 1)
 	) {
 		for (let k = 0; k < positions.length; k++) {

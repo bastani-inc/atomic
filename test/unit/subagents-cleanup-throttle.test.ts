@@ -11,6 +11,21 @@ import {
 import { cleanupAllArtifactDirs, getArtifactsDir } from "../../packages/subagents/src/shared/artifacts.js";
 import type { SubagentState } from "../../packages/subagents/src/shared/types.ts";
 
+const boundary = vi.hoisted(() => ({
+	afterReadDirectory: undefined as ((path: string) => Promise<void>) | undefined,
+}));
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const fs = await importOriginal<typeof import("node:fs/promises")>();
+	return {
+		...fs,
+		readdir: (async (...args: Parameters<typeof fs.readdir>) => {
+			const entries = await fs.readdir(...args);
+			await boundary.afterReadDirectory?.(String(args[0]));
+			return entries;
+		}) as typeof fs.readdir,
+	};
+});
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 const AGENT_DIR_ENV = "ATOMIC_CODING_AGENT_DIR";
 
@@ -110,6 +125,54 @@ describe("session artifact cleanup throttling", () => {
 			false,
 			"a skipped scan must not record a marker",
 		);
+	});
+
+	test("an asynchronous scan that loses its cleanup lock preserves the new holder and skips deletion", async () => {
+		const { sessionsRoot } = makeIsolatedSessionsRoot();
+		const staleFile = makeStaleSessionArtifacts(sessionsRoot, "session-a");
+		const lockPath = join(sessionsRoot, ".cleanup.lock");
+		const readRoot = Promise.withResolvers<void>();
+		const resume = Promise.withResolvers<void>();
+		boundary.afterReadDirectory = async (path) => {
+			if (path === sessionsRoot) {
+				readRoot.resolve();
+				await resume.promise;
+			}
+		};
+		const cleanup = cleanupAllArtifactDirs(1, [sessionsRoot]);
+		try {
+			await readRoot.promise;
+			assert.equal(fs.existsSync(lockPath), true);
+			fs.writeFileSync(lockPath, "new holder");
+			resume.resolve();
+			await cleanup;
+			assert.equal(fs.existsSync(staleFile), true, "a displaced scanner deletes no session artifacts");
+			assert.equal(fs.readFileSync(lockPath, "utf8"), "new holder", "release cannot erase the new lock");
+			assert.equal(fs.existsSync(join(sessionsRoot, ".last-cleanup")), false);
+		} finally {
+			resume.resolve();
+			await cleanup;
+			boundary.afterReadDirectory = undefined;
+		}
+	});
+
+	test("a fresh progress file created after an empty-directory scan survives cleanup", async () => {
+		const { sessionsRoot } = makeIsolatedSessionsRoot();
+		const staleDirectory = join(sessionsRoot, "session-a", "subagent-artifacts", "progress");
+		fs.mkdirSync(staleDirectory, { recursive: true });
+		const old = new Date(Date.now() - 10 * DAY_MS);
+		fs.utimesSync(staleDirectory, old, old);
+		const progress = join(staleDirectory, "progress.md");
+		let reads = 0;
+		boundary.afterReadDirectory = async (path) => {
+			if (path === staleDirectory && ++reads === 2) fs.writeFileSync(progress, "fresh progress");
+		};
+		try {
+			await cleanupAllArtifactDirs(1, [sessionsRoot]);
+			assert.equal(fs.readFileSync(progress, "utf8"), "fresh progress");
+		} finally {
+			boundary.afterReadDirectory = undefined;
+		}
 	});
 
 	test("breaks a stale lock left behind by a crashed process", async () => {

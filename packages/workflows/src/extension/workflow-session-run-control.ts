@@ -19,7 +19,11 @@ import {
 import { rehydrateJournalStoreError } from "@bastani/atomic/storage";
 import type { DurableWorkflowCatalogEntries } from "../durable/backend.js";
 import { JournalError } from "../durable/journal/types.js";
-import { canonicalDirectory, isProjectRootRun, isSdkDurableRunInScope } from "../durable/sdk-recovery-scope.js";
+import {
+	canonicalDirectoryAsync,
+	isProjectRootRunAsync,
+	isSdkDurableRunInScopeAsync,
+} from "../durable/sdk-recovery-scope.js";
 import { awaitJobSettlement } from "../runs/background/ended-run-settlement.js";
 import { currentJobTracker, type JobTracker } from "../runs/background/job-tracker.js";
 import { describeErrorWithCauses } from "../shared/error-with-causes.js";
@@ -34,8 +38,8 @@ import { flushWorkflowActivityPublications } from "./workflow-observation.js";
 type RunScope = (
 	entry: DurableWorkflowCatalogEntries["resumable"][number],
 	cwd: string | undefined,
-	canonicalize: (path: string) => string,
-) => boolean;
+	canonicalize: (path: string) => Promise<string>,
+) => Promise<boolean>;
 
 export interface SessionRunControlHost {
 	/** The same executor the registered `workflow` tool runs, so ownership and durability rules are shared. */
@@ -196,17 +200,19 @@ export function createSessionRunControl(host: SessionRunControlHost): WorkflowRu
 			throw failure("control_failed", `Unexpected workflow result: ${result.action}`, undefined);
 		const catalog = filter?.includeDurable ? await host.catalog?.() : undefined;
 		const cwd = host.context()?.cwd;
-		const canonicalPaths = new Map<string, string>();
-		const canonicalize = (path: string): string => {
+		const canonicalPaths = new Map<string, Promise<string>>();
+		const canonicalize = (path: string): Promise<string> => {
 			const cached = canonicalPaths.get(path);
 			if (cached !== undefined) return cached;
-			const canonical = canonicalDirectory(path);
+			const canonical = canonicalDirectoryAsync(path);
 			canonicalPaths.set(path, canonical);
 			return canonical;
 		};
-		const entries = [...(catalog?.resumable ?? []), ...(catalog === undefined ? [] : finished(catalog))].filter(
-			(entry) => inScope(entry, cwd, canonicalize),
+		const candidates = [...(catalog?.resumable ?? []), ...(catalog === undefined ? [] : finished(catalog))];
+		const matched = await Promise.all(
+			candidates.map(async (entry) => ((await inScope(entry, cwd, canonicalize)) ? entry : undefined)),
 		);
+		const entries = matched.filter((entry): entry is (typeof candidates)[number] => entry !== undefined);
 		const saved = new Map(entries.map((entry) => [entry.workflowId, entry]));
 		const snapshots = new Map(host.store.runs().map((run) => [run.id, run]));
 		const runs: WorkflowRunSummary[] = result.runs.map((run) => {
@@ -250,9 +256,9 @@ export function createSessionRunControl(host: SessionRunControlHost): WorkflowRu
 	};
 
 	return {
-		listRuns: (filter) => list(filter, isSdkDurableRunInScope, (catalog) => catalog.completed),
+		listRuns: (filter) => list(filter, isSdkDurableRunInScopeAsync, (catalog) => catalog.completed),
 		listProjectRuns: () =>
-			list({ includeDurable: true }, isProjectRootRun, (catalog) => catalog.completedAll ?? catalog.completed),
+			list({ includeDurable: true }, isProjectRootRunAsync, (catalog) => catalog.completedAll ?? catalog.completed),
 		async getRun(runId) {
 			const result = await request({ action: "status", runId });
 			if (result.action !== "statusDetail")

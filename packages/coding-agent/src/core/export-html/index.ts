@@ -1,8 +1,9 @@
 import type { AgentState } from "@bastani/atomic-agent-core";
 import type { ToolCall } from "@bastani/atomic-ai/compat";
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, writeFileSync } from "fs";
+import { readFile, writeFile } from "fs/promises";
 import { basename, join } from "path";
-import { APP_NAME, getExportTemplateDir } from "../../config.js";
+import { APP_NAME, getExportTemplateDirAsync } from "../../config.js";
 import { getResolvedThemeColors, getThemeExportColors } from "../../modes/interactive/theme/theme.js";
 import { normalizePath, resolvePath } from "../../utils/paths.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
@@ -142,14 +143,18 @@ interface SessionData {
 /**
  * Core HTML generation logic shared by both export functions.
  */
-function generateHtml(sessionData: SessionData, themeName?: string): string {
-	const templateDir = getExportTemplateDir();
-	const template = readFileSync(join(templateDir, "template.html"), "utf-8");
-	const templateCss = readFileSync(join(templateDir, "template.css"), "utf-8");
-	const templateJs = readFileSync(join(templateDir, "template.js"), "utf-8");
-	const markedJs = readFileSync(join(templateDir, "vendor", "marked.min.js"), "utf-8");
-	const markedCjkFriendlyJs = readFileSync(join(templateDir, "vendor", "marked-cjk-friendly.min.js"), "utf-8");
-	const hljsJs = readFileSync(join(templateDir, "vendor", "highlight.min.js"), "utf-8");
+async function generateHtml(sessionData: SessionData, themeName?: string): Promise<string> {
+	const templateDir = await getExportTemplateDirAsync();
+	const [template, templateCss, templateJs, markedJs, markedCjkFriendlyJs, hljsJs] = await Promise.all(
+		[
+			["template.html"],
+			["template.css"],
+			["template.js"],
+			["vendor", "marked.min.js"],
+			["vendor", "marked-cjk-friendly.min.js"],
+			["vendor", "highlight.min.js"],
+		].map((parts) => readFile(join(templateDir, ...parts), "utf-8")),
+	);
 
 	const themeVars = generateThemeVars(themeName);
 	const colors = getResolvedThemeColors(themeName);
@@ -278,7 +283,7 @@ export async function exportSessionToHtml(
 		renderedTools,
 	};
 
-	const html = generateHtml(sessionData, opts.themeName);
+	const html = await generateHtml(sessionData, opts.themeName);
 
 	let outputPath = opts.outputPath ? normalizePath(opts.outputPath) : undefined;
 	if (!outputPath) {
@@ -287,7 +292,7 @@ export async function exportSessionToHtml(
 		outputPath = `${APP_NAME}-session-${sessionBasename}.html`;
 	}
 
-	writeFileSync(outputPath, html, "utf8");
+	await writeFile(outputPath, html, "utf8");
 	return outputPath;
 }
 
@@ -313,7 +318,7 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 		tools: undefined,
 	};
 
-	const html = generateHtml(sessionData, opts.themeName);
+	const html = await generateHtml(sessionData, opts.themeName);
 
 	let outputPath = opts.outputPath ? normalizePath(opts.outputPath) : undefined;
 	if (!outputPath) {

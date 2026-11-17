@@ -7,19 +7,18 @@ import { hasEntryNewerThan } from "../../packages/subagents/src/runs/inprocess/r
 
 const scanInstrumentation = vi.hoisted(() => ({ active: false, readdirCalls: [] as string[] }));
 
-// Instrument readdirSync so the test can count directory reads, and normalize
 // entry order so the fresh top-level entry is always scanned first.
-vi.mock("node:fs", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("node:fs")>();
-	const readdirSync = ((...args: Parameters<typeof actual.readdirSync>) => {
-		const result = actual.readdirSync(...args);
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	const readdir = (async (...args: Parameters<typeof actual.readdir>) => {
+		const result = await actual.readdir(...args);
 		if (scanInstrumentation.active && Array.isArray(result) && typeof result[0] === "string") {
 			scanInstrumentation.readdirCalls.push(String(args[0]));
 			return [...result].sort();
 		}
 		return result;
-	}) as typeof actual.readdirSync;
-	return { ...actual, readdirSync, default: { ...actual, readdirSync } };
+	}) as typeof actual.readdir;
+	return { ...actual, readdir, default: { ...actual, readdir } };
 });
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -50,11 +49,11 @@ function buildOldTree(root: string, depth: number, filesPerLevel: number, cutoff
 	return current;
 }
 
-function countingScan(root: string, cutoff: number): { result: boolean; readdirCalls: string[] } {
+async function countingScan(root: string, cutoff: number): Promise<{ result: boolean; readdirCalls: string[] }> {
 	scanInstrumentation.readdirCalls.length = 0;
 	scanInstrumentation.active = true;
 	try {
-		return { result: hasEntryNewerThan(root, cutoff), readdirCalls: [...scanInstrumentation.readdirCalls] };
+		return { result: await hasEntryNewerThan(root, cutoff), readdirCalls: [...scanInstrumentation.readdirCalls] };
 	} finally {
 		scanInstrumentation.active = false;
 	}
@@ -65,7 +64,7 @@ afterEach(() => {
 });
 
 describe("hasEntryNewerThan short-circuit scan", () => {
-	test("stops at the first fresh entry instead of walking the whole subtree", () => {
+	test("stops at the first fresh entry instead of walking the whole subtree", async () => {
 		const cutoff = Date.now() - 2 * DAY_MS;
 		const root = fs.mkdtempSync(join(tmpdir(), "atomic-nested-scan-"));
 		roots.push(root);
@@ -74,28 +73,28 @@ describe("hasEntryNewerThan short-circuit scan", () => {
 		fs.writeFileSync(join(root, "aa-fresh.txt"), "fresh\n");
 		makeOld(root, cutoff);
 
-		const scan = countingScan(root, cutoff);
+		const scan = await countingScan(root, cutoff);
 
 		assert.equal(scan.result, true);
 		assert.deepEqual(scan.readdirCalls, [root], "scan must stop at the fresh top-level entry");
 	});
 
-	test("returns false for a tree entirely older than cutoff", () => {
+	test("returns false for a tree entirely older than cutoff", async () => {
 		const cutoff = Date.now() - 2 * DAY_MS;
 		const root = fs.mkdtempSync(join(tmpdir(), "atomic-nested-scan-"));
 		roots.push(root);
 		buildOldTree(root, 4, 3, cutoff);
 
-		assert.equal(hasEntryNewerThan(root, cutoff), false);
+		assert.equal(await hasEntryNewerThan(root, cutoff), false);
 	});
 
-	test("finds a fresh file buried at the bottom of an otherwise old tree", () => {
+	test("finds a fresh file buried at the bottom of an otherwise old tree", async () => {
 		const cutoff = Date.now() - 2 * DAY_MS;
 		const root = fs.mkdtempSync(join(tmpdir(), "atomic-nested-scan-"));
 		roots.push(root);
 		const deepest = buildOldTree(root, 4, 3, cutoff);
 		fs.writeFileSync(join(deepest, "zz-fresh.txt"), "fresh\n");
 
-		assert.equal(hasEntryNewerThan(root, cutoff), true);
+		assert.equal(await hasEntryNewerThan(root, cutoff), true);
 	});
 });

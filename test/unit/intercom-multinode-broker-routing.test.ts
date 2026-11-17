@@ -670,9 +670,26 @@ async function advanceUntil<T>(
 		const value = read();
 		if (value !== undefined) return { value, elapsedMs };
 		await vi.advanceTimersByTimeAsync(stepMs);
-		await new Promise((resolveStep) => setImmediate(resolveStep));
+		await settleFileIo();
 	}
 	return undefined;
+}
+
+/** Bound on the real event-loop turns a fake-time step waits for the store's file I/O it started. */
+const FILE_IO_SETTLE_TURNS = 1_000;
+
+/**
+ * Lets the store finish the file I/O a fake-time step started before time moves on: the store's transactions check
+ * their writers' queue and records off the event loop, so a step's work can need several real turns.
+ */
+async function settleFileIo(): Promise<void> {
+	await new Promise((resolveTurn) => setImmediate(resolveTurn));
+	for (
+		let turn = 0;
+		turn < FILE_IO_SETTLE_TURNS && process.getActiveResourcesInfo().some((kind) => kind.startsWith("FSReq"));
+		turn++
+	)
+		await new Promise((resolveTurn) => setImmediate(resolveTurn));
 }
 
 test("a lost outcome hint for a held send is noticed by the outcome poll before the hold times out", async () => {
@@ -1562,7 +1579,7 @@ test(
 async function advance(totalMs: number, stepMs = 500): Promise<void> {
 	for (let elapsed = 0; elapsed < totalMs; elapsed += stepMs) {
 		await vi.advanceTimersByTimeAsync(stepMs);
-		await new Promise((resolveTick) => setImmediate(resolveTick));
+		await settleFileIo();
 	}
 }
 

@@ -10,12 +10,13 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { oauthErrorHtml, oauthSuccessHtml } from "@bastani/atomic-ai/utils/oauth-page";
 import lockfile from "proper-lockfile";
 import { APP_NAME, getAgentDir } from "../../config.js";
 import { type AuthStorageBackend, FileAuthStorageBackend } from "../../core/auth-storage.ts";
+import { type AsyncAuthStorageReads, asyncAuthStorageReads } from "../../core/auth-storage-backends.ts";
 import { releaseLock } from "../../core/lock-release.ts";
 import { waitForLock } from "../../core/lock-wait.ts";
 import { mcpNamespace } from "../../core/mcp-servers.ts";
@@ -111,6 +112,7 @@ function mergeScopes(...scopes: (string | undefined)[]): string | undefined {
 type StoredState = McpOAuthState & { credentialGeneration?: string };
 type StoredStates = Record<string, StoredState>;
 const refreshQueues = new WeakMap<AuthStorageBackend, Map<string, Promise<unknown>>>();
+const writeQueues = new WeakMap<AuthStorageBackend, Promise<unknown>>();
 
 function parseStates(content: string | undefined): StoredStates {
 	if (!content?.trim()) return {};
@@ -141,35 +143,44 @@ export interface McpOAuthServerStore extends McpOAuthStateStore {
 /** Per-server OAuth state (client registration, tokens, pending PKCE verifier) in `mcp-auth.json`. */
 export class McpOAuthCredentialStore {
 	private readonly backend: AuthStorageBackend;
+	private readonly reads: AsyncAuthStorageReads;
 	/** Directory for the refresh lock files. Without one, refreshes are only serialized in this process. */
 	private readonly lockDir: string | undefined;
 
 	constructor(backend?: AuthStorageBackend, lockDir?: string) {
 		this.backend = backend ?? new FileAuthStorageBackend(join(getAgentDir(), "mcp-auth.json"));
+		this.reads = asyncAuthStorageReads(this.backend);
 		this.lockDir = backend ? lockDir : getAgentDir();
 	}
 
 	forServer(name: string, serverUrl: string): McpOAuthServerStore {
 		const { key, legacyKey } = storeKeys(name, serverUrl);
 		const scoped = (fenced: boolean): McpOAuthStateStore => {
-			const initial = this.read();
-			const generation = (initial[key] ?? initial[legacyKey])?.credentialGeneration;
-			const check = (state: StoredState | undefined) => {
-				if (fenced && state?.credentialGeneration !== generation) throw new McpSignInCancelledError();
+			const generation = fenced
+				? this.inWriteTurn(() => this.readAsync()).then(
+						(initial) => (initial[key] ?? initial[legacyKey])?.credentialGeneration,
+					)
+				: undefined;
+			generation?.catch(() => {});
+			const check = (state: StoredState | undefined, owned: string | undefined) => {
+				if (fenced && state?.credentialGeneration !== owned) throw new McpSignInCancelledError();
 			};
 			return {
-				load: () => {
-					const state = this.claimLegacy(key, legacyKey)[key];
-					check(state);
+				load: async () => {
+					const owned = await generation;
+					const state = (await this.claimLegacyAsync(key, legacyKey))[key];
+					check(state, owned);
 					if (!state) return undefined;
 					const { credentialGeneration: _generation, ...value } = state;
 					return Object.keys(value).length > 1 ? value : undefined;
 				},
-				save: (state) =>
-					this.write((states) => {
-						check(states[key]);
+				save: async (state) => {
+					const owned = await generation;
+					await this.writeAsync((states) => {
+						check(states[key], owned);
 						states[key] = { ...state, credentialGeneration: states[key]?.credentialGeneration };
-					}),
+					});
+				},
 			};
 		};
 		return {
@@ -201,7 +212,7 @@ export class McpOAuthCredentialStore {
 
 	private async withFileRefreshLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
 		if (!this.lockDir) return fn();
-		mkdirSync(this.lockDir, { recursive: true, mode: 0o700 });
+		await mkdir(this.lockDir, { recursive: true, mode: 0o700 });
 		const hash = createHash("sha256").update(key).digest("hex").slice(0, 16);
 		const lockPath = join(this.lockDir, `mcp-auth-refresh-${hash}`);
 		const release = await waitForLock(
@@ -243,17 +254,19 @@ export class McpOAuthCredentialStore {
 
 	/**
 	 * The first server to load legacy state takes it over; others with the same URL sign in again. Reads without the
-	 * lock and takes it only when there is legacy state to move.
+	 * lock and takes it only when there is legacy state to move; in turn with this process's other reads and writes.
 	 */
-	private claimLegacy(key: string, legacyKey: string): StoredStates {
-		const states = this.read();
-		if (states[key] || !states[legacyKey]) return states;
-		return this.backend.withLock((current) => {
-			const states = parseStates(current);
-			if (states[key] || !states[legacyKey]) return { result: states };
-			states[key] = states[legacyKey];
-			delete states[legacyKey];
-			return { result: states, next: serializeStates(states) };
+	private claimLegacyAsync(key: string, legacyKey: string): Promise<StoredStates> {
+		return this.inWriteTurn(async () => {
+			const states = await this.readAsync();
+			if (states[key] || !states[legacyKey]) return states;
+			return this.backend.withLockAsync(async (current) => {
+				const states = parseStates(current);
+				if (states[key] || !states[legacyKey]) return { result: states };
+				states[key] = states[legacyKey];
+				delete states[legacyKey];
+				return { result: states, next: serializeStates(states) };
+			});
 		});
 	}
 
@@ -264,10 +277,20 @@ export class McpOAuthCredentialStore {
 		return (states[key] ?? states[legacyKey])?.tokens;
 	}
 
+	async tokensAsync(name: string, serverUrl: string): Promise<McpOAuthState["tokens"]> {
+		const { key, legacyKey } = storeKeys(name, serverUrl);
+		const states = await this.inWriteTurn(() => this.readAsync());
+		return (states[key] ?? states[legacyKey])?.tokens;
+	}
+
 	/** Serialized logout: waits for rotated tokens to be saved before revoking the grant. */
 	removeAsync(name: string, serverUrl: string): Promise<boolean> {
 		const { key } = storeKeys(name, serverUrl);
-		return this.withRefreshLock(key, async () => this.remove(name, serverUrl));
+		return this.withRefreshLock(key, async () => {
+			const revocation = revoke(name, serverUrl);
+			await this.writeAsync(revocation.update);
+			return revocation.removed();
+		});
 	}
 
 	/**
@@ -275,19 +298,9 @@ export class McpOAuthCredentialStore {
 	 * legacy state the server would take over.
 	 */
 	remove(name: string, serverUrl: string): boolean {
-		const { key, legacyKey } = storeKeys(name, serverUrl);
-		const hasCredentials = (state: StoredState | undefined) =>
-			state !== undefined &&
-			Object.keys(state).some((field) => field !== "serverUrl" && field !== "credentialGeneration");
-		let removed = false;
-		this.write((states) => {
-			const own = states[key];
-			const legacy = own === undefined ? states[legacyKey] : undefined;
-			removed = hasCredentials(own) || hasCredentials(legacy);
-			if (legacy) delete states[legacyKey];
-			states[key] = { serverUrl: legacyKey, credentialGeneration: randomUUID() };
-		});
-		return removed;
+		const revocation = revoke(name, serverUrl);
+		this.write(revocation.update);
+		return revocation.removed();
 	}
 
 	/**
@@ -299,6 +312,11 @@ export class McpOAuthCredentialStore {
 		return this.backend.withLock((current) => ({ result: parseStates(current) }));
 	}
 
+	private async readAsync(): Promise<StoredStates> {
+		if (this.reads.readAsync) return parseStates(await this.reads.readAsync());
+		return this.backend.withLockAsync(async (current) => ({ result: parseStates(current) }));
+	}
+
 	private write(update: (states: StoredStates) => void): void {
 		this.backend.withLock((current) => {
 			const states = parseStates(current);
@@ -306,6 +324,41 @@ export class McpOAuthCredentialStore {
 			return { result: undefined, next: serializeStates(states) };
 		});
 	}
+
+	private writeAsync(update: (states: StoredStates) => void): Promise<void> {
+		return this.inWriteTurn(() =>
+			this.backend.withLockAsync(async (current) => {
+				const states = parseStates(current);
+				update(states);
+				return { result: undefined, next: serializeStates(states) };
+			}),
+		);
+	}
+
+	private inWriteTurn<T>(write: () => Promise<T>): Promise<T> {
+		const previous = writeQueues.get(this.backend) ?? Promise.resolve();
+		const running = previous.catch(() => undefined).then(write);
+		writeQueues.set(this.backend, running);
+		return running;
+	}
+}
+
+function revoke(name: string, serverUrl: string): { update: (states: StoredStates) => void; removed: () => boolean } {
+	const { key, legacyKey } = storeKeys(name, serverUrl);
+	const hasCredentials = (state: StoredState | undefined) =>
+		state !== undefined &&
+		Object.keys(state).some((field) => field !== "serverUrl" && field !== "credentialGeneration");
+	let removed = false;
+	return {
+		update: (states) => {
+			const own = states[key];
+			const legacy = own === undefined ? states[legacyKey] : undefined;
+			removed = hasCredentials(own) || hasCredentials(legacy);
+			if (legacy) delete states[legacyKey];
+			states[key] = { serverUrl: legacyKey, credentialGeneration: randomUUID() };
+		},
+		removed: () => removed,
+	};
 }
 
 /** `fetch` with `OAUTH_REQUEST_TIMEOUT_MS` per request, on top of the request's own signal. */
@@ -359,7 +412,7 @@ export interface McpAuthProvider extends AuthProvider {
 export function createMcpAuthProvider(options: {
 	serverUrl: string;
 	store: McpOAuthServerStore;
-	settings: () => McpOAuthSettings;
+	settings: () => McpOAuthSettings | Promise<McpOAuthSettings>;
 	onChallenge: (challenge: OAuthChallenge) => void;
 }): McpAuthProvider {
 	const { serverUrl, store } = options;
@@ -373,7 +426,7 @@ export function createMcpAuthProvider(options: {
 				const state = await flowStore.load();
 				if (state?.tokens?.access_token !== staleToken) return;
 				if (!state?.tokens?.refresh_token) throw new McpOAuthAuthorizationRequiredError();
-				const settings = options.settings();
+				const settings = await options.settings();
 				const redirectUrl =
 					callbackSettings(settings).fixedRedirectUrl ??
 					registeredRedirectUrls(state.clientInformation)[0] ??

@@ -7,6 +7,7 @@ import {
 	KeybindingsManager as TuiKeybindingsManager,
 } from "@bastani/atomic-tui";
 import { existsSync, readFileSync } from "fs";
+import { access, readFile } from "fs/promises";
 import { join } from "path";
 import { getAgentDir } from "../config.js";
 import { stripBom } from "../utils/text.ts";
@@ -338,11 +339,28 @@ function orderKeybindingsConfig(config: Record<string, unknown>): Record<string,
 function loadRawConfig(path: string): Record<string, unknown> | undefined {
 	if (!existsSync(path)) return undefined;
 	try {
-		const parsed = JSON.parse(stripBom(readFileSync(path, "utf-8"))) as unknown;
-		return isRecord(parsed) ? parsed : undefined;
+		return parseRawConfig(readFileSync(path, "utf-8"));
 	} catch {
 		return undefined;
 	}
+}
+
+async function loadRawConfigAsync(path: string): Promise<Record<string, unknown> | undefined> {
+	try {
+		await access(path);
+	} catch {
+		return undefined;
+	}
+	try {
+		return parseRawConfig(await readFile(path, "utf-8"));
+	} catch {
+		return undefined;
+	}
+}
+
+function parseRawConfig(content: string): Record<string, unknown> | undefined {
+	const parsed = JSON.parse(stripBom(content)) as unknown;
+	return isRecord(parsed) ? parsed : undefined;
 }
 
 export class KeybindingsManager extends TuiKeybindingsManager {
@@ -364,12 +382,20 @@ export class KeybindingsManager extends TuiKeybindingsManager {
 		this.setUserBindings(KeybindingsManager.loadFromFile(this.configPath));
 	}
 
+	async reloadAsync(): Promise<void> {
+		if (!this.configPath) return;
+		this.setUserBindings(KeybindingsManager.toUserBindings(await loadRawConfigAsync(this.configPath)));
+	}
+
 	getEffectiveConfig(): KeybindingsConfig {
 		return this.getResolvedBindings();
 	}
 
 	private static loadFromFile(path: string): KeybindingsConfig {
-		const rawConfig = loadRawConfig(path);
+		return KeybindingsManager.toUserBindings(loadRawConfig(path));
+	}
+
+	private static toUserBindings(rawConfig: Record<string, unknown> | undefined): KeybindingsConfig {
 		if (!rawConfig) return {};
 		return toKeybindingsConfig(migrateKeybindingsConfig(rawConfig).config);
 	}

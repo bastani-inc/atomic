@@ -40,12 +40,6 @@ function scheduleDelayedTask(task: () => void, delayMs: number): () => void {
 	};
 }
 
-function swallowCleanup(task: () => void): void {
-	try {
-		task();
-	} catch {}
-}
-
 interface StartupMaintenanceOptions {
 	artifactCleanupDays: number;
 	resultsDir?: string;
@@ -108,7 +102,7 @@ export function createSubagentStartupMaintenance(
 	const maintenance: SubagentStartupMaintenance = {
 		scheduleStartupCleanup(onDone) {
 			schedule(() => {
-				swallowCleanup(() => cleanupOldSubagentRuntimeDirs(options.artifactCleanupDays));
+				cleanupOldSubagentRuntimeDirs(options.artifactCleanupDays).catch(() => {});
 				scheduleDelayed(() => {
 					runningStartupCleanups.add(maintenance);
 					void cleanupAllArtifactDirs(options.artifactCleanupDays, contextSessionsRoots)

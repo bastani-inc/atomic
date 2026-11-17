@@ -26,9 +26,13 @@ export function applyToolModifiers(base: readonly string[], entries: readonly st
 	return tools;
 }
 
-export function resolveDefaultTools(entries: string[], inherited: readonly string[] = getDefaultToolNames()): string[] {
+export function resolveDefaultToolsWith(entries: string[], inherited: readonly string[]): string[] {
 	const plain = entries.filter((entry) => !isToolModifier(entry));
 	return applyToolModifiers(plain.length > 0 || entries.length === 0 ? plain : inherited, entries);
+}
+
+export function resolveDefaultTools(entries: string[], inherited: readonly string[] = getDefaultToolNames()): string[] {
+	return resolveDefaultToolsWith(entries, inherited);
 }
 
 /** Keys that reach an object's prototype; no settings name uses them, so settings code never reads or writes them. */
@@ -87,10 +91,12 @@ export function deepMergeSettings(base: Settings, overrides: Settings): Settings
 		overrideTools.length > 0 &&
 		overrideTools.every(isToolModifier)
 	) {
-		merged.defaultTools = resolveDefaultTools(
-			overrideTools,
-			resolveDefaultTools(base.defaultTools.filter((entry) => typeof entry === "string")),
-		);
+		const baseTools = base.defaultTools.filter((entry): entry is string => typeof entry === "string");
+		const plain = baseTools.filter((entry) => !isToolModifier(entry));
+		merged.defaultTools =
+			plain.length > 0 || baseTools.length === 0
+				? applyToolModifiers(plain, [...baseTools, ...overrideTools])
+				: [...baseTools, ...overrideTools];
 	}
 	return merged;
 }

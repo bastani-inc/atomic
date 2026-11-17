@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { mapRestoredPath } from "../session-worktree-snapshots.ts";
+import { mapRestoredPath, mapRestoredPathAsync } from "../session-worktree-snapshots.ts";
 import type { WorktreeRootMapping } from "../worktree-snapshot/types.ts";
 
 /** The restores that apply to the paths resolved by the current work: its own, after those of any work it runs in. */
@@ -64,10 +64,16 @@ export function withWorktreeRestoreNotices<T>(notices: readonly string[], work: 
  * in are never redirected. Outside a session's or run's work, every path is returned unchanged.
  */
 export function mapPathForCwd(path: string, cwd: string): string {
-	const base = resolve(cwd);
-	const mapped = mapRestoredPath(
-		path,
-		currentWorktreeRootMappings().filter((mapping) => !isInside(resolve(mapping.from), base)),
-	);
+	const mapped = mapRestoredPath(path, mappingsForCwd(cwd));
 	return mapped === resolve(path) ? path : mapped;
+}
+
+export async function mapPathForCwdAsync(path: string, cwd: string): Promise<string> {
+	const mapped = await mapRestoredPathAsync(path, mappingsForCwd(cwd));
+	return mapped === resolve(path) ? path : mapped;
+}
+
+function mappingsForCwd(cwd: string): readonly WorktreeRootMapping[] {
+	const base = resolve(cwd);
+	return currentWorktreeRootMappings().filter((mapping) => !isInside(resolve(mapping.from), base));
 }

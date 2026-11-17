@@ -326,19 +326,21 @@ test("a child with no release policy that is terminated for a parent shutdown en
 	});
 	const control = new SubagentControlRuntime({ path: "shutdown-parent", depth: 0 }, join(root, "sessions"));
 	control.registerAgents([agent]);
-	const admitted = control.admitChildSession(
-		{
-			taskName: agent.name,
-			task: "watch CI",
-			agent,
-			cwd: root,
-			testSession: {
-				promptGate: gate.promise,
-				abortResolvesPrompt: true,
-				onSession: () => sessionReady.resolve(),
+	const admitted = (
+		await control.admitChildSession(
+			{
+				taskName: agent.name,
+				task: "watch CI",
+				agent,
+				cwd: root,
+				testSession: {
+					promptGate: gate.promise,
+					abortResolvesPrompt: true,
+					onSession: () => sessionReady.resolve(),
+				},
 			},
-		},
-		{ path: "shutdown-parent", depth: 0 },
+			{ path: "shutdown-parent", depth: 0 },
+		)
 	).admitted;
 	assert.ok(admitted);
 	const neverAbort = new AbortController().signal;

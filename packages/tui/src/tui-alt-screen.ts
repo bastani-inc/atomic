@@ -6,11 +6,13 @@ import {
 } from "./alt-screen-search.ts";
 import { AltScreenFlashContainer } from "./components/alt-screen-flash.ts";
 import { ScrollView } from "./components/scroll-view.ts";
+import { WindowedContainer, type WindowRows } from "./components/windowed-container.ts";
 import { getKeybindings } from "./keybindings.ts";
 import { isKeyRelease } from "./keys.ts";
 import {
 	getLayoutBoxesAt,
 	getScrollbarGeometry,
+	getScrollContentRows,
 	getScrollViewBox,
 	getScrollViewsAt,
 	type LayoutFrame,
@@ -71,6 +73,9 @@ const FOCUS_IN = "\x1b[I";
 const FOCUS_OUT = "\x1b[O";
 const BEGIN_SYNCHRONIZED_OUTPUT = "\x1b[?2026h";
 const END_SYNCHRONIZED_OUTPUT = "\x1b[?2026l";
+const EXIT_TRANSCRIPT_START = `${BEGIN_SYNCHRONIZED_OUTPUT}${EXIT_ALT_SCREEN}${DISABLE_AUTOWRAP}`;
+const EXIT_TRANSCRIPT_END = `\x1b[0m${ENABLE_AUTOWRAP}\r\n\x1b[?25h${END_SYNCHRONIZED_OUTPUT}`;
+const EXIT_TRANSCRIPT_RESTORE = `\x1b[0m${ENABLE_AUTOWRAP}\x1b[?25h${END_SYNCHRONIZED_OUTPUT}`;
 const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:;[^\x07\x1b]*)?(?:\x07|\x1b\\))+/;
 const OSC133_PROMPT_START = /^\x1b\]133;A(?:;[^\x07\x1b]*)?(?:\x07|\x1b\\)/;
 const PAGE_SCROLL_OVERLAP = 4;
@@ -78,6 +83,9 @@ const ALT_WHEEL_SCROLL_MULTIPLIER = 5;
 const MAX_CACHED_OFFSCREEN_KITTY_IMAGES = 16;
 const MAX_CACHED_OFFSCREEN_KITTY_TRANSMISSION_BYTES = 32 * 1024 * 1024;
 const MAX_CACHED_OFFSCREEN_KITTY_DECODED_BYTES = 64 * 1024 * 1024;
+const EXIT_WRITE_CHARACTERS = 16 * 1024;
+const EXIT_PREPARE_ROWS = 512;
+const EXIT_SLICE_BUDGET_MS = 8;
 const DOUBLE_CLICK_INTERVAL_MS = 500;
 const COPY_ERROR_FLASH_DURATION_MS = 5000;
 // Regular mode delegates double-click selection to the terminal emulator. Fullscreen owns mouse selection,
@@ -110,8 +118,8 @@ type SelectionGranularity = "character" | "word" | "line";
 interface ClickTarget {
 	timestamp: number;
 	count: number;
+	/** The screen row, so clicks count alike whether or not an overlay changed how the press was located. */
 	row: number;
-	scrollView?: ScrollView;
 	/** The word under the click, or the clicked cell when no word is there. */
 	wordStart: number;
 	wordEnd: number;
@@ -121,15 +129,30 @@ interface ClickTarget {
 interface PointerFrame {
 	readonly line: string | undefined;
 	readonly boxes: readonly { readonly component: Component; readonly x: number; readonly y: number }[];
-	readonly overlay: Component | undefined;
+	/** The overlay drawn at the pointer and the rectangle it was drawn in, or undefined. */
+	readonly overlay:
+		| {
+				readonly component: Component;
+				readonly row: number;
+				readonly col: number;
+				readonly width: number;
+				readonly height: number;
+		  }
+		| undefined;
 	readonly decorated: boolean;
+	/** The components drawn at the pointer, outermost first, then what the innermost reports for its row. */
+	readonly drawn: readonly unknown[];
 }
 
-function samePointerFrame(a: PointerFrame | undefined, b: PointerFrame): boolean {
+/** Whether the same components are drawn at the pointer in the same places: the frame's geometry there. */
+function samePointerGeometry(a: PointerFrame | undefined, b: PointerFrame): boolean {
 	return (
 		a !== undefined &&
-		a.line === b.line &&
-		a.overlay === b.overlay &&
+		a.overlay?.component === b.overlay?.component &&
+		a.overlay?.row === b.overlay?.row &&
+		a.overlay?.col === b.overlay?.col &&
+		a.overlay?.width === b.overlay?.width &&
+		a.overlay?.height === b.overlay?.height &&
 		a.decorated === b.decorated &&
 		a.boxes.length === b.boxes.length &&
 		a.boxes.every(
@@ -137,6 +160,44 @@ function samePointerFrame(a: PointerFrame | undefined, b: PointerFrame): boolean
 				box.component === b.boxes[index]?.component && box.x === b.boxes[index]?.x && box.y === b.boxes[index]?.y,
 		)
 	);
+}
+
+/** The same geometry at the pointer, and the same painted row under it, drawn by the same components. */
+function samePointerFrame(a: PointerFrame | undefined, b: PointerFrame): boolean {
+	return (
+		a !== undefined &&
+		a.line === b.line &&
+		a.drawn.length === b.drawn.length &&
+		a.drawn.every((item, index) => item === b.drawn[index]) &&
+		samePointerGeometry(a, b)
+	);
+}
+
+/** Bounds the walk into nested containers when recording what a frame drew at the pointer. */
+const MAX_DRAWN_DEPTH = 32;
+
+/** A component that stacks children, as `Container` does, and can say which child it drew on a row. */
+type ChildRows = Component & Pick<Container, "childAtRow">;
+
+function stacksChildren(component: Component): component is ChildRows {
+	return typeof (component as Partial<ChildRows>).childAtRow === "function";
+}
+
+/** The components a frame drew at `row` of `component`, laid out `width` wide, then the innermost one's row key. */
+function drawnAt(component: Component, width: number, row: number): unknown[] {
+	const drawn: unknown[] = [];
+	let current: Component = component;
+	let at = row;
+	for (let depth = 0; depth < MAX_DRAWN_DEPTH && stacksChildren(current); depth++) {
+		const hit = current.childAtRow(width, at);
+		if (!hit) break;
+		drawn.push(hit.component);
+		current = hit.component;
+		at = hit.row;
+	}
+	const innermost: Component = current;
+	drawn.push(innermost.paintedRowKey?.(at));
+	return drawn;
 }
 
 interface SgrMouseEvent {
@@ -229,6 +290,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	readonly [VIEWPORT_TUI] = true as const;
 	private previousScreen: string[] = [];
 	private lastDocument: string[] = [];
+	private exitWrites = 0;
 	private previousScreenWidth = 0;
 	private previousScreenHeight = 0;
 	/** The last layout drawn had image lines, which an overlay does not cover. */
@@ -264,6 +326,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private mouseCapture?: TuiMouseDispatchTarget;
 	private mousePressTarget?: TuiMouseDispatchTarget;
 	private mousePressPoint?: { x: number; y: number };
+	/** What the screen showed at a press a component took: its click needs the same geometry at the release. */
+	private mousePressFrame?: PointerFrame;
 	private mousePressMoved = false;
 	private lastComponentClick?: {
 		timestamp: number;
@@ -291,13 +355,15 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		options: TuiAltScreenOptions = {},
 	) {
 		super(terminal, showHardwareCursor, logDirectory);
-		this.implicitDocument = {
+		const implicitDocument: ChildRows = {
 			render: (width) => super.render(width),
 			handleMouse: (event) => super.handleMouse(event),
+			childAtRow: (width, row) => super.childAtRow(width, row),
 			invalidate: () => {
 				for (const child of this.children) child.invalidate();
 			},
 		};
+		this.implicitDocument = implicitDocument;
 		this.implicitScrollView = new ScrollView(this.implicitDocument, { follow: "end", primary: true });
 		this.flashes = new AltScreenFlashContainer(() => this.requestRender());
 		this.wheelScroll = new WheelScrollAccelerator(options.wheelScrollLines ?? 1);
@@ -377,6 +443,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	protected override beforeTerminalStart(): void {
+		this.exitWrites++;
 		this.stopSelectionAutoScroll();
 		this.selectionPressActive = false;
 		this.stopScrollbarHover();
@@ -436,28 +503,94 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	protected override afterTerminalStop(options: TuiStopOptions): void {
 		if (!this.altScreenActive) return;
 		this.altScreenActive = false;
+		const savedCapabilities = this.savedCapabilities;
+		this.savedCapabilities = undefined;
+		const restoreCapabilities = () => {
+			if (savedCapabilities) setCapabilities(savedCapabilities);
+		};
 		if (options.preserveScreen) {
 			this.terminal.write(`${BEGIN_SYNCHRONIZED_OUTPUT}${EXIT_ALT_SCREEN}\x1b[?25h${END_SYNCHRONIZED_OUTPUT}`);
+		} else if (options.writeInSlices) {
+			const restoreOnExit = (): void => {
+				try {
+					this.terminal.restoreOnExit?.(EXIT_TRANSCRIPT_RESTORE, "");
+				} catch {}
+			};
+			process.on("exit", restoreOnExit);
+			this.stopOutput = this.writeTranscriptInSlices(++this.exitWrites).then(
+				() => {
+					process.off("exit", restoreOnExit);
+					restoreCapabilities();
+				},
+				async (error: unknown) => {
+					restoreCapabilities();
+					try {
+						this.terminal.write(EXIT_TRANSCRIPT_RESTORE);
+						await this.terminal.flush?.();
+						process.off("exit", restoreOnExit);
+					} catch {}
+					throw error;
+				},
+			);
+			return;
 		} else {
 			const width = Math.max(1, this.terminal.columns);
-			const documentLines = this.resolveFakeCursors(this.render(width)).map((line) =>
-				line.replace(OSC133_ZONE_PREFIX, ""),
-			);
-			this.lastDocument = this.applyLineResets(documentLines.map((line) => line.replaceAll(CURSOR_MARKER, ""))).map(
-				(line) => (isImageLine(line) || visibleWidth(line) <= width ? line : sliceByColumn(line, 0, width, true)),
-			);
-			let buffer = `${BEGIN_SYNCHRONIZED_OUTPUT}${EXIT_ALT_SCREEN}${DISABLE_AUTOWRAP}`;
+			this.lastDocument = this.prepareExitRows(this.render(width), width);
+			let buffer = EXIT_TRANSCRIPT_START;
 			for (let row = 0; row < this.lastDocument.length; row++) {
 				if (row > 0) buffer += "\r\n";
 				buffer += `\r\x1b[2K${this.lastDocument[row] ?? ""}`;
 			}
-			buffer += `\x1b[0m${ENABLE_AUTOWRAP}\r\n\x1b[?25h${END_SYNCHRONIZED_OUTPUT}`;
+			buffer += EXIT_TRANSCRIPT_END;
 			this.terminal.write(buffer);
 		}
-		if (this.savedCapabilities) {
-			setCapabilities(this.savedCapabilities);
-			this.savedCapabilities = undefined;
+		restoreCapabilities();
+	}
+
+	private prepareExitRows(lines: string[], width: number): string[] {
+		const documentLines = this.resolveFakeCursors(lines).map((line) => line.replace(OSC133_ZONE_PREFIX, ""));
+		return this.applyLineResets(documentLines.map((line) => line.replaceAll(CURSOR_MARKER, ""))).map((line) =>
+			isImageLine(line) || visibleWidth(line) <= width ? line : sliceByColumn(line, 0, width, true),
+		);
+	}
+
+	private async writeTranscriptInSlices(write: number): Promise<void> {
+		const width = Math.max(1, this.terminal.columns);
+		const lines =
+			this.layoutRoot instanceof WindowedContainer
+				? await this.layoutRoot.renderInSlices(width)
+				: this.render(width);
+		let deadline = performance.now() + EXIT_SLICE_BUDGET_MS;
+		const proceed = async (): Promise<boolean> => {
+			if (performance.now() >= deadline) {
+				await new Promise((resolve) => setImmediate(resolve));
+				deadline = performance.now() + EXIT_SLICE_BUDGET_MS;
+			}
+			return write === this.exitWrites;
+		};
+		let buffer = EXIT_TRANSCRIPT_START;
+		const writeBuffer = async (minimum: number): Promise<boolean> => {
+			while (buffer.length > 0 && buffer.length >= minimum) {
+				let end = Math.min(buffer.length, EXIT_WRITE_CHARACTERS);
+				const last = buffer.charCodeAt(end - 1);
+				if (end < buffer.length && end > 1 && last >= 0xd800 && last <= 0xdbff) end--;
+				this.terminal.write(buffer.slice(0, end));
+				buffer = buffer.slice(end);
+				await this.terminal.flush?.();
+				if (!(await proceed())) return false;
+			}
+			return true;
+		};
+		for (let start = 0; start < lines.length; start += EXIT_PREPARE_ROWS) {
+			const rows = this.prepareExitRows(lines.slice(start, start + EXIT_PREPARE_ROWS), width);
+			for (let index = 0; index < rows.length; index++) {
+				if (start + index > 0) buffer += "\r\n";
+				buffer += `\r\x1b[2K${rows[index] ?? ""}`;
+			}
+			if (!(await writeBuffer(EXIT_WRITE_CHARACTERS)) || !(await proceed())) return;
 		}
+		buffer += EXIT_TRANSCRIPT_END;
+		await writeBuffer(0);
 	}
 
 	protected override getExitRestorePrefix(): string {
@@ -550,11 +683,12 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private scrollToPrompt(direction: -1 | 1): void {
 		if (!this.currentLayout) return;
 		const scrollView = this.getPrimaryScrollView();
-		const lines = getScrollViewBox(this.currentLayout, scrollView)?.scrollContentLines;
+		if (this.settleScrollContent(scrollView)) this.currentLayout = this.layoutFrame();
+		const lines = getScrollContentRows(getScrollViewBox(this.currentLayout, scrollView));
 		if (!lines) return;
 
 		for (let row = scrollView.scrollTop + direction; row >= 0 && row < lines.length; row += direction) {
-			if (!OSC133_PROMPT_START.test(lines[row] ?? "")) continue;
+			if (!OSC133_PROMPT_START.test(lines.at(row) ?? "")) continue;
 			scrollView.scrollTo(row);
 			this.requestRender();
 			return;
@@ -641,8 +775,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (!search) return false;
 		const scrollView = layout.primaryScrollView ?? this.implicitScrollView;
 		const box = getScrollViewBox(layout, scrollView);
-		const lines = box?.scrollContentLines;
-		if (!lines || !search.query.trim()) {
+		const rows = getScrollContentRows(box);
+		if (!rows || !search.query.trim()) {
 			search.matches = [];
 			search.selectedIndex = -1;
 			search.selectedKey = undefined;
@@ -652,6 +786,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 
 		const shouldRevealSelection = search.selectionMode !== "retain";
+		const lines = Array.isArray(rows) ? rows : Array.from({ length: rows.length }, (_, row) => rows.at(row) ?? "");
 		const result = search.index.search(lines, search.query);
 		const matches = result.matches;
 		search.matches = matches;
@@ -726,6 +861,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.mouseCapture = undefined;
 		this.mousePressTarget = undefined;
 		this.mousePressPoint = undefined;
+		this.mousePressFrame = undefined;
 		this.mousePressMoved = false;
 	}
 
@@ -971,7 +1107,14 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			const targetResult = this.dispatchMouseToTarget(event, target);
 			if (targetResult) render = this.applyMouseDispatchResult(event, targetResult);
 			if (raw.release) {
-				if (!this.mousePressMoved && this.mousePressPoint?.x === raw.x && this.mousePressPoint.y === raw.y) {
+				// The release always reaches the target, so it can end what its press started. The click needs the
+				// target still drawn where it was pressed; its own rows may repaint, as a pressed button's do.
+				if (
+					!this.mousePressMoved &&
+					this.mousePressPoint?.x === raw.x &&
+					this.mousePressPoint.y === raw.y &&
+					samePointerGeometry(this.mousePressFrame, this.pointerFrame(raw.x, raw.y))
+				) {
 					const clickEvent = this.createMouseEvent("click", raw.button, raw.x, raw.y, {
 						clickCount: this.getComponentClickCount(target, raw.x, raw.y),
 					});
@@ -1003,6 +1146,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				this.clearTextSelection();
 				this.mousePressTarget = result.target;
 				this.mousePressPoint = { x: raw.x, y: raw.y };
+				this.mousePressFrame = this.pointerFrame(raw.x, raw.y);
 				this.mousePressMoved = false;
 			}
 			if (render) this.requestRender();
@@ -1198,7 +1342,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		);
 		if (visibleBottom < visibleTop) return undefined;
 		const pointerRow = Math.max(visibleTop, Math.min(visibleBottom, y));
-		const maxContentRow = Math.max(0, (box.scrollContentLines?.length ?? 1) - 1);
+		const maxContentRow = Math.max(0, (getScrollContentRows(box)?.length ?? 1) - 1);
 		return {
 			row: Math.max(0, Math.min(maxContentRow, scrollView.scrollTop + pointerRow - box.rect.y)),
 			col: Math.max(0, Math.min(box.rect.width - 1, x - box.rect.x)),
@@ -1219,8 +1363,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	private getSelectionSourceLine(point: SelectionPoint): string {
 		if (point.scrollView && this.currentLayout) {
-			const lines = getScrollViewBox(this.currentLayout, point.scrollView)?.scrollContentLines;
-			if (lines) return lines[point.row] ?? "";
+			const lines = getScrollContentRows(getScrollViewBox(this.currentLayout, point.scrollView));
+			if (lines) return lines.at(point.row) ?? "";
 		}
 		return this.previousScreen[point.row] ?? "";
 	}
@@ -1289,18 +1433,18 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 	}
 
-	private getClickCount(point: SelectionPoint, word: SelectionRange | undefined): number {
+	private getClickCount(screenRow: number, point: SelectionPoint, word: SelectionRange | undefined): number {
 		const now = Date.now();
 		const previous = this.lastClick;
-		// A second click counts on the same word, or on the same cell where there is no word, so a fast second click
-		// on empty space is a double-click as well.
+		// Clicks count on the screen: a press located in the transcript and one located on the screen, because an
+		// overlay opened between them, are on the same spot. A second click counts on the same word, or on the same
+		// cell where there is no word, so a fast second click on empty space is a double-click as well.
 		const start = word?.start.col ?? point.col;
 		const end = word?.end.col ?? point.col;
 		const count =
 			previous &&
 			now - previous.timestamp <= DOUBLE_CLICK_INTERVAL_MS &&
-			previous.row === point.row &&
-			previous.scrollView === point.scrollView &&
+			previous.row === screenRow &&
 			previous.wordStart === start &&
 			previous.wordEnd === end
 				? (previous.count % 3) + 1
@@ -1308,8 +1452,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.lastClick = {
 			timestamp: now,
 			count,
-			row: point.row,
-			scrollView: point.scrollView,
+			row: screenRow,
 			wordStart: start,
 			wordEnd: end,
 		};
@@ -1320,15 +1463,16 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private pointerFrame(x: number, y: number): PointerFrame {
 		const decoration = this.decoratedRows.get(y);
 		const overlay = this.overlayAt(x, y);
+		const boxes = this.currentLayout ? getLayoutBoxesAt(this.currentLayout, x, y) : [];
+		const innermost = boxes[0];
 		return {
 			line: this.previousScreen[y],
-			boxes: this.currentLayout
-				? getLayoutBoxesAt(this.currentLayout, x, y).map((box) => ({
-						component: box.component,
-						x: box.rect.x,
-						y: box.rect.y,
-					}))
-				: [],
+			boxes: boxes.map((box) => ({ component: box.component, x: box.rect.x, y: box.rect.y })),
+			drawn: overlay
+				? drawnAt(overlay.component, overlay.width, y - overlay.row)
+				: innermost
+					? drawnAt(innermost.component, innermost.rect.width, y - innermost.rect.y)
+					: [],
 			overlay,
 			// An overlay drawn over the row takes its clicks; the decoration under it is hidden.
 			decorated:
@@ -1463,7 +1607,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				: undefined;
 		const anchor = this.getSelectionPoint(event, scrollView);
 		const word = this.getWordSelection(anchor);
-		const clickCount = this.getClickCount(anchor, word);
+		const clickCount = this.getClickCount(event.y, anchor, word);
 		const range = clickCount === 2 ? word : clickCount === 3 ? this.getLineSelection(anchor) : undefined;
 		this.selectionGranularity = range ? (clickCount === 2 ? "word" : "line") : "character";
 		this.selectionInitialRange = range;
@@ -1521,16 +1665,16 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private getActiveSelectionText(): string | undefined {
 		const selection = this.getSelectionBounds();
 		if (!selection) return undefined;
-		let sourceLines: readonly string[] = this.previousScreen;
+		let sourceLines: WindowRows = this.previousScreen;
 		if (selection.start.scrollView) {
 			if (!this.currentLayout) return undefined;
-			const box = getScrollViewBox(this.currentLayout, selection.start.scrollView);
-			if (!box?.scrollContentLines) return undefined;
-			sourceLines = box.scrollContentLines;
+			const rows = getScrollContentRows(getScrollViewBox(this.currentLayout, selection.start.scrollView));
+			if (!rows) return undefined;
+			sourceLines = rows;
 		}
 		const lines: string[] = [];
 		for (let row = selection.start.row; row <= selection.end.row; row++) {
-			const line = sourceLines[row] ?? "";
+			const line = sourceLines.at(row) ?? "";
 			const columns = this.getSelectionColumns(line, row, selection);
 			lines.push(
 				stripTerminalSequences(
@@ -1789,6 +1933,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	private renderLayout(width: number, height: number): LayoutFrame {
+		if (this.activeSearch?.query.trim()) this.settleScrollContent(this.getPrimaryScrollView());
 		const root = this.layoutRoot ?? this.implicitScrollView;
 		let layout = renderLayoutFrame(root, width, height, () => this.requestRender());
 		if (this.refreshSearch(layout)) layout = renderLayoutFrame(root, width, height, () => this.requestRender());
@@ -1812,7 +1957,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (this.isCurrentSearchMatchOnRow(scrollView.scrollTop)) return screen;
 		const box = getScrollViewBox(layout, scrollView);
 		const clip = box?.clip;
-		const lines = box?.scrollContentLines;
+		const lines = getScrollContentRows(box);
 		if (!clip || !lines || clip.width <= 0 || clip.height < 2) return screen;
 		const pin = this.scrollPinnedPrompt;
 		const promptRow = turnPromptAbove(lines, scrollView.scrollTop, pin.isPrompt);
@@ -1830,6 +1975,20 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		result[row] = compositeTuiLine(result[row] ?? "", padded, clip.x, available, width);
 		this.decoratedRows.set(row, { x: clip.x, width: available });
 		return result;
+	}
+
+	private layoutFrame(): LayoutFrame {
+		const width = Math.max(1, this.terminal.columns);
+		const height = Math.max(1, this.terminal.rows);
+		return renderLayoutFrame(this.layoutRoot ?? this.implicitScrollView, width, height, () => this.requestRender());
+	}
+
+	private settleScrollContent(scrollView: ScrollView): boolean {
+		const box = this.currentLayout ? getScrollViewBox(this.currentLayout, scrollView) : undefined;
+		const content = box?.children[0]?.component;
+		if (!(content instanceof WindowedContainer)) return false;
+		content.settleRows();
+		return true;
 	}
 
 	protected override doRender(): void {
@@ -1933,14 +2092,14 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 }
 
 export function turnPromptAbove(
-	lines: readonly string[],
+	lines: WindowRows,
 	top: number,
 	isPrompt: (row: string) => boolean,
 ): string | undefined {
 	for (let start = Math.min(top, lines.length - 1); start >= 0; start--) {
-		if (!isPrompt(lines[start] ?? "")) continue;
+		if (!isPrompt(lines.at(start) ?? "")) continue;
 		for (let row = start; row < top; row++) {
-			const text = (lines[row] ?? "").replace(OSC133_ZONE_PREFIX, "");
+			const text = (lines.at(row) ?? "").replace(OSC133_ZONE_PREFIX, "");
 			if (text.replace(/\x1b\[[0-9;]*m/g, "").trim()) return text;
 		}
 		return undefined;

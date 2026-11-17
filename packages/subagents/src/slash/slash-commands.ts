@@ -12,7 +12,7 @@ export function registerSlashCommands(pi: ExtensionAPI, _state: SubagentState): 
 				ctx.ui.notify("Use subagent action=list to list agents outside interactive mode.", "info");
 				return;
 			}
-			const { agents } = discoverAgents(ctx.cwd, "both", contextAgentDiscoveryOptions(ctx));
+			const { agents } = await discoverAgents(ctx.cwd, "both", contextAgentDiscoveryOptions(ctx));
 			await ctx.ui.custom<void>(
 				(tui, theme, _keys, done) => {
 					const browser = new AgentBrowser(

@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
 import { type ExtensionContext, SessionManager } from "@bastani/atomic";
+import { pathExists } from "../../shared/path-exists.js";
 import type { SubagentChildRecord } from "./subagent-child-records.js";
 
 /** Intercom's entry recording the Intercom id a session registered under (`packages/intercom/session-identity.ts`). */
@@ -39,7 +39,7 @@ export async function reopenChildSession(
 	const openOptions =
 		typeof SessionManager.prototype.getEntrySeq === "function" ? ({ history: "tail" } as const) : undefined;
 	try {
-		if (record.childSessionFile && !existsSync(record.childSessionFile))
+		if (record.childSessionFile && !(await pathExists(record.childSessionFile)))
 			return { reason: `its session file is missing: ${record.childSessionFile}` };
 		if (record.childSessionFile) {
 			const sessionManager = await SessionManager.open(record.childSessionFile, undefined, record.cwd, openOptions);

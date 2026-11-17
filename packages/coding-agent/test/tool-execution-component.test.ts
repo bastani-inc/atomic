@@ -289,23 +289,23 @@ describe("ToolExecutionComponent parity", () => {
 
 	test("bash execute emits an initial empty partial update before output arrives", async () => {
 		const updates: Array<{ content: Array<{ type: string; text?: string }>; details?: unknown }> = [];
+		let updatesWhenCommandStarted: typeof updates | undefined;
 		const operations: BashOperations = {
 			exec: async () => {
+				updatesWhenCommandStarted = [...updates];
 				await new Promise((resolve) => setTimeout(resolve, 10));
 				return { exitCode: 0 };
 			},
 		};
 		const tool = createBashToolDefinition(process.cwd(), { operations });
-		const promise = tool.execute(
+		await tool.execute(
 			"tool-bash-1",
 			{ command: "sleep 10" },
 			undefined,
 			(update) => updates.push(update as { content: Array<{ type: string; text?: string }>; details?: unknown }),
 			{} as never,
 		);
-		await Promise.resolve();
-		expect(updates).toEqual([{ content: [], details: undefined }]);
-		await promise;
+		expect(updatesWhenCommandStarted).toEqual([{ content: [], details: undefined }]);
 	});
 
 	test("bash renderer does not duplicate final full output truncation details", async () => {
@@ -844,6 +844,18 @@ describe("ToolExecutionComponent parity", () => {
 			absent: undefined,
 		},
 	] as const) {
+		test(`renders an @-mentioned ${scenario.title} read compactly on its first render`, () => {
+			const component = new ToolExecutionComponent(
+				"read",
+				`tool-compact-mention-${scenario.title}`,
+				{ path: `@${scenario.path}` },
+				{},
+				createReadToolDefinition(process.cwd()),
+				createFakeTui(),
+				process.cwd(),
+			);
+			expect(stripAnsi(component.render(120).join("\n"))).toContain(scenario.compact);
+		});
 		test(`renders ${scenario.title} read results compactly until expanded`, () => {
 			const component = new ToolExecutionComponent(
 				"read",

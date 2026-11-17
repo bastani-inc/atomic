@@ -1,5 +1,11 @@
 import type * as nodeFs from "node:fs";
-import { guardLockRemoval, lockHolder, prepareTakeoverMutex } from "./lock-takeover.js";
+import {
+	guardLockRemoval,
+	guardLockRemovalSync,
+	lockHolder,
+	lockHolderAsync,
+	prepareTakeoverMutex,
+} from "./lock-takeover.js";
 
 export { lockHolder };
 
@@ -36,6 +42,10 @@ export interface LockWait {
 	readonly contended: (error: unknown, waitedMs: number) => Error;
 }
 
+export interface AsyncLockWait extends Omit<LockWait, "takeOver"> {
+	readonly takeOver?: () => Promise<boolean>;
+}
+
 /**
  * The wait for one lock. Contention alone never fails it: the holder's allowance starts over whenever the lock changes
  * hands, so a waiter fails only when one holder keeps the lock too long, or after the overall contention bound.
@@ -45,21 +55,17 @@ class LockWaiter {
 	private holder: string | undefined;
 	private holderDeadline: number;
 	private pollMs: number;
-	private readonly wait: LockWait;
+	private readonly wait: Omit<LockWait, "takeOver">;
 
-	constructor(wait: LockWait) {
+	constructor(wait: Omit<LockWait, "takeOver">, holder: string | undefined) {
 		this.wait = wait;
-		this.holder = lockHolder(wait.lockPath);
+		this.holder = holder;
 		this.holderDeadline = this.startedAt + wait.holderWaitMs;
 		this.pollMs = wait.pollMinMs;
 	}
 
-	/** How long to sleep before the next attempt after `error`; throws when the wait is over. */
-	next(error: unknown): number {
-		if (!this.wait.retryable(error)) throw error;
-		if (this.wait.takeOver?.()) return 0;
+	next(error: unknown, holder: string | undefined): number {
 		const now = Date.now();
-		const holder = lockHolder(this.wait.lockPath);
 		if (holder !== this.holder) {
 			this.holder = holder;
 			this.holderDeadline = now + this.wait.holderWaitMs;
@@ -104,14 +110,16 @@ export type LockFileSystem = typeof nodeFs;
  * `acquire` passes the file system it is given to proper-lockfile as its `fs` option.
  */
 export function waitForLockSync<T>(acquire: (fs: LockFileSystem) => T, wait: LockWait): T {
-	const waiter = new LockWaiter(wait);
-	const guard = guardLockRemoval(wait.lockPath, wait.staleMs);
+	const waiter = new LockWaiter(wait, lockHolder(wait.lockPath));
+	const guard = guardLockRemovalSync(wait.lockPath, wait.staleMs);
 	try {
 		for (;;) {
 			try {
 				return acquire(guard.fs);
 			} catch (error) {
-				Atomics.wait(sleeper, 0, 0, waiter.next(error));
+				if (!wait.retryable(error)) throw error;
+				if (wait.takeOver?.()) continue;
+				Atomics.wait(sleeper, 0, 0, waiter.next(error, lockHolder(wait.lockPath)));
 			}
 		}
 	} finally {
@@ -119,13 +127,12 @@ export function waitForLockSync<T>(acquire: (fs: LockFileSystem) => T, wait: Loc
 	}
 }
 
-/** {@link waitForLockSync} for an asynchronous `acquire`; `signal` stops the wait. */
 export async function waitForLock<T>(
 	acquire: (fs: LockFileSystem) => Promise<T>,
-	wait: LockWait,
+	wait: AsyncLockWait,
 	signal?: AbortSignal,
 ): Promise<T> {
-	const waiter = new LockWaiter(wait);
+	const waiter = new LockWaiter(wait, await lockHolderAsync(wait.lockPath));
 	const guard = guardLockRemoval(wait.lockPath, wait.staleMs);
 	try {
 		for (;;) {
@@ -133,7 +140,9 @@ export async function waitForLock<T>(
 			try {
 				return await acquire(guard.fs);
 			} catch (error) {
-				const sleepMs = waiter.next(error);
+				if (!wait.retryable(error)) throw error;
+				if (await wait.takeOver?.()) continue;
+				const sleepMs = waiter.next(error, await lockHolderAsync(wait.lockPath));
 				void prepareTakeoverMutex(wait.lockPath);
 				signal?.throwIfAborted();
 				await delay(sleepMs, signal);
@@ -141,5 +150,24 @@ export async function waitForLock<T>(
 		}
 	} finally {
 		guard.done();
+	}
+}
+
+const lockTurns = new Map<string, Promise<void>>();
+
+export async function inLockTurn<T>(path: string, fn: () => Promise<T>): Promise<T> {
+	const previous = lockTurns.get(path) ?? Promise.resolve();
+	let end!: () => void;
+	const ended = new Promise<void>((resolve) => {
+		end = resolve;
+	});
+	const turn = previous.then(() => ended);
+	lockTurns.set(path, turn);
+	await previous;
+	try {
+		return await fn();
+	} finally {
+		end();
+		if (lockTurns.get(path) === turn) lockTurns.delete(path);
 	}
 }

@@ -1,7 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { gt, maxSatisfying, rcompare, satisfies } from "semver";
 import { APP_NAME, CONFIG_DIR_NAME, getProjectConfigDirs } from "../config.js";
+import { pathExists as exists } from "../utils/path-exists.ts";
 import { markPathIgnoredByCloudSync } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { runCommand, runCommandCapture, runCommandSync } from "./package-manager-command.ts";
@@ -71,6 +73,14 @@ export function runNpmCommandSync(context: PackageManagerContext, args: string[]
 	return runCommandSync(npmCommand.command, [...npmCommand.args, ...args]);
 }
 
+function runNpmCommandCapture(context: PackageManagerContext, args: string[]): Promise<string> {
+	const npmCommand = getNpmCommand(context);
+	const options = { timeoutMs: NETWORK_TIMEOUT_MS };
+	return context.driver
+		? context.driver.runCommandCapture(npmCommand.command, [...npmCommand.args, ...args], options)
+		: runCommandCapture(npmCommand.command, [...npmCommand.args, ...args], options);
+}
+
 export function getGitDependencyInstallArgs(context: PackageManagerContext): string[] {
 	switch (getPackageManagerName(context)) {
 		case "bun":
@@ -90,9 +100,13 @@ export function getGitDependencyInstallArgs(context: PackageManagerContext): str
 	}
 }
 
-export function getNpmInstallArgs(context: PackageManagerContext, specs: string[], root: string): string[] {
+export async function getNpmInstallArgs(
+	context: PackageManagerContext,
+	specs: string[],
+	root: string,
+): Promise<string[]> {
 	// npm writes broken nested package-lock.json paths when --prefix goes through a symlink.
-	const installRoot = existsSync(root) ? realpathSync(root) : root;
+	const installRoot = (await exists(root)) ? await realpath(root) : root;
 	const packageManagerName = getPackageManagerName(context);
 	if (packageManagerName === "bun") {
 		return ["install", ...specs, "--cwd", installRoot, "--omit=peer"];
@@ -120,8 +134,8 @@ export async function installNpm(
 ): Promise<void> {
 	const installRoot = await getNpmInstallRoot(context, scope, temporary);
 	await withInstallLock(installRoot, async () => {
-		ensureNpmProject(installRoot);
-		await runNpmCommand(context, getNpmInstallArgs(context, [source.spec], installRoot));
+		await ensureNpmProject(installRoot);
+		await runNpmCommand(context, await getNpmInstallArgs(context, [source.spec], installRoot));
 	});
 }
 
@@ -131,11 +145,11 @@ export async function uninstallNpm(
 	scope: SourceScope,
 ): Promise<void> {
 	const root = await getNpmInstallRoot(context, scope, false);
-	if (!existsSync(root)) {
+	if (!(await exists(root))) {
 		return;
 	}
 	// npm writes broken nested package-lock.json paths when --prefix goes through a symlink.
-	const installRoot = realpathSync(root);
+	const installRoot = await realpath(root);
 	await withInstallLock(root, async () => {
 		if (getPackageManagerName(context) === "bun") {
 			await runNpmCommand(context, ["uninstall", source.name, "--cwd", installRoot]);
@@ -154,31 +168,31 @@ export async function installNpmBatch(
 ): Promise<void> {
 	const installRoot = await getNpmInstallRoot(context, scope, false);
 	await withInstallLock(installRoot, async () => {
-		ensureNpmProject(installRoot);
-		await runNpmCommand(context, getNpmInstallArgs(context, specs, installRoot));
+		await ensureNpmProject(installRoot);
+		await runNpmCommand(context, await getNpmInstallArgs(context, specs, installRoot));
 	});
 }
 
-function ensureNpmProject(installRoot: string): void {
-	if (!existsSync(installRoot)) {
-		mkdirSync(installRoot, { recursive: true });
+async function ensureNpmProject(installRoot: string): Promise<void> {
+	if (!(await exists(installRoot))) {
+		await mkdir(installRoot, { recursive: true });
 	}
-	markPathIgnoredByCloudSync(installRoot);
-	ensureGitIgnore(installRoot);
+	await markPathIgnoredByCloudSync(installRoot);
+	await ensureGitIgnore(installRoot);
 	const packageJsonPath = join(installRoot, "package.json");
-	if (!existsSync(packageJsonPath)) {
+	if (!(await exists(packageJsonPath))) {
 		const pkgJson = { name: `${APP_NAME}-extensions`, private: true };
-		writeFileSync(packageJsonPath, JSON.stringify(pkgJson, null, 2), "utf-8");
+		await writeFile(packageJsonPath, JSON.stringify(pkgJson, null, 2), "utf-8");
 	}
 }
 
-export function ensureGitIgnore(dir: string): void {
-	if (!existsSync(dir)) {
-		mkdirSync(dir, { recursive: true });
+export async function ensureGitIgnore(dir: string): Promise<void> {
+	if (!(await exists(dir))) {
+		await mkdir(dir, { recursive: true });
 	}
 	const ignorePath = join(dir, ".gitignore");
-	if (!existsSync(ignorePath)) {
-		writeFileSync(ignorePath, "*\n!.gitignore\n", "utf-8");
+	if (!(await exists(ignorePath))) {
+		await writeFile(ignorePath, "*\n!.gitignore\n", "utf-8");
 	}
 }
 
@@ -193,27 +207,58 @@ export function getManagedNpmInstallPath(
 	return join(context.agentDir, "npm", "node_modules", source.name);
 }
 
-export function getGlobalNpmRoot(context: PackageManagerContext): string {
+function globalNpmRootCommandKey(context: PackageManagerContext): string {
 	const npmCommand = getNpmCommand(context);
-	const commandKey = [npmCommand.command, ...npmCommand.args].join("\0");
+	return [npmCommand.command, ...npmCommand.args].join("\0");
+}
+
+function globalNpmRootQuery(context: PackageManagerContext): { args: string[]; root: (output: string) => string } {
+	if (getPackageManagerName(context) === "bun") {
+		return {
+			args: ["pm", "bin", "-g"],
+			root: (output) => join(dirname(output.trim()), "install", "global", "node_modules"),
+		};
+	}
+	return { args: ["root", "-g"], root: (output) => output.trim() };
+}
+
+export function getGlobalNpmRoot(context: PackageManagerContext): string {
+	const commandKey = globalNpmRootCommandKey(context);
 	if (context.globalNpmRoot && context.globalNpmRootCommandKey === commandKey) {
 		return context.globalNpmRoot;
 	}
-	if (getPackageManagerName(context) === "bun") {
-		const binDir = runNpmCommandSync(context, ["pm", "bin", "-g"]).trim();
-		context.globalNpmRoot = join(dirname(binDir), "install", "global", "node_modules");
-	} else {
-		context.globalNpmRoot = runNpmCommandSync(context, ["root", "-g"]).trim();
-	}
+	const query = globalNpmRootQuery(context);
+	context.globalNpmRoot = query.root(runNpmCommandSync(context, query.args));
 	context.globalNpmRootCommandKey = commandKey;
 	return context.globalNpmRoot;
 }
 
-function getPnpmGlobalPackagePath(context: PackageManagerContext, packageName: string): string | undefined {
-	if (getPackageManagerName(context) !== "pnpm") {
-		return undefined;
+const globalNpmRootLookups = new WeakMap<PackageManagerContext, { commandKey: string; root: Promise<string> }>();
+
+async function getGlobalNpmRootAsync(context: PackageManagerContext): Promise<string> {
+	const commandKey = globalNpmRootCommandKey(context);
+	if (context.globalNpmRoot && context.globalNpmRootCommandKey === commandKey) {
+		return context.globalNpmRoot;
 	}
-	const output = runNpmCommandSync(context, ["list", "-g", "--depth", "0", "--json"]);
+	const pending = globalNpmRootLookups.get(context);
+	if (pending?.commandKey === commandKey) return pending.root;
+	const query = globalNpmRootQuery(context);
+	const root = runNpmCommandCapture(context, query.args).then((output) => {
+		context.globalNpmRoot = query.root(output);
+		context.globalNpmRootCommandKey = commandKey;
+		return context.globalNpmRoot;
+	});
+	globalNpmRootLookups.set(context, { commandKey, root });
+	try {
+		return await root;
+	} finally {
+		if (globalNpmRootLookups.get(context)?.root === root) globalNpmRootLookups.delete(context);
+	}
+}
+
+const PNPM_GLOBAL_LIST_ARGS = ["list", "-g", "--depth", "0", "--json"];
+
+function pnpmGlobalPackagePath(output: string, packageName: string): string | undefined {
 	const entries = JSON.parse(output) as Array<{ dependencies?: Record<string, { path?: string }> }>;
 	for (const entry of entries) {
 		const path = entry.dependencies?.[packageName]?.path;
@@ -224,12 +269,30 @@ function getPnpmGlobalPackagePath(context: PackageManagerContext, packageName: s
 
 function getLegacyGlobalNpmInstallPath(context: PackageManagerContext, source: NpmSource): string | undefined {
 	try {
-		const pnpmPath = getPnpmGlobalPackagePath(context, source.name);
-		if (pnpmPath) return pnpmPath;
+		if (getPackageManagerName(context) === "pnpm") {
+			const pnpmPath = pnpmGlobalPackagePath(runNpmCommandSync(context, PNPM_GLOBAL_LIST_ARGS), source.name);
+			if (pnpmPath) return pnpmPath;
+		}
 		const globalRoot = context.driver?.getGlobalNpmRoot
 			? context.driver.getGlobalNpmRoot()
 			: getGlobalNpmRoot(context);
 		return join(globalRoot, source.name);
+	} catch {
+		return undefined;
+	}
+}
+
+async function getLegacyGlobalNpmInstallPathAsync(
+	context: PackageManagerContext,
+	source: NpmSource,
+): Promise<string | undefined> {
+	try {
+		if (getPackageManagerName(context) === "pnpm") {
+			const output = await runNpmCommandCapture(context, PNPM_GLOBAL_LIST_ARGS);
+			const pnpmPath = pnpmGlobalPackagePath(output, source.name);
+			if (pnpmPath) return pnpmPath;
+		}
+		return join(await getGlobalNpmRootAsync(context), source.name);
 	} catch {
 		return undefined;
 	}
@@ -248,6 +311,19 @@ export function getNpmInstallPath(
 	return legacyPath && existsSync(legacyPath) ? legacyPath : managedPath;
 }
 
+export async function getNpmInstallPathAsync(
+	context: PackageManagerContext,
+	source: NpmSource,
+	scope: InstalledSourceScope,
+): Promise<string> {
+	const managedPath = getManagedNpmInstallPath(context, source, scope);
+	if (scope !== "user" || (await exists(managedPath))) {
+		return managedPath;
+	}
+	const legacyPath = await getLegacyGlobalNpmInstallPathAsync(context, source);
+	return legacyPath && (await exists(legacyPath)) ? legacyPath : managedPath;
+}
+
 export async function getTemporaryNpmInstallPath(context: PackageLocationContext, source: NpmSource): Promise<string> {
 	return join(await getNpmInstallRoot(context, "temporary", true), "node_modules", source.name);
 }
@@ -257,9 +333,24 @@ export async function findExistingNpmInstallPath(
 	source: NpmSource,
 	scope: SourceScope,
 ): Promise<string | undefined> {
-	if (scope !== "temporary") return getExistingNpmInstallPath(context, source, scope);
+	if (scope !== "temporary") return getExistingNpmInstallPathAsync(context, source, scope);
 	const path = await getTemporaryNpmInstallPath(context, source);
-	return existsSync(path) ? path : undefined;
+	return (await exists(path)) ? path : undefined;
+}
+
+function npmInstallCandidates(
+	context: PackageManagerContext,
+	source: NpmSource,
+	scope: InstalledSourceScope,
+	installPath: string,
+): string[] {
+	const candidates = [installPath];
+	if (scope === "project") {
+		for (const configDir of getProjectConfigDirs(context.cwd)) {
+			candidates.push(join(configDir, "npm", "node_modules", source.name));
+		}
+	}
+	return Array.from(new Set(candidates));
 }
 
 export function getExistingNpmInstallPath(
@@ -267,14 +358,19 @@ export function getExistingNpmInstallPath(
 	source: NpmSource,
 	scope: InstalledSourceScope,
 ): string | undefined {
-	const candidates = [getNpmInstallPath(context, source, scope)];
-	if (scope === "project") {
-		for (const configDir of getProjectConfigDirs(context.cwd)) {
-			candidates.push(join(configDir, "npm", "node_modules", source.name));
-		}
-	}
-	for (const candidate of Array.from(new Set(candidates))) {
-		if (existsSync(candidate)) return candidate;
+	return npmInstallCandidates(context, source, scope, getNpmInstallPath(context, source, scope)).find((candidate) =>
+		existsSync(candidate),
+	);
+}
+
+export async function getExistingNpmInstallPathAsync(
+	context: PackageManagerContext,
+	source: NpmSource,
+	scope: InstalledSourceScope,
+): Promise<string | undefined> {
+	const installPath = await getNpmInstallPathAsync(context, source, scope);
+	for (const candidate of npmInstallCandidates(context, source, scope, installPath)) {
+		if (await exists(candidate)) return candidate;
 	}
 	return undefined;
 }
@@ -284,7 +380,7 @@ export async function installedNpmMatchesConfiguredVersion(
 	source: NpmSource,
 	installedPath: string,
 ): Promise<boolean> {
-	const installedVersion = getInstalledNpmVersion(installedPath);
+	const installedVersion = await getInstalledNpmVersion(installedPath);
 	if (!installedVersion) return false;
 	if (source.range) return satisfies(installedVersion, source.range);
 	if (source.version !== undefined) {
@@ -305,7 +401,7 @@ export async function npmHasAvailableUpdate(
 	installedPath: string,
 ): Promise<boolean> {
 	if (isOfflineModeEnabled()) return false;
-	const installedVersion = getInstalledNpmVersion(installedPath);
+	const installedVersion = await getInstalledNpmVersion(installedPath);
 	if (!installedVersion) return false;
 	try {
 		const targetVersion = await getLatestNpmVersion(
@@ -319,11 +415,11 @@ export async function npmHasAvailableUpdate(
 	}
 }
 
-export function getInstalledNpmVersion(installedPath: string): string | undefined {
+export async function getInstalledNpmVersion(installedPath: string): Promise<string | undefined> {
 	const packageJsonPath = join(installedPath, "package.json");
-	if (!existsSync(packageJsonPath)) return undefined;
+	if (!(await exists(packageJsonPath))) return undefined;
 	try {
-		const content = readFileSync(packageJsonPath, "utf-8");
+		const content = await readFile(packageJsonPath, "utf-8");
 		const pkg = JSON.parse(stripBom(content)) as { version?: string };
 		return pkg.version;
 	} catch {

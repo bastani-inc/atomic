@@ -176,9 +176,9 @@ function windowsDirectory(): string {
 	return process.env.SystemRoot ?? process.env.windir ?? "C:\\Windows";
 }
 
-function neutralWorkingDirectory(): string | undefined {
+async function neutralWorkingDirectory(): Promise<string | undefined> {
 	try {
-		return statSync(windowsDirectory()).isDirectory() ? windowsDirectory() : undefined;
+		return (await statAsync(windowsDirectory())).isDirectory() ? windowsDirectory() : undefined;
 	} catch {
 		return undefined;
 	}
@@ -351,12 +351,14 @@ class SharedSecurityRead {
 		return undefined;
 	}
 
-	private readWith(executable: string): Promise<SecurityAttempt> {
+	private async readWith(executable: string): Promise<SecurityAttempt> {
+		const cwd = await neutralWorkingDirectory();
+		if (this.controller.signal.aborted) return { failure: `${executable}: aborted` };
 		return new Promise((resolve) => {
 			let child: ChildProcess;
 			try {
 				child = spawn(executable, ["-NoProfile", "-NonInteractive", "-Command", READ_SECURITY_SCRIPT], {
-					cwd: neutralWorkingDirectory(),
+					cwd,
 					env: { ...process.env, ATOMIC_SECURITY_QUERY_PATH: this.path },
 					stdio: ["ignore", "pipe", "pipe"],
 					windowsHide: true,

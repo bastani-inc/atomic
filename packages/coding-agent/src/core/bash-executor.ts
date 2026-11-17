@@ -91,7 +91,7 @@ export async function executeBashWithOperations(
 			const dir = await ensureSessionTempDirAsync(options?.sessionTempDir);
 			const id = randomBytes(8).toString("hex");
 			const path = join(dir, `${APP_NAME}-bash-${id}.log`);
-			tempFile = new PersistedOutputFile(path);
+			tempFile = await PersistedOutputFile.create(path);
 			tempFilePath = path;
 		} catch {
 			// The session temp directory was refused (see ensureTempDir). Run without

@@ -23,17 +23,21 @@ function writeFixture(name: string, source: string): string {
 	return filePath;
 }
 
-function scanFile(name: string, source: string, options?: { readonly maxDepth?: number }): PossibleStagesScanResult {
-	return scanPossibleStagesFromSource(writeFixture(name, source), options);
+async function scanFile(
+	name: string,
+	source: string,
+	options?: { readonly maxDepth?: number },
+): Promise<PossibleStagesScanResult> {
+	return await scanPossibleStagesFromSource(writeFixture(name, source), options);
 }
 
-function scanCommitted(name: string): PossibleStagesScanResult {
-	return scanPossibleStagesFromSource(join(FIXTURES, name, "workflow.mjs"));
+async function scanCommitted(name: string): Promise<PossibleStagesScanResult> {
+	return await scanPossibleStagesFromSource(join(FIXTURES, name, "workflow.mjs"));
 }
 
 describe("committed prediction fixtures", () => {
-	test("helper-names offers each call's composed helper name", () => {
-		const result = scanCommitted("helper-names");
+	test("helper-names offers each call's composed helper name", async () => {
+		const result = await scanCommitted("helper-names");
 		assert.deepEqual(result.stages, ["*"]);
 		assert.deepEqual(result.warnings, []);
 		assert.deepEqual(
@@ -55,8 +59,8 @@ describe("committed prediction fixtures", () => {
 		assert.ok(result.uncertainties[1]!.excerpt.includes('await ctx.task(stageName("summary", 2)'));
 	});
 
-	test("imported-factory offers each imported factory's step name", () => {
-		const result = scanCommitted("imported-factory");
+	test("imported-factory offers each imported factory's step name", async () => {
+		const result = await scanCommitted("imported-factory");
 		assert.deepEqual(result.stages, []);
 		assert.equal(result.hasTrackedNodes, true);
 		assert.deepEqual(result.warnings, []);
@@ -74,8 +78,8 @@ describe("committed prediction fixtures", () => {
 		assert.ok(result.uncertainties[0]!.excerpt.includes("await ctx.parallel([makeLint(), makeTypecheck()]);"));
 	});
 
-	test("data-driven-loop offers the aliased enum array as a group, then each element", () => {
-		const result = scanCommitted("data-driven-loop");
+	test("data-driven-loop offers the aliased enum array as a group, then each element", async () => {
+		const result = await scanCommitted("data-driven-loop");
 		assert.deepEqual(result.stages, ["*"]);
 		assert.deepEqual(result.warnings, []);
 		assert.equal(result.uncertainties.length, 1);
@@ -92,8 +96,8 @@ describe("committed prediction fixtures", () => {
 		assert.ok(only!.excerpt.includes("await ctx.task(area, "));
 	});
 
-	test("dynamic-children offers each imported child with its own scanned stages", () => {
-		const result = scanCommitted("dynamic-children");
+	test("dynamic-children offers each imported child with its own scanned stages", async () => {
+		const result = await scanCommitted("dynamic-children");
 		assert.deepEqual(result.stages, ["workflow:*"]);
 		assert.equal(result.warnings.length, 2);
 		assert.equal(result.uncertainties.length, 1);
@@ -108,8 +112,8 @@ describe("committed prediction fixtures", () => {
 		assert.ok(only!.excerpt.includes("await ctx.workflow(children[kind]);"));
 	});
 
-	test("a child sub-scan leaves the parent's own stage output unchanged", () => {
-		const result = scanCommitted("dynamic-children");
+	test("a child sub-scan leaves the parent's own stage output unchanged", async () => {
+		const result = await scanCommitted("dynamic-children");
 		assert.deepEqual(result.stages, ["workflow:*"]);
 		assert.deepEqual(
 			result.sources.map((source) => source.file),
@@ -119,8 +123,8 @@ describe("committed prediction fixtures", () => {
 });
 
 describe("uncertainty records", () => {
-	test("a fully literal workflow has no uncertainties", () => {
-		const result = scanFile(
+	test("a fully literal workflow has no uncertainties", async () => {
+		const result = await scanFile(
 			"literal.ts",
 			`
 			export default workflow({ name: "literal", run: async (ctx) => {
@@ -133,8 +137,8 @@ describe("uncertainty records", () => {
 		assert.deepEqual(result.uncertainties, []);
 	});
 
-	test("zero-stages reports name-like literals and the first seven lines", () => {
-		const result = scanFile(
+	test("zero-stages reports name-like literals and the first seven lines", async () => {
+		const result = await scanFile(
 			"zero.ts",
 			[
 				"export default workflow({",
@@ -165,8 +169,8 @@ describe("uncertainty records", () => {
 		]);
 	});
 
-	test("unreadable-file records a missing entry with no excerpt or candidates", () => {
-		const result = scanPossibleStagesFromSource(join(TEST_DIR, "gone", "entry.ts"));
+	test("unreadable-file records a missing entry with no excerpt or candidates", async () => {
+		const result = await scanPossibleStagesFromSource(join(TEST_DIR, "gone", "entry.ts"));
 		assert.deepEqual(
 			result.uncertainties.map((entry) => [entry.code, entry.file, entry.line, entry.excerpt, entry.candidates]),
 			[
@@ -177,8 +181,8 @@ describe("uncertainty records", () => {
 		assert.deepEqual(result.sources, []);
 	});
 
-	test("unresolved-steps offers the name literals of the unit", () => {
-		const result = scanFile(
+	test("unresolved-steps offers the name literals of the unit", async () => {
+		const result = await scanFile(
 			"steps.ts",
 			`
 			const known = { name: "alpha" };
@@ -207,8 +211,8 @@ describe("uncertainty records", () => {
 		assert.equal(result.warnings.length, 2);
 	});
 
-	test("unresolved-step covers local function factories and unrecognized elements", () => {
-		const result = scanFile(
+	test("unresolved-step covers local function factories and unrecognized elements", async () => {
+		const result = await scanFile(
 			"steps-local.ts",
 			`
 			function makeBuild() { return { name: "build", prompt: "x" }; }
@@ -227,9 +231,9 @@ describe("uncertainty records", () => {
 		);
 	});
 
-	test("a helper imported by name composes its template from literal arguments", () => {
+	test("a helper imported by name composes its template from literal arguments", async () => {
 		writeFixture("helpers.ts", "export const label = (kind: string, n: number) => `$" + "{kind}-$" + "{n}`;\n");
-		const result = scanFile(
+		const result = await scanFile(
 			"helper-import.ts",
 			`
 			import { label } from "./helpers.js";
@@ -251,9 +255,9 @@ describe("uncertainty records", () => {
 		);
 	});
 
-	test("enum arrays through a named import and an as-const array are expanded", () => {
+	test("enum arrays through a named import and an as-const array are expanded", async () => {
 		writeFixture("kinds.ts", 'export const KINDS = ["x", "y"] as const;\n');
-		const result = scanFile(
+		const result = await scanFile(
 			"enum-import.ts",
 			`
 			import { KINDS } from "./kinds.js";
@@ -279,12 +283,12 @@ describe("uncertainty records", () => {
 		]);
 	});
 
-	test("a call inside a scanned child records the child boundary", () => {
+	test("a call inside a scanned child records the child boundary", async () => {
 		writeFixture(
 			"boundary-child.ts",
 			`export default workflow({ name: "child-a", run: async (ctx) => { await ctx.task(pick("only"), {}); }});\n`,
 		);
-		const result = scanFile(
+		const result = await scanFile(
 			"boundary-parent.ts",
 			`
 			import child from "./boundary-child.js";
@@ -305,12 +309,12 @@ describe("uncertainty records", () => {
 		]);
 	});
 
-	test("an explicit unresolved stageName is an unresolved-name, with child candidates under it", () => {
+	test("an explicit unresolved stageName is an unresolved-name, with child candidates under it", async () => {
 		writeFixture(
 			"sn-child.ts",
 			`export default workflow({ name: "sn", run: async (ctx) => { await ctx.task("inner", {}); }});\n`,
 		);
-		const result = scanFile(
+		const result = await scanFile(
 			"sn-parent.ts",
 			`
 			import child from "./sn-child.js";
@@ -326,8 +330,8 @@ describe("uncertainty records", () => {
 		);
 	});
 
-	test("a child that cannot be resolved under a readable name adds no wildcard", () => {
-		const result = scanFile(
+	test("a child that cannot be resolved under a readable name adds no wildcard", async () => {
+		const result = await scanFile(
 			"missing-child-parent.ts",
 			`
 			import child from "./missing-child.js";
@@ -341,8 +345,8 @@ describe("uncertainty records", () => {
 		);
 	});
 
-	test("an unreadable stageName on an unresolved child marks both call-site records with the wildcard", () => {
-		const result = scanFile(
+	test("an unreadable stageName on an unresolved child marks both call-site records with the wildcard", async () => {
+		const result = await scanFile(
 			"unread-child-parent.ts",
 			`
 			export default workflow({ name: "p", run: async (ctx) => {
@@ -360,7 +364,7 @@ describe("uncertainty records", () => {
 		);
 	});
 
-	test("maxDepth limits a child candidate to its boundary", () => {
+	test("maxDepth limits a child candidate to its boundary", async () => {
 		writeFixture(
 			"md-child.ts",
 			`export default workflow({ name: "md", run: async (ctx) => { await ctx.task("deep", {}); }});\n`,
@@ -369,17 +373,17 @@ describe("uncertainty records", () => {
 			import child from "./md-child.js";
 			export default workflow({ name: "p", run: async (ctx) => { await ctx.workflow(children[pick]); }});
 		`;
-		assert.deepEqual(scanFile("md-parent-1.ts", source, { maxDepth: 1 }).uncertainties[0]!.candidates, [
+		assert.deepEqual((await scanFile("md-parent-1.ts", source, { maxDepth: 1 })).uncertainties[0]!.candidates, [
 			{ stages: ["workflow:md"], source: "child-definition" },
 		]);
-		assert.deepEqual(scanFile("md-parent-2.ts", source, { maxDepth: 2 }).uncertainties[0]!.candidates, [
+		assert.deepEqual((await scanFile("md-parent-2.ts", source, { maxDepth: 2 })).uncertainties[0]!.candidates, [
 			{ stages: ["workflow:md", "workflow:md/deep"], source: "child-definition" },
 		]);
 	});
 });
 
 describe("source digests", () => {
-	test("every read file has its sha256, sorted by relative file", () => {
+	test("every read file has its sha256, sorted by relative file", async () => {
 		writeFixture("digest-b.ts", `export const B = ["b"];\n`);
 		writeFixture("sub/digest-a.ts", `export const helper = 1;\n`);
 		const entry = writeFixture(
@@ -390,7 +394,7 @@ describe("source digests", () => {
 			export default workflow({ name: "d", run: async (ctx) => { await ctx.task("one", {}); }});
 		`,
 		);
-		const result = scanPossibleStagesFromSource(entry);
+		const result = await scanPossibleStagesFromSource(entry);
 		const expected = ["digest-b.ts", "digest-entry.ts", "sub/digest-a.ts"].map((file) => ({
 			file,
 			sha256: createHash("sha256")
@@ -400,7 +404,7 @@ describe("source digests", () => {
 		assert.deepEqual(result.sources, expected);
 	});
 
-	test("a file outside the entry directory keeps a ../ relative form", () => {
+	test("a file outside the entry directory keeps a ../ relative form", async () => {
 		writeFixture("shared/outside.ts", `export const helper = 1;\n`);
 		const entry = writeFixture(
 			"nested/up-entry.ts",
@@ -409,7 +413,7 @@ describe("source digests", () => {
 			export default workflow({ name: "u", run: async (ctx) => { await ctx.task(helper, {}); }});
 		`,
 		);
-		const result = scanPossibleStagesFromSource(entry);
+		const result = await scanPossibleStagesFromSource(entry);
 		assert.deepEqual(
 			result.sources.map((source) => source.file),
 			["../shared/outside.ts", "up-entry.ts"],
@@ -419,8 +423,8 @@ describe("source digests", () => {
 });
 
 describe("candidate invariants", () => {
-	test("a candidate containing '/' or '*' is never produced", () => {
-		const result = scanFile(
+	test("a candidate containing '/' or '*' is never produced", async () => {
+		const result = await scanFile(
 			"invalid-names.ts",
 			`
 			const BAD = ["ok", "a/b", "w*c", " padded ", ""];
@@ -446,9 +450,9 @@ describe("candidate invariants", () => {
 		assert.deepEqual(result.uncertainties[2]!.candidates, [{ stages: ["fine"], source: "enum-array" }]);
 	});
 
-	test("candidates are capped at 24 per uncertainty", () => {
+	test("candidates are capped at 24 per uncertainty", async () => {
 		const names = Array.from({ length: 40 }, (_, index) => `n${index}`);
-		const result = scanFile(
+		const result = await scanFile(
 			"cap.ts",
 			`
 			const MANY = ${JSON.stringify(names)};
@@ -464,16 +468,16 @@ describe("candidate invariants", () => {
 		assert.deepEqual(only!.candidates[23]!.stages, ["n22"]);
 	});
 
-	test("scans are deterministic", () => {
+	test("scans are deterministic", async () => {
 		for (const name of ["helper-names", "imported-factory", "data-driven-loop", "dynamic-children"]) {
-			assert.deepEqual(scanCommitted(name), scanCommitted(name), name);
+			assert.deepEqual(await scanCommitted(name), await scanCommitted(name), name);
 		}
 	});
 
-	test("excerpts hold the call line with up to three lines around it and stay bounded", () => {
+	test("excerpts hold the call line with up to three lines around it and stay bounded", async () => {
 		const lines = Array.from({ length: 12 }, (_, index) => `// line ${index + 1}`);
 		lines[5] = "await ctx.task(dynamicName, {});";
-		const result = scanFile("excerpt.ts", `${lines.join("\n")}\n`);
+		const result = await scanFile("excerpt.ts", `${lines.join("\n")}\n`);
 		assert.deepEqual(result.uncertainties[0]!.line, 6);
 		assert.equal(
 			result.uncertainties[0]!.excerpt,
@@ -487,7 +491,7 @@ describe("candidate invariants", () => {
 				"// line 9",
 			].join("\n"),
 		);
-		const long = scanFile("excerpt-long.ts", `${"x".repeat(5000)}\nawait ctx.task(dynamicName, {});\n`);
+		const long = await scanFile("excerpt-long.ts", `${"x".repeat(5000)}\nawait ctx.task(dynamicName, {});\n`);
 		assert.ok(long.uncertainties[0]!.excerpt.length <= 1200);
 	});
 });
@@ -521,8 +525,8 @@ describe("wildcards without an uncertainty record", () => {
 			[],
 		],
 	] as const) {
-		test(`records exactly the wildcards ${source} adds without an uncertainty record`, () => {
-			const result = scanFile(
+		test(`records exactly the wildcards ${source} adds without an uncertainty record`, async () => {
+			const result = await scanFile(
 				`unnoted-${source.replaceAll(" ", "-").replaceAll(":", "").replaceAll("*", "star")}.ts`,
 				`${prelude}\nexport default workflow({ name: "p", run: async (ctx) => { ${body} await ctx.task(reviewName(1), {}); }});\n`,
 			);
@@ -534,8 +538,8 @@ describe("wildcards without an uncertainty record", () => {
 		});
 	}
 
-	test("a call site that records an uncertainty adds none", () => {
-		const result = scanFile(
+	test("a call site that records an uncertainty adds none", async () => {
+		const result = await scanFile(
 			"noted-only.ts",
 			`export default workflow({ name: "p", run: async (ctx) => { await ctx.task(name, {}); await ctx.workflow(children[k]); }});`,
 		);
@@ -543,12 +547,12 @@ describe("wildcards without an uncertainty record", () => {
 		assert.deepEqual(result.wildcardsWithoutUncertainty, []);
 	});
 
-	test("a declared wildcard inside a scanned child sits under the child's boundary", () => {
+	test("a declared wildcard inside a scanned child sits under the child's boundary", async () => {
 		writeFixture(
 			"unnoted-child.ts",
 			`export default workflow({ name: "child-b", run: async (ctx) => { await ctx.parallel(s, { possibleStageNames: ["*"] }); }});\n`,
 		);
-		const result = scanFile(
+		const result = await scanFile(
 			"unnoted-parent.ts",
 			`
 			import child from "./unnoted-child.js";
@@ -558,12 +562,12 @@ describe("wildcards without an uncertainty record", () => {
 		assert.deepEqual(result.wildcardsWithoutUncertainty, ["workflow:child-b/*"]);
 	});
 
-	test("a child scanned only for candidates adds none", () => {
+	test("a child scanned only for candidates adds none", async () => {
 		writeFixture(
 			"candidate-child.ts",
 			`export default workflow({ name: "child-c", run: async (ctx) => { await ctx.parallel(s, { possibleStageNames: ["*"] }); }});\n`,
 		);
-		const result = scanFile(
+		const result = await scanFile(
 			"candidate-parent.ts",
 			`
 			import child from "./candidate-child.js";

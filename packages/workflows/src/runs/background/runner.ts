@@ -14,7 +14,7 @@
  * cross-ref: spec detached-runner
  */
 
-import { initializeDurableBackend } from "../../durable/factory.js";
+import { initializeDurableBackendReadingSettings } from "../../durable/factory.js";
 import { JournalDurableBackend } from "../../durable/journal/journal-backend.js";
 import { availableRunDurableBackend } from "../../durable/run-owner-backend.js";
 import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from "../../durable/store-backend.js";
@@ -203,7 +203,8 @@ export function runDetached<TInputs extends WorkflowInputValues, TRunInputs exte
 					? (availableRunDurableBackend(store, opts.continuation?.source.id ?? runId) ??
 						availableStoreDurableBackendOverride(store))
 					: undefined);
-			const backend = preset ?? (await initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd }));
+			const backend =
+				preset ?? (await initializeDurableBackendReadingSettings({ journal: opts.journal, cwd: opts.cwd }));
 			if (opts.parentRun === undefined && opts.journal === undefined && opts.durableBackend === undefined) {
 				bindStoreDurableBackend(store, backend);
 			}

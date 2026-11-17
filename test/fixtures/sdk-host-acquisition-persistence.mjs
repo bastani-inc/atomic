@@ -34,7 +34,9 @@ try {
   const a = session.executeBash("first", undefined, { id: "raw id  ", operations });
   const b = session.executeBash("second", undefined, { id: "raw id  ", operations });
   try {
-   await tick(); const close = session.dispose(); await tick();
+   const started = Date.now() + 10_000;
+   while (signals.length < 2 && Date.now() < started) await tick();
+   const close = session.dispose(); await tick();
    assert.deepEqual(signals.map(signal => signal.aborted), [true, true]);
    await Promise.all([a, b, close]);
   } finally { finishes.forEach(finish => finish()); await Promise.all([a, b]); }

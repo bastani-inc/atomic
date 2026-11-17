@@ -1,4 +1,7 @@
 import assert from "node:assert";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it, mock } from "node:test";
 import { setKittyProtocolActive } from "../src/keys.ts";
 import {
@@ -403,6 +406,35 @@ describe("ProcessTerminal progress", () => {
 			assert.deepEqual(writes, ["\x1b]9;4;0\x07"]);
 		} finally {
 			process.stdout.write = previousWrite;
+		}
+	});
+});
+
+describe("ProcessTerminal write log", () => {
+	it("appends every write to a new file in the TUI_WRITE_LOG directory, in order", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "tui-write-log-"));
+		const previousSetting = process.env.ATOMIC_TUI_WRITE_LOG;
+		const previousWrite = process.stdout.write;
+		process.env.ATOMIC_TUI_WRITE_LOG = directory;
+		process.stdout.write = (() => true) as typeof process.stdout.write;
+		try {
+			const terminal = new ProcessTerminal();
+			const writes = Array.from({ length: 50 }, (_, index) => `write ${index}\n`);
+			for (const data of writes) terminal.write(data);
+			const expected = writes.join("");
+			const logged = () => {
+				const [file] = readdirSync(directory);
+				return file === undefined ? "" : readFileSync(join(directory, file), "utf8");
+			};
+			const deadline = Date.now() + 5000;
+			while (logged() !== expected && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+			assert.deepEqual(readdirSync(directory).length, 1);
+			assert.equal(logged(), expected);
+		} finally {
+			process.stdout.write = previousWrite;
+			if (previousSetting === undefined) delete process.env.ATOMIC_TUI_WRITE_LOG;
+			else process.env.ATOMIC_TUI_WRITE_LOG = previousSetting;
+			rmSync(directory, { recursive: true, force: true });
 		}
 	});
 });

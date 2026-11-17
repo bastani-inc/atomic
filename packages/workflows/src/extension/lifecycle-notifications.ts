@@ -1,4 +1,4 @@
-import { NoticeLine, type NoticeLineSpec, reportDebug, sliceHead } from "@bastani/atomic";
+import { NoticeLine, type NoticeLineSpec, reportDebugAsync as reportDebug, sliceHead } from "@bastani/atomic";
 import type { WorkflowArtifact } from "../shared/authoring-contract-stage.js";
 import type { BudgetDimension, BudgetReport } from "../shared/budget.js";
 import {

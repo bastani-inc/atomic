@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
-import { mkdir, readdir, readFile, realpath, rm } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, realpath, rename, rm } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { getAgentDir } from "../../config.js";
@@ -13,7 +12,7 @@ import {
 	WorkspaceBindingError,
 	type WorkspaceGitPhase,
 } from "./errors.ts";
-import { assertWorkspaceGitAvailable, gitOutput, runWorkspaceGit } from "./git.ts";
+import { assertWorkspaceGitAvailable, gitOutput, pathExists, runWorkspaceGit } from "./git.ts";
 import { processAlive, withRepositoryLock } from "./lease.ts";
 import { waitFor } from "./process.ts";
 import { redactCredentials } from "./redact.ts";
@@ -200,7 +199,7 @@ async function createStore(spec: Extract<WorkspaceRepository, { kind: "remote" }
 			() => undefined,
 			(cause: unknown) => cause,
 		);
-		if (existsSync(join(store, "HEAD"))) return;
+		if (await pathExists(join(store, "HEAD"))) return;
 		throw attachCleanupCause(error, cleanupCause);
 	}
 }
@@ -219,7 +218,7 @@ async function openRemote(
 	signal?: AbortSignal,
 ): Promise<OpenRepository> {
 	const store = sharedStorePath(spec);
-	if (existsSync(join(store, "HEAD"))) {
+	if (await pathExists(join(store, "HEAD"))) {
 		const root = await realpath(store);
 		return { spec, root, commonDir: root };
 	}
@@ -351,7 +350,7 @@ async function checkoutBranch(
 	path: string,
 	branch: string,
 	missingBranchStart: () => Promise<string>,
-	onSpawn: (pid: number) => void,
+	onSpawn: (pid: number) => Promise<void>,
 ): Promise<void> {
 	const local = await commitOf(repository, `refs/heads/${branch}`);
 	const remote = await commitOf(repository, `refs/remotes/origin/${branch}`);
@@ -417,7 +416,7 @@ async function readState(file: string): Promise<string | undefined | "directory"
 }
 
 async function readWorktreeState(repository: OpenRepository, path: string): Promise<WorktreeState> {
-	if (!existsSync(path)) return { kind: "missing" };
+	if (!(await pathExists(path))) return { kind: "missing" };
 	const link = await readState(join(path, ".git"));
 	if (link === undefined) return { kind: "unsettled" };
 	if (link === "directory") return { kind: "complete" };
@@ -426,7 +425,7 @@ async function readWorktreeState(repository: OpenRepository, path: string): Prom
 	const adminDir = resolve(path, gitdir.trim());
 	const parent = (await canonical(dirname(adminDir))) ?? dirname(adminDir);
 	if (parent !== join(repository.commonDir, "worktrees")) return { kind: "complete" };
-	if (!existsSync(adminDir)) return { kind: "orphaned", adminDir };
+	if (!(await pathExists(adminDir))) return { kind: "orphaned", adminDir };
 	const marker = (await readState(join(adminDir, "locked")))?.trim();
 	return marker === WORKTREE_ADDING_REASON || marker === GIT_ADDING_MARKER
 		? { kind: "interrupted", adminDir, marker }
@@ -456,30 +455,31 @@ export function worktreeAdderRecord(commonDir: string, path: string): string {
 	return join(commonDir, "atomic-worktree-adders", `${shortDigest(resolve(path))}.json`);
 }
 
-function processStartTime(pid: number): string | null {
+async function processStartTime(pid: number): Promise<string | null> {
 	if (process.platform !== "linux") return null;
 	try {
-		const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
+		const stat = await readFile(`/proc/${pid}/stat`, "utf-8");
 		return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] ?? null;
 	} catch (error) {
-		if ((error as { readonly code?: unknown }).code === "ENOENT") return null;
+		const code = (error as { readonly code?: unknown }).code;
+		if (code === "ENOENT" || code === "ESRCH") return null;
 		throw error;
 	}
 }
 
-function recordAdder(record: string, pid: number): void {
-	const adder: WorktreeAdder = { host: hostname(), pid, startTime: processStartTime(pid) };
+async function recordAdder(record: string, pid: number): Promise<void> {
+	const adder: WorktreeAdder = { host: hostname(), pid, startTime: await processStartTime(pid) };
 	const staging = `${record}.${randomUUID()}.tmp`;
 	try {
-		mkdirSync(dirname(record), { recursive: true });
-		const file = openSync(staging, "w");
+		await mkdir(dirname(record), { recursive: true });
+		const file = await open(staging, "w");
 		try {
-			writeSync(file, JSON.stringify(adder));
-			fsyncSync(file);
+			await file.writeFile(JSON.stringify(adder));
+			await file.sync();
 		} finally {
-			closeSync(file);
+			await file.close();
 		}
-		renameSync(staging, record);
+		await rename(staging, record);
 	} catch (error) {
 		const errno = (error as { readonly code?: unknown }).code;
 		if (typeof errno !== "string") throw error;
@@ -528,12 +528,12 @@ async function runningAddition(
 		throw error;
 	});
 	if (recorded === undefined || recorded === "directory")
-		return adminDir !== undefined && existsSync(join(adminDir, "index.lock")) ? null : undefined;
+		return adminDir !== undefined && (await pathExists(join(adminDir, "index.lock"))) ? null : undefined;
 	const adder = parseAdder(recorded);
 	if (adder === undefined) return undefined;
 	if (adder.host !== hostname()) return adder;
 	if (!processAlive(adder.pid)) return undefined;
-	const startTime = processStartTime(adder.pid);
+	const startTime = await processStartTime(adder.pid);
 	return adder.startTime === null || startTime === null || startTime === adder.startTime ? adder : undefined;
 }
 
@@ -732,10 +732,13 @@ export async function ensureWorktree(
 
 async function worktreePath(repository: OpenRepository, requested: string, branch: string): Promise<string> {
 	if (requested !== "auto") return requested;
-	const existing = (await listWorktrees(repository)).find(
-		(candidate) => candidate.branch === branch && existsSync(candidate.path),
-	);
-	return existing?.path ?? join(atomicHome(), "worktrees", ...repositoryKey(repository.spec, repository.root), branch);
+	let existing: string | undefined;
+	for (const candidate of await listWorktrees(repository))
+		if (candidate.branch === branch && (await pathExists(candidate.path))) {
+			existing = candidate.path;
+			break;
+		}
+	return existing ?? join(atomicHome(), "worktrees", ...repositoryKey(repository.spec, repository.root), branch);
 }
 
 /** Snapshot tree of the working state (tracked and untracked, honouring ignores), without touching the real index. */
@@ -767,7 +770,7 @@ async function environmentHash(worktree: string): Promise<string> {
 	const digest = createHash("sha256");
 	for (const file of LOCKFILES) {
 		const path = join(worktree, file);
-		if (!existsSync(path)) continue;
+		if (!(await pathExists(path))) continue;
 		digest.update(
 			`${file}\0${createHash("sha256")
 				.update(await readFile(path))
@@ -878,7 +881,7 @@ export async function resolveWorkspace(
 	const pending = resolutions.get(input);
 	if (pending !== undefined) {
 		const { binding, commonDir } = await waitFor(pending, signal);
-		if (existsSync(binding.worktree)) {
+		if (await pathExists(binding.worktree)) {
 			await verifyWorktree({ commonDir }, binding.repo, binding.worktree, binding.branch, signal);
 			return binding;
 		}

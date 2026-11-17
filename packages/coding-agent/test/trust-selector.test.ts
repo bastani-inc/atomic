@@ -19,6 +19,7 @@ describe("TrustSelectorComponent", () => {
 		const projectPath = resolve("/project");
 		const selector = new TrustSelectorComponent({
 			cwd: projectPath,
+			trustPath: projectPath,
 			savedDecision: { path: projectPath, decision: true },
 			projectTrusted: true,
 			onSelect: () => {},
@@ -43,6 +44,7 @@ describe("TrustSelectorComponent", () => {
 		const projectPath = resolve("/project");
 		const selector = new TrustSelectorComponent({
 			cwd: projectPath,
+			trustPath: projectPath,
 			savedDecision: null,
 			projectTrusted: false,
 			onSelect,
@@ -70,6 +72,7 @@ describe("TrustSelectorComponent", () => {
 		expect(onCancel).not.toHaveBeenCalled();
 		const numbered = new TrustSelectorComponent({
 			cwd: projectPath,
+			trustPath: projectPath,
 			savedDecision: null,
 			projectTrusted: false,
 			onSelect,
@@ -79,6 +82,7 @@ describe("TrustSelectorComponent", () => {
 		expect(onSelect).toHaveBeenLastCalledWith({ trusted: false, updates: [{ path: projectPath, decision: false }] });
 		const cancelled = new TrustSelectorComponent({
 			cwd: projectPath,
+			trustPath: projectPath,
 			savedDecision: null,
 			projectTrusted: false,
 			onSelect,
@@ -96,6 +100,7 @@ describe("TrustSelectorComponent", () => {
 		const projectPath = resolve("/project");
 		const selector = new TrustSelectorComponent({
 			cwd: projectPath,
+			trustPath: projectPath,
 			savedDecision: null,
 			projectTrusted: false,
 			onSelect,
@@ -112,6 +117,7 @@ describe("TrustSelectorComponent", () => {
 		const ancestorPath = resolve("/parent");
 		const selector = new TrustSelectorComponent({
 			cwd: nestedPath,
+			trustPath: nestedPath,
 			savedDecision: { path: ancestorPath, decision: true },
 			projectTrusted: true,
 			onSelect: () => {},
@@ -129,6 +135,7 @@ describe("TrustSelectorComponent", () => {
 		const parentPath = dirname(projectPath);
 		const selector = new TrustSelectorComponent({
 			cwd: projectPath,
+			trustPath: projectPath,
 			savedDecision: { path: parentPath, decision: true },
 			projectTrusted: true,
 			onSelect,

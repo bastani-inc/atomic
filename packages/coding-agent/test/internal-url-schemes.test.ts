@@ -123,7 +123,7 @@ describe("internal URL schemes (#4252)", () => {
 	});
 
 	it("resolves artifact:// for read, search and find, and refuses to write it", async () => {
-		const id = new ArtifactManager(artifactsDir).save("alpha\nbeta needle\ngamma\n", "read");
+		const id = await new ArtifactManager(artifactsDir).save("alpha\nbeta needle\ngamma\n", "read");
 		assertIncludes(text(await read(`artifact://${id}:2-2`)), "beta needle");
 		assertIncludes(text(await search("needle", `artifact://${id}`)), "beta needle");
 		assertIncludes(text(await find(`artifact://${id}`)), `${id}.`);

@@ -129,6 +129,13 @@ export interface Component {
 	handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined;
 
 	/**
+	 * An identity for what the last render drew on `row`, such as the id of the item shown there. The fullscreen
+	 * renderer turns a press and release into a click only when it is the same at both, so a repaint that swaps in
+	 * another item with the same text is not clicked by mistake.
+	 */
+	paintedRowKey?(row: number): string | undefined;
+
+	/**
 	 * If true, component receives key release events (Kitty protocol).
 	 * Default is false - release events are filtered out.
 	 */
@@ -470,6 +477,7 @@ export type TuiMode = "regular" | "fullscreen";
 export interface TuiStopOptions {
 	/** Leave renderer output in place for another TUI taking over the same terminal. */
 	preserveScreen?: boolean;
+	writeInSlices?: boolean;
 }
 
 export interface TUI extends Component {
@@ -491,6 +499,7 @@ export interface TUI extends Component {
 	hasOverlay(): boolean;
 	start(): void;
 	stop(options?: TuiStopOptions): void;
+	whenStopped(): Promise<void>;
 	renderNow(force?: boolean): void;
 	requestRender(force?: boolean): void;
 	/**
@@ -536,6 +545,7 @@ export abstract class TuiBase extends Container implements TUI {
 	private clearOnShrink = false;
 	protected fullRedrawCount = 0;
 	protected stopped = false;
+	protected stopOutput: Promise<void> = Promise.resolve();
 	/**
 	 * Color queries waiting for their DA1 reply, oldest first. Terminals answer in order, so color
 	 * replies belong to the oldest one. Queries stay here after a timeout to collect late replies.
@@ -909,12 +919,16 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	/** Dispatch to the visually topmost overlay under the pointer. */
-	/** The topmost overlay the last frame drew at screen cell `x`, `y`. */
-	protected overlayAt(x: number, y: number): Component | undefined {
+	/** The topmost overlay the last frame drew at screen cell `x`, `y`, and the rectangle it was drawn in. */
+	protected overlayAt(
+		x: number,
+		y: number,
+	): { component: Component; row: number; col: number; width: number; height: number } | undefined {
 		for (let index = this.renderedOverlayLayouts.length - 1; index >= 0; index--) {
 			const layout = this.renderedOverlayLayouts[index]!;
 			if (x >= layout.col && x < layout.col + layout.width && y >= layout.row && y < layout.row + layout.height) {
-				return layout.entry.component;
+				const { row, col, width, height } = layout;
+				return { component: layout.entry.component, row, col, width, height };
 			}
 		}
 		return undefined;
@@ -1041,6 +1055,10 @@ export abstract class TuiBase extends Container implements TUI {
 		this.terminal.showCursor();
 		this.terminal.stop();
 		this.afterTerminalStop(options);
+	}
+
+	whenStopped(): Promise<void> {
+		return this.stopOutput;
 	}
 
 	renderNow(force = false): void {

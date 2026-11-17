@@ -60,7 +60,7 @@ describe("extension graph manifest recording", () => {
 		const factory = await extensionLoaderTestHooks.loadExtensionModuleTransformed(entry);
 		expect(typeof factory).toBe("function");
 
-		const manifest = extensionLoaderTestHooks.readExtensionGraphManifest(entry);
+		const manifest = await extensionLoaderTestHooks.readExtensionGraphManifest(entry);
 		expect(manifest).toBeDefined();
 		expect(manifest?.version).toBe(1);
 		expect(manifest?.extensionPath).toBe(entry);
@@ -77,12 +77,12 @@ describe("extension graph manifest recording", () => {
 		if (!chainC) throw new Error("fixture chain incomplete");
 
 		await extensionLoaderTestHooks.loadExtensionModuleTransformed(entry);
-		const before = extensionLoaderTestHooks.readExtensionGraphManifest(entry);
+		const before = await extensionLoaderTestHooks.readExtensionGraphManifest(entry);
 		const beforeHash = manifestFileHash(before?.files ?? {}, chainC);
 
 		fs.writeFileSync(chainC, `export const valueC = "c-edited";\n`);
 		await extensionLoaderTestHooks.loadExtensionModuleTransformed(entry);
-		const after = extensionLoaderTestHooks.readExtensionGraphManifest(entry);
+		const after = await extensionLoaderTestHooks.readExtensionGraphManifest(entry);
 		const afterHash = manifestFileHash(after?.files ?? {}, chainC);
 
 		expect(beforeHash).toBeDefined();
