@@ -41,7 +41,7 @@ beforeEach(() => {
 	root = makeTempDirectory("journal-store-cli-");
 	agentDir = join(root, "agent");
 	project = join(root, "project");
-	store = join(root, "workflows", "journal");
+	store = join(agentDir, "workflows", "journal");
 	mkdirSync(agentDir, { recursive: true });
 	mkdirSync(project, { recursive: true });
 });
@@ -215,13 +215,13 @@ test("atomic storage status shows the journal store, its adopted and missing jou
 	await storage(["adopt", kept, lost]);
 	assert.equal((await storage(["adopt", join(root, "notes.sqlite")])).code, 1);
 	rmSync(join(root, "lost"), { recursive: true, force: true });
-	mkdirSync(join(root, "workflows"), { recursive: true });
-	writeFileSync(join(root, "workflows", "journal.sqlite"), "");
+	mkdirSync(join(agentDir, "workflows"), { recursive: true });
+	writeFileSync(join(agentDir, "workflows", "journal.sqlite"), "");
 	const { DatabaseSync } = await import("node:sqlite");
 	const catalog = new DatabaseSync(join(store, "catalog.sqlite"));
 	catalog
 		.prepare("INSERT INTO catalog_discovery VALUES (?, 'skipped', 'not-a-journal', NULL, 0)")
-		.run(join(root, "workflows", "journal.sqlite"));
+		.run(join(agentDir, "workflows", "journal.sqlite"));
 	catalog.close();
 
 	const after = await collectStorageStatus({ cwd: project, agentDir, probe: true });
@@ -233,7 +233,7 @@ test("atomic storage status shows the journal store, its adopted and missing jou
 		shards: 0,
 		adopted: 2,
 		runs: 2,
-		skipped: [{ path: join(root, "workflows", "journal.sqlite"), reason: "not-a-journal" }],
+		skipped: [{ path: join(agentDir, "workflows", "journal.sqlite"), reason: "not-a-journal" }],
 	});
 	assert.equal(unavailable.length, 1);
 	assert.deepEqual(
@@ -247,7 +247,7 @@ test("atomic storage status shows the journal store, its adopted and missing jou
 	assert.deepEqual(lines.slice(at + 3, at + 6), [
 		"  journals:    0 shards, 2 adopted journals, 2 runs",
 		`  unavailable: ${lost} (adopted, no longer exists: shard-missing)`,
-		`  skipped:     ${join(root, "workflows", "journal.sqlite")} (not-a-journal)`,
+		`  skipped:     ${join(agentDir, "workflows", "journal.sqlite")} (not-a-journal)`,
 	]);
 });
 
@@ -316,7 +316,7 @@ test("adopt notes only a journal selection this project applies: an untrusted pr
 		(await collectStorageStatus({ cwd: project, agentDir, probe: false })).domains.find(
 			(entry) => entry.domain === "journal",
 		)?.selection,
-		`SQLite ${join(root, "shared.sqlite")}`,
+		`SQLite ${join(agentDir, "shared.sqlite")}`,
 	);
 });
 

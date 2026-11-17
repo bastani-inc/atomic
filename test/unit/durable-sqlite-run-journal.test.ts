@@ -1380,15 +1380,15 @@ test("journal path defaults to the user workflow root and preserves an explicit 
 	try {
 		delete process.env.ATOMIC_WORKFLOW_JOURNAL_PATH;
 		delete process.env.PI_WORKFLOW_JOURNAL_PATH;
-		assert.equal(workflowJournalPath(), join(dirname(getAgentDir()), "workflows", "journal.sqlite"));
+		assert.equal(workflowJournalPath(), join(getAgentDir(), "workflows", "journal.sqlite"));
 		process.env.PI_WORKFLOW_JOURNAL_PATH = "/tmp/ignored-journal.sqlite";
-		assert.equal(workflowJournalPath(), join(dirname(getAgentDir()), "workflows", "journal.sqlite"));
+		assert.equal(workflowJournalPath(), join(getAgentDir(), "workflows", "journal.sqlite"));
 		for (const value of [" ./verbatim/../journal.sqlite ", "relative.sqlite"]) {
 			process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = value;
 			assert.equal(workflowJournalPath(), value);
 		}
 		process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = "";
-		assert.equal(workflowJournalPath(), join(dirname(getAgentDir()), "workflows", "journal.sqlite"));
+		assert.equal(workflowJournalPath(), join(getAgentDir(), "workflows", "journal.sqlite"));
 	} finally {
 		if (previous === undefined) delete process.env.ATOMIC_WORKFLOW_JOURNAL_PATH;
 		else process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = previous;
@@ -1458,7 +1458,7 @@ test.each(["node", "bun"])("empty journal override persists across reopen and a 
 			for await (const entry of reader.read(header.runId)) entries.push(entry);
 			assert.equal(entries.length, 1);
 			assert.deepEqual(entries[0].event, event);
-			assert.equal(reader.path, join(dirname(process.env.ATOMIC_CODING_AGENT_DIR), "workflows", "journal.sqlite"));
+			assert.equal(reader.path, join(process.env.ATOMIC_CODING_AGENT_DIR, "workflows", "journal.sqlite"));
 			console.log(JSON.stringify({ runs: await reader.listRuns(), entries }));
 		} finally { await reader.close(); }
 	`;
