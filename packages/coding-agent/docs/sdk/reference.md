@@ -1114,15 +1114,18 @@ Use the asynchronous helpers in a host that must keep accepting input while it r
 
 | Helpers | Purpose |
 | --- | --- |
-| `getProjectTrustOptionsAsync`, `hasProjectTrustInputsAsync`, `hasTrustRequiringProjectResourcesAsync` | Read project trust inputs without synchronous file access |
+| `getProjectTrustOptionsAsync`, `hasProjectTrustInputsAsync`, `hasTrustRequiringProjectResourcesAsync`, `savedProjectTrustAsync` | Read project trust inputs without synchronous file access; `savedProjectTrustAsync()` returns a predicate whose trust result must be awaited |
 | `buildSkillCatalogAsync`, `emptySkillCatalog` | Load a skill catalog asynchronously, or create an empty catalog without reading files |
-| `mapRestoredPathAsync`, `workspaceSessionCwdAsync` | Resolve restored paths and workspace working directories asynchronously |
+| `latestSessionSnapshotAsync`, `mapPathForCwdAsync`, `mapRestoredPathAsync`, `workspaceSessionCwdAsync` | Read snapshot metadata and resolve restored paths and workspace working directories asynchronously |
+| `loadMcpConfigAsync`, `updateMcpServerConfigAsync`, `addMcpServerConfigAsync`, `removeMcpServerConfigAsync` | Read and edit MCP configuration asynchronously; await edits before reading their result |
+| `AuthStorage.createAsync`, `SettingsManager.createAsync` | Load credential or settings storage asynchronously |
+| `ModelRuntime.getCompatibilityRequestConfigAsync`, `ModelRuntime.getCatalogInputsGenerationAsync` | Read provider request configuration or observe catalog input changes asynchronously |
 | `processSharedStorageSelectionAsync`, `processStorageEnvironmentAsync` | Read a team token file asynchronously when building storage selections or child environments |
 | `takeTakeoverMutexAsync` | Acquire a takeover mutex asynchronously; await the returned mutex's `release()` |
 | `resolveInstalledGit` | Resolve an installed Git executable asynchronously without provisioning a missing one |
 | `appendDebugRecordAsync`, `reportDebugAsync`, `flushDebugLog` | Append debug records off the host thread, or wait for queued records before inspecting their files |
 
-Await each operation before starting work that depends on its result. `emptySkillCatalog()` is synchronous because it does no I/O.
+Await each operation before starting work that depends on its result. `emptySkillCatalog()` is synchronous because it does no I/O. `savedProjectTrust()` still returns a boolean predicate for synchronous SDK callers. For direct environment credential checks, `@bastani/atomic-ai` also exports `getEnvApiKeyAsync()` alongside synchronous `getEnvApiKey()`.
 
 ## Private temp directories
 
