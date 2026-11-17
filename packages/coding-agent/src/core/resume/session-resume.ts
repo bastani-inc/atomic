@@ -1,7 +1,7 @@
 import { stat } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { type GitUnavailableError, isGitUnavailableError } from "../../utils/git-errors.ts";
-import { failureDebugFields, reportDebug } from "../debug.ts";
+import { failureDebugFields, reportDebugAsync as reportDebug } from "../debug.ts";
 import type { SessionManager } from "../session-manager.ts";
 import {
 	currentWorktreeSnapshots,

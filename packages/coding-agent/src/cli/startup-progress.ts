@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import { failureDebugFields, reportDebug } from "../core/debug.ts";
+import { failureDebugFields, reportDebugAsync as reportDebug } from "../core/debug.ts";
 
 /** Progress of the startup work that runs before the TUI paints, such as loading and preparing a resumed session. */
 export interface StartupProgress {

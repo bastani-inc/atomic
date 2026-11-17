@@ -443,6 +443,7 @@ export {
 } from "./core/compaction/index.ts";
 export {
 	appendDebugRecord,
+	appendDebugRecordAsync,
 	DEBUG_AREA_VARIABLES,
 	type DebugArea,
 	type DebugFields,
@@ -451,6 +452,7 @@ export {
 	getDebugLogFailure,
 	isDebugEnabled,
 	reportDebug,
+	reportDebugAsync,
 } from "./core/debug.ts";
 export {
 	DebugConfigError,

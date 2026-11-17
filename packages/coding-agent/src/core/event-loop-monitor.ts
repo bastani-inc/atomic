@@ -26,13 +26,13 @@
  *   every few seconds to bound its memory, and reads the samples taken during a block once the block ends.
  */
 import { appendFileSync, mkdirSync } from "node:fs";
-import { appendFile } from "node:fs/promises";
 import type { Profiler, Session } from "node:inspector";
 import { dirname, join, resolve } from "node:path";
 import { type IntervalHistogram, monitorEventLoopDelay } from "node:perf_hooks";
 import { Worker } from "node:worker_threads";
 import { getAgentDir, isBunRuntime } from "../config.js";
 import { createModuleRequire } from "../utils/module-require.ts";
+import { DiagnosticWriter } from "./diagnostic-writer.ts";
 
 export const EVENT_LOOP_BLOCK_MS_ENV = "ATOMIC_EVENT_LOOP_BLOCK_MS";
 export const EVENT_LOOP_BLOCK_LOG_ENV = "ATOMIC_EVENT_LOOP_BLOCK_LOG";
@@ -168,23 +168,35 @@ export function summarizeStacks(samples: readonly (readonly string[])[]): EventL
 	return [...counts.values()].sort((left, right) => right.count - left.count).slice(0, MAX_BLOCK_STACKS);
 }
 
+const nodeFunctionFrames = new WeakMap<readonly string[], readonly string[]>();
+
 /**
  * The frames the most samples passed through, keeping the first `MAX_HOT_FRAMES`. Among frames every sample passed
  * through, the innermost is the most specific answer to what held the loop, so equal counts order by depth.
  */
 export function hotFrames(samples: readonly (readonly string[])[]): EventLoopHotFrame[] {
-	const frames = new Map<string, { count: number; depth: number }>();
+	const frames = new Map<string, { frame: string; count: number; depth: number }>();
 	for (const stack of samples) {
-		for (const [depth, frame] of [...new Set(stack)].entries()) {
+		const counted = new Set<string>();
+		for (const [depth, frame] of stack.entries()) {
 			if (frame.startsWith("… ")) continue;
-			const seen = frames.get(frame);
-			frames.set(frame, { count: (seen?.count ?? 0) + 1, depth: (seen?.depth ?? 0) + depth });
+			const key =
+				nodeFunctionFrames.get(stack)?.[depth] ??
+				(frame.startsWith("(anonymous)") ? frame : frame.replace(/:\d+:\d+\)$/, ")"));
+			if (counted.has(key)) continue;
+			counted.add(key);
+			const seen = frames.get(key);
+			frames.set(key, {
+				frame: seen?.frame ?? frame,
+				count: (seen?.count ?? 0) + 1,
+				depth: (seen?.depth ?? 0) + depth,
+			});
 		}
 	}
-	return [...frames.entries()]
-		.sort(([, left], [, right]) => right.count - left.count || left.depth / left.count - right.depth / right.count)
+	return [...frames.values()]
+		.sort((left, right) => right.count - left.count || left.depth / left.count - right.depth / right.count)
 		.slice(0, MAX_HOT_FRAMES)
-		.map(([frame, { count }]) => ({ count, frame }));
+		.map(({ frame, count }) => ({ count, frame }));
 }
 
 /**
@@ -214,7 +226,7 @@ export function profileStacksBetween(profile: Profiler.Profile, fromUs: number, 
 }
 
 /** A frame the Node worker read from a paused main thread: function name, script URL, 0-based line and column. */
-type WorkerFrame = readonly [string, string, number, number];
+type WorkerFrame = readonly [string, string, number, number, number, number];
 
 interface WorkerBlockSamples {
 	/** The heartbeat stamp, epoch microseconds, the block followed. */
@@ -267,6 +279,8 @@ function begin(sinceUs) {
 				frame.url || urls.get(frame.location.scriptId) || "",
 				frame.location.lineNumber,
 				frame.location.columnNumber ?? 0,
+				frame.functionLocation?.lineNumber ?? frame.location.lineNumber,
+				frame.functionLocation?.columnNumber ?? frame.location.columnNumber ?? 0,
 			]));
 		}
 		current.pausing = false;
@@ -336,7 +350,16 @@ class DebuggerSampler implements StackSampler {
 			},
 		});
 		worker.on("message", ({ sinceUs, samples }: WorkerBlockSamples) => {
-			const stacks = samples.map((frames) => trimStack(frames.map((frame) => formatStackFrame(...frame))));
+			const stacks = samples.map((frames) => {
+				const stack = trimStack(
+					frames.map(([name, url, line, column]) => formatStackFrame(name, url, line, column)),
+				);
+				nodeFunctionFrames.set(
+					stack,
+					trimStack(frames.map(([name, url, , , line, column]) => formatStackFrame(name, url, line, column))),
+				);
+				return stack;
+			});
 			const waiter = this.waiting.get(sinceUs);
 			if (waiter === undefined) this.arrived.set(sinceUs, stacks);
 			else waiter(stacks);
@@ -462,8 +485,7 @@ function startDelayHistogram(): IntervalHistogram {
 
 class EventLoopMonitor {
 	private histogram: IntervalHistogram;
-	private readonly pending: string[] = [];
-	private draining: Promise<void> | undefined;
+	private readonly writer = new DiagnosticWriter(() => {});
 	private readonly sampler: StackSampler;
 	private lastBeatUs: number;
 	private phase: EventLoopPhase = "startup";
@@ -484,8 +506,10 @@ class EventLoopMonitor {
 		this.sampler.beat(this.lastBeatUs);
 		setInterval(() => this.beat(), HEARTBEAT_MS).unref();
 		process.once("exit", () => {
+			const lateMs = (epochUs() - this.lastBeatUs) / 1000 - HEARTBEAT_MS;
 			this.sampler.exit();
-			this.writeAtQuit(this.delayRecord());
+			if (lateMs >= this.thresholdMs) this.writeAtQuit(this.blockRecord(this.lastBeatUs, lateMs, []));
+			this.writeAtQuit(this.delayRecord(lateMs));
 		});
 		this.write({
 			type: "start",
@@ -520,22 +544,26 @@ class EventLoopMonitor {
 		this.lastBeatUs = nowUs;
 		const durationMs = (nowUs - sinceUs) / 1000 - HEARTBEAT_MS;
 		if (durationMs >= this.thresholdMs) {
-			void this.sampler.stacksOf(sinceUs, nowUs).then((samples) =>
-				this.write({
-					type: "block",
-					at: new Date(sinceUs / 1000 + HEARTBEAT_MS).toISOString(),
-					role: this.role,
-					pid: process.pid,
-					durationMs: roundMs(durationMs),
-					thresholdMs: this.thresholdMs,
-					samples: samples.length,
-					hotFrames: hotFrames(samples),
-					stacks: summarizeStacks(samples),
-				}),
-			);
+			void this.sampler
+				.stacksOf(sinceUs, nowUs)
+				.then((samples) => this.write(this.blockRecord(sinceUs, durationMs, samples)));
 		}
 		this.sampler.beat(nowUs);
 		return durationMs;
+	}
+
+	private blockRecord(sinceUs: number, durationMs: number, samples: readonly (readonly string[])[]): EventLoopRecord {
+		return {
+			type: "block",
+			at: new Date(sinceUs / 1000 + HEARTBEAT_MS).toISOString(),
+			role: this.role,
+			pid: process.pid,
+			durationMs: roundMs(durationMs),
+			thresholdMs: this.thresholdMs,
+			samples: samples.length,
+			hotFrames: hotFrames(samples),
+			stacks: summarizeStacks(samples),
+		};
 	}
 
 	/** This phase's delay so far; `lateMs` is a late tick the histogram has not counted yet. */
@@ -560,20 +588,7 @@ class EventLoopMonitor {
 
 	/** Records written while the session runs: appended in order without blocking the loop they measure. */
 	private write(record: EventLoopRecord): void {
-		this.pending.push(`${JSON.stringify(record)}\n`);
-		if (this.draining === undefined) this.draining = this.drain();
-	}
-
-	private async drain(): Promise<void> {
-		while (this.pending.length > 0) {
-			const chunk = this.pending.splice(0).join("");
-			try {
-				await appendFile(this.logPath, chunk);
-			} catch {
-				// The log was writable at start; a later failure loses those records, never the session.
-			}
-		}
-		this.draining = undefined;
+		void this.writer.append(this.logPath, `${JSON.stringify(record)}\n`);
 	}
 
 	/**
@@ -581,9 +596,9 @@ class EventLoopMonitor {
 	 * asynchronous write could land. Anything still queued is written first, in order.
 	 */
 	private writeAtQuit(record: EventLoopRecord): void {
-		const chunk = [...this.pending.splice(0), `${JSON.stringify(record)}\n`].join("");
+		this.writer.flushSync();
 		try {
-			appendFileSync(this.logPath, chunk);
+			appendFileSync(this.logPath, `${JSON.stringify(record)}\n`);
 		} catch {
 			// As above: a lost record, never a lost session.
 		}

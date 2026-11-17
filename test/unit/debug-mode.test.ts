@@ -446,7 +446,9 @@ describe("pooled-watch area (#4360)", () => {
 			vi.stubEnv("ATOMIC_DEBUG_POOLED_WATCH", "1");
 			vi.resetModules();
 			const fresh = await import("../../packages/workflows/src/workers/pooled-watch-trace.js");
+			const freshDebug = await import("../../packages/coding-agent/src/core/debug.js");
 			fresh.tracePooledWatch("root.reconnect.start", { key: "k" });
+			await freshDebug.flushDebugLog();
 			assert.equal(await log.exists(), false);
 		});
 	});
@@ -491,8 +493,8 @@ describe("debug log writes", () => {
 	}, () => {
 		const agentDir = makeTempDirectory("atomic-debug-exit-");
 		try {
-			const script = `import { reportDebug } from ${JSON.stringify(join(process.cwd(), "packages/coding-agent/src/core/debug.ts"))};
-for (const event of ["first", "second", "third"]) reportDebug("pool", event, {});
+			const script = `import { reportDebugAsync } from ${JSON.stringify(join(process.cwd(), "packages/coding-agent/src/core/debug.ts"))};
+for (const event of ["first", "second", "third"]) void reportDebugAsync("pool", event, {});
 process.exit(0);`;
 			const result = spawnSyncCollect([bunExecutable(), "-e", script], {
 				env: createChildProcessEnvironment(undefined, {
@@ -506,8 +508,7 @@ process.exit(0);`;
 				.trimEnd()
 				.split("\n")
 				.map((line) => (JSON.parse(line) as { event: string }).event);
-			for (const event of ["first", "second", "third"]) assert.ok(events.includes(event), `${event} was written`);
-			assert.deepEqual([...new Set(events)], ["first", "second", "third"], "in the order they were reported");
+			assert.deepEqual(events, ["first", "second", "third"], "each once, in the order they were reported");
 		} finally {
 			removeTempDirectory(agentDir);
 		}

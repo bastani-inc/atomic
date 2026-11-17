@@ -1,4 +1,4 @@
-import { reportDebug, sliceHead } from "@bastani/atomic";
+import { reportDebugAsync as reportDebug, sliceHead } from "@bastani/atomic";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
 import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";

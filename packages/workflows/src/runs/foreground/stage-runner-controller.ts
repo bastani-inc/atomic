@@ -17,7 +17,7 @@ import {
 	parkWorkflowStageForRelease,
 	partitionByCredentials,
 	providerOfModelReference,
-	reportDebug,
+	reportDebugAsync as reportDebug,
 	type SessionManager,
 	type SessionStore,
 	type StructuredOutputCapture,

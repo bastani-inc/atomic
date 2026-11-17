@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { link, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { failureDebugFields, reportDebug } from "../debug.ts";
+import { failureDebugFields, reportDebugAsync as reportDebug } from "../debug.ts";
 import { renameWithRetry } from "../rename-retry.ts";
 import { isWorkspaceRestoreError } from "./errors.ts";
 import { nulFields, runGit } from "./git.ts";

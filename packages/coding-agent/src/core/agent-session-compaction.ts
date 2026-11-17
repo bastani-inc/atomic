@@ -31,7 +31,7 @@ import {
 	withRecalledContext,
 } from "./compaction/index.ts";
 import { resolveCompactionModel } from "./compaction/model-resolver.js";
-import { reportDebug } from "./debug.ts";
+import { reportDebugAsync as reportDebug } from "./debug.ts";
 import type {
 	SessionBeforeCompactEvent,
 	SessionBeforeCompactResult,

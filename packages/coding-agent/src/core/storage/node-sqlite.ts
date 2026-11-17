@@ -53,7 +53,7 @@ function reportDegradationInDebugMode(degradation: StorageWriterQueueDegradedErr
 	const errno = (degradation.cause as { readonly code?: unknown } | undefined)?.code;
 	debugOutput ??= import("../debug.ts");
 	void debugOutput.then(
-		({ reportDebug }) =>
+		({ reportDebugAsync: reportDebug }) =>
 			reportDebug("storage", "writer-queue-degraded", {
 				code: degradation.code,
 				reason: degradation.reason,

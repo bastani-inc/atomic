@@ -1,7 +1,7 @@
 import { access, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
-import { failureDebugFields, reportDebug } from "./debug.ts";
+import { failureDebugFields, reportDebugAsync as reportDebug } from "./debug.ts";
 import { timeCheckoutRestore } from "./resume/timings.ts";
 import type { SessionManager } from "./session-manager.ts";
 import type { SessionEntry, WorktreeRestoreHostWarning } from "./session-manager-types.ts";

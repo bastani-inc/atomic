@@ -1,4 +1,4 @@
-import { reportDebug } from "@bastani/atomic";
+import { reportDebugAsync as reportDebug } from "@bastani/atomic";
 import { InvalidWorkflowHeartbeatAnchorError } from "../durable/workflow-heartbeat-anchor.js";
 import type { SessionEntry } from "../shared/persistence-restore.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";

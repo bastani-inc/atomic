@@ -1,4 +1,4 @@
-import { failureDebugFields, reportDebug } from "../../core/debug.ts";
+import { failureDebugFields, reportDebugAsync as reportDebug } from "../../core/debug.ts";
 import type { ToolStatusReport } from "../../core/tool-status.js";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import type { InteractiveModeBase } from "./interactive-mode-base.ts";

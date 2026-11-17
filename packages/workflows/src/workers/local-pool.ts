@@ -13,7 +13,7 @@ import {
 	onDebugSettingChange,
 	providerRateLimitObservations,
 	type QuestionnaireResult,
-	reportDebug,
+	reportDebugAsync as reportDebug,
 	serializeWorkspaceError,
 	type WorktreeSnapshot,
 	type WorktreeSnapshotSettingsInput,

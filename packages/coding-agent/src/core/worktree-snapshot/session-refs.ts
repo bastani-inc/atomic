@@ -1,5 +1,5 @@
 import { isGitUnavailableError } from "../../utils/git-errors.ts";
-import { failureDebugFields, reportDebug } from "../debug.ts";
+import { failureDebugFields, reportDebugAsync as reportDebug } from "../debug.ts";
 import { readRepositoryConfig } from "./capture.ts";
 import { sha256Hex } from "./env-hash.ts";
 import { runGit } from "./git.ts";

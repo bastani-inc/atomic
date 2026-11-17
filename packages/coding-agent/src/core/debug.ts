@@ -1,10 +1,10 @@
 import { appendFileSync, mkdirSync } from "node:fs";
-import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { ENV_DEBUG, getDebugLogPath, getEnvNames } from "../config.js";
 import { redactCredentialShapes } from "../utils/credential-redaction.js";
 import { DebugLogUnwritableError } from "./debug-errors.ts";
 import { isDebugSettingOn } from "./debug-setting.ts";
+import { DiagnosticWriter } from "./diagnostic-writer.ts";
 
 /** A diagnostic area. Each is on in debug mode, or while its own environment variable is set. */
 export type DebugArea = "workflow" | "decision" | "pooled-watch" | "pool" | "storage" | "engine";
@@ -66,63 +66,24 @@ function safeFields(fields: DebugFields): Record<string, DebugValue> {
 	return Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, safeValue(value)]));
 }
 
-interface PendingLine {
-	readonly path: string;
-	readonly line: string;
-}
-
-/** Lines reported and not yet appended, each with its file, in the order they were reported. */
-const pendingLines: PendingLine[] = [];
-/** The line being appended, until its append has finished. */
-let appending: PendingLine | undefined;
-/** The appends in progress, while there are any. */
-let draining: Promise<void> | undefined;
+const writer = new DiagnosticWriter(recordFailure, true);
 let exitFlushRegistered = false;
 
-/**
- * Appends `line` to the file at `path` without blocking the event loop: lines are appended in the order they were
- * reported, and those still waiting when the process exits are written then.
- */
-function appendLine(path: string, line: string): void {
-	pendingLines.push({ path, line });
+function appendLine(path: string, line: string): Promise<void> {
 	if (!exitFlushRegistered) {
 		exitFlushRegistered = true;
-		process.once("exit", () => writePendingLinesSync());
+		process.once("exit", () => writer.flushSync());
 	}
-	draining ??= drainPendingLines();
+	return writer.append(path, `${line}\n`);
 }
 
-async function drainPendingLines(): Promise<void> {
+function appendLineSync(path: string, line: string): void {
+	writer.flushSync();
 	try {
-		for (appending = pendingLines.shift(); appending !== undefined; appending = pendingLines.shift()) {
-			const { path, line } = appending;
-			try {
-				await mkdir(dirname(path), { recursive: true });
-				await appendFile(path, `${line}\n`);
-			} catch (error) {
-				recordFailure(path, error);
-			}
-		}
-	} finally {
-		appending = undefined;
-		draining = undefined;
-	}
-}
-
-/**
- * Writes the lines still waiting as the process exits, when nothing can wait for them any longer: the one being
- * appended first, since its append cannot finish once the process exits.
- */
-function writePendingLinesSync(): void {
-	if (appending !== undefined) pendingLines.unshift(appending);
-	appending = undefined;
-	for (let next = pendingLines.shift(); next !== undefined; next = pendingLines.shift()) {
-		try {
-			mkdirSync(dirname(next.path), { recursive: true });
-			appendFileSync(next.path, `${next.line}\n`);
-		} catch (error) {
-			recordFailure(next.path, error);
-		}
+		mkdirSync(dirname(path), { recursive: true });
+		appendFileSync(path, `${line}\n`);
+	} catch (error) {
+		recordFailure(path, error);
 	}
 }
 
@@ -134,21 +95,19 @@ function recordFailure(path: string, error: unknown): void {
 
 /** Resolves once every debug record reported so far is in its file, or its failure is recorded. */
 export async function flushDebugLog(): Promise<void> {
-	while (draining !== undefined) await draining;
+	await writer.written();
 }
 
-/**
- * Appends `record` to the debug output file `path` as one JSON line, with credentials redacted, without blocking: it is
- * in the file once {@link flushDebugLog} resolves. A failure is recorded once (see {@link getDebugLogFailure}), never
- * thrown.
- */
 export function appendDebugRecord(path: string, record: DebugFields): void {
-	appendLine(path, JSON.stringify(safeFields(record)));
+	appendLineSync(path, JSON.stringify(safeFields(record)));
 }
 
-function appendDebugLog(area: DebugArea, event: string, fields: DebugFields): void {
-	const record = { at: new Date().toISOString(), pid: process.pid, area, event, data: safeFields(fields) };
-	appendLine(getDebugLogPath(), JSON.stringify(record));
+export function appendDebugRecordAsync(path: string, record: DebugFields): Promise<void> {
+	return appendLine(path, JSON.stringify(safeFields(record)));
+}
+
+function debugLogLine(area: DebugArea, event: string, fields: DebugFields): string {
+	return JSON.stringify({ at: new Date().toISOString(), pid: process.pid, area, event, data: safeFields(fields) });
 }
 
 /**
@@ -163,9 +122,24 @@ export function reportDebug(
 	ownOutput?: (variable: string) => void,
 	env: NodeJS.ProcessEnv = process.env,
 ): void {
-	if (isDebugModeOn(env)) appendDebugLog(area, event, fields);
+	if (isDebugModeOn(env)) appendLineSync(getDebugLogPath(), debugLogLine(area, event, fields));
 	const own = areaVariableValue(area, env);
 	if (ownOutput !== undefined && own !== undefined) ownOutput(own);
+}
+
+export function reportDebugAsync(
+	area: DebugArea,
+	event: string,
+	fields: DebugFields,
+	ownOutput?: (variable: string) => void,
+	env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+	const written = isDebugModeOn(env)
+		? appendLine(getDebugLogPath(), debugLogLine(area, event, fields))
+		: Promise.resolve();
+	const own = areaVariableValue(area, env);
+	if (ownOutput !== undefined && own !== undefined) ownOutput(own);
+	return written;
 }
 
 /** The first failure to write a debug log file in this process, if any. Later records are still attempted. */

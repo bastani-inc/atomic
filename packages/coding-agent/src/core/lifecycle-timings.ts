@@ -1,5 +1,4 @@
-import { appendFileSync } from "node:fs";
-import { appendFile } from "node:fs/promises";
+import { DiagnosticWriter } from "./diagnostic-writer.ts";
 
 export type LifecycleTimingLabel =
 	| "process-entry"
@@ -108,39 +107,11 @@ export interface LifecycleTraceLine {
 	readonly ppid: number;
 }
 
-/** Lines a trace has not yet handed to the disk, and the write in flight, so a mark never waits for the disk. */
-interface LifecycleTraceWriter {
-	readonly file: string;
-	readonly queued: string[];
-	inFlight: string | undefined;
-	written: Promise<void>;
-}
-
-let traceWriter: LifecycleTraceWriter | undefined;
-
-function drainTrace(writer: LifecycleTraceWriter): Promise<void> {
-	return (async () => {
-		while (writer.queued.length > 0) {
-			writer.inFlight = writer.queued.splice(0).join("");
-			try {
-				await appendFile(writer.file, writer.inFlight);
-			} catch {
-				// Diagnostics must never alter the startup path they observe.
-			}
-			writer.inFlight = undefined;
-		}
-	})();
-}
-
-function queueTraceLine(writer: LifecycleTraceWriter, line: string): void {
-	const idle = writer.queued.length === 0 && writer.inFlight === undefined;
-	writer.queued.push(line);
-	if (idle) writer.written = drainTrace(writer);
-}
+let traceWriter: DiagnosticWriter | undefined;
 
 /** Settles once every trace line marked so far is in the trace file. */
 export function lifecycleTraceWritten(): Promise<void> {
-	return traceWriter?.written ?? Promise.resolve();
+	return traceWriter?.written() ?? Promise.resolve();
 }
 
 /**
@@ -153,21 +124,13 @@ export function lifecycleTraceWritten(): Promise<void> {
 export function installLifecycleTraceFromEnv(env: NodeJS.ProcessEnv = process.env): (() => void) | undefined {
 	const file = STARTUP_TRACE_ENV_NAMES.map((name) => env[name]).find((value) => value !== undefined && value !== "");
 	if (!file || getState().sink) return undefined;
-	const writer: LifecycleTraceWriter = { file, queued: [], inFlight: undefined, written: Promise.resolve() };
+	const writer = new DiagnosticWriter(() => {});
 	traceWriter = writer;
 	const write = (label: LifecycleTraceLine["label"], epochMs: number): void => {
 		const line: LifecycleTraceLine = { label, epochMs, pid: process.pid, ppid: process.ppid };
-		queueTraceLine(writer, `${JSON.stringify(line)}\n`);
+		void writer.append(file, `${JSON.stringify(line)}\n`);
 	};
-	const writeRemainingAtExit = (): void => {
-		const remaining = (writer.inFlight ?? "") + writer.queued.splice(0).join("");
-		if (remaining === "") return;
-		try {
-			appendFileSync(file, remaining);
-		} catch {
-			// Diagnostics must never alter the startup path they observe.
-		}
-	};
+	const writeRemainingAtExit = (): void => writer.flushSync();
 	process.once("exit", writeRemainingAtExit);
 	write("process-start", performance.timeOrigin);
 	const uninstallSink = installLifecycleTimingSink((record) =>

@@ -33,7 +33,7 @@ import {
   type ReleasedChildWakeNotice,
   waitForIntercomPeer,
 } from "./session-recovery.js";
-import { APP_NAME, createGitEnvironment, type ExtensionAPI, IntercomRoutingMismatchError, IntercomRoutingUnavailableError, isIntercomBrokerStopTimeoutError, isIntercomBrokerUpgradeError, isIntercomRoutingChangedError, isIntercomRoutingMismatchError, isIntercomRoutingUnavailableError, isProjectGroupError, type ExtensionContext, processStorageEnvironmentAsync, reportDebug, type SessionEntry, sessionScopedExtensionState, type IntercomPolicyView } from "@bastani/atomic";
+import { APP_NAME, createGitEnvironment, type ExtensionAPI, IntercomRoutingMismatchError, IntercomRoutingUnavailableError, isIntercomBrokerStopTimeoutError, isIntercomBrokerUpgradeError, isIntercomRoutingChangedError, isIntercomRoutingMismatchError, isIntercomRoutingUnavailableError, isProjectGroupError, type ExtensionContext, processStorageEnvironmentAsync, reportDebugAsync as reportDebug, type SessionEntry, sessionScopedExtensionState, type IntercomPolicyView } from "@bastani/atomic";
 import { randomUUID } from "node:crypto";
 import { appendFile } from "node:fs/promises";
 import { dirname } from "node:path";

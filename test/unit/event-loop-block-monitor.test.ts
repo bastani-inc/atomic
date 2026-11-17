@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, test } from "vitest";
 import {
 	eventLoopBlockLogPath,
 	eventLoopBlockThresholdMs,
+	hotFrames,
 } from "../../packages/coding-agent/src/core/event-loop-monitor.js";
 import {
 	bunExecutable,
@@ -191,16 +192,23 @@ for (const runtime of RUNTIMES) {
 			);
 		});
 
-		test("prints nothing to the terminal when the process exits inside a block it is sampling", () => {
+		test("counts the current block at exit without printing to the terminal (#5377)", () => {
+			const log = join(temp, "blocks.jsonl");
 			const { stderr } = runChild(
 				runtime,
 				{
 					ATOMIC_EVENT_LOOP_BLOCK_MS: String(THRESHOLD_MS),
-					ATOMIC_EVENT_LOOP_BLOCK_LOG: join(temp, "blocks.jsonl"),
+					ATOMIC_EVENT_LOOP_BLOCK_LOG: log,
 				},
 				"exit-inside-block",
 			);
 			assert.equal(stderr, "");
+			const records = readLog(log);
+			const startup = records.find((record) => record.type === "delay" && record.phase === "startup");
+			assert.ok((startup?.maxMs ?? 0) >= LONG_BLOCK_MS * 0.9, `startup max ${startup?.maxMs} ms`);
+			assert.ok(
+				records.some((record) => record.type === "block" && (record.durationMs ?? 0) >= LONG_BLOCK_MS * 0.9),
+			);
 		});
 
 		test("starts nothing and writes nothing while the threshold is unset", () => {
@@ -212,6 +220,19 @@ for (const runtime of RUNTIMES) {
 		});
 	});
 }
+
+test("hot frames count a function once per sample across sampled line and column changes (#5377)", () => {
+	assert.deepEqual(
+		hotFrames([
+			["spin (file:///worker.ts:10:2)", "spin (file:///worker.ts:20:3)", "caller (file:///main.ts:1:1)"],
+			["spin (file:///worker.ts:11:8)", "caller (file:///main.ts:1:1)"],
+		]),
+		[
+			{ count: 2, frame: "spin (file:///worker.ts:10:2)" },
+			{ count: 2, frame: "caller (file:///main.ts:1:1)" },
+		],
+	);
+});
 
 test("only a positive whole number of milliseconds turns the diagnostic on", () => {
 	const threshold = (value: string | undefined) => eventLoopBlockThresholdMs({ ATOMIC_EVENT_LOOP_BLOCK_MS: value });

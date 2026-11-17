@@ -16,7 +16,7 @@ import type { Api, AssistantMessage, Model, Usage } from "@bastani/atomic-ai/com
 import { chmod, mkdir, writeFile } from "fs/promises";
 import { basename, dirname, join } from "path";
 import { redactCredentialShapes } from "../../utils/credential-redaction.js";
-import { reportDebug } from "../debug.ts";
+import { reportDebugAsync as reportDebug } from "../debug.ts";
 import type { MorphRangeDiagnostics } from "./morph-compaction.js";
 
 /**

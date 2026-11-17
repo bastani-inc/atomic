@@ -1,4 +1,4 @@
-import { registerExtensionContextRetirementEffect, reportDebug } from "@bastani/atomic";
+import { registerExtensionContextRetirementEffect, reportDebugAsync as reportDebug } from "@bastani/atomic";
 import { outsideWorkflowExecutions } from "../durable/execution-context-boundary.js";
 import { requireStoreDurableBackend } from "../durable/store-backend.js";
 import {
