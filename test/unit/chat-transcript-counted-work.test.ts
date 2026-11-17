@@ -15,6 +15,7 @@ import {
 	ChatTranscriptComponent,
 	type ChatTranscriptRole,
 } from "../../packages/coding-agent/src/modes/interactive/components/index.js";
+import { USER_PROMPT_ZONE_START } from "../../packages/coding-agent/src/modes/interactive/components/user-message.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 
 /** Long enough that work per entry would dwarf work per change; the main chat's own benchmark resumes this many. */
@@ -108,6 +109,90 @@ describe("ChatTranscriptComponent renders only what changed", () => {
 		revision += 1;
 		transcript.measureRows(WIDTH);
 		assert.equal(rendered.length, 1);
+	});
+});
+
+/** Operations per seeded run; each one is checked against a transcript rendered from scratch. */
+const DIFFERENTIAL_STEPS = 400;
+const DIFFERENTIAL_SEEDS = [1, 7, 42, 1_234, 99_991];
+
+interface VersionedEntry {
+	readonly role: ChatTranscriptRole;
+	readonly text: string;
+	readonly rows: number;
+	readonly prompt: boolean;
+	version: number;
+}
+
+function seededRandom(seed: number): () => number {
+	let state = seed;
+	return () => {
+		state = (state * 1_103_515_245 + 12_345) % 2_147_483_648;
+		return state / 2_147_483_648;
+	};
+}
+
+function entryRows(entry: VersionedEntry): string[] {
+	return Array.from({ length: entry.rows }, (_, row) =>
+		row === 0 && entry.prompt
+			? `${USER_PROMPT_ZONE_START}${entry.text} v${entry.version}`
+			: `${entry.text} v${entry.version} row ${row}`,
+	);
+}
+
+function versionedTranscript(entries: VersionedEntry[]): ChatTranscriptComponent<VersionedEntry> {
+	return new ChatTranscriptComponent<VersionedEntry>(
+		entries,
+		(entry): Component => {
+			const rows = entryRows(entry);
+			return { render: () => rows, invalidate: () => {} };
+		},
+		(entry) => ["v", entry.version],
+	);
+}
+
+describe("ChatTranscriptComponent's incremental layout equals a full render", () => {
+	test("after any sequence of appends, replacements, removals, prepends, in-place changes and resizes", () => {
+		for (const seed of DIFFERENTIAL_SEEDS) {
+			const random = seededRandom(seed);
+			let next = 0;
+			const make = (): VersionedEntry => {
+				next += 1;
+				const roles: ChatTranscriptRole[] = ["user", "assistant", "tool", "notice"];
+				return {
+					role: roles[Math.floor(random() * roles.length)] ?? "assistant",
+					text: `entry ${next}`,
+					rows: Math.floor(random() * 4),
+					prompt: random() < 0.3,
+					version: 0,
+				};
+			};
+			const entries = Array.from({ length: 30 }, make);
+			const incremental = versionedTranscript(entries);
+			let width = 80;
+			for (let step = 0; step < DIFFERENTIAL_STEPS; step++) {
+				const operation = Math.floor(random() * 7);
+				const at = Math.floor(random() * Math.max(1, entries.length));
+				if (operation === 0) entries.push(make());
+				else if (operation === 1 && entries.length > 0) entries[at] = make();
+				else if (operation === 2 && entries.length > 0) entries.splice(at, 1 + Math.floor(random() * 3));
+				else if (operation === 3) entries.unshift(...Array.from({ length: 1 + Math.floor(random() * 3) }, make));
+				else if (operation === 4 && entries.length > 0) (entries[at] as VersionedEntry).version += 1;
+				else if (operation === 5) width = width === 80 ? 60 : 80;
+				else if (operation === 6) incremental.invalidate();
+				const measured = incremental.measureRows(width);
+				const fresh = versionedTranscript(entries).measureRows(width);
+				const context = `seed ${seed}, step ${step}, operation ${operation}`;
+				assert.equal(measured.rowCount, fresh.rowCount, context);
+				assert.deepEqual(measured.renderRows(0, measured.rowCount), fresh.renderRows(0, fresh.rowCount), context);
+				assert.deepEqual(measured.segments, fresh.segments, context);
+				const probe = Math.floor(random() * (fresh.rowCount + 1));
+				assert.equal(measured.findUserPromptRow?.(probe), fresh.findUserPromptRow?.(probe), context);
+				const start = Math.floor(random() * (fresh.rowCount + 1));
+				const end = start + Math.floor(random() * 10);
+				assert.deepEqual(measured.renderRows(start, end), fresh.renderRows(start, end), context);
+			}
+		}
 	});
 });
 
