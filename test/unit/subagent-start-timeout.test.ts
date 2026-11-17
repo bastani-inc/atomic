@@ -1100,3 +1100,58 @@ test(
 	},
 	REAL_CHILD_SESSION_TIMEOUT_MS,
 );
+
+test(
+	"a late session's disposal must finish before its stalled start can be retried (#5341)",
+	async () => {
+		const fixture = await startFixture();
+		const firstStart = fixture.stallChildAt("session_start");
+		const originalHook = globals[STALL_HOOK]!;
+		const releaseDisposal = Promise.withResolvers<void>();
+		const disposals: Promise<void>[] = [];
+		const dispose = AgentSession.prototype.dispose;
+		const disposeSpy = vi.spyOn(AgentSession.prototype, "dispose").mockImplementation(function (this: AgentSession) {
+			const pending = dispose.call(this);
+			disposals.push(pending);
+			return pending;
+		});
+		let disposing = false;
+		let starts = 0;
+		globals[STALL_HOOK] = (point) => {
+			if (point === "session_start") starts += 1;
+			if (point !== "session_shutdown") return originalHook(point);
+			disposing = true;
+			return releaseDisposal.promise;
+		};
+		try {
+			const result = await fixture.launch("late-session-disposal", STALL_START_BUDGET_MS, {
+				taskExecution: {
+					signal: new AbortController().signal,
+					reportActivity() {},
+					reportStart(progress) {
+						if (progress?.awaitingRelease) firstStart.release();
+					},
+					onExecution() {},
+					yieldTaskWait() {},
+					isParentObserving: () => false,
+				},
+			});
+			assert.equal(disposing, true, "the abandoned session reached its held shutdown");
+			assert.equal(starts, 1, "no second session starts while the abandoned session still owns resources");
+			assert.match(
+				result.error ?? "",
+				/It was not retried: the stalled start did not let go of its session in time/,
+			);
+			assert.deepEqual(fixture.requests, []);
+		} finally {
+			firstStart.release();
+			releaseDisposal.resolve();
+			try {
+				await Promise.all(disposals);
+			} finally {
+				disposeSpy.mockRestore();
+			}
+		}
+	},
+	REAL_CHILD_SESSION_TIMEOUT_MS,
+);

@@ -4,13 +4,16 @@
  * its start is instead of showing it as merely running.
  */
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { afterEach, test } from "vitest";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import {
+	SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
 	SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
+	type SubagentReleaseRestoringChildRequest,
 	type SubagentReserveRestoringChildRequest,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-hold.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
@@ -34,13 +37,14 @@ const worker: AgentConfig = {
 	inheritSkills: false,
 };
 
-function launcher() {
+function launcher(options: { readonly ownerless?: boolean } = {}) {
 	const cwd = makeTempDirectory("subagent-launch-target-");
 	cleanups.push(() => removeTempDirectory(cwd));
-	const sessionId = "019f0000-aaaa-7bbb-8ccc-000000000002";
+	const sessionId = randomUUID();
 	const emitter = new EventEmitter();
 	// The launching session's Intercom: it issues each child's capability and holds sends for it while it starts.
 	const holds: Array<{ readonly capability: string; readonly holdMs?: number }> = [];
+	const releases: SubagentReleaseRestoringChildRequest[] = [];
 	const events = {
 		on(channel: string, handler: (payload: unknown) => void) {
 			emitter.on(channel, handler);
@@ -63,10 +67,18 @@ function launcher() {
 				});
 				request.completion = Promise.resolve();
 			}
+			if (channel === SUBAGENT_RELEASE_RESTORING_CHILD_EVENT) {
+				const request = payload as SubagentReleaseRestoringChildRequest;
+				releases.push({ ...request });
+				request.completion = Promise.resolve();
+			}
 			emitter.emit(channel, payload);
 		},
 	};
 	const host = new AgentTaskHost({ scope: { kind: "session", sessionId }, authorizeLaunch() {} });
+	cleanups.push(async () => {
+		await host.close("session-close");
+	});
 	const entries: object[] = [];
 	const ctx = {
 		cwd,
@@ -82,7 +94,7 @@ function launcher() {
 			getEntries: () => entries,
 			getSessionStore: () => undefined,
 		},
-		getAgentTaskHost: () => host,
+		...(options.ownerless ? {} : { getAgentTaskHost: () => host }),
 		isIdle: () => true,
 		isProjectTrusted: () => true,
 		ui: { notify() {} },
@@ -142,7 +154,7 @@ function launcher() {
 	});
 	const call = (params: object) =>
 		executor.execute("call", params as never, new AbortController().signal, undefined, ctx as never);
-	return { call, launched: launched.promise, firstTurn, finish, holds };
+	return { call, launched: launched.promise, firstTurn, finish, holds, releases, host };
 }
 
 function text(result: { content: Array<{ type: string; text?: string }> }): string {
@@ -183,6 +195,23 @@ test("a child that has not started its first turn is shown starting, with its st
 	assert.doesNotMatch(running, /is starting/);
 	const [started] = JSON.parse(running.split("\n").at(-1)!) as Array<{ start?: object }>;
 	assert.equal(started?.start, undefined, "once its first turn starts it is running");
+});
+
+test("a launch refused by its closed task host releases its starting hold (#5341)", async () => {
+	const parent = launcher();
+	await parent.host.close("session-close");
+	await parent.call({ agent: "worker", task: "work", wait: { kind: "background" }, artifacts: false });
+	assert.equal(parent.holds.length, 1);
+	assert.deepEqual(parent.releases, [{ capability: parent.holds[0]!.capability }]);
+});
+
+test("an ownerless launch releases its starting hold when its execution ends (#5341)", async () => {
+	const parent = launcher({ ownerless: true });
+	parent.firstTurn.resolve();
+	parent.finish.resolve();
+	await parent.call({ agent: "worker", task: "work", artifacts: false });
+	assert.equal(parent.holds.length, 1);
+	assert.deepEqual(parent.releases, [{ capability: parent.holds[0]!.capability }]);
 });
 
 test("every child of a parallel launch has its sends held while it starts, for the length of its start", async () => {

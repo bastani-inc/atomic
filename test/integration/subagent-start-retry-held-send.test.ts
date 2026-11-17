@@ -21,6 +21,7 @@ import { afterAll, beforeAll, test } from "vitest";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
+import type { Cleanup } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { AuthStorage, ModelRuntime } from "../../packages/coding-agent/src/index.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { requestSupervisorAuthorization } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
@@ -44,7 +45,9 @@ const STALL_MS = BUDGET_MS + 500;
 /** Structural cost: a real broker and two real child starts, the first held past its budget. */
 const REAL_RETRY_TEST_TIMEOUT_MS = 180_000;
 const STALL_HOOK = "__subagentStartRetryHoldStall";
-const globals = globalThis as typeof globalThis & { [STALL_HOOK]?: () => Promise<void> | undefined };
+const globals = globalThis as typeof globalThis & {
+	[STALL_HOOK]?: (point: "start" | "shutdown") => Promise<void> | undefined;
+};
 
 beforeAll(async () => {
 	await fixture.startSourceBroker(20_000);
@@ -136,7 +139,7 @@ async function launchingParent(cwd: string) {
 
 for (const stallAt of ["before_agent_start", "session_start"] as const)
 	test(
-		`sends held for a launching child reach its retry before its first turn when its first start stalls in ${stallAt}`,
+		`held sends and cleanup belong to the retry when the first start stalls in ${stallAt} (#5341)`,
 		async () => {
 			const cwd = mkdtempSync(join(tmpdir(), "start-retry-hold-cwd-"));
 			fixture.onCleanup(() => rmSync(cwd, { recursive: true, force: true }));
@@ -192,8 +195,16 @@ for (const stallAt of ["before_agent_start", "session_start"] as const)
 
 			// A child-only extension: the first start stalls in session_start past its budget, then lets go.
 			let starts = 0;
-			globals[STALL_HOOK] = () => (++starts === 1 ? sleep(STALL_MS) : undefined);
+			const retryDisposing = Promise.withResolvers<void>();
+			const releaseRetry = Promise.withResolvers<void>();
+			globals[STALL_HOOK] = (point) => {
+				if (point === "start") return ++starts === 1 ? sleep(STALL_MS) : undefined;
+				if (starts !== 2) return undefined;
+				retryDisposing.resolve();
+				return releaseRetry.promise;
+			};
 			fixture.onCleanup(() => {
+				releaseRetry.resolve();
 				delete globals[STALL_HOOK];
 			});
 			mkdirSync(join(agentDir, "extensions"), { recursive: true });
@@ -201,7 +212,8 @@ for (const stallAt of ["before_agent_start", "session_start"] as const)
 				join(agentDir, "extensions", "stall.ts"),
 				[
 					"export default function (pi) {",
-					`\tpi.on(${JSON.stringify(stallAt)}, async () => { await globalThis.${STALL_HOOK}?.(); });`,
+					`\tpi.on(${JSON.stringify(stallAt)}, async () => { await globalThis.${STALL_HOOK}?.("start"); });`,
+					`\tpi.on("session_shutdown", async () => { await globalThis.${STALL_HOOK}?.("shutdown"); });`,
 					"}",
 				].join("\n"),
 			);
@@ -236,6 +248,8 @@ for (const stallAt of ["before_agent_start", "session_start"] as const)
 
 			const reports: string[] = [];
 			let executions = 0;
+			let executionCleanup: Promise<Cleanup> | undefined;
+			let cleanupSettled = false;
 			let gapSend: Promise<unknown> | undefined;
 			const taskExecution: TaskExecutionHooks = {
 				signal: new AbortController().signal,
@@ -246,8 +260,12 @@ for (const stallAt of ["before_agent_start", "session_start"] as const)
 					if (progress.attempt === 2 && gapSend === undefined)
 						gapSend = peer.send(childName, { text: "GAP-2 while the first start stalled" });
 				},
-				onExecution() {
+				onExecution(execution) {
 					executions += 1;
+					executionCleanup = execution.cleanup;
+					void execution.cleanup.then(() => {
+						cleanupSettled = true;
+					});
 				},
 				yieldTaskWait() {},
 				isParentObserving: () => false,
@@ -285,6 +303,15 @@ for (const stallAt of ["before_agent_start", "session_start"] as const)
 				taskExecution,
 			});
 			startHold.settle(result);
+			try {
+				await retryDisposing.promise;
+				await new Promise<void>((resolve) => setImmediate(resolve));
+				assert.equal(cleanupSettled, false, "the task still owns the retry while its session is disposing");
+				assert.ok(executionCleanup);
+			} finally {
+				releaseRetry.resolve();
+			}
+			assert.deepEqual(await executionCleanup, { kind: "reaped" });
 			const held = (await heldSend) as { delivered?: boolean; reason?: string };
 			const gap = (await gapSend) as { delivered?: boolean; reason?: string } | undefined;
 			const seen = (text: string) => contexts.some((context) => context.includes(text));

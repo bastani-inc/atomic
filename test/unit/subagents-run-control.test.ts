@@ -80,6 +80,7 @@ import {
 	WORKFLOW_STAGE_END_CHILDREN_STATE,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import {
+	holdRunningSubagentChildren,
 	restoreSubagentChild,
 	restoreSubagentChildren,
 	SUBAGENT_AWAIT_INTERCOM_PEER_EVENT,
@@ -1846,6 +1847,26 @@ async function resumeQueuedChildAfterRestart(
 	await settled(h, resumedTask);
 	return { ...start, taskId: resumedTask };
 }
+
+test("a relaunched child names its owner's live Intercom id and holds sends for its start (#5341)", async () => {
+	const h = harness();
+	h.deps.config.sessionStartTimeoutMs = 60_000;
+	const restarted = await restoreStartedChild(h, "restored-supervisor", {}, undefined, async () => {
+		h.deps.state!.ownIntercomSession = {
+			sessionId: h.sessionManager.getSessionId(),
+			intercomSessionId: "restored-owner-intercom-id",
+		};
+		await holdRunningSubagentChildren(h.deps.pi.events, h.ctx);
+	});
+	assert.equal(restarted.options.orchestratorIntercomTarget, "restored-owner-intercom-id");
+	assert.match(restarted.agent?.systemPrompt ?? "", /restored-owner-intercom-id/);
+	assert.deepEqual(h.startHolds, [
+		{
+			reserve: restarted.options.supervisorAuthorization!.capability,
+			holdMs: subagentStartHoldMs(60_000),
+		},
+	]);
+});
 
 test("a started child of a user agent a project agent of the same name shadows is restored with the user agent (#3784)", async () => {
 	const h = harness();
