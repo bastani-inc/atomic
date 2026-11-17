@@ -28,6 +28,7 @@ import {
 } from "@bastani/atomic-ai/compat";
 import { Compile } from "typebox/compile";
 import { afterEach, test, vi } from "vitest";
+import { resolveSessionStore } from "../../packages/coding-agent/src/core/session-storage.js";
 import {
 	clearDeprecationWarningsForTests,
 	setDeprecationWarningSink,
@@ -93,6 +94,16 @@ function tempDir(prefix: string): string {
 	const dir = mkdtempSync(join(tmpdir(), prefix));
 	cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 	return dir;
+}
+
+/**
+ * The session store the SDK session adapter's sessions in `cwd` open, closed before the directory is removed: Windows
+ * cannot delete a SQLite file a handle still holds, whatever state the run ended in.
+ */
+async function sdkSessionStore(cwd: string) {
+	const store = await resolveSessionStore(cwd, { agentDir: join(cwd, "agent"), settings: {} });
+	cleanups.push(() => store.close());
+	return store;
 }
 
 function usage(): AssistantMessage["usage"] {
@@ -914,6 +925,7 @@ test(
 		const sdk = createAgentSessionAdapter({
 			cwd,
 			agentDir: join(cwd, "agent"),
+			sessionStore: await sdkSessionStore(cwd),
 			modelRuntime: m.runtime,
 			settingsManager: SettingsManager.inMemory({
 				...WITH_DEFAULT,
@@ -938,10 +950,12 @@ test(
 				return {};
 			},
 		});
-		const result = await run(
+		const result = await sdkRun(
 			def,
 			{},
 			{
+				cwd,
+				journal: { memory: true },
 				store: createStore(),
 				adapters: {
 					agentSession: {
@@ -981,6 +995,7 @@ test(
 		const sdk = createAgentSessionAdapter({
 			cwd,
 			agentDir: join(cwd, "agent"),
+			sessionStore: await sdkSessionStore(cwd),
 			modelRuntime: m.runtime,
 			settingsManager: SettingsManager.inMemory({
 				...WITH_DEFAULT,
@@ -1006,10 +1021,12 @@ test(
 				return {};
 			},
 		});
-		const result = await run(
+		const result = await sdkRun(
 			def,
 			{},
 			{
+				cwd,
+				journal: { memory: true },
 				store: createStore(),
 				adapters: {
 					agentSession: {
@@ -1052,6 +1069,7 @@ for (const fallbackSeesImages of [true, false]) {
 			const sdk = createAgentSessionAdapter({
 				cwd,
 				agentDir: join(cwd, "agent"),
+				sessionStore: await sdkSessionStore(cwd),
 				modelRuntime: m.runtime,
 				settingsManager: SettingsManager.inMemory({
 					...WITH_DEFAULT,
@@ -1076,7 +1094,16 @@ for (const fallbackSeesImages of [true, false]) {
 					return {};
 				},
 			});
-			const result = await run(def, {}, { store: createStore(), adapters: { agentSession: sdk } });
+			const result = await sdkRun(
+				def,
+				{},
+				{
+					cwd,
+					journal: { memory: true },
+					store: createStore(),
+					adapters: { agentSession: sdk },
+				},
+			);
 			const requested = m.requests.map((request) => request.model);
 			if (fallbackSeesImages) {
 				assert.equal(result.status, "completed", result.error);
@@ -1417,6 +1444,7 @@ test(
 					agentSession: createAgentSessionAdapter({
 						cwd,
 						agentDir: join(cwd, "agent"),
+						sessionStore: await sdkSessionStore(cwd),
 						modelRuntime: m.runtime,
 						settingsManager: SettingsManager.inMemory({
 							...WITH_DEFAULT,
@@ -1453,6 +1481,7 @@ async function sdkAutoStage(input: {
 	const base = createAgentSessionAdapter({
 		cwd,
 		agentDir: join(cwd, "agent"),
+		sessionStore: await sdkSessionStore(cwd),
 		modelRuntime: m.runtime,
 		settingsManager: SettingsManager.inMemory({
 			...input.settings,
