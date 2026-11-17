@@ -27,18 +27,18 @@ const release: GitRelease = {
 };
 
 if (process.env.CHAOS_STOP_DURING_PUBLISH === "1") {
-	const realFs = { ...(await import("node:fs")) };
-	const realRename = realFs.renameSync;
-	mock.module("fs", () => ({
+	const realFs = { ...(await import("node:fs/promises")) };
+	const realRename = realFs.rename;
+	mock.module("fs/promises", () => ({
 		...realFs,
-		renameSync: (from: string, to: string) => {
+		rename: async (from: string, to: string) => {
 			const movingPublishedRoot = from === join(process.env.ATOMIC_CODING_AGENT_DIR ?? "", "bin", "git");
-			if (movingPublishedRoot) realRename(from, to);
+			if (movingPublishedRoot) await realRename(from, to);
 			if (movingPublishedRoot || basename(to) === "selected") {
 				appendFileSync(log, `publishing ${process.pid}\n`);
 				process.kill(process.pid, "SIGSTOP");
 			}
-			if (!movingPublishedRoot) realRename(from, to);
+			if (!movingPublishedRoot) await realRename(from, to);
 		},
 	}));
 }
