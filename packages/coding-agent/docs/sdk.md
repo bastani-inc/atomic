@@ -310,7 +310,7 @@ Extension authors should check `ctx.hasHumanInput` before asking questions and `
 
 #### Durable workflow approvals
 
-Workflow input uses the same callbacks for stage questionnaires and nested workflows. Requests include `workflowRunId` and `workflowStageId`; combine them with `requestId` to associate a question with its run. A stage dialog can arrive while its questionnaire is still pending. Keep both requests: opening or answering the dialog does not withdraw or restart the questionnaire. Author semantic `ctx.ui` calls rather than terminal-specific branches so the definition works across hosts.
+Workflow input uses the same callbacks for stage questionnaires, extension dialogs and nested workflows, including dialogs raised by local worker stages. Return the answer through the callback to let the waiting stage continue. Requests include `workflowRunId` and `workflowStageId`; combine them with `requestId` to associate a question with its run. A stage dialog can arrive while its questionnaire is still pending. Keep both requests: opening or answering the dialog does not withdraw or restart the questionnaire. Author semantic `ctx.ui` calls rather than terminal-specific branches so the definition works across hosts.
 
 A durable approval stays pending when input is unavailable, cancelled, or invalid. Withdrawing the adapter neither approves the request nor discards the run. Bind a new adapter to present a live pending request again. It receives a fresh request ID; late answers to the withdrawn request cannot authorize work.
 

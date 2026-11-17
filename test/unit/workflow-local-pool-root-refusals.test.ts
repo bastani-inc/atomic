@@ -8,11 +8,13 @@ import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-
 import { bindRunDurableBackend } from "../../packages/workflows/src/durable/run-owner-backend.js";
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
+import { bindWorkflowHumanInput } from "../../packages/workflows/src/extension/workflow-human-input.js";
 import {
 	rehydrateError,
 	type SerializedError,
 	serializeError,
 } from "../../packages/workflows/src/shared/error-codec.js";
+import { adoptStageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
 import type { PendingPrompt, RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
@@ -376,6 +378,60 @@ test("a prompt failure held for an earlier attempt fails the replacement's route
 		staleWorkLease({ root: ROOT, workId: pool.work.id, generation: 1, reason: "expired" })(rehydrateError(sent));
 		assert.equal(pool.commands("stage-answer").length, 1, "the prompt fails once");
 	} finally {
+		await pool.dispose();
+	}
+});
+
+test.each([true, false])("an SDK host answers a worker-published stage dialog with %s (#5354)", async (response) => {
+	const pool = await rootPool();
+	const broker = adoptStageUiBroker({}, false, pool.store);
+	const asked: string[] = [];
+	const reply = Promise.withResolvers<boolean>();
+	const unbind = bindWorkflowHumanInput(
+		pool.store,
+		{
+			hasUI: false,
+			hasHumanInput: true,
+			ui: {
+				confirm: async (title, message) => {
+					asked.push(`${title}:${message}`);
+					return reply.promise;
+				},
+			},
+		},
+		broker,
+	);
+	try {
+		pool.known();
+		const prompt: PendingPrompt = {
+			id: "dialog-1",
+			kind: "confirm",
+			source: "stage-dialog",
+			message: "Allow worker action?",
+			createdAt: Date.now(),
+		};
+		assert.deepEqual(
+			await pool.publish([childRun([stage("ask", { status: "awaiting_input", pendingPrompt: prompt })])]),
+			[],
+		);
+		await settled();
+		assert.equal(broker.hasStageDialog(descriptor.childRunId, "ask"), false);
+		assert.deepEqual(asked, ["Workflow approval:Allow worker action?"]);
+		assert.equal(pool.store.run(descriptor.childRunId)?.stages[0]?.pendingPrompt?.id, prompt.id);
+		assert.deepEqual(pool.commands("stage-answer"), []);
+
+		reply.resolve(response);
+		await settled();
+		const [answer] = pool.commands("stage-answer");
+		assert.ok(answer, "the host's answer reaches the waiting worker");
+		assert.equal(answer.runId, descriptor.childRunId);
+		assert.equal(answer.stageId, "ask");
+		assert.deepEqual(answer.answer, { kind: "prompt", promptId: prompt.id, response });
+		assert.equal(pool.store.run(descriptor.childRunId)?.stages[0]?.pendingPrompt, undefined);
+		assert.equal(pool.commands("stage-answer").length, 1);
+		assert.deepEqual(asked, ["Workflow approval:Allow worker action?"]);
+	} finally {
+		unbind();
 		await pool.dispose();
 	}
 });
