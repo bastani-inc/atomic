@@ -1,0 +1,306 @@
+import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
+import { getKeybindings, setKeybindings, type TuiMouseEvent } from "@bastani/atomic-tui";
+import { test } from "vitest";
+import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import type { TaskCompletionEnvelope } from "../../packages/coding-agent/src/core/tasks/completion.js";
+import { taskCompletionMessage } from "../../packages/coding-agent/src/core/tasks/completion-message.js";
+import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
+import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
+import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
+import { themedChatHostStyle } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
+import { getEditorTheme, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { taskFixture } from "../helpers/task-projection.js";
+import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
+import {
+	createStore,
+	deriveGraphTheme,
+	makeHandle,
+	makeTestTui,
+	StageChatView,
+	setupRun,
+	submitStageChatText,
+} from "./stage-chat-view-helpers.js";
+
+const flush = async () => {
+	for (let i = 0; i < 4; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+};
+const lines = (count: number, label: string) =>
+	Array.from({ length: count }, (_, index) => `${label} line ${index + 1}`).join("\n");
+
+function assistant(content: AssistantMessage["content"], stopReason: AssistantMessage["stopReason"] = "stop") {
+	return {
+		role: "assistant",
+		content,
+		api: "openai-responses",
+		provider: "openai",
+		model: "fixture",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason,
+		timestamp: 1,
+	} satisfies AssistantMessage;
+}
+
+function click(x: number, y: number, width: number, height: number): TuiMouseEvent {
+	return {
+		type: "click",
+		button: "left",
+		x,
+		y,
+		screenX: x,
+		screenY: y,
+		width,
+		height,
+		shift: false,
+		alt: false,
+		ctrl: false,
+		clickCount: 1,
+	};
+}
+
+/** A task's open transcript in the task inspector, over `session`, with live events from `emit`. */
+async function openTranscript(session: SessionManager, width = 100, height = 60) {
+	initTheme("dark");
+	const keys = getKeybindings();
+	setKeybindings(new KeybindingsManager());
+	const fixture = taskFixture();
+	const listeners = new Set<(event: AgentSessionEvent) => void>();
+	const environment = taskTranscriptEnvironment();
+	const inspector = new TaskInspector(
+		fixture.store,
+		() => {},
+		() => {},
+		undefined,
+		() => environment,
+	);
+	await fixture.start();
+	fixture.runners[0]!.context.bindTranscript({
+		getSessionId: () => session.getSessionId(),
+		getEntries: () => session.getEntries(),
+		getStreamingMessage: () => undefined,
+		subscribe: (listener) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+	});
+	inspector.handleInput("\r");
+	await flush();
+	inspector.handleInput("\r");
+	await flush();
+	const screen = () => inspector.renderViewport(width, height).map((line) => stripVTControlCharacters(line));
+	const rowOf = (pattern: RegExp) => {
+		const row = screen().findIndex((line) => pattern.test(line));
+		assert.notEqual(row, -1, `no row matches ${pattern}:\n${screen().join("\n")}`);
+		return row;
+	};
+	const clickOn = (pattern: RegExp, text: string) => {
+		const row = rowOf(pattern);
+		return inspector.handleMouse(click(screen()[row]!.indexOf(text), row, width, height));
+	};
+	const emit = (event: AgentSessionEvent) => {
+		for (const listener of listeners) listener(event);
+	};
+	const dispose = async () => {
+		inspector.dispose();
+		await fixture.dispose();
+		setKeybindings(keys);
+	};
+	return { screen, rowOf, clickOn, emit, dispose };
+}
+
+test("a running tool block a click expanded stays expanded as its live output arrives", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({ role: "user", content: "Run it", timestamp: 0 });
+	const chat = await openTranscript(session);
+	try {
+		chat.emit({ type: "tool_execution_start", toolCallId: "live", toolName: "bash", args: { command: "live-cmd" } });
+		const update = (count: number) =>
+			chat.emit({
+				type: "tool_execution_update",
+				toolCallId: "live",
+				toolName: "bash",
+				args: { command: "live-cmd" },
+				partialResult: { content: [{ type: "text", text: lines(count, "live") }] },
+			});
+		update(20);
+		const expanded = () => chat.screen().some((line) => line.trimEnd().endsWith("live line 1"));
+		assert.ok(!expanded(), chat.screen().join("\n"));
+		assert.equal(chat.clickOn(/live-cmd/, "live-cmd")?.handled, true);
+		assert.ok(expanded(), chat.screen().join("\n"));
+
+		update(25);
+		assert.ok(expanded(), `the next output collapsed the block:\n${chat.screen().join("\n")}`);
+		assert.ok(chat.screen().some((line) => line.trimEnd().endsWith("live line 25")));
+	} finally {
+		await chat.dispose();
+	}
+});
+
+test("a finished-agent card in a task transcript expands on a click on its header", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({ role: "user", content: "Check the release", timestamp: 0 });
+	const envelope = {
+		completionId: "completion-1",
+		ownerId: "owner",
+		taskId: "task-1",
+		terminalSequence: "7",
+		result: {
+			kind: "completed",
+			output: { ownerId: "owner", taskId: "task-1", artifactId: "out", byteCount: "0", omittedRanges: [] },
+		},
+		display: false,
+	} as unknown as TaskCompletionEnvelope;
+	const message = taskCompletionMessage(
+		envelope,
+		{ kind: "agent", title: "check the release", agentName: "worker" } as never,
+		lines(3, "worker result"),
+	);
+	await session.appendCustomMessageEntry(message.customType, message.content, true, message.details);
+	const chat = await openTranscript(session);
+	try {
+		const shown = () => chat.screen().some((line) => line.trimEnd().endsWith("worker result line 3"));
+		assert.ok(!shown(), chat.screen().join("\n"));
+		assert.equal(chat.clickOn(/worker finished/, "worker")?.handled, true);
+		assert.ok(shown(), chat.screen().join("\n"));
+	} finally {
+		await chat.dispose();
+	}
+});
+
+test("a user shell block in an attached chat expands on a click on its command", () => {
+	initTheme("dark");
+	const host = new ChatSessionHost({ style: themedChatHostStyle(), editorTheme: getEditorTheme() });
+	try {
+		host.replaceMessages([
+			{
+				role: "bashExecution",
+				command: "user-cmd",
+				output: lines(30, "shell"),
+				exitCode: 0,
+				cancelled: false,
+				truncated: false,
+				timestamp: 0,
+			},
+		]);
+		const screen = () => host.renderBody(100, 50).map((line) => stripVTControlCharacters(line));
+		const expanded = () => screen().some((line) => line.trimEnd().endsWith("shell line 1"));
+		assert.ok(!expanded(), screen().join("\n"));
+		const row = screen().findIndex((line) => line.includes("$ user-cmd"));
+		assert.notEqual(row, -1, screen().join("\n"));
+		assert.equal(host.handleBodyClick(click(screen()[row]!.indexOf("user-cmd"), row, 100, 50)), true);
+		assert.ok(expanded(), screen().join("\n"));
+	} finally {
+		host.dispose();
+	}
+});
+
+/** A child task's session: one finished bash call, `child-cmd`, with 20 lines of output. */
+async function childSession(): Promise<SessionManager> {
+	const child = SessionManager.inMemory();
+	await child.appendMessage({ role: "user", content: "Child work", timestamp: 0 });
+	await child.appendMessage(
+		assistant([{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "child-cmd" } }], "toolUse"),
+	);
+	await child.appendMessage({
+		role: "toolResult",
+		toolCallId: "call-1",
+		toolName: "bash",
+		content: [{ type: "text", text: lines(20, "child") }],
+		isError: false,
+		timestamp: 2,
+	});
+	return child;
+}
+
+test("a click in a chat's open task transcript reaches the blocks of that transcript", async () => {
+	initTheme("dark");
+	const keys = getKeybindings();
+	setKeybindings(new KeybindingsManager());
+	const fixture = taskFixture();
+	const child = await childSession();
+	const source = ownerTaskViewSource(fixture.store);
+	const host = new ChatSessionHost({
+		style: themedChatHostStyle(),
+		editorTheme: getEditorTheme(),
+		getTaskSource: () => source,
+	});
+	try {
+		await fixture.start("Child");
+		fixture.runners[0]!.context.bindTranscript(Object.assign(child, { subscribe: () => () => {} }));
+		assert.equal(host.openTasks(), true);
+		host.handleTaskInput("\r");
+		await flush();
+		host.handleTaskInput("\r");
+		await flush();
+		const screen = () => host.renderBody(100, 50).map((line) => stripVTControlCharacters(line));
+		const expanded = () => screen().some((line) => line.trimEnd().endsWith("child line 1"));
+		assert.ok(!expanded(), screen().join("\n"));
+		const header = screen().findIndex((line) => line.includes("child-cmd"));
+		assert.notEqual(header, -1, screen().join("\n"));
+		assert.equal(host.handleBodyClick(click(screen()[header]!.indexOf("child-cmd"), header, 100, 50)), true);
+		assert.ok(expanded(), screen().join("\n"));
+	} finally {
+		host.dispose();
+		await fixture.dispose();
+		setKeybindings(keys);
+	}
+});
+
+test("a click in a stage chat's open task transcript reaches the blocks of that transcript", async () => {
+	const keys = getKeybindings();
+	const keybindings = new KeybindingsManager();
+	setKeybindings(keybindings);
+	const fixture = taskFixture();
+	const source = ownerTaskViewSource(fixture.store);
+	const store = createStore();
+	setupRun(store, "run-1", "stage-a");
+	const { handle } = makeHandle();
+	const view = new StageChatView({
+		store,
+		graphTheme: deriveGraphTheme({}),
+		runId: "run-1",
+		stageId: "stage-a",
+		workflowName: "test-wf",
+		// A stage on a local worker lists the tasks of its session there.
+		handle: {
+			...handle,
+			placement: { kind: "local-worker", workId: "work", generation: 1 },
+			taskSource: () => source,
+		},
+		onDetach: () => {},
+		onClose: () => {},
+		piTui: makeTestTui(50),
+		piKeybindings: keybindings,
+	});
+	try {
+		await fixture.start("Child");
+		fixture.runners[0]!.context.bindTranscript(Object.assign(await childSession(), { subscribe: () => () => {} }));
+		submitStageChatText(view, "/tasks");
+		await flush();
+		view.handleInput("\r");
+		await flush();
+		view.handleInput("\r");
+		await flush();
+		const screen = () => view.render(100).map((line) => stripVTControlCharacters(line));
+		const expanded = () => screen().some((line) => line.trimEnd().endsWith("child line 1"));
+		const header = screen().findIndex((line) => line.includes("child-cmd"));
+		assert.notEqual(header, -1, screen().join("\n"));
+		assert.ok(!expanded(), screen().join("\n"));
+		assert.equal(view.handleMouse(click(screen()[header]!.indexOf("child-cmd"), header, 100, 50))?.handled, true);
+		assert.ok(expanded(), screen().join("\n"));
+	} finally {
+		view.dispose();
+		await fixture.dispose();
+		setKeybindings(keys);
+	}
+});

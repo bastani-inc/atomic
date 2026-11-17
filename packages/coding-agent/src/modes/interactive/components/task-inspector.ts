@@ -792,6 +792,15 @@ export class TaskInspector implements Component {
 		return { handled: true };
 	}
 
+	/** What the last frame drew on `row` of the open transcript, named by the transcript; undefined elsewhere. */
+	paintedRowKey(row: number): string | undefined {
+		const transcript = this.transcript;
+		const top = this.transcriptTop;
+		if (transcript?.paintedRowKey === undefined || top === undefined || this.helpOpen) return undefined;
+		if (this.navigation.focus.kind !== "detail") return undefined;
+		return transcript.paintedRowKey(row - top);
+	}
+
 	/** Every key belongs to the inspector except the host's thinking toggle when it leaves that alone. */
 	handleInput(data: string): boolean {
 		const keys = getKeybindings();

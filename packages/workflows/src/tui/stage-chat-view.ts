@@ -125,6 +125,13 @@ export class StageChatView implements Component, Focusable {
 		return { handled: true };
 	}
 
+	/** What the last frame drew on `row` of the transcript: the entry there and the row within it. */
+	paintedRowKey(row: number): string | undefined {
+		const region = this.transcriptRows;
+		if (region === undefined || row < region.top || row >= region.top + region.rows) return undefined;
+		return this.chatHost.bodyRowKey(row - region.top);
+	}
+
 	render(width: number): string[] {
 		const ctx = this._ctx();
 		this.transcriptRows = undefined;
@@ -133,11 +140,10 @@ export class StageChatView implements Component, Focusable {
 			const rows = viewLineCount(ctx);
 			const footer = this.chatHost.taskInspectorFullscreen ? [] : this.chatHost.renderFooter(taskWidth);
 			const visibleFooter = footer.slice(0, Math.max(0, rows - 1));
-			return fitStageChatFrame(
-				[...this.chatHost.renderBody(taskWidth, rows - visibleFooter.length), ...visibleFooter],
-				rows,
-				blankLine(taskWidth),
-			);
+			const body = this.chatHost.renderBody(taskWidth, rows - visibleFooter.length);
+			// The chat's body, with the task list or a task's transcript it shows, starts at the top row.
+			this.transcriptRows = { top: 0, rows: body.length };
+			return fitStageChatFrame([...body, ...visibleFooter], rows, blankLine(taskWidth));
 		}
 		const w = Math.max(40, width);
 		const stage = currentStage(ctx);
@@ -213,7 +219,13 @@ export class StageChatView implements Component, Focusable {
 		if (blocked) this.chatHost.scrollToBottom();
 
 		let bodyLines: string[];
-		const renderTranscript = (rows: number): string[] => this.chatHost.renderBody(w, rows);
+		// Every body that shows the transcript draws it from the body's first row; this records how many rows it took.
+		let transcriptLines: number | undefined;
+		const renderTranscript = (rows: number): string[] => {
+			const lines = this.chatHost.renderBody(w, rows);
+			transcriptLines = lines.length;
+			return lines;
+		};
 		const waitingNotice = pooledStageWaitingNotice(ctx, stage);
 		if (bodyBudget <= 0) {
 			bodyLines = [];
@@ -229,9 +241,11 @@ export class StageChatView implements Component, Focusable {
 			bodyLines = renderReadOnlyArchiveBody(ctx, w, bodyBudget, stage, renderTranscript);
 		} else {
 			bodyLines = renderTranscript(bodyBudget);
+		}
+		if (transcriptLines !== undefined) {
 			this.transcriptRows = {
 				top: headerLines.length + sepLines.length,
-				rows: Math.min(bodyLines.length, bodyBudget),
+				rows: Math.min(transcriptLines, bodyBudget),
 			};
 		}
 		const visibleBodyLines = bodyLines.slice(0, bodyBudget);

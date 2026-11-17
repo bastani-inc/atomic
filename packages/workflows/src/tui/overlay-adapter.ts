@@ -315,6 +315,7 @@ export function buildGraphOverlayAdapter(
 				if (result?.handled === true) tui.requestRender?.();
 				return result;
 			},
+			paintedRowKey: (row: number): string | undefined => view.paintedRowKey(row),
 			handleInput: (data: string): boolean => {
 				const consumed = view.handleInput(data);
 				if (consumed) tui.requestRender?.();

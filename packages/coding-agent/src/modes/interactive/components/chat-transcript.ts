@@ -64,6 +64,13 @@ interface CachedChatTranscriptBlock<TEntry extends ChatTranscriptEntryLike> {
 	readonly promptRows: readonly number[];
 }
 
+/** The blocks a transcript drew and their first rows, at the width it drew them. */
+interface CachedTranscriptPaint<TEntry extends ChatTranscriptEntryLike> {
+	readonly width: number;
+	readonly blocks: readonly (CachedChatTranscriptBlock<TEntry> | undefined)[];
+	readonly starts: readonly number[];
+}
+
 /** Row offsets of every cached block, kept current from the first block that changed onward. */
 interface TranscriptRowLayout {
 	readonly starts: number[];
@@ -165,6 +172,8 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 	private readonly cacheKey: ChatTranscriptCacheKey<TEntry> | undefined;
 	private blockCache: Array<CachedChatTranscriptBlock<TEntry> | undefined> = [];
 	private measuredRows: MeasuredRowWindow | undefined;
+	/** The blocks and their first rows as last drawn, which a click is resolved against. */
+	private paintedLayout: CachedTranscriptPaint<TEntry> | undefined;
 	private readonly layout: TranscriptRowLayout = { starts: [], prompts: [], segments: [], rowCount: 0 };
 	private dirtyEntries = new WeakSet<TEntry>();
 	private staticComponents: readonly Component[] = [];
@@ -232,11 +241,16 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		this.refreshLayout(Math.min(firstChanged, this.blockCache.length));
 		const { starts, prompts, segments, rowCount } = this.layout;
 		const blocks = this.blockCache;
+		let painted: CachedTranscriptPaint<TEntry> | undefined;
 		this.measuredRows = {
 			rowCount,
 			segments,
 			findUserPromptRow: (start) => prompts[indexAtOrBefore(prompts, start)],
 			renderRows: (start, end) => {
+				// Drawing these rows is what the reader sees; a click resolves against this layout until the next draw,
+				// though a search or prompt jump may measure the transcript again before then.
+				painted ??= { width, blocks: [...blocks], starts: [...starts] };
+				this.paintedLayout = painted;
 				const lines: string[] = [];
 				for (let index = Math.max(0, indexAtOrBefore(starts, start)); index < blocks.length; index++) {
 					const block = blocks[index];
@@ -254,6 +268,17 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		return this.measuredRows;
 	}
 
+	/** The entry whose block the last draw at `width` put on row `row`, and the row within that block. */
+	paintedEntryAt(width: number, row: number): { readonly entry: TEntry; readonly row: number } | undefined {
+		const painted = this.paintedLayout;
+		if (!this.supportsRowWindow || row < 0 || painted === undefined || painted.width !== width) return undefined;
+		const index = indexAtOrBefore(painted.starts, row);
+		const block = painted.blocks[index];
+		const start = painted.starts[index] ?? 0;
+		if (block === undefined || row - start >= block.lines.length) return undefined;
+		return { entry: block.entry, row: row - start };
+	}
+
 	/**
 	 * The entries whose blocks a single click on row `row` of the transcript, as last laid out at `width`, expands or
 	 * collapses, and whether it expands them. Undefined unless the row is a block's header; only a windowed transcript,
@@ -263,14 +288,14 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		width: number,
 		row: number,
 	): { readonly entries: readonly TEntry[]; readonly expand: boolean } | undefined {
-		if (!this.supportsRowWindow || row < 0) return undefined;
-		// The rows as last laid out, which is what the reader saw: entries that arrived since are not drawn yet.
-		const blocks = this.blockCache;
-		if (blocks.some((candidate) => candidate !== undefined && candidate.width !== width)) return undefined;
-		const index = indexAtOrBefore(this.layout.starts, row);
+		const painted = this.paintedLayout;
+		if (!this.supportsRowWindow || row < 0 || painted === undefined || painted.width !== width) return undefined;
+		// The rows as last drawn, which is what the reader saw: entries that arrived since are not drawn yet.
+		const blocks = painted.blocks;
+		const index = indexAtOrBefore(painted.starts, row);
 		const block = blocks[index];
 		if (block === undefined) return undefined;
-		const bodyRow = row - (this.layout.starts[index] ?? 0) - (block.spaced ? 1 : 0);
+		const bodyRow = row - (painted.starts[index] ?? 0) - (block.spaced ? 1 : 0);
 		if (bodyRow < 0 || bodyRow >= block.body.length) return undefined;
 		const components = blocks.map((candidate) => candidate?.component ?? EMPTY_COMPONENT);
 		const unit = clickedBlocks(components, index, width, bodyRow);
@@ -296,6 +321,7 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		this.staticComponents = [];
 		this.dirtyEntries = new WeakSet<TEntry>();
 		this.measuredRows = undefined;
+		this.paintedLayout = undefined;
 	}
 
 	/**

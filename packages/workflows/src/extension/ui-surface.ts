@@ -56,6 +56,8 @@ export interface PiCustomComponent {
 	handleInput?: (data: string) => boolean;
 	/** A mouse event at the component's own row and column; a handled result stops the host's own handling. */
 	handleMouse?: (event: TuiMouseEvent) => TuiMouseEventResult | undefined;
+	/** What the last render drew on `row`, such as the transcript entry there; a click needs it unchanged. */
+	paintedRowKey?: (row: number) => string | undefined;
 	invalidate?: () => void;
 	dispose?: () => void;
 	capturesBack?: () => boolean;

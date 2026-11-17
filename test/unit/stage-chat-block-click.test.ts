@@ -81,3 +81,45 @@ for (const width of [80, 160]) {
 		}
 	});
 }
+
+test("a click on a block header in a paused stage's transcript expands it", () => {
+	const store = createStore();
+	setupRun(store, "run-1", "stage-a", "paused");
+	const { handle, emit } = makeHandle(undefined, [], "paused");
+	const view = new StageChatView({
+		store,
+		graphTheme: deriveGraphTheme({}),
+		runId: "run-1",
+		stageId: "stage-a",
+		workflowName: "test-wf",
+		handle,
+		onDetach: () => {},
+		onClose: () => {},
+	});
+	const width = 100;
+	const screen = () => view.render(width).map(stripAnsi);
+	const expanded = () => screen().some((line) => line.trimEnd().endsWith("stage line 1"));
+	try {
+		emit({
+			type: "tool_execution_start",
+			toolCallId: "t1",
+			toolName: "bash",
+			args: { command: "stage-cmd" },
+		} as AgentSessionEvent);
+		emit({
+			type: "tool_execution_end",
+			toolCallId: "t1",
+			toolName: "bash",
+			result: { content: [{ type: "text", text: output("stage") }] },
+			isError: false,
+		} as AgentSessionEvent);
+		assert.match(screen().join("\n"), /PAUSED/);
+		assert.ok(!expanded(), screen().join("\n"));
+		const header = screen().findIndex((line) => /Bash\(stage-cmd\)/.test(line));
+		assert.notEqual(header, -1, screen().join("\n"));
+		assert.equal(view.handleMouse(click(screen()[header]!.indexOf("stage-cmd"), header, width))?.handled, true);
+		assert.ok(expanded(), screen().join("\n"));
+	} finally {
+		view.dispose();
+	}
+});

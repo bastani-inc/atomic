@@ -116,8 +116,12 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	renderIdentityIds = new WeakMap<object, number>();
 	/** Bumped when a rendered entry redraws itself (a tool renderer's `invalidate`), so its cached rows are rebuilt. */
 	entryRevisions = new WeakMap<object, number>();
-	/** Entries a click expanded or collapsed, which then differ from the chat's tool-output setting. */
-	expandedOverrides = new WeakMap<object, boolean>();
+	/**
+	 * Entries a click expanded or collapsed, which then differ from the chat's tool-output setting. A tool call is kept
+	 * by its call id, because live output replaces its entry object; other entries by the entry itself.
+	 */
+	expandedOverrides = new Map<string, boolean>();
+	expandedEntryOverrides = new WeakMap<object, boolean>();
 	/** The tool-output setting the overrides were made against; changing it (Ctrl+O) drops them. */
 	expandedOverridesFor: boolean | undefined;
 	/** The cache key shared by entries that change only by being replaced, per revision, under the current settings. */

@@ -32,7 +32,9 @@ import {
 	renderChatSessionPendingMessages,
 	renderChatSessionUsage,
 	renderChatSessionWorkingStatus,
+	setExpandedOverride,
 	transcriptCacheKey,
+	transcriptEntryName,
 } from "./chat-session-host-rendering.ts";
 import {
 	clearChatSessionBusyForTerminalWorkflowStage,
@@ -85,6 +87,11 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	private taskSession?: object;
 	private unsubscribeTaskBinding?: () => void;
 	private taskInspector?: TaskInspector;
+	/** How the last `renderBody` laid out the body: a full-screen task view, or the transcript's rows above a picker. */
+	private bodyLayout: { readonly taskView: true } | { readonly taskView: false; readonly transcriptRows: number } = {
+		taskView: false,
+		transcriptRows: Number.POSITIVE_INFINITY,
+	};
 	private historyHydrated = false;
 	private readonly taskTranscriptEnvironment: () => TaskTranscriptEnvironment;
 
@@ -396,13 +403,19 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 
 	renderBody(width: number, budget: number): string[] {
 		if (this.taskInspector) {
-			if (this.taskInspector.fullscreen) return this.taskInspector.renderViewport(width, budget);
+			if (this.taskInspector.fullscreen) {
+				this.bodyLayout = { taskView: true };
+				return this.taskInspector.renderViewport(width, budget);
+			}
 			const picker = this.taskInspector.renderPicker(width, budget);
 			const remaining = Math.max(0, budget - picker.length);
 			const body = remaining ? renderChatSessionBody(this.state, width, remaining) : [];
+			this.bodyLayout = { taskView: false, transcriptRows: body.length };
 			return [...body, ...Array.from({ length: Math.max(0, remaining - body.length) }, () => ""), ...picker];
 		}
-		return renderChatSessionBody(this.state, width, budget);
+		const body = renderChatSessionBody(this.state, width, budget);
+		this.bodyLayout = { taskView: false, transcriptRows: body.length };
+		return body;
 	}
 
 	/**
@@ -522,13 +535,17 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	 */
 	handleBodyClick(event: TuiMouseEvent): boolean {
 		if (!isSingleLeftClick(event)) return false;
+		const layout = this.bodyLayout;
+		// A task's transcript the chat shows full-screen takes the click into its own transcript.
+		if (layout.taskView) return this.taskInspector?.handleMouse(event)?.handled === true;
+		if (event.y >= layout.transcriptRows) return false;
 		const state = this.state;
 		const hit = state.bodyViewport.componentAtRow(event.y);
 		if (hit === undefined || hit.component !== state.transcriptComponent) return false;
 		const clicked = state.transcriptComponent.clickedEntries(hit.width, hit.row);
 		if (clicked === undefined) return false;
 		for (const entry of clicked.entries) {
-			state.expandedOverrides.set(entry, clicked.expand);
+			setExpandedOverride(state, entry, clicked.expand);
 			state.entryRevisions.set(entry, (state.entryRevisions.get(entry) ?? 0) + 1);
 		}
 		const first = state.bodyViewport.firstVisibleRow();
@@ -537,6 +554,21 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		}
 		state.requestRender?.();
 		return true;
+	}
+
+	/**
+	 * What the last `renderBody` drew on `row`: the transcript entry there and the row within it, or what the task
+	 * transcript the chat shows drew there. Undefined for rows outside a transcript.
+	 */
+	bodyRowKey(row: number): string | undefined {
+		const layout = this.bodyLayout;
+		if (layout.taskView) return this.taskInspector?.paintedRowKey(row);
+		if (row < 0 || row >= layout.transcriptRows) return undefined;
+		const state = this.state;
+		const hit = state.bodyViewport.componentAtRow(row);
+		if (hit === undefined || hit.component !== state.transcriptComponent) return undefined;
+		const drawn = state.transcriptComponent.paintedEntryAt(hit.width, hit.row);
+		return drawn === undefined ? undefined : `${transcriptEntryName(state, drawn.entry)}#${drawn.row}`;
 	}
 
 	bodyMaxScroll(): number {

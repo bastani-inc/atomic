@@ -182,6 +182,8 @@ export async function showTaskInspector(
 						// A full-screen page draws from the top row, so the click's row is the page's.
 						handleMouse: (event: TuiMouseEvent): TuiMouseEventResult | undefined =>
 							fullscreen ? inspector.handleMouse(event) : undefined,
+						paintedRowKey: (row: number): string | undefined =>
+							fullscreen ? inspector.paintedRowKey(row) : undefined,
 						handleInput: (data: string) => {
 							if (!isPhysicalCtrlC(data)) return inspector.handleInput(data);
 							closed = true;

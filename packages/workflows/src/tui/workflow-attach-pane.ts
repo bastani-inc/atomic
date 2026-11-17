@@ -598,6 +598,11 @@ export class WorkflowAttachPane implements Component {
 		if (!this.visible || this.mode !== "stage-chat" || !this.chatView) return undefined;
 		return this.chatView.handleMouse(event);
 	}
+	/** What the attached stage chat last drew on `row`; the graph names none. */
+	paintedRowKey(row: number): string | undefined {
+		if (!this.visible || this.mode !== "stage-chat" || !this.chatView) return undefined;
+		return this.chatView.paintedRowKey(row);
+	}
 	handleInput(data: string): boolean | undefined {
 		this._flushStoreUpdate();
 		if (!this.visible) return false;

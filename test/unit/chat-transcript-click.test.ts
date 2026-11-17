@@ -63,3 +63,26 @@ test("a click on a row of a frame drawn at another width names nothing", () => {
 		["alpha"],
 	);
 });
+
+test("a click names the entry drawn on the row even after a search measured the transcript again before the next draw", () => {
+	const entries: Entry[] = [
+		{ role: "tool", name: "alpha" },
+		{ role: "tool", name: "beta" },
+	];
+	const transcript = new ChatTranscriptComponent<Entry>(
+		entries,
+		(entry) => block(entry.name),
+		(entry) => entry.name,
+	);
+	const painted = transcript.render(40);
+	const row = painted.findIndex((line) => line.includes("● beta"));
+
+	entries.unshift({ role: "tool", name: "earlier" });
+	// A search or prompt jump measures every row without drawing them.
+	transcript.rowCount(40);
+
+	assert.deepEqual(
+		transcript.clickedEntries(40, row)?.entries.map((entry) => entry.name),
+		["beta"],
+	);
+});

@@ -48,7 +48,8 @@ export function renderChatSessionBody<TExtraEntry extends ChatTranscriptEntryLik
 	const toolsExpanded = state.getChatRenderSettings?.()?.toolOutputExpanded === true;
 	if (state.expandedOverridesFor !== toolsExpanded) {
 		state.expandedOverridesFor = toolsExpanded;
-		state.expandedOverrides = new WeakMap();
+		state.expandedOverrides = new Map();
+		state.expandedEntryOverrides = new WeakMap();
 	}
 	if (state.transcript.length > 0) {
 		components.push(state.transcriptComponent);
@@ -335,6 +336,40 @@ class EchoedInitialPromptComponent implements Component {
 	}
 }
 
+/** The key a click's expansion is kept under for a tool call: its call id, which outlives the replaced entry objects. */
+function toolCallKey<TExtraEntry extends ChatTranscriptEntryLike>(
+	entry: ChatSessionHostEntry<TExtraEntry>,
+): string | undefined {
+	return isChatMessageEntry(entry) && entry.kind === "tool" ? `tool:${entry.toolCallId}` : undefined;
+}
+
+/** Whether a click expanded (true) or collapsed (false) `entry`, or undefined when the chat's setting applies. */
+export function expandedOverride<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	entry: ChatSessionHostEntry<TExtraEntry>,
+): boolean | undefined {
+	const key = toolCallKey(entry);
+	return key === undefined ? state.expandedEntryOverrides.get(entry) : state.expandedOverrides.get(key);
+}
+
+/** A name for `entry` that a repaint keeps: a tool call's id, which outlives its replaced entry objects, or the entry's. */
+export function transcriptEntryName<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	entry: ChatSessionHostEntry<TExtraEntry>,
+): string {
+	return toolCallKey(entry) ?? `entry:${renderIdentityKey(state, entry)}`;
+}
+
+export function setExpandedOverride<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	entry: ChatSessionHostEntry<TExtraEntry>,
+	expanded: boolean,
+): void {
+	const key = toolCallKey(entry);
+	if (key === undefined) state.expandedEntryOverrides.set(entry, expanded);
+	else state.expandedOverrides.set(key, expanded);
+}
+
 export function renderChatSessionEntry<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	entry: ChatSessionHostEntry<TExtraEntry>,
@@ -344,7 +379,7 @@ export function renderChatSessionEntry<TExtraEntry extends ChatTranscriptEntryLi
 	}
 	if (isChatMessageEntry(entry)) {
 		const isStreaming = isChatSessionStreaming(state) && state.liveChat.isStreamingAssistantEntry(entry);
-		const expanded = state.expandedOverrides.get(entry);
+		const expanded = expandedOverride(state, entry);
 		const options =
 			expanded === undefined
 				? chatMessageRenderOptions(state, isStreaming)

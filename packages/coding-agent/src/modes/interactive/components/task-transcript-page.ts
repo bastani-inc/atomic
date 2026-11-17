@@ -90,6 +90,8 @@ export interface TaskTranscriptPage {
 	render(width: number, rows: number): string[];
 	/** A single click at row `event.y` of the last frame `render` drew; true when the page acted on it. */
 	handleMouse?(event: TuiMouseEvent): boolean;
+	/** What the last frame `render` drew on `row`, such as the transcript entry there; undefined when it cannot say. */
+	paintedRowKey?(row: number): string | undefined;
 	invalidate(): void;
 	dispose(): void;
 }
@@ -440,10 +442,14 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	/** A single click on a block header in the transcript expands or collapses that block. */
 	handleMouse(event: TuiMouseEvent): boolean {
-		if (this.chat.hasTaskInspector || event.y < 0 || event.y >= this.bodyRows) return false;
+		if (event.y < 0 || event.y >= this.bodyRows) return false;
 		const handled = this.chat.handleBodyClick(event);
 		if (handled) this.requestRender();
 		return handled;
+	}
+
+	paintedRowKey(row: number): string | undefined {
+		return row < 0 || row >= this.bodyRows ? undefined : this.chat.bodyRowKey(row);
 	}
 
 	/** The chat box of a stage chat: the transcript, then pending, working, usage, the named editor and the footer. */
@@ -453,7 +459,10 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		if (this.chat.hasTaskInspector) {
 			const footer = this.chat.taskInspectorFullscreen ? [] : this.chat.renderFooter(width);
 			const shownFooter = footer.slice(0, viewport - 1);
-			return [...this.chat.renderBody(width, viewport - shownFooter.length), ...shownFooter];
+			// The chat's own task list or a task's transcript takes the top rows, and clicks there.
+			const body = this.chat.renderBody(width, viewport - shownFooter.length);
+			this.bodyRows = body.length;
+			return [...body, ...shownFooter];
 		}
 		let remaining = viewport;
 		// The editor keeps its rows first, then the footer, then the status rows; the transcript takes what is left.
