@@ -120,7 +120,7 @@ import {
   jitteredReconnectDelayMs,
   reconnectDelayMs,
 } from "./reconnect-backoff.js";
-import { IntercomClientDisconnectedError, isIntercomBrokerRetiring } from "./recoverable-disconnect.js";
+import { IntercomClientDisconnectedError, isIntercomBrokerRetiring, isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
 import { registerWithBrokerSuccessor } from "./broker-successor-retry.js";
 import { isOwnerMissingRefusal, LIVE_ROUTE_OWNER_WAIT_MS, liveRouteOwnerRetryDelayMs } from "./live-route-refusal.js";
 import { RouteRetryWaiters, scheduledRetryFailure } from "./route-retry-waiters.js";
@@ -572,9 +572,15 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const synced =
       active === null || !active.isConnected()
         ? Promise.resolve()
-        : active.syncReach().then(() => {
-            if (client === active && joinedGroups !== null) setJoinedGroups(active.groups);
-          });
+        : active.syncReach().then(
+            () => {
+              if (client === active && joinedGroups !== null) setJoinedGroups(active.groups);
+            },
+            (error: unknown) => {
+              // The connection closed first: the session registers with the new reach when it reconnects.
+              if (!isRecoverableIntercomDisconnect(error)) throw error;
+            },
+          );
     return Promise.all([persisted, synced]).then(() => {});
   }
   function currentIntercomGroups(): Set<string> {
