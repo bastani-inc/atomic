@@ -3,6 +3,7 @@ import {
 	type DetachedToolResult,
 	type ExtensionAPI,
 	type ExtensionContext,
+	isStaleExtensionContextError,
 	type SessionEntry,
 	SessionManager,
 	type SessionStore,
@@ -580,6 +581,39 @@ const stageChildren = new WeakMap<AbortSignal, StageChildren>();
 /** Workflow stage sessions with a generation in this process, whose own session records how their children end. */
 const stageSessionsInProcess = new Set<string>();
 
+/** Whether an append failed because the session it went through was given up: its extension API refuses it. */
+function refusedByGivenUpSession(error: Error): boolean {
+	const cause = isReleasedChildError(error) && error.cause instanceof Error ? error.cause : error;
+	return isStaleExtensionContextError(cause) || (cause as { code?: unknown }).code === "SessionClosed";
+}
+
+/**
+ * Save a child's record through a workflow stage's session, in its owner's order: through the stage's newest session,
+ * or, once the stage gave that session up and its API refuses every append, through the session reopened from its
+ * store, as a stage whose run ends while it waits released is closed. A failed save is counted, not lost.
+ */
+function saveStageClosed(
+	stage: { readonly pi: Pick<ExtensionAPI, "appendEntry">; readonly sessionManager: StageSession },
+	record: SubagentChildRecord,
+): void {
+	const full = observeSubagentChildRecord(record);
+	const sessionId = full.owner.sessionId;
+	void inOrder(sessionId, async () => {
+		try {
+			await appendObserved(stage.pi, full);
+		} catch (error) {
+			if (!refusedByGivenUpSession(error as Error)) throw error;
+			const stored = await SessionManager.open(stage.sessionManager.getSessionStore(), sessionId, undefined, {
+				history: "tail",
+			});
+			const entryId = await stored.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, full);
+			observeSubagentChildRecord(full, false, { entryId, sessionId });
+		}
+	}).catch((error: Error) => {
+		observeChildRecordFailure(sessionId, asRecordFailure(full, error));
+	});
+}
+
 /**
  * Watch the children a workflow stage owns, so that when the stage generation closes for good every settled child,
  * quit ones included, is recorded `stage-closed`: resume then names why it cannot continue (#3760).
@@ -623,7 +657,7 @@ export function watchWorkflowStageSubagentChildren(
 		try {
 			const latest = latestOf(childId, persisted);
 			if (!endedForGood() || latest?.owner?.sessionId !== owner.sessionId || !endsWithStage(latest)) return;
-			void appendInOrder(current.pi, { ...latest, terminalStatus: SUBAGENT_CHILD_STAGE_CLOSED_STATUS });
+			saveStageClosed(current, { ...latest, terminalStatus: SUBAGENT_CHILD_STAGE_CLOSED_STATUS });
 			// It can no longer resume, so its worktree is no longer kept for it.
 			unparkRunWorktree(latest.runId, latest.index);
 		} catch (error) {
