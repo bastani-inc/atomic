@@ -32,7 +32,7 @@ const children: ChildProcess[] = [];
 beforeEach(() => {
 	directory = mkdtempSync(join(tmpdir(), "atomic-start-preparation-"));
 	Object.defineProperty(process, "platform", { value: "win32" });
-	vi.stubEnv("SystemRoot", directory);
+	if (platform.value !== "win32") vi.stubEnv("SystemRoot", tmpdir());
 	setNativeProcessCreationTimeForTesting(null);
 	setNativeLocksForTesting(null);
 	setProcessCreationTimeQueryForTesting({

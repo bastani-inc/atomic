@@ -83,7 +83,7 @@ describe("package settings updates (#4966)", () => {
 
 		await managerFor(SettingsManager.create(tempDir, agentDir)).installAndPersist(extDir);
 		assert.deepEqual((JSON.parse(readFileSync(settingsPath, "utf-8")) as { packages?: string[] }).packages, [
-			"../local-ext",
+			join("..", "local-ext"),
 		]);
 
 		const removed = await managerFor(SettingsManager.create(tempDir, agentDir)).removeAndPersist(extDir);
