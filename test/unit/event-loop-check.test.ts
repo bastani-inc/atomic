@@ -28,6 +28,7 @@ const fixturePolicy: EventLoopPolicy = {
 			reason: "the fixture's stand-in for a reviewed helper that only runs before the first frame",
 		},
 	],
+	reviewedRegexes: [],
 };
 
 let graph: CallGraph;
@@ -88,6 +89,25 @@ describe("event-loop check", () => {
 			report.violations.some((v) => v.function === "reviewedStartupHelper"),
 			false,
 		);
+	});
+
+	test("rejects a backtracking regular expression on an interactive path, not one that only runs at startup", () => {
+		assert.deepEqual(
+			report.regexFindings.map((finding) => `${finding.function} /${finding.pattern}/ ${finding.kind}`),
+			["handleKey /^(\\w+\\s?)*$/ exponential"],
+		);
+		const reviewed = analyzeEventLoop(graph, {
+			...fixturePolicy,
+			reviewedRegexes: [
+				{
+					file: "src/host.ts",
+					pattern: "^(\\w+\\s?)*$",
+					reason: "the fixture's stand-in for a regex that only sees short input",
+				},
+			],
+		});
+		assert.deepEqual(reviewed.regexFindings, []);
+		assert.deepEqual(reviewed.policyErrors, []);
 	});
 
 	test("fails the policy when a reviewed entry no longer names a reachable function", () => {

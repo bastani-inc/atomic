@@ -8,7 +8,8 @@ import { Terminal } from "./terminal.ts";
 const store: Store = new FileStore();
 
 function loadConfigBeforeFirstFrame(): string {
-	return readFileSync("config.json", "utf8");
+	const text = readFileSync("config.json", "utf8");
+	return /^(\s*\w+\s*)+=/.test(text) ? text : "";
 }
 
 function spin(milliseconds: number): void {
@@ -30,6 +31,8 @@ async function readLazily(): Promise<string> {
 }
 
 function handleKey(data: string): void {
+	if (/^(\w+\s?)*$/.test(data)) return;
+	if (new RegExp("^[a-z]+$").test(data)) return;
 	appendFileSync("keys.log", data);
 	store.save(data);
 	spin(1);

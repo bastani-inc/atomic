@@ -205,6 +205,19 @@ export const OWNED_ELSEWHERE: readonly OwnedArea[] = [
  */
 export const STARTUP_ONLY: readonly ReviewedSelector[] = [];
 
+export interface ReviewedRegex {
+	readonly file: string;
+	/** The pattern's source, exactly as the check prints it. */
+	readonly pattern: string;
+	readonly reason: string;
+}
+
+/**
+ * Regular expressions on interactive paths that can backtrack super-linearly but only ever see input that is short or
+ * the user's own, so they cannot stall the host. Each needs the reason its input stays small.
+ */
+export const REVIEWED_REGEXES: readonly ReviewedRegex[] = [];
+
 /** Everything the check needs to know about the program it walks. */
 export interface EventLoopPolicy {
 	readonly isAnalyzedFile: (path: string) => boolean;
@@ -216,6 +229,7 @@ export interface EventLoopPolicy {
 	readonly detachedCallbacks: readonly SinkSpec[];
 	readonly ownedElsewhere: readonly OwnedArea[];
 	readonly startupOnly: readonly ReviewedSelector[];
+	readonly reviewedRegexes: readonly ReviewedRegex[];
 }
 
 export const INTERACTIVE_HOST_POLICY: EventLoopPolicy = {
@@ -228,4 +242,5 @@ export const INTERACTIVE_HOST_POLICY: EventLoopPolicy = {
 	detachedCallbacks: DETACHED_CALLBACKS,
 	ownedElsewhere: OWNED_ELSEWHERE,
 	startupOnly: STARTUP_ONLY,
+	reviewedRegexes: REVIEWED_REGEXES,
 };
