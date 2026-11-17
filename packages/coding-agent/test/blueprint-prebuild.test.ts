@@ -90,11 +90,24 @@ const MOVE_MIDWAY = `
 const { existsSync, renameSync, writeFileSync } = require("node:fs");
 const { spawnSync } = require("node:child_process");
 const [staging, target, marker, release, git, ...args] = process.argv.slice(1);
-renameSync(staging, target);
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const move = (from, to) => {
+	for (const deadline = Date.now() + 10000; ; pause(20)) {
+		try {
+			return renameSync(from, to);
+		} catch (error) {
+			if (!["EPERM", "EACCES", "EBUSY"].includes(error.code) || Date.now() > deadline) {
+				writeFileSync(marker + ".error", String(error));
+				throw error;
+			}
+		}
+	}
+};
+move(staging, target);
 writeFileSync(marker, "");
 const deadline = Date.now() + 30000;
-while (!existsSync(release) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
-renameSync(target, staging);
+while (!existsSync(release) && Date.now() < deadline) pause(10);
+move(target, staging);
 process.exit(spawnSync(git, args, { stdio: "inherit" }).status ?? 1);
 `;
 
@@ -1147,7 +1160,10 @@ describe("prebuild and seed edge cases (#4748)", () => {
 						clearInterval(poll);
 						spawning.hook = undefined;
 						restoreSpawn();
-						assert.ok(existsSync(marker), "the prebuild was interrupted while Git moved the worktree");
+						assert.ok(
+							existsSync(marker),
+							`the prebuild was interrupted while Git moved the worktree${existsSync(`${marker}.error`) ? `; the move failed: ${readFileSync(`${marker}.error`, "utf8")}` : ""}`,
+						);
 					};
 				},
 			};
