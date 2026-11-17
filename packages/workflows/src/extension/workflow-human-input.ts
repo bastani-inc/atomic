@@ -71,53 +71,61 @@ export function bindWorkflowHumanInput(
 				if (stage.status !== "awaiting_input" && !(stage.status === "running" && hasDialog)) continue;
 				const prompt = hasDialog ? undefined : stage.pendingPrompt;
 				const questionnaire = stageUiBroker.peekStageQuestionnaire(run.id, stage.id);
-				if (!prompt && !questionnaire) continue;
-				const key = `${run.id}\0${stage.id}\0${questionnaire?.requestId ?? prompt!.id}`;
-				pending.add(key);
-				const childInput = questionnaire?.humanInput;
-				if (childInput && !childSubscriptions.has(key)) {
-					const unsubscribe = workflowInputBridge(childInput.ui)?.subscribe(() => bindingChanged(key));
-					if (unsubscribe) childSubscriptions.set(key, unsubscribe);
-				}
-				const ownBinding = childInput?.usesOwnBinding() === true;
-				const input = ownBinding ? workflowInputBridge(childInput.ui) : ownerInput;
-				const available = ownBinding ? input?.available() : ctx.hasUI === false && ctx.hasHumanInput === true;
-				if (requests.has(key) || run.status === "paused" || !available) continue;
-				const controller = new AbortController();
-				requests.set(key, { controller, ownBinding });
-				// Defer presentation until the publisher has installed its pending waiter.
-				void Promise.resolve().then(async () => {
-					if (controller.signal.aborted) return;
-					if (store.run(run.id)?.status !== "running") {
-						if (requests.get(key)?.controller === controller) requests.delete(key);
-						controller.abort();
-						return;
+				const presentations = [
+					{ id: questionnaire?.requestId, questionnaire, prompt: undefined },
+					{ id: prompt?.id, questionnaire: undefined, prompt },
+				];
+				for (const { id, questionnaire, prompt } of presentations) {
+					if (id === undefined) continue;
+					const key = `${run.id}\0${stage.id}\0${id}`;
+					pending.add(key);
+					const childInput = questionnaire?.humanInput;
+					if (childInput && !childSubscriptions.has(key)) {
+						const unsubscribe = workflowInputBridge(childInput.ui)?.subscribe(() => bindingChanged(key));
+						if (unsubscribe) childSubscriptions.set(key, unsubscribe);
 					}
-					try {
-						const scoped = input?.scope(run.id, stage.id, questionnaire?.sessionId);
-						if (questionnaire) {
-							const answer = await scoped?.questionnaire(questionnaire.params, controller.signal);
-							if (controller.signal.aborted || !answer || answer.cancelled || answer.error) return;
-							if (stageUiBroker.peekStageQuestionnaire(run.id, stage.id)?.requestId !== questionnaire.requestId)
-								return;
-							stageUiBroker.answerStagePrompt(
-								run.id,
-								stage.id,
-								{ raw: answer },
-								{ answerSource: "workflow_ui" },
-							);
-						} else if (prompt) {
-							const answer = await ask(scoped?.ui ?? ctx.ui, prompt, controller.signal);
-							if (controller.signal.aborted || answer === undefined) return;
-							store.resolveStagePendingPrompt(run.id, stage.id, prompt.id, answer, {
-								answerSource: "workflow_ui",
-							});
+					const ownBinding = childInput?.usesOwnBinding() === true;
+					const input = ownBinding ? workflowInputBridge(childInput.ui) : ownerInput;
+					const available = ownBinding ? input?.available() : ctx.hasUI === false && ctx.hasHumanInput === true;
+					if (requests.has(key) || run.status === "paused" || !available) continue;
+					const controller = new AbortController();
+					requests.set(key, { controller, ownBinding });
+					// Defer presentation until the publisher has installed its pending waiter.
+					void Promise.resolve().then(async () => {
+						if (controller.signal.aborted) return;
+						if (store.run(run.id)?.status !== "running") {
+							if (requests.get(key)?.controller === controller) requests.delete(key);
+							controller.abort();
+							return;
 						}
-					} catch {
-						// Withdrawal, cancellation and malformed replies never settle a durable
-						// gate. Keep its descriptor available for explicit answer/resumption.
-					}
-				});
+						try {
+							const scoped = input?.scope(run.id, stage.id, questionnaire?.sessionId ?? stage.sessionId);
+							if (questionnaire) {
+								const answer = await scoped?.questionnaire(questionnaire.params, controller.signal);
+								if (controller.signal.aborted || !answer || answer.cancelled || answer.error) return;
+								if (
+									stageUiBroker.peekStageQuestionnaire(run.id, stage.id)?.requestId !== questionnaire.requestId
+								)
+									return;
+								stageUiBroker.answerStagePrompt(
+									run.id,
+									stage.id,
+									{ raw: answer },
+									{ answerSource: "workflow_ui" },
+								);
+							} else if (prompt) {
+								const answer = await ask(scoped?.ui ?? ctx.ui, prompt, controller.signal);
+								if (controller.signal.aborted || answer === undefined) return;
+								store.resolveStagePendingPrompt(run.id, stage.id, prompt.id, answer, {
+									answerSource: "workflow_ui",
+								});
+							}
+						} catch {
+							// Withdrawal, cancellation and malformed replies never settle a durable
+							// gate. Keep its descriptor available for explicit answer/resumption.
+						}
+					});
+				}
 			}
 		}
 		for (const [key, { controller }] of requests) {

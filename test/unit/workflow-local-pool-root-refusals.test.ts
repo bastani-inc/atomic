@@ -2,19 +2,22 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import type { QuestionnaireResult } from "../../packages/coding-agent/src/index.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlPoolQueue, type PoolWork } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { bindRunDurableBackend } from "../../packages/workflows/src/durable/run-owner-backend.js";
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
+import type { PiUISurface } from "../../packages/workflows/src/extension/ui-surface.js";
 import { bindWorkflowHumanInput } from "../../packages/workflows/src/extension/workflow-human-input.js";
 import {
 	rehydrateError,
 	type SerializedError,
 	serializeError,
 } from "../../packages/workflows/src/shared/error-codec.js";
-import { adoptStageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
+import { buildStagePromptAdapter } from "../../packages/workflows/src/shared/stage-prompt.js";
+import { adoptStageUiBroker, type StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
 import type { PendingPrompt, RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
@@ -30,6 +33,7 @@ import { type HeldPromptAnswers, promptIdentity } from "../../packages/workflows
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import type { PublishedRun } from "../../packages/workflows/src/workers/run-changes.js";
 import { PoolStageHandoff, type PoolStageQueue } from "../../packages/workflows/src/workers/stage-handoff.js";
+import type { PooledStageQuestion } from "../../packages/workflows/src/workers/stage-watch-types.js";
 import { publicationRejected, staleWorkLease } from "../helpers/pool-errors.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { testRunId } from "../helpers/run-id.js";
@@ -72,6 +76,7 @@ interface PoolInternals {
 	store?: Store;
 	coordinator?: { readonly port: { send(message: CoordinatorInbound): void } };
 	handoff?: PoolStageHandoff;
+	questionBroker?: StageUiBroker;
 	readonly works: Map<string, PoolWork>;
 	readonly heldAnswers: HeldPromptAnswers;
 	queueView(): PoolStageQueue;
@@ -84,6 +89,7 @@ type RequestReply = Extract<CoordinatorInbound, { readonly kind: "request-reply"
 interface RootPoolOptions {
 	/** Whether the root has a store, and so a stage handoff; without one it only keeps a coordinator's work. */
 	readonly handoff?: boolean;
+	readonly question?: PooledStageQuestion;
 }
 
 /** A pool bound to a root whose journal holds one claimed work, with a coordinator that only records what it is sent. */
@@ -139,7 +145,14 @@ async function rootPool(options: RootPoolOptions = {}) {
 				sent.push(message);
 				// The coordinator answers every command the pool sends it as having succeeded.
 				if ("id" in message && "kind" in message && message.kind !== "request-reply")
-					queueMicrotask(() => void internals.receive({ kind: "reply", id: message.id, value: { ok: true } }));
+					queueMicrotask(
+						() =>
+							void internals.receive({
+								kind: "reply",
+								id: message.id,
+								value: message.kind === "stage-question" ? options.question : { ok: true },
+							}),
+					);
 			},
 		},
 	};
@@ -435,6 +448,151 @@ test.each([true, false])("an SDK host answers a worker-published stage dialog wi
 		await pool.dispose();
 	}
 });
+
+test.each(["question-first", "dialog-first", "same-publication"] as const)(
+	"an SDK host keeps a worker's stacked requests live in %s order (#5354)",
+	async (order) => {
+		const question: PooledStageQuestion = {
+			promptId: "question-1",
+			kind: "ask_user_question",
+			params: {
+				questions: [
+					{
+						question: "Choose",
+						header: "Choice",
+						options: [
+							{ label: "A", description: "First" },
+							{ label: "B", description: "Second" },
+						],
+					},
+				],
+			},
+		};
+		const pool = await rootPool({ question });
+		const broker = adoptStageUiBroker({}, false, pool.store);
+		pool.internals.questionBroker = broker;
+		const dialogReply = Promise.withResolvers<boolean>();
+		const questionReply = Promise.withResolvers<QuestionnaireResult>();
+		const dialogSignals: AbortSignal[] = [];
+		const questionSignals: AbortSignal[] = [];
+		const scopedSessions: Array<string | undefined> = [];
+		const confirm = async (_title: string, _message: string, options?: { signal?: AbortSignal }) => {
+			assert.ok(options?.signal);
+			dialogSignals.push(options.signal);
+			return dialogReply.promise;
+		};
+		const ui = {
+			confirm,
+			[Symbol.for("atomic-coding-agent/workflow-input@1")]: {
+				active: () => true,
+				available: () => true,
+				bindingRevision: () => 0,
+				subscribe: () => () => {},
+				scope: (_runId: string, _stageId: string, sessionId?: string) => {
+					scopedSessions.push(sessionId);
+					return {
+						ui: { confirm },
+						questionnaire: (_params: typeof question.params, signal: AbortSignal) => {
+							questionSignals.push(signal);
+							return questionReply.promise;
+						},
+					};
+				},
+			},
+		} as PiUISurface;
+		const unbind = bindWorkflowHumanInput(pool.store, { hasUI: false, hasHumanInput: true, ui }, broker);
+		const prompt: PendingPrompt = {
+			id: "dialog-1",
+			kind: "confirm",
+			source: "stage-dialog",
+			message: "Allow worker action?",
+			createdAt: Date.now(),
+		};
+		const inputRequest = buildStagePromptAdapter(
+			question.promptId,
+			question.kind,
+			question.params,
+			Date.now(),
+		)!.prompt;
+		const publish = async (withQuestion: boolean, withDialog: boolean) => {
+			assert.deepEqual(
+				await pool.publish([
+					childRun([
+						stage("ask", {
+							sessionId: "worker-session",
+							status: "awaiting_input",
+							...(withQuestion ? { inputRequest } : {}),
+							...(withDialog ? { pendingPrompt: prompt } : {}),
+						}),
+					]),
+				]),
+				[],
+			);
+			await settled();
+		};
+		try {
+			pool.known();
+			if (order === "question-first") {
+				await publish(true, false);
+				assert.equal(questionSignals.length, 1);
+			} else if (order === "dialog-first") {
+				await publish(false, true);
+				assert.equal(dialogSignals.length, 1);
+			}
+			await publish(true, true);
+			assert.equal(questionSignals.length, 1);
+			assert.equal(dialogSignals.length, 1, "the worker dialog is presented alongside its question");
+			assert.equal(questionSignals[0]!.aborted, false);
+			assert.equal(dialogSignals[0]!.aborted, false, "adding the question must not withdraw the pending dialog");
+			assert.deepEqual(scopedSessions, ["worker-session", "worker-session"]);
+
+			const answer: QuestionnaireResult = {
+				cancelled: false,
+				answers: [{ questionIndex: 0, question: "Choose", kind: "option", answer: "A" }],
+			};
+			if (order === "question-first") {
+				dialogReply.resolve(true);
+				await settled();
+				assert.equal(pool.store.run(descriptor.childRunId)?.stages[0]?.status, "awaiting_input");
+				assert.equal(
+					questionSignals[0]!.aborted,
+					false,
+					"the questionnaire stays presented after the dialog answer",
+				);
+				assert.equal(questionSignals.length, 1);
+				questionReply.resolve(answer);
+			} else {
+				questionReply.resolve(answer);
+				await settled();
+				assert.equal(dialogSignals[0]!.aborted, false);
+				assert.equal(dialogSignals.length, 1, "answering the question must not ask the dialog again");
+				assert.equal(pool.store.run(descriptor.childRunId)?.stages[0]?.pendingPrompt?.id, prompt.id);
+				dialogReply.resolve(true);
+			}
+			await settled();
+			const inputAnswer = {
+				runId: descriptor.childRunId,
+				stageId: "ask",
+				answer: { kind: "input", promptId: question.promptId, answer: { raw: answer } },
+			};
+			const dialogAnswer = {
+				runId: descriptor.childRunId,
+				stageId: "ask",
+				answer: { kind: "prompt", promptId: prompt.id, response: true },
+			};
+			assert.deepEqual(
+				pool.commands("stage-answer").map(({ runId, stageId, answer }) => ({ runId, stageId, answer })),
+				order === "question-first" ? [dialogAnswer, inputAnswer] : [inputAnswer, dialogAnswer],
+			);
+			assert.equal(pool.store.run(descriptor.childRunId)?.stages[0]?.pendingPrompt, undefined);
+			assert.equal(dialogSignals.length, 1);
+		} finally {
+			unbind();
+			broker.cancelStagePrompt(descriptor.childRunId, "ask", new Error("cleanup"));
+			await pool.dispose();
+		}
+	},
+);
 
 test("a reply to a command nobody waits for any more is ignored (#4327)", async () => {
 	const pool = await rootPool();

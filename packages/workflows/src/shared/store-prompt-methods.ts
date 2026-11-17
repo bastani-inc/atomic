@@ -120,7 +120,7 @@ export function createPromptStoreMethods(context: StoreContext): PromptStoreMeth
 				status: options.recordAnswer === false ? "cancelled" : "answered",
 			});
 			stage.pendingPrompt = undefined;
-			if (stage.status === "awaiting_input") {
+			if (stage.status === "awaiting_input" && stage.inputRequest === undefined) {
 				stage.status = "running";
 				delete stage.awaitingInputSince;
 			}
