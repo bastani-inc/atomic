@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import {
 	discoverLegacyJournal,
 	isJournalCatalogError,
@@ -10,6 +9,7 @@ import {
 	type StorageDescriptor,
 	type StorageFailureCause,
 } from "@bastani/atomic/storage";
+import { pathExists } from "../../shared/path-exists.js";
 import { journalKeyRangeRead } from "./internal.js";
 import {
 	type AppendOutcome,
@@ -184,22 +184,22 @@ export class ShardedRunJournal implements RunJournal {
 	private shardJournal(record: JournalShardRecord, runId?: string): Promise<RunJournal> {
 		let opened = this.shardJournals.get(record.id);
 		if (opened !== undefined) return opened;
-		if (!existsSync(record.path))
-			return Promise.reject(
-				new JournalShardUnavailableError({
+		opened = pathExists(record.path).then((exists) => {
+			if (!exists)
+				throw new JournalShardUnavailableError({
 					code: "shard-missing",
 					shardId: record.id,
 					shardPath: record.path,
 					runId,
-				}),
-			);
-		opened = this.openShardFile(record.path).catch((cause: StorageFailureCause) => {
-			throw new JournalShardUnavailableError({
-				code: "shard-open-failed",
-				shardId: record.id,
-				shardPath: record.path,
-				runId,
-				cause,
+				});
+			return this.openShardFile(record.path).catch((cause: StorageFailureCause) => {
+				throw new JournalShardUnavailableError({
+					code: "shard-open-failed",
+					shardId: record.id,
+					shardPath: record.path,
+					runId,
+					cause,
+				});
 			});
 		});
 		this.shardJournals.set(record.id, opened);

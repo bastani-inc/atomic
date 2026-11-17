@@ -1,6 +1,5 @@
 import { type ChildProcess, fork } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
 import { appendFile, mkdir, rm, rmdir } from "node:fs/promises";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -49,6 +48,7 @@ import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../runs/foreground/stage-se
 import { rehydrateError, type SerializedError, serializeError } from "../shared/error-codec.js";
 import { workflowInvocationIntercomGroup } from "../shared/intercom-group.js";
 import { runSnapshotsFromRecord } from "../shared/legacy-waiting-status.js";
+import { pathExists } from "../shared/path-exists.js";
 import {
 	rotateWorkflowPendingStageRouteCapability,
 	workflowPendingStageRouteCapability,
@@ -1026,7 +1026,7 @@ export class PoolCoordinator {
 		if (options.shared !== undefined)
 			this.journal ??= await this.countedJournal(await openDurableJournal(options.durable));
 		else {
-			if (options.journalShard !== undefined && !existsSync(options.journalPath))
+			if (options.journalShard !== undefined && !(await pathExists(options.journalPath)))
 				throw new JournalShardUnavailableError({
 					code: "shard-missing",
 					shardId: options.journalShard,
@@ -3648,10 +3648,10 @@ export class PoolCoordinator {
 		for (;;) {
 			await Promise.race([exit, delay(WORKER_EXIT_POLL_MS)]);
 			if (exited()) return true;
-			if (workerProcessExited(pid)) return confirmed();
+			if (await workerProcessExited(pid)) return confirmed();
 			this.observeResponsiveness();
 			if (performance.now() - since - (this.stalledMs - stalledAt) >= WORKER_EXIT_CONFIRMATION_MS)
-				return exited() || (workerProcessExited(pid, true) && confirmed());
+				return exited() || ((await workerProcessExited(pid, true)) && confirmed());
 		}
 	}
 

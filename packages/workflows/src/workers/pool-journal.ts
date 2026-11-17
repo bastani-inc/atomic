@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, linkSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { link, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { createChildProcessEnvironment } from "@bastani/atomic";
 import { type AdapterOptions, type StorageSelection, storageSelectionKey } from "@bastani/atomic/storage";
@@ -8,6 +8,7 @@ import "../durable/journal/workflows-host-module.js";
 import { openSelectedRunJournal, resolveRunJournal, runJournalOrigin } from "../durable/journal/resolution.js";
 import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
 import type { RunJournal } from "../durable/journal/types.js";
+import { pathExists } from "../shared/path-exists.js";
 
 /**
  * Where a root's durable journal lives when it is not the local SQLite file the pool shares (an adapter, such as a
@@ -165,8 +166,7 @@ export function openCoordinationJournal(path: string): Promise<RunJournal> {
 	const file = resolve(path);
 	let opened = coordinationJournals.get(file);
 	if (opened === undefined) {
-		mkdirSync(dirname(file), { recursive: true });
-		opened = resolveRunJournal({ journal: { path: file } });
+		opened = mkdir(dirname(file), { recursive: true }).then(() => resolveRunJournal({ journal: { path: file } }));
 		coordinationJournals.set(file, opened);
 		opened.catch(() => {
 			if (coordinationJournals.get(file) === opened) coordinationJournals.delete(file);
@@ -215,9 +215,9 @@ export function poolJournalForRoot(journal: RunJournal, root: string): RunJourna
 }
 
 /** The trimmed contents of `file`, or undefined when it is missing or empty. */
-function readId(file: string): string | undefined {
+async function readId(file: string): Promise<string | undefined> {
 	try {
-		return readFileSync(file, "utf8").trim() || undefined;
+		return (await readFile(file, "utf8")).trim() || undefined;
 	} catch {
 		return undefined;
 	}
@@ -228,9 +228,9 @@ function readId(file: string): string | undefined {
  * the one agent directory that claims it (#5219): the first to start records itself beside it, and only the directory
  * recorded there adopts it, again after a crash before it kept the id. The file stays for an older build.
  */
-function adoptedHostId(agentDir: string): string | undefined {
+async function adoptedHostId(agentDir: string): Promise<string | undefined> {
 	const legacy = join(poolStateDirectory(agentDir), "host-id");
-	const id = readId(legacy);
+	const id = await readId(legacy);
 	if (id === undefined) return undefined;
 	const claim = `${legacy}.adopted-by`;
 	const self = resolve(agentDir);
@@ -238,31 +238,44 @@ function adoptedHostId(agentDir: string): string | undefined {
 	// link fails when the claim exists, so one directory claims it.
 	const staged = `${claim}.${randomUUID()}`;
 	try {
-		writeFileSync(staged, `${self}\n`, { flag: "wx" });
-		linkSync(staged, claim);
+		await writeFile(staged, `${self}\n`, { flag: "wx" });
+		await link(staged, claim);
 	} catch {
 	} finally {
-		rmSync(staged, { force: true });
+		await rm(staged, { force: true });
 	}
-	return readId(claim) === self ? id : undefined;
+	return (await readId(claim)) === self ? id : undefined;
 }
+
+/** Calls of {@link poolHostId} still running, by agent directory: one made at the same time gets the same id. */
+const hostIdsInProgress = new Map<string, Promise<string>>();
 
 /**
  * This agent directory's identity for pool state, as a worker host: a random id kept inside the agent directory, so two
  * agent directories under one parent are two hosts (#5219). A root records it when it first runs a pool against a
  * journal in another database, so a resume elsewhere can say its pool state is not here.
  */
-export function poolHostId(agentDir: string): string {
+export function poolHostId(agentDir: string): Promise<string> {
+	const key = resolve(agentDir);
+	let pending = hostIdsInProgress.get(key);
+	if (pending === undefined) {
+		pending = keptPoolHostId(agentDir).finally(() => hostIdsInProgress.delete(key));
+		hostIdsInProgress.set(key, pending);
+	}
+	return pending;
+}
+
+async function keptPoolHostId(agentDir: string): Promise<string> {
 	const file = join(agentDir, "pool-host-id");
-	const existing = readId(file);
+	const existing = await readId(file);
 	if (existing !== undefined) return existing;
-	const id = adoptedHostId(agentDir) ?? randomUUID();
-	mkdirSync(dirname(file), { recursive: true });
+	const id = (await adoptedHostId(agentDir)) ?? randomUUID();
+	await mkdir(dirname(file), { recursive: true });
 	try {
-		writeFileSync(file, `${id}\n`, { flag: "wx" });
+		await writeFile(file, `${id}\n`, { flag: "wx" });
 		return id;
 	} catch {
-		return readFileSync(file, "utf8").trim();
+		return (await readFile(file, "utf8")).trim();
 	}
 }
 
@@ -277,7 +290,7 @@ export async function poolJournalOf(journal: RunJournal): Promise<RunJournal> {
 	const origin = runJournalOrigin(journal);
 	if (origin === undefined || !isReopenableSelection(origin.selection)) return journal;
 	const path = coordinationPath(poolDurableJournal(journal));
-	if (!existsSync(path)) return journal;
+	if (!(await pathExists(path))) return journal;
 	const coordination = await openCoordinationJournal(path);
 	registerPoolJournal(journal, coordination);
 	return coordination;
