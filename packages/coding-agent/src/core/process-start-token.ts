@@ -1,6 +1,7 @@
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { createModuleRequire } from "../utils/module-require.ts";
 
 /**
@@ -17,15 +18,33 @@ export function processStartToken(pid: number): string | undefined {
 		return created === undefined ? undefined : sha12(`windows\n${created}`);
 	}
 	try {
-		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-		// Fields after the command name, which may hold spaces and parentheses: the start time is the 22nd field.
-		const started = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
-		const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-		if (started === undefined || !/^\d+$/.test(started) || boot === "") return undefined;
-		return sha12(`${boot}\n${started}`);
+		return linuxStartToken(readFileSync(`/proc/${pid}/stat`, "utf8"), readFileSync(BOOT_ID, "utf8"));
 	} catch {
 		return undefined;
 	}
+}
+
+/** {@link processStartToken} without blocking the event loop: the same token, read asynchronously. */
+export async function processStartTokenAsync(pid: number): Promise<string | undefined> {
+	if (process.platform === "win32") {
+		const created = await windowsCreationTimeAsync(pid);
+		return created === undefined ? undefined : sha12(`windows\n${created}`);
+	}
+	try {
+		return linuxStartToken(await readFile(`/proc/${pid}/stat`, "utf8"), await readFile(BOOT_ID, "utf8"));
+	} catch {
+		return undefined;
+	}
+}
+
+const BOOT_ID = "/proc/sys/kernel/random/boot_id";
+
+function linuxStartToken(stat: string, bootId: string): string | undefined {
+	// Fields after the command name, which may hold spaces and parentheses: the start time is the 22nd field.
+	const started = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+	const boot = bootId.trim();
+	if (started === undefined || !/^\d+$/.test(started) || boot === "") return undefined;
+	return sha12(`${boot}\n${started}`);
 }
 
 function sha12(text: string): string {
@@ -65,31 +84,65 @@ const CREATION_TIME = /^[1-9]\d*$/;
  */
 function windowsCreationTime(pid: number): string | undefined {
 	const native = nativeCreationTime();
-	if (native !== null) {
-		try {
-			const created = native(pid);
-			return created !== null && CREATION_TIME.test(created) ? created : undefined;
-		} catch {
-			return undefined;
-		}
-	}
+	if (native !== null) return nativeWindowsCreationTime(native, pid);
 	if (fallbackBroken) return undefined;
 	const now = Date.now();
 	const cached = fallbackReads.get(pid);
 	if (cached !== undefined && now - cached.at < FALLBACK_CACHE_MS) return cached.created;
-	const result = spawnSync(
-		"powershell.exe",
-		[
-			"-NoProfile",
-			"-NonInteractive",
-			"-Command",
-			`$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($p -and -not $p.HasExited) { $p.StartTime.ToFileTimeUtc() }`,
-		],
-		{ encoding: "utf8", timeout: FALLBACK_TIMEOUT_MS, windowsHide: true },
-	);
+	const result = spawnSync("powershell.exe", fallbackArguments(pid), {
+		encoding: "utf8",
+		timeout: FALLBACK_TIMEOUT_MS,
+		windowsHide: true,
+	});
+	return recordFallbackRead(pid, now, result.error, result.stdout);
+}
+
+/** {@link windowsCreationTime} with the PowerShell fallback run asynchronously. */
+async function windowsCreationTimeAsync(pid: number): Promise<string | undefined> {
+	const native = nativeCreationTime();
+	if (native !== null) return nativeWindowsCreationTime(native, pid);
+	if (fallbackBroken) return undefined;
+	const now = Date.now();
+	const cached = fallbackReads.get(pid);
+	if (cached !== undefined && now - cached.at < FALLBACK_CACHE_MS) return cached.created;
+	const result = await new Promise<{ error: Error | null; stdout: string }>((resolve) => {
+		execFile(
+			"powershell.exe",
+			fallbackArguments(pid),
+			{ encoding: "utf8", timeout: FALLBACK_TIMEOUT_MS, windowsHide: true },
+			(error, stdout) => resolve({ error, stdout }),
+		);
+	});
+	return recordFallbackRead(pid, now, result.error ?? undefined, result.stdout);
+}
+
+function nativeWindowsCreationTime(native: CreationTimeReader, pid: number): string | undefined {
+	try {
+		const created = native(pid);
+		return created !== null && CREATION_TIME.test(created) ? created : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function fallbackArguments(pid: number): string[] {
+	return [
+		"-NoProfile",
+		"-NonInteractive",
+		"-Command",
+		`$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($p -and -not $p.HasExited) { $p.StartTime.ToFileTimeUtc() }`,
+	];
+}
+
+function recordFallbackRead(
+	pid: number,
+	now: number,
+	error: Error | undefined,
+	stdout: string | undefined,
+): string | undefined {
 	// PowerShell that cannot be started never will be; one that timed out may answer the next time.
-	fallbackBroken = (result.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
-	const output = result.stdout?.trim() ?? "";
+	fallbackBroken = (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
+	const output = stdout?.trim() ?? "";
 	const created = CREATION_TIME.test(output) ? output : undefined;
 	// Only the reads of the last few seconds are kept.
 	for (const [read, { at }] of fallbackReads) if (now - at >= FALLBACK_CACHE_MS) fallbackReads.delete(read);
