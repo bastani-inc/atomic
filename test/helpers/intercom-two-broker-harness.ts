@@ -76,6 +76,8 @@ export interface TwoBrokerConnectOptions {
 	 * read in the same chunk is emitted before `connect` resolves.
 	 */
 	readonly beforeConnect?: (client: TwoBrokerClient) => void;
+	/** #5352: register with a reach policy whose home is `group` and which reaches these other groups. */
+	readonly reachable?: readonly string[];
 }
 
 /** A real Intercom client attached to one node's broker, recording every frame it receives. */
@@ -440,6 +442,9 @@ export class TwoBrokerHarness {
 			...(options.preferredSessionId === undefined ? {} : { preferredSessionId: options.preferredSessionId }),
 			acknowledgesReceipt: true,
 			connectTimeoutMs: options.connectTimeoutMs ?? CLIENT_REGISTRATION_TIMEOUT_MS,
+			...(options.reachable === undefined
+				? {}
+				: { reach: () => ({ home: group, reachable: [...options.reachable!] }) }),
 		});
 		const attached = new TwoBrokerClient(node, name, group, returnAddress, client);
 		const acknowledge = options.acknowledgeReceipts ?? true;
