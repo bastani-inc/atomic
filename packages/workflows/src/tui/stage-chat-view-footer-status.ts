@@ -34,6 +34,19 @@ import {
 } from "./stage-input-label.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
+interface HostTheme {
+	fg(color: string, text: string): string;
+	bold?(text: string): string;
+}
+
+function hostThemeOf(candidate: unknown): HostTheme | undefined {
+	return typeof candidate === "object" &&
+		candidate !== null &&
+		typeof (candidate as { fg?: unknown }).fg === "function"
+		? (candidate as HostTheme)
+		: undefined;
+}
+
 export function injectStageLabelIntoEditorTopRule(
 	ctx: StageChatViewContext,
 	stageName: string | undefined,
@@ -57,11 +70,12 @@ export function injectStageLabelIntoEditorTopRule(
 						: stage.status;
 	const label = ["stage", cleanStageName, state].filter(Boolean).join(" · ");
 	const t = ctx.theme;
+	const hostTheme = hostThemeOf(ctx.piTheme);
 	return applyAttachedComposer(
 		{
-			accent: (text) => paint(text, t.accent),
-			text: (text) => paint(text, t.text),
-			dim: (text) => paint(text, t.dim),
+			accent: (text) => (hostTheme ? hostTheme.fg("accent", text) : paint(text, t.accent)),
+			text: (text) => (hostTheme ? hostTheme.fg("text", text) : paint(text, t.text)),
+			dim: (text) => (hostTheme ? hostTheme.fg("dim", text) : paint(text, t.dim)),
 		},
 		label,
 		ctx.chatHost.hasInputText() ? undefined : `${waiting ? "Answer" : "Message"} ${cleanStageName}…`,
@@ -166,6 +180,17 @@ export function sepRule(ctx: StageChatViewContext, width: number): string {
 
 export function stageNavKeyStyle(ctx: StageChatViewContext): NavKeyStyle {
 	const t = ctx.theme;
+	const hostTheme = hostThemeOf(ctx.piTheme);
+	if (hostTheme) {
+		return {
+			dim: (text) => hostTheme.fg("dim", text),
+			text: (text) => hostTheme.fg("text", text),
+			muted: (text) => hostTheme.fg("muted", text),
+			border: (text) => hostTheme.fg("borderMuted", text),
+			bold: (text) =>
+				typeof hostTheme.bold === "function" ? hostTheme.bold(text) : paint(text, t.text, { bold: true }),
+		};
+	}
 	return {
 		dim: (text) => paint(text, t.dim),
 		text: (text) => paint(text, t.text),
@@ -289,7 +314,8 @@ export function embedCustomUiBackHint(
 	const hintPlain = stripAnsi(hintLine).trim();
 	if (hintPlain.length === 0 || hintPlain.includes(`${backKey} graph`)) return [...widgetLines];
 	const suffixPlain = ` · ${backKey} graph`;
-	const suffixStyled = paint(suffixPlain, ctx.theme.dim);
+	const hostTheme = hostThemeOf(ctx.piTheme);
+	const suffixStyled = hostTheme ? hostTheme.fg("dim", suffixPlain) : paint(suffixPlain, ctx.theme.dim);
 	const suffixWidth = visibleWidth(suffixPlain);
 	const trimmedLine = hintLine.trimEnd();
 	const nextHint =

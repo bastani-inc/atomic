@@ -8,7 +8,7 @@ import { taskOutputText } from "./command-output.js";
 import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
 import { bindTaskClockSource } from "./live-elapsed.js";
 import { TaskMessageError, TaskMessageTimeoutError } from "./message-error.js";
-import type { OwnerTaskStore, TaskActivity } from "./owner-store.js";
+import { isTaskTurnInterrupted, type OwnerTaskStore, type TaskActivity } from "./owner-store.js";
 import {
 	loadTaskOwnTranscriptEntries,
 	type TaskMessageDelivery,
@@ -356,7 +356,11 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			}
 		},
 		taskStopped(id) {
-			return taskResumer(store.supervisor)?.isStopped?.(id) === true;
+			const record = store.getTask(id);
+			return (
+				(record !== undefined && isTaskTurnInterrupted(record)) ||
+				taskResumer(store.supervisor)?.isStopped?.(id) === true
+			);
 		},
 		taskReadOnlyReason(id) {
 			const record = store.tasks.find((candidate) => candidate.ref.taskId === id);

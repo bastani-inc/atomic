@@ -35,6 +35,7 @@ import {
 import { showAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import { showTaskInspector } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
 import { renderIntercomCustomMessage } from "../../packages/intercom/ui/inline-message.js";
+import { renderSubagentToolResult } from "../../packages/subagents/src/extension/tool-rendering.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
@@ -1159,7 +1160,11 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 
 	test("attached subagent view renders intercom_message entries through the registered Intercom card renderer even after settling (#5239)", async () => {
 		const fixture = taskFixture();
+		let ownerSessionId: string | undefined = "01a1e951-44cc-7ef6-b030-8418c3d9c1e6";
 		const ownerSession = {
+			sessionManager: {
+				getSessionId: () => ownerSessionId,
+			},
 			extensionRunner: {
 				getMessageRenderer: (customType: string) =>
 					customType === "intercom_message" ? renderIntercomCustomMessage : undefined,
@@ -1180,7 +1185,7 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 			true,
 			{
 				from: {
-					id: "01a1e951-44cc-7ef6-b030-8418c3d9c1e6",
+					id: "b8a5d7c2-3e54-4cb4-a417-a397f01c16df",
 					name: "subagent-chat-01a1e951-44cc-7ef6-b030-8418c3d9c1e6",
 					cwd: "/tmp/r1fin/sub/proj",
 					model: "claude-haiku-4-5",
@@ -1195,6 +1200,29 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 					content: { text: "hello again" },
 				},
 				bodyText: "hello again",
+			},
+		);
+		await session.appendCustomMessageEntry(
+			"intercom_message",
+			"**📨 From subagent-chat-22222222-2222-4222-8222-222222222222** (/tmp/r1fin/sub/proj)\n\npeer note",
+			true,
+			{
+				from: {
+					id: "99999999-9999-4999-8999-999999999999",
+					name: "subagent-chat-22222222-2222-4222-8222-222222222222",
+					cwd: "/tmp/r1fin/sub/proj",
+					model: "claude-haiku-4-5",
+					pid: 1235,
+					startedAt: 1_000,
+					lastActivity: 2_000,
+					status: "running",
+				},
+				message: {
+					id: "msg-2",
+					timestamp: Date.UTC(2026, 10, 17, 5, 42, 0),
+					content: { text: "peer note" },
+				},
+				bodyText: "peer note",
 			},
 		);
 		await session.appendMessage(createAssistantMessage("Acknowledged."));
@@ -1223,13 +1251,40 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 		try {
 			inspector.openChat(fixture.store.tasks[0]!.ref.taskId);
 			await flush();
-			const rows = plain(inspector.renderViewport(80, 28));
+			const rows = plain(inspector.renderViewport(120, 28));
 			const text = rows.join("\n");
 			assert.doesNotMatch(text, /\[intercom_message\]/, "must not render raw [intercom_message] fallback box");
 			assert.doesNotMatch(text, /📨/, "must not render raw 📨 framing");
 			assert.doesNotMatch(text, /\/tmp\/r1fin\/sub\/proj/, "must not leak raw full host path");
-			assert.match(text, /^ › Message from /m, "renders shared › Message from card at column 1");
+			assert.doesNotMatch(
+				text,
+				/subagent-chat-01a1e951-44cc-7ef6-b030-8418c3d9c1e6/,
+				"must not show opaque subagent-chat-UUID alias for main chat echo",
+			);
+			assert.match(text, /^ › Message from main\b/m, "renders friendly › Message from main card at column 1");
+			assert.match(
+				text,
+				/^ › Message from subagent-chat-22222222-2222-4222-8222-222222222222\b/m,
+				"unrelated unnamed peer retains its own Intercom identity and is never misidentified as main",
+			);
 			assert.match(text, /hello again/, "renders message body");
+			const customEntry = session.getEntries().find((entry) => entry.type === "custom_message");
+			assert.equal(
+				(customEntry as { details?: { from?: { name?: string } } } | undefined)?.details?.from?.name,
+				"subagent-chat-01a1e951-44cc-7ef6-b030-8418c3d9c1e6",
+				"model-facing stored entry retains its original Intercom identity",
+			);
+
+			// When owner session identity is unavailable, no runtime alias is renamed to main.
+			ownerSessionId = undefined;
+			inspector.invalidate();
+			const unownedText = plain(inspector.renderViewport(120, 28)).join("\n");
+			assert.doesNotMatch(unownedText, /^ › Message from main\b/m, "unknown owner never renames alias to main");
+			assert.match(
+				unownedText,
+				/^ › Message from subagent-chat-01a1e951-44cc-7ef6-b030-8418c3d9c1e6\b/m,
+				"keeps raw alias when owner session identity is absent",
+			);
 		} finally {
 			inspector.dispose();
 			await fixture.dispose();
@@ -1328,10 +1383,54 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 			const interruptedRule =
 				interruptedRows.find((row) => row.includes("━") && row.includes("Inspect concurrent")) ?? "";
 			assert.match(interruptedRule, / · stopped ━$/, "interrupted composer label shows stopped instead of ticking");
+			assert.ok(
+				interruptedRows.some((row) => row.includes("Stopped · send to resume")),
+				"interrupted composer placeholder shows Stopped · send to resume",
+			);
 
 			const panelItems = agentPanelItems(ownerSession);
 			assert.equal(panelItems[0]?.state, "stopped", "panel item state reflects stopped after Esc interrupt");
 			assert.equal(panelItems[0]?.elapsedMs, 14_000, "panel item elapsed clock stays frozen at 14s");
+
+			const agentBlockState = {};
+			const renderMainAgentBlock = () =>
+				plain(
+					renderSubagentToolResult(
+						{
+							content: [{ type: "text", text: "" }],
+							details: {
+								mode: "single",
+								inheritContext: false,
+								projectAgentsDir: null,
+								results: [],
+								taskRecords: [fixture.store.tasks[0]!],
+								taskResponse: {
+									kind: "admitted",
+									observation: {
+										kind: "yielded",
+										taskId,
+										ownerId: fixture.store.tasks[0]!.ref.ownerId,
+										yieldReason: "background",
+									},
+								},
+							},
+						} as never,
+						{ expanded: false, isPartial: false },
+						theme as never,
+						{
+							toolCallId: "subagent-call-1",
+							state: agentBlockState,
+							invalidate: () => {},
+							args: { agent: "worker", task: "Inspect concurrent spawn locks." },
+							getTaskRecord: (id: string) => fixture.store.getTask(id as never),
+							outputPad: 1,
+						} as never,
+					).render(80),
+				);
+			assert.deepEqual(renderMainAgentBlock(), [
+				" ◼ Agent(worker · Inspect concurrent spawn locks.)",
+				"   ⎿  Stopped · 14s",
+			]);
 
 			// Sending a follow-up message resumes the subagent turn and clears the stopped override.
 			for (const ch of "hello again") inspector.handleInput(ch);
@@ -1340,9 +1439,63 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 
 			const resumedItems = agentPanelItems(ownerSession);
 			assert.equal(resumedItems[0]?.state, "running", "panel item returns to running after follow-up message");
+			const resumedBlock = renderMainAgentBlock();
+			assert.match(resumedBlock[0] ?? "", /^ ∀ Agent\(worker · Inspect concurrent spawn locks\.\)$/);
+			assert.match(resumedBlock[1] ?? "", /^ {3}⎿ {2}Running · 14s · ↓ 800 tokens/);
 			const resumedRows = plain(inspector.renderViewport(80, 24));
 			const resumedRule = resumedRows.find((row) => row.includes("━") && row.includes("Inspect concurrent")) ?? "";
 			assert.doesNotMatch(resumedRule, / · stopped ━$/, "composer label leaves stopped state once turn resumes");
+
+			// When the follow-up turn finishes and transitions from live followed session to settled history for the same sessionId, the past-tense end row stays visible.
+			for (const listener of listeners) {
+				listener({ type: "turn_start" } as never);
+			}
+			now += 4_000;
+			const finalReply = createAssistantMessage("Acknowledged.", { outputTokens: 200, timestamp: now });
+			await session.appendMessage(finalReply);
+			for (const listener of listeners) {
+				listener({ type: "message_end", message: finalReply } as never);
+				listener({ type: "turn_end", message: finalReply, toolResults: [] } as never);
+				listener({ type: "agent_end", messages: [finalReply] } as never);
+			}
+			running = false;
+			// Transition to settled history-only transcript (no subscribe) for the SAME sessionId.
+			fixture.runners[0]!.context.bindTranscript({
+				getSessionId: () => session.getSessionId(),
+				getEntries: () => session.getEntries(),
+			});
+			fixture.runners[0]!.context.reportActivity({
+				reportId: "m-2",
+				change: { kind: "metrics", elapsedMs: 18_000, tokenCount: 1_000, toolCount: 4 },
+			});
+			fixture.store.drain();
+			await flush();
+			const settledSameSessionRows = plain(inspector.renderViewport(80, 24));
+			assert.ok(
+				settledSameSessionRows.some((row) => /^ ∀ .+ for 4s · ↓ (?:800|1k) tokens$/.test(row.trimEnd())),
+				"live -> history transition for the same conversation preserves the past-tense end row",
+			);
+
+			// Switching to a different sessionId resets the previous conversation's end row.
+			const otherSession = SessionManager.inMemory();
+			await otherSession.appendMessage({ role: "user", content: "Other session", timestamp: now });
+			await otherSession.appendMessage(createAssistantMessage("Other reply."));
+			fixture.runners[0]!.context.bindTranscript({
+				getSessionId: () => otherSession.getSessionId(),
+				getEntries: () => otherSession.getEntries(),
+			});
+			fixture.runners[0]!.context.reportActivity({
+				reportId: "m-3",
+				change: { kind: "metrics", elapsedMs: 19_000, tokenCount: 1_000, toolCount: 4 },
+			});
+			fixture.store.drain();
+			await flush();
+			const switchedSessionRows = plain(inspector.renderViewport(80, 24));
+			assert.equal(
+				switchedSessionRows.some((row) => /^ ∀ .+ for 4s/.test(row.trimEnd())),
+				false,
+				"switching to a different sessionId clears the previous conversation's end row",
+			);
 
 			// Rebinding the same transcript object to a second task after settlement tracks the new task cleanly.
 			await fixture.start("Second subagent task.");

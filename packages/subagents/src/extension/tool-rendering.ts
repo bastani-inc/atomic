@@ -2,6 +2,7 @@ import {
 	builtinToolBlockPresentation,
 	formatTokenSegment,
 	initTheme,
+	isTaskTurnInterrupted,
 	isToolBlock,
 	keyHint,
 	keyHintIfBound,
@@ -769,8 +770,9 @@ function buildOutcomeToolBlock(input: {
 					? observation.result.message
 					: undefined;
 
+		const turnInterrupted = task !== undefined && isTaskTurnInterrupted(task);
 		const isRunningNow =
-			task?.attention.kind === "input-needed"
+			task?.attention.kind === "input-needed" || turnInterrupted
 				? false
 				: taskSettled !== undefined
 					? false
@@ -800,6 +802,9 @@ function buildOutcomeToolBlock(input: {
 			const questionFirstLine = firstDisplayLine(task.attention.prompt || "");
 			const answerKey = navEntryKeys(getKeybindings(), { action: "app.agents.focus", label: "to answer" });
 			statusLine = statJoin(theme, ["Needs input", questionFirstLine, answerKey ? `${answerKey} to answer` : ""]);
+		} else if (turnInterrupted) {
+			status = "stopped";
+			statusLine = statJoin(theme, ["Stopped", elapsedText]);
 		} else if (taskSettled !== undefined && (!record || record.state === "running")) {
 			if (taskSettled.kind === "completed") {
 				status = "success";
@@ -968,7 +973,9 @@ function buildForegroundChildToolBlock(input: {
 	const { child, progress, identity, taskRecord, expanded, now, theme, outputPad, context } = input;
 	const activeProgress = child?.progress ?? progress;
 	const summary = activeProgress ?? child?.progressSummary;
-	const isRunning = activeProgress?.status === "running" || (!child && activeProgress?.status === "pending");
+	const turnInterrupted = taskRecord !== undefined && isTaskTurnInterrupted(taskRecord);
+	const isRunning =
+		!turnInterrupted && (activeProgress?.status === "running" || (!child && activeProgress?.status === "pending"));
 	const agentName = child?.agent || activeProgress?.agent || identity?.agent || taskRecord?.agentName || "agent";
 	const headerTask = taskRecord?.title || activeProgress?.task || child?.task || identity?.task || "";
 	const rawTask = identity?.task || child?.task || activeProgress?.task || taskRecord?.title || "";
@@ -988,6 +995,9 @@ function buildForegroundChildToolBlock(input: {
 		const questionFirstLine = firstDisplayLine(taskRecord.attention.prompt || "");
 		const answerKey = navEntryKeys(getKeybindings(), { action: "app.agents.focus", label: "to answer" });
 		statusLine = statJoin(theme, ["Needs input", questionFirstLine, answerKey ? `${answerKey} to answer` : ""]);
+	} else if (turnInterrupted) {
+		status = "stopped";
+		statusLine = statJoin(theme, ["Stopped", elapsedText]);
 	} else if (isRunning) {
 		status = "running";
 		const manageKey = hasPanelRow(taskRecord)
