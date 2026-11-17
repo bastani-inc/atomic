@@ -294,6 +294,17 @@ export async function answerPanelRun(
 					: "The pending prompt changed before the answer was sent.",
 		};
 	}
+	const choiceIndex = options.choiceIndex;
+	if (
+		choiceIndex !== undefined &&
+		(!Number.isSafeInteger(choiceIndex) ||
+			currentChoices === undefined ||
+			choiceIndex < 0 ||
+			choiceIndex >= currentChoices.length)
+	) {
+		return { ok: false, reason: "The selected choice is no longer available." };
+	}
+	const answerText = choiceIndex === undefined ? text : currentChoices![choiceIndex]!;
 	const [ownerRunId, stageId, promptId] = affordance.identity;
 	if (stageId === null) {
 		const pending = owner.store.run(ownerRunId)?.pendingPrompt;
@@ -301,15 +312,18 @@ export async function answerPanelRun(
 			return { ok: false, reason: `No matching pending prompt ${promptId}.` };
 		}
 		if (isPrimitivePrompt(pending)) {
-			const coerced = coercePrimitivePromptAnswer(pending, text);
+			const coerced = coercePrimitivePromptAnswer(pending, answerText);
 			if (!coerced.ok) return { ok: false, reason: primitivePromptAnswerRejection(promptId, pending) };
 			const ok = owner.store.resolvePendingPrompt(ownerRunId, promptId, coerced.value);
 			return ok ? { ok: true } : { ok: false, reason: `No matching pending prompt ${promptId}.` };
 		}
-		const ok = owner.store.resolvePendingPrompt(ownerRunId, promptId, text);
+		const ok = owner.store.resolvePendingPrompt(ownerRunId, promptId, answerText);
 		return ok ? { ok: true } : { ok: false, reason: `No matching pending prompt ${promptId}.` };
 	}
 	const stageTarget = ownerRunId === runId ? stageId : `${ownerRunId}:${stageId}`;
-	const result = await workflowAnswerAction({ action: "answer", runId, stageId: stageTarget, promptId, text }, owner);
+	const result = await workflowAnswerAction(
+		{ action: "answer", runId, stageId: stageTarget, promptId, text: answerText },
+		owner,
+	);
 	return result.status === "ok" ? { ok: true } : { ok: false, reason: result.message ?? result.status };
 }

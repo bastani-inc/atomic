@@ -71,7 +71,9 @@ function coerceConfirm(value: unknown): PrimitivePromptAnswerResult {
 function coerceSelect(choices: readonly string[], value: unknown): PrimitivePromptAnswerResult {
 	if (typeof value === "string") {
 		const normalized = normalizeText(value);
-		const choice = choices.find((candidate) => normalizeText(candidate) === normalized);
+		const choice =
+			choices.find((candidate) => candidate === value) ??
+			choices.find((candidate) => normalizeText(candidate) === normalized);
 		if (choice !== undefined) return accepted(choice);
 	}
 	const index = selectIndex(value, choices.length);

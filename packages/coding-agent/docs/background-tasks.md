@@ -62,6 +62,7 @@ Run `/tasks` to inspect work without stopping it:
 - Escape closes the card and keeps an unsent draft. While a reply is sending, the card shows `Sending…` and other keys are ignored until it finishes. Your first typed character or numbered choice binds the draft to the question last shown, and typing before any question is shown cannot answer it. If the question changes before you press Enter, the reply is refused with a notice and kept for the question now shown: press Enter again to send it there, or clear the reply. When the question disappears, the card stops taking reply text and its list keys work again. A send failure keeps your reply while the inspector stays open. If you close it during a send or stop, a later failure appears in the chat.
 - Enter or Right on a row opens it: a workflow run's graph, a subagent's chat or a shell's output, or its detail page when no transcript is available.
 - `/` filters the list by name or task; Enter keeps the filter and Escape clears it.
+- Paused workflow runs remain in Working with a `‖ paused` status. Their elapsed time stays frozen, and `x` twice stops them rather than dismissing them as finished.
 - Detail, transcript, input, and cancellation-confirmation pages use the full screen.
 - Escape returns to the picker with your selection preserved, then to chat.
 - Completed background work remains available, including after a later foreground wait. Foreground-only commands are excluded.

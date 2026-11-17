@@ -1,6 +1,6 @@
 import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { AgentPanelItem } from "../../../core/tasks/agent-panel-source.ts";
-import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
+import type { TaskRecord } from "../../../core/tasks/contracts.js";
 import { taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.ts";
 import { theme } from "../theme/theme.js";
 import { taskDisplayText, taskDuration, taskLabel, taskState } from "./task-row.js";
@@ -51,7 +51,7 @@ export function rowState(row: TaskBoardRow): TaskBoardState {
 
 export function stateGroup(state: TaskBoardState): TaskBoardGroup {
 	if (state === "input") return "input";
-	if (state === "running" || state === "queued" || state === "stopping") return "working";
+	if (state === "running" || state === "queued" || state === "stopping" || state === "paused") return "working";
 	return "done";
 }
 
@@ -227,10 +227,6 @@ export function renderPeekCard(
 	return [top, ...clipped.map(frame), ...replyLines.map(frame), border(`╰${"─".repeat(Math.max(0, width - 2))}╯`)].map(
 		(line) => truncateToWidth(line, width),
 	);
-}
-
-export function boardTaskIds(rows: readonly TaskBoardRow[]): TaskId[] {
-	return rows.flatMap((row) => (row.kind === "task" ? [row.task.ref.taskId] : []));
 }
 
 export function rowMatches(row: TaskBoardRow, filter: string): boolean {

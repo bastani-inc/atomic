@@ -19,6 +19,19 @@ import {
 const malformedCustomPrompt = { kind: "custom" } as unknown as PrimitivePrompt;
 
 describe("primitive prompt answer helpers", () => {
+	test("an exact choice value wins over an earlier case-insensitive or trimmed match (#5224)", () => {
+		for (const choices of [
+			["YES", "yes"],
+			["yes ", "yes"],
+		]) {
+			assert.deepEqual(coercePrimitivePromptAnswer({ kind: "select", choices }, "yes"), { ok: true, value: "yes" });
+			assert.deepEqual(coercePrimitivePromptAnswer({ kind: "select", choices }, "YeS"), {
+				ok: true,
+				value: choices[0],
+			});
+		}
+	});
+
 	test("coercePrimitivePromptAnswer rejects a malformed non-primitive descriptor", () => {
 		assert.deepEqual(coercePrimitivePromptAnswer(malformedCustomPrompt, "true"), { ok: false });
 	});

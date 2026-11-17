@@ -207,7 +207,10 @@ export class TaskInspector implements Component {
 	private readonly replyDrafts = new Map<string, string>();
 	private readonly paintedPrompts = new Map<string, AgentPanelAnswerOptions>();
 	private readonly replyTargets = new Map<string, AgentPanelAnswerOptions>();
-	private readonly pickedChoices = new Map<string, { readonly text: string; readonly raw: string }>();
+	private readonly pickedChoices = new Map<
+		string,
+		{ readonly text: string; readonly raw: string; readonly index: number }
+	>();
 	private readonly paintedItemFinished = new Map<string, boolean>();
 	private readonly workflowReadAt = new WeakMap<TaskBoardItem, number>();
 
@@ -970,7 +973,7 @@ export class TaskInspector implements Component {
 						for (const char of taskDisplayText(choice)) this.handleReplyInput(row.id, char);
 						const filled = this.reply.getValue();
 						if (filled !== "" && this.replyTargets.has(row.id)) {
-							this.pickedChoices.set(row.id, { text: filled, raw: choice });
+							this.pickedChoices.set(row.id, { text: filled, raw: choice, index: index - 1 });
 						}
 						return true;
 					}
@@ -1161,6 +1164,7 @@ export class TaskInspector implements Component {
 			const painted = this.paintedPrompts.get(rowId);
 			if (painted !== undefined) {
 				this.replyTargets.set(rowId, painted);
+				this.pickedChoices.delete(rowId);
 				this.reportLate(
 					"Could not send the answer: The pending prompt changed before the answer was sent. (enter to send or clear)",
 					environment,
@@ -1178,7 +1182,9 @@ export class TaskInspector implements Component {
 		this.sending = true;
 		this.requestRender();
 		try {
-			const result = await this.boardSource.answer(id, answerText, expected);
+			const answerOptions =
+				picked !== undefined && picked.text === typed ? { ...expected, choiceIndex: picked.index } : expected;
+			const result = await this.boardSource.answer(id, answerText, answerOptions);
 			if (result.ok) {
 				this.sentAt = Date.now();
 				this.replyDrafts.delete(rowId);
@@ -1191,6 +1197,7 @@ export class TaskInspector implements Component {
 				const painted = this.paintedPrompts.get(rowId);
 				if (painted !== undefined && !samePromptOptions(painted, expected)) {
 					this.replyTargets.set(rowId, painted);
+					this.pickedChoices.delete(rowId);
 					this.reportLate(
 						`Could not send the answer: ${taskDisplayText(result.reason)} (enter to send or clear)`,
 						environment,
@@ -1614,8 +1621,21 @@ export class TaskInspector implements Component {
 				const prompt = promptAnswerOptionsOf(row.item);
 				if (prompt !== undefined) {
 					const question = taskDisplayText(prompt.question ?? "").trim();
+					const questionLine = body[selectedLine + 2];
+					const shownCardLine =
+						typeof questionLine === "string" ? stripVTControlCharacters(clip(questionLine)) : "";
+					const cardPrefix = "   │ ";
+					const shownQuestion = shownCardLine.startsWith(cardPrefix)
+						? shownCardLine.slice(cardPrefix.length).trimStart()
+						: "";
+					const questionPrefix = truncateToWidth(question, 2, "");
 					const questionInCard =
-						peekOpen && row.id === selected?.id && selectedLine + 2 >= start && selectedLine + 2 < start + room;
+						peekOpen &&
+						row.id === selected?.id &&
+						selectedLine + 2 >= start &&
+						selectedLine + 2 < start + room &&
+						questionPrefix !== "" &&
+						shownQuestion.startsWith(questionPrefix);
 					const shownRow = stripVTControlCharacters(renderBoardRow(row, row.id === selected?.id, width - 1));
 					if (questionInCard || (question !== "" && shownRow.includes(question)))
 						this.paintedPrompts.set(row.id, prompt);

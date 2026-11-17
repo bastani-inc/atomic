@@ -44,6 +44,7 @@ export interface AgentPanelAnswerOptions {
 	readonly promptId?: string;
 	readonly question?: string;
 	readonly choices?: readonly string[];
+	readonly choiceIndex?: number;
 }
 
 export type AgentPanelActionResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };

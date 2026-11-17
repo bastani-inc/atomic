@@ -122,6 +122,52 @@ test("workflow elapsed advances without store events while paused and settled ru
 	}
 });
 
+test("numbered workflow answers keep exact option identity and reject invalid indices (#5224)", async () => {
+	for (const variant of [
+		{ choices: ["2", "1"], index: 0, text: "1", expected: "2" },
+		{ choices: ["YES", "yes"], index: 1, text: "yes", expected: "yes" },
+		{ choices: ["yes ", "yes"], index: 1, text: "yes", expected: "yes" },
+		{ choices: ["\u202eyes\x1b[31m", "yes"], index: 0, text: "yes", expected: "\u202eyes\x1b[31m" },
+	]) {
+		const store = createStore();
+		store.recordRunStart({
+			id: "live",
+			name: "live",
+			inputs: {},
+			status: "running",
+			startedAt: 1_000,
+			toolNodes: [],
+			stages: [],
+		});
+		store.recordPendingPrompt("live", {
+			id: "choice",
+			kind: "select",
+			message: "Choose?",
+			choices: variant.choices,
+			createdAt: 1_000,
+		});
+		const source = workflowPanelSource(
+			{ ...captureWorkflowOwnerResources(), store },
+			{
+				open: () => true,
+				quit: async () => {
+					throw new Error("not used");
+				},
+			},
+		);
+		const item = source.items()[0]!;
+		for (const choiceIndex of [-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, variant.choices.length]) {
+			assert.equal((await source.answer!(item.id, variant.choices[0]!, { ...item, choiceIndex })).ok, false);
+			assert.equal(store.run("live")?.pendingPrompt?.id, "choice");
+		}
+		const answer = store.awaitPendingPrompt("live", "choice");
+		assert.deepEqual(await source.answer!(item.id, variant.text, { ...item, choiceIndex: variant.index }), {
+			ok: true,
+		});
+		assert.equal(await answer, variant.expected);
+	}
+});
+
 test("an earlier prompt identity cannot answer a replacement with identical question and choices (#5224)", async () => {
 	const store = createStore();
 	store.recordRunStart({
