@@ -175,7 +175,12 @@ describe("callers reading starts without the native module (#5315)", () => {
 			const ownSession = "33333333-3333-4333-8333-333333333333";
 			await prepareSessionOpenMarkers();
 			cleanups.push(holdSessionOpenMarker(ownSession, { agentDir }));
-			const [name] = readdirSync(join(agentDir, "open-sessions", ownSession));
+			// The marker is published off the event loop once the hold is taken.
+			const name = await vi.waitFor(() => {
+				const names = readdirSync(join(agentDir, "open-sessions", ownSession));
+				assert.equal(names.length, 1);
+				return names[0];
+			});
 			assert.match(name ?? "", new RegExp(`^${process.pid}-[0-9a-f]{16}-${own}\\.json$`));
 		},
 		POWERSHELL_READS_TIMEOUT_MS,
@@ -193,7 +198,10 @@ describe("callers reading starts without the native module (#5315)", () => {
 			const markers = join(agentDir, "open-sessions", sessionId);
 
 			const release = freshMarkers.holdSessionOpenMarker(sessionId, { agentDir });
-			assert.match(readdirSync(markers)[0] ?? "", new RegExp(`^${process.pid}-[0-9a-f]{16}\\.json$`));
+			// Named when the hold is taken and published off the event loop, still before the start is read.
+			await vi.waitFor(() =>
+				assert.match(readdirSync(markers)[0] ?? "", new RegExp(`^${process.pid}-[0-9a-f]{16}\\.json$`)),
+			);
 			await freshMarkers.prepareSessionOpenMarkers();
 			await release();
 
