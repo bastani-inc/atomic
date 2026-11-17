@@ -692,6 +692,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       if (pendingIdleMessages.size === 0) clearInboundFlushTimer();
     },
     isCurrent: () => Boolean(getLiveContext()),
+    // A finished child's completion notice follows every message already in line, from it or from anyone else.
+    admissionPlace: () => inboundOrder.reserveBehindBusyLine(),
   });
   pi.on("session_shutdown", () => { unregisterTerminalOrderingBarrier(); });
   function scheduleInboundFlush(delayMs = INBOUND_FLUSH_DELAY_MS): void {

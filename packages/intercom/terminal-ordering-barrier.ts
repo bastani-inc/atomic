@@ -32,6 +32,12 @@ interface TerminalOrderingBarrierOptions {
   deliver(entry: InboundMessageEntry, mode: "prelude"): unknown;
   onDrain?(): void;
   isCurrent?(): boolean;
+  /**
+   * A place in the session's admission line behind every message already in it; undefined when the line is empty. The
+   * barrier claims and starts its dispatch there, so a message that arrived before the terminal event is written before
+   * the completion notice, and a later admission cannot take the child's queued messages ahead of it.
+   */
+  admissionPlace?(): { run<T>(operation: () => T): Promise<T> } | undefined;
 }
 
 function parseBarrier(value: unknown): TerminalOrderingBarrier | null {
@@ -125,6 +131,36 @@ export function registerTerminalOrderingBarrier(
     const terminalKey = `${terminalOwnerId(barrier.owner)}:${barrier.runId}\0${barrier.terminalId}`;
     const currentOwner = inFlightByTerminal.get(terminalKey);
     if (currentOwner) { envelope.completion = currentOwner; return; }
+    const place = options.admissionPlace?.();
+    if (place !== undefined) {
+      // Messages that arrived before this terminal event are still being admitted. The barrier takes the next place in
+      // line: it claims there and starts its dispatch, without waiting for that dispatch inside the place. It owns the
+      // terminal meanwhile, so a second event for it, or the global fallback, joins this one instead of dispatching.
+      const waiting = Promise.withResolvers<void>();
+      void waiting.promise.catch(() => {});
+      inFlightByTerminal.set(terminalKey, waiting.promise);
+      envelope.completion = waiting.promise;
+      void place.run(() => {
+        if (inFlightByTerminal.get(terminalKey) === waiting.promise) inFlightByTerminal.delete(terminalKey);
+        const claimed: { completion?: Promise<void> } = {};
+        try {
+          claimAndDispatch(barrier, claimed, terminalKey);
+        } catch (error) {
+          waiting.reject(error);
+          return;
+        }
+        if (claimed.completion) claimed.completion.then(waiting.resolve, waiting.reject);
+        else waiting.resolve();
+      });
+      return;
+    }
+    claimAndDispatch(barrier, envelope, terminalKey);
+  };
+  const claimAndDispatch = (
+    barrier: TerminalOrderingBarrier,
+    envelope: { completion?: Promise<void> },
+    terminalKey: string,
+  ): void => {
     // Owner-task calls drain only preludes; the outbox publishes the terminal
     // afterward and may retry it. Rescan on retry for newly queued messages.
     const drainedTargets = barrier.source === "owner-task" ? new Set<string>() : drainedTargetsByTerminal.get(terminalKey) ?? new Set<string>();

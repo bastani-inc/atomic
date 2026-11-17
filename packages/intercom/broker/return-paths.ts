@@ -59,6 +59,9 @@ interface QueuedOpening {
  */
 export class ReturnPaths {
 	private readonly paths = new Map<string, ReturnPath>();
+	/** Path keys by responder identity, and by sender identity: a lookup costs the paths of one party, not all. */
+	private readonly byResponder = new Map<string, Set<string>>();
+	private readonly bySender = new Map<string, Set<string>>();
 	private readonly queued = new Map<string, QueuedOpening>();
 	/** The inbound messages that opened a path, per path: kept when the path itself is dropped. */
 	private readonly seen = new Map<string, true>();
@@ -82,7 +85,7 @@ export class ReturnPaths {
 		if (this.seen.has(opening)) return;
 		this.seen.set(opening, true);
 		this.bound(this.seen, RETURN_PATH_SEEN_OPENINGS);
-		this.paths.delete(key);
+		this.deletePath(key);
 		this.paths.set(key, {
 			responderIdentity: responder.identity,
 			senderIdentity: sender.identity,
@@ -90,27 +93,43 @@ export class ReturnPaths {
 			openedAt: this.now(),
 			used: new Set(),
 		});
-		this.bound(this.paths);
+		index(this.byResponder, responder.identity, key);
+		index(this.bySender, sender.identity, key);
+		while (this.paths.size > this.maxEntries) {
+			const oldest = this.paths.keys().next().value as string | undefined;
+			if (oldest === undefined) break;
+			this.deletePath(oldest);
+		}
 	}
 
 	/**
 	 * The inbound message `operationId` from `sender` was queued for the workflow stages `target` names. It reaches a
 	 * stage when that stage takes its route ({@link stageStarted}); queuing the same message again changes nothing.
+	 * `liveRoutes` are the stages that already hold a route when it is queued: a stage that went live while its host was
+	 * still answering for this message is handed it now, so it reaches them too.
 	 */
-	queue(target: string, sender: ReturnPathParty, operationId: string): void {
+	queue(
+		target: string,
+		sender: ReturnPathParty,
+		operationId: string,
+		liveRoutes: Iterable<{ readonly stage: ReturnPathParty; readonly target: string }> = [],
+		sharesGroup: (stage: ReturnPathParty, sender: ReturnPathSender) => boolean = () => false,
+	): void {
 		const parsed = parseWorkflowStageTarget(target);
 		if (parsed === undefined || sender.identity === undefined) return;
 		const key = `${parsed.rootRunId}\0${parsed.segments.join("/")}\0${sender.identity}\0${operationId}`;
 		if (this.queued.has(key)) return;
-		this.queued.set(key, {
+		const opening: QueuedOpening = {
 			rootRunId: parsed.rootRunId,
 			segments: parsed.segments,
 			senderIdentity: sender.identity,
 			senderId: sender.sessionId,
 			operationId,
 			reached: new Set(),
-		});
+		};
+		this.queued.set(key, opening);
 		this.bound(this.queued);
+		for (const route of liveRoutes) this.reach(opening, route.stage, route.target, (from) => sharesGroup(route.stage, from));
 	}
 
 	/**
@@ -118,16 +137,24 @@ export class ReturnPaths {
 	 * path back to that message's sender unless `sharesGroup` says the two can already reach each other.
 	 */
 	stageStarted(stage: ReturnPathParty, target: string, sharesGroup: (sender: ReturnPathSender) => boolean): void {
+		for (const opening of this.queued.values()) this.reach(opening, stage, target, sharesGroup);
+	}
+
+	/** `opening` reaches `stage`, which holds the route `target`, when the opening addresses it: once per stage. */
+	private reach(
+		opening: QueuedOpening,
+		stage: ReturnPathParty,
+		target: string,
+		sharesGroup: (sender: ReturnPathSender) => boolean,
+	): void {
 		const parsed = parseWorkflowStageTarget(target);
 		if (parsed === undefined || stage.identity === undefined) return;
-		for (const opening of this.queued.values()) {
-			if (opening.rootRunId !== parsed.rootRunId || !matchStagePathSegments(opening.segments, parsed.segments)) continue;
-			if (opening.reached.has(stage.identity)) continue;
-			opening.reached.add(stage.identity);
-			const sender = { identity: opening.senderIdentity, sessionId: opening.senderId };
-			if (sharesGroup(sender)) continue;
-			this.open(stage, sender, opening.operationId);
-		}
+		if (opening.rootRunId !== parsed.rootRunId || !matchStagePathSegments(opening.segments, parsed.segments)) return;
+		if (opening.reached.has(stage.identity)) return;
+		opening.reached.add(stage.identity);
+		const sender = { identity: opening.senderIdentity, sessionId: opening.senderId };
+		if (sharesGroup(sender)) return;
+		this.open(stage, sender, opening.operationId);
 	}
 
 	/** Whether `responder` holds a return path to `sender`, open or closed: such a sender resolves by name. */
@@ -155,22 +182,29 @@ export class ReturnPaths {
 		return path !== undefined && !this.allowsOn(path, undefined);
 	}
 
-	/** The senders `responder` holds return paths to, open or closed. */
+	/** The senders `responder` holds return paths to, open or closed: as many as it holds, whatever else the broker keeps. */
 	sendersOf(responder: ReturnPathParty): ReturnPathSender[] {
 		if (responder.identity === undefined) return [];
 		const senders: ReturnPathSender[] = [];
-		for (const path of this.paths.values()) {
-			if (path.responderIdentity === responder.identity) {
-				senders.push({ identity: path.senderIdentity, sessionId: path.senderId });
-			}
+		for (const key of this.byResponder.get(responder.identity) ?? []) {
+			const path = this.paths.get(key);
+			if (path !== undefined) senders.push({ identity: path.senderIdentity, sessionId: path.senderId });
 		}
 		return senders;
 	}
 
+	/** The registration `identity` connected again as session `sessionId`: paths back to it now resolve to that session. */
+	senderReconnected(identity: string, sessionId: string): void {
+		for (const key of this.bySender.get(identity) ?? []) {
+			const path = this.paths.get(key);
+			if (path !== undefined) path.senderId = sessionId;
+		}
+	}
+
 	/** A registration ended for good: every return path it opened or holds goes with it. */
 	revoke(identity: string): void {
-		for (const [key, path] of this.paths) {
-			if (path.responderIdentity === identity || path.senderIdentity === identity) this.paths.delete(key);
+		for (const key of [...(this.byResponder.get(identity) ?? []), ...(this.bySender.get(identity) ?? [])]) {
+			this.deletePath(key);
 		}
 		for (const [key, opening] of this.queued) {
 			if (opening.senderIdentity === identity) this.queued.delete(key);
@@ -195,6 +229,14 @@ export class ReturnPaths {
 		return elapsed >= 0 && elapsed <= this.windowMs && path.used.size < this.messageLimit;
 	}
 
+	private deletePath(key: string): void {
+		const path = this.paths.get(key);
+		if (path === undefined) return;
+		this.paths.delete(key);
+		unindex(this.byResponder, path.responderIdentity, key);
+		unindex(this.bySender, path.senderIdentity, key);
+	}
+
 	private bound<V>(entries: Map<string, V>, limit = this.maxEntries): void {
 		while (entries.size > limit) {
 			const oldest = entries.keys().next().value as string | undefined;
@@ -206,4 +248,16 @@ export class ReturnPaths {
 
 function pathKey(responderIdentity: string, senderIdentity: string): string {
 	return `${responderIdentity}\0${senderIdentity}`;
+}
+
+function index(entries: Map<string, Set<string>>, identity: string, key: string): void {
+	const keys = entries.get(identity) ?? new Set<string>();
+	keys.add(key);
+	entries.set(identity, keys);
+}
+
+function unindex(entries: Map<string, Set<string>>, identity: string, key: string): void {
+	const keys = entries.get(identity);
+	keys?.delete(key);
+	if (keys?.size === 0) entries.delete(identity);
 }

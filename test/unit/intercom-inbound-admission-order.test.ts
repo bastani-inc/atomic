@@ -45,3 +45,25 @@ test("an operation with nothing ahead starts at once, and a given-up place holds
 	});
 	assert.deepEqual(admitted, ["immediate", "after", "next"]);
 });
+
+test("a place behind a busy line runs after everything already in it, and nothing waits on an empty line", async () => {
+	const order = new InboundAdmissionOrder();
+	assert.equal(order.reserveBehindBusyLine(), undefined);
+	const admitted: string[] = [];
+	const slow = Promise.withResolvers<void>();
+	const earlier = order.run(async () => {
+		await slow.promise;
+		admitted.push("earlier");
+	});
+	const behind = order.reserveBehindBusyLine();
+	assert.ok(behind);
+	const notice = behind.run(() => {
+		admitted.push("notice");
+	});
+	const later = order.run(() => {
+		admitted.push("later");
+	});
+	slow.resolve();
+	await Promise.all([earlier, notice, later]);
+	assert.deepEqual(admitted, ["earlier", "notice", "later"]);
+});

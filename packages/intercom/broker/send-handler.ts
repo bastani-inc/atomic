@@ -145,6 +145,11 @@ export type ReleasedAskerReplyRouter = (reply: {
 export interface ReturnPathAuthority {
 	/** Whether `sender` holds a return path to `target`, open or closed: such a target resolves by name. */
 	holds(sender: BrokerConnectedSession, target: ReturnPathParty): boolean;
+	/**
+	 * The live sessions `sender` holds return paths to, open or closed, found from its own paths: the cost is the paths
+	 * it holds, never the sessions the broker serves.
+	 */
+	answerable(sender: BrokerConnectedSession): BrokerConnectedSession[];
 	/** Counts `messageId` as an answer to `target`; false when no open return path allows it. */
 	use(sender: BrokerConnectedSession, target: ReturnPathParty, messageId: string): boolean;
 	/** Whether `sender` holds a return path to `target` that has closed. */
@@ -393,10 +398,6 @@ export function handleBrokerSend(
   // supervisor frame or an exact recorded reply may resolve across groups.
 	const liveWorkflowTarget = sessions.has(trimmedTo) ? undefined : resolveLiveWorkflowStage?.(trimmedTo);
 	const exactIdTarget = sessions.get(trimmedTo) ?? liveWorkflowTarget;
-  const heldReturnPath = (info: SessionInfo): boolean => {
-    const session = sessions.get(info.id);
-    return session !== undefined && returnPaths?.holds(fromSession, returnPathParty(session)) === true;
-  };
   const visibleCandidates = Array.from(sessions.values(), (session) => session.info).filter(
 	(info) => sessionsShareGroup(info, fromSession.info) ||
       (supervisorSend && info.id === fromSession.supervisorId) ||
@@ -408,11 +409,13 @@ export function handleBrokerSend(
   const candidates = visibleCandidates.filter(isAgentRecipient);
   // A sender outside the sender's groups that wrote to it may be answered by the name its message showed. It is
   // considered only when nothing the sender can already see answers to that name, so no name resolves differently.
+  const visibleIds = new Set(candidates.map((visible) => visible.id));
   const returnPathCandidates =
     returnPaths !== undefined && mayUseReturnPath(message, supervisorSend)
-      ? Array.from(sessions.values(), (session) => session.info).filter(
-          (info) => isAgentRecipient(info) && !candidates.some((visible) => visible.id === info.id) && heldReturnPath(info),
-        )
+      ? returnPaths
+          .answerable(fromSession)
+          .map((session) => session.info)
+          .filter((info) => isAgentRecipient(info) && !visibleIds.has(info.id))
       : [];
   // Preserve explicit named-reply collision rejection without exposing hidden identities (#2603).
   const originalSelector = logicalTarget.trim();

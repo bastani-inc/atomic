@@ -535,3 +535,38 @@ test("an isolated stage answers the invocation member whose queued message it re
 	const answer = await stage.sendTo(run.launcherName, "subgroup-answer", "got your queued message");
 	assert.equal(answer.type, "delivered", JSON.stringify(answer));
 });
+
+test("a stage that goes live while its host is still answering for the launcher's message can answer it", async () => {
+	const run = await launchedRun("going-live", "5a1e0012-0000-4000-8000-000000000012", ["later"]);
+	run.launcher.send({
+		type: "send",
+		to: `${run.group}/later`,
+		message: { id: "going-live-note", timestamp: Date.now(), content: { text: "read this when you start" } },
+	});
+	const request = await run.owner.next("pending_stage_message", (frame) => frame.message.id === "going-live-note");
+	// The stage takes its route before the host answered; the broker holds the route's acknowledgment behind it.
+	const stage = new WireClient();
+	await register(stage, "going-live-later", run.group);
+	stage.send({
+		type: "register_live_workflow_stage_route",
+		requestId: "going-live-route",
+		runId: run.runId,
+		stageKeys: ["later"],
+		capability: run.routeCapability,
+	});
+	await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+	run.owner.send({
+		type: "pending_stage_message_result",
+		requestId: request.requestId,
+		outcome: "queued",
+		position: 1,
+	});
+	assert.equal((await run.launcher.settled("going-live-note")).type, "queued");
+	await stage.next("live_workflow_stage_route_registered", (frame) => frame.requestId === "going-live-route");
+	// Its host hands the queued message to the live stage, which answers the launcher.
+	const answer = await stage.sendTo(run.launcherName, "going-live-answer", "got it");
+	assert.equal(answer.type, "delivered", JSON.stringify(answer));
+	// A stage of the run the message did not address still gains nothing.
+	const other = await startStage(run, "elsewhere");
+	assert.equal((await other.sendTo(run.launcherName, "going-live-other", "not mine")).type, "delivery_failed");
+});

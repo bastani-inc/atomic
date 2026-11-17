@@ -227,7 +227,7 @@ A message can reach a session from a sender outside its groups: the session that
 - A message queued for a workflow stage that has not started reaches it when the stage starts, so the 30 minutes count from the stage's start. Only the stages the message addressed can answer; a sibling stage it did not address cannot. A stage that reconnects does not receive the message again.
 - With [multi-node routing](/intercom/operations#running-intercom-across-machines), it works the same across machines, and an answer to a sender that went offline waits for it like any other message.
 
-Once the path has closed, a send to that sender is refused with `<sender> is outside your intercom groups and its return path has closed`, and it reopens when the sender writes to you again. For a longer exchange, the sender can join your group, or a run's launcher can keep steering the run's stages as described above.
+Once the path has closed, a send to that sender is refused with `<sender> is outside your intercom groups and its return path has closed`, and it reopens when the sender writes to you again. Return paths are kept in the Intercom broker's memory, so restarting the broker closes them too. A name that a session in your own groups also has reaches that session, not the sender; use the sender's ID in that case. For a longer exchange, the sender can join your group, or a run's launcher can keep steering the run's stages as described above.
 
 ### send vs ask vs reply
 

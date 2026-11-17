@@ -69,6 +69,15 @@ export class InboundAdmissionOrder {
     return this.reserve().run(operation);
   }
 
+  /**
+   * A place behind everything already in line, or undefined when the line is empty and the caller can go on at once,
+   * as a finished child's completion notice does: it follows every message that arrived before it, and nothing that
+   * arrives after it can take that child's queued messages ahead of it.
+   */
+  reserveBehindBusyLine(): AdmissionPlace | undefined {
+    return this.line.length === 0 ? undefined : this.reserve();
+  }
+
   private finish(place: Place): void {
     const index = this.line.indexOf(place);
     if (index < 0) return;

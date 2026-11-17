@@ -86,7 +86,7 @@ import {
 	type SendClientMessage,
 	senderGroupIdentity,
 } from "./send-handler.js";
-import { type ReturnPathSender, ReturnPaths } from "./return-paths.js";
+import { type ReturnPathParty, type ReturnPathSender, ReturnPaths } from "./return-paths.js";
 import {
   type BrokerStateOpener,
   LOCAL_RETRY_LOOKUP_BOUND_MS,
@@ -523,6 +523,11 @@ class IntercomBroker {
   private readonly returnPaths = new ReturnPaths();
   private readonly returnPathAuthority: ReturnPathAuthority = {
     holds: (sender, target) => this.returnPaths.holds(returnPathParty(sender), target),
+    answerable: (sender) =>
+      this.returnPaths.sendersOf(returnPathParty(sender)).flatMap((held) => {
+        const live = this.sessions.get(held.sessionId);
+        return live !== undefined && returnPathParty(live).identity === held.identity ? [live] : [];
+      }),
     use: (sender, target, messageId) => this.returnPaths.use(returnPathParty(sender), target, messageId),
     closed: (sender, target) => this.returnPaths.closed(returnPathParty(sender), target),
     delivered: (recipient, from, fromInfo, operationId) => {
@@ -950,15 +955,37 @@ class IntercomBroker {
 	private queueStageReturnPath(pending: PendingStageAcknowledgment): void {
 		const sender = this.sessions.get(pending.senderSessionId);
 		if (sender === undefined || sender.info.id !== pending.sender.id) return;
-		this.returnPaths.queue(pending.target, returnPathParty(sender), pending.messageId);
+		// A stage may take its route while its host is still answering for this message (the going-live barrier holds
+		// the stage's acknowledgment behind it); the host hands the message to that live stage, so it reaches it now.
+		const parsed = parseWorkflowStageTarget(pending.target);
+		const liveRoutes: { stage: ReturnPathParty; target: string }[] = [];
+		for (const [target, route] of this.liveWorkflowStageRoutes) {
+			if (parsed === undefined || parseWorkflowStageTarget(target)?.rootRunId !== parsed.rootRunId) continue;
+			const stage = this.sessions.get(route.sessionId);
+			if (stage !== undefined) liveRoutes.push({ stage: returnPathParty(stage), target });
+		}
+		this.returnPaths.queue(pending.target, returnPathParty(sender), pending.messageId, liveRoutes, (stage, from) =>
+			this.canAlreadyReach(stage.sessionId, from),
+		);
 	}
 
 	/** A stage took `target`: the messages queued for it reached it, opening its paths back to their senders. */
 	private stageTookRoute(stage: ConnectedSession, target: string): void {
-		this.returnPaths.stageStarted(returnPathParty(stage), target, (sender: ReturnPathSender) => {
-			const live = this.sessions.get(sender.sessionId);
-			return live !== undefined && returnPathParty(live).identity === sender.identity && sameGroup(stage.info, live.info);
-		});
+		this.returnPaths.stageStarted(returnPathParty(stage), target, (sender: ReturnPathSender) =>
+			this.canAlreadyReach(stage.info.id, sender),
+		);
+	}
+
+	/** Whether the stage `stageId` already shares a group with `sender`'s live session, so needs no return path to it. */
+	private canAlreadyReach(stageId: string, sender: ReturnPathSender): boolean {
+		const stage = this.sessions.get(stageId);
+		const live = this.sessions.get(sender.sessionId);
+		return (
+			stage !== undefined &&
+			live !== undefined &&
+			returnPathParty(live).identity === sender.identity &&
+			sameGroup(stage.info, live.info)
+		);
 	}
 
 	/**
@@ -2042,6 +2069,9 @@ class IntercomBroker {
             : {}),
           ...(clientMessage.acknowledgesReceipt === true ? { acknowledgesReceipt: true as const } : {}),
         });
+        // A registration that connects again under a new id stays the sender its return paths lead back to.
+        const registeredIdentity = returnPathParty(this.sessions.get(id)!).identity;
+        if (registeredIdentity !== undefined) this.returnPaths.senderReconnected(registeredIdentity, id);
 
         if (this.shutdownTimer) {
           clearTimeout(this.shutdownTimer);
