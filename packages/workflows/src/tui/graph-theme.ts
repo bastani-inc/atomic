@@ -34,6 +34,8 @@ const MOCHA = {
 	lavender: "#b4befe",
 } as const;
 
+const LATTE = { text: "#4c4f69" } as const;
+
 /**
  * Optional generic theme overrides accepted by `deriveGraphTheme`.
  * Keys mirror the role names below; any field omitted falls back to Mocha.
@@ -157,6 +159,7 @@ export function deriveGraphTheme(theme: GenericTheme = {}): GraphTheme {
  * via `hexToAnsi` / `hexBg`.
  */
 export interface PiRuntimeTheme {
+	readonly name?: string;
 	getFgAnsi?: (color: string) => string;
 	getBgAnsi?: (color: string) => string;
 }
@@ -213,21 +216,25 @@ function parsePiAnsiToHex(ansi: string | undefined): string | undefined {
  * the current theme; we want feature detection without surfacing the
  * throw to overlay mount.
  */
-function tryPiAccessor(fn: ((color: string) => string) | undefined, color: string): string | undefined {
+function tryPiAccessor(
+	owner: PiRuntimeTheme,
+	fn: ((color: string) => string) | undefined,
+	color: string,
+): string | undefined {
 	if (typeof fn !== "function") return undefined;
 	try {
-		return fn(color);
+		return Reflect.apply(fn, owner, [color]);
 	} catch {
 		return undefined;
 	}
 }
 
 function fgHex(theme: PiRuntimeTheme, color: string): string | undefined {
-	return parsePiAnsiToHex(tryPiAccessor(theme.getFgAnsi, color));
+	return parsePiAnsiToHex(tryPiAccessor(theme, theme.getFgAnsi, color));
 }
 
 function bgHex(theme: PiRuntimeTheme, color: string): string | undefined {
-	return parsePiAnsiToHex(tryPiAccessor(theme.getBgAnsi, color));
+	return parsePiAnsiToHex(tryPiAccessor(theme, theme.getBgAnsi, color));
 }
 
 /**
@@ -257,6 +264,7 @@ function bgHex(theme: PiRuntimeTheme, color: string): string | undefined {
 export function deriveGraphThemeFromPiTheme(theme: unknown): GraphTheme {
 	if (!theme || typeof theme !== "object") return deriveGraphTheme({});
 	const t = theme as PiRuntimeTheme;
+	const defaultText = t.name === "light" || t.name === "catppuccin-latte" ? LATTE.text : undefined;
 	const accent = fgHex(t, "accent");
 	const overrides: GenericTheme = {
 		backgroundPanel: bgHex(t, "toolPendingBg") ?? bgHex(t, "customMessageBg"),
@@ -268,11 +276,11 @@ export function deriveGraphThemeFromPiTheme(theme: unknown): GraphTheme {
 		borderDim: fgHex(t, "borderMuted"),
 		borderActive: fgHex(t, "borderAccent"),
 
-		text: fgHex(t, "text") ?? fgHex(t, "customMessageText"),
+		text: fgHex(t, "text") ?? fgHex(t, "customMessageText") ?? defaultText,
 		textMuted: fgHex(t, "muted"),
 		dim: fgHex(t, "dim"),
 		toolTitle: fgHex(t, "toolTitle"),
-		toolOutput: fgHex(t, "toolOutput") ?? fgHex(t, "text") ?? fgHex(t, "customMessageText"),
+		toolOutput: fgHex(t, "toolOutput") ?? fgHex(t, "text") ?? fgHex(t, "customMessageText") ?? defaultText,
 
 		accent,
 		success: fgHex(t, "success"),

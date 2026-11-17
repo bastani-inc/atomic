@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters as stripAnsi } from "node:util";
 import { describe, test } from "vitest";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import {
 	createWorkflowLifecycleNotificationState,
 	installWorkflowLifecycleNotifications,
@@ -21,6 +22,7 @@ interface SentNotice {
 }
 
 function createHarness() {
+	initTheme("dark");
 	const store = createStore();
 	const sent: SentNotice[] = [];
 	installWorkflowLifecycleNotifications({
@@ -32,9 +34,12 @@ function createHarness() {
 		},
 	});
 	let renderer:
-		| ((payload: {
-				details?: WorkflowLifecycleNoticeDetails;
-		  }) => { render(width: number): string[]; invalidate(): void } | undefined)
+		| ((
+				payload: {
+					details?: WorkflowLifecycleNoticeDetails;
+				},
+				options: { expanded: boolean },
+		  ) => { render(width: number): string[]; invalidate(): void } | undefined)
 		| undefined;
 	registerLifecycleNoticeRenderer({
 		rendererHost: {},
@@ -46,7 +51,7 @@ function createHarness() {
 		store,
 		sent,
 		componentFor(details: WorkflowLifecycleNoticeDetails) {
-			const component = renderer?.({ details });
+			const component = renderer?.({ details }, { expanded: true });
 			assert.ok(component);
 			return component;
 		},
@@ -208,7 +213,8 @@ describe("workflow lifecycle notice bounds and caching (#5224)", () => {
 			.map((line) => stripAnsi(line));
 		const headlineRow = rows.find((line) => line.includes("completed"));
 		assert.ok(headlineRow);
-		assert.match(headlineRow, /✓ Workflow "release notes" completed/);
+		assert.match(headlineRow, /● Workflow "release notes" completed/);
+		assert.ok(rows.some((row) => /✓ Workflow "release notes" completed/.test(row)));
 		for (const row of rows) {
 			assert.doesNotMatch(row, /\\x0d/);
 		}

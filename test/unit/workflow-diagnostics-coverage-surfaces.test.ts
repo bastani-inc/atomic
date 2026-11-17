@@ -14,7 +14,7 @@ import {
 	registerLifecycleNoticeRenderer,
 	type WorkflowLifecycleNoticeDetails,
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
-import type { PiCommandContext } from "../../packages/workflows/src/extension/public-types.js";
+import type { PiCommandContext, PiMessageRenderer } from "../../packages/workflows/src/extension/public-types.js";
 import { renderResult } from "../../packages/workflows/src/extension/render-result.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import type {
@@ -438,6 +438,7 @@ describe("workflow diagnostic surfaces, text safety, and listing wiring (#5224)"
 	});
 
 	it("renders lifecycle notice cards for blocked runs, single artifacts without +more, and completed runs without outputs (#5224)", async () => {
+		initTheme("dark");
 		const store = createStore();
 		const sent: Array<{ details?: WorkflowLifecycleNoticeDetails }> = [];
 		installWorkflowLifecycleNotifications({
@@ -448,22 +449,18 @@ describe("workflow diagnostic surfaces, text safety, and listing wiring (#5224)"
 				sent.push(message as { details?: WorkflowLifecycleNoticeDetails });
 			},
 		});
-		let renderer:
-			| ((payload: { details?: WorkflowLifecycleNoticeDetails }) => { render(width: number): string[] })
-			| undefined;
+		let renderer: PiMessageRenderer | undefined;
 		registerLifecycleNoticeRenderer({
 			rendererHost: {},
 			registerMessageRenderer(_event, registered) {
-				renderer = registered as (payload: { details?: WorkflowLifecycleNoticeDetails }) => {
-					render(width: number): string[];
-				};
+				renderer = registered;
 			},
 		});
-		const renderCard = (details: WorkflowLifecycleNoticeDetails, width = 100): string =>
-			renderer!({ details })
-				.render(width)
-				.map((line) => stripAnsi(line))
-				.join("\n");
+		const renderCard = (details: WorkflowLifecycleNoticeDetails, width = 100): string => {
+			const component = renderer?.({ details }, { expanded: true });
+			assert.ok(component && typeof component !== "string");
+			return component.render(width).map(stripAnsi).join("\n");
+		};
 
 		store.recordRunStart({
 			id: "run-single-art",

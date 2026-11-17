@@ -238,6 +238,7 @@ export type {
 	SetThinkingLevelHandler,
 	SubagentChildPolicy,
 	SubagentIntercomIdentity,
+	SubagentStartupHooks,
 	TerminalInputHandler,
 	ThinkingLevelSelectEvent,
 	// Events - Tool

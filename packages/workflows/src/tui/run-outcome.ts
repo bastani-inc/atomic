@@ -15,11 +15,13 @@ import {
 } from "../shared/tool-payload-bounds.js";
 import { authoritativeWorkflowChildRunId, reciprocalWorkflowRootRunId } from "../shared/workflow-run-ownership.js";
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
-import { inertDisplayLine, inertDisplayText } from "./display-text.js";
+import { inertDisplayLine, inertDisplayText, NO_FAILURE_REASON, summarizeFailureText } from "./display-text.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { stageFailureLogLines } from "./stage-failure-detail.js";
 import { fmtDuration } from "./status-helpers.js";
 import { truncateToWidth, visibleWidth, wrapPlainText } from "./text-helpers.js";
+
+export { summarizeFailureText, withoutStackFrames } from "./display-text.js";
 
 export type RunOutcomeState = "completed" | "failed" | "stopped" | "paused" | "waiting" | "blocked" | "running";
 
@@ -64,9 +66,6 @@ export interface RunOutcome {
 	readonly log: readonly string[];
 }
 
-const NO_REASON = "No reason was recorded.";
-const STACK_FRAME_TAIL = /(?::\d+:\d+\)?|\s\((?:native|<anonymous>|index\s+\d+)\))$/;
-const BARE_COLON_LOC = /^:\d+:\d+\)?$/;
 const MAX_EVENTS = 12;
 const MAX_VALUE_LINES = 3;
 const MAX_LOG_ROWS = 256;
@@ -81,40 +80,6 @@ function firstLineOf(text: string): string {
 function padVisible(text: string, width: number): string {
 	const pad = width - visibleWidth(text);
 	return pad > 0 ? `${text}${" ".repeat(pad)}` : text;
-}
-
-function stripControlsIfPresent(line: string): string {
-	return line.includes("\x1b") || line.includes("\x9b") ? stripVTControlCharacters(line) : line;
-}
-
-function isStackFrame(line: string): boolean {
-	const plain = stripControlsIfPresent(line).trim();
-	if (!plain.startsWith("at ") && !plain.startsWith("at\t")) return false;
-	const rest = plain.slice(2).trimStart();
-	if (rest.length === 0) return false;
-	if (rest === "<anonymous>" || rest === "async <anonymous>") return true;
-	if (BARE_COLON_LOC.test(rest)) return false;
-	return STACK_FRAME_TAIL.test(rest);
-}
-
-export function summarizeFailureText(text: string | undefined): { reason: string; frames: number } {
-	const raw = text ?? "";
-	const bounded = raw.length > TOOL_PAYLOAD_VALUE_LIMIT * 4 ? sliceHead(raw, TOOL_PAYLOAD_VALUE_LIMIT * 4) : raw;
-	const lines = bounded.split(/\r?\n/);
-	const frames = lines.filter(isStackFrame).length;
-	const first = lines
-		.map((line) => stripControlsIfPresent(line).trim())
-		.find((line) => line.length > 0 && !isStackFrame(line));
-	if (first === undefined) return { reason: NO_REASON, frames };
-	const boundedFirst = first.length > TOOL_PAYLOAD_VALUE_LIMIT ? sliceHead(first, TOOL_PAYLOAD_VALUE_LIMIT) : first;
-	const reason = boundedFirst.replace(/^(?:Uncaught\s+)?Error:\s*/, "").trim();
-	return { reason: inertDisplayLine(reason.length > 0 ? reason : boundedFirst), frames };
-}
-
-export function withoutStackFrames(text: string): { kept: string[]; frames: number } {
-	const lines = text.split(/\r?\n/);
-	const kept = lines.filter((line) => !isStackFrame(line));
-	return { kept, frames: lines.length - kept.length };
 }
 
 function isTerminalOrBlockedRun(run: RunSnapshot): boolean {
@@ -425,7 +390,7 @@ export function buildRunOutcome(run: RunSnapshot, now = Date.now(), runs: readon
 		state === "failed" || state === "blocked"
 			? failureText !== undefined
 				? summarizeFailureText(failureText).reason
-				: (failedBlockerReason ?? NO_REASON)
+				: (failedBlockerReason ?? NO_FAILURE_REASON)
 			: pendingRunQuestion !== undefined
 				? inertDisplayLine(firstLineOf(pendingRunQuestion))
 				: undefined;

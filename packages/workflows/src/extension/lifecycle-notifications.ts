@@ -1,4 +1,4 @@
-import { reportDebug, sliceHead } from "@bastani/atomic";
+import { NoticeLine, type NoticeLineSpec, reportDebug, sliceHead } from "@bastani/atomic";
 import type { WorkflowArtifact } from "../shared/authoring-contract-stage.js";
 import type { BudgetDimension, BudgetReport } from "../shared/budget.js";
 import {
@@ -374,10 +374,10 @@ export function registerLifecycleNoticeRenderer(
 	const host = options.rendererHost ?? register;
 	if (rendererRegisteredHosts.has(host)) return;
 
-	const renderer: RawRenderer = (raw, _options, piTheme) => {
+	const renderer: RawRenderer = (raw, options, piTheme) => {
 		const message = raw as { details?: WorkflowLifecycleNoticeDetails };
 		if (!message.details) return undefined;
-		return makeNoticeComponent(message.details, themeFromRenderer(piTheme));
+		return makeNoticeComponent(message.details, themeFromRenderer(piTheme), options?.expanded === true);
 	};
 
 	register(LIFECYCLE_NOTICE_CUSTOM_TYPE, renderer);
@@ -774,28 +774,87 @@ function formatLifecycleOutputs(outputs: WorkflowOutputValues | undefined): stri
 function makeNoticeComponent(
 	details: WorkflowLifecycleNoticeDetails,
 	theme: GraphTheme | undefined,
+	expanded: boolean,
 ): PiMessageRenderComponent {
 	const text = formatWorkflowLifecycleNoticeText(details);
+	const line = new NoticeLine(lifecycleNoticeLine(details));
 	let cachedWidth: number | undefined;
 	let cachedLines: string[] | undefined;
 	return {
 		render(width: number): string[] {
-			// Width < 32 cannot carry rounded card chrome without exceeding the
-			// terminal, so the card helper falls back to wrapped plain text there.
 			const normalizedWidth = Math.max(1, Math.floor(width));
-			if (cachedWidth === normalizedWidth && cachedLines !== undefined) {
-				return cachedLines;
-			}
+			if (cachedWidth === normalizedWidth && cachedLines !== undefined) return cachedLines;
+			const head = line.render(normalizedWidth);
 			cachedWidth = normalizedWidth;
-			cachedLines = renderLifecycleNoticeCard(details, { width: normalizedWidth, theme, fallbackText: text });
+			cachedLines = expanded
+				? [...head, ...renderLifecycleNoticeCard(details, { width: normalizedWidth, theme, fallbackText: text })]
+				: head;
 			return cachedLines;
 		},
 		invalidate() {
-			/* stored lifecycle notices are immutable */
+			line.invalidate();
 			cachedWidth = undefined;
 			cachedLines = undefined;
 		},
 	};
+}
+
+/** The notice as the one line every finished task, agent and run reports with; ctrl+o adds its card under it. */
+export function lifecycleNoticeLine(details: WorkflowLifecycleNoticeDetails): NoticeLineSpec {
+	const stage = details.stageName ?? details.failedStageId ?? details.stageId;
+	const at = stage === undefined ? undefined : `at ${singleLineNoticeText(stage)}`;
+	const duration = formatDurationMs(details.durationMs);
+	const base = {
+		label: details.scope === "stage" ? "Stage of workflow" : "Workflow",
+		subject: singleLineNoticeText(details.workflowName),
+	};
+	switch (details.kind) {
+		case "started":
+			return { ...base, status: "success", outcome: "started" };
+		case "resumed":
+			return { ...base, status: "success", outcome: "resumed", ...(at === undefined ? {} : { meta: [at] }) };
+		case "failed": {
+			const tool = stage === undefined ? lifecycleToolOrigin(details) : undefined;
+			const where = at ?? (tool === undefined ? undefined : `at tool ${singleLineNoticeText(tool)}`);
+			return {
+				...base,
+				status: "failure",
+				outcome: "failed",
+				meta: [where, duration].filter((fact): fact is string => fact !== undefined),
+			};
+		}
+		case "blocked":
+			return {
+				...base,
+				status: "warning",
+				outcome:
+					details.budgetExceeded === true
+						? "stopped at its budget limit"
+						: details.active === true
+							? "is blocked"
+							: "ended blocked",
+				...(at === undefined ? {} : { meta: [at] }),
+			};
+		case "budget_warning":
+			return {
+				...base,
+				status: "warning",
+				outcome: `is approaching its ${singleLineNoticeText(details.budgetDimension ?? "duration")} budget`,
+			};
+		case "awaiting_input":
+			return { ...base, status: "warning", outcome: "needs input", ...(at === undefined ? {} : { meta: [at] }) };
+		case "paused":
+			return { ...base, status: "paused", outcome: "paused", ...(at === undefined ? {} : { meta: [at] }) };
+		case "quit":
+			return { ...base, status: "stopped", outcome: "quit", ...(at === undefined ? {} : { meta: [at] }) };
+		default:
+			return {
+				...base,
+				status: "success",
+				outcome: "completed",
+				...(duration === undefined ? {} : { meta: [duration] }),
+			};
+	}
 }
 
 function renderLifecycleNoticeCard(

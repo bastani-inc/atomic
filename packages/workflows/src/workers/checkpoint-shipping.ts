@@ -1,30 +1,121 @@
-import type { PoolCheckpointMutation, PoolMutation } from "../durable/journal/pool-mutations.js";
+import type { PoolMutation } from "../durable/journal/pool-mutations.js";
 import { poolCheckpointUsage } from "../durable/journal/pool-stage-usage.js";
 import { checkpointKey, type PoolCommitReceipt, type PoolShipBatch } from "../durable/journal/sql-pool-queue.js";
 import type { AttemptLease } from "../durable/journal/sql-shared-pool.js";
 import { StaleLeaseError } from "../durable/journal/types.js";
 import { serializeJson } from "../durable/journal/values.js";
+import type { DurableCheckpoint } from "../durable/types.js";
 import { assertWorkflowSerializableObject } from "../shared/serializable.js";
 import { StaleWorkLeaseError } from "../shared/worker-pool-errors.js";
 import { infrastructureFaultOf } from "../shared/workflow-infrastructure-error.js";
 import { CHECKPOINT_SHIPPING_LIMITS, type ResolvedCheckpointShipping } from "./public-options.js";
-import { ShipIdentityConflictError, type ShipShard } from "./ship-shard.js";
+import {
+	ShipIdentityConflictError,
+	type ShipOp,
+	ShipSessionRefusal,
+	type ShipSessionState,
+	ShipSessionUnknownError,
+	type ShipSessionWrite,
+	type ShipShard,
+} from "./ship-shard.js";
+
+/** A write of an attempt as its host keeps it in its local journal (#4768). */
+export interface LocalWrite {
+	/** Its identity among the attempt's rows: a checkpoint's key, or a session append's operation. */
+	readonly key: string;
+	/** The checkpoint's JSON, or a session write's whole mutation. */
+	readonly payload: string;
+	readonly at: number;
+	readonly op: ShipOp;
+	/** The checkpoint the write records: itself, or the stage checkpoint a session create or replace binds with. */
+	readonly checkpoint?: DurableCheckpoint;
+	readonly session?: ShipSessionWrite;
+}
+
+/** The worktree snapshots a checkpoint records, where it carries a list of them. */
+export function checkpointSnapshots(checkpoint: DurableCheckpoint | undefined): readonly unknown[] {
+	const carried = (checkpoint as { readonly worktreeSnapshots?: unknown } | undefined)?.worktreeSnapshots;
+	return Array.isArray(carried) ? carried : [];
+}
 
 /**
- * Whether a host may keep `mutation` in its local journal and ship it later (#4768): a plain checkpoint, with no
- * session to write, no worktree snapshot whose blobs the shared store must check as it records it, and no model usage
- * to bill, so the root's budget always sees usage as soon as it is spent. Every other mutation commits to the shared
- * journal before the step returns, as without shipping.
+ * How a host keeps `mutation` in its local journal and ships it later (#4768), or undefined for one it commits to the
+ * shared journal directly: a session write that is not well formed, whose refusal the shared journal names, or a
+ * session append without the worker's operation, which is its identity. Every checkpoint, every session write, a
+ * checkpoint that bills usage and one that records worktree snapshots alike: the host bills usage and checks snapshot
+ * blobs in the shared store as it accepts them (see {@link CheckpointShipping.commit}).
  */
-export function shippableCheckpoint(
-	mutation: PoolMutation,
-): mutation is Extract<PoolCheckpointMutation, { kind: "checkpoint" }> {
-	if (mutation.kind !== "checkpoint") return false;
+export function localWrite(mutation: PoolMutation, operation?: string): LocalWrite | undefined {
+	if (mutation.kind === "checkpoint") {
+		const checkpoint = mutation.checkpoint;
+		return {
+			key: checkpointKey(checkpoint),
+			payload: serializeJson(payloadOf(checkpoint)),
+			at: checkpoint.completedAt,
+			op: "checkpoint",
+			checkpoint,
+		};
+	}
+	if (mutation.kind === "session-append") {
+		if (operation === undefined || typeof mutation.sessionId !== "string" || mutation.sessionId === "") return;
+		if (!Array.isArray(mutation.entries) || !Number.isSafeInteger(mutation.expectSeq)) return;
+		return {
+			key: JSON.stringify(["session-append", mutation.sessionId, operation]),
+			payload: serializeJson(payloadOf(mutation, "Pool mutation")),
+			at: Date.now(),
+			op: mutation.kind,
+			session: {
+				op: mutation.kind,
+				session: mutation.sessionId,
+				expectSeq: mutation.expectSeq,
+				entries: mutation.entries.length,
+			},
+		};
+	}
+	if (mutation.kind !== "session-create" && mutation.kind !== "session-replace") return;
 	const checkpoint = mutation.checkpoint;
-	if (checkpoint.kind === "stage" && checkpoint.sessionId !== undefined) return false;
-	if (poolCheckpointUsage(checkpoint) !== undefined) return false;
-	const snapshots = (checkpoint as { readonly worktreeSnapshots?: unknown }).worktreeSnapshots;
-	return !(Array.isArray(snapshots) && snapshots.length > 0);
+	const session = checkpoint?.sessionId;
+	if (
+		checkpoint?.kind !== "stage" ||
+		typeof session !== "string" ||
+		session === "" ||
+		checkpoint.sessionFile !== undefined ||
+		mutation.header?.id !== session ||
+		!Array.isArray(mutation.entries) ||
+		(mutation.kind === "session-replace" && !Number.isSafeInteger(mutation.expectSeq))
+	)
+		return;
+	return {
+		key: checkpointKey(checkpoint),
+		payload: serializeJson(payloadOf(mutation, "Pool mutation")),
+		at: checkpoint.completedAt,
+		op: mutation.kind,
+		checkpoint,
+		session: {
+			op: mutation.kind,
+			session,
+			replayKey: checkpoint.replayKey,
+			...(mutation.kind === "session-replace" ? { expectSeq: mutation.expectSeq } : {}),
+			entries: mutation.entries.length,
+		},
+	};
+}
+
+/** A stage checkpoint that ends a stage with a session: what the stage wrote to its session ships at once after it. */
+function endsSessionStage(checkpoint: DurableCheckpoint | undefined): boolean {
+	return (
+		checkpoint?.kind === "stage" &&
+		checkpoint.sessionId !== undefined &&
+		("output" in checkpoint || checkpoint.topology?.status === "failed")
+	);
+}
+
+/** Per commit: what the worker's request carries besides the mutation. */
+export interface LocalCommitOptions {
+	/** The worker's identity of the commit, which every resend of it repeats: a session append's identity. */
+	readonly operation?: string;
+	/** Renews the attempt's lease, after the local journal found it expired while the attempt still owns its work. */
+	readonly renewAttempt?: () => Promise<void>;
 }
 
 /** How many times an attempt's checkpoints are shipped before its work is released without them. */
@@ -180,6 +271,17 @@ export class CheckpointShipping {
 			 * tries: they ship later only if no other attempt took the work over.
 			 */
 			readonly onReleaseFailure?: (failure: ShippingFallback) => void;
+			/**
+			 * The state the shared store holds `session` in, for a session the attempt writes that an earlier attempt of its
+			 * work wrote: its last sequence and the stage it is bound to. Rejects as the shared store would refuse a write of a
+			 * session it does not hold or the work does not own. Without it, such a write commits directly.
+			 */
+			readonly sessionState?: (attempt: AttemptLease, session: string) => Promise<ShipSessionState>;
+			/**
+			 * Rejects with a `blobs-collected` WorkspaceSnapshotError when the shared store no longer holds a blob of the
+			 * snapshots a checkpoint records, as a direct commit would. Without it, such a checkpoint commits directly.
+			 */
+			readonly snapshotsStored?: (checkpoint: DurableCheckpoint) => Promise<void>;
 			/** The monotonic clock, in milliseconds. */
 			readonly now?: () => number;
 		},
@@ -267,6 +369,21 @@ export class CheckpointShipping {
 		this.attempts.delete(work.id);
 		this.shard.release(work);
 		if (this.syncOnly.get(work.id) === work.generation) this.syncOnly.delete(work.id);
+		// The sessions it wrote are the shared store's alone once nothing of them is left to ship.
+		await this.shard.forgetSessions(work).catch(() => {});
+	}
+
+	/**
+	 * Ships everything the attempt accepted when a write of `session` is among it, or, without `session`, a write of any
+	 * session: before the attempt reads the session from the shared store, which holds it only once it is shipped.
+	 */
+	async flushSession(lease: Pick<AttemptLease, "id" | "generation">, session?: string): Promise<void> {
+		const attempt = this.attempts.get(lease.id);
+		if (attempt === undefined || attempt.lease.generation !== lease.generation) return;
+		if (attempt.fenced !== undefined) throw attempt.fenced;
+		// A local journal that cannot say ships everything the attempt holds.
+		if (!(await this.shard.holdsSession(lease, session).catch(() => true))) return;
+		await this.flush(lease, URGENT_BATCH_CAP);
 	}
 
 	/** Whether the attempt commits every checkpoint to the shared journal, after its local journal failed. */
@@ -280,33 +397,97 @@ export class CheckpointShipping {
 
 	/**
 	 * Commits `mutation` for the attempt `lease`. `commitShared` commits it to the shared journal, under the shared
-	 * store's own fences.
+	 * store's own fences. Every checkpoint and session write is kept in the local journal and acknowledged from there,
+	 * after everything the attempt kept there before it (#4768):
+	 *
+	 * - a session write is checked against the session's state after the attempt's earlier writes, as the shared store
+	 *   checks it, and its receipt carries the session's sequence after it;
+	 * - a checkpoint that ends a stage and bills its model usage is acknowledged only once it is shipped, with everything
+	 *   the attempt kept before it: the batch records the usage under the attempt's fences, so the root's budget sees it
+	 *   as it is spent and an acknowledged step's usage is never lost, and the stage's transcript is in the shared
+	 *   journal when the stage ends. Spending of a stage still running reaches the budget through the heartbeat;
+	 * - a checkpoint that records worktree snapshots is kept only while the shared store holds every blob of them.
+	 *
+	 * What the host cannot do for a write (no `sessionState`, no `snapshotsStored`) commits it directly, after what the
+	 * attempt kept before it is shipped.
 	 */
 	async commit(
 		lease: AttemptLease,
 		mutation: PoolMutation,
 		commitShared: () => Promise<PoolCommitReceipt>,
-		renewAttempt?: () => Promise<void>,
+		options: LocalCommitOptions | (() => Promise<void>) = {},
 	): Promise<PoolCommitReceipt> {
+		const { operation, renewAttempt } = typeof options === "function" ? { renewAttempt: options } : options;
 		const fenced = this.attempts.get(lease.id)?.fenced;
 		if (fenced !== undefined && this.attempts.get(lease.id)?.lease.generation === lease.generation) throw fenced;
-		if (!shippableCheckpoint(mutation) || this.isSyncOnly(lease)) return this.commitDirect(lease, commitShared);
-		const checkpoint = mutation.checkpoint;
+		if (this.isSyncOnly(lease)) return this.commitDirect(lease, commitShared);
+		const write = localWrite(mutation, operation);
+		if (write === undefined) return this.commitDirect(lease, commitShared);
+		const billed = write.op === "checkpoint" ? poolCheckpointUsage(write.checkpoint!) : undefined;
+		const snapshots = checkpointSnapshots(write.checkpoint);
+		// A session the attempt did not create, nor write before, is taken up at the state the shared store holds it in.
+		const known =
+			write.session === undefined || write.op === "session-create"
+				? true
+				: await this.knownSession(lease, write.session.session);
+		if (known === undefined) return this.commitDirect(lease, commitShared);
+		const unknownSession = !known;
+		if (
+			(snapshots.length > 0 && this.options.snapshotsStored === undefined) ||
+			(unknownSession && this.options.sessionState === undefined)
+		)
+			return this.commitDirect(lease, commitShared);
 		await this.catchUp(lease);
-		const accepted = await this.acceptWithRenewal(
-			lease,
-			checkpointKey(checkpoint),
-			serializeJson(payloadOf(checkpoint)),
-			checkpoint.completedAt,
-			renewAttempt,
-		);
+		// Its blobs are in the shared store before the checkpoint is kept, as a direct commit checks them: the snapshot
+		// ships after them, and the batch that ships it checks them again.
+		if (snapshots.length > 0) await this.options.snapshotsStored!(write.checkpoint!);
+		if (unknownSession && !(await this.seedSession(lease, write.session!)))
+			return this.commitDirect(lease, commitShared);
+		const accepted = await this.acceptWithRenewal(lease, write, renewAttempt);
 		if (accepted === undefined) return this.commitDirect(lease, commitShared);
 		if (accepted.accepted) this.noteAccepted(lease, accepted.localSeq);
+		// Spent usage reaches the root's budget before the step that spent it is acknowledged: the batch that ships the
+		// checkpoint records it. The heartbeat records the same usage of the stage too, which changes nothing: usage is
+		// kept per attempt and stage at the larger of each value.
+		if (billed !== undefined) await this.flush(lease, URGENT_BATCH_CAP);
 		const attempt = this.attempts.get(lease.id);
-		// A full batch ships at once, unless a shipment is queued already: it takes what has come since when it runs.
-		if (attempt !== undefined && attempt.accepted.length >= this.options.maxBatch && !attempt.shipping)
+		// A full batch ships at once, unless a shipment is queued already: it takes what has come since when it runs. So
+		// does a stage that ended with a session: its transcript reaches the shared store as the stage's end does.
+		if (
+			attempt !== undefined &&
+			(attempt.accepted.length >= this.options.maxBatch || endsSessionStage(write.checkpoint)) &&
+			!attempt.shipping
+		)
 			void this.ship(attempt).catch(() => {});
-		return { at: Date.now(), local: true };
+		return { at: Date.now(), local: true, ...(accepted.lastSeq === undefined ? {} : { lastSeq: accepted.lastSeq }) };
+	}
+
+	/**
+	 * Whether the local journal holds the state of `session` as the attempt's writes left it. Undefined when the local
+	 * journal failed to say: the attempt commits to the shared journal from then on.
+	 */
+	private async knownSession(lease: AttemptLease, session: string): Promise<boolean | undefined> {
+		try {
+			return (await this.shard.session(lease, session)) !== undefined;
+		} catch (error) {
+			this.fallBack(lease, error as Error);
+			return undefined;
+		}
+	}
+
+	/**
+	 * Takes up a session the attempt writes for the first time at the state the shared store holds it in. False when the
+	 * local journal failed to: the attempt commits to the shared journal from then on.
+	 */
+	private async seedSession(lease: AttemptLease, write: ShipSessionWrite): Promise<boolean> {
+		const state = await this.options.sessionState!(lease, write.session);
+		try {
+			await this.shard.seedSession(lease, write.session, state);
+			return true;
+		} catch (error) {
+			this.fallBack(lease, error as Error);
+			return false;
+		}
 	}
 
 	/**
@@ -577,7 +758,12 @@ export class CheckpointShipping {
 		const batch: PoolShipBatch = {
 			id: sealed.id,
 			host: this.options.host,
-			events: sealed.events.map((event) => ({ localSeq: event.localSeq, key: event.key, payload: event.payload })),
+			events: sealed.events.map((event) => ({
+				localSeq: event.localSeq,
+				key: event.key,
+				payload: event.payload,
+				...(event.op === "checkpoint" ? {} : { op: event.op }),
+			})),
 		};
 		const began = this.now();
 		try {
@@ -607,12 +793,10 @@ export class CheckpointShipping {
 
 	private async acceptWithRenewal(
 		lease: AttemptLease,
-		key: string,
-		payload: string,
-		at: number,
+		write: LocalWrite,
 		renewAttempt?: () => Promise<void>,
-	): Promise<{ readonly localSeq: number; readonly accepted: boolean } | undefined> {
-		const accept = () => this.shard.accept(this.shard.root, lease, key, payload, at);
+	): Promise<{ readonly localSeq: number; readonly accepted: boolean; readonly lastSeq?: number } | undefined> {
+		const accept = () => this.shard.accept(this.shard.root, lease, write.key, write.payload, write.at, write.session);
 		try {
 			return await accept();
 		} catch (error) {
@@ -637,7 +821,15 @@ export class CheckpointShipping {
 	}
 
 	private acceptFailure(lease: AttemptLease, error: Error): undefined {
-		if (error instanceof StaleWorkLeaseError || error instanceof ShipIdentityConflictError) throw error;
+		// A refusal of the write itself, as the shared store would refuse it, goes to the attempt; only a failure of the local
+		// journal sends the attempt to the shared journal.
+		if (
+			error instanceof StaleWorkLeaseError ||
+			error instanceof ShipIdentityConflictError ||
+			error instanceof ShipSessionRefusal ||
+			error instanceof ShipSessionUnknownError
+		)
+			throw error;
 		this.fallBack(lease, error);
 		return undefined;
 	}
@@ -708,9 +900,9 @@ export class CheckpointShipping {
 }
 
 /** The checkpoint as the JSON value the shared journal records, checked serializable as the shared commit checks it. */
-function payloadOf(checkpoint: unknown) {
-	assertWorkflowSerializableObject(checkpoint, "Pool checkpoint");
-	return checkpoint;
+function payloadOf(value: unknown, label = "Pool checkpoint") {
+	assertWorkflowSerializableObject(value, label);
+	return value;
 }
 
 function timedCatchUpMs(normal: number, normalTiming: DeliveryTiming, urgentTiming: DeliveryTiming, size: number) {

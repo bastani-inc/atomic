@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters as stripAnsi } from "node:util";
 import { describe, test } from "vitest";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import {
 	createWorkflowLifecycleNotificationState,
 	formatWorkflowLifecycleNoticeText,
@@ -17,6 +18,7 @@ const STACK =
 	"Error: verify gate failed: 2 jobs\n    at verifyStage (/repo/ralph.ts:41:11)\n    at run (/repo/x.js:1:1)";
 
 function setup() {
+	initTheme("dark");
 	const store = createStore();
 	const sent: Array<{ details?: WorkflowLifecycleNoticeDetails }> = [];
 	installWorkflowLifecycleNotifications({
@@ -35,7 +37,7 @@ function setup() {
 		},
 	});
 	const card = (message: { details?: WorkflowLifecycleNoticeDetails }, width = 100) => {
-		const component = renderer?.({ details: message.details });
+		const component = renderer?.({ details: message.details }, { expanded: true });
 		assert.ok(component && typeof component !== "string");
 		return component.render(width).map((line) => stripAnsi(line));
 	};
@@ -113,7 +115,7 @@ describe("workflow completion card: outputs and diagnostics (#5224)", () => {
 				renderer = r;
 			},
 		});
-		const component = renderer?.({ details: notice.details });
+		const component = renderer?.({ details: notice.details }, { expanded: true });
 		assert.ok(component && typeof component !== "string");
 		for (const width of [80, 160]) {
 			for (const line of component.render(width)) {

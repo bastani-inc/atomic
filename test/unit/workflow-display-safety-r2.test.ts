@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { describe, it } from "vitest";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import {
 	createWorkflowLifecycleNotificationState,
 	installWorkflowLifecycleNotifications,
@@ -149,6 +150,7 @@ describe("workflow display safety regressions (#5224)", () => {
 	});
 
 	it("keeps a CRLF workflow name on one headline without literal \\x0d on the lifecycle notice card (#5224)", async () => {
+		initTheme("dark");
 		const store = createStore();
 		const sent: Array<{ details?: WorkflowLifecycleNoticeDetails }> = [];
 		installWorkflowLifecycleNotifications({
@@ -189,6 +191,40 @@ describe("workflow display safety regressions (#5224)", () => {
 		);
 		assert.doesNotMatch(card, /\\x0d/);
 		assert.match(card, /Workflow "release notes" completed/);
+	});
+
+	it("keeps collapsed lifecycle notices terminal-safe for workflow, stage and tool names (#5224)", () => {
+		initTheme("dark");
+		let renderer: PiMessageRenderer | undefined;
+		registerLifecycleNoticeRenderer({
+			rendererHost: {},
+			registerMessageRenderer: (_entryType, registered) => {
+				renderer = registered;
+			},
+		});
+		assert.ok(renderer);
+		for (const target of [
+			{ stageName: "\x1b[31mverify\u2066\x1b[0m" },
+			{ toolName: "\x1b[31mverify\u2066\x1b[0m" },
+		]) {
+			const details: WorkflowLifecycleNoticeDetails = {
+				kind: "failed",
+				scope: "run",
+				runId: "safe-notice",
+				workflowName: "\x1b[31mrelease\u202e\x1b[0m",
+				status: "failed",
+				createdAt: NOW,
+				...target,
+			};
+			const component = renderer({ details });
+			assert.ok(component && typeof component !== "string");
+			const rows: string[] = component.render(160).map(stripVTControlCharacters);
+			assert.equal(rows.length, 1);
+			assert.doesNotMatch(rows[0]!, BIDI_PATTERN);
+			assert.match(rows[0]!, /release<U\+202E>/);
+			assert.match(rows[0]!, /verify<U\+2066>/);
+			assert.doesNotMatch(rows[0]!, /\\x1b/);
+		}
 	});
 
 	it("removes ANSI and OSC escape sequences before sanitizing failed-stage details, logs and action notices (#5224)", async () => {

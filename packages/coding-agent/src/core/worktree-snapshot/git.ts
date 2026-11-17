@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { type ChildProcess, type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -7,6 +7,7 @@ import { getBinDir } from "../../config.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createGitEnvironment } from "../../utils/git-env.ts";
 import { isGitProvisionError } from "../../utils/git-errors.ts";
+import { type HostChildProcess, spawnHostProcess } from "../../utils/host-spawn.ts";
 import { redactUrlCredentials } from "../error-contract.ts";
 import { containProcessTree, type ProcessTreeContainment } from "../process-tree-containment.ts";
 import {
@@ -174,7 +175,7 @@ async function configuresSshCommand(options: GitRunOptions): Promise<boolean> {
 const ABORTED_GIT_EXIT_WAIT_MS = 10_000;
 const PROCESS_TREE_POLL_MS = 5;
 
-function killChild(child: ChildProcessWithoutNullStreams, detached: boolean): void {
+function killChild(child: HostChildProcess, detached: boolean): void {
 	if (detached && child.pid !== undefined) {
 		try {
 			process.kill(-child.pid, "SIGKILL");
@@ -233,7 +234,7 @@ function taskkillTree(pid: number, deadline: number): Promise<number[]> {
 }
 
 async function stopCommand(
-	child: ChildProcessWithoutNullStreams,
+	child: HostChildProcess,
 	detached: boolean,
 	tree: ProcessTreeContainment | undefined,
 ): Promise<void> {
@@ -343,9 +344,10 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 					error,
 				);
 	return new Promise<GitRunResult>((resolve, reject) => {
-		let child: ChildProcessWithoutNullStreams;
+		let child: HostChildProcess;
 		try {
-			child = spawn(executable.path, argv, { cwd: options.cwd, env, stdio: ["pipe", "pipe", "pipe"], detached });
+			// Without fork where that costs the host time in proportion to its memory (#5345).
+			child = spawnHostProcess(executable.path, argv, { cwd: options.cwd, env, stdio: "pipe", detached });
 		} catch (error) {
 			// Node throws instead of emitting `error` for some failures, such as a path component that is a file.
 			reject(spawnFailure(error as NodeJS.ErrnoException));
@@ -368,15 +370,15 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 			settled = true;
 			action();
 		};
-		child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-		child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+		child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));
+		child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
 		child.on("error", (error: NodeJS.ErrnoException) =>
 			finish(() => {
 				tree?.close();
 				reject(spawnFailure(error));
 			}),
 		);
-		child.stdin.on("error", exitStatusReportsClosedInput);
+		child.stdin?.on("error", exitStatusReportsClosedInput);
 		child.on("close", (code) =>
 			finish(() => {
 				const result = {
@@ -398,7 +400,7 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 				});
 			}),
 		);
-		child.stdin.end(options.input === undefined ? undefined : options.input);
+		child.stdin?.end(options.input === undefined ? undefined : options.input);
 	});
 }
 
