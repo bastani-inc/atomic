@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { exitedProcess } from "../../../test/helpers/exited-process.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
-import { thisProcess } from "../src/core/worktree-snapshot/process-holder.ts";
+import { thisProcess } from "../src/core/worktree-snapshot/process-holder.js";
 import { pendingLfsDownload } from "../src/core/worktree-snapshot/restore.ts";
 
 const statHook = vi.hoisted(() => ({
@@ -110,7 +110,7 @@ describe("an LFS download an interrupted resume left pending (#5099)", () => {
 
 	test("a mark whose process is gone has its locks removed and its download finished, which clears it (#5099)", async () => {
 		const { clone, remote, head, tree, mark, locks } = await checkout();
-		const holder = { ...thisProcess(), pid: exitedPid() };
+		const holder = { ...(await thisProcess()), pid: exitedPid() };
 		writeFileSync(mark, JSON.stringify({ head, tree, remotes: [remote], holder }));
 		for (const lock of locks) writeFileSync(lock, "");
 
@@ -127,7 +127,7 @@ describe("an LFS download an interrupted resume left pending (#5099)", () => {
 
 	test("a mark of this process, which no longer downloads, counts as stopped (#5099)", async () => {
 		const { clone, remote, head, tree, mark, locks } = await checkout();
-		writeFileSync(mark, JSON.stringify({ head, tree, remotes: [remote], holder: thisProcess() }));
+		writeFileSync(mark, JSON.stringify({ head, tree, remotes: [remote], holder: await thisProcess() }));
 		writeFileSync(locks[1]!, "");
 		await (await pendingLfsDownload(clone))?.();
 		assert.equal(existsSync(locks[1]!), false);
@@ -144,7 +144,7 @@ describe("an LFS download an interrupted resume left pending (#5099)", () => {
 
 	test("a download another running process holds is waited for, and done once that process ends it (#5099)", async () => {
 		const { clone, remote, head, tree, mark } = await checkout();
-		const parent = { host: thisProcess().host, pid: process.ppid };
+		const parent = { host: (await thisProcess()).host, pid: process.ppid };
 		writeFileSync(mark, JSON.stringify({ head, tree, remotes: [remote], holder: parent }));
 		const pull = await pendingLfsDownload(clone);
 		assert.ok(pull);
@@ -161,7 +161,7 @@ describe("an LFS download an interrupted resume left pending (#5099)", () => {
 
 	test("a mark removed right after it is read and before its holder is checked finishes cleanly (#5099)", async () => {
 		const { clone, remote, head, tree, mark } = await checkout();
-		const parent = { host: thisProcess().host, pid: process.ppid };
+		const parent = { host: (await thisProcess()).host, pid: process.ppid };
 		writeFileSync(mark, JSON.stringify({ head, tree, remotes: [remote], holder: parent }));
 		const pull = await pendingLfsDownload(clone);
 		assert.ok(pull);
@@ -173,7 +173,7 @@ describe("an LFS download an interrupted resume left pending (#5099)", () => {
 
 	test("a resume that judged a stopped holder never finds the mark half-written by the resume that took over (#5099)", async () => {
 		const { clone, remote, head, tree, mark } = await checkout();
-		const stopped = { ...thisProcess(), pid: exitedPid() };
+		const stopped = { ...(await thisProcess()), pid: exitedPid() };
 		writeFileSync(mark, JSON.stringify({ head, tree, remotes: [remote], holder: stopped }));
 
 		// The late resume read the mark naming the stopped holder and is held while it judges that holder.
@@ -223,7 +223,7 @@ describe("an LFS download an interrupted resume left pending (#5099)", () => {
 
 	test("a download whose holder stops while it is waited for is taken over (#5099)", async () => {
 		const { clone, remote, head, tree, mark } = await checkout();
-		const parent = { host: thisProcess().host, pid: process.ppid };
+		const parent = { host: (await thisProcess()).host, pid: process.ppid };
 		writeFileSync(mark, JSON.stringify({ head, tree, remotes: [remote], holder: parent }));
 		const pull = await pendingLfsDownload(clone);
 		assert.ok(pull);

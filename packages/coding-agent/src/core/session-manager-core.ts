@@ -64,7 +64,7 @@ import {
 	generateId,
 	validateSessionFileEntries,
 } from "./session-manager-validation.ts";
-import { assertSessionNotOpenElsewhere, holdSessionOpenMarker } from "./session-open-markers.ts";
+import { assertSessionNotOpenElsewhere, holdSessionOpenMarker } from "./session-open-markers.js";
 import { listSessionStore } from "./session-store-list.js";
 import {
 	assertSessionBlobStore,
