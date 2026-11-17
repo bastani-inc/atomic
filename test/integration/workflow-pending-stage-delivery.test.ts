@@ -4931,14 +4931,23 @@ test("the launching session steers its own run's stages while an unrelated sessi
 		assert.doesNotMatch(outsiderList.content[0]?.text ?? "", new RegExp(`${group}/work`));
 		assert.equal(store.pendingStageMessagesFor(runId, "work-3").length, 1);
 		assert.equal(injectedTexts(liveStage).filter((text) => text.includes("outsider")).length, 0);
-		// The run's stages gain no route to the launcher: it is not a member of their group.
+		// The run's stages gain no general route to the launcher, which is not a member of their group: a stage can only
+		// answer, by the name its message showed, the launcher that wrote to it. Nobody else becomes reachable.
+		const stageToOutsider = await executeIntercom(liveStage, {
+			action: "send",
+			to: "issue-4006-outsider",
+			message: "stage to outsider",
+		});
+		assert.equal(stageToOutsider.isError, true);
+		assert.equal(outsider.injectedMessages.length, 0);
 		const stageToLauncher = await executeIntercom(liveStage, {
 			action: "send",
 			to: "issue-4006-launcher",
 			message: "stage to launcher",
 		});
-		assert.equal(stageToLauncher.isError, true);
-		assert.equal(launcher.injectedMessages.length, 0);
+		assert.equal(stageToLauncher.isError, false, stageToLauncher.content[0]?.text);
+		await launcher.waitForInjectedCount(1);
+		assert.equal(injectedTexts(launcher).filter((text) => text.includes("stage to launcher")).length, 1);
 
 		// Joining the documented group grants the same authority.
 		const joined = await executeIntercom(outsider, { action: "join", group });

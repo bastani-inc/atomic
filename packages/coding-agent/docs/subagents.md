@@ -58,6 +58,8 @@ The catalog uses the same effective discovery rules as execution, so overridden 
 
 All builtin subagents default to `model: "auto"`. Atomic selects a model and reasoning effort from your available catalog using its shipped evaluation guidance before launching each child, favouring cheaper models for exploration and routine implementation and stronger ones for review and verification. You can also set `auto` on a custom agent or call. A concrete per-call model overrides the builtin default. Custom agents with no model keep their existing inheritance. See [Automatic model selection](/subagents/reference#automatic-model-selection) for configuration and failure handling.
 
+A child never waits on a model it cannot use. Routing chooses only among models whose provider has credentials, and a model in a child's fallback chain whose provider has none is skipped before the child starts, listed in its model attempts. A provider that rejects its credentials during the task is not asked again; the child moves to its next fallback of another provider. When no model in the chain has credentials, the launch fails at once with an error naming each model and the provider it lacks. See [Fallbacks and credentials](/models/model-selection#fallbacks-and-credentials).
+
 ## Subagent execution is non-interactive
 
 Supported subagent launches start immediately without opening a preview/editor prompt or waiting for terminal input. This applies to single, parallel, forked, fanout, and prompt-template execution. Ask any necessary questions in the parent conversation before delegating.
