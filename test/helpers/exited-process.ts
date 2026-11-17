@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,7 +36,7 @@ export async function keptExitedPid(): Promise<KeptExitedPid> {
 	const pid = child.pid!;
 	const exited = once(child, "exit");
 	try {
-		const release = process.platform === "win32" ? await holdHandle(pid) : async () => {};
+		const release = await keepProcessPid(child);
 		return { pid, release };
 	} finally {
 		child.kill("SIGKILL");
@@ -44,14 +44,31 @@ export async function keptExitedPid(): Promise<KeptExitedPid> {
 	}
 }
 
-async function holdHandle(pid: number): Promise<() => Promise<void>> {
+export async function keepProcessPid(child: ChildProcess): Promise<() => Promise<void>> {
+	return keepWindowsProcessPid(childPidWhileNodeOwnsHandle(child), () => {
+		childPidWhileNodeOwnsHandle(child);
+	});
+}
+
+export async function keepProcessPidByStartTime(pid: number, creationTime: string): Promise<() => Promise<void>> {
+	assert.match(creationTime, /^[1-9]\d*$/u);
+	return keepWindowsProcessPid(pid, (openedCreationTime) => {
+		assert.equal(openedCreationTime, creationTime, `Process ${pid} start time changed before its PID could be kept`);
+	});
+}
+
+async function keepWindowsProcessPid(
+	pid: number,
+	confirmIdentity: (creationTime: string) => void,
+): Promise<() => Promise<void>> {
+	if (process.platform !== "win32") return async () => {};
 	const holder = spawn(
 		join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
 		[
 			"-NoProfile",
 			"-NonInteractive",
 			"-Command",
-			`$ErrorActionPreference = 'Stop'; $p = [System.Diagnostics.Process]::GetProcessById(${pid}); $null = $p.Handle; [Console]::Out.WriteLine('held'); $null = [Console]::In.ReadLine()`,
+			`$ErrorActionPreference = 'Stop'; $p = [System.Diagnostics.Process]::GetProcessById(${pid}); $null = $p.Handle; [Console]::Out.WriteLine($p.StartTime.ToFileTimeUtc().ToString()); $null = [Console]::In.ReadLine()`,
 		],
 		{ stdio: ["pipe", "pipe", "pipe"], windowsHide: true },
 	);
@@ -61,15 +78,39 @@ async function holdHandle(pid: number): Promise<() => Promise<void>> {
 		stderr += chunk.toString();
 	});
 	const ended = new Promise<void>((resolve) => holder.once("close", () => resolve()));
-	await new Promise<void>((resolve, reject) => {
-		holder.stdout.once("data", () => resolve());
-		holder.once("error", reject);
-		holder.once("exit", (code) =>
-			reject(new Error(`no handle to process ${pid} could be held (exit ${code}): ${stderr}`)),
-		);
-	});
-	return async () => {
+	const release = async () => {
 		holder.stdin.end();
 		await ended;
 	};
+	try {
+		await new Promise<void>((resolve, reject) => {
+			let output = "";
+			holder.stdout.on("data", (chunk: Buffer) => {
+				output += chunk.toString();
+				if (!output.includes("\n")) return;
+				try {
+					confirmIdentity(output.trim());
+					resolve();
+				} catch (error) {
+					reject(error);
+				}
+			});
+			holder.once("error", reject);
+			holder.once("exit", (code) =>
+				reject(new Error(`no handle to process ${pid} could be held (exit ${code}): ${stderr}`)),
+			);
+		});
+		return release;
+	} catch (error) {
+		await release();
+		throw error;
+	}
+}
+
+function childPidWhileNodeOwnsHandle(child: ChildProcess): number {
+	if (child.pid === undefined) throw new Error("Cannot keep a process PID before the child has spawned");
+	if (child.exitCode !== null || child.signalCode !== null) {
+		throw new Error(`Process ${child.pid} exited before its PID could be kept`);
+	}
+	return child.pid;
 }
