@@ -860,7 +860,7 @@ export class StageSessionController {
 					release(true);
 					if (this.sessionPromise === pending) {
 						this.sessionPromise = undefined;
-						this.activeCandidateIndex = undefined;
+						if (this.releasedSettings === undefined) this.activeCandidateIndex = undefined;
 					}
 				},
 			);
@@ -2948,13 +2948,11 @@ export class StageSessionController {
 				candidates[this.activeCandidateIndex]?.id === restoredId
 					? this.activeCandidateIndex
 					: undefined;
-			// An unspecified effort accepts the SDK's effective effort, but must not
-			// shadow a later candidate explicitly declaring the saved reasoning tier.
 			const restoredIndex =
-				exactRestoredIndex >= 0
+				retainedIndex ??
+				(exactRestoredIndex >= 0
 					? exactRestoredIndex
-					: (retainedIndex ??
-						candidates.findIndex((entry) => entry.id === restoredId && entry.reasoningLevel === undefined));
+					: candidates.findIndex((entry) => entry.id === restoredId && entry.reasoningLevel === undefined));
 			this.activeCandidateIndex = restoredIndex >= 0 ? restoredIndex : undefined;
 			this.selectedModel = restoredId ?? first.id;
 			this.resumeCurrentSession = true;
