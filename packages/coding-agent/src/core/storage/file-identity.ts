@@ -854,9 +854,8 @@ function parentStorageOwner(parent: string): string | undefined {
 
 function applyStorageHomeDecision(decision: StorageHomeDecision, agentPath: string): SettledStorageHome {
 	if (decision.defaultHome) {
-		const home =
-			defaultHomeForAgent(agentPath, join(getHomeDir(), CONFIG_DIR_NAME)) ?? dirname(canonicalPath(agentPath));
-		return createDefaultStorageHomeEntry(home);
+		const home = defaultHomeForAgent(agentPath, join(getHomeDir(), CONFIG_DIR_NAME));
+		return home === undefined ? createStorageHomeEntry(agentPath) : createDefaultStorageHomeEntry(home);
 	}
 	if (decision.parentOwner === undefined) return createStorageHomeEntry(agentPath);
 	const workflows = join(decision.home, "workflows");

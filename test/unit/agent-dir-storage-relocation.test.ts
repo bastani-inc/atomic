@@ -66,6 +66,24 @@ test.each(["move", "share"])(
 	},
 );
 
+test("a default profile copied to a custom location cannot select an unrelated parent store (#5242)", () => {
+	const home = join(root, "copied-default-home");
+	const original = join(home, ".atomic", "agent");
+	const parent = join(root, "custom-profiles");
+	const custom = join(parent, "custom");
+	const sibling = join(parent, "sibling");
+	mkdirSync(original, { recursive: true });
+	useHome(home);
+	assert.equal(defaultSessionDatabasePath(original, {}), join(home, ".atomic", "workflows", "journal.sqlite"));
+	cpSync(original, custom, { recursive: true });
+	mkdirSync(sibling);
+	mkdirSync(join(parent, "workflows"));
+	writeFileSync(join(parent, "workflows", "journal.sqlite"), "unrelated history");
+	resetStorageHomeCacheForTests();
+	assert.equal(defaultSessionDatabasePath(custom, {}), join(custom, "workflows", "journal.sqlite"));
+	assert.equal(defaultSessionDatabasePath(sibling, {}), join(parent, "workflows", "journal.sqlite"));
+});
+
 test("default relative selections follow the current home when the agent directory is shared (#5242)", () => {
 	const original = join(root, "relative-original-home");
 	const current = join(root, "relative-current-home");
