@@ -693,10 +693,17 @@ test("a host whose local journal cannot take an attempt's lease commits that att
 	assert.deepEqual(await local.pending(LEASE), []);
 });
 
-test("a stage checkpoint with a session ships like any other, at once when it ends the stage (#4768)", async () => {
+test("a stage checkpoint with a session ships at its end before a full batch or interval (#4768, #5344)", async () => {
 	const { shard: local } = await shard();
 	const shared = fakeShared();
-	const shipping = shippingOf(local, shared.deliver);
+	const shipping = new CheckpointShipping(local, {
+		...SHIPPING,
+		maxBatch: 64,
+		maxLagMs: 600_000,
+		host: "host",
+		deliver: shared.deliver,
+	});
+	opened.push(shipping);
 	await shipping.hold(LEASE, LEASE_MS);
 	const stage = (id: string, extra: Record<string, unknown> = {}) =>
 		({
