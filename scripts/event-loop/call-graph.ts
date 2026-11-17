@@ -45,7 +45,13 @@ import {
 	SyntaxKind,
 	skipTrivia,
 } from "typescript/unstable/ast";
-import { type NodeHandle, type Project, SymbolFlags, type Symbol as TsSymbol } from "typescript/unstable/sync";
+import {
+	type NodeHandle,
+	type Project,
+	SymbolFlags,
+	type Symbol as TsSymbol,
+	type Type as TsType,
+} from "typescript/unstable/sync";
 import {
 	type BlockingApi,
 	CLOCK_READS,
@@ -1601,12 +1607,10 @@ export class CallGraphBuilder {
 		}
 	}
 
-	private typesAt(
-		nodes: readonly Node[],
-	): Array<ReturnType<typeof this.project.checker.getTypeAtLocation> | undefined> {
-		const types: Array<ReturnType<typeof this.project.checker.getTypeAtLocation> | undefined> = [];
+	private typesAt(nodes: readonly Node[]): Array<TsType | undefined> {
+		const types: Array<TsType | undefined> = [];
 		for (let start = 0; start < nodes.length; start += RESOLVE_BATCH) {
-			let batch: ReadonlyArray<ReturnType<typeof this.project.checker.getTypeAtLocation> | undefined>;
+			let batch: ReadonlyArray<TsType | undefined>;
 			try {
 				batch = this.project.checker.getTypeAtLocation(nodes.slice(start, start + RESOLVE_BATCH));
 			} catch {
@@ -1617,10 +1621,7 @@ export class CallGraphBuilder {
 		return types;
 	}
 
-	private propertyKeys(
-		type: ReturnType<typeof this.project.checker.getTypeAtLocation> | undefined,
-		name: string,
-	): string[] {
+	private propertyKeys(type: TsType | undefined, name: string): string[] {
 		if (type === undefined) return [];
 		let property: TsSymbol | undefined;
 		try {
