@@ -3,7 +3,7 @@ import { copyFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises
 import { dirname, join } from "node:path";
 import { getBlueprintActionsDir, getGlobalBlueprintPath, getProjectBlueprintPath } from "../../../config.js";
 import { getHomeDir } from "../../../utils/paths.ts";
-import { getShellEnv } from "../../../utils/shell.ts";
+import { getShellEnvAsync } from "../../../utils/shell.ts";
 import type { ActionFetcher } from "./actions.ts";
 import { sessionEnvrcPath } from "./envrc.ts";
 import {
@@ -592,7 +592,7 @@ async function executeBuild(
 		full,
 		ledger,
 		envrcPath,
-		environment: config.environment ?? getShellEnv(),
+		environment: config.environment ?? (await getShellEnvAsync()),
 		signal,
 		layers,
 		failures: [],

@@ -3,6 +3,7 @@ import type { ImageContent } from "@bastani/atomic-ai/compat";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
 import type { BashOutputChannel } from "../../core/tools/bash.js";
+import { removeOwnedInteractiveEngineBootstrapAsync } from "../../utils/interactive-engine-bootstrap.ts";
 import { sleep } from "../../utils/sleep.ts";
 import type { ActivityWatchdogDiagnostic } from "../interactive-engine/activity-watchdog.ts";
 import type {
@@ -25,6 +26,7 @@ import {
 	appendBoundedStderr,
 	createInteractiveJsonlOptions,
 	createStderrReporter,
+	prepareRpcClientBootstrap,
 	restartCliArgs,
 	spawnRpcClientProcess,
 	terminateRpcClientProcess,
@@ -122,7 +124,7 @@ export class RpcClient extends RpcClientApi {
 		this.options = options;
 	}
 
-	async start(): Promise<void> {
+	async start(restartPermit?: number): Promise<void> {
 		if (this.process) {
 			throw new Error("Client already started");
 		}
@@ -138,6 +140,22 @@ export class RpcClient extends RpcClientApi {
 		}
 		if (this.options.args) {
 			args.push(...this.options.args);
+		}
+
+		const startRevision = restartPermit ?? this.restartRevision;
+		const preparedBootstrap = this.options.interactiveEngine
+			? await prepareRpcClientBootstrap(this.options.interactiveEngine.apiKey)
+			: undefined;
+		if (this.stopPromise) {
+			await this.stopPromise.catch(() => {});
+		}
+		if (this.restartRevision !== startRevision) {
+			await removeOwnedInteractiveEngineBootstrapAsync(preparedBootstrap?.bootstrap);
+			throw rpcTransportError(restartPermit !== undefined ? RESTART_CANCELLED_MESSAGE : "Agent process stopped");
+		}
+		if (this.process) {
+			await removeOwnedInteractiveEngineBootstrapAsync(preparedBootstrap?.bootstrap);
+			throw new Error("Client already started");
 		}
 
 		const generation = ++this.generation;
@@ -162,6 +180,7 @@ export class RpcClient extends RpcClientApi {
 			...(this.options.interactiveEngine?.apiKey
 				? { interactiveEngineApiKey: this.options.interactiveEngine.apiKey }
 				: {}),
+			...(preparedBootstrap ? { preparedBootstrap } : {}),
 		});
 		this.process = childProcess;
 		this.stdinWriter = new QueuedWriter(childProcess.stdin!);
@@ -437,7 +456,7 @@ export class RpcClient extends RpcClientApi {
 			cwd: options?.cwd ?? this.options.cwd,
 			args: restartCliArgs(this.options.args, sessionId, options?.sessionDirectory),
 		};
-		await this.start();
+		await this.start(permit);
 		await this.waitForInteractiveEngineBound();
 	}
 

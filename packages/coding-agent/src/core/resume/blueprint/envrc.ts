@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { join, resolve, win32 } from "node:path";
-import { getShellConfig } from "../../../utils/shell.ts";
+import { getShellConfigAsync } from "../../../utils/shell.ts";
 import { pathExists } from "../../tools/path-utils.ts";
 
 /** `value` as one single-quoted bash word. */
@@ -45,7 +45,7 @@ export async function sessionEnvironmentPrefix(storeDir: string, roots: Iterable
  * starting from `base`. Used where a step cannot source the file itself: PowerShell and GitHub Actions.
  */
 export async function evaluateEnvrc(envrcPath: string, base: NodeJS.ProcessEnv): Promise<NodeJS.ProcessEnv> {
-	const { shell, args, commandTransport } = getShellConfig();
+	const { shell, args, commandTransport } = await getShellConfigAsync();
 	const script = [
 		"set -ae",
 		'. "$1"',

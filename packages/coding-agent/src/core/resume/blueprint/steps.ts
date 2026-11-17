@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { getPowerShellConfig, getShellConfig, type ShellConfig } from "../../../utils/shell.ts";
+import { getPowerShellConfigAsync, getShellConfigAsync, type ShellConfig } from "../../../utils/shell.ts";
 import { recordBlueprintStep } from "../timings.ts";
 import { type ActionFetcher, runAction } from "./actions.ts";
 import { bashPath, evaluateEnvrc, shellQuote } from "./envrc.ts";
@@ -148,9 +148,13 @@ async function startStep(
 	const options = { timeoutMs: context.timeoutMs, signal: context.signal };
 	if (runsInPowerShell(context.shell, context.platform)) {
 		const evaluated = await evaluateEnvrc(context.envrcPath, context.environment);
-		return runLoggedProcess(powerShellProcess(step, context, getPowerShellConfig(), evaluated), log, options);
+		return runLoggedProcess(
+			powerShellProcess(step, context, await getPowerShellConfigAsync(), evaluated),
+			log,
+			options,
+		);
 	}
-	return runLoggedProcess(bashProcess(step, context, getShellConfig()), log, options);
+	return runLoggedProcess(bashProcess(step, context, await getShellConfigAsync()), log, options);
 }
 
 function describeExit(exit: ProcessExit, timeoutMs: number): string {

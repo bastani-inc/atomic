@@ -1,10 +1,11 @@
 import { accessSync, constants } from "node:fs";
+import { access } from "node:fs/promises";
 import { delimiter, join, win32 } from "node:path";
 import { Worker } from "node:worker_threads";
-import { spawn, spawnSync } from "child_process";
+import { execFile, spawn, spawnSync } from "child_process";
 import { getBinDir } from "../config.js";
 import { createChildProcessEnvironment } from "./child-process.ts";
-import { getGitShellEnvironment } from "./tools-manager.ts";
+import { getGitShellEnvironment, getGitShellEnvironmentAsync } from "./tools-manager.ts";
 
 export interface ShellConfig {
 	shell: string;
@@ -41,6 +42,15 @@ function shellPathExists(path: string): boolean {
 	}
 }
 
+async function shellPathExistsAsync(path: string): Promise<boolean> {
+	try {
+		await access(path, constants.F_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 const MISSING_EXECUTABLE_RECHECK_MS = 30_000;
 
 interface ExecutableLookup {
@@ -56,6 +66,12 @@ function isReusableLookup(lookup: ExecutableLookup): boolean {
 		: shellPathExists(lookup.path);
 }
 
+async function isReusableLookupAsync(lookup: ExecutableLookup): Promise<boolean> {
+	return lookup.path === null
+		? Date.now() - lookup.checkedAt < MISSING_EXECUTABLE_RECHECK_MS
+		: shellPathExistsAsync(lookup.path);
+}
+
 /**
  * Find an executable on PATH (cross-platform), memoized per PATH value.
  * A missing executable is looked up again once its result is 30 seconds old.
@@ -65,6 +81,15 @@ function findExecutableOnPath(executable: string): string | null {
 	const cached = executablePathLookups.get(key);
 	if (cached && isReusableLookup(cached)) return cached.path;
 	const path = lookupExecutableOnPath(executable);
+	executablePathLookups.set(key, { path, checkedAt: Date.now() });
+	return path;
+}
+
+async function findExecutableOnPathAsync(executable: string): Promise<string | null> {
+	const key = `${executable}\0${process.env.PATH ?? ""}`;
+	const cached = executablePathLookups.get(key);
+	if (cached && (await isReusableLookupAsync(cached))) return cached.path;
+	const path = await lookupExecutableOnPathAsync(executable);
 	executablePathLookups.set(key, { path, checkedAt: Date.now() });
 	return path;
 }
@@ -83,6 +108,21 @@ function scanWindowsPath(executable: string): string | null {
 		for (const extension of extensions) {
 			const candidate = win32.join(directory, `${executable}${extension}`);
 			if (shellPathExists(candidate)) return candidate;
+		}
+	}
+	return null;
+}
+
+async function scanWindowsPathAsync(executable: string): Promise<string | null> {
+	const extensions = win32.extname(executable)
+		? [""]
+		: (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+	for (const entry of [process.cwd(), ...(process.env.PATH ?? "").split(";")]) {
+		const directory = entry.trim().replace(/^"(.*)"$/, "$1");
+		if (!directory) continue;
+		for (const extension of extensions) {
+			const candidate = win32.join(directory, `${executable}${extension}`);
+			if (await shellPathExistsAsync(candidate)) return candidate;
 		}
 	}
 	return null;
@@ -108,6 +148,34 @@ function lookupExecutableOnPath(executable: string): string | null {
 		// Ignore errors
 	}
 	return null;
+}
+
+async function lookupExecutableOnPathAsync(executable: string): Promise<string | null> {
+	if (process.platform === "win32") return scanWindowsPathAsync(executable);
+
+	return new Promise((resolve) => {
+		try {
+			execFile(
+				"which",
+				[executable],
+				{
+					encoding: "utf-8",
+					timeout: 5000,
+					env: createChildProcessEnvironment(),
+				},
+				(error, stdout) => {
+					if (error !== null || !stdout) {
+						resolve(null);
+						return;
+					}
+					const firstMatch = String(stdout).trim().split(/\r?\n/)[0];
+					resolve(firstMatch || null);
+				},
+			);
+		} catch {
+			resolve(null);
+		}
+	});
 }
 
 /**
@@ -172,6 +240,58 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 	return { shell: "sh", args: ["-c"] };
 }
 
+/** {@link getShellConfig} without blocking the event loop. */
+export async function getShellConfigAsync(customShellPath?: string): Promise<ShellConfig> {
+	if (customShellPath) {
+		if (await shellPathExistsAsync(customShellPath)) {
+			return getBashShellConfig(customShellPath);
+		}
+		throw new Error(`Custom shell path not found: ${customShellPath}`);
+	}
+
+	if (process.platform === "win32") {
+		const paths: string[] = [];
+		const programFiles = process.env.ProgramFiles;
+		if (programFiles) {
+			paths.push(`${programFiles}\\Git\\bin\\bash.exe`);
+		}
+		const programFilesX86 = process.env["ProgramFiles(x86)"];
+		if (programFilesX86) {
+			paths.push(`${programFilesX86}\\Git\\bin\\bash.exe`);
+		}
+
+		for (const path of paths) {
+			if (await shellPathExistsAsync(path)) {
+				return getBashShellConfig(path);
+			}
+		}
+
+		const bashOnPath = await findExecutableOnPathAsync("bash.exe");
+		if (bashOnPath) {
+			return getBashShellConfig(bashOnPath);
+		}
+
+		throw new Error(
+			`No bash shell found. Options:\n` +
+				`  1. Install Git for Windows: https://git-scm.com/download/win\n` +
+				`  2. Add your bash to PATH (Cygwin, MSYS2, etc.)\n` +
+				"  3. Set shellPath in settings.json\n\n" +
+				`Searched Git Bash in:\n${paths.map((p) => `  ${p}`).join("\n")}`,
+		);
+	}
+
+	if (await shellPathExistsAsync("/bin/bash")) {
+		return getBashShellConfig("/bin/bash");
+	}
+
+	const bashOnPath = await findExecutableOnPathAsync("bash");
+	if (bashOnPath) {
+		return getBashShellConfig(bashOnPath);
+	}
+
+	return { shell: "sh", args: ["-c"] };
+}
+
 export const POWERSHELL_ARGS = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"] as const;
 
 export function getPowerShellConfig(): ShellConfig {
@@ -195,6 +315,27 @@ export function getPowerShellConfig(): ShellConfig {
 	return { shell, args: [...POWERSHELL_ARGS] };
 }
 
+/** {@link getPowerShellConfig} without blocking the event loop. */
+export async function getPowerShellConfigAsync(): Promise<ShellConfig> {
+	if (process.platform !== "win32") throw new Error("The powershell tool is only available on Windows.");
+	let shell = await findExecutableOnPathAsync("pwsh.exe");
+	const programFiles = process.env.ProgramFiles;
+	if (!shell && programFiles) {
+		const pwsh7 = win32.join(programFiles, "PowerShell", "7", "pwsh.exe");
+		if (await shellPathExistsAsync(pwsh7)) shell = pwsh7;
+	}
+
+	shell ??= await findExecutableOnPathAsync("powershell.exe");
+	const systemRoot = process.env.SystemRoot;
+	if (!shell && systemRoot) {
+		const windowsPowerShell = win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+		if (await shellPathExistsAsync(windowsPowerShell)) shell = windowsPowerShell;
+	}
+
+	if (!shell) throw new Error("No PowerShell executable found. Install PowerShell or add it to PATH.");
+	return { shell, args: [...POWERSHELL_ARGS] };
+}
+
 export function isPowerShellAvailable(): boolean {
 	try {
 		getPowerShellConfig();
@@ -204,12 +345,23 @@ export function isPowerShellAvailable(): boolean {
 	}
 }
 
-export function getShellEnv(): NodeJS.ProcessEnv {
+/** {@link isPowerShellAvailable} without blocking the event loop. */
+export async function isPowerShellAvailableAsync(): Promise<boolean> {
+	try {
+		await getPowerShellConfigAsync();
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function buildShellEnv(
+	git: { readonly pathEntry: string; readonly env: Record<string, string> } | undefined,
+): NodeJS.ProcessEnv {
 	const binDir = getBinDir();
 	const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
 	const currentPath = process.env[pathKey] ?? "";
 	const pathEntries = currentPath.split(delimiter).filter(Boolean);
-	const git = getGitShellEnvironment(process.env);
 	const additions = [...(git === undefined ? [] : [git.pathEntry]), binDir].filter(
 		(entry) => !pathEntries.includes(entry),
 	);
@@ -220,6 +372,15 @@ export function getShellEnv(): NodeJS.ProcessEnv {
 		...git?.env,
 		[pathKey]: updatedPath,
 	};
+}
+
+export function getShellEnv(): NodeJS.ProcessEnv {
+	return buildShellEnv(getGitShellEnvironment(process.env));
+}
+
+/** {@link getShellEnv} without blocking the event loop. */
+export async function getShellEnvAsync(): Promise<NodeJS.ProcessEnv> {
+	return buildShellEnv(await getGitShellEnvironmentAsync(process.env));
 }
 
 interface DetachedChildGuardian {

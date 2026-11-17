@@ -4,7 +4,7 @@ import { access, appendFile, mkdir, readFile, rm, stat, writeFile } from "node:f
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { parse } from "yaml";
 import { isBunBinary, isBunRuntime } from "../../../config.js";
-import { getPowerShellConfig, getShellConfig, type ShellConfig } from "../../../utils/shell.ts";
+import { getPowerShellConfigAsync, getShellConfigAsync, type ShellConfig } from "../../../utils/shell.ts";
 import { renameWithRetry } from "../../rename-retry.ts";
 import { isWorkspaceGitError } from "../../workspace/errors.ts";
 import { redactUrlCredentials, runGit } from "../../worktree-snapshot/git.ts";
@@ -897,16 +897,16 @@ export function powerShellInvocation(config: ShellConfig, script: string): Shell
 	return { executable: config.shell, args: [...config.args, text] };
 }
 
-function shellInvocation(
+async function shellInvocation(
 	context: RunContext,
 	frame: ActionFrame,
 	shell: string,
 	script: string,
-): ShellInvocation | Error {
+): Promise<ShellInvocation | Error> {
 	const name = shell.toLowerCase();
 	if (name === "bash" || name === "sh") {
 		try {
-			return bashInvocation(getShellConfig(), name, script);
+			return bashInvocation(await getShellConfigAsync(), name, script);
 		} catch (error) {
 			return error as Error;
 		}
@@ -916,7 +916,7 @@ function shellInvocation(
 			throw failure(context, frame, "unsupported-expression", "PowerShell steps are only supported on Windows");
 		}
 		try {
-			return powerShellInvocation(getPowerShellConfig(), script);
+			return powerShellInvocation(await getPowerShellConfigAsync(), script);
 		} catch (error) {
 			return error as Error;
 		}
@@ -982,7 +982,7 @@ async function runCompositeAction(
 				depth: frame.depth + 1,
 			});
 		} else {
-			const invocation = shellInvocation(
+			const invocation = await shellInvocation(
 				context,
 				frame,
 				interpolate(step.action.shell, expressions).trim(),

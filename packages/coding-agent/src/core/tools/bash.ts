@@ -10,8 +10,8 @@ import { APP_NAME } from "../../config.js";
 import { theme } from "../../modes/interactive/theme/theme.js";
 import { createChildProcessEnvironment, waitForChildProcess } from "../../utils/child-process.ts";
 import {
-	getShellConfig,
-	getShellEnv,
+	getShellConfigAsync,
+	getShellEnvAsync,
 	killProcessTree,
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
@@ -20,7 +20,7 @@ import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "
 import { formatTimeoutSeconds, longerRunAdvice, MAX_COMMAND_TIMEOUT_SECONDS } from "../tasks/cancel-reason.js";
 import type { WaitPolicy } from "../tasks/contracts.js";
 import { validateTaskHeartbeatMs } from "../tasks/heartbeat-notice.js";
-import { stripLeadingCdCommand } from "./bash-leading-cd.ts";
+import { stripLeadingCdCommandAsync } from "./bash-leading-cd.ts";
 import {
 	executeNativePty,
 	executeSupervisedCommand,
@@ -218,7 +218,7 @@ export function createLocalBashOperations(options?: {
 					if (!message.includes("Native PTY") && !message.includes("PtySession")) throw error;
 				}
 			}
-			const shellConfig = getShellConfig(options?.shellPath);
+			const shellConfig = await getShellConfigAsync(options?.shellPath);
 			try {
 				const cwdStat = await fsStat(cwd);
 				if (!cwdStat.isDirectory()) throw new Error(`Working directory is not a directory: ${cwd}`);
@@ -248,7 +248,7 @@ export function createLocalBashOperations(options?: {
 			const child = spawn(shellConfig.shell, commandFromStdin ? shellConfig.args : [...shellConfig.args, command], {
 				cwd,
 				detached: process.platform !== "win32",
-				env: createChildProcessEnvironment(undefined, env ?? getShellEnv()),
+				env: createChildProcessEnvironment(undefined, env ?? (await getShellEnvAsync())),
 				stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
 				windowsHide: true,
 			});
@@ -332,13 +332,13 @@ export interface BashSpawnContext {
 	env: NodeJS.ProcessEnv;
 }
 export type BashSpawnHook = (context: BashSpawnContext) => BashSpawnContext;
-function resolveSpawnContext(
+async function resolveSpawnContext(
 	command: string,
 	cwd: string,
 	sessionEnvironment: NodeJS.ProcessEnv,
 	spawnHook?: BashSpawnHook,
-): BashSpawnContext {
-	const baseContext: BashSpawnContext = { command, cwd, env: { ...getShellEnv() } };
+): Promise<BashSpawnContext> {
+	const baseContext: BashSpawnContext = { command, cwd, env: { ...(await getShellEnvAsync()) } };
 	applyBashSessionEnvironment(baseContext.env, sessionEnvironment);
 	return spawnHook ? spawnHook(baseContext) : baseContext;
 }
@@ -513,7 +513,7 @@ export function createBashToolDefinition(
 			);
 			let strippedExpandedContext = hasExplicitCwd
 				? undefined
-				: stripLeadingCdCommand(expandedCommand, requestedCwd);
+				: await stripLeadingCdCommandAsync(expandedCommand, requestedCwd);
 			// Locally, a `cd` that bash would refuse runs as written so the command fails, or continues, as bash decides.
 			if (
 				strippedExpandedContext &&
@@ -524,9 +524,9 @@ export function createBashToolDefinition(
 			// Read per command: a blueprint build that ran behind the first turn writes its `$ENVRC` after the tool exists.
 			const commandPrefix = await options?.commandPrefix;
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${expandedCommand}` : expandedCommand;
-			const spawnContext = resolveSpawnContext(resolvedCommand, requestedCwd, sessionEnvironment, spawnHook);
+			const spawnContext = await resolveSpawnContext(resolvedCommand, requestedCwd, sessionEnvironment, spawnHook);
 			const strippedCdContext = strippedExpandedContext
-				? resolveSpawnContext(
+				? await resolveSpawnContext(
 						commandPrefix
 							? `${commandPrefix}\n${strippedExpandedContext.command}`
 							: strippedExpandedContext.command,

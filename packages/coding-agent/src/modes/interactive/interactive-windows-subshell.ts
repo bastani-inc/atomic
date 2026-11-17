@@ -1,7 +1,7 @@
 import { setImmediate } from "node:timers/promises";
 import type { PtySession } from "@bastani/atomic-natives";
 import { createModuleRequire } from "../../utils/module-require.ts";
-import { getPowerShellConfig } from "../../utils/shell.ts";
+import { getPowerShellConfigAsync } from "../../utils/shell.ts";
 
 interface SubshellOwner {
 	ui: { stop(options?: { preserveScreen?: boolean }): void; start(): void; requestRender(force?: boolean): void };
@@ -30,7 +30,7 @@ export async function openWindowsSubshell(owner: SubshellOwner): Promise<void> {
 		// This is a temporary handoff, not final shutdown. Replaying the full
 		// document into the cooked Windows console can invalidate its handles.
 		owner.ui.stop({ preserveScreen: true });
-		const { shell } = getPowerShellConfig();
+		const { shell } = await getPowerShellConfigAsync();
 		const { PtySession: NativePtySession } = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as {
 			PtySession: typeof PtySession;
 		};

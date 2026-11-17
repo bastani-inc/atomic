@@ -69,7 +69,9 @@ export function getToolDefinition(this: AgentSession, name: string): ToolDefinit
 
 function toolSelectionSource(session: AgentSession): ToolSelectionSource {
 	if (session._usesDefaultTools) {
-		return session.settingsManager.getDefaultTools() === undefined ? "built-in-defaults" : "default-tools-setting";
+		return session.settingsManager.getDefaultToolsWith([]) === undefined
+			? "built-in-defaults"
+			: "default-tools-setting";
 	}
 	if (session._allowedToolNames) return session._allowedToolNames.size === 0 ? "no-tools" : "tools-allowlist";
 	return (session._initialActiveToolNames?.length ?? 0) > 0 ? "explicit-selection" : "no-built-in-tools";
