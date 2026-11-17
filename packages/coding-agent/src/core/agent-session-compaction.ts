@@ -122,16 +122,16 @@ function stats(planned: PlannedVerbatimCompaction, text: string): VerbatimCompac
 	};
 }
 
-/** The boundary text and durable details for a planned compaction, given the history's line count before it. */
+/** The boundary text and durable details for a planned compaction, given the history's last entry position. */
 export function buildPlannedBoundary(
 	planned: PlannedVerbatimCompaction,
 	sessionId: string,
-	historyLines: number,
+	historyEntries: number,
 ): { text: string; details: VerbatimCompactionDetails } {
 	const { text, history } = buildBoundaryTextWithLocation({
 		sessionId,
 		tokensBefore: planned.tokensBefore,
-		linesBefore: historyLines,
+		entriesBefore: historyEntries,
 		access: planned.access,
 		...(planned.instructions ? { instructions: planned.instructions } : {}),
 		...(planned.compacted
@@ -249,7 +249,7 @@ function contextAfterBoundary(
 		{
 			sessionId: session.sessionManager.getSessionId(),
 			tokensBefore: planned.tokensBefore,
-			linesBefore: 0,
+			entriesBefore: 0,
 			access: planned.access,
 			...(planned.instructions ? { instructions: planned.instructions } : {}),
 			...(planned.compacted
@@ -411,8 +411,8 @@ async function writeBestEffortBackup(this: AgentSession, label: string): Promise
 }
 
 /**
- * Back up the session and append a planned compaction as one boundary. The boundary text, with the history line
- * numbers it advertises, is built inside the append's queued mutation. Nothing else changes, so a failure here leaves
+ * Back up the session and append a planned compaction as one boundary. The boundary text, with the history entry
+ * positions it advertises, is built inside the append's queued mutation. Nothing else changes, so a failure here leaves
  * history and the in-memory context as they were. `signal` is checked inside the mutation: the append is the commit
  * point, so a cancel that arrives before it leaves the session unchanged.
  */
@@ -426,8 +426,8 @@ export async function appendVerbatimBoundary(
 	const sessionId = this.sessionManager.getSessionId();
 	let built: { text: string; details: VerbatimCompactionDetails } | undefined;
 	const entryId = await this.sessionManager.appendCompaction(
-		(historyLines) => {
-			const boundary = buildPlannedBoundary(planned, sessionId, historyLines);
+		(historyEntries) => {
+			const boundary = buildPlannedBoundary(planned, sessionId, historyEntries);
 			built = { text: boundary.text, details: { ...boundary.details, ...(backupPath ? { backupPath } : {}) } };
 			return built;
 		},
