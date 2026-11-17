@@ -41,6 +41,7 @@
 - Replacing a submission echo with a prompt rewritten by an `input` hook, or inserting a custom message ahead of a streaming reply, now touches only the tail of the chat container instead of scanning the whole transcript, keeping prompt swaps fast in long sessions ([#5323](https://github.com/bastani-inc/atomic/issues/5323))
 - Corrected new-message counts when a transcript insertion or removal is followed by another change that restores its earlier child count ([#5323](https://github.com/bastani-inc/atomic/issues/5323))
 - In the interactive CLI, questions and extension dialogs stay with the session that asked them. A subagent's question waits in its own task view, and a workflow stage's question in its stage chat, instead of opening in and blocking the launching chat. Forms keep their drafts when left and show countdowns for timed dialogs. SDK input adapters receive the asking session's identity; plain RPC clients and SDK hosts without a task inspector keep receiving child dialogs through their existing presentation ([#5354](https://github.com/bastani-inc/atomic/pull/5354))
+- Workspace Git commands now receive their full timeout budget, and reported timeout durations stay accurate when the system clock changes.
 
 ## [0.9.88] - 2026-11-16
 
