@@ -5,7 +5,10 @@ import { stripVTControlCharacters } from "node:util";
 import { Container, getKeybindings, setKeybindings, Text } from "@bastani/atomic-tui";
 import { afterAll, beforeAll, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
-import { AtomicWorkingLoader } from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.ts";
+import {
+	AtomicWorkingLoader,
+	DEFAULT_WORKING_MESSAGE,
+} from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.ts";
 import { WorkingRunMeter } from "../../packages/coding-agent/src/modes/interactive/components/working-run-meter.js";
 import "../../packages/coding-agent/src/modes/interactive/interactive-agent-events.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-extension-runtime.ts";
@@ -101,7 +104,7 @@ function makeHarness(): Harness {
 			getClearOnShrink: () => false,
 		},
 		session,
-		createWorkingLoader: () => new AtomicWorkingLoader(ui, undefined, String, "Working..."),
+		createWorkingLoader: () => new AtomicWorkingLoader(ui, undefined, String, DEFAULT_WORKING_MESSAGE),
 		clearWorkingLoader: InteractiveModeBase.prototype.clearWorkingLoader,
 		stopWorkingLoader: InteractiveModeBase.prototype.stopWorkingLoader,
 		showWorkingLoaderNow: InteractiveModeBase.prototype.showWorkingLoaderNow,
