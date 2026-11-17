@@ -504,6 +504,9 @@ export class SettingsManager {
 					this.assertProjectTrustedForWrite();
 				}
 				await this.storage.prepareWriteLock?.(scope);
+				if (scope === "project") {
+					this.assertProjectTrustedForWrite();
+				}
 				task();
 				this.clearModifiedScope(scope);
 				recordSettingsWrite(owner, scope);

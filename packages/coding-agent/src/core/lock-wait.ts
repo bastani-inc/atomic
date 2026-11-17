@@ -131,6 +131,7 @@ export async function waitForLock<T>(
 		for (;;) {
 			signal?.throwIfAborted();
 			await prepareTakeoverMutex(wait.lockPath);
+			signal?.throwIfAborted();
 			try {
 				return await acquire(guard.fs);
 			} catch (error) {
