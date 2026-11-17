@@ -80,7 +80,9 @@ describe("foreground intercom detach routing", () => {
 			const recovery = new Promise<void>((resolve) => {
 				resolveRecovery = resolve;
 			});
+			const launched = Promise.withResolvers<void>();
 			const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+				onChildLaunch: () => launched.resolve(),
 				cwd: dir,
 				runId: "recover",
 				index: 0,
@@ -94,6 +96,8 @@ describe("foreground intercom detach routing", () => {
 					resolveRecovery();
 				},
 			});
+			// Setup checks the cwd asynchronously; a child cannot ask for a handoff until it has launched.
+			await Promise.all([launched.promise]);
 			await sleep(25);
 			await handoff(eventBus(emitter), { requestId: "q", childIntercomTarget: "child-a" });
 			const continued = await pending;
@@ -122,7 +126,9 @@ describe("foreground intercom detach routing", () => {
 			const recovery = new Promise<SingleResult>((resolve) => {
 				recoveredResult = resolve;
 			});
+			const launched = Promise.withResolvers<void>();
 			const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+				onChildLaunch: () => launched.resolve(),
 				cwd: dir,
 				runId: "recover-output",
 				index: 0,
@@ -134,6 +140,8 @@ describe("foreground intercom detach routing", () => {
 				testSession: { output: "detached findings", promptGate: gate.promise },
 				onDetachedExit: (result) => recoveredResult(result),
 			});
+			// Setup checks the cwd asynchronously; a child cannot ask for a handoff until it has launched.
+			await Promise.all([launched.promise]);
 			await sleep(25);
 			await handoff(eventBus(emitter), { requestId: "q", childIntercomTarget: "child-a" });
 			assert.equal((await pending).detached, true);
@@ -152,7 +160,9 @@ describe("foreground intercom detach routing", () => {
 			const secondGate = deferred();
 			const emitter = new EventEmitter();
 			const bus = eventBus(emitter);
+			const firstLaunched = Promise.withResolvers<void>();
 			const first = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+				onChildLaunch: () => firstLaunched.resolve(),
 				cwd: dir,
 				runId: "run",
 				index: 0,
@@ -161,7 +171,9 @@ describe("foreground intercom detach routing", () => {
 				intercomEvents: bus,
 				testSession: { output: "eventual result", promptGate: firstGate.promise },
 			});
+			const secondLaunched = Promise.withResolvers<void>();
 			const second = runSync(dir, [bridgedAgent()], "fake-worker", "B", {
+				onChildLaunch: () => secondLaunched.resolve(),
 				cwd: dir,
 				runId: "run",
 				index: 1,
@@ -172,6 +184,8 @@ describe("foreground intercom detach routing", () => {
 			});
 			let acknowledged = 0;
 			emitter.on(INTERCOM_DETACH_RESPONSE_EVENT, () => acknowledged++);
+			// Setup checks the cwd asynchronously; a child cannot ask for a handoff until it has launched.
+			await Promise.all([firstLaunched.promise, secondLaunched.promise]);
 			await sleep(25);
 			const route = {
 				requestId: "q1",
@@ -202,7 +216,9 @@ describe("foreground intercom detach routing", () => {
 			const bus = eventBus(emitter);
 			const controller = new AbortController();
 			const recovered: SingleResult[] = [];
+			const launched = Promise.withResolvers<void>();
 			const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+				onChildLaunch: () => launched.resolve(),
 				cwd: dir,
 				runId: "cancel-detached",
 				index: 0,
@@ -213,6 +229,8 @@ describe("foreground intercom detach routing", () => {
 				testSession: { output: "too late", promptGate: gate.promise },
 				onDetachedExit: (result) => recovered.push(result),
 			});
+			// Setup checks the cwd asynchronously; a child cannot ask for a handoff until it has launched.
+			await Promise.all([launched.promise]);
 			await sleep(25);
 			await handoff(bus, { requestId: "q", childIntercomTarget: "child-a" });
 			assert.equal((await pending).status, "continued");
@@ -231,7 +249,9 @@ describe("foreground intercom detach routing", () => {
 			const gate = deferred();
 			const emitter = new EventEmitter();
 			const controller = new AbortController();
+			const launched = Promise.withResolvers<void>();
 			const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+				onChildLaunch: () => launched.resolve(),
 				cwd: dir,
 				runId: "cancel-before",
 				index: 0,
@@ -241,6 +261,8 @@ describe("foreground intercom detach routing", () => {
 				signal: controller.signal,
 				testSession: { output: "too late", promptGate: gate.promise },
 			});
+			// Setup checks the cwd asynchronously; a child cannot ask for a handoff until it has launched.
+			await Promise.all([launched.promise]);
 			await sleep(25);
 			controller.abort();
 			gate.release();
@@ -300,7 +322,9 @@ describe("foreground intercom detach routing", () => {
 			const gate = deferred();
 			const emitter = new EventEmitter();
 			const bus = eventBus(emitter);
+			const launched = Promise.withResolvers<void>();
 			const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+				onChildLaunch: () => launched.resolve(),
 				cwd: dir,
 				runId: "background",
 				index: 0,
@@ -309,6 +333,8 @@ describe("foreground intercom detach routing", () => {
 				intercomEvents: bus,
 				testSession: { output: "background result", promptGate: gate.promise },
 			});
+			// Setup checks the cwd asynchronously; a child cannot ask for a handoff until it has launched.
+			await Promise.all([launched.promise]);
 			await sleep(20);
 			bus.emit(INTERCOM_DETACH_REQUEST_EVENT, {
 				phase: "commit",
@@ -331,7 +357,9 @@ describe("foreground intercom detach routing", () => {
 			const bus = eventBus(emitter);
 			const recovered: SingleResult[] = [];
 			const recoveredExit = Promise.withResolvers<void>();
+			const launched = Promise.withResolvers<void>();
 			const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+				onChildLaunch: () => launched.resolve(),
 				cwd: dir,
 				runId: "duplicate",
 				index: 0,
@@ -344,6 +372,8 @@ describe("foreground intercom detach routing", () => {
 					recoveredExit.resolve();
 				},
 			});
+			// Setup checks the cwd asynchronously; a child cannot ask for a handoff until it has launched.
+			await Promise.all([launched.promise]);
 			await sleep(20);
 			const request = {
 				requestId: "same",
@@ -372,7 +402,9 @@ describe("foreground intercom detach routing", () => {
 			const gate = deferred();
 			const emitter = new EventEmitter();
 			const bus = eventBus(emitter);
+			const launched = Promise.withResolvers<void>();
 			const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+				onChildLaunch: () => launched.resolve(),
 				cwd: dir,
 				runId: "reserved",
 				index: 0,
@@ -381,6 +413,8 @@ describe("foreground intercom detach routing", () => {
 				intercomEvents: bus,
 				testSession: { output: "normal", promptGate: gate.promise },
 			});
+			// Setup checks the cwd asynchronously; a child cannot ask for a handoff until it has launched.
+			await Promise.all([launched.promise]);
 			await sleep(20);
 			const route = { requestId: "q", messageId: "q", senderId: "child-id", childIntercomTarget: "child-a" };
 			bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...route, runtimeGeneration: 1, phase: "commit" });
@@ -398,7 +432,9 @@ describe("foreground intercom detach routing", () => {
 			const gate = deferred();
 			const emitter = new EventEmitter();
 			const bus = eventBus(emitter);
+			const launched = Promise.withResolvers<void>();
 			const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+				onChildLaunch: () => launched.resolve(),
 				cwd: dir,
 				runId: "run",
 				intercomSessionName: "child-a",
@@ -406,6 +442,8 @@ describe("foreground intercom detach routing", () => {
 				intercomEvents: bus,
 				testSession: { output: "normal", promptGate: gate.promise },
 			});
+			// Setup checks the cwd asynchronously; a child cannot ask for a handoff until it has launched.
+			await Promise.all([launched.promise]);
 			await sleep(20);
 			bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "legacy" });
 			gate.release();
@@ -420,7 +458,9 @@ describe("foreground intercom detach routing", () => {
 			const gate = deferred();
 			const emitter = new EventEmitter();
 			const bus = eventBus(emitter);
+			const launched = Promise.withResolvers<void>();
 			const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+				onChildLaunch: () => launched.resolve(),
 				cwd: dir,
 				runId: "exact-run",
 				index: 3,
@@ -429,6 +469,8 @@ describe("foreground intercom detach routing", () => {
 				intercomEvents: bus,
 				testSession: { output: "normal", promptGate: gate.promise },
 			});
+			// Setup checks the cwd asynchronously; a child cannot ask for a handoff until it has launched.
+			await Promise.all([launched.promise]);
 			await sleep(20);
 			bus.emit(INTERCOM_DETACH_REQUEST_EVENT, {
 				requestId: "missing",
@@ -469,7 +511,9 @@ test("task hooks retain the live result through tool activity and exact Intercom
 		let launches = 0;
 		// Handed its cwd check, the run starts its child within the call.
 		const cwdVerdict = await checkLaunchCwd(dir);
+		const launched = Promise.withResolvers<void>();
 		const pending = runSync(dir, [bridgedAgent()], "fake-worker", "task", {
+			onChildLaunch: () => launched.resolve(),
 			cwdVerdict,
 			runId: "task-hooks",
 			intercomSessionName: "child-a",
@@ -554,7 +598,9 @@ test("task cleanup failure preserves successful execution and is not reaped", as
 	await withTempDir(async (dir) => {
 		let execution: Parameters<TaskExecutionHooks["onExecution"]>[0] | undefined;
 		const cwdVerdict = await checkLaunchCwd(dir);
+		const launched = Promise.withResolvers<void>();
 		const pending = runSync(dir, [bridgedAgent()], "fake-worker", "task", {
+			onChildLaunch: () => launched.resolve(),
 			cwdVerdict,
 			runId: "cleanup-failed",
 			taskExecution: {
@@ -591,7 +637,9 @@ test("task signal cancels the original execution after Intercom yields", async (
 		const bus = eventBus(new EventEmitter());
 		let execution: Parameters<TaskExecutionHooks["onExecution"]>[0] | undefined;
 		const cwdVerdict = await checkLaunchCwd(dir);
+		const launched = Promise.withResolvers<void>();
 		const pending = runSync(dir, [bridgedAgent()], "fake-worker", "task", {
+			onChildLaunch: () => launched.resolve(),
 			cwdVerdict,
 			runId: "task-cancel",
 			allowIntercomDetach: true,

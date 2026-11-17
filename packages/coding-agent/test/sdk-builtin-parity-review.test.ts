@@ -441,14 +441,13 @@ for (const cancel of ["dispose", "id", "settled-peer"] as const) {
 	test(`review F duplicate shell IDs cancel every operation (${cancel})`, async () => {
 		const f = await fixture();
 		const { session } = await createAgentSession(f.options);
-		const signals: AbortSignal[] = [];
-		const finish: Array<() => void> = [];
+		// By command: the two commands read their environments concurrently, so either may reach its shell first.
+		const running = new Map<string, { readonly signal: AbortSignal; readonly finish: () => void }>();
 		const operations = {
-			exec: async (_command: string, _cwd: string, { signal }: { signal?: AbortSignal }) =>
+			exec: async (command: string, _cwd: string, { signal }: { signal?: AbortSignal }) =>
 				new Promise<{ exitCode: number }>((resolve) => {
 					assert.ok(signal);
-					signals.push(signal);
-					finish.push(() => resolve({ exitCode: 0 }));
+					running.set(command.split("\n").at(-1) ?? command, { signal, finish: () => resolve({ exitCode: 0 }) });
 					signal.addEventListener("abort", () => resolve({ exitCode: 0 }), { once: true });
 				}),
 		};
@@ -456,23 +455,22 @@ for (const cancel of ["dispose", "id", "settled-peer"] as const) {
 		const first = session.executeBash("first", undefined, { id, operations });
 		const second = session.executeBash("second", undefined, { id, operations });
 		try {
-			// Both commands start once their environment is read.
 			const started = Date.now() + 10_000;
-			while (signals.length < 2 && Date.now() < started) await new Promise((resolve) => setTimeout(resolve, 5));
-			assert.equal(signals.length, 2, "both commands started");
+			while (running.size < 2 && Date.now() < started) await new Promise((resolve) => setTimeout(resolve, 5));
+			assert.equal(running.size, 2, "both commands started");
 			if (cancel === "settled-peer") {
-				finish[0]!();
+				running.get("first")?.finish();
 				await first;
 			}
 			if (cancel === "dispose") void session.dispose();
 			else session.abortBash(id);
 			await new Promise((resolve) => setTimeout(resolve, 10));
 			assert.deepEqual(
-				signals.map((signal) => signal.aborted),
+				["first", "second"].map((command) => running.get(command)?.signal.aborted),
 				[cancel !== "settled-peer", true],
 			);
 		} finally {
-			for (const done of finish) done();
+			for (const { finish } of running.values()) finish();
 			await Promise.all([first, second]);
 			await session.dispose();
 			f.remove();
