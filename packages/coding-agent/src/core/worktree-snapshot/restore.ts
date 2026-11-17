@@ -548,7 +548,11 @@ async function withRestoreRecord(
 			} catch (cleanupCause) {
 				if (error instanceof Error)
 					Object.defineProperty(error, "cleanupCause", { value: cleanupCause, configurable: true });
-				warn({ code: "stale-restore-retained", path: record.staging, kind: "worktree" });
+				warn({
+					code: "stale-restore-retained",
+					path: movedToTarget ? record.target : record.staging,
+					kind: "worktree",
+				});
 			}
 		}
 		throw error;
