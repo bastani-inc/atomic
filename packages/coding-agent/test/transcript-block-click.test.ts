@@ -52,6 +52,7 @@ function makeMode(requestRender: () => void, transcriptView: () => ScrollView | 
 		footer: { invalidate: vi.fn() },
 		statusContainer: new Container(),
 		chatContainer,
+		pendingMessagesContainer: new Container(),
 		resourceDisclosureContainer: new Container(),
 		startupNoticesContainer: new Container(),
 		pendingTools: new Map(),
@@ -102,6 +103,8 @@ function makeMode(requestRender: () => void, transcriptView: () => ScrollView | 
 		chatMessageRenderOptions: proto("chatMessageRenderOptions"),
 		rebuildChatFromMessages: proto("rebuildChatFromMessages"),
 		showStatus: proto("showStatus"),
+		setToolsExpanded: proto("setToolsExpanded"),
+		toggleToolOutputExpansion: proto("toggleToolOutputExpansion"),
 	};
 }
 
@@ -278,6 +281,23 @@ describe("clicking transcript blocks in the main chat", () => {
 			const expandedHeader = chat.rowOf(/Bash\(first-command\)/);
 			chat.click(chat.columnOf(expandedHeader, "Bash"), expandedHeader);
 			assert.ok(!chat.expanded("first"), chat.transcriptText().join("\n"));
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("pressing Ctrl+O twice before the next paint collapses a block a click expanded, with every other block", async () => {
+		const chat = await mountChat(100, 60);
+		try {
+			const header = chat.rowOf(/Bash\(first-command\)/);
+			chat.click(chat.columnOf(header, "first-command"), header);
+			assert.ok(chat.expanded("first"));
+
+			mode(chat).toggleToolOutputExpansion();
+			mode(chat).toggleToolOutputExpansion();
+			chat.tui.renderNow();
+			assert.ok(!chat.expanded("first"), chat.transcriptText().join("\n"));
+			assert.ok(!chat.expanded("second"), chat.transcriptText().join("\n"));
 		} finally {
 			chat.tui.stop();
 		}

@@ -120,9 +120,18 @@ interface ClickTarget {
 	count: number;
 	/** The screen row, so clicks count alike whether or not an overlay changed how the press was located. */
 	row: number;
-	/** The word under the click, or the clicked cell when no word is there. */
+	/** The screen columns of the word under the click, or of the clicked cell when no word is there. */
 	wordStart: number;
 	wordEnd: number;
+	/** The screen column of the click. */
+	col: number;
+	/**
+	 * What was drawn under the click: a click on another item drawn there since counts from one again. A click a
+	 * component acted on, such as one that expanded a block, takes what the next paint draws there instead.
+	 */
+	drawn: readonly unknown[];
+	/** Whether a component acted on the click, so the next paint shows what the click itself drew. */
+	awaitingPaint: boolean;
 }
 
 /** What the screen showed at a pointer position: the painted row and the components drawn there. */
@@ -162,15 +171,22 @@ function samePointerGeometry(a: PointerFrame | undefined, b: PointerFrame): bool
 	);
 }
 
-/** The same geometry at the pointer, and the same painted row under it, drawn by the same components. */
-function samePointerFrame(a: PointerFrame | undefined, b: PointerFrame): boolean {
+/**
+ * The same geometry at the pointer, drawn by the same components naming the same item there. What a target that took
+ * the press needs for its click: its own rows may repaint, as a pressed button's do, but it must still be drawn there.
+ */
+function sameDrawnAtPointer(a: PointerFrame | undefined, b: PointerFrame): boolean {
 	return (
 		a !== undefined &&
-		a.line === b.line &&
 		a.drawn.length === b.drawn.length &&
 		a.drawn.every((item, index) => item === b.drawn[index]) &&
 		samePointerGeometry(a, b)
 	);
+}
+
+/** The same geometry at the pointer, and the same painted row under it, drawn by the same components. */
+function samePointerFrame(a: PointerFrame | undefined, b: PointerFrame): boolean {
+	return a !== undefined && a.line === b.line && sameDrawnAtPointer(a, b);
 }
 
 /** Bounds the walk into nested containers when recording what a frame drew at the pointer. */
@@ -1108,12 +1124,12 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			if (targetResult) render = this.applyMouseDispatchResult(event, targetResult);
 			if (raw.release) {
 				// The release always reaches the target, so it can end what its press started. The click needs the
-				// target still drawn where it was pressed; its own rows may repaint, as a pressed button's do.
+				// same target still drawn where it was pressed, not another that took its place.
 				if (
 					!this.mousePressMoved &&
 					this.mousePressPoint?.x === raw.x &&
 					this.mousePressPoint.y === raw.y &&
-					samePointerGeometry(this.mousePressFrame, this.pointerFrame(raw.x, raw.y))
+					sameDrawnAtPointer(this.mousePressFrame, this.pointerFrame(raw.x, raw.y))
 				) {
 					const clickEvent = this.createMouseEvent("click", raw.button, raw.x, raw.y, {
 						clickCount: this.getComponentClickCount(target, raw.x, raw.y),
@@ -1433,28 +1449,40 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 	}
 
-	private getClickCount(screenRow: number, point: SelectionPoint, word: SelectionRange | undefined): number {
+	private getClickCount(
+		screenRow: number,
+		screenCol: number,
+		point: SelectionPoint,
+		word: SelectionRange | undefined,
+		drawn: readonly unknown[],
+	): number {
 		const now = Date.now();
 		const previous = this.lastClick;
-		// Clicks count on the screen: a press located in the transcript and one located on the screen, because an
-		// overlay opened between them, are on the same spot. A second click counts on the same word, or on the same
-		// cell where there is no word, so a fast second click on empty space is a double-click as well.
-		const start = word?.start.col ?? point.col;
-		const end = word?.end.col ?? point.col;
+		// Clicks count on the screen, in rows and columns alike: a press located in a scroll view and one located on
+		// the screen, because an overlay opened between them, are on the same spot. A second click counts on the same
+		// word, or on the same cell where there is no word, so a fast second click on empty space is a double-click.
+		const toScreen = screenCol - point.col;
+		const start = (word?.start.col ?? point.col) + toScreen;
+		const end = (word?.end.col ?? point.col) + toScreen;
 		const count =
 			previous &&
 			now - previous.timestamp <= DOUBLE_CLICK_INTERVAL_MS &&
 			previous.row === screenRow &&
 			previous.wordStart === start &&
-			previous.wordEnd === end
+			previous.wordEnd === end &&
+			previous.drawn.length === drawn.length &&
+			previous.drawn.every((item, index) => item === drawn[index])
 				? (previous.count % 3) + 1
 				: 1;
 		this.lastClick = {
 			timestamp: now,
 			count,
 			row: screenRow,
+			col: screenCol,
 			wordStart: start,
 			wordEnd: end,
+			drawn,
+			awaitingPaint: false,
 		};
 		return count;
 	}
@@ -1581,6 +1609,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				if (result) {
 					const render = this.applyMouseDispatchResult(clickEvent, result);
 					this.clearTextSelection();
+					if (this.lastClick) this.lastClick.awaitingPaint = true;
 					if (render) this.requestRender();
 					return;
 				}
@@ -1607,14 +1636,21 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				: undefined;
 		const anchor = this.getSelectionPoint(event, scrollView);
 		const word = this.getWordSelection(anchor);
-		const clickCount = this.getClickCount(event.y, anchor, word);
+		const pressFrame = this.pointerFrame(event.x, event.y);
+		const clickCount = this.getClickCount(
+			event.y,
+			Math.max(0, Math.min(this.terminal.columns - 1, event.x)),
+			anchor,
+			word,
+			pressFrame.drawn,
+		);
 		const range = clickCount === 2 ? word : clickCount === 3 ? this.getLineSelection(anchor) : undefined;
 		this.selectionGranularity = range ? (clickCount === 2 ? "word" : "line") : "character";
 		this.selectionInitialRange = range;
 		this.selectionAnchor = range?.start ?? anchor;
 		this.selectionFocus = range?.end ?? anchor;
 		this.selectionDragged = false;
-		this.pressFrame = this.pointerFrame(event.x, event.y);
+		this.pressFrame = pressFrame;
 		this.pressedUrl = range
 			? undefined
 			: getOsc8LinkAtColumn(
@@ -2088,6 +2124,11 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.previousScreenWidth = width;
 		this.previousScreenHeight = height;
 		this.currentLayout = nextLayout;
+		const click = this.lastClick;
+		if (click?.awaitingPaint) {
+			click.awaitingPaint = false;
+			click.drawn = this.pointerFrame(click.col, click.row).drawn;
+		}
 	}
 }
 
