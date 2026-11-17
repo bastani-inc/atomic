@@ -596,7 +596,7 @@ export interface OpenCliSessionOptions {
 	readonly catalogTimeoutMs?: number;
 	readonly sessionStorage?: SessionStore | StorageSelection;
 	/** Whether the project at a restored worktree is trusted, which building its blueprints requires. */
-	readonly trusted: (worktree: string) => boolean;
+	readonly trusted: (worktree: string) => boolean | Promise<boolean>;
 	readonly chooseDirtyCheckout?: (prompt: DirtyCheckoutPrompt) => Promise<DirtyCheckoutChoice>;
 	readonly io?: ResumePreflightIo;
 	/** `"skip"` in the interactive engine child, whose host already built the blueprints of this resume. */

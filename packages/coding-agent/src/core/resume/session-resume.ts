@@ -1372,9 +1372,9 @@ function planRestores(
 export function savedProjectTrust(
 	agentDir: string,
 	settings: Pick<SettingsManager, "getDefaultProjectTrust">,
-): (worktree: string) => boolean {
+): (worktree: string) => Promise<boolean> {
 	const trustStore = new ProjectTrustStore(agentDir);
-	return (worktree) => trustStore.get(worktree) ?? settings.getDefaultProjectTrust() === "always";
+	return async (worktree) => (await trustStore.getAsync(worktree)) ?? settings.getDefaultProjectTrust() === "always";
 }
 
 /** Where restored worktrees, the blueprint build ledger and logs live for the agent directory `agentDir`. */
@@ -1399,7 +1399,7 @@ export function sessionResumeOptions(
 		SettingsManager,
 		"getWorktreeSnapshotSettings" | "getWorktreePoolSettings" | "getResumeSetupCommand" | "getResumeWaitForBlueprint"
 	>,
-	trusted: (worktree: string) => boolean,
+	trusted: (worktree: string) => boolean | Promise<boolean>,
 	interactive = true,
 ): PrepareSessionResumeOptions {
 	return {
