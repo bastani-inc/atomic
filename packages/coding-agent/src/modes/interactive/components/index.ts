@@ -25,6 +25,7 @@ export type { CompactionReason } from "./chat-session-host-events.ts";
 export {
 	addChatTranscriptEntry,
 	type ChatTranscriptCacheKey,
+	type ChatTranscriptCacheKeyValue,
 	ChatTranscriptComponent,
 	type ChatTranscriptEntryLike,
 	type ChatTranscriptRenderer,

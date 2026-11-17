@@ -133,7 +133,7 @@ test("successful retry and fallback stay ordinary-inactive until a genuine lifec
 	}
 });
 
-test("ordinary assistant start coalesces into the active turn animation paint", () => {
+test("an assistant start paints on the next frame while the turn animation keeps its cadence", () => {
 	const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
 	const previousRandom = Math.random;
 	delete process.env.ATOMIC_REDUCED_MOTION;
@@ -159,17 +159,14 @@ test("ordinary assistant start coalesces into the active turn animation paint", 
 
 		assert.equal(host.entries().length, 1, "the assistant transcript entry updates immediately");
 		assert.equal(host.entries()[0]?.role, "assistant");
-		assert.deepEqual(paintedFrames, [" ∀ Working...", " ∀ Schlepping..."]);
-		timers.advanceBy(87);
-		assert.equal(paintedFrames.length, 2, "the active cadence retains its 88ms latency ceiling");
-		timers.advanceBy(1);
-
 		assert.deepEqual(
 			paintedFrames,
 			[" ∀ Working...", " ∀ Schlepping...", " ∀ Schlepping..."],
-			"the 88ms turn tick owns the single next-frame repaint",
+			"the assistant entry paints on the next frame, as the main chat paints each delta",
 		);
-		assert.deepEqual(timers.timeoutDelays(), [], "no parallel event throttle is registered");
+		timers.advanceBy(88);
+		assert.equal(paintedFrames.length, 4, "the turn animation keeps its 88ms cadence");
+		assert.deepEqual(timers.timeoutDelays(), [], "no event throttle is registered");
 	} finally {
 		host.dispose();
 		timers.restore();
@@ -221,7 +218,7 @@ test("public interrupt stops the working lifecycle and fences its captured callb
 	}
 });
 
-test("turn and terminal stops immediately repaint and fence stale event throttles", () => {
+test("turn and terminal stops repaint immediately and leave no delayed repaint", () => {
 	const stopCases = [
 		{ name: "turn_end", stop: (host) => host.applyAgentEvent({ type: "turn_end" } as never) },
 		{ name: "agent_end", stop: (host) => host.applyAgentEvent({ type: "agent_end", messages: [] } as never) },
@@ -238,10 +235,10 @@ test("turn and terminal stops immediately repaint and fence stale event throttle
 		try {
 			host.applyAgentEvent({ type: "agent_start" } as never);
 			host.applyAgentEvent({ type: "auto_retry_start" } as never);
+			const beforeQueue = renderRequests;
 			host.applyAgentEvent({ type: "queue_update", steering: ["pending"] } as never);
-			assert.deepEqual(timers.timeoutDelays(), [80], stopCase.name);
-			assert.equal(timers.timeoutCount(), 1, stopCase.name);
-			const staleThrottle = timers.capturedEventRenderCallbacks()[0]!;
+			assert.equal(renderRequests, beforeQueue + 1, `${stopCase.name}: the queue paints on the next frame`);
+			assert.equal(timers.timeoutCount(), 0, stopCase.name);
 			const beforeStop = renderRequests;
 
 			stopCase.stop(host);
@@ -251,45 +248,12 @@ test("turn and terminal stops immediately repaint and fence stale event throttle
 			assert.equal(host.hasAnimationTick(), false, stopCase.name);
 			assert.deepEqual(host.renderWorkingStatus(64), [], stopCase.name);
 
-			staleThrottle();
 			timers.advanceBy(160);
 			assert.equal(renderRequests, beforeStop + 1, `${stopCase.name} leaves no delayed repaint`);
 		} finally {
 			host.dispose();
 			timers.restore();
 		}
-	}
-});
-
-test("a stale lifecycle throttle cannot detach a newer current throttle", () => {
-	const timers = installLifecycleFakeClock();
-	let renderRequests = 0;
-	const host = makeLifecycleHost({
-		requestRender: () => {
-			renderRequests += 1;
-		},
-	});
-	try {
-		host.applyAgentEvent({ type: "agent_start" } as never);
-		host.applyAgentEvent({ type: "auto_retry_start" } as never);
-		host.applyAgentEvent({ type: "queue_update", steering: ["old"] } as never);
-		const staleThrottle = timers.capturedEventRenderCallbacks()[0]!;
-
-		host.applyAgentEvent({ type: "turn_start" } as never);
-		host.applyAgentEvent({ type: "auto_retry_start" } as never);
-		host.applyAgentEvent({ type: "queue_update", steering: ["current"] } as never);
-		assert.equal(timers.timeoutCount(), 1);
-		assert.equal(timers.timeoutDelays().length, 2);
-		const beforeStaleCallback = renderRequests;
-
-		staleThrottle();
-		host.applyAgentEvent({ type: "queue_update", steering: ["coalesced"] } as never);
-		assert.equal(renderRequests, beforeStaleCallback);
-		assert.equal(timers.timeoutCount(), 1);
-		assert.equal(timers.timeoutDelays().length, 2, "the current throttle remains attached");
-	} finally {
-		host.dispose();
-		timers.restore();
 	}
 });
 

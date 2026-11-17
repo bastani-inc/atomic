@@ -5,7 +5,6 @@ import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 
 export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 export const ANIMATION_FRAME_MS = 80;
-export const STREAMING_RENDER_THROTTLE_MS = 80;
 const STREAMING_TEXT_TAIL_LINES = 240;
 const STREAMING_TEXT_TAIL_CHARS = 16_000;
 

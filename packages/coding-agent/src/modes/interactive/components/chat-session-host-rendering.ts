@@ -20,7 +20,9 @@ export function renderChatSessionBody<TExtraEntry extends ChatTranscriptEntryLik
 	budget: number,
 ): string[] {
 	const components: Component[] = [];
-	state.transcriptRenderSettingsKey = chatRenderSettingsCacheKey(state);
+	// Kept as the same string while it is unchanged, so every entry's key compares it by reference.
+	const settingsKey = chatRenderSettingsCacheKey(state);
+	if (settingsKey !== state.transcriptRenderSettingsKey) state.transcriptRenderSettingsKey = settingsKey;
 	if (state.transcript.length > 0) {
 		components.push(state.transcriptComponent);
 	}
@@ -190,19 +192,23 @@ export function renderChatSessionEntry<TExtraEntry extends ChatTranscriptEntryLi
 	return state.renderExtraEntry(entry);
 }
 
+/**
+ * What an entry's rows depend on besides the entry object, compared part by part: the chat's render settings, the
+ * fields that change in place, and, for the assistant message still streaming, the streaming state and tail window.
+ */
 export function transcriptCacheKey<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	entry: ChatSessionHostEntry<TExtraEntry>,
-	index: number,
-): string {
-	return cacheKey([
+): readonly unknown[] {
+	const streaming =
+		isChatMessageEntry(entry) && state.liveChat.isStreamingAssistantEntry(entry) && isChatSessionStreaming(state);
+	return [
 		state.transcriptRenderSettingsKey,
-		index,
-		entry.role,
-		renderIdentityKey(state, entry),
-		entryContentCacheKey(state, entry),
 		state.entryRevisions.get(entry) ?? 0,
-	]);
+		streaming,
+		streaming && state.bodyViewport.getScrollFromBottom() === 0,
+		...entryContentKeyParts(entry),
+	];
 }
 
 function streamingWindowedEntry<TExtraEntry extends ChatTranscriptEntryLike>(
@@ -272,48 +278,35 @@ function chatRenderSettingsCacheKey<TExtraEntry extends ChatTranscriptEntryLike>
 		inherited?.renderLatex !== false,
 		markdownTransformersKey,
 		state.getCwd?.() ?? state.getAgentSession?.()?.sessionManager.getCwd() ?? process.cwd(),
-		state.bodyViewport.getScrollFromBottom() === 0,
-		isChatSessionStreaming(state),
 	]);
 }
 
-function entryContentCacheKey<TExtraEntry extends ChatTranscriptEntryLike>(
-	state: ChatSessionHostState<TExtraEntry>,
+function entryContentKeyParts<TExtraEntry extends ChatTranscriptEntryLike>(
 	entry: ChatSessionHostEntry<TExtraEntry>,
-): string {
-	if (!isChatMessageEntry(entry)) return cacheKey(["extra"]);
+): readonly unknown[] {
+	if (!isChatMessageEntry(entry)) return [];
 	switch (entry.kind) {
 		case "task":
-			return cacheKey(["task", renderIdentityKey(state, entry.task), entry.duplicate]);
+			return [entry.task, entry.duplicate];
 		case "assistant":
-			return cacheKey(["assistant", renderIdentityKey(state, entry.message)]);
+		case "custom":
+		case "branchSummary":
+			return [entry.message];
 		case "tool":
-			return cacheKey([
-				"tool",
-				entry.toolCallId,
-				entry.toolName,
-				entry.isPartial === true,
-				entry.result === undefined ? null : renderIdentityKey(state, entry.result),
-			]);
+			return [entry.toolCallId, entry.toolName, entry.isPartial === true, entry.result];
 		case "bashExecution":
-			return cacheKey([
-				"bashExecution",
+			return [
 				entry.isPartial === true,
 				entry.message.command,
 				entry.message.output,
-				entry.message.exitCode ?? null,
+				entry.message.exitCode,
 				entry.message.cancelled,
 				entry.message.truncated,
-				entry.message.fullOutputPath ?? null,
-			]);
+				entry.message.fullOutputPath,
+			];
 		case "user":
-			return cacheKey(["user", entry.text]);
-		case "custom":
-			return cacheKey(["custom", renderIdentityKey(state, entry.message)]);
-		case "branchSummary":
-			return cacheKey(["branchSummary", renderIdentityKey(state, entry.message)]);
 		case "system":
-			return cacheKey(["system", entry.text]);
+			return [entry.text];
 	}
 }
 

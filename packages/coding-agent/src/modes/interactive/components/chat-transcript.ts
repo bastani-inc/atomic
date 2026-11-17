@@ -37,18 +37,43 @@ export interface ChatTranscriptEntryLike {
 
 export type ChatTranscriptRenderer<TEntry extends ChatTranscriptEntryLike> = (entry: TEntry) => Component;
 
-export type ChatTranscriptCacheKey<TEntry extends ChatTranscriptEntryLike> = (entry: TEntry, index: number) => string;
+/**
+ * What an entry's rendered rows depend on beyond the entry object itself. A string is compared whole; parts are
+ * compared one by one with `Object.is`, so a host can name the objects and fields an entry renders from without
+ * serializing them on every frame.
+ */
+export type ChatTranscriptCacheKeyValue = string | readonly unknown[];
+
+export type ChatTranscriptCacheKey<TEntry extends ChatTranscriptEntryLike> = (
+	entry: TEntry,
+	index: number,
+) => ChatTranscriptCacheKeyValue;
 
 interface CachedChatTranscriptBlock<TEntry extends ChatTranscriptEntryLike> {
 	readonly entry: TEntry;
-	readonly key: string;
+	readonly key: ChatTranscriptCacheKeyValue;
 	readonly width: number;
 	readonly component: Component;
+	/** The component's own rows, without the leading spacer its position adds. */
+	readonly body: readonly string[];
+	readonly bodyPromptRows: readonly number[];
+	readonly spaced: boolean;
 	readonly lines: readonly string[];
 	readonly promptRows: readonly number[];
 }
 
+/** Row offsets of every cached block, kept current from the first block that changed onward. */
+interface TranscriptRowLayout {
+	readonly starts: number[];
+	readonly prompts: number[];
+	segments: readonly RowWindowSegment[];
+	rowCount: number;
+}
+
 type DisposableComponent = Component & { dispose?: () => void };
+
+/** `ensureBlockCache` found every block current. */
+const UNCHANGED = Number.POSITIVE_INFINITY;
 
 /**
  * A run of rows inside a windowed component, tagged with the identity of the
@@ -133,6 +158,7 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 	private readonly cacheKey: ChatTranscriptCacheKey<TEntry> | undefined;
 	private blockCache: Array<CachedChatTranscriptBlock<TEntry> | undefined> = [];
 	private measuredRows: MeasuredRowWindow | undefined;
+	private readonly layout: TranscriptRowLayout = { starts: [], prompts: [], segments: [], rowCount: 0 };
 	/** Per-entry heights recorded by the most recent `renderAllRows`. */
 	private staticSegments: readonly RowWindowSegment[] = [];
 	/** Width those heights were measured at; they mean nothing at another width. */
@@ -184,24 +210,19 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		return this.measureRows(width).renderRows(start, end);
 	}
 
+	/**
+	 * The row layout of every entry at `width`.
+	 *
+	 * Work per call is proportional to what changed: an entry is rendered again only when it is new, its cache key
+	 * changed, or the width changed, and row offsets are recomputed from the first changed entry onward. Entries that
+	 * only moved (a prepend, a splice) keep their rendered rows.
+	 */
 	measureRows(width: number): MeasuredRowWindow {
-		this.ensureBlockCache(width);
-		if (this.measuredRows !== undefined) return this.measuredRows;
-		const segments: RowWindowSegment[] = [];
-		const blocks: Array<CachedChatTranscriptBlock<TEntry>> = [];
-		const starts: number[] = [];
-		const prompts: number[] = [];
-		let rowCount = 0;
-		for (const block of this.blockCache) {
-			if (block === undefined) continue;
-			segments.push({ id: block.entry, rows: block.lines.length });
-			if (block.lines.length > 0) {
-				blocks.push(block);
-				starts.push(rowCount);
-				for (const row of block.promptRows) prompts.push(rowCount + row);
-			}
-			rowCount += block.lines.length;
-		}
+		const firstChanged = this.ensureBlockCache(width);
+		if (this.measuredRows !== undefined && firstChanged === UNCHANGED) return this.measuredRows;
+		this.refreshLayout(Math.min(firstChanged, this.blockCache.length));
+		const { starts, prompts, segments, rowCount } = this.layout;
+		const blocks = this.blockCache;
 		this.measuredRows = {
 			rowCount,
 			segments,
@@ -211,7 +232,8 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 				for (let index = Math.max(0, indexAtOrBefore(starts, start)); index < blocks.length; index++) {
 					const block = blocks[index];
 					const blockStart = starts[index] ?? 0;
-					if (block === undefined || blockStart >= end) break;
+					if (blockStart >= end) break;
+					if (block === undefined) continue;
 					const localEnd = Math.min(block.lines.length, end - blockStart);
 					for (let row = Math.max(0, start - blockStart); row < localEnd; row++) {
 						lines.push(block.lines[row] ?? "");
@@ -229,32 +251,94 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		this.measuredRows = undefined;
 	}
 
-	private ensureBlockCache(width: number): void {
-		if (this.blockCache.length > this.entries.length) {
-			this.measuredRows = undefined;
-			for (let index = this.entries.length; index < this.blockCache.length; index += 1) {
-				disposeComponent(this.blockCache[index]?.component);
+	/**
+	 * Brings every block up to date. Returns the index of the first block whose rows or position may have changed,
+	 * or `UNCHANGED`.
+	 */
+	private ensureBlockCache(width: number): number {
+		const entries = this.entries;
+		const previous = this.blockCache;
+		if (previous.length === entries.length && previous.every((block, index) => block?.entry === entries[index])) {
+			let firstChanged = UNCHANGED;
+			for (let index = 0; index < entries.length; index++) {
+				const cached = previous[index];
+				const block = this.currentBlock(entries[index], index, width, cached);
+				if (block === cached) continue;
+				if (cached !== undefined && cached.component !== block?.component) disposeComponent(cached.component);
+				previous[index] = block;
+				firstChanged = Math.min(firstChanged, index);
 			}
-			this.blockCache.length = this.entries.length;
+			return firstChanged;
 		}
-		for (let index = 0; index < this.entries.length; index += 1) {
-			const entry = this.entries[index];
-			if (entry === undefined) continue;
-			const key = this.cacheKey?.(entry, index) ?? `${index}:${entry.role}`;
-			const cached = this.blockCache[index];
-			if (cached !== undefined && cached.entry === entry && cached.key === key && cached.width === width) {
-				continue;
-			}
-			disposeComponent(cached?.component);
-			const component = this.renderEntry(entry);
-			const lines = this.renderEntryBlock(component, entry, index, width);
-			const promptRows: number[] = [];
-			for (let row = 0; row < lines.length; row++) {
-				if (isUserPromptRow(lines[row] ?? "")) promptRows.push(row);
-			}
-			this.blockCache[index] = { entry, key, width, component, lines, promptRows };
-			this.measuredRows = undefined;
+		// Entries were added, removed or moved: find each one's block by identity, so a moved entry keeps its rows.
+		const byEntry = new Map<TEntry, CachedChatTranscriptBlock<TEntry>>();
+		for (const block of previous) if (block !== undefined) byEntry.set(block.entry, block);
+		const kept = new Set<Component>();
+		const next: Array<CachedChatTranscriptBlock<TEntry> | undefined> = [];
+		let firstChanged = Math.min(previous.length, entries.length);
+		for (let index = 0; index < entries.length; index++) {
+			const entry = entries[index];
+			const block = this.currentBlock(entry, index, width, entry === undefined ? undefined : byEntry.get(entry));
+			if (block !== undefined) kept.add(block.component);
+			next.push(block);
+			if (block !== previous[index]) firstChanged = Math.min(firstChanged, index);
 		}
+		for (const block of previous) {
+			if (block !== undefined && !kept.has(block.component)) disposeComponent(block.component);
+		}
+		this.blockCache = next;
+		return firstChanged;
+	}
+
+	/**
+	 * `cached` while it still shows `entry` at `index`; otherwise the entry's block, rendered again only when its key or
+	 * the width changed. A block whose position alone changed keeps its rendered rows and only gains or loses its
+	 * leading spacer. The caller disposes a replaced component.
+	 */
+	private currentBlock(
+		entry: TEntry | undefined,
+		index: number,
+		width: number,
+		cached: CachedChatTranscriptBlock<TEntry> | undefined,
+	): CachedChatTranscriptBlock<TEntry> | undefined {
+		if (entry === undefined) return undefined;
+		const key = this.cacheKey?.(entry, index) ?? `${index}:${entry.role}`;
+		const spaced = index > 0 && needsLeadingSpacer(entry.role);
+		if (cached !== undefined && cached.width === width && sameCacheKey(cached.key, key)) {
+			return cached.spaced === spaced ? cached : withSpacing(cached, spaced);
+		}
+		const component = this.renderEntry(entry);
+		const body = component.render(width);
+		const bodyPromptRows: number[] = [];
+		for (let row = 0; row < body.length; row++) {
+			if (isUserPromptRow(body[row] ?? "")) bodyPromptRows.push(row);
+		}
+		return withSpacing(
+			{ entry, key, width, component, body, bodyPromptRows, spaced, lines: [], promptRows: [] },
+			spaced,
+		);
+	}
+
+	/** Recomputes row offsets, prompt rows and segments from block `from` onward; earlier blocks did not move. */
+	private refreshLayout(from: number): void {
+		const layout = this.layout;
+		const blocks = this.blockCache;
+		let row = from === 0 ? 0 : (layout.starts[from - 1] ?? 0) + (blocks[from - 1]?.lines.length ?? 0);
+		layout.starts.length = blocks.length;
+		layout.prompts.length = indexAtOrBefore(layout.prompts, row - 1) + 1;
+		const segments = layout.segments.slice(0, from);
+		for (let index = from; index < blocks.length; index++) {
+			const block = blocks[index];
+			layout.starts[index] = row;
+			const rows = block?.lines.length ?? 0;
+			if (block !== undefined) {
+				segments.push({ id: block.entry, rows });
+				for (const promptRow of block.promptRows) layout.prompts.push(row + promptRow);
+			}
+			row += rows;
+		}
+		layout.segments = segments;
+		layout.rowCount = row;
 	}
 
 	/**
@@ -298,6 +382,26 @@ function indexAtOrBefore(sorted: readonly number[], target: number): number {
 		else high = middle;
 	}
 	return low - 1;
+}
+
+function sameCacheKey(left: ChatTranscriptCacheKeyValue, right: ChatTranscriptCacheKeyValue): boolean {
+	if (left === right) return true;
+	if (typeof left === "string" || typeof right === "string" || left.length !== right.length) return false;
+	for (let index = 0; index < left.length; index++) if (!Object.is(left[index], right[index])) return false;
+	return true;
+}
+
+/** The block's rows at its position: one blank row ahead of a user-like entry that is not the first. */
+function withSpacing<TEntry extends ChatTranscriptEntryLike>(
+	block: CachedChatTranscriptBlock<TEntry>,
+	spaced: boolean,
+): CachedChatTranscriptBlock<TEntry> {
+	return {
+		...block,
+		spaced,
+		lines: spaced ? ["", ...block.body] : block.body,
+		promptRows: spaced ? block.bodyPromptRows.map((row) => row + 1) : block.bodyPromptRows,
+	};
 }
 
 function disposeComponent(component: Component | undefined): void {

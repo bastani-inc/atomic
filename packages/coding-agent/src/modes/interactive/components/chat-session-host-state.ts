@@ -13,6 +13,7 @@ import type {
 	ChatSessionSubmitMode,
 } from "./chat-session-host-types.ts";
 import {
+	type ChatTranscriptCacheKeyValue,
 	ChatTranscriptComponent,
 	type ChatTranscriptEntryLike,
 	ScrollableComponentViewport,
@@ -29,7 +30,7 @@ export interface ChatSessionHostStateCallbacks<TExtraEntry extends ChatTranscrip
 		state: ChatSessionHostState<TExtraEntry>,
 		entry: ChatSessionHostEntry<TExtraEntry>,
 		index: number,
-	) => string;
+	) => ChatTranscriptCacheKeyValue;
 }
 
 export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = never> {
@@ -78,7 +79,6 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly workingRunMeter = new WorkingRunMeter();
 	workingLifecycleActive: boolean;
 	workingLifecycleGeneration = 0;
-	immediateEventRenderPending = false;
 	disposed = false;
 	pendingSteeringMessages: readonly string[] = [];
 	pendingFollowUpMessages: readonly string[] = [];
@@ -94,7 +94,6 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	manualCompactionTakeoverPending = false;
 	animationTimer: ReturnType<typeof setInterval> | undefined;
 	metaTimer: ReturnType<typeof setInterval> | undefined;
-	renderThrottleTimer: ReturnType<typeof setTimeout> | undefined;
 	bodyViewport: ScrollableComponentViewport;
 	transcriptComponent: ChatTranscriptComponent<ChatSessionHostEntry<TExtraEntry>>;
 	transcriptRenderSettingsKey = "";

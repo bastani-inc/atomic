@@ -262,9 +262,6 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 				Date.now();
 			state.sdkBusy = true;
 			state.statusMessage = compactionStatusMessage(compaction.reason);
-			// The animation timer this event starts would otherwise swallow the
-			// event's own paint request, delaying the factual status by a frame.
-			state.immediateEventRenderPending = true;
 			changed = true;
 			break;
 		}
@@ -295,7 +292,6 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 				// would restart ordinary Working for the continuing stream.
 				startChatSessionWorkingLifecycle(state);
 			}
-			state.immediateEventRenderPending = true;
 			// `result` and `errorMessage` are independent facts. The post-tool gate can
 			// report a hard-input-limit failure *after* the boundary was already
 			// committed, and skipping the refresh there hid a durable context

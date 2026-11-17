@@ -2,7 +2,6 @@ import { ATOMIC_WORKING_FRAME_MS, ATOMIC_WORKING_FRAMES } from "./atomic-working
 import type { ChatSessionHostState } from "./chat-session-host-state.ts";
 import { finalizeTerminalWorkflowToolEntries } from "./chat-session-host-terminal-cleanup.ts";
 import type { ChatSessionSubmitMode } from "./chat-session-host-types.ts";
-import { STREAMING_RENDER_THROTTLE_MS } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 
 export function isChatSessionStreaming<TExtraEntry extends ChatTranscriptEntryLike>(
@@ -38,8 +37,6 @@ export function startChatSessionWorkingLifecycle<TExtraEntry extends ChatTranscr
 ): void {
 	if (state.disposed) return;
 	clearChatSessionAnimation(state);
-	clearChatSessionEventRender(state);
-	state.immediateEventRenderPending = true;
 	state.workingLifecycleActive = true;
 	state.workingLifecycleGeneration += 1;
 	state.workingFrame = 0;
@@ -47,12 +44,9 @@ export function startChatSessionWorkingLifecycle<TExtraEntry extends ChatTranscr
 
 export function stopChatSessionWorkingLifecycle<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
-	immediateEventRender = true,
 ): void {
 	state.workingLifecycleActive = false;
 	clearChatSessionAnimation(state);
-	clearChatSessionEventRender(state);
-	state.immediateEventRenderPending = !state.disposed && immediateEventRender;
 }
 
 /**
@@ -129,14 +123,6 @@ function clearChatSessionAnimation<TExtraEntry extends ChatTranscriptEntryLike>(
 	state.metaTimer = undefined;
 }
 
-function clearChatSessionEventRender<TExtraEntry extends ChatTranscriptEntryLike>(
-	state: ChatSessionHostState<TExtraEntry>,
-): void {
-	if (!state.renderThrottleTimer) return;
-	clearTimeout(state.renderThrottleTimer);
-	state.renderThrottleTimer = undefined;
-}
-
 export function syncChatSessionAnimationTick<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 ): void {
@@ -178,7 +164,7 @@ export function clearChatSessionBusyForTerminalWorkflowStage<TExtraEntry extends
 	state.workingMessage = undefined;
 	state.compacting = false;
 	state.workingRunMeter.stop();
-	stopChatSessionWorkingLifecycle(state, false);
+	stopChatSessionWorkingLifecycle(state);
 	if (finalizeTerminalWorkflowToolEntries(state.transcript)) {
 		state.transcriptComponent.invalidate();
 	}
@@ -194,7 +180,7 @@ export function disposeChatSession<TExtraEntry extends ChatTranscriptEntryLike>(
 	state.footer?.dispose();
 	state.footer = undefined;
 	state.compacting = false;
-	stopChatSessionWorkingLifecycle(state, false);
+	stopChatSessionWorkingLifecycle(state);
 	state.transcriptComponent.invalidate();
 	state.bodyViewport.dispose();
 	state.editor = undefined;
@@ -254,35 +240,15 @@ export function requiredChatSessionCommand<TExtraEntry extends ChatTranscriptEnt
 	}
 }
 
+/**
+ * Paints what an event changed on the next frame, as the main chat does for every streamed delta. The renderer
+ * coalesces requests into frames, so a burst of deltas still paints once per frame.
+ */
 export function afterChatSessionEvent<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	changed: boolean,
 ): void {
 	if (state.disposed) return;
 	syncChatSessionAnimationTick(state);
-	if (!changed) return;
-	if (state.immediateEventRenderPending) {
-		state.immediateEventRenderPending = false;
-		state.requestRender?.();
-		return;
-	}
-	requestChatSessionEventRender(state);
-}
-
-function requestChatSessionEventRender<TExtraEntry extends ChatTranscriptEntryLike>(
-	state: ChatSessionHostState<TExtraEntry>,
-): void {
-	if (!isChatSessionStreaming(state)) {
-		state.requestRender?.();
-		return;
-	}
-	if (state.animationTimer) return;
-	if (state.renderThrottleTimer) return;
-	const timer = setTimeout(() => {
-		if (state.disposed || state.renderThrottleTimer !== timer) return;
-		state.renderThrottleTimer = undefined;
-		state.requestRender?.();
-	}, STREAMING_RENDER_THROTTLE_MS);
-	state.renderThrottleTimer = timer;
-	state.renderThrottleTimer.unref?.();
+	if (changed) state.requestRender?.();
 }
