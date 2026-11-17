@@ -27,7 +27,9 @@ function childProcess(args: string[]): {
 async function controlFixture(relativeDirectory?: string) {
 	const directory = makeTempDirectory("broker-control-");
 	let control: BrokerProcessControl | undefined;
+	let finished = false;
 	onTestFinished(async () => {
+		finished = true;
 		try {
 			await control?.close();
 		} finally {
@@ -37,6 +39,10 @@ async function controlFixture(relativeDirectory?: string) {
 	const controlledDirectory = relativeDirectory === undefined ? directory : join(directory, relativeDirectory);
 	mkdirSync(controlledDirectory, { recursive: true });
 	control = await createBrokerProcessControl(controlledDirectory, CONTROL_SHUTDOWN_MS);
+	if (finished) {
+		await control.close();
+		throw new Error("broker control setup completed after test cleanup");
+	}
 	return { directory, control };
 }
 
