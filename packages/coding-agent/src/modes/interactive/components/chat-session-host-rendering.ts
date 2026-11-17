@@ -1,3 +1,4 @@
+import type { AssistantMessage } from "@bastani/atomic-ai";
 import { type Component, Spacer, Text, type TUI, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import { AtomicWorkedStatusComponent, DEFAULT_WORKING_MESSAGE } from "./atomic-working-status.ts";
 import {
@@ -12,7 +13,7 @@ import type { ChatSessionHostEntry } from "./chat-session-host-types.ts";
 import { cacheKey, isChatMessageEntry, stripAnsi, tailStreamingText } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import { FooterComponent, UsageMeterComponent } from "./footer.ts";
-import { compactionMeta } from "./working-run-meter.ts";
+import { agentTokenTotal, compactionMeta, type WorkingRunSnapshot } from "./working-run-meter.ts";
 import { WorkingStatusComponent } from "./working-status.ts";
 
 export function renderChatSessionBody<TExtraEntry extends ChatTranscriptEntryLike>(
@@ -63,6 +64,28 @@ export function renderChatSessionPendingMessages<TExtraEntry extends ChatTranscr
 	return lines;
 }
 
+export function chatSessionTokenCount<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): number {
+	const counted = state.workingTokenCount?.();
+	if (counted !== undefined) return counted;
+	const settled: AssistantMessage[] = [];
+	let streaming: AssistantMessage | undefined;
+	for (const entry of state.transcript) {
+		if (!isChatMessageEntry(entry) || entry.kind !== "assistant") continue;
+		if (state.liveChat.isStreamingAssistantEntry(entry)) streaming = entry.message;
+		else settled.push(entry.message);
+	}
+	return agentTokenTotal(settled, streaming);
+}
+
+export function chatSessionWorkingMeta<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): WorkingRunSnapshot | undefined {
+	const snapshot = state.workingRunMeter.snapshot();
+	return snapshot === undefined ? undefined : { ...snapshot, tokens: chatSessionTokenCount(state) };
+}
+
 export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	width: number,
@@ -101,7 +124,7 @@ export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscrip
 	return new WorkingStatusComponent({
 		frame: state.workingFrame,
 		message: state.workingMessage ?? DEFAULT_WORKING_MESSAGE,
-		meta: state.workingRunMeter.snapshot(),
+		meta: chatSessionWorkingMeta(state),
 		palette,
 		spinnerColor: useCallerStyling ? (text) => state.style.accent(text) : undefined,
 		spinnerBoldColor: useCallerStyling ? (text) => state.style.accentBold(text) : undefined,

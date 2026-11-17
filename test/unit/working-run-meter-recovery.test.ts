@@ -194,7 +194,7 @@ test("#5243: main-chat engine-loss diagnostic and idle prompt turn clear a stale
 		now = 3_000;
 		session.isStreaming = true;
 		mode.renderCurrentSessionState();
-		assert.deepEqual(mode.workingRunMeter.snapshot(), { elapsedMs: 2_000, outputTokens: 18_400 });
+		assert.deepEqual(mode.workingRunMeter.snapshot(), { elapsedMs: 2_000, tokens: 18_400 });
 
 		session.isStreaming = false;
 		mode.renderCurrentSessionState();

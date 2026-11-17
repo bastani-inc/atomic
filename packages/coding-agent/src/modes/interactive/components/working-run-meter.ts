@@ -1,12 +1,22 @@
+import { formatTokenCount, formatTokenSegment } from "./token-segment.ts";
+
 export interface WorkingRunSnapshot {
 	readonly elapsedMs: number;
-	readonly outputTokens: number;
+	readonly tokens: number;
+	readonly requesting?: boolean;
 	readonly note?: string;
 }
 
 export interface MeteredMessage {
 	readonly role: string;
-	readonly usage?: { readonly output?: number } | undefined;
+	readonly usage?:
+		| {
+				readonly input?: number;
+				readonly output?: number;
+				readonly cacheRead?: number;
+				readonly cacheWrite?: number;
+		  }
+		| undefined;
 	readonly content?: readonly unknown[] | string;
 }
 
@@ -20,7 +30,7 @@ const RUN_CONTINUING_STOP_REASONS: ReadonlySet<string> = new Set(["toolUse", "pe
 export function runInProgress(
 	messages: readonly MeteredRunMessage[],
 	streaming?: MeteredRunMessage,
-): { readonly startedAt: number | undefined; readonly settledTokens: number } {
+): { readonly startedAt: number | undefined; readonly settledTokens: number; readonly requesting: boolean } {
 	let start = messages.length;
 	while (start > 0) {
 		const message = messages[start - 1]!;
@@ -35,11 +45,37 @@ export function runInProgress(
 	let startedAt: number | undefined;
 	let settledTokens = 0;
 	for (const message of messages.slice(start)) {
-		if (startedAt === undefined && typeof message.timestamp === "number") startedAt = message.timestamp;
+		if (startedAt === undefined && isTimestamp(message.timestamp)) startedAt = message.timestamp;
 		if (message.role === "assistant") settledTokens += meteredOutputTokens(message);
 	}
-	if (startedAt === undefined && typeof streaming?.timestamp === "number") startedAt = streaming.timestamp;
-	return { startedAt, settledTokens };
+	if (startedAt === undefined && isTimestamp(streaming?.timestamp)) startedAt = streaming.timestamp;
+	const last = messages.at(-1);
+	const requesting =
+		!hasContent(streaming) && start < messages.length && (last?.role === "user" || last?.role === "toolResult");
+	return { startedAt, settledTokens, requesting };
+}
+
+function isTimestamp(value: number | undefined): value is number {
+	return typeof value === "number" && value > 0;
+}
+
+function hasContent(message: MeteredMessage | undefined): boolean {
+	const content = message?.content;
+	return typeof content === "string" ? content.length > 0 : (content?.length ?? 0) > 0;
+}
+
+export function agentTokenTotal(messages: readonly MeteredMessage[], streaming?: MeteredMessage): number {
+	let output = 0;
+	let latestInput = 0;
+	for (const message of messages) {
+		if (message.role !== "assistant") continue;
+		output += meteredOutputTokens(message);
+		const usage = message.usage;
+		const input = (usage?.input ?? 0) + (usage?.cacheRead ?? 0) + (usage?.cacheWrite ?? 0);
+		if (input > 0) latestInput = input;
+	}
+	const live = streaming?.role === "assistant" ? meteredOutputTokens(streaming, true) : 0;
+	return latestInput + output + live;
 }
 
 const serializedArgumentLengths = new WeakMap<object, number>();
@@ -83,6 +119,7 @@ export class WorkingRunMeter {
 	private settledTokens = 0;
 	private streamingMessage: MeteredMessage | undefined;
 	private cachedStreamingTokens: number | undefined;
+	private requesting = false;
 	private readonly now: () => number;
 
 	constructor(now: () => number = Date.now) {
@@ -94,12 +131,18 @@ export class WorkingRunMeter {
 		this.settledTokens = 0;
 		this.streamingMessage = undefined;
 		this.cachedStreamingTokens = 0;
+		this.requesting = false;
+	}
+
+	requestStarted(): void {
+		this.requesting = true;
 	}
 
 	streaming(message: MeteredMessage): void {
 		if (message.role !== "assistant") return;
 		this.streamingMessage = message;
 		this.cachedStreamingTokens = undefined;
+		if (hasContent(message)) this.requesting = false;
 	}
 
 	settled(message: MeteredMessage): void {
@@ -107,13 +150,15 @@ export class WorkingRunMeter {
 		this.settledTokens += meteredOutputTokens(message);
 		this.streamingMessage = undefined;
 		this.cachedStreamingTokens = 0;
+		this.requesting = false;
 	}
 
-	resume(startedAt: number | undefined, settledTokens: number): void {
+	resume(startedAt: number | undefined, settledTokens: number, requesting = false): void {
 		this.startedAt = Math.min(startedAt ?? this.now(), this.now());
 		this.settledTokens = settledTokens;
 		this.streamingMessage = undefined;
 		this.cachedStreamingTokens = 0;
+		this.requesting = requesting;
 	}
 
 	stop(): void {
@@ -129,7 +174,8 @@ export class WorkingRunMeter {
 		}
 		return {
 			elapsedMs: Math.max(0, this.now() - this.startedAt),
-			outputTokens: this.settledTokens + this.cachedStreamingTokens,
+			tokens: this.settledTokens + this.cachedStreamingTokens,
+			...(this.requesting ? { requesting: true } : {}),
 		};
 	}
 }
@@ -143,20 +189,17 @@ export function formatWorkingElapsed(ms: number): string {
 }
 
 export function formatWorkingTokens(tokens: number): string {
-	if (tokens < 1000) return `${tokens}`;
-	if (tokens < 999_500) return `${(tokens / 1000).toFixed(tokens < 99_950 ? 1 : 0)}k`;
-	if (tokens < 999_500_000) return `${(tokens / 1_000_000).toFixed(tokens < 99_950_000 ? 1 : 0)}M`;
-	return `${(tokens / 1_000_000_000).toFixed(tokens < 99_950_000_000 ? 1 : 0)}B`;
-}
-
-export function formatWorkingTokenCount(tokens: number): string {
-	return `↓ ${formatWorkingTokens(tokens)} tokens`;
+	return formatTokenCount(tokens);
 }
 
 export function formatWorkingMeta(snapshot: WorkingRunSnapshot): string {
-	if (snapshot.elapsedMs < 1000 && snapshot.outputTokens <= 0 && !snapshot.note) return "";
+	if (snapshot.elapsedMs < 1000 && snapshot.tokens <= 0 && !snapshot.note) return "";
 	const parts = [formatWorkingElapsed(snapshot.elapsedMs)];
-	if (snapshot.outputTokens > 0) parts.push(formatWorkingTokenCount(snapshot.outputTokens));
+	const tokens = formatTokenSegment({
+		mode: snapshot.requesting ? "requesting" : "receiving",
+		count: snapshot.tokens,
+	});
+	if (tokens) parts.push(tokens);
 	if (snapshot.note) parts.push(snapshot.note);
 	return parts.join(" · ");
 }
@@ -164,7 +207,7 @@ export function formatWorkingMeta(snapshot: WorkingRunSnapshot): string {
 export function compactionMeta(startedAt: number, cancelKey: string | undefined, now = Date.now()): WorkingRunSnapshot {
 	return {
 		elapsedMs: Math.max(0, now - startedAt),
-		outputTokens: 0,
+		tokens: 0,
 		...(cancelKey ? { note: `${cancelKey} to cancel` } : {}),
 	};
 }

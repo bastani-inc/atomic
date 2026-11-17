@@ -146,6 +146,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			break;
 
 		case "turn_start": {
+			this.workingRunMeter.requestStarted();
 			this.workingMessage = pickWhimsicalWorkingMessage();
 			this.lastWorkingMessage = this.workingMessage;
 			if (this.loadingAnimation) {

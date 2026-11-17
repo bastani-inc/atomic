@@ -41,6 +41,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly getSessionMessages: (() => AgentSession["messages"] | undefined) | undefined;
 	readonly getTaskSource: (() => TaskViewSource | undefined) | undefined;
 	readonly isStreamingOverride: (() => boolean) | undefined;
+	readonly workingTokenCount: (() => number | undefined) | undefined;
 	readonly isPaused: (() => boolean) | undefined;
 	readonly isDisabled: (() => boolean) | undefined;
 	readonly isBashRunningOverride: (() => boolean) | undefined;
@@ -139,6 +140,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 		this.getSessionMessages = opts.getSessionMessages;
 		this.getTaskSource = opts.getTaskSource;
 		this.isStreamingOverride = opts.isStreaming;
+		this.workingTokenCount = opts.workingTokenCount;
 		this.workingLifecycleActive = opts.isStreaming?.() === true;
 		this.isPaused = opts.isPaused;
 		this.isDisabled = opts.isDisabled;

@@ -507,7 +507,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		if (this.state.disposed) return;
 		if (this.state.workingRunMeter.snapshot() === undefined) {
 			const run = runInProgress(messages, streaming);
-			this.state.workingRunMeter.resume(run.startedAt, run.settledTokens);
+			this.state.workingRunMeter.resume(run.startedAt, run.settledTokens, run.requesting);
 			if (streaming !== undefined) this.state.workingRunMeter.streaming(streaming);
 		}
 		if (this.state.workingMessage === undefined) {

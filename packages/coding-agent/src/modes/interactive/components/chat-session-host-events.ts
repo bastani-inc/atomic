@@ -14,6 +14,7 @@ import {
 } from "../../../core/messages.ts";
 import { pickWhimsicalWorkingMessage } from "../whimsical-messages.ts";
 import { confirmQueuedChatSessionMessages, flushChatSessionCompactionQueue } from "./chat-session-host-actions.ts";
+import { chatSessionWorkingMeta } from "./chat-session-host-rendering.ts";
 import {
 	afterChatSessionEvent,
 	decrementOptimisticUserSignature,
@@ -201,7 +202,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			break;
 		case "agent_end": {
 			const manualTakeoverPending = state.manualCompactionTakeoverPending;
-			const snapshot = state.workingRunMeter.snapshot();
+			const snapshot = chatSessionWorkingMeta(state);
 			if (snapshot !== undefined && !manualTakeoverPending)
 				state.workedRun = { message: state.lastWorkingMessage, snapshot };
 			state.workingRunMeter.stop();
@@ -221,6 +222,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 		}
 		case "turn_start":
 			startChatSessionWorkingLifecycle(state);
+			state.workingRunMeter.requestStarted();
 			state.workingMessage = pickWhimsicalWorkingMessage();
 			state.lastWorkingMessage = state.workingMessage;
 			changed = true;

@@ -489,6 +489,22 @@ describe("a live subagent's chat box (#4640)", () => {
 		idle.page.dispose();
 	});
 
+	test("a running subagent's working line counts the same tokens as its task row (#5224)", async () => {
+		const tasks = tree().map((task) =>
+			task.ref.taskId === "child" ? { ...task, metrics: { tokenCount: 87_400 } } : task,
+		);
+		const live = { ...session("child", "subagent-worker-aabcf28b-1"), isRunning: () => true };
+		const page = subagentPage(
+			treeSource(tasks, new Map([["child", live]])),
+			"child",
+			environment({ footerData, createChat: (opts) => new ChatSessionHost(opts) }),
+		);
+		await page.load();
+		const working = plain(page.render(100, 20)).find((row) => WORKING_LINE.test(row)) ?? "";
+		assert.match(working.trimEnd(), / · [↑↓] 87\.4k tokens\)$/);
+		page.dispose();
+	});
+
 	test("shows the messages already queued for the subagent when the page opens (#4640)", async () => {
 		const { page } = await livePage({
 			getQueuedMessages: () => ({ steering: ["use the fixture"], followUp: ["then run the suite"] }),

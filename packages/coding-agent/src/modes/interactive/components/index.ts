@@ -88,4 +88,5 @@ export { TrustSelectorComponent } from "./trust-selector.ts";
 export { UserMessageComponent } from "./user-message.ts";
 export { UserMessageSelectorComponent } from "./user-message-selector.ts";
 export { truncateToVisualLines, type VisualTruncateResult } from "./visual-truncate.ts";
+export { agentTokenTotal } from "./working-run-meter.ts";
 export { WorkingStatusComponent, type WorkingStatusComponentOptions } from "./working-status.ts";

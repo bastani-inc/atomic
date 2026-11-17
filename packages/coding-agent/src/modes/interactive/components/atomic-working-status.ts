@@ -9,12 +9,8 @@ import {
 } from "@bastani/atomic-tui";
 import { ansi256ToHex, fgAnsi, hexToRgb } from "../theme/color-utils.ts";
 import { theme } from "../theme/theme.js";
-import {
-	formatWorkingElapsed,
-	formatWorkingMeta,
-	formatWorkingTokenCount,
-	type WorkingRunSnapshot,
-} from "./working-run-meter.ts";
+import { formatTokenSegment } from "./token-segment.ts";
+import { formatWorkingElapsed, formatWorkingMeta, type WorkingRunSnapshot } from "./working-run-meter.ts";
 
 /** Atomic's literal one-cell identity follows the approved ten-step luminance ramp. */
 export const ATOMIC_WORKING_FRAMES = ["∀", "∀", "∀", "∀", "∀", "∀", "∀", "∀", "∀", "∀"] as const;
@@ -23,22 +19,29 @@ export const ATOMIC_WORKING_FRAME_MS = 88;
 export const DEFAULT_WORKING_MESSAGE = "Working...";
 
 const IRREGULAR_WORKED_VERBS: Readonly<Record<string, string>> = {
+	building: "built",
 	doing: "did",
 	feeding: "fed",
+	finding: "found",
 	forgiving: "forgave",
 	freeing: "freed",
+	getting: "got",
 	giving: "gave",
 	having: "had",
 	letting: "let",
 	making: "made",
 	reading: "read",
+	running: "ran",
+	sending: "sent",
 	shaking: "shook",
 	spellbinding: "spellbound",
 	spinning: "spun",
 	taking: "took",
 	teaching: "taught",
+	thinking: "thought",
 	unbinding: "unbound",
 	winding: "wound",
+	writing: "wrote",
 };
 
 export function workedVerb(message: string | undefined): string {
@@ -223,7 +226,8 @@ export class AtomicWorkedStatusComponent implements Component {
 
 	render(width: number): string[] {
 		const { snapshot } = this.options;
-		const tokens = snapshot.outputTokens > 0 ? ` · ${formatWorkingTokenCount(snapshot.outputTokens)}` : "";
+		const segment = formatTokenSegment({ mode: "receiving", count: snapshot.tokens });
+		const tokens = segment ? ` · ${segment}` : "";
 		const text = `${workedVerb(this.options.message)} for ${formatWorkingElapsed(snapshot.elapsedMs)}${tokens}`;
 		const color = noColorRequested()
 			? (value: string) => value

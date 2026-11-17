@@ -1147,6 +1147,7 @@ export {
 export {
 	ArminComponent,
 	AssistantMessageComponent,
+	agentTokenTotal,
 	applyInputLabelToEditorTopRule,
 	BashExecutionComponent,
 	BorderedLoader,
