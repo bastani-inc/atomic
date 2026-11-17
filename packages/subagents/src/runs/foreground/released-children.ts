@@ -440,7 +440,8 @@ export interface ReleasedChildWakeActions {
 	) => Promise<void>;
 }
 
-function wakeFailureOf(error: Error, childId: string): ReleasedChildError {
+/** `error` as the failure of a wake of `childId`, as its owner is told of it. */
+export function wakeFailureOf(error: Error, childId: string): ReleasedChildError {
 	return isReleasedChildError(error)
 		? error
 		: new ReleasedChildError("wake-failed", { childId, reason: error.message }, { cause: error });
