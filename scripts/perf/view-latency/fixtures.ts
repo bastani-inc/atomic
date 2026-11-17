@@ -144,6 +144,9 @@ export function benchEnvironment(dirs: BenchDirectories, extra: Record<string, s
 		ATOMIC_TELEMETRY: "0",
 		TERM: "xterm-256color",
 		COLORTERM: "truecolor",
+		// Windows' PTY adds this environment to the driver's own, so a CI value inherited there must be overridden:
+		// in CI Atomic falls back to the main-screen renderer.
+		CI: "0",
 		...extra,
 	};
 }

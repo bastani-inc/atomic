@@ -21,11 +21,20 @@ export class BenchScreen {
 	}
 
 	feed(chunk: string, atMs: number): void {
-		this.terminal.write(chunk, () => {
-			this.current = this.capture();
-			for (const listener of this.listeners) listener(this.current, atMs);
-		});
+		if (this.overflow !== undefined) return;
+		try {
+			this.terminal.write(chunk, () => {
+				this.current = this.capture();
+				for (const listener of this.listeners) listener(this.current, atMs);
+			});
+		} catch (error) {
+			// The terminal model fell too far behind the output to keep up: stop rather than measure a partial screen.
+			this.overflow = error instanceof Error ? error : new Error(String(error));
+		}
 	}
+
+	/** Why the screen stopped following the output, if it did. */
+	overflow: Error | undefined;
 
 	lines(): readonly string[] {
 		return this.current;
@@ -45,7 +54,9 @@ export class BenchScreen {
 		return new Promise((resolve, reject) => {
 			const timer = setTimeout(() => {
 				unsubscribe();
-				reject(new Error(`timed out after ${timeoutMs} ms waiting for ${label}\n${this.text()}`));
+				const cause =
+					this.overflow === undefined ? "" : ` (the screen stopped following: ${this.overflow.message})`;
+				reject(new Error(`timed out after ${timeoutMs} ms waiting for ${label}${cause}\n${this.text()}`));
 			}, timeoutMs);
 			const unsubscribe = this.subscribe((lines) => {
 				if (!predicate(lines)) return;
