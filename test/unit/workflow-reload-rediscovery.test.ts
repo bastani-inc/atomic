@@ -327,14 +327,9 @@ describe("workflow reload rediscovery matrix", () => {
 			inputs.inputs.map((input) => input.name),
 			["message"],
 		);
-		const workflowCommand = harness.commands.get("workflow");
-		assert.ok(workflowCommand?.getArgumentCompletions);
-		const completions = await workflowCommand.getArgumentCompletions("scope-project-at");
-		assert.ok(completions?.some((item) => item.label === "scope-project-atomic"));
-		const messageStart = harness.messages.length;
-
-		await workflowCommand.handler?.("scope-project-atomic --help", { hasUI: false, ui: { notify: () => undefined } });
-		assert.match(harness.messages.slice(messageStart).join("\n"), /message/);
+		assert.equal(harness.commands.has("workflow"), false);
+		assert.equal(harness.commands.has("workflows"), true);
+		assert.equal(harness.commands.has("workflow-authoring"), true);
 
 		const run = await harness.execute({
 			action: "run",
@@ -392,14 +387,14 @@ describe("workflow reload rediscovery matrix", () => {
 			);
 		await writeDefinition("fresh-one");
 		const harness = createHarness({ getWorkflowHostModules });
-		await harness.commands.get("workflow")?.handler?.("reload", { hasUI: false, ui: { notify: () => undefined } });
+		await harness.execute({ action: "reload" });
 		assert.ok(names(await harness.execute({ action: "list" })).includes("fresh-one"));
 		const before = await harness.execute({ action: "get", workflow: "fresh-one" });
 		assert.equal(before.action, "get");
 		assert.equal(before.details?.output?.description, "helper-one:AuthStorage");
 		await writeFile(helper, 'export const description = "helper-two";');
 		await writeDefinition("fresh-two");
-		await harness.commands.get("workflow")?.handler?.("reload", { hasUI: false, ui: { notify: () => undefined } });
+		await harness.execute({ action: "reload" });
 		const reloadedNames = names(await harness.execute({ action: "list" }));
 		assert.ok(!reloadedNames.includes("fresh-one"));
 		assert.ok(reloadedNames.includes("fresh-two"));
@@ -431,10 +426,8 @@ describe("workflow reload rediscovery matrix", () => {
 			inputs: { message: "still-valid" },
 		});
 		await expectCompleted(harness, stableRun, { value: "declared:reload-stable:still-valid" });
-		const slashMessageStart = harness.messages.length;
-		await harness.commands.get("workflow")?.handler?.("reload", { hasUI: false, ui: { notify: () => undefined } });
 		assert.match(
-			harness.messages.slice(slashMessageStart).join("\n"),
+			added.message ?? "",
 			/INVALID_DEFINITION[\s\S]*IMPORT_FAILED|IMPORT_FAILED[\s\S]*INVALID_DEFINITION/,
 		);
 
@@ -542,13 +535,12 @@ describe("workflow reload rediscovery matrix", () => {
 		const durableBefore = structuredClone(durableBackend.listResumableWorkflows());
 		await harness.execute({ action: "reload" });
 		assert.deepEqual(durableBackend.listResumableWorkflows(), durableBefore);
-		const resumeMessageStart = harness.messages.length;
-		await harness.commands.get("workflow")?.handler?.(`resume ${testRunId("durable-reload-retained")}`, {
-			hasUI: false,
-			ui: { notify: () => undefined },
+		const resumed = await harness.execute({
+			action: "resume",
+			runId: testRunId("durable-reload-retained"),
 		});
 		assert.match(
-			harness.messages.slice(resumeMessageStart).join("\n"),
+			String((resumed as { message?: string }).message ?? ""),
 			/Resuming durable workflow[\s\S]*checkpoints will be replayed/,
 		);
 		const running = harness.execute({ action: "run", workflow: "reload-inflight", inputs: { message: "value" } });

@@ -1,23 +1,30 @@
-/**
- * The workflow tool's result in the chat, in the tool band every tool uses: one `⎿` line that says how the call
- * ended, or how its run stands while it runs, and the call's details under it when tool output is expanded.
- */
-
 import type { ThemeColor } from "@bastani/atomic";
-import { formatTokenCount, formatTokenSegment, keyHintIfBound } from "@bastani/atomic";
-import { visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
+import { keyHintIfBound, navEntryKeys, sliceHead, ToolBlock, ToolBlockRecords } from "@bastani/atomic";
+import { type Component, getKeybindings, visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
 import { meter_run, type RunUsageTree } from "../shared/budget-meter.js";
+import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { StoreInvalidationListener } from "../shared/store-public-types.js";
 import type { RunSnapshot, StageSnapshot, StageStatus } from "../shared/store-types.js";
+import { stripTerminalSequences } from "../shared/terminal-controls.js";
 import { elapsedRunMs } from "../shared/timing.js";
+import { boundedToolText, TOOL_PAYLOAD_VALUE_LIMIT } from "../shared/tool-payload-bounds.js";
 import type { WorkflowOutputValues } from "../shared/types.js";
+import { authoritativeWorkflowChildRunId, type RunsById } from "../shared/workflow-run-ownership.js";
+import { inertDisplayLine, summarizeFailureText, withoutStackFrames } from "../tui/display-text.js";
+import { findWaitingInTree, runFailureText, validChildRunForStage } from "../tui/run-display-state.js";
 import { truncateToWidth } from "../tui/text-helpers.js";
 import type { PiRenderComponent } from "./public-types.js";
-import { displayLine, runAskLine, type WorkflowCallLabel, type WorkflowToolArgs } from "./render-call.js";
+import {
+	displayLine,
+	fitWorkflowCallLabel,
+	runAskLine,
+	type WorkflowCallLabel,
+	type WorkflowToolArgs,
+	workflowCallLabel,
+} from "./render-call.js";
 import type { WorkflowRegisteredToolResult } from "./render-result.js";
 import { renderResult } from "./render-result.js";
 
-/** The theme calls the block uses; the host passes its theme, and anything else renders plain. */
 export interface WorkflowBlockTheme {
 	fg(color: ThemeColor, text: string): string;
 	bold(text: string): string;
@@ -28,11 +35,13 @@ const PLAIN_THEME: WorkflowBlockTheme = { fg: (_color, text) => text, bold: (tex
 export function workflowBlockTheme(theme: unknown): WorkflowBlockTheme {
 	const candidate = theme as Partial<WorkflowBlockTheme> | undefined;
 	return typeof candidate?.fg === "function" && typeof candidate.bold === "function"
-		? (candidate as WorkflowBlockTheme)
+		? {
+				fg: (color, text) => candidate.fg!(color, text),
+				bold: (text) => candidate.bold!(text),
+			}
 		: PLAIN_THEME;
 }
 
-/** The runs a block reads its run from, and is told of their changes by. */
 export interface WorkflowRunSource {
 	run(runId: string): RunSnapshot | undefined;
 	childRuns(parentRunId: string): readonly RunSnapshot[];
@@ -41,20 +50,29 @@ export interface WorkflowRunSource {
 
 export type WorkflowResultTone = "running" | "success" | "failure" | "warning" | "paused" | "stopped" | "info";
 
-/** How a call ended, or how its run stands, as its `⎿` line says it. */
 export interface WorkflowResultSummary {
 	readonly tone: WorkflowResultTone;
 	readonly text: string;
 }
 
 const TONE_MARKERS: Readonly<Record<WorkflowResultTone, { readonly glyph: string; readonly color: ThemeColor }>> = {
-	running: { glyph: "∀", color: "accent" },
+	running: { glyph: "", color: "accent" },
 	success: { glyph: "✓", color: "success" },
 	failure: { glyph: "✗", color: "error" },
 	warning: { glyph: "!", color: "warning" },
 	paused: { glyph: "⏸", color: "muted" },
 	stopped: { glyph: "◼", color: "muted" },
 	info: { glyph: "", color: "dim" },
+};
+
+const STAGE_MARKERS: Readonly<Record<WorkflowResultTone, { readonly glyph: string; readonly color: ThemeColor }>> = {
+	running: { glyph: "∀", color: "accent" },
+	success: { glyph: "✓", color: "success" },
+	failure: { glyph: "✗", color: "error" },
+	warning: { glyph: "!", color: "warning" },
+	paused: { glyph: "⏸", color: "muted" },
+	stopped: { glyph: "◼", color: "muted" },
+	info: { glyph: "·", color: "dim" },
 };
 
 const STAGE_TONES: Readonly<Record<StageStatus, WorkflowResultTone>> = {
@@ -69,19 +87,15 @@ const STAGE_TONES: Readonly<Record<StageStatus, WorkflowResultTone>> = {
 	skipped: "stopped",
 };
 
-const TERMINAL_RUN_STATUSES = new Set<RunSnapshot["status"]>([
-	"completed",
-	"failed",
-	"blocked",
-	"skipped",
-	"cancelled",
-	"killed",
-]);
+const FINAL_UNRESUMABLE_RUN_STATUSES = new Set<RunSnapshot["status"]>(["completed", "skipped", "cancelled", "killed"]);
 
 const SETTLED_STAGE_STATUSES = new Set<StageStatus>(["completed", "failed", "skipped"]);
 const FIRST_PREFIX = "  ⎿  ";
 const DETAIL_PREFIX = "     ";
 const LIST_PREVIEW = 3;
+const ERROR_SCAN_LIMIT = 4096;
+const ERROR_PREVIEW_LIMIT = 240;
+const DEFAULT_DEFINITION_GUIDANCE = "Fix the workflow definition and run /reload.";
 
 export function formatBlockDuration(ms: number): string {
 	const totalSec = Math.floor(Math.max(0, ms) / 1000);
@@ -93,28 +107,107 @@ export function formatBlockDuration(ms: number): string {
 	return minutes % 60 > 0 ? `${hours}h ${minutes % 60}m` : `${hours}h`;
 }
 
+export function formatWorkflowTokenCount(tokens: number): string {
+	const count = Math.max(0, Math.round(tokens));
+	if (count < 1000) return `${count}`;
+	if (count < 999_500) return `${(count / 1000).toFixed(count < 99_950 ? 1 : 0)}k`;
+	if (count < 999_500_000) return `${(count / 1_000_000).toFixed(count < 99_950_000 ? 1 : 0)}m`;
+	return `${(count / 1_000_000_000).toFixed(count < 99_950_000_000 ? 1 : 0)}b`;
+}
+
 function plural(count: number, noun: string, nouns = `${noun}s`): string {
 	return `${count} ${count === 1 ? noun : nouns}`;
 }
 
-/** An error's first message line: never a stack frame, never a line break. */
 export function shortReason(text: string | undefined): string | undefined {
 	if (text === undefined) return undefined;
-	for (const raw of text.split(/\r?\n/)) {
-		const line = displayLine(raw);
-		if (line.length === 0 || /^at\s/.test(line)) continue;
-		return line.replace(/^Error:\s*/, "");
+	const first = withoutStackFrames(sliceHead(text, ERROR_SCAN_LIMIT)).kept.find(
+		(line) => displayLine(line).length > 0,
+	);
+	if (first === undefined) return undefined;
+	const reason = summarizeFailureText(first).reason;
+	return reason.length > ERROR_PREVIEW_LIMIT ? `${sliceHead(reason, ERROR_PREVIEW_LIMIT - 1)}…` : reason;
+}
+
+function shortPrompt(text: string | undefined): string | undefined {
+	if (text === undefined) return undefined;
+	const line = displayLine(sliceHead(text, ERROR_SCAN_LIMIT));
+	if (line.length === 0) return undefined;
+	return line.length > ERROR_PREVIEW_LIMIT ? `${sliceHead(line, ERROR_PREVIEW_LIMIT - 1)}…` : line;
+}
+
+function runsByIdFromSource(source: Pick<WorkflowRunSource, "run"> | undefined, rootRun: RunSnapshot): RunsById {
+	return {
+		get: (runId) => (runId === rootRun.id ? (source?.run(runId) ?? rootRun) : source?.run(runId)),
+	};
+}
+
+function descendantRunIds(
+	source: WorkflowRunSource | undefined,
+	runId: string,
+	rootRun: RunSnapshot | undefined,
+): Set<string> {
+	const ids = new Set<string>();
+	if (source === undefined) return ids;
+	const resolvedRoot = rootRun ?? source.run(runId);
+	const runsById = resolvedRoot === undefined ? undefined : runsByIdFromSource(source, resolvedRoot);
+	const visited = new Set<string>([runId]);
+	const queue: Array<{ readonly id: string; readonly run: RunSnapshot | undefined }> = [
+		{ id: runId, run: resolvedRoot },
+	];
+	for (let index = 0; index < queue.length; index++) {
+		const current = queue[index]!;
+		if (current.run !== undefined && runsById !== undefined) {
+			for (const stage of current.run.stages) {
+				const validChild = validChildRunForStage(stage, current.run, runId, runsById, visited);
+				if (validChild !== undefined && !ids.has(validChild.id) && validChild.id !== runId) {
+					ids.add(validChild.id);
+					queue.push({ id: validChild.id, run: validChild });
+					continue;
+				}
+				const childId = authoritativeWorkflowChildRunId(stage);
+				if (childId !== undefined && !ids.has(childId) && childId !== runId) {
+					ids.add(childId);
+					queue.push({ id: childId, run: source.run(childId) });
+				}
+			}
+		}
+		for (const child of source.childRuns(current.id)) {
+			if (child.parentStageId !== undefined && current.run !== undefined) continue;
+			if (!ids.has(child.id) && child.id !== runId) {
+				ids.add(child.id);
+				queue.push({ id: child.id, run: child });
+			}
+		}
 	}
-	return undefined;
+	return ids;
 }
 
 function join(...parts: readonly (string | undefined)[]): string {
 	return parts.filter((part): part is string => part !== undefined && part.length > 0).join(" · ");
 }
 
-function usageTree(source: WorkflowRunSource | undefined, run: RunSnapshot, depth = 0): RunUsageTree {
-	const children = source === undefined || depth >= 8 ? [] : source.childRuns(run.id);
-	return { run, children: children.map((child) => usageTree(source, child, depth + 1)) };
+function usageTree(source: WorkflowRunSource | undefined, run: RunSnapshot, visited = new Set<string>()): RunUsageTree {
+	if (source === undefined || visited.has(run.id)) return { run, children: [] };
+	visited.add(run.id);
+	const seenChildren = new Set<string>();
+	const children: RunSnapshot[] = [];
+	for (const child of source.childRuns(run.id)) {
+		if (!visited.has(child.id) && !seenChildren.has(child.id)) {
+			seenChildren.add(child.id);
+			children.push(child);
+		}
+	}
+	for (const stage of run.stages) {
+		const childId = authoritativeWorkflowChildRunId(stage);
+		if (childId === undefined || visited.has(childId) || seenChildren.has(childId)) continue;
+		const child = source.run(childId);
+		if (child !== undefined) {
+			seenChildren.add(child.id);
+			children.push(child);
+		}
+	}
+	return { run, children: children.map((child) => usageTree(source, child, visited)) };
 }
 
 function runTokens(source: WorkflowRunSource | undefined, run: RunSnapshot, now: number): number {
@@ -142,33 +235,186 @@ function stageProgress(run: { readonly stages: readonly StageSnapshot[] }): stri
 	return `${settled}/${total} stages`;
 }
 
-/** The `⎿` line for a run, from its live snapshot. */
-export function summarizeRun(run: RunSnapshot, tokens: number, now: number): WorkflowResultSummary {
-	const progress = stageProgress(run);
-	const tokenText = tokens > 0 ? `${formatTokenCount(tokens)} tokens` : undefined;
-	switch (run.status) {
+function completedStageProgress(run: { readonly stages: readonly StageSnapshot[] }): string | undefined {
+	const total = run.stages.length;
+	if (total === 0) return undefined;
+	const completed = run.stages.filter((stage) => stage.status === "completed").length;
+	return `${completed}/${total} stages`;
+}
+
+function runningStageProgress(run: RunSnapshot): string | undefined {
+	const total = run.stages.length;
+	if (total === 0) return undefined;
+	const current = stageWhere(
+		run,
+		(stage) =>
+			stage.status === "running" ||
+			stage.status === "awaiting_input" ||
+			stage.status === "paused" ||
+			stage.status === "blocked",
+	);
+	const settled = run.stages.filter((stage) => SETTLED_STAGE_STATUSES.has(stage.status)).length;
+	const index = current !== undefined ? run.stages.indexOf(current) + 1 : Math.min(total, Math.max(1, settled));
+	const name = current !== undefined ? displayLine(current.name) : "";
+	return `stage ${index}/${total}${name ? ` ${name}` : ""}`;
+}
+
+function pausedStageProgress(run: RunSnapshot): string | undefined {
+	const total = run.stages.length;
+	if (total === 0) return undefined;
+	const current = stageWhere(run, (stage) => stage.status === "paused" || stage.status === "running");
+	const settled = run.stages.filter((stage) => SETTLED_STAGE_STATUSES.has(stage.status)).length;
+	const index = current !== undefined ? run.stages.indexOf(current) + 1 : Math.min(total, Math.max(1, settled));
+	return `stage ${index}/${total}`;
+}
+
+function manageKeyLabel(): string | undefined {
+	const keys = getKeybindings();
+	if (typeof keys.getKeys !== "function") return "↓";
+	const bound = keys.getKeys("app.agents.focus");
+	if (bound.length > 0) return navEntryKeys(keys, { action: "app.agents.focus", label: "to manage" });
+	const hasAppBindings = keys.getKeys("app.tools.expand").length > 0 || keys.getKeys("app.interrupt").length > 0;
+	return hasAppBindings ? undefined : "↓";
+}
+
+function manageHintSegment(enabled = true): string | undefined {
+	if (!enabled) return undefined;
+	const key = manageKeyLabel();
+	return key ? `${key} to manage` : undefined;
+}
+
+export interface DefinitionErrorView {
+	readonly message: string;
+	readonly sourceLine?: string;
+	readonly caretLine?: string;
+	readonly guidance: string;
+}
+
+const CARET_LINE_RE = /^(\s*(?:\|\s*)?\^+)\s*$/;
+const DEFINITION_ERROR_RE =
+	/^(?:Uncaught\s+)?(?:Definition\s+error|DefinitionError)\s*:|Failed to import|ParseError|SyntaxError|TransformError|INVALID_DEFINITION|IMPORT_FAILED|__piWorkflow|workflow\(\{|workflow:\s+(?:description|run|outputs|inputs|name|normalized name|heartbeatIntervalMinutes|budget)\b/i;
+
+function sanitizePreservingIndent(line: string): string {
+	return inertDisplayLine(stripTerminalSequences(line, true).replace(/\t/g, "  ")).trimEnd();
+}
+
+export function parseDefinitionError(rawText: string | undefined): DefinitionErrorView | undefined {
+	if (rawText === undefined || rawText.trim().length === 0) return undefined;
+	const bounded = sliceHead(rawText, ERROR_SCAN_LIMIT);
+	const { kept } = withoutStackFrames(bounded);
+	const nonEmptyLines = kept.filter((line) => displayLine(line).length > 0);
+	if (nonEmptyLines.length === 0) return undefined;
+	const hasCaret = nonEmptyLines.some((line) => CARET_LINE_RE.test(stripTerminalSequences(line, true)));
+	if (!hasCaret && !DEFINITION_ERROR_RE.test(bounded)) return undefined;
+
+	const firstRaw = displayLine(nonEmptyLines[0]!);
+	const withoutImport = firstRaw.replace(/^Failed to import "[^"]*":\s*/i, "");
+	const strippedMessage = withoutImport
+		.replace(
+			/^(?:Uncaught\s+)?(?:Definition\s+error|DefinitionError|Error|TypeError|SyntaxError|ParseError):\s*/i,
+			"",
+		)
+		.trim();
+	const message = strippedMessage.length > 0 ? strippedMessage : withoutImport;
+
+	const rest = nonEmptyLines.slice(1);
+	const caretIdx = rest.findIndex((line) => CARET_LINE_RE.test(stripTerminalSequences(line, true)));
+	let sourceLine: string | undefined;
+	let caretLine: string | undefined;
+	let guidance: string | undefined;
+
+	if (caretIdx >= 0) {
+		const rawCaret = sanitizePreservingIndent(rest[caretIdx]!);
+		const rawSource = caretIdx > 0 ? sanitizePreservingIndent(rest[caretIdx - 1]!) : undefined;
+		if (rawSource !== undefined) {
+			const gutterMatch = /^(\s*\d+\s*\|\s?)/.exec(rawSource);
+			const caretGutterMatch = /^(\s*\|\s?)/.exec(rawCaret);
+			if (gutterMatch && caretGutterMatch) {
+				sourceLine = rawSource.slice(gutterMatch[1]!.length);
+				caretLine = rawCaret.slice(caretGutterMatch[1]!.length);
+			} else {
+				const leadSpaces = /^\s*/.exec(rawSource)?.[0].length ?? 0;
+				sourceLine = rawSource.slice(leadSpaces);
+				caretLine = rawCaret.slice(Math.min(leadSpaces, /^\s*/.exec(rawCaret)?.[0].length ?? 0));
+			}
+		} else {
+			caretLine = rawCaret;
+		}
+		const afterCaret = rest.slice(caretIdx + 1).find((line) => displayLine(line).length > 0);
+		if (afterCaret !== undefined) guidance = displayLine(afterCaret);
+	} else if (rest.length > 0) {
+		guidance = displayLine(rest[rest.length - 1]!);
+	}
+
+	return {
+		message: message.length > ERROR_PREVIEW_LIMIT ? `${sliceHead(message, ERROR_PREVIEW_LIMIT - 1)}…` : message,
+		...(sourceLine === undefined ? {} : { sourceLine }),
+		...(caretLine === undefined ? {} : { caretLine }),
+		guidance: guidance ?? DEFAULT_DEFINITION_GUIDANCE,
+	};
+}
+
+export function summarizeRun(
+	run: RunSnapshot,
+	tokens: number,
+	now: number,
+	manage = true,
+	runsById?: RunsById,
+): WorkflowResultSummary {
+	const elapsedMs = elapsedRunMs(run, now);
+	const elapsed = elapsedMs >= 1000 ? formatBlockDuration(elapsedMs) : undefined;
+	const tokenText = tokens > 0 ? `${formatWorkflowTokenCount(tokens)} tokens` : undefined;
+	const hasDuration = elapsedMs > 0 || run.endedAt !== undefined || run.durationMs !== undefined;
+	const status = effectiveRunStatus(run);
+	switch (status) {
 		case "pending":
 		case "running": {
-			const waiting = stageWhere(run, (stage) => stage.status === "awaiting_input");
+			const waiting = findWaitingInTree(run, runsById);
 			if (waiting !== undefined) {
-				return { tone: "warning", text: join(`Waiting for input at ${displayLine(waiting.name)}`, progress) };
+				const where = waiting.stageName === undefined ? "" : ` at ${displayLine(waiting.stageName)}`;
+				return {
+					tone: "warning",
+					text: join(
+						`Waiting for input${where}`,
+						runningStageProgress(run),
+						elapsed,
+						shortPrompt(waiting.question),
+						manageHintSegment(manage),
+					),
+				};
 			}
 			return {
 				tone: "running",
-				text: join("Running", progress, formatTokenSegment({ mode: "receiving", count: tokens })),
+				text: join(
+					"Running in background",
+					runningStageProgress(run),
+					elapsed,
+					tokens > 0 ? `↓ ${formatWorkflowTokenCount(tokens)} tokens` : undefined,
+					manageHintSegment(manage),
+				),
 			};
 		}
 		case "paused": {
-			const at = stageWhere(run, (stage) => stage.status === "paused" || stage.status === "running");
-			const where = at === undefined ? "" : ` at ${displayLine(at.name)}`;
-			if (run.exitReason === "quit") return { tone: "stopped", text: join(`Stopped${where}`, progress) };
-			return { tone: "paused", text: join(`Paused${where}`, progress) };
+			if (run.exitReason === "quit" || run.quitAt !== undefined) {
+				const stoppedDuration =
+					hasDuration || run.pausedAt !== undefined || run.quitAt !== undefined
+						? `Stopped in ${formatBlockDuration(elapsedMs)}`
+						: "Stopped";
+				return {
+					tone: "stopped",
+					text: join(stoppedDuration, completedStageProgress(run), tokenText),
+				};
+			}
+			return {
+				tone: "paused",
+				text: join("Paused", pausedStageProgress(run), manageHintSegment(manage)),
+			};
 		}
 		case "completed":
 			return {
 				tone: "success",
 				text: join(
-					`Completed in ${formatBlockDuration(elapsedRunMs(run, now))}`,
+					`Completed in ${formatBlockDuration(elapsedMs)}`,
 					run.stages.length > 0 ? plural(run.stages.length, "stage") : undefined,
 					tokenText,
 				),
@@ -177,38 +423,67 @@ export function summarizeRun(run: RunSnapshot, tokens: number, now: number): Wor
 			const stage = failedStageName(run);
 			return {
 				tone: "failure",
-				text: join(stage === undefined ? "Failed" : `Failed at ${stage}`, shortReason(run.error ?? run.exitReason)),
+				text: join(
+					hasDuration ? `Failed in ${formatBlockDuration(elapsedMs)}` : "Failed",
+					stage === undefined ? undefined : `stage ${stage}`,
+					completedStageProgress(run),
+					tokenText,
+					shortReason(runFailureText(run) ?? run.exitReason),
+				),
 			};
 		}
 		case "blocked": {
-			const stage = stageWhere(run, (s) => s.status === "blocked" || s.status === "failed");
+			const stage =
+				(run.failedStageId === undefined ? undefined : stageWhere(run, (s) => s.id === run.failedStageId)) ??
+				stageWhere(run, (s) => s.status === "blocked" || s.status === "failed");
 			return {
 				tone: "warning",
 				text: join(
 					stage === undefined ? "Blocked" : `Blocked at ${displayLine(stage.name)}`,
-					shortReason(run.error ?? run.exitReason),
+					completedStageProgress(run),
+					shortReason(runFailureText(run) ?? run.exitReason),
 				),
 			};
 		}
 		case "skipped":
 			return { tone: "stopped", text: join("Skipped", shortReason(run.exitReason)) };
 		default:
-			return { tone: "stopped", text: join("Stopped", progress) };
+			return {
+				tone: "stopped",
+				text: join(
+					hasDuration ? `Stopped in ${formatBlockDuration(elapsedMs)}` : "Stopped",
+					completedStageProgress(run),
+					tokenText,
+				),
+			};
 	}
 }
 
-/** What a run result says when its run is not in the store: what the call itself reported. */
-function summarizeRunResult(result: Extract<WorkflowRegisteredToolResult, { action: "run" }>): WorkflowResultSummary {
+function summarizeRunResult(
+	result: Extract<WorkflowRegisteredToolResult, { action: "run" }>,
+	manage = true,
+): WorkflowResultSummary {
 	if ("code" in result) return { tone: "failure", text: shortReason(result.error) ?? "Timed out" };
 	const status = result.details?.status === "accepted" ? "running" : result.status;
 	if (result.error !== undefined && result.error.length > 0) {
+		const defError = !result.runId ? parseDefinitionError(result.error) : undefined;
+		if (defError !== undefined) {
+			return { tone: "failure", text: `Definition error: ${defError.message}` };
+		}
 		return { tone: "failure", text: join(result.runId ? "Failed" : "Not started", shortReason(result.error)) };
 	}
 	switch (status) {
 		case "running":
 		case "pending":
 		case "accepted":
-			return { tone: "running", text: join("Started in the background", result.runId ? `run ${result.runId}` : "") };
+			return {
+				tone: "running",
+				text: join(
+					"Running in background",
+					result.runId ? `run ${displayLine(result.runId)}` : undefined,
+					manageHintSegment(manage),
+				),
+			};
 		case "completed":
 			return {
 				tone: "success",
@@ -219,7 +494,7 @@ function summarizeRunResult(result: Extract<WorkflowRegisteredToolResult, { acti
 		case "blocked":
 			return { tone: "warning", text: join("Blocked", shortReason(result.exitReason)) };
 		case "paused":
-			return { tone: "paused", text: "Paused" };
+			return { tone: "paused", text: join("Paused", manageHintSegment(manage)) };
 		default:
 			return { tone: "stopped", text: displayLine(status) || "Stopped" };
 	}
@@ -243,12 +518,20 @@ function controlSummary(result: { status: string; message: string; code?: string
 	return { tone: "success", text };
 }
 
-/** The `⎿` line for any workflow tool result, given the run's live snapshot when it has one. */
 export function summarizeWorkflowResult(
 	result: WorkflowRegisteredToolResult | null | undefined,
-	view: { readonly errorText?: string; readonly run?: RunSnapshot; readonly tokens?: number; readonly now: number },
+	view: {
+		readonly errorText?: string;
+		readonly run?: RunSnapshot;
+		readonly runsById?: RunsById;
+		readonly tokens?: number;
+		readonly now: number;
+		readonly manage?: boolean;
+	},
 ): WorkflowResultSummary {
 	if (result === null || result === undefined || typeof result.action !== "string") {
+		const defError = parseDefinitionError(view.errorText);
+		if (defError !== undefined) return { tone: "failure", text: `Definition error: ${defError.message}` };
 		const reason = shortReason(view.errorText);
 		return reason === undefined ? { tone: "info", text: "No result" } : { tone: "failure", text: reason };
 	}
@@ -258,8 +541,11 @@ export function summarizeWorkflowResult(
 	switch (result.action) {
 		case "run":
 			return view.run !== undefined
-				? summarizeRun(view.run, view.tokens ?? 0, view.now)
-				: summarizeRunResult(result as Extract<WorkflowRegisteredToolResult, { action: "run" }>);
+				? summarizeRun(view.run, view.tokens ?? 0, view.now, view.manage !== false, view.runsById)
+				: summarizeRunResult(
+						result as Extract<WorkflowRegisteredToolResult, { action: "run" }>,
+						view.manage !== false,
+					);
 		case "list":
 			return result.items.length === 0
 				? { tone: "info", text: "No workflows" }
@@ -395,8 +681,7 @@ function fieldLines(values: Readonly<Record<string, unknown>> | WorkflowOutputVa
 }
 
 function stageLine(stage: StageSnapshot, theme: WorkflowBlockTheme, now: number): string {
-	const marker = TONE_MARKERS[STAGE_TONES[stage.status]];
-	const glyph = marker.glyph === "" ? "·" : marker.glyph;
+	const marker = STAGE_MARKERS[STAGE_TONES[stage.status]];
 	const ended = stage.endedAt ?? (stage.status === "running" ? now : undefined);
 	const duration =
 		stage.durationMs !== undefined
@@ -405,10 +690,9 @@ function stageLine(stage: StageSnapshot, theme: WorkflowBlockTheme, now: number)
 				? formatBlockDuration(ended - stage.startedAt)
 				: undefined;
 	const reason = stage.status === "failed" || stage.status === "blocked" ? shortReason(stage.error) : undefined;
-	return `  ${theme.fg(marker.color, glyph)} ${join(displayLine(stage.name), stage.status === "completed" ? undefined : stage.status.replaceAll("_", " "), duration, reason)}`;
+	return `  ${theme.fg(marker.color, marker.glyph)} ${join(displayLine(stage.name), stage.status === "completed" ? undefined : stage.status.replaceAll("_", " "), duration, reason)}`;
 }
 
-/** The details ctrl+o shows for a run: what it was asked, its stages, and what it returned. */
 function runDetailLines(
 	run: RunSnapshot | undefined,
 	result: Extract<WorkflowRegisteredToolResult, { action: "run" }>,
@@ -428,7 +712,7 @@ function runDetailLines(
 	const error = run?.error ?? ("error" in result ? result.error : undefined);
 	if (error !== undefined && error.length > 0) lines.push(theme.bold("Error"), `  ${shortReason(error) ?? ""}`);
 	const runId = run?.id ?? ("runId" in result ? result.runId : undefined);
-	if (runId) lines.push(theme.fg("dim", `run ${runId} · /workflow status ${runId}`));
+	if (runId) lines.push(theme.fg("dim", `run ${displayLine(runId)} · /workflows`));
 	return lines;
 }
 
@@ -442,30 +726,68 @@ export interface WorkflowBlockView {
 }
 
 export interface WorkflowBlockOptions {
-	/** Whether the host lists runs in an agent panel that ↓ focuses, so the running line can say so. */
 	readonly agentPanel?: boolean;
 	readonly now?: () => number;
 }
 
-/**
- * The result part of a workflow tool row. It follows a run it started through the store, repainting only when its
- * line changes, and stops following once the run has ended.
- */
-export class WorkflowToolResultBlock implements PiRenderComponent {
+function definitionErrorRecordComponent(defError: DefinitionErrorView, theme: WorkflowBlockTheme): Component {
+	return {
+		invalidate() {},
+		render(width: number): string[] {
+			if (width < 1) return [];
+			const lines = [truncateToWidth(theme.fg("error", `Definition error: ${defError.message}`), width, "…")];
+			if (defError.sourceLine !== undefined) {
+				lines.push(truncateToWidth(defError.sourceLine, width, "…"));
+			}
+			if (defError.caretLine !== undefined) {
+				lines.push(truncateToWidth(theme.fg("error", defError.caretLine), width, "…"));
+			}
+			lines.push(truncateToWidth(theme.fg("dim", defError.guidance), width, "…"));
+			return lines;
+		},
+	};
+}
+
+export class WorkflowDefinitionFailureBlock extends ToolBlock implements PiRenderComponent {
+	constructor(label: WorkflowCallLabel, defError: DefinitionErrorView, theme: WorkflowBlockTheme, outputPad?: number) {
+		super({
+			status: "failure",
+			title: callComponent(label, theme),
+			details: new ToolBlockRecords([definitionErrorRecordComponent(defError, theme)]),
+			...(outputPad === undefined ? {} : { outputPad }),
+		});
+	}
+
+	isWorking(): boolean {
+		return false;
+	}
+
+	includes(searchString: string): boolean {
+		return this.render(160).join("\n").includes(searchString);
+	}
+}
+
+export class WorkflowToolResultBlock extends ToolBlockRecords implements PiRenderComponent {
 	private result: WorkflowRegisteredToolResult | null | undefined;
 	private view: WorkflowBlockView = { expanded: false, isError: false };
 	private followedRunId: string | undefined;
 	private unsubscribe: (() => void) | undefined;
 	private lastRun: RunSnapshot | undefined;
+	private trackedRunIds = new Set<string>();
 	private shown: string | undefined;
+	private working = false;
+	private disposed = false;
 
 	constructor(
 		private readonly source: WorkflowRunSource | undefined,
 		private readonly theme: WorkflowBlockTheme,
-		private readonly options: WorkflowBlockOptions = {},
-	) {}
+		private readonly renderOptions: WorkflowBlockOptions = {},
+	) {
+		super([]);
+	}
 
 	update(result: WorkflowRegisteredToolResult | null | undefined, view: WorkflowBlockView): this {
+		this.disposed = false;
 		this.result = result;
 		this.view = view;
 		const runId = result?.action === "run" && "runId" in result && result.runId ? result.runId : undefined;
@@ -473,25 +795,75 @@ export class WorkflowToolResultBlock implements PiRenderComponent {
 			this.stopFollowing();
 			this.followedRunId = runId;
 			this.lastRun = undefined;
+			this.trackedRunIds.clear();
 		}
 		this.refreshRun();
+		this.working = this.computeWorking();
 		if (runId !== undefined && this.unsubscribe === undefined && !this.runEnded()) this.follow(runId);
 		this.shown = this.signature();
 		return this;
 	}
 
+	isWorking(): boolean {
+		return this.working;
+	}
+
+	definitionFailureBlock(outputPad?: number): WorkflowDefinitionFailureBlock | undefined {
+		const defError = this.definitionError();
+		if (defError === undefined) return undefined;
+		const fallbackName =
+			this.result !== null &&
+			this.result !== undefined &&
+			typeof this.result.action === "string" &&
+			this.result.action === "run" &&
+			"name" in this.result &&
+			typeof this.result.name === "string"
+				? this.result.name
+				: undefined;
+		const label = workflowCallLabel(this.view.args ?? (fallbackName ? { workflow: fallbackName } : {}));
+		return new WorkflowDefinitionFailureBlock(label, defError, this.theme, outputPad);
+	}
+
+	private computeWorking(): boolean {
+		if (this.disposed) return false;
+		if (this.view.partial === true && (this.result === null || this.result === undefined)) return true;
+		if (this.lastRun !== undefined) {
+			const status = effectiveRunStatus(this.lastRun);
+			if (status !== "running" && status !== "pending") return false;
+			return findWaitingInTree(this.lastRun, runsByIdFromSource(this.source, this.lastRun)) === undefined;
+		}
+		const result = this.result;
+		if (result === null || result === undefined || typeof result.action !== "string" || "code" in result) {
+			return false;
+		}
+		if (result.action === "run") {
+			if (result.error !== undefined && result.error.length > 0) return false;
+			const status = result.details?.status === "accepted" ? "running" : result.status;
+			return status === "running" || status === "pending" || status === "accepted";
+		}
+		if (result.action === "stage") {
+			return result.error === undefined && result.stage?.status === "running";
+		}
+		return false;
+	}
+
 	private now(): number {
-		return this.options.now?.() ?? Date.now();
+		return this.renderOptions.now?.() ?? Date.now();
 	}
 
 	private refreshRun(): void {
 		if (this.followedRunId === undefined || this.source === undefined) return;
 		const run = this.source.run(this.followedRunId);
 		if (run !== undefined) this.lastRun = run;
+		this.trackedRunIds = descendantRunIds(this.source, this.followedRunId, this.lastRun);
+		this.working = this.computeWorking();
 	}
 
 	private runEnded(): boolean {
-		return this.lastRun !== undefined && TERMINAL_RUN_STATUSES.has(this.lastRun.status);
+		if (this.lastRun === undefined) return false;
+		const status = effectiveRunStatus(this.lastRun);
+		if (FINAL_UNRESUMABLE_RUN_STATUSES.has(status)) return true;
+		return status === "failed" && this.lastRun.resumable === false;
 	}
 
 	private follow(runId: string): void {
@@ -509,9 +881,9 @@ export class WorkflowToolResultBlock implements PiRenderComponent {
 	}
 
 	private touches(runId: string, changes: readonly { readonly runId: string }[]): boolean {
-		if (changes.some((change) => change.runId === runId)) return true;
-		const children = new Set(this.source?.childRuns(runId).map((child) => child.id) ?? []);
-		return changes.some((change) => children.has(change.runId));
+		if (changes.some((change) => change.runId === runId || this.trackedRunIds.has(change.runId))) return true;
+		const current = descendantRunIds(this.source, runId, this.lastRun);
+		return changes.some((change) => current.has(change.runId));
 	}
 
 	private stopFollowing(): void {
@@ -519,7 +891,19 @@ export class WorkflowToolResultBlock implements PiRenderComponent {
 		this.unsubscribe = undefined;
 	}
 
-	private summary(): WorkflowResultSummary {
+	private definitionError(): DefinitionErrorView | undefined {
+		if (this.lastRun !== undefined) return undefined;
+		const result = this.result;
+		if (result === null || result === undefined || typeof result.action !== "string") {
+			return this.view.isError ? parseDefinitionError(this.view.errorText) : undefined;
+		}
+		if (result.action === "run" && !("code" in result) && !result.runId && result.error) {
+			return parseDefinitionError(result.error);
+		}
+		return undefined;
+	}
+
+	private summary(manage = this.renderOptions.agentPanel !== false): WorkflowResultSummary {
 		if (this.view.partial === true && (this.result === null || this.result === undefined)) {
 			return { tone: "running", text: "Starting" };
 		}
@@ -527,8 +911,15 @@ export class WorkflowToolResultBlock implements PiRenderComponent {
 		const run = this.lastRun;
 		return summarizeWorkflowResult(this.result, {
 			...(this.view.isError && this.view.errorText !== undefined ? { errorText: this.view.errorText } : {}),
-			...(run === undefined ? {} : { run, tokens: runTokens(this.source, run, now) }),
+			...(run === undefined
+				? {}
+				: {
+						run,
+						runsById: runsByIdFromSource(this.source, run),
+						tokens: runTokens(this.source, run, now),
+					}),
 			now,
+			manage,
 		});
 	}
 
@@ -538,29 +929,20 @@ export class WorkflowToolResultBlock implements PiRenderComponent {
 		return `${summary.tone}\u0000${summary.text}\u0000${stages}`;
 	}
 
-	private hint(summary: WorkflowResultSummary): string {
-		const hints: string[] = [];
-		if (summary.tone === "running" && this.options.agentPanel === true && this.followedRunId !== undefined) {
-			const manage = keyHintIfBound("app.agents.focus", "to manage");
-			if (manage) hints.push(manage);
-		}
-		if (!this.view.expanded) {
-			const expand = keyHintIfBound("app.tools.expand", "to expand");
-			if (expand) hints.push(expand);
-		}
-		return hints.length === 0
-			? ""
-			: ` ${this.theme.fg("muted", "(")}${hints.join(this.theme.fg("muted", " · "))}${this.theme.fg("muted", ")")}`;
+	private expandHint(): string {
+		if (this.view.expanded) return "";
+		const expand = keyHintIfBound("app.tools.expand", "to expand");
+		if (!expand) return "";
+		return ` ${this.theme.fg("muted", "(")}${expand}${this.theme.fg("muted", ")")}`;
 	}
 
 	private detailLines(width: number): string[] {
 		const result = this.result;
 		if (result === null || result === undefined || typeof result.action !== "string") {
 			const text = this.view.errorText ?? "";
-			return text
-				.split(/\r?\n/)
-				.filter((line) => line.trim().length > 0 && !/^\s+at\s/.test(line))
-				.map((line) => displayLine(line));
+			return withoutStackFrames(boundedToolText(text, TOOL_PAYLOAD_VALUE_LIMIT))
+				.kept.map((line) => displayLine(line))
+				.filter((line) => line.length > 0);
 		}
 		if (result.action === "run" && !("code" in result)) {
 			return runDetailLines(this.lastRun, result, this.view.args, this.theme, this.now());
@@ -568,15 +950,42 @@ export class WorkflowToolResultBlock implements PiRenderComponent {
 		return renderResult(result, { width: Math.max(1, width), now: this.now() }).split("\n");
 	}
 
-	render(width: number): string[] {
-		if (width < 1) return [];
-		const summary = this.summary();
+	private renderDefinitionError(defError: DefinitionErrorView, width: number): string[] {
+		const record = definitionErrorRecordComponent(defError, this.theme);
+		const innerWidth = Math.max(1, width - DETAIL_PREFIX.length);
+		return record.render(innerWidth).map((line, index) => {
+			const prefix = index === 0 ? `${this.theme.fg("dim", FIRST_PREFIX)}` : DETAIL_PREFIX;
+			return truncateToWidth(`${prefix}${line}`, width, "…");
+		});
+	}
+
+	private formatHead(summary: WorkflowResultSummary): string {
 		const marker = TONE_MARKERS[summary.tone];
 		const glyph = marker.glyph === "" ? "" : `${this.theme.fg(marker.color, marker.glyph)} `;
 		const text = summary.tone === "info" ? this.theme.fg("dim", summary.text) : summary.text;
-		const head = `${this.theme.fg("dim", FIRST_PREFIX)}${glyph}${text}`;
-		const hinted = `${head}${this.hint(summary)}`;
-		const lines = [visibleWidth(hinted) <= width ? hinted : truncateToWidth(head, width, "…")];
+		return `${this.theme.fg("dim", FIRST_PREFIX)}${glyph}${text}`;
+	}
+
+	override render(width: number): string[] {
+		if (width < 1) return [];
+		const defError = this.definitionError();
+		if (defError !== undefined) {
+			return this.renderDefinitionError(defError, width);
+		}
+		const summary = this.summary();
+		const head = this.formatHead(summary);
+		const withExpandHint = `${head}${this.expandHint()}`;
+		let firstLine: string;
+		if (visibleWidth(withExpandHint) <= width) {
+			firstLine = withExpandHint;
+		} else if (visibleWidth(head) <= width) {
+			firstLine = head;
+		} else {
+			const withoutManage = this.summary(false);
+			const bareHead = this.formatHead(withoutManage);
+			firstLine = visibleWidth(bareHead) <= width ? bareHead : truncateToWidth(bareHead, width, "…");
+		}
+		const lines = [firstLine];
 		if (!this.view.expanded) return lines;
 		const innerWidth = Math.max(1, width - DETAIL_PREFIX.length);
 		for (const line of this.detailLines(innerWidth)) {
@@ -587,34 +996,63 @@ export class WorkflowToolResultBlock implements PiRenderComponent {
 		return lines;
 	}
 
-	invalidate(): void {}
+	override invalidate(): void {}
 
 	includes(searchString: string): boolean {
 		return this.render(160).join("\n").includes(searchString);
 	}
 
 	dispose(): void {
+		this.disposed = true;
+		this.working = false;
 		this.stopFollowing();
 	}
 }
 
-/** The call header, in the tool title style every tool's header uses. */
-export function styledCallLine(label: WorkflowCallLabel, theme: WorkflowBlockTheme): string {
-	if (label.run) {
-		const detail = label.detail === undefined ? "" : theme.fg("muted", ` · ${label.detail}`);
-		return `${theme.fg("toolTitle", theme.bold(label.title))}(${theme.fg("accent", label.target ?? "?")}${detail})`;
+export function styledCallLine(label: WorkflowCallLabel, theme: WorkflowBlockTheme, width?: number): string {
+	const fitted = fitWorkflowCallLabel(label, width);
+	if (fitted.run) {
+		const detail = fitted.detail === undefined ? "" : theme.fg("muted", ` · ${fitted.detail}`);
+		const line = `${theme.fg("toolTitle", theme.bold(fitted.title))}(${theme.fg("accent", fitted.target ?? "?")}${detail})`;
+		return width !== undefined && width > 0 ? truncateToWidth(line, width, "…") : line;
 	}
-	const [word, action] = label.title.split(" ");
+	const [word, action] = fitted.title.split(" ");
 	const target =
-		label.target === undefined ? "" : ` ${theme.fg(action === "status" ? "dim" : "accent", label.target)}`;
-	return `${theme.fg("toolTitle", theme.bold(`${word} `))}${action ?? ""}${target}`;
+		fitted.target === undefined ? "" : ` ${theme.fg(action === "status" ? "dim" : "accent", fitted.target)}`;
+	const line = `${theme.fg("toolTitle", theme.bold(`${word} `))}${action ?? ""}${target}`;
+	return width !== undefined && width > 0 ? truncateToWidth(line, width, "…") : line;
 }
 
-export function callComponent(line: string): PiRenderComponent {
+function fitCallLineString(line: string, width: number): string {
+	if (visibleWidth(line) <= width) return line;
+	const plain = stripTerminalSequences(line, true);
+	if (plain.startsWith("Workflow(") && plain.endsWith(")") && width >= 11) {
+		const closingIndex = line.lastIndexOf(")");
+		if (closingIndex > 0) {
+			const prefixAndArgs = line.slice(0, closingIndex);
+			const suffix = line.slice(closingIndex);
+			return `${truncateToWidth(prefixAndArgs, width - 1, "…")}${suffix}`;
+		}
+	}
+	return truncateToWidth(line, width, "…");
+}
+
+export function callComponent(
+	labelOrLine: WorkflowCallLabel | string,
+	theme: WorkflowBlockTheme = PLAIN_THEME,
+): PiRenderComponent & Component {
+	if (typeof labelOrLine !== "string") {
+		const full = styledCallLine(labelOrLine, theme);
+		return {
+			render: (width: number) => (width < 1 ? [] : [styledCallLine(labelOrLine, theme, width)]),
+			invalidate() {},
+			includes: (searchString: string) => full.includes(searchString),
+		};
+	}
 	return {
-		render: (width: number) => (width < 1 ? [] : wrapTextWithAnsi(line, width)),
+		render: (width: number) => (width < 1 ? [] : [fitCallLineString(labelOrLine, width)]),
 		invalidate() {},
-		includes: (searchString: string) => line.includes(searchString),
+		includes: (searchString: string) => labelOrLine.includes(searchString),
 	};
 }
 

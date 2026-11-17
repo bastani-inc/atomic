@@ -1,51 +1,9 @@
 // @ts-nocheck
 import { describe, test } from "vitest";
-import type { ExtensionAPI, PiCommandContext, PiCommandOptions, StageControlHandle } from "./slash-dispatch-utils.js";
-import {
-	addFactoryStubs,
-	assert,
-	buildCtx,
-	buildMockPi,
-	installSlashDispatchTestHooks,
-	runFactory,
-	stageControlRegistry,
-	store,
-	WORKFLOW_COMMAND_OUTPUT_CUSTOM_TYPE,
-} from "./slash-dispatch-utils.js";
+import type { ExtensionAPI, PiCommandContext, PiCommandOptions, SentMessage } from "./slash-dispatch-utils.js";
+import { assert, installSlashDispatchTestHooks, runFactory } from "./slash-dispatch-utils.js";
 
 installSlashDispatchTestHooks();
-
-describe("/workflow <name> --help prints schema without dispatching", () => {
-	test.sequential("--help token short-circuits to the schema printer", async () => {
-		const { pi, commands, sent } = buildMockPi();
-		await runFactory(pi);
-
-		const workflowCmd = commands.find((c) => c.name === "workflow");
-		const { ctx, messages } = buildCtx();
-
-		await workflowCmd!.options.handler("fan-out-and-synthesize --help", ctx);
-
-		// Schema printer prints the pretty themed header or the plain text header.
-		assert.ok(
-			messages.some((m) => /INPUTS FOR FAN-OUT-AND-SYNTHESIZE|Inputs for "fan-out-and-synthesize":/.test(m)),
-			`expected schema header in messages; got: ${JSON.stringify(messages)}`,
-		);
-		assert.equal(
-			sent.some((message) => message.customType === WORKFLOW_COMMAND_OUTPUT_CUSTOM_TYPE),
-			false,
-			"interactive help output should continue using ctx.ui.notify",
-		);
-		// Should NOT have a run completion/failure line
-		assert.equal(
-			messages.some((m) => m.includes("started") || m.includes("completed (runId:")),
-			false,
-		);
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Canonical registerCommand shape — opts.handler, no opts.execute
-// ---------------------------------------------------------------------------
 
 interface RawRegisteredCommand {
 	name: string;
@@ -80,10 +38,12 @@ describe("canonical registerCommand — opts.handler shape", () => {
 		return { commands, sent };
 	}
 
-	test.sequential("registerCommand receives string name 'workflow'", async () => {
+	test.sequential("registerCommand receives 'workflows' and 'workflow-authoring' and never 'workflow' (#5224)", async () => {
 		const { commands } = await runFactoryRaw();
 		const names = commands.map((c) => c.name);
-		assert.ok(names.includes("workflow"));
+		assert.equal(names.includes("workflow"), false);
+		assert.ok(names.includes("workflows"));
+		assert.ok(names.includes("workflow-authoring"));
 	});
 
 	test.sequential("registerCommand does not receive per-workflow alias names", async () => {
@@ -116,98 +76,24 @@ describe("canonical registerCommand — opts.handler shape", () => {
 		}
 	});
 
-	test.sequential("handler for 'workflow' is callable — does not throw synchronously", async () => {
+	test.sequential("handlers for 'workflows' and 'workflow-authoring' are callable (#5224)", async () => {
 		const { commands, sent } = await runFactoryRaw();
-		const workflowCmd = commands.find((c) => c.name === "workflow");
-		assert.notEqual(workflowCmd, undefined);
+		const workflowsCmd = commands.find((c) => c.name === "workflows");
+		const authoringCmd = commands.find((c) => c.name === "workflow-authoring");
+		assert.notEqual(workflowsCmd, undefined);
+		assert.notEqual(authoringCmd, undefined);
 		const msgs: string[] = [];
 		const ctx: PiCommandContext = {
+			hasUI: false,
 			ui: {
 				notify(message: string) {
 					msgs.push(message);
 				},
 			},
 		};
-		await workflowCmd!.options.handler("list", ctx);
-		// `/workflow list` now routes through `emitChatSurface` → pi.sendMessage,
-		// so the catalogue payload lands in `sent` rather than `msgs`. Either
-		// path counts as the handler having produced output.
-		assert.ok(msgs.length > 0 || sent.length > 0);
-		if (sent.length > 0) {
-			const listPayload = sent.find((m) => (m.details as { kind?: string } | undefined)?.kind === "list");
-			assert.ok(listPayload, "expected a chat-surface list message to be sent");
-		}
+		await workflowsCmd!.options.handler("", ctx);
+		assert.equal(sent.length, 1);
+		await authoringCmd!.options.handler("", ctx);
+		assert.equal(sent.length, 2);
 	});
 });
-
-// ---------------------------------------------------------------------------
-// resume regression: /workflow resume opens overlay + no legacy message
-// ---------------------------------------------------------------------------
-
-function makeInflightRun(id: string) {
-	return {
-		id,
-		name: "test-wf",
-		inputs: {},
-		status: "running" as const,
-		toolNodes: [],
-		stages: [],
-		startedAt: Date.now(),
-	};
-}
-
-async function _registerWorkflowCommand() {
-	const { pi, commands, sent } = buildMockPi();
-	addFactoryStubs(pi);
-	const factoryModule = await import("../../packages/workflows/src/extension/index.js");
-	factoryModule.default(pi);
-	const workflowCmd = commands.find((c) => c.name === "workflow");
-	assert.notEqual(workflowCmd, undefined);
-	return { pi, commands, sent, workflowCmd: workflowCmd! };
-}
-
-function _recordTerminalRun(
-	id: string,
-	status: "completed" | "failed" | "killed",
-	overrides: { name?: string; startedAt?: number; endedAt?: number } = {},
-): void {
-	store.recordRunStart({
-		...makeInflightRun(id),
-		name: overrides.name ?? "terminal-wf",
-		startedAt: overrides.startedAt ?? Date.now() - 10_000,
-	});
-	const completed = status === "completed";
-	store.recordRunEnd(id, status, completed ? { ok: true } : undefined, completed ? undefined : status);
-	if (overrides.endedAt !== undefined) {
-		const run = store.runs().find((r) => r.id === id);
-		if (run) {
-			run.endedAt = overrides.endedAt;
-			run.durationMs = run.endedAt - run.startedAt;
-		}
-	}
-}
-
-function _registerTestStageHandle(
-	runId: string,
-	stageId: string,
-	status: StageControlHandle["status"] = "running",
-): void {
-	const handle: StageControlHandle = {
-		runId,
-		stageId,
-		stageName: "worker",
-		status,
-		sessionId: undefined,
-		sessionFile: undefined,
-		isStreaming: false,
-		messages: [],
-		async ensureAttached(): Promise<void> {},
-		async prompt(): Promise<void> {},
-		async steer(): Promise<void> {},
-		async followUp(): Promise<void> {},
-		async pause(): Promise<void> {},
-		async resume(): Promise<void> {},
-		subscribe: () => () => {},
-	};
-	stageControlRegistry.register(handle);
-}

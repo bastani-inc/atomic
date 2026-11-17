@@ -64,6 +64,18 @@ function scriptedModel(probes: Map<Prober, readonly ToolResultMessage[]>): FauxR
 			probes.set(prober, results);
 			return fauxAssistantMessage(`${prober} probed Intercom`);
 		}
+		const launched = results.some((message) => message.toolName === "workflow");
+		const runRequested = context.messages.some(
+			(message) =>
+				message.role === "user" && JSON.stringify(message.content).includes("Run the probe-5352 workflow"),
+		);
+		if (runRequested && !launched)
+			return fauxAssistantMessage(
+				[fauxToolCall("workflow", { action: "run", workflow: "probe-5352", inputs: {} })],
+				{
+					stopReason: "toolUse",
+				},
+			);
 		const delegated = results.some((message) => message.toolName === "subagent");
 		const asked = context.messages.some(
 			(message) => message.role === "user" && JSON.stringify(message.content).includes("Delegate the probe"),
@@ -190,7 +202,7 @@ test(
 		const probes = new Map<Prober, readonly ToolResultMessage[]>();
 		const session = await mainSession(cwd, scriptedModel(probes));
 
-		await session.prompt("/workflow probe-5352 --no-picker");
+		await session.prompt("Run the probe-5352 workflow.");
 		const runId = await vi.waitFor(
 			async () => {
 				const [run] = await session.workflows.listRuns();

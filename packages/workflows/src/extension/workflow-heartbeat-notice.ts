@@ -41,7 +41,7 @@ export function formatWorkflowHeartbeatNoticeText(details: WorkflowHeartbeatEven
 		"Use `ask` once the target has a live session that can reply. " +
 		"Use workflow pause, resume, or quit for run control. " +
 		"Continue the progressing run when no intervention is needed, or ask the user when a decision is needed. " +
-		`Inspect: /workflow status ${details.runId}`
+		`Inspect: /workflows ${details.runId}`
 	);
 }
 
@@ -97,7 +97,7 @@ function renderWorkflowHeartbeatCard(
 			{ label: "cadence", value: formatWorkflowHeartbeatCadence(details.intervalMinutes), tone: "muted" },
 			{ label: "elapsed", value: formatWorkflowHeartbeatElapsed(details), tone: "muted" },
 		],
-		hints: [`/workflow status ${details.runId}`],
+		hints: [`/workflows ${details.runId}`],
 		fallbackText: opts.fallbackText,
 		width: opts.width,
 		...(opts.theme ? { theme: opts.theme } : {}),

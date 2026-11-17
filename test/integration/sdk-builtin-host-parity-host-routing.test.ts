@@ -61,8 +61,8 @@ export default workflow({ name: "required", description: "required approval", in
 			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 		});
 		try {
-			await session.prompt("/workflow required --no-picker");
 			const tool = session.agent.state.tools.find((entry) => entry.name === "workflow")!;
+			await tool.execute("run", { action: "run", workflow: "required", inputs: {} }, new AbortController().signal);
 			const status = async () =>
 				(await tool.execute("status", { action: "status" }, new AbortController().signal)).details as {
 					runs: { runId: string; status: string; awaitingInputCount: number }[];
@@ -158,8 +158,12 @@ export default workflow({ name: "host-parity", description: "host routing fixtur
 			},
 		});
 		try {
-			await session.prompt("/workflow host-parity --no-picker");
 			const tool = session.agent.state.tools.find((entry) => entry.name === "workflow")!;
+			await tool.execute(
+				"run",
+				{ action: "run", workflow: "host-parity", inputs: {} },
+				new AbortController().signal,
+			);
 			const listed = await tool.execute("list", { action: "list" }, new AbortController().signal);
 			assert.match(JSON.stringify(listed.details), /host-parity/);
 			await vi.waitFor(() => assert.deepEqual(requests, ["  exact input\n", "  exact approval\n"]), {
@@ -366,8 +370,8 @@ export default ${scenario === "nested" ? 'workflow({ name: "stage-host", descrip
 			},
 		});
 		try {
-			await session.prompt("/workflow stage-host --no-picker");
 			const tool = session.agent.state.tools.find((entry) => entry.name === "workflow")!;
+			await tool.execute("run", { action: "run", workflow: "stage-host", inputs: {} }, new AbortController().signal);
 			// A hang reports where the workflow stopped instead of only the runner's timeout.
 			signal.addEventListener(
 				"abort",
@@ -531,8 +535,12 @@ test.each(["true", "false", "cancelled", "invalid", "late"] as const)(
 					extensionBindings: { humanInput },
 				});
 				try {
-					await session.prompt("/workflow sdk-host-durable --no-picker");
 					const tool = session.agent.state.tools.find((t) => t.name === "workflow")!;
+					await tool.execute(
+						"run",
+						{ action: "run", workflow: "sdk-host-durable", inputs: {} },
+						new AbortController().signal,
+					);
 					await vi.waitFor(
 						() =>
 							assert.equal(
@@ -770,8 +778,8 @@ export default workflow({ name: "host-budget", description: "budget boundary", i
 		},
 	});
 	try {
-		await session.prompt("/workflow host-budget --no-picker");
 		const tool = session.agent.state.tools.find((entry) => entry.name === "workflow")!;
+		await tool.execute("run", { action: "run", workflow: "host-budget", inputs: {} }, new AbortController().signal);
 		await vi.waitFor(
 			async () => {
 				const details = (await tool.execute("status", { action: "status" }, new AbortController().signal)).details;

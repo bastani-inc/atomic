@@ -52,7 +52,7 @@ test("session list renders full run ids with the band-header chrome and a detail
 	assert.match(out, /● 1/);
 	assert.match(out, /✓ 1/);
 	// Trailing hint nudges drill-down via the rich detail surface using the complete identifier.
-	assert.ok(out.includes(`/workflow status ${activeRunId}`));
+	assert.ok(out.includes(`/workflows ${activeRunId}`));
 });
 
 test("session list includeAll:true includes old retained terminal runs", () => {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { CombinedAutocompleteProvider } from "@bastani/atomic-tui";
 import { describe, test } from "vitest";
-import { BUILTIN_SLASH_COMMANDS, getBundledWorkflowArgumentCompletions } from "../src/core/slash-commands.ts";
+import { BUILTIN_SLASH_COMMANDS, parseSlashCommand } from "../src/core/slash-commands.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
 
@@ -183,10 +183,10 @@ describe("slash command autocomplete splits at the first whitespace (#5192)", ()
 		});
 	}
 
-	test("completes a /workflow subcommand argument after a tab (#5192)", () => {
-		assert.deepEqual(
-			getBundledWorkflowArgumentCompletions("quit\t--")?.map((item) => item.value),
-			["quit\t--all "],
-		);
+	test("parses a /workflow-authoring request argument after a tab (#5192)", () => {
+		assert.deepEqual(parseSlashCommand("/workflow-authoring\tWrite a release workflow"), {
+			name: "workflow-authoring",
+			args: "Write a release workflow",
+		});
 	});
 });

@@ -11,6 +11,7 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
+import { getThemeByName } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { deriveGraphTheme, deriveGraphThemeFromPiTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 
 /** Mirror Pi's truecolor SGR shape. */
@@ -29,6 +30,18 @@ function indexedFg(idx: number): string {
 const MOCHA_DEFAULTS = deriveGraphTheme({});
 
 describe("deriveGraphThemeFromPiTheme", () => {
+	test("preserves live theme method receivers so light and dark workflow views differ (#5224)", () => {
+		const dark = getThemeByName("dark");
+		const light = getThemeByName("light");
+		assert.ok(dark);
+		assert.ok(light);
+		const darkGraph = deriveGraphThemeFromPiTheme(dark);
+		const lightGraph = deriveGraphThemeFromPiTheme(light);
+		assert.notEqual(darkGraph.error, lightGraph.error);
+		assert.notEqual(darkGraph.text, lightGraph.text);
+		assert.notEqual(darkGraph.backgroundPanel, lightGraph.backgroundPanel);
+	});
+
 	test("falls back to the Catppuccin defaults when theme is absent", () => {
 		assert.deepEqual(deriveGraphThemeFromPiTheme(undefined), MOCHA_DEFAULTS);
 		assert.deepEqual(deriveGraphThemeFromPiTheme(null), MOCHA_DEFAULTS);

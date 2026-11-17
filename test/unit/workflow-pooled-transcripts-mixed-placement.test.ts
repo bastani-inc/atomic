@@ -341,7 +341,7 @@ test("a fork of a shared root whose journal has no pool tables fails with ForkPo
 			assert.deepEqual(error.fields, { runId, forkRunId: error.forkRunId, placement: "shared" });
 			assert.equal(
 				error.hint,
-				`Nothing was written. No pool of run ${runId} ran on this journal; fork it from a stage before its child workflows ran with /workflow fork ${runId} --from <stage>.`,
+				`Nothing was written. No pool of run ${runId} ran on this journal; fork it from a stage before its child workflows ran in /workflows ${runId}.`,
 			);
 			return true;
 		},

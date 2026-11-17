@@ -110,13 +110,19 @@ for (const background of [false, true]) {
 					);
 					try {
 						assert.doesNotMatch(
+							stripVTControlCharacters(inspector.renderPicker(100, 24).join("\n")),
+							/provider\//,
+						);
+						assert.doesNotMatch(
 							stripVTControlCharacters(inspector.renderViewport(100, 24).join("\n")),
 							/provider\//,
 						);
 						assert.equal(inspector.handleInput(" "), true);
-						const peek = stripVTControlCharacters(inspector.renderViewport(100, 24).join("\n"));
-						assert.match(peek, /provider\/fallback {2}off/);
-						assert.doesNotMatch(peek, /provider\/first/);
+						for (const rendered of [inspector.renderPicker(100, 24), inspector.renderViewport(100, 24)]) {
+							const peek = stripVTControlCharacters(rendered.join("\n"));
+							assert.match(peek, /provider\/fallback {2}off/);
+							assert.doesNotMatch(peek, /provider\/first/);
+						}
 					} finally {
 						inspector.dispose();
 					}

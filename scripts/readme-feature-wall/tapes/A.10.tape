@@ -1,21 +1,18 @@
-# A.10 Autonomous implementation loops
-# Inspect ralph's typed contract, launch its bounded implementation loop against
-# a planted demo flaw, and connect to its live research-first graph.
 Set TypingSpeed 55ms
 Type "atomic"
 Sleep 500ms
 Enter
 Sleep 12s
 Set TypingSpeed 36ms
-Type "/workflow inputs ralph"
+Type "What inputs does the ralph workflow take?"
 Sleep 1s
 Enter
-Sleep 10s
+Sleep 15s
 Set TypingSpeed 28ms
-Type "/workflow ralph prompt='Add input validation to demo-app/server.js and prove it with a test' max_loops=1"
+Type "Run ralph with the workflow tool, with prompt 'Add input validation to demo-app/server.js and prove it with a test' and max_loops 1."
 Sleep 1s
 Enter
-Sleep 18s
+Sleep 30s
 Type "/workflows"
 Sleep 1s
 Enter

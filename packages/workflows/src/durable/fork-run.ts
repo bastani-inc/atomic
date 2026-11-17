@@ -64,7 +64,11 @@ import {
 	type ForkStorageScope,
 	ForkTargetNotFoundError,
 } from "./fork-errors.js";
-import { decodeJournalEventHandle, JournalDurableBackend } from "./journal/journal-backend.js";
+import {
+	decodeJournalEventHandle,
+	isJournalDurableBackend,
+	type JournalDurableBackend,
+} from "./journal/journal-backend.js";
 import {
 	RUN_EVENT_TYPES as E,
 	type JournalEntry,
@@ -173,7 +177,7 @@ const STAGE_PATH_SEPARATOR = ".";
 function forkJournal(backend: DurableWorkflowBackend): JournalDurableBackend & {
 	readonly journal: RunJournal & Required<Pick<RunJournal, "createRunWithEvents">>;
 } {
-	if (!(backend instanceof JournalDurableBackend) || typeof backend.journal.createRunWithEvents !== "function")
+	if (!isJournalDurableBackend(backend) || typeof backend.journal.createRunWithEvents !== "function")
 		throw new ForkJournalUnsupportedError();
 	return backend as JournalDurableBackend & {
 		readonly journal: RunJournal & Required<Pick<RunJournal, "createRunWithEvents">>;

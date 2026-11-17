@@ -29,11 +29,16 @@ const GRAPH_NOTICE_MS = 4000;
 export abstract class GraphViewInputController extends GraphViewRenderer {
 	/** Returns true if consumed. */
 	handleInput(data: string): boolean {
+		const wasDetailOpen = this._detailOpen();
 		this._syncLayout();
 		if (this.keysHelpOpen) return this._handleKeysHelpInput(data);
 		if (this.switcherOpen) return this._handleSwitcherInput(data);
-		if (this._matchesNavAction(data, APP_ACTION.keysHelp)) {
+		if (this.forkConfirm === null && this._matchesNavAction(data, APP_ACTION.keysHelp)) {
+			this._disarmStop();
 			this.keysHelpOpen = true;
+			return true;
+		}
+		if (matchesKey(data, Key.escape) && wasDetailOpen && !this._detailOpen()) {
 			return true;
 		}
 		if (this.toolDetail !== null) return this._handleToolDetailInput(data);
@@ -69,10 +74,6 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		}
 		if (matchesKey(data, Key.ctrl("c"))) {
 			this.onClose?.();
-			return true;
-		}
-		if (matchesKey(data, "h") && this.onHide) {
-			this.onHide();
 			return true;
 		}
 		// A capped payload still renders far more rows than a terminal shows, so
@@ -166,7 +167,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		const name = stage?.name ?? detail.stageId;
 
 		if ((matchesKey(data, "r") || matchesKey(data, "f")) && this.stageActionInFlight) return true;
-		if (matchesKey(data, "r") && actions?.retry) {
+		if (matchesKey(data, "r") && detail.status === "failed" && actions?.retry) {
 			const failedAt = stage?.endedAt;
 			this._runStageAction(() => actions.retry!(detail.runId, detail.stageId), `Retrying ${name}\u2026`, {
 				focusStageId: detail.stageId,
@@ -190,10 +191,12 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			this.graphLayoutInvalidateForDetail();
 			return true;
 		}
-		if (matchesKey(data, Key.down)) this._scrollGraphVertically(1);
-		else if (matchesKey(data, Key.up)) this._scrollGraphVertically(-1);
-		else if (matchesKey(data, Key.pageDown)) this._scrollGraphVertically(this._toolDetailPageRows());
-		else if (matchesKey(data, Key.pageUp)) this._scrollGraphVertically(-this._toolDetailPageRows());
+		if (detail.logs) {
+			if (matchesKey(data, Key.down)) this._scrollGraphVertically(1);
+			else if (matchesKey(data, Key.up)) this._scrollGraphVertically(-1);
+			else if (matchesKey(data, Key.pageDown)) this._scrollGraphVertically(this._toolDetailPageRows());
+			else if (matchesKey(data, Key.pageUp)) this._scrollGraphVertically(-this._toolDetailPageRows());
+		}
 		return true;
 	}
 
@@ -278,7 +281,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 					const stop = target.live ? " Stops this run first, resumably." : "";
 					this.forkConfirm = { rootRunId, stageId, name };
 					this.graphNotice = {
-						text: `Fork from ${name}: reruns it${tools} in a new run.${stop}`,
+						text: `New run from ${name}? Reruns it${tools} in a new run.${stop}`,
 						tone: "info",
 						until: Number.POSITIVE_INFINITY,
 					};
@@ -304,6 +307,8 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 
 	private _handleStopInput(data: string): boolean {
 		if (this.stageActionInFlight) return true;
+		this.quitConfirm.reset();
+		this._clearQuitConfirmTarget();
 		const stage = this.cachedLayout[this.focusedIndex]?.stage;
 		const target = this._stageChatTarget(stage);
 		if (!this._focusedStageStoppable() || stage === undefined || target === undefined) return true;
@@ -326,10 +331,64 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		return true;
 	}
 
+	private _handlePauseRunInput(): boolean {
+		if (this.stageActionInFlight) return true;
+		const run = this._getCurrentRun();
+		const actions = this.stageActions;
+		if (!this._runPausable(run) || run === null || actions?.pauseRun === undefined) return true;
+		this._disarmStop();
+		this._runStageAction(() => actions.pauseRun!(run.id), `Pausing ${run.name}\u2026`);
+		return true;
+	}
+
+	private _handleResumeRunInput(): boolean {
+		if (this.stageActionInFlight) return true;
+		const run = this._getCurrentRun();
+		const actions = this.stageActions;
+		if (!this._runResumable(run) || run === null || actions?.resumeRun === undefined) return true;
+		this._disarmStop();
+		this._runStageAction(() => actions.resumeRun!(run.id), `Resuming ${run.name}\u2026`);
+		return true;
+	}
+
+	private _handleQuitRunInput(): boolean {
+		if (this.stageActionInFlight) return true;
+		this.stopConfirm.reset();
+		const run = this._getCurrentRun();
+		const actions = this.stageActions;
+		if (!this._runQuittable(run) || run === null || actions?.quitRun === undefined) {
+			this.quitConfirm.reset();
+			this._clearQuitConfirmTarget();
+			return true;
+		}
+		if (!this._isQuitArmed(run)) {
+			this.quitConfirm.reset();
+		}
+		const stateKey = this._runControlState(run);
+		const key = `${run.id}\u0000${stateKey}`;
+		if (!this.quitConfirm.press(key)) {
+			const until = Date.now() + 3000;
+			this.quitConfirmTarget = { runId: run.id, status: stateKey, until };
+			this.graphNotice = {
+				text: `Press q again within 3s to quit ${run.name}`,
+				tone: "info",
+				until,
+				arm: true,
+			};
+			return true;
+		}
+		this._disarmStop();
+		this._runStageAction(() => actions.quitRun!(run.id), `Quitting ${run.name}\u2026`);
+		return true;
+	}
+
 	private readonly stopConfirm = new TwoPressConfirm();
+	private readonly quitConfirm = new TwoPressConfirm();
 
 	private _disarmStop(): void {
 		this.stopConfirm.reset();
+		this.quitConfirm.reset();
+		this._clearQuitConfirmTarget();
 		if (this.graphNotice?.arm === true) this.graphNotice = null;
 	}
 
@@ -360,6 +419,17 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 	}
 
 	private _handleGraphInput(data: string): boolean {
+		if (this._getCurrentRun() === null) {
+			if (matchesKey(data, "h") && this.onHide && !this._keyShadowed("h")) {
+				this.onHide();
+				return true;
+			}
+			if (matchesKey(data, Key.ctrl("c"))) {
+				this.onClose?.();
+				return true;
+			}
+			return false;
+		}
 		const stageCount = this.cachedLayout.length;
 		if (this.graphLayout.handleScrollbarInput(data)) {
 			this.pendingEnsureFocusedVisible = false;
@@ -402,26 +472,45 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			}
 			return true;
 		}
-		if (matchesKey(data, "/")) {
+		if (matchesKey(data, "/") && !this._keyShadowed("/")) {
+			this._disarmStop();
 			this.switcherOpen = true;
 			this.switcherState = { query: "", selectedIndex: 0 };
 			return true;
 		}
 		if (matchesKey(data, Key.enter)) {
+			this._disarmStop();
 			this._activateFocusedNode();
 			return true;
 		}
-		if (matchesKey(data, "f")) {
+		if (matchesKey(data, "f") && !this._keyShadowed("f")) {
+			this._disarmStop();
 			const next = (GRAPH_STATUS_FILTERS.indexOf(this.statusFilter) + 1) % GRAPH_STATUS_FILTERS.length;
 			this.statusFilter = GRAPH_STATUS_FILTERS[next]!;
 			return true;
 		}
 		if (this._matchesNavAction(data, APP_ACTION.listStop)) return this._handleStopInput(data);
-		if (matchesKey(data, "h") && this.onHide) {
+		if (matchesKey(data, "d") && !this._keyShadowed("d") && this._focusedStageDetailsAvailable()) {
+			this._disarmStop();
+			this._openFocusedStageDetail(true);
+			return true;
+		}
+		if (matchesKey(data, "p") && !this._keyShadowed("p") && this._runPausable()) {
+			return this._handlePauseRunInput();
+		}
+		if (matchesKey(data, "r") && !this._keyShadowed("r") && this._runResumable()) {
+			return this._handleResumeRunInput();
+		}
+		if (matchesKey(data, "q") && !this._keyShadowed("q") && this._runQuittable()) {
+			return this._handleQuitRunInput();
+		}
+		if (matchesKey(data, "h") && this.onHide && !this._keyShadowed("h")) {
+			this._disarmStop();
 			this.onHide();
 			return true;
 		}
 		if (matchesKey(data, Key.ctrl("c"))) {
+			this._disarmStop();
 			this.onClose?.();
 			return true;
 		}

@@ -7,6 +7,7 @@ import {
 	expandedStageTarget,
 	expandWorkflowGraph,
 } from "../shared/expanded-workflow-graph.js";
+import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { Store } from "../shared/store.js";
 import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { RunSnapshot, StageSnapshot, StoreSnapshot } from "../shared/store-types.js";
@@ -17,6 +18,7 @@ import { ANIMATION_TICK_MS } from "./graph-view-constants.js";
 import type { GraphStageActions, GraphViewMode, GraphViewOpts } from "./graph-view-types.js";
 import { computeLayout, type LayoutNode, NODE_H, NODE_W } from "./layout.js";
 import { nodeCardHeight } from "./node-card.js";
+import { isQuitRun } from "./run-state-indicator.js";
 import { stageFailureReason } from "./stage-failure-detail.js";
 import type { SwitcherState } from "./switcher.js";
 
@@ -51,6 +53,7 @@ export interface GraphStageDetail {
 	readonly stageId: string;
 
 	readonly nodeId: string;
+	readonly status: "failed" | "completed";
 
 	logs: boolean;
 }
@@ -110,6 +113,8 @@ export abstract class GraphViewState {
 	protected onShowRun?: GraphViewOpts["onShowRun"];
 
 	protected forkConfirm: { rootRunId: string; stageId: string; name: string } | null = null;
+	protected quitConfirmTarget: { readonly runId: string; readonly status: string; readonly until: number } | null =
+		null;
 
 	protected retryWatch: { nodeId: string; failedAt: number | undefined; sawRetry: boolean } | null = null;
 	protected initialFocusedStageId?: string;
@@ -287,7 +292,11 @@ export abstract class GraphViewState {
 			this.graphNodeHitRects = [];
 			this.lastGraphViewport = null;
 			this.pendingEnsureFocusedVisible = true;
+			this.switcherOpen = false;
+			this.switcherState = { query: "", selectedIndex: 0 };
+			this.keysHelpOpen = false;
 			this.toolDetail = null;
+			this._clearQuitConfirmTarget();
 			this._closeStageDetail();
 			this.hasAnimatingStages = false;
 			this.lastBuiltSnapshotVersion = version;
@@ -316,7 +325,7 @@ export abstract class GraphViewState {
 				(stage) => stage.status === "running" || stage.status === "awaiting_input",
 			);
 			this._finalizeFocus(previousFocusedStageId, true);
-			this._syncToolDetail();
+			this._syncToolDetail(run);
 			this.lastBuiltSnapshotVersion = version;
 			return;
 		}
@@ -335,7 +344,7 @@ export abstract class GraphViewState {
 		this.graphNodeHitRects = [];
 		this.lastGraphViewport = null;
 		this._finalizeFocus(previousFocusedStageId, false);
-		this._syncToolDetail();
+		this._syncToolDetail(run);
 		this.lastBuiltSnapshotVersion = version;
 	}
 
@@ -561,20 +570,84 @@ export abstract class GraphViewState {
 		return true;
 	}
 
-	private _syncToolDetail(): void {
-		if (this.stageDetail !== null && this._stageDetailStage()?.status !== "failed") this._closeStageDetail();
+	private _syncToolDetail(run?: RunSnapshot | null): void {
+		this._isQuitArmed(run);
+		if (this.stageDetail !== null && this._stageDetailStage()?.status !== this.stageDetail.status) {
+			this._closeStageDetail();
+		}
 		this._syncRetryWatch();
 		if (this.toolDetail === null) return;
 		this.toolDetail = this.expandedGraph.tools.find((tool) => tool.id === this.toolDetail?.id) ?? null;
 	}
 
-	protected _openFocusedStageDetail(): boolean {
+	protected _focusedStageDetailsAvailable(
+		stage: StageSnapshot | undefined = this.cachedLayout[this.focusedIndex]?.stage,
+	): boolean {
+		if (stage === undefined || this._stageChatTarget(stage) === undefined) return false;
+		return stage.status === "failed" || stage.status === "completed";
+	}
+
+	protected _openFocusedStageDetail(allowCompleted = false): boolean {
 		const stage = this.cachedLayout[this.focusedIndex]?.stage;
-		if (stage?.status !== "failed") return false;
+		if (stage === undefined) return false;
+		if (stage.status !== "failed" && (!allowCompleted || stage.status !== "completed")) return false;
 		const target = this._stageChatTarget(stage);
 		if (target === undefined) return false;
-		this.stageDetail = { runId: target.runId, stageId: target.stageId, nodeId: stage.id, logs: false };
+		this.stageDetail = {
+			runId: target.runId,
+			stageId: target.stageId,
+			nodeId: stage.id,
+			status: stage.status,
+			logs: false,
+		};
 		this.graphLayoutInvalidateForDetail();
+		return true;
+	}
+
+	protected _runControlState(run: RunSnapshot): string {
+		if (isQuitRun(run)) return "quit";
+		return effectiveRunStatus(run);
+	}
+
+	protected _runPausable(run: RunSnapshot | null = this._getCurrentRun()): boolean {
+		if (this.stageActions?.pauseRun === undefined || run === null || run.endedAt !== undefined) return false;
+		return effectiveRunStatus(run) === "running";
+	}
+
+	protected _runResumable(run: RunSnapshot | null = this._getCurrentRun()): boolean {
+		if (this.stageActions?.resumeRun === undefined || run === null || run.resumable === false) return false;
+		const status = effectiveRunStatus(run);
+		return status === "paused" || status === "blocked";
+	}
+
+	protected _runQuittable(run: RunSnapshot | null = this._getCurrentRun()): boolean {
+		if (this.stageActions?.quitRun === undefined || run === null || run.endedAt !== undefined || isQuitRun(run)) {
+			return false;
+		}
+		const status = effectiveRunStatus(run);
+		return status === "running" || status === "paused" || status === "blocked";
+	}
+
+	protected _clearQuitConfirmTarget(): void {
+		if (this.quitConfirmTarget === null) return;
+		this.quitConfirmTarget = null;
+		if (this.graphNotice?.arm === true) this.graphNotice = null;
+	}
+
+	protected _isQuitArmed(run?: RunSnapshot | null): boolean {
+		const armed = this.quitConfirmTarget;
+		if (armed === null) return false;
+		const currentRun = run === undefined ? this._getCurrentRun() : run;
+		if (
+			currentRun === null ||
+			Date.now() > armed.until ||
+			armed.runId !== currentRun.id ||
+			armed.status !== this._runControlState(currentRun) ||
+			!this._runQuittable(currentRun)
+		) {
+			this._clearQuitConfirmTarget();
+			return false;
+		}
 		return true;
 	}
 

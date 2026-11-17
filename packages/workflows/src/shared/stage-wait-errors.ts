@@ -163,7 +163,7 @@ const HINTS: Readonly<
 		"Give the stage a persistent session store (the default store, sessionDir, or a caller-owned sessionStore) so it can be reopened.",
 	"session-unavailable": "Check that the stage's session store is reachable, then resume the workflow.",
 	"replayed-stage":
-		"Read the stage's transcript with await stage.readMessages(), which reads it from the session store. To run the stage again, fork the run from it with /workflow fork <runId> --from <stage>.",
+		"Read the stage's transcript with await stage.readMessages(), which reads it from the session store. To run the stage again, fork the run from that stage in /workflows.",
 	"wait-record-unavailable":
 		"The stage carries on. Until its next record is written, a resume after a restart starts the stage from its previous record, which may run a finished tool call again; check that the run's journal storage is reachable.",
 	"unknown-wake-kind":
@@ -199,7 +199,7 @@ function hintFor(code: StageWaitErrorCode, fields: StageWaitErrorFields): string
 	if (code === "builtin-kind-handler")
 		return `Register "${fields.kind ?? "tool-results"}" without a handler: the runtime delivers it only to a stage that waits for it.`;
 	if (code === "results-not-saved")
-		return `Resume the run with /workflow resume ${fields.runId ?? "<runId>"}: the stage continues its turn from the results it recorded with its wait, which stay recorded until a turn that uses them is saved.`;
+		return `Resume run ${fields.runId ?? "<runId>"} from /workflows or /resume: the stage continues its turn from the results it recorded with its wait, which stay recorded until a turn that uses them is saved.`;
 	if (code === "stage-released") return releasedHint(fields);
 	if (code !== "session-not-found") return HINTS[code];
 	const storage = fields.storage === undefined ? "" : ` (${fields.storage})`;

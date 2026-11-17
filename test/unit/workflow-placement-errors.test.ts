@@ -107,7 +107,7 @@ test("a setup error lists every missing piece with its remedy, without secret va
 		[elsewhere.code, elsewhere.problems[0]?.fields],
 		["pool-on-another-host", { recordedHost: "host-a", thisHost: "host-b", root: "root-1" }],
 	);
-	assert.ok(elsewhere.hint?.includes("/workflow resume root-1"));
+	assert.ok(elsewhere.hint?.includes("Resume root-1 from `/resume` on host host-a"));
 	const file = sharedPoolProblems.secretUnavailable("authToken", { file: "/run/secrets/turso" });
 	assert.deepEqual(file.fields, { secret: "authToken", file: "/run/secrets/turso" });
 });
@@ -362,7 +362,7 @@ test("setup problems name each missing piece and how to supply it (#4310)", () =
 	assert.deepEqual(sharedPoolProblems.poolOnAnotherHost("a", "b", "r"), {
 		code: "pool-on-another-host",
 		subject: "the pool database of host a, where this root's work queue and leases are (this host is b)",
-		hint: 'Run `/workflow resume r` on host a; its workers may still be running children. Roots started with workers: { placement: "shared" } on a shared journal resume on any host.',
+		hint: 'Resume r from `/resume` on host a; its workers may still be running children. Roots started with workers: { placement: "shared" } on a shared journal resume on any host.',
 		fields: { recordedHost: "a", thisHost: "b", root: "r" },
 	});
 	assert.deepEqual(

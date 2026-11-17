@@ -117,7 +117,7 @@ export async function handleRunControlCommand(
 					successes.some((result) => result.message !== undefined)
 						? successes.map((result) => result.message ?? `Run ${result.runId} stopped.`).join("\n")
 						: action === "quit"
-							? `Quit ${changed} run(s); resume with /workflow resume.`
+							? `Quit ${changed} run(s); resume with /resume.`
 							: `Paused ${changed} run(s).`,
 				);
 			} else if (alreadyPaused > 0) {
@@ -137,7 +137,7 @@ export async function handleRunControlCommand(
 			return true;
 		}
 		const run = store.run(resolved.runId);
-		// `/workflow pause <run> <stage>` holds only that stage, in this process or on a local worker.
+
 		const positional = tokens.filter((token) => !token.startsWith("--"));
 		const stageTarget = action === "pause" && target === positional[0] ? positional[1] : undefined;
 		if (stageTarget !== undefined) {
@@ -162,7 +162,7 @@ export async function handleRunControlCommand(
 				if (result.ok)
 					print(
 						result.message ??
-							`Stage ${stageTarget} of run ${resolved.runId} paused; resume it with /workflow resume ${resolved.runId} ${stageTarget}.`,
+							`Stage ${stageTarget} of run ${resolved.runId} paused; resume it from /workflows ${resolved.runId}.`,
 					);
 				else
 					fail(
@@ -186,8 +186,7 @@ export async function handleRunControlCommand(
 			}
 			try {
 				const result = await quitRun(resolved.runId, { ...owner, actor: "user" });
-				if (result.ok)
-					print(result.message ?? `Run ${result.runId} quit and can be resumed with /workflow resume.`);
+				if (result.ok) print(result.message ?? `Run ${result.runId} quit and can be resumed with /resume.`);
 				else if (result.reason === "already_ended") print(`Run ${result.runId} already ended.`);
 				else if (result.reason === "no_active_stages") {
 					fail(`No controllable stages on run ${result.runId}; the run remains active.`);

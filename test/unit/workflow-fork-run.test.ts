@@ -755,7 +755,7 @@ test("an unconfirmed write keeps the copied sessions and names the fork run in a
 		["journal-unavailable", "commit", runId, false, { adapter: "libsql", scope: "shared" }, failure],
 	);
 	assert.equal(isRetryableForkError(error), false);
-	assert.ok(error.forkRunId !== undefined && error.hint.includes(`/workflow resume ${error.forkRunId}`));
+	assert.ok(error.forkRunId !== undefined && error.hint.includes(`resume ${error.forkRunId} with /resume`));
 	assert.ok(!error.hint.includes("fork again."), "the hint never advises forking again");
 	assert.equal(await copyKept(), true, "a fork that may exist keeps its sessions");
 	assert.equal((await forkRuns()).length, 0);
@@ -1492,7 +1492,7 @@ test("a journal storage failure is a ForkJournalUnavailableError that says wheth
 	assert.equal(isRetryableForkError(hydrate), false);
 	assert.ok(hydrate.forkRunId !== undefined);
 	assert.equal((await backend.journal.getRun(hydrate.forkRunId))?.runId, hydrate.forkRunId);
-	assert.ok(hydrate.hint.includes(`/workflow resume ${hydrate.forkRunId}`), hydrate.hint);
+	assert.ok(hydrate.hint.includes(`resume ${hydrate.forkRunId} with /resume`), hydrate.hint);
 
 	const bug = new TypeError("not a storage failure");
 	vi.spyOn(backend.journal, "getRun").mockRejectedValueOnce(bug);
@@ -1727,7 +1727,7 @@ test("a nested run id is reported as a nested run of its root, never as storage 
 	assert.deepEqual(unknown.storage, { adapter: "memory", scope: "local-only" });
 	assert.equal(
 		unknown.hint,
-		"This node uses a local-only journal and is not joined to the shared storage; run atomic team join <url> --token-file <path> to fork runs started on other nodes, or pass a root run id from /workflow list (a nested workflow's run is forked through its root run).",
+		"This node uses a local-only journal and is not joined to the shared storage; run atomic team join <url> --token-file <path> to fork runs started on other nodes, or pass a root run id from /workflows (a nested workflow's run is forked through its root run).",
 		"the hint names both remedies: joining the shared storage and forking the root run",
 	);
 	const unlistable = await (async () => {

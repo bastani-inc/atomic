@@ -9,6 +9,7 @@
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { RunSnapshot, RunStatus } from "../shared/store-types.js";
 import { sanitizeToolTitleText } from "../shared/tool-payload-bounds.js";
+import { inertDisplayLine } from "./display-text.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { statusColor, statusIcon } from "./status-helpers.js";
 
@@ -67,6 +68,6 @@ function indicator(kind: RunStateKind, reason?: string): RunStateIndicator {
 }
 
 function blockedReason(run: RunSnapshot): string | undefined {
-	const reason = sanitizeToolTitleText(run.exitReason ?? "").trim();
+	const reason = sanitizeToolTitleText(inertDisplayLine(run.exitReason ?? "")).trim();
 	return reason.length > 0 ? reason : undefined;
 }

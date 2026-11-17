@@ -194,73 +194,113 @@ describe("MockExtensionAPI — no slash aliases for bundled workflows", () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// Completions include admin subcommands and workflow names
-// ---------------------------------------------------------------------------
-
-describe("MockExtensionAPI — completions include admin subcommands and workflow names", () => {
+describe("MockExtensionAPI — /workflows completions list session runs (#5224)", () => {
 	let mock: ReturnType<typeof makeMock>;
 
 	beforeEach(() => {
+		defaultStore.clear();
 		mock = makeMock();
 		factory(mock);
 	});
 
-	test("/workflow completions include all admin subcommands and all bundled workflow names", async () => {
-		const cmd = getCommand(mock.commands, "workflow")!;
+	test("/workflows completions include top-level session run IDs and exclude removed /workflow subcommands and bundled names (#5224)", async () => {
+		defaultStore.recordRunStart({
+			id: "run-alpha-1",
+			name: "fan-out-and-synthesize",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
+		defaultStore.recordRunStart({
+			id: "run-beta-2",
+			name: "goal",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 2,
+		});
+		assert.equal(getCommand(mock.commands, "workflow"), undefined);
+		const cmd = getCommand(mock.commands, "workflows")!;
 		const completions = (await cmd.options.getArgumentCompletions?.("")) ?? [];
 		const labels = completions.map((c) => c.label);
 
-		// Admin subcommands
-		for (const sub of ["list", "status", "pause", "resume", "inputs"]) {
-			assert.ok(labels.includes(sub));
+		assert.deepEqual(labels.sort(), ["run-alpha-1", "run-beta-2"]);
+		for (const sub of ["list", "status", "pause", "resume", "inputs", "session", "interrupt"]) {
+			assert.equal(labels.includes(sub), false);
 		}
-		assert.equal(labels.includes("session"), false);
-		assert.equal(labels.includes("interrupt"), false);
-
-		for (const name of BUILTIN_WORKFLOW_NAMES) assert.ok(labels.includes(name));
+		for (const name of BUILTIN_WORKFLOW_NAMES) {
+			assert.equal(labels.includes(name), false);
+		}
 	});
 
-	test("/workflow completions filter partial input to a workflow name", async () => {
-		const cmd = getCommand(mock.commands, "workflow")!;
-		const completions = (await cmd.options.getArgumentCompletions?.("fan")) ?? [];
+	test("/workflows completions filter partial input to a matching run ID (#5224)", async () => {
+		defaultStore.recordRunStart({
+			id: "run-alpha-1",
+			name: "fan-out-and-synthesize",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
+		defaultStore.recordRunStart({
+			id: "run-beta-2",
+			name: "goal",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 2,
+		});
+		const cmd = getCommand(mock.commands, "workflows")!;
+		const completions = (await cmd.options.getArgumentCompletions?.("run-alpha")) ?? [];
 		const labels = completions.map((c) => c.label);
-		assert.deepEqual(labels, ["fan-out-and-synthesize"]);
+		assert.deepEqual(labels, ["run-alpha-1"]);
 	});
 });
 
-// /workflow <name> prompt=test dispatches run, not unknown subcommand.
-
-describe("MockExtensionAPI — /workflow <name> dispatches run not unknown-subcommand", () => {
+describe("MockExtensionAPI — workflow tool dispatches run while /workflows is runs-only (#5224)", () => {
 	let mock: ReturnType<typeof makeMock>;
 
 	beforeEach(() => {
+		defaultStore.clear();
 		mock = makeMock();
 		factory(mock);
 	});
 
-	test("/workflow fan-out-and-synthesize prompt=test dispatches run", async () => {
-		const cmd = getCommand(mock.commands, "workflow")!;
+	test("registered workflow tool fan-out-and-synthesize dispatches run while /workflows rejects definition names (#5224)", async () => {
+		const cmd = getCommand(mock.commands, "workflows")!;
 		const messages: string[] = [];
-		await cmd.options.handler("fan-out-and-synthesize prompt=test", {
+		await cmd.options.handler("fan-out-and-synthesize", {
 			ui: { notify: (m: string) => messages.push(m) },
 		});
-
-		// Must not say "unknown subcommand"
 		assert.equal(
-			messages.some((m) => m.toLowerCase().includes("unknown subcommand")),
-			false,
+			messages.some((m) =>
+				m.includes(
+					'Run id must be a full 36-character UUID or a unique 8-character hexadecimal prefix; got "fan-out-and-synthesize"',
+				),
+			),
+			true,
 		);
 
-		// Must print a dispatch confirmation or a failure — never silent.
-		// The success path now emits via pi.sendMessage (kind: "dispatch")
-		// instead of ctx.ui.notify; either signal counts as evidence the
-		// handler resolved without the unknown-subcommand fallback.
-		const dispatchedSent = mock.sent.some((m) => (m.details as { kind?: string } | undefined)?.kind === "dispatch");
-		const errored = messages.some(
-			(m) => m.includes("completed") || m.includes("failed") || m.includes("Workflow not found"),
+		const execute = mock.tools[0]!.opts.execute;
+		const result = await runTool(
+			execute,
+			{
+				workflow: "fan-out-and-synthesize",
+				inputs: { prompt: "test", max_branches: 1 },
+				action: "run",
+			},
+			{},
 		);
-		assert.equal(dispatchedSent || errored, true);
+		const r = result as { action: "run"; runId: string; status: string };
+		assert.equal(r.action, "run");
+		assert.equal(r.status, "running");
+		assert.ok(r.runId.length > 0);
+		await waitForRun(r.runId, { store: defaultStore });
 	});
 });
 

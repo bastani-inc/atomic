@@ -16,8 +16,7 @@ import { run as engineRun } from "../../packages/workflows/src/engine/run.js";
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import type { ExtensionAPI } from "../../packages/workflows/src/extension/public-types.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
-import { registerWorkflowSlashCommand } from "../../packages/workflows/src/extension/workflow-command-registration.js";
-import type { WorkflowCommandHandler } from "../../packages/workflows/src/extension/workflow-command-utils.js";
+import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { runDetached } from "../../packages/workflows/src/runs/background/runner.js";
@@ -112,32 +111,18 @@ test("extension dispatch defaults to the persistent journal store without settin
 });
 
 for (const hasUI of [true, false]) {
-	test(`${hasUI ? "TUI" : "CLI"} slash command defaults to the persistent SQLite journal`, async () => {
+	test(`${hasUI ? "TUI" : "CLI"} workflow tool defaults to the persistent SQLite journal`, async () => {
 		const owner = resources();
 		const runtime = createExtensionRuntime({ ...owner, cwd: directory, definitions: [definition()] });
-		const handlers = new Map<string, WorkflowCommandHandler>();
-		const pi: ExtensionAPI = { registerCommand() {}, sendMessage() {} };
-		const overlay: GraphOverlayPort = { open() {}, toggle() {}, close() {} };
-		registerWorkflowSlashCommand(pi, handlers, {
-			runtimeProxy: runtime,
-			runtimeForContext: () => runtime,
-			overlay,
+		const execute = makeExecuteWorkflowTool(
+			runtime,
+			() => undefined,
+			() => undefined,
 			owner,
-			reloadWorkflowResources: () => undefined,
-			ensureWorkflowResourcesLoaded: () => undefined,
-			runWithLifecycleSuppressedForPolicy: (_policy, action) => action(),
-			runControl: {
-				pi,
-				overlay,
-				runtimeForContext: () => runtime,
-				ensureWorkflowResourcesLoaded: () => undefined,
-				owner,
-			},
-		});
-		const handler = handlers.get("workflow");
-		assert.ok(handler);
+		);
 		const { ctx } = buildCtx();
-		await handler("default-journal --yes", { ...ctx, cwd: directory, hasUI });
+		const result = await execute({ action: "run", workflow: "default-journal" }, { ...ctx, cwd: directory, hasUI });
+		assert.ok("runId" in result && result.runId);
 		await settle(owner);
 	});
 }
@@ -240,27 +225,8 @@ test("fresh /workflow resume opens the picker before loading saved journal runs 
 
 	const owner = resources();
 	const runtime = createExtensionRuntime({ ...owner, cwd: directory, definitions: [def] });
-	const handlers = new Map<string, WorkflowCommandHandler>();
 	const pi: ExtensionAPI = { registerCommand() {}, sendMessage() {} };
 	const overlay: GraphOverlayPort = { open() {}, toggle() {}, close() {} };
-	registerWorkflowSlashCommand(pi, handlers, {
-		runtimeProxy: runtime,
-		runtimeForContext: () => runtime,
-		overlay,
-		owner,
-		reloadWorkflowResources: () => undefined,
-		ensureWorkflowResourcesLoaded: () => undefined,
-		runWithLifecycleSuppressedForPolicy: (_policy, action) => action(),
-		runControl: {
-			pi,
-			overlay,
-			runtimeForContext: () => runtime,
-			ensureWorkflowResourcesLoaded: () => undefined,
-			owner,
-		},
-	});
-	const handler = handlers.get("workflow");
-	assert.ok(handler);
 	let opened = false;
 	let savedRunListed = false;
 	let closePicker: (path: string | undefined) => void = () => {};
@@ -268,32 +234,44 @@ test("fresh /workflow resume opens the picker before loading saved journal runs 
 		closePicker = resolve;
 	});
 	const { ctx, messages } = buildCtx();
-	await handler("resume", {
-		...ctx,
-		cwd: directory,
-		hasUI: true,
-		ui: {
-			...ctx.ui,
-			custom: async () => undefined,
-			hostSessionPicker(request) {
-				opened = true;
-				assert.deepEqual(request.sessions, []);
-				assert.equal(availableStoreDurableBackend(owner.store), undefined, "mount must stay storage-free");
-				return {
-					result,
-					close: () => closePicker(undefined),
-					update(rows) {
-						savedRunListed = rows.some((row) => row.id === saved.runId);
-						closePicker(undefined);
-					},
-					error(message) {
-						messages.push(message);
-						closePicker(undefined);
-					},
-				};
+	await handleRunControlCommand(
+		"resume",
+		[],
+		{
+			...ctx,
+			cwd: directory,
+			hasUI: true,
+			ui: {
+				...ctx.ui,
+				custom: async () => undefined,
+				hostSessionPicker(request) {
+					opened = true;
+					assert.deepEqual(request.sessions, []);
+					assert.equal(availableStoreDurableBackend(owner.store), undefined, "mount must stay storage-free");
+					return {
+						result,
+						close: () => closePicker(undefined),
+						update(rows) {
+							savedRunListed = rows.some((row) => row.id === saved.runId);
+							closePicker(undefined);
+						},
+						error(message) {
+							messages.push(message);
+							closePicker(undefined);
+						},
+					};
+				},
 			},
 		},
-	});
+		{ info: (m) => messages.push(m), error: (m) => messages.push(m) },
+		{
+			pi,
+			overlay,
+			runtimeForContext: () => runtime,
+			ensureWorkflowResourcesLoaded: () => undefined,
+			owner,
+		},
+	);
 	assert.equal(opened, true, messages.join("\n"));
 	assert.equal(savedRunListed, true, messages.join("\n"));
 	assert.equal(defaultBackend(owner.store).getWorkflow(saved.runId)?.status, "paused");
@@ -360,39 +338,17 @@ async function launchFresh(entry: FreshEntryPoint, owner: ReturnType<typeof reso
 	} else {
 		const runtime = createExtensionRuntime({ ...owner, cwd, definitions: [definition()] });
 		const { ctx } = buildCtx();
-		if (entry === "workflow tool") {
-			const execute = makeExecuteWorkflowTool(
-				runtime,
-				() => undefined,
-				() => undefined,
-				owner,
-			);
-			const result = await execute({ action: "run", workflow: "default-journal" }, { ...ctx, cwd, hasUI: false });
-			assert.ok("runId" in result && result.runId);
-		} else {
-			const handlers = new Map<string, WorkflowCommandHandler>();
-			const pi: ExtensionAPI = { registerCommand() {}, sendMessage() {} };
-			const overlay: GraphOverlayPort = { open() {}, toggle() {}, close() {} };
-			registerWorkflowSlashCommand(pi, handlers, {
-				runtimeProxy: runtime,
-				runtimeForContext: () => runtime,
-				overlay,
-				owner,
-				reloadWorkflowResources: () => undefined,
-				ensureWorkflowResourcesLoaded: () => undefined,
-				runWithLifecycleSuppressedForPolicy: (_policy, action) => action(),
-				runControl: {
-					pi,
-					overlay,
-					runtimeForContext: () => runtime,
-					ensureWorkflowResourcesLoaded: () => undefined,
-					owner,
-				},
-			});
-			const handler = handlers.get("workflow");
-			assert.ok(handler);
-			await handler("default-journal --yes", { ...ctx, cwd, hasUI: entry === "TUI slash" });
-		}
+		const execute = makeExecuteWorkflowTool(
+			runtime,
+			() => undefined,
+			() => undefined,
+			owner,
+		);
+		const result = await execute(
+			{ action: "run", workflow: "default-journal" },
+			{ ...ctx, cwd, hasUI: entry === "TUI slash" },
+		);
+		assert.ok("runId" in result && result.runId);
 	}
 	await Promise.all(owner.jobs.runIds().map((id) => owner.jobs.get(id)?.promise));
 	const created = owner.store.runs().filter((saved) => !previousIds.has(saved.id));

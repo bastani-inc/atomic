@@ -689,7 +689,7 @@ test("a resumed root runs its unfinished children with an edited entry module on
 				error.message.includes(`worker definition ${work.definition} at sha256 ${work.digest.slice(0, 12)}`),
 			);
 			assert.ok(error.message.includes(`at sha256 ${edited.digest.slice(0, 12)}`));
-			assert.ok(error.message.includes("/workflow resume root --accept-entry-changes"));
+			assert.ok(error.message.includes("Resume root root from /resume and confirm the edited module"));
 			return true;
 		});
 		assert.equal((await pool.inspect("root")).find((item) => item.id === unfinished.id)?.digest, work.digest);

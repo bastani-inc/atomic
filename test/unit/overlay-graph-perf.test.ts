@@ -643,7 +643,7 @@ describe("GraphView many-stage performance (#2100)", () => {
 			view.handleInput("\r");
 			view.handleInput("f");
 			await Promise.resolve();
-			assert.match(visibleText(view.render(160)), /enter fork/);
+			assert.match(visibleText(view.render(160)), /enter confirm\s+·\s+esc cancel/);
 			requestRender.mockClear();
 			vi.advanceTimersByTime(10_000);
 			assert.equal(requestRender.mock.calls.length, 0);

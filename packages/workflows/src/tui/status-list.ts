@@ -1,25 +1,3 @@
-/**
- * `/workflow status` list — rounded workflow-tool output surface.
- *
- * Visual contract (DESIGN.md §5):
- *  - One rounded `BACKGROUND` panel with subtitle and count badges.
- *  - One rounded card per run (replaces the indented per-stage rows):
- *      title: full runId · workflow · state badge
- *      rows: status glyph + full runId, then workflow identity and meta
- *
- * Plain mode (theme omitted) preserves the rounded panel/card shape without
- * ANSI escapes, with ASCII bracket cells `[✓][●][○][✗]`.
- *
- * Powers:
- *   - `renderResult({ action: "status" })` (LLM tool path)
- *   - `/workflow session list` chat output (via renderSessionList)
- *   - `/workflow status` chat output
- *
- * cross-ref:
- *  - src/tui/chat-surface.ts shared primitives
- *  - src/tui/run-detail.ts per-run drill-down surface (unchanged)
- */
-
 import type {
 	PendingWorkflowRunStatusResolver,
 	WorkflowBoundarySegmentsResolver,
@@ -60,12 +38,6 @@ export interface RenderStatusListOpts {
 	owningRunStatus?: PendingWorkflowRunStatusResolver;
 	/** Depth-faithful boundary-chain authority for advertised pending-stage targets. */
 	resolveBoundarySegments?: WorkflowBoundarySegmentsResolver;
-	/**
-	 * Emit-time indicator status per run id, taking precedence over deriving
-	 * from `allRuns`. Lets persisted payloads (e.g. the `/workflow status`
-	 * chat entry) keep hidden-descendant prompt attribution after a session
-	 * restore, when the full run collection is no longer available.
-	 */
 	indicatorStatuses?: Readonly<Record<string, RunIndicatorStatus>>;
 }
 
@@ -320,7 +292,7 @@ function runCardMeta(run: RunSnapshot, now: number): string {
 				? fmtDuration(elapsedRunMs(run, now))
 				: undefined;
 
-	if (isQuitRun(run)) return run.resumable === false ? "not resumable" : "resumable via /workflow resume";
+	if (isQuitRun(run)) return run.resumable === false ? "not resumable" : "resumable via /resume";
 	if (effectiveRunStatus(run) === "running") {
 		if (isChain) parts.push(`${done}/${total}`);
 		const labels = runningStageLabels(run);
@@ -496,7 +468,7 @@ function sortRuns(runs: readonly RunSnapshot[], opts: RenderStatusListOpts): Run
 
 function renderStatusHintRows(id: string, theme: GraphTheme | undefined, width: number): string[] {
 	const budget = Math.max(1, width - 4);
-	const prefix = "▸ /workflow status ";
+	const prefix = "▸ /workflows ";
 	const continuation = "  ";
 	const rows = wrapIdentifierLines(id, budget, prefix, continuation);
 	const identifierRowCount = rows.length;
@@ -519,7 +491,7 @@ function renderStatusHintRows(id: string, theme: GraphTheme | undefined, width: 
 		const idChunk = carriesSuffix ? row.chunk.slice(0, -suffix.length) : row.chunk;
 		const suffixText = carriesSuffix ? suffix : "";
 		if (index === 0) {
-			return `${dim}▸${RESET} ${accent}/workflow status ${idChunk}${RESET}${suffixText ? `${dim}${suffixText}${RESET}` : ""}`;
+			return `${dim}▸${RESET} ${accent}/workflows ${idChunk}${RESET}${suffixText ? `${dim}${suffixText}${RESET}` : ""}`;
 		}
 		if (carriesIdentifier) {
 			return `${row.prefix}${accent}${idChunk}${RESET}${suffixText ? `${dim}${suffixText}${RESET}` : ""}`;

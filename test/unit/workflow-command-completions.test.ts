@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
-import { workflowArgumentCompletions } from "../../packages/workflows/src/extension/workflow-command-completions.js";
+import { completeToken, runIdItems } from "../../packages/workflows/src/extension/workflow-command-completions.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { testRunId } from "../helpers/run-id.js";
 
-function completionFixture() {
+test("/workflows runIdItems and completeToken complete only top-level session run IDs (#5224)", () => {
 	const store = createStore();
 	const id = testRunId("completion-stage-slot");
+	const childId = testRunId("completion-child-slot");
 	store.recordRunStart({
 		id,
 		name: "demo",
@@ -17,72 +17,29 @@ function completionFixture() {
 		stages: [],
 		startedAt: 1,
 	});
-	const runtime = createExtensionRuntime({ store });
-	return { id, complete: (partial: string) => workflowArgumentCompletions(partial, runtime, store) };
-}
+	store.recordRunStart({
+		id: childId,
+		parentRunId: id,
+		name: "child-demo",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [],
+		startedAt: 2,
+	});
 
-test.each(["resume", "pause"])("%s completes only the run argument, not the stage or message (#5224)", (command) => {
-	const { id, complete } = completionFixture();
-	for (const flags of command === "pause" ? ["", "--yes ", "-y "] : ["", "--accept-entry-changes "]) {
-		const head = `${command} ${flags}`;
-		assert.deepEqual(
-			complete(`${head}${id.slice(0, 8)}`)?.map((item) => item.value),
-			[`${head}${id} `],
-		);
-		for (const tail of [" ", ` ${id.slice(0, 2)}`, " plan ", " --"]) {
-			assert.equal(complete(`${head}${id}${tail}`), null, `${head}${id}${tail}`);
-		}
-	}
-	if (command === "pause") {
-		assert.deepEqual(
-			complete("pause --")?.map((item) => item.value),
-			["pause --all "],
-		);
-	}
-});
-
-test("fork offers one run argument and one --from flag, never run IDs as stages (#5224)", () => {
-	const { id, complete } = completionFixture();
+	const items = runIdItems(store);
+	assert.deepEqual(items, [
+		{
+			value: `${id} `,
+			label: id,
+			description: "demo — running",
+		},
+	]);
 	assert.deepEqual(
-		complete(`fork ${id.slice(0, 8)}`)?.map((item) => item.value),
-		[`fork ${id} `],
+		completeToken(id.slice(0, 8), items)?.map((item) => item.value),
+		[`${id} `],
 	);
-	assert.deepEqual(
-		complete(`fork ${id} `)?.map((item) => item.value),
-		[`fork ${id} --from `],
-	);
-	assert.deepEqual(
-		complete(`fork ${id} --f`)?.map((item) => item.value),
-		[`fork ${id} --from `],
-	);
-	for (const partial of [
-		`fork ${id} ${id.slice(0, 2)}`,
-		`fork ${id} --from `,
-		`fork ${id} --from ${id.slice(0, 2)}`,
-		`fork ${id} --from plan `,
-		`fork ${id} --from plan --f`,
-		`fork ${id} --from=plan `,
-		`fork ${id} --from=plan --f`,
-		"fork --from ",
-		"fork --from=",
-	]) {
-		assert.equal(complete(partial), null, partial);
-	}
-});
-
-test("fork completes the run after --from and its stage (#5224)", () => {
-	const { id, complete } = completionFixture();
-	assert.deepEqual(
-		complete(`fork --from plan ${id.slice(0, 8)}`)?.map((item) => item.value),
-		[`fork --from plan ${id} `],
-	);
-	assert.deepEqual(
-		complete("fork --from plan ")?.map((item) => item.value),
-		[`fork --from plan ${id} `],
-	);
-	assert.deepEqual(
-		complete(`fork --from=plan ${id.slice(0, 8)}`)?.map((item) => item.value),
-		[`fork --from=plan ${id} `],
-	);
-	assert.equal(complete(`fork --from plan ${id} `), null);
+	assert.equal(completeToken(id, items), null);
+	assert.equal(completeToken("unknown-prefix", items), null);
 });

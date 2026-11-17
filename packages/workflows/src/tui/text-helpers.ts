@@ -86,15 +86,6 @@ export function decodePrintableKey(data: string): string | undefined {
 }
 
 /**
- * Trim review values without flattening authored line breaks.
- * Empty or whitespace-only values render as an explicit placeholder.
- */
-export function formatReviewValue(value: string): string {
-	const trimmed = value.trim();
-	return trimmed.length === 0 ? "<empty>" : trimmed;
-}
-
-/**
  * Wrap plain text by terminal cell width while preserving paragraph breaks.
  * Within each paragraph, runs of whitespace collapse to a single space; this
  * keeps labels/descriptions readable but is not intended for preformatted text.

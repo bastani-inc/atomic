@@ -265,7 +265,7 @@ async function executeQuitRunWithAction(
 	}
 	const message =
 		runtimeQuit !== undefined || !resumable
-			? `Run ${runId} quit. ${runtimeQuit === undefined ? "" : "No further workflow steps will be admitted; untracked initialization or workflow code may still finish. "}${resumable ? "Resume with /workflow resume." : "No durable progress was recorded; this run cannot be resumed."}`
+			? `Run ${runId} quit. ${runtimeQuit === undefined ? "" : "No further workflow steps will be admitted; untracked initialization or workflow code may still finish. "}${resumable ? "Resume with /resume." : "No durable progress was recorded; this run cannot be resumed."}`
 			: undefined;
 	return { ok: true, runId, paused, cancelledTools, abandonedTools, ...(message === undefined ? {} : { message }) };
 }

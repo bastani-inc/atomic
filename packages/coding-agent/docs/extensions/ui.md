@@ -95,6 +95,8 @@ See [examples/extensions/timed-confirm.ts](https://github.com/bastani-inc/atomic
 
 ### Widgets, Status, and Footer
 
+Inline custom UIs opened with `{ purpose: "navigation" }`, such as `/workflows`, temporarily hide every `setWidget()` widget above and below the editor, including the agent panel. Queued-message and pending-shell previews also stay hidden. The widgets and previews continue to update and return with their latest content after the last inline navigation view closes. Overlays and the default `"prompt"` custom UIs do not hide them.
+
 ```typescript
 // Status in footer (persistent until cleared)
 ctx.ui.setStatus("my-ext", "Processing...");
@@ -201,6 +203,8 @@ These APIs customize presentation only; they do not start work or emit an extens
 ### Autocomplete Providers
 
 Use `ctx.ui.addAutocompleteProvider()` to stack custom autocomplete logic on top of the built-in slash-command and path provider.
+
+Return the complete result from a provider you wrap, including its metadata. Slash-command suggestions can set `completeOnConfirm: false` so Enter submits the typed command literally until the user navigates the suggestion list; Tab still accepts the highlighted completion.
 
 Typical pattern:
 

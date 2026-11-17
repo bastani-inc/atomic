@@ -174,7 +174,7 @@ test.skipIf(process.platform === "win32")(
 				),
 				refusal,
 			);
-			assert.match(refusal, /--accept-entry-changes/);
+			assert.match(refusal, /resume from \/resume and confirm the edited module/);
 			assert.match(refusal, /acceptEntryChanges/);
 			await refused.stop();
 			assert.equal(recordedCheckpoints(directory), 1);

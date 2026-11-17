@@ -32,6 +32,7 @@ import {
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
 import { wrapPlainText } from "../../packages/workflows/src/tui/text-helpers.js";
 import { renderToolDetail } from "../../packages/workflows/src/tui/tool-detail.js";
+import { workflowsListingItems } from "../../packages/workflows/src/tui/workflows-listing.js";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import { defaultTheme, makeSnap, makeStage, makeStore } from "./overlay-graph-helpers.js";
 
@@ -840,6 +841,9 @@ test.each([
 		const narrowPanelRows = renderAgentPanelRows(panelItemsFromSnapshot(snap, 2_000), 52, panelStyle);
 		assertSafeRows(narrowPanelRows);
 		assert.ok(narrowPanelRows.join("\n").includes("active-"), "the narrow panel renders the current stage name");
+		for (const item of workflowsListingItems(snap.runs, 2_000)) {
+			assertSafeRows([item.label, item.description ?? ""]);
+		}
 
 		for (const status of ["running", "failed", "paused", "completed"] as const) {
 			const statusRun = { ...run, status };

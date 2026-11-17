@@ -8,7 +8,6 @@ import { raceWorkflowRequestAbort } from "./workflow-request-abort.js";
 import { WorkflowParametersSchema } from "./workflow-schema.js";
 import {
 	callComponent,
-	styledCallLine,
 	type WorkflowRunSource,
 	WorkflowToolResultBlock,
 	workflowBlockTheme,
@@ -139,7 +138,7 @@ export function registerWorkflowTool(
 				details,
 			};
 		},
-		renderCall: (args, theme) => callComponent(styledCallLine(workflowCallLabel(args), workflowBlockTheme(theme))),
+		renderCall: (args, theme) => callComponent(workflowCallLabel(args), workflowBlockTheme(theme)),
 		renderResult: (result, opts, theme, context) => {
 			const isError = context.isError ?? result.isError ?? false;
 			const block =
@@ -148,7 +147,7 @@ export function registerWorkflowTool(
 					: new WorkflowToolResultBlock(options.runs, workflowBlockTheme(theme), {
 							agentPanel: hostHasAgentPanel(pi),
 						});
-			return block.update(result.details, {
+			block.update(result.details, {
 				expanded: opts.expanded === true,
 				partial: opts.isPartial === true,
 				isError,
@@ -160,6 +159,7 @@ export function registerWorkflowTool(
 				...(context.args === undefined ? {} : { args: context.args as WorkflowToolArgs }),
 				...(context.invalidate === undefined ? {} : { invalidate: context.invalidate }),
 			});
+			return block.definitionFailureBlock(context.outputPad) ?? block;
 		},
 	};
 	pi.registerTool(tool);

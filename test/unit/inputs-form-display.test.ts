@@ -1,0 +1,84 @@
+import assert from "node:assert/strict";
+import { type Editor, type Terminal, TuiMainScreen, visibleWidth } from "@bastani/atomic-tui";
+import { beforeAll, test } from "vitest";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
+import { HostInputFormComponent } from "../../packages/coding-agent/src/modes/interactive/components/host-input-form.ts";
+import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+
+class QuietTerminal implements Terminal {
+	columns = 100;
+	rows = 40;
+	kittyProtocolActive = true;
+	start(): void {}
+	stop(): void {}
+	async drainInput(): Promise<void> {}
+	write(_data: string): void {}
+	moveBy(_lines: number): void {}
+	hideCursor(): void {}
+	showCursor(): void {}
+	clearLine(): void {}
+	clearFromCursor(): void {}
+	clearScreen(): void {}
+	setTitle(_title: string): void {}
+	setProgress(_active: boolean): void {}
+	setProgramStatus(): void {}
+}
+
+beforeAll(() => {
+	initTheme("dark");
+});
+
+test("Up in a prefilled text field moves one displayed row of its escaped text (#5224)", () => {
+	const component = new HostInputFormComponent(
+		new TuiMainScreen(new QuietTerminal()),
+		theme,
+		new KeybindingsManager(),
+		{
+			title: "demo",
+			fields: [
+				{ name: "f", type: "text", initialValue: "\x01".repeat(60) },
+				{ name: "g", type: "string", initialValue: "" },
+			],
+		},
+		{ onSubmit: () => {}, onCancel: () => {} },
+	);
+	const editor = (Reflect.get(component, "editors") as Editor[])[0]!;
+	component.render(40);
+	component.handleInput("\x1b[A");
+	const cursor = editor.getCursor();
+	assert.equal(cursor.line, 0);
+	assert.ok(cursor.col > 0 && cursor.col < 60, `Up moved the cursor to column ${cursor.col}`);
+	component.render(40);
+	component.handleInput("\x1b[B");
+	assert.equal(editor.getCursor().col, 60);
+});
+
+test("the host form draws wide text and control characters within every width from 1 to 200 (#5224)", () => {
+	const wide = "漢字🙂‍👩e\u0301".repeat(20);
+	const component = new HostInputFormComponent(
+		new TuiMainScreen(new QuietTerminal()),
+		theme,
+		new KeybindingsManager(),
+		{
+			title: `t${wide}`,
+			heading: `H${wide}`,
+			fields: [
+				{
+					name: `n${wide}`,
+					type: "string",
+					initialValue: `\x1b]52;c;x\x07${wide}`,
+					description: wide,
+					required: true,
+				},
+				{ name: "t", type: "text", initialValue: `${wide}\n\t\x01${wide}` },
+				{ name: "s", type: "select", choices: [wide, "b"], initialValue: "" },
+				{ name: "b", type: "boolean", initialValue: "" },
+			],
+		},
+		{ onSubmit: () => {}, onCancel: () => {} },
+	);
+	for (let width = 1; width <= 200; width++) {
+		for (const line of component.render(width))
+			assert.ok(visibleWidth(line) <= width, `width ${width}: a line takes ${visibleWidth(line)} columns`);
+	}
+});

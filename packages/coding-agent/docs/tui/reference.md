@@ -363,19 +363,25 @@ Rows can set `canDelete: false` to hide and disable deletion, even when `onDelet
 
 ### Host-native input form
 
-Use `ctx.ui.hostInputForm(request)` for a structured inline form in the editor slot. It supports Tab/Shift+Tab, arrows, text editing, configured keybindings, Enter, Escape, and Ctrl+C, including under engine isolation.
+Use `ctx.ui.hostInputForm(request)` for a structured inline form in the editor slot. It supports Tab/Shift+Tab, arrows, text editing, configured keybindings, Enter, Escape, and Ctrl+C, including under engine isolation. The promise rejects if the host cannot read the form, with "The host could not read this input form."
 
 ```typescript
-const values = await ctx.ui.hostInputForm?.({
-  title: "Release",
-  fields: [
-    { name: "version", type: "string", required: true, initialValue: "" },
-    { name: "channel", type: "select", choices: ["stable", "beta"], initialValue: "stable" },
-  ],
-});
-if (values === undefined) return; // Escape, Ctrl+C, teardown, or close
+try {
+  const values = await ctx.ui.hostInputForm?.({
+    title: "Release",
+    fields: [
+      { name: "version", type: "string", required: true, initialValue: "" },
+      { name: "channel", type: "select", choices: ["stable", "beta"], initialValue: "stable" },
+    ],
+  });
+  if (values === undefined) return;
+} catch (error) {
+  ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+}
 ```
 
-Field types are `string`, `text`, `number`, `integer`, `boolean`, and `select`. Initial and returned values are raw strings; the caller owns domain coercion. Every current interactive Atomic host exposes the optional capability, while headless RPC and print surfaces omit it. Keep a legacy fallback only when compatibility with older hosts is required.
+Field types are `string`, `text`, `number`, `integer`, `boolean`, and `select`. Initial and returned values are raw strings; the caller owns domain coercion.
 
-`/workflow <name>` uses this input form.
+Every current interactive Atomic host exposes the optional capability, while headless RPC and print surfaces omit it. Keep a legacy fallback only when compatibility with older hosts is required.
+
+Each field's header shows whether its value is ready: `✓`, or `✗` with the reason (`required`, `choose one`, `choose on or off`, `must be a whole number`, `must be a whole number within ±9007199254740991`, `must be a number`, `must be on or off`, or `not in choices`). Integers must stay within JavaScript's safe integer range so their value is not rounded. Enter on the submit button runs only when every field is ready. A boolean accepts `true`, `false`, `on`, `off`, `1` or `0`; anything else is refused rather than read as off.

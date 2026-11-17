@@ -45,25 +45,23 @@ With a session working, these are the fuller capabilities to reach for next. Non
 
 ### Try the built-in workflows
 
-Atomic ships with nine workflows you can run immediately. Use `/workflow list` to see them and `/workflow inputs <name>` to inspect their inputs in your environment.
+Atomic ships with nine workflows you can run immediately. Ask the agent which workflows are installed and what inputs one takes; it checks them with the `workflow` tool.
 
-| Workflow | When to use | Example |
+| Workflow | When to use | Example request |
 |---|---|---|
-| `classify-and-act` | Route requests through structured classification and low-confidence human fallback. | `/workflow classify-and-act prompt="Triage and handle this request"` |
-| `fan-out-and-synthesize` | Partition independent slices, including repository-focused research, and synthesize their artifact evidence. | `/workflow fan-out-and-synthesize prompt="Map payment retries by subsystem and synthesize cited findings"` |
-| `adversarial-verification` | Challenge a candidate with fresh verifiers and bounded repair. | `/workflow adversarial-verification task="Verify the migration patch"` |
-| `generate-and-filter` | Generate, dedupe, filter, optionally judge, and shortlist candidates. | `/workflow generate-and-filter prompt="Propose names for the new command"` |
-| `tournament` | Compare whole solutions through balanced pairwise judging. | `/workflow tournament prompt="Design the retry strategy"` |
-| `loop-until-done` | Iterate with a durable ledger until completion or bound exhaustion. | `/workflow loop-until-done prompt="Repair failures until the test suite passes"` |
-| `goal` | Autonomous work that needs a durable ledger, bounded sub-agent orchestration, receipts, and reviewer-gated completion. | `/workflow goal objective="Update the CLI docs, add one example, and validate the docs build"` |
-| `ralph` | Research-first autonomous work with prompt refinement, delegated implementation, and iterative multi-model review. | `/workflow ralph prompt="Implement specs/rate-limit.md and validate burst traffic"` |
-| `open-claude-design` | UI and design-system work with one generated preview, one live review session, and export. | `/workflow open-claude-design prompt="Refresh the settings page hierarchy as a page"` |
+| `classify-and-act` | Route requests through structured classification and low-confidence human fallback. | `Run classify-and-act to triage and handle this request` |
+| `fan-out-and-synthesize` | Partition independent slices, including repository-focused research, and synthesize their artifact evidence. | `Run fan-out-and-synthesize to map payment retries by subsystem and synthesize cited findings` |
+| `adversarial-verification` | Challenge a candidate with fresh verifiers and bounded repair. | `Run adversarial-verification on the migration patch` |
+| `generate-and-filter` | Generate, dedupe, filter, optionally judge, and shortlist candidates. | `Run generate-and-filter to propose names for the new command` |
+| `tournament` | Compare whole solutions through balanced pairwise judging. | `Run tournament to design the retry strategy` |
+| `loop-until-done` | Iterate with a durable ledger until completion or bound exhaustion. | `Run loop-until-done to repair failures until the test suite passes` |
+| `goal` | Autonomous work that needs a durable ledger, bounded sub-agent orchestration, receipts, and reviewer-gated completion. | `Run goal to update the CLI docs, add one example, and validate the docs build` |
+| `ralph` | Research-first autonomous work with prompt refinement, delegated implementation, and iterative multi-model review. | `Run ralph to implement specs/rate-limit.md and validate burst traffic` |
+| `open-claude-design` | UI and design-system work with one generated preview, one live review session, and export. | `Run open-claude-design to refresh the settings page hierarchy as a page` |
 
-<p align="center"><img src="../images/workflow-list.png" alt="Workflow List" width="600" /></p>
+The agent starts a workflow with the `workflow` tool, passing inputs as typed JSON values. Goal and Ralph support `git_worktree_dir` only when you explicitly want a reusable worktree, and skip PR creation unless you set `create_pr` to `true` for the post-approval final stage.
 
-Inputs are bare `key=value` tokens. Values are JSON-parsed when possible, so `count=5`, `flag=true`, and `prompt="multi word value"` preserve useful types. If you call `/workflow <name>` without required inputs, the TUI opens an inline picker; pass `--no-picker` to skip it. Goal and Ralph support `git_worktree_dir` only when you explicitly want a reusable worktree, and skip PR creation unless you set `create_pr=true` for the post-approval final stage.
-
-You can also launch workflows with **natural language** — describe the task in chat and ask Atomic to run a matching installed workflow or author a task-specific one:
+Describe the task in chat and ask Atomic to run a matching installed workflow or author a task-specific one:
 
 ```text
 Fan out repository research by subsystem, save cited findings as artifacts, and synthesize the evidence.
@@ -81,24 +79,23 @@ Use goal to update the CLI docs, include one example, run the docs build, and fi
 Use ralph to research and implement specs/rate-limit.md, then review and repair it within three loops.
 ```
 
-For natural-language launches, Atomic decides between inline work and a workflow as described above and preserves your explicit approval gates. Direct user `/workflow <name>` commands launch the named workflow. Goal provides a durable ledger and receipt-backed reviewer gate; Ralph provides a research-first implementation/review loop. Custom graphs can add domain-specific deterministic checks and bounded repairs.
+For these requests, Atomic decides between inline work and a workflow as described above and preserves your explicit approval gates. When you name a workflow, the agent runs that workflow. Goal provides a durable ledger and receipt-backed reviewer gate; Ralph provides a research-first implementation/review loop. Custom graphs can add domain-specific deterministic checks and bounded repairs.
 
 ### Monitor and steer a run
 
-Named workflow runs execute in the background. After launch you get the full run id; user-facing workflow surfaces show that complete UUID. You can still type the full id or a unique short prefix to inspect, open (`/workflows <id>`), pause, quit, or resume a run. Ambiguous prefixes are reported rather than selecting a run arbitrarily.
+Named workflow runs execute in the background. After launch you get the full run id; user-facing workflow surfaces show that complete UUID. `/workflows <id>` accepts the full id or a unique short prefix. Ambiguous prefixes are reported rather than selecting a run arbitrarily.
 
 ```text
-/workflow status <run-id>         # inspect one run's progress
-/workflow status                  # list this session's active and terminal runs
+/workflows                         # browse running and completed workflows in this session
 /workflows <run-id>                # see agents working; chat with or steer each stage (F2 also opens latest)
-/workflow pause <run-id>          # pause resumably
-/workflow resume <run-id> "go"    # send a steer message and resume
-/workflow quit <run-id>           # pause gracefully and keep the run resumable
+/resume                            # resume a run left by an earlier session or interrupted by a restart
 ```
 
-Each run has a row in the agent panel below the prompt with its stage progress, current stage and elapsed time. A run waiting on one question shows it on the row; with several questions or a custom prompt, the row shows `needs input`. Press ↓ on an empty prompt and Enter on the run's row to open its graph.
+`/workflows` lists each run's state and progress. In a run's graph, `p` pauses the run, `r` resumes it, and `q` twice quits it while keeping it resumable; the hint line lists the keys that work at that moment.
 
-Human-in-the-loop prompts (`ctx.ui.input`, `confirm`, `select`, `editor`) surface in the graph viewer, not as chat modals — connect to the run to answer them. The agent panel row shows that a run waits, and Enter on it opens the graph.
+Each run has a row in the agent panel below the prompt with its stage progress, current stage and elapsed time; a run waiting on one question shows it on the row; with several questions or a custom prompt, the row shows `needs input`. Press ↓ on an empty prompt and Enter on the run's row to open its graph.
+
+Human-in-the-loop prompts (`ctx.ui.input`, `confirm`, `select`, `editor`) surface in the graph viewer, not as chat modals. Open `/workflows <run-id>` and select the waiting node to answer them. The agent panel row shows that a run waits, and Enter on it opens the graph.
 
 Atomic also posts main-chat lifecycle notices when a run completes, fails, or awaits input. If you answer a workflow prompt in the graph or attached stage chat, the main chat receives a display-only answer summary for audit; it does not wake the model, enter LLM context, or answer later prompts. See [Workflow Operations](/workflows/operations) for the full run-control reference.
 
@@ -140,7 +137,7 @@ Atomic will:
 
 - ask clarifying questions if stage purpose, inputs, models, or handoffs are ambiguous,
 - write a `.atomic/workflows/<name>.ts` definition that uses `workflow({ ... })` and imports `Type` from `typebox`,
-- run `/workflow reload` so the generated workflow is rediscovered and can be launched with `/workflow <name>`,
+- run `/reload` so the generated workflow is rediscovered and can be launched,
 - then report the generated workflow folder so you can inspect the code it wrote, using `Custom workflow created. You can inspect its code at: <workflow-folder-path>` (for example, `.atomic/workflows/`); Atomic does this only for newly created custom workflows, never builtin or pre-existing workflows.
 
 The same plain-chat approach works for editing or hardening an existing workflow. For the full authoring reference, see [Custom Workflow Authoring](/workflows/authoring), including composition with user-defined workflows and all nine builtins from `@bastani/atomic/workflows/builtin`.

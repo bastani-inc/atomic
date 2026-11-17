@@ -1,5 +1,9 @@
 import type { ExtensionUIContext, HostInputFormRequest } from "../../core/extensions/index.js";
-import { type HostInputFormMount, mountHostInputForm } from "../interactive/components/host-input-form-mount.ts";
+import {
+	HOST_INPUT_FORM_UNREADABLE,
+	type HostInputFormMount,
+	mountHostInputForm,
+} from "../interactive/components/host-input-form-mount.ts";
 import type { IsolatedInteractiveRuntime } from "./isolated-runtime.js";
 import type { InteractiveEngineMessage } from "./protocol.ts";
 
@@ -34,6 +38,14 @@ export class InputFormHostController {
 		if (message.type === "engine_input_form_close") {
 			this.mounted.get(message.componentId)?.close();
 			this.mounted.delete(message.componentId);
+			return;
+		}
+		if (message.type === "engine_input_form_refused") {
+			this.runtime.sendEngineCommand({
+				type: "engine_input_form_error",
+				componentId: message.componentId,
+				message: HOST_INPUT_FORM_UNREADABLE,
+			});
 			return;
 		}
 		if (message.type === "engine_input_form_open") {

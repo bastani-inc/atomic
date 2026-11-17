@@ -55,8 +55,8 @@ let importIndex = 0;
 runtime.setRebindSession(async session => { await tick(); assert.equal(runtime.session, session); rebound.push(session); });
 const invoke = () => operation === "fork" ? runtime.fork(entry) : operation === "resume" ? runtime.switchSession(source) : operation === "import" ? runtime.importFromJsonl(imports[importIndex++].getSessionFile()) : runtime.newSession();
 if (workflow) {
- await runtime.session.prompt("/workflow sdk-host-durable --no-picker");
  const tool = runtime.session.agent.state.tools.find(tool => tool.name === "workflow");
+ await tool.execute("run", { action: "run", workflow: "sdk-host-durable", inputs: {} }, new AbortController().signal);
  let status;
  const deadline = Date.now() + 10_000;
  do {

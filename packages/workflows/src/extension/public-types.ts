@@ -37,6 +37,7 @@ export interface PiRenderContext {
 	args?: unknown;
 	/** What this renderer returned for the same row last time, so it can update it in place. */
 	lastComponent?: unknown;
+	outputPad?: number;
 }
 
 export interface PiRenderResultOpts extends RenderResultOpts {
@@ -47,6 +48,7 @@ export interface PiRenderComponent {
 	render(width: number): string[];
 	invalidate?: () => void;
 	includes(searchString: string): boolean;
+	isWorking?: () => boolean;
 }
 
 export interface PiMessageRenderComponent {
@@ -106,6 +108,7 @@ export interface PiModelContext {
 	generateWorkflowSummary?(text: string, signal: AbortSignal): Promise<string | undefined>;
 	isSessionSummaryEnabled?(): boolean;
 	isProjectTrusted?(): boolean;
+	isIdle?(): boolean;
 	readonly model?: PiRuntimeModel;
 	readonly modelRegistry?: PiRuntimeModelRegistry;
 }
@@ -204,6 +207,10 @@ export interface ExtensionAPI {
 	registerMessageRenderer?: (event: string, renderer: PiMessageRenderer) => void;
 	sendMessage?: StageLateMessageRouter["routeMessage"];
 	sendMessages?: StageLateMessageRouter["routeMessages"];
+	sendUserMessage?: (
+		content: string,
+		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
+	) => void | Promise<void>;
 	registerFlag?: (name: string, opts: PiFlagNamedOpts) => void;
 	getWorkflowHostModules?: import("./workflow-module-loader.js").WorkflowHostModuleProvider;
 	refreshWorkflowResources?: () => Promise<readonly WorkflowResourceInfo[]>;

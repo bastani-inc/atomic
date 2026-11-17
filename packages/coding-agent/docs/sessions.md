@@ -66,7 +66,7 @@ const { session } = await createAgentSession({
 
 Use `{ kind: "memory" }` for an explicit ephemeral SDK session or `{ kind: "jsonl", dir: "/data/sessions" }` for JSONL. An existing `sessionManager` remains caller-owned and bypasses store selection.
 
-Workflows launched from a non-default session directory also save their stage transcripts there. A headless command such as `atomic --mode json --session-dir <dir> -p '/workflow <name> ...'` therefore captures the main and stage transcripts together. An explicit per-stage `sessionDir` overrides the inherited directory.
+Workflows launched from a non-default session directory also save their stage transcripts there. A headless prompt such as `atomic --mode json --session-dir <dir> -p 'Run the <name> workflow with ...'` therefore captures the main and stage transcripts together. An explicit per-stage `sessionDir` overrides the inherited directory.
 
 When the host uses the default store, stages also use the default SQLite database unless they explicitly choose a directory.
 
@@ -153,7 +153,7 @@ Non-interactive runs such as `atomic -p` do not recover interrupted work. It sta
 
 ### Picker keys
 
-Each session is a two-line row: its name or first message, then its age, message count, folder (when listing all folders) and summary. The line at the bottom of the picker lists the keys that work at that moment, as described in [Resuming and Deleting Sessions](#resuming-and-deleting-sessions).
+Each session is a two-line row: its name or first message, then its age, message count, folder (when listing all folders) and summary. The line at the bottom of the picker lists the keys that work at that moment, as described in [Resuming and Deleting Sessions](#resuming-and-deleting-sessions). Workflow runs use the same two-line rows in the **Workflow runs** group.
 
 In the picker you can:
 
@@ -207,7 +207,7 @@ JSONL history reads reuse saved range positions while another process appends to
 
 The search index is about as large as the rendered text it indexes (messages, tool results and summaries), so indexing a text-heavy session roughly doubles its storage. Deleting or rewriting a session removes its index rows automatically. SQLite reuses freed pages on later writes, and running `VACUUM` while no Atomic process uses the database returns freed pages to the OS; on PostgreSQL, `VACUUM` reuses space and `VACUUM FULL` returns it to the OS.
 
-By default only the current project's history is visible. Other projects' sessions appear only when a sessions URL carries `?project=all` or `?project=<dir>`, which the agent uses only when you ask it to. Workflow history is always limited to the current project and includes runs you started with `/workflow` as well as runs the agent started, including finished runs that recorded no checkpoints and cancelled runs. `history://` is read-only.
+By default only the current project's history is visible. Other projects' sessions appear only when a sessions URL carries `?project=all` or `?project=<dir>`, which the agent uses only when you ask it to. Workflow history is always limited to the current project and includes every run of the project that the agent started, including finished runs that recorded no checkpoints and cancelled runs. `history://` is read-only.
 
 ## Naming Sessions
 

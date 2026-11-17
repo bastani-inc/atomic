@@ -691,6 +691,23 @@ test("an attached composer has accent rules naming its target and a placeholder 
 	assert.equal(narrow[0], "━".repeat(30), "narrow terminals keep the rule without the label");
 });
 
+test("an attached composer preserves cursor markers and terminal styling around its placeholder (#5245)", () => {
+	const style = { accent: (text: string) => text, text: (text: string) => text, dim: (text: string) => text };
+	for (const [line, expected] of [
+		["❯   ", "❯ hint"],
+		["❯   \x1b[31m\x1b[0m", "❯\x1b[31m\x1b[0m hint"],
+		["❯\t   \x1b[m", "❯\t\x1b[m hint"],
+		["❯   \x1b[0K", "❯   \x1b[0K hint"],
+		["❯ \x1b_pi:c\x07\x1b_pi:fc\x07 \x1b_pi:/fc\x07", "❯ \x1b_pi:c\x07\x1b_pi:fc\x07 \x1b_pi:/fc\x07hint"],
+		["❯ \x1b_outer\x1b_inner\x07", "❯ \x1b_outer\x1b_inner\x07 hint"],
+		["❯ \x1b_unterminated", "❯ \x1b_unterminated"],
+		["❯ typed", "❯ typed"],
+	]) {
+		const rendered = applyAttachedComposer(style, undefined, "hint", ["─".repeat(80), line!, "─".repeat(80)]);
+		assert.equal(rendered[1], expected);
+	}
+});
+
 test("← also leaves the focused panel, and coming back selects the row that was open (#5224)", () => {
 	const { focus, calls, press } = focusFixture();
 	press("\x1b[D");

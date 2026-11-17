@@ -105,7 +105,7 @@ describe("agent token total (#5224)", () => {
 		);
 	});
 
-	test("a settled request reporting zero input replaces the previous request's input", () => {
+	test("a settled request reporting zero input replaces the previous request's input (#5224)", () => {
 		assert.equal(
 			agentTokenTotal([
 				assistant(200, "toolUse", 1, { input: 1_000 }),

@@ -40,10 +40,11 @@ async function createFactoryHost() {
 	}
 
 	assert.ok(registeredTool, "expected workflow tool registration");
-	const workflowCommand = mock.commands.workflow;
-	assert.ok(workflowCommand, "expected /workflow command registration");
+	assert.equal(mock.commands.workflow, undefined, "/workflow slash command must not be registered");
+	assert.ok(mock.commands.workflows, "expected /workflows command registration");
+	assert.ok(mock.commands["workflow-authoring"], "expected /workflow-authoring command registration");
 
-	return { ...mock, tool: registeredTool, workflowCommand };
+	return { ...mock, tool: registeredTool };
 }
 
 async function executeWorkflow(
@@ -77,7 +78,6 @@ beforeAll(async () => {
 	await writeFile(
 		fixturePath,
 		`import { workflow } from "@bastani/atomic/workflows";
-import { Type } from "typebox";
 
 export const attachEnabled = workflow({
   name: "attach-enabled",
@@ -92,14 +92,6 @@ export const attachDefault = workflow({
   name: "attach-default",
   description: "",
   inputs: {},
-  outputs: {},
-  run: (ctx) => ctx.exit(),
-});
-
-export const attachPickerDefault = workflow({
-  name: "attach-picker-default",
-  description: "",
-  inputs: { message: Type.String() },
   outputs: {},
   run: (ctx) => ctx.exit(),
 });
@@ -129,53 +121,7 @@ afterAll(async () => {
 });
 
 describe("workflow auto-attach host entrypoints", () => {
-	test.sequential("/workflow opens one graph through extension pi.ui.custom when autoAttach is enabled", async () => {
-		const host = await createFactoryHost();
-
-		await host.workflowCommand.options.handler("attach-enabled", {
-			ui: { notify: () => undefined },
-		});
-
-		assert.equal(host.customCalls.length, 1);
-		assert.equal(overlayMounts(host.customCalls).length, 1);
-	});
-
-	test.sequential("/workflow remains detached when autoAttach is omitted", async () => {
-		const host = await createFactoryHost();
-
-		await host.workflowCommand.options.handler("attach-default", {
-			ui: { notify: () => undefined },
-		});
-
-		assert.equal(host.customCalls.length, 0);
-	});
-
-	test.sequential("/workflow preserves the existing input-form attach path when autoAttach is omitted", async () => {
-		const host = await createFactoryHost();
-
-		await host.workflowCommand.options.handler("attach-picker-default", {
-			ui: {
-				notify: () => undefined,
-				hostInputForm: async () => ({ message: "hello" }),
-				custom: host.pi.ui?.custom,
-			},
-		});
-
-		assert.equal(overlayMounts(host.customCalls).length, 1);
-	});
-
-	test.sequential("headless /workflow remains detached when autoAttach is enabled", async () => {
-		const host = await createFactoryHost();
-
-		await host.workflowCommand.options.handler("attach-enabled", {
-			hasUI: false,
-			ui: { notify: () => undefined },
-		});
-
-		assert.equal(host.customCalls.length, 0);
-	});
-
-	test.sequential("interactive registered tool returns the running result after mounting one graph", async () => {
+	test.sequential("interactive registered tool returns the running result after mounting one graph (#5224)", async () => {
 		const host = await createFactoryHost();
 
 		const result = await executeWorkflow(host.tool, "attach-enabled", true);
@@ -188,7 +134,7 @@ describe("workflow auto-attach host entrypoints", () => {
 		assert.equal(overlayMounts(host.customCalls).length, 1);
 	});
 
-	test.sequential("interactive registered tool remains detached when autoAttach is omitted", async () => {
+	test.sequential("interactive registered tool remains detached when autoAttach is omitted (#5224)", async () => {
 		const host = await createFactoryHost();
 
 		const result = await executeWorkflow(host.tool, "attach-default", true);
@@ -199,7 +145,7 @@ describe("workflow auto-attach host entrypoints", () => {
 		assert.equal(host.customCalls.length, 0);
 	});
 
-	test.sequential("headless registered tool remains detached when autoAttach is enabled", async () => {
+	test.sequential("headless registered tool remains detached when autoAttach is enabled (#5224)", async () => {
 		const host = await createFactoryHost();
 
 		const result = await executeWorkflow(host.tool, "attach-enabled", false);

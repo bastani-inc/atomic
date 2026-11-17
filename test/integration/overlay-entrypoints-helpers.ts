@@ -17,7 +17,6 @@
  *   - close() releases the OverlayHandle (`hide`) and disposes the view.
  *   - F2 shortcut registration in extension factory calls
  *     overlay.open(activeRunId).
- *   - /workflow resume + /workflow pause routing.
  *   - Graph-mode Ctrl+X / `h` never changes the run lifecycle.
  *   - `q` does not navigate, cancel, or pause the active run.
  */
@@ -29,11 +28,28 @@ import {
 } from "../../packages/coding-agent/src/modes/interactive/components/host-session-picker.ts";
 import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { createWorkflowExtensionRuntimeState } from "../../packages/workflows/src/extension/extension-runtime-state.js";
+import type {
+	ExtensionAPI,
+	PiCommandContext,
+	PiCommandOptions,
+	PiToolOpts,
+	WorkflowToolArgs,
+} from "../../packages/workflows/src/extension/index.js";
+import { createPostMortemHandleResolver } from "../../packages/workflows/src/extension/postmortem-deps.js";
+import type { WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
+import { buildRuntimeAdapters } from "../../packages/workflows/src/extension/wiring.js";
+import { createWorkflowCommandReporter } from "../../packages/workflows/src/extension/workflow-command-utils.js";
+import { createGraphStageActions } from "../../packages/workflows/src/extension/workflow-graph-stage-actions.js";
+import { captureWorkflowOwnerResources } from "../../packages/workflows/src/extension/workflow-owner-resources.js";
+import { workflowPolicyFromContext } from "../../packages/workflows/src/extension/workflow-policy.js";
+import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
+import type { GraphStageActions } from "../../packages/workflows/src/tui/graph-view-types.js";
 import type { OverlayPiSurface } from "../../packages/workflows/src/tui/overlay-adapter.js";
+import { buildGraphOverlayAdapter } from "../../packages/workflows/src/tui/overlay-adapter.js";
 
 export type { OverlayPiSurface } from "../../packages/workflows/src/tui/overlay-adapter.js";
-export { buildGraphOverlayAdapter } from "../../packages/workflows/src/tui/overlay-adapter.js";
-export { InteractiveMode, initTheme };
+export { buildGraphOverlayAdapter, InteractiveMode, initTheme };
 
 import type {
 	PiCustomComponent,
@@ -58,7 +74,15 @@ import type { createStore } from "../../packages/workflows/src/shared/store.js";
 
 export { Type } from "typebox";
 export { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+export type {
+	ExtensionAPI,
+	PiCommandContext,
+	PiCommandOptions,
+	PiToolOpts,
+	WorkflowToolArgs,
+} from "../../packages/workflows/src/extension/index.js";
 export { default as factory } from "../../packages/workflows/src/extension/index.js";
+export type { WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
 export { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 export { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 export { runDetached } from "../../packages/workflows/src/runs/background/runner.js";
@@ -66,14 +90,6 @@ export {
 	createStore,
 	store as singletonStore,
 } from "../../packages/workflows/src/shared/store.js";
-
-import type { ExtensionAPI, PiCommandContext, PiCommandOptions } from "../../packages/workflows/src/extension/index.js";
-
-export type {
-	ExtensionAPI,
-	PiCommandContext,
-	PiCommandOptions,
-} from "../../packages/workflows/src/extension/index.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -318,23 +334,25 @@ export function attachHostCustomUiState(ui: NonNullable<OverlayPiSurface["ui"]>)
 	};
 }
 
-/** Create a minimal mock pi ExtensionAPI with the real custom overlay surface. */
 export function buildMockPi(overrides: Partial<ExtensionAPI> = {}): {
 	pi: ExtensionAPI;
 	shortcuts: Record<string, (ctx?: PiCommandContext) => void>;
 	commands: Record<string, { name: string; options: PiCommandOptions }>;
+	tools: Record<string, PiToolOpts<WorkflowToolArgs, WorkflowToolResult>>;
+	events: Map<string, Array<(event?: unknown, ctx?: PiCommandContext) => Promise<unknown> | unknown>>;
 	customCalls: CapturedCustomCall[];
 } {
 	const shortcuts: Record<string, (ctx?: PiCommandContext) => void> = {};
 	const commands: Record<string, { name: string; options: PiCommandOptions }> = {};
+	const tools: Record<string, PiToolOpts<WorkflowToolArgs, WorkflowToolResult>> = {};
+	const events = new Map<string, Array<(event?: unknown, ctx?: PiCommandContext) => Promise<unknown> | unknown>>();
 	const { ui, calls } = buildMockUi();
 
 	const pi: ExtensionAPI = {
-		// The overlay tests assert registration/entrypoint behavior against the
-		// bundled startup registry. Disable project/global async discovery so each
-		// mock factory instance does not leave unrelated background work running.
 		disableAsyncDiscovery: true,
-		registerTool: () => undefined,
+		registerTool: (opts) => {
+			tools[opts.name] = opts as unknown as PiToolOpts<WorkflowToolArgs, WorkflowToolResult>;
+		},
 		registerCommand: (name: string, options: PiCommandOptions) => {
 			commands[name] = { name, options };
 		},
@@ -343,11 +361,60 @@ export function buildMockPi(overrides: Partial<ExtensionAPI> = {}): {
 		registerShortcut: (key, opts) => {
 			shortcuts[key] = opts.handler;
 		},
+		on: (event, handler) => {
+			const list = events.get(event) ?? [];
+			list.push(handler as (event?: unknown, ctx?: PiCommandContext) => Promise<unknown> | unknown);
+			events.set(event, list);
+		},
 		ui,
 		...overrides,
 	};
 
-	return { pi, shortcuts, commands, customCalls: calls };
+	return { pi, shortcuts, commands, tools, events, customCalls: calls };
+}
+
+export function invokeRunControl(
+	pi: ExtensionAPI,
+	action: "quit" | "pause" | "resume",
+	rest: string[],
+	ctx: PiCommandContext,
+): Promise<boolean> {
+	const owner = captureWorkflowOwnerResources();
+	const adapters = buildRuntimeAdapters(pi);
+	const runtimeState = createWorkflowExtensionRuntimeState(pi, adapters);
+	const postMortemHandleResolver = createPostMortemHandleResolver({
+		adapters,
+		resolveDefaultStageSessionDir: runtimeState.resolveDefaultStageSessionDir,
+		store: owner.store,
+		stageControlRegistry: owner.stageControlRegistry,
+	});
+	const overlay = buildGraphOverlayAdapter(pi, owner.store, {
+		resolvePostMortemHandle: postMortemHandleResolver,
+		resolveSessionStore: () => adapters.sessionStore,
+		stageControlRegistry: owner.stageControlRegistry,
+		stageUiBroker: owner.stageUiBroker,
+	});
+	const reporter = createWorkflowCommandReporter(ctx, workflowPolicyFromContext(ctx), pi);
+	return handleRunControlCommand(action, rest, ctx, reporter, {
+		owner,
+		pi,
+		overlay,
+		runtimeForContext: runtimeState.runtimeForContext,
+		ensureWorkflowResourcesLoaded: runtimeState.ensureWorkflowResourcesLoaded,
+		beforeRestoreCompleted: runtimeState.beforeRestoreCompleted,
+	});
+}
+
+export function buildTestGraphStageActions(pi: ExtensionAPI, ctx?: PiCommandContext): GraphStageActions {
+	const owner = captureWorkflowOwnerResources();
+	const adapters = buildRuntimeAdapters(pi);
+	const runtimeState = createWorkflowExtensionRuntimeState(pi, adapters);
+	return createGraphStageActions({
+		owner,
+		runtime: () => runtimeState.runtimeForContext(ctx),
+		context: () => ctx,
+		ensureWorkflowResourcesLoaded: runtimeState.ensureWorkflowResourcesLoaded,
+	});
 }
 
 /** Build a slash-command ctx whose `ui.notify` captures the printed messages. */

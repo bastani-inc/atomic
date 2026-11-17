@@ -114,7 +114,7 @@ describe("installWorkflowLifecycleNotifications", () => {
 		assert.equal(sent[0]?.details?.kind, "completed");
 		assert.equal(sent[0]?.details?.scope, "run");
 		assert.equal(sent[0]?.details?.workflowName, "release");
-		assert.match(sent[0]?.content ?? "", /\/workflow status run-1/);
+		assert.match(sent[0]?.content ?? "", /\/workflows run-1/);
 	});
 
 	test("uses blocked lifecycle notices for runs ending with blocked status", () => {

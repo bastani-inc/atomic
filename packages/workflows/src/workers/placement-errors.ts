@@ -317,7 +317,7 @@ export const sharedPoolProblems = {
 		return {
 			code: "pool-on-another-host",
 			subject: `the pool database of host ${recordedHost}, where this root's work queue and leases are (this host is ${thisHost})`,
-			hint: `Run \`/workflow resume ${root}\` on host ${recordedHost}; its workers may still be running children. Roots started with workers: { placement: "shared" } on a shared journal resume on any host.`,
+			hint: `Resume ${root} from \`/resume\` on host ${recordedHost}; its workers may still be running children. Roots started with workers: { placement: "shared" } on a shared journal resume on any host.`,
 			fields: { recordedHost, thisHost, root },
 		};
 	},

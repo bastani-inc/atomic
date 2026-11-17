@@ -490,3 +490,60 @@ test("a launch from inside a retired execution is refused with an error naming t
 		removeTempDirectory(directory);
 	}
 });
+
+test("execution context boundary exits and restores AsyncLocalStorage across module generations and unregisters on close", async () => {
+	const { AsyncLocalStorage } = await import("node:async_hooks");
+	const boundaryUrl = new URL("../../packages/workflows/src/durable/execution-context-boundary.ts", import.meta.url)
+		.href;
+	const gen1 = (await import(
+		`${boundaryUrl}?gen=1`
+	)) as typeof import("../../packages/workflows/src/durable/execution-context-boundary.js");
+	const gen2 = (await import(
+		`${boundaryUrl}?gen=2`
+	)) as typeof import("../../packages/workflows/src/durable/execution-context-boundary.js");
+	const registry = (globalThis as Record<symbol, Set<unknown> | undefined>)[
+		Symbol.for("atomic-workflows/execution-context-boundary@1")
+	];
+
+	const directory = makeTempDirectory("cross-generation-execution-boundary-");
+	const backend = await JournalDurableBackend.open(await openSqlRunJournal(join(directory, "journal.sqlite")));
+	const storageA = new AsyncLocalStorage<string>();
+	const storageB = new AsyncLocalStorage<string>();
+	const unregisterCustom = gen1.registerExecutionStorages(storageA, storageB);
+	const retiredRunId = testRunId("retired-cross-gen");
+	const launchedRunId = testRunId("launched-cross-gen");
+	try {
+		assert.ok(registry instanceof Set);
+		assert.equal(registry.has(storageA), true);
+		assert.equal(registry.has(storageB), true);
+		const sizeWithBackend = registry.size;
+
+		const launchOutsideFromGen2 = await storageA.run("alpha", () =>
+			storageB.run("beta", () =>
+				backend.withWorkflowLease(retiredRunId, async () => {
+					const Bound = gen2.outsideWorkflowExecutions(() => {
+						assert.equal(storageA.getStore(), undefined);
+						assert.equal(storageB.getStore(), undefined);
+						return AsyncResource.bind(() =>
+							backend.withWorkflowLease(launchedRunId, async () => "launched-cleanly"),
+						);
+					});
+					assert.equal(storageA.getStore(), "alpha");
+					assert.equal(storageB.getStore(), "beta");
+					return Bound;
+				}),
+			),
+		);
+		assert.equal(await launchOutsideFromGen2(), "launched-cleanly");
+
+		unregisterCustom();
+		assert.equal(registry.has(storageA), false);
+		assert.equal(registry.has(storageB), false);
+		await backend.close();
+		assert.equal(registry.size, sizeWithBackend - 4);
+	} finally {
+		unregisterCustom();
+		await backend.close();
+		removeTempDirectory(directory);
+	}
+});
