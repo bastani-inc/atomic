@@ -454,9 +454,46 @@ function rawSourceError(error: unknown): Error {
 }
 
 const drainedPromises = new WeakSet<Promise<unknown>>();
+const MAX_DRAIN_DEPTH = 32;
+let drainDepth = 0;
+const unattachablePromises = new WeakSet<Promise<unknown>>();
+let unattachableGuardInstalled = false;
+
+function markUnattachable(promise: Promise<unknown>): void {
+	unattachablePromises.add(promise);
+	if (unattachableGuardInstalled) return;
+	unattachableGuardInstalled = true;
+	process.on("unhandledRejection", (reason, rejected) => {
+		if (unattachablePromises.has(rejected)) return;
+		if (process.listenerCount("unhandledRejection") === 1) throw reason;
+	});
+}
 
 function drainCaught(value: unknown, seen?: Set<object>): void {
-	drainThenable(value, seen);
+	if (drainDepth >= MAX_DRAIN_DEPTH) return;
+	drainDepth++;
+	try {
+		drainThenable(value, seen);
+	} catch {
+	} finally {
+		drainDepth--;
+	}
+}
+
+function thenNativePromise(
+	promise: Promise<unknown>,
+	onFulfilled: (value: unknown) => void,
+	onRejected: (error: unknown) => void,
+): void {
+	if (Reflect.getPrototypeOf(promise) !== Promise.prototype || Object.hasOwn(promise, "constructor")) {
+		Reflect.defineProperty(promise, "constructor", { value: Promise, configurable: true, writable: true });
+	}
+	try {
+		Promise.prototype.then.call(promise, onFulfilled, onRejected);
+	} catch (error) {
+		markUnattachable(promise);
+		throw error;
+	}
 }
 
 function drainThenable(value: unknown, seen?: Set<object>): boolean {
@@ -465,7 +502,7 @@ function drainThenable(value: unknown, seen?: Set<object>): boolean {
 		if (drainedPromises.has(value)) return true;
 		drainedPromises.add(value);
 		try {
-			Promise.prototype.then.call(
+			thenNativePromise(
 				value,
 				(result: unknown) => drainCaught(result),
 				(error: unknown) => drainCaught(error),
@@ -534,7 +571,7 @@ function settleSourceResult(value: unknown): Promise<SettledSourceResult> {
 			};
 			try {
 				if (types.isPromise(result)) {
-					Promise.prototype.then.call(result, accept, fail);
+					thenNativePromise(result, accept, fail);
 					return;
 				}
 				const then = (result as { readonly then?: unknown }).then;

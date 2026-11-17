@@ -533,10 +533,13 @@ export class AgentPanelFocus {
 	private finishedAcknowledged = false;
 	/** Whether each row was last drawn finished, so `x` acts on what the reader saw, not on a change not yet drawn. */
 	private readonly paintedFinished = new Map<string, boolean>();
+	/** Set when a refresh, not the reader, moved the selection, until it is drawn: `x` and open then act on nothing. */
+	private selectionMovedUnseen = false;
 	/** Records the rows as drawn; the renderer calls it with the rows it painted. */
 	notePainted(rows: readonly AgentPanelRow[]): void {
 		this.paintedFinished.clear();
 		for (const row of rows) this.paintedFinished.set(row.id, isFinishedPanelRow(row));
+		this.selectionMovedUnseen = false;
 	}
 	update(rows: readonly AgentPanelRow[]): void {
 		const ids = new Set([AGENT_PANEL_MAIN_ID]);
@@ -557,8 +560,10 @@ export class AgentPanelFocus {
 		) {
 			this.finishedWhileArmed = undefined;
 		}
-		if (this.selectedId !== AGENT_PANEL_MAIN_ID && !rows.some((row) => row.id === this.selectedId))
+		if (this.selectedId !== AGENT_PANEL_MAIN_ID && !rows.some((row) => row.id === this.selectedId)) {
 			this.selectedId = rows[0]?.id ?? AGENT_PANEL_MAIN_ID;
+			this.selectionMovedUnseen = true;
+		}
 		this.keepInView();
 	}
 	/** Focus starts on the first row below `main`, as ↓ from the prompt moves one step. */
@@ -616,25 +621,33 @@ export class AgentPanelFocus {
 			return true;
 		}
 		if (is(data, "up")) {
+			this.selectionMovedUnseen = false;
 			if (this.selectedId === AGENT_PANEL_MAIN_ID) this.actions.close();
 			else this.move(-1);
 			return true;
 		}
 		if (is(data, "down")) {
+			this.selectionMovedUnseen = false;
 			this.move(1);
 			return true;
 		}
 		if (is(data, "home")) {
+			this.selectionMovedUnseen = false;
 			this.selectedId = AGENT_PANEL_MAIN_ID;
 			this.scroll = 0;
 			return true;
 		}
 		if (is(data, "end")) {
+			this.selectionMovedUnseen = false;
 			this.selectedId = this.rows.at(-1)?.id ?? AGENT_PANEL_MAIN_ID;
 			this.keepInView();
 			return true;
 		}
 		const row = this.selected();
+		if (this.selectionMovedUnseen && (stopKey || this.keys.matches(data, "app.list.open"))) {
+			this.stopConfirm.reset();
+			return true;
+		}
 		if (this.keys.matches(data, "app.list.open")) {
 			if (row === undefined) this.actions.close();
 			else this.actions.open(row);
