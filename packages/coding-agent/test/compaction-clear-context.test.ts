@@ -8,10 +8,12 @@ import {
 	compactedOutputTokenCap,
 	estimateTextTokens,
 	estimateTokens,
+	findUnansweredToolCall,
 	shouldCompact,
 } from "../src/core/compaction/index.ts";
 import { assertToolPairingInvariant } from "../src/core/context-tool-pairing.ts";
 import { convertToLlm } from "../src/core/messages.ts";
+import type { SessionEntry } from "../src/core/session-manager-types.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
 
 const WINDOW = 1_000_000;
@@ -260,5 +262,89 @@ describe("compaction clears the context window without calling a model", () => {
 			branch.slice(0, boundaryIndex).some((entry) => entry.type === "message" && entry.message.role === "assistant"),
 			"the interrupted assistant message was written before the boundary",
 		);
+	});
+
+	it("a manual compaction during a streamed tool call clears after the abort, leaving no call waiting", async () => {
+		harness = await createHarness({
+			models: [{ id: "big", contextWindow: WINDOW, maxTokens: 32_000 }],
+			settings: { compaction: { enabled: true, reserveTokens: RESERVE }, retry: { enabled: false } },
+			fauxProvider: { tokensPerSecond: 20 },
+		});
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("read", { path: "a/".repeat(400) }, { id: "streamed-call" })], {
+				stopReason: "toolUse",
+			}),
+		]);
+		let compacting: Promise<unknown> | undefined;
+		let callsAtCompact = 0;
+		harness.session.subscribe((event) => {
+			if (
+				compacting === undefined &&
+				event.type === "message_update" &&
+				event.message.role === "assistant" &&
+				event.message.content.some((block) => block.type === "toolCall")
+			) {
+				callsAtCompact = harness!.faux.state.callCount;
+				compacting = harness!.session.compact();
+			}
+		});
+		const prompting = harness.session.prompt("go");
+		await vi.waitFor(() => assert.ok(compacting !== undefined));
+		const [, compacted] = await Promise.allSettled([prompting, compacting!]);
+
+		assert.equal(compacted.status, "fulfilled", compacted.status === "rejected" ? String(compacted.reason) : "");
+		assert.equal((compacted as PromiseFulfilledResult<{ form: string }>).value.form, "cleared");
+		assert.equal(harness.faux.state.callCount, callsAtCompact, "the compaction made no model call");
+		const branch = harness.sessionManager.getBranch();
+		const boundaries = branch.flatMap((entry, index) => (entry.type === "compaction" ? [index] : []));
+		assert.equal(boundaries.length, 1);
+		const before = branch.slice(0, boundaries[0]);
+		const aborted = before.findLast((entry) => entry.type === "message" && entry.message.role === "assistant");
+		assert.ok(aborted?.type === "message" && aborted.message.role === "assistant");
+		assert.equal(aborted.message.stopReason, "aborted");
+		assert.ok(aborted.message.content.some((block) => block.type === "toolCall"));
+		const context = nonSystem(harness);
+		assert.equal(context.length, 1);
+		assert.ok(textOf(context[0]).startsWith("Context cleared."));
+		assert.doesNotThrow(() => assertToolPairingInvariant(convertToLlm(harness!.session.messages)));
+	});
+});
+
+describe("which tool calls still wait for a result", () => {
+	let next = 0;
+	function entry(
+		message: SessionEntry extends infer E ? (E extends { type: "message" } ? E["message"] : never) : never,
+	) {
+		next += 1;
+		return {
+			type: "message",
+			id: `e${next}`,
+			parentId: next === 1 ? null : `e${next - 1}`,
+			timestamp: new Date(next).toISOString(),
+			message,
+		} as SessionEntry;
+	}
+	const user = () => entry({ role: "user", content: "go", timestamp: 1 });
+	const call = (stopReason: "toolUse" | "aborted" | "error" | "length") =>
+		entry(fauxAssistantMessage([fauxToolCall("read", { path: "a" }, { id: "call-1" })], { stopReason }));
+	const result = () =>
+		entry({
+			role: "toolResult",
+			toolCallId: "call-1",
+			toolName: "read",
+			content: [{ type: "text", text: "ok" }],
+			isError: false,
+			timestamp: 3,
+		});
+
+	it("an aborted or errored call was never executed and waits for nothing", () => {
+		assert.equal(findUnansweredToolCall([user(), call("aborted")]), undefined);
+		assert.equal(findUnansweredToolCall([user(), call("error")]), undefined);
+	});
+
+	it("a call from a completed tool-use turn waits until its result arrives", () => {
+		assert.equal(findUnansweredToolCall([user(), call("toolUse")]), 1);
+		assert.equal(findUnansweredToolCall([user(), call("toolUse"), result()]), undefined);
+		assert.equal(findUnansweredToolCall([user(), call("length")]), 1);
 	});
 });

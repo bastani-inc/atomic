@@ -1,7 +1,12 @@
 import type { SessionEntry } from "../session-manager-types.ts";
 
+/**
+ * Calls of an assistant entry that may still get a result. An aborted or errored turn's calls were never executed and
+ * never get one: the agent loop stops before running them, and provider requests leave those turns out.
+ */
 function toolCallIds(entry: SessionEntry): string[] {
 	if (entry.type !== "message" || entry.message.role !== "assistant") return [];
+	if (entry.message.stopReason === "aborted" || entry.message.stopReason === "error") return [];
 	return entry.message.content.flatMap((block) => (block.type === "toolCall" ? [block.id] : []));
 }
 
