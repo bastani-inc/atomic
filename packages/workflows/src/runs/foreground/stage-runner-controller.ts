@@ -2,21 +2,28 @@ import {
 	type AgentSession,
 	AutoRoutingInferenceError,
 	type CreateAgentSessionOptions,
+	clampThinkingLevel,
 	convertToLlm,
 	currentWorktreeRootMappings,
 	type DetachedToolCall,
 	type DetachedToolResult,
 	type ExtensionToolContext,
+	eligiblePair,
 	findToolDetachmentError,
+	getSupportedThinkingLevels,
 	isExtensionStartupFailure,
+	isProviderCredentialRejection,
 	isTaskCleanupError,
 	isTransientExtensionStartupFailure,
 	type ModelConstraints,
 	type ModelRoute,
 	modelCallUsage,
+	NoUsableModelError,
 	type PromptOptions,
 	parkWorkflowStageForRelease,
 	parseModelConstraints,
+	partitionByCredentials,
+	providerOfModelReference,
 	reportDebug,
 	type SessionManager,
 	type SessionStore,
@@ -412,6 +419,7 @@ function splitStageContent(content: StageUserMessageContent): { text: string; im
 
 export class StageSessionController {
 	private session: StageSessionRuntime | undefined;
+	private hasAdmittedSession = false;
 	private activeCreation: Promise<StageSessionRuntime> | undefined;
 	/** The creation promise a candidate walk still owns, if one is advancing. */
 	private ownedCreationPromise: Promise<StageSessionRuntime> | undefined;
@@ -441,6 +449,7 @@ export class StageSessionController {
 	private pendingDisposal = false;
 	private disposalPromise: Promise<void> | undefined;
 	private pendingThinkingLevel: Parameters<StageContext["setThinkingLevel"]>[0] | undefined;
+	private thinkingLevelRevision = 0;
 	private requestedThinkingLevel: Parameters<StageContext["setThinkingLevel"]>[0] | undefined;
 	private readonly pendingListeners = new Set<(event: StageSessionEvent) => void>();
 	private readonly pauseControl = new StageSessionPause(
@@ -452,6 +461,7 @@ export class StageSessionController {
 	/** The restores of the run this stage belongs to, which every session it opens follows, wherever it reopens. */
 	private readonly runWorktreeRootMappings = currentWorktreeRootMappings();
 	private candidatesPromise: Promise<WorkflowResolvedModelCandidate[]> | undefined;
+	private explicitCandidateModels = new Map<string, WorkflowModelValue>();
 	private scopedModelsPromise: Promise<WorkflowResolvedScopedModel[] | undefined> | undefined;
 	private modelRoute: ModelRoute | undefined;
 	private routingPromise: Promise<void> | undefined;
@@ -685,6 +695,24 @@ export class StageSessionController {
 		if (this.session) await this.session.setThinkingLevel(level);
 		else this.requestedThinkingLevel = level;
 		this.pendingThinkingLevel = level;
+		this.thinkingLevelRevision++;
+		if (
+			!this.modelRoute &&
+			!this.hasAdmittedSession &&
+			this.sessionPromise === undefined &&
+			this.activeCreation === undefined &&
+			this.ownedCreationPromise === undefined
+		)
+			this.candidatesPromise = undefined;
+	}
+
+	async cycleThinkingLevel(): ReturnType<StageSessionRuntime["cycleThinkingLevel"]> {
+		const level = await this.requireSession("cycleThinkingLevel").cycleThinkingLevel();
+		if (level !== undefined) {
+			this.pendingThinkingLevel = level;
+			this.thinkingLevelRevision++;
+		}
+		return level;
 	}
 
 	get awaitingAutoPrompt(): boolean {
@@ -774,6 +802,7 @@ export class StageSessionController {
 	private checkedSession(session: StageSessionRuntime): StageSessionRuntime {
 		if (this.modelRoute && (!session.model || !this.modelRoute.allowsModel(session.model, session.thinkingLevel)))
 			throw new Error("Workflow stage execution model no longer satisfies routing constraints.");
+		this.assertExplicitSessionConstraints(session);
 		return session;
 	}
 
@@ -831,7 +860,7 @@ export class StageSessionController {
 					release(true);
 					if (this.sessionPromise === pending) {
 						this.sessionPromise = undefined;
-						this.activeCandidateIndex = undefined;
+						if (this.releasedSettings === undefined) this.activeCandidateIndex = undefined;
 					}
 				},
 			);
@@ -1190,6 +1219,7 @@ export class StageSessionController {
 		};
 		for (;;) {
 			try {
+				this.checkedSession(session);
 				await resume.call(session, results);
 				break;
 			} catch (error) {
@@ -1416,7 +1446,10 @@ export class StageSessionController {
 		this.releasedWait = wait;
 		this.givenUp = wait;
 		this.reattachSessionId = current.sessionId;
-		this.releasedSettings = { model: current.model, thinkingLevel: current.thinkingLevel };
+		this.releasedSettings = {
+			model: current.model,
+			thinkingLevel: current.thinkingLevel ?? this.pendingThinkingLevel,
+		};
 		this.session = undefined;
 		this.sessionPromise = undefined;
 		this.resumeCurrentSession = false;
@@ -2331,6 +2364,21 @@ export class StageSessionController {
 			walk.rateLimited.add(index);
 		}
 		walk.remaining.delete(index);
+		const provider = this.candidateProvider(candidates[index]);
+		if (provider !== undefined && isProviderCredentialRejection(error)) {
+			for (const other of new Set([...walk.remaining, ...walk.rateLimited])) {
+				const candidate = candidates[other];
+				if (candidate === undefined || this.candidateProvider(candidate) !== provider) continue;
+				walk.remaining.delete(other);
+				walk.rateLimited.delete(other);
+				walk.rateLimitFailures.delete(other);
+				this.modelAttempts.push({
+					model: candidate.id,
+					success: false,
+					error: `Skipped ${candidate.id}: provider '${provider}' rejected its credentials.`,
+				});
+			}
+		}
 		// #3984: when every candidate left is throttled, the chain is not exhausted but cooling. Give each
 		// throttled candidate a fresh budget and wait for the earliest cooldown (none when one is already
 		// ready), if it fits the retry-hint cap, at most `retry.maxRetries` times per walk.
@@ -2467,6 +2515,7 @@ export class StageSessionController {
 		this.residency.thrownErrorRetryStates.add(state);
 		try {
 			await this.waitForProvider(this.currentModelValue());
+			this.checkedSession(continuationSession);
 			await continuationSession._runAgentContinue();
 		} catch (error) {
 			const resume = state.pauseResume ?? this.pauseControl.currentResume();
@@ -2706,36 +2755,162 @@ export class StageSessionController {
 				includeCurrentModel: this.modelRoute !== undefined,
 			});
 			this.candidatesPromise = this.modelRoute
-				? resolved.then((candidates) => {
-						if (!this.modelRoute) return candidates;
-						this.modelRoute.assertCurrent();
-						const effort = this.modelRoute.routerSelection.effort ?? undefined;
-						const seenModels = new Set<string>();
-						const allowed = candidates
-							.filter((candidate) => {
-								if (
-									typeof candidate.value === "string" ||
-									!this.modelRoute!.allowsModel(candidate.value, candidate.reasoningLevel ?? effort)
-								)
-									return false;
-								const id = `${candidate.value.provider}/${candidate.value.id}`;
-								if (seenModels.has(id)) return false;
-								seenModels.add(id);
-								return true;
-							})
-							.map((candidate) => ({
-								...candidate,
-								...(candidate.reasoningLevel === undefined && effort !== undefined
-									? { reasoningLevel: effort as WorkflowResolvedModelCandidate["reasoningLevel"] }
-									: {}),
-							}));
-						if (allowed.length === 0)
-							throw new Error("Workflow stage auto has no eligible execution candidates.");
-						return allowed;
-					})
-				: resolved;
+				? resolved
+						.then((candidates) => this.withCredentials(candidates))
+						.then((candidates) => {
+							if (!this.modelRoute) return candidates;
+							this.modelRoute.assertCurrent();
+							const effort = this.modelRoute.routerSelection.effort ?? undefined;
+							const seenModels = new Set<string>();
+							const allowed = candidates
+								.filter((candidate) => {
+									if (
+										typeof candidate.value === "string" ||
+										!this.modelRoute!.allowsModel(candidate.value, candidate.reasoningLevel ?? effort)
+									)
+										return false;
+									const id = `${candidate.value.provider}/${candidate.value.id}`;
+									if (seenModels.has(id)) return false;
+									seenModels.add(id);
+									return true;
+								})
+								.map((candidate) => ({
+									...candidate,
+									...(candidate.reasoningLevel === undefined && effort !== undefined
+										? { reasoningLevel: effort as WorkflowResolvedModelCandidate["reasoningLevel"] }
+										: {}),
+								}));
+							if (allowed.length === 0)
+								throw new Error("Workflow stage auto has no eligible execution candidates.");
+							return allowed;
+						})
+				: resolved
+						.then((candidates) => this.withExplicitConstraints(candidates))
+						.then((candidates) => this.withCredentials(candidates));
 		}
 		return this.candidatesPromise;
+	}
+
+	private explicitModelConstraints(): ModelConstraints[] {
+		const options = this.effectiveStageOptions;
+		return [
+			...(options?.inheritedModelConstraints ?? []).map((constraint) => parseModelConstraints(constraint)),
+			parseModelConstraints(options?.modelConstraints),
+		].filter((constraint): constraint is ModelConstraints => constraint !== undefined);
+	}
+
+	private withExplicitConstraints(candidates: WorkflowResolvedModelCandidate[]): WorkflowResolvedModelCandidate[] {
+		this.explicitCandidateModels = new Map(candidates.map((candidate) => [candidate.id, candidate.value]));
+		const constraints = this.explicitModelConstraints();
+		if (constraints.length === 0 || candidates.length === 0) return candidates;
+		const allowed = candidates.filter((candidate) => this.candidateSatisfiesConstraints(candidate, constraints));
+		if (allowed.length === 0)
+			throw new Error("No workflow stage model candidate satisfies the stage's modelConstraints.");
+		return allowed;
+	}
+
+	private candidateSatisfiesConstraints(
+		candidate: WorkflowResolvedModelCandidate,
+		constraints: readonly ModelConstraints[],
+	): boolean {
+		const stageThinkingLevel = (
+			this.effectiveStageOptions as
+				| { readonly thinkingLevel?: WorkflowResolvedModelCandidate["reasoningLevel"] }
+				| undefined
+		)?.thinkingLevel;
+		const effort = this.requestedThinkingLevel ?? candidate.reasoningLevel ?? stageThinkingLevel;
+		if (typeof candidate.value !== "string") {
+			const model = candidate.value;
+			if (!model.reasoning) {
+				return eligiblePair(model, { model: candidate.id, effort: null }, constraints);
+			}
+			if (effort === undefined) {
+				if (constraints.some((constraint) => constraint.allowedEfforts !== undefined)) return false;
+				return getSupportedThinkingLevels(model).some((level) =>
+					eligiblePair(model, { model: candidate.id, effort: level }, constraints),
+				);
+			}
+			return eligiblePair(model, { model: candidate.id, effort: clampThinkingLevel(model, effort) }, constraints);
+		}
+		const provider = this.candidateProvider(candidate);
+		return constraints.every(
+			(constraint) =>
+				constraint.maxInputCost === undefined &&
+				constraint.maxOutputCost === undefined &&
+				constraint.minContextWindow === undefined &&
+				(constraint.requiredInputs === undefined || constraint.requiredInputs.length === 0) &&
+				(constraint.allowedModels === undefined || constraint.allowedModels.includes(candidate.id)) &&
+				(constraint.allowedProviders === undefined ||
+					(provider !== undefined && constraint.allowedProviders.includes(provider))) &&
+				(constraint.excludedProviders === undefined ||
+					constraint.excludedProviders.length === 0 ||
+					(provider !== undefined && !constraint.excludedProviders.includes(provider))) &&
+				(constraint.allowedEfforts === undefined ||
+					(effort !== undefined && constraint.allowedEfforts.some((allowed) => allowed === effort))),
+		);
+	}
+
+	private assertExplicitSessionConstraints(
+		session: StageSessionRuntime,
+		candidate?: WorkflowResolvedModelCandidate,
+	): void {
+		if (this.modelRoute || !this.hasExplicitModelFallbackConfig) return;
+		const constraints = this.explicitModelConstraints();
+		if (constraints.length === 0) return;
+		const selectedValue = session.model ?? candidate?.value ?? this.currentModelValue();
+		const id = workflowModelId(selectedValue);
+		const value =
+			typeof selectedValue === "string" && id !== undefined
+				? (this.explicitCandidateModels.get(id) ?? selectedValue)
+				: selectedValue;
+		if (
+			value === undefined ||
+			id === undefined ||
+			!this.candidateSatisfiesConstraints(
+				{
+					id,
+					value,
+					reasoningLevel: session.thinkingLevel ?? this.pendingThinkingLevel ?? candidate?.reasoningLevel,
+				},
+				constraints,
+			)
+		)
+			throw new Error("No workflow stage model candidate satisfies the stage's modelConstraints.");
+	}
+
+	private candidateProvider(candidate: WorkflowResolvedModelCandidate | undefined): string | undefined {
+		if (candidate === undefined) return undefined;
+		return (
+			candidate.provider ??
+			(typeof candidate.value === "string"
+				? (this.modelCatalog?.resolveProvider?.(candidate.value) ?? providerOfModelReference(candidate.value))
+				: String(candidate.value.provider))
+		);
+	}
+
+	private withCredentials(candidates: WorkflowResolvedModelCandidate[]): WorkflowResolvedModelCandidate[] {
+		const catalog = this.modelCatalog;
+		if (catalog?.hasCredentials === undefined) return candidates;
+		const { usable, skipped } = partitionByCredentials(
+			candidates,
+			(candidate) => this.candidateProvider(candidate),
+			(provider) => catalog.hasCredentials!(provider),
+		);
+		if (skipped.length === 0) return candidates;
+		const skippedModels = skipped.map(({ candidate, provider }) => ({
+			model: candidate.id,
+			provider,
+			reason: "no-credentials" as const,
+		}));
+		for (const entry of skippedModels)
+			this.modelAttempts.push({
+				model: entry.model,
+				success: false,
+				error: `Skipped ${entry.model}: provider '${entry.provider}' has no credentials.`,
+			});
+		this.notifyModelFallbackMetaChange();
+		if (usable.length === 0) throw new NoUsableModelError(skippedModels);
+		return usable;
 	}
 
 	private async createInitialSession(consumer: AgentSessionConsumer): Promise<StageSessionRuntime> {
@@ -2757,19 +2932,27 @@ export class StageSessionController {
 		}
 		if (this.reattachSessionId !== undefined) {
 			const resumed = await this.createSession(undefined, consumer, { restoreSavedModel: true });
-			const restoredId = workflowModelId(resumed.model);
+			const restoredId =
+				workflowModelId(resumed.model ?? this.releasedSettings?.model) ??
+				(this.releasedSettings === undefined ? undefined : this.selectedModel);
+			const restoredThinkingLevel = resumed.thinkingLevel ?? this.pendingThinkingLevel;
 			const exactRestoredIndex =
 				restoredId === undefined
 					? -1
 					: candidates.findIndex(
-							(entry) => entry.id === restoredId && entry.reasoningLevel === resumed.thinkingLevel,
+							(entry) => entry.id === restoredId && entry.reasoningLevel === restoredThinkingLevel,
 						);
-			// An unspecified effort accepts the SDK's effective effort, but must not
-			// shadow a later candidate explicitly declaring the saved reasoning tier.
+			const retainedIndex =
+				this.releasedSettings !== undefined &&
+				this.activeCandidateIndex !== undefined &&
+				candidates[this.activeCandidateIndex]?.id === restoredId
+					? this.activeCandidateIndex
+					: undefined;
 			const restoredIndex =
-				exactRestoredIndex >= 0
+				retainedIndex ??
+				(exactRestoredIndex >= 0
 					? exactRestoredIndex
-					: candidates.findIndex((entry) => entry.id === restoredId && entry.reasoningLevel === undefined);
+					: candidates.findIndex((entry) => entry.id === restoredId && entry.reasoningLevel === undefined));
 			this.activeCandidateIndex = restoredIndex >= 0 ? restoredIndex : undefined;
 			this.selectedModel = restoredId ?? first.id;
 			this.resumeCurrentSession = true;
@@ -3097,6 +3280,11 @@ export class StageSessionController {
 					!this.modelRoute.allowsModel(candidate.value, candidate.reasoningLevel))
 			)
 				throw new Error("Workflow stage execution candidate is no longer eligible.");
+			if (!this.modelRoute && candidate) {
+				const constraints = this.explicitModelConstraints();
+				if (constraints.length > 0 && !this.candidateSatisfiesConstraints(candidate, constraints))
+					throw new Error("No workflow stage model candidate satisfies the stage's modelConstraints.");
+			}
 			const adapter = this.opts.adapters.agentSession ?? missingAdapter(consumer);
 			const createOptions = (await stripWorkflowOnlyOptions(
 				stageOptions,
@@ -3147,11 +3335,15 @@ export class StageSessionController {
 		const attachedSession = session instanceof Promise ? await session : session;
 		this.reportStartupPhase("delivery-readiness");
 		try {
+			if (resumeOptions?.restoreSavedModel && attachedSession.thinkingLevel === undefined)
+				this.pendingThinkingLevel ??= this.releasedSettings?.thinkingLevel;
 			const thinkingLevel =
 				this.requestedThinkingLevel ??
 				(asAgentSession(attachedSession) === undefined ? this.pendingThinkingLevel : undefined);
 			if (thinkingLevel !== undefined) {
+				const thinkingLevelRevision = this.thinkingLevelRevision;
 				await attachedSession.setThinkingLevel(thinkingLevel);
+				if (this.thinkingLevelRevision === thinkingLevelRevision) this.pendingThinkingLevel = thinkingLevel;
 				this.requestedThinkingLevel = undefined;
 			}
 			await this.sharedOrchestrationContext?.pendingStageDelivery?.ready(attachedSession.sessionId);
@@ -3163,6 +3355,7 @@ export class StageSessionController {
 			await this.opts.onSessionReady?.();
 			if (this.disposed || this.opts.signal?.aborted || this.abortGeneration !== startGeneration)
 				throw this.staleCreationReason(startGeneration);
+			this.assertExplicitSessionConstraints(attachedSession, candidate);
 		} catch (reason) {
 			// Attachment is not readiness. The retained creation owns cleanup on
 			// both rejection and cancellation; never expose this identity for reuse.
@@ -3175,6 +3368,7 @@ export class StageSessionController {
 			}
 			throw reason;
 		}
+		this.hasAdmittedSession = true;
 		this.givenUp = undefined;
 		this.reopenFailure = undefined;
 		this.reportStartupPhase("ready");
@@ -3316,8 +3510,8 @@ export class StageSessionController {
 			try {
 				this.reportStartupPhase("first-dispatch");
 				// A live resume loops here without returning through the outer retry guard.
-				this.checkedSession(activeSession);
 				await this.waitForProvider(this.currentModelValue());
+				this.checkedSession(activeSession);
 				const detachedResults = this.pendingDetachedResults;
 				this.pendingDetachedResults = undefined;
 				if (detachedResults !== undefined && activeSession.resumeDetachedTurn !== undefined) {
@@ -3449,7 +3643,7 @@ export class StageSessionController {
 				this.notifyModelFallbackMetaChange();
 				throw err;
 			}
-			if (isWorkflowRateLimit(err)) {
+			if (isWorkflowRateLimit(err) || isProviderCredentialRejection(err)) {
 				for (let index = 0; index < currentIndex; index++) walk.remaining.add(index);
 				this.recordCandidateFailure(walk, currentIndex, err, candidates);
 				if (walk.remaining.size === 0) {
