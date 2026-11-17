@@ -256,11 +256,14 @@ function resolveRenderedReadPath(rawPath: string, cwd: string, context: ToolRend
 	if (state.resolved?.key === key) return state.resolved.path;
 	if (state.resolving !== key) {
 		state.resolving = key;
-		void resolveToCwdAsync(rawPath, cwd).then((path) => {
-			if (state.resolving !== key) return;
-			state.resolved = { key, path };
-			context.invalidate();
-		});
+		void resolveToCwdAsync(rawPath, cwd).then(
+			(path) => {
+				if (state.resolving !== key) return;
+				state.resolved = { key, path };
+				context.invalidate();
+			},
+			() => {},
+		);
 	}
 	return resolveUserPath(rawPath, cwd, { normalizeUnicodeSpaces: true, stripAtPrefix: true });
 }
