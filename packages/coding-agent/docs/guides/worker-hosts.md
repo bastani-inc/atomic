@@ -107,6 +107,8 @@ Before you let the fleet grow, size the database for it: on PostgreSQL, plan its
 
 The policy wants `ceil(demand / workersPerHost)` hosts, kept between `minHosts` and `maxHosts`. Demand is the ready and running children of every running root, each root capped by its `admission.limits.session`. A root whose budget is spent, or that is paused, counts only its running children.
 
+When roots set [fleet-wide model rate limits](/workflows/operations#fleet-wide-model-rate-limits), the policy also wants no more hosts than those limits keep busy, so the fleet does not grow to wait on its quota. For each limited provider or model, it reads how many calls the hosts took over the last 10 minutes and how many workers ran children of roots under that limit. A limit that granted a quarter of its rate to 8 busy workers feeds 32; a limit that granted 95% or more of its rate feeds only the workers it has. The fleet then keeps at most `ceil(fed workers / workersPerHost)` hosts, by the tightest limit, never fewer than 1 or than `minHosts`. A limit needs a minute of history before it caps anything. Only readers that keep that history cap the target: a [fleet controller](#the-fleet-controller) and `atomic worker metrics`; `atomic worker status` does not.
+
 `atomic worker status --json` prints it as `scaling`, and `atomic worker metrics` serves it over HTTP:
 
 ```bash
@@ -117,7 +119,7 @@ atomic worker metrics --listen 0.0.0.0:9464 --db 'postgresql://atomic@db.example
 `atomic worker metrics` only reads a database whose schema is current, so on PostgreSQL a monitoring role with `USAGE` on the `atomic` schema and `SELECT` on its tables can serve it.
 
 - `GET /scaling` returns the signal as JSON, the shape a KEDA [`metrics-api`](https://keda.sh/docs/latest/scalers/metrics-api/) trigger reads. It answers `503` while the database cannot be read.
-- `GET /metrics` returns the same counts in Prometheus text: `atomic_fleet_desired_hosts`, `atomic_fleet_desired_workers`, `atomic_fleet_demand`, `atomic_fleet_queue_depth`, `atomic_fleet_running`, `atomic_fleet_hosts`, `atomic_fleet_slots{state="busy"|"idle"}`, the policy's `atomic_fleet_min_hosts`, `atomic_fleet_max_hosts` and `atomic_fleet_workers_per_host`, and `atomic_fleet_store_up`.
+- `GET /metrics` returns the same counts in Prometheus text: `atomic_fleet_desired_hosts`, `atomic_fleet_desired_workers`, `atomic_fleet_demand`, `atomic_fleet_queue_depth`, `atomic_fleet_running`, `atomic_fleet_hosts`, `atomic_fleet_slots{state="busy"|"idle"}`, the policy's `atomic_fleet_min_hosts`, `atomic_fleet_max_hosts` and `atomic_fleet_workers_per_host`, `atomic_fleet_rate_cap_hosts` while rate limits cap the fleet, and `atomic_fleet_store_up`.
 
 | Field | Meaning |
 | --- | --- |
@@ -129,6 +131,7 @@ atomic worker metrics --listen 0.0.0.0:9464 --db 'postgresql://atomic@db.example
 | `hosts` | Hosts that reported within 15 seconds |
 | `busySlots`, `idleSlots` | Their slots running a child, and free on hosts that are not draining |
 | `minHosts`, `maxHosts`, `workersPerHost` | The policy it was computed with (`--min-hosts`, `--max-hosts`, `--workers-per-host`) |
+| `rateCapHosts` | The most hosts the rate limits keep busy, once a limit has a minute of history; absent otherwise |
 
 The endpoints serve counts only: no host, root, URL or token. They read the database at most once every 5 seconds however often they are scraped, never write to it, and cut off a client that takes longer than 10 seconds. The default address is `127.0.0.1:9464`; listen on `0.0.0.0` only inside a container or a private network.
 
@@ -188,7 +191,7 @@ SDK roots can run it themselves while they run: pass `workers: { placement: "sha
 
 Every 10 seconds the controller:
 
-- computes the [scaling signal's](#the-scaling-signal) target.
+- computes the [scaling signal's](#the-scaling-signal) target, capped by what the rate limits keep busy. When that cap holds the fleet below what its queue wants, it records a `rate-cap` fleet event naming the limit, its rate, what it granted and to how many workers, and another once the cap no longer holds the fleet back.
 - adds hosts with `scaleTo` when more than `scaleUpQueueDepth` children have been waiting for `scaleUpDelayMs`, or when children wait and no host runs at all. Hosts below `minHosts` are added at once.
 - asks a host to drain once it has held no child for `idleDrainMs` and the fleet is above its target. The host takes no more children, from the moment the drain is asked even before the host has read it, and exits as on SIGTERM; the controller calls `drain` once the host has left the registry. A host that stopped reporting without leaving is removed only 5 minutes after its drain was asked, and only if it holds no child. A host that holds a child is never drained or removed, whether or not it still reports. A child whose root died and whose own lease expired no longer counts, so it does not keep an idle host or the fleet's target up.
 - removes a host that has not registered `bootTimeoutMs` after it started, or that the provider reports failed, and replaces it once. A host that registers just as its boot timeout is reached is kept, but a host that registered and then stopped reporting is not. The instance is drained before it is removed, so a host that registers on it during the removal takes no child. Further failures in a row wait 30 seconds, then twice as long each time, up to 10 minutes.
