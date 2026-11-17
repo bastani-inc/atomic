@@ -251,10 +251,15 @@ const report = {
 	).toFixed(1),
 	samples,
 };
-faux.unregister();
-await sessionStore.close();
-rmSync(root, { recursive: true, force: true });
 const text = JSON.stringify(report, null, 2);
 if (values.out) writeFileSync(values.out, `${text}\n`);
 console.log(text);
+faux.unregister();
+await sessionStore.close();
+try {
+	rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+} catch (error) {
+	// Windows keeps a database the process still has open, such as the Intercom broker's, until the process exits.
+	console.error(`left ${root}: ${error instanceof Error ? error.message : String(error)}`);
+}
 process.exit(result.status === "completed" ? 0 : 1);
