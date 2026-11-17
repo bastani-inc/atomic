@@ -17,14 +17,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Workflow rows in the agent panel count expanded nested, dynamic and fan-out stages, include in-flight attempt tokens once, show the choices for pending single-select questions, omit full stage bars while tool work continues, and retain the last step when stopped. Numbered replies preserve the original option even when display labels look alike. Run and stage names display terminal controls as inert text, and unchanged progress is reused between refreshes ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- Bounded workflow previews no longer keep their builders and omitted source inputs in memory after the source is released ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- A reply sent from a workflow's `/tasks` card is refused if the pending question changed after typing began. SDK replies must include the captured prompt identity, so identical question text cannot direct an old reply to a replacement question ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+
 - Fixed a session that ended for good, such as an SDK session that ran workflows and was disposed, staying in memory through the workflow hand-off kept for a session that might replace it.
 - Fixed each `/reload` keeping the previous copy of the workflows extension, and the extensions and session it reaches, in memory for as long as the session ran.
 - Workflow discovery checks the bundled workflows once per process. Startup checked them twice, and `/workflow reload` and every `/workflow resume` of a durable run checked them again, each time reading and scanning their sources: about 180 ms on Windows and 120 ms on Linux ([#5319](https://github.com/bastani-inc/atomic/issues/5319))
 - When another process on Windows holds `.atomic/workflows/status.json` open for a long read, the status writer now waits out the reader across its retry backoff instead of recording a `status file write failed` warning notice on each attempt, and writes the latest status as soon as the workflow changes after the reader closes the file. A hold that lasts beyond the retry backoff (about 21 seconds) still records one warning. At shutdown, Atomic retries a held status file for about one second and records a warning if it still cannot replace it ([#5322](https://github.com/bastani-inc/atomic/issues/5322))
 - Workflow resume picker failure summaries preserve Unicode when shortened and keep reasons beginning with "at ", rather than mistaking them for stack frames ([#5256](https://github.com/bastani-inc/atomic/pull/5256)).
 - Workflow resume cannot select a run while deleting it, and a stale refresh cannot restore a successfully deleted run to the picker ([#5256](https://github.com/bastani-inc/atomic/pull/5256)).
-- Workflow rows in the agent panel now count expanded nested, dynamic and fan-out stages, omit empty progress bars on tools-only runs, and show the choices for a pending single-select question. Run and stage names display terminal controls as inert text, and unchanged stage progress is reused between refreshes ([#5239](https://github.com/bastani-inc/atomic/pull/5239))
-- A reply sent from a workflow's `/tasks` card is refused if the pending question changed after typing began. SDK replies must include the captured prompt identity, so identical question text cannot direct an old reply to a replacement question ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Design workflows no longer pause other tools while Windows verifies temporary artifact storage ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
 
 ### Removed

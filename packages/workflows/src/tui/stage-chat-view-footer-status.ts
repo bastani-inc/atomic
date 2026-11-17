@@ -188,7 +188,7 @@ function stageNavKeybindings(ctx: Pick<StageChatViewContext, "piKeybindings">): 
 				candidate && typeof candidate.getKeys === "function"
 					? candidate.getKeys(action)
 					: fallback.getKeys(action as Parameters<typeof fallback.getKeys>[0]);
-			return action === APP_ACTION.navBack ? keys.filter((key) => key !== "esc" && key !== "escape") : keys;
+			return action === "app.interrupt" ? keys : keys.filter((key) => key !== "esc" && key !== "escape");
 		},
 	};
 }

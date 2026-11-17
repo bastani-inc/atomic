@@ -13,6 +13,7 @@ import {
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { markPublishedSnapshotArray } from "../../packages/workflows/src/shared/workflow-run-ownership.js";
 import { panelItemsFromSnapshot } from "../../packages/workflows/src/tui/panel-runs.js";
 
 const plain: AgentPanelStyle = {
@@ -369,4 +370,248 @@ test("cached snapshot projection does not rescan stages across frames and reflec
 	const [afterRestart] = panelItemsFromSnapshot([target]);
 	assert.deepEqual(afterRestart?.progress, { done: 2, total: 3 });
 	assert.equal(afterRestart?.task, "stage b");
+});
+
+test("nested workflow token totals do not double-count root budget accounting and published frozen snapshots count settled stage tokens (#5224)", () => {
+	const rootWithChild: RunSnapshot[] = [
+		run(
+			"root",
+			"running",
+			[
+				stage("plan", "completed", {
+					modelAttempts: [{ model: "m", success: true, usage: { input: 40, output: 60 } }],
+				}),
+				stage("delegate", "running", {
+					workflowChildRun: { runId: "child", workflow: "child", alias: "child" },
+				}),
+			],
+			{
+				budgetState: {
+					accounting: {
+						baseline: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+						perCounter: { input: 120, output: 180, cacheRead: 0, cacheWrite: 0 },
+						tokens: 300,
+						cost: 0,
+					},
+				},
+			},
+		),
+		run(
+			"child",
+			"running",
+			[
+				stage("sub", "completed", {
+					modelAttempts: [{ model: "m", success: true, usage: { input: 80, output: 120 } }],
+				}),
+			],
+			{
+				parentRunId: "root",
+				parentStageId: "delegate",
+				rootRunId: "root",
+			},
+		),
+	];
+	const [nestedItem] = panelItemsFromSnapshot(rootWithChild, 10_000);
+	assert.equal(
+		nestedItem?.tokens,
+		300,
+		"root stage (100) + child stage (200) is not inflated to 500 by root accounting",
+	);
+
+	const partialWithRootAccounting: RunSnapshot[] = [
+		run(
+			"root-partial-accounted",
+			"running",
+			[
+				stage("plan", "completed", {
+					modelAttempts: [{ model: "m", success: true, usage: { input: 40, output: 60 } }],
+				}),
+			],
+			{
+				budgetState: {
+					accounting: {
+						baseline: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+						perCounter: { input: 120, output: 180, cacheRead: 0, cacheWrite: 0 },
+						tokens: 300,
+						cost: 0,
+					},
+				},
+			},
+		),
+	];
+	const [partialAccountedItem] = panelItemsFromSnapshot(partialWithRootAccounting, 10_000);
+	assert.equal(
+		partialAccountedItem?.tokens,
+		300,
+		"whole-tree root accounting (300) is preserved when visible stage tokens (100) are partial",
+	);
+
+	const makePublished64 = (tokensPerStage: number): readonly RunSnapshot[] => {
+		const stages = Object.freeze(
+			Array.from({ length: 64 }, (_, index) =>
+				Object.freeze(
+					stage(`s-${index}`, "completed", {
+						modelAttempts: Object.freeze([
+							Object.freeze({
+								model: "m",
+								success: true,
+								usage: Object.freeze({ input: tokensPerStage / 2, output: tokensPerStage / 2 }),
+							}),
+						]),
+					}),
+				),
+			),
+		);
+		const tools = Object.freeze([]);
+		markPublishedSnapshotArray(stages);
+		markPublishedSnapshotArray(tools);
+		return Object.freeze([
+			Object.freeze(
+				run("same-64-id", "running", stages as StageSnapshot[], {
+					toolNodes: tools as never,
+				}),
+			),
+		]);
+	};
+	const [first64] = panelItemsFromSnapshot(makePublished64(10), 10_000, new Set());
+	const [second64] = panelItemsFromSnapshot(makePublished64(20), 10_000, new Set());
+	assert.equal(first64?.tokens, 640);
+	assert.equal(second64?.tokens, 1280, "second 64-stage run with identical id/start/name does not reuse first prefix");
+
+	const store = createStore();
+	store.recordRunStart(
+		run(" prefix-lifecycle", "running", [
+			stage("s1", "completed", {
+				modelAttempts: [{ model: "m", success: true, usage: { input: 40, output: 60 } }],
+			}),
+			stage("s2", "completed", {
+				modelAttempts: [{ model: "m", success: true, usage: { input: 50, output: 50 } }],
+			}),
+		]),
+	);
+	assert.equal(panelItemsFromSnapshot(store.graphSnapshot(), 5_000, store)[0]?.tokens, 200);
+	store.recordStageEnd(
+		" prefix-lifecycle",
+		stage("s1", "completed", {
+			modelAttempts: [{ model: "m", success: true, usage: { input: 90, output: 60 } }],
+		}),
+	);
+	assert.equal(
+		panelItemsFromSnapshot(store.graphSnapshot(), 6_000, store)[0]?.tokens,
+		250,
+		"historical settled stage update invalidates the cached prefix",
+	);
+	store.removeRun(" prefix-lifecycle");
+	store.recordRunStart(
+		run(" prefix-lifecycle", "running", [
+			stage("s1", "completed", {
+				modelAttempts: [{ model: "m", success: true, usage: { input: 30, output: 50 } }],
+			}),
+		]),
+	);
+	assert.equal(
+		panelItemsFromSnapshot(store.graphSnapshot(), 7_000, store)[0]?.tokens,
+		80,
+		"removing and re-adding a run with the same id/start/name invalidates the cached prefix",
+	);
+
+	const frozenStages = Object.freeze([
+		Object.freeze(
+			stage("settled-1", "completed", {
+				modelAttempts: Object.freeze([
+					Object.freeze({ model: "m", success: true, usage: Object.freeze({ input: 80, output: 42 }) }),
+				]),
+			}),
+		),
+	]);
+	const frozenTools = Object.freeze([]);
+	markPublishedSnapshotArray(frozenStages);
+	markPublishedSnapshotArray(frozenTools);
+	const frozenRuns = Object.freeze([
+		Object.freeze(
+			run("published-no-store", "running", frozenStages as StageSnapshot[], {
+				toolNodes: frozenTools as never,
+			}),
+		),
+	]);
+	const [publishedItem] = panelItemsFromSnapshot(frozenRuns, 10_000, new Set());
+	assert.equal(
+		publishedItem?.tokens,
+		122,
+		"published frozen snapshot without a raw store counts settled stage tokens",
+	);
+});
+
+test("a stopped tools-only or post-stage workflow run retains its last tool step label in O(1) without scanning earlier tools (#5224)", () => {
+	let firstToolReads = 0;
+	const firstTool = {
+		id: "prep",
+		name: "prep",
+		kind: "tool" as const,
+		argsHash: "prep",
+		ordinal: 0,
+		executionOrder: 0,
+		parentIds: [],
+		status: "cancelled" as const,
+		attachable: false as const,
+	};
+	const lastTool = {
+		id: "ship",
+		name: "ship",
+		kind: "tool" as const,
+		argsHash: "ship",
+		ordinal: 1,
+		executionOrder: 2,
+		parentIds: ["approve"],
+		status: "cancelled" as const,
+		attachable: false as const,
+	};
+	const tools = [firstTool, lastTool];
+	Object.defineProperty(tools, 0, {
+		get() {
+			firstToolReads++;
+			return firstTool;
+		},
+	});
+	const stoppedRun: RunSnapshot = {
+		...run("release", "paused", [stage("approve", "completed", { executionOrder: 1 })], {
+			exitReason: "quit",
+			quitAt: 5_000,
+			resumable: true,
+		}),
+		toolNodes: tools,
+	};
+	const indexFastPathRun: RunSnapshot = {
+		...stoppedRun,
+		id: "tools-only-quit",
+		stages: [],
+	};
+	const items = panelItemsFromSnapshot([stoppedRun, indexFastPathRun], 10_000);
+	assert.equal(items[0]?.state, "stopped");
+	assert.equal(items[0]?.task, "tool ship");
+	assert.equal(items[1]?.state, "stopped");
+	assert.equal(items[1]?.task, "tool ship");
+
+	firstToolReads = 0;
+	const cachedStages = Object.freeze([]);
+	const cachedTools = [firstTool, lastTool];
+	Object.defineProperty(cachedTools, 0, {
+		get() {
+			firstToolReads++;
+			return firstTool;
+		},
+	});
+	Object.freeze(cachedTools);
+	markPublishedSnapshotArray(cachedStages);
+	markPublishedSnapshotArray(cachedTools);
+	const publishedQuitRuns = Object.freeze([
+		Object.freeze({
+			...indexFastPathRun,
+			stages: cachedStages as unknown as StageSnapshot[],
+			toolNodes: cachedTools,
+		}),
+	]);
+	const [publishedQuit] = panelItemsFromSnapshot(publishedQuitRuns, 10_000);
+	assert.equal(publishedQuit?.task, "tool ship");
+	assert.equal(firstToolReads, 0, "O(1) tail lookup does not scan earlier tool nodes");
 });
