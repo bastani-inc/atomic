@@ -8,6 +8,7 @@
 
 ### Added
 
+- `createAgentSession({ intercom: { group, reachable } })` gives a top-level session its own Intercom home group, ahead of `ATOMIC_INTERCOM_GROUP`, Intercom `config.json` and the project group, and the other groups it may reach; the session keeps its workflow extension. It lists, sends to, asks and joins only within those groups, can't leave its home group, and reach is one way, while replies to its asks still arrive. `session.intercom.setReachable(groups)` changes the reachable groups on the live session from its next Intercom call. Its workflow stages and subagents reach only their own groups, and the Intercom broker enforces the policy. ([#5352](https://github.com/bastani-inc/atomic/issues/5352))
 - `ATOMIC_STARTUP_TRACE` names a file to which Atomic appends each startup milestone (process start, first paint, engine ready, first provider request) with its wall-clock time; an interactive session's engine writes to the same file
 - `ensurePrivateTempDirAsync()` and `assertPrivateDirectoryAsync()` for extensions and SDK integrations: they create or check a directory private to the current account without blocking, waiting for the Windows owner and access-list check ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
 
