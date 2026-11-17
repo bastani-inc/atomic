@@ -21,76 +21,81 @@ A `setImmediate` chain runs for the whole benchmark and records each turn of the
 
 ## Results
 
-Before is `main` at d0aadb5577, measured twice on the same VM, once before and once after this change, with the same benchmark file. The longest block is the worst over 5 rounds. Elapsed p50 is the median, with the two before runs averaged. Node 22.23.5 and Bun 1.4.4, 2026-11-16.
+Before is `main` at d0aadb5577, measured twice on the same VM, once before and once after this change, with the same benchmark file. The longest block is the worst over 5 rounds. Elapsed p50 is the median, with the two before runs averaged. Node 22.23.5 and Bun 1.4.4, 2026-11-17.
 
 Windows, Azure Standard_D16ads_v6, Node:
 
 | case | longest block before (ms) | longest block after (ms) | elapsed p50 before (ms) | elapsed p50 after (ms) |
 |---|---:|---:|---:|---:|
-| open | 30.1 | 2.3 | 36.27 | 91.17 |
-| hold (first claim) | 3.9 | 0.1 | 2.21 | 1.99 |
-| accept, one 4 KiB | 10.2 | 0.6 | 1.92 | 1.96 |
-| accept, one 64 KiB | 17.1 | 0.6 | 2.53 | 2.64 |
-| accept x50 in sequence, 16 KiB | 183.0 | 0.4 | 102.34 | 101.02 |
-| accept x16 at once, 16 KiB | 7.6 | 1.2 | 4.74 | 5.95 |
-| seal 64 | 46.5 | 0.6 | 19.70 | 21.14 |
-| shipped 64 | 6.1 | 0.2 | 3.57 | 3.81 |
-| discard | 3.9 | 0.1 | 1.66 | 1.72 |
-| fence | 4.6 | 0.1 | 3.77 | 3.73 |
-| close (retire) | 19.6 | 0.8 | 18.65 | 48.12 |
+| open | 43.0 | 15.0 | 40.34 | 68.84 |
+| hold (first claim) | 5.1 | 0.2 | 2.43 | 2.14 |
+| accept, one 4 KiB | 30.1 | 0.9 | 2.23 | 2.15 |
+| accept, one 64 KiB | 40.3 | 0.6 | 2.88 | 2.75 |
+| accept x50 in sequence, 16 KiB | 227.9 | 0.5 | 121.96 | 117.80 |
+| accept x16 at once, 16 KiB | 11.2 | 0.8 | 5.23 | 5.77 |
+| seal 64 | 30.9 | 0.7 | 24.44 | 25.30 |
+| shipped 64 | 7.5 | 0.2 | 4.45 | 4.80 |
+| discard | 6.0 | 0.1 | 2.28 | 2.09 |
+| fence | 6.9 | 0.7 | 4.98 | 3.93 |
+| close (retire) | 39.7 | 1.6 | 20.69 | 23.63 |
 
 Windows, Azure Standard_D16ads_v6, Bun:
 
 | case | longest block before (ms) | longest block after (ms) | elapsed p50 before (ms) | elapsed p50 after (ms) |
 |---|---:|---:|---:|---:|
-| open | 31.6 | 2.8 | 42.39 | 66.27 |
-| hold (first claim) | 7.4 | 0.1 | 2.69 | 2.45 |
-| accept, one 4 KiB | 18.7 | 4.7 | 1.98 | 2.14 |
-| accept, one 64 KiB | 16.4 | 3.0 | 2.47 | 2.66 |
-| accept x50 in sequence, 16 KiB | 212.0 | 2.8 | 111.19 | 112.74 |
-| accept x16 at once, 16 KiB | 7.6 | 0.6 | 4.99 | 4.88 |
-| seal 64 | 29.1 | 1.6 | 21.25 | 22.44 |
-| shipped 64 | 23.9 | 0.5 | 5.21 | 4.21 |
-| discard | 8.7 | 0.1 | 1.91 | 2.44 |
-| fence | 13.2 | 0.1 | 4.29 | 3.97 |
-| close (retire) | 24.1 | 1.8 | 32.53 | 38.93 |
+| open | 28.9 | 22.7 | 47.20 | 64.16 |
+| hold (first claim) | 4.8 | 0.3 | 2.71 | 2.34 |
+| accept, one 4 KiB | 14.8 | 7.7 | 2.21 | 2.20 |
+| accept, one 64 KiB | 41.5 | 1.8 | 2.73 | 2.86 |
+| accept x50 in sequence, 16 KiB | 135.8 | 2.2 | 119.42 | 124.42 |
+| accept x16 at once, 16 KiB | 9.0 | 0.6 | 5.85 | 5.33 |
+| seal 64 | 26.4 | 0.7 | 21.32 | 22.91 |
+| shipped 64 | 28.9 | 0.7 | 5.26 | 5.10 |
+| discard | 6.1 | 0.1 | 2.09 | 2.06 |
+| fence | 10.1 | 0.1 | 4.30 | 3.94 |
+| close (retire) | 31.3 | 12.4 | 32.52 | 33.47 |
 
 Linux, Azure Standard_D16alds_v6, Node:
 
 | case | longest block before (ms) | longest block after (ms) | elapsed p50 before (ms) | elapsed p50 after (ms) |
 |---|---:|---:|---:|---:|
-| open | 10.3 | 3.2 | 2.74 | 52.76 |
-| hold (first claim) | 0.4 | 0.1 | 0.14 | 0.32 |
-| accept, one 4 KiB | 0.6 | 0.9 | 0.15 | 0.18 |
-| accept, one 64 KiB | 2.7 | 1.0 | 0.42 | 0.48 |
-| accept x50 in sequence, 16 KiB | 12.1 | 0.6 | 9.14 | 11.86 |
-| accept x16 at once, 16 KiB | 2.6 | 1.0 | 2.00 | 2.86 |
-| seal 64 | 8.4 | 0.7 | 5.03 | 6.98 |
-| shipped 64 | 0.5 | 0.1 | 0.23 | 0.28 |
-| discard | 0.1 | 0.0 | 0.05 | 0.09 |
-| fence | 1.1 | 0.1 | 0.92 | 1.03 |
-| close (retire) | 1.0 | 0.8 | 3.01 | 31.05 |
+| open | 10.5 | 3.3 | 2.30 | 27.55 |
+| hold (first claim) | 0.4 | 0.2 | 0.15 | 0.32 |
+| accept, one 4 KiB | 0.6 | 1.4 | 0.15 | 0.19 |
+| accept, one 64 KiB | 3.3 | 1.6 | 0.42 | 0.50 |
+| accept x50 in sequence, 16 KiB | 13.0 | 0.9 | 9.48 | 11.90 |
+| accept x16 at once, 16 KiB | 2.6 | 2.9 | 2.10 | 3.35 |
+| seal 64 | 8.1 | 0.7 | 5.59 | 7.10 |
+| shipped 64 | 0.5 | 0.1 | 0.26 | 0.30 |
+| discard | 0.1 | 0.1 | 0.07 | 0.09 |
+| fence | 1.2 | 0.1 | 1.01 | 1.08 |
+| close (retire) | 1.1 | 1.2 | 3.34 | 5.15 |
 
 Linux, Azure Standard_D16alds_v6, Bun:
 
 | case | longest block before (ms) | longest block after (ms) | elapsed p50 before (ms) | elapsed p50 after (ms) |
 |---|---:|---:|---:|---:|
-| open | 13.6 | 2.5 | 5.83 | 25.24 |
-| hold (first claim) | 0.5 | 0.1 | 0.21 | 0.28 |
-| accept, one 4 KiB | 0.5 | 0.2 | 0.11 | 0.16 |
-| accept, one 64 KiB | 2.4 | 3.1 | 0.38 | 0.37 |
-| accept x50 in sequence, 16 KiB | 10.1 | 1.5 | 7.74 | 10.87 |
-| accept x16 at once, 16 KiB | 3.1 | 0.8 | 1.88 | 2.16 |
-| seal 64 | 8.7 | 1.5 | 7.73 | 9.12 |
-| shipped 64 | 0.4 | 0.1 | 0.23 | 0.32 |
-| discard | 0.1 | 0.1 | 0.10 | 0.09 |
-| fence | 1.4 | 0.1 | 1.17 | 1.33 |
-| close (retire) | 8.4 | 0.5 | 14.82 | 22.15 |
+| open | 16.8 | 16.0 | 7.25 | 20.04 |
+| hold (first claim) | 0.6 | 0.3 | 0.26 | 0.44 |
+| accept, one 4 KiB | 0.6 | 0.2 | 0.12 | 0.18 |
+| accept, one 64 KiB | 2.5 | 0.3 | 0.39 | 0.47 |
+| accept x50 in sequence, 16 KiB | 10.4 | 0.2 | 8.05 | 11.94 |
+| accept x16 at once, 16 KiB | 3.1 | 1.6 | 1.96 | 2.39 |
+| seal 64 | 9.1 | 2.0 | 8.45 | 11.17 |
+| shipped 64 | 1.7 | 0.2 | 0.30 | 0.36 |
+| discard | 0.1 | 0.1 | 0.09 | 0.10 |
+| fence | 1.4 | 0.1 | 1.27 | 1.34 |
+| close (retire) | 9.4 | 24.5 | 16.81 | 19.94 |
 
-Every SQLite statement of a shard now runs on a thread of its own, and so does the journal directory's lock while a shard opens or retires. The event loop only sends each statement and receives its result. What remains of the longest block after the change is work on the event loop itself, such as receiving results and garbage collection; no SQLite statement runs there.
+Every SQLite statement of a shard now runs on a thread of its own: the event loop only sends each statement and receives its result. What remains of a write's longest block is work on the event loop itself, such as receiving results and garbage collection.
+
+The journal directory's lock, taken while a shard opens or retires, stays on the event loop, in the in-process adapter: it waits for the lock without blocking the loop, keeps the writers' first-come order across processes, and names the holder when it gives up. Its transaction writes nothing, so it blocks the loop for about a millisecond, except in two cases these tables show:
+
+- The first open in a journal directory creates the lock file and switches it to write-ahead logging: 12 to 23 ms on Windows. Every round here opens a new journal directory, so every round pays it. A coordinator pays it once per journal.
+- Under Bun, closing the lock runs a full garbage collection so Windows lets go of the file: 10 to 25 ms in this process.
 
 Costs of the change:
 
-- Each statement crosses to the thread and back. On Linux, where a synced commit takes well under a millisecond, single operations take up to 0.2 ms longer, 16 concurrent checkpoints 15 to 45% longer, and sealing 64 checkpoints of 16 KiB, whose rows cross back to the event loop, 20 to 40% longer. On Windows, where syncing to disk dominates, operations take about as long as before; 16 concurrent checkpoints under Node take 25% longer.
-- Opening a shard starts two threads, the lock's and the shard's, and retiring one starts the lock's: about 25 ms each under Node and 5 to 12 ms under Bun.
+- Each statement crosses to the thread and back. On Linux, where a synced commit takes well under a millisecond, single operations take up to 0.2 ms longer, 16 concurrent checkpoints 20 to 60% longer, and 50 checkpoints in a row or sealing 64 of 16 KiB, whose rows cross back to the event loop, 25 to 50% longer. On Windows, where syncing to disk dominates, operations take about as long as before.
+- Opening a shard starts its thread: 25 to 30 ms more under Node and 13 to 17 ms more under Bun.
 - A shard's thread uses about 11 MiB of memory under Node and 3.5 MiB under Bun while the shard is open.

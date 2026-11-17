@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- A worker host's local checkpoint journal (`workers.checkpointShipping` set to an object) now reads and writes its SQLite files on a thread of its own, so the host's pool coordinator keeps answering its workers' heartbeats, claims and checkpoints while a checkpoint is synced to disk. On Windows, recording a burst of checkpoints stopped the coordinator for up to 250 ms at a time; it now stops it for under 5 ms. A checkpoint is still on disk before its step returns, and checkpoints are kept in the order they arrived. Each root's local journal holds a thread while it is open, about 11 MiB of memory under Node and 3.5 MiB in the standalone binary ([#5321](https://github.com/bastani-inc/atomic/issues/5321))
+- A worker host's local checkpoint journal (`workers.checkpointShipping` set to an object) now reads and writes its SQLite file on a thread of its own, so the host's pool coordinator keeps answering its workers' heartbeats, claims and checkpoints while a checkpoint is synced to disk. On Windows, recording a burst of checkpoints stopped the coordinator for up to 250 ms at a time; checkpoint writes now stop it for under 8 ms. A checkpoint is still on disk before its step returns, and checkpoints are kept in the order they arrived. Each root's local journal holds a thread while it is open, about 11 MiB of memory under Node and 3.5 MiB in the standalone binary ([#5321](https://github.com/bastani-inc/atomic/issues/5321))
 
 ## [0.9.88] - 2026-11-16
 
