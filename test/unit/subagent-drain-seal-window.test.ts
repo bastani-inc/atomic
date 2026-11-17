@@ -8,6 +8,7 @@ import type {
 	SendMessageOptions,
 } from "../../packages/coding-agent/src/core/extensions/index.js";
 import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
+import { untilStarted, waitForCiTurn, waitTool } from "../../packages/coding-agent/test/helpers/detached-tools.js";
 import { createHarness } from "../../packages/coding-agent/test/suite/harness.js";
 import { admitActiveSessionInbound } from "../../packages/intercom/active-session-admission.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
@@ -446,6 +447,98 @@ test("a subagent session refuses a prompt, user message, steering or follow-up m
 		assert.deepEqual(harness.session.getFollowUpMessages(), []);
 	} finally {
 		ended.abort();
+		await harness.cleanup();
+	}
+});
+
+test("a standalone subagent session seals admission after its last deferred user message settles (#5318)", async () => {
+	const ended = new AbortController();
+	const harness = await createHarness({
+		subagentPolicy: {
+			managementActions: "restricted",
+			fanoutAuthorized: false,
+			inheritProjectContext: false,
+			inheritSkills: false,
+			depth: 1,
+			executionEnded: ended.signal,
+		},
+	});
+	let deferred = false;
+	harness.session.subscribe((event) => {
+		if (event.type !== "agent_settled" || deferred) return;
+		deferred = true;
+		void harness.session.sendUserMessage("deferred one");
+		void harness.session.sendUserMessage("deferred two");
+	});
+	try {
+		harness.setResponses(Array.from({ length: 4 }, () => answerPendingInput()));
+		await harness.session.prompt("the task");
+		assert.deepEqual(assistantTexts(harness.session), [
+			"answered: the task",
+			"answered: deferred one",
+			"answered: deferred two",
+		]);
+		await assert.rejects(harness.session.steer("too late"), REFUSED);
+	} finally {
+		ended.abort();
+		await harness.cleanup();
+	}
+});
+
+test("a steering hook's custom message wakes an interrupted subagent before the hook completes (#5318)", async () => {
+	const ended = new AbortController();
+	const tool = waitTool({ rejectOnAbort: true });
+	const nestedStarted = Promise.withResolvers<void>();
+	const nestedSettled = Promise.withResolvers<void>();
+	let wakeRequested = false;
+	let steering: Promise<unknown> | undefined;
+	const harness = await createHarness({
+		customTools: [tool.definition],
+		subagentPolicy: {
+			managementActions: "restricted",
+			fanoutAuthorized: false,
+			inheritProjectContext: false,
+			inheritSkills: false,
+			depth: 1,
+			executionEnded: ended.signal,
+			taskPending: () => true,
+		},
+		extensionFactories: [
+			(pi) => {
+				pi.on("input", async (event) => {
+					if (event.text !== "outer steering") return;
+					wakeRequested = true;
+					await pi.sendMessage(
+						{ customType: "intercom_message", content: "nested after Esc", display: true },
+						{ triggerTurn: true, persistWhenStreaming: true },
+					);
+					await nestedStarted.promise;
+				});
+			},
+		],
+	});
+	const session = harness.session;
+	session.subscribe((event) => {
+		if (!wakeRequested) return;
+		if (event.type === "agent_start") nestedStarted.resolve();
+		if (event.type === "agent_settled") nestedSettled.resolve();
+	});
+	try {
+		harness.setResponses([waitForCiTurn("initial")]);
+		const initial = session.prompt("the task");
+		await untilStarted(tool);
+		await session.interruptTurn();
+		await initial;
+		harness.setResponses(Array.from({ length: 3 }, () => answerPendingInput()));
+		steering = session.steer("outer steering");
+		await within(steering, "the steering hook's message never started its turn");
+		await within(nestedSettled.promise, "the nested message's turn never settled");
+		assert.ok(assistantTexts(session).some((text) => text.includes("nested after Esc")));
+	} finally {
+		nestedStarted.resolve();
+		harness.session.pauseQueuedMessages();
+		ended.abort();
+		await steering?.catch(() => undefined);
 		await harness.cleanup();
 	}
 });

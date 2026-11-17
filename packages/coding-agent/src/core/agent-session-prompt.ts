@@ -56,7 +56,7 @@ function holdSubagentMessageAdmission(session: AgentSession): () => void {
 	const hold = {};
 	holds.add(hold);
 	return () => {
-		holds.delete(hold);
+		if (!holds.delete(hold)) return;
 		if (holds.size === 0) messageAdmissionHolds.delete(session);
 	};
 }
@@ -835,7 +835,10 @@ async function finishAgentRun(session: AgentSession, keepMessageAdmissionOpen = 
 		const deferred = session._deferredSettledActions?.splice(0) ?? [];
 		const releaseMessageAdmission = deferred.length > 0 ? holdSubagentMessageAdmission(session) : () => {};
 		try {
-			for (const action of deferred) await action();
+			for (const [index, action] of deferred.entries()) {
+				if (index === deferred.length - 1) releaseMessageAdmission();
+				await action();
+			}
 		} finally {
 			releaseMessageAdmission();
 			if (session._activePromptCount === 0) session._subagentPolicy?.onTurnDrained?.();
@@ -1185,13 +1188,12 @@ async function queueUserInput(
 	if (boundary === undefined || session._queuedMessagesPaused) return queue();
 	if (!boundary.isOpen()) throw subagentExecutionEndedError();
 	const releaseMessageAdmission = holdSubagentMessageAdmission(session);
-	session._activePromptCount += 1;
 	try {
 		return await queue();
 	} finally {
 		releaseMessageAdmission();
-		session._activePromptCount -= 1;
-		if (session._activePromptCount === 0) session._subagentPolicy?.onTurnDrained?.();
+		if (session._activePromptCount === 0 && !messageAdmissionHolds.has(session))
+			session._subagentPolicy?.onTurnDrained?.();
 	}
 }
 
