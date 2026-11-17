@@ -390,7 +390,7 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 		},
 
 		cycleThinkingLevel() {
-			return controller.requireSession("cycleThinkingLevel").cycleThinkingLevel();
+			return controller.cycleThinkingLevel();
 		},
 
 		get agent() {
