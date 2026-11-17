@@ -140,7 +140,6 @@ describe("settings type validation (#4902)", () => {
 		writeJson(globalPath, {
 			decisionModel: 7,
 			compactionModel: 7,
-			modelRouting: ["github-copilot"],
 			storage: "memory",
 			sessions: 1,
 			workflows: 1,
@@ -153,7 +152,6 @@ describe("settings type validation (#4902)", () => {
 		const manager = SettingsManager.create(projectDir, agentDir);
 
 		assert.deepEqual(manager.drainErrors(), []);
-		assert.throws(() => manager.getModelRouting(), /Invalid modelRouting/);
 		assert.throws(() => manager.getHttpIdleTimeoutMs(), /Invalid httpIdleTimeoutMs setting/);
 		assert.equal(manager.getGlobalSettings().streamDeadlineMs, true);
 	});

@@ -296,45 +296,6 @@ test("a decision trace reports the resolve phase before its first request", asyn
 	assert.equal(trace.phase, "classifier");
 });
 
-test("an auto-routing inference failure keeps the decision error as its cause (#4358)", async () => {
-	const { routeExecutionModel, AutoRoutingInferenceError } = await import(
-		"../../packages/coding-agent/src/core/execution-model-router.js"
-	);
-	const other = { ...decisionChatModel, id: "other", name: "Other" };
-	const failing = vi.fn(() => {
-		throw new Error("connection refused");
-	});
-	const error = await routeExecutionModel({
-		ctx: {
-			model: decisionChatModel,
-			getDecisionModel: () => "",
-			modelRegistry: {
-				getAll: () => [decisionChatModel, other],
-				getAvailable: () => [decisionChatModel, other],
-				streamSimple: failing as never,
-				containsConfiguredCredential: async () => false,
-			},
-		},
-		task: "Summarize the change.",
-		agent: { name: "worker", description: "test" },
-		taskNeeds: {
-			work: "coding",
-			difficulty: "easy",
-			mistakeCost: "low",
-			needsImages: false,
-			longContext: false,
-			latencySensitive: false,
-		},
-	}).then(
-		() => undefined,
-		(failure: unknown) => failure,
-	);
-	assert.ok(error instanceof AutoRoutingInferenceError);
-	assert.ok(isDecisionProviderError(error.cause));
-	assert.equal((error.cause as DecisionProviderError).model, "decision-test/chat");
-	assert.ok(failing.mock.calls.length > 0);
-});
-
 test("the structured_output tool tells the calling model it starts on the decision model", async () => {
 	const { createStructuredOutputTool, StructuredOutputParameters } = await import(
 		"../../packages/coding-agent/src/core/tools/structured-output.js"
@@ -353,52 +314,6 @@ test("the structured_output tool tells the calling model it starts on the decisi
 			"Pass complete instructions and named state; omit model to use the configured decision model.",
 		),
 	);
-});
-
-test("auto routing asks the decision model to choose among the shortlist with the task's needs as state", async () => {
-	const { routeExecutionModel } = await import("../../packages/coding-agent/src/core/execution-model-router.js");
-	const { chatChoiceAnswer } = await import("../helpers/model-routing.js");
-	const other = { ...decisionChatModel, id: "other", name: "Other" };
-	const states: unknown[] = [];
-	const dispatch = vi.fn((_model: unknown, context: Parameters<typeof chatChoiceAnswer>[0]) => {
-		const payload = JSON.parse(
-			String(context.messages.find((message: { role: string }) => message.role === "user")?.content),
-		) as { state: unknown };
-		states.push(payload.state);
-		return messageStream(decisionMessage(chatChoiceAnswer(context, "decision-test/other")));
-	});
-	const route = await routeExecutionModel({
-		ctx: {
-			model: decisionChatModel,
-			getDecisionModel: () => "",
-			modelRegistry: {
-				getAll: () => [decisionChatModel, other],
-				getAvailable: () => [decisionChatModel, other],
-				streamSimple: dispatch as never,
-				containsConfiguredCredential: async () => false,
-			},
-		},
-		task: "Summarize the change.",
-		agent: { name: "worker", description: "test" },
-		taskNeeds: {
-			work: "coding",
-			difficulty: "easy",
-			mistakeCost: "low",
-			needsImages: false,
-			longContext: false,
-			latencySensitive: false,
-		},
-	});
-	assert.equal(route.routerSelection.model, "decision-test/other");
-	assert.equal(dispatch.mock.calls.length, 1);
-	assert.deepEqual((states[0] as { needs: unknown }).needs, {
-		work: "coding",
-		difficulty: "easy",
-		mistake_cost: "low",
-		needs_images: false,
-		long_context: false,
-		latency_sensitive: false,
-	});
 });
 
 const MIXED_QUESTIONS: Record<string, StructuredDecisionQuestion> = {

@@ -73,7 +73,6 @@ function hasWrongTypedLegacyFields(schema: SchemaNode, value: JsonValue): boolea
 const SELF_VALIDATED_SETTINGS: ReadonlySet<string> = new Set([
 	"decisionModel",
 	"compactionModel",
-	"modelRouting",
 	"storage",
 	"sessions",
 	"workflows",
