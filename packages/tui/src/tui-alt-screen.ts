@@ -129,15 +129,28 @@ interface ClickTarget {
 interface PointerFrame {
 	readonly line: string | undefined;
 	readonly boxes: readonly { readonly component: Component; readonly x: number; readonly y: number }[];
-	readonly overlay: Component | undefined;
+	/** The overlay drawn at the pointer and the rectangle it was drawn in, or undefined. */
+	readonly overlay:
+		| {
+				readonly component: Component;
+				readonly row: number;
+				readonly col: number;
+				readonly width: number;
+				readonly height: number;
+		  }
+		| undefined;
 	readonly decorated: boolean;
 }
 
-function samePointerFrame(a: PointerFrame | undefined, b: PointerFrame): boolean {
+/** Whether the same components are drawn at the pointer in the same places: the frame's geometry there. */
+function samePointerGeometry(a: PointerFrame | undefined, b: PointerFrame): boolean {
 	return (
 		a !== undefined &&
-		a.line === b.line &&
-		a.overlay === b.overlay &&
+		a.overlay?.component === b.overlay?.component &&
+		a.overlay?.row === b.overlay?.row &&
+		a.overlay?.col === b.overlay?.col &&
+		a.overlay?.width === b.overlay?.width &&
+		a.overlay?.height === b.overlay?.height &&
 		a.decorated === b.decorated &&
 		a.boxes.length === b.boxes.length &&
 		a.boxes.every(
@@ -145,6 +158,11 @@ function samePointerFrame(a: PointerFrame | undefined, b: PointerFrame): boolean
 				box.component === b.boxes[index]?.component && box.x === b.boxes[index]?.x && box.y === b.boxes[index]?.y,
 		)
 	);
+}
+
+/** The same geometry at the pointer, and the same painted row under it. */
+function samePointerFrame(a: PointerFrame | undefined, b: PointerFrame): boolean {
+	return a !== undefined && a.line === b.line && samePointerGeometry(a, b);
 }
 
 interface SgrMouseEvent {
@@ -273,6 +291,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private mouseCapture?: TuiMouseDispatchTarget;
 	private mousePressTarget?: TuiMouseDispatchTarget;
 	private mousePressPoint?: { x: number; y: number };
+	/** What the screen showed at a press a component took: its click needs the same geometry at the release. */
+	private mousePressFrame?: PointerFrame;
 	private mousePressMoved = false;
 	private lastComponentClick?: {
 		timestamp: number;
@@ -804,6 +824,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.mouseCapture = undefined;
 		this.mousePressTarget = undefined;
 		this.mousePressPoint = undefined;
+		this.mousePressFrame = undefined;
 		this.mousePressMoved = false;
 	}
 
@@ -1049,7 +1070,14 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			const targetResult = this.dispatchMouseToTarget(event, target);
 			if (targetResult) render = this.applyMouseDispatchResult(event, targetResult);
 			if (raw.release) {
-				if (!this.mousePressMoved && this.mousePressPoint?.x === raw.x && this.mousePressPoint.y === raw.y) {
+				// The release always reaches the target, so it can end what its press started. The click needs the
+				// target still drawn where it was pressed; its own rows may repaint, as a pressed button's do.
+				if (
+					!this.mousePressMoved &&
+					this.mousePressPoint?.x === raw.x &&
+					this.mousePressPoint.y === raw.y &&
+					samePointerGeometry(this.mousePressFrame, this.pointerFrame(raw.x, raw.y))
+				) {
 					const clickEvent = this.createMouseEvent("click", raw.button, raw.x, raw.y, {
 						clickCount: this.getComponentClickCount(target, raw.x, raw.y),
 					});
@@ -1081,6 +1109,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				this.clearTextSelection();
 				this.mousePressTarget = result.target;
 				this.mousePressPoint = { x: raw.x, y: raw.y };
+				this.mousePressFrame = this.pointerFrame(raw.x, raw.y);
 				this.mousePressMoved = false;
 			}
 			if (render) this.requestRender();

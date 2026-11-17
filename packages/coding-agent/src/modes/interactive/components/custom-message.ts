@@ -80,6 +80,23 @@ export class CustomMessageComponent extends Container {
 		this.rebuild();
 	}
 
+	/** A finished-task card in this message expands on a click on its header, as a tool block does. */
+	get expandsOnClick(): boolean {
+		return this.customComponent instanceof TaskCompletionMessage;
+	}
+
+	isExpanded(): boolean {
+		return this._expanded;
+	}
+
+	/** The card's header rows, under the blank row this message leads with. */
+	headerRows(width: number): readonly number[] {
+		const card = this.customComponent;
+		if (!(card instanceof TaskCompletionMessage)) return [];
+		const above = this.spacer?.render(width).length ?? 0;
+		return card.headerRows(width).map((row) => row + above);
+	}
+
 	setExpanded(expanded: boolean): void {
 		if (this.disposed) return;
 		if (this._expanded !== expanded) {

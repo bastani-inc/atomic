@@ -912,12 +912,16 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	/** Dispatch to the visually topmost overlay under the pointer. */
-	/** The topmost overlay the last frame drew at screen cell `x`, `y`. */
-	protected overlayAt(x: number, y: number): Component | undefined {
+	/** The topmost overlay the last frame drew at screen cell `x`, `y`, and the rectangle it was drawn in. */
+	protected overlayAt(
+		x: number,
+		y: number,
+	): { component: Component; row: number; col: number; width: number; height: number } | undefined {
 		for (let index = this.renderedOverlayLayouts.length - 1; index >= 0; index--) {
 			const layout = this.renderedOverlayLayouts[index]!;
 			if (x >= layout.col && x < layout.col + layout.width && y >= layout.row && y < layout.row + layout.height) {
-				return layout.entry.component;
+				const { row, col, width, height } = layout;
+				return { component: layout.entry.component, row, col, width, height };
 			}
 		}
 		return undefined;

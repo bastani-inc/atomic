@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Component } from "@bastani/atomic-tui";
 import type { CustomMessage } from "../../core/messages.ts";
+import { TASK_COMPLETION_MESSAGE_TYPE } from "../../core/tasks/completion.js";
 import type { ToolGroupRole } from "../interactive/components/tool-block.ts";
 import type { ToolExecutionComponent } from "../interactive/components/tool-execution.ts";
 import { sameToolGroupRole, toolGroupRoleKey } from "../interactive/components/tool-group-tracker.ts";
@@ -330,6 +331,17 @@ export class RemoteCustomMessageComponent extends RemoteRenderer {
 	setExpanded(expanded: boolean): void {
 		this.expanded = expanded;
 		this.changed();
+	}
+	/** A finished-task card expands on a click on its header, as a tool block does. */
+	get expandsOnClick(): boolean {
+		return this.message.customType === TASK_COMPLETION_MESSAGE_TYPE;
+	}
+	isExpanded(): boolean {
+		return this.expanded;
+	}
+	/** The card's `● … finished` row: the engine draws the card after the blank row it leads with. */
+	headerRows(width: number): readonly number[] {
+		return this.expandsOnClick && this.render(width).length > 1 ? [1] : [];
 	}
 	setOutputPad(outputPad: number): void {
 		this.outputPad = outputPad;

@@ -14,6 +14,8 @@ import {
 } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, describe, test, vi } from "vitest";
 import type { SessionEntry } from "../src/core/session-manager.js";
+import type { TaskCompletionEnvelope } from "../src/core/tasks/completion.js";
+import { taskCompletionMessage } from "../src/core/tasks/completion-message.js";
 import { UserMessageComponent } from "../src/modes/interactive/components/user-message.js";
 import { WorkingRunMeter } from "../src/modes/interactive/components/working-run-meter.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
@@ -450,6 +452,45 @@ describe("clicking transcript blocks in the main chat", () => {
 			chat.tui.renderNow();
 			chat.click(4, top);
 			assert.deepEqual(clicks, [top]);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("a click on a finished-agent card's header expands it and a second click collapses it", async () => {
+		const chat = await mountChat(100, 60);
+		try {
+			const envelope = {
+				completionId: "completion-1",
+				ownerId: "owner",
+				taskId: "task-1",
+				terminalSequence: "7",
+				result: {
+					kind: "completed",
+					output: { ownerId: "owner", taskId: "task-1", artifactId: "out", byteCount: "0", omittedRanges: [] },
+				},
+				display: false,
+			} as unknown as TaskCompletionEnvelope;
+			const message = taskCompletionMessage(
+				envelope,
+				{ kind: "agent", title: "check the release", agentName: "worker" } as never,
+				["worker result line 1", "worker result line 2", "worker result line 3"].join("\n"),
+			);
+			const custom = { role: "custom", ...message, timestamp: Date.now() };
+			await emit(chat.mode, { type: "message_start", message: custom });
+			await emit(chat.mode, { type: "message_end", message: custom });
+			chat.tui.renderNow();
+			const shown = () => chat.screen().some((line) => line.trimEnd().endsWith("worker result line 3"));
+			assert.ok(!shown(), chat.screen().join("\n"));
+
+			const header = chat.rowOf(/worker finished/);
+			chat.click(chat.columnOf(header, "worker"), header);
+			assert.ok(shown(), chat.screen().join("\n"));
+
+			vi.advanceTimersByTime(1_000);
+			const again = chat.rowOf(/worker finished/);
+			chat.click(chat.columnOf(again, "worker"), again);
+			assert.ok(!shown(), chat.screen().join("\n"));
 		} finally {
 			chat.tui.stop();
 		}
