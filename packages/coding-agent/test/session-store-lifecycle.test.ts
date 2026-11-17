@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@bastani/atomic-ai/compat";
@@ -151,22 +151,83 @@ test("failed engine startup closes the local runtime's owned store", async () =>
 	const local = new AgentSessionRuntime(initial.session, services, factory);
 	const start = vi.spyOn(RpcClient.prototype, "start").mockRejectedValue(new Error("engine startup failed"));
 	try {
-		await assert.rejects(
-			createIsolatedInteractiveRuntime({
-				localRuntime: local,
-				createRuntime: factory,
-				parsed: parseArgs([]),
-				sessionManager: initial.session.sessionManager,
-				resources: {},
-			}),
-			/engine startup failed/,
-		);
+		// The host does not wait for the engine to start; binding to it reports the failure.
+		const isolated = await createIsolatedInteractiveRuntime({
+			localRuntime: local,
+			createRuntime: factory,
+			parsed: parseArgs([]),
+			sessionManager: initial.session.sessionManager,
+			resources: {},
+		});
+		await assert.rejects(isolated.waitUntilBound(), /engine startup failed/);
 		await assert.rejects(
 			initial.session.sessionManager.getSessionStore().load(initial.session.sessionId),
 			closedStoreError,
 		);
 	} finally {
 		start.mockRestore();
+		await local.dispose();
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+/** A stand-in engine child: runs `body` and never speaks the engine protocol unless `body` does. */
+function fakeEngine(cwd: string, body: string): RpcClient {
+	const path = join(cwd, "fake-engine.mjs");
+	writeFileSync(path, body);
+	return new RpcClient({
+		cliPath: path,
+		cwd,
+		runtimeExecutable: process.execPath,
+		interactiveEngine: { onDiagnostic: () => {} },
+	});
+}
+
+test("the host's runtime is usable while its engine child is still loading, and a quit then is not a failure", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "loading-engine-store-"));
+	const services = await servicesFor(cwd);
+	const initial = await createAgentSessionFromServices({ services, ...sessionOptions });
+	const factory = async () => ({ ...initial, services, diagnostics: [] });
+	const local = new AgentSessionRuntime(initial.session, services, factory);
+	// The child never announces readiness, like an engine still loading its modules.
+	const client = fakeEngine(cwd, "process.stdin.resume();");
+	const isolated = new IsolatedInteractiveRuntime(local, factory, client, client.start());
+	try {
+		assert.equal(isolated.session, initial.session);
+		let settled = false;
+		const bound = isolated.waitUntilBound().finally(() => {
+			settled = true;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.equal(settled, false);
+		await isolated.dispose({ fromSignal: true });
+		await bound;
+	} finally {
+		await local.dispose();
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("an engine child that exits before it is ready fails startup without a restart and closes the local store", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "early-exit-engine-store-"));
+	const services = await servicesFor(cwd);
+	const initial = await createAgentSessionFromServices({ services, ...sessionOptions });
+	const factory = async () => ({ ...initial, services, diagnostics: [] });
+	const local = new AgentSessionRuntime(initial.session, services, factory);
+	const restart = vi.spyOn(RpcClient.prototype, "restart");
+	const client = fakeEngine(cwd, 'process.stderr.write("engine boom\\n"); process.exit(7);');
+	const isolated = new IsolatedInteractiveRuntime(local, factory, client, client.start());
+	try {
+		await assert.rejects(isolated.waitUntilBound(), /code=7[\s\S]*engine boom/);
+		await assert.rejects(isolated.waitUntilResourcesReady(), /code=7/);
+		assert.equal(restart.mock.calls.length, 0);
+		await assert.rejects(
+			initial.session.sessionManager.getSessionStore().load(initial.session.sessionId),
+			closedStoreError,
+		);
+	} finally {
+		restart.mockRestore();
+		await isolated.dispose({ fromSignal: true });
 		await local.dispose();
 		rmSync(cwd, { recursive: true, force: true });
 	}
