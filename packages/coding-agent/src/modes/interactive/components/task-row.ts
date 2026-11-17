@@ -3,7 +3,7 @@ import { type Component, truncateToWidth } from "@bastani/atomic-tui";
 import { formatModelLabel } from "../../../core/model-label.ts";
 import { taskOutcomeStatus } from "../../../core/tasks/command-output.js";
 import { isResumableStop, releasedWaitingOn } from "../../../core/tasks/completion.js";
-import type { TaskRecord } from "../../../core/tasks/contracts.js";
+import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import type { TaskActivity } from "../../../core/tasks/owner-store.js";
 import { theme } from "../theme/theme.js";
 import { keyHintIfBound as keyHint } from "./keybinding-hints.js";
@@ -95,10 +95,86 @@ export type TaskRowOptions = {
 	expanded?: boolean;
 	duplicate?: boolean;
 	hint?: boolean;
+	/** The tasks listed with this one. Pass the list `taskSiblings` returns, so its rows share one index of it. */
 	siblings?: readonly TaskRecord[];
 	activity?: readonly TaskActivity[];
 	activityOmitted?: boolean;
 };
+
+/** A task's launch group within a sibling list: its members in list order, and each member's first position. */
+type LaunchGroup = { tasks: TaskRecord[]; positions: Map<TaskId, number> };
+
+/** Launch groups of a sibling list, and the ids of its tasks by display label for each row width labels are cut to. */
+class SiblingIndex {
+	private readonly tasks: readonly TaskRecord[];
+	private readonly groups = new Map<string, LaunchGroup>();
+	private readonly labels = new Map<number, Map<string, Set<TaskId>>>();
+	constructor(tasks: readonly TaskRecord[]) {
+		this.tasks = tasks;
+		for (const task of tasks) {
+			if (!task.launchGroupId) continue;
+			let group = this.groups.get(task.launchGroupId);
+			if (!group) {
+				group = { tasks: [], positions: new Map() };
+				this.groups.set(task.launchGroupId, group);
+			}
+			if (!group.positions.has(task.ref.taskId)) group.positions.set(task.ref.taskId, group.tasks.length);
+			group.tasks.push(task);
+		}
+	}
+	/** The siblings launched with `task`, in list order, empty when none was. */
+	groupOf(task: TaskRecord): LaunchGroup {
+		return (task.launchGroupId && this.groups.get(task.launchGroupId)) || { tasks: [], positions: new Map() };
+	}
+	/** Whether a sibling other than `task` shows the same label as `task` when labels are cut to `width`. */
+	sharesLabel(task: TaskRecord, width: number): boolean {
+		let byLabel = this.labels.get(width);
+		if (!byLabel) {
+			byLabel = new Map();
+			for (const item of this.tasks) {
+				const label = taskDisplayLabel(item, width);
+				const ids = byLabel.get(label) ?? new Set<TaskId>();
+				ids.add(item.ref.taskId);
+				byLabel.set(label, ids);
+			}
+			this.labels.set(width, byLabel);
+		}
+		const ids = byLabel.get(taskDisplayLabel(task, width));
+		return ids !== undefined && ids.size > (ids.has(task.ref.taskId) ? 1 : 0);
+	}
+}
+
+const siblingIndexes = new WeakMap<readonly TaskRecord[], SiblingIndex>();
+
+/**
+ * A frozen copy of `tasks` for every row listing them to share as siblings. It is indexed once, so a row finds its
+ * launch group and same-labelled siblings without scanning the list; a list of other origin is indexed for each row.
+ */
+export function taskSiblings(tasks: readonly TaskRecord[]): readonly TaskRecord[] {
+	const siblings = Object.freeze([...tasks]);
+	siblingIndexes.set(siblings, new SiblingIndex(siblings));
+	return siblings;
+}
+
+/** A key two tasks share exactly when their agent names and titles are equal. */
+export function taskNameAndTitle(task: TaskRecord): string {
+	return JSON.stringify([task.agentName ?? null, task.title]);
+}
+
+/** How many of `tasks` share each key. */
+export function countTasksBy(tasks: readonly TaskRecord[], key: (task: TaskRecord) => string): Map<string, number> {
+	const counts = new Map<string, number>();
+	for (const task of tasks) {
+		const value = key(task);
+		counts.set(value, (counts.get(value) ?? 0) + 1);
+	}
+	return counts;
+}
+
+function taskDisplayLabel(task: TaskRecord, width: number): string {
+	return truncateToWidth(`${taskDisplayText(taskLabel(task))}: ${taskDisplayText(taskTitle(task))}`, width);
+}
+
 export class TaskRow implements Component {
 	private readonly task: TaskRecord;
 	private readonly options: TaskRowOptions;
@@ -109,11 +185,12 @@ export class TaskRow implements Component {
 	invalidate(): void {}
 	render(width: number): string[] {
 		const task = this.task;
-		const group = task.launchGroupId
-			? this.options.siblings?.filter((item) => item.launchGroupId === task.launchGroupId)
-			: undefined;
-		const index = group?.findIndex((item) => item.ref.taskId === task.ref.taskId) ?? -1;
-		const grouped = group !== undefined && index >= 0;
+		const siblings = this.options.siblings;
+		const siblingIndex = siblings && (siblingIndexes.get(siblings) ?? new SiblingIndex(siblings));
+		const launchGroup = task.launchGroupId ? siblingIndex?.groupOf(task) : undefined;
+		const group = launchGroup?.tasks;
+		const position = launchGroup?.positions.get(task.ref.taskId) ?? -1;
+		const grouped = group !== undefined && position >= 0;
 		const rowWidth = Math.max(1, width - (grouped ? 2 : 0));
 		const state =
 			taskState(task) === "killed"
@@ -126,16 +203,7 @@ export class TaskRow implements Component {
 		const live = task.execution.kind === "running" || task.execution.kind === "queued";
 		const badge = live && task.observation.kind !== "none" ? ` · ${task.observation.kind}` : "";
 		const { icon: glyph, color } = taskStatusAppearance(task);
-		const displayLabel = (item: TaskRecord) =>
-			truncateToWidth(
-				`${taskDisplayText(taskLabel(item))}: ${taskDisplayText(taskTitle(item))}`,
-				Math.max(1, rowWidth - 2),
-			);
-		const duplicate =
-			this.options.duplicate ||
-			this.options.siblings?.some(
-				(item) => item.ref.taskId !== task.ref.taskId && displayLabel(item) === displayLabel(task),
-			);
+		const duplicate = this.options.duplicate || siblingIndex?.sharesLabel(task, Math.max(1, rowWidth - 2));
 		const suffix = duplicate ? ` [${taskShortId(task)}]` : "";
 		const title =
 			theme.fg(color, glyph) +
@@ -173,10 +241,10 @@ export class TaskRow implements Component {
 		}
 		const rendered = lines.map(
 			(line, row) =>
-				(grouped ? theme.fg("dim", row === 0 ? (index === group.length - 1 ? "└─" : "├─") : "  ") : "") +
+				(grouped ? theme.fg("dim", row === 0 ? (position === group.length - 1 ? "└─" : "├─") : "  ") : "") +
 				truncateToWidth(line, rowWidth),
 		);
-		if (grouped && index === 0) {
+		if (grouped && position === 0) {
 			const labels = new Set(group.map(taskLabel));
 			const counts = new Map<string, number>();
 			for (const sibling of group) {
@@ -192,7 +260,7 @@ export class TaskRow implements Component {
 				),
 			);
 		}
-		if (this.options.hint !== false && (!grouped || index === group.length - 1)) {
+		if (this.options.hint !== false && (!grouped || position === group.length - 1)) {
 			const hint = keyHint("app.tools.expand", this.options.expanded ? "collapse" : "expand");
 			if (hint) rendered.push(theme.fg("dim", hint));
 		}
