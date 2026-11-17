@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import {
 	chmodSync,
 	existsSync,
+	promises as fsPromises,
 	lstatSync,
 	mkdirSync,
 	type NoParamCallback,
@@ -16,7 +17,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "fs";
-import { access, chmod, lstat, mkdir, readFile, readlink, rm, stat, writeFile } from "fs/promises";
+import { access, lstat, mkdir, readFile, readlink } from "fs/promises";
 import { dirname, isAbsolute, join, resolve, sep } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME } from "../config.js";
@@ -82,7 +83,7 @@ const MAX_SYMLINK_HOPS = 40;
  * chain, each link resolved against its own directory. A cycle or an overlong chain throws `ELOOP`, as writing through
  * the link would.
  */
-function settingsFileTarget(path: string): string {
+export function settingsFileTarget(path: string): string {
 	if (existsSync(path)) return realpathSync(path);
 	let current = path;
 	for (let hop = 0; hop <= MAX_SYMLINK_HOPS; hop += 1) {
@@ -94,10 +95,9 @@ function settingsFileTarget(path: string): string {
 	throw tooManySymlinks(path);
 }
 
-/** {@link settingsFileTarget} without blocking the event loop. */
 const realpathAsync = promisify(realpathCallback);
 
-async function settingsFileTargetAsync(path: string): Promise<string> {
+export async function settingsFileTargetAsync(path: string): Promise<string> {
 	if (await pathExists(path)) return realpathAsync(path);
 	let current = path;
 	for (let hop = 0; hop <= MAX_SYMLINK_HOPS; hop += 1) {
@@ -175,23 +175,23 @@ export function writeSettingsFile(path: string, content: string): SettingsFileWr
 /** {@link writeSettingsFile} without blocking the event loop. */
 export async function writeSettingsFileAsync(path: string, content: string): Promise<SettingsFileWrite> {
 	const target = await settingsFileTargetAsync(path);
-	const mode = (await pathExists(target)) ? (await stat(target)).mode & 0o777 : undefined;
+	const mode = (await pathExists(target)) ? (await fsPromises.stat(target)).mode & 0o777 : undefined;
 	const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
 	try {
-		await writeFile(temporary, content, { encoding: "utf-8", ...(mode === undefined ? {} : { mode }) });
-		if (mode !== undefined) await chmod(temporary, mode);
+		await fsPromises.writeFile(temporary, content, { encoding: "utf-8", ...(mode === undefined ? {} : { mode }) });
+		if (mode !== undefined) await fsPromises.chmod(temporary, mode);
 	} catch (error) {
-		await rm(temporary, { force: true });
+		await fsPromises.rm(temporary, { force: true });
 		throw error;
 	}
 	try {
 		await renameReplacingAsync(temporary, target);
 		return { mode: "replaced" };
 	} catch (error) {
-		await rm(temporary, { force: true });
+		await fsPromises.rm(temporary, { force: true });
 		const reason = error as NodeJS.ErrnoException;
 		if (!UNREPLACEABLE_FILE_CODES.has(reason.code ?? "")) throw error;
-		await writeFile(target, content, "utf-8");
+		await fsPromises.writeFile(target, content, "utf-8");
 		if (!inPlaceWrites.has(target)) inPlaceWrites.set(target, reason);
 		return { mode: "in-place", reason };
 	}
@@ -509,7 +509,7 @@ export class FileSettingsStorage implements SettingsStorage, AsyncSettingsStorag
 						await mkdir(dir, { recursive: true });
 					}
 					if (!release) {
-						if (!(await pathExists(path))) await writeFile(path, "{}", "utf-8");
+						if (!(await pathExists(path))) await fsPromises.writeFile(path, "{}", "utf-8");
 						release = await this.acquireLockWithRetry(path);
 					}
 					await writeSettingsFileAsync(path, next);

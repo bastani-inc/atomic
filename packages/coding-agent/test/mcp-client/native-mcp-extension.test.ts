@@ -1,5 +1,18 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	promises as fsPromises,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -188,6 +201,136 @@ describe("MCP config", () => {
 			beta: { command: "beta-cmd", enabled: false, exposure: "direct" },
 			gamma: { command: "gamma-v2" },
 		});
+	});
+
+	it("refuses synchronous edits while an async edit is in flight after reading mcp.json", async () => {
+		const paths = setup({ mcpServers: { initial: { command: "init-cmd" } } }, {});
+		const configPath = join(paths.agentDir, "mcp.json");
+		const originalReadFile = fsPromises.readFile;
+		const originalWriteFile = fsPromises.writeFile;
+		let resolveReadGate!: () => void;
+		const readGate = new Promise<void>((resolve) => {
+			resolveReadGate = resolve;
+		});
+		let releaseWriteGate!: () => void;
+		const writeGate = new Promise<void>((resolve) => {
+			releaseWriteGate = resolve;
+		});
+		const readSpy = vi.spyOn(fsPromises, "readFile").mockImplementation((async (
+			...args: Parameters<typeof originalReadFile>
+		) => {
+			const content = await Reflect.apply(originalReadFile, fsPromises, args);
+			if (String(args[0]) === configPath) resolveReadGate();
+			return content;
+		}) as typeof originalReadFile);
+		const writeSpy = vi.spyOn(fsPromises, "writeFile").mockImplementation((async (
+			...args: Parameters<typeof originalWriteFile>
+		) => {
+			if (String(args[0]).startsWith(configPath)) await writeGate;
+			return Reflect.apply(originalWriteFile, fsPromises, args);
+		}) as typeof originalWriteFile);
+
+		try {
+			const asyncAdd = addMcpServerConfigAsync(configPath, "async-server", { command: "async-cmd" });
+			await readGate;
+
+			assert.throws(
+				() => addMcpServerConfig(configPath, "sync-server", { command: "sync-cmd" }),
+				/asynchronous.*in progress/i,
+			);
+			assert.throws(
+				() => updateMcpServerConfig(configPath, "initial", { enabled: false }),
+				/asynchronous.*in progress/i,
+			);
+			assert.throws(() => removeMcpServerConfig(configPath, "initial"), /asynchronous.*in progress/i);
+			assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")).mcpServers, {
+				initial: { command: "init-cmd" },
+			});
+
+			releaseWriteGate();
+			await asyncAdd;
+
+			assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")).mcpServers, {
+				initial: { command: "init-cmd" },
+				"async-server": { command: "async-cmd" },
+			});
+			assert.equal(addMcpServerConfig(configPath, "sync-after", { command: "sync-after-cmd" }), false);
+			assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")).mcpServers, {
+				initial: { command: "init-cmd" },
+				"async-server": { command: "async-cmd" },
+				"sync-after": { command: "sync-after-cmd" },
+			});
+		} finally {
+			releaseWriteGate();
+			readSpy.mockRestore();
+			writeSpy.mockRestore();
+		}
+	});
+
+	it("publishes async mcp.json edits atomically so concurrent sync loads never see partial JSON and symlinks and modes survive", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-mcp-atomic-"));
+		dirs.push(root);
+		const agentDir = join(root, "agent");
+		const cwd = join(root, "project");
+		const realDir = join(root, "real");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(cwd, { recursive: true });
+		mkdirSync(realDir, { recursive: true });
+		const realConfigPath = join(realDir, "mcp.json");
+		const linkConfigPath = join(agentDir, "mcp.json");
+		writeFileSync(realConfigPath, JSON.stringify({ mcpServers: { initial: { command: "init-cmd" } } }, null, 2));
+		chmodSync(realConfigPath, 0o600);
+		symlinkSync(realConfigPath, linkConfigPath);
+
+		const originalWriteFile = fsPromises.writeFile;
+		let resolveMidWrite!: () => void;
+		const midWriteReached = new Promise<void>((resolve) => {
+			resolveMidWrite = resolve;
+		});
+		let releaseMidWrite!: () => void;
+		const midWriteGate = new Promise<void>((resolve) => {
+			releaseMidWrite = resolve;
+		});
+		const writeSpy = vi.spyOn(fsPromises, "writeFile").mockImplementation((async (file, data, options) => {
+			const targetPath = String(file);
+			const text = String(data);
+			writeFileSync(targetPath, text.slice(0, Math.floor(text.length / 2)));
+			resolveMidWrite();
+			await midWriteGate;
+			return originalWriteFile.call(fsPromises, file, data, options);
+		}) as typeof originalWriteFile);
+
+		try {
+			const pendingWrite = addMcpServerConfigAsync(linkConfigPath, "added", { command: "added-cmd" });
+			await midWriteReached;
+
+			const duringWrite = loadMcpConfig({ agentDir, cwd, projectTrusted: false });
+			assert.deepEqual(duringWrite.errors, []);
+			assert.deepEqual(
+				duringWrite.servers.map((server) => [server.name, server.config]),
+				[["initial", { command: "init-cmd" }]],
+			);
+
+			releaseMidWrite();
+			await pendingWrite;
+
+			const afterWrite = loadMcpConfig({ agentDir, cwd, projectTrusted: false });
+			assert.deepEqual(afterWrite.errors, []);
+			assert.deepEqual(
+				afterWrite.servers.map((server) => [server.name, server.config]),
+				[
+					["initial", { command: "init-cmd" }],
+					["added", { command: "added-cmd" }],
+				],
+			);
+			assert.equal(lstatSync(linkConfigPath).isSymbolicLink(), true);
+			if (process.platform !== "win32") {
+				assert.equal(statSync(realConfigPath).mode & 0o777, 0o600);
+			}
+		} finally {
+			releaseMidWrite();
+			writeSpy.mockRestore();
+		}
 	});
 
 	// Regression: #10239.

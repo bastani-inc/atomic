@@ -29,8 +29,7 @@
  * with `codemode` exposure connects. A project value overrides the global one.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync, promises as fsPromises, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { CONFIG_DIR_NAME } from "../../config.js";
 import {
@@ -39,6 +38,12 @@ import {
 	mcpNamespace,
 	validateMcpServerConfig,
 } from "../../core/mcp-servers.ts";
+import {
+	settingsFileTarget,
+	settingsFileTargetAsync,
+	writeSettingsFile,
+	writeSettingsFileAsync,
+} from "../../core/settings-storage.ts";
 import { pathExists } from "../../core/tools/path-utils.ts";
 import { stripBom } from "../../utils/text.ts";
 
@@ -156,7 +161,7 @@ async function readConfigFile(path: string, scope: "global" | "project", state: 
 	if (!(await pathExists(path))) return;
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(stripBom(await readFile(path, "utf8")));
+		parsed = JSON.parse(stripBom(await fsPromises.readFile(path, "utf8")));
 	} catch {
 		state.errors.push(`${path}: failed to read or parse MCP configuration`);
 		return;
@@ -286,6 +291,7 @@ export async function addMcpServerConfigAsync(path: string, name: string, config
 
 /** Remove a server from an `mcp.json`. Returns false when the file does not define it. */
 export function removeMcpServerConfig(path: string, name: string): boolean {
+	assertNoPendingAsyncEdit(path);
 	if (!existsSync(path)) return false;
 	let removed = false;
 	editMcpServersSync(path, (servers) => {
@@ -323,19 +329,51 @@ function serializeEditedMcpServers(
 	return `${JSON.stringify(parsed, null, indent)}\n`;
 }
 
+const pendingAsyncPaths = new Map<string, number>();
+
+function trackPendingAsyncPath(path: string, delta: 1 | -1): void {
+	const next = (pendingAsyncPaths.get(path) ?? 0) + delta;
+	if (next <= 0) pendingAsyncPaths.delete(path);
+	else pendingAsyncPaths.set(path, next);
+}
+
+function assertNoPendingAsyncEdit(path: string): void {
+	if (pendingAsyncPaths.size === 0) return;
+	const resolvedPath = resolve(path);
+	const target = settingsFileTarget(resolvedPath);
+	const conflicted =
+		pendingAsyncPaths.has(resolvedPath) ||
+		pendingAsyncPaths.has(target) ||
+		[...pendingAsyncPaths.keys()].some((pendingPath) => {
+			try {
+				return settingsFileTarget(pendingPath) === target;
+			} catch {
+				return pendingPath === resolvedPath;
+			}
+		});
+	if (conflicted) {
+		throw new Error(
+			`Cannot synchronously edit ${path} while an asynchronous MCP configuration edit is in progress; await addMcpServerConfigAsync, updateMcpServerConfigAsync, or removeMcpServerConfigAsync instead`,
+		);
+	}
+}
+
 function editMcpServersSync(
 	path: string,
 	edit: (servers: Record<string, unknown> | undefined, parsed: Record<string, unknown>) => boolean,
 ): void {
-	const text = existsSync(path) ? stripBom(readFileSync(path, "utf8")) : undefined;
+	assertNoPendingAsyncEdit(path);
+	const target = settingsFileTarget(resolve(path));
+	const text = existsSync(target) ? stripBom(readFileSync(target, "utf8")) : undefined;
 	const output = serializeEditedMcpServers(path, text, edit);
 	if (output === undefined) return;
-	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, output);
+	mkdirSync(dirname(target), { recursive: true });
+	writeSettingsFile(target, output);
 }
 
 /** The edit of each `mcp.json` that runs last; a later edit of the same file waits for it. */
 const pendingEdits = new Map<string, Promise<void>>();
+let editRegistrationQueue = Promise.resolve();
 
 /**
  * Read an `mcp.json` (an empty config when missing), let `edit` change its `mcpServers`, and write
@@ -346,24 +384,51 @@ function editMcpServers(
 	path: string,
 	edit: (servers: Record<string, unknown> | undefined, parsed: Record<string, unknown>) => boolean,
 ): Promise<void> {
-	const key = resolve(path);
-	const previous = pendingEdits.get(key) ?? Promise.resolve();
-	const editing = previous.catch(() => undefined).then(() => rewriteMcpServers(path, edit));
-	pendingEdits.set(key, editing);
-	const settled = () => {
-		if (pendingEdits.get(key) === editing) pendingEdits.delete(key);
-	};
-	editing.then(settled, settled);
-	return editing;
+	const resolvedPath = resolve(path);
+	trackPendingAsyncPath(resolvedPath, 1);
+	const registration = editRegistrationQueue.then(async () => {
+		const target = await settingsFileTargetAsync(resolvedPath);
+		trackPendingAsyncPath(target, 1);
+		const previous = pendingEdits.get(target) ?? Promise.resolve();
+		let releaseNext!: () => void;
+		const nextGate = new Promise<void>((resolveGate) => {
+			releaseNext = resolveGate;
+		});
+		const chained = previous.then(() => nextGate);
+		pendingEdits.set(target, chained);
+		return { target, previous, chained, releaseNext };
+	});
+	editRegistrationQueue = registration.then(
+		() => undefined,
+		() => undefined,
+	);
+	return (async () => {
+		let registered: Awaited<typeof registration> | undefined;
+		try {
+			registered = await registration;
+			await registered.previous;
+			await rewriteMcpServers(path, registered.target, edit);
+		} finally {
+			trackPendingAsyncPath(resolvedPath, -1);
+			if (registered !== undefined) {
+				trackPendingAsyncPath(registered.target, -1);
+				registered.releaseNext();
+				if (pendingEdits.get(registered.target) === registered.chained) {
+					pendingEdits.delete(registered.target);
+				}
+			}
+		}
+	})();
 }
 
 async function rewriteMcpServers(
 	path: string,
+	target: string,
 	edit: (servers: Record<string, unknown> | undefined, parsed: Record<string, unknown>) => boolean,
 ): Promise<void> {
-	const text = (await pathExists(path)) ? stripBom(await readFile(path, "utf8")) : undefined;
+	const text = (await pathExists(target)) ? stripBom(await fsPromises.readFile(target, "utf8")) : undefined;
 	const output = serializeEditedMcpServers(path, text, edit);
 	if (output === undefined) return;
-	await mkdir(dirname(path), { recursive: true });
-	await writeFile(path, output);
+	await fsPromises.mkdir(dirname(target), { recursive: true });
+	await writeSettingsFileAsync(target, output);
 }
