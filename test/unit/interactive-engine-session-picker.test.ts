@@ -97,7 +97,7 @@ function makeBridge(): Bridge {
 			new Promise((resolve) => {
 				const mount: HostMount = { component: undefined as unknown as SessionSelectorComponent, resolved: false };
 				const tui = { terminal: { rows: 40, columns: 120 }, requestRender: () => {} };
-				mount.component = factory(tui, {}, {}, (result: unknown) => {
+				mount.component = factory(tui, {}, new KeybindingsManager(), (result: unknown) => {
 					mount.resolved = true;
 					resolve(result);
 				});

@@ -47,7 +47,7 @@ function makeLocalUi(): LocalMount {
 			) => SessionSelectorComponent | Promise<SessionSelectorComponent>,
 		) =>
 			new Promise<undefined>((resolve) => {
-				const built = factory({ terminal: { rows: 40, columns: 120 } }, {}, {}, (result) => {
+				const built = factory({ terminal: { rows: 40, columns: 120 } }, {}, new KeybindingsManager(), (result) => {
 					resolved = true;
 					resolve(result);
 				});
@@ -241,7 +241,7 @@ describe("in-process host session picker (non-isolated)", () => {
 				new Promise<undefined>((resolve) => {
 					// Defer the factory: some hosts mount custom UI asynchronously.
 					mountFactory = () => {
-						component = factory({ terminal: { rows: 40, columns: 120 } }, {}, {}, resolve);
+						component = factory({ terminal: { rows: 40, columns: 120 } }, {}, new KeybindingsManager(), resolve);
 					};
 				}),
 		} as unknown as HostSessionPickerUi;
