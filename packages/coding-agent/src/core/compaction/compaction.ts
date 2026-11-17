@@ -190,8 +190,8 @@ export function shouldCompact(contextTokens: number, contextWindow: number, sett
  * Providers fold image tokens into their reported prompt/input usage, so usage-based
  * accounting already captures actual image cost. For heuristic paths (trailing
  * messages without usage, transcript content-block estimates) a single conservative
- * fixed estimate keeps both the context-window threshold check and the transcript
- * planner consistent.
+ * fixed estimate keeps the context-window threshold check and the compaction estimates
+ * consistent.
  */
 export const ESTIMATED_IMAGE_CHARS = 4800;
 export const ESTIMATED_IMAGE_TOKENS = Math.ceil(ESTIMATED_IMAGE_CHARS / 4);

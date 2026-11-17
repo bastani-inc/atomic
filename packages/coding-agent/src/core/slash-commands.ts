@@ -369,7 +369,7 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "new", description: "Start a new session" },
 	{
 		name: "compact",
-		description: "Clear the context window; the agent then recovers what it needs from session history",
+		description: "Clear or compact the context window; the agent recovers what it needs from session history",
 		argumentHint: "[instructions]",
 	},
 	{ name: "resume", description: "Resume another session" },

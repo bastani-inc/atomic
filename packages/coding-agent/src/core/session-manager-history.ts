@@ -48,7 +48,7 @@ function contextMessageFromEntry(entry: SessionEntry): AgentMessage | undefined 
  * tool call was compacted away, or a trailing unanswered tool call) would otherwise
  * emit ill-ordered provider blocks and fail the request. Payloads are kept whole:
  * tool results keep their full text and images stay as image blocks, because the tail
- * is exactly the span `preserve_recent` promised to keep. Thinking is omitted, as in
+ * is exactly the span an older boundary promised to keep. Thinking is omitted, as in
  * the compacted region; the durable entries keep it, and messages after the boundary
  * replay with their thinking blocks.
  */

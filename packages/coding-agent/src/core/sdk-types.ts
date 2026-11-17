@@ -60,10 +60,7 @@ export interface CreateAgentSessionOptions {
 	thinkingLevel?: ThinkingLevel;
 	/**
 	 * Ordered fallback models as provider/model strings with optional :thinkingLevel suffix.
-	 * Used by main-chat turns and borrowed, planner-only, for compaction range planning when
-	 * the current model cannot produce a usable plan — so a configured candidate may receive
-	 * the compaction transcript. Borrowing never changes the session model or thinking level.
-	 * Default: settings.fallbackModels
+	 * Used by main-chat turns. Default: settings.fallbackModels
 	 */
 	fallbackModels?: string[];
 	/** Hard eligibility gate applied before fallback inference, including compaction borrowing. */

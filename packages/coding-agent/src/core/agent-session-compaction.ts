@@ -559,7 +559,7 @@ export function compact(this: AgentSession, options: SessionCompactOptions = {})
 	this._pendingPostCompactionContinuation = undefined;
 
 	const automaticCompletion = this._autoCompactionCompletion;
-	// The manual request wins. Abort the active automatic planner now, before the
+	// The manual request wins. Abort the active automatic compaction now, before the
 	// next microtask can admit a post-tool or threshold boundary, then wait for
 	// its owner to settle before mutating the transcript ourselves. Start the
 	// session abort before publishing this new manual owner so abort() cancels
@@ -583,7 +583,7 @@ export function compact(this: AgentSession, options: SessionCompactOptions = {})
 				if (automaticCompletion !== undefined) await automaticCompletion;
 				await abortBoundary;
 			} catch (error) {
-				// The abort drain can fail before the planner starts. Finish the
+				// The abort drain can fail before compaction starts. Finish the
 				// manual lifecycle so event consumers can release queued input.
 				await emitManualCompactionFailure.call(this, controller, error, false);
 				throw error;
