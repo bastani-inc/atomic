@@ -130,6 +130,7 @@ test("workflow fallback replacements keep explicit model and effort labels throu
 										graphTheme: deriveGraphTheme({}),
 									});
 									frames.push(stripVTControlCharacters(view.render(140).join("\n")));
+									if (model === "openai/model-a") throw new Error("400 context length exceeded");
 									if (model !== "openai/model-c") throw new Error("401 invalid API key");
 									return undefined;
 								},

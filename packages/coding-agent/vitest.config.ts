@@ -41,6 +41,16 @@ const skippedSuites = [
 ];
 
 /**
+ * Suites that test/unit/test-suite-runner.test.ts writes under `test/` to run through this config, each there only
+ * while one of its tests runs. Another run globbing this suite in the same checkout meanwhile would collect a file
+ * about to vanish: the duration sequencer's check, globbing once per shard beside that test, saw it in some shards'
+ * file lists and not in others', so files went to two shards or to none. Only the run that test starts for its own
+ * suite, which sets `ATOMIC_TEST_COLLECT_SCRATCH_SUITES` and names the suite's file on its command line, collects them.
+ */
+const scratchSuites =
+	process.env.ATOMIC_TEST_COLLECT_SCRATCH_SUITES === "1" ? [] : ["**/.tmp-test-suite-runner-real-*/**"];
+
+/**
  * Both projects share everything except which files they collect, so a setting
  * cannot drift between the Node-hosted and Bun-hosted halves of one suite.
  *
@@ -71,7 +81,7 @@ const project = (name: string, include: string[], exclude: string[]) => ({
 		testTimeout: defaultTestTimeoutMs,
 		hookTimeout: defaultHookTimeoutMs,
 		include,
-		exclude: ["**/node_modules/**", ...exclude],
+		exclude: ["**/node_modules/**", ...scratchSuites, ...exclude],
 		server: { deps: { external: [/@silvia-odwyer\/photon-node/] } },
 	},
 });

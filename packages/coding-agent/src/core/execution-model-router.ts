@@ -10,6 +10,7 @@ import {
 } from "@bastani/atomic-ai";
 import { getDocsPath } from "../config.js";
 import { decide, decideWithModel } from "./decision/decide.js";
+import { partitionByCredentials } from "./model-credential-filter.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import { resolveModelScopeFromModels } from "./model-resolver-scope.ts";
 import { ROUTING_REQUEST_BYTES } from "./model-routing-bytes.js";
@@ -46,7 +47,9 @@ export interface ModelRoutingContext {
 		ModelRegistry,
 		"getAll" | "getAvailable" | "streamSimple" | "containsConfiguredCredential"
 	> &
-		Partial<Pick<ModelRegistry, "getProviderAuthStatus" | "getProviderAuth" | "getClassifierModel" | "classify">>;
+		Partial<Pick<ModelRegistry, "getProviderAuthStatus" | "getProviderAuth" | "getClassifierModel" | "classify">> & {
+			hasConfiguredAuth?(model: { readonly provider: string }): boolean;
+		};
 	readonly model?: Model<Api>;
 	getDecisionModel(): string;
 	/** Provider and model filters from settings.json `modelRouting`; absent means every model is a candidate. */
@@ -232,6 +235,8 @@ export async function routeExecutionModel(input: {
 	signal?.throwIfAborted();
 	const constraints = structuredClone((input.constraints ?? []).map((c) => parseModelConstraints(c)!));
 	const statedNeeds = parseTaskNeeds(input.taskNeeds);
+	const requiredInputs = new Set(input.selection?.requiredInputs ?? []);
+	if (statedNeeds?.needsImages) requiredInputs.add("image");
 	// settings.json provider lists are defaults that only the call itself may
 	// replace; every constraint's own provider lists are enforced by eligiblePair.
 	const routing = ctx.getModelRouting?.() ?? {};
@@ -250,8 +255,10 @@ export async function routeExecutionModel(input: {
 	// uses `allowsModel` as its fallback gate after model fallback retired the session that launched it, and a
 	// retired extension context throws on every read. The registry is the session-independent model runtime's.
 	const { modelRegistry } = ctx;
-	const permittedModels = () => {
-		const models = modelRegistry.getAvailable();
+	const credentialed = (provider: string) =>
+		modelRegistry.hasConfiguredAuth?.({ provider }) ??
+		modelRegistry.getAvailable().some((model) => model.provider === provider);
+	const gatedModels = (models = modelRegistry.getAvailable()) => {
 		const allowed = allowedModels.length ? matching(allowedModels, models) : undefined;
 		const excluded = matching(excludedModels, models);
 		return models.filter((model) => {
@@ -264,6 +271,7 @@ export async function routeExecutionModel(input: {
 			);
 		});
 	};
+	const permittedModels = () => partitionByCredentials(gatedModels(), (model) => model.provider, credentialed).usable;
 	const catalog = () =>
 		permittedModels()
 			// Ultrafast is billed above Standard and gated by account access. It is selectable
@@ -291,10 +299,24 @@ export async function routeExecutionModel(input: {
 			...(excludedModels.length ? ["modelRouting.excludedModels"] : []),
 		];
 		const noun = gateSettings.length === 1 && !providerSettings ? "setting" : "settings";
+		const uncredentialed = gatedModels(modelRegistry.getAll())
+			.filter((model) => !credentialed(model.provider))
+			.filter((model) =>
+				(model.reasoning ? getSupportedThinkingLevels(model) : [null]).some((effort) =>
+					eligiblePair(model, { model: `${model.provider}/${model.id}`, effort }, constraints),
+				),
+			)
+			.map((model) => `${model.provider}/${model.id} (no credentials for ${model.provider})`);
+		const diagnosticLimit = 8;
+		const credentialSummary = uncredentialed.slice(0, diagnosticLimit).join(", ");
+		const omitted = uncredentialed.length - diagnosticLimit;
+		const lacking = uncredentialed.length
+			? `: ${credentialSummary}${omitted > 0 ? `, and ${omitted} more` : ""}`
+			: "";
 		throw new Error(
 			gateSettings.length
-				? `Auto routing has no eligible model/effort pairs. Check configured providers, modelConstraints, and the ${new Intl.ListFormat("en", { type: "conjunction" }).format(gateSettings)} ${noun}.`
-				: "Auto routing has no eligible model/effort pairs. Check configured providers and modelConstraints.",
+				? `Auto routing has no eligible model/effort pairs${lacking}. Check configured providers, modelConstraints, and the ${new Intl.ListFormat("en", { type: "conjunction" }).format(gateSettings)} ${noun}.`
+				: `Auto routing has no eligible model/effort pairs${lacking}. Check configured providers and modelConstraints.`,
 		);
 	}
 	// The effective post-filter pool, echoed in routerSelection for audit (#3528).
@@ -306,6 +328,7 @@ export async function routeExecutionModel(input: {
 			...(ctx.getHttpIdleTimeoutMs ? { getHttpIdleTimeoutMs: () => ctx.getHttpIdleTimeoutMs!() } : {}),
 		};
 		const router = resolveDecisionModel({ settings, currentModel: ctx.model, modelRegistry: ctx.modelRegistry });
+		const credentialedCurrentModel = ctx.model && credentialed(ctx.model.provider) ? ctx.model : undefined;
 		if (!input.task.trim()) throw new Error("Auto routing requires task instructions.");
 		const stated = statedNeeds;
 		const agent = { name: input.agent.name, description: input.agent.description };
@@ -337,7 +360,15 @@ export async function routeExecutionModel(input: {
 				entry?.pairs.find((candidate) => candidate.effort === effort),
 			).find((candidate) => candidate !== undefined);
 			if (pair === undefined) return undefined;
-			return routeExecutionModel({ ...input, selection: { model: pair.model, effort: pair.effort, candidates } });
+			return routeExecutionModel({
+				...input,
+				selection: {
+					model: pair.model,
+					effort: pair.effort,
+					candidates,
+					...(requiredInputs.size ? { requiredInputs: [...requiredInputs] } : {}),
+				},
+			});
 		};
 		// Any failure before a model is chosen is a total inference failure: the
 		// router and its chat structured-output fallback both failed (#3206).
@@ -369,6 +400,10 @@ export async function routeExecutionModel(input: {
 		const fallBackToCurrentModel = async (message: string): Promise<never> => {
 			throw new AutoRoutingInferenceError(message, await currentModelRoute().catch(() => undefined));
 		};
+		if (router.kind === "chat" && !credentialed(router.model.provider))
+			await fallBackToCurrentModel(
+				`Auto routing cannot use the decision model ${router.fullId}: no credentials for ${router.model.provider}. Log in to ${router.model.provider} or set decisionModel to a model you have credentials for.`,
+			);
 		const catalogEvals = await readModelSelectionEvals(signal)
 			.then(parsedEvals)
 			.catch((error: unknown) => {
@@ -385,7 +420,7 @@ export async function routeExecutionModel(input: {
 			const preferred =
 				router.kind === "chat"
 					? router.model
-					: current && current.id !== "auto" && isModelType(current, "chat")
+					: current && current.id !== "auto" && isModelType(current, "chat") && credentialed(current.provider)
 						? current
 						: undefined;
 			// The reader gets the complete task. When the task is larger than the
@@ -427,7 +462,7 @@ export async function routeExecutionModel(input: {
 					{
 						settings,
 						modelRegistry: ctx.modelRegistry,
-						currentModel: ctx.model,
+						currentModel: credentialedCurrentModel,
 						state: {
 							task,
 							agent,
@@ -448,6 +483,7 @@ export async function routeExecutionModel(input: {
 			answers = Object.fromEntries(Object.entries(result.answers).map(([id, answer]) => [id, answer.choice]));
 		}
 		const needs: ResolvedTaskNeeds = resolveTaskNeeds(stated, answers);
+		if (needs.needsImages) requiredInputs.add("image");
 
 		// Step 2: narrow in code. A task that needs images only goes to models that read them.
 		const seeing = needs.needsImages ? available.filter((entry) => entry.model.input.includes("image")) : available;
@@ -519,7 +555,7 @@ export async function routeExecutionModel(input: {
 				decide({
 					settings,
 					modelRegistry: ctx.modelRegistry,
-					currentModel: ctx.model,
+					currentModel: credentialedCurrentModel,
 					state: { ...choiceState },
 					instructions: CHOICE_INSTRUCTIONS,
 					questions: {
@@ -575,9 +611,14 @@ export async function routeExecutionModel(input: {
 		effort: selection.effort,
 		...(fallbacks?.length ? { fallbacks: Object.freeze(fallbacks) } : {}),
 		...(selection.candidates ? { candidates: Object.freeze([...selection.candidates]) } : {}),
+		...(requiredInputs.size ? { requiredInputs: Object.freeze([...requiredInputs]) } : {}),
 	});
 	const hasPair = (pair: ModelRouterOutput) =>
-		catalog().some((entry) => entry.pairs.some((p) => p.model === pair.model && p.effort === pair.effort));
+		catalog().some(
+			(entry) =>
+				[...requiredInputs].every((required) => entry.model.input.includes(required)) &&
+				entry.pairs.some((p) => p.model === pair.model && p.effort === pair.effort),
+		);
 	const allowsModel = (model: Model<Api>, effort?: string): boolean => {
 		const levels = model.reasoning ? getSupportedThinkingLevels(model) : [null];
 		return levels.some((level) => {
