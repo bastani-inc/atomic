@@ -113,13 +113,13 @@ fn denied_write_access_is_an_error_not_lock_contention_5317() {
 	let dir = scratch();
 	let path = dir.join("readonly.lock");
 	fs::write(&path, "").unwrap();
-	let mut permissions = fs::metadata(&path).unwrap().permissions();
-	permissions.set_readonly(true);
-	fs::set_permissions(&path, permissions.clone()).unwrap();
+	let original_permissions = fs::metadata(&path).unwrap().permissions();
+	let mut readonly_permissions = original_permissions.clone();
+	readonly_permissions.set_readonly(true);
+	fs::set_permissions(&path, readonly_permissions).unwrap();
 	let exclusive = try_advisory_lock(path.to_string_lossy().into_owned(), 0);
 	let shared = try_shared_advisory_lock(path.to_string_lossy().into_owned(), 0);
-	permissions.set_readonly(false);
-	fs::set_permissions(&path, permissions).unwrap();
+	fs::set_permissions(&path, original_permissions).unwrap();
 	fs::remove_dir_all(dir).unwrap();
 	assert!(
 		exclusive.is_err(),
