@@ -25,6 +25,7 @@ import { PersistedOutputFile } from "../src/core/tools/persisted-output-file.ts"
 import {
 	deriveOwnerComponent,
 	ensureTempDir,
+	ensureTempDirAsync,
 	getSessionTempDir,
 	getSessionTempDirAsync,
 	getTempRootDir,
@@ -39,6 +40,14 @@ import {
 } from "../src/core/tools/session-temp-dir.ts";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS, TOOL_RESULTS_SUBDIR } from "../src/core/tools/tool-limits.ts";
 import { isPathInside } from "../src/utils/path-inside.js";
+
+it("asynchronous temp creation yields before touching the directory", async () => {
+	const path = join(sandbox, "async-yield", "child");
+	const created = ensureTempDirAsync(path);
+	assert.equal(existsSync(path), false, "creating a spill must not synchronously touch the file system");
+	assert.equal(await created, path);
+	assert.equal(statSync(path).isDirectory(), true);
+});
 
 const isPosix = process.platform !== "win32";
 
@@ -439,7 +448,7 @@ assert.equal(await temp.ensurePrivateTempDirAsync("extensions"), join(second, "a
 describe("persisted tool-output files", () => {
 	it("creates spill files owner-only", async () => {
 		const dir = await getSessionTempDirAsync("file-mode");
-		const file = new PersistedOutputFile(join(dir, "spill.log"));
+		const file = await PersistedOutputFile.create(join(dir, "spill.log"));
 		file.write("hello");
 		await file.close();
 		if (isPosix) {
