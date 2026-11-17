@@ -76,6 +76,18 @@ async function settle(): Promise<void> {
 }
 
 describe("WindowedContainer in a scroll view", () => {
+	it("scrolls to the requested row after offscreen heights replace their estimates", () => {
+		const content = new WindowedContainer();
+		for (const child of entries(200)) content.addChild(child);
+		const request = { width: COLUMNS, height: ROWS, followEnd: false, requestRender() {} };
+		content.layoutWindow({ ...request, top: 0 });
+		// As a background sweep does, measure the offscreen entries before the next layout updates its offsets.
+		content.settleRows();
+		const rows = content.layoutWindow({ ...request, top: 300 });
+		assert.equal(rows.top, 300);
+		assert.equal(rows.at(rows.top), `${PROMPT}entry 120 row 0`);
+	});
+
 	it("shows the rows a container of the same children shows, at the end, the top and in between", async () => {
 		const windowed = open(new WindowedContainer(), entries(200));
 		const plain = open(new Container(), entries(200));

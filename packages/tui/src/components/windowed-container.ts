@@ -89,6 +89,7 @@ export class WindowedContainer extends Container {
 	private measuredRows = 0;
 	private measuredChildren = 0;
 	private lastRowIndex = 0;
+	private lastTop = 0;
 	private requestRender: (() => void) | undefined;
 	/**
 	 * The background pass in progress: from the window up, then down. A full pass renders every child; otherwise it
@@ -120,7 +121,9 @@ export class WindowedContainer extends Container {
 		const width = Math.max(1, Math.floor(request.width));
 		const height = Math.max(0, Math.floor(request.height));
 		this.requestRender = request.requestRender;
-		const anchor = this.locateAnchor(request.top);
+		// Preserve the visible content only while the view stays put. A new scroll target uses the measured rows,
+		// not the old offsets that a background sweep's height changes have made stale.
+		const anchor = request.top === this.lastTop ? this.locateAnchor(request.top) : undefined;
 		if (width !== this.width) {
 			this.width = width;
 			for (const entry of this.laidOut) entry.current = false;
@@ -136,6 +139,7 @@ export class WindowedContainer extends Container {
 			top = this.topFor(request, anchor, height);
 		}
 		this.scheduleSweep();
+		this.lastTop = top;
 		const length = this.rowCount();
 		return { top, length, at: (index) => this.rowAt(index) };
 	}
