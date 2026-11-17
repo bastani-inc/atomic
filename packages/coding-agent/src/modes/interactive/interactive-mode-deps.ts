@@ -111,6 +111,7 @@ export {
 	hasProjectConfigDir,
 	hasProjectTrustInputs,
 	hasTrustRequiringProjectResources,
+	hasTrustRequiringProjectResourcesAsync,
 	ProjectTrustStore,
 } from "../../core/trust-manager.ts";
 export {

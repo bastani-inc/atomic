@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
@@ -482,14 +482,16 @@ test("/trust reports a balanced wait on cancel, selection, and selector replacem
 			};
 			const showTrust = Reflect.get(InteractiveModeBase.prototype, "showTrustSelector") as (
 				this: typeof host,
-			) => void;
-			showTrust.call(host);
+			) => Promise<void>;
+			const shown = showTrust.call(host);
+			await vi.waitFor(() => assert.ok(mounted));
 			await flushNotifications();
 			assert.deepEqual(events, [
 				{ type: "ui_prompt_start", reason: "project_trust", kind: "select", title: "Project trust" },
 			]);
 			if (action === "dispose") mounted.dispose?.();
 			else mounted.component.handleInput(action === "cancel" ? "\x1b" : "\n");
+			await shown;
 			await flushNotifications();
 			assert.deepEqual(events, [
 				{ type: "ui_prompt_start", reason: "project_trust", kind: "select", title: "Project trust" },

@@ -30,6 +30,11 @@ const BLUEPRINT_BUILDS = 40;
 const RELAY_HOLDERS = 6;
 const RELAY_HOLD_MS = TRUST_LOCK_WAIT_MS / 4;
 const TRUST_MODULE = fileURLToPath(new URL("../src/core/trust-manager.ts", import.meta.url));
+/** How long another process keeps the trust lock while a save waits for it, well within the save's holder wait. */
+const ASYNC_WAIT_HOLD_MS = TRUST_LOCK_WAIT_MS / 25;
+const ASYNC_WAIT_PROBE_MS = 5;
+/** Ticks a probe timer must see during that hold: a save that blocked the event loop lets none through. */
+const ASYNC_WAIT_MIN_TICKS = 5;
 
 // Permission bits do not deny root, and Windows ignores them.
 const posixNonRoot = process.platform === "win32" || process.getuid?.() === 0 ? it.skip : it;
@@ -348,6 +353,27 @@ describe("trust store under concurrent sessions (#4952)", () => {
 		},
 		CHILD_PROCESS_TEST_TIMEOUT_MS,
 	);
+
+	it("waits for another process's trust lock without blocking the event loop, and saves once it is released", async () => {
+		const project = join(sandbox, "project");
+		const lockPath = `${trustPath}.lock`;
+		mkdirSync(lockPath);
+		let ticks = 0;
+		const probe = setInterval(() => {
+			ticks += 1;
+		}, ASYNC_WAIT_PROBE_MS);
+		// The other process releases its lock after a while; a save that blocked the event loop would never see it.
+		const release = setTimeout(() => rmSync(lockPath, { recursive: true, force: true }), ASYNC_WAIT_HOLD_MS);
+		try {
+			await new ProjectTrustStore(agentDir).setManyAsync([{ path: project, decision: true }]);
+		} finally {
+			clearInterval(probe);
+			clearTimeout(release);
+		}
+
+		assert.equal(await new ProjectTrustStore(agentDir).getAsync(project), true);
+		assert.ok(ticks >= ASYNC_WAIT_MIN_TICKS, `the event loop ran only ${ticks} times while the save waited`);
+	});
 
 	it("takes over a lock a crashed process left behind (#4952)", () => {
 		const project = join(sandbox, "project");

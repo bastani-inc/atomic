@@ -431,7 +431,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				return;
 			}
 			if (bare("trust")) {
-				this.showTrustSelector();
+				void this.showTrustSelector();
 				this.editor.setText("");
 				return;
 			}

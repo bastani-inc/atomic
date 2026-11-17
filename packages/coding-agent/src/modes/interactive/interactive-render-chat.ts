@@ -30,9 +30,10 @@ import {
 	type ChatMessageRenderOptions,
 	CompactionBoundaryMessageComponent,
 	type Component,
+	Container,
 	CustomMessageComponent,
 	chatEntriesFromAgentMessages,
-	hasTrustRequiringProjectResources,
+	hasTrustRequiringProjectResourcesAsync,
 	Markdown,
 	type Message,
 	type PersistedMessageMeta,
@@ -704,24 +705,42 @@ InteractiveModeBase.prototype.renderInitialMessages = function (this: Interactiv
 	}
 };
 
+/**
+ * Warns that this untrusted project's resources are ignored, when it has resources that need trust. Finding them walks
+ * the file system, so the warning's place in the chat is kept and filled once the walk answers.
+ */
 function renderProjectTrustWarningIfNeeded(mode: InteractiveModeBase): void {
-	if (mode.settingsManager.isProjectTrusted() || !hasTrustRequiringProjectResources(mode.sessionManager.getCwd())) {
+	if (mode.settingsManager.isProjectTrusted()) {
 		return;
 	}
-	if (mode.chatContainer.children.length > 0) {
-		mode.chatContainer.addChild(new Spacer(1));
-	}
-	mode.chatContainer.addChild(
-		new ThemedText(
-			() =>
-				theme.fg(
-					"warning",
-					`This project is not trusted. Project ${CONFIG_DIR_NAME} resources and packages are ignored. Use /trust to save a trust decision, then restart ${APP_NAME}.`,
-				),
-			1,
-			0,
-		),
-	);
+	const chat = mode.chatContainer;
+	const separated = chat.children.length > 0;
+	const slot = new Container();
+	chat.addChild(slot);
+	const settle = (requiresTrust: boolean) => {
+		// A chat rebuilt meanwhile was given its own warning.
+		if (!chat.children.includes(slot)) return;
+		if (!requiresTrust) {
+			chat.removeChild(slot);
+			return;
+		}
+		if (separated) {
+			slot.addChild(new Spacer(1));
+		}
+		slot.addChild(
+			new ThemedText(
+				() =>
+					theme.fg(
+						"warning",
+						`This project is not trusted. Project ${CONFIG_DIR_NAME} resources and packages are ignored. Use /trust to save a trust decision, then restart ${APP_NAME}.`,
+					),
+				1,
+				0,
+			),
+		);
+		mode.ui.requestRender();
+	};
+	void hasTrustRequiringProjectResourcesAsync(mode.sessionManager.getCwd()).then(settle, () => settle(false));
 }
 
 InteractiveModeBase.prototype.getUserInput = async function (
