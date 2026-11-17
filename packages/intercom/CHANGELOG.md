@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a multi-node Intercom broker on Windows freezing for seconds as it started, up to 30 s on a loaded host ([#5252](https://github.com/bastani-inc/atomic/issues/5252)). It read its host's identity and the start time of an earlier instance's process by running PowerShell and `reg` synchronously, so nothing else in the broker ran meanwhile, including the sessions connecting to it. These commands now run without blocking it. A process reads its host's identity once and every broker it starts uses it.
+
 ## [0.9.88] - 2026-11-16
 
 ### Added
