@@ -699,6 +699,13 @@ export class WorkflowAttachPane implements Component {
 		if (this.mode === "stage-chat" && this.chatView) this.chatView.invalidate();
 		else this.graphView.invalidate();
 	}
+	/**
+	 * A store change arrived. The graph lays itself out again from the new snapshot; an attached chat reads the store
+	 * as it renders, so it keeps its rendered transcript instead of rendering every entry again.
+	 */
+	storeChanged(): void {
+		if (this.mode !== "stage-chat" || !this.chatView) this.graphView.invalidate();
+	}
 	dispose(): void {
 		this.attachmentGeneration += 1;
 		this.unsubscribeStore?.();

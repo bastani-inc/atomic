@@ -159,7 +159,11 @@ function makeBridge(options: BridgeOptions = {}): Bridge {
 			factory: (tui: unknown, theme: unknown, keys: unknown, done: (result: unknown) => void) => HostComponent,
 		) =>
 			new Promise((resolve) => {
-				const factoryTui = tui ?? { terminal: { rows: 40, columns: 100 }, requestRender: () => {} };
+				const factoryTui = tui ?? {
+					terminal: { rows: 40, columns: 100 },
+					requestRender: () => {},
+					requestImmediateRender: () => {},
+				};
 				bridge.hostComponent = factory(factoryTui, {}, {}, resolve);
 			}),
 	} as unknown as ExtensionUIContext;

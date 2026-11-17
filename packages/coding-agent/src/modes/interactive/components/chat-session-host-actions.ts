@@ -49,7 +49,7 @@ export function interruptChatSession<TExtraEntry extends ChatTranscriptEntryLike
 			state.sdkBusy = false;
 			state.workingMessage = undefined;
 			state.workingRunMeter.stop();
-			stopChatSessionWorkingLifecycle(state, false);
+			stopChatSessionWorkingLifecycle(state);
 			await state.commands.interrupt?.();
 		} catch (err) {
 			state.interruptFailureMessage = errorMessage(err);
