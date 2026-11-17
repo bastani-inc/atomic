@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, test } from "vitest";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { renameWithRetry } from "../src/core/rename-retry.ts";
 import { buildLockPath } from "../src/core/resume/blueprint/build-lock.ts";
+import { rootKey } from "../src/core/resume/blueprint/ledger.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
@@ -121,19 +122,21 @@ afterEach(async () => {
 });
 
 /** A session recorded in a clone whose blueprint's maintenance waits for {@link gate}; the clone is then gone. */
-async function recordedSession(afterGate = ""): Promise<{ sessionId: string; storePath: string }> {
+async function recordedSession(afterGate = "", custom?: string): Promise<{ sessionId: string; storePath: string }> {
 	const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
-	const blueprint = [
-		"maintenance:",
-		"  - name: Install dependencies",
-		"    run: |",
-		`      basename "$PWD" >> "${shellPath(places())}"`,
-		`      echo started >> "${shellPath(markers())}"`,
-		`      while [ ! -f "${shellPath(gate())}" ]; do sleep 0.05; done`,
-		`      echo built >> "${shellPath(markers())}"`,
-		...(afterGate === "" ? [] : [`      ${afterGate}`]),
-		"",
-	].join("\n");
+	const blueprint =
+		custom ??
+		[
+			"maintenance:",
+			"  - name: Install dependencies",
+			"    run: |",
+			`      basename "$PWD" >> "${shellPath(places())}"`,
+			`      echo started >> "${shellPath(markers())}"`,
+			`      while [ ! -f "${shellPath(gate())}" ]; do sleep 0.05; done`,
+			`      echo built >> "${shellPath(markers())}"`,
+			...(afterGate === "" ? [] : [`      ${afterGate}`]),
+			"",
+		].join("\n");
 	sandbox.write(join(clone, ".atomic", "blueprint.yaml"), forThisHost(blueprint));
 	const storePath = sandbox.path("sessions.sqlite");
 	const database = await openNodeSqliteDatabase(storePath);
@@ -153,7 +156,7 @@ async function recordedSession(afterGate = ""): Promise<{ sessionId: string; sto
 	return { sessionId, storePath };
 }
 
-function launch(args: readonly string[]) {
+function launch(args: readonly string[], extraEnv: NodeJS.ProcessEnv = {}) {
 	const child = spawn(
 		bunExecutable(),
 		[
@@ -176,6 +179,7 @@ function launch(args: readonly string[]) {
 				ATOMIC_INTERCOM_GROUP: undefined,
 				PI_INTERCOM_GROUP: undefined,
 				NO_COLOR: "1",
+				...extraEnv,
 			},
 			stdio: ["pipe", "pipe", "pipe"],
 		},
@@ -483,6 +487,71 @@ describe("a resume without a UI whose blueprint build runs behind the first turn
 			CLI_RESUME_TIMEOUT_MS,
 		);
 	}
+
+	test.skipIf(process.platform === "win32" || processStartToken(process.pid) === undefined)(
+		"a resume after its host was killed while a first action's ENVRC evaluator ran cancels that build and builds a fresh worktree (#5379)",
+		async () => {
+			const evaluating = sandbox.path("evaluating.txt");
+			const startup = sandbox.path("bash-startup.sh");
+			// What a shell startup file can run in the evaluator's bash before anything else of the step.
+			writeFileSync(
+				startup,
+				[
+					'if [ "$0" = atomic-blueprint-envrc ]; then',
+					`  echo evaluating >> "${shellPath(evaluating)}"`,
+					`  while [ ! -f "${shellPath(gate())}" ]; do sleep 0.05; done`,
+					"fi",
+					"",
+				].join("\n"),
+			);
+			const recorded = await recordedSession("", "initialize:\n  - uses: github.com/example/setup@v1\n");
+			const startupEnv = { BASH_ENV: startup, ATOMIC_BLUEPRINT_GITHUB_BASE_URL: sandbox.path("no-actions") };
+			const evaluations = () =>
+				existsSync(evaluating) ? readFileSync(evaluating, "utf8").trim().split(/\r?\n/) : [];
+			const killed = launch(
+				["--session-store", recorded.storePath, "--session", recorded.sessionId, "-p", "hello"],
+				startupEnv,
+			);
+			killed.child.stdin.end();
+			await until(() => evaluations().length === 1, "the first build's ENVRC evaluation to start").catch(
+				(error: Error) => {
+					throw new Error(`${error.message}; the first resume wrote: ${killed.err()}${killed.out()}`);
+				},
+			);
+			const [cancelled] = readdirSync(worktreesDir());
+			killed.child.kill("SIGKILL");
+			await killed.exited;
+			const again = launch(
+				["--session-store", recorded.storePath, "--session", recorded.sessionId, "--approve", "-p", "hello"],
+				startupEnv,
+			);
+			again.child.stdin.end();
+			await until(() => evaluations().length === 2, "the second build's ENVRC evaluation to start").catch(
+				(error: Error) => {
+					throw new Error(`${error.message}; the second resume wrote: ${again.err()}${again.out()}`);
+				},
+			);
+			writeFileSync(gate(), "");
+			assert.equal(await again.exited, 0);
+			const warning = again
+				.err()
+				.split("\n")
+				.filter((line) => line.includes("may still be running") && line.includes(join(worktreesDir(), cancelled!)));
+			assert.equal(warning.length, 1, again.err());
+			const ledger = JSON.parse(readFileSync(join(storeDir(), "blueprint-builds", "ledger.json"), "utf8")) as {
+				roots: Record<string, { state: string }>;
+			};
+			assert.equal(
+				ledger.roots[rootKey(join(worktreesDir(), cancelled!))]?.state,
+				"running",
+				"the cancelled worktree was never built again",
+			);
+			const fresh = readdirSync(worktreesDir()).filter((slot) => slot !== cancelled);
+			assert.equal(fresh.length, 1, "a fresh worktree was restored");
+			assert.notEqual(ledger.roots[rootKey(join(worktreesDir(), fresh[0]!))], undefined, "and built");
+		},
+		CLI_RESUME_TIMEOUT_MS,
+	);
 
 	for (const mode of ["text", "json"] as const) {
 		test.skipIf(processStartToken(process.pid) === undefined)(
