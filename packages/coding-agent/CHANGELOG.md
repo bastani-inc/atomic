@@ -32,6 +32,8 @@
 - On Windows, concurrent resumes and `atomic blueprint prebuild` runs retry temporary `EPERM` refusals when creating pool or seed lock directories, instead of failing or treating reusable worktrees and seeds as dirty or unavailable. Refusals that persist for 10 seconds still report a failure, and locks another process holds still count as busy ([#5320](https://github.com/bastani-inc/atomic/issues/5320))
 - A resume paused while admitting a pooled worktree no longer replaces another process's slot record after losing its locks. Temporary-file cleanup failures no longer orphan an admitted worktree or let a later write corrupt its record, and discarding an old lease cannot delete a newer admission in the same process ([#5320](https://github.com/bastani-inc/atomic/issues/5320))
 - A resume that detects it lost its parked-seed lock stops adoption instead of moving or deleting a replacement seed. It releases the restored worktree's lease before falling back to a fresh restore ([#5320](https://github.com/bastani-inc/atomic/issues/5320))
+- Replacing a submission echo with a prompt rewritten by an `input` hook, or inserting a custom message ahead of a streaming reply, now touches only the tail of the chat container instead of scanning the whole transcript, keeping prompt swaps fast in long sessions ([#5323](https://github.com/bastani-inc/atomic/issues/5323))
+- Corrected new-message counts when a transcript insertion or removal is followed by another change that restores its earlier child count ([#5323](https://github.com/bastani-inc/atomic/issues/5323))
 
 ## [0.9.88] - 2026-11-16
 
