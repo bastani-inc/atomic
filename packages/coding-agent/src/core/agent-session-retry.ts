@@ -5,9 +5,15 @@ import { sleep } from "../utils/sleep.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { isCodexTokenInvalidationError } from "./codex-errors.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
-import { fallbackKey, resolveFallbackModel as resolveConfiguredFallbackModel } from "./fallback-models.ts";
+import {
+	fallbackKey,
+	resolveFallbackModel as resolveConfiguredFallbackModel,
+	resolveFallbackModelWithoutCredentials,
+} from "./fallback-models.ts";
+import { NoUsableModelError, type SkippedModel } from "./model-credential-filter.ts";
 import {
 	isContentFilterRefusal,
+	isProviderCredentialRejection,
 	isRetryableModelFailure,
 	isRetryableSameModelFailure,
 	isSafetyRefusalFailure,
@@ -49,6 +55,20 @@ function resolveFallbackModel(
 		this._modelRuntime,
 		this.model?.provider ?? this.settingsManager.getDefaultProvider(),
 	);
+}
+
+function resolveFallbackModelLackingCredentials(this: AgentSession, value: string): Model<Api> | undefined {
+	return resolveFallbackModelWithoutCredentials(
+		value,
+		this._modelRuntime,
+		this.model?.provider ?? this.settingsManager.getDefaultProvider(),
+	)?.model;
+}
+
+function noteSkipped(skipped: SkippedModel[], model: Model<Api>, reason: SkippedModel["reason"]): void {
+	const label = modelLabel(model);
+	if (!skipped.some((entry) => entry.model === label))
+		skipped.push({ model: label, provider: model.provider, reason });
 }
 
 /** `retry.fallbackOnContentFilter`: a content-filter refusal spends the next fallback candidate, not a retry. */
@@ -221,6 +241,7 @@ function clearFallbackModelScopeState(this: AgentSession): void {
 	this._fallbackRestoreError = undefined;
 	this._fallbackAttemptedKeys.clear();
 	this._fallbackBlockedModels.length = 0;
+	this._fallbackBlockedProviders.clear();
 }
 
 function finishFallbackModelScope(
@@ -296,12 +317,21 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 			this._fallbackBlockedModels.push(currentModel);
 		}
 	}
+	if (isProviderCredentialRejection(message)) {
+		this._fallbackBlockedProviders.add(currentModel.provider);
+	}
 
 	const currentThinkingLevel = this.agent.state.thinkingLevel ?? this.thinkingLevel;
 	const fromModel = currentModel;
+	const skipped: SkippedModel[] = [];
 	for (const rawCandidate of this._fallbackModels) {
 		const candidate = resolveFallbackModel.call(this, rawCandidate);
-		if (!candidate) continue;
+		if (!candidate) {
+			const lacking = resolveFallbackModelLackingCredentials.call(this, rawCandidate);
+			if (lacking && (!this._isFallbackModelAllowed || this._isFallbackModelAllowed(lacking, undefined)))
+				noteSkipped(skipped, lacking, "no-credentials");
+			continue;
+		}
 		const nextModel = candidate.model;
 		const nextLevel = clampThinkingLevel(
 			nextModel,
@@ -317,6 +347,10 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 		// Skipped before any lifecycle starts: a blocked variant emits no fallback
 		// event and opens no scope.
 		if (this._fallbackBlockedModels.some((blocked) => modelsAreEqual(blocked, nextModel))) continue;
+		if (this._fallbackBlockedProviders.has(nextModel.provider)) {
+			noteSkipped(skipped, nextModel, "auth-failed");
+			continue;
+		}
 
 		// Do not create a fallback lifecycle until a candidate can actually be
 		// selected. An exhausted or unresolvable chain has no start to close.
@@ -329,6 +363,7 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 			requested: modelLabel(this._fallbackOriginModel ?? fromModel),
 			from: modelLabel(fromModel),
 			reason: message.errorMessage || "Retryable model error",
+			...(skipped.length > 0 ? { skipped } : {}),
 		});
 		_beginFallbackModelScope.call(this);
 		this.agent.state.model = nextModel;
@@ -401,6 +436,71 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 		this._fallbackRestoreError = message.errorMessage || "Model fallback exhausted";
 	}
 	return false;
+}
+
+export async function _selectModelWithCredentials(this: AgentSession): Promise<void> {
+	const currentModel = this.agent.state.model ?? this.model;
+	if (currentModel === undefined || this._modelRuntime.hasConfiguredAuth(currentModel.provider)) return;
+	const skipped: SkippedModel[] = [];
+	noteSkipped(skipped, currentModel, "no-credentials");
+	const currentThinkingLevel = this.agent.state.thinkingLevel ?? this.thinkingLevel;
+	for (const rawCandidate of this._fallbackModels) {
+		const candidate = resolveFallbackModel.call(this, rawCandidate);
+		if (!candidate) {
+			const lacking = resolveFallbackModelLackingCredentials.call(this, rawCandidate);
+			if (lacking && (!this._isFallbackModelAllowed || this._isFallbackModelAllowed(lacking, undefined)))
+				noteSkipped(skipped, lacking, "no-credentials");
+			continue;
+		}
+		const nextModel = candidate.model;
+		const nextLevel = clampThinkingLevel(
+			nextModel,
+			candidate.thinkingLevel ??
+				this.settingsManager.getDefaultThinkingLevel() ??
+				currentThinkingLevel ??
+				DEFAULT_THINKING_LEVEL,
+		) as ThinkingLevel;
+		if (this._isFallbackModelAllowed && !this._isFallbackModelAllowed(nextModel, nextLevel)) continue;
+		if (modelsAreEqual(nextModel, currentModel)) continue;
+
+		const reason = `No API key found for ${currentModel.provider}`;
+		await this.sessionManager.appendModelChange(nextModel.provider, nextModel.id, {
+			requested: modelLabel(this._fallbackOriginModel ?? currentModel),
+			from: modelLabel(currentModel),
+			reason,
+			skipped,
+		});
+		_beginFallbackModelScope.call(this);
+		this.agent.state.model = nextModel;
+		const thinkingChanged = await applyFallbackThinkingLevel.call(this, nextLevel);
+		this._fallbackAttemptedKeys.add(fallbackKey(currentModel, currentThinkingLevel));
+		this._fallbackAttemptedKeys.add(fallbackKey(nextModel, nextLevel));
+		this._emit({
+			type: "model_fallback_start",
+			from: modelLabel(currentModel),
+			to: modelLabel(nextModel),
+			...(currentModel.reasoning && currentThinkingLevel !== undefined
+				? { fromThinkingLevel: currentThinkingLevel }
+				: {}),
+			...(nextModel.reasoning ? { toThinkingLevel: nextLevel } : {}),
+			reason,
+			attempt: this._fallbackAttemptedKeys.size - 1,
+		});
+		if (thinkingChanged) {
+			this._emit({ type: "thinking_level_changed", level: nextLevel });
+			void this._extensionRunner?.emit({
+				type: "thinking_level_select",
+				level: nextLevel,
+				previousLevel: currentThinkingLevel,
+			});
+		}
+		this._refreshBaseSystemPromptFromActiveTools();
+		this._emitModelChanged(nextModel, currentModel, "fallback");
+		await this._emitModelSelect(nextModel, currentModel, "fallback");
+		await this._recordSystemPromptForModelSwitch();
+		return;
+	}
+	throw new NoUsableModelError(skipped);
 }
 
 export async function _handleRetryableError(this: AgentSession, message: AssistantMessage): Promise<boolean> {
@@ -570,6 +670,7 @@ export const agentSessionRetryMethods = {
 	_isSafetyRefusal,
 	_handleRetryableError,
 	_trySwitchToFallbackModel,
+	_selectModelWithCredentials,
 	_beginFallbackModelScope,
 	_clearFallbackModelScope,
 	_settleFallbackModelScope,

@@ -426,6 +426,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_isSafetyRefusal(message: AssistantMessage): boolean;
 	_handleRetryableError(message: AssistantMessage): Promise<boolean>;
 	_trySwitchToFallbackModel(message: AssistantMessage): Promise<boolean>;
+	_selectModelWithCredentials(): Promise<void>;
 	_beginFallbackModelScope(): void;
 	_clearFallbackModelScope(): void;
 	_settleFallbackModelScope(): Promise<boolean>;
@@ -598,6 +599,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_isFallbackModelAllowed?: (model: Model<Api>, effort: string | undefined) => boolean;
 	_fallbackAttemptedKeys: Set<string>;
 	_fallbackBlockedModels: Array<Model<Api>>;
+	_fallbackBlockedProviders: Set<string>;
 	_fallbackOriginModel: Model<Api> | undefined;
 	_fallbackOriginThinkingLevel: ThinkingLevel | undefined;
 	_fallbackScopeGeneration: number;

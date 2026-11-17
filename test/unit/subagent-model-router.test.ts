@@ -70,6 +70,11 @@ const agent: AgentConfig = {
 async function fixture() {
 	const infer = vi.fn<Parameters<typeof registeredDecisionRuntime>[0]>(chatRouter());
 	const { registry } = await registeredDecisionRuntime(infer);
+	const credentialed = registry.hasConfiguredAuth.bind(registry);
+	vi.spyOn(registry, "hasConfiguredAuth").mockImplementation(
+		(model) =>
+			credentialed(model) || registry.getAvailable().some((available) => available.provider === model.provider),
+	);
 	const ctx = {
 		model: decisionChatModel,
 		modelRegistry: registry,
@@ -781,6 +786,21 @@ test("routerSelection.candidates lists only the models the router chose from aft
 	assert.deepEqual(route.routerSelection.candidates, ["second-provider/reasoner"]);
 });
 
+test("image requirements gate execution fallbacks and survive a recorded route (#5353)", async () => {
+	const f = await fixture();
+	const available = vi.spyOn(f.ctx.modelRegistry, "getAvailable");
+	available.mockReturnValue([decisionChatModel, reasoningModel]);
+	const route = await routeTask(f, { taskNeeds: { ...STATED_CODING_NEEDS, needsImages: true } });
+	assert.equal(route.allowsModel(decisionChatModel), false);
+	assert.equal(route.allowsModel(reasoningModel), true);
+
+	const restored = await routeTask(f, { selection: route.routerSelection });
+	assert.equal(restored.allowsModel(decisionChatModel), false);
+	assert.equal(restored.allowsModel(reasoningModel), true);
+	available.mockReturnValue([decisionChatModel, { ...reasoningModel, input: ["text"] }]);
+	assert.throws(restored.assertCurrent, /no longer eligible/);
+});
+
 test("a caller that states every need gets one choice request whose options carry their own evidence", async () => {
 	const f = await fixture();
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([
@@ -1012,7 +1032,7 @@ test("a caller's shortlist is described with standings among every model the use
 	);
 });
 
-test("a task that needs images falls back to the current chat model when no eligible model can read them", async () => {
+test("a task that needs images never falls back to a text-only current chat model (#5353)", async () => {
 	const f = await fixture();
 	const current = { ...decisionChatModel, input: ["text" as const] };
 	f.ctx.model = current;
@@ -1024,7 +1044,7 @@ test("a task that needs images falls back to the current chat model when no elig
 	await assert.rejects(routeTask(f, { taskNeeds: { needsImages: true } }), (error: unknown) => {
 		assert.ok(error instanceof AutoRoutingInferenceError);
 		assert.match(error.message, /needs a model that can read images/u);
-		assert.equal(error.currentModelRoute?.routerSelection.model, `${current.provider}/${current.id}`);
+		assert.equal(error.currentModelRoute, undefined);
 		return true;
 	});
 });

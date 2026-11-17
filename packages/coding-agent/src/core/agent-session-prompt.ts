@@ -18,11 +18,7 @@ import {
 	queueProtectedStreamingCustomMessage,
 } from "./agent-session-persistent-custom-messages.ts";
 import type { PromptDisposition, PromptOptions, QueuedInputDisposition } from "./agent-session-types.js";
-import {
-	formatNoApiKeyFoundMessage,
-	formatNoModelSelectedMessage,
-	formatUnresolvedModelMessage,
-} from "./auth-guidance.ts";
+import { formatNoModelSelectedMessage, formatUnresolvedModelMessage } from "./auth-guidance.ts";
 import { runCallback } from "./callback-activity.ts";
 import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
 import { expandPromptTemplate } from "./prompt-templates.ts";
@@ -499,14 +495,15 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			// the real load failure instead so configured providers are not falsely
 			// reported as unauthenticated (issue #1431).
 			const isOAuth = this._modelRuntime.isUsingOAuth(this.model.provider);
-			if (isOAuth) {
+			if (isOAuth && this._fallbackModels.length === 0) {
 				throw new Error(
 					`Authentication failed for "${this.model.provider}". ` +
 						`Credentials may have expired or network is unavailable. ` +
 						`Run '/login ${this.model.provider}' to re-authenticate.`,
 				);
 			}
-			throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
+			await this._selectModelWithCredentials();
+			assertCurrent();
 		}
 
 		this._isPreparingRun = "user";
