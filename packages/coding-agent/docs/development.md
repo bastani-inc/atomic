@@ -58,7 +58,7 @@ The process that draws the UI (`host`) and the engine that runs the agent and ex
 
 Records hold function names and file paths, never prompts or message text. Atomic never trims the file, so delete it before reproducing a problem.
 
-While the variable is set, each process checks itself every few milliseconds. The npm package (Node) attaches a debugger to a stalled process to read its stacks, which lengthens that stall by up to about a tenth of a second. The standalone binary instead keeps a sampling profile, which costs a few percent of CPU while code runs. Unset, it costs nothing.
+While the variable is set, each process checks itself every few milliseconds. The npm package (Node) attaches a debugger to a stalled process to read its stacks, which lengthens that stall, typically by tens of milliseconds. The standalone binary instead keeps a sampling profile, which costs a few percent of CPU while code runs. Unset, it costs nothing.
 
 ## PDF and engine diagnostics
 
