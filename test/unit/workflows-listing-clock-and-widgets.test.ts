@@ -146,6 +146,10 @@ for (const [columns, rows, widgetRows, followUpCount, shellRows, working] of [
 	[100, 30, 8, 0, 0, false],
 	[80, 24, 1, 6, 0, false],
 	[80, 24, 1, 0, 8, false],
+	[100, 30, 1, 6, 0, false],
+	[120, 40, 1, 6, 0, false],
+	[100, 30, 1, 0, 8, false],
+	[120, 40, 1, 0, 8, false],
 	[100, 30, 1, 6, 8, true],
 	[120, 40, 1, 6, 8, true],
 ] as const) {
@@ -266,6 +270,11 @@ for (const [columns, rows, widgetRows, followUpCount, shellRows, working] of [
 			await pending;
 			if (followUpCount > 0 || shellRows > 0) terminal.resize(columns, 60);
 			tui.renderNow();
+			if (shellRows > 0) {
+				assert.match(cleanScreen(getLayoutFrame(tui).lines), /pending-shell-output-0/);
+				terminal.resize(columns, 60);
+				tui.renderNow();
+			}
 			const afterClose = cleanScreen(getLayoutFrame(tui).lines);
 			assert.match(afterClose, /below-widget/);
 			assert.match(afterClose, /above-widget-0/);
@@ -273,6 +282,7 @@ for (const [columns, rows, widgetRows, followUpCount, shellRows, working] of [
 			if (followUpCount > 0) {
 				assert.match(afterClose, /queued-follow-up-0/);
 				assert.match(pendingPreview, /queued-follow-up-added-while-open/);
+				assert.equal(context.getAllQueuedMessages().followUp.length, followUps.length);
 			}
 			if (shellRows > 0) {
 				assert.match(afterClose, /pending-shell/);
