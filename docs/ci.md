@@ -341,7 +341,7 @@ worktrees, which Windows runs about ten times slower) split by topic into `resum
 already sets its floor; split that file instead. The two files that bound the table's Windows rows are split the same
 way: `sdk-builtin-host-parity-host-routing.test.ts` into `-prompt-nodes`, `-stage-questionnaire`, `-across-hosts` and
 `-children` (about 114, 87, 83 and 40 s of cases on Windows), and `worktree-pool-claim.test.ts` into itself,
-`-candidates` and `-edges` (about 85, 68 and 77 s), with their fixture in
+`-candidates` and `-edges` (about 81, 71 and 77 s), with their fixture in
 `packages/coding-agent/test/helpers/worktree-pool-claim-fixture.ts`.
 
 A whole-suite job's wall time was set by its longest files and by its total. Pooled-worker integration files ran for four to eight minutes each, and the unit suite alone took 7–10 minutes on one runner. Sharding spreads each suite over several 8-vCPU runners, and long files are split so that none outlasts its shard's share.
