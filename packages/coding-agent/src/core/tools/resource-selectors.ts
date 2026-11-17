@@ -32,9 +32,19 @@ export interface InternalSearchRequest {
 	literal: boolean;
 	contextBefore: number;
 	contextAfter: number;
+	ranges?: readonly { readonly start: number; readonly end: number }[];
+	signal?: AbortSignal;
+}
+export interface InternalReadSelection {
+	ranges?: readonly { readonly start: number; readonly end?: number }[];
+	offset?: number;
+	limit?: number;
+	raw?: boolean;
+	signal?: AbortSignal;
 }
 export interface InternalResourceRouter {
 	read?: (url: string) => string | Buffer | undefined | Promise<string | Buffer | undefined>;
+	readSelected?: (url: string, selection: InternalReadSelection) => string | undefined | Promise<string | undefined>;
 	write?: (url: string, content: string) => void | Promise<void>;
 	resolve?: (url: string) => string | undefined | Promise<string | undefined>;
 	/** Search a resource that is too large to read whole; `undefined` leaves the URL to `read`. */
@@ -508,7 +518,12 @@ export function writeArchiveSelector(selector: ArchiveSelector, content: string)
 }
 const SEARCH_LINE_LIMIT = 512;
 function truncateSearchLine(line: string): string {
-	return line.length > SEARCH_LINE_LIMIT ? `${line.slice(0, SEARCH_LINE_LIMIT)}… [truncated]` : line;
+	if (line.length <= SEARCH_LINE_LIMIT) return line;
+	let end = SEARCH_LINE_LIMIT;
+	const high = line.charCodeAt(end - 1);
+	const low = line.charCodeAt(end);
+	if (high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff) end--;
+	return `${line.slice(0, end)}… [truncated]`;
 }
 function stripExtendedRegexWhitespace(pattern: string): string {
 	let out = "",
@@ -542,7 +557,7 @@ function stripExtendedRegexWhitespace(pattern: string): string {
 	return out;
 }
 
-function normalizeSearchPattern(pattern: string, ignoreCase: boolean): { pattern: string; flags: string } {
+export function normalizeSearchPattern(pattern: string, ignoreCase: boolean): { pattern: string; flags: string } {
 	const match = pattern.match(/^\(\?([imsUx-]+)\)([\s\S]*)$/);
 	const flags = new Set<string>();
 	if (ignoreCase) flags.add("i");
@@ -559,15 +574,20 @@ function normalizeSearchPattern(pattern: string, ignoreCase: boolean): { pattern
 	return { pattern, flags: [...flags].join("") };
 }
 
-export function searchTextSelectorLines(
-	label: string,
+export interface SearchTextLine {
+	readonly lineNumber: number;
+	readonly line: string;
+	readonly match: boolean;
+}
+
+export function searchTextLines(
 	text: string,
 	pattern: string,
 	ignoreCase: boolean,
 	literal: boolean,
 	contextBefore = 1,
 	contextAfter = 3,
-): string[] {
+): SearchTextLine[] {
 	const normalized = normalizeSearchPattern(pattern, ignoreCase);
 	if (!literal && !normalized.pattern.includes("\n") && !pattern.includes("\\n"))
 		try {
@@ -580,13 +600,17 @@ export function searchTextSelectorLines(
 			});
 			if (native && !native.error)
 				return native.matches.flatMap((match) => [
-					...(match.contextBefore ?? []).map(
-						(line) => `${label}-${line.lineNumber}- ${truncateSearchLine(line.line)}`,
-					),
-					`${label}:${match.lineNumber}: ${truncateSearchLine(match.line)}`,
-					...(match.contextAfter ?? []).map(
-						(line) => `${label}-${line.lineNumber}- ${truncateSearchLine(line.line)}`,
-					),
+					...(match.contextBefore ?? []).map((line) => ({
+						lineNumber: line.lineNumber,
+						line: line.line,
+						match: false,
+					})),
+					{ lineNumber: match.lineNumber, line: match.line, match: true },
+					...(match.contextAfter ?? []).map((line) => ({
+						lineNumber: line.lineNumber,
+						line: line.line,
+						match: false,
+					})),
 				]);
 		} catch {}
 	const matcher = literal ? undefined : new RegExp(normalized.pattern, normalized.flags);
@@ -610,10 +634,25 @@ export function searchTextSelectorLines(
 			outputLines.add(n);
 	return [...outputLines]
 		.sort((a, b) => a - b)
-		.map(
-			(line) =>
-				`${label}${matchLines.has(line) ? ":" : "-"}${line}${matchLines.has(line) ? ":" : "-"} ${truncateSearchLine(lines[line - 1] ?? "")}`,
-		);
+		.map((line) => ({ lineNumber: line, line: lines[line - 1] ?? "", match: matchLines.has(line) }));
+}
+
+export function formatSearchTextLine(label: string, number: number, line: string, match: boolean): string {
+	return `${label}${match ? ":" : "-"}${number}${match ? ":" : "-"} ${truncateSearchLine(line)}`;
+}
+
+export function searchTextSelectorLines(
+	label: string,
+	text: string,
+	pattern: string,
+	ignoreCase: boolean,
+	literal: boolean,
+	contextBefore = 1,
+	contextAfter = 3,
+): string[] {
+	return searchTextLines(text, pattern, ignoreCase, literal, contextBefore, contextAfter).map((line) =>
+		formatSearchTextLine(label, line.lineNumber, line.line, line.match),
+	);
 }
 
 export function searchArchiveSelector(
@@ -668,6 +707,7 @@ export function composeInternalRouters(...routers: readonly InternalResourceRout
 	};
 	return {
 		read: (url) => first((router) => router.read?.(url)),
+		readSelected: (url, selection) => first((router) => router.readSelected?.(url, selection)),
 		resolve: (url) => first((router) => router.resolve?.(url)),
 		search: (url, request) => first((router) => router.search?.(url, request)),
 	};
@@ -736,6 +776,13 @@ export async function readInternalSelector(
 		throw new Error(`Internal resource not found or no session router supports it: ${value}`);
 	return readFileSync(resolved, "utf8");
 }
+export async function readInternalSelected(
+	value: string,
+	selection: InternalReadSelection,
+	context?: InternalResourceContext,
+): Promise<string | undefined> {
+	return routerFromContext(context)?.readSelected?.(value, selection);
+}
 export async function writeInternalSelector(
 	value: string,
 	cwd: string,
@@ -763,6 +810,7 @@ export async function searchInternalSelector(
 	context?: InternalResourceContext,
 	contextBefore = 1,
 	contextAfter = 3,
+	scope: Pick<InternalSearchRequest, "ranges" | "signal"> = {},
 ): Promise<string> {
 	const searched = await routerFromContext(context)?.search?.(value, {
 		pattern,
@@ -770,6 +818,7 @@ export async function searchInternalSelector(
 		literal,
 		contextBefore,
 		contextAfter,
+		...scope,
 	});
 	if (typeof searched === "string") return searched;
 	return searchTextSelectorLines(

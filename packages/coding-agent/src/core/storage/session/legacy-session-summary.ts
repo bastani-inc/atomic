@@ -109,19 +109,27 @@ export async function summarizeLegacySession(
 	file: JsonlSessionFile,
 	size: number,
 	modifiedMs: number,
+	options?: { readonly whole?: boolean },
 ): Promise<SessionSummary> {
-	if (size <= SUMMARY_WINDOW_BYTES) return summarizeSession(await file.read());
+	const allowWhole = options?.whole !== false;
+	if (allowWhole && size <= SUMMARY_WINDOW_BYTES) return summarizeSession(await file.read());
 	const scan: Scan = { state: applySessionSummaryEntries(undefined, []).state, texts: [] };
 	const handle = await open(file.location, "r");
+	let estimated = false;
 	try {
 		const head = await scanHead(handle, scan);
-		if (!head.complete) return summarizeSession(await file.read());
-		if (!(await scanTail(handle, size, head.end, scan))) return summarizeSession(await file.read());
+		if (!head.complete && allowWhole) return summarizeSession(await file.read());
+		if (!(await scanTail(handle, size, head.end, scan)) && allowWhole) return summarizeSession(await file.read());
+		estimated = Math.max(size - SUMMARY_WINDOW_BYTES, head.end) > head.end;
 	} finally {
 		await handle.close();
 	}
 	const state = { ...scan.state, latestMessageTime: scan.state.latestMessageTime ?? modifiedMs };
-	return { ...materializeSessionSummaryMetadata(file.header, state), searchText: scan.texts.join(" ") };
+	return {
+		...materializeSessionSummaryMetadata(file.header, state),
+		searchText: scan.texts.join(" "),
+		...(estimated ? { estimated: true as const } : {}),
+	};
 }
 
 /** Offset just past the header line, or undefined when no newline appears within the head scan limit. */
