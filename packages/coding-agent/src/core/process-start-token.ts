@@ -129,14 +129,13 @@ function readFallbackCreation(pid: number): Promise<string | undefined> {
 	const pending = pendingReads.get(pid);
 	if (pending !== undefined) return pending;
 	const generation = fallbackGeneration;
-	const askedAt = Date.now();
 	const reading = queryCreationTime(pid).then(({ created, unstartable }) => {
 		if (generation !== fallbackGeneration) return undefined;
 		pendingReads.delete(pid);
 		fallbackBroken ||= unstartable;
 		const now = Date.now();
 		for (const [read, { at }] of fallbackReads) if (now - at >= FALLBACK_CACHE_MS) fallbackReads.delete(read);
-		fallbackReads.set(pid, { at: askedAt, created });
+		fallbackReads.set(pid, { at: now, created });
 		if (pid === process.pid && created !== undefined) ownCreation = created;
 		return created;
 	});

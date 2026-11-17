@@ -20,7 +20,7 @@ import {
 	type ResumeNotice,
 	sessionResumeOptions,
 } from "./core/resume/session-resume.ts";
-import { claimSession, prepareSessionClaim } from "./core/session-claims.ts";
+import { claimSession, prepareSessionClaim } from "./core/session-claims.js";
 import {
 	formatMissingSessionCwdPrompt,
 	getMissingSessionCwdOptions,

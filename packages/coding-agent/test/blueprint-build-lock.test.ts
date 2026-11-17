@@ -19,9 +19,9 @@ import { takeTakeoverMutex } from "../src/core/lock-takeover.ts";
 import {
 	setNativeProcessCreationTimeForTesting,
 	setProcessCreationTimeQueryForTesting,
-} from "../src/core/process-start-token.ts";
+} from "../src/core/process-start-token.js";
 import { buildLockPath, settleOtherBuilds, withBuildLocks } from "../src/core/resume/blueprint/build-lock.ts";
-import { runLoggedProcess } from "../src/core/resume/blueprint/process.ts";
+import { type ProcessExit, runLoggedProcess } from "../src/core/resume/blueprint/process.js";
 import { processStartToken } from "../src/core/worktree-snapshot/pool.ts";
 
 // Process creation is real; execFile is only watched, to tell when a build lock lists this host's processes.
@@ -268,7 +268,7 @@ describe("blueprint build locks (#4748)", () => {
 			const fd = openSync(log, "a");
 			const gate = join(dir, "gate");
 			const lock = buildLockPath(dir, root());
-			let run: Promise<unknown> | undefined;
+			let run: Promise<ProcessExit> | undefined;
 			await withBuildLocks(dir, [root()], async () => {
 				const waiting = {
 					command: process.execPath,

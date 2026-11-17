@@ -4,7 +4,6 @@ import { hostname } from "node:os";
 import {
 	HOLDER_TEMP_STALE_MS,
 	lockHolderPath,
-	prepareProcessRecord,
 	prepareTakeoverMutex,
 	processMayRun,
 	putBack,
@@ -77,7 +76,7 @@ function readHolderRecord(lockPath: string): LockHolderRecord | undefined {
 }
 
 export async function prepareLockTakeover(lockPath: string): Promise<void> {
-	await Promise.all([prepareTakeoverMutex(lockPath), prepareProcessRecord(readHolderRecord(lockPath))]);
+	await prepareTakeoverMutex(lockPath, readHolderRecord(lockPath));
 }
 
 /**

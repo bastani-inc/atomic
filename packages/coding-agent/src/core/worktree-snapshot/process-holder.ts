@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { hostname } from "node:os";
-import { readProcessStartToken } from "../process-start-token.ts";
+import { readProcessStartToken } from "../process-start-token.js";
 
 /** Names this host, so a process on the same host can tell whether a process another one named still runs. */
 export const HOST = createHash("sha256").update(hostname()).digest("hex").slice(0, 12);

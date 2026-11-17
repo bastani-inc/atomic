@@ -4,29 +4,29 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
-import { lockHolderPath } from "../src/core/lock-holder.ts";
+import { lockHolderPath } from "../src/core/lock-holder.js";
 import {
 	lockHolder,
 	setNativeLocksForTesting,
 	takeoverMutexPath,
 	takeTakeoverMutex,
-} from "../src/core/lock-takeover.ts";
+} from "../src/core/lock-takeover.js";
 import {
 	processStartToken,
 	readProcessStartToken,
 	setNativeProcessCreationTimeForTesting,
 	setProcessCreationTimeQueryForTesting,
-} from "../src/core/process-start-token.ts";
-import { claimSession, prepareSessionClaim } from "../src/core/session-claims.ts";
+} from "../src/core/process-start-token.js";
+import { claimSession, prepareSessionClaim } from "../src/core/session-claims.js";
 import {
 	findSessionOpenHolder,
 	holdSessionOpenMarker,
 	prepareSessionOpenMarkers,
-} from "../src/core/session-open-markers.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
-import { FileSettingsStorage } from "../src/core/settings-storage.ts";
-import type { SettingsScope } from "../src/core/settings-types.ts";
-import { HOST, holderRuns, thisProcess } from "../src/core/worktree-snapshot/process-holder.ts";
+} from "../src/core/session-open-markers.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
+import { FileSettingsStorage } from "../src/core/settings-storage.js";
+import type { SettingsScope } from "../src/core/settings-types.js";
+import { HOST, holderRuns, thisProcess } from "../src/core/worktree-snapshot/process-holder.js";
 
 const windows = process.platform === "win32";
 const GONE_START = "abcdefabcdef";
@@ -132,8 +132,8 @@ describe("callers reading starts without the native module (#5315)", () => {
 		"an open marker written before this process's start was read keeps its name until it is released (#5315)",
 		async () => {
 			vi.resetModules();
-			const fresh = await import("../src/core/process-start-token.ts");
-			const freshMarkers = await import("../src/core/session-open-markers.ts");
+			const fresh = await import("../src/core/process-start-token.js");
+			const freshMarkers = await import("../src/core/session-open-markers.js");
 			fresh.setNativeProcessCreationTimeForTesting(null);
 			cleanups.push(() => fresh.setNativeProcessCreationTimeForTesting(undefined));
 			const sessionId = "44444444-4444-4444-8444-444444444444";

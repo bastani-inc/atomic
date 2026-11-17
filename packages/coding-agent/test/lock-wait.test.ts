@@ -3,8 +3,8 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
-import * as takeover from "../src/core/lock-takeover.ts";
-import { waitForLock } from "../src/core/lock-wait.ts";
+import * as takeover from "../src/core/lock-takeover.js";
+import { waitForLock } from "../src/core/lock-wait.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -18,6 +18,7 @@ test("a lock wait cancelled during process-start preparation never acquires the 
 	const waiting = waitForLock(
 		async () => {
 			acquisitions++;
+			throw new Error("lock is held");
 		},
 		{
 			lockPath: join(tmpdir(), `atomic-lock-wait-${randomUUID()}`),
@@ -25,12 +26,12 @@ test("a lock wait cancelled during process-start preparation never acquires the 
 			holderWaitMs: 1_000,
 			pollMinMs: 10,
 			pollMaxMs: 50,
-			retryable: () => false,
+			retryable: () => true,
 			stuck: () => new Error("holder did not release the lock"),
 			contended: () => new Error("lock wait exceeded its bound"),
 		},
 		controller.signal,
 	);
 	await assert.rejects(waiting, (error) => error === reason);
-	assert.equal(acquisitions, 0);
+	assert.equal(acquisitions, 1);
 });

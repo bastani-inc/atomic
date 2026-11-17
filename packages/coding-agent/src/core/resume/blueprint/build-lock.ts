@@ -16,8 +16,8 @@ import { accessSync, constants, mkdirSync, readFileSync, renameSync, rmSync, wri
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { killProcessTree } from "../../../utils/shell.ts";
-import { prepareTakeoverMutex, type TakeoverMutex, takeTakeoverMutex } from "../../lock-takeover.ts";
-import { processStartToken, readProcessStartToken } from "../../process-start-token.ts";
+import { prepareTakeoverMutex, type TakeoverMutex, takeTakeoverMutex } from "../../lock-takeover.js";
+import { processStartToken, readProcessStartToken } from "../../process-start-token.js";
 import { rootKey } from "./ledger.ts";
 import { stepProcessWatcher } from "./process.ts";
 

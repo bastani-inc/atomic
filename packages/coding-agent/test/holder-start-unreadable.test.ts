@@ -21,7 +21,7 @@ import { pendingLfsDownload } from "../src/core/worktree-snapshot/restore.js";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.js";
 
 // No process's start can be read now, as when Windows' PowerShell fallback times out under load (#5141).
-vi.mock("../src/core/process-start-token.ts", () => ({
+vi.mock("../src/core/process-start-token.js", () => ({
 	processStartToken: () => undefined,
 	readProcessStartToken: async () => undefined,
 }));

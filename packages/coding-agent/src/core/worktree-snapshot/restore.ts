@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { releaseLock } from "../lock-release.ts";
-import { prepareTakeoverMutex, takeTakeoverMutex } from "../lock-takeover.ts";
+import { prepareTakeoverMutex, takeTakeoverMutex } from "../lock-takeover.js";
 import { renameWithRetry } from "../rename-retry.ts";
 import { deferRestorePhase, noteRestoreFetch, timeRestorePhase } from "../resume/timings.ts";
 import {
@@ -44,7 +44,7 @@ import {
 	stagingWorktreeName,
 } from "./paths.ts";
 import { loadSnapshotPathPolicy } from "./policy.ts";
-import { HOST, holderRuns, type ProcessHolder, thisProcess } from "./process-holder.ts";
+import { HOST, holderRuns, type ProcessHolder, thisProcess } from "./process-holder.js";
 import { assertUsableBundlePrerequisites, assertUsableSnapshotRecord, isAllowedRemote } from "./records.ts";
 import { checkoutStoreIdOf, sameRemote, sharedRepositoryIdsOf } from "./repository-identity.ts";
 import {

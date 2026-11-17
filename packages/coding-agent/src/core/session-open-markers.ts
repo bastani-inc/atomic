@@ -13,7 +13,7 @@ import { mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, writ
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "../config.js";
-import { processStartToken, readProcessStartToken } from "./process-start-token.ts";
+import { processStartToken, readProcessStartToken } from "./process-start-token.js";
 import { attachSessionClaim } from "./session-claims.ts";
 import { SessionOpenElsewhereError } from "./session-manager-errors.js";
 import type {

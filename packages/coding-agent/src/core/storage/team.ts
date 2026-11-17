@@ -19,7 +19,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { getAgentConfigPaths, getAgentDir, getProjectConfigPaths } from "../../config.js";
 import { parseJsonFileContent } from "../../utils/json.ts";
 import type { IntercomBrokerControl, RestartOutcome } from "../intercom-broker-control.js";
-import { prepareLockTakeover } from "../lock-holder.ts";
+import { prepareLockTakeover } from "../lock-holder.js";
 import { resolvePackageStorageAdapter } from "../package-manager-storage-adapters.js";
 import { selectSessionSetting, selectSessionStorage } from "../session-storage.js";
 import { SettingsManager } from "../settings-manager.ts";

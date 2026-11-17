@@ -25,8 +25,8 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { prepareTakeoverMutex, putBack, removeAside, takeTakeoverMutex } from "./lock-takeover.ts";
-import { processStartToken, readProcessStartToken } from "./process-start-token.ts";
+import { prepareTakeoverMutex, putBack, removeAside, takeTakeoverMutex } from "./lock-takeover.js";
+import { processStartToken } from "./process-start-token.js";
 import { SessionAlreadyOpenError } from "./session-manager-errors.js";
 
 /** How often a held claim's heartbeat is refreshed. */
@@ -194,8 +194,7 @@ process.on("exit", () => {
 export async function prepareSessionClaim(sessionId: string, options: { readonly agentDir: string }): Promise<void> {
 	const path = claimPath(options.agentDir, sessionId);
 	const holder = claimHolder(path);
-	const judged = holder?.host === hostname() && holder.pid !== process.pid && holder.started !== undefined;
-	await Promise.all([prepareTakeoverMutex(path), judged ? readProcessStartToken(holder.pid) : undefined]);
+	await prepareTakeoverMutex(path, holder);
 }
 
 function claimHolder(path: string): ClaimRecord | undefined {

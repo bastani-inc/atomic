@@ -245,10 +245,12 @@ describe("the start of a process of this host (#5141)", () => {
 			const deadline = performance.now() + READ_DEADLINE_MS;
 			while (runs(query) && performance.now() < deadline) await sleep(50);
 			assert.equal(runs(query), false, "the query that did not answer was stopped");
+			assert.equal(await readProcessStartToken(FAKE_PID), undefined, "the timeout answer is reused immediately");
+			await sleep(5_500);
 			assert.match(
 				(await readProcessStartToken(FAKE_PID)) ?? "",
 				/^[0-9a-f]{12}$/,
-				"a query that timed out is asked again, not given up on",
+				"a query that timed out is asked again once its cached answer expires",
 			);
 		},
 		POWERSHELL_READS_TIMEOUT_MS,
