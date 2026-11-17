@@ -107,7 +107,34 @@ test.each(["session", "runtime", "nested session", "nested runtime"] as const)(
 		});
 		const { harness, runtime } = await host();
 		const path = directory();
+		let shell: ReturnType<typeof harness.session.executeBash> | undefined;
+		let shellAborted = false;
 		try {
+			if (owner === "session") {
+				let markShellStarted!: () => void;
+				const shellStarted = new Promise<void>((resolve) => {
+					markShellStarted = resolve;
+				});
+				shell = harness.session.executeBash("hold", undefined, {
+					emitEvent: false,
+					recordResult: false,
+					operations: {
+						exec: async (_command, _cwd, { signal }) =>
+							new Promise((resolve) => {
+								markShellStarted();
+								signal?.addEventListener(
+									"abort",
+									() => {
+										shellAborted = true;
+										resolve({ exitCode: 130 });
+									},
+									{ once: true },
+								);
+							}),
+					},
+				});
+				await shellStarted;
+			}
 			await trackSessionWork(owner.endsWith("session") ? harness.session : runtime, async () => {
 				const start = async () => {
 					verifyWindowsDirectorySecurity(path);
@@ -123,6 +150,7 @@ test.each(["session", "runtime", "nested session", "nested runtime"] as const)(
 			});
 			await setImmediate();
 			assert.equal(child.kill.mock.calls.length, 1, "the retiring host cancels its fallback");
+			if (shell) assert.equal(shellAborted, true, "shell cancellation does not wait for ACL child closure");
 			assert.equal(closed, false, "disposal waits for process closure, not just a kill request");
 			child.emit("close", null, "SIGTERM");
 			await closing;
@@ -132,6 +160,7 @@ test.each(["session", "runtime", "nested session", "nested runtime"] as const)(
 			resetWindowsDirectorySecurityStateForTesting();
 			child.emit("close", null, "SIGTERM");
 			await runtime.dispose();
+			await shell;
 			await harness.cleanup();
 		}
 	},

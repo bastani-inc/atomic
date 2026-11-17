@@ -744,13 +744,13 @@ export function closeAgentSession(
 			}
 		};
 		await attempt("lifetime", () => abortSessionWork(session, event.reason === "quit"));
-		await attempt("directory checks", () => drainWindowsDirectorySecurityReads(sessionLifetime(session)));
 		await attempt("event subscriptions", () => cancelSessionSubscriptions(session));
 		await attempt("shell abort", () => abortBash.call(session));
 		await attempt("abort", () => abortCurrentGeneration.call(session));
 		await attempt("reload rollback", () => drainSessionReload(session));
 		await attempt("tasks", () => session.closeSessionTasks());
 		await attempt("summary", () => session.abortSessionSummary());
+		await attempt("directory checks", () => drainWindowsDirectorySecurityReads(sessionLifetime(session)));
 		if (handoff) {
 			await attempt("peer work", () => drainSessionWork(session, true, true));
 			await attempt("retired authority", () => session._extensionRunner.revokeAuthority());
