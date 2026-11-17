@@ -663,7 +663,8 @@ class ModelsImpl implements MutableModels {
 		const errors = new Map<string, Error>();
 		if (callerSignal.aborted) return { aborted: true, errors };
 		const selected = options.providers ? new Set(options.providers.map(normalizeProviderId)) : undefined;
-		const refreshable = Array.from(this.providers.values()).filter(
+		const providers = Array.from(this.providers.values());
+		const refreshable = providers.filter(
 			(provider): provider is Provider & Required<Pick<Provider, "refreshModels">> =>
 				provider.refreshModels !== undefined && (!selected || selected.has(provider.id)),
 		);
@@ -720,7 +721,7 @@ class ModelsImpl implements MutableModels {
 		// Providers without a model source still repair a stored OAuth credential that lacks data
 		// only a refresh restores (see `OAuthAuth.needsRefresh`), so its availability filter has it.
 		const repairable = allowNetwork
-			? Array.from(this.providers.values()).filter(
+			? providers.filter(
 					(provider) =>
 						provider.refreshModels === undefined &&
 						provider.auth.oauth?.needsRefresh !== undefined &&
@@ -752,7 +753,13 @@ class ModelsImpl implements MutableModels {
 			if (!callerSignal.aborted) throw error;
 		}
 
-		return { aborted: callerSignal.aborted, errors: new Map(errors) };
+		// Providers settle in whatever order their reads finish; report failures in registration order.
+		const orderedErrors = new Map<string, Error>();
+		for (const provider of providers) {
+			const error = errors.get(provider.id);
+			if (error) orderedErrors.set(provider.id, error);
+		}
+		return { aborted: callerSignal.aborted, errors: orderedErrors };
 	}
 
 	private async resolveNetworkRefresh(

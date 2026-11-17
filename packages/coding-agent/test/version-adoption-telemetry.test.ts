@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, it, vi } from "vitest";
 import { VERSION, VERSION_ADOPTION_ENDPOINT } from "../src/config.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
+import { preloadChangelog } from "../src/utils/changelog.js";
 import { getPiUserAgent } from "../src/utils/pi-user-agent.js";
 
 const VERSION_ADOPTION_ORIGIN = "https://atomic-version-adoption.bastani-atomic.workers.dev/v1/version-adoption";
@@ -26,7 +27,9 @@ type ChangelogHost = {
 	reportInstallTelemetry: ReturnType<typeof vi.fn<(version: string) => void>>;
 };
 
-function getChangelogForDisplay(host: ChangelogHost): string | undefined {
+// Startup loads the changelog before it decides what What's New shows.
+async function getChangelogForDisplay(host: ChangelogHost): Promise<string | undefined> {
+	await preloadChangelog(changelogFixture.path);
 	const fn = Reflect.get(InteractiveMode.prototype, "getChangelogForDisplay") as (
 		this: ChangelogHost,
 	) => string | undefined;
@@ -137,49 +140,49 @@ describe("version-adoption telemetry", () => {
 		);
 	});
 
-	it("pings once on the first interactive launch with fresh settings", () => {
+	it("pings once on the first interactive launch with fresh settings", async () => {
 		const host = freshHost();
 		assert.equal(host.settingsManager.getLastChangelogVersion(), undefined);
-		assert.equal(getChangelogForDisplay(host), undefined);
+		assert.equal(await getChangelogForDisplay(host), undefined);
 		assert.equal(host.settingsManager.getLastChangelogVersion(), VERSION);
 		assert.equal(host.reportInstallTelemetry.mock.calls.length, 1);
 		assert.ok(host.reportInstallTelemetry.mock.calls.some((args) => args.length === 1 && args[0] === VERSION));
 	});
 
-	it("does not ping when the same version is already recorded, including a reinstall that kept settings", () => {
+	it("does not ping when the same version is already recorded, including a reinstall that kept settings", async () => {
 		const settings = SettingsManager.inMemory();
 		settings.setLastChangelogVersion(VERSION);
 		const host = freshHost(settings);
-		assert.equal(getChangelogForDisplay(host), undefined);
+		assert.equal(await getChangelogForDisplay(host), undefined);
 		assert.equal(host.reportInstallTelemetry.mock.calls.length, 0);
 		assert.equal(host.settingsManager.getLastChangelogVersion(), VERSION);
 	});
 
-	it("does not ping or record a version for a resumed session", () => {
+	it("does not ping or record a version for a resumed session", async () => {
 		const host = freshHost();
 		host.session.state.messages.push({ role: "user" });
-		assert.equal(getChangelogForDisplay(host), undefined);
+		assert.equal(await getChangelogForDisplay(host), undefined);
 		assert.equal(host.reportInstallTelemetry.mock.calls.length, 0);
 		assert.equal(host.settingsManager.getLastChangelogVersion(), undefined);
 	});
 
-	it("pings once on the first interactive launch after an update with changelog entries", () => {
+	it("pings once on the first interactive launch after an update with changelog entries", async () => {
 		writeChangelog("## [0.0.0]\n\n- current\n\n## [0.0.0-alpha.1]\n\n- previous\n");
 		const settings = SettingsManager.inMemory();
 		settings.setLastChangelogVersion("0.0.0-alpha.1");
 		const host = freshHost(settings);
-		assert.ok(getChangelogForDisplay(host));
+		assert.ok(await getChangelogForDisplay(host));
 		assert.equal(host.settingsManager.getLastChangelogVersion(), VERSION);
 		assert.equal(host.reportInstallTelemetry.mock.calls.length, 1);
 		assert.ok(host.reportInstallTelemetry.mock.calls.some((args) => args.length === 1 && args[0] === VERSION));
 	});
 
-	it("does not ping after an update whose version has no changelog section", () => {
+	it("does not ping after an update whose version has no changelog section", async () => {
 		writeChangelog("## [0.0.0-alpha.1]\n\n- previous\n");
 		const settings = SettingsManager.inMemory();
 		settings.setLastChangelogVersion("0.0.0-alpha.1");
 		const host = freshHost(settings);
-		assert.equal(getChangelogForDisplay(host), undefined);
+		assert.equal(await getChangelogForDisplay(host), undefined);
 		assert.equal(host.reportInstallTelemetry.mock.calls.length, 0);
 		assert.equal(host.settingsManager.getLastChangelogVersion(), "0.0.0-alpha.1");
 	});

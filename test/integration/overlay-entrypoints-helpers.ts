@@ -23,6 +23,7 @@
  */
 
 import { Container } from "@bastani/atomic-tui";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import {
 	type HostSessionPickerUi,
 	openLocalHostSessionPicker,
@@ -385,7 +386,8 @@ function buildHostPickerUi(calls: CapturedCustomCall[], mockOpts: MockUiOpts = {
 						? { rows: mockOpts.rows, columns: mockOpts.columns }
 						: undefined,
 			};
-			const mounted = factoryArg(tui, {}, {}, (result) => resolve(result as undefined));
+			// Like the interactive host, the factory gets the keybindings in effect.
+			const mounted = factoryArg(tui, {}, new KeybindingsManager(), (result) => resolve(result as undefined));
 			if (mounted instanceof Promise) {
 				throw new Error("test factory should be sync");
 			}

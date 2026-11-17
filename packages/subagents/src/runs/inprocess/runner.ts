@@ -1003,6 +1003,8 @@ function settledTranscript(
 	commands: TranscriptCommands | undefined,
 	inherited: string | null,
 	unsavedAnswer: AssistantMessage | undefined,
+	/** Settles once the child's session is disposed, when a source bound before that reads its saved history. */
+	disposed?: Promise<unknown>,
 ): TranscriptSource {
 	const sessionId = manager.getSessionId();
 	const sessionFile = manager.getSessionFile();
@@ -1013,6 +1015,7 @@ function settledTranscript(
 	// own in memory; a session in a shared store, as a forked or resumed child's, is read from that store.
 	const store = sessionFile === undefined ? manager.getSessionStore() : undefined;
 	const read = async (): Promise<SessionEntry[]> => {
+		await disposed;
 		const entries = store
 			? [...(await store.load(sessionId)).entries]
 			: await readSessionFileEntries(sessionFile!, sessionId);
@@ -2530,11 +2533,14 @@ export class SubagentControlRuntime {
 				session === undefined || transcriptManager === undefined
 					? undefined
 					: settledCommands(sessionCommands(session, transcriptManager.getCwd()));
+			let earlyBound = false;
 			const settleTranscript = async (): Promise<void> => {
 				statusesOpen = false;
 				taskHooks?.clearExtensionStatuses?.();
 				if (transcriptManager === undefined) return;
 				const commands = await keptCommands;
+				// A source bound early (#5210, below) already shows the settled chat; it is replaced only to add its commands.
+				if (earlyBound && commands === undefined) return;
 				taskHooks?.bindTranscript?.(
 					releasedAttempt
 						? releasedTranscript(transcriptManager.getSessionId(), commands)
@@ -2565,6 +2571,15 @@ export class SubagentControlRuntime {
 					await settleTranscript();
 				}
 			})();
+			// #5210: the live session lacks the final answer it could not save, so the child's task shows what it settled
+			// with as soon as it settles, which is when its completion card and /tasks read it, not once its session is
+			// disposed. Its saved history is read after the disposal.
+			if (unsavedAnswer !== undefined && !releasedAttempt && transcriptManager !== undefined) {
+				earlyBound = true;
+				taskHooks?.bindTranscript?.(
+					settledTranscript(transcriptManager, undefined, openedThroughId, unsavedAnswer, disposal),
+				);
+			}
 			onDisposal(disposal);
 			if (releasedAttempt) await disposal;
 			if (this.attemptTokens.get(admitted.identity.path) === token)

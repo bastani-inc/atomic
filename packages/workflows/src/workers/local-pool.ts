@@ -202,23 +202,27 @@ function launchCoordinatorProcess(logPath: string): Coordinator {
 	};
 	const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
 	child.on("error", lose);
-	// The loss names why its log could not be written, so it waits for the log's opening to settle first.
-	child.once(
-		"exit",
-		(code, signal) =>
-			void log.opened.then(() =>
-				lose(
-					new WorkerLostError({
-						phase: "coordinator",
-						pid: child.pid,
-						exitCode: code ?? undefined,
-						signal: signal ?? undefined,
-						logPath,
-						logFailure,
-					}),
-				),
-			),
-	);
+	let logOpenSettled = false;
+	void log.opened.then(() => {
+		logOpenSettled = true;
+	});
+	child.once("exit", (code, signal) => {
+		const loseToExit = () =>
+			lose(
+				new WorkerLostError({
+					phase: "coordinator",
+					pid: child.pid,
+					exitCode: code ?? undefined,
+					signal: signal ?? undefined,
+					logPath,
+					logFailure,
+				}),
+			);
+		// The loss names why its log could not be written, so an exit before the log's opening settled waits for it.
+		// Otherwise the pool hears of the loss as the exit is announced, before anything that runs after it.
+		if (logOpenSettled) loseToExit();
+		else void log.opened.then(loseToExit);
+	});
 	return {
 		pid: child.pid,
 		async removeLog() {

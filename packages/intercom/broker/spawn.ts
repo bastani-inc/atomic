@@ -574,12 +574,14 @@ async function spawnBrokerHoldingLock(
         launch.args,
         spawnOptions,
       );
-    } finally {
-      if (logHandle !== undefined) await logHandle.close();
+    } catch (error) {
+      await logHandle?.close();
+      throw error;
     }
     child.unref();
 
-    await new Promise<void>((resolve, reject) => {
+    // Listened to before anything awaits: a spawn that fails reports its error on the next tick.
+    const started = new Promise<void>((resolve, reject) => {
       const cleanup = () => {
         child.off("error", onError);
         child.off("exit", onExit);
@@ -648,6 +650,11 @@ async function spawnBrokerHoldingLock(
         reject(toError(error));
       });
     });
+    try {
+      await logHandle?.close();
+    } finally {
+      await started;
+    }
   } finally {
     if (!keepLock) await releaseSpawnLockAsync(lockOwner);
   }

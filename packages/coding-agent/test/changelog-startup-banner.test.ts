@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, it, vi } from "vitest";
+import { Container } from "@bastani/atomic-tui";
+import { afterAll, beforeAll, describe, it, vi } from "vitest";
 
 const fixture = vi.hoisted(() => ({ path: "" }));
 
@@ -15,9 +16,12 @@ vi.mock("../src/config.js", async (importOriginal) => ({
 const { SettingsManager } = await import("../src/core/settings-manager.js");
 const { InteractiveMode } = await import("../src/modes/interactive/interactive-mode.js");
 const { parseChangelog } = await import("../src/utils/changelog.js");
+const { initTheme } = await import("../src/modes/interactive/theme/theme.js");
+const { stripAnsi } = await import("../src/utils/ansi.js");
 
 const workDir = mkdtempSync(join(tmpdir(), "atomic-changelog-banner-"));
 afterAll(() => rmSync(workDir, { recursive: true, force: true }));
+beforeAll(() => initTheme("dark"));
 
 function bannerFor(changelog: string): string | undefined {
 	fixture.path = join(workDir, "CHANGELOG.md");
@@ -79,5 +83,43 @@ describe("What's New startup banner", () => {
 		);
 
 		assert.equal(banner, "## [1.0.0] - 2026-01-01\n\n### Fixed\n\n- detailed fix entry");
+	});
+
+	it("shows What's New when deferred startup readies input before reading the changelog", async () => {
+		fixture.path = join(workDir, "DEFERRED-CHANGELOG.md");
+		writeFileSync(fixture.path, "# Changelog\n\n## [1.0.0] - 2026-01-01\n\nCalmer sessions.\n");
+		const settingsManager = SettingsManager.inMemory();
+		settingsManager.setLastChangelogVersion("0.9.0");
+		const prototypeMethod = (name: string) => Reflect.get(InteractiveMode.prototype, name);
+		const host = {
+			pendingUserInputs: [],
+			inputHandlerReadyRecorded: false,
+			deferredStartupPending: true,
+			ensureDeferredStartupComplete: async () => undefined,
+			footerDataProvider: { startGitWatcher: () => undefined },
+			startupNoticesShown: false,
+			startupNoticesPrepared: false,
+			firstRunNoticeVisible: false,
+			version: "1.0.0",
+			startupNoticesContainer: new Container(),
+			ui: { requestRender: () => undefined },
+			session: { state: { messages: [] }, extensionRunner: { getMarkdownTransformers: () => [] } },
+			runtimeHost: {},
+			settingsManager,
+			reportInstallTelemetry: vi.fn(),
+			getChangelogForDisplay: prototypeMethod("getChangelogForDisplay"),
+			showStartupNoticesIfNeeded: prototypeMethod("showStartupNoticesIfNeeded"),
+			createChangelogMarkdown: prototypeMethod("createChangelogMarkdown"),
+			getMarkdownThemeWithSettings: prototypeMethod("getMarkdownThemeWithSettings"),
+			getMarkdownTransformers: prototypeMethod("getMarkdownTransformers"),
+		};
+		const getUserInput = prototypeMethod("getUserInput") as (this: typeof host) => Promise<void>;
+
+		void getUserInput.call(host);
+
+		await vi.waitFor(() => assert.equal(host.startupNoticesShown, true));
+		const rendered = stripAnsi(host.startupNoticesContainer.render(100).join("\n"));
+		assert.ok(rendered.includes("What's New"));
+		assert.ok(rendered.includes("Calmer sessions."));
 	});
 });
