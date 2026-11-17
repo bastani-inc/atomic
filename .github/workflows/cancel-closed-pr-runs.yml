@@ -20,12 +20,21 @@ jobs:
     timeout-minutes: 5
     permissions:
       actions: write
+      pull-requests: read
     steps:
       - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const pr = context.payload.pull_request;
             const { owner, repo } = context.repo;
+            // A pull request reopened before this job ran keeps the run its reopening started.
+            const { data: current } = await github.rest.pulls.get({ owner, repo, pull_number: pr.number });
+            if (current.state === "open") {
+              core.info(`#${pr.number} is open again; nothing to cancel`);
+              return;
+            }
+            // Runs created after the close belong to a later reopening, even one that lands while this job works.
+            const closedAt = Date.parse(pr.closed_at);
             const headRepoId = pr.head.repo?.id;
             // A run's `pull_requests` lists only open pull requests, so once this one has closed it usually comes back
             // empty and the run is matched by its head repository and branch. When it still names another open pull
@@ -46,7 +55,8 @@ jobs:
                 status,
                 per_page: 100,
               });
-              for (const run of runs.filter(belongsToThisPullRequest)) {
+              const closedRuns = runs.filter((run) => Date.parse(run.created_at) <= closedAt && belongsToThisPullRequest(run));
+              for (const run of closedRuns) {
                 try {
                   await github.rest.actions.cancelWorkflowRun({ owner, repo, run_id: run.id });
                   cancelled += 1;

@@ -275,8 +275,8 @@ These are recorded here and deliberately not performed by the migration:
 
 ## Tests (`test.yml`)
 
-The workflow runs on pushes to `main` and on pull requests when they open, get a new push, reopen, or are marked ready
-for review. Release branches reach CI through their PRs, without duplicate push runs. A draft pull request runs no work
+The workflow runs on pushes to `main` and on pull requests when they open, get a new push, reopen, are marked ready
+for review, or go back to draft. Release branches reach CI through their PRs, without duplicate push runs. A draft pull request runs no work
 job; see [Draft pull requests](#draft-pull-requests).
 
 Runs share a `concurrency:` group per pull request (`pr-<number>`) and one per pushed ref (`refs/heads/main`), using
@@ -304,18 +304,23 @@ A draft pull request runs none of the work jobs. Each work job has `if: ${{ !git
 push to a draft finishes at once and holds no runner. The Windows legs are the scarce ones: each full run needs eighteen
 Windows jobs, and on a busy day hundreds of them queued behind work-in-progress pushes that nobody was going to merge.
 
-The draft never satisfies the required check. GitHub counts a skipped job as a successful check, so skipping the result
-gate under its required name would let a draft's head commit report `test (all platforms)` as passed. The gate's name is
-therefore an expression that yields `test (all platforms)` only outside a draft. GitHub doesn't evaluate a skipped
+A draft run never reports a passing `test (all platforms)`. GitHub counts a skipped job as a successful check, so
+skipping the result gate under its required name would let a draft run mark its head commit as passed. The gate's name
+is therefore an expression that yields `test (all platforms)` only outside a draft. GitHub doesn't evaluate a skipped
 job's `name`, so in a draft the skipped gate appears under the expression's text (as do the skipped matrix jobs, under
-their templates), and the required `test (all platforms)` context is never reported for that commit: the pull request
-shows it as expected and stays blocked. If GitHub ever evaluated the name of a skipped job, the draft branch,
-`test (draft, runs when marked ready)`, still differs from the required name. Do not replace the expression with a
-plain `test (all platforms)` while the gate skips itself in drafts.
+their templates), and the draft run reports no `test (all platforms)` context at all. A commit that never had a full run
+therefore shows the required check as expected, and the pull request stays blocked. If GitHub ever evaluated the name
+of a skipped job, the draft branch, `test (draft, runs when marked ready)`, still differs from the required name. Do
+not replace the expression with a plain `test (all platforms)` while the gate skips itself in drafts.
+
+A result from an earlier full run stays on its commit. If a ready pull request whose full run passed is converted back
+to draft without a new push, its head commit keeps that passing `test (all platforms)`. What keeps the draft from being
+merged then is GitHub's own rule that a draft pull request can't be merged, not this workflow.
 
 Marking the pull request ready for review (`gh pr ready <number>`) starts a full run on its head commit, and the gate
-reports `test (all platforms)` as usual. Converting a ready pull request back to draft starts no run; its next push runs
-as a draft and, through the pull request's concurrency group, cancels any full run still in progress.
+reports `test (all platforms)` as usual. Converting a ready pull request back to draft (`converted_to_draft`) starts a
+draft run, which cancels a full run still in progress through the pull request's concurrency group; the cancelled
+run's gate fails closed.
 
 Open a pull request as a draft while it is still changing (`gh pr create --draft`) and mark it ready once it is done.
 
@@ -329,10 +334,14 @@ stayed queued for hours, holding Windows capacity that open pull requests were w
   branch, with a token that can cancel runs of fork pull requests too, and it also runs for a pull request that closed
   with merge conflicts, which gets no `pull_request` run. It never checks out or runs pull-request code; it reads only
   the event payload.
-- Its job has `actions: write` and nothing else. It lists `test.yml` runs with event `pull_request` and the pull
-  request's head branch in each unfinished status, keeps those whose head repository and branch match the pull request,
-  and cancels them. A run's `pull_requests` field lists only open pull requests, so a run that still names another open
-  pull request from the same branch is left alone. A run that finished in the meantime is skipped.
+- Its job has `actions: write` and `pull-requests: read`, nothing else. It lists `test.yml` runs with event
+  `pull_request` and the pull request's head branch in each unfinished status, keeps those whose head repository and
+  branch match the pull request, and cancels them. A run's `pull_requests` field lists only open pull requests, so a run
+  that still names another open pull request from the same branch is left alone. A run that finished in the meantime is
+  skipped.
+- It first reads the pull request again and does nothing if it is open by then: a pull request closed and reopened
+  before the job ran keeps the run its reopening started. It also cancels only runs created no later than the close,
+  so a run started by a reopening that lands while the job is working is left alone too.
 - The `push` run that a merge starts on `main` is never touched.
 - It runs on the `atomic-ci-linux-amd64-4x16` profile with its own cache tag, `bastani-inc.atomic.ci.run-cleanup.linux-amd64`.
   A `pull_request_target` run carries the base branch's ref, so the profile's main-only cache rule lets it commit that
@@ -909,7 +918,7 @@ Repository-wide workflow permissions are read-only. Only draft staging and undra
 
 | File | Trigger | Purpose |
 | --- | --- | --- |
-| `.github/workflows/test.yml` | pushes to `main`; pull requests opened, pushed, reopened or marked ready (work jobs skip in drafts) | workspace tests and cross-platform release smoke |
+| `.github/workflows/test.yml` | pushes to `main`; pull requests opened, pushed, reopened, marked ready or converted to draft (work jobs skip in drafts) | workspace tests and cross-platform release smoke |
 | `.github/workflows/cancel-closed-pr-runs.yml` | a pull request closing, merged or not (`pull_request_target`) | cancel that pull request's queued and running `test.yml` runs |
 | `.github/workflows/publish.yml` | release tag push; manual recovery dispatch | verify, build, stage draft, publish npm, undraft, register the published version |
 | `.github/workflows/warm-toolchain-cache.yml` | pushes to `main`; manual dispatch on `main` | persist verified Zig tarballs and commit the Linux/Windows npm download caches and the MSVC CRT/Windows SDK cache to their Namespace release cache volumes, from `main` only |

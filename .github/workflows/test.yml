@@ -26,13 +26,14 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # A draft pull request runs none of the work jobs: each skips itself, and the result gate below reports under another
-# name, so the required `test (all platforms)` context stays pending until the pull request is marked ready for review,
-# which starts a full run. See docs/ci.md ("Draft pull requests").
+# name, so a draft run never reports the required `test (all platforms)` context. Marking the pull request ready for
+# review starts a full run; converting it back to draft starts a draft run, which cancels a full run still in progress
+# through the concurrency group above. See docs/ci.md ("Draft pull requests").
 on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
 
 # The work runs as five independent jobs. Root suites duplicate setup so neither
 # waits for the other; no shared producer sits on their critical path.
