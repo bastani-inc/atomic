@@ -81,9 +81,11 @@ import {
 	type RemoteSendRequest,
 	type RemoteSendRouter,
 	type RestoringRecipientHold,
+	type ReturnPathAuthority,
 	type SendClientMessage,
 	senderGroupIdentity,
 } from "./send-handler.js";
+import { RETURN_PATH_MAX_ENTRIES, type ReturnPathResponder, ReturnPaths } from "./return-paths.js";
 import {
   type BrokerStateOpener,
   LOCAL_RETRY_LOOKUP_BOUND_MS,
@@ -129,6 +131,7 @@ import { PresenceFanout } from "./presence-fanout.js";
 import {
 	knownGroupSummaries,
 	sessionGroups,
+	sessionsShareGroup as sameGroup,
 	setSessionGroups,
 } from "./group-membership.js";
 import { replyToList } from "./list-reply.js";
@@ -265,6 +268,8 @@ interface LiveWorkflowStageRouteRegistration {
   readonly capability: string;
   /** Run whose route registration authorized this alias; capabilities are per run. */
   readonly runId: string;
+  /** When this session first took the route: a message queued for the stage before then reached it then. */
+  readonly registeredAt: number;
 }
 
 interface LiveWorkflowStageRouteActivation {
@@ -515,6 +520,24 @@ class IntercomBroker {
   private pendingStageAcknowledgments = new Map<string, PendingStageAcknowledgment>();
 	private pendingStageNotificationAcknowledgments = new Map<string, PendingStageNotificationAcknowledgment>();
   private liveWorkflowStageRoutes = new Map<string, LiveWorkflowStageRouteRegistration>();
+  /** Return paths: who may answer a sender outside its groups that wrote to it. */
+  private readonly returnPaths = new ReturnPaths();
+  /**
+   * When each session first took each stage route. A reconnect takes the route again but keeps this time: the messages
+   * queued for the stage reached it when it first started, so a reconnect never reopens their return paths.
+   */
+  private readonly stageRouteStarts = new Map<string, number>();
+  private readonly returnPathAuthority: ReturnPathAuthority = {
+    allows: (sender, targetId, messageId) =>
+      this.returnPaths.leadsTo(targetId) && this.returnPaths.allows(this.returnPathResponder(sender), targetId, messageId),
+    use: (sender, targetId, messageId) =>
+      this.returnPaths.leadsTo(targetId) && this.returnPaths.use(this.returnPathResponder(sender), targetId, messageId),
+    closed: (sender, targetId) =>
+      this.returnPaths.leadsTo(targetId) && this.returnPaths.closed(this.returnPathResponder(sender), targetId),
+    delivered: (recipient, from) => {
+      if (!sameGroup(recipient.info, from)) this.returnPaths.openForSession(recipient.info.id, from.id);
+    },
+  };
   /** #4639: the names and ids each stage's sessions registered under, so they keep reaching the stage. */
   private workflowStageAliases = new WorkflowStageAliases();
   private workflowRosters = new Map<string, WorkflowRosterRegistration>();
@@ -929,6 +952,38 @@ class IntercomBroker {
 		return true;
 	}
 
+	private stageRouteStart(sessionId: string, target: string): number {
+		const key = `${sessionId}\0${target}`;
+		const started = this.stageRouteStarts.get(key) ?? Date.now();
+		this.stageRouteStarts.delete(key);
+		this.stageRouteStarts.set(key, started);
+		while (this.stageRouteStarts.size > RETURN_PATH_MAX_ENTRIES) {
+			const oldest = this.stageRouteStarts.keys().next().value as string | undefined;
+			if (oldest === undefined) break;
+			this.stageRouteStarts.delete(oldest);
+		}
+		return started;
+	}
+
+	/** `session`, and the workflow stage routes it holds, as a return path sees it. */
+	private returnPathResponder(session: ConnectedSession): ReturnPathResponder {
+		const stageRoutes: { target: string; registeredAt: number }[] = [];
+		for (const [target, route] of this.liveWorkflowStageRoutes) {
+			if (route.sessionId === session.info.id) stageRoutes.push({ target, registeredAt: route.registeredAt });
+		}
+		return { sessionId: session.info.id, stageRoutes };
+	}
+
+	/**
+	 * A message from a sender outside the run's group was queued for the stages `target` names (or found already
+	 * delivered): each of those stages may answer it once it starts.
+	 */
+	private openStageReturnPath(pending: PendingStageAcknowledgment): void {
+		const parsed = parseWorkflowStageTarget(pending.target);
+		if (parsed === undefined || hasGroup(sessionGroups(pending.sender), `workflow:${parsed.rootRunId}`)) return;
+		this.returnPaths.openForStageTarget(pending.target, pending.senderSessionId);
+	}
+
 	/**
 	 * Invocation control may come from the invocation owner, from the session that
 	 * launched the run (#4006), or from an ordinary host session that explicitly
@@ -1248,7 +1303,12 @@ class IntercomBroker {
       }
     }
     for (const target of targets) {
-      this.liveWorkflowStageRoutes.set(target, { sessionId: currentId, capability, runId });
+      this.liveWorkflowStageRoutes.set(target, {
+        sessionId: currentId,
+        capability,
+        runId,
+        registeredAt: this.stageRouteStart(currentId, target),
+      });
     }
     this.recordWorkflowStageAliases(currentId, runId, registrant?.target ?? targets[0]);
     const pendingRequestIds = new Set(
@@ -1323,6 +1383,7 @@ class IntercomBroker {
 		if (owner === undefined) {
 			this.pendingStageRoutes.delete(runId);
 			this.workflowStageAliases.forgetRun(runId);
+			this.returnPaths.forgetRun(runId);
 			return false;
 		}
     if (route.liveTargetId === undefined && !this.canControlWorkflowInvocation(route.from, ownerRegistration.group)) {
@@ -1417,6 +1478,7 @@ class IntercomBroker {
 			return;
 		}
 		if (outcome === "delivered") {
+			this.openStageReturnPath(pending);
 			writeMessageIfOpen(pending.senderSocket, {
 				type: "delivered",
 				messageId: pending.messageId,
@@ -1431,6 +1493,7 @@ class IntercomBroker {
 			// delivery only for the targets this write actually reached, so a stage
 			// that dropped between the owner's answer and this write is not marked
 			// delivered and a retried send re-forwards to it.
+			this.openStageReturnPath(pending);
 			const deliveredTargets = this.deliverStickyBroadcast(pending, forwardTargets);
 			const ownerSocket = this.sessions.get(currentId)?.socket;
 			if (deliveredTargets.length > 0 && ownerSocket !== undefined) {
@@ -1637,6 +1700,7 @@ class IntercomBroker {
 			if (pending.message.replyTo !== undefined && this.pendingQuestions.clearReply(from.info.id, recipient.info.id, pending.message.replyTo)) {
 				this.deliveredMessages.settleQuestion(pending.message.replyTo);
 			}
+			this.returnPathAuthority.delivered(recipient, from.info);
 			notify({ type: "delivered", messageId: pending.messageId, ...senderAttempt });
 		};
 		const sender: ReceiptSender = {
@@ -1708,6 +1772,7 @@ class IntercomBroker {
 			// send re-forwards to it.
 			if (!writeMessageIfOpen(targetSession.socket, messageFrameFor(targetSession, pending.sender, pending.message)))
 				continue;
+			this.returnPathAuthority.delivered(targetSession, pending.sender);
 			delivered.push(target);
 		}
 		// Deliberately NOT recorded in the delivered-message cache (round-1 review): the
@@ -2969,6 +3034,7 @@ class IntercomBroker {
       (sender, group) => this.canInspectSelectedGroup(sender, group),
       this.routeReleasedAskerReply,
       this.resolveWorkflowStageAlias,
+      this.returnPathAuthority,
     );
   }
 
@@ -3221,6 +3287,7 @@ class IntercomBroker {
                 write: writeMessageIfOpen,
                 writeConfirmed: writeMessageWithOutcome,
                 supervisorCache: this.supervisorChannel,
+                returnPaths: this.returnPathAuthority,
                 pendingQuestions: this.pendingQuestions,
                 // A remote send reaches only a session registered here, which has opened the authority (#4727).
                 deliveredMessages: {
@@ -3758,6 +3825,7 @@ class IntercomBroker {
       this.pendingStageRoutes.delete(runId);
       this.workflowRosters.delete(runId);
       this.workflowStageAliases.forgetRun(runId);
+      this.returnPaths.forgetRun(runId);
       endedInvocations.add(normalizeGroup(owner.group));
     }
     // #4639: once no route of a run is left, the released children its stages kept while away go with it.

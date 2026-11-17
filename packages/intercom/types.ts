@@ -496,7 +496,18 @@ export type BrokerMessage =
 	| { type: "membership_ack"; requestId: string; groups: string[] }
   | { type: "supervisor_authorized"; requestId: string; capability: string; supervisorSessionId: string; childName: string }
   /** `hostedRecipient` names the hosted session the message is for, written only to the connection hosting it (#4642). */
-  | { type: "message"; from: SessionInfo; message: Message; channel?: "supervisor"; hostedRecipient?: string }
+  | {
+      type: "message";
+      from: SessionInfo;
+      message: Message;
+      channel?: "supervisor";
+      hostedRecipient?: string;
+      /**
+       * Multi-node: the origin broker carried this answer on a return path (its recipient wrote to its sender first).
+       * Set only between brokers, on outbox rows; never sent to a client.
+       */
+      returnPath?: true;
+    }
 	| { type: "pending_stage_notification"; requestId: string; from: SessionInfo; message: Message }
 	| {
 			type: "pending_stage_message";

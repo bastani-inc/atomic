@@ -24,6 +24,7 @@ import { sessionGroups, sessionsShareGroup } from "./group-membership.js";
 import { HELD_FOR_AWAY_ASKER_TARGET } from "./held-reply-targets.js";
 import { PendingQuestionIndex } from "./pending-question-index.js";
 import { ROUTE_UNAVAILABLE_REASON } from "./delivery-failure-reason.js";
+import { returnPathClosedReason } from "./return-paths.js";
 import { isAgentRecipient, NON_AGENT_RECIPIENT_REFUSAL } from "../recipient-purpose.js";
 
 export interface BrokerConnectedSession {
@@ -138,6 +139,21 @@ export type ReleasedAskerReplyRouter = (reply: {
 }) => boolean;
 
 /**
+ * Return paths across intercom groups (see `return-paths.ts`): a session that received a message from a sender
+ * outside its groups may send back to that sender, and only to it, for a bounded number of messages and time.
+ */
+export interface ReturnPathAuthority {
+	/** Whether `sender` may send `messageId` to the session `targetId` on a return path. */
+	allows(sender: BrokerConnectedSession, targetId: string, messageId: string): boolean;
+	/** Counts `messageId` against the return path that allows it; false when none does. */
+	use(sender: BrokerConnectedSession, targetId: string, messageId: string): boolean;
+	/** Whether `sender` had a return path to `targetId` that has closed. */
+	closed(sender: BrokerConnectedSession, targetId: string): boolean;
+	/** `from` delivered a message to `recipient`: opens a return path when they share no group. */
+	delivered(recipient: BrokerConnectedSession, from: SessionInfo): void;
+}
+
+/**
  * Multi-node S5: a validated send whose target no local session, local hold or workflow route resolved. The
  * router answers it through the shared state (another broker's recipient, a shared hold or an offline session),
  * or calls `notFound`, which answers exactly as a single-node broker would.
@@ -217,6 +233,7 @@ export function handleBrokerSend(
 	 * its run's queue even after the session that held the name was replaced or released.
 	 */
 	resolveWorkflowStageAlias?: (sender: BrokerConnectedSession, alias: string) => string | undefined,
+	returnPaths?: ReturnPathAuthority,
 ): void {
   const message = clientMessage.message;
   const messageId = wireMessageId(message);
@@ -363,7 +380,9 @@ export function handleBrokerSend(
       (message.replyTo !== undefined && (
         pendingQuestions.matchesReply(fromSession.info.id, info.id, message.replyTo) ||
         isVerticalBypass({ replyTo: message.replyTo, sender: fromSession.info, target: info, supervisorCache })
-      )),
+      )) ||
+      // A sender outside the sender's groups that wrote to it may be answered, by the name its message showed.
+      (!supervisorSend && returnPaths?.allows(fromSession, info.id, message.id) === true),
   );
   const candidates = visibleCandidates.filter(isAgentRecipient);
   // Preserve explicit named-reply collision rejection without exposing hidden identities (#2603).
@@ -468,6 +487,7 @@ export function handleBrokerSend(
       canPeekGroup,
       routeReleasedAskerReply,
       resolveWorkflowStageAlias,
+      returnPaths,
     );
     return;
   }
@@ -561,6 +581,7 @@ export function handleBrokerSend(
           canPeekGroup,
           routeReleasedAskerReply,
           resolveWorkflowStageAlias,
+          returnPaths,
         ),
     });
     return;
@@ -631,6 +652,7 @@ export function handleBrokerSend(
 					canPeekGroup,
 					routeReleasedAskerReply,
 					resolveWorkflowStageAlias,
+					returnPaths,
 				);
 			},
 		});
@@ -705,6 +727,7 @@ export function handleBrokerSend(
 				canPeekGroup,
 				routeReleasedAskerReply,
 				resolveWorkflowStageAlias,
+				returnPaths,
 			);
 		};
 		// #5252: the ask this replies to is written, but its write is not confirmed yet: its route opens then.
@@ -748,7 +771,9 @@ export function handleBrokerSend(
 		}) ||
 		correlatedReply ||
 		(liveWorkflowTarget !== undefined && canControlLiveWorkflowStage?.(fromSession, target, trimmedTo) === true);
-	if (!bypass && !sameGroup(target.info, fromSession.info)) {
+	const crossesGroups = !bypass && !sameGroup(target.info, fromSession.info);
+	// A recipient answers a sender outside its groups that wrote to it, within the return path's bounds.
+	if (crossesGroups && returnPaths?.use(fromSession, target.info.id, message.id) !== true) {
       write(socket, {
         type: "delivery_failed",
         messageId: message.id,
@@ -757,7 +782,9 @@ export function handleBrokerSend(
         // unless the sender is a workflow stage that joining could never authorize.
         reason: liveWorkflowTarget !== undefined && workflowTarget !== undefined
           ? workflowInvocationRefusalFor(fromSession.registrationGroup, `workflow:${workflowTarget.rootRunId}`)
-          : "Target session is in a different intercom group",
+          : returnPaths?.closed(fromSession, target.info.id) === true
+            ? returnPathClosedReason(target.info.name ?? target.info.id)
+            : "Target session is in a different intercom group",
       });
       return;
     }
@@ -949,6 +976,7 @@ export function handleBrokerSend(
       if (message.replyTo !== undefined)
         pendingQuestions.releaseHeldFailures(message.replyTo, fromSession.info.id, recipient.registrationReturnAddress);
       if (supervisorSend) supervisorCache.record(message.id, fromSession.info.id, recipient.info.id);
+      returnPaths?.delivered(recipient, fromSession.info);
       notify({ type: "delivered", messageId: message.id, attemptId: senderAttemptId });
     };
     const senderWaiting: ReceiptSender = { socket, ...(attemptId === undefined ? {} : { attemptId }) };
@@ -1046,8 +1074,9 @@ export function handleBrokerSend(
 	}
   const peekHint =
     resolution.kind === "not_found" && !supervisorSend && !requirePendingReply && expectedRecipientId === undefined &&
-    message.replyTo === undefined && workflowTarget === undefined && canPeekGroup !== undefined
-      ? liveInPeekableGroupReason(sessions, fromSession, trimmedTo, canPeekGroup)
+    message.replyTo === undefined && workflowTarget === undefined
+      ? (returnPaths === undefined ? undefined : closedReturnPathReason(sessions, fromSession, trimmedTo, returnPaths)) ??
+        (canPeekGroup === undefined ? undefined : liveInPeekableGroupReason(sessions, fromSession, trimmedTo, canPeekGroup))
       : undefined;
   write(socket, {
     type: "delivery_failed",
@@ -1058,6 +1087,23 @@ export function handleBrokerSend(
 			? { reasonCode: "session_not_found" as const }
 			: {}),
   });
+}
+
+/**
+ * A target the sender could answer on a return path that has since closed: says why, and when it reopens. Only a
+ * session that wrote to the sender is named, so this reveals nothing the sender's inbox did not already show.
+ */
+function closedReturnPathReason(
+  sessions: Map<string, BrokerConnectedSession>,
+  sender: BrokerConnectedSession,
+  target: string,
+  returnPaths: ReturnPathAuthority,
+): string | undefined {
+  const closed = Array.from(sessions.values(), ({ info }) => info).filter(
+    (info) => info.id !== sender.info.id && isAgentRecipient(info) && returnPaths.closed(sender, info.id),
+  );
+  const resolution = resolveSessionTarget(closed, target);
+  return resolution.kind === "resolved" ? returnPathClosedReason(resolution.session.name ?? resolution.session.id) : undefined;
 }
 
 /**

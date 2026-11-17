@@ -78,9 +78,11 @@ import {
 	deliveryTargetIdentity,
 	messageFrameFor,
 	type RemoteSendRequest,
+	type ReturnPathAuthority,
 	type SendClientMessage,
 	senderGroupIdentity,
 } from "./send-handler.js";
+import { returnPathClosedReason } from "./return-paths.js";
 import { deliverHeldToAsker } from "./ask-failures.js";
 import { brokerHostIdentity, isProcessAlive, processStartedAt } from "./broker-instance.js";
 import { type LostRecipientBounds, lostRecipientBounds, lostRecipientReason } from "./lost-recipients.js";
@@ -205,6 +207,8 @@ export interface MultiNodeHost {
 		onSettled: (written: boolean) => void,
 	): void;
 	readonly supervisorCache: SupervisorChannelCache;
+	/** This broker's return paths: a session here may answer a sender outside its groups whose message reached it here. */
+	readonly returnPaths?: ReturnPathAuthority;
 	/** This broker's own ask routes: an ask whose asker and recipient are both here is answered on the local path. */
 	readonly pendingQuestions: PendingQuestionIndex;
 	/** This broker's local accepted deliveries: a retry whose recipient moved to another broker is answered from them. */
@@ -1493,7 +1497,8 @@ export class MultiNodeRouter {
 				return (
 					sameGroup(info, from.info) ||
 					(request.supervisorSend && info.id === from.supervisorId) ||
-					replyAuthorized.has(info.id)
+					replyAuthorized.has(info.id) ||
+					(!request.supervisorSend && this.host.returnPaths?.allows(from, info.id, request.message.id) === true)
 				);
 			});
 			const nonAgentNamed = visible.some(
@@ -1994,8 +1999,20 @@ export class MultiNodeRouter {
 		const verticalReply =
 			message.replyTo !== undefined &&
 			this.host.supervisorCache.matchReply(message.replyTo, from.info.id, target.sessionId);
-		if (!request.supervisorSend && !verticalReply && !correlatedReply && !sharesGroup(target.groups, from.info)) {
-			this.fail(request, TARGET_GROUP_REFUSAL);
+		// A session answers a sender outside its groups whose message reached it here, within the return path's bounds.
+		const returnPath =
+			!request.supervisorSend &&
+			!verticalReply &&
+			!correlatedReply &&
+			!sharesGroup(target.groups, from.info) &&
+			this.host.returnPaths?.use(from, target.sessionId, message.id) === true;
+		if (!request.supervisorSend && !verticalReply && !correlatedReply && !returnPath && !sharesGroup(target.groups, from.info)) {
+			this.fail(
+				request,
+				this.host.returnPaths?.closed(from, target.sessionId) === true
+					? returnPathClosedReason(target.sessionId)
+					: TARGET_GROUP_REFUSAL,
+			);
 			return;
 		}
 		if (message.expectsReply === true && target.gates.replyCapability === "terminal") {
@@ -2004,7 +2021,7 @@ export class MultiNodeRouter {
 		}
 		const frame: IntercomDeliveryFrame = request.supervisorSend
 			? { type: "message", from: from.info, message, channel: "supervisor" }
-			: { type: "message", from: from.info, message };
+			: { type: "message", from: from.info, message, ...(returnPath ? { returnPath: true as const } : {}) };
 		const enqueued = await this.reserveAndEnqueue(
 			{
 				messageId: message.id,
@@ -2499,7 +2516,8 @@ export class MultiNodeRouter {
 		if (frame.message.expectsReply === true && recipient.info.replyCapability === "terminal") {
 			return TERMINAL_CHILD_ASK_REFUSAL;
 		}
-		if (frame.channel === "supervisor" || sameGroup(recipient.info, frame.from)) return undefined;
+		// The origin broker carried an answer on a return path it holds (its sender's message reached it there first).
+		if (frame.channel === "supervisor" || frame.returnPath === true || sameGroup(recipient.info, frame.from)) return undefined;
 		const replyTo = frame.message.replyTo;
 		if (replyTo === undefined) return TARGET_GROUP_REFUSAL;
 		if (recipient.supervisorId === frame.from.id) return undefined;
@@ -2541,6 +2559,7 @@ export class MultiNodeRouter {
 			if (frame.channel === "supervisor") {
 				this.host.supervisorCache.record(frame.message.id, frame.from.id, recipient.info.id);
 			}
+			this.host.returnPaths?.delivered(recipient, frame.from);
 			await this.wakeOrigin(inflight.row);
 		})().catch((error: Error) => {
 			this.report(error);

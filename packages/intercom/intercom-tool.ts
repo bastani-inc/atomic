@@ -15,6 +15,7 @@ import type { Attachment, BrokerMultiNodeStatus, Message, SessionInfo, SessionDi
 import { OutboundAsks } from "./outbound-asks.js";
 import { HELD_FOR_AWAY_ASKER_TARGET, OFFLINE_SESSION_TARGET } from "./broker/held-reply-targets.js";
 import { ASK_DESCRIPTION, ASK_PROMPT_SNIPPET, ASK_USAGE, askIdSchema, askWaitSchema, parseAskWait } from "./ask-wait.js";
+import { RETURN_PATH_TOOL_NOTE } from "./broker/return-paths.js";
 import { PeerDisconnectedError } from "./peer-disconnect-routing.js";
 import { describeMultiNodeStatus } from "./broker/broker-status.js";
 import { appendEntryUnlessReleased, intercomCallMayDetach } from "./detachable-calls.js";
@@ -477,7 +478,7 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
 Use this to communicate findings, request help, or coordinate work with other sessions.
 
 Sessions belong to an intercom group and can ONLY message sessions in the same group;
-cross-group sends are rejected by the broker. Ungrouped sessions share the "default" group; with multi-node routing on, a project group (project:<owner>/<repo>).
+cross-group sends are rejected by the broker, ${RETURN_PATH_TOOL_NOTE}. Ungrouped sessions share the "default" group; with multi-node routing on, a project group (project:<owner>/<repo>).
 
 For send, live session names, exact full session IDs, and unique 8-hex session UUID prefixes
 remain supported. \`send\` also takes a name glob (\`subagent-worker-*\`, or \`*\` for every session

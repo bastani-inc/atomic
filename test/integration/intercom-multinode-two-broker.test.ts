@@ -115,6 +115,45 @@ function anonymousSender(frame: ReceivedFrame) {
 	};
 }
 
+test("a supervisor on the other broker answers its child in another group with a plain send, and reaches no one else", async ({
+	annotate,
+}) => {
+	const supervisorGroup = unique("supervisor-group");
+	const childGroup = unique("child-group");
+	const supervisor = await harness.connect("a", unique("answering-supervisor"), {
+		group: supervisorGroup,
+		supervisorOwnerToken: randomUUID(),
+	});
+	const childName = unique("answered-child");
+	const authorization = await supervisor.client.authorizeSupervisorChild(childName);
+	const child = await harness.connect("a", childName, { group: childGroup, supervisor: authorization });
+	const bystander = await harness.connect("a", unique("bystander"), { group: childGroup });
+	const supervisorId = supervisor.sessionId;
+	await harness.disconnect(supervisor);
+	const moved = await harness.connect("b", supervisor.name, {
+		group: supervisorGroup,
+		returnAddress: supervisor.returnAddress,
+		preferredSessionId: supervisorId,
+	});
+	if (!harness.multiNodeRouting) {
+		await annotate("multi-node routing not advertised: nothing crosses brokers");
+		return;
+	}
+	const update = await child.client.sendToSupervisor(supervisorId, { text: "Halfway through" });
+	assert.equal(update.delivered, true, JSON.stringify(update));
+	await waitForMessage(moved, update.id);
+
+	// The child's message reached the supervisor: the supervisor answers it across groups and brokers.
+	const answer = await moved.client.send(child.name, { text: "Keep going" });
+	assert.equal(answer.delivered, true, JSON.stringify(answer));
+	assert.equal((await waitForMessage(child, answer.id)).message.content.text, "Keep going");
+	// Nobody else in the child's group became reachable.
+	const stray = await moved.client.send(bystander.sessionId, { text: "not for you" });
+	assert.equal(stray.delivered, false);
+	assert.equal(stray.queued, undefined);
+	assert.deepEqual(bystander.received, []);
+});
+
 test(
 	"harness self-test: two brokers on separate sockets each serve only their own clients and share one storage file",
 	async () => {
