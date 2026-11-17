@@ -227,6 +227,10 @@
       "$ref": "#/$defs/KeybindingValue",
       "description": "Open model selector"
     },
+    "app.history.search": {
+      "$ref": "#/$defs/KeybindingValue",
+      "description": "Search past prompts"
+    },
     "app.tools.expand": {
       "$ref": "#/$defs/KeybindingValue",
       "description": "Toggle tool output"

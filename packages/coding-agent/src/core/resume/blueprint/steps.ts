@@ -13,6 +13,7 @@ import {
 	BlueprintStepTimedOutError,
 } from "./errors.ts";
 import {
+	buildProcessStarting,
 	type LoggedProcess,
 	logTail,
 	openStepLog,
@@ -119,6 +120,7 @@ async function startStep(
 	context: StepContext,
 	log: StepLog,
 ): Promise<ProcessExit> {
+	buildProcessStarting();
 	append(
 		log,
 		[

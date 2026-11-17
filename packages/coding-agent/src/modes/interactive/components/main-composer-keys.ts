@@ -79,6 +79,8 @@ export function mainComposerKeys(state: MainComposerKeyState): NavKey[] {
 		...(state.working ? [{ action: "app.interrupt", label: "interrupt the agent's turn" }] : []),
 		...(agentRows > 0 ? [{ action: "app.agents.focus", label: "agents, on an empty prompt" }] : []),
 		{ keys: "/", label: "commands, at the start of the prompt" },
+		{ keys: "@", label: "insert a file path" },
+		{ action: "app.history.search", label: "search past prompts" },
 		{ keys: "pgup/pgdn", label: "scroll" },
 		{ action: "tui.altScreen.bottom", label: "jump to the latest message" },
 		{ action: "app.tools.expand", label: "expand tool output" },

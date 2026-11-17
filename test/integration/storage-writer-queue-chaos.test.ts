@@ -218,11 +218,11 @@ test(
 		const { path, writers } = database("queue-chaos-fifo-");
 		const holder = await startHolder(path);
 		const queued = [];
-		for (const label of ["first", "second", "third", "fourth", "fifth"]) {
-			const writer = await startWriter(path, { label });
+		for (const label of ["first", "second", "third", "fourth", "fifth"])
+			queued.push(await startWriter(path, { label }));
+		for (const writer of queued) {
 			writer.go();
 			await untilQueued(writers, writer.pid);
-			queued.push(writer);
 		}
 		const queuedTickets = describeTickets(writers);
 		await holder.commit();
@@ -247,9 +247,9 @@ test(
 		const { path, writers } = database("queue-chaos-killed-waiter-");
 		const holder = await startHolder(path);
 		const killed = await startWriter(path, { label: "killed" });
+		const behind = await startWriter(path, { label: "behind" });
 		killed.go();
 		const abandoned = await untilQueued(writers, killed.pid);
-		const behind = await startWriter(path, { label: "behind" });
 		behind.go();
 		await untilQueued(writers, behind.pid);
 		const queuedTickets = describeTickets(writers);
@@ -281,11 +281,10 @@ test(
 		const { path, writers } = database("queue-chaos-killed-holder-");
 		const holder = await startHolder(path);
 		const waiting = [];
-		for (const label of ["one", "two", "three"]) {
-			const writer = await startWriter(path, { label });
+		for (const label of ["one", "two", "three"]) waiting.push(await startWriter(path, { label }));
+		for (const writer of waiting) {
 			writer.go();
 			await untilQueued(writers, writer.pid);
-			waiting.push(writer);
 		}
 		holder.child.kill("SIGKILL");
 		await holder.child.exited;
@@ -336,11 +335,10 @@ test.skipIf(process.platform === "win32")(
 		const holder = await startHolder(path);
 		holder.child.kill("SIGSTOP");
 		const waiting = [];
-		for (const label of ["a", "b", "c"]) {
-			const writer = await startWriter(path, { label, lockWaitMs: 10_000 });
+		for (const label of ["a", "b", "c"]) waiting.push(await startWriter(path, { label, lockWaitMs: 10_000 }));
+		for (const writer of waiting) {
 			writer.go();
 			await untilQueued(writers, writer.pid);
-			waiting.push(writer);
 		}
 		await sleep(3_000);
 		holder.child.kill("SIGCONT");

@@ -26,6 +26,7 @@ import {
 	workflowSource,
 } from "../../packages/workflows/src/shared/workflow-source.js";
 import { definitionDigest } from "../../packages/workflows/src/workers/definitions.js";
+import { toJsLiteral } from "../helpers/js-literal.js";
 import { testRunId } from "../helpers/run-id.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
@@ -60,7 +61,7 @@ function writeTestWorkflowFile(filePath: string, stepValue: string): void {
 			"  inputs: {},",
 			"  outputs: {},",
 			"  run: async (ctx) => {",
-			`    await ctx.tool("step-1", {}, async () => ${JSON.stringify(stepValue)});`,
+			`    await ctx.tool("step-1", {}, async () => ${toJsLiteral(stepValue)});`,
 			"    return {};",
 			"  },",
 			"});",
@@ -98,20 +99,10 @@ describe("workflow resume confirmation and definition source guards (#5256)", ()
 			ui: {
 				notify: () => undefined,
 				custom: async (factory) => {
-					const baseKb = new KeybindingsManager();
-					const customKb = {
-						matches: (data: string, action: string) => {
-							const matched = baseKb.matches(data, action as never);
-							if (matched && action === "tui.select.confirm") {
-								generationActive = false;
-							}
-							return matched;
-						},
-						getKeys: (action: string) => baseKb.getKeys(action as never),
-					};
-					const component = await factory({} as never, {} as never, customKb as never, (val) => {
+					const component = await factory({} as never, {} as never, new KeybindingsManager() as never, (val) => {
 						settledByOnSelect = val === true;
 					});
+					generationActive = false;
 					component.handleInput?.("\r");
 					return settledByOnSelect;
 				},
@@ -318,7 +309,7 @@ describe("workflow resume confirmation and definition source guards (#5256)", ()
 					"  inputs: {},",
 					"  outputs: {},",
 					"  run: async (ctx) => {",
-					`    await ctx.tool("step-1", {}, async () => ${JSON.stringify(stepValue)});`,
+					`    await ctx.tool("step-1", {}, async () => ${toJsLiteral(stepValue)});`,
 					"    return {};",
 					"  },",
 					"});",

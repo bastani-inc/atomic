@@ -16,9 +16,9 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { sleep } from "../../../test/helpers/runtime.js";
-import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
+import { replaceEnvironmentVariable, useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { runBlueprintCommand } from "../src/cli/blueprint-command.js";
 import { renameWithRetry } from "../src/core/rename-retry.ts";
@@ -59,7 +59,57 @@ import {
 } from "../src/core/worktree-snapshot/seeds.js";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.js";
 import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.js";
+import { HOST_SPAWN_ENV } from "../src/utils/host-spawn.ts";
 import { forThisHost } from "./helpers/blueprint-fixtures.js";
+
+const spawning = vi.hoisted(() => ({
+	hook: undefined as
+		| undefined
+		| ((
+				command: string,
+				args: readonly string[],
+		  ) => { readonly command: string; readonly args: string[] } | undefined),
+}));
+
+vi.mock("node:child_process", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:child_process")>();
+	return {
+		...actual,
+		spawn: (command: string, args: readonly string[], ...rest: unknown[]) => {
+			const override = spawning.hook?.(command, args);
+			return (actual.spawn as (...parameters: unknown[]) => unknown)(
+				override?.command ?? command,
+				override?.args ?? args,
+				...rest,
+			);
+		},
+	};
+});
+
+const MOVE_MIDWAY = `
+const { existsSync, renameSync, writeFileSync } = require("node:fs");
+const { spawnSync } = require("node:child_process");
+const [staging, target, marker, release, git, ...args] = process.argv.slice(1);
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const move = (from, to) => {
+	for (const deadline = Date.now() + 10000; ; pause(20)) {
+		try {
+			return renameSync(from, to);
+		} catch (error) {
+			if (!["EPERM", "EACCES", "EBUSY"].includes(error.code) || Date.now() > deadline) {
+				writeFileSync(marker + ".error", String(error));
+				throw error;
+			}
+		}
+	}
+};
+move(staging, target);
+writeFileSync(marker, "");
+const deadline = Date.now() + 30000;
+while (!existsSync(release) && Date.now() < deadline) pause(10);
+move(target, staging);
+process.exit(spawnSync(git, args, { stdio: "inherit" }).status ?? 1);
+`;
 
 useTemporaryAgentDir();
 
@@ -1079,25 +1129,67 @@ describe("prebuild and seed edge cases (#4748)", () => {
 		"a prebuild interrupted at any point leaves no process in the checkout or the worktree (#4748)",
 		async () => {
 			const { clone, remote } = await checkout(`maintenance: sleep 5\n`);
-			for (const delayMs of INTERRUPT_DELAYS_MS) {
+			const atDelay = (delayMs: number) => ({
+				label: `after ${delayMs} ms`,
+				arm: (controller: AbortController) => {
+					const timer = setTimeout(() => controller.abort(new Error("stop")), delayMs);
+					return (_outcome: string) => clearTimeout(timer);
+				},
+			});
+			const atMove = {
+				label: "while Git moves the worktree into the slot",
+				arm: (controller: AbortController) => {
+					const restoreSpawn = replaceEnvironmentVariable(HOST_SPAWN_ENV, "child-process");
+					const marker = sandbox.path("moving");
+					const release = sandbox.path("move-released");
+					spawning.hook = (command, args) => {
+						if (!(args.includes("worktree") && args.includes("move"))) return undefined;
+						const [staging, target] = args.slice(-2);
+						return {
+							command: process.execPath,
+							args: ["-e", MOVE_MIDWAY, staging!, target!, marker, release, command, ...args],
+						};
+					};
+					const poll = setInterval(() => {
+						if (!existsSync(marker)) return;
+						clearInterval(poll);
+						controller.abort(new Error("stop"));
+						writeFileSync(release, "");
+					}, 5);
+					return (outcome: string) => {
+						clearInterval(poll);
+						spawning.hook = undefined;
+						restoreSpawn();
+						assert.ok(
+							existsSync(marker),
+							`the prebuild was interrupted while Git moved the worktree; ${outcome}${existsSync(`${marker}.error`) ? `; the move failed: ${readFileSync(`${marker}.error`, "utf8")}` : ""}`,
+						);
+					};
+				},
+			};
+			for (const { label, arm } of [atMove, ...INTERRUPT_DELAYS_MS.map(atDelay)]) {
 				const controller = new AbortController();
-				const timer = setTimeout(() => controller.abort(new Error("stop")), delayMs);
+				const disarm = arm(controller);
+				let outcome = "it did not settle";
 				try {
-					await prebuildRepository(clone, {
+					outcome = await prebuildRepository(clone, {
 						agentDir: agentDir(),
 						storeDir: storeDir(),
 						settings,
 						maxIdlePerRepository: 8,
 						signal: controller.signal,
-					}).catch(() => undefined);
+					}).then(
+						() => "it completed",
+						(error: unknown) => `it failed: ${String(error)}`,
+					);
 				} finally {
-					clearTimeout(timer);
+					disarm(outcome);
 				}
 				// Checked at once: a Git or build process the interrupt left running would hold these directories.
-				assert.deepEqual(processesInside(clone), [], `interrupted after ${delayMs} ms`);
-				assert.deepEqual(processesInside(join(storeDir(), "worktrees")), [], `interrupted after ${delayMs} ms`);
-				assert.ok(movable(clone), `the checkout is in use after an interrupt at ${delayMs} ms`);
-				assert.equal(existsSync(slot([remote], 0)), false, `slot 0 remained after ${delayMs} ms interrupt`);
+				assert.deepEqual(processesInside(clone), [], `interrupted ${label}`);
+				assert.deepEqual(processesInside(join(storeDir(), "worktrees")), [], `interrupted ${label}`);
+				assert.ok(movable(clone), `the checkout is in use after an interrupt ${label}`);
+				assert.equal(existsSync(slot([remote], 0)), false, `slot 0 remained after an interrupt ${label}`);
 			}
 		},
 		INTERRUPT_TEST_TIMEOUT_MS,
