@@ -251,6 +251,37 @@ for (;;) {
 			],
 		});
 	await publish();
+	for (let ordinal = 0; ordinal < Number(process.env.SHARED_POOL_STUB_CHECKPOINTS ?? 0); ordinal++)
+		await request({
+			kind: "commit",
+			operation: `checkpoint-${work.id}-${work.generation}-${ordinal}`,
+			mutation: {
+				kind: "checkpoint",
+				checkpoint: {
+					kind: "tool",
+					name: `tool-${ordinal}`,
+					output: {},
+					workflowId: start.root,
+					checkpointId: `${work.scope}:tool-${ordinal}`,
+					argsHash: `${work.scope}:args-${ordinal}`,
+					completedAt: ordinal + 1,
+					topology: {
+						version: 1,
+						nodeId: `tool-${ordinal}`,
+						ordinal,
+						order: ordinal,
+						parentIds: [],
+						run: {
+							runId: work.childRunId,
+							runName: "child",
+							parentRunId: start.root,
+							parentStageId: work.boundaryId,
+							rootRunId: start.root,
+						},
+					},
+				},
+			},
+		});
 	if (process.env.SHARED_POOL_STUB_WAITS === "1") {
 		const released = await request({ kind: "place", op: "release" }).then(
 			() => "released",

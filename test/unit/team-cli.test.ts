@@ -144,7 +144,7 @@ describe("atomic team join, status and leave (#4320)", () => {
 
 			const saved = savedSettings();
 			const reference = (saved.storage as { secrets: { authToken: { file: string } } }).secrets.authToken.file;
-			assert.match(reference, /^agent\/storage-token\.[\da-f-]+$/);
+			assert.match(reference, /^storage-token\.[\da-f-]+$/);
 			assert.match((saved.teamJoin as { storage: string }).storage, /^sha256:[\da-f]{64}$/);
 			assert.deepEqual(saved, {
 				...UNRELATED,
@@ -158,7 +158,7 @@ describe("atomic team join, status and leave (#4320)", () => {
 				sessions: { storage: LOCAL_SESSIONS_STORAGE },
 				teamJoin: saved.teamJoin,
 			});
-			const tokenPath = resolve(root, reference);
+			const tokenPath = resolve(agentDir, reference);
 			assert.equal(readFileSync(tokenPath, "utf8"), "team-secret-token");
 			if (process.platform !== "win32") assert.equal(statSync(tokenPath).mode & 0o777, 0o600);
 			assert.deepEqual(restarts, [agentDir]);
@@ -171,7 +171,7 @@ describe("atomic team join, status and leave (#4320)", () => {
 			assert.match(
 				joined.out,
 				new RegExp(
-					`^Sessions: SQLite ${join(root, "workflows", "journal.sqlite").replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}$`,
+					`^Sessions: SQLite ${join(agentDir, "workflows", "journal.sqlite").replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}$`,
 					"m",
 				),
 			);
@@ -192,7 +192,7 @@ describe("atomic team join, status and leave (#4320)", () => {
 			const settings = savedSettings();
 			assert.deepEqual(selectSessionStorage(project, { agentDir, settings }), {
 				kind: "sqlite",
-				path: join(root, "workflows", "journal.sqlite"),
+				path: join(agentDir, "workflows", "journal.sqlite"),
 			});
 			const journal = selectRunJournal({ agentDir, settings });
 			assert.ok("kind" in journal && journal.kind === "adapter");
@@ -283,7 +283,7 @@ describe("atomic team join, status and leave (#4320)", () => {
 		"leave keeps the local sessions pin while an edited storage remains, so private sessions never move (#4320)",
 		async () => {
 			vi.stubEnv("TEAM_TOKEN", "team-secret-token");
-			const localSessions = { kind: "sqlite", path: join(root, "workflows", "journal.sqlite") };
+			const localSessions = { kind: "sqlite", path: join(agentDir, "workflows", "journal.sqlite") };
 			for (const edit of [
 				(storage: { secrets?: object }) => ({ ...storage, secrets: { authToken: { env: "TEAM_TOKEN" } } }),
 				() => ({ path: "shared.sqlite" }),
@@ -316,8 +316,8 @@ describe("atomic team join, status and leave (#4320)", () => {
 		async () => {
 			const cases: [object, string | undefined][] = [
 				[LOCAL_SESSIONS_STORAGE, undefined],
-				[{ dir: "sessions" }, `JSONL directory ${join(root, "sessions")}`],
-				[{ path: "mine.sqlite", prefix: "me_" }, `SQLite ${join(root, "mine.sqlite")} (prefix me_)`],
+				[{ dir: "sessions" }, `JSONL directory ${join(agentDir, "sessions")}`],
+				[{ path: "mine.sqlite", prefix: "me_" }, `SQLite ${join(agentDir, "mine.sqlite")} (prefix me_)`],
 				[{ adapter: "@example/sessions", options: { url: "x" } }, "adapter @example/sessions"],
 				[{ path: 7 }, "an invalid selection"],
 			];

@@ -48,6 +48,7 @@ import {
 	sqlPoolStorage,
 } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
+import { CONFIRMED_OPERATION, HANDOFF_OPERATION } from "./pool-attempt-operations.js";
 import {
 	PoolCheckpointIndex,
 	type PoolCheckpointRead,
@@ -398,13 +399,6 @@ const CLAIM = { audit: fencedPath("pool-claim") } as const;
 const HEARTBEAT = { audit: fencedPath("pool-heartbeat"), priority: true } as const;
 const COMMIT = { audit: fencedPath("pool-commit") } as const;
 const COMPLETE = { audit: fencedPath("pool-complete") } as const;
-/** The operation a handed-back attempt records for its work (see {@link PoolWork.handoffs}). */
-const HANDOFF_OPERATION = "pool-handoff";
-/**
- * The operation a worker's heartbeat records for its attempt: the worker has its claim (#5034). Any other operation
- * under the attempt's generation but a handoff confirms the claim too.
- */
-const CONFIRMED_OPERATION = "pool-confirmed";
 function fromRow(row: WorkRow): PoolWork {
 	const work: PoolWork = {
 		...JSON.parse(row.descriptor),

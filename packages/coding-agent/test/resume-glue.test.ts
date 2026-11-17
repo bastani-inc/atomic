@@ -7,6 +7,7 @@ import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.
 import { getBinDir } from "../src/config.ts";
 import { STORAGE_JOIN_COMMAND } from "../src/core/agent-rehydrate-errors.ts";
 import { StorageAdapterLoadError, StorageTransientError, StorageUnavailableError } from "../src/core/storage/errors.js";
+import { resetStorageHomeCacheForTests } from "../src/core/storage/file-identity.js";
 import type { StorageSelection } from "../src/core/storage/provider.js";
 import { inMemorySecret, LIBSQL_ADAPTER_PACKAGE } from "../src/core/storage/selection.js";
 import { GitUnavailableError, isGitUnavailableError } from "../src/core/worktree-snapshot/errors.ts";
@@ -388,6 +389,22 @@ const MAX_OPERATIONS_PER_SELECTION = 1;
 
 describe("resume storage preconditions (#4329)", () => {
 	const agentDir = "/home/u/.atomic/agent";
+	let prevHome: string | undefined;
+	let prevUserProfile: string | undefined;
+	beforeEach(() => {
+		prevHome = process.env.HOME;
+		prevUserProfile = process.env.USERPROFILE;
+		process.env.HOME = "/home/u";
+		process.env.USERPROFILE = "/home/u";
+		resetStorageHomeCacheForTests();
+	});
+	afterEach(() => {
+		if (prevHome === undefined) delete process.env.HOME;
+		else process.env.HOME = prevHome;
+		if (prevUserProfile === undefined) delete process.env.USERPROFILE;
+		else process.env.USERPROFILE = prevUserProfile;
+		resetStorageHomeCacheForTests();
+	});
 	const libsql = (secrets?: Extract<StorageSelection, { kind: "adapter" }>["secrets"]): StorageSelection => ({
 		kind: "adapter",
 		module: LIBSQL_ADAPTER_PACKAGE,
@@ -450,6 +467,17 @@ describe("resume storage preconditions (#4329)", () => {
 			"env:TEAM_TOKEN",
 		]);
 		assert.ok(io.calls.length <= MAX_OPERATIONS_PER_SELECTION + 2);
+
+		const customIo = new CountingIo();
+		const customProblems = await storagePreconditionProblems(
+			[{ domain: "sessions", selection: libsql({ authToken: { file: "team-token" } }) }],
+			"/srv/node-a",
+			customIo,
+		);
+		assert.deepEqual(
+			customProblems.map((problem) => [problem.code, problem.subject]),
+			[["credential-missing", `token file ${join("/srv/node-a", "team-token")}`]],
+		);
 	});
 
 	test("secret values never appear in problems", async () => {

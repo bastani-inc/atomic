@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { getDocsPath } from "../src/config.js";
 import { getDefaultSessionDirPath } from "../src/core/session-manager-paths.js";
@@ -507,7 +507,9 @@ describe("buildSystemPrompt", () => {
 		});
 
 		test("names where history lives, derived from the agent directory and the project", () => {
-			const agentDir = mkdtempSync(join(tmpdir(), "atomic-prompt-agent-"));
+			const root = mkdtempSync(join(tmpdir(), "atomic-prompt-agent-"));
+			const agentDir = join(root, "agent");
+			mkdirSync(agentDir, { recursive: true });
 			const previous = process.env.ATOMIC_CODING_AGENT_DIR;
 			process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
 			try {
@@ -515,7 +517,7 @@ describe("buildSystemPrompt", () => {
 				const prompt = buildSystemPrompt({ selectedTools: ["read"], contextFiles: [], skills: [], cwd: project });
 				const start = prompt.indexOf("**Session memory**");
 				const guidance = prompt.slice(start, prompt.indexOf("\n- ", start));
-				const workflowsDir = join(dirname(agentDir), "workflows");
+				const workflowsDir = join(agentDir, "workflows");
 
 				assert.ok(guidance.includes(join(workflowsDir, "journal.sqlite")));
 				assert.ok(
@@ -532,7 +534,7 @@ describe("buildSystemPrompt", () => {
 			} finally {
 				if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 				else process.env.ATOMIC_CODING_AGENT_DIR = previous;
-				rmSync(agentDir, { recursive: true, force: true });
+				rmSync(root, { recursive: true, force: true });
 			}
 		});
 	});

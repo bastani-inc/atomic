@@ -44,7 +44,7 @@ test("durable workflow artifacts default to the configured Atomic config root", 
 		await withEnv(
 			{ [ENV_WORKFLOW_ARTIFACT_DIR]: undefined, ATOMIC_CODING_AGENT_DIR: join(root, "agent") },
 			async () => {
-				assert.equal(workflowArtifactRunsRoot(), join(root, "workflows", "runs"));
+				assert.equal(workflowArtifactRunsRoot(), join(root, "agent", "workflows", "runs"));
 				const runDirectory = await createWorkflowArtifactDirectory("durable-resume-run");
 				assert.match(posix(runDirectory), /workflows\/runs\/durable-resume-run\/artifact-[^/]+$/);
 				await stat(runDirectory);
