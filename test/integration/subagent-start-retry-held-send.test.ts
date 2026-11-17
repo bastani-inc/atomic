@@ -137,9 +137,13 @@ async function launchingParent(cwd: string) {
 	return { events };
 }
 
-for (const stallAt of ["before_agent_start", "session_start"] as const)
+for (const { stallAt, resume } of [
+	{ stallAt: "before_agent_start", resume: false },
+	{ stallAt: "session_start", resume: false },
+	{ stallAt: "session_start", resume: true },
+] as const)
 	test(
-		`held sends and cleanup belong to the retry when the first start stalls in ${stallAt} (#5341)`,
+		`held sends and cleanup belong to the ${resume ? "resumed child" : "launch"} retry when the first start stalls in ${stallAt} (#5341)`,
 		async () => {
 			const cwd = mkdtempSync(join(tmpdir(), "start-retry-hold-cwd-"));
 			fixture.onCleanup(() => rmSync(cwd, { recursive: true, force: true }));
@@ -245,6 +249,20 @@ for (const stallAt of ["before_agent_start", "session_start"] as const)
 			});
 			fixture.onCleanup(() => peer.disconnect().catch(() => undefined));
 			const heldSend = peer.send(childName, { text: "HELD-1 before the child registered" });
+			const resumedSession = resume ? await SessionManager.create(cwd, join(cwd, "resumed-child")) : undefined;
+			if (resumedSession) {
+				await resumedSession.appendMessage({ role: "user", content: "previous task", timestamp: Date.now() });
+				await resumedSession.appendCustomMessageEntry(
+					"intercom_message",
+					"PRIOR-1 saved before the child was resumed",
+					true,
+				);
+				await resumedSession.appendCustomMessageEntry(
+					"intercom_message",
+					"PRIOR-2 saved before the child was resumed",
+					true,
+				);
+			}
 
 			const reports: string[] = [];
 			let executions = 0;
@@ -299,11 +317,14 @@ for (const stallAt of ["before_agent_start", "session_start"] as const)
 				orchestratorIntercomTarget: authorization.supervisorSessionId,
 				intercomGroup: "default",
 				intercomEvents: parent.events as never,
+				...(resumedSession ? { sessionManager: resumedSession, resumeSession: true } : {}),
 				onStartRetry: () => startHold.renew(),
 				taskExecution,
 			});
 			startHold.settle(result);
 			try {
+				assert.equal(starts, 2, "the first start stalled and was retried once");
+				assert.equal(result.status, "ok", JSON.stringify(result));
 				await retryDisposing.promise;
 				await new Promise<void>((resolve) => setImmediate(resolve));
 				assert.equal(cleanupSettled, false, "the task still owns the retry while its session is disposing");
@@ -316,18 +337,21 @@ for (const stallAt of ["before_agent_start", "session_start"] as const)
 			const gap = (await gapSend) as { delivered?: boolean; reason?: string } | undefined;
 			const seen = (text: string) => contexts.some((context) => context.includes(text));
 
-			assert.equal(starts, 2, "the first start stalled and was retried once");
-			assert.equal(result.status, "ok", JSON.stringify(result));
 			assert.equal(held.delivered, true, held.reason);
 			assert.ok(seen("HELD-1"), "a send held before the first start registered reaches the retry's first turn");
 			assert.ok(gap, "a send was made while the start was retried");
 			assert.equal(gap.delivered, true, gap.reason);
 			assert.ok(seen("GAP-2"), "a send made while the start was retried reaches the retry's first turn");
 			const first = contexts[0] ?? "";
-			assert.ok(
-				first.includes("HELD-1") && first.includes("GAP-2"),
-				`the child's first model request has both: ${contexts.length} requests`,
-			);
+			const expectedMarkers = [...(resume ? ["PRIOR-1", "PRIOR-2"] : []), "HELD-1", "GAP-2"];
+			for (const marker of expectedMarkers) {
+				assert.ok(
+					first.includes(marker),
+					`the child's first model request includes ${marker}: ${contexts.length} requests`,
+				);
+				assert.equal(first.split(marker).length - 1, 1, `${marker} appears once in the retry's first-turn context`);
+			}
+			if (resumedSession) assert.equal(result.sessionFile, resumedSession.getSessionFile());
 			assert.equal(executions, 1, "the task has one execution, its retried start included");
 			assert.ok(
 				reports.some((report) => report.startsWith("attempt 2")),

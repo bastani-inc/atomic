@@ -1037,7 +1037,7 @@ test("a setup failure before session construction has no agent session to dispos
 const RETRY_START_BUDGET_MS = 6_000;
 
 test(
-	"a child whose start stalls is reported stalled with its step, retried once, then failed naming both stalls",
+	"a child whose start stalls renews its hold once before retrying and names both stalls (#5341)",
 	async () => {
 		const fixture = await startFixture();
 		// Each start is held past its budget, then lets go of its session, so its retry may open it again.
@@ -1051,8 +1051,15 @@ test(
 			yieldTaskWait() {},
 			isParentObserving: () => false,
 		};
-		const result = await fixture.launch("start-stalls-twice", RETRY_START_BUDGET_MS, { taskExecution });
+		const retries: number[] = [];
+		const result = await fixture.launch("start-stalls-twice", RETRY_START_BUDGET_MS, {
+			taskExecution,
+			onStartRetry: async () => {
+				retries.push(stall.starts());
+			},
+		});
 
+		assert.deepEqual(retries, [1], "the hold is renewed once, after the first start releases and before the retry");
 		assert.equal(stall.starts(), 2, "the stalled start was retried once, and only once");
 		const shown = reports.flatMap((report) => (report === undefined ? [] : [describeSubagentStart(report)]));
 		assert.ok(shown.length > 0, "its start was reported");
