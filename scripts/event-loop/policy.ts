@@ -1,8 +1,9 @@
 /**
  * What the event-loop check treats as the interactive host, where it starts walking, and the reviewed exceptions.
  *
- * Every entry names a function as `<repository-relative file>#<qualified name>`, the name `check-event-loop.ts --list`
- * prints. An entry that no longer matches a function fails the check, so the policy cannot drift from the code.
+ * Every entry names a function as `<repository-relative file>#<qualified name>`, the name `check-event-loop.ts --paths`
+ * prints after the line of each step and `--explain` takes. An entry that no longer matches a function, or that the
+ * walk no longer meets, fails the check, so the policy cannot drift from the code.
  */
 import type { SinkSpec } from "./call-graph.ts";
 
@@ -148,8 +149,9 @@ const NODE_EMITTER_DECLARATIONS = [
 export const SINKS: readonly SinkSpec[] = [
 	...NODE_EMITTER_DECLARATIONS.map((module) => ({ file: `/@types/node/${module}.d.ts`, names: EMITTER_METHODS })),
 	{ file: "/@types/node/fs.d.ts", names: [...EMITTER_METHODS, "watch", "watchFile"] },
-	{ file: "/@types/node/timers.d.ts", names: ["setTimeout", "setInterval"] },
-	{ file: "/bun-types/globals.d.ts", names: ["setTimeout", "setInterval"] },
+	{ file: "/@types/node/timers.d.ts", names: ["setTimeout", "setInterval", "setImmediate"] },
+	{ file: "/bun-types/globals.d.ts", names: ["setTimeout", "setInterval", "setImmediate"] },
+	{ file: ".d.ts", owner: "Promise", names: ["then", "catch", "finally"], continuation: true },
 	{ file: "/lib.dom.d.ts", names: ["addEventListener"] },
 	{ file: ".ts", names: OUR_REGISTRATION_NAMES },
 ];
@@ -164,8 +166,9 @@ export const DETACHED_CALLBACKS: readonly SinkSpec[] = [
 ];
 
 export interface OwnedArea {
-	/** Repository-relative files, or directories ending in `/`. */
-	readonly paths: readonly string[];
+	/** Repository-relative files, or directories ending in `/`: their calls and every call reached only through them. */
+	readonly paths?: readonly string[];
+	readonly functions?: readonly FunctionSelector[];
 	/** The pull request or work item that makes these calls non-blocking. */
 	readonly owner: string;
 }
@@ -177,11 +180,21 @@ export interface OwnedArea {
 export const OWNED_ELSEWHERE: readonly OwnedArea[] = [
 	{
 		owner: "#5376 (node:sqlite statements off the event loop)",
-		paths: [
-			"packages/coding-agent/src/core/storage/node-sqlite.ts",
-			// The in-process connection that confirms a retired shard is unused before its files are removed.
-			"packages/workflows/src/workers/ship-shard.ts",
-		],
+		paths: ["packages/workflows/src/workers/ship-shard.ts"],
+		functions: [
+			"databaseNow",
+			"NodeSqliteDatabase.tryBegin/this.driver()",
+			"NodeSqliteDatabase.dataVersion/this.driver()",
+			"NodeSqliteDatabase.createExecutor/statement",
+			"NodeSqliteDatabase.createExecutor/<returned>.exec/execute()",
+			"NodeSqliteDatabase.createExecutor/<returned>.run/execute()",
+			"NodeSqliteDatabase.createExecutor/<returned>.get/execute()",
+			"NodeSqliteDatabase.createExecutor/<returned>.all/execute()",
+			"NodeSqliteDatabase.close/this.tail.then()/this.driver()",
+			"openConnection",
+			"openNodeSqliteDatabase",
+			"openNodeSqliteDatabase/switchToWriteAheadLog()",
+		].map((name) => ({ file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name })),
 	},
 ];
 
@@ -232,9 +245,9 @@ export const STARTUP_ONLY: readonly ReviewedSelector[] = [
 export const SYNCHRONOUS_LOADER_HOOKS: readonly ReviewedSelector[] = [
 	{
 		file: "packages/coding-agent/src/core/extensions/loader-virtual-modules.ts",
-		name: "installReadFileSyncObserver/wrapped",
+		name: "installReadFileSyncObserver",
 		reason:
-			"stands in for fs.readFileSync while jiti reads an extension's files, recording what it read for the module graph cache; it adds no read of its own",
+			"installs the stand-in for fs.readFileSync that jiti calls while it reads an extension's files, recording what it read for the module graph cache; it keeps the original to call and adds no read of its own",
 	},
 	{
 		file: "packages/coding-agent/src/core/extensions/ts-source-specifiers.ts",
@@ -261,7 +274,8 @@ export const SYNCHRONOUS_LOADER_HOOKS: readonly ReviewedSelector[] = [
 
 /**
  * Reviewed exceptions: a small synchronous write whose ordering before the next side effect is a crash-consistency
- * contract: if the process is killed right after it, the record must already be on disk. The walk does not enter them.
+ * contract: if the process is killed right after it, the record must already be on disk. Only the function's own
+ * calls are exempt; the walk still checks everything it calls.
  */
 export const DURABLE_RECORDS: readonly ReviewedSelector[] = [
 	{

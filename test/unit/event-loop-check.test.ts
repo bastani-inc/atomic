@@ -20,7 +20,10 @@ const fixturePolicy: EventLoopPolicy = {
 	],
 	sinks: SINKS,
 	detachedCallbacks: DETACHED_CALLBACKS,
-	ownedElsewhere: [{ owner: "another change", paths: ["src/owned.ts"] }],
+	ownedElsewhere: [
+		{ owner: "another change", paths: ["src/owned.ts"] },
+		{ owner: "statements change", functions: [{ file: "src/statements.ts", name: "queryStatement" }] },
+	],
 	startupOnly: [
 		{
 			file: "src/host.ts",
@@ -30,7 +33,13 @@ const fixturePolicy: EventLoopPolicy = {
 	],
 	exitOnly: [],
 	synchronousLoaderHooks: [],
-	durableRecords: [],
+	durableRecords: [
+		{
+			file: "src/statements.ts",
+			name: "recordDurably",
+			reason: "the fixture's stand-in for a record whose write must land before the next step",
+		},
+	],
 	guardedCalls: [
 		{
 			from: { file: "src/loader.ts", name: "Loader.constructor" },
@@ -66,7 +75,18 @@ describe("event-loop check", () => {
 			"src/host.ts readLazily fs.readFileSync",
 			"src/host.ts sleepWithAtomics Atomics.wait",
 			"src/host.ts spin loop polling a clock",
+			"src/session.ts exportText fs.writeFileSync",
+			"src/session.ts installSessionAccessors/title.get fs.readFileSync",
+			"src/startup.ts afterImmediate fs.readdirSync",
+			"src/startup.ts afterSettled fs.lstatSync",
+			"src/startup.ts warmCache fs.readFileSync",
+			"src/statements.ts lockHeld fs.existsSync",
+			"src/statements.ts readStartToken fs.readFileSync",
 			"src/stores.ts FileStore.save fs.writeFileSync",
+			"src/values.ts countEntries fs.readdirSync",
+			"src/values.ts existsByElement fs.existsSync",
+			"src/values.ts openDatabase new DatabaseSync",
+			"src/values.ts readThroughCast fs.readFileSync",
 		]);
 		assert.deepEqual(report.policyErrors, []);
 	});
@@ -100,7 +120,12 @@ describe("event-loop check", () => {
 	test("defers findings in areas another change owns, or reached only through them, and keeps reviewed startup helpers out of the walk", () => {
 		assert.deepEqual(
 			report.deferred.map((v) => `${v.function} ${v.api} ${v.ownedBy}`),
-			["readHelperOnlyOwnedCodeCalls fs.readFileSync another change", "listOwnedArea fs.readdirSync another change"],
+			[
+				"readHelperOnlyOwnedCodeCalls fs.readFileSync another change",
+				"listOwnedArea fs.readdirSync another change",
+				"queryStatement DatabaseSync.close statements change",
+				"queryStatement new DatabaseSync statements change",
+			],
 		);
 		assert.equal(
 			report.violations.some((v) => v.function === "reviewedStartupHelper"),
@@ -110,7 +135,9 @@ describe("event-loop check", () => {
 
 	test("rejects a backtracking regular expression on an interactive path, not one that only runs at startup", () => {
 		assert.deepEqual(
-			report.regexFindings.map((finding) => `${finding.function} /${finding.pattern}/ ${finding.kind}`),
+			report.regexFindings
+				.filter((finding) => finding.file === "src/host.ts")
+				.map((finding) => `${finding.function} /${finding.pattern}/ ${finding.kind}`),
 			["handleKey /^(\\w+\\s?)*$/ exponential"],
 		);
 		const reviewed = analyzeEventLoop(graph, {
@@ -123,7 +150,10 @@ describe("event-loop check", () => {
 				},
 			],
 		});
-		assert.deepEqual(reviewed.regexFindings, []);
+		assert.deepEqual(
+			reviewed.regexFindings.filter((finding) => finding.file === "src/host.ts"),
+			[],
+		);
 		assert.deepEqual(reviewed.policyErrors, []);
 	});
 
@@ -156,5 +186,112 @@ describe("event-loop check", () => {
 				"STARTUP_ONLY: src/host.ts loadConfigBeforeFirstFrame is no longer reached from an interactive root",
 			],
 		);
+	});
+
+	test("follows methods and accessors installed on a class's prototype to the calls made through its instances", () => {
+		const session = report.violations
+			.filter((v) => v.file === "src/session.ts")
+			.map((v) => `${v.function} ${v.api}`)
+			.sort();
+		assert.deepEqual(session, ["exportText fs.writeFileSync", "installSessionAccessors/title.get fs.readFileSync"]);
+	});
+
+	test("checks module-scope and static regular expressions where a reachable function uses them", () => {
+		assert.deepEqual(
+			report.regexFindings
+				.filter((finding) => finding.file === "src/patterns.ts")
+				.map((finding) => `${finding.function} /${finding.pattern}/ ${finding.kind}`)
+				.sort(),
+			["matchesModulePatterns /^(\\w+\\s?)+$/ exponential", "matchesModulePatterns /^(a|a)*$/ exponential"],
+		);
+	});
+
+	test("reports a regular expression the analyzer cannot read instead of skipping it", () => {
+		assert.deepEqual(
+			report.analysisErrors.map((error) => error.replace(/:\d+ /, " ")),
+			["src/patterns.ts compilesInvalidPattern /[/: Invalid regular expression: /[/: Unterminated character class"],
+		);
+	});
+
+	test("reports blocking APIs passed as values, behind a cast require and through element access", () => {
+		assert.deepEqual(
+			report.violations
+				.filter((v) => v.file === "src/values.ts")
+				.map((v) => `${v.function} ${v.api}`)
+				.sort(),
+			[
+				"countEntries fs.readdirSync",
+				"existsByElement fs.existsSync",
+				"openDatabase new DatabaseSync",
+				"readThroughCast fs.readFileSync",
+			],
+		);
+	});
+
+	test("treats setImmediate callbacks, promise continuations and detached async work started at startup as interactive", () => {
+		assert.deepEqual(
+			report.violations
+				.filter((v) => v.file === "src/startup.ts")
+				.map((v) => `${v.function} ${v.api}`)
+				.sort(),
+			["afterImmediate fs.readdirSync", "afterSettled fs.lstatSync", "warmCache fs.readFileSync"],
+		);
+	});
+
+	test("defers only the calls of the functions an owned entry names, not a lock they take on the way", () => {
+		assert.ok(report.violations.some((v) => v.function === "lockHeld" && v.api === "fs.existsSync"));
+		assert.equal(
+			report.violations.some((v) => v.function === "queryStatement"),
+			false,
+		);
+	});
+
+	test("a durable record exempts its own write, not the reads it makes first", () => {
+		assert.ok(report.violations.some((v) => v.function === "readStartToken" && v.api === "fs.readFileSync"));
+		assert.equal(
+			report.violations.some((v) => v.function === "recordDurably"),
+			false,
+		);
+	});
+
+	test("fails the policy on a stale entry in every reviewed list", () => {
+		const stale = analyzeEventLoop(graph, {
+			...fixturePolicy,
+			otherModes: [
+				{
+					file: "src/host.ts",
+					name: "flushOnExit",
+					reason: "the fixture's stand-in for a function no mode reaches",
+				},
+			],
+			ownedElsewhere: [
+				...fixturePolicy.ownedElsewhere,
+				{ owner: "a landed change", paths: ["src/loader.ts"] },
+				{ owner: "a landed statement", functions: [{ file: "src/stores.ts", name: "MemoryStore.save" }] },
+			],
+			durableRecords: [
+				...fixturePolicy.durableRecords,
+				{
+					file: "src/host.ts",
+					name: "loadConfigBeforeFirstFrame",
+					reason: "the fixture's stand-in for a record no interactive path writes",
+				},
+			],
+			guardedCalls: [
+				...fixturePolicy.guardedCalls,
+				{
+					from: { file: "src/host.ts", name: "startHost" },
+					to: { file: "src/host.ts", name: "loadConfigBeforeFirstFrame" },
+					reason: "the fixture's stand-in for a guarded call no interactive path makes",
+				},
+			],
+		});
+		assert.deepEqual(stale.policyErrors.map((error) => error.replace(/:\d+ /, " ")).sort(), [
+			"DURABLE_RECORDS: src/host.ts loadConfigBeforeFirstFrame is no longer reached from an interactive root",
+			"GUARDED_CALLS: src/host.ts startHost is no longer reached from an interactive root",
+			"OTHER_MODES: src/host.ts flushOnExit is no longer reached from the process entries",
+			"OWNED_ELSEWHERE: nothing left for a landed change in src/loader.ts; remove the entry",
+			"OWNED_ELSEWHERE: nothing left for a landed statement in src/stores.ts#MemoryStore.save; remove the entry",
+		]);
 	});
 });

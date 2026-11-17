@@ -16,6 +16,8 @@
  * function kept in a collection. Callbacks are reached instead where they are created (`closure`) or registered
  * (the policy's sinks), which is what makes those calls visible to the check.
  */
+
+import { isBuiltin } from "node:module";
 import {
 	type ArrowFunction,
 	type CallExpression,
@@ -71,6 +73,7 @@ export interface BlockingUse {
 }
 
 export interface RegexUse {
+	readonly file?: string;
 	readonly line: number;
 	readonly pattern: string;
 	readonly flags: string;
@@ -98,6 +101,7 @@ export interface SinkRegistration {
 	readonly sink: string;
 	readonly line: number;
 	readonly callbacks: readonly number[];
+	readonly continuation?: boolean;
 }
 
 /** A declaration that registers callbacks: what the callee of a call must resolve to. */
@@ -109,6 +113,7 @@ export interface SinkSpec {
 	readonly names: readonly string[];
 	/** Only calls whose first argument is one of these string literals register (event names). */
 	readonly events?: readonly string[];
+	readonly continuation?: boolean;
 }
 
 export interface CallGraph {
@@ -176,6 +181,13 @@ interface PendingCall {
 	readonly arguments: readonly ValueSources[];
 	readonly firstArgument: string | undefined;
 	readonly detached: boolean;
+	readonly floating: boolean;
+	readonly floatingChain: boolean;
+}
+
+interface RequiredExport {
+	readonly specifier: string;
+	readonly name: string | undefined;
 }
 
 interface ClassInfo {
@@ -290,7 +302,11 @@ function nameText(node: Node | undefined): string | undefined {
 }
 
 function memberName(node: Node): string | undefined {
-	return nameText((node as Node & { readonly name?: Node }).name);
+	return nameText(memberNameNode(node));
+}
+
+function memberNameNode(node: Node): Node | undefined {
+	return (node as Node & { readonly name?: Node }).name;
 }
 
 function isStatic(node: Node): boolean {
@@ -395,6 +411,35 @@ function isValuePosition(node: Node): boolean {
 	}
 }
 
+function isFloating(node: Node): boolean {
+	let parent = node.parent as Node | undefined;
+	while (parent !== undefined && EXPRESSION_WRAPPERS.has(parent.kind)) parent = parent.parent as Node | undefined;
+	return parent?.kind === SyntaxKind.VoidExpression || parent?.kind === SyntaxKind.ExpressionStatement;
+}
+
+function isFloatingChain(node: Node): boolean {
+	let current = node;
+	for (;;) {
+		let parent = current.parent as Node | undefined;
+		while (parent !== undefined && EXPRESSION_WRAPPERS.has(parent.kind)) parent = parent.parent as Node | undefined;
+		const call = parent?.parent as Node | undefined;
+		if (parent === undefined || !isPropertyAccessExpression(parent) || call === undefined || !isCallExpression(call))
+			break;
+		if (unwrapExpression(call.expression) !== parent) break;
+		current = call;
+	}
+	return isFloating(current);
+}
+
+function classifyRequiredExport(required: RequiredExport, name: string): BlockingApi | undefined {
+	const { specifier } = required;
+	let path: string;
+	if (specifier.startsWith("bun:")) path = `/node_modules/bun-types/${specifier.slice(4)}.d.ts`;
+	else if (isBuiltin(specifier)) path = `/node_modules/@types/node/${specifier.replace(/^node:/, "")}.d.ts`;
+	else path = `/node_modules/${specifier}/index.d.ts`;
+	return classifyExternalDeclaration({ path, name, owner: undefined });
+}
+
 export class CallGraphBuilder {
 	private readonly functions: GraphFunction[] = [];
 	/** The function each function was created in, or -1 for module and class-level nodes. */
@@ -450,6 +495,31 @@ export class CallGraphBuilder {
 		readonly functions: readonly number[];
 		readonly references: readonly number[];
 	}> = [];
+	private readonly functionNodes = new Map<number, Node>();
+	private readonly prototypeInstalls: Array<{
+		readonly path: string;
+		readonly target: Node;
+		readonly sources: readonly Node[];
+	}> = [];
+	private readonly propertyInstalls: Array<{
+		readonly path: string;
+		readonly target: Node;
+		readonly name: string;
+		readonly descriptor: Node;
+	}> = [];
+	private readonly accessorFunctions = new Map<string, number[]>();
+	private readonly regexHolders = new Map<string, RegexUse[]>();
+	private readonly regexHolderNames = new Set<string>();
+	private readonly identifierNodes: Node[] = [];
+	private readonly identifierContainers: number[] = [];
+	private readonly requireCalls: Array<{
+		readonly path: string;
+		readonly call: Node;
+		readonly callee: Node;
+		readonly specifier: string;
+	}> = [];
+	private readonly requiredDeclarations = new Map<string, RequiredExport>();
+	private readonly requiredMembers = new Map<Node, RequiredExport>();
 	private readonly targetCache = new Map<string, readonly number[]>();
 	private readonly externalCache = new Map<number, BlockingApi | null>();
 	private readonly locationCache = new Map<string, readonly string[]>();
@@ -501,6 +571,9 @@ export class CallGraphBuilder {
 		}
 		this.resolveHeritage();
 		this.resolveObjectMembers();
+		this.resolveInstalls();
+		this.resolveRequires();
+		this.resolveRegexHolders();
 		this.resolveAssignments();
 		this.resolveReferences();
 		this.resolveShorthandValues();
@@ -628,8 +701,17 @@ export class CallGraphBuilder {
 				this.addReference(context, (node as Node & { readonly tag: Node }).tag, "call");
 				break;
 			case SyntaxKind.Identifier:
+				this.identifierNodes.push(node);
+				this.identifierContainers.push(context.container);
 				if (isValuePosition(node)) this.addReference(context, node, "value");
 				break;
+			case SyntaxKind.ElementAccessExpression: {
+				const argument = (node as Node & { readonly argumentExpression: Node }).argumentExpression;
+				if (stringArgument(argument) !== undefined && isValuePosition(node)) {
+					this.addReference(context, argument, "value");
+				}
+				break;
+			}
 			case SyntaxKind.PropertyAccessExpression:
 				this.visitPropertyAccess(node, context);
 				break;
@@ -693,6 +775,7 @@ export class CallGraphBuilder {
 			isAsync !== 0,
 		);
 		this.functionByDeclaration.set(declarationKey(context.file.path, node), id);
+		this.functionNodes.set(id, node);
 		const parameters = node.parameters ?? [];
 		this.functionParameters.set(id, {
 			keys: parameters.map((parameter) => declarationKey(context.file.path, parameter)),
@@ -1068,9 +1151,28 @@ export class CallGraphBuilder {
 			return;
 		}
 		if (isIdentifier(callee) && callee.text === "RegExp") this.recordRegexConstructor(node, context);
+		const dotted = dottedText(callee);
+		if (dotted === "Object.assign") this.recordPrototypeInstall(node, context);
+		if (dotted === "Object.defineProperties" || dotted === "Object.defineProperty") {
+			this.recordPropertyInstalls(node, dotted, context);
+		}
+		const specifier = stringArgument(node.arguments[0]);
+		if (
+			specifier !== undefined &&
+			(isIdentifier(callee) || isCallExpression(callee) || isPropertyAccessExpression(callee))
+		) {
+			this.requireCalls.push({ path: context.file.path, call: node, callee, specifier });
+		}
 		let calleeReference: number | undefined;
 		if (isIdentifier(callee)) {
 			calleeReference = this.addReference(context, callee, "call");
+		} else if (
+			callee.kind === SyntaxKind.ElementAccessExpression &&
+			stringArgument((callee as Node & { readonly argumentExpression: Node }).argumentExpression) !== undefined
+		) {
+			const access = callee as Node & { readonly expression: Node; readonly argumentExpression: Node };
+			calleeReference = this.addReference(context, access.argumentExpression, "call");
+			this.visit(access.expression, context);
 		} else if (isPropertyAccessExpression(callee)) {
 			calleeReference = this.addReference(context, callee.name, "call");
 			const method = nameText(callee.name);
@@ -1081,9 +1183,49 @@ export class CallGraphBuilder {
 			}
 			this.visit(callee.expression, context);
 		} else {
-			this.visit(callee, context);
+			const created = this.captureCreated(context, () => this.visit(callee, context));
+			const detachedAsync = created.functions.filter((id) => this.functions[id].isAsync);
+			if (isFloating(node) && detachedAsync.length > 0) {
+				this.sinkRegistrations.push({
+					registrar: context.container,
+					sink: "detached async call",
+					line: this.lineOf(context.file, node),
+					callbacks: detachedAsync,
+					continuation: true,
+				});
+			}
 		}
 		this.recordCall(node, calleeReference, context);
+	}
+
+	private recordPrototypeInstall(node: CallExpression, context: WalkContext): void {
+		const [target, ...sources] = node.arguments;
+		if (target === undefined || sources.length === 0) return;
+		const unwrapped = unwrapExpression(target);
+		if (!isPropertyAccessExpression(unwrapped) || nameText(unwrapped.name) !== "prototype") return;
+		this.prototypeInstalls.push({ path: context.file.path, target, sources });
+	}
+
+	private recordPropertyInstalls(node: CallExpression, method: string, context: WalkContext): void {
+		const target = node.arguments[0];
+		if (target === undefined) return;
+		const install = (name: string | undefined, descriptor: Node | undefined) => {
+			if (name === undefined || descriptor === undefined) return;
+			const literal = unwrapExpression(descriptor);
+			if (literal.kind !== SyntaxKind.ObjectLiteralExpression) return;
+			this.propertyInstalls.push({ path: context.file.path, target, name, descriptor: literal });
+			this.accessorNames.add(name);
+		};
+		if (method === "Object.defineProperty") {
+			install(stringArgument(node.arguments[1]), node.arguments[2]);
+			return;
+		}
+		const properties = node.arguments[1] === undefined ? undefined : unwrapExpression(node.arguments[1]);
+		if (properties?.kind !== SyntaxKind.ObjectLiteralExpression) return;
+		for (const property of (properties as Node & { readonly properties: readonly Node[] }).properties) {
+			if (property.kind !== SyntaxKind.PropertyAssignment) continue;
+			install(memberName(property), (property as Node & { readonly initializer?: Node }).initializer);
+		}
 	}
 
 	private recordCall(
@@ -1099,6 +1241,8 @@ export class CallGraphBuilder {
 			for (const source of sources) for (const index of source.references) this.detachedReferences.add(index);
 		if (callee === undefined) return;
 		this.calls.push({
+			floating: isFloating(node),
+			floatingChain: isFloatingChain(node),
 			container: context.container,
 			callee,
 			line: this.lineOf(context.file, node),
@@ -1213,7 +1357,10 @@ export class CallGraphBuilder {
 
 	private addReference(context: WalkContext, node: Node, role: ReferenceRole): number | undefined {
 		const target = unwrapExpression(node);
-		const name = isIdentifier(target) || target.kind === SyntaxKind.PrivateIdentifier ? nameText(target) : undefined;
+		const name =
+			isIdentifier(target) || target.kind === SyntaxKind.PrivateIdentifier || stringArgument(target) !== undefined
+				? nameText(target)
+				: undefined;
 		const resolvable = isPropertyAccessExpression(target) ? target.name : target;
 		if (name === undefined && !isPropertyAccessExpression(target)) return undefined;
 		this.references.push({
@@ -1230,21 +1377,39 @@ export class CallGraphBuilder {
 		const text = (node as Node & { readonly text: string }).text;
 		const close = text.lastIndexOf("/");
 		if (!text.startsWith("/") || close <= 0) return;
-		this.functions[context.container].regexes.push({
-			line: this.lineOf(context.file, node),
-			pattern: text.slice(1, close),
-			flags: text.slice(close + 1),
-		});
+		this.recordRegex(node, context, text.slice(1, close), text.slice(close + 1));
 	}
 
 	private recordRegexConstructor(node: CallExpression, context: WalkContext): void {
 		const pattern = stringArgument(node.arguments?.[0]);
 		if (pattern === undefined) return;
-		this.functions[context.container].regexes.push({
-			line: this.lineOf(context.file, node),
-			pattern,
-			flags: stringArgument(node.arguments?.[1]) ?? "",
-		});
+		this.recordRegex(node, context, pattern, stringArgument(node.arguments?.[1]) ?? "");
+	}
+
+	private recordRegex(node: Node, context: WalkContext, pattern: string, flags: string): void {
+		const use: RegexUse = { file: context.file.relative, line: this.lineOf(context.file, node), pattern, flags };
+		this.functions[context.container].regexes.push(use);
+		if (this.functions[context.container].kind !== "module") return;
+		for (
+			let parent = node.parent as Node | undefined;
+			parent !== undefined;
+			parent = parent.parent as Node | undefined
+		) {
+			if (isFunctionLike(parent) || parent.kind === SyntaxKind.ClassStaticBlockDeclaration) return;
+			if (
+				parent.kind !== SyntaxKind.VariableDeclaration &&
+				parent.kind !== SyntaxKind.PropertyDeclaration &&
+				parent.kind !== SyntaxKind.PropertyAssignment
+			)
+				continue;
+			const name = memberName(parent);
+			if (name === undefined) continue;
+			const key = declarationKey(context.file.path, parent);
+			const list = this.regexHolders.get(key) ?? [];
+			list.push(use);
+			this.regexHolders.set(key, list);
+			this.regexHolderNames.add(name);
+		}
 	}
 
 	/**
@@ -1360,8 +1525,11 @@ export class CallGraphBuilder {
 
 	private collectDeclarationTargets(path: string, declaration: Node, role: ReferenceRole, into: Set<number>): void {
 		const isAccessor = declaration.kind === SyntaxKind.GetAccessor || declaration.kind === SyntaxKind.SetAccessor;
-		if (role === "accessor" && !isAccessor) return;
 		const key = declarationKey(path, declaration);
+		if (role === "accessor") {
+			for (const id of this.accessorFunctions.get(key) ?? []) into.add(id);
+			if (!isAccessor) return;
+		}
 		const direct = this.functionByDeclaration.get(key);
 		if (direct !== undefined) into.add(direct);
 		for (const id of this.assignedFunctions.get(key) ?? []) into.add(id);
@@ -1430,6 +1598,254 @@ export class CallGraphBuilder {
 				}
 				current = info.base;
 			}
+		}
+	}
+
+	private typesAt(
+		nodes: readonly Node[],
+	): Array<ReturnType<typeof this.project.checker.getTypeAtLocation> | undefined> {
+		const types: Array<ReturnType<typeof this.project.checker.getTypeAtLocation> | undefined> = [];
+		for (let start = 0; start < nodes.length; start += RESOLVE_BATCH) {
+			let batch: ReadonlyArray<ReturnType<typeof this.project.checker.getTypeAtLocation> | undefined>;
+			try {
+				batch = this.project.checker.getTypeAtLocation(nodes.slice(start, start + RESOLVE_BATCH));
+			} catch {
+				batch = new Array(Math.min(RESOLVE_BATCH, nodes.length - start)).fill(undefined);
+			}
+			types.push(...batch);
+		}
+		return types;
+	}
+
+	private propertyKeys(
+		type: ReturnType<typeof this.project.checker.getTypeAtLocation> | undefined,
+		name: string,
+	): string[] {
+		if (type === undefined) return [];
+		let property: TsSymbol | undefined;
+		try {
+			property = this.project.checker.getPropertyOfType(type, name);
+		} catch {
+			property = undefined;
+		}
+		const keys: string[] = [];
+		for (const handle of property?.declarations ?? []) {
+			if (!this.modulePaths.has(handle.path)) continue;
+			const declaration = this.resolveHandle(handle);
+			if (declaration !== undefined) keys.push(declarationKey(handle.path, declaration));
+		}
+		return keys;
+	}
+
+	private functionsOfSymbol(symbol: TsSymbol | undefined): number[] {
+		if (symbol === undefined) return [];
+		const ids: number[] = [];
+		for (const handle of this.aliased(symbol).declarations) {
+			const declaration = this.resolveHandle(handle);
+			if (declaration === undefined) continue;
+			const key = declarationKey(handle.path, declaration);
+			const id = this.functionByDeclaration.get(key);
+			if (id !== undefined) ids.push(id);
+			for (const initialized of this.initializerFunctions.get(key) ?? []) ids.push(initialized);
+		}
+		return ids;
+	}
+
+	private symbolAt(node: Node): TsSymbol | undefined {
+		try {
+			return this.project.checker.getSymbolAtLocation(node);
+		} catch {
+			return undefined;
+		}
+	}
+
+	private literalMembers(source: Node, path: string): Array<{ readonly name: string; readonly functions: number[] }> {
+		let literal: Node | undefined = unwrapExpression(source);
+		let literalPath = path;
+		if (isIdentifier(literal)) {
+			const symbol = this.symbolAt(literal);
+			literal = undefined;
+			for (const handle of symbol === undefined ? [] : this.aliased(symbol).declarations) {
+				const declaration = this.resolveHandle(handle);
+				const initializer = (declaration as (Node & { readonly initializer?: Node }) | undefined)?.initializer;
+				if (declaration?.kind !== SyntaxKind.VariableDeclaration || initializer === undefined) continue;
+				literal = unwrapExpression(initializer);
+				literalPath = handle.path;
+				break;
+			}
+		}
+		if (literal?.kind !== SyntaxKind.ObjectLiteralExpression) return [];
+		const members: Array<{ readonly name: string; readonly functions: number[] }> = [];
+		for (const property of (literal as Node & { readonly properties: readonly Node[] }).properties) {
+			const name = memberName(property);
+			if (name === undefined) continue;
+			const functions: number[] = [];
+			if (isFunctionLike(property)) {
+				const id = this.functionByDeclaration.get(declarationKey(literalPath, property));
+				if (id !== undefined) functions.push(id);
+			} else if (property.kind === SyntaxKind.ShorthandPropertyAssignment) {
+				let symbol: TsSymbol | undefined;
+				try {
+					symbol = this.project.checker.getShorthandAssignmentValueSymbol(property);
+				} catch {
+					symbol = undefined;
+				}
+				functions.push(...this.functionsOfSymbol(symbol));
+			} else if (property.kind === SyntaxKind.PropertyAssignment) {
+				const value = unwrapExpression((property as Node & { readonly initializer: Node }).initializer);
+				const id = this.functionByDeclaration.get(declarationKey(literalPath, value));
+				if (id !== undefined) functions.push(id);
+				else if (isIdentifier(value) || isPropertyAccessExpression(value)) {
+					functions.push(...this.functionsOfSymbol(this.symbolAt(this.resolvableNode(value))));
+				}
+			}
+			if (functions.length > 0) members.push({ name, functions });
+		}
+		return members;
+	}
+
+	private resolveInstalls(): void {
+		const targetTypes = this.typesAt(this.prototypeInstalls.map((install) => install.target));
+		this.prototypeInstalls.forEach((install, index) => {
+			for (const source of install.sources) {
+				for (const member of this.literalMembers(source, install.path)) {
+					const keys = new Set(this.propertyKeys(targetTypes[index], member.name));
+					for (const id of member.functions) {
+						const thisParameter = (
+							this.functionNodes.get(id) as (Node & { readonly parameters?: readonly Node[] }) | undefined
+						)?.parameters?.[0];
+						if (thisParameter === undefined || nameText(memberNameNode(thisParameter)) !== "this") continue;
+						const [thisType] = this.typesAt([thisParameter]);
+						for (const key of this.propertyKeys(thisType, member.name)) keys.add(key);
+					}
+					for (const key of keys) {
+						const list = this.assignedFunctions.get(key) ?? [];
+						list.push(...member.functions);
+						this.assignedFunctions.set(key, list);
+					}
+				}
+			}
+		});
+		const propertyTypes = this.typesAt(this.propertyInstalls.map((install) => install.target));
+		this.propertyInstalls.forEach((install, index) => {
+			const keys = this.propertyKeys(propertyTypes[index], install.name);
+			if (keys.length === 0) return;
+			for (const member of this.literalMembers(install.descriptor, install.path)) {
+				const into = member.name === "value" ? this.assignedFunctions : this.accessorFunctions;
+				if (member.name !== "value" && member.name !== "get" && member.name !== "set") continue;
+				for (const key of keys) {
+					const list = into.get(key) ?? [];
+					list.push(...member.functions);
+					into.set(key, list);
+				}
+			}
+		});
+	}
+
+	private resolveRequires(): void {
+		const types = this.typesAt(this.requireCalls.map((call) => call.callee));
+		const namespaces = new Map<string, RequiredExport>();
+		this.requireCalls.forEach((call, index) => {
+			let symbol: TsSymbol | undefined;
+			try {
+				symbol = types[index]?.getSymbol();
+			} catch {
+				symbol = undefined;
+			}
+			if (symbol === undefined || !["Require", "NodeRequire", "RequireFunction"].includes(symbol.name)) return;
+			let child = call.call;
+			let parent = child.parent as Node | undefined;
+			while (parent !== undefined && EXPRESSION_WRAPPERS.has(parent.kind)) {
+				child = parent;
+				parent = parent.parent as Node | undefined;
+			}
+			if (parent === undefined) return;
+			if (isPropertyAccessExpression(parent) && parent.expression === child) {
+				this.requiredMembers.set(parent.name, { specifier: call.specifier, name: nameText(parent.name) });
+				return;
+			}
+			if (parent.kind !== SyntaxKind.VariableDeclaration) return;
+			const name = (parent as Node & { readonly name: Node }).name;
+			if (isIdentifier(name)) {
+				const required = { specifier: call.specifier, name: undefined };
+				this.requiredDeclarations.set(declarationKey(call.path, parent), required);
+				namespaces.set(name.text, required);
+				return;
+			}
+			if (name.kind !== SyntaxKind.ObjectBindingPattern) return;
+			for (const element of (name as Node & { readonly elements: readonly Node[] }).elements) {
+				const binding = element as Node & { readonly propertyName?: Node; readonly name: Node };
+				const exported = nameText(binding.propertyName) ?? nameText(binding.name);
+				if (exported === undefined) continue;
+				this.requiredDeclarations.set(declarationKey(call.path, element), {
+					specifier: call.specifier,
+					name: exported,
+				});
+			}
+		});
+		if (namespaces.size === 0) return;
+		const members = this.references.filter((reference) => {
+			const parent = reference.node.parent as Node | undefined;
+			if (parent === undefined || !isPropertyAccessExpression(parent) || parent.name !== reference.node)
+				return false;
+			const receiver = unwrapExpression(parent.expression);
+			return isIdentifier(receiver) && namespaces.has(receiver.text);
+		});
+		for (const reference of members) {
+			const receiver = unwrapExpression((reference.node.parent as Node & { readonly expression: Node }).expression);
+			const required = this.requiredExportOf(this.symbolAt(receiver));
+			if (required !== undefined && required.name === undefined) {
+				this.requiredMembers.set(reference.node, { specifier: required.specifier, name: reference.name });
+			}
+		}
+	}
+
+	private requiredExportOf(symbol: TsSymbol | undefined): RequiredExport | undefined {
+		if (symbol === undefined || this.requiredDeclarations.size === 0) return undefined;
+		for (const handle of this.aliased(symbol).declarations) {
+			if (!this.modulePaths.has(handle.path)) continue;
+			const declaration = this.resolveHandle(handle);
+			if (declaration === undefined) continue;
+			const required = this.requiredDeclarations.get(declarationKey(handle.path, declaration));
+			if (required !== undefined) return required;
+		}
+		return undefined;
+	}
+
+	private resolveRegexHolders(): void {
+		const pending: number[] = [];
+		this.identifierNodes.forEach((node, index) => {
+			const name = nameText(node);
+			const container = this.identifierContainers[index];
+			if (name !== undefined && this.regexHolderNames.has(name) && this.functions[container].kind !== "module") {
+				pending.push(index);
+			}
+		});
+		const added = new Set<string>();
+		for (let start = 0; start < pending.length; start += RESOLVE_BATCH) {
+			const batch = pending.slice(start, start + RESOLVE_BATCH);
+			let symbols: ReadonlyArray<TsSymbol | undefined>;
+			try {
+				symbols = this.project.checker.getSymbolAtLocation(batch.map((index) => this.identifierNodes[index]));
+			} catch {
+				continue;
+			}
+			batch.forEach((identifier, index) => {
+				const symbol = symbols[index];
+				if (symbol === undefined) return;
+				const container = this.identifierContainers[identifier];
+				for (const handle of this.aliased(symbol).declarations) {
+					if (!this.modulePaths.has(handle.path)) continue;
+					const declaration = this.resolveHandle(handle);
+					if (declaration === undefined) continue;
+					for (const use of this.regexHolders.get(declarationKey(handle.path, declaration)) ?? []) {
+						const key = `${container}\0${use.file}:${use.line}\0${use.pattern}`;
+						if (added.has(key)) continue;
+						added.add(key);
+						this.functions[container].regexes.push(use);
+					}
+				}
+			});
 		}
 	}
 
@@ -1538,6 +1954,7 @@ export class CallGraphBuilder {
 		this.propagateValues(resolved);
 		this.applyNameChecks(resolved);
 		for (const call of this.calls) this.applySinks(call, resolved, symbolsByReference);
+		for (const call of this.calls) this.applyDetachedAsync(call, resolved);
 		for (const assignment of this.assignedHandlers) this.applyAssignedHandler(assignment, resolved);
 	}
 
@@ -1679,6 +2096,15 @@ export class CallGraphBuilder {
 
 	private applyReference(reference: PendingReference, symbol: TsSymbol | undefined, index: number): readonly number[] {
 		if (this.detachedReferences.has(index)) return [];
+		const required = this.requiredMembers.get(reference.node) ?? (symbol && this.requiredExportOf(symbol));
+		if (required !== undefined) {
+			const api = classifyRequiredExport(required, required.name ?? reference.name);
+			if (api !== undefined) {
+				this.functions[reference.container].blocking.push({ line: reference.line, api });
+				this.stats.resolvedExternal++;
+				return [];
+			}
+		}
 		if (symbol === undefined) {
 			this.stats.unresolved++;
 			if (reference.role === "call") this.recordUnresolvedBlocking(reference);
@@ -1692,7 +2118,7 @@ export class CallGraphBuilder {
 			if (variableLike) this.typeFallbacks.push(index);
 		}
 		const edge: EdgeKind = reference.role === "value" ? "reference" : "call";
-		if (blocking !== undefined && reference.role !== "value") {
+		if (blocking !== undefined) {
 			this.functions[reference.container].blocking.push({ line: reference.line, api: blocking });
 		}
 		if (functions.length > 0) this.stats.resolvedToFunction++;
@@ -1742,15 +2168,35 @@ export class CallGraphBuilder {
 		const reference = this.references[call.callee];
 		const symbol = symbols[call.callee];
 		if (symbol === undefined || call.detached) return;
-		const sink = this.matchSink(symbol, call);
-		if (sink === undefined) return;
+		const match = this.matchSink(symbol, call);
+		if (match === undefined) return;
+		if (match.continuation && !call.floatingChain) return;
 		const callbacks = new Set<number>(call.argumentFunctions);
 		for (const index of call.argumentReferences) for (const id of resolved[index] ?? []) callbacks.add(id);
 		if (callbacks.size === 0) return;
-		this.sinkRegistrations.push({ registrar: reference.container, sink, line: call.line, callbacks: [...callbacks] });
+		this.sinkRegistrations.push({
+			registrar: reference.container,
+			sink: match.sink,
+			line: call.line,
+			callbacks: [...callbacks],
+			...(match.continuation ? { continuation: true } : {}),
+		});
 	}
 
-	private matchSink(symbol: TsSymbol, call: PendingCall): string | undefined {
+	private applyDetachedAsync(call: PendingCall, resolved: Array<readonly number[]>): void {
+		if (!call.floating || call.detached) return;
+		const callbacks = (resolved[call.callee] ?? []).filter((id) => this.functions[id].isAsync);
+		if (callbacks.length === 0) return;
+		this.sinkRegistrations.push({
+			registrar: this.references[call.callee].container,
+			sink: "detached async call",
+			line: call.line,
+			callbacks,
+			continuation: true,
+		});
+	}
+
+	private matchSink(symbol: TsSymbol, call: PendingCall): { sink: string; continuation: boolean } | undefined {
 		const target = this.aliased(symbol);
 		for (const handle of target.declarations) {
 			const path = handle.path.replaceAll("\\", "/");
@@ -1766,7 +2212,10 @@ export class CallGraphBuilder {
 					(call.firstArgument === undefined || !spec.events.includes(call.firstArgument))
 				)
 					continue;
-				return `${owner === undefined || owner === "global" ? "" : `${owner}.`}${target.name}`;
+				return {
+					sink: `${owner === undefined || owner === "global" ? "" : `${owner}.`}${target.name}`,
+					continuation: spec.continuation === true,
+				};
 			}
 		}
 		return undefined;
@@ -1802,7 +2251,8 @@ export class CallGraphBuilder {
 				symbol = undefined;
 			}
 			if (symbol === undefined) continue;
-			const { functions } = this.resolveSymbol(symbol, "value");
+			const { functions, blocking } = this.resolveSymbol(symbol, "value");
+			if (blocking !== undefined) this.functions[entry.container].blocking.push({ line: entry.line, api: blocking });
 			for (const id of functions) this.addEdge(entry.container, id, "reference");
 		}
 	}

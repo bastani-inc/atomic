@@ -216,6 +216,17 @@ describe("shipped patterns rewritten to read each run once", () => {
 	}
 });
 
+describe("lookbehind", () => {
+	test("reads a lookbehind right to left, so repetitions it tries first are checked against what must follow them", () => {
+		assert.deepEqual(summary("(?<=a\\s*\\s*)b"), ["polynomial: \\s*\\s*"]);
+		assert.deepEqual(summary("(?<=^\\s*\\s*)b"), ["polynomial: \\s*\\s*"]);
+	});
+
+	test("does not flag a lookbehind whose repetitions the matcher reaches last", () => {
+		assert.deepEqual(summary("(?<=\\s*\\s*a)b"), []);
+	});
+});
+
 describe("pattern syntax", () => {
 	test("rejects a pattern that is not valid JavaScript", () => {
 		assert.throws(() => findBacktrackingRisks("(a", ""), SyntaxError);

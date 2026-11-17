@@ -3,8 +3,13 @@ import { pbkdf2Sync } from "node:crypto";
 import { appendFileSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { Loader } from "./loader.ts";
 import { listOwnedArea } from "./owned.ts";
+import { compilesInvalidPattern, matchesModulePatterns } from "./patterns.ts";
+import { Session } from "./session.ts";
+import { scheduleStartupWork } from "./startup.ts";
+import { queryStatement, recordDurably } from "./statements.ts";
 import { FileStore, type Store } from "./stores.ts";
 import { Terminal } from "./terminal.ts";
+import { countEntries, existsByElement, openDatabase, readThroughCast } from "./values.ts";
 
 const store: Store = new FileStore();
 
@@ -44,6 +49,17 @@ function handleKey(data: string): void {
 	void readLazily();
 	process.once("exit", flushOnExit);
 	void new Loader({ text: data }).text;
+	const session = new Session();
+	session.exportText();
+	void session.title;
+	matchesModulePatterns(data);
+	compilesInvalidPattern(data);
+	countEntries([data]);
+	openDatabase(data);
+	readThroughCast(data);
+	existsByElement(data);
+	queryStatement(data);
+	recordDurably();
 }
 
 function pollStatus(): string {
@@ -56,6 +72,7 @@ function flushOnExit(): void {
 
 export function startHost(): void {
 	loadConfigBeforeFirstFrame();
+	scheduleStartupWork();
 	new Terminal().start((data) => handleKey(data));
 	setInterval(pollStatus, 1_000);
 	process.on("exit", () => writeFileSync("exit.marker", "bye"));

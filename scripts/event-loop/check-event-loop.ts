@@ -3,8 +3,9 @@
  * Fails when a blocking API is reachable from the interactive host's entry points.
  *
  *   node scripts/event-loop/check-event-loop.ts             violations, exit 1 when there are any
+ *   node scripts/event-loop/check-event-loop.ts --paths     each with the call path from its entry point
  *   node scripts/event-loop/check-event-loop.ts --json      the same as JSON
- *   node scripts/event-loop/check-event-loop.ts --explain 'packages/tui/src/tui.ts#TuiBase.render'
+ *   node scripts/event-loop/check-event-loop.ts --explain 'packages/tui/src/tui.ts#TuiBase.doRender'
  *
  * See scripts/event-loop/README.md for what is checked and how to fix or review a finding.
  */
@@ -49,6 +50,7 @@ export interface EventLoopReport {
 	readonly deferred: readonly Violation[];
 	/** Backtracking regular expressions on interactive paths that no reviewed entry accepts. */
 	readonly regexFindings: readonly RegexFinding[];
+	readonly analysisErrors: readonly string[];
 	readonly warnings: readonly string[];
 	readonly policyErrors: readonly string[];
 	readonly reachableFunctions: number;
@@ -144,6 +146,7 @@ export function analyzeEventLoop(graph: CallGraph, policy: EventLoopPolicy = INT
 	}
 	for (const registration of graph.sinkRegistrations) {
 		if (!process.arrivals.has(registration.registrar)) continue;
+		if (registration.continuation && entries.has(registration.registrar)) continue;
 		const registrar = graph.functions[registration.registrar];
 		for (const callback of registration.callbacks) {
 			if (!roots.has(callback)) {
@@ -160,7 +163,6 @@ export function analyzeEventLoop(graph: CallGraph, policy: EventLoopPolicy = INT
 	const loaderHooks = reviewed(policy.synchronousLoaderHooks, "SYNCHRONOUS_LOADER_HOOKS");
 	for (const [id, reason] of loaderHooks) startupOnly.set(id, reason);
 	const durableRecords = reviewed(policy.durableRecords, "DURABLE_RECORDS");
-	for (const [id, reason] of durableRecords) startupOnly.set(id, reason);
 	for (const id of otherModes.keys()) startupOnly.set(id, "other mode");
 	const loadedAtStartup = startupModuleNodes(graph, policy.startupModules, policyErrors);
 	const guarded = new Set<string>();
@@ -190,7 +192,6 @@ export function analyzeEventLoop(graph: CallGraph, policy: EventLoopPolicy = INT
 		["STARTUP_ONLY", policy.startupOnly],
 		["EXIT_ONLY", policy.exitOnly],
 		["SYNCHRONOUS_LOADER_HOOKS", policy.synchronousLoaderHooks],
-		["DURABLE_RECORDS", policy.durableRecords],
 	] as const) {
 		for (const entry of entries) {
 			const id = byName.get(selectorKey(entry));
@@ -201,13 +202,44 @@ export function analyzeEventLoop(graph: CallGraph, policy: EventLoopPolicy = INT
 			}
 		}
 	}
+	for (const id of durableRecords.keys()) {
+		if (!interactive.arrivals.has(id)) {
+			policyErrors.push(
+				`DURABLE_RECORDS: ${describe(graph.functions[id])} is no longer reached from an interactive root`,
+			);
+		}
+	}
+	for (const id of otherModes.keys()) {
+		if (!process.stoppedFrom.has(id)) {
+			policyErrors.push(
+				`OTHER_MODES: ${describe(graph.functions[id])} is no longer reached from the process entries`,
+			);
+		}
+	}
+	for (const edge of policy.guardedCalls) {
+		const from = byName.get(selectorKey(edge.from));
+		if (from !== undefined && !interactive.arrivals.has(from)) {
+			policyErrors.push(
+				`GUARDED_CALLS: ${describe(graph.functions[from])} is no longer reached from an interactive root`,
+			);
+		}
+	}
 
-	const ownerOf = (file: string) =>
-		policy.ownedElsewhere.find((area) =>
-			area.paths.some((path) => (path.endsWith("/") ? file.startsWith(path) : file === path)),
-		)?.owner;
-	// A second walk that does not enter areas other changes own: a call reached only through one of them is theirs to
-	// remove (their change makes the caller non-blocking), so it is deferred to them, not failed here.
+	const inPath = (file: string, path: string) => (path.endsWith("/") ? file.startsWith(path) : file === path);
+	const pathEntryOf = (file: string) => {
+		for (const area of policy.ownedElsewhere) {
+			for (const path of area.paths ?? []) if (inPath(file, path)) return { owner: area.owner, entry: path };
+		}
+		return undefined;
+	};
+	const ownerOf = (file: string) => pathEntryOf(file)?.owner;
+	const ownedByFunction = new Map<number, { owner: string; entry: string }>();
+	for (const area of policy.ownedElsewhere) {
+		for (const selector of area.functions ?? []) {
+			const id = resolve(selector, "OWNED_ELSEWHERE");
+			if (id !== undefined) ownedByFunction.set(id, { owner: area.owner, entry: selectorKey(selector) });
+		}
+	}
 	const ownedFunctions = new Map(startupOnly);
 	for (const fn of graph.functions) {
 		const owner = ownerOf(fn.file);
@@ -225,15 +257,22 @@ export function analyzeEventLoop(graph: CallGraph, policy: EventLoopPolicy = INT
 	);
 	const throughOwnedArea = (id: number) => {
 		for (const step of pathTo(interactive, id)) {
-			const owner = ownerOf(graph.functions[step.id].file);
-			if (owner !== undefined) return owner;
+			const owned = pathEntryOf(graph.functions[step.id].file);
+			if (owned !== undefined) return owned;
 		}
 		return undefined;
 	};
+	const usedOwnedEntries = new Set<string>();
 	const findings: Violation[] = [];
 	for (const [id] of interactive.arrivals) {
 		const fn = graph.functions[id];
-		const ownedBy = ownerOf(fn.file) ?? (withoutOwnedAreas.arrivals.has(id) ? undefined : throughOwnedArea(id));
+		if (durableRecords.has(id)) continue;
+		const owned =
+			pathEntryOf(fn.file) ??
+			ownedByFunction.get(id) ??
+			(withoutOwnedAreas.arrivals.has(id) ? undefined : throughOwnedArea(id));
+		const ownedBy = owned?.owner;
+		if (owned !== undefined && fn.blocking.length > 0) usedOwnedEntries.add(`${owned.owner}\0${owned.entry}`);
 		for (const use of fn.blocking) {
 			findings.push({
 				file: fn.file,
@@ -253,6 +292,8 @@ export function analyzeEventLoop(graph: CallGraph, policy: EventLoopPolicy = INT
 	const violations = findings.filter((finding) => finding.ownedBy === undefined);
 	const deferred = findings.filter((finding) => finding.ownedBy !== undefined);
 	const regexFindings: RegexFinding[] = [];
+	const analysisErrors: string[] = [];
+	const regexesSeen = new Set<string>();
 	const reviewedRegexUsed = new Set<string>();
 	const reviewedRegex = new Map(policy.reviewedRegexes.map((entry) => [`${entry.file}\0${entry.pattern}`, entry]));
 	for (const entry of policy.reviewedRegexes) {
@@ -261,23 +302,30 @@ export function analyzeEventLoop(graph: CallGraph, policy: EventLoopPolicy = INT
 	}
 	for (const [id] of interactive.arrivals) {
 		const fn = graph.functions[id];
-		if (ownerOf(fn.file) !== undefined) continue;
 		for (const use of fn.regexes) {
+			const file = use.file ?? fn.file;
+			if (ownerOf(file) !== undefined) continue;
+			const location = `${file}:${use.line}\0${use.pattern}\0${use.flags}`;
+			if (regexesSeen.has(location)) continue;
+			regexesSeen.add(location);
 			let risks: ReturnType<typeof findBacktrackingRisks>;
 			try {
 				risks = findBacktrackingRisks(use.pattern, use.flags);
-			} catch {
+			} catch (error) {
+				analysisErrors.push(
+					`${file}:${use.line} ${fn.name} /${use.pattern}/${use.flags}: ${error instanceof Error ? error.message : String(error)}`,
+				);
 				continue;
 			}
 			if (risks.length === 0) continue;
-			const key = `${fn.file}\0${use.pattern}`;
+			const key = `${file}\0${use.pattern}`;
 			if (reviewedRegex.has(key)) {
 				reviewedRegexUsed.add(key);
 				continue;
 			}
 			for (const risk of risks) {
 				regexFindings.push({
-					file: fn.file,
+					file,
 					line: use.line,
 					pattern: use.pattern,
 					flags: use.flags,
@@ -297,14 +345,17 @@ export function analyzeEventLoop(graph: CallGraph, policy: EventLoopPolicy = INT
 	}
 	const warnings: string[] = [];
 	for (const area of policy.ownedElsewhere) {
-		if (!deferred.some((finding) => finding.ownedBy === area.owner)) {
-			warnings.push(`OWNED_ELSEWHERE: nothing left for ${area.owner}; remove the entry`);
+		for (const entry of [...(area.paths ?? []), ...(area.functions ?? []).map(selectorKey)]) {
+			if (!usedOwnedEntries.has(`${area.owner}\0${entry}`)) {
+				policyErrors.push(`OWNED_ELSEWHERE: nothing left for ${area.owner} in ${entry}; remove the entry`);
+			}
 		}
 	}
 	return {
 		violations,
 		deferred,
 		regexFindings,
+		analysisErrors,
 		warnings,
 		policyErrors,
 		reachableFunctions: interactive.arrivals.size,
@@ -373,13 +424,18 @@ function main(argv: readonly string[]): number {
 					`${finding.file}:${finding.line} /${finding.pattern}/${finding.flags} backtracks (${finding.kind}) in ${finding.function}: ${finding.reason}`,
 				);
 			}
+			for (const error of report.analysisErrors) console.log(`regex analysis failed: ${error}`);
 			for (const warning of report.warnings) console.log(`warning: ${warning}`);
 			for (const error of report.policyErrors) console.log(`policy: ${error}`);
 			console.log(
 				`event-loop check: ${report.violations.length} blocking call(s), ${report.deferred.length} more owned by open changes, reachable from ${report.interactiveRoots} interactive entry points (${report.reachableFunctions} of ${graph.functions.length} functions reachable, ${report.processFunctions} in the process) in ${((performance.now() - started) / 1000).toFixed(1)} s`,
 			);
 		}
-		const failed = report.violations.length + report.regexFindings.length + report.policyErrors.length;
+		const failed =
+			report.violations.length +
+			report.regexFindings.length +
+			report.analysisErrors.length +
+			report.policyErrors.length;
 		return failed > 0 ? 1 : 0;
 	} finally {
 		close();

@@ -19,20 +19,25 @@ It runs under Node (the TypeScript 7 API it uses cannot run under Bun) and takes
 `blocking-apis.ts` lists them: `fs` `*Sync` functions, `child_process` `execSync`/`execFileSync`/`spawnSync`,
 `Bun.spawnSync`/`Bun.sleepSync`, synchronous `crypto` and `zlib`, `node:sqlite` and `bun:sqlite` statements,
 `Atomics.wait`, the `@bastani/atomic-natives` functions that wait on the file system, a lock or another process, any
-library function named `*Sync`/`sync`, and loops that only poll a clock (busy-waits).
+library function named `*Sync`/`sync`, and loops that only poll a clock (busy-waits). Passing or storing one of them as
+a value counts as calling it, since whatever receives it can.
 
 ## What counts as reachable
 
 `call-graph.ts` builds a call graph of the shipped sources with the type checker: resolved calls, `new`, accessors,
 callbacks passed or stored as values, interface and base-class dispatch (to every implementing class and every object
-literal checked against the interface), functions passed through parameters and stored in properties, and dynamic
-`import()` of modules not already loaded at startup.
+literal checked against the interface), functions passed through parameters and stored in properties, methods and
+accessors installed with `Object.assign(X.prototype, …)` or `Object.defineProperty`/`defineProperties` (as members of
+the target's type and of their own `this` type), the exports of a `require()` call whatever its result is cast to,
+element access with a literal key, and dynamic `import()` of modules not already loaded at startup.
 
 `check-event-loop.ts` then walks it in two steps (`policy.ts` holds the lists):
 
 1. From the process entries (`PROCESS_ENTRIES`: the CLI and the bundled extensions), everything the process can run.
 2. From the interactive entry points: every callback that code registers with an event source (`SINKS`: Node event
-   emitters, timers, `fs.watch`, and Atomic's own `on`/`subscribe`/`register*` APIs and `onX` handler properties) and
+   emitters, timers and `setImmediate`, `fs.watch`, and Atomic's own `on`/`subscribe`/`register*` APIs and `onX` handler
+   properties), every continuation nothing waits for (a promise chain or an async call that is neither awaited nor
+   kept, other than the process entry's own startup chain), and
    every component's `render`/`handleInput`/`handleMouse`/`invalidate` (`INTERFACE_ROOTS`). Whatever this walk reaches
    can run while the user is interacting, and a blocking call there is a finding.
 
@@ -41,11 +46,13 @@ removals (`off`, `removeListener`) never call what they are given.
 
 ## Regular expressions
 
-The same walk checks every regular expression literal and `new RegExp("…")` in the reachable functions with
+The same walk checks every regular expression literal and `new RegExp("…")` in the reachable functions, and every
+module-scope or static-field one they reference, with
 `regex-safety.ts`: a pattern whose repetitions can match the same text in more than one way (nested or adjacent
 quantifiers over overlapping characters, quantified overlapping alternatives) can backtrack exponentially or
 polynomially on a crafted input and freezes the loop as surely as a synchronous read. A finding fails the check.
-`node scripts/event-loop/regex-safety.ts [paths…]` scans files on their own.
+A pattern the analyzer cannot read fails the check too. `node scripts/event-loop/regex-safety.ts [paths…]` scans
+files on their own.
 
 Not flagged: a leading repetition that an unanchored search retries at each start (`/\s+$/` on a long run of
 spaces followed by another character). Its cost is quadratic only in that run, and flagging it would bury the
@@ -60,14 +67,16 @@ A synchronous path that a renderer or key handler needs must read from memory.
 
 Only when a function genuinely runs before the first frame, or only in a non-interactive command, add it to
 `STARTUP_ONLY` or `OTHER_MODES` in `policy.ts` with the reason it cannot run later. `EXIT_ONLY` is for writes that
-must land as the process exits or fails, `DURABLE_RECORDS` for a small write whose landing before the next step is
-a crash-consistency contract, and `SYNCHRONOUS_LOADER_HOOKS` for the extension loader's hooks that a synchronous
-module loader calls. The walk does not enter those functions. An entry that no longer names a function,
-or one that is no longer reached, fails the check, so the lists cannot go stale. `REVIEWED_REGEXES` accepts a
+must land as the process exits or fails, and `SYNCHRONOUS_LOADER_HOOKS` for the extension loader's hooks that a
+synchronous module loader calls. The walk does not enter those functions. `DURABLE_RECORDS` is for a small write whose
+landing before the next step is a crash-consistency contract: only the function's own calls are exempt, and what it
+calls is still checked. An entry in any list that no longer names a function, or that the walk no longer meets, fails
+the check, so the lists cannot go stale. `REVIEWED_REGEXES` accepts a
 backtracking pattern whose input is always short, with the reason.
 
-`OWNED_ELSEWHERE` lists areas another open change is making non-blocking; their findings are printed with
-`--deferred` and do not fail the check. Remove an entry once its change has landed.
+`OWNED_ELSEWHERE` lists areas another open change is making non-blocking: files, whose calls and everything reached only
+through them are deferred, or functions, whose own calls are. Their findings are printed with `--deferred` and do not
+fail the check. An entry with nothing left to defer fails the check; remove it once its change has landed.
 
 ## Known limits
 

@@ -157,6 +157,7 @@ interface Context {
 	readonly word: CharSet;
 	readonly lineTerminator: CharSet;
 	readonly open: Guard;
+	readonly reversed: boolean;
 }
 
 interface Finding {
@@ -192,19 +193,23 @@ export function findBacktrackingRisks(pattern: string, flags: string): RegexRisk
 		unicodeSets: parsedFlags.unicodeSets,
 	};
 	const findings: Finding[] = [];
-	const pending: (readonly AST.Alternative[])[] = [ast.alternatives];
+	const pending: { readonly alternatives: readonly AST.Alternative[]; readonly reversed: boolean }[] = [
+		{ alternatives: ast.alternatives, reversed: false },
+	];
 	const analysed = new Set<readonly AST.Alternative[]>();
 	while (pending.length > 0) {
-		const alternatives = pending.pop()!;
+		const { alternatives, reversed } = pending.pop()!;
 		if (analysed.has(alternatives)) continue;
 		analysed.add(alternatives);
-		const context = createContext(readonlyFlags);
+		const context = createContext(readonlyFlags, reversed);
 		const body = union(
 			context,
 			alternatives.map((alternative) => sequence(context, alternative, readonlyFlags)),
 		);
 		findings.push(...analyse(context, body, pattern));
-		for (const lookaround of context.lookarounds) pending.push(lookaround.alternatives);
+		for (const lookaround of context.lookarounds) {
+			pending.push({ alternatives: lookaround.alternatives, reversed: lookaround.kind === "lookbehind" });
+		}
 	}
 	return dedupe(findings).map((finding) => ({
 		kind: finding.kind,
@@ -213,7 +218,7 @@ export function findBacktrackingRisks(pattern: string, flags: string): RegexRisk
 	}));
 }
 
-function createContext(flags: ReadonlyFlags): Context {
+function createContext(flags: ReadonlyFlags, reversed: boolean): Context {
 	const all = Chars.all(flags);
 	const none = Chars.empty(flags);
 	return {
@@ -225,6 +230,7 @@ function createContext(flags: ReadonlyFlags): Context {
 		word: Chars.word(flags),
 		lineTerminator: Chars.lineTerminator(flags),
 		open: { prev: all, atStart: true, next: all, atEnd: true, boundary: "any", conditional: false },
+		reversed,
 	};
 }
 
@@ -412,7 +418,8 @@ function optional(context: Context, fragment: Fragment): Fragment {
 
 function sequence(context: Context, alternative: AST.Alternative, flags: ReadonlyFlags): Fragment {
 	let fragment = epsilon(context);
-	for (const element of alternative.elements) {
+	const elements = context.reversed ? [...alternative.elements].reverse() : alternative.elements;
+	for (const element of elements) {
 		fragment = concat(context, fragment, build(context, element, flags), alternative);
 	}
 	return fragment;
@@ -463,7 +470,9 @@ function characters(
 	const parts: Fragment[] = set.chars.isEmpty ? [] : [leaf(context, set.chars, node)];
 	for (const word of set.accept.wordSets) {
 		let fragment = epsilon(context);
-		for (const chars of word) fragment = concat(context, fragment, leaf(context, chars, node), node);
+		for (const chars of context.reversed ? [...word].reverse() : word) {
+			fragment = concat(context, fragment, leaf(context, chars, node), node);
+		}
 		parts.push(fragment);
 	}
 	return union(context, parts);
@@ -477,13 +486,24 @@ function withModifiers(group: AST.Group, flags: ReadonlyFlags): ReadonlyFlags {
 	return { ...flags, dotAll: pick("dotAll"), ignoreCase: pick("ignoreCase"), multiline: pick("multiline") };
 }
 
+function oriented(context: Context, guard: Guard): Guard {
+	if (!context.reversed) return guard;
+	return { ...guard, prev: guard.next, atStart: guard.atEnd, next: guard.prev, atEnd: guard.atStart };
+}
+
 function assertion(context: Context, node: AST.Assertion, flags: ReadonlyFlags): Fragment {
 	const base = { ...context.open, conditional: true };
 	switch (node.kind) {
 		case "start":
-			return epsilon(context, { ...base, prev: flags.multiline ? context.lineTerminator : context.none });
+			return epsilon(
+				context,
+				oriented(context, { ...base, prev: flags.multiline ? context.lineTerminator : context.none }),
+			);
 		case "end":
-			return epsilon(context, { ...base, next: flags.multiline ? context.lineTerminator : context.none });
+			return epsilon(
+				context,
+				oriented(context, { ...base, next: flags.multiline ? context.lineTerminator : context.none }),
+			);
 		case "word":
 			return epsilon(context, { ...base, boundary: node.negate ? "nonword" : "word" });
 		case "lookahead":
@@ -504,7 +524,10 @@ function assertion(context: Context, node: AST.Assertion, flags: ReadonlyFlags):
 			}
 			return epsilon(
 				context,
-				direction === "ltr" ? { ...base, next: chars, atEnd: edge } : { ...base, prev: chars, atStart: edge },
+				oriented(
+					context,
+					direction === "ltr" ? { ...base, next: chars, atEnd: edge } : { ...base, prev: chars, atStart: edge },
+				),
 			);
 		}
 	}
