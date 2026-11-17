@@ -30,11 +30,11 @@ test("builtin configuration diagnostics are quiet, redacted and routed to each o
 		const { loadConfig } = await import("../../packages/intercom/config.js");
 		for (let index = 0; index < 2; index++) {
 			const diagnostics: Omit<HostDiagnostic, "sessionId">[] = [];
-			context.run(
+			await context.run(
 				(entry) => diagnostics.push(entry),
-				() => {
-					loadConfigForExtensionInit();
-					loadConfig();
+				async () => {
+					await loadConfigForExtensionInit();
+					await loadConfig();
 				},
 			);
 			assert.deepEqual(
