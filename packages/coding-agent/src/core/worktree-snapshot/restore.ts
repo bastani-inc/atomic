@@ -421,6 +421,22 @@ async function ownsWorktree(path: string, record: RestoreRecord): Promise<boolea
 	}
 }
 
+/**
+ * Whether the directory at `path` is a worktree of `store` that holds nothing but its `.git` file and whose
+ * administrative directory holds no restore token: what a restore stopped between `git worktree add` and writing its
+ * token leaves. Removing one loses no files and never touches another restore's worktree.
+ */
+async function unmarkedEmptyWorktree(path: string, store: string): Promise<boolean> {
+	const [admin, admins] = await Promise.all([worktreeAdminDir(path), storeAdminDirs(store)]);
+	if (admin === undefined || admins === undefined || !isWithin(admins, admin)) return false;
+	const names = await readdir(path).catch(() => undefined);
+	if (names?.length !== 1 || names[0] !== ".git") return false;
+	return lstat(join(admin, RESTORE_TOKEN_FILE)).then(
+		() => false,
+		(error: NodeJS.ErrnoException) => error.code === "ENOENT",
+	);
+}
+
 /** Removes the directory at `path` only when it is empty, which loses nothing whoever made it. */
 async function removeIfEmpty(path: string): Promise<boolean> {
 	try {
@@ -445,7 +461,7 @@ async function cleanRestoreRecord(record: RestoreRecord, signal?: AbortSignal): 
 		if (entry.isDirectory()) registeredPath = await physicalPath(record.staging);
 		const owned =
 			entry.isDirectory() &&
-			(record.token === undefined
+			(record.token === undefined || (await unmarkedEmptyWorktree(record.staging, record.store))
 				? includesPath(await registeredWorktrees(git), registeredPath)
 				: await ownsWorktree(record.staging, record));
 		// An empty directory is what a deletion of the worktree stopped right before its last step leaves.
