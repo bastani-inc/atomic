@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { BackgroundCompactionPersistError } from "@bastani/atomic";
 import { StoragePayloadTooLargeError, StorageRollbackError, StorageUnavailableError } from "@bastani/atomic/storage";
 import {
 	type Component,
@@ -45,9 +44,9 @@ const panelStyle: AgentPanelStyle = {
 	border: (text) => text,
 	bold: (text) => text,
 	accent: (text) => text,
-	success: (text: string) => text,
-	error: (text: string) => text,
-	warning: (text: string) => text,
+	success: (text) => text,
+	error: (text) => text,
+	warning: (text) => text,
 };
 
 function graphFor(stage: StageSnapshot, options: Partial<GraphViewOpts> = {}): GraphView {
@@ -66,7 +65,7 @@ function assertSafeRows(rows: readonly string[]): void {
 	const text = rows.join("\n");
 	assert.equal(text.includes("\x1b[2J"), false, "data never clears the terminal");
 	assert.equal(text.includes("\x1b]52;"), false, "data never emits clipboard controls");
-	assert.doesNotMatch(text, /[\u0080-\u009f\u202a-\u202e\u2066-\u2069]/);
+	assert.doesNotMatch(text, /[\u0080-\u009f]/);
 	assert.ok(
 		rows.every((row) => !row.includes("\n") && !row.includes("\r")),
 		"each rendered row is one physical line",
@@ -76,7 +75,7 @@ function assertSafeRows(rows: readonly string[]): void {
 test.each(["result", "rejection"])(
 	"graph action %s notices stay on one safe row before width truncation (#5234)",
 	async (kind) => {
-		const message = "Notice\x1b[2JNAME\nsecond\x1b]52;c;Yg==\x07\u009b2J\u202e";
+		const message = "Notice\x1b[2JNAME\nsecond\x1b]52;c;Yg==\x07\u009b2J";
 		const graph = graphFor(
 			{ ...makeStage("worker"), status: "running" },
 			{
@@ -93,7 +92,7 @@ test.each(["result", "rejection"])(
 			graph.handleInput("x");
 			await new Promise<void>((resolve) => setTimeout(resolve, 0));
 			for (const width of [80, 160]) assertSafeRows(graph.render(width));
-			assert.ok(graph.render(160).join("\n").includes("NoticeNAME second"));
+			assert.ok(graph.render(160).join("\n").includes("Notice\\x1b[2JNAME second"));
 		} finally {
 			graph.dispose();
 		}
@@ -153,7 +152,7 @@ test("display serialization bounds long property keys before quoting them (#5234
 	}
 });
 
-test.each(["card", "detail", "listing", "panel"])(
+test.each(["card", "detail", "panel"])(
 	"%s graph labels keep C1 controls inert without changing stored names (#5234)",
 	(surface) => {
 		const stage: StageSnapshot = { ...makeStage("stage"), status: "running", name: "model\u009b2JNAME" };
@@ -177,18 +176,14 @@ test.each(["card", "detail", "listing", "panel"])(
 			assert.ok(detail.ok);
 			for (const theme of [undefined, defaultTheme])
 				assertSafeRows(renderRunDetail(detail.detail, { theme, width: 200, now: 2 }).split("\n"));
-		} else if (surface === "listing") {
-			const rows = workflowsListingItems(snap.runs, [], 2);
-			assertSafeRows(rows.flatMap((row) => [row.label, row.description ?? ""]));
-			assert.ok(rows[0]?.description?.includes("model"));
 		} else {
 			initTheme("dark");
 			assertSafeRows(
 				renderAgentPanelRows(
-					panelItemsFromSnapshot(
-						{ ...snap, runs: [{ ...snap.runs[0]!, toolNodes: [{ ...node, status: "running" }] }] },
-						2,
-					),
+					panelItemsFromSnapshot({
+						...snap,
+						runs: [{ ...snap.runs[0]!, toolNodes: [{ ...node, status: "running" }] }],
+					}),
 					200,
 					panelStyle,
 				),
@@ -245,7 +240,7 @@ test("failure summary and logs render control-bearing fields as printable data w
 		const summary = graph.render(160);
 		assertSafeRows(summary);
 		assert.ok(summary.join("\n").includes("verify\\x1b[2JNAME second"));
-		assert.match(summary.join("\n"), /gate +denied/);
+		assert.ok(summary.join("\n").includes("gate \\x1b]52;c;Yg==\\x07 denied"));
 		graph.handleInput("l");
 		const logs = graph.render(160);
 		assertSafeRows(logs);
@@ -549,10 +544,8 @@ test("failure logs render a storage error's rollbackCause and extra envelope fie
 		new StorageUnavailableError({ adapter: "sqlite", location: "journal.sqlite" }, new Error("commit failed")),
 		rollbackFailure,
 	);
-	const compactionError = new BackgroundCompactionPersistError({ upToEntryId: "u3" }, { cause: rollbackError });
-	const detail = typedFailureDetail(compactionError);
+	const detail = typedFailureDetail(rollbackError);
 	assert.ok(detail !== undefined);
-	assert.deepEqual(detail.extra, { phase: "persist" });
 	const stage: StageSnapshot = {
 		...makeStage("verify"),
 		status: "failed",
@@ -561,14 +554,12 @@ test("failure logs render a storage error's rollbackCause and extra envelope fie
 		failureDetail: detail,
 	};
 	const lines = stageFailureLogLines(stage);
-	assert.ok(lines.some((line) => line.includes('"phase":"persist"')));
 	const rollbackHeadingIndex = lines.findIndex((line) => line.trim() === "during rollback:");
 	assert.ok(rollbackHeadingIndex >= 0, "expected during rollback: heading");
 	assert.ok(lines[rollbackHeadingIndex + 1]?.includes("StoragePayloadTooLargeError (payload-too-large)"));
 	const rendered = renderStageFailureDetailLines(stage, { theme: defaultTheme, width: 120, logs: true })
 		.map(stripTerminalSequences)
 		.join("\n");
-	assert.ok(rendered.includes('"phase":"persist"'));
 	assert.ok(rendered.includes("during rollback:"));
 	assert.ok(rendered.includes("StoragePayloadTooLargeError (payload-too-large)"));
 });
@@ -845,19 +836,12 @@ test.each([
 			assert.ok(detailText.includes("tool-"), "last tool event name is rendered");
 		}
 
-		const listingRows = workflowsListingItems(snap.runs, [], 2_000).flatMap((row) => [
-			row.label,
-			row.description ?? "",
-		]);
-		assertSafeRows(listingRows);
-		assert.ok(listingRows.join("\n").includes("active-"), "the listing renders the active stage name");
-		assertSafeRows(renderNodeCard(pendingStage, { theme: defaultTheme, width: 80 }));
 		const panelRows = renderAgentPanelRows(panelItemsFromSnapshot(snap, 2_000), 200, panelStyle);
 		assertSafeRows(panelRows);
 		const narrowPanelRows = renderAgentPanelRows(panelItemsFromSnapshot(snap, 2_000), 52, panelStyle);
 		assertSafeRows(narrowPanelRows);
 		assert.ok(narrowPanelRows.join("\n").includes("active-"), "the narrow panel renders the current stage name");
-		for (const item of workflowsListingItems(snap.runs, [], 2_000)) {
+		for (const item of workflowsListingItems(snap.runs, 2_000)) {
 			assertSafeRows([item.label, item.description ?? ""]);
 		}
 

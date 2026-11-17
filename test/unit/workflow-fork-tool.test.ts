@@ -17,15 +17,11 @@ import type { PiExecuteContext } from "../../packages/workflows/src/extension/pu
 import type { ForkResult } from "../../packages/workflows/src/extension/render-result.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import {
-	workflowArgumentCompletions,
-	workflowArgumentCompletionsNeedWorkflowResources,
-} from "../../packages/workflows/src/extension/workflow-command-completions.js";
-import { parseWorkflowForkArgs } from "../../packages/workflows/src/extension/workflow-command-registration.js";
-import {
 	assertWorkflowForkSourceOwner,
 	workflowCaller,
 } from "../../packages/workflows/src/extension/workflow-instance-owner.js";
 import { workflowPolicyFromContext } from "../../packages/workflows/src/extension/workflow-policy.js";
+import { projectTrustConfirmation } from "../../packages/workflows/src/extension/workflow-project-trust.js";
 import { WorkflowParametersSchema } from "../../packages/workflows/src/extension/workflow-schema.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
 import { renderWorkflowToolContent } from "../../packages/workflows/src/extension/workflow-tool-content.js";
@@ -37,7 +33,6 @@ import { testRunId } from "../helpers/run-id.js";
 import { readText, writeFileEnsuringDir } from "../helpers/runtime.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
-import { registerWorkflowCommand } from "./slash-dispatch-utils.js";
 
 function context(): PiExecuteContext {
 	return {
@@ -245,7 +240,7 @@ test("the fork action refuses a source run another session owns before copying a
 					status: "failed",
 					message: undefined,
 					code: "source-not-owned",
-					hint: `Fork it from the session that started it, or ask the user to run /workflow fork ${runId}.`,
+					hint: `Fork it from the session that started it, or ask the user to fork it in /workflows ${runId}.`,
 				},
 			);
 		}
@@ -515,109 +510,6 @@ test("the workflow tool schema accepts the fork action and its options (#4321)",
 	assert.match(carryMessages?.description ?? "", /^Fork-only: .*\('before', default\) or all of them \('all'\)/);
 });
 
-const RUN_ISSUE = {
-	field: "runId",
-	expected: "exactly one run id or 8-character prefix: /workflow fork <run> [--from <stage>]",
-};
-const FROM_ISSUE = { field: "fromStage", expected: "one stage path after --from" };
-
-test("/workflow fork parses a run and an optional --from stage, rejecting other shapes with one typed error (#4321)", () => {
-	const runId = testRunId("slash-fork");
-	assert.deepEqual(parseWorkflowForkArgs([runId]), { runId });
-	assert.deepEqual(parseWorkflowForkArgs([runId, "--from", "implement-api.review-2"]), {
-		runId,
-		fromStage: "implement-api.review-2",
-	});
-	assert.deepEqual(parseWorkflowForkArgs(["--from=plan", runId]), { runId, fromStage: "plan" });
-	const rejected = (tokens: string[]) => {
-		const error = parseWorkflowForkArgs(tokens);
-		assert.ok(error instanceof ForkConfigError, JSON.stringify(tokens));
-		assert.equal(error.source, "cli");
-		assert.equal(error.field, error.issues[0]!.field);
-		assert.equal(error.expected, error.issues[0]!.expected);
-		return error.issues;
-	};
-	assert.deepEqual(rejected(["--from"]), [RUN_ISSUE, FROM_ISSUE]);
-	assert.deepEqual(rejected([runId, "other"]), [RUN_ISSUE]);
-	assert.deepEqual(rejected([]), [RUN_ISSUE]);
-	assert.deepEqual(rejected([runId, "--from", "--plan"]), [FROM_ISSUE]);
-	assert.deepEqual(rejected([runId, "--from", "a", "--from", "b"]), [FROM_ISSUE]);
-	assert.deepEqual(rejected([runId, "--from", "a", "--from=b"]), [FROM_ISSUE]);
-	assert.deepEqual(rejected([runId, "--from=a", "--from=b"]), [FROM_ISSUE]);
-	assert.deepEqual(rejected([runId, "--from="]), [FROM_ISSUE]);
-	assert.deepEqual(rejected(["--bogus"]), [RUN_ISSUE]);
-	assert.deepEqual(rejected(["--bogus", "--from", "a"]), [RUN_ISSUE]);
-	assert.equal(
-		(parseWorkflowForkArgs([runId, "--from"]) as ForkConfigError).message,
-		new ForkConfigError({ source: "cli", field: "fromStage", expected: FROM_ISSUE.expected }).message,
-	);
-});
-
-test("/workflow fork completes the subcommand, --from and run ids, and nothing else is mistaken for it (#4321)", () => {
-	const completeDemo = workflow({
-		name: "complete-demo",
-		description: "",
-		inputs: { mode: Type.Union([Type.Literal("fast"), Type.Literal("slow")]) },
-		outputs: {},
-		run: async () => ({}),
-	});
-	const runtime = createExtensionRuntime({ registry: createRegistry().register(completeDemo), store });
-	const forkItem = {
-		value: "fork ",
-		label: "fork",
-		description: "Fork a run into a new run, optionally --from a stage",
-	};
-	assert.deepEqual(workflowArgumentCompletions("fo", runtime, store), [forkItem]);
-	const fromItem = {
-		value: "fork --from ",
-		label: "--from",
-		description: "Dot path of the stage the fork re-runs from",
-	};
-	assert.deepEqual(workflowArgumentCompletions("fork --f", runtime, store), [fromItem]);
-	const runStore = createStore();
-	const forkable = testRunId("complete-run");
-	runStore.recordRunStart({
-		id: forkable,
-		name: "complete-demo",
-		inputs: {},
-		status: "completed",
-		stages: [],
-		toolNodes: [],
-		startedAt: 1,
-	});
-	assert.deepEqual(workflowArgumentCompletions("fork ", runtime, runStore), [
-		{ ...fromItem, value: "fork --from " },
-		{ value: `fork ${forkable} `, label: forkable, description: "complete-demo — completed" },
-	]);
-	assert.deepEqual(workflowArgumentCompletions("quit ", runtime, runStore), [
-		{
-			value: "quit --all ",
-			label: "--all",
-			description: "Quit and keep all in-flight runs resumable",
-		},
-		{ value: `quit ${forkable} `, label: forkable, description: "complete-demo — completed" },
-	]);
-	assert.deepEqual(
-		workflowArgumentCompletions("complete-demo mode=", runtime, runStore)?.map((item) => item.value),
-		["complete-demo mode=fast ", "complete-demo mode=slow "],
-	);
-	assert.equal(workflowArgumentCompletions("unknown-workflow ", runtime, runStore), null);
-});
-
-test("completing a run-targeting subcommand never loads workflow resources, and a workflow name does (#4321)", () => {
-	for (const subcommand of ["status", "resume", "pause", "quit", "reload", "fork"]) {
-		assert.equal(workflowArgumentCompletionsNeedWorkflowResources(`${subcommand} `), false, subcommand);
-		assert.equal(workflowArgumentCompletionsNeedWorkflowResources(`${subcommand} abc`), false, subcommand);
-		assert.equal(
-			workflowArgumentCompletionsNeedWorkflowResources(subcommand),
-			true,
-			`${subcommand} still being typed`,
-		);
-	}
-	assert.equal(workflowArgumentCompletionsNeedWorkflowResources("inputs x"), true);
-	assert.equal(workflowArgumentCompletionsNeedWorkflowResources("complete-demo mode="), true);
-});
-
 const DISCOVERED = "fork-discovered";
 
 /**
@@ -748,7 +640,7 @@ test("a fork written but unable to start reports why with a code and the next st
 		assert.deepEqual([elsewhere.status, elsewhere.startFailure], ["forked", "control_failed"]);
 		assert.equal(
 			elsewhere.message,
-			`Forked workflow ${discovered.runId} from stage "plan" into ${elsewhere.runId}; it did not start: Failed to resume durable workflow ${elsewhere.runId}: registration refused Workflow "${DISCOVERED}" is not defined in this directory, so /workflow resume cannot start the fork here; fork the source again with /workflow fork ${discovered.runId}.`,
+			`Forked workflow ${discovered.runId} from stage "plan" into ${elsewhere.runId}; it did not start: Failed to resume durable workflow ${elsewhere.runId}: registration refused Workflow "${DISCOVERED}" is not defined in this directory, so /resume cannot start the fork here; fork the source again from /workflows ${discovered.runId}.`,
 		);
 		assert.equal((await discovered.backend.journal.getRun(elsewhere.runId))?.runId, elsewhere.runId);
 	} finally {
@@ -762,10 +654,7 @@ test("a fork written but unable to start reports why with a code and the next st
 		context(),
 	)) as ForkResult;
 	assert.deepEqual([here.status, here.startFailure], ["forked", "control_failed"]);
-	assert.ok(
-		here.message.endsWith(`registration refused Resume it with /workflow resume ${here.runId}.`),
-		here.message,
-	);
+	assert.ok(here.message.endsWith(`registration refused Resume it with /resume ${here.runId}.`), here.message);
 });
 
 test("a fork of a run this process is still executing is refused as busy and creates no run (#4321)", async () => {
@@ -827,63 +716,6 @@ test("a validation failure that is not a fork error propagates from the fork act
 	);
 });
 
-test("/workflow fork forks a run, prints what happened and reports bad arguments and fork failures (#4321)", async () => {
-	const { backend, root, runId } = await discoverableSource("fork-slash");
-	try {
-		const { workflowCmd } = await registerWorkflowCommand();
-		assert.match(workflowCmd.options.description, /\/workflow fork <run> \[--from <stage>\]/);
-		const run = async (args: string) => {
-			const messages: string[] = [];
-			const levels: (string | undefined)[] = [];
-			await workflowCmd.options.handler(args, {
-				ui: {
-					notify: (message: string, level?: string) => {
-						messages.push(message);
-						levels.push(level);
-					},
-				},
-			});
-			return { messages, levels };
-		};
-		const { messages: staged, levels: stagedLevels } = await run(`fork ${runId} --from plan`);
-		assert.equal(staged.length, 1, staged.join("\n"));
-		const stagedMatch =
-			/^Forked workflow (\S+) from stage "plan" into (\S+)\. Resuming durable workflow "fork-discovered"/.exec(
-				staged[0]!,
-			);
-		assert.ok(stagedMatch, staged[0]);
-		assert.deepEqual(stagedLevels, ["info"]);
-		assert.equal(stagedMatch[1], runId);
-		assert.deepEqual(backend.getWorkflow(stagedMatch[2]!)?.forkedFrom, { runId, stagePath: "plan" });
-		await currentJobTracker().get(stagedMatch[2]!)?.promise;
-		assert.equal(backend.getWorkflow(stagedMatch[2]!)?.status, "completed");
-		const { messages: whole } = await run(`fork ${runId}`);
-		assert.equal(whole.length, 1, whole.join("\n"));
-		const wholeMatch = new RegExp(`^Forked workflow ${runId} into (\\S+)\\. Resuming durable workflow `).exec(
-			whole[0]!,
-		);
-		assert.ok(wholeMatch, whole[0]);
-		await currentJobTracker().get(wholeMatch[1]!)?.promise;
-		assert.equal(backend.getWorkflow(wholeMatch[1]!)?.status, "completed");
-		const runsBefore = await backend.journal.listRuns();
-		const { messages: invalid, levels: invalidLevels } = await run("fork");
-		assert.deepEqual(invalid, [(parseWorkflowForkArgs([]) as ForkConfigError).message]);
-		assert.deepEqual(invalidLevels, ["error"]);
-		const { messages: badFrom } = await run(`fork ${runId} --from`);
-		assert.deepEqual(badFrom, [(parseWorkflowForkArgs([runId, "--from"]) as ForkConfigError).message]);
-		const { messages: missing, levels: missingLevels } = await run(`fork ${testRunId("fork-slash-missing")}`);
-		assert.equal(missing.length, 1);
-		assert.deepEqual(missingLevels, ["error"]);
-		assert.match(missing[0]!, /not found/i);
-		const { messages: noStage } = await run(`fork ${runId} --from nowhere`);
-		assert.equal(noStage.length, 1);
-		assert.match(noStage[0]!, /nowhere/);
-		assert.deepEqual(await backend.journal.listRuns(), runsBefore);
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
-});
-
 test("the fork action's tool content names the fork, or the source when no fork exists, and other actions keep theirs (#4321)", () => {
 	const failed: ForkResult = {
 		action: "fork",
@@ -935,24 +767,33 @@ for (const trust of [false, null] as const)
 		}
 	});
 
-test("/workflow fork asks whether to trust the source project and forks once it is trusted", async () => {
+test("interactive fork action asks whether to trust the source project and forks once it is trusted (#5224)", async () => {
 	const { backend, root, runId, sourceDir, agentDir, marker } = await discoverableSource("fork-trust-prompt", null);
 	try {
-		const { workflowCmd } = await registerWorkflowCommand();
+		const runtime = createExtensionRuntime({ store });
 		const prompts: string[] = [];
 		const run = async (answer: (options: string[]) => string | undefined) => {
-			const messages: string[] = [];
-			await workflowCmd.options.handler(`fork ${runId}`, {
+			const ctx = {
 				hasUI: true,
 				ui: {
-					notify: (message: string) => messages.push(message),
+					notify: () => undefined,
 					select: async (title: string, options: string[]) => {
 						prompts.push(title);
 						return answer(options);
 					},
 				},
-			});
-			return messages;
+			};
+			const policy = workflowPolicyFromContext(ctx);
+			const result = await workflowForkAction(
+				{ runId },
+				{
+					getRuntime: () => runtime,
+					policy,
+					source: "cli",
+					...projectTrustConfirmation(ctx, policy),
+				},
+			);
+			return [result.message];
 		};
 
 		const declined = await run((options) => options.find((option) => option === "Do not trust"));

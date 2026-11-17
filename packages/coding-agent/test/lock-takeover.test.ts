@@ -16,6 +16,7 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, it } from "vitest";
+import { exitedProcess } from "../../../test/helpers/exited-process.js";
 import { HOLDER_TEMP_STALE_MS } from "../src/core/lock-holder.ts";
 import {
 	guardLockRemoval,
@@ -26,9 +27,9 @@ import {
 	takeoverLockPath,
 	takeoverMutexPath,
 	takeTakeoverMutex,
-} from "../src/core/lock-takeover.ts";
+} from "../src/core/lock-takeover.js";
 import { lockHolder } from "../src/core/lock-wait.ts";
-import { processStartToken } from "../src/core/process-start-token.ts";
+import { processStartToken } from "../src/core/process-start-token.js";
 import { FileSettingsStorage } from "../src/core/settings-storage.ts";
 import { ProjectTrustStore } from "../src/core/trust-manager.ts";
 
@@ -248,7 +249,7 @@ describe("the directory takeover mutex, without the native lock (#5161)", () => 
 	});
 
 	it("is taken over at once from an owner that has exited, however fresh (#5161)", () => {
-		mutexOf({ host: hostname(), pid: exitedPid(), id: "dead" });
+		mutexOf({ host: hostname(), ...exitedProcess(), id: "dead" });
 		const mutex = takeTakeoverMutex(lockPath);
 		assert.ok(mutex);
 		assert.equal(mutex.owned(), true);
@@ -302,7 +303,7 @@ describe("the directory takeover mutex, without the native lock (#5161)", () => 
 
 	it("removes a stale lock though a process that exited left the takeover mutex behind (#5161)", () => {
 		staleLock(lockPath);
-		mutexOf({ host: hostname(), pid: exitedPid(), id: "dead" });
+		mutexOf({ host: hostname(), ...exitedProcess(), id: "dead" });
 		removeStaleLock(lockPath, STALE_MS);
 		assert.equal(existsSync(lockPath), false, "a dead owner's mutex does not stop the removal");
 	});
@@ -370,7 +371,7 @@ describe("the advisory takeover mutex (#5193)", () => {
 		);
 		mutex.release();
 		assert.equal(existsSync(takeoverMutexPath(lockPath)), false);
-		mutexOf({ host: hostname(), pid: exitedPid(), id: "killed" });
+		mutexOf({ host: hostname(), ...exitedProcess(), id: "killed" });
 		const after = takeTakeoverMutex(lockPath, 0);
 		assert.ok(after, "a killed holder's directory mutex is freed by its owner check");
 		after.release();
@@ -488,7 +489,7 @@ describe("a moved-aside mutex that cannot be removed (#5193)", () => {
 			await new Promise((resolve) => setTimeout(resolve, 50));
 			staleLock(lockPath);
 			// A fallback holder run as another user, then killed: its owner file is in a directory this user cannot change.
-			mutexOf({ host: hostname(), pid: exitedPid(), id: "root" });
+			mutexOf({ host: hostname(), ...exitedProcess(), id: "root" });
 			chmodSync(takeoverMutexPath(lockPath), 0o555);
 			const warnings: string[] = [];
 			const listen = (warning: Error) => warnings.push(warning.message);

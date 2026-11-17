@@ -168,7 +168,8 @@ describe("GraphView return to main chat", () => {
 		assert.match(mediumText, /↵ open stage chat/);
 
 		const compactText = visibleText(view.render(40));
-		assert.match(compactText, /esc(?:\/←)?\s+back/i);
+		assert.match(compactText, /\besc(?:\s+back)?\s*·/i);
+		assert.doesNotMatch(compactText, /←|ctrl\+x|ctrl\+d/i);
 		view.dispose();
 	});
 });

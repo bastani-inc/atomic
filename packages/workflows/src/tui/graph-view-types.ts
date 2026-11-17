@@ -37,6 +37,10 @@ export interface GraphStageActions {
 
 	forkTarget?(rootRunId: string, stageId: string): Promise<GraphForkTargetResult>;
 	fork?(rootRunId: string, stageId: string): Promise<GraphStageActionResult>;
+
+	pauseRun?(runId: string): Promise<GraphStageActionResult>;
+	resumeRun?(runId: string): Promise<GraphStageActionResult>;
+	quitRun?(runId: string): Promise<GraphStageActionResult>;
 }
 /**
  * Terminal geometry exposed to GraphView. The renderer reads only `rows`;

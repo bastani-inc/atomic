@@ -219,7 +219,7 @@ for (const reason of ["new", "fork"] as const) {
 			assert.equal(released?.status, "paused", "the switch quits the run at its checkpoint");
 			assert.equal(released?.modelOwner, firstId);
 			assert.equal(released?.releasedModelOwner, firstId, "the switch releases the run for adoption");
-			const notice = host.notices.find((message) => message.includes(`/workflow resume ${runId}`));
+			const notice = host.notices.find((message) => message.includes(`/resume ${runId}`));
 			assert.ok(notice, `the successor must announce the released run: ${JSON.stringify(host.notices)}`);
 
 			const resumed = await callWorkflowTool(successor, { action: "resume", runId });
@@ -288,7 +288,7 @@ for (const reason of ["new", "fork"] as const) {
 			assert.notEqual(runtime.session, first);
 			const successorId = runtime.session.sessionManager.getSessionId();
 			assert.ok(
-				inWithSession.notices?.some((message) => message.includes(`/workflow resume ${runId}`)),
+				inWithSession.notices?.some((message) => message.includes(`/resume ${runId}`)),
 				`withSession must already see the released-run notice: ${JSON.stringify(inWithSession.notices)}`,
 			);
 			assert.ok(
@@ -326,7 +326,7 @@ test(
 		assert.equal(afterSecondSwitch?.status, "paused");
 		assert.equal(afterSecondSwitch?.modelOwner, firstId);
 		assert.equal(afterSecondSwitch?.releasedModelOwner, firstId, "the second switch keeps the first release");
-		const lastNotice = host.notices.filter((message) => message.includes(`/workflow resume ${runId}`)).length;
+		const lastNotice = host.notices.filter((message) => message.includes(`/resume ${runId}`)).length;
 		assert.equal(lastNotice, 2, `each successor announces the released run: ${JSON.stringify(host.notices)}`);
 
 		const successorId = runtime.session.sessionManager.getSessionId();
@@ -439,7 +439,7 @@ test(
 		assert.equal(afterReturn?.modelOwner, firstId);
 		assert.equal(afterReturn?.releasedModelOwner, undefined, "the owner reclaims its own released run");
 		assert.equal(
-			host.notices.slice(noticesBefore).some((message) => message.includes(`/workflow resume ${runId}`)),
+			host.notices.slice(noticesBefore).some((message) => message.includes(`/resume ${runId}`)),
 			false,
 		);
 

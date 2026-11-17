@@ -107,6 +107,27 @@ describe("session selector path/delete interactions", () => {
 		// session selector uses the global theme instance
 		initTheme("dark");
 	});
+	it("does not offer deletion for the active session (#5256)", () => {
+		const sessions = [makeSession({ id: "active" }), makeSession({ id: "other" })];
+		const selector = new SessionSelectorComponent(
+			async () => sessions,
+			async () => sessions,
+			() => {},
+			() => {},
+			() => {},
+			() => {},
+			{ keybindings, initialSessions: sessions, deleteSession: async () => {} },
+			{ id: "active", directory: dirname(sessions[0]!.path) },
+		);
+		try {
+			assert.doesNotMatch(stripAnsi(selector.render(300).at(-2) ?? ""), /ctrl\+d delete/);
+			selector.handleInput("\x1b[B");
+			assert.match(stripAnsi(selector.render(300).at(-2) ?? ""), /ctrl\+d delete/);
+		} finally {
+			selector.dispose();
+		}
+	});
+
 	it("deletes a SQLite session through its selected store after confirmation", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "session-selector-sqlite-"));
 		tempDirs.push(directory);
@@ -135,6 +156,120 @@ describe("session selector path/delete interactions", () => {
 			await store.close();
 		}
 	});
+	it.each([false, true])(
+		"never resumes or deletes a session again while deletion is pending (failure=%j) (#5256)",
+		async (fail) => {
+			let sessions = [makeSession({ id: "a" }), makeSession({ id: "b" })];
+			const gate = createDeferred<void>();
+			const resumed: string[] = [];
+			const deleting: string[] = [];
+			const selector = new SessionSelectorComponent(
+				async () => sessions,
+				async () => sessions,
+				(session) => resumed.push(session.id),
+				() => {},
+				() => {},
+				() => {},
+				{
+					keybindings,
+					initialSessions: sessions,
+					deleteSession: async (id) => {
+						deleting.push(id);
+						await gate.promise;
+						if (fail) throw new Error("Deletion refused");
+						sessions = sessions.filter((session) => session.id !== id);
+					},
+				},
+			);
+			await flushPromises();
+			try {
+				selector.handleInput(CTRL_D);
+				selector.handleInput("\r");
+				selector.handleInput("\r");
+				selector.handleInput("\x1b[C");
+				selector.handleInput(CTRL_D);
+				selector.handleInput("\r");
+				assert.deepEqual(deleting, ["a"]);
+				assert.deepEqual(resumed, []);
+				assert.match(stripAnsi(selector.render(100).join("\n")), /Deleting/);
+				gate.resolve();
+				await flushPromises();
+				selector.handleInput("\r");
+				assert.deepEqual(resumed, [fail ? "a" : "b"]);
+			} finally {
+				gate.resolve();
+				selector.dispose();
+			}
+		},
+	);
+
+	it("filters rows deleted in one scope from an already-running scan in the other scope (#5256)", async () => {
+		let catalog = [
+			makeSession({ id: "a", modified: new Date(3000), firstMessage: "session-a", allMessagesText: "session-a" }),
+			makeSession({ id: "b", modified: new Date(2000), firstMessage: "session-b", allMessagesText: "session-b" }),
+			makeSession({ id: "c", modified: new Date(1000), firstMessage: "session-c", allMessagesText: "session-c" }),
+		];
+		const staleSnapshot = [...catalog];
+		const allDeferred = createDeferred<SessionInfo[]>();
+		let emitAllProgress: ((loaded: number, total: number, partial?: readonly SessionInfo[]) => void) | undefined;
+		const deleted: string[] = [];
+		const resumed: string[] = [];
+		let allLoads = 0;
+
+		const selector = new SessionSelectorComponent(
+			async () => [...catalog],
+			async (onProgress) => {
+				allLoads++;
+				emitAllProgress = onProgress;
+				return allDeferred.promise;
+			},
+			(session) => resumed.push(session.id),
+			() => {},
+			() => {},
+			() => {},
+			{
+				keybindings,
+				initialSessions: catalog,
+				deleteSession: async (id) => {
+					deleted.push(id);
+					catalog = catalog.filter((session) => session.id !== id);
+				},
+			},
+		);
+		try {
+			await flushPromises();
+			selector.handleInput("\t");
+			assert.equal(allLoads, 1);
+			selector.handleInput("\t");
+			assert.equal(selector.getSessionList().getSelectedSessionId(), "a");
+
+			selector.handleInput(CTRL_D);
+			selector.handleInput("\r");
+			await flushPromises();
+			await flushPromises();
+			assert.deepEqual(deleted, ["a"]);
+			assert.equal(selector.getSessionList().getSelectedSessionId(), "b");
+
+			emitAllProgress?.(2, 3, staleSnapshot);
+			selector.handleInput("\t");
+			assert.doesNotMatch(stripAnsi(selector.render(160).join("\n")), /session-a/);
+			selector.handleInput("\t");
+
+			allDeferred.resolve(staleSnapshot);
+			await flushPromises();
+
+			selector.handleInput("\t");
+			await flushPromises();
+			selector.handleInput("\x1b[A");
+			assert.doesNotMatch(stripAnsi(selector.render(160).join("\n")), /session-a/);
+			selector.handleInput("\r");
+			assert.deepEqual(resumed, ["b"]);
+		} finally {
+			allDeferred.resolve(staleSnapshot);
+			selector.dispose();
+		}
+	});
+
 	it("does not treat Ctrl+Backspace as delete when search query is non-empty", async () => {
 		const sessions = [makeSession({ id: "a" }), makeSession({ id: "b" })];
 
@@ -242,8 +377,8 @@ describe("session selector path/delete interactions", () => {
 
 		expect(allLoadCalls).toBe(1);
 		const output = selector.render(120).join("\n");
-		expect(output).toContain("Resume Session (Current Folder)");
-		expect(output).not.toContain("Resume Session (All)");
+		expect(output).toContain("this folder · ");
+		expect(output).not.toContain("all folders");
 	});
 
 	it("does not start redundant All loads when toggling scopes while All is already loading", async () => {
@@ -458,7 +593,7 @@ describe("session selector path/delete interactions", () => {
 
 		list.handleInput("\t");
 		const backToLoadingCurrent = stripAnsi(selector.render(120).join("\n"));
-		assert.equal(backToLoadingCurrent.includes("Loading ..."), true);
+		assert.equal(backToLoadingCurrent.includes("Loading…"), true);
 		assert.equal(backToLoadingCurrent.includes("msg-s2"), true);
 		assert.equal(backToLoadingCurrent.includes("/proj/a"), false);
 
@@ -466,27 +601,27 @@ describe("session selector path/delete interactions", () => {
 		emitAllProgress?.(2, 3, [s3]);
 		assert.equal(requestRender.mock.calls.length, rendersBeforeBgAllProgress);
 		const duringBgAllFrame = stripAnsi(selector.render(120).join("\n"));
-		assert.equal(duringBgAllFrame.includes("Loading ..."), true);
+		assert.equal(duringBgAllFrame.includes("Loading…"), true);
 		assert.equal(duringBgAllFrame.includes("Loading 2/3"), false);
 		assert.equal(duringBgAllFrame.includes("msg-s3"), false);
 
 		currentInitial.resolve([s1, s2]);
 		await flushPromises();
 		assert.equal(list.getSelectedSessionPath(), s1.path);
-		assert.equal(stripAnsi(selector.render(120).join("\n")).includes("◉ Current Folder"), true);
+		assert.equal(stripAnsi(selector.render(120).join("\n")).includes("this folder · "), true);
 
 		list.handleInput("\x1b[B");
 		assert.equal(list.getSelectedSessionPath(), s2.path);
 
 		list.handleInput("\t");
 		const partialAllFrame = stripAnsi(selector.render(120).join("\n"));
-		assert.equal(partialAllFrame.includes("Loading ..."), true);
+		assert.equal(partialAllFrame.includes("Loading…"), true);
 		assert.equal(partialAllFrame.includes("msg-s3"), true);
 		assert.equal(partialAllFrame.includes("/proj/b"), true);
 
 		list.handleInput("\t");
 		const settledCurrentFrame = stripAnsi(selector.render(120).join("\n"));
-		assert.equal(settledCurrentFrame.includes("◉ Current Folder"), true);
+		assert.equal(settledCurrentFrame.includes("this folder · "), true);
 		assert.equal(settledCurrentFrame.includes("/proj/a"), false);
 		assert.equal(list.getSelectedSessionPath(), s2.path);
 
@@ -496,7 +631,7 @@ describe("session selector path/delete interactions", () => {
 		allLoad.resolve([s1, s3]);
 		await flushPromises();
 		assert.equal(list.getSelectedSessionPath(), s3.path);
-		assert.equal(stripAnsi(selector.render(120).join("\n")).includes("◉ All"), true);
+		assert.equal(stripAnsi(selector.render(120).join("\n")).includes("all folders"), true);
 
 		list.handleInput("\t");
 		list.handleInput("\x1b[A");

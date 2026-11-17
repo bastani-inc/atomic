@@ -5,7 +5,7 @@ import type { PiCustomComponent } from "../../packages/workflows/src/extension/w
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { openWorkflowsListing } from "../../packages/workflows/src/tui/workflows-listing.js";
 
-test("refreshes the workflow sheet clock once per second until it closes (#5245)", async () => {
+test("refreshes the workflow sheet clock once per second until it closes (#5224)", async () => {
 	initTheme("dark");
 	vi.useFakeTimers();
 	let component: PiCustomComponent | undefined;
@@ -33,7 +33,6 @@ test("refreshes the workflow sheet clock once per second until it closes (#5245)
 							startedAt: Date.now(),
 						},
 					] as RunSnapshot[],
-				definitions: () => [],
 			},
 		);
 		assert.ok(component);
@@ -55,7 +54,7 @@ test("refreshes the workflow sheet clock once per second until it closes (#5245)
 	}
 });
 
-test("releases the workflow sheet clock when subscribing fails (#5245)", async () => {
+test("releases the workflow sheet clock when subscribing fails (#5224)", async () => {
 	initTheme("dark");
 	vi.useFakeTimers();
 	try {
@@ -65,7 +64,6 @@ test("releases the workflow sheet clock when subscribing fails (#5245)", async (
 			},
 			{
 				runs: () => [],
-				definitions: () => [],
 				subscribe: () => {
 					throw new Error("subscription unavailable");
 				},

@@ -1,14 +1,37 @@
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
-import {
+
+const spawned = vi.hoisted(() => ({ spawn: vi.fn(), spawnSync: vi.fn() }));
+
+vi.mock("node:child_process", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:child_process")>();
+	spawned.spawn.mockImplementation(actual.spawn);
+	spawned.spawnSync.mockImplementation(actual.spawnSync);
+	return { ...actual, spawn: spawned.spawn, spawnSync: spawned.spawnSync };
+});
+
+const {
+	CLEANUP_MARKER_FILE,
 	resetSessionTempCleanupScheduleForTesting,
+	SESSION_TEMP_CLEANUP_DELAY_MS,
 	scheduleSessionTempCleanup,
-} from "../src/core/tools/session-temp-cleanup.js";
+	waitForSessionTempCleanupForTesting,
+} = await import("../src/core/tools/session-temp-cleanup.js");
+const { getTempRootDir, resetSessionTempDirStateForTesting } = await import("../src/core/tools/session-temp-dir.js");
+
+const sandboxes: string[] = [];
 
 afterEach(() => {
+	vi.useRealTimers();
 	vi.restoreAllMocks();
+	vi.unstubAllEnvs();
 	resetSessionTempCleanupScheduleForTesting();
+	resetSessionTempDirStateForTesting();
+	for (const sandbox of sandboxes.splice(0)) rmSync(sandbox, { recursive: true, force: true });
 });
 
 test("the deferred sweep is armed once, outside the async context of the session that asked for it (#4309)", () => {
@@ -26,3 +49,31 @@ test("the deferred sweep is armed once, outside the async context of the session
 
 	assert.deepEqual(armedIn, [undefined]);
 });
+
+test.skipIf(process.platform !== "win32")(
+	"the deferred sweep verifies the temp root without starting PowerShell on the main thread (#5324)",
+	async () => {
+		const sandbox = realpathSync(mkdtempSync(join(tmpdir(), "atomic-deferred-sweep-")));
+		sandboxes.push(sandbox);
+		for (const key of ["TEMP", "TMP", "TMPDIR"]) vi.stubEnv(key, sandbox);
+		resetSessionTempDirStateForTesting();
+		const root = getTempRootDir();
+		mkdirSync(root);
+		spawned.spawn.mockClear();
+		spawned.spawnSync.mockClear();
+
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		scheduleSessionTempCleanup({ sessionsRoots: [] });
+		vi.advanceTimersByTime(SESSION_TEMP_CLEANUP_DELAY_MS);
+		await waitForSessionTempCleanupForTesting();
+
+		assert.ok(existsSync(join(root, CLEANUP_MARKER_FILE)), "the sweep verified the temp root and ran");
+		assert.deepEqual(
+			[...spawned.spawn.mock.calls, ...spawned.spawnSync.mock.calls]
+				.map(([command]) => String(command))
+				.filter((command) => /powershell|pwsh/i.test(command)),
+			[],
+			"the native reader needed no PowerShell process",
+		);
+	},
+);

@@ -76,6 +76,8 @@ describe("workflow completion card: outputs and diagnostics (#5224)", () => {
 				artifacts: [
 					{ kind: "diff", path: "/repo/.atomic/impl.patch", filesChanged: 3, insertions: 40, deletions: 2 },
 					{ kind: "output", path: "/repo/out/report.md" },
+					{ kind: "output", path: "/repo/out/summary.md" },
+					{ kind: "output", path: "/repo/out/trace.json" },
 				],
 			},
 		]);

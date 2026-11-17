@@ -24,6 +24,11 @@ import type { WorkflowArtifact, WorkflowModelAttempt, WorkflowSerializableValue 
 
 export type { DurableRepositoryBinding, DurableWorkspaceBinding, WorkflowForkedFrom } from "../shared/fork-lineage.js";
 
+export interface DurableWorkflowDefinitionSource {
+	readonly path: string;
+	readonly digest: string;
+}
+
 // ---------------------------------------------------------------------------
 // Top-level workflow identity
 // ---------------------------------------------------------------------------
@@ -49,6 +54,7 @@ export interface DurableWorkflowHandle {
 	readonly status: DurableWorkflowStatus;
 	/** Original invocation cwd used to resolve repo-relative workflow defaults on resume. */
 	readonly invocationCwd?: string;
+	readonly definitionSource?: DurableWorkflowDefinitionSource;
 	readonly resources?: import("../workers/public-options.js").WorkflowExecutionResources;
 	/** Snapshot exclusion and size policy in effect when the run started. */
 	readonly snapshots?: import("@bastani/atomic").WorktreeSnapshotSettingsInput;
@@ -303,6 +309,10 @@ export interface DurableStageCheckpoint {
 	readonly startedAt?: number;
 	/** Original stage end timestamp, when available. */
 	readonly endedAt?: number;
+	readonly awaitingInputSince?: number;
+	readonly pendingPrompt?: import("../shared/store-types.js").PendingPrompt;
+	readonly promptFootprint?: import("../shared/store-types.js").PendingPrompt;
+	readonly promptAnswerState?: import("../shared/store-types.js").StageSnapshot["promptAnswerState"];
 	/** Original stage duration, when available. */
 	readonly durationMs?: number;
 	/** Display/result text recorded for the completed stage. */
@@ -313,7 +323,6 @@ export interface DurableStageCheckpoint {
 	readonly attemptedModels?: readonly string[];
 	readonly modelAttempts?: readonly WorkflowModelAttempt[];
 	readonly rateLimits?: readonly import("../shared/types.js").WorkflowProviderRateLimit[];
-	readonly routerSelection?: import("@bastani/atomic").ModelRouterOutput;
 	/** Schema-backed task value; independent of assistant text. */
 	readonly structured?: WorkflowSerializableValue;
 	/** Worktree or output artifacts collected for a completed task. */
@@ -395,6 +404,7 @@ export interface DurableWorkflowMetadata {
 	/** Author-supplied reason from ctx.exit(), when present. */
 	readonly exitReason?: string;
 	readonly invocationCwd?: string;
+	readonly definitionSource?: DurableWorkflowDefinitionSource;
 	readonly resources?: import("../workers/public-options.js").WorkflowExecutionResources;
 	readonly origin?: WorkflowActor;
 	readonly modelOwner?: string;

@@ -346,7 +346,7 @@ atomic
 
 Atomic stores provider credentials in `~/.atomic/agent/auth.json` and creates the file with owner-only permissions where the platform supports them. For non-interactive use, `atomic -p "<prompt>"` prints the response and exits.
 
-After authenticating, type a message or run `/workflow list` to explore built-in workflows. A fresh install also shows a one-time workflow-engine introduction.
+After authenticating, type a message, or ask which workflows are installed. A fresh install also shows a one-time workflow-engine introduction.
 
 > ⚠️ Atomic has no built-in sandbox or command-level shell permission gate. Tools and extensions run with your user permissions. Run autonomous work inside a devcontainer, VM, or remote development machine—not on a host with sensitive data or credentials.
 
@@ -411,7 +411,7 @@ Explore the rest of Atomic’s real recorded capabilities, with public docs and 
 <a href="https://github.com/bastani-inc/atomic-crash-course#a10-autonomous-implementation-loops">
 <picture>
 <source srcset="assets/feature-wall/40-autonomous-implementation-loops.gif" type="image/gif">
-<img src="assets/feature-wall/40-autonomous-implementation-loops.jpg" alt="Atomic inspecting the ralph contract, launching a one-loop validation task, and opening its live research-first workflow graph" width="100%">
+<img src="assets/feature-wall/40-autonomous-implementation-loops.jpg" alt="An earlier Atomic session inspecting the ralph contract, launching a one-loop validation task, and opening its live research-first workflow graph" width="100%">
 </picture>
 </a>
 </td>
@@ -419,7 +419,7 @@ Explore the rest of Atomic’s real recorded capabilities, with public docs and 
 <tr>
 <td width="42%" valign="top">
 <h4>Inspect and control workflows</h4>
-<p>List definitions, inspect input contracts, check live status, and open a run graph with <code>/workflows</code>.</p>
+<p>Browse running and completed workflows with <code>/workflows</code>, then pause, resume or quit a run from its graph.</p>
 <p><a href="https://docs.bastani.ai/workflows"><sub>Atomic docs · Workflows</sub></a></p>
 <p><a href="https://github.com/bastani-inc/atomic-crash-course#61-touring-the-builtins"><sub>Crash course · W.3 Inspect and control workflows</sub></a></p>
 </td>
@@ -539,7 +539,7 @@ Explore the rest of Atomic’s real recorded capabilities, with public docs and 
 <a href="https://github.com/bastani-inc/atomic-crash-course#61-touring-the-builtins">
 <picture>
 <source srcset="assets/feature-wall/22-touring-the-builtins.gif" type="image/gif">
-<img src="assets/feature-wall/22-touring-the-builtins.jpg" alt="The Atomic workflow picker listing the bundled workflows and their stages" width="100%">
+<img src="assets/feature-wall/22-touring-the-builtins.jpg" alt="An earlier Atomic session's workflow picker listing the bundled workflows and their stages" width="100%">
 </picture>
 </a>
 </td>
@@ -547,7 +547,7 @@ Explore the rest of Atomic’s real recorded capabilities, with public docs and 
 <tr>
 <td width="42%" valign="top">
 <h4>Run a workflow with typed inputs</h4>
-<p>Use <code>/workflow &lt;name&gt; key=value</code> to validate static inputs against TypeBox before a run starts.</p>
+<p>Ask for a workflow by name; the workflow tool validates its typed inputs against TypeBox before the run starts.</p>
 <p><a href="https://docs.bastani.ai/workflows"><sub>Atomic docs · Workflows</sub></a></p>
 <p><a href="https://github.com/bastani-inc/atomic-crash-course#61-touring-the-builtins"><sub>Crash course · W.2 Run a workflow with typed inputs</sub></a></p>
 </td>
@@ -555,15 +555,15 @@ Explore the rest of Atomic’s real recorded capabilities, with public docs and 
 <a href="https://github.com/bastani-inc/atomic-crash-course#61-touring-the-builtins">
 <picture>
 <source srcset="assets/feature-wall/29-workflow-typed-inputs.gif" type="image/gif">
-<img src="assets/feature-wall/29-workflow-typed-inputs.jpg" alt="Atomic showing the typed-input-demo input contract, launching it with a string path and integer depth, and listing its live run status" width="100%">
+<img src="assets/feature-wall/29-workflow-typed-inputs.jpg" alt="An earlier Atomic session showing the typed-input-demo input contract, launching it with a string path and integer depth, and listing its live run status" width="100%">
 </picture>
 </a>
 </td>
 </tr>
 <tr>
 <td width="42%" valign="top">
-<h4>Verbatim compaction</h4>
-<p>Compaction deletes low-value transcript lines without rewriting what survives; <code>&lt;keepContext&gt;</code> pins exact text.</p>
+<h4>Context compaction</h4>
+<p>Compaction clears the context window, and the agent recovers what it needs from session history, <code>&lt;keepContext&gt;</code> spans first and verbatim.</p>
 <p><a href="https://docs.bastani.ai/compaction"><sub>Atomic docs · Compaction</sub></a></p>
 <p><a href="https://github.com/bastani-inc/atomic-crash-course#22-verbatim-compaction"><sub>Crash course · 2.2 Verbatim compaction</sub></a></p>
 </td>
@@ -571,7 +571,7 @@ Explore the rest of Atomic’s real recorded capabilities, with public docs and 
 <a href="https://github.com/bastani-inc/atomic-crash-course#22-verbatim-compaction">
 <picture>
 <source srcset="assets/feature-wall/06-verbatim-compaction.gif" type="image/gif">
-<img src="assets/feature-wall/06-verbatim-compaction.jpg" alt="Atomic answering after compaction by quoting the pinned keepContext repo rule back byte-exact" width="100%">
+<img src="assets/feature-wall/06-verbatim-compaction.jpg" alt="Atomic answering after compaction by quoting a keepContext repo rule back exactly" width="100%">
 </picture>
 </a>
 </td>
@@ -921,7 +921,7 @@ Focused codebase research:
 Repository-wide research with durable artifacts:
 
 ```text
-/workflow fan-out-and-synthesize prompt="Partition the repository by subsystem, map every legacy auth middleware callsite, and synthesize cited migration findings"
+Run fan-out-and-synthesize to partition the repository by subsystem, map every legacy auth middleware callsite, and synthesize cited migration findings.
 ```
 
 A task-specific implementation and review loop:
@@ -933,13 +933,13 @@ Create and run a workflow that implements specs/2026-03-rate-limit.md, runs focu
 A reviewer-gated run with Goal:
 
 ```text
-/workflow goal objective="Update the CLI docs for --json, add one example, and validate the docs build"
+Run goal to update the CLI docs for --json, add one example, and validate the docs build.
 ```
 
 A research-first implementation with Ralph:
 
 ```text
-/workflow ralph prompt="Implement specs/2026-03-rate-limit.md and validate burst traffic" create_pr=true
+Run ralph to implement specs/2026-03-rate-limit.md and validate burst traffic, and open a PR when it is approved.
 ```
 
 Use Goal when a durable ledger, receipts, bounded sub-agent orchestration, and reviewer-gated completion fit the task. Use Ralph when the job benefits from prompt refinement, codebase research, delegated implementation, and iterative multi-model review. Both skip PR creation unless `create_pr=true` explicitly authorizes the post-approval final stage.
@@ -954,17 +954,17 @@ Atomic ships three top-level building blocks: workflows, skills, and specialized
 
 Workflows define inputs, stages, branches, parallelism, retries, checks, artifacts, checkpoints, and human review gates. Atomic can author TypeScript `workflow({...})` definitions, import reusable project or package workflows, and nest workflows with `ctx.workflow(...)` within a configured `maxDepth`.
 
-| Workflow | What it does | Example input |
+| Workflow | What it does | Example request |
 | --- | --- | --- |
-| `fan-out-and-synthesize` | Partitions independent slices, writes branch artifacts, and synthesizes their evidence. | `/workflow fan-out-and-synthesize prompt="Map payment retries by subsystem and synthesize cited findings"` |
-| `adversarial-verification` | Challenges a candidate with fresh verifiers and bounded repair. | `/workflow adversarial-verification task="Verify the rate-limit migration patch"` |
-| `loop-until-done` | Iterates with a durable ledger until explicit completion evidence or bound exhaustion. | `/workflow loop-until-done prompt="Repair failures until the test suite passes"` |
-| `goal` | Runs bounded autonomous implementation with a durable ledger, receipts, parallel review, and reducer-gated completion. | `/workflow goal objective="Update CLI docs and validate the docs build"` |
-| `ralph` | Runs research-first delegated implementation with bounded multi-model review and repair. | `/workflow ralph prompt="Implement specs/rate-limit.md" create_pr=true` |
-| `open-claude-design` | Gathers requirements and references, discovers the design system, refines output, and exports a handoff. | `/workflow open-claude-design prompt="Team activity feed prototype using ./mocks/feed.png as a reference"` |
+| `fan-out-and-synthesize` | Partitions independent slices, writes branch artifacts, and synthesizes their evidence. | `Run fan-out-and-synthesize to map payment retries by subsystem and synthesize cited findings` |
+| `adversarial-verification` | Challenges a candidate with fresh verifiers and bounded repair. | `Run adversarial-verification on the rate-limit migration patch` |
+| `loop-until-done` | Iterates with a durable ledger until explicit completion evidence or bound exhaustion. | `Run loop-until-done to repair failures until the test suite passes` |
+| `goal` | Runs bounded autonomous implementation with a durable ledger, receipts, parallel review, and reducer-gated completion. | `Run goal to update the CLI docs and validate the docs build` |
+| `ralph` | Runs research-first delegated implementation with bounded multi-model review and repair. | `Run ralph to implement specs/rate-limit.md and open a PR when approved` |
+| `open-claude-design` | Gathers requirements and references, discovers the design system, refines output, and exports a handoff. | `Run open-claude-design for a team activity feed prototype using ./mocks/feed.png as a reference` |
 | _author your own_ | Issue-to-PR, migration, triage, release, compliance, or another process your team needs. Start with the [custom workflow authoring guide](./packages/coding-agent/docs/workflows/authoring.md). | _“Create a workflow that plans, implements, runs tests and lint, reviews the diff, then stops for approval.”_ |
 
-Run `/workflow list` to see installed workflows and `/workflow inputs <name>` for input schemas. Use `/workflow status <id>`, `/workflows <id>`, `/workflow quit <id>`, and `/workflow resume <id>` to manage runs. Quitting pauses work so it can resume later. Runnable references live in [`packages/coding-agent/examples/`](./packages/coding-agent/examples).
+Ask the agent which workflows are installed and what inputs one takes. `/workflows` browses running and completed workflows; in a run's graph, `p` pauses, `r` resumes and `q` twice quits it, keeping it resumable. `/resume` resumes runs from earlier sessions. Runnable references live in [`packages/coding-agent/examples/`](./packages/coding-agent/examples).
 
 ### 2. Skills
 

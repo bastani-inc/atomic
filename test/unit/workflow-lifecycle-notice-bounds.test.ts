@@ -157,7 +157,12 @@ describe("workflow lifecycle notice bounds and caching (#5224)", () => {
 					status: "completed",
 					parentIds: [],
 					toolEvents: [],
-					artifacts: [shownArtifact, ...unshownArtifacts],
+					artifacts: [
+						shownArtifact,
+						{ kind: "output", path: "/repo/out/second.md" },
+						{ kind: "output", path: "/repo/out/third.md" },
+						...unshownArtifacts,
+					],
 					startedAt: 1,
 					endedAt: 2,
 				},
@@ -182,8 +187,8 @@ describe("workflow lifecycle notice bounds and caching (#5224)", () => {
 		assert.ok(notice?.details);
 		assert.equal(outputSerializeCalls, 1);
 		assert.equal(unshownArtifactReads, 0);
-		assert.equal(notice.details.artifacts?.total, 10_000);
-		assert.equal(notice.details.artifacts?.shown.length, 1);
+		assert.equal(notice.details.artifacts?.total, 10_002);
+		assert.equal(notice.details.artifacts?.shown.length, 3);
 		assert.equal(notice.details.outputsPreview?.length, NOTICE_SNIPPET_LIMIT);
 
 		const cardText = componentFor(notice.details)
@@ -202,7 +207,7 @@ describe("workflow lifecycle notice bounds and caching (#5224)", () => {
 				if (typeof property === "string" && /^\d+$/.test(property)) {
 					const index = Number(property);
 					inspected.push(index);
-					if (index > 0) throw new Error("artifact inspection exceeded its preview budget");
+					if (index > 2) throw new Error("artifact inspection exceeded its preview budget");
 				}
 				return Reflect.get(target, property, receiver);
 			},
@@ -227,7 +232,7 @@ describe("workflow lifecycle notice bounds and caching (#5224)", () => {
 			await Promise.resolve();
 			assert.ok(inspected.length > 0);
 			assert.ok(
-				inspected.every((index) => index === 0),
+				inspected.every((index) => index < 3),
 				inspected.join(", "),
 			);
 			assert.ok(sent.some((notice) => notice.details?.runId === run.id));

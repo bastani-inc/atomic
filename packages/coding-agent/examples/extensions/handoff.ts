@@ -59,8 +59,8 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			// Gather the active provider context. Durable verbatim compaction boundaries
-			// are already reconstructed as a boundary message plus their kept tail.
+			// Gather the active provider context. A compaction boundary is already a single
+			// boundary message, followed by the messages added after it.
 			const messages = buildSessionContext(ctx.sessionManager.getEntries(), ctx.sessionManager.getLeafId()).messages;
 
 			if (messages.length === 0) {

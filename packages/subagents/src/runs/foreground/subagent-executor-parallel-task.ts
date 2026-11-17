@@ -59,7 +59,8 @@ interface ForegroundParallelRunInput {
 	knownModelProviders: string[];
 	resolveCandidateModel: CandidateModelResolver;
 	modelOverrides: (string | undefined)[];
-	modelRoutes?: (import("../shared/model-router.js").ModelRoute | undefined)[];
+	/** Which tasks run `model: "auto"`, whose `modelOverrides` entry is the model it stood for, not one they named. */
+	autoModels?: readonly boolean[];
 	behaviors: ResolvedStepBehavior[];
 	/** Run-scoped directory holding the shared, precreated progress.md; set when any task tracks progress. */
 	progressDir?: string;
@@ -186,6 +187,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			task.group ?? input.setIntercomGroup,
 			inheritedIntercomGroup(input.ctx),
 			input.sharedAutoIntercomGroup,
+			input.ctx.intercomPolicy,
 		);
 		// Sends to the child wait for it to register, before its first turn, instead of finding no session.
 		const startHold = await holdStartingChild({
@@ -254,8 +256,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			// Parallel requests use Intercom's correlated waiter in the original child.
 			// The single-child terminal handoff would cancel unrelated siblings here.
 			modelOverride: input.modelOverrides[index],
-			modelRoute: input.modelRoutes?.[index],
-			...(task.modelConstraints ? { modelConstraints: task.modelConstraints } : {}),
+			...(input.autoModels?.[index] ? { runsNamedModel: false as const } : {}),
 			availableModels: input.availableModels,
 			knownModelProviders: input.knownModelProviders,
 			resolveCandidateModel: input.resolveCandidateModel,
@@ -316,7 +317,6 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 					}
 				: undefined,
 		};
-		runOptions.modelRoute?.assertCurrent();
 		input.onExecution?.(index, input.ctx.cwd, runOptions);
 		if (host) {
 			if (input.wait?.kind !== "foreground") {

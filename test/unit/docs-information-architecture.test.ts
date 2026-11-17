@@ -136,9 +136,12 @@ function headingsIn(text: string): Heading[] {
 }
 
 /**
- * The 44 routes that existed before the migration. #2847 requires every one of
+ * The routes that existed before the migration. #2847 requires every one of
  * them to keep working, so this list is frozen: a deletion has to fail loudly
  * rather than quietly 404 for readers and for agents reading published docs.
+ * The model benchmark pages (`/models/model-selection`, and the
+ * `/models/artificial-analysis-index` and `/models/pareto-efficiency` routes
+ * that redirected to them) were removed with automatic model routing.
  */
 const preMigrationRoutes = [
 	"/changelog",
@@ -154,9 +157,6 @@ const preMigrationRoutes = [
 	"/keybindings",
 	"/llama-cpp",
 	"/models",
-	"/models/artificial-analysis-index",
-	"/models/model-selection",
-	"/models/pareto-efficiency",
 	"/packages",
 	"/prompt-templates",
 	"/providers",
@@ -405,7 +405,6 @@ const generatedNavigationInsertions: Record<string, readonly string[]> = {
 	"/intercom": ["/intercom/operations"],
 	"/extensions": ["/extensions/authoring", "/extensions/events", "/extensions/ui", "/extensions/examples"],
 	"/packages": ["/packages/authoring"],
-	"/models": ["/models/model-selection", "/models/evals"],
 	"/workflows/reliable-design": ["/workflows/verification"],
 	"/tmux": ["/herdr"],
 	// The edit reference now lives in tools; the codemode script reference and integrations follow it.
@@ -462,6 +461,8 @@ const historicalChangelogAnchors = new Set([
 	"/extensions#message_start--message_update--message_end",
 	"/extensions#pigetcommands",
 	"/extensions#tool-call-events",
+	// The modelRouting setting was removed with automatic model routing; released sections still cite it.
+	"/settings#modelrouting",
 	"/settings#terminal--images",
 	"/tui#working-indicator",
 ]);
@@ -655,7 +656,7 @@ describe("docs information architecture (#2847)", () => {
 		const expectedGenerated = Object.values(generatedNavigationInsertions).flat().sort();
 		assert.equal(
 			expectedGenerated.length,
-			50,
+			48,
 			"migration routes, additions, and the storage API have insertion points",
 		);
 		assert.deepEqual(generated, expectedGenerated, "no generated page may fall outside the insertion contract");
@@ -1086,7 +1087,7 @@ describe("docs references and assets (#2847)", () => {
 				checked += 1;
 			}
 		}
-		assert.equal(checked, 6, "all six relative image references must still be checked");
+		assert.equal(checked, 3, "all three relative image references must still be checked");
 	});
 });
 

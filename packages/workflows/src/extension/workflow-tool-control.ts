@@ -263,7 +263,7 @@ export async function workflowQuitAction(
 				quitCount > 0
 					? successes.some((result) => result.message !== undefined)
 						? successes.map((result) => result.message ?? `Run ${result.runId} quit.`).join("\n")
-						: `Quit ${quitCount} run(s); resume with /workflow resume.`
+						: `Quit ${quitCount} run(s); resume with /resume.`
 					: "No in-flight runs to quit.",
 		};
 	}
@@ -287,7 +287,7 @@ export async function workflowQuitAction(
 				status: "paused",
 				message:
 					result.message ??
-					`Run ${result.runId} quit and can be resumed with /workflow resume.${cancelledToolSummary(result)}`,
+					`Run ${result.runId} quit and can be resumed with /resume.${cancelledToolSummary(result)}`,
 			};
 		}
 		const benign = result.reason === "already_ended" || result.reason === "no_active_stages";

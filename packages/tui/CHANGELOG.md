@@ -4,6 +4,11 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+### Added
+
+- Slash-command autocomplete suggestions can set `completeOnConfirm: false` to submit the typed input on Enter until the user navigates the suggestion list. Tab still accepts the highlighted completion ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- `Markdown` accepts per-instance `hyperlinks: false` to display links as text and URLs without OSC 8, and `images: false` to display image placeholders. Other Markdown instances keep their existing behavior ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+
 ### Fixed
 
 - F1–F5 and Page Up/Down sent as `ESC [ [ …` (libuv on Windows, the Linux console) are read as one key instead of typing their final letter into the editor

@@ -11,6 +11,7 @@ import {
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import {
+	AGENT_PANEL_REFRESH_WINDOW_MS,
 	agentPanelRows,
 	bindAgentPanel,
 	setAgentPanelVisible,
@@ -105,6 +106,7 @@ test("a source applies all pending changes before returning its notified snapsho
 test("hidden panel refreshes sample extension sources without rebuilding background task rows (#5239)", async () => {
 	const fixture = taskFixture();
 	await fixture.start();
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 	const hub = new AgentPanelSourceHub();
 	let notify = () => {};
 	let reads = 0;
@@ -127,7 +129,7 @@ test("hidden panel refreshes sample extension sources without rebuilding backgro
 		taskReads.mockClear();
 		reads = 0;
 		notify();
-		await Promise.resolve();
+		await vi.advanceTimersByTimeAsync(AGENT_PANEL_REFRESH_WINDOW_MS);
 		assert.equal(taskReads.mock.calls.length, 0);
 		assert.equal(reads, 1);
 		setAgentPanelVisible(session, true);
@@ -137,6 +139,7 @@ test("hidden panel refreshes sample extension sources without rebuilding backgro
 		unbind();
 		taskReads.mockRestore();
 		hub.dispose();
+		vi.useRealTimers();
 		await fixture.dispose();
 	}
 });

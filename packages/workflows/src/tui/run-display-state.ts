@@ -16,11 +16,11 @@ import {
 import { inertDisplayLine } from "./display-text.js";
 
 export function firstPromptLine(text: string): string {
-	const bounded = sliceHead(text, TOOL_PAYLOAD_VALUE_LIMIT).trimStart();
-	const nl = bounded.indexOf("\n");
-	const cr = bounded.indexOf("\r");
+	const trimmed = sliceHead(text, TOOL_PAYLOAD_VALUE_LIMIT).trimStart();
+	const nl = trimmed.indexOf("\n");
+	const cr = trimmed.indexOf("\r");
 	const end = nl < 0 ? cr : cr < 0 ? nl : Math.min(nl, cr);
-	return end < 0 ? bounded : bounded.slice(0, end);
+	return end < 0 ? trimmed : trimmed.slice(0, end);
 }
 
 export function isTerminalOrBlockedRun(run: RunSnapshot): boolean {

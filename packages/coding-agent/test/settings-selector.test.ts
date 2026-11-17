@@ -11,10 +11,7 @@ import { createExtensionContext, type ExtensionContextSource } from "../src/core
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { createSettingsChangeHandler } from "../src/modes/interactive/components/settings-selector-handlers.js";
-import {
-	BACKGROUND_COMPACTION_THRESHOLD_CHOICES,
-	buildSettingsItems,
-} from "../src/modes/interactive/components/settings-selector-items.js";
+import { buildSettingsItems } from "../src/modes/interactive/components/settings-selector-items.js";
 import { SelectSubmenu } from "../src/modes/interactive/components/settings-selector-submenus.js";
 import type { SettingsCallbacks, SettingsConfig } from "../src/modes/interactive/components/settings-selector-types.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
@@ -27,8 +24,6 @@ beforeAll(() => {
 function settingsConfig(overrides: Partial<SettingsConfig> = {}): SettingsConfig {
 	return {
 		autoCompact: true,
-		backgroundCompaction: true,
-		backgroundCompactionThresholdPercent: 75,
 		showImages: false,
 		imageWidthCells: 60,
 		autoResizeImages: true,
@@ -98,12 +93,12 @@ test("keeps the configured fixed theme marked while browsing", () => {
 
 	let output = render(submenu);
 	expect(output).toContain("  Automatic");
-	expect(output).toContain("→ ✓ dark");
+	expect(output).toContain("❯ ✓ dark");
 
 	submenu.handleInput?.("\x1b[B");
 	output = render(submenu);
 	expect(output).toContain("  ✓ dark");
-	expect(output).toContain("→   light");
+	expect(output).toContain("❯   light");
 });
 
 test("keeps a configured automatic theme marked while browsing", () => {
@@ -120,12 +115,12 @@ test("keeps a configured automatic theme marked while browsing", () => {
 	// picker, whose configured value is "light".
 	submenu.handleInput?.("\r");
 	let output = render(submenu);
-	expect(output).toContain("→ ✓ light");
+	expect(output).toContain("❯ ✓ light");
 
 	submenu.handleInput?.("\x1b[B");
 	output = render(submenu);
 	expect(output).toContain("  ✓ light");
-	expect(output).toContain("→   other");
+	expect(output).toContain("❯   other");
 });
 
 function openRouterSubmenu(
@@ -164,7 +159,7 @@ test("router settings list registered classifiers and use the current chat model
 	expect(config.availableDefaultModels).toEqual([]);
 
 	const reopened = openRouterSubmenu(config, changed);
-	expect(render(reopened)).toContain("→ ✓ judge/custom");
+	expect(render(reopened)).toContain("❯ ✓ judge/custom");
 	reopened.handleInput?.("\x1b[A");
 	reopened.handleInput?.("\r");
 	expect(changed).toHaveBeenLastCalledWith("");
@@ -200,7 +195,7 @@ test("router settings search exact provider/model IDs without changing chat defa
 	const changed = vi.fn();
 	const submenu = openRouterSubmenu(config, changed);
 	for (const character of "nested") submenu.handleInput?.(character);
-	expect(render(submenu)).toContain("→   test/nested/model");
+	expect(render(submenu)).toContain("❯   test/nested/model");
 	expect(changed).not.toHaveBeenCalled();
 	submenu.handleInput?.("\r");
 	expect(changed).toHaveBeenCalledExactlyOnceWith("test/nested/model");
@@ -213,7 +208,7 @@ test("router settings preserve an unavailable selection and cancellation does no
 	const changed = vi.fn();
 	const done = vi.fn();
 	const submenu = openRouterSubmenu(config, changed, done);
-	expect(render(submenu)).toContain("→ ✓ missing/model");
+	expect(render(submenu)).toContain("❯ ✓ missing/model");
 	expect(render(submenu)).toContain("not currently available");
 	submenu.handleInput?.("\x1b");
 	expect(changed).not.toHaveBeenCalled();
@@ -231,7 +226,7 @@ test("router picker marks an unavailable classifier ID and excludes non-chat exe
 	});
 	const menu = openRouterSubmenu(config, vi.fn());
 	const output = render(menu);
-	expect(output).toContain("→ ✓ typesafe-ai/jev-latest");
+	expect(output).toContain("❯ ✓ typesafe-ai/jev-latest");
 	expect(output).toContain("Configured model is not currently available");
 	expect(output).not.toContain("gallery/paint");
 	expect(output).not.toContain("judge/jev");
@@ -279,7 +274,7 @@ test("decision model setter accepts auto and rejects malformed IDs with a typed 
 	manager.setDecisionModel("auto");
 	expect(manager.getDecisionModel()).toBe("auto");
 	const submenu = openRouterSubmenu(settingsConfig({ decisionModel: manager.getDecisionModel() }), vi.fn());
-	expect(render(submenu)).toContain("→ ✓ Automatic");
+	expect(render(submenu)).toContain("❯ ✓ Automatic");
 });
 
 test("router menu edits the project override including Automatic without changing global defaults", async () => {
@@ -332,7 +327,7 @@ function openCompactionSubmenu(config: SettingsConfig, change: (model: string) =
 	return item.submenu(item.currentValue, () => {}) as Container;
 }
 
-test("compaction picker selects chat, classifier and Morph models without changing chat defaults (#3470)", () => {
+test("compaction picker offers Auto and compactor models only, without changing chat defaults (#3470)", () => {
 	const config = settingsConfig({
 		compactionModel: "auto",
 		availableDefaultModels: [
@@ -347,22 +342,17 @@ test("compaction picker selects chat, classifier and Morph models without changi
 	const selected: string[] = [];
 	const menu = openCompactionSubmenu(config, (value) => selected.push(value));
 	const output = render(menu);
-	for (const label of [
-		"Auto (current model)",
-		"test/chat",
-		"judge/score",
-		"morph/morph-compactor",
-		"requires /login morph",
-	]) {
+	for (const label of ["Auto (clear and recover)", "morph/morph-compactor", "requires /login morph"]) {
 		assert.ok(output.includes(label), label);
 	}
-	for (const id of ["test/chat", "judge/score", "morph/morph-compactor", ""]) {
+	for (const label of ["test/chat", "judge/score"]) assert.ok(!output.includes(label), label);
+	for (const id of ["morph/morph-compactor", ""]) {
 		const reopened = openCompactionSubmenu(config, (value) => selected.push(value));
 		for (const character of id || "Auto") reopened.handleInput?.(character);
 		reopened.handleInput?.("\r");
 		assert.equal(config.compactionModel, id);
 	}
-	assert.deepEqual(selected, ["test/chat", "judge/score", "morph/morph-compactor", ""]);
+	assert.deepEqual(selected, ["morph/morph-compactor", ""]);
 	assert.equal(config.thinkingLevel, "off");
 	assert.equal(config.availableDefaultModels?.[0].id, "chat");
 });
@@ -396,11 +386,9 @@ test("compaction picker persists global and project selections and Auto without 
 			const config = settingsConfig({
 				compactionModel: manager.getCompactionModel(),
 				compactionModelScope: scope,
-				availableClassifierModels: [
-					{ type: "classifier", provider: "judge", id: "score", name: "Judge" },
-				] as SettingsConfig["availableClassifierModels"],
+				availableCompactorModels: [{ type: "compactor", provider: "morph", id: "morph-compactor", name: "Morph" }],
 			});
-			for (const search of ["judge/score", "Auto"]) {
+			for (const search of ["morph/morph-compactor", "Auto"]) {
 				const menu = openCompactionSubmenu(config, (value) => manager.setCompactionModel(value, scope));
 				for (const character of search) menu.handleInput?.(character);
 				menu.handleInput?.("\r");
@@ -458,132 +446,17 @@ test("pages a searchable submenu with selection page keys (upstream #7629)", () 
 	assert.deepEqual(onSelect.mock.calls, [["theme-10"]]);
 });
 
-test("shows background compaction next to auto-compact, enabled by default with a 75% threshold (#4330)", () => {
-	const items = buildSettingsItems(settingsConfig(), {} as SettingsCallbacks);
-	const ids = items.map(({ id }) => id);
-	const autocompact = ids.indexOf("autocompact");
-	assert.deepEqual(ids.slice(autocompact, autocompact + 3), [
-		"autocompact",
-		"background-compaction",
-		"background-compaction-threshold",
-	]);
-	const toggle = items[autocompact + 1];
-	assert.equal(toggle.label, "Background compaction");
-	assert.equal(
-		toggle.description,
-		"Compact older context in the background while the agent keeps working; blocking compaction only on overflow",
-	);
-	assert.equal(toggle.currentValue, "true");
-	assert.deepEqual(toggle.values, ["true", "false"]);
-	const threshold = items[autocompact + 2];
-	assert.equal(threshold.label, "Background compaction threshold");
-	assert.equal(threshold.description, "Percentage of the context window at which background compaction starts");
-	assert.equal(threshold.currentValue, "75");
-	assert.deepEqual(threshold.values, ["50", "60", "70", "75", "80", "90"]);
-	assert.deepEqual(BACKGROUND_COMPACTION_THRESHOLD_CHOICES, [50, 60, 70, 75, 80, 90]);
-});
-
-test("keeps a configured background threshold outside the choices selectable (#4330)", () => {
-	const items = buildSettingsItems(
-		settingsConfig({ backgroundCompaction: false, backgroundCompactionThresholdPercent: 85 }),
-		{} as SettingsCallbacks,
-	);
-	assert.equal(items.find(({ id }) => id === "background-compaction")?.currentValue, "false");
-	const threshold = items.find(({ id }) => id === "background-compaction-threshold");
-	assert.equal(threshold?.currentValue, "85");
-	assert.deepEqual(threshold?.values, ["50", "60", "70", "75", "80", "85", "90"]);
-});
-
-test("routes the background compaction rows to their callbacks (#4330)", () => {
-	const onBackgroundCompactionChange = vi.fn();
-	const onBackgroundCompactionThresholdChange = vi.fn();
-	const handle = createSettingsChangeHandler({
-		onBackgroundCompactionChange,
-		onBackgroundCompactionThresholdChange,
-	} as unknown as SettingsCallbacks);
-	handle("background-compaction", "false");
-	handle("background-compaction", "true");
-	handle("background-compaction-threshold", "60");
-	assert.deepEqual(onBackgroundCompactionChange.mock.calls, [[false], [true]]);
-	assert.deepEqual(onBackgroundCompactionThresholdChange.mock.calls, [[60]]);
-});
-
-test("persists the background compaction settings like other settings (#4330)", async () => {
-	const dir = mkdtempSync(join(tmpdir(), "background-compaction-settings-"));
-	try {
-		const agentDir = join(dir, "agent");
-		mkdirSync(agentDir, { recursive: true });
-		const manager = SettingsManager.create(dir, agentDir);
-		assert.equal(manager.getCompactionBackground(), true);
-		assert.equal(manager.getCompactionBackgroundThresholdPercent(), 75);
-		manager.setCompactionBackground(false);
-		manager.setCompactionBackgroundThresholdPercent(60);
-		await manager.flush();
-		const saved = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
-		assert.deepEqual(saved.compaction, { background: false, backgroundThresholdPercent: 60 });
-		const reloaded = SettingsManager.create(dir, agentDir);
-		assert.equal(reloaded.getCompactionBackground(), false);
-		assert.equal(reloaded.getCompactionBackgroundThresholdPercent(), 60);
-		writeFileSync(
-			join(agentDir, "settings.json"),
-			JSON.stringify({ compaction: { backgroundThresholdPercent: "75" } }),
-		);
-		const invalid = SettingsManager.create(dir, agentDir);
-		assert.throws(
-			() => invalid.getCompactionBackgroundThresholdPercent(),
-			(error: unknown) =>
-				error instanceof Error &&
-				error.name === "BackgroundCompactionConfigError" &&
-				(error as { source?: string }).source === "settings",
-		);
-	} finally {
-		rmSync(dir, { recursive: true, force: true });
-	}
-});
-
-test("saving a background compaction setting keeps other compaction settings, including ones changed on disk (#4330)", async () => {
-	const dir = mkdtempSync(join(tmpdir(), "background-compaction-merge-"));
-	try {
-		const agentDir = join(dir, "agent");
-		mkdirSync(agentDir, { recursive: true });
-		const settingsPath = join(agentDir, "settings.json");
-		writeFileSync(settingsPath, JSON.stringify({ compaction: { enabled: false } }));
-		const manager = SettingsManager.create(dir, agentDir);
-		writeFileSync(settingsPath, JSON.stringify({ compaction: { enabled: false, reserveTokens: 5000 } }));
-		manager.setCompactionBackground(false);
-		manager.setCompactionBackgroundThresholdPercent(80);
-		await manager.flush();
-		assert.equal(manager.getCompactionEnabled(), false);
-		const saved = JSON.parse(readFileSync(settingsPath, "utf8"));
-		assert.deepEqual(saved.compaction, {
-			enabled: false,
-			reserveTokens: 5000,
-			background: false,
-			backgroundThresholdPercent: 80,
-		});
-		assert.throws(
-			() => manager.setCompactionBackground("yes" as never),
-			(error: unknown) =>
-				error instanceof Error &&
-				error.name === "BackgroundCompactionConfigError" &&
-				(error as { source?: string }).source === "sdk",
-		);
-	} finally {
-		rmSync(dir, { recursive: true, force: true });
-	}
-});
-
 test("image and UI toggles follow the compaction rows in both terminal kinds (#4330)", () => {
 	try {
 		for (const images of [false, "kitty"] as const) {
 			setCapabilities({ images: images || null, trueColor: true, hyperlinks: true });
 			const ids = buildSettingsItems(settingsConfig(), {} as SettingsCallbacks).map(({ id }) => id);
-			const start = ids.indexOf("background-compaction-threshold") + 1;
+			const start = ids.indexOf("autocompact") + 1;
 			const expected = images
 				? ["show-images", "image-width-cells", "auto-resize-images", "block-images"]
 				: ["auto-resize-images", "block-images"];
 			assert.deepEqual(ids.slice(start, start + expected.length), expected, String(images));
-			assert.equal(ids[1], "background-compaction");
+			assert.equal(ids[0], "autocompact");
 		}
 	} finally {
 		resetCapabilitiesCache();
@@ -621,7 +494,7 @@ test("/settings shows the decision model, its scope and what Automatic means (#4
 	assert.equal(item(settingsConfig({ decisionModel: "judge/custom" }))?.currentValue, "judge/custom");
 	assert.equal(
 		item(settingsConfig({}))?.description,
-		'Saves to global settings; decides model "auto" selection, structured output and readiness after a steer, not the chat model',
+		"Saves to global settings; decides structured output, stage predictions and readiness after a steer, not the chat model",
 	);
 	const projectConfig = settingsConfig({
 		decisionModel: "auto",
@@ -636,7 +509,7 @@ test("/settings shows the decision model, its scope and what Automatic means (#4
 	assert.ok(shown.includes("Decision model"));
 	assert.ok(shown.includes("Saves to project settings. Choose a provider permitted to receive decision context."));
 	assert.ok(shown.includes("Automatic saves an empty decisionModel."));
-	assert.ok(shown.includes("→ ✓ Automatic"));
+	assert.ok(shown.includes("❯ ✓ Automatic"));
 	submenu.handleInput?.("\r");
 	assert.ok(done.mock.calls.some((args: unknown[]) => args.length === 1 && args[0] === "Automatic"));
 	assert.equal(projectConfig.decisionModel, "");
@@ -667,7 +540,7 @@ test("an unset decision model opens on Automatic and the submenu names the globa
 	const config = settingsConfig({ decisionModel: undefined, availableDefaultModels: [] });
 	const item = buildSettingsItems(config, {} as SettingsCallbacks).find(({ id }) => id === "decision-model");
 	const shown = render(item!.submenu!(item!.currentValue, vi.fn()) as Container);
-	assert.ok(shown.includes("→ ✓ Automatic"));
+	assert.ok(shown.includes("❯ ✓ Automatic"));
 	assert.ok(!shown.includes("not currently available"));
 	assert.ok(shown.includes("Saves to global settings. Choose a provider permitted to receive decision context."));
 });

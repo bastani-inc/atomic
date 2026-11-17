@@ -287,28 +287,15 @@ export function registerWebSearchTool(pi: ExtensionAPI, deps: RegisterWebSearchT
 		},
 
 		renderCall(args, theme) {
-			const input = args as { query?: unknown; queries?: unknown };
-			const rawQueryList: unknown[] = Array.isArray(input.queries)
+			const input = args as { query?: unknown; queries?: unknown } | undefined;
+			const rawQueryList: unknown[] = Array.isArray(input?.queries)
 				? input.queries
-				: (input.query !== undefined ? [input.query] : []);
+				: input?.query !== undefined
+					? [input.query]
+					: [];
 			const queryList = normalizeQueryList(rawQueryList);
-			if (queryList.length === 0) {
-				return new Text(theme.fg("toolTitle", theme.bold("search ")) + theme.fg("error", "(no query)"), 0, 0);
-			}
-			if (queryList.length === 1) {
-				const q = queryList[0];
-				const display = q.length > 60 ? q.slice(0, 57) + "..." : q;
-				return new Text(theme.fg("toolTitle", theme.bold("search ")) + theme.fg("accent", `"${display}"`), 0, 0);
-			}
-			const lines = [theme.fg("toolTitle", theme.bold("search ")) + theme.fg("accent", `${queryList.length} queries`)];
-			for (const q of queryList.slice(0, 5)) {
-				const display = q.length > 50 ? q.slice(0, 47) + "..." : q;
-				lines.push(theme.fg("muted", `  "${display}"`));
-			}
-			if (queryList.length > 5) {
-				lines.push(theme.fg("muted", `  ... and ${queryList.length - 5} more`));
-			}
-			return new Text(lines.join("\n"), 0, 0);
+			const label = queryList.join(" · ");
+			return new Text(`${theme.fg("toolTitle", theme.bold("WebSearch"))}${theme.fg("text", `(${label})`)}`, 0, 0);
 		},
 
 		renderResult: renderWebSearchResult,

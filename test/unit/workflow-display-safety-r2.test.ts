@@ -227,9 +227,10 @@ describe("workflow display safety regressions (#5224)", () => {
 		}
 	});
 
-	it("removes ANSI and OSC escape sequences before sanitizing failed-stage details, logs and action notices (#5224)", async () => {
+	it("keeps failed-stage details, logs and action notices printable while run summaries strip styling (#5224)", async () => {
 		const coloured = "\x1b[31mboom\x1b[39m";
-		assert.deepEqual(stageFailureLogLines({ error: coloured }), ["boom"]);
+		const printable = "\\x1b[31mboom\\x1b[39m";
+		assert.deepEqual(stageFailureLogLines({ error: coloured }), [printable]);
 
 		const failedStage: StageSnapshot = {
 			...makeStage("deploy"),
@@ -246,9 +247,9 @@ describe("workflow display safety regressions (#5224)", () => {
 		const outcome = buildRunOutcome(run, NOW);
 		assert.equal(outcome.blockers[0]?.reason, "boom");
 		assert.ok(outcome.log.includes("ship failed"));
-		assert.ok(outcome.log.includes("  boom"));
+		assert.ok(outcome.log.includes(`  ${printable}`));
 		assert.equal(
-			outcome.log.some((line) => line.includes("\\x1b")),
+			outcome.log.some((line) => UNSAFE_LINE_PATTERN.test(line)),
 			false,
 		);
 
@@ -262,14 +263,14 @@ describe("workflow display safety regressions (#5224)", () => {
 			width: 80,
 			logs: true,
 		}).map(stripVTControlCharacters);
-		assert.ok(summary.some((line) => line.includes("boom")));
+		assert.ok(summary.some((line) => line.includes(printable)));
 		assert.equal(
-			summary.some((line) => line.includes("\\x1b")),
+			summary.some((line) => UNSAFE_LINE_PATTERN.test(line)),
 			false,
 		);
-		assert.ok(log.some((line) => line.includes("boom")));
+		assert.ok(log.some((line) => line.includes(printable)));
 		assert.equal(
-			log.some((line) => line.includes("\\x1b")),
+			log.some((line) => UNSAFE_LINE_PATTERN.test(line)),
 			false,
 		);
 
@@ -313,8 +314,8 @@ describe("workflow display safety regressions (#5224)", () => {
 			graph.handleInput("x");
 			await new Promise<void>((resolve) => setTimeout(resolve, 0));
 			const rendered = stripVTControlCharacters(graph.render(160).join("\n"));
-			assert.match(rendered, /Stopped worker now<U\+202E>/);
-			assert.doesNotMatch(rendered, /\\x1b/);
+			assert.match(rendered, /Stopped \\x1b\[32mworker\\x1b\[39m now<U\+202E>/);
+			assert.doesNotMatch(rendered, BIDI_PATTERN);
 		} finally {
 			graph.dispose();
 		}

@@ -205,7 +205,7 @@ describe("atomic team output (#4320)", () => {
 				"Stored the token in <root>/agent/storage-token.<id> (mode 600).",
 				"Set `storage` to the team database and `sessions.storage` to the local store in <root>/agent/settings.json; other settings are unchanged.",
 				"It replaces the previous selection: SQLite old.sqlite.",
-				"It replaces the previous `sessions.storage`: JSONL directory <root>/sessions.",
+				"It replaces the previous `sessions.storage`: JSONL directory <root>/agent/sessions.",
 				"Stopping the Intercom broker (pid 101)",
 				"Restarted the Intercom broker: pid 101 → 202.",
 				"",
@@ -286,7 +286,7 @@ describe("atomic team output (#4320)", () => {
 				"Stopping the Intercom broker (pid 101)",
 				"Kept the token file <root>/agent/storage-token.<id>: another setting still references it.",
 				"No Intercom broker was running; the next session that uses Intercom starts one with these settings.",
-				"Profile: custom (sessions: SQLite <root>/workflows/journal.sqlite; workflow runs: adapter @bastani/atomic-storage-libsql; Intercom: off)",
+				"Profile: custom (sessions: SQLite <root>/agent/workflows/journal.sqlite; workflow runs: adapter @bastani/atomic-storage-libsql; Intercom: off)",
 			]);
 
 			writeSettings({
@@ -369,8 +369,8 @@ describe("atomic team output (#4320)", () => {
 		const parsed = JSON.parse(out.join("\n"));
 		assert.deepEqual(parsed.profile, {
 			profile: "individual",
-			sessions: `SQLite ${join(root, "workflows", "journal.sqlite")}`,
-			journal: `journal store ${join(root, "workflows", "journal")}`,
+			sessions: `SQLite ${join(agentDir, "workflows", "journal.sqlite")}`,
+			journal: `journal store ${join(agentDir, "workflows", "journal")}`,
 			intercom: "off",
 		});
 		assert.deepEqual(parsed.broker, { state: "unknown", error: "intercom package missing" });

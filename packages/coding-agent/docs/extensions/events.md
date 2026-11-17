@@ -73,7 +73,7 @@ user sends another prompt ◄─────────────────
   └─► resources_discover { reason: "startup" }
 
 /compact or auto-compaction
-  ├─► compaction_start / compaction_end (verbatim line-compaction status)
+  ├─► compaction_start / compaction_end (compaction status)
   ├─► session_before_compact (can cancel or provide compactedText)
   ├─► session_compact (after the compaction boundary is persisted)
   └─► session_compact_failed (failure or cancellation)
@@ -222,16 +222,16 @@ Do cleanup work in `session_shutdown`, then reestablish any in-memory state in `
 
 #### session_before_compact / session_compact / session_compact_failed
 
-Fired by `/compact` and auto-compaction, including a threshold crossing detected after tool results enter the prospective next-turn context. Atomic prepares the complete active transcript except for the exact newest `preserve_recent` context-visible messages. Extensions may cancel or provide a complete `compactedText` replacement for that region; empty or whitespace text counts as no replacement, and Atomic plans the region itself; they cannot move `firstKeptEntryId`. The override is persisted verbatim and works without provider credentials. A successful post-tool compaction returns its rebuilt context directly to the already-active Pi loop; it does not start a separate continuation. Cancellation or failure prevents that loop's follow-up provider request.
+Fired by `/compact` and auto-compaction, including a threshold crossing detected after tool results enter the prospective next-turn context. Atomic prepares everything in context since the last boundary. Extensions may cancel or provide a `compactedText` replacement: the model then sees that text in a `Context compacted` message, followed by instructions for recovering the rest from session history, and the configured compactor is not called. Empty or whitespace text counts as no replacement, and the configured form runs instead. The replacement is saved verbatim and works without provider credentials. A successful post-tool compaction returns its rebuilt context directly to the already-active Pi loop; it does not start a separate continuation. Cancellation or failure prevents that loop's follow-up provider request.
 
 ```typescript
 pi.on("session_before_compact", async (event) => {
   const { preparation, branchEntries, parameters, reason, signal } = event;
 
-  // preparation.region.lines - unnumbered compactable transcript lines
-  // preparation.firstKeptEntryId - fixed start of the exact tail, or null when the tail is empty
+  // preparation.region.lines - the context since the last boundary, as role-tagged lines
+  // preparation.firstKeptEntryId - always null: no earlier message stays in context
   // preparation.tokensBefore - whole-context token estimate
-  // parameters - compression_ratio, preserve_recent, query
+  // parameters.query - the /compact instructions, or the latest user request
   // branchEntries - raw entries on the active branch
   // reason - "manual" | "threshold" | "overflow"
   // preparation is a deep-frozen clone
@@ -241,14 +241,14 @@ pi.on("session_before_compact", async (event) => {
   // Cancel compaction:
   return { cancel: true };
 
-  // Or replace only the prepared region. Whitespace-only text is rejected.
+  // Or replace the context with your own text. Whitespace-only text is no replacement.
   return {
-    compactedText: preparation.region.lines.slice(0, 40).join("\n"),
+    compactedText: preparation.region.lines.filter((line) => line.startsWith("[User]: ")).join("\n"),
   };
 });
 
 pi.on("session_compact", async (event) => {
-  // event.result - VerbatimCompactionResult (text, boundary, stats, parameters, rung)
+  // event.result - VerbatimCompactionResult (compactedText, form, backend, model, fallbackReason, history, stats)
   // event.compactionEntry - saved CompactionEntry with strategy "verbatim-lines"
   // event.fromExtension - true when session_before_compact provided compactedText
   // Observe-only: errors are isolated after persistence.

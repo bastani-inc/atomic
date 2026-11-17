@@ -357,6 +357,8 @@ export class Editor implements Component, Focusable {
 	private autocompleteList?: SelectList;
 	private autocompleteState: "regular" | "force" | null = null;
 	private autocompletePrefix: string = "";
+	private autocompleteCompleteOnConfirm = true;
+	private autocompleteSelectionMoved = false;
 	private autocompleteMaxVisible: number = 5;
 	private autocompleteAbort?: AbortController;
 	private autocompleteDebounceTimer?: ReturnType<typeof setTimeout>;
@@ -798,6 +800,7 @@ export class Editor implements Component, Focusable {
 				kb.matches(data, "tui.select.pageUp") ||
 				kb.matches(data, "tui.select.pageDown")
 			) {
+				this.autocompleteSelectionMoved = true;
 				this.autocompleteList.handleInput(data);
 				return;
 			}
@@ -824,28 +827,36 @@ export class Editor implements Component, Focusable {
 			}
 
 			if (kb.matches(data, "tui.select.confirm")) {
-				const selected = this.autocompleteList.getSelectedItem();
-				if (selected && this.autocompleteProvider) {
-					this.pushUndoSnapshot();
-					this.lastAction = null;
-					const result = this.autocompleteProvider.applyCompletion(
-						this.state.lines,
-						this.state.cursorLine,
-						this.state.cursorCol,
-						selected,
-						this.autocompletePrefix,
-					);
-					this.state.lines = result.lines;
-					this.state.cursorLine = result.cursorLine;
-					this.setCursorCol(result.cursorCol);
+				if (
+					!this.autocompleteCompleteOnConfirm &&
+					!this.autocompleteSelectionMoved &&
+					this.autocompletePrefix.startsWith("/")
+				) {
+					this.cancelAutocomplete();
+				} else {
+					const selected = this.autocompleteList.getSelectedItem();
+					if (selected && this.autocompleteProvider) {
+						this.pushUndoSnapshot();
+						this.lastAction = null;
+						const result = this.autocompleteProvider.applyCompletion(
+							this.state.lines,
+							this.state.cursorLine,
+							this.state.cursorCol,
+							selected,
+							this.autocompletePrefix,
+						);
+						this.state.lines = result.lines;
+						this.state.cursorLine = result.cursorLine;
+						this.setCursorCol(result.cursorCol);
 
-					if (this.autocompletePrefix.startsWith("/")) {
-						this.cancelAutocomplete();
-						// Fall through to submit
-					} else {
-						this.cancelAutocomplete();
-						if (this.onChange) this.onChange(this.getText());
-						return;
+						if (this.autocompletePrefix.startsWith("/")) {
+							this.cancelAutocomplete();
+							// Fall through to submit
+						} else {
+							this.cancelAutocomplete();
+							if (this.onChange) this.onChange(this.getText());
+							return;
+						}
 					}
 				}
 			}
@@ -2472,6 +2483,8 @@ export class Editor implements Component, Focusable {
 
 	private applyAutocompleteSuggestions(suggestions: AutocompleteSuggestions, state: "regular" | "force"): void {
 		this.autocompletePrefix = suggestions.prefix;
+		this.autocompleteCompleteOnConfirm = suggestions.completeOnConfirm !== false;
+		this.autocompleteSelectionMoved = false;
 		this.autocompleteList = this.createAutocompleteList(suggestions.prefix, suggestions.items);
 
 		const bestMatchIndex = this.getBestAutocompleteMatchIndex(suggestions.items, suggestions.prefix);
@@ -2496,6 +2509,8 @@ export class Editor implements Component, Focusable {
 		this.autocompleteState = null;
 		this.autocompleteList = undefined;
 		this.autocompletePrefix = "";
+		this.autocompleteCompleteOnConfirm = true;
+		this.autocompleteSelectionMoved = false;
 	}
 
 	private cancelAutocomplete(): void {

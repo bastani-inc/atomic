@@ -168,7 +168,7 @@ describe("storage status sources (#3856)", () => {
 	test("global settings select every domain, and an empty agent directory selects the defaults", async () => {
 		const empty = await collectStorageStatus({ cwd: project, agentDir, probe: false });
 		assert.deepEqual(sources(empty), { sessions: "default", journal: "default", intercom: "default" });
-		assert.equal(domain(empty, "sessions").selection, `SQLite ${join(root, "workflows", "journal.sqlite")}`);
+		assert.equal(domain(empty, "sessions").selection, `SQLite ${join(agentDir, "workflows", "journal.sqlite")}`);
 		assert.match(domain(empty, "intercom").multiNode ?? "", /^off: no shared storage selection/);
 
 		writeSettings({ storage: { path: "shared.sqlite", prefix: "t_" } });
@@ -178,7 +178,7 @@ describe("storage status sources (#3856)", () => {
 			journal: "global settings: storage",
 			intercom: "global settings: storage",
 		});
-		assert.equal(domain(status, "journal").selection, `SQLite ${join(root, "shared.sqlite")} (prefix t_)`);
+		assert.equal(domain(status, "journal").selection, `SQLite ${join(agentDir, "shared.sqlite")} (prefix t_)`);
 		assert.equal(domain(status, "sessions").probe?.connection.status, "skipped");
 		assert.match(domain(status, "sessions").probe?.connection.detail ?? "", /not created yet/);
 		assert.equal(domain(status, "journal").probe?.sameAs, "sessions");
@@ -507,7 +507,7 @@ describe("atomic storage join with the libSQL package (#3857)", () => {
 		assert.match(result.out, /saved.*could not report.*project settings/i);
 		const saved = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
 		assert.equal(saved.storage.options.url, databaseUrl);
-		assert.equal(readFileSync(resolve(root, saved.storage.secrets.authToken.file), "utf8"), "secret-token");
+		assert.equal(readFileSync(resolve(agentDir, saved.storage.secrets.authToken.file), "utf8"), "secret-token");
 	});
 
 	test(
@@ -529,8 +529,8 @@ describe("atomic storage join with the libSQL package (#3857)", () => {
 
 			const saved = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
 			const tokenReference: string = saved.storage.secrets.authToken.file;
-			assert.match(tokenReference, /^agent\/storage-token\.[\da-f-]+$/);
-			const tokenPath = resolve(root, tokenReference);
+			assert.match(tokenReference, /^storage-token\.[\da-f-]+$/);
+			const tokenPath = resolve(agentDir, tokenReference);
 			assert.equal(readFileSync(tokenPath, "utf8"), "secret-token");
 			if (process.platform !== "win32") assert.equal(statSync(tokenPath).mode & 0o777, 0o600);
 			assert.equal(readFileSync(tokenFile, "utf8"), "  secret-token\n\n");

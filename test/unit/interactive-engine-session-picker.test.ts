@@ -39,6 +39,7 @@ import { sleep } from "../helpers/runtime.js";
 
 const DOWN = "\x1b[B";
 const UP = "\x1b[A";
+const RIGHT = "\x1b[C";
 const ENTER = "\r";
 const ESCAPE = "\x1b";
 const CTRL_D = "\x04";
@@ -155,11 +156,44 @@ describe("engine_session_picker protocol", () => {
 			{ type: "engine_session_picker_open", componentId: "p1", sessions, showRenameHint: false },
 			{ type: "engine_session_picker_update", componentId: "p1", sessions },
 			{ type: "engine_session_picker_error", componentId: "p1", message: "boom" },
+			{
+				type: "engine_session_picker_error",
+				componentId: "p1",
+				message: "delete failed",
+				deletePath: "workflow-durable:a",
+			},
+			{
+				type: "engine_session_picker_error",
+				componentId: "p1",
+				message: "delete failed",
+				deletePath: "workflow-durable:a",
+				deleteRequestId: 3,
+			},
 			{ type: "engine_session_picker_close", componentId: "p1" },
 		] as const) {
 			const parsed = parseInteractiveEngineMessage(serializeInteractiveEngineFrame(message));
 			assert.deepEqual(parsed, message);
 		}
+	});
+
+	test("carries a picker's title, kind, delete offer and each row's title and detail line (#5224)", () => {
+		const sessions = [{ ...row("alpha"), title: "ralph · ship it", detail: "paused · stage 3/5 implement" }];
+		const message = {
+			type: "engine_session_picker_open",
+			componentId: "p1",
+			sessions,
+			title: "Resume workflow run",
+			variant: "runs",
+			canDelete: false,
+		} as const;
+		assert.deepEqual(parseInteractiveEngineMessage(serializeInteractiveEngineFrame(message)), message);
+		const reject = (payload: Record<string, unknown>) =>
+			parseInteractiveEngineMessage(
+				JSON.stringify({ type: "engine_session_picker_open", componentId: "p1", sessions: [row("a")], ...payload }),
+			);
+		assert.equal(reject({ variant: "tasks" }), undefined);
+		assert.equal(reject({ canDelete: "no" }), undefined);
+		assert.equal(reject({ sessions: [{ ...row("a"), detail: 3 }] }), undefined);
 	});
 
 	test("rejects malformed rows, colors, and missing fields", () => {
@@ -183,6 +217,7 @@ describe("engine_session_picker protocol", () => {
 			{ type: "engine_session_picker_select", componentId: "p1", path: "workflow-durable:a" },
 			{ type: "engine_session_picker_cancel", componentId: "p1" },
 			{ type: "engine_session_picker_delete", componentId: "p1", path: "workflow-durable:a" },
+			{ type: "engine_session_picker_delete", componentId: "p1", path: "workflow-durable:a", deleteRequestId: 3 },
 		] as const) {
 			assert.deepEqual(parseInteractiveEngineCommand(serializeInteractiveEngineFrame(command)), command);
 		}
@@ -217,6 +252,26 @@ describe("host-native session picker (source-path)", () => {
 		const rendered = renderText(bridge);
 		assert.ok(rendered.includes("alpha-message"), "first row rendered");
 		assert.ok(rendered.includes("beta-message"), "second row rendered");
+		bridge.controller.dispose();
+	});
+
+	test("the host mount shows the child's title and rows, and offers delete only when the child handles it (#5224)", async () => {
+		const bridge = makeBridge();
+		void bridge.child.open({
+			sessions: [{ ...row("alpha"), title: "ralph · ship it", detail: "paused · stage 3/5 implement" }, row("beta")],
+			title: "Resume workflow run",
+			variant: "runs",
+		});
+		await flush();
+		const lines = renderText(bridge).split("\n");
+		assert.ok(
+			lines.some((line) => line.trim() === "Resume workflow run"),
+			lines.join("\n"),
+		);
+		const title = lines.findIndex((line) => line.includes("ralph · ship it"));
+		assert.match(lines[title + 1]!, /^\s+paused · stage 3\/5 implement\s*$/);
+		assert.ok(!lines.some((line) => line.includes("delete")), "no delete without the child's onDelete");
+		assert.ok(!lines.some((line) => line.includes("tab all")), "no folder scope for runs");
 		bridge.controller.dispose();
 	});
 
@@ -308,6 +363,144 @@ describe("host-native session picker (source-path)", () => {
 		assert.ok(!afterUpdate.includes("alpha-message"), "row removed after the child's update");
 		assert.ok(afterUpdate.includes("beta-message"), "remaining row retained");
 		bridge.controller.dispose();
+	});
+
+	test.each(["throw", "reject", "report"])(
+		"delete failure unlocks only its row across the engine channel (%s) (#5256)",
+		async (failure) => {
+			const bridge = makeBridge();
+			const handle = bridge.child.open({
+				sessions: [row("alpha")],
+				onDelete: () => {
+					if (failure === "reject") return Promise.reject(new Error("Deletion denied"));
+					if (failure === "report") return Promise.resolve().then(() => handle.error("Deletion denied"));
+					throw new Error("Deletion denied");
+				},
+			});
+			await flush();
+			try {
+				const picker = bridge.mounts[0]!.component;
+				picker.handleInput(CTRL_D);
+				picker.handleInput(ENTER);
+				await flush();
+				assert.ok(
+					bridge.hostMessages.some(
+						(message) =>
+							message.type === "engine_session_picker_error" && message.deletePath === "workflow-durable:alpha",
+					),
+				);
+				assert.match(renderText(bridge), /Deletion denied/);
+				picker.handleInput(ENTER);
+				assert.equal(await handle.result, "workflow-durable:alpha");
+			} finally {
+				bridge.controller.dispose();
+				bridge.child.dispose();
+			}
+		},
+	);
+
+	test("late rejection from a released delete attempt does not unlock a retried delete of the same row (#5256)", async () => {
+		const bridge = makeBridge();
+		const deletes: string[] = [];
+		let rejectFirstAttempt!: (error: Error) => void;
+		let rejectSecondAttempt!: (error: Error) => void;
+		const handle = bridge.child.open({
+			sessions: [row("alpha")],
+			onDelete: (path) => {
+				deletes.push(path);
+				if (deletes.length === 1) {
+					handle.error("first refused");
+					return new Promise<void>((_resolve, reject) => {
+						rejectFirstAttempt = reject;
+					});
+				}
+				return new Promise<void>((_resolve, reject) => {
+					rejectSecondAttempt = reject;
+				});
+			},
+		});
+		await flush();
+		try {
+			const picker = bridge.mounts[0]!.component;
+			picker.handleInput(CTRL_D);
+			picker.handleInput(ENTER);
+			await flush();
+			assert.deepEqual(deletes, ["workflow-durable:alpha"], "attempt 1 started and reported error");
+
+			picker.handleInput(CTRL_D);
+			picker.handleInput(ENTER);
+			await flush();
+			assert.deepEqual(
+				deletes,
+				["workflow-durable:alpha", "workflow-durable:alpha"],
+				"attempt 2 is pending on the same path",
+			);
+
+			rejectFirstAttempt(new Error("late attempt 1 rejection"));
+			await flush();
+			handle.error("unrelated background error");
+			await flush();
+
+			picker.handleInput(ENTER);
+			picker.handleInput(RIGHT);
+			await flush();
+			assert.equal(bridge.mounts[0]!.resolved, false, "attempt 2 must remain locked after late attempt 1 reject");
+			assert.deepEqual(
+				bridge.childCommands.filter((command) => command.type === "engine_session_picker_select"),
+				[],
+				"neither Enter nor Right may emit select while attempt 2 is pending",
+			);
+
+			const deleteCommands = bridge.childCommands.filter(
+				(command) => command.type === "engine_session_picker_delete",
+			);
+			assert.equal(deleteCommands.length, 2, "two delete requests sent across the bridge");
+			const firstRequestId = deleteCommands[0]?.deleteRequestId;
+			const secondRequestId = deleteCommands[1]?.deleteRequestId;
+			assert.equal(typeof firstRequestId, "number", "first delete carries a numeric deleteRequestId");
+			assert.equal(typeof secondRequestId, "number", "second delete carries a numeric deleteRequestId");
+			assert.notEqual(firstRequestId, secondRequestId, "retried delete carries a distinct deleteRequestId");
+
+			rejectSecondAttempt(new Error("second refused"));
+			await flush();
+
+			const errorMessages = bridge.hostMessages.filter((message) => message.type === "engine_session_picker_error");
+			assert.deepEqual(
+				errorMessages.map((message) => ({
+					message: message.message,
+					deletePath: message.deletePath,
+					deleteRequestId: message.deleteRequestId,
+				})),
+				[
+					{
+						message: "first refused",
+						deletePath: "workflow-durable:alpha",
+						deleteRequestId: firstRequestId,
+					},
+					{
+						message: "Failed to delete: late attempt 1 rejection",
+						deletePath: "workflow-durable:alpha",
+						deleteRequestId: firstRequestId,
+					},
+					{
+						message: "unrelated background error",
+						deletePath: undefined,
+						deleteRequestId: undefined,
+					},
+					{
+						message: "Failed to delete: second refused",
+						deletePath: "workflow-durable:alpha",
+						deleteRequestId: secondRequestId,
+					},
+				],
+			);
+
+			picker.handleInput(ENTER);
+			assert.equal(await handle.result, "workflow-durable:alpha");
+		} finally {
+			bridge.controller.dispose();
+			bridge.child.dispose();
+		}
 	});
 
 	test("child-initiated close disposes the host mount and resolves undefined", async () => {

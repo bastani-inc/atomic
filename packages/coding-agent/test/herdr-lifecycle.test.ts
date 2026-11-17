@@ -167,12 +167,11 @@ test("real compaction and continued prompts retain pane authority until quit", a
 	try {
 		await harness.session.bindExtensions({ mode: "tui", uiContext: { ...noOpUIContext } });
 		await fake.waitFor(1);
-		// Manual compaction requires at least twenty compactable transcript lines.
 		await harness.session.prompt(Array.from({ length: 25 }, (_, index) => `Task detail ${index}`).join("\n"));
 		await fake.waitFor(3);
 		const identity = harness.sessionManager.getSessionId();
-		const result = await harness.session.compact({ preserve_recent: 0 });
-		assert.equal(result.rung, "extension");
+		const result = await harness.session.compact();
+		assert.equal(result.backend, "extension");
 		assert.equal(harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction").length, 1);
 		assert.deepEqual(lifecycle, ["start", "compact"]);
 		assert.equal((await fake.calls()).filter((call) => call.phase === "start").length, 3);

@@ -242,16 +242,16 @@ test("main chat jump-to-latest pill keeps unread arrivals across a compaction re
 			compactedText: "Compacted earlier turns",
 			firstKeptEntryId: entries[8]!.id,
 			tokensBefore: 1200,
-			rung: "planned" as const,
-			promptVersion: 6 as const,
+			form: "cleared" as const,
+			promptVersion: 7 as const,
 			parameters,
 			stats,
 		};
 		await mode.sessionManager.appendCompaction("Compacted earlier turns", coveredThroughId, 1200, {
 			strategy: "verbatim-lines",
-			promptVersion: 6,
+			promptVersion: 7,
 			parameters,
-			rung: "planned",
+			form: "cleared",
 			stats,
 		});
 		mode.chatContainer.clear();

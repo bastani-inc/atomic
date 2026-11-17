@@ -1,5 +1,4 @@
 import type { EditorTheme, MarkdownTheme, SelectListTheme } from "@bastani/atomic-tui";
-import chalk from "chalk";
 import { getHighlightLanguageCount, highlight, supportsLanguage } from "../../../utils/syntax-highlight.ts";
 import { getGlobalTheme, theme } from "./global-theme.ts";
 import type { Theme } from "./theme-class.ts";
@@ -163,7 +162,7 @@ export function getMarkdownTheme(): MarkdownTheme {
 		bold: (text: string) => theme.bold(text),
 		italic: (text: string) => theme.italic(text),
 		underline: (text: string) => theme.underline(text),
-		strikethrough: (text: string) => chalk.strikethrough(text),
+		strikethrough: (text: string) => theme.strikethrough(text),
 		highlightCode: (code: string, lang?: string): string[] => {
 			// Validate language before highlighting to avoid stderr spam from cli-highlight
 			const validLang = lang && supportsLanguage(lang) ? lang : undefined;

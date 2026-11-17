@@ -214,7 +214,7 @@ describe("a stage a resumed run replays from its checkpoint, after stage.release
 		assert.deepEqual(error.fields, { runId: RUN_ID, stageName: STAGE, sessionId, replayed: true });
 		assert.equal(
 			error.message,
-			`Cannot rehydrate stage "${STAGE}": it was replayed from its durable checkpoint and has no live stage session to reopen (replayed-stage). Read the stage's transcript with await stage.readMessages(), which reads it from the session store. To run the stage again, fork the run from it with /workflow fork <runId> --from <stage>.`,
+			`Cannot rehydrate stage "${STAGE}": it was replayed from its durable checkpoint and has no live stage session to reopen (replayed-stage). Read the stage's transcript with await stage.readMessages(), which reads it from the session store. To run the stage again, fork the run from that stage in /workflows.`,
 		);
 
 		const copy = deserializeStageWaitError(JSON.parse(JSON.stringify(error)));

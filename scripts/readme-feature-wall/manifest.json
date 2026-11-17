@@ -111,11 +111,12 @@
       "blurb": "Attach to a running stage, watch it stream, and steer, pause, or abort it mid-flight.",
       "alt": "The Atomic workflow graph with a live stage streaming, receiving a steering message from the operator",
       "interactions": [
-        "launch fan-out-and-synthesize with two live branches",
+        "ask the agent to run fan-out-and-synthesize with two live branches",
         "list the running branch stages",
         "send an exact <keepContext> steering message to each live stage"
       ],
       "privacy_notes": "Dynamic statusline and provider/model fields masked.",
+      "capture_note": "The shipped recording predates the removal of /workflow and shows the earlier commands; interactions and the capture script are the current recipe and have not been re-recorded.",
       "media": {
         "gif": "assets/feature-wall/23-steer-a-live-run.gif",
         "jpg": "assets/feature-wall/23-steer-a-live-run.jpg"
@@ -146,12 +147,13 @@
       "blurb": "Runs checkpoint as they go, so killing the process leaves them retained and resumable instead of lost.",
       "alt": "The Atomic resume picker after a killed run, listing retained workflow runs with their checkpoint counts",
       "interactions": [
-        "/workflow research-codebase",
+        "ask the agent to run fan-out-and-synthesize on demo-app/server.js",
         "kill the Atomic process mid-run",
         "atomic",
-        "/workflow resume"
+        "/resume"
       ],
       "privacy_notes": "Dynamic statusline and provider/model fields masked. Retained run names from this machine are shown by the picker and are allowed by the repository owner's narrowed privacy scope.",
+      "capture_note": "The shipped recording predates the removal of /workflow and shows the earlier commands; interactions and the capture script are the current recipe and have not been re-recorded.",
       "media": {
         "gif": "assets/feature-wall/26-durability-and-resume.gif",
         "jpg": "assets/feature-wall/26-durability-and-resume.jpg"
@@ -182,11 +184,13 @@
       "blurb": "Put an approval gate anywhere in the graph and the run waits for a person before it proceeds.",
       "alt": "A workflow run pausing at a human approval gate and waiting for the operator's decision",
       "interactions": [
-        "start the project-local release-gate-demo workflow",
-        "connect to its live graph and open the awaiting ctx.ui.select node",
-        "leave the real risk-choice gate waiting for the operator"
+        "/reload",
+        "ask the agent to run the project-local release-gate-demo workflow",
+        "/workflows",
+        "open the awaiting ctx.ui.select node and leave the real risk-choice gate waiting for the operator"
       ],
       "privacy_notes": "Graph- and stage-view-only window with no statusline, so the band pass is skipped like A.9; the OCR pass and finished-media gate still run.",
+      "capture_note": "The shipped recording predates the removal of /workflow and shows the earlier commands; interactions and the capture script are the current recipe and have not been re-recorded.",
       "media": {
         "gif": "assets/feature-wall/25-human-in-the-loop-gates.gif",
         "jpg": "assets/feature-wall/25-human-in-the-loop-gates.jpg"
@@ -252,11 +256,13 @@
       "blurb": "Executable checks and fresh reviewers produce evidence; failures route into bounded repair until the gate passes.",
       "alt": "Atomic security-review workflow graph with the hardcoded API key audit finding, repair-1 running, and the header reaching four-of-four complete",
       "interactions": [
-        "reload and start the project-local security-review-demo workflow",
-        "attach through tmux to the live graph and approve its human repair gate",
-        "watch audit, repair-1, and verify-2 run as real tracked nodes"
+        "/reload",
+        "ask the agent to run the project-local security-review-demo workflow",
+        "/workflows",
+        "approve its human repair gate and watch audit, repair-1, and verify-2 run as real tracked nodes"
       ],
       "privacy_notes": "Graph-only window with no statusline, so the band pass is skipped like A.9; the OCR pass and finished-media gate still run. The planted demo secret is fictional seed data from the crash course; the selected window shows only the graph view, not the finding detail or prompt text.",
+      "capture_note": "The shipped recording predates the removal of /workflow and shows the earlier commands; interactions and the capture script are the current recipe and have not been re-recorded.",
       "media": {
         "gif": "assets/feature-wall/27-security-review-repair-loop.gif",
         "jpg": "assets/feature-wall/27-security-review-repair-loop.jpg"
@@ -319,13 +325,14 @@
       "anchor": "#a10-autonomous-implementation-loops",
       "title": "Autonomous implementation loops",
       "blurb": "<code>ralph</code> refines, researches, implements, reviews, and repairs against a bounded loop contract.",
-      "alt": "Atomic inspecting the ralph contract, launching a one-loop validation task, and opening its live research-first workflow graph",
+      "alt": "An earlier Atomic session inspecting the ralph contract, launching a one-loop validation task, and opening its live research-first workflow graph",
       "interactions": [
-        "/workflow inputs ralph",
-        "/workflow ralph prompt='Add input validation to demo-app/server.js and prove it with a test' max_loops=1",
+        "What inputs does the ralph workflow take?",
+        "Run ralph with the workflow tool, with prompt 'Add input validation to demo-app/server.js and prove it with a test' and max_loops 1.",
         "/workflows"
       ],
       "privacy_notes": "Dynamic statusline and provider/model fields masked. create_pr is not enabled; the run stays inside the clean clone.",
+      "capture_note": "The shipped recording predates the removal of /workflow and shows the earlier commands; interactions and the capture script are the current recipe and have not been re-recorded.",
       "media": {
         "gif": "assets/feature-wall/40-autonomous-implementation-loops.gif",
         "jpg": "assets/feature-wall/40-autonomous-implementation-loops.jpg"
@@ -353,16 +360,17 @@
       "lesson": "W.3 Inspect and control workflows",
       "anchor": "#61-touring-the-builtins",
       "title": "Inspect and control workflows",
-      "blurb": "List definitions, inspect input contracts, check live status, and open a run graph with <code>/workflows</code>.",
+      "blurb": "Browse running and completed workflows with <code>/workflows</code>, then pause, resume or quit a run from its graph.",
       "alt": "An earlier Atomic session listing workflows, inspecting inputs and status, and opening the live control-demo graph",
       "interactions": [
-        "/workflow list",
-        "/workflow inputs control-demo",
-        "/workflow control-demo subject=src-client.ts",
-        "/workflow status",
-        "/workflows"
+        "Which workflows are installed?",
+        "What inputs does control-demo take?",
+        "Run control-demo with the workflow tool, with subject src-client.ts.",
+        "/workflows",
+        "p pauses the run and r resumes it from its graph"
       ],
       "privacy_notes": "Dynamic statusline and provider/model fields masked. The recorded run picker contains only throwaway lesson runs.",
+      "capture_note": "The shipped recording predates the removal of /workflow and shows the earlier commands; interactions and the capture script are the current recipe and have not been re-recorded.",
       "media": {
         "gif": "assets/feature-wall/30-inspect-control-workflows.gif",
         "jpg": "assets/feature-wall/30-inspect-control-workflows.jpg"
@@ -465,11 +473,12 @@
       "alt": "Atomic showing nested fan-out builtin stages flattened into the live research-and-verify parent workflow graph",
       "interactions": [
         "!!sed -n '1,160p' .atomic/workflows/research-and-verify.ts",
-        "/workflow reload",
-        "/workflow research-and-verify topic='how the session store works'",
+        "/reload",
+        "Run the research-and-verify workflow with the workflow tool, with topic 'how the session store works'.",
         "/workflows"
       ],
       "privacy_notes": "The selected window stays inside the graph viewer, where no chat statusline is present; moving private text would still be found and painted by the OCR pass.",
+      "capture_note": "The shipped recording predates the removal of /workflow and shows the earlier commands; interactions and the capture script are the current recipe and have not been re-recorded.",
       "media": {
         "gif": "assets/feature-wall/39-nesting-builtin-workflows.gif",
         "jpg": "assets/feature-wall/39-nesting-builtin-workflows.jpg"
@@ -570,10 +579,11 @@
       "alt": "A project-local workflow defined in TypeScript with stages and an output schema, then run by Atomic",
       "interactions": [
         "seed and display .atomic/workflows/explain-file.ts",
-        "/workflow reload",
-        "/workflow explain-file path=src-client.ts"
+        "/reload",
+        "Run the explain-file workflow with the workflow tool, with path src-client.ts."
       ],
       "privacy_notes": "Dynamic statusline and provider/model fields masked.",
+      "capture_note": "The shipped recording predates the removal of /workflow and shows the earlier commands; interactions and the capture script are the current recipe and have not been re-recorded.",
       "media": {
         "gif": "assets/feature-wall/24-write-your-own-workflow.gif",
         "jpg": "assets/feature-wall/24-write-your-own-workflow.jpg"
@@ -602,12 +612,13 @@
       "anchor": "#61-touring-the-builtins",
       "title": "Touring the builtins",
       "blurb": "Bundled workflows for research, planning, implementation, and review, ready before you write one.",
-      "alt": "The Atomic workflow picker listing the bundled workflows and their stages",
+      "alt": "An earlier Atomic session's workflow picker listing the bundled workflows and their stages",
       "interactions": [
-        "/workflow",
-        "browse the builtin list"
+        "Which workflows are installed? List each one with its description.",
+        "Which bundled workflow should I use to independently prove a change is correct, and why?"
       ],
       "privacy_notes": "Statusline model segment masked.",
+      "capture_note": "The shipped recording predates the removal of /workflow and shows the earlier commands; interactions and the capture script are the current recipe and have not been re-recorded.",
       "media": {
         "gif": "assets/feature-wall/22-touring-the-builtins.gif",
         "jpg": "assets/feature-wall/22-touring-the-builtins.jpg"
@@ -635,14 +646,15 @@
       "lesson": "W.2 Run a workflow with typed inputs",
       "anchor": "#61-touring-the-builtins",
       "title": "Run a workflow with typed inputs",
-      "blurb": "Use <code>/workflow &lt;name&gt; key=value</code> to validate static inputs against TypeBox before a run starts.",
-      "alt": "Atomic showing the typed-input-demo input contract, launching it with a string path and integer depth, and listing its live run status",
+      "blurb": "Ask for a workflow by name; the workflow tool validates its typed inputs against TypeBox before the run starts.",
+      "alt": "An earlier Atomic session showing the typed-input-demo input contract, launching it with a string path and integer depth, and listing its live run status",
       "interactions": [
-        "/workflow inputs typed-input-demo",
-        "/workflow typed-input-demo path=src-client.ts depth=2",
-        "/workflow status"
+        "What inputs does the typed-input-demo workflow take?",
+        "Run typed-input-demo with the workflow tool, with path src-client.ts and depth 2.",
+        "/workflows"
       ],
       "privacy_notes": "Dynamic statusline and provider/model fields masked. The typed workflow is seeded off camera and run by installed Atomic.",
+      "capture_note": "The shipped recording predates the removal of /workflow and shows the earlier commands; interactions and the capture script are the current recipe and have not been re-recorded.",
       "media": {
         "gif": "assets/feature-wall/29-workflow-typed-inputs.gif",
         "jpg": "assets/feature-wall/29-workflow-typed-inputs.jpg"
@@ -669,9 +681,9 @@
       "part": "Part 2 - Session mastery",
       "lesson": "2.2 Verbatim compaction",
       "anchor": "#22-verbatim-compaction",
-      "title": "Verbatim compaction",
-      "blurb": "Compaction deletes low-value transcript lines without rewriting what survives; <code>&lt;keepContext&gt;</code> pins exact text.",
-      "alt": "Atomic answering after compaction by quoting the pinned keepContext repo rule back byte-exact",
+      "title": "Context compaction",
+      "blurb": "Compaction clears the context window, and the agent recovers what it needs from session history, <code>&lt;keepContext&gt;</code> spans first and verbatim.",
+      "alt": "Atomic answering after compaction by quoting a keepContext repo rule back exactly",
       "interactions": [
         "pin a rule inside a keepContext block and have it acknowledged",
         "/compact",

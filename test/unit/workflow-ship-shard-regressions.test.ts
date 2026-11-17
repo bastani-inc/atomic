@@ -128,7 +128,7 @@ test("opening an existing shard file migrates legacy UNIQUE(work, event_key) tab
 	const checkDb = await openNodeSqliteDatabase(path);
 	opened.push(checkDb);
 	await checkDb.run(
-		`INSERT INTO ship_events(work, generation, epoch, event_key, payload, digest, at)
+		`INSERT INTO ship_rows(work, generation, epoch, event_key, payload, digest, at)
 		VALUES ('work-1', 2, 2, 'shared-key', '{"g":2}', 'd2', 2)`,
 	);
 	assert.equal((await migrated.pending(LEASE_G1)).length, 1);

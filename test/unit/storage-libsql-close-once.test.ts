@@ -4,6 +4,8 @@ import { test } from "vitest";
 import { readStreamText, spawnProcess } from "../helpers/runtime.js";
 
 const fixture = fileURLToPath(new URL("../fixtures/storage-libsql-close-once.mjs", import.meta.url));
+const wrapperFixture = fileURLToPath(new URL("../fixtures/storage-libsql-wrapper-close-once.mjs", import.meta.url));
+const releaseFixture = fileURLToPath(new URL("../fixtures/storage-libsql-wrapper-close-releases.mjs", import.meta.url));
 
 /**
  * glibc's allocator, told to fill memory it frees with 0xba (SQLite's "sick connection" marker) and to keep no
@@ -14,8 +16,10 @@ const fixture = fileURLToPath(new URL("../fixtures/storage-libsql-close-once.mjs
  */
 const FREED_MEMORY_POISON = { GLIBC_TUNABLES: "glibc.malloc.tcache_count=0", MALLOC_PERTURB_: String(0xba) };
 
-test("closing two libSQL file databases a process opens over one file closes each connection once", async () => {
-	const child = spawnProcess([process.execPath, fixture], {
+const CHILD_PROCESS_TIMEOUT_MS = 60_000;
+
+async function runPoisoned(script: string): Promise<void> {
+	const child = spawnProcess([process.execPath, script], {
 		env: { ...process.env, ...FREED_MEMORY_POISON },
 		stdout: "pipe",
 		stderr: "pipe",
@@ -26,4 +30,28 @@ test("closing two libSQL file databases a process opens over one file closes eac
 		child.exited,
 	]);
 	assert.deepEqual({ code, signal: child.signalCode, stdout }, { code: 0, signal: null, stdout: "closed\n" }, stderr);
-}, 60_000);
+}
+
+test(
+	"closing two libSQL file databases a process opens over one file closes each connection once (#4824)",
+	async () => {
+		await runPoisoned(fixture);
+	},
+	CHILD_PROCESS_TIMEOUT_MS,
+);
+
+test(
+	"closing libSQL file databases the documented custom driver opens closes each connection once (#5325)",
+	async () => {
+		await runPoisoned(wrapperFixture);
+	},
+	CHILD_PROCESS_TIMEOUT_MS,
+);
+
+test(
+	"closing a libSQL file database the documented custom driver opened releases its files before close resolves (#5325)",
+	async () => {
+		await runPoisoned(releaseFixture);
+	},
+	CHILD_PROCESS_TIMEOUT_MS,
+);

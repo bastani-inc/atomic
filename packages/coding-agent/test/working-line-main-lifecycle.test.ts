@@ -5,6 +5,7 @@ import { WorkingRunMeter } from "../src/modes/interactive/components/working-run
 import "../src/modes/interactive/interactive-agent-events.ts";
 import "../src/modes/interactive/interactive-extension-context.ts";
 import "../src/modes/interactive/interactive-extension-runtime.ts";
+import "../src/modes/interactive/interactive-prompt-turn.ts";
 import "../src/modes/interactive/interactive-session-runtime.ts";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import { ProgramStatusReporter } from "../src/modes/interactive/program-status-reporter.ts";
@@ -25,7 +26,7 @@ function mainChat() {
 		workingVisible: true,
 		workingMessage: undefined,
 		lastWorkingMessage: undefined,
-		defaultWorkingMessage: "Working...",
+		defaultWorkingMessage: "Working…",
 		workingIndicatorOptions: undefined,
 		loadingAnimation: undefined,
 		compactionActive: false,
@@ -35,13 +36,23 @@ function mainChat() {
 		statusContainer: new Container(),
 		chatContainer: new Container(),
 		pendingMessagesContainer: new Container(),
-		session: { isStreaming: false },
+		blockingInlineCustomUiDepth: 0,
+		navigationInlineCustomUiDepth: 0,
+		hostCustomUiStateListeners: new Set(),
+		promptTurnWorkingLoaderActive: false,
+		session: { isStreaming: false, subscribe: () => () => {} },
 		renderInitialMessages() {},
 		settingsManager: { getShowTerminalProgress: () => false, getClearOnShrink: () => false },
 		getWorkingLoaderMessage: InteractiveModeBase.prototype.getWorkingLoaderMessage,
 		createWorkingLoader: InteractiveModeBase.prototype.createWorkingLoader,
 		clearWorkingLoader: InteractiveModeBase.prototype.clearWorkingLoader,
 		stopWorkingLoader: InteractiveModeBase.prototype.stopWorkingLoader,
+		showWorkingLoaderNow: InteractiveModeBase.prototype.showWorkingLoaderNow,
+		setWorkingVisible: InteractiveModeBase.prototype.setWorkingVisible,
+		beginHostInlineCustomUi: InteractiveModeBase.prototype.beginHostInlineCustomUi,
+		notifyHostCustomUiStateListeners: InteractiveModeBase.prototype.notifyHostCustomUiStateListeners,
+		getHostCustomUiState: InteractiveModeBase.prototype.getHostCustomUiState,
+		discardDeferredRenderedUserInput() {},
 		checkShutdownRequested: async () => {},
 	} as unknown as InteractiveModeBase;
 	return {
@@ -95,6 +106,73 @@ test("an extension's current working message supplies the end-row verb (#5224)",
 		await chat.apply({ type: "agent_end", messages: [] });
 		assert.match(chat.line(), /Built for/);
 	} finally {
+		chat.mode.stopWorkingLoader();
+	}
+});
+
+test("pure navigation suppresses the false command loader when no agent turn is running and preserves genuine working lines behind navigation (#5224)", async () => {
+	const chat = mainChat();
+	let modelTurns = 0;
+	let releaseNavigation: (() => void) | undefined;
+	const closeGate = Promise.withResolvers<void>();
+	(chat.mode as unknown as { isExtensionCommand: (text: string) => boolean }).isExtensionCommand = (text) =>
+		text.startsWith("/workflow");
+	try {
+		const navMounted = Promise.withResolvers<void>();
+		(chat.mode as unknown as { session: Record<string, unknown> }).session = {
+			isStreaming: false,
+			promptTemplates: [],
+			subscribe: () => () => {},
+			resumeQueuedMessages: async () => {},
+			_tryExecuteExtensionCommand: async (input: string) => {
+				if (input === "/workflows") {
+					releaseNavigation = chat.mode.beginHostInlineCustomUi("navigation");
+					navMounted.resolve();
+					await closeGate.promise;
+					releaseNavigation();
+					releaseNavigation = undefined;
+					return true;
+				}
+				return false;
+			},
+			prompt: async () => {
+				modelTurns += 1;
+			},
+		};
+		const turnPromise = InteractiveModeBase.prototype.runUserPromptTurn.call(chat.mode, "/workflows");
+		await navMounted.promise;
+		assert.equal(chat.mode.navigationInlineCustomUiDepth, 1);
+		assert.equal(modelTurns, 0);
+		assert.doesNotMatch(chat.line(), /∀|Working/);
+
+		chat.mode.showWorkingLoaderNow();
+		assert.doesNotMatch(chat.line(), /∀|Working/);
+
+		closeGate.resolve();
+		await turnPromise;
+		assert.equal(chat.mode.navigationInlineCustomUiDepth, 0);
+		assert.equal(modelTurns, 0);
+		assert.doesNotMatch(chat.line(), /∀|Working/);
+
+		await chat.apply({ type: "agent_start" });
+		chat.mode.workingMessage = "Brewing...";
+		chat.mode.lastWorkingMessage = "Brewing...";
+		if (chat.mode.loadingAnimation) chat.mode.loadingAnimation.setMessage("Brewing...");
+		assert.match(chat.line(), /∀ Brewing/);
+
+		const releaseBusyNav = chat.mode.beginHostInlineCustomUi("navigation");
+		assert.equal(chat.mode.navigationInlineCustomUiDepth, 1);
+		assert.match(chat.line(), /∀ Brewing/);
+
+		chat.mode.setWorkingVisible(false);
+		assert.doesNotMatch(chat.line(), /∀|Brewing/);
+		releaseBusyNav();
+		chat.mode.setWorkingVisible(true);
+		assert.equal(chat.mode.navigationInlineCustomUiDepth, 0);
+		assert.match(chat.line(), /∀ Brewing/);
+	} finally {
+		releaseNavigation?.();
+		closeGate.resolve();
 		chat.mode.stopWorkingLoader();
 	}
 });

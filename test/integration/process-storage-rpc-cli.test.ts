@@ -64,11 +64,14 @@ async function driveChild(client: RpcClient, label: string): Promise<ChildEviden
 	await client.start();
 	await client.setSessionName(`${label} conversation`);
 	const { sessionId } = await client.getState();
-	await client.prompt(`/workflow ${WORKFLOW_NAME}`);
+	await client.prompt(`run ${WORKFLOW_NAME}`);
 	const run = await waitFor(
 		async () => {
 			const runs = await client.listWorkflowRuns();
-			const finished = runs.find((candidate) => candidate.name === WORKFLOW_NAME && candidate.status !== "running");
+			const finished = runs.find(
+				(candidate) =>
+					candidate.name === WORKFLOW_NAME && candidate.status !== "pending" && candidate.status !== "running",
+			);
 			return finished;
 		},
 		`${label}'s workflow run to finish`,
@@ -107,20 +110,46 @@ test(
 		const project = join(root, "project");
 		const settingsPath = join(agentDir, "settings.json");
 		const selectedStore = join(root, "selected", "process-store.sqlite");
-		const settingsStore = join(atomicHome, "settings-store.sqlite");
+		const settingsStore = join(agentDir, "settings-store.sqlite");
 		await writeFileEnsuringDir(
 			settingsPath,
 			`${JSON.stringify({ onboardedVersion: "0.0.0", storage: { path: "settings-store.sqlite" } }, null, 2)}\n`,
 		);
 		await writeFileEnsuringDir(join(project, ".atomic/workflows/.keep"), "");
 		copyFileSync(workflowFixture, join(project, ".atomic/workflows/issue-3783-storage-workflow.ts"));
+		await writeFileEnsuringDir(
+			join(project, ".atomic/extensions/issue-3783-provider.ts"),
+			[
+				'import { createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";',
+				"export default function (pi) {",
+				'  pi.registerProvider("issue-3783-fixture", {',
+				'    api: "issue-3783-fixture",',
+				'    apiKey: "fixture-only",',
+				'    baseUrl: "http://127.0.0.1:1/unused",',
+				'    models: [{ id: "fixture", name: "Fixture", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],',
+				"    streamSimple(model, context) {",
+				"      const stream = createAssistantMessageEventStream();",
+				'      const hasToolResult = context.messages.some((m) => m.role === "toolResult");',
+				"      const message = {",
+				'        role: "assistant", api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(),',
+				'        content: hasToolResult ? [{ type: "text", text: "done" }] : [{ type: "toolCall", id: "run-1", name: "workflow", arguments: { action: "run", workflow: "issue-3783-storage", inputs: {} } }],',
+				'        stopReason: hasToolResult ? "stop" : "toolUse",',
+				"        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },",
+				"      };",
+				'      queueMicrotask(() => { stream.push({ type: "done", reason: message.stopReason, message }); stream.end(); });',
+				"      return stream;",
+				"    },",
+				"  });",
+				"}",
+			].join("\n"),
+		);
 		const settingsBefore = await readText(settingsPath);
 		const childOptions = (env: Record<string, string>) =>
 			new RpcClient({
 				cliPath,
 				cwd: project,
 				runtimeExecutable: bunExecutable(),
-				args: ["--approve", "--offline"],
+				args: ["--approve", "--offline", "--provider", "issue-3783-fixture", "--model", "fixture"],
 				env: {
 					...CLEARED_STORAGE_ENV,
 					ATOMIC_CODING_AGENT_DIR: agentDir,
@@ -163,8 +192,8 @@ test(
 			} finally {
 				await database.close();
 			}
-			assert.equal(fileExistsSync(join(atomicHome, "workflows", "journal.sqlite")), false);
-			assert.equal(fileExistsSync(join(atomicHome, "storage.sqlite")), false);
+			assert.equal(fileExistsSync(join(agentDir, "workflows", "journal.sqlite")), false);
+			assert.equal(fileExistsSync(join(agentDir, "storage.sqlite")), false);
 			assert.equal(await readText(settingsPath), settingsBefore);
 		} finally {
 			await Promise.all([selected.stop(), unselected.stop()]);
@@ -212,6 +241,7 @@ test(
 				assert.ok(stderr.includes(`Invalid storage configuration: ${field}`), `${label}: ${stderr}`);
 				assert.equal(stderr.includes(SECRET), false, `${label} leaked the selection value`);
 			}
+			assert.equal(fileExistsSync(join(agentDir, "workflows", "journal.sqlite")), false);
 			assert.equal(fileExistsSync(join(root, "workflows", "journal.sqlite")), false);
 		} finally {
 			await removeTempRootReleasingBroker(root, agentDir);

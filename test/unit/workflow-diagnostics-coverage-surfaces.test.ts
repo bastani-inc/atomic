@@ -16,7 +16,6 @@ import {
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import type { PiCommandContext, PiMessageRenderer } from "../../packages/workflows/src/extension/public-types.js";
 import { renderResult } from "../../packages/workflows/src/extension/render-result.js";
-import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import type {
 	PiCustomComponent,
 	PiCustomOverlayFactoryTui,
@@ -182,7 +181,7 @@ describe("workflow diagnostic surfaces, text safety, and listing wiring (#5224)"
 			endedAt: 5_000,
 			error: `bad ${EVIL}`,
 		};
-		const [runItem] = workflowsListingItems([failedRun], [], 10_000);
+		const [runItem] = workflowsListingItems([failedRun], 10_000);
 		assert.ok(runItem);
 		assert.doesNotMatch(runItem.description ?? "", RAW_UNSAFE);
 		assert.match(runItem.description ?? "", /<U\+202E>/);
@@ -191,12 +190,7 @@ describe("workflow diagnostic surfaces, text safety, and listing wiring (#5224)"
 			{ level: "error", code: "INVALID_DEFINITION", source: "/repo/release.ts", message: "Error: publish bad" },
 			{ level: "error", code: "INVALID_DEFINITION", source: "/repo/release.ts", message: "Error: verify bad" },
 		];
-		const repeatedItems = workflowsListingItems(
-			[],
-			[],
-			10_000,
-			invalidDefinitionsFromDiagnostics(repeatedDiagnostics),
-		);
+		const repeatedItems = workflowsListingItems([], 10_000, invalidDefinitionsFromDiagnostics(repeatedDiagnostics));
 		assert.equal(new Set(repeatedItems.map((item) => item.id)).size, 2);
 
 		const hostileDiagnostics = invalidDefinitionsFromDiagnostics([
@@ -243,7 +237,7 @@ describe("workflow diagnostic surfaces, text safety, and listing wiring (#5224)"
 		assert.doesNotMatch(lines[0]!, /\x1b/);
 		assert.match(lines[0]!, /\\x07/);
 		assert.match(lines[0]!, /<U\+202E>/);
-		assert.equal(lines[0], "badthing\\x07<U+202E>");
+		assert.equal(lines[0], "bad\\x1b[2Jthing\\x07<U+202E>");
 	});
 
 	it("caps invalid-definition detail lines at 8 lines and formats sourceless and single-frame diagnostics (#5224)", () => {
@@ -287,7 +281,6 @@ describe("workflow diagnostic surfaces, text safety, and listing wiring (#5224)"
 			toolControlRegistry: createToolControlRegistry(),
 			stageUiBroker: new StageUiBroker(store),
 		};
-		const runtime = createExtensionRuntime({ ...owner, definitions: [] });
 		const handlers = new Map<string, WorkflowCommandHandler>();
 		const overlay = { open() {}, toggle() {}, close() {} };
 		const pi = {
@@ -296,20 +289,9 @@ describe("workflow diagnostic surfaces, text safety, and listing wiring (#5224)"
 		} as unknown as ExtensionAPI;
 
 		registerWorkflowSlashCommand(pi, handlers, {
-			runtimeProxy: runtime,
-			runtimeForContext: () => runtime,
 			overlay,
 			owner,
-			reloadWorkflowResources: () => undefined,
-			ensureWorkflowResourcesLoaded: () => undefined,
-			runWithLifecycleSuppressedForPolicy: (_policy, action) => action(),
-			runControl: {
-				pi,
-				overlay,
-				runtimeForContext: () => runtime,
-				ensureWorkflowResourcesLoaded: () => undefined,
-				owner,
-			},
+			ensureWorkflowResourcesLoaded: async () => {},
 			discoveryDiagnostics: () => [
 				{
 					level: "error",

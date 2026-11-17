@@ -230,9 +230,6 @@ Response:
     "sessionId": "abc123",
     "sessionName": "my-feature-work",
     "autoCompactionEnabled": true,
-    "compaction": {"state": "running", "upToEntryId": "m41", "startedAt": "2026-11-05T10:00:00.000Z"},
-    "backgroundCompactionEnabled": true,
-    "backgroundCompactionThresholdPercent": 75,
     "messageCount": 5,
     "pendingMessageCount": 0,
     "resourceErrors": [{"path": "/path/to/extension.ts", "error": "Failed to load extension: ..."}],
@@ -243,9 +240,7 @@ Response:
 
 `resourceErrors` lists the extensions that failed to load in the last startup or reload, and `resourceWarnings` lists their load warnings, such as an extension registering the same tool name twice.
 
-When `isCompacting` is `true`, `compactionReason` identifies the foreground compaction. The optional `compactionStartedAt` gives its start time in Unix epoch milliseconds, so an attaching client can show elapsed time. These fields are absent when no foreground compaction is active.
-
-`compaction` is the [background compaction state](/compaction/reference#background-compaction-state): `state` is `idle`, `running`, `ready` or `failed`, and a failed state carries the serialized typed `error`.
+When `isCompacting` is `true`, `compactionReason` identifies the compaction. The optional `compactionStartedAt` gives its start time in Unix epoch milliseconds, so an attaching client can show elapsed time. These fields are absent when no compaction is active.
 
 The `model` field is a full [Model](#model) object or `null`. Its `contextWindow` is the model's token budget. The `sessionName` field is the display name set via `set_session_name`, or omitted if not set.
 
@@ -273,15 +268,17 @@ Messages are `AgentMessage` objects (see [Types](#types)).
 
 #### set_model
 
-Switch to a specific model. Omit `persist` (or set it false) to change only the current session. Set `"persist": true` to also save `defaultProvider`, `defaultModel`, and the effective thinking level in settings, matching an interactive `/model` selection.
+Switch to a specific model. Pass optional `thinkingLevel` (`"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, or `"max"`) to choose the model and its reasoning level in one call. A level the model does not support is clamped to a supported level. An unrecognized value returns an error response without changing the model.
+
+Omit `persist` (or set it false) to change only the current session. Set `"persist": true` to also save `defaultProvider`, `defaultModel`, and the effective thinking level in settings, matching an interactive `/model` selection.
 
 ```json
 {"type": "set_model", "provider": "anthropic", "modelId": "claude-sonnet-4-20250514"}
 ```
 
-Persist as the startup default:
+Persist as the startup default with an explicit reasoning level:
 ```json
-{"type": "set_model", "provider": "anthropic", "modelId": "claude-sonnet-4-20250514", "persist": true}
+{"type": "set_model", "provider": "anthropic", "modelId": "claude-sonnet-4-20250514", "thinkingLevel": "high", "persist": true}
 ```
 
 Response contains the full [Model](/rpc/protocol#model) object:
@@ -293,6 +290,8 @@ Response contains the full [Model](/rpc/protocol#model) object:
   "data": {...}
 }
 ```
+
+When `persist` is true, the model object also includes `persistedDefaults` with `provider`, `modelId`, `thinkingLevel` and `defaultThinkingLevel`. These fields report the startup model, its reasoning preference and the reasoning default saved to the global settings file, without project overrides. They can differ from the live session if an extension makes a session-only change during model selection. Use `get_state` to read the live model and reasoning level.
 
 #### cycle_model
 
@@ -316,7 +315,19 @@ Response:
 }
 ```
 
-The `model` field is a full [Model](#model) object.
+The `model` field is a full [Model](#model) object. With `persist: true`, the response data also includes `persistedDefaults` in the same format as [`set_model`](#set_model).
+
+#### set_scoped_models
+
+Replace the current session's model-cycling scope. Model searches limited to the scope and `cycle_model` use the new list immediately. An empty `models` list removes the cycling restriction. Unknown model references are ignored. Invalid thinking levels return an error without changing the scope.
+
+```json
+{"type": "set_scoped_models", "models": [{"provider": "openai", "modelId": "o3", "thinkingLevel": "high"}]}
+```
+
+Each entry requires `provider` and `modelId`; `thinkingLevel` is optional. The optional `enabledModels` field also updates the global saved model patterns. Omit it to leave saved settings unchanged, pass an array to replace them, or pass `null` to enable all models. Project settings remain unchanged.
+
+A successful response has `command: "set_scoped_models"` and the same catalog `data` as `get_available_models`, including the updated `scopedModels`.
 
 #### get_available_models
 
@@ -483,10 +494,10 @@ Response:
 
 #### compact
 
-Run verbatim line compaction with the session model. It preserves exactly the newest `preserve_recent` context-visible messages, default two, without aligning to user turns. Zero compacts the whole active transcript and returns `firstKeptEntryId: null`. The resulting durable entry uses `details.strategy: "verbatim-lines"`; see [Compaction](/compaction) for behavior and settings.
+Compact the session: stop the active run, then clear the context window, or replace it with the configured compactor model's output. `instructions` is optional; it is added to the boundary message and becomes the compactor's query, like `/compact <instructions>`. The response rejects with `Nothing to compact` when nothing has entered the context since the last boundary. The durable entry uses `details.strategy: "verbatim-lines"`; see [Compaction](/compaction) for behavior and settings.
 
 ```json
-{"type": "compact"}
+{"type": "compact", "instructions": "keep the migration plan"}
 ```
 
 Response:
@@ -496,31 +507,30 @@ Response:
   "command": "compact",
   "success": true,
   "data": {
-    "compactedText": "[User]: fix the test\n(filtered 42 lines)\n[Assistant]: Fixed.",
-    "firstKeptEntryId": "m7",
+    "compactedText": "Context cleared. Your earlier conversation (150,000 tokens) is no longer in your context window. …",
+    "firstKeptEntryId": null,
     "tokensBefore": 150000,
-    "promptVersion": 3,
-    "parameters": {
-      "compression_ratio": 0.5,
-      "preserve_recent": 2,
-      "query": "fix the test"
-    },
-    "rung": "planned",
+    "promptVersion": 7,
+    "parameters": {"query": "keep the migration plan"},
+    "form": "cleared",
+    "history": {"sessionId": "abc123", "linesBefore": 4210, "boundaryLine": 4211, "totalLines": 4232},
     "stats": {
       "linesBefore": 812,
-      "linesDeleted": 417,
-      "linesKept": 395,
-      "rangeCount": 63,
+      "linesDeleted": 812,
+      "linesKept": 0,
+      "rangeCount": 0,
       "tokensBefore": 150000,
-      "tokensAfter": 72000,
-      "percentReduction": 52
+      "tokensAfter": 2400,
+      "percentReduction": 98.4
     },
     "backupPath": "/path/to/session.jsonl.2026-06-06T00-00-00-000Z.compact.bak"
   }
 }
 ```
 
-`firstKeptEntryId` is a string when at least one ordinary message remains outside compaction and `null` when none does. RPC clients must accept both values.
+`compactedText` is the whole boundary message the model sees. `firstKeptEntryId` is always `null`. `form` is `cleared` or `compacted`; a compacted result also carries `backend` (`compactor` or `extension`) and, for a compactor, `model`. `fallbackReason` says why a configured compactor was not used. See [Persistence and resume](/compaction/reference#persistence-and-resume) for every field.
+
+`RpcClient.compact(instructions?)` sends this command and resolves with `data`.
 
 #### set_auto_compaction
 
@@ -537,7 +547,7 @@ Response:
 
 #### set_background_compaction
 
-Turn [background compaction](/compaction#background-compaction) on or off. The setting is saved like `/settings` does; turning it off cancels a running background task.
+Background compaction was removed. `set_background_compaction` and `set_background_compaction_threshold` are still accepted so older clients keep working: they succeed and change nothing.
 
 ```json
 {"type": "set_background_compaction", "enabled": false}
@@ -546,19 +556,6 @@ Turn [background compaction](/compaction#background-compaction) on or off. The s
 Response:
 ```json
 {"type": "response", "command": "set_background_compaction", "success": true}
-```
-
-#### set_background_compaction_threshold
-
-Set the percentage of the context window at which background compaction starts. A value that is not above 0 and below 100 fails with a `BackgroundCompactionConfigError` message.
-
-```json
-{"type": "set_background_compaction_threshold", "percent": 60}
-```
-
-Response:
-```json
-{"type": "response", "command": "set_background_compaction_threshold", "success": true}
 ```
 
 ### Extension UI
@@ -1164,14 +1161,13 @@ Events are streamed to stdout as JSON lines. Most events do not include an `id`;
 | `tool_execution_end` | Tool completes |
 | `bash_execution_update` | Correlated direct-bash stdout/stderr delta |
 | `queue_update` | Pending steering/follow-up queue changed |
-| `compaction_start` | Verbatim line compaction begins |
-| `compaction_end` | Verbatim line compaction completes, including a background result applied at a turn boundary |
-| `compaction_usage` | One compaction model request returned usage |
+| `compaction_start` | Compaction begins |
+| `compaction_end` | Compaction completes, fails, or is cancelled |
+| `compaction_usage` | The compactor model's request returned usage |
 | `child_session_usage` | One model call of a child session, such as a subagent, returned usage |
-| `background_compaction` | Background compaction state changed |
 | `auto_retry_start` | Auto-retry begins (after transient error) |
 | `auto_retry_end` | Auto-retry completes (success or final failure) |
-| `summarization_retry_scheduled` | Retry scheduled for a transient compaction or branch-summary provider error |
+| `summarization_retry_scheduled` | Retry scheduled for a transient branch-summary provider error |
 | `summarization_retry_attempt_start` | Retried summarization request starts |
 | `summarization_retry_finished` | Summarization retry loop completes |
 | `extension_error` | Extension threw an error |
@@ -1342,7 +1338,7 @@ Emitted whenever the pending steering or follow-up queue changes.
 
 ### compaction_start / compaction_end
 
-Emitted when default Verbatim Compaction runs, whether manual or automatic. The result records deletion targets and stats rather than a generated summary.
+Emitted when compaction runs, whether manual or automatic. The result describes the boundary: whether the context was cleared or compacted, and where the earlier conversation is in session history.
 
 ```json
 {"type": "compaction_start", "reason": "threshold"}
@@ -1355,20 +1351,23 @@ The `reason` field is `"manual"`, `"threshold"`, or `"overflow"`.
   "type": "compaction_end",
   "reason": "threshold",
   "result": {
-    "compactedText": "[User]: fix the test\n(filtered 42 lines)",
-    "firstKeptEntryId": "m7",
+    "compactedText": "Context compacted. Your earlier conversation (150,000 tokens) was replaced by the compacted text below, produced by morph/morph-compactor. …",
+    "firstKeptEntryId": null,
     "tokensBefore": 150000,
-    "promptVersion": 3,
-    "parameters": {"compression_ratio": 0.5, "preserve_recent": 2, "query": "fix the test"},
-    "rung": "planned",
+    "promptVersion": 7,
+    "parameters": {"query": "fix the test"},
+    "form": "compacted",
+    "backend": "compactor",
+    "model": "morph/morph-compactor",
+    "history": {"sessionId": "abc123", "linesBefore": 4210, "boundaryLine": 4211, "totalLines": 4890},
     "stats": {
       "linesBefore": 812,
-      "linesDeleted": 417,
-      "linesKept": 395,
-      "rangeCount": 63,
+      "linesDeleted": 406,
+      "linesKept": 406,
+      "rangeCount": 0,
       "tokensBefore": 150000,
-      "tokensAfter": 72000,
-      "percentReduction": 52
+      "tokensAfter": 21400,
+      "percentReduction": 85.7
     }
   },
   "aborted": false,
@@ -1376,23 +1375,23 @@ The `reason` field is `"manual"`, `"threshold"`, or `"overflow"`.
 }
 ```
 
+A compactor failure is not a compaction failure: the context is cleared instead, and `result.form` is `"cleared"` with `result.fallbackReason` naming the cause.
+
 If `reason` was `"overflow"` and compaction succeeds, `willRetry` is `true` and the agent will automatically retry the prompt. Public prompt/RPC callers wait for that post-compaction continuation before the prompt is considered complete.
 
 If compaction was aborted, `result` is `null` and `aborted` is `true`.
 
-If compaction failed (e.g., API quota exceeded), `result` is `null`, `aborted` is `false`, and `errorMessage` contains the error description.
+If compaction failed (for example, the boundary could not be saved), `result` is `null`, `aborted` is `false`, and `errorMessage` contains the error description.
 
 `result` and `errorMessage` are independent. A mid-turn post-tool compaction can commit a boundary and *then* fail the provider hard-input-limit gate, so one `compaction_end` may carry both a non-null `result` and an `errorMessage`. Treat the result as a committed durable boundary in that case; the error describes the follow-up request that was not sent.
 
-If overflow recovery exhausts the same-model compact-and-retry attempt, `compaction_end` includes `"unresolvedOverflow": true` and an `errorMessage`. Workflow orchestration treats that signal as a context-length failure that can advance configured model fallback tiers.
-
-A background compaction result applied at a turn boundary emits `compaction_end` with `"background": true` and no preceding `compaction_start`. When the last request used the prompt cache it also carries `"cacheMiss": {"expectedMissedTokens": 41000, "expectedMissedCost": 0.11}`, the cached prompt the next request re-bills.
+If overflow recovery exhausts its one compact-and-retry attempt, `compaction_end` includes `"unresolvedOverflow": true` and an `errorMessage`. Workflow orchestration treats that signal as a context-length failure that can advance configured model fallback tiers.
 
 There is no `context_compact` command; Atomic reports it as an unknown command. Use `compact`.
 
 ### compaction_usage
 
-Emitted once for every model request a compaction run makes: each planner request, classifier request, summary fallback request, and retry of one, for foreground and background runs, including a run that later fails or is cancelled. `usage` is that one request's usage, so summing these events counts every compaction request exactly once. `compaction_end.result.usage` is the total of a successful run's requests; do not add both.
+Emitted once when a compaction run's compactor request returns usage, including a run that later fails or is cancelled. A clear makes no model call and emits none. `compaction_end.result.usage` holds the same usage for a successful run; do not add both.
 
 ```json
 {"type": "compaction_usage", "reason": "threshold", "usage": {"input": 5000, "output": 20, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 5020, "cost": {"input": 0.5, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0.5}}}
@@ -1400,21 +1399,11 @@ Emitted once for every model request a compaction run makes: each planner reques
 
 ### child_session_usage
 
-Emitted on a session once for every model call of a child session it created, such as an in-process subagent, and of that child's own children: assistant responses, compaction requests and cache warming. `usage` is that one call's usage. A workflow stage charges these to its budget.
+Emitted on a session once for every model call of a child session it created, such as an in-process subagent, and of that child's own children: assistant responses, compactor requests and cache warming. `usage` is that one call's usage. A workflow stage charges these to its budget.
 
 ```json
 {"type": "child_session_usage", "usage": {"input": 10, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 10, "cost": {"input": 2, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 2}}}
 ```
-
-### background_compaction
-
-Emitted whenever the [background compaction state](/compaction/reference#background-compaction-state) changes: a task starts, a result is saved and ready, the result is applied, a task fails, or a task is cancelled.
-
-```json
-{"type": "background_compaction", "compaction": {"state": "ready", "upToEntryId": "m41", "startedAt": "2026-11-05T10:00:00.000Z"}}
-```
-
-`discarded` is present when a saved result was dropped instead of applied, for example `{"name": "BackgroundCompactionDiscardedError", "code": "result-discarded", "fields": {"upToEntryId": "m41", "reason": "context-edited"}, ...}`.
 
 ### auto_retry_start / auto_retry_end
 
@@ -1450,7 +1439,7 @@ On final failure (max retries exceeded):
 
 ### summarization_retry_scheduled / summarization_retry_attempt_start / summarization_retry_finished
 
-Emitted when compaction planning or branch summarization retries after a transient provider error. These events use the same retry settings as automatic assistant-turn retries.
+Emitted when branch summarization retries after a transient provider error. These events use the same retry settings as automatic assistant-turn retries. Compaction makes no retried model request: a compactor failure clears the context instead.
 
 ```json
 {
@@ -1465,12 +1454,11 @@ Emitted when compaction planning or branch summarization retries after a transie
 ```json
 {
   "type": "summarization_retry_attempt_start",
-  "source": "compaction",
-  "reason": "threshold"
+  "source": "branchSummary"
 }
 ```
 
-For branch summaries, `source` is `"branchSummary"` and no `reason` is present. The loop then emits:
+The loop then emits:
 
 ```json
 {"type": "summarization_retry_finished"}
@@ -1524,27 +1512,6 @@ Parse errors:
   "command": "parse",
   "success": false,
   "error": "Failed to parse command: Unexpected token..."
-}
-```
-
-A command rejected with a background compaction error, such as `set_background_compaction_threshold` with a value outside 0–100, also carries `errorCode: "background_compaction"` and the serialized error in `errorDetails`. Branch on `errorDetails.code`, not on the message. `RpcClient` rethrows it as the same class, for example `BackgroundCompactionConfigError` with `source: "sdk"`:
-
-```json
-{
-  "type": "response",
-  "command": "set_background_compaction_threshold",
-  "success": false,
-  "error": "Background compaction failed: compaction.backgroundThresholdPercent from sdk is not above 0 and below 100 (invalid-setting). Set compaction.backgroundThresholdPercent to a percentage above 0 and below 100, for example 75",
-  "errorCode": "background_compaction",
-  "errorDetails": {
-    "name": "BackgroundCompactionConfigError",
-    "code": "invalid-setting",
-    "message": "Background compaction failed: …",
-    "hint": "Set compaction.backgroundThresholdPercent to a percentage above 0 and below 100, for example 75",
-    "retryable": false,
-    "phase": "config",
-    "fields": { "source": "sdk", "field": "compaction.backgroundThresholdPercent", "reason": "out-of-range" }
-  }
 }
 ```
 

@@ -214,6 +214,7 @@ test("an in-process overlay that omits the opt-in leaves its component unmarked"
 test("clearExtensionWidgets and resetExtensionUI reattach a live below-editor widget", () => {
 	const scheduled: Array<() => void> = [];
 	const mode = Object.assign(Object.create(InteractiveModeBase.prototype), {
+		runtimeHost: { session: { isStreaming: false } },
 		extensionDialogs: [],
 		extensionOverlays: new Set<() => void>(),
 		extensionWidgetsAbove: new Map(),

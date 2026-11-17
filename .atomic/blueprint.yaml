@@ -24,18 +24,53 @@ knowledge:
       It needs Bun >= 1.4.4 on PATH. `npm run typecheck` runs the typecheck passes alone, and
       `npm run format` applies biome's formatting. If a direct Git commit cannot find `prek`,
       use `PATH="$PWD/node_modules/.bin:$PATH" git commit ...` so the installed hook finds the local binary.
+      Stage new API files, their tracked callers and their tests together: hooks hide unstaged tracked changes,
+      but the full typecheck still discovers untracked TypeScript files.
   - name: test
     contents: |
       Root suites run under vitest: `npm run test:unit`, `npm run test:integration`, or both with
       `npm run test:all`. The coding-agent suite is `npm run test --workspace=@bastani/atomic`, and the
-      scripts/*.test.mjs tests run with `npm run test:scripts` (`node --test`). Build first: several
-      suites load the built packages. Do not overlap tests with build, check or typecheck: those
-      commands replace compiled package assets, so concurrent tests can see missing model JSON files.
+      scripts/*.test.mjs tests run with `npm run test:scripts` (`node --test`). The TUI package uses
+      `npm run test --workspace=@bastani/atomic-tui` (`node --test`), not a Vitest config.
+      Focused TUI tests run with `node --test packages/tui/test/<name>.test.ts`; the TUI workspace's
+      npm test script always expands its full test glob, even when a filename is appended.
+      Build first: several suites load the built packages. For focused root tests use
+      `npm run test:unit -- test/unit/<file>.test.ts`; the test-suite-runner fixtures need npm's
+      node_modules/.bin on PATH for their nested Vitest commands. For many test-file filters on Windows,
+      invoke `node node_modules/vitest/vitest.mjs run --project unit ...` directly rather than `npx vitest`:
+      npx.cmd passes through cmd.exe and fails once the command exceeds its 8191-character limit.
+      `test/unit/storage-libsql-close-once.test.ts` runs native-driver close regressions in child processes
+      with glibc freed-memory poisoning on Linux, and checks file release directly on Windows.
+      To select coding-agent files, run `cd packages/coding-agent && npx vitest run test/<name>.test.ts`;
+      its config resolves `test/` from that working directory.
+      For concurrent-session coverage, use
+      `npm run test --workspace=@bastani/atomic -- agent-session-concurrent-` to select the five
+      `.suite.ts` files; the `agent-session-concurrent.test.ts` wrapper is excluded.
+      Finish `npm run check` and `npm run build` before running suites that import built packages:
+      typechecking rebuilds dist in place and cleans provider data.
+      Validate named-worktree permissions with a private default umask:
+      `(umask 0022; npx --no-install vitest --run --project unit test/unit/subagents-named-worktree-locks.test.ts)`.
+      Localized named-worktree recovery fixtures write the translated marker while Git is paused, so they do not
+      require installed locales or a Git build with gettext support.
+      Check terminal-display regressions on the supported Node 22 runtime too; newer Node versions can hide
+      control-sequence stripping differences. If the local Node is newer, run
+      `npm exec --yes --package=node@22.23.5 -- node node_modules/vitest/vitest.mjs run --project unit test/unit/workflow-tool-block.test.ts`.
       After changing SDK imports used by workflow graph views, run
       `npx vitest run --project unit test/unit/overlay-adapter-autowrap.test.ts test/unit/overlay-adapter-hidden-render.test.ts`:
       these wrappers run Bun children with isolated module mocks, which must expose each imported SDK name.
-      Use `node --version` to include Node 22 in terminal-text checks: its built-in VT stripper differs
-      from newer Node versions. Workflow displays use the shared terminal-controls parser instead.
+      Verify both localized recovery fixtures without system locales with:
+      `(umask 022; LOCPATH=/nonexistent npx vitest run --project unit test/unit/subagents-named-worktree-locks.test.ts test/unit/subagents-named-worktree-recovery.test.ts)`.
+      Before real CLI captures, run `npm run build`; `npm run check` does not refresh the compiled CLI's
+      builtin assets. Exercise `/tasks` and stage chats too: direct component tests do not cover RPC-hosted
+      widget renderer resolution.
+      SDK tests that allocate an agentDir and load bundled packages call `linkSharedTranspileCache(agentDir)`
+      from `packages/coding-agent/test/helpers/shared-transpile-cache.ts` to reuse the suite's warmed compilation cache;
+      keep cold-cache coverage separate.
+      Measure task-list key-to-paint latency with `bun run scripts/perf/tasks-board/benchmark.ts 100,1000,10000 30`.
+      For isolated CLI UI checks, set ATOMIC_CODING_AGENT_DIR to a fresh temporary profile and pass
+      --offline. ATOMIC_AGENT_DIR does not select the CLI profile.
+      Bare Node type stripping does not resolve source .js import paths to .ts. Node child probes that
+      import source modules use the resolution hook shown in packages/coding-agent/test/read-streaming.test.ts.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run

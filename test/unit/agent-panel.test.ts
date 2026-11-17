@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { matchesKey, visibleWidth } from "@bastani/atomic-tui";
+import { matchesKey, stripTerminalSequences, visibleWidth } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import {
@@ -27,15 +27,22 @@ import {
 	renderAgentPanelRows,
 } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
 import { atomicWorkingGlyph } from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.js";
+import { CustomEditor } from "../../packages/coding-agent/src/modes/interactive/components/custom-editor.js";
 import { applyAttachedComposer } from "../../packages/coding-agent/src/modes/interactive/components/input-label.js";
 import { getGlobalTheme } from "../../packages/coding-agent/src/modes/interactive/theme/global-theme.js";
-import { initTheme, setThemeInstance, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import {
+	getEditorTheme,
+	initTheme,
+	setThemeInstance,
+	theme,
+} from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import {
 	agentPanelRows,
 	bindAgentPanel,
 	themedAgentPanelStyle,
 } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import { taskFixture } from "../helpers/task-projection.js";
+import { makeTestTui } from "../support/fake-tui.js";
 
 const plain: AgentPanelStyle = {
 	dim: (text) => text,
@@ -292,6 +299,7 @@ function focusFixture(now: () => number = () => 0) {
 	);
 	focus.update(ROWS);
 	focus.enter();
+	focus.notePainted(ROWS);
 	const press = (data: string) => focus.handleInput(data, (input, key) => matchesKey(input, key as "up"));
 	return { focus, calls, press };
 }
@@ -629,7 +637,7 @@ test("the panel lists a session's extension items and background tasks together,
 		await fixture.start("first task");
 		await fixture.start("second task");
 		const hub = new AgentPanelSourceHub();
-		const run: AgentPanelItem = {
+		let run: AgentPanelItem = {
 			id: "run:r1",
 			kind: "workflow",
 			state: "running",
@@ -647,6 +655,7 @@ test("the panel lists a session's extension items and background tasks together,
 		);
 		assert.equal(openAgentPanelItem(session, "run:r1"), true);
 		assert.deepEqual(opened, ["run:r1"]);
+		run = { ...run, state: "done" };
 		dismissedAgentPanelItems(session).add("run:r1");
 		assert.deepEqual(
 			agentPanelRows(session).map((row) => row.name),
@@ -660,15 +669,21 @@ test("the panel lists a session's extension items and background tasks together,
 
 test("an attached composer has accent rules naming its target and a placeholder (#5224)", () => {
 	const style = { accent: (text: string) => text, text: (text: string) => text, dim: (text: string) => text };
-	const editor = ["─".repeat(80), `❯ ${" ".repeat(78)}`, "─".repeat(80)];
-	const lines = applyAttachedComposer(style, "debugger · #5220 spawn lock · 18m", "Message debugger…", editor).map(
-		(line) => stripVTControlCharacters(line),
+	const realEditor = new CustomEditor(makeTestTui(24), getEditorTheme(), new KeybindingsManager(), { paddingX: 0 });
+	realEditor.focused = true;
+	const raw = applyAttachedComposer(
+		style,
+		"debugger · #5220 spawn lock · 18m",
+		"Message debugger…",
+		realEditor.render(80),
 	);
+	assert.equal(raw[1], "❯ \x1b_pi:c\x07\x1b_pi:fc\x07 \x1b_pi:/fc\x07Message debugger…");
+	const lines = raw.map((line) => stripTerminalSequences(line));
 	assert.equal(
 		lines[0],
 		`${"━".repeat(80 - " debugger · #5220 spawn lock · 18m ".length - 1)} debugger · #5220 spawn lock · 18m ━`,
 	);
-	assert.equal(lines[1], "❯ Message debugger…");
+	assert.equal(lines[1], "❯  Message debugger…");
 	assert.equal(lines[2], "━".repeat(80));
 	const typed = applyAttachedComposer(style, "x", "Message debugger…", ["─".repeat(80), "❯ hi", "─".repeat(80)]);
 	assert.equal(typed[1], "❯ hi", "typed text replaces the placeholder");
@@ -676,14 +691,14 @@ test("an attached composer has accent rules naming its target and a placeholder 
 	assert.equal(narrow[0], "━".repeat(30), "narrow terminals keep the rule without the label");
 });
 
-test("an attached composer preserves cursor markers and terminal styling around its placeholder (#5224)", () => {
+test("an attached composer preserves cursor markers and terminal styling around its placeholder (#5245)", () => {
 	const style = { accent: (text: string) => text, text: (text: string) => text, dim: (text: string) => text };
 	for (const [line, expected] of [
 		["❯   ", "❯ hint"],
 		["❯   \x1b[31m\x1b[0m", "❯\x1b[31m\x1b[0m hint"],
 		["❯\t   \x1b[m", "❯\t\x1b[m hint"],
 		["❯   \x1b[0K", "❯   \x1b[0K hint"],
-		["❯ \x1b_pi:c\x07\x1b_pi:fc\x07 \x1b_pi:/fc\x07", "❯ \x1b_pi:c\x07\x1b_pi:fc\x07 \x1b_pi:/fc\x07 hint"],
+		["❯ \x1b_pi:c\x07\x1b_pi:fc\x07 \x1b_pi:/fc\x07", "❯ \x1b_pi:c\x07\x1b_pi:fc\x07 \x1b_pi:/fc\x07hint"],
 		["❯ \x1b_outer\x1b_inner\x07", "❯ \x1b_outer\x1b_inner\x07 hint"],
 		["❯ \x1b_unterminated", "❯ \x1b_unterminated"],
 		["❯ typed", "❯ typed"],
@@ -704,8 +719,8 @@ test("← also leaves the focused panel, and coming back selects the row that wa
 	focus.selectedId = AGENT_PANEL_MAIN_ID;
 	assert.equal(
 		stripVTControlCharacters(renderAgentPanelHint(focus, 160, plain, new KeybindingsManager())),
-		"  ↑↓ select · esc/← back to prompt · ? keys",
-		"the main row offers neither open nor stop",
+		"  ↑↓ select · enter/→ to open · esc/← back to prompt · ? keys",
+		"the main row offers open but no stop",
 	);
 });
 
@@ -803,7 +818,7 @@ test("the focused panel scrolls to keep the selection in view and keeps every ro
 	);
 	focus.selectedId = "task:5";
 	focus.update(many.filter((row) => row.id !== "task:5"));
-	assert.equal(focus.selectedId, "task:0", "a row that leaves moves the selection to the first row");
+	assert.equal(focus.selectedId, "task:6", "a row that leaves moves the selection to the next row");
 });
 
 test("duplicate row ids do not trap focused keyboard navigation (#5224, #5239)", () => {
@@ -894,10 +909,11 @@ test("a row that finishes between the two x presses is not dismissed by the seco
 	assert.equal(focus.pendingStop(), undefined, "the stop is called off");
 	assert.equal(
 		stripVTControlCharacters(renderAgentPanelHint(focus, 80, plain, new KeybindingsManager())),
-		"  worker finished · x to dismiss",
+		"  worker finished · x to acknowledge",
 	);
 	press("x");
 	assert.deepEqual(calls, [], "the press meant as the second one only acknowledges the notice");
+	focus.notePainted([{ ...ROWS[0]!, state: "done" }, ...ROWS.slice(1)]);
 	press("x");
 	assert.deepEqual(calls, ["dismiss task:a"], "a later press dismisses it");
 });

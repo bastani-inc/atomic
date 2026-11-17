@@ -2,11 +2,13 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { onTestFinished } from "vitest";
 import {
 	observeWorkspaceGitCommands,
 	setWorkspaceGitExecutableResolver,
 } from "../../packages/coding-agent/src/core/workspace/git.ts";
 import { worktreeAdderRecord } from "../../packages/coding-agent/src/core/workspace/resolve.ts";
+import { keptExitedPid } from "./exited-process.js";
 import { removeTestDirectory } from "./test-directory-removal.js";
 
 /** Run git for test setup only; product code goes through the workspace git runner. */
@@ -49,13 +51,13 @@ const SANDBOX_REMOVAL_RETRY_DELAY_MS = 100;
 /** A temporary root with its own Atomic home, so shared stores and auto worktrees never touch the real one. */
 export function workspaceSandbox(prefix: string): WorkspaceSandboxDirs {
 	const root = realpathSync.native(mkdtempSync(join(tmpdir(), prefix)));
-	const home = join(root, "atomic-home");
-	mkdirSync(join(home, "agent"), { recursive: true });
+	const agentDir = join(root, "atomic-home", "agent");
+	mkdirSync(agentDir, { recursive: true });
 	const previous = process.env.ATOMIC_CODING_AGENT_DIR;
-	process.env.ATOMIC_CODING_AGENT_DIR = join(home, "agent");
+	process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
 	return {
 		root,
-		home,
+		home: agentDir,
 		cleanup() {
 			if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 			else process.env.ATOMIC_CODING_AGENT_DIR = previous;
@@ -221,12 +223,12 @@ export function interruptedWorktree(
 	return adminDir;
 }
 
-/** Record a git that is no longer running as the adder of `path`, as a crash of both Atomic and git leaves it. */
-export function recordExitedAdder(repo: string, path: string): void {
-	const exited = spawnSync(process.execPath, ["-e", ""]).pid!;
+export async function recordExitedAdder(repo: string, path: string): Promise<void> {
+	const exited = await keptExitedPid();
+	onTestFinished(() => exited.release());
 	const record = worktreeAdderRecord(realpathSync(join(repo, ".git")), path);
 	mkdirSync(dirname(record), { recursive: true });
-	writeFileSync(record, JSON.stringify({ host: hostname(), pid: exited, startTime: null }));
+	writeFileSync(record, JSON.stringify({ host: hostname(), pid: exited.pid, startTime: null }));
 }
 
 /** Run `body` with workspace git commands going through the fake git under `env`. POSIX only. */

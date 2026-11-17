@@ -8,6 +8,7 @@ import {
 	buildCtx,
 	buildMockPi,
 	cancellationRegistry,
+	createLegacyWorkflowControlHarness,
 	installSlashDispatchTestHooks,
 	join,
 	makeInflightRun,
@@ -86,13 +87,13 @@ describe("/workflow run-control chat commands", () => {
 		const controller = new AbortController();
 		cancellationRegistry.register(runId, controller);
 
-		const { pi, commands, sent } = buildMockPi();
+		const { pi, sent } = buildMockPi();
 		addFactoryStubs(pi);
 
 		const factoryModule = await import("../../packages/workflows/src/extension/index.js");
 		factoryModule.default(pi);
 
-		const workflowCmd = commands.find((c) => c.name === "workflow")!;
+		const workflowCmd = createLegacyWorkflowControlHarness(pi);
 		const msgs: string[] = [];
 		let confirmCalls = 0;
 		const ctx: PiCommandContext = {
@@ -445,13 +446,13 @@ describe("/workflow run-control chat commands", () => {
 		const runId = testRunId(`pause-active-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 
-		const { pi, commands } = buildMockPi();
+		const { pi } = buildMockPi();
 		addFactoryStubs(pi);
 
 		const factoryModule = await import("../../packages/workflows/src/extension/index.js");
 		factoryModule.default(pi);
 
-		const workflowCmd = commands.find((c) => c.name === "workflow")!;
+		const workflowCmd = createLegacyWorkflowControlHarness(pi);
 		const msgs: string[] = [];
 		const ctx: PiCommandContext = {
 			ui: {
@@ -476,13 +477,13 @@ describe("/workflow run-control chat commands", () => {
 		const runId = testRunId(`pause-chat-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 
-		const { pi, commands } = buildMockPi();
+		const { pi } = buildMockPi();
 		addFactoryStubs(pi);
 
 		const factoryModule = await import("../../packages/workflows/src/extension/index.js");
 		factoryModule.default(pi);
 
-		const workflowCmd = commands.find((c) => c.name === "workflow")!;
+		const workflowCmd = createLegacyWorkflowControlHarness(pi);
 		const msgs: string[] = [];
 		let confirmCalls = 0;
 		const ctx: PiCommandContext = {
@@ -584,13 +585,13 @@ describe("/workflow run-control chat commands", () => {
 		const runId = testRunId(`reload-slash-inflight-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 
-		const { pi, commands } = buildMockPi();
+		const { pi } = buildMockPi();
 		addFactoryStubs(pi);
 
 		const factoryModule = await import("../../packages/workflows/src/extension/index.js");
 		factoryModule.default(pi);
 
-		const workflowCmd = commands.find((c) => c.name === "workflow")!;
+		const workflowCmd = createLegacyWorkflowControlHarness(pi);
 		const { ctx, messages } = buildCtx();
 
 		await workflowCmd.options.handler("reload", ctx);
@@ -603,7 +604,7 @@ describe("/workflow run-control chat commands", () => {
 	});
 
 	test.sequential("top-level /workflow reload reports reload failures", async () => {
-		const { pi, commands } = buildMockPi();
+		const { pi } = buildMockPi();
 		addFactoryStubs(pi);
 		pi.refreshWorkflowResources = async () => {
 			throw new Error("package loader unavailable");
@@ -612,7 +613,7 @@ describe("/workflow run-control chat commands", () => {
 		const factoryModule = await import("../../packages/workflows/src/extension/index.js");
 		factoryModule.default(pi);
 
-		const workflowCmd = commands.find((c) => c.name === "workflow")!;
+		const workflowCmd = createLegacyWorkflowControlHarness(pi);
 		const { ctx, messages } = buildCtx();
 
 		await workflowCmd.options.handler("reload", ctx);
@@ -631,7 +632,7 @@ describe("/workflow run-control chat commands", () => {
 			await writeWorkflowFixture(existingWorkflow, "refresh-existing");
 			await writeWorkflowFixture(addedWorkflow, "refresh-added");
 
-			const { pi, commands } = buildMockPi();
+			const { pi } = buildMockPi();
 			addFactoryStubs(pi);
 			let refreshCalls = 0;
 			pi.refreshWorkflowResources = async () => [{ path: existingWorkflow, enabled: true }];
@@ -646,7 +647,7 @@ describe("/workflow run-control chat commands", () => {
 			const factoryModule = await import("../../packages/workflows/src/extension/index.js");
 			factoryModule.default(pi);
 
-			const workflowCmd = commands.find((c) => c.name === "workflow")!;
+			const workflowCmd = createLegacyWorkflowControlHarness(pi);
 			const { ctx, messages } = buildCtx();
 
 			await workflowCmd.options.handler("reload", ctx);
@@ -654,11 +655,6 @@ describe("/workflow run-control chat commands", () => {
 			assert.equal(refreshCalls, 1);
 			assert.equal(
 				messages.some((message) => message.includes("Reloaded workflow resources.")),
-				true,
-			);
-			const completions = (await workflowCmd.options.getArgumentCompletions?.("refresh-add")) ?? [];
-			assert.equal(
-				completions?.some((completion) => completion.label === "refresh-added"),
 				true,
 			);
 		} finally {

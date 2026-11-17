@@ -15,6 +15,7 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, it, vi } from "vitest";
+import { exitedProcess } from "../../../test/helpers/exited-process.js";
 
 /**
  * Hooks that run once just before the next takeover-mutex creation or lock-directory rename, as another process would
@@ -72,7 +73,7 @@ vi.mock("node:fs", async (importOriginal) => {
 
 const { lockHolderPath, takeOverDeadHolder } = await import("../src/core/lock-holder.ts");
 const { setNativeLocksForTesting, takeoverMutexPath, takeTakeoverMutex, TAKEOVER_MUTEX_STALE_MS } = await import(
-	"../src/core/lock-takeover.ts"
+	"../src/core/lock-takeover.js"
 );
 const { lockHolder } = await import("../src/core/lock-wait.ts");
 
@@ -109,10 +110,7 @@ beforeEach(() => {
 	setNativeLocksForTesting(null);
 	mkdirSync(lockPath);
 	deadLock = lockHolder(lockPath);
-	const exited = Number(
-		spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" }).stdout,
-	);
-	writeFileSync(lockHolderPath(lockPath), JSON.stringify({ host: hostname(), pid: exited, lock: deadLock }));
+	writeFileSync(lockHolderPath(lockPath), JSON.stringify({ host: hostname(), ...exitedProcess(), lock: deadLock }));
 });
 
 afterEach(() => {
@@ -241,13 +239,7 @@ function deadOwnersMutex(id = "dead"): void {
 	mkdirSync(takeoverMutexPath(lockPath));
 	writeFileSync(
 		join(takeoverMutexPath(lockPath), "owner"),
-		JSON.stringify({ host: hostname(), pid: exitedPid(), id }),
-	);
-}
-
-function exitedPid(): number {
-	return Number(
-		spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" }).stdout,
+		JSON.stringify({ host: hostname(), ...exitedProcess(), id }),
 	);
 }
 

@@ -140,7 +140,7 @@ import type {
 } from "../shared/types.js";
 import type { WorkflowFailure } from "../shared/workflow-failures.js";
 import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
-import { workflowSource } from "../shared/workflow-source.js";
+import { resolveWorkflowDefinitionSource, workflowSource } from "../shared/workflow-source.js";
 import { admitWorkflowSessions } from "../workers/admission-binding.js";
 import { childWorkerDispatcher } from "../workers/dispatch.js";
 import { activatePublicPool, restoreWorkerOptions } from "../workers/public-pool.js";
@@ -1657,8 +1657,14 @@ async function executeRun(
 			const claim = opts[resumeClaim];
 			let taken = true;
 			if (durableRootRegistration !== undefined) {
+				const existingDefinitionSource = durableBackend.getWorkflow(runId)?.definitionSource;
+				const definitionSource =
+					existingDefinitionSource !== undefined && opts.acceptEntryChanges !== true
+						? existingDefinitionSource
+						: await resolveWorkflowDefinitionSource(def, existingDefinitionSource);
 				const registration = {
 					...durableRootRegistration,
+					...(definitionSource === undefined ? {} : { definitionSource }),
 					modelOwner: runSnapshot.modelOwner,
 					...workflowInvocationMetadata(
 						inputRuntimeDefaults,

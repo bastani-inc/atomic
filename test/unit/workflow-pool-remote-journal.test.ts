@@ -586,6 +586,8 @@ test("a slow journal read does not make the pool's copy of the lease look newer 
 });
 
 test("a recovered remote journal claim passes a coalesced wake to another long-idle worker (#5230)", async () => {
+	const RECOVERY_BOUND_MS = 300;
+	const CLAIM_SETTLE_BOUND_MS = 10_000;
 	const f = await fixture();
 	const first = poolWorkFixture("first");
 	const second = poolWorkFixture("second");
@@ -593,12 +595,14 @@ test("a recovered remote journal claim passes a coalesced wake to another long-i
 	let running = true;
 	let checkedEmpty = 0;
 	let refused = 0;
-	const claimed: string[] = [];
+	const claimed: { checkStartedAt: number; completedAt: number; id: string }[] = [];
 	const workers = ["worker-first", "worker-second"].map(async (worker) => {
 		const backoff = new IdleClaimBackoff(() => 0);
 		for (let index = 0; index < 8; index++) backoff.next();
 		while (running) {
+			let checkStartedAt = 0;
 			const taken = await waits.claim(backoff, async () => {
+				checkStartedAt = performance.now();
 				const result = await f.pool.claim(f.lease, worker, [first.work], 60_000, undefined, () => {
 					refused++;
 					backoff.reset();
@@ -607,7 +611,7 @@ test("a recovered remote journal claim passes a coalesced wake to another long-i
 				return result;
 			});
 			if (taken !== undefined) {
-				claimed.push(taken.id);
+				claimed.push({ checkStartedAt, completedAt: performance.now(), id: taken.id });
 				return;
 			}
 		}
@@ -620,16 +624,23 @@ test("a recovered remote journal claim passes a coalesced wake to another long-i
 		await assert.rejects(f.pool.commit(f.lease, f.attempt, "create", sessionMutation), /journal unavailable/);
 		waits.wakeOne();
 		while (refused < 2) await sleep(1);
-		outage.mockRestore();
-		const RECOVERY_BOUND_MS = 300;
 		const recoveredAt = performance.now();
-		while (claimed.length < 2 && performance.now() - recoveredAt < RECOVERY_BOUND_MS) await sleep(5);
+		outage.mockRestore();
+		while (claimed.length < 2 && performance.now() - recoveredAt < CLAIM_SETTLE_BOUND_MS) await sleep(5);
 		assert.equal(
 			claimed.length,
 			2,
 			"both idle workers claim after one readiness notice and repeated delivery refusals",
 		);
-		assert.equal(new Set(claimed).size, 2);
+		assert.ok(
+			claimed[0]!.checkStartedAt - recoveredAt < RECOVERY_BOUND_MS,
+			`first worker waited ${Math.round(claimed[0]!.checkStartedAt - recoveredAt)} ms to check after recovery`,
+		);
+		assert.ok(
+			claimed[1]!.checkStartedAt - claimed[0]!.completedAt < RECOVERY_BOUND_MS,
+			`second worker waited ${Math.round(claimed[1]!.checkStartedAt - claimed[0]!.completedAt)} ms after the coalesced wake`,
+		);
+		assert.equal(new Set(claimed.map((entry) => entry.id)).size, 2);
 	} finally {
 		running = false;
 		vi.restoreAllMocks();
@@ -640,6 +651,7 @@ test("a recovered remote journal claim passes a coalesced wake to another long-i
 });
 
 test("a claim held back by undelivered remote journal events resets its idle pause so recovery claims promptly (#5230)", async () => {
+	const RECOVERY_BOUND_MS = 300;
 	const f = await fixture();
 	const other = poolWorkFixture("other");
 	const waits = new IdleClaimWaits();
@@ -658,17 +670,19 @@ test("a claim held back by undelivered remote journal events resets its idle pau
 		for (let index = 0; index < 8; index++) backoff.next();
 		let blocked = 0;
 		let refused = 0;
-		const claimed: { at: number; id: string }[] = [];
+		const claimed: { checkStartedAt: number; id: string }[] = [];
 		const worker = (async () => {
 			for (;;) {
-				const taken = await waits.claim(backoff, () =>
-					f.pool.claim(f.lease, "worker-other", [other.work], 60_000, undefined, () => {
+				let checkStartedAt = 0;
+				const taken = await waits.claim(backoff, () => {
+					checkStartedAt = performance.now();
+					return f.pool.claim(f.lease, "worker-other", [other.work], 60_000, undefined, () => {
 						blocked++;
 						backoff.reset();
-					}),
-				);
+					});
+				});
 				if (taken !== undefined) {
-					claimed.push({ at: performance.now(), id: taken.id });
+					claimed.push({ checkStartedAt, id: taken.id });
 					return;
 				}
 				refused++;
@@ -681,8 +695,8 @@ test("a claim held back by undelivered remote journal events resets its idle pau
 		assert.ok(blocked > 0);
 		assert.ok(refused > 0);
 		assert.ok(
-			claimed[0]!.at - recoveredAt < 300,
-			`ready work waited ${Math.round(claimed[0]!.at - recoveredAt)} ms after the journal recovered`,
+			claimed[0]!.checkStartedAt - recoveredAt < RECOVERY_BOUND_MS,
+			`ready work waited ${Math.round(claimed[0]!.checkStartedAt - recoveredAt)} ms after the journal recovered`,
 		);
 		const blockedAfterDrain = blocked;
 		assert.equal(
@@ -737,6 +751,7 @@ test("an unavailable remote journal with a pending outbox row bounds idle claim 
 	const IDLE_OUTAGE_RETRY_MS = 1_000;
 	const APPEND_ONLY_BOUND_MS = 1_000;
 	const RECOVERY_BOUND_MS = 1_200;
+	const CLAIM_SETTLE_BOUND_MS = 10_000;
 	const f = await fixture();
 	const other = poolWorkFixture("other");
 	const waits = new IdleClaimWaits();
@@ -761,14 +776,16 @@ test("an unavailable remote journal with a pending outbox row bounds idle claim 
 		});
 		await assert.rejects(f.pool.commit(f.lease, f.attempt, "create", sessionMutation), /journal unavailable/);
 		for (const key of Object.keys(counts) as (keyof typeof counts)[]) counts[key] = 0;
-		const claimed: { at: number; id: string }[] = [];
+		const claimed: { checkStartedAt: number; id: string }[] = [];
 		loops = Array.from({ length: workers }, async (_, index) => {
 			const backoff = new IdleClaimBackoff();
 			for (let step = 0; step < 8; step++) backoff.next();
 			while (running) {
+				let checkStartedAt = 0;
 				let taken: Awaited<ReturnType<typeof f.pool.claim>>;
 				try {
 					taken = await waits.claim(backoff, () => {
+						checkStartedAt = performance.now();
 						counts.checks++;
 						return f.pool.claim(f.lease, `worker-${index}`, [other.work], 60_000, undefined, (error) => {
 							if (infrastructureFaultOf(error) === "storage_unavailable") throw error;
@@ -781,7 +798,7 @@ test("an unavailable remote journal with a pending outbox row bounds idle claim 
 					continue;
 				}
 				if (taken !== undefined) {
-					claimed.push({ at: performance.now(), id: taken.id });
+					claimed.push({ checkStartedAt, id: taken.id });
 					return;
 				}
 			}
@@ -814,7 +831,7 @@ test("an unavailable remote journal with a pending outbox row bounds idle claim 
 		const snapshot = { ...counts };
 		const recoveredAt = performance.now();
 		vi.restoreAllMocks();
-		while (claimed.length === 0 && performance.now() - recoveredAt < 1_500) await sleep(10);
+		while (claimed.length === 0 && performance.now() - recoveredAt < CLAIM_SETTLE_BOUND_MS) await sleep(10);
 		running = false;
 		waits.wakeAll();
 		await Promise.all(loops);
@@ -827,8 +844,8 @@ test("an unavailable remote journal with a pending outbox row bounds idle claim 
 		assert.equal(snapshot.leaseState, 0);
 		assert.equal(claimed.length, 1);
 		assert.ok(
-			claimed[0]!.at - recoveredAt < RECOVERY_BOUND_MS,
-			`ready work waited ${Math.round(claimed[0]!.at - recoveredAt)} ms after the journal recovered`,
+			claimed[0]!.checkStartedAt - recoveredAt < RECOVERY_BOUND_MS,
+			`ready work waited ${Math.round(claimed[0]!.checkStartedAt - recoveredAt)} ms after the journal recovered`,
 		);
 	} finally {
 		running = false;

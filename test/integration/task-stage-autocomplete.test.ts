@@ -42,7 +42,7 @@ test("stage slash suggestions select /tasks and inspect only the stage owner wit
 		view.render(100);
 		for (const character of "/tas") view.handleInput(character);
 		await vi.waitFor(() => {
-			assert.match(stripVTControlCharacters(view.render(100).join("\n")), /→ tasks\s+Inspect agents and shells/);
+			assert.match(stripVTControlCharacters(view.render(100).join("\n")), /❯ tasks\s+Inspect agents and shells/);
 		});
 		view.handleInput("\t");
 		assert.equal(editor?.getText(), "/tasks ");

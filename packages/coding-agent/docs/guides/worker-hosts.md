@@ -62,7 +62,7 @@ On the machine that starts the runs, select the shared database for workflow run
 }
 ```
 
-Roots that `/workflow run` starts then run their pooled children on this machine's own workers and on every worker host. SDK runs pass `workers: { placement: "shared" }` instead. See [Workflow settings](/settings#local-worker-pools).
+Roots that the `workflow` tool starts then run their pooled children on this machine's own workers and on every worker host. SDK runs pass `workers: { placement: "shared" }` instead. See [Workflow settings](/settings#local-worker-pools).
 
 ## Stop, drain and status
 
@@ -85,7 +85,7 @@ The command never waits on a database that stops answering: after 5 seconds it p
 Atomic 0.9.88 upgrades a shared database's session schema the first time it opens it, and older Atomic versions then refuse that database with `StorageSchemaVersionError`. Upgrade every machine that shares the database together, in this order:
 
 1. Stop the fleet controllers and `atomic worker metrics`, so nothing adds hosts.
-2. Let running roots finish, or stop them and continue them after the upgrade with `/workflow resume`.
+2. Let running roots finish, or stop them and continue them after the upgrade from `/resume`.
 3. Drain the worker hosts with SIGTERM, and stop the Atomic sessions on the machines that start roots.
 4. Install 0.9.88 or later on every machine, including container images and the user data of scaling groups (`atomic update`, or `npm install -g @bastani/atomic`), and update the storage adapter with `atomic update --extensions`.
 5. Start the roots' machines, then the hosts, then the controllers.
@@ -105,7 +105,11 @@ Before you let the fleet grow, size the database for it: on PostgreSQL, plan its
 
 ### The scaling signal
 
-The policy wants `ceil(demand / workersPerHost)` hosts, kept between `minHosts` and `maxHosts`. Demand is the ready and running children of every running root, each root capped by its `admission.limits.session`. A root whose budget is spent, or that is paused, counts only its running children.
+The policy wants `max(minHosts, min(maxHosts, ceil(demand / workersPerHost), rateCapHosts))` hosts. Without a rate cap, omit `rateCapHosts` from the minimum. Demand is the ready and running children of every running root, each root capped by its `admission.limits.session`. A root whose budget is spent, or that is paused, counts only its running children.
+
+When roots set [fleet-wide model rate limits](/workflows/operations#fleet-wide-model-rate-limits), the controller and metrics server estimate how many workers those limits can feed. For each limited provider or model, they keep up to 10 minutes of granted calls, started-child counts and time workers spent waiting for tokens. Claims still in placement or workspace restore do not count as started children. They subtract token-waiting time before estimating capacity. A limit that granted a quarter of its rate to 8 nonwaiting workers feeds about 32. A saturated limit, at 95% or more of its rate, with 32 busy workers and the equivalent of 22 workers waiting feeds 10, or 3 hosts of 4 slots. Each limit caps only the roots using its scope. Roots using several scopes satisfy each limit, while work under disjoint scopes and unlimited roots keeps its own capacity. Their combined capacity sets `rateCapHosts`, with at least one host available to make progress; the policy still respects `minHosts` and `maxHosts` and can scale an empty queue to zero.
+
+Each limited scope needs a minute of recent observations. Until then, capacity for work under warming scopes stays at the current serving and booting host count, or one bootstrap host when none exists. Unrelated work can still grow. If a scope has no draws during a minute of observation while its roots run children, its hold ends because there is no evidence that this scope limits the work. The no-draw minute starts over when the scope's roots stop running children. Time booting a host or restoring a claimed child's workspace does not count toward that minute. This applies to unused scopes, tool-only work and unchanged counters left by earlier runs. A scope starts warming again when it begins drawing after being idle. Standby controllers collect observations too. A gap longer than 30 seconds, or three controller ticks when that is longer, starts the observation window over. Scrape `atomic worker metrics` at least once every 30 seconds to build its history. Only readers that keep history apply this cap: a [fleet controller](#the-fleet-controller), `atomic worker metrics`, or SDK reads with `rateHistory: true`; `atomic worker status` does not. Hosts of 0.9.88 do not report these counters. When a bucket's schedule advances without enough counted draws to explain it, that scope supplies no cap for the observation window. A mixed-version fleet can therefore scale more permissively. Upgrade every host for the full cap.
 
 `atomic worker status --json` prints it as `scaling`, and `atomic worker metrics` serves it over HTTP:
 
@@ -117,7 +121,7 @@ atomic worker metrics --listen 0.0.0.0:9464 --db 'postgresql://atomic@db.example
 `atomic worker metrics` only reads a database whose schema is current, so on PostgreSQL a monitoring role with `USAGE` on the `atomic` schema and `SELECT` on its tables can serve it.
 
 - `GET /scaling` returns the signal as JSON, the shape a KEDA [`metrics-api`](https://keda.sh/docs/latest/scalers/metrics-api/) trigger reads. It answers `503` while the database cannot be read.
-- `GET /metrics` returns the same counts in Prometheus text: `atomic_fleet_desired_hosts`, `atomic_fleet_desired_workers`, `atomic_fleet_demand`, `atomic_fleet_queue_depth`, `atomic_fleet_running`, `atomic_fleet_hosts`, `atomic_fleet_slots{state="busy"|"idle"}`, the policy's `atomic_fleet_min_hosts`, `atomic_fleet_max_hosts` and `atomic_fleet_workers_per_host`, and `atomic_fleet_store_up`.
+- `GET /metrics` returns the same counts in Prometheus text: `atomic_fleet_desired_hosts`, `atomic_fleet_desired_workers`, `atomic_fleet_demand`, `atomic_fleet_queue_depth`, `atomic_fleet_running`, `atomic_fleet_hosts`, `atomic_fleet_slots{state="busy"|"idle"}`, the policy's `atomic_fleet_min_hosts`, `atomic_fleet_max_hosts` and `atomic_fleet_workers_per_host`, `atomic_fleet_rate_cap_hosts` whenever a running root sets `rateLimits` and the reader keeps history, even if the limits do not reduce the target, and `atomic_fleet_store_up`.
 
 | Field | Meaning |
 | --- | --- |
@@ -129,6 +133,7 @@ atomic worker metrics --listen 0.0.0.0:9464 --db 'postgresql://atomic@db.example
 | `hosts` | Hosts that reported within 15 seconds |
 | `busySlots`, `idleSlots` | Their slots running a child, and free on hosts that are not draining |
 | `minHosts`, `maxHosts`, `workersPerHost` | The policy it was computed with (`--min-hosts`, `--max-hosts`, `--workers-per-host`) |
+| `rateCapHosts` | Hosts the fleet can keep busy under its rate limits across every root, including unlimited and disjoint-scope work. While history warms, limited work stays at the current host count. Present whenever a running root sets `rateLimits` and the reader keeps history, whether or not it reduces the target. An unused scope or one with uncounted draws leaves its roots' full demand available. |
 
 The endpoints serve counts only: no host, root, URL or token. They read the database at most once every 5 seconds however often they are scraped, never write to it, and cut off a client that takes longer than 10 seconds. The default address is `127.0.0.1:9464`; listen on `0.0.0.0` only inside a container or a private network.
 
@@ -188,7 +193,7 @@ SDK roots can run it themselves while they run: pass `workers: { placement: "sha
 
 Every 10 seconds the controller:
 
-- computes the [scaling signal's](#the-scaling-signal) target.
+- computes the [scaling signal's](#the-scaling-signal) target, capped by what the rate limits keep busy. When that cap holds the fleet below what its queue wants, it records a `rate-cap` fleet event naming the limit, its rate, what it granted and to how many workers, and another once the cap no longer holds the fleet back.
 - adds hosts with `scaleTo` when more than `scaleUpQueueDepth` children have been waiting for `scaleUpDelayMs`, or when children wait and no host runs at all. Hosts below `minHosts` are added at once.
 - asks a host to drain once it has held no child for `idleDrainMs` and the fleet is above its target. The host takes no more children, from the moment the drain is asked even before the host has read it, and exits as on SIGTERM; the controller calls `drain` once the host has left the registry. A host that stopped reporting without leaving is removed only 5 minutes after its drain was asked, and only if it holds no child. A host that holds a child is never drained or removed, whether or not it still reports. A child whose root died and whose own lease expired no longer counts, so it does not keep an idle host or the fleet's target up.
 - removes a host that has not registered `bootTimeoutMs` after it started, or that the provider reports failed, and replaces it once. A host that registers just as its boot timeout is reached is kept, but a host that registered and then stopped reporting is not. The instance is drained before it is removed, so a host that registers on it during the removal takes no child. Further failures in a row wait 30 seconds, then twice as long each time, up to 10 minutes.
@@ -419,4 +424,4 @@ docker run -d --name atomic-worker -e ATOMIC_DB=postgresql://atomic@db.example.c
 - **`degraded failures=… retry_in_ms=…`** means the host could not reach the database. It keeps running its children and tries again after 1 second, then twice as long after each further failure, up to 30 seconds, and prints `recovered` once it gets through. Its workers keep their children while each child's lease (`localWorkers.leaseMs`, 30 seconds by default) lasts. A child whose lease expires during a longer outage, or that writes a checkpoint while the database is unreachable, is replayed by another host from its last checkpoint.
 - **`shared store unknown` or `shared store degraded`**, or hosts that all turn `stale` at once, mean the database stopped answering or stopped committing writes. sqld 0.24.33 and earlier can stop taking writes from every client until it restarts ([tursodatabase/libsql#2286](https://github.com/tursodatabase/libsql/issues/2286)): start sqld with `--checkpoint-interval-s 60` (`SQLD_CHECKPOINT_INTERVAL_S=60`) to avoid it, and restart it if writes stay stuck. Hosts keep their running children meanwhile.
 - **PostgreSQL connection, TLS, pooler and cloud identity errors**: see [Troubleshooting](/guides/worker-fleets-postgres#troubleshooting) in the PostgreSQL fleet guide.
-- **A host never claims anything.** It runs a root's children only if it has the root's worker definitions at the same paths with the same entry module, and the root uses shared placement. Check `atomic worker status`, and `/workflow status <run>` on the root's machine.
+- **A host never claims anything.** It runs a root's children only if it has the root's worker definitions at the same paths with the same entry module, and the root uses shared placement. Check `atomic worker status`, and the run in `/workflows` on the root's machine.

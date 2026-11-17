@@ -8,6 +8,7 @@ import {
 	addFactoryStubs,
 	assert,
 	buildMockPi,
+	createLegacyWorkflowControlHarness,
 	installSlashDispatchTestHooks,
 	join,
 	makeInflightRun,
@@ -32,10 +33,9 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
 		handler: NonNullable<PiCommandOptions["handler"]>;
 		sent: SentMessage[];
 	}> {
-		const { pi, commands, sent } = buildMockPi();
+		const { pi, sent } = buildMockPi();
 		await runFactory(pi);
-		const cmd = commands.find((c) => c.name === "workflow");
-		assert.ok(cmd, "expected /workflow command registration");
+		const cmd = createLegacyWorkflowControlHarness(pi);
 		return { handler: cmd.options.handler, sent };
 	}
 
@@ -122,7 +122,7 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
 		const filePath = join(dir, fileName);
 		await writeFile(filePath, source, "utf8");
 
-		const { pi, commands, sent } = buildMockPi();
+		const { pi, sent } = buildMockPi();
 		addFactoryStubs(pi);
 		pi.disableAsyncDiscovery = false;
 		pi.refreshWorkflowResources = async () => [{ path: filePath, enabled: true }];
@@ -141,8 +141,7 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
 			await startHandler({}, { ui: { notify: () => undefined } });
 		}
 
-		const cmd = commands.find((c) => c.name === "workflow");
-		assert.ok(cmd, "expected /workflow command registration");
+		const cmd = createLegacyWorkflowControlHarness(pi);
 		return {
 			handler: cmd.options.handler,
 			sent,
@@ -347,47 +346,6 @@ export default workflow({
 		const error = notifications.find((entry) => entry.type === "error");
 		assert.ok(error, "expected interactive errors to be reported via notify('error')");
 		assert.match(error.message, /Workflow not found: ghost-workflow/);
-	});
-
-	test.sequential("/workflow still uses picker-capable path when a UI is available", async () => {
-		const { handler } = await registerWorkflowCommand();
-		const { ctx, pickerCalls } = commandCtx(true);
-
-		await handler("fan-out-and-synthesize", ctx);
-
-		assert.ok(pickerCalls.length > 0, "expected interactive picker path to be attempted");
-	});
-
-	test.sequential("/workflow prefers host-native input form over callable isolated editor stub and Escape cancellation does not dispatch", async () => {
-		const { handler, sent } = await registerWorkflowCommand();
-		const calls: string[] = [];
-		const ctx = {
-			hasUI: true,
-			ui: {
-				notify: () => undefined,
-				hostInputForm: async () => {
-					calls.push("host");
-					return undefined;
-				},
-				setEditorComponent: () => {
-					calls.push("inline-noop");
-				},
-				getEditorComponent: () => undefined,
-				custom: async () => {
-					calls.push("remote-custom");
-					return undefined;
-				},
-			},
-		} as PiCommandContext;
-
-		await handler("fan-out-and-synthesize", ctx);
-
-		assert.deepEqual(calls, ["host"]);
-		assert.equal(
-			sent.some((message) => chatSurfacePayload(message)?.kind === "dispatch"),
-			false,
-			"cancelled host form must not dispatch the workflow",
-		);
 	});
 
 	test.sequential("/workflow proceeds when hasUI is unset (degraded runtimes)", async () => {

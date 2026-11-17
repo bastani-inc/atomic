@@ -6,6 +6,31 @@ description: Component and focusable interfaces, keyboard input, line width, inv
 
 # TUI API reference
 
+## Tool blocks
+
+Use `ToolBlock` from `@bastani/atomic` for a transcript item with a state glyph, one header row and connected result rows. It accepts `status`, `title`, optional `args`, `meta`, `details`, `body` and `outputPad` (default `1`). Supported states are `running`, `success`, `failure`, `stopped`, `warning`, `paused` and `info`.
+
+```typescript
+import { ToolBlock, ToolBlockRecords } from "@bastani/atomic";
+
+const item = new ToolBlock({
+  status: "success",
+  title: "Inspect",
+  args: "sample.ts",
+  details: new ToolBlockRecords(["Read 42 lines", "No errors found"]),
+});
+```
+
+A block does not add a leading blank line; its container controls spacing between items. `ToolBlockGroup` separates several blocks with one blank line. `ToolBlockMarkdown(text)` sanitizes terminal controls and renders Markdown with links shown as text and URLs, not clickable terminal links, and images shown as `[image]`.
+
+In ordinary tool renderers, return only the call title from `renderCall` and unframed result content from `renderResult`; Atomic supplies the state glyph and connectors. Return `ToolBlockRecords` when several results need separate connectors.
+
+When embedding `ChatSessionHost`, forward the complete `ctx.ui.getChatRenderSettings()` result. Its optional component factories preserve remote tool renderers and the attached chat's repaint and expansion settings. Do not copy only `getToolDefinition`. Custom message renderers can use `options.cwd` for the receiving chat's working directory instead of assuming `process.cwd()` matches it.
+
+`host.replaceMessages(messages)` starts a fresh unread baseline. Use `host.replaceMessages(messages, { preserveUnread: true })` for a new snapshot of the same conversation; arrivals that have not painted yet remain unread.
+
+The `Markdown` component from `@bastani/atomic-tui` also accepts per-instance `hyperlinks: false` and `images: false` in its sixth constructor argument. These options do not change other components or terminal capabilities.
+
 ## Component Interface
 
 All components implement:
@@ -332,7 +357,9 @@ picker.update(await loadMoreRows()); // merge late rows into the open picker
 const path = await picker.result;    // selected row's path, or undefined on cancel
 ```
 
-`/workflow resume` uses this picker.
+`/resume` uses this picker for workflow runs from earlier sessions.
+
+Rows can set `canDelete: false` to hide and disable deletion, even when `onDelete` is present. Leave the field unset to use the request's deletion behavior. Keep the row until deletion finishes, then remove it with `update()`, or report failure with `error()` from that `onDelete` callback. The row cannot be selected while deletion is pending.
 
 ### Host-native input form
 
@@ -355,21 +382,6 @@ try {
 
 Field types are `string`, `text`, `number`, `integer`, `boolean`, and `select`. Initial and returned values are raw strings; the caller owns domain coercion.
 
-A field can also carry constraints, which decide whether its value is ready. When `schema` is present, it replaces all other checks, including the field type and select choices:
-
-| Field | Applies to | Checks |
-|---|---|---|
-| `const` | all but `select` | the value equals it (a `boolean` compares on or off) |
-| `minimum`, `maximum` | `number`, `integer` | inclusive bounds |
-| `exclusiveMinimum`, `exclusiveMaximum` | `number`, `integer` | exclusive bounds |
-| `multipleOf` | `number`, `integer` | the value is a multiple of it |
-| `minLength`, `maxLength` | `string`, `text` | length in characters |
-| `pattern` | `string`, `text` | a regular expression, compiled with the `u` flag |
-| `format` | `string`, `text` | a JSON Schema format such as `email`, `uuid` or `date-time` |
-| `schema` | any | a JSON Schema the value must match: the text is read as JSON when that value matches the schema, otherwise as the string itself |
-
 Every current interactive Atomic host exposes the optional capability, while headless RPC and print surfaces omit it. Keep a legacy fallback only when compatibility with older hosts is required.
 
-Each field's header shows whether its value is ready: `✓`, or `✗` with the reason (`required`, `choose one`, `choose on or off`, `must be a whole number`, `must be a number`, `must be on or off`, `not in choices`, `must equal <value>`, the broken constraint such as `must be >= 1` or `must not have more than 100 characters (maxLength 100)`, or `invalid pattern in the workflow schema` when a `pattern` does not compile). Enter on the submit button runs only when every field is ready. A boolean accepts `true`, `false`, `on`, `off`, `1` or `0`; anything else is refused rather than read as off.
-
-`/workflow <name>` uses this input form.
+Each field's header shows whether its value is ready: `✓`, or `✗` with the reason (`required`, `choose one`, `choose on or off`, `must be a whole number`, `must be a whole number within ±9007199254740991`, `must be a number`, `must be on or off`, or `not in choices`). Integers must stay within JavaScript's safe integer range so their value is not rounded. Enter on the submit button runs only when every field is ready. A boolean accepts `true`, `false`, `on`, `off`, `1` or `0`; anything else is refused rather than read as off.

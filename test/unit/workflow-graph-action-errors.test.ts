@@ -3,6 +3,10 @@ import { stripVTControlCharacters } from "node:util";
 import { test } from "vitest";
 import { createGraphStageActions } from "../../packages/workflows/src/extension/workflow-graph-stage-actions.js";
 import { captureWorkflowOwnerResources } from "../../packages/workflows/src/extension/workflow-owner-resources.js";
+import {
+	createStageControlRegistry,
+	type StageControlStatus,
+} from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import type {
@@ -41,7 +45,7 @@ test("synchronous fork lookups keep their receiver and release the busy state af
 		graph.handleInput("f");
 		await settle();
 		assert.equal(actions.attempts, 2);
-		assert.ok(stripVTControlCharacters(graph.render(160).join("\n")).includes("enter fork"));
+		assert.ok(stripVTControlCharacters(graph.render(160).join("\n")).includes("enter confirm"));
 	} finally {
 		graph.dispose();
 	}
@@ -91,6 +95,9 @@ test("graph action resource failures always resolve to an error result (#5234)",
 		() => actions.retry!("missing", "stage"),
 		() => actions.fork!("missing", "stage"),
 		() => actions.forkTarget!("missing", "stage"),
+		() => actions.pauseRun!("missing"),
+		() => actions.resumeRun!("missing"),
+		() => actions.quitRun!("missing"),
 	]) {
 		const outcome = await request();
 		assert.equal(outcome.ok, false);
@@ -162,6 +169,64 @@ test("graph retry, fork and forkTarget await ensureWorkflowResourcesLoaded befor
 	assert.equal(warnings[0]?.type, "warning");
 	assert.match(warnings[0]?.message ?? "", /broken workflow file/);
 	assert.equal(warnings[1]?.type, "warning");
+
+	const store = createStore();
+	const stageControlRegistry = createStageControlRegistry();
+	store.recordRunStart({
+		id: "run-live",
+		name: "deploy",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [{ id: "stage-1", name: "build", status: "running", parentIds: [], toolEvents: [] }],
+		startedAt: 1,
+	});
+	const owner = { ...captureWorkflowOwnerResources(), store, stageControlRegistry };
+	let currentStatus: StageControlStatus = "running";
+	stageControlRegistry.register({
+		runId: "run-live",
+		stageId: "stage-1",
+		stageName: "build",
+		get status() {
+			return currentStatus;
+		},
+		sessionId: undefined,
+		sessionFile: undefined,
+		isStreaming: false,
+		messages: [],
+		async ensureAttached() {},
+		async prompt() {},
+		async steer() {},
+		async followUp() {},
+		pause: async () => {
+			currentStatus = "paused";
+		},
+		resume: async () => {
+			currentStatus = "running";
+			return undefined;
+		},
+		subscribe: () => () => {},
+	});
+	const liveActions = createGraphStageActions({
+		owner,
+		runtime: () =>
+			({
+				resumeFailedRun: async () => ({ ok: true as const, runId: "run-live", message: "Resumed blocked run" }),
+				resumeDurableWorkflow: async () => ({ ok: true as const, runId: "run-live", message: "Resumed quit run" }),
+			}) as never,
+		context: () => ({ hasUI: true }),
+	});
+	const pausedOutcome = await liveActions.pauseRun!("run-live");
+	assert.equal(pausedOutcome.ok, true);
+	assert.equal(store.run("run-live")?.status, "paused");
+
+	const resumedOutcome = await liveActions.resumeRun!("run-live");
+	assert.equal(resumedOutcome.ok, true);
+	assert.equal(store.run("run-live")?.status, "running");
+
+	const quitOutcome = await liveActions.quitRun!("run-live");
+	assert.equal(quitOutcome.ok, true);
+	assert.equal(store.run("run-live")?.exitReason, "quit");
 });
 
 test.each([

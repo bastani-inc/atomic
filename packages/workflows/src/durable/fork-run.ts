@@ -29,6 +29,7 @@ import type {
 	WorkflowOutputValues,
 	WorkflowSerializableValue,
 } from "../shared/types.js";
+import { resolveWorkflowDefinitionSource } from "../shared/workflow-source.js";
 import { formatWorkflowStageTarget, parseWorkflowStageTarget } from "../shared/workflow-stage-target.js";
 import { poolSessionStore } from "../workers/pool-session-store.js";
 import { workflowNamesEqual } from "../workflows/identity.js";
@@ -62,7 +63,11 @@ import {
 	type ForkStorageScope,
 	ForkTargetNotFoundError,
 } from "./fork-errors.js";
-import { decodeJournalEventHandle, JournalDurableBackend } from "./journal/journal-backend.js";
+import {
+	decodeJournalEventHandle,
+	isJournalDurableBackend,
+	type JournalDurableBackend,
+} from "./journal/journal-backend.js";
 import {
 	RUN_EVENT_TYPES as E,
 	type JournalEntry,
@@ -83,6 +88,7 @@ import type {
 	DurableStageCheckpoint,
 	DurableStageRunTopology,
 	DurableStageTopology,
+	DurableWorkflowDefinitionSource,
 	DurableWorkflowHandle,
 	WorkflowForkedFrom,
 } from "./types.js";
@@ -170,7 +176,7 @@ const STAGE_PATH_SEPARATOR = ".";
 function forkJournal(backend: DurableWorkflowBackend): JournalDurableBackend & {
 	readonly journal: RunJournal & Required<Pick<RunJournal, "createRunWithEvents">>;
 } {
-	if (!(backend instanceof JournalDurableBackend) || typeof backend.journal.createRunWithEvents !== "function")
+	if (!isJournalDurableBackend(backend) || typeof backend.journal.createRunWithEvents !== "function")
 		throw new ForkJournalUnsupportedError();
 	return backend as JournalDurableBackend & {
 		readonly journal: RunJournal & Required<Pick<RunJournal, "createRunWithEvents">>;
@@ -1209,6 +1215,7 @@ function forkHandle(
 	request: ResolvedForkRequest,
 	selection: ForkSelection,
 	inputs: WorkflowInputValues,
+	definitionSource?: DurableWorkflowDefinitionSource,
 ): DurableWorkflowHandle {
 	const {
 		transitionClaimId: _transitionClaimId,
@@ -1238,6 +1245,7 @@ function forkHandle(
 	const now = Date.now();
 	return {
 		...carried,
+		...(definitionSource === undefined ? {} : { definitionSource }),
 		...(sameCwd && workflowCwd !== undefined ? { workflowCwd } : {}),
 		...(sameCwd && repositoryRoot !== undefined ? { repositoryRoot } : {}),
 		...(sameCwd && gitWorktreeRoot !== undefined ? { gitWorktreeRoot } : {}),
@@ -1377,7 +1385,8 @@ export async function forkDurableRun<
 			request.signal?.throwIfAborted();
 			const checkpoints = selection.checkpoints.map((checkpoint) => forkCheckpoint(checkpoint, ids));
 			const messages = selection.messageEvents.map((entry) => forkMessageEvent(entry, ids));
-			const handle = forkHandle(source.handle, ids, request, selection, inputs);
+			const definitionSource = await resolveWorkflowDefinitionSource(definition, source.handle.definitionSource);
+			const handle = forkHandle(source.handle, ids, request, selection, inputs, definitionSource);
 			const events: RunJournalSeedEvent[] = [
 				{ event: { type: E.runStarted, payload: handle as unknown as RunEvent["payload"] } as RunEvent },
 				...checkpoints.map((checkpoint) => ({

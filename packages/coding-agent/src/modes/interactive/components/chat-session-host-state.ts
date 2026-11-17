@@ -4,12 +4,14 @@ import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provi
 import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { theme } from "../theme/theme.js";
+import { atomicWorkingFrame } from "./atomic-working-status.ts";
 import { type ChatMessageEntry, LiveChatEntriesController } from "./chat-message-renderer.ts";
 import type {
 	ChatSessionHostCommands,
 	ChatSessionHostEntry,
 	ChatSessionHostOpts,
 	ChatSessionHostStyle,
+	ChatSessionInterruptedTurnSnapshot,
 	ChatSessionSubmitMode,
 } from "./chat-session-host-types.ts";
 import {
@@ -76,10 +78,14 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	workingMessage: string | undefined;
 	lastWorkingMessage: string | undefined = undefined;
 	workedRun: { readonly message: string | undefined; readonly snapshot: WorkingRunSnapshot } | undefined = undefined;
+	interruptedTurnSnapshot: ChatSessionInterruptedTurnSnapshot | undefined = undefined;
 	seenFirstRawUser = false;
 	firstUserEntryExactText: string | undefined = undefined;
 	firstUserEntry: Extract<ChatMessageEntry, { kind: "user" }> | undefined = undefined;
-	workingFrame = 0;
+	get workingFrame(): number {
+		return atomicWorkingFrame();
+	}
+	set workingFrame(_value: number) {}
 	readonly newMessages = new NewMessageCounter();
 	compactionStartedAt: number | undefined;
 	readonly workingRunMeter = new WorkingRunMeter();
@@ -100,6 +106,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	/** Keeps input queued while automatic compaction hands off to a manual request. */
 	manualCompactionTakeoverPending = false;
 	animationTimer: ReturnType<typeof setInterval> | undefined;
+	stopAnimationClock: (() => void) | undefined;
 	metaTimer: ReturnType<typeof setInterval> | undefined;
 	renderThrottleTimer: ReturnType<typeof setTimeout> | undefined;
 	bodyViewport: ScrollableComponentViewport;

@@ -77,14 +77,14 @@ test("cancelling tasks keep one monotone elapsed time across the panel and task 
 		now = 60_000;
 		observeTaskClocks([record], now);
 		assert.equal(panel.rows([row])[0]?.elapsedMs, 65_000);
-		assert.equal(taskMetricsText(record), "1m 5s");
-		assert.match(renderInspector(), /1m 5s/);
+		assert.equal(taskMetricsText(record), "1m");
+		assert.match(renderInspector(), /worker\s+finish cleanup\s+1m\b/);
 		assert.match(renderTranscript(), /worker · finish cleanup · 1m/);
 
 		record.execution = { kind: "cancelling", cause: "user" };
 		now = 61_000;
 		observeTaskClocks([record], now);
-		assert.equal(taskMetricsText(record), "1m 6s");
+		assert.equal(taskMetricsText(record), "1m");
 		assert.match(renderInspector(), /worker\s+finish cleanup\s+stopping/);
 
 		for (let second = 62; second <= 70; second++) {
@@ -93,7 +93,7 @@ test("cancelling tasks keep one monotone elapsed time across the panel and task 
 		}
 		now = 71_000;
 		assert.equal(panel.rows([bindTaskClock({ ...row, state: "stopping" as const }, clocks)])[0]?.elapsedMs, 76_000);
-		assert.equal(taskMetricsText(record), "1m 16s");
+		assert.equal(taskMetricsText(record), "1m");
 		assert.match(renderInspector(), /stopping/);
 
 		now = 116_000;
@@ -104,10 +104,10 @@ test("cancelling tasks keep one monotone elapsed time across the panel and task 
 		record.execution = { kind: "settled", result: { kind: "cancelled", cause: "user" } };
 		observeTaskClocks([record], now);
 		assert.equal(panel.rows([bindTaskClock({ ...row, state: "stopped" as const }, clocks)])[0]?.elapsedMs, 123_000);
-		assert.equal(taskMetricsText(record), "2m 3s");
+		assert.equal(taskMetricsText(record), "2m");
 		now += 100_000;
 		assert.equal(panel.rows([bindTaskClock({ ...row, state: "stopped" as const }, clocks)])[0]?.elapsedMs, 123_000);
-		assert.equal(taskMetricsText(record), "2m 3s");
+		assert.equal(taskMetricsText(record), "2m");
 	} finally {
 		transcript.dispose();
 		inspector.dispose();

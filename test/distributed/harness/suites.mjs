@@ -111,8 +111,8 @@ export const FEATURE_PROBES = Object.freeze({
 	},
 	compaction: {
 		issue: "#4330",
-		capability: "AgentSession.awaitBackgroundCompaction",
-		present: memberOf("atomic.AgentSession", "awaitBackgroundCompaction"),
+		capability: "AgentSession.compact",
+		present: memberOf("atomic.AgentSession", "compact"),
 		implemented: false,
 	},
 });

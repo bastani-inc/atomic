@@ -1,14 +1,22 @@
+import { normalizeProviderId } from "@bastani/atomic-ai";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import type { KeyId } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import { THINKING_LEVELS } from "../../core/agent-session-types.js";
 import { runCallback } from "../../core/callback-activity.ts";
-import { serializeBackgroundCompactionState } from "../../core/compaction/background-compaction.ts";
 import { setDebugSetting } from "../../core/debug-setting.ts";
 import { KeybindingsManager } from "../../core/keybindings.ts";
 import { SessionManager } from "../../core/session-manager.ts";
+import { settingsWriteOwner } from "../../core/settings-write-ownership.ts";
 import { getSkillCatalog } from "../../core/skill-catalog.ts";
 import { sourceError } from "../../core/tasks/agent-panel-source.ts";
 import { stopAllBackgroundWork } from "../../core/tasks/stop-all.ts";
+import {
+	deleteWorkflowFromPicker,
+	listWorkflowResumeEntries,
+	resumeWorkflowFromPicker,
+} from "../../core/workflow-resume.ts";
 import { STOP_ALL_STATUS_KEY } from "../interactive/interactive-stop-all.ts";
 import { showAgentPanel } from "./agent-panel-bridge.ts";
 import { RpcBashRequestOwners } from "./rpc-bash-request-owners.ts";
@@ -24,10 +32,17 @@ import {
 	formatRpcErrorMessage,
 	type RpcOutput,
 } from "./rpc-responses.ts";
-import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.ts";
+import type {
+	RpcCommand,
+	RpcPersistedModelDefaults,
+	RpcResponse,
+	RpcSessionState,
+	RpcSlashCommand,
+} from "./rpc-types.ts";
 import { type EngineTaskInspectorMount, engineTaskInspectorUi, showEngineTaskInspector } from "./task-ui-bridge.js";
 
 export type RpcCommandHandler = (command: RpcCommand) => Promise<RpcResponse | undefined>;
+
 export type ManagedRpcCommandHandler = RpcCommandHandler & { disposeActiveBash(): Promise<void> };
 
 interface RpcCommandHandlerOptions {
@@ -52,6 +67,28 @@ interface RpcCommandHandlerOptions {
 	beginCommand?: () => () => void;
 }
 
+function persistedModelDefaults(session: AgentSession, persist?: boolean): RpcPersistedModelDefaults | undefined {
+	if (!persist) return undefined;
+	const settings = session.settingsManager.getGlobalSettings();
+	const provider = settings.defaultProvider;
+	const modelId = settings.defaultModel;
+	const defaultThinkingLevel = settings.defaultThinkingLevel;
+	if (!provider || !modelId || defaultThinkingLevel === undefined) return undefined;
+	const thinkingLevel = settings.modelThinkingLevels?.[`${normalizeProviderId(provider)}/${modelId}`];
+	if (thinkingLevel === undefined) return undefined;
+	return { provider, modelId, thinkingLevel, defaultThinkingLevel };
+}
+
+/** Commands of removed features that still succeed without effect, so older clients keep working. */
+const REMOVED_NO_OP_COMMANDS: ReadonlySet<string> = new Set([
+	"set_background_compaction",
+	"set_background_compaction_threshold",
+]);
+
+function compactOptions(instructions: string | undefined): { query?: string } {
+	return typeof instructions === "string" && instructions.trim() ? { query: instructions } : {};
+}
+
 function canRunBeforeOptionalResources(command: RpcCommand): boolean {
 	switch (command.type) {
 		case "abort":
@@ -67,8 +104,6 @@ function canRunBeforeOptionalResources(command: RpcCommand): boolean {
 		case "pause_queued_messages":
 		case "resume_queued_messages":
 		case "set_auto_compaction":
-		case "set_background_compaction":
-		case "set_background_compaction_threshold":
 		case "set_auto_retry":
 		case "set_debug":
 		case "set_extension_ui_capabilities":
@@ -78,7 +113,7 @@ function canRunBeforeOptionalResources(command: RpcCommand): boolean {
 		case "get_available_models":
 			return command.allowPartialResources === true;
 		default:
-			return false;
+			return REMOVED_NO_OP_COMMANDS.has((command as { type: string }).type);
 	}
 }
 
@@ -107,6 +142,7 @@ export function createRpcCommandHandler({
 		pending: pendingExtensionRequests ?? new Map(),
 	});
 	const bashOwners = new RpcBashRequestOwners(output);
+	let agentPanelShowing = false;
 	const getShortcutBindings = () => {
 		if (keybindings) return keybindings.getEffectiveConfig();
 		if (fallbackShortcutKeybindings) fallbackShortcutKeybindings.reload();
@@ -134,10 +170,14 @@ export function createRpcCommandHandler({
 			case "open_agent_panel": {
 				if (!keybindings || !taskInspectorUi)
 					return createRpcErrorResponse(id, command.type, "The agent panel requires an interactive host");
+				if (agentPanelShowing) return createRpcSuccessResponse(id, command.type);
+				agentPanelShowing = true;
 				const ui = session.extensionRunner.getUIContext();
-				void showAgentPanel(session, engineTaskInspectorUi(ui, taskInspectorUi)).catch((error: unknown) =>
-					ui.notify(sourceError(error).message, "error"),
-				);
+				void showAgentPanel(session, engineTaskInspectorUi(ui, taskInspectorUi))
+					.catch((error: unknown) => ui.notify(sourceError(error).message, "error"))
+					.finally(() => {
+						agentPanelShowing = false;
+					});
 				return createRpcSuccessResponse(id, command.type);
 			}
 			case "set_stop_all_notice": {
@@ -246,6 +286,32 @@ export function createRpcCommandHandler({
 				});
 			case "get_workflow_run_summary":
 				return createRpcSuccessResponse(id, command.type, await session.workflows.getRun(command.runId));
+			case "get_workflow_resume_entries": {
+				try {
+					return createRpcSuccessResponse(id, command.type, {
+						entries: await listWorkflowResumeEntries(session, command.target),
+					});
+				} catch (error: unknown) {
+					return createRpcErrorResponse(id, command.type, formatRpcErrorMessage(error), error);
+				}
+			}
+			case "resume_workflow_from_picker": {
+				try {
+					return createRpcSuccessResponse(id, command.type, {
+						handled: await resumeWorkflowFromPicker(session, command.target),
+					});
+				} catch (error: unknown) {
+					return createRpcErrorResponse(id, command.type, formatRpcErrorMessage(error), error);
+				}
+			}
+			case "delete_workflow_from_picker": {
+				try {
+					await deleteWorkflowFromPicker(session, command.runId);
+					return createRpcSuccessResponse(id, command.type);
+				} catch (error: unknown) {
+					return createRpcErrorResponse(id, command.type, formatRpcErrorMessage(error), error);
+				}
+			}
 
 			case "get_state": {
 				const extensionResult = session.resourceLoader.getExtensions();
@@ -266,9 +332,6 @@ export function createRpcCommandHandler({
 					sessionId: session.sessionId,
 					sessionName: session.sessionName,
 					autoCompactionEnabled: session.autoCompactionEnabled,
-					compaction: serializeBackgroundCompactionState(session.compaction),
-					backgroundCompactionEnabled: session.backgroundCompactionEnabled,
-					backgroundCompactionThresholdPercent: session.backgroundCompactionThresholdPercent,
 					messageCount: session.messages.length,
 					pendingMessageCount: session.pendingMessageCount,
 					queuedMessagesPaused: session.queuedMessagesPaused,
@@ -285,6 +348,13 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "get_state", state);
 			}
 			case "set_model": {
+				if (command.thinkingLevel !== undefined && !THINKING_LEVELS.includes(command.thinkingLevel)) {
+					return createRpcErrorResponse(
+						id,
+						"set_model",
+						`Invalid thinkingLevel: expected one of ${THINKING_LEVELS.join(", ")}`,
+					);
+				}
 				const models = await session.modelRuntime.getAvailableSnapshot();
 				const model = models.find(
 					(candidate) => candidate.provider === command.provider && candidate.id === command.modelId,
@@ -296,9 +366,16 @@ export function createRpcCommandHandler({
 						`Model not found: ${command.provider}/${command.modelId}`,
 					);
 				}
-				await session.setModel(model, command.persist === true ? { persist: true } : {});
+				await session.setModel(model, {
+					...(command.persist === true ? { persist: true } : {}),
+					...(command.thinkingLevel !== undefined ? { thinkingLevel: command.thinkingLevel } : {}),
+				});
 				runtimeHost.resolveModelFallback();
-				return createRpcSuccessResponse(id, "set_model", session.model ?? model);
+				const persistedDefaults = persistedModelDefaults(session, command.persist === true);
+				return createRpcSuccessResponse(id, "set_model", {
+					...(session.model ?? model),
+					...(persistedDefaults ? { persistedDefaults } : {}),
+				});
 			}
 			case "cycle_model": {
 				const previousModel = session.model;
@@ -307,10 +384,53 @@ export function createRpcCommandHandler({
 					command.persist === true ? { persist: true } : {},
 				);
 				runtimeHost.resolveModelFallbackAfterExplicitModelSelection(previousModel, result?.model);
-				return createRpcSuccessResponse(id, "cycle_model", result ?? null);
+				const persistedDefaults = result ? persistedModelDefaults(session, command.persist === true) : undefined;
+				return createRpcSuccessResponse(
+					id,
+					"cycle_model",
+					result ? { ...result, ...(persistedDefaults ? { persistedDefaults } : {}) } : null,
+				);
 			}
 			case "get_available_models":
 				return createRpcSuccessResponse(id, "get_available_models", createRpcModelCatalog(session));
+
+			case "set_scoped_models": {
+				const models = await session.modelRuntime.getAvailableSnapshot();
+				const scopedModels: Array<{ model: Model<Api>; thinkingLevel?: (typeof THINKING_LEVELS)[number] }> = [];
+				for (const entry of command.models) {
+					if (entry.thinkingLevel !== undefined && !THINKING_LEVELS.includes(entry.thinkingLevel)) {
+						return createRpcErrorResponse(
+							id,
+							"set_scoped_models",
+							`Invalid thinkingLevel: expected one of ${THINKING_LEVELS.join(", ")}`,
+						);
+					}
+					const model =
+						models.find((candidate) => candidate.provider === entry.provider && candidate.id === entry.modelId) ??
+						session.modelRuntime.getModel(entry.provider, entry.modelId);
+					if (model) {
+						scopedModels.push({
+							model,
+							...(entry.thinkingLevel !== undefined ? { thinkingLevel: entry.thinkingLevel } : {}),
+						});
+					}
+				}
+				session.setScopedModels(scopedModels);
+				if (command.enabledModels !== undefined) {
+					const nextEnabledModels = command.enabledModels === null ? undefined : [...command.enabledModels];
+					const currentEnabledModels = session.settingsManager.getGlobalSettings().enabledModels;
+					const unchanged =
+						nextEnabledModels === undefined
+							? currentEnabledModels === undefined
+							: currentEnabledModels !== undefined &&
+								currentEnabledModels.length === nextEnabledModels.length &&
+								currentEnabledModels.every((value, index) => value === nextEnabledModels[index]);
+					if (!unchanged) {
+						settingsWriteOwner.run(session, () => session.settingsManager.setEnabledModels(nextEnabledModels));
+					}
+				}
+				return createRpcSuccessResponse(id, "set_scoped_models", createRpcModelCatalog(session));
+			}
 
 			case "login_provider": {
 				const result =
@@ -406,7 +526,7 @@ export function createRpcCommandHandler({
 				if (detachCompaction) {
 					const finishCommand = beginCommand?.();
 					void session
-						.compact()
+						.compact(compactOptions(command.instructions))
 						.then(
 							(result) => output(createRpcSuccessResponse(id, "compact", result)),
 							(compactError: unknown) =>
@@ -417,19 +537,13 @@ export function createRpcCommandHandler({
 						.finally(() => finishCommand?.());
 					return undefined;
 				}
-				const result = await session.compact();
+				const result = await session.compact(compactOptions(command.instructions));
 				return createRpcSuccessResponse(id, "compact", result);
 			}
 
 			case "set_auto_compaction":
 				session.setAutoCompactionEnabled(command.enabled);
 				return createRpcSuccessResponse(id, "set_auto_compaction");
-			case "set_background_compaction":
-				session.setBackgroundCompactionEnabled(command.enabled);
-				return createRpcSuccessResponse(id, "set_background_compaction");
-			case "set_background_compaction_threshold":
-				session.setBackgroundCompactionThresholdPercent(command.percent);
-				return createRpcSuccessResponse(id, "set_background_compaction_threshold");
 			case "abort_compaction":
 				session.abortCompaction();
 				return createRpcSuccessResponse(id, "abort_compaction");
@@ -742,6 +856,10 @@ export function createRpcCommandHandler({
 			}
 			default: {
 				const unknownCommand = command as { type: string };
+				// Background compaction was removed; its commands still succeed so older clients keep working.
+				if (REMOVED_NO_OP_COMMANDS.has(unknownCommand.type)) {
+					return { id, type: "response", command: unknownCommand.type, success: true } as RpcResponse;
+				}
 				return createRpcErrorResponse(id, unknownCommand.type, `Unknown command: ${unknownCommand.type}`);
 			}
 		}

@@ -1,6 +1,28 @@
 # SQLite storage API
 
-The SDK exposes an async SQLite API from `@bastani/atomic` and `@bastani/atomic/storage`. Sessions default to the local file `~/.atomic/workflows/journal.sqlite`, with `session_` table prefixes. Workflow runs default to the [workflow journal store](#the-workflow-journal-store) in `~/.atomic/workflows/journal/`, one logical journal that Atomic splits into shard files by itself. Use [storage settings](/settings#sessions) to choose a different file, explicit JSONL sessions, explicit memory, or an adapter module, or [select storage per process](#selecting-storage-per-process) without editing settings. A failed persistent store never falls back to memory.
+The SDK exposes an async SQLite API from `@bastani/atomic` and `@bastani/atomic/storage`. Sessions default to the local file `workflows/journal.sqlite` under the [storage home](#storage-home) (`~/.atomic/workflows/journal.sqlite` by default), with `session_` table prefixes. Workflow runs default to the [workflow journal store](#the-workflow-journal-store) in `workflows/journal/` under the storage home (`~/.atomic/workflows/journal/` by default), one logical journal that Atomic splits into shard files by itself. Use [storage settings](/settings#sessions) to choose a different file, explicit JSONL sessions, explicit memory, or an adapter module, or [select storage per process](#selecting-storage-per-process) without editing settings. A failed persistent store never falls back to memory.
+
+### Storage home
+
+Every local store, relative storage `path` or `dir` setting, relative `--storage`/`ATOMIC_STORAGE` selection, relative `secrets.file` reference, worker pool coordination directory, workflow artifact directory, and shared workspace repository/worktree directory resolves against the agent directory's **storage home** (`storageHomeDir(agentDir, settings?)`):
+
+- **Default agent directory (`~/.atomic/agent`, matched by physical directory identity):** the storage home is the current home directory's `~/.atomic`, even after moving the home directory or mounting the same agent directory under another home. It does not retain the first machine's absolute home path. Relative storage targets in each home remain reserved for its default agent, even when another home used the shared agent directory first.
+- **Custom agent directory (`ATOMIC_CODING_AGENT_DIR`, `PI_CODING_AGENT_DIR`, or SDK `agentDir`):** the storage home is `<agentDir>` itself, so sibling agent directories under one parent never share a store. Under `<agentDir>/workflows`, the top-level `journal/`, `pool/`, and `runs/` subdirectories belong to Atomic's store and are not scanned as user workflow files.
+- **Upgraded parent store adoption:** one eligible custom agent directory can keep an earlier build's store in `<parent>`, unless the parent is `~/.atomic`. Atomic recognizes its session database, workflow journal, worker host id, an existing adoption record, or a relative storage `path` or `dir` selected by effective global, trusted project, SDK, CLI or environment settings. An unselected `storage.sqlite` file or generic `repos/` and `worktrees/` directories alone do not trigger adoption.
+
+For parent adoption, a sibling with Atomic configuration, agent resources, or an open-session registry has priority over an empty directory or one that does not exist yet. Ordinary source and documentation directories do not block an SDK agent directory from retaining its history. Unrelated applications' `settings.json`, `auth.json` and `models.json` files do not establish Atomic use merely by having those names. A directory with its own store stays isolated, including a populated relative session directory or database when the same relative target later appears under the parent. An incidental empty relative target does not block adoption of the parent store.
+
+The first eligible directory to claim the parent store keeps `<parent>` as its storage home and receives a one-time notice. Later processes of that directory use the same home, even if another store appears after the first process starts. Atomic honors an earlier worker host-id adoption. Opening the owner through a symlink or junction, renaming it within the same parent, or moving the parent together with its agent directories keeps the same store. Moving the parent across filesystems also keeps the store. Existing `.atomic/agent` layouts remain reserved for their default agent even when another process has a different `HOME`. Sibling directories use their own storage homes.
+
+Copying an adopting profile does not transfer its parent's default store away from an identifiable original, including after moving the parent, reopening the profile and then renaming it. This also applies when the copy uses the original profile name. A copy with its own store keeps that store if the original is removed, including a database newly selected in the copy's `settings.json`, even when the parent has another store at the same relative path. If the original and its copies can no longer be told apart, none uses the parent's default store, even when the original starts first. This also applies when the original is gone and several copies could own that store. Parent-relative session directories have separate ownership rules below.
+
+The adopted home also remains the base for relative storage settings, workspace `repos/` and `worktrees/`, and secrets. Existing relative `secrets.file` references can still read a file in `<parent>` even for an isolated sibling. If an older build used an alias of the default agent directory and stored its history in the alias's parent, Atomic can retain that unclaimed store when the canonical default home has no store. Later processes use the same adopted home through either spelling.
+
+Existing parent-relative targets keep their locations when they belong to different agent directories. For example, siblings selecting `a1-sessions` and `a2-sessions` keep reading those directories under their common parent, even when only one sibling adopts the parent's default store. An in-directory target such as `sessions.storage.dir: "a2/sessions"` for `<parent>/a2` also stays at `<parent>/a2/sessions`, not `<parent>/a2/a2/sessions`. If siblings select the same relative target, only its owner keeps the parent target; other siblings resolve it inside their own directories, and a copy that has used its own directory keeps it after the original is removed, even if the copy was renamed or moved first. Symlinks and hard links do not bypass that ownership. An explicit `sessions.storage.dir: "sessions"` retains its owned parent-relative target during upgrade, even when older default JSONL files also exist in `<agentDir>/sessions` or another profile adopted worker-host state first.
+
+When the physical parent holds the adopted store and a move across filesystems and a rename leave an adopter and its copy indistinguishable, the first to claim the parent-relative session directory keeps it. For sequential starts, this is whichever starts first. The other profile uses its own session directory on later starts. Starting the original before its backup keeps only the parent sessions with it, not the parent's default store. To keep both, start Atomic once after moving and before copying. Opening through a symlink or junction follows this rule when the physical parent holds the store. Use an absolute path when you intentionally want directories to share a store.
+
+The `@bastani/atomic/storage` (and `@bastani/atomic`) package exports `storageHomeDir(agentDir?, settings?)`, `workflowsStorageDir(agentDir?, settings?)`, `defaultJournalStoreDirectory(agentDir, settings?)`, `defaultSessionDatabasePath(agentDir?, settings?)`, and `defaultSharedStoragePath(agentDir?, settings?)`. Use `storagePathBaseDir(path, agentDir, settings?)` when resolving a relative target that may need the compatibility rules above. Pass merged settings to these helpers before opening a store. A lookup without settings, or for an agent directory that does not exist yet, is provisional. Opening a session or journal finalizes its selection with complete settings. `atomic storage status` does not create an agent directory that does not exist. A read-only agent directory can still use a writable storage home. Atomic uses the current selection when it cannot save a new storage-home decision because of directory permissions. Make the agent directory writable if you need that new decision to stay fixed across sessions.
 
 For CLI storage selection and resume commands, see [Choosing a store](/sessions#choosing-a-store).
 
@@ -21,7 +43,7 @@ try {
 
 `exec`, `run`, `get`, and `all` return promises. Bind values through positional `?` parameters; `run` returns `{ changes }`, `get` returns a row or `undefined`, and `all` returns an array. Values may be null, number, bigint, string, or Uint8Array. Binary values are copied when the call is made, so reusing a buffer afterward does not change queued work. INTEGER values inside the safe integer range are returned as numbers; larger values are returned as bigints.
 
-The node adapter creates parent directories and enables WAL, full synchronization, and foreign keys. Its busy timeout defaults to 5000 ms; override it with `openNodeSqliteDatabase(path, { busyTimeoutMs: 1000 })`. Use `:memory:` for an ephemeral database. Pass `{ readOnly: true }` to inspect an existing file without creating it or changing its journal mode.
+The node adapter creates parent directories and enables WAL, full synchronization, and foreign keys. Its busy timeout defaults to 5000 ms; override it with `openNodeSqliteDatabase(path, { busyTimeoutMs: 1000 })`. Use `:memory:` for an ephemeral database. Pass `{ readOnly: true }` to inspect an existing file without creating it or changing its journal mode. `openNodeSqliteDatabase` and `wrapNodeSqliteDatabase` connections hold a shared lock on `<file>-open.lock` while they are open, `file:` URIs included, so Atomic removes a local checkpoint journal only when none of them has it open. An `openNodeSqliteDatabase` read-only connection takes the lock only beside a database that has a `<file>-holders` directory, a `<file>-open.lock` or a `<file>.lock` file, and goes without it where it cannot create the lock file, such as in a read-only directory. `wrapNodeSqliteDatabase` attempts the lock for every file-backed connection, including a read-only connection to an untouched database, because the caller's connection does not expose its read-only setting. It removes the lock file when the last connection releases it. Wrapping also works without the lock when the lock file is not writable, including when a Windows directory's permissions refuse new files. Journal cleanup never removes a file while an Atomic-created or Atomic-wrapped connection uses it. Tools that open checkpoint journal files directly outside Atomic do not take this lock; do not run them against a crashed host's journal while a new host starts.
 
 Transactions from separate `openNodeSqliteDatabase` connections to the same file queue asynchronously within one process; symlink paths refer to the same queue. Separate in-memory databases remain independent. Wrap a caller-owned connection consistently: its transaction queue is shared by wrappers of that connection, not by other connections to its file.
 
@@ -61,7 +83,7 @@ To move existing runs and sessions to another store, see [Exporting and importin
 In this release:
 
 - **Sessions**, including entries whose text holds NUL characters or lone surrogates, such as some tool output.
-- **Workflow runs**: starting, running and resuming them, and the `/workflow resume` list, from any machine that selects the database.
+- **Workflow runs**: starting, running and resuming them, and the resumable runs in `/resume`, from any machine that selects the database.
 - **Intercom's multi-node routing**: sessions on different machines that select the same database message each other.
 - **Moving data in and out**: `atomic storage export` and `atomic storage import` with a PostgreSQL database, for sessions and workflow runs.
 - **Worker pools**: roots with shared placement and their worker hosts, with `atomic worker start`, `status`, `metrics` and `controller --db postgres://…`. The pool's queue, leases, resource admission, pooled-stage transcripts and fleet controller live in the database. See [Running workers on many machines](/guides/worker-hosts).
@@ -262,9 +284,11 @@ The checkpoint is the server's own work: sqld refuses checkpoints from its clien
 
 For a self-hosted sqld started with `--enable-namespaces`, add `"namespace": "<name>"` to `options`; the adapter sends it as the `x-namespace` header, so each namespace is its own database with its own token. `namespace` needs a `libsql:`, `https:`, or `http:` URL. SDK callers can also pass extra request `headers` to `openLibsqlDatabase`; their values are redacted from errors.
 
-Save the token with `turso db tokens create <db> > turso-token` and keep it readable only by you (`chmod 600`); a trailing newline is ignored. A relative `file` resolves against Atomic home, normally `~/.atomic`. Use `{ "env": "TURSO_TOKEN" }` instead to read it from an environment variable. For a local database file, use a `file:` URL such as `file:/home/me/shared.sqlite` and omit `secrets`. Every machine that uses the same `storage` block shares the same sessions, workflow runs, and Intercom routing; add a `prefix` to keep projects or teams apart. See [Sharing storage across hosts](#sharing-storage-across-hosts).
+Save the token with `turso db tokens create <db> > turso-token` and keep it readable only by you (`chmod 600`); a trailing newline is ignored. A relative `file` resolves against the [storage home](#storage-home) (`~/.atomic` by default, `<agentDir>` for a fresh custom `ATOMIC_CODING_AGENT_DIR`, or the parent directory when that file or an adopted store already lives there). Use `{ "env": "TURSO_TOKEN" }` instead to read it from an environment variable. For a local database file, use a `file:` URL such as `file:/home/me/shared.sqlite` and omit `secrets`. Every machine that uses the same `storage` block shares the same sessions, workflow runs, and Intercom routing; add a `prefix` to keep projects or teams apart. See [Sharing storage across hosts](#sharing-storage-across-hosts).
 
-A process that stops for a while in the middle of a write, for example one paused by a signal, starved of CPU, or on a laptop that slept, can find on resuming that the server expired its idle stream or rolled back its transaction; a server that is restarting refuses connections for a moment. A request the server leaves unanswered for 30 seconds is abandoned and reported the same way, with `outcome: "unknown"`. The adapter reports these as `StorageTransientError`, and a statement, a batch, or a workflow journal or session write that they ended before it wrote anything runs again, up to five times over about four seconds. A write whose connection broke after the server may have applied it is never sent again: it fails with `StorageTransientError` and `outcome: "unknown"`. Workflow runs that still fail this way can be continued with `/workflow resume`.
+A process that stops for a while in the middle of a write, for example one paused by a signal, starved of CPU, or on a laptop that slept, can find on resuming that the server expired its idle stream or rolled back its transaction; a server that is restarting refuses connections for a moment. A request the server leaves unanswered for 30 seconds is abandoned and reported the same way, with `outcome: "unknown"`. The adapter reports these as `StorageTransientError`, and a statement, a batch, or a workflow journal or session write that they ended before it wrote anything runs again, up to five times over about four seconds. A write whose connection broke after the server may have applied it is never sent again: it fails with `StorageTransientError` and `outcome: "unknown"`. Workflow runs that still fail this way can be resumed from `/resume`.
+
+The adapter uses WebSockets for `ws:` and `wss:` URLs, including `run`, `get` and `all` statements. A batch is successful only when its COMMIT ran. If the server skipped COMMIT without an explicit rollback error, Atomic reports `StorageUnavailableError` with cause code `TRANSACTION_CLOSED` rather than assuming success or retrying an unconfirmed write.
 
 #### Size limits
 
@@ -279,9 +303,11 @@ Atomic's stores keep every value well under the smallest of these limits, so ses
 - A workflow journal event whose JSON is over 1 MiB, such as a large `ctx.step` result or stage output, is stored as rows of at most 1 MiB in `wf_event_chunks`, in the transaction that appends the event. Its `wf_events` row keeps a summary with the event's short top-level fields and its `worktreeSnapshots`, which the queries that read event JSON in SQL use: the snapshot reference index, a run's latest snapshot and checkpoint time, and run status.
 - A worker pool child's inputs over 1 MiB, and a pooled child's result over 1 MiB, are stored the same way, in `wf_runs_work_input_chunks` and `wf_runs_work_result_chunks`.
 
-Blobs, entries, events, inputs and results written before this release stay in one row and are still read.
+Blobs, entries, events, inputs and results written before this release stay readable in their original rows. Snapshot collection moves worktree-snapshot blobs over 1 MiB into chunks regardless of their age, writing at most 16 MiB of chunks per transaction. Recording unknown ages for smaller blobs also rewrites at most 16 MiB per transaction. Moving a blob preserves its existing age, so conversion does not restart its grace window. A stopped move resumes on the next collection, and deleting the blob removes its partial chunks.
 
-**This upgrade is one way.** The first session entry this release stores in chunks upgrades the session schema to version 2, in the sessions meta table. Until then, a new database or an existing version 1 database stays at version 1, and older builds keep opening it. A database already at version 2 is not downgraded, even after its chunked entries are deleted. When this release opens a workflow journal, it upgrades the journal schema (`wf_meta`) to version 2, and a worker pool's schema (`wf_runs_pool_meta`) to version 3. Older Atomic builds then refuse the database with `StorageSchemaVersionError` (`JournalSchemaVersionError` for a journal) instead of reading a large entry, event, input, result or worktree snapshot blob as a stub. Storing a worktree snapshot over 1 MiB does the same to the journal schema even where no workflow has run yet, so an older build cannot open that database's journal. Upgrade every host that shares a store together, before any of them opens it with this release.
+Refreshing or storing a blob of unknown age leaves it protected until collection records its age. A blob whose age an older build already recorded keeps its normal age refresh, so refreshing a large inline blob can still rewrite its whole row before the first collection moves it. Publishing the chunks also frees the old inline pages under the write lock, with time proportional to the blob's size.
+
+**This upgrade is one way.** The first session entry this release stores in chunks upgrades the session schema to version 2, in the sessions meta table. Until then, a new database or an existing version 1 database stays at version 1, and older builds keep opening it. A database already at version 2 is not downgraded, even after its chunked entries are deleted. When this release opens a workflow journal, it upgrades the journal schema (`wf_meta`) to version 2, and a worker pool's schema (`wf_runs_pool_meta`) to version 3. Older Atomic builds then refuse the database with `StorageSchemaVersionError` (`JournalSchemaVersionError` for a journal) instead of reading a large entry, event, input, result or worktree snapshot blob as a stub. Storing a worktree snapshot over 1 MiB, or a collection finishing the move of an older one into chunks, does the same to the journal schema even where no workflow has run yet, so an older build cannot open that database's journal. Upgrade every host that shares a store together, before any of them opens it with this release.
 
 **Stop every older Atomic process on a shared store before the first run of this release**, worker hosts and pool workers included. A process that opened the store before the upgrade keeps it open and never reads its schema version again, so it can read a chunked session entry or workflow event as a stub. The lazy session upgrade does not make it safe to run older and newer builds on the same store at once. An older process running across the first chunked entry can also leave deleted session content behind in chunk rows when it rewrites or deletes that session. After stopping it, reopen the SQLite/libSQL store with write access using this release to remove those rows. Opening it read-only leaves those rows unchanged. This release stores large journal events, pool inputs and pool results whole while it can tell that an older process is live: one holds a workflow run's lease renewed in the last two minutes that no build of this release granted, or a worker host without the journal schema it reads reported in that window. Whole, such a value fails on a libSQL server with `StoragePayloadTooLargeError`, as before this release. An older process that only reads cannot be told apart. From this release on, each session transaction and each read and write of a workflow journal checks its schema version. A process of this release refuses a session schema newer than version 2 with `StorageSchemaVersionError`, or a journal a later release upgrades with `JournalSchemaVersionError`. An older build that reads a large worktree snapshot through a workflow journal, without opening the session store, reports the snapshot as corrupt (`WorkspaceRestoreError` `blob-corrupt`), because it cannot read the snapshot's chunks.
 
@@ -348,7 +374,7 @@ When the shared `storage` selection (global settings, `--storage`, or `ATOMIC_ST
 
 ## The workflow journal store
 
-With no journal selected, workflow runs go to the journal store in `~/.atomic/workflows/journal/` (under the agent directory's parent when `ATOMIC_CODING_AGENT_DIR` is set). It is one logical journal: a small catalog, `catalog.sqlite`, and SQLite shard files, `shard-0001.sqlite` and up. You never choose or create these files. `{}` as `workflows.journal` or `ATOMIC_WORKFLOWS_JOURNAL` also selects the store.
+With no journal selected, workflow runs go to the journal store in `workflows/journal/` under the [storage home](#storage-home) (`~/.atomic/workflows/journal/` by default, `<agentDir>/workflows/journal/` for a custom `ATOMIC_CODING_AGENT_DIR`, or `<parent>/workflows/journal/` for the single custom directory that adopted an existing parent store). It is one logical journal: a small catalog, `catalog.sqlite`, and SQLite shard files, `shard-0001.sqlite` and up. You never choose or create these files. `{}` as `workflows.journal` or `ATOMIC_WORKFLOWS_JOURNAL` also selects the store.
 
 - Each root run, with everything recorded for its child runs and its local workers, lives on one shard, so runs on different shards never wait for each other's write lock.
 - A new root goes to a shard with no running root. When every shard has one, Atomic adds a shard, up to 32. Runs never move to another shard on their own. A shard file that is lost stops taking new roots, and its runs fail with `shard-missing` until the file is restored.
@@ -441,7 +467,7 @@ Import takes the write lock of every journal file it writes runs to, and compare
 
 After import, sessions resolve for `--session`, `/resume` and `history://sessions`. Runs resolve by ID for status, resume, attach, fork and `history://workflows`.
 
-Leases, local-worker pool state and worktree snapshot contents of workflow runs are not exported. An imported run has no owner: a run that was running when it was exported is an interrupted run here. The resume picker and `/workflow resume` offer it once it has completed at least one step. Import refuses to add events to a run that a process on this machine renewed the lease of in the last two minutes, because that run may still be running here. Resume treats a run whose working directory differs from the current one as a run from another project, so restore the checkout at the same path.
+Leases, local-worker pool state and worktree snapshot contents of workflow runs are not exported. An imported run has no owner: a run that was running when it was exported is an interrupted run here. The `/resume` picker offers it once it has completed at least one step. Import refuses to add events to a run that a process on this machine renewed the lease of in the last two minutes, because that run may still be running here. Resume treats a run whose working directory differs from the current one as a run from another project, so restore the checkout at the same path.
 
 #### Which storage they use
 
@@ -520,7 +546,7 @@ mkdir -p "$STATE_DIR" && atomic storage import "$STATE_DIR"
 atomic storage export "$STATE_DIR"
 ```
 
-To carry only runs that can still be resumed, export with `--unfinished`. An interrupted run imported this way resumes with `/workflow resume <runId>` in the next job. A session imported this way continues with `atomic --session <id>`. Add `--since` or `--limit` to keep the saved directory small.
+To carry only runs that can still be resumed, export with `--unfinished`. An interrupted run imported this way resumes from `/resume` or the workflow tool's `resume` action in the next job. A session imported this way continues with `atomic --session <id>`. Add `--since` or `--limit` to keep the saved directory small.
 
 ### When to select a journal
 
@@ -559,8 +585,13 @@ You can also implement `SqliteDatabase` yourself by following the same rules. Ei
 
 This module is a complete adapter. Install `@libsql/client` where the module can import it, for example as a dependency of an [Atomic package](#adapters-from-atomic-packages). It accepts caller-provided credentials only. For a local file, create its parent directory first; no network or credentials are needed.
 
+Keep `closeEachConnectionOnce` and `releaseClosedConnections` when you copy the example. For a local file, `@libsql/client` 0.18 uses the native `libsql` 0.5 driver, which closes a connection's SQLite handle twice when no statement still holds the connection. The second close reads freed memory, and on Windows the process can then exit without an error message. `closeEachConnectionOnce` prepares a statement before each close and holds it until the close returns, so the handle closes once, when the statement is garbage-collected. For a local file, `close()` therefore runs two garbage collections before it resolves, so the database's files are released when it returns and Windows can delete them. `@bastani/atomic-storage-libsql` does the same.
+
 {/* custom-driver-example */}
 ```ts
+import { createRequire } from "node:module";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import type { Client, Transaction } from "@libsql/client";
 import {
 	createSqliteDatabase,
@@ -598,6 +629,76 @@ function urlCredentials(url: string): string[] {
 	return secrets;
 }
 
+const closesOnce = Symbol.for("@bastani/atomic-storage-libsql.closesOnce");
+
+interface LibsqlConnection {
+	open: boolean;
+	close(): void;
+	prepare(sql: string): object;
+}
+
+interface LibsqlConnectionClass {
+	prototype: LibsqlConnection & { [closesOnce]?: true };
+}
+
+const statementsHeldWhileClosing = new Set<object>();
+
+function statementHoldingConnection(connection: LibsqlConnection): object | undefined {
+	if (!connection.open) return undefined;
+	try {
+		return connection.prepare("SELECT 1");
+	} catch {
+		return undefined;
+	}
+}
+
+function closeEachConnectionOnce(): void {
+	const client = createRequire(import.meta.url).resolve("@libsql/client");
+	const Connection = createRequire(client)("libsql") as LibsqlConnectionClass;
+	if (Connection.prototype[closesOnce]) return;
+	const close = Connection.prototype.close;
+	Connection.prototype.close = function (this: LibsqlConnection) {
+		const statement = statementHoldingConnection(this);
+		if (statement) statementsHeldWhileClosing.add(statement);
+		try {
+			close.call(this);
+		} finally {
+			if (statement) statementsHeldWhileClosing.delete(statement);
+		}
+	};
+	Connection.prototype[closesOnce] = true;
+}
+
+interface GarbageCollectingRuntime {
+	gc?: () => void;
+	Bun?: { gc(force: boolean): void };
+}
+
+function exposedGc(): () => void {
+	setFlagsFromString("--expose-gc");
+	try {
+		return runInNewContext("gc") as () => void;
+	} finally {
+		setFlagsFromString("--no-expose-gc");
+	}
+}
+
+function collectGarbage(): void {
+	const runtime = globalThis as GarbageCollectingRuntime;
+	if (runtime.gc) runtime.gc();
+	else if (runtime.Bun) runtime.Bun.gc(true);
+	else exposedGc()();
+}
+
+const COLLECTION_PASSES = 2;
+
+async function releaseClosedConnections(): Promise<void> {
+	for (let pass = 0; pass < COLLECTION_PASSES; pass++) {
+		collectGarbage();
+		await new Promise((resolve) => setImmediate(resolve));
+	}
+}
+
 function statements(connection: () => Client | Transaction): SqliteDriverExecutor {
 	return {
 		async execute(sql, params) {
@@ -612,6 +713,7 @@ export async function openLibsqlDatabase({ url, authToken }: LibsqlDatabaseOptio
 	let createClient: typeof import("@libsql/client").createClient;
 	try {
 		({ createClient } = await import("@libsql/client"));
+		closeEachConnectionOnce();
 	} catch (cause) {
 		throw new StorageAdapterLoadError("@libsql/client", cause as StorageFailureCause);
 	}
@@ -631,7 +733,10 @@ export async function openLibsqlDatabase({ url, authToken }: LibsqlDatabaseOptio
 				close: () => transaction.close(),
 			};
 		},
-		close: () => client?.close(),
+		async close() {
+			client?.close();
+			if (/^file:/i.test(url)) await releaseClosedConnections();
+		},
 	});
 	try {
 		await database.exec("PRAGMA foreign_keys = ON");
@@ -791,7 +896,7 @@ How the options combine with the path overrides:
 - `ATOMIC_SESSIONS_STORAGE` with a non-empty `ATOMIC_CODING_AGENT_SESSION_DIR`, or `ATOMIC_WORKFLOWS_JOURNAL` with a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, is a conflict. Startup fails with `StorageConfigError` whose `source` is `"env"`, whose `field` names both variables, and whose `reason` is `"conflicting-overrides"`. Unset one of them.
 - `--storage` or `--storage-file` with a non-empty `ATOMIC_CODING_AGENT_SESSION_DIR` or `ATOMIC_WORKFLOW_JOURNAL_PATH` is also a conflict, with `source` `"cli"`, because the flag would otherwise silently override the variable. Unset the variable, or for sessions pass a session flag such as `--session-dir`, which takes precedence over both.
 
-Relative `path`, `dir`, and `secrets.file` values resolve against Atomic home, normally `~/.atomic`, and relative adapter module specifiers resolve from the agent directory, exactly as in settings and regardless of the working directory. A relative `--storage-file` path resolves against the working directory. Empty variables are ignored. `ATOMIC_CODING_AGENT_SESSION_DIR` and `ATOMIC_WORKFLOW_JOURNAL_PATH` keep their existing behavior.
+Relative `path`, `dir`, and `secrets.file` values resolve against the [storage home](#storage-home) (`~/.atomic` by default, `<agentDir>` for a custom `ATOMIC_CODING_AGENT_DIR`, or `<parent>` when adopted; relative `secrets.file` paths also fall back to `<parent>` when reading an existing file), and relative adapter module specifiers resolve from the agent directory, exactly as in settings and regardless of the working directory. A relative `--storage-file` path resolves against the working directory. Empty variables are ignored. `ATOMIC_CODING_AGENT_SESSION_DIR` and `ATOMIC_WORKFLOW_JOURNAL_PATH` keep their existing behavior.
 
 At startup, before any session starts and in every mode including RPC, the CLI validates `--storage` or `--storage-file` and every set `ATOMIC_STORAGE`, `ATOMIC_SESSIONS_STORAGE`, and `ATOMIC_WORKFLOWS_JOURNAL`, even one that a flag or another variable outranks. `createAgentSession()` validates the same set variables before it creates a session, even when the host supplies `sessionManager` or `sessionStore`. Invalid JSON, a selection that does not match the settings schema, or an unreadable `--storage-file` raises `StorageConfigError` with `source` `"env"` or `"cli"`, a `field` naming the variable or flag, and a `reason` such as `"invalid-json"`, `"invalid-selection"`, or `"unreadable-file"`. A missing `{ "env": ... }` secret reports `"secret-env-missing"` against the selection's variable or flag when the store opens. Atomic never falls back to settings or another store. Errors name the variable or flag, never the selection text or a resolved secret.
 
@@ -824,7 +929,7 @@ A custom `SessionStore` can implement these optional methods to avoid loading wh
 |---|---|
 | `readTail(id, fromSeq)` | The header and entries from `fromSeq` on, in store order, plus earlier live state and omitted usage totals. |
 | `readRange(id, startSeq, endSeq)` | Entries in that inclusive sequence range, in store order, with `seqs`, `lastSeq` and `epoch`. |
-| `findLatestCompaction(id, leafId?)` | The latest verbatim compaction on the selected branch, its sequence and retained start. |
+| `findLatestCompaction(id, leafId?)` | The latest active compaction boundary on the selected branch, its sequence and retained start. |
 | `readResume(id, leafId?)` | One consistent snapshot containing the header, selected branch from its compaction boundary, live state, omitted totals, recovery ids, `lastSeq`, `lastEntryId`, `leafId` and `epoch`. |
 | `findEntrySeq(id, entryId)` | The entry's sequence, or `undefined` if it is absent. |
 
@@ -888,8 +993,7 @@ These storage errors carry a stable `code` and a `hint` with the remedy:
 | `SessionSpillError` | `spill-dir-refused` | Not thrown: recorded once, as above. The directory for released sessions' files could not be created under the agent directory; released sessions keep their history in memory, and the store tries again no more than once a minute. | `directory`, `errno` | Make the agent directory writable by this account. |
 | `SessionSpillError` | `spill-cleanup-failed` | Not thrown: recorded once, as above. A deleted or replaced session's file, or a closed store's directory, could not be removed. | `directory`, `sessionId` (for one session's file), `errno`, `cause` | Nothing in the store is affected; the process's directory is removed when it exits, or by the next start's sweep once it is gone. |
 
-Each has a guard that also recognizes a copy from another module instance or process: `isStorageConfigError`, `isStorageWriteLockTimeoutError`, `isStorageUnsupportedOperationError`, `isStorageWriterQueueDegradedError`, `isStorageWriterQueueUnusableError`, and `isStorageTransientError` (`STORAGE_TRANSIENT_ERROR_CODES` lists its codes). `isStorageError(error)` matches any storage error on this page, including a rehydrated one, and a copy of one of these coded errors. `findStorageWriteLockTimeoutError(error)` and `isRetryableStorageError(error)` look through up to eight levels of `cause`. To pass a storage error to another process, send `serializeStorageError(error)` as JSON and call `rehydrateStorageError` on the other side: any of the storage errors on this page comes back as the same class with the same message, fields, cause chain, `rollbackCause`, and `cleanupCause`. Only scalar facts travel, so a `StorageSchemaVersionError` whose `found` was a bigint or binary value comes back with `found: null`. A storage error the receiving version does not know becomes a `StorageError` that keeps the original `name`, `code`, and fields.
-Each has a guard that also recognizes a copy from another module instance or process: `isStorageConfigError`, `isStorageWriteLockTimeoutError`, `isStorageUnsupportedOperationError`, `isStorageWriterQueueDegradedError`, `isStorageWriterQueueUnusableError`, `isSessionBlobError`, and `isSessionSpillError`. `SESSION_BLOB_ERROR_CODES` lists `SessionBlobError`'s codes, none of which is retryable; `SESSION_SPILL_ERROR_CODES` lists `SessionSpillError`'s. `isStorageError(error)` matches any storage error on this page, including a rehydrated one, and a copy of one of these coded errors. `findStorageWriteLockTimeoutError(error)` and `isRetryableStorageError(error)` look through up to eight levels of `cause`. To pass a storage error to another process, send `serializeStorageError(error)` as JSON and call `rehydrateStorageError` on the other side: any of the storage errors on this page comes back as the same class with the same message, fields, cause chain, `rollbackCause`, and `cleanupCause`. Only scalar facts travel, so a `StorageSchemaVersionError` whose `found` was a bigint or binary value comes back with `found: null`. A storage error the receiving version does not know becomes a `StorageError` that keeps the original `name`, `code`, and fields.
+Each has a guard that also recognizes a copy from another module instance or process: `isStorageConfigError`, `isStorageWriteLockTimeoutError`, `isStorageUnsupportedOperationError`, `isStorageWriterQueueDegradedError`, `isStorageWriterQueueUnusableError`, `isStorageTransientError`, `isSessionBlobError`, and `isSessionSpillError`. `STORAGE_TRANSIENT_ERROR_CODES` lists `StorageTransientError`'s codes; `SESSION_BLOB_ERROR_CODES` lists `SessionBlobError`'s codes, none of which is retryable; `SESSION_SPILL_ERROR_CODES` lists `SessionSpillError`'s. `isStorageError(error)` matches any storage error on this page, including a rehydrated one, and a copy of one of these coded errors. `findStorageWriteLockTimeoutError(error)` and `isRetryableStorageError(error)` look through up to eight levels of `cause`. To pass a storage error to another process, send `serializeStorageError(error)` as JSON and call `rehydrateStorageError` on the other side: any of the storage errors on this page comes back as the same class with the same message, fields, cause chain, `rollbackCause`, and `cleanupCause`. Only scalar facts travel, so a `StorageSchemaVersionError` whose `found` was a bigint or binary value comes back with `found: null`. A storage error the receiving version does not know becomes a `StorageError` that keeps the original `name`, `code`, and fields.
 
 Session operations can raise `SessionNotFoundError` or `SessionExistsError` with `sessionId`; `SessionIdMismatchError` with `requested` and `found`; and `SessionConflictError` with `sessionId`, `expectedSeq`, and `actualSeq`. Keep one writer per session. After a conflict, reopen the session rather than writing from stale state.
 

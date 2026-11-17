@@ -461,7 +461,7 @@ describe("installWorkflowLifecycleNotifications", () => {
 		assert.equal(siblingSawCompletion, true);
 	});
 
-	test("registers lifecycle renderer once per host and returns a notice card", () => {
+	test("registers lifecycle renderer once per host and returns a shared expandable notice (#5224)", () => {
 		const host = {};
 		const registered: RegisteredRenderer[] = [];
 		registerLifecycleNoticeRenderer({
@@ -494,7 +494,7 @@ describe("installWorkflowLifecycleNotifications", () => {
 		assert.notEqual(rendered, null);
 		assert.deepEqual(
 			(rendered as CardComponent).render(80).map((line) => stripVTControlCharacters(line)),
-			['● Workflow "cards" completed'],
+			[' ● Workflow "cards" completed'],
 			"collapsed, the notice is the one notice line every finished task uses (#5224)",
 		);
 		const expanded = registered[0]?.renderer(
@@ -510,14 +510,12 @@ describe("installWorkflowLifecycleNotifications", () => {
 			},
 			{ expanded: true },
 		);
-		const lines = (expanded as CardComponent).render(80);
+		const lines = (expanded as CardComponent).render(80).map(stripVTControlCharacters);
 		const text = lines.join("\n");
-		assert.match(stripVTControlCharacters(lines[0]!), /^● Workflow "cards" completed$/);
-		assert.match(text, /╭ WORKFLOW COMPLETE/);
-		assert.match(text, /✓ Workflow "cards" completed/);
-		assert.match(text, /workflow\s+cards/);
-		assert.match(text, /run\s+run-card/);
-		assert.match(text, /▸ \/workflow status run-card/);
+		assert.equal(lines[0], ' ● Workflow "cards" completed');
+		assert.doesNotMatch(text, /[╭╮╰╯│]/);
+		assert.match(text, / {3}⎿ {2}run run-card/);
+		assert.match(text, /\/workflows run-card/);
 	});
 
 	test("wraps long lifecycle notices to the render width so no rendered line overflows the terminal (#1109 width-overflow crash)", () => {
@@ -561,12 +559,14 @@ describe("installWorkflowLifecycleNotifications", () => {
 			}
 		}
 
-		// Where the terminal is wide enough to hold the run id token, wrapping must
-		// not drop it so `/workflow status <id>` stays usable.
-		for (const width of [120, 80, 40]) {
+		for (const width of [120, 80, 40, 24]) {
 			const lines = component.render(width);
+			const unwrapped = lines
+				.map((line) => stripVTControlCharacters(line).replace(/^\s*(?:⎿\s*)?/, ""))
+				.join("")
+				.replace(/\s/g, "");
 			assert.ok(
-				lines.some((line) => line.includes(details.runId)),
+				unwrapped.includes(`run${details.runId}`) && unwrapped.includes(`/workflows${details.runId}`),
 				`runId missing after wrap at width ${width}: ${JSON.stringify(lines)}`,
 			);
 		}

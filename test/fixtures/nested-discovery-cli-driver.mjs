@@ -66,7 +66,7 @@ const workflowCall = async (args_) => {
 	return JSON.parse(result.content.find((c) => c.type === "text").text);
 };
 try {
-	await prompt("/workflow nested-discovery-fixture");
+	await workflowCall({ action: "run", workflow: "nested-discovery-fixture", inputs: {} });
 	await waitFor(() => existsSync(join(evidence, "holds.jsonl")), "grandchild live reviewer");
 	const status = await workflowCall({ action: "status" });
 	assert.equal(status.runs.length, 1);

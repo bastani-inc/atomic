@@ -1,19 +1,24 @@
 import {
+	type AutoModelSettings,
 	type CreateAgentSessionOptions,
 	DecisionModelUnavailableError,
 	decide,
-	type ModelRoutingSettings,
-	routeExecutionModel,
+	providerOfModelReference,
+	resolveAutoModel,
 } from "@bastani/atomic";
 import type { RunJournalSettings } from "../durable/journal/resolution.js";
-import type { WorkflowModelCatalogPort, WorkflowModelInfo } from "../shared/types.js";
+import type { WorkflowModelCatalogPort, WorkflowModelInfo, WorkflowThinkingLevel } from "../shared/types.js";
 import type { PiModelContext } from "./public-types.js";
 
 export type WorkflowModelContext = PiModelContext & {
+	/** The launching session's thinking level, which `model: "auto"` keeps with that session's model. */
+	readonly thinkingLevel?: WorkflowThinkingLevel;
 	getDecisionModel?: () => string;
-	getModelRouting?: () => ModelRoutingSettings;
 	getHttpIdleTimeoutMs?: () => number;
 };
+
+/** The host settings a workflow reads: its journal settings and the default model `model: "auto"` stands for. */
+export type WorkflowHostSettings = RunJournalSettings & AutoModelSettings;
 
 /** `workflows.autoAdvanceAfterSteer`; the array form of `workflows` and an unset value keep the default, true. */
 export function autoAdvanceAfterSteerSetting(settings: RunJournalSettings | undefined): boolean {
@@ -26,60 +31,36 @@ export function autoAdvanceAfterSteerSetting(settings: RunJournalSettings | unde
  * `currentModel` and `preferredProvider` are the launch-time selection. The
  * registry is read lazily and, when `resolveLiveContext` is supplied, through
  * the newest live host generation, so a run that survives a preserving
- * `/reload` still validates and routes stage models after its launch ctx has
+ * `/reload` still validates and resolves stage models after its launch ctx has
  * gone stale (#3201). `readSettings` returns the host's live settings.
  */
 export function workflowModelCatalogFromContext(
 	ctx?: WorkflowModelContext,
 	resolveLiveContext?: () => WorkflowModelContext | undefined,
-	readSettings?: () => RunJournalSettings | undefined,
+	readSettings?: () => WorkflowHostSettings | undefined,
 ): WorkflowModelCatalogPort | undefined {
 	if (ctx?.modelRegistry === undefined && ctx?.model === undefined) return undefined;
 	const live = (): WorkflowModelContext => resolveLiveContext?.() ?? ctx;
 	return {
-		routeModel: async (input) => {
+		autoModel: () => {
 			const current = live();
 			const registry = current.modelRegistry;
-			if (
-				!current.getDecisionModel ||
-				!registry?.getAll ||
-				!registry.streamSimple ||
-				!registry.containsConfiguredCredential ||
-				!registry.getClassifierModel
-			) {
-				throw new Error(
-					"Workflow stage auto routing requires host routing, classifier model, and credential screening support.",
-				);
-			}
-			return routeExecutionModel({
-				ctx: {
-					model: current.model,
-					getDecisionModel: () => current.getDecisionModel!(),
-					...(current.getModelRouting ? { getModelRouting: () => current.getModelRouting!() } : {}),
-					...(current.getHttpIdleTimeoutMs ? { getHttpIdleTimeoutMs: () => current.getHttpIdleTimeoutMs!() } : {}),
-					modelRegistry: {
-						getAvailable: () => registry.getAvailable(),
-						getAll: () => registry.getAll!(),
-						streamSimple: (...args) => registry.streamSimple!(...args),
-						containsConfiguredCredential: (text) => registry.containsConfiguredCredential!(text),
-						getClassifierModel: (provider, modelId) => registry.getClassifierModel!(provider, modelId),
-						...(registry.classify ? { classify: registry.classify.bind(registry) } : {}),
-						...(registry.getProviderAuth ? { getProviderAuth: registry.getProviderAuth.bind(registry) } : {}),
-						...(registry.getProviderAuthStatus
-							? { getProviderAuthStatus: registry.getProviderAuthStatus.bind(registry) }
-							: {}),
-					},
-				},
-				task: input.task,
-				agent: { name: input.stageName, description: "Workflow stage" },
-				constraints: input.constraints,
-				signal: input.signal,
-				selection: input.selection,
-				...(input.taskNeeds ? { taskNeeds: input.taskNeeds } : {}),
-				...(input.overrideProviderSettings ? { overrideProviderSettings: true } : {}),
-				...(input.inference ? { inference: input.inference } : {}),
-				...(input.parallelSlot ? { parallelSlot: input.parallelSlot } : {}),
+			// A stale availability list can still name a provider whose credentials are gone; `auto` never stands for it.
+			const availableModels = (registry?.getAvailable() ?? []).filter(
+				(model) => registry?.hasConfiguredAuth?.({ provider: String(model.provider) }) ?? true,
+			);
+			const selected = resolveAutoModel({
+				settings: readSettings?.(),
+				availableModels,
+				...(current.model === undefined ? {} : { sessionModel: current.model }),
+				...(current.thinkingLevel === undefined ? {} : { sessionThinkingLevel: current.thinkingLevel }),
 			});
+			return (
+				selected && {
+					model: selected.model as NonNullable<CreateAgentSessionOptions["model"]>,
+					thinkingLevel: selected.thinkingLevel,
+				}
+			);
 		},
 		...(ctx?.getDecisionModel === undefined
 			? {}
@@ -108,6 +89,19 @@ export function workflowModelCatalogFromContext(
 					},
 					autoAdvanceAfterSteer: () => autoAdvanceAfterSteerSetting(readSettings?.()),
 				}),
+		resolveProvider: (reference: string): string | undefined =>
+			providerOfModelReference(
+				reference,
+				live()
+					.modelRegistry?.getAll?.()
+					.map((model) => String(model.provider)),
+			),
+		hasCredentials: (provider: string): boolean => {
+			const registry = live().modelRegistry;
+			if (!registry?.getAll?.().some((model) => String(model.provider) === provider)) return true;
+			if (registry.hasConfiguredAuth) return registry.hasConfiguredAuth({ provider });
+			return registry.getAvailable().some((model) => String(model.provider) === provider);
+		},
 		listModels: async (): Promise<readonly WorkflowModelInfo[]> => {
 			const current = live();
 			const available =

@@ -97,11 +97,13 @@ export class SelectList implements Component {
 			lines.push(this.renderItem(item, isSelected, width, descriptionSingleLine, primaryColumnWidth));
 		}
 
-		// Add scroll indicators if needed
-		if (startIndex > 0 || endIndex < this.filteredItems.length) {
-			const scrollText = `  (${this.selectedIndex + 1}/${this.filteredItems.length})`;
-			// Truncate if too long for terminal
-			lines.push(this.theme.scrollInfo(truncateToWidth(scrollText, width - 2, "")));
+		// One line under the rows says how many more are above and below the window. It stays below the rows so a
+		// mouse row maps to an item without an offset.
+		const above = startIndex;
+		const below = this.filteredItems.length - endIndex;
+		if (above > 0 || below > 0) {
+			const parts = [above > 0 ? `↑ ${above} more` : "", below > 0 ? `↓ ${below} more` : ""].filter(Boolean);
+			lines.push(this.theme.scrollInfo(truncateToWidth(`  ${parts.join(" · ")}`, width - 2, "")));
 		}
 
 		return lines;
@@ -195,7 +197,8 @@ export class SelectList implements Component {
 		descriptionSingleLine: string | undefined,
 		primaryColumnWidth: number,
 	): string {
-		const prefix = isSelected ? "→ " : "  ";
+		// The same row marker every picker uses; two cells wide, so rows stay aligned.
+		const prefix = isSelected ? "❯ " : "  ";
 		const prefixWidth = visibleWidth(prefix);
 
 		if (descriptionSingleLine && width > 40) {

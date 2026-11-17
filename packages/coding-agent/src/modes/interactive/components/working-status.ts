@@ -6,7 +6,7 @@ import {
 	atomicWorkingFrame,
 	DEFAULT_WORKING_MESSAGE,
 } from "./atomic-working-status.ts";
-import type { WorkingRunSnapshot } from "./working-run-meter.ts";
+import { normalizeWorkingRunSnapshot, type WorkingRunMetaInput } from "./working-run-meter.ts";
 
 export interface WorkingStatusComponentOptions {
 	/** Explicit caller-owned indicator frame; omitted uses Atomic's one-cell identity. */
@@ -17,7 +17,7 @@ export interface WorkingStatusComponentOptions {
 	spinnerBoldColor?: (text: string) => string;
 	palette?: AtomicWorkingPalette | (() => AtomicWorkingPalette);
 	messageColor?: (text: string) => string;
-	meta?: WorkingRunSnapshot;
+	meta?: WorkingRunMetaInput;
 	logo?: boolean;
 }
 
@@ -43,7 +43,7 @@ export class WorkingStatusComponent implements Component {
 			spinnerBoldColor: this.options.spinnerBoldColor,
 			palette: this.options.palette,
 			messageColor,
-			meta: this.options.meta,
+			meta: this.options.meta ? normalizeWorkingRunSnapshot(this.options.meta) : undefined,
 			logo: this.options.logo,
 		}).render(width);
 	}

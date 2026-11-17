@@ -116,7 +116,7 @@ test("session_before_switch prompts for /new and /resume when workflows are in f
 			assert.match(promptText, /^Quit 1 running workflow and /);
 			assert.match(promptText, /quits 1 running workflow now/);
 			assert.doesNotMatch(promptText, /1 running workflows/);
-			assert.match(promptText, /resumed later with \/workflow resume/);
+			assert.match(promptText, /resumed later with \/resume/);
 			assert.doesNotMatch(promptText, /keeps? .* running/i);
 			assert.equal(store.runs().length, 1);
 			assert.equal(store.runs()[0]?.endedAt, undefined);

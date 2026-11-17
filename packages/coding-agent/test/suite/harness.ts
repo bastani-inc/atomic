@@ -77,6 +77,7 @@ export interface HarnessOptions {
 	/** Working directory of the session's tools. Default: a fresh temporary directory. */
 	cwd?: string;
 	settings?: Partial<Settings>;
+	settingsManager?: SettingsManager;
 	systemPrompt?: string;
 	tools?: AgentTool[];
 	customTools?: ToolDefinition[];
@@ -136,7 +137,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
 
 	const sessionManager = options.sessionManager ?? SessionManager.inMemory();
-	const settingsManager = SettingsManager.inMemory(options.settings);
+	const settingsManager = options.settingsManager ?? SettingsManager.inMemory(options.settings);
 
 	const authStorage = AuthStorage.inMemory();
 	if (withConfiguredAuth) {

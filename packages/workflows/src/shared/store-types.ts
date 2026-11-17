@@ -3,7 +3,6 @@
  * cross-ref: spec §5.5
  */
 
-import type { SerializedBackgroundCompactionState } from "@bastani/atomic";
 import type { BudgetDimension, BudgetReport, DurationBudgetReport, UsageBudgetReport } from "./budget.js";
 import type { RunMeterCounters } from "./budget-meter.js";
 import type { RunExecutionState } from "./run-execution-state.js";
@@ -142,6 +141,7 @@ export type CustomPromptIdentitySource = "caller" | "factory" | "callsite";
 export interface PendingPrompt {
 	readonly id: string;
 	readonly kind: PromptKind;
+	readonly source?: "stage-dialog";
 	readonly message: string;
 	/** Choices for `kind: "select"`. */
 	readonly choices?: readonly string[];
@@ -153,6 +153,7 @@ export interface PendingPrompt {
 	readonly customIdentitySource?: CustomPromptIdentitySource;
 	/** Issue timestamp (ms since epoch). */
 	readonly createdAt: number;
+	readonly expiresAt?: number;
 }
 
 /** Discriminates the brokered structured-prompt source. */
@@ -426,8 +427,6 @@ export interface StageSnapshot {
 	 * activity so the graph can show them without a live view of the stage (#3996).
 	 */
 	queuedUserMessageCount?: number;
-	/** Background compaction state of the stage's session (#4330), the same shape RPC `get_state` reports. */
-	compaction?: SerializedBackgroundCompactionState;
 	/**
 	 * The Intercom messages the stage's session `sessionId` took before its first turn, by message id, as the worker of
 	 * a pooled stage on a host that does not run its root publishes them: the root records their receipts when the
@@ -556,7 +555,6 @@ export interface StageSnapshot {
 	/** Per-model fallback attempt outcomes. */
 	modelAttempts?: readonly import("./types.js").WorkflowModelAttempt[];
 	rateLimits?: readonly import("./types.js").WorkflowProviderRateLimit[];
-	routerSelection?: import("@bastani/atomic").ModelRouterOutput;
 	/**
 	 * The latest readiness decision after a steer: whether the decision model advanced the stage, kept it open, or the
 	 * user was asked, with its probabilities, model, and the typed error when the decision failed. Live only.

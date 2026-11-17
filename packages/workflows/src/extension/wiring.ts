@@ -25,10 +25,17 @@ import { join } from "node:path";
 import {
 	type CreateAgentSessionOptions,
 	type DefaultResourceLoaderInheritanceSnapshot,
+	getAgentDir,
+	type HostInput,
+	type HostInputOptions,
+	isHeldPromptInput,
+	isPresentationHostInput,
 	isStaleExtensionContextError,
 	ModelRuntime,
 	noOpUIContext,
+	resolveAutoModel,
 	resolveRestoredModelReference,
+	SettingsManager,
 } from "@bastani/atomic";
 import { outsideWorkflowExecutions } from "../durable/execution-context-boundary.js";
 import type {
@@ -40,7 +47,7 @@ import type {
 import { cleanupFailedStageSessionBinding } from "../runs/foreground/stage-runner-session.js";
 import { setAgentSessionAdapterDefaultCwd } from "../runs/foreground/stage-runner-session-options.js";
 import { resolveStageGroup, stageHasIntercomAccess } from "../shared/intercom-group.js";
-import { currentStageUiBroker, type StageUiBroker } from "../shared/stage-ui-broker.js";
+import { currentStageUiBroker, type StageDialogRequest, type StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { StageExecutionMeta, StageOptions } from "../shared/types.js";
 import type { PiCodingAgentSdk, PrepareAtomicStageSessionOptions } from "./atomic-stage-session.js";
 import { prepareAtomicStageSessionOptions } from "./atomic-stage-session.js";
@@ -55,7 +62,7 @@ export type {
 } from "./atomic-stage-session.js";
 export { prepareAtomicStageSessionOptions } from "./atomic-stage-session.js";
 
-import type { PiCustomOverlayFactory, PiCustomOverlayOptions, PiUISurface } from "./ui-surface.js";
+import type { PiCustomOverlayFactory, PiCustomOverlayOptions, PiUIDialogOptions, PiUISurface } from "./ui-surface.js";
 
 export type {
 	PiCustomComponent,
@@ -229,9 +236,32 @@ async function createPiSdkAgentSession(
 
 async function createTestAgentSession(_options?: CreateAgentSessionOptions): Promise<StageSessionCreateResult> {
 	let lastAssistantText: string | undefined;
+	const messages = [] as unknown as StageSessionRuntime["messages"];
 	const session: StageSessionRuntime = {
 		async prompt(text: string): Promise<string> {
 			lastAssistantText = `stub:sdk:${text.slice(0, 120)}`;
+			// A turn ends on an assistant message, as a real session's does: the stage reads its reply from there.
+			const now = Date.now();
+			(messages as unknown as object[]).push(
+				{ role: "user", content: [{ type: "text", text }], timestamp: now },
+				{
+					role: "assistant",
+					content: [{ type: "text", text: lastAssistantText }],
+					api: "stub",
+					provider: "stub",
+					model: "stub",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "stop",
+					timestamp: now,
+				},
+			);
 			return lastAssistantText;
 		},
 		async steer(_text: string): Promise<void> {},
@@ -252,19 +282,19 @@ async function createTestAgentSession(_options?: CreateAgentSessionOptions): Pro
 		agent: Object.create(null) as StageSessionRuntime["agent"],
 		model: undefined,
 		thinkingLevel: "off",
-		messages: [] as StageSessionRuntime["messages"],
+		messages,
 		isStreaming: false as StageSessionRuntime["isStreaming"],
 		async navigateTree(): ReturnType<StageSessionRuntime["navigateTree"]> {
 			return { cancelled: true };
 		},
 		async compact(): ReturnType<StageSessionRuntime["compact"]> {
 			return {
-				compactedText: "[User]: retained",
-				firstKeptEntryId: "kept",
+				compactedText: "Context cleared.",
+				firstKeptEntryId: null,
 				tokensBefore: 0,
-				promptVersion: 6,
-				parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "auto-detected" },
-				rung: "planned",
+				promptVersion: 7,
+				parameters: { query: "auto-detected" },
+				form: "cleared",
 				stats: {
 					linesBefore: 0,
 					linesDeleted: 0,
@@ -431,16 +461,56 @@ function shouldBindStageUiContext(pi: RuntimeWiringSurface, meta: StageExecution
 	return pi.ui !== undefined || meta !== undefined;
 }
 
+function stageDialogRequest(
+	stageSignal: AbortSignal | undefined,
+	kind: PrimitiveDialogKind,
+	options: PiUIDialogOptions | undefined,
+	answerWithHost?: StageDialogRequest["answerWithHost"],
+): StageDialogRequest {
+	const signals = [stageSignal, options?.signal].filter((signal): signal is AbortSignal => signal !== undefined);
+	if (options?.timeout !== undefined) signals.push(AbortSignal.timeout(options.timeout));
+	return {
+		...(signals.length === 0 ? {} : { signal: AbortSignal.any(signals) }),
+		...(options?.timeout === undefined ? {} : { timeout: options.timeout }),
+		...(answerWithHost === undefined ? {} : { answerWithHost }),
+		unrecorded: async () => (kind === "confirm" ? false : undefined),
+	};
+}
+
+type PrimitiveDialogKind = Parameters<StageUiBroker["requestDialog"]>[2]["kind"];
+
+const TASK_PROMPT_HOST = Symbol.for("atomic-coding-agent/task-prompt-host@1");
+
 function makeStageExtensionUiContext(
 	ui: PiUISurface,
 	meta: StageExecutionMeta | undefined,
 	broker: StageUiBroker,
 	inheritedBindingRevision: number,
 	explicitInput: boolean,
+	holdsChildPrompts: boolean,
+	childInput: HostInput | undefined,
 ) {
 	let questionnaireSessionId: string | undefined;
 	let questionnaireInput: StageQuestionnaireInput | undefined;
 	const stageUi: object = {
+		...(holdsChildPrompts ? { [TASK_PROMPT_HOST]: true } : {}),
+		...(childInput === undefined
+			? {}
+			: { [Symbol.for("atomic-coding-agent/child-presentation-input@1")]: childInput }),
+		[Symbol.for("atomic-coding-agent/stage-dialog@1")]:
+			meta === undefined
+				? undefined
+				: (
+						descriptor: Parameters<StageUiBroker["requestDialog"]>[2],
+						identity: HostInputOptions,
+						answerWithHost?: StageDialogRequest["answerWithHost"],
+					) =>
+						broker.requestDialog(
+							meta.runId,
+							meta.stageId,
+							descriptor,
+							stageDialogRequest(meta.signal, descriptor.kind, identity, answerWithHost),
+						),
 		[Symbol.for("atomic-coding-agent/stage-questionnaire@1")]:
 			meta === undefined
 				? undefined
@@ -455,9 +525,40 @@ function makeStageExtensionUiContext(
 						};
 						return stageUi;
 					},
-		select: ui.select ?? (async () => undefined),
-		confirm: ui.confirm ?? (async () => false),
-		input: ui.input ?? (async () => undefined),
+		select:
+			meta === undefined
+				? (ui.select ?? (async () => undefined))
+				: async (title: string, choices: string[], options?: PiUIDialogOptions) => {
+						const value = await broker.requestDialog(
+							meta.runId,
+							meta.stageId,
+							{ kind: "select", message: title, choices },
+							stageDialogRequest(meta.signal, "select", options),
+						);
+						return typeof value === "string" ? value : undefined;
+					},
+		confirm:
+			meta === undefined
+				? (ui.confirm ?? (async () => false))
+				: async (title: string, message: string, options?: PiUIDialogOptions) =>
+						(await broker.requestDialog(
+							meta.runId,
+							meta.stageId,
+							{ kind: "confirm", message: `${title}\n\n${message}` },
+							stageDialogRequest(meta.signal, "confirm", options),
+						)) === true,
+		input:
+			meta === undefined
+				? (ui.input ?? (async () => undefined))
+				: async (title: string, placeholder?: string, options?: PiUIDialogOptions) => {
+						const value = await broker.requestDialog(
+							meta.runId,
+							meta.stageId,
+							{ kind: "input", message: placeholder ? `${title}\n\n${placeholder}` : title },
+							stageDialogRequest(meta.signal, "input", options),
+						);
+						return typeof value === "string" ? value : undefined;
+					},
 		notify: ui.notify ?? (() => undefined),
 		requestRender: noOpUIContext.requestRender,
 		onTerminalInput: ui.onTerminalInput ?? (() => () => undefined),
@@ -499,7 +600,18 @@ function makeStageExtensionUiContext(
 		pasteToEditor: ui.pasteToEditor ?? (() => undefined),
 		setEditorText: ui.setEditorText ?? (() => undefined),
 		getEditorText: ui.getEditorText ?? (() => ""),
-		editor: ui.editor ?? (async () => undefined),
+		editor:
+			meta === undefined
+				? (ui.editor ?? (async () => undefined))
+				: async (title: string, initial?: string, options?: PiUIDialogOptions) => {
+						const value = await broker.requestDialog(
+							meta.runId,
+							meta.stageId,
+							{ kind: "editor", message: title, initial },
+							stageDialogRequest(meta.signal, "editor", options),
+						);
+						return typeof value === "string" ? value : undefined;
+					},
 		addAutocompleteProvider: ui.addAutocompleteProvider ?? (() => undefined),
 		setEditorComponent: ui.setEditorComponent ?? (() => undefined),
 		getEditorComponent: ui.getEditorComponent ?? (() => undefined),
@@ -628,6 +740,14 @@ export function buildRuntimeAdapters(
 					pi.getChildSessionOptions?.(stripWorkflowOnlyOptions(stageOptions) ?? {}) ??
 					stripWorkflowOnlyOptions(stageOptions) ??
 					{};
+				const inheritedInput = inheritedOptions.extensionBindings?.humanInput;
+				const holdsChildPrompts =
+					isHeldPromptInput(inheritedInput) ||
+					(pi.ui as { [TASK_PROMPT_HOST]?: boolean } | undefined)?.[TASK_PROMPT_HOST] === true;
+				if (isHeldPromptInput(inheritedInput) || isPresentationHostInput(inheritedInput)) {
+					const { humanInput: _launcherInput, ...bindings } = inheritedOptions.extensionBindings ?? {};
+					inheritedOptions.extensionBindings = bindings;
+				}
 				await resolveStageModel(
 					inheritedOptions,
 					stageOptions.model === undefined && stageOptions.sessionManager !== undefined,
@@ -650,6 +770,8 @@ export function buildRuntimeAdapters(
 							// Creation binds a supplied adapter once; only later explicit binds change ownership.
 							inheritedOptions.extensionBindings?.humanInput === undefined ? 0 : 1,
 							stageOptions.extensionBindings?.humanInput !== undefined,
+							holdsChildPrompts,
+							isPresentationHostInput(inheritedInput) ? inheritedInput : undefined,
 						)
 					: undefined;
 				if (stageUi)
@@ -697,16 +819,15 @@ export function createAgentSessionAdapter(
 	/** Where stages created by this adapter raise their custom UI; the process's broker by default. */
 	stageUiBroker?: StageUiBroker,
 ): AgentSessionAdapter {
+	const withBaseOptions = (stageOptions: CreateAgentSessionOptions): CreateAgentSessionOptions => {
+		const options: CreateAgentSessionOptions = { ...baseOptions };
+		for (const [key, value] of Object.entries(stageOptions)) {
+			if (value !== undefined) Object.assign(options, { [key]: value });
+		}
+		return options;
+	};
 	const { agentSession } = buildRuntimeAdapters(
-		{
-			getChildSessionOptions: (stageOptions) => {
-				const options: CreateAgentSessionOptions = { ...baseOptions };
-				for (const [key, value] of Object.entries(stageOptions)) {
-					if (value !== undefined) Object.assign(options, { [key]: value });
-				}
-				return options;
-			},
-		},
+		{ getChildSessionOptions: withBaseOptions },
 		{
 			async createAgentSession(options, prepareOptions) {
 				if (options && !options.modelRuntime && typeof options.model === "string") {
@@ -721,6 +842,37 @@ export function createAgentSessionAdapter(
 			...(stageUiBroker === undefined ? {} : { stageUiBroker }),
 		},
 	);
+	// `auto` follows the settings and credentials these sessions start with; the adapter's own model is the session's.
+	agentSession!.autoModel = async (stageOptions, needs) => {
+		const options = withBaseOptions(stageOptions);
+		const settingsManager =
+			options.settingsManager ??
+			SettingsManager.create(options.cwd ?? process.cwd(), options.agentDir ?? getAgentDir());
+		const runtime =
+			options.modelRuntime ??
+			(await ModelRuntime.create({
+				authPath: options.agentDir ? join(options.agentDir, "auth.json") : undefined,
+				modelsPath: options.agentDir ? join(options.agentDir, "models.json") : undefined,
+			}));
+		const availableModels = await runtime.getAvailable();
+		const selected = resolveAutoModel({
+			settings: settingsManager.getSettings(),
+			availableModels,
+			...(baseOptions.model === undefined ? {} : { sessionModel: baseOptions.model }),
+			...(baseOptions.thinkingLevel === undefined ? {} : { sessionThinkingLevel: baseOptions.thinkingLevel }),
+		});
+		if (selected === undefined) return undefined;
+		// The model record, not only its ID, so the stage can check what it accepts.
+		if (needs?.imageInput === true && !selected.model.input.includes("image")) {
+			const sessionModel = baseOptions.model;
+			if (sessionModel?.input.includes("image"))
+				return {
+					model: sessionModel,
+					...(baseOptions.thinkingLevel === undefined ? {} : { thinkingLevel: baseOptions.thinkingLevel }),
+				};
+		}
+		return { model: selected.model, thinkingLevel: selected.thinkingLevel };
+	};
 	// Session managers are created before this adapter sees a stage, so the runner applies the cwd first.
 	if (baseOptions.cwd !== undefined) setAgentSessionAdapterDefaultCwd(agentSession!, baseOptions.cwd);
 	return agentSession!;

@@ -386,7 +386,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		const body = [
 			this._centerCanvasContent(`  ${hexToAnsi(this.graphTheme.textMuted)}No active workflow run.${RESET}`, width),
 			this._centerCanvasContent(
-				`  ${hexToAnsi(this.graphTheme.dim)}Start one with ${hexToAnsi(this.graphTheme.accent)}/workflow <name>${RESET}${hexToAnsi(this.graphTheme.dim)} or press ${hexToAnsi(this.graphTheme.accent)}F2${RESET}${hexToAnsi(this.graphTheme.dim)} on an active run.${RESET}`,
+				`  ${hexToAnsi(this.graphTheme.dim)}Open ${hexToAnsi(this.graphTheme.accent)}/workflows${RESET}${hexToAnsi(this.graphTheme.dim)} or press ${hexToAnsi(this.graphTheme.accent)}F2${RESET}${hexToAnsi(this.graphTheme.dim)} on an active run.${RESET}`,
 				width,
 			),
 		];

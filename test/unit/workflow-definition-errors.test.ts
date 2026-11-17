@@ -18,7 +18,6 @@ import {
 } from "../../packages/workflows/src/extension/workflow-open-run.js";
 import {
 	invalidDefinitionsFromDiagnostics,
-	type WorkflowsListingDefinition,
 	workflowsListingItems,
 } from "../../packages/workflows/src/tui/workflows-listing.js";
 import { cleanupDiscoveryTempDirs, join, makeTempDir, mkdirSync, writeFileSync } from "./discovery-helpers.js";
@@ -46,14 +45,10 @@ type PickerFactory = (
 	done: (result: undefined) => void,
 ) => PiCustomComponent;
 
-function harness(
-	definitions: readonly WorkflowsListingDefinition[] = [],
-	invalid: readonly DiscoveryDiagnostic[] = DIAGNOSTICS,
-) {
+function harness(invalid: readonly DiscoveryDiagnostic[] = DIAGNOSTICS) {
 	const opened: string[] = [];
 	const messages = { info: [] as string[], error: [] as string[] };
 	const pickers: PickerFactory[] = [];
-	const started: string[] = [];
 	const ctx: PiCommandContext = {
 		hasUI: true,
 		ui: {
@@ -74,11 +69,7 @@ function harness(
 			close() {},
 		},
 		store: h.makeStore({ runs: [], notices: [], version: 1 }),
-		definitions: () => definitions,
 		invalidDefinitions: () => invalidDefinitionsFromDiagnostics(invalid),
-		startDefinition: async (name) => {
-			started.push(name);
-		},
 	};
 	const reporter = {
 		info: (m: string) => {
@@ -88,7 +79,7 @@ function harness(
 			messages.error.push(m);
 		},
 	};
-	return { opened, messages, pickers, started, ctx, deps, reporter };
+	return { opened, messages, pickers, ctx, deps, reporter };
 }
 
 describe("workflow definition errors before launch (#5224)", () => {
@@ -105,7 +96,7 @@ describe("workflow definition errors before launch (#5224)", () => {
 
 	it("lists a definition that failed to load as ✗ with its one-line reason; Enter explains it instead of starting it", async () => {
 		initTheme("dark");
-		const t = harness([{ normalizedName: "ralph", description: "iterate a fix", inputs: {} }]);
+		const t = harness();
 		const pending = handleWorkflowsCommand("", t.ctx, t.reporter, t.deps);
 		await Promise.resolve();
 		assert.equal(t.pickers.length, 1);
@@ -119,7 +110,7 @@ describe("workflow definition errors before launch (#5224)", () => {
 		component.render(120);
 		component.handleInput?.("\r");
 		await pending;
-		assert.deepEqual(t.started, [], "a broken definition never starts");
+		assert.deepEqual(t.opened, [], "a broken definition never opens a run");
 		assert.deepEqual(t.messages.error, [], "the ✗ line says it failed; no extra Error: prefix");
 		const shown = t.messages.info.join("\n");
 		assert.match(shown, /✗ Workflow "greet" could not be loaded/);
@@ -155,7 +146,7 @@ describe("workflow definition errors before launch (#5224)", () => {
 
 	it("opens the sheet when the only definitions are broken, instead of saying there are no workflows", async () => {
 		initTheme("dark");
-		const t = harness([]);
+		const t = harness();
 		const pending = handleWorkflowsCommand("", t.ctx, t.reporter, t.deps);
 		await Promise.resolve();
 		assert.equal(t.pickers.length, 1);
@@ -193,7 +184,7 @@ describe("workflow definition errors before launch (#5224)", () => {
 		const greet = DIAGNOSTICS[0]!;
 		const deploy = DIAGNOSTICS[1]!;
 		const idOf = (diagnostics: readonly DiscoveryDiagnostic[], name: string) =>
-			workflowsListingItems([], [], 0, invalidDefinitionsFromDiagnostics(diagnostics)).find(
+			workflowsListingItems([], 0, invalidDefinitionsFromDiagnostics(diagnostics)).find(
 				(item) => item.label === name,
 			)?.id;
 		assert.equal(idOf([greet, deploy], "deploy"), idOf([deploy], "deploy"));
@@ -206,7 +197,7 @@ describe("workflow definition errors before launch (#5224)", () => {
 			message: `workflow export "${exportKey}" rejected: missing run()`,
 		});
 		const idsFor = (diagnostics: readonly DiscoveryDiagnostic[]) =>
-			workflowsListingItems([], [], 0, invalidDefinitionsFromDiagnostics(diagnostics)).map((item) => [
+			workflowsListingItems([], 0, invalidDefinitionsFromDiagnostics(diagnostics)).map((item) => [
 				item.id,
 				item.value.kind === "invalid-definition" ? item.value.definition.message : "",
 			]);
@@ -230,7 +221,7 @@ describe("workflow definition errors before launch (#5224)", () => {
 		]);
 		assert.equal(verifyChanged[0]?.[0], verifyIdBefore);
 
-		const sourceless = workflowsListingItems([], [], 0, [
+		const sourceless = workflowsListingItems([], 0, [
 			{ name: "alpha", code: "INVALID_DEFINITION", reason: "bad", message: "bad" },
 			{ name: "beta", code: "INVALID_DEFINITION", reason: "bad", message: "bad" },
 		]);
@@ -238,14 +229,12 @@ describe("workflow definition errors before launch (#5224)", () => {
 
 		const singleImportFirst = workflowsListingItems(
 			[],
-			[],
 			0,
 			invalidDefinitionsFromDiagnostics([
 				{ level: "error", code: "IMPORT_FAILED", source: "/w/a.ts", message: "first failure" },
 			]),
 		);
 		const singleImportSecond = workflowsListingItems(
-			[],
 			[],
 			0,
 			invalidDefinitionsFromDiagnostics([
@@ -281,8 +270,8 @@ describe("workflow definition errors before launch (#5224)", () => {
 			},
 		];
 		for (const { name, diagnostics } of replayCases) {
-			const before = workflowsListingItems([], [], 0, invalidDefinitionsFromDiagnostics(diagnostics));
-			const after = workflowsListingItems([], [], 0, invalidDefinitionsFromDiagnostics(diagnostics.slice(1)));
+			const before = workflowsListingItems([], 0, invalidDefinitionsFromDiagnostics(diagnostics));
+			const after = workflowsListingItems([], 0, invalidDefinitionsFromDiagnostics(diagnostics.slice(1)));
 			const original = before.find(
 				(row) => row.value.kind === "invalid-definition" && row.value.definition.message === "second failure",
 			);
@@ -307,7 +296,7 @@ describe("workflow definition errors before launch (#5224)", () => {
 			},
 			{ level: "error", code: "INVALID_DEFINITION", message: "missing run()", source: "/w/release.ts#1" },
 		];
-		const items = workflowsListingItems([], [], 0, invalidDefinitionsFromDiagnostics(diagnostics));
+		const items = workflowsListingItems([], 0, invalidDefinitionsFromDiagnostics(diagnostics));
 		assert.equal(items.length, 3);
 		assert.equal(new Set(items.map((item) => item.id)).size, 3);
 		const state = new SelectorState({ items });
@@ -315,7 +304,7 @@ describe("workflow definition errors before launch (#5224)", () => {
 			(item) => item.value.kind === "invalid-definition" && item.value.definition.source === "/w/release.ts#1",
 		);
 		while (state.getSelectedIndex() !== targetIndex) state.move(1);
-		state.setItems(workflowsListingItems([], [], 1_000, invalidDefinitionsFromDiagnostics(diagnostics)));
+		state.setItems(workflowsListingItems([], 1_000, invalidDefinitionsFromDiagnostics(diagnostics)));
 		const selected = state.getSelected()?.value;
 		assert.equal(selected?.kind, "invalid-definition");
 		if (selected?.kind === "invalid-definition") {
@@ -323,7 +312,7 @@ describe("workflow definition errors before launch (#5224)", () => {
 			assert.equal(selected.definition.message, "missing run()");
 		}
 
-		const duplicateItems = workflowsListingItems([], [], 0, [
+		const duplicateItems = workflowsListingItems([], 0, [
 			{ name: "a", source: "/w/a.ts", code: "INVALID_DEFINITION", reason: "rejected", message: "rejected" },
 			{ name: "a", source: "/w/a.ts", code: "INVALID_DEFINITION", reason: "rejected", message: "rejected" },
 			{ name: "a.ts#1", source: "/w/a.ts#1", code: "INVALID_DEFINITION", reason: "rejected", message: "rejected" },
@@ -358,14 +347,8 @@ describe("workflow definition errors before launch (#5224)", () => {
 		assert.equal(registry.has("release"), true);
 		const invalid = invalidDefinitionsFromDiagnostics(errors);
 		assert.deepEqual(invalid, []);
-		const definitions = registry.all().map((d) => ({
-			normalizedName: d.normalizedName,
-			description: d.description,
-			inputs: d.inputs ?? {},
-		}));
-		const items = workflowsListingItems([], definitions, 0, invalid);
-		assert.equal(items.length, 1);
-		assert.deepEqual(items[0]?.value, { kind: "definition", name: "release" });
+		const items = workflowsListingItems([], 0, invalid);
+		assert.deepEqual(items, [], "loaded definitions are not launch rows or broken-definition diagnostics");
 	});
 
 	it("shows +N more when broken definition details exceed 8 message lines (#5224)", () => {

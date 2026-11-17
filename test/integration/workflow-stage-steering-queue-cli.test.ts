@@ -83,8 +83,8 @@ const FOLLOW_UP_ROW = `Follow-up: ${FOLLOW_UP_TEXT}`;
 const QUEUED_BADGE = "✉ 2 queued";
 
 /** Footer hints that identify which of the overlay's two views is drawn. */
-const GRAPH_FOOTER = "↵ open stage chat";
-const CHAT_FOOTER = "← return to graph";
+const GRAPH_FOOTER = "↵ open";
+const CHAT_FOOTER = "← graph · ";
 
 const ENTER = "\r";
 const CTRL_F = "\x06";
@@ -388,7 +388,7 @@ async function runScenario(): Promise<Evidence> {
 		// 1. Launch the run. It dispatches to the background, as a named
 		//    workflow launch does in interactive chat.
 		const beforeLaunch = (await cli.output()).length;
-		await cli.submitCommand(`/workflow ${WORKFLOW_NAME}`, CLI_STARTUP_TIMEOUT_MS);
+		await cli.submitCommand(`launch ${WORKFLOW_NAME}`, CLI_STARTUP_TIMEOUT_MS);
 		await cli.waitForOutput(
 			(output) => output.slice(beforeLaunch).includes("started in background"),
 			"the run to be dispatched",
@@ -475,7 +475,7 @@ describe("issue #2074 — stage steering and queued-message state through the re
 	test("the stage really is mid-turn, so the typed messages are queued rather than delivered", () => {
 		assert.equal(evidence.whileAttached.includes(STAGE_TEXT), true);
 		// The chat only shows the interrupt hint while the stage session streams.
-		assert.equal(evidence.whileAttached.includes("esc to interrupt"), true);
+		assert.equal(evidence.whileAttached.includes("esc interrupt"), true);
 	});
 
 	test("Enter queues into the steering queue and ctrl+f into the follow-up queue", () => {

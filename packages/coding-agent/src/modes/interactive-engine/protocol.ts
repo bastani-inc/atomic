@@ -4,12 +4,15 @@ import { parseSerializedDecisionError, type SerializedDecisionError } from "../.
 import type { UIPromptEndEvent, UIPromptStartEvent } from "../../core/extensions/agent-events.ts";
 import type {
 	HostInputFormField,
+	HostInputFormRequest,
 	HostSessionPickerRow,
 	WidgetScrollRequest,
 	WidgetScrollState,
 } from "../../core/extensions/ui-types.js";
 import type { WorkflowActivityFrame, WorkflowRootActivity } from "../../core/extensions/workflow-events.js";
 import type { KeyId } from "../../core/keybindings.ts";
+import { parseHostSessionPickerRows } from "../../core/workflow-resume.ts";
+import type { ToolGroupFamily, ToolGroupRole } from "../interactive/components/tool-block.ts";
 
 /**
  * Version 4 separates minimal session binding from optional resource readiness.
@@ -126,9 +129,19 @@ export type InteractiveEngineMessage =
 			componentId: string;
 			sessions: HostSessionPickerRow[];
 			showRenameHint?: boolean;
+			title?: string;
+			variant?: "sessions" | "runs";
+			/** Whether the child handles row deletion; absent means it does (older children). */
+			canDelete?: boolean;
 	  }
 	| { type: "engine_session_picker_update"; componentId: string; sessions: HostSessionPickerRow[] }
-	| { type: "engine_session_picker_error"; componentId: string; message: string }
+	| {
+			type: "engine_session_picker_error";
+			componentId: string;
+			message: string;
+			deletePath?: string;
+			deleteRequestId?: number;
+	  }
 	| { type: "engine_session_picker_close"; componentId: string }
 	| {
 			type: "engine_input_form_open";
@@ -207,15 +220,18 @@ export type InteractiveEngineCommand =
 			width: number;
 			toolName: string;
 			toolCallId: string;
+			rendererTaskId?: string;
 			args: JsonValue;
 			result?: JsonObject;
 			executionStarted: boolean;
+			executionStartedAt?: number;
 			argsComplete: boolean;
 			isPartial: boolean;
 			expanded: boolean;
 			showImages: boolean;
 			imageWidthCells: number;
 			outputPad?: number;
+			groupRole?: ToolGroupRole;
 	  }
 	| {
 			type: "engine_message_render";
@@ -229,7 +245,7 @@ export type InteractiveEngineCommand =
 	| { type: "engine_render_dispose"; componentId: string }
 	| { type: "engine_session_picker_select"; componentId: string; path: string }
 	| { type: "engine_session_picker_cancel"; componentId: string }
-	| { type: "engine_session_picker_delete"; componentId: string; path: string }
+	| { type: "engine_session_picker_delete"; componentId: string; path: string; deleteRequestId?: number }
 	| { type: "engine_input_form_submit"; componentId: string; values: Record<string, string> }
 	| { type: "engine_input_form_cancel"; componentId: string }
 	| { type: "engine_input_form_error"; componentId: string; message: string };
@@ -360,67 +376,8 @@ function parseEngineTerminalControl(value: JsonValue | undefined): EngineTermina
 	return { kind: "autowrap", enabled: value.enabled };
 }
 
-const SESSION_PICKER_MESSAGE_COLORS = ["success", "warning", "accent", "error"] as const;
-
-function parseSessionPickerRow(value: JsonValue): HostSessionPickerRow | undefined {
-	if (!isJsonObject(value)) return undefined;
-	const {
-		path,
-		id,
-		cwd,
-		createdAt,
-		modifiedAt,
-		messageCount,
-		firstMessage,
-		summary,
-		allMessagesText,
-		name,
-		messageColor,
-	} = value;
-	if (
-		typeof path !== "string" ||
-		typeof id !== "string" ||
-		typeof cwd !== "string" ||
-		typeof createdAt !== "number" ||
-		typeof modifiedAt !== "number" ||
-		typeof messageCount !== "number" ||
-		typeof firstMessage !== "string"
-	)
-		return undefined;
-	if (summary !== undefined && typeof summary !== "string") return undefined;
-	if (allMessagesText !== undefined && typeof allMessagesText !== "string") return undefined;
-	if (name !== undefined && typeof name !== "string") return undefined;
-	if (
-		messageColor !== undefined &&
-		!SESSION_PICKER_MESSAGE_COLORS.includes(messageColor as (typeof SESSION_PICKER_MESSAGE_COLORS)[number])
-	)
-		return undefined;
-	return {
-		path,
-		id,
-		cwd,
-		createdAt,
-		modifiedAt,
-		messageCount,
-		firstMessage,
-		...(summary !== undefined ? { summary } : {}),
-		...(allMessagesText !== undefined ? { allMessagesText } : {}),
-		...(name !== undefined ? { name } : {}),
-		...(messageColor !== undefined
-			? { messageColor: messageColor as (typeof SESSION_PICKER_MESSAGE_COLORS)[number] }
-			: {}),
-	};
-}
-
 function parseSessionPickerRows(value: JsonValue | undefined): HostSessionPickerRow[] | undefined {
-	if (!Array.isArray(value)) return undefined;
-	const rows: HostSessionPickerRow[] = [];
-	for (const entry of value) {
-		const row = parseSessionPickerRow(entry);
-		if (!row) return undefined;
-		rows.push(row);
-	}
-	return rows;
+	return parseHostSessionPickerRows(value);
 }
 
 const INPUT_FORM_FIELD_TYPES = ["string", "text", "number", "integer", "boolean", "select"] as const;
@@ -430,26 +387,7 @@ function parseInputFormFields(value: JsonValue | undefined): HostInputFormField[
 	const fields: HostInputFormField[] = [];
 	for (const entry of value) {
 		if (!isJsonObject(entry)) return undefined;
-		const {
-			name,
-			type,
-			description,
-			required,
-			choices,
-			placeholder,
-			initialValue,
-			const: constVal,
-			minimum,
-			maximum,
-			exclusiveMinimum,
-			exclusiveMaximum,
-			multipleOf,
-			minLength,
-			maxLength,
-			pattern,
-			format,
-			schema,
-		} = entry;
+		const { name, type, description, required, choices, placeholder, initialValue } = entry;
 		if (
 			typeof name !== "string" ||
 			!INPUT_FORM_FIELD_TYPES.includes(type as HostInputFormField["type"]) ||
@@ -461,32 +399,6 @@ function parseInputFormFields(value: JsonValue | undefined): HostInputFormField[
 		if (choices !== undefined && (!Array.isArray(choices) || !choices.every((choice) => typeof choice === "string")))
 			return undefined;
 		if (placeholder !== undefined && typeof placeholder !== "string") return undefined;
-		if (
-			constVal !== undefined &&
-			typeof constVal !== "string" &&
-			typeof constVal !== "number" &&
-			typeof constVal !== "boolean"
-		)
-			return undefined;
-		if (minimum !== undefined && (typeof minimum !== "number" || !Number.isFinite(minimum))) return undefined;
-		if (maximum !== undefined && (typeof maximum !== "number" || !Number.isFinite(maximum))) return undefined;
-		if (
-			exclusiveMinimum !== undefined &&
-			(typeof exclusiveMinimum !== "number" || !Number.isFinite(exclusiveMinimum))
-		)
-			return undefined;
-		if (
-			exclusiveMaximum !== undefined &&
-			(typeof exclusiveMaximum !== "number" || !Number.isFinite(exclusiveMaximum))
-		)
-			return undefined;
-		if (multipleOf !== undefined && (typeof multipleOf !== "number" || !Number.isFinite(multipleOf)))
-			return undefined;
-		if (minLength !== undefined && (typeof minLength !== "number" || !Number.isFinite(minLength))) return undefined;
-		if (maxLength !== undefined && (typeof maxLength !== "number" || !Number.isFinite(maxLength))) return undefined;
-		if (pattern !== undefined && typeof pattern !== "string") return undefined;
-		if (format !== undefined && typeof format !== "string") return undefined;
-		if (schema !== undefined && !isJsonObject(schema)) return undefined;
 		fields.push({
 			name,
 			type: type as HostInputFormField["type"],
@@ -495,20 +407,31 @@ function parseInputFormFields(value: JsonValue | undefined): HostInputFormField[
 			...(typeof required === "boolean" ? { required } : {}),
 			...(Array.isArray(choices) ? { choices: choices as string[] } : {}),
 			...(typeof placeholder === "string" ? { placeholder } : {}),
-			...(constVal !== undefined ? { const: constVal } : {}),
-			...(typeof minimum === "number" ? { minimum } : {}),
-			...(typeof maximum === "number" ? { maximum } : {}),
-			...(typeof exclusiveMinimum === "number" ? { exclusiveMinimum } : {}),
-			...(typeof exclusiveMaximum === "number" ? { exclusiveMaximum } : {}),
-			...(typeof multipleOf === "number" ? { multipleOf } : {}),
-			...(typeof minLength === "number" ? { minLength } : {}),
-			...(typeof maxLength === "number" ? { maxLength } : {}),
-			...(typeof pattern === "string" ? { pattern } : {}),
-			...(typeof format === "string" ? { format } : {}),
-			...(schema !== undefined && isJsonObject(schema) ? { schema: schema as HostInputFormField["schema"] } : {}),
 		});
 	}
 	return fields;
+}
+
+const TOOL_GROUP_FAMILIES: readonly ToolGroupFamily[] = ["read", "search", "find", "list", "bash"];
+
+function parseToolGroupRole(value: JsonValue | undefined): ToolGroupRole | undefined {
+	if (value === undefined || !isJsonObject(value)) return undefined;
+	if (value.kind === "standalone" || value.kind === "hidden") return { kind: value.kind };
+	if (value.kind !== "head" || !Array.isArray(value.clauses)) return undefined;
+	const clauses: { family: ToolGroupFamily; count: number }[] = [];
+	for (const clause of value.clauses) {
+		if (
+			!isJsonObject(clause) ||
+			typeof clause.count !== "number" ||
+			!Number.isInteger(clause.count) ||
+			clause.count < 1
+		)
+			return undefined;
+		const family = TOOL_GROUP_FAMILIES.find((candidate) => candidate === clause.family);
+		if (family === undefined) return undefined;
+		clauses.push({ family, count: clause.count });
+	}
+	return clauses.length > 0 ? { kind: "head", clauses } : undefined;
 }
 
 function parseStringRecord(value: JsonValue | undefined): Record<string, string> | undefined {
@@ -562,6 +485,29 @@ function parseJsonObject(line: string): JsonObject | undefined {
 		return undefined;
 	}
 	return isJsonObject(value) ? value : undefined;
+}
+
+export function readHostInputFormRequest(request: unknown): HostInputFormRequest | undefined {
+	let text: string | undefined;
+	try {
+		text = JSON.stringify(request);
+	} catch {
+		return undefined;
+	}
+	const value = text === undefined ? undefined : parseJsonObject(text);
+	return value === undefined ? undefined : parseHostInputFormRequest(value);
+}
+
+function parseHostInputFormRequest(value: JsonObject): HostInputFormRequest | undefined {
+	const fields = parseInputFormFields(value.fields);
+	return typeof value.title === "string" && fields
+		? {
+				title: value.title,
+				fields,
+				...(typeof value.heading === "string" ? { heading: value.heading } : {}),
+				...(typeof value.submitLabel === "string" ? { submitLabel: value.submitLabel } : {}),
+			}
+		: undefined;
 }
 
 export function parseInteractiveEngineMessage(line: string): InteractiveEngineMessage | undefined {
@@ -736,12 +682,18 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 			const sessions = parseSessionPickerRows(value.sessions);
 			return typeof value.componentId === "string" &&
 				sessions &&
-				(value.showRenameHint === undefined || typeof value.showRenameHint === "boolean")
+				(value.showRenameHint === undefined || typeof value.showRenameHint === "boolean") &&
+				(value.title === undefined || typeof value.title === "string") &&
+				(value.variant === undefined || value.variant === "sessions" || value.variant === "runs") &&
+				(value.canDelete === undefined || typeof value.canDelete === "boolean")
 				? {
 						type: value.type,
 						componentId: value.componentId,
 						sessions,
 						...(typeof value.showRenameHint === "boolean" ? { showRenameHint: value.showRenameHint } : {}),
+						...(typeof value.title === "string" ? { title: value.title } : {}),
+						...(value.variant === "sessions" || value.variant === "runs" ? { variant: value.variant } : {}),
+						...(typeof value.canDelete === "boolean" ? { canDelete: value.canDelete } : {}),
 					}
 				: undefined;
 		}
@@ -753,7 +705,17 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 		}
 		case "engine_session_picker_error":
 			return typeof value.componentId === "string" && typeof value.message === "string"
-				? { type: value.type, componentId: value.componentId, message: value.message }
+				? {
+						type: value.type,
+						componentId: value.componentId,
+						message: value.message,
+						...(typeof value.deletePath === "string" ? { deletePath: value.deletePath } : {}),
+						...(typeof value.deleteRequestId === "number" &&
+						Number.isSafeInteger(value.deleteRequestId) &&
+						value.deleteRequestId > 0
+							? { deleteRequestId: value.deleteRequestId }
+							: {}),
+					}
 				: undefined;
 		case "engine_session_picker_close":
 		case "engine_input_form_close":
@@ -762,16 +724,9 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				: undefined;
 		case "engine_input_form_open": {
 			if (typeof value.componentId !== "string") return undefined;
-			const fields = parseInputFormFields(value.fields);
-			return typeof value.title === "string" && fields
-				? {
-						type: value.type,
-						componentId: value.componentId,
-						title: value.title,
-						fields,
-						...(typeof value.heading === "string" ? { heading: value.heading } : {}),
-						...(typeof value.submitLabel === "string" ? { submitLabel: value.submitLabel } : {}),
-					}
+			const request = parseHostInputFormRequest(value);
+			return request
+				? { type: value.type, componentId: value.componentId, ...request }
 				: { type: "engine_input_form_refused", componentId: value.componentId };
 		}
 		default:
@@ -843,7 +798,17 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 		(value.type === "engine_session_picker_select" || value.type === "engine_session_picker_delete") &&
 		typeof value.path === "string"
 	) {
-		return { type: value.type, componentId: value.componentId, path: value.path };
+		return {
+			type: value.type,
+			componentId: value.componentId,
+			path: value.path,
+			...(value.type === "engine_session_picker_delete" &&
+			typeof value.deleteRequestId === "number" &&
+			Number.isSafeInteger(value.deleteRequestId) &&
+			value.deleteRequestId > 0
+				? { deleteRequestId: value.deleteRequestId }
+				: {}),
+		};
 	}
 	if (value.type === "engine_session_picker_cancel") return { type: value.type, componentId: value.componentId };
 	if (value.type === "engine_input_form_cancel") return { type: value.type, componentId: value.componentId };
@@ -866,12 +831,20 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 		typeof value.showImages === "boolean" &&
 		typeof value.imageWidthCells === "number"
 	) {
+		if (
+			value.rendererTaskId !== undefined &&
+			(typeof value.rendererTaskId !== "string" ||
+				value.rendererTaskId.length === 0 ||
+				value.rendererTaskId.length > 256)
+		)
+			return undefined;
 		return {
 			type: value.type,
 			componentId: value.componentId,
 			requestId: value.requestId,
 			width: value.width,
 			toolName: value.toolName,
+			...(value.rendererTaskId === undefined ? {} : { rendererTaskId: value.rendererTaskId }),
 			toolCallId: value.toolCallId,
 			args: value.args,
 			result: isJsonObject(value.result) ? value.result : undefined,
@@ -882,6 +855,11 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 			showImages: value.showImages,
 			imageWidthCells: value.imageWidthCells,
 			outputPad: typeof value.outputPad === "number" ? value.outputPad : undefined,
+			executionStartedAt:
+				typeof value.executionStartedAt === "number" && Number.isFinite(value.executionStartedAt)
+					? value.executionStartedAt
+					: undefined,
+			groupRole: parseToolGroupRole(value.groupRole),
 		};
 	}
 	if (

@@ -2,8 +2,9 @@ import { AsyncLocalStorage, AsyncResource } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type * as native from "@bastani/atomic-natives";
-import { createModuleRequire } from "../../utils/module-require.ts";
+import { createModuleRequire } from "../../utils/module-require.js";
 import type { AgentSession, AgentSessionEvent, CompactionReason } from "../agent-session.js";
+import type { MessageRenderer, ToolRenderers } from "../extensions/types.ts";
 import { currentResourceAdmission } from "../resource-admission-scope.ts";
 import type { ResourceAdmission, ResourcePermit } from "../sdk-types.ts";
 import type { SessionManager } from "../session-manager.ts";
@@ -43,7 +44,13 @@ export type ChatBoxSession = Pick<
 	| "compactionStartedAt"
 	| "isRetrying"
 	| "isBashRunning"
->;
+> & {
+	readonly getToolDefinition?: (toolName: string) => ToolRenderers | undefined;
+	readonly extensionRunner?: {
+		resolveToolRenderers?: (toolName: string, base: () => ToolRenderers | undefined) => ToolRenderers | undefined;
+		getMessageRenderer?: (customType: string) => MessageRenderer | undefined;
+	};
+};
 
 /** Messages a live session holds back until its turn ends. */
 export interface QueuedTaskMessages {
@@ -323,7 +330,8 @@ function entriesAfterInherited(
 ): ReturnType<TaskTranscriptSource["getEntries"]> {
 	const throughId = inherited?.throughId;
 	if (throughId === undefined || throughId === null) return entries;
-	return entries.slice(entries.findLastIndex((entry) => entry.id === throughId) + 1);
+	const index = entries.findLastIndex((entry) => entry.id === throughId);
+	return index < 0 ? [] : entries.slice(index + 1);
 }
 
 /** History the runner produced; a forked child's inherited parent entries are excluded. */
@@ -334,16 +342,22 @@ export function taskOwnTranscriptEntries(task: TaskLease): ReturnType<TaskTransc
 }
 
 /** {@link taskOwnTranscriptEntries}, read from the task's session store when its transcript keeps none in memory. */
-export async function loadTaskOwnTranscriptEntries(
-	task: TaskLease,
-): Promise<ReturnType<TaskTranscriptSource["getEntries"]> | undefined> {
+export async function loadTaskOwnTranscriptHistory(task: TaskLease): Promise<TaskTranscriptHistory | undefined> {
 	const state = environment.tasks.get(task);
 	const source = state?.transcript;
 	if (!state || !source) return undefined;
-	if (!source.loadHistory) return entriesAfterInherited(source.getEntries(), state.inherited);
+	if (!source.loadHistory) return { entries: entriesAfterInherited(source.getEntries(), state.inherited) };
 	const history = await source.loadHistory();
 	// What a transcript keeps when its saved history is gone is the task's own entries only.
-	return history.unavailable === undefined ? entriesAfterInherited(history.entries, state.inherited) : history.entries;
+	return history.unavailable === undefined
+		? { entries: entriesAfterInherited(history.entries, state.inherited) }
+		: { entries: history.entries, unavailable: history.unavailable };
+}
+
+export async function loadTaskOwnTranscriptEntries(
+	task: TaskLease,
+): Promise<ReturnType<TaskTranscriptSource["getEntries"]> | undefined> {
+	return (await loadTaskOwnTranscriptHistory(task))?.entries;
 }
 
 /** Promise rejections, setup throws and consumer exceptions may be arbitrary JavaScript values. */
@@ -481,7 +495,6 @@ type LaunchHeartbeat = { heartbeatMs: number; taskId?: C.TaskId };
  */
 export type LaunchMetadata = {
 	/** Routing provenance, by task id. */
-	readonly routerSelections: Map<string, C.RouterSelection>;
 	/** The model each launch asked for, by task id. */
 	readonly requestedModels: Map<string, string>;
 	/**
@@ -522,7 +535,6 @@ function claimLaunchHeartbeat(
 }
 function record(value: native.TaskRecord, launches: LaunchMetadata): C.TaskRecord {
 	if (value.kind !== "agent" && value.kind !== "command") throw new Error(`Invalid native task kind: ${value.kind}`);
-	const routerSelection = launches.routerSelections.get(value.ref.taskId);
 	const requestedModel = launches.requestedModels.get(value.ref.taskId);
 	const heartbeatMs = launches.launchHeartbeats.get(value.launchOperationId)?.heartbeatMs;
 	const launchedBy = launches.launchers.get(value.launchOperationId);
@@ -538,7 +550,6 @@ function record(value: native.TaskRecord, launches: LaunchMetadata): C.TaskRecor
 		...(value.agentName === undefined ? {} : { agentName: value.agentName }),
 		...(value.model === undefined ? {} : { model: value.model }),
 		...(value.thinking === undefined ? {} : { thinking: value.thinking }),
-		...(routerSelection ? { routerSelection } : {}),
 		...(requestedModel === undefined ? {} : { requestedModel }),
 		...(heartbeatMs === undefined ? {} : { heartbeatMs }),
 		execution: execution(value.execution, value.ref.taskId, launches),
@@ -904,7 +915,6 @@ export function taskHostStateSizesForTesting(owner: OwnerLease) {
 		unconfirmedCleanups: state.unconfirmedCleanups.size,
 		permits: state.permits.size,
 		commandStarts: state.commandStarts.size,
-		routerSelections: state.launches.routerSelections.size,
 		requestedModels: state.launches.requestedModels.size,
 		launchHeartbeats: state.launches.launchHeartbeats.size,
 		executionTimeouts: state.launches.executionTimeouts.size,
@@ -985,7 +995,6 @@ export class TaskSupervisor {
 					commandStarts: new Map(),
 					commandLaunches: new Map(),
 					launches: {
-						routerSelections: new Map(),
 						requestedModels: new Map(),
 						launchHeartbeats: new Map(),
 						executionTimeouts: new Map(),
@@ -1075,7 +1084,6 @@ export class TaskSupervisor {
 		state.tasks.delete(taskId);
 		state.settledTasks.delete(taskId);
 		state.quarantinedTasks.delete(taskId);
-		state.launches.routerSelections.delete(taskId);
 		state.launches.requestedModels.delete(taskId);
 		if (state.launches.launchHeartbeats.get(operation)?.taskId === taskId)
 			state.launches.launchHeartbeats.delete(operation);
@@ -1432,7 +1440,6 @@ export class TaskSupervisor {
 		const existing = state.tasks.get(id);
 		if (existing) return { ok: true, value: existing };
 		claimLaunchHeartbeat(state.launches, operation, id, cadence);
-		if (intent.routerSelection) state.launches.routerSelections.set(id, Object.freeze({ ...intent.routerSelection }));
 		if (intent.requestedModel) state.launches.requestedModels.set(id, intent.requestedModel);
 		const task = new TaskCapability();
 		Object.freeze(task);
@@ -1723,7 +1730,6 @@ export class TaskSupervisor {
 				this.#disposeRecordIndex(state);
 				// No watcher is left to read the closed owner's records, and none can start: its launch metadata goes
 				// with it (#4451).
-				state.launches.routerSelections.clear();
 				state.launches.requestedModels.clear();
 				state.launches.launchHeartbeats.clear();
 				state.launches.executionTimeouts.clear();

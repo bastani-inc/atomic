@@ -58,7 +58,6 @@ function mount(initial: readonly WorkflowsListingInvalidDefinition[]) {
 		},
 		{
 			runs: () => [run],
-			definitions: () => [],
 			invalidDefinitions: () => {
 				reads++;
 				return definitions;
@@ -146,15 +145,13 @@ test("removing a broken definition cannot confirm its unpainted replacement (#52
 	}
 });
 
-test("compact run and definition rows keep bidirectional controls inert without changing targets (#5224)", () => {
+test("compact run and broken-definition rows keep bidirectional controls inert without changing targets (#5224)", () => {
 	const name = "review\u202eevil";
-	const rows = workflowsListingItems(
-		[{ ...run, name, label: "label\u2066evil" }],
-		[{ normalizedName: name, description: "description\u202eevil", inputs: {} }],
-	);
+	const broken = invalid(name);
+	const rows = workflowsListingItems([{ ...run, name, label: "label\u2066evil" }], 10_000, [broken]);
 	for (const row of rows) {
 		assert.doesNotMatch(`${row.label} ${row.description}`, /[\u202e\u2066]/);
 		assert.match(row.label, /<U\+202E>/);
 	}
-	assert.deepEqual(rows[1]!.value, { kind: "definition", name });
+	assert.deepEqual(rows[1]!.value, { kind: "invalid-definition", definition: broken });
 });

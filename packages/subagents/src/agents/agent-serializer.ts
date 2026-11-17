@@ -9,7 +9,6 @@ export const KNOWN_FIELDS = new Set([
 	"description",
 	"tools",
 	"model",
-	"modelConstraints",
 	"fallbackModels",
 	"fallbackThinkingLevels",
 	"thinking",
@@ -32,7 +31,12 @@ export const KNOWN_FIELDS = new Set([
  * the file. Each is spelled with a splice so the removed identifier never appears
  * as contiguous source text.
  */
-const REMOVED_AGENT_FRONTMATTER_FIELDS = new Set<string>([`completion${"Guard"}`, `maxSubagent${"Depth"}`]);
+const REMOVED_AGENT_FRONTMATTER_FIELDS = new Set<string>([
+	`completion${"Guard"}`,
+	`maxSubagent${"Depth"}`,
+	`model${"Constraints"}`,
+	`task${"Needs"}`,
+]);
 
 export function shouldPreserveAgentExtraField(key: string): boolean {
 	return !KNOWN_FIELDS.has(key) && !REMOVED_AGENT_FRONTMATTER_FIELDS.has(key);
@@ -74,8 +78,6 @@ export function serializeAgent(config: AgentConfig): string {
 	if (toolsValue) lines.push(`tools: ${toolsValue}`);
 
 	if (config.model) lines.push(`model: ${config.model}`);
-	if (config.modelConstraints)
-		lines.push(stringify({ modelConstraints: config.modelConstraints }, { lineWidth: 0 }).trimEnd());
 	const fallbackModelsValue = joinComma(config.fallbackModels);
 	if (fallbackModelsValue) lines.push(`fallbackModels: ${fallbackModelsValue}`);
 	const fallbackThinkingLevelsValue = joinComma(config.fallbackThinkingLevels);

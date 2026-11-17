@@ -58,8 +58,8 @@ export async function _getRequiredRequestAuth(
 	if (result && (result.auth.apiKey || result.auth.headers)) {
 		// `ProviderHeaders` is `Record<string, string | null>` and a null value
 		// suppresses the provider/API default header of the same name. Callers of
-		// this function issue real outbound requests (branch summarization and the
-		// compaction planner), so both markers and the credential-specific endpoint
+		// this function issue real outbound requests (branch and session summaries),
+		// so both markers and the credential-specific endpoint
 		// must reach the request layer intact.
 		return {
 			apiKey: result.auth.apiKey,
@@ -120,7 +120,7 @@ function addPersistedDefaultToNonEmptyScope(session: AgentSession, model: Model<
 	if (session._scopedModels.some((scoped) => modelsAreEqual(scoped.model, model))) return;
 
 	session._scopedModels = [...session._scopedModels, { model }];
-	const enabledModels = session.settingsManager.getEnabledModels();
+	const enabledModels = session.settingsManager.getGlobalSettings().enabledModels;
 	if (!enabledModels?.length) return;
 
 	const modelReference = `${model.provider}/${model.id}`;
@@ -137,7 +137,7 @@ function addPersistedDefaultToNonEmptyScope(session: AgentSession, model: Model<
 export async function setModel(
 	this: AgentSession,
 	model: Model<Api>,
-	options: ModelMutationOptions = {},
+	options: ModelMutationOptions & { thinkingLevel?: ThinkingLevel } = {},
 ): Promise<void> {
 	assertSessionOpen(this);
 	return trackSessionWork(this, async () => {
@@ -146,7 +146,7 @@ export async function setModel(
 				throw new Error(`No API key for ${model.provider}/${model.id}`);
 			}
 			const previousModel = this.model;
-			const thinkingLevel = this._getThinkingLevelForModelSwitch(model);
+			const thinkingLevel = this._getThinkingLevelForModelSwitch(model, options.thinkingLevel);
 			const nextModel = model;
 			await this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
 			this._clearFallbackModelScope?.();

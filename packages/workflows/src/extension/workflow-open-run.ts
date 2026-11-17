@@ -1,16 +1,11 @@
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { Store } from "../shared/store.js";
 import { subscribeStoreInvalidation } from "../shared/store-observation.js";
-import { inertDisplayLine, inertDisplayText } from "../tui/display-text.js";
+import { inertDisplayLine, inertDisplayText, withoutStackFrames } from "../tui/display-text.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
-import { withoutStackFrames } from "../tui/run-outcome.js";
 import { renderSessionList } from "../tui/session-list.js";
-import {
-	openWorkflowsListing,
-	type WorkflowsListingDefinition,
-	type WorkflowsListingInvalidDefinition,
-} from "../tui/workflows-listing.js";
+import { openWorkflowsListing, type WorkflowsListingInvalidDefinition } from "../tui/workflows-listing.js";
 import type { PiCommandContext } from "./public-types.js";
 import { tokenizeWorkflowArgs, type WorkflowCommandReporter } from "./workflow-command-utils.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
@@ -25,8 +20,6 @@ export interface OpenWorkflowRunOptions {
 export interface WorkflowsCommandDeps {
 	readonly overlay: GraphOverlayPort;
 	readonly store: Store;
-	readonly definitions?: () => readonly WorkflowsListingDefinition[];
-	readonly startDefinition?: (name: string) => Promise<void>;
 	readonly invalidDefinitions?: () => readonly WorkflowsListingInvalidDefinition[];
 }
 
@@ -60,11 +53,16 @@ export function openWorkflowRun(
 	});
 }
 
+export interface WorkflowsCommandOptions {
+	readonly selectRunId?: string;
+}
+
 export async function handleWorkflowsCommand(
 	args: string,
 	ctx: PiCommandContext,
 	reporter: WorkflowCommandReporter,
 	deps: WorkflowsCommandDeps,
+	options: WorkflowsCommandOptions = {},
 ): Promise<void> {
 	const { store } = deps;
 	const theme = deriveGraphTheme({});
@@ -95,13 +93,13 @@ export async function handleWorkflowsCommand(
 	const runs = topLevelWorkflowRuns(store.runs());
 	if (runs.length === 0 && !interactive) return reporter.info("No workflows in this session.");
 	if (!interactive) return reporter.info(renderSessionList(store.runs(), { theme, includeAll: true }));
-	if (runs.length === 1) {
+	if (runs.length === 1 && (deps.invalidDefinitions?.().length ?? 0) === 0) {
 		openWorkflowRun(runs[0]!.id, ctx, deps);
 		return;
 	}
 	if (typeof ctx.ui?.custom !== "function")
 		return reporter.info(renderSessionList(store.runs(), { theme, includeAll: true }));
-	await showWorkflowsListing(ctx, reporter, deps);
+	await showWorkflowsListing(ctx, reporter, deps, options.selectRunId);
 }
 
 async function showWorkflowsListing(
@@ -119,12 +117,10 @@ async function showWorkflowsListing(
 	};
 	const picked = await openWorkflowsListing(ctx.ui, {
 		runs: () => store.runs(),
-		definitions: () => deps.definitions?.() ?? [],
-		invalidDefinitions: () => deps.invalidDefinitions?.() ?? [],
+		invalidDefinitions: deps.invalidDefinitions,
 		subscribe: (listener) => subscribeStoreInvalidation(store, listener),
 		selectRunId,
 	});
 	if (picked?.kind === "run") openWorkflowRun(picked.runId, ctx, deps, { onReturn: reopen });
-	else if (picked?.kind === "definition") await deps.startDefinition?.(picked.name);
 	else if (picked?.kind === "invalid-definition") reporter.info(formatInvalidDefinitionDetails(picked.definition));
 }

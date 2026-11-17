@@ -84,10 +84,11 @@ wait_for() {
 send() { tmux -L "$sock" send-keys -t "$target" "$@"; }
 
 wait_for "Engineering matters." 30
-send "/workflow reload" Enter
-wait_for "Reloaded workflow resources" 30
-send "/workflow security-review-demo" Enter
-wait_for "started in background" 30
+send "/reload" Enter
+wait_for "Reloaded" 30
+send -l "Run the security-review-demo workflow with the workflow tool."
+send Enter
+sleep 30
 send "/workflows" Enter
 wait_for "awaiting input" 30
 # The graph node is selected. Open its live input form.

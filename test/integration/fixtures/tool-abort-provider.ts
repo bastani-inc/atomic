@@ -1,6 +1,21 @@
 /** Offline provider fixture: exercise the real registered workflow tool, with no model/network calls. */
 import type { ExtensionAPI } from "@bastani/atomic";
-import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
+import { type AssistantMessage, createAssistantMessageEventStream, type JsonObject } from "@bastani/atomic-ai/compat";
+
+function parseWorkflowToolRequest(text: string): JsonObject | undefined {
+	const launch = /^launch-workflow (\S+)$/.exec(text)?.[1];
+	if (launch !== undefined) return { action: "run", workflow: launch, inputs: {} };
+	const status = /^status-workflow ([0-9a-f-]{36})$/.exec(text)?.[1];
+	if (status !== undefined) return { action: "status", runId: status };
+	const quit = /^quit-workflow ([0-9a-f-]{36})$/.exec(text)?.[1];
+	if (quit !== undefined) return { action: "quit", runId: quit };
+	const resume = /^resume-workflow ([0-9a-f-]{36})$/.exec(text)?.[1];
+	if (resume !== undefined) return { action: "resume", runId: resume };
+	if (text === "reload-workflow") return { action: "reload" };
+	const pauseTool = /^pause-tool ([0-9a-f-]{36})$/.exec(text)?.[1];
+	if (pauseTool !== undefined) return { action: "pause", runId: pauseTool, stageId: "hang-tool" };
+	return undefined;
+}
 
 export default function (pi: ExtensionAPI): void {
 	pi.registerProvider("tool-abort-fixture", {
@@ -30,7 +45,7 @@ export default function (pi: ExtensionAPI): void {
 								.map((part) => part.text)
 								.join("")
 					: "";
-			const runId = /^pause-tool ([0-9a-f-]{36})$/.exec(text)?.[1];
+			const toolArgs = parseWorkflowToolRequest(text.trim());
 			const output: AssistantMessage = {
 				role: "assistant",
 				api: model.api,
@@ -38,17 +53,17 @@ export default function (pi: ExtensionAPI): void {
 				model: model.id,
 				timestamp: Date.now(),
 				content:
-					runId === undefined
+					toolArgs === undefined
 						? [{ type: "text", text: "Fixture complete." }]
 						: [
 								{
 									type: "toolCall",
-									id: `abort-${runId}`,
+									id: `wf-${Date.now()}`,
 									name: "workflow",
-									arguments: { action: "pause", runId, stageId: "hang-tool" },
+									arguments: toolArgs,
 								},
 							],
-				stopReason: runId === undefined ? "stop" : "toolUse",
+				stopReason: toolArgs === undefined ? "stop" : "toolUse",
 				usage: {
 					input: 0,
 					output: 0,

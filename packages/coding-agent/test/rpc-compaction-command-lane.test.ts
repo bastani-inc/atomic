@@ -121,7 +121,7 @@ describe("interactive engine command lane during a manual compaction", () => {
 			type: "response",
 			command: "compact",
 			success: false,
-			error: "Nothing to compact (session too small)",
+			error: "Nothing to compact: the context holds nothing new since the last boundary",
 		});
 	});
 

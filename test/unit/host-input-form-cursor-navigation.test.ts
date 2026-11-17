@@ -151,7 +151,7 @@ function countedRestoreVisits(n: number): { visits: number; restored: number; mo
 	return { visits, restored: editor.getCursor().col, moved };
 }
 
-test("vertical cursor restoration scans the target line once in linear time (#5245)", () => {
+test("vertical cursor restoration scans the target line once in linear time (#5224)", () => {
 	for (const n of [50, 100, 200, 400]) {
 		const result = countedRestoreVisits(n);
 		assert.equal(result.moved, n);
@@ -160,7 +160,7 @@ test("vertical cursor restoration scans the target line once in linear time (#52
 	}
 });
 
-test("vertical cursor movement progresses across escaped characters before leaving the text field (#5245)", () => {
+test("vertical cursor movement progresses across escaped characters before leaving the text field (#5224)", () => {
 	for (const initial of ["\x01\x01\x01\x01", "\t\t\t\t", "\x9b\x9b\x9b\x9b"]) {
 		for (const width of [8, 9, 10]) {
 			const { component, editor } = createForm(initial);
@@ -192,7 +192,7 @@ test("vertical cursor movement progresses across escaped characters before leavi
 	}
 });
 
-test("PageUp and PageDown navigate wrapped escaped and tab-expanded text using displayed rows (#5245)", () => {
+test("PageUp and PageDown navigate wrapped escaped and tab-expanded text using displayed rows (#5224)", () => {
 	for (const unit of ["\x01", "\t"]) {
 		const initial = unit.repeat(600);
 		const { component, editor } = createForm(initial);
@@ -220,7 +220,7 @@ test("PageUp and PageDown navigate wrapped escaped and tab-expanded text using d
 	}
 });
 
-test("differential vertical navigation matches display-line editor movement and nearest raw boundaries (#5245)", () => {
+test("differential vertical navigation matches display-line editor movement and nearest raw boundaries (#5224)", () => {
 	const tokens = [
 		"a",
 		"b",

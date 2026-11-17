@@ -401,6 +401,7 @@ export async function handleConfigCommand(
 		writeScope: options.local ? "project" : "global",
 		projectModeAvailable: settingsManager.isProjectTrusted(),
 	});
+	await settingsManager.flush();
 	process.exit(0);
 }
 

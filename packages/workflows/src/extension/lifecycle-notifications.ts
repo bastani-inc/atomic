@@ -25,6 +25,7 @@ import type {
 import { boundedToolPayloadText, boundedToolText } from "../shared/tool-payload-bounds.js";
 import type { WorkflowOutputValues } from "../shared/types.js";
 import { inertDisplayLine, inertDisplayText } from "../tui/display-text.js";
+import { runFailureText } from "../tui/run-display-state.js";
 import { outputValueLine, summarizeFailureText } from "../tui/run-outcome.js";
 import { fmtDuration } from "../tui/status-helpers.js";
 import type { ExtensionAPI, PiMessageRenderComponent, PiMessageRenderer } from "./index.js";
@@ -108,7 +109,7 @@ export interface WorkflowLifecycleNoticeArtifact {
 	readonly detail?: string;
 }
 
-const NOTICE_ARTIFACTS_SHOWN = 1;
+const NOTICE_ARTIFACTS_SHOWN = 3;
 const NOTICE_TEXT_LIMIT = 4096;
 const SNIPPET_SCAN_WINDOW = 4096;
 
@@ -400,7 +401,7 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
 		return `▶ ${actor} started workflow "${workflowName}" (run ${details.runId}). It is running in the background; you will be notified when it completes.`;
 	}
 	if (details.kind === "completed") {
-		return `✓ Workflow "${workflowName}" completed (run ${details.runId})${origin}. Inspect: /workflow status ${details.runId}`;
+		return `✓ Workflow "${workflowName}" completed (run ${details.runId})${origin}. Inspect: /workflows ${details.runId}`;
 	}
 	if (details.kind === "failed") {
 		const stage = details.stageName ?? details.failedStageId ?? details.stageId;
@@ -409,21 +410,21 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
 		const errorText = details.error ? `: ${details.error}` : "";
 		const outputsText = formatLifecycleOutputs(details.outputs);
 		const outputSuffix = outputsText === undefined ? "" : ` Partial outputs: ${outputsText}`;
-		return `✗ Workflow "${workflowName}" failed (run ${details.runId}${failureSite})${origin}${errorText}${outputSuffix}. Inspect: /workflow status ${details.runId}`;
+		return `✗ Workflow "${workflowName}" failed (run ${details.runId}${failureSite})${origin}${errorText}${outputSuffix}. Inspect: /workflows ${details.runId}`;
 	}
 	if (details.kind === "blocked") {
 		const errorText = details.error ? `: ${details.error}` : "";
 		if (details.budgetExceeded === true) {
 			const dimension = details.budgetDimension === undefined ? "" : ` ${details.budgetDimension}`;
-			return `! Workflow "${workflowName}" stopped at its${dimension} budget limit (run ${details.runId})${origin}${errorText}. Summarize progress and the estimated next steps, then ask the user whether to proceed — prefer the ask_user_question tool when it is available — and after approval resume with a raised budget: workflow({ action: "resume", runId: "${details.runId}", budget: { ... } }). Inspect: /workflow status ${details.runId}`;
+			return `! Workflow "${workflowName}" stopped at its${dimension} budget limit (run ${details.runId})${origin}${errorText}. Summarize progress and the estimated next steps, then ask the user whether to proceed — prefer the ask_user_question tool when it is available — and after approval resume with a raised budget: workflow({ action: "resume", runId: "${details.runId}", budget: { ... } }). Inspect: /workflows ${details.runId}`;
 		}
 		const stateText = details.active === true ? "is blocked" : "ended blocked";
-		return `! Workflow "${workflowName}" ${stateText} (run ${details.runId})${origin}${errorText}. Unless the user has requested inline/no-workflow execution, resume or steer the run, or continue with a follow-up workflow. For an explicit inline switch, safely hold/stop the affected run, reconcile completed work and in-flight side effects, then continue inline without duplicate execution; completed work is not undone. Preserve safety, authorization and validation requirements. Resolve material ambiguity from the objective and repository evidence. Inspect: /workflow status ${details.runId}`;
+		return `! Workflow "${workflowName}" ${stateText} (run ${details.runId})${origin}${errorText}. Unless the user has requested inline/no-workflow execution, resume or steer the run, or continue with a follow-up workflow. For an explicit inline switch, safely hold/stop the affected run, reconcile completed work and in-flight side effects, then continue inline without duplicate execution; completed work is not undone. Preserve safety, authorization and validation requirements. Resolve material ambiguity from the objective and repository evidence. Inspect: /workflows ${details.runId}`;
 	}
 	if (details.kind === "budget_warning") {
 		const warningText = details.error ? `: ${details.error}` : "";
 		const dimension = details.budgetDimension ?? "duration";
-		return `! Workflow "${workflowName}" is approaching its ${dimension} budget (run ${details.runId})${origin}${warningText}. Inspect: /workflow status ${details.runId}`;
+		return `! Workflow "${workflowName}" is approaching its ${dimension} budget (run ${details.runId})${origin}${warningText}. Inspect: /workflows ${details.runId}`;
 	}
 	if (details.kind === "paused" || details.kind === "quit") {
 		const stopStage = details.stageName ?? details.stageId;
@@ -434,7 +435,7 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
 		const verb = details.kind === "paused" ? "paused" : "quit";
 		const noun = details.kind === "paused" ? "pause" : "stop";
 		const glyph = details.kind === "paused" ? "⏸" : "⏹";
-		return `${glyph} ${actor} ${verb} the ${scopeText} "${workflowName}" (run ${details.runId})${origin}${stageText}. This ${noun} was deliberate and user-requested; do not resume it or take over the work unless asked. Resume: /workflow resume ${details.runId}`;
+		return `${glyph} ${actor} ${verb} the ${scopeText} "${workflowName}" (run ${details.runId})${origin}${stageText}. This ${noun} was deliberate and user-requested; do not resume it or take over the work unless asked. Resume from /workflows ${details.runId}`;
 	}
 	if (details.kind === "resumed") {
 		const resumedStage = details.stageName ?? details.stageId;
@@ -477,7 +478,8 @@ function makeTerminalNotice(
 			returnedNoticeError(run, kind) ??
 			(kind === "blocked" || kind === "failed" ? run.exitReason : undefined));
 	const outputsPreview = kind === "completed" ? formatCardOutputs(fullResult) : undefined;
-	const reason = error && (kind === "failed" || kind === "blocked") ? summarizeNoticeFailureReason(error) : undefined;
+	const displayFailure = kind === "failed" || kind === "blocked" ? (runFailureText(run) ?? error) : undefined;
+	const reason = displayFailure === undefined ? undefined : summarizeNoticeFailureReason(displayFailure);
 	const artifacts = kind === "completed" ? collectNoticeArtifacts(run) : undefined;
 	return {
 		kind,
@@ -727,16 +729,20 @@ function summarizeNoticeFailureReason(error: string): string {
 
 function noticeArtifactDetail(artifact: WorkflowArtifact): string | undefined {
 	if (artifact.captureError !== undefined)
-		return `not captured: ${summarizeFailureText(artifact.captureError).reason}`;
+		return `not captured: ${boundedToolText(summarizeFailureText(artifact.captureError).reason, LIFECYCLE_NOTICE_SNIPPET_LIMIT)}`;
 	const size: string[] = [];
-	if (artifact.filesChanged !== undefined)
+	if (artifact.filesChanged !== undefined && Number.isFinite(artifact.filesChanged) && artifact.filesChanged >= 0) {
 		size.push(`${artifact.filesChanged} ${artifact.filesChanged === 1 ? "file" : "files"}`);
-	if (artifact.insertions !== undefined || artifact.deletions !== undefined)
-		size.push(`+${artifact.insertions ?? 0} \u2212${artifact.deletions ?? 0}`);
+	}
+	if (artifact.insertions !== undefined || artifact.deletions !== undefined) {
+		const insertions = Number.isFinite(artifact.insertions) ? Math.max(0, artifact.insertions ?? 0) : 0;
+		const deletions = Number.isFinite(artifact.deletions) ? Math.max(0, artifact.deletions ?? 0) : 0;
+		size.push(`+${insertions} \u2212${deletions}`);
+	}
 	if (size.length > 0) return size.join(" \u00b7 ");
 	return artifact.diffStat === undefined
 		? undefined
-		: boundedToolText(artifact.diffStat, NOTICE_TEXT_LIMIT).split(/\r?\n/, 1)[0];
+		: boundedToolText(artifact.diffStat, LIFECYCLE_NOTICE_SNIPPET_LIMIT).split(/\r?\n/, 1)[0];
 }
 
 function collectNoticeArtifacts(run: RunSnapshot): WorkflowLifecycleNoticeDetails["artifacts"] {

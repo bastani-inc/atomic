@@ -11,7 +11,6 @@ import type {
 	WorkflowRunControlRegistration,
 } from "@bastani/atomic";
 import type { Api, Model } from "@bastani/atomic-ai/compat";
-import type { RunJournalSettings } from "../durable/journal/resolution.js";
 import type { StageSessionRuntime } from "../runs/foreground/stage-runner.js";
 import type { LegacyWaitingStatus } from "../shared/legacy-waiting-status.js";
 import type { SessionManager as PersistenceSessionManager } from "../shared/persistence-restore.js";
@@ -38,6 +37,7 @@ export interface PiRenderContext {
 	args?: unknown;
 	/** What this renderer returned for the same row last time, so it can update it in place. */
 	lastComponent?: unknown;
+	outputPad?: number;
 }
 
 export interface PiRenderResultOpts extends RenderResultOpts {
@@ -48,6 +48,7 @@ export interface PiRenderComponent {
 	render(width: number): string[];
 	invalidate?: () => void;
 	includes(searchString: string): boolean;
+	isWorking?: () => boolean;
 }
 
 export interface PiMessageRenderComponent {
@@ -96,6 +97,7 @@ export interface PiRuntimeModelRegistry
 		>
 	> {
 	getAvailable(): PiRuntimeModel[];
+	hasConfiguredAuth?(model: { readonly provider: string }): boolean;
 }
 
 export interface PiModelContext {
@@ -106,6 +108,7 @@ export interface PiModelContext {
 	generateWorkflowSummary?(text: string, signal: AbortSignal): Promise<string | undefined>;
 	isSessionSummaryEnabled?(): boolean;
 	isProjectTrusted?(): boolean;
+	isIdle?(): boolean;
 	readonly model?: PiRuntimeModel;
 	readonly modelRegistry?: PiRuntimeModelRegistry;
 }
@@ -158,7 +161,6 @@ export interface PiToolOpts<TArgs, TDetails> {
 
 export interface PiExecuteContext extends PiModelContext {
 	getDecisionModel?: () => string;
-	getModelRouting?: () => import("@bastani/atomic").ModelRoutingSettings;
 	getHttpIdleTimeoutMs?: () => number;
 	sessionId?: string;
 	ui?: PiUISurface;
@@ -205,6 +207,10 @@ export interface ExtensionAPI {
 	registerMessageRenderer?: (event: string, renderer: PiMessageRenderer) => void;
 	sendMessage?: StageLateMessageRouter["routeMessage"];
 	sendMessages?: StageLateMessageRouter["routeMessages"];
+	sendUserMessage?: (
+		content: string,
+		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
+	) => void | Promise<void>;
 	registerFlag?: (name: string, opts: PiFlagNamedOpts) => void;
 	getWorkflowHostModules?: import("./workflow-module-loader.js").WorkflowHostModuleProvider;
 	refreshWorkflowResources?: () => Promise<readonly WorkflowResourceInfo[]>;
@@ -212,7 +218,7 @@ export interface ExtensionAPI {
 	getChildSessionOptions?: (options: CreateAgentSessionOptions) => CreateAgentSessionOptions;
 	getWorkflowJournal?: () => CreateAgentSessionOptions["journal"];
 	getStorageAgentDir?: () => string | undefined;
-	getSettings?: () => RunJournalSettings;
+	getSettings?: () => import("./workflow-model-catalog.js").WorkflowHostSettings;
 	registerShortcut?: (
 		key: string,
 		opts: {

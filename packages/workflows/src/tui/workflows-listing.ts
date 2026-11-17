@@ -1,23 +1,24 @@
 import {
+	type NavKey,
 	renderNavHintLine,
 	type SelectorItem,
 	SelectorState,
 	type SelectorStyle,
 	selectorHintEntries,
+	sliceHead,
 	themeSelectorStyle,
 } from "@bastani/atomic";
 import { getKeybindings, Input, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { PiCustomComponent, PiCustomOverlayFactoryTui, PiCustomOverlayFunction } from "../extension/wiring.js";
-import { actionableReturnedStatusText, effectiveRunStatus } from "../shared/returned-run-status.js";
+import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
-import { schemaIsRequired } from "../shared/schema-introspection.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import { sanitizeToolTitleText } from "../shared/tool-payload-bounds.js";
-import type { WorkflowInputSchemaMap } from "../shared/types.js";
-import { inertDisplayLine } from "./display-text.js";
+import { inertDisplayLine, summarizeFailureText } from "./display-text.js";
 import { panelItemsFromSnapshot } from "./panel-runs.js";
-import { summarizeFailureText } from "./run-outcome.js";
+import { type RunFailureSource, runFailureText } from "./run-display-state.js";
+import { runStateIndicator } from "./run-state-indicator.js";
 
 export interface WorkflowsListingInvalidDefinition {
 	readonly name: string;
@@ -29,13 +30,11 @@ export interface WorkflowsListingInvalidDefinition {
 
 export type WorkflowsListingTarget =
 	| { kind: "run"; runId: string }
-	| { kind: "definition"; name: string }
 	| { kind: "invalid-definition"; definition: WorkflowsListingInvalidDefinition };
 
 const FAILED_TO_LOAD_CODES: ReadonlySet<string> = new Set(["INVALID_DEFINITION", "IMPORT_FAILED", "PATH_NOT_FOUND"]);
 const NON_WORKFLOW_NAMED_EXPORT =
 	/\bexport "(?!default")[^"]+" rejected: (?:export is not an object|missing or incorrect __piWorkflow sentinel\b|workflow definition is not produced by workflow\b)/;
-const NAMED_EXPORT_REJECTION = /\bexport "(?!default").+?" rejected:/;
 const RAW_SOURCE = Symbol("workflow.invalidDefinition.rawSource");
 
 type InvalidDefinitionWithRawSource = WorkflowsListingInvalidDefinition & {
@@ -127,12 +126,6 @@ export function invalidDefinitionsFromDiagnostics(
 	return entries;
 }
 
-export interface WorkflowsListingDefinition {
-	readonly normalizedName: string;
-	readonly description: string;
-	readonly inputs: WorkflowInputSchemaMap;
-}
-
 const RUN_STATUS_TEXT: Readonly<Record<RunSnapshot["status"], string>> = {
 	pending: "starting",
 	running: "running",
@@ -146,6 +139,7 @@ const RUN_STATUS_TEXT: Readonly<Record<RunSnapshot["status"], string>> = {
 };
 
 export function listingDuration(ms: number): string {
+	if (!Number.isFinite(ms)) return "";
 	const seconds = Math.max(0, Math.round(ms / 1000));
 	if (seconds < 60) return `${seconds}s`;
 	const minutes = Math.floor(seconds / 60);
@@ -156,6 +150,7 @@ export function listingDuration(ms: number): string {
 }
 
 export function listingAgo(ms: number): string {
+	if (!Number.isFinite(ms)) return "";
 	const minutes = Math.floor(Math.max(0, ms) / 60_000);
 	if (minutes < 1) return "just now";
 	if (minutes < 60) return `${minutes}m ago`;
@@ -165,18 +160,12 @@ export function listingAgo(ms: number): string {
 	return days === 1 ? "yesterday" : `${days}d ago`;
 }
 
-export function shortFailureReason(
-	run: Pick<RunSnapshot, "error" | "exitReason" | "failureMessage" | "result">,
-): string | undefined {
-	const text = run.error ?? run.exitReason ?? run.failureMessage ?? actionableReturnedStatusText(run.result);
+export function shortFailureReason(run: RunFailureSource & Pick<RunSnapshot, "exitReason">): string | undefined {
+	const text = runFailureText(run) ?? run.exitReason;
 	if (!text) return undefined;
-	const first =
-		text
-			.split(/\r?\n/)
-			.map((line) => sanitizeToolTitleText(line).trim())
-			.find((line) => line.length > 0 && !/^at\s/.test(line)) ?? "";
-	const clean = first.replace(/^(Error|[A-Z][A-Za-z]*Error):\s*/, "");
-	return clean.length > 60 ? `${clean.slice(0, 59)}…` : clean || undefined;
+	const summary = summarizeFailureText(text).reason;
+	const clean = summary.replace(/^(Error|[A-Z][A-Za-z]*Error):\s*/, "");
+	return clean.length > 60 ? `${sliceHead(clean, 59)}…` : clean || undefined;
 }
 
 export function runStageText(run: RunSnapshot): string | undefined {
@@ -192,18 +181,29 @@ export function runStageText(run: RunSnapshot): string | undefined {
 
 export function runCostText(run: RunSnapshot): string | undefined {
 	const cost = run.budgetState?.accounting?.cost;
-	return cost === undefined || cost <= 0 ? undefined : `$${cost.toFixed(2)}`;
+	return typeof cost !== "number" || !Number.isFinite(cost) || cost <= 0 ? undefined : `$${cost.toFixed(2)}`;
+}
+
+function firstNonBlankLine(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	for (const line of value.split(/\r?\n/)) {
+		const clean = sanitizeToolTitleText(line).trim();
+		if (clean.length > 0) return clean;
+	}
+	return undefined;
 }
 
 export function runRowLabel(run: RunSnapshot): string {
 	const name = sanitizeToolTitleText(run.name);
-	if (run.label) return `${name} · ${sanitizeToolTitleText(run.label)}`;
-	const input = Object.values(run.inputs).find((value) => typeof value === "string" && value.trim() !== "");
-	const rawDetail =
-		typeof input === "string"
-			? sanitizeToolTitleText(input.split(/\r?\n/)[0] ?? "").trim()
-			: sanitizeToolTitleText(run.id.slice(0, 8));
-	const detail = rawDetail.length > 40 ? `${rawDetail.slice(0, 39)}…` : rawDetail;
+	const label = firstNonBlankLine(run.label);
+	if (label !== undefined) return `${name} · ${label}`;
+	let rawDetail: string | undefined;
+	for (const value of Object.values(run.inputs)) {
+		rawDetail = firstNonBlankLine(value);
+		if (rawDetail !== undefined) break;
+	}
+	const fallback = rawDetail ?? sanitizeToolTitleText(run.id.slice(0, 8)).trim();
+	const detail = fallback.length > 40 ? `${sliceHead(fallback, 39)}…` : fallback;
 	return `${name} · ${detail}`;
 }
 
@@ -217,7 +217,8 @@ export function runRowDescription(
 		return ["needs input", sanitizeToolTitleText(question), listingDuration(elapsedRunMs(run, now)), runCostText(run)]
 			.filter((part): part is string => part !== undefined && part !== "")
 			.join(" · ");
-	const statusText = RUN_STATUS_TEXT[status];
+	const state = runStateIndicator(run);
+	const statusText = state?.kind === "quit" ? "quit" : RUN_STATUS_TEXT[status];
 	const live = status === "running" || status === "pending" || status === "paused";
 	const reason = status === "failed" || status === "blocked" ? shortFailureReason(run) : undefined;
 	const parts = [
@@ -231,14 +232,6 @@ export function runRowDescription(
 	return parts.filter((part): part is string => part !== undefined && part !== "").join(" · ");
 }
 
-export function inputsSummary(inputs: WorkflowInputSchemaMap): string {
-	const entries = Object.values(inputs);
-	if (entries.length === 0) return "no inputs";
-	const required = entries.filter((schema) => schemaIsRequired(schema)).length;
-	const noun = entries.length === 1 ? "input" : "inputs";
-	return required ? `${entries.length} ${noun} (${required} required)` : `${entries.length} ${noun}`;
-}
-
 const RUN_TONE: Partial<Record<RunSnapshot["status"], "accent" | "success" | "warning" | "error" | "muted">> = {
 	running: "accent",
 	pending: "accent",
@@ -250,51 +243,38 @@ const RUN_TONE: Partial<Record<RunSnapshot["status"], "accent" | "success" | "wa
 	killed: "muted",
 };
 
-function normalizeRunsForPanel(runs: readonly RunSnapshot[]): readonly RunSnapshot[] {
-	if (
-		runs.every(
-			(run) =>
-				Array.isArray(run.toolNodes) &&
-				Array.isArray(run.stages) &&
-				run.stages.every((stage) => Array.isArray(stage.parentIds)),
-		)
-	) {
-		return runs;
-	}
-	return runs.map((run) => ({
-		...run,
-		toolNodes: Array.isArray(run.toolNodes) ? run.toolNodes : [],
-		stages: Array.isArray(run.stages)
-			? run.stages.map((stage) => (Array.isArray(stage.parentIds) ? stage : { ...stage, parentIds: [] }))
-			: [],
-	}));
+function startedAtRank(run: RunSnapshot): number {
+	return Number.isFinite(run.startedAt) ? run.startedAt : Number.NEGATIVE_INFINITY;
 }
 
 export function workflowsListingItems(
 	runs: readonly RunSnapshot[],
-	definitions: readonly WorkflowsListingDefinition[],
 	now = Date.now(),
 	invalidDefinitions: readonly WorkflowsListingInvalidDefinition[] = [],
 ): SelectorItem<WorkflowsListingTarget>[] {
 	const waiting = new Map(
-		panelItemsFromSnapshot(normalizeRunsForPanel(runs), now)
+		panelItemsFromSnapshot(runs, now)
 			.filter((item) => item.state === "input")
 			.map((item) => [item.id, item.question ?? item.task] as const),
 	);
 	const runItems = [...topLevelWorkflowRuns(runs)]
-		.sort((a, b) => b.startedAt - a.startedAt)
+		.sort((a, b) => startedAtRank(b) - startedAtRank(a))
 		.map((run): SelectorItem<WorkflowsListingTarget> => {
 			const status = effectiveRunStatus(run);
+			const state = runStateIndicator(run);
+			const statusText = state?.kind === "quit" ? "quit" : RUN_STATUS_TEXT[status];
 			const question = waiting.get(`run:${run.id}`);
 			const label = inertDisplayLine(runRowLabel(run));
 			const tag =
 				question !== undefined
 					? "◆"
-					: status === "failed"
-						? "✗"
-						: status === "cancelled" || status === "killed"
-							? "◼"
-							: undefined;
+					: state?.kind === "quit"
+						? state.glyph
+						: status === "failed"
+							? "✗"
+							: status === "cancelled" || status === "killed"
+								? "◼"
+								: undefined;
 			return {
 				id: `run:${run.id}`,
 				value: { kind: "run", runId: run.id },
@@ -302,34 +282,12 @@ export function workflowsListingItems(
 				description: inertDisplayLine(runRowDescription(run, now, question, status)),
 				tag,
 				tagTone: question !== undefined ? "warning" : RUN_TONE[status],
-				group: "Runs",
-				searchText: `${label} ${sanitizeToolTitleText(run.id)} ${RUN_STATUS_TEXT[status]}`,
+				searchText: `${label} ${sanitizeToolTitleText(run.id)} ${statusText}`,
 			};
 		});
 	const seenInvalidIds = new Map<string, number>();
-	const loadedNames = new Set(definitions.map((definition) => definition.normalizedName));
-	const visibleInvalidDefinitions = invalidDefinitions.filter(
-		(definition) =>
-			!(
-				definition.code === "INVALID_DEFINITION" &&
-				loadedNames.has(definition.name) &&
-				NAMED_EXPORT_REJECTION.test(definition.message)
-			),
-	);
-	const definitionItems = [
-		...definitions.map((definition): SelectorItem<WorkflowsListingTarget> => {
-			const label = inertDisplayLine(sanitizeToolTitleText(definition.normalizedName));
-			const summary = inertDisplayLine(sanitizeToolTitleText(definition.description.split(/\r?\n/)[0] ?? "")).trim();
-			return {
-				id: `definition:${definition.normalizedName}`,
-				value: { kind: "definition", name: definition.normalizedName },
-				label,
-				description: [summary, inputsSummary(definition.inputs)].filter(Boolean).join(" · "),
-				group: "Definitions",
-				searchText: `${label} ${sanitizeToolTitleText(definition.description)}`,
-			};
-		}),
-		...visibleInvalidDefinitions.map(
+	const definitionItems = invalidDefinitions
+		.map(
 			(definition): SelectorItem<WorkflowsListingTarget> => ({
 				id: invalidDefinitionId(definition, seenInvalidIds),
 				value: { kind: "invalid-definition", definition },
@@ -337,11 +295,10 @@ export function workflowsListingItems(
 				description: `failed to load · ${definition.reason}`,
 				tag: "✗",
 				tagTone: "error",
-				group: "Definitions",
 				searchText: `${definition.name} ${definition.source ?? ""} failed ${definition.reason}`,
 			}),
-		),
-	].sort((a, b) => a.label.localeCompare(b.label));
+		)
+		.sort((a, b) => a.label.localeCompare(b.label));
 	return [...runItems, ...definitionItems];
 }
 
@@ -350,20 +307,15 @@ export interface WorkflowsListingUi {
 }
 
 const LISTING_CLOCK_TICK_MS = 1_000;
+const LISTING_CHROME_ROWS = 3;
+const RUN_PREVIEW_ROWS = 5;
+const MIN_ROWS_FOR_PREVIEW = LISTING_CHROME_ROWS + 2 + RUN_PREVIEW_ROWS;
 const TRANSCRIPT_MIN_ROWS = 1;
 const USAGE_METER_ROWS = 1;
 const FOOTER_CHROME_ROWS = 2;
 const WIDGET_SPACER_ROWS = 1;
-const IDLE_AGENT_PANEL_ROWS = 4;
-const IDLE_AGENT_PANEL_OVERFLOW_ROWS = 1;
-const BELOW_SHEET_ROWS =
-	TRANSCRIPT_MIN_ROWS +
-	USAGE_METER_ROWS +
-	FOOTER_CHROME_ROWS +
-	WIDGET_SPACER_ROWS +
-	IDLE_AGENT_PANEL_ROWS +
-	IDLE_AGENT_PANEL_OVERFLOW_ROWS;
-const LISTING_HINT_OPTIONS = { search: true, confirmLabel: "open", cancelLabel: "close" };
+const BELOW_SHEET_ROWS = TRANSCRIPT_MIN_ROWS + USAGE_METER_ROWS + FOOTER_CHROME_ROWS + WIDGET_SPACER_ROWS;
+const LISTING_HINT_DROP_ORDER = ["to search", "preview", "close preview", "select"];
 
 function listingAvailableRows(tui: PiCustomOverlayFactoryTui): number {
 	const reportedRows = tui.terminal?.rows;
@@ -372,6 +324,34 @@ function listingAvailableRows(tui: PiCustomOverlayFactoryTui): number {
 			? Math.floor(reportedRows)
 			: 24;
 	return Math.max(3, terminalRows - BELOW_SHEET_ROWS);
+}
+
+function fitListingHints(
+	entries: readonly NavKey[],
+	width: number,
+	style: SelectorStyle,
+	keybindings: ReturnType<typeof getKeybindings>,
+): string {
+	const kept = [...entries];
+	const plainStyle: SelectorStyle = {
+		dim: (t) => t,
+		text: (t) => t,
+		muted: (t) => t,
+		border: (t) => t,
+		bold: (t) => t,
+		accent: (t) => t,
+		tone: (_tone, t) => t,
+	};
+	while (kept.length > 1) {
+		const rendered = renderNavHintLine(kept, 10_000, plainStyle, keybindings);
+		if (visibleWidth(rendered) <= width) break;
+		const drop = LISTING_HINT_DROP_ORDER.map((label) => kept.findIndex((entry) => entry.label === label)).find(
+			(index) => index >= 0,
+		);
+		if (drop === undefined) break;
+		kept.splice(drop, 1);
+	}
+	return renderNavHintLine(kept, width, style, keybindings);
 }
 
 function renderListingSearch(search: Input, style: SelectorStyle, width: number): string {
@@ -385,34 +365,63 @@ function renderListingSearch(search: Input, style: SelectorStyle, width: number)
 	return display.render(width)[0] ?? "";
 }
 
+function renderRunPreview(
+	item: SelectorItem<WorkflowsListingTarget>,
+	run: RunSnapshot | undefined,
+	style: SelectorStyle,
+	width: number,
+): string[] {
+	const inner = Math.max(1, width - 6);
+	const border = style.border;
+	const heading = ` ${truncateToWidth(item.label, Math.max(1, inner - 2))} `;
+	const top = `  ${border("╭─")}${style.bold(style.text(heading))}${border(`${"─".repeat(Math.max(0, inner - visibleWidth(heading) + 1))}╮`)}`;
+	const frame = (line: string): string => {
+		const clipped = truncateToWidth(line, inner);
+		return `  ${border("│ ")}${clipped}${" ".repeat(Math.max(0, inner - visibleWidth(clipped)))}${border(" │")}`;
+	};
+	const body: string[] = [];
+	if (item.description) body.push(style.muted(item.description));
+	if (run) {
+		const stages = run.stages
+			.map((stage) => `${sanitizeToolTitleText(stage.name).trim()} (${sanitizeToolTitleText(stage.status)})`)
+			.filter(Boolean)
+			.join(" · ");
+		if (stages) body.push(style.dim(stages));
+		body.push(style.dim(`id ${sanitizeToolTitleText(run.id)}`));
+	}
+	const bottom = `  ${border(`╰${"─".repeat(Math.max(0, inner + 2))}╯`)}`;
+	return [top, ...body.map(frame), bottom].map((line) => truncateToWidth(line, width));
+}
+
 function renderCompactListing(
 	state: SelectorState<WorkflowsListingTarget>,
+	runs: readonly RunSnapshot[],
 	search: Input,
 	style: SelectorStyle,
 	width: number,
+	previewOpen: boolean,
+	previewAvailable: boolean,
 ): string[] {
 	const visible = state.getVisible();
 	const top = state.getTop();
 	const end = Math.min(visible.length, top + state.maxVisible);
 	const page = visible.slice(top, end);
-	const groups = new Set(page.map((item) => item.group).filter((group) => group !== undefined));
-	const singleGroup = !state.getQuery() && groups.size === 1 ? page[0]?.group : undefined;
-	const title = `  ${style.bold(style.text("Workflows"))}${singleGroup ? style.muted(` · ${singleGroup}`) : ""}  `;
+	const title = `  ${style.bold(style.text("Workflows"))}  `;
 	const range = visible.length > 0 ? style.dim(`  ${top + 1}-${end}/${visible.length}`) : "";
 	const searchWidth = Math.max(1, width - visibleWidth(title) - visibleWidth(range));
-	const lines = [title + renderListingSearch(search, style, searchWidth) + range];
+	const hasSearch = state.items.length > 0 || state.getQuery().length > 0;
+	const lines = [
+		style.accent("▔".repeat(Math.max(0, Math.floor(width)))),
+		hasSearch ? title + renderListingSearch(search, style, searchWidth) + range : title.trimEnd(),
+	];
 	if (page.length === 0) {
 		const empty = state.getQuery()
 			? `No matches for "${sanitizeToolTitleText(state.getQuery())}"`
 			: "No workflows in this session.";
 		lines.push(`  ${style.dim(truncateToWidth(empty, Math.max(1, width - 2)))}`);
 	}
-	let lastGroup: string | undefined;
 	for (let index = 0; index < page.length; index++) {
 		const item = page[index]!;
-		if (groups.size > 1 && !state.getQuery() && item.group !== lastGroup && item.group !== undefined)
-			lines.push(`  ${style.bold(style.muted(truncateToWidth(item.group, Math.max(1, width - 2))))}`);
-		lastGroup = item.group;
 		const selected = top + index === state.getSelectedIndex();
 		const lead = selected ? ` ${style.accent(style.bold("❯ "))}` : "   ";
 		const tagWidth = item.tag ? visibleWidth(item.tag) + 2 : 0;
@@ -424,9 +433,26 @@ function renderCompactListing(
 				style.tone(item.tagTone ?? "muted", item.tag);
 		lines.push(line);
 		lines.push(`   ${style.muted(truncateToWidth(item.description ?? "", Math.max(1, width - 3)))}`);
+		if (selected && previewOpen && !state.getQuery()) {
+			const target = item.value;
+			const selectedRun = target.kind === "run" ? runs.find((run) => run.id === target.runId) : undefined;
+			lines.push(...renderRunPreview(item, selectedRun, style, width));
+		}
 	}
-	const hints = selectorHintEntries(state, LISTING_HINT_OPTIONS).filter((entry) => entry.label !== "to search");
-	lines.push(renderNavHintLine(hints, width, style, getKeybindings()));
+	const keybindings = getKeybindings();
+	if (state.items.length === 0 && !state.getQuery()) {
+		lines.push(renderNavHintLine([{ keys: "Esc", label: "to close" }], width, style, keybindings));
+	} else {
+		const hints = selectorHintEntries(state, {
+			search: true,
+			confirmLabel: "open",
+			cancelLabel: "close",
+			onPreview: !state.getQuery() && previewAvailable ? () => {} : undefined,
+			previewLabel: previewOpen ? "close preview" : "preview",
+			keybindings,
+		});
+		lines.push(fitListingHints(hints, width, style, keybindings));
+	}
 	return lines.map((line) => truncateToWidth(line, width));
 }
 
@@ -434,9 +460,9 @@ export function openWorkflowsListing(
 	ui: WorkflowsListingUi,
 	source: {
 		readonly runs: () => readonly RunSnapshot[];
-		readonly definitions: () => readonly WorkflowsListingDefinition[];
 		readonly invalidDefinitions?: () => readonly WorkflowsListingInvalidDefinition[];
 		readonly subscribe?: (listener: () => void) => () => void;
+		readonly initialId?: string;
 		readonly selectRunId?: string;
 	},
 ): Promise<WorkflowsListingTarget | undefined> {
@@ -465,24 +491,41 @@ export function openWorkflowsListing(
 				if (settle(target)) done(undefined);
 			};
 			let cachedRuns = source.runs();
-			let cachedDefinitions = source.definitions();
 			let cachedInvalidDefinitions = source.invalidDefinitions?.() ?? [];
 			let currentNow = Date.now();
-			let items = workflowsListingItems(cachedRuns, cachedDefinitions, currentNow, cachedInvalidDefinitions);
+			let items = workflowsListingItems(cachedRuns, currentNow, cachedInvalidDefinitions);
 			const style = themeSelectorStyle();
 			const search = new Input({ prompt: "⌕ ", placeholder: "Search…", placeholderStyle: style.dim });
+			const initialId = source.selectRunId !== undefined ? `run:${source.selectRunId}` : source.initialId;
 			const selector = new SelectorState<WorkflowsListingTarget>({
 				items,
-				initialId: source.selectRunId === undefined ? undefined : `run:${source.selectRunId}`,
-				maxVisible: Math.max(1, Math.floor((listingAvailableRows(tui) - 2) / 2)),
+				initialId,
+				maxVisible: Math.max(1, Math.floor((listingAvailableRows(tui) - LISTING_CHROME_ROWS) / 2)),
 			});
-			const handleSelectionInput = (data: string): void => {
+			let baseTop = selector.getTop();
+			let previewOpen = false;
+			const canShowPreview = (): boolean =>
+				!selector.getQuery() &&
+				selector.getSelected() !== undefined &&
+				listingAvailableRows(tui) >= MIN_ROWS_FOR_PREVIEW;
+			const handleSelectionInput = (data: string): boolean => {
 				const keys = getKeybindings();
+				if (selector.items.length === 0 && !selector.getQuery()) {
+					if (keys.matches(data, "tui.select.cancel")) finish(undefined);
+					return false;
+				}
 				if (keys.matches(data, "tui.select.up")) selector.move(-1);
 				else if (keys.matches(data, "tui.select.down")) selector.move(1);
 				else if (keys.matches(data, "tui.select.pageUp")) selector.page(-1);
 				else if (keys.matches(data, "tui.select.pageDown")) selector.page(1);
-				else if (keys.matches(data, "tui.select.cancel")) {
+				else if (data === " " && !selector.getQuery()) {
+					if (canShowPreview()) previewOpen = !previewOpen;
+					return false;
+				} else if (keys.matches(data, "tui.select.cancel")) {
+					if (previewOpen && data !== "\x03") {
+						previewOpen = false;
+						return false;
+					}
 					if (selector.getQuery() && data !== "\x03") {
 						search.setValue("");
 						selector.setQuery("");
@@ -496,7 +539,11 @@ export function openWorkflowsListing(
 				} else {
 					search.handleInput(data);
 					selector.setQuery(search.getValue());
+					if (selector.getQuery()) previewOpen = false;
 				}
+				if (!selector.getSelected()) previewOpen = false;
+				baseTop = selector.getTop();
+				return true;
 			};
 			let paintedSelectionId: string | undefined;
 			let refreshedSincePaint = true;
@@ -521,27 +568,26 @@ export function openWorkflowsListing(
 				if ((!fromTick && Math.abs(now - currentNow) < LISTING_CLOCK_TICK_MS) || cachedRuns.length === 0)
 					return false;
 				currentNow = now;
-				const next = workflowsListingItems(cachedRuns, cachedDefinitions, currentNow, cachedInvalidDefinitions);
+				const next = workflowsListingItems(cachedRuns, currentNow, cachedInvalidDefinitions);
 				if (sameDescriptions(items, next)) return false;
 				items = next;
 				const before = selector.getVisible();
 				const beforePage = visiblePage();
 				selector.setItems(items);
-				if (!sameIds(before, selector.getVisible())) {
-					refreshedSincePaint = true;
-					return true;
-				}
-				return !sameDescriptions(beforePage, visiblePage());
+				baseTop = selector.getTop();
+				refreshedSincePaint = true;
+				return !sameIds(before, selector.getVisible()) || !sameDescriptions(beforePage, visiblePage());
 			};
 			const refreshItems = (): void => {
 				if (itemsStale) {
 					itemsStale = false;
 					cachedRuns = source.runs();
-					cachedDefinitions = source.definitions();
 					cachedInvalidDefinitions = source.invalidDefinitions?.() ?? [];
 					currentNow = Date.now();
-					items = workflowsListingItems(cachedRuns, cachedDefinitions, currentNow, cachedInvalidDefinitions);
+					items = workflowsListingItems(cachedRuns, currentNow, cachedInvalidDefinitions);
 					selector.setItems(items);
+					if (!selector.getSelected()) previewOpen = false;
+					baseTop = selector.getTop();
 					refreshedSincePaint = true;
 					return;
 				}
@@ -565,12 +611,36 @@ export function openWorkflowsListing(
 				render: (width: number) => {
 					refreshItems();
 					const availableRows = listingAvailableRows(tui);
-					let maxVisible = Math.max(1, Math.floor((availableRows - 2) / 2));
+					const previewAvailable = canShowPreview();
+					if (!previewAvailable) previewOpen = false;
+					let maxVisible = Math.max(1, Math.floor((availableRows - LISTING_CHROME_ROWS) / 2));
+					Reflect.set(selector, "top", baseTop);
+					Reflect.set(selector, "_maxVisible", 0);
 					selector.setMaxVisible(maxVisible);
-					let lines = renderCompactListing(selector, search, style, width);
+					baseTop = selector.getTop();
+					let lines = renderCompactListing(
+						selector,
+						cachedRuns,
+						search,
+						style,
+						width,
+						previewOpen,
+						previewAvailable,
+					);
 					while (lines.length > availableRows && maxVisible > 1) {
 						selector.setMaxVisible(--maxVisible);
-						lines = renderCompactListing(selector, search, style, width);
+						lines = renderCompactListing(
+							selector,
+							cachedRuns,
+							search,
+							style,
+							width,
+							previewOpen,
+							previewAvailable,
+						);
+					}
+					if (previewOpen && lines.length > availableRows) {
+						lines = renderCompactListing(selector, cachedRuns, search, style, width, false, previewAvailable);
 					}
 					paintedSelectionId = selector.getSelected()?.id;
 					refreshedSincePaint = false;
@@ -584,8 +654,7 @@ export function openWorkflowsListing(
 						keys.matches(data, "tui.select.confirm") ||
 						(keys.matches(data, "app.list.open") && !selector.getQuery());
 					if (!confirms) {
-						handleSelectionInput(data);
-						movedSincePaint = true;
+						if (handleSelectionInput(data)) movedSincePaint = true;
 					} else if (
 						!refreshedSincePaint ||
 						(!movedSincePaint && selector.getSelected()?.id === paintedSelectionId)

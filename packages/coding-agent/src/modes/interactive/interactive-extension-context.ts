@@ -1,4 +1,5 @@
 import { replaceControlCharacters } from "@bastani/atomic-tui";
+import { taskPromptHost } from "../../core/extensions/held-prompts.ts";
 import { openLocalHostInputForm } from "./components/host-input-form-mount.ts";
 import { openLocalHostSessionPicker } from "./components/host-session-picker.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
@@ -66,6 +67,14 @@ InteractiveModeBase.prototype.beginHostInlineCustomUi = function (
 	this.blockingInlineCustomUiDepth++;
 	if (purpose === "navigation") {
 		this.navigationInlineCustomUiDepth = (this.navigationInlineCustomUiDepth ?? 0) + 1;
+		if (
+			this.blockingInlineCustomUiDepth <= this.navigationInlineCustomUiDepth &&
+			!this.session?.isStreaming &&
+			this.workingRunMeter?.snapshot() === undefined
+		) {
+			this.promptTurnWorkingLoaderActive = false;
+			if (this.loadingAnimation) this.stopWorkingLoader?.();
+		}
 		this.renderWidgets?.();
 	}
 	this.notifyHostCustomUiStateListeners();
@@ -75,6 +84,15 @@ InteractiveModeBase.prototype.beginHostInlineCustomUi = function (
 		this.blockingInlineCustomUiDepth = Math.max(0, this.blockingInlineCustomUiDepth - 1);
 		if (purpose === "navigation") {
 			this.navigationInlineCustomUiDepth = Math.max(0, this.navigationInlineCustomUiDepth - 1);
+			if (
+				this.navigationInlineCustomUiDepth === 0 &&
+				(Boolean(this.session?.isStreaming) || this.workingRunMeter?.snapshot() !== undefined) &&
+				this.workingVisible &&
+				!this.loadingAnimation &&
+				!this.compactionActive
+			) {
+				this.showWorkingLoaderNow?.();
+			}
 			this.renderWidgets?.();
 		}
 		this.notifyHostCustomUiStateListeners();
@@ -172,7 +190,7 @@ InteractiveModeBase.prototype.createProjectTrustContext = function (
 };
 
 InteractiveModeBase.prototype.createExtensionUIContext = function (this: InteractiveModeBase): ExtensionUIContext {
-	return {
+	return taskPromptHost({
 		select: (title, options, opts) => this.showExtensionSelector(title, options, opts),
 		confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
 		input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
@@ -247,19 +265,25 @@ InteractiveModeBase.prototype.createExtensionUIContext = function (this: Interac
 		},
 		getToolsExpanded: () => this.toolOutputExpanded,
 		setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
-		getChatRenderSettings: () => ({
-			hideThinkingBlock: this.hideThinkingBlock,
-			hiddenThinkingLabel: this.hiddenThinkingLabel,
-			toolOutputExpanded: this.toolOutputExpanded,
-			showImages: this.settingsManager.getShowImages(),
-			imageWidthCells: this.settingsManager.getImageWidthCells(),
-			outputPad: this.outputPad,
-			renderLatex: this.settingsManager.getLatexRenderingEnabled(),
-			fullscreenScrollbar: this.settingsManager.getFullscreenScrollbar(),
-			fullscreenWheelScrollLines: this.settingsManager.getFullscreenWheelScrollLines(),
-			markdownTransformers: this.getMarkdownTransformers(),
-			getToolDefinition: (toolName: string) => this.getRegisteredToolDefinition(toolName),
-			getCustomMessageRenderer: (customType: string) => this.session.extensionRunner.getMessageRenderer(customType),
-		}),
-	};
+		getChatRenderSettings: () => {
+			const rendering = this.chatMessageRenderOptions();
+			return {
+				hideThinkingBlock: this.hideThinkingBlock,
+				hiddenThinkingLabel: this.hiddenThinkingLabel,
+				toolOutputExpanded: this.toolOutputExpanded,
+				showImages: this.settingsManager.getShowImages(),
+				imageWidthCells: this.settingsManager.getImageWidthCells(),
+				outputPad: this.outputPad,
+				renderLatex: this.settingsManager.getLatexRenderingEnabled(),
+				fullscreenScrollbar: this.settingsManager.getFullscreenScrollbar(),
+				fullscreenWheelScrollLines: this.settingsManager.getFullscreenWheelScrollLines(),
+				markdownTransformers: this.getMarkdownTransformers(),
+				createToolComponent: rendering.createToolComponent,
+				createCustomMessageComponent: rendering.createCustomMessageComponent,
+				getToolDefinition: (toolName: string) => this.getRegisteredToolDefinition(toolName),
+				getCustomMessageRenderer: (customType: string) =>
+					this.session.extensionRunner.getMessageRenderer(customType),
+			};
+		},
+	});
 };

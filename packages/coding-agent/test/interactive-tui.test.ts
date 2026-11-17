@@ -284,6 +284,7 @@ describe("interactive TUI renderer", () => {
 			renderer,
 			ui: renderer,
 			disposeMarkitDiagnosticSink: vi.fn(),
+			disposeDeprecationWarningSink: vi.fn(),
 		}) as unknown as InteractiveMode;
 
 		renderer.start();
@@ -293,6 +294,8 @@ describe("interactive TUI renderer", () => {
 		expect([terminal.startCount, terminal.stopCount]).toEqual([1, 1]);
 		expect(terminal.cursorVisible).toBe(true);
 		expect(context.disposeMarkitDiagnosticSink).toHaveBeenCalledOnce();
+		// Deprecation warnings go back to stderr once the UI no longer owns the terminal.
+		expect(context.disposeDeprecationWarningSink).toHaveBeenCalledOnce();
 	});
 	test("keeps the fullscreen dock fixed and offers a clickable jump to latest while scrolled up", async () => {
 		const previousKeybindings = getKeybindings();
@@ -812,7 +815,9 @@ describe("clear-on-shrink working status spacing", () => {
 	test("resetting extension UI uses the default Working interrupt label", () => {
 		setKeybindings(KeybindingsManager.create());
 		const setMessage = vi.fn();
-		const context = {
+		const context = Object.assign(Object.create(InteractiveMode.prototype), {
+			runtimeHost: { session: { isStreaming: false } },
+			ui: { requestRender: vi.fn() },
 			extensionDialogs: [],
 			extensionOverlays: new Set<() => void>(),
 			clearExtensionTerminalInputListeners: vi.fn(),
@@ -833,7 +838,7 @@ describe("clear-on-shrink working status spacing", () => {
 			setWorkingIndicator: vi.fn(),
 			loadingAnimation: { setMessage },
 			setHiddenThinkingLabel: vi.fn(),
-		};
+		});
 
 		workingLoaderPrototype.resetExtensionUI.call(context as unknown as Record<string, unknown>);
 

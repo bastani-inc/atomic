@@ -1,8 +1,3 @@
-/**
- * Run-level state on the `/workflow` graph page and every other surface that
- * shows a run's state (#4643): the graph header and its compact widget trailer,
- * the status/session list, the connect picker and the stage switcher.
- */
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
@@ -10,10 +5,10 @@ import { hexToAnsi } from "../../packages/workflows/src/tui/color-utils.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { renderHeader } from "../../packages/workflows/src/tui/header.js";
 import { runStateColor, runStateIndicator } from "../../packages/workflows/src/tui/run-state-indicator.js";
-import { createSessionPickerState, renderSessionPicker } from "../../packages/workflows/src/tui/session-picker.js";
 import { statusColor, statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
 import { renderSwitcher } from "../../packages/workflows/src/tui/switcher.js";
+import { workflowsListingItems } from "../../packages/workflows/src/tui/workflows-listing.js";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import { assertVisibleWidths, defaultTheme, makePendingPrompt, makeStage, makeStore } from "./overlay-graph-helpers.js";
 
@@ -100,7 +95,6 @@ const FIXTURES: Readonly<Record<string, Fixture>> = {
 	running: { run: running },
 };
 
-/** The ANSI foreground the ORCHESTRATOR pill's top-left corner is drawn in. */
 function pillBorder(lines: readonly string[]): string | undefined {
 	return /(\x1b\[38;2;\d+;\d+;\d+m)╭/.exec(lines[0] ?? "")?.[1];
 }
@@ -160,23 +154,10 @@ function statusListRow(target: RunSnapshot): string {
 
 const OTHER_RUN = run({ id: "other-run-id", name: "other-workflow" });
 
-/** Render the picker with another run selected, so the target row keeps its own colours. */
-function pickerRows(target: RunSnapshot): { readonly idRow: string; readonly nameRow: string } {
-	const lines = renderSessionPicker({
-		width: 100,
-		theme,
-		rows: [
-			{ run: OTHER_RUN, bucket: "active" },
-			{ run: target, bucket: target.endedAt === undefined ? "active" : "terminal" },
-		],
-		state: createSessionPickerState(),
-		allRuns: [OTHER_RUN, target],
-		now: NOW,
-	});
-	const idRow = lines.find((line) => plain(line).includes(target.id));
-	const nameRow = lines.find((line) => plain(line).startsWith(`│   ${target.name.slice(0, 12)}`));
-	assert.ok(idRow !== undefined && nameRow !== undefined, "the picker lists the run");
-	return { idRow, nameRow };
+function listingItem(target: RunSnapshot) {
+	const item = workflowsListingItems([OTHER_RUN, target], NOW).find((entry) => entry.id === `run:${target.id}`);
+	assert.ok(item !== undefined, "the listing includes the run");
+	return item;
 }
 
 test("renderHeader adds a ↑ N blocked-stage badge in the stage badge order (#4643)", () => {
@@ -217,7 +198,7 @@ for (const width of [WIDE, NARROW]) {
 		}
 	});
 
-	test(`renderHeader shows a resumed live run like any running run, with no resumed label, at ${width} columns`, () => {
+	test(`renderHeader shows a resumed live run like any running run, with no resumed label, at ${width} columns (#4643)`, () => {
 		for (const target of [resumedAfterPause, resumedFromBlock]) {
 			const lines = renderHeader(target, { width, theme });
 			assertVisibleWidths(lines, width);
@@ -282,11 +263,11 @@ test("renderHeader shows a multi-line exit reason on one line without terminal c
 	const lines = renderHeader(target, { width: WIDE, theme });
 	assertVisibleWidths(lines, WIDE);
 	assert.ok(lines[1]!.includes("↑ blocked: line one line two"));
-	assert.doesNotMatch(lines.join(""), /\\x1b/);
+	assert.equal(plain(lines[1]!).includes("\\x1b"), false);
 	assert.equal(lines.join("").includes("\n"), false);
 });
 
-test("renderHeader never labels a run resumed, whatever its state", () => {
+test("renderHeader never labels a run resumed, whatever its state (#4643)", () => {
 	const completed = run({ ...resumedFromBlock, status: "completed", endedAt: NOW - 1_000 });
 	assert.doesNotMatch(headerMid(completed, WIDE), /resumed/);
 	assert.equal(pillBorder(renderHeader(completed, { width: WIDE, theme })), hexToAnsi(theme.success));
@@ -330,19 +311,20 @@ test("runStateIndicator classifies run-level states with the status glyphs (#464
 	}
 });
 
-test("graph header, widget trailer, status list, picker and switcher agree on the run state (#4643)", () => {
+test("graph header, widget trailer, status list, listing and switcher agree on the run state (#4643)", () => {
 	for (const [name, { run: target, label, color }] of Object.entries(FIXTURES)) {
 		const header = renderHeader(target, { width: WIDE, theme })[1]!;
 		const trailer = widgetTrailer(target);
 		const listRow = statusListRow(target);
-		const picker = pickerRows(target);
+		const item = listingItem(target);
 		const switcher = switcherTitle(target);
 		if (label === undefined || color === undefined) {
-			for (const surface of [header, trailer, picker.nameRow]) {
+			for (const surface of [header, trailer]) {
 				for (const other of RUN_STATE_LABELS)
 					assert.equal(plain(surface).includes(other), false, `${name}: ${other}`);
 			}
 			assert.match(plain(listRow), /● running/, name);
+			assert.match(item.description ?? "", /^running · /, name);
 			assert.equal(switcher, undefined, name);
 			continue;
 		}
@@ -350,9 +332,9 @@ test("graph header, widget trailer, status list, picker and switcher agree on th
 		assert.ok(header.includes(styled), `${name}: header`);
 		assert.ok(trailer.includes(styled), `${name}: widget trailer`);
 		assert.ok(listRow.includes(styled), `${name}: status list`);
-		assert.ok(picker.nameRow.includes(styled), `${name}: picker`);
+		const stateWord = label.split(" ")[1]!;
+		assert.match(item.description ?? "", new RegExp(`^${stateWord} · `), `${name}: listing state`);
 		assert.equal(switcher, label, `${name}: switcher`);
-		assert.ok(plain(picker.idRow).startsWith(`│ ${label.split(" ")[0]} `), `${name}: picker glyph`);
 	}
 });
 
@@ -367,23 +349,15 @@ test("the widget trailer leads with the run state and fits the width (#4643)", (
 	assert.equal(plain(narrow), " ❚❚ paused · 0/3 done · 1 running · 1 f…");
 });
 
-test("the picker shows the run state beside the elapsed time and keeps the row width (#4643)", () => {
-	assert.match(plain(pickerRows(blockedExit).nameRow), /^│ {3}blocked-demo +↑ blocked {7}59s │$/);
-	assert.match(plain(pickerRows(running).nameRow), /^│ {3}blocked-demo +1m │$/);
-});
-
-test("the picker shortens a long run name to keep the run state and elapsed time (#4643)", () => {
-	const longName = "n".repeat(85);
-	assert.match(plain(pickerRows({ ...blockedExit, name: longName }).nameRow), /^│ {3}n{73}… ↑ blocked {7}59s │$/);
-	assert.match(plain(pickerRows({ ...running, name: longName }).nameRow), /^│ {3}n{85} {7}1m │$/);
-});
-
-test("the picker keeps the awaiting-input glyph for a resumed run waiting on a prompt (#4643)", () => {
-	const awaiting = run({ ...resumedFromBlock, pendingPrompt: makePendingPrompt({ createdAt: NOW - 1_000 }) });
-	const { idRow, nameRow } = pickerRows(awaiting);
-	assert.ok(plain(idRow).startsWith(`│ ${statusIcon("awaiting_input")} `));
-	assert.ok(idRow.includes(hexToAnsi(statusColor("awaiting_input", theme))));
-	assert.doesNotMatch(plain(nameRow), /resumed/);
+test("the listing keeps the awaiting-input tag for a resumed run waiting on a prompt (#4643)", () => {
+	const awaiting = run({
+		...resumedFromBlock,
+		stages: [{ ...stage("finish", "awaiting_input"), pendingPrompt: makePendingPrompt({ createdAt: NOW - 1_000 }) }],
+	});
+	const item = listingItem(awaiting);
+	assert.equal(item.tag, "◆");
+	assert.equal(item.tagTone, "warning");
+	assert.doesNotMatch(item.description ?? "", /resumed/);
 });
 
 test("renderSwitcher titles its border with the run state and keeps narrow borders closed (#4643)", () => {

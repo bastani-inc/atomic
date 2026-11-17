@@ -315,6 +315,7 @@ describe("InteractiveMode.showExtensionCustom stacked overlays", () => {
 			updateTerminalTitle: vi.fn(),
 			setWorkingIndicator: vi.fn(),
 			setHiddenThinkingLabel: vi.fn(),
+			runtimeHost: { session: { isStreaming: false } },
 		});
 		Object.setPrototypeOf(host, InteractiveMode.prototype);
 		const showOverlay = (component: RecordingFocusable, onHandle?: (handle: OverlayHandle) => void) =>

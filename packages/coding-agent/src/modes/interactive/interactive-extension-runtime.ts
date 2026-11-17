@@ -69,7 +69,6 @@ InteractiveModeBase.prototype.setupExtensionShortcuts = function (
 		},
 		getSystemPrompt: () => this.session.systemPrompt,
 		getDecisionModel: () => this.session.settingsManager.getDecisionModel(),
-		getModelRouting: () => this.session.settingsManager.getModelRouting(),
 		getHttpIdleTimeoutMs: () => this.session.settingsManager.getHttpIdleTimeoutMs(),
 	});
 
@@ -126,7 +125,8 @@ InteractiveModeBase.prototype.stopWorkingLoader = function (this: InteractiveMod
 	const hadLoader = this.loadingAnimation !== undefined;
 	const wasEmbedded = this.workingIndicatorEmbedded;
 	InteractiveModeBase.prototype.clearWorkingLoader.call(this);
-	if (hadLoader && !wasEmbedded) mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
+	if (hadLoader && !wasEmbedded)
+		mountIdleStatus(this.statusContainer, this.settingsManager?.getClearOnShrink?.() ?? false);
 };
 
 InteractiveModeBase.prototype.showWorkingLoaderNow = function (this: InteractiveModeBase): void {
@@ -136,7 +136,10 @@ InteractiveModeBase.prototype.showWorkingLoaderNow = function (this: Interactive
 	// expansion, auth and compaction checks, deferred startup) runs before the
 	// agent emits `agent_start`, which is otherwise the only place the loader is
 	// created. Respect `workingVisible` so extensions can still suppress it.
-	if (!this.workingVisible || this.loadingAnimation) {
+	const pureNavigationActive =
+		this.navigationInlineCustomUiDepth > 0 && this.blockingInlineCustomUiDepth <= this.navigationInlineCustomUiDepth;
+	const agentTurnActive = Boolean(this.session?.isStreaming) || this.workingRunMeter?.snapshot() !== undefined;
+	if (!this.workingVisible || this.loadingAnimation || (pureNavigationActive && !agentTurnActive)) {
 		this.ui.requestRender();
 		return;
 	}
@@ -158,7 +161,11 @@ InteractiveModeBase.prototype.setWorkingVisible = function (this: InteractiveMod
 	this.workingVisible = visible;
 	if (!visible) {
 		this.stopWorkingLoader();
-	} else if (this.session.isStreaming && !this.loadingAnimation && !this.compactionActive) {
+	} else if (
+		(Boolean(this.session?.isStreaming) || this.workingRunMeter?.snapshot() !== undefined) &&
+		!this.loadingAnimation &&
+		!this.compactionActive
+	) {
 		this.statusContainer.clear();
 		const loader = this.createWorkingLoader();
 		this.loadingAnimation = loader;
@@ -286,7 +293,7 @@ InteractiveModeBase.prototype.resetExtensionUI = function (this: InteractiveMode
 	this.defaultEditor.onExtensionShortcut = this.interactiveEngineShortcutHandler;
 	this.updateTerminalTitle();
 	this.workingMessage = undefined;
-	this.workingVisible = true;
+	this.setWorkingVisible(true);
 	this.setWorkingIndicator();
 	if (this.loadingAnimation) {
 		this.loadingAnimation.setMessage(`${this.defaultWorkingMessage} (${keyText("app.interrupt")} Interrupt)`);

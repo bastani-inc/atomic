@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
+import { AgentPanelSourceHub, agentPanelItems } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
+import { agentPanelRows } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import { captureWorkflowOwnerResources } from "../../packages/workflows/src/extension/workflow-owner-resources.js";
 import { workflowPanelSource } from "../../packages/workflows/src/extension/workflow-panel-source.js";
 import { createStageControlHandle } from "../../packages/workflows/src/runs/foreground/executor-stage-control.js";
@@ -10,7 +12,7 @@ import {
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowModelUsage } from "../../packages/workflows/src/shared/types.js";
 import { buildGraphOverlayAdapter } from "../../packages/workflows/src/tui/overlay-adapter.js";
-import { viewedWorkflowRuns } from "../../packages/workflows/src/tui/panel-runs.js";
+import { markWorkflowRunViewed, viewedWorkflowRuns } from "../../packages/workflows/src/tui/panel-runs.js";
 
 function completedStore() {
 	const store = createStore();
@@ -79,6 +81,68 @@ test("idle workflow listings reuse projections and refresh when a run or its vie
 	assert.equal(source.items()[0]?.state, "running");
 	store.recordRunEnd("live", "failed", undefined, "boom");
 	assert.equal(source.items()[0]?.state, "failed");
+});
+
+test("marking a completed workflow viewed outside the panel notifies the host hub, invalidates cached items, and lets the row expire (#5224)", () => {
+	let now = 1_800_000_000_000;
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+	const store = completedStore();
+	const otherStore = completedStore();
+	const source = workflowPanelSource(
+		{ ...captureWorkflowOwnerResources(), store },
+		{
+			open: () => true,
+			quit: async () => {
+				throw new Error("not used");
+			},
+		},
+	);
+	const hub = new AgentPanelSourceHub();
+	hub.register(source);
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	let notifications = 0;
+	const unsubscribe = hub.subscribe(() => {
+		notifications++;
+	});
+	try {
+		assert.notEqual(agentPanelItems(session)[0]?.viewed, true);
+		assert.deepEqual(
+			agentPanelRows(session).map((row) => row.id),
+			["run:run"],
+		);
+
+		markWorkflowRunViewed("run", otherStore);
+		assert.equal(notifications, 0);
+		assert.notEqual(agentPanelItems(session)[0]?.viewed, true);
+
+		markWorkflowRunViewed("run", store);
+		assert.equal(notifications, 1);
+		markWorkflowRunViewed("run", store);
+		assert.equal(notifications, 1);
+		assert.equal(agentPanelItems(session)[0]?.viewed, true);
+
+		now += 60 * 60_000;
+		assert.deepEqual(agentPanelRows(session), []);
+
+		unsubscribe();
+		hub.dispose();
+		store.recordRunStart({
+			id: "after-dispose",
+			name: "release",
+			inputs: {},
+			status: "completed",
+			startedAt: 1_000,
+			endedAt: 2_000,
+			toolNodes: [],
+			stages: [],
+		});
+		markWorkflowRunViewed("after-dispose", store);
+		assert.equal(notifications, 1);
+	} finally {
+		unsubscribe();
+		hub.dispose();
+		clock.mockRestore();
+	}
 });
 
 test("workflow elapsed advances without store events while paused and settled runs stay frozen (#5224)", () => {
@@ -322,6 +386,20 @@ test("workflowPanelSource adds in-flight attempt usage to recorded stage attempt
 
 	assert.equal(handleListeners.size, 0, "no handle subscription before source has subscribers");
 	assert.equal(source.items()[0]?.tokens, 322, "completed plan (122) + in-flight inspect (80 + 120 = 200)");
+
+	const rawRun = store.run("review")!;
+	const settledPlan = rawRun.stages[0]!;
+	let settledStageReads = 0;
+	Object.defineProperty(rawRun.stages, 0, {
+		configurable: true,
+		get() {
+			settledStageReads++;
+			return settledPlan;
+		},
+	});
+	for (let frame = 0; frame < 20; frame++) assert.equal(source.items()[0]?.tokens, 322);
+	assert.equal(settledStageReads, 0, "live usage refreshes do not scan the settled stage prefix");
+	Object.defineProperty(rawRun.stages, 0, { configurable: true, writable: true, value: settledPlan });
 
 	let notifications = 0;
 	const unsubscribe = source.subscribe(() => {

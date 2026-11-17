@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import type { Component } from "@bastani/atomic-tui";
 import type { CustomMessage } from "../../core/messages.ts";
+import type { ToolGroupRole } from "../interactive/components/tool-block.ts";
 import type { ToolExecutionComponent } from "../interactive/components/tool-execution.ts";
+import { sameToolGroupRole, toolGroupRoleKey } from "../interactive/components/tool-group-tracker.ts";
 import type { IsolatedInteractiveRuntime } from "./isolated-runtime.js";
 import type { InteractiveEngineCommand, InteractiveEngineMessage, JsonObject, JsonValue } from "./protocol.ts";
 import { RemoteFrameWidthClamp } from "./remote-frame-clamp.ts";
@@ -10,6 +12,23 @@ type RenderableToolResult = Parameters<ToolExecutionComponent["updateResult"]>[0
 type RemoteRenderCommand = Extract<InteractiveEngineCommand, { type: "engine_tool_render" | "engine_message_render" }>;
 
 let nextRemoteRendererId = 0;
+let nextRuntimeScopeId = 0;
+const runtimeScopeIds = new WeakMap<IsolatedInteractiveRuntime, number>();
+
+function runtimeFrameScope(runtime: IsolatedInteractiveRuntime): string {
+	let id = runtimeScopeIds.get(runtime);
+	if (id === undefined) {
+		id = ++nextRuntimeScopeId;
+		runtimeScopeIds.set(runtime, id);
+	}
+	let sessionId: string | undefined;
+	try {
+		sessionId = runtime.session.sessionManager.getSessionId();
+	} catch {
+		sessionId = undefined;
+	}
+	return JSON.stringify([id, sessionId]);
+}
 
 /** A row the engine has not rendered yet draws nothing, rather than a placeholder that flickers in and out. */
 const NOT_RENDERED_YET: string[] = [];
@@ -70,6 +89,8 @@ abstract class RemoteRenderer implements Component {
 	 * collapsed while its expanded frame was in flight must not have that frame remembered as its collapsed one.
 	 */
 	private readonly requestIdentities = new Map<number, string>();
+	private readonly requestScopes = new Map<number, string>();
+	private lastScope: string | undefined;
 
 	protected readonly runtime: IsolatedInteractiveRuntime;
 	private readonly requestRender: () => void;
@@ -85,12 +106,18 @@ abstract class RemoteRenderer implements Component {
 	receive(message: InteractiveEngineMessage): void {
 		if (message.type === "engine_custom_frame") {
 			if (message.requestId < this.appliedRequestId) return;
+			const identity = this.requestIdentities.get(message.requestId);
+			const scope = this.requestScopes.get(message.requestId);
+			if (identity === undefined || scope === undefined) return;
+			for (const requestId of this.requestIdentities.keys()) {
+				if (requestId > message.requestId) continue;
+				this.requestIdentities.delete(requestId);
+				this.requestScopes.delete(requestId);
+			}
+			rememberFrame(identity, message.lines);
+			if (scope !== runtimeFrameScope(this.runtime)) return;
 			this.appliedRequestId = message.requestId;
 			this.lines = message.lines;
-			const identity = this.requestIdentities.get(message.requestId);
-			for (const requestId of this.requestIdentities.keys())
-				if (requestId <= message.requestId) this.requestIdentities.delete(requestId);
-			if (identity !== undefined) rememberFrame(identity, message.lines);
 			this.requestRender();
 		} else if (message.type === "engine_custom_invalidate") {
 			this.changed();
@@ -98,13 +125,20 @@ abstract class RemoteRenderer implements Component {
 	}
 
 	render(width: number): string[] {
+		const scope = runtimeFrameScope(this.runtime);
+		if (scope !== this.lastScope) {
+			this.lastScope = scope;
+			this.lines = NOT_RENDERED_YET;
+			this.dirty = true;
+		}
 		if (!this.disposed && (this.dirty || width !== this.width)) {
 			this.width = width;
 			this.dirty = false;
 			// A row rebuilt for a row the engine already rendered paints its last frame until the fresh one arrives.
-			const identity = this.frameIdentity();
+			const identity = JSON.stringify([scope, this.frameIdentity()]);
 			if (this.lines === NOT_RENDERED_YET) this.lines = recentFrames.get(identity) ?? NOT_RENDERED_YET;
 			this.requestIdentities.set(++this.requestId, identity);
+			this.requestScopes.set(this.requestId, scope);
 			this.runtime.sendEngineCommand(this.command(this.requestId, width));
 		}
 		// The engine child re-renders asynchronously; until the fresh frame
@@ -123,6 +157,7 @@ abstract class RemoteRenderer implements Component {
 		this.disposed = true;
 		if (this.routes.get(this.componentId) === this) this.routes.delete(this.componentId);
 		this.requestIdentities.clear();
+		this.requestScopes.clear();
 		this.runtime.sendEngineCommand({ type: "engine_render_dispose", componentId: this.componentId });
 	}
 
@@ -152,10 +187,13 @@ export function disposeRemoteRenderers(components: readonly Component[]): void {
 export class RemoteToolExecutionComponent extends RemoteRenderer {
 	private readonly toolName: string;
 	private readonly toolCallId: string;
+	private readonly rendererTaskId: string | undefined;
 	private args: unknown;
 	private result: RenderableToolResult | undefined;
 	private executionStarted = false;
+	private executionStartedAt: number | undefined;
 	private argsComplete = false;
+	private groupRole: ToolGroupRole = { kind: "standalone" };
 	private isPartial = true;
 	private expanded = false;
 	private showImages: boolean;
@@ -166,13 +204,14 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 		toolName: string,
 		toolCallId: string,
 		args: unknown,
-		options: { showImages?: boolean; imageWidthCells?: number; outputPad?: number },
+		options: { showImages?: boolean; imageWidthCells?: number; outputPad?: number; rendererTaskId?: string },
 		runtime: IsolatedInteractiveRuntime,
 		requestRender: () => void,
 	) {
 		super(runtime, requestRender);
 		this.toolName = toolName;
 		this.toolCallId = toolCallId;
+		this.rendererTaskId = options.rendererTaskId;
 		this.args = args;
 		this.showImages = options.showImages ?? true;
 		this.imageWidthCells = options.imageWidthCells ?? 60;
@@ -187,13 +226,25 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 		this.args = args;
 		this.changed();
 	}
-	markExecutionStarted(): void {
+	markExecutionStarted(startedAt?: number): void {
+		if (this.executionStarted) return;
 		this.executionStarted = true;
+		this.executionStartedAt = startedAt ?? Date.now();
 		this.changed();
 	}
 	setArgsComplete(): void {
+		if (this.argsComplete) return;
 		this.argsComplete = true;
 		this.changed();
+	}
+	setGroupRole(role: ToolGroupRole): void {
+		if (sameToolGroupRole(this.groupRole, role)) return;
+		this.groupRole = role;
+		this.changed();
+	}
+	override render(width: number): string[] {
+		if (!this.expanded && this.groupRole.kind === "hidden") return [];
+		return super.render(width);
 	}
 	updateResult(result: RenderableToolResult, isPartial = false): void {
 		this.result = result;
@@ -221,24 +272,35 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 			width,
 			toolName: this.toolName,
 			toolCallId: this.toolCallId,
+			...(this.rendererTaskId === undefined ? {} : { rendererTaskId: this.rendererTaskId }),
 			args: jsonValue(this.args),
 			result: this.result ? (jsonValue(this.result) as JsonObject) : undefined,
 			executionStarted: this.executionStarted,
+			...(this.executionStartedAt === undefined ? {} : { executionStartedAt: this.executionStartedAt }),
 			argsComplete: this.argsComplete,
 			isPartial: this.isPartial,
 			expanded: this.expanded,
 			showImages: this.showImages,
 			imageWidthCells: this.imageWidthCells,
 			outputPad: this.outputPad,
+			...(this.groupRole.kind === "standalone" ? {} : { groupRole: this.groupRole }),
 		};
 	}
 
 	protected frameIdentity(): string {
-		return JSON.stringify(["tool", this.toolName, this.toolCallId, this.expanded]);
+		return JSON.stringify([
+			"tool",
+			this.rendererTaskId,
+			this.toolName,
+			this.toolCallId,
+			this.expanded,
+			toolGroupRoleKey(this.groupRole),
+		]);
 	}
 }
 
 export class RemoteCustomMessageComponent extends RemoteRenderer {
+	readonly ownsLeadingSpacer = true;
 	private readonly message: CustomMessage<unknown>;
 	private contentDigest: string | undefined;
 	private expanded = false;

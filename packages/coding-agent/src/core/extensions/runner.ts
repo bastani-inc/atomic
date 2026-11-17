@@ -38,6 +38,14 @@ import {
 	sealExtensionWork,
 } from "./extension-work.ts";
 import {
+	childPresentationInput,
+	hasTaskPromptHost,
+	heldPromptInput,
+	isHeldPromptInput,
+	isPresentationHostInput,
+	presentationHostInput,
+} from "./held-prompts.ts";
+import {
 	copyHostQuestionnaire,
 	type HostDiagnostic,
 	type HostInput,
@@ -198,6 +206,7 @@ export class ExtensionRunner {
 	private uiContext: ExtensionUIContext;
 	private presentationUI?: ExtensionUIContext;
 	private presentationInput?: HostInput;
+	private hadPresentation = false;
 	private humanInput?: HostInput | null;
 	private humanInputBindingRevision = 0;
 	private inputBridge = new HostInputBridge(
@@ -213,6 +222,7 @@ export class ExtensionRunner {
 	private modelRegistry: ModelRegistry;
 	private orchestrationContext: OrchestrationContext | undefined;
 	private subagentPolicy: SubagentChildPolicy | undefined;
+	private intercomPolicy: import("../intercom-policy.ts").IntercomPolicyView | undefined;
 	private taskHostBinding: (() => import("../tasks/agent-adapter.js").AgentTaskHost) | undefined;
 	private inheritedHistory: ProjectHistory | undefined;
 	/** @internal Attach dispatch receipts to the owning session before startup. */
@@ -264,8 +274,17 @@ export class ExtensionRunner {
 		return this.runtime.workflowActivityHub.getSnapshotFrame();
 	}
 	getChildHostBindings(): import("../agent-session-types.js").ExtensionBindings {
+		const inherited =
+			(isHeldPromptInput(this.humanInput) || isPresentationHostInput(this.humanInput)) && this.hadPresentation
+				? undefined
+				: this.humanInput;
 		return {
-			humanInput: this.humanInput === undefined ? this.presentationInput : this.humanInput,
+			humanInput:
+				inherited !== undefined
+					? inherited
+					: hasTaskPromptHost(this.presentationUI)
+						? heldPromptInput
+						: (childPresentationInput(this.presentationUI) ?? this.presentationInput),
 			onDiagnostic: this.onDiagnostic,
 		};
 	}
@@ -287,7 +306,6 @@ export class ExtensionRunner {
 		normalizeBuildSystemPromptOptions({ cwd: this.cwd });
 	private getSkillCatalogFn: ExtensionContextActions["getSkillCatalog"] = undefined;
 	private getDecisionModelFn: ExtensionContextActions["getDecisionModel"] = undefined;
-	private getModelRoutingFn: ExtensionContextActions["getModelRouting"] = undefined;
 	private getHttpIdleTimeoutMsFn: ExtensionContextActions["getHttpIdleTimeoutMs"] = undefined;
 	private executeToolFn: ExtensionContextActions["executeTool"];
 	private getCallableToolsFn: NonNullable<ExtensionContextActions["getCallableTools"]> = () => [];
@@ -315,6 +333,7 @@ export class ExtensionRunner {
 		modelRegistry: ModelRegistry,
 		orchestrationContext?: OrchestrationContext,
 		subagentPolicy?: SubagentChildPolicy,
+		intercomPolicy?: import("../intercom-policy.ts").IntercomPolicyView,
 	) {
 		this.extensions = extensions;
 		this.runtime = runtime;
@@ -326,6 +345,7 @@ export class ExtensionRunner {
 		this.modelRegistry = modelRegistry;
 		this.orchestrationContext = orchestrationContext;
 		this.subagentPolicy = subagentPolicy;
+		this.intercomPolicy = intercomPolicy;
 	}
 
 	bindCore(
@@ -373,7 +393,6 @@ export class ExtensionRunner {
 			contextActions.getSystemPromptOptions ?? (() => normalizeBuildSystemPromptOptions({ cwd: this.cwd }));
 		this.getSkillCatalogFn = contextActions.getSkillCatalog;
 		this.getDecisionModelFn = contextActions.getDecisionModel;
-		this.getModelRoutingFn = contextActions.getModelRouting;
 		this.getHttpIdleTimeoutMsFn = contextActions.getHttpIdleTimeoutMs;
 		this.executeToolFn = contextActions.executeTool;
 		this.getCallableToolsFn = contextActions.getCallableTools ?? (() => []);
@@ -505,13 +524,18 @@ export class ExtensionRunner {
 		this.refreshHostInput();
 	}
 
+	private resolvedHostInput(): HostInput | undefined {
+		const bound = this.humanInput;
+		if (bound === null) return undefined;
+		if (bound === undefined) return this.presentationInput;
+		if ((isHeldPromptInput(bound) || isPresentationHostInput(bound)) && this.hadPresentation)
+			return this.presentationInput;
+		return bound;
+	}
+
 	private refreshHostInput(): void {
 		const ui = this.presentationUI;
-		this.inputBridge.bind(
-			this.humanInput === undefined ? this.presentationInput : (this.humanInput ?? undefined),
-			this.humanInput,
-			this.humanInputBindingRevision,
-		);
+		this.inputBridge.bind(this.resolvedHostInput(), this.humanInput, this.humanInputBindingRevision);
 		const bridged = this.inputBridge.wrap(
 			ui ?? {
 				...noOpUIContext,
@@ -534,19 +558,20 @@ export class ExtensionRunner {
 
 	setUIContext(uiContext?: ExtensionUIContext, mode: ExtensionMode = "print", isPresentationOnly = false): void {
 		this.presentationOnly = isPresentationOnly;
+		if (uiContext !== undefined) this.hadPresentation = true;
 		if (uiContext !== this.presentationUI) {
 			this.endActiveUIPrompt();
 			++this.uiPromptBinding;
 			this.presentationUI = uiContext;
 			const ui = uiContext;
 			this.presentationInput = ui
-				? {
+				? presentationHostInput({
 						confirm: (title, message, options) => ui.confirm(title, message, options),
 						select: (title, choices, options) => ui.select(title, choices, options),
 						input: (title, placeholder, options) => ui.input(title, placeholder, options),
 						editor: (title, initial, options) => ui.editor(title, initial, options),
 						questionnaire: (params, options) => presentQuestionnaire(ui, params, options.signal),
-					}
+					})
 				: undefined;
 			this.refreshHostInput();
 		}
@@ -935,6 +960,7 @@ export class ExtensionRunner {
 			getModelRegistry: () => this.modelRegistry,
 			getModel: () => this.getModel(),
 			getSubagentPolicy: () => this.subagentPolicy,
+			getIntercomPolicy: () => this.intercomPolicy,
 			getScopedModels: () => this.getScopedModels(),
 			getThinkingLevel: () => this.runtime.getThinkingLevel(),
 			getOrchestrationContext: () => this.orchestrationContext,
@@ -953,7 +979,6 @@ export class ExtensionRunner {
 			getSystemPrompt: () => this.getSystemPromptFn(),
 			...(this.getSkillCatalogFn ? { getSkillCatalog: () => this.getSkillCatalogFn!() } : {}),
 			...(this.getDecisionModelFn ? { getDecisionModel: () => this.getDecisionModelFn!() } : {}),
-			...(this.getModelRoutingFn ? { getModelRouting: () => this.getModelRoutingFn!() } : {}),
 			...(this.getHttpIdleTimeoutMsFn ? { getHttpIdleTimeoutMs: () => this.getHttpIdleTimeoutMsFn!() } : {}),
 			getSystemPromptOptions: () => this.getSystemPromptOptionsFn(),
 			waitForIdle: () => this.waitForIdleFn(),

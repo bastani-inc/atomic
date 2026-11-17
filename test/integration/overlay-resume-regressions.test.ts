@@ -17,6 +17,7 @@ import {
 	delay,
 	factory,
 	initTheme,
+	invokeRunControl,
 	type PiCustomOverlayFunction,
 	singletonStore,
 	visibleText,
@@ -24,7 +25,7 @@ import {
 
 useTemporaryAgentDir();
 
-describe("/workflow resume — durable regression coverage", () => {
+describe("workflow resume — durable regression coverage", () => {
 	beforeEach(async () => {
 		singletonStore.clear();
 		setDurableBackend(await createMemoryTestBackend());
@@ -130,7 +131,7 @@ describe("/workflow resume — durable regression coverage", () => {
 		assert.equal(customCalls, 0);
 		assert.match(joined, /Resumable workflows/);
 		assert.match(joined, /headless-wf/);
-		assert.match(joined, /Resume with: \/workflow resume <id>/);
+		assert.match(joined, /Resume with: \/resume <id>/);
 	});
 
 	test("targeted stale running durable resume does not print stale catalog", async () => {
@@ -179,17 +180,18 @@ describe("/workflow resume — durable regression coverage", () => {
 	});
 
 	test("no-arg resume with no resumable workflows opens empty /resume-style selector", async () => {
-		const { pi, commands } = buildMockPi();
+		const { pi } = buildMockPi();
 		factory(pi);
 		const { ctx, customCalls, messages } = buildPrintCtxWithRealCustom();
 
-		const handlerPromise = commands.workflow!.options.handler("resume", ctx);
+		const handlerPromise = invokeRunControl(pi, "resume", [], ctx);
 		await delay(5);
 
 		assert.equal(messages.length, 0);
 		assert.ok(customCalls.length >= 1);
 		const rendered = visibleText(customCalls[0]!.component.render(100));
-		assert.match(rendered, /Resume Session \(Current Folder\)/);
+		assert.match(rendered, /Resume workflow run/);
+		assert.match(rendered, /No workflow runs to resume\./);
 		assert.doesNotMatch(rendered, /No resumable workflow runs found/);
 
 		customCalls[0]!.component.handleInput?.("\u001b");
@@ -207,17 +209,17 @@ describe("/workflow resume — durable regression coverage", () => {
 			completedCheckpoints: 1,
 		});
 		setDurableBackend(backend);
-		const { pi, commands } = buildMockPi();
+		const { pi } = buildMockPi();
 		factory(pi);
 		const { ctx, customCalls } = buildPrintCtxWithRealCustom();
 
-		const handlerPromise = commands.workflow!.options.handler("resume", ctx);
+		const handlerPromise = invokeRunControl(pi, "resume", [], ctx);
 		await delay(5);
 
 		assert.ok(customCalls.length >= 1);
 		const rendered = visibleText(customCalls[0]!.component.render(100));
-		assert.match(rendered, /Resume Session \(Current Folder\)/);
-		assert.match(rendered, /durable-tree-ui\s+paused\s+durable-tree-wf/);
+		assert.match(rendered, /Resume workflow run/);
+		assert.match(rendered, /durable-tree-wf\s+paused · /);
 		assert.doesNotMatch(rendered, /Resumable workflows/);
 
 		customCalls[0]!.component.handleInput?.("\u001b");
@@ -250,18 +252,18 @@ describe("/workflow resume — durable regression coverage", () => {
 			completedCheckpoints: 1,
 		});
 		setDurableBackend(backend);
-		const { pi, commands } = buildMockPi();
+		const { pi } = buildMockPi();
 		factory(pi);
 		const { ctx, customCalls } = buildPrintCtxWithRealCustom();
 
-		const handlerPromise = commands.workflow!.options.handler("resume", ctx);
+		const handlerPromise = invokeRunControl(pi, "resume", [], ctx);
 		await delay(5);
 
 		assert.ok(customCalls.length >= 1);
 		const rendered = visibleText(customCalls[0]!.component.render(100));
-		assert.doesNotMatch(rendered, /old-failed-run/);
-		assert.doesNotMatch(rendered, /old-running-run/);
-		assert.match(rendered, /visible-paused-run\s+paused\s+visible-paused-definition/);
+		assert.doesNotMatch(rendered, /old-missing-definition/);
+		assert.doesNotMatch(rendered, /old-running-definition/);
+		assert.match(rendered, /visible-paused-definition\s+paused · /);
 
 		customCalls[0]!.component.handleInput?.("\u001b");
 		await handlerPromise;
@@ -278,11 +280,11 @@ describe("/workflow resume — durable regression coverage", () => {
 			completedCheckpoints: 1,
 		});
 		setDurableBackend(backend);
-		const { pi, commands } = buildMockPi();
+		const { pi } = buildMockPi();
 		factory(pi);
 		const { ctx, customCalls, messages } = buildPrintCtxWithRealCustom();
 
-		const handlerPromise = commands.workflow!.options.handler("resume", ctx);
+		const handlerPromise = invokeRunControl(pi, "resume", [], ctx);
 		await delay(5);
 		assert.ok(customCalls.length >= 1);
 		customCalls[0]!.component.handleInput?.("\r");
@@ -290,7 +292,7 @@ describe("/workflow resume — durable regression coverage", () => {
 
 		const joined = messages.join("\n");
 		assert.match(joined, /Workflow definition not found: missing-selection-def/);
-		assert.doesNotMatch(joined, /Resume with: \/workflow resume <id>/);
+		assert.doesNotMatch(joined, /Resume with: \/resume <id>/);
 	});
 
 	test("combined picker resolves live selection before dispose", async () => {
@@ -340,11 +342,11 @@ describe("/workflow resume — durable regression coverage", () => {
 			completedCheckpoints: 1,
 		});
 		setDurableBackend(backend);
-		const { pi, commands } = buildMockPi();
+		const { pi } = buildMockPi();
 		factory(pi);
 		const { ctx, customCalls } = buildPrintCtxWithRealCustom();
 
-		const handlerPromise = commands.workflow!.options.handler("resume", ctx);
+		const handlerPromise = invokeRunControl(pi, "resume", [], ctx);
 		await delay(5);
 		assert.ok(customCalls.length >= 1);
 		customCalls[0]!.component.handleInput?.("\r");
@@ -391,11 +393,11 @@ describe("/workflow resume — durable regression coverage", () => {
 			completedCheckpoints: 1,
 		});
 		setDurableBackend(backend);
-		const { pi, commands } = buildMockPi();
+		const { pi } = buildMockPi();
 		factory(pi);
 		const { ctx, customCalls, messages } = buildPrintCtxWithRealCustom();
 
-		const handlerPromise = commands.workflow!.options.handler("resume", ctx);
+		const handlerPromise = invokeRunControl(pi, "resume", [], ctx);
 		await delay(5);
 		assert.ok(customCalls.length >= 1);
 		customCalls[0]!.component.handleInput?.("\r");

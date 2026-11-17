@@ -143,16 +143,16 @@ test("main chat jump-to-latest pill keeps unpainted arrivals when compaction_end
 			compactedText: "Compacted earlier turns",
 			firstKeptEntryId: entries[8]!.id,
 			tokensBefore: 1200,
-			rung: "planned" as const,
-			promptVersion: 6 as const,
+			form: "cleared" as const,
+			promptVersion: 7 as const,
 			parameters,
 			stats,
 		};
 		await mode.sessionManager.appendCompaction("Compacted earlier turns", coveredThroughId, 1200, {
 			strategy: "verbatim-lines",
-			promptVersion: 6,
+			promptVersion: 7,
 			parameters,
-			rung: "planned",
+			form: "cleared",
 			stats,
 		});
 
@@ -414,9 +414,9 @@ async function compactFirstEight(mode: InteractiveMode): Promise<void> {
 	const entries = mode.sessionManager.getEntries();
 	await mode.sessionManager.appendCompaction("Compacted earlier turns", entries[7]!.id, 1200, {
 		strategy: "verbatim-lines",
-		promptVersion: 6,
+		promptVersion: 7,
 		parameters: compactionParameters,
-		rung: "planned",
+		form: "cleared",
 		stats: compactionStats,
 	});
 	await mode.handleEvent({
@@ -426,8 +426,8 @@ async function compactFirstEight(mode: InteractiveMode): Promise<void> {
 			compactedText: "Compacted earlier turns",
 			firstKeptEntryId: entries[8]!.id,
 			tokensBefore: 1200,
-			rung: "planned" as const,
-			promptVersion: 6 as const,
+			form: "cleared" as const,
+			promptVersion: 7 as const,
 			parameters: compactionParameters,
 			stats: compactionStats,
 		},

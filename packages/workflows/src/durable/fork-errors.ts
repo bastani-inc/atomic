@@ -325,8 +325,8 @@ export class ForkSourceBusyError extends ForkError {
 				input.reason === "fork-in-progress" || input.reason === "resume-in-progress"
 					? "Retry after the other fork or resume finishes."
 					: input.reason === "lease-lost"
-						? `The fork lost its source claim before writing. Check /workflow status ${input.runId} and retry once the source is paused or idle.`
-						: `Pause or quit the run (/workflow quit ${input.runId}), then fork it.`,
+						? `The fork lost its source claim before writing. Check /workflows ${input.runId} and retry once the source is paused or idle.`
+						: `Pause or stop the run in /workflows ${input.runId}, then fork it.`,
 			retryable: true,
 			fields: { runId: input.runId, reason: input.reason, holderId: input.holderId },
 			cause: options?.cause,
@@ -490,10 +490,6 @@ export interface ForkConfigIssue {
 	readonly expected: string;
 }
 
-/**
- * `forkRun` options or `/workflow fork` arguments are invalid. Checked in one pass before any I/O;
- * `issues` lists every invalid option and `field`/`expected` name the first.
- */
 export class ForkConfigError extends ForkError {
 	declare readonly name: "ForkConfigError";
 	declare readonly code: "invalid-option";
@@ -574,10 +570,9 @@ export class ForkSourceNotFoundError extends ForkError {
 		const hints: Record<ForkSourceNotFoundReason, string> = {
 			"not-found":
 				input.storage?.scope === "local-only"
-					? `This node uses a local-only journal and is not joined to the shared storage; run ${FORK_JOIN_SHARED_STORAGE_COMMAND} to fork runs started on other nodes, or pass a root run id from /workflow list (a nested workflow's run is forked through its root run).`
-					: "Pass a root run id from /workflow list (a nested workflow's run is forked through its root run), or pass the journal that holds the run with the journal option.",
-			malformed:
-				"Pass a run id from /workflow list, or pass the journal that holds the run with the journal option.",
+					? `This node uses a local-only journal and is not joined to the shared storage; run ${FORK_JOIN_SHARED_STORAGE_COMMAND} to fork runs started on other nodes, or pass a root run id from /workflows (a nested workflow's run is forked through its root run).`
+					: "Pass a root run id from /workflows (a nested workflow's run is forked through its root run), or pass the journal that holds the run with the journal option.",
+			malformed: "Pass a run id from /workflows, or pass the journal that holds the run with the journal option.",
 			ambiguous: "Pass the full run id.",
 			"not-root":
 				input.rootRunId === undefined
@@ -627,8 +622,8 @@ export class ForkSourceOwnershipError extends ForkError {
 					: `run ${input.runId} was started by an agent whose session was not recorded`,
 			hint:
 				input.reason === "foreign-owner"
-					? `Fork it from the session that started it, or ask the user to run /workflow fork ${input.runId}.`
-					: `Ask the user to run /workflow fork ${input.runId}.`,
+					? `Fork it from the session that started it, or ask the user to fork it in /workflows ${input.runId}.`
+					: `Ask the user to fork it in /workflows ${input.runId}.`,
 			retryable: false,
 			fields: { runId: input.runId, reason: input.reason },
 		});
@@ -703,9 +698,9 @@ export class ForkJournalUnavailableError extends ForkError {
 		const hints: Record<ForkJournalPhase, string> = {
 			read: `Nothing was written and run ${input.runId} is unchanged; retry the fork once the journal is reachable. ${status}`,
 			claim: `Nothing was written and run ${input.runId} is unchanged; retry the fork once the journal is reachable. ${status}`,
-			commit: `Fork run ${input.forkRunId} may have been written, and its copied stage sessions were kept. Once the journal is reachable, inspect that exact run with /workflow status ${input.forkRunId} and resume it with /workflow resume ${input.forkRunId} if it exists. Do not fork run ${input.runId} again before that check: a missing run does not prove the write will never land. ${status}`,
+			commit: `Fork run ${input.forkRunId} may have been written, and its copied stage sessions were kept. Once the journal is reachable, inspect that exact run in /workflows ${input.forkRunId} and resume ${input.forkRunId} with /resume if it exists. Do not fork run ${input.runId} again before that check: a missing run does not prove the write will never land. ${status}`,
 			"commit-confirmed": `Nothing to do: fork run ${input.forkRunId} was written and the fork continues. If the journal keeps failing, ${status}`,
-			hydrate: `Fork run ${input.forkRunId} was written; resume it with /workflow resume ${input.forkRunId} once the journal is reachable instead of forking again. ${status}`,
+			hydrate: `Fork run ${input.forkRunId} was written; resume ${input.forkRunId} with /resume once the journal is reachable instead of forking again. ${status}`,
 		};
 		const hint = hints[input.phase];
 		super({
@@ -899,7 +894,7 @@ export class ForkSessionClaimError extends ForkError {
 			code: "session-claim-refused",
 			what: "Fork session claim refused",
 			subject: `session ${input.sessionId} of forked run ${input.rootRunId} was not given to child run ${input.childRunId} because ${CLAIM_SUBJECTS[input.reason]}`,
-			hint: `This enqueue attempt changed no session owners. Inspect /workflow status ${input.rootRunId} before retrying; resume only with the fork's original journal and session copies. Do not fork again or reassign session owners blindly.`,
+			hint: `This enqueue attempt changed no session owners. Inspect /workflows ${input.rootRunId} before retrying; resume only with the fork's original journal and session copies. Do not fork again or reassign session owners blindly.`,
 			retryable: false,
 			fields: {
 				reason: input.reason,
@@ -946,7 +941,7 @@ export class ForkPoolSessionsUnavailableError extends ForkError {
 	readonly placement: ForkPoolPlacement;
 
 	constructor(input: { readonly runId: string; readonly forkRunId: string; readonly placement: ForkPoolPlacement }) {
-		const fromStage = `fork it from a stage before its child workflows ran with /workflow fork ${input.runId} --from <stage>`;
+		const fromStage = `fork it from a stage before its child workflows ran in /workflows ${input.runId}`;
 		super({
 			name: "ForkPoolSessionsUnavailableError",
 			code: "pool-sessions-unavailable",

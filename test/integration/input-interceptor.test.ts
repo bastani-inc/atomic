@@ -1,30 +1,8 @@
-/**
- * Verify the `pi.on("input", …)` interceptor:
- *   1. Registers a handler under the `"input"` event.
- *   2. For `/workflow …` text, dispatches the
- *      registered command handler directly and returns
- *      `{ action: "handled" }` — short-circuiting pi's
- *      `startPendingSubmission` flow that otherwise echoes the message
- *      into chat scrollback AND starts the `Working… (Esc to interrupt)`
- *      loader before `session.prompt` runs. The shape matches pi's
- *      `InputEventResult` discriminated union; `{ handled: true }` is
- *      silently ignored by the runner.
- *   3. For anything else (regular chat, unknown slash command), passes
- *      through without short-circuiting so the host can run its normal
- *      submission flow.
- *
- * cross-ref:
- *   - src/extension/index.ts  `installInputInterceptor`
- *   - pi packages/coding-agent/src/modes/controllers/input-controller.ts
- *     `setupEditorSubmitHandler`
- *   - pi packages/coding-agent/src/extensibility/extensions/runner.ts
- *     `emitInput`
- */
-
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import type { ExtensionAPI, PiCommandContext, PiCommandOptions } from "../../packages/workflows/src/extension/index.js";
 import factory from "../../packages/workflows/src/extension/index.js";
+import { REMOVED_WORKFLOW_COMMAND_NOTICE } from "../../packages/workflows/src/extension/workflow-command-registration.js";
 
 type EventHandler = (event?: unknown, ctx?: PiCommandContext) => Promise<unknown> | unknown;
 
@@ -90,7 +68,7 @@ describe('installInputInterceptor — pi.on("input") wiring', () => {
 		assert.equal(handlers.length, 1, "exactly one input handler must be registered");
 	});
 
-	test("/workflow text short-circuits with { action: 'handled' } and dispatches the registered handler", async () => {
+	test("/workflows text short-circuits with { action: 'handled' } and dispatches the registered handler (#5224)", async () => {
 		const { pi, events, commandCalls } = buildMock();
 		factory(pi);
 
@@ -98,32 +76,52 @@ describe('installInputInterceptor — pi.on("input") wiring', () => {
 		assert.ok(handler, "input handler must be registered");
 
 		const ctx: PiCommandContext = { ui: { notify: () => undefined } };
-		const result = await handler({ text: "/workflow list", source: "interactive" }, ctx);
+		const result = await handler({ text: "/workflows list", source: "interactive" }, ctx);
 
 		assert.deepEqual(
 			result,
 			{ action: "handled" },
 			"must short-circuit the host submit pipeline using pi's InputEventResult shape",
 		);
-		assert.equal(commandCalls.length, 1, "must dispatch the workflow command handler exactly once");
-		assert.equal(commandCalls[0]!.name, "workflow");
+		assert.equal(commandCalls.length, 1, "must dispatch the workflows command handler exactly once");
+		assert.equal(commandCalls[0]!.name, "workflows");
 		assert.equal(commandCalls[0]!.args, "list");
+	});
+
+	test("removed /workflow text short-circuits with removal notice without registering a slash command (#5224)", async () => {
+		const { pi, events, commandCalls } = buildMock();
+		factory(pi);
+
+		const handler = (events.get("input") ?? [])[0]!;
+		const notifications: string[] = [];
+		const ctx: PiCommandContext = {
+			ui: {
+				notify: (msg) => {
+					notifications.push(msg);
+				},
+			},
+		};
+		const result = await handler({ text: "/workflow list", source: "interactive" }, ctx);
+
+		assert.deepEqual(result, { action: "handled" });
+		assert.deepEqual(commandCalls, []);
+		assert.deepEqual(notifications, [REMOVED_WORKFLOW_COMMAND_NOTICE]);
 	});
 
 	for (const [label, separator] of [
 		["tab", "\t"],
 		["newline", "\n"],
 	] as const) {
-		test(`/workflow whose arguments follow a ${label} dispatches the registered handler (#5192)`, async () => {
+		test(`/workflows whose arguments follow a ${label} dispatches the registered handler (#5192, #5224)`, async () => {
 			const { pi, events, commandCalls } = buildMock();
 			factory(pi);
 
 			const handler = (events.get("input") ?? [])[0]!;
 			const ctx: PiCommandContext = { ui: { notify: () => undefined } };
-			const result = await handler({ text: `/workflow${separator}list`, source: "interactive" }, ctx);
+			const result = await handler({ text: `/workflows${separator}list`, source: "interactive" }, ctx);
 
 			assert.deepEqual(result, { action: "handled" });
-			assert.deepEqual(commandCalls, [{ name: "workflow", args: "list" }]);
+			assert.deepEqual(commandCalls, [{ name: "workflows", args: "list" }]);
 		});
 	}
 
@@ -200,14 +198,12 @@ describe('installInputInterceptor — pi.on("input") wiring', () => {
 		factory(throwingPi);
 		const throwingHandler = (events.get("input") ?? [])[0]!;
 
-		const result = await throwingHandler({ text: "/workflow list", source: "interactive" }, ctx);
+		const result = await throwingHandler({ text: "/workflows list", source: "interactive" }, ctx);
 
-		// Interceptor must still resolve with action:"handled" so the host
-		// does not fall back to the streaming submit path.
 		assert.deepEqual(result, { action: "handled" });
 		const errorEntry = errors.find((e) => e.type === "error");
 		assert.ok(errorEntry, "error must be surfaced via ctx.ui.notify");
-		assert.match(errorEntry!.msg, /\/workflow failed: boom in \/workflow/);
+		assert.match(errorEntry!.msg, /\/workflows failed: boom in \/workflows/);
 	});
 
 	test("headless handler exception propagates instead of being hidden by no-op notify", async () => {
@@ -243,8 +239,8 @@ describe('installInputInterceptor — pi.on("input") wiring', () => {
 		const throwingHandler = (events.get("input") ?? [])[0]!;
 
 		await assert.rejects(async () => {
-			await throwingHandler({ text: "/workflow list", source: "print" }, ctx);
-		}, /boom in \/workflow/);
+			await throwingHandler({ text: "/workflows list", source: "print" }, ctx);
+		}, /boom in \/workflows/);
 		assert.deepEqual(notifications, []);
 	});
 });

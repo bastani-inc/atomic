@@ -1,4 +1,4 @@
-import { basename, dirname, join, relative, sep } from "node:path";
+import { basename, join, relative, sep } from "node:path";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@bastani/atomic-agent-core";
 import { getOpenCodeSessionHeaders } from "@bastani/atomic-ai";
 import {
@@ -29,6 +29,7 @@ import { getDefaultCacheRetention } from "./cache-retention.ts";
 import { CacheWarmer } from "./cache-warmer.ts";
 import { inheritChildSessionOptions } from "./child-session-options.ts";
 import { getClientIdentity } from "./client-identity.ts";
+import { migrateCompactionModelSettings } from "./compaction/model-resolver.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { startupCleanupFailureMessage } from "./extension-startup-failure.ts";
 import type { ExtensionRunner } from "./extensions/index.js";
@@ -38,6 +39,7 @@ import {
 	rollbackFactoryAcquisitions,
 } from "./extensions/loader-rollback.ts";
 import { getModelFastRoute, streamWithFastRoute, withFastRouteStreamOptions } from "./fast-model-routing.ts";
+import { SessionIntercomPolicy, validateIntercomSessionOptions } from "./intercom-policy.ts";
 import { markLifecycleTiming } from "./lifecycle-timings.ts";
 import {
 	isMandatoryResourceLoader,
@@ -66,12 +68,14 @@ import {
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
 import { SessionManager } from "./session-manager.ts";
+import { prepareSessionOpenMarkers } from "./session-open-markers.js";
 import { registerStartupRollback, rollbackStartup } from "./session-startup-rollback.ts";
 import { resolveSessionStore } from "./session-storage.js";
 import { releaseSessionWorktrees } from "./session-worktree-snapshots.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { applyToolModifiers, getToolListError, isToolModifier } from "./settings-merge.js";
 import { ownedSettingsManagers } from "./settings-write-ownership.ts";
+import { defaultSessionDatabasePath } from "./storage/file-identity.js";
 import { validateProcessStorage } from "./storage/process-selection.js";
 import { selectStorage } from "./storage/selection.js";
 import type { SessionStore } from "./storage/session/types.js";
@@ -168,6 +172,15 @@ function removeUnownedModelHeaders(
  * });
  * ```
  */
+function sessionIntercomPolicyFor(options: CreateAgentSessionOptions): SessionIntercomPolicy | undefined {
+	const parent = options.parentIntercomPolicy;
+	if (parent !== undefined) {
+		const own = options.subagentPolicy?.intercomGroup ?? options.orchestrationContext?.intercomGroup;
+		return SessionIntercomPolicy.forChild(own !== undefined && own.trim().length > 0 ? own : parent.home, parent);
+	}
+	return options.intercom === undefined ? undefined : SessionIntercomPolicy.fromOptions(options.intercom);
+}
+
 export async function createAgentSession(options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> {
 	return createScopedSession(options, false);
 }
@@ -188,6 +201,7 @@ function createScopedSession(
 	let releaseWhenIdle: ReleaseWhenIdleOptions | undefined;
 	try {
 		releaseWhenIdle = parseReleaseWhenIdle(options.releaseWhenIdle);
+		if (options.intercom !== undefined) validateIntercomSessionOptions(options.intercom);
 	} catch (error) {
 		return Promise.reject(error);
 	}
@@ -346,16 +360,20 @@ async function constructAgentSession(
 	await modelRuntime.refresh({ allowNetwork: false });
 
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
+	migrateCompactionModelSettings(settingsManager, modelRuntime.getAllModels());
+	const effectiveSettings = settingsManager.getSettings();
 	let sessionManager = suppliedSession;
 	if (!sessionManager) {
 		const sessionStore =
 			options.sessionStore ??
 			(options.storage === undefined
 				? undefined
-				: selectStorage(options.storage, "sdk", "storage", join(dirname(agentDir), "workflows", "journal.sqlite")));
+				: selectStorage(options.storage, "sdk", "storage", () =>
+						defaultSessionDatabasePath(agentDir, effectiveSettings),
+					));
 		const store = await resolveSessionStore(cwd, {
 			agentDir,
-			settings: settingsManager.getSettings(),
+			settings: effectiveSettings,
 			sessionStore,
 		});
 		if (store !== options.sessionStore) acquisition.store = store;
@@ -503,6 +521,7 @@ async function constructAgentSession(
 				: options.tools === undefined
 					? undefined
 					: [...options.tools];
+	const intercomPolicy = sessionIntercomPolicyFor(options);
 	const subagentPolicy =
 		options.subagentPolicy && (options.subagentPolicy.depth ?? 0) >= 1
 			? {
@@ -817,6 +836,7 @@ async function constructAgentSession(
 		}
 	}
 
+	void prepareSessionOpenMarkers();
 	const providerRollback = modelRuntime.createExtensionProviderTransaction();
 	let session: AgentSession;
 	const childCommandTaskOwner = createChildCommandTaskOwner(
@@ -872,6 +892,7 @@ async function constructAgentSession(
 						resourceAdmission: options.resourceAdmission,
 						workspace,
 						parentUsageSink: reportChildUsage,
+						...(intercomPolicy === undefined ? {} : { parentIntercomPolicy: intercomPolicy }),
 					},
 					child,
 					session.getAllTools().map((tool) => tool.name),
@@ -884,7 +905,6 @@ async function constructAgentSession(
 			customTools: options.customTools,
 			modelRuntime,
 			cacheWarmer,
-			...(options.compactionWake ? { compactionWake: options.compactionWake } : {}),
 			initialActiveToolNames,
 			usesDefaultTools: (options.tools === undefined || toolModifiers !== undefined) && !options.noTools,
 			defaultToolModifiers: toolModifiers,
@@ -894,6 +914,7 @@ async function constructAgentSession(
 			sessionStartEvent: options.sessionStartEvent,
 			orchestrationContext: options.orchestrationContext,
 			subagentPolicy,
+			intercomPolicy,
 			parentCommandTaskOwner: options.parentCommandTaskOwner,
 			inheritedHistory: options.inheritedHistory,
 			resourceAdmission: options.resourceAdmission ?? undefined,

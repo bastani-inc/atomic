@@ -3,6 +3,7 @@ import { setKeybindings, visibleWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import type { TaskId, TaskRecord, TaskResult } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import { taskDetailSummary } from "../../packages/coding-agent/src/modes/interactive/components/task-detail.js";
 import {
 	renderTaskFooter,
 	TaskList,
@@ -10,6 +11,8 @@ import {
 } from "../../packages/coding-agent/src/modes/interactive/components/task-list.js";
 import {
 	TaskRow,
+	taskDuration,
+	taskMetricsText,
 	taskShortId,
 	taskStatusAppearance,
 } from "../../packages/coding-agent/src/modes/interactive/components/task-row.js";
@@ -261,4 +264,29 @@ test("task footer lists only active background tasks, newest first, not retained
 		"  ∀ agent  Task agent  running",
 	]);
 	assert.deepEqual(renderTaskFooter([failure], 60), []);
+});
+
+test("taskDuration, taskMetricsText, taskDetailSummary and TaskRow use panel elapsed formatting (3m and 1h 6m, not 3m 12s or 66m 40s) (#5239)", () => {
+	assert.equal(taskDuration(192_000), "3m");
+	assert.equal(taskDuration(4_000_000), "1h 6m");
+	const threeMinTask: TaskRecord = {
+		...taskRecord("three-min"),
+		execution: { kind: "settled", result: { kind: "completed", output: taskRecord("three-min").output } },
+		metrics: { elapsedMs: 192_000, tokenCount: 1200, toolCount: 2 },
+	};
+	const hourTask: TaskRecord = {
+		...taskRecord("hour-six"),
+		execution: { kind: "settled", result: { kind: "completed", output: taskRecord("hour-six").output } },
+		metrics: { elapsedMs: 4_000_000 },
+	};
+	assert.equal(taskMetricsText(threeMinTask), "3m · 1,200 tokens · 2 tools");
+	assert.match(taskDetailSummary(threeMinTask), /\b3m\b/);
+	assert.doesNotMatch(taskDetailSummary(threeMinTask), /3m 12s/);
+	assert.equal(taskMetricsText(hourTask), "1h 6m");
+	assert.match(taskDetailSummary(hourTask), /\b1h 6m\b/);
+	assert.doesNotMatch(taskDetailSummary(hourTask), /66m 40s/);
+	assert.match(plain(new TaskRow(threeMinTask).render(80)), /· 3m\b/);
+	assert.doesNotMatch(plain(new TaskRow(threeMinTask).render(80)), /3m 12s/);
+	assert.match(plain(new TaskRow(hourTask).render(80)), /· 1h 6m\b/);
+	assert.doesNotMatch(plain(new TaskRow(hourTask).render(80)), /66m 40s/);
 });

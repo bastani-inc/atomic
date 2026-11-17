@@ -79,6 +79,7 @@ export interface ModelFallbackRecord {
 	from: string;
 	/** The failure that moved the session on. */
 	reason: string;
+	skipped?: { model: string; provider: string; reason: "no-credentials" | "auth-failed" }[];
 }
 
 export interface ModelChangeEntry extends SessionEntryBase {
@@ -106,9 +107,9 @@ export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	firstKeptEntryId: string | null;
 	tokensBefore: number;
 	/**
-	 * Last entry the boundary covers, when a background compaction committed it after more entries were
-	 * appended. Entries after it and before the boundary replay unchanged. Absent: the boundary covers
-	 * every entry before it.
+	 * Last entry the boundary covers, when it was placed before a turn that still waited on a tool result (or, in an
+	 * older session, when a background compaction committed it after more entries were appended). Entries after it
+	 * and before the boundary replay unchanged. Absent: the boundary covers every entry before it.
 	 */
 	coveredThroughEntryId?: string;
 	details?: T;
@@ -366,6 +367,12 @@ export interface SessionInfo {
 	allMessagesText: string;
 	/** Optional semantic color for synthetic selector rows. */
 	messageColor?: "success" | "warning" | "accent" | "error";
+	/** Synthetic selector rows: the row's first line, in place of the name or first message. */
+	title?: string;
+	/** Synthetic selector rows: the row's dim second line, in place of age · messages · summary. */
+	detail?: string;
+	resumeKind?: "workflow";
+	canDelete?: boolean;
 }
 
 export type SessionListProgress = (loaded: number, total: number, partialSessions?: readonly SessionInfo[]) => void;

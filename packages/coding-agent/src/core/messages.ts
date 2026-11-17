@@ -206,7 +206,8 @@ export function isVerbatimCompactionMessage(message: CustomMessage): boolean {
 }
 
 /**
- * Create the visible custom-role boundary used to replay a verbatim compaction.
+ * Create the visible custom-role boundary used to replay a compaction boundary. A boundary with a `form` holds the
+ * whole message; an older verbatim or summary boundary gets its original prefix back.
  *
  * `retainedTail` holds the serialized kept tail. Its text merges into the boundary text and
  * its image blocks stay intact, so preserved content is not reduced to a placeholder.
@@ -222,9 +223,13 @@ export function createVerbatimCompactionMessage(
 ): CustomMessage {
 	const isSummary =
 		typeof details === "object" && details !== null && "backend" in details && details.backend === "summary";
-	const prefix = isSummary
-		? SUMMARY_COMPACTION_PREFIX
-		: VERBATIM_COMPACTION_PREFIX + (sessionId === undefined ? "" : verbatimRecallHint(sessionId));
+	// A cleared or compacted boundary stores the whole message the model sees, recovery instructions included.
+	const isWholeMessage = typeof details === "object" && details !== null && "form" in details;
+	const prefix = isWholeMessage
+		? ""
+		: isSummary
+			? SUMMARY_COMPACTION_PREFIX
+			: VERBATIM_COMPACTION_PREFIX + (sessionId === undefined ? "" : verbatimRecallHint(sessionId));
 	const content: (TextContent | ImageContent)[] = [{ type: "text", text: prefix + compactedText }];
 	for (const block of retainedTail ?? []) {
 		const last = content[content.length - 1];

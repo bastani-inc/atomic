@@ -10,6 +10,7 @@ import type {
 	TUI,
 	WheelScrollLines,
 } from "@bastani/atomic-tui";
+import type { ChatMessageRenderOptions } from "../../modes/interactive/components/chat-message-renderer.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
 import type { Keybinding, KeybindingsManager } from "../keybindings.ts";
@@ -147,6 +148,8 @@ export interface ChatRenderSettings {
 	fullscreenWheelScrollLines?: WheelScrollLines;
 	getToolDefinition(toolName: string): ToolRenderers | undefined;
 	getCustomMessageRenderer(customType: string): MessageRenderer | undefined;
+	createToolComponent?: ChatMessageRenderOptions["createToolComponent"];
+	createCustomMessageComponent?: ChatMessageRenderOptions["createCustomMessageComponent"];
 }
 
 /** Host-owned inline custom UI focus state exposed to overlays without prompt content. */
@@ -166,14 +169,6 @@ export type HostCustomUiStateListener = (state: HostCustomUiState) => void;
 /** Supported field kinds for the host-native input form. */
 export type HostInputFormFieldType = "string" | "text" | "number" | "integer" | "boolean" | "select";
 
-export type HostInputFormJson =
-	| string
-	| number
-	| boolean
-	| null
-	| readonly HostInputFormJson[]
-	| { readonly [key: string]: HostInputFormJson };
-
 /** JSON-safe field descriptor for {@link ExtensionUIContext.hostInputForm}. */
 export interface HostInputFormField {
 	name: string;
@@ -182,18 +177,8 @@ export interface HostInputFormField {
 	required?: boolean;
 	choices?: string[];
 	placeholder?: string;
+
 	initialValue: string;
-	const?: string | number | boolean;
-	minimum?: number;
-	maximum?: number;
-	exclusiveMinimum?: number;
-	exclusiveMaximum?: number;
-	multipleOf?: number;
-	minLength?: number;
-	maxLength?: number;
-	pattern?: string;
-	format?: string;
-	schema?: { readonly [key: string]: HostInputFormJson };
 }
 
 /** Request for a host-owned inline input form. */
@@ -227,6 +212,11 @@ export interface HostSessionPickerRow {
 	name?: string;
 	/** Optional semantic color for synthetic selector rows. */
 	messageColor?: "success" | "warning" | "accent" | "error";
+	/** The row's first line, in place of `name` or `firstMessage`. */
+	title?: string;
+	/** The row's dim second line, in place of age · messages · summary. */
+	detail?: string;
+	canDelete?: boolean;
 }
 
 /** Request for {@link ExtensionUIContext.hostSessionPicker}. */
@@ -235,6 +225,13 @@ export interface HostSessionPickerRequest {
 	sessions: HostSessionPickerRow[];
 	/** Show the rename keybinding hint in the picker header. Defaults to false. */
 	showRenameHint?: boolean;
+	/** The picker's title. Defaults to "Resume session", or "Resume workflow run" for `variant: "runs"`. */
+	title?: string;
+	/**
+	 * What the rows are: `sessions` (the default) offers folder scope, name filtering and paths; `runs` lists
+	 * workflow runs and leaves those keys out.
+	 */
+	variant?: "sessions" | "runs";
 	/**
 	 * Invoked after the user confirms a Ctrl+D delete on a row. The host does
 	 * NOT remove the row; reply with `update()` (row removed) or `error()`.

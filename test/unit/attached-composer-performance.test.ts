@@ -33,13 +33,13 @@ assert.equal(rendered[1], ${JSON.stringify(scenario)} === "application-commands"
 }
 
 test(
-	"an attached composer handles unterminated application commands without blocking input (#5245)",
+	"an attached composer handles unterminated application commands without blocking input (#5224)",
 	() => renderInProcess("application-commands"),
 	COMPOSER_TEST_TIMEOUT_MS,
 );
 
 test(
-	"an attached composer handles padding before a non-SGR escape without blocking input (#5245)",
+	"an attached composer handles padding before a non-SGR escape without blocking input (#5224)",
 	() => renderInProcess("trailing-spaces"),
 	COMPOSER_TEST_TIMEOUT_MS,
 );

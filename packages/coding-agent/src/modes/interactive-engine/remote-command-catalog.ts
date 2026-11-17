@@ -3,21 +3,6 @@ import type { RpcSlashCommand } from "../rpc/rpc-types.ts";
 
 export type RemoteCommandsListener = (commands: readonly RpcSlashCommand[]) => void;
 
-/**
- * Tracks the engine child's slash-command catalog (extension commands, prompt
- * templates, and skills) for the isolated interactive host.
- *
- * When {@link isolateInteractiveHost} is on, `main.ts` loads no extensions in
- * the host session, so `session.extensionRunner.getRegisteredCommands()` is
- * empty and interactive autocomplete would omit every extension command
- * (`/workflow`, `/workflows`, `/mcp`, …). The commands still live in the
- * engine child, which answers the `get_commands` RPC. This catalog fetches that
- * list asynchronously so it never blocks first paint or input, caches the last
- * good result, and notifies listeners so autocomplete can rebuild.
- *
- * A generation guard ensures a slow in-flight fetch cannot clobber the catalog
- * after a newer refresh (e.g. an engine restart) has already superseded it.
- */
 export class RemoteCommandCatalog {
 	private commands: readonly RpcSlashCommand[] = [];
 	private readonly listeners = new Set<RemoteCommandsListener>();

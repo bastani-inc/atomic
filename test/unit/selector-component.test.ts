@@ -213,12 +213,15 @@ describe("shared selector (#5224)", () => {
 		assert.deepEqual(events, []);
 	});
 
-	test("ctrl+c cancels even with search text", () => {
-		const { selector, events } = picker({ search: true, items: items(2) });
-		selector.handleInput("i");
-		selector.handleInput(CTRL_C);
-		assert.deepEqual(events, ["cancel"]);
-	});
+	test.each([CTRL_C, "\x1b[99;5u", "\x1b[1089::99;5u", "\x1b[27;5;99~"])(
+		"ctrl+c encoding %j cancels even with search text (#5237)",
+		(key) => {
+			const { selector, events } = picker({ search: true, items: items(2) });
+			selector.handleInput("i");
+			selector.handleInput(key);
+			assert.deepEqual(events, ["cancel"]);
+		},
+	);
 
 	test("a search with no match shows the empty state and no choose key", () => {
 		const { selector, text } = picker({ search: true, items: items(2) });
@@ -246,7 +249,7 @@ describe("shared selector (#5224)", () => {
 		assert.ok(lines.includes("  ↓ 5 more"));
 	});
 
-	test("multi-select: space toggles checkboxes, enter confirms the checked rows in list order", () => {
+	test("multi-select: space toggles checkboxes, enter confirms the checked rows in list order, and enter is inert when nothing is checked or enabled (#5237)", () => {
 		const { selector, events, text } = picker({ mode: "multi", items: items(3) });
 		selector.handleInput(DOWN);
 		selector.handleInput(DOWN);
@@ -260,6 +263,20 @@ describe("shared selector (#5224)", () => {
 		assert.equal(hint(lines), "↑↓ select · space toggle · enter confirm · esc cancel · ? keys");
 		selector.handleInput(ENTER);
 		assert.deepEqual(events, ["confirm:id-0,id-2"]);
+
+		const noMatchMulti = picker({ mode: "multi", search: true, items: items(2) });
+		for (const key of "zzz") noMatchMulti.selector.handleInput(key);
+		assert.equal(hint(noMatchMulti.text()), "type to search · esc clear");
+		noMatchMulti.selector.handleInput(ENTER);
+		assert.deepEqual(noMatchMulti.events, []);
+		noMatchMulti.selector.handleInput(ESC);
+		noMatchMulti.selector.handleInput(ENTER);
+		assert.deepEqual(noMatchMulti.events, ["confirm:"]);
+
+		const disabledMulti = picker({ mode: "multi", items: items(2, () => ({ disabled: true })) });
+		assert.equal(hint(disabledMulti.text()), "esc cancel · ? keys");
+		disabledMulti.selector.handleInput(ENTER);
+		assert.deepEqual(disabledMulti.events, []);
 	});
 
 	test("space previews when the picker has a preview, and the hint says so", () => {
@@ -315,7 +332,7 @@ describe("shared selector (#5224)", () => {
 		assert.ok(!text().includes("  Definitions"));
 	});
 
-	test("? shows the key overlay of a picker without a search box, and esc closes only the overlay", () => {
+	test("? shows the key overlay of a picker without a search box, esc closes only the overlay, and ctrl+c cancels (#5237)", () => {
 		const { selector, events, text } = picker({ title: "Theme", items: items(2) });
 		selector.handleInput("?");
 		const lines = text();
@@ -324,6 +341,15 @@ describe("shared selector (#5224)", () => {
 		selector.handleInput(ESC);
 		assert.deepEqual(events, []);
 		assert.equal(hint(text()), "↑↓ select · enter choose · esc cancel · ? keys");
+
+		for (const key of [CTRL_C, "\x1b[99;5u", "\x1b[1089::99;5u", "\x1b[27;5;99~"]) {
+			const withOverlay = picker({ title: "Theme", items: items(2) });
+			withOverlay.selector.handleInput("?");
+			withOverlay.selector.handleInput(key);
+			assert.deepEqual(withOverlay.events, ["cancel"]);
+			withOverlay.selector.handleInput(ENTER);
+			assert.deepEqual(withOverlay.events, ["cancel"]);
+		}
 	});
 
 	test("a narrow hint keeps cancel and choose and drops the least needed keys first", () => {
@@ -556,9 +582,32 @@ describe("shared selector (#5224)", () => {
 		assert.equal(hint(text(50)), "enter toggle · ctrl+a all · esc cancel");
 	});
 
-	test("the digit hint names the digits that choose a row", () => {
+	test("the digit hint names the digits that choose an enabled row (#5237)", () => {
 		assert.match(hint(picker({ items: items(2), numbered: true }).text()), /1-2 pick/);
 		assert.match(hint(picker({ items: items(12), numbered: true }).text()), /1-9 pick/);
 		assert.match(hint(picker({ items: items(1), numbered: true }).text()), /1 pick/);
+
+		const onlyThirdEnabled = picker({
+			items: items(3, (index) => ({ disabled: index < 2 })),
+			numbered: true,
+		});
+		assert.equal(hint(onlyThirdEnabled.text()), "enter choose · 3 pick · esc cancel · ? keys");
+		onlyThirdEnabled.selector.handleInput("1");
+		onlyThirdEnabled.selector.handleInput("2");
+		assert.deepEqual(onlyThirdEnabled.events, []);
+		onlyThirdEnabled.selector.handleInput("3");
+		assert.deepEqual(onlyThirdEnabled.events, ["select:id-2"]);
+
+		const firstAndThirdEnabled = picker({
+			items: items(3, (index) => ({ disabled: index === 1 })),
+			numbered: true,
+		});
+		assert.equal(hint(firstAndThirdEnabled.text()), "↑↓ select · enter choose · 1/3 pick · esc cancel · ? keys");
+
+		const onlyTenthEnabled = picker({
+			items: items(10, (index) => ({ disabled: index < 9 })),
+			numbered: true,
+		});
+		assert.equal(hint(onlyTenthEnabled.text()), "enter choose · esc cancel · ? keys");
 	});
 });

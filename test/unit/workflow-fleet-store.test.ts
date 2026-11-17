@@ -76,7 +76,9 @@ test.skipIf(process.platform === "win32")(
 			await f.report("h1", "vm-1");
 			await f.report("h2");
 			const snapshot = await f.store.snapshot();
-			assert.deepEqual(snapshot.roots, [{ root: "root", ready: 2, leased: 1, sessionLimit: 2, blocked: false }]);
+			assert.deepEqual(snapshot.roots, [
+				{ root: "root", ready: 2, leased: 1, started: 0, sessionLimit: 2, blocked: false },
+			]);
 			assert.deepEqual(snapshot.hosts, [
 				{ host: "h1", providerId: "vm-1", live: true, leased: 1 },
 				{ host: "h2", live: true, leased: 0 },

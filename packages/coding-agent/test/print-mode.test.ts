@@ -255,6 +255,43 @@ describe("runPrintMode", () => {
 		assert.deepEqual(errorSpy.mock.calls, [["Response was truncated: the model reached its output token limit."]]);
 	});
 
+	for (const [label, final, expectedExit, expectedStdout, expectedError] of [
+		["the answer", createAssistantMessage({ text: "final answer" }), 0, "final answer\n", undefined],
+		[
+			"the failure",
+			createAssistantMessage({ stopReason: "error", errorMessage: "Request authentication timed out" }),
+			1,
+			"",
+			"Model openai/gpt-4o-mini failed: Request authentication timed out",
+		],
+	] as const) {
+		it(`reports ${label} of the last turn, not the Context cleared message, when compaction ran after it`, async () => {
+			const boundary: CustomMessage = {
+				role: "custom",
+				customType: "compaction",
+				content: [{ type: "text", text: "Context cleared. Your earlier conversation is in history." }],
+				display: true,
+				timestamp: Date.now(),
+			};
+			const runtimeHost = createRuntimeHost(boundary);
+			Object.assign(runtimeHost.session.sessionManager, {
+				getBranch: () => [
+					{ type: "message", id: "u", parentId: null, timestamp: "", message: { role: "user", content: "hi" } },
+					{ type: "message", id: "a", parentId: "u", timestamp: "", message: final },
+					{ type: "compaction", id: "b", parentId: "a", timestamp: "", summary: "Context cleared." },
+				],
+			});
+			const stdoutChunks = captureStdout();
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+			const exitCode = await runPrintModeWithFakeHost(runtimeHost, { mode: "text", initialMessage: "hi" });
+
+			assert.equal(exitCode, expectedExit);
+			assert.equal(stdoutChunks.join(""), expectedStdout);
+			assert.deepEqual(errorSpy.mock.calls, expectedError === undefined ? [] : [[expectedError]]);
+		});
+	}
+
 	it("reports truncation despite a trailing hidden custom notification", async () => {
 		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "partial", stopReason: "length" }));
 		runtimeHost.session.prompt.mockImplementation(async () => {

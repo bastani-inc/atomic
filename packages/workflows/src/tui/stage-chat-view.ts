@@ -37,7 +37,7 @@ import {
 	sepRule,
 } from "./stage-chat-view-footer-status.js";
 import { handleStageChatInput } from "./stage-chat-view-input.js";
-import { blankLine, paint, takeRows } from "./stage-chat-view-render-helpers.js";
+import { blankLine, paint, setComponentFocused, takeRows } from "./stage-chat-view-render-helpers.js";
 import {
 	currentStage,
 	disposeStageChatView,
@@ -130,9 +130,11 @@ export class StageChatView implements Component, Focusable {
 		const stage = currentStage(ctx);
 		const blocked = isBlocked(ctx);
 
-		const customUiActive = this.mountedCustomUi !== null;
 		syncPromptState(ctx, stage?.pendingPrompt);
-		const promptActive = !customUiActive && promptCardShown(ctx);
+		const promptActive =
+			promptCardShown(ctx) && (this.mountedCustomUi === null || this.promptState?.prompt.source === "stage-dialog");
+		const customUiActive = this.mountedCustomUi !== null && !promptActive;
+		if (this.mountedCustomUi) setComponentFocused(this.mountedCustomUi.component, this.focused && customUiActive);
 		const readOnlyArchive = isReadOnlyArchive(ctx, stage);
 		const chatChromeHidden = customUiActive || promptActive || readOnlyArchive || blocked;
 		this.chatHost.focused = this.focused;

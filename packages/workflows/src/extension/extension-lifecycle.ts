@@ -10,7 +10,6 @@ import { killAllRuns } from "../runs/background/status.js";
 import { installCompactionHook } from "../shared/persistence-compaction-policy.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { Store } from "../shared/store.js";
-import { clearForms } from "../tui/inline-form-store.js";
 import { currentWorkflowSessionRunState, type WorkflowSessionRunState } from "./adopt-session-run-state.js";
 import { WORKFLOW_CONFIG_DEFAULTS } from "./config-loader.js";
 import type { WorkflowExtensionRuntimeState } from "./extension-runtime-state.js";
@@ -126,7 +125,7 @@ export function sessionSwitchQuitConfirmation(
 	const pronoun = inFlightWorkflowCount === 1 ? "It" : "Each";
 	return {
 		title: `Quit ${runs} and ${SESSION_SWITCH_COPY[reason].action}?`,
-		message: `Continuing quits ${runs} now. ${pronoun} stops at its last checkpoint and can be resumed later with /workflow resume.`,
+		message: `Continuing quits ${runs} now. ${pronoun} stops at its last checkpoint and can be resumed later with /resume.`,
 	};
 }
 
@@ -140,8 +139,18 @@ function releasedRunsNotice(runs: readonly { readonly id: string; readonly name:
 	const count = runs.length === 1 ? "1 workflow run" : `${runs.length} workflow runs`;
 	return [
 		`Released ${count} from the previous session. Resume ${runs.length === 1 ? "it" : "any"} here:`,
-		...runs.map((run) => `  /workflow resume ${run.id}  (${run.name})`),
+		...runs.map((run) => `  /resume ${run.id}  (${run.name})`),
 	].join("\n");
+}
+
+function blockedAtRest(
+	run: { readonly endedAt?: number; readonly blockedAt?: number; readonly failureDisposition?: string } | undefined,
+): boolean {
+	return (
+		run !== undefined &&
+		run.endedAt === undefined &&
+		(run.blockedAt !== undefined || run.failureDisposition === "active_blocked")
+	);
 }
 
 function eventReason(event: unknown): string | undefined {
@@ -187,7 +196,13 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 					);
 				const failures = results
 					.flatMap((result) => (result.ok ? [] : [result]))
-					.filter((result) => !(boundary === "switch" && result.reason === "no_active_stages"));
+					.filter(
+						(result) =>
+							!(
+								result.reason === "no_active_stages" &&
+								(boundary === "switch" || blockedAtRest(store.run(result.runId)))
+							),
+					);
 				if (failures.length > 0)
 					throw new Error(
 						failures
@@ -280,7 +295,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 				mode === "ask" &&
 				!(await ctx?.ui?.confirm?.(
 					"Resume interrupted workflows?",
-					`${interrupted.length} interrupted workflow(s) can resume from their durable checkpoints. Resume now? Choose No to leave them available through /workflow resume.`,
+					`${interrupted.length} interrupted workflow(s) can resume from their durable checkpoints. Resume now? Choose No to leave them available through /resume.`,
 				))
 			)
 				return;
@@ -293,7 +308,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			for (const entry of interrupted) {
 				if (availableIds.has(entry.workflowId)) continue;
 				ctx?.ui?.notify?.(
-					`Workflow ${entry.workflowId} is not available for startup recovery. Enable its workflow resources, then use /workflow resume ${entry.workflowId}.`,
+					`Workflow ${entry.workflowId} is not available for startup recovery. Enable its workflow resources, then use /resume ${entry.workflowId}.`,
 					"warning",
 				);
 			}
@@ -303,7 +318,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 				// #5149: a run paused or taken elsewhere while the dialog was open is skipped; a failed check warns below.
 				if (!(await isInterruptedInProject(entry))) {
 					ctx?.ui?.notify?.(
-						`Workflow ${entry.workflowId} changed while startup recovery was pending, so it was not resumed. Use /workflow resume ${entry.workflowId} if it should continue.`,
+						`Workflow ${entry.workflowId} changed while startup recovery was pending, so it was not resumed. Use /resume ${entry.workflowId} if it should continue.`,
 						"info",
 					);
 					continue;
@@ -317,10 +332,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			}
 		} catch (error) {
 			if (!isCurrent()) return;
-			ctx?.ui?.notify?.(
-				`Workflow startup resume failed: ${String(error)}. Use /workflow resume to retry.`,
-				"warning",
-			);
+			ctx?.ui?.notify?.(`Workflow startup resume failed: ${String(error)}. Use /resume to retry.`, "warning");
 		}
 	};
 
@@ -388,7 +400,6 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			});
 			store.clear();
 		}
-		clearForms();
 		resetWorkflowLifecycleNotificationState(runtimeState.lifecycleNotificationState);
 		resetWorkflowHilAnswerNotificationState(runtimeState.hilAnswerNotificationState);
 		if (stopsWorkflows) await stageControlRegistry.clear();

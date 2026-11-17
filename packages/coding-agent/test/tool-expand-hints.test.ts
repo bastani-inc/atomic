@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { getKeybindings, setKeybindings, type TUI } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import { getReadmePath } from "../src/config.ts";
@@ -58,13 +58,17 @@ describe("unbound tool expansion hints", () => {
 	test("omits the whole affordance on collapsed skill, resource, and docs reads", () => {
 		setKeybindings(new KeybindingsManager({ "app.tools.expand": [] }));
 		for (const scenario of [
-			{ path: join(process.cwd(), "tmux", "SKILL.md"), expected: "[skill] tmux", body: "skill body" },
+			{ path: join(process.cwd(), "tmux", "SKILL.md"), expected: "Read(tmux/SKILL.md)", body: "skill body" },
 			{
 				path: join(process.cwd(), ".atomic", "AGENTS.md"),
-				expected: "read resource .atomic/AGENTS.md",
+				expected: "Read(.atomic/AGENTS.md)",
 				body: "resource body",
 			},
-			{ path: getReadmePath(), expected: "read docs README.md", body: "docs body" },
+			{
+				path: getReadmePath(),
+				expected: `Read(${relative(process.cwd(), getReadmePath()).replace(/\\/g, "/")})`,
+				body: "docs body",
+			},
 		]) {
 			const target = component("read", { path: scenario.path }, createReadToolDefinition(process.cwd()));
 			target.updateResult({ content: [{ type: "text", text: scenario.body }], details: {}, isError: false }, false);
@@ -95,7 +99,7 @@ describe("unbound tool expansion hints", () => {
 			const target = component(scenario.name, scenario.args, scenario.definition);
 			updateWithLines(target, scenario.lines);
 			const rendered = visible(target);
-			expect(rendered).toMatch(/earlier lines|more lines/);
+			expect(rendered).toMatch(/… \+\d+ (?:earlier )?lines/);
 			expectNoUnavailableExpandHint(rendered);
 		}
 
@@ -107,8 +111,10 @@ describe("unbound tool expansion hints", () => {
 			},
 			createWriteToolDefinition(process.cwd()),
 		);
+		write.setArgsComplete();
+		write.updateResult({ content: [], isError: false });
 		const renderedWrite = visible(write);
-		expect(renderedWrite).toContain("2 more lines, 12 total");
+		expect(renderedWrite).toContain("Wrote 12 lines");
 		expectNoUnavailableExpandHint(renderedWrite);
 	});
 });

@@ -3,10 +3,11 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { vi } from "vitest";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
+import { defaultSharedStoragePath } from "../../packages/coding-agent/src/core/storage/file-identity.js";
 import { loadStorageAdapter } from "../../packages/coding-agent/src/core/storage/provider.js";
 import { selectStorage } from "../../packages/coding-agent/src/core/storage/selection.js";
 import { IntercomClient } from "../../packages/intercom/broker/client.js";
@@ -53,6 +54,7 @@ const CAPABILITY_PROBE_TIMEOUT_MS = BROKER_START_ALLOWANCE_MS;
 const DROP_WAKEUPS_TRIGGER = "two_broker_harness_drop_wakeups";
 const STORAGE_OPEN_GATE = "storage-open-gate";
 const REGISTRATION_GATE = "registration-gate";
+const PRESENCE_READ_GATE = "presence-read-gate";
 
 export interface ReceivedFrame {
 	readonly from: SessionInfo;
@@ -76,6 +78,7 @@ export interface TwoBrokerConnectOptions {
 	 * read in the same chunk is emitted before `connect` resolves.
 	 */
 	readonly beforeConnect?: (client: TwoBrokerClient) => void;
+	readonly reachable?: readonly string[];
 }
 
 /** A real Intercom client attached to one node's broker, recording every frame it receives. */
@@ -119,6 +122,8 @@ export interface TwoBrokerHarnessOptions {
 	readonly gatedStorageOpening?: BrokerNode;
 	/** Both brokers can park the shared-store write that records a registration (`holdRegistration`). */
 	readonly parkableRegistrations?: true;
+	/** This node's broker can park one read of an identity's presence lease (`holdPresenceRead`). */
+	readonly parkablePresenceRead?: BrokerNode;
 	/** The nodes to run, each with its own broker over the one shared storage; default `BROKER_NODES`. */
 	readonly nodes?: readonly BrokerNode[];
 	/** Added to every broker's environment, as a shortened bound (`ATOMIC_INTERCOM_LOST_RECIPIENT_AFTER_MS`). */
@@ -146,6 +151,7 @@ function nodeSettings(
 	options: TwoBrokerHarnessOptions,
 	openGate?: string,
 	registrationGate?: string,
+	presenceReadGate?: string,
 ): string {
 	return JSON.stringify({
 		storage: {
@@ -155,6 +161,7 @@ function nodeSettings(
 				...(options.databaseCallDelayMs === undefined ? {} : { callDelayMs: options.databaseCallDelayMs }),
 				...(openGate === undefined ? {} : { openGate }),
 				...(registrationGate === undefined ? {} : { registrationGate }),
+				...(presenceReadGate === undefined ? {} : { presenceReadGate }),
 			},
 			prefix: TWO_BROKER_STORAGE_PREFIX,
 		},
@@ -221,9 +228,10 @@ export class TwoBrokerHarness {
 			mkdirSync(agentDir, { recursive: true });
 			const openGate = options.gatedStorageOpening === node ? join(root, STORAGE_OPEN_GATE) : undefined;
 			const registrationGate = options.parkableRegistrations === true ? join(root, REGISTRATION_GATE) : undefined;
+			const presenceReadGate = options.parkablePresenceRead === node ? join(root, PRESENCE_READ_GATE) : undefined;
 			writeFileSync(
 				join(agentDir, "settings.json"),
-				nodeSettings(sharedDatabasePath, options, openGate, registrationGate),
+				nodeSettings(sharedDatabasePath, options, openGate, registrationGate, presenceReadGate),
 			);
 			nodes[node] = {
 				fixture: new IntercomBrokerFixture(agentDir),
@@ -281,6 +289,30 @@ export class TwoBrokerHarness {
 	/** Let every parked registration's write go. */
 	releaseRegistration(): void {
 		rmSync(join(this.root, REGISTRATION_GATE), { force: true });
+	}
+
+	/**
+	 * Park the next read of a presence lease whose identity contains `text` on the `parkablePresenceRead` node: that
+	 * read does not answer until `releasePresenceRead`.
+	 */
+	holdPresenceRead(text: string): void {
+		writeFileSync(join(this.root, PRESENCE_READ_GATE), text);
+	}
+
+	/** Resolve once the broker has parked the presence read held for `text`. */
+	async presenceReadParked(text: string): Promise<void> {
+		await vi.waitFor(
+			() => {
+				const parked = readFileSync(join(this.root, `${PRESENCE_READ_GATE}.parked`), "utf8").split("\n");
+				if (!parked.includes(text)) throw new Error(`no presence read for ${text} is parked yet`);
+			},
+			{ timeout: BROKER_READY_TIMEOUT_MS, interval: 20 },
+		);
+	}
+
+	/** Let the parked presence read answer. */
+	releasePresenceRead(): void {
+		rmSync(join(this.root, PRESENCE_READ_GATE), { force: true });
 	}
 
 	agentDir(node: BrokerNode): string {
@@ -440,6 +472,9 @@ export class TwoBrokerHarness {
 			...(options.preferredSessionId === undefined ? {} : { preferredSessionId: options.preferredSessionId }),
 			acknowledgesReceipt: true,
 			connectTimeoutMs: options.connectTimeoutMs ?? CLIENT_REGISTRATION_TIMEOUT_MS,
+			...(options.reachable === undefined
+				? {}
+				: { reach: () => ({ home: group, reachable: [...options.reachable!] }) }),
 		});
 		const attached = new TwoBrokerClient(node, name, group, returnAddress, client);
 		const acknowledge = options.acknowledgeReceipts ?? true;
@@ -482,7 +517,7 @@ export class TwoBrokerHarness {
 		const agentDir = this.agentDir(node);
 		const value = SettingsManager.create(this.root, agentDir).getSettings().storage;
 		if (value === undefined) throw new Error(`node ${node} has no top-level storage selection`);
-		const selection = selectStorage(value, "settings", "storage", join(dirname(agentDir), "storage.sqlite"));
+		const selection = selectStorage(value, "settings", "storage", defaultSharedStoragePath(agentDir));
 		if (selection.kind !== "adapter") throw new Error(`node ${node} selects ${selection.kind}, not an adapter`);
 		const context = { agentDir, domain: "sessions" } as const;
 		const adapter = await loadStorageAdapter(selection.module, context);

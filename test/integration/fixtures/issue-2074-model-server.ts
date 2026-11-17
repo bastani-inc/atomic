@@ -83,6 +83,68 @@ function openTurn(response: ServerResponse): void {
 	});
 }
 
+function completeMainTurn(response: ServerResponse, body: string): void {
+	response.writeHead(200, {
+		"content-type": "text/event-stream",
+		"cache-control": "no-cache",
+		connection: "keep-alive",
+	});
+	const hasToolResult = body.includes("function_call_output");
+	if (!hasToolResult) {
+		const callItem = {
+			id: "fc_issue_2074",
+			type: "function_call",
+			call_id: "call_issue_2074",
+			name: "workflow",
+			arguments: JSON.stringify({ action: "run", workflow: "issue-2074-stage-steering", inputs: {} }),
+			status: "completed",
+		};
+		sse(response, { type: "response.output_item.added", output_index: 0, item: callItem });
+		sse(response, { type: "response.output_item.done", output_index: 0, item: callItem });
+		sse(response, {
+			type: "response.completed",
+			response: {
+				id: "resp_issue_2074_1",
+				status: "completed",
+				output: [callItem],
+				usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+			},
+		});
+		response.end();
+		return;
+	}
+	const msgItem = {
+		id: "msg_issue_2074_main",
+		type: "message",
+		role: "assistant",
+		status: "completed",
+		content: [{ type: "output_text", text: "started in background" }],
+	};
+	sse(response, {
+		type: "response.output_item.added",
+		output_index: 0,
+		item: { ...msgItem, status: "in_progress", content: [] },
+	});
+	sse(response, {
+		type: "response.output_text.delta",
+		output_index: 0,
+		content_index: 0,
+		item_id: msgItem.id,
+		delta: "started in background",
+	});
+	sse(response, { type: "response.output_item.done", output_index: 0, item: msgItem });
+	sse(response, {
+		type: "response.completed",
+		response: {
+			id: "resp_issue_2074_2",
+			status: "completed",
+			output: [msgItem],
+			usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+		},
+	});
+	response.end();
+}
+
 function main(): void {
 	const stateDir = process.argv[2];
 	if (stateDir === undefined || stateDir.trim() === "") {
@@ -91,10 +153,20 @@ function main(): void {
 	}
 	const held = new Set<ServerResponse>();
 	const server = createServer((request, response) => {
-		request.resume();
-		openTurn(response);
-		held.add(response);
-		response.on("close", () => held.delete(response));
+		let body = "";
+		request.setEncoding("utf8");
+		request.on("data", (chunk: string) => {
+			body += chunk;
+		});
+		request.on("end", () => {
+			if (body.includes("hold this turn open")) {
+				openTurn(response);
+				held.add(response);
+				response.on("close", () => held.delete(response));
+			} else {
+				completeMainTurn(response, body);
+			}
+		});
 	});
 	const heartbeat = setInterval(() => {
 		for (const response of held) {

@@ -7,7 +7,6 @@ import type { PiCustomComponent } from "../../packages/workflows/src/extension/w
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import {
 	openWorkflowsListing,
-	type WorkflowsListingDefinition,
 	type WorkflowsListingTarget,
 } from "../../packages/workflows/src/tui/workflows-listing.js";
 
@@ -31,11 +30,7 @@ function run(overrides: Partial<RunSnapshot> & Pick<RunSnapshot, "id" | "name" |
 	return { inputs: {}, stages: [], toolNodes: [], startedAt: 0, ...overrides } as RunSnapshot;
 }
 
-function mount(
-	runs: () => readonly RunSnapshot[],
-	definitions: readonly WorkflowsListingDefinition[],
-	tui: { requestRender?: () => void } = {},
-) {
+function mount(runs: () => readonly RunSnapshot[], tui: { requestRender?: () => void } = {}) {
 	let component: PiCustomComponent | undefined;
 	const outcome: { settled: boolean; result: WorkflowsListingTarget | undefined } = {
 		settled: false,
@@ -53,7 +48,7 @@ function mount(
 					) as PiCustomComponent;
 				}),
 		},
-		{ runs, definitions: () => definitions },
+		{ runs },
 	).then((result) => {
 		outcome.settled = true;
 		outcome.result = result;
@@ -66,7 +61,6 @@ const CLOCK_CASES: ReadonlyArray<{
 	readonly name: string;
 	readonly query: string;
 	readonly runs: readonly RunSnapshot[];
-	readonly definitions: readonly WorkflowsListingDefinition[];
 	readonly paintedSecond: string;
 }> = [
 	{
@@ -75,8 +69,8 @@ const CLOCK_CASES: ReadonlyArray<{
 		runs: [
 			run({ id: "aaaaaaaa", name: "now", status: "running", startedAt: T0 - 300_000 }),
 			run({ id: "bbbbbbbb", name: "wf2", status: "completed", startedAt: T0 - 62_000, endedAt: T0 - 59_500 }),
+			run({ id: "cccccccc", name: "snowdrop", status: "running", startedAt: T0 - 400_000 }),
 		],
-		definitions: [{ normalizedName: "snowdrop", description: "d", inputs: {} }],
 		paintedSecond: "run:bbbbbbbb",
 	},
 	{
@@ -87,7 +81,6 @@ const CLOCK_CASES: ReadonlyArray<{
 			run({ id: "bbbbbbbb", name: "axgxo", status: "completed", startedAt: T0 - 62_000, endedAt: T0 - 59_500 }),
 			run({ id: "cccccccc", name: "axxxgo", status: "running", startedAt: T0 - 400_000 }),
 		],
-		definitions: [],
 		paintedSecond: "run:cccccccc",
 	},
 	{
@@ -98,28 +91,22 @@ const CLOCK_CASES: ReadonlyArray<{
 			run({ id: "bbbbbbbb", name: "wf", status: "completed", startedAt: T0 - 121_000, endedAt: T0 - 119_500 }),
 			run({ id: "cccccccc", name: "wf", status: "completed", startedAt: T0 - 62_000, endedAt: T0 - 59_500 }),
 		],
-		definitions: [],
 		paintedSecond: "run:bbbbbbbb",
 	},
 ];
 
 for (const clockCase of CLOCK_CASES) {
-	test(`Enter waits for a new frame when a clock refresh ${clockCase.name} under a search (#5245)`, async () => {
+	test(`Enter waits for a new frame when a clock refresh ${clockCase.name} under a search (#5224)`, async () => {
 		let clock = T0;
 		vi.spyOn(Date, "now").mockImplementation(() => clock);
-		const { component, outcome } = mount(() => clockCase.runs, clockCase.definitions);
+		const { component, outcome } = mount(() => clockCase.runs);
 		for (const char of clockCase.query) component.handleInput?.(char);
 		component.render(110);
 		clock += 1_000;
 		component.handleInput?.(DOWN);
 		component.handleInput?.(ENTER);
 		await Promise.resolve();
-		const target =
-			outcome.result?.kind === "run"
-				? `run:${outcome.result.runId}`
-				: outcome.result?.kind === "definition"
-					? `definition:${outcome.result.name}`
-					: undefined;
+		const target = outcome.result?.kind === "run" ? `run:${outcome.result.runId}` : undefined;
 		assert.ok(
 			!outcome.settled || target === clockCase.paintedSecond,
 			`Enter acted on ${target}; the row painted below the cursor was ${clockCase.paintedSecond}`,
@@ -128,7 +115,7 @@ for (const clockCase of CLOCK_CASES) {
 	});
 }
 
-test("keys within one clock tick reuse the built rows (#5245)", () => {
+test("keys within one clock tick reuse the built rows (#5224)", () => {
 	let clock = T0;
 	vi.spyOn(Date, "now").mockImplementation(() => clock);
 	let stageReads = 0;
@@ -142,7 +129,7 @@ test("keys within one clock tick reuse the built rows (#5245)", () => {
 		});
 		return snapshot;
 	});
-	const { component } = mount(() => runs, []);
+	const { component } = mount(() => runs);
 	component.render(100);
 	const afterFrame = stageReads;
 	for (let key = 0; key < 5; key++) {
@@ -153,7 +140,7 @@ test("keys within one clock tick reuse the built rows (#5245)", () => {
 	component.dispose?.();
 });
 
-test("the clock tick asks for a frame only when a row's text changes (#5245)", () => {
+test("the clock tick asks for a frame only when a row's text changes (#5224)", () => {
 	vi.useFakeTimers({ now: T0 });
 	let renders = 0;
 	const ended = [
@@ -172,20 +159,26 @@ test("the clock tick asks for a frame only when a row's text changes (#5245)", (
 			endedAt: T0 - 6.5 * 86_400_000,
 		}),
 	];
-	const { component } = mount(() => ended, [], { requestRender: () => renders++ });
+	const { component } = mount(() => ended, { requestRender: () => renders++ });
 	component.render(100);
 	vi.advanceTimersByTime(30_000);
 	assert.equal(renders, 0);
 	component.dispose?.();
 });
 
-test("the sheet places the terminal cursor in its search field while focused (#5245)", () => {
-	const { component } = mount(() => [run({ id: "a", name: "ralph", status: "running", startedAt: Date.now() })], []);
+test("the sheet places the terminal cursor in its search field while focused and reports its focus state (#5224)", () => {
+	const { component } = mount(() => [run({ id: "a", name: "ralph", status: "running", startedAt: Date.now() })]);
 	const focusable = component as PiCustomComponent & { focused?: boolean };
 	assert.ok("focused" in focusable);
+	assert.equal(focusable.focused, false);
 	focusable.focused = true;
-	assert.ok(component.render(100)[0]!.includes(CURSOR_MARKER));
+	assert.equal(focusable.focused, true);
+	const focusedRows = component.render(100);
+	const searchRow = focusedRows.find((row) => row.includes("⌕"));
+	assert.ok(searchRow?.includes(CURSOR_MARKER));
+	assert.equal(focusedRows.filter((row) => row.includes(CURSOR_MARKER)).length, 1);
 	focusable.focused = false;
-	assert.ok(!component.render(100)[0]!.includes(CURSOR_MARKER));
+	assert.equal(focusable.focused, false);
+	assert.ok(component.render(100).every((row) => !row.includes(CURSOR_MARKER)));
 	component.dispose?.();
 });

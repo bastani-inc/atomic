@@ -42,9 +42,7 @@ pi.on("session_start", async (_event, ctx) => {
 
 Pass `{ signal }` to `ctx.ui.custom()` when the UI belongs to an abortable operation. Aborting a mounted custom UI dismisses it and releases its input ownership. In-process mode rejects the returned promise with the signal reason; isolated mode resolves it with `undefined`, like host-side cancellation. For overlays, use `options.onHandle` to receive an overlay handle for programmatic visibility control.
 
-For inspection or navigation, pass `{ purpose: "navigation" }`. Atomic then mounts the component without emitting `ui_prompt_start` / `ui_prompt_end`, so a persistent viewer does not falsely mark Herdr as blocked. The default is `"prompt"`; keep it for approvals and required user decisions. Separate prompts opened while a navigation view is mounted still emit their own lifecycle events.
-
-An inline `ctx.ui.custom(..., { purpose: "navigation" })` temporarily hides every `setWidget` widget above and below the editor, plus queued-message previews and pending shell output. Their state keeps updating, and they reappear when the last inline navigation UI closes. Navigation overlays do not hide them.
+For inspection or navigation, pass `{ purpose: "navigation" }`. Atomic then mounts the component without emitting `ui_prompt_start` / `ui_prompt_end`, so a persistent viewer does not falsely mark Herdr as blocked. Inline navigation temporarily hides all `ctx.ui.setWidget()` widgets above and below the editor, including the agent panel, along with queued-message and pending-shell previews. They return with their latest content after the last inline navigation view closes. Overlays do not hide them. The default is `"prompt"`; keep it for approvals and required user decisions. Separate prompts opened while a navigation view is mounted still emit their own lifecycle events.
 
 Navigation still owns keyboard focus. In `getHostCustomUiState()` and its change listener, `blockingInlineCustomUiActive` counts all inline mounts. When navigation is present, `blockingInlineCustomUiNeedsInput` distinguishes real pending prompts from navigation-only mounts; when omitted, use `blockingInlineCustomUiActive`. This distinction is preserved across the isolated-engine bridge.
 
@@ -445,7 +443,9 @@ Keys: ↑↓ select (wrapping), pgup/pgdn page, home/end jump to the ends when t
 | Option | Effect |
 | --- | --- |
 | `layout: "two-line"` | Each description goes on the line under its label, for rows like sessions or runs. |
-| `mode: "multi"` | Checkboxes: space toggles, enter calls `onConfirm` with the checked rows. |
+| `wrap: true` | Wrap long titles and option labels instead of truncating them. Extension `select` and `confirm` dialogs enable this automatically. |
+| `mode: "multi"` | Checkboxes: space toggles, enter calls `onConfirm` with the checked rows. Confirming always stops the picker, whatever `closeOnSelect` says. |
+| `closeOnSelect: false` | Single-select only. Choosing a row calls `onSelect` and leaves the picker live, so enter or a click can choose again, for a picker that applies each choice and stays open. Default `true`. |
 | `numbered: true` | Rows are numbered; without a search box, digits 1–9 choose a row directly, or toggle it with `mode: "multi"`. |
 | `onPreview` | Space previews the selected row; the hint shows `space preview`. |
 | `onSelectionChange` | Reports the selected row when navigation or filtering changes its identity, or `undefined` when no enabled row matches. |
@@ -454,15 +454,21 @@ Keys: ↑↓ select (wrapping), pgup/pgdn page, home/end jump to the ends when t
 | `disabled` on items | Drawn dim, skipped by ↑↓ and the wheel, and refused by enter and clicks. |
 | `mark` on items | `"on"`/`"off"` draw `●`/`○` for the current value; `"checked"`/`"unchecked"` draw `[✓]`/`[ ]` for a row enter switches on and off. |
 | `labelStyle` on items | Paints the label yourself, told whether the row is selected. |
+| `searchText` on items | Extra text that type-to-search matches. By default it is matched with the label, description and tag. |
+| `searchTextMode: "replace"` on items | Search matches only the item's `searchText`, not its label, description or tag. Use it when the shown text holds words a search should not find, such as a reasoning level. The default is `"extend"`. |
 | `subtitle` | Dim text under the title; each `\n` starts a line and long lines wrap. |
 
 Without a search box, `?` shows the picker's keys and `j`/`k` move like ↓/↑. Mouse input does not change or choose a row while this help is open. `setNotice({ text, tone })` shows a one-line status, such as a refresh result, under the list.
 
-Use `setItems()` to replace row data. When external data used by a custom `style` or an extra key's `enabled` callback changes, call `selector.invalidate()` before requesting a render. A row's `labelStyle` still runs on each render, so animated labels can update without replacing the rows.
+A picker stops taking keys and mouse input once it calls `onCancel`, once it calls `onConfirm`, and once it calls `onSelect` unless `closeOnSelect` is `false`. Repeated enter presses and clicks therefore reach your callback once, and a picker you keep on screen after that ignores every key, esc and ctrl+c included. If your callback can fail, for example while it saves the choice, call `selector.retrySelection()` when it does: the picker takes input again, so the user can choose again or press esc. Pair it with `setNotice()` to show the error.
 
-For live lists, call `selector.setItems(nextItems)` and then `tui.requestRender()`. Updates keep the search text and selected item by its `id`. If that item disappears, becomes disabled, or no longer matches the search, selection moves to the first enabled match. Checked items that disappear are removed from the selection.
+Use `setItems()` to replace row data. It keeps the selected enabled row by ID, then tries `preferId` if that row disappeared. If neither remains enabled, it scans forward from the previous list position, clamped to the new list, then backward if no enabled row follows. `onSelectionChange` fires only when the selected ID changes, so its callback can refresh the same rows without calling itself again. `SelectorState.items` and its list snapshots are read-only and frozen; replace direct assignments and mutations with `state.setItems(rows)`. Copy a snapshot with `[...state.items]` before editing the array. For persistent or multi-stage single-select pickers that replace rows after `onSelect`, pass `closeOnSelect: false` so subsequent navigation and cancellation remain available.
+
+When external data used by a custom `style` or an extra key's `enabled` callback changes, call `selector.invalidate()` before requesting a render. A row's `labelStyle` still runs on each render, so animated labels can update without replacing the rows.
 
 `SelectorState` holds a picker's search, selection and checked rows without drawing anything, and `selectorHintEntries(state, options)` returns the keys its hint line lists, so you can test a picker's behaviour without rendering it. `themeSelectorStyle()` returns the active theme's picker colours; pass `style: PLAIN_SELECTOR_STYLE` for output without colour.
+
+For live lists, call `selector.setItems(nextItems)` and then `tui.requestRender()`. Updates keep the search text and selected item by its `id`. If that item disappears, becomes disabled, or no longer matches the search, selection moves to the first enabled match. Checked items that disappear are removed from the selection.
 
 ### Pattern 1b: Selection Dialog (SelectList)
 

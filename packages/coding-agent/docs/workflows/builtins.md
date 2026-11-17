@@ -43,24 +43,23 @@ Atomic will:
 - write a `.atomic/workflows/<name>.ts` file using `workflow({...})`,
 - pick `ctx.task` / `ctx.chain` / `ctx.parallel` / `ctx.ui` per the [WorkflowContext primitives](/workflows/api-reference#workflowcontext) and [task options](/workflows/api-reference#task-and-stage-options) reference,
 - use `ctx.tool(name, args, fn)` for workflow-owned side effects so completed operations are durably checkpointed and do not run again after resume (see [`ctx.tool`](/workflows/operations#ctx-tool-—-durable-cached-tool-execution)),
-- run `/workflow reload` so Atomic rediscovers the workflow resource and you can launch it immediately,
+- run `/reload` so Atomic rediscovers the workflow resource and you can launch it immediately,
 - then report the generated workflow folder so you can inspect the code it wrote, using `Custom workflow created. You can inspect its code at: <workflow-folder-path>` (for example, `.atomic/workflows/`); Atomic does this only for newly created custom workflows, never builtin or pre-existing workflows.
 
 You can also edit or harden an existing workflow in plain chat — ask Atomic to add a stage, switch a model, save artifacts, or wire in a human approval gate.
 
-List and run it like any other workflow:
+The agent can then run it like any other workflow:
 
-```text
-/workflow list
-/workflow inputs <name>
-/workflow <name> key=value ...
+```ts
+workflow({ action: "inputs", workflow: "<name>" })
+workflow({ action: "run", workflow: "<name>", inputs: { /* ... */ } })
 ```
 
-Named workflow runs execute in the background. By default, after launch expect a full run id and monitor it with `/workflow status <run-id>`, F2, or `/workflows <run-id>`. A definition with `autoAttach: true` instead opens the graph overlay as soon as an interactive top-level named launch through `/workflow <name>` or the registered `workflow` tool is accepted. This option does not affect headless launches or nested `ctx.workflow(...)` calls, and existing input-form launch behavior is unchanged.
+Named workflow runs execute in the background. By default, after launch expect a full run id and monitor it with F2 or `/workflows <run-id>`. A definition with `autoAttach: true` instead opens the graph overlay as soon as an interactive top-level named launch through the registered `workflow` tool is accepted. This option does not affect headless launches or nested `ctx.workflow(...)` calls.
 
 For deliberately authored multi-item graphs, see [Task queues and software factories](/workflows/reliable-design#task-queues-and-software-factories). To start a workflow, use `workflow({ action: "run", workflow: "<name>", inputs: {...} })` after inspecting its required inputs with `workflow({ action: "inputs", workflow: "<name>" })`.
 
-The agent panel below the prompt lists top-level runs with their stage progress, current stage and elapsed time; a run that waits for input shows `◆` and, when it waits on one question, the question. Press ↓ on an empty prompt and Enter on a run to open its graph. Use `/workflow status` for full details, including resumable quit runs. See [runs in the agent panel](/workflows/operations#runs-in-the-agent-panel).
+The agent panel below the prompt lists top-level runs with their stage progress, current stage and elapsed time; a run that waits for input shows `◆` and, when it waits on one question, the question. Press ↓ on an empty prompt and Enter on a run to open its graph. Open `/workflows` (or call `workflow({ action: "status" })`) for full details, including resumable quit runs. See [runs in the agent panel](/workflows/operations#runs-in-the-agent-panel).
 
 ## Atomic vs Claude Code Dynamic Workflows
 
@@ -80,7 +79,7 @@ Atomic's category is broader and more explicit: it is the loop engine for engine
 
 ## Built-in Workflows
 
-Atomic bundles nine workflows: six reusable control-flow patterns, two autonomous implementation loops, and one end-to-end design workflow. They are available in every session. Use `/workflow list` to confirm the current set and `/workflow inputs <name>` to inspect a contract before launch.
+Atomic bundles nine workflows: six reusable control-flow patterns, two autonomous implementation loops, and one end-to-end design workflow. They are available in every session. Ask the agent to list the current set, and ask for a workflow's inputs to inspect its contract before launch.
 
 All builtin workflows allow Intercom coordination, including stages with narrow tool lists such as the classifier and category actions. Parent tool allowlists, exclusions, `noTools`, and disabled builtins still apply; enabling a workflow does not restore caller-disabled Intercom.
 
@@ -98,11 +97,9 @@ All builtin workflows allow Intercom coordination, including stages with narrow 
 
 Builtin stages report evidence and bounded results. Give each run a concrete objective and acceptance criteria; do not treat a completion claim as proof that validation passed.
 
-All nine builtins default to `model: "auto"` for every model stage, including review, scoring, repair and final handoff stages. This also applies when you import a builtin as a child with `ctx.workflow(...)`. Each stage routes independently from its actual prompt; reviewers may select the same model. Builtins no longer ship concrete fallback chains.
+All nine builtins default to `model: "auto"` for every model stage, including review, scoring, repair and final handoff stages. This also applies when you import a builtin as a child with `ctx.workflow(...)`. `auto` runs your default model, the one you last chose with `/model`, at its default thinking level, or the launching session's model when no default model is configured; reviewers therefore run the same model. Builtins ship no concrete fallback chains. To run builtin stages on another model, choose it with `/model` before launching. See [automatic stage models](/workflows/operations#automatic-stage-models).
 
-Use `/settings` → **Decision model** to choose the decision provider without changing your main-chat model. Unset and `auto` use the current chat model. A complete routing failure can still run the stage on that chat model when it satisfies the stage constraints; otherwise the stage stops before execution. Inspect `/workflow status <run-id>` and correct the reported router, credentials, or eligibility problem before retrying. See [automatic stage models](/workflows/operations#automatic-stage-models) for failure and resume behavior.
-
-Explicit `tournament` `models` inputs still assign attempt models in their supplied order, round-robin; an omitted or empty list uses automatic routing. Custom workflow definitions keep their existing defaults. For an explicit model, effort or capability requirement in your own stages, use the [stage model options](/workflows/authoring#automatic-stage-model-selection).
+Explicit `tournament` `models` inputs still assign attempt models in their supplied order, round-robin; an omitted or empty list runs every attempt on `auto`. Custom workflow definitions keep their existing defaults. For an explicit model, effort or capability requirement in your own stages, use the [stage model options](/workflows/authoring#automatic-stage-model-selection).
 
 ### Six composable pattern builtins
 
@@ -144,7 +141,7 @@ All six can run by name or as nested definitions. Prefer composition over copyin
 
 Goal keeps the literal objective and immutable acceptance criteria in a durable ledger, delegates implementation, and asks independent reviewers to inspect current changes. Its decision is `complete`, `blocked`, or `needs_human`. Resume retains the run identity and checkpointed progress without repeating completed effects.
 
-An orchestrator or reviewer infrastructure failure, including a provider outage or durable checkpoint timeout, leaves the goal ledger `active`. Resolve the reported problem, then use `/workflow resume <run-id>` in the same Atomic session to retry the interrupted stage and finish its turn. You do not need to quit or restart Atomic. Completed stages replay their checkpoints. `needs_human` remains reserved for review outcomes, malformed reviewer decisions, exhausted schema corrections, and exhausted turn budgets. Resume also recovers older synthetic failure verdicts when their diagnostics identify a database or checkpoint interruption; ambiguous old failures and genuine human escalations remain unchanged.
+An orchestrator or reviewer infrastructure failure, including a provider outage or durable checkpoint timeout, leaves the goal ledger `active`. Resolve the reported problem, then press `r` in the run's graph (`/workflows <run-id>`) in the same Atomic session to retry the interrupted stage and finish its turn. You do not need to quit or restart Atomic. Completed stages replay their checkpoints. `needs_human` remains reserved for review outcomes, malformed reviewer decisions, exhausted schema corrections, and exhausted turn budgets. Resume also recovers older synthetic failure verdicts when their diagnostics identify a database or checkpoint interruption; ambiguous old failures and genuine human escalations remain unchanged.
 
 Reviewer schema corrections also cover invalid `structured_output` inputs, such as whitespace-only instructions or empty named state. If the reviewer exhausts those corrections, Goal requires human attention rather than retrying the malformed review on resume. If a provider failure occurs during those corrections and no correction succeeds, the goal stays resumable even when a later call has invalid inputs. Provider and database failures remain resumable.
 
@@ -162,9 +159,9 @@ Goal and Ralph share the same low-confidence finding re-verification and per-rou
 | `git_worktree_dir` | string | no | `""` | Optional reusable worktree, only when explicitly requested. |
 | `create_pr` | boolean | no | `false` | Authorize the post-approval PR/MR/review stage. Prompt text alone never opts in. |
 
-```text
-/workflow goal objective="Update the CLI docs for --json, add one example, and validate the docs build"
-/workflow goal objective="Implement specs/rate-limit.md and run focused checks" create_pr=true
+```ts
+workflow({ action: "run", workflow: "goal", inputs: { objective: "Update the CLI docs for --json, add one example, and validate the docs build" } })
+workflow({ action: "run", workflow: "goal", inputs: { objective: "Implement specs/rate-limit.md and run focused checks", create_pr: true } })
 ```
 
 Declared outputs include `result`, `status`, `approved`, `goal_id`, `objective`, `acceptance_criteria`, `ledger_path`, turn counts, receipts, remaining work, review artifacts, and optional `pr_report`.
@@ -196,9 +193,9 @@ Each parsed Goal review round and Ralph review round appends convergence evidenc
 | `git_worktree_dir` | string | no | `""` | Optional reusable worktree, only when explicitly requested. |
 | `create_pr` | boolean | no | `false` | Authorize the post-approval PR/MR/review stage. Prompt text alone never opts in. |
 
-```text
-/workflow ralph prompt="Migrate the database layer to Drizzle" max_loops=3
-/workflow ralph prompt="Implement specs/rate-limit.md and validate burst behavior" create_pr=true
+```ts
+workflow({ action: "run", workflow: "ralph", inputs: { prompt: "Migrate the database layer to Drizzle", max_loops: 3 } })
+workflow({ action: "run", workflow: "ralph", inputs: { prompt: "Implement specs/rate-limit.md and validate burst behavior", create_pr: true } })
 ```
 
 Declared outputs include `result`, the latest research question and artifact paths, implementation notes, optional QA video and PR reports, approval, iteration count, and review artifacts.
@@ -217,7 +214,7 @@ Inputs:
 
 The workflow establishes or loads project design context, extracts user-provided references, can browse curated galleries, writes one live `preview.html`, and exports an HTML spec and implementation handoff after the review session. Browser-backed preview and review use the `agent-browser` skill when available. Research context moves between stages as artifact files rather than inline prompt payloads: the composed project design context is written to `<artifact_dir>/design-context.md` and the curated references brief to `<artifact_dir>/references.md`; `reference-discovery`, `generate-1`, and `exporter` read the required files via `reads` with explicit read instructions.
 
-**Reference images.** When an image model is available, the workflow renders three design reference images after reference discovery and before generation: one per visual direction (reference-led, brand-forward, and information-dense), prompted from the confirmed brief, `PRODUCT.md`, `DESIGN.md`, and the curated references, at high quality. They are written to `<artifact_dir>/references/`. `generate-1` reads them and matches the direction that best fits the brief; the run-level gate and the session-start stage list each image with its `file://` URL; and the exporter adds a "Design References" section to `spec.html` that links the images by relative path, so keep `spec.html` next to its `references/` folder when you move it.
+**Reference images.** When an image model is available, the workflow renders three design reference images after reference discovery and before generation: one per visual direction (reference-led, brand-forward, and information-dense), prompted from the confirmed brief, `PRODUCT.md`, `DESIGN.md`, and the curated references, at high quality. They are written to `<artifact_dir>/references/`. `generate-1` reads them and matches the direction that best fits the brief, on a model that accepts image input (your default model when it does, otherwise the current session's model; with neither, the stage stops and asks you to set an image-capable default model); the run-level gate and the session-start stage list each image with its `file://` URL; and the exporter adds a "Design References" section to `spec.html` that links the images by relative path, so keep `spec.html` next to its `references/` folder when you move it.
 
 The workflow picks the newest available GPT Image model first (`openai-images/gpt-image-2.6-flare`, then `gpt-image-2.6-sunburst`, then older GPT Image versions in descending order), so newer releases win automatically, and then other image providers such as OpenRouter. Pass `image_model` to choose a model yourself; if it does not name an available model, the images are skipped instead of falling back to another one. Models come from Atomic's built-in image providers and the credentials you saved: an OpenAI API key enables the `openai-images` models and an OpenRouter key enables OpenRouter's image models. A ChatGPT sign-in cannot call the Images API, and image models added through `models.json` or an extension are not used. Each run with an image model makes three image requests billed to that provider account.
 
@@ -233,10 +230,10 @@ The workflow uses Atomic's bundled live-review helper, not a project-vendored co
 
 No `<artifact_dir>/feedback/` directory, JSON record, Markdown copy, or annotated-snapshot copy is written. The declared outputs are `output_type`, `design_system`, `artifact`, `handoff`, `import_context`, `run_id`, `artifact_dir`, `preview_path`, `preview_file_url`, `spec_path`, `spec_file_url`, `agent_browser_status`, and `reference_images_status`. It has no implicit `result` output.
 
-```text
-/workflow open-claude-design prompt="Refresh the settings page hierarchy"
-/workflow open-claude-design prompt="Design a marketing landing page" discover_references=false
-/workflow open-claude-design prompt="Design a pricing page" image_model=openai-images/gpt-image-2.6-flare
+```ts
+workflow({ action: "run", workflow: "open-claude-design", inputs: { prompt: "Refresh the settings page hierarchy" } })
+workflow({ action: "run", workflow: "open-claude-design", inputs: { prompt: "Design a marketing landing page", discover_references: false } })
+workflow({ action: "run", workflow: "open-claude-design", inputs: { prompt: "Design a pricing page", image_model: "openai-images/gpt-image-2.6-flare" } })
 ```
 
 ### Launching with natural language

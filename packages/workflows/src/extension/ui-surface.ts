@@ -1,5 +1,4 @@
 import type { ChatMessageRenderOptions, ChatSessionViewportSettings } from "@bastani/atomic";
-import type { WorkflowInputJson } from "./render-result.js";
 
 // ---------------------------------------------------------------------------
 // UI adapter — maps pi ctx.ui dialog surface to WorkflowUIAdapter
@@ -56,6 +55,7 @@ export interface PiCustomComponent {
 	handleInput?: (data: string) => boolean;
 	invalidate?: () => void;
 	dispose?: () => void;
+	capturesBack?: () => boolean;
 }
 
 /**
@@ -73,21 +73,6 @@ export interface PiOverlayHandle {
 	isFocused(): boolean;
 }
 
-/**
- * Options accepted by Pi/pi's real `ctx.ui.custom(factory, options)`
- * overlay primitive. Aligned with the shape documented in
- * `@bastani/atomic docs/tui.md` and
- * `@bastani/atomic-tui dist/tui.d.ts`.
- *
- * Workflow pickers (`session-overlays.ts`, `inputs-overlay.ts`) mount
- * with `overlay: false`, which causes the host to REPLACE the editor
- * with the picker inline at the editor's natural position — see
- * those files for the placement rationale.
- *
- * `onHandle` is honoured today only by the full-screen graph overlay
- * (`overlay-adapter.ts`); inline pickers leave it unset and dismiss
- * via the factory `done()` callback.
- */
 export interface PiHostCustomUiState {
 	blockingInlineCustomUiDepth: number;
 	blockingInlineCustomUiActive: boolean;
@@ -174,17 +159,6 @@ export interface PiHostInputFormField {
 	choices?: string[];
 	placeholder?: string;
 	initialValue: string;
-	const?: string | number | boolean;
-	minimum?: number;
-	maximum?: number;
-	exclusiveMinimum?: number;
-	exclusiveMaximum?: number;
-	multipleOf?: number;
-	minLength?: number;
-	maxLength?: number;
-	pattern?: string;
-	format?: string;
-	schema?: { readonly [key: string]: WorkflowInputJson };
 }
 
 export interface PiHostInputFormRequest {
@@ -219,6 +193,11 @@ export interface PiHostSessionPickerRow {
 	name?: string;
 	/** Optional semantic color for synthetic selector rows. */
 	messageColor?: "success" | "warning" | "accent" | "error";
+	/** The row's first line, in place of `name` or `firstMessage`. */
+	title?: string;
+	/** The row's dim second line, in place of age · messages · summary. */
+	detail?: string;
+	canDelete?: boolean;
 }
 
 /** Request accepted by the host-native session picker capability. */
@@ -227,6 +206,10 @@ export interface PiHostSessionPickerRequest {
 	sessions: PiHostSessionPickerRow[];
 	/** Show the rename keybinding hint in the picker header. Defaults to false. */
 	showRenameHint?: boolean;
+	/** The picker's title. */
+	title?: string;
+	/** `runs` leaves out folder scope, name filtering and paths. */
+	variant?: "sessions" | "runs";
 	/**
 	 * Invoked after the user confirms a Ctrl+D delete on a row. The host never
 	 * removes the row itself; reply with `update()` (row removed) or `error()`.

@@ -1,30 +1,3 @@
-/**
- * Chat-scroll message renderer for the workflow chat surfaces.
- *
- * Why this exists:
- *   The simpler `print(rendered_string)` path runs our output through pi's
- *   `notify` → `showStatus` → `Text(paddingX=1)` pipeline, which wraps
- *   every line at `chatWidth - 2`. Our band + card chrome computes line
- *   widths to *exactly* `chatWidth`, so the trailing badge then folds onto
- *   a second visual row. Sizing to `cols - 2` as a workaround is a magic
- *   number that papers over the wrong abstraction.
- *
- *   `registerMessageRenderer` is the canonical Component path documented
- *   in pi/docs/extensions.md and pi/docs/tui.md: a customRenderer that
- *   returns a `{ render(width): string[] }` Component receives the *real*
- *   chat content width and bypasses the default Text wrapping entirely
- *   (custom-message.js detaches the default Box when a customRenderer
- *   returns truthy). Same pattern used by {@link registerInlineFormRenderer}
- *   for the workflow input card.
- *
- * Renders dispatch confirmations, status lists, and workflow lists;
- * per-run drill-down is the run-detail surface.
- *
- * cross-ref:
- *  - src/tui/inline-form-overlay.ts (same pattern, different surface)
- *  - pi/dist/modes/interactive/components/custom-message.js — customRenderer hook
- */
-
 import type { ExtensionAPI } from "../extension/index.js";
 import type { RunDetail } from "../runs/background/status.js";
 import type { RunIndicatorStatus } from "../shared/run-indicator-status.js";

@@ -4,12 +4,6 @@ import { createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import type { ExtensionAPI } from "../../../packages/coding-agent/src/core/extensions/types.js";
 
-// Regression fixture for the isolated-interactive autocomplete fix. Mirrors the
-// real workflows extension surface just enough to prove that when the host loads
-// no extensions (isolateInteractiveHost), the engine child still exposes its
-// `/workflow` command plus its `/workflows` alias to host autocomplete, and that
-// invoking them executes the handler in the child (never on the host).
-
 const provider = "isolation-fixture";
 const model = "blocking-model";
 
@@ -56,8 +50,6 @@ export default function workflowCommandExtension(api: ExtensionAPI): void {
 		streamSimple: (_activeModel, context) => {
 			const stream = createAssistantMessageEventStream();
 			queueMicrotask(() => {
-				// Emit the blocking tool on the first turn so the test can force an
-				// engine restart (escape → abortAndRecover), then stop once recovered.
 				const hasToolResult = context.messages.some((entry) => entry.role === "toolResult");
 				const reason = hasToolResult ? "stop" : "toolUse";
 				const finalMessage = hasToolResult
@@ -86,26 +78,19 @@ export default function workflowCommandExtension(api: ExtensionAPI): void {
 		},
 	});
 
-	api.registerCommand("workflow", {
-		description: "Run or inspect Atomic workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status]",
-		getArgumentCompletions: (prefix: string) => {
-			if (prefix.includes(" ")) return null;
-			return [
-				{ value: "list ", label: "list", description: "List registered workflows" },
-				{ value: "status ", label: "status", description: "List retained runs" },
-			].filter((item) => item.value.startsWith(prefix));
-		},
-		handler: async (args, ctx) => {
-			recordInvocation("workflow", args);
-			ctx.ui.notify?.(`workflow handled in child: ${args}`, "info");
-		},
-	});
-
 	api.registerCommand("workflows", {
-		description: "List retained workflow runs or open one by id. Usage: /workflows [run-id]",
+		description: "Browse running and completed workflows",
 		handler: async (args, ctx) => {
 			recordInvocation("workflows", args);
 			ctx.ui.notify?.(`workflows handled in child: ${args}`, "info");
+		},
+	});
+
+	api.registerCommand("workflow-authoring", {
+		description: "Load the reference for writing workflow definitions",
+		handler: async (args, ctx) => {
+			recordInvocation("workflow-authoring", args);
+			ctx.ui.notify?.(`workflow-authoring handled in child: ${args}`, "info");
 		},
 	});
 }

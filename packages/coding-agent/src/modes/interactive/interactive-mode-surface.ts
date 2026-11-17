@@ -362,6 +362,7 @@ declare module "./interactive-mode-base.ts" {
 		showTrustSelector(): void;
 		showTreeSelector(initialSelectedId?: string): Promise<void>;
 		showSessionSelector(): void;
+		handleResumeTarget(target: string): Promise<void>;
 		handleResumeSession(
 			sessionId: string,
 			options?: Parameters<ExtensionCommandContext["switchSession"]>[1],
@@ -411,7 +412,7 @@ declare module "./interactive-mode-base.ts" {
 		handleArminSaysHi(): void;
 		handleDementedDelves(): void;
 		handleBashCommand(command: string, excludeFromContext?: boolean): Promise<void>;
-		handleCompactCommand(): Promise<void>;
+		handleCompactCommand(instructions?: string): Promise<void>;
 		stop(fullscreenExitOutput?: FullscreenExitOutput): void;
 	}
 }

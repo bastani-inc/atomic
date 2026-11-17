@@ -1,9 +1,9 @@
-import { types } from "node:util";
+import { inspect, types } from "node:util";
 import { sanitizeTerminalText } from "../../utils/terminal-text.ts";
 import type { ExtensionError } from "../extensions/runtime-types.ts";
 import type { TaskId, TaskRecord } from "./contracts.js";
-import { bindTaskClock, TaskElapsedClocks, taskClockOf, taskClockRunning } from "./live-elapsed.ts";
-import { getOwnerTaskStore, watchOwnerTaskStoreBinding } from "./owner-store.js";
+import { bindTaskClock, TaskElapsedClocks, taskClockOf, taskClockRunning } from "./live-elapsed.js";
+import { getOwnerTaskStore, isTaskTurnInterrupted, watchOwnerTaskStoreBinding } from "./owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "./task-view-source.js";
 
 export type AgentPanelState = "running" | "queued" | "input" | "paused" | "stopping" | "done" | "failed" | "stopped";
@@ -239,7 +239,8 @@ export function taskPanelState(task: TaskRecord): AgentPanelState {
 		case "cancelling":
 			return "stopping";
 		case "running":
-			return task.attention.kind === "none" ? "running" : "input";
+			if (task.attention.kind !== "none") return "input";
+			return isTaskTurnInterrupted(task) ? "stopped" : "running";
 		case "settled": {
 			const result = task.execution.result;
 			if (result.kind === "completed") return "done";
@@ -268,21 +269,42 @@ export function shortTaskTitle(title: string): string {
 
 const cachedTaskItems = new WeakMap<
 	TaskRecord,
-	{ readonly taskId: string; readonly clocks: TaskElapsedClocks | undefined; readonly item: AgentPanelItem }
+	{
+		readonly taskId: string;
+		readonly clocks: TaskElapsedClocks | undefined;
+		readonly interrupted: boolean;
+		readonly item: AgentPanelItem;
+	}
 >();
 const lazyTaskItems = new WeakMap<
 	TaskRecord,
-	{ readonly state: AgentPanelState; readonly clocks: TaskElapsedClocks | undefined; readonly item: AgentPanelItem }
+	{
+		readonly state: AgentPanelState;
+		readonly clocks: TaskElapsedClocks | undefined;
+		readonly interrupted: boolean;
+		readonly item: AgentPanelItem;
+	}
 >();
 const lazyTaskRecords = new WeakMap<
 	AgentPanelItem,
 	{ readonly task: TaskRecord; readonly clocks: TaskElapsedClocks | undefined }
 >();
+const interruptedTaskItems = new WeakSet<object>();
+
+export function markInterruptedPanelTask<T extends object>(item: T): T {
+	interruptedTaskItems.add(item);
+	return item;
+}
+
+export function isInterruptedPanelTask(item: object): boolean {
+	return interruptedTaskItems.has(item);
+}
 
 export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks): AgentPanelItem {
 	const clocks = sourceClocks ?? taskClockOf(task);
 	const cached = cachedTaskItems.get(task);
 	const state = taskPanelState(task);
+	const interrupted = task.execution.kind !== "settled" && state === "stopped";
 	const question = task.attention.kind === "input-needed" ? task.attention.prompt || undefined : undefined;
 	const kind = task.kind === "agent" ? "agent" : "shell";
 	const name = task.kind === "agent" ? (task.agentName ?? "agent") : "shell";
@@ -294,6 +316,7 @@ export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks
 	if (
 		cached !== undefined &&
 		cached.clocks === clocks &&
+		cached.interrupted === interrupted &&
 		cached.taskId === task.ref.taskId &&
 		cached.item.kind === kind &&
 		cached.item.state === state &&
@@ -316,15 +339,22 @@ export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks
 		...(question ? { question } : {}),
 		...(reason === undefined ? {} : { reason }),
 	};
+	if (interrupted) markInterruptedPanelTask(item);
 	if (clocks !== undefined) bindTaskClock(item, clocks);
-	cachedTaskItems.set(task, { taskId: task.ref.taskId, clocks, item });
+	cachedTaskItems.set(task, { taskId: task.ref.taskId, clocks, interrupted, item });
 	return item;
 }
 
 export function lazyTaskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks): AgentPanelItem {
 	const state = taskPanelState(task);
+	const interrupted = task.execution.kind !== "settled" && state === "stopped";
 	const cached = lazyTaskItems.get(task);
-	if (cached !== undefined && cached.state === state && cached.clocks === sourceClocks) {
+	if (
+		cached !== undefined &&
+		cached.state === state &&
+		cached.clocks === sourceClocks &&
+		cached.interrupted === interrupted
+	) {
 		return cached.item;
 	}
 	const item: AgentPanelItem = {
@@ -338,7 +368,8 @@ export function lazyTaskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedCl
 			return taskPanelItem(task, sourceClocks).task;
 		},
 	};
-	lazyTaskItems.set(task, { state, clocks: sourceClocks, item });
+	if (interrupted) markInterruptedPanelTask(item);
+	lazyTaskItems.set(task, { state, clocks: sourceClocks, interrupted, item });
 	lazyTaskRecords.set(item, { task, clocks: sourceClocks });
 	return item;
 }
@@ -358,9 +389,9 @@ export function taskPanelItems(
 	const sourceClocks = taskClockOf(source);
 	const items: AgentPanelItem[] = [];
 	for (const task of source.backgroundTasks) {
-		if ((topLevelOnly && task.parentTaskId !== undefined) || (hasDismissed && dismissed.has(task.ref.taskId))) {
-			continue;
-		}
+		if (topLevelOnly && task.parentTaskId !== undefined) continue;
+		const finishedState = task.execution.kind === "settled";
+		if (finishedState && hasDismissed && dismissed.has(task.ref.taskId)) continue;
 		items.push(taskPanelItem(task, sourceClocks));
 	}
 	return items;
@@ -405,15 +436,62 @@ const drainQueue: Array<{ readonly value: unknown; readonly seen?: Set<object> }
 let draining = false;
 const unattachablePromises = new WeakSet<Promise<unknown>>();
 let unattachableGuardInstalled = false;
+const UNHANDLED_REJECTION_OWNER = Symbol.for("atomic.unhandled-rejection-owner");
+
+function hasUnhandledRejectionOwner(
+	self: (reason: unknown, rejected: Promise<unknown>) => void,
+	rejected: Promise<unknown>,
+	reason: unknown,
+): boolean {
+	for (const candidate of process.listeners("unhandledRejection")) {
+		if (candidate === self) continue;
+		const owns = (
+			candidate as {
+				readonly [UNHANDLED_REJECTION_OWNER]?: (
+					promise: Promise<unknown> | undefined,
+					rejectionReason?: unknown,
+				) => boolean;
+			}
+		)[UNHANDLED_REJECTION_OWNER];
+		if (typeof owns !== "function" || owns(rejected, reason)) return true;
+	}
+	return false;
+}
+
+function shouldThrowUnhandledRejection(reason: unknown): boolean {
+	const args = [...(process.env.NODE_OPTIONS ?? "").split(/\s+/), ...process.execArgv];
+	let mode = "throw";
+	for (let index = 0; index < args.length; index += 1) {
+		const arg = args[index] ?? "";
+		if (arg.startsWith("--unhandled-rejections=")) mode = arg.slice("--unhandled-rejections=".length);
+		else if (arg === "--unhandled-rejections" && args[index + 1] !== undefined) mode = args[index + 1] ?? mode;
+	}
+	if (mode === "none" || mode === "warn") return false;
+	if (mode === "warn-with-error-code") {
+		process.emitWarning(
+			inspect(reason, { customInspect: false, getters: false }),
+			"UnhandledPromiseRejectionWarning",
+		);
+		process.exitCode = 1;
+		return false;
+	}
+	return true;
+}
 
 function markUnattachable(promise: Promise<unknown>): void {
 	unattachablePromises.add(promise);
 	if (unattachableGuardInstalled) return;
 	unattachableGuardInstalled = true;
-	process.on("unhandledRejection", (reason, rejected) => {
+	const onUnattachableRejection = (reason: unknown, rejected: Promise<unknown>) => {
 		if (unattachablePromises.has(rejected)) return;
-		if (process.listenerCount("unhandledRejection") === 1) throw reason;
+		if (hasUnhandledRejectionOwner(onUnattachableRejection, rejected, reason)) return;
+		if (!shouldThrowUnhandledRejection(reason)) return;
+		throw reason;
+	};
+	Reflect.defineProperty(onUnattachableRejection, UNHANDLED_REJECTION_OWNER, {
+		value: (rejected: Promise<unknown> | undefined) => rejected !== undefined && unattachablePromises.has(rejected),
 	});
+	process.on("unhandledRejection", onUnattachableRejection);
 }
 
 function attachNativePromise(promise: Promise<unknown>, seen?: Set<object>): void {
@@ -461,11 +539,17 @@ function thenNativePromise(
 	onFulfilled: (value: unknown) => void,
 	onRejected: (error: unknown) => void,
 ): void {
-	if (Reflect.getPrototypeOf(promise) !== Promise.prototype || Object.hasOwn(promise, "constructor")) {
-		Reflect.defineProperty(promise, "constructor", { value: Promise, configurable: true, writable: true });
-	}
 	try {
-		Promise.prototype.then.call(promise, onFulfilled, onRejected);
+		try {
+			Promise.prototype.then.call(promise, onFulfilled, onRejected);
+			return;
+		} catch (firstError) {
+			drainCaught(firstError);
+			if (Reflect.getPrototypeOf(promise) !== Promise.prototype || Object.hasOwn(promise, "constructor")) {
+				Reflect.defineProperty(promise, "constructor", { value: Promise, configurable: true, writable: true });
+			}
+			Promise.prototype.then.call(promise, onFulfilled, onRejected);
+		}
 	} catch (error) {
 		markUnattachable(promise);
 		throw error;
@@ -809,7 +893,7 @@ function readSourceSnapshot(source: AgentPanelSource): SourceCacheEntry {
 			const before = seenIds.size;
 			seenIds.add(validated.id);
 			if (seenIds.size === before) {
-				validationError ??= new Error(`Duplicate agent panel item id "${validated.id}".`);
+				validationError ??= new Error(`Duplicate agent panel item id "${cleanReasonText(validated.id)}".`);
 				continue;
 			}
 			items.push(validated);
@@ -889,6 +973,13 @@ export function notifyAgentPanelSourceHubRebound(session: object): void {
 	for (const listener of [...(hubBindingListeners.get(session) ?? [])]) safelyCall(listener);
 }
 
+export function notifyAgentPanelChanged(session: object): void {
+	if ((typeof session !== "object" && typeof session !== "function") || session === null) return;
+	sourcesGeneration++;
+	bumpHubSources(hubOf(session as AgentPanelSession));
+	notifyAgentPanelSourceHubRebound(session);
+}
+
 export function watchAgentPanelSourceHubBinding(session: object, listener: () => void): () => void {
 	let listeners = hubBindingListeners.get(session);
 	if (listeners === undefined) {
@@ -914,7 +1005,7 @@ function sourceErrorReporter(session: AgentPanelSession): ((error: Error) => voi
 	return (error: Error) =>
 		safelyCall(() =>
 			Reflect.apply(emit, session.extensionRunner, [
-				{ extensionPath: "agent panel source", event: "agent_panel", error: error.message },
+				{ extensionPath: "agent panel source", event: "agent_panel", error: cleanReasonText(error.message) },
 			]),
 		);
 }
@@ -947,16 +1038,27 @@ export function agentPanelExtensionItems(
 	const hasDismissed = dismissed.size > 0;
 	const hub = hubOf(session);
 	const sources = hub?.all() ?? [];
-	if (report !== undefined && hub !== undefined) {
-		for (const [source, error] of hub.failures()) reportSourceOnce(source, error, report);
+	const hubFailures = hub?.failures();
+	let hasSourceError = (hubFailures?.length ?? 0) > 0;
+	if (report !== undefined && hubFailures !== undefined) {
+		for (const [source, error] of hubFailures) reportSourceOnce(source, error, report);
 	}
 	const items: AgentPanelItem[] = [];
 	const seenIds = sources.length > 1 ? new Set<string>() : undefined;
 	for (const source of sources) {
-		for (const item of sourceItems(source, report)) {
+		const entry = readSourceCache(source);
+		if (entry.error !== undefined) {
+			hasSourceError = true;
+			reportSourceOnce(source, entry.error, report);
+		}
+		for (const item of entry.items) {
 			if (seenIds !== undefined) {
 				if (seenIds.has(item.id)) {
-					reportSourceOnce(source, new Error(`Duplicate agent panel item id "${item.id}".`), report);
+					reportSourceOnce(
+						source,
+						new Error(`Duplicate agent panel item id "${cleanReasonText(item.id)}".`),
+						report,
+					);
 					continue;
 				}
 				seenIds.add(item.id);
@@ -984,11 +1086,37 @@ export function agentPanelExtensionItems(
 	if (clockIds !== undefined) extensionClocksBySession.get(session)?.prune(clockIds);
 	else clocks?.clear();
 	const viewed = viewedBySession.get(session);
-	if (viewed !== undefined && viewed.size > 0) {
-		const liveIds = new Set(items.map((item) => item.id));
+	const liveIds =
+		!hasSourceError && ((viewed !== undefined && viewed.size > 0) || (hasDismissed && sources.length > 0))
+			? new Set(items.map((item) => item.id))
+			: undefined;
+	if (viewed !== undefined && viewed.size > 0 && liveIds !== undefined) {
 		for (const id of [...viewed]) if (!liveIds.has(id)) viewed.delete(id);
 	}
-	return hasDismissed ? items.filter((item) => !dismissed.has(item.id)) : items;
+	if (hasDismissed) {
+		if (liveIds !== undefined) {
+			for (const id of [...dismissed]) {
+				if (agentPanelTaskId(id) === undefined && !liveIds.has(id)) dismissed.delete(id);
+			}
+		}
+		for (const item of items) {
+			if (dismissed.has(item.id) && item.state !== "done" && item.state !== "failed" && item.state !== "stopped") {
+				dismissed.delete(item.id);
+			}
+		}
+		const store = getOwnerTaskStore(session);
+		if (store !== undefined) {
+			for (const id of [...dismissed]) {
+				const taskId = agentPanelTaskId(id);
+				if (taskId === undefined) continue;
+				const task = store.taskRecord(taskId);
+				if (task !== undefined && task.execution.kind !== "settled") {
+					dismissed.delete(id);
+				}
+			}
+		}
+	}
+	return dismissed.size > 0 ? items.filter((item) => !dismissed.has(item.id)) : items;
 }
 
 export function agentPanelItems(
@@ -1132,6 +1260,7 @@ export function openAgentPanelItem(
 			});
 		}
 		viewedAgentPanelItems(session).add(id);
+		notifyAgentPanelChanged(session);
 		return true;
 	} catch (error) {
 		drainCaught(error);

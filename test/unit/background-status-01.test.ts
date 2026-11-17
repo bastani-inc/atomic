@@ -354,7 +354,7 @@ describe("resumeRun", () => {
 			assert.equal(result.mode, "snapshot");
 			assert.equal(result.snapshot.status, "failed");
 			assert.match(result.message ?? "", /marked resumable/);
-			assert.match(result.message ?? "", /\/workflow resume r1/);
+			assert.match(result.message ?? "", /\/resume r1/);
 		}
 	});
 

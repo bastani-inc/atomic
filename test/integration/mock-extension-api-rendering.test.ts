@@ -21,107 +21,27 @@ describe("MockExtensionAPI — slash command registration", () => {
 		factory(mock);
 	});
 
-	test("registers at least one command", () => {
-		assert.ok(mock.commands.length >= 1);
+	test("registers only /workflows and /workflow-authoring", () => {
+		assert.equal(getCommand(mock.commands, "workflow"), undefined);
+		expectRegisteredCommand(mock.commands, "workflows");
+		expectRegisteredCommand(mock.commands, "workflow-authoring");
 	});
 
-	test("/workflow command registered", () => {
-		assert.notEqual(getCommand(mock.commands, "workflow"), undefined);
+	test("/workflows and /workflow-authoring have exact descriptions and no flag completions", async () => {
+		const workflowsCmd = getCommand(mock.commands, "workflows")!;
+		assert.equal(workflowsCmd.options.description, "Browse running and completed workflows");
+		assert.deepEqual((await workflowsCmd.options.getArgumentCompletions?.("--")) ?? [], []);
+
+		const authoringCmd = getCommand(mock.commands, "workflow-authoring")!;
+		assert.equal(authoringCmd.options.description, "Load the reference for writing workflow definitions");
+		assert.deepEqual((await authoringCmd.options.getArgumentCompletions?.("--")) ?? [], []);
 	});
 
-	test("/workflow registered through canonical (name, opts) tuple", () => {
-		expectRegisteredCommand(mock.commands, "workflow");
-	});
-
-	test("/workflow has non-empty description", () => {
-		const cmd = getCommand(mock.commands, "workflow")!;
-		assert.ok(cmd.options.description.length > 0);
-	});
-
-	test("/workflow execute with empty args calls reply/print or sendMessage", async () => {
-		const cmd = getCommand(mock.commands, "workflow")!;
-		const messages: string[] = [];
-		await cmd.options.handler("", { ui: { notify: (m: string) => messages.push(m) } });
-		// Empty args now routes through the chat-surface renderer (kind:
-		// "list"); pre-Component-path tests expected ctx.ui.notify to receive
-		// output. Accept either signal.
-		assert.ok(messages.length > 0 || mock.sent.length > 0);
-	});
-
-	test("/workflow execute 'list' calls reply/print or sendMessage", async () => {
-		const cmd = getCommand(mock.commands, "workflow")!;
+	test("/workflows rejects arguments with a notice", async () => {
+		const cmd = getCommand(mock.commands, "workflows")!;
 		const messages: string[] = [];
 		await cmd.options.handler("list", { ui: { notify: (m: string) => messages.push(m) } });
-		assert.ok(messages.length > 0 || mock.sent.length > 0);
-	});
-
-	test("/workflow execute 'status' calls reply/print or sendMessage", async () => {
-		const cmd = getCommand(mock.commands, "workflow")!;
-		const messages: string[] = [];
-		await cmd.options.handler("status", { ui: { notify: (m: string) => messages.push(m) } });
-		assert.ok(messages.length > 0 || mock.sent.length > 0);
-	});
-
-	test("/workflow execute unknown arg calls reply/print", async () => {
-		const cmd = getCommand(mock.commands, "workflow")!;
-		const messages: string[] = [];
-		await cmd.options.handler("run my-wf", { ui: { notify: (m: string) => messages.push(m) } });
 		assert.ok(messages.length > 0);
-	});
-	test("/workflow getArgumentCompletions returns all subcommands for empty partial", async () => {
-		const cmd = getCommand(mock.commands, "workflow")!;
-		const completions = (await cmd.options.getArgumentCompletions?.("")) ?? [];
-		const labels = completions.map((c) => c.label);
-		for (const sub of ["list", "status", "pause", "quit", "resume", "inputs"]) {
-			assert.ok(labels.includes(sub));
-		}
-		assert.equal(labels.includes("kill"), false);
-		assert.equal(labels.includes("session"), false);
-	});
-
-	test("/workflow getArgumentCompletions filters by partial", async () => {
-		const cmd = getCommand(mock.commands, "workflow")!;
-		const completions = (await cmd.options.getArgumentCompletions?.("li")) ?? [];
-		assert.ok(completions.length > 0);
-		assert.equal(
-			completions.every((c) => c.label.startsWith("li")),
-			true,
-		);
-	});
-
-	test("/workflow getArgumentCompletions covers subcommand arguments", async () => {
-		const cmd = getCommand(mock.commands, "workflow")!;
-		const inputs = (await cmd.options.getArgumentCompletions?.("inputs fa")) ?? [];
-		assert.ok(inputs.some((c) => c.value === "inputs fan-out-and-synthesize "));
-
-		const status = (await cmd.options.getArgumentCompletions?.("status --")) ?? [];
-		assert.equal(
-			status.some((c) => c.value === "status --all "),
-			false,
-		);
-
-		const pause = (await cmd.options.getArgumentCompletions?.("pause -")) ?? [];
-		assert.ok(pause.some((c) => c.value === "pause --all "));
-		assert.equal(
-			pause.some((c) => c.label === "-y" || c.label === "--yes"),
-			false,
-		);
-
-		const quit = (await cmd.options.getArgumentCompletions?.("quit -")) ?? [];
-		assert.ok(quit.some((c) => c.value === "quit --all "));
-		assert.equal(
-			quit.some((c) => c.label === "-y" || c.label === "--yes"),
-			false,
-		);
-	});
-
-	test("/workflow getArgumentCompletions covers workflow run inputs and flags", async () => {
-		const cmd = getCommand(mock.commands, "workflow")!;
-		const inputKeys = (await cmd.options.getArgumentCompletions?.("fan-out-and-synthesize p")) ?? [];
-		assert.ok(inputKeys.some((c) => c.value === "fan-out-and-synthesize prompt="));
-
-		const flags = (await cmd.options.getArgumentCompletions?.("fan-out-and-synthesize --")) ?? [];
-		assert.ok(flags.some((c) => c.value === "fan-out-and-synthesize --no-picker "));
 	});
 });
 

@@ -39,9 +39,9 @@ const result: VerbatimCompactionResult = {
 	compactedText: "[User]: retained\n(filtered 1 lines)",
 	firstKeptEntryId: "m2",
 	tokensBefore: 100,
-	parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "task" },
-	promptVersion: 3,
-	rung: "planned",
+	parameters: { query: "task" },
+	promptVersion: 7,
+	form: "compacted",
 	stats: {
 		linesBefore: 4,
 		linesDeleted: 1,
@@ -72,7 +72,7 @@ const persistedBoundary = createVerbatimCompactionMessage(
 		strategy: "verbatim-lines",
 		parameters: result.parameters,
 		promptVersion: result.promptVersion,
-		rung: result.rung,
+		form: result.form,
 		stats: result.stats,
 	},
 ) as AgentMessage;
@@ -92,8 +92,6 @@ type CompactionEndEvent = {
 	errorMessage?: string;
 	midTurn?: boolean;
 	manualTakeoverPending?: boolean;
-	background?: true;
-	cacheMiss?: { expectedMissedTokens: number; expectedMissedCost: number; expectedRebilledCost?: number };
 };
 type AgentEndEvent = { type: "agent_end" };
 type AgentContinueErrorEvent = {
@@ -369,7 +367,7 @@ describe("InteractiveMode compaction events", () => {
 			expect(mode.addCompactionBoundaryToChat).toHaveBeenCalledWith(result);
 
 			expect(visibleBoundaries(chatContainer)).toHaveLength(1);
-			expect(renderedText(chatContainer).match(/∀ Context compacted/g)).toHaveLength(1);
+			expect(renderedText(chatContainer).match(/⚛ Context compacted/g)).toHaveLength(1);
 			expect(renderedText(chatContainer)).toContain("startup notice");
 			expect(renderedText(chatContainer)).toContain("retained context message");
 		});
@@ -377,13 +375,10 @@ describe("InteractiveMode compaction events", () => {
 
 	it("shows one boundary and one set of notices when overflow recovery joins a turn-boundary commit (#4851)", async () => {
 		const { mode, chatContainer } = makeMode(persistedContextMessages, true);
-		const cacheMiss = { expectedMissedTokens: 41_000, expectedMissedCost: 0.1234, expectedRebilledCost: 0.1371 };
 		const committed = {
 			result: resultWithUsage,
 			aborted: false,
 			willRetry: false,
-			background: true as const,
-			cacheMiss,
 		};
 
 		await emit(mode, { type: "compaction_start", reason: "overflow" });
@@ -392,9 +387,8 @@ describe("InteractiveMode compaction events", () => {
 
 		const text = renderedText(chatContainer);
 		expect(visibleBoundaries(chatContainer)).toHaveLength(1);
-		expect(text.match(/∀ Context compacted/g)).toHaveLength(1);
+		expect(text.match(/⚛ Context compacted/g)).toHaveLength(1);
 		expect(text.match(/Compaction: 1,234 tokens billed/g)).toHaveLength(1);
-		expect(text.match(/Prompt cache miss expected after background compaction/g)).toHaveLength(1);
 	});
 
 	it("renders billed compaction usage after the live boundary when notices are enabled", async () => {
@@ -410,44 +404,7 @@ describe("InteractiveMode compaction events", () => {
 
 		const text = renderedText(chatContainer);
 		expect(text).toContain("Compaction: 1,234 tokens billed (~$0.02)");
-		expect(text.indexOf("∀ Context compacted")).toBeLessThan(text.indexOf("Compaction: 1,234 tokens billed"));
-	});
-
-	for (const showCacheMissNotices of [true, false]) {
-		it(`${showCacheMissNotices ? "shows" : "hides"} the expected cache miss of an applied background compaction with notices ${showCacheMissNotices ? "on" : "off"} (#4330)`, async () => {
-			const { mode, chatContainer } = makeMode(persistedContextMessages, showCacheMissNotices);
-
-			await emit(mode, {
-				type: "compaction_end",
-				reason: "threshold",
-				result,
-				aborted: false,
-				willRetry: false,
-				background: true,
-				cacheMiss: { expectedMissedTokens: 41_000, expectedMissedCost: 0.1234, expectedRebilledCost: 0.1371 },
-			});
-
-			const text = renderedText(chatContainer);
-			const notice =
-				"Prompt cache miss expected after background compaction: 41,000 tokens re-billed ($0.137, $0.123 more than a cache hit)";
-			if (showCacheMissNotices) {
-				assert.ok(text.includes(notice));
-				assert.ok(text.indexOf("∀ Context compacted") < text.indexOf(notice));
-			} else assert.ok(!text.includes("Prompt cache miss"));
-		});
-	}
-
-	it("shows no cache-miss notice for a commit without cache data (#4330)", async () => {
-		const { mode, chatContainer } = makeMode(persistedContextMessages, true);
-		await emit(mode, {
-			type: "compaction_end",
-			reason: "threshold",
-			result,
-			aborted: false,
-			willRetry: false,
-			background: true,
-		});
-		assert.ok(!renderedText(chatContainer).includes("Prompt cache miss"));
+		expect(text.indexOf("⚛ Context compacted")).toBeLessThan(text.indexOf("Compaction: 1,234 tokens billed"));
 	});
 
 	// The completed boundary is persisted with its usage *and* re-announced live.
@@ -474,7 +431,7 @@ describe("InteractiveMode compaction events", () => {
 					strategy: "verbatim-lines",
 					parameters: result.parameters,
 					promptVersion: result.promptVersion,
-					rung: result.rung,
+					form: result.form,
 					stats: result.stats,
 				},
 				usage: compactionUsage,
@@ -594,7 +551,7 @@ describe("InteractiveMode compaction events", () => {
 		await emit(mode, { type: "compaction_end", reason: "manual", result, aborted: true, willRetry: false });
 		expect(visibleBoundaries(chatContainer)).toHaveLength(0);
 		expect(mode.addCompactionBoundaryToChat).not.toHaveBeenCalled();
-		expect(renderedText(chatContainer)).not.toContain("∀ Context compacted");
+		expect(renderedText(chatContainer)).not.toContain("⚛ Context compacted");
 	});
 
 	it("renders a committed boundary together with a later failure (#4977)", async () => {
@@ -606,7 +563,6 @@ describe("InteractiveMode compaction events", () => {
 			result,
 			aborted: false,
 			willRetry: true,
-			background: true,
 			errorMessage: "Context overflow recovery failed: boom",
 		});
 		expect(mode.addCompactionBoundaryToChat).toHaveBeenCalledWith(result);
@@ -755,7 +711,7 @@ describe("InteractiveMode compaction events", () => {
 			customType: "compaction",
 			content: [{ type: "text", text: `${VERBATIM_COMPACTION_PREFIX}extension-owned state` }],
 			display: true,
-			details: { strategy: "verbatim-lines", rung: result.rung, stats: result.stats },
+			details: { strategy: "verbatim-lines", form: result.form, stats: result.stats },
 			timestamp: 2,
 		} as AgentMessage;
 		const hiddenAlias = {
@@ -771,8 +727,33 @@ describe("InteractiveMode compaction events", () => {
 
 		expect(mode.renderSessionEntries).toHaveBeenCalledWith(entries, { suppressCompactionBoundary: result });
 		expect(visibleBoundaries(chatContainer)).toHaveLength(1);
-		expect(renderedText(chatContainer).match(/∀ Context compacted/g)).toHaveLength(1);
+		expect(renderedText(chatContainer).match(/⚛ Context compacted/g)).toHaveLength(1);
 		expect(renderedText(chatContainer)).toContain("extension-owned state");
+	});
+
+	it("shows one boundary when the persisted boundary carries the system prompt", async () => {
+		const { mode, chatContainer, entries } = makeMode([]);
+		entries.push({
+			type: "compaction",
+			id: "boundary",
+			parentId: null,
+			timestamp: new Date(1).toISOString(),
+			summary: result.compactedText,
+			firstKeptEntryId: null,
+			tokensBefore: result.tokensBefore,
+			details: {
+				strategy: "verbatim-lines",
+				promptVersion: result.promptVersion,
+				parameters: result.parameters,
+				stats: result.stats,
+				form: result.form,
+			},
+			systemMessage: { role: "system", content: "system prompt", timestamp: 1 },
+		} as SessionEntry);
+
+		await emit(mode, { type: "compaction_end", reason: "manual", result, aborted: false, willRetry: false });
+
+		expect(renderedText(chatContainer).match(/⚛ Context compacted/g)).toHaveLength(1);
 	});
 
 	it("renders one persisted boundary during a normal resume rebuild", () => {
@@ -785,7 +766,7 @@ describe("InteractiveMode compaction events", () => {
 		expect(chatContainer.children[0]).toBe(mode.resourceDisclosureContainer);
 		expect(chatContainer.children[1]).toBe(mode.startupNoticesContainer);
 		expect(visibleBoundaries(chatContainer)).toHaveLength(1);
-		expect(renderedText(chatContainer).match(/∀ Context compacted/g)).toHaveLength(1);
+		expect(renderedText(chatContainer).match(/⚛ Context compacted/g)).toHaveLength(1);
 	});
 
 	it("keeps terminal progress active when the same run resumes after compaction", async () => {
@@ -982,7 +963,7 @@ describe("InteractiveMode compaction events", () => {
 			) => Promise<void>;
 			const send = async (event: object): Promise<void> => handleEvent.call(mode, event);
 			await send({ type: "turn_start" });
-			expect(mode.workingMessage).toBe("Schlepping...");
+			expect(mode.workingMessage).toBe("Schlepping…");
 			await send({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: undefined });
 			await send({
 				type: "tool_execution_start",
@@ -1004,7 +985,7 @@ describe("InteractiveMode compaction events", () => {
 				result: { content: [] },
 				isError: false,
 			});
-			expect(mode.workingMessage).toBe("Schlepping...");
+			expect(mode.workingMessage).toBe("Schlepping…");
 			await send({ type: "turn_end" });
 			expect(mode.workingMessage).toBeUndefined();
 		} finally {
@@ -1053,7 +1034,7 @@ describe("compaction boundary component", () => {
 		const collapsedRaw = component.render(200).join("\n");
 		const collapsed = stripVTControlCharacters(collapsedRaw);
 		expect(collapsedRaw).toContain(theme.fg("customMessageLabel", theme.bold("Context compacted")));
-		expect(collapsed).toMatch(/∀ Context compacted · 100 → \S+ tokens · ctrl\+o for summary/);
+		expect(collapsed).toMatch(/⚛ Context compacted · 100 → \S+ tokens · ctrl\+o to expand/);
 		expect(collapsed).not.toContain("Context before compaction");
 		expect(collapsed).not.toContain("retained");
 		expect(collapsed).not.toContain("planned");
@@ -1064,7 +1045,7 @@ describe("compaction boundary component", () => {
 			.split("\n")
 			.map((line) => line.trimEnd())
 			.join("\n");
-		expect(expanded).toContain("∀ Context compacted");
+		expect(expanded).toContain("⚛ Context compacted");
 		expect(expanded).toContain("Context before compaction: 100 tokens");
 		expect(expanded).toContain("[User]: retained\n (filtered 1 lines)");
 		expect(expandedRaw).toContain(theme.fg("dim", "(filtered 1 lines)"));
@@ -1110,7 +1091,7 @@ describe("compaction boundary component", () => {
 				strategy: "verbatim-lines",
 				parameters: result.parameters,
 				promptVersion: result.promptVersion,
-				rung: result.rung,
+				form: result.form,
 				stats: result.stats,
 			},
 			new Date(1).toISOString(),
@@ -1127,7 +1108,7 @@ describe("compaction boundary component", () => {
 			strategy: "verbatim-lines" as const,
 			parameters: result.parameters,
 			promptVersion: result.promptVersion,
-			rung: result.rung,
+			form: result.form,
 			stats: result.stats,
 		};
 		const snapshot = structuredClone(details);
@@ -1149,7 +1130,7 @@ describe("compaction boundary component", () => {
 				strategy: "verbatim-lines" as const,
 				parameters: result.parameters,
 				promptVersion: result.promptVersion,
-				rung: result.rung,
+				form: result.form,
 				stats: result.stats,
 				tokensBefore: existing,
 			};
@@ -1178,7 +1159,7 @@ describe("compaction boundary component", () => {
 				strategy: "verbatim-lines",
 				parameters: result.parameters,
 				promptVersion: result.promptVersion,
-				rung: result.rung,
+				form: result.form,
 				stats: result.stats,
 			},
 			new Date(1).toISOString(),
@@ -1208,7 +1189,7 @@ describe("compaction boundary JSONL reopen (#2052)", () => {
 			strategy: "verbatim-lines",
 			parameters: result.parameters,
 			promptVersion: result.promptVersion,
-			rung: result.rung,
+			form: result.form,
 			stats: { ...result.stats, tokensBefore: 480, tokensAfter: 240, percentReduction: 50 },
 		});
 

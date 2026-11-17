@@ -605,7 +605,7 @@ describe("the successor may start before the departing session's shutdown handle
 			assert.equal(backend.getWorkflow(own)?.status, "paused");
 			assert.equal(backend.getWorkflow(own)?.releasedModelOwner, "session-a");
 			assert.equal(notices.length, 1, notices.join("\n---\n"));
-			assert.match(notices[0]!, new RegExp(`/workflow resume ${own}\\b`));
+			assert.match(notices[0]!, new RegExp(`/resume ${own}\\b`));
 
 			const releases = vi.spyOn(backend, "commitWorkflowStatusTransition");
 			await departing.get("session_shutdown")!({ reason });
@@ -681,7 +681,7 @@ describe("the successor may start before the departing session's shutdown handle
 		const notices: string[] = [];
 		await startSwitchedSession(scope, "session-c", "new", notifyingUi(notices));
 		assert.equal(notices.length, 1, notices.join("\n---\n"));
-		assert.match(notices[0]!, new RegExp(`/workflow resume ${own}\\b`));
+		assert.match(notices[0]!, new RegExp(`/resume ${own}\\b`));
 	});
 
 	test("returning to the owner session reclaims its released run instead of announcing it or leaving it adoptable (#3569)", async () => {
@@ -829,7 +829,7 @@ describe("switching sessions releases the previous session's paused runs for the
 			const notices: string[] = [];
 			await startSwitchedSession(scope, "session-b", reason, notifyingUi(notices));
 			assert.equal(notices.length, 1, notices.join("\n---\n"));
-			assert.match(notices[0]!, new RegExp(`/workflow resume ${RELEASE_RUN_A}\\b`));
+			assert.match(notices[0]!, new RegExp(`/resume ${RELEASE_RUN_A}\\b`));
 			assert.match(notices[0]!, /alpha/);
 			assert.doesNotMatch(notices[0]!, new RegExp(RELEASE_RUN_B));
 			assert.doesNotMatch(notices[0]!, new RegExp(RELEASE_RUN_C));
@@ -1026,6 +1026,38 @@ describe("quit pauses and clears without closing the shared journal", () => {
 		assert.ok(await backend.prepareWorkflowCatalog());
 	});
 
+	test("session_shutdown(quit) leaves a run blocked on missing credentials at rest instead of failing the shutdown", async () => {
+		const handlers = captureHandlers();
+		await handlers.get("session_start")!({ reason: "startup" });
+		startBareRun("blocked-run", "blocked-boundary");
+		store.recordStageStart("blocked-run", {
+			id: "stage1",
+			name: "stage1",
+			status: "blocked",
+			parentIds: [],
+			toolEvents: [],
+		});
+		assert.equal(
+			store.recordRunBlocked("blocked-run", "No API key found for anthropic", {
+				failureKind: "auth",
+				failureCode: "missing_api_key",
+				failureRecoverability: "recoverable",
+				failureDisposition: "active_blocked",
+				failureMessage: "A required model provider API key is missing.",
+				failedStageId: "stage1",
+				resumable: true,
+			}),
+			true,
+		);
+
+		await handlers.get("session_shutdown")!({ reason: "quit" });
+
+		const run = store.runs().find((candidate) => candidate.id === "blocked-run");
+		assert.equal(run?.endedAt, undefined);
+		assert.equal(run?.resumable, true);
+		assert.equal(run?.failureDisposition, "active_blocked");
+	});
+
 	for (const reason of PRESERVE) {
 		test(`session_shutdown(${reason}) keeps the shared journal open`, async () => {
 			const backend = await readyDurability();
@@ -1068,7 +1100,7 @@ describe("session-switch confirmation says running workflows will be quit (#3203
 			assert.match(prompts[0]!.title, /^Quit 2 running workflows and /);
 			assert.match(prompts[0]!.message ?? "", /quits 2 running workflows now/);
 			assert.match(prompts[0]!.message ?? "", /last checkpoint/);
-			assert.match(prompts[0]!.message ?? "", /resumed later with \/workflow resume/);
+			assert.match(prompts[0]!.message ?? "", /resumed later with \/resume/);
 			assert.doesNotMatch(`${prompts[0]!.title}\n${prompts[0]!.message}`, /keeps? .* running/i);
 		});
 
@@ -1144,7 +1176,7 @@ describe("session-switch confirmation says running workflows will be quit (#3203
 		assert.deepEqual(sessionSwitchQuitConfirmation("new", 1), {
 			title: "Quit 1 running workflow and start a new session?",
 			message:
-				"Continuing quits 1 running workflow now. It stops at its last checkpoint and can be resumed later with /workflow resume.",
+				"Continuing quits 1 running workflow now. It stops at its last checkpoint and can be resumed later with /resume.",
 		});
 	});
 });

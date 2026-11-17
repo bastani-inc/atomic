@@ -62,6 +62,8 @@ export function createStageContext(input: {
 			return noticeValue(innerCtx.thinkingLevel);
 		} catch (error) {
 			if (isStageReleasedError(error) && error.fields?.property === "thinkingLevel") return undefined;
+			// A level set before the stage's session opens applies when it opens; until then none is known.
+			if (innerCtx.__sessionMeta().sessionId === undefined) return undefined;
 			throw error;
 		}
 	};

@@ -1,4 +1,5 @@
 import { type NavKey, type NavKeybindings, type NavKeyStyle, navEntryKeys, sliceHead } from "@bastani/atomic";
+import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { sanitizeToolTitleText } from "../shared/tool-payload-bounds.js";
 import { BOLD, DEFAULT_BG, fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import { inertDisplayLine } from "./display-text.js";
@@ -35,8 +36,16 @@ function displayedBinding(key: string): string {
 
 function noticeDisplayText(value: string, width: number): string {
 	const head = sliceHead(value, Math.max(0, width + 1));
-	return sanitizeToolTitleText(inertDisplayLine(head)) + (head.length < value.length ? "…" : "");
+	return inertDisplayLine(sanitizeToolTitleText(head)) + (head.length < value.length ? "…" : "");
 }
+
+function ellipsizeQuitName(name: string, budget: number): string {
+	if (budget <= 0) return "";
+	if (visibleWidth(name) <= budget) return name;
+	return truncateToWidth(name, budget, "\u2026");
+}
+
+export type GraphKeyTier = "full" | "compact" | "tight" | "minimal" | "keys";
 
 export function toolExpandKey(piKeybindings: unknown): string {
 	const keybindings = isKeybindingsLike(piKeybindings) ? piKeybindings : undefined;
@@ -90,10 +99,6 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		return this._navKeybindings()?.getKeys ? { action, label } : { keys: fallback, label };
 	}
 
-	private _helpShadows(key: string): boolean {
-		return this._navKeybindings()?.matches(key, APP_ACTION.keysHelp) === true;
-	}
-
 	private _stopNavKey(label: string): NavKey {
 		const keybindings = this._navKeybindings();
 		const keys = keybindings?.getKeys?.(APP_ACTION.listStop);
@@ -105,94 +110,200 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		return { keys: available.map(displayedBinding).join("/"), label };
 	}
 
-	protected _focusedStageStoppable(): boolean {
+	protected _focusedStageStoppable(
+		stage: StageSnapshot | undefined = this.cachedLayout[this.focusedIndex]?.stage,
+	): boolean {
 		if (this.stageActions?.stop === undefined) return false;
-		const stage = this.cachedLayout[this.focusedIndex]?.stage;
 		if (stage === undefined || this._stageChatTarget(stage) === undefined) return false;
 		return stage.status === "running";
 	}
 
-	protected _graphKeys(compact = false): NavKey[] {
-		const help = this._actionKey(APP_ACTION.keysHelp, "?", "keys");
+	protected _keyShadowed(key: string): boolean {
+		const keybindings = this._navKeybindings();
+		return (
+			keybindings?.matches(key, APP_ACTION.listStop) === true ||
+			keybindings?.matches(key, APP_ACTION.keysHelp) === true
+		);
+	}
+
+	protected _toolDetailKeyShadowed(key: string): boolean {
+		const keybindings = this._navKeybindings();
+		return (
+			keybindings?.matches(key, APP_ACTION.toolsExpand) === true ||
+			keybindings?.matches(key, APP_ACTION.keysHelp) === true
+		);
+	}
+
+	protected _graphKeys(
+		compact: boolean | GraphKeyTier = "full",
+		frameContext?: { readonly run: RunSnapshot | null; readonly focused: StageSnapshot | undefined },
+	): NavKey[] {
+		const mode: GraphKeyTier = typeof compact === "boolean" ? (compact ? "compact" : "full") : compact;
+		const keyOnly = mode === "keys";
+		const quitArmed = this._isQuitArmed(frameContext?.run);
+		const help: NavKey = this._actionKey(APP_ACTION.keysHelp, "?", keyOnly && !quitArmed ? "" : "keys");
 		if (this.toolDetail !== null) {
 			const expandKey = toolExpandKey(this.piKeybindings);
+			const homeEndKeys = ["home", "end"].filter((key) => !this._toolDetailKeyShadowed(key)).join("/");
 			return [
-				{ keys: "esc", label: compact ? "back" : "back to graph" },
-				{ keys: "\u2191\u2193 pgup/pgdn", label: "scroll" },
-				...(expandKey.length > 0 && !this._helpShadows(expandKey)
-					? [{ keys: expandKey, label: this.toolDetailExpanded ? "collapse" : "expand" }]
+				{
+					keys: "esc",
+					label: keyOnly ? "" : mode === "full" ? "back to graph" : "back",
+				},
+				{ keys: "\u2191\u2193 pgup/pgdn", label: keyOnly ? "" : "scroll" },
+				...(homeEndKeys.length > 0
+					? [
+							{
+								keys: homeEndKeys,
+								label: mode === "full" ? "top/bottom" : mode === "compact" ? "ends" : "",
+							},
+						]
+					: []),
+				...(expandKey.length > 0
+					? [
+							{
+								keys: expandKey,
+								label: keyOnly ? "" : this.toolDetailExpanded ? "collapse" : "expand",
+							},
+						]
 					: []),
 				help,
 			];
 		}
 		if (this.stageDetail !== null && this.forkConfirm !== null) {
 			return [
-				{ keys: "enter", label: "fork" },
+				{ keys: "enter", label: "confirm" },
 				{ keys: "esc", label: "cancel" },
 			];
 		}
 		if (this.stageDetail !== null) {
 			const actions = this.stageActions;
 			const canFork = actions?.fork !== undefined && actions.forkTarget !== undefined && this.runId !== null;
-			const inLogs = this.stageDetail.logs;
+			const canRetry = this.stageDetail.status === "failed" && actions?.retry !== undefined;
+			const short = mode !== "full";
 			return [
-				...(actions?.retry && !this._helpShadows("r")
-					? [{ keys: "r", label: compact ? "retry" : "retry from stage" }]
+				...(canRetry ? [{ keys: "r", label: keyOnly ? "" : short ? "retry" : "retry from stage" }] : []),
+				...(canFork ? [{ keys: "f", label: keyOnly ? "" : short ? "fork" : "fork from stage" }] : []),
+				...(this.onStageAttach
+					? [
+							{
+								keys: "t",
+								label: keyOnly ? "" : mode === "tight" || mode === "minimal" ? "chat" : "transcript",
+							},
+						]
 					: []),
-				...(canFork && !this._helpShadows("f") ? [{ keys: "f", label: compact ? "fork" : "fork from stage" }] : []),
-				...(this.onStageAttach && !this._helpShadows("t")
-					? [{ keys: "t", label: compact && inLogs ? "chat" : "transcript" }]
+				{ keys: "l", label: keyOnly ? "" : this.stageDetail.logs ? "summary" : "logs" },
+				{ keys: "esc", label: keyOnly ? "" : "back" },
+				...(this.stageDetail.logs
+					? [
+							{
+								keys: mode === "minimal" || keyOnly ? "\u2191\u2193" : "\u2191\u2193 pgup/pgdn",
+								label: mode === "tight" || mode === "minimal" || keyOnly ? "" : "scroll",
+							},
+						]
 					: []),
-				...(!this._helpShadows("l") ? [{ keys: "l", label: inLogs ? "summary" : "logs" }] : []),
-				{ keys: "esc", label: "back" },
-				...(inLogs ? [{ keys: "\u2191\u2193 pgup/pgdn", label: "scroll" }] : []),
 				help,
 			];
 		}
 		if (this.runDetail !== null) {
 			const blockers = this.runDetail.logs ? 0 : this._runDetailBlockers().length;
 			return [
-				{ keys: "esc", label: compact ? "back" : "back to graph" },
-				...(blockers > 1 ? [{ keys: "\u2191\u2193", label: "select" }] : []),
-				...(blockers > 0 ? [{ keys: "\u2192/\u21b5", label: "open" }] : []),
-				...(!this._helpShadows("l") ? [{ keys: "l", label: this.runDetail.logs ? "summary" : "logs" }] : []),
-				{ keys: blockers > 1 ? "pgup/pgdn" : "\u2191\u2193 pgup/pgdn", label: "scroll" },
+				{ keys: "esc", label: keyOnly ? "" : mode === "full" ? "back to graph" : "back" },
+				...(blockers > 1 ? [{ keys: "\u2191\u2193", label: keyOnly ? "" : "select" }] : []),
+				...(blockers > 0 ? [{ keys: "\u2192/\u21b5", label: keyOnly ? "" : "open" }] : []),
+				...(!this._navKeybindings()?.matches("l", APP_ACTION.keysHelp)
+					? [{ keys: "l", label: keyOnly ? "" : this.runDetail.logs ? "summary" : "logs" }]
+					: []),
+				{ keys: blockers > 1 ? "pgup/pgdn" : "\u2191\u2193 pgup/pgdn", label: keyOnly ? "" : "scroll" },
 				help,
 			];
 		}
-		const hasRun = this._getCurrentRun() !== null;
-		const focused = this.cachedLayout[this.focusedIndex]?.stage;
+		const run = frameContext !== undefined ? frameContext.run : this._getCurrentRun();
+		if (run === null) {
+			return [
+				{ keys: "esc", label: keyOnly ? "" : "back" },
+				help,
+				...(this.onHide && !this._keyShadowed("h") ? [{ keys: "h", label: keyOnly ? "" : "hide" }] : []),
+			];
+		}
+		const focused = frameContext !== undefined ? frameContext.focused : this.cachedLayout[this.focusedIndex]?.stage;
+		const focusedTarget = this._stageChatTarget(focused);
 		const moveKeys = this._movableArrows();
-		const filter: NavKey = { keys: "f", label: `filter: ${this.statusFilter}` };
 		const filtered = this.statusFilter !== "all";
 		const openLabel =
 			focused?.nodeKind === "tool"
 				? "open tool detail"
-				: focused?.status === "failed" && this._focusedStageChatTarget() !== undefined
+				: focused?.status === "failed" && focusedTarget !== undefined
 					? "open failure detail"
-					: this._focusedStageChatTarget() !== undefined
+					: focusedTarget !== undefined
 						? "open stage chat"
 						: undefined;
-		const back: NavKey = { keys: "esc", label: "back" };
-		const open: NavKey[] = openLabel ? [{ keys: "\u21b5", label: compact ? "open" : openLabel }] : [];
-		const move: NavKey[] = moveKeys ? [{ keys: moveKeys, label: "move" }] : [];
+		const backLabel = mode === "minimal" || (keyOnly && quitArmed) ? "" : "back";
+		const back: NavKey = { keys: "esc", label: backLabel };
+		const openText = mode === "full" ? openLabel! : mode === "compact" ? "open" : "";
+		const open: NavKey[] = openLabel ? [{ keys: "\u21b5", label: openText }] : [];
+		const detailsText = mode === "full" || mode === "compact" ? "details" : "";
+		const details: NavKey[] =
+			this._focusedStageDetailsAvailable(focused) && !this._keyShadowed("d")
+				? [{ keys: "d", label: detailsText }]
+				: [];
+		const moveText = mode === "full" || mode === "compact" ? "move" : "";
+		const move: NavKey[] = moveKeys ? [{ keys: moveKeys, label: moveText }] : [];
 
-		const stop = this._focusedStageStoppable() ? [this._stopNavKey(compact ? "stop" : "stop stage")] : [];
-		const stateful = [...stop, ...(filtered && !this._helpShadows("f") ? [filter] : [])];
-		const keybindings = this._navKeybindings();
-		const hideShadowed =
-			(hasRun && keybindings?.matches("h", APP_ACTION.listStop) === true) || this._helpShadows("h");
-		if (!hasRun) {
-			return [back, help, ...(this.onHide && !hideShadowed ? [{ keys: "h", label: "hide" }] : [])];
-		}
+		const stopText = mode === "full" ? "stop stage" : keyOnly || (mode === "minimal" && quitArmed) ? "" : "stop";
+		const stop = this._focusedStageStoppable(focused) ? [this._stopNavKey(stopText)] : [];
+		const pauseText = mode === "full" ? "pause run" : keyOnly || (mode === "minimal" && quitArmed) ? "" : "pause";
+		const resumeText = mode === "full" ? "resume run" : keyOnly || (mode === "minimal" && quitArmed) ? "" : "resume";
+		const pauseOrResume: NavKey[] =
+			this._runPausable(run) && !this._keyShadowed("p")
+				? [{ keys: "p", label: pauseText }]
+				: this._runResumable(run) && !this._keyShadowed("r")
+					? [{ keys: "r", label: resumeText }]
+					: [];
+		const quitRunName = sanitizeToolTitleText(sliceHead(run.name, 24)).trim() || run.id;
+		const quitNameBudget =
+			mode === "full" ? 12 : mode === "compact" ? 10 : mode === "tight" ? 7 : mode === "minimal" ? 6 : 0;
+		const armedQuitName = ellipsizeQuitName(quitRunName, quitNameBudget);
+		const quitText = quitArmed
+			? armedQuitName.length > 0
+				? `again to quit ${armedQuitName}`
+				: "again to quit"
+			: mode === "full"
+				? "quit run"
+				: keyOnly
+					? ""
+					: "quit";
+		const quit: NavKey[] = this._runQuittable(run) && !this._keyShadowed("q") ? [{ keys: "q", label: quitText }] : [];
+		const stagesText = mode === "full" || mode === "compact" ? "stages" : "";
+		const stages: NavKey[] = this._keyShadowed("/") ? [] : [{ keys: "/", label: stagesText }];
+		const filterText =
+			mode === "full"
+				? `filter: ${this.statusFilter}`
+				: mode === "compact"
+					? filtered
+						? `filter: ${this.statusFilter}`
+						: "filter"
+					: mode === "tight"
+						? filtered
+							? `filter: ${this.statusFilter}`
+							: ""
+						: "";
+		const filter: NavKey[] = this._keyShadowed("f") ? [] : [{ keys: "f", label: filterText }];
+		const hideText = mode === "full" || mode === "compact" ? "hide" : "";
+		const hide: NavKey[] = this.onHide && !this._keyShadowed("h") ? [{ keys: "h", label: hideText }] : [];
 		return [
 			back,
-			...(compact ? [...stateful, ...open, ...move] : [...open, ...move, ...stateful]),
-			...(!this._helpShadows("/") ? [{ keys: "/", label: "stages" }] : []),
-			...(filtered || this._helpShadows("f") ? [] : [filter]),
+			...open,
+			...details,
+			...move,
+			...stop,
+			...pauseOrResume,
+			...quit,
+			...stages,
+			...filter,
 			help,
-			...(this.onHide && !hideShadowed ? [{ keys: "h", label: "hide" }] : []),
-			...(!this._helpShadows("o") ? [{ keys: "o", label: "run details" }] : []),
+			...hide,
+			...(!this._navKeybindings()?.matches("o", APP_ACTION.keysHelp) ? [{ keys: "o", label: "run details" }] : []),
 		];
 	}
 
@@ -217,60 +328,69 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		const { top, mid, bot, visibleWidth: pillW } = renderOutlinePill(MODE_PILL_LABEL, t.accent, chromeBg);
 
 		const wideSep = `${chromeBg}  ${dim}\u00b7${RESET}${chromeBg}  `;
-		const compactSep = `${chromeBg} ${dim}\u00b7${RESET}${chromeBg} `;
+		const tightSep = `${chromeBg} ${dim}\u00b7${RESET}${chromeBg} `;
 		const leftEdgePad = 1;
-		let rightEdgePad = 2;
-		let hintsBudget = Math.max(0, width - leftEdgePad - pillW - rightEdgePad);
+		const rightEdgePad = 2;
+		const hintsBudget = Math.max(0, width - leftEdgePad - pillW - rightEdgePad);
 		const keybindings = this._navKeybindings();
-		const taken = new Set<string>();
 
-		const fits = (entries: readonly NavKey[]): boolean => {
+		const frameContext =
+			this.toolDetail === null && this.stageDetail === null
+				? {
+						run: this._getCurrentRun(),
+						focused: this.cachedLayout[this.focusedIndex]?.stage,
+					}
+				: undefined;
+		const buildRendered = (mode: GraphKeyTier, sepText: string, sepStyled: string, includeRunDetails = false) => {
 			const taken = new Set<string>();
-			const kept = entries.filter(
-				(entry) =>
-					entry.keys !== "/" &&
-					!(entry.keys === "h" && entry.label === "hide") &&
-					!(entry.keys === "o" && entry.label === "run details") &&
-					!(entry.keys === "f" && entry.label === "filter: all"),
-			);
-			const texts = kept.flatMap((entry) => {
+			const plainParts: string[] = [];
+			const styledParts: string[] = [];
+			for (const entry of this._graphKeys(mode, frameContext)) {
+				if (entry.keys === "o" && entry.label === "run details" && !includeRunDetails) continue;
 				const keys = navEntryKeys(keybindings, entry, taken);
-				return keys ? [`${keys} ${entry.label}`] : [];
-			});
-			return visibleWidth(texts.join("  \u00b7  ")) <= hintsBudget;
-		};
-		const full = this._graphKeys();
-		const entries = fits(full) ? full : this._graphKeys(true);
-		let helpSegment: string | undefined;
-		const segments = entries.flatMap((entry) => {
-			const keys = navEntryKeys(keybindings, entry, taken);
-			if (!keys) return [];
-			const segment = `${text}${BOLD}${keys}${RESET}${chromeBg} ${muted}${entry.label}${RESET}${chromeBg}`;
-			if (entry.action === APP_ACTION.keysHelp || (entry.keys === "?" && entry.label === "keys")) {
-				helpSegment = segment;
-				return [];
+				if (!keys) continue;
+				plainParts.push(entry.label.length > 0 ? `${keys} ${entry.label}` : keys);
+				styledParts.push(
+					entry.label.length > 0
+						? `${text}${BOLD}${keys}${RESET}${chromeBg} ${muted}${entry.label}${RESET}${chromeBg}`
+						: `${text}${BOLD}${keys}${RESET}${chromeBg}`,
+				);
 			}
-			return [segment];
-		});
-		const withHelp = (): string[] => (helpSegment ? [...segments, helpSegment] : segments);
-		const compactDetailChrome = this._detailOpen() && visibleWidth(withHelp().join(compactSep)) > hintsBudget;
-		const visiblePillWidth = compactDetailChrome ? 0 : pillW;
-		if (compactDetailChrome) {
-			rightEdgePad = 0;
-			hintsBudget = Math.max(0, width - leftEdgePad);
+			return {
+				width: visibleWidth(plainParts.join(sepText)),
+				styled: styledParts.join(sepStyled),
+			};
+		};
+		const candidates: ReadonlyArray<readonly [GraphKeyTier, string, string]> = [
+			["full", "  \u00b7  ", wideSep],
+			["full", " \u00b7 ", tightSep],
+			["compact", "  \u00b7  ", wideSep],
+			["compact", " \u00b7 ", tightSep],
+			["tight", " \u00b7 ", tightSep],
+			["minimal", " \u00b7 ", tightSep],
+			["keys", " \u00b7 ", tightSep],
+		];
+		let chosen: { width: number; styled: string } | undefined;
+		for (const [mode, sepText, sepStyled] of candidates) {
+			const candidate = buildRendered(mode, sepText, sepStyled);
+			chosen = candidate;
+			if (candidate.width <= hintsBudget) {
+				const withRunDetails = buildRendered(mode, sepText, sepStyled, true);
+				if (mode === "full" && withRunDetails.width <= hintsBudget) chosen = withRunDetails;
+				break;
+			}
 		}
-		const sep = this._detailOpen() && visibleWidth(withHelp().join(wideSep)) > hintsBudget ? compactSep : wideSep;
+		const chosenHints = chosen ?? buildRendered("keys", " \u00b7 ", tightSep);
 		const notice = this._activeGraphNotice();
 		const statusText = this._externalStatusText();
 
 		const toastText = notice?.text ?? statusText;
 		const toastColor = notice ? hexToAnsi(notice.tone === "error" ? t.error : t.accent) : accent;
-		while (segments.length > 1 && visibleWidth(withHelp().join(sep)) > hintsBudget) segments.pop();
-		const hintsStyled = truncateToWidth(withHelp().join(sep), hintsBudget, "");
+		const hintsStyled = truncateToWidth(chosenHints.styled, hintsBudget, "");
 		const hintsVisibleLen = visibleWidth(hintsStyled);
 		const fillerVisible = Math.max(0, hintsBudget - hintsVisibleLen);
 		const filler = " ".repeat(fillerVisible);
-		const acrossWidth = Math.max(0, width - leftEdgePad - visiblePillWidth);
+		const acrossWidth = Math.max(0, width - leftEdgePad - pillW);
 		const blankAcross = " ".repeat(acrossWidth);
 		const toastBudget = Math.max(0, acrossWidth - rightEdgePad);
 		const toast = toastText ? truncateToWidth(noticeDisplayText(toastText, toastBudget), toastBudget, "\u2026") : "";
@@ -279,9 +399,9 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 			: blankAcross;
 
 		return [
-			`${chromeBg} ${RESET}${compactDetailChrome ? "" : top}${chromeBg}${toastRow}${RESET}`,
-			`${chromeBg} ${RESET}${compactDetailChrome ? "" : mid}${chromeBg}${filler}${hintsStyled}${chromeBg}${" ".repeat(rightEdgePad)}${RESET}`,
-			`${chromeBg} ${RESET}${compactDetailChrome ? "" : bot}${chromeBg}${blankAcross}${RESET}`,
+			`${chromeBg} ${RESET}${top}${chromeBg}${toastRow}${RESET}`,
+			`${chromeBg} ${RESET}${mid}${chromeBg}${filler}${hintsStyled}${chromeBg}${" ".repeat(rightEdgePad)}${RESET}`,
+			`${chromeBg} ${RESET}${bot}${chromeBg}${blankAcross}${RESET}`,
 		].map((line) => fillBackground(line, width, chromeBg));
 	}
 

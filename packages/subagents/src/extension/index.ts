@@ -4,14 +4,16 @@ import * as path from "node:path";
 import {
 	type ExtensionAPI,
 	type ExtensionContext,
+	initTheme,
 	keyHintIfBound,
 	publishExtensionContextEffect,
 	type SessionEntry,
+	ToolBlock,
+	type ToolBlockStatus,
 	type ToolDefinition,
 } from "@bastani/atomic";
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import {
-	Box,
 	type Component,
 	Container,
 	Spacer,
@@ -53,7 +55,6 @@ import {
 import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.js";
 import { resumeAwaitingSubagentChildren } from "../runs/foreground/subagent-run-control.js";
 import { bindSubagentTaskResumer } from "../runs/foreground/subagent-task-resumer.ts";
-import { getArtifactsDir } from "../shared/artifacts.js";
 import { formatDuration, shortenPath } from "../shared/formatters.js";
 import { resolveCurrentSessionId } from "../shared/session-identity.js";
 import { subagentSessionRoot } from "../shared/session-root.js";
@@ -154,18 +155,6 @@ export { loadConfig } from "./config.js";
 function expandTilde(p: string): string {
 	return p.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p;
 }
-function isSlashResultRunning(result: { details?: Details }): boolean {
-	return (
-		result.details?.progress?.some((entry) => entry.status === "running") ||
-		result.details?.results.some((entry) => entry.progress?.status === "running") ||
-		false
-	);
-}
-function isSlashResultError(result: { details?: Details }): boolean {
-	return (
-		result.details?.results.some((entry) => entry.status === "error" && entry.progress?.status !== "running") || false
-	);
-}
 type SubagentToolRenderState = SubagentResultRenderState;
 function rebuildSlashResultContainer(
 	container: Container,
@@ -175,14 +164,7 @@ function rebuildSlashResultContainer(
 ): void {
 	container.clear();
 	container.addChild(new Spacer(1));
-	const boxTheme = isSlashResultRunning(result)
-		? "toolPendingBg"
-		: isSlashResultError(result)
-			? "toolErrorBg"
-			: "toolSuccessBg";
-	const box = new Box(1, 1, (text: string) => theme.bg(boxTheme, text));
-	box.addChild(renderSubagentResult(result, options, theme));
-	container.addChild(box);
+	container.addChild(renderSubagentResult(result, options, theme));
 }
 function createSlashResultComponent(
 	details: SlashMessageDetails,
@@ -216,43 +198,47 @@ export function renderSubagentNotification(
 	options: { expanded: boolean },
 	theme: ExtensionContext["ui"]["theme"],
 ): Component {
+	if (!(globalThis as Record<symbol, unknown>)[Symbol.for("@bastani/atomic:theme")]) {
+		initTheme("dark", false);
+	}
 	const content = typeof message.content === "string" ? message.content : "";
 	const details = (message.details as SubagentNotifyDetails | undefined) ?? parseSubagentNotifyContent(content);
 	if (!details) return new Text(content, 0, 0);
-	const icon =
+	const status: ToolBlockStatus =
 		details.status === "completed"
-			? theme.fg("success", "✓")
+			? "success"
 			: details.status === "interrupted" || details.status === "killed"
-				? theme.fg("warning", "■")
-				: theme.fg("error", "✗");
-	const parts: string[] = [];
-	if (details.taskInfo) parts.push(details.taskInfo);
-	if (details.durationMs !== undefined) parts.push(formatDuration(details.durationMs));
-	let text = `${icon} ${theme.bold(details.agent)} ${theme.fg("dim", details.status)}`;
-	if (parts.length > 0)
-		text += ` ${theme.fg("dim", "·")} ${parts.map((part) => theme.fg("dim", part)).join(` ${theme.fg("dim", "·")} `)}`;
+				? "stopped"
+				: "failure";
+	const meta: string[] = [];
+	if (details.taskInfo) meta.push(details.taskInfo);
+	if (details.durationMs !== undefined) meta.push(formatDuration(details.durationMs));
 	const trimmedPreview = details.resultPreview.trim();
 	const previewLines = options.expanded
 		? trimmedPreview.split("\n").filter((line) => line.trim())
 		: [trimmedPreview.split("\n", 1)[0] ?? ""].filter((line) => line.trim());
-	for (const line of previewLines.length > 0 ? previewLines : ["(no output)"]) {
-		text += `\n  ${theme.fg("dim", `⎿  ${line}`)}`;
-	}
+	const detailLines = (previewLines.length > 0 ? previewLines : ["(no output)"]).map((line) => theme.fg("dim", line));
 	if (!options.expanded && trimmedPreview.includes("\n")) {
 		const expandHint = keyHintIfBound("app.tools.expand", "full notification");
-		if (expandHint) text += `\n  ${expandHint}`;
+		if (expandHint) detailLines.push(theme.fg("dim", expandHint));
 	}
 	if (details.sessionLabel && details.sessionValue) {
-		text += `\n  ${theme.fg("muted", `${details.sessionLabel}: ${shortenPath(details.sessionValue)}`)}`;
+		detailLines.push(theme.fg("muted", `${details.sessionLabel}: ${shortenPath(details.sessionValue)}`));
 	}
 	const container = new Container();
 	container.addChild(new Spacer(1));
-	// Interrupted is the neutral terminal state, so it uses the pending background rather than success or error.
-	const boxTheme =
-		details.status === "completed" ? "toolSuccessBg" : details.status === "failed" ? "toolErrorBg" : "toolPendingBg";
-	const box = new Box(1, 1, (line: string) => theme.bg(boxTheme, line));
-	box.addChild(new Text(text, 0, 0));
-	container.addChild(box);
+	container.addChild(
+		new ToolBlock({
+			status,
+			title: new Text(
+				`${theme.fg("toolTitle", theme.bold(details.agent))} ${theme.fg("dim", details.status)}`,
+				0,
+				0,
+			),
+			...(meta.length > 0 ? { meta } : {}),
+			details: new Text(detailLines.join("\n"), 0, 0),
+		}),
+	);
 	return container;
 }
 class SubagentControlNoticeComponent implements Component {
@@ -310,11 +296,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			pi,
 			state,
 			config,
-			// Resolved on use: choosing it creates and verifies a private directory,
-			// which registration (every session start) should not pay for.
-			get tempArtifactsDir() {
-				return getArtifactsDir(null);
-			},
 			getSubagentSessionRoot: subagentSessionRoot,
 			expandTilde,
 			discoverAgents,

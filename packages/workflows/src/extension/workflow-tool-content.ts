@@ -12,14 +12,10 @@ import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import { fmtDuration, statusIcon } from "../tui/status-helpers.js";
 import type { WorkflowToolArgs } from "./public-types.js";
-import type { WorkflowInputEntry, WorkflowRegisteredToolResult, WorkflowToolResult } from "./render-result.js";
+import type { WorkflowRegisteredToolResult, WorkflowToolResult } from "./render-result.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import type { WorkflowRunStatusSummary, WorkflowStatusAwaitingInput } from "./workflow-status-summary.js";
 import { getWorkflowStatusRenderRuns } from "./workflow-status-summary.js";
-
-export function stripModelInputFields(inputs: readonly WorkflowInputEntry[]): WorkflowInputEntry[] {
-	return inputs.map(({ schema: _schema, validationDeferred: _validationDeferred, ...field }) => field);
-}
 
 function stringifyWorkflowToolResult(result: WorkflowRegisteredToolResult): string {
 	return JSON.stringify(result, null, 2);
@@ -293,28 +289,24 @@ function renderStageToolContent(result: Extract<WorkflowToolResult, { action: "s
 }
 
 export function renderWorkflowToolContent(result: WorkflowRegisteredToolResult, args: WorkflowToolArgs): string {
-	const shaped =
-		!("code" in result && result.code === "WORKFLOW_TIMEOUT") && result.action === "inputs"
-			? { ...result, inputs: stripModelInputFields(result.inputs) }
-			: result;
-	if (args.format === "json") return stringifyWorkflowToolResult(shaped);
-	if ("code" in shaped && shaped.code === "WORKFLOW_TIMEOUT") return stringifyWorkflowToolResult(shaped);
-	switch (shaped.action) {
+	if (args.format === "json") return stringifyWorkflowToolResult(result);
+	if ("code" in result && result.code === "WORKFLOW_TIMEOUT") return stringifyWorkflowToolResult(result);
+	switch (result.action) {
 		case "transcript":
-			return renderTranscriptToolContent(shaped);
+			return renderTranscriptToolContent(result);
 		case "stages":
-			return renderStagesToolContent(shaped);
+			return renderStagesToolContent(result);
 		case "stage":
-			return renderStageToolContent(shaped);
+			return renderStageToolContent(result);
 		case "answer":
 		case "pause":
 		case "reload":
 		case "quit":
 		case "resume":
 		case "fork":
-			return compactWorkflowToolMessage(shaped);
+			return compactWorkflowToolMessage(result);
 		case "status":
-			return renderStatusToolContent(shaped);
+			return renderStatusToolContent(result);
 		case "list":
 		case "statusDetail":
 		case "statusSummary":
@@ -322,7 +314,7 @@ export function renderWorkflowToolContent(result: WorkflowRegisteredToolResult, 
 		case "get":
 		case "run":
 		case "models":
-			return stringifyWorkflowToolResult(shaped);
+			return stringifyWorkflowToolResult(result);
 	}
 }
 
@@ -330,7 +322,7 @@ export function workflowGetResult(runtime: ExtensionRuntime, args: WorkflowToolA
 	const workflow = args.workflow ?? "";
 	const def = runtime.registry.get(workflow);
 	if (!def) return { action: "get", workflow, error: `Workflow not found: "${workflow}"` };
-	const inputs = stripModelInputFields(deriveInputFields(def.inputs));
+	const inputs = deriveInputFields(def.inputs);
 	return {
 		action: "get",
 		workflow: def.normalizedName,

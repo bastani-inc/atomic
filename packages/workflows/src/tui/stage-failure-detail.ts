@@ -157,9 +157,12 @@ interface StageFailureLogSections {
 }
 
 function stageFailureLogSections(
-	stage: Pick<StageSnapshot, "error" | "failureMessage" | "failureDetail" | "failureCode">,
+	stage: Pick<StageSnapshot, "error" | "failureMessage" | "failureDetail" | "failureCode"> &
+		Partial<Pick<StageSnapshot, "status" | "result">>,
 ): StageFailureLogSections {
-	const message = trimLeadingWhitespace(stage.failureMessage ?? stage.error ?? "");
+	const rawMessage =
+		stage.failureMessage ?? stage.error ?? (stage.status === "completed" ? stage.result : undefined) ?? "";
+	const message = trimLeadingWhitespace(rawMessage);
 	const detailLines = stage.failureDetail
 		? capLogLines(
 				serializedErrorLines(
@@ -192,13 +195,13 @@ export function stageFailureLogLines(
 	const lines = [...messageLines];
 	if (detailLines.length > 0) lines.push("", ...detailLines);
 	if (lines.length === 0) lines.push("No log was recorded for this stage.");
-	return lines.map((line) => sanitizeToolTitleText(inertDisplayLine(line)));
+	return lines.map((line) => inertDisplayLine(sanitizeToolTitleText(line)));
 }
 
 function wrapLogLine(part: string, room: number, partLimit: number): string[] {
 	if (part.length === 0) return [""];
 	const sanitized = boundedToolText(
-		sanitizeToolDisplayText(inertDisplayLine(boundedToolText(part, partLimit))),
+		inertDisplayLine(sanitizeToolDisplayText(boundedToolText(part, partLimit))),
 		partLimit,
 	);
 	const trimmed = trimLeadingWhitespace(sanitized);
@@ -252,18 +255,30 @@ function stageTokensText(stage: Pick<StageSnapshot, "modelAttempts">): string {
 	return total > 0 ? ` · ${formatStageTokens(total)}` : "";
 }
 
+function stageCompletedSummary(stage: Pick<StageSnapshot, "result">): string | undefined {
+	const text = boundedToolText(trimLeadingWhitespace(stage.result ?? ""), TOOL_PAYLOAD_VALUE_LIMIT);
+	return text
+		.split(/\r?\n/)
+		.map((part) => part.trim())
+		.find((part) => part.length > 0);
+}
+
 export function renderStageFailureDetailLines(stage: StageSnapshot, opts: StageFailureDetailOpts): string[] {
 	const { theme } = opts;
 	const width = Math.max(1, Math.floor(opts.width));
-	const error = hexToAnsi(theme.error);
+	const isCompleted = stage.status === "completed";
+	const statusTone = hexToAnsi(isCompleted ? theme.success : theme.error);
+	const statusGlyph = isCompleted ? "✓" : "✗";
+	const statusWord = isCompleted ? "completed" : "failed";
+	const elapsedPrefix = isCompleted ? "in" : "after";
 	const text = hexToAnsi(theme.text);
 	const muted = hexToAnsi(theme.textMuted);
 	const elapsed = elapsedStageMs(stage);
-	const after = elapsed === undefined ? "" : ` after ${fmtDuration(elapsed)}`;
+	const after = elapsed === undefined ? "" : ` ${elapsedPrefix} ${fmtDuration(elapsed)}`;
 	const tokens = stageTokensText(stage);
 	const indent = "  ";
 	const room = Math.max(1, width - indent.length);
-	const title = `${indent}${error}${BOLD}✗ ${inertDisplayLine(boundedToolTitleText(stage.name, width * 4))}${RESET}${muted} · failed${after}${tokens}${RESET}`;
+	const title = `${indent}${statusTone}${BOLD}${statusGlyph} ${inertDisplayLine(boundedToolTitleText(stage.name, width * 4))}${RESET}${muted} · ${statusWord}${after}${tokens}${RESET}`;
 	if (opts.logs) {
 		const partLimit = Math.min(TOOL_PAYLOAD_VALUE_LIMIT, room * MAX_FAILURE_LOG_ROWS);
 		const markerRow = truncateToWidth(TOOL_PAYLOAD_TRUNCATION_MARKER, room, "…");
@@ -303,11 +318,12 @@ export function renderStageFailureDetailLines(stage: StageSnapshot, opts: StageF
 			}),
 		];
 	}
-	const label = "Reason";
+	const label = isCompleted ? "Result" : "Reason";
 	const reasonRoom = Math.max(1, room - label.length - 3);
-	const firstLine = stageFailureReason(stage);
+	const firstLine = isCompleted ? stageCompletedSummary(stage) : stageFailureReason(stage);
+	if (firstLine === undefined) return [truncateToWidth(title, width)];
 	const slicedReason = sliceHead(firstLine, room * 3);
-	const wrappedReason = wrapPlainText(sanitizeToolTitleText(inertDisplayLine(slicedReason)), reasonRoom);
+	const wrappedReason = wrapPlainText(inertDisplayLine(sanitizeToolTitleText(slicedReason)), reasonRoom);
 	const truncatedReason = slicedReason.length < firstLine.length || wrappedReason.length > MAX_FAILURE_REASON_ROWS;
 	const reason = wrappedReason.slice(0, MAX_FAILURE_REASON_ROWS);
 	if (truncatedReason && reason.length > 0) {

@@ -206,33 +206,13 @@ export function registerContentTools(pi: ExtensionAPI, deps: RegisterContentTool
 		},
 
 		renderCall(args, theme) {
-			const { url, urls, prompt, timestamp, frames, model } = args as { url?: string; urls?: string[]; prompt?: string; timestamp?: string; frames?: number; model?: string };
-			const urlList = urls ?? (url ? [url] : []);
-			if (urlList.length === 0) {
-				return new Text(theme.fg("toolTitle", theme.bold("fetch ")) + theme.fg("error", "(no URL)"), 0, 0);
-			}
-			const lines: string[] = [];
-			if (urlList.length === 1) {
-				const display = urlList[0].length > 60 ? urlList[0].slice(0, 57) + "..." : urlList[0];
-				lines.push(theme.fg("toolTitle", theme.bold("fetch ")) + theme.fg("accent", display));
-			} else {
-				lines.push(theme.fg("toolTitle", theme.bold("fetch ")) + theme.fg("accent", `${urlList.length} URLs`));
-				for (const u of urlList.slice(0, 5)) {
-					const display = u.length > 60 ? u.slice(0, 57) + "..." : u;
-					lines.push(theme.fg("muted", "  " + display));
-				}
-				if (urlList.length > 5) {
-					lines.push(theme.fg("muted", `  ... and ${urlList.length - 5} more`));
-				}
-			}
-			if (timestamp) lines.push(theme.fg("dim", "  timestamp: ") + theme.fg("warning", timestamp));
-			if (typeof frames === "number") lines.push(theme.fg("dim", "  frames: ") + theme.fg("warning", String(frames)));
-			if (prompt) {
-				const display = prompt.length > 250 ? prompt.slice(0, 247) + "..." : prompt;
-				lines.push(theme.fg("dim", "  prompt: ") + theme.fg("muted", `"${display}"`));
-			}
-			if (model) lines.push(theme.fg("dim", "  model: ") + theme.fg("warning", model));
-			return new Text(lines.join("\n"), 0, 0);
+			const { url, urls } = (args as { url?: string; urls?: string[] } | undefined) ?? {};
+			const urlList = Array.isArray(urls) ? urls : typeof url === "string" ? [url] : [];
+			const label = urlList
+				.map((u) => String(u ?? "").trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, ""))
+				.filter(Boolean)
+				.join(", ");
+			return new Text(`${theme.fg("toolTitle", theme.bold("Fetch"))}${theme.fg("text", `(${label})`)}`, 0, 0);
 		},
 
 		renderResult: renderFetchContentResult,

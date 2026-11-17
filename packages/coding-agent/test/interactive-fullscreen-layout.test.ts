@@ -11,7 +11,7 @@ type StackLike = {
 	children: Component[];
 };
 
-test("InteractiveMode.init builds the fullscreen dock and shares navigation-aware pending previews with flat mounts (#5245)", async () => {
+test("InteractiveMode.init builds the fullscreen dock and shares navigation-aware pending previews with flat mounts (#5224)", async () => {
 	const { context, terminal, tui, initPromise, resolveTheme, restoreOffline } = createProductionFullscreenContext();
 
 	try {

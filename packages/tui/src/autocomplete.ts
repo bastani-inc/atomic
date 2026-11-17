@@ -263,6 +263,7 @@ export interface SlashCommand {
 export interface AutocompleteSuggestions {
 	items: AutocompleteItem[];
 	prefix: string; // What we're matching against (e.g., "/" or "src/")
+	completeOnConfirm?: boolean;
 }
 
 export interface AutocompleteProvider {

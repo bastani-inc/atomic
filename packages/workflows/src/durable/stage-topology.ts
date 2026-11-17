@@ -1,3 +1,4 @@
+import { isWorkflowPromptStage } from "../shared/stage-prompt.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import {
@@ -58,6 +59,7 @@ export function durableStageCheckpointMetadata(
 	run?: DurableStageRunTopology,
 	sourceOrder?: number,
 ): Partial<DurableStageCheckpoint> {
+	const stageDialog = stage.promptFootprint?.source === "stage-dialog";
 	return {
 		topology: {
 			version: DURABLE_STAGE_TOPOLOGY_VERSION,
@@ -66,12 +68,20 @@ export function durableStageCheckpointMetadata(
 			...(stage.intercomGroup !== undefined ? { intercomGroup: stage.intercomGroup } : {}),
 			...(stage.executionOrder !== undefined ? { order: stage.executionOrder } : {}),
 			...(sourceOrder !== undefined && sourceOrder >= 0 ? { sourceOrder } : {}),
-			...(stage.promptFootprint !== undefined ? { occurrenceKey: stage.id } : {}),
+			...(isWorkflowPromptStage(stage) ? { occurrenceKey: stage.id } : {}),
 			status: stage.status,
 			...(run !== undefined ? { run: { ...run } } : {}),
 		},
 		...(stage.startedAt !== undefined ? { startedAt: stage.startedAt } : {}),
 		...(stage.endedAt !== undefined ? { endedAt: stage.endedAt } : {}),
+		...(stageDialog && stage.status === "awaiting_input" && stage.awaitingInputSince !== undefined
+			? { awaitingInputSince: stage.awaitingInputSince }
+			: {}),
+		...(stageDialog && stage.status === "awaiting_input" && stage.pendingPrompt !== undefined
+			? { pendingPrompt: structuredClone(stage.pendingPrompt) }
+			: {}),
+		...(stageDialog ? { promptFootprint: structuredClone(stage.promptFootprint) } : {}),
+		...(stageDialog && stage.promptAnswerState !== undefined ? { promptAnswerState: stage.promptAnswerState } : {}),
 		...(stage.result !== undefined ? { result: stage.result } : {}),
 		...(stage.sessionId !== undefined ? { sessionId: stage.sessionId } : {}),
 		...(stage.sessionFile !== undefined ? { sessionFile: stage.sessionFile } : {}),
@@ -82,7 +92,6 @@ export function durableStageCheckpointMetadata(
 		...(stage.attemptedModels !== undefined ? { attemptedModels: [...stage.attemptedModels] } : {}),
 		...(stage.modelAttempts !== undefined ? { modelAttempts: [...stage.modelAttempts] } : {}),
 		...(stage.rateLimits !== undefined ? { rateLimits: [...stage.rateLimits] } : {}),
-		...(stage.routerSelection !== undefined ? { routerSelection: stage.routerSelection } : {}),
 		...(stage.structured !== undefined ? { structured: stage.structured } : {}),
 		...(stage.artifacts !== undefined ? { artifacts: [...stage.artifacts] } : {}),
 		...(stage.warnings !== undefined ? { warnings: [...stage.warnings] } : {}),

@@ -89,8 +89,8 @@ test(
 	async () => {
 		withStorageEnvironment(JSON.stringify({ path: "process.sqlite", prefix: "process_" }));
 		const { root } = await startBroker();
-		await waitForBrokerLease(join(root, "process.sqlite"), "process_");
-		assert.equal(existsSync(join(root, "settings.sqlite")), false);
+		await waitForBrokerLease(join(root, "agent", "process.sqlite"), "process_");
+		assert.equal(existsSync(join(root, "agent", "settings.sqlite")), false);
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
@@ -102,9 +102,9 @@ test(
 		setCliStorageSelection({ flag: "--storage", value: JSON.stringify({ path: "cli.sqlite", prefix: "cli_" }) });
 		cleanups.push(() => setCliStorageSelection(undefined));
 		const { root } = await startBroker();
-		await waitForBrokerLease(join(root, "cli.sqlite"), "cli_");
-		assert.equal(existsSync(join(root, "environment.sqlite")), false);
-		assert.equal(existsSync(join(root, "settings.sqlite")), false);
+		await waitForBrokerLease(join(root, "agent", "cli.sqlite"), "cli_");
+		assert.equal(existsSync(join(root, "agent", "environment.sqlite")), false);
+		assert.equal(existsSync(join(root, "agent", "settings.sqlite")), false);
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
@@ -114,7 +114,7 @@ test(
 	async () => {
 		withStorageEnvironment(undefined);
 		const { root } = await startBroker();
-		await waitForBrokerLease(join(root, "settings.sqlite"), "settings_");
+		await waitForBrokerLease(join(root, "agent", "settings.sqlite"), "settings_");
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );

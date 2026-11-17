@@ -5,6 +5,7 @@ import { describe, it, vi } from "vitest";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
+import type { GraphKeyTier } from "../../packages/workflows/src/tui/graph-view-render-helpers.js";
 import type { GraphViewOpts } from "../../packages/workflows/src/tui/graph-view-types.js";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import * as h from "./overlay-graph-helpers.js";
@@ -74,8 +75,11 @@ function overlayText(graph: GraphView, width = 120): string {
 }
 
 class GraphViewWithoutRunDetailsKey extends GraphView {
-	protected override _graphKeys(compact = false): NavKey[] {
-		return super._graphKeys(compact).filter((entry) => entry.keys !== "o");
+	protected override _graphKeys(
+		compact: boolean | GraphKeyTier = "full",
+		frameContext?: { readonly run: RunSnapshot | null; readonly focused: StageSnapshot | undefined },
+	): NavKey[] {
+		return super._graphKeys(compact, frameContext).filter((entry) => entry.keys !== "o");
 	}
 }
 
@@ -114,19 +118,22 @@ describe("workflow graph, run-details, and stage-detail hints (#5224)", () => {
 		filtered.handleInput("f");
 
 		try {
-			assert.match(hintLine(failed, 80), /↵ open failure detail/);
+			assert.match(hintLine(failed, 80), /↵/);
+			assert.match(hintLine(failed, 200), /↵ open failure detail/);
 			for (const width of [110, 120]) {
-				assert.match(hintLine(failed, width), /h hide/, `failed stage at width ${width}`);
+				assert.match(hintLine(failed, width), /\bh\b/, `failed stage at width ${width}`);
 			}
-			assert.match(hintLine(running, 90), /↵ open stage chat/);
-			assert.match(hintLine(running, 90), /x stop stage/);
+			assert.match(hintLine(running, 90), /↵/);
+			assert.match(hintLine(running, 90), /\bx\b/);
+			assert.match(hintLine(running, 200), /↵ open stage chat/);
+			assert.match(hintLine(running, 200), /x stop stage/);
 			for (const width of [125, 140]) {
-				assert.match(hintLine(running, width), /h hide/, `running stage at width ${width}`);
+				assert.match(hintLine(running, width), /\bh\b/, `running stage at width ${width}`);
 			}
-			assert.match(hintLine(running, 160), /h hide {2}· {2}o run details {2}· {2}\? keys$/);
+			assert.match(hintLine(running, 200), /h hide {2}· {2}o run details$/);
 			for (const width of [110, 120]) {
-				assert.match(hintLine(filtered, width), /↵ open stage chat/, `filtered stage at width ${width}`);
-				assert.match(hintLine(filtered, width), /x stop stage/, `filtered stage at width ${width}`);
+				assert.match(hintLine(filtered, width), /↵/, `filtered stage at width ${width}`);
+				assert.match(hintLine(filtered, width), /\bx\b/, `filtered stage at width ${width}`);
 			}
 		} finally {
 			failed.dispose();
@@ -161,11 +168,15 @@ describe("workflow graph, run-details, and stage-detail hints (#5224)", () => {
 			const { withO, withoutO } = makePair(stages);
 			try {
 				for (let width = 40; width <= 200; width++) {
-					const headEntries = hintLine(withO, width).split(/ {2}· {2}/);
-					const baseEntries = hintLine(withoutO, width).split(/ {2}· {2}/);
+					const headEntries = hintLine(withO, width).split(/\s+·\s+/);
+					const baseEntries = hintLine(withoutO, width).split(/\s+·\s+/);
 					const missing = baseEntries.filter((entry) => !headEntries.includes(entry));
 					assert.deepEqual(missing, [], `width ${width}: ${headEntries.join(" · ")}`);
-					assert.equal(headEntries.at(-1), "? keys", `width ${width} ends with ? keys`);
+					assert.equal(
+						headEntries.some((entry) => /^\?(?: keys)?$/.test(entry)),
+						baseEntries.some((entry) => /^\?(?: keys)?$/.test(entry)),
+						`width ${width} preserves base help visibility`,
+					);
 				}
 			} finally {
 				withO.dispose();
@@ -311,7 +322,7 @@ describe("workflow graph, run-details, and stage-detail hints (#5224)", () => {
 				hint,
 				/esc back to graph {2}· {2}→\/↵ open {2}· {2}l logs {2}· {2}↑↓ pgup\/pgdn scroll {2}· {2}\? keys/,
 			);
-			assert.equal(hint80, "esc back  ·  →/↵ open  ·  l logs  ·  ↑↓ pgup/pgdn scroll  ·  ? keys");
+			assert.equal(hint80, "esc back to graph · →/↵ open · l logs · ↑↓ pgup/pgdn scroll · ? keys");
 			assert.doesNotMatch(hint, /↑↓ select/);
 			assert.match(help, /→\/↵\s+open/);
 			assert.match(help, /↑↓ pgup\/pgdn\s+scroll/);
@@ -419,10 +430,7 @@ describe("workflow graph, run-details, and stage-detail hints (#5224)", () => {
 				hintLine(full, 160),
 				"r retry from stage  ·  f fork from stage  ·  t transcript  ·  l summary  ·  esc back  ·  ↑↓ pgup/pgdn scroll  ·  ? keys",
 			);
-			assert.equal(
-				hintLine(full, 80),
-				"r retry · f fork · t chat · l summary · esc back · ↑↓ pgup/pgdn scroll · ? keys",
-			);
+			assert.equal(hintLine(full, 80), "r retry · f fork · t chat · l summary · esc back · ↑↓ · ? keys");
 			const logBefore = bodyText(full);
 			full.handleInput(DOWN);
 			assert.notEqual(bodyText(full), logBefore);
@@ -501,7 +509,7 @@ describe("workflow graph, run-details, and stage-detail hints (#5224)", () => {
 		}
 	});
 
-	it("strips ANSI escape sequences in statusline notices before escaping control characters and truncating (#5224)", async () => {
+	it("shows ANSI escape sequences and bidi controls as printable data before truncating notices (#5224)", async () => {
 		const shortGraph = view(
 			[stage("A", "running")],
 			{ status: "running" },
@@ -525,8 +533,8 @@ describe("workflow graph, run-details, and stage-detail hints (#5224)", () => {
 			shortGraph.handleInput("x");
 			await new Promise<void>((resolve) => setTimeout(resolve, 0));
 			const shortToast = toastLine(shortGraph, 80);
-			assert.match(shortToast, /boom\s+<U\+202E>!/);
-			assert.doesNotMatch(shortToast, /\\x1b/);
+			assert.match(shortToast, /\\x1b\[31mboom\\x1b\[39m\s+<U\+202E>!/);
+			assert.doesNotMatch(shortToast, /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/);
 			assert.doesNotMatch(shortToast, /…$/);
 
 			longGraph.handleInput("x");

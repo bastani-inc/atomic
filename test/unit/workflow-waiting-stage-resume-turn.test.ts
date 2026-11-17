@@ -243,7 +243,7 @@ describe("a resumed session that returns without the results in its transcript (
 			toolCallIds: ["c1", "c2"],
 			phase: "resume-turn",
 		});
-		assert.ok(error.hint.includes(`/workflow resume ${RUN_ID}`), error.hint);
+		assert.ok(error.hint.includes(`Resume run ${RUN_ID} from /workflows or /resume`), error.hint);
 		assert.ok(!rig.log.includes("resultsInTranscript"));
 	});
 

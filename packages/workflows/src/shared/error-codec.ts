@@ -155,8 +155,8 @@ export interface SerializedError {
 	/** A storage error's failed rollback, carried as the storage layer's own serializer carries it. */
 	readonly rollbackCause?: SerializedError;
 	/**
-	 * The members of a family's own JSON form that the envelope has no member for, such as a workspace error's `reason`
-	 * or a background compaction error's `phase`.
+	 * The members of a family's own JSON form that the envelope has no member for, such as a workspace error's
+	 * `reason`.
 	 */
 	readonly extra?: SerializedErrorFields;
 }

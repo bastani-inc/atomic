@@ -15,16 +15,12 @@ import {
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import {
 	isProtectedStreamingCustomMessage,
-	queueProtectedStreamingCustomMessage,
+	queueHeldCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
 import type { PromptDisposition, PromptOptions, QueuedInputDisposition } from "./agent-session-types.js";
-import {
-	formatNoApiKeyFoundMessage,
-	formatNoModelSelectedMessage,
-	formatUnresolvedModelMessage,
-} from "./auth-guidance.ts";
+import { formatNoModelSelectedMessage, formatUnresolvedModelMessage } from "./auth-guidance.ts";
 import { runCallback } from "./callback-activity.ts";
-import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
+import type { CustomMessage } from "./messages.ts";
 import { expandPromptTemplate } from "./prompt-templates.ts";
 import {
 	isInsideInputHook,
@@ -47,6 +43,19 @@ import { ToolDetachmentError } from "./tool-detachment-errors.ts";
 
 const customPreparations = new WeakMap<AgentSession, Promise<void>>();
 const openRuns = new WeakMap<AgentSession, number>();
+const messageAdmissionHolds = new WeakMap<AgentSession, Set<object>>();
+
+function holdSubagentMessageAdmission(session: AgentSession): () => void {
+	if (session._subagentMessageAdmission === undefined) return () => {};
+	const holds = messageAdmissionHolds.get(session) ?? new Set<object>();
+	messageAdmissionHolds.set(session, holds);
+	const hold = {};
+	holds.add(hold);
+	return () => {
+		if (!holds.delete(hold)) return;
+		if (holds.size === 0) messageAdmissionHolds.delete(session);
+	};
+}
 
 function openRun(session: AgentSession): void {
 	openRuns.set(session, (openRuns.get(session) ?? 0) + 1);
@@ -145,6 +154,7 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 		throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
 	const owner = resolveWorkflowStageDeliveryTarget(this);
 	if (owner !== this) return owner.prompt(text, options);
+	if (subagentExecutionEnded(this)) throw subagentExecutionEndedError();
 	if (this._isEmittingAgentSettled && !queuesDuringAgentSettled(this, options)) {
 		// A run started by an agent_settled handler waits until every settled handler completes.
 		deferSettledAction(this, async () => await this.prompt(text, options));
@@ -330,6 +340,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		reservedPreflight = false;
 		this._promptPreflightCount--;
 	};
+	const releaseMessageAdmission = holdSubagentMessageAdmission(this);
 	try {
 		// Authorize workflow delivery before commands or input extensions can perform side effects.
 		// A later terminal transition cannot retroactively reject input accepted at this boundary.
@@ -499,14 +510,15 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			// the real load failure instead so configured providers are not falsely
 			// reported as unauthenticated (issue #1431).
 			const isOAuth = this._modelRuntime.isUsingOAuth(this.model.provider);
-			if (isOAuth) {
+			if (isOAuth && this._fallbackModels.length === 0) {
 				throw new Error(
 					`Authentication failed for "${this.model.provider}". ` +
 						`Credentials may have expired or network is unavailable. ` +
 						`Run '/login ${this.model.provider}' to re-authenticate.`,
 				);
 			}
-			throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
+			await this._selectModelWithCredentials();
+			assertCurrent();
 		}
 
 		this._isPreparingRun = "user";
@@ -582,6 +594,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 	} finally {
 		releasePreflight();
 		admission.release();
+		releaseMessageAdmission();
 		// A started run is now preparing, so held input admitted next queues behind it.
 		if (held) finishHeldInput(this, held);
 	}
@@ -655,6 +668,7 @@ export async function _runAgentPrompt(
 			preparation.resolve();
 		}
 	};
+	const releaseMessageAdmission = holdSubagentMessageAdmission(this);
 	this._activePromptCount += 1;
 	openRun(this);
 	try {
@@ -665,7 +679,8 @@ export async function _runAgentPrompt(
 				return;
 			}
 		}
-		const pendingPriority = preparePriorityContinuation(this);
+		releaseMessageAdmission();
+		const pendingPriority = preparePriorityContinuation(this, true);
 		if (pendingPriority) await pendingPriority;
 		if (this._agentRunAbortRequested) {
 			if (this.agent.state.isStreaming || this._queuedMessagesPaused) {
@@ -686,8 +701,7 @@ export async function _runAgentPrompt(
 		// (#4580). It joins the turn the hand-back continues, as input does for a paused queue.
 		if (!prepared && holdsTurnsForDetachedResults(this)) {
 			const items = Array.isArray(messages) ? messages : [messages];
-			const keys = new Set<string>();
-			for (const message of items) await holdForDetachedResults(this, message, keys);
+			await holdForDetachedResults(this, items);
 			return;
 		}
 		if (customMessage?.role === "custom") {
@@ -760,28 +774,23 @@ export async function _runAgentPrompt(
 		releasePreparation();
 		if (ownsPreparation && !preparation) this._isPreparingRun = false;
 		this._runSystemPromptOptions = undefined;
+		releaseMessageAdmission();
 		await settleAgentRun(this);
 	}
 }
 
-/**
- * Hold a delivery for the turn the hand-back continues. An unprotected custom message gets a durable card and a hidden
- * turn, like a protected delivery, so it survives the session being released before the results arrive (#4580). The
- * messages of one batch share an admission key, and a card is found again by its key, so only the first of them keeps it.
- */
-async function holdForDetachedResults(session: AgentSession, message: AgentMessage, keys: Set<string>): Promise<void> {
-	if (message.role !== "custom" || isProtectedStreamingCustomMessage(session, message)) {
+async function holdForDetachedResults(session: AgentSession, messages: AgentMessage[]): Promise<void> {
+	let custom: CustomMessage[] = [];
+	for (const message of messages) {
+		if (message.role === "custom" && !isProtectedStreamingCustomMessage(session, message)) {
+			custom.push(message);
+			continue;
+		}
+		if (custom.length > 0) await queueHeldCustomMessages(session, custom, "steer");
+		custom = [];
 		session._queueAgentMessage(message, "steer");
-		return;
 	}
-	const { stageAdmissionKey } = message as StageAdmittedCustomMessage;
-	const repeated = stageAdmissionKey !== undefined && keys.has(stageAdmissionKey);
-	if (stageAdmissionKey !== undefined) keys.add(stageAdmissionKey);
-	await queueProtectedStreamingCustomMessage(
-		session,
-		repeated ? ({ ...message, stageAdmissionKey: undefined } as StageAdmittedCustomMessage) : message,
-		"steer",
-	);
+	if (custom.length > 0) await queueHeldCustomMessages(session, custom, "steer");
 }
 
 async function settleAgentRun(session: AgentSession, keepMessageAdmissionOpen = false): Promise<void> {
@@ -817,9 +826,14 @@ async function finishAgentRun(session: AgentSession, keepMessageAdmissionOpen = 
 		// Runs deferred by agent_settled handlers start only after every settled handler completed.
 		// Guarded because prompt-handshake suites drive this function on a synthetic session.
 		const deferred = session._deferredSettledActions?.splice(0) ?? [];
+		const releaseMessageAdmission = deferred.length > 0 ? holdSubagentMessageAdmission(session) : () => {};
 		try {
-			for (const action of deferred) await action();
+			for (const [index, action] of deferred.entries()) {
+				if (index === deferred.length - 1) releaseMessageAdmission();
+				await action();
+			}
 		} finally {
+			releaseMessageAdmission();
 			if (session._activePromptCount === 0) session._subagentPolicy?.onTurnDrained?.();
 		}
 	}
@@ -874,14 +888,69 @@ async function settleSubagentMessages(session: AgentSession, keepMessageAdmissio
 	}
 	// A turn that settles before the child's execution gave it its task, such as one an extension's interrupt started
 	// while the task was still being sent, leaves admission open for that task.
-	if (!keepMessageAdmissionOpen && session._subagentPolicy?.taskPending?.() !== true) admission.seal();
+	if (
+		!keepMessageAdmissionOpen &&
+		session._subagentPolicy?.taskPending?.() !== true &&
+		(session._deferredSettledActions?.length ?? 0) === 0 &&
+		!messageAdmissionHolds.has(session)
+	)
+		admission.seal();
+}
+
+function subagentExecutionEnded(session: AgentSession): boolean {
+	const admission = session._subagentMessageAdmission;
+	return (
+		admission !== undefined &&
+		!admission.isOpen() &&
+		!session._queuedMessagesPaused &&
+		!session._agentRunAbortRequested
+	);
+}
+
+function subagentExecutionEndedError(): Error {
+	return new Error("Subagent execution is terminal and cannot accept messages");
+}
+
+function awaitsSubagentAnswer(
+	session: AgentSession,
+	admission: NonNullable<AgentSession["_subagentMessageAdmission"]>,
+): boolean {
+	if (
+		session._queuedMessagesPaused ||
+		session._persistenceFailure !== undefined ||
+		session._stopAfterTurnBlockedContinuation ||
+		session._disposed ||
+		sessionGenerationClosing.has(session) ||
+		sessionLifetime(session).aborted ||
+		holdsTurnsForDetachedResults(session)
+	)
+		return false;
+	return admission.hasPendingDeliveries() || session._priorityInterruptPending || session.agent.hasQueuedMessages();
+}
+
+export function _sealMessageAdmissionIfDrained(this: AgentSession): boolean {
+	if (
+		this.isStreaming ||
+		this._activePromptCount > 0 ||
+		this._pendingInterruptDeliveries > 0 ||
+		messageAdmissionHolds.has(this)
+	)
+		return false;
+	const admission = this._subagentMessageAdmission;
+	if (admission === undefined || !admission.isOpen() || holdsTurnsForDetachedResults(this)) return true;
+	if (awaitsSubagentAnswer(this, admission)) {
+		void this._runAgentContinuation(async () => {}, "settle").catch(() => {});
+		return false;
+	}
+	admission.seal();
+	return true;
 }
 
 export async function _runAgentContinue(this: AgentSession): Promise<void> {
 	if (this._agentRunAbortRequested || sessionGenerationClosing.has(this) || sessionLifetime(this).aborted) return;
 	// Nothing continues past a detached call that has no result yet; the hand-back continues the turn (#4580).
 	if (holdsTurnsForDetachedResults(this)) return;
-	await this.agent.continue();
+	await this._continueAgentAfterCompactionCheck();
 	await this.waitForRetry();
 	await this._continueQueuedAgentMessages();
 }
@@ -915,7 +984,7 @@ export async function _runAgentContinuation(
 			if (this._disposed || lifetime.aborted || sessionGenerationClosing.has(this))
 				throw sessionClosedForDetachedTurn(this);
 			if (mode === "recovery") await this._continueQueuedAgentMessages();
-			else if (mode === "continue") await this.agent.continue();
+			else if (mode === "continue") await this._continueAgentAfterCompactionCheck();
 			await this.waitForRetry();
 			if (lifetime.aborted || sessionGenerationClosing.has(this)) return;
 			await this._continueQueuedAgentMessages();
@@ -929,14 +998,17 @@ export async function _runAgentContinuation(
 	});
 }
 
-/** Restore priority input the moment the native loop can poll it again. */
-function preparePriorityContinuation(session: AgentSession): Promise<void> | undefined {
+/**
+ * Restore priority input the moment the native loop can poll it again. `startsOwnTurn` marks a prompt run's own
+ * start, which skips the wait when its message delivery started it and awaits it.
+ */
+function preparePriorityContinuation(session: AgentSession, startsOwnTurn = false): Promise<void> | undefined {
 	const boundary = session._subagentMessageAdmission ?? session._workflowStageAdmission;
 	// Explicit SDK interrupts own a native turn and the shared hold. An admitted
 	// receiver's task must join that owner before checking its priority input;
 	// otherwise it can settle before the interrupt finalizer restores the queue.
 	if (boundary && session._pendingInterruptDeliveries > 0) {
-		return session._interruptDeliveryQueue.then(() => preparePriorityContinuation(session));
+		return session._interruptDeliveryQueue.then(() => preparePriorityContinuation(session, startsOwnTurn));
 	}
 	const restore = (): void => {
 		if (!session._priorityInterruptPending) return;
@@ -944,14 +1016,15 @@ function preparePriorityContinuation(session: AgentSession): Promise<void> | und
 		session._abortPreparedRunAtStart = false;
 		session._restoreAndClearActiveInterruptQueueHold();
 	};
-	// Keep the idle prompt start synchronous unless a producer commit is still in flight.
-	if (!boundary?.hasMessageDeliveries()) {
+	// Keep the idle prompt start synchronous unless a producer commit is still in flight. A turn its own delivery
+	// started and awaits skips the wait: that delivery is the one in flight, and the rest are queued behind it.
+	if (!boundary?.hasMessageDeliveries() || (startsOwnTurn && boundary.startsAwaitedTurn())) {
 		restore();
 		return undefined;
 	}
 	// A producer can enqueue an explicit SDK interrupt while this await yields.
 	// Recheck its ownership before restoring the shared hold.
-	return boundary.waitForMessageDeliveries().then(() => preparePriorityContinuation(session));
+	return boundary.waitForMessageDeliveries().then(() => preparePriorityContinuation(session, startsOwnTurn));
 }
 
 export async function _continueQueuedAgentMessages(this: AgentSession): Promise<void> {
@@ -975,7 +1048,7 @@ export async function _continueQueuedAgentMessages(this: AgentSession): Promise<
 			!this._queuedMessagesPaused &&
 			this.agent.hasQueuedMessages()
 		) {
-			await this.agent.continue();
+			await this._continueAgentAfterCompactionCheck();
 			await this.waitForRetry();
 			await this._agentEventQueue;
 			await preparePriorityContinuation(this);
@@ -1104,9 +1177,21 @@ async function queueUserInput(
 	assertSessionOpen(session);
 	const owner = resolveWorkflowStageDeliveryTarget(session);
 	if (owner !== session) return queueUserInput(owner, text, images, behavior, source, expandPromptTemplates);
-	return trackSessionWork(session, () =>
-		admittedQueueUserInput(session, text, images, behavior, source, expandPromptTemplates),
-	);
+	const queue = () =>
+		trackSessionWork(session, () =>
+			admittedQueueUserInput(session, text, images, behavior, source, expandPromptTemplates),
+		);
+	const boundary = session._subagentMessageAdmission;
+	if (boundary === undefined || session._queuedMessagesPaused) return queue();
+	if (!boundary.isOpen()) throw subagentExecutionEndedError();
+	const releaseMessageAdmission = holdSubagentMessageAdmission(session);
+	try {
+		return await queue();
+	} finally {
+		releaseMessageAdmission();
+		if (session._activePromptCount === 0 && !messageAdmissionHolds.has(session))
+			session._subagentPolicy?.onTurnDrained?.();
+	}
 }
 
 async function admittedQueueUserInput(
@@ -1182,7 +1267,10 @@ async function runQueuedInput(session: AgentSession): Promise<void> {
 	await session._agentEventQueue.catch(() => {});
 	await preparePriorityContinuation(session);
 	if (!canStartQueuedInputRun(session)) return;
-	const run = session.agent.continue();
+	const cleared = await session._compactBeforeContinuation();
+	if (!canStartQueuedInputRun(session)) return;
+	// After a clear the context ends with the boundary message, so the queued input is the next request's prompt.
+	const run = cleared ? session.agent.promptQueuedMessages().then(() => {}) : session.agent.continue();
 	if (!session.agent.state.isStreaming) return run;
 	session._activePromptCount += 1;
 	openRun(session);
@@ -1332,6 +1420,7 @@ export const agentSessionPromptMethods = {
 	_runAgentContinue,
 	_runAgentContinuation,
 	_continueQueuedAgentMessages,
+	_sealMessageAdmissionIfDrained,
 	_tryExecuteExtensionCommand,
 	_expandSkillCommand,
 	steer,

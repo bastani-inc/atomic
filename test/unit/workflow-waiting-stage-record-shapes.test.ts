@@ -36,7 +36,7 @@ describe("typed waiting-stage failures name what they lack (#4309)", () => {
 		assert.equal(
 			error.message,
 			'Cannot rehydrate stage "implement": session unknown returned from its detached turn without saving the results of its calls (results-not-saved). ' +
-				"Resume the run with /workflow resume <runId>: the stage continues its turn from the results it recorded with its wait, which stay recorded until a turn that uses them is saved.",
+				"Resume run <runId> from /workflows or /resume: the stage continues its turn from the results it recorded with its wait, which stay recorded until a turn that uses them is saved.",
 		);
 	});
 

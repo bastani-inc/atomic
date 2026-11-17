@@ -1,240 +1,30 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
-import { type Terminal, TuiMainScreen } from "@bastani/atomic-tui";
 import { type TSchema, Type } from "typebox";
-import { beforeAll, test } from "vitest";
-import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
-import { HostInputFormComponent } from "../../packages/coding-agent/src/modes/interactive/components/host-input-form.ts";
-import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { test } from "vitest";
 import { dispatch } from "../../packages/workflows/src/extension/dispatcher.ts";
+import { renderResult } from "../../packages/workflows/src/extension/render-result.ts";
+import {
+	parseWorkflowArgs,
+	tokenizeWorkflowArgs,
+} from "../../packages/workflows/src/extension/workflow-command-utils.ts";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.ts";
 import {
 	renderWorkflowToolContent,
 	workflowGetResult,
 } from "../../packages/workflows/src/extension/workflow-tool-content.ts";
-import { resolveAndValidateInputs } from "../../packages/workflows/src/runs/foreground/executor-inputs.ts";
-import { renderInputsSchema } from "../../packages/workflows/src/shared/render-inputs-schema.ts";
 import { deriveInputField, deriveInputFields } from "../../packages/workflows/src/shared/schema-introspection.ts";
-import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.ts";
-import { openHostInputsForm } from "../../packages/workflows/src/tui/host-input-form.ts";
-import { renderInlineCard } from "../../packages/workflows/src/tui/inline-form-card.ts";
-import { openInputsPicker } from "../../packages/workflows/src/tui/inputs-overlay.ts";
-import {
-	coerceValues,
-	createInputsPickerState,
-	initialInputText,
-	invalidForField,
-	renderInputsPicker,
-} from "../../packages/workflows/src/tui/inputs-picker.ts";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.ts";
 
-class QuietTerminal implements Terminal {
-	columns = 100;
-	rows = 40;
-	kittyProtocolActive = true;
-	start(): void {}
-	stop(): void {}
-	async drainInput(): Promise<void> {}
-	write(_data: string): void {}
-	moveBy(_lines: number): void {}
-	hideCursor(): void {}
-	showCursor(): void {}
-	clearLine(): void {}
-	clearFromCursor(): void {}
-	clearScreen(): void {}
-	setTitle(_title: string): void {}
-	setProgress(_active: boolean): void {}
-	setProgramStatus(): void {}
-}
-
-beforeAll(() => {
-	initTheme("dark");
-});
-
-const graphTheme = deriveGraphTheme({});
-
-test("initialInputText serializes non-null default and prefilled objects and arrays as JSON (#5245)", async () => {
-	const schema = {
-		config: Type.Object({ retries: Type.Number() }, { default: { retries: 3 } }),
-		items: Type.Array(Type.String(), { default: ["a", "b"] }),
-	};
-	const fields = deriveInputFields(schema);
-	assert.equal(initialInputText(fields[0]!, {}), '{"retries":3}');
-	assert.equal(initialInputText(fields[1]!, {}), '["a","b"]');
-	assert.equal(initialInputText(fields[0]!, { config: { retries: 5 } }), '{"retries":5}');
-	assert.equal(initialInputText(fields[1]!, { items: ["x", "y"] }), '["x","y"]');
-	const state = createInputsPickerState(fields, {});
-	assert.equal(invalidForField(fields[0]!, state.rawText.config!, 0), null);
-	assert.equal(invalidForField(fields[1]!, state.rawText.items!, 1), null);
-	const coerced = coerceValues(fields, state.rawText);
-	assert.deepEqual(coerced, { config: { retries: 3 }, items: ["a", "b"] });
-	assert.deepEqual(resolveAndValidateInputs(schema, coerced, "test"), {
-		config: { retries: 3 },
-		items: ["a", "b"],
-	});
-});
-
-test("unknown and any object and array defaults keep their JSON values (#5245)", () => {
-	for (const schema of [Type.Unknown({ default: { a: 1 } }), Type.Any({ default: [1, 2] })]) {
-		const fields = deriveInputFields({ f: schema });
-		const state = createInputsPickerState(fields, {});
-		assert.equal(state.rawText.f, JSON.stringify(fields[0]!.default));
-		assert.deepEqual(coerceValues(fields, state.rawText), { f: fields[0]!.default });
-	}
-});
-
-test("refined inputs retain structural checks while deferring their runtime refinements (#5245)", async () => {
-	const refinedObj = Type.Refine(
-		Type.Object({ a: Type.Number() }),
-		(value) => value.a > 0,
-		() => "a must be positive",
-	);
-	const nestedRefined = Type.Object({
-		a: Type.Refine(
-			Type.Number(),
-			(value) => value > 0,
-			() => "a must be positive",
-		),
-	});
-	const refinedArray = Type.Refine(Type.Array(Type.Number()), (value) => value.length > 0);
-	for (const [schema, validText, invalidText, reason] of [
-		[refinedObj, '{"a":-1}', '{"a":"x"}', /must be number/],
-		[nestedRefined, '{"a":-1}', '{"a":"x"}', /must be number/],
-		[refinedArray, "[]", "x", /must be array/],
-	] as const) {
-		const fields = deriveInputFields({ f: schema });
-		assert.match(invalidForField(fields[0]!, invalidText, 0)!, reason);
-		assert.equal(invalidForField(fields[0]!, validText, 0), null);
-		assert.equal(fields[0]!.validationDeferred, true);
-		const state = createInputsPickerState(fields);
-		state.rawText.f = validText;
-		const rendered = renderInputsPicker({
-			width: 80,
-			theme: graphTheme,
-			workflowName: "demo",
-			fields,
-			state,
-			cursorOn: false,
-		})
-			.map((line) => stripVTControlCharacters(line))
-			.join("\n");
-		assert.doesNotMatch(rendered, / f ✓/);
-		assert.match(rendered, / f \?/);
-		for (const raw of [validText, invalidText]) {
-			state.rawText.f = raw;
-			const pickerText = stripVTControlCharacters(
-				renderInputsPicker({
-					width: 80,
-					theme: graphTheme,
-					workflowName: "demo",
-					fields,
-					state,
-					cursorOn: false,
-				}).join("\n"),
-			);
-			const inlineText = stripVTControlCharacters(
-				renderInlineCard({
-					width: 80,
-					theme: graphTheme,
-					state: { ...state, fields, formId: "refined", workflowName: "demo", status: "editing", version: 0 },
-				}).join("\n"),
-			);
-			for (const text of [pickerText, inlineText]) {
-				if (raw === validText) assert.match(text, / f \?/);
-				else {
-					assert.match(text, / f ✗/);
-					assert.match(text, reason);
-				}
-			}
-		}
-		const hostOut = await openHostInputsForm(
-			{ hostInputForm: async () => ({ f: '{"a":-1}' }) },
-			{ workflowName: "demo", fields },
-		);
-		assert.deepEqual(hostOut, { kind: "unsupported" });
-	}
-});
-
-test("non-finite JSON uses the literal string only when that string matches the schema (#5245)", async () => {
-	for (const [schema, text, ready] of [
-		[Type.Union([Type.String(), Type.Number()]), "1e9999", true],
-		[Type.Union([Type.Number(), Type.Null()]), "1e9999", false],
-		[Type.Unknown(), "1e9999", true],
-		[Type.Any(), "[1e999]", true],
-		[Type.Array(Type.Unknown()), "[1e999]", false],
-		[Type.Object({ a: Type.Unknown() }), '{"a":1e999}', false],
-	] as const) {
-		const fields = deriveInputFields({ f: schema });
-		const state = createInputsPickerState(fields);
-		state.rawText.f = text;
-		const values = coerceValues(fields, state.rawText);
-		assert.deepEqual(values, { f: text });
-		assert.equal(invalidForField(fields[0]!, text, 0) === null, ready);
-		if (ready) assert.deepEqual(resolveAndValidateInputs({ f: schema }, values, "test"), values);
-		else assert.throws(() => resolveAndValidateInputs({ f: schema }, values, "test"));
-		const component = new HostInputFormComponent(
-			new TuiMainScreen(new QuietTerminal()),
-			theme,
-			new KeybindingsManager(),
-			{
-				title: "demo",
-				fields: [{ name: "f", type: "string", required: true, initialValue: text, schema: fields[0]!.schema }],
-			},
-			{ onSubmit: () => {}, onCancel: () => {} },
-		);
-		const rendered = [
-			component.render(100),
-			renderInputsPicker({ width: 100, theme: graphTheme, workflowName: "demo", fields, state, cursorOn: false }),
-			renderInlineCard({
-				width: 100,
-				theme: graphTheme,
-				state: { ...state, fields, formId: "finite", workflowName: "demo", status: "editing", version: 0 },
-			}),
-		];
-		for (const lines of rendered) {
-			const renderedText = stripVTControlCharacters(lines.join("\n"));
-			assert.match(renderedText, ready ? /✓/ : /✗/);
-			assert.doesNotMatch(renderedText, ready ? /✗/ : /✓/);
-		}
-		if (ready) {
-			assert.deepEqual(
-				await openHostInputsForm({ hostInputForm: async () => ({ f: text }) }, { workflowName: "demo", fields }),
-				{ kind: "run", values },
-			);
-		}
-	}
-});
-
-test("schema checking reports unexpected errors instead of claiming readiness (#5245)", () => {
-	const field = deriveInputField("f", Type.Object({ a: Type.Number() }));
-	assert.ok(field.schema);
-	Object.defineProperty(field.schema, "type", {
-		get() {
-			throw new TypeError("broken schema dereference");
-		},
-	});
-	assert.equal(invalidForField(field, '{"a":1}', 0), "broken schema dereference");
-	const component = new HostInputFormComponent(
-		new TuiMainScreen(new QuietTerminal()),
-		theme,
-		new KeybindingsManager(),
-		{
-			title: "demo",
-			fields: [{ name: "f", type: "string", required: true, initialValue: '{"a":1}', schema: field.schema }],
-		},
-		{ onSubmit: () => {}, onCancel: () => {} },
-	);
-	assert.match(stripVTControlCharacters(component.render(100).join("\n")), /✗ broken schema dereference/);
-});
-
-test("model-facing inputs and get tool outputs omit field.schema while dispatch keeps it for forms (#5245)", async () => {
+test("workflow inputs and get tool outputs include declared constraints and JSON defaults without UI-only fields (#5224)", async () => {
 	const wf = {
 		normalizedName: "structured-wf",
 		name: "structured-wf",
 		description: "demo",
 		inputs: {
-			config: Type.Object({ retries: Type.Number() }),
-			items: Type.Array(Type.String()),
+			config: Type.Object({ retries: Type.Number() }, { default: { retries: 3 } }),
+			items: Type.Array(Type.String(), { default: ["a", "b"] }),
+			slug: Type.String({ minLength: 2, maxLength: 8, pattern: "^[a-z]+$", format: "hostname", const: "prod" }),
+			count: Type.Integer({ minimum: 1, maximum: 10, exclusiveMinimum: 0, exclusiveMaximum: 11, multipleOf: 2 }),
 		},
 		run: async () => ({}),
 	};
@@ -248,38 +38,83 @@ test("model-facing inputs and get tool outputs omit field.schema while dispatch 
 	};
 
 	const dispatched = await runtime.dispatch({ action: "inputs", workflow: "structured-wf" });
-	assert.ok(dispatched.action === "inputs");
-	assert.notEqual(dispatched.inputs[0]!.schema, undefined);
+	assert.equal(dispatched.action, "inputs");
+	if (dispatched.action !== "inputs") return;
+	assert.deepEqual(dispatched.inputs[0]?.default, { retries: 3 });
+	assert.deepEqual(dispatched.inputs[1]?.default, ["a", "b"]);
+	assert.equal(dispatched.inputs[2]?.minLength, 2);
+	assert.equal(dispatched.inputs[2]?.maxLength, 8);
+	assert.equal(dispatched.inputs[2]?.pattern, "^[a-z]+$");
+	assert.equal(dispatched.inputs[2]?.format, "hostname");
+	assert.equal(dispatched.inputs[2]?.const, "prod");
+	assert.equal(dispatched.inputs[3]?.minimum, 1);
+	assert.equal(dispatched.inputs[3]?.maximum, 10);
+	assert.equal(dispatched.inputs[3]?.exclusiveMinimum, 0);
+	assert.equal(dispatched.inputs[3]?.exclusiveMaximum, 11);
+	assert.equal(dispatched.inputs[3]?.multipleOf, 2);
 
 	const execute = makeExecuteWorkflowTool(runtime as never, () => undefined);
 	const toolInputs = await execute({ action: "inputs", workflow: "structured-wf" }, {} as never);
-	assert.ok(toolInputs.action === "inputs");
-	for (const entry of toolInputs.inputs) {
-		assert.equal("schema" in entry, false);
-		assert.equal("validationDeferred" in entry, false);
+	assert.equal(toolInputs.action, "inputs");
+	if (toolInputs.action === "inputs") {
+		for (const entry of toolInputs.inputs) {
+			assert.equal("schema" in entry, false);
+			assert.equal("validationDeferred" in entry, false);
+		}
 	}
 	const renderedInputs = JSON.parse(
 		renderWorkflowToolContent(dispatched, { action: "inputs", workflow: "structured-wf" }),
 	);
 	for (const entry of renderedInputs.inputs) {
 		assert.equal("schema" in entry, false);
+		assert.equal("validationDeferred" in entry, false);
 	}
 
 	const getRes = workflowGetResult(runtime as never, { action: "get", workflow: "structured-wf" });
-	assert.ok(getRes.action === "get");
-	assert.ok(getRes.details);
-	const getInputs = (getRes.details.output as { inputs: Array<Record<string, unknown>> }).inputs;
-	for (const entry of getInputs) {
-		assert.equal("schema" in entry, false);
-		assert.equal("validationDeferred" in entry, false);
+	assert.equal(getRes.action, "get");
+	if (getRes.action === "get" && getRes.details) {
+		const getInputs = (getRes.details.output as { inputs: Array<Record<string, unknown>> }).inputs;
+		for (const entry of getInputs) {
+			assert.equal("schema" in entry, false);
+			assert.equal("validationDeferred" in entry, false);
+		}
 	}
 });
 
 test.each([
 	["BigInt", Type.Optional(Type.BigInt({ default: 1n }))],
+	["primitive with BigInt default", Type.Number({ default: 1n as never })],
 	["object containing BigInt", Type.Optional(Type.Object({ count: Type.BigInt() }, { default: { count: 1n } }))],
+	[
+		"null-prototype object containing BigInt",
+		Type.Optional(
+			Type.Object(
+				{ count: Type.BigInt() },
+				{ default: Object.assign(Object.create(null) as Record<string, bigint>, { count: 1n }) },
+			),
+		),
+	],
 	["function", Type.Optional(Type.String({ default: () => "runtime" }))],
-])("workflow inputs and get omit an unencodable %s default (#5245)", async (_label, schema) => {
+	["symbol", Type.String({ default: Symbol("s") as never })],
+	["Infinity", Type.Number({ default: Number.POSITIVE_INFINITY })],
+	["-Infinity", Type.Number({ default: Number.NEGATIVE_INFINITY })],
+	["NaN", Type.Number({ default: Number.NaN })],
+	["Date", Type.String({ default: new Date(0) as never })],
+	["RegExp", Type.String({ default: /x/ as never })],
+	["Map", Type.Unknown({ default: new Map([["a", 1]]) })],
+	["toJSON returning undefined", Type.Unknown({ default: { toJSON: () => undefined } })],
+	["toJSON returning string", Type.Unknown({ default: { toJSON: () => "custom" } })],
+	[
+		"toJSON throwing",
+		Type.Unknown({
+			default: {
+				toJSON: () => {
+					throw new Error("boom");
+				},
+			},
+		}),
+	],
+])("workflow inputs and get omit an unencodable or non-round-tripping %s default (#5224)", async (_label, schema) => {
 	const registry = createRegistry([
 		{
 			normalizedName: "default-wf",
@@ -293,64 +128,115 @@ test.each([
 	assert.equal(result.action, "inputs");
 	if (result.action !== "inputs") return;
 	assert.doesNotThrow(() => renderWorkflowToolContent(result, { action: "inputs", workflow: "default-wf" }));
-	for (const options of [{}, { theme: graphTheme }]) {
-		assert.match(renderInputsSchema("default-wf", result.inputs, options), /value/);
-	}
+	const rendered = renderResult(result);
+	assert.match(rendered, /value/);
+	assert.doesNotMatch(rendered, /default:/);
 	const field = result.inputs[0]!;
 	assert.equal(Object.hasOwn(field, "default"), false);
 	assert.equal(field.required, false);
-	assert.equal(field.validationDeferred, true);
 	const get = workflowGetResult({ registry } as never, { action: "get", workflow: "default-wf" });
 	assert.doesNotThrow(() => JSON.stringify(get));
 	assert.doesNotThrow(() => renderWorkflowToolContent(get, { action: "get", workflow: "default-wf" }));
 });
 
-test("an input whose schema cannot be copied defers validation instead of crashing (#5245)", () => {
-	const cyclic = Type.Object({ a: Type.Number() }) as TSchema & { self?: unknown };
+test("cyclic schemas and cyclic defaults do not crash deriveInputField (#5224)", () => {
+	const cyclic = Type.Object({ a: Type.Number() }) as TSchema & { self?: unknown; default?: unknown };
 	cyclic.self = cyclic;
+	const cyclicDefault: { self?: unknown } = {};
+	cyclicDefault.self = cyclicDefault;
+	cyclic.default = cyclicDefault;
 	const field = deriveInputField("cyclic", cyclic);
-	assert.equal(field.schema, undefined);
-	assert.equal(field.validationDeferred, true);
+	assert.equal(Object.hasOwn(field, "default"), false);
+	assert.equal(field.required, false);
 });
 
-test("picker defaults that cannot be JSON encoded start blank instead of coercing or throwing (#5245)", () => {
-	const cyclic: { self?: object } = {};
-	cyclic.self = cyclic;
-	const nullPrototype = Object.assign(Object.create(null), { count: 1n });
-	for (const value of [
-		1n,
-		{ count: 1n },
-		nullPrototype,
-		cyclic,
-		{ toJSON: () => undefined },
-		() => "runtime",
-		Symbol("default"),
-	]) {
-		const field = { name: "config", type: "unknown", required: false, default: value };
-		assert.equal(initialInputText(field, {}), "");
-		assert.equal(createInputsPickerState([field]).rawText.config, "");
-	}
-});
-
-test("an optional object input with a BigInt default opens a cancellable form (#5245)", async () => {
-	const fields = deriveInputFields({
-		config: Type.Optional(Type.Object({ count: Type.BigInt({ default: 1n }) }, { default: { count: 1n } })),
-	});
-	assert.equal(fields[0]!.schema, undefined);
-	assert.equal(fields[0]!.validationDeferred, true);
-	assert.equal(initialInputText(fields[0]!, {}), "");
-	let rendered = "";
-	const result = await openInputsPicker(
-		{
-			custom: async (factory) => {
-				const component = await factory({ requestRender() {} }, undefined, undefined, () => {});
-				rendered = stripVTControlCharacters(component.render(80).join("\n"));
-				component.handleInput?.("\x1b");
-				return undefined;
-			},
+test("accessor-backed object and array index defaults are omitted without invoking their getters (#5224)", async () => {
+	let objectReads = 0;
+	const objectDefault = Object.defineProperty({}, "n", {
+		enumerable: true,
+		get() {
+			objectReads += 1;
+			return objectReads;
 		},
-		{ workflowName: "demo", fields, theme: graphTheme },
+	});
+	let arrayReads = 0;
+	const arrayDefault: unknown[] = [];
+	Object.defineProperty(arrayDefault, 0, {
+		enumerable: true,
+		get() {
+			arrayReads += 1;
+			return arrayReads;
+		},
+	});
+	const registry = createRegistry([
+		{
+			normalizedName: "accessor-wf",
+			name: "accessor-wf",
+			description: "demo",
+			inputs: {
+				obj: Type.Unknown({ default: objectDefault }),
+				arr: Type.Unknown({ default: arrayDefault }),
+			},
+			run: async () => ({}),
+		} as never,
+	]);
+	const result = await dispatch({ action: "inputs", workflow: "accessor-wf" }, { registry });
+	assert.equal(result.action, "inputs");
+	if (result.action !== "inputs") return;
+	for (const field of result.inputs) {
+		assert.equal(Object.hasOwn(field, "default"), false);
+		assert.equal(field.required, false);
+	}
+	assert.doesNotMatch(renderResult(result), /default:/);
+	const get = workflowGetResult({ registry } as never, { action: "get", workflow: "accessor-wf" });
+	assert.doesNotThrow(() => renderWorkflowToolContent(get, { action: "get", workflow: "accessor-wf" }));
+	assert.equal(objectReads, 0);
+	assert.equal(arrayReads, 0);
+});
+
+test("a trailing backslash inside double quotes does not swallow following arguments (#5224)", () => {
+	const parsed = parseWorkflowArgs(tokenizeWorkflowArgs('dir="C:\\tmp\\" n=3'));
+	assert.equal(parsed.n, 3);
+	assert.equal(parsed.dir, '"C:\\tmp\\"');
+});
+
+test("inputs and argument parsing preserve __proto__ and constructor keys as own properties (#5224)", () => {
+	const schemaMap: Record<string, TSchema> = {};
+	Object.defineProperty(schemaMap, "__proto__", {
+		value: Type.String({ default: "proto-default" }),
+		enumerable: true,
+		configurable: true,
+		writable: true,
+	});
+	Object.defineProperty(schemaMap, "constructor", {
+		value: Type.Number({ default: 7 }),
+		enumerable: true,
+		configurable: true,
+		writable: true,
+	});
+	const fields = deriveInputFields(schemaMap);
+	assert.deepEqual(
+		fields.map((f) => ({ name: f.name, type: f.type, default: f.default })),
+		[
+			{ name: "__proto__", type: "text", default: "proto-default" },
+			{ name: "constructor", type: "number", default: 7 },
+		],
 	);
-	assert.match(rendered, /config \?/);
-	assert.deepEqual(result, { kind: "cancel" });
+	const parsed = parseWorkflowArgs(["__proto__=alpha", "constructor=42"]);
+	assert.equal(Object.getPrototypeOf(parsed), Object.prototype);
+	assert.equal(Object.getOwnPropertyDescriptor(parsed, "__proto__")?.value, "alpha");
+	assert.equal(Object.getOwnPropertyDescriptor(parsed, "constructor")?.value, 42);
+});
+
+test("array subclasses cannot transform workflow default metadata through inherited toJSON (#5224)", () => {
+	let calls = 0;
+	class ChangingArray extends Array<number> {
+		toJSON(): string {
+			calls++;
+			return "changed";
+		}
+	}
+	const field = deriveInputField("value", Type.Unknown({ default: new ChangingArray(1, 2) }));
+	assert.equal(Object.hasOwn(field, "default"), false);
+	assert.equal(calls, 0);
 });

@@ -1,73 +1,13 @@
-import { inspectRun, type RunDetail } from "../runs/background/status.js";
-import { workflowBoundarySegments } from "../shared/pending-stage-status.js";
-import type { WorkflowInputValues } from "../shared/types.js";
-import { emitChatSurface } from "../tui/chat-surface-message.js";
-import { renderRunDetail } from "../tui/run-detail.js";
 import type { ConfigLoadResult } from "./config-loader.js";
 import type { DiscoveryResult } from "./discovery.js";
-import type { ExtensionAPI } from "./public-types.js";
-import type { WorkflowToolResult } from "./render-result.js";
-import { captureWorkflowOwnerResources } from "./workflow-owner-resources.js";
 import type { WorkflowReloadReport } from "./workflow-reload-report.js";
-import { isRunStatus } from "./workflow-targets.js";
-
-function fallbackRunDetailFromResult(
-	workflowName: string,
-	inputs: Readonly<WorkflowInputValues>,
-	result: Extract<WorkflowToolResult, { action: "run"; runId: string }>,
-): RunDetail {
-	const now = Date.now();
-	const stages = result.stages?.map((stage) => structuredClone(stage)) ?? [];
-	return {
-		runId: result.runId,
-		name: result.name ?? workflowName,
-		status: isRunStatus(result.status) ? result.status : "failed",
-		mode: stages.length > 1 ? "chain" : "single",
-		startedAt: now,
-		endedAt: now,
-		durationMs: 0,
-		inputs,
-		stages,
-		tools: [],
-		result: result.result,
-		error: result.error,
-		exited: result.exited,
-		exitReason: result.exitReason,
-	};
-}
-
-export function emitTerminalRunDetailSurface(
-	pi: ExtensionAPI,
-	workflowName: string,
-	inputs: Readonly<WorkflowInputValues>,
-	result: Extract<WorkflowToolResult, { action: "run"; runId: string }>,
-	owner = captureWorkflowOwnerResources(),
-): void {
-	const { store } = owner;
-	const inspected = inspectRun(result.runId, owner);
-	const detail = inspected.ok ? inspected.detail : fallbackRunDetailFromResult(workflowName, inputs, result);
-	const graphRuns = store.graphSnapshot().runs;
-	const owningRunStatuses = Object.fromEntries(graphRuns.map((run) => [run.id, run.status] as const));
-	const owningRunStatus = (runId: string) => owningRunStatuses[runId];
-	emitChatSurface(
-		pi,
-		{ kind: "detail", detail, owningRunStatuses },
-		{
-			content: renderRunDetail(detail, {
-				width: 100,
-				owningRunStatus,
-				resolveBoundarySegments: (runId) => workflowBoundarySegments(graphRuns, runId),
-			}),
-		},
-	);
-}
 
 export function formatWorkflowResourceLoadWarning(error: unknown): string {
 	const message = error instanceof Error ? error.message : String(error);
 	return [
 		"Workflow discovery diagnostics: workflow resources could not be fully refreshed.",
 		`- [error DISCOVERY_FAILED] workflow discovery: ${message}`,
-		"Using the currently loaded workflow registry; run `/workflow reload` after fixing the issue.",
+		"Using the currently loaded workflow registry; run `/reload` after fixing the issue.",
 	].join("\n");
 }
 
@@ -91,6 +31,7 @@ export function formatWorkflowReloadReport(report: WorkflowReloadReport, reason?
 		...lines,
 	].join("\n");
 }
+
 export function formatStartupDiagnostics(
 	configResult: ConfigLoadResult | null,
 	discoveryResult: DiscoveryResult | null,

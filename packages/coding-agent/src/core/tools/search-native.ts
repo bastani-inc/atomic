@@ -1,4 +1,4 @@
-import { createModuleRequire } from "../../utils/module-require.ts";
+import { createModuleRequire } from "../../utils/module-require.js";
 
 type NativeBinding = {
 	glob: (options: NativeGlobOptions) => Promise<NativeGlobResult>;

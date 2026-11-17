@@ -161,18 +161,14 @@ describe("agent-decided workflow execution guidance", () => {
 		}
 	});
 
-	test("requires consulting factual evals and configured catalog when pinning stage models", () => {
+	test("requires the configured catalog when pinning stage models", () => {
 		const authoringGuidance = workflowGuidance.join("\n");
 		for (const phrase of [
-			"packages/coding-agent/docs/models/model-selection.md",
-			"packages/coding-agent/docs/models/evals.md",
-			"factual per-evaluation benchmark records",
 			'workflow({ action: "models" })',
 			"returned `fullId` values as model strings",
 			"availableThinkingLevels",
 			"treat an absent or empty `availableThinkingLevels` as no suffix support",
-			"no catalog model matches the documented evidence and role constraints",
-			"leave the stage unpinned rather than inventing a substitute",
+			"If no catalog model fits the stage's role, leave the stage unpinned rather than inventing a substitute",
 			"state that no configured models were returned, and do not fabricate model IDs",
 			"Do not inspect or infer credentials, environment variables, auth files, token validity, entitlements",
 			"`isCurrent` marks the active selection, not a quality recommendation",
@@ -181,53 +177,13 @@ describe("agent-decided workflow execution guidance", () => {
 		}
 	});
 
-	test("allocates mixed-role thinking effort by failure cost instead of blanket max", async () => {
+	test("applies the stage role and failure-cost policy to the primary and every fallback", () => {
 		const authoringGuidance = workflowGuidance.join("\n");
-		const modelSelection = await readRepositoryFile("packages/coding-agent/docs/models/model-selection.md");
-
-		expect(authoringGuidance).toContain(
-			"apply the stage role and failure-cost policy independently to the primary and every fallback",
-		);
-
-		for (const phrase of [
-			"Benchmark results are measurements under named harnesses",
-			"measurement configuration for that row",
-			"`max` is an exception, not a default.",
-			"| Coding, implementation, routine fixes | `low` or `medium` |",
-			"| Code review, test design, failure analysis, security, identity, adversarial challenge, final approval | `high` or `xhigh` |",
-			"| Codebase mapping, lifecycle analysis, compatibility, planning, synthesis, triage | `high` |",
-			"| User-impact review and final reporting | `medium`",
-			"| Deterministic checks | No model call",
-		]) {
-			expect(modelSelection).toContain(phrase);
-		}
-
-		for (const blanketDefault of [
-			"gpt-5.6-luna [max]` as the workhorse",
-			"gpt-5.6-terra [max]` as a balanced default",
-		]) {
-			expect(modelSelection).not.toContain(blanketDefault);
-		}
-	});
-
-	test("lets explicit thinking requests override role defaults and applies the policy to fallbacks", async () => {
-		const authoringGuidance = workflowGuidance.join("\n");
-		const modelSelection = await readRepositoryFile("packages/coding-agent/docs/models/model-selection.md");
-
 		for (const phrase of [
 			"apply the stage role and failure-cost policy independently to the primary and every fallback",
 			"An explicit user request for a level overrides the role default",
 		]) {
 			expect(authoringGuidance).toContain(phrase);
-		}
-
-		for (const phrase of [
-			"`max` is an exception, not a default.",
-			"An explicit user request wins over these defaults, but the requested level must exist for the selected catalog entry.",
-			"Do not invent unsupported suffixes.",
-			"If `xhigh` is unavailable, use `high` rather than automatically promoting to `max`; choose another catalog model or leave the stage unpinned if neither fits.",
-		]) {
-			expect(modelSelection).toContain(phrase);
 		}
 	});
 
@@ -661,13 +617,12 @@ describe("agent-decided workflow execution guidance", () => {
 			"omit the explicit model argument",
 			"documented task requirement",
 			"Do not choose an ad hoc model merely for diversity",
-			"packages/coding-agent/docs/models/model-selection.md",
-			"packages/coding-agent/docs/models/evals.md",
-			"factual per-evaluation benchmark records",
+			'`model: "auto"`, which the builtin agents declare, runs the user\'s configured default model',
+			"or the current session's model when no default is configured",
 			'workflow({ action: "models" })',
 			"Pin only a returned fullId",
 			"thinking level listed for that entry",
-			"no catalog model matches the documented evidence and role constraints",
+			"no catalog model fits",
 			"leave the child unpinned",
 			"Do not inspect credentials",
 			"Workflow stages automatically receive their invocation-scoped Intercom group",
@@ -880,7 +835,7 @@ describe("agent-decided workflow execution guidance", () => {
 		const documentation = await readRepositoryFile("packages/coding-agent/docs/workflows/operations.md");
 		for (const current of [
 			"`answer` responds only to a pending primitive or structured human-input prompt",
-			"Use `workflow resume` only for paused workflow control",
+			"Use the workflow tool's `resume` action only for paused workflow control",
 			"ordinary Intercom to",
 			"delivers immediately to live stages",
 			"delivering them before their first model turn",

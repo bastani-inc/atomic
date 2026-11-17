@@ -1,10 +1,18 @@
 import type { Terminal, TUI } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import { runSynchronousCallback } from "../../core/callback-activity.ts";
+import type { ToolRenderers } from "../../core/extensions/types.ts";
 import type { CustomMessage } from "../../core/messages.ts";
+import type { TaskId } from "../../core/tasks/contracts.js";
+import type { OwnerTaskStore } from "../../core/tasks/owner-store.js";
+import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
+import { loadTaskOwnTranscriptHistory, taskTranscriptSource } from "../../core/tasks/supervisor.js";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { CustomMessageComponent } from "../interactive/components/custom-message.ts";
+import { disposeRenderer, runRendererCleanup } from "../interactive/components/renderer-disposal.js";
+import { ToolBlock } from "../interactive/components/tool-block.ts";
 import { ToolExecutionComponent } from "../interactive/components/tool-execution.ts";
+import { RETAINED_TOOL_RENDERERS, retainedToolRenderer } from "../interactive/components/tool-renderer-scope.js";
 import { BackgroundRenderLane, BackgroundRenderTui } from "./background-render-lane.ts";
 import {
 	type InteractiveEngineCommand,
@@ -31,8 +39,22 @@ type MessageRenderCommand = Extract<InteractiveEngineCommand, { type: "engine_me
  */
 type RenderRecord = { runner: AgentSession["extensionRunner"]; terminal: RenderTerminal; tui: TUI } & (
 	| { kind: "message"; component: CustomMessageComponent }
-	| { kind: "tool"; component: ToolExecutionComponent }
+	| {
+			kind: "tool";
+			component: ToolExecutionComponent;
+			toolOwner: object;
+			rendererTaskId?: string;
+			stopOwnerWatch?: () => void;
+	  }
 );
+
+interface ToolRendererScope {
+	identity: object;
+	session: object;
+	cwd: string;
+	resolve(name: string): ToolRenderers | undefined;
+	watchedTask?: { store: OwnerTaskStore; taskId: TaskId; currentIdentity(): object | undefined };
+}
 
 class RenderTerminal implements Terminal {
 	columns = 80;
@@ -121,12 +143,16 @@ export class EngineRenderService {
 				requestId: command.requestId,
 				lines,
 			});
-		} catch (error) {
+		} catch {
 			this.send({
 				type: "engine_custom_frame",
 				componentId: command.componentId,
 				requestId: command.requestId,
-				lines: [`Remote renderer failed: ${error instanceof Error ? error.message : String(error)}`],
+				lines: new ToolBlock({
+					status: "failure",
+					title: command.type === "engine_tool_render" ? "Tool renderer failed" : "Message renderer failed",
+					outputPad: command.outputPad,
+				}).render(command.width),
 			});
 		}
 	}
@@ -150,9 +176,71 @@ export class EngineRenderService {
 		return new BackgroundRenderTui(terminal, this.backgroundRenders, `check:${componentId}`);
 	}
 
+	private toolRendererScope(command: ToolRenderCommand): ToolRendererScope | undefined {
+		const root = this.boundSession();
+		const rootScope: ToolRendererScope = {
+			identity: root.extensionRunner,
+			session: root,
+			cwd: root.sessionManager.getCwd(),
+			resolve: (name) => root.extensionRunner.resolveToolRenderers(name, () => root.getToolDefinition(name)),
+		};
+		if (command.rendererTaskId === undefined) return rootScope;
+		const store = getOwnerTaskStore(root);
+		const taskId = command.rendererTaskId as TaskId;
+		const lease = store?.resolveTask(taskId);
+		if (!store || !lease?.ok) return undefined;
+		const transcript = taskTranscriptSource(lease.value);
+		if (!transcript.ok) return undefined;
+		const source = transcript.value.session;
+		const session = source.chatSession;
+		if (!session?.getToolDefinition && !session?.extensionRunner?.resolveToolRenderers) {
+			return RETAINED_TOOL_RENDERERS.has(command.toolName)
+				? {
+						...rootScope,
+						cwd: source.commands?.().cwd ?? rootScope.cwd,
+						resolve: (name) => retainedToolRenderer(name, rootScope.resolve),
+					}
+				: undefined;
+		}
+		return {
+			identity: session.extensionRunner ?? session,
+			session,
+			cwd: source.commands?.().cwd ?? rootScope.cwd,
+			resolve: (name) =>
+				session.extensionRunner?.resolveToolRenderers?.(name, () => session.getToolDefinition?.(name)) ??
+				session.getToolDefinition?.(name),
+			watchedTask: {
+				store,
+				taskId,
+				currentIdentity: () => {
+					const current = taskTranscriptSource(lease.value);
+					const live = current.ok ? current.value.session.chatSession : undefined;
+					return live?.extensionRunner ?? live;
+				},
+			},
+		};
+	}
+
 	private renderTool(command: ToolRenderCommand): string[] {
+		const scope = this.toolRendererScope(command);
+		if (!scope) {
+			this.disposeRecord(command.componentId);
+			return [
+				"",
+				...new ToolBlock({
+					status: "warning",
+					title: "Tool renderer unavailable",
+					outputPad: command.outputPad,
+				}).render(command.width),
+			];
+		}
 		let record = this.records.get(command.componentId);
-		if (record?.kind !== "tool" || record.runner !== this.session?.extensionRunner) {
+		if (
+			record?.kind !== "tool" ||
+			record.runner !== this.session?.extensionRunner ||
+			record.toolOwner !== scope.identity ||
+			record.rendererTaskId !== command.rendererTaskId
+		) {
 			const session = this.boundSession();
 			this.disposeRecord(command.componentId);
 			const terminal = this.createTerminal(command.componentId);
@@ -166,16 +254,38 @@ export class EngineRenderService {
 				command.toolName,
 				command.toolCallId,
 				command.args,
-				{ showImages: command.showImages, imageWidthCells: command.imageWidthCells, outputPad: command.outputPad },
-				session.extensionRunner.resolveToolRenderers(command.toolName, () =>
-					session.getToolDefinition(command.toolName),
-				),
+				{
+					showImages: command.showImages,
+					imageWidthCells: command.imageWidthCells,
+					outputPad: command.outputPad,
+					getTaskRecord: (taskId) => getOwnerTaskStore(scope.session)?.getTask(taskId),
+					getToolDefinition: scope.resolve,
+				},
+				scope.resolve(command.toolName),
 				tui,
-				session.sessionManager.getCwd(),
+				scope.cwd,
 			);
 			tui.addChild(component);
-			record = { kind: "tool", component, terminal, tui, runner: session.extensionRunner };
+			record = {
+				kind: "tool",
+				component,
+				terminal,
+				tui,
+				runner: session.extensionRunner,
+				toolOwner: scope.identity,
+				rendererTaskId: command.rendererTaskId,
+			};
 			this.records.set(command.componentId, record);
+			if (scope.watchedTask) {
+				const { store, taskId, currentIdentity } = scope.watchedTask;
+				const ownerIdentity = scope.identity;
+				record.stopOwnerWatch = store.subscribe(() => {
+					const task = store.getTask(taskId);
+					if (task && task.execution.kind !== "settled" && currentIdentity() === ownerIdentity) return;
+					this.disposeRecord(command.componentId);
+					this.send({ type: "engine_custom_invalidate", componentId: command.componentId });
+				});
+			}
 		} else {
 			record.terminal.columns = Math.max(1, command.width);
 			record.component.updateArgs(command.args);
@@ -184,9 +294,10 @@ export class EngineRenderService {
 			record.component.setOutputPad(command.outputPad ?? 1);
 		}
 		const tool = record.component;
-		if (command.executionStarted) tool.markExecutionStarted();
+		if (command.executionStarted) tool.markExecutionStarted(command.executionStartedAt);
 		if (command.argsComplete) tool.setArgsComplete();
 		tool.setExpanded(command.expanded);
+		tool.setGroupRole(command.groupRole ?? { kind: "standalone" });
 		if (command.result) {
 			tool.updateResult(
 				command.result as unknown as Parameters<ToolExecutionComponent["updateResult"]>[0],
@@ -214,6 +325,24 @@ export class EngineRenderService {
 				session.extensionRunner.getMessageRenderer(message.customType),
 				undefined,
 				command.outputPad,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{
+					hasTranscript: (taskId) => {
+						const lease = getOwnerTaskStore(session)?.resolveTask(taskId);
+						return lease?.ok ? taskTranscriptSource(lease.value).ok : false;
+					},
+					loadTranscript: async (taskId) => {
+						const lease = getOwnerTaskStore(session)?.resolveTask(taskId);
+						return lease?.ok ? loadTaskOwnTranscriptHistory(lease.value) : undefined;
+					},
+					getToolDefinition: (name) =>
+						session.extensionRunner.resolveToolRenderers(name, () => session.getToolDefinition(name)),
+					cwd: session.sessionManager.getCwd(),
+					requestRender: () => tui.requestRender(),
+				},
 			);
 			tui.addChild(component);
 			record = { kind: "message", component, terminal, tui, runner: session.extensionRunner };
@@ -230,8 +359,9 @@ export class EngineRenderService {
 		const record = this.records.get(id);
 		if (!record) return;
 		this.records.delete(id);
-		if (record.kind === "tool") record.component.dispose();
-		record.tui.stop();
+		if (record.kind === "tool") runRendererCleanup(record.stopOwnerWatch);
+		disposeRenderer(record.component);
+		runRendererCleanup(() => record.tui.stop());
 	}
 
 	private send(message: InteractiveEngineMessage): void {

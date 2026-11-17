@@ -16,6 +16,7 @@ import {
 	addFactoryStubs,
 	assert,
 	buildMockPi,
+	createLegacyWorkflowControlHarness,
 	installSlashDispatchTestHooks,
 	makeInflightRun,
 	registerTestStageHandle,
@@ -31,7 +32,7 @@ describe("/workflow resume <runId> — active run is refused", () => {
 		store.recordRunStart(makeInflightRun(runId));
 
 		const openCalls: Array<{ overlay: boolean }> = [];
-		const { pi, commands } = buildMockPi();
+		const { pi } = buildMockPi();
 		addFactoryStubs(pi);
 		let refreshCalls = 0;
 		pi.refreshWorkflowResources = async () => {
@@ -50,7 +51,7 @@ describe("/workflow resume <runId> — active run is refused", () => {
 		const factoryModule = await import("../../packages/workflows/src/extension/index.js");
 		factoryModule.default(pi);
 
-		const workflowCmd = commands.find((c) => c.name === "workflow")!;
+		const workflowCmd = createLegacyWorkflowControlHarness(pi);
 		const msgs: string[] = [];
 		const ctx: PiCommandContext = {
 			ui: {
@@ -75,7 +76,7 @@ describe("/workflow resume <runId> — active run is refused", () => {
 		const runId = testRunId(`resume-nomsg-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 
-		const { pi, commands } = buildMockPi();
+		const { pi } = buildMockPi();
 		addFactoryStubs(pi);
 		const customFn: PiCustomOverlayFunction = (factoryArg, options) => {
 			const handle: PiOverlayHandle = {
@@ -101,7 +102,7 @@ describe("/workflow resume <runId> — active run is refused", () => {
 		const factoryModule = await import("../../packages/workflows/src/extension/index.js");
 		factoryModule.default(pi);
 
-		const workflowCmd = commands.find((c) => c.name === "workflow")!;
+		const workflowCmd = createLegacyWorkflowControlHarness(pi);
 		const msgs: string[] = [];
 		const ctx: PiCommandContext = {
 			ui: {
@@ -138,11 +139,11 @@ describe("/workflow resume <runId> — exact live fast path", () => {
 
 		const backend = await createCatalogTrapBackend();
 		setDurableBackend(backend);
-		const { pi, commands, sent } = buildMockPi();
+		const { pi, sent } = buildMockPi();
 		addFactoryStubs(pi);
 		const factoryModule = await import("../../packages/workflows/src/extension/index.js");
 		factoryModule.default(pi);
-		const handler = commands.find((command) => command.name === "workflow")!.options.handler;
+		const handler = createLegacyWorkflowControlHarness(pi).options.handler;
 		const runId = testRunId(`headless-fast-resume-${Date.now()}`);
 		const stageId = "stage-fast-resume";
 		await backend.commitWorkflowRegistration({
@@ -196,11 +197,11 @@ describe("/workflow resume <runId> — exact live fast path", () => {
 
 		const backend = await createCatalogCountingBackend();
 		setDurableBackend(backend);
-		const { pi, commands } = buildMockPi();
+		const { pi } = buildMockPi();
 		addFactoryStubs(pi);
 		const factoryModule = await import("../../packages/workflows/src/extension/index.js");
 		factoryModule.default(pi);
-		const handler = commands.find((command) => command.name === "workflow")!.options.handler;
+		const handler = createLegacyWorkflowControlHarness(pi).options.handler;
 		const runId = testRunId(`nested-paused-resume-${Date.now()}`);
 		const stageId = "stage-nested-paused";
 		await backend.commitWorkflowRegistration({

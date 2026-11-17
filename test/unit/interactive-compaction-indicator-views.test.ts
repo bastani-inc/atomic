@@ -21,8 +21,6 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import { presentQuestionnaire } from "../../packages/coding-agent/src/core/tools/ask-user-question/ask-user-question.ts";
 import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
-import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.ts";
-import { type InputsUiSurface, openInputsPicker } from "../../packages/workflows/src/tui/inputs-overlay.ts";
 
 /**
  * Structural cost, not a slow test: each case constructs a real InteractiveMode
@@ -223,7 +221,7 @@ async function createCompactingMode(): Promise<CompactingMode> {
 			const compaction = gate.arm();
 			const run =
 				reason === "manual"
-					? mode.session.compact({ preserve_recent: 2 })
+					? mode.session.compact()
 					: (mode.session as unknown as AutoCompactionRunner)._runAutoCompaction(reason, false);
 			await compaction.entered;
 			assert.equal(mode.session.isCompacting, true, "the session is really compacting");
@@ -303,16 +301,6 @@ const views: readonly OpenView[] = [
 			void host.ui.hostInputForm?.({
 				title: "Inputs",
 				fields: [{ name: "prompt", type: "string", required: true, initialValue: "" }],
-			}),
-	},
-	{
-		name: "workflow inputs picker",
-		open: (host) =>
-			void openInputsPicker(host.ui as unknown as InputsUiSurface, {
-				workflowName: "tournament",
-				fields: [{ name: "prompt", type: "string", required: true }],
-				prefilled: {},
-				theme: deriveGraphTheme({}),
 			}),
 	},
 ];

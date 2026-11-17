@@ -3076,6 +3076,45 @@ test("a replacement worker's first publications keep the replaced attempt's stag
 	}
 });
 
+test("a replacement agent's dialog never supersedes another agent's pending dialog", async () => {
+	const f = await fixture();
+	try {
+		const askingAgent = (id: string): StageSnapshot =>
+			stage(id, {
+				status: "awaiting_input",
+				replayKey: `${descriptor.scope}:stage:${id}`,
+				pendingPrompt: {
+					id: `dialog-${id}`,
+					kind: "confirm",
+					source: "stage-dialog",
+					message: `Allow ${id}?`,
+					createdAt: 1,
+				},
+				promptFootprint: {
+					id: `dialog-${id}`,
+					kind: "confirm",
+					source: "stage-dialog",
+					message: `Allow ${id}?`,
+					createdAt: 1,
+				},
+			});
+		await f.handoff.publish(f.first, [childRun([askingAgent("first")])]);
+		const next = await f.replacement();
+		f.handoff.fence(f.first);
+		await f.handoff.publish(next, [childRun([askingAgent("second")])]);
+		const stages = f.store.run(descriptor.childRunId)!.stages;
+		assert.deepEqual(
+			stages.map((entry) => [entry.id, entry.workerExecution?.reconnecting]),
+			[
+				["second", undefined],
+				["first", true],
+			],
+		);
+	} finally {
+		await f.close();
+	}
+});
+
 test("#4022: a replacement that asks a different prompt where the replaced attempt's unanswered prompt was does not keep the superseded prompt", async () => {
 	const f = await fixture();
 	try {

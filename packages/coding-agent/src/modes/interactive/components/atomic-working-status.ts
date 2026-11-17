@@ -10,13 +10,18 @@ import {
 import { ansi256ToHex, fgAnsi, hexToRgb } from "../theme/color-utils.ts";
 import { theme } from "../theme/theme.js";
 import { formatTokenSegment } from "./token-segment.ts";
-import { formatWorkingElapsed, formatWorkingMeta, type WorkingRunSnapshot } from "./working-run-meter.ts";
+import {
+	formatWorkingElapsed,
+	formatWorkingMeta,
+	normalizeWorkingRunSnapshot,
+	type WorkingRunMetaInput,
+} from "./working-run-meter.ts";
 
 /** Atomic's literal one-cell identity follows the approved ten-step luminance ramp. */
 export const ATOMIC_WORKING_FRAMES = ["∀", "∀", "∀", "∀", "∀", "∀", "∀", "∀", "∀", "∀"] as const;
 export const ATOMIC_WORKING_BOLD_PHASES = [false, false, false, false, true, true, true, false, false, false] as const;
 export const ATOMIC_WORKING_FRAME_MS = 88;
-export const DEFAULT_WORKING_MESSAGE = "Working...";
+export const DEFAULT_WORKING_MESSAGE = "Working…";
 
 const IRREGULAR_WORKED_VERBS: Readonly<Record<string, string>> = {
 	building: "built",
@@ -84,8 +89,59 @@ export interface AtomicWorkingStatusOptions {
 	spinnerColor?: (text: string) => string;
 	spinnerBoldColor?: (text: string) => string;
 	messageColor?: (text: string) => string;
-	meta?: WorkingRunSnapshot;
+	meta?: WorkingRunMetaInput;
 	logo?: boolean;
+}
+
+let sharedClockFrame = 0;
+let sharedClockTimer: ReturnType<typeof setInterval> | undefined;
+const sharedClockListeners = new Set<() => void>();
+
+function syncAtomicWorkingClock(): void {
+	if (sharedClockListeners.size === 0 || process.env.ATOMIC_REDUCED_MOTION === "1") {
+		if (sharedClockTimer !== undefined) {
+			clearInterval(sharedClockTimer);
+			sharedClockTimer = undefined;
+		}
+		if (sharedClockListeners.size === 0) {
+			sharedClockFrame = 0;
+		}
+		return;
+	}
+	if (sharedClockTimer !== undefined) return;
+	const timer = setInterval(() => {
+		if (sharedClockTimer !== timer || sharedClockListeners.size === 0 || process.env.ATOMIC_REDUCED_MOTION === "1") {
+			return;
+		}
+		sharedClockFrame = (sharedClockFrame + 1) % ATOMIC_WORKING_FRAMES.length;
+		for (const listener of [...sharedClockListeners]) {
+			if (sharedClockListeners.has(listener)) listener();
+		}
+	}, ATOMIC_WORKING_FRAME_MS);
+	sharedClockTimer = timer;
+	sharedClockTimer.unref?.();
+}
+
+export function watchAtomicWorkingClock(listener: () => void): () => void {
+	let active = true;
+	const subscription = () => listener();
+	sharedClockListeners.add(subscription);
+	syncAtomicWorkingClock();
+	return () => {
+		if (!active) return;
+		active = false;
+		sharedClockListeners.delete(subscription);
+		syncAtomicWorkingClock();
+	};
+}
+
+export function resetAtomicWorkingClock(): void {
+	sharedClockFrame = 0;
+	if (sharedClockTimer !== undefined) {
+		clearInterval(sharedClockTimer);
+		sharedClockTimer = undefined;
+	}
+	syncAtomicWorkingClock();
 }
 
 export function atomicLogoMark(palette?: AtomicWorkingPalette | (() => AtomicWorkingPalette)): string {
@@ -180,6 +236,23 @@ function styleLegacyFrame(frame: string, bold: boolean, options: AtomicWorkingSt
 	return options.spinnerBoldColor?.(frame) ?? theme.bold(regular);
 }
 
+export function atomicWorkingGlyph(frameOrOptions: number | AtomicWorkingStatusOptions = {}): string {
+	const options = typeof frameOrOptions === "number" ? { frame: frameOrOptions } : frameOrOptions;
+	const reducedMotion = process.env.ATOMIC_REDUCED_MOTION === "1";
+	const frameIndex = reducedMotion ? 3 : normalizedFrameIndex(options.frame ?? atomicWorkingFrame());
+	const frame = ATOMIC_WORKING_FRAMES[frameIndex];
+	const bold = !reducedMotion && ATOMIC_WORKING_BOLD_PHASES[frameIndex];
+	if (options.logo) {
+		return styleLegacyFrame("∀", true, options) ?? atomicLogoMark(options.palette);
+	}
+	const legacy = styleLegacyFrame(frame, bold, options);
+	if (legacy !== undefined) return legacy;
+	if (noColorRequested()) return frame;
+	return bold
+		? emphasize(colorizePhase(frameIndex, frame, options.palette))
+		: colorizePhase(frameIndex, frame, options.palette);
+}
+
 export class AtomicWorkingStatusComponent implements Component {
 	private readonly options: AtomicWorkingStatusOptions;
 
@@ -188,17 +261,8 @@ export class AtomicWorkingStatusComponent implements Component {
 	}
 
 	render(width: number): string[] {
-		const reducedMotion = process.env.ATOMIC_REDUCED_MOTION === "1";
-		const frameIndex = reducedMotion ? 3 : normalizedFrameIndex(this.options.frame ?? 0);
-		const frame = ATOMIC_WORKING_FRAMES[frameIndex];
 		const message = this.options.message ?? DEFAULT_WORKING_MESSAGE;
-		const bold = !reducedMotion && ATOMIC_WORKING_BOLD_PHASES[frameIndex];
-		const icon = this.options.logo
-			? (styleLegacyFrame("∀", true, this.options) ?? atomicLogoMark(this.options.palette))
-			: (styleLegacyFrame(frame, bold, this.options) ??
-				(bold
-					? emphasize(colorizePhase(frameIndex, frame, this.options.palette))
-					: colorizePhase(frameIndex, frame, this.options.palette)));
+		const icon = atomicWorkingGlyph(this.options);
 		const styledMessage = noColorRequested()
 			? message
 			: (this.options.messageColor ?? ((text: string) => theme.fg("muted", text)))(message);
@@ -213,7 +277,7 @@ export class AtomicWorkingStatusComponent implements Component {
 
 export interface AtomicWorkedStatusOptions {
 	message?: string;
-	snapshot: WorkingRunSnapshot;
+	snapshot: WorkingRunMetaInput;
 	color?: (text: string) => string;
 }
 
@@ -225,7 +289,7 @@ export class AtomicWorkedStatusComponent implements Component {
 	}
 
 	render(width: number): string[] {
-		const { snapshot } = this.options;
+		const snapshot = normalizeWorkingRunSnapshot(this.options.snapshot);
 		const segment = formatTokenSegment({ mode: "receiving", count: snapshot.tokens });
 		const tokens = segment ? ` · ${segment}` : "";
 		const text = `${workedVerb(this.options.message)} for ${formatWorkingElapsed(snapshot.elapsedMs)}${tokens}`;
@@ -244,12 +308,11 @@ export class AtomicWorkingLoader implements Component {
 	private readonly spinnerColor: ((text: string) => string) | undefined;
 	private readonly messageColor: (text: string) => string;
 	private message: string;
-	private frame = 0;
-	private timer: ReturnType<typeof setInterval> | undefined;
+	private stopClock: (() => void) | undefined;
 	private delegateGeneration = 0;
 	private indicator: LoaderIndicatorOptions | undefined;
 	private delegate: Loader | undefined;
-	private meta: (() => WorkingRunSnapshot | undefined) | undefined;
+	private meta: (() => WorkingRunMetaInput | undefined) | undefined;
 	private logo = false;
 	private metaTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -271,7 +334,7 @@ export class AtomicWorkingLoader implements Component {
 		return (
 			this.delegate?.render(width) ??
 			new AtomicWorkingStatusComponent({
-				frame: this.frame,
+				frame: atomicWorkingFrame(),
 				message: this.message,
 				spinnerColor: this.spinnerColor,
 				messageColor: this.messageColor,
@@ -319,13 +382,17 @@ export class AtomicWorkingLoader implements Component {
 		this.stop();
 		this.armMetaTimer();
 		if (process.env.ATOMIC_REDUCED_MOTION === "1" || this.logo) return;
-		const timer = setInterval(() => {
-			if (this.timer !== timer || this.delegate) return;
-			this.frame = (this.frame + 1) % ATOMIC_WORKING_FRAMES.length;
+		let active = true;
+		const unsubscribe = watchAtomicWorkingClock(() => {
+			if (!active || this.stopClock !== stop || this.delegate) return;
 			this.ui.requestRender();
-		}, ATOMIC_WORKING_FRAME_MS);
-		this.timer = timer;
-		this.timer.unref?.();
+		});
+		const stop = () => {
+			if (!active) return;
+			active = false;
+			unsubscribe();
+		};
+		this.stopClock = stop;
 	}
 
 	stop(): void {
@@ -333,13 +400,14 @@ export class AtomicWorkingLoader implements Component {
 		const delegate = this.delegate;
 		this.delegate = undefined;
 		delegate?.stop();
-		if (this.timer) clearInterval(this.timer);
-		this.timer = undefined;
+		const stopClock = this.stopClock;
+		this.stopClock = undefined;
+		stopClock?.();
 		if (this.metaTimer) clearInterval(this.metaTimer);
 		this.metaTimer = undefined;
 	}
 
-	setMeta(meta: (() => WorkingRunSnapshot | undefined) | undefined): void {
+	setMeta(meta: (() => WorkingRunMetaInput | undefined) | undefined): void {
 		this.meta = meta;
 		this.armMetaTimer();
 		this.ui.requestRender();
@@ -347,9 +415,10 @@ export class AtomicWorkingLoader implements Component {
 
 	setLogo(logo: boolean): void {
 		this.logo = logo;
-		if (logo && this.timer) {
-			clearInterval(this.timer);
-			this.timer = undefined;
+		if (logo && this.stopClock) {
+			const stopClock = this.stopClock;
+			this.stopClock = undefined;
+			stopClock();
 		}
 		this.armMetaTimer();
 		this.ui.requestRender();
@@ -374,9 +443,11 @@ export class AtomicWorkingLoader implements Component {
 	setIndicator(indicator?: LoaderIndicatorOptions): void {
 		this.stop();
 		this.indicator = indicator;
-		this.frame = 0;
-		if (indicator) this.createDelegate();
-		else this.start();
+		if (indicator) {
+			this.createDelegate();
+		} else {
+			this.start();
+		}
 	}
 
 	private createDelegate(): void {
@@ -399,21 +470,15 @@ export class AtomicWorkingLoader implements Component {
 			this.start();
 			return;
 		}
-		this.frame = 0;
 		this.start();
 		this.ui.requestRender();
 	}
 }
 
-export function atomicWorkingFrame(now = Date.now()): number {
+export function atomicWorkingFrame(now?: number): number {
 	if (process.env.ATOMIC_REDUCED_MOTION === "1") return 3;
-	return Math.floor(now / ATOMIC_WORKING_FRAME_MS) % ATOMIC_WORKING_FRAMES.length;
-}
-
-export function atomicWorkingGlyph(frame = atomicWorkingFrame()): string {
-	const reducedMotion = process.env.ATOMIC_REDUCED_MOTION === "1";
-	const frameIndex = reducedMotion ? 3 : normalizedFrameIndex(frame);
-	const glyph = ATOMIC_WORKING_FRAMES[frameIndex];
-	const colored = colorizePhase(frameIndex, glyph);
-	return !reducedMotion && ATOMIC_WORKING_BOLD_PHASES[frameIndex] ? emphasize(colored) : colored;
+	if (now !== undefined) {
+		return normalizedFrameIndex(Math.floor(now / ATOMIC_WORKING_FRAME_MS));
+	}
+	return sharedClockFrame;
 }

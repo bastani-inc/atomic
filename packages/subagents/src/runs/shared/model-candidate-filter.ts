@@ -1,3 +1,4 @@
+import type { SkippedModel } from "@bastani/atomic";
 import { splitKnownThinkingSuffix } from "../../shared/model-info.js";
 import type { ModelAttempt } from "../../shared/types.js";
 import type { AvailableModelInfo } from "./model-fallback.js";
@@ -5,6 +6,7 @@ import type { AvailableModelInfo } from "./model-fallback.js";
 export interface FilteredModelCandidates {
 	candidates: string[];
 	skippedAttempts: ModelAttempt[];
+	skippedModels: SkippedModel[];
 }
 
 function providerFromModel(model: string | undefined): string | undefined {
@@ -33,6 +35,7 @@ export function filterSpawnableModelCandidates(params: {
 	const currentModel = params.currentModel;
 	const filtered: string[] = [];
 	const skippedAttempts: ModelAttempt[] = [];
+	const skippedModels: SkippedModel[] = [];
 	for (const candidate of params.candidates) {
 		if (currentModel && candidate === currentModel) {
 			filtered.push(candidate);
@@ -51,6 +54,7 @@ export function filterSpawnableModelCandidates(params: {
 				`Skipped ${candidate}: provider '${provider}' has no configured API key/auth in the current session.`,
 			),
 		);
+		skippedModels.push({ model: splitKnownThinkingSuffix(candidate).baseModel, provider, reason: "no-credentials" });
 	}
-	return { candidates: filtered, skippedAttempts };
+	return { candidates: filtered, skippedAttempts, skippedModels };
 }

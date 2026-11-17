@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import factory, { type ExtensionAPI, type PiCommandOptions } from "../../packages/workflows/src/extension/index.js";
 import type { WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
-import type { ExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { createExtensionRuntime, type ExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import {
 	handleRunControlCommand,
 	type WorkflowRunControlDeps,
@@ -43,10 +43,13 @@ async function createUnclassifiedHydrationBackend(...args: Parameters<typeof cre
 	});
 }
 
-function registerFactory(piOverrides: Partial<ExtensionAPI> = {}): Array<{ name: string; options: PiCommandOptions }> {
+function registerFactory(piOverrides: Partial<ExtensionAPI> = {}) {
 	const commands: Array<{ name: string; options: PiCommandOptions }> = [];
+	let tool: { execute: (...args: unknown[]) => Promise<WorkflowToolResult> } | undefined;
 	const pi = {
-		registerTool: () => undefined,
+		registerTool: (opts: { execute: (...args: unknown[]) => Promise<WorkflowToolResult> }) => {
+			tool = opts;
+		},
 		registerCommand: (name: string, options: PiCommandOptions) => {
 			commands.push({ name, options });
 		},
@@ -71,7 +74,27 @@ function registerFactory(piOverrides: Partial<ExtensionAPI> = {}): Array<{ name:
 		...piOverrides,
 	} as unknown as ExtensionAPI;
 	factory(pi);
-	return commands;
+	const runtime = createExtensionRuntime({ store });
+	const runControlDeps: WorkflowRunControlDeps = {
+		pi,
+		overlay: { open: () => undefined, toggle: () => undefined, close: () => undefined },
+		runtimeForContext: () => runtime,
+		ensureWorkflowResourcesLoaded: async () => {
+			await pi.refreshWorkflowResources?.();
+		},
+	};
+	return {
+		commands,
+		tool: tool!,
+		resume: (rest: string[], ctx: Parameters<typeof handleRunControlCommand>[2]) =>
+			handleRunControlCommand(
+				"resume",
+				rest,
+				ctx,
+				{ info: () => undefined, error: (msg) => ctx.ui?.notify?.(msg, "error") },
+				runControlDeps,
+			),
+	};
 }
 
 beforeEach(async () => {
@@ -93,7 +116,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 	test("/workflow resume picker shows live runs when lazy discovery fails", async () => {
 		let refreshCalls = 0;
 		let pickerCalls = 0;
-		const commands = registerFactory({
+		const { resume } = registerFactory({
 			refreshWorkflowResources: async () => {
 				refreshCalls += 1;
 				throw new Error("discovery failed");
@@ -110,10 +133,8 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 			startedAt: Date.now(),
 		});
 		assert.equal(store.recordRunPaused(runId), true);
-		const workflowCmd = commands.find((command) => command.name === "workflow");
-		assert.ok(workflowCmd);
 
-		await workflowCmd.options.handler?.("resume", {
+		await resume([], {
 			hasUI: true,
 			ui: {
 				notify: () => undefined,
@@ -121,15 +142,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 				hostSessionPicker: () => {
 					pickerCalls += 1;
 					return {
-						// The picker must open before any resource/catalog discovery runs.
-						// Discovery happens lazily via hydrate(), so keep the picker open
-						// until it has been attempted (and failed), then cancel — proving
-						// the picker stayed open the whole time.
 						result: (async (): Promise<string | undefined> => {
-							// Wait on a generous wall-clock deadline (not a fixed tick count):
-							// under a loaded event loop the hydrate failure can take many more
-							// than a handful of setImmediate turns to land, so a small tick
-							// budget would cancel prematurely and flake.
 							const deadline = Date.now() + 5_000;
 							while (refreshCalls === 0 && Date.now() < deadline) {
 								await new Promise((resolve) => setImmediate(resolve));
@@ -147,20 +160,18 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 		assert.equal(pickerCalls, 1);
 	});
 
-	test("/workflow list surfaces lazy discovery failures as warnings", async () => {
+	test("workflow tool list surfaces lazy discovery failures as warnings", async () => {
 		const notices: string[] = [];
-		const commands = registerFactory({
+		const { tool } = registerFactory({
 			refreshWorkflowResources: async () => {
 				throw new Error("broken workflow file");
 			},
 		});
-		const workflowCmd = commands.find((command) => command.name === "workflow");
-		assert.ok(workflowCmd);
 
-		await workflowCmd.options.handler?.("list", {
+		await tool.execute("list-call", { action: "list" }, undefined, undefined, {
 			hasUI: true,
 			ui: {
-				notify: (message) => {
+				notify: (message: string) => {
 					notices.push(message);
 				},
 			},
@@ -172,9 +183,9 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 		assert.match(notices[0]!, /currently loaded workflow registry/);
 	});
 
-	test("/workflow resume for quit-paused live runs does not force durable discovery", async () => {
+	test("resume for quit-paused live runs does not force durable discovery", async () => {
 		let refreshCalls = 0;
-		const commands = registerFactory({
+		const { resume } = registerFactory({
 			refreshWorkflowResources: async () => {
 				refreshCalls += 1;
 				throw new Error("discovery failed");
@@ -191,20 +202,18 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 			startedAt: Date.now(),
 		});
 		assert.equal(store.recordRunPaused(runId, Date.now(), { resumable: true, exitReason: "quit" }), true);
-		const workflowCmd = commands.find((command) => command.name === "workflow");
-		assert.ok(workflowCmd);
 
-		await workflowCmd.options.handler?.(`resume ${runId}`, { hasUI: false, ui: { notify: () => undefined } });
+		await resume([runId], { hasUI: false, ui: { notify: () => undefined } });
 
 		assert.equal(refreshCalls, 0);
 		assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");
 	});
 
-	test("/workflow resume keeps hydration-capable current live runs on the lazy fast path", async () => {
+	test("resume keeps hydration-capable current live runs on the lazy fast path", async () => {
 		const backend = await createHydrationCapableBackend();
 		setDurableBackend(backend);
 		let refreshCalls = 0;
-		const commands = registerFactory({
+		const { resume } = registerFactory({
 			refreshWorkflowResources: async () => {
 				refreshCalls += 1;
 				return [];
@@ -221,21 +230,19 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 			startedAt: Date.now(),
 		});
 		assert.equal(store.recordRunPaused(runId), true);
-		const workflowCmd = commands.find((command) => command.name === "workflow");
-		assert.ok(workflowCmd);
 
-		await workflowCmd.options.handler?.(`resume ${runId}`, { hasUI: false, ui: { notify: () => undefined } });
+		await resume([runId], { hasUI: false, ui: { notify: () => undefined } });
 
 		assert.equal(refreshCalls, 0);
 		assert.equal(backend.hydrateCalls, 0);
 		assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");
 	});
 
-	test("/workflow resume prepares unclassified hydration-capable restored runs before choosing live path", async () => {
+	test("resume prepares unclassified hydration-capable restored runs before choosing live path", async () => {
 		const backend = await createUnclassifiedHydrationBackend();
 		setDurableBackend(backend);
 		let refreshCalls = 0;
-		const commands = registerFactory({
+		const { resume } = registerFactory({
 			refreshWorkflowResources: async () => {
 				refreshCalls += 1;
 				return [];
@@ -252,9 +259,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 			startedAt: Date.now(),
 		});
 		assert.equal(store.recordRunPaused(runId), true);
-		const workflowCmd = commands.find((command) => command.name === "workflow");
-		assert.ok(workflowCmd);
-		await workflowCmd.options.handler?.(`resume ${runId}`, { hasUI: false, ui: { notify: () => undefined } });
+		await resume([runId], { hasUI: false, ui: { notify: () => undefined } });
 		assert.equal(refreshCalls, 1);
 		assert.ok(backend.hydrateCalls >= 1);
 		assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");
