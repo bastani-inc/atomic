@@ -197,6 +197,23 @@ for (const runtime of RUNTIMES) {
 	});
 }
 
+test("on Node, an anonymous function's hot frame counts every sample, wherever in its body each landed (#5377)", () => {
+	const log = join(temp, "blocks.jsonl");
+	runChild(
+		RUNTIMES[0],
+		{ ATOMIC_EVENT_LOOP_BLOCK_MS: String(THRESHOLD_MS), ATOMIC_EVENT_LOOP_BLOCK_LOG: log },
+		"anonymous",
+	);
+	const fromFixture = (frame: string) =>
+		frame.startsWith("(anonymous) ") && frame.includes("event-loop-block-monitor");
+	const block = readLog(log).find(
+		(record) => record.type === "block" && record.hotFrames?.some((entry) => fromFixture(entry.frame)),
+	);
+	assert.ok(block, "the anonymous function's block was recorded");
+	const anonymous = block.hotFrames?.find((entry) => fromFixture(entry.frame));
+	assert.equal(anonymous?.count, block.samples, JSON.stringify(block.hotFrames));
+});
+
 test("hot frames count a function once per sample across sampled line and column changes (#5377)", () => {
 	assert.deepEqual(
 		hotFrames([

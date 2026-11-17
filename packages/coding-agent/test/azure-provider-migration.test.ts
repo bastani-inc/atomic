@@ -229,3 +229,25 @@ test("async Azure migration preserves permissions and reports locked files witho
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("the async migration does not lock a file that needs no migration, so another process's lock on it is never reported (#5377)", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-azure-async-clean-"));
+	vi.stubEnv(ENV_AGENT_DIR, root);
+	vi.stubEnv("ATOMIC_DEBUG", "1");
+	try {
+		const path = join(root, "models.json");
+		const content = JSON.stringify({ providers: { azure: { api: legacy, baseUrl: "canonical" } } });
+		writeFileSync(path, content);
+		const release = lockfile.lockSync(path, { realpath: false });
+		try {
+			await migrateAzureProviderAsync(root, { projectTrusted: false });
+		} finally {
+			release();
+		}
+		assert.equal(readFileSync(path, "utf-8"), content);
+		assert.deepEqual(await skippedMigrations(), []);
+	} finally {
+		vi.unstubAllEnvs();
+		rmSync(root, { recursive: true, force: true });
+	}
+});

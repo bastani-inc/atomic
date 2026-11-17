@@ -32,6 +32,20 @@ await delay(Number(settleMs));
 holdTheEventLoopForLong(Number(longBlockMs));
 if (mode === "exit-inside-block") process.exit(0);
 if (mode === "phase-inside-block") markEventLoopStartupComplete();
+if (mode === "anonymous") {
+	await delay(Number(settleMs));
+	// An anonymous function holds the loop across several statements, so its samples land on different lines.
+	(() => {
+		const until = performance.now() + Number(longBlockMs);
+		let spins = 0;
+		while (performance.now() < until) {
+			spins += Math.sqrt(spins + 1);
+			spins -= Math.floor(spins / 3);
+			spins += 1;
+		}
+		return spins;
+	})();
+}
 await delay(Number(settleMs));
 holdTheEventLoopBriefly(Number(shortBlockMs));
 await delay(Number(settleMs));
