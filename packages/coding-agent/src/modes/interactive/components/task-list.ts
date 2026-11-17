@@ -62,10 +62,6 @@ export function isActiveBackgroundTask(task: TaskRecord): boolean {
 	return task.observation.kind === "background" && task.execution.kind !== "settled";
 }
 
-/**
- * The rows of a chat's active background agents and shells, as the agent panel draws them: a stage or subagent chat
- * shows its own tasks this way below its prompt. Finished tasks leave at once; `/tasks` keeps them.
- */
 export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, clocks?: TaskElapsedClocks): string[] {
 	const input: TaskRecord[] = [];
 	const running: TaskRecord[] = [];

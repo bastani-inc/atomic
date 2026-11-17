@@ -110,10 +110,6 @@ export interface ExtensionAPI {
 	registerWorkflowActivityPublisher(): WorkflowActivityPublisher;
 	/** Register the implementation behind `session.workflows`; disposed with this extension generation. */
 	registerWorkflowRunControl(control: WorkflowRunControl): WorkflowRunControlRegistration;
-	/**
-	 * Add items to the agent panel below the main chat's prompt and to `/tasks`, as the workflows extension adds its
-	 * runs. Disposed with this extension generation.
-	 */
 	registerAgentPanelSource(
 		source: import("../tasks/agent-panel-source.ts").AgentPanelSource,
 	): import("../tasks/agent-panel-source.ts").AgentPanelSourceRegistration;

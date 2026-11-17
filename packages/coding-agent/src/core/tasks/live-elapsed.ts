@@ -45,10 +45,6 @@ function readClock(
 	return { elapsedMs: entry.displayed, clock: entry };
 }
 
-/**
- * A task's elapsed time on the clock shared by every view without a source of its own. A clock stopped while paused
- * continues from the time it showed when the task runs again; one stopped because the task `ended` starts afresh.
- */
 export function liveElapsedMs(
 	taskId: string,
 	reportedMs: number | undefined,
@@ -76,7 +72,6 @@ export class TaskElapsedClocks {
 		return this.retained.size > 0 || this.table.size > 0;
 	}
 
-	/** As {@link liveElapsedMs}, on this owner's clocks. */
 	elapsedMs(
 		taskId: string,
 		reportedMs: number | undefined,

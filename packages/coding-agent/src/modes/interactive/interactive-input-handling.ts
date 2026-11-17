@@ -79,7 +79,6 @@ export function registerStartupInputListeners(mode: InteractiveModeBase): void {
 
 InteractiveModeBase.prototype.setupKeyHandlers = async function (this: InteractiveModeBase): Promise<void> {
 	registerStartupInputListeners(this);
-	// The chord's notices show in the view the user is in and clear themselves; none is written to a transcript.
 	const isolated = this.runtimeHost instanceof IsolatedInteractiveRuntime ? this.runtimeHost : undefined;
 	const notices = createStopAllNotices({
 		...(isolated === undefined

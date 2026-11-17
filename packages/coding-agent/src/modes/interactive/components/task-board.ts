@@ -1,6 +1,6 @@
 import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { AgentPanelItem } from "../../../core/tasks/agent-panel-source.ts";
-import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
+import type { TaskRecord } from "../../../core/tasks/contracts.js";
 import { taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.ts";
 import { theme } from "../theme/theme.js";
 import { taskDisplayText, taskDuration, taskLabel, taskState } from "./task-row.js";
@@ -33,7 +33,7 @@ export function taskBoardState(task: TaskRecord): TaskBoardState {
 		case "failed":
 			return "failed";
 		case "paused":
-			return "paused";
+			return "stopped";
 		case "killed":
 		case "cancelled":
 			return "stopped";
@@ -51,7 +51,7 @@ export function rowState(row: TaskBoardRow): TaskBoardState {
 
 export function stateGroup(state: TaskBoardState): TaskBoardGroup {
 	if (state === "input") return "input";
-	if (state === "running" || state === "queued" || state === "stopping") return "working";
+	if (state === "running" || state === "queued" || state === "stopping" || state === "paused") return "working";
 	return "done";
 }
 
@@ -148,7 +148,7 @@ export function rowMeta(row: TaskBoardRow): string {
 	if (state === "paused" || state === "stopped") return [state, time].filter(Boolean).join(" · ");
 	if (state === "failed") return ["failed", time].filter(Boolean).join(" · ");
 	if (state === "queued") return "queued";
-	if (state === "stopping") return "stopping";
+	if (state === "stopping") return ["stopping", time].filter(Boolean).join(" · ");
 	if (state === "done") return ["done", time].filter(Boolean).join(" · ");
 	return [time, validMetric(tokens) ? `↓ ${compactTokens(tokens)}` : ""].filter(Boolean).join(" · ");
 }
@@ -178,7 +178,7 @@ export function renderBoardRow(row: TaskBoardRow, selected: boolean, width: numb
 		progress && row.kind === "item" && row.item.kind === "workflow" && rawTitle.startsWith("stage ")
 			? rawTitle.slice(6)
 			: rawTitle;
-	const task = [title, progress, reason === title ? "" : reason].filter(Boolean).join(" · ");
+	const task = [title, progress, reason === rawTitle ? "" : reason].filter(Boolean).join(" · ");
 	const meta = width < 40 ? "" : rowMeta(row);
 	const fixed = 2 + 2 + nameColumn + (meta ? 2 + visibleWidth(meta) : 0);
 	const taskText = truncateToWidth(task, Math.max(0, width - fixed));
@@ -227,10 +227,6 @@ export function renderPeekCard(
 	return [top, ...clipped.map(frame), ...replyLines.map(frame), border(`╰${"─".repeat(Math.max(0, width - 2))}╯`)].map(
 		(line) => truncateToWidth(line, width),
 	);
-}
-
-export function boardTaskIds(rows: readonly TaskBoardRow[]): TaskId[] {
-	return rows.flatMap((row) => (row.kind === "task" ? [row.task.ref.taskId] : []));
 }
 
 export function rowMatches(row: TaskBoardRow, filter: string): boolean {

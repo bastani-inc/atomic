@@ -42,6 +42,9 @@ knowledge:
       Localized named-worktree recovery fixtures write the translated marker while Git is paused, so they do not
       require installed locales or a Git build with gettext support. Finish `npm run check` before running
       suites that import built packages: typechecking rebuilds dist in place and cleans provider data.
+      After changing SDK imports used by workflow graph views, run
+      `npx vitest run --project unit test/unit/overlay-adapter-autowrap.test.ts test/unit/overlay-adapter-hidden-render.test.ts`:
+      these wrappers run Bun children with isolated module mocks, which must expose each imported SDK name.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run

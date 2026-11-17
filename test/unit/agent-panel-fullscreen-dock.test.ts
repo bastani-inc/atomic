@@ -2,7 +2,7 @@
  * The agent panel in the real fullscreen dock: ported from the retired workflow widget's dock tests (#3015, #5224).
  */
 import { visibleWidth } from "@bastani/atomic-tui";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import {
 	type AgentPanelItem,
 	AgentPanelSourceHub,
@@ -56,13 +56,23 @@ test("the agent panel sits in the sticky dock below the footer and updates in pl
 	active = createProductionFullscreenContext();
 	const { context, terminal, tui } = active;
 	let items: AgentPanelItem[] = [];
-	const { session, changed } = panelSession(() => items);
+	let refreshTime = 0;
+	const clock = vi.spyOn(performance, "now").mockImplementation(() => refreshTime);
+	const { session, changed } = panelSession(() => {
+		if (items.length > 0) refreshTime += 10;
+		return items;
+	});
 	const dispose = bindAgentPanel(session, context.createExtensionUIContext());
 	try {
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		items = [run(1)];
 		await changed();
-		tui.renderNow();
+		await expect
+			.poll(() => {
+				tui.renderNow();
+				return getLayoutFrame(tui).lines.some((line) => line.includes("dummy-1"));
+			})
+			.toBe(true);
 		const panel = context.extensionWidgetsBelow.get("atomic.agent-panel");
 		if (!panel) throw new Error("the agent panel did not mount in the dock");
 		const frame = getLayoutFrame(tui);
@@ -75,11 +85,16 @@ test("the agent panel sits in the sticky dock below the footer and updates in pl
 		expect(row).toBeGreaterThan(footer);
 		items = [{ ...run(1), elapsedMs: 42_000 }];
 		await changed();
-		tui.renderNow();
+		await expect
+			.poll(() => {
+				tui.renderNow();
+				return getLayoutFrame(tui).lines.some((line) => line.includes("42s"));
+			})
+			.toBe(true);
 		expect(context.extensionWidgetsBelow.get("atomic.agent-panel")).toBe(panel);
-		expect(getLayoutFrame(tui).lines.some((line) => line.includes("42s"))).toBe(true);
 	} finally {
 		dispose();
+		clock.mockRestore();
 	}
 });
 

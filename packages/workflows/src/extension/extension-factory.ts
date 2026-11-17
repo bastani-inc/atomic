@@ -217,7 +217,6 @@ function factory(pi: ExtensionAPI): void {
 		...resumeProvider,
 	};
 	pi.registerWorkflowRunControl?.(sessionRunControl);
-	// Each run is a row of the agent panel and /tasks; Enter opens its graph, x x quits it resumably (#5224).
 	pi.registerAgentPanelSource?.(
 		workflowPanelSource(owner, {
 			open: (runId, options) =>

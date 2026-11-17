@@ -73,23 +73,14 @@ export function createStopAllChord(
 	};
 }
 
-/** Where a stop-all notice can show: never a chat transcript, only places that clear themselves. */
 export interface StopAllNoticeSurfaces {
-	/** The isolated engine's status line, which its views (the workflow graph, a subagent's chat) and the host footer show. */
 	setEngineNotice?(text: string | undefined): void;
-	/** The in-process footer's status line. */
 	setFooterStatus?(text: string | undefined): void;
-	/** A floating line over an in-process fullscreen view; returns its remover. */
 	showToast?(text: string): () => void;
 	hasOverlay(): boolean;
 	requestRender(): void;
 }
 
-/**
- * Shows the chord's notices (the "press again" prompt, the result, a failure) in the view the user is in, for one
- * confirm window, and never in a chat transcript: the isolated engine's status line, or in process the footer status
- * plus a floating line over a fullscreen view.
- */
 export function createStopAllNotices(
 	surfaces: StopAllNoticeSurfaces,
 	timers: { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout } = { setTimeout, clearTimeout },

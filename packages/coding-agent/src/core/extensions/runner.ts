@@ -234,7 +234,6 @@ export class ExtensionRunner {
 		this.runtime.workflowJournal = journal;
 		this.runtime.storageAgentDir = storageAgentDir;
 	}
-	/** The agent-panel sources the current extension generation registered. */
 	getAgentPanelSourceHub(): import("../tasks/agent-panel-source.ts").AgentPanelSourceHub {
 		return this.runtime.agentPanelSourceHub;
 	}

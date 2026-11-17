@@ -399,7 +399,6 @@ export class FooterComponent implements Component {
 		}
 		const statusRow = renderExtensionStatusRow(this.footerData.getExtensionStatuses(), width, this.renderStyle);
 		if (statusRow !== undefined) lines.push(statusRow);
-		// The main chat lists its background work in the agent panel; a stage or subagent chat lists its own here.
 		const tasks = this.backgroundTasks?.();
 		if (tasks !== undefined) lines.push(...renderTaskFooter(tasks, width, this.backgroundTaskClocks?.()));
 		return lines;

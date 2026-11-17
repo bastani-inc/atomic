@@ -265,7 +265,6 @@ export class SelectorState<T> {
 		this.scrollToSelected();
 	}
 
-	/** Move one enabled row in the direction of `delta`, wrapping at the ends and skipping disabled rows. */
 	move(delta: number, wrap = true): void {
 		if (!Number.isInteger(delta) || delta === 0) return;
 		const count = this.visible.length;

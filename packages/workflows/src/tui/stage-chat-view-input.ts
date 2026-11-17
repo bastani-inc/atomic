@@ -127,25 +127,22 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 }
 
 function isBackToGraphInput(ctx: StageChatViewContext, data: string): boolean {
+	if (matchesKey(data, Key.escape)) return false;
 	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
 	// At the start of a typed prompt, ← leaves too; the draft stays for the return.
 	return matchesNavAction(keybindings, data, APP_ACTION.navBack) && ctx.chatHost.inputCursorAtStart();
 }
 
-/** Choice and yes/no questions move with ←; Esc closes them back to the chat's prompt. */
 function isClosableQuestion(kind: string): boolean {
 	return kind !== "input" && kind !== "editor";
 }
 
-/**
- * Leaving a typed question for the graph with the back key while its answer is empty, or at its start; the question
- * stays waiting. A choice or yes/no question moves with ←, so it never leaves this way.
- */
 function isPromptBackInput(ctx: StageChatViewContext, data: string): boolean {
 	const state = ctx.promptState;
-	if (!state || isClosableQuestion(state.prompt.kind)) return false;
+	if (!state || matchesKey(data, Key.escape)) return false;
 	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
 	if (!matchesNavAction(keybindings, data, APP_ACTION.navBack)) return false;
+	if (isClosableQuestion(state.prompt.kind)) return true;
 	// At the start of a typed answer, ← leaves too; the answer stays for the return.
 	if (ctx.promptEditor && ctx.promptEditorPromptId === state.prompt.id) {
 		const cursor = (ctx.promptEditor as { getCursor?(): { line: number; col: number } }).getCursor?.();
