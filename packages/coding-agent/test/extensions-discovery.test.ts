@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { discoverAndLoadExtensions } from "../src/core/extensions/loader.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -50,6 +50,43 @@ describe("extensions discovery", () => {
 		expect(result.errors).toHaveLength(0);
 		expect(result.extensions).toHaveLength(2);
 		expect(result.extensions.map((e) => path.basename(e.path)).sort()).toEqual(["bar.ts", "foo.ts"]);
+	});
+
+	it.each(["module", "factory"])("finishes its %s transform cache writes before discovery settles", async (phase) => {
+		const code =
+			phase === "module"
+				? extensionCode
+				: `export default async function(pi) { const { register } = await import('../helper.ts'); register(pi); }`;
+		fs.writeFileSync(
+			path.join(tempDir, "helper.ts"),
+			`export const register = ${extensionCode.replace("export default", "")};`,
+		);
+		fs.writeFileSync(path.join(extensionsDir, "cached.ts"), code);
+		const writeFile = fs.promises.writeFile;
+		const cacheWrites: Promise<void>[] = [];
+		let pendingWrites = 0;
+		// Hold the disk writes long enough for an untracked load to return while its publication is still pending.
+		const CACHE_WRITE_LATENCY_MS = 100;
+		const write = vi.spyOn(fs.promises, "writeFile").mockImplementation(async (...args) => {
+			if (typeof args[0] !== "string" || !args[0].includes(`${path.sep}cache${path.sep}jiti${path.sep}`))
+				return writeFile(...args);
+			pendingWrites++;
+			const writing = (async () => {
+				await new Promise((resolve) => setTimeout(resolve, CACHE_WRITE_LATENCY_MS));
+				await writeFile(...args);
+			})().finally(() => pendingWrites--);
+			cacheWrites.push(writing);
+			return writing;
+		});
+		try {
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			assert.deepEqual(result.errors, []);
+			assert.ok(cacheWrites.length > 0, "the extension must populate its transform cache");
+			assert.equal(pendingWrites, 0, "discovery must finish the cache writes that it started");
+		} finally {
+			await Promise.all(cacheWrites);
+			write.mockRestore();
+		}
 	});
 
 	it("discovers direct .js files in extensions/", async () => {
