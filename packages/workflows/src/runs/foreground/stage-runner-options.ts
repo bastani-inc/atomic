@@ -9,7 +9,7 @@ import {
 	resumeStoreDir,
 	SessionManager,
 	type SessionStore,
-	workspaceSessionCwd,
+	workspaceSessionCwdAsync,
 } from "@bastani/atomic";
 import { resolveStageGroup, stageHasIntercomAccess } from "../../shared/intercom-group.js";
 import { forkStageSession, migrateLegacyStageSession, stageSessionStore } from "../../shared/stage-session-store.js";
@@ -116,7 +116,7 @@ export async function stripWorkflowOnlyOptions(
 						signal,
 					);
 		sessionOptions.workspace = binding;
-		sessionOptions.cwd = workspaceSessionCwd(binding, sessionOptions.cwd);
+		sessionOptions.cwd = await workspaceSessionCwdAsync(binding, sessionOptions.cwd);
 	}
 	const cwd = sessionOptions.cwd ?? process.cwd();
 	if (resumeStore !== undefined) {

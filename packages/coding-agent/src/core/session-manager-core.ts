@@ -3,13 +3,7 @@ import { dirname, join } from "node:path";
 import { getCurrentSystemMessage } from "@bastani/atomic-ai";
 import type { ImageContent, Message, TextContent, Usage } from "@bastani/atomic-ai/compat";
 import { getAgentDir } from "../config.js";
-import {
-	createSessionCwdMatcher,
-	createSessionCwdMatcherAsync,
-	normalizePath,
-	pathsEqual,
-	resolvePath,
-} from "../utils/paths.ts";
+import { createSessionCwdMatcherAsync, normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { SessionHistoryIndex } from "./session-history-index.ts";
@@ -1500,7 +1494,7 @@ export class SessionManager {
 
 	static inMemory(cwd: string = process.cwd(), options?: NewSessionOptions, entries?: FileEntry[]): SessionManager {
 		const manager = new SessionManager(
-			markPrivateMemorySessionStore(new MemorySessionStore(createSessionCwdMatcher)),
+			markPrivateMemorySessionStore(new MemorySessionStore(createSessionCwdMatcherAsync)),
 			cwd,
 			"",
 			options,

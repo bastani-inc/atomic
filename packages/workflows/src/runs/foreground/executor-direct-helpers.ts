@@ -15,7 +15,7 @@ import {
 	setupGitWorktreeCached,
 	type WorktreeSetup,
 } from "../shared/worktree.js";
-import { resolveWorktreeStageCwd } from "../shared/worktree-cwd.js";
+import { resolveWorktreeStageCwdAsync } from "../shared/worktree-cwd.js";
 import { withoutUndefinedProperties, withSharedDefaults } from "./executor-task-prompts.js";
 
 export type { GitWorktreeSetupCache } from "../shared/worktree.js";
@@ -187,7 +187,7 @@ export async function stageOptionsWithGitWorktree<T extends StageOptions>(
 		},
 		cache,
 	);
-	const explicitCwd = resolveWorktreeStageCwd(options.cwd, setup);
+	const explicitCwd = await resolveWorktreeStageCwdAsync(options.cwd, setup);
 	return { ...options, gitWorktreeDir: undefined, baseBranch: undefined, cwd: explicitCwd ?? setup.cwd };
 }
 
