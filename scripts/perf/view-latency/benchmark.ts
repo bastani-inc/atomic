@@ -210,6 +210,7 @@ class Bench {
 
 	/** Types a slash command or prompt and submits it; a second Enter accepts an open completion first. */
 	async submit(text: string): Promise<void> {
+		this.writeKey(KEY.clearLine);
 		this.writeKey(text);
 		await this.screen.waitFor(includes(text), 10_000, `the composer to show ${text}`);
 		await sleep(300);
@@ -453,7 +454,8 @@ async function main(): Promise<void> {
 		now,
 		onData: (chunk, atMs) => screen.feed(chunk, atMs),
 	});
-	screen.onReply((data) => pty.write(data));
+	// Windows' pseudo-console answers the application's terminal queries itself; a second answer would arrive as typing.
+	if (process.platform !== "win32") screen.onReply((data) => pty.write(data));
 	const bench = new Bench(options, screen, server, (data) => pty.write(data), { window: windowFile, loop: loopFile });
 	const results: Partial<Record<ViewName, ViewResult>> = {};
 	try {
