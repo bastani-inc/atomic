@@ -821,6 +821,125 @@ describe("asynchronous windows directory security reader (#5285)", () => {
 		},
 	);
 
+	it.skipIf(isWindows)(
+		"resolves a relative path against the caller's working directory rather than the neutral PowerShell cwd (#5285)",
+		async () => {
+			fake = installFakePowerShell("ownerAtStart");
+			const callerDir = join(dir, "caller");
+			const neutralDir = join(dir, "neutral");
+			const relativeTarget = "target [literal]";
+			mkdirSync(join(callerDir, relativeTarget), { recursive: true });
+			mkdirSync(join(neutralDir, relativeTarget), { recursive: true });
+			writeFileSync(join(callerDir, relativeTarget, ".owner-sid"), FOREIGN_SID);
+			const probe = join(dir, "relative-probe.mjs");
+			writeFileSync(
+				probe,
+				[
+					`const { readWindowsDirectorySecurityAsync, verifyWindowsDirectorySecurityAsync } = await import(${JSON.stringify(pathToFileURL(SECURITY_MODULE).href)});`,
+					`const target = process.argv[2];`,
+					`const refusal = await verifyWindowsDirectorySecurityAsync(target);`,
+					`const descriptor = await readWindowsDirectorySecurityAsync(target);`,
+					`process.stdout.write(JSON.stringify({ refusal, ownerSid: descriptor?.ownerSid }));`,
+				].join("\n"),
+			);
+			for (const runtime of [[bunExecutable()], [process.execPath, "--experimental-strip-types", "--no-warnings"]]) {
+				const child = spawnProcess([...runtime, probe, relativeTarget], {
+					cwd: callerDir,
+					env: { ...process.env, SystemRoot: neutralDir, windir: neutralDir },
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				const [exitCode, stdout, stderr] = await Promise.all([
+					child.exited,
+					readStreamText(child.stdout),
+					readStreamText(child.stderr),
+				]);
+				assert.equal(exitCode, 0, `${runtime[0]}: ${stderr}`);
+				assert.deepEqual(JSON.parse(stdout), {
+					refusal: "it is owned by another account",
+					ownerSid: FOREIGN_SID,
+				});
+			}
+			for (const launch of fake.launches()) {
+				assert.equal(launch.path, join(callerDir, relativeTarget));
+			}
+		},
+	);
+
+	it.skipIf(!isWindows)(
+		"resolves a relative path against the caller's working directory on Windows (#5285)",
+		async () => {
+			const callerDir = join(dir, "caller");
+			const neutralDir = join(dir, "neutral");
+			const relativeTarget = "target [literal]";
+			mkdirSync(join(callerDir, relativeTarget), { recursive: true });
+			mkdirSync(join(neutralDir, relativeTarget), { recursive: true });
+			const granted = spawnSyncCollect(["icacls", join(callerDir, relativeTarget), "/grant", "*S-1-1-0:(OI)(CI)F"]);
+			assert.equal(granted.exitCode, 0, granted.stderr.toString());
+			const tempModule = join(moduleDir(import.meta.url), "..", "src", "core", "tools", "session-temp-dir.ts");
+			const probe = join(dir, "win-relative-probe.mjs");
+			writeFileSync(
+				probe,
+				[
+					`const { verifyWindowsDirectorySecurityAsync } = await import(${JSON.stringify(pathToFileURL(SECURITY_MODULE).href)});`,
+					`const { assertPrivateDirectoryAsync } = await import(${JSON.stringify(pathToFileURL(tempModule).href)});`,
+					`const target = process.argv[2];`,
+					`const refusal = await verifyWindowsDirectorySecurityAsync(target);`,
+					`let rejected = false;`,
+					`try { await assertPrivateDirectoryAsync(target); } catch { rejected = true; }`,
+					`process.stdout.write(JSON.stringify({ refusal, rejected }));`,
+				].join("\n"),
+			);
+			const child = spawnProcess(
+				[process.execPath, "--experimental-strip-types", "--no-warnings", probe, relativeTarget],
+				{
+					cwd: callerDir,
+					env: { ...process.env, SystemRoot: neutralDir, windir: neutralDir },
+					stdout: "pipe",
+					stderr: "pipe",
+				},
+			);
+			const [exitCode, stdout, stderr] = await Promise.all([
+				child.exited,
+				readStreamText(child.stdout),
+				readStreamText(child.stderr),
+			]);
+			assert.equal(exitCode, 0, stderr);
+			assert.deepEqual(JSON.parse(stdout), {
+				refusal: "it grants access to another account",
+				rejected: true,
+			});
+		},
+	);
+
+	it("does not evict a replacement directory's verified entry when the old directory's read later refuses (#5285)", async () => {
+		let finishOld: (security: WindowsDirectorySecurity) => void = () => {};
+		let reads = 0;
+		setWindowsDirectorySecurityReaderForTesting(() => {
+			reads += 1;
+			if (reads === 1) {
+				return new Promise<WindowsDirectorySecurity>((resolve) => {
+					finishOld = resolve;
+				});
+			}
+			return security();
+		});
+		const oldRead = verifyWindowsDirectorySecurityAsync(dir);
+		renameSync(dir, `${dir}-old`);
+		mkdirSync(dir);
+		try {
+			assert.equal(await verifyWindowsDirectorySecurityAsync(dir), undefined);
+			assert.equal(verifyWindowsDirectorySecurity(dir, { startVerification: false }), undefined);
+			finishOld(security({ ownerSid: FOREIGN_SID }));
+			assert.equal(await oldRead, "it is owned by another account");
+			assert.equal(verifyWindowsDirectorySecurity(dir, { startVerification: false }), undefined);
+			assert.equal(await verifyWindowsDirectorySecurityAsync(dir), undefined);
+			assert.equal(reads, 2);
+		} finally {
+			rmSync(`${dir}-old`, { recursive: true, force: true });
+		}
+	});
+
 	it("does not cache a directory replaced while it was read (#5285)", async () => {
 		const reads: string[] = [];
 		setWindowsDirectorySecurityReaderForTesting(async (path) => {

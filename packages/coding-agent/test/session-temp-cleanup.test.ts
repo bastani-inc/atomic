@@ -13,6 +13,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	statSync,
 	symlinkSync,
@@ -700,6 +701,74 @@ describe("oversized result replay safety", () => {
 		assert.equal(lstatSync(replayPath).isSymbolicLink(), true);
 		assert.equal(readFileSync(outside, "utf8"), outsideContent);
 		assert.equal(statSync(outside).mode & 0o777, outsideMode);
+	});
+});
+
+describe("asynchronous cleanup gate races (#5285)", () => {
+	it("keeps paths protected while the sweep awaits control-directory verification (#5285)", async () => {
+		for (const kind of ["session", "project", "custom"] as const) {
+			const root = join(sandbox, `live-${kind}`);
+			mkdirSync(root, { mode: 0o700 });
+			const target =
+				kind === "session"
+					? join(root, "active")
+					: kind === "project"
+						? join(root, "--project--", TOOL_RESULTS_SUBDIR)
+						: join(root, TOOL_RESULTS_SUBDIR);
+			mkdirSync(target, { recursive: true, mode: 0o700 });
+			const file = join(target, "old-but-in-use.txt");
+			writeFileSync(file, "still advertised");
+			stampAge(file, 60);
+			stampAge(target, 60);
+			const options = { now: NOW, controlRoot: join(controlRoot, `live-${kind}`) };
+			const sweep =
+				kind === "session"
+					? sweepSessionTempRoot(root, options)
+					: kind === "project"
+						? sweepToolResultsRoot(root, options)
+						: sweepSessionDirToolResults(root, options);
+			const lease = acquireProtectedPaths([target]);
+			try {
+				assert.equal(await sweep, "swept", kind);
+				assert.equal(existsSync(target), true, `${kind} target must survive`);
+				assert.equal(existsSync(file), true, `${kind} file must survive`);
+			} finally {
+				lease.release();
+			}
+		}
+	});
+
+	it("refuses a scanned root replaced with a link while the sweep awaits control-directory verification (#5285)", async () => {
+		const linkType = process.platform === "win32" ? "junction" : "dir";
+		for (const kind of ["session", "project", "custom"] as const) {
+			const root = join(sandbox, `swap-${kind}`);
+			const outside = join(sandbox, `swap-${kind}-outside`);
+			mkdirSync(root, { mode: 0o700 });
+			mkdirSync(outside, { mode: 0o700 });
+			const target =
+				kind === "session"
+					? join(outside, "active")
+					: kind === "project"
+						? join(outside, "--project--", TOOL_RESULTS_SUBDIR)
+						: join(outside, TOOL_RESULTS_SUBDIR);
+			mkdirSync(target, { recursive: true, mode: 0o700 });
+			const file = join(target, "must-survive.txt");
+			writeFileSync(file, "not beneath selected root");
+			stampAge(file, 60);
+			stampAge(target, 60);
+			const options = { now: NOW, controlRoot: join(controlRoot, `swap-${kind}`), protectedPaths: [] };
+			const sweep =
+				kind === "session"
+					? sweepSessionTempRoot(root, options)
+					: kind === "project"
+						? sweepToolResultsRoot(root, options)
+						: sweepSessionDirToolResults(root, options);
+			renameSync(root, `${root}-original`);
+			symlinkSync(outside, root, linkType);
+			assert.equal(await sweep, "missing", kind);
+			assert.equal(existsSync(file), true, `${kind} outside file must survive`);
+			assert.equal(lstatSync(root).isSymbolicLink(), true, `${kind} link is left in place`);
+		}
 	});
 });
 
