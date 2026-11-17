@@ -165,7 +165,7 @@
 		"type": "table",
 		"name": "team_wf_runs_pool_hosts",
 		"tbl_name": "team_wf_runs_pool_hosts",
-		"sql": "CREATE TABLE team_wf_runs_pool_hosts(\n\t\t\t\t\thost TEXT PRIMARY KEY, labels TEXT NOT NULL, git TEXT NOT NULL, restore INTEGER NOT NULL,\n\t\t\t\t\tworkers INTEGER NOT NULL, max_workers INTEGER NOT NULL, heartbeat_at INTEGER NOT NULL,\n\t\t\t\t\troots TEXT NOT NULL DEFAULT '[]', slots_busy INTEGER, draining INTEGER NOT NULL DEFAULT 0, degraded TEXT\n\t\t\t\t, provider_id TEXT, journal_schema INTEGER)"
+		"sql": "CREATE TABLE team_wf_runs_pool_hosts(\n\t\t\t\t\thost TEXT PRIMARY KEY, labels TEXT NOT NULL, git TEXT NOT NULL, restore INTEGER NOT NULL,\n\t\t\t\t\tworkers INTEGER NOT NULL, max_workers INTEGER NOT NULL, heartbeat_at INTEGER NOT NULL,\n\t\t\t\t\troots TEXT NOT NULL DEFAULT '[]', slots_busy INTEGER, draining INTEGER NOT NULL DEFAULT 0, degraded TEXT\n\t\t\t\t, provider_id TEXT, journal_schema INTEGER, shipping TEXT, progress TEXT, status_at INTEGER)"
 	},
 	{
 		"type": "table",
@@ -345,7 +345,7 @@
 		"type": "table",
 		"name": "wf_runs_pool_hosts",
 		"tbl_name": "wf_runs_pool_hosts",
-		"sql": "CREATE TABLE wf_runs_pool_hosts(\n\t\t\t\t\thost TEXT PRIMARY KEY, labels TEXT NOT NULL, git TEXT NOT NULL, restore INTEGER NOT NULL,\n\t\t\t\t\tworkers INTEGER NOT NULL, max_workers INTEGER NOT NULL, heartbeat_at INTEGER NOT NULL,\n\t\t\t\t\troots TEXT NOT NULL DEFAULT '[]', slots_busy INTEGER, draining INTEGER NOT NULL DEFAULT 0, degraded TEXT\n\t\t\t\t, provider_id TEXT, journal_schema INTEGER)"
+		"sql": "CREATE TABLE wf_runs_pool_hosts(\n\t\t\t\t\thost TEXT PRIMARY KEY, labels TEXT NOT NULL, git TEXT NOT NULL, restore INTEGER NOT NULL,\n\t\t\t\t\tworkers INTEGER NOT NULL, max_workers INTEGER NOT NULL, heartbeat_at INTEGER NOT NULL,\n\t\t\t\t\troots TEXT NOT NULL DEFAULT '[]', slots_busy INTEGER, draining INTEGER NOT NULL DEFAULT 0, degraded TEXT\n\t\t\t\t, provider_id TEXT, journal_schema INTEGER, shipping TEXT, progress TEXT, status_at INTEGER)"
 	},
 	{
 		"type": "table",
