@@ -173,9 +173,12 @@ test("the sheet places the terminal cursor in its search field while focused and
 	assert.equal(focusable.focused, false);
 	focusable.focused = true;
 	assert.equal(focusable.focused, true);
-	assert.ok(component.render(100)[0]!.includes(CURSOR_MARKER));
+	const focusedRows = component.render(100);
+	const searchRow = focusedRows.find((row) => row.includes("⌕"));
+	assert.ok(searchRow?.includes(CURSOR_MARKER));
+	assert.equal(focusedRows.filter((row) => row.includes(CURSOR_MARKER)).length, 1);
 	focusable.focused = false;
 	assert.equal(focusable.focused, false);
-	assert.ok(!component.render(100)[0]!.includes(CURSOR_MARKER));
+	assert.ok(component.render(100).every((row) => !row.includes(CURSOR_MARKER)));
 	component.dispose?.();
 });

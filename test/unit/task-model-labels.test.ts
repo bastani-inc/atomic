@@ -109,10 +109,10 @@ for (const background of [false, true]) {
 						() => {},
 						() => {},
 					);
-					assert.match(
-						stripVTControlCharacters(inspector.renderPicker(100, 24).join("\n")),
-						/provider\/fallback {2}off/,
-					);
+					inspector.handleInput(" ");
+					const pickerText = stripVTControlCharacters(inspector.renderPicker(100, 24).join("\n"));
+					assert.match(pickerText, /provider\/fallback {2}off/);
+					assert.doesNotMatch(pickerText, /provider\/first/);
 					inspector.dispose();
 				}
 			}

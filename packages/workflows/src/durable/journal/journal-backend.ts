@@ -460,7 +460,29 @@ function byCompletedAt(left: DurableCheckpoint, right: DurableCheckpoint): numbe
 	return left.completedAt - right.completedAt;
 }
 
+const JOURNAL_DURABLE_BACKEND = Symbol.for("@bastani/workflows/journal-durable-backend");
+
+export function isJournalDurableBackend<Journal extends RunJournal = RunJournal>(
+	backend: unknown,
+): backend is JournalDurableBackend<Journal> {
+	return (
+		typeof backend === "object" &&
+		backend !== null &&
+		(backend as { [JOURNAL_DURABLE_BACKEND]?: boolean })[JOURNAL_DURABLE_BACKEND] === true &&
+		typeof (backend as { journal?: unknown }).journal === "object" &&
+		(backend as { journal?: unknown }).journal !== null
+	);
+}
+
+function hasJournalDurableBackendInstance(this: unknown, value: unknown): boolean {
+	return (
+		Function.prototype[Symbol.hasInstance].call(this, value) ||
+		(this === JournalDurableBackend && isJournalDurableBackend(value))
+	);
+}
+
 export class JournalDurableBackend<Journal extends RunJournal = RunJournal> implements DurableWorkflowBackend {
+	readonly [JOURNAL_DURABLE_BACKEND] = true;
 	readonly persistent: boolean;
 	private readonly projection = createJournalProjection();
 	private readonly sequences = new Map<string, number>();
@@ -1903,6 +1925,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		}
 	}
 }
+
+Object.defineProperty(JournalDurableBackend, Symbol.hasInstance, {
+	value: hasJournalDurableBackendInstance,
+});
 
 /**
  * A sticky entry's deliveries written as a change to the same entry in the run's previous event: drop these

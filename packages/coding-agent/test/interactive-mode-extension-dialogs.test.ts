@@ -93,7 +93,7 @@ function createContext(): DialogContext & DialogMethods {
 	return new Proxy(context, {
 		get(target, key, receiver) {
 			if (key in target) return Reflect.get(target, key, receiver);
-			const value = prototype[key as string];
+			const value = Reflect.get(prototype, key, receiver);
 			return typeof value === "function" ? value.bind(receiver) : value;
 		},
 	}) as DialogContext & DialogMethods;
@@ -323,6 +323,7 @@ describe("InteractiveMode extension dialogs", () => {
 	it("clears overlay blocked status when the extension UI is reset (earendil-works/pi#11816)", async () => {
 		const context = createContext();
 		Object.assign(context, {
+			runtimeHost: { session: { isStreaming: false } },
 			clearExtensionTerminalInputListeners: vi.fn(),
 			setExtensionFooter: vi.fn(),
 			setExtensionHeader: vi.fn(),

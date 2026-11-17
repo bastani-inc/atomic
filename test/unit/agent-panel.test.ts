@@ -525,7 +525,7 @@ test("an attached composer preserves cursor markers and terminal styling around 
 	const style = { accent: (text: string) => text, text: (text: string) => text, dim: (text: string) => text };
 	for (const [line, expected] of [
 		["❯   ", "❯ hint"],
-		["❯   \x1b[31m\x1b[0m", "❯\x1b[0m hint"],
+		["❯   \x1b[31m\x1b[0m", "❯\x1b[31m\x1b[0m hint"],
 		["❯\t   \x1b[m", "❯\t\x1b[m hint"],
 		["❯   \x1b[0K", "❯   \x1b[0K hint"],
 		["❯ \x1b_pi:c\x07\x1b_pi:fc\x07 \x1b_pi:/fc\x07", "❯ \x1b_pi:c\x07\x1b_pi:fc\x07 \x1b_pi:/fc\x07 hint"],

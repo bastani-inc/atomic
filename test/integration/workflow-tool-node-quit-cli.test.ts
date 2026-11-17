@@ -571,8 +571,31 @@ describe("issue #2078 — quitting an in-flight ctx.tool through the real CLI", 
 	});
 
 	test("the cancelled tool node is rendered distinctly from a failed one", () => {
-		assert.match(evidence.renderedAfterQuit, /hang-tool.*cancelled/);
-		assert.doesNotMatch(evidence.renderedAfterQuit, /hang-tool.*failed/);
+		const rendered = JSON.parse(evidence.renderedAfterQuit) as WorkflowSurfaceDetails;
+		assert.equal(rendered.action, "statusDetail");
+		assert.equal(rendered.runId, evidence.runId);
+		assert.equal(rendered.detail?.runId, evidence.runId);
+		assert.equal(rendered.detail?.status, "paused");
+		assert.deepEqual(
+			(rendered.detail?.tools ?? []).map((node) => ({
+				id: node.id,
+				name: node.name,
+				status: node.status,
+			})),
+			[
+				{
+					id: toolNode(evidence.afterQuit, "sibling-tool").id,
+					name: "sibling-tool",
+					status: "completed",
+				},
+				{
+					id: toolNode(evidence.afterQuit, "hang-tool").id,
+					name: "hang-tool",
+					status: "cancelled",
+				},
+			],
+		);
+		assert.notEqual(toolNode(evidence.afterQuit, "hang-tool").status, "failed");
 		// A settled sibling is untouched by the abort.
 		assert.equal(toolNode(evidence.afterQuit, "sibling-tool").status, "completed");
 	});

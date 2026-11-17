@@ -36,7 +36,9 @@ knowledge:
       npm test script always expands its full test glob, even when a filename is appended.
       Build first: several suites load the built packages. For focused root tests use
       `npm run test:unit -- test/unit/<file>.test.ts`; the test-suite-runner fixtures need npm's
-      node_modules/.bin on PATH for their nested Vitest commands.
+      node_modules/.bin on PATH for their nested Vitest commands. For many test-file filters on Windows,
+      invoke `node node_modules/vitest/vitest.mjs run --project unit ...` directly rather than `npx vitest`:
+      npx.cmd passes through cmd.exe and fails once the command exceeds its 8191-character limit.
       `test/unit/storage-libsql-close-once.test.ts` runs native-driver close regressions in child processes
       with glibc freed-memory poisoning on Linux, and checks file release directly on Windows.
       Validate named-worktree permissions with a private default umask:

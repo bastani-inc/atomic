@@ -38,8 +38,8 @@ describe("StageChatView", () => {
 		} as unknown as AgentSessionEvent);
 
 		const rendered = stripAnsi(view.render(96).join("\n"));
-		assert.match(rendered, /\$ echo legacy/);
-		assert.doesNotMatch(rendered, /\$ \.\.\./);
+		assert.match(rendered, /∀ Bash\(echo legacy\)/);
+		assert.doesNotMatch(rendered, /\$ \.\.\.|Bash\(\)/);
 		view.dispose();
 	});
 
@@ -78,8 +78,8 @@ describe("StageChatView", () => {
 		} as unknown as AgentSessionEvent);
 
 		const rendered = stripAnsi(view.render(96).join("\n"));
-		assert.match(rendered, /\$ echo from-workflow/);
-		assert.doesNotMatch(rendered, /\$ \.\.\./);
+		assert.match(rendered, /∀ Bash\(echo from-workflow\)/);
+		assert.doesNotMatch(rendered, /\$ \.\.\.|Bash\(\)/);
 		view.dispose();
 	});
 
