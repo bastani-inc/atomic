@@ -3,7 +3,8 @@ import { open } from "node:fs/promises";
 import { join } from "node:path";
 import { APP_NAME } from "../../config.js";
 import { PersistedOutputFile } from "./persisted-output-file.ts";
-import { ensureSessionTempDir } from "./session-temp-dir.ts";
+import { ensureSessionTempDirAsync } from "./session-temp-dir.ts";
+import { MAX_PERSISTED_OUTPUT_BYTES } from "./tool-limits.js";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type TruncationResult, truncateTail } from "./truncate.ts";
 
 export interface OutputAccumulatorOptions {
@@ -21,11 +22,6 @@ export interface OutputSnapshot {
 	content: string;
 	truncation: TruncationResult;
 	fullOutputPath?: string;
-}
-
-function defaultTempFilePath(prefix: string, tempDir: string | undefined): string {
-	const id = randomBytes(8).toString("hex");
-	return join(ensureSessionTempDir(tempDir), `${prefix}-${id}.log`);
 }
 
 function byteLength(text: string): number {
@@ -48,6 +44,7 @@ export class OutputAccumulator {
 	private readonly decoder = new TextDecoder();
 
 	private rawChunks: Buffer[] = [];
+	private rawChunkBytes = 0;
 	private tailText = "";
 	private tailBytes = 0;
 	private tailStartsAtLineBoundary = true;
@@ -61,6 +58,7 @@ export class OutputAccumulator {
 
 	private tempFilePath: string | undefined;
 	private tempFile: PersistedOutputFile | undefined;
+	private tempFileOpening: Promise<void> | undefined;
 	private tempFileUnavailable = false;
 
 	constructor(options: OutputAccumulatorOptions = {}) {
@@ -81,9 +79,11 @@ export class OutputAccumulator {
 
 		if (this.tempFile || this.shouldUseTempFile()) {
 			this.ensureTempFile();
-			this.tempFile?.write(data);
-		} else if (data.length > 0) {
-			this.rawChunks.push(data);
+		}
+		if (this.tempFile) {
+			this.tempFile.write(data);
+		} else if (!this.tempFileUnavailable) {
+			this.holdRawChunk(data);
 		}
 	}
 
@@ -130,6 +130,7 @@ export class OutputAccumulator {
 	}
 
 	async closeTempFile(): Promise<void> {
+		await this.tempFileOpening;
 		const file = this.tempFile;
 		if (!file) {
 			return;
@@ -147,6 +148,7 @@ export class OutputAccumulator {
 	}
 
 	async readFullOutput(maxBytes: number): Promise<{ content: string; truncated: boolean }> {
+		await this.tempFileOpening;
 		if (!this.tempFilePath) {
 			if (this.tempFileUnavailable) return { content: this.snapshot().content, truncated: true };
 			return { content: new TextDecoder().decode(Buffer.concat(this.rawChunks)), truncated: false };
@@ -241,13 +243,26 @@ export class OutputAccumulator {
 		);
 	}
 
-	private ensureTempFile(): void {
-		if (this.tempFilePath || this.tempFileUnavailable) {
+	private holdRawChunk(data: Buffer): void {
+		if (data.length === 0 || this.rawChunkBytes > MAX_PERSISTED_OUTPUT_BYTES) {
 			return;
 		}
+		this.rawChunks.push(data);
+		this.rawChunkBytes += data.length;
+	}
+
+	private ensureTempFile(): void {
+		if (this.tempFileOpening || this.tempFileUnavailable) {
+			return;
+		}
+		this.tempFileOpening = this.openTempFile();
+	}
+
+	private async openTempFile(): Promise<void> {
 		let file: PersistedOutputFile | undefined;
 		try {
-			const path = defaultTempFilePath(this.tempFilePrefix, this.tempDir);
+			const dir = await ensureSessionTempDirAsync(this.tempDir);
+			const path = join(dir, `${this.tempFilePrefix}-${randomBytes(8).toString("hex")}.log`);
 			file = new PersistedOutputFile(path);
 			for (const chunk of this.rawChunks) {
 				file.write(chunk);
@@ -257,7 +272,6 @@ export class OutputAccumulator {
 			// accept the output buffered before the spill threshold.
 			this.tempFile = file;
 			this.tempFilePath = path;
-			this.rawChunks = [];
 		} catch {
 			// Persistence is a convenience. Refusal by the directory helper, EMFILE,
 			// ENOSPC, EACCES, or a replay failure must leave bounded output available
@@ -265,12 +279,13 @@ export class OutputAccumulator {
 			this.tempFileUnavailable = true;
 			this.tempFilePath = undefined;
 			this.tempFile = undefined;
-			this.rawChunks = [];
 			try {
 				file?.end();
 			} catch {
 				// Best effort: there is no path to advertise and no writer to reuse.
 			}
 		}
+		this.rawChunks = [];
+		this.rawChunkBytes = 0;
 	}
 }

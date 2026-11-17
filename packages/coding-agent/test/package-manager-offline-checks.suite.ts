@@ -175,7 +175,10 @@ describe("DefaultPackageManager", () => {
 			mkdirSync(installedNpmPath, { recursive: true });
 			writeFileSync(join(installedNpmPath, "package.json"), JSON.stringify({ name: "example", version: "1.0.0" }));
 			const parsedGitSource = (packageManager as any).parseSource("git:github.com/example/repo@v1");
-			const installedGitPath = (packageManager as any).getGitInstallPath(parsedGitSource, "project") as string;
+			const installedGitPath = (await (packageManager as any).getGitInstallPath(
+				parsedGitSource,
+				"project",
+			)) as string;
 			mkdirSync(installedGitPath, { recursive: true });
 
 			settingsManager.setProjectPackages(["npm:example@1.0.0", "git:github.com/example/repo@v1"]);

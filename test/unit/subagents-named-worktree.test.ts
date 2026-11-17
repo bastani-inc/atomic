@@ -432,10 +432,7 @@ test("a branch name that git expands, such as @{-1}, is refused before launch (#
 	for (const branch of ["@{-1}", "feat@{upstream}"]) {
 		const result = await harness.execute({ agent: "worker", task: "t", worktree: { branch } });
 		assert.equal(result.isError, true, branch);
-		assert.match(
-			text(result),
-			new RegExp(`worktree.branch "${branch.replace(/[{}@-]/g, "\\$&")}" is not a valid branch name`),
-		);
+		assert.ok(text(result).includes(`worktree.branch "${branch}" is not a valid branch name`), text(result));
 	}
 	assert.equal(harness.launches.length, 0);
 	assert.equal(
@@ -455,7 +452,8 @@ test("a launch waits out another launch's worktree add rather than show git fail
 		[
 			bunExecutable(),
 			"-e",
-			`setTimeout(() => require("node:fs").rmSync(${JSON.stringify(marker)}, { recursive: true }), 1500)`,
+			`setTimeout(() => require("node:fs").rmSync(process.argv[1], { recursive: true }), 1500)`,
+			marker,
 		],
 		{ cwd: repo, stdout: "ignore", stderr: "ignore" },
 	);

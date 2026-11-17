@@ -528,7 +528,7 @@ test(
 );
 
 test(
-	"an idle satellite claims a waiting bound child on a wake-up, not at the end of its idle pause, after a sibling worker's restore clears its binding backoff (#5230)",
+	"an idle satellite claims a waiting bound child on a wake-up, not at the end of its idle pause, after a sibling worker's restore clears its binding backoff (#5230, #5340)",
 	async () => {
 		const directory = makeLibsqlDirectory("idle-gate-restore-cleared-");
 		const log = join(directory, "stub.log");
@@ -590,8 +590,14 @@ test(
 		mkdirSync(restored);
 		const restores: number[] = [];
 		const succeededAt: number[] = [];
-		const backoff = new RestoreBackoff();
+		const restoreRetryMs = STUBBED_IDLE_PAUSE_MS * 4;
+		const backoff = new RestoreBackoff(undefined, { firstMs: restoreRetryMs, maxMs: restoreRetryMs });
 		const key = workspaceAffinityKey(binding);
+		const siblingRestoring = Promise.withResolvers<void>();
+		const waitingAfterFailure = Promise.withResolvers<void>();
+		const finishSiblingRestore = Promise.withResolvers<void>();
+		let retryAt = Number.POSITIVE_INFINITY;
+		let idleRetryAt = Number.POSITIVE_INFINITY;
 		try {
 			let root: Awaited<ReturnType<SqlSharedPool["roots"]>>[number] | undefined;
 			for (;;) {
@@ -617,11 +623,13 @@ test(
 						restores.push(performance.now());
 						const call = restores.length;
 						if (call === 2) {
-							await sleep(10);
+							await siblingRestoring.promise;
 							throw new Error("the remote is unreachable");
 						}
 						if (call === 3) {
-							await sleep(5_000);
+							relay.hold(true);
+							siblingRestoring.resolve();
+							await finishSiblingRestore.promise;
 							succeededAt.push(performance.now());
 							return restored;
 						}
@@ -634,10 +642,25 @@ test(
 			});
 			while (!firstDone) await sleep(25);
 			rmSync(releaseFile, { force: true });
-			for (let failure = 0; failure < 3; failure++) backoff.failed(key);
 			await sleep(IDLE_SETTLE_MS);
-			vi.spyOn(IdleClaimBackoff.prototype, "next").mockReturnValue(STUBBED_IDLE_PAUSE_MS);
+			vi.spyOn(IdleReadyProbe.prototype, "tick").mockResolvedValue();
+			vi.spyOn(IdleClaimBackoff.prototype, "next").mockImplementation(() => {
+				const remaining = backoff.remaining(key);
+				if (remaining > 0) {
+					const now = performance.now();
+					retryAt = Math.min(retryAt, now + remaining);
+					idleRetryAt = Math.min(idleRetryAt, now + STUBBED_IDLE_PAUSE_MS);
+					waitingAfterFailure.resolve();
+				}
+				return STUBBED_IDLE_PAUSE_MS;
+			});
 			openGate();
+			await waitingAfterFailure.promise;
+			while ((await shared.restoreFailure(key)) === undefined) await sleep(2);
+			await sleep(CLEAR_AFTER_MS);
+			assert.equal(restores.length, 3);
+			assert.ok(backoff.remaining(key) > GATE_CLEAR_BOUND_MS);
+			finishSiblingRestore.resolve();
 			for (let waited = 0; restores.length < 4; waited++) {
 				if (waited > 2_000) {
 					writeFileSync(releaseFile, "");
@@ -645,16 +668,24 @@ test(
 				}
 				await sleep(10);
 			}
+			relay.hold(false);
 			writeFileSync(releaseFile, "");
 			const result = await execution;
 			assert.equal(result.status, "completed");
 			assert.equal(restores.length, 4);
+			assert.equal(succeededAt.length, 1);
 			assert.equal(existsSync(releaseFile), true);
+			assert.ok(restores[3]! >= succeededAt[0]!, "the waiting child retried before its sibling cleared the backoff");
+			assert.ok(restores[3]! < retryAt, "the waiting child waited for its own restore retry deadline");
+			assert.ok(restores[3]! < idleRetryAt, "the waiting child waited out its idle pause");
 			assert.ok(
 				restores[3]! - succeededAt[0]! < GATE_CLEAR_BOUND_MS,
 				`a ready child whose binding backoff was cleared by another worker's restore waited ${Math.round(restores[3]! - succeededAt[0]!)} ms`,
 			);
 		} finally {
+			relay.hold(false);
+			siblingRestoring.resolve();
+			finishSiblingRestore.resolve();
 			writeFileSync(releaseFile, "");
 			openGate();
 			await host?.stopSatellite().catch(() => {});
