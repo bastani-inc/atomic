@@ -196,10 +196,22 @@ export function isStdoutTakenOver(): boolean {
 
 /**
  * Hand a small control frame to stdout at once, ahead of records still waiting in `writeRawStdout`'s queue, so it
- * leaves before synchronous user code begins. Behind a write already in flight it waits its turn.
+ * leaves before synchronous user code begins. Behind a write already in flight it waits its turn. The descriptor
+ * writer returns a best-effort completion: async user callbacks wait for it before running, so a busy callback cannot
+ * hold the completion of an earlier write and leave its own attribution queued until after it finishes.
  */
-export function writeRawStdoutControl(text: string): void {
+export function writeRawStdoutControl(text: string): void | Promise<void> {
 	if (text.length === 0) return;
+	if (stdoutDescriptorWriter) {
+		const writer = stdoutDescriptorWriter;
+		return new Promise<void>((resolve) => {
+			try {
+				writer.write(text, () => resolve());
+			} catch {
+				resolve();
+			}
+		});
+	}
 	try {
 		getRawStdoutRecordWrite()(text, (error) => {
 			if (error) process.exit(1);
