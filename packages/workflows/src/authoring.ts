@@ -246,6 +246,7 @@ export type {
 	ToolNodeSnapshot,
 	WorkflowAction,
 	WorkflowArtifact,
+	WorkflowAutoModel,
 	WorkflowBudget,
 	WorkflowChainOptions,
 	WorkflowChildResult,

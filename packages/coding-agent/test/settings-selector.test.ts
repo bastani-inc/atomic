@@ -494,7 +494,7 @@ test("/settings shows the decision model, its scope and what Automatic means (#4
 	assert.equal(item(settingsConfig({ decisionModel: "judge/custom" }))?.currentValue, "judge/custom");
 	assert.equal(
 		item(settingsConfig({}))?.description,
-		'Saves to global settings; decides model "auto" selection, structured output and readiness after a steer, not the chat model',
+		"Saves to global settings; decides structured output, stage predictions and readiness after a steer, not the chat model",
 	);
 	const projectConfig = settingsConfig({
 		decisionModel: "auto",

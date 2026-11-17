@@ -9,17 +9,15 @@ const root = fileURLToPath(new URL("../..", import.meta.url));
 /**
  * Suites that broke when a developer's shell exported a provider credential:
  * `COPILOT_GITHUB_TOKEN` alone made the whole `github-copilot` catalog available,
- * so `auto` routing chose Copilot models and a live child tried to reach Copilot.
+ * so a live child tried to reach Copilot. `auto` reads the models that have credentials.
  */
 const CREDENTIAL_SENSITIVE_SUITES = [
-	"test/unit/subagent-model-router.test.ts",
-	"test/unit/subagent-model-router-execution.test.ts",
 	"test/unit/subagents-inprocess-runner.test.ts",
-	"test/unit/workflow-stage-auto.test.ts",
+	"test/unit/auto-default-model.test.ts",
 ];
 
 /**
- * Budget for a real vitest child run of the four suites above. Its cost is structural: a fresh vitest
+ * Budget for a real vitest child run of the suites above. Its cost is structural: a fresh vitest
  * process with its global setups, and live in-process children whose own tests allow two minutes for a
  * resource reload. It takes about 15 s on an idle machine; the headroom absorbs full-suite parallel load.
  */

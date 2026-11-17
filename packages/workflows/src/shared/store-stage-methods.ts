@@ -117,8 +117,6 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			if (stage.sessionFile !== undefined) existing.sessionFile = stage.sessionFile;
 			if (stage.modelAttempts !== undefined) existing.modelAttempts = stage.modelAttempts;
 			if (stage.rateLimits !== undefined) existing.rateLimits = stage.rateLimits;
-			if (stage.routerSelection !== undefined)
-				existing.routerSelection = Object.freeze({ ...stage.routerSelection });
 			existing.failureKind = stage.failureKind;
 			existing.failureCode = stage.failureCode;
 			existing.failureRecoverability = stage.failureRecoverability;

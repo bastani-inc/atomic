@@ -251,6 +251,13 @@ export class SettingsManager {
 			}
 			delete settings.routerModel;
 		}
+		// Automatic model routing was removed; its settings are dropped.
+		if ("modelRouting" in settings) {
+			warnDeprecation(
+				'Ignored removed setting "modelRouting": automatic model routing was removed, so "auto" runs your default model and its provider and model restrictions no longer limit "auto" or any fallback model.',
+			);
+			delete settings.modelRouting;
+		}
 		settings = normalizeAzureSettings(settings as Settings) as Record<string, unknown>;
 		// Migrate queueMode -> steeringMode
 		if ("queueMode" in settings && !("steeringMode" in settings)) {

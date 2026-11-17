@@ -157,7 +157,6 @@ export function createWorkflowStageFactory(input: {
 				? options
 				: {
 						...(options ?? {}),
-						routerSelection: executeReplaySource.routerSelection,
 						context: options?.context ?? "fork",
 						forkFromSessionId: options?.forkFromSessionId ?? executeReplaySource.sessionId,
 						forkFromEntryId: options?.forkFromSessionId === undefined ? undefined : options.forkFromEntryId,
@@ -658,9 +657,6 @@ export function createWorkflowStageFactory(input: {
 					...(stageSnapshot.sessionFile !== undefined ? { sessionFile: stageSnapshot.sessionFile } : {}),
 					...(stageSnapshot.modelAttempts !== undefined ? { modelAttempts: stageSnapshot.modelAttempts } : {}),
 					...(stageSnapshot.rateLimits !== undefined ? { rateLimits: stageSnapshot.rateLimits } : {}),
-					...(stageSnapshot.routerSelection !== undefined
-						? { routerSelection: stageSnapshot.routerSelection }
-						: {}),
 					...(stageSnapshot.result !== undefined && stageSnapshot.status === "completed"
 						? { summary: stageSnapshot.result }
 						: {}),

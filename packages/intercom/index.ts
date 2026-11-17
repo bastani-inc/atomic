@@ -43,6 +43,7 @@ import type { SessionInfo } from "./types.js";
 import { answerReleasedReplyFormatRequests } from "./released-reply-format.js";
 import { intercomScriptAccess } from "./codemode-access.js";
 import { ASK_DESCRIPTION, ASK_PROMPT_SNIPPET, ASK_USAGE, askIdSchema, askWaitSchema } from "./ask-wait.js";
+import { RETURN_PATH_TOOL_NOTE } from "./group.js";
 import { INTERCOM_INBOX_REPLAY_EVENT, type IntercomInboxReplayRequest, unconsumedIntercomInbox } from "./durable-inbox.js";
 import {
 	createForwardedHandlerMap,
@@ -1097,7 +1098,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		label: "Intercom",
 		description: `Send a message to another local agent session running on this machine.
 Use this to communicate findings, request help, or coordinate work with other sessions.
-Sessions belong to an intercom group and can ONLY message sessions in the same group; cross-group sends are rejected by the broker. Ungrouped sessions share the "default" group; with multi-node routing on, a project group (project:<owner>/<repo>).
+Sessions belong to an intercom group and can ONLY message sessions in the same group; cross-group sends are rejected by the broker, ${RETURN_PATH_TOOL_NOTE}. Ungrouped sessions share the "default" group; with multi-node routing on, a project group (project:<owner>/<repo>).
 For send, live session names, exact full session IDs, and unique 8-hex session UUID prefixes remain supported. \`send\` also takes a name glob (\`subagent-worker-*\`, or \`*\` for every session visible in your groups except you) and \`subagents:*\` (every running, released or paused subagent this session launched) or \`subagents:<runId>/*\` (those of one run); each recipient gets its own direct send, the result lists every recipient's outcome, a glob matching no session is an error naming close names, a name glob (\`*\` included) matching more than one session needs \`broadcast: true\` (without it the send is refused with the list of matches; \`subagents:\` and \`workflow:\` targets broadcast without it), and patterns never reach outside your groups. Workflow-stage targets use \`workflow:<rootRunId>/<segment>[/<segment>...]\`; \`*\` matches one segment and \`**\` any depth. Use \`intercom list\` inside the invocation group to see live, pending, and possible future targets with queued counts. \`workflow:<rootRunId>/**\` reaches live stages now and remains sticky for every future stage until root termination; valid targets outside the known set still queue and settle undeliverable at terminal only if never delivered; a note appears only when the target looks like a typo of a known stage. Use \`ask\` only on live targets.
 ${ASK_DESCRIPTION}
 For send/ask/reply, Intercom retries recoverable disconnects internally up to three times with the same operation identity. Each new tool call is a new operation. If recovery ends with an unknown delivery outcome, do not repeat it automatically.

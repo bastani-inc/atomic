@@ -250,15 +250,6 @@ export async function decide<const Q extends DecisionQuestions>(
 	return decideOn(request, settings, model);
 }
 
-export async function decideWithModel<const Q extends DecisionQuestions>(
-	request: Omit<DecisionRequest<Q>, "model">,
-	model: StructuredOutputModel,
-): Promise<DecisionResult<Q>> {
-	request.signal?.throwIfAborted();
-	request = snapshotRequest(request);
-	return decideOn(request, decisionSettings(request), model);
-}
-
 function decisionSettings(request: Omit<DecisionRequest, "model"> & { readonly model?: string }) {
 	const source = request.settings;
 	const settings: DecisionModelSelectionOptions["settings"] = {

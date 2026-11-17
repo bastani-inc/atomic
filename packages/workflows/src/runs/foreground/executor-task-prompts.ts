@@ -118,7 +118,14 @@ export function taskStageOptions(options: WorkflowTaskExecutionOptions): StageOp
 		artifacts: _artifacts,
 		...stageOptions
 	} = options;
-	return stageOptions;
+	return readsImages(options) ? { ...stageOptions, autoNeedsImageInput: true } : stageOptions;
+}
+
+/** Image files a model reads as images rather than text; an `auto` task that reads one needs a model that sees it. */
+const IMAGE_FILE = /\.(?:png|jpe?g|gif|webp)$/i;
+
+function readsImages(options: WorkflowTaskExecutionOptions): boolean {
+	return Array.isArray(options.reads) && options.reads.some((file) => IMAGE_FILE.test(file));
 }
 
 export function taskOptionsFromStep(
@@ -216,29 +223,12 @@ export function sharedTaskDefaultsFromOptions(
 	return withoutUndefinedProperties(taskDefaults);
 }
 
-/**
- * Merge shared defaults (chain, parallel or input-level options) under a task's own options. Shared
- * `modelConstraints` always become inherited constraints, so only a task's own provider lists replace the
- * user's modelRouting provider settings; shared ones narrow on top of them (#5046).
- */
+/** Merge shared defaults (chain, parallel or input-level options) under a task's own options. */
 export function withSharedDefaults<T extends Partial<StageOptions>>(
 	defaults: Partial<StageOptions>,
 	own: Partial<StageOptions>,
 ): T {
-	const { modelConstraints: shared, ...rest } = defaults;
-	return {
-		...rest,
-		...own,
-		...(shared === undefined
-			? {}
-			: {
-					inheritedModelConstraints: [
-						...(defaults.inheritedModelConstraints ?? []),
-						shared,
-						...(own.inheritedModelConstraints ?? []),
-					],
-				}),
-	} as T;
+	return { ...defaults, ...own } as T;
 }
 
 export function taskWithSharedDefaults(

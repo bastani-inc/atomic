@@ -331,6 +331,12 @@ export {
 	FileAuthStorageBackend,
 	InMemoryAuthStorageBackend,
 } from "./core/auth-storage-backends.ts";
+export {
+	type AutoModelSelection,
+	type AutoModelSettings,
+	type ResolveAutoModelOptions,
+	resolveAutoModel,
+} from "./core/auto-model.ts";
 export { type BashResult, executeBashWithOperations } from "./core/bash-executor.ts";
 export { getBuiltinPackagePaths } from "./core/builtin-packages.ts";
 export {
@@ -420,14 +426,6 @@ export type {
 } from "./core/error-contract.ts";
 export { redactUrlCredentials } from "./core/error-contract.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.js";
-export {
-	AutoRoutingInferenceError,
-	type ModelRoute,
-	type ModelRoutingContext,
-	type ParallelSlot,
-	type RoutingInferenceBounds,
-	routeExecutionModel,
-} from "./core/execution-model-router.js";
 export { areExperimentalFeaturesEnabled } from "./core/experimental.ts";
 export { sessionScopedExtensionState } from "./core/extension-session-state.ts";
 export {
@@ -587,27 +585,6 @@ export {
 	type ModelLabelSubject,
 } from "./core/model-label.ts";
 export { ModelRegistry } from "./core/model-registry.ts";
-export {
-	eligiblePair,
-	type ModelConstraints,
-	ModelConstraintsSchema,
-	type ModelRouterOutput,
-	parseModelConstraints,
-	setsProviders,
-} from "./core/model-routing-constraints.js";
-export { reportModelRoutingDebug } from "./core/model-routing-debug.js";
-export {
-	DIFFICULTY_LEVELS,
-	type Difficulty,
-	MISTAKE_COST_LEVELS,
-	type MistakeCost,
-	mergeTaskNeeds,
-	parseTaskNeeds,
-	type TaskNeeds,
-	TaskNeedsSchema,
-	WORK_KINDS,
-	type WorkKind,
-} from "./core/model-routing-needs.js";
 export {
 	type CreateModelRuntimeOptions,
 	CredentialSynchronizationError,
@@ -830,7 +807,6 @@ export type { DefaultProjectTrust, QuietStartup } from "./core/settings-manager.
 export {
 	type CompactionSettings,
 	type ImageSettings,
-	type ModelRoutingSettings,
 	type PackageSource,
 	type RetrySettings,
 	type Settings,

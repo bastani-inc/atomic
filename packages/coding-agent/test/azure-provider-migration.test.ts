@@ -25,7 +25,6 @@ test("startup migrates Azure config files atomically without replacing canonical
 				fallbackModels: [`${legacy}/gpt-5.4:low`],
 				decisionModel: `${legacy}/gpt-5.4`,
 				modelThinkingLevels: { [`${legacy}/gpt-5.4`]: "low", "azure/gpt-5.4": "high" },
-				modelRouting: { allowedProviders: [legacy], excludedProviders: [legacy] },
 				compaction: { modelOverrides: { [`${legacy}/gpt-5.4`]: { maxTokens: 1024 } } },
 			},
 			"models.json": {
@@ -74,7 +73,6 @@ test("startup migrates Azure config files atomically without replacing canonical
 				assert.deepEqual(parsed.fallbackModels, ["azure/gpt-5.4:low"]);
 				assert.equal(parsed.decisionModel, "azure/gpt-5.4");
 				assert.deepEqual(parsed.modelThinkingLevels, { "azure/gpt-5.4": "high" });
-				assert.deepEqual(parsed.modelRouting, { allowedProviders: ["azure"], excludedProviders: ["azure"] });
 				// Removed compaction overrides are ignored, so the migration leaves them exactly as written.
 				assert.deepEqual(parsed.compaction.modelOverrides, { [`${legacy}/gpt-5.4`]: { maxTokens: 1024 } });
 			}

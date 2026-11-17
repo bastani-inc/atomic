@@ -366,7 +366,6 @@ describe("settings.json schema", () => {
 				decisionModel: "typesafe/jev-latest",
 				compactionModel: "morph/morph-compactor",
 				fallbackModels: ["anthropic/claude-opus-4-8:xhigh"],
-				modelRouting: { allowedProviders: ["anthropic"], excludedModels: ["*-fast"] },
 				compaction: {
 					enabled: true,
 					reserveTokens: 16384,

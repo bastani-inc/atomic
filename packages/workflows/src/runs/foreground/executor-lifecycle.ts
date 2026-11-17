@@ -208,14 +208,13 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
 
 /** Copies a stage session's model fallback metadata onto its stage; true when a field graph snapshots show changed. */
 export function applyModelFallbackMetaToStage(stage: StageSnapshot, meta: StageModelFallbackMeta): boolean {
-	const { model, thinkingLevel, rateLimits, routerSelection, warnings } = stage;
+	const { model, thinkingLevel, rateLimits, warnings } = stage;
 	if (meta.model !== undefined) stage.model = meta.model;
 	if (meta.thinkingLevel !== undefined) stage.thinkingLevel = meta.thinkingLevel;
 	else delete stage.thinkingLevel;
 	if (meta.attemptedModels !== undefined) stage.attemptedModels = meta.attemptedModels;
 	if (meta.modelAttempts !== undefined) stage.modelAttempts = meta.modelAttempts;
 	if (meta.rateLimits !== undefined) stage.rateLimits = meta.rateLimits;
-	if (meta.routerSelection !== undefined) stage.routerSelection = meta.routerSelection;
 	if (meta.warnings !== undefined) {
 		if (meta.warnings.length > 0) stage.warnings = meta.warnings;
 		else delete stage.warnings;
@@ -224,7 +223,6 @@ export function applyModelFallbackMetaToStage(stage: StageSnapshot, meta: StageM
 		model !== stage.model ||
 		thinkingLevel !== stage.thinkingLevel ||
 		rateLimits !== stage.rateLimits ||
-		routerSelection !== stage.routerSelection ||
 		warnings !== stage.warnings
 	);
 }

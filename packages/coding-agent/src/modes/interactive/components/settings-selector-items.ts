@@ -306,7 +306,7 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 		{
 			id: "decision-model",
 			label: "Decision model",
-			description: `Saves to ${config.decisionModelScope ?? "global"} settings; decides model "auto" selection, structured output and readiness after a steer, not the chat model`,
+			description: `Saves to ${config.decisionModelScope ?? "global"} settings; decides structured output, stage predictions and readiness after a steer, not the chat model`,
 			currentValue: config.decisionModel && config.decisionModel !== "auto" ? config.decisionModel : "Automatic",
 			submenu: (_currentValue, done) => {
 				const current = config.decisionModel === "auto" ? "" : (config.decisionModel ?? "");

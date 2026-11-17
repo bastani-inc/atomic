@@ -35,7 +35,6 @@ const calls: Record<string, readonly Step[]> = {
 		(ctx) => ctx.stage("stage-follow-up").followUp("more"),
 		(ctx) => ctx.stage("stage-send-user-message").sendUserMessage("more"),
 		(ctx) => ctx.stage("stage-set-model").setModel(model),
-		(ctx) => ctx.stage("stage-set-thinking-level").setThinkingLevel("low"),
 		(ctx) => ctx.stage("stage-cycle-model").cycleModel(),
 		(ctx) => Promise.resolve(ctx.stage("stage-cycle-thinking-level").cycleThinkingLevel()),
 		(ctx) => ctx.stage("stage-navigate-tree").navigateTree("entry"),

@@ -241,7 +241,7 @@ Invocation working directory for workflow-owned artifacts. It defaults to the ho
 readonly models?: WorkflowModelCatalogPort;
 ```
 
-Model catalog port for the invoking session, when the host provides one. `models.currentModel` is the user-selected session model; leading a stage's model chain with it (bare, without a `:thinking` suffix) runs the stage at the session's model and default thinking level. `models.listModels()` returns the available catalog. The field is absent when no host catalog exists (for example some detached executions), so definitions should treat it as optional and fall back to their own model configuration.
+Model catalog port for the invoking session, when the host provides one. `models.currentModel` is the user-selected session model; leading a stage's model chain with it (bare, without a `:thinking` suffix) runs the stage at the session's model and default thinking level. `models.listModels()` returns the available catalog. `models.autoModel?.()` returns `{ model, thinkingLevel? }`, the model and thinking level a `model: "auto"` stage runs, or `undefined`. A custom `WorkflowModelCatalogPort` passed to `run()` as `models` can implement `autoModel()`, which replaces the former `routeModel()`. Without a catalog that resolves it, an `auto` stage asks its session adapter's `autoModel()`; see [stage sessions and adapters](#stage-sessions-and-adapters). The field is absent when no host catalog exists (for example some detached executions), so definitions should treat it as optional and fall back to their own model configuration.
 
 ### `ctx.task(name, options)`
 
@@ -751,13 +751,7 @@ readonly model?: WorkflowModelValue; // string or supported SDK model object
 
 Selects the primary stage model. String values can carry the reasoning suffix described under [Reasoning levels](#reasoning-levels).
 
-Use `model: "auto"` for prompt-based selection of an execution model and supported effort before session admission. A concrete model runs only as named, subject to the stage's hard constraints. Shared chain/parallel defaults accept `auto`; each stage receives one decision. The router sees the final supplied prompt, including interpolated inputs and supplied task context, rather than only a stage name.
-
-`modelConstraints?: ModelConstraints` applies hard restrictions to auto selection, explicit stage model chains, and execution fallbacks. Fields are `allowedModels?: string[]`, `allowedProviders?: string[]`, `excludedProviders?: string[]`, `allowedEfforts?: (string | null)[]`, `maxInputCost?: number`, `maxOutputCost?: number`, `minContextWindow?: number`, and `requiredInputs?: ("text" | "image")[]`. Model IDs are exact provider/model IDs. Costs are catalog USD per million tokens including pricing tiers, not task budgets; a `-fast` or `-ultrafast` model is compared at the service-tier price it is billed at. Efforts are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `null` for nonreasoning models. Empty allowlists admit nothing. Inherited and stage restrictions all hold; a task override cannot widen shared restrictions. Provider lists set on a stage or task itself replace the user's `modelRouting` provider settings; provider lists in shared `ctx.chain`/`ctx.parallel` options only narrow them. Use `allowedEfforts` to restrict automatic reasoning selection. The user's [`modelRouting.allowedModels` and `excludedModels`](/settings#modelrouting) settings also apply to every auto stage, including builtin stages that omit a model; `modelConstraints` cannot widen them, and a stage whose filters leave no eligible model fails before launch.
-
-For explicit chains, every candidate, including the named primary, must satisfy the inherited and stage constraints before it can run. When `allowedEfforts` restricts a reasoning model, specify each candidate's effort with a model suffix such as `provider/model:high` or call `ctx.setThinkingLevel` before the first prompt. A candidate whose required capabilities or effort cannot be verified is not used. Later prompts, including after a stage is released, recheck the effective effort against these constraints. A released stage retains its last applied effort when it reopens, so you do not need to call `setThinkingLevel` again. If you select an excluded effort, choose a permitted effort before prompting again. Changing effort or retrying a rejected reopen does not restart candidates that already failed in that stage. If no candidate qualifies, the stage fails without choosing another model. To migrate a pinned stage that previously ran outside shared constraints, include its provider/model and effort in those constraints or choose a permitted model.
-
-An auto stage has no session until it receives prompt text. Model-dependent operations such as `compact()` or `cycleModel()` before that point report an error; call `prompt()` first or deliberately select a concrete model with `setModel()`. Session operations after admission keep their normal behavior.
+Use `model: "auto"` to run the user's default model: the `defaultProvider` and `defaultModel` settings, the model last chosen with `/model`, when it has credentials. The stage runs it at the level set with `stage.setThinkingLevel()`, otherwise at its `modelThinkingLevels` entry, then `defaultThinkingLevel`, then `medium`. Without a usable default model, the stage runs the launching session's model and thinking level. No model is asked to choose. Shared chain/parallel defaults accept `auto`. The `taskNeeds`, `modelConstraints` and `parallelSlot` options of earlier releases are ignored when passed.
 
 ### `fallbackModels`
 
@@ -765,7 +759,7 @@ An auto stage has no session until it receives prompt text. Model-dependent oper
 readonly fallbackModels?: readonly string[];
 ```
 
-`fallbackModels` tries the primary and each declared fallback in order. If all fail, the stage fails; the current Atomic-selected model is not appended implicitly. To use it as a final fallback, include it explicitly. The chain advances for:
+`fallbackModels` tries the primary and each declared fallback in order. If all fail, the stage fails; the current Atomic-selected model is not appended implicitly, except for a `model: "auto"` stage, which falls back to the launching session's model after its own `fallbackModels`. To use it as a final fallback elsewhere, include it explicitly. The chain advances for:
 
 - Rate limits and quota or usage-limit exhaustion, including `The usage limit has been reached`, `usage_limit_reached`, and `insufficient_quota`.
 - Auth/provider outages, unavailable models, network timeouts, generic transport errors such as `Connection error.` or `fetch failed`, and 5xx responses.
@@ -779,7 +773,7 @@ A candidate whose provider has no usable credentials is skipped before the stage
 
 A stage that sets `model` or `fallbackModels` uses only the chain it declares. The `fallbackModels` list in `settings.json` and the chain of the session that launched the workflow never apply to it, so a provider failure cannot move the stage to a model or reasoning level outside the chain you declared. A stage that sets neither runs on the session's current model and keeps that session's fallback behavior. It does not apply the explicit-chain `modelConstraints` checks to that inherited session model.
 
-Explicit stage models can use numbered account providers such as `openai-1/gpt-5-mini:low` with credentials saved under `openai-1` in `auth.json`. They use the source provider's catalog and endpoint, but the account's own credentials; no alias entry in `models.json` or provider-registration extension is needed. The source provider and requested model must exist. `modelRouting` (`allowedProviders`, `excludedProviders`, `allowedModels`, `excludedModels`) and `decisionModel` apply to `model: "auto"`, not to these pinned primary or fallback models.
+Explicit stage models can use numbered account providers such as `openai-1/gpt-5-mini:low` with credentials saved under `openai-1` in `auth.json`. They use the source provider's catalog and endpoint, but the account's own credentials; no alias entry in `models.json` or provider-registration extension is needed. The source provider and requested model must exist.
 
 A same-candidate retry resumes the existing turn when the transcript ends in a message the agent can continue from. Otherwise, it re-sends the stage prompt. In either case, Atomic removes the failed provider error from the live transcript and delivers the prompt exactly once.
 
@@ -1410,7 +1404,6 @@ interface WorkflowTaskResult extends WorkflowTaskContext {
   readonly artifacts?: readonly WorkflowArtifact[];
   readonly model?: string;
   readonly thinkingLevel?: string;
-  readonly routerSelection?: ModelRouterOutput;
   readonly attemptedModels?: readonly string[];
   readonly modelAttempts?: readonly WorkflowModelAttempt[];
   readonly warnings?: readonly string[];
@@ -1576,7 +1569,6 @@ interface StageSnapshot extends WorkflowSerializableObject {
   readonly durationMs?: number;
   readonly result?: WorkflowSerializableValue;
   readonly error?: string;
-  readonly routerSelection?: ModelRouterOutput;
 }
 ```
 
@@ -1591,7 +1583,7 @@ Programmatic `run(...)` returns this type. `exited` identifies `ctx.exit(...)` t
 
 When a child workflow fails, its parent classifies the failure from the child's `failure`, never from workflow or stage names in the error text. An ordinary child failure fails the parent; a child blocked on a rate limit blocks the parent for resume. A child result without `failure` is classified from the child's own error text.
 
-Each stage snapshot carries its graph position: `parentIds` lists the stages it depends on, and `executionOrder` is its admission order among the run's stages and tool nodes. `model` is the effective model after fallback resolution; `routerSelection` is the automatic routing choice: `model` and `effort`, ranked `fallbacks`, and `candidates`, the full IDs of every model the router could choose from after [`modelRouting`](/settings#modelrouting) and `modelConstraints` filtering. When a task requires images, `routerSelection.requiredInputs` records `["image"]` so execution fallbacks and restored routing choices keep that requirement. Older selections may omit `candidates` and `requiredInputs`. Timestamps are epoch milliseconds and are absent until the stage starts or ends. The runtime may replace `parentIds` before a stage starts, so read it from the latest snapshot rather than caching it.
+Each stage snapshot carries its graph position: `parentIds` lists the stages it depends on, and `executionOrder` is its admission order among the run's stages and tool nodes. `model` is the effective model after fallback resolution; for a `model: "auto"` stage it is the model `auto` stood for, or the fallback that replaced it. Timestamps are epoch milliseconds and are absent until the stage starts or ends. The runtime may replace `parentIds` before a stage starts, so read it from the latest snapshot rather than caching it.
 
 ## Workspaces
 
@@ -2049,8 +2041,14 @@ interface AgentSessionAdapter {
     options: StageSessionCreateOptions,
     meta?: StageExecutionMeta,
   ): Promise<StageSessionRuntime | StageSessionCreateResult>;
+  autoModel?(
+    options: StageSessionCreateOptions,
+    needs?: { readonly imageInput?: boolean },
+  ): Promise<WorkflowAutoModel | undefined>;
 }
 ```
+
+`autoModel()` answers what `model: "auto"` stands for when the run's `models` catalog does not resolve it. The adapter `createAgentSessionAdapter()` returns implements it from the settings and credentials its sessions start with: the configured default model at its default thinking level, else the `model` and `thinkingLevel` in `baseOptions`. For a task that reads image files the stage passes `needs.imageInput`: the adapter then answers with the `baseOptions` model when the default model does not accept images and that one does, and the stage fails before a session opens when the answer still cannot see images. The stage then runs that model first, then its `fallbackModels`, skipping any that cannot see the images a task reads. Without a `models` catalog a fallback named by ID is checked when it is about to be tried, in the stage's model runtime as it is then (the task's `modelRuntime`, or the one an earlier session of the stage opened with); a fallback the stage cannot look up at that point is skipped for such a task, with a warning on the stage. An adapter without `autoModel()` leaves an `auto` stage's model to its own `create()`.
 
 Call `createAgentSessionAdapter(baseOptions)` yourself to apply the same `createAgentSession` options, such as `agentDir`, `modelRuntime`, or `settingsManager`, to every stage. Options set on an individual stage override `baseOptions`. `baseOptions` cannot set `sessionManager`, because every stage needs its own. A `cwd` in `baseOptions` applies to every stage that doesn't set its own, and session files saved through `sessionDir` record that directory.
 
@@ -2067,11 +2065,12 @@ await run(helloWorld, { name: "Atomic" }, {
   adapters: { agentSession: createAgentSessionAdapter({ agentDir: "/srv/atomic-agent" }) },
 });
 
-// Per-stage options on top of the default adapter.
+// Per-stage options on top of the default adapter. Spreading it keeps its `autoModel()`.
 const stageSessions = createAgentSessionAdapter();
 await run(helloWorld, { name: "Atomic" }, {
   adapters: {
     agentSession: {
+      ...stageSessions,
       create: (options, meta) =>
         stageSessions.create(meta?.stageName === "review" ? { ...options, cwd: "/srv/review" } : options, meta),
     },

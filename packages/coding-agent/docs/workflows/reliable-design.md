@@ -95,9 +95,9 @@ Workflow-authored `ctx.ui` gates remain supported. `workflow answer` relays an a
 
 ### Stage model and thinking-level assignment
 
-When a user delegates the best-stage-model choice, author `model: "auto"` on each stage or shared chain/parallel options. Runtime routing uses the actual prompt after input interpolation and supplied context. Report model and effort as pending until selected. Preserve explicit concrete model, effort, and constraint requests. The following manual assignment guidance applies only when deliberately selecting concrete models.
+`model: "auto"` on a stage or in shared chain/parallel options runs the user's default model at its default thinking level, or the launching session's model when no default model is configured; see [automatic stage model selection](/workflows/authoring#automatic-stage-model-selection). Preserve explicit concrete model and effort requests. The following manual assignment guidance applies when deliberately selecting concrete models.
 
-Before launching an authored workflow, assign every model stage a **role**, **failure cost**, **primary model**, **thinking level**, and **fallback policy**. Read [Model Selection](/models/model-selection) for the general role defaults and [Evals](/models/evals) for factual per-evaluation benchmark records, but treat thinking levels in benchmark rows as measurement configurations, not production defaults. Use `low` or `medium` for implementation and routine fixes, and `high` or `xhigh` for code review, test design, failure analysis, and approval decisions when supported. Use `high` for demanding mapping, lifecycle analysis, compatibility, planning, synthesis, and triage, and `medium` for user-impact review and final reporting. `max` is an exception justified by task-specific evidence or an explicit user request, not a role default. Keep deterministic checks as tool nodes with no model call.
+Before launching an authored workflow, assign every model stage a **role**, **failure cost**, **primary model**, **thinking level**, and **fallback policy**. Use `low` or `medium` for implementation and routine fixes, and `high` or `xhigh` for code review, test design, failure analysis, and approval decisions when supported. Use `high` for demanding mapping, lifecycle analysis, compatibility, planning, synthesis, and triage, and `medium` for user-impact review and final reporting. `max` is an exception justified by task-specific evidence or an explicit user request, not a role default. Keep deterministic checks as tool nodes with no model call.
 
 Print this compact assignment before launch, with a short cost/quality rationale for each model stage:
 
@@ -432,8 +432,6 @@ Tag:
 Do not tag bulk context. Every tagged span is recovered first, so a large span delays the rest of the recovery. Tag the constraint, not the material it applies to — pass that through files and `reads`.
 
 Every builtin does this for its own invariants: the steering propagation contract, the literal objective contract, scope discipline, worktree discipline, per-run acceptance criteria, and the research/review role constraints are all tagged. See [`keepContext` tags](/compaction#keepcontext-tags).
-
-For automatic model selection, a chat model reads the whole `model: "auto"` stage prompt; stating `taskNeeds` in the stage options saves that read. See [automatic stage model selection](/workflows/authoring#automatic-stage-model-selection).
 
 #### Tagging is not only for workflow authors
 

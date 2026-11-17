@@ -13,7 +13,6 @@ export type {
 	ImageSettings,
 	MarkdownSettings,
 	MermaidRenderingMode,
-	ModelRoutingSettings,
 	PackageSource,
 	ProviderRetrySettings,
 	QuietStartup,

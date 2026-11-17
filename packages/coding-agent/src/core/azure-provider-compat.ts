@@ -50,16 +50,5 @@ export function normalizeAzureSettings(settings: Settings): Settings {
 		...(isRecord(settings.modelThinkingLevels) && {
 			modelThinkingLevels: normalizeProviderKeys(settings.modelThinkingLevels),
 		}),
-		...(isRecord(settings.modelRouting) && {
-			modelRouting: {
-				...settings.modelRouting,
-				...(isStringArray(settings.modelRouting.allowedProviders) && {
-					allowedProviders: settings.modelRouting.allowedProviders.map(normalizeProviderId),
-				}),
-				...(isStringArray(settings.modelRouting.excludedProviders) && {
-					excludedProviders: settings.modelRouting.excludedProviders.map(normalizeProviderId),
-				}),
-			},
-		}),
 	};
 }
