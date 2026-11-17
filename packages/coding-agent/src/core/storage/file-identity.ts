@@ -604,7 +604,7 @@ interface StorageTargetDecision {
 }
 
 let storageTargetDecisions = new WeakMap<SettledStorageHome, Map<string, StorageTargetDecision>>();
-let defaultTargetVersions = new WeakMap<StorageTargetDecision, string>();
+let defaultTargetClaims = new WeakMap<StorageTargetDecision, { version: string; claims: readonly string[] }>();
 
 function canonicalPath(path: string): string {
 	try {
@@ -995,8 +995,7 @@ export function coLocatesWorkflowStore(agentDir: string, settings?: StorageHomeS
 	if (defaultHomeForAgent(agentPath, defaultHome) !== undefined) return false;
 	const decision = readStorageHomeDecision(storageHomeDecisionFile(agentPath));
 	if (decision !== undefined) {
-		if (decision.defaultHome) return false;
-		if (decision.parentOwner === undefined) return true;
+		if (decision.defaultHome || decision.parentOwner === undefined) return true;
 		const owner = parentStorageOwner(decision.home);
 		return !sameDirectory(owner ?? decision.parentOwner, agentPath);
 	}
@@ -1123,16 +1122,17 @@ export function storagePathBaseDir(path: string, agentDir: string, settings?: St
 	return applyStorageTargetDecision(resolved, settings);
 }
 
-function defaultTargetVersion({ target, decision }: StorageTargetDecision): string | undefined {
+function defaultTargetVersion({ agentPath, target, decision }: StorageTargetDecision): string | undefined {
 	if (!decision.defaultHome) return undefined;
 	const selected = resolve(decision.home, target);
 	if (!pathsEqual(dirname(selected), decision.home)) return undefined;
 	try {
 		const home = statSync(decision.home, { bigint: true });
-		if (home.ino === 0n) return undefined;
+		const agent = statSync(agentPath, { bigint: true });
+		if (home.ino === 0n || agent.ino === 0n) return undefined;
 		const file = lstatSync(selected, { bigint: true, throwIfNoEntry: false });
 		if (file !== undefined && (file.isSymbolicLink() || file.ino === 0n)) return undefined;
-		const homeVersion = `${home.dev}:${home.ino}:${home.birthtimeNs}`;
+		const homeVersion = `${home.dev}:${home.ino}:${home.birthtimeNs}:${agent.dev}:${agent.ino}:${agent.birthtimeNs}`;
 		return file === undefined
 			? `${homeVersion}:missing`
 			: `${homeVersion}:${file.dev}:${file.ino}:${file.birthtimeNs}`;
@@ -1145,9 +1145,13 @@ function applyStorageTargetDecision(targetDecision: StorageTargetDecision, setti
 	const { agentPath, target, decision } = targetDecision;
 	if (decision.parentOwner === undefined) return decision.home;
 	const version = defaultTargetVersion(targetDecision);
-	if (version !== undefined && defaultTargetVersions.get(targetDecision) === version) return decision.home;
+	const cached = defaultTargetClaims.get(targetDecision);
 	const selected = resolve(decision.home, target);
-	for (const claim of targetClaimFiles(agentPath, decision.home, selected)) {
+	const claims =
+		version !== undefined && cached?.version === version
+			? cached.claims
+			: targetClaimFiles(agentPath, decision.home, selected);
+	for (const claim of claims) {
 		let owner = readStorageOwner(claim);
 		if (owner === undefined && settings !== undefined && isDirectory(agentPath)) {
 			mkdirSync(dirname(claim), { recursive: true });
@@ -1169,7 +1173,7 @@ function applyStorageTargetDecision(targetDecision: StorageTargetDecision, setti
 		return agentPath;
 	}
 	if (version !== undefined && defaultTargetVersion(targetDecision) === version) {
-		defaultTargetVersions.set(targetDecision, version);
+		defaultTargetClaims.set(targetDecision, { version, claims });
 	}
 	return decision.home;
 }
@@ -1209,7 +1213,7 @@ export function resetStorageHomeCacheForTests(): void {
 	fastStorageHomes.clear();
 	settledStorageHomes.clear();
 	storageTargetDecisions = new WeakMap();
-	defaultTargetVersions = new WeakMap();
+	defaultTargetClaims = new WeakMap();
 	priorUseSnapshots.clear();
 	lastStorageHome = undefined;
 }

@@ -3,6 +3,7 @@ import { cpSync, existsSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFi
 import { join } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import {
+	coLocatesWorkflowStore,
 	defaultSessionDatabasePath,
 	fileIdentity,
 	resetStorageHomeCacheForTests,
@@ -80,6 +81,7 @@ test("a default profile copied to a custom location cannot select an unrelated p
 	mkdirSync(join(parent, "workflows"));
 	writeFileSync(join(parent, "workflows", "journal.sqlite"), "unrelated history");
 	resetStorageHomeCacheForTests();
+	assert.equal(coLocatesWorkflowStore(custom, {}), true);
 	assert.equal(defaultSessionDatabasePath(custom, {}), join(custom, "workflows", "journal.sqlite"));
 	assert.equal(defaultSessionDatabasePath(sibling, {}), join(parent, "workflows", "journal.sqlite"));
 });

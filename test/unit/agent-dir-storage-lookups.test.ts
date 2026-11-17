@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -10,6 +10,7 @@ const filesystemWork = vi.hoisted(() => ({
 	writes: 0,
 	directoryOpens: 0,
 	bulkDirectoryReads: 0,
+	canonicalizations: 0,
 	transientReadPath: undefined as string | undefined,
 	fixedVersionDirectory: undefined as string | undefined,
 	fixedVersionFile: undefined as string | undefined,
@@ -18,6 +19,12 @@ vi.mock("node:fs", async (original) => {
 	const fs = await original<typeof import("node:fs")>();
 	return {
 		...fs,
+		realpathSync: Object.assign((...args: Parameters<typeof fs.realpathSync>) => fs.realpathSync(...args), {
+			native: (...args: Parameters<typeof fs.realpathSync.native>) => {
+				filesystemWork.canonicalizations++;
+				return fs.realpathSync.native(...args);
+			},
+		}),
 		readdirSync: (...args: Parameters<typeof fs.readdirSync>) => {
 			filesystemWork.bulkDirectoryReads++;
 			return fs.readdirSync(...args);
@@ -50,9 +57,8 @@ vi.mock("node:fs", async (original) => {
 	};
 });
 vi.resetModules();
-const { coLocatesWorkflowStore, readClaimFile, resetStorageHomeCacheForTests, storagePathBaseDir } = await import(
-	"../../packages/coding-agent/src/core/storage/file-identity.js"
-);
+const { coLocatesWorkflowStore, fileIdentity, readClaimFile, resetStorageHomeCacheForTests, storagePathBaseDir } =
+	await import("../../packages/coding-agent/src/core/storage/file-identity.js");
 
 let root: string;
 beforeEach(() => {
@@ -82,6 +88,7 @@ function resetFilesystemWork(): void {
 	filesystemWork.writes = 0;
 	filesystemWork.directoryOpens = 0;
 	filesystemWork.bulkDirectoryReads = 0;
+	filesystemWork.canonicalizations = 0;
 }
 
 test("repeated relative selections reuse a settled local target without rereading its decision (#5242)", () => {
@@ -107,7 +114,7 @@ test("missing storage claims avoid exception-driven reads without hiding later p
 });
 
 test.each(["missing", "existing"])(
-	"repeated default relative selections reuse owned %s targets without rereading claims (#5242)",
+	"repeated default relative selections reuse claim paths for %s targets while reading ownership live (#5242)",
 	(state) => {
 		const home = join(root, "home");
 		const agent = join(home, ".atomic", "agent");
@@ -120,10 +127,29 @@ test.each(["missing", "existing"])(
 		resetFilesystemWork();
 		for (let index = 0; index < 3; index++)
 			assert.equal(storagePathBaseDir("history.sqlite", agent, settings), join(home, ".atomic"));
-		assert.equal(filesystemWork.reads, 0);
+		assert.equal(filesystemWork.canonicalizations, 0);
+		assert.ok(filesystemWork.reads > 0);
 		assert.equal(filesystemWork.writes, 0);
 	},
 );
+
+test("cached default target paths still read replaced ownership contents (#5242)", () => {
+	const home = join(root, "changed-default-owner");
+	const atomic = join(home, ".atomic");
+	const agent = join(atomic, "agent");
+	const sibling = join(atomic, "custom");
+	mkdirSync(agent, { recursive: true });
+	mkdirSync(sibling);
+	vi.stubEnv("HOME", home);
+	vi.stubEnv("USERPROFILE", home);
+	const settings = { sessions: { storage: { path: "history.sqlite" } } };
+	assert.equal(storagePathBaseDir("history.sqlite", agent, settings), atomic);
+	assert.equal(storagePathBaseDir("history.sqlite", agent, settings), atomic);
+	const claim = readdirSync(atomic).find((name) => name.startsWith(".atomic-storage-target-"));
+	assert.ok(claim);
+	writeFileSync(join(atomic, claim), JSON.stringify({ path: sibling, identity: fileIdentity(sibling) }));
+	assert.equal(storagePathBaseDir("history.sqlite", agent, settings), agent);
+});
 
 test("unsettled workflow resource discovery uses bulk profile reads without settling storage (#5242)", () => {
 	const agent = join(root, "fresh");
