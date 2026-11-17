@@ -277,7 +277,12 @@ class NativeChildProcess extends EventEmitter implements HostChildProcess {
 	#maybeClose(): void {
 		if (this.#closed || !this.#exited || this.#openOutputs > 0) return;
 		this.#closed = true;
-		process.nextTick(() => this.emit("close", this.exitCode, this.signalCode));
+		process.nextTick(() => {
+			this.emit("close", this.exitCode, this.signalCode);
+			// Reaped only now: until `close` was handled, the process's ID and its group's could not name another
+			// process, so a signal sent to either before it reached only what this process started.
+			this.#process?.release();
+		});
 	}
 
 	kill(signal?: NodeJS.Signals | number): boolean {

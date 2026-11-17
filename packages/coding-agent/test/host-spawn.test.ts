@@ -143,6 +143,14 @@ describe.each(BACKENDS)("host processes started through %s", (backend) => {
 		assert.equal(child.kill("SIGKILL"), false, "an ended process is not signalled again");
 	});
 
+	test("a process is reaped once its close was handled, and leaves no zombie", async () => {
+		const child = spawnHostProcess(node, ["-e", "process.stdout.write('x')"]);
+		await ended(child);
+		await waitGone(child.pid!);
+		assert.equal(running(child.pid!), false);
+		assert.equal(child.kill("SIGKILL"), false, "a reaped process is not signalled");
+	});
+
 	test("ignored streams are null, and the process still runs to its end", async () => {
 		const child = spawnHostProcess(node, ["-e", "process.stdout.write('lost');process.exit(5)"], { stdio: "ignore" });
 		assert.equal(child.stdin, null);

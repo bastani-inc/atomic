@@ -36,6 +36,11 @@ export declare class HostProcess {
   kill(signal: number, group: boolean): boolean
   /** Keeps the host's event loop alive until the process has ended, which is the default. */
   ref(): void
+  /**
+   * Says the host has handled the process's `close`, after which it never signals it again: the process is reaped
+   * once it has exited and this was called, or the handle was dropped.
+   */
+  release(): void
   /** Lets the host's event loop end while the process runs. */
   unref(): void
 }

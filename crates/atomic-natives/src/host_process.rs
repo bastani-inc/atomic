@@ -117,6 +117,14 @@ impl HostProcess {
 		}
 	}
 
+	/// Says the host has handled the process's `close`, after which it never signals it again: the process is reaped
+	/// once it has exited and this was called, or the handle was dropped.
+	#[napi]
+	pub fn release(&self) {
+		#[cfg(target_os = "linux")]
+		self.shared.release_by_host();
+	}
+
 	/// Lets the host's event loop end while the process runs.
 	#[napi]
 	pub fn unref(&self, env: Env) -> napi::Result<()> {
@@ -127,6 +135,13 @@ impl HostProcess {
 			let _ = env;
 			Ok(())
 		}
+	}
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for HostProcess {
+	fn drop(&mut self) {
+		self.shared.release_by_host();
 	}
 }
 
@@ -183,7 +198,7 @@ mod linux {
 	use std::io::{self, Read, Write};
 	use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 	use std::path::PathBuf;
-	use std::sync::atomic::{AtomicBool, Ordering};
+	use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 	use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 	/// How long the output thread waits between checks for the exit where the kernel has no process file
@@ -200,9 +215,10 @@ mod linux {
 
 	/// What the host and the process's output thread share.
 	///
-	/// The process is reaped only once it exited and both output pipes reached their end, which is when the host
-	/// sees `close`: until then its ID, and the ID of its process group, cannot name another process, so a signal
-	/// the host sends meanwhile, to the process or to its group, can only reach what it started.
+	/// The process is reaped only once it exited, both output pipes reached their end, and the host handled its
+	/// `close` (or dropped the handle): until then its ID, and the ID of its process group, cannot name another
+	/// process, so a signal the host sends before `close`, to the process or to its group, can only reach what it
+	/// started.
 	pub(super) struct Shared {
 		pid: libc::pid_t,
 		input: Mutex<Input>,
@@ -214,6 +230,10 @@ mod linux {
 		stderr_open: AtomicBool,
 		pidfd: Option<OwnedFd>,
 		callback: Mutex<Option<EventCallback>>,
+		/// Whether the host released the process (after its `close`, or by dropping the handle) and whether the
+		/// output thread finished with it: the second of the two reaps it.
+		host_released: AtomicBool,
+		releases: AtomicU8,
 	}
 
 	fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -290,12 +310,25 @@ mod linux {
 				..HostProcessEvent::of(HostProcessEventKind::Exit)
 			});
 		}
-		/// Reaps the process, which has exited, and lets the host's event loop end: the last step.
-		fn finish(&self, child: &mut SpawnedChild) {
-			let _ = child.wait();
-			self.reaped.store(true, Ordering::Release);
+		/// The output thread's last step, once it reported the exit and the end of the output: lets the host's event
+		/// loop end, and reaps the process if the host already released it.
+		fn finish(&self) {
 			locked(&self.input).closed = true;
 			drop(locked(&self.callback).take());
+			self.release();
+		}
+		pub(super) fn release_by_host(&self) {
+			if !self.host_released.swap(true, Ordering::AcqRel) {
+				self.release();
+			}
+		}
+		/// The second release reaps the process, which has exited by then: the output thread releases it only after
+		/// reporting its exit.
+		fn release(&self) {
+			if self.releases.fetch_add(1, Ordering::AcqRel) == 1 {
+				let _ = SpawnedChild::new(self.pid).wait();
+				self.reaped.store(true, Ordering::Release);
+			}
 		}
 	}
 
@@ -411,15 +444,16 @@ mod linux {
 			stderr_open: AtomicBool::new(stderr.is_some()),
 			pidfd: pidfd_open(pid),
 			callback: Mutex::new(Some(on_event)),
+			host_released: AtomicBool::new(false),
+			releases: AtomicU8::new(0),
 		});
 		let worker = shared.clone();
 		let started = std::thread::Builder::new().name("host-process".into()).spawn(move || {
-			let mut child = SpawnedChild::new(pid);
 			let supervised = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-				supervise(&mut child, stdin, stdout, stderr, &worker);
+				supervise(stdin, stdout, stderr, &worker);
 			}));
 			if supervised.is_err() {
-				recover(&mut child, &worker);
+				recover(&worker);
 			}
 		});
 		if let Err(error) = started {
@@ -433,8 +467,8 @@ mod linux {
 	}
 
 	/// After the output thread failed: ends the process if it still runs, reports what the host has not been told,
-	/// its exit and the end of its output, and reaps it, so the host sees `close` and nothing is left running.
-	fn recover(child: &mut SpawnedChild, shared: &Shared) {
+	/// its exit and the end of its output, and finishes, so the host sees `close` and nothing is left running.
+	fn recover(shared: &Shared) {
 		if !shared.exit_sent.load(Ordering::Acquire) {
 			let _ = shared.kill(libc::SIGKILL, false);
 			let status = loop {
@@ -460,7 +494,7 @@ mod linux {
 		if shared.stderr_open.load(Ordering::Acquire) {
 			shared.emit(HostProcessEvent::of(HostProcessEventKind::StderrEnd));
 		}
-		shared.finish(child);
+		shared.finish();
 	}
 
 	fn set_nonblocking(file: &File) {
@@ -473,9 +507,8 @@ mod linux {
 		}
 	}
 
-	/// Moves input and output until the process exited and both output pipes reached their end, then reaps it.
+	/// Moves input and output until the process exited and both output pipes reached their end.
 	fn supervise(
-		child: &mut SpawnedChild,
 		mut stdin: Option<File>,
 		mut stdout: Option<File>,
 		mut stderr: Option<File>,
@@ -614,6 +647,6 @@ mod linux {
 			}
 		}
 		drop(stdin);
-		shared.finish(child);
+		shared.finish();
 	}
 }
