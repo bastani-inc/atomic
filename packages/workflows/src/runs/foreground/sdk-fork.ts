@@ -5,7 +5,7 @@
 import { resolve } from "node:path";
 import type { AgentSessionEvent, SessionStore } from "@bastani/atomic";
 import type { DurableWorkflowBackend } from "../../durable/backend.js";
-import { initializeDurableBackend } from "../../durable/factory.js";
+import { initializeDurableBackendReadingSettings } from "../../durable/factory.js";
 import { ForkConfigError, type ForkConfigField, type ForkConfigIssue } from "../../durable/fork-errors.js";
 import type { ForkCarryMessages, ForkPoint } from "../../durable/fork-run.js";
 import {
@@ -166,7 +166,8 @@ async function sdkDurableBackend(
 			: undefined;
 	return {
 		store,
-		backend: preset ?? (await initializeDurableBackend({ journal: options.journal, cwd: options.cwd })),
+		backend:
+			preset ?? (await initializeDurableBackendReadingSettings({ journal: options.journal, cwd: options.cwd })),
 	};
 }
 

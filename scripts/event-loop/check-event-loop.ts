@@ -8,7 +8,7 @@
  *
  * See scripts/event-loop/README.md for what is checked and how to fix or review a finding.
  */
-import { type CallGraph, CallGraphBuilder, type GraphFunction } from "./call-graph.ts";
+import { type CallGraph, CallGraphBuilder, type EdgeKind, type GraphFunction } from "./call-graph.ts";
 import {
 	type EventLoopPolicy,
 	type FunctionSelector,
@@ -163,13 +163,26 @@ export function analyzeEventLoop(graph: CallGraph, policy: EventLoopPolicy = INT
 	for (const [id, reason] of durableRecords) startupOnly.set(id, reason);
 	for (const id of otherModes.keys()) startupOnly.set(id, "other mode");
 	const loadedAtStartup = startupModuleNodes(graph, policy.startupModules, policyErrors);
+	const guarded = new Set<string>();
+	for (const edge of policy.guardedCalls) {
+		if (edge.reason.trim().length < 20) policyErrors.push(`GUARDED_CALLS: ${selectorKey(edge.from)} needs a reason`);
+		const from = resolve(edge.from, "GUARDED_CALLS");
+		const to = resolve(edge.to, "GUARDED_CALLS");
+		if (from === undefined || to === undefined) continue;
+		if (!graph.functions[from].edges.has(to)) {
+			policyErrors.push(`GUARDED_CALLS: ${selectorKey(edge.from)} no longer calls ${selectorKey(edge.to)}`);
+		}
+		guarded.add(`${from}>${to}`);
+	}
+	const skipEdge = (from: number, to: number, edge: EdgeKind) =>
+		(edge === "import" && loadedAtStartup.has(to)) || guarded.has(`${from}>${to}`);
 	const interactive = reach(
 		graph,
 		roots,
 		{
 			stopAt: startupOnly,
 			followRegistrations: true,
-			skipEdge: (_from, to, edge) => edge === "import" && loadedAtStartup.has(to),
+			skipEdge,
 		},
 		registrations,
 	);
@@ -206,7 +219,7 @@ export function analyzeEventLoop(graph: CallGraph, policy: EventLoopPolicy = INT
 		{
 			stopAt: ownedFunctions,
 			followRegistrations: true,
-			skipEdge: (_from, to, edge) => edge === "import" && loadedAtStartup.has(to),
+			skipEdge,
 		},
 		registrations,
 	);

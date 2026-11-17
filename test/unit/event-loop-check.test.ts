@@ -31,6 +31,13 @@ const fixturePolicy: EventLoopPolicy = {
 	exitOnly: [],
 	synchronousLoaderHooks: [],
 	durableRecords: [],
+	guardedCalls: [
+		{
+			from: { file: "src/loader.ts", name: "Loader.constructor" },
+			to: { file: "src/loader.ts", name: "readDefaultText" },
+			reason: "the fixture's interactive caller always passes the text",
+		},
+	],
 	reviewedRegexes: [],
 };
 
@@ -118,6 +125,15 @@ describe("event-loop check", () => {
 		});
 		assert.deepEqual(reviewed.regexFindings, []);
 		assert.deepEqual(reviewed.policyErrors, []);
+	});
+
+	test("does not follow a reviewed guarded call, and reports the fallback without the review", () => {
+		assert.equal(
+			report.violations.some((v) => v.function === "readDefaultText"),
+			false,
+		);
+		const unreviewed = analyzeEventLoop(graph, { ...fixturePolicy, guardedCalls: [] });
+		assert.ok(unreviewed.violations.some((v) => v.function === "readDefaultText" && v.api === "fs.readFileSync"));
 	});
 
 	test("fails the policy when a reviewed entry no longer names a reachable function", () => {

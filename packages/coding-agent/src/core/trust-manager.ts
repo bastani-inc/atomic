@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAMES } from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
-import { canonicalizePath, getHomeDir, pathsEqual, resolvePath } from "../utils/paths.ts";
+import { canonicalizePath, canonicalizePathAsync, getHomeDir, pathsEqual, resolvePath } from "../utils/paths.ts";
 import { releaseLock, releaseLockSync } from "./lock-release.ts";
 import { inLockTurn, type LockWait, waitForLock, waitForLockSync } from "./lock-wait.ts";
 import { renameReplacing, renameReplacingAsync } from "./rename-retry.ts";
@@ -54,7 +54,16 @@ function findTrustFileKeys(data: TrustFile, path: string): string[] {
 }
 
 function findNearestTrustEntry(data: TrustFile, cwd: string): ProjectTrustStoreEntry | null {
-	let currentDir = normalizeCwd(cwd);
+	return findNearestTrustEntryFrom(data, normalizeCwd(cwd));
+}
+
+/** {@link findNearestTrustEntry} without blocking the event loop on the symlinks of `cwd`. */
+async function findNearestTrustEntryAsync(data: TrustFile, cwd: string): Promise<ProjectTrustStoreEntry | null> {
+	return findNearestTrustEntryFrom(data, await canonicalizePathAsync(resolvePath(cwd)));
+}
+
+function findNearestTrustEntryFrom(data: TrustFile, normalizedCwd: string): ProjectTrustStoreEntry | null {
+	let currentDir = normalizedCwd;
 	while (true) {
 		for (const key of findTrustFileKeys(data, currentDir)) {
 			const value = data[key];
@@ -468,7 +477,7 @@ export function hasProjectTrustInputs(cwd: string): boolean {
 
 /** {@link hasProjectConfigDir} without blocking the event loop. */
 export async function hasProjectConfigDirAsync(cwd: string): Promise<boolean> {
-	const projectCwd = canonicalizePath(resolvePath(cwd));
+	const projectCwd = await canonicalizePathAsync(resolvePath(cwd));
 	return someAsync(CONFIG_DIR_NAMES, (configDirName) => pathExists(join(projectCwd, configDirName)));
 }
 
@@ -478,10 +487,10 @@ export async function hasTrustRequiringProjectResourcesAsync(cwd: string): Promi
 		return true;
 	}
 
-	const userGlobalSkillsDir = canonicalizePath(resolvePath(join(getHomeDir(), ".agents", "skills")));
-	let currentDir = canonicalizePath(resolvePath(cwd));
+	const userGlobalSkillsDir = await canonicalizePathAsync(resolvePath(join(getHomeDir(), ".agents", "skills")));
+	let currentDir = await canonicalizePathAsync(resolvePath(cwd));
 	while (true) {
-		const skillsDir = canonicalizePath(resolvePath(join(currentDir, ".agents", "skills")));
+		const skillsDir = await canonicalizePathAsync(resolvePath(join(currentDir, ".agents", "skills")));
 		if (!pathsEqual(skillsDir, userGlobalSkillsDir) && (await pathExists(skillsDir))) {
 			return true;
 		}
@@ -496,14 +505,14 @@ export async function hasTrustRequiringProjectResourcesAsync(cwd: string): Promi
 
 /** {@link hasProjectTrustInputs} without blocking the event loop. */
 export async function hasProjectTrustInputsAsync(cwd: string): Promise<boolean> {
-	let currentDir = canonicalizePath(resolvePath(cwd));
+	let currentDir = await canonicalizePathAsync(resolvePath(cwd));
 	if (
 		(await hasTrustRequiringConfigResourcesAsync(currentDir)) ||
 		(await hasNearestProjectRootAgentResourcesAsync(currentDir))
 	) {
 		return true;
 	}
-	const userGlobalSkillsDir = canonicalizePath(resolvePath(join(getHomeDir(), ".agents", "skills")));
+	const userGlobalSkillsDir = await canonicalizePathAsync(resolvePath(join(getHomeDir(), ".agents", "skills")));
 	const contextFileNames = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
 
 	while (true) {
@@ -513,7 +522,7 @@ export async function hasProjectTrustInputsAsync(cwd: string): Promise<boolean> 
 			}
 		}
 
-		const skillsDir = canonicalizePath(resolvePath(join(currentDir, ".agents", "skills")));
+		const skillsDir = await canonicalizePathAsync(resolvePath(join(currentDir, ".agents", "skills")));
 		if (!pathsEqual(skillsDir, userGlobalSkillsDir) && (await pathExists(skillsDir))) {
 			return true;
 		}
@@ -527,7 +536,7 @@ export async function hasProjectTrustInputsAsync(cwd: string): Promise<boolean> 
 }
 
 async function hasTrustRequiringConfigResourcesAsync(cwd: string): Promise<boolean> {
-	const projectCwd = canonicalizePath(resolvePath(cwd));
+	const projectCwd = await canonicalizePathAsync(resolvePath(cwd));
 	return someAsync(CONFIG_DIR_NAMES, (configDirName) => {
 		const configDir = join(projectCwd, configDirName);
 		return someAsync(TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES, (entry) => pathExists(join(configDir, entry)));
@@ -543,8 +552,8 @@ async function isDirectoryAsync(path: string): Promise<boolean> {
 }
 
 async function hasNearestProjectRootAgentResourcesAsync(cwd: string): Promise<boolean> {
-	const homeDir = canonicalizePath(resolvePath(getHomeDir()));
-	let currentDir = canonicalizePath(resolvePath(cwd));
+	const homeDir = await canonicalizePathAsync(resolvePath(getHomeDir()));
+	let currentDir = await canonicalizePathAsync(resolvePath(cwd));
 	while (true) {
 		const configDirs = CONFIG_DIR_NAMES.map((configDirName) => join(currentDir, configDirName));
 		const legacyAgentsDir = join(currentDir, ".agents");
@@ -595,7 +604,7 @@ export class ProjectTrustStore {
 
 	/** {@link ProjectTrustStore.getEntry} without blocking the event loop. */
 	async getEntryAsync(cwd: string): Promise<ProjectTrustStoreEntry | null> {
-		return findNearestTrustEntry(await readTrustFileForReadAsync(this.trustPath), cwd);
+		return findNearestTrustEntryAsync(await readTrustFileForReadAsync(this.trustPath), cwd);
 	}
 
 	set(cwd: string, decision: ProjectTrustDecision): void {

@@ -12,6 +12,7 @@ import type { StorageSelection } from "./provider.js";
 import {
 	environmentTeamProfile,
 	environmentTeamProfileAsync,
+	environmentTeamProfileSelection,
 	selectStorage,
 	selectsDefaultJournalStore,
 	TEAM_PROFILE_ENV,
@@ -130,7 +131,7 @@ function environmentChoices(agentDir: string) {
 		return choose(value, "env", field, agentDir, defaultPath);
 	};
 	const sharedDefault = join(dirname(agentDir), "storage.sqlite");
-	const team = environmentTeamProfile();
+	const team = environmentTeamProfileSelection();
 	return {
 		sessions: read(SESSIONS_STORAGE_ENV, SessionStorageSelectionSchema, domainDefault),
 		journal: read(WORKFLOWS_JOURNAL_ENV, StorageSelectionSchema, domainDefault),
@@ -142,6 +143,13 @@ function environmentChoices(agentDir: string) {
 /** Check every set storage variable, whether or not any selection uses it. */
 export function validateProcessStorage(agentDir: string): void {
 	environmentChoices(agentDir);
+	environmentTeamProfile();
+}
+
+/** {@link validateProcessStorage} without blocking the event loop on the team profile's token file. */
+export async function validateProcessStorageAsync(agentDir: string): Promise<void> {
+	environmentChoices(agentDir);
+	await environmentTeamProfileAsync();
 }
 
 /**

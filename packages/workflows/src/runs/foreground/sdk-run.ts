@@ -7,7 +7,7 @@ import {
 	withResumeLookupDeadline,
 } from "@bastani/atomic";
 import type { DurableWorkflowBackend } from "../../durable/backend.js";
-import { initializeDurableBackend } from "../../durable/factory.js";
+import { initializeDurableBackendReadingSettings, readDurableJournalSettings } from "../../durable/factory.js";
 import { selectRunJournal } from "../../durable/journal/resolution.js";
 import { availableRunDurableBackend } from "../../durable/run-owner-backend.js";
 import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from "../../durable/store-backend.js";
@@ -44,7 +44,9 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	parseReleaseWhenWaiting(callerOpts.releaseWhenWaiting);
 	parseEvictWhenWaiting(callerOpts.evictWhenWaiting);
 	resolveWorktreeSnapshotSettings(callerOpts.snapshots, "sdk", "snapshots");
-	const inheritedSnapshots = SettingsManager.create(callerOpts.cwd ?? process.cwd()).getWorktreeSnapshotSettings();
+	const inheritedSnapshots = (
+		await SettingsManager.createAsync(callerOpts.cwd ?? process.cwd())
+	).getWorktreeSnapshotSettings();
 	let opts: RunOpts = {
 		...callerOpts,
 		snapshots: resolveWorktreeSnapshotSettings(callerOpts.snapshots, "sdk", "snapshots", inheritedSnapshots),
@@ -82,22 +84,21 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
  * again.
  */
 async function openRunBackend(opts: RunOpts, resumedRunId: string | undefined): Promise<DurableWorkflowBackend> {
-	if (resumedRunId === undefined) return initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd });
-	const selection = selectRunJournal({
-		journal: opts.journal,
-		settings:
-			opts.journal === undefined ? SettingsManager.create(opts.cwd ?? process.cwd()).getSettings() : undefined,
-	});
+	const settings = opts.journal === undefined ? await readDurableJournalSettings({ cwd: opts.cwd }) : undefined;
+	if (resumedRunId === undefined)
+		return initializeDurableBackendReadingSettings({ journal: opts.journal, cwd: opts.cwd, settings });
+	const selection = selectRunJournal({ journal: opts.journal, settings });
 	if (!("kind" in selection) || selection.kind !== "adapter")
-		return initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd });
+		return initializeDurableBackendReadingSettings({ journal: opts.journal, cwd: opts.cwd, settings });
 	const abandon = new AbortController();
 	let answered = () => {};
 	const reached = new Promise<void>((resolveReached) => {
 		answered = resolveReached;
 	});
-	const opening = initializeDurableBackend({
+	const opening = initializeDurableBackendReadingSettings({
 		journal: opts.journal,
 		cwd: opts.cwd,
+		settings,
 		abandonSignal: abandon.signal,
 		onJournalAnswered: () => answered(),
 	});

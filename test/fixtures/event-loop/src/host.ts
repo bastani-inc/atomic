@@ -1,6 +1,7 @@
 import { execSync } from "node:child_process";
 import { pbkdf2Sync } from "node:crypto";
 import { appendFileSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { Loader } from "./loader.ts";
 import { listOwnedArea } from "./owned.ts";
 import { FileStore, type Store } from "./stores.ts";
 import { Terminal } from "./terminal.ts";
@@ -42,6 +43,7 @@ function handleKey(data: string): void {
 	listOwnedArea();
 	void readLazily();
 	process.once("exit", flushOnExit);
+	void new Loader({ text: data }).text;
 }
 
 function pollStatus(): string {

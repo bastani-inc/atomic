@@ -246,6 +246,12 @@ export const STARTUP_ONLY: readonly ReviewedSelector[] = [
 			"runs on the first theme lookup, which initTheme makes before the first frame; /settings and the theme watcher refresh custom themes asynchronously after that",
 	},
 	{
+		file: "packages/coding-agent/src/cli/startup-ui.ts",
+		name: "createStartupTui",
+		reason:
+			"the terminal for first-time setup and the startup trust prompt, mounted before the interactive TUI exists; extension commands reach it only through the ui.select interface, whose interactive implementation is the one they run with",
+	},
+	{
 		file: "packages/coding-agent/src/main-session.ts",
 		name: "createResumeProgress/createStartupProgress()",
 		reason:
@@ -341,6 +347,28 @@ export interface ReviewedRegex {
  */
 export const REVIEWED_REGEXES: readonly ReviewedRegex[] = [];
 
+export interface ReviewedEdge {
+	readonly from: FunctionSelector;
+	readonly to: FunctionSelector;
+	readonly reason: string;
+}
+
+/**
+ * Calls the walk does not follow because the condition guarding them never holds on an interactive path, typically a
+ * fallback for an argument every caller in Atomic passes. Each needs the reason, naming those callers.
+ */
+export const GUARDED_CALLS: readonly ReviewedEdge[] = [
+	{
+		from: {
+			file: "packages/coding-agent/src/core/resource-loader-core.ts",
+			name: "DefaultResourceLoader.constructor",
+		},
+		to: { file: "packages/coding-agent/src/core/settings-manager-core.ts", name: "SettingsManager.create" },
+		reason:
+			"reads settings only when the caller passes no settingsManager; every loader Atomic creates passes one (createAgentSessionServices, BuiltinResourceLoader, a reload's candidate), so only SDK code that omits it takes this call",
+	},
+];
+
 /** Everything the check needs to know about the program it walks. */
 export interface EventLoopPolicy {
 	readonly isAnalyzedFile: (path: string) => boolean;
@@ -355,6 +383,7 @@ export interface EventLoopPolicy {
 	readonly exitOnly: readonly ReviewedSelector[];
 	readonly synchronousLoaderHooks: readonly ReviewedSelector[];
 	readonly durableRecords: readonly ReviewedSelector[];
+	readonly guardedCalls: readonly ReviewedEdge[];
 	readonly reviewedRegexes: readonly ReviewedRegex[];
 }
 
@@ -371,5 +400,6 @@ export const INTERACTIVE_HOST_POLICY: EventLoopPolicy = {
 	exitOnly: EXIT_ONLY,
 	synchronousLoaderHooks: SYNCHRONOUS_LOADER_HOOKS,
 	durableRecords: DURABLE_RECORDS,
+	guardedCalls: GUARDED_CALLS,
 	reviewedRegexes: REVIEWED_REGEXES,
 };

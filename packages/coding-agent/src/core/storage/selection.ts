@@ -587,6 +587,16 @@ export function environmentTeamProfile(env: NodeJS.ProcessEnv = process.env): Te
 	return parsed?.selection;
 }
 
+/**
+ * The team database `ATOMIC_PROFILE=ci` selects, checked in every way but reading its token file: the selection does not
+ * depend on the token. {@link environmentTeamProfile} also reads the file.
+ */
+export function environmentTeamProfileSelection(
+	env: NodeJS.ProcessEnv = process.env,
+): TeamStorageSelection | undefined {
+	return parseEnvironmentTeamProfile(env)?.selection;
+}
+
 /** {@link environmentTeamProfile} without blocking the event loop: the token file is checked asynchronously. */
 export async function environmentTeamProfileAsync(
 	env: NodeJS.ProcessEnv = process.env,

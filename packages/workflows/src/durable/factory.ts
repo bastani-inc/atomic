@@ -74,21 +74,49 @@ function abandonOpening(
 		});
 }
 
+/** The settings that choose a run's journal when its caller names none, read without blocking the event loop. */
+export async function readDurableJournalSettings(
+	options: Pick<DurableBackendOptions, "cwd" | "agentDir" | "projectTrusted"> = {},
+): Promise<RunJournalSettings> {
+	const manager = await SettingsManager.createAsync(options.cwd ?? process.cwd(), options.agentDir ?? getAgentDir(), {
+		projectTrusted: options.projectTrusted,
+	});
+	return manager.getSettings();
+}
+
+/**
+ * The backend a journal choice or the settings select. Registered for its holder before this returns: a release that
+ * follows the call at once finds it. Reads the settings files synchronously when the caller passes neither a journal
+ * nor settings; {@link initializeDurableBackendReadingSettings} reads them first without blocking.
+ */
 export async function initializeDurableBackend(options: DurableBackendOptions = {}): Promise<DurableWorkflowBackend> {
+	const settings =
+		options.journal === undefined
+			? (options.settings ??
+				SettingsManager.create(options.cwd ?? process.cwd(), options.agentDir ?? getAgentDir(), {
+					projectTrusted: options.projectTrusted,
+				}).getSettings())
+			: undefined;
+	return openDurableBackend(options, settings);
+}
+
+/** {@link initializeDurableBackend} for callers on the event loop: settings it must read are read without blocking. */
+export async function initializeDurableBackendReadingSettings(
+	options: DurableBackendOptions = {},
+): Promise<DurableWorkflowBackend> {
+	const settings =
+		options.journal === undefined ? (options.settings ?? (await readDurableJournalSettings(options))) : undefined;
+	return openDurableBackend(options, settings);
+}
+
+function openDurableBackend(
+	options: DurableBackendOptions,
+	settings: RunJournalSettings | undefined,
+): Promise<DurableWorkflowBackend> {
 	const owner = getDurableBackendProcessOwner();
 	const choice = options.journal;
 	const agentDir = options.agentDir ?? getAgentDir();
-	const selection = selectRunJournal({
-		agentDir,
-		journal: choice,
-		settings:
-			choice === undefined
-				? (options.settings ??
-					SettingsManager.create(options.cwd ?? process.cwd(), agentDir, {
-						projectTrusted: options.projectTrusted,
-					}).getSettings())
-				: undefined,
-	});
+	const selection = selectRunJournal({ agentDir, journal: choice, settings });
 	const holder = options.holder;
 	const key =
 		"createRun" in selection

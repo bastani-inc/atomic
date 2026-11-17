@@ -72,7 +72,7 @@ import { releaseSessionWorktrees } from "./session-worktree-snapshots.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { applyToolModifiers, getToolListError, isToolModifier } from "./settings-merge.js";
 import { ownedSettingsManagers } from "./settings-write-ownership.ts";
-import { validateProcessStorage } from "./storage/process-selection.js";
+import { validateProcessStorageAsync } from "./storage/process-selection.js";
 import { selectStorage } from "./storage/selection.js";
 import type { SessionStore } from "./storage/session/types.js";
 import { assertTeamAdapterInstalled } from "./storage/team.js";
@@ -317,7 +317,7 @@ async function constructAgentSession(
 			: await bindSessionWorkspace(options.workspace, options.sessionManager, options.resourceAdmissionSignal);
 	if (workspace !== undefined) await assertSessionManagerInWorktreeAsync(workspace, options.sessionManager);
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
-	validateProcessStorage(agentDir);
+	await validateProcessStorageAsync(agentDir);
 	// `storage` backs the sessions only without `sessionManager` and `sessionStore`, and the journal only without
 	// `journal`; an unused selection needs no adapter, while the process's own profile is still checked.
 	const storageUsed =

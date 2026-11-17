@@ -184,11 +184,34 @@ export function containsConfiguredValue(serialized: string, config: string, env?
 				];
 	return values.some((value) => {
 		if (!value?.trim()) return false;
-		const token = /^(?:Bearer|Basic)\s+(.+)$/i.exec(value)?.[1];
+		const token = authorizationCredential(value);
 		return [value, token].some(
 			(candidate) => !!candidate && serialized.includes(JSON.stringify(candidate).slice(1, -1)),
 		);
 	});
+}
+
+const LINE_TERMINATORS = new Set(["\n", "\r", "\u2028", "\u2029"]);
+
+/**
+ * What `/^(?:Bearer|Basic)\s+(.+)$/i` captures, in one pass: that pattern backtracks quadratically over a long run of
+ * whitespace. The credential follows the whitespace after the scheme; when only whitespace follows, it is the last of
+ * at least two whitespace characters, as `.+` takes the last one back from `\s+`.
+ */
+function authorizationCredential(value: string): string | undefined {
+	const scheme = /^(?:Bearer|Basic)/i.exec(value);
+	if (scheme === null) return undefined;
+	let end = scheme[0].length;
+	while (end < value.length && /\s/.test(value[end] as string)) end++;
+	const whitespace = end - scheme[0].length;
+	if (whitespace === 0) return undefined;
+	const credential = value.slice(end);
+	if (credential.length > 0) {
+		for (const character of credential) if (LINE_TERMINATORS.has(character)) return undefined;
+		return credential;
+	}
+	const last = value[end - 1] as string;
+	return whitespace >= 2 && !LINE_TERMINATORS.has(last) ? last : undefined;
 }
 
 function executeWithConfiguredShell(command: string): { executed: boolean; value: string | undefined } {

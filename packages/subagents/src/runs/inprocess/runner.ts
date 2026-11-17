@@ -1927,7 +1927,7 @@ export class SubagentControlRuntime {
 			);
 			// The fallback gate the child session gets, its own with its parent's, to check the model it starts on.
 			let startGate: CreateAgentSessionOptions["isFallbackModelAllowed"];
-			const prepareChildSession = () => {
+			const prepareChildSession = async () => {
 				const childOptions: CreateAgentSessionOptions = {
 					cwd: admitted.policy.cwd,
 					...((candidate.model ?? admitted.policy.model)
@@ -1956,7 +1956,8 @@ export class SubagentControlRuntime {
 						}
 					: inherited.extensionBindings;
 				const agentDir = inherited.agentDir ?? getAgentDir();
-				const settingsManager = inherited.settingsManager ?? SettingsManager.create(admitted.policy.cwd, agentDir);
+				const settingsManager =
+					inherited.settingsManager ?? (await SettingsManager.createAsync(admitted.policy.cwd, agentDir));
 				// An explicit effort runs exactly on each model that supports it, the child's and every one its fallback
 				// chain can switch to, and at that model's default level on one that does not; never another level. The
 				// model the child starts on keeps its own `:effort`, as when it is a fallback launch moved up to. A
@@ -2005,15 +2006,13 @@ export class SubagentControlRuntime {
 				);
 				return { inherited, extensionBindings, settingsManager, explicitEffort, resourceLoader, reloaded };
 			};
-			let prepared: ReturnType<typeof prepareChildSession> | { readonly error: unknown } | undefined;
-			if (!admitted.spec.testSession) {
-				try {
-					prepared = prepareChildSession();
-				} catch (error) {
-					// Reported once its session is open and bound, where a launch that cannot run has always failed.
-					prepared = { error };
-				}
-			}
+			// Prepared while its session opens; a failure is reported once the session is open and bound, where a launch
+			// that cannot run has always failed.
+			const preparing:
+				| Promise<Awaited<ReturnType<typeof prepareChildSession>> | { readonly error: unknown }>
+				| undefined = admitted.spec.testSession
+				? undefined
+				: prepareChildSession().catch((error: unknown) => ({ error }));
 			const sessionManager = await beforeStartDeadline(opening);
 			// #5210: a child resumed in this process continues after the final answer its last run could not save.
 			await beforeStartDeadline(restoreUnsavedAnswer(sessionManager));
@@ -2030,6 +2029,7 @@ export class SubagentControlRuntime {
 			const launchLeafId = sessionManager.getLeafId();
 			ownMessages = () => messagesSinceLaunch(sessionManager, launchLeafId);
 			let created: { session: AgentSession };
+			const prepared = preparing === undefined ? undefined : await beforeStartDeadline(preparing);
 			if (prepared === undefined) {
 				created = { session: createTestSession(sessionManager, admitted.spec) };
 			} else {

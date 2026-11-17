@@ -20,7 +20,7 @@ import {
 import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "../durable/backend.js";
 import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
-import { initializeDurableBackend } from "../durable/factory.js";
+import { initializeDurableBackendReadingSettings } from "../durable/factory.js";
 import { JournalDurableBackend, JournalOwnershipError } from "../durable/journal/journal-backend.js";
 import { isDurableWorkflowResumable } from "../durable/resume-eligibility.js";
 import { availableRunDurableBackend, bindRunDurableBackend } from "../durable/run-owner-backend.js";
@@ -236,7 +236,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	// A root with shared placement has its setup checked before its journal opens, every missing piece at once (#4310).
 	if (preset === undefined && opts.parentRun === undefined && opts.workers?.placement === "shared")
 		await checkSharedPlacementSetup(opts.journal, opts.cwd === undefined ? {} : { cwd: opts.cwd });
-	const backend = preset ?? (await initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd }));
+	const backend = preset ?? (await initializeDurableBackendReadingSettings({ journal: opts.journal, cwd: opts.cwd }));
 	if (evictionPolicy !== undefined && !(backend instanceof JournalDurableBackend))
 		throw evictionRefused(opts.evictWhenWaiting, runId, "backend");
 	const waitingStages = opts.parentRun === undefined ? durableWaitingStages(backend, runId) : [];

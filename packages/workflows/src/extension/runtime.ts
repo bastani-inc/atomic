@@ -13,7 +13,7 @@ import { ensureWorkflowSummaryService, type WorkflowSummaryContext } from "./wor
  */
 
 import { type DurableWorkflowBackend, resumableEntryFromHandle } from "../durable/backend.js";
-import { initializeDurableBackend } from "../durable/factory.js";
+import { initializeDurableBackendReadingSettings } from "../durable/factory.js";
 import type { RunJournalOption, RunJournalSettings } from "../durable/journal/resolution.js";
 import { resumeDurableWorkflow } from "../durable/resume-runtime.js";
 import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
@@ -221,7 +221,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		if (ready !== undefined) return ready;
 		ready = (
 			presetBackend === undefined
-				? initializeDurableBackend({
+				? initializeDurableBackendReadingSettings({
 						cwd: runtimeCwd,
 						journal: opts.journal ?? opts.resolveJournal?.(),
 						settings: opts.resolveJournalSettings?.(),
