@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getBinDir } from "../../config.js";
@@ -55,8 +55,8 @@ export interface WorkspaceGitCommand {
 	/** Return a non-zero exit instead of throwing `git-failed`. */
 	readonly allowFailure?: boolean;
 	readonly timeoutMs?: number;
-	/** Called with git's pid once it started; a throw stops git and fails the command. */
-	readonly onSpawn?: (pid: number) => void;
+	/** Called with git's pid once it started; a throw or rejection stops git and fails the command. */
+	readonly onSpawn?: (pid: number) => void | Promise<void>;
 }
 
 export interface WorkspaceGitResult {
@@ -113,6 +113,16 @@ async function executable(signal: AbortSignal | undefined): Promise<WorkspaceGit
 	}
 }
 
+/** Whether `path` exists, as `existsSync` answers: any error means it does not. */
+export async function pathExists(path: string): Promise<boolean> {
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 /**
  * Run one git command through the configured executable. Cancellation and timeouts stop git and wait for it to exit,
  * so whatever it removes on the way out is gone before the call fails; cancellation rejects with `signal.reason`.
@@ -151,7 +161,7 @@ export async function runWorkspaceGit(command: WorkspaceGitCommand): Promise<Wor
 	});
 	if (outcome.kind === "not-started") {
 		const error = outcome.error;
-		if (errnoCode(error) === "ENOENT" && existsSync(command.cwd))
+		if (errnoCode(error) === "ENOENT" && (await pathExists(command.cwd)))
 			throw new WorkspaceBindingError({
 				code: "git-unavailable",
 				fields: { gitPath: git.path, installCommand: gitInstallCommand() },
