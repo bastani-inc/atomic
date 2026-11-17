@@ -182,6 +182,10 @@ test.skipIf(process.platform !== "win32")(
 			[],
 			"no PowerShell process held the main thread",
 		);
-		assert.deepEqual(launchedArtifactDirs, [getArtifactsDir(null)], "the child writes into the verified directory");
+		assert.deepEqual(
+			launchedArtifactDirs,
+			[await getArtifactsDir(null)],
+			"the child writes into the verified directory",
+		);
 	},
 );
