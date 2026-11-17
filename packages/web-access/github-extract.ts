@@ -80,8 +80,15 @@ async function isConfined(root: string, path: string): Promise<boolean> {
 	let existing = path;
 	while (!(await pathExists(existing))) existing = dirname(existing);
 	if (!(await targetExists(existing))) return false;
-	const realPath = join(await realpath(existing), relative(existing, path));
-	return isInside(await realpath(root), realPath);
+	try {
+		const realPath = join(await realpath(existing), relative(existing, path));
+		return isInside(await realpath(root), realPath);
+	} catch (error) {
+		// Windows may allow access to a dangling junction even though its target cannot be resolved.
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" || code === "ENOTDIR") return false;
+		throw error;
+	}
 }
 
 /** Removes a clone directory only when it is confined and carries this tool's marker. */
