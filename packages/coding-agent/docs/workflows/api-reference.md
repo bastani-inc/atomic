@@ -771,7 +771,7 @@ Rejected credentials, unavailable models, incompatible requests, and content-fil
 
 A candidate whose provider has no usable credentials is skipped before the stage creates any session for it, and recorded as `Skipped <model>: provider '<provider>' has no credentials.` When no candidate has credentials, the stage blocks at once with an error naming each model and its provider; add the credentials and resume the run.
 
-A stage that sets `model` or `fallbackModels` uses only the chain it declares. The `fallbackModels` list in `settings.json` and the chain of the session that launched the workflow never apply to it, so a provider failure cannot move the stage to a model or reasoning level outside the chain you declared. A stage that sets neither runs on the session's current model and keeps that session's fallback behavior. It does not apply the explicit-chain `modelConstraints` checks to that inherited session model.
+A stage that sets `model` or `fallbackModels` uses only the chain it declares. The `fallbackModels` list in `settings.json` and the chain of the session that launched the workflow never apply to it, so a provider failure cannot move the stage to a model or reasoning level outside the chain you declared. A stage that sets neither runs on the session's current model and keeps that session's fallback behavior.
 
 Explicit stage models can use numbered account providers such as `openai-1/gpt-5-mini:low` with credentials saved under `openai-1` in `auth.json`. They use the source provider's catalog and endpoint, but the account's own credentials; no alias entry in `models.json` or provider-registration extension is needed. The source provider and requested model must exist.
 

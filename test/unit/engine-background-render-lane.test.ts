@@ -15,6 +15,7 @@ import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/ex
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { presentQuestionnaire } from "../../packages/coding-agent/src/core/tools/ask-user-question/ask-user-question.ts";
 import { TabBar } from "../../packages/coding-agent/src/core/tools/ask-user-question/view/components/tab-bar.ts";
+import { ToolBlock } from "../../packages/coding-agent/src/modes/interactive/components/tool-block.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import {
 	BackgroundRenderLane,
@@ -522,7 +523,7 @@ test("a transcript row that fails to render answers with a failure frame (#4333)
 	const [frame] = rowFrames(rows.messages);
 	assert.ok(frame?.type === "engine_custom_frame");
 	assert.equal(frame.requestId, 4);
-	assert.deepEqual(frame.lines, ["Remote renderer failed: Renderer session is not bound"]);
+	assert.deepEqual(frame.lines, new ToolBlock({ status: "failure", title: "Tool renderer failed" }).render(80));
 });
 
 test("every queued transcript row renders, and each one's repaint check runs (#4333)", async () => {

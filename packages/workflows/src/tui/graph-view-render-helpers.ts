@@ -1,4 +1,5 @@
 import { type NavKey, type NavKeybindings, type NavKeyStyle, navEntryKeys, sliceHead } from "@bastani/atomic";
+import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { sanitizeToolTitleText } from "../shared/tool-payload-bounds.js";
 import { BOLD, DEFAULT_BG, fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphCanvas } from "./graph-canvas.js";
@@ -107,9 +108,10 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		return { keys: available.map(displayedBinding).join("/"), label };
 	}
 
-	protected _focusedStageStoppable(): boolean {
+	protected _focusedStageStoppable(
+		stage: StageSnapshot | undefined = this.cachedLayout[this.focusedIndex]?.stage,
+	): boolean {
 		if (this.stageActions?.stop === undefined) return false;
-		const stage = this.cachedLayout[this.focusedIndex]?.stage;
 		if (stage === undefined || this._stageChatTarget(stage) === undefined) return false;
 		return stage.status === "running";
 	}
@@ -130,10 +132,14 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		);
 	}
 
-	protected _graphKeys(compact: boolean | GraphKeyTier = "full"): NavKey[] {
+	protected _graphKeys(
+		compact: boolean | GraphKeyTier = "full",
+		frameContext?: { readonly run: RunSnapshot | null; readonly focused: StageSnapshot | undefined },
+	): NavKey[] {
 		const mode: GraphKeyTier = typeof compact === "boolean" ? (compact ? "compact" : "full") : compact;
 		const keyOnly = mode === "keys";
-		const help: NavKey = this._actionKey(APP_ACTION.keysHelp, "?", keyOnly && !this._isQuitArmed() ? "" : "keys");
+		const quitArmed = this._isQuitArmed(frameContext?.run);
+		const help: NavKey = this._actionKey(APP_ACTION.keysHelp, "?", keyOnly && !quitArmed ? "" : "keys");
 		if (this.toolDetail !== null) {
 			const expandKey = toolExpandKey(this.piKeybindings);
 			const homeEndKeys = ["home", "end"].filter((key) => !this._toolDetailKeyShadowed(key)).join("/");
@@ -197,7 +203,7 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 				help,
 			];
 		}
-		const run = this._getCurrentRun();
+		const run = frameContext !== undefined ? frameContext.run : this._getCurrentRun();
 		if (run === null) {
 			return [
 				{ keys: "esc", label: keyOnly ? "" : "back" },
@@ -205,30 +211,32 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 				...(this.onHide && !this._keyShadowed("h") ? [{ keys: "h", label: keyOnly ? "" : "hide" }] : []),
 			];
 		}
-		const focused = this.cachedLayout[this.focusedIndex]?.stage;
+		const focused = frameContext !== undefined ? frameContext.focused : this.cachedLayout[this.focusedIndex]?.stage;
+		const focusedTarget = this._stageChatTarget(focused);
 		const moveKeys = this._movableArrows();
 		const filtered = this.statusFilter !== "all";
 		const openLabel =
 			focused?.nodeKind === "tool"
 				? "open tool detail"
-				: focused?.status === "failed" && this._focusedStageChatTarget() !== undefined
+				: focused?.status === "failed" && focusedTarget !== undefined
 					? "open failure detail"
-					: this._focusedStageChatTarget() !== undefined
+					: focusedTarget !== undefined
 						? "open stage chat"
 						: undefined;
-		const quitArmed = this._isQuitArmed(run);
 		const backLabel = mode === "minimal" || (keyOnly && quitArmed) ? "" : "back";
 		const back: NavKey = { keys: "esc", label: backLabel };
 		const openText = mode === "full" ? openLabel! : mode === "compact" ? "open" : "";
 		const open: NavKey[] = openLabel ? [{ keys: "\u21b5", label: openText }] : [];
 		const detailsText = mode === "full" || mode === "compact" ? "details" : "";
 		const details: NavKey[] =
-			this._focusedStageDetailsAvailable() && !this._keyShadowed("d") ? [{ keys: "d", label: detailsText }] : [];
+			this._focusedStageDetailsAvailable(focused) && !this._keyShadowed("d")
+				? [{ keys: "d", label: detailsText }]
+				: [];
 		const moveText = mode === "full" || mode === "compact" ? "move" : "";
 		const move: NavKey[] = moveKeys ? [{ keys: moveKeys, label: moveText }] : [];
 
 		const stopText = mode === "full" ? "stop stage" : keyOnly || (mode === "minimal" && quitArmed) ? "" : "stop";
-		const stop = this._focusedStageStoppable() ? [this._stopNavKey(stopText)] : [];
+		const stop = this._focusedStageStoppable(focused) ? [this._stopNavKey(stopText)] : [];
 		const pauseText = mode === "full" ? "pause run" : keyOnly || (mode === "minimal" && quitArmed) ? "" : "pause";
 		const resumeText = mode === "full" ? "resume run" : keyOnly || (mode === "minimal" && quitArmed) ? "" : "resume";
 		const pauseOrResume: NavKey[] =
@@ -310,11 +318,18 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		const hintsBudget = Math.max(0, width - leftEdgePad - pillW - rightEdgePad);
 		const keybindings = this._navKeybindings();
 
+		const frameContext =
+			this.toolDetail === null && this.stageDetail === null
+				? {
+						run: this._getCurrentRun(),
+						focused: this.cachedLayout[this.focusedIndex]?.stage,
+					}
+				: undefined;
 		const buildRendered = (mode: GraphKeyTier, sepText: string, sepStyled: string) => {
 			const taken = new Set<string>();
 			const plainParts: string[] = [];
 			const styledParts: string[] = [];
-			for (const entry of this._graphKeys(mode)) {
+			for (const entry of this._graphKeys(mode, frameContext)) {
 				const keys = navEntryKeys(keybindings, entry, taken);
 				if (!keys) continue;
 				plainParts.push(entry.label.length > 0 ? `${keys} ${entry.label}` : keys);
@@ -338,20 +353,21 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 			["minimal", " \u00b7 ", tightSep],
 			["keys", " \u00b7 ", tightSep],
 		];
-		let chosen = buildRendered("keys", " \u00b7 ", tightSep);
+		let chosen: { width: number; styled: string } | undefined;
 		for (const [mode, sepText, sepStyled] of candidates) {
 			const candidate = buildRendered(mode, sepText, sepStyled);
+			chosen = candidate;
 			if (candidate.width <= hintsBudget) {
-				chosen = candidate;
 				break;
 			}
 		}
+		const chosenHints = chosen ?? buildRendered("keys", " \u00b7 ", tightSep);
 		const notice = this._activeGraphNotice();
 		const statusText = this._externalStatusText();
 
 		const toastText = notice?.text ?? statusText;
 		const toastColor = notice ? hexToAnsi(notice.tone === "error" ? t.error : t.accent) : accent;
-		const hintsStyled = truncateToWidth(chosen.styled, hintsBudget, "");
+		const hintsStyled = truncateToWidth(chosenHints.styled, hintsBudget, "");
 		const hintsVisibleLen = visibleWidth(hintsStyled);
 		const fillerVisible = Math.max(0, hintsBudget - hintsVisibleLen);
 		const filler = " ".repeat(fillerVisible);
