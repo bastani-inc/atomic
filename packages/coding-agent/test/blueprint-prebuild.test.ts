@@ -1097,8 +1097,8 @@ describe("prebuild and seed edge cases (#4748)", () => {
 				assert.deepEqual(processesInside(clone), [], `interrupted after ${delayMs} ms`);
 				assert.deepEqual(processesInside(join(storeDir(), "worktrees")), [], `interrupted after ${delayMs} ms`);
 				assert.ok(movable(clone), `the checkout is in use after an interrupt at ${delayMs} ms`);
+				assert.equal(existsSync(slot([remote], 0)), false, `slot 0 remained after ${delayMs} ms interrupt`);
 			}
-			assert.equal(existsSync(slot([remote], 0)), false);
 		},
 		INTERRUPT_TEST_TIMEOUT_MS,
 	);

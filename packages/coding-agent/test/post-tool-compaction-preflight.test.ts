@@ -70,7 +70,7 @@ describe("post-tool compaction preflight", () => {
 		const harness = await createHarnessWithExtensions({
 			contextWindow: 1_000,
 			settings: {
-				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+				compaction: { enabled: true, reserveTokens: 200 },
 			},
 			responses: [
 				{
@@ -94,16 +94,12 @@ describe("post-tool compaction preflight", () => {
 		expect(harness.eventsOfType("compaction_end")).toEqual([
 			expect.objectContaining({ reason: "threshold", aborted: false, willRetry: false, midTurn: true }),
 		]);
-		// The kept tail is concatenated into the boundary string instead of being replayed
-		// as separate assistant/toolResult blocks.
-		expect(harness.faux.contexts[1]?.messages.map((message) => message.role)).toEqual(["system", "user"]);
+		// The next request is the system prompt and one boundary message. This agent has neither `read` nor `search`,
+		// so the only other message declares its own-session history tool.
+		expect(harness.faux.contexts[1]?.messages.map((message) => message.role)).toEqual(["system", "user", "system"]);
 		expect(harness.faux.contexts[1]?.messages.find((message) => message.role === "user")).toMatchObject({
 			role: "user",
 			content: [{ type: "text", text: expect.stringContaining("[User]: retained") }],
-		});
-		expect(harness.faux.contexts[1]?.messages.find((message) => message.role === "user")).toMatchObject({
-			role: "user",
-			content: [{ type: "text", text: expect.stringContaining("[Tool result]: ") }],
 		});
 		expect(continueSpy).not.toHaveBeenCalled();
 		expect(harness.session.getLastAssistantText()).toBe("completed after compaction");
@@ -115,7 +111,7 @@ describe("post-tool compaction preflight", () => {
 			const harness = await createHarnessWithExtensions({
 				contextWindow: 1_000,
 				settings: {
-					compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+					compaction: { enabled: true, reserveTokens: 200 },
 				},
 				responses: [
 					{
@@ -149,7 +145,7 @@ describe("post-tool compaction preflight", () => {
 		const harness = await createHarnessWithExtensions({
 			contextWindow: 1_000,
 			settings: {
-				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+				compaction: { enabled: true, reserveTokens: 200 },
 			},
 			responses: [
 				{
@@ -177,7 +173,7 @@ describe("post-tool compaction preflight", () => {
 		const harness = await createHarnessWithExtensions({
 			contextWindow: 1_000,
 			settings: {
-				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+				compaction: { enabled: true, reserveTokens: 200 },
 			},
 			responses: [
 				{
@@ -208,7 +204,7 @@ describe("post-tool compaction preflight", () => {
 		const harness = await createHarnessWithExtensions({
 			contextWindow: 1_000,
 			settings: {
-				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+				compaction: { enabled: true, reserveTokens: 200 },
 			},
 			responses: [
 				{
@@ -229,7 +225,7 @@ describe("post-tool compaction preflight", () => {
 		gate.release();
 		const [, manualResult] = await Promise.all([prompt, manual]);
 
-		expect(manualResult.compactedText).toBe("[User]: retained");
+		expect(manualResult.compactedText).toContain("<compacted-context>\n[User]: retained\n</compacted-context>");
 		expect(harness.eventsOfType("compaction_start").map((event) => event.reason)).toEqual(["threshold", "manual"]);
 		expect(harness.eventsOfType("compaction_end")).toEqual([
 			expect.objectContaining({ reason: "threshold", aborted: true, midTurn: true, manualTakeoverPending: true }),
@@ -248,7 +244,7 @@ describe("post-tool compaction preflight", () => {
 		const harness = await createHarnessWithExtensions({
 			contextWindow: 1_000,
 			settings: {
-				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+				compaction: { enabled: true, reserveTokens: 200 },
 			},
 			responses: [
 				{
@@ -299,7 +295,7 @@ describe("post-tool compaction preflight", () => {
 		const harness = await createHarnessWithExtensions({
 			contextWindow: 1_000,
 			settings: {
-				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+				compaction: { enabled: true, reserveTokens: 200 },
 			},
 			responses: [
 				{
@@ -326,10 +322,12 @@ describe("post-tool compaction preflight", () => {
 
 		expect(harness.faux.callCount).toBe(3);
 		expect(harness.eventsOfType("compaction_start")).toHaveLength(1);
-		// The turn after the boundary carries the new call and exactly one result for it.
+		// The turn after the boundary carries the new call and exactly one result for it, after the declaration of
+		// this restricted agent's own-session history tool.
 		expect(harness.faux.contexts[2]?.messages.map((message) => message.role)).toEqual([
 			"system",
 			"user",
+			"system",
 			"assistant",
 			"toolResult",
 		]);
@@ -354,7 +352,7 @@ describe("post-tool compaction preflight", () => {
 		const harness = await createHarnessWithExtensions({
 			contextWindow: 1_000,
 			settings: {
-				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+				compaction: { enabled: true, reserveTokens: 200 },
 			},
 			responses: [
 				{
@@ -411,7 +409,7 @@ describe("post-tool compaction preflight", () => {
 			const harness = await createHarnessWithExtensions({
 				contextWindow: 1_000,
 				settings: {
-					compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+					compaction: { enabled: true, reserveTokens: 200 },
 				},
 				responses: [
 					{
@@ -451,7 +449,7 @@ describe("post-tool compaction preflight", () => {
 		const harness = await createHarnessWithExtensions({
 			contextWindow: 1_000,
 			settings: {
-				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+				compaction: { enabled: true, reserveTokens: 200 },
 				retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 },
 			},
 			responses: [
@@ -490,7 +488,7 @@ describe("post-tool compaction preflight", () => {
 		const harness = await createHarnessWithExtensions({
 			contextWindow: 1_000,
 			settings: {
-				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+				compaction: { enabled: true, reserveTokens: 200 },
 			},
 			responses: [
 				{
@@ -603,7 +601,7 @@ describe("post-tool compaction preflight", () => {
 		const harness = await createHarnessWithExtensions({
 			contextWindow: 1_000,
 			settings: {
-				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+				compaction: { enabled: true, reserveTokens: 200 },
 			},
 			responses: [
 				{
@@ -698,15 +696,16 @@ describe("post-tool compaction preflight", () => {
 		expect(JSON.stringify(callerOutputContext?.messages)).toContain(preparedEarlierSentinel);
 	});
 
-	it("passes the compacted visible tool pair through caller preparation while excluding hidden additions", async () => {
+	it("passes the compacted context through caller preparation while excluding hidden additions", async () => {
 		const preparedVisibleSentinel = "[caller prepared visible message]";
 		const excludedTailSentinel = "[excluded prepared tail]";
 		let callerInputContext: import("@bastani/atomic-agent-core").AgentContext | undefined;
 		let compactionInput = "";
 		const harness = await createHarnessWithExtensions({
-			contextWindow: 1_000,
+			// Room for the boundary message and the caller's addition below the hard limit.
+			contextWindow: 2_000,
 			settings: {
-				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+				compaction: { enabled: true, reserveTokens: 1_200 },
 			},
 			responses: [
 				{
@@ -721,8 +720,8 @@ describe("post-tool compaction preflight", () => {
 				agent.prepareNextTurnWithContext = (context) => {
 					callerInputContext = context.context;
 					const compactedText = JSON.stringify(context.context.messages);
-					expect(compactedText).toContain("[Assistant tool calls]: large_result()");
-					expect(compactedText).toContain("[Tool result]: ");
+					expect(compactedText).toContain("[User]: retained");
+					expect(context.context.messages.some((message) => message.role === "toolResult")).toBe(false);
 					return {
 						context: {
 							...context.context,
@@ -766,8 +765,7 @@ describe("post-tool compaction preflight", () => {
 		expect(compactionInput).not.toContain(preparedVisibleSentinel);
 		expect(compactionInput).not.toContain(excludedTailSentinel);
 		const resumedText = JSON.stringify(harness.faux.contexts[1]?.messages);
-		expect(resumedText).toContain("[Assistant tool calls]: large_result()");
-		expect(resumedText).toContain("[Tool result]: ");
+		expect(resumedText).toContain("[User]: retained");
 		expect(resumedText).toContain(preparedVisibleSentinel);
 		expect(resumedText).not.toContain(excludedTailSentinel);
 		expect(JSON.stringify(callerInputContext?.messages)).not.toContain(preparedVisibleSentinel);
@@ -1183,7 +1181,7 @@ describe("post-tool compaction preflight", () => {
 		const harness = await createHarnessWithExtensions({
 			contextWindow: 1_000,
 			settings: {
-				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+				compaction: { enabled: true, reserveTokens: 200 },
 			},
 			responses: [
 				{
@@ -1225,7 +1223,7 @@ describe("post-tool compaction preflight", () => {
 		const harness = await createHarnessWithExtensions({
 			contextWindow: 1_000,
 			settings: {
-				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+				compaction: { enabled: true, reserveTokens: 200 },
 			},
 			responses: [
 				{
@@ -1259,7 +1257,7 @@ describe("post-tool compaction preflight", () => {
 		const harness = await createHarnessWithExtensions({
 			contextWindow: 1_000,
 			settings: {
-				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+				compaction: { enabled: true, reserveTokens: 200 },
 				retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 },
 			},
 			responses: [
@@ -1316,7 +1314,7 @@ describe("post-tool compaction preflight", () => {
 		const harness = await createHarnessWithExtensions({
 			contextWindow: 1_000,
 			settings: {
-				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+				compaction: { enabled: true, reserveTokens: 200 },
 			},
 			responses: [
 				{

@@ -290,7 +290,7 @@ export function formatTaskCompletion(
 }
 
 /** An admission whose notice is not yet saved in the session: the intent is acknowledged once `saved` settles. */
-export type AdmittedTaskCompletion = { readonly saved: Promise<void> } | undefined;
+export type AdmittedTaskCompletion = { readonly saved: Promise<void> } | { readonly failed: true } | undefined;
 
 /** Admits several intents at once, as one message where they share a session; one admission per envelope, in order. */
 export type AdmitTaskCompletions = (
@@ -383,12 +383,12 @@ export class TaskCompletionOutbox {
 
 	/** Deliver intents an earlier process left unacknowledged; returns how many were delivered. */
 	async flushRestored(): Promise<number> {
-		const before = this.restored.size;
+		const own = [...this.restored].filter((id) => this.entries.get(id)?.launchedBy === undefined);
 		this.restoredDelivery ??= this.deliver(true).finally(() => {
 			this.restoredDelivery = undefined;
 		});
 		await this.restoredDelivery;
-		return before - this.restored.size;
+		return own.filter((id) => !this.restored.has(id)).length;
 	}
 
 	/**
@@ -428,6 +428,7 @@ export class TaskCompletionOutbox {
 						await this.acknowledge(envelope, restored);
 						continue;
 					}
+					if ("failed" in pending) continue;
 					const { completionId } = envelope;
 					this.saving.add(completionId);
 					this.restored.delete(completionId);

@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { createJiti } from "jiti";
 import { getAgentDir, getExtensionTranspileCacheDir, isBunBinary, isBundledBuild } from "../../config.js";
-import { resolutionBaseUrl } from "../../utils/module-require.ts";
+import { resolutionBaseUrl } from "../../utils/module-require.js";
 import { canonicalizePath, pathsEqual, resolvePath } from "../../utils/paths.ts";
 import { moduleDirFromMetaUrl } from "../../utils/split-launcher.ts";
 import {

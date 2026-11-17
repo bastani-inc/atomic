@@ -246,7 +246,7 @@ describe.each(["local", "isolated"] as const)("a message an input hook rewrites 
 			[rewritten("typed during compaction")],
 			[
 				"status: Queued message for after compaction",
-				"error: Compaction failed: Nothing to compact (session too small)",
+				"error: Compaction failed: Nothing to compact: the context holds nothing new since the last boundary",
 			],
 		);
 	});

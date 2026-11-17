@@ -1079,12 +1079,11 @@ function settledTranscript(
 	manager: SessionManager,
 	commands: TranscriptCommands | undefined,
 	inherited: string | null,
-	unsavedAnswer: AssistantMessage | undefined,
+	unsaved: SessionEntry | undefined,
 ): TranscriptSource {
 	const sessionId = manager.getSessionId();
 	const sessionFile = manager.getSessionFile();
 	// #5210: a final answer its session could not save is still shown, after what it saved, unless the session holds it.
-	const unsaved = unsavedAnswer === undefined ? undefined : unsavedAnswerEntry(manager, unsavedAnswer);
 	const kept = withUnsavedAnswer(promptAndAnswer(manager, inherited), unsaved);
 	// A child's own session file is read through a store opened for the read, so a finished child keeps no store of its
 	// own in memory; a session in a shared store, as a forked or resumed child's, is read from that store.
@@ -1801,7 +1800,7 @@ export class SubagentControlRuntime {
 
 		let openedThroughId: string | null = null;
 		let releasedAttempt = false;
-		let unsavedAnswer: AssistantMessage | undefined;
+		let unsavedAnswer: SessionEntry | undefined;
 		// Open while this attempt's session lives: a status a disposed session writes late is not the task's.
 		let statusesOpen = true;
 		let stopHeldPromptAttention: (() => void) | undefined;
@@ -2218,7 +2217,7 @@ export class SubagentControlRuntime {
 			const tokenMeter = new AgentTokenMeter(session.messages);
 			taskHooks?.bindTranscript?.({
 				getSessionId: () => sessionManager.getSessionId(),
-				getEntries: () => sessionManager.getEntries(),
+				getEntries: () => withUnsavedAnswer(sessionManager.getEntries(), unsavedAnswer),
 				...(typeof sessionManager.loadFullHistory === "function"
 					? { loadFullHistory: () => sessionManager.loadFullHistory() }
 					: {}),
@@ -2498,18 +2497,19 @@ export class SubagentControlRuntime {
 			}
 			// #5210: what the session could not save it still holds in memory; the child's answer is among it.
 			const unsaved = termination === undefined ? session.getPersistenceFailure() : undefined;
-			unsavedAnswer = unsaved === undefined ? undefined : finalAnswerOf(unsaved.unsavedMessages);
-			if (unsavedAnswer !== undefined) unsavedAnswers.set(sessionManager.getSessionId(), unsavedAnswer);
+			const finalAnswer = unsaved === undefined ? undefined : finalAnswerOf(unsaved.unsavedMessages);
+			if (finalAnswer !== undefined) {
+				unsavedAnswer = unsavedAnswerEntry(sessionManager, finalAnswer);
+				unsavedAnswers.set(sessionManager.getSessionId(), finalAnswer);
+			}
 			const producedMessages = ownMessages();
-			const output = outputFor(
-				unsavedAnswer === undefined ? producedMessages : [...producedMessages, unsavedAnswer],
-			);
+			const output = outputFor(finalAnswer === undefined ? producedMessages : [...producedMessages, finalAnswer]);
 			// A child that settled without a stop failed when its last turn failed or it completed no successful turn of
 			// its own (#3987, #4188). A named model's failure says that no other model ran in its place.
 			const failure = termination === undefined ? failedChildCause(producedMessages) : undefined;
 			const noOutput =
 				unsaved !== undefined
-					? unsavedWorkCause(unsaved.error, unsavedAnswer !== undefined)
+					? unsavedWorkCause(unsaved.error, finalAnswer !== undefined)
 					: failure?.modelError !== undefined && admitted.spec.namedModel !== undefined
 						? namedModelFailureCause(
 								admitted.spec.namedModel,

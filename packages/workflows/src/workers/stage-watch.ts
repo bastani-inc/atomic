@@ -490,7 +490,7 @@ export class WorkerStageWatches {
 		try {
 			switch (request.kind) {
 				case "compact":
-					await session.compact();
+					await session.compact(request.instructions ? { query: request.instructions } : {});
 					return {};
 				case "abort-compaction":
 					session.abortCompaction();

@@ -58,7 +58,6 @@ import type { ParallelFailFastScope, StageSessionCheckpointOptions } from "./exe
 import { createWorkflowPendingStageDelivery } from "./pending-stage-delivery.js";
 import type { RunStageResidency } from "./run-residency.js";
 import { StageAbortListeners } from "./stage-abort-listeners.js";
-import { recordStageSessionCompaction } from "./stage-background-compaction.js";
 import type { StageControlRegistry } from "./stage-control-registry.js";
 import { persistStageEndWhenRunEndsIt, runEndedInFlightStages } from "./stage-end-by-run-end.js";
 import { type IdleStage, stageIdleReleaser } from "./stage-idle-release.js";
@@ -579,14 +578,12 @@ export function createWorkflowStageFactory(input: {
 			state.activeAskUserQuestionAnonymousCalls = 0;
 			input.activeStore.recordStageAwaitingInput(input.runId, stageId, false);
 			input.stageUiBroker.clearStagePrompt(input.runId, stageId);
-			const session = innerCtx.__agentSession();
 			try {
 				await innerCtx.__dispose();
 			} finally {
 				// The stage's mailbox lives as long as the stage.
 				wakeDispatcher.close(wakeKey);
 			}
-			recordStageSessionCompaction(input.activeStore, input.runId, stageId, session);
 		};
 
 		const captureStageSessionMeta = async (checkpointOptions?: StageSessionCheckpointOptions): Promise<void> => {

@@ -7,7 +7,6 @@ export type {
 	CacheWarmingMode,
 	CodemodeMode,
 	CodemodeSettings,
-	CompactionModelOverride,
 	CompactionSettings,
 	DefaultProjectTrust,
 	FullscreenExitOutput,

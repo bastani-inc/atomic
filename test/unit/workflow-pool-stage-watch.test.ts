@@ -1062,8 +1062,8 @@ test("session commands from the stage chat run on the watched stage's session, a
 	const after = [{ role: "compactionSummary", summary: "short", tokensBefore: 10, timestamp: 2 }];
 	const session = {
 		sessionManager: { getEntries: () => [] },
-		async compact() {
-			calls.push("compact");
+		async compact(options?: { query?: string }) {
+			calls.push(options?.query ? `compact:${options.query}` : "compact");
 			compacted = true;
 			stage.emit({
 				type: "compaction_end",
@@ -1133,6 +1133,9 @@ test("session commands from the stage chat run on the watched stage's session, a
 		after,
 		"the watcher's transcript follows the compacted session",
 	);
+	command(5, { kind: "compact", instructions: "keep the API notes" });
+	assert.equal((await result(5)).error, undefined);
+	assert.equal(calls.at(-1), "compact:keep the API notes", "the instructions reach the stage's session");
 });
 
 test("a session command for a stage whose session is still starting says so instead of failing silently (#3996)", async () => {

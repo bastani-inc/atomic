@@ -89,8 +89,8 @@ describe("a position in the stage session's store that a compaction leaves valid
 			const kept = await writer.appendMessage({ role: "user", content: "kept", timestamp: 9 });
 			await writer.appendCompaction("compacted", kept, 10, {
 				strategy: "verbatim-lines",
-				promptVersion: 6,
-				parameters: { compression_ratio: 0.5, preserve_recent: 1, query: "" },
+				promptVersion: 7,
+				parameters: { query: "" },
 				stats: {
 					linesBefore: 2,
 					linesDeleted: 1,
@@ -100,7 +100,7 @@ describe("a position in the stage session's store that a compaction leaves valid
 					tokensAfter: 5,
 					percentReduction: 50,
 				},
-				rung: "planned",
+				form: "cleared",
 			});
 			const manager = await SessionManager.open(store, writer.getSessionId(), undefined, { history: "tail" });
 			assert.equal(manager.hasFullHistory(), false);

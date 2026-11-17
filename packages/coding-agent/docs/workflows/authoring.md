@@ -254,7 +254,7 @@ Also document the context that stages pass to one another:
 
 See [Context Engineering](/workflows/reliable-design#context-engineering) for details.
 
-Protect a stage's role constraints, acceptance criteria, and prohibitions with `keepContext` so compaction cannot delete them out from under a long-running stage — see [Protect the contract from compaction](/workflows/reliable-design#protect-the-contract-from-compaction).
+Tag a stage's role constraints, acceptance criteria, and prohibitions with `keepContext` so a long-running stage recovers them verbatim first after compaction clears its context — see [Recover the contract after compaction](/workflows/reliable-design#recover-the-contract-after-compaction).
 
 ### Inputs
 

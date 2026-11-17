@@ -878,7 +878,7 @@ To send your own kind:
    ```typescript
    declare module "@bastani/atomic/workflows" {
      interface StageWakeKinds {
-       "compaction-ready": { readonly summaryEntryId: string };
+       "index-ready": { readonly indexPath: string };
      }
    }
    ```
@@ -888,15 +888,15 @@ To send your own kind:
    ```typescript
    import { deliverStageWake, registerStageWakeKind } from "@bastani/atomic/workflows";
 
-   const unregister = registerStageWakeKind("compaction-ready", async (wake, { runId, stageId, waiting, signal }) => {
-     await applySummary(runId, stageId, wake.summaryEntryId, signal);
+   const unregister = registerStageWakeKind("index-ready", async (wake, { runId, stageId, waiting, signal }) => {
+     await loadIndex(runId, stageId, wake.indexPath, signal);
    });
    ```
 
 3. Deliver messages by run and stage id:
 
    ```typescript
-   const { status } = deliverStageWake(runId, stageId, { kind: "compaction-ready", summaryEntryId });
+   const { status } = deliverStageWake(runId, stageId, { kind: "index-ready", indexPath });
    ```
 
 A stage handles each message in this order:
@@ -2283,7 +2283,7 @@ The public authoring declaration intentionally excludes runtime-only executor fi
 
 #### Typed failures of child workflows
 
-When a child workflow fails on a typed error, in this process or on a pooled worker of this machine or another one, the parent's error has the same class in its `cause` chain with its `code`, `hint`, `retryable`, fields and its own causes, so `instanceof`, guards such as `isWorkspaceBindingError(error)`, and finders such as `findStageWaitError(error)` match it. The failed child's `RunResult` and the failed stage's snapshot carry it as `failureDetail`; `error` keeps the text. `failureDetail` is a `SerializedError` (from `@bastani/atomic/workflows`): `name`, `code`, `message`, `hint`, `retryable`, `family`, `fields`, `cause`, `cleanupCause`, and, for members of a family's own JSON form that have no place of their own, `extra` (a workspace error's `reason`, a background compaction error's `phase`). It holds the first error of a family in the table below in the failure's cause chain, outermost first, with that error's own causes. `rehydrateError(failureDetail)` rebuilds it as its class; `serializeError(error)` makes one.
+When a child workflow fails on a typed error, in this process or on a pooled worker of this machine or another one, the parent's error has the same class in its `cause` chain with its `code`, `hint`, `retryable`, fields and its own causes, so `instanceof`, guards such as `isWorkspaceBindingError(error)`, and finders such as `findStageWaitError(error)` match it. The failed child's `RunResult` and the failed stage's snapshot carry it as `failureDetail`; `error` keeps the text. `failureDetail` is a `SerializedError` (from `@bastani/atomic/workflows`): `name`, `code`, `message`, `hint`, `retryable`, `family`, `fields`, `cause`, `cleanupCause`, and, for members of a family's own JSON form that have no place of their own, `extra` (such as a workspace error's `reason`). It holds the first error of a family in the table below in the failure's cause chain, outermost first, with that error's own causes. `rehydrateError(failureDetail)` rebuilds it as its class; `serializeError(error)` makes one.
 
 | `family` | Errors | Guard |
 | --- | --- | --- |
@@ -2298,7 +2298,6 @@ When a child workflow fails on a typed error, in this process or on a pooled wor
 | `decision` | `DecisionError` and its subclasses | `isDecisionError` |
 | `task-evicted` | `TaskEvictedError` | `isTaskEvictedError` |
 | `agent-rehydrate` | `AgentRehydrateError`, `AgentReleaseConfigError` | `isAgentRehydrateError` |
-| `background-compaction` | `BackgroundCompactionError` and its subclasses | `isBackgroundCompactionError` |
 | `github-copilot` | `GitHubCopilotError` and its subclasses | `isGitHubCopilotError` |
 | `debug` | `DebugError`, `DebugLogUnwritableError`, `DebugConfigError` | `isDebugError` |
 | `edit-tool` | `EditToolError` and its subclasses | `isEditToolError` |

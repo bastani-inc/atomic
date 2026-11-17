@@ -922,4 +922,20 @@ export type WaitOutcome =
   | { kind: 'settled'; taskId: string; result: TaskResult }
   | { kind: 'yielded'; taskId: string; waitId: string; reason: YieldReason }
 
+export interface WindowsAccessRule {
+  allow: boolean
+  sid: string
+}
+
+export declare function windowsDirectorySecurity(path: string): WindowsDirectorySecurity | null
+
+export interface WindowsDirectorySecurity {
+  currentSid: string
+  ownerSid: string
+  dacl: string
+  accessRules: Array<WindowsAccessRule>
+}
+
+export declare function windowsDirectorySecurityAsync(path: string): Promise<WindowsDirectorySecurity | undefined | null>
+
 export type YieldReason = 'explicit' | 'default-background' | 'elapsed' | 'intercom-coordination' | 'input-needed'

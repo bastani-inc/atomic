@@ -14,7 +14,7 @@ Legacy extensions can import the running host API from either `@mariozechner/pi-
 
 **Key capabilities:**
 - **Custom tools** - Register tools the LLM can call via `pi.registerTool()`
-- **Event interception** - Block or modify tool calls, inject context, observe/cancel deletion-only compaction, and customize branch summaries
+- **Event interception** - Block or modify tool calls, inject context, observe, cancel or replace compaction, and customize branch summaries
 - **User interaction** - Prompt users via `ctx.ui` (select, confirm, input, notify)
 - **Custom UI components** - Full TUI components with keyboard input via `ctx.ui.custom()` for complex interactions
 - **Custom commands** - Register commands like `/mycommand` via `pi.registerCommand()`
@@ -26,7 +26,7 @@ Legacy extensions can import the running host API from either `@mariozechner/pi-
 - Permission gates (confirm before `rm -rf`, `sudo`, etc.)
 - Git checkpointing (stash at each turn, restore on branch)
 - Path protection (block writes to `.env`, `node_modules/`)
-- Compaction policies (cancel compaction or provide exact deletion targets)
+- Compaction policies (cancel compaction or supply your own replacement text)
 - Conversation summaries (see `summarize.ts` example)
 - Interactive tools (questions, wizards, custom dialogs)
 - Stateful tools (todo lists, connection pools)

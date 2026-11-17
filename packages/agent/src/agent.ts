@@ -401,22 +401,36 @@ export class Agent {
 		}
 
 		if (lastMessage.role === "assistant") {
-			const queuedSteering = this.steeringQueue.drain();
-			if (queuedSteering.length > 0) {
-				await this.runPromptMessages(queuedSteering, { skipInitialSteeringPoll: true });
-				return;
-			}
-
-			const queuedFollowUps = this.followUpQueue.drain();
-			if (queuedFollowUps.length > 0) {
-				await this.runPromptMessages(queuedFollowUps);
-				return;
-			}
-
+			if (await this.promptQueuedMessages()) return;
 			throw new Error("Cannot continue from message role: assistant");
 		}
 
 		await this.runContinuation();
+	}
+
+	/**
+	 * Start a turn from the queued messages, as `continue()` does after an assistant reply: queued steering first,
+	 * otherwise follow-ups, whatever the transcript ends with. Resolves `false` without starting a run when nothing is
+	 * queued.
+	 */
+	async promptQueuedMessages(): Promise<boolean> {
+		if (this.activeRun) {
+			throw new Error("Agent is already processing. Wait for completion before continuing.");
+		}
+
+		const queuedSteering = this.steeringQueue.drain();
+		if (queuedSteering.length > 0) {
+			await this.runPromptMessages(queuedSteering, { skipInitialSteeringPoll: true });
+			return true;
+		}
+
+		const queuedFollowUps = this.followUpQueue.drain();
+		if (queuedFollowUps.length > 0) {
+			await this.runPromptMessages(queuedFollowUps);
+			return true;
+		}
+
+		return false;
 	}
 
 	private normalizePromptInput(

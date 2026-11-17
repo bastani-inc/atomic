@@ -10,14 +10,6 @@ import type {
 	PromptOptions,
 	SessionRecoveryReport,
 } from "../../core/agent-session-types.js";
-import {
-	type BackgroundCompactionState,
-	DEFAULT_BACKGROUND_COMPACTION_THRESHOLD_PERCENT,
-	IDLE_BACKGROUND_COMPACTION_STATE,
-	rehydrateBackgroundCompactionState,
-	resolveBackgroundCompactionEnabled,
-	resolveBackgroundCompactionThresholdPercent,
-} from "../../core/compaction/background-compaction.ts";
 import { onDebugSettingChange } from "../../core/debug-setting.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { ExtensionError } from "../../core/extensions/index.js";
@@ -74,8 +66,6 @@ export interface EngineResourceIssues {
 }
 type ResourceExtensionsListener = (extensions: readonly RpcResourceExtension[]) => void;
 type QueueSnapshot = { steering: string[]; followUp: string[] };
-type CompactionReadyListener = (state: BackgroundCompactionState) => void;
-type BackgroundCompactionWaiter = { session: AgentSession; resolve: (state: BackgroundCompactionState) => void };
 
 /** An extension error of the engine's session, as its RPC binding reports it on the event stream. */
 function isEngineExtensionError(record: unknown): record is { type: "extension_error" } & ExtensionError {
@@ -158,13 +148,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly queuePause: RemoteQueuePause;
 	private readonly sessionStats: EngineSessionStats;
 	private autoCompactionEnabled = true;
-	private backgroundCompaction: BackgroundCompactionState = IDLE_BACKGROUND_COMPACTION_STATE;
-	private backgroundCompactionRevision = 0;
-	private backgroundCompactionEnabled = true;
-	private backgroundCompactionThresholdPercent = DEFAULT_BACKGROUND_COMPACTION_THRESHOLD_PERCENT;
-	private readonly compactionReadyListeners = new WeakMap<AgentSession, Set<CompactionReadyListener>>();
-	private backgroundCompactionWaiters: BackgroundCompactionWaiter[] = [];
-	private readonly reportedReadyCompactions = new WeakMap<AgentSession, string>();
 	private autoRetryEnabled = true;
 	private remoteSessionName: string | undefined;
 	private remoteSessionId: string | undefined;
@@ -272,7 +255,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			if (event.generation === this.client.getGeneration()) {
 				this.panelCounts = { total: 0, needsInput: 0 };
 				this.updateResources({});
-				this.mirrorBackgroundCompaction(IDLE_BACKGROUND_COMPACTION_STATE);
 			}
 			// A first child that never became ready failed startup; initialStart reports it instead of a restart.
 			if (!this.initialStartSettled) {
@@ -360,7 +342,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		try {
 			this.sessionStats.reset();
 			this.pendingEnabledModelsSync = undefined;
-			const compactionRevision = this.backgroundCompactionRevision;
 			const modelEpoch = this.modelEpoch;
 			const thinkingEpoch = this.thinkingEpoch;
 			const scope = this.remoteModelCatalog.getScopeSnapshot();
@@ -404,11 +385,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			session.agent.steeringMode = state.steeringMode;
 			session.agent.followUpMode = state.followUpMode;
 			this.autoCompactionEnabled = state.autoCompactionEnabled;
-			this.backgroundCompactionEnabled = state.backgroundCompactionEnabled;
-			this.backgroundCompactionThresholdPercent = state.backgroundCompactionThresholdPercent;
-			if (compactionRevision === this.backgroundCompactionRevision) {
-				this.mirrorBackgroundCompaction(rehydrateBackgroundCompactionState(state.compaction));
-			}
 			this.resourceOverlaps = state.resourceOverlaps ?? [];
 			this.updateResources(state);
 			this.remoteSessionName = state.sessionName;
@@ -808,7 +784,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		if (this.disposePromise) return this.disposePromise;
 		this.disposed = true;
 		this.stopSharingDebugSetting();
-		this.settleBackgroundCompactionWaiters();
 		this.disposePromise = (async () => {
 			// A quit the user asked for must reach the engine before it is stopped: the stop
 			// is a SIGTERM, which the engine cannot tell from this process being signalled.
@@ -846,17 +821,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			sessionName: { configurable: true, get: () => this.remoteSessionName },
 			sessionFile: { configurable: true, get: () => this.remoteSessionFile },
 			autoCompactionEnabled: { configurable: true, get: () => this.autoCompactionEnabled },
-			compaction: { configurable: true, get: () => this.backgroundCompaction },
-			awaitBackgroundCompaction: { configurable: true, value: () => this.awaitEngineBackgroundCompaction(session) },
-			onCompactionReady: {
-				configurable: true,
-				value: (listener: CompactionReadyListener) => this.onEngineCompactionReady(session, listener),
-			},
-			backgroundCompactionEnabled: { configurable: true, get: () => this.backgroundCompactionEnabled },
-			backgroundCompactionThresholdPercent: {
-				configurable: true,
-				get: () => this.backgroundCompactionThresholdPercent,
-			},
 			autoRetryEnabled: { configurable: true, get: () => this.autoRetryEnabled },
 			queuedMessagesPaused: { configurable: true, get: () => this.queuePause.isPaused },
 			subscribe: {
@@ -912,7 +876,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					);
 				},
 			},
-			compact: { configurable: true, value: () => this.client.compact() },
+			compact: {
+				configurable: true,
+				value: (options?: { query?: string }) => this.client.compact(options?.query),
+			},
 			abortCompaction: {
 				configurable: true,
 				value: () =>
@@ -1131,23 +1098,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					this.dispatchBestEffort("set auto compaction", this.client.setAutoCompaction(enabled));
 				},
 			},
-			setBackgroundCompactionEnabled: {
-				configurable: true,
-				value: (enabled: boolean) => {
-					this.backgroundCompactionEnabled = resolveBackgroundCompactionEnabled(enabled, "sdk");
-					this.dispatchBestEffort("set background compaction", this.client.setBackgroundCompaction(enabled));
-				},
-			},
-			setBackgroundCompactionThresholdPercent: {
-				configurable: true,
-				value: (percent: number) => {
-					this.backgroundCompactionThresholdPercent = resolveBackgroundCompactionThresholdPercent(percent, "sdk");
-					this.dispatchBestEffort(
-						"set background compaction threshold",
-						this.client.setBackgroundCompactionThreshold(percent),
-					);
-				},
-			},
 			setAutoRetryEnabled: {
 				configurable: true,
 				value: (enabled: boolean) => {
@@ -1202,60 +1152,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				message: `Interactive engine ${label} failed: ${error.message}`,
 			});
 		});
-	}
-
-	private awaitEngineBackgroundCompaction(session: AgentSession): Promise<BackgroundCompactionState> {
-		const settled = this.settledBackgroundCompaction(session);
-		if (settled) return Promise.resolve(settled);
-		return new Promise((resolve) => this.backgroundCompactionWaiters.push({ session, resolve }));
-	}
-
-	private settledBackgroundCompaction(session: AgentSession): BackgroundCompactionState | undefined {
-		if (this.disposed || session !== super.session) return IDLE_BACKGROUND_COMPACTION_STATE;
-		return this.backgroundCompaction.state === "running" ? undefined : this.backgroundCompaction;
-	}
-
-	private settleBackgroundCompactionWaiters(): void {
-		const waiting = this.backgroundCompactionWaiters;
-		this.backgroundCompactionWaiters = [];
-		for (const waiter of waiting) {
-			const settled = this.settledBackgroundCompaction(waiter.session);
-			if (settled) waiter.resolve(settled);
-			else this.backgroundCompactionWaiters.push(waiter);
-		}
-	}
-
-	private onEngineCompactionReady(session: AgentSession, listener: CompactionReadyListener): () => void {
-		const listeners = this.compactionReadyListeners.get(session) ?? new Set<CompactionReadyListener>();
-		this.compactionReadyListeners.set(session, listeners);
-		listeners.add(listener);
-		return () => {
-			listeners.delete(listener);
-		};
-	}
-
-	private mirrorBackgroundCompaction(state: BackgroundCompactionState): void {
-		if (this.disposed) return;
-		this.backgroundCompactionRevision += 1;
-		this.backgroundCompaction = state;
-		this.settleBackgroundCompactionWaiters();
-		if (state.state !== "ready") return;
-		const session = super.session;
-		const result = `${state.upToEntryId}\u0000${state.startedAt}`;
-		if (result === this.reportedReadyCompactions.get(session)) return;
-		this.reportedReadyCompactions.set(session, result);
-		for (const listener of [...(this.compactionReadyListeners.get(session) ?? [])]) {
-			try {
-				listener(state);
-			} catch (error) {
-				session.extensionRunner.emitError({
-					extensionPath: "<background_compaction>",
-					event: "background_compaction",
-					error: error instanceof Error ? error.message : String(error),
-					stack: error instanceof Error ? error.stack : undefined,
-				});
-			}
-		}
 	}
 
 	/**
@@ -1471,9 +1367,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				break;
 			case "auto_retry_end":
 				this.retrying = false;
-				break;
-			case "background_compaction":
-				this.mirrorBackgroundCompaction(rehydrateBackgroundCompactionState(event.compaction));
 				break;
 			case "message_end":
 			// An appended entry can carry usage of its own, as a session summary or a cache warm does (#4726).
