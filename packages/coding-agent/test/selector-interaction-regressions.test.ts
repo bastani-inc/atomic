@@ -119,6 +119,19 @@ describe("selector interaction and rendering regressions (#5237)", () => {
 		assert.deepEqual(cancelled, [3]);
 	});
 
+	test.each([true, false])("numbered picks respect closeOnSelect=%s (#5224)", (closeOnSelect) => {
+		const selected: string[] = [];
+		const picker = new Selector<string>({
+			items: makeItems(["Yes", "No"]),
+			numbered: true,
+			closeOnSelect,
+			style: PLAIN_SELECTOR_STYLE,
+			onSelect: (item) => selected.push(item.id),
+		});
+		for (const key of ["1", "1", "2"]) picker.handleInput(key);
+		assert.deepEqual(selected, closeOnSelect ? ["Yes"] : ["Yes", "Yes", "No"]);
+	});
+
 	test("keeps role-based confirm and cancel hints on narrow widths when extra keys use clear or custom labels (#5237)", () => {
 		const noop = () => {};
 		const scopedLike = new Selector<string>({

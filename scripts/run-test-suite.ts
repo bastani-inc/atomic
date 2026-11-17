@@ -3,6 +3,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { cpus, freemem, loadavg, platform, release, totalmem } from "node:os";
 import { basename, resolve } from "node:path";
+import { formatLostWorkerSummary, type LostWorkerRecord } from "../test/global-setup-lost-workers.js";
 import { recordedDurations, UNKNOWN_FILE_MS } from "../test/helpers/duration-sequencer.js";
 import { spawnProcess } from "../test/helpers/runtime.js";
 import {
@@ -94,12 +95,13 @@ interface RunResult {
  * step with no record of which test stalled. Teeing keeps a timed-out run
  * self-describing in the step log.
  */
-async function runOnce(command: string[], reportPath: string): Promise<RunResult> {
+async function runOnce(command: string[], reportPath: string, lostWorkersPath: string): Promise<RunResult> {
 	rmSync(reportPath, { force: true });
+	rmSync(lostWorkersPath, { force: true });
 	const child = spawnProcess(withJsonReporter(command, reportPath), {
 		stdout: "pipe",
 		stderr: "pipe",
-		env: process.env,
+		env: { ...process.env, ATOMIC_TEST_LOST_WORKERS_FILE: lostWorkersPath },
 	});
 	const [stdout, stderr, code] = await Promise.all([
 		pump(child.stdout, process.stdout),
@@ -245,20 +247,39 @@ function reportDurationDrift(report: string | undefined, options: Options): void
 	);
 }
 
+function reportLostWorkers(lostWorkersPath: string, options: Options): void {
+	if (!existsSync(lostWorkersPath)) return;
+	const summaries: string[] = [];
+	for (const line of readFileSync(lostWorkersPath, "utf8").split(/\r?\n/u)) {
+		if (!line.trim()) continue;
+		const record = JSON.parse(line) as LostWorkerRecord;
+		const summary = formatLostWorkerSummary(record);
+		summaries.push(summary);
+		console.log(`::error title=Lost test worker: ${options.label}::${summary}`);
+	}
+	if (summaries.length > 0) {
+		appendSummary(
+			[`### Lost test workers: ${options.label}`, "", ...summaries.map((summary) => `- ${summary}`)].join("\n"),
+		);
+	}
+}
+
 const options = parseArgs();
 const name = safeName(options.label);
 const logPath = resolve(options.diagnosticsDir, `${name}.log`);
 const reportPath = resolve(options.diagnosticsDir, `${name}.json`);
+const lostWorkersPath = resolve(options.diagnosticsDir, `${name}-lost-workers.jsonl`);
 rmSync(logPath, { force: true });
 mkdirSync(options.diagnosticsDir, { recursive: true });
 
-const result = await runOnce(options.command, reportPath);
+const result = await runOnce(options.command, reportPath, lostWorkersPath);
 if (result.code !== 0) {
 	writeFileSync(logPath, result.output);
 	const debug = debugSummary(options.label, options.command);
 	writeFileSync(resolve(options.diagnosticsDir, `${name}-debug.txt`), `${debug}\n`);
 	console.error(`\n${debug}\n`);
 }
+reportLostWorkers(lostWorkersPath, options);
 const guard = await reportDurations(result, options, name);
 reportDurationDrift(readableReport(result.report), options);
 process.exit(result.code !== 0 ? result.code : guard);

@@ -25,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Workflow resume cannot select a run while deleting it, and a stale refresh cannot restore a successfully deleted run to the picker ([#5256](https://github.com/bastani-inc/atomic/pull/5256)).
 - Workflow rows in the agent panel now count expanded nested, dynamic and fan-out stages, omit empty progress bars on tools-only runs, and show the choices for a pending single-select question. Run and stage names display terminal controls as inert text, and unchanged stage progress is reused between refreshes ([#5239](https://github.com/bastani-inc/atomic/pull/5239))
 - A reply sent from a workflow's `/tasks` card is refused if the pending question changed after typing began. SDK replies must include the captured prompt identity, so identical question text cannot direct an old reply to a replacement question ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- Design workflows no longer pause other tools while Windows verifies temporary artifact storage ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
 
 ### Removed
 

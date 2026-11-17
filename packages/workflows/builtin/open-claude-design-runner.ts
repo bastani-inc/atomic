@@ -73,7 +73,7 @@ export async function runOpenClaudeDesignWorkflow(
   const discoverReferences = inputs.discover_references !== false;
 
   const workflowCwd = designContext.cwd ?? process.cwd();
-  const { runId, artifactDir, previewPath, specPath } = prepareArtifactDir(
+  const { runId, artifactDir, previewPath, specPath } = await prepareArtifactDir(
     workflowCwd,
   );
   const previewFileUrl = `file://${previewPath}`;
