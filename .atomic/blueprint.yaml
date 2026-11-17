@@ -32,6 +32,11 @@ knowledge:
       suites load the built packages. Filter coding-agent tests with
       `npm run test --workspace=@bastani/atomic -- test/history-bounded.test.ts` (the package script
       already passes `--run`; run from its workspace, not the root with only `--config`).
+      Validate named-worktree permissions with a private default umask:
+      `(umask 0022; npx --no-install vitest --run --project unit test/unit/subagents-named-worktree-locks.test.ts)`.
+      Localized named-worktree recovery fixtures write the translated marker while Git is paused, so they do not
+      require installed locales or a Git build with gettext support. Finish `npm run check` before running
+      suites that import built packages: typechecking rebuilds dist in place and cleans provider data.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run

@@ -1064,7 +1064,41 @@ async function searchRunLinesBounded(
 
 export function createHistoryRouter(sources: HistorySources): InternalResourceRouter {
 	const limits: HistoryBudget = { ...DEFAULT_HISTORY_BUDGET, ...sources.budget };
-	const newBudget = (signal: AbortSignal | undefined) => new HistoryCallBudget(limits, signal);
+	const newBudget = (signal: AbortSignal | undefined, noteBytes?: number) =>
+		new HistoryCallBudget(limits, signal, noteBytes);
+	const noteBytes = (
+		url: string,
+		target: HistoryTarget,
+		ranges: readonly { readonly start: number; readonly end?: number }[] | undefined,
+		searchLabels = 0,
+		multiline = false,
+	): number => {
+		const widest = Number.MAX_SAFE_INTEGER;
+		const selected = ranges?.map((range) => ({ start: range.start, end: range.end ?? widest })) ?? [
+			{ start: widest, end: widest },
+		];
+		const cursor = `${widest}.${widest}.${widest}.${widest}`;
+		const sessionId = target.domain === "sessions" ? target.id : undefined;
+		const continuation =
+			sessionId === undefined
+				? `${urlWithCursor(url, cursor)}:${rangeText(selected)}`
+				: sessionUrl(sessionId, target, cursor, selected);
+		const label = sessionId === undefined ? urlWithCursor(url, undefined) : sessionUrl(sessionId, target);
+		return (
+			lineBytes(
+				`[read up to entry ${widest} of ${widest}; the byte budget ran out; continue with ${continuation}]`,
+			) +
+			(searchLabels > 0 ? lineBytes(label) : 0) +
+			(searchLabels > 1 ? lineBytes(sessionUrl(target.session ?? "", target)) : 0) +
+			(multiline ? lineBytes(`${label}:0: [${MULTILINE_WINDOW_NOTE}]`) : 0)
+		);
+	};
+	const bounded = (text: string): string => {
+		if (Buffer.byteLength(text, "utf8") <= limits.bytes) return text;
+		const diagnostic =
+			"[History response cannot fit its byte budget; retry the same URL with a larger byte budget or a shorter URL.]";
+		return Buffer.byteLength(diagnostic, "utf8") <= limits.bytes ? diagnostic : limits.bytes >= 1 ? "!" : "";
+	};
 	const parkedRunStreams = new Map<string, ParkedRunStream>();
 
 	const projectScope = (target: HistoryTarget): { cwd?: string } =>
@@ -1822,19 +1856,19 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		if (!rawUrl.startsWith("history://")) return undefined;
 		const { url, selection } = normalizeInlineReadSelection(rawUrl, rawSelection);
 		const target = parseTarget(url);
-		if (target.domain === undefined) return HISTORY_HELP;
-		const budget = newBudget(selection.signal);
+		if (target.domain === undefined) return bounded(HISTORY_HELP);
+		const budget = newBudget(selection.signal, noteBytes(url, target, selection.ranges));
 		try {
 			if (target.domain === "sessions" && target.id !== undefined)
-				return await readSession(target, selection, budget);
+				return bounded(await readSession(target, selection, budget));
 			if (target.domain === "sessions") {
 				const listed = await listSessions(target, budget);
-				if (listed.preselected) return listed.text;
+				if (listed.preselected) return bounded(listed.text);
 				const lineCursor =
 					target.cursor && target.cursor.first > 0
 						? { line: target.cursor.first, char: target.cursor.second }
 						: undefined;
-				return await selectLines(url, listed.text.split("\n"), selection, lineCursor, budget);
+				return bounded(await selectLines(url, listed.text.split("\n"), selection, lineCursor, budget));
 			}
 			const lines =
 				target.id === undefined
@@ -1844,10 +1878,10 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				target.cursor && target.cursor.first > 0
 					? { line: target.cursor.first, char: target.cursor.second }
 					: undefined;
-			return await selectLines(url, lines, selection, lineCursor, budget);
+			return bounded(await selectLines(url, lines, selection, lineCursor, budget));
 		} catch (error) {
 			if (isHistoryDeadlineError(error)) {
-				return `[the time budget ran out waiting for the store; continue with ${rawUrl}]`;
+				return bounded(`[the time budget ran out waiting for the store; continue with ${rawUrl}]`);
 			}
 			throw error;
 		}
@@ -1860,18 +1894,21 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			if (!rawUrl.startsWith("history://")) return undefined;
 			const { url, request } = normalizeInlineSearchRequest(rawUrl, rawRequest);
 			const target = parseTarget(url);
-			const budget = newBudget(request.signal);
 			const multiline = isMultilineSearchPattern(request.pattern, request.ignoreCase, request.literal);
+			const budget = newBudget(
+				request.signal,
+				noteBytes(url, target, request.ranges, target.id === undefined ? 2 : 1, multiline),
+			);
 			selectRegexEngine(normalizeSearchPattern(request.pattern, request.ignoreCase), request.literal, multiline);
 			const prefilter = multiline ? undefined : indexLiterals(request.pattern, request.ignoreCase, request.literal);
 			try {
 				if (target.domain === "sessions")
-					return (await searchSessions(target, request, prefilter, budget)).join("\n");
+					return bounded((await searchSessions(target, request, prefilter, budget)).join("\n"));
 				if (target.domain === "workflows")
-					return (await searchWorkflows(target, request, prefilter, budget)).join("\n");
+					return bounded((await searchWorkflows(target, request, prefilter, budget)).join("\n"));
 			} catch (error) {
 				if (isHistoryDeadlineError(error)) {
-					return `${url}:0: [the time budget ran out waiting for the store; continue with ${rawUrl}]`;
+					return bounded(`${url}:0: [the time budget ran out waiting for the store; continue with ${rawUrl}]`);
 				}
 				throw error;
 			}
@@ -1888,10 +1925,11 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					: [
 							`history://${domain}:0: [${label} not searched: ${settled.reason instanceof Error ? settled.reason.message : String(settled.reason)}]`,
 						];
-			return [
-				...results("sessions", "sessions", sessions),
-				...results("workflows", "workflow runs", workflows),
-			].join("\n");
+			return bounded(
+				[...results("sessions", "sessions", sessions), ...results("workflows", "workflow runs", workflows)].join(
+					"\n",
+				),
+			);
 		},
 	};
 }

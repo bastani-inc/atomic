@@ -86,11 +86,14 @@ export class HistoryCallBudget {
 	private rowsLeft: number;
 	private sliceStart = performance.now();
 
-	constructor(budget: HistoryBudget, signal: AbortSignal | undefined) {
+	constructor(budget: HistoryBudget, signal: AbortSignal | undefined, noteBytes = NOTE_RESERVE_BYTES) {
 		this.signal = signal;
 		this.deadline = performance.now() + budget.timeMs;
 		this.callSignal = this.withCaller(AbortSignal.timeout(Math.max(STORE_WAIT_MIN_MS, budget.timeMs)));
-		const reserve = Math.min(NOTE_RESERVE_BYTES, Math.floor(budget.bytes * 0.25));
+		const reserve = Math.max(
+			Math.min(NOTE_RESERVE_BYTES, Math.floor(budget.bytes * 0.25)) + Math.max(0, noteBytes - NOTE_RESERVE_BYTES),
+			budget.bytes < NOTE_RESERVE_BYTES ? Math.min(noteBytes, Math.floor(budget.bytes / 2)) : 0,
+		);
 		this.bytesLeft = Math.max(1, budget.bytes - reserve);
 		this.rowsLeft = budget.rows;
 		signal?.throwIfAborted();
