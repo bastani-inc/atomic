@@ -156,18 +156,14 @@ for (const backend of storageBackends) {
 				const data = Uint8Array.from(randomBytes(2 * SNAPSHOT_BLOB_CHUNK_BYTES + 1));
 				const kept = { hash: "kept-chunked", data };
 				await store.putBlobs([kept]);
-				await database.run(
-					`INSERT INTO ${t.blobs} (hash, bytes, data, created_at, chunks) VALUES ('partial', ?, ?, 1, 0)`,
-					data.length,
-					data,
-				);
-				await database.run(
-					`INSERT INTO ${t.blobChunks} (hash, idx, data) VALUES ('partial', 0, ?)`,
-					data.subarray(0, SNAPSHOT_BLOB_CHUNK_BYTES),
-				);
-
 				const upgraded = await SqlSnapshotBlobStore.open(await scope.connect(), scope.prefix);
 				const trigger = d.schemaObjects([oldTrigger]);
+				if (d.versionedMigrations) {
+					assert.equal(await database.get(trigger.sql, ...trigger.params), undefined);
+				} else {
+					assert.ok(await database.get(trigger.sql, ...trigger.params));
+				}
+				assert.deepEqual(await upgraded.collectGarbage({ graceSeconds: 3600 }), []);
 				assert.equal(await database.get(trigger.sql, ...trigger.params), undefined);
 				if (d.name === "postgres")
 					assert.equal(
@@ -178,6 +174,15 @@ for (const backend of storageBackends) {
 						undefined,
 						"the retired conditional trigger function is removed too",
 					);
+				await database.run(
+					`INSERT INTO ${t.blobs} (hash, bytes, data, created_at, chunks) VALUES ('partial', ?, ?, 1, 0)`,
+					data.length,
+					data,
+				);
+				await database.run(
+					`INSERT INTO ${t.blobChunks} (hash, idx, data) VALUES ('partial', 0, ?)`,
+					data.subarray(0, SNAPSHOT_BLOB_CHUNK_BYTES),
+				);
 				await database.run(`DELETE FROM ${t.blobs} WHERE hash = 'partial'`);
 				assert.equal(
 					await database.get(`SELECT hash FROM ${t.blobChunks} WHERE hash = 'partial' LIMIT 1`),

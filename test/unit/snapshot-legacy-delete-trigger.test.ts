@@ -16,6 +16,7 @@ import {
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import { collectSnapshotGarbage } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
+import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 
 interface Release0987BlobStore {
 	collectGarbage(options: { readonly graceSeconds: number }): Promise<readonly string[]>;
@@ -99,13 +100,19 @@ async function installLegacyConditionalTrigger(database: SqliteDatabase, prefix 
 	);
 }
 
-test.each(["", "custom_"])(
-	"opens a session store read-only with the previous conditional delete trigger under prefix '%s' (#5327)",
-	async (prefix) => {
+test.each(
+	["", "custom_"].flatMap((prefix) =>
+		[true, undefined].flatMap((readOnly) => ["session", "journal"].map((kind) => ({ prefix, readOnly, kind }))),
+	),
+)(
+	"opens a $kind store read-only with readOnly=$readOnly and the previous conditional delete trigger under prefix '$prefix' (#5327)",
+	async ({ prefix, readOnly, kind }) => {
 		const path = join(directory, "readonly.sqlite");
 		const writable = await openNodeSqliteDatabase(path);
 		closers.push(() => writable.close());
 		const original = await SqlSessionStore.open(writable, { prefix });
+		const journal = await SqlRunJournal.open(writable, { prefix });
+		closers.push(() => journal.close());
 		const blob = legacyBlob(17);
 		await original.snapshotBlobs.putBlobs([blob]);
 		await installLegacyConditionalTrigger(writable, prefix);
@@ -114,7 +121,21 @@ test.each(["", "custom_"])(
 
 		const readonly = await openNodeSqliteDatabase(path, { readOnly: true });
 		closers.push(() => readonly.close());
-		const store = await SqlSessionStore.open(readonly, { prefix });
+		const facade: SqliteDatabase = {
+			descriptor: readonly.descriptor,
+			exec: readonly.exec.bind(readonly),
+			run: readonly.run.bind(readonly),
+			get: readonly.get.bind(readonly),
+			all: readonly.all.bind(readonly),
+			transaction: readonly.transaction.bind(readonly),
+			close: readonly.close.bind(readonly),
+			...(readOnly === true ? { readOnly } : {}),
+		};
+		assert.equal(Object.hasOwn(facade, "readOnly"), readOnly === true);
+		const store =
+			kind === "session"
+				? await SqlSessionStore.open(facade, { prefix })
+				: await SqlRunJournal.open(facade, { prefix });
 		closers.push(() => store.close());
 		assert.ok(blob.data.equals((await store.snapshotBlobs.getBlob(blob.hash))!));
 		assert.ok(
@@ -199,6 +220,54 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 				assert.ok(otherChunked.data.equals((await store.getBlob(otherChunked.hash))!));
 			},
 		);
+
+		test("legacy collection setup renews its claim and yields before an abort stops at that batch boundary (#5327)", async () => {
+			const database = await openDatabase("setup-abort.sqlite");
+			await SqlSnapshotBlobStore.open(database);
+			await installLegacyConditionalTrigger(database);
+			await database.exec("DROP INDEX snapshot_blobs_age; DROP INDEX snapshot_blobs_inline_size");
+			await database.run("UPDATE snapshot_collection SET holder = 'owner', claimed_at = unixepoch() - 100");
+			const controller = new AbortController();
+			const stopped = new Error("stop after legacy collection setup");
+			let commits = 0;
+			const store = await SqlSnapshotBlobStore.open(
+				afterEachTransaction(database, async () => {
+					commits++;
+					const claim = await database.get("SELECT unixepoch() - claimed_at AS age FROM snapshot_collection");
+					assert.ok(Number(claim?.age) < 5, "setup renews the claim before committing");
+					setImmediate(() => controller.abort(stopped));
+				}),
+			);
+			assert.equal(commits, 0, "opening with the previous trigger does not write");
+			await assert.rejects(
+				store.collectGarbage({ graceSeconds: 3600, holder: "owner", signal: controller.signal }),
+				(error) => error === stopped,
+			);
+			assert.equal(commits, 1, "no transaction starts after setup commits an abort");
+		});
+
+		test("collection upgrades the conditional delete trigger before sweeping a legacy inline blob with partial chunks (#5327)", async () => {
+			const database = await openDatabase("sweep.sqlite");
+			await SqlSnapshotBlobStore.open(database);
+			await installLegacyConditionalTrigger(database);
+			const blob = legacyBlob(2 * SNAPSHOT_BLOB_CHUNK_BYTES + 17);
+			await database.run(
+				"INSERT INTO snapshot_blobs (hash, bytes, data, created_at, chunks) VALUES (?, ?, ?, 1, 0)",
+				blob.hash,
+				blob.data.length,
+				blob.data,
+			);
+			await database.run(
+				"INSERT INTO snapshot_blob_chunks (hash, idx, data) VALUES (?, 0, ?)",
+				blob.hash,
+				blob.data.subarray(0, SNAPSHOT_BLOB_CHUNK_BYTES),
+			);
+			const store = await SqlSnapshotBlobStore.open(database);
+			assert.ok(await database.get("SELECT name FROM sqlite_schema WHERE name = 'snapshot_blobs_chunks_delete'"));
+			assert.deepEqual((await collectSnapshotGarbage(store, { graceSeconds: 0 })).deleted, [blob.hash]);
+			assert.equal(await store.getBlob(blob.hash), undefined);
+			assert.equal((await blobState(database, "", blob.hash)).chunkRows, 0);
+		});
 
 		test("an older client deleting and re-storing an inline blob between chunk batches cannot publish incomplete chunks (#5327)", async () => {
 			const database = await openDatabase("recreated.sqlite");

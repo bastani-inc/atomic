@@ -118,8 +118,8 @@ async function queryPlan(shared: SharedSnapshotDatabase, statement: CountedState
  * triggers are this build's (#5065). A collection makes one before it sweeps and one inside each batch's own transaction.
  */
 const INDEX_CHECK = { statements: 2, rows: 16 } as const;
-/** The age and inline-size index rows, then an indexed legacy-row probe, once per collection. */
-const AGE_CHECK = { statements: 2, rows: 2 } as const;
+/** The chunk-delete trigger and two maintenance-index rows, then an indexed legacy-row probe, once per collection. */
+const AGE_CHECK = { statements: 2, rows: 3 } as const;
 
 const summary = (measured: { statements: readonly CountedStatement[]; rows: number; transactions: number }) => ({
 	statements: measured.statements.length,

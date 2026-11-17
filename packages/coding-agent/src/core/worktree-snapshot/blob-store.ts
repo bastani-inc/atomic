@@ -910,10 +910,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			...Object.values(t).map((table) => dialect.tableExists(table)),
 			dialect.columnExists(t.blobs, "created_at"),
 			dialect.columnExists(t.blobs, "chunks"),
-			dialect.schemaObjects([
-				`${t.blobs}_chunks_delete_all`,
-				...(database.readOnly ? [`${t.blobs}_chunks_delete`] : []),
-			]),
+			dialect.schemaObjects([`${t.blobs}_chunks_delete_all`, `${t.blobs}_chunks_delete`]),
 			...SESSION_REF_COLUMNS.map((column) => dialect.columnExists(t.sessionRefs, column)),
 		];
 		const found = await Promise.all(probes.map((probe) => database.get(probe.sql, ...probe.params)));
@@ -1236,9 +1233,22 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	async sweep(options: SnapshotSweepOptions): Promise<readonly string[]> {
 		const t = this.tables;
 		options.signal?.throwIfAborted();
-		const indexes = this.dialect.schemaObjects([`${t.blobs}_age`, `${t.blobs}_inline_size`]);
-		if ((await this.database.all(indexes.sql, ...indexes.params)).length < 2) {
-			await this.write(options.pace, (tx) => addBlobMaintenanceIndexes(tx, t));
+		const trigger = `${t.blobs}_chunks_delete_all`;
+		const required = [trigger, `${t.blobs}_age`, `${t.blobs}_inline_size`];
+		const schema = this.dialect.schemaObjects(required);
+		const present = new Set(
+			(await this.database.all<SqliteRow & { name: string }>(schema.sql, ...schema.params)).map((row) => row.name),
+		);
+		if (present.size < required.length) {
+			options.signal?.throwIfAborted();
+			await this.write(options.pace, async (transaction) => {
+				if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
+				await withShortSchemaLockWaits(transaction, this.dialect, async () => {
+					if (!present.has(trigger)) await addBlobChunks(transaction, t, this.dialect);
+					await addBlobMaintenanceIndexes(transaction, t);
+				});
+			});
+			await this.betweenBatches(options.pace);
 		}
 		const unreferenced = `NOT EXISTS (
 				SELECT 1 FROM ${t.runRefs} AS ref WHERE ref.hash = ${t.blobs}.hash
