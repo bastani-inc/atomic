@@ -61,7 +61,7 @@ import { childReachPolicy, createReachPolicy, type IntercomReachPolicy, narrowMe
 import { localOnlyBrokerWarning, warnLocalOnlyBrokerWithoutUi } from "./local-only-broker.js";
 import { RECIPIENT_SAVING_REPORT_INTERVAL_MS } from "./retry-policy.js";
 import { IntercomRuntimeInactiveError } from "./runtime-inactive-error.js";
-import { InlineMessageComponent } from "./ui/inline-message.js";
+import { renderIntercomCustomMessage } from "./ui/inline-message.js";
 import { defaultConfig, loadConfigAsync, type IntercomConfig } from "./config.js";
 import type { SessionInfo, Message, WorkflowStageRosterAnnouncement, WorkflowPossibleStageAnnouncement, WorkflowRunParentAnnouncement } from "./types.js";
 import { ReplyTracker, restorePendingInboundAsks } from "./reply-tracker.js";
@@ -2427,11 +2427,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   });
 
 
-  pi.registerMessageRenderer("intercom_message", (message, _options, theme) => {
-    const details = message.details as { from: SessionInfo; message: Message; replyCommand?: string; bodyText?: string; heading?: string } | undefined;
-    if (!details) return undefined;
-    return new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText, details.heading);
-  });
+  pi.registerMessageRenderer("intercom_message", renderIntercomCustomMessage);
 
   const replyWaits = replyWaitGates(() => client);
   /**

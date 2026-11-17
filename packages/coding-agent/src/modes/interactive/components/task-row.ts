@@ -4,13 +4,22 @@ import { formatModelLabel } from "../../../core/model-label.ts";
 import { taskOutcomeStatus } from "../../../core/tasks/command-output.js";
 import { isResumableStop, releasedWaitingOn } from "../../../core/tasks/completion.js";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
-import type { TaskActivity } from "../../../core/tasks/owner-store.js";
+import { liveElapsedMs, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
+import { isTaskTurnInterrupted, type TaskActivity } from "../../../core/tasks/owner-store.js";
+import { sanitizeTerminalText } from "../../../utils/terminal-text.ts";
 import { theme } from "../theme/theme.js";
+import { formatPanelElapsed } from "./agent-panel.ts";
 import { keyHintIfBound as keyHint } from "./keybinding-hints.js";
+
+const EMOJI_OR_IGNORABLE_PATTERN = String.raw`(\p{RGI_Emoji}|\p{Extended_Pictographic}(?:\ufe0f|\p{Emoji_Modifier})*(?:\u200d\p{Extended_Pictographic}(?:\ufe0f|\p{Emoji_Modifier})*)+|[\p{Extended_Pictographic}\p{Emoji_Presentation}]\ufe0f)|\p{Default_Ignorable_Code_Point}`;
+const EMOJI_OR_IGNORABLE = new RegExp(EMOJI_OR_IGNORABLE_PATTERN, "gv");
 
 /** Control removal and truncation apply only to terminal display, never task identity. */
 export function taskDisplayText(text: string): string {
-	return text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+	if (!/[\x00-\x1f\x7f-\x9f\p{Default_Ignorable_Code_Point}\u2028\u2029]/u.test(text)) return text;
+	return sanitizeTerminalText(text)
+		.replace(EMOJI_OR_IGNORABLE, "$1")
+		.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, " ");
 }
 export function taskState(task: TaskRecord): string {
 	if (
@@ -47,8 +56,7 @@ export function taskShortId(task: TaskRecord): string {
 	return createHash("sha256").update(task.ref.taskId).digest("hex").slice(0, 6);
 }
 export function taskDuration(milliseconds: number): string {
-	const seconds = Math.max(0, Math.floor(milliseconds / 1000));
-	return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+	return formatPanelElapsed(milliseconds);
 }
 
 /** One semantic status palette for inline rows, lists and detail headers. */
@@ -57,6 +65,7 @@ export function taskStatusAppearance(task: TaskRecord): {
 	icon: string;
 	color: "accent" | "success" | "error" | "warning" | "muted";
 } {
+	if (isTaskTurnInterrupted(task)) return { label: "Stopped · send to resume", icon: "◼", color: "muted" };
 	switch (taskState(task)) {
 		case "completed":
 			return { label: "Completed", icon: "✓", color: "success" };
@@ -83,8 +92,14 @@ export function taskStatusAppearance(task: TaskRecord): {
 
 export function taskMetricsText(task: TaskRecord): string {
 	const metrics = task.metrics;
+	const running = taskClockRunning(task.execution.kind) && !isTaskTurnInterrupted(task);
+	const elapsedMs =
+		metrics?.elapsedMs === undefined
+			? undefined
+			: (taskClockOf(task)?.elapsedMs(task.ref.taskId, metrics.elapsedMs, running) ??
+				liveElapsedMs(task.ref.taskId, metrics.elapsedMs, running));
 	return [
-		metrics?.elapsedMs === undefined ? "" : taskDuration(metrics.elapsedMs),
+		elapsedMs === undefined ? "" : formatPanelElapsed(elapsedMs),
 		metrics?.tokenCount === undefined ? "" : `${metrics.tokenCount.toLocaleString("en-US")} tokens`,
 		metrics?.toolCount === undefined ? "" : `${metrics.toolCount} ${metrics.toolCount === 1 ? "tool" : "tools"}`,
 	]
@@ -206,7 +221,7 @@ export class TaskRow implements Component {
 				? ` · ${taskDisplayText(task.currentAction.tool)} ${taskDisplayText(task.currentAction.text)}`
 				: "";
 		const tools = task.metrics?.toolCount === undefined ? "" : ` · ${task.metrics.toolCount} tool uses`;
-		const duration = task.metrics?.elapsedMs === undefined ? "" : ` · ${taskDuration(task.metrics.elapsedMs)}`;
+		const duration = task.metrics?.elapsedMs === undefined ? "" : ` · ${formatPanelElapsed(task.metrics.elapsedMs)}`;
 		lines.push(theme.fg("dim", truncateToWidth(`  ${state}${badge}${tools}${duration}${action}`, width)));
 		if (this.options.expanded) {
 			lines.push(theme.fg("dim", truncateToWidth(`  ${task.ref.taskId} · owner ${task.ref.ownerId}`, width)));

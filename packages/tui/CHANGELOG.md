@@ -12,6 +12,7 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 ### Changed
 
 - `turnPromptAbove` accepts any `WindowRows` (arrays still work), and `ScrollLayoutState` adds `isFollowingEnd` and an optional anchored scroll position for `updateLayout`
+- `Markdown` accepts per-instance `hyperlinks: false` to display links as text and URLs without OSC 8, and `images: false` to display image placeholders. Other Markdown instances keep their existing behavior ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Fixed
 

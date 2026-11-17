@@ -108,8 +108,7 @@ test("opening a transcript receives the final message queued during its history 
 		assert.equal(listenersAtFinal, 0);
 		assert.ok(oldPage.value.items.every((item) => item.source.entryId !== finalId));
 
-		inspector.handleInput(" ");
-		await flush();
+		inspector.renderViewport(100, 24);
 		finalDuringRead = "FINAL-AT-HISTORY-BOUNDARY";
 		inspector.handleInput("\r");
 		await flush();

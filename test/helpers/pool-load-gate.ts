@@ -33,10 +33,8 @@ import { createWorkflowObservation } from "../../packages/workflows/src/extensio
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
-import {
-	installStoreWidget,
-	installToolExecutionHooks,
-} from "../../packages/workflows/src/tui/store-widget-installer.js";
+import { panelItemsFromSnapshot } from "../../packages/workflows/src/tui/panel-runs.js";
+import { installToolExecutionHooks } from "../../packages/workflows/src/tui/tool-execution-hooks.js";
 import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
@@ -265,15 +263,14 @@ export async function runPoolLoadGate(watches: 0 | 1, options: { readonly pane?:
 					onClose: () => {},
 				})
 			: undefined;
-	// The interactive root also keeps the BACKGROUND widget, the tool-execution hooks and the
+	// The interactive root also keeps the agent panel's run rows, the tool-execution hooks and the
 	// workflow activity bridge subscribed to the same store (#4009); the pane variant mounts them too.
 	let activityChanges = 0;
 	const disposeRootSurfaces =
 		options.pane === true
 			? (() => {
-					const disposeWidget = installStoreWidget(
-						{ ui: { setWidget: () => {}, requestRender: () => {} } },
-						store,
+					const disposeWidget = store.subscribeInvalidation(
+						() => void panelItemsFromSnapshot(store.graphSnapshot().runs),
 					);
 					installToolExecutionHooks({ events: { on: () => {} } }, store);
 					const observation = createWorkflowObservation(

@@ -18,6 +18,7 @@ import {
 } from "@bastani/atomic";
 import { StorageError } from "@bastani/atomic/storage";
 import { isWorkflowDefinition } from "../runs/foreground/executor-child-helpers.js";
+import { resolveInvocationGitBranch } from "../runs/foreground/executor-direct-helpers.js";
 import { resolveAndValidateInputs } from "../runs/foreground/executor-inputs.js";
 import { isFullRunId, isRunIdPrefix, resolveRunIdTarget } from "../shared/run-id.js";
 import { stageSessionStore } from "../shared/stage-session-store.js";
@@ -29,6 +30,7 @@ import type {
 	WorkflowOutputValues,
 	WorkflowSerializableValue,
 } from "../shared/types.js";
+import { resolveWorkflowDefinitionSource } from "../shared/workflow-source.js";
 import { formatWorkflowStageTarget, parseWorkflowStageTarget } from "../shared/workflow-stage-target.js";
 import { poolSessionStore } from "../workers/pool-session-store.js";
 import { workflowNamesEqual } from "../workflows/identity.js";
@@ -83,6 +85,7 @@ import type {
 	DurableStageCheckpoint,
 	DurableStageRunTopology,
 	DurableStageTopology,
+	DurableWorkflowDefinitionSource,
 	DurableWorkflowHandle,
 	WorkflowForkedFrom,
 } from "./types.js";
@@ -1231,13 +1234,14 @@ function forkMessageEvent(entry: JournalEntry, ids: ForkIdentities): RunJournalS
 	} as RunEvent);
 }
 
-function forkHandle(
+async function forkHandle(
 	source: DurableWorkflowHandle,
 	ids: ForkIdentities,
 	request: ResolvedForkRequest,
 	selection: ForkSelection,
 	inputs: WorkflowInputValues,
-): DurableWorkflowHandle {
+	definitionSource?: DurableWorkflowDefinitionSource,
+): Promise<DurableWorkflowHandle> {
 	const {
 		transitionClaimId: _transitionClaimId,
 		rootWorkflowId: _rootWorkflowId,
@@ -1260,15 +1264,19 @@ function forkHandle(
 		workflowCwd,
 		repositoryRoot,
 		gitWorktreeRoot,
+		branch: sourceBranch,
 		...carried
 	} = source;
 	const sameCwd = forkKeepsWorkspace(source, request.cwd);
+	const branch = sameCwd ? sourceBranch : await resolveInvocationGitBranch(request.cwd);
 	const now = Date.now();
 	return {
 		...carried,
+		...(definitionSource === undefined ? {} : { definitionSource }),
 		...(sameCwd && workflowCwd !== undefined ? { workflowCwd } : {}),
 		...(sameCwd && repositoryRoot !== undefined ? { repositoryRoot } : {}),
 		...(sameCwd && gitWorktreeRoot !== undefined ? { gitWorktreeRoot } : {}),
+		...(branch !== undefined ? { branch } : {}),
 		...(request.modelOwner === undefined ? {} : { modelOwner: request.modelOwner }),
 		...(selection.stagePath === undefined && summary !== undefined ? { summary, summarizedThrough } : {}),
 		workflowId: ids.forkRunId,
@@ -1405,7 +1413,8 @@ export async function forkDurableRun<
 			request.signal?.throwIfAborted();
 			const checkpoints = selection.checkpoints.map((checkpoint) => forkCheckpoint(checkpoint, ids));
 			const messages = selection.messageEvents.map((entry) => forkMessageEvent(entry, ids));
-			const handle = forkHandle(source.handle, ids, request, selection, inputs);
+			const definitionSource = await resolveWorkflowDefinitionSource(definition, source.handle.definitionSource);
+			const handle = await forkHandle(source.handle, ids, request, selection, inputs, definitionSource);
 			const events: RunJournalSeedEvent[] = [
 				{ event: { type: E.runStarted, payload: handle as unknown as RunEvent["payload"] } as RunEvent },
 				...checkpoints.map((checkpoint) => ({

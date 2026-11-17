@@ -12,6 +12,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "../../packages/coding-agent/src/index.js";
+import { linkSharedTranspileCache } from "../../packages/coding-agent/test/helpers/shared-transpile-cache.js";
 import { fileExists, makeTempDirectory, readText, removePath, writeFileEnsuringDir } from "../helpers/runtime.js";
 import { currentStoreBackend as getDurableBackend } from "../helpers/store-backend.js";
 
@@ -115,6 +116,7 @@ async function createProject(
 	moduleScope: (stageOptions: string) => string = () => "",
 ): Promise<Project> {
 	const cwd = makeTempDirectory("atomic-disposed-session-paused-");
+	linkSharedTranspileCache(join(cwd, "agent"));
 	projects.push(cwd);
 	const project: Project = {
 		cwd,

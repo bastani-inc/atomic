@@ -17,8 +17,18 @@ import {
 	runWorktreeStepsSync,
 	type WorktreeSteps,
 } from "./worktree-io.js";
-import { findCanonicalGitRootSteps } from "./worktree-root.js";
+import { findCanonicalGitRootSteps, resolveGitHeadBranchSteps } from "./worktree-root.js";
 import type { GitResult, GitWorktreeSetupOptions, GitWorktreeSetupResult } from "./worktree-types.js";
+
+/** The branch a run launched at `cwd` records, read without blocking the event loop. */
+export function resolveInvocationGitBranch(cwd: string): Promise<string | undefined> {
+	return runWorktreeSteps(
+		resolveGitHeadBranchSteps(cwd, function* (repoRoot) {
+			const result = yield* gitReadOnlyProbeSteps(repoRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+			return result.status === 0 ? result.stdout.trim() : undefined;
+		}),
+	);
+}
 
 export { withWorktreeBucketIdsForTest } from "./worktree-allocation.js";
 export type { GitRunner } from "./worktree-git-runner.js";

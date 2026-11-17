@@ -22,6 +22,7 @@ import {
 	handleDurableResume,
 	prepareWorkflowResumeCatalog,
 	resolveWorkflowResumeTarget,
+	resumeFailedRunWithConfirmation,
 	stageScopedDurableResumeMessage,
 	type WorkflowResumeCatalog,
 	type WorkflowRunControlDeps,
@@ -303,10 +304,15 @@ export async function handleRunControlCommand(
 				}
 				if (isResumableContinuation) {
 					await ensureWorkflowResourcesVisible();
-					const continuation = await deps
-						.runtimeForContext(ctx)
-						.resumeFailedRun(resolved.runId, undefined, { policy, actor: "user", ...resumeOptions });
-					continuation.ok ? print(continuation.message) : fail(continuation.message);
+					await resumeFailedRunWithConfirmation(
+						resolved.runId,
+						undefined,
+						ctx,
+						reporter,
+						deps,
+						deps.runtimeForContext(ctx),
+						resumeOptions,
+					);
 				} else {
 					try {
 						const result = await resumeRun(resolved.runId, { ...owner, actor: "user" });
@@ -509,11 +515,15 @@ export async function handleRunControlCommand(
 		}
 		if (isResumableContinuation) {
 			await ensureWorkflowResourcesVisible();
-			const continuation = await deps
-				.runtimeForContext(ctx)
-				.resumeFailedRun(stageRunId, stageId, { policy, actor: "user", ...resumeOptions });
-			continuation.ok ? print(continuation.message) : fail(continuation.message);
-			return true;
+			return await resumeFailedRunWithConfirmation(
+				stageRunId,
+				stageId,
+				ctx,
+				reporter,
+				deps,
+				deps.runtimeForContext(ctx),
+				resumeOptions,
+			);
 		}
 		// A quit, non-paused durable run is a resume shadow rather than a live
 		// stage-control pause. Routing directly to durable resume preserves the

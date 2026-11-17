@@ -1,5 +1,6 @@
 import { Container, type OverlayOptions, Text } from "@bastani/atomic-tui";
-import { terminalDisplayText } from "../../../utils/terminal-text.ts";
+import { ToolBlock, ToolBlockRecords } from "../../../modes/interactive/components/tool-block.ts";
+import { singleLineDisplayText, terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { experimentalToolSamplingProperty } from "../../experimental.ts";
 import { getHostQuestionnaire } from "../../extensions/host-input.js";
 import type { ToolDefinition } from "../../extensions/types.ts";
@@ -7,8 +8,9 @@ import type { ExtensionUIContext } from "../../extensions/ui-types.js";
 import { type AskUserQuestionConfig, loadConfig, loadedConfig, validateGuidanceFields } from "./config.ts";
 import { QuestionnaireSession } from "./state/questionnaire-session.ts";
 import { ROW_INTENT_META, sentinelsToAppend } from "./state/row-intent.ts";
+import { formatAnswerScalar } from "./tool/format-answer.ts";
 import { buildQuestionnaireResponse, buildToolResult } from "./tool/response-envelope.ts";
-import { summarizeAnswers, summarizeQuestions } from "./tool/transcript-summary.ts";
+import { summarizeQuestions } from "./tool/transcript-summary.ts";
 import {
 	MAX_OPTIONS,
 	MAX_QUESTIONS,
@@ -74,11 +76,6 @@ export const askUserQuestionToolSystemPromptContribution = Object.freeze({
 	] as const),
 } as const);
 
-interface AskUserQuestionRenderState {
-	callComponent?: Text;
-	summary?: string;
-}
-
 export function createAskUserQuestionToolDefinition(options?: {
 	readonly chatAsOption?: boolean;
 }): ToolDefinition<typeof QuestionParamsSchema, unknown> {
@@ -128,29 +125,14 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 		...experimentalToolSamplingProperty(),
 		parameters: QuestionParamsSchema,
 
-		renderCall(args, theme, context) {
-			const state = context.state as AskUserQuestionRenderState;
-			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			const params = args as unknown as QuestionParams;
-			state.callComponent = text;
-			text.setText(
-				state.summary === undefined
-					? theme.fg("toolTitle", summarizeQuestions(params))
-					: terminalDisplayText(state.summary),
-			);
-			return text;
+		renderCall(args, theme) {
+			return new Text(theme.fg("toolTitle", summarizeQuestions(args as QuestionParams)), 0, 0);
 		},
 		renderResult(result, _options, theme, context) {
-			const state = context.state as AskUserQuestionRenderState;
-			const container = new Container();
 			const details = result.details as QuestionnaireResult | undefined;
-			const params = context.args as unknown as QuestionParams;
-			const setSummary = (summary: string | undefined) => {
-				state.summary = summary;
-				state.callComponent?.setText(summary ?? theme.fg("toolTitle", summarizeQuestions(params)));
-			};
+			const params = context.args as QuestionParams;
 			if (!details || !Array.isArray(details.answers) || details.error || context.isError) {
-				if (state.summary !== undefined) setSummary(undefined);
+				const container = new Container();
 				const text = result.content
 					.map((part) => (part.type === "text" ? terminalDisplayText(part.text) : ""))
 					.filter(Boolean)
@@ -158,12 +140,30 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 				if (text) container.addChild(new Text(theme.fg("muted", text), 0, 0));
 				return container;
 			}
-			const lines = summarizeAnswers(params, details);
-			const summary = lines.length === 1 ? lines[0] : undefined;
-			if (summary !== state.summary) setSummary(summary);
-			if (summary === undefined)
-				for (const line of lines) container.addChild(new Text(theme.fg("muted", line), 0, 0));
-			return container;
+			if (details.cancelled || details.answers.length === 0) {
+				return new ToolBlock({ status: "stopped", title: "Questions cancelled", outputPad: context.outputPad });
+			}
+			const questions = Array.isArray(params?.questions) ? params.questions : [];
+			const lines = questions.flatMap((question, index) => {
+				const answer = details.answers.find((candidate) => candidate.questionIndex === index);
+				if (!answer) return [];
+				const safeAnswer = {
+					...answer,
+					answer: answer.answer === null ? null : singleLineDisplayText(answer.answer).trim(),
+					selected: answer.selected?.map((value) => singleLineDisplayText(value).trim()),
+				};
+				const value = formatAnswerScalar(safeAnswer, "summary");
+				const quoted = answer.kind === "custom" || answer.kind === "chat" ? JSON.stringify(value) : value;
+				const label = singleLineDisplayText(question.header || question.question || `Q${index + 1}`).trim();
+				const notes = answer.notes ? ` · notes: ${singleLineDisplayText(answer.notes).trim()}` : "";
+				return [`${label} → ${quoted}${notes}`];
+			});
+			return new ToolBlock({
+				status: "success",
+				title: lines[0] ?? "Questions answered",
+				details: lines.length > 1 ? new ToolBlockRecords(lines.slice(1)) : undefined,
+				outputPad: context.outputPad,
+			});
 		},
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {

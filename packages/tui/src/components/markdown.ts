@@ -281,6 +281,8 @@ export interface MarkdownTheme {
 }
 
 export interface MarkdownOptions {
+	hyperlinks?: boolean;
+	images?: boolean;
 	/** Preserve source list markers instead of normalizing them. */
 	preserveOrderedListMarkers?: boolean;
 	/** Preserve source backslash escapes instead of normalizing escaped punctuation. */
@@ -833,7 +835,7 @@ export class Markdown implements Component {
 				case "link": {
 					const linkText = this.renderInlineTokens(token.tokens || [], resolvedStyleContext);
 					const styledLink = this.theme.link(this.theme.underline(linkText));
-					if (getCapabilities().hyperlinks) {
+					if (this.options.hyperlinks !== false && getCapabilities().hyperlinks) {
 						// OSC 8: render as a clickable hyperlink. The URL is not printed inline,
 						// so we always show only the link text regardless of whether it matches href.
 						result += hyperlink(styledLink, token.href) + stylePrefix;
@@ -851,6 +853,10 @@ export class Markdown implements Component {
 					}
 					break;
 				}
+
+				case "image":
+					result += applyTextWithNewlines(this.options.images === false ? "[image]" : token.text);
+					break;
 
 				case "br":
 					result += "\n";

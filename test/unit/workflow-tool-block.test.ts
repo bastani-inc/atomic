@@ -379,6 +379,8 @@ describe("the workflow tool row renders the same wherever a chat shows it (#5224
 				const text = plain(main).join("\n");
 				assert.match(text, /Workflow\(ralph · fix the login bug\)/);
 				assert.match(text, /⎿ {2}∀ Running · 1\/3 stages/);
+				assert.match(plain(main)[2] ?? "", /^ {3}⎿ {2}∀ Running · 1\/3 stages/);
+				assert.doesNotMatch(text, /⎿\s+⎿/);
 				assert.equal(text.includes("╭"), false, "no rounded panel of its own");
 			});
 		}
@@ -432,7 +434,7 @@ describe("a workflow's notice renders the same wherever a chat shows it (#5224)"
 				const lines = main.render(width);
 				assert.deepEqual(hosted.render(width), lines);
 				const text = plain(lines).filter((line) => line.length > 0);
-				assert.equal(text[0], '✗ Workflow "ralph" failed · at review · 12s');
+				assert.equal(text[0], ' ✗ Workflow "ralph" failed · at review · 12s');
 				if (!expanded) assert.equal(text.length, 1);
 			});
 		}

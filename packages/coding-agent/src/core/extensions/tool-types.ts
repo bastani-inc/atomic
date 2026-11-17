@@ -4,6 +4,7 @@ import type { Component } from "@bastani/atomic-tui";
 import type { Static, TSchema } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
 import type { SourceInfo } from "../source-info.ts";
+import type { TaskId, TaskRecord } from "../tasks/contracts.js";
 import type { ToolConcurrency } from "../tools/tool-concurrency.ts";
 
 export type { ToolConcurrency, ToolConcurrencyMode } from "../tools/tool-concurrency.ts";
@@ -47,6 +48,9 @@ export interface ToolRenderContext<TState = unknown, TArgs = unknown> extends Ke
 	isError: boolean;
 	durationMs: number | undefined;
 	outputPad: number;
+	getTaskRecord?: (taskId: TaskId) => TaskRecord | undefined;
+	getElapsedMs?: () => number | undefined;
+	getToolDefinition?: (toolName: string) => ToolRenderers | undefined;
 }
 
 type ToolRenderCall<TParams extends TSchema, TState> = {
@@ -198,7 +202,8 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 
 type AnyToolDefinition = ToolDefinition<TSchema, unknown, unknown>;
 
-export type ToolRenderers = Pick<AnyToolDefinition, "renderShell" | "renderCall" | "renderResult">;
+export type ToolRenderers = Pick<AnyToolDefinition, "renderShell" | "renderCall" | "renderResult"> &
+	Partial<Pick<AnyToolDefinition, "label">>;
 
 /** Chooses renderers for any tool. `next()` resolves later extensions, then the registered tool. */
 export type ToolRendererResolver = (

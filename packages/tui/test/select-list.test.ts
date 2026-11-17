@@ -129,3 +129,31 @@ describe("SelectList", () => {
 		assert.deepStrictEqual(selections, ["item-5", "item-10", "item-11", "item-6"]);
 	});
 });
+
+describe("SelectList: the shared picker look (#5224)", () => {
+	const items = Array.from({ length: 12 }, (_, index) => ({
+		value: `/cmd${index}`,
+		label: `/cmd${index}`,
+		description: `command ${index}`,
+	}));
+
+	it("marks the selected row with ❯ and keeps the other rows aligned", () => {
+		const rendered = new SelectList(items.slice(0, 3), 5, testTheme).render(80);
+		assert.ok(rendered[0]?.startsWith("❯ /cmd0"), rendered[0]);
+		assert.ok(rendered[1]?.startsWith("  /cmd1"), rendered[1]);
+	});
+
+	it("says how many rows are above and below the window instead of a position counter", () => {
+		const list = new SelectList(items, 5, testTheme);
+		for (let step = 0; step < 6; step++) list.handleInput("\x1b[B");
+		const rendered = list.render(80);
+		const last = rendered.at(-1) ?? "";
+		assert.ok(!/\(\d+\/\d+\)/.test(last), last);
+		assert.equal(last.trim(), "↑ 4 more · ↓ 3 more");
+	});
+
+	it("names only the direction that has more rows at an end of the list", () => {
+		const rendered = new SelectList(items, 5, testTheme).render(80);
+		assert.equal((rendered.at(-1) ?? "").trim(), "↓ 7 more");
+	});
+});

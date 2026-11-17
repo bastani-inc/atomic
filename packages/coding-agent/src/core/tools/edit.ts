@@ -4,6 +4,7 @@ import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } 
 import { type Static, Type } from "typebox";
 import { splitBom } from "../../utils/text.ts";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
+import { withBuiltinToolBlockRenderers } from "./builtin-renderers.js";
 import {
 	applyEditsToNormalizedContent,
 	applyReplacementsToOriginal,
@@ -147,7 +148,9 @@ export function createEditToolDefinition(
 	options?: EditToolOptions,
 ): ToolDefinition<typeof editSchema, EditToolDetails | undefined, EditRenderState> {
 	const ops = options?.operations ?? defaultEditOperations;
-	return {
+	return withBuiltinToolBlockRenderers<
+		ToolDefinition<typeof editSchema, EditToolDetails | undefined, EditRenderState>
+	>({
 		name: "edit",
 		label: "edit",
 		// Atomic: same-message ordering. A later call in one assistant message waits for this edit.
@@ -229,7 +232,7 @@ export function createEditToolDefinition(
 			);
 		},
 		...editRenderers,
-	};
+	});
 }
 
 export function createEditTool(cwd: string, options?: EditToolOptions): AgentTool<typeof editSchema> {

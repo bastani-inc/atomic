@@ -440,6 +440,8 @@ export interface DurableWorkflowBackend {
 	 * pooled root, #4318); call it through `readDurableCheckpoints`, which falls back to `listCheckpoints`.
 	 */
 	readCheckpoints?(workflowId: string, scope?: string): Promise<readonly DurableCheckpoint[]>;
+	readRunOverviewCheckpoints?(workflowId: string): Promise<readonly DurableCheckpoint[]>;
+	peekRunOverviewCheckpoints?(workflowId: string): readonly DurableCheckpoint[] | undefined;
 	/**
 	 * Lets go of the checkpoints of the child boundary scope `scope` the run still keeps in memory, once the run read
 	 * them for that boundary's replay or checks; a backend that keeps every checkpoint ignores it.
@@ -745,6 +747,9 @@ class JournalProjection {
 			createdAt: handle.createdAt,
 			status: handle.status,
 			transitionClaimId: handle.transitionClaimId ?? existing?.handle.transitionClaimId,
+			...((handle.definitionSource ?? existing?.handle.definitionSource) !== undefined
+				? { definitionSource: handle.definitionSource ?? existing?.handle.definitionSource }
+				: {}),
 			resources: handle.resources ?? existing?.handle.resources,
 			snapshots: handle.snapshots ?? existing?.handle.snapshots,
 			...(handle.invocationCwd !== undefined
@@ -773,6 +778,11 @@ class JournalProjection {
 				? { gitWorktreeRoot: handle.gitWorktreeRoot }
 				: existing?.handle.gitWorktreeRoot !== undefined
 					? { gitWorktreeRoot: existing.handle.gitWorktreeRoot }
+					: {}),
+			...(handle.branch !== undefined
+				? { branch: handle.branch }
+				: existing?.handle.branch !== undefined
+					? { branch: existing.handle.branch }
 					: {}),
 			...((handle.worktreeRootMappings ?? existing?.handle.worktreeRootMappings) !== undefined
 				? { worktreeRootMappings: handle.worktreeRootMappings ?? existing?.handle.worktreeRootMappings }
@@ -1206,6 +1216,7 @@ class JournalProjection {
 			pendingPrompts: h.pendingPrompts,
 			pendingStageMessages: h.pendingStageMessages ?? [],
 			...(h.possibleStages !== undefined ? { possibleStages: h.possibleStages } : {}),
+			...(h.definitionSource !== undefined ? { definitionSource: h.definitionSource } : {}),
 			...(h.resources !== undefined ? { resources: h.resources } : {}),
 			...(h.ownerExecutorId !== undefined ? { ownerExecutorId: h.ownerExecutorId } : {}),
 			...(h.sessionFile !== undefined ? { sessionFile: h.sessionFile } : {}),
@@ -1221,6 +1232,7 @@ class JournalProjection {
 			...(h.workflowCwd !== undefined ? { workflowCwd: h.workflowCwd } : {}),
 			...(h.repositoryRoot !== undefined ? { repositoryRoot: h.repositoryRoot } : {}),
 			...(h.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: h.gitWorktreeRoot } : {}),
+			...(h.branch !== undefined ? { branch: h.branch } : {}),
 			...(h.snapshots !== undefined ? { snapshots: h.snapshots } : {}),
 			...(h.worktreeRootMappings !== undefined ? { worktreeRootMappings: h.worktreeRootMappings } : {}),
 			...(h.worktreeRestoreOutcomes !== undefined ? { worktreeRestoreOutcomes: h.worktreeRestoreOutcomes } : {}),
@@ -1327,6 +1339,7 @@ function toResumableEntry(handle: DurableWorkflowHandle): ResumableWorkflowEntry
 		...(handle.workflowCwd !== undefined ? { workflowCwd: handle.workflowCwd } : {}),
 		...(handle.repositoryRoot !== undefined ? { repositoryRoot: handle.repositoryRoot } : {}),
 		...(handle.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: handle.gitWorktreeRoot } : {}),
+		...(handle.branch !== undefined ? { branch: handle.branch } : {}),
 		...(handle.forkedFrom !== undefined ? { forkedFrom: handle.forkedFrom } : {}),
 		createdAt: handle.createdAt,
 		updatedAt: handle.updatedAt,

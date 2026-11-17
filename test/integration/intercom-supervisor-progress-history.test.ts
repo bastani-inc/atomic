@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
 import { test, vi } from "vitest";
+import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import intercomHeavy from "../../packages/intercom/index-heavy.js";
 import type { InboundMessageEntry } from "../../packages/intercom/intercom-utils.js";
 import {
@@ -108,13 +110,10 @@ function fixture() {
 		},
 		render(message: (typeof admitted)[number]) {
 			assert.ok(renderer);
-			const component = renderer(
-				message as never,
-				{} as never,
-				{ fg: (_color: string, text: string) => text } as never,
-			);
+			initTheme("dark", false);
+			const component = renderer(message as never, {} as never, theme);
 			assert.ok(component);
-			return component.render(240).join("\n");
+			return stripVTControlCharacters(component.render(240).join("\n"));
 		},
 	};
 }
@@ -135,12 +134,13 @@ test("supervisor updates retain raw identity and render as historical send-time 
 		assert.strictEqual(shown.details.message, message);
 		assert.strictEqual(shown.details.from, sender);
 		assert.ok(shown.details.bodyText.endsWith(message.content.text));
-		for (const text of [shown.content, current.render(shown)]) {
-			assert.match(text, /Historical supervisor update/);
-			assert.match(text, /Sent: 1970-01-01T00:00:01.000Z/);
-			assert.match(text, /not current task status/);
-			assert.match(text, /later correction or final result supersedes/);
-		}
+		assert.match(shown.content, /Historical supervisor update/);
+		assert.match(shown.content, /Sent: 1970-01-01T00:00:01.000Z/);
+		assert.match(shown.content, /not current task status/);
+		assert.match(shown.content, /later correction or final result supersedes/);
+		const rendered = current.render(shown);
+		assert.match(rendered, /Message from worker · repo · update sent \d{2}:\d{2}/);
+		assert.match(rendered, /Earlier hypothesis: retry wrapper\./);
 	} finally {
 		await current.emit("session_shutdown");
 	}
@@ -176,7 +176,8 @@ test("queued hypothesis and correction precede completion, unavailable late prog
 		);
 		for (const shown of current.admitted) {
 			assert.match(shown.content, /not current task status/);
-			assert.match(current.render(shown), /later correction or final result supersedes/);
+			assert.match(shown.content, /later correction or final result supersedes/);
+			assert.match(current.render(shown), /Message from worker · repo · update sent \d{2}:\d{2}/);
 		}
 	} finally {
 		await current.emit("session_shutdown");
@@ -250,7 +251,9 @@ test("busy parent observing a child admits historical progress once before compl
 		await current.deliver(message, "supervisor");
 		await current.deliver(message, "supervisor");
 		assert.equal(current.admitted.length, 1);
-		assert.match(current.render(current.admitted[0]!), /Historical supervisor update/);
+		assert.match(current.render(current.admitted[0]!), /Message from worker · repo · update sent \d{2}:\d{2}/);
+		assert.match(current.render(current.admitted[0]!), /Correction: use the later final result/);
+		assert.match(current.admitted[0]!.content, /Historical supervisor update/);
 		assert.match(current.admitted[0]!.content, /Sent: 1970-01-01T00:00:01.000Z/);
 		await current.terminal();
 		assert.deepEqual(current.order, ["terminal"]);

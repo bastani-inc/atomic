@@ -13,6 +13,7 @@ import { createAgentSession } from "../../../src/core/sdk.ts";
 import { SessionManager } from "../../../src/core/session-manager.ts";
 import { SettingsManager } from "../../../src/core/settings-manager.ts";
 import { resolveExcludedToolsForAppMode } from "../../../src/main.ts";
+import { linkSharedTranspileCache } from "../../helpers/shared-transpile-cache.ts";
 
 describe("SDK tool exclusions", () => {
 	let tempDir: string;
@@ -22,6 +23,7 @@ describe("SDK tool exclusions", () => {
 		tempDir = join(tmpdir(), `pi-exclude-tools-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		agentDir = join(tempDir, "agent");
 		mkdirSync(agentDir, { recursive: true });
+		linkSharedTranspileCache(agentDir);
 	});
 
 	afterEach(() => {

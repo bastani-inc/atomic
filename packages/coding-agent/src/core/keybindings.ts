@@ -22,8 +22,6 @@ export function useWindowsKeybindings(
 const windowsKeybindings = useWindowsKeybindings();
 
 const APP_KEYBINDINGS = {
-	"app.workflows.scrollUp": { defaultKeys: ["alt+k", "alt+pageUp"], description: "Scroll workflows up" },
-	"app.workflows.scrollDown": { defaultKeys: ["alt+j", "alt+pageDown"], description: "Scroll workflows down" },
 	"app.interrupt": { defaultKeys: "escape", description: "Cancel or abort" },
 	"app.clear": { defaultKeys: "ctrl+c", description: "Clear editor" },
 	"app.exit": { defaultKeys: "ctrl+d", description: "Exit when editor is empty" },

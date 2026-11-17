@@ -102,8 +102,7 @@ function skipEscSequence(message: string, start: number): number {
 	return message.length;
 }
 
-/** Drop CSI/OSC/DCS/C0/C1 so untrusted prompt text cannot drive the terminal. */
-function stripTerminalControls(message: string): string {
+export function stripTerminalControls(message: string, preserveControlCharacters = false): string {
 	let out = "";
 	for (let i = 0; i < message.length; ) {
 		const code = message.charCodeAt(i);
@@ -121,6 +120,11 @@ function stripTerminalControls(message: string): string {
 		}
 		if (code === DCS_8BIT || code === SOS_8BIT || code === PM_8BIT || code === APC_8BIT) {
 			i = skipStringControl(message, i + 1, false);
+			continue;
+		}
+		if (preserveControlCharacters && (isC0(code) || isC1(code))) {
+			out += message[i];
+			i += 1;
 			continue;
 		}
 		if (code === 0x09 || code === 0x0a || code === 0x0b || code === 0x0c || code === 0x0d || code === 0x85) {
@@ -248,7 +252,7 @@ function descriptorOccurrence(
 
 function runPromptOccurrence(run: RunSnapshot, prompt: PendingPrompt): PendingInputOccurrence {
 	const message = sanitizePromptDisplay(prompt.message);
-	return descriptorOccurrence(run, null, prompt.id, message, isDisplayablePrompt(message));
+	return descriptorOccurrence(run, null, prompt.id, message, prompt.kind !== "custom" && isDisplayablePrompt(message));
 }
 
 function structuredOccurrence(
@@ -317,7 +321,13 @@ function runPromptOccurrenceForStage(
 	prompt: PendingPrompt,
 ): PendingInputOccurrence {
 	const message = sanitizePromptDisplay(prompt.message);
-	return descriptorOccurrence(run, stage.id, prompt.id, message, isDisplayablePrompt(message));
+	return descriptorOccurrence(
+		run,
+		stage.id,
+		prompt.id,
+		message,
+		prompt.kind !== "custom" && stage.promptFootprint?.kind !== "custom" && isDisplayablePrompt(message),
+	);
 }
 
 function pendingInputOccurrences(run: RunSnapshot): PendingInputOccurrence[] {

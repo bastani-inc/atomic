@@ -29,6 +29,7 @@ import {
 	scanPossibleStagesFromSource,
 } from "../shared/possible-stages.js";
 import type { WorkflowDefinition } from "../shared/types.js";
+import { recordedWorkflowDefinitionSource, recordWorkflowSource, workflowSource } from "../shared/workflow-source.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import { createRegistry } from "../workflows/registry.js";
 import { loadFromDir, loadFromPaths, type WorkflowModuleCandidateRecord } from "./discovery-loaders.js";
@@ -260,6 +261,10 @@ async function applyBatch(
 			continue;
 		}
 
+		if (filePath !== undefined && workflowSource(def) === undefined) {
+			recordWorkflowSource(def, filePath);
+			await recordedWorkflowDefinitionSource(def);
+		}
 		registry = registry.register(def);
 		sources.push({
 			id: key,

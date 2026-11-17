@@ -14,6 +14,7 @@ import { createHerdrExtension } from "../src/extensions/herdr/index.js";
 import type { HerdrDiagnostic } from "../src/extensions/herdr/transport.js";
 import { publishExtensionContextEffect, registerExtensionContextRetirementEffect } from "../src/index.js";
 import { arg, FAKE_HERDR_CHILD_TIMEOUT_MS, fakeHerdr, resumeArgs } from "./helpers/herdr.js";
+import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.js";
 import { createFauxStreamFn, fauxModel } from "./test-harness.js";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.js";
 
@@ -202,6 +203,7 @@ test(
 	"SDK transactional reload retains the new reporter through retiring shutdown and final quit (#3468)",
 	async () => {
 		const fake = await fakeHerdr();
+		linkSharedTranspileCache(fake.dir);
 		try {
 			let loaded = await createTestExtensionsResult(
 				[
@@ -471,6 +473,7 @@ test.each(["prepareCommit", "extendResources", "publishProviders"] as const)(
 	"SDK rejected %s preserves live reporting, approval state and owning quit (#3468)",
 	async (failure) => {
 		const fake = await fakeHerdr();
+		linkSharedTranspileCache(fake.dir);
 		try {
 			let candidateContext: ExtensionContext | undefined;
 			let candidatePublished = false;

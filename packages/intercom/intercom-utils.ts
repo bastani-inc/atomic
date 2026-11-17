@@ -1,5 +1,5 @@
 import { type ExtensionAPI, sliceHead, type SubagentChildPolicy } from "@bastani/atomic";
-import type { Attachment, Message, SessionInfo, SupervisorRegistration } from "./types.js";
+import type { Attachment, Message, MessageDisplayRange, SessionInfo, SupervisorRegistration } from "./types.js";
 import { DEFAULT_GROUP, normalizeGroup } from "./group.js";
 
 
@@ -114,7 +114,12 @@ export function childOrchestratorMetadataFromPolicy(policy?: SubagentChildPolicy
 export function readChildOrchestratorMetadata(policy?: SubagentChildPolicy): ChildOrchestratorMetadata | null {
 	return childOrchestratorMetadataFromPolicy(policy);
 }
-export function formatChildOrchestratorMessage(kind: "ask" | "update" | "interview", metadata: ChildOrchestratorMetadata, message: string): string {
+export interface FormattedChildOrchestratorMessage {
+  readonly text: string;
+  readonly displayRanges: readonly MessageDisplayRange[];
+}
+
+function childOrchestratorHeaderPrefix(kind: "ask" | "update" | "interview", metadata: ChildOrchestratorMetadata): string {
   const heading = kind === "ask"
     ? "Subagent needs a supervisor decision."
     : kind === "interview"
@@ -127,8 +132,27 @@ export function formatChildOrchestratorMessage(kind: "ask" | "update" | "intervi
     `Child index: ${metadata.index}`,
     metadata.sessionName ? `Child intercom target: ${metadata.sessionName}` : undefined,
     "",
-    message,
+    "",
   ].filter((line): line is string => line !== undefined).join("\n");
+}
+
+export function formatChildOrchestratorMessage(kind: "ask" | "update" | "interview", metadata: ChildOrchestratorMetadata, message: string): string {
+  return `${childOrchestratorHeaderPrefix(kind, metadata)}${message}`;
+}
+
+export function formatChildOrchestratorMessagePayload(
+  kind: "ask" | "update",
+  metadata: ChildOrchestratorMetadata,
+  message: string,
+): FormattedChildOrchestratorMessage {
+  const prefix = childOrchestratorHeaderPrefix(kind, metadata);
+  const text = `${prefix}${message}`;
+  const updatePrefixMatch = kind === "update" ? message.match(/^\s*UPDATE:\s*/i) : null;
+  const start = prefix.length + (updatePrefixMatch ? updatePrefixMatch[0].length : 0);
+  return {
+    text,
+    displayRanges: start < text.length ? [{ start, end: text.length }] : [],
+  };
 }
 
 export function validateSupervisorInterviewRequest(input: unknown): { ok: true; interview: SupervisorInterviewRequest } | { ok: false; error: string } {
@@ -284,6 +308,113 @@ export function formatSupervisorInterviewRequest(interview: SupervisorInterviewR
   );
 
   return lines.join("\n");
+}
+
+export function formatSupervisorInterviewPayload(
+  metadata: ChildOrchestratorMetadata,
+  interview: SupervisorInterviewRequest,
+  message?: string,
+): FormattedChildOrchestratorMessage {
+  const prefix = childOrchestratorHeaderPrefix("interview", metadata);
+  const headerLines: string[] = [];
+  const title = interview.title?.trim();
+  if (title) headerLines.push(`Interview: ${title}`);
+  const description = interview.description?.trim();
+  if (description) headerLines.push(description);
+  const note = message?.trim();
+  if (note) headerLines.push(`Child note: ${note}`);
+  if (headerLines.length > 0) headerLines.push("");
+  headerLines.push("Questions:");
+
+  let body = `${headerLines.join("\n")}\n`;
+  const displayRanges: MessageDisplayRange[] = [];
+  let rangeStart = prefix.length;
+
+  interview.questions.forEach((question, index) => {
+    body += `${index > 0 ? "\n" : ""}${index + 1}. `;
+    displayRanges.push({ start: rangeStart, end: prefix.length + body.length });
+    body += `[${question.id}] (${question.type}) `;
+    rangeStart = prefix.length + body.length;
+    body += question.question;
+    if (typeof question.context === "string" && question.context.trim()) {
+      body += `\n   Context: ${question.context.trim()}`;
+    }
+    if (question.options?.length) {
+      body += "\n   Options:";
+      for (const option of question.options) {
+        body += `\n   - ${interviewOptionLabel(option)}`;
+      }
+    }
+  });
+  displayRanges.push({ start: rangeStart, end: prefix.length + body.length });
+
+  const responseExample = {
+    responses: interview.questions
+      .filter((question) => question.type !== "info")
+      .map((question) => ({
+        id: question.id,
+        value: interviewExampleValue(question),
+      })),
+  };
+
+  const instructionsLines = [
+    "",
+    "Supervisor reply instructions:",
+    "Reply with plain JSON or a fenced ```json block using this stable shape. Use the question ids exactly. Info questions are context-only and do not need responses. For single questions, value is one option label. For multi questions, value is an array of option labels. For text/image questions, value is a string unless the question asks otherwise.",
+    "",
+    "```json",
+    JSON.stringify(responseExample, null, 2),
+    "```",
+  ];
+  body += `\n${instructionsLines.join("\n")}`;
+
+  return {
+    text: `${prefix}${body}`,
+    displayRanges,
+  };
+}
+
+function splitsUtf16SurrogatePair(text: string, index: number): boolean {
+  if (index <= 0 || index >= text.length) return false;
+  const prev = text.charCodeAt(index - 1);
+  const curr = text.charCodeAt(index);
+  return prev >= 0xd800 && prev <= 0xdbff && curr >= 0xdc00 && curr <= 0xdfff;
+}
+
+export function extractProjectedDisplayText(content: Message["content"]): string {
+  const text = content.text;
+  const ranges = content.displayRanges;
+  if (!Array.isArray(ranges) || ranges.length === 0) return text;
+  const parts: string[] = [];
+  let lastEnd = 0;
+  let totalProjectedLength = 0;
+  for (const range of ranges) {
+    if (
+      typeof range !== "object" ||
+      range === null ||
+      Array.isArray(range) ||
+      typeof range.start !== "number" ||
+      typeof range.end !== "number" ||
+      !Number.isSafeInteger(range.start) ||
+      !Number.isSafeInteger(range.end) ||
+      range.start < lastEnd ||
+      range.end <= range.start ||
+      range.end > text.length ||
+      splitsUtf16SurrogatePair(text, range.start) ||
+      splitsUtf16SurrogatePair(text, range.end)
+    ) {
+      return text;
+    }
+    const sliceLength = range.end - range.start;
+    totalProjectedLength += sliceLength;
+    if (totalProjectedLength > text.length) {
+      return text;
+    }
+    parts.push(text.slice(range.start, range.end));
+    lastEnd = range.end;
+  }
+  const projected = parts.join("");
+  return projected.trim().length > 0 ? projected : text;
 }
 
 export function validateSupervisorInterviewReply(value: unknown, interview: SupervisorInterviewRequest): SupervisorInterviewReply {

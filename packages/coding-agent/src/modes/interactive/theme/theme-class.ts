@@ -1,6 +1,6 @@
-import chalk from "chalk";
+import { Chalk } from "chalk";
 import type { SourceInfo } from "../../../core/source-info.ts";
-import { bgAnsi, type ColorMode, fgAnsi } from "./color-utils.ts";
+import { bgAnsi, type ColorMode, fgAnsi, resolveThemeStyleLevel, type ThemeStyleLevel } from "./color-utils.ts";
 import {
 	isStatusToken,
 	splitThemeColors,
@@ -13,6 +13,13 @@ import {
 export type { ThemeBg, ThemeColor } from "./theme-tokens.ts";
 
 export type WorkingIndicatorTone = "dark" | "lift" | "muted" | "accent" | "bright" | "peak";
+
+const CHALK_BY_LEVEL = [
+	new Chalk({ level: 0 }),
+	new Chalk({ level: 1 }),
+	new Chalk({ level: 2 }),
+	new Chalk({ level: 3 }),
+] as const;
 
 export class Theme {
 	readonly name?: string;
@@ -74,24 +81,36 @@ export class Theme {
 		return `${ansi}${filled}\x1b[49m`; // Reset only background color
 	}
 
+	private style() {
+		return CHALK_BY_LEVEL[this.getStyleLevel()];
+	}
+
+	getStyleLevel(): ThemeStyleLevel {
+		return resolveThemeStyleLevel(this.mode);
+	}
+
 	bold(text: string): string {
-		return chalk.bold(text);
+		return this.style().bold(text);
 	}
 
 	italic(text: string): string {
-		return chalk.italic(text);
+		return this.style().italic(text);
 	}
 
 	underline(text: string): string {
-		return chalk.underline(text);
+		return this.style().underline(text);
+	}
+
+	dim(text: string): string {
+		return this.style().dim(text);
 	}
 
 	inverse(text: string): string {
-		return chalk.inverse(text);
+		return this.style().inverse(text);
 	}
 
 	strikethrough(text: string): string {
-		return chalk.strikethrough(text);
+		return this.style().strikethrough(text);
 	}
 
 	getFgAnsi(color: ThemeColor): string {

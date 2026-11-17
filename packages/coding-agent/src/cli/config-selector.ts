@@ -46,6 +46,7 @@ export async function selectConfig(options: ConfigSelectorOptions): Promise<void
 			ui.terminal.rows,
 			options.writeScope,
 			options.projectModeAvailable,
+			() => ui.terminal.rows,
 		);
 
 		ui.addChild(selector);

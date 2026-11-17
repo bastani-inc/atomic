@@ -352,6 +352,11 @@ async function releaseAndSettleGlobalReloadJobs(
 	await Promise.allSettled(jobs);
 }
 
+/** The agent-panel items the extensions of `runtime` list, as the host's panel and /tasks read them (#5224). */
+function panelItems(runtime: ReturnType<typeof createExtensionRuntime>) {
+	return runtime.agentPanelSourceHub.all().flatMap((source) => source.items());
+}
+
 function createHostRuntime(scope: object): ReturnType<typeof createExtensionRuntime> {
 	const runtime = createExtensionRuntime();
 	// Model the explicit owner transfer performed by DefaultResourceLoader.prepareReload.
@@ -499,7 +504,8 @@ test(
 			callbackSettlements += 1;
 		});
 		const first = await evaluateWorkflowGraph();
-		const firstExtension = await loadExtensionFromFactory(first.factory, repoRoot, bus, createHostRuntime(scope));
+		const firstRuntime = createHostRuntime(scope);
+		const firstExtension = await loadExtensionFromFactory(first.factory, repoRoot, bus, firstRuntime);
 		await emitSessionEvent(firstExtension, "session_start", { reason: "startup" }, { hasUI: true, ui: widget.ui });
 		const ids = {
 			runId: "reload-run",
@@ -509,21 +515,17 @@ test(
 			toolController: new AbortController(),
 		};
 		recordGenerationState(first, ids, callbackSettled);
-		const firstFactory = widget.calls.findLast((call) => call.factory !== undefined);
-		assert.ok(firstFactory?.factory, "the initial active tool-only run must mount the widget");
-		assert.equal(firstFactory.placement, "belowEditor");
-		assert.match(firstFactory.factory(undefined, undefined).render(120).join("\n"), /reload-tool · running/);
+		const listed = (runtime: ReturnType<typeof createExtensionRuntime>) =>
+			panelItems(runtime).find((item) => item.id === `run:${ids.runId}`);
+		assert.equal(listed(firstRuntime)?.state, "running", "the initial active tool-only run is in the agent panel");
 
 		await emitSessionEvent(firstExtension, "session_shutdown", { reason: "reload" });
 		const second = await evaluateWorkflowGraph();
 		assert.notEqual(second.store, first.store, "each evaluation holds its own facade");
-		const secondExtension = await loadExtensionFromFactory(second.factory, repoRoot, bus, createHostRuntime(scope));
+		const secondRuntime = createHostRuntime(scope);
+		const secondExtension = await loadExtensionFromFactory(second.factory, repoRoot, bus, secondRuntime);
 		await emitSessionEvent(secondExtension, "session_start", { reason: "reload" }, { hasUI: true, ui: widget.ui });
-		const secondFactory = widget.calls.findLast((call) => call.factory !== undefined);
-		assert.ok(secondFactory?.factory, "the replacement generation must remount the active run");
-		assert.notEqual(secondFactory, firstFactory);
-		assert.match(secondFactory.factory(undefined, undefined).render(120).join("\n"), /reload-tool · running/);
-		assert.deepEqual(secondFactory.factory(undefined, undefined).render(60), [" ▾  1 background · 1 ● · 1 tool"]);
+		assert.equal(listed(secondRuntime)?.state, "running", "the replacement generation lists the active run");
 
 		assertGenerationSeesRun(second, ids, "second generation");
 		assert.ok(resolveCallback);
@@ -539,7 +541,6 @@ test(
 			true,
 		);
 		assert.equal(second.store.runs()[0]?.toolNodes?.[0]?.status, "completed");
-		assert.doesNotMatch(secondFactory.factory(undefined, undefined).render(120).join("\n"), /reload-tool · running/);
 		assert.equal(second.cancellationRegistry.abort(ids.runId), true);
 		assert.equal(ids.controller.signal.aborted, true);
 		assert.equal(second.toolControlRegistry.get(ids.runId, ids.nodeId)?.abort("node").scope, "node");
@@ -600,7 +601,6 @@ test.sequential(
 			assert.equal(beforeLaunchReload.action, "reload");
 			assert.equal(beforeLaunchReload.status, "ok", beforeLaunchReload.error);
 
-			const widgetCallStart = widget.calls.length;
 			const launched = await executeWorkflowTool(
 				firstExtension,
 				"agent-run",
@@ -639,16 +639,14 @@ test.sequential(
 				],
 			);
 			assert.deepEqual(first.stageControlRegistry.forRun(launched.runId), []);
-			const initialWidget = widget.calls.slice(widgetCallStart).findLast((call) => call.factory !== undefined);
-			assert.ok(initialWidget?.factory, "run-start invalidation must mount the host widget before any stage exists");
-			assert.equal(initialWidget.placement, "belowEditor");
-			assert.match(initialWidget.factory(undefined, undefined).render(120).join("\n"), /BACKGROUND/);
+			const initialItem = panelItems(firstRuntime).find((item) => item.id === `run:${launched.runId}`);
+			assert.equal(initialItem?.state, "running", "the agent panel lists the run before any stage exists (#5224)");
 			emitReloadEvidence("agent-start", {
 				head: process.env.ATOMIC_RELOAD_EVIDENCE_HEAD,
 				origin: initial.origin,
 				stages: initial.stages.length,
 				tools: initial.toolNodes?.map((node) => [node.name, node.status]),
-				widget120: initialWidget.factory(undefined, undefined).render(120).join(" | "),
+				panel: initialItem,
 			});
 
 			const liveNode = initial.toolNodes?.find((node) => node.name === "publish-watcher");
@@ -675,7 +673,6 @@ test.sequential(
 			});
 
 			// Startup must not replay live work; the original callback retains ownership.
-			const reloadWidgetCallStart = widget.calls.length;
 			await emitSessionEvent(firstExtension, "session_shutdown", { reason: "reload" });
 			firstRuntime.invalidate();
 			setDurableBackend(durableBackend);
@@ -703,14 +700,8 @@ test.sequential(
 			assert.equal(second.jobTracker.get(launched.runId), jobOwner);
 			assert.equal(readGlobalIncidentState(stateDir).agent?.watcherExecutions, 1);
 
-			const replacementWidget = widget.calls
-				.slice(reloadWidgetCallStart)
-				.findLast((call) => call.factory !== undefined);
-			assert.ok(replacementWidget?.factory, "the host must remount the adopted active run below the editor");
-			assert.match(replacementWidget.factory(undefined, undefined).render(120).join("\n"), /BACKGROUND/);
-			assert.deepEqual(replacementWidget.factory(undefined, undefined).render(60), [
-				" ▾  1 background · 1 ● · 1 tool",
-			]);
+			const replacementItem = panelItems(secondRuntime).find((item) => item.id === `run:${launched.runId}`);
+			assert.equal(replacementItem?.state, "running", "the replacement lists the adopted active run in the panel");
 			emitReloadEvidence("full-reload-adopted", {
 				status: adopted.status,
 				resumable: adopted.resumable ?? false,
@@ -718,8 +709,7 @@ test.sequential(
 				toolOwnerPreserved: second.toolControlRegistry.get(launched.runId, liveNode.id) === toolOwner,
 				jobOwnerPreserved: second.jobTracker.get(launched.runId) === jobOwner,
 				watcherExecutions: readGlobalIncidentState(stateDir).agent?.watcherExecutions,
-				widget120: replacementWidget.factory(undefined, undefined).render(120).join(" | "),
-				widget60: replacementWidget.factory(undefined, undefined).render(60),
+				panel: replacementItem,
 			});
 
 			writeFileSync(join(stateDir, "agent.release"), "release", "utf8");
@@ -735,7 +725,8 @@ test.sequential(
 
 			const slashCommand = secondExtension.commands.get("workflow");
 			assert.ok(slashCommand, "the /workflow command must be registered beside the public tool");
-			const rendersBeforeSlash = widget.renders.count;
+			let panelChanges = 0;
+			const unsubscribePanel = secondRuntime.agentPanelSourceHub.subscribe(() => panelChanges++);
 			await slashCommand.handler("global-publish-watch label=slash --no-picker", context as never);
 			await waitForCondition(
 				() => readGlobalIncidentState(stateDir).slash?.watcherRunning === true,
@@ -752,13 +743,12 @@ test.sequential(
 			assert.equal(slashRun.origin, "user");
 			assert.deepEqual(slashRun.stages, []);
 			assert.deepEqual(second.stageControlRegistry.forRun(slashRun.id), []);
-			assert.ok(
-				widget.renders.count > rendersBeforeSlash,
-				"slash and agent launches must both invalidate the mounted host widget",
-			);
-			assert.match(
-				replacementWidget.factory(undefined, undefined).render(120).join("\n"),
-				/publish-watcher · running/,
+			unsubscribePanel();
+			assert.ok(panelChanges > 0, "slash and agent launches must both change the agent panel");
+			assert.equal(
+				panelItems(secondRuntime).find((item) => item.id === `run:${slashRun.id}`)?.state,
+				"running",
+				"the slash-launched run is listed too",
 			);
 			writeFileSync(join(stateDir, "slash.release"), "release", "utf8");
 			await waitForCondition(
@@ -943,7 +933,8 @@ test(
 		const scope = {};
 		const widget = createWidgetUi();
 		const first = await evaluateWorkflowGraph();
-		const firstExtension = await loadExtensionFromFactory(first.factory, repoRoot, bus, createHostRuntime(scope));
+		const firstRuntime = createHostRuntime(scope);
+		const firstExtension = await loadExtensionFromFactory(first.factory, repoRoot, bus, firstRuntime);
 		await emitSessionEvent(firstExtension, "session_start", { reason: "startup" }, { hasUI: true, ui: widget.ui });
 		const runId = "reload-hil-run";
 		first.store.recordRunStart({
@@ -964,38 +955,28 @@ test(
 			}),
 			true,
 		);
-		const firstFactory = widget.calls.findLast((call) => call.factory !== undefined);
-		assert.ok(firstFactory?.factory);
-		assert.match(
-			firstFactory.factory(undefined, undefined).render(120).join("\n"),
-			/"Keep this prompt through reload\?"/,
-		);
+		const question = (runtime: ReturnType<typeof createExtensionRuntime>) =>
+			panelItems(runtime).find((item) => item.id === `run:${runId}`)?.question;
+		assert.equal(question(firstRuntime), "Keep this prompt through reload?", "the panel shows the waiting question");
 		assert.deepEqual(first.store.runs()[0]?.stages[0]?.pendingPrompt?.id, "reload-prompt");
 
 		await emitSessionEvent(firstExtension, "session_shutdown", { reason: "reload" });
 		const second = await evaluateWorkflowGraph();
-		const secondExtension = await loadExtensionFromFactory(second.factory, repoRoot, bus, createHostRuntime(scope));
+		const secondRuntime = createHostRuntime(scope);
+		const secondExtension = await loadExtensionFromFactory(second.factory, repoRoot, bus, secondRuntime);
 		await emitSessionEvent(secondExtension, "session_start", { reason: "reload" }, { hasUI: true, ui: widget.ui });
 		assert.equal(second.store.runs()[0]?.id, runId);
 		assert.deepEqual(second.store.runs()[0]?.stages[0]?.pendingPrompt?.id, "reload-prompt");
-		const secondFactory = widget.calls.findLast((call) => call.factory !== undefined);
-		assert.ok(secondFactory?.factory);
-		assert.match(
-			secondFactory.factory(undefined, undefined).render(120).join("\n"),
-			/"Keep this prompt through reload\?"/,
-		);
+		assert.equal(question(secondRuntime), "Keep this prompt through reload?", "the reloaded panel keeps it");
 		assert.equal(second.store.resolveStagePendingPrompt(runId, "ask", "reload-prompt", true), true);
 		assert.equal(second.store.runs()[0]?.stages[0]?.pendingPrompt, undefined);
-		assert.doesNotMatch(
-			secondFactory.factory(undefined, undefined).render(120).join("\n"),
-			/Keep this prompt through reload/,
-		);
+		assert.equal(question(secondRuntime), undefined, "answering clears it");
 	},
 	WORKFLOW_MODULE_GRAPH_RELOAD_TIMEOUT_MS,
 );
 
 test(
-	"transactional /reload remounts pending input after predecessor shutdown",
+	"transactional /reload keeps pending input in the agent panel after predecessor shutdown (#5224)",
 	async () => {
 		const bus = createEventBus();
 		const scope = {};
@@ -1024,21 +1005,17 @@ test(
 		);
 
 		const second = await evaluateWorkflowGraph();
-		const secondExtension = await loadExtensionFromFactory(second.factory, repoRoot, bus, createHostRuntime(scope));
+		const secondRuntime = createHostRuntime(scope);
+		const secondExtension = await loadExtensionFromFactory(second.factory, repoRoot, bus, secondRuntime);
 		await emitSessionEvent(secondExtension, "session_start", { reason: "reload" }, { hasUI: true, ui: widget.ui });
 		await emitSessionEvent(firstExtension, "session_shutdown", { reason: "reload" });
 		await Promise.resolve();
 
 		assert.equal(second.store.runs()[0]?.id, runId);
 		assert.deepEqual(second.store.runs()[0]?.stages[0]?.pendingPrompt?.id, "reload-prompt");
-		const mounted = widget.calls.findLast((call) => call.factory !== undefined);
-		assert.ok(mounted?.factory, "successor must still own a factory after predecessor dispose");
-		assert.notEqual(
-			widget.calls.at(-1)?.factory,
-			undefined,
-			"the last host widget call must remount, not leave the key cleared",
-		);
-		assert.match(mounted.factory(undefined, undefined).render(120).join("\n"), /"Keep this prompt through reload\?"/);
+		const item = panelItems(secondRuntime).find((candidate) => candidate.id === `run:${runId}`);
+		assert.equal(item?.state, "input", "the successor's panel still lists the waiting run after predecessor dispose");
+		assert.equal(item?.question, "Keep this prompt through reload?");
 	},
 	WORKFLOW_MODULE_GRAPH_RELOAD_TIMEOUT_MS,
 );

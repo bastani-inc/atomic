@@ -7,6 +7,7 @@
  * These tests count renders and frames; none of them measure time.
  */
 import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
 import { type Component, resetCapabilitiesCache, setCapabilities, type Terminal } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, test, vi } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
@@ -522,7 +523,11 @@ test("a transcript row that fails to render answers with a failure frame (#4333)
 	const [frame] = rowFrames(rows.messages);
 	assert.ok(frame?.type === "engine_custom_frame");
 	assert.equal(frame.requestId, 4);
-	assert.deepEqual(frame.lines, ["Remote renderer failed: Renderer session is not bound"]);
+	assert.deepEqual(
+		frame.lines.map((line) => stripVTControlCharacters(line)),
+		[" ✗ Tool renderer failed"],
+	);
+	assert.equal(frame.lines.join("\n").includes("Renderer session is not bound"), false);
 });
 
 test("every queued transcript row renders, and each one's repaint check runs (#4333)", async () => {

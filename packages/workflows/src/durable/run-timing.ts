@@ -21,7 +21,7 @@ import type { RunBudgetAccountingState, RunSnapshot } from "../shared/store-type
 import { elapsedRunMs } from "../shared/timing.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableHash } from "./durable-hash.js";
-import type { DurableToolCheckpoint } from "./types.js";
+import type { DurableCheckpoint, DurableToolCheckpoint } from "./types.js";
 
 /** Reserved checkpoint names AND args-hashes for run-level meter records. */
 export const RUN_TIMING_CHECKPOINT_NAME = "workflow-run-timing";
@@ -39,7 +39,10 @@ function timingBucket(elapsedMs: number): number {
 
 /** Prior accumulated run elapsed recorded durably, or undefined when absent. */
 export function priorRunElapsedMs(backend: DurableWorkflowBackend, workflowId: string): number | undefined {
-	const output = backend.getToolOutput(workflowId, RUN_TIMING_CHECKPOINT_NAME);
+	return elapsedOf(backend.getToolOutput(workflowId, RUN_TIMING_CHECKPOINT_NAME));
+}
+
+function elapsedOf(output: unknown): number | undefined {
 	if (typeof output !== "object" || output === null || Array.isArray(output)) return undefined;
 	const elapsedMs = (output as Record<string, unknown>).elapsedMs;
 	if (typeof elapsedMs !== "number" || !Number.isFinite(elapsedMs) || elapsedMs <= 0) return undefined;
@@ -51,10 +54,37 @@ export function priorRunAccounting(
 	backend: DurableWorkflowBackend,
 	workflowId: string,
 ): RunBudgetAccountingState | undefined {
-	let latest = accountingOf(backend.getToolOutput(workflowId, RUN_USAGE_CHECKPOINT_NAME));
+	return latestAccounting(
+		accountingOf(backend.getToolOutput(workflowId, RUN_USAGE_CHECKPOINT_NAME)),
+		backend.listCheckpoints(workflowId),
+	);
+}
+
+export function recordedRunTotals(checkpoints: readonly DurableCheckpoint[]): {
+	readonly elapsedMs?: number;
+	readonly accounting?: RunBudgetAccountingState;
+} {
+	const latest = (name: string) =>
+		checkpoints.findLast(
+			(checkpoint): checkpoint is DurableToolCheckpoint =>
+				checkpoint.kind === "tool" && checkpoint.argsHash === name,
+		);
+	const elapsedMs = elapsedOf(latest(RUN_TIMING_CHECKPOINT_NAME)?.output);
+	const accounting = latestAccounting(accountingOf(latest(RUN_USAGE_CHECKPOINT_NAME)?.output), checkpoints);
+	return {
+		...(elapsedMs === undefined ? {} : { elapsedMs }),
+		...(accounting === undefined ? {} : { accounting }),
+	};
+}
+
+function latestAccounting(
+	own: RunBudgetAccountingState | undefined,
+	checkpoints: readonly DurableCheckpoint[],
+): RunBudgetAccountingState | undefined {
+	let latest = own;
 	// A child records its root's accounting with its own, in one write, so a crash between them loses neither (#5053).
 	// Charges only grow, so the largest record is the latest.
-	for (const checkpoint of backend.listCheckpoints(workflowId)) {
+	for (const checkpoint of checkpoints) {
 		if (checkpoint.kind !== "tool" || !isChildRunUsageCheckpointName(checkpoint.argsHash)) continue;
 		const output = checkpoint.output as { readonly rootAccounting?: unknown } | undefined;
 		const root = accountingOf({ accounting: output?.rootAccounting });

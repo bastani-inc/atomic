@@ -12,13 +12,14 @@ import type {
 } from "../../core/agent-session-types.js";
 import { onDebugSettingChange } from "../../core/debug-setting.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
-import type { ExtensionError } from "../../core/extensions/index.js";
+import type { ExtensionError, HostSessionPickerRow } from "../../core/extensions/index.js";
 import type { SessionRecoveryReason } from "../../core/extensions/session-events.ts";
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
 import { SessionManager } from "../../core/session-manager.ts";
 import { serializeSessionMutation } from "../../core/session-mutation-queue.ts";
 import type { StopAllBackgroundOutcome } from "../../core/tasks/stop-all.ts";
 import type { ToolStatusReport } from "../../core/tool-status.js";
+import { validateWorkflowResumeEntries } from "../../core/workflow-resume.ts";
 import { captureHerdrEnvironment } from "../../extensions/herdr/environment.js";
 import { releaseUnownedPaneRegistration } from "../../extensions/herdr/pane-owner.js";
 import { canonicalizePathAsync } from "../../utils/paths.ts";
@@ -128,6 +129,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private mirroringPersistedModelDefault = false;
 	private pendingEnabledModelsSync: { patterns: string[] | null } | undefined;
 	private streaming = false;
+	private panelCounts = { total: 0, needsInput: 0 };
 	private compacting = false;
 	/** Whether the engine's session waits out an automatic retry's backoff; the engine's state snapshot omits it. */
 	private retrying = false;
@@ -252,6 +254,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.client.onGenerationEnded((event) => {
 			this.retiredResourceGenerations.add(event.generation);
 			if (event.generation === this.client.getGeneration()) {
+				this.panelCounts = { total: 0, needsInput: 0 };
 				this.updateResources({});
 			}
 			// A first child that never became ready failed startup; initialStart reports it instead of a restart.
@@ -266,7 +269,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		// session/model/bash behavior do not need to implement unrelated transport
 		// surfaces.
 		this.client.onInteractiveEngineMessage?.((message) => {
+			if (message.type === "engine_agent_panel_state") {
+				this.panelCounts = { total: message.total, needsInput: message.needsInput };
+				return;
+			}
 			if (message.type === "engine_extension_ui_reset") {
+				this.panelCounts = { total: 0, needsInput: 0 };
 				this.hostExtensionUIReset?.();
 				return;
 			}
@@ -288,6 +296,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		});
 	}
 
+	get agentPanelCounts(): Readonly<{ total: number; needsInput: number }> {
+		return this.panelCounts;
+	}
+
 	override get session(): AgentSession {
 		const session = super.session;
 		this.patchSession(session);
@@ -296,6 +308,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	async openTaskInspector(taskId?: string): Promise<void> {
 		await this.client.requestInternal({ type: "open_task_inspector", ...(taskId ? { taskId } : {}) });
 	}
+	async openAgentPanel(): Promise<void> {
+		await this.client.requestInternal({ type: "open_agent_panel" });
+	}
+	async setStopAllNotice(text: string | undefined): Promise<void> {
+		await this.client.requestInternal({ type: "set_stop_all_notice", ...(text === undefined ? {} : { text }) });
+	}
 	/** The engine owns the session's tasks and workflow runs, so it stops them. */
 	async stopAllBackgroundWork(): Promise<StopAllBackgroundOutcome> {
 		return this.client.requestInternal<StopAllBackgroundOutcome>({ type: "stop_all_background" });
@@ -303,6 +321,23 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	/** The engine owns extensions and tools; the host session has neither. */
 	async getToolStatus(): Promise<ToolStatusReport> {
 		return this.client.requestInternal<ToolStatusReport>({ type: "get_tools" });
+	}
+	async getWorkflowResumeEntries(target?: string): Promise<readonly HostSessionPickerRow[]> {
+		const response = await this.client.requestInternal<{ entries: readonly HostSessionPickerRow[] }>({
+			type: "get_workflow_resume_entries",
+			...(target !== undefined ? { target } : {}),
+		});
+		return validateWorkflowResumeEntries(response?.entries);
+	}
+	async resumeWorkflowFromPicker(target: string): Promise<boolean> {
+		const response = await this.client.requestInternal<{ handled: boolean }>({
+			type: "resume_workflow_from_picker",
+			target,
+		});
+		return response.handled;
+	}
+	async deleteWorkflowFromPicker(runId: string): Promise<void> {
+		await this.client.requestInternal<void>({ type: "delete_workflow_from_picker", runId });
 	}
 	async initializeFromEngine(generation = this.client.getGeneration?.()): Promise<void> {
 		const run = this.initializationTail

@@ -12,9 +12,18 @@ import { type BashOperations, createBashToolDefinition } from "../src/core/tools
 import { createReadTool, createReadToolDefinition } from "../src/core/tools/read.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 import { codemodeRenderers } from "../src/extensions/codemode/renderer.js";
-import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
+import { ToolExecutionComponent as BaseToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
+
+const toolRows = new Set<BaseToolExecutionComponent>();
+
+class ToolExecutionComponent extends BaseToolExecutionComponent {
+	constructor(...args: ConstructorParameters<typeof BaseToolExecutionComponent>) {
+		super(...args);
+		toolRows.add(this);
+	}
+}
 
 function createBaseToolDefinition(name = "custom_tool"): ToolDefinition {
 	return {
@@ -41,6 +50,8 @@ describe("ToolExecutionComponent parity", () => {
 	});
 
 	afterEach(() => {
+		for (const component of toolRows) component.dispose();
+		toolRows.clear();
 		vi.useRealTimers();
 		resetCapabilitiesCache();
 	});
@@ -74,17 +85,16 @@ describe("ToolExecutionComponent parity", () => {
 		component.dispose();
 	});
 
-	// Upstream #9628: retain precision for short runs and all units for long runs.
 	test.each([
-		[0, "0.0s"],
-		[4_200, "4.2s"],
-		[59_999, "60.0s"],
-		[60_000, "1m 0s"],
-		[90_900, "1m 30s"],
-		[3_599_999, "59m 59s"],
-		[3_600_000, "1h 0m 0s"],
-		[7_384_900, "2h 3m 4s"],
-	])("formats bash duration %d as %s", (ms, formatted) => {
+		[0, undefined, undefined],
+		[4_200, "4s", "4.2s"],
+		[59_999, "59s", "59s"],
+		[60_000, "1m 0s", "1m 0s"],
+		[90_900, "1m 30s", "1m 30s"],
+		[3_599_999, "59m 59s", "59m 59s"],
+		[3_600_000, "1h 0m", "1h 0m"],
+		[7_384_900, "2h 3m", "2h 3m"],
+	])("formats running and settled bash duration %d (#5350)", (ms, running, formatted) => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
 		const component = new ToolExecutionComponent(
@@ -100,10 +110,13 @@ describe("ToolExecutionComponent parity", () => {
 		component.updateResult({ content: [], isError: false }, true);
 		vi.advanceTimersByTime(ms);
 		component.invalidate();
-		expect(stripAnsi(component.render(120).join("\n"))).toContain(`Elapsed ${formatted}`);
+		const active = stripAnsi(component.render(120).join("\n"));
+		expect(active).toContain(running ? `∀ Bash(work) · ${running}` : "∀ Bash(work)");
+		expect(active).not.toMatch(/Elapsed|Took|Observed for/);
 		component.updateResult({ content: [], isError: false }, false);
 		const completed = stripAnsi(component.render(120).join("\n"));
-		expect(completed).toContain(`Took ${formatted}`);
+		expect(completed).toContain(formatted ? `● Bash(work) · ${formatted}` : "● Bash(work)");
+		expect(completed).not.toMatch(/Elapsed|Took|Observed for/);
 		vi.advanceTimersByTime(1000);
 		component.invalidate();
 		expect(stripAnsi(component.render(120).join("\n"))).toBe(completed);
@@ -253,9 +266,9 @@ describe("ToolExecutionComponent parity", () => {
 		);
 		component.updateResult({ content: [], details: { diff: "+1 after", firstChangedLine: 1 }, isError: false });
 		const rawRendered = component.render(120).join("\n");
-		expect(rawRendered).toMatch(/\x1b\[48;/);
+		expect(rawRendered).not.toMatch(/\x1b\[48;/);
 		const rendered = stripAnsi(rawRendered);
-		expect(rendered).toContain("edit");
+		expect(rendered).toContain("● Edit(README.md)");
 		expect(rendered).toContain("README.md");
 		expect(rendered).not.toContain(":1");
 	});
@@ -271,7 +284,7 @@ describe("ToolExecutionComponent parity", () => {
 			process.cwd(),
 		);
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered).toContain("read");
+		expect(rendered).toContain("Read(");
 		expect(rendered).toContain("README.md");
 	});
 
@@ -327,8 +340,8 @@ describe("ToolExecutionComponent parity", () => {
 
 		const rendered = stripAnsi(component.render(200).join("\n"));
 		expect(rendered.match(/Full output:/g)?.length ?? 0).toBe(1);
-		assert.match(rendered, /line-4000[^\n]*\n[^\S\n]*\n \[Truncated: showing 3000 of 4000 lines\. Full output:\]/);
-		assert.doesNotMatch(rendered, /line-4000[^\n]*\n[^\S\n]*\n[^\S\n]*\n \[Truncated:/);
+		assert.match(rendered, /line-4000[^\n]*\n {3}⎿ {2}Truncated: showing 3000 of 4000 lines\. Full output:/);
+		assert.doesNotMatch(rendered, /line-4000[^\n]*\n\s*\n/);
 		expect(rendered).toContain("Truncated: showing 3000 of 4000 lines");
 		expect(rendered).not.toContain("[Showing lines 1001-4000 of 4000. Full output:");
 	});
@@ -367,9 +380,9 @@ describe("ToolExecutionComponent parity", () => {
 			component.updateResult({ ...result, isError: false }, false);
 
 			// Wide enough for the path alone (plus row padding), too narrow for the path beside its label.
-			const lines = component.render(fullOutputPath.length + 4);
+			const lines = component.render(fullOutputPath.length + 8);
 			const plain = lines.map((line) => stripAnsi(line).trim());
-			assert.ok(plain.includes(fullOutputPath), plain);
+			assert.ok(plain.includes(`⎿  ${fullOutputPath}`), plain);
 			// Wider than the terminal, the path still wraps; its link target keeps it whole.
 			const narrow = component.render(40).join("\n");
 			assert.ok(narrow.includes(`\x1b]8;;${pathToFileURL(resolve(fullOutputPath)).href}`), narrow);
@@ -398,11 +411,11 @@ describe("ToolExecutionComponent parity", () => {
 				vi.advanceTimersByTime(3_600_000);
 			}
 			component.updateResult({ content: [], isError: false, durationMs: 4_200 });
-			assert.ok(stripAnsi(component.render(120).join("\n")).includes("Took 4.2s"));
+			assert.ok(stripAnsi(component.render(120).join("\n")).includes("● Bash(sleep 4) · 4.2s"));
 		}
 	});
 
-	test("bash renderer labels a command yielded to the background with how long it was observed", () => {
+	test("bash renderer labels a yielded command as background work in the shared header (#5224)", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
 		const yielded = {
@@ -425,8 +438,9 @@ describe("ToolExecutionComponent parity", () => {
 			vi.advanceTimersByTime(4_200);
 			component.updateResult({ ...yielded, durationMs }, false);
 			const rendered = stripAnsi(component.render(120).join("\n"));
-			assert.ok(rendered.includes("Observed for 4.2s"), rendered);
-			assert.ok(!rendered.includes("Took"), rendered);
+			assert.ok(rendered.includes("● Bash(sleep 60) · background"), rendered);
+			assert.match(rendered, /⎿ {2}Running in background/);
+			assert.doesNotMatch(rendered, /Took|Observed for|Elapsed/);
 			component.dispose();
 		}
 	});
@@ -443,7 +457,8 @@ describe("ToolExecutionComponent parity", () => {
 		);
 		component.updateResult({ content: [{ type: "text", text: "hello" }], details: undefined, isError: false }, false);
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered.match(/\bread\b/g)?.length ?? 0).toBe(1);
+		expect(rendered.match(/● Read\(README\.md\)/g)?.length ?? 0).toBe(1);
+		expect(rendered).toContain("Read 1 line");
 	});
 
 	test("renders read calls with null offset and limit as full-file reads (#9996)", () => {
@@ -457,7 +472,7 @@ describe("ToolExecutionComponent parity", () => {
 			process.cwd(),
 		);
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		assert.ok(rendered.includes("read src/example.ts"));
+		assert.ok(rendered.includes("Read(src/example.ts)"));
 		assert.ok(!rendered.includes("src/example.ts:"));
 	});
 
@@ -500,7 +515,7 @@ describe("ToolExecutionComponent parity", () => {
 		);
 		component.updateResult({ content: [{ type: "text", text: "hello" }], details: undefined, isError: false }, false);
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered).toContain("read");
+		expect(rendered).toContain("Read(");
 		expect(rendered).toContain("README.md");
 		expect(rendered).toContain("override result");
 	});
@@ -611,14 +626,14 @@ describe("ToolExecutionComponent parity", () => {
 			process.cwd(),
 		);
 		const collapsed = stripAnsi(component.render(300).join("\n"));
-		assert.ok(collapsed.includes('custom_tool query="atomic"'));
-		assert.ok(collapsed.includes("..."));
+		assert.ok(collapsed.includes("custom_tool(query=atomic"));
+		assert.ok(collapsed.includes("…"));
 		assert.ok(!collapsed.includes(longValue));
 		component.setExpanded(true);
 		const expanded = stripAnsi(component.render(300).join("\n"));
-		assert.ok(expanded.includes("  query: atomic"));
+		assert.ok(expanded.includes("query: atomic"));
 		assert.ok(expanded.includes(longValue));
-		assert.ok(expanded.includes("    two"));
+		assert.ok(expanded.includes("two"));
 		assert.ok(!expanded.includes("\u001b[2J"));
 	});
 
@@ -665,7 +680,7 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).toContain("custom_tool");
 		expect(rendered).toContain("done");
 	});
-	test("trims trailing blank display lines from write previews", () => {
+	test("trims trailing blank display lines from expanded write results (#5224)", () => {
 		const component = new ToolExecutionComponent(
 			"write",
 			"tool-7",
@@ -675,21 +690,29 @@ describe("ToolExecutionComponent parity", () => {
 			createFakeTui(),
 			process.cwd(),
 		);
+		component.setArgsComplete();
+		component.updateResult({ content: [], isError: false });
+		component.setExpanded(true);
 		const rendered = stripAnsi(component.render(120).join("\n"));
 		expect(rendered).toContain("one");
 		expect(rendered).toContain("two");
 		expect(rendered).not.toContain("two\n\n");
+		component.dispose();
 	});
 
-	// pi #9265: every argument delta re-ran the call renderer; a streamed `write` re-highlighted its whole content each time.
-	test("renders streamed partial arguments once per frame, with the latest arguments (pi #9265)", () => {
+	test("renders streamed partial arguments once per frame, with the latest arguments (#5224)", () => {
 		const write = createWriteToolDefinition(process.cwd());
+		const writePreview: NonNullable<typeof write.renderCall> = (args) => {
+			const { path = "", content = "" } = args as { path?: string; content?: string };
+			const lines = content.trimEnd().split("\n");
+			return new Text(`Write(${path} · ${lines.length} total · ${lines.at(-1)})`, 0, 0);
+		};
 		let renderCalls = 0;
 		const counted: typeof write = {
 			...write,
 			renderCall: (...args) => {
 				renderCalls++;
-				return write.renderCall!(...args);
+				return writePreview(...args);
 			},
 		};
 		let renderRequests = 0;
@@ -713,7 +736,7 @@ describe("ToolExecutionComponent parity", () => {
 			"tool-10",
 			{ path: "src/file.ts", content },
 			{},
-			write,
+			{ ...write, renderCall: writePreview },
 			tui,
 			".",
 		);
@@ -725,14 +748,26 @@ describe("ToolExecutionComponent parity", () => {
 		component.updateArgs(final);
 		const next = stripAnsi(component.render(120).join("\n"));
 		assert.equal(renderCalls - callsBefore, 2);
-		assert.ok(next.includes("201 total"));
+		assert.match(next, /∀ Write\(src\/file\.ts · 201 total · const tail = 2;\)/);
+		assert.doesNotMatch(next, /const tail = 1/);
 		assert.equal(
 			next,
-			stripAnsi(new ToolExecutionComponent("write", "t", final, {}, write, tui, ".").render(120).join("\n")),
+			stripAnsi(
+				new ToolExecutionComponent("write", "t", final, {}, { ...write, renderCall: writePreview }, tui, ".")
+					.render(120)
+					.join("\n"),
+			),
 		);
 		// Rendering again without new arguments does not run the renderer.
 		component.render(120);
 		assert.equal(renderCalls - callsBefore, 2);
+		component.setArgsComplete();
+		component.updateResult({ content: [], isError: false });
+		assert.match(stripAnsi(component.render(120).join("\n")), /Wrote 201 lines/);
+		component.setExpanded(true);
+		assert.match(stripAnsi(component.render(120).join("\n")), /const tail = 2/);
+		component.dispose();
+		direct.dispose();
 	});
 
 	test("trims trailing blank display lines from read results", () => {
@@ -770,7 +805,7 @@ describe("ToolExecutionComponent parity", () => {
 			false,
 		);
 		const collapsed = stripAnsi(component.render(120).join("\n"));
-		expect(collapsed).toContain("read");
+		expect(collapsed).toContain("Read(");
 		expect(collapsed).toContain("notes.txt");
 		expect(collapsed).not.toContain("hidden content");
 		component.setExpanded(true);
@@ -782,7 +817,7 @@ describe("ToolExecutionComponent parity", () => {
 			title: "SKILL.md",
 			path: join(process.cwd(), "attio", "SKILL.md"),
 			content: "---\nname: attio\ndescription: CRM helper\n---\n\n# Hidden skill instructions",
-			compact: "[skill] attio",
+			compact: "Read(attio/SKILL.md)",
 			hidden: "Hidden skill instructions",
 			absent: "read skill attio",
 		},
@@ -790,7 +825,7 @@ describe("ToolExecutionComponent parity", () => {
 			title: "AGENTS.md",
 			path: join(process.cwd(), ".pi", "AGENTS.md"),
 			content: "Hidden resource instructions",
-			compact: "read resource .pi/AGENTS.md",
+			compact: "Read(.pi/AGENTS.md)",
 			hidden: "Hidden resource instructions",
 			absent: undefined,
 		},
@@ -798,7 +833,7 @@ describe("ToolExecutionComponent parity", () => {
 			title: "AGENTS.override.md",
 			path: join(process.cwd(), ".pi", "AGENTS.override.md"),
 			content: "Hidden override instructions",
-			compact: "read resource .pi/AGENTS.override.md",
+			compact: "Read(.pi/AGENTS.override.md)",
 			hidden: "Hidden override instructions",
 			absent: undefined,
 		},
@@ -806,15 +841,15 @@ describe("ToolExecutionComponent parity", () => {
 			title: "outside AGENTS.md",
 			path: resolve(process.cwd(), "..", "AGENTS.md"),
 			content: "Hidden outside resource instructions",
-			compact: `read resource ${resolve(process.cwd(), "..", "AGENTS.md").replace(/\\/g, "/")}`,
+			compact: `Read(${resolve(process.cwd(), "..", "AGENTS.md").replace(/\\/g, "/")})`,
 			hidden: "Hidden outside resource instructions",
 			absent: undefined,
 		},
 		{
-			title: "Pi documentation",
+			title: "Atomic documentation",
 			path: getReadmePath(),
 			content: "Hidden docs content",
-			compact: "read docs README.md",
+			compact: "Read(README.md)",
 			hidden: "Hidden docs content",
 			absent: undefined,
 		},
@@ -857,8 +892,8 @@ describe("ToolExecutionComponent parity", () => {
 		});
 	}
 	for (const scenario of [
-		{ title: "SKILL.md", path: `${join(process.cwd(), "attio", "SKILL.md")}:120+210`, compact: "SKILL.md:120+210" },
-		{ title: "Pi documentation", path: `${getReadmePath()}:120+210`, compact: "README.md:120+210" },
+		{ title: "SKILL.md", path: `${join(process.cwd(), "attio", "SKILL.md")}:120+210`, compact: "SKILL.md:120-329" },
+		{ title: "Atomic documentation", path: `${getReadmePath()}:120+210`, compact: "README.md:120-329" },
 	] as const) {
 		test(`shows the read line range in compact ${scenario.title} reads before the expand hint`, () => {
 			const component = new ToolExecutionComponent(

@@ -3,12 +3,28 @@ import {
 	hasActiveStageChatDelivery,
 	reconcileStageChatDeliveryLifecycle,
 } from "./stage-chat-view-delivery-activity.js";
+import { getStageEscapeInterruptState } from "./stage-chat-view-state.js";
 import { isTerminalStageChatState } from "./stage-chat-view-status.js";
 import type { StageChatViewContext } from "./stage-chat-view-types.js";
 
 export function applyStageChatLiveHandleEvent(ctx: StageChatViewContext, event: AgentSessionEvent): void {
 	const staleTerminalStart = isStaleTerminalLifecycleStart(ctx, event);
+	const type = String((event as { type?: unknown }).type ?? "");
+	const savedInterrupt = ctx.interruptedByEscape ? getStageEscapeInterruptState(ctx) : undefined;
+	if (savedInterrupt?.interruptedTurn !== undefined && type === "agent_end") {
+		ctx.chatHost.restoreInterruptedTurn(savedInterrupt.interruptedTurn, { resumeMeterForAgentEnd: true });
+	}
 	ctx.chatHost.applyAgentEvent(event);
+	if (savedInterrupt && type === "agent_end") {
+		const workedRun = ctx.chatHost.workedRunSnapshot();
+		savedInterrupt.interruptedTurn = {
+			startedAt: undefined,
+			settledTokens: savedInterrupt.interruptedTurn?.settledTokens ?? 0,
+			lastWorkingMessage: savedInterrupt.interruptedTurn?.lastWorkingMessage,
+			workedRun: workedRun ?? savedInterrupt.interruptedTurn?.workedRun,
+		};
+		savedInterrupt.awaitingAgentEnd = false;
+	}
 	if (staleTerminalStart) {
 		retainTerminalCleanup(ctx);
 		return;

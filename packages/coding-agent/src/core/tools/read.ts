@@ -17,6 +17,7 @@ import type {
 	ToolRenderContext,
 	ToolRenderResultOptions,
 } from "../extensions/types.ts";
+import { withBuiltinToolBlockRenderers } from "./builtin-renderers.js";
 import { parseConflictBytes, registerConflictBlocks } from "./conflict-registry.ts";
 import {
 	buildDirectoryTree,
@@ -948,7 +949,9 @@ export function createReadToolDefinition(
 			return text;
 		},
 	};
-	return definition as unknown as ToolDefinition<typeof readSchema, ReadToolDetails | undefined>;
+	return withBuiltinToolBlockRenderers(
+		definition as unknown as ToolDefinition<typeof readSchema, ReadToolDetails | undefined>,
+	);
 }
 export function createReadTool(cwd: string, options?: ReadToolOptions): AgentTool<typeof readSchema> {
 	return wrapToolDefinition(createReadToolDefinition(cwd, options));

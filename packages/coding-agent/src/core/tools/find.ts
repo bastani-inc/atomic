@@ -12,6 +12,7 @@ import type { ManagedToolError } from "../../utils/managed-tool-errors.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import { withBuiltinToolBlockRenderers } from "./builtin-renderers.js";
 import { FileToolAbortedError } from "./file-tool-errors.ts";
 import { literalPathLike, normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
 import { pathExists, resolveToCwdAsync } from "./path-utils.ts";
@@ -444,7 +445,7 @@ export function createFindToolDefinition(
 	options?: FindToolOptions,
 ): ToolDefinition<typeof findSchema, FindToolDetails | undefined> {
 	const customOps = options?.operations;
-	return {
+	return withBuiltinToolBlockRenderers<ToolDefinition<typeof findSchema, FindToolDetails | undefined>>({
 		name: "find",
 		label: "find",
 		description: "Find filesystem paths by glob; use search when you need content matches instead of path matches.",
@@ -873,7 +874,7 @@ export function createFindToolDefinition(
 			text.setText(formatFindResult(result, options, theme, context.showImages));
 			return text;
 		},
-	};
+	});
 }
 export function createFindTool(cwd: string, options?: FindToolOptions): AgentTool<typeof findSchema> {
 	return wrapToolDefinition(createFindToolDefinition(cwd, options));

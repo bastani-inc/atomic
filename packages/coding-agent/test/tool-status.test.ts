@@ -23,6 +23,7 @@ import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
 import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.js";
 import { stripAnsi } from "../src/utils/ansi.js";
+import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.js";
 
 beforeAll(() => {
 	initTheme(undefined, false);
@@ -39,6 +40,7 @@ test.each([
 	{ selectedBy: "a --tools modifier", settings: {}, tools: ["+codemode"] },
 ])("codemode selected by $selectedBy activates once deferred extensions load", async ({ settings, tools }) => {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-deferred-codemode-"));
+	linkSharedTranspileCache(join(cwd, "agent"));
 	try {
 		const services = await createAgentSessionServices({
 			cwd,

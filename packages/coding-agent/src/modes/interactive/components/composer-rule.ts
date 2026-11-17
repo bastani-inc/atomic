@@ -40,7 +40,7 @@ export function renderComposerRule(width: number, options: ComposerRuleOptions):
 	if (!label || plain.length === 0 || columns < INPUT_LABEL_MIN_COLUMNS) return options.color(glyph.repeat(columns));
 	const room = columns - 5;
 	const fits = visibleWidth(plain) <= room;
-	const shown = fits ? label.styled : truncateToWidth(plain, room, "…");
+	const shown = fits ? label.styled : truncateToWidth(label.styled, room, "…");
 	const shownWidth = fits ? visibleWidth(plain) : visibleWidth(shown);
 	const before = columns - shownWidth - 3;
 	return `${options.color(`${glyph.repeat(before)} `)}${shown}${options.color(` ${glyph}`)}`;

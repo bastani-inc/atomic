@@ -357,8 +357,8 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			// A SQL journal's key index: an attempt reads its own child's checkpoints from the root through it (#4197).
 			if (key === "readKeyRange")
 				return target instanceof SqlRunJournal
-					? (runId: string, fromKey: string, toKey: string) =>
-							SqlRunJournal.readKeyRange(target, runId, fromKey, toKey)
+					? (runId: string, fromKey: string, toKey: string, options?: { readonly overview?: boolean }) =>
+							SqlRunJournal.readKeyRange(target, runId, fromKey, toKey, options)
 					: undefined;
 			if (typeof key !== "string" || !journalReads.has(key))
 				return () => {

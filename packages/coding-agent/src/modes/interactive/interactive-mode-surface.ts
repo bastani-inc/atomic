@@ -362,6 +362,7 @@ declare module "./interactive-mode-base.ts" {
 		showTrustSelector(): Promise<void>;
 		showTreeSelector(initialSelectedId?: string): Promise<void>;
 		showSessionSelector(): void;
+		handleResumeTarget(target: string): Promise<void>;
 		handleResumeSession(
 			sessionId: string,
 			options?: Parameters<ExtensionCommandContext["switchSession"]>[1],

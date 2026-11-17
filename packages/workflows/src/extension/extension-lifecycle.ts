@@ -11,7 +11,6 @@ import { installCompactionHook } from "../shared/persistence-compaction-policy.j
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { Store } from "../shared/store.js";
 import { clearForms } from "../tui/inline-form-store.js";
-import { installStoreWidget } from "../tui/store-widget-installer.js";
 import { currentWorkflowSessionRunState, type WorkflowSessionRunState } from "./adopt-session-run-state.js";
 import { WORKFLOW_CONFIG_DEFAULTS } from "./config-loader.js";
 import type { WorkflowExtensionRuntimeState } from "./extension-runtime-state.js";
@@ -163,7 +162,6 @@ function eventReason(event: unknown): string | undefined {
 
 export interface WorkflowLifecycleRegistrationDeps {
 	runtimeState: WorkflowExtensionRuntimeState;
-	storeWidgetRef: { current: (() => void) | null };
 	intercomControlRef: { current: (() => void) | null };
 	disposeObservation?: () => void;
 	/** The owning session's run-scoped instances; defaults to the current ones. */
@@ -349,10 +347,6 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 				deps.intercomControlRef.current?.();
 				deps.intercomControlRef.current = null;
 			},
-			() => {
-				deps.storeWidgetRef.current?.();
-				deps.storeWidgetRef.current = null;
-			},
 			() => runtimeState.resetWorkflowDiscoveryForSession(),
 			() => runtimeState.setNotificationsActive(false),
 			() => deps.disposeObservation?.(),
@@ -421,8 +415,6 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		if (ctx?.ui) {
 			const diagnostics = formatStartupDiagnostics(runtimeState.configLoadRef.current, null);
 			if (diagnostics !== null) ctx.ui.notify?.(diagnostics, "warning");
-			deps.storeWidgetRef.current?.();
-			deps.storeWidgetRef.current = installStoreWidget({ ui: ctx.ui }, store);
 		}
 		if (isSessionSwitch(reason) && sessionCaller !== undefined) {
 			const backend = availableStoreDurableBackend(store);

@@ -97,3 +97,50 @@ export function resolveMainRepoRoot(repoRoot: string): Promise<string | undefine
 export function findCanonicalGitRoot(cwd: string): Promise<string | undefined> {
 	return runWorktreeSteps(findCanonicalGitRootSteps(cwd));
 }
+
+/** The checkout at `cwd` and what its HEAD names: a branch, the reftable placeholder `.invalid`, or nothing. */
+function* readGitHeadSteps(cwd: string): WorktreeSteps<{ repoRoot: string; branch: string } | undefined> {
+	const repoRoot = yield* findGitRootSteps(cwd);
+	if (repoRoot === undefined) return undefined;
+	const gitEntry = path.join(repoRoot, ".git");
+	let gitDir: string | undefined;
+	try {
+		const stats = yield* io("stat", gitEntry);
+		if (stats.isDirectory()) {
+			gitDir = gitEntry;
+		} else if (stats.isFile()) {
+			const pointer = yield* readText(gitEntry);
+			gitDir = pointer === undefined ? undefined : pathFromPointer(pointer, "gitdir:", repoRoot);
+		}
+	} catch {
+		return undefined;
+	}
+	if (gitDir === undefined) return undefined;
+	const head = (yield* readText(path.join(gitDir, "HEAD")))?.trim();
+	if (head === undefined || !head.startsWith("ref: refs/heads/")) return undefined;
+	const branch = head.slice("ref: refs/heads/".length).trim();
+	return branch ? { repoRoot, branch } : undefined;
+}
+
+/** The branch checked out at `cwd`, from HEAD; `probeSymbolicRef` asks Git when HEAD names the reftable placeholder. */
+export function* resolveGitHeadBranchSteps(
+	cwd: string,
+	probeSymbolicRef?: (repoRoot: string) => WorktreeSteps<string | undefined>,
+): WorktreeSteps<string | undefined> {
+	const head = yield* readGitHeadSteps(cwd);
+	if (head === undefined) return undefined;
+	if (head.branch !== ".invalid") return head.branch;
+	if (probeSymbolicRef === undefined) return undefined;
+	return (yield* probeSymbolicRef(head.repoRoot))?.trim() || undefined;
+}
+
+/** `resolveGitHeadBranchSteps` off the event loop, with a probe that may answer asynchronously. */
+export async function resolveGitHeadBranch(
+	cwd: string,
+	probeSymbolicRef?: (repoRoot: string) => string | undefined | Promise<string | undefined>,
+): Promise<string | undefined> {
+	const head = await runWorktreeSteps(readGitHeadSteps(cwd));
+	if (head === undefined) return undefined;
+	if (head.branch !== ".invalid") return head.branch;
+	return (await probeSymbolicRef?.(head.repoRoot))?.trim() || undefined;
+}

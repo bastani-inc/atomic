@@ -1,6 +1,9 @@
-import { type Component, truncateToWidth } from "@bastani/atomic-tui";
+import type { Component } from "@bastani/atomic-tui";
+import { agentPanelTaskId, taskPanelItems } from "../../../core/tasks/agent-panel-source.ts";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
+import { type TaskElapsedClocks, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
 import { theme } from "../theme/theme.js";
+import { AGENT_PANEL_IDLE_ROWS, renderAgentPanelRows } from "./agent-panel.ts";
 import { countTasksBy, TaskRow, taskLabel, taskSiblings, taskTitle } from "./task-row.js";
 
 const labelAndTitle = (task: TaskRecord): string => JSON.stringify([taskLabel(task), taskTitle(task)]);
@@ -60,45 +63,53 @@ export function taskListSections(
 export function isActiveBackgroundTask(task: TaskRecord): boolean {
 	return task.observation.kind === "background" && task.execution.kind !== "settled";
 }
-export function renderTaskFooter(tasks: readonly TaskRecord[], width: number): string[] {
-	const active = tasks.filter(isActiveBackgroundTask);
-	const background = active.filter((task) => task.execution.kind === "running" || task.execution.kind === "queued");
-	const attention = active.filter((task) => task.attention.kind !== "none");
-	if (!active.length) return [];
-	const parts: string[] = [];
-	if (attention.length) parts.push(`${attention.length} need attention`);
-	const agents = background.filter((task) => task.kind === "agent" && task.execution.kind === "running").length;
-	const shells = background.filter((task) => task.kind === "command" && task.execution.kind === "running").length;
-	const queued = background.filter((task) => task.execution.kind === "queued").length;
-	if (agents && shells) parts.push(`${agents + shells} background tasks running`);
-	else if (agents) parts.push(`${agents} ${agents === 1 ? "local agent" : "local agents"} running`);
-	else if (shells) parts.push(`${shells} ${shells === 1 ? "shell" : "shells"} running`);
-	if (queued) parts.push(`${queued} queued`);
-	const cancelling = active.filter((task) => task.execution.kind === "cancelling").length;
-	if (cancelling) parts.push(`${cancelling} stopping`);
-	if (!parts.length) parts.push(`${active.length} active`);
-	const route = " · /tasks";
-	return [
-		theme.fg(
-			attention.length || cancelling ? "warning" : "accent",
-			truncateToWidth(
-				truncateToWidth(`Tasks  ${parts.join(" · ")}`, Math.max(1, width - route.length)) + route,
-				width,
-			),
-		),
-	];
-}
 
-const dismissedBySource = new WeakMap<object, Set<TaskId>>();
-/**
- * Finished tasks the user dismissed with `x`, per task source, so each view of that source leaves them out. The task
- * and its result are untouched; only the lists stop showing it.
- */
-export function dismissedTasks(source: object): Set<TaskId> {
-	let dismissed = dismissedBySource.get(source);
-	if (dismissed === undefined) {
-		dismissed = new Set();
-		dismissedBySource.set(source, dismissed);
+export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, clocks?: TaskElapsedClocks): string[] {
+	const input: TaskRecord[] = [];
+	const running: TaskRecord[] = [];
+	const other: TaskRecord[] = [];
+	let total = 0;
+	for (let index = tasks.length - 1; index >= 0; index--) {
+		const task = tasks[index]!;
+		if (!isActiveBackgroundTask(task)) continue;
+		total++;
+		if (task.execution.kind === "running") {
+			if (task.attention.kind === "none") {
+				if (input.length + running.length < AGENT_PANEL_IDLE_ROWS) running.push(task);
+			} else if (input.length < AGENT_PANEL_IDLE_ROWS) {
+				input.push(task);
+			}
+		} else if (input.length + running.length + other.length < AGENT_PANEL_IDLE_ROWS) {
+			other.push(task);
+		}
 	}
-	return dismissed;
+	if (total === 0) return [];
+	const shownTasks = [...input, ...running, ...other].slice(0, AGENT_PANEL_IDLE_ROWS);
+	const now = Date.now();
+	const items = taskPanelItems({ backgroundTasks: shownTasks }, new Set(), { topLevelOnly: false }).map((row) => {
+		if (row.state === "queued") return row;
+		const itemClocks = taskClockOf(row) ?? clocks;
+		if (itemClocks === undefined) return row;
+		const taskId = agentPanelTaskId(row.id) ?? row.id;
+		const elapsedMs = itemClocks.elapsedMs(taskId, row.elapsedMs, taskClockRunning(row.state), now);
+		return elapsedMs === undefined || elapsedMs === row.elapsedMs || (row.elapsedMs === undefined && elapsedMs < 1000)
+			? row
+			: { ...row, elapsedMs };
+	});
+	return renderAgentPanelRows(
+		items,
+		width,
+		{
+			dim: (text) => theme.fg("dim", text),
+			text: (text) => theme.fg("text", text),
+			muted: (text) => theme.fg("muted", text),
+			border: (text) => theme.fg("borderMuted", text),
+			bold: (text) => theme.bold(text),
+			accent: (text) => theme.fg("accent", text),
+			success: (text) => theme.fg("success", text),
+			error: (text) => theme.fg("error", text),
+			warning: (text) => theme.fg("warning", text),
+		},
+		{ hiddenBelow: total - items.length },
+	);
 }

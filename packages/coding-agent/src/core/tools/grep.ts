@@ -10,6 +10,7 @@ import { attachLineReader } from "../../utils/lines.ts";
 import type { ManagedToolError } from "../../utils/managed-tool-errors.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import { withBuiltinToolBlockRenderers } from "./builtin-renderers.js";
 import { resolveToCwdAsync } from "./path-utils.ts";
 import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.ts";
 import { loadNativeSearchBinding, type NativeGrepMatch } from "./search-native.ts";
@@ -215,7 +216,7 @@ export function createGrepToolDefinition(
 	options?: GrepToolOptions,
 ): ToolDefinition<typeof grepSchema, GrepToolDetails | undefined> {
 	const customOps = options?.operations;
-	return {
+	return withBuiltinToolBlockRenderers<ToolDefinition<typeof grepSchema, GrepToolDetails | undefined>>({
 		name: "grep",
 		label: "grep",
 		description: `Search file contents for a pattern. Returns matching lines with file paths and line numbers. Respects .gitignore. Output is truncated to ${DEFAULT_LIMIT} matches or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Long lines are truncated to ${GREP_MAX_LINE_LENGTH} chars.`,
@@ -656,7 +657,7 @@ export function createGrepToolDefinition(
 			text.setText(formatGrepResult(result, options, theme, context.showImages));
 			return text;
 		},
-	};
+	});
 }
 
 export function createGrepTool(cwd: string, options?: GrepToolOptions): AgentTool<typeof grepSchema> {

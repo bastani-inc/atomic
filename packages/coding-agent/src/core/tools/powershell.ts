@@ -29,6 +29,7 @@ import {
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
 const POWERSHELL_PRESENTATION: ShellToolPresentation = {
+	toolName: "powershell",
 	prompt: "PS>",
 	tempFilePrefix: `${APP_NAME}-powershell`,
 };

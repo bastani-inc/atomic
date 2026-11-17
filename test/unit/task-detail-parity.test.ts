@@ -59,6 +59,7 @@ test("detail keeps status, zero metrics and the selected action pinned while con
 		fixture.store.drain();
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		inspector.handleInput(" ");
+		inspector.handleInput("\r");
 		for (const key of ["", "\x1b[6~", "\x1b[6~", "\x1b[5~"]) {
 			if (key) inspector.handleInput(key);
 			const rows = inspector.renderViewport(64, 10);
@@ -120,6 +121,7 @@ test("earlier transcript pages remain selected when background activity arrives"
 			await child.appendMessage({ role: "user", content: `entry-${String(i).padStart(3, "0")}`, timestamp: i });
 		fixture.runners[0].context.bindTranscript(child);
 		inspector.handleInput(" ");
+		inspector.handleInput("\r");
 		inspector.handleInput("\r");
 		fixture.runners[0].context.reportActivity({
 			reportId: "during-load",
@@ -189,7 +191,7 @@ test("tasks inspector excludes foreground work and retains previously background
 	);
 	try {
 		await fixture.start("Foreground-only task", undefined, false);
-		assert.match(plain(inspector.renderViewport(80, 24)), /No background tasks/);
+		assert.match(plain(inspector.renderViewport(80, 24)), /No background work/);
 		await fixture.settle(0);
 		await fixture.start("Background review");
 		assert.doesNotMatch(plain(inspector.renderViewport(80, 24)), /Foreground-only/);
@@ -197,7 +199,7 @@ test("tasks inspector excludes foreground work and retains previously background
 		await fixture.settle(1);
 		assert.equal(fixture.store.tasks.length, 2);
 		assert.equal(fixture.store.backgroundTasks.length, 1);
-		assert.match(plain(inspector.renderViewport(80, 24)), /Completed/);
+		assert.match(plain(inspector.renderViewport(80, 24)), /✓ worker +Background review +done/);
 		const reattached = new OwnerTaskStore(fixture.supervisor, fixture.owner);
 		try {
 			assert.ok(reattached.connect().ok);
@@ -236,6 +238,7 @@ test("transcript has stable chrome, bounded rows and top/latest navigation at na
 			await child.appendMessage({ role: "user", content: `MESSAGE-${i} ${"界".repeat(40)}\u001b[2J`, timestamp: i });
 		fixture.runners[0].context.bindTranscript(child);
 		inspector.handleInput(" ");
+		inspector.handleInput("\r");
 		inspector.handleInput("\r");
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		for (const width of [24, 48, 100]) {

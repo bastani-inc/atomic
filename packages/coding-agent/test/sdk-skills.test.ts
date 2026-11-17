@@ -7,6 +7,7 @@ import type { ResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
+import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.ts";
 
 const FIXTURE_CLEANUP_TIMEOUT_MS = 90_000;
 
@@ -18,6 +19,7 @@ describe("createAgentSession skills option", () => {
 		tempDir = join(tmpdir(), `pi-sdk-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		skillsDir = join(tempDir, "skills", "test-skill");
 		mkdirSync(skillsDir, { recursive: true });
+		linkSharedTranspileCache(tempDir);
 
 		// Create a test skill in the pi skills directory
 		writeFileSync(

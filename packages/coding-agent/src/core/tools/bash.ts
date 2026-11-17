@@ -30,6 +30,7 @@ import {
 	waitForSupervisedCommand,
 } from "./bash-pty-native.js";
 import { applyBashSessionEnvironment, snapshotBashSessionEnvironment } from "./bash-session-environment.ts";
+import { withBuiltinToolBlockRenderers } from "./builtin-renderers.js";
 import { OutputAccumulator } from "./output-accumulator.ts";
 import {
 	getTextOutput,
@@ -363,14 +364,9 @@ export interface BashToolOptions {
 	 */
 	sessionTempDir?: string | (() => string | undefined);
 }
-/**
- * Presentation identity for a shell-backed built-in tool. Atomic runs PowerShell
- * through the same execution pipeline as bash, so the transcript prompt and the
- * overflow temp-file prefix are the only shell-specific display values.
- */
 export interface ShellToolPresentation {
-	/** Transcript prompt prefix: `$` for bash, `PS>` for PowerShell. */
 	prompt: string;
+	toolName?: "bash" | "powershell";
 	/** Prefix for the temp file that holds truncated output. */
 	tempFilePrefix: string;
 }
@@ -451,7 +447,7 @@ export function createBashToolDefinition(
 	const sessionTempDirOption = options?.sessionTempDir;
 	const resolveSessionTempDir = (): string | undefined =>
 		typeof sessionTempDirOption === "function" ? sessionTempDirOption() : sessionTempDirOption;
-	return {
+	const definition: ToolDefinition<typeof bashSchema, BashToolDetails | undefined, ToolTimerState> = {
 		name: "bash",
 		concurrency: (args) => (args.pty === true ? "exclusive" : "shared"),
 		detachable: (args) => args.action === "wait" && args.budgetMs === undefined,
@@ -670,7 +666,9 @@ export function createBashToolDefinition(
 					// Custom BashOperations, the PTY and the PowerShell backends report a timeout as `timeout:<seconds>`.
 					if (err instanceof Error && err.message.startsWith("timeout:")) {
 						const timeoutSecs = err.message.split(":")[1];
-						throw new Error(appendStatus(text, `Command timed out after ${timeoutSecs} seconds`), { cause: err });
+						throw new Error(appendStatus(text, `Command timed out after ${timeoutSecs} seconds`), {
+							cause: err,
+						});
 					}
 					throw err;
 				}
@@ -707,7 +705,11 @@ export function createBashToolDefinition(
 						structuredContent,
 					};
 				}
-				return { content: [{ type: "text", text: outputText }], details: withTiming(details), structuredContent };
+				return {
+					content: [{ type: "text", text: outputText }],
+					details: withTiming(details),
+					structuredContent,
+				};
 			} finally {
 				invalidateNativeSearchCache();
 				clearUpdateTimer();
@@ -740,6 +742,7 @@ export function createBashToolDefinition(
 			return component;
 		},
 	};
+	return withBuiltinToolBlockRenderers(definition, presentation.toolName ?? "bash");
 }
 export function createBashTool(cwd: string, options?: BashToolOptions): AgentTool<typeof bashSchema> {
 	return wrapToolDefinition(createBashToolDefinition(cwd, options));
