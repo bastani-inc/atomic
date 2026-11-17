@@ -33,6 +33,7 @@ import {
 	isCommandConfigValue,
 	isConfigValueConfigured,
 	resolveHeadersOrThrow,
+	resolveHeadersOrThrowAsync,
 } from "./resolve-config-value.ts";
 
 export type { AuthStatus, ExtensionOAuthConfig, ProviderConfigInput } from "./provider-composer-internal.ts";
@@ -238,6 +239,20 @@ export function resolveConfiguredModelHeaders(
 	env?: Record<string, string>,
 ): Record<string, string> | undefined {
 	return resolveHeadersOrThrow(
+		rawModelHeaders(model, config, extension),
+		`model "${model.provider}/${model.id}"`,
+		env,
+	);
+}
+
+/** {@link resolveConfiguredModelHeaders} without blocking the event loop: a `!` command header runs asynchronously. */
+export function resolveConfiguredModelHeadersAsync(
+	model: AnyModel,
+	config: ModelsJsonProvider | undefined,
+	extension: ProviderConfigInput | undefined,
+	env?: Record<string, string>,
+): Promise<Record<string, string> | undefined> {
+	return resolveHeadersOrThrowAsync(
 		rawModelHeaders(model, config, extension),
 		`model "${model.provider}/${model.id}"`,
 		env,
