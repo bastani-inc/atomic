@@ -100,6 +100,8 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	renderIdentityIds = new WeakMap<object, number>();
 	/** Bumped when a rendered entry redraws itself (a tool renderer's `invalidate`), so its cached rows are rebuilt. */
 	entryRevisions = new WeakMap<object, number>();
+	/** The cache key shared by entries that change only by being replaced, per revision, under the current settings. */
+	readonly replacedEntryKeys = new Map<number, readonly unknown[]>();
 	nextRenderIdentityId = 1;
 	liveChat: LiveChatEntriesController;
 	editor: EditorComponent | undefined;

@@ -258,7 +258,7 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 	private ensureBlockCache(width: number): number {
 		const entries = this.entries;
 		const previous = this.blockCache;
-		if (previous.length === entries.length && previous.every((block, index) => block?.entry === entries[index])) {
+		if (sameEntries(previous, entries)) {
 			let firstChanged = UNCHANGED;
 			for (let index = 0; index < entries.length; index++) {
 				const cached = previous[index];
@@ -382,6 +382,15 @@ function indexAtOrBefore(sorted: readonly number[], target: number): number {
 		else high = middle;
 	}
 	return low - 1;
+}
+
+function sameEntries<TEntry extends ChatTranscriptEntryLike>(
+	blocks: ReadonlyArray<CachedChatTranscriptBlock<TEntry> | undefined>,
+	entries: readonly TEntry[],
+): boolean {
+	if (blocks.length !== entries.length) return false;
+	for (let index = 0; index < entries.length; index++) if (blocks[index]?.entry !== entries[index]) return false;
+	return true;
 }
 
 function sameCacheKey(left: ChatTranscriptCacheKeyValue, right: ChatTranscriptCacheKeyValue): boolean {
