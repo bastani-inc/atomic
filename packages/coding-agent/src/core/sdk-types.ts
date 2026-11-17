@@ -130,6 +130,15 @@ export interface CreateAgentSessionOptions {
 	/** Typed capability policy for an in-process subagent child. */
 	subagentPolicy?: SubagentChildPolicy;
 	/**
+	 * The session's Intercom home group and the other groups it may reach. `group` replaces the group from
+	 * `ATOMIC_INTERCOM_GROUP`, Intercom `config.json` and the project; the session keeps its workflow extension. The session
+	 * lists, sends to and asks only sessions in `group`, `reachable`, or subgroups under `group`, and the workflow stages
+	 * it starts. It joins only `group` and `reachable` and can't leave `group`. Reach is one way. The broker enforces it. Change
+	 * `reachable` later with `session.intercom.setReachable(groups)`. Invalid values throw `IntercomPolicyError`.
+	 */
+	intercom?: import("./intercom-policy.ts").IntercomSessionOptions;
+	parentIntercomPolicy?: import("./intercom-policy.ts").IntercomPolicyView;
+	/**
 	 * Internal: parent-issued shell task owner for an in-process subagent child. Supplied by the
 	 * parent's child-session options, so child background shells appear in the parent's `/tasks`.
 	 */

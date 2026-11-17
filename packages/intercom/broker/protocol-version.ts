@@ -6,13 +6,7 @@ export interface BrokerProtocolRange {
 	readonly max: number;
 }
 
-/**
- * Protocol 1 is the wire of Atomic 0.9.71 and earlier: plain `register`, no released-children frames. Protocol 2 adds
- * `register_verified`, the released-children frames and the broker frames that answer them, and `peer_rebound`.
- * Protocol 3 adds hosted sessions (#4642): `host_sessions`, `unhost_sessions`, `hosted_sessions_ack`, a send's
- * `hostedSender` and a message's `hostedRecipient`.
- */
-export const BROKER_PROTOCOL: BrokerProtocolRange = { min: 1, max: 3 };
+export const BROKER_PROTOCOL: BrokerProtocolRange = { min: 1, max: 4 };
 
 /** The range of a broker that answers `broker_status` without advertising one, or a client that registers without one. */
 export const LEGACY_BROKER_PROTOCOL: BrokerProtocolRange = { min: 1, max: 1 };
@@ -22,6 +16,8 @@ export const VERIFIED_REGISTRATION_PROTOCOL = 2;
 
 /** #4642: the first protocol with hosted sessions. */
 export const HOSTED_SESSIONS_PROTOCOL = 3;
+
+export const REACH_POLICY_PROTOCOL = 4;
 
 /**
  * How a session of `own` treats a running broker of `running`:
