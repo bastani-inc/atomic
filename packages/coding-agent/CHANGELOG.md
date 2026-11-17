@@ -33,6 +33,8 @@
 - A resumed subagent receives the notices of shells it started in an earlier run without needing another shell call. Reopening its parent no longer reports those held notices as results shown in the parent's chat ([#5342](https://github.com/bastani-inc/atomic/pull/5342))
 - Herdr keeps the pane working while a subagent's background shell runs, even after the subagent and the main response finish ([#5342](https://github.com/bastani-inc/atomic/pull/5342))
 - Expanding an agent's completion notice shows its entire retained result rather than silently cutting it off after 40 wrapped lines ([#5342](https://github.com/bastani-inc/atomic/pull/5342))
+- Replacing a submission echo with a prompt rewritten by an `input` hook, or inserting a custom message ahead of a streaming reply, now touches only the tail of the chat container instead of scanning the whole transcript, keeping prompt swaps fast in long sessions ([#5323](https://github.com/bastani-inc/atomic/issues/5323))
+- Corrected new-message counts when a transcript insertion or removal is followed by another change that restores its earlier child count ([#5323](https://github.com/bastani-inc/atomic/issues/5323))
 
 ## [0.9.88] - 2026-11-16
 
