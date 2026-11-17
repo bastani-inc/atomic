@@ -68,21 +68,21 @@ function makeProject(): string {
 }
 
 describe("project agent discovery follows project trust", () => {
-	test("an untrusted project's agents and builtin overrides are not loaded", () => {
+	test("an untrusted project's agents and builtin overrides are not loaded", async () => {
 		const project = makeProject();
 
-		const discovered = discoverAgents(project, "both", { projectTrusted: false }).agents;
+		const discovered = (await discoverAgents(project, "both", { projectTrusted: false })).agents;
 		assert.equal(
 			discovered.some((agent) => agent.name === "project-helper"),
 			false,
 		);
 		assert.notEqual(discovered.find((agent) => agent.name === "worker")?.model, PROJECT_WORKER_MODEL);
 
-		const all = discoverAgentsAll(project, { projectTrusted: false });
+		const all = await discoverAgentsAll(project, { projectTrusted: false });
 		assert.deepEqual(all.project, []);
 		assert.notEqual(all.builtin.find((agent) => agent.name === "worker")?.model, PROJECT_WORKER_MODEL);
 
-		const listed = handleList({ action: "list" }, {
+		const listed = await handleList({ action: "list" }, {
 			cwd: project,
 			modelRegistry: { getAvailable: () => [] },
 			isProjectTrusted: () => false,
@@ -90,20 +90,20 @@ describe("project agent discovery follows project trust", () => {
 		assert.doesNotMatch(listed.content[0]!.type === "text" ? listed.content[0]!.text : "", /project-helper/);
 	});
 
-	test("a trusted project's agents and builtin overrides are loaded", () => {
+	test("a trusted project's agents and builtin overrides are loaded", async () => {
 		const project = makeProject();
 
-		const discovered = discoverAgents(project, "both", { projectTrusted: true }).agents;
+		const discovered = (await discoverAgents(project, "both", { projectTrusted: true })).agents;
 		assert.ok(discovered.some((agent) => agent.name === "project-helper"));
 		assert.equal(discovered.find((agent) => agent.name === "worker")?.model, PROJECT_WORKER_MODEL);
 
-		const all = discoverAgentsAll(project, { projectTrusted: true });
+		const all = await discoverAgentsAll(project, { projectTrusted: true });
 		assert.deepEqual(
 			all.project.map((agent) => agent.name),
 			["project-helper", "project-reviewer"],
 		);
 
-		const listed = handleList({ action: "list" }, {
+		const listed = await handleList({ action: "list" }, {
 			cwd: project,
 			modelRegistry: { getAvailable: () => [] },
 			isProjectTrusted: () => true,
@@ -267,30 +267,30 @@ describe("agent management follows project trust", () => {
 		}) as unknown as Parameters<typeof handleManagementAction>[2];
 
 	for (const action of ["get", "update", "delete"] as const)
-		test(`${action} does not find an untrusted project's agent`, () => {
+		test(`${action} does not find an untrusted project's agent`, async () => {
 			const project = makeProject();
 			const params = { action, agent: "project-helper", config: { description: "changed" } };
 
-			const untrusted = handleManagementAction(action, params, context(project, false));
+			const untrusted = await handleManagementAction(action, params, context(project, false));
 			assert.equal(untrusted.isError, true);
 			assert.match(managementText(untrusted), /Agent 'project-helper' not found/);
 			assert.doesNotMatch(managementText(untrusted), /Available:.*project-helper/);
 
-			const trusted = handleManagementAction(action, params, context(project, true));
+			const trusted = await handleManagementAction(action, params, context(project, true));
 			assert.equal(trusted.isError, false, managementText(trusted));
 		});
 
-	test("create in project scope does not see an untrusted project's agent names", () => {
+	test("create in project scope does not see an untrusted project's agent names", async () => {
 		const project = makeProject();
 		const params = {
 			action: "create",
 			config: { name: "project-helper", description: "Another", scope: "project" },
 		};
 
-		const trusted = handleManagementAction("create", params, context(project, true));
+		const trusted = await handleManagementAction("create", params, context(project, true));
 		assert.match(managementText(trusted), /already exists in project scope/);
 
-		const untrusted = handleManagementAction("create", params, context(project, false));
+		const untrusted = await handleManagementAction("create", params, context(project, false));
 		assert.doesNotMatch(managementText(untrusted), /already exists in project scope/);
 	});
 });
@@ -303,25 +303,27 @@ describe("agent management lookups", () => {
 			isProjectTrusted: () => trusted,
 		}) as unknown as Parameters<typeof handleManagementAction>[2];
 
-	test("a missing agent's error lists the available agents, project agents only for a trusted project", () => {
+	test("a missing agent's error lists the available agents, project agents only for a trusted project", async () => {
 		const project = makeProject();
-		const available = (trusted: boolean) => {
-			const text = managementText(handleManagementAction("get", { agent: "missing" }, context(project, trusted)));
+		const available = async (trusted: boolean) => {
+			const text = managementText(
+				await handleManagementAction("get", { agent: "missing" }, context(project, trusted)),
+			);
 			const listed = /^Agent 'missing' not found\. Available: (.+)\.$/.exec(text);
 			assert.ok(listed, text);
 			return listed[1]!.split(", ");
 		};
 
-		const untrusted = available(false);
+		const untrusted = await available(false);
 		assert.ok(untrusted.includes("user-helper"), untrusted.join(", "));
 		assert.ok(untrusted.includes("worker"), untrusted.join(", "));
 		assert.equal(untrusted.includes("project-helper"), false);
-		assert.ok(available(true).includes("project-helper"));
+		assert.ok((await available(true)).includes("project-helper"));
 	});
 
-	test("renaming a project agent to a name its scope already has is refused", () => {
+	test("renaming a project agent to a name its scope already has is refused", async () => {
 		const project = makeProject();
-		const taken = handleManagementAction(
+		const taken = await handleManagementAction(
 			"update",
 			{ agent: "project-helper", config: { name: "project-reviewer" } },
 			context(project, true),
@@ -329,7 +331,7 @@ describe("agent management lookups", () => {
 		assert.equal(taken.isError, true);
 		assert.equal(managementText(taken), "Name 'project-reviewer' already exists in project scope.");
 
-		const renamed = handleManagementAction(
+		const renamed = await handleManagementAction(
 			"update",
 			{ agent: "project-helper", config: { name: "project-renamed" } },
 			context(project, true),
@@ -340,9 +342,9 @@ describe("agent management lookups", () => {
 	});
 
 	for (const action of ["update", "delete"] as const)
-		test(`${action} with an agentScope hint looks only in that scope`, () => {
+		test(`${action} with an agentScope hint looks only in that scope`, async () => {
 			const project = makeProject();
-			const result = handleManagementAction(
+			const result = await handleManagementAction(
 				action,
 				{ agent: "project-helper", agentScope: "user", config: { description: "changed" } },
 				context(project, true),

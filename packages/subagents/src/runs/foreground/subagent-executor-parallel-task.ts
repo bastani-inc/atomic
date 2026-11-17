@@ -3,6 +3,7 @@ import type { ExtensionContext, SessionManager } from "@bastani/atomic";
 import type { AgentConfig } from "../../agents/agents.js";
 import { INTERCOM_BRIDGE_MARKER } from "../../intercom/intercom-bridge.js";
 import { requestSupervisorAuthorization } from "../../intercom/supervisor-authorization.js";
+import { checkLaunchCwd } from "../../shared/launch-cwd.js";
 import type { ModelInfo } from "../../shared/model-info.js";
 import type { CandidateModelResolver } from "../../shared/model-resolution.js";
 import { buildTaskInstructions, type ResolvedStepBehavior } from "../../shared/settings.js";
@@ -154,6 +155,12 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 	const host = input.ctx.getAgentTaskHost?.();
 	// Admit observations independently; only actual execution holds a concurrency slot.
 	const schedule = input.schedule ?? createExecutionScheduler(input.concurrencyLimit);
+	// Every child's cwd is checked before any launches, so siblings still launch in their order.
+	const cwdVerdicts = await Promise.all(
+		input.tasks.map((task, index) =>
+			checkLaunchCwd(resolveParallelTaskCwd(task, input.paramsCwd, input.worktreeSetup, index)),
+		),
+	);
 	const runChild = async (task: TaskParam, index: number): Promise<SingleResult> => {
 		const behavior = input.behaviors[index];
 		const effectiveSkills = behavior?.skills;
@@ -205,6 +212,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			getChildSessionOptions: input.ctx.getChildSessionOptionsResolver?.() ?? input.ctx.getChildSessionOptions,
 			resourceLoaderInheritanceSnapshot: input.resourceLoaderInheritanceSnapshot,
 			cwd: taskCwd,
+			cwdVerdict: cwdVerdicts[index],
 			signal: input.signal,
 			interruptSignal: interruptController.signal,
 			...(sharedProgress ? { progressPath: sharedProgress, progressArtifactPath: sharedProgress } : {}),

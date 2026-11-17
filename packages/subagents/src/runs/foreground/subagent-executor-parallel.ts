@@ -228,7 +228,7 @@ export async function runParallelPath(
 		// #4976: the run's shared progress.md lives in run-scoped artifact storage, never in the project directory,
 		// where it would overwrite a project's own progress.md.
 		const progressDir = firstProgressIndex === -1 ? undefined : join(artifactsDir, "progress", runId);
-		if (progressDir) writeInitialProgressFile(progressDir);
+		if (progressDir) await writeInitialProgressFile(progressDir);
 
 		if (params.context === "fork") {
 			for (let i = 0; i < taskTexts.length; i++) {

@@ -106,7 +106,7 @@ export function createSubagentStartupMaintenance(
 	return {
 		scheduleStartupCleanup(onDone) {
 			schedule(() => {
-				swallowCleanup(() => cleanupOldSubagentRuntimeDirs(options.artifactCleanupDays));
+				cleanupOldSubagentRuntimeDirs(options.artifactCleanupDays).catch(() => {});
 				scheduleDelayed(() => {
 					swallowCleanup(() => cleanupAllArtifactDirs(options.artifactCleanupDays, contextSessionsRoots));
 					onDone?.();

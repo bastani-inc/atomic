@@ -17,7 +17,7 @@ const capture = vi.hoisted(() => ({ spec: undefined as ChildSpec | undefined }))
 vi.mock("../../packages/subagents/src/runs/inprocess/control-registry.ts", () => ({
 	getOrCreateSubagentControl: () => ({
 		registerAgents: () => {},
-		admitChildSession: (spec: ChildSpec) => {
+		admitCheckedChildSession: (spec: ChildSpec) => {
 			capture.spec = spec;
 			return { refusal: { reason: "dispatch boundary captured; no child execution" } };
 		},
@@ -131,7 +131,10 @@ test("a dispatch that names its model retains agent effort and falls back only t
 });
 
 test("builtin legacy effort selects ranked alternatives without widening hard constraints", async () => {
-	const { agents } = loadAgentsFromDirWithDiagnostics(join(process.cwd(), "packages/subagents/agents"), "builtin");
+	const { agents } = await loadAgentsFromDirWithDiagnostics(
+		join(process.cwd(), "packages/subagents/agents"),
+		"builtin",
+	);
 	const overridden = applyBuiltinOverrides(
 		agents,
 		{ overrides: { worker: { thinking: "high" } } },

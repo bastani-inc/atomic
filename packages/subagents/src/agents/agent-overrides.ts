@@ -1,6 +1,7 @@
-import * as fs from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { parseModelConstraints } from "../shared/model-constraints.js";
+import { pathExists } from "../shared/path-exists.js";
 import { getProjectAgentSettingsPath, getUserAgentSettingsPath } from "./agent-paths.js";
 import {
 	type AgentConfig,
@@ -89,11 +90,11 @@ function cloneOverrideValue(override: BuiltinAgentOverrideConfig): BuiltinAgentO
 	};
 }
 
-function readSettingsFileStrict(filePath: string): Record<string, unknown> {
-	if (!fs.existsSync(filePath)) return {};
+async function readSettingsFileStrict(filePath: string): Promise<Record<string, unknown>> {
+	if (!(await pathExists(filePath))) return {};
 	let raw: string;
 	try {
-		raw = fs.readFileSync(filePath, "utf-8");
+		raw = await readFile(filePath, "utf-8");
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		throw new Error(`Failed to read settings file '${filePath}': ${message}`, { cause: error });
@@ -112,9 +113,9 @@ function readSettingsFileStrict(filePath: string): Record<string, unknown> {
 	return parsed as Record<string, unknown>;
 }
 
-function writeSettingsFile(filePath: string, settings: Record<string, unknown>): void {
-	fs.mkdirSync(path.dirname(filePath), { recursive: true });
-	fs.writeFileSync(filePath, `${JSON.stringify(settings, null, 2)}\n`, "utf-8");
+async function writeSettingsFile(filePath: string, settings: Record<string, unknown>): Promise<void> {
+	await mkdir(path.dirname(filePath), { recursive: true });
+	await writeFile(filePath, `${JSON.stringify(settings, null, 2)}\n`, "utf-8");
 }
 
 function parseOverrideStringArrayOrFalse(
@@ -248,9 +249,9 @@ function parseBuiltinOverrideEntry(
 	return Object.keys(override).length > 0 ? override : undefined;
 }
 
-function readSubagentSettings(filePath: string | null): SubagentSettings {
+async function readSubagentSettings(filePath: string | null): Promise<SubagentSettings> {
 	if (!filePath) return EMPTY_SUBAGENT_SETTINGS;
-	const settings = readSettingsFileStrict(filePath);
+	const settings = await readSettingsFileStrict(filePath);
 	const subagents = settings.subagents;
 	if (!subagents || typeof subagents !== "object" || Array.isArray(subagents)) return EMPTY_SUBAGENT_SETTINGS;
 
@@ -276,13 +277,15 @@ function readSubagentSettings(filePath: string | null): SubagentSettings {
 	return { overrides: parsed, disableBuiltins };
 }
 
-export function readMergedSubagentSettings(filePaths: string[]): { settings: SubagentSettings; path: string | null } {
+export async function readMergedSubagentSettings(
+	filePaths: string[],
+): Promise<{ settings: SubagentSettings; path: string | null }> {
 	let settings = EMPTY_SUBAGENT_SETTINGS;
 	let path: string | null = null;
 	for (let i = filePaths.length - 1; i >= 0; i--) {
 		const filePath = filePaths[i]!;
-		if (!fs.existsSync(filePath)) continue;
-		const next = readSubagentSettings(filePath);
+		if (!(await pathExists(filePath))) continue;
+		const next = await readSubagentSettings(filePath);
 		settings = {
 			disableBuiltins: next.disableBuiltins ?? settings.disableBuiltins,
 			overrides: { ...settings.overrides, ...next.overrides },
@@ -407,16 +410,16 @@ export function buildBuiltinOverrideConfig(
 	return Object.keys(override).length > 0 ? override : undefined;
 }
 
-export function saveBuiltinAgentOverride(
+export async function saveBuiltinAgentOverride(
 	cwd: string,
 	name: string,
 	scope: "user" | "project",
 	override: BuiltinAgentOverrideConfig,
-): string {
-	const filePath = scope === "project" ? getProjectAgentSettingsPath(cwd) : getUserAgentSettingsPath();
+): Promise<string> {
+	const filePath = scope === "project" ? await getProjectAgentSettingsPath(cwd) : getUserAgentSettingsPath();
 	if (!filePath) throw new Error("Project override is not available here. No project config root was found.");
 
-	const settings = readSettingsFileStrict(filePath);
+	const settings = await readSettingsFileStrict(filePath);
 	const subagents =
 		settings.subagents && typeof settings.subagents === "object" && !Array.isArray(settings.subagents)
 			? { ...(settings.subagents as Record<string, unknown>) }
@@ -431,16 +434,20 @@ export function saveBuiltinAgentOverride(
 	agentOverrides[name] = cloneOverrideValue(override);
 	subagents.agentOverrides = agentOverrides;
 	settings.subagents = subagents;
-	writeSettingsFile(filePath, settings);
+	await writeSettingsFile(filePath, settings);
 	return filePath;
 }
 
-export function removeBuiltinAgentOverride(cwd: string, name: string, scope: "user" | "project"): string {
-	const filePath = scope === "project" ? getProjectAgentSettingsPath(cwd) : getUserAgentSettingsPath();
+export async function removeBuiltinAgentOverride(
+	cwd: string,
+	name: string,
+	scope: "user" | "project",
+): Promise<string> {
+	const filePath = scope === "project" ? await getProjectAgentSettingsPath(cwd) : getUserAgentSettingsPath();
 	if (!filePath) throw new Error("Project override is not available here. No project config root was found.");
-	if (!fs.existsSync(filePath)) return filePath;
+	if (!(await pathExists(filePath))) return filePath;
 
-	const settings = readSettingsFileStrict(filePath);
+	const settings = await readSettingsFileStrict(filePath);
 	const subagents = settings.subagents;
 	if (!subagents || typeof subagents !== "object" || Array.isArray(subagents)) return filePath;
 	const nextSubagents = { ...(subagents as Record<string, unknown>) };
@@ -455,6 +462,6 @@ export function removeBuiltinAgentOverride(cwd: string, name: string, scope: "us
 	if (Object.keys(nextSubagents).length > 0) settings.subagents = nextSubagents;
 	else delete settings.subagents;
 
-	writeSettingsFile(filePath, settings);
+	await writeSettingsFile(filePath, settings);
 	return filePath;
 }
