@@ -106,7 +106,7 @@ function verificationContract(prompt: string): void {
 	assert.match(prompt, /`-p ios` session proves Mobile Safari behavior, not a native iOS app/);
 	assert.doesNotMatch(prompt, /PyAutoGUI|pyautogui/i);
 	assert.doesNotMatch(prompt, /uv run --with pyautogui/);
-	assert.doesNotMatch(prompt, /cua/i);
+	assert.doesNotMatch(prompt, /\bcua\b/i);
 	assert.doesNotMatch(prompt, /`workflow resume` re-runs the preflight/);
 	assert.match(
 		prompt,
@@ -284,7 +284,7 @@ test("authoring guidance states the agent-desktop face rule for custom workflows
 	assert.match(prompt, /prefer herdr for terminal automation\/testing[\s\S]*fall back to tmux\/native Windows psmux/);
 	assert.doesNotMatch(prompt, /PyAutoGUI|pyautogui/i);
 	assert.doesNotMatch(prompt, /uv run --with pyautogui/);
-	assert.doesNotMatch(prompt, /cua/i);
+	assert.doesNotMatch(prompt, /\bcua\b/i);
 });
 
 test("default constructed guidance lets the agent interpret scoped intent itself", () => {

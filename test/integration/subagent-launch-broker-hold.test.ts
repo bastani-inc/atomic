@@ -15,8 +15,11 @@ import type { ExtensionContext } from "@bastani/atomic";
 import { afterAll, beforeAll, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
+import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
+import type { BrokerMessage } from "../../packages/intercom/types.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
+import { subagentStartHoldMs } from "../../packages/subagents/src/runs/shared/start-progress.js";
 import type { RunSyncOptions, SingleResult } from "../../packages/subagents/src/shared/types.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
@@ -215,6 +218,50 @@ async function launchingParent(name: string) {
 	return { childName: options.intercomSessionName!, start, received };
 }
 
+async function wirePeer(name: string) {
+	const socket = net.createConnection(getBrokerSocketPath(process.platform, brokerFixture.agentDir));
+	brokerFixture.onCleanup(() => {
+		socket.destroy();
+	});
+	const frames: BrokerMessage[] = [];
+	const errors: Error[] = [];
+	socket.on("error", (error) => errors.push(error));
+	socket.on(
+		"data",
+		createMessageReader(
+			(frame) => frames.push(frame as BrokerMessage),
+			(error) => errors.push(error),
+		),
+	);
+	const next = <T extends BrokerMessage["type"]>(type: T): Promise<Extract<BrokerMessage, { type: T }>> =>
+		vi.waitFor(
+			() => {
+				assert.deepEqual(errors, []);
+				const index = frames.findIndex((frame) => frame.type === type);
+				assert.notEqual(index, -1, `waiting for ${type}: ${JSON.stringify(frames)}`);
+				return frames.splice(index, 1)[0] as Extract<BrokerMessage, { type: T }>;
+			},
+			{ timeout: 5_000, interval: 10 },
+		);
+	const send = (frame: unknown) => writeMessage(socket, frame);
+	send({
+		type: "register",
+		supervisorOwnerToken: randomUUID(),
+		session: {
+			name,
+			model: "test-model",
+			cwd: repoRoot,
+			pid: process.pid,
+			status: "idle",
+			startedAt: Date.now(),
+			lastActivity: Date.now(),
+			group: "default",
+		},
+	});
+	await next("registered");
+	return { send, next, closed: () => socket.destroyed, frames };
+}
+
 let broker: ChildProcess | undefined;
 
 beforeAll(async () => {
@@ -241,6 +288,53 @@ beforeAll(async () => {
 	);
 });
 afterAll(() => brokerFixture.cleanup());
+
+test(
+	"a launch's requested hold duration reaches senders through the real broker (#5341)",
+	async () => {
+		const parent = await launchingParent("launch-duration-parent");
+		try {
+			const sender = await wirePeer("launch-duration-sender");
+			const messageId = randomUUID();
+			sender.send({
+				type: "send",
+				to: parent.childName,
+				awaitRestoringRecipient: true,
+				message: { id: messageId, timestamp: Date.now(), content: { text: "duration held message" } },
+			});
+			const held = await sender.next("send_held");
+			assert.equal(held.messageId, messageId);
+			assert.equal(held.timeoutMs, subagentStartHoldMs(undefined));
+			parent.start.resolve("register");
+			assert.equal((await sender.next("delivered")).messageId, messageId);
+			await vi.waitFor(() => assert.deepEqual(parent.received, ["duration held message"]), {
+				timeout: 5_000,
+				interval: 10,
+			});
+		} finally {
+			parent.start.resolve("fail");
+		}
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"the broker disconnects malformed starting hold requests without accepting them (#5341)",
+	async () => {
+		for (const holdMs of [0, -1, 1.5, "60000", null]) {
+			const owner = await wirePeer(`launch-invalid-duration-${holdMs}`);
+			owner.send({ type: "authorize_supervisor", requestId: randomUUID(), childName: "invalid-hold-child" });
+			const { capability } = await owner.next("supervisor_authorized");
+			owner.send({ type: "reserve_restoring_recipient", requestId: randomUUID(), capability, holdMs });
+			await vi.waitFor(() => assert.equal(owner.closed(), true), { timeout: 5_000, interval: 10 });
+			assert.equal(
+				owner.frames.some((frame) => frame.type === "restoring_recipient_ack"),
+				false,
+			);
+		}
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
 
 test(
 	"sends to a launching subagent before it registers wait for it and reach it once, in order, when it registers",
