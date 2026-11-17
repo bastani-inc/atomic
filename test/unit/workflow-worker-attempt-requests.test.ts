@@ -107,20 +107,23 @@ test("a request made with no attempt to own it is refused as fenced and never se
 	assert.equal(h.replies.attemptFenced, false);
 });
 
-test("a commit belongs to the attempt that may still write, other requests to the attempt held (#4822)", async () => {
-	const h = harness([async () => "committed"]);
-	h.requests.hold(work(4));
-	h.requests.held = undefined;
-	assert.equal(await h.requests.send(commit), "committed");
-	assert.deepEqual(h.sent[0]?.attempt, { workId: "work", generation: 4 });
-	await assert.rejects(h.requests.send(heartbeat), (error: unknown) => isWorkAttemptFencedError(error));
+test.each([commit, { kind: "session-sync", sessionId: "stage-session" } satisfies WorkerRequestBody])(
+	"$kind belongs to the attempt that may still write, other requests to the attempt held (#4822, #5344)",
+	async (message) => {
+		const h = harness([async () => "acknowledged"]);
+		h.requests.hold(work(4));
+		h.requests.held = undefined;
+		assert.equal(await h.requests.send(message), "acknowledged");
+		assert.deepEqual(h.sent[0]?.attempt, { workId: "work", generation: 4 });
+		await assert.rejects(h.requests.send(heartbeat), (error: unknown) => isWorkAttemptFencedError(error));
 
-	const cut = harness([]);
-	cut.requests.hold(work(4));
-	cut.requests.writable = undefined;
-	await assert.rejects(cut.requests.send(commit), (error: unknown) => isWorkAttemptFencedError(error));
-	assert.deepEqual(cut.sent, [], "an attempt whose writes were cut off sends no commit");
-});
+		const cut = harness([]);
+		cut.requests.hold(work(4));
+		cut.requests.writable = undefined;
+		await assert.rejects(cut.requests.send(message), (error: unknown) => isWorkAttemptFencedError(error));
+		assert.deepEqual(cut.sent, [], "an attempt whose writes were cut off sends no write or read barrier");
+	},
+);
 
 test("a commit refused once its attempt can no longer write is not sent again (#4822)", async () => {
 	const refusal = outage();
