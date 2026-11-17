@@ -174,6 +174,10 @@ Workflow stages that set their own `model` or `fallbackModels` never use this li
 
 A failure that another request to the same model cannot repair — a rejected credential, an unavailable model, a request that model cannot serve — takes that model out of the chain for the rest of the turn at **every** reasoning level, so a candidate that differs only by its `:low`/`:high` suffix is skipped rather than spent. Transient rate-limit and transport failures keep those reasoning variants, because retrying them can succeed.
 
+A rejected credential (HTTP 401 or 403, or a provider's "invalid API key" error, including OpenAI's `invalid_api_key` that it files under `invalid_request_error`) takes the whole provider out of the chain for the rest of the turn: the turn moves to the next model of another provider at once and never asks the rejecting provider again with the same credentials.
+
+A model whose provider has no credentials is skipped before any request. When the selected model has none, the turn starts on the chain's first model that has credentials, and the session's `model_change` entry records the move under `fallback`, with each model it skipped and why in `fallback.skipped` (`provider/model`, provider and reason, never a credential). A single model with no fallbacks, or a chain in which no model has credentials, fails at once with an error that names each model and the provider it needs; no other model runs in its place.
+
 Context overflow keeps its normal recovery order: compaction runs first, and a compactable overflow costs no fallback candidate. Only once compaction is disabled, fails, or reports the overflow unresolved does Atomic advance to the next configured candidate, which is how a larger-context model gets a chance at the turn.
 
 Changing the reasoning level after fallback is not a model choice, so the fallback model stays active with the reasoning level you selected. Only an explicit `/model` selection or model cycle changes the session model.

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Workflow stages skip model-chain candidates without credentials before creating sessions and block with an error naming the missing providers when none can run. A provider that rejects credentials stays out of that fallback walk, including after a resumed prompt or a cooldown. Quitting with an already blocked, resumable run no longer fails shutdown ([#5353](https://github.com/bastani-inc/atomic/pull/5353)).
+
 ## [0.9.88] - 2026-11-16
 
 ### Breaking Changes

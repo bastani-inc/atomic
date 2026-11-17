@@ -112,6 +112,17 @@ function releasedRunsNotice(runs: readonly { readonly id: string; readonly name:
 	].join("\n");
 }
 
+/** A run blocked on a recoverable failure that has not ended: recorded, resumable, and with nothing executing. */
+function blockedAtRest(
+	run: { readonly endedAt?: number; readonly blockedAt?: number; readonly failureDisposition?: string } | undefined,
+): boolean {
+	return (
+		run !== undefined &&
+		run.endedAt === undefined &&
+		(run.blockedAt !== undefined || run.failureDisposition === "active_blocked")
+	);
+}
+
 function eventReason(event: unknown): string | undefined {
 	return typeof event === "object" && event !== null && "reason" in event
 		? (event as { readonly reason?: string }).reason
@@ -156,7 +167,15 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 					);
 				const failures = results
 					.flatMap((result) => (result.ok ? [] : [result]))
-					.filter((result) => !(boundary === "switch" && result.reason === "no_active_stages"));
+					// A run blocked on a recoverable failure (for example a model chain with no credentials) has nothing
+					// running to stop: it is already recorded at rest and resumable, so quitting it is not a failure.
+					.filter(
+						(result) =>
+							!(
+								result.reason === "no_active_stages" &&
+								(boundary === "switch" || blockedAtRest(store.run(result.runId)))
+							),
+					);
 				if (failures.length > 0)
 					throw new Error(
 						failures

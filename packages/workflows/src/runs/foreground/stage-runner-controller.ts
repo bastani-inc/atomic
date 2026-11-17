@@ -19,6 +19,7 @@ import {
 	parkWorkflowStageForRelease,
 	parseModelConstraints,
 	partitionByCredentials,
+	providerOfModelReference,
 	reportDebug,
 	type SessionManager,
 	type SessionStore,
@@ -2336,12 +2337,14 @@ export class StageSessionController {
 		walk.remaining.delete(index);
 		// A provider that rejected its credentials rejects them for every model it serves: the walk drops the rest of
 		// that provider's candidates instead of asking it again with the same credentials.
-		const provider = workflowProviderId(candidates[index]?.value);
+		const provider = this.candidateProvider(candidates[index]);
 		if (provider !== undefined && normalizeModelFailureSignal(error).kind === "auth_on_candidate_provider") {
-			for (const other of [...walk.remaining]) {
+			for (const other of new Set([...walk.remaining, ...walk.rateLimited])) {
 				const candidate = candidates[other];
-				if (candidate === undefined || workflowProviderId(candidate.value) !== provider) continue;
+				if (candidate === undefined || this.candidateProvider(candidate) !== provider) continue;
 				walk.remaining.delete(other);
+				walk.rateLimited.delete(other);
+				walk.rateLimitFailures.delete(other);
 				this.modelAttempts.push({
 					model: candidate.id,
 					success: false,
@@ -2756,6 +2759,16 @@ export class StageSessionController {
 		return this.candidatesPromise;
 	}
 
+	private candidateProvider(candidate: WorkflowResolvedModelCandidate | undefined): string | undefined {
+		if (candidate === undefined) return undefined;
+		return (
+			candidate.provider ??
+			(typeof candidate.value === "string"
+				? (this.modelCatalog?.resolveProvider?.(candidate.value) ?? providerOfModelReference(candidate.value))
+				: String(candidate.value.provider))
+		);
+	}
+
 	/**
 	 * The candidates whose provider has usable credentials, in order. The others are skipped before any session or
 	 * request and listed in the stage's model attempts; a chain with none fails at once naming each model and the
@@ -2766,7 +2779,7 @@ export class StageSessionController {
 		if (catalog?.hasCredentials === undefined) return candidates;
 		const { usable, skipped } = partitionByCredentials(
 			candidates,
-			(candidate) => workflowProviderId(candidate.value),
+			(candidate) => this.candidateProvider(candidate),
 			(provider) => catalog.hasCredentials!(provider),
 		);
 		if (skipped.length === 0) return candidates;
@@ -3497,7 +3510,7 @@ export class StageSessionController {
 				this.notifyModelFallbackMetaChange();
 				throw err;
 			}
-			if (isWorkflowRateLimit(err)) {
+			if (isWorkflowRateLimit(err) || normalizeModelFailureSignal(err).kind === "auth_on_candidate_provider") {
 				for (let index = 0; index < currentIndex; index++) walk.remaining.add(index);
 				this.recordCandidateFailure(walk, currentIndex, err, candidates);
 				if (walk.remaining.size === 0) {

@@ -20,10 +20,16 @@ export interface SkippedModel {
 	readonly reason: SkippedModelReason;
 }
 
+/** A candidate skipped because its provider has no usable credentials. */
+export interface SkippedCandidate<T> {
+	readonly candidate: T;
+	readonly provider: string;
+}
+
 /** The candidates whose provider has usable credentials, in their original order, and the ones skipped. */
 export interface CredentialPartition<T> {
 	readonly usable: T[];
-	readonly skipped: { readonly candidate: T; readonly provider: string }[];
+	readonly skipped: SkippedCandidate<T>[];
 }
 
 /**
@@ -39,28 +45,41 @@ export function partitionByCredentials<T>(
 ): CredentialPartition<T> {
 	const known = new Map<string, boolean>();
 	const usable: T[] = [];
-	const skipped: { candidate: T; provider: string }[] = [];
+	const skipped: SkippedCandidate<T>[] = [];
 	for (const candidate of candidates) {
 		const provider = providerOf(candidate);
 		if (provider === undefined) {
 			usable.push(candidate);
 			continue;
 		}
-		let has = known.get(provider);
-		if (has === undefined) {
-			has = hasCredentials(provider);
-			known.set(provider, has);
-		}
+		const cached = known.get(provider);
+		const has = cached === undefined ? hasCredentials(provider) : cached;
+		if (cached === undefined) known.set(provider, has);
 		if (has) usable.push(candidate);
 		else skipped.push({ candidate, provider });
 	}
 	return { usable, skipped };
 }
 
-/** The provider of a `provider/model[:level]` reference, or `undefined` for a bare id. */
-export function providerOfModelReference(reference: string): string | undefined {
-	const slash = reference.indexOf("/");
-	return slash > 0 ? reference.slice(0, slash) : undefined;
+/** The provider of a model reference. URL-derived provider IDs require a known provider prefix. */
+export function providerOfModelReference(
+	reference: string,
+	knownProviders: readonly string[] = [],
+): string | undefined {
+	const trimmed = reference.trim();
+	const normalized = trimmed.toLowerCase();
+	let matched: string | undefined;
+	for (const provider of knownProviders) {
+		if (
+			normalized.startsWith(`${provider.toLowerCase()}/`) &&
+			(matched === undefined || provider.length > matched.length)
+		)
+			matched = provider;
+	}
+	if (matched !== undefined) return matched;
+	if (/^[a-z][a-z\d+.-]*:\/\//i.test(normalized)) return undefined;
+	const slash = trimmed.indexOf("/");
+	return slash > 0 ? trimmed.slice(0, slash) : undefined;
 }
 
 function describeSkipped(skipped: SkippedModel): string {

@@ -584,6 +584,7 @@ export {
 	NoUsableModelError,
 	partitionByCredentials,
 	providerOfModelReference,
+	type SkippedCandidate,
 	type SkippedModel,
 	type SkippedModelReason,
 } from "./core/model-credential-filter.ts";

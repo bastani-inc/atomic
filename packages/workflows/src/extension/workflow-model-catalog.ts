@@ -3,6 +3,7 @@ import {
 	DecisionModelUnavailableError,
 	decide,
 	type ModelRoutingSettings,
+	providerOfModelReference,
 	routeExecutionModel,
 } from "@bastani/atomic";
 import type { RunJournalSettings } from "../durable/journal/resolution.js";
@@ -68,6 +69,9 @@ export function workflowModelCatalogFromContext(
 						...(registry.getProviderAuthStatus
 							? { getProviderAuthStatus: registry.getProviderAuthStatus.bind(registry) }
 							: {}),
+						...(registry.hasConfiguredAuth
+							? { hasConfiguredAuth: registry.hasConfiguredAuth.bind(registry) }
+							: {}),
 					},
 				},
 				task: input.task,
@@ -108,11 +112,20 @@ export function workflowModelCatalogFromContext(
 					},
 					autoAdvanceAfterSteer: () => autoAdvanceAfterSteerSetting(readSettings?.()),
 				}),
+		resolveProvider: (reference: string): string | undefined =>
+			providerOfModelReference(
+				reference,
+				live()
+					.modelRegistry?.getAll?.()
+					.map((model) => String(model.provider)),
+			),
 		hasCredentials: (provider: string): boolean => {
 			const registry = live().modelRegistry;
-			if (registry === undefined) return true;
-			// The registry's own check, which also picks up a login or logout another process saved since the
-			// catalog was last read; the catalog is the fallback for a host without it.
+			// Only a provider the registry lists can be known to lack credentials. One it does not list yet, such as an
+			// auth.json account a stage session clones from its provider when it is created, is left to that session.
+			if (!registry?.getAll?.().some((model) => String(model.provider) === provider)) return true;
+			// The registry's own check, which also sees a login or logout another process saved since the catalog was
+			// last read; the catalog is the fallback for a host without it.
 			if (registry.hasConfiguredAuth) return registry.hasConfiguredAuth({ provider });
 			return registry.getAvailable().some((model) => String(model.provider) === provider);
 		},

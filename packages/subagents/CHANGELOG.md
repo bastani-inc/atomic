@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A subagent launch whose model chain has no credentials now names each skipped model and its provider in the error. A provider that rejects credentials is skipped for the rest of the child's fallback walk ([#5353](https://github.com/bastani-inc/atomic/pull/5353)).
+
 ## [0.9.88] - 2026-11-16
 
 ### Added

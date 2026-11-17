@@ -771,7 +771,9 @@ readonly fallbackModels?: readonly string[];
 
 Before advancing, Atomic retries a thrown failure on the same candidate when another request could plausibly repair it. Rate limits, provider outages, network timeouts, and transport errors use exponential backoff from `settings.retry`. Set `retry.enabled: false` for immediate advancement.
 
-Rejected credentials, unavailable models, incompatible requests, and content-filter refusals advance immediately, as in main chat. Retrying the same candidate cannot repair these failures. The stage's `modelAttempts` record the refusing model and its error.
+Rejected credentials, unavailable models, incompatible requests, and content-filter refusals advance immediately, as in main chat. Retrying the same candidate cannot repair these failures. The stage's `modelAttempts` record the refusing model and its error. Rejected credentials also skip the rest of that provider's candidates, recorded as `Skipped <model>: provider '<provider>' rejected its credentials.`
+
+A candidate whose provider has no usable credentials is skipped before the stage creates any session for it, and recorded as `Skipped <model>: provider '<provider>' has no credentials.` When no candidate has credentials, the stage blocks at once with an error naming each model and its provider; add the credentials and resume the run.
 
 A stage that sets `model` or `fallbackModels` uses only the chain it declares. The `fallbackModels` list in `settings.json` and the chain of the session that launched the workflow never apply to it, so a provider failure cannot move the stage to a model or reasoning level outside the chain you declared. A stage that sets neither runs on the session's current model and keeps that session's fallback behavior.
 
@@ -1587,7 +1589,7 @@ Programmatic `run(...)` returns this type. `exited` identifies `ctx.exit(...)` t
 
 When a child workflow fails, its parent classifies the failure from the child's `failure`, never from workflow or stage names in the error text. An ordinary child failure fails the parent; a child blocked on a rate limit blocks the parent for resume. A child result without `failure` is classified from the child's own error text.
 
-Each stage snapshot carries its graph position: `parentIds` lists the stages it depends on, and `executionOrder` is its admission order among the run's stages and tool nodes. `model` is the effective model after fallback resolution; `routerSelection` is the automatic routing choice: `model` and `effort`, ranked `fallbacks`, and `candidates`, the full IDs of every model the router could choose from after [`modelRouting`](/settings#modelrouting) and `modelConstraints` filtering. Selections recorded before `candidates` existed omit it. Timestamps are epoch milliseconds and are absent until the stage starts or ends. The runtime may replace `parentIds` before a stage starts, so read it from the latest snapshot rather than caching it.
+Each stage snapshot carries its graph position: `parentIds` lists the stages it depends on, and `executionOrder` is its admission order among the run's stages and tool nodes. `model` is the effective model after fallback resolution; `routerSelection` is the automatic routing choice: `model` and `effort`, ranked `fallbacks`, and `candidates`, the full IDs of every model the router could choose from after [`modelRouting`](/settings#modelrouting) and `modelConstraints` filtering. When a task requires images, `routerSelection.requiredInputs` records `["image"]` so execution fallbacks and restored routing choices keep that requirement. Older selections may omit `candidates` and `requiredInputs`. Timestamps are epoch milliseconds and are absent until the stage starts or ends. The runtime may replace `parentIds` before a stage starts, so read it from the latest snapshot rather than caching it.
 
 ## Workspaces
 

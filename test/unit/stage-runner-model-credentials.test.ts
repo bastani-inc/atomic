@@ -48,9 +48,9 @@ function stageOpts(
 				async create(options: StageSessionCreateOptions): Promise<StageSessionRuntime> {
 					const id = String(options?.model);
 					created.push(id);
-					const failure = failing.get(id);
 					const { session } = makeMockSession({
 						async prompt() {
+							const failure = failing.get(id);
 							if (failure) throw failure;
 							return "ok";
 						},
@@ -93,6 +93,36 @@ describe("a workflow stage's model chain and credentials", () => {
 		});
 		await ctx.__dispose();
 		assert.deepEqual(created, []);
+	});
+
+	test("a resumed stage skips its rejected provider when restarting the fallback chain", async () => {
+		const created: string[] = [];
+		const failures = new Map<string, Error>();
+		const ctx = createStageContext(
+			stageOpts(
+				["resumed-revoked/a", "resumed-revoked/b", "working/a"],
+				new Set(["resumed-revoked", "working"]),
+				created,
+				failures,
+			),
+		);
+		try {
+			assert.equal(await ctx.prompt("first"), "ok");
+			failures.set("resumed-revoked/a", REVOKED_401);
+			assert.equal(await ctx.prompt("second"), "ok");
+			assert.deepEqual(created, ["resumed-revoked/a", "working/a"]);
+			assert.deepEqual(
+				ctx.__modelFallbackMeta().modelAttempts?.map((attempt) => [attempt.model, attempt.success]),
+				[
+					["resumed-revoked/a", true],
+					["resumed-revoked/a", false],
+					["resumed-revoked/b", false],
+					["working/a", true],
+				],
+			);
+		} finally {
+			await ctx.__dispose();
+		}
 	});
 
 	test("a provider that rejects its credentials is not asked again for its other models", async () => {

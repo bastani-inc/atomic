@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Model chains skip providers without credentials before sending a request, and skip every remaining model of a provider after it rejects credentials. Routing excludes models without credentials without widening `allowedModels` or other constraints. A pinned model with no fallbacks is never replaced, missing-credential errors name the affected models and providers, and image tasks keep their input requirement through fallbacks and restored routing choices ([#5353](https://github.com/bastani-inc/atomic/pull/5353)).
+
 - A fast foreground shell command no longer delivers a stray `Background shell completed` notice after its own result when the command exits before Atomic has finished starting it. The model was shown the command's result a second time, as a background shell's, in chats and workflow stages alike ([#5333](https://github.com/bastani-inc/atomic/pull/5333))
 
 ## [0.9.88] - 2026-11-16

@@ -24,6 +24,21 @@ In authored workflows, a classifier can make a structured triage decision withou
 
 To keep providers or models out of routing entirely, set [`modelRouting`](/settings#modelrouting).
 
+Routing excludes models whose providers have no usable credentials, even when `modelConstraints.allowedModels` or `modelRouting.allowedModels` names them. This is a local check, not a provider request. Excluded models cannot read the task or become fallbacks. If no allowed model has credentials, routing fails without widening your allowed list.
+
+A chat `decisionModel` without credentials cannot make a routing request. The error names its model and provider. The subagent or stage can then use your current chat model only if it has credentials and meets every constraint. A classifier `decisionModel` that cannot answer uses the existing chat fallback.
+
+## Fallbacks and credentials
+
+A model chain is a pinned model followed by its `fallbackModels`, in a session, a subagent or a workflow stage. Atomic walks it without waiting on models that cannot run:
+
+- A model whose provider has no usable credentials is skipped before any request, so the chain starts on its first model that has them. Main chat records the move and the skipped models in the session's `model_change` entry (`fallback.skipped`); subagents and workflow stages list them in their model attempts, for example `Skipped openai/gpt-5: provider 'openai' has no credentials.`
+- A provider that rejects its credentials (HTTP 401 or 403, or an invalid API key error) is not asked again in that fallback walk. The chain moves to another provider. Transient errors still use the configured retry policy.
+- A chain with no usable model fails at once with an error that names each model and the provider it lacks. A workflow stage blocks instead, so you can add the credentials and resume the run.
+- A single pinned model with no fallbacks is never replaced: when its provider has no credentials, the run fails with that error.
+
+`allowedModels`, `modelRouting` provider lists and `modelConstraints` still apply to every candidate; skipping models without credentials only ever removes candidates. Tasks that require images keep that requirement on every execution fallback and restored routing choice. They never degrade to a text-only current model.
+
 ## Benchmarks are evidence, not policy
 
 Benchmark results are measurements under named harnesses, dates, models, efforts, tools, and scoring rules. Treat a bracketed effort level as the measurement configuration for that row, not a command to run every task at that effort. Compare only records whose measured setup resembles the decision at hand, and keep unmeasured work under ordinary validation rather than inheriting a score.
