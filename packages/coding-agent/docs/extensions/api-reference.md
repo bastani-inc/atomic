@@ -963,7 +963,7 @@ Return at most 10,000 rows per source. Atomic ignores additional rows and warns 
 | Field | Meaning |
 | --- | --- |
 | `id` | Unique in the session. Prefix it with your source's name, for example `deploys:42`; `main` and the `task:` prefix are reserved. |
-| `kind` | `"agent"`, `"shell"` or `"workflow"`. It decides the row's layout. |
+| `kind` | `"agent"`, `"shell"` or `"workflow"`. It decides the row's layout. A `"shell"` item is listed in `/tasks` only; the main chat's footer counts it while it is not finished. |
 | `state` | `running`, `queued`, `input` (waits for an answer), `paused`, `stopping`, `done`, `failed` or `stopped`. It decides the glyph, the state word, the `/tasks` group and whether `x` stops or dismisses. |
 | `name`, `task` | The name and what it works on, for example `stage build`. |
 | `elapsedMs`, `tokens` | Shown on the right. `elapsedMs` is finite, non-negative milliseconds. `tokens` is a non-negative safe integer, at most `Number.MAX_SAFE_INTEGER`. Between your updates, the panel and `/tasks` share the advancing time of running, waiting and stopping items. Paused and finished items keep their last elapsed time. |

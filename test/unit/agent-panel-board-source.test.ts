@@ -526,7 +526,13 @@ test.each(["agent", "shell"] as const)(
 			now += 60_000;
 			items = items.slice(0, 4);
 			const rows = agentPanelRows(session);
-			assert.equal(rows.find((row) => row.id === "ext:0")?.elapsedMs, 61_000);
+			if (kind === "shell")
+				assert.equal(
+					rows.some((row) => row.id === "ext:0"),
+					false,
+					"a shell is listed in /tasks, not the panel",
+				);
+			else assert.equal(rows.find((row) => row.id === "ext:0")?.elapsedMs, 61_000);
 			const inspector = new TaskInspector(
 				fixture.store,
 				() => {},
@@ -594,7 +600,7 @@ test("bindAgentPanel and showAgentPanel project and clock only the drawn rows an
 		try {
 			assert.ok(widget);
 			const idleLines = widget.render(100);
-			assert.equal(idleLines.length, AGENT_PANEL_IDLE_ROWS + 1);
+			assert.equal(idleLines.length, 1 + AGENT_PANEL_IDLE_ROWS + 1, "main, the capped rows and +N more");
 			assert.match(idleLines.at(-1)!, new RegExp(`\\+${20 - AGENT_PANEL_IDLE_ROWS} more`));
 			assert.equal(hiddenTitleReads, 0, "unfocused panel must not project titles of hidden native tasks");
 			assert.equal(hiddenMetricsReads, 0, "unfocused panel must not read metrics/clocks of hidden native tasks");
