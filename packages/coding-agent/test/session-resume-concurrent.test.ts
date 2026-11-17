@@ -261,7 +261,11 @@ describe("concurrent resumes of one session (#5135)", () => {
 			const result = await run.result;
 			assert.equal(result.hung, false, result.stderr);
 			assert.equal(result.code, 1, result.stderr);
-			assert.match(result.stderr, /could not persist the assistant message: Session conflict/);
+			assert.ok(
+				result.stderr.includes(`Error: Another process wrote to session ${sessionId}`),
+				`the conflict is reported as such:\n${result.stderr}`,
+			);
+			assert.doesNotMatch(result.stderr, /Extension error/, "the conflict is reported once");
 			assert.doesNotMatch(result.stderr, /\n\s+at |\^/, `no uncaught error:\n${result.stderr}`);
 		},
 		TEST_TIMEOUT_MS,

@@ -11,11 +11,9 @@ import {
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSessionEvent, AgentSessionEventListener, ExtensionBindings } from "../src/core/agent-session.ts";
-import type { PersistenceFailure } from "../src/core/agent-session-persistence-failures.ts";
 import type { ExtensionContext } from "../src/core/extensions/types.ts";
 import type { CustomMessage } from "../src/core/messages.ts";
 import { awaitBlueprintReady, holdToolsUntilBuilt } from "../src/core/resume/blueprint/barrier.ts";
-import { SessionConflictError } from "../src/core/storage/session/errors.ts";
 import { createStructuredOutputTool } from "../src/core/tools/structured-output.ts";
 import type { SessionShutdownEvent } from "../src/index.ts";
 import { type PrintModeOptions, runPrintMode } from "../src/modes/print-mode.ts";
@@ -42,7 +40,7 @@ type FakeSession = {
 	emitEvent: (event: AgentSessionEvent) => void;
 	getToolDefinition: ReturnType<typeof vi.fn<(name: string) => { structuredOutput?: true } | undefined>>;
 	prompt: ReturnType<typeof vi.fn<(text: string, options?: { images?: ImageContent[] }) => Promise<void>>>;
-	getPersistenceFailure: ReturnType<typeof vi.fn<() => PersistenceFailure | undefined>>;
+	getPersistenceFailure: () => undefined;
 	reload: ReturnType<typeof vi.fn<() => Promise<void>>>;
 };
 
@@ -186,7 +184,7 @@ function createRuntimeHost(
 			structuredOutputTools.has(name) ? { structuredOutput: true } : undefined,
 		),
 		prompt: vi.fn(async (_text: string, _options?: { images?: ImageContent[] }) => {}),
-		getPersistenceFailure: vi.fn(() => undefined),
+		getPersistenceFailure: () => undefined,
 		reload: vi.fn(async () => {}),
 	};
 
@@ -247,27 +245,6 @@ function emitLifecycleExtensionError(bindings: ExtensionBindings | undefined, er
 }
 
 describe("runPrintMode", () => {
-	it("reports a run that another process's write to the session stopped as such and exits 1 (#5135)", async () => {
-		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "the answer it got" }));
-		const conflict = new SessionConflictError("print-session", 2, 4);
-		runtimeHost.session.getPersistenceFailure.mockReturnValue({
-			error: `could not persist the system message: ${conflict.message}`,
-			unsavedMessages: [],
-			conflict,
-		});
-		captureStdout();
-		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-		const exitCode = await runPrintModeWithFakeHost(runtimeHost, { mode: "text", initialMessage: "continue" });
-
-		assert.equal(exitCode, 1);
-		assert.deepEqual(errorSpy.mock.calls, [
-			[
-				"Error: Another process wrote to session print-session while this one was writing to it (expected 2 entries, found 4), so this run stopped. Resume the session again to continue from what was saved.",
-			],
-		]);
-	});
-
 	it("preserves partial output and exits non-zero on truncation (#10799)", async () => {
 		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "partial", stopReason: "length" }));
 		const stdoutChunks = captureStdout();

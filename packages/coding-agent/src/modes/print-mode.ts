@@ -267,6 +267,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 				const isCommandError = isCommandExtensionError(err);
 				if (isCommandError || isSessionSaveError(err)) exitCode = 1;
 				activePromptHadCommandError = activePromptHadCommandError || isCommandError;
+				if (isSessionSaveError(err) && session.getPersistenceFailure()?.conflict !== undefined) return;
 				console.error(`Extension error (${err.extensionPath}): ${err.error}`);
 			},
 		});

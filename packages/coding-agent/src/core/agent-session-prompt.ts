@@ -13,6 +13,7 @@ import {
 	stopWaiting,
 } from "./agent-session-held-input.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { clearPersistenceFailure } from "./agent-session-persistence-failures.ts";
 import {
 	isProtectedStreamingCustomMessage,
 	queueHeldCustomMessages,
@@ -252,7 +253,7 @@ async function admittedPrompt(this: AgentSession, text: string, options?: Prompt
 	if (this._activePromptCount === 0 && !this.isStreaming) {
 		this._agentRunAbortRequested = false;
 		// #4226: a new prompt saves again after an earlier run stopped on a message it could not save.
-		this._persistenceFailure = undefined;
+		clearPersistenceFailure(this);
 	}
 	this._activePromptCount += 1;
 	try {
@@ -681,7 +682,7 @@ export async function _runAgentPrompt(
 	this._workflowStageAwaitingFirstPrompt = false;
 	if (this._activePromptCount === 0 && !this.isStreaming) {
 		this._agentRunAbortRequested = false;
-		this._persistenceFailure = undefined;
+		clearPersistenceFailure(this);
 	}
 	const startingMessages = Array.isArray(messages) ? messages : [messages];
 	const customMessage = !prepared
@@ -1006,7 +1007,7 @@ export async function _runAgentContinuation(
 		if (mode !== "settle") {
 			this._workflowStageAwaitingFirstPrompt = false;
 			this._agentRunAbortRequested = false;
-			this._persistenceFailure = undefined;
+			clearPersistenceFailure(this);
 			this._stopAfterTurnBlockedContinuation = false;
 		}
 		this._activePromptCount += 1;
