@@ -303,7 +303,8 @@ export async function _appendCustomMessage<T>(this: AgentSession, message: Custo
 	const stageAdmissionMessage = message as StageAdmittedCustomMessage;
 	const manager = this.sessionManager;
 	const key = stageAdmissionMessage.stageAdmissionKey;
-	await refreshFailedCustomMessageWrites(this);
+	const refresh = refreshFailedCustomMessageWrites(this);
+	if (refresh !== undefined) await refresh;
 	let entryId =
 		key === undefined || !hasUncertainCustomMessageWrite(manager, key)
 			? undefined
@@ -457,6 +458,10 @@ async function sendInterruptCustomMessageUnlocked<T>(
 		return;
 	}
 	session._abortPreparedRunAtStart = false;
+	// The interrupt starts a request, so it passes the same check as a prompt: a context over the trigger is cleared first.
+	await session._compactBeforeContinuation();
+	assertSessionOpen(session);
+	if (lifetime.aborted) throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
 	await session.agent.prompt(message);
 }
 

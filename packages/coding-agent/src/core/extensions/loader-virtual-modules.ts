@@ -6,8 +6,8 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { createJiti } from "jiti";
 import { getAgentDir, getExtensionTranspileCacheDir, isBunBinary, isBundledBuild } from "../../config.js";
-import { resolutionBaseUrl } from "../../utils/module-require.ts";
-import { pathExists } from "../../utils/path-exists.js";
+import { resolutionBaseUrl } from "../../utils/module-require.js";
+import { pathExists } from "../../utils/path-exists.ts";
 import { pathsEqual, resolvePath } from "../../utils/paths.ts";
 import { moduleDirFromMetaUrl } from "../../utils/split-launcher.ts";
 import {

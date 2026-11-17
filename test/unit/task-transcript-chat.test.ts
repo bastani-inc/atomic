@@ -61,7 +61,7 @@ const assistant = (content: AssistantMessage["content"], stopReason: AssistantMe
 const verbatimDetails: VerbatimCompactionDetails = {
 	strategy: "verbatim-lines",
 	promptVersion: VERBATIM_COMPACTION_PROMPT_VERSION,
-	parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
+	parameters: { query: "test" },
 	stats: {
 		linesBefore: 2,
 		linesDeleted: 1,
@@ -71,7 +71,7 @@ const verbatimDetails: VerbatimCompactionDetails = {
 		tokensAfter: 50,
 		percentReduction: 50,
 	},
-	rung: "planned",
+	form: "cleared",
 };
 
 interface OpenTranscriptOptions {
@@ -431,7 +431,7 @@ test("compaction boundaries, branch summaries and extension notices appear in a 
 		const text = host.text();
 		assert.match(text, /EXTENSION-NOTICE-TEXT/);
 		assert.doesNotMatch(text, /HIDDEN-CONTEXT-TEXT/);
-		assert.match(text, /Context compacted/);
+		assert.match(text, /⚛ Context cleared · 12.3k tokens/);
 		assert.match(text, /BRANCH-SUMMARY-TEXT|Branch summary/i);
 	} finally {
 		await host.dispose();

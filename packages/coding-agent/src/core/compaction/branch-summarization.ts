@@ -20,7 +20,6 @@ import { convertToLlm, createBranchSummaryMessage, createCustomMessage } from ".
 import type { ContextEditEntry, ReadonlySessionManager, SessionEntry } from "../session-manager.ts";
 import { applyContextEdit } from "../session-manager-history.ts";
 import { estimateTokens } from "./compaction.ts";
-import { resolvePlannerRequest } from "./range-planner.js";
 import {
 	collectFileOpsFromMessage,
 	computeFileLists,
@@ -413,14 +412,13 @@ export async function generateBranchSummary(
 	// request behavior stays consistent without mutating agent state.
 	const context = normalizeContext({ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages });
 	const requestModel = baseUrl === undefined || baseUrl === model.baseUrl ? model : { ...model, baseUrl };
-	const budget = resolvePlannerRequest(requestModel, thinkingLevel);
 	const requestOptions: SimpleStreamOptions = {
 		apiKey,
 		headers,
 		signal,
 		cacheRetention: "none",
 		sessionId: uuidv7(),
-		...(budget.reasoning && budget.reasoning !== "off" ? { reasoning: budget.reasoning } : {}),
+		...(thinkingLevel && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
 	};
 	const response = await (async () => {
 		try {

@@ -5,7 +5,7 @@ import { readdir, readFile, stat } from "fs/promises";
 import { basename, join } from "path";
 import { getSessionsDir } from "../config.js";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
-import { pathExists as exists } from "../utils/path-exists.js";
+import { pathExists as exists } from "../utils/path-exists.ts";
 import { createSessionCwdMatcherAsync, normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import { classifiedWorkflowMetadata } from "./session-manager-classification.ts";
 import { getLatestSessionSummary } from "./session-manager-entries.ts";

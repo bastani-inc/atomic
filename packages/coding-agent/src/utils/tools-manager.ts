@@ -33,7 +33,7 @@ import {
 	ManagedToolTimeoutError,
 } from "./managed-tool-errors.ts";
 import { fetchWithRetry } from "./management-http.ts";
-import { pathExists } from "./path-exists.js";
+import { pathExists } from "./path-exists.ts";
 import { getPiUserAgent } from "./pi-user-agent.ts";
 
 const TOOLS_DIR = getBinDir();

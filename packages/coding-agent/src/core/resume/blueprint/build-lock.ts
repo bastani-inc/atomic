@@ -17,8 +17,8 @@ import { access, mkdir, readFile, rm } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { killProcessTree } from "../../../utils/shell.ts";
-import { type AsyncTakeoverMutex, takeTakeoverMutexAsync } from "../../lock-takeover.ts";
-import { processStartTokenAsync } from "../../process-start-token.ts";
+import { type AsyncTakeoverMutex, takeTakeoverMutexAsync } from "../../lock-takeover.js";
+import { processStartTokenAsync } from "../../process-start-token.js";
 import { rootKey } from "./ledger.ts";
 import { stepProcessWatcher } from "./process.ts";
 

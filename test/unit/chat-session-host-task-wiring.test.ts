@@ -230,17 +230,17 @@ test("compaction refresh while scrolled up preserves counted arrivals in a chat 
 			compactedText: "Compacted earlier context",
 			firstKeptEntryId: null,
 			tokensBefore: 4000,
-			rung: "planned" as const,
-			promptVersion: 6 as const,
+			form: "cleared" as const,
+			promptVersion: 7 as const,
 			parameters,
 			stats,
 		};
 		compactedMessages = [
 			createVerbatimCompactionMessage("Compacted earlier context", 4000, new Date(103).toISOString(), {
 				strategy: "verbatim-lines",
-				promptVersion: 6,
+				promptVersion: 7,
 				parameters,
-				rung: "planned",
+				form: "cleared",
 				stats,
 			}),
 			...longConversation.slice(-15),
@@ -281,17 +281,17 @@ test("compaction_end in the same frame as unpainted arrivals preserves the unrea
 		compactedText: "Compacted earlier context",
 		firstKeptEntryId: null,
 		tokensBefore: 4000,
-		rung: "planned" as const,
-		promptVersion: 6 as const,
+		form: "cleared" as const,
+		promptVersion: 7 as const,
 		parameters,
 		stats,
 	};
 	const compactedSnapshot = [
 		createVerbatimCompactionMessage("Compacted earlier context", 4000, new Date(103).toISOString(), {
 			strategy: "verbatim-lines",
-			promptVersion: 6,
+			promptVersion: 7,
 			parameters,
-			rung: "planned",
+			form: "cleared",
 			stats,
 		}),
 		...longConversation.slice(-15),
@@ -351,8 +351,8 @@ test("compaction_end that refreshes to a longer transcript while scrolled up doe
 		compactedText: "Compacted earlier context",
 		firstKeptEntryId: null,
 		tokensBefore: 4000,
-		rung: "planned" as const,
-		promptVersion: 6 as const,
+		form: "cleared" as const,
+		promptVersion: 7 as const,
 		parameters,
 		stats,
 	};
@@ -360,9 +360,9 @@ test("compaction_end that refreshes to a longer transcript while scrolled up doe
 	const compactedSnapshot = [
 		createVerbatimCompactionMessage("Compacted earlier context", 4000, new Date(103).toISOString(), {
 			strategy: "verbatim-lines",
-			promptVersion: 6,
+			promptVersion: 7,
 			parameters,
-			rung: "planned",
+			form: "cleared",
 			stats,
 		}),
 		...longConversation,

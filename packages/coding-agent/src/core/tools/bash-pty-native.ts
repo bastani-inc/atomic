@@ -1,6 +1,6 @@
 import { setTimeout as poll } from "node:timers/promises";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
-import { createModuleRequire } from "../../utils/module-require.ts";
+import { createModuleRequire } from "../../utils/module-require.js";
 import { getShellConfigAsync, getShellEnvAsync, type ShellConfig } from "../../utils/shell.ts";
 import type { OperationId, TaskId, WaitOutcome, WaitPolicy } from "../tasks/contracts.js";
 import type { CommandLaunchOrigin, OwnerLease, TaskLease, TaskSupervisor, WaitLease } from "../tasks/supervisor.js";

@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { SessionStore } from "./storage/session/types.js";
+import { withWindowsDirectorySecurityOwner } from "./tools/windows-directory-security.ts";
 
 export const ownedSessionStores = new WeakMap<object, SessionStore>();
 export const ownedSessionPermits = new WeakMap<object, () => Promise<void>>();
@@ -11,6 +12,11 @@ const reloadCleanupFailures = new WeakMap<object, unknown[]>();
 const reloadRetirements = new WeakMap<object, Set<Promise<void>>>();
 const work = new WeakMap<object, Set<Promise<void>>>();
 const lifetimes = new WeakMap<object, AbortController>();
+const sessionWorkOwners = new WeakSet<object>();
+
+export function registerSessionWorkOwner(owner: object): void {
+	sessionWorkOwners.add(owner);
+}
 const quitSignals = new WeakMap<object, AbortController>();
 export const sessionGenerationClosing = new WeakSet<object>();
 const retiringWork = new WeakMap<object, Set<Promise<void>>>();
@@ -118,7 +124,11 @@ export function trackSessionWork<T>(session: object, operation: () => Promise<T>
 	pending.add(settled);
 	const ancestors = new Set(currentWork.getStore());
 	ancestors.add(settled);
-	const result = currentWork.run(ancestors, async () => operation());
+	const result = currentWork.run(ancestors, () =>
+		withWindowsDirectorySecurityOwner(sessionLifetime(session), async () => operation(), {
+			inherit: !sessionWorkOwners.has(session),
+		}),
+	);
 	void result
 		.finally(() => {
 			pending.delete(settled);

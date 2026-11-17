@@ -81,7 +81,7 @@ export function createHerdrExtension(options: HerdrExtensionOptions = {}): Exten
 			if (options.diagnostic) options.diagnostic(value);
 			else console.error(`[Herdr] ${value.kind}${value.owner ? `: deferring to ${value.owner}` : ""}`);
 		};
-		const tasksRunning = () => taskStore?.tasks.some((task) => task.execution.kind !== "settled") ?? false;
+		const tasksRunning = () => taskStore?.ownerTasks.some((task) => task.execution.kind !== "settled") ?? false;
 		const report = (skipUnchanged = false) => {
 			if (!owner) return;
 			const activity = deriveSessionActivity({

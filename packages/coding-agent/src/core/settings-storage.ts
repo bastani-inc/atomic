@@ -22,7 +22,7 @@ import { dirname, isAbsolute, join, resolve, sep } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME } from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
-import { pathExists } from "../utils/path-exists.js";
+import { pathExists } from "../utils/path-exists.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { normalizeAzureSettings } from "./azure-provider-compat.js";
 import {
@@ -33,7 +33,7 @@ import {
 	recordLockHolderAsync,
 	takeOverDeadHolder,
 	takeOverDeadHolderAsync,
-} from "./lock-holder.ts";
+} from "./lock-holder.js";
 import { releaseLock, releaseLockSync } from "./lock-release.ts";
 import { inLockTurn, type LockFileSystem, type LockWait, waitForLock, waitForLockSync } from "./lock-wait.ts";
 import { renameReplacing, renameReplacingAsync } from "./rename-retry.ts";

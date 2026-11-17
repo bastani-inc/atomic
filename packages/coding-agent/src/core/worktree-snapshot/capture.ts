@@ -14,7 +14,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { pathExists } from "../../utils/path-exists.js";
+import { pathExists } from "../../utils/path-exists.ts";
 import { renameWithRetry } from "../rename-retry.ts";
 import { snapshotBlobHashes } from "./blob-store.ts";
 import { computeEnvironmentHash, sha256Hex, snapshotBlob } from "./env-hash.ts";

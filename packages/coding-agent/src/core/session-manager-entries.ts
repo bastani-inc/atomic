@@ -124,7 +124,7 @@ export function createCompactionEntry(
 		...(coveredThroughEntryId === undefined ? {} : { coveredThroughEntryId }),
 		details,
 		usage,
-		fromHook: details.rung === "extension" || undefined,
+		fromHook: details.backend === "extension" || undefined,
 	};
 }
 

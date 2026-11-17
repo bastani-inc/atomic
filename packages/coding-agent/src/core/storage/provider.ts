@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Jiti, JitiResolveOptions } from "jiti";
 import { createSessionCwdMatcherAsync } from "../../utils/canonical-path.ts";
-import { pathExists } from "../../utils/path-exists.js";
+import { pathExists } from "../../utils/path-exists.ts";
 import { abortSnapshotCollectionsOn, runningSnapshotCollectionsOn } from "../worktree-snapshot/blob-store.ts";
 import type { SqliteDatabase, SqliteValue, StorageDescriptor } from "./database.js";
 import {

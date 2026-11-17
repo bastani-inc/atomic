@@ -1,16 +1,9 @@
 import type { ImageContent, Message, TextContent } from "@bastani/atomic-ai/compat";
-import type { LineRange, NumberedRegion } from "./compaction-types.js";
+import type { NumberedRegion } from "./compaction-types.js";
 
 export const FILTERED_MARKER_RE = /^\(filtered (\d+) lines\)$/;
-export const LINE_NUMBER_SEPARATOR = "→";
 const ROLE_NAMES = "User|Assistant|Assistant tool calls|Tool result";
 export const ROLE_HEADER_RE = new RegExp(`^\\[(${ROLE_NAMES})\\]: `);
-
-/**
- * A role header, or a body line the serializer escaped because it looked like one. Use it to strip
- * the header when comparing line text; never to decide a line's role.
- */
-export const ROLE_HEADER_TEXT_RE = new RegExp(`^\\\\?\\[(${ROLE_NAMES})\\]: `);
 
 /** A line break inside a message body followed by text that would read as a role header. */
 const BODY_HEADER_LINE_RE = new RegExp(`\\n(?=\\[(?:${ROLE_NAMES})\\]: )`, "g");
@@ -31,21 +24,6 @@ function escapeBodyHeaders(text: string, atLineStart: boolean): string {
  */
 const LEGACY_THINKING_HEADER = "[Assistant thinking]: ";
 
-/**
- * Callers wrap never-compressible content in `<keepContext>` / `</keepContext>`. Every line of
- * such a span, tag lines included, becomes a protected line, so the span survives verbatim
- * regardless of the compression ratio. Protecting the tags themselves is what makes the span
- * re-detectable on the next boundary, since each compaction re-ranks the previous output.
- *
- * The region is untrusted: it is serialized user, assistant, and tool-result payload, and a
- * message may quote or document the tag text. Detection is therefore deliberately narrow — a
- * marker must be the entire line once an optional role header is stripped, and only a matched
- * open/close pair protects anything. Prose that merely mentions a tag matches nothing, and an
- * unmatched opener protects nothing rather than swallowing the rest of the region.
- */
-const KEEP_CONTEXT_OPEN_LINE_RE = /^<keepContext>$/i;
-const KEEP_CONTEXT_CLOSE_LINE_RE = /^<\/keepContext>$/i;
-
 const TOOL_RESULT_MAX_CHARS = 2_000;
 
 /** One piece of a serialized transcript: literal text, or an image kept at its position. */
@@ -58,10 +36,6 @@ export type TranscriptChunk = TextContent | ImageContent;
  * does for summaries.
  */
 type SerializeMode = "compacted" | "retained";
-
-export function filteredMarker(lineCount: number): string {
-	return `(filtered ${lineCount} lines)`;
-}
 
 /** Where a tool result's full output can be read back: a `history://sessions/<id>:N-M` URL, keyed by the message. */
 export type FullOutputLocators = ReadonlyMap<Message, string>;
@@ -220,202 +194,18 @@ export function omitLegacyThinkingSections(text: string): string {
 	return kept.join("\n");
 }
 
-/**
- * Classify a line as a `keepContext` marker.
- *
- * The serializer prefixes the first line of a message with its role header, so a span opened at
- * the start of a stage prompt arrives as `[User]: <keepContext>`. The header, or a body line's
- * escaped header-like prefix, is stripped before matching, and the remainder must be the whole
- * line — prose that mentions a tag mid-sentence is payload, not syntax. Whether a marker protects
- * anything depends on the role of the message it is in, which never comes from the line itself.
- */
-function keepContextMarker(line: string): "open" | "close" | undefined {
-	const body = line.replace(ROLE_HEADER_TEXT_RE, "").trim();
-	if (KEEP_CONTEXT_OPEN_LINE_RE.test(body)) return "open";
-	if (KEEP_CONTEXT_CLOSE_LINE_RE.test(body)) return "close";
-	return undefined;
-}
-
-/** Whether a line is a `<keepContext>` or `</keepContext>` marker, role header aside. */
-export function isKeepContextMarkerLine(line: string): boolean {
-	return keepContextMarker(line) !== undefined;
-}
-
+type MessageRole = "user" | "assistant" | "tool";
 type MessageSpan = NonNullable<NumberedRegion["messageSpans"]>[number];
-type MessageRole = MessageSpan["role"];
 
 /**
- * Where a message starts in a region, one-based, and whose message it is. Text before a region's
- * first boundary is the prior compaction summary ahead of its first role header.
+ * Serialize the conversation since the previous boundary for extension hooks: the previous boundary's text first,
+ * then each message, with each message's line span recorded.
  */
-export interface MessageBoundary {
-	line: number;
-	role: MessageRole;
-}
-
-function headerRole(name: string): MessageRole {
-	return name === "User" ? "user" : name === "Tool result" ? "tool" : "assistant";
-}
-
-/**
- * The message boundaries of a region, oldest first.
- *
- * With `messageSpans`, every message starts where the serializer placed it and has the role of the
- * message itself, so no text inside a message can start another one or change its role. The prior
- * summary, always the first span, is the one flat-text span: its sections are read from its role
- * header lines, which only the serializer writes because it escapes header-like lines inside
- * message bodies. Without `messageSpans` the whole region is read that way.
- */
-export function messageBoundaries(lines: readonly string[], messageSpans?: readonly MessageSpan[]): MessageBoundary[] {
-	const headers = (start: number, end: number): MessageBoundary[] => {
-		const found: MessageBoundary[] = [];
-		for (let line = start; line <= end; line++) {
-			const header = ROLE_HEADER_RE.exec(lines[line - 1]);
-			if (header) found.push({ line, role: headerRole(header[1]) });
-		}
-		return found;
-	};
-	if (messageSpans === undefined) return headers(1, lines.length);
-	return messageSpans.flatMap((span): MessageBoundary[] => {
-		return span.previousSummary ? headers(span.start, span.end) : [{ line: span.start, role: span.role }];
-	});
-}
-
-/**
- * Whether a message role may declare protection.
- *
- * User and assistant messages both may. Prompt construction — stage prompts, run inputs, and
- * steering — arrives as user messages, and agents need protection in their own output too, to
- * restate a contract amendment in a handoff report or pin a decision that changes later
- * behavior. A user-only rule would make those inert while still looking correct at the call site.
- *
- * Tool results may not. Their payload is file contents, fetched pages, and command output —
- * bytes an attacker can choose — and honoring tags there would let read material mark itself
- * unreclaimable and persist through compaction ahead of real transcript content. An agent that
- * wants to keep something it read can restate it in its own message, which is also the more
- * selective habit. The role comes from the message boundaries, so a tool result cannot claim
- * another role by containing a line that looks like a header.
- *
- * An undefined role is the prior compaction summary ahead of its first role header. That is
- * compaction's own output, and honoring it is what lets a span re-arm on later boundaries after
- * its header line has itself been compacted away.
- */
-function roleMayProtect(role: MessageRole | undefined): boolean {
-	return role !== "tool";
-}
-
-/** One `<keepContext>` span: its one-based inclusive lines, tag lines included. */
-export interface KeepContextSpan extends LineRange {
-	/** One-based first line of the span's message; undefined in a prior summary before its first header. */
-	messageHeaderLine: number | undefined;
-}
-
-/**
- * The `<keepContext>` spans of a region, oldest first, each inclusive of its tag lines. Messages
- * are those of {@link messageBoundaries}: pass the region's `messageSpans` whenever it has them.
- *
- * Spans are scoped to a single message: a message boundary ends any span still open, and an
- * unclosed span protects through the end of its own message rather than the end of the region.
- * Together with the whole-line marker rule and the tool-result exclusion, that keeps the permissive
- * unclosed case safe — quoted or injected tag text costs at most its own message instead of
- * everything after it. Compaction that cannot reclaim is an overflow, not a safe failure.
- *
- * Nested openers flatten into the outermost span, and a closing tag with no opener is inert.
- */
-export function keepContextSpans(lines: readonly string[], messageSpans?: readonly MessageSpan[]): KeepContextSpan[] {
-	const spans: KeepContextSpan[] = [];
-	const boundaries = messageBoundaries(lines, messageSpans);
-	let nextBoundary = 0;
-	let openIndex: number | undefined;
-	let role: MessageRole | undefined;
-	let headerLine: number | undefined;
-	const closeThrough = (endIndex: number): void => {
-		if (openIndex === undefined) return;
-		spans.push({
-			start: openIndex + 1,
-			end: endIndex + 1,
-			messageHeaderLine: headerLine,
-		});
-		openIndex = undefined;
-	};
-	for (let index = 0; index < lines.length; index++) {
-		const line = lines[index];
-		if (boundaries[nextBoundary]?.line === index + 1) {
-			closeThrough(index - 1);
-			role = boundaries[nextBoundary++].role;
-			headerLine = index + 1;
-		}
-		if (!roleMayProtect(role)) continue;
-		const marker = keepContextMarker(line);
-		if (marker === "open") {
-			if (openIndex === undefined) openIndex = index;
-			continue;
-		}
-		if (marker === "close") closeThrough(index);
-	}
-	closeThrough(lines.length - 1);
-	return spans;
-}
-
-/**
- * The text a span protects with its tags and role header removed and whitespace collapsed, so
- * two restatements of the same constraint compare equal.
- */
-export function keepContextSpanKey(lines: readonly string[], span: LineRange): string {
-	return lines
-		.slice(span.start - 1, span.end)
-		.filter((line) => !isKeepContextMarkerLine(line))
-		.map((line) => line.replace(ROLE_HEADER_TEXT_RE, ""))
-		.join("\n")
-		.replace(/\s+/g, " ")
-		.trim();
-}
-
-/** One-based line numbers covered by `<keepContext>` spans, inclusive of the tag lines. */
-export function keepContextLineNumbers(lines: readonly string[], messageSpans?: readonly MessageSpan[]): Set<number> {
-	const protectedLines = new Set<number>();
-	for (const span of keepContextSpans(lines, messageSpans)) {
-		for (let line = span.start; line <= span.end; line++) protectedLines.add(line);
-	}
-	return protectedLines;
-}
-
-export function createNumberedRegion(
-	text: string,
-	protectedLineNumbers?: ReadonlySet<number>,
-	messageSpans?: MessageSpan[],
-): NumberedRegion {
-	const lines = text.split("\n");
-	const headerLineNumbers = new Set<number>();
-	for (const boundary of messageBoundaries(lines, messageSpans)) headerLineNumbers.add(boundary.line);
-	const priorMarkerNs = new Map<number, number>();
-	for (let index = 0; index < lines.length; index++) {
-		const markerMatch = FILTERED_MARKER_RE.exec(lines[index]);
-		if (markerMatch) priorMarkerNs.set(index + 1, Number(markerMatch[1]));
-	}
-	const detected = keepContextLineNumbers(lines, messageSpans);
-	const merged =
-		protectedLineNumbers === undefined ? detected : new Set<number>([...protectedLineNumbers, ...detected]);
-	return {
-		__brand: "NumberedRegion",
-		lines,
-		headerLineNumbers,
-		priorMarkerNs,
-		protectedLineNumbers: merged.size > 0 ? merged : undefined,
-		tokenEstimate: Math.ceil(text.length / 4),
-		...(messageSpans === undefined ? {} : { messageSpans }),
-	};
-}
-
-export function createConversationRegion(
-	messages: Message[],
-	previousSummary?: string,
-	locators?: FullOutputLocators,
-): NumberedRegion {
+export function createConversationRegion(messages: Message[], previousSummary?: string): NumberedRegion {
 	const sections: { role: MessageRole; text: string }[] = [];
 	if (previousSummary) sections.push({ role: "assistant", text: previousSummary });
 	for (const message of messages) {
-		const text = serializeConversationForCompaction([message], locators);
+		const text = serializeConversationForCompaction([message]);
 		if (text)
 			sections.push({
 				role: message.role === "toolResult" ? "tool" : message.role === "user" ? "user" : "assistant",
@@ -437,19 +227,11 @@ export function createConversationRegion(
 			...(summary ? { previousSummary: true } : {}),
 		});
 	}
-	return createNumberedRegion(
-		lines.join("\n"),
-		undefined,
-		messageSpans.length > 0 ? messageSpans : [{ role: "assistant", start: 1, end: 1 }],
-	);
-}
-
-export function numberRegionLines(region: NumberedRegion, start = 1, end = region.lines.length): string {
-	const first = Math.max(1, Math.trunc(start));
-	const last = Math.min(region.lines.length, Math.trunc(end));
-	if (first > last) return "";
-	return region.lines
-		.slice(first - 1, last)
-		.map((line, index) => `${first + index}${LINE_NUMBER_SEPARATOR}${line}`)
-		.join("\n");
+	const text = lines.join("\n");
+	return {
+		__brand: "NumberedRegion",
+		lines,
+		messageSpans: messageSpans.length > 0 ? messageSpans : [{ role: "assistant", start: 1, end: 1 }],
+		tokenEstimate: Math.ceil(text.length / 4),
+	};
 }

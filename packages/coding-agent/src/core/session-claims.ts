@@ -25,8 +25,8 @@ import {
 import { readFile, rm, stat, utimes } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { prepareTakeoverMutex, putBack, removeAside, takeTakeoverMutex } from "./lock-takeover.ts";
-import { processStartToken } from "./process-start-token.ts";
+import { prepareTakeoverMutex, putBack, removeAside, takeTakeoverMutex } from "./lock-takeover.js";
+import { processStartToken } from "./process-start-token.js";
 import { SessionAlreadyOpenError } from "./session-manager-errors.js";
 
 /** How often a held claim's heartbeat is refreshed. */

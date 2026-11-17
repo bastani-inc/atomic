@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { getBinDir } from "../../config.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createGitEnvironment } from "../../utils/git-env.ts";
-import { pathExists } from "../../utils/path-exists.js";
+import { pathExists } from "../../utils/path-exists.ts";
 import {
 	GitUnavailableError,
 	gitInstallCommand,

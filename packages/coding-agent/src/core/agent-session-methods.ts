@@ -9,12 +9,6 @@ import type {
 	TextContent,
 	ToolResultMessage,
 } from "@bastani/atomic-ai/compat";
-import type {
-	BackgroundCompactionRuntime,
-	CommitReadyOptions,
-	CommittedBackgroundCompaction,
-	ForegroundBackgroundCompaction,
-} from "./agent-session-background-compaction.ts";
 import type { DetachedToolCall, DetachedToolResult, ToolDetachmentPolicy } from "./agent-session-detached-tools.ts";
 import type { PersistenceFailure } from "./agent-session-persistence-failures.ts";
 import type { PendingPostToolCompactionGuard } from "./agent-session-post-tool-compaction.ts";
@@ -39,13 +33,7 @@ import type {
 	ToolDefinitionEntry,
 } from "./agent-session-types.js";
 import type { BashResult } from "./bash-executor.ts";
-import type { BackgroundCompactionState } from "./compaction/background-compaction.ts";
-import type {
-	CompactionUrgency,
-	PlannerAuth,
-	VerbatimCompactionParameters,
-	VerbatimCompactionResult,
-} from "./compaction/index.ts";
+import type { VerbatimCompactionResult } from "./compaction/index.ts";
 import type {
 	AgentActivityOutcome,
 	BoundaryContextPreview,
@@ -80,39 +68,31 @@ import type { BashOperations } from "./tools/bash.js";
 import type { ToolExecutionScheduler } from "./tools/tool-concurrency.ts";
 import type { WorktreeRootMapping } from "./worktree-snapshot/types.ts";
 
-export interface SessionCompactOptions extends Partial<VerbatimCompactionParameters> {
-	/** Exact `provider/model` ID for this run only; overrides the `compactionModel` setting without saving it. */
+export interface SessionCompactOptions {
+	/** Instructions for this compaction: what to recover first, and the compactor's query. */
+	query?: string;
+	/**
+	 * `auto` or an exact compactor model `provider/model` for this run only; overrides the `compactionModel` setting
+	 * without saving it. Any other value clears the context with a notice.
+	 */
 	compactionModel?: string;
 }
 
 export interface VerbatimCompactionApplyOptions {
-	/**
-	 * Per-model planner credentials; a borrowed fallback uses its own, never the session model's.
-	 * `signal` aborts when compaction is cancelled or its planning time limit runs out.
-	 */
-	resolvePlannerAuth: (model: Model<Api>, signal?: AbortSignal) => Promise<PlannerAuth | undefined>;
 	abortController: AbortController;
 	backupLabel: string;
-	compression_ratio?: number;
-	preserve_recent?: number;
 	query?: string;
 	compactionModel?: string;
 	reason: "manual" | "threshold" | "overflow";
 	/** Reports when a session_before_compact override becomes the active compaction source. */
 	onCompactionSource?: (fromExtension: boolean) => void;
-	/** Only `load_bearing` may reach the context-destroying fresh rung. */
-	urgency: CompactionUrgency;
-	/**
-	 * Admit a compactable region below the planner minimum.
-	 *
-	 * Narrow on purpose. Overflow recovery sets it because a real provider
-	 * overflow is already known, and the post-tool preflight sets it only when its
-	 * projected context is genuinely over the provider hard input limit. A
-	 * threshold crossing that still fits must not clear context: the follow-up
-	 * request can be sent as-is.
-	 */
-	allowSmallRegion?: boolean;
 }
+
+/**
+ * How much an automatic compaction is load-bearing: `load_bearing` when the turn cannot continue without it (a provider
+ * overflow), `recoverable` otherwise. Only a load-bearing failure marks the overflow unresolved.
+ */
+export type AutoCompactionUrgency = "recoverable" | "load_bearing";
 
 /** Outcome of an automatic compaction admission and persistence attempt. */
 export type AutoCompactionRunOutcome = "compacted" | "not_compactable" | "deferred" | "failed";
@@ -166,10 +146,6 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	readonly pendingMessageCount: number;
 	readonly resourceLoader: ResourceLoader;
 	readonly autoCompactionEnabled: boolean;
-	/** Background compaction state (#4330): idle, running, ready to commit, or failed with a typed error. */
-	readonly compaction: BackgroundCompactionState;
-	readonly backgroundCompactionEnabled: boolean;
-	readonly backgroundCompactionThresholdPercent: number;
 	readonly isRetrying: boolean;
 	readonly autoRetryEnabled: boolean;
 	readonly isBashRunning: boolean;
@@ -355,6 +331,8 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	abortSessionSummary(): void;
 	_maybeGenerateSessionSummary(): Promise<void>;
 	_checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck?: boolean): Promise<void>;
+	_compactBeforeContinuation(): Promise<boolean>;
+	_continueAgentAfterCompactionCheck(): Promise<void>;
 	_dropTrailingAutoCompactionRetryAssistantIfPresent(): Promise<void>;
 	_schedulePostAutoCompactionContinuationProbe(reason: "overflow" | "threshold", willRetry: boolean): void;
 	_awaitPendingPostCompactionContinuation(): Promise<void>;
@@ -363,23 +341,13 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_runAutoCompaction(
 		reason: "overflow" | "threshold",
 		willRetry: boolean,
-		urgency?: CompactionUrgency,
+		urgency?: AutoCompactionUrgency,
 	): Promise<AutoCompactionRunOutcome>;
 	_preflightPostToolContext(messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]>;
 	_finishPostToolCompactionPreflight(messages: AgentMessage[]): AgentMessage[];
 	setAutoCompactionEnabled(enabled: boolean): void;
-	/** Resolves once no background compaction is running, with the state at that point. Never rejects. */
-	awaitBackgroundCompaction(): Promise<BackgroundCompactionState>;
-	/** Called each time a background result is stored and waits for the next turn boundary. */
-	onCompactionReady(listener: (state: BackgroundCompactionState) => void): () => void;
-	setBackgroundCompactionEnabled(enabled: boolean): void;
-	setBackgroundCompactionThresholdPercent(percent: number): void;
-	_writeBackgroundCompactionSetting(write: () => void): void;
-	_maybeStartBackgroundCompaction(contextTokens: number): void;
-	_commitReadyBackgroundCompaction(options?: CommitReadyOptions): Promise<CommittedBackgroundCompaction | undefined>;
-	_runBackgroundCompactionBoundary(midTurn: boolean, awaitPersistence?: boolean): Promise<boolean>;
-	_useReadyBackgroundCompaction(model: Model<Api>): Promise<ForegroundBackgroundCompaction | undefined>;
-	_abortBackgroundCompaction(): void;
+	/** Give an agent without `read` or `search` the read-only `session_history` tool after a compaction boundary. */
+	_enableSessionHistoryTool(): void;
 
 	bindExtensions(bindings: ExtensionBindings): Promise<void>;
 	startPendingRecovery(reason?: SessionRecoveryReason): Promise<SessionRecoveryReport>;
@@ -513,9 +481,6 @@ export interface AgentSessionPublicSurface
 		| "pendingMessageCount"
 		| "resourceLoader"
 		| "autoCompactionEnabled"
-		| "compaction"
-		| "backgroundCompactionEnabled"
-		| "backgroundCompactionThresholdPercent"
 		| "isRetrying"
 		| "autoRetryEnabled"
 		| "abortSessionSummary"
@@ -559,10 +524,6 @@ export interface AgentSessionPublicSurface
 		| "abortCompaction"
 		| "abortBranchSummary"
 		| "setAutoCompactionEnabled"
-		| "awaitBackgroundCompaction"
-		| "onCompactionReady"
-		| "setBackgroundCompactionEnabled"
-		| "setBackgroundCompactionThresholdPercent"
 		| "bindExtensions"
 		| "startPendingRecovery"
 		| "release"
@@ -623,7 +584,8 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_outputBudgetErrorContinuationAttempts: number;
 	_postToolCompactionPreflightError: string | undefined;
 	_pendingPostToolCompactionGuard: PendingPostToolCompactionGuard | undefined;
-	_backgroundCompaction: BackgroundCompactionRuntime;
+	/** Set once a compaction boundary gave this restricted agent the `session_history` tool. */
+	_sessionHistoryToolEnabled: boolean;
 	_terminatingToolCallIds: Set<string>;
 	_stopAfterTurnBlockedContinuation: boolean;
 	/** The current turn was ended by {@link interruptTurn}: a child's message admission stays open after it. */
@@ -658,6 +620,8 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_compactionAbortController: AbortController | undefined;
 	_manualCompactionPromise: Promise<VerbatimCompactionResult> | undefined;
 	_autoCompactionAbortController: AbortController | undefined;
+	/** Stops the compactor request of the running compaction, which then clears the context instead. */
+	_compactorAbortController: AbortController | undefined;
 	_autoCompactionCompletion: Promise<void> | undefined;
 	_compactionReason: import("./agent-session-types.js").CompactionReason | undefined;
 	_compactionStartedAt: number | undefined;

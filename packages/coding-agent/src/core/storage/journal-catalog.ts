@@ -1,6 +1,6 @@
 import { mkdir, open } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
-import { pathExists as exists } from "../../utils/path-exists.js";
+import { pathExists as exists } from "../../utils/path-exists.ts";
 import { attachCleanupCause } from "./cleanup.js";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "./database.js";
 import {

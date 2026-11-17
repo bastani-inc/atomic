@@ -1,6 +1,6 @@
 import { accessSync, constants } from "node:fs";
 import { dirname } from "node:path";
-import { pathExists } from "../../utils/path-exists.js";
+import { pathExists } from "../../utils/path-exists.ts";
 import { normalizePath, resolvePath } from "../../utils/paths.ts";
 import { currentWorktreeRootMappings, mapPathForCwd, mapPathForCwdAsync } from "../resume/path-mapping.ts";
 

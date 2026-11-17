@@ -48,6 +48,8 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"tryAdvisoryLock",
 	"tryAdvisoryLockAsync",
 	"trySharedAdvisoryLock",
+	"windowsDirectorySecurity",
+	"windowsDirectorySecurityAsync",
 ] as const;
 
 const requireNativeBinding = process.env.ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE === "1";

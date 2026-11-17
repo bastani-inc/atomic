@@ -3,7 +3,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { CONFIG_DIR_NAME } from "../config.js";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
-import { pathExists as exists } from "../utils/path-exists.js";
+import { pathExists as exists } from "../utils/path-exists.ts";
 import { isPathWithin, resolvePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
 import type { LoadPromptTemplatesOptions, LoadPromptTemplatesResult, PromptTemplate } from "./prompt-templates.ts";

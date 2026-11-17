@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { getProjectConfigDirs } from "../config.js";
-import { pathExists as exists } from "../utils/path-exists.js";
+import { pathExists as exists } from "../utils/path-exists.ts";
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
 import { getLoaderAgentDirs } from "./resource-loader-paths.ts";

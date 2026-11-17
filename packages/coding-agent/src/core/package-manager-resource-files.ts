@@ -1,7 +1,7 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
-import { pathExists as exists } from "../utils/path-exists.js";
+import { pathExists as exists } from "../utils/path-exists.ts";
 import { stripBom } from "../utils/text.ts";
 import { NestedGitignore } from "./gitignore-rules.ts";
 import { getManifestFromPackageJson } from "./package-manager-manifest.ts";

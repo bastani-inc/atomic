@@ -1,6 +1,6 @@
 import { setImmediate } from "node:timers/promises";
 import type { PtySession } from "@bastani/atomic-natives";
-import { createModuleRequire } from "../../utils/module-require.ts";
+import { createModuleRequire } from "../../utils/module-require.js";
 import { getPowerShellConfigAsync } from "../../utils/shell.ts";
 
 interface SubshellOwner {

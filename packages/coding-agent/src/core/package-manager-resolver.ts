@@ -1,7 +1,7 @@
 import { stat } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { CONFIG_DIR_NAME } from "../config.js";
-import { pathExists as exists } from "../utils/path-exists.js";
+import { pathExists as exists } from "../utils/path-exists.ts";
 import { addAutoDiscoveredResources, collectProjectLocalResources } from "./package-manager-auto-resources.ts";
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
 import { refreshTemporaryGitSource, resolveGitInstallPath } from "./package-manager-git.ts";

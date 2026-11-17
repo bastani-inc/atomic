@@ -64,17 +64,6 @@ function installCopilotCredential(harness: Harness): Model<Api> {
 	return catalogModel;
 }
 
-async function seedCompactableSession(harness: Harness): Promise<void> {
-	await harness.sessionManager.appendMessage({
-		role: "user",
-		content: [
-			{ type: "text", text: Array.from({ length: 40 }, (_value, index) => `context line ${index}`).join("\n") },
-		],
-		timestamp: Date.now(),
-	});
-	harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
-}
-
 describe("GitHub Copilot credential endpoints in summaries", () => {
 	let harness: Harness | undefined;
 
@@ -82,21 +71,6 @@ describe("GitHub Copilot credential endpoints in summaries", () => {
 		harness?.cleanup();
 		harness = undefined;
 		vi.restoreAllMocks();
-	});
-
-	it("uses the credential-resolved endpoint for Verbatim Compaction (#3470)", async () => {
-		harness = await createHarness();
-		installCopilotCredential(harness);
-		seedCompactableSession(harness);
-		const requests: CapturedRequest[] = [];
-		harness.session.agent.streamFunction = async (requestModel, _context, options) => {
-			requests.push({ baseUrl: requestModel.baseUrl, headers: options?.headers });
-			return completedStream(requestModel, "1:1,20\n");
-		};
-
-		await harness.session.compact({ preserve_recent: 0 });
-
-		expectCredentialRequests(requests);
 	});
 
 	it("uses the credential-resolved endpoint for branch summaries", async () => {

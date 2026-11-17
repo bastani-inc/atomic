@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { pathExists } from "../utils/path-exists.js";
+import { pathExists } from "../utils/path-exists.ts";
 
 export interface SessionCwdIssue {
 	sessionFile?: string;

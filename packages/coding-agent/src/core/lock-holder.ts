@@ -17,12 +17,12 @@ import {
 	removeLeftoverHolderFilesAsync,
 	takeTakeoverMutex,
 	takeTakeoverMutexAsync,
-} from "./lock-takeover.ts";
+} from "./lock-takeover.js";
 
 export { HOLDER_TEMP_STALE_MS, lockHolderPath, prepareTakeoverMutex };
 
 import { lockHolder } from "./lock-wait.ts";
-import { processStartToken, processStartTokenAsync } from "./process-start-token.ts";
+import { processStartToken, processStartTokenAsync } from "./process-start-token.js";
 import { renameReplacing, renameReplacingAsync } from "./rename-retry.ts";
 
 /**

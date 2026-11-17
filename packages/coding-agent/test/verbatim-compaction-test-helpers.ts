@@ -10,8 +10,8 @@ export async function appendTestCompaction(
 	const compactedText = "[User]: retained test context\n(filtered 1 lines)";
 	return await manager.appendCompaction(compactedText, firstKeptEntryId, tokensBefore, {
 		strategy: "verbatim-lines",
-		promptVersion: 6,
-		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
+		promptVersion: 7,
+		parameters: { query: "test" },
 		stats: {
 			linesBefore: 2,
 			linesDeleted: 1,
@@ -21,6 +21,6 @@ export async function appendTestCompaction(
 			tokensAfter,
 			percentReduction: tokensBefore === 0 ? 0 : ((tokensBefore - tokensAfter) / tokensBefore) * 100,
 		},
-		rung: "planned",
+		form: "cleared",
 	});
 }

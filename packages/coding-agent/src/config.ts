@@ -54,7 +54,7 @@ import {
 	type SelfUpdateCommand,
 	type SelfUpdateRuntime,
 } from "./config-self-update.ts";
-import { pathExists } from "./utils/path-exists.js";
+import { pathExists } from "./utils/path-exists.ts";
 
 export type { InstallMethod, SelfUpdateCommand, SelfUpdateTarget } from "./config-self-update.ts";
 
@@ -587,11 +587,6 @@ export function getPromptsDir(): string {
 /** Get path to sessions directory */
 export function getSessionsDir(): string {
 	return join(getAgentDir(), "sessions");
-}
-
-/** Get the directory of compaction diagnostics for persisted sessions that have no session file, such as SQLite sessions. */
-export function getCompactionDiagnosticsDir(): string {
-	return join(getAgentDir(), "compaction-diagnostics");
 }
 
 /** Get path to debug log file */

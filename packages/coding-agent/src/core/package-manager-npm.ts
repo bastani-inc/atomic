@@ -3,7 +3,7 @@ import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { gt, maxSatisfying, rcompare, satisfies } from "semver";
 import { APP_NAME, CONFIG_DIR_NAME, getProjectConfigDirs } from "../config.js";
-import { pathExists as exists } from "../utils/path-exists.js";
+import { pathExists as exists } from "../utils/path-exists.ts";
 import { markPathIgnoredByCloudSync } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { runCommand, runCommandCapture, runCommandSync } from "./package-manager-command.ts";

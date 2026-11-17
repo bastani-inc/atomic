@@ -12,11 +12,6 @@ import type { Api, AssistantMessage, Model } from "@bastani/atomic-ai/compat";
 import { isPowerShellAvailable } from "../utils/shell.ts";
 import { installAgentSessionAccessors } from "./agent-session-accessors.ts";
 import { agentSessionAutoCompactionMethods } from "./agent-session-auto-compaction.ts";
-import {
-	agentSessionBackgroundCompactionMethods,
-	BackgroundCompactionRuntime,
-	installBackgroundCompactionAccessors,
-} from "./agent-session-background-compaction.ts";
 import { agentSessionBashMethods } from "./agent-session-bash.ts";
 import { agentSessionBoundaryMethods } from "./agent-session-boundaries.ts";
 import { agentSessionCompactionMethods } from "./agent-session-compaction.ts";
@@ -65,6 +60,7 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRuntime } from "./model-runtime.js";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { currentWorktreeRestoreNotices, currentWorktreeRootMappings } from "./resume/path-mapping.ts";
+import { abortSessionWork, registerSessionWorkOwner, sessionLifetime } from "./session-lifecycle-work.ts";
 import type { SessionManager } from "./session-manager.ts";
 import { SessionWorktreeSnapshotRecorder } from "./session-worktree-snapshots.ts";
 import type { SettingsManager } from "./settings-manager.ts";
@@ -77,6 +73,7 @@ import { scheduleSessionTempCleanup } from "./tools/session-temp-cleanup.ts";
 import { acquireProtectedPaths, type ProtectedPathLease, setActiveSessionTempId } from "./tools/session-temp-dir.ts";
 import { ToolExecutionScheduler } from "./tools/tool-concurrency.ts";
 import { TOOL_RESULTS_SUBDIR } from "./tools/tool-limits.js";
+import { withWindowsDirectorySecurityOwner } from "./tools/windows-directory-security.ts";
 import { WorkflowStageAdmissionBoundary } from "./workflow-stage-admission.ts";
 import { serializeWorkspaceError } from "./worktree-snapshot/errors.ts";
 
@@ -176,6 +173,7 @@ class AgentSessionBase {
 	protected _compactionStartedAt: number | undefined = undefined;
 	protected _manualCompactionPromise: Promise<VerbatimCompactionResult> | undefined = undefined;
 	protected _autoCompactionAbortController: AbortController | undefined = undefined;
+	protected _compactorAbortController: AbortController | undefined = undefined;
 	/** Resolves when the current automatic compaction has settled. */
 	protected _autoCompactionCompletion: Promise<void> | undefined = undefined;
 	protected _overflowRecoveryAttempted = false;
@@ -188,7 +186,7 @@ class AgentSessionBase {
 	protected _outputBudgetErrorContinuationAttempts = 0;
 	protected _postToolCompactionPreflightError: string | undefined = undefined;
 	protected _pendingPostToolCompactionGuard: PendingPostToolCompactionGuard | undefined = undefined;
-	protected _backgroundCompaction: BackgroundCompactionRuntime;
+	protected _sessionHistoryToolEnabled = false;
 	protected _terminatingToolCallIds = new Set<string>();
 	/** A positive stop callback keeps queued work pending until an explicit new run. */
 	protected _stopAfterTurnBlockedContinuation = false;
@@ -333,6 +331,7 @@ class AgentSessionBase {
 	}
 
 	constructor(config: AgentSessionConfig) {
+		registerSessionWorkOwner(this);
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
 		this.settingsManager = config.settingsManager;
@@ -356,7 +355,6 @@ class AgentSessionBase {
 				}),
 		});
 		this._cacheWarmer = config.cacheWarmer;
-		this._backgroundCompaction = new BackgroundCompactionRuntime(config.compactionWake);
 		if (this._cacheWarmer)
 			this._cacheWarmer.onWarmed = (entry) =>
 				(this as unknown as import("./agent-session-methods.ts").AgentSessionInternalSurface)._emit({
@@ -474,7 +472,7 @@ class AgentSessionBase {
 				const sessionId = this.sessionManager.getSessionId();
 				const sessionDir = this.sessionManager.getSessionDir() || undefined;
 				this._tempStorageLease = acquireProtectedPaths([
-					setActiveSessionTempId(sessionId),
+					withWindowsDirectorySecurityOwner(sessionLifetime(this), () => setActiveSessionTempId(sessionId)),
 					// A disk-backed session's results are read back by path, and a replayed
 					// result reuses an old file without touching its mtime, so age alone
 					// cannot keep it alive.
@@ -507,6 +505,7 @@ class AgentSessionBase {
 			// No session escapes a failed constructor to release these acquisitions later.
 			const failures: unknown[] = [];
 			for (const release of [
+				() => abortSessionWork(this, true),
 				() => removeExecutionEndedListener?.(),
 				() => this._unsubscribeAgent?.(),
 				() => this._tempStorageLease?.release(),
@@ -553,7 +552,6 @@ export const AgentSession = AgentSessionBase as unknown as {
 };
 
 installAgentSessionAccessors(AgentSession.prototype as unknown as AgentSessionInternalSurface);
-installBackgroundCompactionAccessors(AgentSession.prototype as unknown as AgentSessionInternalSurface);
 Object.assign(
 	AgentSession.prototype,
 	agentSessionToolHooksMethods,
@@ -567,7 +565,6 @@ Object.assign(
 	agentSessionCompactionMethods,
 	agentSessionAutoCompactionMethods,
 	agentSessionPostToolCompactionMethods,
-	agentSessionBackgroundCompactionMethods,
 	agentSessionExtensionBindingsMethods,
 	agentSessionRecoveryMethods,
 	agentSessionDetachedToolMethods,

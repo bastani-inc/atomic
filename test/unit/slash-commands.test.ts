@@ -43,7 +43,8 @@ describe("built-in slash commands", () => {
 
 		assert.equal(contextCommand, undefined);
 		assert.ok(compactCommand, "expected /compact to be listed as a built-in command");
-		assert.match(compactCommand.description, /verbatim/i);
+		assert.match(compactCommand.description, /session history/i);
+		assert.equal(compactCommand.argumentHint, "[instructions]");
 		assert.equal(compactCommand.getArgumentCompletions, undefined);
 	});
 

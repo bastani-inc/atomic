@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { getPackageDir, isBunBinary } from "../config.js";
-import { pathExists as exists } from "../utils/path-exists.js";
+import { pathExists as exists } from "../utils/path-exists.ts";
 import { moduleDirFromMetaUrl } from "../utils/split-launcher.ts";
 import { stripBom } from "../utils/text.ts";
 import { type BuiltinPackageDirName, requiredEntriesForBuiltin } from "./builtin-install-layout.ts";

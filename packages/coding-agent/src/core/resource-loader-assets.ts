@@ -4,7 +4,7 @@ import { getProjectConfigDirs } from "../config.js";
 import { type ColorMode, resolveColorMode } from "../modes/interactive/theme/color-utils.ts";
 import { loadThemeFromContent, type Theme } from "../modes/interactive/theme/theme.js";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
-import { pathExists as existsAsync } from "../utils/path-exists.js";
+import { pathExists as existsAsync } from "../utils/path-exists.ts";
 import type { ResourceDiagnostic, ResourceOverlap } from "./diagnostics.ts";
 import type { PathMetadata } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";

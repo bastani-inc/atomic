@@ -16,7 +16,7 @@ import { EventEmitter } from "node:events";
 import { constants as osConstants } from "node:os";
 import { Readable, Writable } from "node:stream";
 import type * as native from "@bastani/atomic-natives";
-import { createModuleRequire } from "./module-require.ts";
+import { createModuleRequire } from "./module-require.js";
 
 /** Which stream a child process gets: a pipe to the host, or nothing (`/dev/null`). */
 export type HostStdio = "pipe" | "ignore";

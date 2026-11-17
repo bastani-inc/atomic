@@ -1,10 +1,11 @@
-import { accessSync, constants } from "node:fs";
+import { accessSync, constants, lstatSync, statSync } from "node:fs";
+import { lstat, stat } from "node:fs/promises";
 import { delimiter, join, win32 } from "node:path";
 import { Worker } from "node:worker_threads";
 import { execFile, spawn, spawnSync } from "child_process";
 import { getBinDir } from "../config.js";
 import { createChildProcessEnvironment } from "./child-process.ts";
-import { pathExists as shellPathExistsAsync } from "./path-exists.js";
+import { pathExists as shellPathExistsAsync } from "./path-exists.ts";
 import { getGitShellEnvironment, getGitShellEnvironmentAsync } from "./tools-manager.ts";
 
 export interface ShellConfig {
@@ -42,6 +43,36 @@ function shellPathExists(path: string): boolean {
 	}
 }
 
+function isDirectoryEntry(path: string): boolean {
+	try {
+		const entry = lstatSync(path, { throwIfNoEntry: false });
+		if (entry === undefined || entry.isFile()) return false;
+		if (entry.isDirectory()) return true;
+		return entry.isSymbolicLink() && statSync(path, { throwIfNoEntry: false })?.isDirectory() === true;
+	} catch {
+		return false;
+	}
+}
+
+function executableCandidateExists(path: string): boolean {
+	return shellPathExists(path) && !isDirectoryEntry(path);
+}
+
+async function isDirectoryEntryAsync(path: string): Promise<boolean> {
+	try {
+		const entry = await lstat(path);
+		if (entry.isFile()) return false;
+		if (entry.isDirectory()) return true;
+		return entry.isSymbolicLink() && (await stat(path)).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+async function executableCandidateExistsAsync(path: string): Promise<boolean> {
+	return (await shellPathExistsAsync(path)) && !(await isDirectoryEntryAsync(path));
+}
+
 const MISSING_EXECUTABLE_RECHECK_MS = 30_000;
 
 interface ExecutableLookup {
@@ -54,13 +85,13 @@ const executablePathLookups = new Map<string, ExecutableLookup>();
 function isReusableLookup(lookup: ExecutableLookup): boolean {
 	return lookup.path === null
 		? Date.now() - lookup.checkedAt < MISSING_EXECUTABLE_RECHECK_MS
-		: shellPathExists(lookup.path);
+		: executableCandidateExists(lookup.path);
 }
 
 async function isReusableLookupAsync(lookup: ExecutableLookup): Promise<boolean> {
 	return lookup.path === null
 		? Date.now() - lookup.checkedAt < MISSING_EXECUTABLE_RECHECK_MS
-		: shellPathExistsAsync(lookup.path);
+		: executableCandidateExistsAsync(lookup.path);
 }
 
 /**
@@ -68,7 +99,7 @@ async function isReusableLookupAsync(lookup: ExecutableLookup): Promise<boolean>
  * A missing executable is looked up again once its result is 30 seconds old.
  */
 function findExecutableOnPath(executable: string): string | null {
-	const key = `${executable}\0${process.env.PATH ?? ""}`;
+	const key = `${executable}\0${process.env.PATH ?? ""}\0${process.cwd()}`;
 	const cached = executablePathLookups.get(key);
 	if (cached && isReusableLookup(cached)) return cached.path;
 	const path = lookupExecutableOnPath(executable);
@@ -77,7 +108,7 @@ function findExecutableOnPath(executable: string): string | null {
 }
 
 async function findExecutableOnPathAsync(executable: string): Promise<string | null> {
-	const key = `${executable}\0${process.env.PATH ?? ""}`;
+	const key = `${executable}\0${process.env.PATH ?? ""}\0${process.cwd()}`;
 	const cached = executablePathLookups.get(key);
 	if (cached && (await isReusableLookupAsync(cached))) return cached.path;
 	const path = await lookupExecutableOnPathAsync(executable);
@@ -85,20 +116,16 @@ async function findExecutableOnPathAsync(executable: string): Promise<string | n
 	return path;
 }
 
-/**
- * What `where <executable>` prints first, without starting `where`, which cost about 40 ms of every Windows start:
- * the current directory, then each PATH directory in order, trying each PATHEXT extension when the name has none.
- */
 function scanWindowsPath(executable: string): string | null {
 	const extensions = win32.extname(executable)
 		? [""]
 		: (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
-	for (const entry of [process.cwd(), ...(process.env.PATH ?? "").split(";")]) {
+	for (const entry of [process.cwd(), ...(process.env.PATH ?? "").split(win32.delimiter)]) {
 		const directory = entry.trim().replace(/^"(.*)"$/, "$1");
 		if (!directory) continue;
 		for (const extension of extensions) {
-			const candidate = win32.join(directory, `${executable}${extension}`);
-			if (shellPathExists(candidate)) return candidate;
+			const candidate = win32.resolve(process.cwd(), directory, `${executable}${extension}`);
+			if (executableCandidateExists(candidate)) return candidate;
 		}
 	}
 	return null;
@@ -108,12 +135,12 @@ async function scanWindowsPathAsync(executable: string): Promise<string | null> 
 	const extensions = win32.extname(executable)
 		? [""]
 		: (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
-	for (const entry of [process.cwd(), ...(process.env.PATH ?? "").split(";")]) {
+	for (const entry of [process.cwd(), ...(process.env.PATH ?? "").split(win32.delimiter)]) {
 		const directory = entry.trim().replace(/^"(.*)"$/, "$1");
 		if (!directory) continue;
 		for (const extension of extensions) {
-			const candidate = win32.join(directory, `${executable}${extension}`);
-			if (await shellPathExistsAsync(candidate)) return candidate;
+			const candidate = win32.resolve(process.cwd(), directory, `${executable}${extension}`);
+			if (await executableCandidateExistsAsync(candidate)) return candidate;
 		}
 	}
 	return null;
@@ -179,7 +206,7 @@ async function lookupExecutableOnPathAsync(executable: string): Promise<string |
 export function getShellConfig(customShellPath?: string): ShellConfig {
 	// 1. Check user-specified shell path
 	if (customShellPath) {
-		if (shellPathExists(customShellPath)) {
+		if (executableCandidateExists(customShellPath)) {
 			return getBashShellConfig(customShellPath);
 		}
 		throw new Error(`Custom shell path not found: ${customShellPath}`);
@@ -198,7 +225,7 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 		}
 
 		for (const path of paths) {
-			if (shellPathExists(path)) {
+			if (executableCandidateExists(path)) {
 				return getBashShellConfig(path);
 			}
 		}
@@ -219,7 +246,7 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 	}
 
 	// Unix: try /bin/bash, then bash on PATH, then fallback to sh
-	if (shellPathExists("/bin/bash")) {
+	if (executableCandidateExists("/bin/bash")) {
 		return getBashShellConfig("/bin/bash");
 	}
 
@@ -233,7 +260,7 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 
 export async function getShellConfigAsync(customShellPath?: string): Promise<ShellConfig> {
 	if (customShellPath) {
-		if (await shellPathExistsAsync(customShellPath)) {
+		if (await executableCandidateExistsAsync(customShellPath)) {
 			return getBashShellConfig(customShellPath);
 		}
 		throw new Error(`Custom shell path not found: ${customShellPath}`);
@@ -251,7 +278,7 @@ export async function getShellConfigAsync(customShellPath?: string): Promise<She
 		}
 
 		for (const path of paths) {
-			if (await shellPathExistsAsync(path)) {
+			if (await executableCandidateExistsAsync(path)) {
 				return getBashShellConfig(path);
 			}
 		}
@@ -270,7 +297,7 @@ export async function getShellConfigAsync(customShellPath?: string): Promise<She
 		);
 	}
 
-	if (await shellPathExistsAsync("/bin/bash")) {
+	if (await executableCandidateExistsAsync("/bin/bash")) {
 		return getBashShellConfig("/bin/bash");
 	}
 
@@ -291,14 +318,14 @@ export function getPowerShellConfig(): ShellConfig {
 	const programFiles = process.env.ProgramFiles;
 	if (!shell && programFiles) {
 		const pwsh7 = win32.join(programFiles, "PowerShell", "7", "pwsh.exe");
-		if (shellPathExists(pwsh7)) shell = pwsh7;
+		if (executableCandidateExists(pwsh7)) shell = pwsh7;
 	}
 
 	shell ??= findExecutableOnPath("powershell.exe");
 	const systemRoot = process.env.SystemRoot;
 	if (!shell && systemRoot) {
 		const windowsPowerShell = win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-		if (shellPathExists(windowsPowerShell)) shell = windowsPowerShell;
+		if (executableCandidateExists(windowsPowerShell)) shell = windowsPowerShell;
 	}
 
 	if (!shell) throw new Error("No PowerShell executable found. Install PowerShell or add it to PATH.");
@@ -311,14 +338,14 @@ export async function getPowerShellConfigAsync(): Promise<ShellConfig> {
 	const programFiles = process.env.ProgramFiles;
 	if (!shell && programFiles) {
 		const pwsh7 = win32.join(programFiles, "PowerShell", "7", "pwsh.exe");
-		if (await shellPathExistsAsync(pwsh7)) shell = pwsh7;
+		if (await executableCandidateExistsAsync(pwsh7)) shell = pwsh7;
 	}
 
 	shell ??= await findExecutableOnPathAsync("powershell.exe");
 	const systemRoot = process.env.SystemRoot;
 	if (!shell && systemRoot) {
 		const windowsPowerShell = win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-		if (await shellPathExistsAsync(windowsPowerShell)) shell = windowsPowerShell;
+		if (await executableCandidateExistsAsync(windowsPowerShell)) shell = windowsPowerShell;
 	}
 
 	if (!shell) throw new Error("No PowerShell executable found. Install PowerShell or add it to PATH.");

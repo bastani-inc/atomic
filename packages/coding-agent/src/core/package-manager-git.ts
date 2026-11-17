@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { APP_NAME, getProjectConfigDirs } from "../config.js";
 import { type GitSource, parseGitUrl } from "../utils/git.ts";
 import { isGitProvisionError } from "../utils/git-errors.ts";
-import { pathExists as exists } from "../utils/path-exists.js";
+import { pathExists as exists } from "../utils/path-exists.ts";
 import { stripBom } from "../utils/text.ts";
 import { getToolEnv, getToolPath } from "../utils/tools-manager.ts";
 import { runCommand, runCommandCapture } from "./package-manager-command.ts";

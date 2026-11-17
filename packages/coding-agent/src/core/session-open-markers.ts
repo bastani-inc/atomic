@@ -14,8 +14,8 @@ import { mkdir, readdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/pr
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "../config.js";
-import { ownProcessStartToken, readProcessStartToken } from "./process-start-token.ts";
-import { attachSessionClaim } from "./session-claims.ts";
+import { ownProcessStartToken, readProcessStartToken } from "./process-start-token.js";
+import { attachSessionClaim } from "./session-claims.js";
 import { SessionOpenElsewhereError } from "./session-manager-errors.js";
 import type {
 	SessionOpenMarker,

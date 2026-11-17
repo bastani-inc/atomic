@@ -876,4 +876,6 @@ module.exports.TerminationCause = nativeBinding.TerminationCause
 module.exports.tryAdvisoryLock = nativeBinding.tryAdvisoryLock
 module.exports.tryAdvisoryLockAsync = nativeBinding.tryAdvisoryLockAsync
 module.exports.trySharedAdvisoryLock = nativeBinding.trySharedAdvisoryLock
+module.exports.windowsDirectorySecurity = nativeBinding.windowsDirectorySecurity
+module.exports.windowsDirectorySecurityAsync = nativeBinding.windowsDirectorySecurityAsync
 module.exports.YieldReason = nativeBinding.YieldReason

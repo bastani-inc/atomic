@@ -15,7 +15,7 @@ import { promisify } from "node:util";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAMES } from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
-import { pathExists } from "../utils/path-exists.js";
+import { pathExists } from "../utils/path-exists.ts";
 import { canonicalizePath, canonicalizePathAsync, getHomeDir, pathsEqual, resolvePath } from "../utils/paths.ts";
 import { releaseLock, releaseLockSync } from "./lock-release.ts";
 import { inLockTurn, type LockWait, waitForLock, waitForLockSync } from "./lock-wait.ts";

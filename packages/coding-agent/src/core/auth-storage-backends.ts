@@ -16,7 +16,7 @@ import { chmod, mkdir, readFile, rm, stat, writeFile } from "fs/promises";
 import { basename, dirname, join } from "path";
 import lockfile, { type LockOptions } from "proper-lockfile";
 import { getAgentDir } from "../config.js";
-import { pathExists } from "../utils/path-exists.js";
+import { pathExists } from "../utils/path-exists.ts";
 import { normalizePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import type { AuthStorageData } from "./auth-storage.ts";

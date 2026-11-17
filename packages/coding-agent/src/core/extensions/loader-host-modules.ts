@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { getPackageDir, isBunBinary, isBundledBuild } from "../../config.js";
-import { createModuleRequire } from "../../utils/module-require.ts";
+import { createModuleRequire } from "../../utils/module-require.js";
 import { withLegacyPackageNames } from "./forked-package-names.ts";
 
 let virtualModules: Record<string, object> | null = null;

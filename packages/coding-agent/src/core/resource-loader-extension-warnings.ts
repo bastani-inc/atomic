@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { APP_NAME } from "../config.js";
-import { pathExists as exists } from "../utils/path-exists.js";
+import { pathExists as exists } from "../utils/path-exists.ts";
 import { stripBom } from "../utils/text.ts";
 import { FORKED_PACKAGE_NAMES } from "./extensions/forked-package-names.ts";
 import type { Extension, LoadExtensionsResult } from "./extensions/types.ts";

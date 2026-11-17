@@ -4,6 +4,7 @@ import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { type GitToolStatus, getGitStatus, getGitStatusAsync } from "../utils/tools-manager.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { getCallableTools } from "./agent-session-nested-tools.js";
+import { syncSessionHistoryTool } from "./agent-session-tool-registry.ts";
 import { failureDebugFields, reportDebugAsync as reportDebug } from "./debug.ts";
 import type { ToolDefinition, ToolInfo } from "./extensions/index.js";
 import { applyToolModifiers } from "./settings-merge.js";
@@ -164,7 +165,7 @@ export async function recordExplicitToolDeactivations(session: AgentSession, mes
 }
 
 export function _setActiveTools(this: AgentSession, toolNames: string[]): void {
-	const tools = applyToolLoadout(this, toolNames);
+	const tools = applyToolLoadout(this, syncSessionHistoryTool(this, toolNames));
 	for (const tool of tools) {
 		this._pendingToolNames.delete(tool.name);
 		this._explicitToolDeactivations.delete(tool.name);

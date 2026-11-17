@@ -1,7 +1,7 @@
 import { stat } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
-import { pathExists as exists } from "../utils/path-exists.js";
+import { pathExists as exists } from "../utils/path-exists.ts";
 import { canonicalizePathAsync, isLocalPath, resolvePath } from "../utils/paths.ts";
 import { getAllBuiltinPackageLocations, getMandatoryBuiltinExtensionPaths } from "./builtin-packages.ts";
 import { filterSupersededHerdrIntegrationPaths } from "./extensions/herdr-file-integration.ts";

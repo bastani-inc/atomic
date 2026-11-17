@@ -100,7 +100,7 @@ Durable `ctx.tool` callbacks wait for tasks admitted inside their callback befor
 
 ## Supervisor coordination
 
-Every builtin specialist includes `intercom` for live coordination, including read-only researchers and locators. `debugger` and `worker` also declare `contact_supervisor`; prefer it for supervisor requests when available. Explicit parent tool allowlists, exclusions, `noTools`, and disabled Intercom still apply—builtin declarations do not override caller restrictions.
+Every builtin specialist includes `intercom` for live coordination, including read-only researchers and locators. `debugger` and `worker` also declare `contact_supervisor`; prefer it for supervisor requests when available. Explicit parent tool allowlists, exclusions, `noTools`, and disabled Intercom still apply—builtin declarations do not override caller restrictions. A child whose tools leave out `read` or `search` gets one read-only tool, `session_history`, after compaction first clears its context, so it can recover from its own session's history and nothing else; see [Agents without read or search](/compaction#agents-without-read-or-search).
 
 In a parallel run, `intercom.ask`, `contact_supervisor({ reason: "need_decision" })`, and `interview_request` wait only in the requesting child. The supervisor answers with ordinary `intercom({ action: "reply", message: "..." })`; use `pending` and `replyTo` to select the exact question when several asks are pending. The correlated reply returns to the same child execution, with its context and run identity intact. Do not relaunch the requester or its siblings to deliver an answer.
 
@@ -249,7 +249,7 @@ When a workflow stage closes for good (the stage finished, or its run ended or w
 
 Live progress and completed results show each step's resolved model ID and effective reasoning level, including after a model fallback; parallel steps keep their metadata separate. Fast inference is part of the model ID, so an agent pinned to a fast variant renders it directly — `codebase-analyzer (openai-codex/gpt-5.6-sol-fast · thinking medium)` — with no separate `fast` badge. Select fast inference in an agent definition's `model` and fallback model fields, for example `openai-codex/gpt-5.6-sol-fast:medium`; normal and fast IDs stay distinct fallback candidates and distinct records. See [Providers](/providers#fast-models) for which providers publish fast variants and what each one sends upstream.
 
-Owner-task rows, status cards, foreground result receipts, and background completion cards retain these settings too. Background launch receipts include the concrete model and known, capability-clamped reasoning level selected at admission, including inherited defaults, without waiting for child session startup. A launch receipt remains a snapshot; inspect `/tasks` for later session resolution or fallback changes. Settings that are not yet resolved remain unavailable rather than being guessed from the parent's display. Completion metadata is persisted with the notification so it remains visible when replaying chat history.
+Owner-task rows, status cards and foreground result receipts retain these settings too. Background launch receipts include the concrete model and known, capability-clamped reasoning level selected at admission, including inherited defaults, without waiting for child session startup. A launch receipt remains a snapshot; inspect `/tasks` for later session resolution or fallback changes. Settings that are not yet resolved remain unavailable rather than being guessed from the parent's display. Completion notices persist model and reasoning metadata in their saved details but do not display a model line, including when replaying chat history.
 
 ### Run control
 
@@ -273,7 +273,7 @@ subagent({ action: "resume", id: "<child-id>", message: "Focus on the failing te
 
 Paused, quit, interrupted, completed, and failed children are resumable, including a paused child that you later quit. So are children whose session you closed or switched away from, whether Atomic exited or crashed, or you used `/new`, `/resume` to another session, or `/fork`; they are restored when that session reopens. Subagents of a workflow stage that was paused or quit, including by Atomic exiting or a session switch, stay resumable too: the stage agent can continue them with `resume`, and resuming the run after Atomic restarts restores them with the stage. These children are terminal, and `resume` returns an error that says why:
 
-- **Killed**: cancelled for good by an owner or batch cancellation. This includes stopping the subagent from `/tasks` and the removed `kill` action.
+- **Killed**: cancelled for good by an owner or batch cancellation. Stopping a subagent from `/tasks` quits it resumably instead.
 - **Stage ended**: the workflow stage that launched it finished, or its run ended or was cancelled. This covers every subagent of that stage, including ones you paused or quit, and also a run killed while it waited, after a restart, for `/workflow resume`. The error reads `<agent> (<child-id>, <intercom-name>) is terminal and cannot be resumed: its workflow stage ended (the stage finished, or its run ended or was cancelled). Launch a fresh subagent if its work is still needed.`
 - **Gone**: it could not be restored after a restart.
 
@@ -326,9 +326,9 @@ A parallel call's card keeps one row per child, and its header counts the outcom
 
 ## Task inspection
 
-Hosts with an owner task store expose `/tasks` and `/tasks <id>` for background agents and shells, including their retained terminal results. Foreground-only work is excluded. Enter opens detail; arrows select an explicit action. Cancel stops the selected task when `x` is pressed again within 3 seconds. Terminal tasks retain transcript inspection but omit foreground, cancellation, and stdin actions. Escape returns from detail or stdin before returning to the composer.
+Hosts with an owner task store expose `/tasks` and `/tasks <id>` for background agents and shells, including their retained terminal results. Foreground-only work is excluded. Enter opens the agent's chat or a shell's output; Space opens detail. Press `x` twice within 3 seconds to stop the selected task. Terminal tasks retain transcript inspection but omit foreground, cancellation, and stdin actions. Escape returns from detail or stdin before returning to the composer.
 
-Cancelling a subagent from `/tasks` stops it for good: its row shows **Killed (non-resumable)** and `resume` refuses it. A paused or quit subagent's row shows **Paused · awaiting resume** (`‖`) instead of **Stopped**. To stop a child and keep it resumable, use `subagent({ action: "quit", id })` or `pause` instead.
+Stopping a subagent from `/tasks` is resumable, like `subagent({ action: "quit", id })`. Its row shows **Paused · awaiting resume**. Send a message in its chat or use `subagent({ action: "resume", id })` to continue it. `subagent({ action: "pause", id })` also keeps the child resumable.
 
 `/tasks` appears in slash-command autocomplete. The inspector groups agents and shells with counts, status symbols, and a highlighted selection. Task descriptions lead; the selected row shows secondary activity and tool counts. The header and footer remain visible in ordinary terminal sizes, with a compact fallback for short terminals.
 
@@ -340,7 +340,7 @@ Plain RPC clients and SDK hosts without a task inspector keep receiving child qu
 
 Opening `/tasks` while the main chat has a question does not answer or cancel that main-chat question. It returns with its selection intact when task navigation closes.
 
-In the default isolated CLI, background subagents continue running after their launch observation returns. The engine publishes a compact task-status indicator below the prompt box, without task rows or activity previews. Run `/tasks` to open the list and inspect individual tasks; task updates never open it automatically. Completed tasks leave the live indicator and remain available in completion cards and `/tasks`. Inspecting does not restart work or create a second task owner. Top-level model bash commands use this owner on POSIX and native Windows; native Windows PowerShell is also owner-bound. Commands inside subagent sessions retain their existing execution path. See [Background shells](/background-tasks#background-shells) for platform support and the separate execution timeout.
+In the default isolated CLI, background subagents continue running after their launch observation returns. The engine publishes a compact task-status indicator below the prompt box, without task rows or activity previews. Run `/tasks` to open the list and inspect individual tasks; task updates never open it automatically. Completed tasks leave the live indicator and remain available in completion notices and `/tasks`. Inspecting does not restart work or create a second task owner. Top-level model bash commands use this owner on POSIX and native Windows; native Windows PowerShell is also owner-bound. Commands inside subagent sessions retain their existing execution path. See [Background shells](/background-tasks#background-shells) for platform support and the separate execution timeout.
 
 Transcript inspection shows the child's conversation as a chat, with the same scrolling, keys, and display settings as a workflow stage chat: it opens at the latest message, follows new output, and loads earlier retained history as you scroll toward the top. Thinking blocks follow Ctrl+T and tool output follows Ctrl+O. Compaction boundaries, branch summaries, and extension notices appear as they do in the chat. Missing capture is reported as `Transcript unavailable`; metrics never substitute for missing messages. See [Inspect tasks](/background-tasks#inspect-tasks) for the controls.
 
@@ -354,9 +354,9 @@ Type in a transcript's prompt and press Enter to message the child through its I
 
 Live transcripts refresh streaming text, tool results, and compaction status without reopening. Earlier pages remain anchored, and leaving the view does not affect execution.
 
-Detail views pin task identity, state, available metrics, and the selected action while PageUp/PageDown scrolls the body. Recent activity shows up to five retained tool actions; errors and input requests appear explicitly. Left returns to the previous view. On the detail page, `x` requests cancellation without bypassing confirmation or configured task bindings; on the list it does nothing, and in a transcript it is ordinary typing. Shell inspection shows a bounded output tail with omission markers.
+Detail views pin task identity, state, available metrics, and the selected action while PageUp/PageDown scrolls the body. Recent activity shows up to five retained tool actions; errors and input requests appear explicitly. Left returns to the previous view. On the list or detail page, press `x` twice within 3 seconds to stop an active task, or once to dismiss a finished task. Configured task bindings take precedence. In a transcript, `x` is ordinary typing. Shell inspection shows a bounded output tail with omission markers.
 
-After a confirmed `x` stop settles, the owning chat receives a visible **stopped** notification and the parent model receives the stop context, even if the child returns no final message. Repeated stops do not duplicate notifications or replace an already-recorded terminal result. Closing the owner still suppresses late completion delivery.
+After a confirmed `x` stop settles, the owning chat receives a **quit · awaiting resume** notice line and the parent model receives the quit context, even if the child returns no final message. Repeated stops do not duplicate notifications or replace an already-recorded terminal result. Closing the owner still suppresses late completion delivery.
 
 ## Orchestrator model and group policy
 

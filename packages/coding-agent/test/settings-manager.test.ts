@@ -44,9 +44,6 @@ describe("SettingsManager", () => {
 			expect(defaults.getCompactionSettings()).toEqual({
 				enabled: true,
 				reserveTokens: 16384,
-				compression_ratio: 0.5,
-				preserve_recent: 2,
-				keepContextShare: 0.5,
 			});
 
 			const settingsPath = join(agentDir, "settings.json");
@@ -63,13 +60,10 @@ describe("SettingsManager", () => {
 				}),
 			);
 			const configured = SettingsManager.create(projectDir, agentDir);
+			// Removed compaction keys are ignored.
 			expect(configured.getCompactionSettings()).toEqual({
 				enabled: false,
 				reserveTokens: 8192,
-				compression_ratio: 0.3,
-				preserve_recent: 4,
-				query: "focus current migration",
-				keepContextShare: 0.5,
 			});
 		});
 	});

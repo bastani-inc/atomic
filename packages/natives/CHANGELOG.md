@@ -5,6 +5,8 @@
 ### Added
 
 - `tryAdvisoryLockAsync` and `renameNoReplaceAsync`: the advisory lock and the non-replacing rename on a worker thread, without blocking the JavaScript event loop
+- Added `windowsDirectorySecurityAsync(path)` to read a directory's security descriptor on a native worker without blocking the caller ([#5324](https://github.com/bastani-inc/atomic/issues/5324)).
+- Added `windowsDirectorySecurity(path)`: on Windows, reads a file or directory's owner SID, its DACL in SDDL form and the SID of each allow and deny entry, along with the current user's SID, without starting a process. It returns `null` where the descriptor cannot be read, and on other platforms ([#5324](https://github.com/bastani-inc/atomic/issues/5324)).
 - Added `trySharedAdvisoryLock(path, waitMs)`: takes a shared operating-system advisory lock on `path` (`flock` on Unix, `LockFileEx` on Windows), waiting up to `waitMs` while an exclusive holder keeps it, and returns an `AdvisoryLock` or `null`. Both `tryAdvisoryLock` and `trySharedAdvisoryLock` reopen `path` when the file was unlinked while acquiring the lock, and treat a delete-pending file on Windows as contention until `waitMs` expires. Permanent access errors still throw, and repeated path replacement does not extend the wait ([#5317](https://github.com/bastani-inc/atomic/issues/5317)).
 
 ### Fixed

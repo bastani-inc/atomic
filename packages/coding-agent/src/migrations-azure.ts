@@ -6,7 +6,7 @@ import { normalizeAzureSettings, normalizeProviderKeys } from "./core/azure-prov
 import { failureDebugFields, reportDebug, reportDebugAsync } from "./core/debug.ts";
 import type { Settings } from "./core/settings-types.ts";
 import { parseJsonFileContent, stripJsonComments } from "./utils/json.ts";
-import { pathExists as exists } from "./utils/path-exists.js";
+import { pathExists as exists } from "./utils/path-exists.ts";
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 type JsonObject = { [key: string]: JsonValue };

@@ -4,7 +4,7 @@ import { basename, dirname, join, sep } from "node:path";
 import { promisify } from "node:util";
 import chalk from "chalk";
 import { getAgentDir, getAgentDirs } from "../config.js";
-import { pathExists as exists } from "../utils/path-exists.js";
+import { pathExists as exists } from "../utils/path-exists.ts";
 import { canonicalizePath, resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { findGitPaths, findGitPathsAsync } from "./footer-data-provider.ts";

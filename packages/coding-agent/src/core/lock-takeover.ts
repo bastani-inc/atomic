@@ -17,14 +17,14 @@ import { link, mkdir, readdir, readFile, rename, rm, rmdir, stat, unlink, writeF
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { createModuleRequire } from "../utils/module-require.ts";
-import { pathExists } from "../utils/path-exists.js";
+import { createModuleRequire } from "../utils/module-require.js";
+import { pathExists } from "../utils/path-exists.ts";
 import {
 	processStartToken,
 	processStartTokenAsync,
 	processStartTokenForSynchronousTakeover,
 	readProcessStartToken,
-} from "./process-start-token.ts";
+} from "./process-start-token.js";
 
 /*
  * Every removal of another process's lock goes through one mutex per lock (#5161): the takeover of a lock whose

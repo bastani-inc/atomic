@@ -2,7 +2,7 @@ import { type ChildProcess, execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { createModuleRequire } from "../utils/module-require.ts";
+import { createModuleRequire } from "../utils/module-require.js";
 
 /**
  * When process `pid` of this host started, as `sha12` of a start that no later process given the same id shares, so a

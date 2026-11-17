@@ -5,7 +5,7 @@ import {
 	lockHolder,
 	lockHolderAsync,
 	prepareTakeoverMutex,
-} from "./lock-takeover.ts";
+} from "./lock-takeover.js";
 
 export { lockHolder };
 

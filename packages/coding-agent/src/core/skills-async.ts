@@ -3,7 +3,7 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
-import { pathExists as exists } from "../utils/path-exists.js";
+import { pathExists as exists } from "../utils/path-exists.ts";
 import { isPathWithin, resolvePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
 import { NestedGitignore } from "./gitignore-rules.ts";

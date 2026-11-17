@@ -9,15 +9,15 @@
  * <tmpdir>/<APP_NAME>-<owner>/<sanitized-session-id>/
  * ```
  *
- * The owner segment mirrors the upstream Claude Code `claude-{uid}` convention
- * (mehmoodosman/claude-code): a shared multi-user temp directory must never let
- * one account write into (or read) another account's tree. The session segment
- * makes the tree reapable as a unit by the age-based sweeper in
- * `session-temp-cleanup.ts` once the session is long gone.
+ * The owner segment keeps accounts in separate trees: a shared multi-user
+ * temp directory must never let one account write into or read another
+ * account's tree. The session segment makes the tree reapable as a unit by
+ * the age-based sweeper in `session-temp-cleanup.ts` once the session is gone.
  */
 
 import { createHash } from "node:crypto";
 import {
+	type BigIntStats,
 	chmodSync,
 	lstatSync,
 	mkdirSync,
@@ -35,6 +35,7 @@ import { APP_NAME, getAgentDir } from "../../config.js";
 import { getErrnoCode } from "./errno.ts";
 import {
 	resetWindowsDirectorySecurityStateForTesting,
+	trackWindowsDirectorySecurityWork,
 	VERIFICATION_PENDING_REASON,
 	verifyWindowsDirectorySecurity,
 	verifyWindowsDirectorySecurityAsync,
@@ -235,10 +236,10 @@ function isVerificationPending(error: unknown): error is TempDirRefusedError {
  * descriptor instead: the owner SID must be a trusted principal and the DACL
  * must grant access to trusted principals only
  * (see `windows-directory-security.ts`). Node exposes neither — `lstatSync`
- * reports uid/gid 0 on Windows — so the read goes through a PowerShell
- * `Get-Acl` subprocess. It runs off the main thread, once per private root per
- * process: a verified directory stays verified while it is the same directory,
- * and a directory inside a verified one needs no read of its own (see
+ * reports uid/gid 0 on Windows — so the native module reads the descriptor,
+ * with an asynchronous PowerShell `Get-Acl` fallback. It runs once per private
+ * root per process: a verified directory stays verified while it is the same
+ * directory, and a directory inside a verified one needs no read of its own (see
  * `verifyWindowsDirectorySecurityAsync`). This synchronous check never reads:
  * it refuses a directory not verified yet, and the asynchronous entry points
  * await its verification and try again. Domain-qualifying the
@@ -480,7 +481,7 @@ const privateTempDirs = new Map<string, KnownPrivateTempDir>();
  * recreated); on POSIX it must still be owned by this account with no group or
  * other access. On Windows the owner and DACL were verified when it was chosen,
  * and a directory this account owns cannot have its DACL changed by another
- * (non-administrator) account, so the costly PowerShell read is not repeated
+ * (non-administrator) account, so the descriptor read is not repeated
  * every time a file is written below it.
  */
 function stillPrivate(known: KnownPrivateTempDir): boolean {
@@ -672,6 +673,35 @@ export function ensureSessionTempDir(explicitDir?: string): string {
 	return ensureTempDir(explicitDir ?? resolveSessionTempDirPath());
 }
 
+async function verifyWindowsOwnedDirectoryAsync(path: string, options: { background?: boolean } = {}): Promise<void> {
+	const before = await lstat(path, { bigint: true });
+	assertRealDirectory(path, before);
+	const refusal = await verifyWindowsDirectorySecurityAsync(path, undefined, options);
+	if (refusal !== undefined) throw new TempDirRefusedError(path, refusal);
+	const after = await lstat(path, { bigint: true });
+	assertRealDirectory(path, after);
+	if (before.dev !== after.dev || before.ino !== after.ino || before.birthtimeNs !== after.birthtimeNs)
+		throw new TempDirRefusedError(path, "its ownership could not be verified");
+}
+
+function assertRealDirectory(path: string, stat: Stats | BigIntStats): void {
+	if (stat.isSymbolicLink()) throw new TempDirRefusedError(path, "it is a symbolic link");
+	if (!stat.isDirectory()) throw new TempDirRefusedError(path, "it is not a directory");
+}
+
+async function ensureWindowsOwnedDirectoryAsync(path: string, options: { background?: boolean } = {}): Promise<void> {
+	try {
+		await lstat(path);
+	} catch {
+		try {
+			await mkdir(path, { mode: SESSION_TEMP_DIR_MODE });
+		} catch (error) {
+			if (getErrnoCode(error) !== "EEXIST") throw new TempDirRefusedError(path, "it could not be created");
+		}
+	}
+	await verifyWindowsOwnedDirectoryAsync(path, options);
+}
+
 export async function ensureTempDirAsync(
 	dir: string,
 	options: { preserveExistingLeaf?: boolean } = {},
@@ -767,14 +797,18 @@ export function setActiveSessionTempId(sessionId: string): string {
 	return resolveSessionTempDirPath(sessionId);
 }
 
-async function startPrivateRootVerification(): Promise<void> {
-	try {
-		const ownerRoot = canonicalTempChild(getTempRootDir(), await baseTempDirsAsync());
-		if (ownerRoot !== undefined) await ensureOwnedDirectoryAsync(ownerRoot);
-	} catch {}
-	try {
-		await verifyOwnedDirectoryAsync(join(getAgentDir(), "cache", "tmp"), undefined, true);
-	} catch {}
+function startPrivateRootVerification(): void {
+	void trackWindowsDirectorySecurityWork(async () => {
+		try {
+			const ownerRoot = canonicalTempChild(getTempRootDir(), await baseTempDirsAsync());
+			if (ownerRoot !== undefined) await ensureWindowsOwnedDirectoryAsync(ownerRoot, { background: true });
+		} catch {}
+	}).catch(() => undefined);
+	void trackWindowsDirectorySecurityWork(async () => {
+		try {
+			await verifyWindowsOwnedDirectoryAsync(join(getAgentDir(), "cache", "tmp"), { background: true });
+		} catch {}
+	}).catch(() => undefined);
 }
 
 export function isProtectedSessionTempDir(path: string): boolean {
@@ -832,20 +866,7 @@ async function verifyOwnedDirectoryAsync(path: string, known?: Stats, strict = f
 		throw new TempDirRefusedError(path, "it is not a directory");
 	}
 	if (process.platform === "win32") {
-		const refusal = await verifyWindowsDirectorySecurityAsync(path);
-		if (refusal !== undefined) {
-			throw new TempDirRefusedError(path, refusal);
-		}
-		const current = await lstat(path);
-		if (
-			current.isSymbolicLink() ||
-			!current.isDirectory() ||
-			current.dev !== stat.dev ||
-			current.ino !== stat.ino ||
-			current.birthtimeMs !== stat.birthtimeMs
-		) {
-			throw new TempDirRefusedError(path, "it changed during ownership verification");
-		}
+		await verifyWindowsOwnedDirectoryAsync(path);
 		return;
 	}
 	const uid = typeof process.getuid === "function" ? process.getuid() : undefined;

@@ -21,7 +21,7 @@ import {
 	migrateModelsJsonConfigValues,
 	migrateModelsJsonConfigValuesAsync,
 } from "./migrations-config-values.ts";
-import { pathExists } from "./utils/path-exists.js";
+import { pathExists } from "./utils/path-exists.ts";
 import { stripBom } from "./utils/text.ts";
 
 const EXTENSIONS_DOC_URL = "https://docs.bastani.ai/extensions";
