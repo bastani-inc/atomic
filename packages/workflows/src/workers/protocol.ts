@@ -144,7 +144,8 @@ export type WorkerRequest = { readonly id: number } & (
 	 * A token of the fleet-wide rate limits for one model call (#4768): the reply is how many milliseconds to wait before
 	 * asking again, 0 when the call may start. Never refused.
 	 */
-	| { readonly kind: "rate-acquire"; readonly provider: string; readonly model: string }
+	| { readonly kind: "rate-acquire"; readonly provider: string; readonly model: string; readonly request?: string }
+	| { readonly kind: "rate-release"; readonly request: string }
 	/** A stage of the attempt started its session: the pool records where it runs (shared pools only, #4310). */
 	| { readonly kind: "stage-workspace"; readonly runId: string; readonly stageId: string }
 	| {

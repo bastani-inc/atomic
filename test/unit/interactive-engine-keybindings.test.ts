@@ -149,6 +149,27 @@ function writeExpandBinding(agentDir: string, binding: string | string[]): void 
 	writeFileSync(join(agentDir, "keybindings.json"), JSON.stringify({ "app.tools.expand": binding }));
 }
 
+async function renderMarkdownMessage(client: RpcClient, requestId: number): Promise<string> {
+	const componentId = `markdown-message-${requestId}`;
+	const frame = nextFrame(client, componentId, requestId);
+	client.sendInteractiveEngineCommand({
+		type: "engine_message_render",
+		componentId,
+		requestId,
+		width: 120,
+		message: {
+			role: "custom",
+			customType: "note",
+			content: "before **bolded** after",
+			display: true,
+			timestamp: 1,
+		},
+		expanded: false,
+		outputPad: 1,
+	});
+	return (await frame).lines.join("\n");
+}
+
 test("host applies the committed engine payload without rereading a later filesystem value", () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "atomic-engine-keybinding-payload-"));
 	try {
@@ -428,6 +449,38 @@ test.sequential(
 		} finally {
 			detachHostSync();
 			await client.stop();
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	},
+	REAL_KEYBINDINGS_TEST_TIMEOUT_MS,
+);
+
+test.sequential(
+	"isolated child emits markdown bold escapes over piped stdout and omits them under NO_COLOR",
+	async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "atomic-engine-markdown-bold-"));
+		const styledClient = createClient(join(tempDir, "styled"), {
+			FORCE_COLOR: undefined as unknown as string,
+			NO_COLOR: undefined as unknown as string,
+		});
+		const noColorClient = createClient(join(tempDir, "no-color"), {
+			FORCE_COLOR: undefined as unknown as string,
+			NO_COLOR: "1",
+		});
+		try {
+			await styledClient.start();
+			await styledClient.waitForInteractiveEngineBound();
+			const styled = await renderMarkdownMessage(styledClient, 30);
+			assert.match(styled, /\x1b\[1m(?:\x1b\[[0-9;]*m)*bolded\x1b\[22m/);
+
+			await noColorClient.start();
+			await noColorClient.waitForInteractiveEngineBound();
+			const plain = await renderMarkdownMessage(noColorClient, 31);
+			assert.match(stripAnsi(plain), /before bolded after/);
+			assert.doesNotMatch(plain, /\x1b\[1m(?:\x1b\[[0-9;]*m)*bolded/);
+		} finally {
+			await styledClient.stop();
+			await noColorClient.stop();
 			rmSync(tempDir, { recursive: true, force: true });
 		}
 	},

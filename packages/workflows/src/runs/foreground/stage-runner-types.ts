@@ -9,7 +9,7 @@ import type {
 	SessionStore,
 	SettingsManager,
 } from "@bastani/atomic";
-import type { StageWaitSnapshot } from "../../shared/authoring-contract-stage.js";
+import type { StageWaitSnapshot, WorkflowAutoModelNeeds } from "../../shared/authoring-contract-stage.js";
 import type { WorkflowPendingStageRouteReadiness } from "../../shared/pending-stage-route-readiness.js";
 import type { StageReleasePolicy } from "../../shared/stage-wait.js";
 import type { StageReleaseError } from "../../shared/stage-wait-errors.js";
@@ -20,6 +20,7 @@ import type {
 	StageOptions,
 	StageSendUserMessageOptions,
 	StageUserMessageContent,
+	WorkflowAutoModel,
 	WorkflowExecutionMode,
 	WorkflowModelAttempt,
 	WorkflowModelCatalogPort,
@@ -197,12 +198,19 @@ export interface AgentSessionAdapter {
 		options: StageSessionCreateOptions,
 		meta?: StageExecutionMeta,
 	): Promise<StageSessionRuntime | StageSessionCreateResult>;
+	/**
+	 * What `model: "auto"` stands for in the sessions this adapter creates, for a run whose `models` catalog does not
+	 * resolve it: the user's default model, else the adapter's own model. No model request.
+	 */
+	autoModel?(
+		options: StageSessionCreateOptions,
+		needs?: WorkflowAutoModelNeeds,
+	): Promise<WorkflowAutoModel | undefined>;
 }
 
 export interface StageModelFallbackMeta {
 	readonly model?: string;
 	readonly thinkingLevel?: string;
-	readonly routerSelection?: import("@bastani/atomic").ModelRouterOutput;
 	readonly attemptedModels?: readonly string[];
 	readonly modelAttempts?: readonly WorkflowModelAttempt[];
 	readonly rateLimits?: readonly import("../../shared/types.js").WorkflowProviderRateLimit[];

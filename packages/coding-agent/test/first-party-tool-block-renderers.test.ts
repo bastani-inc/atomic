@@ -159,8 +159,9 @@ test("interrupted responses render one aligned stopped notice with retained acti
 				const row = new AssistantMessageComponent(message, false, undefined, "Thinking...", outputPad);
 				const rows = plain(row, width).filter(Boolean);
 				assert.equal(rows.length, 1);
-				assert.match(rows[0], new RegExp(`^${" ".repeat(outputPad)}◼ Interrupted(?: · bash)?$`, "u"));
+				assert.match(rows[0], new RegExp(`^${" ".repeat(outputPad)}◼ Interrupted(?: · (?:bash|response))?$`, "u"));
 				if (content.length) assert.match(rows[0], / · bash$/u);
+				else if (width >= 28) assert.match(rows[0], / · response$/u);
 				row.updateContent(message);
 				assert.equal(plain(row, width).filter((line) => line.includes("◼")).length, 1);
 			}

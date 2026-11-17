@@ -16,7 +16,7 @@ import { JournalDurableBackend } from "../../packages/workflows/src/durable/jour
 import { SqlFleetStore } from "../../packages/workflows/src/durable/journal/sql-fleet.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { openSqlPoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
-import { SqlRateBuckets } from "../../packages/workflows/src/durable/journal/sql-rate-buckets.js";
+import { readFleetRateUsage, SqlRateBuckets } from "../../packages/workflows/src/durable/journal/sql-rate-buckets.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
 import { JournalSchemaVersionError, type Lease } from "../../packages/workflows/src/durable/journal/types.js";
@@ -401,7 +401,7 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 		});
 	});
 
-	test("atomic storage migrate moves an earlier release's tables from public to the atomic schema, and an earlier process still on public is refused (#5218)", async () => {
+	test("atomic storage migrate moves earlier tables and fleet waiting counters from public, and refuses earlier writers (#5218, #4768)", async () => {
 		await withRoles(async (scope, roles) => {
 			// An earlier release's layout: every table in public, as the adapter keeps them for an explicit schema public.
 			// On a managed server public is not the owner role's (Azure's belongs to azure_pg_admin): it is granted CREATE
@@ -411,6 +411,10 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 			await openEveryStore(earlier, PREFIX);
 			const running = await SqlRunJournal.open(await earlier(), { prefix: PREFIX });
 			await running.createRun({ runId: "before", name: "w", cwd: "/", createdAt: 1, status: "running" });
+			const earlierRates = await SqlRateBuckets.open(running);
+			await earlierRates.acquire("p", 1, { intervalMs: 1_000, burst: 1 });
+			const waitingEpoch = await earlierRates.registerWaiting("p", "h");
+			await earlierRates.reportWaiting([{ reporter: "h", scope: "p", waitingMs: 750, epoch: waitingEpoch }]);
 			// A default open of that database finds the earlier tables where they are.
 			const found = await roles.open("owner");
 			assert.equal((await found.get("SELECT current_schema() AS schema"))?.schema, "public");
@@ -435,6 +439,10 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 			);
 			// The runtime role then runs on the moved schema without DDL.
 			await grantRuntime(current, roles);
+			const migratedJournal = await SqlRunJournal.open(current, { prefix: PREFIX });
+			const migratedRates = await SqlRateBuckets.open(migratedJournal);
+			await migratedRates.reportWaiting([{ reporter: "h", scope: "p", waitingMs: 1_000, epoch: waitingEpoch }]);
+			assert.equal((await readFleetRateUsage(migratedJournal))[0]?.waitingMs, 1_000);
 			const statements: string[] = [];
 			await openEveryStore(async () => recording(await roles.open("runtime"), statements), PREFIX);
 			assert.deepEqual(statements.flatMap(ddl), []);

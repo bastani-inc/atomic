@@ -11,7 +11,6 @@ import type {
 	WorkflowRunControlRegistration,
 } from "@bastani/atomic";
 import type { Api, Model } from "@bastani/atomic-ai/compat";
-import type { RunJournalSettings } from "../durable/journal/resolution.js";
 import type { StageSessionRuntime } from "../runs/foreground/stage-runner.js";
 import type { LegacyWaitingStatus } from "../shared/legacy-waiting-status.js";
 import type { SessionManager as PersistenceSessionManager } from "../shared/persistence-restore.js";
@@ -159,7 +158,6 @@ export interface PiToolOpts<TArgs, TDetails> {
 
 export interface PiExecuteContext extends PiModelContext {
 	getDecisionModel?: () => string;
-	getModelRouting?: () => import("@bastani/atomic").ModelRoutingSettings;
 	getHttpIdleTimeoutMs?: () => number;
 	sessionId?: string;
 	ui?: PiUISurface;
@@ -213,7 +211,7 @@ export interface ExtensionAPI {
 	getChildSessionOptions?: (options: CreateAgentSessionOptions) => CreateAgentSessionOptions;
 	getWorkflowJournal?: () => CreateAgentSessionOptions["journal"];
 	getStorageAgentDir?: () => string | undefined;
-	getSettings?: () => RunJournalSettings;
+	getSettings?: () => import("./workflow-model-catalog.js").WorkflowHostSettings;
 	registerShortcut?: (
 		key: string,
 		opts: {

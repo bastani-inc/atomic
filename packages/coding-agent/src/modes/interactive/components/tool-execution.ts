@@ -527,6 +527,13 @@ export class ToolExecutionComponent extends Container {
 			this.hasRendererDefinition() && this.getRenderShell() === "self" && !(canonicalCall && canonicalResult);
 		const staticElapsed = formatToolBlockElapsed(this.currentElapsedMs(), { isRunning: true, subTenDecimal: false });
 		const staticMeta = presentation?.meta?.filter((part) => part !== staticElapsed) ?? [];
+		const connectedDetails =
+			details &&
+			!canonicalResult &&
+			!isToolBlock(details) &&
+			!("toolBlockKind" in details && details.toolBlockKind === "records")
+				? new ToolBlockRecords([details], { preserveConnectors: true })
+				: details;
 		if (details && isToolBlock(details)) this.contentContainer.addChild(details);
 		else if (selfRendered) {
 			this.contentContainer.addChild(call);
@@ -538,9 +545,12 @@ export class ToolExecutionComponent extends Container {
 				this.contentContainer.addChild({
 					invalidate: () => title.invalidate(),
 					render: (width) =>
-						new ToolBlock({ status: this.blockStatus(), title, details, outputPad: this.outputPad }).render(
-							width,
-						),
+						new ToolBlock({
+							status: this.blockStatus(),
+							title,
+							details: connectedDetails,
+							outputPad: this.outputPad,
+						}).render(width),
 				});
 			}
 		} else {
@@ -561,7 +571,7 @@ export class ToolExecutionComponent extends Container {
 						title: canonicalCall && presentation ? presentation.title : call,
 						args: canonicalCall ? presentation?.args : undefined,
 						meta,
-						details,
+						details: connectedDetails,
 						outputPad: this.outputPad,
 					}).render(width);
 				},

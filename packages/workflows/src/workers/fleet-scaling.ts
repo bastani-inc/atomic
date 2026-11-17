@@ -13,9 +13,10 @@ export function fleetScaling(
 	roots: readonly FleetRootDemand[],
 	hosts: readonly SharedPoolHost[],
 	policy: WorkerFleetPolicyOptions = {},
+	rateCapHosts?: number,
 ): SharedPoolFleetScaling {
 	const resolved = resolveFleetPolicy(policy);
-	const desiredHosts = fleetTarget(resolved, roots);
+	const desiredHosts = fleetTarget(resolved, roots, rateCapHosts);
 	let live = 0;
 	let busySlots = 0;
 	let idleSlots = 0;
@@ -38,5 +39,6 @@ export function fleetScaling(
 		minHosts: resolved.minHosts,
 		maxHosts: resolved.maxHosts,
 		workersPerHost: resolved.workersPerHost,
+		...(rateCapHosts === undefined ? {} : { rateCapHosts }),
 	};
 }

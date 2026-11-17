@@ -21,7 +21,7 @@ vi.mock("../../packages/coding-agent/src/modes/interactive/whimsical-messages.ts
 	...(await importOriginal<
 		typeof import("../../packages/coding-agent/src/modes/interactive/whimsical-messages.ts")
 	>()),
-	pickWhimsicalWorkingMessage: () => "Brewing...",
+	pickWhimsicalWorkingMessage: () => "Brewing…",
 }));
 
 const WIDTH = 96;
@@ -148,17 +148,17 @@ describe("one working line in the main chat, a stage chat and a subagent view (#
 		try {
 			await all({ type: "agent_start" });
 			await all({ type: "turn_start" });
-			assert.deepEqual(lines(), Array(3).fill("∀ Brewing..."));
+			assert.deepEqual(lines(), Array(3).fill("∀ Brewing…"));
 
 			vi.setSystemTime(1_005_000);
 			const message = assistant("checking the lock", 120);
 			await all({ type: "message_end", message });
-			assert.deepEqual(lines(), Array(3).fill("∀ Brewing... (5s · ↓ 120 tokens)"));
+			assert.deepEqual(lines(), Array(3).fill("∀ Brewing… (5s · ↓ 120 tokens)"));
 
 			await all({ type: "turn_end", message, toolResults: [] });
 			vi.setSystemTime(1_007_000);
 			await all({ type: "turn_start" });
-			assert.deepEqual(lines(), Array(3).fill("∀ Brewing... (7s · ↑ 120 tokens)"));
+			assert.deepEqual(lines(), Array(3).fill("∀ Brewing… (7s · ↑ 120 tokens)"));
 
 			vi.setSystemTime(1_009_000);
 			await all({ type: "turn_end", message, toolResults: [] });
