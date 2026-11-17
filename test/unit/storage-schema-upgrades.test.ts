@@ -38,10 +38,15 @@ const LEGACY_CONVERSION_WRITE_BYTES = 16 * SESSION_BLOB_CHUNK_BYTES;
 /**
  * How long one write transaction of a 256 MiB legacy upgrade may hold the writer, not counting time the whole host
  * stood still (see `hostStallClock`). Each writes at most 16 MiB of blob bytes: the longest took 0.11 s at the median on
- * Linux runners and 0.38 s at the median and 2.6 s at most on loaded Windows runners, where the host itself also stood
- * still for 2 s and more at a time.
+ * Linux runners, and up to 5.7 s on Windows runners four to a host, the database's own writes waiting on a shared disk.
  */
-const LONGEST_WRITE_MS = 5_000;
+const LONGEST_WRITE_MS = 15_000;
+/**
+ * How long one write transaction may hold the writer outside the database's own statements, not counting time the
+ * whole host stood still: preparing a batch's bytes, which a loaded disk cannot slow. A stall of the upgrade's own
+ * code while it holds the lock, such as a wait between two statements, shows here.
+ */
+const LONGEST_HOLD_OUTSIDE_STATEMENTS_MS = 2_000;
 /** Converting and stamping 256 MiB took up to 134 s together beside other suites on loaded Windows runners. */
 const LEGACY_UPGRADE_TEST_TIMEOUT_MS = 300_000;
 /**
@@ -688,6 +693,7 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 				const hostStalls = hostStallClock();
 				closers.push(() => hostStalls.stop());
 				const durations: number[] = [];
+				const outsideStatements: number[] = [];
 				let measuring: (() => Promise<number>) | undefined;
 				let written = 0;
 				let mostWritten = 0;
@@ -701,10 +707,30 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 					async transaction(callback, options) {
 						let acquired = 0;
 						let stalledBefore = 0;
-						const result = await database.transaction((tx) => {
+						let inStatementsMs = 0;
+						let running = 0;
+						let runningSince = 0;
+						const timed = <T>(statement: () => Promise<T>): Promise<T> => {
+							if (running++ === 0) runningSince = performance.now();
+							return statement().finally(() => {
+								if (--running === 0) inStatementsMs += performance.now() - runningSince;
+							});
+						};
+						const result = await database.transaction(async (tx) => {
 							acquired = performance.now();
 							stalledBefore = hostStalls.stalledMs();
-							return callback(tx);
+							const value = await callback({
+								exec: (sql) => timed(() => tx.exec(sql)),
+								run: (sql, ...params) => timed(() => tx.run(sql, ...params)),
+								get: <R extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) =>
+									timed(() => tx.get<R>(sql, ...params)),
+								all: <R extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) =>
+									timed(() => tx.all<R>(sql, ...params)),
+							});
+							outsideStatements.push(
+								performance.now() - acquired - inStatementsMs - (hostStalls.stalledMs() - stalledBefore),
+							);
+							return value;
 						}, options);
 						durations.push(performance.now() - acquired - (hostStalls.stalledMs() - stalledBefore));
 						if (measuring !== undefined) {
@@ -735,6 +761,7 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 					undefined,
 				);
 				durations.length = 0;
+				outsideStatements.length = 0;
 				written = await writtenSessionBytes(database);
 				measuring = () => writtenSessionBytes(database);
 				const conversionStarted = performance.now();
@@ -744,8 +771,9 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 				const conversionMostWritten = mostWritten;
 				mostWritten = 0;
 				const longest = Math.max(...durations);
+				const longestOutside = Math.max(...outsideStatements);
 				process.stdout.write(
-					`${adapter}: 256 MiB open ${openMs.toFixed(0)} ms; lazy conversion ${elapsed.toFixed(0)} ms; longest write ${longest.toFixed(0)} ms; most blob bytes in one write ${conversionMostWritten}\n`,
+					`${adapter}: 256 MiB open ${openMs.toFixed(0)} ms; lazy conversion ${elapsed.toFixed(0)} ms; longest write ${longest.toFixed(0)} ms, ${longestOutside.toFixed(0)} ms of it outside statements; most blob bytes in one write ${conversionMostWritten}\n`,
 				);
 				// Measured against the conversion on the same machine, so a loaded runner slows both: an open that read or
 				// rewrote the blob would cost about as much as converting it.
@@ -758,11 +786,16 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 					`one conversion write transaction wrote ${conversionMostWritten} bytes of blobs`,
 				);
 				assert.ok(longest < LONGEST_WRITE_MS, `one write transaction held the lock for ${longest.toFixed(0)} ms`);
+				assert.ok(
+					longestOutside < LONGEST_HOLD_OUTSIDE_STATEMENTS_MS,
+					`one write transaction held the lock for ${longestOutside.toFixed(0)} ms outside its statements`,
+				);
 				assert.ok(durations.length > 2, "large blobs must commit between chunk batches");
 				const restored = await upgraded.getBlob("session", hash);
 				assert.equal(restored?.byteLength, bytes);
 				assert.equal(createHash("sha256").update(restored!).digest("hex"), hash);
 				durations.length = 0;
+				outsideStatements.length = 0;
 				written = await writtenSnapshotBytes(database);
 				measuring = () => writtenSnapshotBytes(database);
 				const collectionStarted = performance.now();
@@ -770,8 +803,9 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 				const maintenanceMs = performance.now() - collectionStarted;
 				measuring = undefined;
 				const maintenanceWriteMs = Math.max(...durations);
+				const maintenanceOutside = Math.max(...outsideStatements);
 				process.stdout.write(
-					`${adapter}: 256 MiB deferred age index + stamp ${maintenanceMs.toFixed(0)} ms; longest write ${maintenanceWriteMs.toFixed(0)} ms; most blob bytes in one write ${mostWritten}\n`,
+					`${adapter}: 256 MiB deferred age index + stamp ${maintenanceMs.toFixed(0)} ms; longest write ${maintenanceWriteMs.toFixed(0)} ms, ${maintenanceOutside.toFixed(0)} ms of it outside statements; most blob bytes in one write ${mostWritten}\n`,
 				);
 				assert.ok(
 					mostWritten <= SNAPSHOT_LEGACY_STAMP_BYTES,
@@ -780,6 +814,10 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 				assert.ok(
 					maintenanceWriteMs < LONGEST_WRITE_MS,
 					`snapshot maintenance held the writer for ${maintenanceWriteMs.toFixed(0)} ms`,
+				);
+				assert.ok(
+					maintenanceOutside < LONGEST_HOLD_OUTSIDE_STATEMENTS_MS,
+					`snapshot maintenance held the writer for ${maintenanceOutside.toFixed(0)} ms outside its statements`,
 				);
 				assert.ok(await database.get("SELECT name FROM sqlite_schema WHERE name = 'snapshot_blobs_age'"));
 				const stamped = await database.get(
