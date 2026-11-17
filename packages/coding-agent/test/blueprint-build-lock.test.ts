@@ -20,9 +20,11 @@ import {
 	setNativeProcessCreationTimeForTesting,
 	setProcessCreationTimeQueryForTesting,
 } from "../src/core/process-start-token.js";
+import { runBlueprintBuild } from "../src/core/resume/blueprint/build.ts";
 import { buildLockPath, settleOtherBuilds, withBuildLocks } from "../src/core/resume/blueprint/build-lock.ts";
 import { type ProcessExit, runLoggedProcess } from "../src/core/resume/blueprint/process.js";
 import { processStartToken } from "../src/core/worktree-snapshot/pool.ts";
+import { forThisHost } from "./helpers/blueprint-fixtures.ts";
 
 // Process creation is real; execFile is only watched, to tell when a build lock lists this host's processes.
 vi.mock("node:child_process", async (importOriginal) => {
@@ -97,6 +99,89 @@ function writeLock(lock: object): void {
 }
 
 describe("blueprint build locks (#4748)", () => {
+	test("a build that runs nothing writes no lock and says nothing, even where no lock can be written (#5379)", async () => {
+		mkdirSync(join(dir, "blueprint-builds"), { recursive: true });
+		writeFileSync(join(dir, "blueprint-builds", "locks"), "");
+		const told: string[] = [];
+		const built = await withBuildLocks(
+			dir,
+			[root()],
+			async () => "nothing ran",
+			(message) => told.push(message),
+		);
+		assert.equal(built, "nothing ran");
+		assert.deepEqual(told, []);
+	});
+
+	test("a build writes its lock before it starts a step's process, also one that then cannot start (#5379)", async () => {
+		mkdirSync(join(dir, "blueprint-builds"), { recursive: true });
+		writeFileSync(join(dir, "blueprint-builds", "locks"), "");
+		const told: string[] = [];
+		const log = join(dir, "step.log");
+		const fd = openSync(log, "a");
+		const missing = { command: join(dir, "no-such-program"), args: [], cwd: dir, env: process.env };
+		const exit = await withBuildLocks(
+			dir,
+			[root()],
+			() => runLoggedProcess(missing, { fd, path: log }, { timeoutMs: 30_000 }),
+			(message) => told.push(message),
+		);
+		closeSync(fd);
+		assert.ok(exit.spawnError, "the step's process never started");
+		assert.equal(told.length, 1, "the lock was written before the process was started");
+	});
+
+	test("a trusted blueprint with only knowledge runs nothing, so it writes no lock and says nothing (#5379)", async () => {
+		mkdirSync(join(root(), ".atomic"), { recursive: true });
+		writeFileSync(
+			join(root(), ".atomic", "blueprint.yaml"),
+			forThisHost("knowledge:\n  - name: test\n    contents: npm test\n"),
+		);
+		mkdirSync(join(dir, "blueprint-builds"), { recursive: true });
+		writeFileSync(join(dir, "blueprint-builds", "locks"), "");
+		mkdirSync(join(dir, "home"), { recursive: true });
+		const told: string[] = [];
+		const outcome = await withBuildLocks(
+			dir,
+			[root()],
+			() =>
+				runBlueprintBuild([{ root: root(), identity: "https://example.test/repo.git" }], {
+					agentDir: join(dir, "agent"),
+					storeDir: dir,
+					trusted: () => true,
+					homeDir: join(dir, "home"),
+					environment: { PATH: process.env.PATH ?? "", HOME: join(dir, "home") },
+				}),
+			(message) => told.push(message),
+		);
+		assert.equal(outcome.status, "success");
+		assert.deepEqual(told, []);
+	});
+
+	test("a build whose lock cannot be written goes on, and the user is told once that a kill could go unnoticed (#5379)", async () => {
+		// A file where the locks' directory belongs: no lock can be written, also as root.
+		mkdirSync(join(dir, "blueprint-builds"), { recursive: true });
+		writeFileSync(join(dir, "blueprint-builds", "locks"), "");
+		const told: string[] = [];
+		const log = join(dir, "step.log");
+		const fd = openSync(log, "a");
+		const quick = { command: process.execPath, args: ["-e", ""], cwd: dir, env: process.env };
+		const built = await withBuildLocks(
+			dir,
+			[root()],
+			async () => {
+				await runLoggedProcess(quick, { fd, path: log }, { timeoutMs: 30_000 });
+				return "built";
+			},
+			(message) => told.push(message),
+		);
+		closeSync(fd);
+		assert.equal(built, "built");
+		assert.equal(told.length, 1, told.join("\n"));
+		assert.match(told[0]!, /build lock of .* could not be written/);
+		assert.ok(told[0]!.includes(root()));
+	});
+
 	test("a build records each step process while it runs, and removes its lock once it settled", async () => {
 		const log = join(dir, "step.log");
 		const fd = openSync(log, "a");

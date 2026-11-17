@@ -12,7 +12,7 @@ const sessionHistorySchema = Type.Object({
 	pattern: Type.Optional(
 		Type.String({
 			description:
-				"Regular expression to search this session's history for. Search first; keep it and set `lines` to a `?cursor=` URL to continue.",
+				"Regular expression to search this session's history for. Keep it and set `lines` to a `?cursor=` URL to continue.",
 		}),
 	),
 	lines: Type.Optional(

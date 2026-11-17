@@ -7,18 +7,32 @@ import { afterEach, beforeAll, describe, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { forkDurableRun } from "../../packages/workflows/src/durable/fork-run.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { createWorkflowResumeProvider } from "../../packages/workflows/src/extension/workflow-resume-provider.js";
 import { run as executeWorkflow } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { stageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import { resolveInvocationGitBranch } from "../../packages/workflows/src/runs/shared/worktree-git.js";
 import { resolveGitHeadBranch } from "../../packages/workflows/src/runs/shared/worktree-root.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { workflowResumeSelectorItems } from "../../packages/workflows/src/tui/workflow-resume-selector.js";
 import { testRunId } from "../helpers/run-id.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
+
+function gitSupportsReftable(): boolean {
+	const probeDir = makeTempDirectory("resume-reftable-probe-");
+	try {
+		execFileSync("git", ["init", "-q", "--ref-format=reftable", probeDir], { stdio: ["ignore", "pipe", "pipe"] });
+		return true;
+	} catch {
+		return false;
+	} finally {
+		removeTempDirectory(probeDir);
+	}
+}
 
 const opened: JournalDurableBackend[] = [];
 const dirs: string[] = [];
@@ -236,5 +250,56 @@ describe("workflow resume branch persistence and live row age (#5256)", () => {
 		writeFileSync(join(repoDir, ".git", "HEAD"), "ref: refs/heads/.invalid\n");
 		assert.equal(await resolveGitHeadBranch(repoDir, () => "feat/reftable"), "feat/reftable");
 		assert.equal(await resolveGitHeadBranch(repoDir, () => undefined), undefined);
+	});
+
+	test("a fork keeps its source's branch in the source checkout and records the branch of any other destination", async () => {
+		const sourceDir = makeTempDirectory("resume-fork-source-");
+		dirs.push(sourceDir);
+		const sourceGit = initGitRepo(sourceDir, "feat/ship");
+		const otherDir = makeTempDirectory("resume-fork-other-");
+		dirs.push(otherDir);
+		initGitRepo(otherDir, "release/9");
+		const nonGitDir = makeTempDirectory("resume-fork-nongit-");
+		dirs.push(nonGitDir);
+		const journalDir = makeTempDirectory("resume-fork-journal-");
+		dirs.push(journalDir);
+		const backend = await JournalDurableBackend.open(await openSqlRunJournal(join(journalDir, "journal.sqlite")));
+		opened.push(backend);
+		setDurableBackend(backend);
+
+		const runId = testRunId("fork-branch-run");
+		await executeWorkflow(
+			branchWorkflow,
+			{},
+			{ runId, cwd: sourceDir, store, durableBackend: backend, ...sessionOpts },
+		);
+		await backend.commitWorkflowStatus(runId, "paused", 0, true);
+		assert.equal(backend.getWorkflow(runId)?.branch, "feat/ship");
+		sourceGit("checkout", "-q", "-b", "chore/after-run");
+
+		const forkBranch = async (cwd: string) => {
+			const fork = await forkDurableRun(backend, {
+				source: "sdk",
+				runId,
+				carryMessages: "before",
+				cwd,
+				definition: branchWorkflow,
+			});
+			await backend.hydrateWorkflow(fork.runId);
+			return backend.getWorkflow(fork.runId)?.branch;
+		};
+		assert.equal(await forkBranch(sourceDir), "feat/ship");
+		assert.equal(await forkBranch(otherDir), "release/9");
+		assert.equal(await forkBranch(nonGitDir), undefined);
+	});
+
+	test.skipIf(!gitSupportsReftable())("reads the branch of a reftable repository through git", () => {
+		const repoDir = makeTempDirectory("resume-reftable-");
+		dirs.push(repoDir);
+		execFileSync("git", ["init", "-q", "--ref-format=reftable", "-b", "feat/reftable"], {
+			cwd: repoDir,
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		assert.equal(resolveInvocationGitBranch(repoDir), "feat/reftable");
 	});
 });

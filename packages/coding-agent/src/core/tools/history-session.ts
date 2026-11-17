@@ -51,6 +51,8 @@ export const MATCH_SPAN_CHARS = 16 * 1024;
 const CONTEXT_SPAN_SEQS = 64;
 const ENTRY_CACHE_SEQS = 2 * WINDOW_MAX_SEQS + 2 * CONTEXT_SPAN_SEQS;
 const LOOKBEHIND_SYNTAX = /\(\?<[=!]/;
+const LOOKAHEAD_SYNTAX = /\(\?[=!]/;
+const MULTILINE_MODIFIER_SYNTAX = /\(\?[a-ln-zA-Z]*m[a-zA-Z]*(?:-[a-zA-Z]*)?:/;
 const CANDIDATE_PAGE = 64;
 const EXTRA_COUNT_SEQS = 500;
 const SKIPPED_TYPES: readonly string[] = ["custom", "worktree_snapshot"];
@@ -996,10 +998,24 @@ function lineNumberAt(newlines: readonly number[], index: number): number {
 	return low;
 }
 
-function workerWindowPattern(pattern: string): string {
+const START_OF_TEXT = "(?:(?<![\\s\\S]))";
+const NEVER = "(?:(?!))";
+
+function startAt(offset: number): string {
+	return offset === 0 ? START_OF_TEXT : offset < 0 ? NEVER : `(?:(?<=(?<![\\s\\S])[\\s\\S]{${offset}}))`;
+}
+
+function workerWindowPattern(
+	pattern: string,
+	caret: boolean,
+	start: { readonly inside: string; readonly outside: string },
+): { readonly pattern: string; readonly anchored: boolean } {
+	const lookbehinds = [false];
+	let anchored = false;
 	let out = "";
 	for (let i = 0; i < pattern.length; ) {
 		const ch = pattern[i]!;
+		const inside = lookbehinds[lookbehinds.length - 1]!;
 		if (ch === "\\" && i + 1 < pattern.length) {
 			const next = pattern[i + 1]!;
 			if (next === "Q") {
@@ -1009,7 +1025,10 @@ function workerWindowPattern(pattern: string): string {
 				i = end;
 				continue;
 			}
-			out += next === "A" ? "(?<![\\s\\S])" : next === "z" ? "(?![\\s\\S])" : ch + next;
+			if (next === "A") {
+				out += inside ? start.inside : start.outside;
+				anchored ||= !inside;
+			} else out += next === "z" ? "(?![\\s\\S])" : ch + next;
 			i += 2;
 			continue;
 		}
@@ -1019,10 +1038,18 @@ function workerWindowPattern(pattern: string): string {
 			i = end;
 			continue;
 		}
+		if (ch === "^" && caret) {
+			out += inside ? start.inside : start.outside;
+			anchored ||= !inside;
+			i++;
+			continue;
+		}
+		if (ch === "(") lookbehinds.push(inside || pattern.startsWith("(?<=", i) || pattern.startsWith("(?<!", i));
+		else if (ch === ")" && lookbehinds.length > 1) lookbehinds.pop();
 		out += ch;
 		i++;
 	}
-	return out;
+	return { pattern: out, anchored };
 }
 
 function matchMultilineNative(
@@ -1063,6 +1090,7 @@ export interface MultilineWindow {
 	readonly ownedFrom: number;
 	readonly ownedTo: number;
 	readonly cut: boolean;
+	readonly entryStart?: number;
 }
 
 export async function matchMultilineWindow(
@@ -1074,25 +1102,46 @@ export async function matchMultilineWindow(
 	budget: HistoryCallBudget,
 ): Promise<readonly MultilineSpan[] | "timedOut"> {
 	const text = window.cut ? `${window.text}\n${WINDOW_CUT_LINE}` : window.text;
-	let spans: readonly MultilineSpan[];
-	if (engine === "native-only") {
-		spans = matchMultilineNative(text, window.ownedTo, normalized, ignoreCase, window.lineCount + 1);
-	} else {
-		const res = await matchMultilineInWorker(
-			text,
+	if (engine === "native-only")
+		return matchMultilineNative(text, window.ownedTo, normalized, ignoreCase, window.lineCount + 1).filter(
+			(span) => span.endLine < window.lineCount,
+		);
+	const entryStart = window.entryStart ?? 0;
+	const caret =
+		entryStart !== 0 && !normalized.flags.includes("m") && !MULTILINE_MODIFIER_SYNTAX.test(normalized.pattern);
+	const inside = startAt(entryStart);
+	const main = literal
+		? { pattern: normalized.pattern, anchored: false }
+		: workerWindowPattern(normalized.pattern, caret, { inside, outside: entryStart > 0 ? NEVER : inside });
+	const startPattern =
+		main.anchored && entryStart > 0 && entryStart === window.ownedFrom
+			? workerWindowPattern(normalized.pattern, caret, { inside, outside: inside }).pattern
+			: undefined;
+	const search = (searched: string) =>
+		matchMultilineInWorker(
+			searched,
 			window.ownedFrom,
 			window.ownedTo,
-			literal ? normalized.pattern : workerWindowPattern(normalized.pattern),
+			main.pattern,
 			normalized.flags,
 			ignoreCase,
 			literal,
 			budget.remainingMs(),
 			budget.signal,
+			startPattern,
 		);
-		if (res.timedOut) return "timedOut";
-		spans = res.matches;
-	}
-	return spans.filter((span) => span.endLine < window.lineCount);
+	const res = await search(text);
+	if (res.timedOut) return "timedOut";
+	const spans = res.matches.filter((span) => span.endLine < window.lineCount);
+	if (!window.cut || literal || !LOOKAHEAD_SYNTAX.test(normalized.pattern)) return spans;
+	const ended = await search(`${window.text}\n`);
+	if (ended.timedOut) return "timedOut";
+	const kept = new Set(
+		ended.matches
+			.filter((span) => span.endLine < window.lineCount)
+			.map((span) => `${span.startLine}:${span.endLine}`),
+	);
+	return spans.filter((span) => kept.has(`${span.startLine}:${span.endLine}`));
 }
 
 export interface SearchCheckpoint {
@@ -1708,9 +1757,16 @@ class SessionSearcher {
 				0,
 			);
 			const ownedTo = ownedFrom + ownedLines.join("\n").length + 1;
+			const entryPart = windowParts.findIndex((part) => part.seq === entry.seq && part.lineOffset === 0);
+			const entryStart =
+				entryPart === -1
+					? -1
+					: windowParts
+							.slice(0, entryPart)
+							.reduce((sum, part) => part.lines.reduce((chars, line) => chars + line.length + 1, sum), 0);
 			const windowText = windowParts.flatMap((part) => part.lines).join("\n");
 			const matchedSpans = await matchMultilineWindow(
-				{ text: windowText, lineCount: totalLines, ownedFrom, ownedTo, cut: ahead.cut },
+				{ text: windowText, lineCount: totalLines, ownedFrom, ownedTo, cut: ahead.cut, entryStart },
 				this.normalized,
 				this.ignoreCase,
 				request.literal,

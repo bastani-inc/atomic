@@ -8,9 +8,14 @@ import {
 } from "./chat-session-host-runtime.ts";
 import type { ChatSessionHostState } from "./chat-session-host-state.ts";
 import type { ChatSessionHostOpts, ChatSessionSubmitMode } from "./chat-session-host-types.ts";
-import { matchesKey } from "./chat-session-host-utils.ts";
+import { isChatMessageEntry, matchesKey } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import { CustomEditor } from "./custom-editor.ts";
+import {
+	PromptHistorySelectorComponent,
+	promptHistoryEntries,
+	sessionPromptsFromEntries,
+} from "./prompt-history-selector.ts";
 
 export interface ChatSessionEditorCallbacks {
 	submit: (mode: ChatSessionSubmitMode, submittedText?: string) => void | Promise<void>;
@@ -56,6 +61,7 @@ export function createChatSessionEditor<TExtraEntry extends ChatTranscriptEntryL
 	actionEditor.onAction?.("app.editor.external", () => {
 		void openChatSessionExternalEditor(state);
 	});
+	actionEditor.onAction?.("app.history.search", () => openChatSessionPromptSearch(state));
 	if (state.actions) {
 		for (const [action, handler] of Object.entries(state.actions)) {
 			actionEditor.onAction?.(action, () => {
@@ -95,11 +101,96 @@ export function createChatSessionEditor<TExtraEntry extends ChatTranscriptEntryL
 	return editor;
 }
 
+export function syncChatSessionPromptSearch<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): boolean {
+	if (state.isDisabled?.() === true) {
+		state.promptSearch = undefined;
+		return false;
+	}
+	return state.promptSearch !== undefined;
+}
+
+function isChatSessionShowingAutocomplete<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): boolean {
+	if (state.isDisabled?.() === true) return false;
+	const candidate = state.editor as (EditorComponent & { isShowingAutocomplete?: () => boolean }) | undefined;
+	return typeof candidate?.isShowingAutocomplete === "function" && candidate.isShowingAutocomplete();
+}
+
+export function hasChatSessionTransientModal<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): boolean {
+	return syncChatSessionPromptSearch(state) || isChatSessionShowingAutocomplete(state);
+}
+
+function isoTimestamp(timestamp: unknown): string | undefined {
+	if (typeof timestamp !== "number") return undefined;
+	const date = new Date(timestamp);
+	return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
+}
+
+function promptEntriesForChatSession<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): Parameters<typeof sessionPromptsFromEntries>[0] {
+	const sessionEntries = state.getAgentSession?.()?.sessionManager.getEntries();
+	if (sessionEntries && sessionEntries.length > 0) return sessionEntries;
+	const promptEntries = state.getPromptEntries?.();
+	if (promptEntries && promptEntries.length > 0) return promptEntries;
+	const messages = state.getSessionMessages?.();
+	if (messages && messages.length > 0) {
+		return messages.map((message) => {
+			const timestamp = isoTimestamp("timestamp" in message ? message.timestamp : undefined);
+			return {
+				type: "message",
+				...(timestamp === undefined ? {} : { timestamp }),
+				message,
+			};
+		});
+	}
+	return state.transcript.flatMap((entry) =>
+		isChatMessageEntry(entry) && entry.kind === "user"
+			? [{ type: "message", timestamp: entry.timestamp, message: { role: "user", content: entry.text } }]
+			: [],
+	);
+}
+
+export function openChatSessionPromptSearch<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): void {
+	const editor = state.editor;
+	if (!editor || state.isDisabled?.() === true) return;
+	const entries = promptHistoryEntries(sessionPromptsFromEntries(promptEntriesForChatSession(state)));
+	const close = () => {
+		state.promptSearch = undefined;
+		state.requestRender?.();
+	};
+	state.promptSearch = new PromptHistorySelectorComponent(entries, {
+		onSelect: (text) => {
+			close();
+			setChatSessionEditorText(state, text);
+		},
+		onCancel: close,
+	});
+	state.requestRender?.();
+}
+
 export function handleChatSessionInput<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	data: string,
 	callbacks: ChatSessionEditorCallbacks,
 ): boolean {
+	if (syncChatSessionPromptSearch(state)) {
+		state.promptSearch!.handleInput(data);
+		state.requestRender?.();
+		return true;
+	}
+	if (isChatSessionShowingAutocomplete(state)) {
+		state.editor!.handleInput(data);
+		state.requestRender?.();
+		return true;
+	}
 	if (state.bodyViewport.handleInput(data)) return true;
 	if (matchesKey(data, "alt+up")) {
 		callbacks.restoreQueuedMessagesToEditor();

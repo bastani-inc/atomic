@@ -194,6 +194,7 @@ describe("session selector path/delete interactions", () => {
 				assert.match(stripAnsi(selector.render(100).join("\n")), /Deleting/);
 				gate.resolve();
 				await flushPromises();
+				selector.render(100);
 				selector.handleInput("\r");
 				assert.deepEqual(resumed, [fail ? "a" : "b"]);
 			} finally {

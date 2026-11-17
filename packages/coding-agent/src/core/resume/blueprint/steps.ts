@@ -13,6 +13,7 @@ import {
 } from "./errors.ts";
 import {
 	appendToLog,
+	buildProcessStarting,
 	type LoggedProcess,
 	logTail,
 	openStepLog,
@@ -115,6 +116,7 @@ async function startStep(
 	context: StepContext,
 	log: StepLog,
 ): Promise<ProcessExit> {
+	buildProcessStarting();
 	await appendToLog(
 		log,
 		[

@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import { setKeybindings, stripTerminalSequences, TuiMainScreen, visibleWidth } from "@bastani/atomic-tui";
 import { beforeAll, beforeEach, describe, it } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
+import type { ResolvedPaths } from "../src/core/package-manager.ts";
 import type { SettingsManager } from "../src/core/settings-manager.ts";
 import { ConfigSelectorComponent } from "../src/modes/interactive/components/config-selector.ts";
 import { type ResourceGroup, ResourceList } from "../src/modes/interactive/components/config-selector-list.ts";
@@ -34,6 +36,10 @@ function groups(count: number): ResourceGroup[] {
 			],
 		},
 	];
+}
+
+function emptyPaths(): ResolvedPaths {
+	return { extensions: [], skills: [], prompts: [], themes: [], workflows: [], mcpServers: [] };
 }
 
 function render(list: ResourceList, width = 100): string[] {
@@ -86,15 +92,15 @@ describe("package and resource picker on the shared look (#5224)", () => {
 			},
 		];
 		const list = new ResourceList(multiSubgroup, {} as SettingsManager, "/cwd", "/agent", 15);
+		const scrollLine = (out: string[]) => out.find((line) => /^(↑|↓) \d+ more/.test(line.trim()))?.trim();
 		const initial = render(list);
-		const last = initial.at(-1)!;
-		assert.ok(!/\(\d+\/\d+\)/.test(last), last);
-		assert.equal(last.trim(), "↓ 21 more");
+		assert.ok(!initial.some((line) => /\(\d+\/\d+\)/.test(line)), initial.join("\n"));
+		assert.equal(scrollLine(initial), "↓ 21 more");
 		for (let i = 0; i < 12; i++) list.handleInput("\x1b[B");
-		assert.equal(render(list).at(-1)!.trim(), "↑ 11 more · ↓ 9 more");
+		assert.equal(scrollLine(render(list)), "↑ 11 more · ↓ 9 more");
 	});
 
-	it("pins the scope header and key hints in TuiMainScreen on long lists and updates esc clear/close (#5256)", async () => {
+	it("pins the scope header and key hint line in TuiMainScreen on long lists and updates esc clear/close (#5256)", async () => {
 		const resolved = (count: number) =>
 			({
 				extensions: Array.from({ length: count }, (_, i) => ({
@@ -128,7 +134,11 @@ describe("package and resource picker on the shared look (#5224)", () => {
 			await new Promise((r) => setTimeout(r, 30));
 			const vp = await term.flushAndGetViewport();
 			assert.ok(
-				vp.some((line) => line.includes("Global Resources") && line.includes("esc close")),
+				vp.some((line) => line.includes("esc close")),
+				`rows=${rows}:\n${vp.join("\n")}`,
+			);
+			assert.ok(
+				vp.some((line) => line.includes("Global resources")),
 				`rows=${rows}:\n${vp.join("\n")}`,
 			);
 			assert.ok(
@@ -140,7 +150,7 @@ describe("package and resource picker on the shared look (#5224)", () => {
 			await new Promise((r) => setTimeout(r, 30));
 			const vpSearching = await term.flushAndGetViewport();
 			assert.ok(
-				vpSearching.some((line) => line.includes("Global Resources") && line.includes("esc clear")),
+				vpSearching.some((line) => line.includes("esc clear")),
 				`rows=${rows}:\n${vpSearching.join("\n")}`,
 			);
 
@@ -148,7 +158,7 @@ describe("package and resource picker on the shared look (#5224)", () => {
 			await new Promise((r) => setTimeout(r, 30));
 			const vpCleared = await term.flushAndGetViewport();
 			assert.ok(
-				vpCleared.some((line) => line.includes("Global Resources") && line.includes("esc close")),
+				vpCleared.some((line) => line.includes("esc close")),
 				`rows=${rows}:\n${vpCleared.join("\n")}`,
 			);
 			ui.stop();
@@ -219,7 +229,7 @@ describe("package and resource picker on the shared look (#5224)", () => {
 			assert.ok(selector.render(80).length <= 12);
 			const viewport = await terminal.flushAndGetViewport();
 			assert.ok(
-				viewport.some((line) => line.includes("Global Resources") && line.includes("esc close")),
+				viewport.some((line) => line.includes("esc close")),
 				viewport.join("\n"),
 			);
 			assert.ok(
@@ -232,6 +242,49 @@ describe("package and resource picker on the shared look (#5224)", () => {
 			);
 		} finally {
 			ui.stop();
+		}
+	});
+
+	it("renders no more lines than the terminal has rows at every height from 7 to 40 (#5256)", () => {
+		const resolved = (count: number) =>
+			({
+				extensions: Array.from({ length: count }, (_, i) => ({
+					path: `/x/ext${i}.ts`,
+					enabled: true,
+					metadata: { source: "auto", scope: "user", origin: "top-level" },
+				})),
+				skills: [],
+				prompts: [],
+				themes: [],
+				workflows: [],
+			}) as never;
+		for (const count of [0, 1, 43]) {
+			for (const width of [30, 80]) {
+				for (let rows = 7; rows <= 40; rows++) {
+					for (const mode of ["top", "bottom", "query"] as const) {
+						const selector = new ConfigSelectorComponent(
+							{ global: resolved(count), project: resolved(0) },
+							{} as SettingsManager,
+							"/cwd",
+							"/agent",
+							() => {},
+							() => {},
+							() => {},
+							rows,
+						);
+						const list = selector.getResourceList();
+						if (mode === "bottom") for (let i = 0; i < count + 5; i++) list.handleInput("\x1b[B");
+						if (mode === "query") for (const key of "ext") list.handleInput(key);
+						const lines = selector.render(width).map((line) => stripTerminalSequences(line));
+						const tag = `${width}x${rows} n=${count} ${mode}`;
+						assert.ok(lines.length <= rows, `${tag}: ${lines.length} lines`);
+						assert.ok(
+							lines.some((line) => line.includes("Global Resources")),
+							`${tag}: title`,
+						);
+					}
+				}
+			}
 		}
 	});
 
@@ -263,5 +316,43 @@ describe("package and resource picker on the shared look (#5224)", () => {
 		assert.equal(closed, 0);
 		list.handleInput("\x1b");
 		assert.equal(closed, 1);
+	});
+
+	for (const width of [80, 160]) {
+		it(`ends with one hint line naming exactly its live keys at ${width} columns`, () => {
+			const list = new ResourceList(groups(3), {} as SettingsManager, "/cwd", "/agent");
+			assert.equal(
+				render(list, width).at(-1)?.trim(),
+				"↑↓ select · space/enter toggle · type to search · esc close",
+			);
+			list.onSwitchMode = () => {};
+			assert.equal(
+				render(list, width).at(-1)?.trim(),
+				"↑↓ select · space/enter toggle · tab switch scope · type to search · esc close",
+			);
+			for (const key of "ext1") list.handleInput(key);
+			assert.equal(
+				render(list, width).at(-1)?.trim(),
+				"space/enter toggle · tab switch scope · type to search · esc clear",
+			);
+			assert.ok(render(list, width).every((line) => visibleWidth(line) <= width));
+		});
+	}
+
+	it("names the settings file of the agent directory in use, not a fixed home path", () => {
+		const header = new ConfigSelectorComponent(
+			{ global: emptyPaths(), project: emptyPaths() },
+			{} as SettingsManager,
+			"/cwd",
+			"/custom/agent-a",
+			() => {},
+			() => {},
+			() => {},
+		);
+		const out = header.render(100).map((line) => stripTerminalSequences(line).trim());
+		assert.ok(out.includes("Global resources"), out.join("\n"));
+		assert.ok(out.includes(join("/custom/agent-a", "settings.json")), out.join("\n"));
+		assert.ok(!out.some((line) => line.includes("~/.atomic/agent/settings.json")));
+		assert.ok(!out.some((line) => line.includes("Global resources") && line.includes("esc")));
 	});
 });

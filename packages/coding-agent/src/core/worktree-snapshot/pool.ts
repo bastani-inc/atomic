@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { link, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -6,6 +6,7 @@ import { failureDebugFields, reportDebugAsync as reportDebug } from "../debug.ts
 import { renameWithRetry } from "../rename-retry.ts";
 import { isWorkspaceRestoreError } from "./errors.ts";
 import { nulFields, runGit } from "./git.ts";
+import { processesWorkIn } from "./in-use.ts";
 import { canonicalizeWorktreePathAsync } from "./paths.ts";
 import { isDeniedSnapshotPath } from "./policy.ts";
 import { HOST, holderRuns as processHolderRuns, thisProcess } from "./process-holder.js";
@@ -194,6 +195,75 @@ async function holderRuns(name: string, age: number): Promise<boolean> {
 
 function sameOwner(a: PoolOwner, b: PoolOwner): boolean {
 	return a.kind === b.kind && a.id === b.id;
+}
+
+export interface SetAsideNote {
+	readonly startedAt: string;
+	readonly logs: string;
+}
+
+const setAsideHere = new Map<string, string | undefined>();
+
+function setAsideFile(storeDir: string, path: string): string {
+	const key = createHash("sha256").update(resolve(path)).digest("hex").slice(0, 16);
+	return join(resolve(storeDir), "pool", "set-aside", `${key}.json`);
+}
+
+async function directoryIdentity(path: string): Promise<string | undefined> {
+	try {
+		const found = await stat(path);
+		return `${found.dev}:${found.ino}:${Math.trunc(found.birthtimeMs)}`;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" || code === "ENOTDIR") return undefined;
+		throw error;
+	}
+}
+
+export async function setAsideWorktree(storeDir: string, path: string, note: SetAsideNote): Promise<void> {
+	const directory = await directoryIdentity(path).catch(() => undefined);
+	setAsideHere.set(resolve(path), directory);
+	const file = setAsideFile(storeDir, path);
+	await mkdir(dirname(file), { recursive: true });
+	const temporary = `${file}.${randomUUID()}.tmp`;
+	await writeFile(temporary, JSON.stringify({ path: resolve(path), directory, ...note }), { mode: 0o600 });
+	await renameWithRetry(temporary, file);
+}
+
+async function readSetAsideNote(
+	storeDir: string,
+	path: string,
+): Promise<(Partial<SetAsideNote> & { directory?: unknown }) | "absent" | "unreadable"> {
+	let text: string;
+	try {
+		text = await readFile(setAsideFile(storeDir, path), "utf8");
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		return code === "ENOENT" || code === "ENOTDIR" ? "absent" : "unreadable";
+	}
+	try {
+		const note = JSON.parse(text) as unknown;
+		return typeof note === "object" && note !== null ? note : {};
+	} catch {
+		return {};
+	}
+}
+
+async function sameDirectory(path: string, directory: unknown): Promise<boolean> {
+	if (typeof directory !== "string") return true;
+	try {
+		return (await directoryIdentity(path)) === directory;
+	} catch {
+		return true;
+	}
+}
+
+export async function worktreeSetAside(storeDir: string, path: string): Promise<boolean> {
+	if (setAsideHere.has(resolve(path)) && (await sameDirectory(path, setAsideHere.get(resolve(path))))) return true;
+	const note = await readSetAsideNote(storeDir, path);
+	if (note === "absent") return false;
+	if (note === "unreadable") return true;
+	return sameDirectory(path, note.directory);
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -914,10 +984,21 @@ export async function evictIdleWorktrees(
 		return [];
 	}
 	const removed: string[] = [];
-	for (const record of idle.filter((slot) => slot.resetting !== undefined)) {
+	const setAside: PoolSlotRecord[] = [];
+	const usable: PoolSlotRecord[] = [];
+	for (const record of idle) ((await worktreeSetAside(storeDir, record.path)) ? setAside : usable).push(record);
+	for (const record of setAside) {
+		if (await processesWorkIn(record.path)) continue;
+		if (await evictSlot(storeDir, record, options)) {
+			removed.push(record.path);
+			setAsideHere.delete(resolve(record.path));
+			await rm(setAsideFile(storeDir, record.path), { force: true }).catch(() => {});
+		}
+	}
+	for (const record of usable.filter((slot) => slot.resetting !== undefined)) {
 		if (await evictSlot(storeDir, record, options)) removed.push(record.path);
 	}
-	const kept = idle.filter((slot) => slot.resetting === undefined).sort(byNewestRelease);
+	const kept = usable.filter((slot) => slot.resetting === undefined).sort(byNewestRelease);
 	let excess = kept.length - options.maxIdle;
 	for (const record of kept.reverse()) {
 		if (excess <= 0) break;
@@ -1119,6 +1200,7 @@ async function claimSlot(
 				if (heldSlots.has(file) || (await otherLeases(file, true)) > 0) return "busy";
 				const before = await readRecord(file, storeDir, candidate.repository, candidate.slot);
 				if (before === undefined || before.resetting !== undefined) return "dirty";
+				if (await worktreeSetAside(storeDir, before.path)) return "busy";
 				// Another repository's slot is never reset, nor marked: its record and files stay as they are (#4989).
 				if (!(await belongsTo(storeDir, before.path, stores, options.signal))) return "foreign";
 				if (!(await holdsRecordedStateOnly(before, options.settings, options.signal).catch(() => false))) {

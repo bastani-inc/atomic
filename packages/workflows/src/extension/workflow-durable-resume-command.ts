@@ -1,6 +1,5 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { Selector, type SelectorOptions } from "@bastani/atomic";
-import { getKeybindings, truncateToWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
+import { matchesKey, truncateToWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { listOpenableCompletedWorkflows } from "../durable/completed-catalog.js";
 import { openCompletedDurableWorkflow } from "../durable/completed-inspection.js";
@@ -189,20 +188,14 @@ export async function findEditedWorkerEntryModuleReason(
 	return `Since root ${handle.workflowId} started, ${descriptions.join("; ")}.`;
 }
 
-type SelectorKeybindings = NonNullable<SelectorOptions<boolean>["keybindings"]>;
-
-function isSelectorKeybindings(value: object | undefined): value is SelectorKeybindings {
-	return value !== undefined && "matches" in value && typeof value.matches === "function";
-}
-
 function isResumePromptTheme(
 	theme: object,
 ): theme is { readonly fg: (color: "warning" | "dim", text: string) => string } {
-	return "fg" in theme && typeof theme.fg === "function";
+	return typeof Reflect.get(theme, "fg") === "function";
 }
 
 function renderWorkflowDefinitionChangedPrompt(width: number, theme: object): string[] {
-	const fg = isResumePromptTheme(theme) ? theme.fg.bind(theme) : undefined;
+	const fg = isResumePromptTheme(theme) && process.env.NO_COLOR === undefined ? theme.fg.bind(theme) : undefined;
 	const pad = width > 4 ? "  " : "";
 	const inner = Math.max(1, width - pad.length);
 	const hint = ` · enter ${WORKFLOW_DEFINITION_CHANGED_CONFIRM_LABEL} · esc ${WORKFLOW_DEFINITION_CHANGED_CANCEL_LABEL}`;
@@ -227,7 +220,7 @@ export async function confirmEditedWorkflowDefinition(
 
 	if (typeof ctx.ui?.custom === "function") {
 		const confirmed = await ctx.ui.custom(
-			(_tui, theme, keybindings, done) => {
+			(_tui, theme, _keybindings, done) => {
 				const promptTheme = typeof theme === "object" && theme !== null ? theme : {};
 				let settled = false;
 				const finish = (value: boolean): void => {
@@ -242,52 +235,21 @@ export async function confirmEditedWorkflowDefinition(
 				} else {
 					signal?.addEventListener("abort", onAbort, { once: true });
 				}
-				const candidate = typeof keybindings === "object" && keybindings !== null ? keybindings : undefined;
-				const baseKeybindings = isSelectorKeybindings(candidate) ? candidate : getKeybindings();
-				const confirmKeybindings: SelectorKeybindings = {
-					matches: (data, action) =>
-						action === "app.keys.help" ? false : (baseKeybindings?.matches(data, action) ?? false),
-					getKeys: (action) => (action === "app.keys.help" ? [] : (baseKeybindings?.getKeys?.(action) ?? [])),
-				};
-				const selector = new Selector<boolean>({
-					title: WORKFLOW_DEFINITION_CHANGED_TITLE,
-					items: [
-						{
-							id: "resume-with-new-definition",
-							value: true,
-							label: "Resume with the new definition",
-						},
-					],
-					confirmLabel: WORKFLOW_DEFINITION_CHANGED_CONFIRM_LABEL,
-					cancelLabel: WORKFLOW_DEFINITION_CHANGED_CANCEL_LABEL,
-					keybindings: confirmKeybindings,
-					onSelect: () => {
-						if (!isResumeContextActive(ctx, isGenerationCurrent)) {
-							finish(false);
-							return;
-						}
-						finish(true);
-					},
-					onCancel: () => finish(false),
-				});
+				let focused = false;
 				return {
-					get capturesViewportInput() {
-						return selector.capturesViewportInput;
-					},
+					capturesViewportInput: true,
 					get focused() {
-						return selector.focused;
+						return focused;
 					},
 					set focused(value: boolean) {
-						selector.focused = value;
+						focused = value;
 					},
 					render: (width: number) => renderWorkflowDefinitionChangedPrompt(width, promptTheme),
-					invalidate: () => selector.invalidate(),
+					invalidate: () => undefined,
 					handleInput: (data: string) => {
-						if (!isResumeContextActive(ctx, isGenerationCurrent)) {
-							finish(false);
-							return true;
-						}
-						selector.handleInput(data);
+						if (!isResumeContextActive(ctx, isGenerationCurrent)) finish(false);
+						else if (matchesKey(data, "enter")) finish(true);
+						else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) finish(false);
 						return true;
 					},
 					dispose: () => {

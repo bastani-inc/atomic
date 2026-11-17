@@ -357,6 +357,7 @@ declare module "./interactive-mode-base.ts" {
 		showModelSelector(initialSearchInput?: string): void;
 		showModelsSelector(): void;
 		showUserMessageSelector(): Promise<void>;
+		showPromptHistorySearch(): void;
 		handleCloneCommand(): Promise<void>;
 		maybeSaveImplicitProjectTrustAfterReload(): Promise<boolean>;
 		showTrustSelector(): Promise<void>;

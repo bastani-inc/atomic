@@ -120,6 +120,7 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 		if (isKeyRelease(data) || isPhysicalEscape(data) || !this.keybindings.matches(data, "app.agents.focus"))
 			return undefined;
 		if (this.ui.hasOverlay() || !this.editorContainer.children.includes(this.editor)) return undefined;
+		if (this.editor.capturesViewportInput) return undefined;
 		if (this.editor !== this.defaultEditor || this.editor.getText() !== "" || this.isBashMode) return undefined;
 		if (agentPanelRequested || this.blockingInlineCustomUiDepth > 0) return { consume: true };
 		if (this.runtimeHost instanceof IsolatedInteractiveRuntime) {
@@ -203,6 +204,7 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 			this.showModelSelector();
 		})();
 	});
+	this.defaultEditor.onAction("app.history.search", () => this.showPromptHistorySearch());
 	this.defaultEditor.onAction("app.tools.expand", () => this.toggleToolOutputExpansion());
 	this.defaultEditor.onAction("app.keys.help", () => {
 		void this.showExtensionCustom<void>(

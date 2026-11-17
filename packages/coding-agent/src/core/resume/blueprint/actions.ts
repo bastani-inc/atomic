@@ -22,7 +22,7 @@ import {
 	BlueprintUsesUnsupportedError,
 	type BlueprintUsesUnsupportedReason,
 } from "./errors.ts";
-import { appendToLog, type ProcessExit, runLoggedProcess, type StepLog } from "./process.ts";
+import { appendToLog, buildProcessStarting, type ProcessExit, runLoggedProcess, type StepLog } from "./process.ts";
 
 /** The environment variable that replaces `https://github.com` as the place actions are fetched from. */
 export const ACTIONS_GITHUB_BASE_URL_ENV = "ATOMIC_BLUEPRINT_GITHUB_BASE_URL";
@@ -542,6 +542,7 @@ async function ensureRepository(
 	let primary: unknown;
 	try {
 		await mkdir(staging, { recursive: true });
+		buildProcessStarting();
 		await context.fetchAction({
 			owner: reference.owner,
 			repo: reference.repo,

@@ -237,6 +237,12 @@ export interface CompactorRequest {
 	readonly fetchFn?: typeof fetch;
 }
 
+function trimTrailingSlashes(url: string): string {
+	let end = url.length;
+	while (end > 0 && url.charCodeAt(end - 1) === 47) end--;
+	return url.slice(0, end);
+}
+
 /**
  * Send the framed conversation to a compactor endpoint and return its text. Throws `CompactorFailure` naming the
  * reason for every failure (no credentials, HTTP error, malformed or empty output, timeout), and `Compaction cancelled`
@@ -256,7 +262,7 @@ export async function requestCompactorOutput(request: CompactorRequest): Promise
 		const message = typeof error === "string" ? error : error.message || error.name;
 		throw new CompactorFailure(redact(message, apiKey));
 	};
-	const baseUrl = (request.baseUrl ?? DEFAULT_COMPACTOR_BASE_URL).replace(/\/+$/, "");
+	const baseUrl = trimTrailingSlashes(request.baseUrl ?? DEFAULT_COMPACTOR_BASE_URL);
 	let response: Response;
 	try {
 		response = await (request.fetchFn ?? fetch)(`${baseUrl}/compact`, {

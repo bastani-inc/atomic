@@ -16,10 +16,15 @@ permissions:
 # 31047506585 (push, Linux `suites` cancelled on its cap) and 31047542976
 # (pull_request, every job green) on sha 772a373.
 #
-# There is deliberately no `concurrency:` block. A group that cancels a run
-# already in flight can kill a run that has published `test (...)`, leaving a
-# cancelled required context on a SHA with no superseding successful run, which
-# is the failure being fixed here rather than a fix for it.
+# A pull request's newer push cancels its older run: only the head SHA's result can gate the pull request, and a
+# superseded run held a full matrix of runners while newer heads queued behind it. `main` never cancels a run in
+# progress, so every published `test (...)` context on a started `main` SHA completes; GitHub keeps at most one pending
+# run per group, so a newer `main` push replaces a queued older one instead of piling up. See docs/ci.md
+# ("Tests (`test.yml`)").
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 on:
   push:
     branches: [main]
@@ -28,9 +33,9 @@ on:
 # The work runs as five independent jobs. Root suites duplicate setup so neither
 # waits for the other; no shared producer sits on their critical path.
 #
-#   unit-tests      build package -> one of five unit shards (per OS)
-#   integration-tests build package -> one of four integration shards (per OS)
-#   agent-suite     build ai + native bindings -> one of three atomic-ai and coding-agent shards (per OS)
+#   unit-tests      build package -> one of five (Linux) or seven (Windows) unit shards
+#   integration-tests build package -> one of five integration shards (per OS)
+#   agent-suite     build ai + native bindings -> one of three (Linux) or five (Windows) atomic-ai and coding-agent shards
 #   release-archive build package -> build-binaries.sh -> archive smoke
 #   static-checks   typecheck, docs, Mintlify, CI contracts (Linux)
 #   test            result gate; carries the required check contexts
@@ -47,21 +52,28 @@ on:
 # shape; see docs/ci.md ("Runners") before resizing one.
 jobs:
   unit-tests:
-    name: unit-tests (${{ matrix.binary_platform }}, ${{ matrix.shard }}/5)
+    name: unit-tests (${{ matrix.binary_platform }}, ${{ matrix.shard }}/${{ matrix.shards }})
     strategy:
       matrix:
-        # Five shards per OS, balanced by per-OS file durations measured on CI (test/helpers/duration-sequencer.ts).
-        # The result gate needs every shard. See docs/ci.md ("Sharded suites").
+        # Five shards on Linux and seven on Windows, balanced by per-OS file durations measured on CI
+        # (test/helpers/duration-sequencer.ts). The result gate needs every shard. See docs/ci.md ("Sharded suites").
         binary_platform: [linux-x64, windows-x64]
-        shard: [1, 2, 3, 4, 5]
+        shard: [1, 2, 3, 4, 5, 6, 7]
+        exclude:
+          - binary_platform: linux-x64
+            shard: 6
+          - binary_platform: linux-x64
+            shard: 7
         include:
           # The three suites run on 8 vCPU: on 4 vCPU they averaged 54-77% CPU, and
           # Windows unit/integration hit their caps at p95. See docs/ci.md ("Sizing").
           - binary_platform: linux-x64
             runner: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.unit-tests.linux-amd64
+            shards: 5
             timeout_minutes: 14
           - binary_platform: windows-x64
             runner: namespace-profile-atomic-ci-windows-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.unit-tests.windows-amd64
+            shards: 7
             timeout_minutes: 14
       fail-fast: false
     runs-on: ${{ matrix.runner }}
@@ -174,8 +186,8 @@ jobs:
         run: npm run build
       - name: Unit tests
         run: >-
-          bun run scripts/run-test-suite.ts --label "unit tests (${{ matrix.binary_platform }} ${{ matrix.shard }} of 5)"
-          -- npm run test:unit -- --shard=${{ matrix.shard }}/5
+          bun run scripts/run-test-suite.ts --label "unit tests (${{ matrix.binary_platform }} ${{ matrix.shard }} of ${{ matrix.shards }})"
+          -- npm run test:unit -- --shard=${{ matrix.shard }}/${{ matrix.shards }}
       - name: Upload test diagnostics
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -189,13 +201,13 @@ jobs:
           retention-days: 14
 
   integration-tests:
-    name: integration-tests (${{ matrix.binary_platform }}, ${{ matrix.shard }}/4)
+    name: integration-tests (${{ matrix.binary_platform }}, ${{ matrix.shard }}/5)
     strategy:
       matrix:
-        # Four shards per OS, balanced by per-OS file durations measured on CI (test/helpers/duration-sequencer.ts). The result
+        # Five shards per OS, balanced by per-OS file durations measured on CI (test/helpers/duration-sequencer.ts). The result
         # gate below needs every shard, so the required check still covers the whole suite on both hosts.
         binary_platform: [linux-x64, windows-x64]
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5]
         include:
           - binary_platform: linux-x64
             runner: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.integration-tests.linux-amd64
@@ -206,7 +218,7 @@ jobs:
       fail-fast: false
     runs-on: ${{ matrix.runner }}
     # Calibrated for three shards (the slowest four-shard job, 340 s, scaled to three, plus 50%) and kept now that there
-    # are four again; see docs/ci.md ("Per-job time limits").
+    # are five; see docs/ci.md ("Per-job time limits").
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -298,8 +310,8 @@ jobs:
         run: npm run build
       - name: Integration tests
         run: >-
-          bun run scripts/run-test-suite.ts --label "integration tests (${{ matrix.binary_platform }} ${{ matrix.shard }} of 4)"
-          -- npm run test:integration -- --shard=${{ matrix.shard }}/4
+          bun run scripts/run-test-suite.ts --label "integration tests (${{ matrix.binary_platform }} ${{ matrix.shard }} of 5)"
+          -- npm run test:integration -- --shard=${{ matrix.shard }}/5
         env:
           # Hard-require the installed-package Node smoke on both supported hosts.
           ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE: "1"
@@ -447,21 +459,29 @@ jobs:
           retention-days: 14
 
   agent-suite:
-    name: agent-suite (${{ matrix.binary_platform }}, ${{ matrix.shard }}/3)
+    name: agent-suite (${{ matrix.binary_platform }}, ${{ matrix.shard }}/${{ matrix.shards }})
     strategy:
       matrix:
-        # Three shards per OS, each running its share of both the atomic-ai and the coding-agent suites. The
-        # coding-agent share is balanced by measured file duration; atomic-ai's small suite uses vitest's own split.
+        # Three shards on Linux and five on Windows, each running its share of both the atomic-ai and the coding-agent
+        # suites. The coding-agent share is balanced by measured file duration; atomic-ai's small suite uses vitest's
+        # own split.
         binary_platform: [linux-x64, windows-x64]
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4, 5]
+        exclude:
+          - binary_platform: linux-x64
+            shard: 4
+          - binary_platform: linux-x64
+            shard: 5
         include:
           - binary_platform: linux-x64
             runner: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.agent-suite.linux-amd64
+            shards: 3
             timeout_minutes: 10
             ripgrep_target: x86_64-unknown-linux-musl.tar.gz
             ripgrep_sha256: 33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c
           - binary_platform: windows-x64
             runner: namespace-profile-atomic-ci-windows-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.agent-suite.windows-amd64
+            shards: 5
             timeout_minutes: 10
             ripgrep_target: x86_64-pc-windows-msvc.zip
             ripgrep_sha256: 71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5
@@ -555,7 +575,7 @@ jobs:
       - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
         run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build
       - name: atomic-ai vitest suite
-        run: npm --workspace=@bastani/atomic-ai run test -- --shard=${{ matrix.shard }}/3
+        run: npm --workspace=@bastani/atomic-ai run test -- --shard=${{ matrix.shard }}/${{ matrix.shards }}
       # The other forked packages' suites are small, so one shard per OS runs them whole.
       - name: Forked package suites (schema, telemetry, tui, agent-core, codemode)
         if: matrix.shard == 1
@@ -610,8 +630,8 @@ jobs:
           echo "Installed ${version%%$'\n'*} from ${asset} (SHA-256 verified)"
       - name: coding-agent vitest suite
         run: >-
-          bun run scripts/run-test-suite.ts --label "coding-agent tests (${{ matrix.binary_platform }} ${{ matrix.shard }} of 3)"
-          -- npm run test --workspace=@bastani/atomic -- --shard=${{ matrix.shard }}/3
+          bun run scripts/run-test-suite.ts --label "coding-agent tests (${{ matrix.binary_platform }} ${{ matrix.shard }} of ${{ matrix.shards }})"
+          -- npm run test --workspace=@bastani/atomic -- --shard=${{ matrix.shard }}/${{ matrix.shards }}
         env:
           ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE: "1"
           ATOMIC_REQUIRE_PROVISIONED_RIPGREP: "1"

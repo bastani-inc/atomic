@@ -1,46 +1,39 @@
 /** TUI component for managing global and project package resources. */
-import { type Component, Container, type Focusable, Spacer, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import { join } from "node:path";
+import { type Component, Container, type Focusable, Spacer, truncateToWidth } from "@bastani/atomic-tui";
 import { CONFIG_DIR_NAME } from "../../../config.js";
 import type { ResolvedPaths } from "../../../core/package-manager.ts";
 import type { SettingsManager } from "../../../core/settings-manager.ts";
+import { shortenHomePath } from "../../../utils/paths.ts";
 import { theme } from "../theme/theme.js";
 import { buildGroups, type ResourceGroup, ResourceList } from "./config-selector-list.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
-import { keyHint, rawKeyHint } from "./keybinding-hints.js";
 
 export type ConfigWriteScope = "global" | "project";
 export type ScopedResolvedPaths = Record<ConfigWriteScope, ResolvedPaths>;
 
 class ConfigSelectorHeader implements Component {
 	private writeScope: ConfigWriteScope;
-	private readonly projectModeAvailable: boolean;
-	private readonly hasSearchQuery: () => boolean;
-	constructor(writeScope: ConfigWriteScope, projectModeAvailable: boolean, hasSearchQuery: () => boolean) {
+	private readonly agentDir: string;
+	constructor(writeScope: ConfigWriteScope, agentDir: string) {
 		this.writeScope = writeScope;
-		this.projectModeAvailable = projectModeAvailable;
-		this.hasSearchQuery = hasSearchQuery;
+		this.agentDir = agentDir;
 	}
 	setWriteScope(scope: ConfigWriteScope): void {
 		this.writeScope = scope;
 	}
 	invalidate(): void {}
 	render(width: number): string[] {
-		const title = theme.bold(this.writeScope === "project" ? "Project Local Resources" : "Global Resources");
-		const sep = theme.fg("muted", " · ");
-		const switchHint = this.projectModeAvailable ? keyHint("tui.input.tab", "switch scope") + sep : "";
-		const hint =
-			switchHint +
-			rawKeyHint("space", "toggle") +
-			sep +
-			rawKeyHint("esc", this.hasSearchQuery() ? "clear" : "close");
-		const spacing = Math.max(1, width - visibleWidth(title) - visibleWidth(hint));
+		const title = theme.bold(
+			theme.fg("text", this.writeScope === "project" ? "Project resources" : "Global resources"),
+		);
 		const scopeFile =
 			this.writeScope === "project"
 				? `${CONFIG_DIR_NAME}/settings.json · global resources are inherited`
-				: `~/${CONFIG_DIR_NAME}/agent/settings.json`;
+				: shortenHomePath(join(this.agentDir, "settings.json"));
 		return [
-			truncateToWidth(`${title}${" ".repeat(spacing)}${hint}`, width, ""),
-			theme.fg("muted", truncateToWidth(scopeFile, width, "")),
+			truncateToWidth(`  ${title}`, width, ""),
+			truncateToWidth(`  ${theme.fg("muted", scopeFile)}`, width, ""),
 		];
 	}
 }
@@ -82,9 +75,7 @@ export class ConfigSelectorComponent extends Container implements Focusable {
 			project: buildGroups(resolvedPaths.project, agentDir),
 		};
 		this.resourceList = new ResourceList(this.groups[writeScope], settingsManager, cwd, agentDir, terminalHeight);
-		this.header = new ConfigSelectorHeader(writeScope, projectModeAvailable, () =>
-			Boolean(this.resourceList.getSearchQuery()),
-		);
+		this.header = new ConfigSelectorHeader(writeScope, agentDir);
 		this.resourceList.setWriteScope(writeScope);
 		this.resourceList.onCancel = onClose;
 		this.resourceList.onExit = onExit;

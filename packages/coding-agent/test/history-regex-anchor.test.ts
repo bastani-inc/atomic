@@ -73,14 +73,125 @@ describe("multi-line history searches of one large entry (#5250)", () => {
 				header("anchored-lookbehind"),
 				Array.from({ length: 60 }, (_, index) => message(`e${index}`, "x".repeat(1_600))),
 			);
-			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => undefined });
-			const out = await router.search?.(
-				"history://sessions/anchored-lookbehind",
-				request("(?s)^(?=.*(?<!not )approvedXYZ)"),
+			await store.create(
+				header("anchored-lookbehind-lines"),
+				Array.from({ length: 60 }, (_, index) => message(`e${index}`, "x\n".repeat(800))),
 			);
-			assert.ok(out);
-			assert.doesNotMatch(out, /continue with|budget ran out/);
-			assert.doesNotMatch(out, /^history:\/\/sessions\/anchored-lookbehind:[1-9]\d*:/m);
+			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => undefined });
+			for (const id of ["anchored-lookbehind", "anchored-lookbehind-lines"]) {
+				const out = await router.search?.(`history://sessions/${id}`, request("(?s)^(?=.*(?<!not )approvedXYZ)"));
+				assert.ok(out);
+				assert.doesNotMatch(out, /continue with|budget ran out/, id);
+				assert.doesNotMatch(out, new RegExp(`^history://sessions/${id}:[1-9]\\d*:`, "m"), id);
+			}
+		} finally {
+			await store.close();
+		}
+	});
+
+	it("anchors ^ and \\A at the start of the entry when a multi-line pattern has a lookbehind (#5250)", async () => {
+		const store = new MemorySessionStore();
+		try {
+			const body = Array.from({ length: BODY_LINES }, (_, index) => `line-${index + 1} ${"x".repeat(90)}`).join(
+				"\n",
+			);
+			await store.create(header("lookbehind"), [
+				message("e1", "first entry"),
+				message("e2", "needle here"),
+				message("e3", body),
+			]);
+			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => undefined });
+			const matchRows = async (pattern: string): Promise<string[]> => {
+				const out = (await router.search?.("history://sessions/lookbehind", request(pattern))) ?? "";
+				return out.split("\n").filter((line) => /^history:\/\/sessions\/lookbehind:[1-9][\d.]*: /.test(line));
+			};
+			const secondEntry = ["history://sessions/lookbehind:2: ## 2026-11-01T00:00:00.000Z user"];
+
+			assert.deepEqual(await matchRows("(?s)^## [^\\n]+\\nneedle(?<=needle)"), secondEntry);
+			assert.deepEqual(await matchRows("(?s)\\A## [^\\n]+\\nneedle(?<=needle)"), secondEntry);
+			assert.deepEqual(await matchRows("(?s)(?<=^## [^\\n]+\\n)needle"), [
+				"history://sessions/lookbehind:2: needle here",
+			]);
+			assert.deepEqual(await matchRows("(?s)(?<=\\A## [^\\n]+\\n)needle"), [
+				"history://sessions/lookbehind:2: needle here",
+			]);
+			assert.deepEqual(await matchRows("(?s)(?<=\\A?## [^\\n]+\\n)needle"), [
+				"history://sessions/lookbehind:2: needle here",
+			]);
+			assert.deepEqual(await matchRows("(?s)^line-\\d+(?<=\\d) "), []);
+			assert.deepEqual(await matchRows("(?s)(?<=^line-\\d+ )x"), []);
+			assert.deepEqual(await matchRows("(?s)\\Aline-\\d+(?<=\\d) "), []);
+			assert.equal((await matchRows("(?sm)^line-657 x+$(?<=x)")).length, 1);
+		} finally {
+			await store.close();
+		}
+	});
+
+	it("accepts quantified \\A and \\z anchors in multi-line session and run searches (#5250)", async () => {
+		const store = new MemorySessionStore();
+		try {
+			await store.create(header("quantified"), [message("e1", "needle\nB")]);
+			const detail: WorkflowRunDetail = {
+				runId: "run-quantified",
+				name: "flow",
+				status: "failed",
+				startedAt: BASE,
+				endedAt: BASE + 1_000,
+				stages: [],
+				error: "needle\nB",
+			};
+			const workflows: WorkflowRunHistory = {
+				listRuns: async () => [
+					{
+						runId: detail.runId,
+						name: detail.name,
+						status: detail.status,
+						startedAt: BASE,
+						elapsedMs: 1_000,
+						activeStages: [],
+						awaitingInput: [],
+						awaitingInputCount: 0,
+					},
+				],
+				getRun: async () => detail,
+			};
+			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => workflows });
+			for (const [url, label] of [
+				["history://sessions/quantified", "history://sessions/quantified:1"],
+				["history://workflows/run-quantified", "history://workflows/run-quantified:"],
+			] as const) {
+				for (const pattern of ["\\A?needle\\n", "(?s)\\A*needle", "(?s)needle\\nB\\z?", "(?s)needle\\nB\\z*"]) {
+					const out = (await router.search?.(url, request(pattern))) ?? "";
+					assert.ok(
+						out.split("\n").some((line) => line.startsWith(label) && line.endsWith(": needle")),
+						`${url} ${pattern}: ${out}`,
+					);
+				}
+			}
+		} finally {
+			await store.close();
+		}
+	});
+
+	it("does not let a lookahead see past a multi-line window cut before the end of the text (#5250)", async () => {
+		const store = new MemorySessionStore();
+		try {
+			const block = (first: string, count: number) =>
+				Array.from({ length: count }, (_, index) => `${first}${"x".repeat(97)}${index}`).join("\n");
+			await store.create(header("indented"), [message("e1", `needle\n${block(" ", BODY_LINES)}`)]);
+			await store.create(header("lettered"), [message("e1", `needle\n${block("a", BODY_LINES)}`)]);
+			await store.create(header("short"), [message("e1", `needle\n${block(" ", 20)}\nend`)]);
+			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => undefined });
+			const matchRows = async (id: string, pattern: string): Promise<string[]> => {
+				const out = (await router.search?.(`history://sessions/${id}`, request(pattern))) ?? "";
+				return out.split("\n").filter((line) => line.startsWith(`history://sessions/${id}:1: needle`));
+			};
+
+			assert.deepEqual(await matchRows("indented", "needle[\\s\\S]*?(?=\\n\\S)"), []);
+			assert.deepEqual(await matchRows("lettered", "needle[\\s\\S]*?(?=\\n\\W)"), []);
+			assert.deepEqual(await matchRows("lettered", "needle[\\s\\S]*?(?=\\n[^a-z])"), []);
+			assert.equal((await matchRows("short", "needle[\\s\\S]*?(?=\\n\\S)")).length, 1);
+			assert.equal((await matchRows("lettered", "needle[\\s\\S]*?(?=\\na)")).length, 1);
 		} finally {
 			await store.close();
 		}
@@ -258,5 +369,10 @@ describe("multi-line history searches of one large entry (#5250)", () => {
 		]);
 		assert.deepEqual(await matchRows("(?s)\\Aline-\\d+ "), []);
 		assert.deepEqual(await matchRows("(?s)\\A(?P<w>line-\\d+) "), []);
+		assert.deepEqual(await matchRows("(?s)line-2900 (?<=^line-[\\s\\S]*)"), []);
+		assert.deepEqual(await matchRows("(?s)line-2900 (?<=\\Aline-[\\s\\S]*)"), []);
+		assert.deepEqual(await matchRows("(?s)(?<=^# workflow run run-cut\\n)name"), [
+			"history://workflows/run-cut:2: name: flow",
+		]);
 	});
 });

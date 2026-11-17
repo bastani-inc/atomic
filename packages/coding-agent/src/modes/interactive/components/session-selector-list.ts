@@ -180,6 +180,8 @@ export class SessionList implements Component, Focusable {
 	private showPath = false;
 	private showingHelp = false;
 	private confirmingDeleteSession: SessionInfo | null = null;
+	private paintedSelection: SessionInfo | null | undefined;
+	private selectionUnpainted = false;
 	private deletingSessionPath?: string;
 	private deletingWorkflowId?: string;
 	private currentSession?: { id: string; directory?: string };
@@ -302,6 +304,15 @@ export class SessionList implements Component, Focusable {
 	}
 
 	setSessions(sessions: SessionInfo[], showCwd: boolean, partial = false): void {
+		this.replaceSessions(sessions, showCwd, partial);
+		if (this.paintedSelection === undefined) return;
+		const selected = this.filteredSessions[this.selectedIndex]?.session;
+		const painted = this.paintedSelection;
+		if (selected === undefined ? painted !== null : painted === null || !this.isSameSession(selected, painted))
+			this.selectionUnpainted = true;
+	}
+
+	private replaceSessions(sessions: SessionInfo[], showCwd: boolean, partial: boolean): void {
 		const currentSelected = this.filteredSessions[this.selectedIndex]?.session;
 		const selectedPath = this.selectionTouched ? (this.pendingSelectedPath ?? currentSelected?.path) : undefined;
 		const selectedId = this.selectionTouched ? (this.pendingSelectedId ?? currentSelected?.id) : undefined;
@@ -439,6 +450,7 @@ export class SessionList implements Component, Focusable {
 	}
 
 	private selectSession(): void {
+		if (this.selectionUnpainted) return;
 		const selected = this.filteredSessions[this.selectedIndex]?.session;
 		if (selected && !this.isDeleting(selected)) this.onSelect?.(selected);
 	}
@@ -530,6 +542,8 @@ export class SessionList implements Component, Focusable {
 				visibleWidth(line) > width ? truncateToWidth(line, width) : line,
 			);
 		}
+		this.paintedSelection = this.filteredSessions[this.selectedIndex]?.session ?? null;
+		this.selectionUnpainted = false;
 		const lines: string[] = [];
 		lines.push(...this.renderSearch(width));
 		lines.push("");

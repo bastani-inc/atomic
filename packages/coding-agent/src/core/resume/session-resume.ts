@@ -35,7 +35,9 @@ import { isHeadOnlyAdvance } from "../worktree-snapshot/head-advance.ts";
 import {
 	DEFAULT_MAX_IDLE_PER_REPOSITORY,
 	pooledWorktreeHolder,
+	setAsideWorktree,
 	type WorktreePoolSettings,
+	worktreeSetAside,
 } from "../worktree-snapshot/pool.ts";
 import { sameRemote } from "../worktree-snapshot/repository-identity.ts";
 import {
@@ -59,7 +61,7 @@ import {
 	holdToolsUntilBuilt,
 } from "./blueprint/barrier.ts";
 import type { BlueprintBuildConfig } from "./blueprint/build.ts";
-import { settleOtherBuilds, withBuildLocks } from "./blueprint/build-lock.ts";
+import { type CancelledBuild, cancelledBuilds, settleOtherBuilds, withBuildLocks } from "./blueprint/build-lock.ts";
 import {
 	BLUEPRINT_BUILDING_CONTEXT,
 	type BlueprintCheckout,
@@ -448,6 +450,7 @@ async function prepareResume(
 		type: "warning",
 		message: formatLapsedPinNotice(lapsed),
 	}));
+	notices.push(...(await setAsideCancelledBuilds(sessionManager, storeDir, options)));
 	const checkoutCount = (await currentWorktreeSnapshots(sessionManager)).size;
 	options.onProgress?.(
 		`Checking ${checkoutCount === 1 ? "1 checkout" : `${checkoutCount} checkouts`} against the session's snapshots`,
@@ -1090,9 +1093,10 @@ async function setUpCheckoutBlueprints(
 	for (const [root, snapshot] of await currentWorktreeSnapshots(sessionManager)) {
 		const checkout = checkoutOf(sessionManager, root, snapshot);
 		if (restoredNow.has(root)) restoredHere.push({ ...checkout, ready: lfs.ready(root) });
-		else if (isInside(storeDir, root))
-			earlier.push({ ...checkout, ready: finishPendingLfs(lfs, root, options.signal) });
-		else if (await isDirectory(root)) inPlace.push(checkout);
+		else if (isInside(storeDir, root)) {
+			if (!(await pooledWorktreeOwnedElsewhere(storeDir, root, sessionManager.getSessionId())))
+				earlier.push({ ...checkout, ready: finishPendingLfs(lfs, root, options.signal) });
+		} else if (await isDirectory(root)) inPlace.push(checkout);
 	}
 	// A worktree this process is building already is joined, not built again (#4748): its tools wait for that build.
 	const joined = [...restoredHere, ...earlier].filter((checkout) => buildInProgress(checkout.root) !== undefined);
@@ -1119,11 +1123,13 @@ async function setUpCheckoutBlueprints(
 				warnings: [
 					`Could not check for an earlier blueprint build of these worktrees (${error instanceof Error ? describeFailure(error) : String(error)}); building them anyway.`,
 				],
+				cancelled: new Set<string>(),
 				release: async () => {},
 			};
 		});
 		// No other process builds them until this build settled, and then the ledger says whether they still need it.
 		let built: ResumedBlueprints;
+		const unlocked: string[] = [];
 		try {
 			const retried = await checkoutsNeedingRebuild(candidates, storeDir);
 			const restored = [...toBuild, ...retried];
@@ -1138,13 +1144,14 @@ async function setUpCheckoutBlueprints(
 						config: { ...options.blueprint, storeDir },
 						signal: options.signal,
 					}),
+				(message) => unlocked.push(message),
 			);
 		} finally {
 			await settled.release();
 		}
 		// The warnings of LFS downloads that end after their restores were recorded come with the build's (#5099).
 		const downloads = await lfs.notices([...restoredHere, ...earlier].map((checkout) => checkout.root));
-		const warnings = settled.warnings.map((message) => ({ type: "warning" as const, message }));
+		const warnings = [...settled.warnings, ...unlocked].map((message) => ({ type: "warning" as const, message }));
 		return { ...built, notices: [...warnings, ...downloads, ...built.notices] };
 	} finally {
 		for (const root of claimed) if (buildsInProgress.get(root) === settled) buildsInProgress.delete(root);
@@ -1154,6 +1161,52 @@ async function setUpCheckoutBlueprints(
 
 /** The blueprint builds this process runs, by the restored worktree they build, each settling once its build has. */
 const buildsInProgress = new Map<string, Promise<undefined>>();
+
+async function setAsideCancelledBuilds(
+	sessionManager: SessionCheckouts,
+	storeDir: string,
+	options: PrepareSessionResumeOptions,
+): Promise<ResumeNotice[]> {
+	if (process.platform === "win32" || options.blueprints === "skip" || !options.settings.enabled) return [];
+	const roots: string[] = [];
+	for (const root of (await currentWorktreeSnapshots(sessionManager)).keys()) {
+		if (!isInside(storeDir, root) || options.keepInPlace?.has(root) || buildInProgress(root) !== undefined) continue;
+		if (!(await pooledWorktreeOwnedElsewhere(storeDir, root, sessionManager.getSessionId()))) roots.push(root);
+	}
+	if (roots.length === 0) return [];
+	const notices: ResumeNotice[] = [];
+	const setAside = async (build: CancelledBuild): Promise<boolean> => {
+		const running = `A step of the cancelled build may still be running in ${build.root}; its log is ${build.logs}.`;
+		try {
+			await setAsideWorktree(storeDir, build.root, { startedAt: build.startedAt, logs: build.logs });
+			notices.push({
+				type: "warning",
+				message: `The blueprint build of ${build.root} did not finish, so it was cancelled and the worktree set aside; a fresh worktree is restored and built instead. ${running}`,
+			});
+			return true;
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			notices.push({
+				type: "warning",
+				message: `The blueprint build of ${build.root} did not finish, so it was cancelled; a fresh worktree is restored and built instead, but the worktree could not be set aside (${reason.slice(0, 200)}), so another Atomic process may still use it. ${running}`,
+			});
+			return false;
+		}
+	};
+	const warnings = await cancelledBuilds(
+		storeDir,
+		roots,
+		{
+			signal: options.signal,
+			onWait: (root, message) => {
+				options.onProgress?.(message);
+				announceBlueprintBuildWaiting(root, message);
+			},
+		},
+		setAside,
+	);
+	return [...warnings.map((message) => ({ type: "warning" as const, message })), ...notices];
+}
 
 /** The build this process runs of the worktree at `root`, if one runs. */
 function buildInProgress(root: string): Promise<undefined> | undefined {
@@ -1238,6 +1291,8 @@ export async function continueSessionWhereItWorked(
 		options.signal?.throwIfAborted();
 		const cwd = await mapRestoredPathAsync(opened.getCwd(), opened.getWorktreeRootMappings());
 		const checkouts = await currentWorktreeSnapshots(opened);
+		const cancelled = await setAsideCancelledBuilds(opened, storeDir, options);
+		if (cancelled.length > 0) options.onNotices?.(cancelled);
 		const own = await checkoutsWorkedHere(
 			checkouts,
 			cwd,
@@ -1287,6 +1342,7 @@ async function checkoutsWorkedHere(
 	const own = new Set<string>();
 	for (const [root, snapshot] of checkouts) {
 		if (!(await pathExists(isInside(root, cwd) ? cwd : root))) continue;
+		if (await worktreeSetAside(storeDir, root)) continue;
 		const holder = await pooledWorktreeHolder(storeDir, root);
 		if (holder !== "unpooled") {
 			// Slots share their repository's object store, so only the pool record tells whose work a slot holds, and a
