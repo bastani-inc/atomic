@@ -22,15 +22,7 @@ import {
 	BlueprintUsesUnsupportedError,
 	type BlueprintUsesUnsupportedReason,
 } from "./errors.ts";
-import {
-	gatedBash,
-	gatesSteps,
-	type LoggedProcess,
-	nodeStartGate,
-	type ProcessExit,
-	runLoggedProcess,
-	type StepLog,
-} from "./process.ts";
+import { type ProcessExit, runLoggedProcess, type StepLog } from "./process.ts";
 
 /** The environment variable that replaces `https://github.com` as the place actions are fetched from. */
 export const ACTIONS_GITHUB_BASE_URL_ENV = "ATOMIC_BLUEPRINT_GITHUB_BASE_URL";
@@ -358,11 +350,8 @@ interface ProcessRequest {
 	readonly args: readonly string[];
 	readonly cwd: string;
 	readonly stdin?: string;
-	/**
-	 * How the process waits until its host has recorded it before it does anything (#4748), where steps are gated: as a
-	 * {@link gatedBash}, or as a node that preloads {@link nodeStartGate}.
-	 */
-	readonly gate?: "bash" | "node";
+	/** Whether the process starts only once its host has recorded it (#4748), as a `LoggedProcess.gated` one does. */
+	readonly gated?: boolean;
 	readonly env: Readonly<Record<string, string>>;
 }
 
@@ -800,19 +789,6 @@ async function applyFileCommands(
 	return { outputs: toRecord(outputs), state: toRecord(state) };
 }
 
-/**
- * `run` waiting as `gate` says until its host has recorded it (#4748). A node gets {@link nodeStartGate} in the file
- * commands' directory, removed with them, and preloads it ahead of the modules its `NODE_OPTIONS` already preloads.
- */
-async function gated(run: LoggedProcess, gate: "bash" | "node", files: FileCommands): Promise<LoggedProcess> {
-	if (gate === "bash") return gatedBash(run);
-	const preload = join(files.directory, "start-gate.cjs");
-	const { NODE_OPTIONS: nodeOptions } = run.env;
-	await writeFile(preload, nodeStartGate(nodeOptions), { mode: 0o600 });
-	const loading = `--require ${JSON.stringify(preload)}${nodeOptions ? ` ${nodeOptions}` : ""}`;
-	return { ...run, env: { ...run.env, NODE_OPTIONS: loading }, gated: true };
-}
-
 async function runProcess(
 	context: RunContext,
 	request: ProcessRequest,
@@ -823,23 +799,23 @@ async function runProcess(
 	const files = await createFileCommands(context.runnerTemp);
 	try {
 		log(context, `=== ${request.title} ===\n$ ${request.shown}`);
-		const run: LoggedProcess = {
-			command: request.executable,
-			args: request.args,
-			cwd: request.cwd,
-			env: {
-				...context.env,
-				...request.env,
-				GITHUB_ENV: files.env,
-				GITHUB_PATH: files.path,
-				GITHUB_OUTPUT: files.output,
-				GITHUB_STATE: files.state,
-				GITHUB_STEP_SUMMARY: files.summary,
-			},
-			...(request.stdin === undefined ? {} : { stdin: request.stdin }),
-		};
 		const exit = await runLoggedProcess(
-			request.gate === undefined || !gatesSteps(process.platform) ? run : await gated(run, request.gate, files),
+			{
+				command: request.executable,
+				args: request.args,
+				cwd: request.cwd,
+				env: {
+					...context.env,
+					...request.env,
+					GITHUB_ENV: files.env,
+					GITHUB_PATH: files.path,
+					GITHUB_OUTPUT: files.output,
+					GITHUB_STATE: files.state,
+					GITHUB_STEP_SUMMARY: files.summary,
+				},
+				...(request.stdin === undefined ? {} : { stdin: request.stdin }),
+				...(request.gated === true ? { gated: true } : {}),
+			},
 			context.options.log,
 			{ timeoutMs: remaining, signal: context.options.signal },
 		);
@@ -883,7 +859,7 @@ async function runNodeAction(
 			shown: `node ${phase.script}`,
 			executable: node,
 			args: [phase.path],
-			gate: "node",
+			gated: true,
 			cwd: context.options.cwd,
 			env: {
 				...frame.env,
@@ -903,8 +879,8 @@ export interface ShellInvocation {
 	readonly executable: string;
 	readonly args: readonly string[];
 	readonly stdin?: string;
-	/** How the process waits until its host has recorded it (#4748), as {@link ProcessRequest.gate} says. */
-	readonly gate?: "bash";
+	/** Whether the process starts only once its host has recorded it (#4748), as a `LoggedProcess.gated` one does. */
+	readonly gated?: boolean;
 }
 
 /**
@@ -917,7 +893,7 @@ export function bashInvocation(config: ShellConfig, name: string, script: string
 	const text = `set ${strict}\n${script}`;
 	return config.commandTransport === "stdin"
 		? { executable: config.shell, args: config.args, stdin: text }
-		: { executable: config.shell, args: [...config.args, text], gate: "bash" };
+		: { executable: config.shell, args: [...config.args, text], gated: true };
 }
 
 /** How `config`'s PowerShell runs `script` as a `pwsh` or `powershell` step. */

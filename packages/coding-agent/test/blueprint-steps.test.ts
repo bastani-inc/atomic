@@ -26,7 +26,7 @@ import {
 	BlueprintStepTimedOutError,
 	BlueprintUsesUnsupportedError,
 } from "../src/core/resume/blueprint/errors.ts";
-import { gatedBash, stepProcessWatcher } from "../src/core/resume/blueprint/process.ts";
+import { stepProcessWatcher } from "../src/core/resume/blueprint/process.ts";
 import {
 	bashProcess,
 	powerShellProcess,
@@ -463,22 +463,26 @@ describe("a host that dies while it starts a step (#4748)", () => {
 		return Number(readFileSync(recorded, "utf8"));
 	}
 
-	test("a step's process gets going only once its host has recorded it, however long recording takes (#4748)", async () => {
-		const ranBeforeRecorded: boolean[] = [];
-		const record = (_pid: number, running: boolean) => {
-			if (!running) return;
-			// A host stalled between starting the step's process and recording it, as one under load can be.
-			const until = Date.now() + RECORDING_STALL_MS;
-			while (!existsSync(markers()) && Date.now() < until) Atomics.wait(stall, 0, 0, 20);
-			ranBeforeRecorded.push(existsSync(markers()));
-		};
-		const result = await stepProcessWatcher.run(record, () =>
-			runSection("maintenance", [run('echo ran >> "$MARKERS"')], context()),
-		);
-		assert.deepEqual(result, { completed: 1 });
-		assert.deepEqual(ranBeforeRecorded, [false], "nothing ran before the host recorded the process");
-		assert.deepEqual(lines(markers()), ["ran"], "the step ran once recorded");
-	});
+	// On Windows steps are not gated: a job object ends them with their host instead.
+	test.skipIf(process.platform === "win32")(
+		"a step's process gets going only once its host has recorded it, however long recording takes (#4748)",
+		async () => {
+			const ranBeforeRecorded: boolean[] = [];
+			const record = (_pid: number, running: boolean) => {
+				if (!running) return;
+				// A host stalled between starting the step's process and recording it, as one under load can be.
+				const until = Date.now() + RECORDING_STALL_MS;
+				while (!existsSync(markers()) && Date.now() < until) Atomics.wait(stall, 0, 0, 20);
+				ranBeforeRecorded.push(existsSync(markers()));
+			};
+			const result = await stepProcessWatcher.run(record, () =>
+				runSection("maintenance", [run('echo ran >> "$MARKERS"')], context()),
+			);
+			assert.deepEqual(result, { completed: 1 });
+			assert.deepEqual(ranBeforeRecorded, [false], "nothing ran before the host recorded the process");
+			assert.deepEqual(lines(markers()), ["ran"], "the step ran once recorded");
+		},
+	);
 
 	const composite = [
 		"name: Fixture",
@@ -521,9 +525,17 @@ describe("a host that dies while it starts a step (#4748)", () => {
 		return { BASH_ENV: path("bash-env"), SHLVL: "1" };
 	};
 
+	/** Exported bash functions named after the builtins a gate would use, as a user's environment may export. */
+	const exportedFunctions = (): Record<string, string> => ({
+		"BASH_FUNC_read%%": "() { return 0; }",
+		"BASH_FUNC_exec%%": '() { builtin exec "$@"; }',
+		SHLVL: "1",
+	});
+
 	for (const [kind, step, files, environment] of [
 		["a run step", run('echo ran >> "$MARKERS"'), {}, () => ({})],
 		["a run step whose BASH_ENV runs a command", run('echo ran >> "$MARKERS"'), {}, bashEnvironment],
+		["a run step whose environment exports read and exec", run('echo ran >> "$MARKERS"'), {}, exportedFunctions],
 		[
 			"a bash step of a composite action",
 			uses("github.com/acme/compose@v1"),
@@ -785,16 +797,13 @@ describe("which shell runs a step (#4588)", () => {
 			"echo hi",
 			"",
 		].join("\n");
-		const bash = { shell: "/bin/bash", args: ["-c"] };
-		const plain = {
+		assert.deepEqual(bashProcess(step, context(), { shell: "/bin/bash", args: ["-c"] }), {
 			command: "/bin/bash",
 			args: ["-c", script],
 			cwd: path("repo"),
 			env: { ...context().environment, A: "1", ENVRC: bashPath(path("build.envrc")) },
-		};
-		// On Windows the step's job object ends it with its host instead.
-		assert.deepEqual(bashProcess(step, context(), bash, "win32"), plain);
-		assert.deepEqual(bashProcess(step, context(), bash, "linux"), gatedBash(plain));
+			gated: true,
+		});
 	});
 
 	test("a bash that cannot take its command as an argument gets the script on stdin, which is its gate (#4588, #4748)", () => {
@@ -804,12 +813,11 @@ describe("which shell runs a step (#4588)", () => {
 		assert.deepEqual(legacyProcess.args, ["-s"]);
 		assert.equal(legacyProcess.stdin, 'set -a\n[ -f "$ENVRC" ] && . "$ENVRC"\nset +a\nset -e\necho hi\n');
 		assert.equal("gated" in legacyProcess, false);
-		const argv = bashProcess(
-			run("echo hi"),
-			context(),
-			{ shell: "/bin/bash", args: ["-c"], commandTransport: "argv" },
-			"win32",
-		);
+		const argv = bashProcess(run("echo hi"), context(), {
+			shell: "/bin/bash",
+			args: ["-c"],
+			commandTransport: "argv",
+		});
 		assert.equal("stdin" in argv, false);
 		assert.equal(argv.args.length, 2);
 	});

@@ -117,6 +117,32 @@ describe("running a logged process (#4588)", () => {
 		}
 	});
 
+	test("a gated process starts with exactly its arguments, working directory, environment and stdin once released (#4748)", async () => {
+		mkdirSync(path("work"));
+		const env = {
+			PATH: process.env.PATH,
+			SystemRoot: process.env.SystemRoot,
+			"WITH-HYPHEN": "kept",
+			"BASH_FUNC_read%%": "() { return 0; }",
+			MULTILINE: "one\ntwo",
+			EQUALS: "a=b",
+		};
+		const run = nodeProcess(
+			[
+				'const fs = require("node:fs");',
+				"let stdin = '';",
+				"try { stdin = fs.readFileSync(0, 'utf8'); } catch {}",
+				"console.log(JSON.stringify([process.cwd(), process.argv.slice(1), process.env, stdin]));",
+			].join("\n"),
+			{ cwd: path("work"), env, gated: true },
+			["one arg", "--flag", "x=y"],
+		);
+		const { exit, output } = await execute(run);
+		assert.equal(exit.exitStatus, 0, output);
+		const defined = Object.fromEntries(Object.entries(env).filter(([, value]) => value !== undefined));
+		assert.deepEqual(JSON.parse(output), [path("work"), ["one arg", "--flag", "x=y"], defined, ""]);
+	});
+
 	test("the text given as stdin reaches the process and is closed, and without any the process sees end of input (#4588)", async () => {
 		const echo =
 			'let data = ""; process.stdin.on("data", (chunk) => { data += chunk; }); process.stdin.on("end", () => console.log("got:" + data));';
