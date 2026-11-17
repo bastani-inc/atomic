@@ -1133,30 +1133,40 @@ describe("a resumed child checks only the commit of its latest completed step (#
 		assert.deepEqual(sessions, ["next"], "both completed steps replay; only the next one runs");
 	});
 
-	test("a child that squashed its earlier steps' commits resumes, checking only the squashed commit (#4382)", async () => {
-		const repo = createRepository(dirs.root, "squashed-steps");
-		const { head, resume } = await interruptedAfterSteps(
-			workspace({ repo, branch: "feat/squash" }),
-			inSequence("one", "two", "three", "squash"),
-			(stage, cwd) => {
-				if (stage === "squash") {
-					git(cwd, "reset", "-q", "--soft", "HEAD~3");
-					git(cwd, "commit", "-q", "-m", "squashed");
-				} else commitFile(cwd, `${stage}.txt`, `${stage}\n`);
-			},
-		);
-		const squashed = head("squash");
-		const { resumed, transcript, sessions } = await resume();
-		assert.equal(resumed.status, "completed", resumed.error);
-		assert.equal(checksOf(transcript, squashed), 2, "one availability probe and one ancestry check");
-		for (const stage of ["one", "two", "three"])
-			assert.deepEqual(
-				transcript.filter((line) => line.includes(head(stage))),
-				[],
-				`${stage}'s squashed-away commit is never looked up`,
+	/**
+	 * Structural: creates a repository and bound worktree, runs four sequential stages (`one`, `two`, `three`, `squash`)
+	 * that commit and squash in the worktree with change-set diffs and SQLite journal snapshots, then reopens the journal
+	 * to resume and run `next` (~212 sequential `git` process spawns across the two runs).
+	 */
+	const SQUASHED_STEPS_RESUME_TIMEOUT_MS = 90_000;
+	test(
+		"a child that squashed its earlier steps' commits resumes, checking only the squashed commit (#4382)",
+		async () => {
+			const repo = createRepository(dirs.root, "squashed-steps");
+			const { head, resume } = await interruptedAfterSteps(
+				workspace({ repo, branch: "feat/squash" }),
+				inSequence("one", "two", "three", "squash"),
+				(stage, cwd) => {
+					if (stage === "squash") {
+						git(cwd, "reset", "-q", "--soft", "HEAD~3");
+						git(cwd, "commit", "-q", "-m", "squashed");
+					} else commitFile(cwd, `${stage}.txt`, `${stage}\n`);
+				},
 			);
-		assert.deepEqual(sessions, ["next"]);
-	});
+			const squashed = head("squash");
+			const { resumed, transcript, sessions } = await resume();
+			assert.equal(resumed.status, "completed", resumed.error);
+			assert.equal(checksOf(transcript, squashed), 2, "one availability probe and one ancestry check");
+			for (const stage of ["one", "two", "three"])
+				assert.deepEqual(
+					transcript.filter((line) => line.includes(head(stage))),
+					[],
+					`${stage}'s squashed-away commit is never looked up`,
+				);
+			assert.deepEqual(sessions, ["next"]);
+		},
+		SQUASHED_STEPS_RESUME_TIMEOUT_MS,
+	);
 
 	test("a rewritten latest step still fails closed with drift naming its commit (#4382)", async () => {
 		const repo = createRepository(dirs.root, "rewritten-latest");

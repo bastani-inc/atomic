@@ -166,6 +166,7 @@ InteractiveModeBase.prototype.showModelSelector = function (
 	initialSearchInput?: string,
 ): void {
 	this.showSelector((done) => {
+		let settled = false;
 		const selector = new ModelSelectorComponent(
 			this.ui,
 			this.session.model,
@@ -173,9 +174,10 @@ InteractiveModeBase.prototype.showModelSelector = function (
 			this.session.modelRuntime,
 			this.session.scopedModels,
 			async (model, thinkingLevel) => {
+				if (settled) return;
+				settled = true;
 				try {
-					await this.session.setModel(model, { persist: true });
-					if (thinkingLevel !== undefined) await this.session.setThinkingLevel(thinkingLevel, { persist: true });
+					await this.session.setModel(model, { persist: true, thinkingLevel });
 					await this.updateAvailableProviderCount();
 					this.footer.invalidate();
 					this.updateEditorBorderColor();
@@ -188,6 +190,8 @@ InteractiveModeBase.prototype.showModelSelector = function (
 				}
 			},
 			() => {
+				if (settled) return;
+				settled = true;
 				done();
 				this.ui.requestRender();
 			},
@@ -267,13 +271,13 @@ InteractiveModeBase.prototype.showModelsSelector = function (this: InteractiveMo
 			{
 				onChange: (enabledIds) => {
 					selectionChanged = true;
-					updateSessionModels(enabledIds);
 					const allEnabled =
 						enabledIds !== null &&
 						enabledIds.length === availableModels.length &&
 						enabledIds.every((id) => availableModelIds.has(id));
 					const newPatterns = enabledIds === null || allEnabled ? undefined : enabledIds;
 					this.settingsManager.setEnabledModels(newPatterns ? [...newPatterns] : undefined);
+					updateSessionModels(enabledIds);
 				},
 				onCancel: () => {
 					done();
@@ -421,6 +425,7 @@ InteractiveModeBase.prototype.showThinkingSelector = function (this: Interactive
 				await this.selectThinkingLevel(level);
 				done();
 			} catch (error) {
+				selector.selector.retrySelection();
 				this.showError(error instanceof Error ? error.message : String(error));
 			}
 		};
