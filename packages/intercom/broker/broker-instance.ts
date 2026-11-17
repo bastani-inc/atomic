@@ -148,7 +148,9 @@ export function brokerHostIdentity(sources?: HostIdentitySources): Promise<strin
 	const reading = readHostIdentity(system);
 	systemHostIdentities.set(system.configDir, reading);
 	void reading.then((identity) => {
-		if (identity === undefined) systemHostIdentities.delete(system.configDir);
+		if (identity === undefined && systemHostIdentities.get(system.configDir) === reading) {
+			systemHostIdentities.delete(system.configDir);
+		}
 	});
 	return reading;
 }
