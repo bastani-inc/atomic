@@ -23,7 +23,12 @@ export interface ExternalDeclaration {
 const NODE_TYPES = "/node_modules/@types/node/";
 const BUN_TYPES = "/node_modules/bun-types/";
 
-const BLOCKING_NATIVE_FUNCTIONS = new Set(["tryAdvisoryLock", "renameNoReplace", "killSupervisedProcessTrees"]);
+const BLOCKING_NATIVE_FUNCTIONS = new Set([
+	"tryAdvisoryLock",
+	"trySharedAdvisoryLock",
+	"renameNoReplace",
+	"killSupervisedProcessTrees",
+]);
 
 const NODE_SQLITE_MEMBERS = new Set(["exec", "prepare", "run", "get", "all", "iterate", "open", "close", "backup"]);
 const BUN_SQLITE_MEMBERS = new Set(["exec", "run", "query", "prepare", "get", "all", "values", "iterate", "close"]);

@@ -17,6 +17,7 @@ import { basename, dirname, join, resolve, win32 } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import type * as native from "@bastani/atomic-natives";
 import type {
 	SqliteDatabase,
 	SqliteExecutor,
@@ -571,10 +572,9 @@ export function sqliteOpenLockPath(databasePath: string): string {
 	return `${databasePath}-open.lock`;
 }
 
-interface NativeOpenLocks {
-	tryAdvisoryLock(path: string, waitMs: number): { release(): void } | null;
-	trySharedAdvisoryLock(path: string, waitMs: number): { release(): void } | null;
-}
+/** The native advisory locks, typed by their own declarations so the event-loop check sees each call. */
+type NativeOpenLocks = Pick<typeof native, "tryAdvisoryLock" | "trySharedAdvisoryLock"> &
+	Partial<Pick<typeof native, "tryAdvisoryLockAsync">>;
 
 interface HeldOpenLock {
 	readonly lock: { release(): void };
@@ -738,7 +738,9 @@ async function releaseOpenLock(openLock: HeldOpenLock | undefined): Promise<void
 	if (openLock === undefined) return;
 	openLock.lock.release();
 	try {
-		const exclusive = openLocks()?.tryAdvisoryLock(openLock.path, 0) ?? null;
+		// Whether any connection still holds the file open, asked on a worker thread; a binding without the
+		// asynchronous form leaves the lock file in place, which only makes the next opener take its shared lock.
+		const exclusive = (await openLocks()?.tryAdvisoryLockAsync?.(openLock.path, 0)) ?? null;
 		if (exclusive !== null) {
 			try {
 				await rm(openLock.path, { force: true });

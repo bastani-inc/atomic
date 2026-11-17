@@ -31,8 +31,14 @@ export function nativeProcessQueries(pid: number): unknown[] {
 		processCreationTime(pid: number): string | null;
 		containProcessTree(pid: number): unknown;
 		tryAdvisoryLock(path: string): unknown;
+		trySharedAdvisoryLock(path: string, waitMs: number): unknown;
 	};
-	return [natives.processCreationTime(pid), natives.containProcessTree(pid), natives.tryAdvisoryLock("held.lock")];
+	return [
+		natives.processCreationTime(pid),
+		natives.containProcessTree(pid),
+		natives.tryAdvisoryLock("held.lock"),
+		natives.trySharedAdvisoryLock("shared.lock", 0),
+	];
 }
 
 /** A factory whose result the host keeps and calls for every key: the handler it returns runs on input. */

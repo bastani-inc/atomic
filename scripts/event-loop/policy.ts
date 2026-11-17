@@ -170,6 +170,8 @@ export const OWNED_ELSEWHERE: readonly OwnedArea[] = [
 			"openConnection",
 			"openNodeSqliteDatabase",
 			"openNodeSqliteDatabase/switchToWriteAheadLog()",
+			// The open's shared lock: a non-waiting open and flock, with no form off the event loop yet.
+			"acquireOpenLock",
 		].map((name) => ({ file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name })),
 	},
 ];

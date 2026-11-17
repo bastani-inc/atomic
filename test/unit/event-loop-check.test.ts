@@ -98,6 +98,7 @@ describe("event-loop check", () => {
 			"src/values.ts listThroughShorthand fs.readdirSync",
 			"src/values.ts listThroughShorthand fs.readdirSync",
 			"src/values.ts nativeProcessQueries natives.tryAdvisoryLock",
+			"src/values.ts nativeProcessQueries natives.trySharedAdvisoryLock",
 			"src/values.ts openDatabase new DatabaseSync",
 			"src/values.ts readThroughCast fs.readFileSync",
 		]);
@@ -244,6 +245,7 @@ describe("event-loop check", () => {
 				"listThroughShorthand fs.readdirSync",
 				"listThroughShorthand fs.readdirSync",
 				"nativeProcessQueries natives.tryAdvisoryLock",
+				"nativeProcessQueries natives.trySharedAdvisoryLock",
 				"openDatabase new DatabaseSync",
 				"readThroughCast fs.readFileSync",
 			],
