@@ -44,7 +44,7 @@ describe("fork picker on the shared selector (#5224)", () => {
 		);
 	});
 
-	it("starts on the message it was opened at, and typing filters the messages", () => {
+	it("starts on the message it was opened at, and typing filters only the message text (#5256)", () => {
 		const chosen: string[] = [];
 		const selector = new UserMessageSelectorComponent(
 			messages,
@@ -56,6 +56,40 @@ describe("fork picker on the shared selector (#5224)", () => {
 		for (const ch of "redirect") selector.handleInput(ch);
 		selector.handleInput("\r");
 		assert.deepEqual(chosen, ["e2"]);
+
+		const byPosition = new UserMessageSelectorComponent(
+			messages,
+			() => {},
+			() => {},
+		);
+		for (const ch of "message 2 of 3") byPosition.handleInput(ch);
+		assert.ok(
+			lines(byPosition).some((line) => line.includes('No matches for "message 2 of 3"')),
+			lines(byPosition).join("\n"),
+		);
+	});
+
+	it("honors reassigned onSelect and onCancel callbacks on the component and getMessageList() (#5256)", () => {
+		const selector = new UserMessageSelectorComponent(
+			messages,
+			() => {},
+			() => {},
+		);
+		const picked: string[] = [];
+		let cancelled = 0;
+		selector.getMessageList().onSelect = (id) => picked.push(id);
+		selector.getMessageList().onCancel = () => cancelled++;
+		selector.handleInput("\r");
+		assert.deepEqual(picked, ["e3"]);
+
+		const cancelSelector = new UserMessageSelectorComponent(
+			messages,
+			() => {},
+			() => {},
+		);
+		cancelSelector.onCancel = () => cancelled++;
+		cancelSelector.handleInput("\x1b");
+		assert.equal(cancelled, 1);
 	});
 
 	it("esc clears a search before it cancels", () => {

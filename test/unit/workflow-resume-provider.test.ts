@@ -64,6 +64,67 @@ describe("workflow resume provider for unified /resume (#5256)", () => {
 		return dir;
 	}
 
+	test("resource refresh warnings appear once while catalog polls keep retrying (#5256)", async () => {
+		const runtime = createExtensionRuntime({ definitions: [sampleDefinition], store });
+		const notifications: string[] = [];
+		const ensure = vi.fn(() => {
+			throw new Error("Unavailable workflow directory");
+		});
+		const provider = createWorkflowResumeProvider({
+			pi: {},
+			overlay: { open: () => undefined, toggle: () => undefined, close: () => undefined },
+			runtimeForContext: () => runtime,
+			ensureWorkflowResourcesLoaded: ensure,
+			context: () => ({ hasUI: true, cwd: process.cwd(), ui: { notify: (message) => notifications.push(message) } }),
+		});
+		await provider.listResumeEntries();
+		await provider.listResumeEntries();
+		await provider.listResumeEntries();
+		assert.equal(ensure.mock.calls.length, 3);
+		assert.equal(notifications.length, 1);
+		assert.match(notifications[0]!, /`\/reload`/);
+		assert.doesNotMatch(notifications[0]!, /\/workflow\s/);
+	});
+
+	test("resume errors point to current run actions without obsolete flags or extra spaces (#5256)", async () => {
+		const backend = await createMemoryTestBackend();
+		setDurableBackend(backend);
+		const id = testRunId("picker-guidance");
+		await backend.commitWorkflowRegistration({
+			workflowId: id,
+			name: sampleDefinition.name,
+			inputs: {},
+			createdAt: 1_000,
+			updatedAt: 2_000,
+			status: "paused",
+			completedCheckpoints: 1,
+			invocationCwd: process.cwd(),
+		});
+		const runtime = createExtensionRuntime({ definitions: [sampleDefinition], store });
+		const resume = vi.spyOn(runtime, "resumeDurableWorkflow");
+		const provider = createWorkflowResumeProvider({
+			pi: {},
+			overlay: { open: () => undefined, toggle: () => undefined, close: () => undefined },
+			runtimeForContext: () => runtime,
+			ensureWorkflowResourcesLoaded: () => undefined,
+			context: () => ({ hasUI: true, cwd: process.cwd(), ui: { notify: () => undefined } }),
+		});
+		for (const [command, expected] of [
+			[`/workflow fork ${id} --from review`, /\/workflows/],
+			[`/workflow quit ${id}`, /\/workflows/],
+			[`/workflow status ${id}`, /\/workflows/],
+			["/workflow reload", /\/reload/],
+			[`/workflow resume ${id} --accept-entry-changes to continue`, /\/resume/],
+		] as const) {
+			resume.mockResolvedValue({ ok: false, reason: "not_resumable", message: `Use ${command}.` });
+			await assert.rejects(provider.resumeFromPicker(id), (error: Error) => {
+				assert.match(error.message, expected);
+				assert.doesNotMatch(error.message, /\/workflow\s|--accept-entry-changes| {2}/);
+				return true;
+			});
+		}
+	});
+
 	test("lists resumable live, durable and completed runs with two-line metadata and canDelete flags while excluding active runs", async () => {
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
@@ -195,6 +256,54 @@ describe("workflow resume provider for unified /resume (#5256)", () => {
 		assert.equal(completedRow.canDelete, true);
 		assert.ok(durableRow.title?.includes(sampleDefinition.name));
 		assert.ok(durableRow.detail?.includes("paused"));
+	});
+
+	test("completed-only catalogs stay out of the picker but remain inspectable by direct id (#5256)", async () => {
+		const backend = await createMemoryTestBackend();
+		setDurableBackend(backend);
+		const id = testRunId("completed-only-direct");
+		await backend.commitWorkflowRegistration({
+			workflowId: id,
+			name: sampleDefinition.name,
+			inputs: {},
+			createdAt: 1_000,
+			updatedAt: 2_000,
+			status: "completed",
+			completedCheckpoints: 1,
+			invocationCwd: process.cwd(),
+		});
+		await backend.commitCheckpoint({
+			topology: { version: 1, nodeId: "tool:done-hash", ordinal: 1, order: 1, parentIds: [] },
+			kind: "tool",
+			workflowId: id,
+			checkpointId: "tool:done",
+			name: "done",
+			argsHash: "done-hash",
+			output: true,
+			completedAt: 2_000,
+		});
+		const runtime = createExtensionRuntime({ definitions: [sampleDefinition], store });
+		const opened: string[] = [];
+		const provider = createWorkflowResumeProvider({
+			pi: {},
+			overlay: {
+				open: (runId) => {
+					if (runId) opened.push(runId);
+				},
+				toggle: () => undefined,
+				close: () => undefined,
+			},
+			runtimeForContext: () => runtime,
+			ensureWorkflowResourcesLoaded: () => undefined,
+			context: () => ({ hasUI: true, cwd: process.cwd(), ui: { notify: () => undefined } }),
+		});
+		assert.deepEqual(await provider.listResumeEntries(), []);
+		assert.deepEqual(
+			(await provider.listResumeEntries(id.slice(0, 8))).map((row) => row.id),
+			[id],
+		);
+		await provider.resumeFromPicker(id);
+		assert.deepEqual(opened, [id]);
 	});
 
 	test("targeted listResumeEntries(target) finds a cross-project failed run and resumeFromPicker prompts for cross-project fork confirmation", async () => {

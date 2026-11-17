@@ -1,4 +1,4 @@
-import type { ExtensionCommandContext } from "./context-types.js";
+import type { ExtensionCommandContext } from "./context-types.ts";
 import type { HostSessionPickerRow } from "./ui-types.js";
 import type {
 	WorkflowActivityObserver,

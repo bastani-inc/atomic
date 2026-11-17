@@ -9,7 +9,7 @@ import {
 } from "../../core/workflow-resume.ts";
 import { canonicalizePath } from "../../utils/paths.ts";
 import { withHostProjectTrustPrompt } from "../interactive-engine/extension-ui-bridge.ts";
-import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.ts";
+import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { mountIdleStatus } from "./components/idle-status.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -315,22 +315,22 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 		};
 		const load = async (all: boolean, onProgress?: SessionListProgress): Promise<SessionInfo[]> => {
 			let partial: readonly SessionInfo[] = [];
-			let runRows: SessionInfo[] = lastWorkflowRows;
 			const report = (loaded: number, total: number, sessions?: readonly SessionInfo[]) => {
 				if (sessions) partial = sessions;
-				onProgress?.(loaded + runRows.length, total + runRows.length, [...partial, ...runRows]);
+				onProgress?.(loaded + lastWorkflowRows.length, total + lastWorkflowRows.length, [
+					...partial,
+					...lastWorkflowRows,
+				]);
 			};
-			const runs = workflows().then((rows) => {
-				runRows = rows;
+			const runs = workflows().then(() => {
 				report(partial.length, partial.length);
-				return rows;
 			});
 			const progress = this.runtimeHost ? report : onProgress;
 			const sessions = all
 				? SessionManager.listAll(this.sessionManager.getSessionStore(), progress)
 				: SessionManager.list(this.sessionManager.getCwd(), this.sessionManager.getSessionStore(), progress);
-			const [sessionRows, workflowRows] = await Promise.all([sessions, runs]);
-			return [...sessionRows, ...workflowRows];
+			const [sessionRows] = await Promise.all([sessions, runs]);
+			return [...sessionRows, ...lastWorkflowRows];
 		};
 		const selector = new SessionSelectorComponent(
 			(onProgress) => load(false, onProgress),
@@ -397,8 +397,10 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 				if (closed || refreshing) return;
 				refreshing = true;
 				invalidateWorkflowCatalog();
-				void selector
-					.refreshSessions()
+				void workflows()
+					.then((rows) => {
+						if (!closed) selector.updateWorkflowSessions(rows);
+					})
 					.catch((error) => {
 						if (!closed)
 							selector.getSessionList().onError?.(error instanceof Error ? error.message : String(error));
@@ -483,9 +485,7 @@ InteractiveModeBase.prototype.handleResumeTarget = async function (
 			);
 		} else {
 			this.showError(
-				resolution.kind === "invalid"
-					? "Use a full session or workflow id, or a unique 8-character prefix. Workflow resume does not accept flags."
-					: `No session or resumable workflow matches "${target}".`,
+				`No session or resumable workflow matches "${target}". Use /resume to choose an entry, or provide a full id or unique 8-character hexadecimal prefix.`,
 			);
 		}
 	} catch (error) {

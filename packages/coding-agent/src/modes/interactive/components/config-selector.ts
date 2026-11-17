@@ -14,9 +14,11 @@ export type ScopedResolvedPaths = Record<ConfigWriteScope, ResolvedPaths>;
 class ConfigSelectorHeader implements Component {
 	private writeScope: ConfigWriteScope;
 	private readonly projectModeAvailable: boolean;
-	constructor(writeScope: ConfigWriteScope, projectModeAvailable: boolean) {
+	private readonly hasSearchQuery: () => boolean;
+	constructor(writeScope: ConfigWriteScope, projectModeAvailable: boolean, hasSearchQuery: () => boolean) {
 		this.writeScope = writeScope;
 		this.projectModeAvailable = projectModeAvailable;
+		this.hasSearchQuery = hasSearchQuery;
 	}
 	setWriteScope(scope: ConfigWriteScope): void {
 		this.writeScope = scope;
@@ -26,7 +28,11 @@ class ConfigSelectorHeader implements Component {
 		const title = theme.bold(this.writeScope === "project" ? "Project Local Resources" : "Global Resources");
 		const sep = theme.fg("muted", " · ");
 		const switchHint = this.projectModeAvailable ? keyHint("tui.input.tab", "switch scope") + sep : "";
-		const hint = switchHint + rawKeyHint("space", "toggle") + sep + rawKeyHint("esc", "close");
+		const hint =
+			switchHint +
+			rawKeyHint("space", "toggle") +
+			sep +
+			rawKeyHint("esc", this.hasSearchQuery() ? "clear" : "close");
 		const spacing = Math.max(1, width - visibleWidth(title) - visibleWidth(hint));
 		const scopeFile =
 			this.writeScope === "project"
@@ -71,10 +77,12 @@ export class ConfigSelectorComponent extends Container implements Focusable {
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
-		this.header = new ConfigSelectorHeader(writeScope, projectModeAvailable);
+		this.resourceList = new ResourceList(this.groups[writeScope], settingsManager, cwd, agentDir, terminalHeight);
+		this.header = new ConfigSelectorHeader(writeScope, projectModeAvailable, () =>
+			Boolean(this.resourceList.getSearchQuery()),
+		);
 		this.addChild(this.header);
 		this.addChild(new Spacer(1));
-		this.resourceList = new ResourceList(this.groups[writeScope], settingsManager, cwd, agentDir, terminalHeight);
 		this.resourceList.setWriteScope(writeScope);
 		this.resourceList.onCancel = onClose;
 		this.resourceList.onExit = onExit;
@@ -90,6 +98,9 @@ export class ConfigSelectorComponent extends Container implements Focusable {
 		this.addChild(this.resourceList);
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
+	}
+	handleInput(data: string): boolean {
+		return this.resourceList.handleInput(data);
 	}
 	getResourceList(): ResourceList {
 		return this.resourceList;

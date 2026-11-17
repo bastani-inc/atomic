@@ -687,4 +687,111 @@ describe("session selector path/delete interactions", () => {
 		emitAllProgress?.(1, 1, [s2]);
 		assert.equal(list.getSelectedSessionPath(), s3.path);
 	});
+
+	it("releases the delete lock before the post-delete rescan finishes and keeps rows if a refresh fails (#5256)", async () => {
+		let rows = [
+			makeSession({ id: "s1", path: "/tmp/s1.jsonl", firstMessage: "row-one" }),
+			makeSession({ id: "s2", path: "/tmp/s2.jsonl", firstMessage: "row-two" }),
+		];
+		let blockRefresh = false;
+		let failRefresh = false;
+		const refreshGate = createDeferred<void>();
+		const selector = new SessionSelectorComponent(
+			async () => {
+				if (blockRefresh) await refreshGate.promise;
+				if (failRefresh) throw new Error("disk busy");
+				return rows;
+			},
+			async () => rows,
+			() => {},
+			() => {},
+			() => {},
+			() => {},
+			{
+				keybindings,
+				initialSessions: rows,
+				deleteSession: async (id) => {
+					rows = rows.filter((row) => row.id !== id);
+				},
+			},
+		);
+		try {
+			await flushPromises();
+			blockRefresh = true;
+			selector.handleInput(CTRL_D);
+			selector.handleInput("\r");
+			await flushPromises();
+
+			assert.equal(selector.getSessionList().getSelectedSessionId(), "s2");
+			assert.match(stripAnsi(selector.render(160).at(-2) ?? ""), /ctrl\+d delete/);
+			selector.handleInput(CTRL_D);
+			assert.match(stripAnsi(selector.render(160).join("\n")), /Delete this session\?/);
+			selector.handleInput("\x1b");
+
+			failRefresh = true;
+			refreshGate.resolve();
+			await flushPromises();
+			await flushPromises();
+			const afterFailedRefresh = stripAnsi(selector.render(160).join("\n"));
+			assert.match(afterFailedRefresh, /row-two/);
+			assert.match(afterFailedRefresh, /Failed to load sessions: disk busy/);
+		} finally {
+			refreshGate.resolve();
+			selector.dispose();
+		}
+	});
+
+	it("updateWorkflowSessions updates loaded scope caches without scanning sessions or marking unloaded scopes complete (#5256)", async () => {
+		const s1 = makeSession({ id: "s1", path: "/tmp/s1.jsonl", firstMessage: "chat-one" });
+		const wf1 = {
+			...makeSession({ id: "wf-1", path: "workflow-durable:wf-1", firstMessage: "wf-one" }),
+			resumeKind: "workflow" as const,
+			title: "flow · one",
+			detail: "paused · stage 1/2",
+		};
+		const wf2 = {
+			...makeSession({ id: "wf-2", path: "workflow-durable:wf-2", firstMessage: "wf-two" }),
+			resumeKind: "workflow" as const,
+			title: "flow · two",
+			detail: "paused · stage 2/2",
+		};
+		let currentLoads = 0;
+		let allLoads = 0;
+		const selector = new SessionSelectorComponent(
+			async () => {
+				currentLoads++;
+				return [s1, wf1];
+			},
+			async () => {
+				allLoads++;
+				return [s1, wf2];
+			},
+			() => {},
+			() => {},
+			() => {},
+			() => {},
+			{ keybindings, variant: "mixed" },
+		);
+		try {
+			await flushPromises();
+			assert.equal(currentLoads, 1);
+			assert.equal(allLoads, 0);
+			selector.handleInput("\x1b[B");
+			assert.equal(selector.getSessionList().getSelectedSessionId(), "wf-1");
+
+			selector.updateWorkflowSessions([{ ...wf1, detail: "paused · stage 2/2" }, wf2]);
+			assert.equal(currentLoads, 1);
+			assert.equal(allLoads, 0);
+			const updated = stripAnsi(selector.render(160).join("\n"));
+			assert.match(updated, /chat-one/);
+			assert.match(updated, /flow · two/);
+			assert.equal(selector.getSessionList().getSelectedSessionId(), "wf-1");
+
+			selector.handleInput("\t");
+			await flushPromises();
+			assert.equal(allLoads, 1);
+		} finally {
+			selector.dispose();
+		}
+	});
 });

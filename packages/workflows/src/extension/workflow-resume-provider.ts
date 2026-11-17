@@ -68,9 +68,13 @@ function mergeCommandContext(
 function sanitizePickerGuidance(message: string): string {
 	return message
 		.replace(/\/workflow\s+resume\s+([^\s,.;)`"]+)\s+--accept-entry-changes/g, "/resume $1")
-		.replace(/--accept-entry-changes/g, "")
+		.replace(/\s*--accept-entry-changes\b/g, "")
 		.replace(/\/workflow\s+resume\b/g, "/resume")
-		.replace(/\/workflow\s+(?:connect|attach)\b/g, "/workflows");
+		.replace(/\/workflow\s+reload\b/g, "/reload")
+		.replace(/\/workflow\s+fork(?:\s+[\w-]+)?(?:\s+--from\s+[^\s,.;)`"]+)?/g, "/workflows")
+		.replace(/\/workflow\s+quit(?:\s+[\w-]+)?/g, "/workflows")
+		.replace(/\/workflow\s+(?:status|pause)(?:\s+[\w-]+)?/g, "/workflows")
+		.replace(/\/workflow\s+(?:connect|attach)(?:\s+[\w-]+)?/g, "/workflows");
 }
 
 function formatPickerResumeError(targetId: string, message: string): string {
@@ -91,11 +95,16 @@ function formatPickerResumeError(targetId: string, message: string): string {
 
 export function createWorkflowResumeProvider(deps: WorkflowResumeProviderDeps): WorkflowResumeProvider {
 	const resolveOwner = () => deps.owner ?? captureWorkflowOwnerResources();
+	const reportedResourceWarnings = new Set<string>();
 	const ensureResourcesLoaded = async (ctx: PiCommandContext | undefined): Promise<void> => {
 		try {
 			await deps.ensureWorkflowResourcesLoaded();
 		} catch (error) {
-			ctx?.ui?.notify?.(formatWorkflowResourceLoadWarning(error), "warning");
+			const warning = sanitizePickerGuidance(formatWorkflowResourceLoadWarning(error));
+			if (typeof ctx?.ui?.notify === "function" && !reportedResourceWarnings.has(warning)) {
+				reportedResourceWarnings.add(warning);
+				ctx.ui.notify(warning, "warning");
+			}
 		}
 	};
 
@@ -125,6 +134,14 @@ export function createWorkflowResumeProvider(deps: WorkflowResumeProviderDeps): 
 				catalog.completed,
 				owner.store.runs(),
 				backend,
+				undefined,
+				{
+					includeCompletedWithoutResumable: cleanTarget !== undefined,
+					resolveDescription: (name, cwd) =>
+						cwd === undefined || cwd === (activeCtx?.cwd ?? process.cwd())
+							? runtime.registry.get(name)?.description
+							: undefined,
+				},
 			);
 			return items.map(toWorkflowPickerRow);
 		},

@@ -10,8 +10,8 @@ import { sanitizeTerminalText } from "../../../utils/terminal-text.ts";
 import { theme } from "../theme/theme.js";
 import { keyHintIfBound as keyHint } from "./keybinding-hints.js";
 
-const EMOJI_OR_IGNORABLE =
-	/(\p{RGI_Emoji}|\p{Extended_Pictographic}(?:\ufe0f|\p{Emoji_Modifier})*(?:\u200d\p{Extended_Pictographic}(?:\ufe0f|\p{Emoji_Modifier})*)+|[\p{Extended_Pictographic}\p{Emoji_Presentation}]\ufe0f)|\p{Default_Ignorable_Code_Point}/gv;
+const EMOJI_OR_IGNORABLE_PATTERN = String.raw`(\p{RGI_Emoji}|\p{Extended_Pictographic}(?:\ufe0f|\p{Emoji_Modifier})*(?:\u200d\p{Extended_Pictographic}(?:\ufe0f|\p{Emoji_Modifier})*)+|[\p{Extended_Pictographic}\p{Emoji_Presentation}]\ufe0f)|\p{Default_Ignorable_Code_Point}`;
+const EMOJI_OR_IGNORABLE = new RegExp(EMOJI_OR_IGNORABLE_PATTERN, "gv");
 
 /** Control removal and truncation apply only to terminal display, never task identity. */
 export function taskDisplayText(text: string): string {

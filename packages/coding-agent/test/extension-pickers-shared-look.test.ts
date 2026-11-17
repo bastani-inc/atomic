@@ -168,6 +168,57 @@ describe("MCP manager menus share the picker look (#5224)", () => {
 		assert.equal(notify, undefined);
 	});
 
+	test("recomputes whether to show the search box when a live menu grows or shrinks (#5256)", async () => {
+		const view = new McpManagerView(tui, theme, new KeybindingsManager());
+		const makeMenu = (count: number): McpMenu => ({
+			title: "MCP servers",
+			items: Array.from({ length: count }, (_, index) => ({
+				value: `server-${index}`,
+				label: `server-${index}`,
+			})),
+			confirmLabel: "open",
+			cancelLabel: "close",
+		});
+		let menu = makeMenu(3);
+		let notify: (() => void) | undefined;
+		const result = view.menu(
+			() => menu,
+			(listener) => {
+				notify = listener;
+				return () => {
+					notify = undefined;
+				};
+			},
+		);
+		assert.ok(!lines(view).some((line) => line.includes("⌕")));
+		assert.equal(hint(view), "↑↓ select · enter open · esc close · ? keys");
+
+		menu = makeMenu(20);
+		notify?.();
+		assert.ok(lines(view).some((line) => line.includes("⌕")));
+		assert.equal(hint(view), "↑↓ select · enter open · type to search · esc close");
+		for (const ch of "server-18") view.handleInput(ch);
+		assert.deepEqual(
+			lines(view)
+				.filter((line) => /server-\d+/.test(line) && !line.includes("⌕"))
+				.map((line) => line.trim()),
+			["❯ server-18"],
+		);
+
+		menu = makeMenu(2);
+		notify?.();
+		assert.ok(!lines(view).some((line) => line.includes("⌕")));
+		assert.equal(hint(view), "↑↓ select · enter open · esc close · ? keys");
+		assert.deepEqual(
+			lines(view)
+				.filter((line) => /server-\d+/.test(line))
+				.map((line) => line.trim()),
+			["❯ server-0", "server-1"],
+		);
+		view.handleInput(ESCAPE);
+		assert.equal(await result, undefined);
+	});
+
 	test("an empty menu says so and offers only the cancel key", async () => {
 		const view = new McpManagerView(tui, theme, new KeybindingsManager());
 		const result = view.menu(() => ({
@@ -212,6 +263,26 @@ describe("llama.cpp pickers share the picker look (#5224)", () => {
 		view.handleInput("\r");
 		await vi.advanceTimersByTimeAsync(0);
 		assert.deepEqual(action, { type: "download" });
+	});
+
+	test("truncates long model ids at 80 columns so the loaded status and download description stay visible (#5256)", async () => {
+		const models: LlamaModelInfo[] = [
+			{
+				id: "bartowski/Meta-Llama-3.1-70B-Instruct-GGUF:Meta-Llama-3.1-70B-Instruct-Q4_K_M",
+				status: { value: "loaded" },
+				meta: { n_ctx: 32768 },
+			} as LlamaModelInfo,
+			llamaModel("unsloth/Qwen3-Coder-480B-A35B-Instruct-GGUF:Q4_K_M", "unloaded"),
+			llamaModel("ggml-org/gemma-3-4b-it-GGUF:Q4_K_M", "unloaded"),
+		];
+		const view = await openLlama(async (ui) => {
+			await ui.showModels("http://127.0.0.1:8080", models);
+		});
+		const rendered80 = lines(view, 80);
+		const loadedRow = rendered80.find((line) => line.includes("❯ ")) ?? "";
+		assert.ok(loadedRow.includes("loaded · 33k context"), rendered80.join("\n"));
+		const downloadRow = rendered80.find((line) => line.includes("Download model…")) ?? "";
+		assert.ok(downloadRow.includes("Hugging Face"), rendered80.join("\n"));
 	});
 
 	test("a choice shows its message under the title and picks with enter", async () => {

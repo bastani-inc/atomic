@@ -1,4 +1,4 @@
-import type { ExtensionCommandContext } from "./extensions/context-types.js";
+import type { ExtensionCommandContext } from "./extensions/context-types.ts";
 import type { HostSessionPickerRow } from "./extensions/ui-types.js";
 import { type WorkflowRunControl, WorkflowRunControlUnavailableError } from "./extensions/workflow-run-control.js";
 

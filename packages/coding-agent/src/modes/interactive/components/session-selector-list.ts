@@ -10,7 +10,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@bastani/atomic-tui";
-import { keybindingIdentity } from "../../../core/keybinding-identity.ts";
+import { keybindingIdentity } from "../../../core/keybinding-identity.js";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { SessionInfo } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.js";
@@ -35,10 +35,8 @@ import {
 import { buildSessionTree, type FlatSessionNode, flattenSessionTree } from "./session-selector-tree.ts";
 import { formatSessionDate, getSessionPathKey, shortenPath, truncatePathStart } from "./session-selector-utils.ts";
 
-/** What a resume picker lists: saved sessions (with folder scope and names), workflow runs, or both grouped together. */
 export type SessionListVariant = "sessions" | "runs" | "mixed";
 
-/** The line under the list: a pending delete question or a transient status. */
 export interface SessionListNotice {
 	readonly text: string;
 	readonly tone: "error" | "accent" | "muted";
@@ -55,7 +53,6 @@ const HINT_STYLE: NavKeyStyle = {
 const CLEAN_TEXT_CACHE_SIZE = 4096;
 const cleanTextCache = new Map<string, string>();
 
-/** Control characters out and whitespace collapsed, so one row stays one line. */
 function cleanText(text: string): string {
 	const cached = cleanTextCache.get(text);
 	if (cached !== undefined) return cached;
@@ -81,47 +78,37 @@ function fitText(text: string, room: number): string {
 	return fitted;
 }
 
-/** `2h ago`, `just now`. */
 function ageText(date: Date): string {
 	const short = formatSessionDate(date);
 	return short === "now" ? "just now" : `${short} ago`;
 }
 
-/** A row's first line: a synthetic row's own title, else the session's name or first message. */
 export function sessionRowTitle(session: SessionInfo): string {
 	return cleanText(session.title ?? session.name ?? session.firstMessage) || "(no messages)";
 }
 
-/**
- * Labels in the order a narrow hint gives them up: the reminders and view toggles first, then the row actions, so
- * how to move, preview, resume and leave stay longest.
- */
 const RESUME_HINT_DROP_ORDER = [
-	"to search",
-	"keys",
 	"path",
 	"hide path",
 	"named",
 	"all names",
 	"sort",
+	"delete",
+	"rename",
 	"scope",
 	"all",
 	"this folder",
-	"rename",
-	"delete",
+	"to search",
 	"select",
 	"preview",
 	"close preview",
+	"keys",
+	"keep",
 ];
 
 function entryWidth(entry: NavKey, keybindings: NavKeybindings): number {
 	const keys = entry.action !== undefined ? navActionText(keybindings, entry.action) : (entry.keys ?? "");
 	return keys ? visibleWidth(`${keys} ${entry.label}`) : 0;
-}
-
-function joinedHintWidth(entries: readonly NavKey[], keybindings: NavKeybindings): number {
-	const widths = entries.map((entry) => entryWidth(entry, keybindings)).filter((width) => width > 0);
-	return widths.reduce((sum, width) => sum + width, 0) + visibleWidth(" · ") * Math.max(0, widths.length - 1);
 }
 
 function fitResumeHint(entries: readonly NavKey[], room: number, keybindings: NavKeybindings): NavKey[] {
@@ -130,13 +117,30 @@ function fitResumeHint(entries: readonly NavKey[], room: number, keybindings: Na
 	const kept = entries.map((_, index) => index);
 	let total = widths.reduce((sum, width) => sum + width, 0) + separator * Math.max(0, entries.length - 1);
 	for (const label of RESUME_HINT_DROP_ORDER) {
-		if (total <= room) break;
-		const at = kept.findIndex((index) => entries[index]!.label === label);
+		if (total <= room || kept.length <= 1) break;
+		const at = kept.findIndex(
+			(index) => entries[index]!.label === label && entries[index]!.action !== "tui.select.confirm",
+		);
 		if (at < 0) continue;
 		total -= widths[kept[at]!]! + (kept.length > 1 ? separator : 0);
 		kept.splice(at, 1);
 	}
 	return kept.map((index) => entries[index]!);
+}
+
+function isSearchEditingKey(key: KeyId): boolean {
+	const id = keybindingIdentity(key);
+	if (id.length === 1) return true;
+	if (id.startsWith("shift+") && id.length === 7) return true;
+	return (
+		id === "space" ||
+		id === "backspace" ||
+		id === "delete" ||
+		id === "left" ||
+		id === "right" ||
+		id === "home" ||
+		id === "end"
+	);
 }
 
 /**
@@ -183,7 +187,7 @@ export class SessionList implements Component, Focusable {
 	public onDeleteSession?: (sessionPath: string, session: SessionInfo) => Promise<void>;
 	public onRenameSession?: (session: SessionInfo) => void;
 	public onError?: (message: string) => void;
-	private maxVisible: number = 6; // Max sessions visible (two lines each)
+	private maxVisible: number = 6;
 	private variant: SessionListVariant = "sessions";
 	private canDelete = true;
 	private canRename = false;
@@ -247,7 +251,6 @@ export class SessionList implements Component, Focusable {
 		return input;
 	}
 
-	/** Empty the search with a fresh box, so its undo history cannot bring the old text back. */
 	private clearSearch(): void {
 		const selected = this.filteredSessions[this.selectedIndex]?.session;
 		const selectedPath = selected?.path;
@@ -470,7 +473,6 @@ export class SessionList implements Component, Focusable {
 
 	invalidate(): void {}
 
-	/** What the picker lists, which decides its title, empty text and keys. */
 	setVariant(variant: SessionListVariant): void {
 		const changed = this.variant !== variant;
 		this.variant = variant;
@@ -482,17 +484,14 @@ export class SessionList implements Component, Focusable {
 		}
 	}
 
-	/** Whether the picker can delete a row (Ctrl+D); its hint and key follow this. */
 	setCanDelete(canDelete: boolean): void {
 		this.canDelete = canDelete;
 	}
 
-	/** Whether the picker can rename a row; its hint follows this. */
 	setCanRename(canRename: boolean): void {
 		this.canRename = canRename;
 	}
 
-	/** Read the state line under the list: a pending delete question or a transient status. */
 	setNoticeProvider(provider: () => SessionListNotice | undefined): void {
 		this.noticeProvider = provider;
 	}
@@ -504,7 +503,15 @@ export class SessionList implements Component, Focusable {
 	render(width: number): string[] {
 		if (this.showingHelp) {
 			const kb = this.activeKeybindings();
-			return renderNavKeyOverlay("keys · resume", this.helpEntries(), width, HINT_STYLE, kb).map((line) =>
+			const helpKeys = this.availableHelpKeys().map(navKeyText);
+			const overlayKb: NavKeybindings =
+				helpKeys.length > 0
+					? {
+							matches: (data, action) => kb.matches(data, action),
+							getKeys: (action) => (action === "app.keys.help" ? helpKeys : (kb.getKeys?.(action) ?? [])),
+						}
+					: kb;
+			return renderNavKeyOverlay("keys · resume", this.helpEntries(), width, HINT_STYLE, overlayKb).map((line) =>
 				visibleWidth(line) > width ? truncateToWidth(line, width) : line,
 			);
 		}
@@ -622,10 +629,6 @@ export class SessionList implements Component, Focusable {
 		return lines;
 	}
 
-	/**
-	 * The row's dim second line, fitted to `room`: its own detail, or age · messages · folder · path · summary. A long
-	 * folder or session path loses its start, never its end, and a summary takes only what the paths leave.
-	 */
 	private rowDetail(session: SessionInfo, room: number): string {
 		if (session.detail !== undefined) return fitText(cleanText(session.detail), room);
 		const sep = " · ";
@@ -656,7 +659,6 @@ export class SessionList implements Component, Focusable {
 		return truncateToWidth(line, room, "…");
 	}
 
-	/** The selected row in full: its title, summary and where it lives, wrapped under the list. */
 	private renderPreview(width: number): string[] {
 		const selected = this.filteredSessions[this.selectedIndex]?.session;
 		if (!selected) return [];
@@ -681,7 +683,6 @@ export class SessionList implements Component, Focusable {
 			}
 		};
 		add(sessionRowTitle(selected), (text) => theme.bold(theme.fg("text", text)), 3);
-		// A row with its own detail line already carries its summary there; a session shows its summary in full.
 		if (selected.detail !== undefined) add(selected.detail, (text) => theme.fg("muted", text), 4);
 		else if (selected.summary) add(selected.summary, (text) => theme.fg("text", text), 6);
 		const isWorkflow = this.isWorkflowSession(selected);
@@ -701,11 +702,11 @@ export class SessionList implements Component, Focusable {
 	}
 
 	private availableHelpKeys(): readonly KeyId[] {
-		if (this.variant !== "mixed" || this.searchInput.getValue()) return [];
+		if (this.variant !== "mixed") return [];
 		const kb = this.activeKeybindings();
+		const query = this.searchInput.getValue();
 		const selected = this.filteredSessions[this.selectedIndex]?.session;
 		const isSession = selected !== undefined && !this.isWorkflowSession(selected);
-		const canUseSessionControls = selected === undefined || isSession;
 		const claimed = new Set([keybindingIdentity("ctrl+c")]);
 		const actionKeys = (action: string): readonly KeyId[] => (kb.getKeys?.(action) ?? []) as readonly KeyId[];
 		const claim = (action: string, enabled: boolean): void => {
@@ -717,9 +718,9 @@ export class SessionList implements Component, Focusable {
 		}
 		const canResume = selected !== undefined && !this.isDeleting(selected);
 		claim("tui.select.confirm", canResume);
-		claim("app.list.open", canResume);
-		if (selected) claimed.add(keybindingIdentity("space"));
-		claim("tui.input.tab", canUseSessionControls);
+		claim("app.list.open", canResume && !query);
+		if (selected && !query) claimed.add(keybindingIdentity("space"));
+		claim("tui.input.tab", true);
 		claim("app.session.rename", isSession && this.canRename && !this.isDeleting(selected!));
 		const canDelete =
 			selected !== undefined &&
@@ -729,10 +730,15 @@ export class SessionList implements Component, Focusable {
 			!this.isCurrentSession(selected);
 		claim("app.session.delete", canDelete);
 		claim("app.session.deleteNoninvasive", canDelete);
-		claim("app.session.toggleSort", this.filteredSessions.length > 1);
-		claim("app.session.toggleNamedFilter", canUseSessionControls);
+		claim("app.session.toggleSort", this.filteredSessions.length > 1 || Boolean(query));
+		claim("app.session.toggleNamedFilter", true);
 		claim("app.session.togglePath", isSession);
-		return actionKeys("app.keys.help").filter((key) => !claimed.has(keybindingIdentity(key)));
+		const configured = actionKeys("app.keys.help").filter(
+			(key) => !claimed.has(keybindingIdentity(key)) && (!query || !isSearchEditingKey(key)),
+		);
+		if (configured.length > 0) return configured;
+		if (query && !claimed.has(keybindingIdentity("f1"))) return ["f1" as KeyId];
+		return [];
 	}
 
 	private mixedHintParts(): { core: NavKey[]; extras: NavKey[]; help?: NavKey } {
@@ -750,9 +756,7 @@ export class SessionList implements Component, Focusable {
 		core.push({ keys: cancel, label: this.previewOpen ? "close" : query ? "clear" : "cancel" });
 
 		const extras: NavKey[] = [];
-		if (selectedIsSession || selected === undefined) {
-			extras.push({ action: "tui.input.tab", label: "scope" });
-		}
+		extras.push({ action: "tui.input.tab", label: "scope" });
 		if (selectedIsSession && this.canRename && !selectedDeleting) {
 			extras.push({ action: "app.session.rename", label: "rename" });
 		}
@@ -768,12 +772,10 @@ export class SessionList implements Component, Focusable {
 		if (this.filteredSessions.length > 1 || query) {
 			extras.push({ action: "app.session.toggleSort", label: "sort" });
 		}
-		if (selectedIsSession || selected === undefined) {
-			extras.push({
-				action: "app.session.toggleNamedFilter",
-				label: this.nameFilter === "named" ? "all names" : "named",
-			});
-		}
+		extras.push({
+			action: "app.session.toggleNamedFilter",
+			label: this.nameFilter === "named" ? "all names" : "named",
+		});
 		if (selectedIsSession) {
 			extras.push({ action: "app.session.togglePath", label: this.showPath ? "hide path" : "path" });
 		}
@@ -800,7 +802,6 @@ export class SessionList implements Component, Focusable {
 		return this.hintEntries().filter((entry) => entry.action !== "app.keys.help");
 	}
 
-	/** The keys that work now, in hint order; narrow terminals drop the least needed first. */
 	private hintEntries(): NavKey[] {
 		const kb = this.activeKeybindings();
 		const entries: NavKey[] = [];
@@ -856,15 +857,6 @@ export class SessionList implements Component, Focusable {
 	private renderHint(width: number): string {
 		const kb = this.activeKeybindings();
 		const room = Math.max(1, width - 2);
-		if (this.variant === "mixed" && this.confirmingDeleteSession === null) {
-			const { core, extras, help } = this.mixedHintParts();
-			const full = [...core, ...extras, ...(help ? [help] : [])];
-			if (joinedHintWidth(full, kb) <= room) {
-				return renderNavHintLine(full, width, HINT_STYLE, kb);
-			}
-			const compact = [...core, ...(help ? [help] : [])];
-			return renderNavHintLine(fitResumeHint(compact, room, kb), width, HINT_STYLE, kb);
-		}
 		return renderNavHintLine(fitResumeHint(this.hintEntries(), room, kb), width, HINT_STYLE, kb);
 	}
 
@@ -878,7 +870,6 @@ export class SessionList implements Component, Focusable {
 		return parts.join("") + branch;
 	}
 
-	/** The tree guide under a row's title, so a child's second line stays inside its branch. */
 	private buildTreeContinuation(node: FlatSessionNode): string {
 		if (node.depth === 0) return "";
 		const parts = node.ancestorContinues.map((continues) => (continues ? "│  " : "   "));
@@ -894,7 +885,11 @@ export class SessionList implements Component, Focusable {
 				this.onCancel?.();
 				return true;
 			}
-			if (kb.matches(keyData, "tui.select.cancel") || kb.matches(keyData, "app.keys.help")) {
+			if (
+				kb.matches(keyData, "tui.select.cancel") ||
+				kb.matches(keyData, "app.keys.help") ||
+				this.availableHelpKeys().some((key) => matchesKey(keyData, keybindingIdentity(key) as KeyId))
+			) {
 				this.showingHelp = false;
 			}
 			return true;
@@ -902,6 +897,11 @@ export class SessionList implements Component, Focusable {
 
 		// Handle delete confirmation state first - intercept all keys
 		if (this.confirmingDeleteSession !== null) {
+			if (matchesKey(keyData, "ctrl+c")) {
+				this.setConfirmingDeleteSession(null);
+				this.onCancel?.();
+				return true;
+			}
 			if (kb.matches(keyData, "tui.select.confirm")) {
 				const session = this.confirmingDeleteSession;
 				this.setConfirmingDeleteSession(null);
@@ -921,7 +921,6 @@ export class SessionList implements Component, Focusable {
 			return true;
 		}
 
-		// A preview closes before anything else leaves; it follows the selection while open.
 		if (this.previewOpen && kb.matches(keyData, "tui.select.cancel") && !matchesKey(keyData, "ctrl+c")) {
 			this.previewOpen = false;
 			return true;
@@ -933,9 +932,7 @@ export class SessionList implements Component, Focusable {
 		}
 
 		const selected = this.filteredSessions[this.selectedIndex];
-		const canUseSessionControls =
-			this.variant === "sessions" ||
-			(this.variant === "mixed" && (!selected || !this.isWorkflowSession(selected.session)));
+		const canUseSessionControls = this.variant !== "runs";
 
 		if (kb.matches(keyData, "tui.input.tab")) {
 			if (canUseSessionControls) this.onToggleScope?.();
@@ -1029,9 +1026,7 @@ export class SessionList implements Component, Focusable {
 			(kb.matches(keyData, "app.list.open") && !this.searchInput.getValue())
 		) {
 			this.selectSession();
-		}
-		// Escape clears a search first, then cancels; ctrl+c always cancels.
-		else if (kb.matches(keyData, "tui.select.cancel")) {
+		} else if (kb.matches(keyData, "tui.select.cancel") || matchesKey(keyData, "ctrl+c")) {
 			if (this.searchInput.getValue() && !matchesKey(keyData, "ctrl+c")) this.clearSearch();
 			else this.onCancel?.();
 		}
@@ -1042,7 +1037,6 @@ export class SessionList implements Component, Focusable {
 		return true;
 	}
 
-	/** A new search selects its best match; emptying it returns to the row that was selected, as in every picker. */
 	private editSearch(keyData: string): void {
 		const before = this.searchInput.getValue().trim();
 		const previous = this.filteredSessions[this.selectedIndex]?.session;
