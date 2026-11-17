@@ -45,4 +45,9 @@ export interface SubagentState {
 	lastForegroundControlId: string | null;
 	pendingForegroundControlNotices?: Map<string, ReturnType<typeof setTimeout>>;
 	lastUiContext: ExtensionContext | null;
+	/**
+	 * The Intercom id this session's own client registered under, by the Atomic session it registered for. Other
+	 * sessions in the process, such as its workflow stages and subagents, hold Intercom connections of their own.
+	 */
+	ownIntercomSession?: { readonly sessionId: string; readonly intercomSessionId: string };
 }

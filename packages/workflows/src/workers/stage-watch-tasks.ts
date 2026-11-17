@@ -16,8 +16,9 @@ export const STAGE_TASKS_INTERVAL_MS = 200;
 
 /** A task source's state as plain data, for a watcher in another process. */
 export function snapshotStageTasks(source: TaskViewSource): PooledStageTasks {
-	const tasks = [...source.tasks];
-	const background = source.backgroundTasks.map((task) => task.ref.taskId);
+	// Every task of the stage's owner: the watcher's views list the stage's own, and each worker's view its shells.
+	const tasks = [...(source.ownerTasks ?? source.tasks)];
+	const background = (source.ownerBackgroundTasks ?? source.backgroundTasks).map((task) => task.ref.taskId);
 	return {
 		tasks,
 		background,
