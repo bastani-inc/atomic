@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { AgentTool } from "@bastani/atomic-agent-core";
 import { type Context, fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
-import { afterEach, describe, test } from "vitest";
+import { afterEach, describe, test, vi } from "vitest";
 import type { AgentSessionInternalSurface } from "../../packages/coding-agent/src/core/agent-session-methods.js";
 import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../../packages/coding-agent/src/core/agent-session-persistent-custom-messages.js";
 import { convertToLlm } from "../../packages/coding-agent/src/core/messages.js";
@@ -207,70 +207,83 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 			);
 		});
 
-	test("a terminal notice between completed tool turns joins the next provider step", async () => {
-		const store = createStore();
-		store.recordRunStart({
-			id: "run-between-tools",
-			name: "between-tools",
-			inputs: {},
-			status: "running",
-			toolNodes: [],
-			stages: [],
-			startedAt: 1,
+	const cardWriteDelays: Array<[string, (() => Promise<void>) | undefined]> = [
+		["unchanged", undefined],
+		["an extra microtask", () => Promise.resolve()],
+		["a later timer", () => sleep(20)],
+	];
+	for (const [delayName, delayCardWrite] of cardWriteDelays)
+		test(`a terminal notice between completed tool turns joins the next provider step (card write: ${delayName})`, async () => {
+			const store = createStore();
+			store.recordRunStart({
+				id: "run-between-tools",
+				name: "between-tools",
+				inputs: {},
+				status: "running",
+				toolNodes: [],
+				stages: [],
+				startedAt: 1,
+			});
+			const workflowTool: AgentTool = {
+				name: "workflow",
+				label: "Workflow",
+				description: "Launch a named workflow",
+				parameters: Type.Object({}),
+				execute: async () => ({
+					content: [{ type: "text", text: "Workflow between-tools started. Status: running" }],
+					details: { action: "run", runId: "run-between-tools", status: "running" },
+				}),
+			};
+			const harness = await createHarness({ tools: [workflowTool] });
+			harnesses.push(harness);
+			if (delayCardWrite !== undefined) {
+				const appendEntry = harness.sessionManager.appendCustomMessageEntry.bind(harness.sessionManager);
+				vi.spyOn(harness.sessionManager, "appendCustomMessageEntry").mockImplementation(async (...args) => {
+					if (args[0] === LIFECYCLE_NOTICE_CUSTOM_TYPE) await delayCardWrite();
+					return appendEntry(...args);
+				});
+			}
+			unsubscriptions.push(
+				installWorkflowLifecycleNotifications({
+					store,
+					config: lifecycleConfig,
+					seedExisting: false,
+					sendMessage: (message, options) => harness.session.sendCustomMessage(message, options),
+				}),
+			);
+			let terminalized = false;
+			unsubscriptions.push(
+				harness.session.agent.subscribe((event) => {
+					if (!terminalized && event.type === "turn_end") {
+						terminalized = true;
+						assert.equal(store.recordRunEnd("run-between-tools", "completed", {}), true);
+					}
+				}),
+			);
+			let providerContext: Context | undefined;
+			harness.setResponses([
+				fauxAssistantMessage(fauxToolCall("workflow", {}, { id: "workflow-call-between-tools" }), {
+					stopReason: "toolUse",
+				}),
+				(context) => {
+					providerContext = context;
+					return fauxAssistantMessage("between-tools completed.");
+				},
+			]);
+
+			await harness.session.prompt("Run between-tools.");
+
+			assert.equal(harness.faux.state.callCount, 2);
+			assert.ok(providerContext);
+			assertWorkflowToolOrdering(providerContext);
+			assert.equal(
+				providerContext.messages.filter(
+					(message) =>
+						message.role === "user" && getMessageText(message).includes('Workflow "between-tools" completed'),
+				).length,
+				1,
+			);
 		});
-		const workflowTool: AgentTool = {
-			name: "workflow",
-			label: "Workflow",
-			description: "Launch a named workflow",
-			parameters: Type.Object({}),
-			execute: async () => ({
-				content: [{ type: "text", text: "Workflow between-tools started. Status: running" }],
-				details: { action: "run", runId: "run-between-tools", status: "running" },
-			}),
-		};
-		const harness = await createHarness({ tools: [workflowTool] });
-		harnesses.push(harness);
-		unsubscriptions.push(
-			installWorkflowLifecycleNotifications({
-				store,
-				config: lifecycleConfig,
-				seedExisting: false,
-				sendMessage: (message, options) => harness.session.sendCustomMessage(message, options),
-			}),
-		);
-		let terminalized = false;
-		unsubscriptions.push(
-			harness.session.agent.subscribe((event) => {
-				if (!terminalized && event.type === "turn_end") {
-					terminalized = true;
-					assert.equal(store.recordRunEnd("run-between-tools", "completed", {}), true);
-				}
-			}),
-		);
-		let providerContext: Context | undefined;
-		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("workflow", {}, { id: "workflow-call-between-tools" }), {
-				stopReason: "toolUse",
-			}),
-			(context) => {
-				providerContext = context;
-				return fauxAssistantMessage("between-tools completed.");
-			},
-		]);
-
-		await harness.session.prompt("Run between-tools.");
-
-		assert.equal(harness.faux.state.callCount, 2);
-		assert.ok(providerContext);
-		assertWorkflowToolOrdering(providerContext);
-		assert.equal(
-			providerContext.messages.filter(
-				(message) =>
-					message.role === "user" && getMessageText(message).includes('Workflow "between-tools" completed'),
-			).length,
-			1,
-		);
-	});
 
 	test("an idle parent starts one lifecycle prompt with the durable terminal card", async () => {
 		const store = createStore();
