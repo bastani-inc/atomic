@@ -13,8 +13,9 @@ import {
 	type ChildCommandTaskOwner,
 	ChildTaskWaits,
 	childCommandRouteCount,
-	childTaskCompletionRoute,
 	createChildCommandTaskOwner,
+	deliverToLaunchingSession,
+	keptChildNoticeCount,
 } from "../src/core/tasks/child-command-owner.ts";
 import type { TaskId } from "../src/core/tasks/contracts.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
@@ -137,18 +138,79 @@ describe("a child's completion route in its parent's command owner (#4326)", () 
 		assert.equal(owner.routeReleased("child-b", released), false, "a child with nothing running keeps nothing");
 		assert.equal(owner.routeReleased("child-a", released), true);
 		assert.equal(childCommandRouteCount(host), 1);
-		const message = (content: string) => ({
-			customType: "task_completion",
-			content,
-			details: {},
-			display: true as const,
-		});
-		await childTaskCompletionRoute(host, "t-1" as TaskId)?.deliver(message("first done"));
+		await deliverToLaunchingSession(host, "child-a", "t-1" as TaskId, message("first done"));
 		assert.equal(childCommandRouteCount(host), 1, "one of its tasks still runs");
-		await childTaskCompletionRoute(host, "t-2" as TaskId)?.deliver(message("second done"));
+		await deliverToLaunchingSession(host, "child-a", "t-2" as TaskId, message("second done"));
 
 		assert.deepEqual(delivered, ["first done", "second done"]);
 		assert.equal(childCommandRouteCount(host), 0);
-		assert.equal(childTaskCompletionRoute(host, "t-2" as TaskId), undefined);
+	});
+});
+
+const message = (content: string) => ({
+	customType: "task_completion",
+	content,
+	details: {},
+	display: true as const,
+});
+
+describe("a task's notice reaches only the child session that launched it", () => {
+	test("a child that cannot take it keeps it, in order, until it runs again; nothing else receives it", async () => {
+		const host = new AgentTaskHost({
+			scope: { kind: "session", sessionId: crypto.randomUUID() },
+			authorizeLaunch() {},
+		});
+		cleanups.push(() => void host.close("session-close"));
+		const owner = createChildCommandTaskOwner(() => host);
+		const other: string[] = [];
+		owner.bind(
+			"child-b",
+			{ isOpen: () => true, deliver: async (m) => void other.push(m.content) },
+			new ChildTaskWaits(),
+		);
+		const taken: string[] = [];
+		const first = deliverToLaunchingSession(host, "child-a", "t-1" as TaskId, message("first done"));
+		const second = deliverToLaunchingSession(host, "child-a", "t-2" as TaskId, message("second done"));
+		first.then(() => taken.push("first"));
+		second.then(() => taken.push("second"));
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.equal(keptChildNoticeCount(host, "child-a"), 2, "kept while the child has no route");
+		assert.deepEqual(taken, []);
+
+		const refused = { isOpen: () => true, deliver: async () => Promise.reject(new Error("execution ended")) };
+		owner.bind("child-a", refused, new ChildTaskWaits());
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.equal(keptChildNoticeCount(host, "child-a"), 2, "a route that refuses leaves them kept");
+
+		const delivered: string[] = [];
+		owner.bind(
+			"child-a",
+			{ isOpen: () => true, deliver: async (m) => void delivered.push(m.content) },
+			new ChildTaskWaits(),
+		);
+		await Promise.all([first, second]);
+		assert.deepEqual(delivered, ["first done", "second done"]);
+		assert.deepEqual(taken, ["first", "second"]);
+		assert.equal(keptChildNoticeCount(host, "child-a"), 0);
+		assert.deepEqual(other, [], "another child bound in the same owner never receives it");
+	});
+
+	test("a child released with a kept notice and no running shell is routed it, then holds nothing", async () => {
+		const host = new AgentTaskHost({
+			scope: { kind: "session", sessionId: crypto.randomUUID() },
+			authorizeLaunch() {},
+		});
+		cleanups.push(() => void host.close("session-close"));
+		const owner = createChildCommandTaskOwner(() => host);
+		const kept = deliverToLaunchingSession(host, "child-a", "t-1" as TaskId, message("done while stopped"));
+		const delivered: string[] = [];
+
+		assert.equal(
+			owner.routeReleased("child-a", { isOpen: () => true, deliver: async (m) => void delivered.push(m.content) }),
+			true,
+		);
+		await kept;
+		assert.deepEqual(delivered, ["done while stopped"]);
+		assert.equal(childCommandRouteCount(host), 0, "with nothing running or kept, the released child holds nothing");
 	});
 });
