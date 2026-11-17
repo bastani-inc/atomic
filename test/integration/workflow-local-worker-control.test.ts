@@ -141,9 +141,12 @@ async function realWorker(scenario: WorkerScenario, workerEntry: string, directo
 				: Promise.resolve(scenario.answer?.(message, requests));
 		void answered.then((answer) => {
 			if (!worker.connected) return;
-			worker.send(
-				answer === undefined ? { id: message.id, value: plainAnswer(message) } : { id: message.id, ...answer },
-			);
+			const reply =
+				answer === undefined ? { id: message.id, value: plainAnswer(message) } : { id: message.id, ...answer };
+			// The worker can exit between the check and the write (EPIPE on Windows); a reply it never reads is moot.
+			try {
+				worker.send(reply, () => {});
+			} catch {}
 		});
 	});
 	const plainAnswer = (message: WorkerRequest): unknown => {
