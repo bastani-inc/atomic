@@ -1030,11 +1030,20 @@ function settledTranscript(
 	const kept = withUnsavedAnswer(promptAndAnswer(manager, inherited), unsaved);
 	// A child's own session file is read through a store opened for the read, so a finished child keeps no store of its
 	// own in memory; a session in a shared store, as a forked or resumed child's, is read from that store.
-	const store = sessionFile === undefined ? manager.getSessionStore() : undefined;
+	const store =
+		sessionFile === undefined && typeof manager.getSessionStore === "function"
+			? manager.getSessionStore()
+			: undefined;
+	const fallbackEntries =
+		sessionFile === undefined && store === undefined && typeof manager.getEntries === "function"
+			? [...manager.getEntries()]
+			: undefined;
 	const read = async (): Promise<SessionEntry[]> => {
 		const entries = store
 			? [...(await store.load(sessionId)).entries]
-			: await readSessionFileEntries(sessionFile!, sessionId);
+			: sessionFile !== undefined
+				? await readSessionFileEntries(sessionFile, sessionId)
+				: [...(fallbackEntries ?? [])];
 		return withUnsavedAnswer(entries, unsaved);
 	};
 	return {
@@ -1153,6 +1162,26 @@ function messagesSinceLaunch(manager: SessionManager, launchLeafId: string | nul
 	const launchIndex = launchLeafId === null ? -1 : branch.findIndex((entry) => entry.id === launchLeafId);
 	if (launchLeafId !== null && launchIndex === -1) return [];
 	return branch.slice(launchIndex + 1).flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
+}
+
+function hasPartialHistory(manager: SessionManager): boolean {
+	if (typeof manager.hasFullHistory === "function" && !manager.hasFullHistory()) return true;
+	if (typeof manager.getHeldTail === "function" && manager.getHeldTail().fromSeq > 1) return true;
+	return false;
+}
+
+async function sessionLeafSeq(manager: SessionManager, leafId: string): Promise<number | undefined> {
+	if (typeof manager.findEntrySeq === "function") return await manager.findEntrySeq(leafId);
+	if (hasPartialHistory(manager)) {
+		if (typeof manager.loadFullHistory === "function") await manager.loadFullHistory();
+		if (hasPartialHistory(manager)) return undefined;
+	}
+	if (typeof manager.getEntries !== "function") return undefined;
+	const entries = manager.getEntries();
+	for (let index = entries.length - 1; index >= 0; index -= 1) {
+		if (entries[index]?.id === leafId) return index + 1;
+	}
+	return undefined;
 }
 
 /**
@@ -1870,13 +1899,21 @@ export class SubagentControlRuntime {
 			});
 		try {
 			const workflow = workflowMetadataFromContext(admitted.spec.parent?.orchestrationContext);
+			const canReopenFromStore =
+				admitted.sessionManager instanceof SessionManager &&
+				typeof admitted.sessionManager.getSessionStore === "function" &&
+				typeof admitted.sessionManager.getEntrySeq === typeof SessionManager.prototype.getEntrySeq;
+			const openOptions =
+				typeof SessionManager.prototype.getEntrySeq === "function" ? ({ history: "tail" } as const) : undefined;
 			const opening = admitted.sessionManager
-				? SessionManager.open(
-						admitted.sessionManager.getSessionStore(),
-						admitted.sessionManager.getSessionId(),
-						admitted.policy.cwd,
-						{ history: "tail" },
-					)
+				? canReopenFromStore
+					? SessionManager.open(
+							admitted.sessionManager.getSessionStore(),
+							admitted.sessionManager.getSessionId(),
+							admitted.policy.cwd,
+							openOptions,
+						)
+					: Promise.resolve(admitted.sessionManager)
 				: SessionManager.create(
 						admitted.policy.cwd,
 						admitted.sessionDir,
@@ -2043,8 +2080,6 @@ export class SubagentControlRuntime {
 					(late) => void late.session.dispose().catch(() => undefined),
 				);
 			}
-			if (admitted.spec.resumeSession || admitted.spec.resumeFollowUps?.length) startBudget.end();
-			else startBudget.enter("dispatching-task");
 			session = created.session;
 			const release = admitted.spec.releaseWhenWaiting;
 			if (release !== undefined) session.setToolDetachment({ afterMs: release.afterMs });
@@ -2090,7 +2125,9 @@ export class SubagentControlRuntime {
 			taskHooks?.bindTranscript?.({
 				getSessionId: () => sessionManager.getSessionId(),
 				getEntries: () => sessionManager.getEntries(),
-				loadFullHistory: () => sessionManager.loadFullHistory(),
+				...(typeof sessionManager.loadFullHistory === "function"
+					? { loadFullHistory: () => sessionManager.loadFullHistory() }
+					: {}),
 				subscribe: (listener) => transcriptSession.subscribe(listener),
 				getStreamingMessage: () => observedStreamingMessage,
 				getCompactionReason: compactionReasonReader(transcriptSession),
@@ -2109,14 +2146,22 @@ export class SubagentControlRuntime {
 				thinkingLevelForSession(session) ?? initialThinkingForAttempt(candidateModelId, configuredThinking);
 			attemptedModels = initialModelId ? [initialModelId] : [];
 			onModelChange?.(effectiveModelId, effectiveThinking);
+			const currentLeafId = sessionManager.getLeafId();
 			const childLaunch = {
 				model: effectiveModelId === undefined ? undefined : splitKnownThinkingSuffix(effectiveModelId).baseModel,
 				thinking: effectiveThinking,
-				leafId: sessionManager.getLeafId(),
-				leafSeq: sessionManager.getLeafId() === null ? 0 : sessionManager.getEntrySeq(sessionManager.getLeafId()!),
+				leafId: currentLeafId,
+				leafSeq:
+					currentLeafId === null
+						? 0
+						: typeof sessionManager.getEntrySeq === "function"
+							? sessionManager.getEntrySeq(currentLeafId)
+							: await beforeStartDeadline(sessionLeafSeq(sessionManager, currentLeafId)),
 			};
 			taskHooks?.bindChildLaunch?.(childLaunch);
 			admitted.spec.onChildLaunch?.(childLaunch);
+			if (admitted.spec.resumeSession || admitted.spec.resumeFollowUps?.length) startBudget.end();
+			else startBudget.enter("dispatching-task");
 			const progressState: AgentProgress = {
 				index: 0,
 				agent: admitted.spec.agent.name,
@@ -2503,7 +2548,11 @@ export class SubagentControlRuntime {
 			const disposal = (async (): Promise<SessionDisposal> => {
 				try {
 					await session?.dispose();
-					if (releasedAttempt && transcriptManager !== undefined)
+					if (
+						releasedAttempt &&
+						transcriptManager !== undefined &&
+						typeof transcriptManager.getSessionStore === "function"
+					)
 						await transcriptManager.getSessionStore().releaseSession?.(transcriptManager.getSessionId());
 					return { cleanup: { kind: "reaped" } };
 				} catch (error) {

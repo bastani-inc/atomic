@@ -700,7 +700,7 @@ export async function runAgentTask(input: {
 									...(launch.model ? { launchModel: launch.model } : {}),
 									...(launch.thinking ? { launchThinkingLevel: launch.thinking } : {}),
 									launchLeafId: launch.leafId,
-									launchLeafSeq: launch.leafSeq,
+									...(launch.leafSeq === undefined ? {} : { launchLeafSeq: launch.leafSeq }),
 								};
 								recordChild("running");
 							},
