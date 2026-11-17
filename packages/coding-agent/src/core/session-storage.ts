@@ -75,10 +75,43 @@ function resolveStoragePath(path: string, base: string, source: "cli" | "env" | 
 	}
 }
 
+/**
+ * The session storage a caller selects: an SDK store or selection, then the command line, then the process
+ * environment, then settings. Reads the settings files synchronously when `options` carries no settings; a caller that
+ * has them uses {@link selectSessionStorageWithSettings}, and {@link resolveSessionStore} reads them asynchronously.
+ */
 export function selectSessionStorage(
 	cwd: string,
 	options: SessionStorageOptions = {},
 ): SessionStore | StorageSelection {
+	const agentDir = options.agentDir ?? getAgentDir();
+	return (
+		selectSessionStorageBeforeSettings(cwd, options, agentDir) ??
+		selectSessionStorageFromSettings(
+			options.settings ?? SettingsManager.create(cwd, agentDir).getSettings(),
+			agentDir,
+		)
+	);
+}
+
+/** {@link selectSessionStorage} for a caller that already has the settings, so it never reads the settings files. */
+export function selectSessionStorageWithSettings(
+	cwd: string,
+	options: SessionStorageOptions & { readonly settings: Settings },
+): SessionStore | StorageSelection {
+	const agentDir = options.agentDir ?? getAgentDir();
+	return (
+		selectSessionStorageBeforeSettings(cwd, options, agentDir) ??
+		selectSessionStorageFromSettings(options.settings, agentDir)
+	);
+}
+
+/** The session storage `options` or the process environment select; `undefined` leaves the choice to settings. */
+function selectSessionStorageBeforeSettings(
+	cwd: string,
+	options: SessionStorageOptions,
+	agentDir: string,
+): SessionStore | StorageSelection | undefined {
 	if (options.sessionStore !== undefined) {
 		const value = options.sessionStore;
 		if (value !== null && typeof value === "object" && "load" in value) {
@@ -122,14 +155,17 @@ export function selectSessionStorage(
 		sources.set(selection, { source: "cli", field: "--session-dir" });
 		return selection;
 	}
-	const agentDir = options.agentDir ?? getAgentDir();
 	const processChoice = selectProcessStorage("sessions", agentDir, cwd);
 	if (processChoice !== undefined) {
 		sources.set(processChoice.selection, { source: processChoice.source, field: processChoice.field });
 		return processChoice.selection;
 	}
+	return undefined;
+}
+
+/** The session storage `settings` select, when neither the caller nor the process environment chose one. */
+function selectSessionStorageFromSettings(settings: Settings, agentDir: string): StorageSelection {
 	const defaultPath = join(dirname(agentDir), "workflows", "journal.sqlite");
-	const settings = options.settings ?? SettingsManager.create(cwd, agentDir).getSettings();
 	if (
 		settings.sessions !== undefined &&
 		(settings.sessions === null || typeof settings.sessions !== "object" || Array.isArray(settings.sessions))
@@ -190,9 +226,14 @@ function isDefaultDatabase(
 }
 
 export async function resolveSessionStore(cwd: string, options: SessionStorageOptions = {}): Promise<SessionStore> {
-	const selection = selectSessionStorage(cwd, options);
-	if (selection !== null && typeof selection === "object" && "load" in selection) return selection;
 	const agentDir = options.agentDir ?? getAgentDir();
+	const selection =
+		selectSessionStorageBeforeSettings(cwd, options, agentDir) ??
+		selectSessionStorageFromSettings(
+			options.settings ?? (await SettingsManager.createAsync(cwd, agentDir)).getSettings(),
+			agentDir,
+		);
+	if (selection !== null && typeof selection === "object" && "load" in selection) return selection;
 	// Released sessions' history that a killed process left in this agent directory goes, once per process (#4502).
 	void import("./storage/session/released-history-files.js").then(
 		({ sweepReleasedHistoryOnce }) => sweepReleasedHistoryOnce(agentDir),

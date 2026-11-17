@@ -14,7 +14,7 @@ import { pathToFileURL } from "node:url";
 import { APP_NAME } from "../config.js";
 import { getBuiltinPackageLocations } from "../core/builtin-packages.ts";
 import type { IntercomBrokerControl } from "../core/intercom-broker-control.js";
-import { resolveSessionStore, selectSessionStorage } from "../core/session-storage.js";
+import { resolveSessionStore, selectSessionStorageWithSettings } from "../core/session-storage.js";
 import { exportSessions } from "../core/session-transfer.ts";
 import { SettingsManager } from "../core/settings-manager.ts";
 import { openAdapterSelectionDatabase } from "../core/storage/adapter-open.js";
@@ -869,7 +869,7 @@ async function sessionTransfer(
 		projectTrusted: projectTrust(options.cwd, options.agentDir),
 	}).getSettings();
 	const storageOptions = { agentDir: options.agentDir, settings };
-	const selection = selectSessionStorage(options.cwd, storageOptions);
+	const selection = selectSessionStorageWithSettings(options.cwd, storageOptions);
 	if (!("load" in selection)) {
 		if (selection.kind === "memory" || (selection.kind === "sqlite" && selection.path === ":memory:"))
 			return {
