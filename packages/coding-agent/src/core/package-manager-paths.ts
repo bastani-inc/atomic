@@ -3,8 +3,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir, getAgentDirs, getProjectConfigDirs } from "../config.js";
 import { resolvePath } from "../utils/paths.ts";
-import type { PackageLocationContext, SourceScope } from "./package-manager-types.ts";
-import { ensurePrivateTempDir } from "./tools/session-temp-dir.ts";
+import type { InstalledSourceScope, PackageLocationContext, SourceScope } from "./package-manager-types.ts";
+import { ensurePrivateTempDirAsync } from "./tools/session-temp-dir.ts";
 
 export function getHomeDir(): string {
 	return process.env.HOME || homedir();
@@ -16,12 +16,12 @@ export function getHomeDir(): string {
  * trusted (another owner, a symlink, or group/other access), so a package
  * someone else placed there is never resolved or loaded.
  */
-export function getTemporaryDir(prefix: string, suffix?: string, ref?: string): string {
+export async function getTemporaryDir(prefix: string, suffix?: string, ref?: string): Promise<string> {
 	const hash = createHash("sha256")
 		.update(`${prefix}-${suffix ?? ""}${ref ? `@${ref}` : ""}`)
 		.digest("hex")
 		.slice(0, 8);
-	return join(ensurePrivateTempDir("extensions"), prefix, hash, suffix ?? "");
+	return join(await ensurePrivateTempDirAsync("extensions"), prefix, hash, suffix ?? "");
 }
 
 export function getBaseDirsForScope(context: PackageLocationContext, scope: SourceScope): string[] {
@@ -46,7 +46,11 @@ export function resolvePathFromBase(input: string, baseDir: string): string {
 	return resolvePath(input, baseDir, { homeDir: getHomeDir(), trim: true });
 }
 
-export function getNpmInstallRoot(context: PackageLocationContext, scope: SourceScope, temporary: boolean): string {
+export async function getNpmInstallRoot(
+	context: PackageLocationContext,
+	scope: SourceScope,
+	temporary: boolean,
+): Promise<string> {
 	if (temporary) {
 		return getTemporaryDir("npm");
 	}
@@ -56,15 +60,23 @@ export function getNpmInstallRoot(context: PackageLocationContext, scope: Source
 	return join(context.agentDir, "npm");
 }
 
-export function getGitInstallPath(
+export async function getGitInstallPath(
 	context: PackageLocationContext,
 	source: { host: string; path: string; ref?: string },
 	scope: SourceScope,
-): string {
+): Promise<string> {
 	if (scope === "temporary") {
 		// Include the ref in the hash so each pinned ref gets its own checkout.
 		return getTemporaryDir(`git-${source.host}`, source.path, source.ref);
 	}
+	return getInstalledGitInstallPath(context, source, scope);
+}
+
+export function getInstalledGitInstallPath(
+	context: PackageLocationContext,
+	source: { host: string; path: string },
+	scope: InstalledSourceScope,
+): string {
 	if (scope === "project") {
 		return join(context.cwd, CONFIG_DIR_NAME, "git", source.host, source.path);
 	}

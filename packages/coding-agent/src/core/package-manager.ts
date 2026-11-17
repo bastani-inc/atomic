@@ -163,7 +163,7 @@ export class DefaultPackageManager implements PackageManager {
 		return getPackageIdentityFromContext(this.context, source, scope);
 	}
 
-	private getGitInstallPath(source: GitSource, scope: SourceScope): string {
+	private getGitInstallPath(source: GitSource, scope: SourceScope): Promise<string> {
 		return getGitInstallPathFromContext(this.context, source, scope);
 	}
 
