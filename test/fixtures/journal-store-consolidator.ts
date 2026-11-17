@@ -19,8 +19,10 @@ import { existsSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { consolidateJournalStore, isJournalCatalogError, JournalCatalog } from "@bastani/atomic/storage";
-// The module the storage entry point above runs its connections' threads through.
-import { ThreadConnection } from "../../packages/coding-agent/dist/core/storage/node-sqlite-thread.js";
+import {
+	type ConnectionRequest,
+	ThreadConnection,
+} from "../../packages/coding-agent/src/core/storage/node-sqlite-thread.js";
 import { openSelectedRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 
 const [mode, store, ...rest] = process.argv.slice(2);
@@ -59,7 +61,7 @@ function onCommittedWrites(reach: (point: string) => void): void {
 		if (point !== undefined) reach(point);
 	};
 	const request = ThreadConnection.prototype.request;
-	ThreadConnection.prototype.request = async function (this: ThreadConnection, next) {
+	ThreadConnection.prototype.request = async function (this: ThreadConnection, next: ConnectionRequest) {
 		fire();
 		const sql = "sql" in next ? next.sql : "";
 		if (sql.startsWith("INSERT INTO wf_runs(run_id, name")) writing = "copy";

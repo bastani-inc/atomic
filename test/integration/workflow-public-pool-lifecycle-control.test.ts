@@ -90,6 +90,8 @@ function startCoordinator(directory: string, mode: "fresh" | "restart") {
 function observe<T>(directory: string, read: (database: TestSqliteDatabase) => T): T {
 	const database = new TestSqliteDatabase(join(directory, "journal.sqlite"));
 	try {
+		// The root's connections commit on threads of their own, at the same time as this read: wait out their locks.
+		database.run("PRAGMA busy_timeout = 5000");
 		return read(database);
 	} finally {
 		database.close();

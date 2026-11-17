@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import {
 	openNodeSqliteDatabase,
 	wrapNodeSqliteDatabase,
@@ -81,3 +82,20 @@ export const withCallerThreadSqliteDatabase: WithSqliteDatabaseSubject = async (
 		removeTempDirectory(directory);
 	}
 };
+
+/**
+ * A database at `path` (or `:memory:`) on a connection this thread owns, wrapped: a test file's `node:sqlite` mock
+ * that registers SQL functions applies to it, which it does not to a connection `openNodeSqliteDatabase` runs on a
+ * thread of its own. Closing it closes the connection too.
+ */
+export function openCallerThreadSqliteDatabase(path: string): SqliteDatabase {
+	const connection = new DatabaseSync(path);
+	const database = wrapNodeSqliteDatabase(connection);
+	const close = database.close.bind(database);
+	return Object.assign(database, {
+		close: async () => {
+			await close();
+			connection.close();
+		},
+	});
+}

@@ -26,8 +26,9 @@ const SETUP_FILE = "test/setup-workflow-durability.ts";
 // the storage entry exports for adapters and stores (`dialect.ts`, `fenced-paths.ts`, `migrations.ts`; #4793), and the
 // durable backend's attempt identity leaf `attempt-identity.ts`, whose own imports are type-only (#4874), and the
 // asynchronous existence check the journal catalog and storage provider share (`utils/path-exists.ts`), which imports
-// only `node:fs/promises`.
-const MAX_REACHABLE_MODULES = 49;
+// only `node:fs/promises`, and the node-sqlite connection thread (`node-sqlite-thread.ts`, #5376), which imports only
+// `node:worker_threads` and the SQL dialect.
+const MAX_REACHABLE_MODULES = 50;
 
 function runtimeImports(file: string, eagerOnly = false): string[] {
 	try {

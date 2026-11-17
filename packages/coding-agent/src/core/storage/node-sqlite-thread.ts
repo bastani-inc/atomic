@@ -50,13 +50,19 @@ function statement(sql) {
 	return cached;
 }
 
+// Node 22 binds an empty Uint8Array that arrived in a message as NULL; a new empty one binds as a zero-length blob.
+function bind(params) {
+	return params.map((value) => (value instanceof Uint8Array && value.byteLength === 0 ? new Uint8Array(0) : value));
+}
+
+// Object.fromEntries defines every column as an own field, a column named __proto__ included.
 function normalize(row) {
-	const out = {};
-	for (const key of Object.keys(row)) {
-		const value = row[key];
-		out[key] = typeof value === "bigint" && value >= -BigInt(Number.MAX_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : value;
-	}
-	return out;
+	return Object.fromEntries(
+		Object.entries(row).map(([key, value]) => [
+			key,
+			typeof value === "bigint" && value >= -BigInt(Number.MAX_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : value,
+		]),
+	);
 }
 
 function begin() {
@@ -78,12 +84,12 @@ function begin() {
 
 const handlers = {
 	exec: (request) => { database.exec(request.sql); },
-	run: (request) => ({ changes: Number(statement(request.sql).run(...request.params).changes) }),
+	run: (request) => ({ changes: Number(statement(request.sql).run(...bind(request.params)).changes) }),
 	get: (request) => {
-		const row = statement(request.sql).get(...request.params);
+		const row = statement(request.sql).get(...bind(request.params));
 		return row === undefined ? undefined : normalize(row);
 	},
-	all: (request) => statement(request.sql).all(...request.params).map(normalize),
+	all: (request) => statement(request.sql).all(...bind(request.params)).map(normalize),
 	begin: () => { begin(); },
 	dataVersion: () => Number(database.prepare("PRAGMA data_version").get()?.data_version ?? 0),
 	now: () => Number(database.prepare(workerData.nowSql).get().now),

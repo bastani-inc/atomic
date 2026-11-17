@@ -29,6 +29,7 @@ import {
 import { staleWorkLease } from "../helpers/pool-errors.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
+import { trackConnectionRequests } from "../helpers/sqlite-connection-requests.js";
 
 async function fixture() {
 	const directory = makeTempDirectory("resource-admission-");
@@ -744,22 +745,33 @@ test.skipIf(process.platform === "win32")(
 		});
 		try {
 			const admission = await boundProcessPermit(f, group);
+			// The journal answers on its connection's thread, on real turns: each step waits for it before time moves.
+			const requests = trackConnectionRequests();
+			const advance = async (ms: number) => {
+				await requests.settled();
+				await vi.advanceTimersByTimeAsync(ms);
+				await requests.settled();
+			};
 			vi.useFakeTimers({ toFake: ["setTimeout"] });
 			let settled = false;
 			const reaping = admission.reapStoppedProcesses("worker").finally(() => {
 				settled = true;
 			});
-			await vi.advanceTimersByTimeAsync(REAP_TERM_GRACE_MS - 1);
-			assert.deepEqual(signals, [[group, "SIGTERM"]], "SIGKILL waits for the SIGTERM grace");
-			await vi.advanceTimersByTimeAsync(1);
-			assert.deepEqual(signals, [
-				[group, "SIGTERM"],
-				[group, "SIGKILL"],
-			]);
-			await vi.advanceTimersByTimeAsync(REAP_KILL_GRACE_MS - 1);
-			assert.equal(settled, false, "the reap waits out the SIGKILL grace");
-			await vi.advanceTimersByTimeAsync(1);
-			assert.deepEqual(await reaping, [group], "the surviving group is reported");
+			try {
+				await advance(REAP_TERM_GRACE_MS - 1);
+				assert.deepEqual(signals, [[group, "SIGTERM"]], "SIGKILL waits for the SIGTERM grace");
+				await advance(1);
+				assert.deepEqual(signals, [
+					[group, "SIGTERM"],
+					[group, "SIGKILL"],
+				]);
+				await advance(REAP_KILL_GRACE_MS - 1);
+				assert.equal(settled, false, "the reap waits out the SIGKILL grace");
+				await advance(1);
+				assert.deepEqual(await reaping, [group], "the surviving group is reported");
+			} finally {
+				requests.restore();
+			}
 			vi.useRealTimers();
 			assert.deepEqual(
 				(await admission.inspect()).map((row) => row.state),

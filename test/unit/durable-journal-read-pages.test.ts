@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import type { SqliteDatabase } from "@bastani/atomic/storage";
 import { test, vi } from "vitest";
-import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { PoolCheckpointIndex } from "../../packages/workflows/src/durable/journal/pool-checkpoint-index.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { type Lease, RUN_EVENT_TYPES, type RunEvent } from "../../packages/workflows/src/durable/journal/types.js";
@@ -10,6 +9,7 @@ import type { DurableToolCheckpoint } from "../../packages/workflows/src/durable
 import { interceptingDatabase } from "../helpers/intercepting-database.js";
 import { rowLimitedDatabase, SQLD_DEFAULT_LIMITS } from "../helpers/row-limited-database.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { openCallerThreadSqliteDatabase } from "../helpers/storage-database.js";
 
 /**
  * A paged read of large events costs about what each page returns (#4954, #4768): each statement measures the
@@ -56,7 +56,7 @@ async function withJournal(
 	const directory = makeTempDirectory("journal-read-pages-");
 	const statements: Statement[] = [];
 	try {
-		const database = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
+		const database = openCallerThreadSqliteDatabase(join(directory, "journal.sqlite"));
 		// What a libSQL server refuses for size is refused here too: the pages must still fit its limits.
 		const limited = rowLimitedDatabase(database, SQLD_DEFAULT_LIMITS);
 		const observed = interceptingDatabase(limited.wrapped, {

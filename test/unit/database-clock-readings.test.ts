@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { openNodeSqliteDatabase, type SqliteDatabase } from "@bastani/atomic/storage";
-import { afterEach, test, vi } from "vitest";
+import type { SqliteDatabase } from "@bastani/atomic/storage";
+import { afterEach, beforeEach, test, vi } from "vitest";
 import { openSqlKnownSessionStore } from "../../packages/intercom/broker/sql-known-session-store.js";
 import { openSqlBrokerLeaseStore } from "../../packages/intercom/broker/sql-lease-store.js";
 import { readFleetDemand } from "../../packages/workflows/src/durable/journal/sql-fleet.js";
@@ -11,6 +11,8 @@ import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-
 import { readSharedPoolStats, SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { clockConnections, type RequestInterception } from "../helpers/sqlite-connection-requests.js";
+import { openCallerThreadSqliteDatabase } from "../helpers/storage-database.js";
 
 /**
  * A statement that decides by the database's clock and reports or records a time from it reads the clock once, so its
@@ -58,8 +60,22 @@ async function movingFrom<T>(at: number, read: () => Promise<T>): Promise<T> {
 	}
 }
 
+/**
+ * The journal's reader runs on a thread of its own, out of the mock's reach: each reading of the clock in a statement it
+ * is sent becomes the clock's time, which moves on by `step` ms at every reading as the mock's does.
+ */
+let threadClock: RequestInterception | undefined;
+beforeEach(() => {
+	threadClock = clockConnections(() => {
+		const at = clock.now;
+		clock.now += clock.step;
+		return at;
+	});
+});
+
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
+	threadClock?.restore();
 	pin(0);
 	// Windows refuses to remove a database file a connection still holds.
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
@@ -68,7 +84,7 @@ afterEach(async () => {
 async function database(): Promise<SqliteDatabase> {
 	const directory = makeTempDirectory("database-clock-");
 	cleanups.push(() => removeTempDirectory(directory));
-	const opened = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
+	const opened = openCallerThreadSqliteDatabase(join(directory, "journal.sqlite"));
 	cleanups.push(() => opened.close());
 	return opened;
 }

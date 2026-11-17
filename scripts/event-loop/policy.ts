@@ -268,7 +268,22 @@ export const GUARDED_CALLS: readonly ReviewedEdge[] = [
 		from: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "NodeSqliteDatabase.call" },
 		to: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "CallerThreadChannel.request" },
 		reason:
-			"only a connection passed to wrapNodeSqliteDatabase runs its statements on the caller's thread, where the caller's own DatabaseSync belongs; every connection Atomic opens comes from openNodeSqliteDatabase, which runs it on a thread of its own (#5376)",
+			"statements run on the calling thread only for a connection passed to wrapNodeSqliteDatabase, where the caller's own DatabaseSync belongs, and for an in-memory database, which has no file to wait for and no lock another connection holds; openNodeSqliteDatabase runs every file-backed connection on a thread of its own (#5376)",
+	},
+	{
+		from: {
+			file: "packages/coding-agent/src/core/storage/node-sqlite.ts",
+			name: "NodeSqliteDatabase.close/this.tail.then()",
+		},
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "CallerThreadChannel.close" },
+		reason:
+			"closes a connection on the calling thread only for an in-memory database, which has no file to release, and never a connection passed to wrapNodeSqliteDatabase, which its caller closes; a file-backed connection closes on its own thread (#5376)",
+	},
+	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "openNodeSqliteDatabase" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "openInMemoryDatabase" },
+		reason:
+			"an in-memory database has no file: opening it and its statements never wait for the disk, and SQLite's busy handler never waits for it, since no other connection of any process holds a lock on it; file-backed connections open on a thread of their own (#5376)",
 	},
 	{
 		from: { file: "packages/coding-agent/src/core/agent-session.ts", name: "AgentSessionBase.constructor" },

@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
 import { openNodeSqliteDatabase, type SqliteDatabase } from "@bastani/atomic/storage";
-import { afterEach, test, vi } from "vitest";
+import { afterEach, beforeEach, test, vi } from "vitest";
 import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-message-cache.js";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import {
@@ -65,6 +65,7 @@ import {
 	type SharedStoreFixture,
 } from "../helpers/intercom-multinode-contract.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
+import { type ConnectionRequestTracker, trackConnectionRequests } from "../helpers/sqlite-connection-requests.js";
 
 /**
  * S5 (specs/2026-10-19-intercom-multi-node.md §12, §14): in-process brokers that share one SQLite file route sends
@@ -690,7 +691,18 @@ async function settleFileIo(): Promise<void> {
 		turn++
 	)
 		await new Promise((resolveTurn) => setImmediate(resolveTurn));
+	// A connection answers on its own thread, on a real turn too.
+	await connectionRequests?.settled();
 }
+
+let connectionRequests: ConnectionRequestTracker | undefined;
+beforeEach(() => {
+	connectionRequests = trackConnectionRequests();
+});
+afterEach(() => {
+	connectionRequests?.restore();
+	connectionRequests = undefined;
+});
 
 test("a lost outcome hint for a held send is noticed by the outcome poll before the hold times out", async () => {
 	assert.ok(MULTI_NODE_OUTCOME_POLL_INTERVAL_MS < RESTORING_RECIPIENT_HOLD_MS);
@@ -1576,7 +1588,12 @@ test(
 );
 
 /** Steps fake time forward, letting the real store and bus settle between steps. */
-async function advance(totalMs: number, stepMs = 500): Promise<void> {
+/**
+ * Moves fake time on by `totalMs` in steps of `stepMs`, letting file I/O and the brokers' connections finish after each
+ * step. A connection answers on its own thread, on a real turn, so each storage step a broker waits for in a sequence
+ * costs it up to one step of fake time: steps of a bus poll keep that far below every timeout these tests measure.
+ */
+async function advance(totalMs: number, stepMs = BUS_POLL_INTERVAL_MS): Promise<void> {
 	for (let elapsed = 0; elapsed < totalMs; elapsed += stepMs) {
 		await vi.advanceTimersByTimeAsync(stepMs);
 		await settleFileIo();

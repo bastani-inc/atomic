@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test, vi } from "vitest";
+import { afterEach, beforeEach, test, vi } from "vitest";
 import { defaultWorkerHeartbeatMs } from "../../packages/workflows/src/workers/worker-timing.js";
 import {
 	assertNoLapse,
@@ -12,6 +12,7 @@ import {
 	simulatedPool,
 	usageAt,
 } from "../helpers/pool-heartbeat-simulation.js";
+import { clockConnections, type RequestInterception } from "../helpers/sqlite-connection-requests.js";
 
 /**
  * Pool reads run on a read-only connection the journal opens itself (#4314). Every SQLite connection in this file reads
@@ -28,6 +29,13 @@ vi.mock("node:sqlite", async (importOriginal) => {
 	}
 	return { ...actual, DatabaseSync: DateClockedDatabase };
 });
+
+// The journal's reader runs on a thread of its own, where the mock above does not reach: it reads the same clock.
+let threadClock: RequestInterception | undefined;
+beforeEach(() => {
+	threadClock = clockConnections(() => Date.now());
+});
+afterEach(() => threadClock?.restore());
 
 /** Workers of one pool, as many as #4312 measured per coordinator. */
 const WORKERS = 450;

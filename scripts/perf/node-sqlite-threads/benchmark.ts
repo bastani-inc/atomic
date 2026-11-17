@@ -1,9 +1,14 @@
 #!/usr/bin/env bun
+import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type { SqliteDatabase } from "../../../packages/coding-agent/src/core/storage/database.js";
-import { openNodeSqliteDatabase } from "../../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import {
+	openNodeSqliteDatabase,
+	wrapNodeSqliteDatabase,
+} from "../../../packages/coding-agent/src/core/storage/node-sqlite.js";
 
 const SEQUENTIAL_APPENDS = 200;
 const CONCURRENT_APPENDS = 64;
@@ -12,6 +17,8 @@ const POINT_READS = 1_000;
 
 interface Options {
 	readonly rounds: number;
+	/** Processes that keep a CPU busy for the whole run, as a loaded machine. */
+	readonly load: number;
 	readonly out?: string;
 }
 
@@ -22,6 +29,7 @@ function parseOptions(argv: readonly string[]): Options {
 	};
 	return {
 		rounds: Number(value("rounds") ?? "5"),
+		load: Number(value("load") ?? "0"),
 		...(value("out") === undefined ? {} : { out: value("out") }),
 	};
 }
@@ -67,6 +75,7 @@ interface Sample {
 const CASES = [
 	"open",
 	`append x${SEQUENTIAL_APPENDS} in sequence, 1 KiB`,
+	`append x${SEQUENTIAL_APPENDS} in sequence, 1 KiB, wrapped (no writers' queue or holder record)`,
 	`append x${CONCURRENT_APPENDS} at once, 1 KiB`,
 	`append x${LARGE_APPENDS} in sequence, 64 KiB`,
 	`point read x${POINT_READS} in sequence`,
@@ -105,6 +114,18 @@ async function round(probe: TurnProbe): Promise<Sample[]> {
 				for (let index = 0; index < SEQUENTIAL_APPENDS; index++) await append(database, small);
 			}),
 		);
+		// The same appends through a wrapped connection, which runs on this thread and has no writers' queue or holder
+		// record: the difference is what those, and the connection's own thread, cost per write.
+		const connection = new DatabaseSync(join(directory, "wrapped.sqlite"));
+		const wrapped = wrapNodeSqliteDatabase(connection);
+		await wrapped.exec("CREATE TABLE events (seq INTEGER PRIMARY KEY, payload TEXT NOT NULL)");
+		samples.push(
+			await measure(probe, SEQUENTIAL_APPENDS, async () => {
+				for (let index = 0; index < SEQUENTIAL_APPENDS; index++) await append(wrapped, small);
+			}),
+		);
+		await wrapped.close();
+		connection.close();
 		samples.push(
 			await measure(probe, CONCURRENT_APPENDS, () =>
 				Promise.all(Array.from({ length: CONCURRENT_APPENDS }, () => append(database, small))),
@@ -134,18 +155,27 @@ function median(values: readonly number[]): number {
 	return sorted.length % 2 === 1 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
 }
 
+/** Starts `count` processes that each keep a CPU busy until they are killed. */
+function startLoad(count: number): ChildProcess[] {
+	return Array.from({ length: count }, () =>
+		spawn(process.execPath, ["-e", "for (;;) {}"], { stdio: "ignore", windowsHide: true }),
+	);
+}
+
 async function main(): Promise<void> {
 	const options = parseOptions(process.argv.slice(2));
+	const load = startLoad(options.load);
 	const probe = new TurnProbe();
 	const rounds: Sample[][] = [];
 	try {
 		for (let index = 0; index < options.rounds; index++) rounds.push(await round(probe));
 	} finally {
 		probe.stop();
+		for (const child of load) child.kill();
 	}
 	const runtime = typeof (globalThis as { Bun?: unknown }).Bun === "undefined" ? `Node ${process.version}` : "Bun";
 	const lines = [
-		`${runtime} on ${process.platform}, ${options.rounds} rounds`,
+		`${runtime} on ${process.platform}, ${options.rounds} rounds, ${options.load} busy processes`,
 		"",
 		"| case | longest block, worst (ms) | elapsed p50 (ms) | per operation p50 (ms) |",
 		"|---|---:|---:|---:|",

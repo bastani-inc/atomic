@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, test, vi } from "vitest";
+import { afterEach, beforeEach, test, vi } from "vitest";
 import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
@@ -14,6 +14,7 @@ import type { DurableToolCheckpoint } from "../../packages/workflows/src/durable
 import { staleWorkLease } from "../helpers/pool-errors.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { clockConnections, type RequestInterception } from "../helpers/sqlite-connection-requests.js";
 
 /**
  * A work lease is current through the millisecond it expires at and stale from the next one (#4327). Every database
@@ -51,7 +52,14 @@ vi.mock("node:sqlite", async (importOriginal) => {
 	return { ...actual, DatabaseSync: DateClockedDatabase };
 });
 
+// The journal's reader runs on a thread of its own, out of the mock's reach: it reads the same clock.
+let threadClock: RequestInterception | undefined;
+beforeEach(() => {
+	threadClock = clockConnections(() => Date.now());
+});
+
 afterEach(() => {
+	threadClock?.restore();
 	vi.useRealTimers();
 });
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { ForkOptions } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
-import { afterEach, test, vi } from "vitest";
+import { afterEach, beforeEach, test, vi } from "vitest";
 import { isDebugEnabled } from "../../packages/coding-agent/src/core/debug.js";
 import { setDebugSetting } from "../../packages/coding-agent/src/core/debug-setting.js";
 import { type PoolWork, SqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
@@ -20,6 +20,14 @@ import {
 	coordinatorFixture as startCoordinator,
 } from "../helpers/pool-coordinator.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
+import {
+	clockConnections,
+	interceptConnectionRequests,
+	type RequestInterception,
+} from "../helpers/sqlite-connection-requests.js";
+
+/** Requests that read a row on a connection's thread, as `get` or `all` on a statement does on this one. */
+const THREAD_READS: ReadonlySet<string> = new Set(["get", "all", "begin", "dataVersion", "now"]);
 
 const forked = vi.hoisted((): FakeWorker[] => []);
 const sqliteReads = vi.hoisted(() => ({ enabled: false, count: 0 }));
@@ -67,7 +75,20 @@ vi.mock("node:sqlite", async (importOriginal) => {
 	return { ...actual, DatabaseSync: DateClockedDatabase };
 });
 
+// The coordinator's connections run on threads of their own: they read the same clock, and their reads count too.
+let threadClock: RequestInterception | undefined;
+let threadReads: RequestInterception | undefined;
+beforeEach(() => {
+	threadClock = clockConnections(() => Date.now());
+	threadReads = interceptConnectionRequests((request, send) => {
+		if (sqliteReads.enabled && THREAD_READS.has(request.kind)) sqliteReads.count++;
+		return send(request);
+	});
+});
+
 afterEach(() => {
+	threadReads?.restore();
+	threadClock?.restore();
 	vi.useRealTimers();
 	vi.restoreAllMocks();
 	sqliteReads.enabled = false;

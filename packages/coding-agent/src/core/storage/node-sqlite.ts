@@ -1081,14 +1081,17 @@ interface ConnectionChannel {
 }
 
 /**
- * The statements of a connection a caller opened itself and passed to `wrapNodeSqliteDatabase`. A `DatabaseSync`
- * cannot move to another thread, so they run on the caller's, as the caller's own use of it does.
+ * Statements that run on the calling thread: those of a connection a caller opened itself and passed to
+ * `wrapNodeSqliteDatabase` (a `DatabaseSync` cannot move to another thread), and those of an in-memory database, which
+ * never wait for the disk or for a lock (see `openInMemoryDatabase`).
  */
 class CallerThreadChannel implements ConnectionChannel {
 	private readonly connection: DatabaseSync;
+	private readonly ownsConnection: boolean;
 
-	constructor(connection: DatabaseSync) {
+	constructor(connection: DatabaseSync, ownsConnection = false) {
 		this.connection = connection;
+		this.ownsConnection = ownsConnection;
 	}
 
 	request(request: ConnectionRequest): Promise<ConnectionValue> {
@@ -1153,10 +1156,15 @@ class CallerThreadChannel implements ConnectionChannel {
 		}
 	}
 
-	/** The caller closes its own connection; what the adapter prepared on it is released. */
+	/** Closes a connection the adapter opened; a caller closes its own. What the adapter prepared on it is released. */
 	close(): Promise<void> {
-		finalizeReleasedStatements();
-		return Promise.resolve();
+		try {
+			if (this.ownsConnection) this.connection.close();
+			finalizeReleasedStatements();
+			return Promise.resolve();
+		} catch (error) {
+			return Promise.reject(error);
+		}
 	}
 }
 
@@ -1749,6 +1757,8 @@ export async function openNodeSqliteDatabase(
 	const holdMs = groupCommitHold(groupCommitHoldMs);
 	const descriptor = { adapter: "node-sqlite", location: path };
 	const targetFile = sqliteTargetFilePath(path);
+	if (targetFile === undefined)
+		return openInMemoryDatabase(path, descriptor, readOnly, busyTimeoutMs, lockWaitMs, holdMs);
 	let heldOpenLock: HeldOpenLock | undefined;
 	let connection: ThreadConnection | undefined;
 	try {
@@ -1800,6 +1810,51 @@ export async function openNodeSqliteDatabase(
 			await releaseOpenLock(heldOpenLock);
 		}
 		if (cause instanceof StorageAdapterLoadError) throw cause;
+		throw unavailable(descriptor, cause);
+	}
+}
+
+/**
+ * An in-memory database, `:memory:` or a `file:` URI with `mode=memory`, on the calling thread. It has no file: its
+ * statements never wait for the disk, and SQLite's busy handler never waits for it, since no other connection, of any
+ * process, holds a lock on it. Loads node:sqlite on first use: importing it prints Node's experimental warning, which
+ * every importer of the package entry point would otherwise see.
+ */
+async function openInMemoryDatabase(
+	path: string,
+	descriptor: StorageDescriptor,
+	readOnly: boolean,
+	busyTimeoutMs: number,
+	lockWaitMs: number,
+	holdMs: number,
+): Promise<SqliteDatabase> {
+	let Database: typeof DatabaseSync;
+	try {
+		({ DatabaseSync: Database } = await import("node:sqlite"));
+	} catch (cause) {
+		throw new StorageAdapterLoadError("node:sqlite", cause as StorageFailureCause);
+	}
+	let connection: DatabaseSync | undefined;
+	try {
+		connection = new Database(path, { readOnly });
+		const channel = new CallerThreadChannel(connection, true);
+		const exec = async (sql: string) => {
+			await channel.request({ kind: "exec", sql });
+		};
+		await exec(`PRAGMA busy_timeout=${busyTimeoutMs}`);
+		if (!readOnly) {
+			await switchToWriteAheadLog(exec, busyTimeoutMs);
+			await exec("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
+		}
+		const database = new NodeSqliteDatabase(channel, descriptor, connection, lockWaitMs, holdMs);
+		Object.defineProperty(database, "readOnly", { value: readOnly });
+		return database;
+	} catch (cause) {
+		try {
+			connection?.close();
+		} catch {
+			// Preserve the opening failure if cleanup also fails.
+		}
 		throw unavailable(descriptor, cause);
 	}
 }
