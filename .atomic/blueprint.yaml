@@ -34,6 +34,10 @@ knowledge:
       on PATH; if the system provides `fdfind`, expose it as `fd` for that run so those cases do not skip.
       Finish `npm run check` and builds before starting tests: they rewrite package dist files,
       and concurrent imports can read incomplete provider exports.
+      Validate named-worktree permissions with a private default umask:
+      `(umask 0022; npx --no-install vitest --run --project unit test/unit/subagents-named-worktree-locks.test.ts)`.
+      Localized named-worktree recovery fixtures write the translated marker while Git is paused, so they do not
+      require installed locales or a Git build with gettext support.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run
