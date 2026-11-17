@@ -88,12 +88,13 @@ async function childOf(
 	parent: AgentSession,
 	root: string,
 	orchestrationContext?: AgentSession["orchestrationContext"],
+	sessionManager = SessionManager.inMemory(root),
 ) {
 	const executionEnded = new AbortController();
 	const inherited = parent.extensionRunner.createContext().getChildSessionOptions!({ cwd: root });
 	const child = await newSession(root, {
 		...inherited,
-		sessionManager: SessionManager.inMemory(root),
+		sessionManager,
 		settingsManager: SettingsManager.inMemory(),
 		resourceLoader: createTestResourceLoader(),
 		tools: ["bash", "powershell", "kill"],
@@ -186,6 +187,99 @@ function tempRoot(): string {
 	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
 	return root;
 }
+
+test("a resumed child receives a prior run's shell notice without another shell call (#5342)", async () => {
+	const root = tempRoot();
+	const parent = await newSession(root);
+	const manager = SessionManager.inMemory(root);
+	const { child, endExecution } = await childOf(parent, root, undefined, manager);
+	const shell = await startBackground(child, nativeShell);
+	endExecution();
+	await child.closeSessionTasks();
+	child.dispose();
+
+	const { child: resumed } = await childOf(parent, root, undefined, manager);
+	await release(parent, shell);
+
+	await vi.waitFor(() => assert.equal(completionNotices(resumed, shell), 1), { timeout: 10000 });
+	await vi.waitFor(() => assert.ok(acknowledgedBy(parent, shell)), { timeout: 10000 });
+	assert.equal(completionNotices(parent, shell), 0);
+	assert.equal(keptChildNoticeCount(parent.getAgentTaskHost(), manager.getSessionId()), 0);
+});
+
+test("a failed own notice in a mixed batch never repeats the child's notice (#5342)", async () => {
+	const root = tempRoot();
+	const parent = await newSession(root);
+	const { child } = await childOf(parent, root);
+	const own = await startBackground(parent, nativeShell);
+	const shell = await startBackground(child, nativeShell);
+	const manager = parent.sessionManager;
+	const appendEntry = manager.appendCustomEntry.bind(manager);
+	const gate = Promise.withResolvers<void>();
+	const gateHit = Promise.withResolvers<void>();
+	let gated = false;
+	vi.spyOn(manager, "appendCustomEntry").mockImplementation(async (...args) => {
+		if (!gated && args[0] === "task-completion-intent") {
+			gated = true;
+			gateHit.resolve();
+			await gate.promise;
+		}
+		return appendEntry(...args);
+	});
+	cleanups.push(() => gate.resolve());
+	const appendMessage = manager.appendCustomMessageEntry.bind(manager);
+	let failures = 0;
+	vi.spyOn(manager, "appendCustomMessageEntry").mockImplementation(async (...args) => {
+		if (args[0] === TASK_COMPLETION_MESSAGE_TYPE && failures++ === 0)
+			throw new Error("SQLITE_BUSY: database is locked");
+		return appendMessage(...args);
+	});
+
+	await release(parent, own);
+	await gateHit.promise;
+	await release(parent, shell);
+	const internal = parent as unknown as import("../src/core/agent-session-methods.ts").AgentSessionInternalSurface;
+	await vi.waitFor(() => assert.equal(internal._taskCompletionOutbox?.pending.length, 2), { timeout: 10000 });
+	gate.resolve();
+	await vi.waitFor(() => assert.equal(failures, 1), { timeout: 10000 });
+	await vi.waitFor(() => assert.equal(completionNotices(child, shell), 1), { timeout: 10000 });
+	await vi.waitFor(() => assert.ok(acknowledgedBy(parent, shell)), { timeout: 10000 });
+	assert.equal(acknowledgedBy(parent, own), false);
+	await internal._taskCompletionOutbox!.flush();
+	await vi.waitFor(() => assert.ok(acknowledgedBy(parent, own)), { timeout: 10000 });
+	await vi.waitFor(() => assert.ok(acknowledgedBy(parent, shell)), { timeout: 10000 });
+	assert.equal(completionNotices(child, shell), 1);
+	assert.equal(completionNotices(parent, own), 1);
+	assert.equal(completionNotices(parent, shell), 0);
+});
+
+test("reopening a parent counts only notices shown in its own chat (#5342)", async () => {
+	const root = tempRoot();
+	const sessionDir = join(root, "sessions");
+	const manager = await SessionManager.create(root, sessionDir);
+	const parent = await newSession(root, { sessionManager: manager });
+	await parent.sendCustomMessage({ customType: "note", content: "saved", display: true }, { triggerTurn: false });
+	const { child, endExecution } = await childOf(parent, root);
+	const shell = await startBackground(child, nativeShell);
+	endExecution();
+	await child.closeSessionTasks();
+	child.dispose();
+	await parent.closeSessionTasks();
+	parent.dispose();
+	const file = manager.getSessionFile();
+	assert.ok(file);
+
+	for (const round of [1, 2]) {
+		const reopened = await newSession(root, { sessionManager: await SessionManager.open(file, sessionDir) });
+		const recovery = await reopened.startPendingRecovery("resume");
+		assert.equal(recovery.completions, 0, `reopen ${round} did not show the child's notice`);
+		assert.equal(completionNotices(reopened, shell), 0);
+		assert.equal(acknowledgedBy(reopened, shell), false);
+		assert.equal(keptChildNoticeCount(reopened.getAgentTaskHost(), child.sessionId), 1);
+		await reopened.closeSessionTasks();
+		reopened.dispose();
+	}
+});
 
 for (const name of runnableShells) {
 	test(`subagent ${name} background tasks run in the parent's owner, stay out of the parent's /tasks and stay waitable`, async () => {

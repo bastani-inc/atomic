@@ -32,7 +32,11 @@ async function appendDurableDisplayCard(
 	session: AgentSession,
 	message: CustomMessage,
 	delivery: ProtectedDelivery,
-): Promise<{ readonly card: CustomMessage & { excludeFromContext: true }; readonly intentEntryId: string }> {
+): Promise<{
+	readonly card: CustomMessage & { excludeFromContext: true };
+	readonly intentEntryId: string;
+	readonly reused: boolean;
+}> {
 	const card = { ...message, excludeFromContext: true } satisfies CustomMessage & { excludeFromContext: true };
 	const admitted = message as StageAdmittedCustomMessage;
 	// A retry after a failed flush must complete the already-appended occurrence
@@ -63,7 +67,7 @@ async function appendDurableDisplayCard(
 		));
 	session._entryIdsByMessage.set(card, intentEntryId);
 	session._refreshFinalizedContext();
-	return { card, intentEntryId };
+	return { card, intentEntryId, reused: partial !== undefined };
 }
 
 function emitDurableDisplayCard(session: AgentSession, card: CustomMessage): void {
@@ -176,10 +180,27 @@ interface ProtectedAdmission {
 	reconciliations: CustomMessage[];
 }
 
+function hasProtectedReconciliation(session: AgentSession, intentEntryId: string): boolean {
+	return (
+		protectedMessages(session).some(
+			(entry) => completedReconciliationIntent(entry.message.details) === intentEntryId,
+		) ||
+		session.sessionManager
+			.getBranch()
+			.some(
+				(entry) =>
+					entry.type === "custom_message" &&
+					entry.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE &&
+					completedReconciliationIntent(entry.details) === intentEntryId,
+			)
+	);
+}
+
 async function prepareProtectedAdmission(
 	session: AgentSession,
 	messages: CustomMessage[],
 	delivery: ProtectedDelivery,
+	commitBatch?: (admission: ProtectedAdmission) => void,
 ): Promise<ProtectedAdmission> {
 	// While the initiating workflow tool is still executing, its assistant call
 	// may be ahead of SessionManager's async event writer. Wait only in that
@@ -187,17 +208,24 @@ async function prepareProtectedAdmission(
 	// be queued synchronously so agent-core's next native poll observes it.
 	if (session.agent.state.pendingToolCalls.size > 0) await session._agentEventQueue;
 	const owner = resolveWorkflowStageDeliveryTarget(session);
-	const prepared = [];
-	for (const message of messages) {
-		const { card, intentEntryId } = await appendDurableDisplayCard(owner, message, delivery);
-		prepared.push({ card, reconciliation: createProtectedReconciliation(message, intentEntryId) });
+	const cards: CustomMessage[] = [];
+	const reconciliations: CustomMessage[] = [];
+	try {
+		for (const message of messages) {
+			const { card, intentEntryId, reused } = await appendDurableDisplayCard(owner, message, delivery);
+			if (commitBatch !== undefined && reused && hasProtectedReconciliation(owner, intentEntryId)) continue;
+			cards.push(card);
+			reconciliations.push(createProtectedReconciliation(message, intentEntryId));
+		}
+		return { owner, cards, reconciliations };
+	} finally {
+		if (reconciliations.length > 0) {
+			protectedMessages(owner).push(
+				...reconciliations.map((message) => ({ message, delivery, phase: "queued" as const })),
+			);
+			commitBatch?.({ owner, cards, reconciliations });
+		}
 	}
-	const cards = prepared.map((entry) => entry.card);
-	const reconciliations = prepared.map((entry) => entry.reconciliation);
-	protectedMessages(owner).push(
-		...reconciliations.map((message) => ({ message, delivery, phase: "queued" as const })),
-	);
-	return { owner, cards, reconciliations };
 }
 
 function emitProtectedAdmission(admission: ProtectedAdmission): AgentSession {
@@ -237,12 +265,15 @@ export async function queueProtectedStreamingCustomMessages(
 	session: AgentSession,
 	messages: CustomMessage[],
 	delivery: ProtectedDelivery,
+	onQueued?: () => void,
 ): Promise<void> {
-	const admission = await prepareProtectedAdmission(session, messages, delivery);
-	for (const reconciliation of admission.reconciliations) {
-		admission.owner._queueAgentMessage(reconciliation, delivery);
-	}
-	emitProtectedAdmission(admission);
+	await prepareProtectedAdmission(session, messages, delivery, (admission) => {
+		for (const reconciliation of admission.reconciliations) {
+			admission.owner._queueAgentMessage(reconciliation, delivery);
+		}
+		emitProtectedAdmission(admission);
+		onQueued?.();
+	});
 }
 
 /** Start or queue an idle protected batch before exposing its display cards. */
@@ -251,17 +282,18 @@ export async function triggerProtectedStreamingCustomMessages(
 	messages: CustomMessage[],
 	delivery: ProtectedDelivery,
 ): Promise<void> {
-	const admission = await prepareProtectedAdmission(session, messages, delivery);
-	for (const reconciliation of admission.reconciliations) {
-		admission.owner._queueAgentMessage(reconciliation, delivery);
-	}
-	const owner = emitProtectedAdmission(admission);
-	if (owner.isStreaming || owner._isPreparingRun || owner._queuedMessagesPaused) return;
-	for (const reconciliation of admission.reconciliations) {
-		removeQueuedProtectedReference(owner, reconciliation);
-	}
-	const turn = owner._runAgentPrompt(admission.reconciliations);
-	void turn.catch(() => {});
+	await prepareProtectedAdmission(session, messages, delivery, (admission) => {
+		for (const reconciliation of admission.reconciliations) {
+			admission.owner._queueAgentMessage(reconciliation, delivery);
+		}
+		const owner = emitProtectedAdmission(admission);
+		if (owner.isStreaming || owner._isPreparingRun || owner._queuedMessagesPaused) return;
+		for (const reconciliation of admission.reconciliations) {
+			removeQueuedProtectedReference(owner, reconciliation);
+		}
+		const turn = owner._runAgentPrompt(admission.reconciliations);
+		void turn.catch(() => {});
+	});
 }
 
 /** Record that agent-core drained and consumed the hidden reconciliation. */

@@ -258,12 +258,14 @@ export async function commitAdmittedCustomMessages<T>(
 	) {
 		if (options?.triggerTurn === true) {
 			if (useProtectedReconciliation) {
-				await queueProtectedStreamingCustomMessages(self, appMessages, delivery);
-				startTurnIfPauseReleasedDuringAdmission(self, appMessages[0]!);
+				await queueProtectedStreamingCustomMessages(self, appMessages, delivery, () => {
+					startTurnIfPauseReleasedDuringAdmission(self, appMessages[0]!);
+					startTurnAfterInterrupt(self, appMessages[0]!);
+				});
 			} else {
 				for (const item of appMessages) self._queueAgentMessage(item, delivery);
+				startTurnAfterInterrupt(self, appMessages[0]!);
 			}
-			startTurnAfterInterrupt(self, appMessages[0]!);
 		} else if (self.isStreaming || self._isPreparingRun) {
 			self._pendingCustomMessages.push(...appMessages);
 		} else {
@@ -279,8 +281,9 @@ export async function commitAdmittedCustomMessages<T>(
 	} else if ((self.isStreaming || self._isPreparingRun) && options?.triggerTurn === false) {
 		self._pendingCustomMessages.push(...appMessages);
 	} else if ((self.isStreaming || self._isPreparingRun) && useProtectedReconciliation) {
-		await queueProtectedStreamingCustomMessages(self, appMessages, delivery);
-		if (!self.isStreaming) deliverQueuedInputIfIdle(self);
+		await queueProtectedStreamingCustomMessages(self, appMessages, delivery, () => {
+			if (!self.isStreaming) deliverQueuedInputIfIdle(self);
+		});
 	} else if ((self.isStreaming || self._isPreparingRun) && options?.persistWhenStreaming === true) {
 		for (const item of appMessages) await self._appendCustomMessage(item);
 	} else if ((self.isStreaming || self._isPreparingRun) && options?.triggerTurn !== false) {
