@@ -1,4 +1,4 @@
-import { reportDebug, sliceHead } from "@bastani/atomic";
+import { NoticeLine, type NoticeLineSpec, reportDebug, sliceHead } from "@bastani/atomic";
 import type { BudgetDimension, BudgetReport } from "../shared/budget.js";
 import {
 	actionableReturnedStatusText,
@@ -359,10 +359,10 @@ export function registerLifecycleNoticeRenderer(
 	const host = options.rendererHost ?? register;
 	if (rendererRegisteredHosts.has(host)) return;
 
-	const renderer: RawRenderer = (raw, _options, piTheme) => {
+	const renderer: RawRenderer = (raw, options, piTheme) => {
 		const message = raw as { details?: WorkflowLifecycleNoticeDetails };
 		if (!message.details) return undefined;
-		return makeNoticeComponent(message.details, themeFromRenderer(piTheme));
+		return makeNoticeComponent(message.details, themeFromRenderer(piTheme), options?.expanded === true);
 	};
 
 	register(LIFECYCLE_NOTICE_CUSTOM_TYPE, renderer);
@@ -693,18 +693,77 @@ function formatLifecycleOutputs(outputs: WorkflowOutputValues | undefined): stri
 function makeNoticeComponent(
 	details: WorkflowLifecycleNoticeDetails,
 	theme: GraphTheme | undefined,
+	expanded: boolean,
 ): PiMessageRenderComponent {
 	const text = formatWorkflowLifecycleNoticeText(details);
+	const line = new NoticeLine(lifecycleNoticeLine(details));
 	return {
 		render(width: number): string[] {
+			const head = line.render(width);
+			if (!expanded) return head;
 			// Width < 32 cannot carry rounded card chrome without exceeding the
 			// terminal, so the card helper falls back to wrapped plain text there.
-			return renderLifecycleNoticeCard(details, { width, theme, fallbackText: text });
+			return [...head, ...renderLifecycleNoticeCard(details, { width, theme, fallbackText: text })];
 		},
 		invalidate() {
 			/* stored lifecycle notices are immutable */
 		},
 	};
+}
+
+/** The notice as the one line every finished task, agent and run reports with; ctrl+o adds its card under it. */
+export function lifecycleNoticeLine(details: WorkflowLifecycleNoticeDetails): NoticeLineSpec {
+	const stage = details.stageName ?? details.failedStageId ?? details.stageId;
+	const at = stage === undefined ? undefined : `at ${stage}`;
+	const duration = formatDurationMs(details.durationMs);
+	const base = { label: details.scope === "stage" ? "Stage of workflow" : "Workflow", subject: details.workflowName };
+	switch (details.kind) {
+		case "started":
+			return { ...base, status: "success", outcome: "started" };
+		case "resumed":
+			return { ...base, status: "success", outcome: "resumed", ...(at === undefined ? {} : { meta: [at] }) };
+		case "failed": {
+			const tool = stage === undefined ? lifecycleToolOrigin(details) : undefined;
+			const where = at ?? (tool === undefined ? undefined : `at tool ${tool}`);
+			return {
+				...base,
+				status: "failure",
+				outcome: "failed",
+				meta: [where, duration].filter((fact): fact is string => fact !== undefined),
+			};
+		}
+		case "blocked":
+			return {
+				...base,
+				status: "warning",
+				outcome:
+					details.budgetExceeded === true
+						? "stopped at its budget limit"
+						: details.active === true
+							? "is blocked"
+							: "ended blocked",
+				...(at === undefined ? {} : { meta: [at] }),
+			};
+		case "budget_warning":
+			return {
+				...base,
+				status: "warning",
+				outcome: `is approaching its ${details.budgetDimension ?? "duration"} budget`,
+			};
+		case "awaiting_input":
+			return { ...base, status: "warning", outcome: "needs input", ...(at === undefined ? {} : { meta: [at] }) };
+		case "paused":
+			return { ...base, status: "paused", outcome: "paused", ...(at === undefined ? {} : { meta: [at] }) };
+		case "quit":
+			return { ...base, status: "stopped", outcome: "quit", ...(at === undefined ? {} : { meta: [at] }) };
+		default:
+			return {
+				...base,
+				status: "success",
+				outcome: "completed",
+				...(duration === undefined ? {} : { meta: [duration] }),
+			};
+	}
 }
 
 function renderLifecycleNoticeCard(

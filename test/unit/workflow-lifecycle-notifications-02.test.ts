@@ -1,8 +1,10 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
 import { visibleWidth } from "@bastani/atomic-tui";
-import { describe, test } from "vitest";
+import { beforeAll, describe, test } from "vitest";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import {
 	createWorkflowLifecycleNotificationState,
 	formatWorkflowLifecycleNoticeText,
@@ -30,7 +32,7 @@ interface CardComponent {
 
 interface RegisteredRenderer {
 	readonly event: string;
-	readonly renderer: (payload: unknown) => unknown;
+	readonly renderer: (payload: unknown, options?: { expanded: boolean }) => unknown;
 }
 
 type SendOptions = {
@@ -100,6 +102,10 @@ function _installWithState(
 function startRun(store: ReturnType<typeof createStore>, id: string, name = id): void {
 	store.recordRunStart({ id, name, inputs: {}, status: "running", toolNodes: [], stages: [], startedAt: 1 });
 }
+
+beforeAll(() => {
+	initTheme("dark");
+});
 
 describe("installWorkflowLifecycleNotifications", () => {
 	test("emits one failure notice with tool origin and no fabricated stage id", () => {
@@ -461,13 +467,13 @@ describe("installWorkflowLifecycleNotifications", () => {
 		registerLifecycleNoticeRenderer({
 			rendererHost: host,
 			registerMessageRenderer(event, renderer) {
-				registered.push({ event, renderer: renderer as (payload: unknown) => unknown });
+				registered.push({ event, renderer: renderer as RegisteredRenderer["renderer"] });
 			},
 		});
 		registerLifecycleNoticeRenderer({
 			rendererHost: host,
 			registerMessageRenderer(event, renderer) {
-				registered.push({ event, renderer: renderer as (payload: unknown) => unknown });
+				registered.push({ event, renderer: renderer as RegisteredRenderer["renderer"] });
 			},
 		});
 
@@ -486,8 +492,27 @@ describe("installWorkflowLifecycleNotifications", () => {
 
 		assert.equal(typeof rendered, "object");
 		assert.notEqual(rendered, null);
-		const lines = (rendered as CardComponent).render(80);
+		assert.deepEqual(
+			(rendered as CardComponent).render(80).map((line) => stripVTControlCharacters(line)),
+			['● Workflow "cards" completed'],
+			"collapsed, the notice is the one notice line every finished task uses (#5224)",
+		);
+		const expanded = registered[0]?.renderer(
+			{
+				details: {
+					kind: "completed",
+					scope: "run",
+					runId: "run-card",
+					workflowName: "cards",
+					status: "completed",
+					createdAt: 1,
+				} satisfies WorkflowLifecycleNoticeDetails,
+			},
+			{ expanded: true },
+		);
+		const lines = (expanded as CardComponent).render(80);
 		const text = lines.join("\n");
+		assert.match(stripVTControlCharacters(lines[0]!), /^● Workflow "cards" completed$/);
 		assert.match(text, /╭ WORKFLOW COMPLETE/);
 		assert.match(text, /✓ Workflow "cards" completed/);
 		assert.match(text, /workflow\s+cards/);
@@ -500,7 +525,7 @@ describe("installWorkflowLifecycleNotifications", () => {
 		registerLifecycleNoticeRenderer({
 			rendererHost: {},
 			registerMessageRenderer(event, renderer) {
-				registered.push({ event, renderer: renderer as (payload: unknown) => unknown });
+				registered.push({ event, renderer: renderer as RegisteredRenderer["renderer"] });
 			},
 		});
 
@@ -512,7 +537,13 @@ describe("installWorkflowLifecycleNotifications", () => {
 			status: "completed",
 			createdAt: 1,
 		};
-		const component = registered[0]?.renderer({ details }) as CardComponent;
+		const component = registered[0]?.renderer({ details }, { expanded: true }) as CardComponent;
+		const collapsed = registered[0]?.renderer({ details }) as CardComponent;
+		for (const width of [120, 80, 40, 24]) {
+			const lines = collapsed.render(width);
+			assert.equal(lines.length, 1);
+			assert.ok(visibleWidth(lines[0]!) <= width);
+		}
 
 		// Sanity: the single-line form really does overflow a normal terminal —
 		// this is the line that crashed pi-tui ("Rendered line N exceeds terminal width").
@@ -574,13 +605,13 @@ describe("installWorkflowLifecycleNotifications", () => {
 		registerLifecycleNoticeRenderer({
 			rendererHost: {},
 			registerMessageRenderer(event, renderer) {
-				registered.push({ event, renderer: renderer as (payload: unknown) => unknown });
+				registered.push({ event, renderer: renderer as RegisteredRenderer["renderer"] });
 			},
 		});
 		const render = (details: WorkflowLifecycleNoticeDetails, width: number): string[] => {
 			const renderer = registered[0]?.renderer;
 			assert.ok(renderer);
-			return (renderer({ details }) as CardComponent).render(width);
+			return (renderer({ details }, { expanded: true }) as CardComponent).render(width);
 		};
 		const base: WorkflowLifecycleNoticeDetails = {
 			kind: "failed",
@@ -612,7 +643,7 @@ describe("installWorkflowLifecycleNotifications", () => {
 		registerLifecycleNoticeRenderer({
 			rendererHost: {},
 			registerMessageRenderer(event, renderer) {
-				registered.push({ event, renderer: renderer as (payload: unknown) => unknown });
+				registered.push({ event, renderer: renderer as RegisteredRenderer["renderer"] });
 			},
 		});
 		const renderer = registered[0]?.renderer;
@@ -626,9 +657,14 @@ describe("installWorkflowLifecycleNotifications", () => {
 			createdAt: 1,
 			error: "🏻 \u0301\u093f😀 Ａ",
 		};
-		const lines = (renderer({ details }) as CardComponent).render(9);
-		for (const line of lines) {
-			assert.ok(visibleWidth(line) <= 9, `line exceeds width 9: ${JSON.stringify(line)} (w=${visibleWidth(line)})`);
+		for (const expanded of [false, true]) {
+			const lines = (renderer({ details }, { expanded }) as CardComponent).render(9);
+			for (const line of lines) {
+				assert.ok(
+					visibleWidth(line) <= 9,
+					`line exceeds width 9: ${JSON.stringify(line)} (w=${visibleWidth(line)})`,
+				);
+			}
 		}
 	});
 });

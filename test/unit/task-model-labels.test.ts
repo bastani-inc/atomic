@@ -80,12 +80,12 @@ for (const background of [false, true]) {
 						state: {},
 						invalidate() {},
 					});
-					for (const component of [
-						row,
-						receipt,
-						new TaskDetail(task, { stdinAvailable: false }),
-						new TaskCompletionMessage(restored, expanded),
-					]) {
+					// A finished agent's notice names no model (#5224); its row, receipt and detail do.
+					assert.doesNotMatch(
+						stripVTControlCharacters(new TaskCompletionMessage(restored, expanded).render(100).join("\n")),
+						/provider\//,
+					);
+					for (const component of [row, receipt, new TaskDetail(task, { stdinAvailable: false })]) {
 						const text = stripVTControlCharacters(component.render(100).join("\n"));
 						assert.match(text, /provider\/fallback/);
 						assert.match(text, /provider\/fallback {2}off/);

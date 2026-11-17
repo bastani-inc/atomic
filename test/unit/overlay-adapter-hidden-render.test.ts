@@ -99,8 +99,10 @@ async function registerIsolatedTests(): Promise<void> {
 		adapter: GraphOverlayPort;
 		store: Store;
 		handle: PiOverlayHandle;
-		renderRequests: { count: number };
+		renderRequests: { count: number; onRender?: () => void };
 	}
+
+	const STORE_FRAME_POLL_MS = 16;
 
 	function makeRun(id: string): RunSnapshot {
 		return {
@@ -115,7 +117,7 @@ async function registerIsolatedTests(): Promise<void> {
 	}
 
 	function buildHarness(): Harness {
-		const renderRequests = { count: 0 };
+		const renderRequests: Harness["renderRequests"] = { count: 0 };
 		let hidden = false;
 		let focused = true;
 		const handle: PiOverlayHandle = {
@@ -142,6 +144,7 @@ async function registerIsolatedTests(): Promise<void> {
 					const tui: PiCustomOverlayFactoryTui = {
 						requestRender: () => {
 							renderRequests.count++;
+							renderRequests.onRender?.();
 						},
 						terminal: { rows: 24, columns: 80 },
 					};
@@ -173,6 +176,9 @@ async function registerIsolatedTests(): Promise<void> {
 				spyOn(store, "snapshot"),
 				spyOn(store, "inspectionSnapshot"),
 			];
+			const readsAtFrames: number[] = [];
+			renderRequests.onRender = () =>
+				readsAtFrames.push(snapshotSpies.reduce((reads, snapshotSpy) => reads + snapshotSpy.mock.calls.length, 0));
 			try {
 				const before = renderRequests.count;
 				for (let update = 0; update < 50; update++) store.recordRunStart(makeRun(`r${update}`));
@@ -180,11 +186,9 @@ async function registerIsolatedTests(): Promise<void> {
 					assert.equal(snapshotSpy.mock.calls.length, 0, "focused burst performs zero snapshot reads");
 				}
 				assert.equal(renderRequests.count, before, "status events schedule a frame without painting inline");
-				await sleep(32);
-				for (const snapshotSpy of snapshotSpies) {
-					assert.equal(snapshotSpy.mock.calls.length, 0, "coalesced frame performs zero snapshot reads");
-				}
-				assert.equal(renderRequests.count - before, 1, "one frame paints the entire burst");
+				while (readsAtFrames.length === 0) await sleep(STORE_FRAME_POLL_MS);
+				await sleep(2 * STORE_FRAME_POLL_MS);
+				assert.deepEqual(readsAtFrames, [0], "one frame paints the entire burst, with zero snapshot reads");
 			} finally {
 				for (const snapshotSpy of snapshotSpies) snapshotSpy.mockRestore();
 				adapter.close();

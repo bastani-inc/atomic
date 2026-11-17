@@ -144,15 +144,21 @@ Foreground subagent launches and explicit `action: "wait"` calls also yield when
 
 ### Completion messages
 
-Completion creates a shaded notification card in the owning chat without depending on a model reply. It uses the chat theme's card background and padding, with a colored outcome, the agent or shell name, and an available result preview:
+Completion adds one notice line to the owning chat without depending on a model reply. Its marker and colour give the outcome: `●` completed, `✗` failed, `◼` stopped, `!` timed out, `⏸` paused or waiting. The line names the task, says how it ended and how long it ran. An agent's line is followed by the first line of its result:
 
 ```text
-✓ Subagent codebase-analyzer completed: Trace the authentication flow.
-⎿ Authentication starts in …
-(ctrl+o for the full result) · /tasks to inspect
+● Background command "npm run build" completed (exit code 0) · 3m 2s
+◼ Task "Sleep 300 seconds in background" was stopped by the user
+● Agent "Trace the authentication flow" finished · 1h 31m
+  ⎿  Authentication starts in …
+     (ctrl+o for the full result)
 ```
 
+The main chat, a workflow stage's chat and a subagent's view show the same line.
+
 The parent model also receives the result context. Delivery retries do not relaunch the child. Workflow completions stay in their owning stage chat, not the main conversation.
+
+A notice goes only to the session that launched the task: the main chat, a workflow stage, or a subagent. It never goes to another session. Tasks that finish together reach the model in one request, which starts one turn in an idle chat. A notice that arrives while the chat is working is read at that turn's next safe point and starts no turn of its own. A chat waiting for your next message after an interrupt keeps the notice until you send one. A notice restored after a restart joins the transcript without starting a turn.
 
 Supervisor progress messages are labelled **Historical supervisor update** with their original `Sent:` timestamp. They describe the child's state when sent, not its current status, and can arrive after completion. Prefer a later correction or final result over an earlier progress hypothesis; use `/tasks` for the current task state.
 
@@ -164,7 +170,7 @@ Repeated stop requests or late child results do not duplicate the notice or over
 
 Restored completions may have only an outcome and task identity if the original live task or transcript is unavailable. Atomic does not invent missing output. Excerpts are bounded; inspect retained history for more detail.
 
-A collapsed subagent notice shows the first wrapped line of its result; a shell notice shows the last three wrapped lines of retained output. Use the expand-tools key, normally Ctrl+O, for more of the retained preview, or `/tasks` to inspect. Missing model metadata does not change a subagent notice's layout.
+A collapsed subagent notice shows the first wrapped line of its result; a shell notice shows only its line. Use the expand-tools key, normally Ctrl+O, for the shell's last output lines or the agent's full retained result, or `/tasks` to inspect.
 
 Long titles and previews are truncated or wrapped within the card width. Its background covers the ellipsis, expand hint, and trailing padding on every row.
 
@@ -206,7 +212,7 @@ For a shell, the status gives its output size, when it last wrote output, and up
 - Tasks that come due within about a minute of each other share one heartbeat. One heartbeat describes up to eight tasks in full and lists the rest by name.
 - A chat has at most one unread heartbeat. While it waits behind a long response or paused messages, later intervals are not stacked: the tasks that came due are reported together once it has been read, and missed intervals are not replayed.
 - A heartbeat queues behind the current response, like a steering message, and never interrupts streaming text. In an idle chat it starts a turn at once, including right after you interrupt with Esc. That turn sends only the heartbeat, along with any incoming messages the interrupt held; your interrupted response is not resumed. If you queued a message and interrupted with Ctrl+C, the heartbeat waits for you instead, so your text is never sent without you. Intercom messages and finished-task notices do not start a turn after an interrupt; they wait for your next message. Set [`tasks.heartbeatWakesIdleSession`](/settings#tasks) to `false` to keep heartbeats waiting too. Like other incoming messages, it releases a subagent launch or a `wait` action that is observing a task in the foreground; the task keeps running.
-- Heartbeats go to the chat that owns the task: main chat, or the workflow stage's chat, including stages that run on [local worker pools](/settings#local-worker-pools). Shells a subagent starts belong to its parent, so their heartbeats go to the parent.
+- Heartbeats go to the chat that owns the task: main chat, or the workflow stage's chat, including stages that run on [local worker pools](/settings#local-worker-pools). Shells a subagent starts run in its parent's task owner, so their heartbeats go to the parent.
 - A shell's execution `timeout` (300 seconds by default) still ends it. A shell heartbeats only while it runs longer than its cadence.
 
 ### Choose the cadence
@@ -333,14 +339,14 @@ Native Windows refuses owned shell launches it cannot supervise. Legacy Windows 
 
 ### Shells started by subagents
 
-Subagents can run background `bash` and `powershell` commands too. Their shell tasks belong to the parent that launched the subagent: in main chat they appear under **Shells** in the main chat's `/tasks`, and in a workflow the subagent's shells appear in the current stage's `/tasks`. The subagent itself still cannot launch other subagents.
+Subagents can run background `bash` and `powershell` commands too. A subagent's shells run in the task owner of the session that launched it, the main chat's or the current workflow stage's, so they outlive the subagent. They belong to the subagent, though: only the subagent's own `/tasks` lists them, never the parent's, and only the subagent receives their notices. The subagent itself still cannot launch other subagents.
 
 - The subagent can wait on and `kill` the shells it launched, but not the parent's own tasks or another subagent's.
-- The parent can inspect, wait on, and stop those shells from its own `/tasks`, `bash({ action: "wait", id })`, or `kill({ id })`.
-- `/tasks` typed in the subagent's own transcript lists the shells it launched while it ran.
-- While the subagent is still running, a background shell's completion notice goes to the subagent. After the subagent finishes, the notice goes to the parent.
+- The parent can still wait on or stop one of those shells by its task ID, with `bash({ action: "wait", id })` or `kill({ id })`, and Ctrl+X Ctrl+K stops them along with everything else.
+- `/tasks` typed in the subagent's own transcript lists the shells it launched.
+- A shell's completion notice goes only to the subagent that started it. While the subagent runs, it reads the notice in its current turn, and shells that finish together share one message. A released subagent is woken by it. A subagent that has finished, or was paused, quit or stopped, keeps the notice until it next runs, for example when you resume it or send it a message. The notice is never sent to the parent's chat or the workflow stage instead.
 - Shells keep running after the subagent finishes. They stop when the parent's session or workflow stage closes, or when a workflow stage pauses.
-- In a workflow, a subagent keeps its shells for as long as it runs, even when the stage that launched it is released while it waits (see [Suspended stages](/workflows/operations#suspended-stages)) or its session is replaced. The subagent can still wait on, stop, and start shells, and their completion notices still reach it while the stage is released. A subagent that was itself released while it waited is woken by its stage's session, so its shells' completion notices wait in its saved conversation until that session is back.
+- In a workflow, a subagent keeps its shells for as long as it runs, even when the stage that launched it is released while it waits (see [Suspended stages](/workflows/operations#suspended-stages)) or its session is replaced. The subagent can still wait on, stop, and start shells, and their completion notices still reach it while the stage is released. A subagent that was itself released while it waited is woken by its stage's session, so its shells' completion notices wait in its saved conversation until that session is back. A subagent's shell notice is never handed to the stage's own chat.
 - A shell that ends early says why. Its wait result and completion notice name the stop: `timed out after <n> seconds`, `stopped by a pause`, `workflow stage closed`, `session closed`, or `Atomic shut down`.
 - A shell that its session's close stops gets its completion notice the next time that session is opened, once. When Atomic restarts while a workflow stage is released (see [Suspended stages](/workflows/operations#suspended-stages)), each shell the stage was running when it was released and whose notice it had not yet received is reported to the resumed stage, once, as `interrupted by a restart`: the shell no longer runs and its output was not kept.
 
