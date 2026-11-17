@@ -251,6 +251,11 @@ class OsStdin extends Readable {
 		this.deliverWhenRead();
 	}
 
+	/** The bytes typed that no read has handed over yet, as the OS reports them. */
+	pending(): number {
+		return this.typed.reduce((total, chunk) => total + chunk.length, 0);
+	}
+
 	override _read(): void {
 		this.wanted = true;
 		this.deliverWhenRead();
@@ -303,6 +308,19 @@ describe("early startup input held for a startup dialog (#5241)", () => {
 	it("captures input whose read completes just after a dialog starts", async () => {
 		const stdin = new OsStdin(PROMPT_READ_MS);
 		const capture = startEarlyInputCapture({ enabled: true, stdin, process: new FakeProcess() });
+		stdin.type("hello");
+		const snapshot = await withEarlyInputHeldForStartupDialog(async () => consumeStartupInput(capture));
+		expect(snapshot).toEqual({ text: "hello", submissions: [], heldForStartupDecision: true });
+	});
+
+	it("captures input the OS already holds when a dialog starts, however long its read takes on a busy machine (#5241)", async () => {
+		const stdin = new OsStdin(SLOW_READ_MS);
+		const capture = startEarlyInputCapture({
+			enabled: true,
+			stdin,
+			process: new FakeProcess(),
+			pendingInput: () => stdin.pending(),
+		});
 		stdin.type("hello");
 		const snapshot = await withEarlyInputHeldForStartupDialog(async () => consumeStartupInput(capture));
 		expect(snapshot).toEqual({ text: "hello", submissions: [], heldForStartupDecision: true });

@@ -1,4 +1,5 @@
 import { recordTimeSinceReset } from "./core/timings.ts";
+import { createModuleRequire } from "./utils/module-require.ts";
 
 export interface EarlyInputState {
 	text: string;
@@ -20,13 +21,59 @@ interface ActiveEarlyInputCapture {
 	pause(): boolean;
 	resume(): void;
 	keepDraft(text: string): void;
+	readonly pendingInput?: PendingInput;
 }
 
+/** How much input the OS holds unread for the capture's stdin, or null where it cannot tell. */
+export type PendingInput = () => number | null;
+
 /**
- * How long a startup dialog waits for input already typed to arrive before it takes stdin: long enough for the event
- * loop to poll stdin and for a Windows read thread to hand over what it read, short enough not to be seen.
+ * Where the OS cannot say how much input it holds, how long a startup dialog waits for input already typed to arrive
+ * before it takes stdin: long enough for the event loop to poll stdin and for a Windows read thread to hand over what
+ * it read, short enough not to be seen.
  */
 const STARTUP_DIALOG_INPUT_GRACE_MS = 25;
+/**
+ * The longest a startup dialog waits for input the OS already holds to reach the capture, which a busy machine can
+ * delay far past the grace above. Input still unread then goes to the dialog.
+ */
+const STARTUP_DIALOG_INPUT_DRAIN_MAX_MS = 2_000;
+/** How often a startup dialog asks the OS whether that input has been read. */
+const STARTUP_DIALOG_INPUT_DRAIN_POLL_MS = 5;
+
+let nativePendingInput: PendingInput | null | undefined;
+
+/** How much input waits unread on this process's standard input, from the native module; null without it. */
+export function osStdinPendingInput(): number | null {
+	if (nativePendingInput === undefined) {
+		try {
+			const binding = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as {
+				pendingStdinInput?: () => number | null;
+			};
+			const read = binding.pendingStdinInput;
+			nativePendingInput = typeof read === "function" ? () => read() ?? null : null;
+		} catch {
+			nativePendingInput = null;
+		}
+	}
+	return nativePendingInput?.() ?? null;
+}
+
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** Lets the capture receive what was typed before a dialog takes stdin: all the OS holds, when it can say how much. */
+async function receiveInputAlreadyTyped(capture: ActiveEarlyInputCapture): Promise<void> {
+	const pending = capture.pendingInput;
+	if (pending === undefined || pending() === null) {
+		// A timer that is not yet due makes the event loop wait in its I/O poll, so input the terminal or a Windows read
+		// thread already holds reaches the capture. A zero-delay timer and an immediate can both run before that poll.
+		await delay(STARTUP_DIALOG_INPUT_GRACE_MS);
+	} else {
+		const deadline = performance.now() + STARTUP_DIALOG_INPUT_DRAIN_MAX_MS;
+		while ((pending() ?? 0) > 0 && performance.now() < deadline) await delay(STARTUP_DIALOG_INPUT_DRAIN_POLL_MS);
+	}
+	await new Promise<void>((resolve) => setImmediate(resolve));
+}
 
 let activeCapture: ActiveEarlyInputCapture | undefined;
 let startupDialogDrafts: string[] = [];
@@ -46,11 +93,7 @@ export async function withEarlyInputHeldForStartupDialog<T>(
 		if (previous) await previous;
 		if (activeCapture) {
 			activeCapture.resume();
-			// A timer that is not yet due makes the event loop wait in its I/O poll, so input the terminal or a
-			// Windows read thread already holds reaches the capture before the dialog takes stdin. A zero-delay timer
-			// and an immediate can both run before that poll, which lost input under Bun and on loaded runners.
-			await new Promise<void>((resolve) => setTimeout(resolve, STARTUP_DIALOG_INPUT_GRACE_MS));
-			await new Promise<void>((resolve) => setImmediate(resolve));
+			await receiveInputAlreadyTyped(activeCapture);
 		}
 		capture = activeCapture;
 		const hasUnfinishedInput = capture?.pause() ?? startupDialogDrafts.length > 0;
@@ -112,6 +155,8 @@ export interface StartEarlyInputCaptureOptions {
 	enabled: boolean;
 	stdin?: EarlyInputStream;
 	process?: EarlyInputProcess;
+	/** How much input the OS holds unread for `stdin`; for this process's own stdin, the native module tells. */
+	pendingInput?: PendingInput;
 }
 
 const PENDING_ESCAPE_CLEAR_MS = 50;
@@ -228,6 +273,7 @@ export function startEarlyInputCapture(options: StartEarlyInputCaptureOptions): 
 		if (!paused) stdin.setRawMode?.(wasRaw);
 	};
 	const control: ActiveEarlyInputCapture = {
+		pendingInput: options.pendingInput ?? (options.stdin === undefined ? osStdinPendingInput : undefined),
 		pause() {
 			const hasUnfinishedInput = state.text.length > 0 || (draftParts.at(-1)?.length ?? 0) > 0;
 			if (consumed || paused) return hasUnfinishedInput;

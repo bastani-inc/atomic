@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
 	consumeStartupInput,
+	osStdinPendingInput,
 	startEarlyInputCapture,
 	withEarlyInputHeldForStartupDialog,
 } from "../../../packages/coding-agent/src/main-early-input.ts";
@@ -26,6 +27,7 @@ const capture = startEarlyInputCapture({
 		off: (event, listener) => input.off(event, listener),
 		removeListener: (event, listener) => input.removeListener(event, listener),
 	},
+	pendingInput: osStdinPendingInput,
 });
 if (scenario === "after-read") await readFile(process.argv[1] ?? "");
 writeFileSync(join(directory, "capture-ready"), "ready");
