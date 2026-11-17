@@ -7,11 +7,13 @@ import { isNavHelpKey, type NavKey, type NavKeybindings, navActionText, renderNa
 export interface MainComposerKeyState {
 	readonly agentRows?: number;
 	readonly needsInput?: number;
+	/** Running background shells, which /tasks lists. */
+	readonly shells?: number;
 	readonly working: boolean;
 }
 
 export type MainComposerHintSource =
-	| Pick<MainComposerKeyState, "agentRows" | "needsInput">
+	| Pick<MainComposerKeyState, "agentRows" | "needsInput" | "shells">
 	| (AgentPanelSession & object)
 	| (() => AgentPanelCounts);
 
@@ -28,7 +30,7 @@ function resolveAgentCounts(
 	if (typeof source === "function") return source();
 	if (source !== undefined) {
 		if ("agentRows" in source && typeof source.agentRows === "number") {
-			return { total: source.agentRows, needsInput: source.needsInput ?? 0 };
+			return { total: source.agentRows, needsInput: source.needsInput ?? 0, shells: source.shells ?? 0 };
 		}
 		return agentPanelCounts(source as AgentPanelSession & object);
 	}
@@ -66,6 +68,12 @@ export function mainComposerHintSegments(
 	if (agents) {
 		segments.push(agents);
 		if (counts.needsInput > 0) segments.push(`${counts.needsInput} needs input`);
+	}
+	const shells = Math.floor(counts.shells ?? 0);
+	if (Number.isFinite(shells) && shells > 0) {
+		segments.push(`${shells} ${shells === 1 ? "shell" : "shells"}`);
+		// Shells are not panel rows; with no panel to focus, say where they are.
+		if (!agents) segments.push("/tasks to manage");
 	}
 	const help = navActionText(promptKeys, "app.keys.help");
 	if (help) segments.push(`${help} keys`);

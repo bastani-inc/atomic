@@ -81,10 +81,11 @@ test("the engine's agent panel follows the real lazy owner through activity, set
 		await fixture.start("Visible background review");
 		const mounted = currentWidget();
 		assert.ok(mounted);
-		assert.equal(mounted.render(80).length, 1, "one row per task");
+		assert.equal(stripVTControlCharacters(mounted.render(80)[0] ?? "").trimEnd(), "  ● main");
+		assert.equal(mounted.render(80).length, 2, "main, then one row per task");
 		assert.match(
 			stripVTControlCharacters(mounted.render(80).join("\n")),
-			/^ {2}∀ worker {2}Visible background review/,
+			/^ {2}∀ worker {2}Visible background review/m,
 		);
 		fixture.runners[0].context.reportActivity({
 			reportId: "metrics",
@@ -97,7 +98,7 @@ test("the engine's agent panel follows the real lazy owner through activity, set
 		await fixture.settle();
 		await waitForSettledRepaint();
 		assert.equal(currentWidget(), mounted, "a finished task stays a while");
-		assert.match(stripVTControlCharacters(mounted.render(80).join("\n")), /^ {2}✓ worker .* done · 41m$/);
+		assert.match(stripVTControlCharacters(mounted.render(80).join("\n")), /^ {2}✓ worker .* done · 41m$/m);
 		assert.equal(fixture.store.backgroundTasks.length, 1, "history remains available in /tasks");
 		dispose();
 		await fixture.start("Should not mount after disposal");
@@ -153,12 +154,12 @@ test("a final task settlement deferred by the 8ms/50ms refresh budget schedules 
 		assert.equal(settledRenders, 0, "settlement refresh is deferred once the 8ms/50ms budget is spent");
 		assert.match(
 			stripVTControlCharacters(widget.render(80).join("\n")),
-			/^ {2}∀ worker {2}Visible background review/,
+			/^ {2}∀ worker {2}Visible background review/m,
 		);
 		now += PANEL_REFRESH_WINDOW_MS;
 		vi.advanceTimersByTime(PANEL_REFRESH_WINDOW_MS);
 		assert.equal(settledRenders, 1, "deferred refresh calls requestRender when the 50ms budget window expires");
-		assert.match(stripVTControlCharacters(widget.render(80).join("\n")), /^ {2}✓ worker .* done · 41m$/);
+		assert.match(stripVTControlCharacters(widget.render(80).join("\n")), /^ {2}✓ worker .* done · 41m$/m);
 	} finally {
 		dispose();
 		perfSpy.mockRestore();
