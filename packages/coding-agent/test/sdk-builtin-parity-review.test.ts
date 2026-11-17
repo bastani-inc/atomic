@@ -456,7 +456,10 @@ for (const cancel of ["dispose", "id", "settled-peer"] as const) {
 		const first = session.executeBash("first", undefined, { id, operations });
 		const second = session.executeBash("second", undefined, { id, operations });
 		try {
-			await new Promise((resolve) => setTimeout(resolve, 10));
+			// Both commands start once their environment is read.
+			const started = Date.now() + 10_000;
+			while (signals.length < 2 && Date.now() < started) await new Promise((resolve) => setTimeout(resolve, 5));
+			assert.equal(signals.length, 2, "both commands started");
 			if (cancel === "settled-peer") {
 				finish[0]!();
 				await first;
