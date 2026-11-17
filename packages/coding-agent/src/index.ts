@@ -1323,6 +1323,7 @@ export { isPathInside, type PathInsideApi } from "./utils/path-inside.ts";
 export {
 	getPowerShellConfig,
 	getShellConfig,
+	killChildProcessTree,
 	killProcessTree,
 	trackDetachedChildPid,
 	untrackDetachedChildPid,

@@ -9,7 +9,7 @@ import {
 	createChildProcessEnvironment,
 	createGitEnvironment,
 	isPathInside,
-	killProcessTree,
+	killChildProcessTree,
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
 } from "@bastani/atomic";
@@ -172,12 +172,7 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 			child.stdout?.destroy();
 			child.stderr?.destroy();
 			if (!tree?.terminate()) {
-				if (child.pid !== undefined && child.pid !== process.pid && (process.platform !== "win32" || !exited)) {
-					killProcessTree(child.pid);
-				}
-				if (process.platform !== "win32" || child.pid === undefined) {
-					child.kill("SIGKILL");
-				}
+				killChildProcessTree(child, exited);
 			}
 			if (exited || child.pid === undefined) finish(null);
 		};

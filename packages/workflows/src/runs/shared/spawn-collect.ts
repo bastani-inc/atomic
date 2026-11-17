@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import {
 	containProcessTree,
+	killChildProcessTree,
 	killProcessTree,
 	type ProcessTreeContainment,
 	trackDetachedChildPid,
@@ -49,12 +50,7 @@ export function spawnCollect(
 		const startedAt = Date.now();
 		const killTree = () => {
 			if (tree?.terminate()) return;
-			if (child.pid !== undefined && child.pid !== process.pid && (process.platform !== "win32" || !exited)) {
-				killProcessTree(child.pid);
-			}
-			if (process.platform !== "win32" || child.pid === undefined) {
-				child.kill("SIGKILL");
-			}
+			killChildProcessTree(child, exited);
 		};
 		const finish = (status: number | null, signal: NodeJS.Signals | null) => {
 			if (settled) return;

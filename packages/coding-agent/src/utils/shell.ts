@@ -2,7 +2,7 @@ import { accessSync, constants, lstatSync, statSync } from "node:fs";
 import { lstat, stat } from "node:fs/promises";
 import { delimiter, join, win32 } from "node:path";
 import { Worker } from "node:worker_threads";
-import { execFile, spawn, spawnSync } from "child_process";
+import { type ChildProcess, execFile, spawn, spawnSync } from "child_process";
 import { getBinDir } from "../config.js";
 import { createChildProcessEnvironment } from "./child-process.ts";
 import { pathExists as shellPathExistsAsync } from "./path-exists.ts";
@@ -480,30 +480,78 @@ export function killTrackedDetachedChildren(): void {
 }
 
 /**
+ * Stops `child` and its descendants when no Job object contains them; `exited` says whether its exit was reported.
+ * Once it was, the root's pid may already name another process: on POSIX only its process group, which lives on only
+ * while its descendants do, is signalled, and on Windows nothing is killed by pid. While the root runs, its tree is
+ * killed and then the root itself through its handle, which on Windows also ends a root that taskkill could not.
+ */
+export function killChildProcessTree(child: ChildProcess, exited: boolean): void {
+	const pid = child.pid;
+	if (pid === undefined) {
+		child.kill("SIGKILL");
+		return;
+	}
+	if (pid === process.pid) {
+		if (process.platform !== "win32") child.kill("SIGKILL");
+		return;
+	}
+	if (process.platform === "win32") {
+		if (exited) return;
+		taskkillTree(pid, () => {
+			if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+		});
+		return;
+	}
+	if (exited) {
+		try {
+			process.kill(-pid, "SIGKILL");
+		} catch {
+			// No process is left in its group.
+		}
+		return;
+	}
+	killProcessTree(pid);
+	child.kill("SIGKILL");
+}
+
+/** Runs `taskkill /F /T` on `pid`'s tree, then `settled` once taskkill has exited or could not start. */
+function taskkillTree(pid: number, settled?: () => void): void {
+	// Use the trusted System32 executable so cleanup does not depend on PATH.
+	try {
+		const child = spawn(
+			join(process.env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe"),
+			["/F", "/T", "/PID", String(pid)],
+			{
+				stdio: "ignore",
+				detached: true,
+				// `detached` gives the child its own console on Windows unless this is
+				// set, so omitting it both flashes a window and pays for a console
+				// allocation on every tree kill. Every other spawn in the fork sets it.
+				windowsHide: true,
+				env: createChildProcessEnvironment(),
+			},
+		);
+		// A failed spawn emits "error" asynchronously; consume it to avoid crashing Node.
+		let done = false;
+		const finish = () => {
+			if (done) return;
+			done = true;
+			settled?.();
+		};
+		child.once("error", finish);
+		child.once("exit", finish);
+	} catch {
+		// taskkill could not start.
+		settled?.();
+	}
+}
+
+/**
  * Kill a process and all its children (cross-platform)
  */
 export function killProcessTree(pid: number): void {
 	if (process.platform === "win32") {
-		// Use the trusted System32 executable so cleanup does not depend on PATH.
-		try {
-			const child = spawn(
-				join(process.env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe"),
-				["/F", "/T", "/PID", String(pid)],
-				{
-					stdio: "ignore",
-					detached: true,
-					// `detached` gives the child its own console on Windows unless this is
-					// set, so omitting it both flashes a window and pays for a console
-					// allocation on every tree kill. Every other spawn in the fork sets it.
-					windowsHide: true,
-					env: createChildProcessEnvironment(),
-				},
-			);
-			// A failed spawn emits "error" asynchronously; consume it to avoid crashing Node.
-			child.once("error", () => {});
-		} catch {
-			// Ignore errors if taskkill fails.
-		}
+		taskkillTree(pid);
 	} else {
 		if (process.platform === "darwin") {
 			// macOS signals group members individually after releasing the group lock. A killed

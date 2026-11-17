@@ -7,7 +7,7 @@ import {
 	assertPrivateDirectoryAsync,
 	containProcessTree,
 	createChildProcessEnvironment,
-	killProcessTree,
+	killChildProcessTree,
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
 } from "@bastani/atomic";
@@ -146,12 +146,7 @@ function execClone(args: string[], paths: ClonePaths, timeoutMs: number, signal?
 			child.stdout?.destroy();
 			child.stderr?.destroy();
 			if (!tree?.terminate()) {
-				if (child.pid !== undefined && child.pid !== process.pid && (process.platform !== "win32" || !exited)) {
-					killProcessTree(child.pid);
-				}
-				if (process.platform !== "win32" || child.pid === undefined) {
-					child.kill("SIGKILL");
-				}
+				killChildProcessTree(child, exited);
 			}
 			if (exited || child.pid === undefined) finish(true);
 		};

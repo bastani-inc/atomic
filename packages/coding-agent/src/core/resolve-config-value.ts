@@ -8,7 +8,7 @@ import { createChildProcessEnvironment } from "../utils/child-process.ts";
 import {
 	getShellConfig,
 	getShellConfigAsync,
-	killProcessTree,
+	killChildProcessTree,
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
 } from "../utils/shell.ts";
@@ -320,12 +320,7 @@ function runCommand(
 			child.stdin?.destroy();
 			child.stdout?.destroy();
 			if (!tree?.terminate()) {
-				if (child.pid !== undefined && child.pid !== process.pid && (process.platform !== "win32" || !exited)) {
-					killProcessTree(child.pid);
-				}
-				if (process.platform !== "win32" || child.pid === undefined) {
-					child.kill("SIGKILL");
-				}
+				killChildProcessTree(child, exited);
 			}
 			if (exited || child.pid === undefined) finish(null);
 		};
