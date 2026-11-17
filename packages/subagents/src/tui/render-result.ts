@@ -89,8 +89,7 @@ export function renderSubagentResult(
 	if (!d?.results.length && !liveMultiProgress) {
 		const t = result.content[0];
 		const text = t?.type === "text" ? t.text : "(no output)";
-		const contextPrefix = d?.context === "fork" ? `${theme.fg("warning", "[fork]")} ` : "";
-		return new Text(truncLine(`${contextPrefix}${text}`, getTermWidth() - 4), 0, 0);
+		return new Text(truncLine(text, getTermWidth() - 4), 0, 0);
 	}
 
 	const expanded = options.expanded;
@@ -119,7 +118,6 @@ export function renderSubagentResult(
 							: r.status === "ok"
 								? theme.fg("success", "ok")
 								: theme.fg("error", "failed");
-		const contextBadge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
 		const output = r.truncation?.text || getSingleResultOutput(r);
 
 		const progressInfo =
@@ -135,11 +133,7 @@ export function renderSubagentResult(
 		const toolCallLines = getToolCallLines(r, expanded);
 		const c = new Container();
 		c.addChild(
-			new Text(
-				fit(`${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${modelDisplay}${contextBadge}${progressInfo}`),
-				0,
-				0,
-			),
+			new Text(fit(`${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${modelDisplay}${progressInfo}`), 0, 0),
 		);
 		c.addChild(new Spacer(1));
 		// Only an expanded single result gets here, and it shows the whole task.
@@ -265,7 +259,6 @@ export function renderSubagentResult(
 			: "";
 
 	const modeLabel = d.mode;
-	const contextBadge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
 	const multiLabel = buildMultiProgressLabel(d, hasRunning);
 
 	const w = getTermWidth() - 4;
@@ -273,9 +266,7 @@ export function renderSubagentResult(
 	const c = new Container();
 	c.addChild(
 		new Text(
-			fit(
-				`${icon} ${theme.fg("toolTitle", theme.bold(modeLabel))}${contextBadge} · ${multiLabel.headerLabel}${summaryStr}`,
-			),
+			fit(`${icon} ${theme.fg("toolTitle", theme.bold(modeLabel))} · ${multiLabel.headerLabel}${summaryStr}`),
 			0,
 			0,
 		),

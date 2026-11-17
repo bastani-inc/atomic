@@ -1,4 +1,5 @@
 import { describe, test } from "vitest";
+import { WORKING_LINE, WORKING_MESSAGE } from "../helpers/working-line.ts";
 import {
 	type AgentSessionEvent,
 	assert,
@@ -37,7 +38,7 @@ describe("StageChatView", () => {
 		} as unknown as AgentSessionEvent);
 
 		const rendered = stripAnsi(view.render(96).join("\n"));
-		assert.match(rendered, /\$ echo legacy/);
+		assert.match(rendered, /Bash\(echo legacy\)/);
 		assert.doesNotMatch(rendered, /\$ \.\.\./);
 		view.dispose();
 	});
@@ -77,7 +78,7 @@ describe("StageChatView", () => {
 		} as unknown as AgentSessionEvent);
 
 		const rendered = stripAnsi(view.render(96).join("\n"));
-		assert.match(rendered, /\$ echo from-workflow/);
+		assert.match(rendered, /Bash\(echo from-workflow\)/);
 		assert.doesNotMatch(rendered, /\$ \.\.\./);
 		view.dispose();
 	});
@@ -147,7 +148,7 @@ describe("StageChatView", () => {
 			assert.equal(view._hasAnimationTick, true);
 			const rendered = stripAnsi(view.render(96).join("\n"));
 			assert.match(rendered, expected);
-			assert.doesNotMatch(rendered, /Working\.\.\./);
+			assert.doesNotMatch(rendered, WORKING_MESSAGE);
 			assert.equal(rendered.match(/compacting/gi)?.length, 1);
 
 			emit({
@@ -189,7 +190,7 @@ describe("StageChatView", () => {
 			});
 
 			const rendered = stripAnsi(view.render(96).join("\n"));
-			assert.doesNotMatch(rendered, /Working\.\.\./);
+			assert.doesNotMatch(rendered, WORKING_MESSAGE);
 			assert.match(rendered, expected);
 			view.dispose();
 		}
@@ -217,7 +218,7 @@ describe("StageChatView", () => {
 		const rendered = stripAnsi(view.render(96).join("\n"));
 		assert.doesNotMatch(rendered, /summarizing branch…/);
 		assert.doesNotMatch(rendered, /\(esc Cancel\)/);
-		assert.match(rendered, /Working\.\.\./);
+		assert.match(rendered, WORKING_MESSAGE);
 		assert.doesNotMatch(rendered, /Auto-compacting|Compacting context/);
 		view.dispose();
 	});
@@ -242,7 +243,7 @@ describe("StageChatView", () => {
 		});
 
 		const rendered = stripAnsi(view.render(96).join("\n"));
-		assert.match(rendered, /Working\.\.\./);
+		assert.match(rendered, WORKING_MESSAGE);
 		assert.doesNotMatch(rendered, /compacting/i);
 		view.dispose();
 	});
@@ -282,7 +283,7 @@ describe("StageChatView", () => {
 		});
 
 		const beforeAttach = stripAnsi(view.render(96).join("\n"));
-		assert.match(beforeAttach, /Working\.\.\./);
+		assert.match(beforeAttach, WORKING_MESSAGE);
 		assert.doesNotMatch(beforeAttach, /Auto-compacting/);
 		releaseAttach();
 		await flush();
@@ -290,7 +291,7 @@ describe("StageChatView", () => {
 
 		const afterAttach = stripAnsi(view.render(96).join("\n"));
 		assert.match(afterAttach, /Auto-compacting\.\.\./);
-		assert.doesNotMatch(afterAttach, /Working\.\.\./);
+		assert.doesNotMatch(afterAttach, WORKING_MESSAGE);
 		view.dispose();
 	});
 
@@ -336,7 +337,7 @@ describe("StageChatView", () => {
 		await flush();
 
 		const rendered = stripAnsi(view.render(96).join("\n"));
-		assert.match(rendered, /Working\.\.\./);
+		assert.match(rendered, WORKING_MESSAGE);
 		assert.doesNotMatch(rendered, /Auto-compacting|Compacting context/);
 		view.dispose();
 	});
@@ -367,7 +368,8 @@ describe("StageChatView", () => {
 			});
 
 			const rendered = stripAnsi(view.render(96).join("\n"));
-			assert.doesNotMatch(rendered, /Auto-compacting\.\.\.|Working\.\.\./, name);
+			assert.doesNotMatch(rendered, /Auto-compacting\.\.\./, name);
+			assert.doesNotMatch(rendered, WORKING_MESSAGE, name);
 			assert.equal(view._hasAnimationTick, false, name);
 			view.dispose();
 		}
@@ -496,7 +498,7 @@ describe("StageChatView", () => {
 		});
 		const rendered = view.render(64).map(stripAnsi).join("\n");
 		assert.match(rendered, /❯/);
-		assert.match(rendered, /∀ Working\.\.\./);
+		assert.match(rendered, WORKING_LINE);
 		view.dispose();
 	});
 });

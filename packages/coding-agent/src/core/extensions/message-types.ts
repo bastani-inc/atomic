@@ -73,6 +73,7 @@ export type SendMessagesOptions = Omit<
 
 export interface MessageRenderOptions extends KeybindingHints {
 	expanded: boolean;
+	cwd?: string;
 	/** Horizontal padding configured by the outputPad setting. */
 	outputPad: number;
 }

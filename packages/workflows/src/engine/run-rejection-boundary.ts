@@ -64,6 +64,7 @@ type Attribution = Map<ScopeState, RejectionEffect>;
 
 const EVENT = "unhandledRejection";
 const BOUNDARY_KEY = Symbol.for("atomic-workflows/run-rejection-boundary@5");
+const UNHANDLED_REJECTION_OWNER = Symbol.for("atomic.unhandled-rejection-owner");
 const FLAG = "--unhandled-rejections";
 const MAX_CAUSE_DEPTH = 8;
 const MAX_PRIMITIVES_PER_RUN = 64;
@@ -291,9 +292,29 @@ function unhandledRejectionsMode(): string {
 	return mode;
 }
 
-function surfaceNatively(boundary: RejectionBoundary, reason: unknown): void {
+function hasUnhandledRejectionOwner(
+	self: RejectionListener,
+	promise: Promise<unknown> | undefined,
+	reason: unknown,
+): boolean {
+	for (const candidate of process.listeners(EVENT)) {
+		if (candidate === self) continue;
+		const owns = (
+			candidate as {
+				readonly [UNHANDLED_REJECTION_OWNER]?: (
+					rejected: Promise<unknown> | undefined,
+					rejectionReason?: unknown,
+				) => boolean;
+			}
+		)[UNHANDLED_REJECTION_OWNER];
+		if (typeof owns !== "function" || owns(promise, reason)) return true;
+	}
+	return false;
+}
+
+function surfaceNatively(boundary: RejectionBoundary, reason: unknown, promise?: Promise<unknown>): void {
 	const listener = boundary.listener;
-	if (listener === undefined || process.listenerCount(EVENT) > 1) return;
+	if (listener === undefined || hasUnhandledRejectionOwner(listener, promise, reason)) return;
 	if (!NATIVE_REPORTING_MODES.has(unhandledRejectionsMode())) return;
 	process.nextTick(() => {
 		process.removeListener(EVENT, listener);
@@ -308,7 +329,7 @@ function onUnhandledRejection(reason: unknown, promise?: Promise<unknown>): void
 	const boundary = sharedBoundary();
 	const owners = attribute(boundary, reason, promise);
 	if (owners === undefined) {
-		surfaceNatively(boundary, reason);
+		surfaceNatively(boundary, reason, promise);
 		return;
 	}
 	const error = isObject(reason) ? reason : unhandledRejectionError(reason);
@@ -331,6 +352,11 @@ function onUnhandledRejection(reason: unknown, promise?: Promise<unknown>): void
 
 function ensureInstalled(boundary: RejectionBoundary): void {
 	if (boundary.listener !== undefined) return;
+	Reflect.defineProperty(onUnhandledRejection, UNHANDLED_REJECTION_OWNER, {
+		value: (rejected: Promise<unknown> | undefined, reason?: unknown) =>
+			attribute(sharedBoundary(), reason, rejected) !== undefined,
+		configurable: true,
+	});
 	boundary.listener = onUnhandledRejection;
 	process.on(EVENT, onUnhandledRejection);
 }

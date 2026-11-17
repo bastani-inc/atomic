@@ -110,6 +110,9 @@ export interface ExtensionAPI {
 	registerWorkflowActivityPublisher(): WorkflowActivityPublisher;
 	/** Register the implementation behind `session.workflows`; disposed with this extension generation. */
 	registerWorkflowRunControl(control: WorkflowRunControl): WorkflowRunControlRegistration;
+	registerAgentPanelSource(
+		source: import("../tasks/agent-panel-source.ts").AgentPanelSource,
+	): import("../tasks/agent-panel-source.ts").AgentPanelSourceRegistration;
 	on(
 		event: "cache_warming_decision",
 		handler: ExtensionHandler<CacheWarmingDecisionEvent, CacheWarmingDecisionEventResult>,

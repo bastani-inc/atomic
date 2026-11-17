@@ -50,14 +50,10 @@ describe("working line time and tokens (#5224)", () => {
 	});
 
 	test("the meta shows only the time until a token arrives", () => {
-		assert.equal(formatWorkingMeta({ elapsedMs: 3000, outputTokens: 0 }), "3s");
-		assert.equal(
-			formatWorkingMeta({ elapsedMs: 400, outputTokens: 0 }),
-			"",
-			"a run that just started reports nothing",
-		);
-		assert.equal(formatWorkingMeta({ elapsedMs: 0, outputTokens: 0, note: "esc to cancel" }), "0s · esc to cancel");
-		assert.equal(formatWorkingMeta({ elapsedMs: 134_000, outputTokens: 18_400 }), "2m 14s · ↓ 18.4k tokens");
+		assert.equal(formatWorkingMeta({ elapsedMs: 3000, tokens: 0 }), "3s");
+		assert.equal(formatWorkingMeta({ elapsedMs: 400, tokens: 0 }), "", "a run that just started reports nothing");
+		assert.equal(formatWorkingMeta({ elapsedMs: 0, tokens: 0, note: "esc to cancel" }), "0s · esc to cancel");
+		assert.equal(formatWorkingMeta({ elapsedMs: 134_000, tokens: 18_400 }), "2m 14s · ↓ 18.4k tokens");
 	});
 
 	test("the meter counts the run's finished messages by usage and the streaming one by estimate", () => {
@@ -67,14 +63,14 @@ describe("working line time and tokens (#5224)", () => {
 		meter.start();
 		meter.streaming({ role: "assistant", content: [{ type: "text", text: "x".repeat(400) }] });
 		now += 5_000;
-		assert.deepEqual(meter.snapshot(), { elapsedMs: 5_000, outputTokens: 100 });
+		assert.deepEqual(meter.snapshot(), { elapsedMs: 5_000, tokens: 100 });
 		meter.settled({ role: "assistant", usage: { output: 120 }, content: [] });
 		meter.streaming({ role: "assistant", content: [{ type: "thinking", thinking: "y".repeat(80) }] });
-		assert.deepEqual(meter.snapshot(), { elapsedMs: 5_000, outputTokens: 140 });
+		assert.deepEqual(meter.snapshot(), { elapsedMs: 5_000, tokens: 140 });
 		meter.settled({ role: "toolResult", usage: { output: 999 } });
-		assert.equal(meter.snapshot()?.outputTokens, 140);
+		assert.equal(meter.snapshot()?.tokens, 140);
 		meter.start();
-		assert.deepEqual(meter.snapshot(), { elapsedMs: 0, outputTokens: 0 });
+		assert.deepEqual(meter.snapshot(), { elapsedMs: 0, tokens: 0 });
 		meter.stop();
 		assert.equal(meter.snapshot(), undefined);
 	});
@@ -83,7 +79,7 @@ describe("working line time and tokens (#5224)", () => {
 		const meter = new WorkingRunMeter(() => 0);
 		meter.start();
 		meter.streaming({ role: "assistant", usage: { output: 3 }, content: [{ type: "text", text: "x".repeat(800) }] });
-		assert.equal(meter.snapshot()?.outputTokens, 200);
+		assert.equal(meter.snapshot()?.tokens, 200);
 	});
 
 	test("streaming defers argument serialization to painted snapshots, caches argument objects, and refreshes replaced streaming arguments (#5243)", () => {
@@ -104,7 +100,7 @@ describe("working line time and tokens (#5224)", () => {
 			assert.equal(stringifySpy.mock.calls.length, 0);
 
 			const firstSnapshot = meter.snapshot();
-			assert.ok((firstSnapshot?.outputTokens ?? 0) > 200);
+			assert.ok((firstSnapshot?.tokens ?? 0) > 200);
 			assert.equal(stringifySpy.mock.calls.length, 2);
 
 			const initialStreamingArgs = {
@@ -118,7 +114,7 @@ describe("working line time and tokens (#5224)", () => {
 					{ type: "toolCall", id: "call-2", name: "write", arguments: initialStreamingArgs },
 				],
 			});
-			const beforeReplacement = meter.snapshot()?.outputTokens ?? 0;
+			const beforeReplacement = meter.snapshot()?.tokens ?? 0;
 			const callsAfterInitialSnapshot = stringifySpy.mock.calls.length;
 			assert.equal(stringifySpy.mock.calls.filter(([value]) => value === completedArgs).length, 1);
 
@@ -133,7 +129,7 @@ describe("working line time and tokens (#5224)", () => {
 					{ type: "toolCall", id: "call-2", name: "write", arguments: nextStreamingArgs },
 				],
 			});
-			const afterReplacement = meter.snapshot()?.outputTokens ?? 0;
+			const afterReplacement = meter.snapshot()?.tokens ?? 0;
 			assert.ok(afterReplacement > beforeReplacement);
 			assert.ok(stringifySpy.mock.calls.length > callsAfterInitialSnapshot);
 			assert.equal(stringifySpy.mock.calls.filter(([value]) => value === completedArgs).length, 1);
@@ -179,7 +175,7 @@ describe("working line time and tokens (#5224)", () => {
 		try {
 			now = 2_000;
 			const first = meter.snapshot();
-			assert.ok((first?.outputTokens ?? 0) > 400);
+			assert.ok((first?.tokens ?? 0) > 400);
 			const callsAfterFirstSnapshot = stringifySpy.mock.calls.length;
 			assert.equal(callsAfterFirstSnapshot, 2);
 
@@ -188,7 +184,7 @@ describe("working line time and tokens (#5224)", () => {
 			const second = meter.snapshot();
 			assert.deepEqual(second, {
 				elapsedMs: 2_000,
-				outputTokens: first?.outputTokens ?? 0,
+				tokens: first?.tokens ?? 0,
 			});
 			assert.equal(stringifySpy.mock.calls.length, 0);
 		} finally {
@@ -199,7 +195,7 @@ describe("working line time and tokens (#5224)", () => {
 	test("the working line keeps Atomic's ∀ and its message, with the run's time and tokens after it", () => {
 		const line = new AtomicWorkingStatusComponent({
 			message: "Working…",
-			meta: { elapsedMs: 134_000, outputTokens: 18_400 },
+			meta: { elapsedMs: 134_000, tokens: 18_400 },
 		})
 			.render(80)
 			.map(stripTerminalSequences)
@@ -230,7 +226,7 @@ describe("working line time and tokens (#5224)", () => {
 			},
 			workingVisible: true,
 			workingMessage: undefined,
-			defaultWorkingMessage: "Working...",
+			defaultWorkingMessage: "Working…",
 			workingIndicatorOptions: undefined,
 			workingIndicatorEmbedded: false,
 			loadingAnimation: undefined,
@@ -267,7 +263,7 @@ describe("working line time and tokens (#5224)", () => {
 			await InteractiveModeBase.prototype.handleEvent.call(mode, { type: "turn_end" } as never);
 			now = 8_000;
 			await InteractiveModeBase.prototype.handleEvent.call(mode, { type: "turn_start" } as never);
-			assert.match(renderedStatus(), /\(7s · ↓ 120 tokens\)/);
+			assert.match(renderedStatus(), /\(7s · ↑ 120 tokens\)/);
 
 			await InteractiveModeBase.prototype.handleEvent.call(mode, { type: "turn_end" } as never);
 			await InteractiveModeBase.prototype.handleEvent.call(mode, { type: "agent_end", messages: [] } as never);
@@ -275,7 +271,7 @@ describe("working line time and tokens (#5224)", () => {
 
 			now = 20_000;
 			InteractiveModeBase.prototype.showWorkingLoaderNow.call(mode);
-			assert.match(renderedStatus(), /∀ Working\.\.\./);
+			assert.match(renderedStatus(), /∀ Working…/);
 			assert.doesNotMatch(renderedStatus(), /19s|120 tokens/);
 		} finally {
 			mode.stopWorkingLoader();
@@ -329,12 +325,12 @@ describe("working line time and tokens (#5224)", () => {
 			host.applyAgentEvent({ type: "turn_end" } as never);
 			now = 8_000;
 			host.applyAgentEvent({ type: "turn_start" } as never);
-			assert.match(renderedStatus(), /\(7s · ↓ 120 tokens\)/);
+			assert.match(renderedStatus(), /\(7s · ↑ 120 tokens\)/);
 
 			host.applyAgentEvent({ type: "agent_end", messages: [] } as never);
 			now = 20_000;
 			host.beginExternalPromptLifecycle();
-			assert.match(renderedStatus(), /∀ Working\.\.\./);
+			assert.match(renderedStatus(), /∀ Working…/);
 			assert.doesNotMatch(renderedStatus(), /19s|120 tokens/);
 		} finally {
 			host.dispose();
@@ -364,11 +360,11 @@ describe("working run meter estimate cache (#5243)", () => {
 		meter.start();
 		const { message, reads } = countedMessage("x".repeat(400));
 		meter.streaming(message);
-		assert.equal(meter.snapshot()?.outputTokens, 100);
+		assert.equal(meter.snapshot()?.tokens, 100);
 		assert.ok(reads.content > 0, "the first snapshot estimates the streaming message");
 		reads.content = 0;
-		assert.equal(meter.snapshot()?.outputTokens, 100);
-		assert.equal(meter.snapshot()?.outputTokens, 100);
+		assert.equal(meter.snapshot()?.tokens, 100);
+		assert.equal(meter.snapshot()?.tokens, 100);
 		assert.equal(reads.content, 0, "later snapshots reuse the estimate");
 	});
 
@@ -377,11 +373,11 @@ describe("working run meter estimate cache (#5243)", () => {
 		meter.start();
 		const { message, block, reads } = countedMessage("x".repeat(400));
 		meter.streaming(message);
-		assert.equal(meter.snapshot()?.outputTokens, 100);
+		assert.equal(meter.snapshot()?.tokens, 100);
 		block.text = "x".repeat(800);
 		meter.streaming(message);
 		reads.content = 0;
-		assert.equal(meter.snapshot()?.outputTokens, 200);
+		assert.equal(meter.snapshot()?.tokens, 200);
 		assert.ok(reads.content > 0);
 	});
 
@@ -390,10 +386,10 @@ describe("working run meter estimate cache (#5243)", () => {
 		meter.start();
 		const { message, reads } = countedMessage("x".repeat(400));
 		meter.streaming(message);
-		assert.equal(meter.snapshot()?.outputTokens, 100);
+		assert.equal(meter.snapshot()?.tokens, 100);
 		meter.settled({ role: "assistant", usage: { output: 30 }, content: [] });
 		reads.content = 0;
-		assert.equal(meter.snapshot()?.outputTokens, 30);
+		assert.equal(meter.snapshot()?.tokens, 30);
 		assert.equal(reads.content, 0, "a settled run no longer reads the old streaming message");
 	});
 
@@ -402,10 +398,10 @@ describe("working run meter estimate cache (#5243)", () => {
 		meter.start();
 		const { message, reads } = countedMessage("x".repeat(400));
 		meter.streaming(message);
-		assert.equal(meter.snapshot()?.outputTokens, 100);
+		assert.equal(meter.snapshot()?.tokens, 100);
 		meter.start();
 		reads.content = 0;
-		assert.equal(meter.snapshot()?.outputTokens, 0);
+		assert.equal(meter.snapshot()?.tokens, 0);
 		assert.equal(reads.content, 0);
 	});
 
@@ -414,12 +410,12 @@ describe("working run meter estimate cache (#5243)", () => {
 		meter.start();
 		const { message, reads } = countedMessage("x".repeat(400));
 		meter.streaming(message);
-		assert.equal(meter.snapshot()?.outputTokens, 100);
+		assert.equal(meter.snapshot()?.tokens, 100);
 		meter.stop();
 		reads.content = 0;
 		assert.equal(meter.snapshot(), undefined);
 		meter.start();
-		assert.equal(meter.snapshot()?.outputTokens, 0);
+		assert.equal(meter.snapshot()?.tokens, 0);
 		assert.equal(reads.content, 0);
 	});
 });

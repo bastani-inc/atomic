@@ -5,6 +5,8 @@ import { describe, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { CustomEditor } from "../../packages/coding-agent/src/modes/interactive/components/custom-editor.js";
 import {
+	type AttachedComposerStyle,
+	applyAttachedComposer,
 	applyInputLabelToEditorTopRule,
 	buildInputLabel,
 	INPUT_LABEL_MIN_COLUMNS,
@@ -25,6 +27,9 @@ const RULE_COLOR = "\x1b[38;2;1;2;3m";
 const rule = (width: number) => `${RULE_COLOR}${"─".repeat(width)}\x1b[0m`;
 const plain = (line: string | undefined) => stripVTControlCharacters(line ?? "");
 const labels = (lines: readonly string[]) => (plain(lines.join("\n")).match(/\[subagent:/g) ?? []).length;
+
+const LINEAR_NORMALIZATION_BUDGET_MS = 1_500;
+const ADVERSARIAL_REPETITIONS = 80_000;
 
 describe("the shared chat input label (#4640)", () => {
 	test("labels a wide editor's top rule with muted brackets and a bold name, keeping its width and colour (#4640)", () => {
@@ -143,5 +148,68 @@ describe("the shared chat input label (#4640)", () => {
 		assert.equal(plain(stage[0]), plain(shared[0]));
 		assert.equal(plain(stage[0]), `[stage: review-a] ${"─".repeat(62)}`);
 		assert.deepEqual(applyInputLabelToEditorTopRule(style, "subagent", "worker", stage), stage);
+	});
+
+	test("attached composer strips APC cursor markers and scans repeated unclosed APC prefixes in linear time (#5224, #5239)", () => {
+		const composerStyle: AttachedComposerStyle = {
+			accent: (text) => `<accent>${text}</accent>`,
+			text: (text) => `<text>${text}</text>`,
+			dim: (text) => `<dim>${text}</dim>`,
+		};
+		const focusedLine = `❯ \x1b_pi:c\x07\x1b_pi:fc\x07 \x1b_pi:/fc\x07${" ".repeat(76)}\x1b[0m`;
+		const decorated = applyAttachedComposer(composerStyle, "worker · 2m", "Message worker…", [
+			"─".repeat(80),
+			focusedLine,
+			"─".repeat(80),
+		]);
+		assert.equal(decorated[1], "❯ \x1b_pi:c\x07\x1b_pi:fc\x07 \x1b_pi:/fc\x07\x1b[0m<dim>Message worker…</dim>");
+
+		const unclosedApcLine = `❯ ${"\x1b_".repeat(ADVERSARIAL_REPETITIONS)}`;
+		const startApcMs = performance.now();
+		const unclosedResult = applyAttachedComposer(composerStyle, "worker", "Message worker…", [
+			"─".repeat(80),
+			unclosedApcLine,
+			"─".repeat(80),
+		]);
+		const apcElapsedMs = performance.now() - startApcMs;
+
+		assert.equal(unclosedResult[1], unclosedApcLine);
+		assert.ok(
+			apcElapsedMs < LINEAR_NORMALIZATION_BUDGET_MS,
+			`expected linear APC scan (< ${LINEAR_NORMALIZATION_BUDGET_MS}ms), took ${apcElapsedMs.toFixed(1)}ms`,
+		);
+	});
+
+	test("attached composer trims trailing spaces before SGR resets in linear time (#5224, #5239)", () => {
+		const composerStyle: AttachedComposerStyle = {
+			accent: (text) => `<accent>${text}</accent>`,
+			text: (text) => `<text>${text}</text>`,
+			dim: (text) => `<dim>${text}</dim>`,
+		};
+		const trailingSpaceNonSgrLine = `❯ ${" ".repeat(ADVERSARIAL_REPETITIONS)}\x1b[K`;
+		const startSpaceMs = performance.now();
+		const spaceResult = applyAttachedComposer(composerStyle, "worker", "Message worker…", [
+			"─".repeat(80),
+			trailingSpaceNonSgrLine,
+			"─".repeat(80),
+		]);
+		const spaceElapsedMs = performance.now() - startSpaceMs;
+
+		assert.equal(spaceResult[1], `${trailingSpaceNonSgrLine} <dim>Message worker…</dim>`);
+		assert.ok(
+			spaceElapsedMs < LINEAR_NORMALIZATION_BUDGET_MS,
+			`expected linear trailing-space scan (< ${LINEAR_NORMALIZATION_BUDGET_MS}ms), took ${spaceElapsedMs.toFixed(1)}ms`,
+		);
+
+		const multiSgrLine = `❯ \x1b_pi:c\x07\x1b_pi:fc\x07 \x1b_pi:/fc\x07${" ".repeat(76)}\x1b[27m\x1b[0m`;
+		const decorated = applyAttachedComposer(composerStyle, "worker · 2m", "Message worker…", [
+			"─".repeat(80),
+			multiSgrLine,
+			"─".repeat(80),
+		]);
+		assert.equal(
+			decorated[1],
+			"❯ \x1b_pi:c\x07\x1b_pi:fc\x07 \x1b_pi:/fc\x07\x1b[27m\x1b[0m<dim>Message worker…</dim>",
+		);
 	});
 });

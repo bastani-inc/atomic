@@ -46,13 +46,13 @@ test("#5243: clearBusyForTerminalWorkflowStage stops the working-run meter befor
 		seedRunningMeter(host, (ms) => {
 			now = ms;
 		});
-		assert.equal(workingLine(host), " ∀ Working... (2s · ↓ 18.4k tokens)");
+		assert.equal(workingLine(host), " ∀ Working… (2s · ↓ 18.4k tokens)");
 
 		host.clearBusyForTerminalWorkflowStage();
 		assert.equal(workingLine(host), undefined);
 
 		const submitPromise = host.submit("auto", "next prompt");
-		assert.equal(workingLine(host), " ∀ Working...");
+		assert.equal(workingLine(host), " ∀ Working…");
 		await submitPromise;
 	} finally {
 		vi.restoreAllMocks();
@@ -77,13 +77,13 @@ test("#5243: idle submitChatSession and external prompt lifecycle reset a stale 
 		});
 		streaming = true;
 		const steerPromise = host.submit("auto", "steer while running");
-		assert.equal(workingLine(host), " ∀ Working... (2s · ↓ 18.4k tokens)");
+		assert.equal(workingLine(host), " ∀ Working… (2s · ↓ 18.4k tokens)");
 		await steerPromise;
 
 		streaming = false;
 		await host.interrupt();
 		const externalGeneration = host.beginExternalPromptLifecycle();
-		assert.equal(workingLine(host), " ∀ Working...");
+		assert.equal(workingLine(host), " ∀ Working…");
 		host.settleExternalPromptLifecycle(externalGeneration);
 
 		seedRunningMeter(host, (ms) => {
@@ -91,7 +91,7 @@ test("#5243: idle submitChatSession and external prompt lifecycle reset a stale 
 		});
 		await host.interrupt();
 		const idleSubmit = host.submit("auto", "fresh turn after interrupt");
-		assert.equal(workingLine(host), " ∀ Working...");
+		assert.equal(workingLine(host), " ∀ Working…");
 		await idleSubmit;
 	} finally {
 		vi.restoreAllMocks();
@@ -145,7 +145,7 @@ test("#5243: main-chat engine-loss diagnostic and idle prompt turn clear a stale
 		keybindings: new KeybindingsManager(),
 		defaultEditor: { onEscape: undefined as (() => void) | undefined, setWorkingStatusIndicator() {} },
 		setEditorWorkingStatusIndicator: undefined,
-		defaultWorkingMessage: "Working...",
+		defaultWorkingMessage: "Working…",
 		workingMessage: undefined,
 		workingVisible: true,
 		workingIndicatorOptions: undefined,
@@ -180,7 +180,7 @@ test("#5243: main-chat engine-loss diagnostic and idle prompt turn clear a stale
 			message: { role: "assistant", usage: { output: 18_400 }, content: [] },
 		} as never);
 		now = 3_000;
-		assert.match(statusText(), /Working\.\.\. \(2s · ↓ 18\.4k tokens\)/);
+		assert.match(statusText(), /Working… \(2s · ↓ 18\.4k tokens\)/);
 
 		mode.handleEngineDiagnostic({
 			source: "recovery",
@@ -194,7 +194,7 @@ test("#5243: main-chat engine-loss diagnostic and idle prompt turn clear a stale
 		now = 3_000;
 		session.isStreaming = true;
 		mode.renderCurrentSessionState();
-		assert.deepEqual(mode.workingRunMeter.snapshot(), { elapsedMs: 2_000, outputTokens: 18_400 });
+		assert.deepEqual(mode.workingRunMeter.snapshot(), { elapsedMs: 2_000, tokens: 18_400 });
 
 		session.isStreaming = false;
 		mode.renderCurrentSessionState();
@@ -207,7 +207,7 @@ test("#5243: main-chat engine-loss diagnostic and idle prompt turn clear a stale
 		assert.ok(mode.workingRunMeter.snapshot());
 
 		const turnPromise = mode.runUserPromptTurn("hello");
-		assert.match(statusText(), /Working\.\.\./);
+		assert.match(statusText(), /Working…/);
 		assert.doesNotMatch(statusText(), /18\.4k tokens/);
 		await turnPromise;
 	} finally {

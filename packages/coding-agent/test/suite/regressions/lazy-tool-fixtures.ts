@@ -180,7 +180,12 @@ export function runIntercomFixture<T>(heavySource: string, scriptBody: string): 
 		);
 		writeFileSync(
 			join(tempDir, "result-renderers.ts"),
-			"export function renderIntercomToolResult() { return undefined; }\n",
+			"export function renderContactSupervisorCall() { return undefined; }\nexport function renderIntercomCall() { return undefined; }\nexport function renderIntercomToolResult() { return undefined; }\n",
+		);
+		mkdirSync(join(tempDir, "ui"), { recursive: true });
+		writeFileSync(
+			join(tempDir, "ui", "inline-message.ts"),
+			"export function renderIntercomCustomMessage() { return undefined; }\n",
 		);
 		writeFileSync(join(tempDir, "index-heavy.ts"), heavySource);
 		// This list is hand-maintained, and a lightweight module added to the wrapper

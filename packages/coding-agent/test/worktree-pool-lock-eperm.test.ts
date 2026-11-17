@@ -51,7 +51,8 @@ vi.mock("node:timers/promises", async (importOriginal) => {
 		pollClock.delays.push(delay ?? 0);
 		pollClock.elapsedMs += delay ?? 0;
 		pollClock.onSleep?.();
-		return actual.setTimeout(0, value, options);
+		if (options?.signal?.aborted) return actual.setTimeout(0, value, options);
+		return value as never;
 	};
 	return { ...actual, setTimeout };
 });

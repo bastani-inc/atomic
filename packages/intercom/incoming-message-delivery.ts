@@ -55,10 +55,10 @@ export function framePendingStageTimestamp(timestamp: number): string {
 	return Number.isNaN(date.getTime()) ? String(timestamp) : date.toISOString();
 }
 
-/** Mark a deferred workflow-stage message as pre-start context without merging it into the stage task prompt. */
 export function framePreStartPendingStageMessage(entry: InboundMessageEntry): InboundMessageEntry {
 	return {
 		...entry,
+		receivedBeforeStart: true,
 		bodyText: `**Messages received before you started**\n\nSent: ${framePendingStageTimestamp(entry.message.timestamp)}\n\n${entry.bodyText}`,
 	};
 }

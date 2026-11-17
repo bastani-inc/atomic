@@ -2,6 +2,19 @@ import { colorToHex, parseColor } from "@bastani/atomic-tui";
 import type { ColorValue } from "./theme-schema.ts";
 
 export type ColorMode = "truecolor" | "256color";
+export type ThemeStyleLevel = 0 | 1 | 2 | 3;
+
+export function resolveThemeStyleLevel(mode: ColorMode, env: NodeJS.ProcessEnv = process.env): ThemeStyleLevel {
+	if (env.NO_COLOR !== undefined) return 0;
+	if (env.FORCE_COLOR !== undefined) {
+		const forced = env.FORCE_COLOR.trim().toLowerCase();
+		if (forced === "0" || forced === "false") return 0;
+		if (forced === "1" || forced === "true" || forced === "") return 1;
+		if (forced === "2") return 2;
+		if (forced === "3") return 3;
+	}
+	return mode === "truecolor" ? 3 : 2;
+}
 
 export function detectColorMode(): ColorMode {
 	const colorterm = process.env.COLORTERM;

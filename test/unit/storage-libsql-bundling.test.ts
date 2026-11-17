@@ -91,16 +91,11 @@ test(
 			);
 			assert.equal(packed.exitCode, 0, packed.stderr.toString());
 			const [{ filename }] = JSON.parse(packed.stdout.toString()) as { filename: string }[];
-			const packageDir = join(directory, "node_modules", ADAPTER_PACKAGE);
-			mkdirSync(packageDir, { recursive: true });
-			const extracted = spawnSyncCollect([
-				"tar",
-				"-xf",
-				join(directory, filename!),
-				"-C",
-				packageDir,
-				"--strip-components=1",
-			]);
+			const packageDir = `node_modules/${ADAPTER_PACKAGE}`;
+			mkdirSync(join(directory, packageDir), { recursive: true });
+			const extracted = spawnSyncCollect(["tar", "-xf", filename!, "-C", packageDir, "--strip-components=1"], {
+				cwd: directory,
+			});
 			assert.equal(extracted.exitCode, 0, extracted.stderr.toString());
 			mkdirSync(join(directory, "node_modules/@libsql"), { recursive: true });
 			const linkType = process.platform === "win32" ? "junction" : "dir";
