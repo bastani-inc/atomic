@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { once } from "node:events";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -48,7 +48,31 @@ const lockRefusals = vi.hoisted(() => ({
 		| ((attempt: number, path: string) => boolean | Promise<boolean | undefined> | undefined)
 		| undefined,
 	onRefusal: undefined as ((refused: number, path: string) => void) | undefined,
+	onCompromised: undefined as ((path: string) => void) | undefined,
+	onRecordWrite: undefined as ((path: string, data: string) => Promise<void>) | undefined,
 }));
+
+vi.mock("../src/core/worktree-snapshot/shared-clock.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/core/worktree-snapshot/shared-clock.js")>();
+	const lockShared: typeof actual.lockShared = (path, options) =>
+		actual.lockShared(path, {
+			...options,
+			onCompromised: (error) => {
+				options.onCompromised?.(error);
+				lockRefusals.onCompromised?.(path);
+			},
+		});
+	return { ...actual, lockShared };
+});
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	const writeFile: typeof actual.writeFile = async (path, data, options) => {
+		if (typeof data === "string") await lockRefusals.onRecordWrite?.(String(path), data);
+		return actual.writeFile(path, data, options);
+	};
+	return { ...actual, writeFile };
+});
 
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>();
@@ -81,7 +105,10 @@ vi.mock("node:fs", async (importOriginal) => {
 			};
 			const decision = lockRefusals.onAttempt?.(lockRefusals.attempts, target);
 			if (decision instanceof Promise) {
-				void decision.then(finish);
+				void decision.then(finish, (error: Error) => {
+					const callback = rest.at(-1) as (error: Error) => void;
+					callback(error);
+				});
 				return;
 			}
 			finish(decision);
@@ -120,8 +147,38 @@ afterEach(() => {
 	lockRefusals.refusedByTarget.clear();
 	lockRefusals.onAttempt = undefined;
 	lockRefusals.onRefusal = undefined;
+	lockRefusals.onCompromised = undefined;
+	lockRefusals.onRecordWrite = undefined;
 	sandbox.dispose();
 });
+
+function admissionChild(script: string) {
+	const child = spawn(bunExecutable(), ["-e", script], { stdio: ["pipe", "pipe", "inherit"] });
+	const lines = createInterface({ input: child.stdout });
+	const iterator = lines[Symbol.asyncIterator]();
+	const exited = new Promise<{ code: number | null; error?: Error }>((resolve) => {
+		child.once("exit", (code) => resolve({ code }));
+		child.once("error", (error) => {
+			resolve({ code: null, error });
+			lines.close();
+		});
+	});
+	return {
+		child,
+		exited,
+		nextLine: async () => {
+			const line = await iterator.next();
+			if (!line.done) return line.value;
+			const result = await exited;
+			throw result.error ?? new Error(`admission child exited with ${result.code} before replying`);
+		},
+		close: async () => {
+			lines.close();
+			if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+			await exited;
+		},
+	};
+}
 
 async function capturedPair(): Promise<{
 	first: WorktreeSnapshot;
@@ -417,7 +474,7 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 		const storePreHeartbeat = sandbox.path("store-pre-heartbeat");
 		const preSlot0Lock = join(storePreHeartbeat, "pool", repository, "0.json.lock");
 		const preRepoLock = join(storePreHeartbeat, "pool", `${repository}.lock`);
-		let childPre: ReturnType<typeof spawn> | undefined;
+		let childPre: ReturnType<typeof admissionChild> | undefined;
 		try {
 			lockRefusals.targets.add(preSlot0Lock);
 			let pausedOnce = false;
@@ -436,10 +493,8 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 					`rl.close();`,
 					`await discardPooledWorktree(lease);`,
 				].join("\n");
-				childPre = spawn(bunExecutable(), ["-e", script], { stdio: ["pipe", "pipe", "inherit"] });
-				const rl = createInterface({ input: childPre.stdout! });
-				const [line] = (await once(rl, "line")) as [string];
-				rl.close();
+				childPre = admissionChild(script);
+				const line = await childPre.nextLine();
 				const childLease = JSON.parse(line) as { slot: number; path: string };
 				assert.equal(childLease.slot, 0);
 				return false;
@@ -454,11 +509,11 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 			) as PoolSlotRecord;
 			assert.deepEqual(slot0Record.holder, ownerB);
 			await discardPooledWorktree(leaseA);
-			childPre?.stdin?.end("done\n");
-			if (childPre) await once(childPre, "exit");
+			childPre?.child.stdin.end("done\n");
+			if (childPre) assert.equal((await childPre.exited).code, 0);
 			childPre = undefined;
 		} finally {
-			childPre?.kill("SIGKILL");
+			await childPre?.close();
 		}
 
 		const storeCompromised = sandbox.path("store-compromised");
@@ -473,7 +528,12 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 			const clamped = typeof ms === "number" && ms >= 1_000 ? 40 : ms;
 			return realSetTimeout(fn, clamped, ...args);
 		}) as typeof setTimeout);
-		let childComp: ReturnType<typeof spawn> | undefined;
+		let childComp: ReturnType<typeof admissionChild> | undefined;
+		const compromised = new Promise<void>((resolve) => {
+			lockRefusals.onCompromised = (path) => {
+				if (path === join(storeCompromised, "pool", repository)) resolve();
+			};
+		});
 		try {
 			lockRefusals.targets.clear();
 			lockRefusals.targets.add(compSlot0Lock);
@@ -493,13 +553,11 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 					`rl.close();`,
 					`await discardPooledWorktree(lease);`,
 				].join("\n");
-				childComp = spawn(bunExecutable(), ["-e", script], { stdio: ["pipe", "pipe", "inherit"] });
-				const rl = createInterface({ input: childComp.stdout! });
-				const [line] = (await once(rl, "line")) as [string];
-				rl.close();
+				childComp = admissionChild(script);
+				const line = await childComp.nextLine();
 				const childLease = JSON.parse(line) as { slot: number; path: string };
 				assert.equal(childLease.slot, 0);
-				await new Promise((resolve) => realSetTimeout(resolve, 120));
+				await compromised;
 				return false;
 			};
 			await assert.rejects(
@@ -510,14 +568,92 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 				readFileSync(join(storeCompromised, "pool", repository, "0.json"), "utf8"),
 			) as PoolSlotRecord;
 			assert.deepEqual(slot0Record.holder, ownerB);
-			childComp?.stdin?.end("done\n");
-			if (childComp) await once(childComp, "exit");
+			childComp?.child.stdin.end("done\n");
+			if (childComp) assert.equal((await childComp.exited).code, 0);
 			childComp = undefined;
 		} finally {
 			timeoutSpy.mockRestore();
-			childComp?.kill("SIGKILL");
+			await childComp?.close();
 		}
 	});
+
+	test.each(["lease acquisition", "record publication"])(
+		"admission cannot replace another process's slot after takeover during %s (#5320)",
+		async (pauseAt) => {
+			const storeDir = sandbox.path("store-late-takeover");
+			const remotes = ["https://example.com/acme/repo.git"];
+			const repository = repositoryIdOf(remotes);
+			const state = { snapshotId: null, head: "a".repeat(40), tree: "b".repeat(40) };
+			const admission = { storeDir, remotes, lastState: state, envHash: "env" };
+			const ownerA = { kind: "session" as const, id: "owner-a" };
+			const ownerB = { kind: "session" as const, id: "owner-b" };
+			const directory = join(storeDir, "pool", repository);
+			const file = join(directory, "0.json");
+			const lostPaths = new Set<string>();
+			const compromised = new Promise<void>((resolve) => {
+				lockRefusals.onCompromised = (path) => {
+					lostPaths.add(path);
+					if (lostPaths.has(directory) && lostPaths.has(file)) resolve();
+				};
+			});
+			const realSetTimeout = globalThis.setTimeout;
+			const timeoutSpy = vi
+				.spyOn(globalThis, "setTimeout")
+				.mockImplementation(((fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) =>
+					realSetTimeout(fn, typeof ms === "number" && ms >= 1_000 ? 40 : ms, ...args)) as typeof setTimeout);
+			let child: ReturnType<typeof admissionChild> | undefined;
+			let paused = false;
+			const takeOver = async () => {
+				if (paused) return;
+				paused = true;
+				await Promise.all([
+					rm(`${directory}.lock`, { recursive: true, force: true }),
+					rm(`${file}.lock`, { recursive: true, force: true }),
+				]);
+				const script = [
+					`import { admitPooledWorktree, confirmPooledWorktreeLease, discardPooledWorktree } from ${JSON.stringify(POOL_MODULE_PATH)};`,
+					`import { createInterface } from "node:readline";`,
+					`const rl = createInterface({ input: process.stdin });`,
+					`const lease = await admitPooledWorktree(${JSON.stringify(admission)}, ${JSON.stringify(ownerB)});`,
+					`process.stdout.write(JSON.stringify({ slot: lease.slot }) + "\\n");`,
+					`await new Promise((resolve) => rl.once("line", resolve));`,
+					`process.stdout.write(JSON.stringify({ held: await confirmPooledWorktreeLease(lease) }) + "\\n");`,
+					`rl.close();`,
+					`await discardPooledWorktree(lease);`,
+				].join("\n");
+				child = admissionChild(script);
+				const line = await child.nextLine();
+				assert.equal((JSON.parse(line) as { slot: number }).slot, 0);
+				await compromised;
+			};
+			try {
+				if (pauseAt === "lease acquisition") {
+					lockRefusals.onAttempt = async (_attempt, path) => {
+						if (path.startsWith(`${file}.`) && path.endsWith(".lease.lock")) await takeOver();
+						return false;
+					};
+				} else {
+					lockRefusals.onRecordWrite = async (path, data) => {
+						if (path.startsWith(`${file}.`) && path.endsWith(".tmp") && data.includes('"holder"')) {
+							await takeOver();
+						}
+					};
+				}
+				await assert.rejects(admitPooledWorktree(admission, ownerA), { code: "ECOMPROMISED" });
+				assert.equal(paused, true);
+				const record = JSON.parse(readFileSync(file, "utf8")) as PoolSlotRecord;
+				assert.deepEqual(record.holder, ownerB);
+				assert.ok(child);
+				child.child.stdin.end("confirm\n");
+				assert.deepEqual(JSON.parse(await child.nextLine()), { held: true });
+				assert.equal((await child.exited).code, 0);
+				child = undefined;
+			} finally {
+				timeoutSpy.mockRestore();
+				await child?.close();
+			}
+		},
+	);
 
 	test("pool and seed locks refused with EPERM for 10 seconds on end on Windows each independently report EPERM and unavailable (#5320)", async () => {
 		assert.equal(POOL_LOCK_REFUSED_MS, EXPECTED_LOCK_REFUSED_MS);

@@ -456,6 +456,22 @@ async function writeRecord(file: string, record: PoolSlotRecord): Promise<void> 
 	await renameWithRetry(temporary, file);
 }
 
+async function createRecord(file: string, record: PoolSlotRecord): Promise<boolean> {
+	const temporary = `${file}.${ownLease()}.tmp`;
+	try {
+		await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
+		try {
+			await link(temporary, file);
+			return true;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+			throw error;
+		}
+	} finally {
+		await rm(temporary, { force: true });
+	}
+}
+
 function isOwner(value: unknown): value is PoolOwner {
 	const owner = value as Partial<PoolOwner> | null | undefined;
 	return (owner?.kind === "session" || owner?.kind === "prebuild") && typeof owner.id === "string";
@@ -544,6 +560,7 @@ export async function admitPooledWorktree(admission: PoolAdmission, owner: PoolO
 					if (!(await lock.held())) throw lockLostError(file);
 					if ((await exists(file)) || (await exists(path))) return undefined;
 					const taken = await takeSlot(file, owner, record);
+					let published = false;
 					try {
 						if (repositoryLost !== undefined) throw repositoryLost;
 						if (!(await lock.held())) throw lockLostError(file);
@@ -551,8 +568,18 @@ export async function admitPooledWorktree(admission: PoolAdmission, owner: PoolO
 							await taken.unlease().catch(() => {});
 							return undefined;
 						}
-						await writeRecord(file, record);
+						published = await createRecord(file, record);
+						if (!(await lock.held())) throw lockLostError(file);
+						if (repositoryLost !== undefined) throw repositoryLost;
+						if (!published) {
+							await taken.unlease().catch(() => {});
+							return undefined;
+						}
 					} catch (error) {
+						if (published) {
+							const abandoned = await takeRecord(file, record).catch(() => undefined);
+							if (abandoned !== undefined) await rm(abandoned, { force: true }).catch(() => {});
+						}
 						await taken.unlease().catch(() => {});
 						throw error;
 					}
