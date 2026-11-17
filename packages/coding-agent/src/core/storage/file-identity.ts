@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
 	existsSync,
 	linkSync,
+	lstatSync,
 	mkdirSync,
 	opendirSync,
 	readdirSync,
@@ -209,6 +210,7 @@ function createDefaultStorageHomeEntry(home: string, provisionalWithoutSettings?
 }
 
 export function readClaimFile(file: string): string | undefined {
+	if (!existsSync(file)) return undefined;
 	try {
 		let raw = readFileSync(file, "utf8");
 		for (let attempt = 0; raw.length === 0 && attempt < 100; attempt++) {
@@ -602,6 +604,7 @@ interface StorageTargetDecision {
 }
 
 let storageTargetDecisions = new WeakMap<SettledStorageHome, Map<string, StorageTargetDecision>>();
+let defaultTargetVersions = new WeakMap<StorageTargetDecision, string>();
 
 function canonicalPath(path: string): string {
 	try {
@@ -1121,11 +1124,29 @@ export function storagePathBaseDir(path: string, agentDir: string, settings?: St
 	return applyStorageTargetDecision(resolved, settings);
 }
 
-function applyStorageTargetDecision(
-	{ agentPath, target, decision }: StorageTargetDecision,
-	settings?: StorageHomeSettings,
-): string {
+function defaultTargetVersion({ target, decision }: StorageTargetDecision): string | undefined {
+	if (!decision.defaultHome) return undefined;
+	const selected = resolve(decision.home, target);
+	if (!pathsEqual(dirname(selected), decision.home)) return undefined;
+	try {
+		const home = statSync(decision.home, { bigint: true });
+		if (home.ino === 0n) return undefined;
+		const file = lstatSync(selected, { bigint: true, throwIfNoEntry: false });
+		if (file !== undefined && (file.isSymbolicLink() || file.ino === 0n)) return undefined;
+		const homeVersion = `${home.dev}:${home.ino}:${home.birthtimeNs}`;
+		return file === undefined
+			? `${homeVersion}:missing`
+			: `${homeVersion}:${file.dev}:${file.ino}:${file.birthtimeNs}`;
+	} catch {
+		return undefined;
+	}
+}
+
+function applyStorageTargetDecision(targetDecision: StorageTargetDecision, settings?: StorageHomeSettings): string {
+	const { agentPath, target, decision } = targetDecision;
 	if (decision.parentOwner === undefined) return decision.home;
+	const version = defaultTargetVersion(targetDecision);
+	if (version !== undefined && defaultTargetVersions.get(targetDecision) === version) return decision.home;
 	const selected = resolve(decision.home, target);
 	for (const claim of targetClaimFiles(agentPath, decision.home, selected)) {
 		let owner = readStorageOwner(claim);
@@ -1147,6 +1168,9 @@ function applyStorageTargetDecision(
 			throw new Error(`Relative storage target ${target} is owned by another agent directory`);
 		}
 		return agentPath;
+	}
+	if (version !== undefined && defaultTargetVersion(targetDecision) === version) {
+		defaultTargetVersions.set(targetDecision, version);
 	}
 	return decision.home;
 }
@@ -1186,6 +1210,7 @@ export function resetStorageHomeCacheForTests(): void {
 	fastStorageHomes.clear();
 	settledStorageHomes.clear();
 	storageTargetDecisions = new WeakMap();
+	defaultTargetVersions = new WeakMap();
 	priorUseSnapshots.clear();
 	lastStorageHome = undefined;
 }

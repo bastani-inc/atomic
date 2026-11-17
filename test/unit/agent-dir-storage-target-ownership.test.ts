@@ -106,6 +106,35 @@ test("a cached isolated target cannot become a hard-link alias of a sibling's cl
 	assert.throws(() => selectSessionStorage(root, { agentDir: second, settings }), /owned by another agent directory/);
 });
 
+test.each(["file", "directory"])("a cached default target still rejects a sibling's new %s alias (#5242)", (kind) => {
+	const home = join(root, `default-cache-${kind}`);
+	const atomic = join(home, ".atomic");
+	const agent = join(atomic, "agent");
+	const sibling = join(atomic, "custom");
+	mkdirSync(agent, { recursive: true });
+	mkdirSync(sibling);
+	vi.stubEnv("HOME", home);
+	vi.stubEnv("USERPROFILE", home);
+	assert.equal(storageHomeDir(agent, {}), atomic);
+	assert.equal(storageHomeDir(sibling, {}), sibling);
+	const foreign = join(atomic, "foreign");
+	if (kind === "file") writeFileSync(foreign, "history");
+	else mkdirSync(foreign);
+	const selected = (owner: string, name: string) =>
+		selectSessionStorage(root, {
+			agentDir: owner,
+			settings: { sessions: { storage: kind === "file" ? { path: name } : { dir: name } } },
+		});
+	const selection = (location: string) =>
+		kind === "file" ? { kind: "sqlite", path: location } : { kind: "jsonl", dir: location };
+	assert.deepEqual(selected(sibling, "foreign"), selection(foreign));
+	assert.deepEqual(selected(agent, "history"), selection(join(atomic, "history")));
+	assert.deepEqual(selected(agent, "history"), selection(join(atomic, "history")));
+	if (kind === "file") linkSync(foreign, join(atomic, "history"));
+	else symlinkSync(foreign, join(atomic, "history"), "junction");
+	assert.deepEqual(selected(agent, "history"), selection(join(agent, "history")));
+});
+
 test("an adopted agent retains a legacy relative target beside its alias when its home has no matching target (#5242)", () => {
 	const parent = join(root, "adopted");
 	const agent = join(parent, "agent");

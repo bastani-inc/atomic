@@ -50,7 +50,7 @@ vi.mock("node:fs", async (original) => {
 	};
 });
 vi.resetModules();
-const { coLocatesWorkflowStore, resetStorageHomeCacheForTests, storagePathBaseDir } = await import(
+const { coLocatesWorkflowStore, readClaimFile, resetStorageHomeCacheForTests, storagePathBaseDir } = await import(
 	"../../packages/coding-agent/src/core/storage/file-identity.js"
 );
 
@@ -96,6 +96,34 @@ test("repeated relative selections reuse a settled local target without rereadin
 	assert.equal(filesystemWork.reads, 0);
 	assert.equal(filesystemWork.writes, 0);
 });
+
+test("missing storage claims avoid exception-driven reads without hiding later publication (#5242)", () => {
+	const claim = join(root, "claim");
+	resetFilesystemWork();
+	assert.equal(readClaimFile(claim), undefined);
+	assert.equal(filesystemWork.reads, 0);
+	writeFileSync(claim, "owner\n");
+	assert.equal(readClaimFile(claim), "owner");
+});
+
+test.each(["missing", "existing"])(
+	"repeated default relative selections reuse owned %s targets without rereading claims (#5242)",
+	(state) => {
+		const home = join(root, "home");
+		const agent = join(home, ".atomic", "agent");
+		mkdirSync(agent, { recursive: true });
+		vi.stubEnv("HOME", home);
+		vi.stubEnv("USERPROFILE", home);
+		if (state === "existing") writeFileSync(join(home, ".atomic", "history.sqlite"), "history");
+		const settings = { sessions: { storage: { path: "history.sqlite" } } };
+		assert.equal(storagePathBaseDir("history.sqlite", agent, settings), join(home, ".atomic"));
+		resetFilesystemWork();
+		for (let index = 0; index < 3; index++)
+			assert.equal(storagePathBaseDir("history.sqlite", agent, settings), join(home, ".atomic"));
+		assert.equal(filesystemWork.reads, 0);
+		assert.equal(filesystemWork.writes, 0);
+	},
+);
 
 test("unsettled workflow resource discovery uses bulk profile reads without settling storage (#5242)", () => {
 	const agent = join(root, "fresh");
