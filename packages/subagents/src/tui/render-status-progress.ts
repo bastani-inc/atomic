@@ -7,7 +7,8 @@ import { getDisplayItems } from "../shared/utils.js";
 import { getTermWidth, pulseGlyph, type Theme } from "./render-layout.js";
 
 export function extractOutputTarget(task: string): string | undefined {
-	const writeToMatch = task.match(/\[Write to:\s*([^\]\n]+)\]/i);
+	// Whitespace up to the last line break, then the target: the run before it is read once, and trim() drops the rest.
+	const writeToMatch = task.match(/\[Write to:(?:[^\S\n]*\n)*([^\]\n]+)\]/i);
 	if (writeToMatch?.[1]?.trim()) return writeToMatch[1].trim();
 	const findingsMatch = task.match(/Write your findings to:\s*(\S+)/i);
 	if (findingsMatch?.[1]?.trim()) return findingsMatch[1].trim();
