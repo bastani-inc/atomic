@@ -131,7 +131,12 @@ export async function refreshWorkflowArtifactPresence(
 	sessionRuns: readonly RunSnapshot[] = store.runs(),
 ): Promise<void> {
 	const paths = new Set(runs.flatMap((run) => referencedArtifactRunPaths(run, sessionRuns)));
-	await Promise.all([...paths].map((path) => readArtifactRunPresence(path)));
+	// A read already in flight may have looked before this call; the answer reads each directory again after it.
+	await Promise.all(
+		[...paths].map((path) =>
+			(pendingPresenceReads.get(path) ?? Promise.resolve()).then(() => readArtifactRunPresence(path)),
+		),
+	);
 }
 
 /**
