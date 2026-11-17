@@ -11,6 +11,11 @@ import type { ChatSessionHostOpts, ChatSessionSubmitMode } from "./chat-session-
 import { matchesKey } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import { CustomEditor } from "./custom-editor.ts";
+import {
+	PromptHistorySelectorComponent,
+	promptHistoryEntries,
+	sessionPromptsFromEntries,
+} from "./prompt-history-selector.ts";
 
 export interface ChatSessionEditorCallbacks {
 	submit: (mode: ChatSessionSubmitMode, submittedText?: string) => void | Promise<void>;
@@ -56,6 +61,7 @@ export function createChatSessionEditor<TExtraEntry extends ChatTranscriptEntryL
 	actionEditor.onAction?.("app.editor.external", () => {
 		void openChatSessionExternalEditor(state);
 	});
+	actionEditor.onAction?.("app.history.search", () => openChatSessionPromptSearch(state));
 	if (state.actions) {
 		for (const [action, handler] of Object.entries(state.actions)) {
 			actionEditor.onAction?.(action, () => {
@@ -95,11 +101,40 @@ export function createChatSessionEditor<TExtraEntry extends ChatTranscriptEntryL
 	return editor;
 }
 
+/** Open the prompt search (ctrl+r) in place of the editor, as the main chat does. */
+export function openChatSessionPromptSearch<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): void {
+	const editor = state.editor;
+	if (!editor) return;
+	const session = state.getAgentSession?.();
+	const entries = promptHistoryEntries(
+		editor.getHistory?.() ?? [],
+		sessionPromptsFromEntries(session?.sessionManager.getEntries() ?? []),
+	);
+	const close = () => {
+		state.promptSearch = undefined;
+		state.requestRender?.();
+	};
+	state.promptSearch = new PromptHistorySelectorComponent(entries, {
+		onSelect: (text) => {
+			close();
+			setChatSessionEditorText(state, text);
+		},
+		onCancel: close,
+	});
+	state.requestRender?.();
+}
+
 export function handleChatSessionInput<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	data: string,
 	callbacks: ChatSessionEditorCallbacks,
 ): boolean {
+	if (state.promptSearch) {
+		state.promptSearch.handleInput(data);
+		return true;
+	}
 	if (state.bodyViewport.handleInput(data)) return true;
 	if (matchesKey(data, "alt+up")) {
 		callbacks.restoreQueuedMessagesToEditor();

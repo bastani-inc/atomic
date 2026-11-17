@@ -115,6 +115,7 @@ export function renderChatSessionEditor<TExtraEntry extends ChatTranscriptEntryL
 	focused: boolean,
 ): string[] {
 	const disabled = state.isDisabled?.() === true;
+	if (!disabled && state.promptSearch) return state.promptSearch.render(width);
 	const agentSession = state.getAgentSession?.();
 	const ruleHex = state.style.editorRuleColor(disabled, agentSession, {
 		isBashMode: state.isBashMode,

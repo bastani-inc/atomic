@@ -15,6 +15,35 @@ export interface SessionPrompt {
 
 const promptKey = (text: string): string => text.trim();
 
+interface PromptEntryLike {
+	readonly type: string;
+	readonly timestamp?: string;
+	readonly message?: { readonly role?: string; readonly content?: unknown };
+}
+
+function promptText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.flatMap((part: { type?: unknown; text?: unknown }) =>
+			part?.type === "text" && typeof part.text === "string" ? [part.text] : [],
+		)
+		.join("");
+}
+
+/** A session's prompts from the history already in memory, with when each was sent. */
+export function sessionPromptsFromEntries(entries: readonly PromptEntryLike[]): SessionPrompt[] {
+	const prompts: SessionPrompt[] = [];
+	for (const entry of entries) {
+		if (entry.type !== "message" || entry.message?.role !== "user") continue;
+		const text = promptText(entry.message.content);
+		if (!text.trim()) continue;
+		const sentAt = entry.timestamp === undefined ? Number.NaN : Date.parse(entry.timestamp);
+		prompts.push(Number.isFinite(sentAt) ? { text, sentAt } : { text });
+	}
+	return prompts;
+}
+
 /**
  * The prompts history search lists, newest first and each once: the prompts ↑ walks through (this run's and the
  * resumed session's), then older prompts of the current session that ↑ no longer reaches. A prompt the session

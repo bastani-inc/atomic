@@ -1244,6 +1244,7 @@ export {
 	getSettingsListTheme,
 	highlightCode,
 	initTheme,
+	renderAutocompleteHint,
 	Theme,
 	type ThemeColor,
 } from "./modes/interactive/theme/theme.js";
