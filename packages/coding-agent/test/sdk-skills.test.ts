@@ -8,6 +8,8 @@ import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 
+const FIXTURE_CLEANUP_TIMEOUT_MS = 90_000;
+
 describe("createAgentSession skills option", () => {
 	let tempDir: string;
 	let skillsDir: string;
@@ -36,7 +38,7 @@ This is a test skill.
 		if (tempDir) {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
-	});
+	}, FIXTURE_CLEANUP_TIMEOUT_MS);
 
 	it("should discover skills by default and expose them on session.skills", async () => {
 		const { session } = await createAgentSession({
