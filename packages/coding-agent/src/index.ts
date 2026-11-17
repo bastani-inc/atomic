@@ -1012,7 +1012,9 @@ export {
 export { boundOversizedText } from "./core/tools/oversized-tool-result.js";
 export {
 	assertPrivateDirectory,
+	assertPrivateDirectoryAsync,
 	ensurePrivateTempDir,
+	ensurePrivateTempDirAsync,
 	TempDirRefusedError,
 } from "./core/tools/session-temp-dir.ts";
 export {

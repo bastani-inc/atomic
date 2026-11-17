@@ -12,10 +12,16 @@ import { NETWORK_TIMEOUT_MS } from "./package-manager-constants.ts";
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
 import { withInstallLock } from "./package-manager-lock.ts";
 import { ensureGitIgnore, getGitDependencyInstallArgs, runNpmCommand } from "./package-manager-npm.ts";
-import { getBaseDirsForScope, getGitInstallPath, getGitInstallRoot } from "./package-manager-paths.ts";
+import {
+	getBaseDirsForScope,
+	getGitInstallPath,
+	getGitInstallRoot,
+	getInstalledGitInstallPath,
+} from "./package-manager-paths.ts";
 import { emitProgress, withProgress } from "./package-manager-progress.ts";
 import type {
 	GitUpdateTargetInfo,
+	InstalledSourceScope,
 	PackageLocationContext,
 	PackageManagerContext,
 	SourceScope,
@@ -85,14 +91,18 @@ function isSafeGitRef(ref: string): boolean {
 		.every((part) => part && part !== "." && part !== ".." && !part.startsWith(".") && !part.endsWith(".lock"));
 }
 
-/** Where a git package may be installed, in the order it is looked for. */
-function gitInstallCandidates(context: PackageLocationContext, source: GitSource, scope: SourceScope): string[] {
-	const candidates = [getGitInstallPath(context, source, scope)];
+/** Where an installed git package may be, in the order it is looked for. */
+function gitInstallCandidates(
+	context: PackageLocationContext,
+	source: GitSource,
+	scope: InstalledSourceScope,
+): string[] {
+	const candidates = [getInstalledGitInstallPath(context, source, scope)];
 	if (scope === "project") {
 		for (const configDir of getProjectConfigDirs(context.cwd)) {
 			candidates.push(join(configDir, "git", source.host, source.path));
 		}
-	} else if (scope === "user") {
+	} else {
 		for (const agentDir of getBaseDirsForScope(context, "user")) {
 			candidates.push(join(agentDir, "git", source.host, source.path));
 		}
@@ -103,7 +113,7 @@ function gitInstallCandidates(context: PackageLocationContext, source: GitSource
 export function getExistingGitInstallPath(
 	context: PackageLocationContext,
 	source: GitSource,
-	scope: SourceScope,
+	scope: InstalledSourceScope,
 ): string | undefined {
 	return gitInstallCandidates(context, source, scope).find((candidate) => existsSync(candidate));
 }
@@ -112,12 +122,24 @@ export function getExistingGitInstallPath(
 export async function getExistingGitInstallPathAsync(
 	context: PackageLocationContext,
 	source: GitSource,
-	scope: SourceScope,
+	scope: InstalledSourceScope,
 ): Promise<string | undefined> {
 	for (const candidate of gitInstallCandidates(context, source, scope)) {
 		if (await exists(candidate)) return candidate;
 	}
 	return undefined;
+}
+
+export async function resolveGitInstallPath(
+	context: PackageLocationContext,
+	source: GitSource,
+	scope: SourceScope,
+): Promise<string> {
+	if (scope === "temporary") return getGitInstallPath(context, source, scope);
+	return (
+		(await getExistingGitInstallPathAsync(context, source, scope)) ??
+		getInstalledGitInstallPath(context, source, scope)
+	);
 }
 
 /** A staging directory older than this belongs to an install that was killed, not one still running. */
@@ -183,7 +205,7 @@ async function cleanAndInstallGitDependencies(
 
 export async function installGit(context: PackageManagerContext, source: GitSource, scope: SourceScope): Promise<void> {
 	const safeRef = source.ref ? getSafeGitRef(source.ref) : undefined;
-	const targetDir = getGitInstallPath(context, source, scope);
+	const targetDir = await getGitInstallPath(context, source, scope);
 	const installedBefore = await exists(targetDir);
 	await withGitInstallLock(context, scope, targetDir, async () => {
 		if (!(await exists(targetDir))) {
@@ -411,8 +433,7 @@ export async function getInstalledGitHead(
 	source: GitSource,
 	scope: SourceScope,
 ): Promise<string | undefined> {
-	const targetDir =
-		(await getExistingGitInstallPathAsync(context, source, scope)) ?? getGitInstallPath(context, source, scope);
+	const targetDir = await resolveGitInstallPath(context, source, scope);
 	if (!(await exists(targetDir))) return undefined;
 	try {
 		const head = await captureGitProcess(context, ["rev-parse", "HEAD"], {
@@ -428,8 +449,7 @@ export async function getInstalledGitHead(
 
 export async function updateGit(context: PackageManagerContext, source: GitSource, scope: SourceScope): Promise<void> {
 	const safeRef = source.ref ? getSafeGitRef(source.ref) : undefined;
-	const targetDir =
-		(await getExistingGitInstallPathAsync(context, source, scope)) ?? getGitInstallPath(context, source, scope);
+	const targetDir = await resolveGitInstallPath(context, source, scope);
 	await withGitInstallLock(context, scope, targetDir, async () => {
 		if (!(await exists(targetDir))) {
 			await cloneGit(context, source, scope, targetDir, safeRef);
@@ -502,7 +522,7 @@ export async function refreshTemporaryGitSource(
 }
 
 export async function removeGit(context: PackageManagerContext, source: GitSource, scope: SourceScope): Promise<void> {
-	const targetDir = getGitInstallPath(context, source, scope);
+	const targetDir = await getGitInstallPath(context, source, scope);
 	if (!(await exists(dirname(targetDir)))) return;
 	await withGitInstallLock(context, scope, targetDir, async () => {
 		await assertOwnGitInstallDir(source, targetDir);

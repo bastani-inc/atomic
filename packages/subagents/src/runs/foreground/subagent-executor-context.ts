@@ -65,7 +65,8 @@ export async function prepareExecutionContext(input: {
 	deps: ResolvedExecutorDeps;
 }): Promise<ExecutionContextBuildResult> {
 	const { params, ctx, signal, onUpdate, deps } = input;
-	const stageCloseSignal = ctx.orchestrationContext?.messageAdmission?.boundary.closeSignal;
+	const admission = ctx.orchestrationContext?.messageAdmission;
+	const stageCloseSignal = admission?.boundary.closeSignal;
 	const executionSignal = stageCloseSignal === undefined ? signal : AbortSignal.any([signal, stageCloseSignal]);
 	const depth = getCurrentSubagentDepth(ctx);
 	const normalized = normalizeRepeatedParallelCounts(params);
@@ -77,7 +78,8 @@ export async function prepareExecutionContext(input: {
 	const scope = resolveExecutionAgentScope(effectiveParams.agentScope);
 	const effectiveCwd = effectiveParams.cwd ?? ctx.cwd;
 	const parentSessionFile = ctx.sessionManager.getSessionFile() ?? null;
-	deps.state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
+	const parentSessionId = resolveCurrentSessionId(ctx.sessionManager);
+	deps.state.currentSessionId = parentSessionId;
 	const initialDiscoveryCwd =
 		(effectiveParams.tasks?.[0] as BurstTaskParam | undefined)?.[BURST_TASK_DISCOVERY_CWD] ?? effectiveCwd;
 	const discovery = contextAgentDiscoveryOptions(ctx);
@@ -156,7 +158,14 @@ export async function prepareExecutionContext(input: {
 		...DEFAULT_ARTIFACT_CONFIG,
 		enabled: effectiveParams.artifacts !== false,
 	};
-	const artifactsDir = getArtifactsDir(parentSessionFile);
+	let artifactsDir: string;
+	try {
+		executionSignal.throwIfAborted();
+		artifactsDir = await getArtifactsDir(parentSessionFile);
+		executionSignal.throwIfAborted();
+	} catch (error) {
+		return { error: toExecutionErrorResult(effectiveParams, error) };
+	}
 
 	let sessionRoot: string;
 	if (effectiveParams.sessionDir) {
@@ -164,7 +173,7 @@ export async function prepareExecutionContext(input: {
 	} else {
 		const baseSessionRoot = deps.config.defaultSessionDir
 			? path.resolve(deps.expandTilde(deps.config.defaultSessionDir))
-			: deps.getSubagentSessionRoot(parentSessionFile, resolveCurrentSessionId(ctx.sessionManager));
+			: deps.getSubagentSessionRoot(parentSessionFile, parentSessionId);
 		sessionRoot = path.join(baseSessionRoot, runId);
 	}
 	try {
@@ -204,7 +213,7 @@ export async function prepareExecutionContext(input: {
 		intercomBridge,
 	};
 
-	ctx.orchestrationContext?.messageAdmission?.boundary.registerOwnedSubagentRun(runId);
+	admission?.boundary.registerOwnedSubagentRun(runId);
 
 	const foregroundMode: "single" | "parallel" = hasTasks ? "parallel" : "single";
 	const foregroundControl = {

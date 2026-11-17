@@ -3,14 +3,14 @@ import { dirname, isAbsolute, join } from "node:path";
 import { CONFIG_DIR_NAME } from "../config.js";
 import { addAutoDiscoveredResources, collectProjectLocalResources } from "./package-manager-auto-resources.ts";
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
-import { getExistingGitInstallPathAsync, refreshTemporaryGitSource } from "./package-manager-git.ts";
+import { refreshTemporaryGitSource, resolveGitInstallPath } from "./package-manager-git.ts";
 import {
-	getExistingNpmInstallPathAsync,
+	findExistingNpmInstallPath,
 	installedNpmMatchesConfiguredVersion,
 	npmHasAvailableUpdate,
 } from "./package-manager-npm.ts";
 import { installParsedSource } from "./package-manager-operations.ts";
-import { getBaseDirsForScope, getGitInstallPath, resolvePathFromBase } from "./package-manager-paths.ts";
+import { getBaseDirsForScope, resolvePathFromBase } from "./package-manager-paths.ts";
 import {
 	addResource,
 	createAccumulator,
@@ -253,13 +253,13 @@ async function resolvePackageSources(
 		};
 
 		if (parsed.type === "npm") {
-			let installedPath = await getExistingNpmInstallPathAsync(context, parsed, resolvedScope);
+			let installedPath = await findExistingNpmInstallPath(context, parsed, resolvedScope);
 			const needsInstall =
 				!installedPath || !(await installedNpmMatchesConfiguredVersion(context, parsed, installedPath));
 			if (needsInstall) {
 				const installed = await installMissing();
 				if (!installed) continue;
-				installedPath = await getExistingNpmInstallPathAsync(context, parsed, resolvedScope);
+				installedPath = await findExistingNpmInstallPath(context, parsed, resolvedScope);
 				if (!installedPath || !(await installedNpmMatchesConfiguredVersion(context, parsed, installedPath))) {
 					continue;
 				}
@@ -288,9 +288,7 @@ async function resolvePackageSources(
 			continue;
 		}
 
-		const installedPath =
-			(await getExistingGitInstallPathAsync(context, parsed, resolvedScope)) ??
-			getGitInstallPath(context, parsed, resolvedScope);
+		const installedPath = await resolveGitInstallPath(context, parsed, resolvedScope);
 		if (!(await exists(installedPath))) {
 			const installed = await installMissing();
 			if (!installed) continue;

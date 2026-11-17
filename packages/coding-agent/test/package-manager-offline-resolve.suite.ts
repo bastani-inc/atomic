@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CONFIG_DIR_NAME } from "../src/config.ts";
 import { DefaultPackageManager, type ResolvedResource } from "../src/core/package-manager.ts";
-import { getNpmInstallPath } from "../src/core/package-manager-npm.ts";
+import { getTemporaryNpmInstallPath } from "../src/core/package-manager-npm.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
 function normalizeForMatch(value: string): string {
@@ -36,7 +36,7 @@ interface PackageManagerInternals {
 		options?: { cwd?: string; timeoutMs?: number; env?: Record<string, string> },
 	): Promise<string>;
 	parseSource(source: string): ParsedSourceForTest;
-	getGitInstallPath(source: ParsedSourceForTest, scope: "temporary"): string;
+	getGitInstallPath(source: ParsedSourceForTest, scope: "temporary"): Promise<string>;
 	getLocalGitUpdateTarget(installedPath: string): Promise<{ ref: string; head: string; fetchArgs: string[] }>;
 }
 
@@ -149,7 +149,10 @@ describe("DefaultPackageManager", () => {
 			process.env.ATOMIC_OFFLINE = "1";
 			const gitSource = "git:github.com/example/repo";
 			const parsedGitSource = (packageManager as any).parseSource(gitSource);
-			const installedPath = (packageManager as any).getGitInstallPath(parsedGitSource, "temporary") as string;
+			const installedPath = (await (packageManager as any).getGitInstallPath(
+				parsedGitSource,
+				"temporary",
+			)) as string;
 
 			mkdirSync(join(installedPath, "extensions"), { recursive: true });
 			writeFileSync(join(installedPath, "extensions", "index.ts"), "export default function() {};");
@@ -166,7 +169,7 @@ describe("DefaultPackageManager", () => {
 			const internals = packageManager as object as PackageManagerInternals;
 			const parsed = internals.parseSource("npm:example");
 			if (parsed.type !== "npm") throw new Error("Expected npm source");
-			const installedPath = getNpmInstallPath((packageManager as any).context, parsed as never, "temporary");
+			const installedPath = await getTemporaryNpmInstallPath((packageManager as any).context, parsed as never);
 			try {
 				mkdirSync(join(installedPath, "extensions"), { recursive: true });
 				writeFileSync(join(installedPath, "package.json"), JSON.stringify({ name: "example", version: "1.0.0" }));
@@ -197,7 +200,7 @@ describe("DefaultPackageManager", () => {
 				for (const source of ["npm:example", "npm:example@1.0.0"]) {
 					const parsed = internals.parseSource(source);
 					if (parsed.type !== "npm") throw new Error("Expected npm source");
-					const installedPath = getNpmInstallPath((packageManager as any).context, parsed as never, "temporary");
+					const installedPath = await getTemporaryNpmInstallPath((packageManager as any).context, parsed as never);
 					installedPaths.push(installedPath);
 					mkdirSync(installedPath, { recursive: true });
 					writeFileSync(
@@ -236,7 +239,7 @@ describe("DefaultPackageManager", () => {
 		it("should refresh temporary git sources with a branch ref", async () => {
 			const internals = packageManager as object as PackageManagerInternals;
 			const source = `git:github.com/example/branch-${Date.now()}-${Math.random().toString(36).slice(2)}@main`;
-			const installedPath = internals.getGitInstallPath(internals.parseSource(source), "temporary");
+			const installedPath = await internals.getGitInstallPath(internals.parseSource(source), "temporary");
 			try {
 				mkdirSync(join(installedPath, ".git"), { recursive: true });
 				mkdirSync(join(installedPath, "extensions"), { recursive: true });
@@ -256,7 +259,7 @@ describe("DefaultPackageManager", () => {
 		it("should not refresh temporary git sources pinned to the checked-out commit", async () => {
 			const internals = packageManager as object as PackageManagerInternals;
 			const source = `git:github.com/example/commit-${Date.now()}-${Math.random().toString(36).slice(2)}@abc1234`;
-			const installedPath = internals.getGitInstallPath(internals.parseSource(source), "temporary");
+			const installedPath = await internals.getGitInstallPath(internals.parseSource(source), "temporary");
 			try {
 				mkdirSync(installedPath, { recursive: true });
 
@@ -272,8 +275,8 @@ describe("DefaultPackageManager", () => {
 			const repo = `github.com/example/pinned-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 			const oldSource = `git:${repo}@aaaaaaa`;
 			const newSource = `git:${repo}@bbbbbbb`;
-			const oldPath = internals.getGitInstallPath(internals.parseSource(oldSource), "temporary");
-			const newPath = internals.getGitInstallPath(internals.parseSource(newSource), "temporary");
+			const oldPath = await internals.getGitInstallPath(internals.parseSource(oldSource), "temporary");
+			const newPath = await internals.getGitInstallPath(internals.parseSource(newSource), "temporary");
 			try {
 				mkdirSync(join(oldPath, "extensions"), { recursive: true });
 				writeFileSync(join(oldPath, "extensions", "old.ts"), "export default function() {};");

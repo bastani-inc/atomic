@@ -160,8 +160,9 @@ export async function waitForSupervisedCommand(
 			offset = observed.value.kind === "yielded" ? undefined : page.value.nextOffset;
 		} while (offset !== undefined);
 		output.finish();
-		const snapshot = output.snapshot({ persistIfTruncated: true });
+		output.snapshot({ persistIfTruncated: true });
 		await output.closeTempFile();
+		const snapshot = output.snapshot();
 		if (observed.value.kind === "yielded" && BigInt(nextOffset) > BigInt(yieldedOutputOffsets.get(task) ?? "0"))
 			yieldedOutputOffsets.set(task, nextOffset);
 		const terminal = observed.value.kind === "settled" ? observed.value.result : undefined;

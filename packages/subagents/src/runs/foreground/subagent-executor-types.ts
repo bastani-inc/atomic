@@ -90,7 +90,7 @@ export interface ExecutorDeps {
 	pi: ExtensionAPI;
 	state: SubagentState;
 	config: import("../../shared/types.js").ExtensionConfig;
-	tempArtifactsDir: string;
+	tempArtifactsDir?: string;
 	getSubagentSessionRoot: (parentSessionFile: string | null, parentSessionId: string) => string;
 	expandTilde: (p: string) => string;
 	discoverAgents: (
