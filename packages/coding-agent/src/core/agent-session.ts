@@ -168,6 +168,7 @@ class AgentSessionBase {
 	protected _compactionStartedAt: number | undefined = undefined;
 	protected _manualCompactionPromise: Promise<VerbatimCompactionResult> | undefined = undefined;
 	protected _autoCompactionAbortController: AbortController | undefined = undefined;
+	protected _compactorAbortController: AbortController | undefined = undefined;
 	/** Resolves when the current automatic compaction has settled. */
 	protected _autoCompactionCompletion: Promise<void> | undefined = undefined;
 	protected _overflowRecoveryAttempted = false;

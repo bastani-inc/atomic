@@ -6,11 +6,14 @@ import {
 	buildCompactorMessages,
 	COMPACTOR_COMPRESSION_RATIO,
 	CompactorFailure,
+	estimateContextTokens,
 	requestCompactorOutput,
 	wrapLongLines,
 } from "../src/core/compaction/index.ts";
 import { convertToLlm, createCustomMessage, createVerbatimCompactionMessage } from "../src/core/messages.ts";
+import { createHistoryRouter } from "../src/core/tools/history-protocol.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
+import { createTestResourceLoader } from "./utilities.ts";
 
 const API_KEY = "sk-morph-secret-key-0123456789";
 const COMPACTOR = "morph/morph-compactor";
@@ -289,6 +292,34 @@ describe("compaction with a configured compactor model", () => {
 		assert.ok(text.indexOf("</compacted-context>") < text.indexOf("Recover what you need"));
 	});
 
+	for (const [form, body] of [
+		["output", { output: `notes ${API_KEY} end` }],
+		["messages", { messages: [{ content: `first ${API_KEY}` }, { content: "second" }] }],
+	] as const) {
+		it(`never stores the key when the compactor echoes it in its ${form}`, async () => {
+			vi.stubGlobal("fetch", endpoint(() => json(body)).fetch);
+			harness = await compactorHarness(true);
+			const result = await harness.session.compact();
+			assert.equal(result.form, "compacted");
+			assert.ok(result.compactedText.includes("[redacted]"), result.compactedText);
+			const router = createHistoryRouter({
+				cwd: process.cwd(),
+				currentSessionId: harness.session.sessionId,
+				sessionStore: () => harness?.sessionManager.getSessionStore(),
+				workflows: () => undefined,
+			});
+			const history = String(await router.read?.(`history://sessions/${harness.session.sessionId}`));
+			const everything = JSON.stringify({
+				result,
+				events: harness.events,
+				entries: harness.sessionManager.getEntries(),
+				messages: harness.session.messages,
+			});
+			assert.ok(!everything.includes(API_KEY), "the key reached a result, event, entry or message");
+			assert.ok(!history.includes(API_KEY), "the key reached the session history");
+		});
+	}
+
 	const fallbacks: Array<[string, () => Response | Promise<Response>, RegExp, boolean]> = [
 		["no credentials", () => json({ output: "unused" }), /failed: no credentials/u, false],
 		["an HTTP error", () => json({ error: { message: `invalid key ${API_KEY}` } }, 503), /failed: HTTP 503/u, true],
@@ -313,6 +344,104 @@ describe("compaction with a configured compactor model", () => {
 			assert.ok(!everything.includes(API_KEY), "the key leaked into a result, event or entry");
 		});
 	}
+
+	async function budgetHarness(systemPrompt: string): Promise<Harness> {
+		const created = await createHarness({
+			models: [{ id: "budget", contextWindow: 32_000, maxTokens: 1_000 }],
+			resourceLoader: createTestResourceLoader({ systemPrompt }),
+			settings: {
+				compactionModel: COMPACTOR,
+				compaction: { enabled: true, reserveTokens: 1_000 },
+				retry: { enabled: false },
+			},
+		});
+		await created.authStorage.modify("morph", async () => ({ type: "api_key", key: API_KEY }));
+		created.setResponses([fauxAssistantMessage("answer")]);
+		await created.session.prompt("fix the parser");
+		return created;
+	}
+
+	it("falls back to clearing when the system prompt, the output and the recovery text would not fit", async () => {
+		vi.stubGlobal("fetch", endpoint(() => json({ output: "word ".repeat(12_400) })).fetch);
+		harness = await budgetHarness("rule ".repeat(16_000));
+		const result = await harness.session.compact();
+		assert.equal(result.form, "cleared");
+		assert.match(result.fallbackReason ?? "", /too long/u);
+		assert.ok(estimateContextTokens(harness.session.messages).tokens < 31_000);
+	});
+
+	it("keeps the compacted text when the whole replacement fits below the trigger", async () => {
+		vi.stubGlobal("fetch", endpoint(() => json({ output: "word ".repeat(12_400) })).fetch);
+		harness = await budgetHarness("rules");
+		const result = await harness.session.compact();
+		assert.equal(result.form, "compacted");
+		assert.ok(estimateContextTokens(harness.session.messages).tokens < 31_000);
+	});
+
+	/** An endpoint that answers only when its request is aborted, and says when a request arrived. */
+	function hangingEndpoint(): { fetch: typeof fetch; arrived: Promise<void> } {
+		const arrived = Promise.withResolvers<void>();
+		const fake = ((_input: string | URL | Request, init?: RequestInit) =>
+			new Promise<Response>((_resolve, reject) => {
+				arrived.resolve();
+				init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+			})) as typeof fetch;
+		return { fetch: fake, arrived: arrived.promise };
+	}
+
+	it("stopping a manual compactor request clears the context instead of cancelling", async () => {
+		const hanging = hangingEndpoint();
+		vi.stubGlobal("fetch", hanging.fetch);
+		harness = await compactorHarness(true);
+		const compacting = harness.session.compact();
+		await hanging.arrived;
+		harness.session.abortCompaction();
+		const result = await compacting;
+		assert.equal(result.form, "cleared");
+		assert.match(result.fallbackReason ?? "", /aborted/u);
+		assert.equal(harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction").length, 1);
+		assert.equal(convertToLlm(harness.session.messages).filter((message) => message.role !== "system").length, 1);
+	});
+
+	it("stopping an automatic compactor request clears the context instead of cancelling", async () => {
+		const hanging = hangingEndpoint();
+		vi.stubGlobal("fetch", hanging.fetch);
+		harness = await compactorHarness(true);
+		const internals = harness.session as unknown as {
+			_runAutoCompaction(reason: "threshold", willRetry: boolean): Promise<string>;
+		};
+		const running = internals._runAutoCompaction("threshold", false);
+		await hanging.arrived;
+		harness.session.abortCompaction();
+		assert.equal(await running, "compacted");
+		const [end] = harness.eventsOfType("compaction_end");
+		assert.equal(end?.result?.form, "cleared");
+		assert.match(end?.result?.fallbackReason ?? "", /aborted/u);
+	});
+
+	it("a manual takeover of an automatic compactor request writes only the manual boundary", async () => {
+		const hanging = hangingEndpoint();
+		vi.stubGlobal("fetch", hanging.fetch);
+		harness = await compactorHarness(true);
+		const internals = harness.session as unknown as {
+			_runAutoCompaction(reason: "threshold", willRetry: boolean): Promise<string>;
+		};
+		const automatic = internals._runAutoCompaction("threshold", false);
+		await hanging.arrived;
+		vi.stubGlobal("fetch", endpoint(() => json({ output: "manual compacted text" })).fetch);
+		const manual = await harness.session.compact();
+		await automatic;
+		assert.equal(manual.form, "compacted");
+		assert.equal(harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction").length, 1);
+		const ends = harness.eventsOfType("compaction_end");
+		assert.deepEqual(
+			ends.map((event) => [event.reason, event.aborted]),
+			[
+				["threshold", true],
+				["manual", false],
+			],
+		);
+	});
 
 	it("a chat model named for one run clears the context and says why", async () => {
 		harness = await compactorHarness(false);

@@ -731,6 +731,31 @@ describe("InteractiveMode compaction events", () => {
 		expect(renderedText(chatContainer)).toContain("extension-owned state");
 	});
 
+	it("shows one boundary when the persisted boundary carries the system prompt", async () => {
+		const { mode, chatContainer, entries } = makeMode([]);
+		entries.push({
+			type: "compaction",
+			id: "boundary",
+			parentId: null,
+			timestamp: new Date(1).toISOString(),
+			summary: result.compactedText,
+			firstKeptEntryId: null,
+			tokensBefore: result.tokensBefore,
+			details: {
+				strategy: "verbatim-lines",
+				promptVersion: result.promptVersion,
+				parameters: result.parameters,
+				stats: result.stats,
+				form: result.form,
+			},
+			systemMessage: { role: "system", content: "system prompt", timestamp: 1 },
+		} as SessionEntry);
+
+		await emit(mode, { type: "compaction_end", reason: "manual", result, aborted: false, willRetry: false });
+
+		expect(renderedText(chatContainer).match(/⚛ Context compacted/g)).toHaveLength(1);
+	});
+
 	it("renders one persisted boundary during a normal resume rebuild", () => {
 		const { mode, chatContainer } = makeMode();
 		const rebuild = Reflect.get(InteractiveMode.prototype, "rebuildChatFromMessages") as (this: object) => void;

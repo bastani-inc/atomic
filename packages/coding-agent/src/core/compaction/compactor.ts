@@ -229,6 +229,8 @@ export interface CompactorRequest {
 	readonly query: string;
 	/** Aborts when the compaction itself is cancelled; that is a cancel, not a failure. */
 	readonly signal: AbortSignal;
+	/** Stops this request only; that is a failure (`request aborted`) and the context is cleared instead. */
+	readonly stop?: AbortSignal;
 	readonly timeoutMs?: number;
 	readonly fetchFn?: typeof fetch;
 }
@@ -244,9 +246,10 @@ export async function requestCompactorOutput(request: CompactorRequest): Promise
 	if (!apiKey) throw new CompactorFailure("no credentials (use /login or the provider's API key variable)");
 	const timeoutMs = request.timeoutMs ?? COMPACTOR_REQUEST_TIMEOUT_MS;
 	const timeout = AbortSignal.timeout(timeoutMs);
-	const signal = AbortSignal.any([request.signal, timeout]);
+	const signal = AbortSignal.any([request.signal, timeout, ...(request.stop ? [request.stop] : [])]);
 	const failure = (error: Error | string): never => {
 		if (request.signal.aborted) throw new Error("Compaction cancelled");
+		if (request.stop?.aborted) throw new CompactorFailure("request aborted");
 		if (timeout.aborted) throw new CompactorFailure(`timed out after ${timeoutMs} ms`);
 		const message = typeof error === "string" ? error : error.message || error.name;
 		throw new CompactorFailure(redact(message, apiKey));
@@ -281,7 +284,8 @@ export async function requestCompactorOutput(request: CompactorRequest): Promise
 	}
 	if (request.signal.aborted) throw new Error("Compaction cancelled");
 	if (typeof body !== "object" || body === null) throw new CompactorFailure("malformed response");
-	const text = responseText(body);
+	// The output becomes context and history, so a credential the endpoint echoed back must not survive in it.
+	const text = responseText(body).replaceAll(apiKey, "[redacted]");
 	if (!text) throw new CompactorFailure("empty output");
 	const usage = compactorUsage(body.usage);
 	return { text, ...(usage ? { usage } : {}) };

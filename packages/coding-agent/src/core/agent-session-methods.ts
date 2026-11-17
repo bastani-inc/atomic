@@ -611,6 +611,8 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_compactionAbortController: AbortController | undefined;
 	_manualCompactionPromise: Promise<VerbatimCompactionResult> | undefined;
 	_autoCompactionAbortController: AbortController | undefined;
+	/** Stops the compactor request of the running compaction, which then clears the context instead. */
+	_compactorAbortController: AbortController | undefined;
 	_autoCompactionCompletion: Promise<void> | undefined;
 	_compactionReason: import("./agent-session-types.js").CompactionReason | undefined;
 	_compactionStartedAt: number | undefined;

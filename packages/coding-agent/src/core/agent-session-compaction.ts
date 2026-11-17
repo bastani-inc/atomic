@@ -174,8 +174,17 @@ async function runCompactor(
 	reason: VerbatimCompactionApplyOptions["reason"],
 ): Promise<{ compacted: CompactedReplacement; usage?: Usage } | { fallbackReason: string }> {
 	let apiKey: string | undefined;
+	// Stopping the request (Escape, `abortCompaction()`) clears the context instead; a cancel of the compaction itself
+	// (a takeover, closing the session) still cancels.
+	const stop = new AbortController();
+	session._compactorAbortController = stop;
 	try {
-		apiKey = (await session._modelRuntime.getAuth(selection.model.provider, { signal }))?.auth.apiKey;
+		apiKey = (
+			await session._modelRuntime.getAuth(selection.model.provider, {
+				signal: AbortSignal.any([signal, stop.signal]),
+			})
+		)?.auth.apiKey;
+		stop.signal.throwIfAborted();
 		const messages: AgentMessage[] = buildSessionProjection(pathEntries).messages;
 		const output = await requestCompactorOutput({
 			apiKey,
@@ -187,6 +196,7 @@ async function runCompactor(
 			),
 			query: preparation.parameters.query,
 			signal,
+			stop: stop.signal,
 		});
 		if (output.usage) session._emit({ type: "compaction_usage", reason, usage: output.usage });
 		const model = session.model;
@@ -202,19 +212,22 @@ async function runCompactor(
 		};
 	} catch (error) {
 		if (signal.aborted) throw new Error("Compaction cancelled");
+		if (stop.signal.aborted) return { fallbackReason: "request aborted" };
 		if (error instanceof CompactorFailure) return { fallbackReason: error.message };
 		return { fallbackReason: fallbackReasonText(error instanceof Error ? error : String(error), apiKey) };
+	} finally {
+		if (session._compactorAbortController === stop) session._compactorAbortController = undefined;
 	}
 }
 
-/** Whether the system prompt plus the boundary message stays below the automatic compaction trigger. */
-function clearFitsBelowTrigger(
+/**
+ * Estimated tokens of the context right after a boundary, and the automatic trigger: the system prompt plus the whole
+ * boundary message, compacted text included. The trigger is undefined for a model with no known context window.
+ */
+function contextAfterBoundary(
 	session: AgentSession,
-	planned: Pick<PlannedVerbatimCompaction, "tokensBefore" | "access" | "systemTokens" | "instructions">,
-): boolean {
-	const model = session.model;
-	if (!model || model.contextWindow <= 0) return true;
-	const trigger = model.contextWindow - session.settingsManager.getCompactionSettings(model).reserveTokens;
+	planned: Pick<PlannedVerbatimCompaction, "tokensBefore" | "access" | "systemTokens" | "instructions" | "compacted">,
+): { tokens: number; trigger: number | undefined } {
 	const boundary = buildBoundaryText(
 		{
 			sessionId: session.sessionManager.getSessionId(),
@@ -222,10 +235,25 @@ function clearFitsBelowTrigger(
 			linesBefore: 0,
 			access: planned.access,
 			...(planned.instructions ? { instructions: planned.instructions } : {}),
+			...(planned.compacted
+				? { compacted: { text: planned.compacted.text, source: planned.compacted.model ?? "an extension" } }
+				: {}),
 		},
 		0,
 	);
-	return planned.systemTokens + estimateTextTokens(boundary) < trigger;
+	const tokens = planned.systemTokens + estimateTextTokens(boundary);
+	const model = session.model;
+	if (!model || model.contextWindow <= 0) return { tokens, trigger: undefined };
+	return { tokens, trigger: model.contextWindow - session.settingsManager.getCompactionSettings(model).reserveTokens };
+}
+
+/** Whether the system prompt plus the boundary message stays below the automatic compaction trigger. */
+function fitsBelowTrigger(
+	session: AgentSession,
+	planned: Pick<PlannedVerbatimCompaction, "tokensBefore" | "access" | "systemTokens" | "instructions" | "compacted">,
+): boolean {
+	const { tokens, trigger } = contextAfterBoundary(session, planned);
+	return trigger === undefined || tokens < trigger;
 }
 
 function ignoredModelReason(configured: string, reason: "chat" | "classifier" | "unknown"): string {
@@ -266,7 +294,7 @@ export async function planVerbatimCompaction(
 		systemTokens: systemMessage ? estimateTokens(systemMessage) : 0,
 	} satisfies Partial<PlannedVerbatimCompaction>;
 	// An automatic clear that cannot bring the context below the trigger would only destroy context and fire again.
-	if (options.reason !== "manual" && !clearFitsBelowTrigger(this, base)) return undefined;
+	if (options.reason !== "manual" && !fitsBelowTrigger(this, base)) return undefined;
 
 	if (this._extensionRunner.hasHandlers("session_before_compact")) {
 		let snapshot: VerbatimCompactionPreparation;
@@ -316,6 +344,16 @@ export async function planVerbatimCompaction(
 	if (signal.aborted) throw new Error("Compaction cancelled");
 	if ("fallbackReason" in outcome) {
 		return { ...base, fallbackReason: `${selection.fullId} failed: ${outcome.fallbackReason}`, fromExtension: false };
+	}
+	// The whole replacement, system prompt and recovery instructions included, must leave room below the trigger.
+	const after = contextAfterBoundary(this, { ...base, compacted: outcome.compacted });
+	if (after.trigger !== undefined && after.tokens >= after.trigger) {
+		return {
+			...base,
+			fallbackReason: `${selection.fullId} failed: output too long for the context (${after.tokens} > ${after.trigger} tokens)`,
+			...(outcome.usage ? { usage: outcome.usage } : {}),
+			fromExtension: false,
+		};
 	}
 	return {
 		...base,
@@ -600,6 +638,12 @@ export function compact(this: AgentSession, options: SessionCompactOptions = {})
 }
 
 export function abortCompaction(this: AgentSession): void {
+	// While a compactor request runs, stopping it falls back to clearing the context rather than cancelling.
+	const compactor = this._compactorAbortController;
+	if (compactor !== undefined) {
+		compactor.abort();
+		return;
+	}
 	this._compactionAbortController?.abort();
 	this._autoCompactionAbortController?.abort();
 }
