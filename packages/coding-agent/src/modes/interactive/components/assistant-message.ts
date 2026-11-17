@@ -234,9 +234,9 @@ export class AssistantMessageComponent extends Container {
 			const ownActivity = message.content
 				.flatMap((content) => (content.type === "toolCall" ? [singleLineDisplayText(content.name).trim()] : []))
 				.filter(Boolean);
-			const fallbackActivity = this.interruptedActivity
-				.map((name) => singleLineDisplayText(name).trim())
-				.filter(Boolean);
+			const fallbackActivity = hasAssistantVisibleContent(message.content)
+				? []
+				: this.interruptedActivity.map((name) => singleLineDisplayText(name).trim()).filter(Boolean);
 			const activity = ownActivity.length > 0 ? ownActivity : fallbackActivity;
 			const meta = [...new Set(activity)];
 			if (reason !== "Interrupted by user" && reason && !/^(?:\w*Error\b|at\s|Caused by:)/u.test(reason))
@@ -252,6 +252,15 @@ export class AssistantMessageComponent extends Container {
 			this.contentContainer.addChild(new Text(theme.fg("error", `Error: ${errorMsg}`), this.outputPad, 0));
 		}
 	}
+}
+
+export function hasAssistantVisibleContent(content: AssistantMessage["content"]): boolean {
+	for (const block of content) {
+		if (block.type === "toolCall") return true;
+		if (block.type === "text" && stripTerminalControls(block.text).trim().length > 0) return true;
+		if (block.type === "thinking" && stripTerminalControls(block.thinking).trim().length > 0) return true;
+	}
+	return false;
 }
 
 /**

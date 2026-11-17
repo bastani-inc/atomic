@@ -14,7 +14,7 @@ import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runti
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import { bindAgentPanel } from "../rpc/agent-panel-bridge.ts";
-import { interruptedNotice } from "./components/assistant-message.ts";
+import { hasAssistantVisibleContent, interruptedNotice } from "./components/assistant-message.ts";
 import { AtomicWorkedStatusComponent, AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
 import { toolResultGroupState } from "./components/tool-group-tracker.ts";
@@ -369,11 +369,9 @@ InteractiveModeBase.prototype.handleEvent = async function (
 					errorMessage = existingAbortMessage ?? "Interrupted by user";
 					this.streamingMessage.errorMessage = errorMessage;
 				}
-				const hasOwnToolCalls = this.streamingMessage.content.some((content) => content.type === "toolCall");
 				const interruptedActivity =
 					this.streamingMessage.stopReason === "aborted" &&
-					!hasOwnToolCalls &&
-					this.streamingMessage.content.length === 0
+					!hasAssistantVisibleContent(this.streamingMessage.content)
 						? currentInterruptedMainTools(this)
 						: undefined;
 				this.streamingComponent.updateContent(this.streamingMessage, false, interruptedActivity);

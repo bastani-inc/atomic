@@ -311,23 +311,38 @@ describe("AssistantMessageComponent", () => {
 		);
 	});
 
-	test("an empty aborted post-tool turn names the interrupted tool across replay and live entries without mutating message bytes (#5350)", () => {
+	test("an empty aborted post-tool turn names the interrupted tool across replay, live, and main entries even with native empty text/thinking blocks (#5350)", async () => {
 		initTheme("dark");
 		const toolTurn = createAssistantMessage(
-			[{ type: "toolCall", id: "call-bash-1", name: "bash", arguments: { command: "echo started; sleep 40" } }],
+			[
+				{
+					type: "toolCall",
+					id: "mx-1794924149595562253-0",
+					name: "bash",
+					arguments: {
+						command: "echo started; sleep 40; echo finished",
+						timeout: 60,
+						wait: {
+							kind: "foreground",
+							budgetMs: 60000,
+						},
+					},
+				},
+			],
 			{ stopReason: "toolUse" },
 		);
 		const toolResult = {
 			role: "toolResult" as const,
-			toolCallId: "call-bash-1",
+			toolCallId: "mx-1794924149595562253-0",
 			toolName: "bash",
-			content: [{ type: "text" as const, text: "Command aborted" }],
+			details: {},
+			content: [{ type: "text" as const, text: "started\n\n\nCommand aborted" }],
 			isError: true,
 			timestamp: Date.now(),
 		};
-		const abortedTurn = createAssistantMessage([], {
+		const abortedTurn = createAssistantMessage([{ type: "text", text: "" }], {
 			stopReason: "aborted",
-			errorMessage: "Request was aborted",
+			errorMessage: "This operation was aborted",
 		});
 		const snapshot = structuredClone(abortedTurn);
 
@@ -355,15 +370,19 @@ describe("AssistantMessageComponent", () => {
 		controller.applyEvent({ type: "message_end", message: toolTurn });
 		controller.applyEvent({
 			type: "tool_execution_start",
-			toolCallId: "call-bash-1",
+			toolCallId: "mx-1794924149595562253-0",
 			toolName: "bash",
-			args: { command: "echo started; sleep 40" },
+			args: {
+				command: "echo started; sleep 40; echo finished",
+				timeout: 60,
+				wait: { kind: "foreground", budgetMs: 60000 },
+			},
 		});
 		controller.applyEvent({
 			type: "tool_execution_end",
-			toolCallId: "call-bash-1",
+			toolCallId: "mx-1794924149595562253-0",
 			toolName: "bash",
-			result: { content: [{ type: "text", text: "Command aborted" }] },
+			result: { details: {}, content: [{ type: "text", text: "started\n\n\nCommand aborted" }] },
 			isError: true,
 		});
 		controller.applyEvent({ type: "message_start", message: { ...abortedTurn, stopReason: "stop" } });
@@ -379,11 +398,90 @@ describe("AssistantMessageComponent", () => {
 			.filter(Boolean);
 		assert.deepEqual(liveRendered, ["◼ Interrupted · bash"]);
 
-		controller.appendUserText("next question");
-		const freshAborted = createAssistantMessage([], {
-			stopReason: "aborted",
-			errorMessage: "Request was aborted",
+		const chatContainer = new Container();
+		const mode = {
+			isInitialized: true,
+			footer: { invalidate() {} },
+			programStatus: { handleEvent() {} },
+			workingRunMeter: {
+				start() {},
+				requestStarted() {},
+				streaming() {},
+				settled() {},
+				stop() {},
+				snapshot: () => undefined,
+			},
+			pendingTools: new Map(),
+			settingsManager: {
+				getShowTerminalProgress: () => false,
+				getShowImages: () => false,
+				getImageWidthCells: () => 60,
+				getLatexRenderingEnabled: () => false,
+				getShowCacheMissNotices: () => false,
+			},
+			stopWorkingLoader() {},
+			workingVisible: false,
+			ui: { requestRender() {}, terminal: { setProgress() {} } },
+			hideThinkingBlock: false,
+			getMarkdownThemeWithSettings: () => getMarkdownTheme(),
+			hiddenThinkingLabel: "Thinking...",
+			outputPad: 1,
+			getMarkdownTransformers: () => [],
+			chatContainer,
+			toolOutputExpanded: false,
+			session: {},
+			getRegisteredToolDefinition: () => undefined,
+			sessionManager: { getCwd: () => "/project", getEntries: () => [] },
+			maybeShowInstallChangeWarning: () => false,
+			maybeShowAssistantDiagnostics() {},
+			checkShutdownRequested: async () => {},
+			compactionQueuedMessages: [],
+		} as unknown as InteractiveModeBase;
+		const emit = (event: unknown) => InteractiveModeBase.prototype.handleEvent.call(mode, event as never);
+		await emit({ type: "agent_start" });
+		await emit({ type: "message_start", message: { ...toolTurn, content: [] } });
+		await emit({
+			type: "message_update",
+			message: toolTurn,
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "" },
 		});
+		await emit({ type: "message_end", message: toolTurn });
+		await emit({
+			type: "tool_execution_start",
+			toolCallId: "mx-1794924149595562253-0",
+			toolName: "bash",
+			args: {
+				command: "echo started; sleep 40; echo finished",
+				timeout: 60,
+				wait: { kind: "foreground", budgetMs: 60000 },
+			},
+		});
+		await emit({
+			type: "tool_execution_end",
+			toolCallId: "mx-1794924149595562253-0",
+			toolName: "bash",
+			result: { details: {}, content: [{ type: "text", text: "started\n\n\nCommand aborted" }] },
+			isError: true,
+		});
+		await emit({ type: "message_start", message: { ...abortedTurn, stopReason: "stop" } });
+		await emit({ type: "message_end", message: { ...abortedTurn } });
+		const mainInterruptLines = chatContainer
+			.render(80)
+			.map((line) => stripAnsi(line).trim())
+			.filter((line) => line.startsWith("◼ Interrupted"));
+		assert.deepEqual(mainInterruptLines, ["◼ Interrupted · bash"]);
+
+		controller.appendUserText("next question");
+		const freshAborted = createAssistantMessage(
+			[
+				{ type: "thinking", thinking: "" },
+				{ type: "text", text: "" },
+			],
+			{
+				stopReason: "aborted",
+				errorMessage: "This operation was aborted",
+			},
+		);
 		controller.applyEvent({ type: "message_start", message: { ...freshAborted, stopReason: "stop" } });
 		controller.applyEvent({ type: "message_end", message: freshAborted });
 		const freshAssistant = liveEntries.filter((entry) => entry.kind === "assistant").at(-1);
