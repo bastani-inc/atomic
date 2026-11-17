@@ -256,7 +256,23 @@ export function bindReleasedChildWakes(
 		const childName = (payload as { readonly childName?: string } | null)?.childName;
 		if (typeof childName !== "string") return;
 		indexSubagentChildOwner(ctx);
-		const record = subagentChildRecordForTarget(ownerSessionId, childName);
+		let record: SubagentChildRecord | undefined;
+		try {
+			record = subagentChildRecordForTarget(ownerSessionId, childName);
+		} catch (error) {
+			// A child whose record cannot be read is not woken; its owner is told why, as of any wake that fails.
+			observeChildRecordFailure(
+				ownerSessionId,
+				isReleasedChildError(error as Error)
+					? (error as ReleasedChildError)
+					: new ReleasedChildError(
+							"wake-failed",
+							{ childName, reason: (error as Error).message },
+							{ cause: error as Error },
+						),
+			);
+			return;
+		}
 		if (record === undefined) return;
 		void dispatcher
 			.deliver(subagentWakeKey(ownerSessionId, record.childId), { id: `intercom:${randomUUID()}`, kind: "intercom" })
