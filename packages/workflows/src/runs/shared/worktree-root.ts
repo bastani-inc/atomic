@@ -82,3 +82,31 @@ export function findCanonicalGitRoot(cwd: string): string | undefined {
 	const repoRoot = findGitRoot(cwd);
 	return repoRoot === undefined ? undefined : resolveMainRepoRoot(repoRoot);
 }
+
+export function resolveGitHeadBranch(
+	cwd: string,
+	probeSymbolicRef?: (repoRoot: string) => string | undefined,
+): string | undefined {
+	const repoRoot = findGitRoot(cwd);
+	if (repoRoot === undefined) return undefined;
+	const gitEntry = path.join(repoRoot, ".git");
+	let gitDir: string | undefined;
+	try {
+		const stats = fs.statSync(gitEntry);
+		if (stats.isDirectory()) {
+			gitDir = gitEntry;
+		} else if (stats.isFile()) {
+			const pointer = readText(gitEntry);
+			gitDir = pointer === undefined ? undefined : pathFromPointer(pointer, "gitdir:", repoRoot);
+		}
+	} catch {
+		return undefined;
+	}
+	if (gitDir === undefined) return undefined;
+	const head = readText(path.join(gitDir, "HEAD"))?.trim();
+	if (head === undefined || !head.startsWith("ref: refs/heads/")) return undefined;
+	const branch = head.slice("ref: refs/heads/".length).trim();
+	if (!branch) return undefined;
+	if (branch === ".invalid") return probeSymbolicRef?.(repoRoot)?.trim() || undefined;
+	return branch;
+}

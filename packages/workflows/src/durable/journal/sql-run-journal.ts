@@ -20,7 +20,6 @@ import {
 	StorageSchemaVersionError,
 	StorageUnavailableError,
 	type StoredJournalPayload,
-	storedJournalPayload,
 	upgradeRunJournalSchema,
 	validateStoragePrefix,
 	withJournalPayloads,
@@ -40,6 +39,8 @@ import {
 	type RunVersion,
 	registerJournalKeyRangeRead,
 	registerSqlPoolStorage,
+	STAGE_OVERVIEW_PAYLOAD_CHARS,
+	storedEventPayload,
 } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import { LegacyJournalRuns, latestEventColumns, type RunVersionRow } from "./legacy-journal-tables.js";
@@ -54,6 +55,7 @@ import {
 	JournalClosedError,
 	type JournalEntry,
 	type JournalEventRow,
+	type JournalKeyRangeReadOptions,
 	type JournalLeaseRow,
 	JournalMetaCorruptError,
 	JournalSchemaVersionError,
@@ -121,6 +123,18 @@ function entryFromRow(row: EventRow): JournalEntry {
  * row it fetches, and a fixed batch of {@link JOURNAL_READ_PAGE_SIZE} large events made each page of a few of them
  * measure the payloads of up to 256.
  */
+function overviewEventColumns(dialect: StorageDialect): string {
+	const overviewPayload =
+		dialect.name === "postgres"
+			? `CASE WHEN length(${c.payload}) > ${STAGE_OVERVIEW_PAYLOAD_CHARS} AND pg_input_is_valid(${c.payload}, 'jsonb') THEN CASE WHEN ((${c.payload})::jsonb ->> 'kind') = 'stage' THEN (CASE WHEN jsonb_typeof((${c.payload})::jsonb -> 'output') IS NOT NULL THEN (((${c.payload})::jsonb - 'result' - 'worktreeSnapshots' - 'structured' - 'artifacts' - 'waitResults') || '{"output":null}'::jsonb) ELSE ((${c.payload})::jsonb - 'output' - 'result' - 'worktreeSnapshots' - 'structured' - 'artifacts' - 'waitResults') END)::text ELSE ${c.payload} END ELSE ${c.payload} END AS ${c.payload}`
+			: `CASE WHEN length(${c.payload}) > ${STAGE_OVERVIEW_PAYLOAD_CHARS} AND ${dialect.jsonValid(c.payload)} THEN CASE WHEN ${dialect.jsonText(c.payload, "kind")} = 'stage' THEN CASE WHEN ${dialect.jsonType(c.payload, "output")} IS NOT NULL THEN json_set(json_remove(${c.payload}, '$.output', '$.result', '$.worktreeSnapshots', '$.structured', '$.artifacts', '$.waitResults'), '$.output', json('null')) ELSE json_remove(${c.payload}, '$.output', '$.result', '$.worktreeSnapshots', '$.structured', '$.artifacts', '$.waitResults') END ELSE ${c.payload} END ELSE ${c.payload} END AS ${c.payload}`;
+	const overviewChunks =
+		dialect.name === "postgres"
+			? `CASE WHEN pg_input_is_valid(${c.payload}, 'jsonb') THEN CASE WHEN ((${c.payload})::jsonb ->> 'kind') = 'stage' AND ((${c.payload})::jsonb ->> 'overviewStub') = '1' THEN 0 ELSE ${c.chunks} END ELSE ${c.chunks} END AS ${c.chunks}`
+			: `CASE WHEN ${dialect.jsonValid(c.payload)} THEN CASE WHEN ${dialect.jsonText(c.payload, "kind")} = 'stage' AND ${dialect.jsonAt({ column: c.payload }, "overviewStub")} = 1 THEN 0 ELSE ${c.chunks} END ELSE ${c.chunks} END AS ${c.chunks}`;
+	return `${c.runId}, ${c.seq}, ${c.epoch}, ${c.key}, ${c.type}, ${overviewPayload}, ${c.at}, ${overviewChunks}`;
+}
+
 async function readSizedPage(
 	database: SqliteDatabase,
 	chunkTable: string,
@@ -142,11 +156,9 @@ async function readSizedPage(
 	);
 	const fetched = Number(rows[0]?.fetched ?? 0);
 	if (rows.length === 0) {
-		// No row carries the version: read it on its own, so an upgraded journal is refused rather than read as empty.
 		assertRowVersion(await database.get(`SELECT ${c.schemaVersion} AS ${META_VERSION} FROM ${meta}`));
 	}
 	return {
-		// A payload stored in chunks has its stub's length in the page's size: its chunks are read one statement each.
 		page: (await withJournalPayloads(database, chunkTable, rows)).map(entryFromRow),
 		more: rows.length > 0 && (rows.length < fetched || fetched === limit),
 		limit: nextReadBatch(limit, fetched, rows.length, JOURNAL_READ_PAGE_SIZE),
@@ -291,8 +303,8 @@ export class SqlRunJournal implements RunJournal {
 			adapter: database.descriptor.adapter,
 			...(database.notifications === undefined ? {} : { notifications: database.notifications }),
 		});
-		registerJournalKeyRangeRead(this, (runId, fromKey, toKey) =>
-			SqlRunJournal.readKeyRange(this, runId, fromKey, toKey),
+		registerJournalKeyRangeRead(this, (runId, fromKey, toKey, options) =>
+			SqlRunJournal.readKeyRange(this, runId, fromKey, toKey, options),
 		);
 	}
 
@@ -1112,7 +1124,7 @@ export class SqlRunJournal implements RunJournal {
 			validateText("status", status!);
 		// How the payload is stored: a large one as a stub in its row and its JSON in chunks (#4965).
 		const stored =
-			payload instanceof StorageUnavailableError ? undefined : storedJournalPayload(payload, event.payload);
+			payload instanceof StorageUnavailableError ? undefined : storedEventPayload(type, payload, event.payload);
 		const carried =
 			type === RUN_EVENT_TYPES.checkpointRecorded
 				? (event.payload as { readonly worktreeSnapshots?: readonly WorktreeSnapshot[] }).worktreeSnapshots
@@ -1259,6 +1271,7 @@ export class SqlRunJournal implements RunJournal {
 		runId: string,
 		fromKey: string,
 		toKey: string,
+		options?: JournalKeyRangeReadOptions,
 	): AsyncIterable<JournalEntry> {
 		journal.assertOpen();
 		validateText("runId", runId);
@@ -1273,6 +1286,7 @@ export class SqlRunJournal implements RunJournal {
 			}
 			return;
 		}
+		const selectColumns = options?.overview === true ? overviewEventColumns(journal.dialect) : "*";
 		let after: string | undefined;
 		let limit = JOURNAL_READ_PAGE_SIZE;
 		for (;;) {
@@ -1281,7 +1295,7 @@ export class SqlRunJournal implements RunJournal {
 					journal.database,
 					journal.tables.eventChunks,
 					journal.tables.meta,
-					`SELECT * FROM ${journal.tables.events} WHERE ${c.runId} = ? AND ${c.key} ${after === undefined ? ">=" : ">"} ? AND ${c.key} < ? ORDER BY ${c.key} LIMIT ?`,
+					`SELECT ${selectColumns} FROM ${journal.tables.events} WHERE ${c.runId} = ? AND ${c.key} ${after === undefined ? ">=" : ">"} ? AND ${c.key} < ? ORDER BY ${c.key} LIMIT ?`,
 					c.key,
 					[runId, after ?? fromKey, toKey],
 					limit,

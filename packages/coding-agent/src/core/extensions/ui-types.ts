@@ -212,6 +212,9 @@ export interface HostSessionPickerRow {
 	name?: string;
 	/** Optional semantic color for synthetic selector rows. */
 	messageColor?: "success" | "warning" | "accent" | "error";
+	title?: string;
+	detail?: string;
+	canDelete?: boolean;
 }
 
 /** Request for {@link ExtensionUIContext.hostSessionPicker}. */
@@ -220,6 +223,8 @@ export interface HostSessionPickerRequest {
 	sessions: HostSessionPickerRow[];
 	/** Show the rename keybinding hint in the picker header. Defaults to false. */
 	showRenameHint?: boolean;
+	title?: string;
+	variant?: "sessions" | "runs";
 	/**
 	 * Invoked after the user confirms a Ctrl+D delete on a row. The host does
 	 * NOT remove the row; reply with `update()` (row removed) or `error()`.
