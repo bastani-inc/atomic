@@ -1,4 +1,5 @@
 import { TRANSCRIPT_JUMP_TO_END_URL } from "@bastani/atomic";
+import { isWorkflowPromptStage } from "../shared/stage-prompt.js";
 
 import { APP_ACTION, isKeybindingsLike, matchesAction, matchesNavAction, TUI_ACTION } from "./keybindings-adapter.js";
 import { parseTerminalMouseInput, terminalMouseWheelDirection } from "./mouse-input.js";
@@ -32,15 +33,23 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	}
 	if (data === TRANSCRIPT_JUMP_TO_END_URL) return handleStageChatJumpToBottom(ctx, data);
 	if (isHostThinkingToggle(ctx, data)) return false;
-	if (ctx.mountedCustomUi) {
+	const stage = currentStage(ctx);
+	if (ctx.mountedCustomUi && stage?.pendingPrompt?.source !== "stage-dialog") {
 		return handleMountedCustomUiInput(ctx, data);
 	}
-	const stage = currentStage(ctx);
 	syncPromptState(ctx, stage?.pendingPrompt);
 	const readOnlyArchive = isReadOnlyArchive(ctx, stage);
-	const readOnlyPromptArchive = readOnlyArchive && stage?.promptFootprint !== undefined;
+	const readOnlyPromptArchive = readOnlyArchive && isWorkflowPromptStage(stage);
 
 	if (ctx.promptState && promptCardShown(ctx)) {
+		if (ctx.mountedCustomUi && ctx.promptState.prompt.source === "stage-dialog" && matchesKey(data, Key.escape)) {
+			resolvePromptResponse(
+				ctx,
+				ctx.promptState.prompt.id,
+				ctx.promptState.prompt.kind === "confirm" ? false : undefined,
+			);
+			return true;
+		}
 		// Esc closes a choice or yes/no question back to the chat's prompt; the question stays pending (#5224).
 		if (isClosableQuestion(ctx.promptState.prompt.kind) && matchesKey(data, Key.escape)) {
 			ctx.dismissedPromptId = ctx.promptState.prompt.id;
@@ -55,6 +64,13 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 		handlePromptInput(ctx, data);
 		return true;
 	}
+	if (ctx.promptState && !promptCardShown(ctx) && matchesKey(data, Key.enter) && !ctx.chatHost.hasInputText()) {
+		ctx.dismissedPromptId = null;
+		return true;
+	}
+	if (ctx.mountedCustomUi) {
+		return handleMountedCustomUiInput(ctx, data);
+	}
 	if (handleToolsExpandInput(ctx, data)) return true;
 	if (readOnlyPromptArchive && handlePromptScrollInput(ctx, data, true)) {
 		return true;
@@ -62,11 +78,6 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	if (handleStageChatJumpToBottom(ctx, data)) return true;
 	if (ctx.chatHost.handleScrollInput(data)) return true;
 	// The back key on an empty prompt returns to the graph, one level up; it never discards typed text.
-	// Enter on the empty prompt reopens a question closed with Esc.
-	if (ctx.promptState && !promptCardShown(ctx) && matchesKey(data, Key.enter) && !ctx.chatHost.hasInputText()) {
-		ctx.dismissedPromptId = null;
-		return true;
-	}
 	if (isBackToGraphInput(ctx, data)) {
 		recordCurrentPromptDraft(ctx);
 		ctx.onDetach();

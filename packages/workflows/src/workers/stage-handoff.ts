@@ -15,6 +15,7 @@ import {
 	workflowPendingStageRouteCapability,
 } from "../shared/pending-stage-route-capability.js";
 import { workflowPendingStageRouteReady } from "../shared/pending-stage-route-readiness.js";
+import { isWorkflowPromptStage } from "../shared/stage-prompt.js";
 import type { Store } from "../shared/store.js";
 import { isTerminalRunStatus, isTerminalStageStatus } from "../shared/store-internal.js";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
@@ -1115,9 +1116,7 @@ function withReconnectingStages(
 	// Positions where this attempt asks a prompt the earlier attempt did not: an unanswered prompt the
 	// earlier attempt asked there was superseded (#4022), not left behind, and is not kept.
 	const newPromptPositions = new Set(
-		stages.flatMap((stage, index) =>
-			stage.promptFootprint !== undefined && !previousIds.has(stage.id) ? [index] : [],
-		),
+		stages.flatMap((stage, index) => (isWorkflowPromptStage(stage) && !previousIds.has(stage.id) ? [index] : [])),
 	);
 	const reconnecting = previous.stages.filter(
 		(stage, index) =>
@@ -1125,7 +1124,7 @@ function withReconnectingStages(
 			(stage.replayKey === undefined || !replayKeys.has(stage.replayKey)) &&
 			stage.workerExecution !== undefined &&
 			stage.workerExecution.generation < generation &&
-			!(stage.promptFootprint !== undefined && stage.endedAt === undefined && newPromptPositions.has(index)),
+			!(isWorkflowPromptStage(stage) && stage.endedAt === undefined && newPromptPositions.has(index)),
 	);
 	if (reconnecting.length === 0) return stages;
 	// A stage republished under a new id with the same replay key keeps its edges: retained

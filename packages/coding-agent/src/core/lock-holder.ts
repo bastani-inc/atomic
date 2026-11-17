@@ -4,17 +4,18 @@ import { hostname } from "node:os";
 import {
 	HOLDER_TEMP_STALE_MS,
 	lockHolderPath,
+	prepareTakeoverMutex,
 	processMayRun,
 	putBack,
 	removeAside,
 	removeLeftoverHolderFiles,
 	takeTakeoverMutex,
-} from "./lock-takeover.ts";
+} from "./lock-takeover.js";
 
-export { HOLDER_TEMP_STALE_MS, lockHolderPath };
+export { HOLDER_TEMP_STALE_MS, lockHolderPath, prepareTakeoverMutex };
 
 import { lockHolder } from "./lock-wait.ts";
-import { processStartToken } from "./process-start-token.ts";
+import { processStartToken } from "./process-start-token.js";
 import { renameReplacing } from "./rename-retry.ts";
 
 /**
@@ -72,6 +73,10 @@ function readHolderRecord(lockPath: string): LockHolderRecord | undefined {
 	} catch {
 		return undefined;
 	}
+}
+
+export async function prepareLockTakeover(lockPath: string): Promise<void> {
+	await prepareTakeoverMutex(lockPath, readHolderRecord(lockPath));
 }
 
 /**

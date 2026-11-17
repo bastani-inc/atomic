@@ -16,7 +16,11 @@ import {
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { createModuleRequire } from "../utils/module-require.ts";
-import { processStartToken } from "./process-start-token.ts";
+import {
+	processStartToken,
+	processStartTokenForSynchronousTakeover,
+	readProcessStartToken,
+} from "./process-start-token.js";
 
 /*
  * Every removal of another process's lock goes through one mutex per lock (#5161): the takeover of a lock whose
@@ -115,11 +119,23 @@ function processAlive(pid: number): boolean {
  * else by its pid, so a start that cannot be read never makes a running process another one. A process on another host
  * cannot be seen from here and may still run.
  */
-export function processMayRun(record: ProcessRecord): boolean {
+export function processMayRun(record: ProcessRecord, readStart = processStartToken): boolean {
 	if (record.host !== hostname()) return true;
-	const started = record.started === undefined ? undefined : processStartToken(record.pid);
+	const started = record.started === undefined ? undefined : readStart(record.pid);
 	if (started !== undefined) return started === record.started;
 	return processAlive(record.pid);
+}
+
+export async function prepareProcessRecord(record: ProcessRecord | undefined): Promise<void> {
+	if (record === undefined || record.host !== hostname() || record.started === undefined) return;
+	await readProcessStartToken(record.pid);
+}
+
+export async function prepareTakeoverMutex(lockPath: string, holder?: ProcessRecord): Promise<void> {
+	const owner = readMutexOwner(takeoverMutexPath(lockPath));
+	const prepareRecords = () => Promise.all([prepareProcessRecord(owner), prepareProcessRecord(holder)]);
+	await Promise.all([readProcessStartToken(process.pid), prepareRecords()]);
+	await prepareRecords();
 }
 
 /** Which directory `path` is now, or undefined when none is there or it is being removed. */
@@ -185,12 +201,12 @@ export function removeAside(path: string): void {
  * {@link TAKEOVER_MUTEX_STALE_MS} old. It is moved aside first and removed only when it is still the mutex judged, so a
  * mutex another process took meanwhile is never removed; true when the mutex is gone.
  */
-function removeStaleMutex(mutexPath: string): boolean {
+function removeStaleMutex(mutexPath: string, readStart: typeof processStartToken): boolean {
 	const judged = lockHolder(mutexPath);
 	if (judged === undefined) return true;
 	const owner = readMutexOwner(mutexPath);
 	if (owner !== undefined) {
-		if (processMayRun(owner)) return false;
+		if (processMayRun(owner, readStart)) return false;
 	} else {
 		const stats = statSync(mutexPath, { throwIfNoEntry: false });
 		if (stats !== undefined && Date.now() - stats.mtimeMs < TAKEOVER_MUTEX_STALE_MS) return false;
@@ -220,11 +236,12 @@ function removeStaleMutex(mutexPath: string): boolean {
 export function takeTakeoverMutex(
 	lockPath: string,
 	waitMs: number = TAKEOVER_MUTEX_WAIT_MS,
+	readStart = processStartToken,
 ): TakeoverMutex | undefined {
 	const native = locks();
 	if (native === null) {
 		warnFallback();
-		return takeDirectoryMutex(lockPath);
+		return takeDirectoryMutex(lockPath, undefined, readStart);
 	}
 	const file = takeoverLockPath(lockPath);
 	let lock: { release(): void } | null;
@@ -233,11 +250,11 @@ export function takeTakeoverMutex(
 	} catch (error) {
 		// A missing directory is no lock to take at all: the directory mutex cannot be made either.
 		if (existsSync(dirname(lockPath))) warnUnopenable(file, error);
-		return takeDirectoryMutex(lockPath);
+		return takeDirectoryMutex(lockPath, undefined, readStart);
 	}
 	if (lock === null) return undefined;
 	removeLeftoverStaging(lockPath);
-	const directory = takeDirectoryMutex(lockPath, native);
+	const directory = takeDirectoryMutex(lockPath, native, readStart);
 	if (directory === undefined) {
 		lock.release();
 		return undefined;
@@ -290,12 +307,16 @@ export function putBack(aside: string, path: string): boolean {
  * proven dead is removed, as is one that names no owner once it is {@link TAKEOVER_MUTEX_STALE_MS} old; a live owner
  * keeps its mutex however long it holds it.
  */
-function takeDirectoryMutex(lockPath: string, native?: NativeLocks): TakeoverMutex | undefined {
+function takeDirectoryMutex(
+	lockPath: string,
+	native: NativeLocks | undefined,
+	readStart: typeof processStartToken,
+): TakeoverMutex | undefined {
 	const path = takeoverMutexPath(lockPath);
 	const owner: MutexOwner = {
 		host: hostname(),
 		pid: process.pid,
-		started: processStartToken(process.pid),
+		started: readStart(process.pid),
 		id: randomUUID(),
 	};
 	const owned = () => readMutexOwner(path)?.id === owner.id;
@@ -332,7 +353,7 @@ function takeDirectoryMutex(lockPath: string, native?: NativeLocks): TakeoverMut
 		}
 		return mutex;
 	};
-	return take() ?? (removeStaleMutex(path) ? take() : undefined);
+	return take() ?? (removeStaleMutex(path, readStart) ? take() : undefined);
 }
 
 /** A name beside the directory mutex at `path` for one being made or removed by a process holding the advisory lock. */
@@ -411,8 +432,8 @@ export function removeLeftoverHolderFiles(lockPath: string): void {
  * mutex the directory is removed only while it is still stale, so a lock taken since is never removed. When the mutex
  * is held elsewhere or the lock is fresh again, nothing is removed and the next attempt finds the lock held.
  */
-export function removeStaleLock(lockPath: string, staleMs: number): void {
-	const mutex = takeTakeoverMutex(lockPath);
+export function removeStaleLock(lockPath: string, staleMs: number, readStart = processStartToken): void {
+	const mutex = takeTakeoverMutex(lockPath, TAKEOVER_MUTEX_WAIT_MS, readStart);
 	if (mutex === undefined) return;
 	try {
 		const stats = statSync(lockPath, { throwIfNoEntry: false });
@@ -441,7 +462,7 @@ export function guardLockRemoval(lockPath: string, staleMs: number): LockRemoval
 	let taking = true;
 	const guarded = (path: nodeFs.PathLike) => taking && resolve(String(path)) === target;
 	const rmdirSync = ((path: nodeFs.PathLike, options?: nodeFs.RmDirOptions) => {
-		if (guarded(path)) removeStaleLock(target, staleMs);
+		if (guarded(path)) removeStaleLock(target, staleMs, processStartTokenForSynchronousTakeover);
 		else nodeFs.rmdirSync(path, options);
 	}) as typeof nodeFs.rmdirSync;
 	const rmdir = ((path: nodeFs.PathLike, ...rest: unknown[]) => {

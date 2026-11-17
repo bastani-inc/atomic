@@ -266,7 +266,11 @@ Await every `SessionManager` mutation before reading dependent state. Writes res
 
 Pass `extensionBindings.humanInput` to answer extension dialogs and `ask_user_question` in a Node host. `HostInput` requires all five methods: `confirm`, `select`, `input`, `editor` and `questionnaire`. `QuestionParams` and `QuestionnaireResult` are exported from `@bastani/atomic`; questionnaire answers retain their question indices, answer kinds, selections, previews and notes.
 
-Each callback receives a `HostInputOptions` argument with a runtime-generated `requestId`, the originating `sessionId`, and an `AbortSignal`. Stop presenting the question when the signal aborts.
+Each callback receives a `HostInputOptions` argument with a runtime-generated `requestId`, the originating `sessionId`, and an `AbortSignal`. Route the question to that session, not whichever chat is currently visible, and stop presenting it when the signal aborts. Child sessions inherit an explicitly supplied `humanInput` adapter. In the interactive CLI, subagent questions wait in their own task views and workflow stage questions wait in their stage chats. Plain RPC clients and SDK hosts that provide only `uiContext` keep receiving child dialogs through that presentation, including subagents launched by workflow stages, since they have no built-in task inspector. Setting `mode: "tui"` alone does not enable held task prompts.
+
+Dialog options include `timeout` in milliseconds when the caller supplied it. The signal aborts when a timeout, cancellation, session shutdown or an answer from a stage chat or `workflow answer` ends a pending request. Stop showing the dialog on abort even if your callback has not returned. A settled host reply does not abort its signal, including when Atomic rejects that reply as invalid.
+
+For custom task views, see [Session-local task prompts](/sdk/reference#session-local-task-prompts).
 
 Return an actual boolean from `confirm`, a supplied choice or `undefined` from `select`, and a string or `undefined` from text dialogs. Atomic preserves empty strings, whitespace and choice order. Malformed replies reject with `InvalidHostInput`; false, cancellation and rejected callbacks never approve an action.
 
@@ -306,7 +310,7 @@ Extension authors should check `ctx.hasHumanInput` before asking questions and `
 
 #### Durable workflow approvals
 
-Workflow input uses the same callbacks for stage questionnaires and nested workflows. Requests include `workflowRunId` and `workflowStageId`; combine them with `requestId` to associate a question with its run. Author semantic `ctx.ui` calls rather than terminal-specific branches so the definition works across hosts.
+Workflow input uses the same callbacks for stage questionnaires, extension dialogs and nested workflows, including dialogs raised by local worker stages. Return the answer through the callback to let the waiting stage continue. Requests include `workflowRunId` and `workflowStageId`; combine them with `requestId` to associate a question with its run. A stage dialog and its questionnaire can be pending together, regardless of which arrives first. Keep both requests live until each settles: opening or answering either request does not withdraw or restart the other. A stage can then open another dialog with a new request ID. Answer that request separately, even when it comes from the same worker and stage. A replacement worker's new dialog also needs a fresh answer, even if its text matches an earlier dialog. Author semantic `ctx.ui` calls rather than terminal-specific branches so the definition works across hosts.
 
 A durable approval stays pending when input is unavailable, cancelled, or invalid. Withdrawing the adapter neither approves the request nor discards the run. Bind a new adapter to present a live pending request again. It receives a fresh request ID; late answers to the withdrawn request cannot authorize work.
 

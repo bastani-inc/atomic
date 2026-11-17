@@ -141,6 +141,7 @@ export type CustomPromptIdentitySource = "caller" | "factory" | "callsite";
 export interface PendingPrompt {
 	readonly id: string;
 	readonly kind: PromptKind;
+	readonly source?: "stage-dialog";
 	readonly message: string;
 	/** Choices for `kind: "select"`. */
 	readonly choices?: readonly string[];
@@ -152,6 +153,7 @@ export interface PendingPrompt {
 	readonly customIdentitySource?: CustomPromptIdentitySource;
 	/** Issue timestamp (ms since epoch). */
 	readonly createdAt: number;
+	readonly expiresAt?: number;
 }
 
 /** Discriminates the brokered structured-prompt source. */

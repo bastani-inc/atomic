@@ -1,5 +1,12 @@
-import { getKeybindings, type KeybindingsManager, matchesKey, Text } from "@bastani/atomic-tui";
+import {
+	getKeybindings,
+	matchesKey,
+	Text,
+	type KeybindingsManager as TuiKeybindingsManager,
+} from "@bastani/atomic-tui";
+import { type HeldPrompt, heldPrompts } from "../../../core/extensions/held-prompts.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
+import { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { TaskMessageError } from "../../../core/tasks/message-error.js";
 import type { TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
@@ -14,6 +21,7 @@ import { theme } from "../theme/theme.js";
 import type { ChatSessionHost } from "./chat-session-host.ts";
 import type { ChatSessionHostOpts, ChatSessionHostStyle } from "./chat-session-host-types.ts";
 import { ScrollableComponentViewport } from "./chat-transcript.js";
+import { type HeldPromptForm, heldPromptForm } from "./held-prompt-form.ts";
 import { applyInputLabelToEditorTopRule } from "./input-label.ts";
 import { taskDisplayText } from "./task-row.js";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./transcript-follow-indicator.ts";
@@ -63,6 +71,8 @@ export interface TaskTranscriptPage {
 	cursorAtStart(): boolean;
 	/** Whether the page takes Escape and Left itself, as while its own task list is open. */
 	handlesBack(): boolean;
+	takesEscape?(): boolean;
+	capturesPageScroll?(): boolean;
 	/** Whether Esc would interrupt the task's current turn now. */
 	interruptible(): boolean;
 	/** Interrupts the task's current turn; the task keeps running and waits for its next message. */
@@ -88,10 +98,10 @@ export function themedChatHostStyle(): ChatSessionHostStyle {
 	};
 }
 
-function keybindingsOf(candidate: unknown): Pick<KeybindingsManager, "matches"> {
-	const keybindings = candidate as Partial<Pick<KeybindingsManager, "matches">> | undefined;
+function keybindingsOf(candidate: unknown): Pick<TuiKeybindingsManager, "matches"> {
+	const keybindings = candidate as Partial<Pick<TuiKeybindingsManager, "matches">> | undefined;
 	return typeof keybindings?.matches === "function"
-		? (keybindings as Pick<KeybindingsManager, "matches">)
+		? (keybindings as Pick<TuiKeybindingsManager, "matches">)
 		: getKeybindings();
 }
 
@@ -151,6 +161,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	/** A history-only transcript changed while the reader was away from its end; it is read again when they return. */
 	private behind = false;
 	private disposed = false;
+	private shownPromptSessionId?: string;
+	private readonly unsubscribePrompts: () => void;
 
 	private readonly reportLate: (reason: string) => void;
 
@@ -198,6 +210,36 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		});
 		this.restoreDraft();
 		this.restoreUndelivered();
+		this.unsubscribePrompts = heldPrompts().subscribe((sessionId) => {
+			if (sessionId === this.childSessionId() || sessionId === this.shownPromptSessionId) this.requestRender();
+		});
+	}
+
+	private childSessionId(): string | undefined {
+		const task = this.source.tasks.find((candidate) => candidate.ref.taskId === this.taskId);
+		const sessionId =
+			task?.attention.kind === "input-needed"
+				? task.attention.route.sessionId
+				: (this.followed?.getSessionId() ?? this.source.followTaskTranscript(this.taskId)?.session?.getSessionId());
+		if (sessionId !== undefined) this.shownPromptSessionId = sessionId;
+		return sessionId;
+	}
+
+	heldPrompt(): HeldPrompt | undefined {
+		const task = this.source.tasks.find((candidate) => candidate.ref.taskId === this.taskId);
+		if (task?.execution.kind === "settled") return undefined;
+		const sessionId = this.childSessionId();
+		return sessionId === undefined ? undefined : heldPrompts().current(sessionId);
+	}
+
+	private heldForm(): HeldPromptForm | undefined {
+		const prompt = this.heldPrompt();
+		if (prompt === undefined) return undefined;
+		return heldPromptForm(prompt, {
+			...(this.env.tui === undefined ? {} : { tui: this.env.tui }),
+			...(this.env.keybindings instanceof KeybindingsManager ? { keybindings: this.env.keybindings } : {}),
+			requestRender: this.requestRender,
+		});
 	}
 
 	/** Restores what was typed here before the reader left. */
@@ -270,6 +312,18 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.requestRender();
 			return true;
 		}
+		const form = this.chat.hasTaskInspector ? undefined : this.heldForm();
+		if (form !== undefined) {
+			const selectorPages =
+				this.capturesPageScroll() && (matchesKey(data, "pageUp") || matchesKey(data, "pageDown"));
+			if (!selectorPages && this.chat.handleScrollInput(data)) {
+				this.requestRender();
+				return true;
+			}
+			form.handleInput(data);
+			this.requestRender();
+			return true;
+		}
 		// A read-only chat scrolls and keeps its keys, but takes no typing: nothing it sends could reach the task.
 		if (!this.chat.hasTaskInspector && this.readOnlyReason() !== undefined && isTyping(data)) return true;
 		// The subagent's own task list is modal while it is open, as in a stage chat.
@@ -293,8 +347,16 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			remaining -= shown.length;
 			return shown;
 		};
+		const form = this.heldForm();
 		const editor = reserve(
-			applyInputLabelToEditorTopRule(this.env.style, "subagent", this.sessionName(), this.chat.renderEditor(width)),
+			form !== undefined
+				? form.render(width)
+				: applyInputLabelToEditorTopRule(
+						this.env.style,
+						"subagent",
+						this.sessionName(),
+						this.chat.renderEditor(width),
+					),
 		);
 		const footer = reserve(this.chat.renderFooter(width));
 		const pending = reserve(this.chat.renderPendingMessages(width));
@@ -323,21 +385,37 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			keptDrafts.set(this.source, kept);
 		}
 		this.disposed = true;
+		this.unsubscribePrompts();
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
 		this.chat.dispose();
 	}
 
 	hasDraft(): boolean {
+		if (!this.chat.hasTaskInspector && this.heldPrompt() !== undefined) return true;
 		return this.chat.hasInputText();
 	}
 
 	cursorAtStart(): boolean {
+		const form = this.chat.hasTaskInspector ? undefined : this.heldForm();
+		if (form !== undefined) return form.capturesBack?.() !== true;
 		return this.chat.inputCursorAtStart();
 	}
 
 	handlesBack(): boolean {
 		return this.chat.hasTaskInspector;
+	}
+
+	takesEscape(): boolean {
+		return !this.chat.hasTaskInspector && this.heldPrompt() !== undefined;
+	}
+
+	capturesPageScroll(): boolean {
+		return (
+			!this.chat.hasTaskInspector &&
+			this.heldPrompt()?.kind === "select" &&
+			(this.heldPrompt()?.choices?.length ?? 0) > 10
+		);
 	}
 
 	interruptible(): boolean {

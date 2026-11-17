@@ -74,4 +74,20 @@ describe("package settings updates (#4966)", () => {
 		assert.deepEqual(settingsManager.getGlobalSettings().packages, ["npm:a"]);
 		assert.equal(readFileSync(path, "utf-8"), "{ not json");
 	});
+
+	it("flushes settings to disk before installAndPersist and removeAndPersist resolve (#5315)", async () => {
+		const agentDir = join(tempDir, "agent");
+		const settingsPath = join(agentDir, "settings.json");
+		const extDir = join(tempDir, "local-ext");
+		mkdirSync(extDir, { recursive: true });
+
+		await managerFor(SettingsManager.create(tempDir, agentDir)).installAndPersist(extDir);
+		assert.deepEqual((JSON.parse(readFileSync(settingsPath, "utf-8")) as { packages?: string[] }).packages, [
+			join("..", "local-ext"),
+		]);
+
+		const removed = await managerFor(SettingsManager.create(tempDir, agentDir)).removeAndPersist(extDir);
+		assert.equal(removed, true);
+		assert.deepEqual((JSON.parse(readFileSync(settingsPath, "utf-8")) as { packages?: string[] }).packages, []);
+	});
 });
