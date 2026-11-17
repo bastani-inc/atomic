@@ -16,11 +16,12 @@ export async function loginIsolatedOAuthProvider(
 	provider: string,
 	callbacks: AtomicOAuthLoginCallbacks,
 ): Promise<{ modelsRefreshed: true }> {
+	const scope = catalog.getScopeSnapshot();
 	const remoteCatalog = await loginRpcOAuthProvider(client, provider, callbacks);
 	if (remoteCatalog.cancelled) {
 		throw normalizeOAuthLoginError(callbacks.signal?.reason ?? new Error("Login cancelled"), callbacks.signal);
 	}
-	catalog.apply(remoteCatalog);
+	catalog.apply(remoteCatalog, scope);
 	// The engine owns persistence. Refresh the frontend snapshot only after its
 	// credential transaction and catalog refresh both complete successfully.
 	await session.modelRuntime.reloadCredentials({ refreshAvailability: false });
@@ -56,16 +57,18 @@ export async function loginIsolatedApiKeyProvider(
 	const signal = operationSignal(interaction.signal);
 	signal.throwIfAborted();
 	if (!apiKeyAuth?.login) {
+		const scope = catalog.getScopeSnapshot();
 		const result = await client.loginProvider(provider, signal);
 		if (result.cancelled) throw normalizeOAuthLoginError(signal.reason ?? new Error("Login cancelled"), signal);
-		catalog.apply(result);
+		catalog.apply(result, scope);
 		await session.modelRuntime.reloadCredentials({ refreshAvailability: false });
 		return { modelsRefreshed: true };
 	}
 	const credential = await raceWithAbortSignal(apiKeyAuth.login({ ...interaction, signal }), signal);
 	if (signal.aborted) throw normalizeOAuthLoginError(signal.reason ?? new Error("Login cancelled"), signal);
+	const scope = catalog.getScopeSnapshot();
 	const remoteCatalog = await client.saveProviderCredential(provider, credential, { refreshCatalog: false });
-	catalog.apply(remoteCatalog);
+	catalog.apply(remoteCatalog, scope);
 	await session.modelRuntime.reloadCredentials({ refreshAvailability: false });
 	return { modelsRefreshed: true };
 }

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.js";
 import { formatNoApiKeyFoundMessage } from "../src/core/auth-guidance.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
+import { formatNoUsableModelMessage } from "../src/core/model-credential-filter.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
@@ -92,7 +93,13 @@ describe("an extension provider without credentials gets the built-in missing-ke
 			[BUILTIN, EXTENSION].map((provider) => ({
 				provider,
 				select: `No API key for ${provider}/${runtime.getModels(provider)[0]?.id}`,
-				prompt: formatNoApiKeyFoundMessage(provider),
+				prompt: formatNoUsableModelMessage([
+					{
+						model: `${provider}/${runtime.getModels(provider)[0]?.id}`,
+						provider,
+						reason: "no-credentials",
+					},
+				]),
 				request: formatNoApiKeyFoundMessage(provider),
 				requestAuth: undefined,
 			})),

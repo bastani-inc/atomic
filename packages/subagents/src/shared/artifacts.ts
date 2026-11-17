@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { ensurePrivateTempDir, getAgentConfigPaths } from "@bastani/atomic";
+import { ensurePrivateTempDirAsync, getAgentConfigPaths } from "@bastani/atomic";
 import { appendToActiveEventWriter } from "./event-jsonl-writer.js";
 import { publishFileExclusive, unlinkIfPresent } from "./exclusive-file-publication.js";
 import type { ArtifactPaths } from "./types.js";
@@ -10,7 +10,7 @@ const CLEANUP_LOCK_FILE = ".cleanup.lock";
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const CLEANUP_LOCK_STALE_MS = 60 * 60 * 1000;
 
-export function getArtifactsDir(sessionFile: string | null): string {
+export async function getArtifactsDir(sessionFile: string | null): Promise<string> {
 	if (sessionFile) {
 		const sessionDir = path.dirname(sessionFile);
 		return path.join(sessionDir, "subagent-artifacts");
@@ -20,11 +20,11 @@ export function getArtifactsDir(sessionFile: string | null): string {
 
 /**
  * The session-less artifact directory, created private to this account (see
- * `ensurePrivateTempDir`) before anything — progress files, worktree diffs — is
+ * `ensurePrivateTempDirAsync`) before anything — progress files, worktree diffs — is
  * written below it, and checked again on every call.
  */
-function sessionlessArtifactsDir(): string {
-	return ensurePrivateTempDir("subagents", "artifacts");
+function sessionlessArtifactsDir(): Promise<string> {
+	return ensurePrivateTempDirAsync("subagents", "artifacts");
 }
 
 export function getArtifactPaths(artifactsDir: string, runId: string, agent: string, index?: number): ArtifactPaths {
@@ -237,17 +237,17 @@ function cleanupSessionsRoot(sessionsBase: string, maxAgeDays: number): void {
 	}
 }
 
-export function cleanupAllArtifactDirs(maxAgeDays: number, sessionsRoots?: readonly string[]): void {
-	try {
-		cleanupOldArtifacts(sessionlessArtifactsDir(), maxAgeDays);
-	} catch {
-		// No private session-less artifact directory; there is nothing of ours to clean.
-	}
-
+export async function cleanupAllArtifactDirs(maxAgeDays: number, sessionsRoots?: readonly string[]): Promise<void> {
 	// Host-provided sessions roots keep isolated/programmatic agent directories from
 	// leaking into the real global (and legacy) session roots; only the env/global
 	// derivation scans those.
 	for (const sessionsBase of sessionsRoots ?? getAgentConfigPaths("sessions")) {
 		cleanupSessionsRoot(sessionsBase, maxAgeDays);
+	}
+
+	try {
+		cleanupOldArtifacts(await sessionlessArtifactsDir(), maxAgeDays);
+	} catch {
+		// No private session-less artifact directory; there is nothing of ours to clean.
 	}
 }

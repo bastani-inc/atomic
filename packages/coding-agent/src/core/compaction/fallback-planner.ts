@@ -38,6 +38,7 @@ export interface FallbackPlannerContext {
 	readonly isFallbackModelAllowed?: (model: Model<Api>, effort: string | undefined) => boolean;
 	/** Models the main chat's fallback blocked earlier in this turn; borrowing skips them as main-chat fallback does. */
 	readonly blockedModels?: readonly Model<Api>[];
+	readonly blockedProviders?: ReadonlySet<string>;
 	readonly selectedModelId?: string;
 }
 
@@ -120,6 +121,7 @@ async function borrowCandidate(
 	if (!candidate) return undefined;
 	if (`${candidate.model.provider}/${candidate.model.id}` === context.selectedModelId) return undefined;
 	if (context.blockedModels?.some((blocked) => modelsAreEqual(blocked, candidate.model))) return undefined;
+	if (context.blockedProviders?.has(candidate.model.provider)) return undefined;
 	// Resolve the budget first: the identity depends on the effective
 	// reasoning level, which inheritance may supply.
 	const budget = resolvePlannerRequest(candidate.model, context.sessionThinkingLevel, candidate.thinkingLevel);

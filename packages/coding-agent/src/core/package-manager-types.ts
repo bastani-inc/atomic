@@ -123,7 +123,7 @@ export interface PackageManagerDriver {
 	getGlobalNpmRoot(): string;
 	parseSource(source: string): ParsedSource;
 	getPackageIdentity(source: string, scope?: SourceScope): string;
-	getGitInstallPath(source: GitSource, scope: SourceScope): string;
+	getGitInstallPath(source: GitSource, scope: SourceScope): Promise<string>;
 	getLatestNpmVersion(packageSpec: string, range?: string): Promise<string>;
 }
 

@@ -250,6 +250,7 @@ export {
 	type SerializedGitHubCopilotError,
 	serializeGitHubCopilotError,
 } from "@bastani/atomic-ai";
+export { clampThinkingLevel, getSupportedThinkingLevels } from "@bastani/atomic-ai/compat";
 export { type Args, parseArgs } from "./cli/args.ts";
 // Config paths
 export {
@@ -567,6 +568,15 @@ export {
 	serializeIntercomBrokerError,
 } from "./core/intercom-broker-error.ts";
 export {
+	confinedIntercomChildGroup,
+	IntercomPolicyError,
+	type IntercomPolicyView,
+	type IntercomReachApplier,
+	type IntercomSessionOptions,
+	MAX_INTERCOM_REACHABLE_GROUPS,
+	type SessionIntercom,
+} from "./core/intercom-policy.ts";
+export {
 	isProjectGroupError,
 	ProjectGroupError,
 	type ProjectGroupErrorCode,
@@ -605,6 +615,16 @@ export {
 } from "./core/mcp-servers.ts";
 export { convertToLlm } from "./core/messages.ts";
 export { modelCallUsage } from "./core/model-call-usage.ts";
+export {
+	type CredentialPartition,
+	formatNoUsableModelMessage,
+	NoUsableModelError,
+	partitionByCredentials,
+	providerOfModelReference,
+	type SkippedCandidate,
+	type SkippedModel,
+	type SkippedModelReason,
+} from "./core/model-credential-filter.ts";
 export type {
 	ModelFallbackFailureKind,
 	ModelFallbackFailureOptions,
@@ -613,6 +633,7 @@ export type {
 } from "./core/model-fallback-failures.ts";
 export {
 	errorMessage,
+	isProviderCredentialRejection,
 	isRetryableModelFailure,
 	isRetryableSameModelFailure,
 	isUnrecognizedModelFailure,
@@ -1021,7 +1042,9 @@ export {
 export { boundOversizedText } from "./core/tools/oversized-tool-result.js";
 export {
 	assertPrivateDirectory,
+	assertPrivateDirectoryAsync,
 	ensurePrivateTempDir,
+	ensurePrivateTempDirAsync,
 	TempDirRefusedError,
 } from "./core/tools/session-temp-dir.ts";
 export {

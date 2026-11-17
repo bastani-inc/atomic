@@ -595,15 +595,14 @@ export function createBashToolDefinition(
 				output.finish();
 				clearUpdateTimer();
 				emitOutputUpdate();
-				const snapshot = output.snapshot({ persistIfTruncated: true });
+				output.snapshot({ persistIfTruncated: true });
 				try {
 					await output.closeTempFile();
 				} catch {
-					// The spill file could not be flushed. Keep the truncated result, but
-					// re-read the snapshot so the now-cleared path is not advertised.
-					return output.snapshot();
+					// The spill file could not be flushed. Keep the truncated result; the
+					// snapshot below no longer advertises the cleared path.
 				}
-				return snapshot;
+				return output.snapshot();
 			};
 			const formatOutput = (snapshot: Awaited<ReturnType<typeof finishOutput>>, emptyText = "(no output)") => {
 				const truncation = snapshot.truncation;

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- A subagent of a session created with the SDK's `intercom` option gets its own Intercom policy: its group is its home and it reaches nothing else. It starts in the session's home group, and a requested `group` (including `true`) is placed under it, as `<home>/<group>` ([#5352](https://github.com/bastani-inc/atomic/issues/5352))
+
 ### Changed
 
 - Agent launches and control calls use shared state-marked blocks. Foreground and background launches show the short task title, elapsed time, token count and live management hint. Completion notices name the agent and show its first result line; expansion shows the prompt, tool calls and full retained result without inherited fork history ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
@@ -16,6 +20,8 @@
 - Fixed a background subagent that was slow to start showing only as `running` for many minutes, with no Intercom registration, metrics or output. A child that has not started its first turn now shows where its start is. `subagent status` gives the step and how long it and the start have run, `/tasks` and task heartbeats show the step as its current action, and the launch result and `status` name the child's Intercom target. A start that runs out of its start budget is shown as stalled with that step, retried once, and then fails with both stalls named. The launching session is told. The retry keeps the messages the stalled start had received before its first turn, and the task's cleanup covers the retry's session.
 - Fixed a subagent that started while the Intercom broker was briefly unreachable running its turns unregistered, invisible to `intercom list` and unreachable until it next used Intercom itself. Its start now waits in its `registering on Intercom` step and retries until it registers, within its start budget.
 - Fixed `contact_supervisor` reaching the wrong session. A background subagent named as its supervisor whichever session in the Atomic process had connected to Intercom last, such as another subagent or a workflow stage hosted in that process, instead of the session that launched it. Its updates and questions went to that session and never reached its parent. A child now names the Intercom id its launching session registered under, or that session's own name until it has one, and a child relaunched after a restart does the same.
+- A subagent launch whose model chain has no credentials now names each skipped model and its provider in the error. A provider that rejects credentials is skipped for the rest of the child's fallback walk ([#5353](https://github.com/bastani-inc/atomic/pull/5353)).
+- On Windows, sessionless artifact storage waits for its private-directory check without pausing the main thread. A subagent cancelled during that check creates no child storage or supervisor authorization, and a storage failure returns a tool error. Startup artifact cleanup stays single-flight until its asynchronous work finishes, even if the session that started it ends ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
 
 ## [0.9.88] - 2026-11-16
 
