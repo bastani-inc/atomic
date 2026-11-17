@@ -3,8 +3,8 @@
  *
  * POSIX proves ownership of an existing temp component with a uid comparison
  * and a mode check. Node exposes neither on Windows — `lstatSync` reports
- * uid/gid 0 — so this module reads the real security descriptor through a
- * PowerShell `Get-Acl` subprocess and decides from SIDs alone: the owner must
+ * uid/gid 0 — so this module reads the real security descriptor and decides
+ * from SIDs alone: the owner must
  * be a trusted principal and every access-allowed ACE must grant only trusted
  * principals. Names are never compared; two accounts can share a display name,
  * but never a SID.

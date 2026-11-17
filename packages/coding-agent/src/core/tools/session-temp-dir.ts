@@ -488,7 +488,7 @@ const privateTempDirs = new Map<string, KnownPrivateTempDir>();
  * recreated); on POSIX it must still be owned by this account with no group or
  * other access. On Windows the owner and DACL were verified when it was chosen,
  * and a directory this account owns cannot have its DACL changed by another
- * (non-administrator) account, so the costly PowerShell read is not repeated
+ * (non-administrator) account, so the descriptor read is not repeated
  * every time a file is written below it.
  */
 function stillPrivate(known: KnownPrivateTempDir): boolean {
