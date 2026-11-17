@@ -19,7 +19,7 @@ const {
 	SESSION_TEMP_CLEANUP_DELAY_MS,
 	scheduleSessionTempCleanup,
 } = await import("../src/core/tools/session-temp-cleanup.js");
-const { getTempRootDir, resetSessionTempDirStateForTesting } = await import("../src/core/tools/session-temp-dir.ts");
+const { getTempRootDir, resetSessionTempDirStateForTesting } = await import("../src/core/tools/session-temp-dir.js");
 
 const sandboxes: string[] = [];
 

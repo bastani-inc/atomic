@@ -16,7 +16,7 @@ const {
 	powershellCandidates,
 	readWindowsDirectorySecurity,
 	readWindowsDirectorySecurityWithPowerShell,
-} = await import("../src/core/tools/windows-directory-security.ts");
+} = await import("../src/core/tools/windows-directory-security.js");
 
 const QUERY_PATH = "C:\\Users\\alice\\AppData\\Local\\Temp\\atomic-alice";
 

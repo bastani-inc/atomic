@@ -11,7 +11,7 @@ import { ENV_AGENT_DIR } from "../../packages/coding-agent/src/config.js";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { resetSessionTempCleanupScheduleForTesting } from "../../packages/coding-agent/src/core/tools/session-temp-cleanup.js";
-import { linkSharedTranspileCache } from "../../packages/coding-agent/test/helpers/shared-transpile-cache.ts";
+import { linkSharedTranspileCache } from "../../packages/coding-agent/test/helpers/shared-transpile-cache.js";
 import type { RunSyncOptions } from "../../packages/subagents/src/shared/types.ts";
 import { settle } from "../../scripts/perf/idle-agents/scripted-model.js";
 import { removeTempRootReleasingBroker } from "./detached-broker.js";

@@ -26,7 +26,7 @@
 import { spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { dirname } from "node:path";
-import { createModuleRequire } from "../../utils/module-require.ts";
+import { createModuleRequire } from "../../utils/module-require.js";
 
 /** One DACL entry with its trustee resolved to a literal SID. */
 export interface WindowsAccessRule {

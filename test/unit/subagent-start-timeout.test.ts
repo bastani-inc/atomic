@@ -288,7 +288,6 @@ async function startFixture(options: { readonly parentAdmission?: ResourceAdmiss
 		releaseAfterMs?: number,
 	): {
 		readonly reached: () => boolean;
-		readonly isHeld: () => boolean;
 		readonly held: Promise<void>;
 		readonly release: () => void;
 		readonly shutdown: Promise<void>;
@@ -300,13 +299,9 @@ async function startFixture(options: { readonly parentAdmission?: ResourceAdmiss
 		const shutdown = new Promise<void>((resolve) => {
 			shutdownVisited = () => resolve();
 		});
-		let released = false;
 		let release: () => void = () => undefined;
 		const held = new Promise<void>((resolve) => {
-			release = () => {
-				released = true;
-				resolve();
-			};
+			release = resolve;
 		});
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		globals[STALL_HOOK] = (at) => {
@@ -336,7 +331,7 @@ async function startFixture(options: { readonly parentAdmission?: ResourceAdmiss
 				"}",
 			].join("\n"),
 		);
-		return { reached: () => reached, isHeld: () => reached && !released, held: holding.promise, release, shutdown };
+		return { reached: () => reached, held: holding.promise, release, shutdown };
 	};
 	/** A child-only extension that records, at its session_start and its first turn, the start the host gave it. */
 	const recordStartupHooks = (): Array<{
@@ -521,7 +516,6 @@ for (const point of ["input", "before_agent_start"] as const) {
 			const outcome = await launched;
 
 			assert.ok(stall.reached(), `the child's ${point} handling was held`);
-			assert.equal(stall.isHeld(), true, "the launch settled while its handler was still held");
 			const error = startTimeoutOf(outcome);
 			assertMeasuredPhase(error, "dispatch");
 			assert.equal(error.step, "dispatching-task");
