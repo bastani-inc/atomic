@@ -122,6 +122,20 @@ test("a write whose caller aborts it while it waits for a kept close fails at on
 	assert.equal(after.status, 200);
 }, 30_000);
 
+test("a write whose request carries the caller's signal stops waiting for a kept close once that signal aborts (#5114)", async () => {
+	const { url, clientFetch, sent, control } = await client();
+	await assert.rejects(clientFetch(closeOf(url, "kept")));
+	control.mode = "hold";
+	const caller = new AbortController();
+	const write = clientFetch(new Request(statementOf(url, "INSERT INTO events VALUES (1)"), { signal: caller.signal }));
+	await until(() => sent.some((close) => close.settle !== undefined), "the kept close to be under way");
+	await sleep(50);
+	const abortedAt = performance.now();
+	caller.abort();
+	await assert.rejects(write, { name: "AbortError" });
+	assert.ok(performance.now() - abortedAt < ABORT_BOUND_MS, "the aborted write failed at once");
+}, 30_000);
+
 test("a close kept while the timer's resend is under way adds no second resend, so one unanswered resend doubles the wait once (#5114)", async () => {
 	const { url, clientFetch, sent, control } = await client();
 	await assert.rejects(clientFetch(closeOf(url, "first")));

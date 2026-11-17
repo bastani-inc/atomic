@@ -207,7 +207,10 @@ class AbandonedStreams {
 	sending;
 	/** When the writes waiting for the round under way stop waiting for it. @type {number | undefined} */
 	waitUntil;
-	/** Whether a round left the writes waiting for it unanswered: writes wait no more until a close is answered. */
+	/**
+	 * Whether a round left the writes waiting for it unanswered: writes wait no more for the closes kept then, until one is
+	 * answered, given up or joined by a newly kept close.
+	 */
 	stalled = false;
 	wait = ABANDONED_STREAM_CLOSE_FIRST_WAIT_MS;
 	closed = false;
@@ -220,6 +223,8 @@ class AbandonedStreams {
 		const body = await request.arrayBuffer();
 		if (this.closed || !closesStream(new Uint8Array(body))) return;
 		this.pending.push({ url: request.url, headers: [...request.headers], body, since: Date.now() });
+		// A stall belongs to the closes it was found for: a newly kept close, whose stream may hold the lock now, is waited for.
+		this.stalled = false;
 		if (this.pending.length > MAX_ABANDONED_STREAM_CLOSES) this.pending.shift();
 		this.schedule();
 	}
@@ -255,7 +260,7 @@ class AbandonedStreams {
 	 * again would otherwise take the write while an abandoned stream still holds the write lock, and the write would wait
 	 * for that lock until the next timed resend. The writes waiting for one round wait for it at most
 	 * `ABANDONED_STREAM_CLOSE_WRITE_WAIT_MS` in all; a round still unanswered then stalls the closes, and no write waits
-	 * for them again until the server answers one. A round that fails at once costs nothing: the write finds the server
+	 * for them again until the server answers one, they are given up, or another close is kept. A round that fails at once costs nothing: the write finds the server
 	 * unreachable on its own. Rejects with the reason of `signal` when it aborts first; the round goes on.
 	 * @param {AbortSignal} signal
 	 */
@@ -294,6 +299,7 @@ class AbandonedStreams {
 		this.sending ??= (async () => {
 			const oldest = Date.now() - ABANDONED_STREAM_CLOSE_MAX_AGE_MS;
 			this.pending = this.pending.filter((close) => close.since > oldest);
+			if (this.pending.length === 0) this.stalled = false;
 			while (this.pending.length > 0) {
 				const [close] = this.pending;
 				try {
@@ -343,7 +349,8 @@ function fetchWith(headers, abandoned) {
 		const copy = request.clone();
 		if (await closesNoStream(request.clone())) return closedResponse();
 		const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-		const signal = init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
+		// The caller's signal: the one `init` passes, or else the one `input`, a request, carries.
+		const signal = AbortSignal.any([request.signal, timeout]);
 		if (abandoned.pending.length > 0) {
 			if (await mayWrite(request.clone())) await abandoned.beforeWrite(signal);
 			else abandoned.start();

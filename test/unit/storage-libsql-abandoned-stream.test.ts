@@ -37,6 +37,10 @@ const MAX_ABANDONED_STREAM_CLOSES = 16;
 const PROCESS_EXIT_BOUND_MS = 10_000;
 /** How long, in all, writes wait for a kept close that the server takes but leaves unanswered. */
 const CLOSE_WRITE_WAIT_MS = 2_000;
+/** How long the adapter waits for the answer to one resend of a kept close. */
+const CLOSE_TIMEOUT_MS = 5_000;
+/** How long a close-only request takes to reach the server when the transport is slow, well under CLOSE_WRITE_WAIT_MS. */
+const SLOW_CLOSE_MS = 200;
 
 async function within<T>(promise: Promise<T>, what: string, boundMs = RECOVERY_BOUND_MS): Promise<T> {
 	let timer: NodeJS.Timeout | undefined;
@@ -90,7 +94,7 @@ async function abandonCloses(count: number) {
 	/** The batons of the close-only requests sent, in order. */
 	const sent: string[] = [];
 	const control = {
-		mode: "fail" as "fail" | "pass" | "hold",
+		mode: "fail" as "fail" | "pass" | "hold" | "slow",
 		answer: undefined as ((response: Response) => void) | undefined,
 	};
 	vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -101,8 +105,14 @@ async function abandonCloses(count: number) {
 		if (control.mode === "pass") return real(request);
 		if (control.mode === "fail")
 			throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } });
-		return new Promise<Response>((resolve) => {
+		if (control.mode === "slow") {
+			await sleep(SLOW_CLOSE_MS);
+			return real(request);
+		}
+		// A held close is answered when a test says so, or goes unanswered until the request gives up.
+		return new Promise<Response>((resolve, reject) => {
 			control.answer = resolve;
+			init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
 		});
 	});
 	const streams = () => new Set(sent).size;
@@ -245,6 +255,30 @@ test("a kept close the server takes but leaves unanswered never holds up reads, 
 		CLOSE_WRITE_WAIT_MS / 2,
 	);
 }, 30_000);
+
+test("a stall of closes the adapter has since given up on does not carry over to a stream abandoned later: the next write waits for its close (#5114)", async () => {
+	vi.useFakeTimers({ toFake: ["Date"] });
+	const { fake, database, sent, control } = await abandonCloses(1);
+	// The server takes the kept close and never answers it: the write gives up waiting for it, and the closes stall.
+	control.mode = "hold";
+	await database.run("INSERT INTO events VALUES (10)");
+	// The unanswered resend times out, and the next round gives the kept close up, CLOSE_MAX_AGE_MS old.
+	control.mode = "fail";
+	vi.setSystemTime(Date.now() + CLOSE_MAX_AGE_MS);
+	await sleep(CLOSE_TIMEOUT_MS + 4 * CLOSE_FIRST_WAIT_MS);
+	// Another transaction loses its connection while it holds the lock; its close fails, so the adapter keeps it.
+	const streams = new Set(sent).size;
+	await cutInTransaction(database, () => fake.fail({ kind: "reset-before" }));
+	while (new Set(sent).size === streams) await sleep(5);
+	// The server is reachable again, and closes take a moment to reach it.
+	control.mode = "slow";
+	const before = fake.pipelines.length;
+	await within(database.run("INSERT INTO events VALUES (11)"), "a write after the outage");
+	const received = fake.pipelines.slice(before);
+	const close = received.findIndex((pipeline) => pipeline.continuesStream && pipeline.sql.length === 0);
+	const write = received.findIndex((pipeline) => pipeline.sql.includes("INSERT INTO events VALUES (11)"));
+	assert.ok(close !== -1 && close < write, "the new stream's close reached the server before the write");
+}, 60_000);
 
 test("closing the database stops resending its abandoned closes (#5114)", async () => {
 	// The stream's own close has been sent and failed: the close is kept for resending.
