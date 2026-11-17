@@ -8,6 +8,8 @@ import { createBrokerProcessControl } from "../helpers/broker-process-control.js
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const CONTROL_SHUTDOWN_MS = 10_000;
+const SELF_KILL_EXIT: readonly [number | null, NodeJS.Signals | null] =
+	process.platform === "win32" ? [1, null] : [null, "SIGKILL"];
 
 function childProcess(args: string[]): {
 	child: ChildProcessWithoutNullStreams;
@@ -48,7 +50,7 @@ test("broker cleanup stops only its connected child (#5332)", async () => {
 	await once(owned.child.stdout, "data");
 	assert.ok(owned.child.pid !== undefined);
 	await control.stop(owned.child.pid);
-	assert.deepEqual(await owned.closed, [null, "SIGKILL"]);
+	assert.deepEqual(await owned.closed, SELF_KILL_EXIT);
 	assert.equal(stranger.child.exitCode, null);
 	assert.equal(stranger.child.signalCode, null);
 	const strangerPid = stranger.child.pid;
@@ -87,6 +89,6 @@ test("a broker launched after control teardown exits before publishing fixture f
 	owned.child.stderr.on("data", (chunk: Buffer) => {
 		stderr += chunk.toString();
 	});
-	assert.deepEqual(await owned.closed, [null, "SIGKILL"], stderr);
+	assert.deepEqual(await owned.closed, SELF_KILL_EXIT, stderr);
 	assert.equal(existsSync(published), false);
 });
