@@ -1,5 +1,4 @@
-import { type Component, type Container, stripTerminalSequences, type TuiMouseEvent } from "@bastani/atomic-tui";
-import { keyText } from "./keybinding-hints.js";
+import type { Component, Container, TuiMouseEvent } from "@bastani/atomic-tui";
 import { isSingleLeftClick } from "./single-click.ts";
 import type { ToolGroupRole } from "./tool-block.ts";
 
@@ -11,6 +10,11 @@ export interface ClickExpandableBlock extends Component {
 	readonly expandsOnClick: true;
 	isExpanded(): boolean;
 	setExpanded(expanded: boolean): void;
+	/**
+	 * The rows of `render(width)` that are the block's header: the row with its state glyph and title. The block's
+	 * renderer reports them; a click on any other row, such as output that happens to read like a hint, is not one.
+	 */
+	headerRows(width: number): readonly number[];
 	/** The block's place in a group of finished calls; blocks that never group omit it. */
 	getGroupRole?(): ToolGroupRole;
 }
@@ -56,34 +60,19 @@ function clickUnit(siblings: readonly Component[], index: number): readonly Clic
 	return blocks;
 }
 
-/** `… +12 earlier lines` and `... 12 more lines`, the rows that stand in for a collapsed block's hidden output. */
-const HIDDEN_LINES_ROW = /^\s*(?:⎿\s*)?(?:…|\.\.\.)\s*\+?\d+ (?:earlier |more )?lines?\b/u;
-
 /**
- * Whether `row` is part of a block's header: its first row, which carries the state glyph and title, or a row that
- * offers to expand or collapse the block.
- */
-function isHeaderRow(lines: readonly string[], row: number): boolean {
-	const text = stripTerminalSequences(lines[row] ?? "");
-	if (text.trim().length === 0) return false;
-	if (lines.findIndex((line) => stripTerminalSequences(line).trim().length > 0) === row) return true;
-	if (HIDDEN_LINES_ROW.test(text)) return true;
-	const expandKey = keyText("app.tools.expand");
-	return expandKey.length > 0 && text.includes(`${expandKey} `);
-}
-
-/**
- * The blocks a click on row `row` of `siblings[index]`, whose rows are `lines`, expands or collapses: the block and,
- * for a group summary or one of its calls, the whole group. Undefined unless the row is part of a block's header.
+ * The blocks a click on row `row` of `siblings[index]` drawn at `width` expands or collapses: the block and, for a
+ * group summary or one of its calls, the whole group. Undefined unless the row is the clicked block's header.
  */
 export function clickedBlocks(
 	siblings: readonly Component[],
 	index: number,
-	lines: readonly string[],
+	width: number,
 	row: number,
 ): readonly ClickExpandableBlock[] | undefined {
-	const unit = clickUnit(siblings, index);
-	return unit !== undefined && isHeaderRow(lines, row) ? unit : undefined;
+	const clicked = siblings[index];
+	if (!isClickExpandableBlock(clicked) || !clicked.headerRows(width).includes(row)) return undefined;
+	return clickUnit(siblings, index);
 }
 
 /**
@@ -102,7 +91,7 @@ export function handleTranscriptBlockClick(
 	const hit = locate(event.width, event.y);
 	if (!hit) return undefined;
 	const index = siblings.indexOf(hit.component);
-	const unit = index === -1 ? undefined : clickedBlocks(siblings, index, hit.component.render(event.width), hit.row);
+	const unit = index === -1 ? undefined : clickedBlocks(siblings, index, event.width, hit.row);
 	if (!unit) return undefined;
 	const expand = !unit[0]!.isExpanded();
 	for (const block of unit) block.setExpanded(expand);

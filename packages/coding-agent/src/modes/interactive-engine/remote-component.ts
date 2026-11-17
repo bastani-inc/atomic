@@ -73,6 +73,9 @@ class RemoteComponent implements Component {
 	private requestId = 0;
 	private inputRequestId = 0;
 	private appliedRequestId = 0;
+	/** The engine's number for the frame in `lines`, and for the frame the last `render` returned. */
+	private frame: number | undefined;
+	private paintedFrame: number | undefined;
 	private dirty = true;
 	private disposed = false;
 	private readonly pendingInputs = new Map<number, PendingInput>();
@@ -131,6 +134,7 @@ class RemoteComponent implements Component {
 		// arrives, the previous frame may be wrapped for an older terminal
 		// width. Clamp so a resize never replays overflowing lines (pi-tui
 		// crashes on any rendered line wider than the terminal).
+		this.paintedFrame = this.frame;
 		return this.frameClamp.clamp(this.lines, width);
 	}
 
@@ -139,10 +143,11 @@ class RemoteComponent implements Component {
 	 * with the host's text selection.
 	 */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		if (this.disposed || !isSingleLeftClick(event)) return undefined;
+		if (this.disposed || !isSingleLeftClick(event) || this.paintedFrame === undefined) return undefined;
 		this.runtime.sendEngineCommand({
 			type: "engine_custom_click",
 			componentId: this.componentId,
+			frame: this.paintedFrame,
 			x: Math.max(0, Math.floor(event.x)),
 			y: Math.max(0, Math.floor(event.y)),
 			width: Math.max(0, Math.floor(event.width)),
@@ -243,10 +248,11 @@ class RemoteComponent implements Component {
 		this.dirty = true;
 	}
 
-	applyFrame(requestId: number, lines: string[], scrollRequest?: WidgetScrollRequest): void {
+	applyFrame(requestId: number, lines: string[], scrollRequest?: WidgetScrollRequest, frame?: number): void {
 		if (this.disposed || requestId < this.appliedRequestId) return;
 		this.appliedRequestId = requestId;
 		this.lines = lines;
+		this.frame = frame;
 		this.scrollRequest = scrollRequest;
 		let answeredKey = false;
 		for (const inputId of [...this.answeredInputs]) {
@@ -475,7 +481,7 @@ export class RemoteComponentController {
 			case "engine_custom_frame":
 				this.mounted
 					.get(message.componentId)
-					?.component.applyFrame(message.requestId, message.lines, message.scrollRequest);
+					?.component.applyFrame(message.requestId, message.lines, message.scrollRequest, message.frame);
 				break;
 			case "engine_custom_input_result":
 				this.mounted.get(message.componentId)?.component.resolveInput(message.requestId, message.handled);

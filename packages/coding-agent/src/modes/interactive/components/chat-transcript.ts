@@ -272,7 +272,7 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		const bodyRow = row - (this.layout.starts[index] ?? 0) - (block.spaced ? 1 : 0);
 		if (bodyRow < 0 || bodyRow >= block.body.length) return undefined;
 		const components = blocks.map((candidate) => candidate?.component ?? EMPTY_COMPONENT);
-		const unit = clickedBlocks(components, index, block.body, bodyRow);
+		const unit = clickedBlocks(components, index, width, bodyRow);
 		if (unit === undefined) return undefined;
 		const entryOf = new Map<Component, TEntry>();
 		for (const candidate of blocks) if (candidate !== undefined) entryOf.set(candidate.component, candidate.entry);

@@ -179,3 +179,39 @@ test("a click on a row of the focused panel opens it, and a click on main return
 	assert.equal(closedWithoutOpening, true, "main closes the panel");
 	assert.deepEqual(opened, []);
 });
+
+test("a click opens the row that was painted under it, even after the rows changed before the next paint", async () => {
+	const opened: string[] = [];
+	let runs: AgentPanelItem[] = [workflow("run:b", "run-b"), workflow("run:a", "run-a")];
+	const listeners = new Set<() => void>();
+	const hub = new AgentPanelSourceHub();
+	hub.register({
+		items: () => runs,
+		subscribe: (listener) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+		open: (id) => opened.push(id),
+	});
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	const widget = mountWidget(session, noInspector);
+	const painted = plain(widget.render(80));
+	const row = 0;
+	const [top, other] = painted[row]?.includes("run-a") ? ["a", "b"] : ["b", "a"];
+
+	// The other run now waits for an answer and ranks first; the panel has not painted that yet.
+	runs = [
+		{ ...workflow(`run:${other}`, `run-${other}`), state: "input", question: "Ship it?" },
+		workflow(`run:${top}`, `run-${top}`),
+	];
+	for (const listener of listeners) listener();
+	await new Promise<void>((resolve) => queueMicrotask(resolve));
+
+	click(widget, row, 80, painted.length);
+	assert.deepEqual(opened, [`run:${top}`], "the click opens the row the reader saw");
+	assert.match(
+		plain(widget.render(80))[row] ?? "",
+		new RegExp(`run-${other}`),
+		"the next paint moves the other run there",
+	);
+});

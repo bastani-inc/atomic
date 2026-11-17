@@ -72,6 +72,8 @@ interface ActiveComponent {
 	lastFrame?: { readonly lines: readonly string[]; readonly scrollRequest: WidgetScrollRequest | undefined };
 	/** The next frame answers a host request and is sent even when it is unchanged. */
 	frameRequested?: boolean;
+	/** The number of the last frame sent; a click on any other frame is dropped. */
+	frame?: number;
 	/** A hidden component changed and the host was told to ask for a frame once it shows it again. */
 	staleWhileHidden?: boolean;
 	handlingInput?: boolean;
@@ -462,6 +464,8 @@ export class EngineCustomUiService {
 				break;
 			}
 			case "engine_custom_click": {
+				// The component has drawn a newer frame than the one clicked: what was under the pointer may have moved.
+				if (command.frame !== record.frame) break;
 				const { x, y, width, height } = command;
 				record.handlingInput = true;
 				try {
@@ -608,11 +612,13 @@ export class EngineCustomUiService {
 
 	private sendFrame(componentId: string, requestId: number, record: ActiveComponent, lines: string[]): void {
 		const scrollRequest = (record.component as ScrollableWidgetComponent).getScrollRequest?.();
+		record.frame = (record.frame ?? 0) + 1;
 		this.send({
 			type: "engine_custom_frame",
 			componentId,
 			requestId,
 			lines,
+			frame: record.frame,
 			...(scrollRequest ? { scrollRequest } : {}),
 		});
 	}

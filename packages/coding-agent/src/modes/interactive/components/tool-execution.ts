@@ -277,6 +277,11 @@ export class ToolExecutionComponent extends Container {
 		return this.groupRole;
 	}
 
+	/** The block's title row, which `render` draws right after the blank row it leads with. */
+	headerRows(width: number): readonly number[] {
+		return this.render(width).length > 1 ? [1] : [];
+	}
+
 	setExpanded(expanded: boolean): void {
 		if (this.disposed) return;
 		if (this.expanded === expanded) return;

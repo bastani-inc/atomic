@@ -114,3 +114,40 @@ test("a click on an engine component reaches it at the row and column it landed 
 		bridge.child.dispose();
 	}
 });
+
+test("a click on a frame the engine has since replaced is dropped", async () => {
+	const bridge = makeBridge();
+	const received: TuiMouseEvent[] = [];
+	let label = "first";
+	let engineTui: { renderNow(): void } | undefined;
+	try {
+		void bridge.child.custom((tui) => {
+			engineTui = tui as unknown as { renderNow(): void };
+			return {
+				render: () => [label],
+				invalidate() {},
+				handleMouse(event: TuiMouseEvent) {
+					received.push(event);
+					return { handled: true };
+				},
+			} as MouseComponent;
+		});
+		for (let attempt = 0; attempt < 200 && bridge.host() === undefined; attempt++) await sleep(5);
+		const host = bridge.host();
+		assert.ok(host && engineTui);
+		host.render(60);
+		assert.deepEqual(host.render(60), ["first"]);
+
+		// The engine sends a new frame; the host has not painted it yet.
+		label = "second";
+		engineTui.renderNow();
+		host.handleMouse?.(mouse("click", 0));
+		assert.equal(received.length, 0, "the click was aimed at the frame the host still shows");
+
+		assert.deepEqual(host.render(60), ["second"]);
+		host.handleMouse?.(mouse("click", 0));
+		assert.equal(received.length, 1);
+	} finally {
+		bridge.child.dispose();
+	}
+});

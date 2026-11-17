@@ -17,6 +17,7 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 - A fuzzy `@` file suggestion no longer repeats its path as the description when the file's name already shows it; a nested file still names its folder ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - The fullscreen renderer no longer lays out the screen under an overlay that covers all of it, until the overlay stops covering it.
 - A focused component whose input handler returns a promise is repainted when the promise settles, rather than right after the key is routed.
+- In the fullscreen renderer, a press and release become a click only when the screen under the pointer did not change between them, and never on the pinned prompt row or the jump-to-latest row. A fast second click on empty space counts as a double-click, as on a word
 
 ### Fixed
 

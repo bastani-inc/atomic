@@ -13,6 +13,7 @@ import {
 } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, describe, test, vi } from "vitest";
 import type { SessionEntry } from "../src/core/session-manager.js";
+import { UserMessageComponent } from "../src/modes/interactive/components/user-message.js";
 import { WorkingRunMeter } from "../src/modes/interactive/components/working-run-meter.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import { isChatMessageComponent } from "../src/modes/interactive/interactive-mode-base.js";
@@ -102,6 +103,8 @@ function makeMode(requestRender: () => void, transcriptView: () => ScrollView | 
 
 type Mode = ReturnType<typeof makeMode>;
 
+const mode = (chat: { readonly mode: Mode }): Mode => chat.mode;
+
 async function emit(mode: Mode, event: object): Promise<void> {
 	const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
 		this: Mode,
@@ -151,7 +154,7 @@ const lines = (count: number, label: string) =>
  * The main chat as production lays it out: the transcript document in a following scroll view above a dock, rendered
  * by Atomic's fullscreen renderer and driven by SGR mouse reports.
  */
-async function mountChat(columns: number, rows: number) {
+async function mountChat(columns: number, rows: number, outputs: { readonly second?: string } = {}) {
 	const terminal = new RecordingTerminal();
 	terminal.columns = columns;
 	terminal.rows = rows;
@@ -181,6 +184,7 @@ async function mountChat(columns: number, rows: number) {
 	);
 	tui.setFocus(editor);
 	tui.start();
+	mode.chatContainer.addChild(new UserMessageComponent("first question"));
 	await toolTurn(
 		mode,
 		fauxAssistantMessage([fauxToolCall("bash", { command: "first-command" }, { id: "first" })], {
@@ -205,10 +209,11 @@ async function mountChat(columns: number, rows: number) {
 		fauxAssistantMessage([fauxToolCall("bash", { command: "second-command" }, { id: "second" })], {
 			stopReason: "toolUse",
 		}),
-		() => lines(20, "second output"),
+		() => outputs.second ?? lines(20, "second output"),
 	);
 	tui.renderNow();
-	const screen = (): string[] => getLayoutFrame(tui).lines.map((line) => stripTerminalSequences(line));
+	/** What the terminal shows: the layout with the pinned prompt and jump-to-latest row drawn over it. */
+	const screen = (): string[] => tui.getScreenLines().map((line) => stripTerminalSequences(line));
 	const rowOf = (pattern: RegExp): number => {
 		const row = screen().findIndex((line) => pattern.test(line));
 		assert.notEqual(row, -1, `no row matches ${pattern}:\n${screen().join("\n")}`);
@@ -274,19 +279,59 @@ describe("clicking transcript blocks in the main chat", () => {
 		}
 	});
 
-	test("a click on the row standing in for hidden output expands the block, and a click on shown output does not", async () => {
-		const chat = await mountChat(100, 60);
+	test("only a block's header toggles it: output rows, even ones that read like an expand hint, do not", async () => {
+		const tail = [
+			"... 12 more lines",
+			"ctrl+o to see more",
+			"second output 18",
+			"second output 19",
+			"second output 20",
+		];
+		const chat = await mountChat(100, 60, {
+			second: [...Array.from({ length: 15 }, (_, index) => `second output ${index + 1}`), ...tail].join("\n"),
+		});
 		try {
-			const output = chat.rowOf(/second output 18$/);
-			chat.click(chat.columnOf(output, "second output 18"), output);
-			assert.ok(!chat.expanded("second"), chat.transcriptText().join("\n"));
+			for (const pattern of [/second output 18$/, /\.\.\. 12 more lines$/, /ctrl\+o to see more$/]) {
+				const row = chat.rowOf(pattern);
+				chat.click(chat.columnOf(row, chat.screen()[row]!.trim().slice(0, 4)), row);
+				assert.ok(!chat.expanded("second"), `${pattern} toggled the block:\n${chat.transcriptText().join("\n")}`);
+				vi.advanceTimersByTime(1_000);
+			}
 
-			const header = chat.rowOf(/Bash\(second-command\)/);
+			const header = chat.rowOf(/Bash\(first-command\)/);
 			const hidden = chat.screen().findIndex((line, row) => row > header && /\+15 earlier lines/.test(line));
 			assert.notEqual(hidden, -1, chat.screen().join("\n"));
 			chat.click(chat.columnOf(hidden, "+15"), hidden);
-			assert.ok(chat.expanded("second"), chat.transcriptText().join("\n"));
-			assert.ok(!chat.expanded("first"), chat.transcriptText().join("\n"));
+			assert.ok(!chat.expanded("first"), "the row standing in for hidden output is not the header");
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("a click on the pinned prompt or on the jump-to-latest row toggles nothing under it", async () => {
+		const chat = await mountChat(100, 12);
+		try {
+			const transcriptRows = () => chat.transcriptText();
+			const headerRow = transcriptRows().findIndex((line) => /Bash\(second-command\)/.test(line));
+			assert.notEqual(headerRow, -1);
+			// The pinned prompt draws over the transcript's first row once the reader scrolls past the prompt.
+			chat.transcript.scrollTo(headerRow, { disableFollow: true });
+			chat.tui.renderNow();
+			const top = getLayoutFrame(chat.tui).root.children[0]!.rect.y;
+			assert.match(chat.screen()[top] ?? "", /↑ first question/, chat.screen().join("\n"));
+			chat.click(4, top);
+			assert.ok(!chat.expanded("second"), chat.transcriptText().join("\n"));
+
+			// The jump-to-latest row draws over the transcript's last row.
+			const box = getLayoutFrame(chat.tui).root.children[0]!.rect;
+			chat.transcript.scrollTo(headerRow - (box.height - 1), { disableFollow: true });
+			chat.tui.renderNow();
+			const bottom = box.y + box.height - 1;
+			assert.match(chat.screen()[bottom] ?? "", /jump to bottom/, chat.screen().join("\n"));
+			assert.match(chat.screen()[bottom] ?? "", /^ ● Bash/, chat.screen().join("\n"));
+			vi.advanceTimersByTime(1_000);
+			chat.click(chat.columnOf(bottom, "Bash"), bottom);
+			assert.ok(!chat.expanded("second"), chat.transcriptText().join("\n"));
 		} finally {
 			chat.tui.stop();
 		}
@@ -376,6 +421,62 @@ describe("clicking transcript blocks in the main chat", () => {
 			chat.click(chat.columnOf(header, "second-command"), header);
 			assert.ok(!chat.expanded("second"), chat.transcriptText().join("\n"));
 			assert.equal(chat.transcript.isFollowingEnd, true, "folding it back returns to the live end");
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("a press and release that a repaint split toggles nothing: rows moved under the pointer", async () => {
+		const chat = await mountChat(100, 60);
+		try {
+			const header = chat.rowOf(/Bash\(second-command\)/);
+			// Pressed on the block's output, two rows below its header.
+			chat.press(4, header + 2);
+			// New rows above push the header down under the pointer before the release.
+			const index = mode(chat).chatContainer.children.findIndex((child) =>
+				child.render(100).some((line) => line.includes("second-command")),
+			);
+			mode(chat).chatContainer.children.splice(index, 0, new Text("inserted one\ninserted two", 1, 0));
+			chat.tui.renderNow();
+			assert.match(chat.screen()[header + 2] ?? "", /Bash\(second-command\)/, chat.screen().join("\n"));
+			chat.release(4, header + 2);
+			chat.tui.renderNow();
+			assert.ok(!chat.expanded("second"), chat.transcriptText().join("\n"));
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("a press on an overlay that closes before the release toggles nothing under it", async () => {
+		const chat = await mountChat(100, 60);
+		try {
+			const header = chat.rowOf(/Bash\(second-command\)/);
+			const overlay = chat.tui.showOverlay(
+				{ render: (width: number) => ["overlay".padEnd(width)], invalidate: () => {} },
+				{ row: header, col: 0, width: "100%", nonCapturing: true },
+			);
+			chat.tui.renderNow();
+			assert.match(chat.screen()[header] ?? "", /^overlay/);
+			chat.press(4, header);
+			overlay.hide();
+			chat.tui.renderNow();
+			chat.release(4, header);
+			chat.tui.renderNow();
+			assert.ok(!chat.expanded("second"), chat.transcriptText().join("\n"));
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("two fast clicks on a header past its title are a double-click, not two toggles", async () => {
+		const chat = await mountChat(100, 60);
+		try {
+			const header = chat.rowOf(/Bash\(first-command\)/);
+			const empty = (chat.screen()[header] ?? "").trimEnd().length + 10;
+			chat.click(empty, header);
+			assert.ok(chat.expanded("first"), "the first click toggles");
+			chat.click(empty, header);
+			assert.ok(chat.expanded("first"), "the second click in the double-click window does not toggle back");
 		} finally {
 			chat.tui.stop();
 		}

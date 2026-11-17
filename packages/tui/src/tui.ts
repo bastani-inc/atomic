@@ -909,6 +909,17 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	/** Dispatch to the visually topmost overlay under the pointer. */
+	/** The topmost overlay the last frame drew at screen cell `x`, `y`. */
+	protected overlayAt(x: number, y: number): Component | undefined {
+		for (let index = this.renderedOverlayLayouts.length - 1; index >= 0; index--) {
+			const layout = this.renderedOverlayLayouts[index]!;
+			if (x >= layout.col && x < layout.col + layout.width && y >= layout.row && y < layout.row + layout.height) {
+				return layout.entry.component;
+			}
+		}
+		return undefined;
+	}
+
 	protected dispatchMouseToOverlay(event: TuiMouseEvent): { hit: boolean; result?: TuiMouseDispatchResult } {
 		for (let index = this.renderedOverlayLayouts.length - 1; index >= 0; index--) {
 			const layout = this.renderedOverlayLayouts[index]!;

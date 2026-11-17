@@ -262,6 +262,10 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 	getGroupRole(): ToolGroupRole {
 		return this.groupRole;
 	}
+	/** The block's title row: the engine draws the block as `ToolExecutionComponent` does, after a blank row. */
+	headerRows(width: number): readonly number[] {
+		return this.render(width).length > 1 ? [1] : [];
+	}
 	setShowImages(show: boolean): void {
 		this.showImages = show;
 		this.changed();
