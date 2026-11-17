@@ -3727,6 +3727,8 @@ test(
 			executionTimeouts: processWide.executionTimeouts,
 			// A retained released child keeps what it waits on for its notice; an evicted one keeps nothing (#5031).
 			releases: FINISHED_TASK_RETENTION,
+			launchers: 0,
+			launchedAt: 0,
 		});
 
 		const resumed = await h.call({ action: "resume", id: "retained0:0", message: "carry on" });

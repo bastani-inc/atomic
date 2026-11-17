@@ -469,44 +469,52 @@ test("SQL light listing advances past oversized rows with bounded statements and
 	});
 });
 
-test("SQL light listing reads 2,000 wide rows in bounded statements without collapsing its fetch limit (#5250)", async () => {
-	await withNodeSqliteDatabase(async ({ database }) => {
-		const store = await SqlSessionStore.open(database);
-		const sessions = 2_000;
-		const wideName = "w".repeat(20_000);
-		for (let index = 0; index < sessions; index++) {
-			const id = `s-${String(index).padStart(4, "0")}`;
-			await store.create({ ...header, id }, [
-				{
-					type: "session_info",
-					id: `${id}-name`,
-					parentId: null,
-					timestamp: header.createdAt,
-					name: wideName,
-				},
-			]);
-		}
-		let statements = 0;
-		const all = database.all.bind(database);
-		database.all = async <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]): Promise<T[]> => {
-			statements++;
-			return all<T>(sql, ...params);
-		};
-		const actual: string[] = [];
-		try {
-			for await (const summary of store.list({ includeInternal: true, withoutSearchText: true }))
-				actual.push(summary.id);
-		} finally {
-			database.all = all;
-		}
-		assert.deepEqual(
-			actual,
-			Array.from({ length: sessions }, (_, index) => `s-${String(index).padStart(4, "0")}`),
-		);
-		assert.ok(statements <= 60, `listing used ${statements} statements across ${sessions} sessions`);
-		await store.close();
-	});
-});
+/** Seeding 2,000 sessions of 20 KB rows, each its own write, before the listing; about 17 s on an idle Windows runner. */
+const WIDE_LISTING_SEED_TIMEOUT_MS = 90_000;
+
+test(
+	"SQL light listing reads 2,000 wide rows in bounded statements without collapsing its fetch limit (#5250)",
+	async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const store = await SqlSessionStore.open(database);
+			const sessions = 2_000;
+			const wideName = "w".repeat(20_000);
+			await database.exec("PRAGMA synchronous=OFF");
+			for (let index = 0; index < sessions; index++) {
+				const id = `s-${String(index).padStart(4, "0")}`;
+				await store.create({ ...header, id }, [
+					{
+						type: "session_info",
+						id: `${id}-name`,
+						parentId: null,
+						timestamp: header.createdAt,
+						name: wideName,
+					},
+				]);
+			}
+			let statements = 0;
+			const all = database.all.bind(database);
+			database.all = async <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]): Promise<T[]> => {
+				statements++;
+				return all<T>(sql, ...params);
+			};
+			const actual: string[] = [];
+			try {
+				for await (const summary of store.list({ includeInternal: true, withoutSearchText: true }))
+					actual.push(summary.id);
+			} finally {
+				database.all = all;
+			}
+			assert.deepEqual(
+				actual,
+				Array.from({ length: sessions }, (_, index) => `s-${String(index).padStart(4, "0")}`),
+			);
+			assert.ok(statements <= 60, `listing used ${statements} statements across ${sessions} sessions`);
+			await store.close();
+		});
+	},
+	WIDE_LISTING_SEED_TIMEOUT_MS,
+);
 
 for (let seed = 1; seed <= 16; seed++) {
 	test(`SQL incremental summaries match full history after reopen for random sequence ${seed} (#3645)`, async () => {
