@@ -2,8 +2,14 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, it } from "vitest";
+import { bunExecutable, spawnSyncCollect } from "../../../test/helpers/runtime.js";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+
+const MANAGER_MODULE = fileURLToPath(new URL("../src/core/settings-manager.ts", import.meta.url));
+/** A real Bun child process that saves and exits. */
+const EXITING_CHILD_TIMEOUT_MS = 60_000;
 
 /** How often the probe timer ticks while a save waits for a lock another process holds. */
 const PROBE_INTERVAL_MS = 5;
@@ -64,4 +70,26 @@ it("serves the project settings it reads once trust is granted, without blocking
 	await manager.setProjectTrustedAsync(true);
 	assert.equal(manager.isProjectTrusted(), true);
 	assert.equal(manager.getQuietStartup(), true);
+});
+
+it(
+	"writes a setting saved just before the process exits",
+	() => {
+		const script = `import { SettingsManager } from ${JSON.stringify(MANAGER_MODULE)};
+const manager = SettingsManager.create(${JSON.stringify(cwd)}, ${JSON.stringify(agentDir)}, { projectTrusted: false });
+manager.setTheme("dark");
+await Promise.resolve();
+process.exit(0);`;
+		const result = spawnSyncCollect([bunExecutable(), "-e", script]);
+		assert.equal(result.exitCode, 0, result.stderr.toString());
+		assert.equal(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")).theme, "dark");
+	},
+	EXITING_CHILD_TIMEOUT_MS,
+);
+
+it("reads back, in a manager created afterwards, what another manager of this process saved", async () => {
+	const first = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+	first.setTheme("dark");
+	const second = await SettingsManager.createAsync(cwd, agentDir, { projectTrusted: false });
+	assert.equal(second.getTheme(), "dark");
 });

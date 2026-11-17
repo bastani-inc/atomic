@@ -441,10 +441,12 @@ async function createHarnessWithResourceLoader(
 	});
 
 	const cleanup = () => {
-		session.dispose();
-		if (existsSync(tempDir)) {
-			rmSync(tempDir, { recursive: true });
-		}
+		// Settings are saved asynchronously, and disposal saves what is pending: the directory goes once it has.
+		void session.dispose().finally(() => {
+			if (existsSync(tempDir)) {
+				rmSync(tempDir, { recursive: true });
+			}
+		});
 	};
 
 	return {

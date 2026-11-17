@@ -40,6 +40,19 @@ function nestedEntries(field: keyof Settings, value: unknown): Record<string, un
 	return isPlainObject(value) ? value : {};
 }
 
+/** What a save writes to a scope's primary settings file, from the file as it is under the lock. */
+type PersistSettings = (currentPrimary: string | undefined) => string | undefined;
+
+interface UnsavedWrite {
+	readonly manager: SettingsManager;
+	readonly scope: SettingsScope;
+	readonly persist: PersistSettings;
+}
+
+/** The saves of every settings manager of this process that have not finished, in the order they were made. */
+const unsavedWrites: UnsavedWrite[] = [];
+let exitSaveRegistered = false;
+
 export class SettingsManager {
 	/** A defensive snapshot of the effective merged settings. */
 	getSettings(): Settings {
@@ -113,6 +126,8 @@ export class SettingsManager {
 	): Promise<SettingsManager> {
 		const storage = SettingsManager.fileStorage(cwd, agentDir);
 		const projectTrusted = options.projectTrusted ?? true;
+		// What this process saved before is read back, as a synchronous save was always on disk before the next read.
+		await SettingsManager.unsavedWritesSettled();
 		const globalLoad = await SettingsManager.tryLoadFromStorageAsync(storage, storage, "global");
 		const projectLoad = await SettingsManager.tryLoadFromStorageAsync(storage, storage, "project", projectTrusted);
 		return SettingsManager.fromLoads(storage, globalLoad, projectLoad, projectTrusted);
@@ -468,7 +483,7 @@ export class SettingsManager {
 		let projectLoad: SettingsLoad;
 		for (;;) {
 			const writes = this.writeQueue;
-			await writes;
+			await SettingsManager.unsavedWritesSettled();
 			globalLoad = await SettingsManager.tryLoadFromStorageAsync(this.storage, this.asyncStorage, "global");
 			projectLoad = await SettingsManager.tryLoadFromStorageAsync(
 				this.storage,
@@ -614,21 +629,61 @@ export class SettingsManager {
 		this.modifiedProjectNestedFields.clear();
 	}
 
-	private enqueueWrite(scope: SettingsScope, task: () => Promise<void>): void {
+	/**
+	 * Queues a save of `scope` in order with this manager's other saves. Saves do not block the event loop; one that has
+	 * not finished when the process exits is written then (see {@link SettingsManager.saveUnsavedWritesAtExit}).
+	 */
+	private enqueueWrite(scope: SettingsScope, persist: PersistSettings): void {
 		const owner = settingsWriteOwner.getStore() ?? ownedSettingsManagers.get(this);
+		const unsaved: UnsavedWrite = { manager: this, scope, persist };
+		unsavedWrites.push(unsaved);
+		if (!exitSaveRegistered) {
+			exitSaveRegistered = true;
+			process.once("exit", () => SettingsManager.saveUnsavedWritesAtExit());
+		}
 		this.writeQueue = this.writeQueue
 			.then(async () => {
 				if (scope === "project") {
 					this.assertProjectTrustedForWrite();
 				}
-				await task();
+				await SettingsManager.writePrimary(this.asyncStorage, scope, persist);
 				this.clearModifiedScope(scope);
 				recordSettingsWrite(owner, scope);
 			})
 			.catch((error) => {
 				this.recordError(scope, error);
 				recordSettingsWrite(owner, scope, error);
+			})
+			.finally(() => {
+				const index = unsavedWrites.indexOf(unsaved);
+				if (index >= 0) unsavedWrites.splice(index, 1);
 			});
+	}
+
+	/**
+	 * Writes, as the process exits, the saves that have not finished: synchronous saves were always written before an
+	 * exit, and an asynchronous one still in progress never resumes. A save is written again when it had already reached
+	 * its file; saving the same values twice changes nothing.
+	 */
+	private static saveUnsavedWritesAtExit(): void {
+		for (const { manager, scope, persist } of unsavedWrites.splice(0)) {
+			if (scope === "project" && !manager.projectTrusted) continue;
+			try {
+				if (manager.storage instanceof FileSettingsStorage)
+					manager.storage.withPrimaryWriteLockAtExit(scope, persist);
+				else if (manager.storage.withPrimaryWriteLock) manager.storage.withPrimaryWriteLock(scope, persist);
+				else manager.storage.withLock(scope, persist);
+			} catch {
+				// The process is exiting: a save that fails now has nowhere to be reported.
+			}
+		}
+	}
+
+	/** Resolves once every save this process made so far has finished, in whichever manager made it. */
+	private static async unsavedWritesSettled(): Promise<void> {
+		while (unsavedWrites.length > 0) {
+			await Promise.all([...new Set(unsavedWrites.map(({ manager }) => manager.writeQueue))]);
+		}
 	}
 
 	private cloneModifiedNestedFields(source: Map<keyof Settings, Set<string>>): Map<keyof Settings, Set<string>> {
@@ -639,12 +694,12 @@ export class SettingsManager {
 		return snapshot;
 	}
 
-	private async persistScopedSettings(
+	private enqueueScopedSettingsWrite(
 		scope: SettingsScope,
 		snapshotSettings: Settings,
 		modifiedFields: Set<keyof Settings>,
 		modifiedNestedFields: Map<keyof Settings, Set<string>>,
-	): Promise<void> {
+	): void {
 		const persist = (currentPrimary: string | undefined): string => {
 			const currentFileSettings = currentPrimary
 				? SettingsManager.migrateSettings(parseJsonFileContent(currentPrimary) as Record<string, unknown>)
@@ -679,14 +734,14 @@ export class SettingsManager {
 			return JSON.stringify(mergedSettings, null, 2);
 		};
 
-		await SettingsManager.writePrimary(this.asyncStorage, scope, persist);
+		this.enqueueWrite(scope, persist);
 	}
 
 	/** Saves `persist` to the primary file of `scope`, under its lock. */
 	private static async writePrimary(
 		storage: AsyncSettingsStorage,
 		scope: SettingsScope,
-		persist: (currentPrimary: string | undefined) => string | undefined,
+		persist: PersistSettings,
 	): Promise<void> {
 		if (storage.withPrimaryWriteLockAsync) await storage.withPrimaryWriteLockAsync(scope, persist);
 		else await storage.withLockAsync(scope, persist);
@@ -703,9 +758,7 @@ export class SettingsManager {
 		const modifiedFields = new Set(this.modifiedFields);
 		const modifiedNestedFields = this.cloneModifiedNestedFields(this.modifiedNestedFields);
 
-		this.enqueueWrite("global", () =>
-			this.persistScopedSettings("global", snapshotGlobalSettings, modifiedFields, modifiedNestedFields),
-		);
+		this.enqueueScopedSettingsWrite("global", snapshotGlobalSettings, modifiedFields, modifiedNestedFields);
 	}
 
 	private saveProjectSettings(settings: Settings): void {
@@ -720,9 +773,7 @@ export class SettingsManager {
 		const snapshotProjectSettings = structuredClone(this.projectSettings);
 		const modifiedFields = new Set(this.modifiedProjectFields);
 		const modifiedNestedFields = this.cloneModifiedNestedFields(this.modifiedProjectNestedFields);
-		this.enqueueWrite("project", () =>
-			this.persistScopedSettings("project", snapshotProjectSettings, modifiedFields, modifiedNestedFields),
-		);
+		this.enqueueScopedSettingsWrite("project", snapshotProjectSettings, modifiedFields, modifiedNestedFields);
 	}
 
 	/**
@@ -749,7 +800,7 @@ export class SettingsManager {
 				? undefined
 				: JSON.stringify({ ...fileSettings, packages: filePackages }, null, 2);
 		};
-		this.enqueueWrite(scope, () => SettingsManager.writePrimary(this.asyncStorage, scope, persist));
+		this.enqueueWrite(scope, persist);
 		return true;
 	}
 

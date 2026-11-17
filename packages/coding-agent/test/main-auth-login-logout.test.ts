@@ -248,8 +248,12 @@ describe("atomic auth login and logout from main", () => {
 		const exit = await runMain(["auth", "login", "openai"]);
 
 		assert.equal(exit.code, 0);
-		const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")) as { deviceId?: string };
-		assert.equal(typeof settings.deviceId, "string");
+		// Settings are saved asynchronously; process.exit is stubbed here, so the save is not forced at exit.
+		const settings = await vi.waitFor(() => {
+			const saved = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")) as { deviceId?: string };
+			assert.equal(typeof saved.deviceId, "string");
+			return saved;
+		});
 		assert.deepEqual(deviceIds, [settings.deviceId]);
 	});
 });

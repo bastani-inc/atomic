@@ -185,6 +185,9 @@ export async function writeSettingsFileAsync(path: string, content: string): Pro
 	}
 }
 
+/** The settings files whose lock an asynchronous save of this process holds now. */
+const locksHeldAsynchronously = new Set<string>();
+
 function parsesAsJson(content: string): boolean {
 	try {
 		parseJsonFileContent(content);
@@ -303,7 +306,9 @@ export class FileSettingsStorage implements SettingsStorage, AsyncSettingsStorag
 			{ ...this.lockWait(path), takeOver: () => takeOverDeadHolderAsync(lockPath) },
 		);
 		await recordLockHolderAsync(lockPath);
+		locksHeldAsynchronously.add(path);
 		return async () => {
+			locksHeldAsynchronously.delete(path);
 			await clearLockHolderAsync(lockPath);
 			await release();
 		};
@@ -484,6 +489,23 @@ export class FileSettingsStorage implements SettingsStorage, AsyncSettingsStorag
 		} finally {
 			releaseLockSync(release, path);
 		}
+	}
+
+	/**
+	 * {@link withPrimaryWriteLock} as the process exits. When an asynchronous save of this process holds the file's lock,
+	 * it never resumes, so the file is written under that lock rather than waiting for it.
+	 */
+	withPrimaryWriteLockAtExit(
+		scope: SettingsScope,
+		fn: (currentPrimary: string | undefined) => string | undefined,
+	): void {
+		const path = scope === "global" ? this.globalSettingsPath : this.projectSettingsPath;
+		if (!locksHeldAsynchronously.has(path)) {
+			this.withPrimaryWriteLock(scope, fn);
+			return;
+		}
+		const next = fn(existsSync(path) ? readFileSync(path, "utf-8") : undefined);
+		if (next !== undefined) writeSettingsFile(path, next);
 	}
 
 	/** {@link withPrimaryWriteLock} without blocking the event loop. */

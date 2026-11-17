@@ -136,6 +136,7 @@ export class DefaultPackageManager implements PackageManager {
 	async installAndPersist(source: string, options?: { local?: boolean }): Promise<void> {
 		await this.install(source, options);
 		this.addSourceToSettings(source, options);
+		await this.context.settingsManager.flush();
 	}
 
 	async remove(source: string, options?: { local?: boolean }): Promise<void> {
@@ -144,7 +145,9 @@ export class DefaultPackageManager implements PackageManager {
 
 	async removeAndPersist(source: string, options?: { local?: boolean }): Promise<boolean> {
 		await this.remove(source, options);
-		return this.removeSourceFromSettings(source, options);
+		const removed = this.removeSourceFromSettings(source, options);
+		await this.context.settingsManager.flush();
+		return removed;
 	}
 
 	async update(source?: string): Promise<void> {
