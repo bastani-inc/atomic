@@ -46,6 +46,8 @@ knowledge:
       `(umask 022; LOCPATH=/nonexistent npx vitest run --project unit test/unit/subagents-named-worktree-locks.test.ts test/unit/subagents-named-worktree-recovery.test.ts)`.
       For isolated CLI UI checks, set ATOMIC_CODING_AGENT_DIR to a fresh temporary profile and pass
       --offline. ATOMIC_AGENT_DIR does not select the CLI profile.
+      Bare Node type stripping does not resolve source .js import paths to .ts. Node child probes that
+      import source modules use the resolution hook shown in packages/coding-agent/test/read-streaming.test.ts.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run

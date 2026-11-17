@@ -11,7 +11,7 @@ import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
-import { liveChildEnvironment } from "../helpers/live-child-environment.js";
+import { LIVE_CHILD_START_WAIT_MS, liveChildEnvironment } from "../helpers/live-child-environment.js";
 
 const LIVE_CHILD_TIMEOUT_MS = 120_000;
 const CONDITION_WAIT_MS = 20_000;
@@ -62,8 +62,8 @@ function agent(): AgentConfig {
 	};
 }
 
-async function until(predicate: () => boolean): Promise<void> {
-	const deadline = Date.now() + CONDITION_WAIT_MS;
+async function until(predicate: () => boolean, timeoutMs = CONDITION_WAIT_MS): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
 	while (!predicate() && Date.now() < deadline) await new Promise<void>((resolve) => setTimeout(resolve, 5));
 	assert.ok(predicate(), "condition never held");
 }
@@ -129,7 +129,7 @@ test.each(["with Esc during preparation", "without a second Esc"] as const)(
 			settled = true;
 		});
 		try {
-			await until(() => env.blockStarted());
+			await until(() => env.blockStarted(), LIVE_CHILD_START_WAIT_MS);
 			const session = source!.chatSession as AgentSession;
 			const sessionId = source!.getSessionId();
 			await source!.interruptTurn!();
@@ -236,7 +236,7 @@ test.each(SAVE_FAILURE_CASES)(
 		let waking: Promise<void> | undefined;
 		let interrupting: Promise<void> | undefined;
 		try {
-			await until(() => env.blockStarted());
+			await until(() => env.blockStarted(), LIVE_CHILD_START_WAIT_MS);
 			const session = source!.chatSession as AgentSession;
 			await source!.interruptTurn!();
 			await until(() => settledRuns === 1 && !source!.isRunning?.());
@@ -407,7 +407,7 @@ test.each(INTERRUPTING_MESSAGES)(
 		let waking: Promise<void> | undefined;
 		let interrupting: Promise<void> | undefined;
 		try {
-			await until(() => env.blockStarted());
+			await until(() => env.blockStarted(), LIVE_CHILD_START_WAIT_MS);
 			const session = source!.chatSession as AgentSession;
 			await source!.interruptTurn!();
 			await until(() => settledRuns === 1 && !source!.isRunning?.());

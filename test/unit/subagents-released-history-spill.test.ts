@@ -163,6 +163,7 @@ async function ownerOf(store: SessionStore, closeStore: () => Promise<void>) {
 	const ended = async () => {
 		await until((record) => record.terminalStatus !== SUBAGENT_CHILD_RELEASED_STATUS && record.state === "terminal");
 		await dispatcher.whenIdle();
+		await until(() => taskCleanups().every((kind) => kind !== "active"));
 	};
 	/** Answer the child's call, which wakes it, and wait until its woken run has ended. */
 	const wake = async () => {
