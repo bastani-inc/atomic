@@ -21,7 +21,7 @@ import {
 export const ATOMIC_WORKING_FRAMES = ["∀", "∀", "∀", "∀", "∀", "∀", "∀", "∀", "∀", "∀"] as const;
 export const ATOMIC_WORKING_BOLD_PHASES = [false, false, false, false, true, true, true, false, false, false] as const;
 export const ATOMIC_WORKING_FRAME_MS = 88;
-export const DEFAULT_WORKING_MESSAGE = "Working...";
+export const DEFAULT_WORKING_MESSAGE = "Working…";
 
 const IRREGULAR_WORKED_VERBS: Readonly<Record<string, string>> = {
 	building: "built",
@@ -261,7 +261,8 @@ export class AtomicWorkingStatusComponent implements Component {
 	}
 
 	render(width: number): string[] {
-		const message = this.options.message ?? DEFAULT_WORKING_MESSAGE;
+		const rawMessage = this.options.message ?? DEFAULT_WORKING_MESSAGE;
+		const message = rawMessage === "Working..." ? DEFAULT_WORKING_MESSAGE : rawMessage;
 		const icon = atomicWorkingGlyph(this.options);
 		const styledMessage = noColorRequested()
 			? message

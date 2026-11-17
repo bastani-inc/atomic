@@ -248,7 +248,7 @@ test("Bash and Wait families render running tail, collapsed tail, preserved inde
 		}),
 	);
 	assert.deepEqual(runningRows, [
-		" ∀ Bash(for i in $(seq 1 12); do echo tick $i; sleep 1; d…) · 3.0s · timeout 60s",
+		" ∀ Bash(for i in $(seq 1 12); do echo tick $i; sleep 1; done) · 3s · timeout 60s",
 		"   ⎿  tick 1",
 		"      tick 2",
 		"      tick 3",
@@ -375,6 +375,7 @@ test("Bash and Wait families render running tail, collapsed tail, preserved inde
 		renderFamily({
 			toolName: "bash",
 			args: { command: "npm test", wait: { kind: "background" } },
+			canManageTask: (taskId) => taskId === "task-1",
 			result: {
 				content: [
 					{
@@ -991,6 +992,41 @@ test("waiting for approval is derived from trusted result details rather than ra
 		);
 		assert.deepEqual(trustedWaitingInDetails, [" ! Bash(cat secret) · waiting for approval"]);
 	}
+});
+
+test("background shell hints require an available task row and follow live bindings (#5350)", () => {
+	const input = {
+		toolName: "bash",
+		args: { command: "sleep 40" },
+		result: { content: [], details: { observation: { kind: "yielded", taskId: "task-1" } }, isError: false },
+		isPartial: false,
+		expanded: false,
+		canManageTask: (id: string) => id === "task-1",
+	};
+	setKeybindings(new KeybindingsManager({ "app.agents.focus": "ctrl+g" }));
+	assert.match(plain(renderFamily(input)).join("\n"), /ctrl\+g to manage/);
+	setKeybindings(new KeybindingsManager({ "app.agents.focus": [] }));
+	assert.doesNotMatch(plain(renderFamily(input)).join("\n"), /to manage/);
+	setKeybindings(new KeybindingsManager());
+	assert.doesNotMatch(plain(renderFamily({ ...input, canManageTask: () => false })).join("\n"), /to manage/);
+});
+
+test("large expanded read gutters keep every retained source line (#5350)", () => {
+	const count = 150_000;
+	const content = `[Lines 1-${count} of ${count}]\n${Array<string>(count).fill("kept source").join("\n")}`;
+	const view = builtinToolBlockPresentation({
+		toolName: "read",
+		args: { path: "large.txt" },
+		result: { content: [{ type: "text", text: content }], isError: false },
+		expanded: true,
+		isPartial: false,
+		cwd: "/workspace",
+		executionStarted: true,
+		argsComplete: true,
+	});
+	const rows = view!.details!.render(80).map(stripTerminalSequences);
+	assert.equal(rows.length, count);
+	assert.match(rows.at(-1)!, /150000 {2}kept source/);
 });
 
 test("Bash derives final state from settled metadata and does not let program output or requested background wait override completion (#5350)", () => {

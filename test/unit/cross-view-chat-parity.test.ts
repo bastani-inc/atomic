@@ -658,7 +658,7 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 			const stageWorkingLine = stageLines.find((line) => line.includes("∀ "));
 			const subWorkingLine = subLines.find((line) => line.includes("∀ "));
 			assert.equal(mainWorkingLines.length, 1);
-			assert.match(mainWorkingLines[0]!, /^ ∀ Schlepping\.\.\. \(4s · ↓ 7 tokens\)$/);
+			assert.match(mainWorkingLines[0]!, /^ ∀ Schlepping… \(4s · ↓ 7 tokens\)$/);
 			assert.equal(stageWorkingLine, mainWorkingLines[0], "stage chat working line matches main chat");
 			assert.equal(subWorkingLine, mainWorkingLines[0], "subagent view working line matches main chat");
 
@@ -852,8 +852,8 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 			const stageWorking = plain(stageView.render(100)).find((line) => line.includes("∀ "));
 			const subWorking = plain(subInspector.renderViewport(100, 24)).find((line) => line.includes("∀ "));
 
-			assert.equal(stageWorking, ` ∀ Schlepping... (27s · ↓ ${expectedTokens} tokens)`);
-			assert.equal(subWorking, ` ∀ Schlepping... (27s · ↓ ${expectedTokens} tokens)`);
+			assert.equal(stageWorking, ` ∀ Schlepping… (27s · ↓ ${expectedTokens} tokens)`);
+			assert.equal(subWorking, ` ∀ Schlepping… (27s · ↓ ${expectedTokens} tokens)`);
 		} finally {
 			stageView.dispose();
 			subInspector.dispose();

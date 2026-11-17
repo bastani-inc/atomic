@@ -88,9 +88,9 @@ test("renders PowerShell calls with a PowerShell prompt, not the bash prompt", (
 	const powershell = stripVTControlCharacters(renderedCall(createPowerShellToolDefinition(process.cwd())));
 	const bash = stripVTControlCharacters(renderedCall(createBashToolDefinition(process.cwd())));
 
-	expect(powershell).toContain("PS> Get-ChildItem");
+	expect(powershell).toContain("PowerShell(Get-ChildItem)");
 	expect(powershell).not.toContain("$ Get-ChildItem");
-	expect(bash).toContain("$ Get-ChildItem");
+	expect(bash).toContain("Bash(Get-ChildItem)");
 });
 
 test("powershell is always a known tool name, on every platform", () => {

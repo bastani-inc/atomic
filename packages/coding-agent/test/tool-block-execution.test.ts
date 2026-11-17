@@ -3,6 +3,8 @@ import { stripTerminalSequences, Text, type TUI, visibleWidth } from "@bastani/a
 import { Type } from "typebox";
 import { beforeAll, test, vi } from "vitest";
 import type { ToolDefinition } from "../src/core/extensions/types.ts";
+import { createToolDefinition } from "../src/core/tools/index.ts";
+import { createPowerShellToolDefinition } from "../src/core/tools/powershell.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import { ToolBlock } from "../src/modes/interactive/components/tool-block.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
@@ -112,6 +114,51 @@ test("a background agent's canonical running block keeps the shared clock after 
 	} finally {
 		component.dispose();
 		vi.useRealTimers();
+	}
+});
+
+test("the registered edit wrapper preserves shared tool framing (#5350)", () => {
+	const component = new ToolExecutionComponent(
+		"edit",
+		"wrapped-edit",
+		{ path: "sample.ts", edits: [{ oldText: "old", newText: "new" }] },
+		{},
+		createToolDefinition("edit", "/workspace"),
+		ui,
+		"/workspace",
+	);
+	try {
+		component.updateResult({
+			content: [{ type: "text", text: "Updated sample.ts" }],
+			details: { diff: "-1 old\n+1 new" },
+			isError: false,
+		});
+		for (const width of [80, 160]) {
+			const rows = component.render(width).map((line) => stripTerminalSequences(line).trimEnd());
+			assert.equal(rows[1], " ● Edit(sample.ts)");
+			assert.match(rows[2]!, /⎿ {2}\+1 −1/);
+			assert.equal(rows.filter((line) => line === "").length, 1);
+		}
+	} finally {
+		component.dispose();
+	}
+});
+
+test("PowerShell keeps its shell identity when using the shared default renderer (#5350)", () => {
+	const component = new ToolExecutionComponent(
+		"powershell",
+		"ps-call",
+		{ command: "Get-Location" },
+		{},
+		createPowerShellToolDefinition("/workspace"),
+		ui,
+		"/workspace",
+	);
+	try {
+		component.updateResult({ content: [{ type: "text", text: "sample" }], details: { exitCode: 0 }, isError: false });
+		assert.match(component.render(80).map(stripTerminalSequences).join("\n"), /● PowerShell\(Get-Location\)/);
+	} finally {
+		component.dispose();
 	}
 });
 

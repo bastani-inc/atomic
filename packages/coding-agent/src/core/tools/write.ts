@@ -3,7 +3,7 @@ import { mkdir as fsMkdir, writeFile as fsWriteFile } from "fs/promises";
 import { dirname } from "path";
 import { type Static, Type } from "typebox";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
-import { markBuiltinToolRenderers } from "./builtin-renderers.js";
+import { withBuiltinToolBlockRenderers } from "./builtin-renderers.js";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
 import { FileToolAbortedError } from "./file-tool-errors.ts";
 import { resolveToCwd } from "./path-utils.ts";
@@ -48,7 +48,7 @@ export function createWriteToolDefinition(
 	options?: WriteToolOptions,
 ): ToolDefinition<typeof writeSchema, undefined> {
 	const ops = options?.operations ?? defaultWriteOperations;
-	return markBuiltinToolRenderers<ToolDefinition<typeof writeSchema, undefined>>({
+	return withBuiltinToolBlockRenderers<ToolDefinition<typeof writeSchema, undefined>>({
 		name: "write",
 		label: "write",
 		// Atomic: same-message ordering. A later call in one assistant message waits for this write.
