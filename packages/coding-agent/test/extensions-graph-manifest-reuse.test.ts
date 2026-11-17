@@ -18,7 +18,7 @@ function resetState(): void {
 	delete (globalThis as typeof globalThis & { __graphManifestReuseTest?: ReuseTestState }).__graphManifestReuseTest;
 }
 
-type ValueFactory = () => string;
+type ValueFactory = () => string | Promise<string>;
 
 async function loadGated(entry: string): Promise<ValueFactory> {
 	const factory = await extensionLoaderTestHooks.loadTransformedExtensionModule(entry);
@@ -72,35 +72,35 @@ export default function () {
 
 		expect(state().evaluations).toBe(1);
 		expect(second).toBe(first);
-		expect(second()).toBe("c:b:a");
+		expect(await second()).toBe("c:b:a");
 	});
 
 	it("re-evaluates and observes new code after a transitively imported file changes", async () => {
 		const { entry, chainC } = writeChainFixture();
 
 		const first = await loadGated(entry);
-		expect(first()).toBe("c:b:a");
+		expect(await first()).toBe("c:b:a");
 
 		fs.writeFileSync(chainC, `export const valueC = "c-edited";\n`);
 		const second = await loadGated(entry);
 
 		expect(state().evaluations).toBe(2);
 		expect(second).not.toBe(first);
-		expect(second()).toBe("c-edited:b:a");
+		expect(await second()).toBe("c-edited:b:a");
 	});
 
 	it("re-evaluates and observes new code after the entry file changes directly", async () => {
 		const { entry } = writeChainFixture();
 
 		const first = await loadGated(entry);
-		expect(first()).toBe("c:b:a");
+		expect(await first()).toBe("c:b:a");
 
 		fs.writeFileSync(entry, `export default function () { return "entry-edited"; }\n`);
 		const second = await loadGated(entry);
 
 		expect(state().evaluations).toBe(1);
 		expect(second).not.toBe(first);
-		expect(second()).toBe("entry-edited");
+		expect(await second()).toBe("entry-edited");
 	});
 
 	it("re-evaluates and extends the manifest after a new import joins the graph", async () => {
@@ -116,7 +116,7 @@ export default function () {
 		const reloaded = await loadGated(entry);
 
 		expect(state().evaluations).toBe(2);
-		expect(reloaded()).toBe("c-d:b:a");
+		expect(await reloaded()).toBe("c-d:b:a");
 		const after = await extensionLoaderTestHooks.readExtensionGraphManifest(entry);
 		expect(Object.keys(after?.files ?? {}).some((filePath) => filePath.endsWith("chain-d.ts"))).toBe(true);
 	});
@@ -138,7 +138,7 @@ export default function () {
 		fs.writeFileSync(deferred, `export const value = "before";\n`);
 
 		const first = await loadGated(entry);
-		expect(first()).toBe("before");
+		expect(await first()).toBe("before");
 		const manifest = await extensionLoaderTestHooks.readExtensionGraphManifest(entry);
 		expect(Object.keys(manifest?.files ?? {}).some((filePath) => filePath.endsWith("deferred.ts"))).toBe(true);
 
@@ -147,7 +147,7 @@ export default function () {
 
 		expect(state().evaluations).toBe(2);
 		expect(second).not.toBe(first);
-		expect(second()).toBe("after");
+		expect(await second()).toBe("after");
 	});
 
 	it("invalidates reuse when a dependency is loaded from a non-native thenable returned by the factory", async () => {
@@ -223,12 +223,12 @@ export default function () {
 		fs.rmSync(extensionLoaderTestHooks.graphManifestPath(entry), { force: true });
 		const afterMissing = await loadGated(entry);
 		expect(state().evaluations).toBe(2);
-		expect(afterMissing()).toBe("c:b:a");
+		expect(await afterMissing()).toBe("c:b:a");
 
 		fs.writeFileSync(extensionLoaderTestHooks.graphManifestPath(entry), "{ not json");
 		const afterCorrupt = await loadGated(entry);
 		expect(state().evaluations).toBe(3);
-		expect(afterCorrupt()).toBe("c:b:a");
+		expect(await afterCorrupt()).toBe("c:b:a");
 
 		// The fallback evaluation rewrote a valid manifest, so reuse resumes.
 		const reused = await loadGated(entry);

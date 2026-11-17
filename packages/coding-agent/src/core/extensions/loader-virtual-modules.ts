@@ -32,9 +32,6 @@ export { getVirtualModules } from "./loader-host-modules.js";
 const require = createRequire(import.meta.url);
 let _aliases: Promise<Record<string, string>> | null = null;
 let createJitiPromise: Promise<typeof createJiti> | undefined;
-type SourceSpecifierTransform = ReturnType<typeof createTypeScriptSourceSpecifierTransform>;
-// Keyed by transpile cache directory; "" is the uncached transform for a load whose agent directory is gone.
-const typeScriptSourceSpecifierTransforms = new Map<string, SourceSpecifierTransform>();
 // Cache directories this process has tried to set up, one per agent directory, and those it has pruned.
 const prunedTranspileCacheDirs = new Set<string>();
 
@@ -43,23 +40,6 @@ function getCreateJiti(): Promise<typeof createJiti> {
 		isBunBinary || isBundledBuild ? import("./jiti-static-loader.ts") : import("./jiti-loader.ts")
 	).then((module) => module.createJiti);
 	return createJitiPromise;
-}
-
-function getTypeScriptSourceSpecifierTransform(
-	createJitiImpl: typeof createJiti,
-	cacheDir: string | undefined,
-): SourceSpecifierTransform {
-	const key = cacheDir ?? "";
-	let transform = typeScriptSourceSpecifierTransforms.get(key);
-	if (!transform) {
-		transform = createTypeScriptSourceSpecifierTransform(
-			createJitiImpl,
-			resolutionBaseUrl(import.meta.url),
-			() => cacheDir,
-		);
-		typeScriptSourceSpecifierTransforms.set(key, transform);
-	}
-	return transform;
 }
 
 /** Creates `dir` one level at a time below `root`, never `root` itself, so a removed agent directory stays removed. */
@@ -346,34 +326,25 @@ function withDeferredGraphRecording(
 	cacheDir: string,
 	factory: ExtensionFactory,
 ): ExtensionFactory {
-	return (pi) => {
+	return async (pi) => {
 		const recorder = createGraphRecorder(cacheDir);
 		activeGraphRecorders.add(recorder);
 		installReadFileSyncObserver();
-		const finish = () => {
+		try {
+			return await factory(pi);
+		} finally {
 			activeGraphRecorders.delete(recorder);
 			uninstallReadFileSyncObserver();
-			if (recorder.files.size > 0) mergeDeferredGraphReads(extensionPath, cacheDir, recorder.files);
-		};
-		try {
-			const result = factory(pi);
-			if (
-				result !== null &&
-				(typeof result === "object" || typeof result === "function") &&
-				typeof (result as PromiseLike<void>).then === "function"
-			) {
-				return Promise.resolve(result).finally(finish);
-			}
-			finish();
-			return result;
-		} catch (error) {
-			finish();
-			throw error;
+			if (recorder.files.size > 0) await mergeDeferredGraphReads(extensionPath, cacheDir, recorder.files);
 		}
 	};
 }
 
-function mergeDeferredGraphReads(extensionPath: string, cacheDir: string, files: Map<string, string>): void {
+async function mergeDeferredGraphReads(
+	extensionPath: string,
+	cacheDir: string,
+	files: Map<string, string>,
+): Promise<void> {
 	const retained = retainedTransformedLoads.get(extensionPath);
 	if (!retained || retained.cacheDir !== cacheDir) return;
 	let changed = false;
@@ -383,7 +354,7 @@ function mergeDeferredGraphReads(extensionPath: string, cacheDir: string, files:
 			changed = true;
 		}
 	}
-	if (changed) void writeGraphManifest(retained.manifest, retained.cacheDir);
+	if (changed) await writeGraphManifest(retained.manifest, retained.cacheDir);
 }
 
 let extensionCacheCwd: string | undefined;
@@ -712,7 +683,12 @@ async function importExtensionModule(
 	// Import the real path so a symlinked entry (a pnpm store package) resolves its dependencies next to the real
 	// file; extensionPath stays the cache and graph key.
 	const importPath = await realpathJs(extensionPath).catch(() => extensionPath);
-	const transformSource = getTypeScriptSourceSpecifierTransform(createJitiImpl, cacheDir);
+	// Each load owns its cache publications; the Babel host remains shared by the transform implementation.
+	const transformSource = createTypeScriptSourceSpecifierTransform(
+		createJitiImpl,
+		resolutionBaseUrl(import.meta.url),
+		() => cacheDir,
+	);
 	installReloadableScripts((id) => createJitiImpl(id, { moduleCache: false, fsCache: false }));
 	const jiti = createJitiImpl(resolutionBaseUrl(import.meta.url), {
 		moduleCache: false,
@@ -732,8 +708,15 @@ async function importExtensionModule(
 	// evaluates it instead, as on every reload (#4988). Installed builtin bundles cannot change while Atomic runs,
 	// so they keep loading natively, with nothing to transpile.
 	const reloadableEntry = isReloadableScriptPath(importPath) && !(await isNativeBuiltinExtensionPath(extensionPath));
-	const importEntry = () =>
-		reloadableEntry ? evaluateReloadableScript(jiti, importPath) : jiti.import(specifier, { default: true });
+	const importEntry = async () => {
+		try {
+			return await (reloadableEntry
+				? evaluateReloadableScript(jiti, importPath)
+				: jiti.import(specifier, { default: true }));
+		} finally {
+			await transformSource.flush();
+		}
+	};
 	// Transformed evaluations are the loads whose repeat cost is the Windows
 	// /reload regression, so they are also the loads whose file graph is
 	// recorded into a content-hash manifest. Without a transpile cache there is
@@ -752,8 +735,19 @@ async function importExtensionModule(
 	if ((isWindows || jiti.options.tryNative) && !forceTransformedImports) {
 		nativelyImportedPaths.add(extensionPath);
 	}
-	let factory = module as ExtensionFactory;
-	if (typeof factory !== "function") return undefined;
+	const loadedFactory = module as ExtensionFactory;
+	if (typeof loadedFactory !== "function") return undefined;
+	let factory: ExtensionFactory = loadedFactory;
+	if (cacheDir !== undefined) {
+		factory = async (pi) => {
+			try {
+				return await loadedFactory(pi);
+			} finally {
+				// A factory can load more modules; those publications belong to its initialization too.
+				await transformSource.flush();
+			}
+		};
+	}
 	if (recordedManifest && cacheDir !== undefined) {
 		factory = withDeferredGraphRecording(extensionPath, cacheDir, factory);
 		retainedTransformedLoads.set(extensionPath, { factory, manifest: recordedManifest, cacheDir });
