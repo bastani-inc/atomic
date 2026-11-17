@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@bastani/atomic";
 import { Value } from "typebox/value";
 import { describe, test } from "vitest";
@@ -378,7 +379,7 @@ describe("programmatic subagent tool boundary", () => {
 				keyText: () => "",
 				keyHint: () => "",
 			});
-			const rendered = component.render(120).join("\n");
+			const rendered = stripVTControlCharacters(component.render(120).join("\n"));
 			assert.match(rendered, /Agent\(|subagent parallel/);
 			assert.doesNotMatch(rendered, /\[async\]/);
 		}

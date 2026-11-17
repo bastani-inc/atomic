@@ -92,7 +92,7 @@ beforeAll(() => {
 test("Intercom message card strips terminal sequences from the sender, cwd, text and attachments (#4889)", async () => {
 	const output = await renderOnScreen(new InlineMessageComponent(sender, message, theme));
 	assertNoPayloadSequences(output);
-	for (const visible of ["peer-name", "/peer/cwd", "message body", "indented line", "notes.txt"]) {
+	for (const visible of ["peer-name", "peer/cwd", "message body", "indented line", "notes.txt"]) {
 		assert.ok(output.includes(visible), `visible text ${visible} is missing`);
 	}
 	const lines = new InlineMessageComponent(sender, message, theme).render(100);
@@ -164,7 +164,8 @@ test("Intercom message card strips terminal sequences from the reply-to id (#488
 		new InlineMessageComponent(sender, { ...message, replyTo: hostile("reply-target") }, theme),
 	);
 	assertNoPayloadSequences(output);
-	assert.ok(output.includes("reply-target"));
+	assert.ok(output.includes("Reply from"));
+	assert.ok(!output.includes("reply-target"));
 });
 
 test("Intercom tool result strips terminal sequences from relayed reply text (#4889)", async () => {
@@ -189,7 +190,10 @@ test("Intercom tool result strips terminal sequences from an expanded delivery r
 	const output = await renderOnScreen(rendered);
 	assertNoPayloadSequences(output);
 	const lines = rendered.render(100).map((line) => stripTerminalSequences(line).trim());
-	assert.ok(lines.includes("Reason: peer reason"), `reason line missing in ${JSON.stringify(lines)}`);
+	assert.ok(
+		lines.some((line) => line.includes("Refused · peer reason")),
+		`reason line missing in ${JSON.stringify(lines)}`,
+	);
 });
 
 test("contact_supervisor result strips terminal sequences from the reply and its parse issue (#4889)", async () => {
@@ -205,9 +209,12 @@ test("contact_supervisor result strips terminal sequences from the reply and its
 	const output = await renderOnScreen(rendered);
 	assertNoPayloadSequences(output);
 	const lines = rendered.render(100).map((line) => stripTerminalSequences(line).trim());
-	assert.ok(lines.includes("⚠ supervisor reply"), `reply line missing in ${JSON.stringify(lines)}`);
 	assert.ok(
-		lines.includes("Structured reply parse issue: parse issue"),
+		lines.some((line) => line.includes("supervisor reply")),
+		`reply line missing in ${JSON.stringify(lines)}`,
+	);
+	assert.ok(
+		lines.some((line) => line.includes("! Structured reply could not be parsed · parse issue")),
 		`issue line missing in ${JSON.stringify(lines)}`,
 	);
 });

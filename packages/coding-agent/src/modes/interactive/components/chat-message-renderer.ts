@@ -9,7 +9,7 @@ import {
 	type CustomMessage,
 	isVerbatimCompactionMessage,
 } from "../../../core/messages.ts";
-import type { TaskRecord } from "../../../core/tasks/contracts.js";
+import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import type { OwnerTaskStore, TaskActivity } from "../../../core/tasks/owner-store.js";
 import {
 	applyAssistantMessageDelta,
@@ -24,8 +24,16 @@ import { extractMessageText } from "./chat-session-host-utils.ts";
 import { compactionBoundaryFromMessage } from "./compaction-boundary-message.ts";
 import { CustomMessageComponent } from "./custom-message.ts";
 import { SkillInvocationMessageComponent } from "./skill-invocation-message.ts";
+import type { TaskCompletionMessageOptions } from "./task-completion-message.js";
 import { TaskRow } from "./task-row.js";
+import type { ToolGroupRole } from "./tool-block.ts";
 import { ToolExecutionComponent } from "./tool-execution.ts";
+import {
+	assistantCallBreaks,
+	type ToolGroupMemberState,
+	ToolGroupTracker,
+	toolResultGroupState,
+} from "./tool-group-tracker.ts";
 import { UserMessageComponent } from "./user-message.ts";
 export interface PersistedMessageMeta {
 	id: string;
@@ -47,9 +55,14 @@ export type ChatMessageEntry =
 			kind: "tool";
 			toolName: string;
 			toolCallId: string;
+			rendererTaskId?: TaskId;
 			args: unknown;
 			result?: RenderableToolResult;
 			isPartial?: boolean;
+			argsComplete?: boolean;
+			executionStarted?: boolean;
+			startedAt?: number;
+			groupRole?: ToolGroupRole;
 	  }
 	| { role: "tool"; kind: "bashExecution"; message: BashExecutionMessage; isPartial?: boolean }
 	| { role: "user"; kind: "user"; text: string; messageId?: string; timestamp?: string }
@@ -67,14 +80,74 @@ export interface ChatMessageRenderOptions {
 	imageWidthCells?: number;
 	outputPad?: number;
 	isStreaming?: boolean;
+	groupBash?: boolean;
 	markdownTransformers?: readonly MarkdownTransformer[];
 	renderLatex?: boolean;
 	getToolDefinition?: (toolName: string) => ToolRenderers | undefined;
+	getTaskRecord?: (taskId: TaskId) => TaskRecord | undefined;
+	loadTaskTranscript?: TaskCompletionMessageOptions["loadTranscript"];
+	hasTaskTranscript?: (taskId: TaskId) => boolean;
 	getCustomMessageRenderer?: (customType: string) => MessageRenderer | undefined;
-	createToolComponent?: (entry: Extract<ChatMessageEntry, { kind: "tool" }>) => Component;
-	createCustomMessageComponent?: (message: CustomMessage<unknown>) => Component;
+	createToolComponent?: (
+		entry: Extract<ChatMessageEntry, { kind: "tool" }>,
+		context?: ChatRendererContext,
+	) => Component;
+	createCustomMessageComponent?: (message: CustomMessage<unknown>, context?: ChatRendererContext) => Component;
+}
+type ToolChatEntry = Extract<ChatMessageEntry, { kind: "tool" }>;
+export interface ChatEntryGrouping {
+	readonly tracker?: ToolGroupTracker;
+	readonly groupBash?: boolean;
 }
 export function chatEntriesFromAgentMessages(
+	messages: readonly AgentMessage[],
+	messageMeta?: ReadonlyMap<AgentMessage, PersistedMessageMeta>,
+	grouping: ChatEntryGrouping = {},
+): ChatMessageEntry[] {
+	const entries = buildChatEntries(messages, messageMeta);
+	groupChatEntries(entries, grouping.tracker ?? new ToolGroupTracker({ groupBash: grouping.groupBash }));
+	return entries;
+}
+function groupedChatEntries(
+	messages: readonly AgentMessage[],
+	tracker: ToolGroupTracker,
+	carried: boolean,
+): { readonly entries: ChatMessageEntry[]; readonly carried: boolean } {
+	const entries = buildChatEntries(messages);
+	return { entries, carried: groupChatEntries(entries, tracker, carried) };
+}
+export function groupChatEntries(
+	entries: readonly (ChatMessageEntry | { role: string })[],
+	tracker: ToolGroupTracker,
+	carriedBreak = false,
+): boolean {
+	let carried = carriedBreak;
+	let breakBefore: ReadonlySet<string> = new Set();
+	for (const entry of entries) {
+		if (isChatMessageEntry(entry) && entry.kind === "tool") {
+			if (breakBefore.has(entry.toolCallId)) tracker.break();
+			tracker.append(entry.toolCallId, entry.toolName, toolEntryState(entry), toolEntryRoleSink(entry));
+		} else if (isChatMessageEntry(entry) && entry.kind === "assistant") {
+			const calls = assistantCallBreaks(entry.message.content, carried);
+			breakBefore = calls.breakBefore;
+			carried = calls.trailing;
+		} else {
+			tracker.break();
+			carried = false;
+		}
+	}
+	return carried;
+}
+function toolEntryState(entry: ToolChatEntry): ToolGroupMemberState {
+	if (entry.isPartial !== false || entry.result === undefined) return "pending";
+	return toolResultGroupState(entry.result, entry.result.isError);
+}
+function toolEntryRoleSink(entry: ToolChatEntry): (role: ToolGroupRole) => void {
+	return (role) => {
+		entry.groupRole = role;
+	};
+}
+function buildChatEntries(
 	messages: readonly AgentMessage[],
 	messageMeta?: ReadonlyMap<AgentMessage, PersistedMessageMeta>,
 ): ChatMessageEntry[] {
@@ -101,6 +174,7 @@ export function chatEntriesFromAgentMessages(
 						toolCallId: content.id,
 						args: content.arguments,
 						isPartial: true,
+						argsComplete: true,
 					};
 					entries.push(toolEntry);
 					pendingTools.set(content.id, toolEntry);
@@ -140,6 +214,7 @@ export function chatEntriesFromAgentMessages(
 						args: {},
 						result: message,
 						isPartial: false,
+						argsComplete: true,
 					});
 				}
 				break;
@@ -204,12 +279,44 @@ export interface LiveChatEventLike {
 	readonly durationMs?: unknown;
 }
 type LiveChatEntry = ChatMessageEntry | { role: string };
+interface ToolEntryUpdate {
+	toolCallId?: string;
+	toolName: string;
+	args?: unknown;
+	isPartial: boolean;
+	argsComplete?: boolean;
+	executionStarted?: boolean;
+	startedAt?: number;
+	breakBefore?: boolean;
+}
 export class LiveChatEntriesController {
 	private streamingAssistantIndex: number | undefined;
+	private carriedToolBreak = false;
 	private pendingToolIndexes = new Map<string, number>();
+	private tracker: ToolGroupTracker;
+	private groupBash: boolean;
 	private declare readonly entries: LiveChatEntry[];
-	constructor(entries: LiveChatEntry[]) {
+	constructor(entries: LiveChatEntry[], options: { readonly groupBash?: boolean } = {}) {
 		this.entries = entries;
+		this.groupBash = options.groupBash ?? true;
+		this.tracker = new ToolGroupTracker({ groupBash: this.groupBash });
+	}
+	setGroupBash(groupBash: boolean): boolean {
+		if (this.groupBash === groupBash) return false;
+		this.groupBash = groupBash;
+		this.tracker = new ToolGroupTracker({ groupBash });
+		for (const entry of this.entries) if (this.isToolEntry(entry)) entry.groupRole = undefined;
+		groupChatEntries(this.entries, this.tracker);
+		return true;
+	}
+	markToolExecutionStarted(toolCallId: string, startedAt: number): boolean {
+		if (!Number.isFinite(startedAt) || startedAt > Date.now()) return false;
+		const index = this.pendingToolIndexes.get(toolCallId);
+		const entry = index === undefined ? undefined : this.entries[index];
+		if (!this.isToolEntry(entry) || entry.isPartial === false) return false;
+		if (entry.executionStarted && entry.startedAt !== undefined && entry.startedAt <= startedAt) return false;
+		this.replaceToolEntry(index as number, { ...entry, executionStarted: true, startedAt, argsComplete: true });
+		return true;
 	}
 	clearTasks(): void {
 		const streaming =
@@ -236,7 +343,7 @@ export class LiveChatEntriesController {
 				entry.siblings = tasks;
 				entry.activity = activity;
 				entry.activityOmitted = activityOmitted;
-			} else
+			} else {
 				this.entries.push({
 					role: "tool",
 					kind: "task",
@@ -246,27 +353,52 @@ export class LiveChatEntriesController {
 					activity,
 					activityOmitted,
 				});
+				this.tracker.break();
+			}
 		}
 	}
 	appendMessages(messages: readonly AgentMessage[]): void {
-		this.entries.push(...chatEntriesFromAgentMessages(messages));
+		const grouped = groupedChatEntries(messages, this.tracker, this.carriedToolBreak);
+		this.carriedToolBreak = grouped.carried;
+		this.entries.push(...grouped.entries);
 		this.reindexPendingTools();
 	}
 	/** Adds earlier history ahead of every entry, keeping a stream in progress and its pending tools in place. */
 	prependMessages(messages: readonly AgentMessage[]): void {
-		const entries = chatEntriesFromAgentMessages(messages);
+		const entries = chatEntriesFromAgentMessages(messages, undefined, { groupBash: this.groupBash });
 		if (entries.length === 0) return;
 		this.entries.unshift(...entries);
 		if (this.streamingAssistantIndex !== undefined) this.streamingAssistantIndex += entries.length;
 		this.reindexPendingTools();
 	}
 	replaceMessages(messages: readonly AgentMessage[], preservedEntries: readonly { role: string }[] = []): void {
-		this.entries.splice(0, this.entries.length, ...chatEntriesFromAgentMessages(messages), ...preservedEntries);
+		const started = this.startedToolEntries();
+		this.tracker.reset();
+		const grouped = groupedChatEntries(messages, this.tracker, false);
+		const entries = grouped.entries;
+		this.carriedToolBreak = grouped.carried;
+		if (started.size > 0) {
+			for (const entry of entries) {
+				if (entry.kind !== "tool" || entry.isPartial === false) continue;
+				const previous = started.get(entry.toolCallId);
+				if (previous === undefined) continue;
+				entry.executionStarted = true;
+				entry.startedAt = previous.startedAt;
+				entry.argsComplete = true;
+			}
+		}
+		this.entries.splice(0, this.entries.length, ...entries, ...preservedEntries);
+		if (preservedEntries.length > 0) {
+			this.tracker.break();
+			this.carriedToolBreak = false;
+		}
 		this.streamingAssistantIndex = undefined;
 		this.reindexPendingTools();
 	}
 	appendUserText(text: string): void {
 		this.entries.push({ role: "user", kind: "user", text });
+		this.tracker.break();
+		this.carriedToolBreak = false;
 	}
 	/**
 	 * Seed the assistant message a chat mounted mid-stream never saw start.
@@ -298,6 +430,16 @@ export class LiveChatEntriesController {
 					toolName: typeof event.toolName === "string" ? event.toolName : "tool",
 					args: event.args,
 					isPartial: true,
+					argsComplete: true,
+					executionStarted: true,
+					startedAt: Date.now(),
+				});
+			case "tool_call_args":
+				return this.upsertToolEntry({
+					toolCallId: typeof event.toolCallId === "string" ? event.toolCallId : undefined,
+					toolName: typeof event.toolName === "string" ? event.toolName : "tool",
+					args: event.args,
+					isPartial: true,
 				});
 			case "tool_execution_update": {
 				const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : undefined;
@@ -324,6 +466,8 @@ export class LiveChatEntriesController {
 	}
 	clearPendingTools(): void {
 		this.pendingToolIndexes.clear();
+		this.tracker.reset();
+		this.carriedToolBreak = false;
 	}
 
 	isStreamingAssistantEntry(entry: ChatMessageEntry): boolean {
@@ -340,7 +484,9 @@ export class LiveChatEntriesController {
 			const toolResult = message as ToolResultMessage;
 			if (this.findToolEntryIndex(toolResult.toolCallId) >= 0) return true;
 		}
-		const entries = chatEntriesFromAgentMessages([message as AgentMessage]);
+		const grouped = groupedChatEntries([message as AgentMessage], this.tracker, this.carriedToolBreak);
+		this.carriedToolBreak = grouped.carried;
+		const entries = grouped.entries;
 		if (entries.length === 0) return false;
 		this.entries.push(...entries);
 		this.reindexPendingTools();
@@ -354,9 +500,10 @@ export class LiveChatEntriesController {
 	}
 	private handleMessageEnd(message: unknown): boolean {
 		if (!isAgentMessageLike(message) || message.role !== "assistant") return false;
-		const changed = this.updateAssistantMessage(message as AssistantMessage);
 		const stopReason = typeof message.stopReason === "string" ? message.stopReason : "";
-		if (stopReason === "aborted" || stopReason === "error") {
+		const failed = stopReason === "aborted" || stopReason === "error";
+		const changed = this.updateAssistantMessage(message as AssistantMessage, !failed);
+		if (failed) {
 			const errorText =
 				typeof message.errorMessage === "string" && message.errorMessage
 					? message.errorMessage
@@ -368,10 +515,14 @@ export class LiveChatEntriesController {
 			}
 			this.clearPendingTools();
 		}
+		this.carriedToolBreak = assistantCallBreaks(
+			(message as AssistantMessage).content,
+			this.carriedToolBreak,
+		).trailing;
 		this.streamingAssistantIndex = undefined;
 		return changed || true;
 	}
-	private updateAssistantMessage(message: AssistantMessage): boolean {
+	private updateAssistantMessage(message: AssistantMessage, argsComplete = false): boolean {
 		if (
 			this.streamingAssistantIndex !== undefined &&
 			this.isAssistantEntry(this.entries[this.streamingAssistantIndex])
@@ -384,6 +535,7 @@ export class LiveChatEntriesController {
 			this.entries.push({ role: "assistant", kind: "assistant", message });
 			this.streamingAssistantIndex = this.entries.length - 1;
 		}
+		const calls = assistantCallBreaks(message.content, this.carriedToolBreak);
 		for (const content of message.content) {
 			if (content.type !== "toolCall") continue;
 			this.upsertToolEntry({
@@ -391,6 +543,8 @@ export class LiveChatEntriesController {
 				toolName: content.name,
 				args: content.arguments,
 				isPartial: true,
+				argsComplete,
+				breakBefore: calls.breakBefore.has(content.id),
 			});
 		}
 		return true;
@@ -399,17 +553,12 @@ export class LiveChatEntriesController {
 		const entry = this.streamingAssistantIndex !== undefined ? this.entries[this.streamingAssistantIndex] : undefined;
 		return this.isAssistantEntry(entry) ? entry.message : undefined;
 	}
-	private upsertToolEntry(update: {
-		toolCallId?: string;
-		toolName: string;
-		args?: unknown;
-		isPartial: boolean;
-	}): boolean {
+	private upsertToolEntry(update: ToolEntryUpdate): boolean {
 		const toolCallId = update.toolCallId ?? `live-${update.toolName}`;
 		const index = this.pendingToolIndexes.get(toolCallId) ?? this.findToolEntryIndex(toolCallId, update.toolName);
 		const previous = index >= 0 ? this.entries[index] : undefined;
 		const previousTool = this.isToolEntry(previous) ? previous : undefined;
-		const next: ChatMessageEntry = {
+		const next: ToolChatEntry = {
 			role: "tool",
 			kind: "tool",
 			toolName: previousTool?.toolName ?? update.toolName,
@@ -417,11 +566,33 @@ export class LiveChatEntriesController {
 			args: update.args ?? previousTool?.args ?? {},
 			result: previousTool?.result,
 			isPartial: update.isPartial,
+			argsComplete: previousTool?.argsComplete === true || update.argsComplete === true || undefined,
+			executionStarted: previousTool?.executionStarted === true || update.executionStarted === true || undefined,
+			startedAt: previousTool?.startedAt ?? update.startedAt,
+			groupRole: previousTool?.groupRole,
 		};
-		if (index >= 0) this.entries[index] = next;
-		else this.entries.push(next);
+		if (index >= 0) this.replaceToolEntry(index, next);
+		else {
+			if (update.breakBefore === true) this.tracker.break();
+			this.entries.push(next);
+			this.tracker.append(toolCallId, next.toolName, toolEntryState(next), toolEntryRoleSink(next));
+		}
 		this.pendingToolIndexes.set(toolCallId, index >= 0 ? index : this.entries.length - 1);
 		return true;
+	}
+	private replaceToolEntry(index: number, next: ToolChatEntry): void {
+		this.entries[index] = next;
+		this.tracker.bind(next.toolCallId, toolEntryRoleSink(next));
+		this.tracker.settle(next.toolCallId, toolEntryState(next));
+	}
+	private startedToolEntries(): Map<string, { readonly startedAt?: number }> {
+		const started = new Map<string, { readonly startedAt?: number }>();
+		for (const index of this.pendingToolIndexes.values()) {
+			const entry = this.entries[index];
+			if (this.isToolEntry(entry) && entry.executionStarted === true)
+				started.set(entry.toolCallId, { startedAt: entry.startedAt });
+		}
+		return started;
 	}
 	private updateToolResult(
 		toolCallId: string,
@@ -436,7 +607,7 @@ export class LiveChatEntriesController {
 		if (!this.isToolEntry(entry)) return false;
 		const resultObject = toolResultFromUnknown(result, entry.toolName, toolCallId, isError);
 		if (durationMs !== undefined) resultObject.durationMs = durationMs;
-		this.entries[index] = { ...entry, result: resultObject, isPartial };
+		this.replaceToolEntry(index, { ...entry, result: resultObject, isPartial });
 		if (!isPartial) this.pendingToolIndexes.delete(toolCallId);
 		return true;
 	}
@@ -523,6 +694,38 @@ function toolResultFromUnknown(
 		timestamp: Date.now(),
 	};
 }
+export interface ChatRendererContext {
+	requestRender(): void;
+	expanded: boolean;
+	outputPad: number;
+	showImages: boolean;
+	imageWidthCells?: number;
+}
+
+function rendererContext(options: ChatMessageRenderOptions, requestRender: () => void): ChatRendererContext {
+	return {
+		requestRender,
+		expanded: options.toolOutputExpanded ?? false,
+		outputPad: options.outputPad ?? 1,
+		showImages: options.showImages ?? true,
+		imageWidthCells: options.imageWidthCells,
+	};
+}
+
+export interface ToolEntryStateTarget {
+	setExpanded(expanded: boolean): void;
+	setArgsComplete(): void;
+	markExecutionStarted(startedAt?: number): void;
+	updateResult(result: Parameters<ToolExecutionComponent["updateResult"]>[0], isPartial?: boolean): void;
+	setGroupRole(role: ToolGroupRole): void;
+}
+export function applyToolEntryState(component: ToolEntryStateTarget, entry: ToolChatEntry, expanded: boolean): void {
+	component.setExpanded(expanded);
+	if (entry.argsComplete) component.setArgsComplete();
+	if (entry.executionStarted) component.markExecutionStarted(entry.startedAt);
+	if (entry.result) component.updateResult(entry.result, entry.isPartial ?? false);
+	if (entry.groupRole) component.setGroupRole(entry.groupRole);
+}
 export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMessageRenderOptions): Component {
 	const messageEntry = entry as ChatMessageEntry;
 	const markdownTheme = options.markdownTheme ?? getMarkdownTheme();
@@ -549,7 +752,23 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				messageEntry.timestamp,
 			);
 		case "tool": {
-			if (options.createToolComponent) return options.createToolComponent(messageEntry);
+			if (options.createToolComponent) {
+				let seeding = true;
+				const component = options.createToolComponent(
+					messageEntry,
+					rendererContext(options, () => {
+						if (!seeding) options.ui.requestRender();
+					}),
+				);
+				seeding = false;
+				return component;
+			}
+			let seeding = true;
+			const ui = {
+				requestRender: () => {
+					if (!seeding) options.ui.requestRender();
+				},
+			};
 			const component = new ToolExecutionComponent(
 				messageEntry.toolName,
 				messageEntry.toolCallId,
@@ -558,13 +777,15 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 					showImages: options.showImages ?? true,
 					imageWidthCells: options.imageWidthCells,
 					outputPad: options.outputPad,
+					getTaskRecord: options.getTaskRecord,
+					getToolDefinition: options.getToolDefinition,
 				},
 				options.getToolDefinition?.(messageEntry.toolName),
-				options.ui as TUI,
+				ui as TUI,
 				options.cwd,
 			);
-			component.setExpanded(options.toolOutputExpanded ?? false);
-			if (messageEntry.result) component.updateResult(messageEntry.result, messageEntry.isPartial ?? false);
+			applyToolEntryState(component, messageEntry, options.toolOutputExpanded ?? false);
+			seeding = false;
 			return component;
 		}
 		case "bashExecution": {
@@ -606,7 +827,17 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 					options.outputPad,
 				);
 			}
-			if (options.createCustomMessageComponent) return options.createCustomMessageComponent(messageEntry.message);
+			if (options.createCustomMessageComponent) {
+				let seeding = true;
+				const component = options.createCustomMessageComponent(
+					messageEntry.message,
+					rendererContext(options, () => {
+						if (!seeding) options.ui.requestRender();
+					}),
+				);
+				seeding = false;
+				return component;
+			}
 			const component = new CustomMessageComponent(
 				messageEntry.message,
 				options.getCustomMessageRenderer?.(messageEntry.message.customType),
@@ -616,6 +847,13 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				options.markdownTransformers,
 				messageEntry.messageId,
 				messageEntry.timestamp,
+				{
+					...(options.loadTaskTranscript ? { loadTranscript: options.loadTaskTranscript } : {}),
+					...(options.hasTaskTranscript ? { hasTranscript: options.hasTaskTranscript } : {}),
+					requestRender: () => options.ui.requestRender(),
+					getToolDefinition: options.getToolDefinition,
+					cwd: options.cwd,
+				},
 			);
 			component.setExpanded(options.toolOutputExpanded ?? false);
 			return component;

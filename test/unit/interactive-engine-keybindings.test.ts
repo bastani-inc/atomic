@@ -106,8 +106,8 @@ function nextFrame(client: RpcClient, componentId: string, requestId: number) {
 	);
 }
 
-async function renderSkill(client: RpcClient, expanded: boolean, requestId: number): Promise<string> {
-	const componentId = `skill-${requestId}`;
+async function renderGroupedReads(client: RpcClient, expanded: boolean, requestId: number): Promise<string> {
+	const componentId = `grouped-reads-${requestId}`;
 	const frame = nextFrame(client, componentId, requestId);
 	client.sendInteractiveEngineCommand({
 		type: "engine_tool_render",
@@ -128,6 +128,7 @@ async function renderSkill(client: RpcClient, expanded: boolean, requestId: numb
 		expanded,
 		showImages: false,
 		imageWidthCells: 80,
+		groupRole: { kind: "head", clauses: [{ family: "read", count: 3 }] },
 	});
 	return stripAnsi((await frame).lines.join("\n"));
 }
@@ -222,15 +223,15 @@ test.sequential("late host attachment receives the latest committed child state"
 	}
 });
 
-test.sequential("isolated child renders Atomic's default expand key on collapsed skill reads", async () => {
+test.sequential("isolated child renders Atomic's default expand key on a collapsed group of reads", async () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "atomic-engine-keybindings-"));
 	const client = createClient(tempDir);
 	try {
 		await client.start();
 		await client.waitForInteractiveEngineBound();
-		const rendered = await renderSkill(client, false, 1);
-		assert.match(rendered, /\[skill\] tmux \(ctrl\+o Expand\)/);
-		assert.doesNotMatch(rendered, /\[skill\] tmux \( Expand\)/);
+		const rendered = await renderGroupedReads(client, false, 1);
+		assert.match(rendered, /Read 3 files {2}\(ctrl\+o to expand\)/);
+		assert.doesNotMatch(rendered, /\( to expand\)/);
 	} finally {
 		await client.stop();
 		rmSync(tempDir, { recursive: true, force: true });
@@ -246,14 +247,15 @@ test.sequential("isolated child renders the host-effective custom expand key and
 	try {
 		await client.start();
 		await client.waitForInteractiveEngineBound();
-		const collapsed = await renderSkill(client, false, 2);
+		const collapsed = await renderGroupedReads(client, false, 2);
 		assert.equal(hostText, "ctrl+x");
-		assert.ok(collapsed.includes(`[skill] tmux (${hostText} Expand)`));
-		assert.doesNotMatch(collapsed, /ctrl\+o Expand|\( Expand\)/);
+		assert.ok(collapsed.includes(`Read 3 files  (${hostText} to expand)`));
+		assert.doesNotMatch(collapsed, /ctrl\+o to expand|\( to expand\)/);
 
-		const expanded = await renderSkill(client, true, 3);
+		const expanded = await renderGroupedReads(client, true, 3);
+		assert.match(expanded, /Read\(tmux\/SKILL\.md\)/);
 		assert.match(expanded, /Tmux skill instructions/);
-		assert.doesNotMatch(expanded, /\[skill\] tmux/);
+		assert.doesNotMatch(expanded, /Read 3 files/);
 	} finally {
 		await client.stop();
 		rmSync(tempDir, { recursive: true, force: true });
@@ -286,7 +288,7 @@ test.sequential("direct RPC reload updates one shared global and injected manage
 		await client.waitForInteractiveEngineResources();
 		let open = await opened;
 		assert.equal(await renderCustom(client, open.componentId, 10), "same:true|injected:ctrl+x|global:ctrl+x");
-		assert.match(await renderSkill(client, false, 11), /\(ctrl\+x Expand\)/);
+		assert.match(await renderGroupedReads(client, false, 11), /Read 3 files {2}\(ctrl\+x to expand\)/);
 
 		writeExpandBinding(tempDir, "ctrl+y");
 		const reloaded = nextKeybindingsReload(client);
@@ -312,7 +314,7 @@ test.sequential("direct RPC reload updates one shared global and injected manage
 		assert.equal(hostKeybindings, hostIdentity);
 		assert.deepEqual(hostKeybindings.getKeys("app.tools.expand"), ["ctrl+y"]);
 		assert.equal(await renderCustom(client, open.componentId, 12), "same:true|injected:ctrl+y|global:ctrl+y");
-		assert.match(await renderSkill(client, false, 13), /\(ctrl\+y Expand\)/);
+		assert.match(await renderGroupedReads(client, false, 13), /Read 3 files {2}\(ctrl\+y to expand\)/);
 
 		writeExpandBinding(tempDir, []);
 		const unboundReloaded = nextKeybindingsReload(client);
@@ -334,9 +336,9 @@ test.sequential("direct RPC reload updates one shared global and injected manage
 		await unboundReloaded;
 		assert.deepEqual(hostKeybindings.getKeys("app.tools.expand"), []);
 		assert.equal(await renderCustom(client, open.componentId, 14), "same:true|injected:|global:");
-		const unbound = await renderSkill(client, false, 15);
-		assert.match(unbound, /\[skill\] tmux/);
-		assert.doesNotMatch(unbound, /Expand|\(\s*\)/);
+		const unbound = await renderGroupedReads(client, false, 15);
+		assert.match(unbound, /Read 3 files/);
+		assert.doesNotMatch(unbound, /to expand|\(\s*\)/);
 	} finally {
 		detachHostSync();
 		await client.stop();
@@ -401,7 +403,7 @@ test.sequential(
 			editor.handleInput("\x19");
 			assert.equal(expandDispatches, 2, "new host remap must dispatch");
 			assert.equal(await renderCustom(client, open.componentId, 21), "same:true|injected:ctrl+y|global:ctrl+y");
-			assert.match(await renderSkill(client, false, 22), /\(ctrl\+y Expand\)/);
+			assert.match(await renderGroupedReads(client, false, 22), /Read 3 files {2}\(ctrl\+y to expand\)/);
 
 			writeExpandBinding(tempDir, []);
 			const unboundReloaded = nextKeybindingsReload(client);

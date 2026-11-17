@@ -1,6 +1,7 @@
 import {
 	type AgentSessionEvent,
 	ChatSessionHost,
+	type ChatSessionInterruptedTurnSnapshot,
 	classifyChatCommand,
 	type ReadonlyFooterDataProvider,
 } from "@bastani/atomic";
@@ -121,6 +122,7 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 	const initialChatIsTerminal =
 		isTerminalStageChatState(initialRun?.status) || isTerminalStageChatState(initialStage?.status);
 	if (initialChatIsTerminal) ctx.chatHost.clearBusyForTerminalWorkflowStage();
+	rehydrateEscapeInterruptState(ctx, initialStage);
 	ctx._unsubscribeStore = subscribeStoreInvalidation(ctx.store, () => handleStoreUpdate(ctx));
 	const unsubscribeBranch = ctx.footerData?.onBranchChange(() => ctx.requestRender?.());
 	const unsubscribeStatuses = ctx.footerData
@@ -241,7 +243,7 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 				await liveHandle(ctx)?.ensureAttached();
 			},
 			prompt: async (text, mode) => {
-				ctx.interruptedByEscape = false;
+				clearStageEscapeInterruptState(ctx);
 				if (classifyChatCommand(text) === "skill") return submitStageSkillCommand(ctx, text, mode);
 				const handle = liveHandle(ctx);
 				if (!handle) throw new Error("no live handle on this stage");
@@ -296,7 +298,7 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 			resume: async (message, mode = "auto") => {
 				const handle = liveHandle(ctx);
 				if (!handle) throw new Error("no live handle on this stage");
-				ctx.interruptedByEscape = false;
+				clearStageEscapeInterruptState(ctx);
 				ctx.localPaused = true;
 				let succeeded = false;
 				try {
@@ -381,9 +383,10 @@ function handleStoreUpdate(ctx: StageChatViewContext): void {
 		changed = true;
 	} else if (stage && stage.status === "running" && (ctx.localPaused || ctx.interruptedByEscape)) {
 		ctx.localPaused = false;
-		ctx.interruptedByEscape = false;
+		clearStageEscapeInterruptState(ctx);
 		changed = true;
 	}
+	pruneStageEscapeInterruptStates(ctx.store);
 	changed = absorbStageNotices(ctx, stage) || changed;
 	const promptChanged = syncPromptState(ctx, stage?.pendingPrompt);
 	changed = promptChanged || changed;
@@ -742,4 +745,88 @@ export function disposeStageChatView(ctx: StageChatViewContext): void {
 
 export function promptPageSize(ctx: StageChatViewContext): number {
 	return Math.max(4, viewLineCount(ctx) - HEADER_ROWS - SEP_ROWS - 2);
+}
+
+export interface EscapeInterruptedStageState {
+	interruptedTurn: ChatSessionInterruptedTurnSnapshot | undefined;
+	awaitingAgentEnd: boolean;
+}
+
+const escapeInterruptedStagesByStore = new WeakMap<object, Map<string, EscapeInterruptedStageState>>();
+
+function escapeInterruptStageKey(ctx: Pick<StageChatViewContext, "runId" | "stageId">): string {
+	return `${ctx.runId}\u0000${ctx.stageId}`;
+}
+
+export function pruneStageEscapeInterruptStates(store: StageChatViewContext["store"]): void {
+	const byStage = escapeInterruptedStagesByStore.get(store);
+	if (!byStage) return;
+	for (const [key, entry] of byStage) {
+		const sep = key.indexOf("\u0000");
+		if (sep < 0) {
+			byStage.delete(key);
+			continue;
+		}
+		const runId = key.slice(0, sep);
+		const stageId = key.slice(sep + 1);
+		const run = readGraphStoreRun(store, runId);
+		if (!run || (isTerminalStageChatState(run.status) && run.status !== "paused")) {
+			byStage.delete(key);
+			continue;
+		}
+		const stage = run.stages.find((candidate) => candidate.id === stageId);
+		if (!stage) {
+			byStage.delete(key);
+			continue;
+		}
+		if (stage.status === "paused") continue;
+		if (stage.status === "running" && entry.awaitingAgentEnd) continue;
+		byStage.delete(key);
+	}
+	if (byStage.size === 0) escapeInterruptedStagesByStore.delete(store);
+}
+
+export function getStageEscapeInterruptState(
+	ctx: Pick<StageChatViewContext, "store" | "runId" | "stageId">,
+): EscapeInterruptedStageState | undefined {
+	pruneStageEscapeInterruptStates(ctx.store);
+	return escapeInterruptedStagesByStore.get(ctx.store)?.get(escapeInterruptStageKey(ctx));
+}
+
+export function clearStageEscapeInterruptState(
+	ctx: Pick<StageChatViewContext, "store" | "runId" | "stageId" | "interruptedByEscape">,
+): void {
+	ctx.interruptedByEscape = false;
+	const byStage = escapeInterruptedStagesByStore.get(ctx.store);
+	if (!byStage) return;
+	byStage.delete(escapeInterruptStageKey(ctx));
+	if (byStage.size === 0) escapeInterruptedStagesByStore.delete(ctx.store);
+}
+
+export function recordStageEscapeInterrupt(ctx: StageChatViewContext): void {
+	ctx.interruptedByEscape = true;
+	pruneStageEscapeInterruptStates(ctx.store);
+	const interruptedTurn = ctx.chatHost.snapshotInterruptedTurn();
+	let byStage = escapeInterruptedStagesByStore.get(ctx.store);
+	if (!byStage) {
+		byStage = new Map<string, EscapeInterruptedStageState>();
+		escapeInterruptedStagesByStore.set(ctx.store, byStage);
+	}
+	byStage.set(escapeInterruptStageKey(ctx), {
+		interruptedTurn,
+		awaitingAgentEnd: true,
+	});
+	void ctx.chatHost.interrupt({ restoreQueuedMessages: true });
+	ctx.chatHost.restoreInterruptedTurn(interruptedTurn);
+}
+
+function rehydrateEscapeInterruptState(ctx: StageChatViewContext, stage: StageSnapshot | undefined): void {
+	const saved = getStageEscapeInterruptState(ctx);
+	if (!saved) return;
+	if (!isPaused(ctx, stage)) {
+		clearStageEscapeInterruptState(ctx);
+		return;
+	}
+	ctx.interruptedByEscape = true;
+	ctx.chatHost.restoreInterruptedTurn(saved.interruptedTurn);
 }

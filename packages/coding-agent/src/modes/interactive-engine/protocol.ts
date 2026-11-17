@@ -11,6 +11,7 @@ import type {
 import type { WorkflowActivityFrame, WorkflowRootActivity } from "../../core/extensions/workflow-events.js";
 import type { KeyId } from "../../core/keybindings.ts";
 import { parseHostSessionPickerRows } from "../../core/workflow-resume.ts";
+import type { ToolGroupFamily, ToolGroupRole } from "../interactive/components/tool-block.ts";
 
 /**
  * Version 4 separates minimal session binding from optional resource readiness.
@@ -217,15 +218,18 @@ export type InteractiveEngineCommand =
 			width: number;
 			toolName: string;
 			toolCallId: string;
+			rendererTaskId?: string;
 			args: JsonValue;
 			result?: JsonObject;
 			executionStarted: boolean;
+			executionStartedAt?: number;
 			argsComplete: boolean;
 			isPartial: boolean;
 			expanded: boolean;
 			showImages: boolean;
 			imageWidthCells: number;
 			outputPad?: number;
+			groupRole?: ToolGroupRole;
 	  }
 	| {
 			type: "engine_message_render";
@@ -403,6 +407,28 @@ function parseInputFormFields(value: JsonValue | undefined): HostInputFormField[
 		});
 	}
 	return fields;
+}
+
+const TOOL_GROUP_FAMILIES: readonly ToolGroupFamily[] = ["read", "search", "find", "list", "bash"];
+
+function parseToolGroupRole(value: JsonValue | undefined): ToolGroupRole | undefined {
+	if (value === undefined || !isJsonObject(value)) return undefined;
+	if (value.kind === "standalone" || value.kind === "hidden") return { kind: value.kind };
+	if (value.kind !== "head" || !Array.isArray(value.clauses)) return undefined;
+	const clauses: { family: ToolGroupFamily; count: number }[] = [];
+	for (const clause of value.clauses) {
+		if (
+			!isJsonObject(clause) ||
+			typeof clause.count !== "number" ||
+			!Number.isInteger(clause.count) ||
+			clause.count < 1
+		)
+			return undefined;
+		const family = TOOL_GROUP_FAMILIES.find((candidate) => candidate === clause.family);
+		if (family === undefined) return undefined;
+		clauses.push({ family, count: clause.count });
+	}
+	return clauses.length > 0 ? { kind: "head", clauses } : undefined;
 }
 
 function parseStringRecord(value: JsonValue | undefined): Record<string, string> | undefined {
@@ -783,12 +809,20 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 		typeof value.showImages === "boolean" &&
 		typeof value.imageWidthCells === "number"
 	) {
+		if (
+			value.rendererTaskId !== undefined &&
+			(typeof value.rendererTaskId !== "string" ||
+				value.rendererTaskId.length === 0 ||
+				value.rendererTaskId.length > 256)
+		)
+			return undefined;
 		return {
 			type: value.type,
 			componentId: value.componentId,
 			requestId: value.requestId,
 			width: value.width,
 			toolName: value.toolName,
+			...(value.rendererTaskId === undefined ? {} : { rendererTaskId: value.rendererTaskId }),
 			toolCallId: value.toolCallId,
 			args: value.args,
 			result: isJsonObject(value.result) ? value.result : undefined,
@@ -799,6 +833,11 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 			showImages: value.showImages,
 			imageWidthCells: value.imageWidthCells,
 			outputPad: typeof value.outputPad === "number" ? value.outputPad : undefined,
+			executionStartedAt:
+				typeof value.executionStartedAt === "number" && Number.isFinite(value.executionStartedAt)
+					? value.executionStartedAt
+					: undefined,
+			groupRole: parseToolGroupRole(value.groupRole),
 		};
 	}
 	if (

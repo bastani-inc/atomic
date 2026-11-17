@@ -6,8 +6,11 @@ import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { agentPanelItems, taskPanelItem } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
+import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
+import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
 import {
 	MainComposerKeyOverlay,
 	mainComposerKeys,
@@ -29,7 +32,9 @@ import {
 	initTheme,
 	theme,
 } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { showAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import { showTaskInspector } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
+import { renderIntercomCustomMessage } from "../../packages/intercom/ui/inline-message.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
@@ -153,12 +158,24 @@ describe("attached subagent transcript header and live-key hint (#5224)", () => 
 			await flush();
 
 			for (const width of [80, 160]) {
-				const rows = plain(inspector.renderViewport(width, 24));
-				assert.equal(rows[0], "  › from main", `width ${width}: › from main header at row 0`);
+				const rawRows = inspector.renderViewport(width, 24);
+				const rows = plain(rawRows);
+				assert.equal(rows[0], " › from main", `width ${width}: › from main header at column 1`);
 				assert.match(
 					rows[1] ?? "",
-					/^ {2}❯ Fix #5220: make lock creation atomic/,
-					`width ${width}: styled ❯ prompt echo at row 1`,
+					/^ ❯ Fix #5220: make lock creation atomic/,
+					`width ${width}: styled ❯ prompt echo at column 1`,
+				);
+				assert.ok(
+					(rawRows[0] ?? "").includes(theme.fg("dim", "› from main")),
+					`width ${width}: › from main header uses dim theme token`,
+				);
+				assert.ok(
+					(rawRows[1] ?? "").includes(theme.fg("accent", theme.bold("❯"))) &&
+						(rawRows[1] ?? "").includes(
+							theme.fg("userMessageText", "Fix #5220: make lock creation atomic across concurrent spawns"),
+						),
+					`width ${width}: ❯ prompt echo uses accent bold chevron and userMessageText token`,
 				);
 				const beforeComposer = rows.slice(
 					0,
@@ -235,8 +252,8 @@ describe("attached subagent transcript header and live-key hint (#5224)", () => 
 				taskId,
 				{ chat: true, backLabel: "main chat" },
 			);
-			assert.equal(renderedLines[0], "  › from main");
-			assert.equal(renderedLines[1], "  ❯ Subagent task");
+			assert.equal(renderedLines[0], " › from main");
+			assert.equal(renderedLines[1], " ❯ Subagent task");
 			const beforeComposer = renderedLines.slice(
 				0,
 				renderedLines.findIndex((row) => row.includes("━")),
@@ -311,8 +328,8 @@ describe("attached subagent transcript header and live-key hint (#5224)", () => 
 		try {
 			for (const width of [80, 160]) {
 				const rows = plain(longCase.inspector.renderViewport(width, 28));
-				assert.equal(rows[0], "  › from main");
-				assert.match(rows[1] ?? "", /^ {2}❯ Investigate concurrency race condition/);
+				assert.equal(rows[0], " › from main");
+				assert.match(rows[1] ?? "", /^ ❯ Investigate concurrency race condition/);
 				assert.equal(
 					(rows[1] ?? "").includes("TAIL-SENTINEL-BEYOND-160"),
 					false,
@@ -451,7 +468,7 @@ describe("attached subagent transcript header and live-key hint (#5224)", () => 
 		]);
 		try {
 			const wideRows = plain(prefacedCustomCase.inspector.renderViewport(120, 28));
-			assert.equal(wideRows[1], `  ❯ ${prefacedPrompt}`);
+			assert.equal(wideRows[1], ` ❯ ${prefacedPrompt}`);
 			const wideBodyRows = wideRows.slice(
 				2,
 				wideRows.findIndex((row) => row.includes("━")),
@@ -658,7 +675,7 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 			const stageWorkingLine = stageLines.find((line) => line.includes("∀ "));
 			const subWorkingLine = subLines.find((line) => line.includes("∀ "));
 			assert.equal(mainWorkingLines.length, 1);
-			assert.match(mainWorkingLines[0]!, /^ ∀ Schlepping\.\.\. \(4s · ↓ 7 tokens\)$/);
+			assert.match(mainWorkingLines[0]!, /^ ∀ Schlepping… \(4s · ↓ 7 tokens\)$/);
 			assert.equal(stageWorkingLine, mainWorkingLines[0], "stage chat working line matches main chat");
 			assert.equal(subWorkingLine, mainWorkingLines[0], "subagent view working line matches main chat");
 
@@ -704,7 +721,6 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 			assert.equal(stageStreaming, true, "Esc on stage ? overlay only closes the overlay");
 			assert.equal(subRunning, true, "Esc on subagent ? overlay only closes the overlay");
 
-			// 4. Esc interrupts the turn and renders the identical shared "Interrupted by user" notice (no PAUSED banner)
 			assert.equal(stageView.handleInput(ESC), true);
 			assert.equal(subInspector.handleInput(ESC), true);
 			await flush();
@@ -723,12 +739,12 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 			const stageAfterAbort = plain(stageView.render(100));
 			const subAfterAbort = plain(subInspector.renderViewport(100, 28));
 
-			const mainNotice = mainAfterAbort.find((line) => line.includes("Interrupted by user"));
-			const stageNotice = stageAfterAbort.find((line) => line.includes("Interrupted by user"));
-			const subNotice = subAfterAbort.find((line) => line.includes("Interrupted by user"));
-			assert.equal(mainNotice, " Interrupted by user");
-			assert.equal(stageNotice, mainNotice, "stage chat renders identical Interrupted by user notice");
-			assert.equal(subNotice, mainNotice, "subagent view renders identical Interrupted by user notice");
+			const mainNotice = mainAfterAbort.find((line) => line.includes("◼ Interrupted"));
+			const stageNotice = stageAfterAbort.find((line) => line.includes("◼ Interrupted"));
+			const subNotice = subAfterAbort.find((line) => line.includes("◼ Interrupted"));
+			assert.equal(mainNotice, " ◼ Interrupted");
+			assert.equal(stageNotice, mainNotice, "stage chat renders the same shared interruption notice");
+			assert.equal(subNotice, mainNotice, "subagent view renders the same shared interruption notice");
 			assert.doesNotMatch(
 				stageAfterAbort.join("\n"),
 				/❚❚\s+PAUSED|This workflow stage is paused/,
@@ -853,8 +869,8 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 			const stageWorking = plain(stageView.render(100)).find((line) => line.includes("∀ "));
 			const subWorking = plain(subInspector.renderViewport(100, 24)).find((line) => line.includes("∀ "));
 
-			assert.equal(stageWorking, ` ∀ Schlepping... (27s · ↓ ${expectedTokens} tokens)`);
-			assert.equal(subWorking, ` ∀ Schlepping... (27s · ↓ ${expectedTokens} tokens)`);
+			assert.equal(stageWorking, ` ∀ Schlepping… (27s · ↓ ${expectedTokens} tokens)`);
+			assert.equal(subWorking, ` ∀ Schlepping… (27s · ↓ ${expectedTokens} tokens)`);
 		} finally {
 			stageView.dispose();
 			subInspector.dispose();
@@ -1138,6 +1154,474 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 			stageView.dispose();
 			subInspector.dispose();
 			await subFixture.dispose();
+		}
+	});
+
+	test("attached subagent view renders intercom_message entries through the registered Intercom card renderer even after settling (#5239)", async () => {
+		const fixture = taskFixture();
+		const ownerSession = {
+			extensionRunner: {
+				getMessageRenderer: (customType: string) =>
+					customType === "intercom_message" ? renderIntercomCustomMessage : undefined,
+			},
+		};
+		bindOwnerTaskStore(ownerSession, fixture.store);
+		await fixture.start("Inspect concurrent spawn locks.");
+		const session = SessionManager.inMemory("/tmp/r1fin/sub/proj");
+		await session.appendMessage({
+			role: "user",
+			content: "Inspect concurrent spawn locks.",
+			timestamp: 1_000,
+		});
+		await session.appendMessage(createAssistantMessage("Now waiting on the long check."));
+		await session.appendCustomMessageEntry(
+			"intercom_message",
+			"**📨 From subagent-chat-01a1e951-44cc-7ef6-b030-8418c3d9c1e6** (/tmp/r1fin/sub/proj)\n\nhello again",
+			true,
+			{
+				from: {
+					id: "01a1e951-44cc-7ef6-b030-8418c3d9c1e6",
+					name: "subagent-chat-01a1e951-44cc-7ef6-b030-8418c3d9c1e6",
+					cwd: "/tmp/r1fin/sub/proj",
+					model: "claude-haiku-4-5",
+					pid: 1234,
+					startedAt: 1_000,
+					lastActivity: 2_000,
+					status: "running",
+				},
+				message: {
+					id: "msg-1",
+					timestamp: Date.UTC(2026, 10, 17, 5, 41, 0),
+					content: { text: "hello again" },
+				},
+				bodyText: "hello again",
+			},
+		);
+		await session.appendMessage(createAssistantMessage("Acknowledged."));
+		// Bind a settled history-only transcript (no live subscribe / chatSession) and an RPC-like getChatRenderSettings returning undefined.
+		fixture.runners[0]!.context.bindTranscript({
+			getSessionId: () => session.getSessionId(),
+			getEntries: () => session.getEntries(),
+		});
+		const env = taskTranscriptEnvironment({
+			tui: makeTestTui(28),
+			keybindings: getKeybindings(),
+			getChatRenderSettings: () => ({
+				getToolDefinition: () => undefined,
+				getCustomMessageRenderer: () => undefined,
+			}),
+			getToolsExpanded: () => false,
+			setToolsExpanded: () => {},
+		});
+		const inspector = new TaskInspector(
+			ownerTaskViewSource(fixture.store),
+			() => {},
+			() => {},
+			undefined,
+			() => env,
+		);
+		try {
+			inspector.openChat(fixture.store.tasks[0]!.ref.taskId);
+			await flush();
+			const rows = plain(inspector.renderViewport(80, 28));
+			const text = rows.join("\n");
+			assert.doesNotMatch(text, /\[intercom_message\]/, "must not render raw [intercom_message] fallback box");
+			assert.doesNotMatch(text, /📨/, "must not render raw 📨 framing");
+			assert.doesNotMatch(text, /\/tmp\/r1fin\/sub\/proj/, "must not leak raw full host path");
+			assert.match(text, /^ › Message from /m, "renders shared › Message from card at column 1");
+			assert.match(text, /hello again/, "renders message body");
+		} finally {
+			inspector.dispose();
+			await fixture.dispose();
+		}
+	});
+
+	test("interrupting an attached subagent stops its elapsed clock, shows stopped in composer label and panel, and resumes on follow-up (#5239)", async () => {
+		let now = 10_000;
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+		const fixture = taskFixture();
+		const ownerSession = {};
+		bindOwnerTaskStore(ownerSession, fixture.store);
+		await fixture.start("Inspect concurrent spawn locks.");
+		const taskId = fixture.store.tasks[0]!.ref.taskId;
+		fixture.runners[0]!.context.reportActivity({
+			reportId: "m-1",
+			change: { kind: "metrics", elapsedMs: 14_000, tokenCount: 800, toolCount: 4 },
+		});
+		fixture.store.drain();
+
+		// Freshly starting child (not yet streaming, not interrupted) is still running, never stopped.
+		assert.equal(taskPanelItem(fixture.store.tasks[0]!).state, "running");
+
+		const session = SessionManager.inMemory();
+		await session.appendMessage({
+			role: "user",
+			content: "Inspect concurrent spawn locks.",
+			timestamp: 1_000,
+		});
+		await session.appendMessage(createAssistantMessage("Now waiting on the long check."));
+		let running = true;
+		const listeners = new Set<(event: AgentSessionEvent) => void>();
+		const interruptTurn = async () => {
+			running = false;
+			for (const listener of listeners) listener({ type: "agent_end", messages: [] } as never);
+		};
+		const sendMessage = async (_text: string) => {
+			running = true;
+			for (const listener of listeners) listener({ type: "agent_start" } as never);
+			return { delivered: true as const };
+		};
+		const subscribe = (listener: (event: AgentSessionEvent) => void) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		};
+		const transcript: TaskTranscriptSource = Object.assign(session, {
+			subscribe,
+			isRunning: () => running,
+			completionSource: { runId: "run-1", intercomTarget: "subagent-debugger-1" },
+			interruptTurn,
+			sendMessage,
+		});
+		fixture.runners[0]!.context.bindTranscript(transcript);
+
+		// Reading panel items before opening a viewer must not add any transcript listener or mutate transcript methods.
+		assert.equal(agentPanelItems(ownerSession)[0]?.state, "running");
+		assert.equal(listeners.size, 0, "pure panel state read adds no transcript listener");
+		assert.equal(transcript.interruptTurn, interruptTurn, "transcript interruptTurn method is not monkey-patched");
+		assert.equal(transcript.sendMessage, sendMessage, "transcript sendMessage method is not monkey-patched");
+		assert.equal(transcript.subscribe, subscribe, "transcript subscribe method is not monkey-patched");
+
+		const env = taskTranscriptEnvironment({
+			tui: makeTestTui(24),
+			keybindings: getKeybindings(),
+			getToolsExpanded: () => false,
+			setToolsExpanded: () => {},
+		});
+		const inspector = new TaskInspector(
+			ownerTaskViewSource(fixture.store),
+			() => {},
+			() => {},
+			undefined,
+			() => env,
+		);
+		try {
+			inspector.openChat(taskId);
+			await flush();
+
+			const runningRows = plain(inspector.renderViewport(80, 24));
+			const runningRule = runningRows.find((row) => row.includes("━") && row.includes("Inspect concurrent")) ?? "";
+			assert.match(runningRule, / · 14s ━$/, "running composer label shows live elapsed");
+
+			// Press Esc to interrupt the subagent turn while native task execution remains running.
+			assert.equal(inspector.handleInput(ESC), true);
+			await flush();
+
+			assert.equal(
+				fixture.store.tasks[0]!.execution.kind,
+				"running",
+				"authoritative supervisor execution state remains running",
+			);
+
+			// Advance time by 10 seconds: elapsed clock must stay frozen and composer label must say stopped.
+			now += 10_000;
+			const interruptedRows = plain(inspector.renderViewport(80, 24));
+			const interruptedRule =
+				interruptedRows.find((row) => row.includes("━") && row.includes("Inspect concurrent")) ?? "";
+			assert.match(interruptedRule, / · stopped ━$/, "interrupted composer label shows stopped instead of ticking");
+
+			const panelItems = agentPanelItems(ownerSession);
+			assert.equal(panelItems[0]?.state, "stopped", "panel item state reflects stopped after Esc interrupt");
+			assert.equal(panelItems[0]?.elapsedMs, 14_000, "panel item elapsed clock stays frozen at 14s");
+
+			// Sending a follow-up message resumes the subagent turn and clears the stopped override.
+			for (const ch of "hello again") inspector.handleInput(ch);
+			inspector.handleInput("\r");
+			await flush();
+
+			const resumedItems = agentPanelItems(ownerSession);
+			assert.equal(resumedItems[0]?.state, "running", "panel item returns to running after follow-up message");
+			const resumedRows = plain(inspector.renderViewport(80, 24));
+			const resumedRule = resumedRows.find((row) => row.includes("━") && row.includes("Inspect concurrent")) ?? "";
+			assert.doesNotMatch(resumedRule, / · stopped ━$/, "composer label leaves stopped state once turn resumes");
+
+			// Rebinding the same transcript object to a second task after settlement tracks the new task cleanly.
+			await fixture.start("Second subagent task.");
+			const secondTaskId = fixture.store.tasks[1]!.ref.taskId;
+			fixture.runners[1]!.context.bindTranscript(transcript);
+			await ownerTaskViewSource(fixture.store).interruptTask?.(secondTaskId);
+			assert.equal(taskPanelItem(fixture.store.tasks[1]!).state, "stopped");
+			assert.equal(taskPanelItem(fixture.store.tasks[0]!).state, "running");
+		} finally {
+			inspector.dispose();
+			await fixture.dispose();
+		}
+	});
+
+	test("opening a subagent from showAgentPanel passes backLabel 'main chat' and ← returns to the focused panel (#5239)", async () => {
+		const fixture = taskFixture();
+		const ownerSession = {};
+		bindOwnerTaskStore(ownerSession, fixture.store);
+		await fixture.start("Fix #5220: make lock creation atomic");
+		const session = SessionManager.inMemory();
+		await session.appendMessage({
+			role: "user",
+			content: "Fix #5220: make lock creation atomic",
+			timestamp: 1_000,
+		});
+		fixture.runners[0]!.context.bindTranscript(
+			Object.assign(session, {
+				subscribe: () => () => {},
+				isRunning: () => false,
+			}),
+		);
+
+		const phases: string[] = [];
+		let attachedLines: string[] = [];
+		let step = 0;
+		try {
+			await showAgentPanel(ownerSession, {
+				getToolsExpanded: () => false,
+				setToolsExpanded: () => {},
+				async custom<T>(factory: Parameters<Parameters<typeof showAgentPanel>[1]["custom"]>[0]): Promise<T> {
+					let finished = false;
+					const component = await factory(makeTestTui(24), theme, new KeybindingsManager(), (() => {
+						finished = true;
+					}) as never);
+					await flush();
+					const rendered = plain(component.render(100));
+					if (step === 0) {
+						step += 1;
+						phases.push("panel-initial");
+						assert.ok(rendered.some((line) => line.includes("● main")));
+						component.handleInput?.("\r");
+					} else if (step === 1) {
+						step += 1;
+						phases.push("attached-chat");
+						attachedLines = rendered;
+						component.handleInput?.(LEFT);
+					} else {
+						step += 1;
+						phases.push("panel-returned");
+						assert.ok(rendered.some((line) => line.includes("● main")));
+						component.handleInput?.(ESC);
+					}
+					if (!finished) component.dispose?.();
+					return undefined as T;
+				},
+			});
+			assert.deepEqual(phases, ["panel-initial", "attached-chat", "panel-returned"]);
+			assert.equal(attachedLines[0], " › from main");
+			assert.equal(
+				attachedLines.at(-1),
+				"  ← main chat · pgup/pgdn scroll · ctrl+o expand · ? keys",
+				"panel route opens subagent chat with ← main chat back label",
+			);
+		} finally {
+			await fixture.dispose();
+		}
+	});
+
+	test("real tool execution events render byte-identical plain and ANSI tool blocks across main chat, stage chat, and attached subagent view (#5239)", async () => {
+		const mainChatContainer = new Container();
+		const mainStatusContainer = new Container();
+		const mainPendingContainer = new Container();
+		const settingsManager = {
+			getShowTerminalProgress: () => false,
+			getClearOnShrink: () => false,
+			getShowCacheMissNotices: () => false,
+			getShowImages: () => true,
+			getImageWidthCells: () => 60,
+			getLatexRenderingEnabled: () => true,
+		};
+		const sessionManager = SessionManager.inMemory("/repo");
+		const mainMode = {
+			isInitialized: true,
+			ui: { requestRender() {}, terminal: { setProgress() {} } },
+			footer: { invalidate() {} },
+			programStatus: new ProgramStatusReporter(
+				() => ({ setProgramStatus() {} }) as never,
+				() => undefined,
+			),
+			sessionManager,
+			settingsManager,
+			session: {
+				isStreaming: true,
+				isCompacting: false,
+				compactionReason: undefined,
+				pendingMessageCount: 0,
+				settingsManager,
+				sessionManager,
+				modelRuntime: {},
+				extensionRunner: {
+					getMessageRenderer: () => undefined,
+					resolveToolRenderers: () => undefined,
+				},
+				getToolDefinition: () => undefined,
+			},
+			statusContainer: mainStatusContainer,
+			chatContainer: mainChatContainer,
+			pendingMessagesContainer: mainPendingContainer,
+			compactionQueuedMessages: [],
+			pendingTools: new Map(),
+			optimisticUserMessageSignatures: [],
+			streamingComponent: undefined,
+			streamingMessage: undefined,
+			loadingAnimation: undefined,
+			autoCompactionLoader: undefined,
+			workingVisible: true,
+			workingMessage: undefined,
+			lastWorkingMessage: undefined,
+			defaultWorkingMessage: "Working…",
+			workingIndicatorOptions: undefined,
+			workingIndicatorEmbedded: false,
+			compactionActive: false,
+			workingRunMeter: new WorkingRunMeter(),
+			hideThinkingBlock: false,
+			hiddenThinkingLabel: "Thinking...",
+			toolOutputExpanded: false,
+			outputPad: 1,
+			getMarkdownThemeWithSettings: () => getMarkdownTheme(),
+			getMarkdownTransformers: () => [],
+			getRegisteredToolDefinition: () => undefined,
+			chatMessageRenderOptions: InteractiveModeBase.prototype.chatMessageRenderOptions,
+			addRenderedChatEntry: InteractiveModeBase.prototype.addRenderedChatEntry,
+			getWorkingLoaderMessage: InteractiveModeBase.prototype.getWorkingLoaderMessage,
+			createWorkingLoader: InteractiveModeBase.prototype.createWorkingLoader,
+			clearWorkingLoader: InteractiveModeBase.prototype.clearWorkingLoader,
+			stopWorkingLoader: InteractiveModeBase.prototype.stopWorkingLoader,
+			showWorkingLoaderNow: InteractiveModeBase.prototype.showWorkingLoaderNow,
+			updatePendingMessagesDisplay: () => {},
+			checkShutdownRequested: async () => {},
+		} as unknown as InteractiveModeBase;
+		const mainHost = new ChatSessionHost({
+			style: themedChatHostStyle(),
+			editorTheme: getEditorTheme(),
+			getCwd: () => "/repo",
+			requestRender: () => {},
+			commands: { send: async () => {} },
+		});
+		(mainMode as unknown as { chatHost: ChatSessionHost }).chatHost = mainHost;
+
+		const wfStore = createStore();
+		setupRun(wfStore, "run-tools", "stage-tools", "running");
+		const { handle: stageHandle, emit: emitStage } = makeHandle();
+		const stageView = new StageChatView({
+			store: wfStore,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-tools",
+			stageId: "stage-tools",
+			workflowName: "demo",
+			handle: stageHandle,
+			onDetach: () => {},
+			onClose: () => {},
+			piTui: makeTestTui(28),
+			piTheme: theme,
+			getChatRenderSettings: () => ({ cwd: "/repo" }) as never,
+		});
+
+		const fixture = taskFixture();
+		await fixture.start("Inspect tools");
+		const subSession = SessionManager.inMemory("/repo");
+		const subListeners = new Set<(event: AgentSessionEvent) => void>();
+		fixture.runners[0]!.context.bindTranscript(
+			Object.assign(subSession, {
+				subscribe: (listener: (event: AgentSessionEvent) => void) => {
+					subListeners.add(listener);
+					return () => subListeners.delete(listener);
+				},
+				isRunning: () => true,
+			}),
+		);
+		const subInspector = new TaskInspector(
+			ownerTaskViewSource(fixture.store),
+			() => {},
+			() => {},
+			undefined,
+			() =>
+				taskTranscriptEnvironment({
+					tui: makeTestTui(28),
+					keybindings: getKeybindings(),
+					getToolsExpanded: () => false,
+					setToolsExpanded: () => {},
+				}),
+		);
+		subInspector.openChat(fixture.store.tasks[0]!.ref.taskId);
+		await flush();
+
+		const events: AgentSessionEvent[] = [
+			{ type: "agent_start" } as AgentSessionEvent,
+			{ type: "turn_start" } as AgentSessionEvent,
+			{
+				type: "tool_execution_start",
+				toolCallId: "call-read-1",
+				toolName: "read",
+				args: { path: "README.md" },
+			} as AgentSessionEvent,
+			{
+				type: "tool_execution_end",
+				toolCallId: "call-read-1",
+				toolName: "read",
+				result: { content: [{ type: "text", text: "line 1\nline 2" }] },
+				isError: false,
+			} as AgentSessionEvent,
+			{
+				type: "tool_execution_start",
+				toolCallId: "call-bash-1",
+				toolName: "bash",
+				args: { command: "ls /nonexistent-dir" },
+			} as AgentSessionEvent,
+			{
+				type: "tool_execution_end",
+				toolCallId: "call-bash-1",
+				toolName: "bash",
+				result: {
+					content: [{ type: "text", text: "ls: cannot access '/nonexistent-dir': No such file or directory" }],
+					details: { exitCode: 2 },
+				},
+				isError: true,
+			} as AgentSessionEvent,
+		];
+
+		try {
+			for (const event of events) {
+				mainHost.applyAgentEvent(event);
+				await emitStage(event);
+				for (const listener of subListeners) listener(event);
+			}
+			await flush();
+
+			const extractToolRows = (lines: readonly string[]): string[] =>
+				lines
+					.map((line) => line.trimEnd())
+					.filter((line) => {
+						const stripped = stripVTControlCharacters(line);
+						return (
+							stripped.startsWith(" ● Read(") || stripped.startsWith(" ✗ Bash(") || stripped.startsWith("   ⎿  ")
+						);
+					});
+
+			const mainRaw = extractToolRows(mainHost.renderBody(80, 20));
+			const stageRaw = extractToolRows(stageView.render(80));
+			const subRaw = extractToolRows(subInspector.renderViewport(80, 28));
+
+			assert.equal(mainRaw.length, 4, "renders 2 tool headers and 2 connector rows");
+			assert.deepEqual(plain(mainRaw), [
+				" ● Read(README.md)",
+				"   ⎿  Read 2 lines",
+				" ✗ Bash(ls /nonexistent-dir) · exit 2 · 0.1s",
+				"   ⎿  ls: cannot access '/nonexistent-dir': No such file or directory",
+			]);
+			assert.deepEqual(stageRaw, mainRaw, "stage chat tool rows match main chat in both plain text and ANSI SGR");
+			assert.deepEqual(
+				subRaw,
+				mainRaw,
+				"attached subagent tool rows match main chat in both plain text and ANSI SGR",
+			);
+		} finally {
+			mainHost.dispose();
+			stageView.dispose();
+			subInspector.dispose();
+			await fixture.dispose();
 		}
 	});
 });

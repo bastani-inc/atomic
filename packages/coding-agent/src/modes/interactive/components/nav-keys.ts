@@ -76,10 +76,22 @@ export function navEntryKeys(keybindings: NavKeybindings | undefined, entry: Nav
 	return keys.map(navKeyText).join("/");
 }
 
-/**
- * A screen's single dim hint line: `key label · key label`. Entries whose action is unbound are left out, and entries
- * are dropped from the end, never cut mid-word, until the line fits.
- */
+const WAY_OUT_KEY_RE = /(?:^|\/)(?:esc|escape|←|left)(?:$|\/)/i;
+
+function navEntryPriority(entry: NavKey, keys: string): number {
+	if (
+		entry.action === "app.nav.back" ||
+		entry.action === "tui.select.cancel" ||
+		(WAY_OUT_KEY_RE.test(keys) && entry.label !== "interrupt")
+	) {
+		return 2;
+	}
+	if (entry.action === "app.keys.help" || (keys === "?" && entry.label === "keys")) {
+		return 1;
+	}
+	return 0;
+}
+
 export function renderNavHintLine(
 	entries: readonly NavKey[],
 	width: number,
@@ -89,21 +101,35 @@ export function renderNavHintLine(
 	options: { readonly compact?: boolean } = {},
 ): string {
 	const taken = new Set<string>();
-	const parts = entries.flatMap((entry) => {
+	const items = entries.flatMap((entry) => {
 		const keys = navEntryKeys(keybindings, entry, taken);
-		return keys ? [`${keys} ${entry.label}`] : [];
+		return keys ? [{ text: `${keys} ${entry.label}`, priority: navEntryPriority(entry, keys) }] : [];
 	});
+	const separator = " · ";
+	const joined = () => items.map((item) => item.text).join(separator);
 	let padding = indent;
-	let separator = " · ";
-	if (options.compact && visibleWidth(parts.join(separator)) > width - padding) {
+	if (options.compact && visibleWidth(joined()) > width - padding) {
 		padding = 0;
-		if (visibleWidth(parts.join(separator)) > width) separator = "·";
 	}
 	const room = Math.max(1, width - padding);
-	while (parts.length > 1 && visibleWidth(parts.join(separator)) > room) parts.pop();
-	const joined = parts.join(separator);
-	const line = visibleWidth(joined) <= room ? joined : truncateToWidth(joined, room);
-	return style.dim(" ".repeat(Math.min(padding, Math.max(0, width - visibleWidth(line)))) + line);
+	while (items.length > 1 && visibleWidth(joined()) > room) {
+		let minPriority = items[0]!.priority;
+		for (const item of items) {
+			if (item.priority < minPriority) minPriority = item.priority;
+		}
+		let dropIndex = items.length - 1;
+		for (let i = items.length - 1; i >= 0; i--) {
+			if (items[i]!.priority === minPriority) {
+				dropIndex = i;
+				break;
+			}
+		}
+		items.splice(dropIndex, 1);
+	}
+	const joinedText = joined();
+	const line = visibleWidth(joinedText) <= room ? joinedText : truncateToWidth(joinedText, room);
+	const lead = options.compact && visibleWidth(line) <= width - indent ? indent : padding;
+	return style.dim(" ".repeat(Math.min(lead, Math.max(0, width - visibleWidth(line)))) + line);
 }
 
 /**

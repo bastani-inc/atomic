@@ -451,7 +451,7 @@ test("store events on the /tasks list page mark the board stale and call refresh
 		assert.equal(refreshCalls, 1, "next paint refreshes the stale board once");
 		assert.match(frame, /Task two/);
 		inspector.handleInput(SPACE);
-		assert.match(plain(inspector.renderViewport(100, 24)), /bash step 19/);
+		assert.match(plain(inspector.renderViewport(100, 24)), /Bash\(step 19\)/);
 		inspector.dispose();
 	} finally {
 		await fixture.dispose();
@@ -492,15 +492,12 @@ test("finished-while-armed notice clears in AgentPanelFocus and /tasks when the 
 	focus.update([{ ...runningRow, state: "stopped" }]);
 	assert.match(
 		stripVTControlCharacters(renderAgentPanelHint(focus, 120, panelStyle, keys)),
-		/deploy finished · x to dismiss/,
+		/deploy finished · x to acknowledge/,
 	);
 
 	focus.update([runningRow]);
 	assert.equal(focus.finishedWhileArmed, undefined);
-	assert.doesNotMatch(
-		stripVTControlCharacters(renderAgentPanelHint(focus, 120, panelStyle, keys)),
-		/finished · x to dismiss/,
-	);
+	assert.doesNotMatch(stripVTControlCharacters(renderAgentPanelHint(focus, 120, panelStyle, keys)), /finished · x to/);
 	pressPanel("x");
 	assert.deepEqual(panelCalls, [], "first x on a restarted row arms stop rather than stopping");
 	assert.match(
@@ -535,12 +532,12 @@ test("finished-while-armed notice clears in AgentPanelFocus and /tasks when the 
 		inspector.handleInput("x");
 		currentItems = [{ ...runningRow, state: "stopped" }];
 		emit();
-		assert.match(plain(inspector.renderViewport(100, 24)), /deploy finished · x to dismiss/);
+		assert.match(plain(inspector.renderViewport(100, 24)), /deploy finished · x to acknowledge/);
 
 		currentItems = [runningRow];
 		emit();
 		const restartedFrame = plain(inspector.renderViewport(100, 24));
-		assert.doesNotMatch(restartedFrame, /deploy finished · x to dismiss/);
+		assert.doesNotMatch(restartedFrame, /deploy finished · x to/);
 
 		inspector.handleInput("x");
 		assert.deepEqual(stopped, []);
@@ -732,11 +729,11 @@ test("extension agent and shell items share live elapsed clocks between AgentPan
 			subscribe: () => () => {},
 		});
 		const frame = plain(inspector.renderViewport(100, 24));
-		assert.match(frame, /∀ helper +index repository +1m 1s/);
+		assert.match(frame, /∀ helper +index repository +1m\b/);
 		const directRow = stripVTControlCharacters(
 			renderBoardRow({ id: "ext:agent-1", kind: "item", item: makeItem() }, false, 100),
 		);
-		assert.match(directRow, /1m 1s/);
+		assert.match(directRow, /index repository +1m$/);
 		inspector.dispose();
 	} finally {
 		vi.restoreAllMocks();

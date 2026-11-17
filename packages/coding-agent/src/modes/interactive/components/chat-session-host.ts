@@ -4,7 +4,7 @@ import { repairOrphanToolResults } from "../../../core/messages.ts";
 import { SessionManager } from "../../../core/session-manager.ts";
 import type { SessionStore } from "../../../core/storage/session/types.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import { taskClocksFor } from "../../../core/tasks/live-elapsed.ts";
+import { taskClocksFor } from "../../../core/tasks/live-elapsed.js";
 import { getOwnerTaskStore, type OwnerTaskStore, watchOwnerTaskStoreBinding } from "../../../core/tasks/owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { pickWhimsicalWorkingMessage } from "../whimsical-messages.ts";
@@ -23,6 +23,7 @@ import {
 } from "./chat-session-host-editor.ts";
 import { applyChatSessionAgentEvent, compactionStatusMessage } from "./chat-session-host-events.ts";
 import {
+	chatSessionWorkingMeta,
 	renderChatSessionBody,
 	renderChatSessionEditor,
 	renderChatSessionEntry,
@@ -49,6 +50,7 @@ import type {
 	AgentSnapshotMessage,
 	ChatSessionHostEntry,
 	ChatSessionHostOpts,
+	ChatSessionInterruptedTurnSnapshot,
 	ChatSessionSubmitMode,
 } from "./chat-session-host-types.ts";
 import { firstRawUserExactText, syncFirstUserEntry } from "./chat-session-host-utils.ts";
@@ -64,6 +66,7 @@ export type {
 	ChatSessionHostEntry,
 	ChatSessionHostOpts,
 	ChatSessionHostStyle,
+	ChatSessionInterruptedTurnSnapshot,
 	ChatSessionSubmitMode,
 	ChatSessionViewportSettings,
 } from "./chat-session-host-types.ts";
@@ -184,13 +187,17 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	}
 
 	/** Replaces the conversation with `messages`, keeping the host's own extra entries. */
-	replaceMessages(messages: readonly AgentSnapshotMessage[]): void {
+	replaceMessages(messages: readonly AgentSnapshotMessage[], options: { preserveUnread?: boolean } = {}): void {
+		if (options.preserveUnread && this.state.bodyViewport.getScrollFromBottom() > 0) {
+			this.state.newMessages.observe(false, countableTranscriptLength(this.state));
+		}
 		const firstUser = firstRawUserExactText(messages);
 		this.state.seenFirstRawUser = firstUser.seenUser;
 		this.state.firstUserEntryExactText = firstUser.exactText;
 		this.state.liveChat.replaceMessages(messages, this.state.extraEntries);
 		syncFirstUserEntry(this.state);
-		this.state.newMessages.replaced(countableTranscriptLength(this.state));
+		if (options.preserveUnread) this.state.newMessages.replaced(countableTranscriptLength(this.state));
+		else this.state.newMessages.reset();
 		this.state.requestRender?.();
 	}
 
@@ -203,6 +210,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.workingMessage = undefined;
 		this.state.lastWorkingMessage = undefined;
 		this.state.workedRun = undefined;
+		this.state.interruptedTurnSnapshot = undefined;
 		this.state.seenFirstRawUser = false;
 		this.state.firstUserEntryExactText = undefined;
 		this.state.firstUserEntry = undefined;
@@ -318,6 +326,13 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	applyAgentEvent(event: AgentSessionEvent): boolean {
 		this.refreshTaskStore();
 		return applyChatSessionAgentEvent(this.state, event);
+	}
+
+	hydrateToolExecutionStarts(starts: readonly { readonly toolCallId: string; readonly startedAt: number }[]): void {
+		let changed = false;
+		for (const start of starts)
+			changed = this.state.liveChat.markToolExecutionStarted(start.toolCallId, start.startedAt) || changed;
+		if (changed) this.state.requestRender?.();
 	}
 
 	/**
@@ -531,6 +546,53 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 
 	clearBusyForTerminalWorkflowStage(): void {
 		clearChatSessionBusyForTerminalWorkflowStage(this.state);
+	}
+
+	snapshotInterruptedTurn(): ChatSessionInterruptedTurnSnapshot | undefined {
+		const snapshot = chatSessionWorkingMeta(this.state);
+		const now = Date.now();
+		const startedAt = snapshot !== undefined ? now - snapshot.elapsedMs : undefined;
+		const settledTokens = snapshot?.tokens ?? 0;
+		const lastWorkingMessage = this.state.lastWorkingMessage ?? this.state.workingMessage;
+		const workedRun = snapshot !== undefined ? { message: lastWorkingMessage, snapshot } : this.state.workedRun;
+		if (startedAt === undefined && workedRun === undefined && lastWorkingMessage === undefined) {
+			return this.state.interruptedTurnSnapshot;
+		}
+		if (workedRun !== undefined) {
+			this.state.workedRun = workedRun;
+		}
+		const captured: ChatSessionInterruptedTurnSnapshot = {
+			startedAt,
+			settledTokens,
+			lastWorkingMessage,
+			workedRun,
+		};
+		this.state.interruptedTurnSnapshot = captured;
+		return captured;
+	}
+
+	restoreInterruptedTurn(
+		interrupted: ChatSessionInterruptedTurnSnapshot | undefined,
+		options?: { readonly resumeMeterForAgentEnd?: boolean },
+	): void {
+		this.state.interruptedTurnSnapshot = interrupted;
+		if (!interrupted) return;
+		if (options?.resumeMeterForAgentEnd && interrupted.startedAt !== undefined) {
+			if (this.state.workingRunMeter.snapshot() === undefined) {
+				this.state.workingRunMeter.resume(interrupted.startedAt, interrupted.settledTokens, false);
+			}
+			if (this.state.lastWorkingMessage === undefined) {
+				this.state.lastWorkingMessage = interrupted.lastWorkingMessage;
+			}
+			return;
+		}
+		if (interrupted.workedRun !== undefined) {
+			this.state.workedRun = interrupted.workedRun;
+		}
+	}
+
+	workedRunSnapshot(): ChatSessionInterruptedTurnSnapshot["workedRun"] {
+		return this.state.workedRun;
 	}
 
 	/**

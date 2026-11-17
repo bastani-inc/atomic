@@ -2,6 +2,7 @@ import { DEFAULT_WORKING_MESSAGE } from "../../packages/coding-agent/src/modes/i
 import { WHIMSICAL_WORKING_MESSAGES } from "../../packages/coding-agent/src/modes/interactive/whimsical-messages.ts";
 
 const alternatives = [DEFAULT_WORKING_MESSAGE, ...WHIMSICAL_WORKING_MESSAGES]
+	.flatMap((message) => [message, message.replace(/\.{3}$/, "…")])
 	.map((message) => message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
 	.join("|");
 

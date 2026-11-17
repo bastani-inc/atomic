@@ -3,7 +3,7 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import type { Component } from "@bastani/atomic-tui";
+import type { Component, TUI } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, describe, test, vi } from "vitest";
 import { AgentTaskHost } from "../src/core/tasks/agent-adapter.js";
 import type { CancelReceipt, OperationId, TaskId, WaitOutcome } from "../src/core/tasks/contracts.js";
@@ -11,6 +11,7 @@ import type { BashToolDetails } from "../src/core/tools/bash.js";
 import { createBashToolDefinition } from "../src/core/tools/bash.js";
 import { createKillToolDefinition } from "../src/core/tools/kill.js";
 import { createPowerShellToolDefinition } from "../src/core/tools/powershell.js";
+import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.js";
 
 const WIDTH = 120;
@@ -131,7 +132,13 @@ function row(
 			context,
 		).render(width),
 	];
-	return options.raw ? lines : lines.map((line) => stripVTControlCharacters(line).trimEnd());
+	return options.raw
+		? lines
+		: lines.map((line) =>
+				stripVTControlCharacters(line)
+					.trimEnd()
+					.replace(/^(?: {2}⎿ {2}| {5})/u, ""),
+			);
 }
 
 const waitText = (result: ShellResult) =>
@@ -142,7 +149,6 @@ describe("shell task results are friendly (#3828)", () => {
 	afterEach(() => vi.unstubAllEnvs());
 
 	for (const factory of [createBashToolDefinition, createPowerShellToolDefinition]) {
-		const prompt = factory === createBashToolDefinition ? "$" : "PS>";
 		test.runIf(process.platform !== "win32")(
 			`${factory.name} renders a completed wait as a status line above its output (#3828)`,
 			async () => {
@@ -158,7 +164,7 @@ describe("shell task results are friendly (#3828)", () => {
 					assert.equal((outcome.result.details as BashToolDetails).exitCode, 0);
 					assert.equal((outcome.result.details as BashToolDetails).observation?.kind, "settled");
 					const lines = row(tool, args, outcome);
-					assert.deepEqual(lines, [`${prompt} wait ${id}`, "✓ completed · exit 0", "", "hello", "", "Took 0.2s"]);
+					assert.deepEqual(lines, [`Wait(${id})`, "✓ completed · exit 0", "hello"]);
 					for (const line of lines) assert.doesNotMatch(line, FORBIDDEN_IN_UI);
 				} finally {
 					await owner.close("session-close");
@@ -179,14 +185,7 @@ describe("shell task results are friendly (#3828)", () => {
 						waitText(outcome.result as ShellResult),
 						`FAIL src/parser.test.ts\n\n\nTask ${id} exited with code 1.`,
 					);
-					assert.deepEqual(row(tool, args, outcome), [
-						`${prompt} wait ${id}`,
-						"✗ exited 1",
-						"",
-						"FAIL src/parser.test.ts",
-						"",
-						"Took 0.2s",
-					]);
+					assert.deepEqual(row(tool, args, outcome), [`Wait(${id})`, "✗ exited 1", "FAIL src/parser.test.ts"]);
 				} finally {
 					await owner.close("session-close");
 				}
@@ -209,12 +208,9 @@ describe("shell task results are friendly (#3828)", () => {
 					);
 					assert.equal((outcome.result.details as BashToolDetails).observation?.kind, "yielded");
 					assert.deepEqual(row(tool, args, outcome), [
-						`${prompt} wait ${id}`,
+						`Wait(${id})`,
 						"● still running · showing output so far",
-						"",
 						"compiling",
-						"",
-						"Observed for 0.2s",
 					]);
 					await release(owner, id);
 				} finally {
@@ -237,14 +233,7 @@ describe("shell task results are friendly (#3828)", () => {
 					waitText(outcome.result as ShellResult),
 					`started\n\n\nTask ${id} was cancelled (stop requested).`,
 				);
-				assert.deepEqual(row(tool, args, outcome), [
-					`${prompt} wait ${id}`,
-					"○ cancelled",
-					"",
-					"started",
-					"",
-					"Took 0.2s",
-				]);
+				assert.deepEqual(row(tool, args, outcome), [`Wait(${id})`, "◼ cancelled", "started"]);
 			} finally {
 				await owner.close("session-close");
 			}
@@ -267,11 +256,9 @@ describe("shell task results are friendly (#3828)", () => {
 					assert.equal(error.message, 'UnknownTask: No background task "task-1-0-1010" in this session');
 					const outcome = await settleLikeAgentLoop(() => tool.execute("wait", args));
 					assert.deepEqual(row(tool, args, outcome), [
-						`${prompt} wait task-1-0-1010`,
-						'✗ No background task "task-1-0-1010" in this session',
+						"Wait(task-1-0-1010)",
+						'No background task "task-1-0-1010" in this session',
 						"It may have finished and been cleaned up, or belong to another session. Run /tasks to see current tasks.",
-						"",
-						"Took 0.2s",
 					]);
 				} finally {
 					await owner.close("session-close");
@@ -325,9 +312,9 @@ describe("shell task results are friendly (#3828)", () => {
 					`(no output)\n\nTask ${id} completed with exit code 0.`,
 				);
 				const plain = row(tool, args, outcome);
-				assert.deepEqual(plain, [`$ wait ${id}`, "✓ completed · exit 0", "(no output)", "", "Took 0.2s"]);
+				assert.deepEqual(plain, [`Wait(${id})`, "✓ completed · exit 0", "(no output)"]);
 				const raw = row(tool, args, outcome, { raw: true });
-				assert.ok(raw.some((line) => line.includes(theme.fg("dim", "(no output)"))));
+				assert.ok(raw.some((line) => line.includes(theme.fg("muted", "(no output)"))));
 			} finally {
 				await owner.close("session-close");
 			}
@@ -359,17 +346,17 @@ describe("shell task results are friendly (#3828)", () => {
 					text.slice(-300),
 				);
 				// Wide enough for the path alone, too narrow for the path beside its label.
-				const width = fullOutputPath.length + 2;
+				const width = fullOutputPath.length + 6;
 				const plain = row(tool, args, outcome, { width });
 				assert.equal(plain[1], "✓ completed · exit 0");
 				assert.ok(plain.some((line) => line.includes("earlier lines")));
 				const truncation = plain.findIndex((line) => line.startsWith("Truncated:"));
 				assert.ok(truncation !== -1, plain.join("\n"));
-				assert.match(plain[truncation]!, /^Truncated: showing \d+ of 5000 lines · Full output:$/);
+				assert.match(plain[truncation]!, /^Truncated: showing \d+ of 5000 lines\. Full output:$/);
 				assert.equal(plain[truncation + 1], fullOutputPath, plain.join("\n"));
 				const raw = row(tool, args, outcome, { width, raw: true });
 				assert.ok(raw[truncation]!.includes(theme.fg("dim", plain[truncation]!)));
-				assert.ok(raw[truncation + 1]!.startsWith(theme.getFgAnsi("dim")), JSON.stringify(raw[truncation + 1]));
+				assert.ok(raw[truncation + 1]!.includes(theme.getFgAnsi("dim")), JSON.stringify(raw[truncation + 1]));
 				assert.doesNotMatch(plain.join("\n"), /\[Full output|\[Output truncated/);
 				const expanded = row(tool, args, outcome, { expanded: true });
 				assert.equal(expanded[1], "✓ completed · exit 0");
@@ -396,19 +383,39 @@ describe("shell task results are friendly (#3828)", () => {
 				const failed = await settleLikeAgentLoop(() =>
 					tool.execute("wait", { action: "wait", id: bad, budgetMs: 5000 }),
 				);
-				const statusLine = (outcome: typeof done, id: string, raw = true) =>
-					row(tool, { action: "wait", id }, outcome, { raw }).find((line) =>
-						/[✓✗]/.test(stripVTControlCharacters(line)),
-					)!;
-				assert.ok(statusLine(done, ok).startsWith(theme.fg("success", "✓ completed")));
-				assert.ok(statusLine(failed, bad).startsWith(theme.fg("error", "✗ exited 3")));
+				const statusLine = (outcome: typeof done, id: string) => {
+					const component = new ToolExecutionComponent(
+						"bash",
+						"wait-color",
+						{ action: "wait", id },
+						{ outputPad: 0 },
+						tool,
+						{ requestRender() {} } as TUI,
+						process.cwd(),
+					);
+					try {
+						component.updateResult({ ...outcome.result, isError: outcome.isError });
+						return component
+							.render(WIDTH)
+							.find((line) => /(?:completed|exited 3)/.test(stripVTControlCharacters(line)))!;
+					} finally {
+						component.dispose();
+					}
+				};
+				assert.ok(statusLine(done, ok).includes(theme.fg("success", "✓ completed")));
+				assert.ok(statusLine(failed, bad).includes(theme.fg("error", "✗ exited 3")));
 				vi.stubEnv("NO_COLOR", "1");
 				for (const [outcome, id, text] of [
 					[done, ok, "✓ completed · exit 0"],
 					[failed, bad, "✗ exited 3"],
 				] as const) {
 					const line = statusLine(outcome, id);
-					assert.equal(stripVTControlCharacters(line).trimEnd(), text);
+					assert.equal(
+						stripVTControlCharacters(line)
+							.replace(/^ {2}⎿ {2}/u, "")
+							.trimEnd(),
+						text,
+					);
 					assert.doesNotMatch(
 						line,
 						/\x1b\[(?:3[0-79]|38|9[0-7])/,
@@ -430,8 +437,8 @@ describe("shell task results are friendly (#3828)", () => {
 			{ result: { content: [{ type: "text", text: "UnknownTask: UnknownTask" }], details: {} }, isError: true },
 		);
 		assert.deepEqual(lines.slice(0, 3), [
-			"$ wait task-1-0-1010",
-			'✗ No background task "task-1-0-1010" in this session',
+			"Wait(task-1-0-1010)",
+			'No background task "task-1-0-1010" in this session',
 			"It may have finished and been cleaned up, or belong to another session. Run /tasks to see current tasks.",
 		]);
 	});
@@ -464,7 +471,7 @@ describe("shell task results are friendly (#3828)", () => {
 			{ action: "wait", id: "task-1-0-1" },
 			{ result: { content: [{ type: "text", text: "aborted" }], details: {} }, isError: true },
 		);
-		assert.deepEqual(lines.slice(0, 3), ["$ wait task-1-0-1", "", "aborted"]);
+		assert.deepEqual(lines.slice(0, 3), ["Wait(task-1-0-1)", "aborted"]);
 	});
 });
 

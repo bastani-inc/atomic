@@ -7,16 +7,21 @@ import { isVerbatimCompactionMessage, stripVerbatimCompactionPrefix } from "../.
 import { serviceTierWarnings } from "../../core/service-tier-warnings.ts";
 import type { CustomEntry } from "../../core/session-manager.ts";
 import { buildContextEntries, type SessionEntry, sessionEntryToContextMessages } from "../../core/session-manager.ts";
+import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
+import { loadTaskOwnTranscriptHistory, taskTranscriptSource } from "../../core/tasks/supervisor.js";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { RemoteCustomMessageComponent, RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { appendBoundedStderr } from "../rpc/rpc-client-process.js";
 import { messageComponents, statusComponents } from "./chat-message-count.ts";
+import { applyToolEntryState } from "./components/chat-message-renderer.ts";
 import { CustomEntryComponent } from "./components/custom-entry.ts";
 import type { NewMessageCounter } from "./components/jump-to-latest.ts";
 import { createMarkdownTransform } from "./components/markdown-transform.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import { ThemedText } from "./components/themed-text.js";
+import type { ToolGroupRole } from "./components/tool-block.ts";
+import { assistantCallBreaks, type ToolGroupMemberState, ToolGroupTracker } from "./components/tool-group-tracker.ts";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
 import { countChatMessages, InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -142,6 +147,136 @@ InteractiveModeBase.prototype.showStatus = function (
 };
 
 const echoReadEpochs = new WeakMap<Component[], number>();
+
+interface GroupedToolComponent {
+	setGroupRole(role: ToolGroupRole): void;
+}
+interface MainToolGrouping {
+	readonly tracker: ToolGroupTracker;
+	readonly starts: Map<string, number>;
+	lastMember: Component | undefined;
+	carriedBreak: boolean;
+}
+const mainToolGroupings = new WeakMap<InteractiveModeBase, MainToolGrouping>();
+
+function mainToolGrouping(mode: InteractiveModeBase): MainToolGrouping {
+	let grouping = mainToolGroupings.get(mode);
+	if (grouping === undefined) {
+		grouping = {
+			tracker: new ToolGroupTracker({ groupBash: false }),
+			starts: new Map(),
+			lastMember: undefined,
+			carriedBreak: false,
+		};
+		mainToolGroupings.set(mode, grouping);
+	}
+	return grouping;
+}
+
+function isGroupedToolComponent(component: Component): component is Component & GroupedToolComponent {
+	return "setGroupRole" in component && typeof component.setGroupRole === "function";
+}
+
+function hasRowsSinceLastMember(
+	container: Component & { children: Component[] },
+	last: Component,
+	current: Component,
+): boolean {
+	for (let index = container.children.length - 1; index >= 0; index -= 1) {
+		const child = container.children[index];
+		if (child === last) return false;
+		if (child !== current && !(child instanceof AssistantMessageComponent)) return true;
+	}
+	return true;
+}
+
+export function breakMainToolGroup(mode: InteractiveModeBase): void {
+	const grouping = mainToolGrouping(mode);
+	grouping.tracker.break();
+	grouping.lastMember = undefined;
+	grouping.carriedBreak = false;
+}
+
+function resetMainToolGroup(mode: InteractiveModeBase): void {
+	const grouping = mainToolGrouping(mode);
+	grouping.tracker.reset();
+	grouping.lastMember = undefined;
+	grouping.carriedBreak = false;
+}
+
+export function endMainToolTurn(mode: InteractiveModeBase): void {
+	resetMainToolGroup(mode);
+	mainToolGrouping(mode).starts.clear();
+}
+
+export function mainToolCallBreaks(mode: InteractiveModeBase, message: AssistantMessage): ReadonlySet<string> {
+	return assistantCallBreaks(message.content, mainToolGrouping(mode).carriedBreak).breakBefore;
+}
+
+export function endMainAssistantMessage(mode: InteractiveModeBase, message: AssistantMessage): void {
+	const grouping = mainToolGrouping(mode);
+	grouping.carriedBreak = assistantCallBreaks(message.content, grouping.carriedBreak).trailing;
+}
+
+export function trackMainToolComponent(
+	mode: InteractiveModeBase,
+	toolCallId: string,
+	toolName: string,
+	component: Component & GroupedToolComponent,
+	breakBefore = false,
+): void {
+	const grouping = mainToolGrouping(mode);
+	if (
+		breakBefore ||
+		(grouping.lastMember !== undefined && hasRowsSinceLastMember(mode.chatContainer, grouping.lastMember, component))
+	)
+		grouping.tracker.break();
+	grouping.tracker.append(toolCallId, toolName, "pending", (role) => component.setGroupRole(role));
+	grouping.lastMember = component;
+}
+
+export function settleMainTool(mode: InteractiveModeBase, toolCallId: string, state: ToolGroupMemberState): void {
+	const grouping = mainToolGrouping(mode);
+	grouping.tracker.settle(toolCallId, state);
+	if (state !== "pending") grouping.starts.delete(toolCallId);
+}
+
+export function observeMainToolStart(mode: InteractiveModeBase, toolCallId: string): number {
+	const starts = mainToolGrouping(mode).starts;
+	const startedAt = starts.get(toolCallId) ?? Date.now();
+	starts.set(toolCallId, startedAt);
+	return startedAt;
+}
+
+function renderGroupedChatEntries(
+	mode: InteractiveModeBase,
+	entries: readonly ChatMessageEntry[],
+	onEntry: (entry: ChatMessageEntry, component: Component) => void,
+): void {
+	const grouping = mainToolGrouping(mode);
+	for (const entry of entries) {
+		if (entry.kind === "tool" && entry.isPartial !== false) {
+			const startedAt = grouping.starts.get(entry.toolCallId);
+			if (startedAt !== undefined) {
+				entry.executionStarted = true;
+				entry.startedAt = startedAt;
+				entry.argsComplete = true;
+			}
+		}
+		if (entry.kind === "assistant")
+			grouping.carriedBreak = assistantCallBreaks(entry.message.content, grouping.carriedBreak).trailing;
+		else if (entry.kind !== "tool") grouping.carriedBreak = false;
+		const component = mode.addRenderedChatEntry(entry);
+		if (entry.kind === "tool" && isGroupedToolComponent(component)) {
+			grouping.tracker.bind(entry.toolCallId, (role) => {
+				entry.groupRole = role;
+				component.setGroupRole(role);
+			});
+			grouping.lastMember = component;
+		}
+		onEntry(entry, component);
+	}
+}
 
 InteractiveModeBase.prototype.renderDeferredUserInput = function (this: InteractiveModeBase, text: string): void {
 	this.deferredRenderedUserInputs.push(text);
@@ -326,37 +461,50 @@ InteractiveModeBase.prototype.chatMessageRenderOptions = function (
 		renderLatex: this.settingsManager.getLatexRenderingEnabled(),
 		markdownTransformers: this.getMarkdownTransformers(),
 		getToolDefinition: isolated ? undefined : (toolName) => this.getRegisteredToolDefinition(toolName),
+		getTaskRecord: isolated ? undefined : (taskId) => getOwnerTaskStore(this.session)?.getTask(taskId),
+		hasTaskTranscript: isolated
+			? undefined
+			: (taskId) => {
+					const lease = getOwnerTaskStore(this.session)?.resolveTask(taskId);
+					return lease?.ok ? taskTranscriptSource(lease.value).ok : false;
+				},
+		loadTaskTranscript: isolated
+			? undefined
+			: async (taskId) => {
+					const lease = getOwnerTaskStore(this.session)?.resolveTask(taskId);
+					return lease?.ok ? loadTaskOwnTranscriptHistory(lease.value) : undefined;
+				},
 		getCustomMessageRenderer: isolated
 			? undefined
 			: (customType) => this.session.extensionRunner.getMessageRenderer(customType),
 		createToolComponent: isolated
-			? (entry) => {
+			? (entry, context) => {
 					const component = new RemoteToolExecutionComponent(
 						entry.toolName,
 						entry.toolCallId,
 						entry.args,
 						{
-							showImages: this.settingsManager.getShowImages(),
-							imageWidthCells: this.settingsManager.getImageWidthCells(),
-							outputPad: this.outputPad,
+							showImages: context?.showImages ?? this.settingsManager.getShowImages(),
+							imageWidthCells: context?.imageWidthCells ?? this.settingsManager.getImageWidthCells(),
+							outputPad: context?.outputPad ?? this.outputPad,
+							rendererTaskId: entry.rendererTaskId,
 						},
 						this.runtimeHost as IsolatedInteractiveRuntime,
-						() => this.ui.requestRender(),
+						context?.requestRender ?? (() => this.ui.requestRender()),
 					);
-					component.setExpanded(this.toolOutputExpanded);
-					if (entry.result) component.updateResult(entry.result, entry.isPartial ?? false);
+					applyToolEntryState(component, entry, context?.expanded ?? this.toolOutputExpanded);
 					return component;
 				}
 			: undefined,
 		createCustomMessageComponent: isolated
-			? (message) => {
+			? (message, context) => {
 					const component = new RemoteCustomMessageComponent(
 						message,
 						this.runtimeHost as IsolatedInteractiveRuntime,
-						() => this.ui.requestRender(),
-						this.outputPad,
+						context?.requestRender ?? (() => this.ui.requestRender()),
+						context?.outputPad ?? this.outputPad,
 					);
-					component.setExpanded(this.toolOutputExpanded);
+					component.setExpanded(context?.expanded ?? this.toolOutputExpanded);
 					return component;
 				}
 			: undefined,
@@ -466,6 +614,21 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 								this.outputPad,
 								this.settingsManager.getLatexRenderingEnabled(),
 								markdownTransformers,
+								undefined,
+								undefined,
+								{
+									hasTranscript: (taskId) => {
+										const lease = getOwnerTaskStore(this.session)?.resolveTask(taskId);
+										return lease?.ok ? taskTranscriptSource(lease.value).ok : false;
+									},
+									loadTranscript: async (taskId) => {
+										const lease = getOwnerTaskStore(this.session)?.resolveTask(taskId);
+										return lease?.ok ? loadTaskOwnTranscriptHistory(lease.value) : undefined;
+									},
+									getToolDefinition: (toolName) => this.getRegisteredToolDefinition(toolName),
+									cwd: this.sessionManager.getCwd(),
+									requestRender: () => this.ui.requestRender(),
+								},
 							);
 				component.setExpanded(this.toolOutputExpanded);
 				messageComponents.add(component);
@@ -572,16 +735,17 @@ InteractiveModeBase.prototype.renderSessionContext = function (
 		this.updateEditorBorderColor();
 	}
 
-	const entries = chatEntriesFromAgentMessages(sessionContext.messages);
-	for (const entry of entries) {
-		const component = this.addRenderedChatEntry(entry);
+	const grouping = mainToolGrouping(this);
+	resetMainToolGroup(this);
+	const entries = chatEntriesFromAgentMessages(sessionContext.messages, undefined, { tracker: grouping.tracker });
+	renderGroupedChatEntries(this, entries, (entry, component) => {
 		if (entry.kind === "tool" && entry.isPartial !== false && component instanceof ToolExecutionComponent) {
 			this.pendingTools.set(entry.toolCallId, component);
 		}
 		if (options.populateHistory && entry.kind === "user") {
 			this.editor.addToHistory?.(entry.text);
 		}
-	}
+	});
 
 	restoreDeferredEchoes(this, pendingEchoes);
 
@@ -604,6 +768,8 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 		this.footer.invalidate();
 		this.updateEditorBorderColor();
 	}
+	const grouping = mainToolGrouping(this);
+	resetMainToolGroup(this);
 	let messageBuffer: AgentMessage[] = [];
 	const messageMeta = new Map<AgentMessage, PersistedMessageMeta>();
 	let firstMessage = true;
@@ -616,14 +782,15 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 			messageBuffer = messageBuffer.slice(1);
 		}
 		firstMessage = false;
-		for (const entry of chatEntriesFromAgentMessages(messageBuffer, messageMeta)) {
-			const component = this.addRenderedChatEntry(entry);
+		breakMainToolGroup(this);
+		const entries = chatEntriesFromAgentMessages(messageBuffer, messageMeta, { tracker: grouping.tracker });
+		renderGroupedChatEntries(this, entries, (entry, component) => {
 			if (entry.kind === "assistant") addServiceTierWarnings(this, entry.message);
 			if (entry.kind === "tool" && entry.isPartial !== false && component instanceof ToolExecutionComponent) {
 				this.pendingTools.set(entry.toolCallId, component);
 			}
 			if (options.populateHistory && entry.kind === "user") this.editor.addToHistory?.(entry.text);
-		}
+		});
 		messageBuffer = [];
 	};
 	for (const entry of sessionEntries) {

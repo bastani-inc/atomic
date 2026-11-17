@@ -5,11 +5,20 @@ import {
 	ATOMIC_WORKING_FRAME_MS,
 	ATOMIC_WORKING_FRAMES,
 	ATOMIC_WORKING_PHASES,
+	AtomicWorkedStatusComponent,
 	AtomicWorkingLoader,
 	AtomicWorkingStatusComponent,
 	atomicWorkingFrame,
+	atomicWorkingGlyph,
+	resetAtomicWorkingClock,
+	watchAtomicWorkingClock,
 } from "../src/modes/interactive/components/atomic-working-status.ts";
-import { WorkingStatusComponent } from "../src/modes/interactive/components/working-status.ts";
+import { ChatSessionHost } from "../src/modes/interactive/components/chat-session-host.ts";
+import { formatWorkingMeta } from "../src/modes/interactive/components/working-run-meter.ts";
+import {
+	WorkingStatusComponent,
+	type WorkingStatusComponentOptions,
+} from "../src/modes/interactive/components/working-status.ts";
 import { ansi256ToHex, fgAnsi } from "../src/modes/interactive/theme/color-utils.ts";
 import {
 	initTheme,
@@ -19,7 +28,10 @@ import {
 	type ThemeColor,
 } from "../src/modes/interactive/theme/theme.ts";
 import { loadTheme, loadThemeFromContent, loadThemeJson } from "../src/modes/interactive/theme/theme-loading.ts";
-import { WHIMSICAL_WORKING_MESSAGES } from "../src/modes/interactive/whimsical-messages.ts";
+import {
+	pickWhimsicalWorkingMessage,
+	WHIMSICAL_WORKING_MESSAGES,
+} from "../src/modes/interactive/whimsical-messages.ts";
 
 const plain = (text: string): string => text.replace(/\u001b\[[0-9;]*m/g, "");
 const renderedContent = (loader: AtomicWorkingLoader): string => plain(loader.render(64)[1]!).trimEnd();
@@ -86,6 +98,19 @@ afterEach(() => {
 });
 
 describe("Atomic working status", () => {
+	it("uses a single ellipsis for built-in working labels without changing custom text (#5350)", () => {
+		initTheme("dark", false);
+		const random = vi.spyOn(Math, "random").mockReturnValue(0);
+		try {
+			expect(plain(new AtomicWorkingStatusComponent().render(80).join("\n"))).toContain("∀ Working…");
+			expect(pickWhimsicalWorkingMessage()).toBe("Schlepping…");
+			expect(plain(new AtomicWorkingStatusComponent({ message: "Custom..." }).render(80).join("\n"))).toContain(
+				"Custom...",
+			);
+		} finally {
+			random.mockRestore();
+		}
+	});
 	it("keeps exact literal one-cell identity through the approved ten-phase ramp", () => {
 		expect(ATOMIC_WORKING_FRAMES).toEqual(Array(10).fill("∀"));
 		expect(ATOMIC_WORKING_FRAMES.map(visibleWidth)).toEqual(Array(10).fill(1));
@@ -121,7 +146,7 @@ describe("Atomic working status", () => {
 			"#2d537a",
 			"#1c2c3c",
 		]);
-		expect(rendered.map((line) => plain(line).trimEnd())).toEqual(Array(10).fill(" ∀ Working..."));
+		expect(rendered.map((line) => plain(line).trimEnd())).toEqual(Array(10).fill(" ∀ Working…"));
 		expect(rendered.map((line) => line.includes("\u001b[1m"))).toEqual(ATOMIC_WORKING_BOLD_PHASES);
 	});
 
@@ -278,8 +303,8 @@ describe("Atomic working status", () => {
 			spinnerBoldColor: (text) => `<bold>${text}</bold>`,
 			messageColor: String,
 		}).render(64)[1]!;
-		expect(regular.trimEnd()).toBe(" <regular>∀</regular> Working...");
-		expect(bold.trimEnd()).toBe(" <bold>∀</bold> Working...");
+		expect(regular.trimEnd()).toBe(" <regular>∀</regular> Working…");
+		expect(bold.trimEnd()).toBe(" <bold>∀</bold> Working…");
 	});
 
 	it("uses an exact 88ms cadence with a ten-phase 880ms cycle", () => {
@@ -323,7 +348,7 @@ describe("Atomic working status", () => {
 		vi.useFakeTimers();
 		const requestRender = vi.fn();
 		const loader = new AtomicWorkingLoader({ requestRender } as never, undefined, String, "Working...");
-		expect(renderedContent(loader)).toBe(" ∀ Working...");
+		expect(renderedContent(loader)).toBe(" ∀ Working…");
 		vi.advanceTimersByTime(352);
 		expect(loader.render(64)[1]).toContain("\u001b[1m");
 		loader.setIndicator({ frames: ["X"] });
@@ -361,14 +386,22 @@ describe("Atomic working status", () => {
 		loader.stop();
 	});
 
-	it("keeps regular/bold activity under NO_COLOR without foreground escapes", () => {
+	it("renders a static raw ∀ across all ten phases under NO_COLOR while preserving custom indicator styling (#5224)", () => {
 		process.env.NO_COLOR = "";
+		const glyphs = ATOMIC_WORKING_FRAMES.map((_, frame) => atomicWorkingGlyph(frame));
+		expect(glyphs).toEqual(Array(10).fill("∀"));
 		const rendered = ATOMIC_WORKING_FRAMES.map(
 			(_, frame) => new AtomicWorkingStatusComponent({ frame }).render(64)[1]!,
 		);
-		expect(rendered.every((line) => !line.includes("\u001b[38;"))).toBe(true);
-		expect(rendered.every((line) => plain(line).trimEnd() === " ∀ Working...")).toBe(true);
-		expect(rendered.map((line) => line.includes("\u001b[1m"))).toEqual(ATOMIC_WORKING_BOLD_PHASES);
+		expect(rendered.every((line) => !line.includes("\u001b["))).toBe(true);
+		expect(rendered.map((line) => line.trimEnd())).toEqual(Array(10).fill(" ∀ Working…"));
+		expect(
+			atomicWorkingGlyph({
+				frame: 4,
+				spinnerColor: (text) => `<regular>${text}</regular>`,
+				spinnerBoldColor: (text) => `<bold>${text}</bold>`,
+			}),
+		).toBe("<bold>∀</bold>");
 	});
 
 	it("renders a static regular accent identity with no timer under reduced motion", () => {
@@ -411,5 +444,144 @@ describe("Atomic working status", () => {
 		} finally {
 			restoreEnv("ATOMIC_REDUCED_MOTION", previousReducedMotion);
 		}
+	});
+
+	it("drives main loader, chat host, and tool-block glyphs from one shared 88ms clock with no leaked listeners (#5224)", () => {
+		vi.useFakeTimers();
+		setThemeInstance(loadTheme("catppuccin-mocha", "truecolor"));
+		const mainRenders = vi.fn();
+		const hostRenders = vi.fn();
+		const blockOneRenders = vi.fn();
+		const blockTwoRenders = vi.fn();
+		const loader = new AtomicWorkingLoader({ requestRender: mainRenders } as never, undefined, String, "Working...");
+		const host = new ChatSessionHost({
+			style: {
+				dim: String,
+				text: String,
+				textMuted: String,
+				accent: String,
+				accentBold: String,
+				workingIndicatorUseGlobalTheme: true,
+				rule: (_hex, text) => text,
+				cursor: () => "",
+				blank: (width) => " ".repeat(width),
+				editorRuleColor: () => "#ffffff",
+			},
+			editorTheme: {
+				borderColor: String,
+				selectList: {
+					selectedPrefix: String,
+					selectedText: String,
+					description: String,
+					scrollInfo: String,
+					noMatch: String,
+				},
+			},
+			requestRender: hostRenders,
+		});
+		let unsubOne: (() => void) | undefined;
+		let unsubTwo: (() => void) | undefined;
+		try {
+			host.applyAgentEvent({ type: "agent_start" } as never);
+			unsubOne = watchAtomicWorkingClock(blockOneRenders);
+			unsubTwo = watchAtomicWorkingClock(blockTwoRenders);
+
+			expect(vi.getTimerCount()).toBe(1);
+			expect(atomicWorkingFrame()).toBe(0);
+
+			vi.advanceTimersByTime(352);
+			expect(atomicWorkingFrame()).toBe(4);
+			expect(rgb(loader.render(64)[1]!)).toBe("#b8d2ff");
+			expect(rgb(host.renderWorkingStatus(64)[1]!)).toBe("#b8d2ff");
+			expect(rgb(atomicWorkingGlyph())).toBe("#b8d2ff");
+			expect(rgb(atomicWorkingGlyph(atomicWorkingFrame()))).toBe("#b8d2ff");
+			expect(blockOneRenders).toHaveBeenCalledTimes(4);
+			expect(blockTwoRenders).toHaveBeenCalledTimes(4);
+
+			resetAtomicWorkingClock();
+			expect(atomicWorkingFrame()).toBe(0);
+			expect(rgb(loader.render(64)[1]!)).toBe("#70759f");
+			expect(rgb(host.renderWorkingStatus(64)[1]!)).toBe("#70759f");
+			expect(rgb(atomicWorkingGlyph())).toBe("#70759f");
+			expect(vi.getTimerCount()).toBe(1);
+
+			unsubOne();
+			unsubOne();
+			const blockOneAfterUnsub = blockOneRenders.mock.calls.length;
+			vi.advanceTimersByTime(88);
+			expect(atomicWorkingFrame()).toBe(1);
+			expect(blockOneRenders).toHaveBeenCalledTimes(blockOneAfterUnsub);
+			expect(blockTwoRenders).toHaveBeenCalledTimes(5);
+			expect(vi.getTimerCount()).toBe(1);
+
+			unsubTwo();
+			loader.stop();
+			expect(vi.getTimerCount()).toBe(1);
+			host.dispose();
+			expect(vi.getTimerCount()).toBe(0);
+			expect(atomicWorkingFrame()).toBe(0);
+
+			const sharedCallback = vi.fn();
+			const firstSame = watchAtomicWorkingClock(sharedCallback);
+			const secondSame = watchAtomicWorkingClock(sharedCallback);
+			expect(vi.getTimerCount()).toBe(1);
+			firstSame();
+			firstSame();
+			expect(vi.getTimerCount()).toBe(1);
+			vi.advanceTimersByTime(88);
+			expect(atomicWorkingFrame()).toBe(1);
+			expect(sharedCallback).toHaveBeenCalledTimes(1);
+			secondSame();
+			expect(vi.getTimerCount()).toBe(0);
+			expect(atomicWorkingFrame()).toBe(0);
+		} finally {
+			unsubOne?.();
+			unsubTwo?.();
+			loader.stop();
+			host.dispose();
+		}
+	});
+
+	it("new loaders and quick turns join an active shared phase without starving its cadence (#5224)", () => {
+		vi.useFakeTimers();
+		resetAtomicWorkingClock();
+		const releaseSibling = watchAtomicWorkingClock(() => {});
+		let loader: AtomicWorkingLoader | undefined;
+		try {
+			vi.advanceTimersByTime(176);
+			expect(atomicWorkingFrame()).toBe(2);
+			loader = new AtomicWorkingLoader({ requestRender() {} } as never, undefined, String, "first");
+			expect(atomicWorkingFrame()).toBe(2);
+			for (let index = 0; index < 5; index++) {
+				vi.advanceTimersByTime(40);
+				loader.resetForTurn(`turn ${index}`);
+			}
+			expect(atomicWorkingFrame()).toBe(4);
+			expect(vi.getTimerCount()).toBe(1);
+		} finally {
+			loader?.stop();
+			releaseSibling();
+		}
+	});
+
+	it("normalizes legacy outputTokens metadata across public working status boundaries (#5224)", () => {
+		const legacyMeta: NonNullable<WorkingStatusComponentOptions["meta"]> = {
+			elapsedMs: 134_000,
+			outputTokens: 18_400,
+			note: "esc to cancel",
+		};
+		expect(formatWorkingMeta(legacyMeta)).toBe("2m 14s · ↓ 18.4k tokens · esc to cancel");
+		const workingRow = plain(
+			new WorkingStatusComponent({ message: "Working...", meta: legacyMeta }).render(80)[1]!,
+		).trimEnd();
+		expect(workingRow).toBe(" ∀ Working… (2m 14s · ↓ 18.4k tokens · esc to cancel)");
+		const atomicRow = plain(
+			new AtomicWorkingStatusComponent({ message: "Working...", meta: legacyMeta }).render(80)[1]!,
+		).trimEnd();
+		expect(atomicRow).toBe(" ∀ Working… (2m 14s · ↓ 18.4k tokens · esc to cancel)");
+		const workedRow = plain(
+			new AtomicWorkedStatusComponent({ message: "Brewing...", snapshot: legacyMeta }).render(80)[1]!,
+		).trimEnd();
+		expect(workedRow).toBe(" ∀ Brewed for 2m 14s · ↓ 18.4k tokens");
 	});
 });

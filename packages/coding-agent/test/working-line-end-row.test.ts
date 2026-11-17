@@ -95,6 +95,26 @@ describe("working line token direction (#5224)", () => {
 });
 
 describe("agent token total (#5224)", () => {
+	test("an unbilled aborted message preserves the last known request input (#5224)", () => {
+		assert.equal(
+			agentTokenTotal([
+				assistant(120, "toolUse", 1, { input: 80 }),
+				{ ...assistant(0, "aborted", 2, { input: 0, cacheRead: 0, cacheWrite: 0 }), content: [] },
+			]),
+			200,
+		);
+	});
+
+	test("a settled request reporting zero input replaces the previous request's input", () => {
+		assert.equal(
+			agentTokenTotal([
+				assistant(200, "toolUse", 1, { input: 1_000 }),
+				assistant(50, "stop", 2, { input: 0, cacheRead: 0, cacheWrite: 0 }),
+			]),
+			250,
+		);
+	});
+
 	test("is the latest request's full input plus every output plus the streaming estimate (#5224)", () => {
 		const messages = [
 			{ role: "user", content: "go", timestamp: 1 },

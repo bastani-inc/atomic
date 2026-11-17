@@ -1,11 +1,19 @@
 import { stripVTControlCharacters } from "node:util";
-import { type Component, truncateToWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
+import type { AgentToolResult } from "@bastani/atomic-agent-core";
+import { type Component, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
+import type { ToolRenderContext, ToolRenderers } from "../../../core/extensions/types.ts";
 import type { TaskCompletionNotice, TaskNoticeLine } from "../../../core/tasks/completion.js";
+import type { TaskId } from "../../../core/tasks/contracts.js";
+import type { TaskTranscriptHistory, TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
+import { isBuiltinToolCallRenderer, isBuiltinToolResultRenderer } from "../../../core/tools/builtin-renderers.js";
 import { theme } from "../theme/theme.js";
-import { keyHintIfBound } from "./keybinding-hints.js";
+import { keyHint, keyHintIfBound, keyText } from "./keybinding-hints.js";
 import { NoticeLine, type NoticeLineSpec } from "./notice-line.ts";
+import { isToolBlock, ToolBlock, ToolBlockMarkdown, ToolBlockRecords, type ToolBlockStatus } from "./tool-block.ts";
+import { type BuiltinToolBlockContentPart, builtinToolBlockPresentation } from "./tool-block-families.ts";
 
 const NOTICE_LINE_STATUSES = new Set(["success", "failure", "stopped", "warning", "paused"]);
+const parsedNotices = new WeakMap<object, TaskCompletionNotice>();
 
 function noticeLineFrom(value: unknown): TaskNoticeLine | undefined {
 	if (!value || typeof value !== "object") return undefined;
@@ -23,6 +31,8 @@ function noticeLineFrom(value: unknown): TaskNoticeLine | undefined {
 
 export function completionNoticeFromDetails(details: unknown): TaskCompletionNotice | undefined {
 	if (!details || typeof details !== "object" || !("notification" in details)) return undefined;
+	const existing = parsedNotices.get(details);
+	if (existing !== undefined) return existing;
 	const notice = details.notification;
 	if (!notice || typeof notice !== "object") return undefined;
 	if (
@@ -37,18 +47,21 @@ export function completionNoticeFromDetails(details: unknown): TaskCompletionNot
 		return undefined;
 	if (notice.status !== "completed" && notice.status !== "failed" && notice.status !== "cancelled") return undefined;
 	const line = "line" in notice ? noticeLineFrom(notice.line) : undefined;
-	return {
+	const parsed: TaskCompletionNotice = {
 		title: notice.title,
 		preview: notice.preview,
 		taskId: notice.taskId,
 		...("taskKind" in notice && (notice.taskKind === "agent" || notice.taskKind === "command")
 			? { taskKind: notice.taskKind }
 			: {}),
+		...("agentName" in notice && typeof notice.agentName === "string" ? { agentName: notice.agentName } : {}),
 		status: notice.status,
 		...("model" in notice && typeof notice.model === "string" ? { model: notice.model } : {}),
 		...("thinking" in notice && typeof notice.thinking === "string" ? { thinking: notice.thinking } : {}),
 		...(line === undefined ? {} : { line }),
 	};
+	parsedNotices.set(details, parsed);
+	return parsed;
 }
 
 /** How long a task ran: `12s`, `3m 2s`, `1h 31m`. */
@@ -63,13 +76,49 @@ function isAgentNotice(notice: TaskCompletionNotice): boolean {
 	return (
 		notice.taskKind === "agent" ||
 		(notice.taskKind === undefined &&
-			(notice.model !== undefined || notice.thinking !== undefined || notice.title.startsWith("Subagent ")))
+			(notice.agentName !== undefined ||
+				notice.model !== undefined ||
+				notice.thinking !== undefined ||
+				notice.title.startsWith("Subagent ")))
 	);
 }
 
-/** The notice-line spec of a notice; one saved by an earlier version shows its title. */
+function agentNoticeName(notice: TaskCompletionNotice): string {
+	if (notice.agentName?.trim()) return notice.agentName.trim();
+	if (notice.title.startsWith("Subagent ")) {
+		const rest = notice.title.slice("Subagent ".length).trim();
+		const matched =
+			/^(\S+?)(?:\s+(?:completed|failed|stopped|killed|paused|quit|released|timed\s+out|interrupted)\b|:|$)/i.exec(
+				rest,
+			)?.[1] ?? rest.split(/[\s:]+/)[0];
+		if (matched === "agent" && notice.line?.subject && !/\s/.test(notice.line.subject.trim())) {
+			return notice.line.subject.trim();
+		}
+		if (matched) return matched;
+	}
+	return notice.line?.subject?.trim() || "agent";
+}
+
+function agentNoticeOutcome(status: NoticeLineSpec["status"], line: TaskNoticeLine | undefined): string {
+	if (status === "success") return "finished";
+	if (status === "failure") return "failed";
+	if (status === "stopped") return "stopped";
+	return line?.outcome || "stopped";
+}
+
 export function taskNoticeLineSpec(notice: TaskCompletionNotice): NoticeLineSpec {
 	const line = notice.line;
+	if (isAgentNotice(notice)) {
+		const status: NoticeLineSpec["status"] =
+			line?.status ??
+			(notice.status === "completed" ? "success" : notice.status === "failed" ? "failure" : "stopped");
+		return {
+			status,
+			label: agentNoticeName(notice),
+			outcome: agentNoticeOutcome(status, line),
+			...(line?.elapsedMs === undefined ? {} : { meta: [noticeDuration(line.elapsedMs)] }),
+		};
+	}
 	if (line !== undefined)
 		return {
 			status: line.status,
@@ -95,14 +144,442 @@ function cleanPreview(value: string): string {
  * agent's line is followed by the first line of its result, and expands to the rest. Notices joined in one message
  * show one line each. The same component renders them in the main chat, a workflow stage's chat and a subagent's view.
  */
+const TOOL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
+	read: "Read",
+	bash: "Bash",
+	edit: "Edit",
+	write: "Write",
+	search: "Search",
+	find: "Find",
+	ls: "List",
+	todo: "Todo",
+	web_search: "WebSearch",
+	fetch_content: "Fetch",
+	subagent: "Agent",
+	workflow: "Workflow",
+	intercom: "Intercom",
+	contact_supervisor: "Supervisor",
+};
+
+function toolDisplayName(name: string): string {
+	return TOOL_DISPLAY_NAMES[name] ?? name;
+}
+
+function summarizeToolArgs(name: string, args: Record<string, unknown>): string {
+	if (name === "bash" && typeof args.command === "string") {
+		const lines = args.command.split("\n");
+		return lines.length > 1 ? `${lines[0] ?? ""}…` : (lines[0] ?? "");
+	}
+	if ((name === "read" || name === "write" || name === "edit") && typeof (args.path ?? args.file_path) === "string") {
+		const target = String(args.path ?? args.file_path);
+		const offset = typeof args.offset === "number" ? args.offset : undefined;
+		const limit = typeof args.limit === "number" ? args.limit : undefined;
+		if (name === "read" && offset !== undefined && limit !== undefined) {
+			return `${target}:${offset}-${offset + limit - 1}`;
+		}
+		return target;
+	}
+	if (name === "search" && typeof args.pattern === "string") {
+		const paths = typeof args.paths === "string" ? args.paths : undefined;
+		return paths ? `/${args.pattern}/ in ${paths}` : `/${args.pattern}/`;
+	}
+	if ((name === "find" || name === "ls") && typeof (args.path ?? args.paths) === "string") {
+		return String(args.path ?? args.paths);
+	}
+	for (const value of Object.values(args)) {
+		if (typeof value === "string" && value.trim()) return value.trim().split("\n")[0] ?? "";
+	}
+	return "";
+}
+
+function unwrapPromptText(task: string): string {
+	let text = task;
+	const forkMarker = "\n\nTask:\n";
+	const forkIndex = text.indexOf(forkMarker);
+	if (forkIndex >= 0 && text.startsWith("You are continuing from")) {
+		text = text.slice(forkIndex + forkMarker.length);
+	}
+	text = text.replace(
+		/\n\n---\n(?:Create and maintain progress at:|Update progress at:|Write your findings to:)\s*[^\n]+$/g,
+		"",
+	);
+	text = text.replace(/\n\n\[Write to:\s*[^\]\n]+\]\s*$/i, "");
+	return text.trim();
+}
+
+class SectionRecord implements Component {
+	private readonly heading: string;
+	private readonly content: Component;
+	constructor(heading: string, content: Component) {
+		this.heading = heading;
+		this.content = content;
+	}
+	invalidate(): void {
+		this.content.invalidate();
+	}
+	render(width: number): string[] {
+		return [this.heading, ...this.content.render(width)];
+	}
+}
+
+class ComponentList implements Component {
+	private readonly items: readonly Component[];
+	constructor(items: readonly Component[]) {
+		this.items = items;
+	}
+	invalidate(): void {
+		for (const item of this.items) item.invalidate();
+	}
+	render(width: number): string[] {
+		const rows: string[] = [];
+		for (const item of this.items) {
+			const rendered = item.render(width);
+			if (rendered.length === 0) continue;
+			if (rows.length > 0) rows.push("");
+			rows.push(...rendered);
+		}
+		return rows;
+	}
+}
+
+class UnpaddedBlockComponent implements Component {
+	private readonly inner: Component;
+	constructor(inner: Component) {
+		this.inner = inner;
+	}
+	invalidate(): void {
+		this.inner.invalidate();
+	}
+	render(width: number): string[] {
+		if (width < 1) return [];
+		const lines = this.inner.render(width + 1);
+		if (lines.length > 0 && lines.every((line) => line.startsWith(" "))) {
+			return lines.map((line) => truncateToWidth(line.slice(1), width, "…"));
+		}
+		return this.inner.render(width);
+	}
+}
+
+interface ExtractedNoticeTranscript {
+	readonly prompt: string;
+	readonly toolBlocks: readonly Component[];
+	readonly unavailable?: string;
+}
+
+export type TaskCompletionTranscriptLoadResult =
+	| TaskTranscriptHistory
+	| ReturnType<TaskTranscriptSource["getEntries"]>
+	| undefined;
+
+export interface TaskCompletionMessageOptions {
+	readonly loadTranscript?: (
+		taskId: TaskId,
+	) => Promise<TaskCompletionTranscriptLoadResult> | TaskCompletionTranscriptLoadResult;
+	readonly hasTranscript?: (taskId: TaskId) => boolean;
+	readonly getToolDefinition?: (toolName: string) => ToolRenderers | undefined;
+	readonly cwd?: string;
+	readonly requestRender?: () => void;
+}
+
+const expandedNoticeCache = new WeakMap<TaskCompletionNotice, ExtractedNoticeTranscript | null>();
+const pendingNoticeLoads = new WeakMap<TaskCompletionNotice, Promise<ExtractedNoticeTranscript | null>>();
+
+function formatUnavailableReason(reason: string): string {
+	const cleaned = cleanPreview(reason).trim();
+	if (!cleaned) return "Transcript unavailable";
+	if (/^transcript unavailable/i.test(cleaned)) return cleaned;
+	return `Transcript unavailable · ${cleaned}`;
+}
+
+function renderInnerNoticeToolCall(input: {
+	readonly id: string;
+	readonly name: string;
+	readonly args: Record<string, unknown>;
+	readonly matched?: {
+		readonly content: readonly BuiltinToolBlockContentPart[];
+		readonly details?: unknown;
+		readonly text: string;
+		readonly isError: boolean;
+		readonly durationMs?: number;
+	};
+	readonly settledStatus: ToolBlockStatus;
+	readonly getToolDefinition?: (toolName: string) => ToolRenderers | undefined;
+	readonly cwd: string;
+}): Component {
+	const { id, name, args, matched, settledStatus, getToolDefinition, cwd } = input;
+	const isPartial = !matched && settledStatus === "running";
+	const isError = matched?.isError === true;
+	const status: ToolBlockStatus = matched
+		? matched.isError
+			? "failure"
+			: "success"
+		: settledStatus === "running"
+			? "running"
+			: "stopped";
+	const durationMeta =
+		matched?.durationMs !== undefined && matched.durationMs >= 1000
+			? [noticeDuration(matched.durationMs)]
+			: undefined;
+	const toolDef = getToolDefinition?.(name);
+	const presentation = builtinToolBlockPresentation({
+		toolName: name,
+		args,
+		result: matched
+			? {
+					content: matched.content,
+					details: matched.details,
+					isError: matched.isError,
+					durationMs: matched.durationMs,
+				}
+			: undefined,
+		expanded: false,
+		isPartial,
+		cwd,
+		executionStarted: true,
+		argsComplete: true,
+		elapsedMs: matched?.durationMs,
+	});
+	const canonicalCall =
+		presentation !== undefined && (!toolDef?.renderCall || isBuiltinToolCallRenderer(toolDef.renderCall));
+	const canonicalResult =
+		presentation !== undefined && (!toolDef?.renderResult || isBuiltinToolResultRenderer(toolDef.renderResult));
+	if (canonicalCall && canonicalResult && presentation) {
+		return new ToolBlock({
+			status: presentation.status ?? status,
+			title: presentation.title,
+			args: presentation.args,
+			meta: presentation.meta,
+			details: presentation.details,
+			outputPad: 0,
+		});
+	}
+	if (toolDef?.renderCall || toolDef?.renderResult) {
+		const innerContext: ToolRenderContext = {
+			args,
+			toolCallId: id || name,
+			invalidate: () => {},
+			lastComponent: undefined,
+			state: {},
+			cwd,
+			executionStarted: true,
+			argsComplete: true,
+			isPartial,
+			expanded: false,
+			showImages: false,
+			isError,
+			durationMs: isPartial ? undefined : matched?.durationMs,
+			outputPad: 0,
+			getToolDefinition,
+			keyText,
+			keyHint,
+		};
+		let callComp: Component | undefined;
+		if (toolDef.renderCall && !canonicalCall) {
+			try {
+				callComp = toolDef.renderCall(args, theme, innerContext);
+			} catch {
+				callComp = new Text(theme.fg("toolTitle", theme.bold(name)), 0, 0);
+			}
+		}
+		let resultComp: Component | undefined;
+		if (matched && toolDef.renderResult && !canonicalResult) {
+			try {
+				resultComp = toolDef.renderResult(
+					{
+						content: matched.content as AgentToolResult<unknown>["content"],
+						details: matched.details,
+					},
+					{ expanded: false, isPartial },
+					theme,
+					innerContext,
+				);
+			} catch {
+				const firstResult = matched.text
+					.split("\n")
+					.find((line) => line.trim())
+					?.trim();
+				if (firstResult) {
+					resultComp = new Text(theme.fg(isError ? "error" : "toolOutput", cleanPreview(firstResult)), 0, 0);
+				}
+			}
+		} else if (canonicalResult && presentation) {
+			resultComp = presentation.details;
+		} else if (matched?.text) {
+			const firstResult = matched.text
+				.split("\n")
+				.find((line) => line.trim())
+				?.trim();
+			if (firstResult) {
+				resultComp = new Text(theme.fg(isError ? "error" : "toolOutput", cleanPreview(firstResult)), 0, 0);
+			}
+		}
+		if (resultComp && isToolBlock(resultComp)) return new UnpaddedBlockComponent(resultComp);
+		if (callComp && isToolBlock(callComp)) return new UnpaddedBlockComponent(callComp);
+		return new ToolBlock({
+			status,
+			title: callComp ?? (presentation ? presentation.title : toolDisplayName(name)),
+			args: callComp ? undefined : presentation ? presentation.args : summarizeToolArgs(name, args),
+			meta: presentation?.meta ?? durationMeta,
+			details: resultComp,
+			outputPad: 0,
+		});
+	}
+	const firstResult = matched?.text
+		? matched.text
+				.split("\n")
+				.find((line) => line.trim())
+				?.trim()
+		: undefined;
+	return new ToolBlock({
+		status,
+		title: toolDisplayName(name),
+		args: summarizeToolArgs(name, args),
+		meta: durationMeta,
+		details: firstResult
+			? new Text(theme.fg(matched?.isError ? "error" : "toolOutput", cleanPreview(firstResult)), 0, 0)
+			: undefined,
+		outputPad: 0,
+	});
+}
+
+function extractEntriesExpansion(
+	loaded: TaskCompletionTranscriptLoadResult,
+	settledStatus: ToolBlockStatus,
+	options?: TaskCompletionMessageOptions,
+): ExtractedNoticeTranscript | undefined {
+	if (!loaded) return undefined;
+	const entries = Array.isArray(loaded) ? loaded : loaded.entries;
+	const unavailable = Array.isArray(loaded) ? undefined : loaded.unavailable;
+	if ((!entries || entries.length === 0) && !unavailable) return undefined;
+	const messages = (entries ?? []).flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
+	let prompt = "";
+	const resultsById = new Map<
+		string,
+		{
+			readonly content: readonly BuiltinToolBlockContentPart[];
+			readonly details?: unknown;
+			readonly text: string;
+			readonly isError: boolean;
+			readonly durationMs?: number;
+		}
+	>();
+	for (const message of messages) {
+		if (message.role === "user" && !prompt) {
+			if (typeof message.content === "string") prompt = unwrapPromptText(message.content);
+			else if (Array.isArray(message.content)) {
+				const text = message.content
+					.filter(
+						(part): part is { type: "text"; text: string } =>
+							part.type === "text" && typeof part.text === "string",
+					)
+					.map((part) => part.text)
+					.join("\n");
+				prompt = unwrapPromptText(text);
+			}
+		} else if (message.role === "toolResult" && "toolCallId" in message && typeof message.toolCallId === "string") {
+			const content: readonly BuiltinToolBlockContentPart[] = Array.isArray(message.content)
+				? (message.content as readonly BuiltinToolBlockContentPart[])
+				: [];
+			const text = content
+				.filter(
+					(part): part is { type: "text"; text: string } => part.type === "text" && typeof part.text === "string",
+				)
+				.map((part) => part.text)
+				.join("\n");
+			resultsById.set(message.toolCallId, {
+				content,
+				details: "details" in message ? message.details : undefined,
+				text,
+				isError: message.isError === true,
+				durationMs:
+					"durationMs" in message && typeof message.durationMs === "number" ? message.durationMs : undefined,
+			});
+		}
+	}
+	if (!prompt && !unavailable) return undefined;
+	const cwd = options?.cwd ?? process.cwd();
+	const toolBlocks: Component[] = [];
+	for (const message of messages) {
+		if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+		for (const part of message.content) {
+			if (part.type !== "toolCall") continue;
+			const args =
+				typeof part.arguments === "object" && part.arguments !== null && !Array.isArray(part.arguments)
+					? (part.arguments as Record<string, unknown>)
+					: {};
+			const matched = typeof part.id === "string" ? resultsById.get(part.id) : undefined;
+			toolBlocks.push(
+				renderInnerNoticeToolCall({
+					id: typeof part.id === "string" ? part.id : "",
+					name: part.name,
+					args,
+					matched,
+					settledStatus,
+					getToolDefinition: options?.getToolDefinition,
+					cwd,
+				}),
+			);
+		}
+	}
+	return {
+		prompt,
+		toolBlocks,
+		...(unavailable !== undefined ? { unavailable: formatUnavailableReason(unavailable) } : {}),
+	};
+}
+
 export class TaskCompletionMessage implements Component {
 	private readonly notices: readonly TaskCompletionNotice[];
-	private readonly expanded: boolean;
-	constructor(notices: TaskCompletionNotice | readonly TaskCompletionNotice[], expanded: boolean) {
+	private expanded: boolean;
+	private readonly options: TaskCompletionMessageOptions | undefined;
+	private disposed = false;
+	private generation = 0;
+	private readonly loadedByTask = new Map<TaskId, ExtractedNoticeTranscript | null>();
+	private readonly pendingByTask = new Map<TaskId, Promise<void>>();
+
+	constructor(
+		notices: TaskCompletionNotice | readonly TaskCompletionNotice[],
+		expanded: boolean,
+		options?: TaskCompletionMessageOptions,
+	) {
 		this.notices = Array.isArray(notices) ? notices : [notices as TaskCompletionNotice];
 		this.expanded = expanded;
+		this.options = options;
+		if (!expanded) {
+			for (const notice of this.notices) {
+				expandedNoticeCache.delete(notice);
+				pendingNoticeLoads.delete(notice);
+			}
+		}
 	}
+
+	setExpanded(expanded: boolean): void {
+		if (this.expanded === expanded) return;
+		this.expanded = expanded;
+		this.generation += 1;
+		if (!expanded) {
+			this.loadedByTask.clear();
+			this.pendingByTask.clear();
+			for (const notice of this.notices) {
+				expandedNoticeCache.delete(notice);
+				pendingNoticeLoads.delete(notice);
+			}
+		}
+	}
+
+	dispose(): void {
+		this.disposed = true;
+		this.generation += 1;
+		this.loadedByTask.clear();
+		this.pendingByTask.clear();
+		for (const notice of this.notices) {
+			expandedNoticeCache.delete(notice);
+			pendingNoticeLoads.delete(notice);
+		}
+	}
+
 	invalidate(): void {}
+
 	render(width: number): string[] {
 		if (width < 1) return [];
 		return this.notices.flatMap((notice, index) => [
@@ -110,26 +587,118 @@ export class TaskCompletionMessage implements Component {
 			...this.renderNotice(notice, width),
 		]);
 	}
+
+	private ensureTranscriptLoaded(
+		notice: TaskCompletionNotice,
+		status: ToolBlockStatus,
+	): ExtractedNoticeTranscript | undefined {
+		const taskId = notice.taskId as TaskId;
+		if (this.loadedByTask.has(taskId)) {
+			return this.loadedByTask.get(taskId) ?? undefined;
+		}
+		if (expandedNoticeCache.has(notice)) {
+			const cached = expandedNoticeCache.get(notice) ?? null;
+			this.loadedByTask.set(taskId, cached);
+			return cached ?? undefined;
+		}
+		const loader = this.options?.loadTranscript;
+		if (!loader || this.disposed) return undefined;
+		if (!this.pendingByTask.has(taskId)) {
+			const gen = this.generation;
+			let inflight = pendingNoticeLoads.get(notice);
+			if (!inflight) {
+				inflight = Promise.resolve()
+					.then(() => loader(taskId))
+					.then(
+						(loaded) => extractEntriesExpansion(loaded, status, this.options) ?? null,
+						() => null,
+					)
+					.finally(() => {
+						pendingNoticeLoads.delete(notice);
+					});
+				pendingNoticeLoads.set(notice, inflight);
+			}
+			const pending = inflight.then((extracted) => {
+				if (this.disposed || !this.expanded || this.generation !== gen) return;
+				this.loadedByTask.set(taskId, extracted);
+				expandedNoticeCache.set(notice, extracted);
+				this.pendingByTask.delete(taskId);
+				this.options?.requestRender?.();
+			});
+			this.pendingByTask.set(taskId, pending);
+		}
+		return undefined;
+	}
+
 	private renderNotice(notice: TaskCompletionNotice, width: number): string[] {
 		const preview = cleanPreview(notice.preview).trimEnd();
 		const agent = isAgentNotice(notice);
 		const spec = taskNoticeLineSpec(notice);
 		if (!agent) {
-			// A shell's line expands to the last lines of its output.
 			const tail = preview.split("\n").slice(-20).join("\n");
 			return new NoticeLine({ ...spec, ...(tail ? { detail: tail } : {}) }, this.expanded).render(width);
 		}
 		const [line] = new NoticeLine(spec).render(width);
-		if (!preview) return line === undefined ? [] : [line];
-		const result = wrapTextWithAnsi(preview, Math.max(1, width - 5));
-		const shown = this.expanded ? result.slice(0, 40) : result.slice(0, 1);
-		const hint = !this.expanded && result.length > 1 ? keyHintIfBound("app.tools.expand", "for the full result") : "";
+		const taskId = notice.taskId as TaskId;
+		const contentWidth = Math.max(1, width - 6);
+		if (this.expanded) {
+			const transcript = this.ensureTranscriptLoaded(notice, spec.status);
+			if (transcript) {
+				const records = new ToolBlockRecords([
+					new SectionRecord(
+						theme.bold("Prompt"),
+						transcript.prompt
+							? new ToolBlockMarkdown(transcript.prompt)
+							: new Text(theme.fg("dim", "(none)"), 0, 0),
+					),
+					new SectionRecord(
+						theme.bold("Tool calls"),
+						transcript.toolBlocks.length > 0
+							? new ComponentList(transcript.toolBlocks)
+							: new Text(theme.fg("dim", transcript.unavailable ?? "(none)"), 0, 0),
+					),
+					new SectionRecord(
+						theme.bold("Result"),
+						preview ? new ToolBlockMarkdown(preview) : new Text(theme.fg("dim", "(no output)"), 0, 0),
+					),
+				]);
+				const detailWidth = Math.max(1, width - 1);
+				return [
+					...(line === undefined ? [] : [line]),
+					...records.render(detailWidth).map((row) => truncateToWidth(` ${row}`, width, "…")),
+				];
+			}
+			if (!preview) return line === undefined ? [] : [line];
+			const result = wrapTextWithAnsi(preview, contentWidth);
+			return [
+				...(line === undefined ? [] : [line]),
+				...result.map((text, index) =>
+					truncateToWidth(theme.fg("muted", `${index === 0 ? "   ⎿  " : "      "}${text}`), width, "…"),
+				),
+			];
+		}
+		const canLoadTranscript =
+			this.loadedByTask.get(taskId) !== null &&
+			(this.options?.hasTranscript ? this.options.hasTranscript(taskId) : Boolean(this.options?.loadTranscript));
+		if (!preview && !canLoadTranscript) return line === undefined ? [] : [line];
+		const lines = preview ? preview.split("\n") : [];
+		const firstLine = (lines.find((item) => item.trim().length > 0) ?? lines[0] ?? "").trim();
+		const cutFirst = firstLine ? truncateToWidth(firstLine, contentWidth, "…") : "";
+		const hasMore = canLoadTranscript || lines.length > 1 || visibleWidth(firstLine) > contentWidth;
+		const hintLabel = canLoadTranscript ? "for prompt, tool calls and full result" : "for the full result";
+		const hint = hasMore ? keyHintIfBound("app.tools.expand", hintLabel) : "";
 		return [
 			...(line === undefined ? [] : [line]),
-			...shown.map((text, index) =>
-				truncateToWidth(theme.fg("muted", `${index === 0 ? "  ⎿  " : "     "}${text}`), width, "…"),
-			),
-			...(hint ? [truncateToWidth(`     ${theme.fg("dim", "(")}${hint}${theme.fg("dim", ")")}`, width, "…")] : []),
+			...(cutFirst ? [truncateToWidth(theme.fg("muted", `   ⎿  ${cutFirst}`), width, "…")] : []),
+			...(hint
+				? [
+						truncateToWidth(
+							`${cutFirst ? "      " : "   ⎿  "}${theme.fg("dim", "(")}${hint}${theme.fg("dim", ")")}`,
+							width,
+							"…",
+						),
+					]
+				: []),
 		];
 	}
 }

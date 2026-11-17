@@ -216,6 +216,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			state.sdkBusy = true;
 			state.workingMessage = undefined;
 			state.lastWorkingMessage = undefined;
+			state.interruptedTurnSnapshot = undefined;
 			startChatSessionWorkingLifecycle(state);
 			state.liveChat.clearPendingTools();
 			state.statusMessage = "";
@@ -224,9 +225,26 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			break;
 		case "agent_end": {
 			const manualTakeoverPending = state.manualCompactionTakeoverPending;
+			const interrupted = state.interruptedTurnSnapshot;
+			if (interrupted?.startedAt !== undefined && state.workingRunMeter.snapshot() === undefined) {
+				state.workingRunMeter.resume(interrupted.startedAt, interrupted.settledTokens, false);
+				if (state.lastWorkingMessage === undefined) {
+					state.lastWorkingMessage = interrupted.lastWorkingMessage;
+				}
+			}
 			const snapshot = chatSessionWorkingMeta(state);
-			if (snapshot !== undefined && !manualTakeoverPending)
+			if (snapshot !== undefined && !manualTakeoverPending) {
 				state.workedRun = { message: state.lastWorkingMessage, snapshot };
+			} else if (interrupted?.workedRun !== undefined && !manualTakeoverPending) {
+				state.workedRun = interrupted.workedRun;
+			}
+			if (interrupted !== undefined) {
+				state.interruptedTurnSnapshot = {
+					...interrupted,
+					startedAt: undefined,
+					workedRun: state.workedRun ?? interrupted.workedRun,
+				};
+			}
 			state.workingRunMeter.stop();
 			state.sdkBusy = manualTakeoverPending;
 			state.compacting = manualTakeoverPending;
@@ -453,7 +471,7 @@ function isSharedLiveChatEvent(type: string): boolean {
 
 function assistantToolCallEvent(event: AgentSessionEvent):
 	| {
-			type: "tool_execution_start";
+			type: "tool_call_args";
 			toolCallId: string;
 			toolName: string;
 			args: unknown;
@@ -484,7 +502,7 @@ function assistantToolCallEvent(event: AgentSessionEvent):
 
 function toolCallPayload(value: unknown):
 	| {
-			type: "tool_execution_start";
+			type: "tool_call_args";
 			toolCallId: string;
 			toolName: string;
 			args: unknown;
@@ -495,7 +513,7 @@ function toolCallPayload(value: unknown):
 	if (candidate.type !== "toolCall") return undefined;
 	if (typeof candidate.id !== "string" || typeof candidate.name !== "string") return undefined;
 	return {
-		type: "tool_execution_start",
+		type: "tool_call_args",
 		toolCallId: candidate.id,
 		toolName: candidate.name,
 		args: candidate.arguments ?? {},

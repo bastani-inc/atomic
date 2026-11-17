@@ -11,6 +11,10 @@
 
 - A subagent of a session created with the SDK's `intercom` option gets its own Intercom policy: its group is its home and it reaches nothing else. It starts in the session's home group, and a requested `group` (including `true`) is placed under it, as `<home>/<group>` ([#5352](https://github.com/bastani-inc/atomic/issues/5352))
 
+### Changed
+
+- Agent launches and control calls use shared state-marked blocks. Foreground and background launches show the short task title, elapsed time, token count and live management hint. Completion notices name the agent and show its first result line; expansion shows the prompt, tool calls and full retained result without inherited fork history ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+
 ### Fixed
 
 - Fixed Atomic exiting with `child-record-unreadable` ("which is not open in this process") when a workflow stage that had launched a background subagent finished, failed or had its run ended. Closing the stage reads each child's latest record to record it `stage-closed`. That record was read only through the copies of the stage's session registered for it, which are held weakly and which a later copy of the session can replace, and the error escaped from the stage's close listener and ended the process. The stage now also reads its children's records through its own session. When the copy that saved a newer record is gone, the stage ends the child from the record its own session holds, updated with where the child stands as Atomic last saw it. A child that is still running instead ends once its task settles, and a child that was already killed, gone or `stage-closed` is left as it is. A child it can read no record of is counted as a record that could not be saved, and the stage's other children still end. Nothing that goes wrong while a stage closes ends the process or fails the close.

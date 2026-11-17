@@ -62,8 +62,10 @@ export class TaskNavigation {
 		this.tasks = [...tasks];
 		const retained = new Set(tasks.map((task) => task.ref.taskId));
 		for (const id of this.paintedExecution.keys()) if (!retained.has(id)) this.paintedExecution.delete(id);
+		const previous = this.order;
 		this.order = [...order];
-		if (!this.order.includes(this.selectedTaskId ?? "")) this.selectedTaskId = this.order[0] as TaskId | undefined;
+		if (!this.order.includes(this.selectedTaskId ?? ""))
+			this.selectedTaskId = nearestSurvivor(previous, this.order, this.selectedTaskId) as TaskId | undefined;
 		const armed = this.stopConfirm.pending();
 		const settled = this.tasks.find((task) => task.ref.taskId === armed && task.execution.kind === "settled");
 		if (settled !== undefined) {
@@ -98,7 +100,7 @@ export class TaskNavigation {
 			this.stopConfirm.reset();
 			return;
 		}
-		const paintedKind = this.paintedExecution.get(task.ref.taskId) ?? listed.execution.kind;
+		const paintedKind = this.paintedExecution.get(task.ref.taskId);
 		if (action === "cancel" && task.execution.kind === "settled" && paintedKind !== "settled") {
 			this.stopConfirm.reset();
 			this.finishedWhileArmed = task;
@@ -155,7 +157,8 @@ export class TaskNavigation {
 			const task = this.tasks.find((task) => task.ref.taskId === this.selectedTaskId);
 			if (task) {
 				this.focus = { kind: "detail" };
-				if (this.keys.matches(data, "app.list.open")) this.actions.openChat(task);
+				if (this.keys.matches(data, "app.list.open") || task.attention.kind === "input-needed")
+					this.actions.openChat(task);
 				else this.actions.inspect(task);
 			}
 			return true;
@@ -180,4 +183,19 @@ export class TaskNavigation {
 		this.selectedTaskId = this.order[Math.max(0, Math.min(this.order.length - 1, next))] as TaskId | undefined;
 		return true;
 	}
+}
+
+function nearestSurvivor(
+	previous: readonly string[],
+	next: readonly string[],
+	selected: string | undefined,
+): string | undefined {
+	const index = selected === undefined ? -1 : previous.indexOf(selected);
+	if (index >= 0) {
+		const survivors = new Set(next);
+		for (let after = index + 1; after < previous.length; after++)
+			if (survivors.has(previous[after]!)) return previous[after];
+		for (let before = index - 1; before >= 0; before--) if (survivors.has(previous[before]!)) return previous[before];
+	}
+	return next[0];
 }

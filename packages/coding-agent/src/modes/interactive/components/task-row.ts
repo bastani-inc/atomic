@@ -4,8 +4,8 @@ import { formatModelLabel } from "../../../core/model-label.ts";
 import { taskOutcomeStatus } from "../../../core/tasks/command-output.js";
 import { isResumableStop, releasedWaitingOn } from "../../../core/tasks/completion.js";
 import type { TaskRecord } from "../../../core/tasks/contracts.js";
-import { liveElapsedMs, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.ts";
-import type { TaskActivity } from "../../../core/tasks/owner-store.js";
+import { liveElapsedMs, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
+import { isTaskTurnInterrupted, type TaskActivity } from "../../../core/tasks/owner-store.js";
 import { sanitizeTerminalText } from "../../../utils/terminal-text.ts";
 import { theme } from "../theme/theme.js";
 import { keyHintIfBound as keyHint } from "./keybinding-hints.js";
@@ -65,6 +65,7 @@ export function taskStatusAppearance(task: TaskRecord): {
 	icon: string;
 	color: "accent" | "success" | "error" | "warning" | "muted";
 } {
+	if (isTaskTurnInterrupted(task)) return { label: "Stopped · send to resume", icon: "◼", color: "muted" };
 	switch (taskState(task)) {
 		case "completed":
 			return { label: "Completed", icon: "✓", color: "success" };
@@ -91,11 +92,12 @@ export function taskStatusAppearance(task: TaskRecord): {
 
 export function taskMetricsText(task: TaskRecord): string {
 	const metrics = task.metrics;
+	const running = taskClockRunning(task.execution.kind) && !isTaskTurnInterrupted(task);
 	const elapsedMs =
 		metrics?.elapsedMs === undefined
 			? undefined
-			: (taskClockOf(task)?.elapsedMs(task.ref.taskId, metrics.elapsedMs, taskClockRunning(task.execution.kind)) ??
-				liveElapsedMs(task.ref.taskId, metrics.elapsedMs, taskClockRunning(task.execution.kind)));
+			: (taskClockOf(task)?.elapsedMs(task.ref.taskId, metrics.elapsedMs, running) ??
+				liveElapsedMs(task.ref.taskId, metrics.elapsedMs, running));
 	return [
 		elapsedMs === undefined ? "" : taskDuration(elapsedMs),
 		metrics?.tokenCount === undefined ? "" : `${metrics.tokenCount.toLocaleString("en-US")} tokens`,

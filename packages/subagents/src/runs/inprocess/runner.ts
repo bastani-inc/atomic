@@ -6,6 +6,7 @@ import {
 	type AgentSession,
 	type AgentSessionEvent,
 	type AgentSessionEventListener,
+	AgentTokenMeter,
 	applyAssistantMessageDelta,
 	beginStreamingAssistantMessage,
 	buildSkillCatalog,
@@ -2190,6 +2191,7 @@ export class SubagentControlRuntime {
 			};
 			// Snapshot at the public session-event boundary, never ahead of its queued events.
 			let observedStreamingMessage: AssistantMessage | undefined;
+			const tokenMeter = new AgentTokenMeter(session.messages);
 			taskHooks?.bindTranscript?.({
 				getSessionId: () => sessionManager.getSessionId(),
 				getEntries: () => sessionManager.getEntries(),
@@ -2240,7 +2242,7 @@ export class SubagentControlRuntime {
 				recentTools: [],
 				recentOutput: [],
 				toolCount: 0,
-				tokens: 0,
+				tokens: tokenMeter.total(),
 				durationMs: 0,
 				lastActivityAt: Date.now(),
 			};
@@ -2251,8 +2253,6 @@ export class SubagentControlRuntime {
 				const onProgress = admitted.spec.onProgress;
 				if (!onProgress && !taskHooks) return;
 				const now = Date.now();
-				if (!force && now - lastProgressEmit < 400) return;
-				lastProgressEmit = now;
 				progressState.durationMs = now - attemptStartedAt;
 				progressState.lastActivityAt = now;
 				taskHooks?.reportActivity({
@@ -2264,6 +2264,8 @@ export class SubagentControlRuntime {
 						tokenCount: progressState.tokens,
 					},
 				});
+				if (!force && now - lastProgressEmit < 400) return;
+				lastProgressEmit = now;
 				onProgress?.({ ...progressState, recentTools: [...progressState.recentTools] });
 			};
 			let activitySequence = 0;
@@ -2289,8 +2291,11 @@ export class SubagentControlRuntime {
 					observedStreamingMessage = beginStreamingAssistantMessage(event.message);
 				else if (event.type === "message_update" && observedStreamingMessage)
 					applyAssistantMessageDelta(observedStreamingMessage, event.assistantMessageEvent);
-				else if (event.type === "message_end" && event.message.role === "assistant")
+				else if (event.type === "message_end" && event.message.role === "assistant") {
 					observedStreamingMessage = undefined;
+					tokenMeter.settled(event.message);
+					progressState.tokens = tokenMeter.total();
+				}
 				const emission = progressEmissionFor(event.type);
 				if (event.type === "tool_execution_start") {
 					taskHooks?.reportActivity({
@@ -2319,13 +2324,7 @@ export class SubagentControlRuntime {
 					progressState.currentToolArgs = undefined;
 					progressState.currentToolStartedAt = undefined;
 				} else if (event.type === "message_end") {
-					const message = (event as { message?: { role?: string; usage?: { input?: number; output?: number } } })
-						.message;
-					if (message?.role === "assistant") {
-						progressState.turnCount = (progressState.turnCount ?? 0) + 1;
-						const usage = message.usage;
-						if (usage) progressState.tokens += (usage.input ?? 0) + (usage.output ?? 0);
-					}
+					if (event.message.role === "assistant") progressState.turnCount = (progressState.turnCount ?? 0) + 1;
 				}
 				if (emission !== "none") emitProgress(emission === "force");
 				if (event.type === "model_fallback_start" && !signals.abort.aborted) {

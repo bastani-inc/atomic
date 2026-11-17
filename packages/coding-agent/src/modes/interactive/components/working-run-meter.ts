@@ -7,8 +7,31 @@ export interface WorkingRunSnapshot {
 	readonly note?: string;
 }
 
+export interface LegacyWorkingRunSnapshot {
+	readonly elapsedMs: number;
+	readonly outputTokens: number;
+	readonly requesting?: boolean;
+	readonly note?: string;
+}
+
+export type WorkingRunMetaInput = WorkingRunSnapshot | LegacyWorkingRunSnapshot;
+
+export function normalizeWorkingRunSnapshot(meta: WorkingRunMetaInput): WorkingRunSnapshot {
+	if ("tokens" in meta && typeof meta.tokens === "number") {
+		return meta;
+	}
+	const legacy = meta as LegacyWorkingRunSnapshot;
+	return {
+		elapsedMs: legacy.elapsedMs,
+		tokens: legacy.outputTokens,
+		...(legacy.requesting === undefined ? {} : { requesting: legacy.requesting }),
+		...(legacy.note === undefined ? {} : { note: legacy.note }),
+	};
+}
+
 export interface MeteredMessage {
 	readonly role: string;
+	readonly stopReason?: string;
 	readonly usage?:
 		| {
 				readonly input?: number;
@@ -72,18 +95,33 @@ function hasContent(message: MeteredMessage | undefined): boolean {
 	});
 }
 
-export function agentTokenTotal(messages: readonly MeteredMessage[], streaming?: MeteredMessage): number {
-	let output = 0;
-	let latestInput = 0;
-	for (const message of messages) {
-		if (message.role !== "assistant") continue;
-		output += meteredOutputTokens(message);
-		const usage = message.usage;
-		const input = (usage?.input ?? 0) + (usage?.cacheRead ?? 0) + (usage?.cacheWrite ?? 0);
-		if (input > 0) latestInput = input;
+export class AgentTokenMeter {
+	private outputTokens = 0;
+	private latestInputTokens = 0;
+
+	constructor(messages: readonly MeteredMessage[] = []) {
+		for (const message of messages) this.settled(message);
 	}
-	const live = streaming?.role === "assistant" ? meteredOutputTokens(streaming, true) : 0;
-	return latestInput + output + live;
+
+	settled(message: MeteredMessage): void {
+		if (message.role !== "assistant") return;
+		this.outputTokens += meteredOutputTokens(message);
+		const usage = message.usage;
+		if (usage && (usage.input !== undefined || usage.cacheRead !== undefined || usage.cacheWrite !== undefined)) {
+			const inputTokens = (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+			const unbilledAbort = message.stopReason === "aborted" && inputTokens === 0 && (usage.output ?? 0) === 0;
+			if (!unbilledAbort) this.latestInputTokens = inputTokens;
+		}
+	}
+
+	total(streaming?: MeteredMessage): number {
+		const live = streaming?.role === "assistant" ? meteredOutputTokens(streaming, true) : 0;
+		return this.latestInputTokens + this.outputTokens + live;
+	}
+}
+
+export function agentTokenTotal(messages: readonly MeteredMessage[], streaming?: MeteredMessage): number {
+	return new AgentTokenMeter(messages).total(streaming);
 }
 
 const serializedArgumentLengths = new WeakMap<object, number>();
@@ -203,7 +241,8 @@ export function formatWorkingTokens(tokens: number): string {
 	return `${(tokens / 1_000_000_000).toFixed(tokens < 99_950_000_000 ? 1 : 0)}B`;
 }
 
-export function formatWorkingMeta(snapshot: WorkingRunSnapshot): string {
+export function formatWorkingMeta(input: WorkingRunMetaInput): string {
+	const snapshot = normalizeWorkingRunSnapshot(input);
 	if (snapshot.elapsedMs < 1000 && snapshot.tokens <= 0 && !snapshot.note) return "";
 	const parts = [formatWorkingElapsed(snapshot.elapsedMs)];
 	const tokens = formatTokenSegment({

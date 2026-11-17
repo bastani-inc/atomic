@@ -3,9 +3,10 @@ import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { CompactionReason } from "../agent-session.js";
 import { sessionEntryToContextMessages } from "../session-manager-history.ts";
 import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.ts";
+import { activeToolExecutionStarts, type ToolExecutionStart } from "../tool-execution-timing.ts";
 import { taskOutputText } from "./command-output.js";
 import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
-import { bindTaskClockSource } from "./live-elapsed.ts";
+import { bindTaskClockSource } from "./live-elapsed.js";
 import { TaskMessageError, TaskMessageTimeoutError } from "./message-error.js";
 import type { OwnerTaskStore, TaskActivity } from "./owner-store.js";
 import {
@@ -39,6 +40,7 @@ export interface TaskTranscriptView {
 	/** On the latest page: why the task's session is compacting at the time of the read. */
 	readonly compactionReason?: CompactionReason;
 	readonly compactionStartedAt?: number;
+	readonly activeToolStarts?: readonly ToolExecutionStart[];
 }
 
 /** How an open transcript of a task follows it: through its live session, or by reading it again. */
@@ -345,6 +347,9 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 				return { ok: false, error: { message: "This task's turn cannot be interrupted from here." } };
 			try {
 				await interrupt.call(bound.value.session);
+				if (bound.value.session.isRunning?.() !== true) {
+					store.setTurnInterrupted(id, true);
+				}
 				return { ok: true, value: undefined };
 			} catch (error) {
 				return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } };
@@ -388,7 +393,10 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			} catch (cause) {
 				throw new TaskMessageError("delivery-unconfirmed", { taskId: id, target }, { cause });
 			}
-			if (delivery.delivered) return;
+			if (delivery.delivered) {
+				store.setTurnInterrupted(id, false);
+				return;
+			}
 			if (delivery.reason === "unconfirmed")
 				throw new TaskMessageTimeoutError({
 					taskId: id,
@@ -457,6 +465,8 @@ function transcriptView(
 	});
 	const compactionReason = cursor === undefined ? session.getCompactionReason?.() : undefined;
 	const compactionStartedAt = compactionReason === undefined ? undefined : session.chatSession?.compactionStartedAt;
+	const activeToolStarts =
+		cursor === undefined && session.chatSession !== undefined ? activeToolExecutionStarts(session.chatSession) : [];
 	return {
 		ok: true,
 		value: {
@@ -464,6 +474,7 @@ function transcriptView(
 			...(page.ok && page.value.nextCursor !== undefined ? { nextCursor: page.value.nextCursor } : {}),
 			...(compactionReason === undefined ? {} : { compactionReason }),
 			...(compactionStartedAt === undefined ? {} : { compactionStartedAt }),
+			...(activeToolStarts.length === 0 ? {} : { activeToolStarts }),
 		},
 	};
 }

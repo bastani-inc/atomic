@@ -4,6 +4,7 @@ import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import type { TSchema } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
+import { watchAtomicWorkingClock } from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.ts";
 import { theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { createRpcExtensionUIContext } from "../../packages/coding-agent/src/modes/rpc/rpc-extension-ui.ts";
 import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
@@ -391,7 +392,7 @@ describe("StageChatView terminal subagent cleanup regressions", () => {
 		}
 	});
 
-	test("rendering a running subagent installs no animation interval (update-driven pulse)", () => {
+	test("a running subagent reuses the shared animation clock and releases it on completion (#5224)", () => {
 		stopResultAnimations();
 		const originalSetInterval = globalThis.setInterval;
 		const originalClearInterval = globalThis.clearInterval;
@@ -405,11 +406,15 @@ describe("StageChatView terminal subagent cleanup regressions", () => {
 			activeIntervals.delete(timer);
 			return originalClearInterval(timer);
 		}) as typeof clearInterval;
+		let view: StageChatView | undefined;
+		let stopSharedClock: (() => void) | undefined;
 		try {
+			stopSharedClock = watchAtomicWorkingClock(() => {});
+			assert.equal(activeIntervals.size, 1);
 			const store = createStore();
 			setupRun(store, "run-1", "stage-a", "running");
 			const { handle, emit } = makeHandle();
-			const view = new StageChatView({
+			view = new StageChatView({
 				store,
 				graphTheme: deriveGraphTheme({}),
 				runId: "run-1",
@@ -423,11 +428,7 @@ describe("StageChatView terminal subagent cleanup regressions", () => {
 
 			emitRunningSubagent(emit);
 			renderText(view);
-			// The foreground subagent renderer must NOT spin up a wall-clock
-			// animation timer: its activity pulse is advanced once per progress
-			// update instead. A timer here would tick above pi-tui's viewport
-			// fold and force a destructive full-screen/scrollback clear (flicker).
-			assert.equal(activeIntervals.size, 0);
+			assert.equal(activeIntervals.size, 1);
 
 			const runningStage = store.runs()[0]!.stages[0]!;
 			store.recordStageEnd("run-1", {
@@ -437,15 +438,17 @@ describe("StageChatView terminal subagent cleanup regressions", () => {
 				durationMs: 1,
 			});
 
-			// Terminating the stage and re-rendering must likewise leak no
-			// interval, and the host carries no animation tick of its own.
 			renderText(view);
-			assert.equal(activeIntervals.size, 0);
+			assert.equal(activeIntervals.size, 1);
 			stopResultAnimations();
-			assert.equal(activeIntervals.size, 0);
+			assert.equal(activeIntervals.size, 1);
 			assert.equal(view._hasAnimationTick, false);
 			view.dispose();
+			stopSharedClock();
+			assert.equal(activeIntervals.size, 0);
 		} finally {
+			view?.dispose();
+			stopSharedClock?.();
 			stopResultAnimations();
 			for (const timer of activeIntervals) originalClearInterval(timer);
 			globalThis.setInterval = originalSetInterval;

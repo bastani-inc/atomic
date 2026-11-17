@@ -136,7 +136,7 @@ test("clears an expired stop-all notice and opens the agent panel while stop_all
 	);
 
 	try {
-		const prompt = "Press ctrl+x ctrl+k again within 3s to stop all background subagents, shells and workflow runs";
+		const prompt = "Press ctrl+x ctrl+k again within 3s to stop all";
 		chord(CTRL_X);
 		chord(CTRL_K);
 		await sleep(20);

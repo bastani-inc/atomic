@@ -8,6 +8,7 @@ import { createEditToolDefinition } from "../src/core/tools/edit.js";
 import { computeEditsDiff, type Edit } from "../src/core/tools/edit-diff.js";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
+import { stripAnsi } from "../src/utils/ansi.js";
 
 class FakeTerminal implements Terminal {
 	columns = 80;
@@ -78,7 +79,7 @@ describe("edit tool TUI rendering", () => {
 		await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 	});
 
-	it("renders the large diff in the call preview and does not full-redraw when the result settles", async () => {
+	it("keeps a settled large diff stable across repeated results (#5350)", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "pi-edit-redraw-"));
 		tempDirs.push(dir);
 		const filePath = join(dir, "large-edit.txt");
@@ -121,16 +122,10 @@ describe("edit tool TUI rendering", () => {
 		await waitForRender();
 		await waitForRender();
 
-		const callOnlyRender = await waitForRenderedText(
-			() => component.render(80).join("\n"),
-			"line 50 changed",
-			() => tui.requestRender(true),
-		);
-		assert.ok(callOnlyRender.includes("edit"));
-		assert.ok(callOnlyRender.includes("line 950 changed"));
-
-		const redrawsBeforeResult = tui.fullRedraws;
-		const clearsBeforeResult = terminal.fullClearCount;
+		const callOnlyRender = component.render(80).join("\n");
+		assert.match(stripAnsi(callOnlyRender), /Edit\(/);
+		assert.ok(!callOnlyRender.includes("line 50 changed"));
+		component.setExpanded(true);
 		component.updateResult(
 			{
 				content: [{ type: "text", text: `Successfully replaced ${edits.length} block(s) in ${filePath}.` }],
@@ -142,16 +137,24 @@ describe("edit tool TUI rendering", () => {
 		tui.requestRender();
 		await waitForRender();
 
-		assert.equal(tui.fullRedraws, redrawsBeforeResult);
-		assert.equal(terminal.fullClearCount, clearsBeforeResult);
+		await waitForRenderedText(() => component.render(80).join("\n"), "line 950 changed");
+		const redrawsBeforeRepeat = tui.fullRedraws;
+		const clearsBeforeRepeat = terminal.fullClearCount;
+		component.updateResult({ content: [], details: diff, isError: false });
+		tui.requestRender();
+		await waitForRender();
+		assert.equal(tui.fullRedraws, redrawsBeforeRepeat);
+		assert.equal(terminal.fullClearCount, clearsBeforeRepeat);
 
 		const settledRender = component.render(80).join("\n");
 		assert.ok(settledRender.includes("line 50 changed"));
 		assert.ok(settledRender.includes("line 950 changed"));
 		assert.ok(!settledRender.includes("Successfully replaced"));
+		component.dispose();
+		tui.stop();
 	});
 
-	it("reconstructs the boxed preview from a settled result without argsComplete", async () => {
+	it("reconstructs the diff from a settled result without argsComplete", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "pi-edit-replay-"));
 		tempDirs.push(dir);
 		const filePath = join(dir, "replay-edit.txt");
@@ -198,6 +201,8 @@ describe("edit tool TUI rendering", () => {
 		const rendered = component.render(80).join("\n");
 		assert.ok(rendered.includes("line 50 changed"));
 		assert.ok(rendered.includes("line 150 changed"));
+		component.dispose();
+		tui.stop();
 	});
 
 	it("shows a preflight error without rendering a diff when the edits do not apply", async () => {
@@ -226,12 +231,12 @@ describe("edit tool TUI rendering", () => {
 		await waitForRender();
 		await waitForRender();
 
-		const rendered = await waitForRenderedText(
-			() => component.render(80).join("\n"),
-			"Could not find",
-			() => tui.requestRender(true),
-		);
+		assert.ok(!component.render(80).join("\n").includes("replacement"));
+		component.updateResult({ content: [{ type: "text", text: "Could not find old text" }], isError: true });
+		const rendered = await waitForRenderedText(() => component.render(80).join("\n"), "Could not find");
 		assert.ok(!rendered.includes("+1 "));
 		assert.ok(!rendered.includes("-1 "));
+		component.dispose();
+		tui.stop();
 	});
 });

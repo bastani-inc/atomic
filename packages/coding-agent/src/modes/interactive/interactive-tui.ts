@@ -13,11 +13,10 @@ import { stripOsc133Marks, stripOverlayActiveRowMarker } from "../../core/extens
 import { isLifecycleTimingEnabled, markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { copyToClipboard } from "../../utils/clipboard.js";
 import { openBrowser } from "../../utils/open-browser.ts";
-import { jumpToLatestLabel, NewMessageCounter, PINNED_PROMPT } from "./components/jump-to-latest.ts";
+import { jumpToLatestPill, NewMessageCounter, PINNED_PROMPT } from "./components/jump-to-latest.ts";
 import { keyDisplayText } from "./components/keybinding-hints.js";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./components/transcript-follow-indicator.ts";
 import { compositeOverlayLine } from "./overlay-line-composite.ts";
-import { theme } from "./theme/theme.js";
 
 interface TuiOverlayEntry {
 	component: Component;
@@ -637,10 +636,8 @@ export function createFullscreenTui(options: InteractiveTuiOptions): TuiAltScree
 		options.showHardwareCursor,
 		options.logDirectory,
 		{
-			scrollToEndIndicator: () => {
-				const label = ` ${jumpToLatestLabel(tui.newMessages.count, keyDisplayText("tui.altScreen.bottom") ?? "")} `;
-				return theme.bg("selectedBg", theme.fg("text", label));
-			},
+			scrollToEndIndicator: () =>
+				jumpToLatestPill(tui.newMessages.count, keyDisplayText("tui.altScreen.bottom") ?? ""),
 			scrollPinnedPrompt: PINNED_PROMPT,
 			openUrl: (url) =>
 				handleUrlActivation(url, {
