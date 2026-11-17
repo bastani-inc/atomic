@@ -191,6 +191,7 @@ export const OWNED_ELSEWHERE: readonly OwnedArea[] = [
 			"packages/coding-agent/src/main-early-input.ts",
 			"packages/coding-agent/src/core/models-store.ts",
 			"packages/coding-agent/src/utils/shell.ts",
+			"packages/coding-agent/src/main.ts",
 		],
 	},
 	{
