@@ -395,16 +395,16 @@ test("isolated chat settings include only the builtin Mermaid transformer", () =
 				getMessageRenderer: () => undefined,
 			},
 			sessionManager: {
-				getCwd: () => "/tmp",
+				getCwd: () => "/project",
 			},
 			settingsManager: {
-				getCodeBlockIndent: () => "  ",
 				getShowImages: () => true,
 				getImageWidthCells: () => 60,
 				getMermaidRenderingMode: () => "streaming",
 				getLatexRenderingEnabled: () => true,
 				getFullscreenScrollbar: () => "auto",
 				getFullscreenWheelScrollLines: () => "auto",
+				getCodeBlockIndent: () => "  ",
 			},
 		},
 	});

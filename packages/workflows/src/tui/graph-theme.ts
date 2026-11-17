@@ -217,13 +217,13 @@ function parsePiAnsiToHex(ansi: string | undefined): string | undefined {
  * throw to overlay mount.
  */
 function tryPiAccessor(
-	owner: PiRuntimeTheme,
+	theme: PiRuntimeTheme,
 	fn: ((color: string) => string) | undefined,
 	color: string,
 ): string | undefined {
 	if (typeof fn !== "function") return undefined;
 	try {
-		return Reflect.apply(fn, owner, [color]);
+		return Reflect.apply(fn, theme, [color]);
 	} catch {
 		return undefined;
 	}

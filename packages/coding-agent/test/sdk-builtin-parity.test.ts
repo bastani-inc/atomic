@@ -782,37 +782,41 @@ test.each<Partial<Record<AtomicBuiltin, boolean>>>([
 	{ mcp: false },
 	{ "web-access": false },
 	{ intercom: false },
-])("builtin selection %j preserves enabled families after reload", async (builtins) => {
-	const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-builtins-"));
-	Object.freeze(builtins);
-	try {
-		const { session } = await createAgentSession({
-			cwd,
-			agentDir: join(cwd, "agent"),
-			builtins,
-			settingsManager: SettingsManager.inMemory(),
-			sessionManager: SessionManager.inMemory(cwd),
-		});
+])(
+	"builtin selection %j preserves enabled families after reload",
+	async (builtins) => {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-builtins-"));
+		Object.freeze(builtins);
 		try {
-			for (let generation = 0; generation < 2; generation++) {
-				for (const [family, tool] of [
-					["workflows", "workflow"],
-					["subagents", "subagent"],
-					["web-access", "web_search"],
-					["intercom", "intercom"],
-				] as const) {
-					assert.equal(session.getActiveToolNames().includes(tool), builtins[family] !== false, family);
+			const { session } = await createAgentSession({
+				cwd,
+				agentDir: join(cwd, "agent"),
+				builtins,
+				settingsManager: SettingsManager.inMemory(),
+				sessionManager: SessionManager.inMemory(cwd),
+			});
+			try {
+				for (let generation = 0; generation < 2; generation++) {
+					for (const [family, tool] of [
+						["workflows", "workflow"],
+						["subagents", "subagent"],
+						["web-access", "web_search"],
+						["intercom", "intercom"],
+					] as const) {
+						assert.equal(session.getActiveToolNames().includes(tool), builtins[family] !== false, family);
+					}
+					assert.equal(Boolean(session.extensionRunner?.getCommand("mcp")), builtins.mcp !== false, "mcp");
+					if (generation === 0) await session.reload();
 				}
-				assert.equal(Boolean(session.extensionRunner?.getCommand("mcp")), builtins.mcp !== false, "mcp");
-				if (generation === 0) await session.reload();
+			} finally {
+				await session.dispose();
 			}
 		} finally {
-			await session.dispose();
+			rmSync(cwd, { recursive: true, force: true });
 		}
-	} finally {
-		rmSync(cwd, { recursive: true, force: true });
-	}
-});
+	},
+	REAL_BUILTIN_RELOAD_TEST_TIMEOUT_MS,
+);
 
 // #3105: a Node callback, without a terminal, answers the existing questionnaire tool.
 test("SDK host callback answers a questionnaire without rendering", async () => {

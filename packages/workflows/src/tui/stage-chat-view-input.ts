@@ -1,6 +1,10 @@
 import { isNavHelpKey, TRANSCRIPT_JUMP_TO_END_URL } from "@bastani/atomic";
 import { getKeybindings } from "@bastani/atomic-tui";
-import { coercePrimitivePromptAnswer, isPrimitivePrompt } from "../shared/prompt-answer.js";
+import {
+	coercePrimitivePromptAnswer,
+	isPrimitivePrompt,
+	primitivePromptAnswerExpectation,
+} from "../shared/prompt-answer.js";
 
 import { APP_ACTION, isKeybindingsLike, matchesAction, matchesNavAction, TUI_ACTION } from "./keybindings-adapter.js";
 import { parseTerminalMouseInput, terminalMouseWheelDirection } from "./mouse-input.js";
@@ -93,11 +97,22 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 			return true;
 		}
 		const prompt = ctx.promptState.prompt;
-		const coerced = isPrimitivePrompt(prompt) ? coercePrimitivePromptAnswer(prompt, trimmed) : { ok: false as const };
-		const response = coerced.ok ? coerced.value : trimmed;
+		if (isPrimitivePrompt(prompt)) {
+			const coerced = coercePrimitivePromptAnswer(prompt, trimmed);
+			if (!coerced.ok) {
+				ctx.chatHost.showWarning(primitivePromptAnswerExpectation(prompt));
+				return true;
+			}
+			ctx.chatHost.showWarning("");
+			ctx.chatHost.setInputText("");
+			ctx.dismissedPromptId = null;
+			resolvePromptResponse(ctx, prompt.id, coerced.value, { suppressNextGraphSubmit: true });
+			return true;
+		}
+		ctx.chatHost.showWarning("");
 		ctx.chatHost.setInputText("");
 		ctx.dismissedPromptId = null;
-		resolvePromptResponse(ctx, prompt.id, response, { suppressNextGraphSubmit: true });
+		resolvePromptResponse(ctx, prompt.id, trimmed, { suppressNextGraphSubmit: true });
 		return true;
 	}
 	if (isBackToGraphInput(ctx, data)) {

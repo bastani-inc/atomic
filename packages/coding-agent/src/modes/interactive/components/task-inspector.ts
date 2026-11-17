@@ -627,11 +627,18 @@ export class TaskInspector implements Component {
 	private async sendInput(text: string): Promise<void> {
 		const task = this.selected();
 		if (!task) return;
+		const environment = this.transcriptEnvironment();
 		const result = await this.store.writeTaskInput(task.ref.taskId, text);
-		this.status = result.ok ? `Sent ${result.value.acceptedBytes} bytes` : taskDisplayText(result.error.message);
+		const focus = this.navigation.focus;
+		const showingInput = focus.kind === "stdin" && focus.taskId === task.ref.taskId;
+		if (showingInput) {
+			this.status = result.ok ? `Sent ${result.value.acceptedBytes} bytes` : taskDisplayText(result.error.message);
+		} else if (!result.ok) {
+			this.reportLate(`Could not send input: ${taskDisplayText(result.error.message)}`, environment);
+		}
 		if (result.ok) {
-			this.input.setValue("");
-			this.inputDrafts.delete(task.ref.taskId);
+			if (showingInput && this.input.getValue() === text) this.input.setValue("");
+			if (this.inputDrafts.get(task.ref.taskId) === text) this.inputDrafts.delete(task.ref.taskId);
 		}
 		this.requestRender();
 	}
@@ -838,6 +845,7 @@ export class TaskInspector implements Component {
 			// ← on an empty input, or at its start (the draft is kept for the return), goes back to the list.
 			if (getKeybindings().matches(data, "app.nav.back") && this.input.getCursor() === 0) {
 				this.navigation.focus = { kind: "tasks" };
+				this.status = "";
 				this.requestRender();
 				return true;
 			}

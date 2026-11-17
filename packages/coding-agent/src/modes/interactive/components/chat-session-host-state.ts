@@ -40,7 +40,6 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly requestRender: (() => void) | undefined;
 	readonly getAgentSession: (() => AgentSession | undefined) | undefined;
 	readonly getChatBoxSession: (() => ChatBoxSession | undefined) | undefined;
-	lastRendererSession: WeakRef<ChatBoxSession> | undefined;
 	readonly getSessionMessages: (() => AgentSession["messages"] | undefined) | undefined;
 	readonly getTaskSource: (() => TaskViewSource | undefined) | undefined;
 	readonly echoedInitialPrompt: string | (() => string | undefined) | undefined;
