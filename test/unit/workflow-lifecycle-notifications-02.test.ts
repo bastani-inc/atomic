@@ -3,7 +3,8 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { visibleWidth } from "@bastani/atomic-tui";
-import { describe, test } from "vitest";
+import { beforeAll, describe, test } from "vitest";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import {
 	createWorkflowLifecycleNotificationState,
 	formatWorkflowLifecycleNoticeText,
@@ -101,6 +102,10 @@ function _installWithState(
 function startRun(store: ReturnType<typeof createStore>, id: string, name = id): void {
 	store.recordRunStart({ id, name, inputs: {}, status: "running", toolNodes: [], stages: [], startedAt: 1 });
 }
+
+beforeAll(() => {
+	initTheme("dark");
+});
 
 describe("installWorkflowLifecycleNotifications", () => {
 	test("emits one failure notice with tool origin and no fabricated stage id", () => {

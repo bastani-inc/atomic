@@ -3,9 +3,16 @@ import { stripVTControlCharacters } from "node:util";
 import type { TUI } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, describe, test, vi } from "vitest";
 import type { ToolRenderers } from "../../packages/coding-agent/src/core/extensions/tool-types.js";
+import type { MessageRenderer } from "../../packages/coding-agent/src/core/extensions/types.js";
 import { renderChatMessageEntry } from "../../packages/coding-agent/src/modes/interactive/components/chat-message-renderer.js";
+import { CustomMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/custom-message.js";
 import { ToolExecutionComponent } from "../../packages/coding-agent/src/modes/interactive/components/tool-execution.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import {
+	LIFECYCLE_NOTICE_CUSTOM_TYPE,
+	registerLifecycleNoticeRenderer,
+	type WorkflowLifecycleNoticeDetails,
+} from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import type { WorkflowToolArgs } from "../../packages/workflows/src/extension/public-types.js";
 import type { WorkflowRegisteredToolResult } from "../../packages/workflows/src/extension/render-result.js";
 import {
@@ -332,6 +339,60 @@ describe("the workflow tool row renders the same wherever a chat shows it (#5224
 				assert.match(text, /Workflow\(ralph · fix the login bug\)/);
 				assert.match(text, /⎿ {2}∀ Running · 1\/3 stages/);
 				assert.equal(text.includes("╭"), false, "no rounded panel of its own");
+			});
+		}
+	}
+});
+
+describe("a workflow's notice renders the same wherever a chat shows it (#5224)", () => {
+	const ui = { requestRender: () => {} } as unknown as TUI;
+	function noticeRenderer(): MessageRenderer {
+		let registered: MessageRenderer | undefined;
+		registerLifecycleNoticeRenderer({
+			rendererHost: {},
+			registerMessageRenderer: (_event, renderer) => {
+				registered = renderer as unknown as MessageRenderer;
+			},
+		});
+		if (registered === undefined) throw new Error("the lifecycle notice renderer was not registered");
+		return registered;
+	}
+	const details: WorkflowLifecycleNoticeDetails = {
+		kind: "failed",
+		scope: "run",
+		runId: RUN_ID,
+		workflowName: "ralph",
+		status: "failed",
+		stageName: "review",
+		durationMs: 12_000,
+		error: "tests failed",
+		createdAt: START,
+	};
+	const message = {
+		role: "custom" as const,
+		customType: LIFECYCLE_NOTICE_CUSTOM_TYPE,
+		content: "failed",
+		display: true,
+		details,
+		timestamp: START,
+	};
+
+	for (const expanded of [false, true]) {
+		for (const width of [80, 160]) {
+			test(`${expanded ? "expanded" : "collapsed"} at ${width} columns`, () => {
+				const renderer = noticeRenderer();
+				const main = new CustomMessageComponent(message, renderer);
+				main.setExpanded(expanded);
+				const hosted = renderChatMessageEntry(
+					{ role: "custom", kind: "custom", message },
+					{ ui, cwd: process.cwd(), getCustomMessageRenderer: () => renderer, toolOutputExpanded: expanded },
+				);
+				(hosted as CustomMessageComponent).setExpanded(expanded);
+				const lines = main.render(width);
+				assert.deepEqual(hosted.render(width), lines);
+				const text = plain(lines).filter((line) => line.length > 0);
+				assert.equal(text[0], '✗ Workflow "ralph" failed · at review · 12s');
+				if (!expanded) assert.equal(text.length, 1);
 			});
 		}
 	}

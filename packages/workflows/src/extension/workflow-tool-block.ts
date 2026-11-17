@@ -4,7 +4,7 @@
  */
 
 import type { ThemeColor } from "@bastani/atomic";
-import { keyHintIfBound } from "@bastani/atomic";
+import { formatTokenCount, formatTokenSegment, keyHintIfBound } from "@bastani/atomic";
 import { wrapTextWithAnsi } from "@bastani/atomic-tui";
 import { meter_run, type RunUsageTree } from "../shared/budget-meter.js";
 import type { StoreInvalidationListener } from "../shared/store-public-types.js";
@@ -93,13 +93,6 @@ export function formatBlockDuration(ms: number): string {
 	return minutes % 60 > 0 ? `${hours}h ${minutes % 60}m` : `${hours}h`;
 }
 
-export function formatBlockTokens(tokens: number): string {
-	if (tokens < 1000) return String(tokens);
-	if (tokens < 100_000) return `${(tokens / 1000).toFixed(1)}k`;
-	if (tokens < 1_000_000) return `${Math.round(tokens / 1000)}k`;
-	return `${(tokens / 1_000_000).toFixed(1)}M`;
-}
-
 function plural(count: number, noun: string, nouns = `${noun}s`): string {
 	return `${count} ${count === 1 ? noun : nouns}`;
 }
@@ -149,7 +142,7 @@ function stageProgress(run: { readonly stages: readonly StageSnapshot[] }): stri
 /** The `⎿` line for a run, from its live snapshot. */
 export function summarizeRun(run: RunSnapshot, tokens: number, now: number): WorkflowResultSummary {
 	const progress = stageProgress(run);
-	const tokenText = tokens > 0 ? `${formatBlockTokens(tokens)} tokens` : undefined;
+	const tokenText = tokens > 0 ? `${formatTokenCount(tokens)} tokens` : undefined;
 	switch (run.status) {
 		case "pending":
 		case "running": {
@@ -159,7 +152,7 @@ export function summarizeRun(run: RunSnapshot, tokens: number, now: number): Wor
 			}
 			return {
 				tone: "running",
-				text: join("Running", progress, tokenText === undefined ? undefined : `↓ ${tokenText}`),
+				text: join("Running", progress, formatTokenSegment({ mode: "receiving", count: tokens })),
 			};
 		}
 		case "paused": {
