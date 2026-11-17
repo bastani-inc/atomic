@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { basename, dirname, sep } from "node:path";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { canonicalizePath } from "../utils/paths.ts";
@@ -315,11 +315,11 @@ export interface SkillExpansionError {
  * command, or names no skill, is returned as typed; `onError` hears why an ambiguous selector or an unreadable
  * skill file was left as typed.
  */
-export function expandSkillCommand(
+export async function expandSkillCommand(
 	catalog: SkillCatalog,
 	text: string,
 	onError: (error: SkillExpansionError) => void = () => {},
-): string {
+): Promise<string> {
 	if (!text.startsWith("/skill:")) return text;
 
 	const command = parseSlashCommand(text);
@@ -333,7 +333,7 @@ export function expandSkillCommand(
 	const { skill, id } = resolution.candidate;
 
 	try {
-		const content = readFileSync(skill.filePath, "utf-8");
+		const content = await readFile(skill.filePath, "utf-8");
 		const body = stripFrontmatter(content).trim();
 		const skillBlock = `<skill name="${selector}" location="${skill.filePath}" candidate="${id}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
 		return args ? `${skillBlock}\n\n${args}` : skillBlock;
