@@ -1,4 +1,4 @@
-import { getShellEnv } from "../utils/shell.ts";
+import { getShellEnvAsync } from "../utils/shell.ts";
 import { shellCommandPrefixFor } from "./agent-session-blueprint-environment.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { blueprintSubject } from "./agent-session-tool-hooks.ts";
@@ -60,7 +60,7 @@ async function executeBashOperation(
 	if (abortController.signal.aborted) return cancelBeforeStart();
 	const shellPath = this.settingsManager.getShellPath();
 	const resolvedCommand = prefix ? `${prefix}\n${command}` : command;
-	const env = { ...getShellEnv() };
+	const env = { ...(await getShellEnvAsync()) };
 	applyBashSessionEnvironment(env, snapshotBashSessionEnvironment(this, true));
 
 	try {

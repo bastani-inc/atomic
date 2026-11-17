@@ -9,7 +9,7 @@ import { parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 import { SettingsManager } from "./settings-manager-core.ts";
 import { settingsInternals, stringEntries } from "./settings-manager-internals.ts";
-import { resolveDefaultTools } from "./settings-merge.js";
+import { resolveDefaultTools, resolveDefaultToolsWith } from "./settings-merge.js";
 import type { Settings } from "./settings-schema.ts";
 import type {
 	CompactionModelOverride,
@@ -126,6 +126,7 @@ interface SettingsManagerBasicAccessors {
 	): void;
 	removeModelThinkingLevel(provider: string, modelId: string): void;
 	getDefaultTools(): string[] | undefined;
+	getDefaultToolsWith(inherited: readonly string[]): string[] | undefined;
 	getCodemodeMode(): "on" | "only" | undefined;
 	setCodemodeMode(mode: "on" | "only" | undefined): void;
 	getCodemodeInlineBudget(): number;
@@ -510,6 +511,16 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		const tools = settingsInternals(this).settings.defaultTools;
 		return Array.isArray(tools)
 			? resolveDefaultTools(tools.filter((tool): tool is string => typeof tool === "string"))
+			: undefined;
+	},
+
+	getDefaultToolsWith(inherited) {
+		const tools = settingsInternals(this).settings.defaultTools;
+		return Array.isArray(tools)
+			? resolveDefaultToolsWith(
+					tools.filter((tool): tool is string => typeof tool === "string"),
+					inherited,
+				)
 			: undefined;
 	},
 

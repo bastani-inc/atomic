@@ -199,7 +199,7 @@ describe("evaluating an ENVRC file (#4588)", () => {
 
 	test("a shell that takes its script on stdin still receives the ENVRC as a positional argument (#4588)", async () => {
 		const config = shell.getShellConfig();
-		vi.spyOn(shell, "getShellConfig").mockReturnValue({
+		vi.spyOn(shell, "getShellConfigAsync").mockResolvedValue({
 			shell: config.shell,
 			args: ["-s"],
 			commandTransport: "stdin",
@@ -211,7 +211,7 @@ describe("evaluating an ENVRC file (#4588)", () => {
 
 	test("Windows evaluation converts the sourced PATH for native children with cygpath (#4588)", async () => {
 		const config = shell.getShellConfig();
-		vi.spyOn(shell, "getShellConfig").mockReturnValue(config);
+		vi.spyOn(shell, "getShellConfigAsync").mockResolvedValue(config);
 		const commands = path("commands");
 		mkdirSync(commands);
 		const converter = join(commands, "cygpath");

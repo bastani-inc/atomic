@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { resolve as resolvePath } from "node:path";
-import { getShellEnv } from "../../utils/shell.ts";
+import { getShellEnv, getShellEnvAsync } from "../../utils/shell.ts";
 
 export interface LeadingCdSpawnContext {
 	command: string;
@@ -27,12 +27,13 @@ function searchesCdPath(pathValue: string, env: NodeJS.ProcessEnv): boolean {
 	return !/^\.\.?(\/|$)/.test(pathValue);
 }
 
-/**
- * Turn `cd <dir> && rest` or `cd <dir>; rest` into `rest` run in `<dir>`, when `<dir>` is one plain word that
- * bash would take literally (optionally wrapped in quotes). Anything else returns undefined, so bash runs the
- * command as written.
- */
-export function stripLeadingCdCommand(command: string, cwd: string): LeadingCdSpawnContext | undefined {
+interface ParsedLeadingCd {
+	readonly nextCommand: string;
+	readonly rawPath: string;
+	readonly expandsHome: boolean;
+}
+
+function parseLeadingCd(command: string): ParsedLeadingCd | undefined {
 	let index = 0;
 	while (isBlank(command[index])) index++;
 	if (command.slice(index, index + 2) !== "cd" || !isBlank(command[index + 2])) return undefined;
@@ -64,8 +65,37 @@ export function stripLeadingCdCommand(command: string, cwd: string): LeadingCdSp
 	while (isBlank(command[index]) || command[index] === "\n") index++;
 	const nextCommand = command.slice(index);
 	if (!nextCommand || /^[;&|)]/.test(nextCommand)) return undefined;
-	const env = { ...getShellEnv() };
-	if (!expandsHome && searchesCdPath(rawPath, env)) return undefined;
-	const directory = expandsHome ? resolvePath(homedir(), `.${rawPath}`) : resolvePath(cwd, rawPath);
-	return { command: nextCommand, cwd: directory, env };
+	return { nextCommand, rawPath, expandsHome };
+}
+
+function finishLeadingCd(
+	parsed: ParsedLeadingCd,
+	cwd: string,
+	baseEnv: NodeJS.ProcessEnv,
+): LeadingCdSpawnContext | undefined {
+	const env = { ...baseEnv };
+	if (!parsed.expandsHome && searchesCdPath(parsed.rawPath, env)) return undefined;
+	const directory = parsed.expandsHome
+		? resolvePath(homedir(), `.${parsed.rawPath}`)
+		: resolvePath(cwd, parsed.rawPath);
+	return { command: parsed.nextCommand, cwd: directory, env };
+}
+
+/**
+ * Turn `cd <dir> && rest` or `cd <dir>; rest` into `rest` run in `<dir>`, when `<dir>` is one plain word that
+ * bash would take literally (optionally wrapped in quotes). Anything else returns undefined, so bash runs the
+ * command as written.
+ */
+export function stripLeadingCdCommand(command: string, cwd: string): LeadingCdSpawnContext | undefined {
+	const parsed = parseLeadingCd(command);
+	return parsed && finishLeadingCd(parsed, cwd, getShellEnv());
+}
+
+/** {@link stripLeadingCdCommand} without blocking the event loop. */
+export async function stripLeadingCdCommandAsync(
+	command: string,
+	cwd: string,
+): Promise<LeadingCdSpawnContext | undefined> {
+	const parsed = parseLeadingCd(command);
+	return parsed && finishLeadingCd(parsed, cwd, await getShellEnvAsync());
 }

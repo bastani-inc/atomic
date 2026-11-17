@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
 	resize: vi.fn(),
 	config: vi.fn(() => ({ shell: "pwsh.exe", args: [] })),
 }));
-vi.mock("../src/utils/shell.ts", () => ({ getPowerShellConfig: mocks.config }));
+vi.mock("../src/utils/shell.ts", () => ({ getPowerShellConfig: mocks.config, getPowerShellConfigAsync: mocks.config }));
 vi.mock("../src/utils/module-require.ts", () => ({
 	createModuleRequire: () => () => ({
 		PtySession: class {

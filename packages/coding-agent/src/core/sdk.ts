@@ -27,7 +27,7 @@ import { getBuiltinPackageLocations, getBuiltinPackagePaths } from "./builtin-pa
 import { withBuiltinResourceLoader } from "./builtin-resource-loader.ts";
 import { getDefaultCacheRetention } from "./cache-retention.ts";
 import { CacheWarmer } from "./cache-warmer.ts";
-import { inheritChildSessionOptions } from "./child-session-options.ts";
+import { inheritChildSessionOptionsWithDefaults } from "./child-session-options.ts";
 import { getClientIdentity } from "./client-identity.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { startupCleanupFailureMessage } from "./extension-startup-failure.ts";
@@ -81,7 +81,7 @@ import { time } from "./timings.ts";
 import { createToolNameMatcher } from "./tool-selection.ts";
 import { refreshConfig as refreshAskUserQuestionConfig } from "./tools/ask-user-question/config.ts";
 import type { ProjectHistory } from "./tools/history-protocol.ts";
-import { allToolNames, getDefaultToolNames } from "./tools/index.js";
+import { allToolNames, getDefaultToolNamesAsync } from "./tools/index.js";
 import {
 	assertSessionManagerInWorktreeAsync,
 	bindSessionWorkspace,
@@ -493,7 +493,10 @@ async function constructAgentSession(
 	// for any user who configures it (upstream 4d9aa837 + companion fix 541045ae).
 	const toolListError = options.tools ? getToolListError(options.tools) : undefined;
 	if (toolListError) throw new Error(`Invalid tools option: ${toolListError}`);
-	const defaultToolNames = options.noTools ? [] : (settingsManager.getDefaultTools() ?? getDefaultToolNames());
+	const builtinDefaultToolNames = await getDefaultToolNamesAsync();
+	const defaultToolNames = options.noTools
+		? []
+		: (settingsManager.getDefaultToolsWith(builtinDefaultToolNames) ?? builtinDefaultToolNames);
 	const toolModifiers = options.tools?.some(isToolModifier) ? options.tools : undefined;
 	const selectedToolNames = toolModifiers ? applyToolModifiers(defaultToolNames, toolModifiers) : options.tools;
 	const allowedToolNames =
@@ -854,7 +857,7 @@ async function constructAgentSession(
 							settingsManager.getWorktreeSnapshotSettings(),
 						),
 			childSessionOptions: (child) =>
-				inheritChildSessionOptions(
+				inheritChildSessionOptionsWithDefaults(
 					{
 						cwd,
 						agentDir,
@@ -878,6 +881,7 @@ async function constructAgentSession(
 					},
 					child,
 					session.getAllTools().map((tool) => tool.name),
+					builtinDefaultToolNames,
 				),
 			scopedModels: options.scopedModels,
 			// Undefined follows the settings' current `fallbackModels`, also once a project is trusted later.

@@ -18,6 +18,16 @@ export function inheritChildSessionOptions(
 	child: CreateAgentSessionOptions,
 	availableToolNames: readonly string[] = [],
 ): CreateAgentSessionOptions {
+	return inheritChildSessionOptionsWithDefaults(parent, child, availableToolNames, getDefaultToolNames());
+}
+
+/** {@link inheritChildSessionOptions} using `defaultToolNames` resolved ahead of time without touching the disk. */
+export function inheritChildSessionOptionsWithDefaults(
+	parent: CreateAgentSessionOptions,
+	child: CreateAgentSessionOptions,
+	availableToolNames: readonly string[],
+	defaultToolNames: readonly string[],
+): CreateAgentSessionOptions {
 	const builtins = { ...parent.builtins, ...definedOptions(child.builtins) };
 	for (const name of ["workflows", "subagents", "mcp", "web-access", "intercom"] as const) {
 		if (parent.builtins?.[name] === false) builtins[name] = false;
@@ -36,7 +46,8 @@ export function inheritChildSessionOptions(
 				[
 					...((child.noTools ?? parent.noTools)
 						? []
-						: ((child.settingsManager ?? parent.settingsManager)?.getDefaultTools() ?? getDefaultToolNames())),
+						: ((child.settingsManager ?? parent.settingsManager)?.getDefaultToolsWith(defaultToolNames) ??
+							defaultToolNames)),
 					...inheritedCustomToolNames,
 				],
 				child.tools,

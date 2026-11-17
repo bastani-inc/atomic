@@ -86,7 +86,7 @@ import {
 	setCliStorageSelection,
 } from "./core/storage/process-selection.js";
 import { endTimingSpan, printTimings, resetTimings, startTimingSpan, time } from "./core/timings.ts";
-import { hasProjectTrustInputs, ProjectTrustStore } from "./core/trust-manager.ts";
+import { hasProjectTrustInputs, hasProjectTrustInputsAsync, ProjectTrustStore } from "./core/trust-manager.ts";
 import { builtInExtensions } from "./extensions/index.ts";
 import {
 	type AppMode,
@@ -783,8 +783,8 @@ export async function main(argv: string[], options?: MainOptions) {
 		projectTrustContext,
 	}) => {
 		const cachedProjectTrust = projectTrustByCwd.get(cwd);
-		const hasTrustInputs = hasProjectTrustInputs(cwd);
-		const storedProjectTrust = projectTrustStore.get(cwd);
+		const hasTrustInputs = await hasProjectTrustInputsAsync(cwd);
+		const storedProjectTrust = await projectTrustStore.getAsync(cwd);
 		const initialProjectTrusted =
 			parsed.projectTrustOverride ?? cachedProjectTrust ?? storedProjectTrust ?? !hasTrustInputs;
 		const shouldResolveProjectTrust =
@@ -792,7 +792,9 @@ export async function main(argv: string[], options?: MainOptions) {
 			parsed.projectTrustOverride === undefined &&
 			cachedProjectTrust === undefined &&
 			hasTrustInputs;
-		const runtimeSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: initialProjectTrusted });
+		const runtimeSettingsManager = await SettingsManager.createAsync(cwd, agentDir, {
+			projectTrusted: initialProjectTrusted,
+		});
 		const existingSession = sessionManager.buildSessionContext();
 		const deferStartupTrust =
 			sessionStartEvent === undefined &&

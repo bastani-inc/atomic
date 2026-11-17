@@ -5,7 +5,7 @@
 
 import { execSync, spawn, spawnSync } from "child_process";
 import { createChildProcessEnvironment } from "../utils/child-process.ts";
-import { getShellConfig } from "../utils/shell.ts";
+import { getShellConfig, getShellConfigAsync } from "../utils/shell.ts";
 
 // Cache for shell command results (persists for process lifetime)
 const commandResultCache = new Map<string, string | undefined>();
@@ -339,7 +339,7 @@ async function executeWithConfiguredShellAsync(
 	command: string,
 ): Promise<{ executed: boolean; value: string | undefined }> {
 	try {
-		const { shell, args, commandTransport } = getShellConfig();
+		const { shell, args, commandTransport } = await getShellConfigAsync();
 		const commandFromStdin = commandTransport === "stdin";
 		const result = await runCommand(shell, commandFromStdin ? args : [...args, command], {
 			shell: false,

@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import type * as ChildProcess from "node:child_process";
 import type * as Fs from "node:fs";
+import type * as FsPromises from "node:fs/promises";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
 
 type ShellModule = typeof import("../src/utils/shell.js");
 
-const { accessSyncMock, spawnSyncMock } = vi.hoisted(() => ({
+const { accessMock, accessSyncMock, execFileMock, spawnSyncMock } = vi.hoisted(() => ({
+	accessMock: vi.fn(),
 	accessSyncMock: vi.fn(),
+	execFileMock: vi.fn(),
 	spawnSyncMock: vi.fn(),
 }));
 
@@ -15,8 +18,14 @@ vi.mock("node:fs", async (importOriginal) => ({
 	accessSync: accessSyncMock,
 }));
 
+vi.mock("node:fs/promises", async (importOriginal) => ({
+	...(await importOriginal<typeof FsPromises>()),
+	access: accessMock,
+}));
+
 vi.mock("child_process", async (importOriginal) => ({
 	...(await importOriginal<typeof ChildProcess>()),
+	execFile: execFileMock,
 	spawnSync: spawnSyncMock,
 }));
 
@@ -31,7 +40,10 @@ function stubPlatform(platform: string) {
 beforeEach(async () => {
 	vi.stubEnv("ProgramFiles", undefined);
 	vi.stubEnv("ProgramFiles(x86)", undefined);
+	accessMock.mockReset();
+	accessMock.mockResolvedValue(undefined);
 	accessSyncMock.mockReset();
+	execFileMock.mockReset();
 	spawnSyncMock.mockReset();
 	// Atomic memoizes PATH lookups per module instance; start each test without them.
 	vi.resetModules();
@@ -107,5 +119,18 @@ describe("Unix shell existence checks", () => {
 		assert.throws(() => shell.getShellConfig("/missing/bash"), {
 			message: "Custom shell path not found: /missing/bash",
 		});
+	});
+
+	it("resolves bash on PATH asynchronously with execFile when /bin/bash fails access(F_OK)", async () => {
+		accessMock.mockRejectedValueOnce(Object.assign(new Error("not found"), { code: "ENOENT" }));
+		execFileMock.mockImplementation(
+			(_file: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string) => void) => {
+				cb(null, "/usr/local/bin/bash\n");
+			},
+		);
+
+		assert.equal((await shell.getShellConfigAsync()).shell, "/usr/local/bin/bash");
+		assert.equal(accessSyncMock.mock.calls.length, 0);
+		assert.equal(spawnSyncMock.mock.calls.length, 0);
 	});
 });

@@ -131,7 +131,7 @@ export {
 
 import type { AgentTool } from "@bastani/atomic-agent-core";
 import type { TSchema } from "typebox";
-import { isPowerShellAvailable } from "../../utils/shell.ts";
+import { isPowerShellAvailable, isPowerShellAvailableAsync } from "../../utils/shell.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import { createAskUserQuestionToolDefinition } from "./ask-user-question/index.ts";
 import { type BashToolOptions, createBashTool, createBashToolDefinition } from "./bash.js";
@@ -189,12 +189,11 @@ export const allToolNames: Set<ToolName> = new Set([
  * call rather than at module load, and callers can decide it explicitly through
  * `powerShellAvailable` instead of depending on the host running the process.
  */
-export function getDefaultToolNames(options?: { powerShellAvailable?: boolean }): readonly ToolName[] {
-	const powerShell = options?.powerShellAvailable ?? isPowerShellAvailable();
+export function defaultToolNamesFor(powerShellAvailable: boolean): readonly ToolName[] {
 	return [
 		"read",
 		"bash",
-		...(powerShell ? (["powershell"] as const satisfies readonly ToolName[]) : []),
+		...(powerShellAvailable ? (["powershell"] as const satisfies readonly ToolName[]) : []),
 		"kill",
 		"edit",
 		"write",
@@ -203,6 +202,17 @@ export function getDefaultToolNames(options?: { powerShellAvailable?: boolean })
 		"ask_user_question",
 		"todo",
 	];
+}
+
+export function getDefaultToolNames(options?: { powerShellAvailable?: boolean }): readonly ToolName[] {
+	return defaultToolNamesFor(options?.powerShellAvailable ?? isPowerShellAvailable());
+}
+
+/** {@link getDefaultToolNames} without blocking the event loop. */
+export async function getDefaultToolNamesAsync(options?: {
+	powerShellAvailable?: boolean;
+}): Promise<readonly ToolName[]> {
+	return defaultToolNamesFor(options?.powerShellAvailable ?? (await isPowerShellAvailableAsync()));
 }
 
 export interface ToolsOptions {

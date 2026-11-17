@@ -18,8 +18,10 @@ import {
 	INTERACTIVE_ENGINE_BOOTSTRAP_VERSION,
 	readInteractiveEngineBootstrap,
 	removeOwnedInteractiveEngineBootstrap,
+	removeOwnedInteractiveEngineBootstrapAsync,
 	takeInteractiveEngineBootstrapArg,
 	writeInteractiveEngineBootstrap,
+	writeInteractiveEngineBootstrapAsync,
 } from "../../packages/coding-agent/src/utils/interactive-engine-bootstrap.ts";
 import { bunExecutable, moduleDir, spawnSyncCollect } from "../helpers/runtime.js";
 
@@ -249,4 +251,26 @@ test("the published path never exposes partially written content", () => {
 		assert.equal(dirname(handle.path), handle.directory);
 		removeOwnedInteractiveEngineBootstrap(handle);
 	}
+});
+
+test("asynchronous bootstrap publication and cleanup round-trip and clean up on failure", async () => {
+	const handle = await writeInteractiveEngineBootstrapAsync({
+		hostPid: 5151,
+		guardFile: "/tmp/atomic-engine-guardian-5151",
+		apiKey: "sk-async-bootstrap",
+	});
+	try {
+		assert.ok(existsSync(handle.path));
+		assert.deepEqual(readInteractiveEngineBootstrap(handle.path), {
+			version: INTERACTIVE_ENGINE_BOOTSTRAP_VERSION,
+			hostPid: 5151,
+			guardFile: "/tmp/atomic-engine-guardian-5151",
+			apiKey: "sk-async-bootstrap",
+		});
+		assert.equal(existsSync(handle.path), false);
+	} finally {
+		await removeOwnedInteractiveEngineBootstrapAsync(handle);
+	}
+	assert.equal(existsSync(handle.directory), false);
+	await removeOwnedInteractiveEngineBootstrapAsync(undefined);
 });
