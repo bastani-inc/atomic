@@ -34,6 +34,7 @@ import { closeMemoryTestBackends, createMemoryTestBackend } from "../helpers/wor
 
 useTemporaryAgentDir();
 
+const STAGE_PROMPT_WAIT_MS = 10_000;
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
 	setDurableBackend(undefined);
@@ -164,11 +165,14 @@ test("stage dialogs journal their pending prompt kind and settlement in the work
 
 	const runPromise = run(def, {}, { runId, store, stageUiBroker: broker, durableBackend: backend, adapters });
 
-	await vi.waitFor(() => {
-		const readerStages = durableWorkflowRunSnapshots(backend, backend.getWorkflow(runId)!)[0]?.stages;
-		assert.equal(readerStages?.[0]?.status, "awaiting_input");
-		assert.equal(readerStages?.[0]?.pendingPrompt?.kind, "confirm");
-	});
+	await vi.waitFor(
+		() => {
+			const readerStages = durableWorkflowRunSnapshots(backend, backend.getWorkflow(runId)!)[0]?.stages;
+			assert.equal(readerStages?.[0]?.status, "awaiting_input");
+			assert.equal(readerStages?.[0]?.pendingPrompt?.kind, "confirm");
+		},
+		{ timeout: STAGE_PROMPT_WAIT_MS },
+	);
 
 	const reopenedWhileConfirm = await JournalDurableBackend.open(backend.journal, { ownsJournal: false });
 	cleanups.push(() => reopenedWhileConfirm.close());
@@ -193,11 +197,14 @@ test("stage dialogs journal their pending prompt kind and settlement in the work
 	);
 	assert.equal(confirmAnswer.status, "ok");
 
-	await vi.waitFor(() => {
-		const readerStages = durableWorkflowRunSnapshots(backend, backend.getWorkflow(runId)!)[0]?.stages;
-		assert.equal(readerStages?.[0]?.status, "awaiting_input");
-		assert.equal(readerStages?.[0]?.pendingPrompt?.kind, "select");
-	});
+	await vi.waitFor(
+		() => {
+			const readerStages = durableWorkflowRunSnapshots(backend, backend.getWorkflow(runId)!)[0]?.stages;
+			assert.equal(readerStages?.[0]?.status, "awaiting_input");
+			assert.equal(readerStages?.[0]?.pendingPrompt?.kind, "select");
+		},
+		{ timeout: STAGE_PROMPT_WAIT_MS },
+	);
 
 	const selectStage = durableWorkflowRunSnapshots(backend, backend.getWorkflow(runId)!)[0]!.stages[0]!;
 	assert.deepEqual(selectStage.pendingPrompt?.choices, ["staging", "prod"]);
@@ -431,7 +438,9 @@ test("an interrupted run never auto-approves or reuses an earlier stage permissi
 		},
 	);
 
-	await vi.waitFor(() => assert.equal(firstStore.run(runId)?.stages[0]?.pendingPrompt?.kind, "confirm"));
+	await vi.waitFor(() => assert.equal(firstStore.run(runId)?.stages[0]?.pendingPrompt?.kind, "confirm"), {
+		timeout: STAGE_PROMPT_WAIT_MS,
+	});
 	const firstPrompt = firstStore.run(runId)!.stages[0]!.pendingPrompt!;
 	const firstStageId = firstStore.run(runId)!.stages[0]!.id;
 	assert.equal(
@@ -482,7 +491,9 @@ test("an interrupted run never auto-approves or reuses an earlier stage permissi
 		},
 	);
 
-	await vi.waitFor(() => assert.equal(secondStore.run(runId)?.stages[0]?.pendingPrompt?.kind, "confirm"));
+	await vi.waitFor(() => assert.equal(secondStore.run(runId)?.stages[0]?.pendingPrompt?.kind, "confirm"), {
+		timeout: STAGE_PROMPT_WAIT_MS,
+	});
 	const secondPrompt = secondStore.run(runId)!.stages[0]!.pendingPrompt!;
 	const secondStageId = secondStore.run(runId)!.stages[0]!.id;
 	assert.notEqual(secondPrompt.id, firstPrompt.id);

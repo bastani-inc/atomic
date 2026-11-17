@@ -207,6 +207,18 @@ test("a stage's confirmation waits as a stage prompt and workflow answer resolve
 	assert.equal(await pending, true);
 	assert.equal(store.run("3a8b8e63-2704-4212-af75-60bff16c299b")?.stages[0]?.pendingPrompt, undefined);
 	assert.equal(store.getStagePromptAnswer("3a8b8e63-2704-4212-af75-60bff16c299b", "stage-1")?.value, true);
+	const nextController = new AbortController();
+	const next = stage.extensionRunner
+		.createContext()
+		.ui.input("Next decision", undefined, { signal: nextController.signal });
+	void next.catch(() => {});
+	try {
+		assert.equal(store.run("3a8b8e63-2704-4212-af75-60bff16c299b")!.stages[0]!.promptAnswerState, undefined);
+		assert.equal(store.getStagePromptAnswer("3a8b8e63-2704-4212-af75-60bff16c299b", "stage-1"), undefined);
+	} finally {
+		nextController.abort();
+		assert.equal(await next, undefined);
+	}
 	assert.deepEqual(shown, []);
 });
 

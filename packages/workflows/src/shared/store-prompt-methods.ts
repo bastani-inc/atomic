@@ -73,6 +73,8 @@ export function createPromptStoreMethods(context: StoreContext): PromptStoreMeth
 			if (!stage) return false;
 			if (isTerminalStageStatus(stage.status)) return false;
 			if (stage.pendingPrompt !== undefined) return false;
+			state.stagePromptAnswers.delete(context.stagePromptAnswerKey(runId, stageId));
+			delete stage.promptAnswerState;
 			stage.pendingPrompt = { ...prompt };
 			stage.promptFootprint = { ...prompt };
 			stage.status = "awaiting_input";
