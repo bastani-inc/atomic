@@ -161,9 +161,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private remoteSessionFile: string | undefined;
 	private readonly health: EngineHealthController;
 	private readonly remoteCommands: RemoteCommandCatalog;
-	/** The first engine child's start; settles once that child announced readiness or failed to. */
-	private readonly initialStart: Promise<void>;
-	private initialStartSettled = false;
+	/** The first engine child's start, while it may still be in flight; settles once it announced readiness or failed to. */
+	private readonly initialStart: Promise<void> | undefined;
+	private initialStartSettled: boolean;
 	/** Why the first engine child never started. Its loss is a startup failure, never a recovery. */
 	private startupFailure: Error | undefined;
 	private disposed = false;
@@ -192,7 +192,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		localRuntime: AgentSessionRuntime,
 		createRuntime: CreateAgentSessionRuntimeFactory,
 		client: RpcClient,
-		initialStart: Promise<void> = Promise.resolve(),
+		initialStart?: Promise<void>,
 	) {
 		super(
 			localRuntime.session,
@@ -242,7 +242,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.stopSharingDebugSetting = onDebugSettingChange((enabled) =>
 			this.dispatchBestEffort("set debug", this.client.setDebug(enabled)),
 		);
-		this.initialStart = initialStart.then(
+		this.initialStartSettled = initialStart === undefined;
+		this.initialStart = initialStart?.then(
 			() => {
 				this.initialStartSettled = true;
 			},
@@ -255,7 +256,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				throw error;
 			},
 		);
-		this.initialStart.catch(() => {});
+		this.initialStart?.catch(() => {});
 		this.client.onGenerationEnded((event) => {
 			this.retiredResourceGenerations.add(event.generation);
 			if (event.generation === this.client.getGeneration()) {
@@ -479,7 +480,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 
 	async waitUntilBound(): Promise<void> {
 		try {
-			await this.initialStart;
+			// A failed start rejects once this runtime has been disposed, so its store is closed when the failure reaches us.
+			if (this.initialStart && (!this.initialStartSettled || this.startupFailure)) await this.initialStart;
+			if (this.startupFailure) throw this.startupFailure;
 			await this.client.waitForInteractiveEngineBound();
 		} catch (error) {
 			if (this.startupFailure) throw this.startupFailure;
