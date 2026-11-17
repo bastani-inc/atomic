@@ -207,6 +207,7 @@ export type InteractiveEngineCommand =
 			width: number;
 			toolName: string;
 			toolCallId: string;
+			rendererTaskId?: string;
 			args: JsonValue;
 			result?: JsonObject;
 			executionStarted: boolean;
@@ -830,12 +831,20 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 		typeof value.showImages === "boolean" &&
 		typeof value.imageWidthCells === "number"
 	) {
+		if (
+			value.rendererTaskId !== undefined &&
+			(typeof value.rendererTaskId !== "string" ||
+				value.rendererTaskId.length === 0 ||
+				value.rendererTaskId.length > 256)
+		)
+			return undefined;
 		return {
 			type: value.type,
 			componentId: value.componentId,
 			requestId: value.requestId,
 			width: value.width,
 			toolName: value.toolName,
+			...(value.rendererTaskId === undefined ? {} : { rendererTaskId: value.rendererTaskId }),
 			toolCallId: value.toolCallId,
 			args: value.args,
 			result: isJsonObject(value.result) ? value.result : undefined,

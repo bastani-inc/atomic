@@ -192,6 +192,25 @@ test("loading earlier history preserves only actual unread arrivals (#5243)", ()
 	}
 });
 
+test("same-conversation snapshots retain arrivals that have not painted yet (#5350)", () => {
+	initTheme("dark", false);
+	const host = new ChatSessionHost(hostOptions());
+	try {
+		host.replaceMessages(longConversation);
+		host.renderBody(80, 10);
+		host.handleInput(PAGE_UP);
+		host.renderBody(80, 10);
+		const arrival = { role: "user" as const, content: "NEW-SNAPSHOT-ARRIVAL", timestamp: 100 };
+		host.appendMessages([arrival]);
+		host.replaceMessages([...longConversation, arrival], { preserveUnread: true });
+		assert.match(text(host.renderBody(80, 10).slice(-1)), /1 new message/);
+		host.replaceMessages(longConversation);
+		assert.doesNotMatch(text(host.renderBody(80, 10)), /new message/);
+	} finally {
+		host.dispose();
+	}
+});
+
 test("compaction refresh while scrolled up preserves counted arrivals in a chat host (#5243)", () => {
 	initTheme("dark");
 	let compactedMessages: Array<Parameters<ChatSessionHost["replaceMessages"]>[0][number]> = [...longConversation];

@@ -9,12 +9,14 @@ import { stripTerminalControls } from "../../../utils/ansi.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
 import { createMarkdownTransform } from "./markdown-transform.ts";
+import { disposeRenderer } from "./renderer-disposal.js";
 import {
 	completionNoticeFromDetails,
 	TaskCompletionMessage,
 	type TaskCompletionMessageOptions,
 } from "./task-completion-message.js";
 import { heartbeatDetailsFrom, TaskHeartbeatMessage } from "./task-heartbeat-message.js";
+import { ToolBlock } from "./tool-block.js";
 
 /**
  * Type guard ensuring a value returned by an extension's custom renderer is a
@@ -32,6 +34,8 @@ function isRenderableComponent(value: unknown): value is Component {
  * Uses distinct styling to differentiate from user messages.
  */
 export class CustomMessageComponent extends Container {
+	readonly ownsLeadingSpacer = true;
+	private disposed = false;
 	private message: CustomMessage<unknown>;
 	private customRenderer?: MessageRenderer;
 	private box: Box;
@@ -77,6 +81,7 @@ export class CustomMessageComponent extends Container {
 	}
 
 	setExpanded(expanded: boolean): void {
+		if (this.disposed) return;
 		if (this._expanded !== expanded) {
 			this._expanded = expanded;
 			if (this.customComponent instanceof TaskCompletionMessage) {
@@ -88,28 +93,42 @@ export class CustomMessageComponent extends Container {
 	}
 
 	dispose(): void {
-		(this.customComponent as { dispose?: () => void } | undefined)?.dispose?.();
+		if (this.disposed) return;
+		this.disposed = true;
+		disposeRenderer(this.customComponent);
 		this.customComponent = undefined;
+		this.completionOptions = undefined;
+		this.customRenderer = undefined;
+		this.box.clear();
+		this.clear();
 	}
 
 	setOutputPad(outputPad: number): void {
+		if (this.disposed) return;
 		if (this.outputPad === outputPad) return;
 		this.outputPad = outputPad;
 		this.rebuild();
 	}
 
 	override invalidate(): void {
+		if (this.disposed) return;
 		super.invalidate();
 		this.rebuild();
 	}
 
 	private rebuild(): void {
-		// Remove previously mounted content (spacer + content) before rebuilding.
-		if (this.customComponent) {
-			(this.customComponent as { dispose?: () => void }).dispose?.();
-			this.removeChild(this.customComponent);
-			this.customComponent = undefined;
+		if (this.disposed) return;
+		const previous = this.customComponent;
+		this.customComponent = undefined;
+		if (previous) this.removeChild(previous);
+		try {
+			this.buildDisplay();
+		} finally {
+			if (previous !== this.customComponent) disposeRenderer(previous);
 		}
+	}
+
+	private buildDisplay(): void {
 		if (this.spacer) {
 			this.removeChild(this.spacer);
 			this.spacer = undefined;
@@ -141,7 +160,13 @@ export class CustomMessageComponent extends Container {
 			try {
 				const component = this.customRenderer(
 					this.message,
-					{ expanded: this._expanded, outputPad: this.outputPad, keyText, keyHint },
+					{
+						expanded: this._expanded,
+						outputPad: this.outputPad,
+						cwd: this.completionOptions?.cwd,
+						keyText,
+						keyHint,
+					},
 					theme,
 				);
 				// Explicit null = "handled; render nothing". Skip the leading spacer
@@ -164,7 +189,15 @@ export class CustomMessageComponent extends Container {
 					return;
 				}
 			} catch {
-				// Fall through to default rendering
+				this.spacer = new Spacer(1);
+				this.customComponent = new ToolBlock({
+					status: "failure",
+					title: "Message renderer failed",
+					outputPad: this.outputPad,
+				});
+				this.addChild(this.spacer);
+				this.addChild(this.customComponent);
+				return;
 			}
 		}
 

@@ -1062,7 +1062,7 @@ export function renderSubagentToolCall(args: SubagentParamsLike, theme: Theme, c
 	if (args.action) {
 		const target = args.agent || args.id || args.runId || (args.all ? "all" : "");
 		return new Text(
-			`${theme.fg("toolTitle", theme.bold("subagent "))}${args.action}${target ? ` ${theme.fg(args.action === "status" ? "dim" : "accent", displayText(target))}` : ""}`,
+			`${theme.fg("toolTitle", theme.bold("Agent"))}${theme.fg("text", `(${firstDisplayLine(args.action)}${target ? ` · ${firstDisplayLine(target)}` : ""})`)}`,
 			0,
 			0,
 		);
@@ -1133,10 +1133,10 @@ export function renderSubagentToolResult(
 		const lines = runControl.children.map((child) => {
 			const state =
 				child.state === "running"
-					? theme.fg("success", `▶ Resumed · ${displayText(child.agent)}`)
+					? theme.fg("success", `✓ Resumed · ${displayText(child.agent)}`)
 					: theme.fg(
-							"warning",
-							`${child.state === "paused" ? "‖ Paused" : "■ Quit (resumable)"} · ${displayText(child.agent)}`,
+							"muted",
+							`${child.state === "paused" ? "⏸ Paused" : "◼ Quit (resumable)"} · ${displayText(child.agent)}`,
 						);
 			const identity = theme.fg(
 				"dim",

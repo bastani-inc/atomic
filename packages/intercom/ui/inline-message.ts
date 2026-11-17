@@ -210,6 +210,7 @@ export const renderIntercomCustomMessage: MessageRenderer = (message, options, t
 	return new InlineMessageComponent(details.from, details.message, theme, {
 		expanded: options.expanded,
 		outputPad: options.outputPad,
+		currentCwd: options.cwd,
 		channel: details.channel,
 		receivedBeforeStart: details.receivedBeforeStart,
 		heading: isReplyOrFailure ? undefined : details.heading,

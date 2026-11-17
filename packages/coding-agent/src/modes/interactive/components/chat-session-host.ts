@@ -187,13 +187,17 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	}
 
 	/** Replaces the conversation with `messages`, keeping the host's own extra entries. */
-	replaceMessages(messages: readonly AgentSnapshotMessage[]): void {
+	replaceMessages(messages: readonly AgentSnapshotMessage[], options: { preserveUnread?: boolean } = {}): void {
+		if (options.preserveUnread && this.state.bodyViewport.getScrollFromBottom() > 0) {
+			this.state.newMessages.observe(false, countableTranscriptLength(this.state));
+		}
 		const firstUser = firstRawUserExactText(messages);
 		this.state.seenFirstRawUser = firstUser.seenUser;
 		this.state.firstUserEntryExactText = firstUser.exactText;
 		this.state.liveChat.replaceMessages(messages, this.state.extraEntries);
 		syncFirstUserEntry(this.state);
-		this.state.newMessages.replaced(countableTranscriptLength(this.state));
+		if (options.preserveUnread) this.state.newMessages.replaced(countableTranscriptLength(this.state));
+		else this.state.newMessages.reset();
 		this.state.requestRender?.();
 	}
 

@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
-import { stripTerminalSequences, Text, type TUI, visibleWidth } from "@bastani/atomic-tui";
+import {
+	getKeybindings,
+	setKeybindings,
+	stripTerminalSequences,
+	Text,
+	type TUI,
+	visibleWidth,
+} from "@bastani/atomic-tui";
 import { Type } from "typebox";
 import { beforeAll, test, vi } from "vitest";
 import type { ToolDefinition } from "../src/core/extensions/types.ts";
+import { KeybindingsManager } from "../src/core/keybindings.js";
 import { createToolDefinition } from "../src/core/tools/index.ts";
 import { createPowerShellToolDefinition } from "../src/core/tools/powershell.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
@@ -162,6 +170,115 @@ test("PowerShell keeps its shell identity when using the shared default renderer
 	}
 });
 
+test("ordinary custom results remain visible after a canonical pending call (#5350)", () => {
+	vi.useFakeTimers();
+	const component = new ToolExecutionComponent(
+		"sample",
+		"canonical-call-custom-result",
+		{ secret: "must remain hidden" },
+		{},
+		{
+			...definition,
+			renderCall: () => new ToolBlock({ status: "running", title: "Private title", args: "redacted", outputPad: 0 }),
+			renderResult: () => new Text("Custom projected result", 0, 0),
+		},
+		ui,
+		"/workspace",
+	);
+	try {
+		component.updateResult({ content: [{ type: "text", text: "raw private result" }], isError: false });
+		const text = component.render(80).map(stripTerminalSequences).join("\n");
+		assert.match(text, /● Private title\(redacted\)/);
+		assert.match(text, /⎿ {2}Custom projected result/);
+		assert.doesNotMatch(text, /∀|must remain hidden|raw private result/);
+		assert.equal(vi.getTimerCount(), 0);
+	} finally {
+		component.dispose();
+		vi.useRealTimers();
+	}
+});
+
+test("closed tool rows release every renderer and ignore late updates even if a disposer fails (#5350)", () => {
+	vi.useFakeTimers();
+	const repaint = vi.fn();
+	const resultDisposed = vi.fn();
+	let calls = 0;
+	const component = new ToolExecutionComponent(
+		"sample",
+		"closed-row",
+		{},
+		{},
+		{
+			...definition,
+			renderCall: (_args, _theme, context) => {
+				calls++;
+				const state = context.state as { interval?: ReturnType<typeof setInterval> };
+				state.interval ??= setInterval(() => {}, 1_000);
+				return {
+					render: () => ["Sample()"],
+					invalidate() {},
+					dispose() {
+						throw new Error("private disposal detail");
+					},
+				};
+			},
+			renderResult: () => ({ render: () => ["done"], invalidate() {}, dispose: resultDisposed }),
+		},
+		{ requestRender: repaint } as TUI,
+		"/workspace",
+	);
+	try {
+		component.updateResult({ content: [], isError: false });
+		assert.doesNotThrow(() => component.dispose());
+		assert.equal(resultDisposed.mock.calls.length, 1);
+		assert.equal(vi.getTimerCount(), 0);
+		const before = calls;
+		const beforePaint = repaint.mock.calls.length;
+		component.invalidate();
+		component.setExpanded(true);
+		component.updateArgs({ late: true });
+		component.updateResult({ content: [], isError: false });
+		assert.deepEqual(component.render(80), []);
+		assert.equal(calls, before);
+		assert.equal(repaint.mock.calls.length, beforePaint);
+	} finally {
+		component.dispose();
+		vi.useRealTimers();
+	}
+});
+
+test("grouped call summaries keep the bound expand hint at narrow and wide widths (#5350)", () => {
+	const previous = getKeybindings();
+	setKeybindings(new KeybindingsManager());
+	const component = new ToolExecutionComponent("read", "group-summary", {}, {}, undefined, ui, "/workspace");
+	try {
+		component.updateResult({ content: [], isError: false });
+		component.setGroupRole({
+			kind: "head",
+			clauses: [
+				{ family: "read", count: 3 },
+				{ family: "search", count: 2 },
+				{ family: "find", count: 1 },
+				{ family: "list", count: 2 },
+				{ family: "bash", count: 4 },
+			],
+		});
+		for (const width of [80, 160]) {
+			const rows = component.render(width).map(stripTerminalSequences);
+			assert.equal(rows.length, 2);
+			assert.ok(visibleWidth(rows[1]!) <= width);
+			assert.match(rows[1]!, /Read 3 files/);
+			assert.match(rows[1]!, /\(ctrl\+o to expand\)$/);
+			assert.doesNotMatch(rows[1]!, /…\)$/u);
+		}
+		setKeybindings(new KeybindingsManager({ "app.tools.expand": [] }));
+		assert.doesNotMatch(component.render(80).map(stripTerminalSequences).join("\n"), /ctrl\+o|to expand/);
+	} finally {
+		component.dispose();
+		setKeybindings(previous);
+	}
+});
+
 test("default extension headers use their registered label (#5224)", () => {
 	const component = new ToolExecutionComponent(
 		"sample",
@@ -200,6 +317,25 @@ test("a failed custom result renderer does not expose its hidden raw output (#52
 		const text = component.render(80).map(stripTerminalSequences).join("\n");
 		assert.match(text, /Result renderer failed/);
 		assert.doesNotMatch(text, /secret raw output|private renderer detail/);
+	} finally {
+		component.dispose();
+	}
+});
+
+test("fallback argument summaries shorten complete Unicode graphemes (#5350)", () => {
+	const component = new ToolExecutionComponent(
+		"custom_action",
+		"unicode-fallback",
+		{ value: `${"a".repeat(60)}😀😀end` },
+		{},
+		undefined,
+		ui,
+		"/workspace",
+	);
+	try {
+		const line = component.render(160).map(stripTerminalSequences).join("\n");
+		assert.doesNotMatch(line, /[\ud800-\udfff]/u);
+		assert.match(line, /😀…\)/u);
 	} finally {
 		component.dispose();
 	}

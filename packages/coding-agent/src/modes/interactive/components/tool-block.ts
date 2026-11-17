@@ -52,9 +52,10 @@ function inlineText(value: string): string {
 		.trim();
 }
 
-function renderedTitle(title: Component): string {
+function renderedTitle(title: Component, width: number): string {
+	if (width < 1) return "";
 	return title
-		.render(16_384)
+		.render(width)
 		.map((line) => line.trimEnd())
 		.join(" ")
 		.trim();
@@ -63,7 +64,9 @@ function renderedTitle(title: Component): string {
 function shortenedTitle(title: string, width: number): string {
 	if (visibleWidth(title) <= width) return title;
 	const closing = title.lastIndexOf(")");
-	if (closing > title.indexOf("(") && closing > 0) {
+	const plain = stripTerminalSequences(title);
+	const opening = plain.indexOf("(");
+	if (opening > 0 && !/\s/u.test(plain[opening - 1] ?? "") && closing > 0) {
 		const suffix = title.slice(closing);
 		const room = width - visibleWidth(suffix);
 		if (room > 0) return `${truncateToWidth(title.slice(0, closing), room, "…")}${suffix}`;
@@ -148,7 +151,7 @@ export class ToolBlock implements Component {
 		const titleWidth = Math.max(0, contentWidth - 2);
 		const meta = [...(this.spec.meta ?? [])].filter((part) => visibleWidth(part) > 0);
 		const titleText =
-			typeof this.spec.title === "string" ? inlineText(this.spec.title) : renderedTitle(this.spec.title);
+			typeof this.spec.title === "string" ? inlineText(this.spec.title) : renderedTitle(this.spec.title, titleWidth);
 		const args = this.spec.args === undefined ? undefined : inlineText(this.spec.args);
 		const minimumTitle =
 			typeof this.spec.title === "string"
@@ -166,7 +169,11 @@ export class ToolBlock implements Component {
 				title = `${name}${theme.fg("text", `(${truncateToWidth(args, argumentWidth, "…")})`)}`;
 				title = truncateToWidth(title, availableTitle, "…");
 			}
-		} else title = shortenedTitle(titleText, availableTitle);
+		} else
+			title = shortenedTitle(
+				availableTitle === titleWidth ? titleText : renderedTitle(this.spec.title, availableTitle),
+				availableTitle,
+			);
 		const header = truncateToWidth(`${glyph} ${title}${theme.fg("dim", metaText())}`, contentWidth, "…");
 		const rows = [header];
 		if (this.spec.body) {

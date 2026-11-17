@@ -12,6 +12,7 @@ import {
 	type WheelScrollLines,
 } from "@bastani/atomic-tui";
 import { isUserPromptRow } from "./jump-to-latest.ts";
+import { disposeRenderer as disposeComponent } from "./renderer-disposal.js";
 import { WheelScrollAccelerator } from "./wheel-scroll-accelerator.ts";
 
 /**
@@ -47,8 +48,6 @@ interface CachedChatTranscriptBlock<TEntry extends ChatTranscriptEntryLike> {
 	readonly lines: readonly string[];
 	readonly promptRows: readonly number[];
 }
-
-type DisposableComponent = Component & { dispose?: () => void };
 
 /**
  * A run of rows inside a windowed component, tagged with the identity of the
@@ -107,10 +106,14 @@ interface StaticComponentRows {
 type ComponentRows = WindowedComponentRows | StaticComponentRows;
 
 export function addChatTranscriptEntry(container: Container, component: Component, role: ChatTranscriptRole): void {
-	if (needsLeadingSpacer(role) && container.children.length > 0) {
+	if (needsLeadingSpacer(role) && container.children.length > 0 && !ownsLeadingSpacer(component)) {
 		container.addChild(new Spacer(1));
 	}
 	container.addChild(component);
+}
+
+function ownsLeadingSpacer(component: Component): boolean {
+	return "ownsLeadingSpacer" in component && component.ownsLeadingSpacer === true;
 }
 
 function needsLeadingSpacer(role: ChatTranscriptRole): boolean {
@@ -256,8 +259,8 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 				cached !== undefined && cached.entry === entry && cached.key === key && cached.width === width;
 			if (reusable && !this.dirtyEntries.has(entry)) continue;
 			this.dirtyEntries.delete(entry);
-			if (!reusable) disposeComponent(cached?.component);
 			const component = reusable ? cached.component : this.renderEntry(entry);
+			if (!reusable && cached?.component !== component) disposeComponent(cached?.component);
 			const lines = this.renderEntryBlock(component, entry, index, width);
 			const promptRows: number[] = [];
 			for (let row = 0; row < lines.length; row++) {
@@ -304,9 +307,17 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 	}
 
 	private renderEntryBlock(component: Component, entry: TEntry, index: number, width: number): string[] {
+		const rendered = component.render(width);
+		if (rendered.length === 0) return [];
 		const lines: string[] = [];
-		if (index > 0 && needsLeadingSpacer(entry.role)) lines.push("");
-		for (const line of component.render(width)) lines.push(line);
+		if (
+			index > 0 &&
+			needsLeadingSpacer(entry.role) &&
+			!ownsLeadingSpacer(component) &&
+			stripTerminalSequences(rendered[0] ?? "").trim() !== ""
+		)
+			lines.push("");
+		for (const line of rendered) lines.push(line);
 		return lines;
 	}
 }
@@ -320,10 +331,6 @@ function indexAtOrBefore(sorted: readonly number[], target: number): number {
 		else high = middle;
 	}
 	return low - 1;
-}
-
-function disposeComponent(component: Component | undefined): void {
-	(component as DisposableComponent | undefined)?.dispose?.();
 }
 
 /** Alt+wheel moves this many wheel steps at once, as the main transcript does. */

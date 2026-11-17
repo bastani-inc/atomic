@@ -55,6 +55,7 @@ export type ChatMessageEntry =
 			kind: "tool";
 			toolName: string;
 			toolCallId: string;
+			rendererTaskId?: TaskId;
 			args: unknown;
 			result?: RenderableToolResult;
 			isPartial?: boolean;
@@ -87,8 +88,11 @@ export interface ChatMessageRenderOptions {
 	loadTaskTranscript?: TaskCompletionMessageOptions["loadTranscript"];
 	hasTaskTranscript?: (taskId: TaskId) => boolean;
 	getCustomMessageRenderer?: (customType: string) => MessageRenderer | undefined;
-	createToolComponent?: (entry: Extract<ChatMessageEntry, { kind: "tool" }>) => Component;
-	createCustomMessageComponent?: (message: CustomMessage<unknown>) => Component;
+	createToolComponent?: (
+		entry: Extract<ChatMessageEntry, { kind: "tool" }>,
+		context?: ChatRendererContext,
+	) => Component;
+	createCustomMessageComponent?: (message: CustomMessage<unknown>, context?: ChatRendererContext) => Component;
 }
 type ToolChatEntry = Extract<ChatMessageEntry, { kind: "tool" }>;
 export interface ChatEntryGrouping {
@@ -690,6 +694,24 @@ function toolResultFromUnknown(
 		timestamp: Date.now(),
 	};
 }
+export interface ChatRendererContext {
+	requestRender(): void;
+	expanded: boolean;
+	outputPad: number;
+	showImages: boolean;
+	imageWidthCells?: number;
+}
+
+function rendererContext(options: ChatMessageRenderOptions, requestRender: () => void): ChatRendererContext {
+	return {
+		requestRender,
+		expanded: options.toolOutputExpanded ?? false,
+		outputPad: options.outputPad ?? 1,
+		showImages: options.showImages ?? true,
+		imageWidthCells: options.imageWidthCells,
+	};
+}
+
 export interface ToolEntryStateTarget {
 	setExpanded(expanded: boolean): void;
 	setArgsComplete(): void;
@@ -730,7 +752,17 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				messageEntry.timestamp,
 			);
 		case "tool": {
-			if (options.createToolComponent) return options.createToolComponent(messageEntry);
+			if (options.createToolComponent) {
+				let seeding = true;
+				const component = options.createToolComponent(
+					messageEntry,
+					rendererContext(options, () => {
+						if (!seeding) options.ui.requestRender();
+					}),
+				);
+				seeding = false;
+				return component;
+			}
 			let seeding = true;
 			const ui = {
 				requestRender: () => {
@@ -746,6 +778,7 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 					imageWidthCells: options.imageWidthCells,
 					outputPad: options.outputPad,
 					getTaskRecord: options.getTaskRecord,
+					getToolDefinition: options.getToolDefinition,
 				},
 				options.getToolDefinition?.(messageEntry.toolName),
 				ui as TUI,
@@ -794,7 +827,17 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 					options.outputPad,
 				);
 			}
-			if (options.createCustomMessageComponent) return options.createCustomMessageComponent(messageEntry.message);
+			if (options.createCustomMessageComponent) {
+				let seeding = true;
+				const component = options.createCustomMessageComponent(
+					messageEntry.message,
+					rendererContext(options, () => {
+						if (!seeding) options.ui.requestRender();
+					}),
+				);
+				seeding = false;
+				return component;
+			}
 			const component = new CustomMessageComponent(
 				messageEntry.message,
 				options.getCustomMessageRenderer?.(messageEntry.message.customType),
@@ -804,13 +847,13 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				options.markdownTransformers,
 				messageEntry.messageId,
 				messageEntry.timestamp,
-				options.loadTaskTranscript
-					? {
-							loadTranscript: options.loadTaskTranscript,
-							...(options.hasTaskTranscript ? { hasTranscript: options.hasTaskTranscript } : {}),
-							requestRender: () => options.ui.requestRender(),
-						}
-					: undefined,
+				{
+					...(options.loadTaskTranscript ? { loadTranscript: options.loadTaskTranscript } : {}),
+					...(options.hasTaskTranscript ? { hasTranscript: options.hasTaskTranscript } : {}),
+					requestRender: () => options.ui.requestRender(),
+					getToolDefinition: options.getToolDefinition,
+					cwd: options.cwd,
+				},
 			);
 			component.setExpanded(options.toolOutputExpanded ?? false);
 			return component;
