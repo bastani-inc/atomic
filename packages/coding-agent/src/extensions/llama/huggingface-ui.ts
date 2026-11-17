@@ -9,6 +9,7 @@ import {
 	type TUI,
 } from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
+import { type NavKey, navActionText, renderNavHintLine } from "../../modes/interactive/components/nav-keys.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
 import type { HuggingFaceModel } from "./huggingface.js";
 
@@ -28,7 +29,7 @@ export class HuggingFaceSearch extends Container implements Focusable {
 	private readonly search: (query: string, signal: AbortSignal) => Promise<HuggingFaceModel[]>;
 	private readonly cache: Map<string, HuggingFaceModel[]>;
 	private readonly onSelectModel: (model: string | undefined) => void;
-	private readonly input = new Input();
+	private readonly input: Input;
 	private readonly resultsContainer = new Container();
 	private results: HuggingFaceModel[] = [];
 	private filteredResults: HuggingFaceModel[] = [];
@@ -57,10 +58,21 @@ export class HuggingFaceSearch extends Container implements Focusable {
 		this.search = search;
 		this.cache = cache;
 		this.onSelectModel = onSelectModel;
-		this.addChild(new Text(theme.fg("dim", "Model name or owner/repository[:quant]"), 1, 0));
+		this.input = new Input({
+			prompt: "⌕ ",
+			placeholder: "Model name or owner/repository[:quant]",
+			placeholderStyle: (text) => theme.fg("dim", text),
+		});
 		this.addChild(this.input);
 		this.addChild(new Spacer(1));
 		this.addChild(this.resultsContainer);
+		this.addChild(new Spacer(1));
+		this.addChild({
+			render: (width: number) => [
+				renderNavHintLine(this.hintEntries(), width, this.hintStyle(), this.keybindings, 1),
+			],
+			invalidate: () => {},
+		});
 		this.updateResults();
 	}
 
@@ -86,7 +98,7 @@ export class HuggingFaceSearch extends Container implements Focusable {
 		for (let index = start; index < end; index++) {
 			const model = this.filteredResults[index];
 			if (!model) continue;
-			const prefix = index === this.selectedIndex ? "→ " : "  ";
+			const prefix = index === this.selectedIndex ? "❯ " : "  ";
 			const details = `${compactCount(model.downloads)} downloads`;
 			this.resultsContainer.addChild(
 				new Text(
@@ -98,10 +110,11 @@ export class HuggingFaceSearch extends Container implements Focusable {
 				),
 			);
 		}
-		if (start > 0 || end < this.filteredResults.length) {
-			this.resultsContainer.addChild(
-				new Text(this.theme.fg("dim", `  (${this.selectedIndex + 1}/${this.filteredResults.length})`), 0, 0),
-			);
+		const above = start;
+		const below = this.filteredResults.length - end;
+		if (above > 0 || below > 0) {
+			const parts = [above > 0 ? `↑ ${above} more` : "", below > 0 ? `↓ ${below} more` : ""].filter(Boolean);
+			this.resultsContainer.addChild(new Text(this.theme.fg("dim", `  ${parts.join(" · ")}`), 0, 0));
 		}
 		if (this.filteredResults.length === 0) {
 			this.resultsContainer.addChild(new Text(this.theme.fg("dim", `  ${this.status}`), 0, 0));
@@ -109,6 +122,38 @@ export class HuggingFaceSearch extends Container implements Focusable {
 			this.resultsContainer.addChild(new Text(this.theme.fg("dim", `  ${this.status}`), 0, 0));
 		}
 		this.tui.requestRender();
+	}
+
+	private hintStyle() {
+		return {
+			dim: (text: string) => this.theme.fg("dim", text),
+			text: (text: string) => this.theme.fg("text", text),
+			muted: (text: string) => this.theme.fg("muted", text),
+			border: (text: string) => this.theme.fg("borderMuted", text),
+			bold: (text: string) => this.theme.bold(text),
+		};
+	}
+
+	private exactQuery(): string | undefined {
+		return /^[^/\s]+\/[^:\s]+(?::[^\s:]+)?$/u.test(this.query) ? this.query : undefined;
+	}
+
+	private hintEntries(): NavKey[] {
+		const entries: NavKey[] = [];
+		if (this.filteredResults.length > 1) {
+			const up = navActionText(this.keybindings, "tui.select.up");
+			const down = navActionText(this.keybindings, "tui.select.down");
+			entries.push({ keys: up === "↑" && down === "↓" ? "↑↓" : `${up}/${down}`, label: "select" });
+		}
+		if (this.exactQuery() !== undefined || this.filteredResults[this.selectedIndex] !== undefined) {
+			entries.push({ action: "tui.select.confirm", label: "download" });
+		}
+		entries.push({ keys: "type", label: "to search" });
+		entries.push({
+			keys: navActionText(this.keybindings, "tui.select.cancel").split("/")[0] || "esc",
+			label: "back",
+		});
+		return entries;
 	}
 
 	private filterResults(preferredId?: string): void {
@@ -209,8 +254,7 @@ export class HuggingFaceSearch extends Container implements Focusable {
 			return true;
 		}
 		if (this.keybindings.matches(data, "tui.select.confirm")) {
-			const exact = /^[^/\s]+\/[^:\s]+(?::[^\s:]+)?$/u.test(this.query) ? this.query : undefined;
-			const selected = exact ?? this.filteredResults[this.selectedIndex]?.id;
+			const selected = this.exactQuery() ?? this.filteredResults[this.selectedIndex]?.id;
 			if (selected) this.close(selected);
 			return true;
 		}

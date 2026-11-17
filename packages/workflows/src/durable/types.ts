@@ -24,6 +24,11 @@ import type { WorkflowArtifact, WorkflowModelAttempt, WorkflowSerializableValue 
 
 export type { DurableRepositoryBinding, DurableWorkspaceBinding, WorkflowForkedFrom } from "../shared/fork-lineage.js";
 
+export interface DurableWorkflowDefinitionSource {
+	readonly path: string;
+	readonly digest: string;
+}
+
 // ---------------------------------------------------------------------------
 // Top-level workflow identity
 // ---------------------------------------------------------------------------
@@ -49,6 +54,7 @@ export interface DurableWorkflowHandle {
 	readonly status: DurableWorkflowStatus;
 	/** Original invocation cwd used to resolve repo-relative workflow defaults on resume. */
 	readonly invocationCwd?: string;
+	readonly definitionSource?: DurableWorkflowDefinitionSource;
 	readonly resources?: import("../workers/public-options.js").WorkflowExecutionResources;
 	/** Snapshot exclusion and size policy in effect when the run started. */
 	readonly snapshots?: import("@bastani/atomic").WorktreeSnapshotSettingsInput;
@@ -67,6 +73,7 @@ export interface DurableWorkflowHandle {
 	readonly repositoryRoot?: string;
 	/** Resolved reusable git worktree root, when setup happened at workflow start. */
 	readonly gitWorktreeRoot?: string;
+	readonly branch?: string;
 	/** Restored worktree locations, retaining the original roots for later resume and path mapping. */
 	readonly worktreeRootMappings?: readonly import("@bastani/atomic").WorktreeRootMapping[];
 	/**
@@ -398,6 +405,7 @@ export interface DurableWorkflowMetadata {
 	/** Author-supplied reason from ctx.exit(), when present. */
 	readonly exitReason?: string;
 	readonly invocationCwd?: string;
+	readonly definitionSource?: DurableWorkflowDefinitionSource;
 	readonly resources?: import("../workers/public-options.js").WorkflowExecutionResources;
 	readonly origin?: WorkflowActor;
 	readonly modelOwner?: string;
@@ -407,6 +415,7 @@ export interface DurableWorkflowMetadata {
 	readonly workflowCwd?: string;
 	readonly repositoryRoot?: string;
 	readonly gitWorktreeRoot?: string;
+	readonly branch?: string;
 	readonly updatedAt: number;
 	/** Durable pre-start stage messages, when present. */
 	readonly pendingStageMessages?: readonly PendingStageMessage[];
@@ -447,6 +456,7 @@ export interface ResumableWorkflowEntry {
 	readonly workflowCwd?: string;
 	readonly repositoryRoot?: string;
 	readonly gitWorktreeRoot?: string;
+	readonly branch?: string;
 	readonly forkedFrom?: WorkflowForkedFrom;
 	readonly createdAt: number;
 	readonly updatedAt: number;

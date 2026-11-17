@@ -1,4 +1,4 @@
-import { setKeybindings } from "@bastani/atomic-tui";
+import { setKeybindings, stripTerminalSequences } from "@bastani/atomic-tui";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import type { SessionInfo } from "../src/core/session-manager.ts";
@@ -59,21 +59,19 @@ describe("session selector summary column", () => {
 		expect(frame).toContain("Debugged an OAuth redirect loop");
 	});
 
-	it("falls back to a placeholder when a summary is missing and others exist", () => {
+	it("shows no placeholder for a row without a summary, even when others have one (#5224)", () => {
 		const frame = renderRows([
 			makeSession({ id: "c", firstMessage: "fix the login bug" }),
 			makeSession({ id: "c2", firstMessage: "other work", summary: "Refactored the session picker" }),
 		]);
 		expect(frame).toContain("fix the login bug");
-		expect(frame).toContain("No summary available.");
+		expect(frame).toContain("Refactored the session picker");
+		expect(frame).not.toContain("No summary available.");
 	});
 
 	it("treats a whitespace-only summary as absent", () => {
-		const frame = renderRows([
-			makeSession({ id: "d", summary: "   " }),
-			makeSession({ id: "d2", summary: "Real summary" }),
-		]);
-		expect(frame).toContain("No summary available.");
+		const frame = renderRows([makeSession({ id: "d", summary: "   " })]);
+		expect(stripTerminalSequences(frame)).toMatch(/1 message\s*(\n|$)/);
 	});
 
 	it("renders no summary column when no listed session has one", () => {
@@ -85,7 +83,7 @@ describe("session selector summary column", () => {
 		expect(frame).not.toContain("No summary available.");
 	});
 
-	it("omits the summary column entirely when the terminal is too narrow", () => {
+	it("leaves the summary out when the line has too little room for it", () => {
 		const frame = renderRows(
 			[
 				makeSession({ id: "e", firstMessage: "fix the login bug", summary: "x".repeat(80) }),

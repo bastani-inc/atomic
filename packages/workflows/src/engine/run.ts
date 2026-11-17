@@ -75,6 +75,7 @@ import {
 import {
 	createGitWorktreeSetupCacheOwner,
 	inputsSelectGitWorktree,
+	resolveInvocationGitBranch,
 	workflowCwdWithInputWorktree,
 	workflowInvocationMetadata,
 } from "../runs/foreground/executor-direct-helpers.js";
@@ -140,7 +141,7 @@ import type {
 } from "../shared/types.js";
 import type { WorkflowFailure } from "../shared/workflow-failures.js";
 import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
-import { workflowSource } from "../shared/workflow-source.js";
+import { resolveWorkflowDefinitionSource, workflowSource } from "../shared/workflow-source.js";
 import { admitWorkflowSessions } from "../workers/admission-binding.js";
 import { childWorkerDispatcher } from "../workers/dispatch.js";
 import { activatePublicPool, restoreWorkerOptions } from "../workers/public-pool.js";
@@ -596,6 +597,13 @@ async function executeRun(
 		persistedPossibleStages ?? coercePossibleStages(rootBackend.getWorkflow(runId)?.possibleStages) ?? [];
 	const forkedFrom = rootBackend.getWorkflow(runId)?.forkedFrom;
 	const copiedByFork = forkCopiedNodes(rootBackend, runId);
+	const existingRootHandle = opts.parentRun === undefined ? durableBackend.getWorkflow(runId) : undefined;
+	const isFreshLaunch = existingRootHandle === undefined && opts.continuation === undefined;
+	const initialBranch =
+		opts.workspace?.branch ??
+		opts.continuation?.source.branch ??
+		existingRootHandle?.branch ??
+		(isFreshLaunch ? resolveInvocationGitBranch(opts.cwd ?? process.cwd()) : undefined);
 	const keepsCopiedParent = (parentId: string): boolean => keepsForkCopiedParent(copiedByFork, runSnapshot, parentId);
 	const runSnapshot: RunSnapshot = {
 		id: runId,
@@ -606,6 +614,7 @@ async function executeRun(
 		phaseStartedAt: Date.now(),
 		stages: [],
 		toolNodes: [],
+		...(initialBranch !== undefined ? { branch: initialBranch } : {}),
 		...(opts.worktreeRootMappings !== undefined ? { worktreeRootMappings: opts.worktreeRootMappings } : {}),
 		...(opts.worktreeRestoreOutcomes !== undefined ? { worktreeRestoreOutcomes: opts.worktreeRestoreOutcomes } : {}),
 		pendingStageMessages: [
@@ -1657,15 +1666,37 @@ async function executeRun(
 			const claim = opts[resumeClaim];
 			let taken = true;
 			if (durableRootRegistration !== undefined) {
+				const existingHandle = durableBackend.getWorkflow(runId);
+				const existingDefinitionSource = existingHandle?.definitionSource;
+				const definitionSource =
+					existingDefinitionSource !== undefined && opts.acceptEntryChanges !== true
+						? existingDefinitionSource
+						: await resolveWorkflowDefinitionSource(def, existingDefinitionSource);
+				const invocationMetadata = workflowInvocationMetadata(
+					inputRuntimeDefaults,
+					workflowInvocationCwd,
+					gitWorktreeSetupCache,
+					runSnapshot.origin,
+				);
+				const branch =
+					opts.workspace?.branch ??
+					opts.continuation?.source.branch ??
+					existingHandle?.branch ??
+					(existingHandle === undefined && opts.continuation === undefined
+						? (invocationMetadata.branch ?? runSnapshot.branch)
+						: undefined);
+				if (branch !== undefined) {
+					runSnapshot.branch = branch;
+				} else {
+					delete runSnapshot.branch;
+				}
+				const { branch: _invocationBranch, ...invocationPaths } = invocationMetadata;
 				const registration = {
 					...durableRootRegistration,
+					...(definitionSource === undefined ? {} : { definitionSource }),
 					modelOwner: runSnapshot.modelOwner,
-					...workflowInvocationMetadata(
-						inputRuntimeDefaults,
-						workflowInvocationCwd,
-						gitWorktreeSetupCache,
-						runSnapshot.origin,
-					),
+					...invocationPaths,
+					...(branch === undefined ? {} : { branch }),
 					...(opts[recordedInvocationCwd] === undefined ? {} : { invocationCwd: opts[recordedInvocationCwd] }),
 				};
 				if (claim === undefined || durableBackend.commitClaimedWorkflowRegistration === undefined)

@@ -468,6 +468,8 @@ When external data used by a custom `style` or an extra key's `enabled` callback
 
 `SelectorState` holds a picker's search, selection and checked rows without drawing anything, and `selectorHintEntries(state, options)` returns the keys its hint line lists, so you can test a picker's behaviour without rendering it. `themeSelectorStyle()` returns the active theme's picker colours; pass `style: PLAIN_SELECTOR_STYLE` for output without colour.
 
+`UserMessageSelectorComponent` is the `/fork` picker built on the same `Selector`. `new UserMessageSelectorComponent(messages, onSelect, onCancel, initialSelectedId?)` takes the session's user messages oldest first as `{ id, text }`, shows each as a two-line row, selects `initialSelectedId` or else the newest message, and filters by message text as you type. It is a selector component rather than a `Container` holding a list, so focus the component itself. `getMessageList()` returns the component, and `onSelect` and `onCancel` are assignable properties that Enter and Esc call.
+
 ### Pattern 1b: Selection Dialog (SelectList)
 
 The lower-level `SelectList` from `@bastani/atomic-tui` is still available when you need a bare list inside your own layout, such as autocomplete rows. Frame it with `DynamicBorder`.
