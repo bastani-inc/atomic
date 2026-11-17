@@ -69,7 +69,28 @@ vi.mock("child_process", async () => {
 			return { pid: 1, output: [], stdout: probe.stdout, stderr: "", status: probe.status, signal: null };
 		return actual.spawnSync(command, [...args], options) as SpawnSyncReturns<string>;
 	};
-	return { ...actual, spawnSync };
+	const execFile = (
+		command: string,
+		args: readonly string[],
+		options: { timeout?: number; signal?: AbortSignal; env?: NodeJS.ProcessEnv },
+		callback?: (error: (Error & { code?: number | string }) | null, stdout: string, stderr: string) => void,
+	) => {
+		if (options?.signal === undefined) {
+			mocks.spawnSyncCommands.push(command);
+			mocks.spawnSyncOptions.push({ command, options });
+			const probe = mocks.probes.get(command);
+			if (probe !== undefined && args[0] === "--version") {
+				const err =
+					probe.status === 0
+						? null
+						: Object.assign(new Error(`exited with status ${probe.status}`), { code: probe.status });
+				callback?.(err, probe.stdout, "");
+				return;
+			}
+		}
+		return actual.execFile(command, [...args], options, callback as never);
+	};
+	return { ...actual, spawnSync, execFile };
 });
 
 vi.mock("../src/utils/git-install-command.js", async (importOriginal) => ({
@@ -78,12 +99,39 @@ vi.mock("../src/utils/git-install-command.js", async (importOriginal) => ({
 		mocks.osReleaseReads += 1;
 		return mocks.osRelease;
 	},
+	readOsReleaseAsync: async () => {
+		mocks.osReleaseReads += 1;
+		return mocks.osRelease;
+	},
 }));
 
 vi.mock("fs/promises", async () => {
 	const actual = await vi.importActual<typeof import("fs/promises")>("fs/promises");
 	mocks.writeFile.mockImplementation(actual.writeFile);
-	return { ...actual, writeFile: mocks.writeFile };
+	return {
+		...actual,
+		access: async (path: string) => {
+			if (!mocks.existsSync(path)) {
+				throw Object.assign(new Error(`ENOENT: no such file or directory, access '${path}'`), { code: "ENOENT" });
+			}
+		},
+		stat: async (path: string, options?: object) => {
+			const stats = mocks.statSync(path, options);
+			if (stats === undefined) {
+				throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: "ENOENT" });
+			}
+			return stats;
+		},
+		readdir: async (path: string, options?: object) => mocks.readdirSync(path, options),
+		rm: async (path: string, options?: object) => mocks.rmSync(path, options),
+		rename: async (from: string, to: string) => mocks.renameSync(from, to),
+		writeFile: async (path: string, data: unknown, ...rest: unknown[]) => {
+			if (typeof data === "string") {
+				return mocks.writeFileSync(path, data, ...rest);
+			}
+			return mocks.writeFile(path, data, ...rest);
+		},
+	};
 });
 
 vi.mock("fs", async () => {
@@ -449,17 +497,29 @@ describe("git resolution (#4322)", () => {
 		assert.equal(fetchMock.mock.calls.length, 0);
 	});
 
-	it("answers getToolPath synchronously for a tool other than git, without resolving git", () => {
+	it("answers getToolPath for a tool other than git, without resolving git", async () => {
 		mocks.probes.set("rg", { status: 0, stdout: "ripgrep 1.0\n" });
 		const fetchMock = vi.spyOn(globalThis, "fetch");
 
-		assert.equal(tools.getToolPath("rg"), "rg");
+		assert.equal(await tools.getToolPath("rg"), "rg");
 
 		assert.equal(fetchMock.mock.calls.length, 0);
 		assert.equal(
 			mocks.spawnSyncCommands.some((command) => command.includes("git")),
 			false,
 		);
+	});
+
+	it("resolves installed git asynchronously without downloading via resolveInstalledGit", async () => {
+		await assert.rejects(
+			() => tools.resolveInstalledGit(),
+			(thrown: Error) => isGitUnavailableError(thrown) && thrown.code === "not-installed",
+		);
+		const executable = makeProvisionedGit("2.56.0");
+		const resolved = await tools.resolveInstalledGit();
+		assert.equal(resolved.source, "provisioned");
+		assert.equal(resolved.path, executable);
+		assert.equal(resolved.version, "2.56.0");
 	});
 
 	it.each([

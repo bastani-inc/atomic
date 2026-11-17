@@ -1093,6 +1093,7 @@ export {
 	workspace,
 	workspaceChangeSet,
 	workspaceSessionCwd,
+	workspaceSessionCwdAsync,
 } from "./core/workspace/index.ts";
 export {
 	findLlamaServerError,
@@ -1327,5 +1328,6 @@ export {
 	type ResolveGitOptions,
 	resolveGit,
 	resolveGitSync,
+	resolveInstalledGit,
 	type ToolStatus as ManagedToolStatus,
 } from "./utils/tools-manager.ts";

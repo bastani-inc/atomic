@@ -75,8 +75,8 @@ function isCommandCatalog(
 let fdPath: string | null | undefined;
 
 /** Located once per process: finding fd on `PATH` runs it, which a keystroke must not wait on each time. */
-function sharedFdPath(): string | null {
-	if (fdPath === undefined) fdPath = getToolPath("fd");
+async function sharedFdPath(): Promise<string | null> {
+	if (fdPath === undefined) fdPath = await getToolPath("fd");
 	return fdPath;
 }
 
@@ -128,7 +128,7 @@ export function createSessionSkillAutocompleteProvider(
 			return createChatAutocompleteProvider(
 				[...BUILTIN_SLASH_COMMANDS.filter((command) => command.name === "tasks"), ...catalog.skillCommands],
 				catalog.cwd,
-				sharedFdPath(),
+				await sharedFdPath(),
 			).getSuggestions(lines, cursorLine, cursorCol, options);
 		},
 		applyCompletion: (...args) => completion.applyCompletion(...args),

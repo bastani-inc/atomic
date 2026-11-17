@@ -1,10 +1,11 @@
-import type { SpawnSyncReturns } from "child_process";
 import { writeFileSync } from "fs";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
+type ExecFileCallback = (error: Error | null, stdout: Buffer, stderr: Buffer) => void;
+
 const mocks = vi.hoisted(() => {
 	return {
-		spawnSync: vi.fn<(command: string, args: string[], options: unknown) => SpawnSyncReturns<Buffer>>(),
+		execFile: vi.fn<(command: string, args: string[], options: unknown, callback: ExecFileCallback) => void>(),
 		clipboard: {
 			hasImage: vi.fn<() => boolean>(),
 			getImageBinary: vi.fn<() => Promise<Uint8Array | null>>(),
@@ -14,7 +15,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock("child_process", () => {
 	return {
-		spawnSync: mocks.spawnSync,
+		execFile: mocks.execFile,
 	};
 });
 
@@ -24,33 +25,18 @@ vi.mock("../src/utils/clipboard-native.js", () => {
 	};
 });
 
-function spawnOk(stdout: Buffer): SpawnSyncReturns<Buffer> {
-	return {
-		pid: 123,
-		output: [Buffer.alloc(0), stdout, Buffer.alloc(0)],
-		stdout,
-		stderr: Buffer.alloc(0),
-		status: 0,
-		signal: null,
-	};
+function execOk(callback: ExecFileCallback, stdout: Buffer): void {
+	callback(null, stdout, Buffer.alloc(0));
 }
 
-function spawnError(error: Error): SpawnSyncReturns<Buffer> {
-	return {
-		pid: 123,
-		output: [Buffer.alloc(0), Buffer.alloc(0), Buffer.alloc(0)],
-		stdout: Buffer.alloc(0),
-		stderr: Buffer.alloc(0),
-		status: null,
-		signal: null,
-		error,
-	};
+function execError(callback: ExecFileCallback, error: Error): void {
+	callback(error, Buffer.alloc(0), Buffer.alloc(0));
 }
 
 describe("readClipboardImage", () => {
 	beforeEach(() => {
 		vi.resetModules();
-		mocks.spawnSync.mockReset();
+		mocks.execFile.mockReset();
 		mocks.clipboard.hasImage.mockReset();
 		mocks.clipboard.getImageBinary.mockReset();
 	});
@@ -60,14 +46,16 @@ describe("readClipboardImage", () => {
 			throw new Error("clipboard.hasImage should not be called on Wayland");
 		});
 
-		mocks.spawnSync.mockImplementation((command, args, _options) => {
+		mocks.execFile.mockImplementation((command, args, _options, callback) => {
 			if (command === "wl-paste" && args[0] === "--list-types") {
-				return spawnOk(Buffer.from("text/plain\nimage/png\n", "utf-8"));
+				execOk(callback, Buffer.from("text/plain\nimage/png\n", "utf-8"));
+				return;
 			}
 			if (command === "wl-paste" && args[0] === "--type") {
-				return spawnOk(Buffer.from([1, 2, 3]));
+				execOk(callback, Buffer.from([1, 2, 3]));
+				return;
 			}
-			throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+			throw new Error(`Unexpected execFile call: ${command} ${args.join(" ")}`);
 		});
 
 		const { readClipboardImage } = await import("../src/utils/clipboard-image.ts");
@@ -85,20 +73,23 @@ describe("readClipboardImage", () => {
 		const enoent = new Error("spawn ENOENT");
 		(enoent as { code?: string }).code = "ENOENT";
 
-		mocks.spawnSync.mockImplementation((command, args, _options) => {
+		mocks.execFile.mockImplementation((command, args, _options, callback) => {
 			if (command === "wl-paste") {
-				return spawnError(enoent);
+				execError(callback, enoent);
+				return;
 			}
 
 			if (command === "xclip" && args.includes("TARGETS")) {
-				return spawnOk(Buffer.from("image/png\n", "utf-8"));
+				execOk(callback, Buffer.from("image/png\n", "utf-8"));
+				return;
 			}
 
 			if (command === "xclip" && args.includes("image/png")) {
-				return spawnOk(Buffer.from([9, 8]));
+				execOk(callback, Buffer.from([9, 8]));
+				return;
 			}
 
-			return spawnOk(Buffer.alloc(0));
+			execOk(callback, Buffer.alloc(0));
 		});
 
 		const { readClipboardImage } = await import("../src/utils/clipboard-image.ts");
@@ -115,15 +106,17 @@ describe("readClipboardImage", () => {
 
 		let tmpFile: string | undefined;
 		const cwds: Record<string, unknown> = {};
-		mocks.spawnSync.mockImplementation((command, args, options) => {
+		mocks.execFile.mockImplementation((command, args, options, callback) => {
 			cwds[command] = (options as { cwd?: string }).cwd;
 			if (command === "wl-paste" || command === "xclip") {
-				return spawnOk(Buffer.alloc(0));
+				execOk(callback, Buffer.alloc(0));
+				return;
 			}
 
 			if (command === "wslpath") {
 				tmpFile = args[1];
-				return spawnOk(Buffer.from("C:\\Users\\O'Hare\\clip.png\n", "utf-8"));
+				execOk(callback, Buffer.from("C:\\Users\\O'Hare\\clip.png\n", "utf-8"));
+				return;
 			}
 
 			if (command === "powershell.exe") {
@@ -134,10 +127,11 @@ describe("readClipboardImage", () => {
 					throw new Error("wslpath should be called before powershell.exe");
 				}
 				writeFileSync(tmpFile, Buffer.from([4, 5, 6]));
-				return spawnOk(Buffer.from("ok\n", "utf-8"));
+				execOk(callback, Buffer.from("ok\n", "utf-8"));
+				return;
 			}
 
-			throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+			throw new Error(`Unexpected execFile call: ${command} ${args.join(" ")}`);
 		});
 
 		const { readClipboardImage } = await import("../src/utils/clipboard-image.ts");
@@ -150,8 +144,8 @@ describe("readClipboardImage", () => {
 	});
 
 	test("Non-Wayland: uses clipboard", async () => {
-		mocks.spawnSync.mockImplementation(() => {
-			throw new Error("spawnSync should not be called for non-Wayland sessions");
+		mocks.execFile.mockImplementation(() => {
+			throw new Error("execFile should not be called for non-Wayland sessions");
 		});
 
 		mocks.clipboard.hasImage.mockReturnValue(true);
@@ -166,14 +160,16 @@ describe("readClipboardImage", () => {
 
 	test("Non-Wayland: falls back to xclip when native clipboard has no image", async () => {
 		mocks.clipboard.hasImage.mockReturnValue(false);
-		mocks.spawnSync.mockImplementation((command, args) => {
+		mocks.execFile.mockImplementation((command, args, _options, callback) => {
 			if (command === "xclip" && args.includes("TARGETS")) {
-				return spawnOk(Buffer.from("image/png\n", "utf-8"));
+				execOk(callback, Buffer.from("image/png\n", "utf-8"));
+				return;
 			}
 			if (command === "xclip" && args.includes("image/png")) {
-				return spawnOk(Buffer.from([6, 7]));
+				execOk(callback, Buffer.from([6, 7]));
+				return;
 			}
-			throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+			throw new Error(`Unexpected execFile call: ${command} ${args.join(" ")}`);
 		});
 
 		const { readClipboardImage } = await import("../src/utils/clipboard-image.ts");
@@ -184,26 +180,35 @@ describe("readClipboardImage", () => {
 
 	test("X11 does not probe image types when TARGETS fails (pi#9786)", async () => {
 		mocks.clipboard.hasImage.mockReturnValue(false);
-		mocks.spawnSync.mockImplementation((command, args) => {
-			if (command === "xclip" && args.includes("TARGETS")) return spawnError(new Error("no targets"));
-			return spawnOk(Buffer.from("hello"));
+		mocks.execFile.mockImplementation((command, args, _options, callback) => {
+			if (command === "xclip" && args.includes("TARGETS")) {
+				execError(callback, new Error("no targets"));
+				return;
+			}
+			execOk(callback, Buffer.from("hello"));
 		});
 
 		const { readClipboardImage } = await import("../src/utils/clipboard-image.ts");
 		expect(await readClipboardImage({ platform: "linux", env: {} })).toBeNull();
-		expect(mocks.spawnSync.mock.calls.map(([, args]) => args[3])).toEqual(["TARGETS"]);
+		expect(mocks.execFile.mock.calls.map(([, args]) => args[3])).toEqual(["TARGETS"]);
 	});
 
 	test("X11 does not probe unadvertised image types", async () => {
 		mocks.clipboard.hasImage.mockReturnValue(false);
-		mocks.spawnSync.mockImplementation((command, args) => {
-			if (command === "xclip" && args.includes("TARGETS")) return spawnOk(Buffer.from("image/png\n"));
-			if (command === "xclip" && args.includes("image/png")) return spawnError(new Error("owner refused"));
-			return spawnOk(Buffer.from("hello"));
+		mocks.execFile.mockImplementation((command, args, _options, callback) => {
+			if (command === "xclip" && args.includes("TARGETS")) {
+				execOk(callback, Buffer.from("image/png\n"));
+				return;
+			}
+			if (command === "xclip" && args.includes("image/png")) {
+				execError(callback, new Error("owner refused"));
+				return;
+			}
+			execOk(callback, Buffer.from("hello"));
 		});
 
 		const { readClipboardImage } = await import("../src/utils/clipboard-image.ts");
 		expect(await readClipboardImage({ platform: "linux", env: {} })).toBeNull();
-		expect(mocks.spawnSync.mock.calls.map(([, args]) => args[3])).toEqual(["TARGETS", "image/png"]);
+		expect(mocks.execFile.mock.calls.map(([, args]) => args[3])).toEqual(["TARGETS", "image/png"]);
 	});
 });

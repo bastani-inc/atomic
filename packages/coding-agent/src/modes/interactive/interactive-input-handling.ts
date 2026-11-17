@@ -407,8 +407,8 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				return;
 			}
 			if (bare("changelog")) {
-				this.handleChangelogCommand();
 				this.editor.setText("");
+				await this.handleChangelogCommand();
 				return;
 			}
 			if (bare("hotkeys")) {

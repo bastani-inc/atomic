@@ -11,6 +11,8 @@ import {
 	type Container,
 	findInitialModel,
 	formatNoModelsAvailableMessage,
+	getChangelogPath,
+	preloadChangelog,
 	recordTimeSinceReset,
 	resolveModelScopeWithDiagnostics,
 	resolveRestoredModelReference,
@@ -104,6 +106,7 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 		});
 		// Keep the subscription warning after the RESOURCES disclosure.
 		void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
+		await preloadChangelog(getChangelogPath());
 		this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
 		const modelsJsonError = this.session.modelRuntime.getError();
 		if (modelsJsonError) {

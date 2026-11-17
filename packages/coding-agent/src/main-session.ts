@@ -46,7 +46,7 @@ import type { AppMode } from "./main-app-mode.ts";
 import { keepStartupDialogDraft, withEarlyInputHeldForStartupDialog } from "./main-early-input.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 import { isSessionIdPrefix, resolveSessionIdTargetAcrossScopes } from "./session-id-target.js";
-import { createSessionCwdMatcher, resolvePath } from "./utils/paths.ts";
+import { createSessionCwdMatcherAsync, resolvePath } from "./utils/paths.ts";
 
 type ResolvedSession =
 	| { type: "local" | "global"; id: string; cwd: string }
@@ -64,7 +64,7 @@ async function findLocalSessionByExactId(sessionId: string, cwd: string, store: 
 	const header = await store.readHeader(sessionId);
 	return header &&
 		!classifiedWorkflowMetadata(header) &&
-		createSessionCwdMatcher(resolvePath(cwd))(resolvePath(header.cwd))
+		(await createSessionCwdMatcherAsync(resolvePath(cwd))(resolvePath(header.cwd)))
 		? { id: header.id, cwd: header.cwd }
 		: undefined;
 }
@@ -76,7 +76,7 @@ async function findSessionByExactId(
 ): Promise<ResolvedSession | undefined> {
 	const header = await store.readHeader(sessionId).catch(() => undefined);
 	if (!header) return undefined;
-	const inProject = createSessionCwdMatcher(resolvePath(cwd))(resolvePath(header.cwd));
+	const inProject = await createSessionCwdMatcherAsync(resolvePath(cwd))(resolvePath(header.cwd));
 	return { type: inProject ? "local" : "global", id: header.id, cwd: header.cwd };
 }
 
@@ -95,8 +95,11 @@ async function resolveSessionId(sessionArg: string, cwd: string, store: SessionS
 	const exact = await findSessionByExactId(sessionArg, cwd, store);
 	if (exact) return exact;
 	const candidates = isSessionIdPrefix(sessionArg) ? await sessionsWithIdPrefix(sessionArg, store) : [];
-	const inProject = createSessionCwdMatcher(resolvePath(cwd));
-	const localSessions = candidates.filter((session) => inProject(resolvePath(session.cwd)));
+	const inProject = createSessionCwdMatcherAsync(resolvePath(cwd));
+	const localSessions: { readonly id: string; readonly cwd: string }[] = [];
+	for (const session of candidates) {
+		if (await inProject(resolvePath(session.cwd))) localSessions.push(session);
+	}
 	const resolution = await resolveSessionIdTargetAcrossScopes(sessionArg, localSessions, async () => candidates);
 	if (resolution.kind === "exact" || resolution.kind === "unique_prefix") {
 		return {

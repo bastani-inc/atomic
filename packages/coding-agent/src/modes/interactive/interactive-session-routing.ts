@@ -1,7 +1,7 @@
 import { dirname } from "node:path";
 import { isResumeFailure } from "../../core/resume/failure.ts";
 import { worktreeRestoreNotices } from "../../core/session-worktree-snapshots.ts";
-import { canonicalizePath } from "../../utils/paths.ts";
+import { canonicalizePathAsync } from "../../utils/paths.ts";
 import { withHostProjectTrustPrompt } from "../interactive-engine/extension-ui-bridge.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
@@ -303,7 +303,8 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 					if (
 						selected.id === this.sessionManager.getSessionId() &&
 						(directory === undefined ||
-							canonicalizePath(directory) === canonicalizePath(this.sessionManager.getSessionDir()))
+							(await canonicalizePathAsync(directory)) ===
+								(await canonicalizePathAsync(this.sessionManager.getSessionDir())))
 					) {
 						await this.session.setSessionName(next);
 					} else {

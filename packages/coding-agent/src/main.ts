@@ -137,7 +137,7 @@ import {
 	unreadableTrustSettingsDiagnostics,
 } from "./main-stdio.ts";
 import type { MainOptions } from "./main-types.ts";
-import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
+import { runMigrations, runMigrationsAsync, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { isUnknownModel } from "./modes/interactive/interactive-mode-helpers.ts";
 import { shouldUseFullscreenTui } from "./modes/interactive/interactive-tui.ts";
@@ -936,7 +936,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			},
 		});
 		return async () => {
-			if (migrateAfterTrust) runMigrations(cwd, { projectTrusted: true });
+			if (migrateAfterTrust) await runMigrationsAsync(cwd, { projectTrusted: true });
 			const services = await completeServices();
 			if (!deferStartupTrust) await finalizeStartupStorage();
 			if (isolateInteractiveHost) limitMandatoryIntercomToTool(services.resourceLoader);
@@ -1028,7 +1028,7 @@ export async function main(argv: string[], options?: MainOptions) {
 					(completion ??= (async () => {
 						startupTrustContext = context;
 						await completeReload();
-						if (migrateAfterTrust) runMigrations(cwd, { projectTrusted: true });
+						if (migrateAfterTrust) await runMigrationsAsync(cwd, { projectTrusted: true });
 						const finalServices = await completeServices();
 						const extensionErrors = finalServices.resourceLoader.getExtensions().errors;
 						if (extensionErrors.length > 0 && appMode !== "interactive" && engineEnv.child !== "1") {

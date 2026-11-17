@@ -82,11 +82,11 @@ import { createToolNameMatcher } from "./tool-selection.ts";
 import type { ProjectHistory } from "./tools/history-protocol.ts";
 import { allToolNames, getDefaultToolNames } from "./tools/index.js";
 import {
-	assertSessionManagerInWorktree,
+	assertSessionManagerInWorktreeAsync,
 	bindSessionWorkspace,
 	recordSessionWorkspace,
 	WORKSPACE_WRITE_TOOL_NAMES,
-	workspaceSessionCwd,
+	workspaceSessionCwdAsync,
 } from "./workspace/session.ts";
 import { resolveWorktreeSnapshotSettings } from "./worktree-snapshot/settings.ts";
 
@@ -314,7 +314,7 @@ async function constructAgentSession(
 		options.workspace === undefined
 			? undefined
 			: await bindSessionWorkspace(options.workspace, options.sessionManager, options.resourceAdmissionSignal);
-	if (workspace !== undefined) assertSessionManagerInWorktree(workspace, options.sessionManager);
+	if (workspace !== undefined) await assertSessionManagerInWorktreeAsync(workspace, options.sessionManager);
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
 	validateProcessStorage(agentDir);
 	// `storage` backs the sessions only without `sessionManager` and `sessionStore`, and the journal only without
@@ -330,7 +330,7 @@ async function constructAgentSession(
 	const cwd =
 		workspace === undefined
 			? resolvePath(options.cwd ?? suppliedSession?.getCwd() ?? process.cwd())
-			: workspaceSessionCwd(workspace, options.cwd);
+			: await workspaceSessionCwdAsync(workspace, options.cwd);
 	let resourceLoader = options.resourceLoader;
 	// The concrete default can rediscover into private storage (including deferred
 	// CLI configuration). Custom discovery stays delegated; composition instantiates

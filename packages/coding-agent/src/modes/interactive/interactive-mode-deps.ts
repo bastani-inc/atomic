@@ -114,12 +114,15 @@ export {
 	ProjectTrustStore,
 } from "../../core/trust-manager.ts";
 export {
+	getCachedChangelog,
 	getChangelogHighlights,
 	getChangelogPath,
 	getEntriesForVersion,
 	getNewEntries,
 	normalizeChangelogLinks,
 	parseChangelog,
+	parseChangelogAsync,
+	preloadChangelog,
 } from "../../utils/changelog.ts";
 export { copyToClipboard } from "../../utils/clipboard.js";
 export { parseGitUrl } from "../../utils/git.ts";

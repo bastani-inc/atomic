@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 
 /** The fields of os-release(5) that decide which package manager installs git. */
 export interface OsRelease {
@@ -42,6 +43,22 @@ export function readOsRelease(paths: readonly string[] = OS_RELEASE_PATHS): OsRe
 	for (const path of paths) {
 		try {
 			value = parseOsRelease(readFileSync(path, "utf-8"));
+			break;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") break;
+		}
+	}
+	if (paths === OS_RELEASE_PATHS) cachedOsRelease = { paths, value };
+	return value;
+}
+
+/** Asynchronous variant of {@link readOsRelease} sharing the same process-wide default-paths cache. */
+export async function readOsReleaseAsync(paths: readonly string[] = OS_RELEASE_PATHS): Promise<OsRelease | undefined> {
+	if (paths === OS_RELEASE_PATHS && cachedOsRelease !== undefined) return cachedOsRelease.value;
+	let value: OsRelease | undefined;
+	for (const path of paths) {
+		try {
+			value = parseOsRelease(await readFile(path, "utf-8"));
 			break;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") break;

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile, execFileSync, execSync, spawn } from "child_process";
+import { execFile, spawn } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import type * as OsModule from "os";
 import { platform } from "os";
@@ -11,9 +11,7 @@ const mocks = vi.hoisted(() => {
 		clipboard: {
 			setText: vi.fn<(text: string) => Promise<void>>(),
 		},
-		execSync: vi.fn(),
 		execFile: vi.fn(),
-		execFileSync: vi.fn<(file: string, args: string[], options?: object) => Buffer>(),
 		spawn: vi.fn(),
 		platform: vi.fn<() => NodeJS.Platform>(),
 		isWaylandSession: vi.fn<() => boolean>(),
@@ -28,9 +26,7 @@ vi.mock("../src/utils/clipboard-native.js", () => {
 
 vi.mock("child_process", () => {
 	return {
-		execSync: mocks.execSync,
 		execFile: mocks.execFile,
-		execFileSync: mocks.execFileSync,
 		spawn: mocks.spawn,
 	};
 });
@@ -48,9 +44,7 @@ vi.mock("../src/utils/clipboard-image.js", () => {
 	};
 });
 
-const mockedExecSync = vi.mocked(execSync);
 const mockedExecFile = vi.mocked(execFile);
-const mockedExecFileSync = vi.mocked(execFileSync);
 const mockedSpawn = vi.mocked(spawn);
 const mockedPlatform = vi.mocked(platform);
 
@@ -62,40 +56,66 @@ function osc52Writes(): string[] {
 	return stdoutWrites.filter((write) => write.startsWith("\x1b]52;c;"));
 }
 
-function execSyncCommands(): string[] {
-	return mockedExecSync.mock.calls.map(([command]) => command as string);
+function spawnCommands(): string[] {
+	return mockedSpawn.mock.calls.map(([command, args]) => {
+		const argList = (args as readonly string[]) ?? [];
+		return argList.length > 0 ? `${command as string} ${argList.join(" ")}` : (command as string);
+	});
 }
 
-function execFileSyncFiles(): string[] {
-	return mockedExecFileSync.mock.calls.map(([file]) => file);
+function execFileFiles(): string[] {
+	return mockedExecFile.mock.calls.map(([file]) => file as string);
 }
 
 function spawnCalls(): {
 	command: string;
 	args: readonly string[];
-	options: { stdio?: unknown; env?: NodeJS.ProcessEnv; detached?: boolean; cwd?: string };
+	input: string | undefined;
+	options: { stdio?: unknown; timeout?: number; env?: NodeJS.ProcessEnv; detached?: boolean; cwd?: string };
 }[] {
-	return mockedSpawn.mock.calls.map(([command, args, options]) => ({
+	return mockedSpawn.mock.calls.map(([command, args, options], index) => ({
 		command: command as string,
 		args: args as readonly string[],
-		options: options as { stdio?: unknown; env?: NodeJS.ProcessEnv; detached?: boolean; cwd?: string },
+		input: spawnedChildren[index]?.input,
+		options: options as {
+			stdio?: unknown;
+			timeout?: number;
+			env?: NodeJS.ProcessEnv;
+			detached?: boolean;
+			cwd?: string;
+		},
 	}));
 }
 
-function mockWlCopyExit(code: number): void {
-	const child = {
-		once(event: string, listener: (value: number | null) => void) {
-			if (event === "close") queueMicrotask(() => listener(code));
-			return child;
-		},
-		stdin: {
-			on() {
-				return child.stdin;
+let spawnedChildren: { input: string | undefined }[];
+
+function mockSpawnExit(
+	exitCodeForCommand: number | ((command: string, args: readonly string[]) => number | Error),
+): void {
+	mockedSpawn.mockImplementation(((command: string, args: readonly string[]) => {
+		const record = { input: undefined as string | undefined };
+		spawnedChildren.push(record);
+		const outcome = typeof exitCodeForCommand === "function" ? exitCodeForCommand(command, args) : exitCodeForCommand;
+		const child = {
+			once(event: string, listener: (value: unknown) => void) {
+				if (outcome instanceof Error) {
+					if (event === "error") queueMicrotask(() => listener(outcome));
+				} else if (event === "close") {
+					queueMicrotask(() => listener(outcome));
+				}
+				return child;
 			},
-			end: vi.fn(),
-		},
-	};
-	mockedSpawn.mockReturnValue(child as unknown as ReturnType<typeof spawn>);
+			stdin: {
+				on() {
+					return child.stdin;
+				},
+				end: vi.fn((text?: string) => {
+					record.input = text;
+				}),
+			},
+		};
+		return child as unknown as ReturnType<typeof spawn>;
+	}) as unknown as typeof spawn);
 }
 
 beforeEach(() => {
@@ -113,16 +133,16 @@ beforeEach(() => {
 	vi.stubEnv("ATOMIC_CLIPBOARD_OSC52", undefined);
 	vi.stubEnv("PI_CLIPBOARD_OSC52", undefined);
 	stdoutWrites = [];
+	spawnedChildren = [];
 	nativeResolved = false;
 	mocks.clipboard.setText.mockReset();
-	mocks.execSync.mockReset();
 	mocks.execFile.mockReset();
-	mocks.execFileSync.mockReset();
 	mocks.spawn.mockReset();
 	mocks.platform.mockReset();
 	mocks.isWaylandSession.mockReset();
 	mockedPlatform.mockReturnValue("darwin");
 	mocks.isWaylandSession.mockReturnValue(false);
+	mockSpawnExit(0);
 	mocks.clipboard.setText.mockImplementation(async () => {
 		await new Promise((resolve) => setTimeout(resolve, 1));
 		nativeResolved = true;
@@ -191,7 +211,6 @@ describe("copyToClipboard", () => {
 
 		assert.deepEqual(mocks.clipboard.setText.mock.calls, [["hello"]]);
 		assert.equal(osc52Writes().length, 0);
-		assert.equal(mockedExecSync.mock.calls.length, 0);
 		assert.equal(mockedSpawn.mock.calls.length, 0);
 	});
 
@@ -207,7 +226,7 @@ describe("copyToClipboard", () => {
 
 		assert.equal(nativeResolved, true);
 		assert.equal(osc52Writes().length, 1);
-		assert.equal(mockedExecSync.mock.calls.length, 0);
+		assert.equal(mockedSpawn.mock.calls.length, 0);
 	});
 
 	test.each([
@@ -221,11 +240,10 @@ describe("copyToClipboard", () => {
 			mockedPlatform.mockReturnValue(currentPlatform);
 			if (display) vi.stubEnv("DISPLAY", display);
 			vi.stubEnv(name, "1");
-			mockedExecSync.mockReturnValue(Buffer.alloc(0));
 
 			await copyToClipboard("hello");
 
-			if (currentPlatform === "linux") assert.deepEqual(execSyncCommands(), ["xclip -selection clipboard"]);
+			if (currentPlatform === "linux") assert.deepEqual(spawnCommands(), ["xclip -selection clipboard"]);
 			else assert.deepEqual(mocks.clipboard.setText.mock.calls, [["hello"]]);
 			assert.deepEqual(osc52Writes(), [`\x1b]52;c;${Buffer.from("hello").toString("base64")}\x07`]);
 		},
@@ -243,26 +261,23 @@ describe("copyToClipboard", () => {
 
 	test("local shell fallback success skips OSC 52", async () => {
 		mocks.clipboard.setText.mockRejectedValue(new Error("native failed"));
-		mockedExecSync.mockReturnValue(Buffer.alloc(0));
 
 		await copyToClipboard("hello");
 
-		assert.equal(mockedExecSync.mock.calls.length, 1);
-		const [command, options] = mockedExecSync.mock.calls[0]!;
-		assert.equal(command, "pbcopy");
-		assert.equal(options?.input, "hello");
-		assert.deepEqual(options?.stdio, ["pipe", "ignore", "ignore"]);
-		assert.equal(options?.timeout, 5000);
-		assert.equal(options?.env?.AI_AGENT, "atomic");
+		const calls = spawnCalls();
+		assert.equal(calls.length, 1);
+		assert.equal(calls[0]!.command, "pbcopy");
+		assert.equal(calls[0]!.input, "hello");
+		assert.deepEqual(calls[0]!.options.stdio, ["pipe", "ignore", "ignore"]);
+		assert.equal(calls[0]!.options.timeout, 5000);
+		assert.equal(calls[0]!.options.env?.AI_AGENT, "atomic");
 		assert.equal(osc52Writes().length, 0);
 	});
 
 	test.each(["SSH_CONNECTION", "SSH_CLIENT", "MOSH_CONNECTION"])("remote %s retains OSC 52 fallback", async (key) => {
 		vi.stubEnv(key, "remote");
 		mocks.clipboard.setText.mockRejectedValue(new Error("native failed"));
-		mockedExecSync.mockImplementation(() => {
-			throw new Error("pbcopy failed");
-		});
+		mockSpawnExit(1);
 
 		await copyToClipboard("hello");
 
@@ -273,11 +288,10 @@ describe("copyToClipboard", () => {
 		mockedPlatform.mockReturnValue("linux");
 		vi.stubEnv("DISPLAY", ":0");
 		vi.stubEnv("REX_SESSION", "session:01a10cf3-2655-7e48-9b9c-43dd6612bef5");
-		mockedExecSync.mockReturnValue(Buffer.alloc(0));
 
 		await copyToClipboard("hello");
 
-		assert.deepEqual(execSyncCommands(), ["xclip -selection clipboard"]);
+		assert.deepEqual(spawnCommands(), ["xclip -selection clipboard"]);
 		assert.deepEqual(osc52Writes(), [`\x1b]52;c;${Buffer.from("hello").toString("base64")}\x07`]);
 	});
 
@@ -293,9 +307,7 @@ describe("copyToClipboard", () => {
 	test("does not emit oversized OSC 52 payloads", async () => {
 		vi.stubEnv("SSH_CONNECTION", "remote");
 		mocks.clipboard.setText.mockRejectedValue(new Error("native failed"));
-		mockedExecSync.mockImplementation(() => {
-			throw new Error("pbcopy failed");
-		});
+		mockSpawnExit(1);
 
 		await assert.rejects(copyToClipboard("x".repeat(80_000)), {
 			message: "Clipboard unavailable: text exceeds the OSC 52 size limit",
@@ -307,8 +319,7 @@ describe("copyToClipboard", () => {
 		mockedPlatform.mockReturnValue("linux");
 		mocks.isWaylandSession.mockReturnValue(true);
 		vi.stubEnv("WAYLAND_DISPLAY", "wayland-1");
-		mockWlCopyExit(0);
-		mockedExecSync.mockReturnValue(Buffer.alloc(0));
+		mockSpawnExit(0);
 
 		await copyToClipboard("hello");
 
@@ -318,7 +329,6 @@ describe("copyToClipboard", () => {
 		assert.deepEqual(calls[0]!.args, []);
 		assert.deepEqual(calls[0]!.options.stdio, ["pipe", "ignore", "ignore"]);
 		assert.equal(calls[0]!.options.env?.AI_AGENT, "atomic");
-		assert.deepEqual(execSyncCommands(), ["which wl-copy"]);
 		assert.equal(osc52Writes().length, 0);
 	});
 
@@ -327,12 +337,11 @@ describe("copyToClipboard", () => {
 		mocks.isWaylandSession.mockReturnValue(true);
 		vi.stubEnv("WAYLAND_DISPLAY", "wayland-1");
 		vi.stubEnv("DISPLAY", ":0");
-		mockWlCopyExit(1);
-		mockedExecSync.mockReturnValue(Buffer.alloc(0));
+		mockSpawnExit((command) => (command === "wl-copy" ? 1 : 0));
 
 		await copyToClipboard("hello");
 
-		assert.deepEqual(execSyncCommands(), ["which wl-copy", "xclip -selection clipboard"]);
+		assert.deepEqual(spawnCommands(), ["wl-copy", "xclip -selection clipboard"]);
 		assert.equal(osc52Writes().length, 0);
 	});
 
@@ -341,14 +350,13 @@ describe("copyToClipboard", () => {
 		mocks.isWaylandSession.mockReturnValue(true);
 		vi.stubEnv("WAYLAND_DISPLAY", "wayland-1");
 		vi.stubEnv("DISPLAY", ":0");
-		mockWlCopyExit(1);
-		mockedExecSync.mockReturnValue(Buffer.alloc(0));
+		mockSpawnExit((command) => (command === "wl-copy" ? 1 : 0));
 
 		await copyToClipboard("hello");
 
-		assert.deepEqual(execSyncCommands(), ["which wl-copy", "xclip -selection clipboard"]);
+		assert.deepEqual(spawnCommands(), ["wl-copy", "xclip -selection clipboard"]);
 		assert.equal(spawnCalls()[0]!.options.detached, true);
-		assert.equal((mockedExecSync.mock.calls[1]![1] as { detached?: boolean }).detached, true);
+		assert.equal(spawnCalls()[1]!.options.detached, true);
 	});
 
 	// pi#11592: clipboard tools ignore the cwd, and WSL cannot start Windows executables from a long one.
@@ -357,32 +365,29 @@ describe("copyToClipboard", () => {
 		mocks.isWaylandSession.mockReturnValue(true);
 		vi.stubEnv("WAYLAND_DISPLAY", "wayland-1");
 		vi.stubEnv("DISPLAY", ":0");
-		mockWlCopyExit(1);
-		mockedExecSync.mockReturnValue(Buffer.alloc(0));
+		mockSpawnExit((command) => (command === "wl-copy" ? 1 : 0));
 
 		await copyToClipboard("hello");
 
 		assert.equal(spawnCalls()[0]!.options.cwd, "/");
-		assert.equal((mockedExecSync.mock.calls[1]![1] as { cwd?: string }).cwd, "/");
+		assert.equal(spawnCalls()[1]!.options.cwd, "/");
 	});
 
 	test("keeps the Windows clip command in Atomic's process group", async () => {
 		mockedPlatform.mockReturnValue("win32");
 		mocks.clipboard.setText.mockRejectedValue(new Error("native failed"));
-		mockedExecSync.mockReturnValue(Buffer.alloc(0));
 
 		await copyToClipboard("hello");
 
-		assert.deepEqual(execSyncCommands(), ["clip"]);
-		assert.notEqual((mockedExecSync.mock.calls[0]![1] as { detached?: boolean }).detached, true);
+		assert.deepEqual(spawnCommands(), ["clip"]);
+		assert.notEqual(spawnCalls()[0]!.options.detached, true);
 	});
 
 	test("rejects failed local wl-copy without emitting OSC 52", async () => {
 		mockedPlatform.mockReturnValue("linux");
 		mocks.isWaylandSession.mockReturnValue(true);
 		vi.stubEnv("WAYLAND_DISPLAY", "wayland-1");
-		mockWlCopyExit(1);
-		mockedExecSync.mockReturnValue(Buffer.alloc(0));
+		mockSpawnExit(1);
 
 		await assert.rejects(copyToClipboard("hello"), {
 			message: "Clipboard unavailable: install `wl-clipboard` (`wl-copy`) or check Wayland access",
@@ -396,8 +401,8 @@ describe("copyToClipboard", () => {
 
 		await copyToClipboard("hello");
 
-		assert.equal(mockedExecSync.mock.calls.length, 0);
-		assert.equal(mockedExecFileSync.mock.calls.length, 0);
+		assert.equal(mockedSpawn.mock.calls.length, 0);
+		assert.equal(mockedExecFile.mock.calls.length, 0);
 		assert.equal(osc52Writes().length, 1);
 	});
 
@@ -406,35 +411,48 @@ describe("copyToClipboard", () => {
 		mockedPlatform.mockReturnValue("linux");
 		vi.stubEnv("WSL_DISTRO_NAME", "Ubuntu");
 		let written: string | undefined;
-		mockedExecFileSync.mockImplementation((file, args) => {
-			if (file !== "wslpath") return Buffer.alloc(0);
+		mockedExecFile.mockImplementation(((
+			file: string,
+			args: string[],
+			_options: object,
+			callback: (error: Error | null, stdout: string) => void,
+		) => {
+			if (file !== "wslpath") {
+				callback(null, "");
+				return;
+			}
 			written = readFileSync(args[1]!, "utf8");
-			return Buffer.from("\\\\wsl.localhost\\Ubuntu\\tmp\\clip.txt\n");
-		});
+			callback(null, "\\\\wsl.localhost\\Ubuntu\\tmp\\clip.txt\n");
+		}) as unknown as typeof execFile);
 
 		await copyToClipboard("héllo");
 
-		assert.deepEqual(execFileSyncFiles(), ["wslpath", "powershell.exe"]);
+		assert.deepEqual(execFileFiles(), ["wslpath", "powershell.exe"]);
 		assert.equal(written, "héllo");
-		const [, wslpathArgs] = mockedExecFileSync.mock.calls[0]!;
-		assert.equal(existsSync(wslpathArgs[1]!), false);
-		const [, powershellArgs] = mockedExecFileSync.mock.calls[1]!;
-		assert.match(powershellArgs[2]!, /Set-Clipboard/);
-		for (const call of mockedExecFileSync.mock.calls) assert.equal((call[2] as { cwd?: string }).cwd, "/");
-		assert.ok(powershellArgs[2]!.includes("'\\\\wsl.localhost\\Ubuntu\\tmp\\clip.txt'"));
+		const [, wslpathArgs] = mockedExecFile.mock.calls[0]!;
+		assert.equal(existsSync((wslpathArgs as string[])[1]!), false);
+		const [, powershellArgs] = mockedExecFile.mock.calls[1]!;
+		assert.match((powershellArgs as string[])[2]!, /Set-Clipboard/);
+		for (const call of mockedExecFile.mock.calls) assert.equal((call[2] as { cwd?: string }).cwd, "/");
+		assert.ok((powershellArgs as string[])[2]!.includes("'\\\\wsl.localhost\\Ubuntu\\tmp\\clip.txt'"));
 		assert.equal(osc52Writes().length, 0);
 	});
 
 	test("WSL falls back to OSC 52 when Windows interop is unavailable", async () => {
 		mockedPlatform.mockReturnValue("linux");
 		vi.stubEnv("WSL_DISTRO_NAME", "Ubuntu");
-		mockedExecFileSync.mockImplementation(() => {
-			throw new Error("wslpath: not found");
-		});
+		mockedExecFile.mockImplementation(((
+			_file: string,
+			_args: string[],
+			_options: object,
+			callback: (error: Error | null, stdout: string) => void,
+		) => {
+			callback(new Error("wslpath: not found"), "");
+		}) as unknown as typeof execFile);
 
 		await copyToClipboard("hello");
 
-		assert.deepEqual(execFileSyncFiles(), ["wslpath"]);
+		assert.deepEqual(execFileFiles(), ["wslpath"]);
 		assert.equal(osc52Writes().length, 1);
 	});
 
@@ -445,7 +463,7 @@ describe("copyToClipboard", () => {
 
 		await copyToClipboard("hello");
 
-		assert.equal(mockedExecFileSync.mock.calls.length, 0);
+		assert.equal(mockedExecFile.mock.calls.length, 0);
 		assert.equal(osc52Writes().length, 1);
 	});
 
@@ -457,7 +475,7 @@ describe("copyToClipboard", () => {
 
 		await copyToClipboard("hello");
 
-		assert.equal(mockedExecFileSync.mock.calls.length, 0);
+		assert.equal(mockedExecFile.mock.calls.length, 0);
 		assert.equal(osc52Writes().length, 1);
 	});
 
@@ -472,7 +490,7 @@ describe("copyToClipboard", () => {
 
 			await copyToClipboard("hello");
 
-			assert.equal(mockedExecFileSync.mock.calls.length, 0);
+			assert.equal(mockedExecFile.mock.calls.length, 0);
 			assert.equal(osc52Writes().length, 1);
 		},
 	);
@@ -481,13 +499,18 @@ describe("copyToClipboard", () => {
 		mockedPlatform.mockReturnValue("linux");
 		vi.stubEnv("WSL_DISTRO_NAME", "Ubuntu");
 		vi.stubEnv("WT_SESSION", "session");
-		mockedExecFileSync.mockImplementation((file) =>
-			file === "wslpath" ? Buffer.from("C:\\clip.txt") : Buffer.alloc(0),
-		);
+		mockedExecFile.mockImplementation(((
+			file: string,
+			_args: string[],
+			_options: object,
+			callback: (error: Error | null, stdout: string) => void,
+		) => {
+			callback(null, file === "wslpath" ? "C:\\clip.txt" : "");
+		}) as unknown as typeof execFile);
 
 		await copyToClipboard("x".repeat(80_000));
 
-		assert.deepEqual(execFileSyncFiles(), ["wslpath", "powershell.exe"]);
+		assert.deepEqual(execFileFiles(), ["wslpath", "powershell.exe"]);
 		assert.equal(osc52Writes().length, 0);
 	});
 
@@ -496,8 +519,7 @@ describe("copyToClipboard", () => {
 		vi.stubEnv("WSL_DISTRO_NAME", "Ubuntu");
 		vi.stubEnv("WAYLAND_DISPLAY", "wayland-0");
 		mocks.isWaylandSession.mockReturnValue(true);
-		mockWlCopyExit(0);
-		mockedExecSync.mockReturnValue(Buffer.alloc(0));
+		mockSpawnExit(0);
 
 		await copyToClipboard("hello");
 
@@ -505,7 +527,7 @@ describe("copyToClipboard", () => {
 			spawnCalls().map(({ command, args }) => ({ command, args })),
 			[{ command: "wl-copy", args: [] }],
 		);
-		assert.equal(mockedExecFileSync.mock.calls.length, 0);
+		assert.equal(mockedExecFile.mock.calls.length, 0);
 		assert.equal(osc52Writes().length, 0);
 	});
 
@@ -518,8 +540,7 @@ describe("copyToClipboard", () => {
 		vi.stubEnv("WAYLAND_DISPLAY", "wayland-0");
 		vi.stubEnv("SSH_CONNECTION", "client server");
 		mocks.isWaylandSession.mockReturnValue(true);
-		mockWlCopyExit(0);
-		mockedExecSync.mockReturnValue(Buffer.alloc(0));
+		mockSpawnExit(0);
 
 		await copyToClipboard("hello");
 
@@ -527,7 +548,7 @@ describe("copyToClipboard", () => {
 			spawnCalls().map(({ command, args }) => ({ command, args })),
 			[{ command: "wl-copy", args: [] }],
 		);
-		assert.equal(mockedExecFileSync.mock.calls.length, 0);
+		assert.equal(mockedExecFile.mock.calls.length, 0);
 		assert.equal(osc52Writes().length, 1);
 	});
 
@@ -535,11 +556,10 @@ describe("copyToClipboard", () => {
 		mockedPlatform.mockReturnValue("android");
 		vi.stubEnv("TERMUX_VERSION", "0.119");
 		mocks.clipboard.setText.mockRejectedValue(new Error("native failed"));
-		mockedExecSync.mockReturnValue(Buffer.alloc(0));
 
 		await copyToClipboard("hello");
 
-		assert.deepEqual(execSyncCommands(), ["termux-clipboard-set"]);
+		assert.deepEqual(spawnCommands(), ["termux-clipboard-set"]);
 		assert.equal(osc52Writes().length, 0);
 	});
 
@@ -565,9 +585,7 @@ describe("copyToClipboard", () => {
 			vi.stubEnv("DISPLAY", display);
 			mocks.isWaylandSession.mockReturnValue(Boolean(wayland));
 			mocks.clipboard.setText.mockRejectedValue(new Error("native failed"));
-			mockedExecSync.mockImplementation(() => {
-				throw new Error("backend failed");
-			});
+			mockSpawnExit(new Error("backend failed"));
 			await assert.rejects(copyToClipboard("hello"), { message });
 			assert.equal(osc52Writes().length, 0);
 		},
