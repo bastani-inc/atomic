@@ -102,6 +102,7 @@ export class FleetRateCap {
 					(history[1]!.acquired === history[0]!.acquired && history[1]!.waitingMs === history[0]!.waitingMs))
 			)
 				history.shift();
+			if (running === 0) state.observedSince = sample.at;
 			this.scopes.set(scope, state);
 		}
 		for (const scope of this.scopes.keys()) if (!busy.has(scope)) this.scopes.delete(scope);

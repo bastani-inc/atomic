@@ -339,3 +339,62 @@ test("the scaling signal never wants more hosts than the rate limits keep busy, 
 	);
 	assert.doesNotMatch(prometheusText({ fleet: store, scaling: uncapped }), /atomic_fleet_rate_cap_hosts/);
 });
+
+test("rounded-up schedules on fractional intervals stay counted instead of bypassing the rate cap (#4768)", () => {
+	const actual = ([47, 23] as const).map((requestsPerMinute) => {
+		const cap = new FleetRateCap();
+		const roots = [{ ...limited(8, "p"), ready: 80 }];
+		let scheduledAt = START;
+		for (let step = 0; step <= 6; step++) {
+			const at = step * 10_000;
+			if (step > 0) scheduledAt = Math.ceil(Math.max(scheduledAt, START + at) + MINUTE / requestsPerMinute);
+			cap.observe([{ ...bucket("p", requestsPerMinute, step, at), scheduledAt }], roots);
+		}
+		return [cap.limit(4, 2), cap.estimate(4)?.hosts];
+	});
+	assert.deepEqual(actual, [
+		[16, 16],
+		[8, 8],
+	]);
+});
+
+test("an uncounted schedule advance before the sample timestamp or alongside saturated counted draws bypasses the cap until the window expires (#4768)", () => {
+	const roots = [{ ...limited(8, "p"), ready: 80 }];
+	const flatCounter = new FleetRateCap();
+	flatCounter.observe([{ ...bucket("p", 60, 100, 0), scheduledAt: START + 1_000 }], roots);
+	assert.equal(flatCounter.limit(4, 2), 2);
+	flatCounter.observe([{ ...bucket("p", 60, 100, 10_000), scheduledAt: START + 5_000 }], roots);
+	assert.equal(flatCounter.limit(4, 2), 22);
+
+	const expiring = new FleetRateCap();
+	expiring.observe([{ ...bucket("p", 60, 100, 0), scheduledAt: START }], roots);
+	expiring.observe([{ ...bucket("p", 60, 110, 10_000), scheduledAt: START + 110_000 }], roots);
+	for (let at = 20_000; at <= 10_000 + RATE_CAP_WINDOW_MS; at += 10_000) {
+		expiring.observe([{ ...bucket("p", 60, 100 + at / 1_000, at), scheduledAt: START + 100_000 + at }], roots);
+		assert.equal(expiring.limit(4, 2), 22, `uncounted draw still within window at ${at}ms`);
+		assert.equal(expiring.estimate(4), undefined);
+	}
+	const afterWindow = 20_000 + RATE_CAP_WINDOW_MS;
+	expiring.observe(
+		[{ ...bucket("p", 60, 100 + afterWindow / 1_000, afterWindow), scheduledAt: START + 100_000 + afterWindow }],
+		roots,
+	);
+	assert.equal(expiring.limit(4, 2), 2);
+	assert.equal(expiring.estimate(4)?.hosts, 2);
+});
+
+test("a scope that starts waiting after an idle period holds growth until its waiting span matures (#4768)", () => {
+	const cap = new FleetRateCap();
+	const roots = [{ ...limited(8, "p"), ready: 80 }];
+	for (let at = 0; at < RATE_CAP_MIN_SPAN_MS; at += 10_000) {
+		cap.observe([bucket("p", 60, 100, at)], roots);
+		assert.equal(cap.limit(4, 2), 2);
+	}
+	for (let at = RATE_CAP_MIN_SPAN_MS; at < 2 * RATE_CAP_MIN_SPAN_MS - 10_000; at += 10_000) {
+		cap.observe([{ ...bucket("p", 60, 100, at), waitingMs: 8 * (at - (RATE_CAP_MIN_SPAN_MS - 10_000)) }], roots);
+		assert.equal(cap.limit(4, 2), 2, `waiting span still warming at ${at}ms`);
+	}
+	const matureAt = 2 * RATE_CAP_MIN_SPAN_MS - 10_000;
+	cap.observe([{ ...bucket("p", 60, 100, matureAt), waitingMs: 8 * RATE_CAP_MIN_SPAN_MS }], roots);
+	assert.equal(cap.limit(4, 2), 1);
+});

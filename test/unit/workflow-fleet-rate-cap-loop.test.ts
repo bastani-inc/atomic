@@ -27,13 +27,15 @@ vi.mock("node:sqlite", async (importOriginal) => {
 	return { ...actual, DatabaseSync: FleetClockDatabase };
 });
 
-for (const [initialHosts, unusedScope] of [
-	[3, false],
-	[8, false],
-	[1, false],
-	[1, true],
+for (const [initialHosts, unusedScope, bootMs] of [
+	[3, false, 0],
+	[8, false, 0],
+	[1, false, 0],
+	[1, true, 0],
+	[0, false, 90_000],
+	[0, false, 150_000],
 ] as const) {
-	test(`a fleet starting with ${initialHosts} hosts${unusedScope ? " and an unused quota" : ""} follows real token-waiting traffic with the default growth delay and through failover (#4768)`, async () => {
+	test(`a fleet starting with ${initialHosts} hosts${unusedScope ? " and an unused quota" : ""}${bootMs ? ` and a ${bootMs / 1_000}-second host boot` : ""} follows real token-waiting traffic with the default growth delay and through failover (#4768)`, async () => {
 		clock.now = 1_800_000_000_000;
 		vi.useFakeTimers({
 			toFake: ["Date", "performance", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
@@ -88,10 +90,10 @@ for (const [initialHosts, unusedScope] of [
 					busy: workers.filter((worker) => worker.active && worker.worker.startsWith(`h${index}/`)).length,
 					roots: ["root"],
 				});
-			const add = async (target: number) => {
-				while (hosts.length < target) {
-					const index = hosts.length;
-					hosts.push({ id: `vm${index}`, state: "running", since: clock.now });
+			const boot = async () => {
+				for (const [index, host] of hosts.entries()) {
+					if (host.state !== "pending" || clock.now - host.since < bootMs) continue;
+					hosts[index] = { ...host, state: "running" };
 					const limiter = new FleetRateLimiter({
 						store: buckets,
 						limits,
@@ -108,6 +110,10 @@ for (const [initialHosts, unusedScope] of [
 					}
 					await report(index);
 				}
+			};
+			const add = async (target: number) => {
+				while (hosts.length < target) hosts.push({ id: `vm${hosts.length}`, state: "pending", since: clock.now });
+				await boot();
 			};
 			await add(initialHosts);
 			const targets: number[] = [];
@@ -139,21 +145,26 @@ for (const [initialHosts, unusedScope] of [
 				for (let second = 0; second < seconds; second++) {
 					clock.now += 1_000;
 					await vi.advanceTimersByTimeAsync(1_000);
+					await boot();
+					if (workers.length === 0)
+						assert.ok(hosts.length <= 1, "only one bootstrap host may be pending before any child runs");
 					for (const worker of workers) {
 						if (!worker.active || worker.due > clock.now) continue;
 						const wait = await worker.limiter.acquire("p", "m", worker.worker);
 						worker.due = clock.now + (wait > 0 ? wait : 10_000);
 					}
 					await Promise.all(limiters.map((limiter) => limiter.poll()));
-					if (clock.now % 10_000 === 0) for (let index = 0; index < hosts.length; index++) await report(index);
+					if (clock.now % 10_000 === 0)
+						for (const [index, host] of hosts.entries()) if (host.state === "running") await report(index);
 				}
 			};
-			await advance(unusedScope ? 600 : 120);
+			const settlingSeconds = bootMs > 0 ? (2 * bootMs) / 1_000 + 180 : 120;
+			await advance(unusedScope ? 600 : settlingSeconds);
 			assert.ok(
 				targets.every((target) => target <= 3),
 				"startup cannot grow beyond the quota's capacity",
 			);
-			if (initialHosts === 1) assert.equal(hosts.length, 3, "an unused quota cannot hold back active work");
+			if (initialHosts <= 1) assert.equal(hosts.length, 3, "the quota can feed three hosts after boot and warm-up");
 			else assert.deepEqual(targets, [], "history warms before the default 20-second delay can over-provision");
 			assert.equal(leader.status().rateCapHosts, 3, "60 calls/minute feed ten workers calling once per ten seconds");
 			assert.equal(leader.status().target, 3, "extra leased workers waiting for tokens cannot raise the cap");
@@ -165,7 +176,7 @@ for (const [initialHosts, unusedScope] of [
 			await advance(10);
 			assert.equal(standby.status().role, "active");
 			assert.equal(standby.status().rateCapHosts, 3);
-			if (initialHosts === 1)
+			if (initialHosts <= 1)
 				assert.ok(
 					targets.every((target) => target <= 3),
 					"takeover keeps the standby's observations rather than growing uncapped",
@@ -199,6 +210,25 @@ for (const [initialHosts, unusedScope] of [
 		}
 	});
 }
+
+test("an unused quota needs a full running observation minute again after its roots stop running children (#4768)", () => {
+	const cap = new FleetRateCap();
+	const root = { leased: 8, ready: 80, blocked: false, rateScopes: ["p"] };
+	const observe = (now: number, leased: number) => {
+		cap.observe([{ scope: "p", now, acquired: 0, waitingMs: 0, intervalMs: 1_000 }], [{ ...root, leased }]);
+	};
+	for (let now = 0; now <= 20_000; now += 10_000) observe(now, 8);
+	for (let now = 30_000; now <= 90_000; now += 10_000) {
+		observe(now, 0);
+		assert.equal(cap.limit(4, 2), 2, "time without a running child cannot expire the hold");
+	}
+	for (let now = 100_000; now <= 140_000; now += 10_000) {
+		observe(now, 8);
+		assert.equal(cap.limit(4, 2), 2, "resumed work must finish the new observation minute");
+	}
+	observe(150_000, 8);
+	assert.equal(cap.limit(4, 2), 22, "an unused quota releases its hold once roots run for the full minute");
+});
 
 for (const [upgraded, countedCalls] of [
 	[false, false],
