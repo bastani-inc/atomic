@@ -534,12 +534,18 @@ export class StageSessionController {
 		}
 	}
 
+	/** The directory of a stage without its own cwd: the stage's, once its worktree is set up. */
+	private stageDefaultCwd: string | undefined;
+	/** Applying the stage's options once its worktree is set up; no session opens before it settles. */
+	private stageOptionsReady: Promise<void> | undefined;
+
 	constructor(
 		private readonly opts: StageRunnerOpts,
 		private readonly meta: StageExecutionMeta,
-		private readonly effectiveStageOptions: StageOptions | undefined,
+		private effectiveStageOptions: StageOptions | undefined,
 		private readonly structuredOutputCapture: StructuredOutputCapture<unknown> | undefined,
 	) {
+		this.stageDefaultCwd = opts.defaultCwd;
 		this.hasExplicitModelFallbackConfig =
 			effectiveStageOptions?.model !== undefined || (effectiveStageOptions?.fallbackModels?.length ?? 0) > 0;
 		this.modelCatalog =
@@ -557,6 +563,17 @@ export class StageSessionController {
 
 	get currentSession(): StageSessionRuntime | undefined {
 		return this.session;
+	}
+
+	/** The stage's options once its worktree is set up, replacing those it was created with. */
+	useStageOptions(options: StageOptions | undefined, defaultCwd: string): void {
+		this.effectiveStageOptions = options;
+		this.stageDefaultCwd = defaultCwd;
+	}
+
+	/** Opens no session until `ready` settles, and none at all when it rejects: each attempt fails with its error. */
+	waitForStageOptions(ready: Promise<void>): void {
+		this.stageOptionsReady = ready;
 	}
 
 	get currentPromptStartIndex(): number | undefined {
@@ -802,6 +819,7 @@ export class StageSessionController {
 				"Workflow stage auto requires prompt text before model-dependent session operations. Call prompt first or set a concrete model.",
 			);
 		if (this.routingPromise !== undefined) await this.routingPromise;
+		if (this.stageOptionsReady !== undefined) await this.stageOptionsReady;
 		if (this.bindingCleanupFailure !== undefined) throw this.bindingCleanupFailure;
 		if (this.sessionShutdownPromise !== undefined) {
 			const generation = this.abortGeneration;
@@ -1676,7 +1694,7 @@ export class StageSessionController {
 	readReleasedMessages(): Promise<StageSessionRuntime["messages"]> {
 		const options = this.effectiveStageOptions;
 		return readStoredStageMessages(
-			{ ...options, cwd: options?.cwd ?? this.opts.defaultCwd },
+			{ ...options, cwd: options?.cwd ?? this.stageDefaultCwd },
 			this.opts.defaultSessionDir,
 			this.reattachSessionId!,
 		);
@@ -3084,7 +3102,7 @@ export class StageSessionController {
 			restoreSavedModel: resumeOptions?.restoreSavedModel,
 			reattachSessionId: this.reattachSessionId,
 			sharedModelRuntime: this.sharedModelRuntime,
-			defaultCwd: this.opts.defaultCwd,
+			defaultCwd: this.stageDefaultCwd,
 		});
 		if (stageOptions && this.modelRoute) stageOptions.isFallbackModelAllowed = this.modelRoute.allowsModel;
 		let created: StageSessionRuntime | StageSessionCreateResult;

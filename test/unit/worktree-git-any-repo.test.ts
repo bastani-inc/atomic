@@ -18,10 +18,23 @@ import {
 	type GitRunner,
 	runGitChecked,
 	setupGitWorktree,
+	setupGitWorktreeCached,
 	withGitRunnerForTest,
 	withWorktreeBucketIdsForTest,
 } from "../../packages/workflows/src/runs/shared/worktree-git.js";
-import type { GitResult } from "../../packages/workflows/src/runs/shared/worktree-types.js";
+import type {
+	GitResult,
+	GitWorktreeSetupOptions,
+	GitWorktreeSetupResult,
+} from "../../packages/workflows/src/runs/shared/worktree-types.js";
+
+/** The SDK's synchronous setup and the engine's non-blocking one run the same steps; each scenario runs on both. */
+const SETUP_DRIVERS: ReadonlyArray<
+	readonly [string, (options: GitWorktreeSetupOptions) => Promise<GitWorktreeSetupResult>]
+> = [
+	["the synchronous SDK setup", async (options) => setupGitWorktree(options)],
+	["the engine's non-blocking setup", (options) => setupGitWorktreeCached(options)],
+];
 
 const BUCKET = /^[0-9a-f]{4}$/;
 
@@ -29,22 +42,22 @@ function createScratch(): string {
 	return realpathSync.native(mkdtempSync(join(tmpdir(), "atomic-worktree-any-repo-")));
 }
 
-function createGitRepo(root: string, name: string): string {
+async function createGitRepo(root: string, name: string): Promise<string> {
 	const repo = join(root, name);
 	mkdirSync(repo);
-	runGitChecked(repo, ["init", "-b", "main"]);
-	runGitChecked(repo, ["config", "user.email", "test@example.com"]);
-	runGitChecked(repo, ["config", "user.name", "Test User"]);
-	runGitChecked(repo, ["config", "commit.gpgsign", "false"]);
+	await runGitChecked(repo, ["init", "-b", "main"]);
+	await runGitChecked(repo, ["config", "user.email", "test@example.com"]);
+	await runGitChecked(repo, ["config", "user.name", "Test User"]);
+	await runGitChecked(repo, ["config", "commit.gpgsign", "false"]);
 	mkdirSync(join(repo, "packages", "api"), { recursive: true });
 	writeFileSync(join(repo, "packages", "api", "index.txt"), `${name}\n`);
-	runGitChecked(repo, ["add", "."]);
-	runGitChecked(repo, ["commit", "-m", "initial"]);
-	runGitChecked(repo, ["checkout", "-b", "feature"]);
+	await runGitChecked(repo, ["add", "."]);
+	await runGitChecked(repo, ["commit", "-m", "initial"]);
+	await runGitChecked(repo, ["checkout", "-b", "feature"]);
 	writeFileSync(join(repo, "feature-only.txt"), "feature\n");
-	runGitChecked(repo, ["add", "feature-only.txt"]);
-	runGitChecked(repo, ["commit", "-m", "feature"]);
-	runGitChecked(repo, ["checkout", "main"]);
+	await runGitChecked(repo, ["add", "feature-only.txt"]);
+	await runGitChecked(repo, ["commit", "-m", "feature"]);
+	await runGitChecked(repo, ["checkout", "main"]);
 	return repo;
 }
 
@@ -61,8 +74,8 @@ function buckets(worktreeRoot: string): string[] {
 		.sort();
 }
 
-function registeredWorktrees(repo: string): string[] {
-	return runGitChecked(repo, ["worktree", "list", "--porcelain"])
+async function registeredWorktrees(repo: string): Promise<string[]> {
+	return (await runGitChecked(repo, ["worktree", "list", "--porcelain"]))
 		.split("\n")
 		.filter((line) => line.startsWith("worktree "))
 		.map((line) => realpathSync.native(line.slice("worktree ".length)));
@@ -85,38 +98,38 @@ function realGitExcept(fail: (args: readonly string[]) => boolean): GitRunner {
 }
 
 describe("gitWorktreeDir reuses existing worktrees of any repository", () => {
-	test("reuses another repository's linked worktree from a different repository's cwd", () => {
+	test("reuses another repository's linked worktree from a different repository's cwd", async () => {
 		const root = createScratch();
 		try {
-			const invoking = createGitRepo(root, "invoking");
-			const other = createGitRepo(root, "other");
+			const invoking = await createGitRepo(root, "invoking");
+			const other = await createGitRepo(root, "other");
 			const otherWorktree = join(root, "other-wt");
-			runGitChecked(other, ["worktree", "add", "--detach", otherWorktree]);
+			await runGitChecked(other, ["worktree", "add", "--detach", otherWorktree]);
 			const cache = createGitWorktreeSetupCache("run-cross-repo");
 			try {
 				const options = { cwd: join(invoking, "packages", "api"), gitWorktreeDir: otherWorktree };
-				const setup = cache.get(options);
+				const setup = await cache.get(options);
 				assert.deepEqual(setup, {
 					worktreeRoot: otherWorktree,
 					cwd: otherWorktree,
 					repositoryRoot: otherWorktree,
 					created: false,
 				});
-				assert.equal(cache.get(options), setup);
+				assert.equal(await cache.get(options), setup);
 			} finally {
-				cache.dispose();
+				await cache.dispose();
 			}
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
 
-	test("reuses linked and main checkouts from a cwd outside any Git repository", () => {
+	test("reuses linked and main checkouts from a cwd outside any Git repository", async () => {
 		const root = createScratch();
 		try {
-			const other = createGitRepo(root, "other");
+			const other = await createGitRepo(root, "other");
 			const otherWorktree = join(root, "other-wt");
-			runGitChecked(other, ["worktree", "add", "--detach", otherWorktree]);
+			await runGitChecked(other, ["worktree", "add", "--detach", otherWorktree]);
 			const plainCwd = join(root, "plain");
 			mkdirSync(plainCwd);
 
@@ -134,10 +147,10 @@ describe("gitWorktreeDir reuses existing worktrees of any repository", () => {
 		}
 	});
 
-	test("still rejects subdirectories of an existing worktree from a non-Git cwd", () => {
+	test("still rejects subdirectories of an existing worktree from a non-Git cwd", async () => {
 		const root = createScratch();
 		try {
-			const other = createGitRepo(root, "other");
+			const other = await createGitRepo(root, "other");
 			const plainCwd = join(root, "plain");
 			mkdirSync(plainCwd);
 			assert.throws(
@@ -169,156 +182,161 @@ describe("gitWorktreeDir reuses existing worktrees of any repository", () => {
 	});
 });
 
-describe("gitWorktreeDir creates worktrees in empty and non-empty directories", () => {
-	test("creates the worktree directly in an existing empty directory", () => {
-		const root = createScratch();
-		try {
-			const repo = createGitRepo(root, "repo");
-			const empty = join(root, "empty-wt");
-			mkdirSync(empty);
-			const setup = setupGitWorktree({
-				cwd: join(repo, "packages", "api"),
-				gitWorktreeDir: empty,
-				baseBranch: "feature",
-			});
-			assert.equal(setup.created, true);
-			assert.equal(setup.worktreeRoot, empty);
-			assert.equal(setup.cwd, join(empty, "packages", "api"));
-			assert.equal(existsSync(join(empty, "feature-only.txt")), true);
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
+describe.each(SETUP_DRIVERS)(
+	"gitWorktreeDir creates worktrees in empty and non-empty directories through %s",
+	(_driver, setup) => {
+		test("creates the worktree directly in an existing empty directory", async () => {
+			const root = createScratch();
+			try {
+				const repo = await createGitRepo(root, "repo");
+				const empty = join(root, "empty-wt");
+				mkdirSync(empty);
+				const created = await setup({
+					cwd: join(repo, "packages", "api"),
+					gitWorktreeDir: empty,
+					baseBranch: "feature",
+				});
+				assert.equal(created.created, true);
+				assert.equal(created.worktreeRoot, empty);
+				assert.equal(created.cwd, join(empty, "packages", "api"));
+				assert.equal(existsSync(join(empty, "feature-only.txt")), true);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		});
 
-	test("allocates a bucketed checkout from base_branch inside a non-empty non-Git directory", () => {
-		const root = createScratch();
-		try {
-			const repo = createGitRepo(root, "repo");
-			const worktreeRoot = createNonEmptyRoot(root);
-			const setup = setupGitWorktree({
-				cwd: join(repo, "packages", "api"),
-				gitWorktreeDir: worktreeRoot,
-				baseBranch: "feature",
-			});
-			const [bucket] = buckets(worktreeRoot);
-			assert.ok(bucket, "expected one allocated bucket");
-			const checkout = join(worktreeRoot, bucket, "repo");
-			assert.deepEqual(setup, {
-				worktreeRoot: checkout,
-				cwd: join(checkout, "packages", "api"),
-				repositoryRoot: repo,
-				created: true,
-			});
-			assert.equal(existsSync(join(checkout, "feature-only.txt")), true);
-			assert.equal(runGitChecked(checkout, ["status", "--porcelain"]).trim(), "");
-			assert.equal(
-				runGitChecked(checkout, ["rev-parse", "HEAD"]).trim(),
-				runGitChecked(repo, ["rev-parse", "feature"]).trim(),
-			);
-			assert.equal(readFileSync(join(worktreeRoot, "notes.txt"), "utf8"), "keep me\n");
-			assert.ok(registeredWorktrees(repo).includes(checkout));
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
+		test("allocates a bucketed checkout from base_branch inside a non-empty non-Git directory", async () => {
+			const root = createScratch();
+			try {
+				const repo = await createGitRepo(root, "repo");
+				const worktreeRoot = createNonEmptyRoot(root);
+				const created = await setup({
+					cwd: join(repo, "packages", "api"),
+					gitWorktreeDir: worktreeRoot,
+					baseBranch: "feature",
+				});
+				const [bucket] = buckets(worktreeRoot);
+				assert.ok(bucket, "expected one allocated bucket");
+				const checkout = join(worktreeRoot, bucket, "repo");
+				assert.deepEqual(created, {
+					worktreeRoot: checkout,
+					cwd: join(checkout, "packages", "api"),
+					repositoryRoot: repo,
+					created: true,
+				});
+				assert.equal(existsSync(join(checkout, "feature-only.txt")), true);
+				assert.equal((await runGitChecked(checkout, ["status", "--porcelain"])).trim(), "");
+				assert.equal(
+					(await runGitChecked(checkout, ["rev-parse", "HEAD"])).trim(),
+					(await runGitChecked(repo, ["rev-parse", "feature"])).trim(),
+				);
+				assert.equal(readFileSync(join(worktreeRoot, "notes.txt"), "utf8"), "keep me\n");
+				assert.ok((await registeredWorktrees(repo)).includes(checkout));
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		});
 
-	test("retries bucket allocation when a bucket already exists", () => {
-		const root = createScratch();
-		try {
-			const repo = createGitRepo(root, "repo");
-			const worktreeRoot = createNonEmptyRoot(root);
-			mkdirSync(join(worktreeRoot, "aaaa"));
-			writeFileSync(join(worktreeRoot, "aaaa", "other.txt"), "someone else\n");
-			const ids = ["aaaa", "bbbb"];
-			const setup = withWorktreeBucketIdsForTest(
-				() => ids.shift() ?? "cccc",
-				() => setupGitWorktree({ cwd: repo, gitWorktreeDir: worktreeRoot }),
-			);
-			assert.equal(setup.worktreeRoot, join(worktreeRoot, "bbbb", "repo"));
-			assert.deepEqual(readdirSync(join(worktreeRoot, "aaaa")), ["other.txt"]);
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
+		test("retries bucket allocation when a bucket already exists", async () => {
+			const root = createScratch();
+			try {
+				const repo = await createGitRepo(root, "repo");
+				const worktreeRoot = createNonEmptyRoot(root);
+				mkdirSync(join(worktreeRoot, "aaaa"));
+				writeFileSync(join(worktreeRoot, "aaaa", "other.txt"), "someone else\n");
+				const ids = ["aaaa", "bbbb"];
+				const created = await withWorktreeBucketIdsForTest(
+					() => ids.shift() ?? "cccc",
+					() => setup({ cwd: repo, gitWorktreeDir: worktreeRoot }),
+				);
+				assert.equal(created.worktreeRoot, join(worktreeRoot, "bbbb", "repo"));
+				assert.deepEqual(readdirSync(join(worktreeRoot, "aaaa")), ["other.txt"]);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		});
 
-	test("rolls back the bucket when git worktree add fails", () => {
-		const root = createScratch();
-		try {
-			const repo = createGitRepo(root, "repo");
-			const worktreeRoot = createNonEmptyRoot(root);
-			const before = registeredWorktrees(repo);
-			assert.throws(
-				() =>
-					withGitRunnerForTest(
-						realGitExcept((args) => args[0] === "worktree" && args[1] === "add"),
-						() => setupGitWorktree({ cwd: repo, gitWorktreeDir: worktreeRoot }),
-					),
-				/Failed to create git worktree at .* under gitWorktreeDir .*simulated failure/,
-			);
-			assert.deepEqual(readdirSync(worktreeRoot), ["notes.txt"]);
-			assert.deepEqual(registeredWorktrees(repo), before);
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
+		test("rolls back the bucket when git worktree add fails", async () => {
+			const root = createScratch();
+			try {
+				const repo = await createGitRepo(root, "repo");
+				const worktreeRoot = createNonEmptyRoot(root);
+				const before = await registeredWorktrees(repo);
+				await assert.rejects(
+					() =>
+						withGitRunnerForTest(
+							realGitExcept((args) => args[0] === "worktree" && args[1] === "add"),
+							() => setup({ cwd: repo, gitWorktreeDir: worktreeRoot }),
+						),
+					/Failed to create git worktree at .* under gitWorktreeDir .*simulated failure/,
+				);
+				assert.deepEqual(readdirSync(worktreeRoot), ["notes.txt"]);
+				assert.deepEqual(await registeredWorktrees(repo), before);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		});
 
-	test("a run started in a subdirectory named '..sub' works in that subdirectory of the worktree (#4836)", () => {
-		const root = createScratch();
-		try {
-			const repo = createGitRepo(root, "repo");
-			const dotted = join(repo, "..sub");
-			mkdirSync(dotted);
-			writeFileSync(join(dotted, "file.txt"), "dotted\n");
-			runGitChecked(repo, ["add", "."]);
-			runGitChecked(repo, ["commit", "-m", "dotted subdirectory"]);
-			const worktreeRoot = createNonEmptyRoot(root);
-			const setup = setupGitWorktree({ cwd: dotted, gitWorktreeDir: worktreeRoot });
-			assert.equal(setup.cwd, join(setup.worktreeRoot, "..sub"));
-			assert.equal(readFileSync(join(setup.cwd, "file.txt"), "utf8").replaceAll("\r\n", "\n"), "dotted\n");
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
+		test("a run started in a subdirectory named '..sub' works in that subdirectory of the worktree (#4836)", async () => {
+			const root = createScratch();
+			try {
+				const repo = await createGitRepo(root, "repo");
+				const dotted = join(repo, "..sub");
+				mkdirSync(dotted);
+				writeFileSync(join(dotted, "file.txt"), "dotted\n");
+				await runGitChecked(repo, ["add", "."]);
+				await runGitChecked(repo, ["commit", "-m", "dotted subdirectory"]);
+				const worktreeRoot = createNonEmptyRoot(root);
+				const created = await setup({ cwd: dotted, gitWorktreeDir: worktreeRoot });
+				assert.equal(created.cwd, join(created.worktreeRoot, "..sub"));
+				assert.equal(readFileSync(join(created.cwd, "file.txt"), "utf8").replaceAll("\r\n", "\n"), "dotted\n");
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		});
 
-	test("rolls back the checkout when the base lacks the invoking subdirectory", () => {
-		const root = createScratch();
-		try {
-			const repo = createGitRepo(root, "repo");
-			const untracked = join(repo, "untracked-only");
-			mkdirSync(untracked);
-			const worktreeRoot = createNonEmptyRoot(root);
-			const before = registeredWorktrees(repo);
-			assert.throws(
-				() => setupGitWorktree({ cwd: untracked, gitWorktreeDir: worktreeRoot }),
-				/does not contain a working directory untracked-only/,
-			);
-			assert.deepEqual(readdirSync(worktreeRoot), ["notes.txt"]);
-			assert.deepEqual(registeredWorktrees(repo), before);
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
+		test("rolls back the checkout when the base lacks the invoking subdirectory", async () => {
+			const root = createScratch();
+			try {
+				const repo = await createGitRepo(root, "repo");
+				const untracked = join(repo, "untracked-only");
+				mkdirSync(untracked);
+				const worktreeRoot = createNonEmptyRoot(root);
+				const before = await registeredWorktrees(repo);
+				await assert.rejects(
+					() => setup({ cwd: untracked, gitWorktreeDir: worktreeRoot }),
+					/does not contain a working directory untracked-only/,
+				);
+				assert.deepEqual(readdirSync(worktreeRoot), ["notes.txt"]);
+				assert.deepEqual(await registeredWorktrees(repo), before);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		});
+	},
+);
 
-	test("one run reuses its allocated checkout across caches while other runs get their own", () => {
+describe("gitWorktreeDir allocations under a non-empty directory belong to their run", () => {
+	test("one run reuses its allocated checkout across caches while other runs get their own", async () => {
 		const root = createScratch();
 		try {
-			const repo = createGitRepo(root, "repo");
+			const repo = await createGitRepo(root, "repo");
 			const worktreeRoot = createNonEmptyRoot(root);
 			const options = { cwd: join(repo, "packages", "api"), gitWorktreeDir: worktreeRoot };
 			const first = createGitWorktreeSetupCache("run-a");
 			const resumed = createGitWorktreeSetupCache("run-a");
 			const other = createGitWorktreeSetupCache("run-b");
 			try {
-				const original = first.get(options);
+				const original = await first.get(options);
 				assert.equal(original.created, true);
-				assert.equal(first.get(options), original, "later stages of the run share one checkout");
+				assert.equal(await first.get(options), original, "later stages of the run share one checkout");
 
-				const afterResume = resumed.get(options);
+				const afterResume = await resumed.get(options);
 				assert.equal(afterResume.created, false);
 				assert.equal(afterResume.worktreeRoot, original.worktreeRoot);
 				assert.equal(afterResume.cwd, original.cwd);
 
-				const separate = other.get(options);
+				const separate = await other.get(options);
 				assert.equal(separate.created, true);
 				assert.notEqual(separate.worktreeRoot, original.worktreeRoot);
 				assert.equal(buckets(worktreeRoot).length, 2);
@@ -326,9 +344,9 @@ describe("gitWorktreeDir creates worktrees in empty and non-empty directories", 
 				assert.ok(BUCKET.test(basename(dirname(separate.worktreeRoot))));
 				assert.equal(relative(worktreeRoot, dirname(dirname(separate.worktreeRoot))), "");
 			} finally {
-				first.dispose();
-				resumed.dispose();
-				other.dispose();
+				await first.dispose();
+				await resumed.dispose();
+				await other.dispose();
 			}
 		} finally {
 			rmSync(root, { recursive: true, force: true });
@@ -348,14 +366,14 @@ describe("gitWorktreeDir never creates or reuses a checkout inside Git metadata"
 		readonly bare: string;
 	}
 
-	function createMetadataFixture(): MetadataFixture {
+	async function createMetadataFixture(): Promise<MetadataFixture> {
 		const root = createScratch();
-		const invoking = createGitRepo(root, "invoking");
-		const other = createGitRepo(root, "other");
-		runGitChecked(other, ["worktree", "add", "--detach", join(root, "other-linked")]);
-		const adminDir = runGitChecked(join(root, "other-linked"), ["rev-parse", "--absolute-git-dir"]).trim();
+		const invoking = await createGitRepo(root, "invoking");
+		const other = await createGitRepo(root, "other");
+		await runGitChecked(other, ["worktree", "add", "--detach", join(root, "other-linked")]);
+		const adminDir = (await runGitChecked(join(root, "other-linked"), ["rev-parse", "--absolute-git-dir"])).trim();
 		const bare = join(root, "bare.git");
-		runGitChecked(root, ["clone", "--bare", "--quiet", other, bare]);
+		await runGitChecked(root, ["clone", "--bare", "--quiet", other, bare]);
 		return { root, invoking, otherGitDir: join(other, ".git"), adminDir: realpathSync.native(adminDir), bare };
 	}
 
@@ -364,15 +382,19 @@ describe("gitWorktreeDir never creates or reuses a checkout inside Git metadata"
 		return readdirSync(directory, { recursive: true, encoding: "utf8" }).sort();
 	}
 
-	function assertRejectedWithoutWrites(fixture: MetadataFixture, gitWorktreeDir: string, watched: string): void {
+	async function assertRejectedWithoutWrites(
+		fixture: MetadataFixture,
+		gitWorktreeDir: string,
+		watched: string,
+	): Promise<void> {
 		const before = tree(watched);
-		const worktreesBefore = registeredWorktrees(fixture.invoking);
+		const worktreesBefore = await registeredWorktrees(fixture.invoking);
 		assert.throws(
 			() => setupGitWorktree({ cwd: join(fixture.invoking, "packages", "api"), gitWorktreeDir }),
 			/gitWorktreeDir must not be inside Git metadata/,
 		);
 		assert.deepEqual(tree(watched), before);
-		assert.deepEqual(registeredWorktrees(fixture.invoking), worktreesBefore);
+		assert.deepEqual(await registeredWorktrees(fixture.invoking), worktreesBefore);
 	}
 
 	function emptyDirectory(parent: string, name: string): string {
@@ -382,50 +404,50 @@ describe("gitWorktreeDir never creates or reuses a checkout inside Git metadata"
 		return directory;
 	}
 
-	test("rejects an empty directory under another repository's .git/objects/info", () => {
-		const fixture = createMetadataFixture();
+	test("rejects an empty directory under another repository's .git/objects/info", async () => {
+		const fixture = await createMetadataFixture();
 		try {
 			const target = join(fixture.otherGitDir, "objects", "info");
 			assert.deepEqual(readdirSync(target), []);
-			assertRejectedWithoutWrites(fixture, target, fixture.otherGitDir);
+			await assertRejectedWithoutWrites(fixture, target, fixture.otherGitDir);
 		} finally {
 			rmSync(fixture.root, { recursive: true, force: true });
 		}
 	});
 
-	test("rejects an empty directory under a linked worktree's admin directory", () => {
-		const fixture = createMetadataFixture();
+	test("rejects an empty directory under a linked worktree's admin directory", async () => {
+		const fixture = await createMetadataFixture();
 		try {
 			const target = emptyDirectory(fixture.adminDir, "empty");
-			assertRejectedWithoutWrites(fixture, target, fixture.adminDir);
+			await assertRejectedWithoutWrites(fixture, target, fixture.adminDir);
 		} finally {
 			rmSync(fixture.root, { recursive: true, force: true });
 		}
 	});
 
-	test("rejects an empty directory inside a bare repository", () => {
-		const fixture = createMetadataFixture();
+	test("rejects an empty directory inside a bare repository", async () => {
+		const fixture = await createMetadataFixture();
 		try {
 			const target = emptyDirectory(fixture.bare, "empty");
-			assertRejectedWithoutWrites(fixture, target, fixture.bare);
+			await assertRejectedWithoutWrites(fixture, target, fixture.bare);
 		} finally {
 			rmSync(fixture.root, { recursive: true, force: true });
 		}
 	});
 
-	test("rejects allocating a checkout inside non-empty Git metadata directories", () => {
-		const fixture = createMetadataFixture();
+	test("rejects allocating a checkout inside non-empty Git metadata directories", async () => {
+		const fixture = await createMetadataFixture();
 		try {
-			assertRejectedWithoutWrites(fixture, join(fixture.otherGitDir, "objects"), fixture.otherGitDir);
-			assertRejectedWithoutWrites(fixture, fixture.adminDir, fixture.adminDir);
-			assertRejectedWithoutWrites(fixture, fixture.bare, fixture.bare);
+			await assertRejectedWithoutWrites(fixture, join(fixture.otherGitDir, "objects"), fixture.otherGitDir);
+			await assertRejectedWithoutWrites(fixture, fixture.adminDir, fixture.adminDir);
+			await assertRejectedWithoutWrites(fixture, fixture.bare, fixture.bare);
 		} finally {
 			rmSync(fixture.root, { recursive: true, force: true });
 		}
 	});
 
-	test("rejects creating a missing path inside Git metadata directories", () => {
-		const fixture = createMetadataFixture();
+	test("rejects creating a missing path inside Git metadata directories", async () => {
+		const fixture = await createMetadataFixture();
 		try {
 			const cases = [
 				[join(fixture.otherGitDir, "objects", "info", "new-wt"), fixture.otherGitDir],
@@ -433,7 +455,7 @@ describe("gitWorktreeDir never creates or reuses a checkout inside Git metadata"
 				[join(fixture.bare, "new-wt"), fixture.bare],
 			] as const;
 			for (const [target, watched] of cases) {
-				assertRejectedWithoutWrites(fixture, target, watched);
+				await assertRejectedWithoutWrites(fixture, target, watched);
 				assert.equal(existsSync(target), false);
 			}
 		} finally {
@@ -441,8 +463,8 @@ describe("gitWorktreeDir never creates or reuses a checkout inside Git metadata"
 		}
 	});
 
-	test("rejects Git metadata from a cwd outside any Git repository", () => {
-		const fixture = createMetadataFixture();
+	test("rejects Git metadata from a cwd outside any Git repository", async () => {
+		const fixture = await createMetadataFixture();
 		try {
 			const plainCwd = emptyDirectory(fixture.root, "plain");
 			for (const target of [join(fixture.otherGitDir, "objects", "info"), fixture.adminDir, fixture.bare]) {
@@ -458,39 +480,43 @@ describe("gitWorktreeDir never creates or reuses a checkout inside Git metadata"
 });
 
 describe("gitWorktreeDir never nests a checkout inside another Git working tree", () => {
-	function assertRejectedWithoutWrites(invoking: string, gitWorktreeDir: string, watched: string): void {
+	async function assertRejectedWithoutWrites(
+		invoking: string,
+		gitWorktreeDir: string,
+		watched: string,
+	): Promise<void> {
 		const before = readdirSync(watched, { recursive: true, encoding: "utf8" }).sort();
-		const invokingBefore = registeredWorktrees(invoking);
-		const watchedBefore = registeredWorktrees(watched);
+		const invokingBefore = await registeredWorktrees(invoking);
+		const watchedBefore = await registeredWorktrees(watched);
 		assert.throws(
 			() => setupGitWorktree({ cwd: join(invoking, "packages", "api"), gitWorktreeDir }),
 			/gitWorktreeDir must not be inside another Git working tree/,
 		);
 		assert.deepEqual(readdirSync(watched, { recursive: true, encoding: "utf8" }).sort(), before);
-		assert.deepEqual(registeredWorktrees(invoking), invokingBefore);
-		assert.deepEqual(registeredWorktrees(watched), watchedBefore);
+		assert.deepEqual(await registeredWorktrees(invoking), invokingBefore);
+		assert.deepEqual(await registeredWorktrees(watched), watchedBefore);
 	}
 
-	test("rejects an empty subdirectory of another repository's checkout", () => {
+	test("rejects an empty subdirectory of another repository's checkout", async () => {
 		const root = createScratch();
 		try {
-			const invoking = createGitRepo(root, "invoking");
-			const other = createGitRepo(root, "other");
+			const invoking = await createGitRepo(root, "invoking");
+			const other = await createGitRepo(root, "other");
 			const target = join(other, "empty-subdir");
 			mkdirSync(target);
-			assertRejectedWithoutWrites(invoking, target, other);
+			await assertRejectedWithoutWrites(invoking, target, other);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
 
-	test("rejects a missing path under another repository's checkout", () => {
+	test("rejects a missing path under another repository's checkout", async () => {
 		const root = createScratch();
 		try {
-			const invoking = createGitRepo(root, "invoking");
-			const other = createGitRepo(root, "other");
+			const invoking = await createGitRepo(root, "invoking");
+			const other = await createGitRepo(root, "other");
 			for (const target of [join(other, "new-wt"), join(other, "packages", "api", "deeper", "new-wt")]) {
-				assertRejectedWithoutWrites(invoking, target, other);
+				await assertRejectedWithoutWrites(invoking, target, other);
 				assert.equal(existsSync(target), false);
 			}
 		} finally {
@@ -498,25 +524,25 @@ describe("gitWorktreeDir never nests a checkout inside another Git working tree"
 		}
 	});
 
-	test("rejects allocating inside a non-empty subdirectory of another repository's checkout", () => {
+	test("rejects allocating inside a non-empty subdirectory of another repository's checkout", async () => {
 		const root = createScratch();
 		try {
-			const invoking = createGitRepo(root, "invoking");
-			const other = createGitRepo(root, "other");
+			const invoking = await createGitRepo(root, "invoking");
+			const other = await createGitRepo(root, "other");
 			const target = join(other, "notes");
 			mkdirSync(target);
 			writeFileSync(join(target, "untracked.txt"), "untracked\n");
-			assertRejectedWithoutWrites(invoking, target, other);
-			assertRejectedWithoutWrites(invoking, join(other, "packages"), other);
+			await assertRejectedWithoutWrites(invoking, target, other);
+			await assertRejectedWithoutWrites(invoking, join(other, "packages"), other);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
 
-	test("still creates worktrees in containers outside every Git working tree", () => {
+	test("still creates worktrees in containers outside every Git working tree", async () => {
 		const root = createScratch();
 		try {
-			const repo = createGitRepo(root, "repo");
+			const repo = await createGitRepo(root, "repo");
 			const missing = join(root, "containers", "missing", "repo-wt");
 			const created = setupGitWorktree({ cwd: repo, gitWorktreeDir: missing });
 			assert.equal(created.created, true);
@@ -527,7 +553,7 @@ describe("gitWorktreeDir never nests a checkout inside another Git working tree"
 			assert.equal(allocated.created, true);
 			assert.equal(dirname(dirname(allocated.worktreeRoot)), container);
 
-			const otherRoot = createGitRepo(root, "other");
+			const otherRoot = await createGitRepo(root, "other");
 			const reused = setupGitWorktree({ cwd: repo, gitWorktreeDir: otherRoot });
 			assert.equal(reused.created, false);
 			assert.equal(reused.worktreeRoot, otherRoot);

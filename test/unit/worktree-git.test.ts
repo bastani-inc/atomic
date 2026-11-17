@@ -59,15 +59,19 @@ function createRepoShape(): { readonly root: string; readonly repo: string; read
 	return { root, repo, sourceCwd };
 }
 
-function createGitRepository(): { readonly root: string; readonly repo: string; readonly worktree: string } {
+async function createGitRepository(): Promise<{
+	readonly root: string;
+	readonly repo: string;
+	readonly worktree: string;
+}> {
 	const root = realpathSync.native(mkdtempSync(join(tmpdir(), "atomic-worktree-generation-test-")));
 	const repo = join(root, "repo");
 	const worktree = join(root, "worktree");
 	mkdirSync(repo);
-	runGitChecked(repo, ["init", "-b", "main"]);
+	await runGitChecked(repo, ["init", "-b", "main"]);
 	writeFileSync(join(repo, "tracked.txt"), "primary\n");
-	runGitChecked(repo, ["add", "."]);
-	runGitChecked(repo, [
+	await runGitChecked(repo, ["add", "."]);
+	await runGitChecked(repo, [
 		"-c",
 		"user.name=Atomic Test",
 		"-c",
@@ -84,72 +88,72 @@ function isArgs(args: readonly string[], expected: readonly string[]): boolean {
 	return args.length === expected.length && args.every((value, index) => value === expected[index]);
 }
 describe("canonical main Git root parser", () => {
-	test("finds a main checkout and handles cwd-is-a-file", () => {
-		const { root, repo } = createGitRepository();
+	test("finds a main checkout and handles cwd-is-a-file", async () => {
+		const { root, repo } = await createGitRepository();
 		const file = join(repo, "tracked.txt");
 		try {
-			assert.equal(findGitRoot(file), repo);
-			assert.equal(resolveMainRepoRoot(repo), repo);
-			assert.equal(findCanonicalGitRoot(file), repo);
+			assert.equal(await findGitRoot(file), repo);
+			assert.equal(await resolveMainRepoRoot(repo), repo);
+			assert.equal(await findCanonicalGitRoot(file), repo);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
 
-	test("resolves a linked pointer and nested cwd without invoking Git", () => {
-		const { root, repo, worktree } = createGitRepository();
+	test("resolves a linked pointer and nested cwd without invoking Git", async () => {
+		const { root, repo, worktree } = await createGitRepository();
 		try {
-			runGitChecked(repo, ["worktree", "add", "--detach", worktree]);
+			await runGitChecked(repo, ["worktree", "add", "--detach", worktree]);
 			const nested = join(worktree, "nested", "deeper");
 			mkdirSync(nested, { recursive: true });
-			assert.equal(findGitRoot(nested), worktree);
-			assert.equal(resolveMainRepoRoot(worktree), repo);
-			assert.equal(findCanonicalGitRoot(nested), repo);
+			assert.equal(await findGitRoot(nested), worktree);
+			assert.equal(await resolveMainRepoRoot(worktree), repo);
+			assert.equal(await findCanonicalGitRoot(nested), repo);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
 
-	test("rejects missing-prefix, empty, and non-worktrees pointers", () => {
+	test("rejects missing-prefix, empty, and non-worktrees pointers", async () => {
 		const root = realpathSync.native(mkdtempSync(join(tmpdir(), "atomic-worktree-pointer-test-")));
 		const checkout = join(root, "checkout");
 		mkdirSync(checkout);
 		try {
 			writeFileSync(join(checkout, ".git"), "not-gitdir: ../foreign\n");
-			assert.equal(resolveMainRepoRoot(checkout), undefined);
+			assert.equal(await resolveMainRepoRoot(checkout), undefined);
 			writeFileSync(join(checkout, ".git"), "gitdir:   \n");
-			assert.equal(resolveMainRepoRoot(checkout), undefined);
+			assert.equal(await resolveMainRepoRoot(checkout), undefined);
 			writeFileSync(join(checkout, ".git"), "gitdir: ../foreign/admin\n");
-			assert.equal(resolveMainRepoRoot(checkout), undefined);
+			assert.equal(await resolveMainRepoRoot(checkout), undefined);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
 
-	test("rejects a pointer escaping to a foreign repository worktree", () => {
-		const first = createGitRepository();
-		const foreign = createGitRepository();
+	test("rejects a pointer escaping to a foreign repository worktree", async () => {
+		const first = await createGitRepository();
+		const foreign = await createGitRepository();
 		const fake = join(first.root, "fake-linked");
 		mkdirSync(fake);
 		try {
-			runGitChecked(foreign.repo, ["worktree", "add", "--detach", foreign.worktree]);
+			await runGitChecked(foreign.repo, ["worktree", "add", "--detach", foreign.worktree]);
 			writeFileSync(join(fake, ".git"), readFileSync(join(foreign.worktree, ".git")));
-			assert.equal(resolveMainRepoRoot(fake), undefined);
+			assert.equal(await resolveMainRepoRoot(fake), undefined);
 		} finally {
 			rmSync(first.root, { recursive: true, force: true });
 			rmSync(foreign.root, { recursive: true, force: true });
 		}
 	});
 
-	test("subagent parser mirrors canonical-root edge cases", () => {
-		const { root, repo, worktree } = createGitRepository();
+	test("subagent parser mirrors canonical-root edge cases", async () => {
+		const { root, repo, worktree } = await createGitRepository();
 		const malformed = join(root, "malformed");
-		const foreign = createGitRepository();
+		const foreign = await createGitRepository();
 		mkdirSync(malformed);
 		try {
 			assert.equal(findSubagentGitRoot(join(repo, "tracked.txt")), repo);
 			assert.equal(resolveSubagentMainRepoRoot(repo), repo);
-			runGitChecked(repo, ["worktree", "add", "--detach", worktree]);
+			await runGitChecked(repo, ["worktree", "add", "--detach", worktree]);
 			const nested = join(worktree, "nested", "deeper");
 			mkdirSync(nested, { recursive: true });
 			assert.equal(findSubagentCanonicalGitRoot(nested), repo);
@@ -161,7 +165,7 @@ describe("canonical main Git root parser", () => {
 			writeFileSync(join(malformed, ".git"), "gitdir: ../foreign/admin\n");
 			assert.equal(resolveSubagentMainRepoRoot(malformed), undefined);
 
-			runGitChecked(foreign.repo, ["worktree", "add", "--detach", foreign.worktree]);
+			await runGitChecked(foreign.repo, ["worktree", "add", "--detach", foreign.worktree]);
 			writeFileSync(join(malformed, ".git"), readFileSync(join(foreign.worktree, ".git")));
 			assert.equal(resolveSubagentMainRepoRoot(malformed), undefined);
 		} finally {
@@ -234,7 +238,7 @@ describe("workflow reusable git worktree git runner", () => {
 		}
 	});
 
-	test("caches setup and revalidates checkout identity within a run", () => {
+	test("caches setup and revalidates checkout identity within a run", async () => {
 		const { root, repo, sourceCwd } = createRepoShape();
 		const worktree = join(root, "cached-wt");
 		const commonDir = join(root, "common.git");
@@ -267,25 +271,25 @@ describe("workflow reusable git worktree git runner", () => {
 
 		const cache = createGitWorktreeSetupCache();
 		try {
-			withGitRunnerForTest(runner, () => {
+			await withGitRunnerForTest(runner, async () => {
 				const options = { cwd: sourceCwd, gitWorktreeDir: "../cached-wt", baseBranch: "main" };
-				const setup = cache.get(options);
+				const setup = await cache.get(options);
 				assert.equal(setup.cwd, join(root, "cached-wt", "packages", "api"));
-				assert.equal(cache.get(options), setup);
+				assert.equal(await cache.get(options), setup);
 			});
 			assert.equal(worktreeAddCalls, 1);
 			assert.ok(identityProbeCalls > 0, "cache reuse should probe the selected checkout identity");
 		} finally {
-			cache.dispose();
+			await cache.dispose();
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
 
-	test("rejects cache reuse when a byte-identical .git file replaces the cached checkout generation", () => {
-		const { root, repo, worktree } = createGitRepository();
+	test("rejects cache reuse when a byte-identical .git file replaces the cached checkout generation", async () => {
+		const { root, repo, worktree } = await createGitRepository();
 		const cache = createGitWorktreeSetupCache();
 		try {
-			cache.get({ cwd: repo, gitWorktreeDir: worktree });
+			await cache.get({ cwd: repo, gitWorktreeDir: worktree });
 			const before = statSync(worktree);
 			const gitFile = join(worktree, ".git");
 			const gitFileContents = readFileSync(gitFile);
@@ -296,71 +300,74 @@ describe("workflow reusable git worktree git runner", () => {
 			const after = statSync(worktree);
 			assert.equal(after.dev, before.dev, "replacement should retain the cached root device");
 			assert.equal(after.ino, before.ino, "replacement should retain the cached root inode");
-			assert.throws(
-				() => cache.get({ cwd: repo, gitWorktreeDir: worktree }),
+			await assert.rejects(
+				async () => await cache.get({ cwd: repo, gitWorktreeDir: worktree }),
 				/Cached gitWorktreeDir changed before reuse:/,
 			);
 		} finally {
-			cache.dispose();
+			await cache.dispose();
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
 
-	test("disposes cached checkout anchors idempotently before worktree cleanup", () => {
-		const { root, repo, worktree } = createGitRepository();
+	test("disposes cached checkout anchors idempotently before worktree cleanup", async () => {
+		const { root, repo, worktree } = await createGitRepository();
 		const cache = createGitWorktreeSetupCache();
 		try {
-			cache.get({ cwd: repo, gitWorktreeDir: worktree });
-			cache.dispose();
-			assert.doesNotThrow(() => cache.dispose());
-			assert.throws(() => cache.get({ cwd: repo, gitWorktreeDir: worktree }), /cache is already disposed/);
-			runGitChecked(repo, ["worktree", "remove", "--force", worktree]);
+			await cache.get({ cwd: repo, gitWorktreeDir: worktree });
+			await cache.dispose();
+			await assert.doesNotReject(async () => await cache.dispose());
+			await assert.rejects(
+				async () => await cache.get({ cwd: repo, gitWorktreeDir: worktree }),
+				/cache is already disposed/,
+			);
+			await runGitChecked(repo, ["worktree", "remove", "--force", worktree]);
 		} finally {
-			cache.dispose();
+			await cache.dispose();
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
 
-	test("leaves a supplied setup cache open when its engine owner is released", () => {
-		const { root, repo, worktree } = createGitRepository();
+	test("leaves a supplied setup cache open when its engine owner is released", async () => {
+		const { root, repo, worktree } = await createGitRepository();
 		const cache = createGitWorktreeSetupCache();
 		const owner = createGitWorktreeSetupCacheOwner(cache);
 		let finalized = false;
 		try {
-			owner.release(() => {
+			await owner.release(() => {
 				finalized = true;
 			});
 			assert.equal(finalized, true);
-			assert.equal(cache.get({ cwd: repo, gitWorktreeDir: worktree }).worktreeRoot, worktree);
+			assert.equal((await cache.get({ cwd: repo, gitWorktreeDir: worktree })).worktreeRoot, worktree);
 		} finally {
-			cache.dispose();
+			await cache.dispose();
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
 
-	test("supports the main checkout as a reusable target from a linked invocation", () => {
-		const { root, repo } = createGitRepository();
+	test("supports the main checkout as a reusable target from a linked invocation", async () => {
+		const { root, repo } = await createGitRepository();
 		const linkedSource = join(root, "linked-source");
 		const cache = createGitWorktreeSetupCache();
 		try {
-			runGitChecked(repo, ["worktree", "add", "--detach", linkedSource]);
+			await runGitChecked(repo, ["worktree", "add", "--detach", linkedSource]);
 			const options = { cwd: linkedSource, gitWorktreeDir: repo };
-			const setup = cache.get(options);
+			const setup = await cache.get(options);
 			assert.equal(setup.created, false);
 			assert.equal(setup.worktreeRoot, repo);
-			assert.equal(cache.get(options), setup);
+			assert.equal(await cache.get(options), setup);
 		} finally {
-			cache.dispose();
+			await cache.dispose();
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
 
-	test("creates a missing reusable target from the main root when invoked inside a linked worktree", () => {
-		const { root, repo } = createGitRepository();
+	test("creates a missing reusable target from the main root when invoked inside a linked worktree", async () => {
+		const { root, repo } = await createGitRepository();
 		const linkedSource = join(root, "linked-source");
 		const reusable = join(root, "reusable-from-linked");
 		try {
-			runGitChecked(repo, ["worktree", "add", "--detach", linkedSource]);
+			await runGitChecked(repo, ["worktree", "add", "--detach", linkedSource]);
 			const nested = join(linkedSource, "packages", "api");
 			mkdirSync(nested, { recursive: true });
 			const setup = setupGitWorktree({ cwd: nested, gitWorktreeDir: reusable, baseBranch: "main" });
@@ -368,8 +375,8 @@ describe("workflow reusable git worktree git runner", () => {
 			assert.equal(setup.repositoryRoot, linkedSource);
 			assert.equal(setup.worktreeRoot, reusable);
 			assert.equal(setup.cwd, join(reusable, "packages", "api"));
-			assert.equal(findCanonicalGitRoot(reusable), repo);
-			runGitChecked(repo, ["worktree", "remove", "--force", reusable]);
+			assert.equal(await findCanonicalGitRoot(reusable), repo);
+			await runGitChecked(repo, ["worktree", "remove", "--force", reusable]);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

@@ -2,7 +2,7 @@ import { createStructuredOutputCapture, runCallback } from "@bastani/atomic";
 import type { Static, TSchema } from "typebox";
 import { RESUME_CONTINUATION_PROMPT } from "../../shared/resume-continuation.js";
 import type { WorkflowStructuredOutputInferenceError } from "../../shared/structured-output-errors.js";
-import type { StageExecutionMeta, StageOutputOptions } from "../../shared/types.js";
+import type { StageExecutionMeta, StageOptions, StageOutputOptions } from "../../shared/types.js";
 import { StageSessionController } from "./stage-runner-controller.js";
 import {
 	assistantArtifactTextForGeneration,
@@ -36,12 +36,13 @@ import type { InternalStageContext, LiveInternalStageContext, StageRunnerOpts } 
 
 export function createStageContext(opts: StageRunnerOpts): LiveInternalStageContext {
 	const { stageId, stageName, adapters, runId, workflowIntercomGroup, signal, stageOptions, executionMode } = opts;
-	const stageCwd =
-		stageOptions?.cwd ??
-		stageOptions?.sessionManager?.getCwd() ??
+	const stageCwdOf = (options: StageOptions | undefined): string =>
+		options?.cwd ??
+		options?.sessionManager?.getCwd() ??
 		agentSessionAdapterDefaultCwd(adapters.agentSession) ??
 		opts.defaultCwd ??
 		process.cwd();
+	let stageCwd = stageCwdOf(stageOptions);
 	const structuredOutputCapture = stageOptions?.schema ? createStructuredOutputCapture<Static<TSchema>>() : undefined;
 	const structuredOutputExecutionCapture: StructuredOutputExecutionCapture<Static<TSchema>> | undefined =
 		stageOptions?.schema ? {} : undefined;
@@ -52,15 +53,17 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 				structuredOutputExecutionCapture,
 			)
 		: undefined;
-	const effectiveStageOptions = stageOptionsWithStructuredOutput(
-		adapters.sessionStore === undefined ||
-			stageOptions?.sessionStore !== undefined ||
-			stageOptions?.sessionDir !== undefined ||
-			stageOptions?.sessionManager !== undefined
-			? stageOptions
-			: { ...stageOptions, sessionStore: adapters.sessionStore },
-		structuredOutputTool,
-	);
+	const effectiveOptionsOf = (options: StageOptions | undefined): StageOptions | undefined =>
+		stageOptionsWithStructuredOutput(
+			adapters.sessionStore === undefined ||
+				options?.sessionStore !== undefined ||
+				options?.sessionDir !== undefined ||
+				options?.sessionManager !== undefined
+				? options
+				: { ...options, sessionStore: adapters.sessionStore },
+			structuredOutputTool,
+		);
+	let effectiveStageOptions = effectiveOptionsOf(stageOptions);
 	const meta: StageExecutionMeta = {
 		runId,
 		stageId,
@@ -76,6 +79,18 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 		effectiveStageOptions,
 		structuredOutputCapture,
 	);
+	/** The stage's options once its worktree is set up, applied before its session, prompts and completions start. */
+	const stageOptionsApplied = opts.stageOptionsReady?.then((resolved) => {
+		stageCwd = stageCwdOf(resolved);
+		effectiveStageOptions = effectiveOptionsOf(resolved);
+		meta.stageOptions = effectiveStageOptions;
+		controller.useStageOptions(effectiveStageOptions, stageCwd);
+	});
+	if (stageOptionsApplied !== undefined) {
+		// Each use of the stage reports a setup that failed; a stage never used reports nothing.
+		stageOptionsApplied.catch(() => {});
+		controller.waitForStageOptions(stageOptionsApplied);
+	}
 	let lastAssistantText: string | undefined;
 	let lastFinalizedOutput: string | undefined;
 	let lastFinalizedMessageCount: number | undefined;
@@ -137,6 +152,7 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 		name: stageName,
 
 		async prompt(text, options) {
+			if (stageOptionsApplied !== undefined) await stageOptionsApplied;
 			if (continuing && artifactOptions) options = { ...options, ...artifactOptions };
 			const { sdkOptions, outputOptions } = splitPromptOptions(options);
 			validatePromptOutputOptions(outputOptions);
@@ -301,6 +317,7 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 		},
 
 		async complete(text, completeOpts) {
+			if (stageOptionsApplied !== undefined) await stageOptionsApplied;
 			artifactOptions = undefined;
 			if (adapters.complete) {
 				if (effectiveStageOptions?.model === "auto" && completeOpts?.model === undefined)

@@ -1,17 +1,19 @@
 import { test, vi } from "vitest";
 
 const lstatFailure = vi.hoisted(() => ({ path: "", code: "" }));
-vi.mock("node:fs", async (importOriginal) => {
-	const fs = await importOriginal<typeof import("node:fs")>();
-	const lstatSync = ((...args: Parameters<typeof fs.lstatSync>) => {
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const fs = await importOriginal<typeof import("node:fs/promises")>();
+	const lstat = ((...args: Parameters<typeof fs.lstat>) => {
 		if (lstatFailure.path && String(args[0]) === lstatFailure.path) {
-			throw Object.assign(new Error(`${lstatFailure.code}: lstat '${lstatFailure.path}'`), {
-				code: lstatFailure.code,
-			});
+			return Promise.reject(
+				Object.assign(new Error(`${lstatFailure.code}: lstat '${lstatFailure.path}'`), {
+					code: lstatFailure.code,
+				}),
+			);
 		}
-		return fs.lstatSync(...args);
-	}) as typeof fs.lstatSync;
-	return { ...fs, lstatSync, default: { ...fs, lstatSync } };
+		return fs.lstat(...args);
+	}) as typeof fs.lstat;
+	return { ...fs, lstat, default: { ...fs, lstat } };
 });
 vi.mock("../../packages/workflows/src/runs/shared/worktree-git.js", { spy: true });
 
@@ -31,27 +33,27 @@ import { join } from "node:path";
 import { runGitChecked } from "../../packages/workflows/src/runs/shared/worktree-git.js";
 import { cleanupWorktrees, createWorktrees } from "../../packages/workflows/src/runs/shared/worktree-setup.js";
 
-function createRepository(): { root: string; repo: string } {
+async function createRepository(): Promise<{ root: string; repo: string }> {
 	const root = realpathSync.native(mkdtempSync(join(tmpdir(), "atomic-worktree-link-inspection-")));
 	const repo = join(root, "repo");
 	mkdirSync(repo);
-	runGitChecked(repo, ["init", "-b", "main"]);
-	runGitChecked(repo, ["config", "user.name", "Atomic Test"]);
-	runGitChecked(repo, ["config", "user.email", "atomic@example.com"]);
+	await runGitChecked(repo, ["init", "-b", "main"]);
+	await runGitChecked(repo, ["config", "user.name", "Atomic Test"]);
+	await runGitChecked(repo, ["config", "user.email", "atomic@example.com"]);
 	writeFileSync(join(repo, ".gitignore"), "deps/\n");
 	writeFileSync(join(repo, "tracked.txt"), "tracked\n");
-	runGitChecked(repo, ["add", "."]);
-	runGitChecked(repo, ["commit", "--no-gpg-sign", "-m", "initial"]);
+	await runGitChecked(repo, ["add", "."]);
+	await runGitChecked(repo, ["commit", "--no-gpg-sign", "-m", "initial"]);
 	mkdirSync(join(repo, "deps"));
 	writeFileSync(join(repo, "deps", "module.txt"), "dependency\n");
 	return { root, repo };
 }
 
 for (const code of ["EACCES", "EIO"]) {
-	test(`cleanup leaves the worktree in place when a linked directory cannot be inspected (${code})`, () => {
-		const { root, repo } = createRepository();
+	test(`cleanup leaves the worktree in place when a linked directory cannot be inspected (${code})`, async () => {
+		const { root, repo } = await createRepository();
 		try {
-			const setup = createWorktrees(repo, `inspect/${code}`, 1, {
+			const setup = await createWorktrees(repo, `inspect/${code}`, 1, {
 				baseBranch: "main",
 				symlinkDirectories: ["deps"],
 			});
@@ -62,7 +64,7 @@ for (const code of ["EACCES", "EIO"]) {
 			lstatFailure.path = link;
 			lstatFailure.code = code;
 			try {
-				cleanupWorktrees(setup);
+				await cleanupWorktrees(setup);
 			} finally {
 				lstatFailure.path = "";
 			}
@@ -78,7 +80,7 @@ for (const code of ["EACCES", "EIO"]) {
 			assert.equal(existsSync(worktree.path), true, "the worktree must be left for recovery");
 			assert.equal(lstatSync(link).isSymbolicLink(), true, "the link must be left intact");
 			assert.equal(readFileSync(join(repo, "deps", "module.txt"), "utf8"), "dependency\n");
-			assert.notEqual(runGitChecked(repo, ["branch", "--list", worktree.branch]).trim(), "");
+			assert.notEqual((await runGitChecked(repo, ["branch", "--list", worktree.branch])).trim(), "");
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

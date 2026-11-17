@@ -21,6 +21,7 @@ import {
 import type { ParallelFailFastScope } from "../../runs/foreground/executor-types.js";
 import { prepareTaskGit } from "../../runs/shared/worktree-git-runner.js";
 import type {
+	StageOptions,
 	WorkflowArtifact,
 	WorkflowChainOptions,
 	WorkflowParallelOptions,
@@ -46,6 +47,15 @@ export interface WorkflowTaskRunners {
 }
 
 function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
+	/** A git failure while a task sets up its own worktree says that the task needs git, and why. */
+	const gitRequired = (error: unknown, name: string, options: WorkflowTaskOptions): unknown =>
+		wrapGitRequired(error, {
+			workflow: runtime.workflowName,
+			runId: runtime.runId,
+			source: "task-option",
+			field: name,
+			...(options.gitWorktreeDir === undefined ? {} : { gitWorktreeDir: options.gitWorktreeDir }),
+		});
 	const runTask = async (
 		name: string,
 		options: WorkflowTaskOptions,
@@ -57,7 +67,7 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 		assertWorkspaceCompatible({ ...options, workspace });
 		const runTaskOnce = async (
 			taskOptions: WorkflowTaskOptions,
-			prepareLiveOptions?: () => WorkflowTaskOptions,
+			prepareLiveOptions?: () => Promise<WorkflowTaskOptions>,
 		): Promise<WorkflowTaskResult> => {
 			runtime.exit.throwIfWorkflowExitSelected();
 			let resolvedTaskOptions =
@@ -68,29 +78,53 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 				!runtime.agentStageReplaysSavedResult(name, stageOptions)
 			)
 				await prepareTaskGit(runtime.signal);
+			// A live task's worktree is set up once its stage spawned, as its stage starts; its prompt names files there.
+			let livePreparation: Promise<StageOptions | undefined> | undefined;
+			const prepareLive = async (): Promise<StageOptions | undefined> => {
+				try {
+					const preparedOptions = (await prepareLiveOptions?.()) ?? taskOptions;
+					resolvedTaskOptions =
+						(await stageOptionsWithGitWorktree(
+							stageOptionsWithInputDefaults(preparedOptions, runtime.inputRuntimeDefaults),
+							runtime.workflowInvocationCwd,
+							runtime.gitWorktreeSetupCache,
+						)) ?? preparedOptions;
+					return taskStageOptions(resolvedTaskOptions);
+				} catch (error) {
+					// The task's stage fails with this error, which says the task needs git when that is why.
+					throw gitRequired(error, name, options);
+				}
+			};
 			const stageHandle = runtime.spawnStage(name, {
 				kind: "agent",
 				...(stageOptions !== undefined ? { options: stageOptions } : {}),
 				...(stageFailFastScope !== undefined ? { failFastScope: stageFailFastScope } : {}),
-				prepareLiveOptions: () => {
-					const preparedOptions = prepareLiveOptions?.() ?? taskOptions;
-					resolvedTaskOptions =
-						stageOptionsWithGitWorktree(
-							stageOptionsWithInputDefaults(preparedOptions, runtime.inputRuntimeDefaults),
-							runtime.workflowInvocationCwd,
-							runtime.gitWorktreeSetupCache,
-						) ?? preparedOptions;
-					return taskStageOptions(resolvedTaskOptions);
-				},
+				...(prepareLiveOptions !== undefined || typeof resolvedTaskOptions.gitWorktreeDir === "string"
+					? {
+							prepareLiveOptions: () => {
+								livePreparation = prepareLive();
+								return livePreparation;
+							},
+						}
+					: {}),
 			});
 			const stage = stageHandle.context;
+			// A setup that failed fails the stage's prompt with its error, so the prompt is not built from it.
+			const setupFailed =
+				livePreparation !== undefined &&
+				(await livePreparation.then(
+					() => false,
+					() => true,
+				));
 			// A resumed task sends the prompt it was started with, which its stage compares with the transcript it reopens;
 			// the files the prompt names are checked only when the task starts.
 			const resumed = resolvedTaskOptions.resumeFromSessionId !== undefined;
-			const promptText = applyTaskContext(
-				`${await taskReadInstruction(resolvedTaskOptions, !resumed)}${taskPrompt(resolvedTaskOptions)}`,
-				taskPrevious(resolvedTaskOptions),
-			);
+			const promptText = setupFailed
+				? ""
+				: applyTaskContext(
+						`${await taskReadInstruction(resolvedTaskOptions, !resumed)}${taskPrompt(resolvedTaskOptions)}`,
+						taskPrevious(resolvedTaskOptions),
+					);
 			const rawOutput = await stage.prompt(promptText, taskPromptOptions(resolvedTaskOptions));
 			const structured = typeof rawOutput === "string" ? undefined : rawOutput;
 			const text = truncateTaskOutput(structuredTaskOutputText(rawOutput), resolvedTaskOptions.maxOutput);
@@ -128,16 +162,18 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 			const binding = await resolveWorkspace(workspace, { signal: runtime.signal });
 			return { ...result, changeSet: await workspaceChangeSet(binding, { signal: runtime.signal }) };
 		}
-		let prepared: ReturnType<typeof prepareTaskWorktrees> | undefined;
-		let collected: readonly WorkflowArtifact[] | undefined;
-		const collect = () => {
+		let prepared: Awaited<ReturnType<typeof prepareTaskWorktrees>> | undefined;
+		let collected: Promise<readonly WorkflowArtifact[]> | undefined;
+		const collect = (): Promise<readonly WorkflowArtifact[]> => {
 			collected ??=
-				prepared === undefined ? [] : collectWorktreeDiffs(prepared, options.artifacts !== false).artifacts;
+				prepared === undefined
+					? Promise.resolve([])
+					: collectWorktreeDiffs(prepared, options.artifacts !== false).then(({ artifacts }) => artifacts);
 			return collected;
 		};
 		try {
-			const result = await runTaskOnce(options, () => {
-				prepared = prepareTaskWorktrees(
+			const result = await runTaskOnce(options, async () => {
+				prepared = await prepareTaskWorktrees(
 					[{ ...options, name }],
 					{ ...options, worktree: true },
 					`${runtime.runId}-${name}-${crypto.randomUUID()}`,
@@ -150,7 +186,7 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 					runtime.registerTerminalArtifactCollector(preparedTask.durableReplayKey, collect);
 				return preparedTask;
 			});
-			const artifacts = collect();
+			const artifacts = await collect();
 			// A worktree whose diff could not be captured is kept, and setup it could not finish is skipped: the task's
 			// result says so, with the worktree (#4876).
 			const worktreeWarnings = [
@@ -170,21 +206,14 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 				...(worktreeWarnings.length === 0 ? {} : { warnings: [...(result.warnings ?? []), ...worktreeWarnings] }),
 			};
 		} finally {
-			if (prepared !== undefined) cleanupPreparedWorktrees(prepared);
+			if (prepared !== undefined) await cleanupPreparedWorktrees(prepared);
 		}
 	};
-	/** A git failure while a task sets up its own worktree says that the task needs git, and why. */
 	return async (name, options, stageFailFastScope) => {
 		try {
 			return await runTask(name, options, stageFailFastScope);
 		} catch (error) {
-			throw wrapGitRequired(error, {
-				workflow: runtime.workflowName,
-				runId: runtime.runId,
-				source: "task-option",
-				field: name,
-				...(options.gitWorktreeDir === undefined ? {} : { gitWorktreeDir: options.gitWorktreeDir }),
-			});
+			throw gitRequired(error, name, options);
 		}
 	};
 }

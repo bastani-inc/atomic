@@ -161,20 +161,25 @@ export function stageOptionsWithInputDefaults<T extends StageOptions>(
 	});
 }
 
-export function stageOptionsWithGitWorktree<T extends StageOptions>(
-	options: T | undefined,
-	workflowInvocationCwd: string,
-	cache?: GitWorktreeSetupCache,
-): T | undefined {
-	if (options === undefined) return undefined;
+/** Refuses stage options whose worktree cannot be set up, before anything is set up for them. */
+export function assertStageGitWorktreeOptions(options: StageOptions | undefined): void {
+	if (options === undefined) return;
 	assertWorkspaceCompatible(options);
-	if (typeof options.gitWorktreeDir !== "string") return options;
-	if (options.gitWorktreeDir.trim().length === 0) {
+	if (typeof options.gitWorktreeDir === "string" && options.gitWorktreeDir.trim().length === 0) {
 		throw new Error(
 			"atomic-workflows: gitWorktreeDir cannot be empty; provide a reusable worktree path or omit gitWorktreeDir for a non-worktree run.",
 		);
 	}
-	const setup = setupGitWorktreeCached(
+}
+
+export async function stageOptionsWithGitWorktree<T extends StageOptions>(
+	options: T | undefined,
+	workflowInvocationCwd: string,
+	cache?: GitWorktreeSetupCache,
+): Promise<T | undefined> {
+	assertStageGitWorktreeOptions(options);
+	if (options === undefined || typeof options.gitWorktreeDir !== "string") return options;
+	const setup = await setupGitWorktreeCached(
 		{
 			gitWorktreeDir: options.gitWorktreeDir,
 			baseBranch: options.baseBranch,
@@ -193,13 +198,13 @@ export function inputsSelectGitWorktree(
 	return typeof inputDefaults.gitWorktreeDir === "string" && inputDefaults.gitWorktreeDir.trim().length > 0;
 }
 
-export function setupWorkflowInputGitWorktree(
+export async function setupWorkflowInputGitWorktree(
 	inputDefaults: Partial<StageOptions>,
 	workflowInvocationCwd: string,
 	cache?: GitWorktreeSetupCache,
-): GitWorktreeSetupResult | undefined {
+): Promise<GitWorktreeSetupResult | undefined> {
 	if (!inputsSelectGitWorktree(inputDefaults)) return undefined;
-	return setupGitWorktreeCached(
+	return await setupGitWorktreeCached(
 		{
 			gitWorktreeDir: inputDefaults.gitWorktreeDir,
 			baseBranch: inputDefaults.baseBranch,
@@ -209,27 +214,29 @@ export function setupWorkflowInputGitWorktree(
 	);
 }
 
-export function workflowCwdWithInputWorktree(
+export async function workflowCwdWithInputWorktree(
 	inputDefaults: Partial<StageOptions>,
 	workflowInvocationCwd: string,
 	cache?: GitWorktreeSetupCache,
-): string {
-	return setupWorkflowInputGitWorktree(inputDefaults, workflowInvocationCwd, cache)?.cwd ?? workflowInvocationCwd;
+): Promise<string> {
+	return (
+		(await setupWorkflowInputGitWorktree(inputDefaults, workflowInvocationCwd, cache))?.cwd ?? workflowInvocationCwd
+	);
 }
 
-export function workflowInvocationMetadata(
+export async function workflowInvocationMetadata(
 	inputDefaults: Partial<StageOptions>,
 	workflowInvocationCwd: string,
 	cache?: GitWorktreeSetupCache,
 	origin?: WorkflowActor,
-): {
+): Promise<{
 	readonly invocationCwd: string;
 	readonly workflowCwd?: string;
 	readonly repositoryRoot?: string;
 	readonly gitWorktreeRoot?: string;
 	readonly origin?: WorkflowActor;
-} {
-	const setup = setupWorkflowInputGitWorktree(inputDefaults, workflowInvocationCwd, cache);
+}> {
+	const setup = await setupWorkflowInputGitWorktree(inputDefaults, workflowInvocationCwd, cache);
 	return {
 		invocationCwd: workflowInvocationCwd,
 		...(setup !== undefined
@@ -261,14 +268,14 @@ function taskWorktreeOutputsRoot(runId: string): string {
 	return join(workflowArtifactRunPath(runId), "task-outputs");
 }
 
-export function prepareTaskWorktrees(
+export async function prepareTaskWorktrees(
 	tasks: readonly WorkflowTaskStep[],
 	options: WorkflowTaskOptions,
 	runId: string,
 	scope: string,
 	workflowInvocationCwd: string = process.cwd(),
 	symlinkDirectories?: readonly string[],
-): PreparedTaskWorktrees {
+): Promise<PreparedTaskWorktrees> {
 	if (options.worktree !== true && !tasks.some((task) => task.worktree === true)) {
 		return { tasks: [...tasks], agents: tasks.map((task) => task.name) };
 	}
@@ -284,14 +291,14 @@ export function prepareTaskWorktrees(
 			: isAbsolute(explicitCwd)
 				? explicitCwd
 				: resolve(workflowInvocationCwd, explicitCwd);
-	const conflict = findWorktreeTaskCwdConflict(
+	const conflict = await findWorktreeTaskCwdConflict(
 		tasks.map((task) => ({ agent: task.name, cwd: resolvedTaskCwd(task.cwd, workflowInvocationCwd) })),
 		sharedCwd,
 	);
 	if (conflict !== undefined) throw new Error(formatWorktreeTaskCwdConflict(conflict, sharedCwd));
 
 	const agents = tasks.map((task) => task.name);
-	const setup = createWorktrees(sharedCwd, runId, tasks.length, {
+	const setup = await createWorktrees(sharedCwd, runId, tasks.length, {
 		agents,
 		baseBranch: options.baseBranch,
 		symlinkDirectories,
@@ -309,15 +316,15 @@ export function prepareTaskWorktrees(
 	};
 }
 
-export function collectWorktreeDiffs(
+export async function collectWorktreeDiffs(
 	prepared: PreparedTaskWorktrees,
 	enabled = true,
-): {
+): Promise<{
 	artifacts: WorkflowArtifact[];
 	summary?: string;
-} {
+}> {
 	if (!enabled || prepared.setup === undefined || prepared.diffsDir === undefined) return { artifacts: [] };
-	const diffs = diffWorktrees(prepared.setup, prepared.agents, prepared.diffsDir);
+	const diffs = await diffWorktrees(prepared.setup, prepared.agents, prepared.diffsDir);
 	const artifacts = diffs.map((diff) => ({
 		kind: "diff" as const,
 		path: diff.patchPath,
@@ -334,6 +341,6 @@ export function collectWorktreeDiffs(
 	return { artifacts, ...(summary.length > 0 ? { summary } : {}) };
 }
 
-export function cleanupPreparedWorktrees(prepared: PreparedTaskWorktrees): void {
-	if (prepared.setup !== undefined) cleanupWorktrees(prepared.setup);
+export async function cleanupPreparedWorktrees(prepared: PreparedTaskWorktrees): Promise<void> {
+	if (prepared.setup !== undefined) await cleanupWorktrees(prepared.setup);
 }
