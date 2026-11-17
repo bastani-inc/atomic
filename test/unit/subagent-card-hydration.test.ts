@@ -496,9 +496,10 @@ test("atomic --session hydrates launch cards once the isolated engine loads the 
 	const host = isolatedEngineHost(manager, undefined);
 	const body = () => stripVTControlCharacters(host.chat.render(140).join("\n")).replace(/\s+/g, " ");
 	try {
-		await eventually(body, /subagent\(agent="hyiso" task="task for hyiso"\)/);
+		await eventually(body, /subagent\(agent=hyiso · task=task for hyiso\)/);
 		host.loadSubagentRenderer();
 		const text = await eventually(body, /⏸ Agent\(hyiso · task for hyiso\) ⎿ Paused · awaiting resume/);
+		assert.equal(text.match(/⏸ Agent\(hyiso · task for hyiso\)/g)?.length, 1);
 		assert.doesNotMatch(text, /Launched in background|subagent\(agent=/);
 	} finally {
 		host.dispose();

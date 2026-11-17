@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { resetCapabilitiesCache, setCapabilities, Text, type TUI } from "@bastani/atomic-tui";
 import { Type } from "typebox";
@@ -838,7 +838,7 @@ describe("ToolExecutionComponent parity", () => {
 			title: "Atomic documentation",
 			path: getReadmePath(),
 			content: "Hidden docs content",
-			compact: "Read(README.md)",
+			compact: `Read(${relative(process.cwd(), getReadmePath()).replace(/\\/g, "/")})`,
 			hidden: "Hidden docs content",
 			absent: undefined,
 		},

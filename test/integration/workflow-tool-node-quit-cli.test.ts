@@ -147,7 +147,14 @@ type RpcLine =
 			readonly type: "entry_appended";
 			readonly entry: { readonly type: string; readonly customType?: string; readonly data?: RunEnding };
 	  }
-	| { readonly type: "response"; readonly id?: string; readonly command: string; readonly success: boolean }
+	| {
+			readonly type: "response";
+			readonly id?: string;
+			readonly command: string;
+			readonly success: boolean;
+			readonly error?: string;
+	  }
+	| { readonly type: "agent_end" }
 	| { readonly type: "other" };
 
 /** One rendered `/workflow` surface: the text a user sees plus its payload. */
@@ -281,8 +288,10 @@ class RpcCli {
 		);
 	}
 
-	private answered(id: string): boolean {
-		return this.lines.some((line) => line.type === "response" && line.id === id);
+	private responseFor(id: string): Extract<RpcLine, { readonly type: "response" }> | undefined {
+		return this.lines.find(
+			(line): line is Extract<RpcLine, { readonly type: "response" }> => line.type === "response" && line.id === id,
+		);
 	}
 
 	/**
@@ -306,13 +315,29 @@ class RpcCli {
 		throw new Error(`timed out after ${timeoutMs}ms waiting for ${label}.\nCLI stderr:\n${this.stderr}`);
 	}
 
-	/** Send one prompt (a slash command here) and wait for the CLI to answer it. */
 	async prompt(id: string, message: string, timeoutMs = STEP_TIMEOUT_MS): Promise<void> {
 		const stdin = this.child.stdin;
 		if (stdin === null) throw new Error("the CLI child must expose piped stdin");
-		stdin.write(`${JSON.stringify({ id, type: "prompt", message })}\n`);
+		const mark = this.lines.length;
+		stdin.write(`${JSON.stringify({ id, type: "prompt", message, streamingBehavior: "followUp" })}\n`);
 		await stdin.flush();
-		await this.waitUntil(() => this.answered(id), `the CLI to answer ${message}`, timeoutMs);
+		await this.waitUntil(
+			() => {
+				const response = this.responseFor(id);
+				if (response === undefined) return false;
+				if (!response.success) {
+					throw new Error(`RPC prompt ${id} (${message}) failed: ${response.error ?? "unknown error"}`);
+				}
+				if (message.startsWith("/")) return true;
+				const slice = this.lines.slice(mark);
+				const toolIdx = slice.findIndex(
+					(line) => line.type === "tool_execution_end" && line.toolName === "workflow",
+				);
+				return toolIdx !== -1 && slice.slice(toolIdx + 1).some((line) => line.type === "agent_end");
+			},
+			`the CLI to answer ${message}`,
+			timeoutMs,
+		);
 	}
 
 	async stop(): Promise<void> {

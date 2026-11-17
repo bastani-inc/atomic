@@ -176,7 +176,7 @@ test("mounting pure navigation clears a pre-turn command loader when idle and ke
 	const { context, tui } = navigationHost([]);
 	try {
 		context.showWorkingLoaderNow();
-		expect(frame(tui)).toContain("∀ Working...");
+		expect(frame(tui)).toContain("∀ Working…");
 
 		let closeIdleNav: (() => void) | undefined;
 		void context.showExtensionCustom(
@@ -189,16 +189,16 @@ test("mounting pure navigation clears a pre-turn command loader when idle and ke
 		await new Promise((resolve) => setImmediate(resolve));
 		const idleNavFrame = frame(tui);
 		expect(idleNavFrame).toContain("WORKFLOWS SHEET");
-		expect(idleNavFrame).not.toContain("∀ Working...");
+		expect(idleNavFrame).not.toContain("∀ Working…");
 
 		closeIdleNav?.();
 		await new Promise((resolve) => setImmediate(resolve));
-		expect(frame(tui)).not.toContain("∀ Working...");
+		expect(frame(tui)).not.toContain("∀ Working…");
 
 		context.session.isStreaming = true;
 		context.workingRunMeter.start();
 		context.showWorkingLoaderNow();
-		expect(frame(tui)).toContain("∀ Working...");
+		expect(frame(tui)).toContain("∀ Working…");
 
 		void context.showExtensionCustom(() => new Text("BUSY NAV SHEET", 0, 0), {
 			overlay: false,
@@ -207,10 +207,10 @@ test("mounting pure navigation clears a pre-turn command loader when idle and ke
 		await new Promise((resolve) => setImmediate(resolve));
 		const busyNavFrame = frame(tui);
 		expect(busyNavFrame).toContain("BUSY NAV SHEET");
-		expect(busyNavFrame).toContain("∀ Working...");
+		expect(busyNavFrame).toContain("∀ Working…");
 
 		context.setWorkingVisible(false);
-		expect(frame(tui)).not.toContain("∀ Working...");
+		expect(frame(tui)).not.toContain("∀ Working…");
 		context.resetExtensionUI();
 		const restoredAfterReset = frame(tui);
 		expect(restoredAfterReset).not.toContain("BUSY NAV SHEET");

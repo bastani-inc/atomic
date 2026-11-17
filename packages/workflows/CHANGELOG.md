@@ -53,6 +53,7 @@
 - Design workflows no longer pause other tools while Windows verifies temporary artifact storage ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
 - Fixed starting a new run from a finished stage failing after `/reload`. Runs created before the reload remain available to fork ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Fixed an idle local worker receiving SIGKILL instead of exiting cleanly when a late IPC reply failed after its root released its lease ([#3979](https://github.com/bastani-inc/atomic/issues/3979))
+- Fixed follow-up agents failing to read workflow history with a retired-execution error after a workflow finished or its extensions reloaded ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Removed
 

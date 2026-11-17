@@ -68,7 +68,10 @@ async function driveChild(client: RpcClient, label: string): Promise<ChildEviden
 	const run = await waitFor(
 		async () => {
 			const runs = await client.listWorkflowRuns();
-			const finished = runs.find((candidate) => candidate.name === WORKFLOW_NAME && candidate.status !== "running");
+			const finished = runs.find(
+				(candidate) =>
+					candidate.name === WORKFLOW_NAME && candidate.status !== "pending" && candidate.status !== "running",
+			);
 			return finished;
 		},
 		`${label}'s workflow run to finish`,
