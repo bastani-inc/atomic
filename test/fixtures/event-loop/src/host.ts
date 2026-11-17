@@ -11,6 +11,7 @@ import { FileStore, type Store } from "./stores.ts";
 import { Terminal } from "./terminal.ts";
 import {
 	countEntries,
+	listThroughShorthand,
 	createCommandHandler,
 	existsByElement,
 	nativeProcessQueries,
@@ -62,6 +63,7 @@ function handleKey(data: string): void {
 	matchesModulePatterns(data);
 	compilesInvalidPattern(data);
 	countEntries([data]);
+	listThroughShorthand(data);
 	openDatabase(data);
 	readThroughCast(data);
 	existsByElement(data);

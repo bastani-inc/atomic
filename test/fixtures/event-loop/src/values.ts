@@ -45,3 +45,9 @@ export function createCommandHandler(): (command: string) => string {
 export function handleEngineRequest(path: string): boolean {
 	return fs.statSync(path).isFile();
 }
+
+/** Hands a blocking API on as a shorthand property value. */
+export function listThroughShorthand(path: string): number {
+	const listing = { readdirSync };
+	return listing.readdirSync(path).length;
+}

@@ -1,6 +1,6 @@
 import { copyFileSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileExistsSync, readTextSync } from "./runtime.js";
+import { fileExistsSync, moduleDir, readTextSync } from "./runtime.js";
 import { type ChatRequest, messageText, type ScriptedReply } from "./scripted-chat-server.js";
 
 export const STREAM_MARKER = "GUARD-STREAM";
@@ -228,43 +228,18 @@ export function describeBlock(block: BlockRecord): string {
 }
 
 const SHIP_SHARD_PATH = "packages/workflows/src/workers/ship-shard";
-const NODE_SQLITE_PATH = "packages/coding-agent/src/core/storage/node-sqlite";
 
-const SHIP_SHARD_FUNCTIONS: ReadonlySet<string> = new Set([
-	"holdsNothingSync",
-	"onlyConnectionSync",
-	"shardOwnerSync",
-	"removeConfirmedShard",
-	"removeUnchanged",
-	"retireEndedShipShards",
-	"holdsNothing",
-	"shardOwner",
-	"inspectShard",
-	"idleShard",
-	"underJournalLock",
-	"removeShardFiles",
-	"shipJournalDirectory",
-	"shipRootFile",
-	"shipShardPath",
-	"shipEventOf",
-	"shipBatchId",
-	"shipDigest",
-]);
-
-const NODE_SQLITE_DEFAULT_SELECTORS = [
-	"databaseNow",
-	"NodeSqliteDatabase.tryBegin/this.driver()",
-	"NodeSqliteDatabase.dataVersion/this.driver()",
-	"NodeSqliteDatabase.createExecutor/statement",
-	"NodeSqliteDatabase.createExecutor/<returned>.exec/execute()",
-	"NodeSqliteDatabase.createExecutor/<returned>.run/execute()",
-	"NodeSqliteDatabase.createExecutor/<returned>.get/execute()",
-	"NodeSqliteDatabase.createExecutor/<returned>.all/execute()",
-	"NodeSqliteDatabase.close/this.tail.then()/this.driver()",
-	"openConnection",
-	"openNodeSqliteDatabase",
-	"openNodeSqliteDatabase/switchToWriteAheadLog()",
-] as const;
+/**
+ * The functions ship-shard.ts declares. The workflows bundle inlines the module, so a block in it is attributed to the
+ * owned module by these names; read from the source, the list cannot fall behind it.
+ */
+const SHIP_SHARD_FUNCTIONS: ReadonlySet<string> = new Set(
+	[
+		...readTextSync(join(moduleDir(import.meta.url), "../..", `${SHIP_SHARD_PATH}.ts`), "utf8").matchAll(
+			/\bfunction\*?\s*([A-Za-z_$][\w$]*)/g,
+		),
+	].map((match) => match[1]!),
+);
 
 const WORKFLOW_BUNDLE_TAILS = [
 	"builtin/workflows/src/extension/index.bundle",
@@ -367,19 +342,11 @@ export function blockOwner(
 ): string | undefined {
 	const compiled = areas.map((area) => {
 		const rawPaths = area.paths ?? [];
-		const plainPaths = rawPaths.filter((path) => {
-			const norm = path.replaceAll("\\", "/").replace(/\.(?:[cm]?[jt]s)$/, "");
-			return norm !== NODE_SQLITE_PATH;
-		});
+		const plainPaths = rawPaths;
 		const hasShipShard = rawPaths.some(
 			(path) => path.replaceAll("\\", "/").replace(/\.(?:[cm]?[jt]s)$/, "") === SHIP_SHARD_PATH,
 		);
-		const functionSelectors = [
-			...(area.functions ?? []),
-			...(rawPaths.some((path) => path.replaceAll("\\", "/").replace(/\.(?:[cm]?[jt]s)$/, "") === NODE_SQLITE_PATH)
-				? NODE_SQLITE_DEFAULT_SELECTORS.map((name) => ({ file: `${NODE_SQLITE_PATH}.ts`, name }))
-				: []),
-		];
+		const functionSelectors = area.functions ?? [];
 		const byFile = new Map<string, Set<string>>();
 		for (const selector of functionSelectors) {
 			let set = byFile.get(selector.file);

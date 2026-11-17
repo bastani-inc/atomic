@@ -86,6 +86,7 @@ describe("event-loop check", () => {
 			"src/session.ts installSessionAccessors/title.get fs.readFileSync",
 			"src/startup.ts afterImmediate fs.readdirSync",
 			"src/startup.ts afterSettled fs.lstatSync",
+			"src/startup.ts scheduleStartupWork/<call>() fs.statSync",
 			"src/startup.ts warmCache fs.readFileSync",
 			"src/statements.ts lockHeld fs.existsSync",
 			"src/statements.ts readStartToken fs.readFileSync",
@@ -94,6 +95,8 @@ describe("event-loop check", () => {
 			"src/values.ts createCommandHandler/handleCommand fs.readFileSync",
 			"src/values.ts existsByElement fs.existsSync",
 			"src/values.ts handleEngineRequest fs.statSync",
+			"src/values.ts listThroughShorthand fs.readdirSync",
+			"src/values.ts listThroughShorthand fs.readdirSync",
 			"src/values.ts nativeProcessQueries natives.tryAdvisoryLock",
 			"src/values.ts openDatabase new DatabaseSync",
 			"src/values.ts readThroughCast fs.readFileSync",
@@ -227,7 +230,7 @@ describe("event-loop check", () => {
 		);
 	});
 
-	test("reports blocking APIs passed as values, returned by a factory, behind a cast require and through element access", () => {
+	test("reports blocking APIs passed as values or shorthand properties, returned by a factory, behind a cast require and through element access", () => {
 		assert.deepEqual(
 			report.violations
 				.filter((v) => v.file === "src/values.ts")
@@ -238,6 +241,8 @@ describe("event-loop check", () => {
 				"createCommandHandler/handleCommand fs.readFileSync",
 				"existsByElement fs.existsSync",
 				"handleEngineRequest fs.statSync",
+				"listThroughShorthand fs.readdirSync",
+				"listThroughShorthand fs.readdirSync",
 				"nativeProcessQueries natives.tryAdvisoryLock",
 				"openDatabase new DatabaseSync",
 				"readThroughCast fs.readFileSync",
@@ -245,13 +250,18 @@ describe("event-loop check", () => {
 		);
 	});
 
-	test("treats setImmediate callbacks, promise continuations and detached async work started at startup as interactive", () => {
+	test("treats setImmediate callbacks, promise continuations, detached async work and an async IIFE started at startup as interactive", () => {
 		assert.deepEqual(
 			report.violations
 				.filter((v) => v.file === "src/startup.ts")
 				.map((v) => `${v.function} ${v.api}`)
 				.sort(),
-			["afterImmediate fs.readdirSync", "afterSettled fs.lstatSync", "warmCache fs.readFileSync"],
+			[
+				"afterImmediate fs.readdirSync",
+				"afterSettled fs.lstatSync",
+				"scheduleStartupWork/<call>() fs.statSync",
+				"warmCache fs.readFileSync",
+			],
 		);
 	});
 

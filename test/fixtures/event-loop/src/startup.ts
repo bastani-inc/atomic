@@ -1,4 +1,4 @@
-import { lstatSync, readdirSync, readFileSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 
 function afterImmediate(): void {
 	readdirSync("immediate");
@@ -17,4 +17,8 @@ export function scheduleStartupWork(): void {
 	setImmediate(afterImmediate);
 	void Promise.resolve().then(afterSettled);
 	void warmCache();
+	void (async () => {
+		await Promise.resolve();
+		statSync("detached-iife");
+	})();
 }

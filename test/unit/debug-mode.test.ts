@@ -524,9 +524,11 @@ describe("debug log failures (#4360)", () => {
 			vi.stubEnv("ATOMIC_CODING_AGENT_DIR", join(blocker, "agent"));
 			assert.equal(getDebugLogFailure(), undefined);
 			reportDebug("pool", "first", {});
+			// The synchronous report writes before it returns, so its failure is recorded by then too.
+			const failure = getDebugLogFailure();
 			reportDebug("pool", "second", {});
 			await flushDebugLog();
-			const failure = getDebugLogFailure();
+			assert.equal(getDebugLogFailure(), failure, "the first failure stays the one recorded");
 			assert.ok(failure instanceof DebugLogUnwritableError);
 			assert.ok(failure instanceof DebugError);
 			assert.equal(failure.name, "DebugLogUnwritableError");
@@ -540,6 +542,14 @@ describe("debug log failures (#4360)", () => {
 				`Debug log is not writable: ${join(blocker, "agent", "atomic-debug.log")} (debug-log-unwritable). ${failure.hint}`,
 			);
 			assert.deepEqual(warn.mock.calls, [[failure.message]], "reported once");
+		});
+	});
+
+	test("a synchronous report is in the debug log when it returns (#5377)", async () => {
+		await withDebugLog("setting", async (log) => {
+			reportDebug("pool", "landed-before-return", {});
+			const written = readFileSync(join(log.agentDir, "atomic-debug.log"), "utf8");
+			assert.match(written, /"event":"landed-before-return"/);
 		});
 	});
 

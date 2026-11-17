@@ -84,6 +84,10 @@ fail the check. An entry with nothing left to defer fails the check; remove it o
 
 ## Known limits
 
+An async call whose result is only chained with `.then()` or `.catch()`, as `work().catch(report)`, is not treated as
+detached work the way `void work()` is: the CLI starts its whole run that way, so rooting it would take the startup
+for interaction. Start such background work with `void` so the check sees it.
+
 The graph cannot see calls through `any`, through functions kept in collections, or through a callback that only
 reaches its caller through a structural type nobody declares. It treats an interface call as able to reach every
 implementation, and a parameter as able to hold every function any caller passes, so it can report a path that no
