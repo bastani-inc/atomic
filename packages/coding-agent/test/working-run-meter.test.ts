@@ -226,7 +226,7 @@ describe("working line time and tokens (#5224)", () => {
 			},
 			workingVisible: true,
 			workingMessage: undefined,
-			defaultWorkingMessage: "Working...",
+			defaultWorkingMessage: "Working…",
 			workingIndicatorOptions: undefined,
 			workingIndicatorEmbedded: false,
 			loadingAnimation: undefined,

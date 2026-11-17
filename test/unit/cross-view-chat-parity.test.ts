@@ -538,7 +538,7 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 			setEditorWorkingStatusIndicator: undefined,
 			workingVisible: true,
 			workingMessage: undefined,
-			defaultWorkingMessage: "Working...",
+			defaultWorkingMessage: "Working…",
 			defaultHiddenThinkingLabel: "Thinking...",
 			hideThinkingBlock: false,
 			hiddenThinkingLabel: "Thinking...",
@@ -743,7 +743,7 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 			const mainNotice = mainAfterAbort.find((line) => line.includes("◼ Interrupted"));
 			const stageNotice = stageAfterAbort.find((line) => line.includes("◼ Interrupted"));
 			const subNotice = subAfterAbort.find((line) => line.includes("◼ Interrupted"));
-			assert.equal(mainNotice, " ◼ Interrupted");
+			assert.equal(mainNotice, " ◼ Interrupted · response");
 			assert.equal(stageNotice, mainNotice, "stage chat renders the same shared interruption notice");
 			assert.equal(subNotice, mainNotice, "subagent view renders the same shared interruption notice");
 			assert.doesNotMatch(
