@@ -326,6 +326,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     appendHandled: (messageId) => pi.appendEntry(INTERCOM_INBOX_HANDLED_ENTRY, { messageId }),
   });
   const inboundDeliveries = new InboundMessageAdmission();
+  /** Messages a starting subagent is writing as context for its first turn; its start waits for them. */
+  const startupDeliveries = new Set<Promise<void>>();
   const broadcastCopies = new BroadcastCopies();
   // #4751: the asks this session sent; their replies arrive as messages on this session's own thread.
   const outboundAsks = new OutboundAsks({
@@ -844,6 +846,25 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const entry = receivedBeforeStageStart ? framePreStartPendingStageMessage(framedEntry) : framedEntry;
     if (receivedBeforeStageStart) {
       return sendIncomingMessage(entry, "prelude", messageGeneration, false);
+    }
+    // A subagent that has not started its first turn, as one whose held sends the broker hands over as it registers,
+    // takes a message as context for that turn: written before it, without a turn of its own.
+    if (
+      !recoveredAfterStageStart &&
+      message.replyTo === undefined &&
+      liveContext.subagentPolicy?.startup?.firstTurnPending() === true
+    ) {
+      const admission = inboundDeliveries.admit(from, message);
+      if (admission.kind !== "reserved") return;
+      const reservation = admission.reservation;
+      replyTracker.recordIncomingMessage(from, message);
+      const delivered = sendIncomingMessage(framePreStartPendingStageMessage(entry), "prelude", messageGeneration, false).then(
+        () => inboundDeliveries.commit(reservation),
+        (error: unknown) => inboundDeliveries.release(reservation, toError(error)),
+      );
+      startupDeliveries.add(delivered);
+      void delivered.finally(() => startupDeliveries.delete(delivered));
+      return delivered;
     }
     const stageAdmission = liveContext.orchestrationContext?.kind === "workflow-stage"
       ? liveContext.orchestrationContext.messageAdmission
@@ -1914,6 +1935,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         ...(request.group === undefined ? {} : { group: request.group }),
         aliases: request.aliases,
         ...(request.dormant === true ? { dormant: true } : {}),
+        ...(request.holdMs === undefined ? {} : { holdMs: request.holdMs }),
       }),
     );
   });
@@ -2057,7 +2079,15 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     if (pendingStageDelivery === undefined) {
       // An admitted child registers at startup so its supervisor and peers can
       // list and steer it before it uses Intercom itself.
-      if (ctx.subagentPolicy?.intercom !== undefined) await ensureConnected("startup");
+      if (ctx.subagentPolicy?.intercom !== undefined) {
+        const registered = await ensureConnected("startup");
+        // The sends the broker held for it follow its registration on the same connection: one round trip later
+        // they have all arrived, and its first turn waits until they are written as its context.
+        if (ctx.subagentPolicy.startup?.firstTurnPending() === true) {
+          await registered.listSessions().catch(() => undefined);
+          await Promise.allSettled([...startupDeliveries]);
+        }
+      }
       return;
     }
     const generation = runtimeGeneration;

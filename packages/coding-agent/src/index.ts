@@ -817,6 +817,7 @@ export {
 	type SessionStartTimeoutDetails,
 	SessionStartTimeoutError,
 	serializeSessionStartError,
+	sessionStartStepText,
 } from "./core/session-start-errors.ts";
 export {
 	DEGRADED_RESTORE_RETENTION_DAYS,

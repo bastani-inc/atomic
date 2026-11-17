@@ -87,7 +87,11 @@ import {
 } from "../shared/cancellation-recovery.js";
 import { type ChildModePolicy, resolveChildModePolicy } from "./child-policy.js";
 import { createInProcessChildPromptBehavior, createInProcessChildSystemPromptTransform } from "./prompt-behavior.js";
-import { SessionStartBudget } from "./session-start-budget.js";
+import {
+	SessionStartBudget,
+	type SessionStartProgress,
+	SUBAGENT_SESSION_START_TIMEOUT_MS,
+} from "./session-start-budget.js";
 
 export type ChildStatus = NativeAgentStatus | "killed";
 export type ContinuationReason = "intercom-coordination";
@@ -196,6 +200,8 @@ export interface ChildSpec {
 	readonly outputArtifactPath?: string;
 	/** How long the child's session may take to start before the attempt fails; {@link SUBAGENT_SESSION_START_TIMEOUT_MS}. */
 	readonly sessionStartTimeoutMs?: number;
+	/** Hears where the child's start is, step by step, and `undefined` once its first turn starts or the start ends. */
+	readonly onStartProgress?: (progress: SessionStartProgress | undefined) => void;
 	/**
 	 * The thinking level the launch asked for explicitly (a `provider/model:effort` override). The child and every model
 	 * in its fallback chain run at it where that model supports it, and at that model's default level where it does not,
@@ -255,12 +261,7 @@ export function releasedEnvelope(waitingOn: readonly SubagentWaitingCall[]): str
 	return `Released while waiting on ${calls}. It holds nothing while it waits; a tool result, an Intercom message or ask, or resume wakes it from its saved session.`;
 }
 
-/**
- * How long a child may take to start: open its session, load its resources, create its agent session, including any
- * wait for a resource-admission permit, and dispatch its task. A child still starting then fails with a
- * `SessionStartTimeoutError` instead of staying running. Waiting for a running slot does not count.
- */
-export const SUBAGENT_SESSION_START_TIMEOUT_MS = 5 * 60_000;
+export { SUBAGENT_SESSION_START_TIMEOUT_MS } from "./session-start-budget.js";
 
 /** Atomic's thinking level when neither the model nor the settings configure one (the SDK's default). */
 const DEFAULT_THINKING_LEVEL: ThinkingLevel = "medium";
@@ -380,6 +381,11 @@ export type AttemptOutcome = (
 			readonly cause: string;
 			/** The typed failure when the child did not start within its start budget; `cause` is its message. */
 			readonly startError?: SessionStartError;
+			/**
+			 * Set with a start that ran out of its budget: settles once that start let go of its session, its late session
+			 * disposed, so another start may open the session again.
+			 */
+			readonly startReleased?: Promise<void>;
 			readonly stats: AttemptStats;
 			readonly path: string;
 			readonly envelope: string;
@@ -1814,14 +1820,20 @@ export class SubagentControlRuntime {
 			`subagent ${admitted.identity.path}`,
 			admitted.spec.sessionStartTimeoutMs ?? SUBAGENT_SESSION_START_TIMEOUT_MS,
 			"opening-session",
+			admitted.spec.onStartProgress,
 		);
+		// What a start that ran out of its budget still holds: work that settles late, and the session it brings up.
+		const abandoned: Promise<unknown>[] = [];
+		const released = Promise.withResolvers<void>();
 		/** Settle with `work`, or fail once the start budget runs out; a result that arrives later is `abandon`ed. */
-		const beforeStartDeadline = <T>(work: Promise<T>, abandon?: (late: T) => void): Promise<T> =>
+		const beforeStartDeadline = <T>(work: Promise<T>, abandon?: (late: T) => unknown): Promise<T> =>
 			new Promise<T>((resolve, reject) => {
 				const expire = () => {
-					void work.then(
-						(late) => abandon?.(late),
-						() => undefined,
+					abandoned.push(
+						work.then(
+							(late) => abandon?.(late),
+							() => undefined,
+						),
 					);
 					reject(startBudget.signal.reason);
 				};
@@ -2001,6 +2013,12 @@ export class SubagentControlRuntime {
 								for (const listener of turnDrainedListeners) listener();
 							},
 							taskPending: () => taskPending,
+							// Intercom registers the child before its first turn, inside this start's budget.
+							startup: {
+								signal: startBudget.signal,
+								enterStep: (step) => startBudget.enter(step),
+								firstTurnPending: () => startBudget.active && startBudget.currentStep !== "dispatching-task",
+							},
 							...(!childAllowsIntercom(inherited) ? { intercom: undefined, intercomGroup: undefined } : {}),
 						},
 						settingsManager,
@@ -2010,7 +2028,7 @@ export class SubagentControlRuntime {
 						initialContextTransform: promptBehavior.initialContextTransform,
 					}),
 					// The attempt already failed; a session that comes up after its deadline is never used.
-					(late) => void late.session.dispose().catch(() => undefined),
+					(late) => late.session.dispose().catch(() => undefined),
 				);
 			}
 			if (admitted.spec.resumeSession || admitted.spec.resumeFollowUps?.length) startBudget.end();
@@ -2435,6 +2453,7 @@ export class SubagentControlRuntime {
 				status,
 				cause,
 				...(startError === undefined ? {} : { startError }),
+				...(startError === undefined ? {} : { startReleased: released.promise }),
 				stats,
 				path: admitted.identity.path,
 				envelope: boundedEnvelope(cause),
@@ -2495,6 +2514,7 @@ export class SubagentControlRuntime {
 				}
 			})();
 			onDisposal(disposal);
+			void Promise.allSettled([disposal, ...abandoned]).then(() => released.resolve());
 			if (releasedAttempt) await disposal;
 			if (this.attemptTokens.get(admitted.identity.path) === token)
 				this.attemptTokens.delete(admitted.identity.path);

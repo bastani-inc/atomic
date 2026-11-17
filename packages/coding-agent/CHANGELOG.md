@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `SessionStartStep` has a `registering-intercom` step, for a subagent start that waits for its Intercom registration, and `sessionStartStepText(step)` describes a step in words. `SubagentChildPolicy.startup` gives an extension the child's start signal, lets it name the step the start waits in, and says whether the child has yet to start its first turn.
+
 ### Fixed
 
 - A fast foreground shell command no longer delivers a stray `Background shell completed` notice after its own result when the command exits before Atomic has finished starting it. The model was shown the command's result a second time, as a background shell's, in chats and workflow stages alike ([#5333](https://github.com/bastani-inc/atomic/pull/5333))

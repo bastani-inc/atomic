@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed a background subagent that was slow to start showing only as `running` for many minutes, with no Intercom registration, metrics or output. A child that has not started its first turn now shows where its start is. `subagent status` gives the step and how long it and the start have run, `/tasks` and task heartbeats show the step as its current action, and the launch result and `status` name the child's Intercom target. A start that runs out of its start budget is shown as stalled with that step, retried once, and then fails with both stalls named. The launching session is told.
+- Fixed a subagent that started while the Intercom broker was briefly unreachable running its turns unregistered, invisible to `intercom list` and unreachable until it next used Intercom itself. Its start now waits in its `registering on Intercom` step and retries until it registers, within its start budget.
 - Fixed `contact_supervisor` reaching the wrong session. A background subagent named as its supervisor whichever session in the Atomic process had connected to Intercom last, such as another subagent or a workflow stage hosted in that process, instead of the session that launched it. Its updates and questions went to that session and never reached its parent. A child now names the Intercom id its launching session registered under, or that session's own name until it has one, and a child relaunched after a restart does the same.
 
 ## [0.9.88] - 2026-11-16

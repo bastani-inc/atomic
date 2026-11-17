@@ -39,8 +39,12 @@ import {
 	SATURATED_LOOP_TURN_MS,
 	SESSION_START_MIN_LOOP_TURNS,
 } from "../../packages/subagents/src/runs/inprocess/session-start-budget.js";
+import {
+	describeSubagentStart,
+	type SubagentStartProgress,
+} from "../../packages/subagents/src/runs/shared/start-progress.js";
 import { createCandidateModelResolver } from "../../packages/subagents/src/shared/model-resolution.js";
-import type { RunSyncOptions, SingleResult } from "../../packages/subagents/src/shared/types.js";
+import type { RunSyncOptions, SingleResult, TaskExecutionHooks } from "../../packages/subagents/src/shared/types.js";
 import { sleep } from "../helpers/runtime.js";
 
 /**
@@ -326,11 +330,34 @@ async function startFixture(options: { readonly parentAdmission?: ResourceAdmiss
 		);
 		return { reached: () => reached, held: holding.promise, release, shutdown };
 	};
+	/** A child-only extension that holds every start of the child in `session_start` for `ms`, then lets it go. */
+	const stallEveryStartFor = (ms: number): { readonly starts: () => number } => {
+		let starts = 0;
+		globals[STALL_HOOK] = (at) => {
+			if (at !== "session_start") return undefined;
+			starts++;
+			return sleep(ms);
+		};
+		cleanups.push(() => {
+			delete globals[STALL_HOOK];
+		});
+		mkdirSync(join(agentDir, "extensions"), { recursive: true });
+		writeFileSync(
+			join(agentDir, "extensions", "stall.ts"),
+			[
+				"export default function (pi) {",
+				`\tpi.on("session_start", () => globalThis.${STALL_HOOK}?.("session_start"));`,
+				"}",
+			].join("\n"),
+		);
+		return { starts: () => starts };
+	};
 	return {
 		cwd,
 		launch,
 		requests,
 		stallChildAt,
+		stallEveryStartFor,
 		onFirstRequest: (listener: () => void) => {
 			onRequest = () => {
 				onRequest = undefined;
@@ -345,7 +372,8 @@ function startTimeoutOf(result: SingleResult): SessionStartTimeoutError {
 	assert.ok(result.startError, JSON.stringify(result));
 	const error = rehydrateSessionStartError(result.startError);
 	assert.ok(isSessionStartTimeoutError(error), JSON.stringify(result.startError));
-	assert.equal(result.error, error.message);
+	// A start that is not retried says why after the timeout itself.
+	assert.ok(result.error?.startsWith(error.message), `${result.error} names ${error.message}`);
 	return error;
 }
 
@@ -976,3 +1004,55 @@ test("a setup failure before session construction has no agent session to dispos
 	assert.ok(cleanup);
 	assert.deepEqual(await cleanup, { kind: "reaped" });
 });
+
+/** A budget a real child start on a loaded host reaches its extensions' start within. */
+const RETRY_START_BUDGET_MS = 6_000;
+
+test(
+	"a child whose start stalls is reported stalled with its step, retried once, then failed naming both stalls",
+	async () => {
+		const fixture = await startFixture();
+		// Each start is held past its budget, then lets go of its session, so its retry may open it again.
+		const stall = fixture.stallEveryStartFor(RETRY_START_BUDGET_MS + 500);
+		const reports: Array<SubagentStartProgress | undefined> = [];
+		const taskExecution: TaskExecutionHooks = {
+			signal: new AbortController().signal,
+			reportActivity() {},
+			reportStart: (progress) => reports.push(progress),
+			onExecution() {},
+			yieldTaskWait() {},
+			isParentObserving: () => false,
+		};
+		const result = await fixture.launch("start-stalls-twice", RETRY_START_BUDGET_MS, { taskExecution });
+
+		assert.equal(stall.starts(), 2, "the stalled start was retried once, and only once");
+		const shown = reports.flatMap((report) => (report === undefined ? [] : [describeSubagentStart(report)]));
+		assert.ok(shown.length > 0, "its start was reported");
+		for (const status of shown) assert.doesNotMatch(status.summary, /^running/, "never shown as merely running");
+		const first = shown.filter((status) => status.attempt === 1);
+		const retried = shown.filter((status) => status.attempt === 2);
+		assert.ok(first.length > 0 && first.every((status) => status.state === "starting"));
+		assert.ok(
+			retried.length > 0 && retried.every((status) => status.state === "stalled"),
+			"the retry shows the stall",
+		);
+		const stalledStep = retried[0]?.stalled?.step;
+		assert.ok(stalledStep, "the stall names its step");
+		assert.match(retried[0]!.summary, /^stalled/);
+
+		assert.equal(result.status, "error", JSON.stringify(result));
+		const error = rehydrateSessionStartError(result.startError!);
+		assert.ok(isSessionStartTimeoutError(error));
+		assert.match(
+			result.error ?? "",
+			/^Subagent did not start: its start stalled .+ and was retried once; the retry stalled /,
+		);
+		assert.ok(result.error?.includes(`retry stalled ${sessionStartStepTextOf(error.step)}`), result.error);
+		assert.deepEqual(fixture.requests, [], "neither attempt ran a turn");
+	},
+	REAL_CHILD_SESSION_TIMEOUT_MS,
+);
+
+function sessionStartStepTextOf(step: SessionStartTimeoutError["step"]): string {
+	return describeSubagentStart({ step, attempt: 1, launchedAt: 0, startedAt: 0, stepStartedAt: 0 }).stepText;
+}

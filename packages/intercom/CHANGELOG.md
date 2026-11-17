@@ -6,6 +6,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ### Fixed
 
+- Fixed sends to a subagent that was launching, being resumed, or being relaunched after a restart failing with `Session not found` until it registered, or with "has not reconnected to Intercom" after a restart. Sends to it by name, from its launching session or any session in its group, now wait for it until it registers. They then reach it once each, in order, before its first turn, as context for that turn. A subagent whose start fails tells the waiting senders why.
 - Fixed a subagent failing to start with `Extension startup failed: …intercom…: Invalid supervisor authorization` when the session that launched it had released or restarted since, as a workflow stage that finishes its turn does. The broker's refusal of a stale supervisor capability no longer ends the child's start: the child registers again without the capability, and `contact_supervisor` reaches its supervisor by name.
 
 ## [0.9.88] - 2026-11-16

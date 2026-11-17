@@ -5,6 +5,7 @@ import {
 	agentWakeDispatcher,
 	type OperationId,
 	ranOnModelLine,
+	sessionStartStepText,
 	type WaitPolicy,
 } from "@bastani/atomic";
 import type {
@@ -27,6 +28,13 @@ import type { IntercomEventBus, RunSyncOptions, SingleResult, SubagentToolResult
 import { getSingleResultOutput } from "../../shared/utils.js";
 import { launchRequestedModel } from "../shared/model-fallback.js";
 import type { ExecutionScheduler } from "../shared/parallel-utils.js";
+import {
+	recordSubagentStartProgress,
+	SUBAGENT_START_ATTEMPTS,
+	type SubagentStartProgress,
+	type SubagentStartStatus,
+	subagentStartStatus,
+} from "../shared/start-progress.js";
 import { scheduleReleasedReplyTimeouts } from "./released-child-replies.js";
 import { endedChildMark, markEndedChildren, reserveReleasedChildTargets } from "./released-child-reservations.js";
 import {
@@ -654,6 +662,29 @@ export async function runAgentTask(input: {
 					? Promise.resolve()
 					: (input.recordChild?.clearHeldToolResults?.(childId, delivered) ?? Promise.resolve());
 			};
+			// From here until its first turn starts the child is starting, and says where (never merely "running").
+			const dispatchedAt = Date.now();
+			let startText: string | undefined;
+			const reportStart = (progress: SubagentStartProgress | undefined) => {
+				recordSubagentStartProgress(context.ref.taskId, progress);
+				const text =
+					progress === undefined
+						? "started its first turn"
+						: `${sessionStartStepText(progress.step)} (attempt ${progress.attempt} of ${SUBAGENT_START_ATTEMPTS}${progress.stalled ? `, after a start that stalled ${sessionStartStepText(progress.stalled.step)}` : ""})`;
+				if (text === startText || (progress === undefined && startText === undefined)) return;
+				startText = text;
+				context.reportActivity({
+					reportId: `${context.ref.taskId}:start-${randomUUID()}`,
+					change: { kind: "action", tool: "start", text },
+				});
+			};
+			reportStart({
+				step: "opening-session",
+				attempt: 1,
+				launchedAt: dispatchedAt,
+				startedAt: dispatchedAt,
+				stepStartedAt: dispatchedAt,
+			});
 			const result = registered.promise.then(async (): Promise<TaskResult> => {
 				try {
 					input.options.modelRoute?.assertCurrent();
@@ -701,6 +732,8 @@ export async function runAgentTask(input: {
 							},
 							// What its session saved is cleared at once; a stop leaves the rest held for its resume (#5012).
 							toolResultsSaved: (toolCallIds) => void clearDelivered(toolCallIds),
+							reportStart: (progress) =>
+								reportStart(progress === undefined ? undefined : { ...progress, launchedAt: dispatchedAt }),
 							onExecution: (execution) => {
 								executionBound = true;
 								trackChildClosing(childId, execution.cleanup);
@@ -865,6 +898,7 @@ export async function runAgentTask(input: {
 					}
 					throw error;
 				} finally {
+					recordSubagentStartProgress(context.ref.taskId, undefined);
 					// A refusal before session admission has no session resources to reap.
 					if (!executionBound) cleaned.resolve({ kind: "reaped" });
 				}
@@ -907,7 +941,30 @@ export async function runAgentTask(input: {
 		input.options.intercomDetachSignal?.removeEventListener("abort", yieldForIntercom);
 	});
 	if (!observed.ok) throw new Error(`${observed.error.code}: ${observed.error.message}`);
-	return { kind: "admitted", observation: observed.value };
+	// The one Intercom target this task's child registers under, so a send never has to guess it.
+	const admitted: ModelSingleResponse & { readonly intercomTarget?: string } = {
+		kind: "admitted",
+		observation: observed.value,
+		...(input.options.intercomSessionName ? { intercomTarget: input.options.intercomSessionName } : {}),
+	};
+	return admitted;
+}
+
+/**
+ * A task record as `subagent status` reports it: with its child's Intercom target, and, while the child has not
+ * started its first turn, where its start is. A child that is still starting is never shown as merely running.
+ */
+export function subagentTaskStatusRecord(
+	record: TaskRecord,
+	intercomTarget: string | undefined,
+	now = Date.now(),
+): TaskRecord & { readonly intercomTarget?: string; readonly start?: SubagentStartStatus } {
+	const start = record.execution.kind === "settled" ? undefined : subagentStartStatus(record.ref.taskId, now);
+	return {
+		...record,
+		...(intercomTarget === undefined ? {} : { intercomTarget }),
+		...(start === undefined ? {} : { start }),
+	};
 }
 
 /** Queued children, remembered run schedulers and executions still closing in this process; counted by tests. */

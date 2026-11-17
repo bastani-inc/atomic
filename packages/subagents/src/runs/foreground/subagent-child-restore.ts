@@ -44,6 +44,7 @@ import {
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.js";
 import { createExecutionScheduler, type ExecutionScheduler } from "../shared/parallel-utils.js";
+import { subagentStartHoldMs } from "../shared/start-progress.js";
 import { type OwnerlessChildLaunch, runOwnerlessChild, takeStoppedQueuedOwnerlessChild } from "./ownerless-children.js";
 import { formatReleasedReplyResults } from "./released-child-replies.js";
 import {
@@ -960,11 +961,13 @@ export async function restoreSubagentChild(
 		// When the session already holds them since it started, that hold carries on under the same capability:
 		// what it holds stays held, and no moment passes without a hold.
 		const earlier = await takeEarlyChildHold(key);
+		// Sends to the relaunched child wait through its start, until it registers, instead of a brief hold.
+		const holdMs = subagentStartHoldMs(deps.config.sessionStartTimeoutMs);
 		if (earlier) {
 			hold = earlier;
-			await hold.refresh();
+			await hold.holdWhileStarting(holdMs);
 		} else {
-			hold = await holdChildTargets(deps.pi.events, record, launchIntercomGroup(record, ctx));
+			hold = await holdChildTargets(deps.pi.events, record, launchIntercomGroup(record, ctx), { holdMs });
 		}
 		// The child follows the restores of the session that owns it, after those it was launched in: a wake comes from
 		// outside any work, so neither is in scope here.
@@ -1151,8 +1154,8 @@ export async function awaitSubagentChildRestoration(
 		if (!outcome)
 			return `Subagent \`${label}\` is still being restored after the restart. The message was not sent; try again shortly.`;
 		if (outcome.kind === "unrestorable") return goneChildRefusal(label, active.record, outcome.reason);
-		if (outcome.kind === "restored" && outcome.intercomLive === false)
-			return `Subagent \`${label}\` was relaunched after the restart but has not reconnected to Intercom. The message was not sent; its result will still arrive as a task completion.`;
+		// A relaunched child that has not registered yet is still starting: its hold keeps the send for it until it
+		// registers, before its first turn, so the send goes out.
 		return undefined;
 	}
 	for (const reported of goneChildren.values()) {
@@ -1192,7 +1195,7 @@ export function subagentChildRestoreNotices(outcomes: readonly SubagentChildRest
 			: "relaunched from its own session";
 		if (outcome.intercomLive === false)
 			return [
-				`${label} was ${how} as task ${outcome.taskId}, but it did not reconnect to Intercom. Treat it as unreachable until it reconnects; its result will still arrive as a task completion.`,
+				`${label} was ${how} as task ${outcome.taskId} and is still starting: it has not registered on Intercom yet. Messages sent to it now wait for it and reach it before its first turn; \`subagent({ action: "status", id: "${outcome.taskId}" })\` shows where its start is. Its result arrives as a task completion.`,
 			];
 		return [
 			`${label} was interrupted by the restart and has been ${how} as task ${outcome.taskId}${outcome.intercomLive ? "; it is live on Intercom under the same name" : ""}.`,

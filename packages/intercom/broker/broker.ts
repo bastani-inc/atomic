@@ -2374,7 +2374,9 @@ class IntercomBroker {
           typeof clientMessage.capability !== "string" || !clientMessage.capability ||
           (clientMessage.group !== undefined && typeof clientMessage.group !== "string") ||
           (clientMessage.dormant !== undefined && typeof clientMessage.dormant !== "boolean") ||
-          (clientMessage.aliases !== undefined && !isRestoringRecipientAliasList(clientMessage.aliases))
+          (clientMessage.aliases !== undefined && !isRestoringRecipientAliasList(clientMessage.aliases)) ||
+          (clientMessage.holdMs !== undefined &&
+            (typeof clientMessage.holdMs !== "number" || !Number.isInteger(clientMessage.holdMs) || clientMessage.holdMs <= 0))
         ) {
           throw new Error("Invalid reserve_restoring_recipient message");
         }
@@ -2399,7 +2401,10 @@ class IntercomBroker {
           childName,
           normalizeGroup(typeof clientMessage.group === "string" ? clientMessage.group : owner.registrationGroup),
           aliases,
-          { dormant: clientMessage.dormant === true },
+          {
+            dormant: clientMessage.dormant === true,
+            ...(typeof clientMessage.holdMs === "number" ? { holdMs: clientMessage.holdMs } : {}),
+          },
         );
         this.dispatchHeldSends(this.departedChildren.supersede(currentId, childName));
         writeMessageIfOpen(socket, { type: "restoring_recipient_ack", requestId: clientMessage.requestId });
@@ -3389,7 +3394,7 @@ class IntercomBroker {
     childName: string,
     group: string,
     aliases: readonly string[],
-    options: { readonly dormant: boolean; readonly wake?: boolean; readonly replaceAliases?: true },
+    options: { readonly dormant: boolean; readonly wake?: boolean; readonly replaceAliases?: true; readonly holdMs?: number },
   ): void {
     const wake = this.restoringRecipients.reserve(key, ownerSessionId, childName, group, aliases, options);
     this.multiNode?.restoringReserved(key, ownerSessionId, childName, group, aliases, options.dormant, {

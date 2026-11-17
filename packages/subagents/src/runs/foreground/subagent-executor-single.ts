@@ -34,8 +34,10 @@ import {
 	resolveSingleOutputPath,
 	validateFileOnlyOutputMode,
 } from "../shared/single-output.js";
+import { subagentStartHoldMs } from "../shared/start-progress.js";
 import { runOwnerlessChild } from "./ownerless-children.js";
 import { formatParentAskHandoffOutput } from "./parent-ask-output.js";
+import { holdStartingChild } from "./subagent-child-hold.js";
 import { createSubagentChildRecordSink } from "./subagent-child-records.js";
 import {
 	createForegroundControlNotifier,
@@ -216,6 +218,15 @@ export async function runSinglePath(
 			childIntercomTarget,
 			ctx.getChildSessionOptions?.({ tools: agentConfig.tools }),
 		);
+		const childIntercomGroup = resolveChildIntercomGroup(params.group, inheritedIntercomGroup(ctx), undefined);
+		// Sends to the child wait for it to register, before its first turn, instead of finding no session.
+		const startHold = await holdStartingChild({
+			events: deps.pi.events,
+			intercomTarget: childIntercomTarget,
+			authorization: supervisorAuthorization,
+			group: childIntercomGroup,
+			holdMs: subagentStartHoldMs(deps.config.sessionStartTimeoutMs),
+		});
 		const runOptions: RunSyncOptions = {
 			runningCapacity: deps.config.parallel?.runningCapacity,
 			sessionStartTimeoutMs: deps.config.sessionStartTimeoutMs,
@@ -245,7 +256,7 @@ export async function runSinglePath(
 			intercomSessionName: childIntercomTarget,
 			supervisorAuthorization,
 			orchestratorIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
-			intercomGroup: resolveChildIntercomGroup(params.group, inheritedIntercomGroup(ctx), undefined),
+			intercomGroup: childIntercomGroup,
 			onParentAskHandoff: (request) => {
 				if (parentAsk) return;
 				request.taskContext = handoffTaskContext;
@@ -288,6 +299,7 @@ export async function runSinglePath(
 				recordChild: createSubagentChildRecordSink(deps.pi, ctx),
 				onTerminal: (child) => {
 					settledChild = child;
+					startHold.settle(child);
 					cleanupTransientProgress(progressDir, artifactConfig.enabled);
 				},
 				outputText: (child) =>
@@ -300,6 +312,7 @@ export async function runSinglePath(
 							})
 						: getSingleResultOutput(child),
 			});
+			if (response.kind === "unstarted") startHold.settle();
 			if (!parentAsk || !settledChild?.interrupted)
 				return await taskToolResultWithOutput(response, ctx.getAgentTaskHost());
 			r = settledChild;
@@ -317,7 +330,7 @@ export async function runSinglePath(
 				recordChild: createSubagentChildRecordSink(deps.pi, ctx),
 				...(params[BURST_EXECUTION_SCHEDULE] ? { schedule: params[BURST_EXECUTION_SCHEDULE] } : {}),
 				runSync: (childTask, options) => deps.runtime.runSync(launchCwd, agents, params.agent!, childTask, options),
-			}).result;
+			}).result.finally(() => startHold.settle());
 		}
 	} catch (error) {
 		cleanupTransientProgress(progressDir, artifactConfig.enabled);
