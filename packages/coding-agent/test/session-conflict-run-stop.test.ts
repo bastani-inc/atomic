@@ -56,7 +56,10 @@ async function storedEntries(store: MemorySessionStore, sessionId: string): Prom
 }
 
 /** Holds this store's first append that saves a system message until `release` resolves. */
-function holdSystemAppend(store: MemorySessionStore): { readonly started: Promise<void>; readonly release: () => void } {
+function holdSystemAppend(store: MemorySessionStore): {
+	readonly started: Promise<void>;
+	readonly release: () => void;
+} {
 	const append = store.append.bind(store);
 	const started = Promise.withResolvers<void>();
 	const release = Promise.withResolvers<void>();
@@ -113,7 +116,11 @@ test("disposal leaves a reconciliation that another writer's entries stopped pen
 	store.append = (async (id, entries, options) => {
 		if (!interleaved && entries.some((entry) => entry.type === "message" && entry.message.role === "system")) {
 			interleaved = true;
-			await otherProcess.appendMessage({ role: "user", content: "the other process's prompt", timestamp: Date.now() });
+			await otherProcess.appendMessage({
+				role: "user",
+				content: "the other process's prompt",
+				timestamp: Date.now(),
+			});
 		}
 		return append(id, entries, options);
 	}) as typeof store.append;
