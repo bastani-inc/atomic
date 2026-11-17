@@ -13,6 +13,7 @@ const backgroundTasks = readFileSync(
 	"utf8",
 );
 const subagents = readFileSync(new URL("../../packages/coding-agent/docs/subagents.md", import.meta.url), "utf8");
+const subagentReadme = readFileSync(new URL("../../packages/subagents/README.md", import.meta.url), "utf8");
 
 test("task notice docs describe unshaded lines and quit notices without a model line (#5342)", () => {
 	assert.doesNotMatch(
@@ -22,8 +23,11 @@ test("task notice docs describe unshaded lines and quit notices without a model 
 	assert.doesNotMatch(backgroundTasks, /Agent rows and completion cards show/);
 	assert.doesNotMatch(
 		subagents,
-		/background completion cards retain these settings|remains visible when replaying chat history/,
+		/background completion cards retain these settings|remains visible when replaying chat history|This includes stopping the subagent from `\/tasks`/,
 	);
+	assert.doesNotMatch(subagentReadme, /shaded notification card|confirm with `y`|receives a stopped notification/);
+	assert.match(subagentReadme, /unshaded notice line with an outcome glyph and task title/);
+	assert.match(subagentReadme, /first result line\. Ctrl\+O expands the full retained result/);
 	initTheme("dark");
 	const task = { ...taskRecord("quit-docs"), title: "Trace the authentication flow" };
 	const notice = taskCompletionNotice(

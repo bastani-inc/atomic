@@ -162,9 +162,9 @@ Workflow invocations receive a stable, non-`default` Intercom group automaticall
 
 ## Where running subagents show up
 
-Background agents appear in the compact count below the prompt in main and workflow-stage chat. Run `/tasks` to open the grouped inspector; updates never open it automatically. Parallel receipts identify individual siblings. Completion produces a shaded notification card with outcome and available response preview, without depending on a model reply. `/agents` browses definitions, while `subagent({ action: "list" })` shows the catalog with the configured expand-key hint.
+Background agents appear in the compact count below the prompt in main and workflow-stage chat. Run `/tasks` to open the grouped inspector; updates never open it automatically. Parallel receipts identify individual siblings. Completion produces one unshaded notice line with an outcome glyph and task title, followed by the first result line. Ctrl+O expands the full retained result. The notice does not depend on a model reply. `/agents` browses definitions, while `subagent({ action: "list" })` shows the catalog with the configured expand-key hint.
 
-To stop a task, select it in `/tasks`, press `x`, and confirm with `y`. Once termination is confirmed, the owning chat receives a stopped notification and the parent model receives the stop context, even when the child has no final response. Repeated stop requests do not duplicate the notice or change an already-settled result. Closing the owner still suppresses late notifications.
+To stop a task, select it in `/tasks` and press `x` twice within 3 seconds. A stopped subagent stays resumable. Once termination is confirmed, the owning chat receives a `quit · awaiting resume` notice line and the parent model receives the quit context, even when the child has no final response. Repeated stop requests do not duplicate the notice or change an already-settled result. Closing the owner still suppresses late notifications.
 
 You can ask naturally:
 

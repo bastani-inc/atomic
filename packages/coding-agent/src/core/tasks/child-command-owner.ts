@@ -64,6 +64,14 @@ class ChildCommandTaskRoutes {
 		return this.routes.size;
 	}
 
+	get deliveryCount(): number {
+		return this.deliveries.size;
+	}
+
+	forgetDelivery(completionId: string): void {
+		this.deliveries.delete(completionId);
+	}
+
 	/** Notices kept for children that could not take them yet; counted by tests. */
 	keptCount(childId: string): number {
 		return this.kept.get(childId)?.length ?? 0;
@@ -188,6 +196,14 @@ export function deliverToLaunchingSession(
 /** How many children have a completion route in this host's owner. */
 export function childCommandRouteCount(host: AgentTaskHost): number {
 	return routesByHost.get(host)?.routeCount ?? 0;
+}
+
+export function childDeliveryCount(host: AgentTaskHost): number {
+	return routesByHost.get(host)?.deliveryCount ?? 0;
+}
+
+export function forgetChildDelivery(host: AgentTaskHost, completionId: string): void {
+	routesByHost.get(host)?.forgetDelivery(completionId);
 }
 
 /** How many completion notices wait in this host's owner for the child `childId` to take them. */

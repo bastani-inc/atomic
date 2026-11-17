@@ -9,6 +9,7 @@ import { AgentTaskHost } from "./tasks/agent-adapter.js";
 import {
 	type ChildTaskCompletionRoute,
 	deliverToLaunchingSession,
+	forgetChildDelivery,
 	type TaskCompletionMessage,
 } from "./tasks/child-command-owner.js";
 import { type AdmittedTaskCompletion, type TaskCompletionEnvelope, TaskCompletionOutbox } from "./tasks/completion.js";
@@ -208,9 +209,15 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 		async (envelope, restored) => (await admitBatch([envelope], restored))[0],
 		// Each notice holds its task's record until it is delivered, so a burst of finishes cannot evict what the
 		// notice is built from (#4385).
-		(envelope) => this._agentTaskHost?.releaseTaskRecord(envelope.taskId),
+		(envelope) => {
+			forgetChildDelivery(host, envelope.completionId);
+			host.releaseTaskRecord(envelope.taskId);
+		},
 		() => !waitsOnDetachedResults(this),
-		(envelope) => releaseDeliveredTaskRecord(this._agentTaskHost, envelope),
+		(envelope) => {
+			forgetChildDelivery(host, envelope.completionId);
+			releaseDeliveredTaskRecord(host, envelope);
+		},
 		{ admitBatch },
 	);
 	this._taskCompletionOutbox = outbox;
@@ -265,7 +272,7 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 			this._emit({ type: "task_cleanup_quarantined", taskId: ref.taskId, resources }),
 	};
 	if (!stageAdmission && !replacementOwnerScopes.has(this)) replacementOwnerScopes.set(this, randomUUID());
-	this._agentTaskHost = stageAdmission
+	const host = stageAdmission
 		? stageAdmission.bindAgentTaskHost(binding)
 		: new AgentTaskHost({
 				...binding,
@@ -274,7 +281,8 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 					sessionId: replacementOwnerScopes.get(this)!,
 				},
 			});
-	const { supervisor, owner } = this._agentTaskHost.ownerBinding;
+	this._agentTaskHost = host;
+	const { supervisor, owner } = host.ownerBinding;
 	const store = new OwnerTaskStore(supervisor, owner);
 	const connected = store.connect();
 	if (!connected.ok) throw new Error(connected.error.message);
