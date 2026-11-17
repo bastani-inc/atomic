@@ -29,6 +29,7 @@ import {
 	TaskCommandOutputPage,
 	type TaskTranscriptEnvironment,
 } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
+import { ToolExecutionComponent } from "../../packages/coding-agent/src/modes/interactive/components/tool-execution.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
 import { WORKED_LINE, WORKING_LINE, WORKING_MESSAGE } from "../helpers/working-line.ts";
@@ -463,8 +464,9 @@ describe("a live subagent's chat box (#4640)", () => {
 	test("resolves tool and message renderers from the child session before the main chat (#5224)", async () => {
 		const childTool = { renderCall: () => new Text("child tool", 0, 0) };
 		const parentTool = { renderCall: () => new Text("parent tool", 0, 0) };
-		const childMessage = () => new Text("child message", 0, 0);
-		const parentMessage = () => new Text("parent message", 0, 0);
+		const childMessage = vi.fn(() => new Text("child message", 0, 0));
+		const parentMessage = vi.fn(() => new Text("parent message", 0, 0));
+		const parentToolLookup = vi.fn(() => parentTool);
 		const { page, opened } = await livePage(
 			{
 				chatSession: {
@@ -477,7 +479,7 @@ describe("a live subagent's chat box (#4640)", () => {
 			},
 			{
 				getChatRenderSettings: () => ({
-					getToolDefinition: () => parentTool,
+					getToolDefinition: parentToolLookup,
 					getCustomMessageRenderer: () => parentMessage,
 				}),
 			},
@@ -485,17 +487,52 @@ describe("a live subagent's chat box (#4640)", () => {
 		try {
 			const settings = opened[0]?.getChatRenderSettings?.();
 			assert.equal(settings?.getToolDefinition?.("contact_supervisor"), childTool);
-			assert.equal(settings?.getCustomMessageRenderer?.("intercom_message"), childMessage);
-			const unavailable = settings?.getToolDefinition?.("other");
-			assert.notEqual(unavailable, parentTool);
-			assert.match(
-				stripVTControlCharacters(
-					unavailable!.renderCall!({}, {} as never, { outputPad: 0 } as never)
-						.render(80)
-						.join("\n"),
-				),
-				/Tool renderer unavailable/,
+			const intercomRenderer = settings?.getCustomMessageRenderer?.("intercom_message");
+			assert.notEqual(intercomRenderer, parentMessage);
+			assert.deepEqual(
+				intercomRenderer?.(
+					{ role: "custom", customType: "intercom_message", content: "hi", display: true, timestamp: 1 },
+					{ expanded: false, outputPad: 0, keyText: () => "", keyHint: () => "" },
+					{} as never,
+				)
+					?.render(80)
+					.map((row) => row.trimEnd()),
+				["child message"],
 			);
+			assert.equal(childMessage.mock.calls.length, 1);
+			assert.equal(parentMessage.mock.calls.length, 0);
+			for (const toolName of ["other", "bash"]) {
+				const unavailable = settings?.getToolDefinition?.(toolName);
+				assert.notEqual(unavailable, parentTool);
+				const unavailableTool = new ToolExecutionComponent(
+					toolName,
+					"private-child-tool",
+					{ command: "PRIVATE_CHILD_ARGUMENTS" },
+					{ outputPad: 0 },
+					unavailable,
+					makeTestTui(24),
+					process.cwd(),
+				);
+				try {
+					for (const settled of [false, true]) {
+						if (settled) {
+							unavailableTool.updateResult({
+								content: [{ type: "text", text: "PRIVATE_CHILD_RESULT" }],
+								isError: false,
+							});
+						}
+						for (const expanded of [false, true]) {
+							unavailableTool.setExpanded(expanded);
+							const rendered = text(unavailableTool.render(80));
+							assert.match(rendered, /Tool renderer unavailable/);
+							assert.doesNotMatch(rendered, /PRIVATE_CHILD_ARGUMENTS|PRIVATE_CHILD_RESULT|parent tool/);
+						}
+					}
+				} finally {
+					unavailableTool.dispose();
+				}
+			}
+			assert.equal(parentToolLookup.mock.calls.length, 0);
 			assert.equal(settings?.getCustomMessageRenderer?.("other"), parentMessage);
 		} finally {
 			page.dispose();
