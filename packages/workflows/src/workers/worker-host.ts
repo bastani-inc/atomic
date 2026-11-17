@@ -904,7 +904,12 @@ export async function readWorkflowWorkerFleet(
 					demand,
 					read.hosts,
 					options.policy,
-					rate?.estimate(resolvedPolicy.workersPerHost)?.hosts,
+					rate?.limit(
+						resolvedPolicy.workersPerHost,
+						read.hosts.filter(
+							(host) => host.state !== "stale" && host.state !== "draining" && host.draining !== true,
+						).length,
+					),
 				),
 			}) ?? {
 				hosts: [],

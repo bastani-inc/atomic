@@ -108,8 +108,8 @@ export interface WorkflowFleetStatus {
 	readonly live?: number;
 	readonly pending?: number;
 	/**
-	 * While active, the most hosts the fleet-wide rate limits keep busy, by the tokens hosts drew over the last 10
-	 * minutes, once a limited scope has a minute of history: `target` exceeds it only when `minHosts` asks for more.
+	 * While active, estimated host capacity from recent grants and nonwaiting worker time, or the current host count
+	 * while history warms. `target` exceeds it only when `minHosts` asks for more.
 	 */
 	readonly rateCapHosts?: number;
 	/** Set while its provisioner or journal calls fail. */

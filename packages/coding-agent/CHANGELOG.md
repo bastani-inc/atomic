@@ -4,7 +4,7 @@
 
 ### Added
 
-- `atomic worker status` and `/workflow status` show the fleet controller, its latest scale events, the fleet-wide rate limits and each worker host's checkpoint shipping lag, and when each running child last recorded a step. `atomic worker metrics` caps the hosts it asks for at what the fleet-wide rate limits keep busy, by the last 10 minutes of calls, and exports the cap as `rateCapHosts` and `atomic_fleet_rate_cap_hosts`. See [The scaling signal](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/docs/guides/worker-hosts.md#the-scaling-signal) ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
+- `atomic worker status` and `/workflow status` show the fleet controller, its latest scale events, the fleet-wide rate limits and each worker host's checkpoint shipping lag, and when each running child last recorded a step. `atomic worker metrics` caps the hosts it asks for at the capacity estimated from recent calls and worker time not spent waiting for tokens, holding growth at the current host count while a minute of history warms, and exports the cap as `rateCapHosts` and `atomic_fleet_rate_cap_hosts`. See [The scaling signal](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/docs/guides/worker-hosts.md#the-scaling-signal) ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
 - `ATOMIC_STARTUP_TRACE` names a file to which Atomic appends each startup milestone (process start, first paint, engine ready, first provider request) with its wall-clock time; an interactive session's engine writes to the same file
 
 ### Changed

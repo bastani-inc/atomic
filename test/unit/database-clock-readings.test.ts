@@ -150,6 +150,38 @@ test("a shared pool's stats report each leased child renewed and expiring one wh
 	}
 });
 
+test("a host's first report shows its checkpoint shipping and its children's progress (#4768)", async () => {
+	const j = await sharedRoot(60_000);
+	const shared = await SqlSharedPool.open(j, await openSqlPoolQueue(j));
+	const [held] = (await readSharedPoolStats(j, "root"))?.leases ?? [];
+	assert.ok(held !== undefined);
+	const shipping = { lagMs: 1_500, pending: 4 };
+	for (let start = T + 1_000; start < T + 1_005; start++) {
+		const host = `host-${start - T}`;
+		await movingFrom(start, () =>
+			shared.reportHost({
+				host,
+				labels: {},
+				git: "unavailable",
+				restore: false,
+				workers: 1,
+				maxWorkers: 1,
+				roots: ["root"],
+				busy: 1,
+				shipping,
+				progress: [{ work: held.work, agoMs: 0, checkpoints: 2 }],
+			}),
+		);
+		pin(start + 10);
+		const reported = (await readSharedPoolStats(j, "root"))?.hosts.find((entry) => entry.host === host);
+		assert.deepEqual(
+			[reported?.shipping, reported?.progress],
+			[shipping, [{ work: held.work, agoMs: 0, checkpoints: 2 }]],
+			`from ${start - T} ms`,
+		);
+	}
+});
+
 test("a broker lists a lease as live only while its age is within the stale bound (#4768)", async () => {
 	const store = await openSqlBrokerLeaseStore({ database: await database(), prefix: "" });
 	pin(T);

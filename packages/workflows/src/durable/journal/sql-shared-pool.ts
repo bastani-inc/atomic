@@ -345,8 +345,9 @@ export class SqlSharedPool {
 		await this.plainWrite(
 			[
 				{
-					sql: `INSERT INTO ${this.hosts}(host, labels, git, restore, workers, max_workers, heartbeat_at, roots, slots_busy, draining, degraded, provider_id, journal_schema, shipping, progress, status_at)
-				VALUES (?, ?, ?, ?, ?, ?, ${this.now}, ?, ?, ?, ?, ?, ?, ?, ?, ${this.now})
+					sql: `WITH clock AS (SELECT ${this.now} AS now)
+				INSERT INTO ${this.hosts}(host, labels, git, restore, workers, max_workers, heartbeat_at, roots, slots_busy, draining, degraded, provider_id, journal_schema, shipping, progress, status_at)
+				VALUES (?, ?, ?, ?, ?, ?, (SELECT now FROM clock), ?, ?, ?, ?, ?, ?, ?, ?, (SELECT now FROM clock))
 				ON CONFLICT(host) DO UPDATE SET labels = excluded.labels, git = excluded.git, restore = excluded.restore,
 				workers = excluded.workers, max_workers = excluded.max_workers, heartbeat_at = excluded.heartbeat_at, roots = excluded.roots,
 				slots_busy = excluded.slots_busy, draining = excluded.draining, degraded = excluded.degraded,

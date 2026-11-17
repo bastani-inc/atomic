@@ -620,12 +620,15 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 				await controller.record(fence, { kind: "scale-up", target: step + 1, live: step, reason: `step ${step}` });
 			await controller.record(fence, {
 				kind: "error",
-				reason: "scaleTo failed",
+				reason: "scaleTo https://me:secret@vault.example/x failed",
 				error: "WorkerProvisionerError: az: https://me:secret@vault.example/x denied",
 			});
 			const buckets = await SqlRateBuckets.open(f.journal);
 			await buckets.acquire("anthropic", 1, { intervalMs: 1_000, burst: 2 });
 			await buckets.cooldown("openai/gpt", 30_000);
+			await buckets.cooldown("expired", 1);
+			const cooledBy = await databaseNow(f.database);
+			while ((await databaseNow(f.database)) <= cooledBy + 2) await delay(1);
 			const peer = await f.peer();
 			const fleet = (await readSharedPoolStats(peer, "root"))!.fleet;
 			assert.deepEqual(
@@ -653,7 +656,7 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 						"error",
 						undefined,
 						undefined,
-						"scaleTo failed",
+						"scaleTo https://vault.example/x failed",
 						{ name: "WorkerProvisionerError", message: "az: https://vault.example/x denied" },
 					],
 					[7, "scale-up", 8, 7, "step 7", undefined],
@@ -713,6 +716,9 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 				},
 				progress: [{ work: claimed.id, agoMs: 250, checkpoints: 3 }],
 			});
+			const reportedBy = await databaseNow(f.database);
+			const reportAgeMs = 50;
+			while ((await databaseNow(f.database)) < reportedBy + reportAgeMs) await delay(1);
 			const peer = await f.peer();
 			const stats = (await readSharedPoolStats(peer, "root"))!;
 			assert.deepEqual(stats.hosts.find((host) => host.host === "h1")?.shipping, {
@@ -725,7 +731,7 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 			assert.equal(lease?.checkpoints, 3);
 			assert.ok(
 				lease?.lastProgressAgoMs !== undefined &&
-					lease.lastProgressAgoMs >= 250 &&
+					lease.lastProgressAgoMs >= 250 + reportAgeMs &&
 					lease.lastProgressAgoMs < 60_250,
 				JSON.stringify(lease),
 			);
@@ -803,10 +809,13 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 						["h-new", { lagMs: 0, pending: 0 }],
 					],
 				);
+				await newerStores.buckets.poll([{ reporter: "h-new", scope: "anthropic", waitingMs: 750 }]);
+				await newerStores.buckets.poll([{ reporter: "h-new", scope: "anthropic", waitingMs: 750 }]);
+				await newerStores.buckets.poll([{ reporter: "h-new", scope: "anthropic", waitingMs: 500 }]);
 				assert.deepEqual(
-					(await readFleetRateUsage(newerJournal)).map((usage) => [usage.scope, usage.acquired]),
-					[["anthropic", 3]],
-					"this version counts the tokens it takes; a 0.9.88 host takes its own without counting them",
+					(await readFleetRateUsage(newerJournal)).map((usage) => [usage.scope, usage.acquired, usage.waitingMs]),
+					[["anthropic", 3, 750]],
+					"0.9.88 hosts change neither counter, so their unmeasured waits make mixed-version caps more permissive",
 				);
 			});
 

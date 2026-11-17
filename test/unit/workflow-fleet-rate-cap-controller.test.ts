@@ -13,6 +13,7 @@ import {
 	startWorkflowFleetController,
 	type WorkflowFleetController,
 } from "../../packages/workflows/src/workers/fleet-controller.js";
+import { readWorkflowWorkerFleet } from "../../packages/workflows/src/workers/worker-host.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { sleep } from "../helpers/runtime.js";
@@ -62,6 +63,7 @@ function bucketReadings(perStep: () => number) {
 		const reading = {
 			scope: "anthropic",
 			acquired,
+			waitingMs: 0,
 			intervalMs: 60_000 / LIMIT_PER_MINUTE,
 			now: 1_800_000_000_000 + step * STEP_MS,
 		};
@@ -69,6 +71,59 @@ function bucketReadings(perStep: () => number) {
 		return [reading];
 	};
 }
+
+test.skipIf(process.platform === "win32")(
+	"fleet reads retain rate history only when requested, hold startup growth and cap subsequent scaling (#4768)",
+	async () => {
+		const journal = await resolveRunJournal({ journal: selection(), agentDir: join(directory, "agent") });
+		journals.push(journal);
+		await journal.createRun({ runId: "root", name: "root", cwd: "", createdAt: 0, status: "running" });
+		const acquired = await journal.acquire("root", "owner");
+		if (acquired.status !== "acquired") assert.fail("root lease was not acquired");
+		const queue = await openSqlPoolQueue(journal);
+		await queue.initialize(acquired.lease, 60_000);
+		const shared = await SqlSharedPool.open(journal, queue);
+		await shared.publishConfig(acquired.lease, {
+			definitions: [],
+			leaseMs: 60_000,
+			heartbeatMs: 15_000,
+			startupTimeoutMs: 60_000,
+			claimWindowMs: 60_000,
+			rateLimits: { anthropic: { requestsPerMinute: LIMIT_PER_MINUTE } },
+		});
+		for (let index = 0; index < 40; index++) {
+			const { work, boundary } = poolWorkFixture(`child-${index}`);
+			await queue.enqueue(acquired.lease, work, boundary);
+		}
+		for (let slot = 0; slot < 4; slot++)
+			assert.ok(await queue.claim(acquired.lease, `h/w${slot}`, [poolWorkFixture().work], 60_000));
+		await shared.reportHost({
+			host: "h",
+			labels: {},
+			git: "unavailable",
+			restore: false,
+			workers: 4,
+			maxWorkers: 4,
+			roots: ["root"],
+			busy: 4,
+		});
+		usage.next = bucketReadings(() => LIMIT_PER_MINUTE / 4);
+		const options = {
+			journal: selection(),
+			agentDir: join(directory, "reader"),
+			probeWrites: false,
+			policy: { workersPerHost: 4, maxHosts: 20 },
+		};
+		const first = await readWorkflowWorkerFleet({ ...options, rateHistory: true });
+		assert.equal(first.scaling?.desiredHosts, 1, "a cold metrics reader holds growth until its history matures");
+		await readWorkflowWorkerFleet({ ...options, rateHistory: true });
+		const warm = await readWorkflowWorkerFleet({ ...options, rateHistory: true });
+		assert.deepEqual([warm.scaling?.desiredHosts, warm.scaling?.rateCapHosts], [2, 2]);
+		const plain = await readWorkflowWorkerFleet(options);
+		assert.equal(plain.scaling?.desiredHosts, 10, "a one-shot status read does not apply the process's history");
+		assert.equal(plain.scaling?.rateCapHosts, undefined);
+	},
+);
 
 test.skipIf(process.platform === "win32")(
 	"a fleet controller adds no host the fleet-wide rate limits cannot feed, records why, and grows once they can (#4768)",
@@ -140,16 +195,19 @@ test.skipIf(process.platform === "win32")(
 		const capped = (await store.recent(20)).filter((event) => event.kind === "rate-cap");
 		assert.deepEqual(
 			capped.map((event) => [event.target, event.live]),
-			[[1, 1]],
+			[
+				[1, 1],
+				[1, 1],
+			],
 		);
 		assert.match(
-			capped[0]!.reason,
-			/^rate limit anthropic \(600\/min\) granted 600\/min to 4 busy workers over the last 10 minutes: it feeds at most 1 hosts, while the queue wants 6$/,
+			capped[1]!.reason,
+			/^rate limit anthropic \(600\/min\) granted 600\/min with 4 nonwaiting workers out of 4 busy over the last 60 seconds: the fleet can use at most 1 hosts including other scopes, while the queue wants 6$/,
 		);
 		assert.deepEqual(
 			(await readSharedPoolStats(journal, "root"))?.fleet.scaleEvents?.find((event) => event.kind === "rate-cap")
 				?.reason,
-			capped[0]!.reason,
+			capped[1]!.reason,
 		);
 
 		saturated = false;

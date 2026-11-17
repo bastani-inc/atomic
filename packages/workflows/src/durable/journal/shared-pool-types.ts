@@ -44,9 +44,9 @@ export interface SharedPoolHostReport {
 
 /** A host's checkpoint shipping as it reports it (#4768). */
 export interface SharedPoolHostShipping {
-	/** Age of the oldest checkpoint the host accepted and has not shipped, 0 when it holds none. */
+	/** Age of the oldest checkpoint or session write the host accepted and has not shipped, 0 when it holds none. */
 	readonly lagMs: number;
-	/** Checkpoints accepted and not shipped yet, across its children. */
+	/** Checkpoint and session writes accepted and not shipped yet, across its children. */
 	readonly pending: number;
 	/** Its oldest unshipped checkpoint reached its catch-up point: it claims no new children until it catches up. */
 	readonly lagging?: boolean;
@@ -180,8 +180,8 @@ export interface SharedPoolFleetScaling {
 	readonly maxHosts: number;
 	readonly workersPerHost: number;
 	/**
-	 * The most hosts the fleet-wide rate limits keep busy, from the tokens hosts drew over the last 10 minutes, once a
-	 * reader that keeps that history has it: a fleet controller, or `atomic worker metrics`. Absent otherwise.
+	 * Estimated host capacity from recent grants and nonwaiting worker time, or the current host count while the
+	 * observation window warms. Present for a rate-limited controller or reader keeping history; absent otherwise.
 	 */
 	readonly rateCapHosts?: number;
 }

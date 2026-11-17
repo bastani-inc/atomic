@@ -6,10 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `SharedPoolScaleEvent.target` and `.live` are now optional. Events without a scaling plan, such as controller activation and provider errors, omit these fields. Check for `undefined` before using them as numbers ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
+
 ### Added
 
 - Added the fleet controller, its scale events, rate limits and each host's checkpoint shipping to fleet status. `/workflow status`, its JSON, `host.stats()`, `readWorkflowWorkerFleet()` and `atomic worker status` show the controller that holds the fleet's lease, its five latest decisions, every fleet-wide rate limit with its rate and any shared 429 cooldown, and each worker host's checkpoint shipping: how far it lags, how many checkpoints it holds, whether it is catching up, and the last delivery failure (`host.stats().shipping` for the host itself). Each child's lease shows when its attempt last recorded a step and how many checkpoints it recorded (`lastProgressAgoMs`, `checkpoints`) ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
-- Added the rate-limit cap to fleet autoscaling: a fleet controller keeps no more hosts than the fleet-wide `workers.rateLimits` keep busy, judged by the calls the hosts took over the last 10 minutes, records a `rate-cap` fleet event when the cap holds the fleet below what its queue wants, and reports it as `rateCapHosts`. Rate buckets now count the calls they grant. The registry and rate-bucket tables gain nullable columns, and hosts of 0.9.88 keep sharing a pool with this version ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
+- Added the rate-limit cap to fleet autoscaling: a fleet controller keeps no more hosts than the fleet-wide `workers.rateLimits` keep busy, estimated from recent calls and worker time not spent waiting for tokens. Growth holds at the current host count while a minute of observations warms, including after an observation gap, and standby controllers keep history for takeover. The controller records a `rate-cap` fleet event when the cap holds the fleet below what its queue wants, and reports it as `rateCapHosts`. Rate buckets now count granted calls and token-waiting worker time. The registry and rate-bucket tables gain additive columns, and hosts of 0.9.88 keep sharing a pool with this version ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
 
 ### Changed
 

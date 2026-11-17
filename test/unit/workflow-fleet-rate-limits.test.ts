@@ -6,6 +6,8 @@ import {
 	type RateAcquireOutcome,
 	type RateBucketPoll,
 	type RateBucketShape,
+	type RateBucketWaiting,
+	readFleetRateUsage,
 	SqlRateBuckets,
 	waitFor,
 } from "../../packages/workflows/src/durable/journal/sql-rate-buckets.js";
@@ -55,6 +57,225 @@ test("a GCRA bucket admits its burst at once, then one token per interval (#4768
 	for (let t = 1_200; t < 3_000; t += 100) assert.equal(bucket.take(t), 0);
 	bucket.refund();
 	assert.equal(bucket.take(2_950), 0);
+});
+
+test("a limiter reports elapsed token-waiting worker time once, including cached waits and its final partial wait (#4768)", async () => {
+	const j = await journal();
+	const store = await SqlRateBuckets.open(j);
+	const limiter = new FleetRateLimiter({
+		store,
+		limits: { p: { requestsPerMinute: 1, burst: 1, prefetch: 1 } },
+		shareCooldowns: false,
+		slots: 2,
+		applyCooldowns: () => {},
+	});
+	vi.useFakeTimers({ toFake: ["Date", "performance"] });
+	try {
+		assert.equal(await limiter.acquire("p", "m", "a"), 0);
+		assert.ok((await limiter.acquire("p", "m", "a")) > 1_000);
+		assert.ok((await limiter.acquire("p", "m", "b")) > 1_000);
+		assert.ok((await limiter.acquire("p", "m", "a", "second")) > 1_000);
+		await vi.advanceTimersByTimeAsync(500);
+		await limiter.poll();
+		assert.equal((await readFleetRateUsage(j))[0]?.waitingMs, 1_000, "overlapping waits of one worker count once");
+		limiter.releaseRequest("a", "default");
+		await vi.advanceTimersByTimeAsync(500);
+		await limiter.poll();
+		assert.equal(
+			(await readFleetRateUsage(j))[0]?.waitingMs,
+			2_000,
+			"ending one request leaves its worker's other wait counted",
+		);
+		limiter.releaseWorker("a");
+		await vi.advanceTimersByTimeAsync(500);
+		await limiter.poll();
+		assert.equal(
+			(await readFleetRateUsage(j))[0]?.waitingMs,
+			2_500,
+			"a worker that stopped contributes no future wait",
+		);
+		await vi.advanceTimersByTimeAsync(500);
+		await limiter.close();
+		assert.equal(
+			(await readFleetRateUsage(j))[0]?.waitingMs,
+			3_000,
+			"closing records only elapsed time, not the scheduled minute",
+		);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("a released worker cannot regain waiting time from an acquire still in flight (#4768)", async () => {
+	const reply = Promise.withResolvers<RateAcquireOutcome>();
+	const reports: (readonly RateBucketWaiting[])[] = [];
+	const { store } = fakeStore(
+		() => reply.promise,
+		async (waiting = []) => {
+			reports.push(waiting);
+			return { cooldowns: [], liveHosts: 1 };
+		},
+	);
+	const limiter = new FleetRateLimiter({
+		store,
+		limits: { p: { requestsPerMinute: 60 } },
+		slots: 1,
+		shareCooldowns: false,
+		applyCooldowns: () => {},
+	});
+	vi.useFakeTimers({ toFake: ["Date", "performance"] });
+	try {
+		const acquiring = limiter.acquire("p", "m", "a");
+		limiter.releaseWorker("a");
+		reply.resolve({ granted: 0, waitMs: 60_000, fits: 1, cooldownMs: 0 });
+		await acquiring;
+		await vi.advanceTimersByTimeAsync(1_000);
+		await limiter.poll();
+		assert.deepEqual(reports.flat(), [], "an ended worker contributes no later wait");
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("a canceled provider gate ends its recorded token wait (#4768)", async () => {
+	const reports: (readonly RateBucketWaiting[])[] = [];
+	const { store } = fakeStore(
+		async () => ({ granted: 0, waitMs: 60_000, fits: 1, cooldownMs: 0 }),
+		async (waiting = []) => {
+			reports.push(waiting);
+			return { cooldowns: [], liveHosts: 1 };
+		},
+	);
+	const limiter = new FleetRateLimiter({
+		store,
+		limits: { p: { requestsPerMinute: 60 } },
+		slots: 1,
+		shareCooldowns: false,
+		applyCooldowns: () => {},
+	});
+	vi.useFakeTimers({ toFake: ["Date", "performance"] });
+	try {
+		const stopped = new AbortController();
+		const gate = fleetRateGate(
+			["p"],
+			async (provider, model, request) => {
+				const wait = await limiter.acquire(provider, model, "a", request);
+				stopped.abort(new Error("stop"));
+				return wait;
+			},
+			async (request) => limiter.releaseRequest("a", request),
+		);
+		await assert.rejects(gate("p", "m", stopped.signal), /stop/);
+		await vi.advanceTimersByTimeAsync(1_000);
+		await limiter.poll();
+		assert.deepEqual(reports.flat(), [], "a canceled request contributes no later wait");
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("an unsuccessful waiting report retains its cumulative total for the next poll (#4768)", async () => {
+	let polls = 0;
+	const reports: (readonly RateBucketWaiting[])[] = [];
+	const { store } = fakeStore(
+		async () => ({ granted: 0, waitMs: 60_000, fits: 1, cooldownMs: 0 }),
+		async (waiting = []) => {
+			reports.push(waiting);
+			if (++polls === 1) throw new Error("not written");
+			return { cooldowns: [], liveHosts: 1 };
+		},
+	);
+	const limiter = new FleetRateLimiter({
+		store,
+		limits: { p: { requestsPerMinute: 60 } },
+		slots: 1,
+		shareCooldowns: false,
+		applyCooldowns: () => {},
+	});
+	vi.useFakeTimers({ toFake: ["Date", "performance"] });
+	try {
+		await limiter.acquire("p", "m", "a");
+		await vi.advanceTimersByTimeAsync(1_000);
+		await limiter.poll();
+		await vi.advanceTimersByTimeAsync(1_000);
+		await limiter.poll();
+		assert.equal(reports.at(-1)?.[0]?.waitingMs, 2_000, "a failed report does not consume elapsed waiting");
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("closing sends its final waiting total after an older timed-out poll answers (#4768)", async () => {
+	const old = Promise.withResolvers<RateBucketPoll>();
+	const reports: (readonly RateBucketWaiting[])[] = [];
+	const { store } = fakeStore(
+		async () => ({ granted: 0, waitMs: 60_000, fits: 1, cooldownMs: 0 }),
+		(waiting = []) => {
+			reports.push(waiting);
+			return reports.length === 1 ? old.promise : Promise.resolve({ cooldowns: [], liveHosts: 1 });
+		},
+	);
+	const limiter = new FleetRateLimiter({
+		store,
+		limits: { p: { requestsPerMinute: 60 } },
+		slots: 1,
+		shareCooldowns: false,
+		applyCooldowns: () => {},
+		timeoutMs: 20,
+	});
+	vi.useFakeTimers({ toFake: ["Date", "performance"] });
+	try {
+		await limiter.poll();
+		await limiter.acquire("p", "m", "a");
+		await vi.advanceTimersByTimeAsync(1_000);
+		const closing = limiter.close();
+		await sleep(5);
+		old.resolve({ cooldowns: [], liveHosts: 1 });
+		await closing;
+		assert.equal(reports.at(-1)?.[0]?.waitingMs, 1_000, "the older empty poll cannot acknowledge the final total");
+	} finally {
+		old.resolve({ cooldowns: [], liveHosts: 1 });
+		vi.useRealTimers();
+	}
+});
+
+test("a rate limiter keeps only one unanswered poll in flight across its timeout (#4768)", async () => {
+	let polls = 0;
+	const { store } = fakeStore(
+		async (_scope, count) => ({ granted: count }),
+		() => {
+			polls++;
+			return new Promise<RateBucketPoll>(() => {});
+		},
+	);
+	const limiter = new FleetRateLimiter({
+		store,
+		limits: {},
+		slots: 1,
+		shareCooldowns: false,
+		applyCooldowns: () => {},
+		timeoutMs: 20,
+	});
+	await limiter.poll();
+	await limiter.poll();
+	await limiter.close();
+	assert.equal(polls, 1);
+});
+
+test("closing a rate limiter never waits on an unbounded final status read (#4768)", async () => {
+	const { store } = fakeStore(
+		async (_scope, count) => ({ granted: count }),
+		() => new Promise<RateBucketPoll>(() => {}),
+	);
+	const limiter = new FleetRateLimiter({
+		store,
+		limits: {},
+		slots: 1,
+		shareCooldowns: false,
+		applyCooldowns: () => {},
+		timeoutMs: 20,
+	});
+	assert.equal(await Promise.race([limiter.close().then(() => "closed"), sleep(100).then(() => "blocked")]), "closed");
 });
 
 test("a refused acquire waits for its cooldown or its next token, whichever ends later (#4768)", () => {
@@ -156,7 +377,7 @@ test("the journal's buckets grant a burst, then refuse with the wait, and a cool
 /** A store whose answers the test decides. */
 function fakeStore(
 	answer: (scope: string, count: number) => Promise<RateAcquireOutcome>,
-	poll?: () => Promise<RateBucketPoll>,
+	poll?: (waiting?: readonly RateBucketWaiting[]) => Promise<RateBucketPoll>,
 ) {
 	const calls: { scope: string; count: number; shaped: boolean }[] = [];
 	const cooldowns: { scope: string; remainingMs: number }[] = [];

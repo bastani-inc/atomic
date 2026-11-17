@@ -1,6 +1,14 @@
+import { randomUUID } from "node:crypto";
 import type { ProviderRateLimitObservation, ProviderRequestGate } from "@bastani/atomic";
-import type { RateAcquireOutcome, RateBucketShape, SqlRateBuckets } from "../durable/journal/sql-rate-buckets.js";
+import type {
+	RateAcquireOutcome,
+	RateBucketPoll,
+	RateBucketShape,
+	RateBucketWaiting,
+	SqlRateBuckets,
+} from "../durable/journal/sql-rate-buckets.js";
 import type { FleetRateLimit, FleetRateLimits } from "./fleet-rate-types.js";
+import { FleetRateWaiting } from "./fleet-rate-waiting.js";
 
 export type { FleetRateLimit, FleetRateLimits } from "./fleet-rate-types.js";
 
@@ -103,6 +111,7 @@ export class LocalGcra {
 }
 
 interface ScopeState {
+	readonly waiting: FleetRateWaiting;
 	readonly shape: RateBucketShape;
 	readonly prefetch: number;
 	/** Tokens taken from the store and not handed out yet, usable until `expiresAt`. */
@@ -138,6 +147,10 @@ export interface FleetRateLimiterOptions {
 /** A host coordinator's view of the fleet's buckets for one root. */
 export class FleetRateLimiter {
 	private readonly scopes = new Map<string, ScopeState>();
+	private readonly requests = new Map<string, Map<string, { active: boolean }>>();
+	private readonly reporter = randomUUID();
+	private readonly reportedWaiting = new Map<string, number>();
+	private storePoll?: { readonly waiting: readonly RateBucketWaiting[]; readonly result: Promise<RateBucketPoll> };
 	private liveHosts = 1;
 	private pollTimer?: NodeJS.Timeout;
 	private polling?: Promise<void>;
@@ -153,6 +166,7 @@ export class FleetRateLimiter {
 		for (const [scope, limit] of Object.entries(options.limits)) {
 			const shape = bucketShape(limit);
 			this.scopes.set(scope, {
+				waiting: new FleetRateWaiting(),
 				shape,
 				prefetch: Math.min(shape.burst, limit.prefetch ?? Math.max(1, Math.ceil(options.slots / 2))),
 				tokens: 0,
@@ -190,13 +204,63 @@ export class FleetRateLimiter {
 	async close(): Promise<void> {
 		this.closed = true;
 		clearTimeout(this.pollTimer);
+		const now = performance.now();
+		for (const worker of this.requests.keys()) this.releaseWorker(worker);
+		for (const state of this.scopes.values()) state.waiting.close(now);
 		await this.polling;
+		if (this.waitingReports().length === 0) return;
+		const pending = this.storePoll;
+		if (pending !== undefined) await within(pending.result, this.timeoutMs).catch(() => undefined);
+		if (this.storePoll === undefined) await this.poll();
+	}
+
+	releaseRequest(worker: string, request: string): void {
+		const requests = this.requests.get(worker);
+		const active = requests?.get(request);
+		if (active !== undefined) active.active = false;
+		requests?.delete(request);
+		if (requests?.size === 0) this.requests.delete(worker);
+		const now = performance.now();
+		for (const state of this.scopes.values()) state.waiting.releaseRequest(worker, request, now);
+	}
+
+	releaseWorker(worker: string): void {
+		for (const request of this.requests.get(worker)?.values() ?? []) request.active = false;
+		this.requests.delete(worker);
+		const now = performance.now();
+		for (const state of this.scopes.values()) state.waiting.releaseWorker(worker, now);
+	}
+
+	private waitingReports(): RateBucketWaiting[] {
+		const now = performance.now();
+		return [...this.scopes].flatMap(([scope, state]) => {
+			const waitingMs = state.waiting.total(now);
+			return waitingMs > (this.reportedWaiting.get(scope) ?? 0)
+				? [{ reporter: this.reporter, scope, waitingMs }]
+				: [];
+		});
 	}
 
 	/** Reads shared cooldowns, applied when the root shares them, and how many hosts the local fallback divides by. */
 	async poll(): Promise<void> {
 		try {
-			const { cooldowns, liveHosts } = await this.options.store.poll();
+			let polling = this.storePoll;
+			if (polling === undefined) {
+				polling = {
+					waiting: this.waitingReports(),
+					result: Promise.resolve().then(() => this.options.store.poll(polling!.waiting)),
+				};
+				this.storePoll = polling;
+				const finished = () => {
+					if (this.storePoll === polling) this.storePoll = undefined;
+				};
+				void polling.result.then(finished, finished);
+			}
+			const report = await within(polling.result, this.timeoutMs);
+			if (report === undefined) return;
+			for (const row of polling.waiting)
+				this.reportedWaiting.set(row.scope, Math.max(this.reportedWaiting.get(row.scope) ?? 0, row.waitingMs));
+			const { cooldowns, liveHosts } = report;
 			this.liveHosts = Math.max(1, liveHosts);
 			if (this.options.shareCooldowns && cooldowns.length > 0) {
 				const now = Date.now();
@@ -220,17 +284,35 @@ export class FleetRateLimiter {
 	 * Takes one token of each configured scope a call to `provider`'s `model` draws from, and returns 0; or takes none
 	 * and returns how long the call waits before it asks again. Never waits on the store beyond the timeout.
 	 */
-	async acquire(provider: string, model: string): Promise<number> {
+	async acquire(provider: string, model: string, worker = "host", request = "default"): Promise<number> {
+		if (this.closed) return 0;
+		let requests = this.requests.get(worker);
+		if (requests === undefined) {
+			requests = new Map();
+			this.requests.set(worker, requests);
+		}
+		let active = requests.get(request);
+		if (active === undefined) {
+			active = { active: true };
+			requests.set(request, active);
+		}
 		const taken: ScopeState[] = [];
 		for (const scope of rateScopesFor(this.scopes.keys(), provider, model)) {
 			const state = this.scopes.get(scope)!;
 			const waitMs = await this.take(scope, state);
+			if (!active.active) {
+				if (waitMs === 0) this.refund(state);
+				for (const held of taken) this.refund(held);
+				return 0;
+			}
 			if (waitMs > 0) {
+				state.waiting.record(worker, request, Math.min(waitMs, GATE_MAX_WAIT_MS), performance.now());
 				for (const held of taken) this.refund(held);
 				return waitMs;
 			}
 			taken.push(state);
 		}
+		this.releaseRequest(worker, request);
 		return 0;
 	}
 
@@ -254,7 +336,7 @@ export class FleetRateLimiter {
 		}
 		const answered = await within(state.fetching ?? this.startFetch(scope, state), this.timeoutMs);
 		now = Date.now();
-		if (answered !== "done") return this.takeLocally(state, now);
+		if (answered !== true) return this.takeLocally(state, now);
 		if (state.tokens > 0) {
 			state.tokens--;
 			return 0;
@@ -338,14 +420,14 @@ export class FleetRateLimiter {
 	}
 }
 
-/** What `promise`, whether the store answered, settled to within `ms`, or `"timeout"`. */
-async function within(promise: Promise<boolean>, ms: number): Promise<"done" | "failed" | "timeout"> {
+/** The value of `promise`, or undefined once `ms` elapses. */
+async function within<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
 	let timer: NodeJS.Timeout | undefined;
 	try {
 		return await Promise.race([
-			promise.then((answered) => (answered ? ("done" as const) : ("failed" as const))),
-			new Promise<"timeout">((resolve) => {
-				timer = setTimeout(() => resolve("timeout"), ms);
+			promise,
+			new Promise<undefined>((resolve) => {
+				timer = setTimeout(() => resolve(undefined), ms);
 				timer.unref?.();
 			}),
 		]);
@@ -379,21 +461,36 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  */
 export function fleetRateGate(
 	scopes: readonly string[],
-	ask: (provider: string, model: string) => Promise<unknown>,
+	ask: (provider: string, model: string, request: string) => Promise<unknown>,
+	release?: (request: string) => Promise<unknown>,
 ): ProviderRequestGate {
+	let sequence = 0;
 	return async (provider, model, signal) => {
 		if (rateScopesFor(scopes, provider, model).length === 0) return;
-		for (;;) {
-			signal?.throwIfAborted();
-			let waitMs: number;
-			try {
-				const reply = await ask(provider, model);
-				waitMs = typeof reply === "number" && Number.isFinite(reply) && reply > 0 ? reply : 0;
-			} catch {
-				return;
+		const request = String(++sequence);
+		let released = false;
+		const finish = () => {
+			if (released) return;
+			released = true;
+			void release?.(request).catch(() => {});
+		};
+		signal?.addEventListener("abort", finish, { once: true });
+		try {
+			for (;;) {
+				signal?.throwIfAborted();
+				let waitMs: number;
+				try {
+					const reply = await ask(provider, model, request);
+					waitMs = typeof reply === "number" && Number.isFinite(reply) && reply > 0 ? reply : 0;
+				} catch {
+					return;
+				}
+				if (waitMs === 0) return;
+				await sleep(Math.min(waitMs, GATE_MAX_WAIT_MS), signal);
 			}
-			if (waitMs === 0) return;
-			await sleep(Math.min(waitMs, GATE_MAX_WAIT_MS), signal);
+		} finally {
+			signal?.removeEventListener("abort", finish);
+			finish();
 		}
 	};
 }

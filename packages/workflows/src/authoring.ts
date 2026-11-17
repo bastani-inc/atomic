@@ -758,9 +758,9 @@ export declare function migrateWorkflowStorage(options?: {
  * Setup problems reject; a store that cannot be read, or does not answer within 5 s, resolves with `fleet.store.state`
  * `"unknown"` instead. `scaling` is the fleet's scaling signal under `policy` (the fleet controller's defaults): the hosts
  * its policy wants, and the queue and slots behind it. `probeWrites: false` only reads. `rateHistory: true` keeps the
- * tokens the fleet's rate-limited scopes granted across this process's reads of the same journal, so once a minute of
- * history is kept, `scaling` caps the hosts it wants at what the rate limits keep busy and reports `rateCapHosts`, as a
- * fleet controller does; a single read has no such history.
+ * granted tokens, token-waiting time and busy workers across this process's reads of the same journal. It holds growth
+ * at the current host count (or one bootstrap host) until a minute of recent observations exists, then estimates the
+ * rate-limited capacity as `scaling.rateCapHosts`. Read at least once every 30 seconds; longer gaps reset the window.
  */
 export declare function readWorkflowWorkerFleet(options?: {
 	readonly journal?: import("./workers/worker-host-types.js").SharedJournalSelection;

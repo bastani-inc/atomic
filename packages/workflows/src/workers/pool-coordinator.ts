@@ -1541,7 +1541,8 @@ export class PoolCoordinator {
 		return progress;
 	}
 
-	private noteProgress(work: PoolWork, checkpoint: boolean): void {
+	private noteProgress(slot: WorkerSlot, work: PoolWork, checkpoint: boolean): void {
+		if (!this.slots.has(slot) || slot.work?.id !== work.id || slot.work.generation !== work.generation) return;
 		const entry = this.progress.get(work.id);
 		const current = entry?.generation === work.generation ? entry : undefined;
 		this.progress.set(work.id, {
@@ -1549,6 +1550,20 @@ export class PoolCoordinator {
 			at: performance.now(),
 			checkpoints: (current?.checkpoints ?? 0) + (checkpoint ? 1 : 0),
 		});
+	}
+
+	private forgetProgress(work: PoolWork): void {
+		if (this.progress.get(work.id)?.generation === work.generation) this.progress.delete(work.id);
+	}
+
+	private attemptEnded(slot: WorkerSlot, work: PoolWork | undefined): void {
+		this.fleetRates?.releaseWorker(slot.worker);
+		if (work !== undefined) this.forgetProgress(work);
+		slot.work = undefined;
+		slot.worktree = undefined;
+		this.places.end(slot);
+		this.gateOpened();
+		this.retireWaiting();
 	}
 
 	/** The work a worker host's workers claimed since the last call, however briefly they held it (#4768). */
@@ -2586,13 +2601,17 @@ export class PoolCoordinator {
 				this.lastHeard.delete(worker);
 				this.awaiting.delete(worker);
 				this.slots.delete(slot);
+				this.fleetRates?.releaseWorker(slot.worker);
 				this.places.end(slot);
 				this.gateOpened();
 				this.retireWaiting();
 				this.endStageWatches((watch) => watch.slot === slot, "worker_exited");
 				for (const settle of slot.stageCommands.values()) settle(undefined);
 				slot.stageCommands.clear();
-				if (slot.work) this.fence(slot.work);
+				if (slot.work) {
+					this.forgetProgress(slot.work);
+					this.fence(slot.work);
+				}
 				const lost = new WorkerLostError({
 					phase: "delivery",
 					pid: child.pid,
@@ -2792,7 +2811,13 @@ export class PoolCoordinator {
 					if (message.kind === "rate-acquire")
 						return this.fleetRates === undefined
 							? 0
-							: this.fleetRates.acquire(message.provider, message.model).catch(() => 0);
+							: this.fleetRates
+									.acquire(message.provider, message.model, slot.worker, message.request)
+									.catch(() => 0);
+					if (message.kind === "rate-release") {
+						this.fleetRates?.releaseRequest(slot.worker, message.request);
+						return 0;
+					}
 					if (message.kind === "fenced") {
 						const fenced = slot.work;
 						// The slot keeps the attempt until its release below is recorded: a store that refuses it leaves the
@@ -2801,11 +2826,7 @@ export class PoolCoordinator {
 						const end = () => {
 							if (slot.work !== fenced) return;
 							if (fenced !== undefined) void this.shipping?.release(fenced);
-							slot.work = undefined;
-							slot.worktree = undefined;
-							this.places.end(slot);
-							this.gateOpened();
-							this.retireWaiting();
+							this.attemptEnded(slot, fenced);
 						};
 						// Its current owner keeps superseded work. Work still leased to this attempt was refused by the root,
 						// or its run failed on a fault of the pool: it is released for replay and counts as a failed attempt,
@@ -3036,7 +3057,7 @@ export class PoolCoordinator {
 										renewAttempt: () => this.whileRootLate(queue, renewAttempt),
 									}),
 						);
-						this.noteProgress(work, message.mutation.kind !== "session-append");
+						this.noteProgress(slot, work, message.mutation.kind !== "session-append");
 						// A checkpoint that bills usage is shipped by the time the host acknowledges it from its local journal.
 						if (
 							message.mutation.kind === "checkpoint"
@@ -3058,11 +3079,7 @@ export class PoolCoordinator {
 					await shipping?.release(work);
 					this.endStageWatches((watch) => watch.slot === slot, "stage_finished");
 					this.replacements = 0;
-					slot.work = undefined;
-					slot.worktree = undefined;
-					this.places.end(slot);
-					this.gateOpened();
-					this.retireWaiting();
+					this.attemptEnded(slot, work);
 					await this.sendResult(work.id);
 				};
 				const handled = this.counters.within(message.kind, () =>

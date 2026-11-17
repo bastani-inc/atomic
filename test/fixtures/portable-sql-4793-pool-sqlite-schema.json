@@ -229,6 +229,18 @@
 	},
 	{
 		"type": "table",
+		"name": "team_wf_runs_rate_buckets",
+		"tbl_name": "team_wf_runs_rate_buckets",
+		"sql": "CREATE TABLE team_wf_runs_rate_buckets(\n\t\t\t\tscope TEXT PRIMARY KEY, tat INTEGER NOT NULL, interval_ms REAL NOT NULL, burst INTEGER NOT NULL,\n\t\t\t\tcooldown_until INTEGER NOT NULL DEFAULT 0, kind TEXT, updated_at INTEGER\n\t\t\t, acquired REAL NOT NULL DEFAULT 0)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_rate_waiting",
+		"tbl_name": "team_wf_runs_rate_waiting",
+		"sql": "CREATE TABLE team_wf_runs_rate_waiting(\n\t\t\t\tscope TEXT NOT NULL, reporter TEXT NOT NULL, total_ms REAL NOT NULL,\n\t\t\t\tPRIMARY KEY(scope, reporter)\n\t\t\t)"
+	},
+	{
+		"type": "table",
 		"name": "team_wf_runs_resource_limits",
 		"tbl_name": "team_wf_runs_resource_limits",
 		"sql": "CREATE TABLE team_wf_runs_resource_limits(scope TEXT PRIMARY KEY, config TEXT NOT NULL)"
@@ -406,6 +418,18 @@
 		"name": "wf_runs_pool_usage_totals",
 		"tbl_name": "wf_runs_pool_usage_totals",
 		"sql": "CREATE TABLE wf_runs_pool_usage_totals(\n\t\troot TEXT PRIMARY KEY REFERENCES wf_runs_pool(root) ON DELETE CASCADE,\n\t\tinput REAL NOT NULL, input_err REAL NOT NULL, output REAL NOT NULL, output_err REAL NOT NULL, cacheread REAL NOT NULL, cacheread_err REAL NOT NULL, cachewrite REAL NOT NULL, cachewrite_err REAL NOT NULL, cost REAL NOT NULL, cost_err REAL NOT NULL\n\t)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_rate_buckets",
+		"tbl_name": "wf_runs_rate_buckets",
+		"sql": "CREATE TABLE wf_runs_rate_buckets(\n\t\t\t\tscope TEXT PRIMARY KEY, tat INTEGER NOT NULL, interval_ms REAL NOT NULL, burst INTEGER NOT NULL,\n\t\t\t\tcooldown_until INTEGER NOT NULL DEFAULT 0, kind TEXT, updated_at INTEGER\n\t\t\t, acquired REAL NOT NULL DEFAULT 0)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_rate_waiting",
+		"tbl_name": "wf_runs_rate_waiting",
+		"sql": "CREATE TABLE wf_runs_rate_waiting(\n\t\t\t\tscope TEXT NOT NULL, reporter TEXT NOT NULL, total_ms REAL NOT NULL,\n\t\t\t\tPRIMARY KEY(scope, reporter)\n\t\t\t)"
 	},
 	{
 		"type": "table",

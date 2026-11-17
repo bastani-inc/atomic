@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { prometheusText } from "../../packages/coding-agent/src/cli/worker-metrics.js";
 import type { RateBucketUsage } from "../../packages/workflows/src/durable/journal/sql-rate-buckets.js";
+import { INITIAL_FLEET_STATE, planFleet, resolveFleetPolicy } from "../../packages/workflows/src/workers/autoscaler.js";
 import {
 	FleetRateCap,
 	RATE_CAP_MIN_SPAN_MS,
@@ -15,11 +16,11 @@ const MINUTE = 60_000;
 const START = 1_800_000_000_000;
 
 function bucket(scope: string, requestsPerMinute: number, acquired: number, at: number): RateBucketUsage {
-	return { scope, acquired, intervalMs: MINUTE / requestsPerMinute, now: START + at };
+	return { scope, acquired, waitingMs: 0, intervalMs: MINUTE / requestsPerMinute, now: START + at };
 }
 
 function limited(leased: number, ...scopes: string[]) {
-	return { leased, rateScopes: scopes };
+	return { leased, ready: 1_000, blocked: false, rateScopes: scopes };
 }
 
 function observeSteady(
@@ -56,7 +57,7 @@ test("a fleet that draws a quarter of a rate limit keeps at most the hosts four 
 	);
 	assert.match(
 		rateCapReason(estimate!, 12),
-		/^rate limit anthropic \(600\/min\) granted 150\/min to 8 busy workers over the last 10 minutes: it feeds at most 8 hosts, while the queue wants 12$/,
+		/^rate limit anthropic \(600\/min\) granted 150\/min with 8 nonwaiting workers out of 8 busy over the last 600 seconds: the fleet can use at most 8 hosts including other scopes, while the queue wants 12$/,
 	);
 });
 
@@ -81,7 +82,7 @@ test("no rate cap before a minute of history, while no token is granted, or for 
 
 	const unlimited = new FleetRateCap();
 	for (let at = 0; at <= 5 * MINUTE; at += 10_000)
-		unlimited.observe([bucket("anthropic", 600, at / 100, at)], [{ leased: 4 }]);
+		unlimited.observe([bucket("anthropic", 600, at / 100, at)], [{ leased: 4, ready: 0, blocked: false }]);
 	assert.equal(unlimited.estimate(4), undefined, "no running root limits the scope");
 
 	const stopped = new FleetRateCap();
@@ -118,6 +119,137 @@ test("the tightest limited scope sets the rate cap, by the last 10 minutes only,
 	shifting.observe([bucket("anthropic", 600, 3, 20 * MINUTE + 10_000)], [limited(8, "anthropic")]);
 	assert.equal(shifting.estimate(4), undefined, "a count that went back starts the history over");
 	assert.ok(acquired > 3);
+});
+
+test("a saturated quota caps productive worker time instead of pinning token-blocked leases (#4768)", () => {
+	for (const busy of [12, 32, 36, 80]) {
+		const cap = new FleetRateCap();
+		for (let at = 0; at <= 5 * MINUTE; at += 10_000)
+			cap.observe([{ ...bucket("p", 600, at / 100, at), waitingMs: (busy - 10) * at }], [limited(busy, "p")]);
+		assert.equal(cap.estimate(4)?.hosts, 3, `${busy} leased children include workers waiting on tokens`);
+		assert.equal(cap.estimate(4)?.scope.activeWorkers, 10);
+	}
+});
+
+test("rate observations start over after a gap, a clock reversal or a limit change (#4768)", () => {
+	for (const change of ["gap", "clock", "limit"] as const) {
+		const cap = new FleetRateCap();
+		const acquired = observeSteady(cap, "p", 600, 600, 32, 0, 2 * MINUTE);
+		const at = change === "gap" ? 62 * MINUTE : change === "clock" ? MINUTE : 2 * MINUTE + 10_000;
+		cap.observe([bucket("p", change === "limit" ? 1200 : 600, acquired + 1, at)], [limited(4, "p")]);
+		assert.equal(cap.estimate(4), undefined, change);
+		assert.equal(cap.limit(4, 3), 3, "a new observation window cannot add hosts");
+		observeSteady(cap, "p", change === "limit" ? 1200 : 600, 60, 4, at, at + MINUTE, acquired + 1);
+		assert.equal(cap.estimate(4)?.hosts, change === "limit" ? 20 : 10);
+	}
+});
+
+test("rate estimates weight each busy count by its observed time and report the actual span (#4768)", () => {
+	const cap = new FleetRateCap();
+	for (let at = 0; at <= MINUTE; at += 10_000)
+		cap.observe([bucket("p", 600, at / 200, at)], [limited(at < 20_000 ? 4 : 12, "p")]);
+	const estimate = cap.estimate(4)!;
+	assert.equal(estimate.hosts, 5);
+	assert.equal(estimate.scope.busyWorkers, (4 * 20_000 + 12 * 40_000) / MINUTE);
+	assert.match(rateCapReason(estimate, 8), /over the last 60 seconds/);
+});
+
+test("a rate-limited fleet holds growth while warming every scope, bootstraps and forgets stopped scopes (#4768)", () => {
+	const cap = new FleetRateCap();
+	cap.observe([bucket("p", 600, 0, 0)], [limited(4, "p")]);
+	assert.equal(cap.limit(4, 0), 1);
+	assert.equal(cap.limit(4, 3), 3);
+	observeSteady(cap, "p", 600, 150, 4, 0, MINUTE);
+	assert.equal(cap.limit(4, 1), 4);
+	cap.observe([bucket("p", 600, 300, MINUTE + 10_000)], [limited(4, "p", "q")]);
+	assert.equal(cap.limit(4, 1), 1, "a scope without readings holds growth too");
+	const idle = new FleetRateCap();
+	observeSteady(idle, "p", 600, 0, 4, 0, MINUTE);
+	assert.equal(idle.limit(4, 1), 1, "an unchanged bucket counter is not evidence of usable capacity");
+	idle.observe([], []);
+	assert.equal(idle.limit(4, 1), undefined, "a scope no running root limits is forgotten");
+});
+
+test("a configured scope without bucket observations keeps its startup hold until real rate history exists (#4768)", () => {
+	const cap = new FleetRateCap();
+	const now = vi.spyOn(Date, "now");
+	try {
+		for (let at = 0; at <= 5 * MINUTE; at += 10_000) {
+			now.mockReturnValue(START + at);
+			cap.observe([], [limited(4, "p")]);
+			assert.equal(cap.limit(4, 1), 1, `setup work has not reached its model call after ${at}ms`);
+		}
+		observeSteady(cap, "p", 600, 300, 4, 5 * MINUTE, 6 * MINUTE);
+		assert.equal(cap.limit(4, 1), 2);
+	} finally {
+		now.mockRestore();
+	}
+});
+
+test("an existing but idle bucket cannot make setup-only samples look like a minute of rate usage (#4768)", () => {
+	const cap = new FleetRateCap();
+	for (let at = 0; at <= 5 * MINUTE; at += 10_000) {
+		cap.observe([bucket("p", 600, 100, at)], [limited(4, "p")]);
+		assert.equal(cap.limit(4, 1), 1, `the previous run's unchanged counter supplies no rate data at ${at}ms`);
+	}
+	observeSteady(cap, "p", 600, 300, 4, 5 * MINUTE, 6 * MINUTE, 100);
+	assert.equal(cap.limit(4, 1), 2);
+});
+
+test("new hosts for unrelated work do not expand the warming quota allowance again (#4768)", () => {
+	const cap = new FleetRateCap();
+	const roots = [
+		{ ...limited(4, "p"), ready: 100 },
+		{ leased: 0, ready: 8, blocked: false },
+	];
+	const policy = resolveFleetPolicy({ maxHosts: 20, workersPerHost: 4 });
+	let state = INITIAL_FLEET_STATE;
+	let serving = 1;
+	for (let at = 0; at < MINUTE; at += 10_000) {
+		cap.observe([bucket("p", 60, at / 1000, at)], roots);
+		const plan = planFleet(
+			policy,
+			{
+				now: at,
+				roots,
+				rateCapHosts: cap.limit(4, serving),
+				hosts: Array.from({ length: serving }, (_, index) => ({
+					id: String(index),
+					state: "running" as const,
+					since: 0,
+					registered: true,
+					leased: 0,
+					draining: false,
+					drained: false,
+				})),
+			},
+			state,
+		);
+		state = plan.state;
+		const scale = plan.actions.find((action) => action.kind === "scale-up");
+		if (scale?.kind === "scale-up") serving = scale.desired;
+		assert.ok(serving <= 3, `${serving} hosts after ${at}ms counts the unrelated hosts twice`);
+	}
+	assert.equal(serving, 3);
+});
+
+test("a scope limits only its own roots, leaving capacity for unlimited and disjoint-scope demand (#4768)", () => {
+	const cap = new FleetRateCap();
+	for (let at = 0; at <= MINUTE; at += 10_000)
+		cap.observe(
+			[bucket("p", 60, at / 1000, at), bucket("q", 120, at / 500, at)],
+			[
+				{ ...limited(4, "p"), ready: 20, blocked: false },
+				{ ...limited(8, "q"), ready: 40, blocked: false },
+				{ leased: 0, ready: 400, blocked: false },
+			],
+		);
+	assert.equal(
+		cap.estimate(4)?.hosts,
+		103,
+		"p feeds four workers, q feeds eight, and 400 unlimited children keep their capacity",
+	);
+	assert.equal(cap.limit(4, 3), 103);
 });
 
 test("the scaling signal never wants more hosts than the rate limits keep busy, and reports that cap (#4768)", () => {
