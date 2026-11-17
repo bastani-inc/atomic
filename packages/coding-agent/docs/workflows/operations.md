@@ -70,7 +70,11 @@ Status, run detail, dispatch confirmation, and run-picker cards wrap full IDs on
 
 An `AWAITING INPUT` banner has two identity rows: `？` with the full run id, then the workflow name and optional metadata. The question and options appear below it in the normal prompt UI.
 
-The `/workflows` list shows this session's runs newest first. Use the arrow keys to select a row and type to search. The workflow tool's `status` action lists active runs first, with runs waiting for input or blocked at the top, then running and paused runs, followed by ended runs (failed, cancelled, then completed); the newest run comes first within each group.
+The `/workflows` list shows this session's runs newest first. Use the arrow keys to select a row and type to search. It also lists definitions that could not be loaded with `✗` and their reason; Enter shows the source file and message details without stack frames. Fix the file, then use `/reload`. Loaded definitions are not launch rows: ask the agent to start a workflow through the workflow tool.
+
+In a run's graph, press `o` for run details: declared outputs, artifacts, ordered events and nested blockers. Use ↑/↓ to select among blockers and Enter or → to open the selected blocker; with zero or one blocker, ↑/↓ scrolls instead. PageUp/PageDown scroll in either case. Press `l` to switch between the summary and logs, and Esc to go back one level. Completion notices show bounded output and artifact previews when expanded with Ctrl+O; open run details to inspect the outcome and artifact locations. Large values and unusually wide output records are truncated for display without changing stored results.
+
+The workflow tool's `status` action lists active runs first, with runs waiting for input or blocked at the top, then running and paused runs, followed by ended runs (failed, cancelled, then completed); the newest run comes first within each group.
 
 ## Running Workflows
 

@@ -3,7 +3,7 @@ import type { KeyId } from "@bastani/atomic-tui";
 import { unknownErrorMessage } from "../runs/foreground/executor-abort.js";
 import { GRAPH_SCROLL_STEP_COLS } from "./graph-view-constants.js";
 import { GraphViewRenderer } from "./graph-view-render.js";
-import { GRAPH_STATUS_FILTERS } from "./graph-view-state.js";
+import { blockerKey, GRAPH_STATUS_FILTERS } from "./graph-view-state.js";
 import type { GraphStageActionResult } from "./graph-view-types.js";
 import {
 	APP_ACTION,
@@ -29,7 +29,8 @@ const GRAPH_NOTICE_MS = 4000;
 export abstract class GraphViewInputController extends GraphViewRenderer {
 	/** Returns true if consumed. */
 	handleInput(data: string): boolean {
-		const wasDetailOpen = this._detailOpen();
+		const paintedView = this.paintedView;
+		const paintedBlockerKey = this.paintedBlockerKey;
 		this._syncLayout();
 		if (this.keysHelpOpen) return this._handleKeysHelpInput(data);
 		if (this.switcherOpen) return this._handleSwitcherInput(data);
@@ -38,11 +39,17 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			this.keysHelpOpen = true;
 			return true;
 		}
-		if (matchesKey(data, Key.escape) && wasDetailOpen && !this._detailOpen()) {
+		if (
+			matchesKey(data, Key.escape) &&
+			paintedView !== this._currentViewKind() &&
+			((paintedView === "stage" && this.stageDetail === null) ||
+				(paintedView === "tool" && this.toolDetail === null))
+		) {
 			return true;
 		}
 		if (this.toolDetail !== null) return this._handleToolDetailInput(data);
 		if (this.stageDetail !== null) return this._handleStageDetailInput(data);
+		if (this.runDetail !== null) return this._handleRunDetailInput(data, paintedView, paintedBlockerKey);
 		if (matchesKey(data, Key.escape)) {
 			this._leaveGraph();
 			return true;
@@ -197,6 +204,67 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			else if (matchesKey(data, Key.pageDown)) this._scrollGraphVertically(this._toolDetailPageRows());
 			else if (matchesKey(data, Key.pageUp)) this._scrollGraphVertically(-this._toolDetailPageRows());
 		}
+		return true;
+	}
+
+	private _handleRunDetailInput(
+		data: string,
+		paintedView: "tool" | "stage" | "run" | "graph",
+		paintedBlockerKey: string | null,
+	): boolean {
+		const detail = this.runDetail;
+		if (detail === null) return false;
+		if (this.graphLayout.handleScrollbarInput(data)) {
+			this.pendingEnsureFocusedVisible = false;
+			return true;
+		}
+		const wheelDelta = this._mouseWheelDelta(data);
+		if (wheelDelta) {
+			if (wheelDelta.rows !== 0) this._scrollGraphVertically(wheelDelta.rows);
+			return true;
+		}
+		if (matchesKey(data, Key.escape)) {
+			this._closeRunDetail();
+			return true;
+		}
+		if (matchesKey(data, Key.ctrl("c"))) {
+			this.onClose?.();
+			return true;
+		}
+		if (matchesKey(data, "l")) {
+			detail.logs = !detail.logs;
+			this.graphLayoutInvalidateForDetail();
+			return true;
+		}
+		const blockers = detail.logs ? [] : this._runDetailBlockers();
+		if (blockers.length > 1) {
+			if (matchesKey(data, Key.down)) {
+				this._moveRunDetailSelection(blockers, 1);
+				this.runDetailRevealSelected = true;
+				return true;
+			}
+			if (matchesKey(data, Key.up)) {
+				this._moveRunDetailSelection(blockers, -1);
+				this.runDetailRevealSelected = true;
+				return true;
+			}
+		}
+		if (blockers.length > 0 && (matchesKey(data, Key.enter) || matchesKey(data, Key.right))) {
+			const blocker = blockers[this._resolveRunDetailSelection(blockers)]!;
+			if (
+				paintedView === "run" &&
+				paintedBlockerKey === blockerKey(blocker) &&
+				this._focusBlockerNode(blocker.node, blocker.id)
+			) {
+				this._activateFocusedNode();
+				if (!this._detailOpen()) this.runDetailReturn = null;
+			}
+			return true;
+		}
+		if (matchesKey(data, Key.down)) this._scrollGraphVertically(1);
+		else if (matchesKey(data, Key.up)) this._scrollGraphVertically(-1);
+		else if (matchesKey(data, Key.pageDown)) this._scrollGraphVertically(this._toolDetailPageRows());
+		else if (matchesKey(data, Key.pageUp)) this._scrollGraphVertically(-this._toolDetailPageRows());
 		return true;
 	}
 
@@ -483,6 +551,10 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			this._activateFocusedNode();
 			return true;
 		}
+		if (matchesKey(data, "o") && !this._navKeybindings()?.matches("o", APP_ACTION.keysHelp)) {
+			this._disarmStop();
+			return this._openRunDetail();
+		}
 		if (matchesKey(data, "f") && !this._keyShadowed("f")) {
 			this._disarmStop();
 			const next = (GRAPH_STATUS_FILTERS.indexOf(this.statusFilter) + 1) % GRAPH_STATUS_FILTERS.length;
@@ -592,7 +664,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		return true;
 	}
 
-	private _activateFocusedNode(): void {
+	protected _activateFocusedNode(): void {
 		// Tool nodes open a read-only snapshot detail; they never enter the
 		// stage-chat attach path even though they share the graph card shape.
 		if (this._openFocusedToolDetail()) return;
