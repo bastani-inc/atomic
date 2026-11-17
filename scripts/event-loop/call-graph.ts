@@ -1,0 +1,1600 @@
+/**
+ * Builds a call graph of the shipped TypeScript sources with the TypeScript 7 compiler API, so that
+ * `check-event-loop.ts` can walk it from the interactive entry points.
+ *
+ * Nodes are function bodies: functions, methods, constructors, accessors, arrow functions, function expressions,
+ * class field initializers, static blocks, and each module's top-level code. An edge means the source may run the
+ * target on the same turn of the event loop or schedule it later:
+ *
+ * - `call`: a call, `new`, tagged template or accessor resolved by the type checker to a declaration;
+ * - `reference`: a function passed or stored as a value (a callback), resolved the same way;
+ * - `dispatch`: an interface or base-class member call, to every class implementing or overriding that member;
+ * - `closure`: a function or arrow created by the source, which may run it or hand it to code that does;
+ * - `import`: a dynamic `import()` (running the module's top level) and a module's static imports.
+ *
+ * What the graph cannot see: calls through `any`, through a callback parameter (`listener(data)`), or through a
+ * function kept in a collection. Callbacks are reached instead where they are created (`closure`) or registered
+ * (the policy's sinks), which is what makes those calls visible to the check.
+ */
+import {
+	type ArrowFunction,
+	type CallExpression,
+	type ClassDeclaration,
+	type ClassExpression,
+	type ConstructorDeclaration,
+	type FunctionDeclaration,
+	type FunctionExpression,
+	type GetAccessorDeclaration,
+	type InterfaceDeclaration,
+	isBinaryExpression,
+	isCallExpression,
+	isClassDeclaration,
+	isClassExpression,
+	isIdentifier,
+	isNewExpression,
+	isNoSubstitutionTemplateLiteral,
+	isPropertyAccessExpression,
+	isStringLiteral,
+	type MethodDeclaration,
+	ModifierFlags,
+	type Node,
+	type SetAccessorDeclaration,
+	type SourceFile,
+	SyntaxKind,
+	skipTrivia,
+} from "typescript/unstable/ast";
+import { type NodeHandle, type Project, SymbolFlags, type Symbol as TsSymbol } from "typescript/unstable/sync";
+import {
+	type BlockingApi,
+	CLOCK_READS,
+	classifyExternalDeclaration,
+	classifyUnresolvedCallName,
+} from "./blocking-apis.ts";
+
+export type FunctionKind =
+	| "module"
+	| "function"
+	| "method"
+	| "constructor"
+	| "getter"
+	| "setter"
+	| "arrow"
+	| "function-expression"
+	| "class-fields"
+	| "static-block";
+
+export type EdgeKind = "call" | "reference" | "dispatch" | "closure" | "import";
+
+export interface BlockingUse {
+	readonly line: number;
+	readonly api: BlockingApi;
+}
+
+export interface RegexUse {
+	readonly line: number;
+	readonly pattern: string;
+	readonly flags: string;
+}
+
+export interface GraphFunction {
+	readonly id: number;
+	/** Repository-relative path with forward slashes. */
+	readonly file: string;
+	/** 1-based line of the declaration. */
+	readonly line: number;
+	/** Qualified name, unique within its file: `Class.method`, `outer/inner`, `Class.method/stdin.on("data")`. */
+	readonly name: string;
+	readonly kind: FunctionKind;
+	/** Declared `async`: a blocking call in it can become an `await` without changing its callers. */
+	readonly isAsync: boolean;
+	readonly edges: Map<number, EdgeKind>;
+	readonly blocking: BlockingUse[];
+	readonly regexes: RegexUse[];
+}
+
+/** A callback handed to a registration API (a sink), which calls it later from the event loop. */
+export interface SinkRegistration {
+	readonly registrar: number;
+	readonly sink: string;
+	readonly line: number;
+	readonly callbacks: readonly number[];
+}
+
+/** A declaration that registers callbacks: what the callee of a call must resolve to. */
+export interface SinkSpec {
+	/** A suffix of the declaring file's path, such as `@types/node/events.d.ts`. */
+	readonly file: string;
+	/** The enclosing class or interface, when the declaration is a member. */
+	readonly owner?: string;
+	readonly names: readonly string[];
+	/** Only calls whose first argument is one of these string literals register (event names). */
+	readonly events?: readonly string[];
+}
+
+export interface CallGraph {
+	readonly functions: readonly GraphFunction[];
+	/**
+	 * The functions that implement `member` of the class or interface `typeName` declared in `file`: its own and those
+	 * of every class that extends or implements it.
+	 */
+	readonly implementationsOf: (file: string, typeName: string, member: string) => readonly number[];
+	readonly sinkRegistrations: readonly SinkRegistration[];
+	/** Each analyzed module's top-level node, by repository-relative path. */
+	readonly modules: ReadonlyMap<string, number>;
+	/** The repository-relative modules each module imports statically. */
+	readonly staticImports: ReadonlyMap<string, ReadonlySet<string>>;
+	readonly stats: CallGraphStats;
+}
+
+export interface CallGraphStats {
+	files: number;
+	functions: number;
+	references: number;
+	resolvedToFunction: number;
+	resolvedExternal: number;
+	unresolved: number;
+	resolvedThroughType: number;
+	objectMembersTyped: number;
+	dispatchTargets: number;
+}
+
+export interface CallGraphOptions {
+	readonly repoRoot: string;
+	/** Whether a repository-relative source path belongs to the analyzed code. */
+	readonly isAnalyzedFile: (relativePath: string) => boolean;
+	readonly sinks: readonly SinkSpec[];
+	/**
+	 * Calls whose callbacks never run while the user interacts, such as `process.on("exit")`: the callbacks get no
+	 * closure edge from the function that registers them.
+	 */
+	readonly detachedCallbacks: readonly SinkSpec[];
+}
+
+type ReferenceRole = "call" | "new" | "value" | "accessor";
+
+interface PendingReference {
+	readonly container: number;
+	readonly node: Node;
+	readonly role: ReferenceRole;
+	readonly line: number;
+	readonly name: string;
+}
+
+interface PendingCall {
+	readonly container: number;
+	readonly callee: number;
+	readonly line: number;
+	readonly argumentFunctions: readonly number[];
+	readonly argumentReferences: readonly number[];
+	readonly firstArgument: string | undefined;
+}
+
+interface ClassInfo {
+	readonly key: string;
+	readonly name: string;
+	readonly constructors: number[];
+	readonly fields: number;
+	readonly members: Map<string, number[]>;
+	readonly heritage: Array<{ readonly expression: Node; readonly extends: boolean }>;
+	base: string | undefined;
+}
+
+interface InterfaceInfo {
+	readonly key: string;
+	readonly heritage: Node[];
+}
+
+interface WalkContext {
+	readonly file: SourceFileState;
+	readonly container: number;
+	readonly className: string | undefined;
+	readonly classKey: string | undefined;
+}
+
+interface SourceFileState {
+	readonly source: SourceFile;
+	readonly relative: string;
+	readonly path: string;
+	readonly moduleId: number;
+	readonly names: Map<string, number>;
+}
+
+const FUNCTION_KINDS = new Set<SyntaxKind>([
+	SyntaxKind.FunctionDeclaration,
+	SyntaxKind.MethodDeclaration,
+	SyntaxKind.Constructor,
+	SyntaxKind.GetAccessor,
+	SyntaxKind.SetAccessor,
+	SyntaxKind.ArrowFunction,
+	SyntaxKind.FunctionExpression,
+]);
+
+const INITIALIZER_DECLARATIONS = new Set<SyntaxKind>([
+	SyntaxKind.VariableDeclaration,
+	SyntaxKind.PropertyDeclaration,
+	SyntaxKind.PropertyAssignment,
+	SyntaxKind.BindingElement,
+	SyntaxKind.Parameter,
+	SyntaxKind.ExportAssignment,
+]);
+
+const EXPRESSION_WRAPPERS = new Set<SyntaxKind>([
+	SyntaxKind.ParenthesizedExpression,
+	SyntaxKind.AsExpression,
+	SyntaxKind.SatisfiesExpression,
+	SyntaxKind.NonNullExpression,
+	SyntaxKind.TypeAssertionExpression,
+]);
+
+const VALUE_OPERATORS = new Set<SyntaxKind>([
+	SyntaxKind.EqualsToken,
+	SyntaxKind.QuestionQuestionToken,
+	SyntaxKind.BarBarToken,
+	SyntaxKind.AmpersandAmpersandToken,
+	SyntaxKind.QuestionQuestionEqualsToken,
+	SyntaxKind.BarBarEqualsToken,
+	SyntaxKind.AmpersandAmpersandEqualsToken,
+	SyntaxKind.CommaToken,
+]);
+
+const RESOLVE_BATCH = 8_000;
+
+/** Handler properties (`onSubmit`, `onData`): assigning a function to one registers it for an event. */
+const HANDLER_PROPERTY = /^on[A-Z]/;
+
+function declarationKey(path: string, node: Node): string {
+	return `${path}:${node.pos}:${node.end}:${node.kind}`;
+}
+
+function unwrapExpression(node: Node): Node {
+	let current = node;
+	while (EXPRESSION_WRAPPERS.has(current.kind)) current = (current as Node & { readonly expression: Node }).expression;
+	return current;
+}
+
+function nameText(node: Node | undefined): string | undefined {
+	if (node === undefined) return undefined;
+	switch (node.kind) {
+		case SyntaxKind.Identifier:
+		case SyntaxKind.PrivateIdentifier:
+		case SyntaxKind.StringLiteral:
+		case SyntaxKind.NumericLiteral:
+		case SyntaxKind.NoSubstitutionTemplateLiteral:
+			return (node as Node & { readonly text: string }).text;
+		case SyntaxKind.ComputedPropertyName:
+			return "[computed]";
+		default:
+			return undefined;
+	}
+}
+
+function memberName(node: Node): string | undefined {
+	return nameText((node as Node & { readonly name?: Node }).name);
+}
+
+function isStatic(node: Node): boolean {
+	const flags = (node as Node & { readonly modifierFlags?: number }).modifierFlags ?? 0;
+	return (flags & ModifierFlags.Static) !== 0;
+}
+
+function stringArgument(node: Node | undefined): string | undefined {
+	if (node === undefined) return undefined;
+	if (isStringLiteral(node) || isNoSubstitutionTemplateLiteral(node)) return node.text;
+	return undefined;
+}
+
+/** A dotted expression's text (`process.stdin.on`), or undefined for anything else. */
+function dottedText(node: Node): string | undefined {
+	const target = unwrapExpression(node);
+	if (isIdentifier(target)) return target.text;
+	if (target.kind === SyntaxKind.ThisKeyword) return "this";
+	if (target.kind === SyntaxKind.SuperKeyword) return "super";
+	if (isPropertyAccessExpression(target)) {
+		const left = dottedText(target.expression);
+		const right = nameText(target.name);
+		return left !== undefined && right !== undefined ? `${left}.${right}` : undefined;
+	}
+	if (isCallExpression(target)) {
+		const callee = dottedText(target.expression);
+		return callee === undefined ? undefined : `${callee}()`;
+	}
+	return undefined;
+}
+
+function isFunctionLike(
+	node: Node,
+): node is
+	| FunctionDeclaration
+	| MethodDeclaration
+	| ConstructorDeclaration
+	| GetAccessorDeclaration
+	| SetAccessorDeclaration
+	| ArrowFunction
+	| FunctionExpression {
+	return FUNCTION_KINDS.has(node.kind);
+}
+
+function functionKind(node: Node): FunctionKind {
+	switch (node.kind) {
+		case SyntaxKind.FunctionDeclaration:
+			return "function";
+		case SyntaxKind.MethodDeclaration:
+			return "method";
+		case SyntaxKind.Constructor:
+			return "constructor";
+		case SyntaxKind.GetAccessor:
+			return "getter";
+		case SyntaxKind.SetAccessor:
+			return "setter";
+		case SyntaxKind.ArrowFunction:
+			return "arrow";
+		default:
+			return "function-expression";
+	}
+}
+
+/** Whether `node` sits where its value is used as a value: passed, stored, returned or assigned. */
+function isValuePosition(node: Node): boolean {
+	let child = node;
+	let parent = node.parent as Node | undefined;
+	while (parent !== undefined && EXPRESSION_WRAPPERS.has(parent.kind)) {
+		child = parent;
+		parent = parent.parent as Node | undefined;
+	}
+	if (parent === undefined) return false;
+	switch (parent.kind) {
+		case SyntaxKind.CallExpression:
+		case SyntaxKind.NewExpression:
+			return (parent as CallExpression).expression !== child;
+		case SyntaxKind.VariableDeclaration:
+		case SyntaxKind.PropertyDeclaration:
+		case SyntaxKind.PropertyAssignment:
+		case SyntaxKind.Parameter:
+		case SyntaxKind.BindingElement:
+			return (parent as Node & { readonly initializer?: Node }).initializer === child;
+		case SyntaxKind.ReturnStatement:
+		case SyntaxKind.ArrayLiteralExpression:
+		case SyntaxKind.ExportAssignment:
+		case SyntaxKind.SpreadElement:
+		case SyntaxKind.YieldExpression:
+		case SyntaxKind.AwaitExpression:
+			return true;
+		case SyntaxKind.ArrowFunction:
+			return (parent as ArrowFunction).body === child;
+		case SyntaxKind.ConditionalExpression:
+			return (parent as Node & { readonly condition: Node }).condition !== child;
+		case SyntaxKind.BinaryExpression: {
+			if (!isBinaryExpression(parent)) return false;
+			const operator = parent.operatorToken.kind;
+			if (!VALUE_OPERATORS.has(operator)) return false;
+			return operator === SyntaxKind.EqualsToken ? parent.right === child : true;
+		}
+		default:
+			return false;
+	}
+}
+
+export class CallGraphBuilder {
+	private readonly functions: GraphFunction[] = [];
+	/** The function each function was created in, or -1 for module and class-level nodes. */
+	private readonly lexicalParents: number[] = [];
+	/** Functions assigned to a property or variable after its declaration: `x.onData = (d) => …`. */
+	private readonly pendingAssignments: Array<{
+		readonly target: Node;
+		readonly functions: readonly number[];
+	}> = [];
+	private readonly assignedFunctions = new Map<string, number[]>();
+	private readonly pendingObjectMembers: Array<{
+		readonly container: number;
+		readonly id: number;
+		readonly literal: Node;
+		readonly name: string;
+		readonly stored: boolean;
+		readonly detached: boolean;
+	}> = [];
+	private readonly functionByDeclaration = new Map<string, number>();
+	private readonly initializerFunctions = new Map<string, number[]>();
+	private readonly classes = new Map<string, ClassInfo>();
+	private readonly classByFieldsFunction = new Map<number, string>();
+	private readonly interfaces = new Map<string, InterfaceInfo>();
+	private readonly typeKeysByName = new Map<string, string>();
+	private readonly modules = new Map<string, number>();
+	private readonly modulePaths = new Map<string, string>();
+	private readonly references: PendingReference[] = [];
+	private readonly calls: PendingCall[] = [];
+	private readonly accessorNames = new Set<string>();
+	private readonly accessorCandidates: Array<{ container: number; node: Node; line: number; name: string }> = [];
+	private readonly superCalls: Array<{ container: number; classKey: string }> = [];
+	private readonly imports: Array<{ container: number; specifier: Node; dynamic: boolean; fromModule: string }> = [];
+	private readonly shorthandValues: Array<{ container: number; node: Node; line: number }> = [];
+	private readonly staticImports = new Map<string, Set<string>>();
+	private readonly sinkRegistrations: SinkRegistration[] = [];
+	private readonly typeFallbacks: number[] = [];
+	private readonly assignedHandlers: Array<{
+		readonly container: number;
+		readonly sink: string;
+		readonly line: number;
+		readonly functions: readonly number[];
+		readonly references: readonly number[];
+	}> = [];
+	private readonly targetCache = new Map<string, readonly number[]>();
+	private readonly externalCache = new Map<number, BlockingApi | null>();
+	private readonly aliasCache = new Map<number, TsSymbol>();
+	private readonly subtypes = new Map<string, Set<string>>();
+	private readonly stats: CallGraphStats = {
+		files: 0,
+		functions: 0,
+		references: 0,
+		resolvedToFunction: 0,
+		resolvedExternal: 0,
+		unresolved: 0,
+		resolvedThroughType: 0,
+		objectMembersTyped: 0,
+		dispatchTargets: 0,
+	};
+
+	private readonly project: Project;
+	private readonly options: CallGraphOptions;
+
+	constructor(project: Project, options: CallGraphOptions) {
+		this.project = project;
+		this.options = options;
+	}
+
+	build(): CallGraph {
+		const program = this.project.program;
+		const sources: SourceFileState[] = [];
+		for (const fileName of program.getSourceFileNames()) {
+			const relative = this.relativePath(fileName);
+			if (relative === undefined || !this.options.isAnalyzedFile(relative)) continue;
+			const source = program.getSourceFile(fileName);
+			if (source === undefined || source.isDeclarationFile) continue;
+			const moduleId = this.addFunction(relative, 1, "<module>", "module");
+			this.modules.set(relative, moduleId);
+			this.modulePaths.set(source.path, relative);
+			sources.push({ source, relative, path: source.path, moduleId, names: new Map() });
+		}
+		this.stats.files = sources.length;
+		for (const file of sources) {
+			const context: WalkContext = { file, container: file.moduleId, className: undefined, classKey: undefined };
+			file.source.forEachChild((child) => this.visit(child, context));
+		}
+		for (const candidate of this.accessorCandidates) {
+			if (this.accessorNames.has(candidate.name)) {
+				this.references.push({ ...candidate, role: "accessor" });
+			}
+		}
+		this.resolveHeritage();
+		this.resolveObjectMembers();
+		this.resolveAssignments();
+		this.resolveReferences();
+		this.resolveShorthandValues();
+		this.resolveSuperCalls();
+		this.resolveImports();
+		this.stats.functions = this.functions.length;
+		return {
+			functions: this.functions,
+			implementationsOf: (file, typeName, member) => {
+				const key = this.typeKeysByName.get(`${file}#${typeName}`);
+				if (key === undefined) return [];
+				const into = new Set<number>();
+				this.addImplementations(key, member, into);
+				return [...into];
+			},
+			sinkRegistrations: this.sinkRegistrations,
+			modules: this.modules,
+			staticImports: this.staticImports,
+			stats: this.stats,
+		};
+	}
+
+	private relativePath(fileName: string): string | undefined {
+		const normalized = fileName.replaceAll("\\", "/");
+		const root = this.options.repoRoot.replaceAll("\\", "/").replace(/\/$/, "");
+		if (!normalized.startsWith(`${root}/`)) return undefined;
+		const relative = normalized.slice(root.length + 1);
+		return relative.includes("/node_modules/") || relative.startsWith("node_modules/") ? undefined : relative;
+	}
+
+	private addFunction(
+		file: string,
+		line: number,
+		name: string,
+		kind: FunctionKind,
+		lexicalParent = -1,
+		isAsync = false,
+	): number {
+		const id = this.functions.length;
+		this.lexicalParents.push(lexicalParent);
+		this.functions.push({ id, file, line, name, kind, isAsync, edges: new Map(), blocking: [], regexes: [] });
+		return id;
+	}
+
+	private addEdge(from: number, to: number, kind: EdgeKind): void {
+		if (from === to) return;
+		const edges = this.functions[from].edges;
+		if (!edges.has(to) || kind === "call") edges.set(to, kind);
+	}
+
+	private lineOf(file: SourceFileState, node: Node): number {
+		const start = skipTrivia(file.source.text, node.pos);
+		return file.source.getLineAndCharacterOfPosition(start).line + 1;
+	}
+
+	private uniqueName(file: SourceFileState, name: string): string {
+		const seen = file.names.get(name) ?? 0;
+		file.names.set(name, seen + 1);
+		return seen === 0 ? name : `${name}#${seen + 1}`;
+	}
+
+	private containerName(context: WalkContext): string {
+		const container = this.functions[context.container];
+		return container.kind === "module" ? "" : container.name;
+	}
+
+	/** The local name of a function expression or arrow function: what it is assigned to or passed to. */
+	private closureName(node: Node): string {
+		let parent = node.parent as Node | undefined;
+		while (parent !== undefined && EXPRESSION_WRAPPERS.has(parent.kind)) parent = parent.parent as Node | undefined;
+		const own = node.kind === SyntaxKind.FunctionExpression ? nameText((node as FunctionExpression).name) : undefined;
+		if (own !== undefined) return own;
+		if (parent === undefined) return "<anonymous>";
+		switch (parent.kind) {
+			case SyntaxKind.VariableDeclaration:
+			case SyntaxKind.PropertyAssignment:
+			case SyntaxKind.PropertyDeclaration:
+				return memberName(parent) ?? "<anonymous>";
+			case SyntaxKind.BinaryExpression:
+				return isBinaryExpression(parent) ? (dottedText(parent.left) ?? "<assigned>") : "<anonymous>";
+			case SyntaxKind.CallExpression:
+			case SyntaxKind.NewExpression: {
+				const call = parent as CallExpression;
+				const callee = dottedText(call.expression) ?? "<call>";
+				const event = stringArgument(call.arguments?.[0]);
+				return event === undefined ? `${callee}()` : `${callee}(${JSON.stringify(event)})`;
+			}
+			case SyntaxKind.ReturnStatement:
+				return "<returned>";
+			default:
+				return "<anonymous>";
+		}
+	}
+
+	private visit(node: Node, context: WalkContext): void {
+		if (isFunctionLike(node)) {
+			this.visitFunction(node, context);
+			return;
+		}
+		switch (node.kind) {
+			case SyntaxKind.ClassDeclaration:
+			case SyntaxKind.ClassExpression:
+				this.visitClass(node as ClassDeclaration | ClassExpression, context);
+				return;
+			case SyntaxKind.InterfaceDeclaration:
+				this.visitInterface(node as InterfaceDeclaration, context);
+				return;
+			case SyntaxKind.ImportDeclaration:
+			case SyntaxKind.ExportDeclaration:
+				this.visitModuleDeclaration(node, context);
+				return;
+			case SyntaxKind.TypeAliasDeclaration:
+				return;
+			case SyntaxKind.CallExpression:
+				this.visitCall(node as CallExpression, context);
+				return;
+			case SyntaxKind.NewExpression:
+				this.visitNew(node, context);
+				break;
+			case SyntaxKind.TaggedTemplateExpression:
+				this.addReference(context, (node as Node & { readonly tag: Node }).tag, "call");
+				break;
+			case SyntaxKind.Identifier:
+				if (isValuePosition(node)) this.addReference(context, node, "value");
+				break;
+			case SyntaxKind.PropertyAccessExpression:
+				this.visitPropertyAccess(node, context);
+				break;
+			case SyntaxKind.BinaryExpression:
+				if (this.visitHandlerAssignment(node, context)) return;
+				break;
+			case SyntaxKind.PropertyAssignment:
+				if (this.visitHandlerProperty(node, context)) return;
+				break;
+			case SyntaxKind.ShorthandPropertyAssignment:
+				this.shorthandValues.push({ container: context.container, node, line: this.lineOf(context.file, node) });
+				break;
+			case SyntaxKind.RegularExpressionLiteral:
+				this.recordRegexLiteral(node, context);
+				break;
+			case SyntaxKind.WhileStatement:
+			case SyntaxKind.DoStatement:
+			case SyntaxKind.ForStatement:
+				this.checkBusyWait(node, context);
+				break;
+			default:
+				break;
+		}
+		node.forEachChild((child) => this.visit(child, context));
+	}
+
+	private visitFunction(
+		node:
+			| FunctionDeclaration
+			| MethodDeclaration
+			| ConstructorDeclaration
+			| GetAccessorDeclaration
+			| SetAccessorDeclaration
+			| ArrowFunction
+			| FunctionExpression,
+		context: WalkContext,
+	): void {
+		const kind = functionKind(node);
+		const parent = node.parent as Node | undefined;
+		const inClass = parent !== undefined && (isClassDeclaration(parent) || isClassExpression(parent));
+		const inObject = parent !== undefined && parent.kind === SyntaxKind.ObjectLiteralExpression;
+		let local: string;
+		if (kind === "constructor") local = "constructor";
+		else if (kind === "arrow" || kind === "function-expression") local = this.closureName(node);
+		else local = memberName(node) ?? "default";
+		if (kind === "getter") local = `get ${local}`;
+		if (kind === "setter") local = `set ${local}`;
+		const outer = this.containerName(context);
+		let qualified: string;
+		if (inClass && context.className !== undefined) qualified = `${context.className}.${local}`;
+		else if (inObject) qualified = `${outer === "" ? "" : `${outer}/`}${this.objectOwnerName(parent)}.${local}`;
+		else qualified = outer === "" ? local : `${outer}/${local}`;
+		const name = this.uniqueName(context.file, qualified);
+		const isAsync = ((node as Node & { readonly modifierFlags?: number }).modifierFlags ?? 0) & ModifierFlags.Async;
+		const id = this.addFunction(
+			context.file.relative,
+			this.lineOf(context.file, node),
+			name,
+			kind,
+			context.container,
+			isAsync !== 0,
+		);
+		this.functionByDeclaration.set(declarationKey(context.file.path, node), id);
+
+		if (kind === "getter" || kind === "setter") {
+			const accessor = memberName(node);
+			if (accessor !== undefined) this.accessorNames.add(accessor);
+		}
+		if (inClass && context.classKey !== undefined) {
+			const info = this.classes.get(context.classKey);
+			if (info !== undefined) {
+				if (kind === "constructor") {
+					info.constructors.push(id);
+					this.addEdge(id, info.fields, "call");
+				} else {
+					const member = memberName(node);
+					if (member !== undefined) {
+						const list = info.members.get(member) ?? [];
+						list.push(id);
+						info.members.set(member, list);
+					}
+				}
+			}
+		} else if (inObject || kind === "arrow" || kind === "function-expression") {
+			const stored = this.bindToDeclarations(node, id, context);
+			const objectMember = this.objectMemberOf(node);
+			if (objectMember !== undefined) {
+				this.pendingObjectMembers.push({
+					container: context.container,
+					id,
+					literal: objectMember.literal,
+					name: objectMember.name,
+					stored,
+					detached: this.isDetachedCallback(node),
+				});
+			} else if (!stored && !this.isDetachedCallback(node)) {
+				this.addEdge(context.container, id, "closure");
+			}
+			const member = inObject ? memberName(node) : undefined;
+			if (member !== undefined && HANDLER_PROPERTY.test(member)) {
+				this.assignedHandlers.push({
+					container: context.container,
+					sink: `{ ${member}() }`,
+					line: this.lineOf(context.file, node),
+					functions: [id],
+					references: [],
+				});
+			}
+		}
+		if (kind === "function") this.bindToDeclarations(node, id, context);
+
+		const inner: WalkContext = { ...context, container: id };
+		node.forEachChild((child) => this.visit(child, inner));
+	}
+
+	/** The object literal and property a function is the value of: `{ m() {} }` or `{ m: () => … }`. */
+	private objectMemberOf(node: Node): { literal: Node; name: string } | undefined {
+		let parent = node.parent as Node | undefined;
+		if (parent?.kind === SyntaxKind.ObjectLiteralExpression) {
+			const name = memberName(node);
+			return name === undefined ? undefined : { literal: parent, name };
+		}
+		while (parent !== undefined && EXPRESSION_WRAPPERS.has(parent.kind)) parent = parent.parent as Node | undefined;
+		if (parent?.kind !== SyntaxKind.PropertyAssignment) return undefined;
+		const literal = parent.parent as Node | undefined;
+		const name = memberName(parent);
+		if (literal?.kind !== SyntaxKind.ObjectLiteralExpression || name === undefined) return undefined;
+		return { literal, name };
+	}
+
+	/**
+	 * An object literal's methods implement the members of the type the literal is checked against (a `Component`,
+	 * a `ToolDefinition`, an options type): calls through that type reach them. A method the walk cannot attach to a
+	 * declared member, of a literal that is not simply stored, gets a closure edge from its creator instead.
+	 */
+	private resolveObjectMembers(): void {
+		const byLiteral = new Map<Node, Array<(typeof this.pendingObjectMembers)[number]>>();
+		for (const member of this.pendingObjectMembers) {
+			const list = byLiteral.get(member.literal) ?? [];
+			list.push(member);
+			byLiteral.set(member.literal, list);
+		}
+		const checker = this.project.checker;
+		for (const [literal, members] of byLiteral) {
+			let type: ReturnType<typeof checker.getContextualType>;
+			try {
+				type = checker.getContextualType(literal as Parameters<typeof checker.getContextualType>[0]);
+			} catch {
+				type = undefined;
+			}
+			for (const member of members) {
+				let attached = false;
+				if (type !== undefined) {
+					let property: TsSymbol | undefined;
+					try {
+						property = checker.getPropertyOfType(type, member.name);
+					} catch {
+						property = undefined;
+					}
+					for (const handle of property?.declarations ?? []) {
+						if (!this.modulePaths.has(handle.path)) continue;
+						const declaration = this.resolveHandle(handle);
+						if (declaration === undefined) continue;
+						const key = declarationKey(handle.path, declaration);
+						if (this.functionByDeclaration.get(key) === member.id) continue;
+						const list = this.assignedFunctions.get(key) ?? [];
+						list.push(member.id);
+						this.assignedFunctions.set(key, list);
+						attached = true;
+						this.stats.objectMembersTyped++;
+					}
+				}
+				if (!attached && !member.stored && !member.detached) this.addEdge(member.container, member.id, "closure");
+			}
+		}
+	}
+
+	/** The name of whatever holds an object literal, for naming its methods. */
+	private objectOwnerName(objectLiteral: Node | undefined): string {
+		const parent = objectLiteral?.parent as Node | undefined;
+		if (parent === undefined) return "<object>";
+		if (parent.kind === SyntaxKind.VariableDeclaration || parent.kind === SyntaxKind.PropertyAssignment) {
+			return memberName(parent) ?? "<object>";
+		}
+		if (parent.kind === SyntaxKind.ReturnStatement) return "<returned>";
+		if (parent.kind === SyntaxKind.CallExpression || parent.kind === SyntaxKind.NewExpression) {
+			return `${dottedText((parent as CallExpression).expression) ?? "<call>"}()`;
+		}
+		return "<object>";
+	}
+
+	private recordInitializer(key: string, id: number): void {
+		const list = this.initializerFunctions.get(key) ?? [];
+		list.push(id);
+		this.initializerFunctions.set(key, list);
+	}
+
+	/**
+	 * Records `id` under each declaration whose value it becomes: a variable, field, parameter default, object property
+	 * (also under every enclosing property and the variable holding the object), or an assigned property. Returns
+	 * whether the function is only stored there, so its creator does not run it: such a function is reached through
+	 * references to what holds it. A function passed to a call on the way may be run by that call, so it is not
+	 * only stored.
+	 */
+	private bindToDeclarations(node: Node, id: number, context: WalkContext): boolean {
+		const path = context.file.path;
+		let child = node;
+		let parent = node.parent as Node | undefined;
+		let passedToCall = false;
+		while (parent !== undefined) {
+			const kind = parent.kind;
+			if (kind === SyntaxKind.ExportAssignment) {
+				this.recordInitializer(declarationKey(path, parent), id);
+				return !passedToCall;
+			}
+			if (INITIALIZER_DECLARATIONS.has(kind)) {
+				if ((parent as Node & { readonly initializer?: Node }).initializer !== child) return false;
+				this.recordInitializer(declarationKey(path, parent), id);
+				if (kind !== SyntaxKind.PropertyAssignment) return !passedToCall;
+			} else if (kind === SyntaxKind.BinaryExpression && isBinaryExpression(parent)) {
+				const operator = parent.operatorToken.kind;
+				if (operator === SyntaxKind.EqualsToken) {
+					if (parent.right !== child) return false;
+					const target = unwrapExpression(parent.left);
+					if (!isIdentifier(target) && !isPropertyAccessExpression(target)) return false;
+					this.pendingAssignments.push({
+						target: isPropertyAccessExpression(target) ? target.name : target,
+						functions: [id],
+					});
+					return !passedToCall;
+				}
+				if (!VALUE_OPERATORS.has(operator)) return false;
+			} else if (kind === SyntaxKind.CallExpression || kind === SyntaxKind.NewExpression) {
+				if ((parent as CallExpression).expression === child) return false;
+				passedToCall = true;
+			} else if (kind === SyntaxKind.ConditionalExpression) {
+				if ((parent as Node & { readonly condition: Node }).condition === child) return false;
+			} else if (
+				!EXPRESSION_WRAPPERS.has(kind) &&
+				kind !== SyntaxKind.ObjectLiteralExpression &&
+				kind !== SyntaxKind.ArrayLiteralExpression &&
+				kind !== SyntaxKind.SpreadElement &&
+				kind !== SyntaxKind.SpreadAssignment
+			) {
+				return false;
+			}
+			child = parent;
+			parent = parent.parent as Node | undefined;
+		}
+		return false;
+	}
+
+	private isDetachedCallback(node: Node): boolean {
+		let parent = node.parent as Node | undefined;
+		while (parent !== undefined && EXPRESSION_WRAPPERS.has(parent.kind)) parent = parent.parent as Node | undefined;
+		if (parent === undefined || !isCallExpression(parent)) return false;
+		const callee = dottedText(parent.expression);
+		if (callee === undefined) return false;
+		const event = stringArgument(parent.arguments[0]);
+		return this.options.detachedCallbacks.some((spec) => {
+			const method = callee.slice(callee.lastIndexOf(".") + 1);
+			const owner = callee.includes(".") ? callee.slice(0, callee.lastIndexOf(".")) : undefined;
+			if (!spec.names.includes(method)) return false;
+			if (spec.owner !== undefined && owner !== spec.owner) return false;
+			return spec.events === undefined || (event !== undefined && spec.events.includes(event));
+		});
+	}
+
+	private visitClass(node: ClassDeclaration | ClassExpression, context: WalkContext): void {
+		const key = declarationKey(context.file.path, node);
+		const outer = this.containerName(context);
+		const own =
+			nameText(node.name) ?? (node.kind === SyntaxKind.ClassExpression ? this.closureName(node) : "default");
+		const className = outer === "" ? own : `${outer}/${own}`;
+		const fields = this.addFunction(
+			context.file.relative,
+			this.lineOf(context.file, node),
+			this.uniqueName(context.file, `${className}.<fields>`),
+			"class-fields",
+		);
+		const info: ClassInfo = {
+			key,
+			name: className,
+			constructors: [],
+			fields,
+			members: new Map(),
+			heritage: [],
+			base: undefined,
+		};
+		this.classes.set(key, info);
+		this.typeKeysByName.set(`${context.file.relative}#${className}`, key);
+		this.classByFieldsFunction.set(fields, key);
+		if (node.kind === SyntaxKind.ClassExpression && !this.bindToDeclarations(node, fields, context)) {
+			this.addEdge(context.container, fields, "closure");
+		}
+		for (const clause of node.heritageClauses ?? []) {
+			for (const type of clause.types) {
+				info.heritage.push({ expression: type.expression, extends: clause.token === SyntaxKind.ExtendsKeyword });
+				this.visit(type.expression, context);
+			}
+		}
+		const classContext: WalkContext = { ...context, className, classKey: key };
+		for (const member of node.members) {
+			if (isFunctionLike(member)) {
+				this.visitFunction(member, classContext);
+			} else if (member.kind === SyntaxKind.PropertyDeclaration) {
+				const container = isStatic(member) ? context.container : fields;
+				const fieldContext: WalkContext = { ...classContext, container };
+				const property = memberName(member);
+				const initializer = (member as Node & { readonly initializer?: Node }).initializer;
+				if (initializer !== undefined) this.visit(initializer, fieldContext);
+				if (property !== undefined) {
+					const functionsInInitializer = this.initializerFunctions.get(declarationKey(context.file.path, member));
+					if (functionsInInitializer !== undefined) {
+						const list = info.members.get(property) ?? [];
+						list.push(...functionsInInitializer);
+						info.members.set(property, list);
+					}
+				}
+			} else if (member.kind === SyntaxKind.ClassStaticBlockDeclaration) {
+				const block = this.addFunction(
+					context.file.relative,
+					this.lineOf(context.file, member),
+					this.uniqueName(context.file, `${className}.<static>`),
+					"static-block",
+				);
+				this.addEdge(context.container, block, "closure");
+				member.forEachChild((child) => this.visit(child, { ...classContext, container: block }));
+			}
+		}
+	}
+
+	private visitInterface(node: InterfaceDeclaration, context: WalkContext): void {
+		const key = declarationKey(context.file.path, node);
+		const heritage: Node[] = [];
+		for (const clause of node.heritageClauses ?? []) {
+			for (const type of clause.types) heritage.push(type.expression);
+		}
+		this.interfaces.set(key, { key, heritage });
+		const name = nameText(node.name);
+		if (name !== undefined) this.typeKeysByName.set(`${context.file.relative}#${name}`, key);
+	}
+
+	private visitModuleDeclaration(node: Node, context: WalkContext): void {
+		if (node.kind === SyntaxKind.ImportDeclaration) {
+			const declaration = node as Node & {
+				readonly importClause?: Node & { readonly phaseModifier?: SyntaxKind };
+				readonly moduleSpecifier: Node;
+			};
+			if (declaration.importClause?.phaseModifier === SyntaxKind.TypeKeyword) return;
+			this.imports.push({
+				container: context.container,
+				specifier: declaration.moduleSpecifier,
+				dynamic: false,
+				fromModule: context.file.relative,
+			});
+			return;
+		}
+		const declaration = node as Node & { readonly isTypeOnly: boolean; readonly moduleSpecifier?: Node };
+		if (declaration.isTypeOnly || declaration.moduleSpecifier === undefined) return;
+		this.imports.push({
+			container: context.container,
+			specifier: declaration.moduleSpecifier,
+			dynamic: false,
+			fromModule: context.file.relative,
+		});
+	}
+
+	private visitCall(node: CallExpression, context: WalkContext): void {
+		const callee = unwrapExpression(node.expression);
+		if (callee.kind === SyntaxKind.ImportKeyword) {
+			const specifier = node.arguments[0];
+			if (specifier !== undefined && stringArgument(specifier) !== undefined) {
+				this.imports.push({
+					container: context.container,
+					specifier,
+					dynamic: true,
+					fromModule: context.file.relative,
+				});
+			}
+			return;
+		}
+		if (callee.kind === SyntaxKind.SuperKeyword) {
+			if (context.classKey !== undefined)
+				this.superCalls.push({ container: context.container, classKey: context.classKey });
+			return;
+		}
+		if (isIdentifier(callee) && callee.text === "RegExp") this.recordRegexConstructor(node, context);
+		let calleeReference: number | undefined;
+		if (isIdentifier(callee)) {
+			calleeReference = this.addReference(context, callee, "call");
+		} else if (isPropertyAccessExpression(callee)) {
+			calleeReference = this.addReference(context, callee.name, "call");
+			const method = nameText(callee.name);
+			if (method === "call" || method === "apply" || method === "bind") {
+				const target = unwrapExpression(callee.expression);
+				if (isIdentifier(target)) this.addReference(context, target, "call");
+				else if (isPropertyAccessExpression(target)) this.addReference(context, target.name, "call");
+			}
+			this.visit(callee.expression, context);
+		} else {
+			this.visit(callee, context);
+		}
+		const firstReference = this.references.length;
+		const firstFunction = this.functions.length;
+		for (const argument of node.arguments) this.visit(argument, context);
+		if (calleeReference === undefined) return;
+		const argumentFunctions: number[] = [];
+		for (let id = firstFunction; id < this.functions.length; id++) {
+			if (this.lexicalParents[id] === context.container) argumentFunctions.push(id);
+		}
+		const argumentReferences: number[] = [];
+		for (let index = firstReference; index < this.references.length; index++) {
+			const reference = this.references[index];
+			if (reference.role === "value" && reference.container === context.container) argumentReferences.push(index);
+		}
+		this.calls.push({
+			container: context.container,
+			callee: calleeReference,
+			line: this.lineOf(context.file, node),
+			argumentFunctions,
+			argumentReferences,
+			firstArgument: stringArgument(node.arguments[0]),
+		});
+	}
+
+	/** Visits `visitInner` and returns the closures and value references it created in the current container. */
+	private captureCreated(context: WalkContext, visitInner: () => void): { functions: number[]; references: number[] } {
+		const firstReference = this.references.length;
+		const firstFunction = this.functions.length;
+		visitInner();
+		const functions: number[] = [];
+		for (let id = firstFunction; id < this.functions.length; id++) {
+			if (this.lexicalParents[id] === context.container) functions.push(id);
+		}
+		const references: number[] = [];
+		for (let index = firstReference; index < this.references.length; index++) {
+			const reference = this.references[index];
+			if (reference.role === "value" && reference.container === context.container) references.push(index);
+		}
+		return { functions, references };
+	}
+
+	/** `x.onSubmit = handler`: the handler runs when `x` reports the event. */
+	private visitHandlerAssignment(node: Node, context: WalkContext): boolean {
+		if (!isBinaryExpression(node) || node.operatorToken.kind !== SyntaxKind.EqualsToken) return false;
+		const left = unwrapExpression(node.left);
+		if (!isPropertyAccessExpression(left)) return false;
+		const property = nameText(left.name);
+		if (property === undefined || !HANDLER_PROPERTY.test(property)) return false;
+		this.visit(node.left, context);
+		const created = this.captureCreated(context, () => this.visit(node.right, context));
+		this.assignedHandlers.push({
+			container: context.container,
+			sink: `.${property} =`,
+			line: this.lineOf(context.file, node),
+			...created,
+		});
+		return true;
+	}
+
+	/** `{ onSubmit: handler }`: an options object whose handler the receiver calls on an event. */
+	private visitHandlerProperty(node: Node, context: WalkContext): boolean {
+		const property = memberName(node);
+		if (property === undefined || !HANDLER_PROPERTY.test(property)) return false;
+		const initializer = (node as Node & { readonly initializer?: Node }).initializer;
+		if (initializer === undefined) return false;
+		const created = this.captureCreated(context, () => this.visit(initializer, context));
+		this.assignedHandlers.push({
+			container: context.container,
+			sink: `{ ${property} }`,
+			line: this.lineOf(context.file, node),
+			...created,
+		});
+		return true;
+	}
+
+	private visitNew(node: Node, context: WalkContext): void {
+		const callee = unwrapExpression((node as Node & { readonly expression: Node }).expression);
+		if (isIdentifier(callee)) {
+			if (callee.text === "RegExp") this.recordRegexConstructor(node as CallExpression, context);
+			this.addReference(context, callee, "new");
+		} else if (isPropertyAccessExpression(callee)) {
+			this.addReference(context, callee.name, "new");
+		}
+	}
+
+	private visitPropertyAccess(node: Node, context: WalkContext): void {
+		if (!isPropertyAccessExpression(node)) return;
+		const parent = node.parent as Node | undefined;
+		const isCallee =
+			parent !== undefined &&
+			(isCallExpression(parent) || isNewExpression(parent)) &&
+			unwrapExpression(parent.expression) === node;
+		if (isCallee) return;
+		const name = nameText(node.name);
+		if (name === undefined) return;
+		if (isValuePosition(node)) {
+			this.addReference(context, node.name, "value");
+			return;
+		}
+		this.accessorCandidates.push({
+			container: context.container,
+			node: node.name,
+			line: this.lineOf(context.file, node),
+			name,
+		});
+	}
+
+	private addReference(context: WalkContext, node: Node, role: ReferenceRole): number | undefined {
+		const target = unwrapExpression(node);
+		const name = isIdentifier(target) || target.kind === SyntaxKind.PrivateIdentifier ? nameText(target) : undefined;
+		const resolvable = isPropertyAccessExpression(target) ? target.name : target;
+		if (name === undefined && !isPropertyAccessExpression(target)) return undefined;
+		this.references.push({
+			container: context.container,
+			node: resolvable,
+			role,
+			line: this.lineOf(context.file, node),
+			name: name ?? nameText(resolvable) ?? "",
+		});
+		return this.references.length - 1;
+	}
+
+	private recordRegexLiteral(node: Node, context: WalkContext): void {
+		const text = (node as Node & { readonly text: string }).text;
+		const close = text.lastIndexOf("/");
+		if (!text.startsWith("/") || close <= 0) return;
+		this.functions[context.container].regexes.push({
+			line: this.lineOf(context.file, node),
+			pattern: text.slice(1, close),
+			flags: text.slice(close + 1),
+		});
+	}
+
+	private recordRegexConstructor(node: CallExpression, context: WalkContext): void {
+		const pattern = stringArgument(node.arguments?.[0]);
+		if (pattern === undefined) return;
+		this.functions[context.container].regexes.push({
+			line: this.lineOf(context.file, node),
+			pattern,
+			flags: stringArgument(node.arguments?.[1]) ?? "",
+		});
+	}
+
+	/**
+	 * A loop that only reads a clock until it says stop: it holds the thread for the whole wait. A loop that also
+	 * does work, or awaits, is not one.
+	 */
+	private checkBusyWait(loop: Node, context: WalkContext): void {
+		let readsClock = false;
+		let doesOtherWork = false;
+		const scan = (node: Node): void => {
+			if (doesOtherWork || isFunctionLike(node)) return;
+			if (node.kind === SyntaxKind.AwaitExpression || node.kind === SyntaxKind.YieldExpression) {
+				doesOtherWork = true;
+				return;
+			}
+			if (isCallExpression(node)) {
+				const callee = dottedText(node.expression)?.replace(/^globalThis\./, "");
+				if (callee !== undefined && CLOCK_READS.has(callee)) readsClock = true;
+				else doesOtherWork = true;
+			}
+			if (isNewExpression(node)) {
+				const callee = dottedText(node.expression);
+				if (callee === "Date") readsClock = true;
+				else doesOtherWork = true;
+			}
+			node.forEachChild(scan);
+		};
+		loop.forEachChild(scan);
+		if (readsClock && !doesOtherWork) {
+			this.functions[context.container].blocking.push({
+				line: this.lineOf(context.file, loop),
+				api: { category: "busy-wait", label: "loop polling a clock" },
+			});
+		}
+	}
+
+	private aliased(symbol: TsSymbol): TsSymbol {
+		if ((symbol.flags & SymbolFlags.Alias) === 0) return symbol;
+		const cached = this.aliasCache.get(symbol.id);
+		if (cached !== undefined) return cached;
+		let resolved = symbol;
+		try {
+			resolved = this.project.checker.getAliasedSymbol(symbol);
+		} catch {
+			resolved = symbol;
+		}
+		this.aliasCache.set(symbol.id, resolved);
+		return resolved;
+	}
+
+	private resolveHandle(handle: NodeHandle): Node | undefined {
+		try {
+			return handle.resolve(this.project);
+		} catch {
+			return undefined;
+		}
+	}
+
+	private ownerName(declaration: Node): string | undefined {
+		const parent = declaration.parent as Node | undefined;
+		if (parent === undefined) return undefined;
+		if (
+			parent.kind === SyntaxKind.ClassDeclaration ||
+			parent.kind === SyntaxKind.InterfaceDeclaration ||
+			parent.kind === SyntaxKind.ModuleDeclaration ||
+			parent.kind === SyntaxKind.ClassExpression
+		) {
+			return nameText((parent as Node & { readonly name?: Node }).name);
+		}
+		if (parent.kind === SyntaxKind.ModuleBlock) return this.ownerName(parent);
+		return undefined;
+	}
+
+	/** The functions a resolved symbol may run, or a blocking API when it is an external declaration. */
+	private resolveSymbol(
+		symbol: TsSymbol,
+		role: ReferenceRole,
+	): { functions: readonly number[]; blocking: BlockingApi | undefined } {
+		const target = this.aliased(symbol);
+		const cacheKey = `${target.id}:${role}`;
+		const cachedFunctions = this.targetCache.get(cacheKey);
+		const cachedBlocking = this.externalCache.get(target.id);
+		if (cachedFunctions !== undefined && cachedBlocking !== undefined) {
+			return { functions: cachedFunctions, blocking: cachedBlocking ?? undefined };
+		}
+		const functions = new Set<number>();
+		let blocking: BlockingApi | undefined;
+		for (const handle of target.declarations) {
+			const relative = this.modulePaths.has(handle.path) ? this.modulePaths.get(handle.path) : undefined;
+			const declaration = this.resolveHandle(handle);
+			if (declaration === undefined) continue;
+			if (relative === undefined) {
+				blocking ??= classifyExternalDeclaration({
+					path: handle.path,
+					name: target.name,
+					owner: this.ownerName(declaration),
+				});
+				continue;
+			}
+			this.collectDeclarationTargets(handle.path, declaration, role, functions);
+		}
+		const result = [...functions];
+		this.targetCache.set(cacheKey, result);
+		this.externalCache.set(target.id, blocking ?? null);
+		return { functions: result, blocking };
+	}
+
+	private collectDeclarationTargets(path: string, declaration: Node, role: ReferenceRole, into: Set<number>): void {
+		const isAccessor = declaration.kind === SyntaxKind.GetAccessor || declaration.kind === SyntaxKind.SetAccessor;
+		if (role === "accessor" && !isAccessor) return;
+		const key = declarationKey(path, declaration);
+		const direct = this.functionByDeclaration.get(key);
+		if (direct !== undefined) into.add(direct);
+		for (const id of this.assignedFunctions.get(key) ?? []) into.add(id);
+		if (INITIALIZER_DECLARATIONS.has(declaration.kind)) {
+			for (const id of this.initializerFunctions.get(key) ?? []) {
+				into.add(id);
+				const constructed = this.classByFieldsFunction.get(id);
+				if (constructed !== undefined && role !== "accessor") this.addConstruction(constructed, into);
+			}
+		}
+		const parent = declaration.parent as Node | undefined;
+		const member = memberName(declaration);
+		if (declaration.kind === SyntaxKind.ClassDeclaration || declaration.kind === SyntaxKind.ClassExpression) {
+			if (role === "new" || role === "value" || role === "call") this.addConstruction(key, into);
+			return;
+		}
+		if (parent === undefined || member === undefined) return;
+		if (
+			(declaration.kind === SyntaxKind.MethodSignature || declaration.kind === SyntaxKind.PropertySignature) &&
+			parent.kind === SyntaxKind.InterfaceDeclaration
+		) {
+			this.addImplementations(declarationKey(path, parent), member, into);
+			return;
+		}
+		if (
+			(declaration.kind === SyntaxKind.MethodDeclaration ||
+				declaration.kind === SyntaxKind.PropertyDeclaration ||
+				declaration.kind === SyntaxKind.GetAccessor ||
+				declaration.kind === SyntaxKind.SetAccessor) &&
+			(parent.kind === SyntaxKind.ClassDeclaration || parent.kind === SyntaxKind.ClassExpression)
+		) {
+			this.addImplementations(declarationKey(path, parent), member, into);
+		}
+	}
+
+	private addConstruction(classKey: string, into: Set<number>): void {
+		let current: string | undefined = classKey;
+		const seen = new Set<string>();
+		while (current !== undefined && !seen.has(current)) {
+			seen.add(current);
+			const info = this.classes.get(current);
+			if (info === undefined) return;
+			into.add(info.fields);
+			for (const id of info.constructors) into.add(id);
+			if (info.constructors.length > 0) return;
+			current = info.base;
+		}
+	}
+
+	/** Every class below `typeKey` (a class or interface) that defines or inherits `member`. */
+	private addImplementations(typeKey: string, member: string, into: Set<number>): void {
+		for (const classKey of this.subtypes.get(typeKey) ?? []) {
+			let current: string | undefined = classKey;
+			const seen = new Set<string>();
+			while (current !== undefined && !seen.has(current)) {
+				seen.add(current);
+				const info = this.classes.get(current);
+				if (info === undefined) break;
+				const found = info.members.get(member);
+				if (found !== undefined) {
+					for (const id of found) {
+						if (!into.has(id)) this.stats.dispatchTargets++;
+						into.add(id);
+					}
+					break;
+				}
+				current = info.base;
+			}
+		}
+	}
+
+	private resolveHeritage(): void {
+		const pending: Array<{
+			readonly from: string;
+			readonly node: Node;
+			readonly extends: boolean;
+			readonly isClass: boolean;
+		}> = [];
+		for (const info of this.classes.values()) {
+			for (const entry of info.heritage)
+				pending.push({ from: info.key, node: entry.expression, extends: entry.extends, isClass: true });
+		}
+		for (const info of this.interfaces.values()) {
+			for (const node of info.heritage) pending.push({ from: info.key, node, extends: true, isClass: false });
+		}
+		const supertypes = new Map<string, Set<string>>();
+		for (let start = 0; start < pending.length; start += RESOLVE_BATCH) {
+			const batch = pending.slice(start, start + RESOLVE_BATCH);
+			const symbols = this.project.checker.getSymbolAtLocation(
+				batch.map((entry) => this.resolvableNode(entry.node)),
+			);
+			batch.forEach((entry, index) => {
+				const symbol = symbols[index];
+				if (symbol === undefined) return;
+				for (const handle of this.aliased(symbol).declarations) {
+					if (!this.modulePaths.has(handle.path)) continue;
+					const declaration = this.resolveHandle(handle);
+					if (declaration === undefined) continue;
+					const key = declarationKey(handle.path, declaration);
+					if (!this.classes.has(key) && !this.interfaces.has(key)) continue;
+					const set = supertypes.get(entry.from) ?? new Set<string>();
+					set.add(key);
+					supertypes.set(entry.from, set);
+					if (entry.isClass && entry.extends && this.classes.has(key)) {
+						const info = this.classes.get(entry.from);
+						if (info !== undefined) info.base = key;
+					}
+				}
+			});
+		}
+		for (const classKey of this.classes.keys()) {
+			const stack = [classKey];
+			const seen = new Set<string>();
+			while (stack.length > 0) {
+				const current = stack.pop() as string;
+				if (seen.has(current)) continue;
+				seen.add(current);
+				const set = this.subtypes.get(current) ?? new Set<string>();
+				set.add(classKey);
+				this.subtypes.set(current, set);
+				for (const parent of supertypes.get(current) ?? []) stack.push(parent);
+			}
+		}
+	}
+
+	/** Attaches functions assigned to a property or variable to every declaration of that property or variable. */
+	private resolveAssignments(): void {
+		const pending = this.pendingAssignments;
+		for (let start = 0; start < pending.length; start += RESOLVE_BATCH) {
+			const batch = pending.slice(start, start + RESOLVE_BATCH);
+			const symbols = this.project.checker.getSymbolAtLocation(batch.map((entry) => entry.target));
+			batch.forEach((entry, index) => {
+				const symbol = symbols[index];
+				if (symbol === undefined) return;
+				for (const handle of this.aliased(symbol).declarations) {
+					if (!this.modulePaths.has(handle.path)) continue;
+					const declaration = this.resolveHandle(handle);
+					if (declaration === undefined) continue;
+					const key = declarationKey(handle.path, declaration);
+					const list = this.assignedFunctions.get(key) ?? [];
+					list.push(...entry.functions);
+					this.assignedFunctions.set(key, list);
+				}
+			});
+		}
+	}
+
+	private resolvableNode(node: Node): Node {
+		const target = unwrapExpression(node);
+		return isPropertyAccessExpression(target) ? target.name : target;
+	}
+
+	private resolveReferences(): void {
+		this.stats.references = this.references.length;
+		const resolved: Array<readonly number[]> = new Array(this.references.length);
+		const symbolsByReference: Array<TsSymbol | undefined> = new Array(this.references.length);
+		for (let start = 0; start < this.references.length; start += RESOLVE_BATCH) {
+			const batch = this.references.slice(start, start + RESOLVE_BATCH);
+			const symbols = this.project.checker.getSymbolAtLocation(batch.map((reference) => reference.node));
+			batch.forEach((reference, index) => {
+				const symbol = symbols[index];
+				symbolsByReference[start + index] = symbol;
+				resolved[start + index] = this.applyReference(reference, symbol, start + index);
+			});
+		}
+		this.resolveThroughTypes(resolved);
+		for (const call of this.calls) this.applySinks(call, resolved, symbolsByReference);
+		for (const assignment of this.assignedHandlers) this.applyAssignedHandler(assignment, resolved);
+	}
+
+	/**
+	 * A callee that resolved to a variable, binding or property with no known function behind it (a destructured
+	 * `await import()`, a `const f = cond ? a : b`) is looked up again through its type, whose symbol is the function
+	 * declaration when there is one.
+	 */
+	private resolveThroughTypes(resolved: Array<readonly number[]>): void {
+		const pending = this.typeFallbacks;
+		for (let start = 0; start < pending.length; start += RESOLVE_BATCH) {
+			const batch = pending.slice(start, start + RESOLVE_BATCH);
+			const types = this.project.checker.getTypeAtLocation(batch.map((index) => this.references[index].node));
+			batch.forEach((referenceIndex, index) => {
+				const type = types[index];
+				if (type === undefined) return;
+				let symbol: TsSymbol | undefined;
+				try {
+					symbol = type.getSymbol();
+				} catch {
+					symbol = undefined;
+				}
+				if (symbol === undefined) return;
+				const reference = this.references[referenceIndex];
+				const isFunction = (symbol.flags & (SymbolFlags.Function | SymbolFlags.Method)) !== 0;
+				if (reference.role === "value" && !isFunction) return;
+				const { functions, blocking } = this.resolveSymbol(symbol, reference.role);
+				if (blocking !== undefined && reference.role !== "value") {
+					this.functions[reference.container].blocking.push({ line: reference.line, api: blocking });
+				}
+				for (const id of functions)
+					this.addEdge(reference.container, id, reference.role === "value" ? "reference" : "call");
+				if (functions.length > 0) {
+					resolved[referenceIndex] = [...resolved[referenceIndex], ...functions];
+					this.stats.resolvedThroughType++;
+				}
+			});
+		}
+	}
+
+	private applyReference(reference: PendingReference, symbol: TsSymbol | undefined, index: number): readonly number[] {
+		if (symbol === undefined) {
+			this.stats.unresolved++;
+			if (reference.role === "call") this.recordUnresolvedBlocking(reference);
+			return [];
+		}
+		const { functions, blocking } = this.resolveSymbol(symbol, reference.role);
+		if (functions.length === 0 && blocking === undefined && reference.role !== "accessor") {
+			const flags = this.aliased(symbol).flags;
+			const variableLike = (flags & (SymbolFlags.Variable | SymbolFlags.Property)) !== 0;
+			if (variableLike) this.typeFallbacks.push(index);
+		}
+		const edge: EdgeKind = reference.role === "value" ? "reference" : "call";
+		if (blocking !== undefined && reference.role !== "value") {
+			this.functions[reference.container].blocking.push({ line: reference.line, api: blocking });
+		}
+		if (functions.length > 0) this.stats.resolvedToFunction++;
+		else if (blocking !== undefined) this.stats.resolvedExternal++;
+		else if (reference.role === "call") this.recordUnresolvedBlocking(reference, symbol);
+		for (const id of functions) {
+			const kind = this.functions[id].kind;
+			const dispatched =
+				reference.role !== "value" && kind !== "class-fields" && kind !== "constructor" && functions.length > 1;
+			this.addEdge(reference.container, id, dispatched ? "dispatch" : edge);
+		}
+		return functions;
+	}
+
+	private recordUnresolvedBlocking(reference: PendingReference, symbol?: TsSymbol): void {
+		if (symbol !== undefined) {
+			const flags = this.aliased(symbol).flags;
+			const isVariableLike =
+				(flags & (SymbolFlags.Variable | SymbolFlags.Property)) !== 0 &&
+				(flags & (SymbolFlags.Function | SymbolFlags.Method)) === 0;
+			if (!isVariableLike) return;
+		}
+		const api = classifyUnresolvedCallName(reference.name);
+		if (api !== undefined) this.functions[reference.container].blocking.push({ line: reference.line, api });
+	}
+
+	private applySinks(
+		call: PendingCall,
+		resolved: Array<readonly number[]>,
+		symbols: Array<TsSymbol | undefined>,
+	): void {
+		const reference = this.references[call.callee];
+		const symbol = symbols[call.callee];
+		if (symbol === undefined) return;
+		const sink = this.matchSink(symbol, call);
+		if (sink === undefined) return;
+		const callbacks = new Set<number>(call.argumentFunctions);
+		for (const index of call.argumentReferences) for (const id of resolved[index] ?? []) callbacks.add(id);
+		if (callbacks.size === 0) return;
+		this.sinkRegistrations.push({ registrar: reference.container, sink, line: call.line, callbacks: [...callbacks] });
+	}
+
+	private matchSink(symbol: TsSymbol, call: PendingCall): string | undefined {
+		const target = this.aliased(symbol);
+		for (const handle of target.declarations) {
+			const path = handle.path.replaceAll("\\", "/");
+			const declaration = this.resolveHandle(handle);
+			if (declaration === undefined) continue;
+			const owner = this.ownerName(declaration);
+			for (const spec of this.options.sinks) {
+				if (!path.endsWith(spec.file)) continue;
+				if (!spec.names.includes(target.name)) continue;
+				if (spec.owner !== undefined && spec.owner !== owner) continue;
+				if (
+					spec.events !== undefined &&
+					(call.firstArgument === undefined || !spec.events.includes(call.firstArgument))
+				)
+					continue;
+				return `${owner === undefined ? "" : `${owner}.`}${target.name}`;
+			}
+		}
+		return undefined;
+	}
+
+	private applyAssignedHandler(
+		assignment: {
+			readonly container: number;
+			readonly sink: string;
+			readonly line: number;
+			readonly functions: readonly number[];
+			readonly references: readonly number[];
+		},
+		resolved: Array<readonly number[]>,
+	): void {
+		const callbacks = new Set<number>(assignment.functions);
+		for (const index of assignment.references) for (const id of resolved[index] ?? []) callbacks.add(id);
+		if (callbacks.size === 0) return;
+		this.sinkRegistrations.push({
+			registrar: assignment.container,
+			sink: assignment.sink,
+			line: assignment.line,
+			callbacks: [...callbacks],
+		});
+	}
+
+	private resolveShorthandValues(): void {
+		for (const entry of this.shorthandValues) {
+			let symbol: TsSymbol | undefined;
+			try {
+				symbol = this.project.checker.getShorthandAssignmentValueSymbol(entry.node);
+			} catch {
+				symbol = undefined;
+			}
+			if (symbol === undefined) continue;
+			const { functions } = this.resolveSymbol(symbol, "value");
+			for (const id of functions) this.addEdge(entry.container, id, "reference");
+		}
+	}
+
+	private resolveSuperCalls(): void {
+		for (const call of this.superCalls) {
+			const base = this.classes.get(call.classKey)?.base;
+			if (base === undefined) continue;
+			const into = new Set<number>();
+			this.addConstruction(base, into);
+			for (const id of into) this.addEdge(call.container, id, "call");
+		}
+	}
+
+	private resolveImports(): void {
+		for (let start = 0; start < this.imports.length; start += RESOLVE_BATCH) {
+			const batch = this.imports.slice(start, start + RESOLVE_BATCH);
+			const symbols = this.project.checker.getSymbolAtLocation(batch.map((entry) => entry.specifier));
+			batch.forEach((entry, index) => {
+				const symbol = symbols[index];
+				if (symbol === undefined) return;
+				for (const handle of symbol.declarations) {
+					const target = this.modulePaths.get(handle.path);
+					if (target === undefined) continue;
+					const targetModule = this.modules.get(target);
+					if (targetModule === undefined) continue;
+					this.addEdge(entry.container, targetModule, "import");
+					if (!entry.dynamic) {
+						const set = this.staticImports.get(entry.fromModule) ?? new Set<string>();
+						set.add(target);
+						this.staticImports.set(entry.fromModule, set);
+					}
+				}
+			});
+		}
+	}
+}
