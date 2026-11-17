@@ -305,9 +305,13 @@ push to a draft finishes at once and holds no runner. The Windows legs are the s
 Windows jobs, and on a busy day hundreds of them queued behind work-in-progress pushes that nobody was going to merge.
 
 The draft never satisfies the required check. GitHub counts a skipped job as a successful check, so skipping the result
-gate under its required name would let a draft's head commit report `test (all platforms)` as passed. Instead, in a
-draft the gate is skipped under another name, `test (draft, runs when marked ready)`, and the required
-`test (all platforms)` context is never reported for that commit. The pull request shows it as expected and waiting.
+gate under its required name would let a draft's head commit report `test (all platforms)` as passed. The gate's name is
+therefore an expression that yields `test (all platforms)` only outside a draft. GitHub doesn't evaluate a skipped
+job's `name`, so in a draft the skipped gate appears under the expression's text (as do the skipped matrix jobs, under
+their templates), and the required `test (all platforms)` context is never reported for that commit: the pull request
+shows it as expected and stays blocked. If GitHub ever evaluated the name of a skipped job, the draft branch,
+`test (draft, runs when marked ready)`, still differs from the required name. Do not replace the expression with a
+plain `test (all platforms)` while the gate skips itself in drafts.
 
 Marking the pull request ready for review (`gh pr ready <number>`) starts a full run on its head commit, and the gate
 reports `test (all platforms)` as usual. Converting a ready pull request back to draft starts no run; its next push runs
