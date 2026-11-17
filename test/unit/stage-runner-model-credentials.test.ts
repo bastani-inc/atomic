@@ -9,6 +9,7 @@ import type {
 	StageSessionRuntime,
 } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { createStageContext } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
+import { unresolvedContextOverflowFailure } from "../../packages/workflows/src/runs/foreground/stage-runner-unresolved-overflow.js";
 import {
 	StageWakeDispatcher,
 	stageWakeKey,
@@ -520,6 +521,85 @@ describe("a workflow stage's model chain and credentials", () => {
 				assert.equal(await ctx.prompt("still open"), "ok");
 				assert.deepEqual(requestedEfforts, ["high", "high", "high", "high", "high"]);
 				assert.equal(creations, 3);
+			} finally {
+				await ctx.__dispose();
+			}
+		});
+	}
+
+	for (const exhaustUnsuffixed of [false, true]) {
+		test(`changing a released stage's effort retains its ${exhaustUnsuffixed ? "final" : "pinned"} candidate without replaying it (#3326)`, async () => {
+			const store = new MemorySessionStore();
+			const dispatcher = new StageWakeDispatcher("run-credentials", undefined);
+			const wakeKey = stageWakeKey("run-credentials", "stage-credentials");
+			dispatcher.open({ runId: "run-credentials", stageId: "stage-credentials", wakeKey });
+			const opts = stageOpts(exhaustUnsuffixed ? ["p/a", "p/a:low"] : ["p/a:low"], new Set(["p"]), [], new Map(), {
+				modelConstraints: { allowedEfforts: ["low", "high"] },
+				sessionStore: store,
+				settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
+			});
+			opts.adapters.sessionStore = store;
+			opts.waiting = {
+				policy: { afterMs: 0 },
+				dispatcher,
+				wakeKey,
+				async enter() {},
+				async recordResults() {},
+				resultsInTranscript() {},
+				async leave() {},
+				async reopenFailed() {},
+				async rehydrated() {},
+				resident() {},
+			};
+			let creations = 0;
+			let failPrimary = exhaustUnsuffixed;
+			let failRemaining = false;
+			const requestedEfforts: (StageSessionRuntime["thinkingLevel"] | undefined)[] = [];
+			opts.adapters.agentSession = {
+				async create(options) {
+					creations++;
+					let appliedEffort: StageSessionRuntime["thinkingLevel"] | undefined;
+					const manager = options.sessionManager as SessionManager;
+					if (manager.getEntries().length === 0)
+						await manager.appendMessage({ role: "user", content: "init", timestamp: 1 });
+					return makeMockSession({
+						sessionId: manager.getSessionId(),
+						model: undefined,
+						thinkingLevel: undefined,
+						setThinkingLevel(level) {
+							appliedEffort = level;
+						},
+						async prompt() {
+							requestedEfforts.push(appliedEffort);
+							if (failPrimary || failRemaining) {
+								failPrimary = false;
+								throw unresolvedContextOverflowFailure("context exhausted");
+							}
+							return "ok";
+						},
+					}).session;
+				},
+			};
+			const ctx = createStageContext(opts);
+			try {
+				await ctx.setThinkingLevel("low");
+				assert.equal(await ctx.prompt("first"), "ok");
+				const initialEfforts = exhaustUnsuffixed ? ["low", "low"] : ["low"];
+				assert.deepEqual(requestedEfforts, initialEfforts);
+				const initialCreations = creations;
+				await ctx.release();
+				await ctx.setThinkingLevel("high");
+				assert.equal(await ctx.prompt("reopened"), "ok");
+				await ctx.setThinkingLevel("medium");
+				await assert.rejects(ctx.prompt("excluded"), /modelConstraints/);
+				await ctx.setThinkingLevel("high");
+				assert.equal(await ctx.prompt("allowed"), "ok");
+				assert.deepEqual(requestedEfforts, [...initialEfforts, "high", "high"]);
+				assert.equal(creations, initialCreations + 1);
+				failRemaining = true;
+				await assert.rejects(ctx.prompt("exhausted"), /context exhausted/);
+				assert.deepEqual(requestedEfforts, [...initialEfforts, "high", "high", "high"]);
+				assert.equal(creations, initialCreations + 1);
 			} finally {
 				await ctx.__dispose();
 			}

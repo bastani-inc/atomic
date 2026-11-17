@@ -2945,8 +2945,7 @@ export class StageSessionController {
 			const retainedIndex =
 				this.releasedSettings !== undefined &&
 				this.activeCandidateIndex !== undefined &&
-				candidates[this.activeCandidateIndex]?.id === restoredId &&
-				restoredThinkingLevel === this.releasedSettings.thinkingLevel
+				candidates[this.activeCandidateIndex]?.id === restoredId
 					? this.activeCandidateIndex
 					: undefined;
 			// An unspecified effort accepts the SDK's effective effort, but must not
@@ -2954,8 +2953,9 @@ export class StageSessionController {
 			const restoredIndex =
 				exactRestoredIndex >= 0
 					? exactRestoredIndex
-					: candidates.findIndex((entry) => entry.id === restoredId && entry.reasoningLevel === undefined);
-			this.activeCandidateIndex = restoredIndex >= 0 ? restoredIndex : retainedIndex;
+					: (retainedIndex ??
+						candidates.findIndex((entry) => entry.id === restoredId && entry.reasoningLevel === undefined));
+			this.activeCandidateIndex = restoredIndex >= 0 ? restoredIndex : undefined;
 			this.selectedModel = restoredId ?? first.id;
 			this.resumeCurrentSession = true;
 			return resumed;
