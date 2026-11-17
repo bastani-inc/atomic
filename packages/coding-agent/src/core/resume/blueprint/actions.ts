@@ -22,7 +22,7 @@ import {
 	BlueprintUsesUnsupportedError,
 	type BlueprintUsesUnsupportedReason,
 } from "./errors.ts";
-import { type ProcessExit, runLoggedProcess, type StepLog } from "./process.ts";
+import { BASH_START_GATE, type ProcessExit, runLoggedProcess, type StepLog } from "./process.ts";
 
 /** The environment variable that replaces `https://github.com` as the place actions are fetched from. */
 export const ACTIONS_GITHUB_BASE_URL_ENV = "ATOMIC_BLUEPRINT_GITHUB_BASE_URL";
@@ -350,6 +350,8 @@ interface ProcessRequest {
 	readonly args: readonly string[];
 	readonly cwd: string;
 	readonly stdin?: string;
+	/** Whether the process waits for its host to record it before it does anything ({@link ShellInvocation.gated}). */
+	readonly gated?: boolean;
 	readonly env: Readonly<Record<string, string>>;
 }
 
@@ -812,6 +814,7 @@ async function runProcess(
 					GITHUB_STEP_SUMMARY: files.summary,
 				},
 				...(request.stdin === undefined ? {} : { stdin: request.stdin }),
+				...(request.gated === true ? { gated: true } : {}),
 			},
 			context.options.log,
 			{ timeoutMs: remaining, signal: context.options.signal },
@@ -875,15 +878,24 @@ export interface ShellInvocation {
 	readonly executable: string;
 	readonly args: readonly string[];
 	readonly stdin?: string;
+	/**
+	 * Whether the script waits for one line on stdin, which its host sends once it has recorded the process, before it
+	 * runs anything (#4748): the script starts with {@link BASH_START_GATE}.
+	 */
+	readonly gated?: boolean;
 }
 
-/** How `config`'s bash runs `script` as a `bash` or `sh` step: failing at the first failing command, as GitHub does. */
+/**
+ * How `config`'s bash runs `script` as a `bash` or `sh` step: failing at the first failing command, as GitHub does.
+ * Given as an argument, the script waits for its host to record its process before it runs anything (#4748); on
+ * stdin, it only comes after that.
+ */
 export function bashInvocation(config: ShellConfig, name: string, script: string): ShellInvocation {
 	const strict = name === "bash" && basename(config.shell).toLowerCase().startsWith("bash") ? "-eo pipefail" : "-e";
 	const text = `set ${strict}\n${script}`;
 	return config.commandTransport === "stdin"
 		? { executable: config.shell, args: config.args, stdin: text }
-		: { executable: config.shell, args: [...config.args, text] };
+		: { executable: config.shell, args: [...config.args, `${BASH_START_GATE}${text}`], gated: true };
 }
 
 /** How `config`'s PowerShell runs `script` as a `pwsh` or `powershell` step. */

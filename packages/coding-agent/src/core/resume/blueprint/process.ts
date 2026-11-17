@@ -21,7 +21,20 @@ export interface LoggedProcess {
 	readonly env: NodeJS.ProcessEnv;
 	/** Written to the process's stdin, for shells that take the command that way; otherwise stdin is closed. */
 	readonly stdin?: string;
+	/**
+	 * Whether the process waits for one line on its stdin before it does anything, as a bash script that starts with
+	 * {@link BASH_START_GATE} does (#4748). It gets that line, ahead of `stdin`, only once {@link stepProcessWatcher} has
+	 * recorded it, so a host that dies before recording it leaves nothing of it running.
+	 */
+	readonly gated?: boolean;
 }
+
+/**
+ * The start of a bash script whose process is {@link LoggedProcess.gated} (#4748): the shell waits for the line its
+ * host sends once it has recorded the process, and ends at once, having run nothing, when the host died first. The
+ * script then runs with the null device as its stdin, as an ungated process does.
+ */
+export const BASH_START_GATE = "read -r _ || exit 1\nexec </dev/null\n";
 
 export interface ProcessExit {
 	readonly exitStatus: number | null;
@@ -84,7 +97,7 @@ export async function runLoggedProcess(
 			detached: startsProcessGroup(process.platform),
 			windowsHide: true,
 			stdio: [
-				run.stdin === undefined ? "ignore" : "pipe",
+				run.stdin === undefined && run.gated !== true ? "ignore" : "pipe",
 				copiesOutput ? "pipe" : log.fd,
 				copiesOutput ? "pipe" : log.fd,
 			],
@@ -170,7 +183,12 @@ export async function runLoggedProcess(
 			child.once("error", onSpawnError);
 			child.once("close", ended);
 		}
-		if (run.stdin !== undefined) child.stdin?.end(run.stdin);
+		// Only now, after the watcher above recorded the process: a gated process starts its work on this line (#4748). A
+		// process that ended before reading it, as one stopped at once, never needs it, so failing to write it is no error.
+		if (run.stdin !== undefined || run.gated === true) {
+			child.stdin?.on("error", () => {});
+			child.stdin?.end(`${run.gated === true ? "\n" : ""}${run.stdin ?? ""}`);
+		}
 	});
 }
 

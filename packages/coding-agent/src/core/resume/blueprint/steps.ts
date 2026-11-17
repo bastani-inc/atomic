@@ -13,6 +13,7 @@ import {
 	BlueprintStepTimedOutError,
 } from "./errors.ts";
 import {
+	BASH_START_GATE,
 	type LoggedProcess,
 	logTail,
 	openStepLog,
@@ -95,16 +96,20 @@ export function powerShellProcess(
 	};
 }
 
-/** The bash process of a `run` step: its script is the last argument, or on stdin for a bash that cannot take it there. */
+/**
+ * The bash process of a `run` step: its script is the last argument, or on stdin for a bash that cannot take it there.
+ * Given as an argument, the script starts with {@link BASH_START_GATE}, so the step runs nothing before the build that
+ * starts it has recorded its process (#4748); on stdin, the script itself comes only after that.
+ */
 export function bashProcess(step: RunStep, context: StepContext, bash: ShellConfig): LoggedProcess {
 	const script = bashScript(step);
 	const byStdin = bash.commandTransport === "stdin";
 	return {
 		command: bash.shell,
-		args: byStdin ? bash.args : [...bash.args, script],
+		args: byStdin ? bash.args : [...bash.args, `${BASH_START_GATE}${script}`],
 		cwd: context.cwd,
 		env: { ...context.environment, ...step.env, ENVRC: bashPath(context.envrcPath) },
-		...(byStdin ? { stdin: script } : {}),
+		...(byStdin ? { stdin: script } : { gated: true }),
 	};
 }
 

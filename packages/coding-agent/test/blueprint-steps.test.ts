@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import {
 	closeSync,
 	existsSync,
@@ -13,6 +15,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import type { ActionFetcher } from "../src/core/resume/blueprint/actions.ts";
 import { bashPath, evaluateEnvrc } from "../src/core/resume/blueprint/envrc.ts";
@@ -22,6 +25,7 @@ import {
 	BlueprintStepTimedOutError,
 	BlueprintUsesUnsupportedError,
 } from "../src/core/resume/blueprint/errors.ts";
+import { BASH_START_GATE, stepProcessWatcher } from "../src/core/resume/blueprint/process.ts";
 import {
 	bashProcess,
 	powerShellProcess,
@@ -33,6 +37,7 @@ import {
 import type { RunStep, UsesStep } from "../src/core/resume/blueprint/types.ts";
 import { ResumeTimingsRecorder } from "../src/core/resume/timings.js";
 import type { ShellConfig } from "../src/utils/shell.ts";
+import { bunExecutable } from "./cli-test-helpers.ts";
 import { WORKING_DIRECTORY_COMMAND } from "./helpers/blueprint-fixtures.ts";
 import { shellPath } from "./helpers/hook-commands.ts";
 
@@ -383,6 +388,110 @@ describe("cancelling a section (#4588)", () => {
 	});
 });
 
+describe("a host that dies while it starts a step (#4748)", () => {
+	/** How long a test's host stays stalled before it records a step's process, unless the step runs meanwhile. */
+	const RECORDING_STALL_MS = 1_500;
+	const stall = new Int32Array(new SharedArrayBuffer(4));
+
+	/** Whether process `pid` has ended: gone, or on Linux a zombie its new parent has not reaped yet. */
+	function ended(pid: number): boolean {
+		try {
+			process.kill(pid, 0);
+		} catch (error) {
+			return (error as NodeJS.ErrnoException).code === "ESRCH";
+		}
+		if (process.platform !== "linux") return false;
+		try {
+			const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+			return /^[ZX]/.test(stat.slice(stat.lastIndexOf(")") + 2));
+		} catch {
+			return true;
+		}
+	}
+
+	/**
+	 * A host that runs `step` in a section and records each process it starts, as a build lock does, and that is killed
+	 * as soon as it has recorded the first one: before it can let that process go on. `files` make up the action a
+	 * `uses` step fetches. Resolves the id of the process it recorded once the host has exited.
+	 */
+	async function hostKilledAfterRecording(step: RunStep | UsesStep, files: Record<string, string> = {}) {
+		const host = path("host.ts");
+		const recorded = path("recorded-pid");
+		writeFileSync(
+			host,
+			[
+				'import { mkdirSync, writeFileSync } from "node:fs";',
+				'import { dirname, join } from "node:path";',
+				"const [steps, processes, input, recorded] = process.argv.slice(2);",
+				"const { runSection } = await import(steps);",
+				"const { stepProcessWatcher } = await import(processes);",
+				"const { step, files, context } = JSON.parse(input);",
+				"const fetchAction = async ({ destination }: { destination: string }) => {",
+				"\tfor (const [name, content] of Object.entries(files as Record<string, string>)) {",
+				"\t\tmkdirSync(dirname(join(destination, name)), { recursive: true });",
+				"\t\twriteFileSync(join(destination, name), content);",
+				"\t}",
+				"};",
+				"const record = (pid: number, running: boolean) => {",
+				"\tif (!running) return;",
+				"\twriteFileSync(recorded, String(pid));",
+				'\tprocess.kill(process.pid, "SIGKILL");',
+				"};",
+				'await stepProcessWatcher.run(record, () => runSection("maintenance", [step], { ...context, fetchAction }));',
+				"",
+			].join("\n"),
+		);
+		const source = (module: string) =>
+			pathToFileURL(join(import.meta.dirname, "..", "src", "core", "resume", "blueprint", module)).href;
+		const input = JSON.stringify({ step, files, context: context() });
+		const child = spawn(bunExecutable(), [host, source("steps.ts"), source("process.ts"), input, recorded], {
+			cwd: sandbox,
+			stdio: "ignore",
+		});
+		await once(child, "exit");
+		assert.equal(existsSync(recorded), true, "the host recorded a process before it was killed");
+		return Number(readFileSync(recorded, "utf8"));
+	}
+
+	test("a step's process gets going only once its host has recorded it, however long recording takes (#4748)", async () => {
+		const ranBeforeRecorded: boolean[] = [];
+		const record = (_pid: number, running: boolean) => {
+			if (!running) return;
+			// A host stalled between starting the step's process and recording it, as one under load can be.
+			const until = Date.now() + RECORDING_STALL_MS;
+			while (!existsSync(markers()) && Date.now() < until) Atomics.wait(stall, 0, 0, 20);
+			ranBeforeRecorded.push(existsSync(markers()));
+		};
+		const result = await stepProcessWatcher.run(record, () =>
+			runSection("maintenance", [run('echo ran >> "$MARKERS"')], context()),
+		);
+		assert.deepEqual(result, { completed: 1 });
+		assert.deepEqual(ranBeforeRecorded, [false], "nothing ran before the host recorded the process");
+		assert.deepEqual(lines(markers()), ["ran"], "the step ran once recorded");
+	});
+
+	const composite = [
+		"name: Fixture",
+		"runs:",
+		"  using: composite",
+		"  steps:",
+		"    - shell: bash",
+		'      run: echo ran >> "$MARKERS"',
+		"",
+	].join("\n");
+
+	for (const [kind, step, files] of [
+		["a run step", run('echo ran >> "$MARKERS"'), {}],
+		["a bash step of a composite action", uses("github.com/acme/compose@v1"), { "action.yml": composite }],
+	] as const) {
+		test(`${kind} runs nothing until its host has recorded its process, so a host killed in between leaves nothing running (#4748)`, async () => {
+			const recorded = await hostKilledAfterRecording(step, files);
+			await waitFor(() => ended(recorded), "the recorded process to end");
+			assert.deepEqual(lines(markers()), [], "the step ran nothing");
+		});
+	}
+});
+
 describe("step timings (#4748)", () => {
 	test("each step reports its section, name, duration and how it ended to the resume it runs in (#4748)", async () => {
 		const recorder = new ResumeTimingsRecorder();
@@ -572,7 +681,7 @@ describe("which shell runs a step (#4588)", () => {
 		);
 	});
 
-	test("the bash process takes its script as the last argument and sources the ENVRC before the step's variables (#4588)", () => {
+	test("the bash process takes its script as the last argument, after the start gate, and sources the ENVRC before the step's variables (#4588, #4748)", () => {
 		const script = [
 			"set -a",
 			'[ -f "$ENVRC" ] && . "$ENVRC"',
@@ -585,18 +694,20 @@ describe("which shell runs a step (#4588)", () => {
 		].join("\n");
 		assert.deepEqual(bashProcess(step, context(), { shell: "/bin/bash", args: ["-c"] }), {
 			command: "/bin/bash",
-			args: ["-c", script],
+			args: ["-c", `${BASH_START_GATE}${script}`],
 			cwd: path("repo"),
 			env: { ...context().environment, A: "1", ENVRC: bashPath(path("build.envrc")) },
+			gated: true,
 		});
 	});
 
-	test("a bash that cannot take its command as an argument gets the script on stdin (#4588)", () => {
+	test("a bash that cannot take its command as an argument gets the script on stdin, which is its gate (#4588, #4748)", () => {
 		const legacy: ShellConfig = { shell: "C:\\Windows\\System32\\bash.exe", args: ["-s"], commandTransport: "stdin" };
 		const legacyProcess = bashProcess(run("echo hi"), context(), legacy);
 		assert.equal(legacyProcess.command, legacy.shell);
 		assert.deepEqual(legacyProcess.args, ["-s"]);
 		assert.equal(legacyProcess.stdin, 'set -a\n[ -f "$ENVRC" ] && . "$ENVRC"\nset +a\nset -e\necho hi\n');
+		assert.equal("gated" in legacyProcess, false);
 		const argv = bashProcess(run("echo hi"), context(), {
 			shell: "/bin/bash",
 			args: ["-c"],
