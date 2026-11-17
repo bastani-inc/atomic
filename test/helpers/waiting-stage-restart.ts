@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
-import { test } from "vitest";
-import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
+import { removeTempRootReleasingBroker } from "./detached-broker.js";
 import {
 	bunExecutable,
 	fileExists,
@@ -12,13 +11,17 @@ import {
 	sleep,
 	spawnProcess,
 	spawnSyncCollect,
-} from "../helpers/runtime.js";
+} from "./runtime.js";
 
+/**
+ * Killing a workflow root while its stages wait, and resuming the run in a new process, under Node (the workflow
+ * sources through jiti) and under Bun. Each scenario starts the root twice, so the cases are split by topic into
+ * `test/integration/waiting-stage-restart-*.test.ts`, which run beside each other instead of one after another.
+ */
 const ROOT = resolve(moduleDir(import.meta.url), "../..");
 const FIXTURE = join(ROOT, "test/fixtures/waiting-stage-restart.ts");
-const STAGES = 20;
+export const STAGES = 20;
 const WORKFLOW_CHILD_STARTUP_AND_CHECKPOINT_TIMEOUT_MS = 60_000;
-const PROCESS_RESTART_TIMEOUT_MS = 3 * WORKFLOW_CHILD_STARTUP_AND_CHECKPOINT_TIMEOUT_MS;
 const STAGE_NAMES = Array.from({ length: STAGES }, (_, index) => `stage-${index}`);
 
 /** How often each stage logged `<entry> <stage> [<detail>]`, in stage order; `detail` narrows to one kind of entry. */
@@ -105,7 +108,7 @@ const KILL_POINTS = {
 	answer: { ready: "answered-ready", dispatches: 1, continued: 2 },
 } as const;
 
-async function killAndResume(runtime: "node" | "bun", killPoint: keyof typeof KILL_POINTS): Promise<void> {
+export async function killAndResume(runtime: "node" | "bun", killPoint: keyof typeof KILL_POINTS): Promise<void> {
 	const expected = KILL_POINTS[killPoint];
 	const { effects, statuses } = await killThenResume(runtime, killPoint, expected.ready, "tool");
 	// Each stage was prompted once, before the kill: the resume sent no prompt, not even a continuation.
@@ -125,7 +128,7 @@ async function killAndResume(runtime: "node" | "bun", killPoint: keyof typeof KI
  * finished prompt from the run's record: nothing is prompted again, not even a "continue" prompt. A released stage's
  * next message is the only prompt after the kill, and it reaches the session reopened with the earlier turn in it.
  */
-async function killAndResumeBetweenTurns(runtime: "node" | "bun", scenario: "release" | "idle"): Promise<void> {
+export async function killAndResumeBetweenTurns(runtime: "node" | "bun", scenario: "release" | "idle"): Promise<void> {
 	const { effects, statuses } = await killThenResume(runtime, "wait", "waiting-ready", scenario);
 	const sendsReport = scenario === "release" ? 1 : 0;
 	assert.deepEqual(perStage(effects, "prompt", "plan"), everyStage(1));
@@ -146,7 +149,7 @@ async function killAndResumeBetweenTurns(runtime: "node" | "bun", scenario: "rel
  * its completion. The resume reopens each stage's session, which already holds the answered turn, and finishes the
  * stage from it: no stage is prompted again, not even with a "continue" prompt, and each returns that turn's answer.
  */
-async function killAndResumeFinishedTurns(runtime: "node" | "bun"): Promise<void> {
+export async function killAndResumeFinishedTurns(runtime: "node" | "bun"): Promise<void> {
 	const { effects, statuses, results } = await killThenResume(runtime, "wait", "finished-ready", "finished");
 	assert.deepEqual(perStage(effects, "prompt", "plan"), everyStage(1));
 	assert.deepEqual(perStage(effects, "prompt"), everyStage(1));
@@ -168,7 +171,7 @@ async function killAndResumeFinishedTurns(runtime: "node" | "bun"): Promise<void
  * `turns`: each stage had finished a prompt before it waited in its next message, which the resume answers from the
  * run's record.
  */
-async function killWhileEvictedAndResume(runtime: "node" | "bun", scenario: "evict" | "turns"): Promise<void> {
+export async function killWhileEvictedAndResume(runtime: "node" | "bun", scenario: "evict" | "turns"): Promise<void> {
 	const { effects, statuses } = await killThenResume(runtime, "wait", "evicted-ready", scenario);
 	assert.deepEqual(perStage(effects, "prompt", "watch"), everyStage(1));
 	assert.deepEqual(perStage(effects, "prompt", "plan"), everyStage(scenario === "turns" ? 1 : 0));
@@ -180,42 +183,3 @@ async function killWhileEvictedAndResume(runtime: "node" | "bun", scenario: "evi
 		STAGE_NAMES.map(() => "completed"),
 	);
 }
-
-for (const runtime of ["node", "bun"] as const) {
-	test(
-		`${runtime}: killing the root while its run is evicted with ${STAGES} stages waiting resumes every stage without prompting again (#4373)`,
-		() => killWhileEvictedAndResume(runtime, "evict"),
-		PROCESS_RESTART_TIMEOUT_MS,
-	);
-	test(
-		`${runtime}: killing the root while its evicted stages wait on a tool after an earlier prompt answers that prompt from the record and continues the waiting turn (#4373)`,
-		() => killWhileEvictedAndResume(runtime, "turns"),
-		PROCESS_RESTART_TIMEOUT_MS,
-	);
-	test(
-		`${runtime}: killing the root while ${STAGES} stages wait released and resuming continues every stage without prompting again (#4309)`,
-		() => killAndResume(runtime, "wait"),
-		PROCESS_RESTART_TIMEOUT_MS,
-	);
-	test(
-		`${runtime}: killing the root while ${STAGES} stages wait after stage.release() resumes them without prompting again, and their next message reopens the saved session (#4309)`,
-		() => killAndResumeBetweenTurns(runtime, "release"),
-		PROCESS_RESTART_TIMEOUT_MS,
-	);
-	test(
-		`${runtime}: killing the root while ${STAGES} held stages wait released by the idle scan resumes them without sending any prompt (#4309)`,
-		() => killAndResumeBetweenTurns(runtime, "idle"),
-		PROCESS_RESTART_TIMEOUT_MS,
-	);
-	test(
-		`${runtime}: killing the root after ${STAGES} stages got the model's final answer but before they recorded their completion finishes every stage from its transcript without another model call (#4375)`,
-		() => killAndResumeFinishedTurns(runtime),
-		PROCESS_RESTART_TIMEOUT_MS,
-	);
-}
-
-test(
-	`node: killing the root after ${STAGES} stages recorded their results but before the model answered continues every turn without prompting or dispatching again (#4309)`,
-	() => killAndResume("node", "answer"),
-	PROCESS_RESTART_TIMEOUT_MS,
-);

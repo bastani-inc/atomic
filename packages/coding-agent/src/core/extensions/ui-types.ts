@@ -212,9 +212,7 @@ export interface HostSessionPickerRow {
 	name?: string;
 	/** Optional semantic color for synthetic selector rows. */
 	messageColor?: "success" | "warning" | "accent" | "error";
-	/** The row's first line, in place of `name` or `firstMessage`. */
 	title?: string;
-	/** The row's dim second line, in place of age · messages · summary. */
 	detail?: string;
 	canDelete?: boolean;
 }
@@ -225,12 +223,7 @@ export interface HostSessionPickerRequest {
 	sessions: HostSessionPickerRow[];
 	/** Show the rename keybinding hint in the picker header. Defaults to false. */
 	showRenameHint?: boolean;
-	/** The picker's title. Defaults to "Resume session", or "Resume workflow run" for `variant: "runs"`. */
 	title?: string;
-	/**
-	 * What the rows are: `sessions` (the default) offers folder scope, name filtering and paths; `runs` lists
-	 * workflow runs and leaves those keys out.
-	 */
 	variant?: "sessions" | "runs";
 	/**
 	 * Invoked after the user confirms a Ctrl+D delete on a row. The host does

@@ -998,6 +998,23 @@ describe("the workflow tool row renders the same wherever a chat shows it (#5224
 		}
 	});
 
+	test("with NO_COLOR the raw row carries no colour sequences, while a coloured terminal still gets them", () => {
+		const colour = /\x1b\[(?:3[0-7]|9[0-7]|38;|4[0-7]|48;)[0-9;]*m/;
+		const definition = registered(runningStore()) as unknown as ToolRenderers;
+		vi.stubEnv("NO_COLOR", undefined);
+		try {
+			assert.match(mainChat(definition, false).render(80).join("\n"), colour);
+			vi.stubEnv("NO_COLOR", "1");
+			for (const expanded of [false, true]) {
+				const raw = mainChat(definition, expanded).render(80).join("\n");
+				assert.match(stripVTControlCharacters(raw), /Workflow\(ralph · fix the shipping benchmark\)/);
+				assert.doesNotMatch(raw, colour);
+			}
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+
 	for (const expanded of [false, true]) {
 		for (const width of [80, 160]) {
 			test(`${expanded ? "expanded" : "collapsed"} at ${width} columns`, () => {

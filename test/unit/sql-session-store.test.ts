@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { describe, it, test } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import type {
@@ -353,6 +354,156 @@ test("SQL replace and delete remove search text before reusing a session ID (#36
 				{ id: header.id, searchText: "" },
 			],
 		);
+		await store.close();
+	});
+});
+
+test("SQL light listing bounds its key scan by size and fetches wide columns per page (#5250)", async () => {
+	await withNodeSqliteDatabase(async ({ database }) => {
+		const store = await SqlSessionStore.open(database);
+		const sessions = 200;
+		for (let index = 0; index < sessions; index++) {
+			const id = `s-${String(index).padStart(4, "0")}`;
+			await store.create({ ...header, id }, [
+				message(`${id}-m`, "x".repeat(60_000)),
+				{
+					type: "session_summary",
+					id: `${id}-sum`,
+					parentId: `${id}-m`,
+					timestamp: header.createdAt,
+					summary: "y".repeat(200_000),
+					summarizedThroughId: `${id}-m`,
+				},
+			]);
+		}
+		let longLengths = 0;
+		const configured = new WeakSet<DatabaseSync>();
+		const prepare = DatabaseSync.prototype.prepare;
+		DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
+			if (!configured.has(this)) {
+				configured.add(this);
+				this.function("length", { deterministic: true }, (value) => {
+					if (value === null) return null;
+					if (typeof value === "string") {
+						if (value.length >= 10_000) longLengths++;
+						return [...value].length;
+					}
+					return value instanceof Uint8Array ? value.byteLength : String(value).length;
+				});
+			}
+			return prepare.call(this, sql);
+		} as typeof prepare;
+		const listed: SessionSummary[] = [];
+		try {
+			for await (const summary of store.list({ includeInternal: true, withoutSearchText: true })) {
+				listed.push(summary);
+			}
+		} finally {
+			DatabaseSync.prototype.prepare = prepare;
+		}
+		assert.deepEqual(
+			listed.map((summary) => summary.id),
+			Array.from({ length: sessions }, (_, index) => `s-${String(index).padStart(4, "0")}`),
+		);
+		assert.ok(
+			longLengths <= 8 * sessions,
+			`light listing measured ${longLengths} long values across ${sessions} sessions`,
+		);
+		await store.close();
+	});
+});
+
+test("SQL light listing advances past oversized rows with bounded statements and key work (#5250)", async () => {
+	await withNodeSqliteDatabase(async ({ database }) => {
+		const store = await SqlSessionStore.open(database);
+		const expected = ["first", ...Array.from({ length: 24 }, (_, index) => `wide-${index}`), "last"];
+		for (const id of expected) {
+			await store.create({ ...header, id }, [
+				{
+					type: "session_info",
+					id: `${id}-name`,
+					parentId: null,
+					timestamp: header.createdAt,
+					name: id.startsWith("wide-") ? "w".repeat(1_100_000) : id,
+				},
+			]);
+		}
+		let statements = 0;
+		let wideLengths = 0;
+		let oneRowPages = 0;
+		const configured = new WeakSet<DatabaseSync>();
+		const prepare = DatabaseSync.prototype.prepare;
+		DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
+			if (!configured.has(this)) {
+				configured.add(this);
+				this.function("length", { deterministic: true }, (value) => {
+					if (typeof value === "string" && value.length > 1_000_000) wideLengths++;
+					return value === null ? null : typeof value === "string" ? value.length : String(value).length;
+				});
+			}
+			return prepare.call(this, sql);
+		} as typeof prepare;
+		const all = database.all.bind(database);
+		database.all = async <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]): Promise<T[]> => {
+			const rows = await all<T>(sql, ...params);
+			statements++;
+			assert.ok(statements <= expected.length + 1, "listing must not stall on an oversized row");
+			if (rows.some((row) => typeof row.id === "string")) {
+				if (rows.length === 1) oneRowPages++;
+				assert.equal(rows.length, 1, "each oversized listing row needs its own page");
+			}
+			return rows;
+		};
+		const actual: string[] = [];
+		try {
+			for await (const summary of store.list({ includeInternal: true, withoutSearchText: true }))
+				actual.push(summary.id);
+		} finally {
+			database.all = all;
+			DatabaseSync.prototype.prepare = prepare;
+		}
+		assert.deepEqual(actual, expected);
+		assert.equal(oneRowPages, expected.length);
+		assert.ok(wideLengths <= expected.length * 6, `listing measured ${wideLengths} oversized values`);
+		await store.close();
+	});
+});
+
+test("SQL light listing reads 2,000 wide rows in bounded statements without collapsing its fetch limit (#5250)", async () => {
+	await withNodeSqliteDatabase(async ({ database }) => {
+		const store = await SqlSessionStore.open(database);
+		const sessions = 2_000;
+		const wideName = "w".repeat(20_000);
+		for (let index = 0; index < sessions; index++) {
+			const id = `s-${String(index).padStart(4, "0")}`;
+			await store.create({ ...header, id }, [
+				{
+					type: "session_info",
+					id: `${id}-name`,
+					parentId: null,
+					timestamp: header.createdAt,
+					name: wideName,
+				},
+			]);
+		}
+		let statements = 0;
+		const all = database.all.bind(database);
+		database.all = async <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]): Promise<T[]> => {
+			statements++;
+			return all<T>(sql, ...params);
+		};
+		const actual: string[] = [];
+		try {
+			for await (const summary of store.list({ includeInternal: true, withoutSearchText: true }))
+				actual.push(summary.id);
+		} finally {
+			database.all = all;
+		}
+		assert.deepEqual(
+			actual,
+			Array.from({ length: sessions }, (_, index) => `s-${String(index).padStart(4, "0")}`),
+		);
+		assert.ok(statements <= 60, `listing used ${statements} statements across ${sessions} sessions`);
 		await store.close();
 	});
 });

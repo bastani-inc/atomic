@@ -1,5 +1,7 @@
 import {
 	type NavKey,
+	navEntryKeys,
+	PLAIN_SELECTOR_STYLE,
 	renderNavHintLine,
 	type SelectorItem,
 	SelectorState,
@@ -8,7 +10,14 @@ import {
 	sliceHead,
 	themeSelectorStyle,
 } from "@bastani/atomic";
-import { getKeybindings, Input, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import {
+	getKeybindings,
+	Input,
+	matchesKey,
+	truncateToWidth,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "@bastani/atomic-tui";
 import type { PiCustomComponent, PiCustomOverlayFactoryTui, PiCustomOverlayFunction } from "../extension/wiring.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
@@ -387,7 +396,7 @@ function renderRunPreview(
 			.filter(Boolean)
 			.join(" · ");
 		if (stages) body.push(style.dim(stages));
-		body.push(style.dim(`id ${sanitizeToolTitleText(run.id)}`));
+		for (const line of wrapTextWithAnsi(`id ${sanitizeToolTitleText(run.id)}`, inner)) body.push(style.dim(line));
 	}
 	const bottom = `  ${border(`╰${"─".repeat(Math.max(0, inner + 2))}╯`)}`;
 	return [top, ...body.map(frame), bottom].map((line) => truncateToWidth(line, width));
@@ -441,7 +450,11 @@ function renderCompactListing(
 	}
 	const keybindings = getKeybindings();
 	if (state.items.length === 0 && !state.getQuery()) {
-		lines.push(renderNavHintLine([{ keys: "Esc", label: "to close" }], width, style, keybindings));
+		const closeKey = navEntryKeys(
+			{ matches: () => false, getKeys: (action) => keybindings.getKeys(action as "tui.select.cancel").slice(0, 1) },
+			{ action: "tui.select.cancel", label: "" },
+		);
+		if (closeKey) lines.push(renderNavHintLine([{ keys: closeKey, label: "to close" }], width, style, keybindings));
 	} else {
 		const hints = selectorHintEntries(state, {
 			search: true,
@@ -454,6 +467,11 @@ function renderCompactListing(
 		lines.push(fitListingHints(hints, width, style, keybindings));
 	}
 	return lines.map((line) => truncateToWidth(line, width));
+}
+
+function listingStyle(): SelectorStyle {
+	const themed = themeSelectorStyle();
+	return process.env.NO_COLOR === undefined ? themed : { ...PLAIN_SELECTOR_STYLE, bold: themed.bold };
 }
 
 export function openWorkflowsListing(
@@ -494,7 +512,7 @@ export function openWorkflowsListing(
 			let cachedInvalidDefinitions = source.invalidDefinitions?.() ?? [];
 			let currentNow = Date.now();
 			let items = workflowsListingItems(cachedRuns, currentNow, cachedInvalidDefinitions);
-			const style = themeSelectorStyle();
+			const style = listingStyle();
 			const search = new Input({ prompt: "⌕ ", placeholder: "Search…", placeholderStyle: style.dim });
 			const initialId = source.selectRunId !== undefined ? `run:${source.selectRunId}` : source.initialId;
 			const selector = new SelectorState<WorkflowsListingTarget>({
@@ -522,11 +540,11 @@ export function openWorkflowsListing(
 					if (canShowPreview()) previewOpen = !previewOpen;
 					return false;
 				} else if (keys.matches(data, "tui.select.cancel")) {
-					if (previewOpen && data !== "\x03") {
+					if (previewOpen && !matchesKey(data, "ctrl+c")) {
 						previewOpen = false;
 						return false;
 					}
-					if (selector.getQuery() && data !== "\x03") {
+					if (selector.getQuery() && !matchesKey(data, "ctrl+c")) {
 						search.setValue("");
 						selector.setQuery("");
 					} else finish(undefined);

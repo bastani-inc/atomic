@@ -18,6 +18,7 @@ import {
 } from "@bastani/atomic";
 import { StorageError } from "@bastani/atomic/storage";
 import { isWorkflowDefinition } from "../runs/foreground/executor-child-helpers.js";
+import { resolveInvocationGitBranch } from "../runs/foreground/executor-direct-helpers.js";
 import { resolveAndValidateInputs } from "../runs/foreground/executor-inputs.js";
 import { isFullRunId, isRunIdPrefix, resolveRunIdTarget } from "../shared/run-id.js";
 import { stageSessionStore } from "../shared/stage-session-store.js";
@@ -1239,9 +1240,11 @@ function forkHandle(
 		workflowCwd,
 		repositoryRoot,
 		gitWorktreeRoot,
+		branch: sourceBranch,
 		...carried
 	} = source;
 	const sameCwd = forkKeepsWorkspace(source, request.cwd);
+	const branch = sameCwd ? sourceBranch : resolveInvocationGitBranch(request.cwd);
 	const now = Date.now();
 	return {
 		...carried,
@@ -1249,6 +1252,7 @@ function forkHandle(
 		...(sameCwd && workflowCwd !== undefined ? { workflowCwd } : {}),
 		...(sameCwd && repositoryRoot !== undefined ? { repositoryRoot } : {}),
 		...(sameCwd && gitWorktreeRoot !== undefined ? { gitWorktreeRoot } : {}),
+		...(branch !== undefined ? { branch } : {}),
 		...(request.modelOwner === undefined ? {} : { modelOwner: request.modelOwner }),
 		...(selection.stagePath === undefined && summary !== undefined ? { summary, summarizedThrough } : {}),
 		workflowId: ids.forkRunId,

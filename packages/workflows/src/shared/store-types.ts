@@ -651,6 +651,7 @@ export interface RunSnapshot extends RunExecutionState {
 	 * Who launched this run, when the launcher was attributable.
 	 */
 	origin?: WorkflowActor;
+	branch?: string;
 	/** Model-tool caller/session bound at admission; retained through every lifecycle transition. */
 	modelOwner?: string;
 	/** Timestamp recorded on the most recent resume from a paused state. */

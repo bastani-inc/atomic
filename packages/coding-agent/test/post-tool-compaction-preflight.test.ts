@@ -1251,8 +1251,21 @@ describe("post-tool compaction preflight", () => {
 		]);
 	});
 	it("blocks a known hard-limit overflow when one compaction attempt is insufficient", async () => {
-		const oversizedCompaction: ExtensionFactory = (pi) => {
-			pi.on("session_before_compact", () => ({ compactedText: `retained ${"z ".repeat(5_000)}` }));
+		const expandingAfterCompaction: ExtensionFactory = (pi) => {
+			let compacted = false;
+			pi.on("session_compact", () => {
+				compacted = true;
+			});
+			pi.on("context", (event) =>
+				compacted
+					? {
+							messages: [
+								...event.messages,
+								{ role: "user", content: `retained ${"z ".repeat(5_000)}`, timestamp: Date.now() },
+							],
+						}
+					: undefined,
+			);
 		};
 		const harness = await createHarnessWithExtensions({
 			contextWindow: 1_000,
@@ -1268,10 +1281,15 @@ describe("post-tool compaction preflight", () => {
 				"must not be requested",
 			],
 			baseToolsOverride: { large_result: largeResultTool },
-			extensionFactories: [oversizedCompaction],
+			extensionFactories: [expandingAfterCompaction],
 		});
 		harnesses.push(harness);
 		await wireHarness(harness);
+		const guardTransform = harness.agent.transformContext;
+		harness.agent.transformContext = async (messages, signal) => {
+			const transformed = await harness.session.extensionRunner.emitContext(messages);
+			return guardTransform ? await guardTransform(transformed, signal) : transformed;
+		};
 		const continueSpy = vi.spyOn(harness.agent, "continue");
 
 		await harness.session.prompt(longPrompt);

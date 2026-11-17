@@ -1112,6 +1112,66 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		}
 	});
 
+	it("at 40 columns the hint keeps esc back and the keys help as complete entries, including armed quit and remapped keys (#5224)", () => {
+		const actions = {
+			stop: async () => ({ ok: true, message: "" }),
+			pauseRun: async () => ({ ok: true, message: "" }),
+			resumeRun: async () => ({ ok: true, message: "" }),
+			quitRun: async () => ({ ok: true, message: "" }),
+		};
+		const defaults = makeFakeKeybindings();
+		const remapped = {
+			matches: (data, action) =>
+				action === APP_ACTION.listStop
+					? data === "s"
+					: action === APP_ACTION.keysHelp
+						? data === "\x1bOP"
+						: defaults.matches(data, action),
+			getKeys: (action) => (action === APP_ACTION.listStop ? ["s"] : action === APP_ACTION.keysHelp ? ["f1"] : []),
+		};
+		for (const scenario of [
+			{ label: "default", piKeybindings: defaults, help: "? keys", stop: "x", armed: false },
+			{ label: "armed quit", piKeybindings: defaults, help: "? keys", stop: "x", armed: true },
+			{ label: "remapped", piKeybindings: remapped, help: "f1 keys", stop: "s", armed: false },
+			{ label: "remapped armed quit", piKeybindings: remapped, help: "f1 keys", stop: "s", armed: true },
+		]) {
+			const snap = makeSnap([stage("A", "running"), stage("B", "pending", {}, ["A"])]);
+			snap.runs[0].name = "ralph";
+			const graph = view([], {
+				store: makeStore(snap),
+				piKeybindings: scenario.piKeybindings,
+				onHide: () => {},
+				onStageAttach: () => {},
+				stageActions: actions,
+			});
+			try {
+				if (scenario.armed) graph.handleInput("q");
+				const row = hint(graph, 40).split("\n")[1];
+				const segments = row
+					.replace(/^.*│ GRAPH │\s*/, "")
+					.trim()
+					.split(/\s+·\s+/);
+				assert.equal(segments[0], "esc back", `${scenario.label}: ${row}`);
+				assert.ok(segments.includes(scenario.help), `${scenario.label} keeps ${scenario.help}: ${row}`);
+				const complete = new Set(["esc back", "↵", "↓", scenario.stop, "p", "q", "/", "f", scenario.help, "h"]);
+				for (const segment of segments) {
+					assert.ok(
+						complete.has(segment) || (scenario.armed && /^q again\b/.test(segment)),
+						`${scenario.label} shows only complete entries, got "${segment}" in: ${row}`,
+					);
+				}
+				if (scenario.armed) {
+					assert.ok(
+						segments.some((segment) => /^q again\b/.test(segment)),
+						`${scenario.label} keeps the armed quit: ${row}`,
+					);
+				}
+			} finally {
+				graph.dispose();
+			}
+		}
+	});
+
 	it("at 80 columns the hint keeps the keys that act on this stage ahead of / stages and h hide, and lists each arrow once", () => {
 		const graph = view(
 			[stage("A", "completed"), stage("B", "running", {}, ["A"]), stage("C", "running", {}, ["A"])],

@@ -135,6 +135,14 @@ describe("shared selector (#5224)", () => {
 			one.find((line) => line.includes("longer")),
 			"   a longer name  second",
 		);
+		const longId = "bartowski/Meta-Llama-3.1-70B-Instruct-GGUF:Meta-Llama-3.1-70B-Instruct-Q4_K_M";
+		const longRows = [
+			{ id: longId, value: 0, label: longId, description: "loaded · 33k context" },
+			{ id: "dl", value: 1, label: "Download model…", description: "Hugging Face owner/repository[:quant]" },
+		];
+		const longOne = picker({ items: longRows }).text(80);
+		assert.ok(longOne[0]?.includes("loaded · 33k context"), longOne.join("\n"));
+		assert.ok(longOne[1]?.includes("Hugging Face"), longOne.join("\n"));
 		const two = picker({ items: rows, layout: "two-line" }).text(80);
 		const index = two.indexOf(" ❯ short");
 		assert.equal(two[index + 1], "   first");

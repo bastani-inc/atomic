@@ -207,14 +207,25 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		}
 		if (this.runDetail !== null) {
 			const blockers = this.runDetail.logs ? 0 : this._runDetailBlockers().length;
+			const keybindings = this._navKeybindings();
+			const helpKeys = new Set((keybindings?.getKeys?.(APP_ACTION.keysHelp) ?? []).map(displayedBinding));
+			const available = (key: string) =>
+				!helpKeys.has(displayedBinding(key)) && keybindings?.matches(key, APP_ACTION.keysHelp) !== true;
+			const arrows = ["up", "down"].filter(available).map(displayedBinding).join("");
+			const open = ["right", "enter"]
+				.filter(available)
+				.map((key) => (key === "enter" ? "\u21b5" : displayedBinding(key)))
+				.join("/");
+			const pages = ["pageUp", "pageDown"].filter(available).map(displayedBinding).join("/");
+			const scroll = [blockers > 1 ? "" : arrows, pages].filter(Boolean).join(" ");
 			return [
-				{ keys: "esc", label: keyOnly ? "" : mode === "full" ? "back to graph" : "back" },
-				...(blockers > 1 ? [{ keys: "\u2191\u2193", label: keyOnly ? "" : "select" }] : []),
-				...(blockers > 0 ? [{ keys: "\u2192/\u21b5", label: keyOnly ? "" : "open" }] : []),
-				...(!this._navKeybindings()?.matches("l", APP_ACTION.keysHelp)
-					? [{ keys: "l", label: keyOnly ? "" : this.runDetail.logs ? "summary" : "logs" }]
+				...(available("escape")
+					? [{ keys: "esc", label: keyOnly ? "" : mode === "full" ? "back to graph" : "back" }]
 					: []),
-				{ keys: blockers > 1 ? "pgup/pgdn" : "\u2191\u2193 pgup/pgdn", label: keyOnly ? "" : "scroll" },
+				...(blockers > 1 && arrows ? [{ keys: arrows, label: keyOnly ? "" : "select" }] : []),
+				...(blockers > 0 && open ? [{ keys: open, label: keyOnly ? "" : "open" }] : []),
+				...(available("l") ? [{ keys: "l", label: keyOnly ? "" : this.runDetail.logs ? "summary" : "logs" }] : []),
+				...(scroll ? [{ keys: scroll, label: keyOnly ? "" : "scroll" }] : []),
 				help,
 			];
 		}
@@ -307,6 +318,53 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		];
 	}
 
+	private _fitGraphKeys(
+		frameContext: { readonly run: RunSnapshot | null; readonly focused: StageSnapshot | undefined } | undefined,
+		budget: number,
+		render: (entries: readonly NavKey[]) => { width: number; styled: string },
+	): { width: number; styled: string } {
+		const tiers = (["compact", "tight", "minimal", "keys"] as const).map((tier) =>
+			this._graphKeys(tier, frameContext),
+		);
+		const base = tiers[tiers.length - 1]!;
+		const isHelp = (entry: NavKey) =>
+			entry.action === APP_ACTION.keysHelp || (entry.action === undefined && entry.keys === "?");
+		const backIndex = base.findIndex((entry) => entry.keys === "esc");
+		const helpIndex = base.findIndex(isHelp);
+		const quitIndex = base.findIndex((entry) => entry.keys === "q" && entry.label.startsWith("again"));
+		const labels = new Map<number, string>();
+		if (backIndex >= 0) labels.set(backIndex, tiers[0]![backIndex]?.label || "back");
+		if (helpIndex >= 0) labels.set(helpIndex, "keys");
+		const kept = new Set([backIndex, helpIndex].filter((index) => index >= 0));
+		const measure = () =>
+			render(
+				base.flatMap((entry, index) =>
+					kept.has(index) ? [{ ...entry, label: labels.get(index) ?? entry.label }] : [],
+				),
+			);
+		if (quitIndex >= 0) {
+			const variants = [...new Set([...tiers.map((tier) => tier[quitIndex]?.label ?? ""), "again"])];
+			kept.add(quitIndex);
+			const fitting = variants.find((label) => {
+				labels.set(quitIndex, label);
+				return measure().width <= budget;
+			});
+			if (fitting === undefined) {
+				kept.delete(quitIndex);
+				labels.delete(quitIndex);
+			}
+		}
+		for (let index = 0; index < base.length; index++) {
+			if (kept.has(index)) continue;
+			kept.add(index);
+			if (measure().width > budget) {
+				kept.delete(index);
+				break;
+			}
+		}
+		return measure();
+	}
+
 	protected _activeGraphNotice(): { text: string; tone: "info" | "error" } | null {
 		const notice = this.graphNotice;
 		if (notice === null) return null;
@@ -341,11 +399,16 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 						focused: this.cachedLayout[this.focusedIndex]?.stage,
 					}
 				: undefined;
-		const buildRendered = (mode: GraphKeyTier, sepText: string, sepStyled: string, includeRunDetails = false) => {
+		const renderEntries = (
+			entries: readonly NavKey[],
+			sepText: string,
+			sepStyled: string,
+			includeRunDetails = false,
+		) => {
 			const taken = new Set<string>();
 			const plainParts: string[] = [];
 			const styledParts: string[] = [];
-			for (const entry of this._graphKeys(mode, frameContext)) {
+			for (const entry of entries) {
 				if (entry.keys === "o" && entry.label === "run details" && !includeRunDetails) continue;
 				const keys = navEntryKeys(keybindings, entry, taken);
 				if (!keys) continue;
@@ -361,6 +424,8 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 				styled: styledParts.join(sepStyled),
 			};
 		};
+		const buildRendered = (mode: GraphKeyTier, sepText: string, sepStyled: string, includeRunDetails = false) =>
+			renderEntries(this._graphKeys(mode, frameContext), sepText, sepStyled, includeRunDetails);
 		const candidates: ReadonlyArray<readonly [GraphKeyTier, string, string]> = [
 			["full", "  \u00b7  ", wideSep],
 			["full", " \u00b7 ", tightSep],
@@ -379,6 +444,11 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 				if (mode === "full" && withRunDetails.width <= hintsBudget) chosen = withRunDetails;
 				break;
 			}
+		}
+		if (chosen !== undefined && chosen.width > hintsBudget) {
+			chosen = this._fitGraphKeys(frameContext, hintsBudget, (entries) =>
+				renderEntries(entries, " \u00b7 ", tightSep),
+			);
 		}
 		const chosenHints = chosen ?? buildRendered("keys", " \u00b7 ", tightSep);
 		const notice = this._activeGraphNotice();

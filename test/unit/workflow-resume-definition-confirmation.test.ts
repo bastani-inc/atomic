@@ -567,6 +567,20 @@ describe("workflow resume definition confirmation and refusal handling (#5256)",
 		store.recordRunStart({
 			id: livePausedId,
 			name: sampleDefinition.name,
+			status: "running",
+			startedAt: 1_000,
+			endedAt: 2_000,
+			exitReason: "quit",
+			inputs: {},
+			stages: [],
+			toolNodes: [],
+		});
+		const quitOutcome = await deleteWorkflowResumeEntry(livePausedId, store);
+		assert.equal(quitOutcome.ok, false, "in-session quit run with endedAt set must be refused as in-flight");
+
+		store.recordRunStart({
+			id: livePausedId,
+			name: sampleDefinition.name,
 			status: "failed",
 			startedAt: 1_000,
 			endedAt: 2_000,

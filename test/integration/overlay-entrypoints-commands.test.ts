@@ -172,7 +172,7 @@ describe("workflow resume — overlay integration", () => {
 			assert.equal(customCalls[0]!.options.overlay, false);
 			const rendered = visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " ");
 			assert.match(rendered, /Resume workflow run/);
-			assert.match(rendered, /durable-wf\s+paused · /);
+			assert.match(rendered, /durable-wf\s+paused · just now/);
 		} finally {
 			setDurableBackend(undefined);
 		}
@@ -209,8 +209,8 @@ describe("workflow resume — overlay integration", () => {
 			await delay(5);
 			assert.equal(customCalls.length, 1);
 			const rendered = visibleText(customCalls[0]!.component.render(80));
-			assert.match(rendered, /durable-history\s+paused · /);
-			assert.doesNotMatch(rendered, /done · /);
+			assert.match(rendered, /durable-history\s+paused · just now/);
+			assert.doesNotMatch(rendered, /done\b/);
 		} finally {
 			setDurableBackend(undefined);
 		}
@@ -316,8 +316,8 @@ describe("workflow resume — overlay integration", () => {
 			await delay(5);
 			assert.ok(customCalls.length >= 1);
 			const text = visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " ");
-			assert.match(text, /live-wf\s+paused · /);
-			assert.match(text, /durable-cross-session\s+paused · /);
+			assert.match(text, /live-wf\s+paused/);
+			assert.match(text, /durable-cross-session\s+paused · just now/);
 			customCalls[0]!.component.handleInput?.("\u001b");
 			await handlerPromise;
 		} finally {
@@ -591,8 +591,8 @@ describe("/workflows and the removed /workflow connect and /workflow attach — 
 			assert.ok(customCalls.length >= 1);
 			assert.equal(customCalls[0]!.options.overlay, false);
 			const text = visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " ");
-			assert.match(text, /live-older-wf\s+paused · /);
-			assert.match(text, /durable-newer-wf\s+paused · /);
+			assert.match(text, /live-older-wf\s+paused/);
+			assert.match(text, /durable-newer-wf\s+paused · just now/);
 			assert.ok(text.indexOf("durable-newer-wf") < text.indexOf("live-older-wf"));
 			customCalls[0]!.component.handleInput?.("\u001b");
 			await handlerPromise;
@@ -711,8 +711,8 @@ describe("/workflows and the removed /workflow connect and /workflow attach — 
 			await delay(10);
 			assert.ok(customCalls.length >= 1);
 			const text = visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " ");
-			assert.match(text, /live-hydrate-wf\s+paused · /);
-			assert.match(text, /durable-hydrate\s+paused · /);
+			assert.match(text, /live-hydrate-wf\s+paused/);
+			assert.match(text, /durable-hydrate\s+paused · just now/);
 			customCalls[0]!.component.handleInput?.("\u001b");
 			await handlerPromise;
 		} finally {

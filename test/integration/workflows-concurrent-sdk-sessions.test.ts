@@ -12,6 +12,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "../../packages/coding-agent/src/index.js";
+import { linkSharedTranspileCache } from "../../packages/coding-agent/test/helpers/shared-transpile-cache.js";
 import { sleep } from "../helpers/runtime.js";
 
 /** Several real SDK host sessions, each loading the builtin workflows extension and a real stage AgentSession. */
@@ -53,6 +54,7 @@ interface WorkflowStatusRun {
 
 function hostedSession(label: string): HostedSession {
 	const cwd = mkdtempSync(join(tmpdir(), `atomic-concurrent-sdk-${label}-`));
+	linkSharedTranspileCache(join(cwd, "agent"));
 	mkdirSync(join(cwd, ".atomic", "workflows"), { recursive: true });
 	mkdirSync(join(cwd, ".atomic", "extensions"), { recursive: true });
 	writeFileSync(

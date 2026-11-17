@@ -135,7 +135,9 @@ export class McpManagerView implements McpUi, Component, Focusable {
 				subtitle: menu.details,
 				items: menuItems(menu),
 				initialId: menu.selected,
-				search: menu.items.length > MAX_VISIBLE_ITEMS,
+				get search() {
+					return menu.items.length > MAX_VISIBLE_ITEMS;
+				},
 				maxVisible: MAX_VISIBLE_ITEMS,
 				get emptyText() {
 					return menu.empty ?? "Nothing to show.";

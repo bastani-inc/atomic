@@ -218,6 +218,65 @@ describe("workflow graph, run-details, and stage-detail hints (#5224)", () => {
 		}
 	});
 
+	it("keeps complete run-detail hints and help at 40 columns with two blockers (#5255)", () => {
+		const graph = view(
+			[stage("bad0", "failed", { error: "first failure" }), stage("bad1", "failed", { error: "second failure" })],
+			{ status: "failed" },
+		);
+		try {
+			graph.handleInput("o");
+			const shown = hintLine(graph, 40);
+			assert.match(shown, /esc back/);
+			assert.match(shown, /\? keys/);
+			const complete = new Set([
+				"esc back",
+				"esc back to graph",
+				"↑↓",
+				"↑↓ select",
+				"→/↵",
+				"→/↵ open",
+				"l",
+				"l logs",
+				"pgup/pgdn",
+				"pgup/pgdn scroll",
+				"? keys",
+			]);
+			for (const token of shown.split(/\s+·\s+/)) assert.ok(complete.has(token), `incomplete hint: ${token}`);
+		} finally {
+			graph.dispose();
+		}
+	});
+
+	it("advertises an Up help binding only as help rather than blocker selection (#5255)", () => {
+		const keybindings = {
+			...makeFakeKeybindings({ "app.keys.help": [UP] }),
+			getKeys: (action: string) => (action === "app.keys.help" ? ["up"] : []),
+		};
+		const graph = view(
+			[stage("bad0", "failed", { error: "first failure" }), stage("bad1", "failed", { error: "second failure" })],
+			{ status: "failed" },
+			{ piKeybindings: keybindings },
+		);
+		try {
+			graph.handleInput("o");
+			const shown = hintLine(graph, 160);
+			assert.equal(shown.match(/↑/g)?.length, 1, shown);
+			assert.match(shown, /↓ select/);
+			assert.match(shown, /↑ keys/);
+			graph.handleInput(DOWN);
+			assert.match(bodyText(graph), /❯ ✗ bad1/);
+			graph.handleInput(UP);
+			const help = plainLines(graph, 140).join("\n");
+			assert.match(help, /keys · run details/);
+			assert.match(help, /│\s+↓\s+select/);
+			assert.match(help, /│\s+esc\/↑\s+close this help/);
+			graph.handleInput(ESC);
+			assert.match(bodyText(graph), /❯ ✗ bad1/);
+		} finally {
+			graph.dispose();
+		}
+	});
+
 	it("omits shadowed keys when help is remapped to l or o (#5224)", () => {
 		const run: RunSnapshot = {
 			...h.makeSnap([
