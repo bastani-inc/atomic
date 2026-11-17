@@ -86,7 +86,8 @@ test.skipIf(process.platform === "win32")(
 			event: string | symbol,
 			...args: unknown[]
 		) {
-			if (event === "spawn") {
+			// Only pool workers have an IPC channel; other processes the host starts (such as its Git lookups) pass through.
+			if (event === "spawn" && typeof this.send === "function") {
 				spawns += 1;
 				// Each forked worker has its own IPC `send`; record the replies that tell it the root's lease is gone.
 				const send = this.send.bind(this) as (message: object, ...rest: unknown[]) => boolean;
@@ -235,7 +236,8 @@ test.skipIf(process.platform === "win32")(
 			event: string | symbol,
 			...args: unknown[]
 		) {
-			if (event === "spawn") {
+			// Only pool workers have an IPC channel; other processes the host starts (such as its Git lookups) pass through.
+			if (event === "spawn" && typeof this.send === "function") {
 				spawned.push(this);
 				const send = this.send.bind(this) as (message: object, ...rest: unknown[]) => boolean;
 				const pid = this.pid;

@@ -67,7 +67,8 @@ function observeWorkers() {
 		event: string | symbol,
 		...args: unknown[]
 	) {
-		if (event === "spawn") spawned.push(this);
+		// Only pool workers have an IPC channel; other processes the host starts (such as its Git lookups) are not counted.
+		if (event === "spawn" && typeof this.send === "function") spawned.push(this);
 		if (event === "message") messages.push({ pid: this.pid, kind: (args[0] as { readonly kind?: string }).kind });
 		if (event === "exit") exits.push({ pid: this.pid, code: args[0] as number | null });
 		return emit.call(this, event, ...args);
