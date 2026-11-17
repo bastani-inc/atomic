@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import {
+	eventLoopBlockLogPath,
+	eventLoopBlockThresholdMs,
+} from "../../packages/coding-agent/src/core/event-loop-monitor.js";
+import {
 	bunExecutable,
 	fileExistsSync,
 	makeTempDirectory,
@@ -182,3 +186,20 @@ for (const runtime of RUNTIMES) {
 		});
 	});
 }
+
+test("only a positive whole number of milliseconds turns the diagnostic on", () => {
+	const threshold = (value: string | undefined) => eventLoopBlockThresholdMs({ ATOMIC_EVENT_LOOP_BLOCK_MS: value });
+	assert.equal(threshold("250"), 250);
+	assert.equal(threshold(" 250 "), 250);
+	for (const off of [undefined, "", "0", "-5", "1.5", "1e3", "on", "99999999999999999999"]) {
+		assert.equal(threshold(off), undefined, `${off} turned it on`);
+	}
+});
+
+test("a relative log path resolves against the directory Atomic starts in", () => {
+	const base = resolve(temp, "start");
+	assert.equal(
+		eventLoopBlockLogPath({ ATOMIC_EVENT_LOOP_BLOCK_LOG: join("logs", "blocks.jsonl") }, base),
+		join(base, "logs", "blocks.jsonl"),
+	);
+});

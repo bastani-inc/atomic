@@ -226,9 +226,11 @@ function assertWithinBudgets(result: ScenarioResult): void {
 			!(delay.maxMs < maxBudgetMs) ? `max ${delay.maxMs} ms ≥ ${maxBudgetMs} ms` : "",
 		].filter(Boolean);
 		if (broken.length === 0) return;
-		const sessionAt = result.delays[role].session.at;
+		// A block counts in the phase its delay was recorded in: the one it ended in.
+		const sessionAt = Date.parse(result.delays[role].session.at);
 		const blocks = result.blocks.filter(
-			(block) => block.role === role && (phase === "session") === block.at >= sessionAt,
+			(block) =>
+				block.role === role && (phase === "session") === Date.parse(block.at) + block.durationMs >= sessionAt,
 		);
 		violations.push(
 			`${result.name}: ${role} ${phase} ${broken.join(", ")} (p50 ${delay.p50Ms} ms, ${delay.ticks} ticks over ${delay.durationMs} ms)`,
