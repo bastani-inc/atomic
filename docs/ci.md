@@ -405,8 +405,9 @@ Suite jobs upload `.ci-diagnostics/` under unique
 `if-no-files-found: ignore`. Jobs failing before test execution may have no
 diagnostic artifact.
 
-A Vitest fork worker that exits without a stop request or a kill call is a lost
-worker. The run prints `Lost test worker: ...` to stderr with its test files, its
+The root unit, integration and CI projects, and the coding-agent project, report
+lost Vitest fork workers. A worker that exits without a stop request or a kill call
+is a lost worker. The run prints `Lost test worker: ...` to stderr with its test files, its
 exit code and signal and what they mean, how long it ran, and the host's free
 memory. `scripts/run-test-suite.ts` repeats each one as an `::error` annotation
 and in the step summary, and keeps the records in

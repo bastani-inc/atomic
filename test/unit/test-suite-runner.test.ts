@@ -302,25 +302,34 @@ const REAL_CONFIG = [
  */
 async function realVitestSuite(
 	files: Record<string, string>,
-	command: string[],
-): Promise<{ code: number; output: string; durations: string }> {
-	const dir = mkdtempSync(join(root, ".tmp-test-suite-runner-real-"));
+	command: string[] | ((directory: string) => string[]),
+	options: { cwd?: string; parentDirectory?: string } = {},
+): Promise<{ code: number; output: string; durations: string; lostWorkers: string }> {
+	const dir = mkdtempSync(join(options.parentDirectory ?? root, ".tmp-test-suite-runner-real-"));
 	const diagnostics = join(dir, "diagnostics");
 	for (const [name, contents] of Object.entries(files)) writeFileSync(join(dir, name), contents);
 	try {
+		const suiteCommand = typeof command === "function" ? command(dir) : command;
 		const spawned = spawnProcess(
-			[bunExecutable(), runner, "--label", "real suite", "--diagnostics-dir", diagnostics, "--", ...command],
-			{ cwd: dir, env: { ...process.env, GITHUB_STEP_SUMMARY: undefined }, stdout: "pipe", stderr: "pipe" },
+			[bunExecutable(), runner, "--label", "real suite", "--diagnostics-dir", diagnostics, "--", ...suiteCommand],
+			{
+				cwd: options.cwd ?? dir,
+				env: { ...process.env, GITHUB_STEP_SUMMARY: undefined },
+				stdout: "pipe",
+				stderr: "pipe",
+			},
 		);
 		const [stdout, stderr, code] = await Promise.all([
 			readStreamText(spawned.stdout),
 			readStreamText(spawned.stderr),
 			spawned.exited,
 		]);
+		const lostWorkersPath = join(diagnostics, "real-suite-lost-workers.jsonl");
 		return {
 			code,
 			output: stdout + stderr,
 			durations: await readText(join(diagnostics, "real-suite-durations.md")),
+			lostWorkers: (await fileExists(lostWorkersPath)) ? await readText(lostWorkersPath) : "",
 		};
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
@@ -459,6 +468,49 @@ test(
 		assert.match(result.output, /Lost test worker: suite\.test\.ts/);
 		assert.match(result.output, expectedLostWorkerKillStatus());
 		assert.match(result.output, /::error title=Lost test worker: real suite::suite\.test\.ts exited with code /);
+	},
+	REAL_VITEST_SUITE_TIMEOUT_MS,
+);
+
+test(
+	"a lost coding-agent test worker is attributed through its actual project config (#5325)",
+	async () => {
+		const agentDirectory = join(root, "packages", "coding-agent");
+		const result = await realVitestSuite(
+			{
+				"suite.test.ts": [
+					'import { test } from "vitest";',
+					"",
+					'test("kills its own worker", () => {',
+					'\tprocess.kill(process.pid, "SIGKILL");',
+					"});",
+					"",
+				].join("\n"),
+			},
+			(directory) => [
+				process.execPath,
+				join(root, "node_modules", "vitest", "vitest.mjs"),
+				"--run",
+				"--project",
+				"agent",
+				join(directory, "suite.test.ts"),
+			],
+			{ cwd: agentDirectory, parentDirectory: join(agentDirectory, "test") },
+		);
+		assert.notEqual(result.code, 0);
+		assert.match(result.output, /Worker exited unexpectedly/);
+		assert.match(result.output, /Lost test worker: test\/\.tmp-test-suite-runner-real-[^/]+\/suite\.test\.ts/);
+		assert.match(result.output, expectedLostWorkerKillStatus());
+		assert.match(
+			result.output,
+			/::error title=Lost test worker: real suite::test\/[^\n]*suite\.test\.ts exited with code /,
+		);
+		const records = result.lostWorkers
+			.trim()
+			.split("\n")
+			.map((line: string) => JSON.parse(line) as { files: string[] });
+		assert.equal(records.length, 1);
+		assert.match(records[0].files[0], /^test\/\.tmp-test-suite-runner-real-[^/]+\/suite\.test\.ts$/);
 	},
 	REAL_VITEST_SUITE_TIMEOUT_MS,
 );
