@@ -919,6 +919,8 @@ export function taskHostStateSizesForTesting(owner: OwnerLease) {
 		launchHeartbeats: state.launches.launchHeartbeats.size,
 		executionTimeouts: state.launches.executionTimeouts.size,
 		releases: state.launches.releases.size,
+		launchers: state.launches.launchers.size,
+		launchedAt: state.launches.launchedAt.size,
 	};
 }
 

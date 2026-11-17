@@ -29,6 +29,12 @@ interface WorkflowLifetime {
 	startupStarted?: boolean;
 	/** Runs the departing session released on a session switch, until the successor announces them. */
 	releasedRunIds?: readonly string[];
+	/** Settles once the latest session start has announced its released runs; the next start announces after it. */
+	releasedRunAnnouncement?: Promise<void>;
+	/** Counts session starts: a start that a later one overtook leaves its notice to that later start. */
+	sessionStarts?: number;
+	/** Released runs an overtaken start found adoptable, for a later reload of the same session to announce. */
+	unannouncedRunIds?: readonly string[];
 	/** The most recently started generation's quit-and-release handoff; a successor completes it before starting. */
 	pendingSwitchHandoff?: () => Promise<void>;
 	/** A handoff already running, so that closing the lifetime never overlaps it. */
@@ -371,7 +377,53 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		lifetime.activeSwitchHandoff = switchHandoff;
 		return switchHandoff;
 	};
-	pi.on("session_start", async (event, ctx) => {
+	const adoptableReleasedRuns = async (
+		runIds: readonly string[],
+		ctx: PiEventContext | undefined,
+	): Promise<{ id: string; name: string }[]> => {
+		const backend = availableStoreDurableBackend(store);
+		const cwd = ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? runtimeState.resolveInvocationCwd();
+		const adoptable: { id: string; name: string }[] = [];
+		for (const runId of runIds) {
+			const handle = backend?.getWorkflow(runId);
+			if (handle !== undefined && (await isSdkReleasedRunAdoptableAsync(handle, cwd))) {
+				adoptable.push({ id: runId, name: handle.name });
+			}
+		}
+		return adoptable;
+	};
+	const announceReleasedRuns = async (
+		reason: string | undefined,
+		ctx: PiEventContext | undefined,
+		sessionStart: number,
+	): Promise<void> => {
+		const unannouncedRunIds = lifetime.unannouncedRunIds;
+		lifetime.unannouncedRunIds = undefined;
+		let adoptable: { id: string; name: string }[];
+		if (reason === "reload") {
+			if (unannouncedRunIds === undefined) return;
+			adoptable = await adoptableReleasedRuns(unannouncedRunIds, ctx);
+		} else {
+			const releasedRunIds = lifetime.releasedRunIds;
+			lifetime.releasedRunIds = undefined;
+			if (!isSessionSwitch(reason) || releasedRunIds === undefined || releasedRunIds.length === 0) return;
+			adoptable = await adoptableReleasedRuns(releasedRunIds, ctx);
+			// Runs nobody adopted stay announced to the next successor; a reload keeps them unannounced.
+			lifetime.releasedRunIds = [
+				...new Set([...adoptable.map((run) => run.id), ...(lifetime.releasedRunIds ?? [])]),
+			];
+		}
+		if (adoptable.length === 0) return;
+		if (lifetime.sessionStarts === sessionStart) ctx?.ui?.notify?.(releasedRunsNotice(adoptable), "info");
+		else lifetime.unannouncedRunIds = adoptable.map((run) => run.id);
+	};
+	const startSession = async (
+		event: unknown,
+		ctx: PiEventContext | undefined,
+		sessionStart: number,
+		previousAnnouncement: Promise<void> | undefined,
+		announced: () => void,
+	): Promise<void> => {
 		const departingHandoff = lifetime.pendingSwitchHandoff;
 		lifetime.pendingSwitchHandoff = handOffRunsToSuccessor;
 		if (ctx) {
@@ -415,27 +467,30 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			const backend = availableStoreDurableBackend(store);
 			if (backend !== undefined) await reclaimReleasedRunsOwnedBy(backend, sessionCaller).catch(() => undefined);
 		}
-		if (reason !== "reload") {
-			const releasedRunIds = lifetime.releasedRunIds;
-			lifetime.releasedRunIds = undefined;
-			if (isSessionSwitch(reason) && releasedRunIds !== undefined && releasedRunIds.length > 0) {
-				const backend = availableStoreDurableBackend(store);
-				const cwd = ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? runtimeState.resolveInvocationCwd();
-				const adoptable: { id: string; name: string }[] = [];
-				for (const runId of releasedRunIds) {
-					const handle = backend?.getWorkflow(runId);
-					if (handle !== undefined && (await isSdkReleasedRunAdoptableAsync(handle, cwd))) {
-						adoptable.push({ id: runId, name: handle.name });
-					}
-				}
-				// Runs nobody adopted stay announced to the next successor; a reload keeps them unannounced.
-				lifetime.releasedRunIds = adoptable.map((run) => run.id);
-				if (adoptable.length > 0) ctx?.ui?.notify?.(releasedRunsNotice(adoptable), "info");
-			}
+		await previousAnnouncement;
+		try {
+			await announceReleasedRuns(reason, ctx, sessionStart);
+		} finally {
+			announced();
 		}
 		runtimeState.updateHostStageSessionDir(ctx?.sessionManager ?? pi.sessionManager);
 		const generation = ++recoveryGeneration;
 		if (stopsWorkflows) trackStartupRecovery(resumeInFlight(ctx, generation));
+	};
+	pi.on("session_start", async (event, ctx) => {
+		const sessionStart = (lifetime.sessionStarts ?? 0) + 1;
+		lifetime.sessionStarts = sessionStart;
+		const previousAnnouncement = lifetime.releasedRunAnnouncement;
+		const announcement = Promise.withResolvers<void>();
+		lifetime.releasedRunAnnouncement = announcement.promise;
+		const announced = () => {
+			void (previousAnnouncement ?? Promise.resolve()).then(() => announcement.resolve());
+		};
+		try {
+			await startSession(event, ctx, sessionStart, previousAnnouncement, announced);
+		} finally {
+			announced();
+		}
 	});
 	// A second startup discovery in one session means deferred startup (such as
 	// project trust) published a changed package set after session_start (#3354).
