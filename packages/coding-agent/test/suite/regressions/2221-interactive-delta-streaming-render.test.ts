@@ -90,7 +90,7 @@ describe("interactive delta streaming render (2221)", () => {
 
 		await (mode as HandleEventAccess).handleEvent({ type: "message_end", message });
 
-		assert.deepEqual(updateContent.mock.calls.at(-1), [message, false]);
+		assert.deepEqual(updateContent.mock.calls.at(-1), [message, false, undefined]);
 		assert.equal(mode.streamingComponent, undefined);
 	});
 

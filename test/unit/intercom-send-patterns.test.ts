@@ -53,9 +53,11 @@ async function connect(
 		ownerToken?: string;
 		supervisor?: { capability: string; supervisorSessionId: string };
 		received?: string[];
+		/** The host session's return address: the stable identity a return path binds. */
+		returnAddress?: string;
 	} = {},
 ): Promise<Client> {
-	const client = new IntercomClient();
+	const client = new IntercomClient(options.returnAddress);
 	client.on("error", () => {});
 	if (options.received !== undefined) {
 		const received = options.received;
@@ -168,6 +170,64 @@ function childRecord(
 		...state,
 	};
 }
+
+test("a subagents: pattern send never travels on a return path its owner holds to a child in another group", async () => {
+	const ownerGroup = `return-path-owner-${randomUUID()}`;
+	const childGroup = `return-path-child-${randomUUID()}`;
+	const hostSessionId = `return-path-host-${randomUUID()}`;
+	const childName = `return-path-child-${randomUUID()}`;
+	const childInbox: string[] = [];
+	const owner = await connect("return-path-pattern-owner", {
+		group: ownerGroup,
+		ownerToken: randomUUID(),
+		returnAddress: hostSessionId,
+	});
+	const authorization = await owner.authorizeSupervisorChild(childName);
+	const child = await connect(childName, {
+		group: childGroup,
+		supervisor: authorization,
+		received: childInbox,
+		returnAddress: `child-host-${randomUUID()}`,
+	});
+	observeSubagentChildRecord(childRecord(hostSessionId, randomUUID(), 1, childName, childGroup, { state: "running" }));
+	const events = eventBus();
+	answerIntercomChildrenRequests(events, () => true);
+	const tool = registerTool(owner, events);
+	// The child reports to its supervisor across groups: the owner may now answer it directly.
+	assert.equal((await child.sendToSupervisor(owner.sessionId!, { text: "report to owner" })).delivered, true);
+	assert.equal(
+		(await owner.listSessions()).some((peer) => peer.id === child.sessionId),
+		false,
+	);
+	const glob = await tool.execute(
+		"return-path-glob",
+		{ action: "send", to: "return-path-child-*", message: "glob stays isolated", broadcast: true },
+		undefined,
+		undefined,
+		contextFor(hostSessionId),
+	);
+	assert.equal(glob.isError, true);
+	const pattern = await tool.execute(
+		"return-path-subagents",
+		{ action: "send", to: "subagents:*", message: "pattern stays isolated" },
+		undefined,
+		undefined,
+		contextFor(hostSessionId),
+	);
+	assert.equal(pattern.isError, true, text(pattern));
+	assert.equal(childInbox.length, 0);
+	// The explicit answer, by the child's name, is what the return path is for.
+	const answer = await tool.execute(
+		"return-path-direct",
+		{ action: "send", to: childName, message: "direct answer" },
+		undefined,
+		undefined,
+		contextFor(hostSessionId),
+	);
+	assert.equal(answer.isError, false, text(answer));
+	await waitFor(() => childInbox.includes("direct answer"), "the direct answer reaches the child");
+	assert.deepEqual(childInbox, ["direct answer"]);
+});
 
 describe("intercom send to name patterns and subagents (#4752)", () => {
 	test(

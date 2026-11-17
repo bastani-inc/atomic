@@ -155,17 +155,17 @@ export function resultGlyph(
 	pulseFrame?: number,
 ): string {
 	if (running) return theme.fg("accent", pulseGlyph(pulseFrame));
-	if (result.detached || result.status === "continued") return theme.fg("warning", "■");
+	if (result.detached || result.status === "continued") return theme.fg("muted", "◼");
 	if (
 		result.status === "killed" ||
 		result.interrupted ||
 		result.status === "interrupted" ||
 		result.status === "skipped"
 	)
-		return theme.fg("warning", "■");
+		return theme.fg("muted", "◼");
 	if (result.status === "error") return theme.fg("error", "✗");
-	if (hasEmptyTextOutputWithoutOutputTarget(result.task, output)) return theme.fg("warning", "✓");
-	return theme.fg("success", "✓");
+	if (hasEmptyTextOutputWithoutOutputTarget(result.task, output)) return theme.fg("warning", "!");
+	return theme.fg("success", "●");
 }
 
 export function compactCurrentActivity(progress: AgentProgress, now?: number): string {

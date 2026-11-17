@@ -1,7 +1,3 @@
-import {
-	isBackgroundCompactionError,
-	serializeBackgroundCompactionError,
-} from "../../core/compaction/background-compaction-errors.ts";
 import { DebugError, serializeDebugError } from "../../core/debug-errors.ts";
 import { CredentialSynchronizationError } from "../../core/model-runtime.js";
 import { isMissingSessionCwdError, serializeMissingSessionCwdError } from "../../core/session-cwd.ts";
@@ -47,17 +43,6 @@ export function createRpcErrorResponse(
 			error: message,
 			errorCode: "debug_error",
 			errorDetails: serializeDebugError(cause),
-		};
-	}
-	if (isBackgroundCompactionError(cause)) {
-		return {
-			id,
-			type: "response",
-			command,
-			success: false,
-			error: message,
-			errorCode: "background_compaction",
-			errorDetails: serializeBackgroundCompactionError(cause),
 		};
 	}
 	if (isMissingSessionCwdError(cause)) {

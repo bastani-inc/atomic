@@ -10,6 +10,13 @@ import { sharedAliases } from "../../vitest.base.js";
 const defaultTestTimeoutMs = process.platform === "win32" ? 90_000 : 30_000;
 
 /**
+ * Setup and teardown hooks here create git sandboxes and open SQLite session stores. Under a loaded
+ * Windows shard that structural work regularly passes vitest's 10 s hook default, so Windows hooks get
+ * the same headroom ratio as the tests; other platforms keep the default.
+ */
+const defaultHookTimeoutMs = process.platform === "win32" ? 30_000 : 10_000;
+
+/**
  * The `exclude` list is preserved verbatim from before the migration. Narrowing
  * it is a separate change and must not ride along in a toolchain migration.
  */
@@ -34,6 +41,16 @@ const skippedSuites = [
 ];
 
 /**
+ * Suites that test/unit/test-suite-runner.test.ts writes under `test/` to run through this config, each there only
+ * while one of its tests runs. Another run globbing this suite in the same checkout meanwhile would collect a file
+ * about to vanish: the duration sequencer's check, globbing once per shard beside that test, saw it in some shards'
+ * file lists and not in others', so files went to two shards or to none. Only the run that test starts for its own
+ * suite, which sets `ATOMIC_TEST_COLLECT_SCRATCH_SUITES` and names the suite's file on its command line, collects them.
+ */
+const scratchSuites =
+	process.env.ATOMIC_TEST_COLLECT_SCRATCH_SUITES === "1" ? [] : ["**/.tmp-test-suite-runner-real-*/**"];
+
+/**
  * Both projects share everything except which files they collect, so a setting
  * cannot drift between the Node-hosted and Bun-hosted halves of one suite.
  *
@@ -53,6 +70,7 @@ const project = (name: string, include: string[], exclude: string[]) => ({
 			"../../test/helpers/checkout-snapshot-isolation.ts",
 		],
 		globalSetup: [
+			"../../test/global-setup-lost-workers.ts",
 			"../../test/global-setup-herdr-isolation.ts",
 			"../../test/global-setup-provider-credential-isolation.ts",
 			"../../test/global-setup-debug-isolation.ts",
@@ -61,8 +79,9 @@ const project = (name: string, include: string[], exclude: string[]) => ({
 			"../../test/global-setup-workflow-journal.ts",
 		],
 		testTimeout: defaultTestTimeoutMs,
+		hookTimeout: defaultHookTimeoutMs,
 		include,
-		exclude: ["**/node_modules/**", ...exclude],
+		exclude: ["**/node_modules/**", ...scratchSuites, ...exclude],
 		server: { deps: { external: [/@silvia-odwyer\/photon-node/] } },
 	},
 });

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ThinkingLevel } from "@bastani/atomic-agent-core";
@@ -17,8 +17,10 @@ import { resolveDeferredStartupModel } from "../src/main-deferred-startup.js";
 import { buildSessionOptions, unresolvedFallbackModelDiagnostics } from "../src/main-session-options.js";
 import { applyDeferredModelScope } from "../src/modes/interactive/interactive-deferred-startup.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
+import { installDeprecationWarningSink } from "../src/modes/interactive/interactive-startup.js";
 import { StartupChatContainer } from "../src/modes/interactive/interactive-startup-chat-container.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
+import { clearDeprecationWarningsForTests } from "../src/utils/deprecation.js";
 import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.js";
 
 beforeAll(() => initTheme("dark"));
@@ -504,6 +506,87 @@ describe("applyDeferredModelScope", () => {
 			assert.equal(reload.mock.calls.length, 0);
 			const rendered = stripTerminalSequences(mode.chatContainer.render(200).join("\n"));
 			assert.equal(rendered.match(/No models match pattern "github-copilot\/missing-model"/g)?.length ?? 0, 1);
+		}
+	});
+});
+
+describe("deprecation warnings during deferred startup", () => {
+	it("keeps a removed-setting warning raised while startup trust is accepted through the chat rebuild", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-deferred-deprecation-"));
+		const restore: (() => void)[] = [];
+		try {
+			const cwd = join(root, "project");
+			const agentDir = join(root, "agent");
+			mkdirSync(join(cwd, ".atomic"), { recursive: true });
+			mkdirSync(agentDir, { recursive: true });
+			writeFileSync(
+				join(cwd, ".atomic", "settings.json"),
+				JSON.stringify({ modelRouting: { excludedProviders: ["x"] } }),
+			);
+			const settings = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+			const mode = Object.create(InteractiveMode.prototype) as InteractiveMode;
+			Object.assign(mode, {
+				chatContainer: new StartupChatContainer(),
+				resourceDisclosureContainer: new Container(),
+				startupNoticesContainer: new Container(),
+				ui: { requestRender() {} },
+				lastStatusSpacer: undefined,
+				lastStatusText: undefined,
+				promptTurnWorkingLoaderActive: false,
+				deferredStartupPending: true,
+				runtimeHost: {
+					services: { diagnostics: [] },
+					// Accepting startup trust loads the project's settings, whose migration warns about the removed key.
+					completeStartup: async () => {
+						settings.setProjectTrusted(true);
+						return true;
+					},
+					session: {
+						reload: async () => {},
+						startPendingRecovery: async () => ({ replayed: 0, dropped: 0, completions: 0, notices: [] }),
+						getToolStatus: () => ({ missing: [] }),
+						resourceLoader: { getThemes: () => ({ themes: [] }) },
+						extensionRunner: {},
+						modelRuntime: {
+							getAvailableSnapshot: () => [claudeModel],
+							getError: () => undefined,
+							getWarning: () => undefined,
+						},
+						setScopedModels: vi.fn(),
+					},
+				},
+				options: {},
+				bindCurrentSessionExtensions: async () => {},
+				applyRuntimeSettings() {},
+				rebuildChatFromMessages() {
+					mode.chatContainer.clear();
+					mode.attachStartupNoticesContainer();
+				},
+				stopWorkingLoader() {},
+				themeController: { applyFromSettings: async () => {} },
+				setupAutocompleteProvider() {},
+				setupExtensionShortcuts() {},
+				retryDeferredModelRestore: async () => {},
+				showLoadedResources() {},
+				maybeWarnAboutAnthropicSubscriptionAuth: async () => {},
+				showStartupNoticesIfNeeded() {},
+				updateAvailableProviderCount: async () => {},
+				updateEditorBorderColor() {},
+			});
+			mode.attachStartupNoticesContainer();
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+			restore.push(() => warn.mockRestore());
+			restore.push(installDeprecationWarningSink(mode));
+
+			await InteractiveMode.prototype.completeDeferredStartup.call(mode);
+
+			const rendered = stripTerminalSequences(mode.chatContainer.render(200).join("\n"));
+			assert.equal(rendered.match(/"modelRouting"/g)?.length ?? 0, 1, rendered);
+			assert.equal(warn.mock.calls.length, 0, "nothing is written over the terminal");
+		} finally {
+			for (const undo of restore.reverse()) undo();
+			clearDeprecationWarningsForTests();
+			rmSync(root, { recursive: true, force: true });
 		}
 	});
 });

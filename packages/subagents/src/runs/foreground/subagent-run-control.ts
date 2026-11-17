@@ -493,7 +493,7 @@ async function resumeChild(
 		outcome.intercomLive === true
 			? " It is live on Intercom under the same name."
 			: outcome.intercomLive === false
-				? " It has not reconnected to Intercom yet; its result still arrives as a task completion."
+				? " It is still starting and has not registered on Intercom yet: messages sent to it wait for it and reach it before its first turn. Its result arrives as a task completion."
 				: "";
 	const heldMessages =
 		record.heldMessages && record.heldMessages.taskId === record.taskId ? record.heldMessages.messages : [];

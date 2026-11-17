@@ -153,6 +153,7 @@ export function runIntercomFixture<T>(heavySource: string, scriptBody: string): 
 			"hosted-session-timeout-error.ts",
 			"ask-wait.ts",
 			"codemode-access.ts",
+			"reach-errors.ts",
 		])
 			writeFileSync(join(tempDir, file), readFileSync(resolve(repoRoot, "packages/intercom", file), "utf-8"));
 		mkdirSync(join(tempDir, "broker"), { recursive: true });
@@ -179,7 +180,12 @@ export function runIntercomFixture<T>(heavySource: string, scriptBody: string): 
 		);
 		writeFileSync(
 			join(tempDir, "result-renderers.ts"),
-			"export function renderIntercomToolResult() { return undefined; }\n",
+			"export function renderContactSupervisorCall() { return undefined; }\nexport function renderIntercomCall() { return undefined; }\nexport function renderIntercomToolResult() { return undefined; }\n",
+		);
+		mkdirSync(join(tempDir, "ui"), { recursive: true });
+		writeFileSync(
+			join(tempDir, "ui", "inline-message.ts"),
+			"export function renderIntercomCustomMessage() { return undefined; }\n",
 		);
 		writeFileSync(join(tempDir, "index-heavy.ts"), heavySource);
 		// This list is hand-maintained, and a lightweight module added to the wrapper

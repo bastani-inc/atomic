@@ -3,7 +3,6 @@ import { getAgentConfigPaths, getAgentDir, getProjectConfigPaths } from "../conf
 import { warnDeprecation } from "../utils/deprecation.js";
 import { parseJsonFileContent } from "../utils/json.ts";
 import { normalizeAzureSettings } from "./azure-provider-compat.js";
-import { backgroundCompactionSettingErrors } from "./compaction/background-compaction.ts";
 import { isDecisionConfigError } from "./decision/errors.js";
 import { deepMergeSettings, isPrototypeKey } from "./settings-merge.js";
 import { FileSettingsStorage, InMemorySettingsStorage } from "./settings-storage.ts";
@@ -210,8 +209,7 @@ export class SettingsManager {
 				invalidKey: value.key,
 			}),
 		);
-		const compaction = backgroundCompactionSettingErrors(load.settings.compaction).map((error) => ({ scope, error }));
-		return [...invalid, ...compaction];
+		return invalid;
 	}
 
 	private static invalidSettingIdentity({ scope, path, error }: SettingsError): string {
@@ -252,6 +250,13 @@ export class SettingsManager {
 				);
 			}
 			delete settings.routerModel;
+		}
+		// Automatic model routing was removed; its settings are dropped.
+		if ("modelRouting" in settings) {
+			warnDeprecation(
+				'Ignored removed setting "modelRouting": automatic model routing was removed, so "auto" runs your default model and its provider and model restrictions no longer limit "auto" or any fallback model.',
+			);
+			delete settings.modelRouting;
 		}
 		settings = normalizeAzureSettings(settings as Settings) as Record<string, unknown>;
 		// Migrate queueMode -> steeringMode
@@ -499,7 +504,11 @@ export class SettingsManager {
 	private enqueueWrite(scope: SettingsScope, task: () => void): void {
 		const owner = settingsWriteOwner.getStore() ?? ownedSettingsManagers.get(this);
 		this.writeQueue = this.writeQueue
-			.then(() => {
+			.then(async () => {
+				if (scope === "project") {
+					this.assertProjectTrustedForWrite();
+				}
+				await this.storage.prepareWriteLock?.(scope);
 				if (scope === "project") {
 					this.assertProjectTrustedForWrite();
 				}

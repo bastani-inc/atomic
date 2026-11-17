@@ -35,13 +35,12 @@ export interface ContextUsage {
 }
 
 export interface CompactOptions {
-	/** Fraction of compactable context to keep. 0.3 is aggressive, 0.7 is light. */
-	compression_ratio?: number;
-	/** Number of recent context-eligible messages to keep uncompressed. */
-	preserve_recent?: number;
-	/** Focus query for relevance-based pruning. Defaults to auto-detected session context. */
+	/** Instructions for this compaction: what to recover first, and a compactor model's query. */
 	query?: string;
-	/** Exact `provider/model` ID for this run only; overrides the `compactionModel` setting without saving it. */
+	/**
+	 * `auto` or an exact compactor model `provider/model` for this run only; overrides the `compactionModel` setting
+	 * without saving it.
+	 */
 	compactionModel?: string;
 	onComplete?: (result: VerbatimCompactionResult) => void;
 	onError?: (error: Error) => void;
@@ -161,6 +160,19 @@ export interface SubagentIntercomIdentity {
 	};
 }
 
+/**
+ * Host-owned hooks of an in-process child's start (its first turn not started yet). Intercom registers the child
+ * before that turn and names its step while it does; a start that runs out of its budget aborts `signal`.
+ */
+export interface SubagentStartupHooks {
+	/** Aborts when the start is given up, as when its start budget runs out. */
+	readonly signal: AbortSignal;
+	/** The start moves on to `step`. */
+	enterStep(step: "registering-intercom" | "creating-session"): void;
+	/** Whether the child has yet to start its first turn: a message arriving now is context for that turn. */
+	firstTurnPending(): boolean;
+}
+
 /** Typed child capability policy supplied by an in-process subagent admission. */
 export interface SubagentChildPolicy {
 	readonly managementActions: "full" | "restricted";
@@ -181,6 +193,8 @@ export interface SubagentChildPolicy {
 		/** Reserve the full producer operation, including retries, before child settlement. */
 		run(deliver: () => void | Promise<void>): Promise<void>;
 	};
+	/** Host-owned: the child's start, until its first turn starts. */
+	readonly startup?: SubagentStartupHooks;
 	/** Current admitted in-process nesting depth; absent for top-level sessions. */
 	readonly depth?: number;
 	/** SDK-resolved exact child tool allowlist; undefined leaves ordinary tools unrestricted. */
@@ -220,6 +234,11 @@ export interface ExtensionContext {
 	readonly orchestrationContext?: OrchestrationContext;
 	/** Typed capability policy for an in-process subagent child, when this session is one. */
 	readonly subagentPolicy?: SubagentChildPolicy;
+	/**
+	 * the session's Intercom home group and reach, when its host set one with `createAgentSession({ intercom })`
+	 * or it is a workflow stage or subagent of such a session.
+	 */
+	readonly intercomPolicy?: import("../intercom-policy.ts").IntercomPolicyView;
 	/** UI methods for user interaction */
 	ui: ExtensionUIContext;
 	/** Current run mode. Use "tui" to guard terminal-only UI such as custom components. */
@@ -282,13 +301,10 @@ export interface ExtensionContext {
 	/** Current loader-owned skill candidates and exact selector resolver. */
 	getSkillCatalog?(): SkillCatalog;
 	/**
-	 * The owning session's `decisionModel`: an exact `provider/model`, `"auto"` or `""`. Every decision uses it:
-	 * `model: "auto"` selection, the `structured_output` tool without a `model`, readiness after a steer, and `decide()`.
-	 * Does not change the chat model.
+	 * The owning session's `decisionModel`: an exact `provider/model`, `"auto"` or `""`. Every decision uses it: the
+	 * `structured_output` tool without a `model`, readiness after a steer, and `decide()`. Does not change the chat model.
 	 */
 	getDecisionModel(): string;
-	/** Provider filters for `model: "auto"` candidates from the owning session's settings. */
-	getModelRouting?(): import("../settings-types.ts").ModelRoutingSettings;
 	/** The owning session's `httpIdleTimeoutMs` setting in milliseconds; 0 means the idle timeout is disabled. */
 	getHttpIdleTimeoutMs?(): number;
 }

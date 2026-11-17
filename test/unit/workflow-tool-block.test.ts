@@ -1,0 +1,442 @@
+import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
+import { getKeybindings, setKeybindings, type TUI } from "@bastani/atomic-tui";
+import { afterEach, beforeAll, beforeEach, describe, onTestFinished, test, vi } from "vitest";
+import type { ToolRenderers } from "../../packages/coding-agent/src/core/extensions/tool-types.js";
+import type { MessageRenderer } from "../../packages/coding-agent/src/core/extensions/types.js";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
+import { renderChatMessageEntry } from "../../packages/coding-agent/src/modes/interactive/components/chat-message-renderer.js";
+import { CustomMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/custom-message.js";
+import { ToolExecutionComponent } from "../../packages/coding-agent/src/modes/interactive/components/tool-execution.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import {
+	LIFECYCLE_NOTICE_CUSTOM_TYPE,
+	registerLifecycleNoticeRenderer,
+	type WorkflowLifecycleNoticeDetails,
+} from "../../packages/workflows/src/extension/lifecycle-notifications.js";
+import type { WorkflowToolArgs } from "../../packages/workflows/src/extension/public-types.js";
+import type { WorkflowRegisteredToolResult } from "../../packages/workflows/src/extension/render-result.js";
+import {
+	summarizeWorkflowResult,
+	WorkflowToolResultBlock,
+	workflowBlockTheme,
+} from "../../packages/workflows/src/extension/workflow-tool-block.js";
+import { registerWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool-registration.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { Store } from "../../packages/workflows/src/shared/store-public-types.js";
+import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+
+const RUN_ID = "wf-run-1";
+const START = 1_000_000;
+
+beforeAll(() => {
+	initTheme("dark");
+});
+
+beforeEach(() => {
+	vi.useFakeTimers({ toFake: ["Date"] });
+	vi.setSystemTime(START);
+});
+
+afterEach(() => {
+	vi.useRealTimers();
+});
+
+function plain(lines: readonly string[]): string[] {
+	return lines.map((line) => stripVTControlCharacters(line).trimEnd());
+}
+
+function stage(id: string, status: StageSnapshot["status"], extra: Partial<StageSnapshot> = {}): StageSnapshot {
+	return { id, name: id, status, parentIds: [], toolEvents: [], ...extra };
+}
+
+function usage(input: number, output: number): StageSnapshot["modelAttempts"] {
+	return [{ model: "test/model", success: true, usage: { input, output } }];
+}
+
+function runningStore(): Store {
+	const store = createStore();
+	store.recordRunStart({
+		id: RUN_ID,
+		name: "ralph",
+		inputs: { prompt: "fix the login bug" },
+		status: "running",
+		toolNodes: [],
+		stages: [],
+		startedAt: START,
+	});
+	store.recordStageStart(RUN_ID, stage("plan", "running", { startedAt: START }));
+	store.recordStageEnd(
+		RUN_ID,
+		stage("plan", "completed", { startedAt: START, endedAt: START + 1000, modelAttempts: usage(12_000, 400) }),
+	);
+	store.recordStageStart(RUN_ID, stage("implement", "running", { startedAt: START + 1000 }));
+	store.recordStageStart(RUN_ID, stage("review", "pending"));
+	return store;
+}
+
+const STARTED: WorkflowRegisteredToolResult = {
+	action: "run",
+	name: "ralph",
+	runId: RUN_ID,
+	status: "running",
+	message: "started in background",
+};
+
+function registered(store?: Store) {
+	const tool = registerWorkflowTool(
+		{ registerTool: () => {} },
+		async () => STARTED as never,
+		async (_policy, run) => run(),
+		store === undefined ? {} : { runs: store },
+	);
+	if (tool === undefined) throw new Error("workflow tool was not registered");
+	return tool;
+}
+
+function block(store: Store | undefined, invalidate: () => void = () => {}, expanded = false) {
+	return new WorkflowToolResultBlock(store, workflowBlockTheme(undefined), { now: () => START + 4_000 }).update(
+		STARTED,
+		{ expanded, isError: false, invalidate, args: { workflow: "ralph", inputs: { prompt: "fix the login bug" } } },
+	);
+}
+
+describe("the workflow tool's result line (#5224)", () => {
+	test("a running run says its stage progress and tokens on one line", () => {
+		const lines = plain(block(runningStore()).render(160));
+		assert.equal(lines.length, 1);
+		assert.match(lines[0]!, /^ {2}⎿ {2}∀ Running · 1\/3 stages · ↓ 12\.4k tokens/);
+	});
+
+	test("the line follows the run through the store and repaints only when it changes", () => {
+		const store = runningStore();
+		let repaints = 0;
+		const row = block(store, () => {
+			repaints += 1;
+		});
+		store.recordStageSession(RUN_ID, "implement", { sessionId: "s-1" });
+		assert.equal(repaints, 0, "a change that leaves the line as it was does not repaint");
+		store.recordRunStart({
+			id: "other-run",
+			name: "other",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: START,
+		});
+		assert.equal(repaints, 0, "another run's change does not repaint");
+		store.recordStageAwaitingInput(RUN_ID, "implement", true, START + 2_000);
+		assert.equal(repaints, 1);
+		assert.match(plain(row.render(160))[0]!, /! Waiting for input at implement · 1\/3 stages/);
+		store.recordStageEnd(
+			RUN_ID,
+			stage("implement", "completed", {
+				startedAt: START + 1000,
+				endedAt: START + 3000,
+				modelAttempts: usage(20_000, 0),
+			}),
+		);
+		store.recordStageEnd(RUN_ID, stage("review", "completed", { startedAt: START + 3000, endedAt: START + 4000 }));
+		vi.setSystemTime(START + 4000);
+		store.recordRunEnd(RUN_ID, "completed", { summary: "fixed" });
+		assert.ok(repaints >= 2);
+		assert.match(plain(row.render(160))[0]!, /✓ Completed in 4s · 3 stages · 32\.4k tokens/);
+		const settled = repaints;
+		store.recordRunStart({
+			id: "third-run",
+			name: "third",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: START,
+		});
+		store.editRun(RUN_ID, () => ({ run: true }));
+		assert.equal(repaints, settled, "an ended run is no longer followed");
+	});
+
+	test("a failed run names its stage and the error's first line, never a stack frame", () => {
+		const store = runningStore();
+		store.recordStageEnd(
+			RUN_ID,
+			stage("implement", "failed", { error: "Error: tests failed\n    at run (x.ts:1:1)" }),
+		);
+		store.recordRunEnd(RUN_ID, "failed", undefined, "Error: tests failed\n    at run (x.ts:1:1)", {
+			failedStageId: "implement",
+		});
+		const line = plain(block(store).render(160))[0]!;
+		assert.match(line, /✗ Failed at implement · tests failed/);
+		assert.doesNotMatch(line, /x\.ts|at run/);
+	});
+
+	test("a run whose tool failed names the tool", () => {
+		const store = runningStore();
+		store.recordToolNodeStart(RUN_ID, {
+			kind: "tool",
+			id: "tool:review",
+			name: "review",
+			argsHash: "h",
+			ordinal: 0,
+			parentIds: [],
+			status: "running",
+			attachable: false,
+		});
+		store.recordRunEnd(RUN_ID, "failed", undefined, "tests failed: 3 of 12 checks did not pass", {
+			failedToolNodeId: "tool:review",
+		});
+		assert.match(
+			plain(block(store).render(160))[0]!,
+			/✗ Failed at review · tests failed: 3 of 12 checks did not pass/,
+		);
+	});
+
+	test("a paused run says where it paused", () => {
+		const store = runningStore();
+		store.recordRunPaused(RUN_ID, START + 2000);
+		assert.match(plain(block(store).render(160))[0]!, /⏸ Paused at implement · 1\/3 stages/);
+	});
+
+	test("a run the store no longer holds says what the call reported", () => {
+		assert.match(plain(block(createStore()).render(160))[0]!, /∀ Started in the background · run wf-run-1/);
+	});
+
+	test("the line fits 80 columns and is whole at 160", () => {
+		const store = runningStore();
+		for (const width of [80, 160]) {
+			const lines = block(store).render(width);
+			assert.equal(lines.length, 1);
+			assert.ok(stripVTControlCharacters(lines[0]!).length <= width);
+		}
+		assert.doesNotMatch(plain(block(store).render(160))[0]!, /…/);
+	});
+
+	test("a line too long for its width drops its key hint before it cuts its text", () => {
+		const previous = getKeybindings();
+		setKeybindings(new KeybindingsManager());
+		onTestFinished(() => setKeybindings(previous));
+		const store = runningStore();
+		store.recordRunEnd(RUN_ID, "failed", undefined, "tests failed: 3 of 12 checks did not pass", {
+			failedStageId: "implement",
+		});
+		const row = new WorkflowToolResultBlock(store, workflowBlockTheme(undefined), { now: () => START }).update(
+			STARTED,
+			{ expanded: false, isError: false },
+		);
+		const wide = plain(row.render(160))[0]!;
+		assert.match(wide, /\(ctrl\+o to expand\)$/);
+		const narrow = plain(row.render(80))[0]!;
+		assert.doesNotMatch(narrow, /ctrl\+o/);
+		assert.ok(narrow.length <= 80);
+	});
+
+	test("expanding shows the run's inputs, stages and outputs", () => {
+		const store = runningStore();
+		store.recordStageEnd(RUN_ID, stage("implement", "completed", { startedAt: START + 1000, endedAt: START + 3000 }));
+		store.recordStageEnd(RUN_ID, stage("review", "completed", { durationMs: 1000 }));
+		vi.setSystemTime(START + 4000);
+		store.recordRunEnd(RUN_ID, "completed", { summary: "fixed the bug" });
+		const text = plain(block(store, () => {}, true).render(160)).join("\n");
+		assert.match(text, /Inputs\n\s+prompt: fix the login bug/);
+		assert.match(text, /Stages\n\s+✓ plan · 1s\n\s+✓ implement · 2s\n\s+✓ review · 1s/);
+		assert.match(text, /Outputs\n\s+summary: fixed the bug/);
+		assert.match(text, /run wf-run-1 · \/workflow status wf-run-1/);
+	});
+
+	test("disposing the row stops following its run", () => {
+		const store = runningStore();
+		let repaints = 0;
+		const row = block(store, () => {
+			repaints += 1;
+		});
+		row.dispose();
+		store.recordRunEnd(RUN_ID, "completed");
+		assert.equal(repaints, 0);
+	});
+});
+
+describe("every workflow action reads as one line (#5224)", () => {
+	const now = START;
+	const cases: Array<[string, WorkflowRegisteredToolResult, RegExp]> = [
+		[
+			"list",
+			{
+				action: "list",
+				items: [
+					{ name: "a", description: "", inputs: [] },
+					{ name: "b", description: "", inputs: [] },
+					{ name: "c", description: "", inputs: [] },
+					{ name: "d", description: "", inputs: [] },
+				],
+			},
+			/^4 workflows: a, b, c, \+1 more$/,
+		],
+		["empty status", { action: "status", filter: "all", runs: [], snapshots: [] }, /^No runs$/],
+		[
+			"inputs",
+			{ action: "inputs", name: "ralph", inputs: [{ name: "prompt", type: "string" }] },
+			/^1 input: prompt$/,
+		],
+		[
+			"stages",
+			{
+				action: "stages",
+				runId: RUN_ID,
+				filter: "all",
+				stages: [
+					{ id: "a", name: "a", status: "completed" },
+					{ id: "b", name: "b", status: "running" },
+				],
+			},
+			/^2 stages · 1 completed · 1 running$/,
+		],
+		[
+			"answer",
+			{ action: "answer", runId: RUN_ID, stageId: "review", message: "Answered review.", status: "ok" },
+			/^Answered review\.$/,
+		],
+		[
+			"pause failure",
+			{
+				action: "pause",
+				runId: RUN_ID,
+				status: "failed",
+				message: "Run not found: x\nmore",
+				code: "run_not_found",
+			} as never,
+			/^Run not found: x$/,
+		],
+		[
+			"reload",
+			{ action: "reload", status: "ok", message: "Reloaded 12 workflows." } as never,
+			/^Reloaded 12 workflows\.$/,
+		],
+		[
+			"models",
+			{ action: "models", models: [{ provider: "p", id: "m", fullId: "p/m", isCurrent: true }] },
+			/^1 model · current p\/m$/,
+		],
+		[
+			"timeout",
+			{
+				action: "run",
+				status: "failed",
+				code: "WORKFLOW_TIMEOUT",
+				timeoutMs: 150_000,
+				error: "Workflow run request timed out after 150000ms. The outcome is unknown.",
+			},
+			/^Workflow run request timed out after 150000ms\. The outcome is unknown\.$/,
+		],
+	];
+	for (const [name, result, expected] of cases) {
+		test(name, () => {
+			const summary = summarizeWorkflowResult(result, { now });
+			assert.match(summary.text, expected);
+			assert.doesNotMatch(summary.text, /\n/);
+		});
+	}
+});
+
+describe("the workflow tool row renders the same wherever a chat shows it (#5224)", () => {
+	const ui = { requestRender: () => {} } as unknown as TUI;
+	const args: WorkflowToolArgs = { workflow: "ralph", inputs: { prompt: "fix the login bug" } };
+	const result = {
+		role: "toolResult" as const,
+		toolCallId: "call-1",
+		toolName: "workflow",
+		timestamp: START,
+		content: [{ type: "text" as const, text: "started" }],
+		details: STARTED,
+		isError: false,
+	};
+
+	function mainChat(definition: ToolRenderers, expanded: boolean): ToolExecutionComponent {
+		const component = new ToolExecutionComponent("workflow", "call-1", args, {}, definition, ui, process.cwd());
+		component.setExpanded(expanded);
+		component.markExecutionStarted();
+		component.setArgsComplete();
+		component.updateResult(result, false);
+		return component;
+	}
+
+	function chatSessionHost(definition: ToolRenderers, expanded: boolean) {
+		const component = renderChatMessageEntry(
+			{ role: "tool", kind: "tool", toolName: "workflow", toolCallId: "call-1", args, result },
+			{ ui, cwd: process.cwd(), getToolDefinition: () => definition, toolOutputExpanded: expanded },
+		);
+		(component as ToolExecutionComponent).markExecutionStarted();
+		(component as ToolExecutionComponent).setArgsComplete();
+		return component;
+	}
+
+	for (const expanded of [false, true]) {
+		for (const width of [80, 160]) {
+			test(`${expanded ? "expanded" : "collapsed"} at ${width} columns`, () => {
+				const definition = registered(runningStore()) as unknown as ToolRenderers;
+				const main = mainChat(definition, expanded).render(width);
+				const hosted = chatSessionHost(definition, expanded).render(width);
+				assert.deepEqual(hosted, main);
+				const text = plain(main).join("\n");
+				assert.match(text, /Workflow\(ralph · fix the login bug\)/);
+				assert.match(text, /⎿ {2}∀ Running · 1\/3 stages/);
+				assert.match(plain(main)[2] ?? "", /^ {3}⎿ {2}∀ Running · 1\/3 stages/);
+				assert.doesNotMatch(text, /⎿\s+⎿/);
+				assert.equal(text.includes("╭"), false, "no rounded panel of its own");
+			});
+		}
+	}
+});
+
+describe("a workflow's notice renders the same wherever a chat shows it (#5224)", () => {
+	const ui = { requestRender: () => {} } as unknown as TUI;
+	function noticeRenderer(): MessageRenderer {
+		let registered: MessageRenderer | undefined;
+		registerLifecycleNoticeRenderer({
+			rendererHost: {},
+			registerMessageRenderer: (_event, renderer) => {
+				registered = renderer as unknown as MessageRenderer;
+			},
+		});
+		if (registered === undefined) throw new Error("the lifecycle notice renderer was not registered");
+		return registered;
+	}
+	const details: WorkflowLifecycleNoticeDetails = {
+		kind: "failed",
+		scope: "run",
+		runId: RUN_ID,
+		workflowName: "ralph",
+		status: "failed",
+		stageName: "review",
+		durationMs: 12_000,
+		error: "tests failed",
+		createdAt: START,
+	};
+	const message = {
+		role: "custom" as const,
+		customType: LIFECYCLE_NOTICE_CUSTOM_TYPE,
+		content: "failed",
+		display: true,
+		details,
+		timestamp: START,
+	};
+
+	for (const expanded of [false, true]) {
+		for (const width of [80, 160]) {
+			test(`${expanded ? "expanded" : "collapsed"} at ${width} columns`, () => {
+				const renderer = noticeRenderer();
+				const main = new CustomMessageComponent(message, renderer);
+				main.setExpanded(expanded);
+				const hosted = renderChatMessageEntry(
+					{ role: "custom", kind: "custom", message },
+					{ ui, cwd: process.cwd(), getCustomMessageRenderer: () => renderer, toolOutputExpanded: expanded },
+				);
+				(hosted as CustomMessageComponent).setExpanded(expanded);
+				const lines = main.render(width);
+				assert.deepEqual(hosted.render(width), lines);
+				const text = plain(lines).filter((line) => line.length > 0);
+				assert.equal(text[0], ' ✗ Workflow "ralph" failed · at review · 12s');
+				if (!expanded) assert.equal(text.length, 1);
+			});
+		}
+	}
+});

@@ -93,6 +93,7 @@ InteractiveModeBase.prototype.showTrustSelector = function (this: InteractiveMod
 							try {
 								trustStore.setMany(selection.updates);
 							} catch (error) {
+								selector.selector.retrySelection();
 								this.showError(error instanceof Error ? error.message : String(error));
 								return;
 							}

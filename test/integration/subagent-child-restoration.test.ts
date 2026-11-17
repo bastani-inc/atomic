@@ -914,7 +914,8 @@ test("a restored child's pre-restart Intercom id is recognized while a sibling i
 
 		slowSibling.reject(new Error("the sibling's session is gone"));
 		await restoring;
-		assert.match(refusal ?? "", /subagent-worker-known1-1.*has not reconnected to Intercom/);
+		// The relaunched child that has not registered is still starting: its hold keeps the send, which goes out.
+		assert.equal(refusal, undefined);
 		assert.match(slowRefusal ?? "", /subagent-worker-slow1-1.*is still being restored/);
 	} finally {
 		slowSibling.reject(new Error("the sibling's session is gone"));
@@ -959,8 +960,9 @@ test("a restored child's pre-restart Intercom id is matched past a sibling's, an
 		const owner = parent.sessionManager.getSessionId();
 		const entries = parent.sessionManager.getEntries();
 
+		// The relaunched child that has not registered is still starting: its hold keeps the send, which goes out.
 		const second = await awaitSubagentChildRestoration(owner, entries, previousIds.get("second1:0")!, RECORD_WAIT_MS);
-		assert.match(second ?? "", /subagent-worker-second1-1.*has not reconnected to Intercom/);
+		assert.equal(second, undefined);
 
 		// Every id is known, so a target that is none of them is not held until the deadline.
 		const started = Date.now();
@@ -1296,10 +1298,9 @@ test("a restored child that fell back keeps the model its launch asked for besid
 		const parent = parentSession(cwd);
 		const original = await launchInterruptedChild(cwd, parent, "named2", "lane-group", undefined, {
 			modelOverride: "anthropic/claude-sonnet-5-5:high",
-			modelConstraints: { allowedModels: ["anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5"] },
 		});
 		assert.equal(original.namedModel, "anthropic/claude-sonnet-5-5:high");
-		// The child had moved to an allowed fallback of its own before the restart.
+		// The child had moved to a fallback of its own before the restart.
 		const childSession = await SessionManager.open(original.childSessionFile!, undefined, cwd);
 		await childSession.appendModelChange("anthropic", "claude-haiku-5");
 
@@ -1314,9 +1315,6 @@ test("a restored child that fell back keeps the model its launch asked for besid
 		);
 		assert.equal(restoredRecord.namedModel, "anthropic/claude-sonnet-5-5:high");
 		assert.equal(restoredRecord.requestedModel, "anthropic/claude-sonnet-5-5:high");
-		assert.deepEqual(restoredRecord.modelConstraints, {
-			allowedModels: ["anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5"],
-		});
 	} finally {
 		await resumedHost.close("session-close");
 		removeTempDirectory(cwd);

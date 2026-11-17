@@ -155,7 +155,6 @@ export function makeStore(snap: StoreSnapshot): Store {
 		clearStagePromptAnswer: () => {},
 		recordStageSession: () => false,
 		recordStageAttachable: () => false,
-		recordStageCompaction: () => false,
 		recordStageAttached: () => false,
 		recordStageBlocked: () => false,
 		recordStageUnblocked: () => false,

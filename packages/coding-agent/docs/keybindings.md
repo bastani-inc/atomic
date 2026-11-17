@@ -10,23 +10,6 @@ After editing `keybindings.json`, run `/reload` in Atomic to apply the changes w
 
 For editor completion of every action id and validation of key syntax, add `"$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/keybindings.schema.json"` to `keybindings.json`. Atomic ignores `$schema` when it loads your bindings.
 
-## Workflow widget scrolling
-
-`app.workflows.scrollUp` defaults to `["alt+k", "alt+pageUp"]`; `app.workflows.scrollDown` defaults to `["alt+j", "alt+pageDown"]`. These scroll the main-chat workflow list without leaving the editor. Any other configured editor binding takes precedence, including the Vim Alt+J/K cursor bindings. Alt+Up remains available for queued messages.
-
-For example, replace both defaults and their aliases:
-
-```json
-{
-  "app.workflows.scrollUp": ["ctrl+alt+k"],
-  "app.workflows.scrollDown": ["ctrl+alt+j"]
-}
-```
-
-Use `[]` to disable an action, then `/reload`. On macOS, the widget labels Alt as Option; enable Option-as-Alt/Meta in your terminal. If a shortcut produces a character or is intercepted by your terminal or multiplexer, use the Page aliases or choose another binding. Wheel scrolling over the widget is independent of these shortcuts and requires fullscreen mouse reporting.
-
-Some differently named keys share terminal input: for example, Ctrl+H and Backspace, Ctrl+I and Tab, or Ctrl+M and Enter. Shared input stays with the editor, and ambiguous legacy shortcuts are omitted from the widget hint. A terminal sending distinct enhanced-protocol input may still use the workflow binding. For consistent behavior across terminals, choose an unambiguous binding or use the Page aliases rather than relying on that distinction.
-
 ## Key Format
 
 `modifier+key` where modifiers are `ctrl`, `shift`, `alt`, or `super` (combinable) and keys are:
@@ -105,7 +88,9 @@ Local copy operations require a working native clipboard or platform command. On
 
 ### TUI Fullscreen Viewport
 
-Interactive sessions use a fullscreen transcript. The wheel scrolls the region under the pointer; over the fixed editor, status, or footer it scrolls the transcript. When scrolled up, a pill above the composer reads "↓ jump to bottom", or "↓ N new messages" once new output arrives; click it or use `tui.altScreen.bottom` to return to live output. While scrolled up, the first line of the prompt that started the turn you are reading stays pinned at the top, marked `↑`. Attached workflow chats and `/tasks` transcripts show the same jump row in their own view; other OSC 8 links open in the default handler.
+Tool output uses compact state-marked blocks. `app.tools.expand` (Ctrl+O by default) expands or collapses every block in the current chat, including grouped calls. Consecutive finished reads, searches and directory listings share a summary row. Attached stage and subagent chats also group finished shell calls; the main chat keeps their individual output previews.
+
+Interactive sessions use a fullscreen transcript. The wheel scrolls the region under the pointer; over the fixed editor, status, or footer it scrolls the transcript. When scrolled up, one centered, rounded pill above the composer reads `╭─ ↓ jump to bottom · ctrl+end ─╮`, or counts new messages as they arrive. Click it or use `tui.altScreen.bottom` to return to live output. The key label follows your binding; a narrow terminal drops the frame before shortening the label. While scrolled up, the first line of the prompt that started the turn you are reading stays pinned at the top, marked `↑`. Attached workflow chats and `/tasks` transcripts show the same jump row in their own view; other OSC 8 links open in the default handler.
 
 Attached workflow stage chats and `/tasks` transcripts scroll the same way as the main transcript: the wheel follows `fullscreenWheelScrollLines`, Alt+wheel scrolls five times as far, `fullscreenScrollbar` controls their scrollbar, and `tui.altScreen.top`, `tui.altScreen.bottom`, `tui.altScreen.previousPrompt`, `tui.altScreen.nextPrompt`, `tui.altScreen.halfPageUp`, and `tui.altScreen.halfPageDown` act on them. In those views `pageUp` and `pageDown` always page the view, `tui.altScreen.lineUp` and `tui.altScreen.lineDown` do nothing, and the scrollbar shows the position but cannot be dragged.
 
@@ -231,8 +216,8 @@ The same keys move between the main chat, subagent chats, workflow graphs, stage
 
 - **Esc** only interrupts the current turn, cancels, closes a dialog or deselects. It never moves you to another chat.
 - **←** on an empty prompt goes back exactly one level, to the chat or list you came from, and the hint line names it (`← tasks`, `← main chat`). With text typed, ← moves the cursor; at the very start of the prompt it leaves too, and what you typed is kept for when you come back.
-- In a workflow graph, **Esc** is the only back key. **←** moves to the previous sibling and does nothing at the leftmost node. In tool and failure details, **←** does nothing and **Esc** returns to the graph. In a stage chat, Esc on a choice or yes/no question closes it back to the chat's prompt: the question stays pending, a line above the prompt shows it, and Enter on the empty prompt reopens it.
-- In a list, **↑↓** select, **Enter** or **→** opens the item's chat (a workflow run's graph), **Space** peeks at its detail, **x** stops the selected item (press it again within 3 seconds to confirm; on a finished item one press dismisses the row), **Esc** or **←** closes the list. If an item finishes between the two presses of `x`, the stop is called off and the list says `<name> finished · x to dismiss`; the press that was meant as the second one is ignored, and only a later `x` dismisses the row.
+- In a workflow graph, **Esc** is the only back key. **←** moves to the previous sibling and does nothing at the leftmost node. In tool and failure details, **←** does nothing and **Esc** returns to the graph. In a stage chat, **←** leaves an open choice or yes/no question pending and returns to the graph. Esc closes the question back to the chat's prompt without leaving: a line above the prompt shows it, and Enter on the empty prompt reopens it. When a stage dialog is stacked over a mounted custom component, Esc cancels that dialog and returns to the component. Escape never navigates, even when assigned to a back action.
+- In a list, **↑↓** select, **Enter** or **→** opens the item's chat (a workflow run's graph), **Space** peeks at it (in `/tasks`, a card under the row), or opens the asking chat for a subagent waiting on input, **x** stops the selected item (press it again within 3 seconds to confirm; on a finished item one press dismisses the row), **Esc** or **←** closes the list. If an item finishes between the two presses of `x`, the stop is called off and the list says `<name> finished · x to acknowledge`; that press acknowledges the change, and a later `x` dismisses the row after its finished state is painted.
 - **Ctrl+X Ctrl+K** stops every running background subagent, shell and workflow run of the session, from any view except a dialog that uses Ctrl+X itself (OAuth sign-in, the scoped-model selector). Press it twice within 3 seconds; the first press says what it will do, and any other key calls it off. Stopped subagents stay resumable: their chats read `Stopped · send to resume`, and only a message you send resumes them. Stopped workflow runs stay resumable.
 - **?** on an empty prompt, or in a list, shows the keys of the current screen; typed after text, `?` is just a character. Esc or ? closes it. Each screen also shows one dim hint line with exactly the keys that work there.
 - A finished subagent's chat stays open to messages: sending one resumes it in its own session. A subagent stopped for good, or one no longer kept, has a read-only chat with a one-line note; ← still goes back.
@@ -246,12 +231,13 @@ The same keys move between the main chat, subagent chats, workflow graphs, stage
 | `app.list.peek` | `space` | Peek at the selected task |
 | `app.list.filter` | `/` | Filter the list by name |
 | `app.keys.help` | `?` | Show the keys of the current screen |
+| `app.agents.focus` | `down` | Focus the agent panel from an empty prompt; from a chat opened in the panel, go back to it |
 | `app.agents.chord` | `ctrl+x` | Start a background-work chord in the main chat |
 | `app.agents.stopAll` | `ctrl+k` | After the chord key: stop all background subagents and workflow runs (press twice to confirm) |
 | `app.tasks.open` | Unbound | Command-only `/tasks` route |
 | `app.tasks.input` | Unbound | Focus stdin only when the selected task has writable input |
 
-**Migrating from earlier versions:** `app.tasks.inspect` is now `app.list.open` and `app.tasks.cancel` is now `app.list.stop`; existing `keybindings.json` entries are migrated on startup. Ctrl+X used to return from a stage chat to its graph and from a graph to the main chat: use ← on an empty prompt in a stage chat and Esc in the graph instead. Esc used to close an idle stage chat and a subagent's transcript: there it now only interrupts, so use ← on an empty prompt. Stopping a task asked for `y`; press `x` a second time instead.
+**Migrating from earlier versions:** `app.tasks.inspect` is now `app.list.open` and `app.tasks.cancel` is now `app.list.stop`; existing `keybindings.json` entries are migrated on startup. Ctrl+X used to return from a stage chat to its graph and from a graph to the main chat: use ← on an empty prompt in a stage chat and Esc in the graph instead. Esc used to close an idle stage chat and a subagent's transcript: there it now only interrupts, so use ← on an empty prompt. Stopping a task asked for `y`; press `x` a second time instead. `app.workflows.scrollUp` and `app.workflows.scrollDown` (Alt+K/J) are gone with the workflow list they scrolled: workflow runs are rows of the agent panel.
 
 Mounted human-input prompts and the composer retain priority. Escape leaves stdin
 or task detail before leaving task focus. Unbound actions have no key hint.
@@ -274,7 +260,7 @@ or task detail before leaving task focus. Unbound actions have no key hint.
 
 ### Scoped Models Selector
 
-Used inside the scoped models selector (opened via `/scoped-models`). Enter switches the selected model on or off, typing filters, and Esc clears the search before it closes the selector. Changes are saved automatically.
+Used inside the scoped models selector (opened via `/scoped-models`). Enter switches the selected model on or off, typing filters, and Esc or Ctrl+C clears the search before it closes the selector. Search matches model and provider names, not the reasoning level shown beside a model. Changes are saved automatically.
 
 | Keybinding id | Default | Description |
 |--------|---------|-------------|

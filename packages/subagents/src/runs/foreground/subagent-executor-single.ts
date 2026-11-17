@@ -22,10 +22,10 @@ import {
 	wrapForkTask,
 } from "../../shared/types.js";
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.js";
+import { resolveSubagentAutoModel } from "../shared/auto-model.js";
 import { isParentCancellation } from "../shared/cancellation-recovery.js";
 import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId, resolveModelCandidate, resultRanOnLine } from "../shared/model-fallback.js";
-import { routeSubagentModel } from "../shared/model-router.js";
 import { recordRun } from "../shared/run-history.js";
 import {
 	finalizeSingleOutput,
@@ -34,8 +34,10 @@ import {
 	resolveSingleOutputPath,
 	validateFileOnlyOutputMode,
 } from "../shared/single-output.js";
+import { subagentStartHoldMs } from "../shared/start-progress.js";
 import { runOwnerlessChild } from "./ownerless-children.js";
 import { formatParentAskHandoffOutput } from "./parent-ask-output.js";
+import { holdStartingChild, type StartingChildHold } from "./subagent-child-hold.js";
 import { createSubagentChildRecordSink } from "./subagent-child-records.js";
 import {
 	createForegroundControlNotifier,
@@ -139,19 +141,10 @@ export async function runSinglePath(
 	const handoffTaskContext = params.task ?? "";
 	let task = handoffTaskContext;
 	const effectiveModel = params.model ?? agentConfig.model;
-	const modelRoute =
-		effectiveModel === "auto"
-			? await routeSubagentModel({
-					ctx,
-					agent: agentConfig,
-					task: params.task,
-					modelConstraints: params.modelConstraints,
-					taskNeeds: params.taskNeeds,
-					signal,
-				})
-			: undefined;
-	const modelOverride =
-		modelRoute?.modelOverride ?? resolveModelCandidate(effectiveModel, availableModels, currentProvider);
+	const runsAutoModel = effectiveModel === "auto";
+	const modelOverride = runsAutoModel
+		? resolveSubagentAutoModel(ctx, deps.pi.getSettings?.(), agentConfig)
+		: resolveModelCandidate(effectiveModel, availableModels, currentProvider);
 	const skillOverride: string[] | false | undefined = normalizeSkillInput(params.skill);
 	const rawOutput = params.output !== undefined ? params.output : agentConfig.output;
 	const effectiveOutput = normalizeSingleOutputOverride(rawOutput, agentConfig.output);
@@ -210,15 +203,32 @@ export async function runSinglePath(
 	// context then throws on every read. Its stage admission outlives that session, so read it now.
 	const detachedNotificationScope = { orchestrationContext: ctx.orchestrationContext };
 	let r: SingleResult;
+	// Ended by the child's terminal result, or here when the launch fails before it starts.
+	let startHold: StartingChildHold | undefined;
 	try {
 		const supervisorAuthorization = await requestSupervisorAuthorization(
 			deps.pi.events,
 			childIntercomTarget,
 			ctx.getChildSessionOptions?.({ tools: agentConfig.tools }),
 		);
+		const childIntercomGroup = resolveChildIntercomGroup(
+			params.group,
+			inheritedIntercomGroup(ctx),
+			undefined,
+			ctx.intercomPolicy,
+		);
+		// Sends to the child wait for it to register, before its first turn, instead of finding no session.
+		startHold = await holdStartingChild({
+			events: deps.pi.events,
+			intercomTarget: childIntercomTarget,
+			authorization: supervisorAuthorization,
+			group: childIntercomGroup,
+			holdMs: subagentStartHoldMs(deps.config.sessionStartTimeoutMs),
+		});
 		const runOptions: RunSyncOptions = {
 			runningCapacity: deps.config.parallel?.runningCapacity,
 			sessionStartTimeoutMs: deps.config.sessionStartTimeoutMs,
+			onStartRetry: () => startHold?.renew(),
 			getChildSessionOptions: ctx.getChildSessionOptionsResolver?.() ?? ctx.getChildSessionOptions,
 			resourceLoaderInheritanceSnapshot: deps.pi.getResourceLoaderInheritanceSnapshot?.(),
 			cwd: effectiveCwd,
@@ -245,7 +255,7 @@ export async function runSinglePath(
 			intercomSessionName: childIntercomTarget,
 			supervisorAuthorization,
 			orchestratorIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
-			intercomGroup: resolveChildIntercomGroup(params.group, inheritedIntercomGroup(ctx), undefined),
+			intercomGroup: childIntercomGroup,
 			onParentAskHandoff: (request) => {
 				if (parentAsk) return;
 				request.taskContext = handoffTaskContext;
@@ -260,8 +270,7 @@ export async function runSinglePath(
 			},
 			index: 0,
 			modelOverride,
-			modelRoute,
-			...(params.modelConstraints ? { modelConstraints: params.modelConstraints } : {}),
+			...(runsAutoModel ? { runsNamedModel: false as const } : {}),
 			availableModels,
 			knownModelProviders,
 			resolveCandidateModel: createCandidateModelResolver(ctx.modelRegistry, currentProvider),
@@ -270,7 +279,6 @@ export async function runSinglePath(
 			currentThinkingLevel: ctx.thinkingLevel,
 			skills: effectiveSkills,
 		};
-		modelRoute?.assertCurrent();
 		if (ctx.getAgentTaskHost) {
 			let settledChild: SingleResult | undefined;
 			const response = await runAgentTask({
@@ -288,6 +296,7 @@ export async function runSinglePath(
 				recordChild: createSubagentChildRecordSink(deps.pi, ctx),
 				onTerminal: (child) => {
 					settledChild = child;
+					startHold?.settle(child);
 					cleanupTransientProgress(progressDir, artifactConfig.enabled);
 				},
 				outputText: (child) =>
@@ -300,6 +309,7 @@ export async function runSinglePath(
 							})
 						: getSingleResultOutput(child),
 			});
+			if (response.kind === "unstarted") startHold?.settle();
 			if (!parentAsk || !settledChild?.interrupted)
 				return await taskToolResultWithOutput(response, ctx.getAgentTaskHost());
 			r = settledChild;
@@ -317,9 +327,10 @@ export async function runSinglePath(
 				recordChild: createSubagentChildRecordSink(deps.pi, ctx),
 				...(params[BURST_EXECUTION_SCHEDULE] ? { schedule: params[BURST_EXECUTION_SCHEDULE] } : {}),
 				runSync: (childTask, options) => deps.runtime.runSync(launchCwd, agents, params.agent!, childTask, options),
-			}).result;
+			}).result.finally(() => startHold?.settle());
 		}
 	} catch (error) {
+		startHold?.settle();
 		cleanupTransientProgress(progressDir, artifactConfig.enabled);
 		throw error;
 	}

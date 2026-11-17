@@ -14,6 +14,7 @@ import {
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
+import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.ts";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
 import { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
@@ -85,6 +86,7 @@ test("isolated host treats an engine-published extension model as configured aft
 		scopedModels: [],
 		sessionFile: undefined,
 		sessionManager: await SessionManager.create(new MemorySessionStore(), process.cwd()),
+		settingsManager: SettingsManager.inMemory(),
 		agent: {
 			state: { model: undefined, thinkingLevel: "off", messages: [] },
 			steeringMode: "all",
@@ -157,6 +159,7 @@ test("an aborted isolated refresh does not replace the current model catalog", a
 		scopedModels: [],
 		sessionFile: undefined,
 		sessionManager: await SessionManager.create(new MemorySessionStore(), process.cwd()),
+		settingsManager: SettingsManager.inMemory(),
 		agent: {
 			state: { model: undefined, thinkingLevel: "off", messages: [] },
 			steeringMode: "all",
@@ -196,9 +199,6 @@ test("isolated host synchronizes authoritative engine fallback state and clears 
 		followUpMode: "all",
 		sessionId: "test-session",
 		autoCompactionEnabled: true,
-		compaction: { state: "idle" },
-		backgroundCompactionEnabled: true,
-		backgroundCompactionThresholdPercent: 75,
 		messageCount: 0,
 		pendingMessageCount: 0,
 		queuedMessagesPaused: false,
@@ -218,6 +218,7 @@ test("isolated host synchronizes authoritative engine fallback state and clears 
 	const session = {
 		modelRuntime,
 		sessionManager: SessionManager.inMemory(process.cwd()),
+		settingsManager: SettingsManager.inMemory(),
 		scopedModels: [],
 		sessionFile: undefined,
 		agent: {
@@ -287,6 +288,7 @@ test("isolated explicit cycle clears fallback only for a changed model despite a
 			if (behavior === "changed") session.agent.state.model = model;
 			return { model, thinkingLevel: behavior === "same" ? ("high" as const) : ("off" as const), isScoped: false };
 		},
+		getState: async () => ({ thinkingLevel: session.agent.state.thinkingLevel }),
 		getCommands: async () => [],
 		getEntries: async () => ({ entries: [], leafId: null }),
 	} as unknown as RpcClient;
@@ -294,6 +296,7 @@ test("isolated explicit cycle clears fallback only for a changed model despite a
 	const sessionFixture = {
 		modelRuntime,
 		sessionManager: SessionManager.inMemory(process.cwd()),
+		settingsManager: SettingsManager.inMemory(),
 		scopedModels: [],
 		sessionFile: undefined,
 		agent: {
@@ -346,9 +349,6 @@ async function selectDuringEngineResync(
 		followUpMode: "all",
 		sessionId: "test-session",
 		autoCompactionEnabled: true,
-		compaction: { state: "idle" },
-		backgroundCompactionEnabled: true,
-		backgroundCompactionThresholdPercent: 75,
 		messageCount: 0,
 		pendingMessageCount: 0,
 		queuedMessagesPaused: false,
@@ -389,6 +389,7 @@ async function selectDuringEngineResync(
 	const sessionFixture = {
 		modelRuntime,
 		sessionManager: SessionManager.inMemory(process.cwd()),
+		settingsManager: SettingsManager.inMemory(),
 		scopedModels: [],
 		sessionFile: undefined,
 		agent: {
@@ -577,6 +578,7 @@ test("isolated queue pause reaches the engine before abort and resumes remotely"
 		scopedModels: [],
 		sessionFile: undefined,
 		sessionManager: await SessionManager.create(new MemorySessionStore(), process.cwd()),
+		settingsManager: SettingsManager.inMemory(),
 		agent: {
 			state: { model: undefined, thinkingLevel: "off", messages: [] },
 			steeringMode: "all",
@@ -618,9 +620,6 @@ test("isolated runtime applies the RPC compaction reason during resync", async (
 		followUpMode: "all",
 		sessionId: "test-session",
 		autoCompactionEnabled: true,
-		compaction: { state: "idle" },
-		backgroundCompactionEnabled: true,
-		backgroundCompactionThresholdPercent: 75,
 		messageCount: 0,
 		pendingMessageCount: 0,
 		queuedMessagesPaused: false,
@@ -638,6 +637,7 @@ test("isolated runtime applies the RPC compaction reason during resync", async (
 	const session = Object.assign({} as AgentSession, {
 		modelRuntime,
 		sessionManager: SessionManager.inMemory(process.cwd()),
+		settingsManager: SettingsManager.inMemory(),
 		scopedModels: [],
 		sessionFile: undefined,
 		agent: {

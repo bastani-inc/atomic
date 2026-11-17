@@ -3,7 +3,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
-import { historyLocation } from "../../src/core/agent-session-compaction.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import type { CompactionEntry, SessionEntry } from "../../src/core/session-manager-types.ts";
 import { openNodeSqliteDatabase } from "../../src/core/storage/node-sqlite.ts";
@@ -31,7 +30,7 @@ function user(id: string, parentId: string | null, lines = 1): SessionEntry {
 	};
 }
 
-test("plans a verbatim compaction of a tail-resumed session without loading its history (#5249)", async () => {
+test("counts the history lines of a tail-resumed session without loading its history (#5249)", async () => {
 	const entries: SessionEntry[] = [];
 	for (let i = 0; i < 2 * PAGE + 100; i++) entries.push(user(`h${i}`, entries.at(-1)?.id ?? null, (i % 3) + 1));
 	const boundary: CompactionEntry = {
@@ -68,25 +67,16 @@ test("plans a verbatim compaction of a tail-resumed session without loading its 
 	);
 	const load = vi.spyOn(store, "load");
 	const readRange = vi.spyOn(store, "readRange");
-	const session = { sessionManager: manager } as never;
 
-	const location = await historyLocation(session);
-	assert.ok(location);
+	const count = await manager.historyLineCount();
 	assert.equal(manager.hasFullHistory(), false);
 	assert.equal(load.mock.calls.length, 0);
 	assert.ok(readRange.mock.calls.length > 0);
 	for (const [, start, end] of readRange.mock.calls) assert.ok(end - start + 1 <= PAGE, `${start}-${end}`);
-	const expected = renderHistoryTranscript(header, entries, true).entryRanges;
-	for (const entry of manager.getEntries())
-		assert.deepEqual(location.entryRanges.get(entry.id), expected.get(entry.id));
-	assert.equal(location.entryRanges.has("abandoned"), false);
+	assert.equal(count, renderHistoryTranscript(header, entries, true).lines.length);
 
-	readRange.mockClear();
 	await manager.appendMessage({ role: "user", content: "later\nnote", timestamp: 2 });
-	const later = await historyLocation(session);
-	assert.equal(readRange.mock.calls.length, 0);
 	const all = (await store.load("session")).entries;
-	const latest = renderHistoryTranscript(header, all, true).entryRanges;
-	for (const entry of manager.getEntries()) assert.deepEqual(later?.entryRanges.get(entry.id), latest.get(entry.id));
+	assert.equal(await manager.historyLineCount(), renderHistoryTranscript(header, all, true).lines.length);
 	assert.equal(manager.hasFullHistory(), false);
 });

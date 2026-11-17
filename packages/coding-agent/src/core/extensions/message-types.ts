@@ -46,6 +46,15 @@ export interface SendMessageOptions {
 	 * @internal
 	 */
 	wakeIdleSession?: boolean;
+
+	/**
+	 * The message is for this session only: when the session's workflow stage or subagent execution has closed, the
+	 * delivery fails instead of taking the late-message route to the chat that launched the workflow. Task completion
+	 * notices use it, so a stage's notice never reaches another session.
+	 *
+	 * @internal
+	 */
+	stayInSession?: boolean;
 }
 
 export type SendMessagesOptions = Omit<
@@ -53,10 +62,18 @@ export type SendMessagesOptions = Omit<
 	"deliverAs" | "interruptAbortMessage" | "wakeIdleSession"
 > & {
 	deliverAs?: "steer" | "followUp" | "nextTurn";
+	/**
+	 * Each message's own stable identity, in order, where the batch is admitted under `stageAdmissionKey`. Task notices
+	 * that finished together use it, so each keeps its own visible entry.
+	 *
+	 * @internal
+	 */
+	stageAdmissionKeys?: readonly (string | undefined)[];
 };
 
 export interface MessageRenderOptions extends KeybindingHints {
 	expanded: boolean;
+	cwd?: string;
 	/** Horizontal padding configured by the outputPad setting. */
 	outputPad: number;
 }

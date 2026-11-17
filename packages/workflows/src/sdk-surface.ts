@@ -208,6 +208,7 @@ export { MemoryRunJournal } from "./durable/journal/memory-run-journal.js";
 export type { RunJournalOption, RunJournalSettings } from "./durable/journal/resolution.js";
 export { resolveRunJournal } from "./durable/journal/resolution.js";
 export type {
+	SharedPoolChildProgress,
 	SharedPoolFailure,
 	SharedPoolFleet,
 	SharedPoolFleetController,
@@ -215,6 +216,7 @@ export type {
 	SharedPoolFleetStatus,
 	SharedPoolHost,
 	SharedPoolHostReport,
+	SharedPoolHostShipping,
 	SharedPoolHostState,
 	SharedPoolRateLimit,
 	SharedPoolScaleEvent,

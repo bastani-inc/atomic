@@ -15,6 +15,8 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"CommandTaskKind",
 	"FileType",
 	"GrepOutputMode",
+	"HostProcess",
+	"HostProcessEventKind",
 	"HostSession",
 	"NapiSubagentControl",
 	"NapiTaskSupervisor",
@@ -41,7 +43,11 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"processCreationTime",
 	"renameNoReplace",
 	"search",
+	"startHostProcess",
 	"tryAdvisoryLock",
+	"trySharedAdvisoryLock",
+	"windowsDirectorySecurity",
+	"windowsDirectorySecurityAsync",
 ] as const;
 
 const requireNativeBinding = process.env.ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE === "1";

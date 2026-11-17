@@ -6,12 +6,11 @@ import type { RunSnapshot, StageSnapshot } from "./store-types.js";
  * the rest (#4642).
  */
 export interface RunStageIndex {
-	/** Whether any stage, finished or not, awaits input or holds a prompt or an input request. */
 	readonly awaitingInput: boolean;
-	/** Stages whose status is `pending`, in run order. */
 	readonly pending: readonly StageSnapshot[];
-	/** Stages that are not finished and await input or hold a pending prompt or an input request, in run order. */
 	readonly waiting: readonly StageSnapshot[];
+	readonly unfinished: readonly StageSnapshot[];
+	readonly settled: number;
 }
 
 /** An index with what it was counted from, so the index of the run's next version can be derived from it. */
@@ -42,12 +41,24 @@ function isFinished(stage: StageSnapshot): boolean {
 function indexFrom(stages: readonly StageSnapshot[], asking: number, unfinished: readonly number[]): IndexedStages {
 	const pending: StageSnapshot[] = [];
 	const waiting: StageSnapshot[] = [];
+	const active: StageSnapshot[] = [];
 	for (const position of unfinished) {
 		const stage = stages[position]!;
+		active.push(stage);
 		if (stage.status === "pending") pending.push(stage);
 		if (asksForInput(stage)) waiting.push(stage);
 	}
-	return { index: { awaitingInput: asking > 0, pending, waiting }, asking, unfinished };
+	return {
+		index: {
+			awaitingInput: asking > 0,
+			pending,
+			waiting,
+			unfinished: active,
+			settled: stages.length - unfinished.length,
+		},
+		asking,
+		unfinished,
+	};
 }
 
 function buildIndex(stages: readonly StageSnapshot[]): IndexedStages {

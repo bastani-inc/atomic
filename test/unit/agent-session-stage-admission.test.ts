@@ -71,6 +71,7 @@ describe("AgentSession workflow-stage admission", () => {
 			readonly stageAdmissionKey?: string;
 		}> = [];
 		const surface = {
+			sessionManager: SessionManager.inMemory(),
 			_workflowStageAdmission: undefined,
 			isStreaming: false,
 			_appendCustomMessage(message: { readonly stageAdmissionKey?: string }) {
@@ -92,7 +93,7 @@ describe("AgentSession workflow-stage admission", () => {
 		);
 		assert.deepEqual(
 			captured.map((message) => message.stageAdmissionKey),
-			["subagent:one", "subagent:batch", "subagent:batch"],
+			["subagent:one", "subagent:batch#0", "subagent:batch"],
 		);
 	});
 

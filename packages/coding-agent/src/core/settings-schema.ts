@@ -17,81 +17,12 @@ function timeoutSetting(options?: TSchemaOptions) {
 	return Type.Union([Type.Number({ minimum: 0 }), Type.String({ pattern: TIMEOUT_STRING_PATTERN })], options);
 }
 
-const CompactionModelOverrideSchema = Type.Object({
-	reserveTokens: Type.Optional(nonNegativeSafeInteger()),
-	preserve_recent: Type.Optional(nonNegativeSafeInteger()),
-});
-
 const CompactionSettingsSchema = Type.Object({
 	enabled: Type.Optional(Type.Boolean({ default: SETTINGS_DEFAULTS.compaction.enabled })),
 	reserveTokens: Type.Optional(
 		nonNegativeSafeInteger({
 			description: "Free context tokens below which automatic compaction starts.",
 			default: SETTINGS_DEFAULTS.compaction.reserveTokens,
-		}),
-	),
-	compression_ratio: Type.Optional(
-		Type.Number({
-			exclusiveMinimum: 0,
-			exclusiveMaximum: 1,
-			description: "Fraction of compactable transcript lines to keep.",
-			default: SETTINGS_DEFAULTS.compaction.compression_ratio,
-		}),
-	),
-	preserve_recent: Type.Optional(
-		nonNegativeSafeInteger({
-			description: "Exact number of newest context-visible messages kept outside the compactable region.",
-			default: SETTINGS_DEFAULTS.compaction.preserve_recent,
-		}),
-	),
-	keepContextShare: Type.Optional(
-		Type.Number({
-			minimum: 0,
-			maximum: 1,
-			description:
-				"Share of the keep target that <keepContext> spans may fill. Past it, whole spans lose protection and are compacted like other lines: older duplicates first, then the oldest spans, then the 3 most recent spans, and spans in the latest user message last.",
-			default: SETTINGS_DEFAULTS.compaction.keepContextShare,
-		}),
-	),
-	query: Type.Optional(
-		Type.String({
-			description:
-				"Relevance focus for selecting older lines to retain. Defaults to the last user message when omitted.",
-		}),
-	),
-	planningTimeoutMs: Type.Optional(
-		timeoutSetting({
-			description:
-				'Wall-clock limit on model planning in automatic compaction (every planner request, retry, trim, fallback model and credential lookup) as milliseconds, a duration such as "5m", or "disabled"; 0 or "disabled" disables it. When it runs out, post-tool and overflow compaction start a fresh context window and threshold compaction fails.',
-			default: SETTINGS_DEFAULTS.compaction.planningTimeoutMs,
-		}),
-	),
-	modelOverrides: Type.Optional(
-		Type.Record(Type.String(), CompactionModelOverrideSchema, {
-			description: 'Per-model overrides keyed by exact "provider/modelId" strings.',
-		}),
-	),
-	background: Type.Optional(
-		Type.Boolean({
-			description:
-				"Compact older context in the background while the agent keeps working; blocking compaction only on overflow. False restores foreground compaction at the reserveTokens threshold.",
-			default: SETTINGS_DEFAULTS.compaction.background,
-		}),
-	),
-	backgroundThresholdPercent: Type.Optional(
-		Type.Number({
-			exclusiveMinimum: 0,
-			exclusiveMaximum: 100,
-			description:
-				"Percentage of the context window at which background compaction starts. The reserveTokens threshold still compacts in the foreground when no background result is ready.",
-			default: SETTINGS_DEFAULTS.compaction.backgroundThresholdPercent,
-		}),
-	),
-	historyRecall: Type.Optional(
-		Type.Boolean({
-			description:
-				"Add a short Recalled context section to each compacted context: lines from this session's earlier compaction cycles, the project's other sessions and workflow runs that match the current task. False leaves the compacted context as the planner kept it.",
-			default: SETTINGS_DEFAULTS.compaction.historyRecall,
 		}),
 	),
 });
@@ -356,37 +287,6 @@ const HerdrSettingsSchema = Type.Object({
 		}),
 	),
 });
-
-const ModelRoutingSettingsSchema = Type.Object(
-	{
-		allowedProviders: Type.Optional(
-			Type.Array(Type.String(), {
-				description: "When nonempty, only models from these provider IDs are routing candidates.",
-			}),
-		),
-		excludedProviders: Type.Optional(
-			Type.Array(Type.String(), {
-				description: "Provider IDs that are never routing candidates. Applied after allowedProviders.",
-			}),
-		),
-		allowedModels: Type.Optional(
-			Type.Array(Type.String(), {
-				description:
-					"When nonempty, only models matching these full-ID or glob patterns, as in enabledModels, are routing candidates.",
-			}),
-		),
-		excludedModels: Type.Optional(
-			Type.Array(Type.String(), {
-				description:
-					"Models matching these full-ID or glob patterns are never routing candidates. Applied after allowedModels.",
-			}),
-		),
-	},
-	{
-		description:
-			'Provider and model filters for the candidates model "auto" may route to. Does not affect decisionModel.',
-	},
-);
 
 function thinkingBudgetsSettings(options?: TSchemaOptions) {
 	return Type.Object(
@@ -711,17 +611,16 @@ export const SettingsSchema = Type.Object(
 		decisionModel: Type.Optional(
 			Type.String({
 				description:
-					'The model every decision uses: workflow-stage and subagent model: "auto" selection, structured_output calls without their own model, readiness after a steer, and decide(). An exact provider/model selects a registered chat or classifier model; "auto" and an empty string use the current chat model.',
+					'The model every decision uses: structured_output calls without their own model, workflow stage predictions, readiness after a steer, and decide(). An exact provider/model selects a registered chat or classifier model; "auto" and an empty string use the current chat model.',
 				default: SETTINGS_DEFAULTS.decisionModel,
 			}),
 		),
 		compactionModel: Type.Optional(
 			Type.String({
 				description:
-					'Compaction model: "auto" or an empty string uses the session model, and an exact provider/model selects a registered chat model, classifier, or compactor.',
+					'Compaction model: "auto" or an empty string clears the context window at compaction and lets the agent recover from session history; an exact provider/model selects a registered compactor model, whose output replaces the context. A chat or classifier model saved here is reset to "auto".',
 			}),
 		),
-		modelRouting: Type.Optional(ModelRoutingSettingsSchema),
 		defaultThinkingLevel: Type.Optional(ModelThinkingLevelSchema),
 		modelThinkingLevels: Type.Optional(
 			Type.Record(Type.String(), ModelThinkingLevelSchema, {
@@ -991,7 +890,6 @@ export const SettingsSchema = Type.Object(
 
 type SettingsInput = Static<typeof SettingsSchema>;
 
-export interface CompactionModelOverride extends Static<typeof CompactionModelOverrideSchema> {}
 export interface CompactionSettings extends Static<typeof CompactionSettingsSchema> {}
 export interface BranchSummarySettings extends Static<typeof BranchSummarySettingsSchema> {}
 export interface SessionSummarySettings extends Static<typeof SessionSummarySettingsSchema> {}
@@ -1002,7 +900,6 @@ export interface RetrySettings extends Omit<Static<typeof RetrySettingsSchema>, 
 export interface TerminalSettings extends Static<typeof TerminalSettingsSchema> {}
 export interface ImageSettings extends Static<typeof ImageSettingsSchema> {}
 export interface SearchSettings extends Static<typeof SearchSettingsSchema> {}
-export interface ModelRoutingSettings extends Static<typeof ModelRoutingSettingsSchema> {}
 export interface ThinkingBudgetsSettings extends Static<typeof ThinkingBudgetsSettingsSchema> {}
 export type MermaidRenderingMode = NonNullable<Static<typeof MarkdownSettingsSchema>["mermaid"]>;
 export interface MarkdownSettings extends Static<typeof MarkdownSettingsSchema> {}

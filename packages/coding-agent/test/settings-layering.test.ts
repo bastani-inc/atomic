@@ -282,7 +282,7 @@ describe("applyOverrides last for the run (#5049)", () => {
 		const manager = SettingsManager.inMemory({ theme: "dark" });
 		manager.applyOverrides({
 			theme: "light",
-			compaction: { enabled: false, background: false },
+			compaction: { enabled: false, reserveTokens: 1234 },
 			workflows: ["./override-wf"],
 		});
 
@@ -292,7 +292,7 @@ describe("applyOverrides last for the run (#5049)", () => {
 
 		assert.equal(manager.getTheme(), "solarized");
 		assert.equal(manager.getCompactionEnabled(), true);
-		assert.equal(manager.getCompactionBackground(), false, "the other overridden compaction key stays");
+		assert.equal(manager.getCompactionReserveTokens(), 1234, "the other overridden compaction key stays");
 		assert.deepEqual(manager.getWorkflowPaths(), ["./override-wf"], "list-form workflow paths stay");
 
 		manager.setWorkflowPaths(["./wf"]);

@@ -1,10 +1,11 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import { type HostChildProcess, spawnHostProcess } from "../../utils/host-spawn.ts";
 import { killProcessTree } from "../../utils/shell.ts";
 
 /** How long a stopped process gets to clean up after itself before its process group is killed. */
 export const WORKSPACE_PROCESS_STOP_GRACE_MS = 5_000;
 /** How often a stopped run looks again whether the rest of its process group has exited. */
 const GROUP_EXIT_POLL_MS = 50;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 /** On POSIX each process runs in its own process group, so stopping it also stops what it started. */
 const OWN_PROCESS_GROUP = process.platform !== "win32";
 
@@ -33,7 +34,7 @@ function errnoCode(error: unknown): unknown {
  * Ask a process and the processes it started to stop. On POSIX its group gets SIGTERM, which git catches to remove a
  * half-added worktree; Windows has no such signal, so the tree is killed and a later bind repairs what is left.
  */
-function terminate(child: ChildProcess): void {
+function terminate(child: HostChildProcess): void {
 	if (child.pid === undefined) return;
 	if (!OWN_PROCESS_GROUP) {
 		killProcessTree(child.pid);
@@ -63,9 +64,9 @@ function groupRunning(pid: number): boolean {
  * with `signal.reason`. A process that could not be started resolves as `not-started`.
  */
 export function runWorkspaceProcess(run: WorkspaceProcessRun): Promise<WorkspaceProcessOutcome> {
-	const startedAt = Date.now();
+	const startedAt = performance.now();
 	return new Promise<WorkspaceProcessOutcome>((resolvePromise, reject) => {
-		const child = spawn(run.path, run.args, {
+		const child = spawnHostProcess(run.path, run.args, {
 			cwd: run.cwd,
 			env: run.env,
 			stdio: ["ignore", "pipe", "pipe"],
@@ -95,16 +96,23 @@ export function runWorkspaceProcess(run: WorkspaceProcessRun): Promise<Workspace
 			}, WORKSPACE_PROCESS_STOP_GRACE_MS);
 		};
 		const onAbort = (): void => stop(() => reject(run.signal!.reason));
-		const timer =
-			run.timeoutMs === undefined
-				? undefined
-				: setTimeout(() => {
-						const elapsedMs = Date.now() - startedAt;
-						stop(() => reject(run.timeoutError!(elapsedMs)));
-					}, run.timeoutMs);
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		if (run.timeoutMs !== undefined) {
+			const timeoutMs = run.timeoutMs;
+			const onTimeout = (): void => {
+				const elapsedMs = performance.now() - startedAt;
+				const remainingMs = timeoutMs - elapsedMs;
+				if (remainingMs > 0) {
+					timer = setTimeout(onTimeout, Math.min(Math.ceil(remainingMs), MAX_TIMER_DELAY_MS));
+					return;
+				}
+				stop(() => reject(run.timeoutError!(Math.ceil(elapsedMs))));
+			};
+			timer = setTimeout(onTimeout, Math.min(Math.ceil(timeoutMs), MAX_TIMER_DELAY_MS));
+		}
 		run.signal?.addEventListener("abort", onAbort, { once: true });
-		child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-		child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+		child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));
+		child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
 		child.on("error", (error) => {
 			settle(() => {
 				if (stopped !== undefined) stopped();

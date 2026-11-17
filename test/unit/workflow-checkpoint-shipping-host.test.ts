@@ -77,7 +77,7 @@ test.skipIf(process.platform === "win32")(
 				hostId: "host-b",
 				workerEntry: stubWorker,
 			});
-			const ship = join(directory, "host", "workflows", "pool", "ship");
+			const ship = join(directory, "host", "agent", "workflows", "pool", "ship");
 			const serves = async () => (await host!.stats()).roots.length > 0;
 			while (!(await serves()) || localJournals(ship).length === 0) await sleep(25);
 			const [local] = localJournals(ship);

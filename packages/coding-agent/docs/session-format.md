@@ -124,7 +124,7 @@ interface Usage {
 
 The pi-ai `StopReason` type also includes `"pending"`, the reason a message carries while it is still streaming. The terminal event replaces it before the assistant message is written, so `"pending"` does not appear in session JSONL.
 
-System messages record prompt and tool changes in chronological order. Later `content` adds instructions, `sections` patches names (`null` deletes), and tool declarations add or remove availability. Resume and branch selection replay that branch's state. Compaction entries can contain a `systemMessage` checkpoint, replayed before the compacted transcript; system instructions are not offered to the deletion planner. Older sessions acquire a declaration on their next request, not merely when opened. Forced per-run prompts affect provider requests but are not written to the transcript.
+System messages record prompt and tool changes in chronological order. Later `content` adds instructions, `sections` patches names (`null` deletes), and tool declarations add or remove availability. Resume and branch selection replay that branch's state. Compaction entries can contain a `systemMessage` checkpoint, replayed before the boundary message; system instructions are never sent to a compactor model. Older sessions acquire a declaration on their next request, not merely when opened. Forced per-run prompts affect provider requests but are not written to the transcript.
 
 A process can stop after a `toolUse` assistant message reaches JSONL but before every corresponding `toolResult` is appended. Atomic does not rewrite that append-only history. When the inactive session is reopened, its derived context supplies an error result for each unanswered call before rendering, compaction, or another provider request. The error states that execution was interrupted and its result is unavailable; it does not claim the tool had no side effects. Orphaned and duplicate results are also removed from provider-bound derived context. The original JSONL remains the authoritative record of what was actually persisted.
 
@@ -162,7 +162,7 @@ interface BranchSummaryMessage {
 }
 ```
 
-`compactionSummary` appears only in older session files and is inert. Active verbatim boundaries appear in rebuilt context as visible `custom` messages with `customType: "compaction"`.
+`compactionSummary` appears only in older session files and is inert. Active compaction boundaries appear in rebuilt context as visible `custom` messages with `customType: "compaction"`.
 
 ### AgentMessage Union
 
@@ -232,10 +232,11 @@ Emitted when the user switches models mid-session.
 {"type":"model_change","id":"d4e5f6g7","parentId":"c3d4e5f6","timestamp":"2024-12-03T14:05:00.000Z","provider":"openai","modelId":"gpt-4o"}
 ```
 
-A model change that a [model fallback](/settings#fallbackmodels) made also has `fallback`. It names the model the turn asked for (`requested`), the model that failed (`from`), and the failure (`reason`):
+A model change that a [model fallback](/settings#fallbackmodels) made also has `fallback`. It names the model the turn asked for (`requested`), the model that failed or lacked credentials before any request (`from`), and the failure (`reason`). When the walk passes over candidates without sending a request, `fallback.skipped` lists each `{ model, provider, reason }` with `reason` set to `"no-credentials"` when that provider has no configured credentials or `"auth-failed"` when that provider already rejected credentials earlier in the turn:
 
 ```json
 {"type":"model_change","id":"e5f6g7h8","parentId":"d4e5f6g7","timestamp":"2024-12-03T14:06:00.000Z","provider":"anthropic","modelId":"claude-opus-4-8","fallback":{"requested":"openai/gpt-4o","from":"openai/gpt-4o","reason":"503 Service Unavailable"}}
+{"type":"model_change","id":"f6g7h8i9","parentId":"e5f6g7h8","timestamp":"2024-12-03T14:07:00.000Z","provider":"github-copilot","modelId":"gpt-5.5","fallback":{"requested":"openai/gpt-5","from":"openai/gpt-5","reason":"No API key found for openai","skipped":[{"model":"openai/gpt-5","provider":"openai","reason":"no-credentials"},{"model":"anthropic/claude-opus-4-8","provider":"anthropic","reason":"no-credentials"}]}}
 ```
 
 ### ThinkingLevelChangeEntry
@@ -248,19 +249,21 @@ Emitted when the user changes the thinking/reasoning level.
 
 ### CompactionEntry
 
-Created by `/compact`, RPC `compact`, and automatic compaction. The `summary` field contains the mechanically reconstructed verbatim transcript string, not generated summary prose. `firstKeptEntryId` is the first context-visible entry retained outside compaction, or `null` when no pre-boundary context-visible message is retained (including `preserve_recent: 0`).
+Created by `/compact`, RPC `compact`, and automatic compaction. The `summary` field holds the whole boundary message the model sees after the boundary: a `Context cleared` message, or a `Context compacted` message with the compacted text, followed by the recovery instructions. `firstKeptEntryId` is `null`: no earlier message stays in context.
 
 An entry is active only when `details.strategy` is exactly `"verbatim-lines"`:
 
 ```json
-{"type":"compaction","id":"c1","parentId":"m9","timestamp":"2026-07-13T10:00:00.000Z","summary":"[User]: fix the test\n(filtered 42 lines)\n[Assistant]: Fixed.","firstKeptEntryId":"m7","tokensBefore":51234,"details":{"strategy":"verbatim-lines","promptVersion":3,"rung":"planned","parameters":{"compression_ratio":0.5,"preserve_recent":2,"query":"fix the test"},"stats":{"linesBefore":812,"linesDeleted":417,"linesKept":395,"rangeCount":63,"tokensBefore":51234,"tokensAfter":24980,"percentReduction":51.2}}}
+{"type":"compaction","id":"c1","parentId":"m9","timestamp":"2026-11-17T10:00:00.000Z","summary":"Context cleared. Your earlier conversation (51,234 tokens) is no longer in your context window. …","firstKeptEntryId":null,"tokensBefore":51234,"details":{"strategy":"verbatim-lines","promptVersion":7,"parameters":{"query":"fix the test"},"stats":{"linesBefore":812,"linesDeleted":812,"linesKept":0,"rangeCount":0,"tokensBefore":51234,"tokensAfter":2210,"percentReduction":95.7},"form":"cleared","history":{"sessionId":"019f6a2e-…","linesBefore":4210,"boundaryLine":4211,"totalLines":4232}}}
 ```
 
-The rebuilt context contains one visible `custom` message with `customType: "compaction"`, combining the durable `summary` and retained tail. Full tool-result text and retained images remain available. `firstKeptEntryId: null` means there is no retained pre-boundary tail. Post-boundary messages remain ordinary messages, and resume needs no new planning request.
+The rebuilt context contains one visible `custom` message with `customType: "compaction"` holding the durable `summary`. Post-boundary messages remain ordinary messages, and resume needs no new request.
 
-`details.rung` is `"planned"`, `"extension"` or `"fresh"`; `details.backupPath` is optional. A `"fresh"` entry written after planning failed also carries `details.freshReason`, the cause (for example `Compaction planning timed out after 300000 ms`).
+`details.form` is `"cleared"` or `"compacted"`. A compacted entry also has `details.backend` (`"compactor"` or `"extension"`) and, for a compactor, `details.model`. `details.fallbackReason` says why a configured compactor was not used. `details.history` gives the boundary's place in `history://sessions/<sessionId>`: `linesBefore`, `boundaryLine` and `totalLines`. `details.historyAccess` is `"read-search"` or `"session-history-tool"`, how the boundary told the agent to reach its history. `details.backupPath` is optional. See [Compaction reference](/compaction/reference#persistence-and-resume) for every field.
 
-A [background compaction](/compaction#background-compaction) boundary also has `coveredThroughEntryId`, the last entry its `summary` covers. Entries after it and before the boundary were appended while the background task ran; they replay unchanged after the compaction message. Before the boundary is written, the finished result is saved as a `custom` entry with `customType: "atomic:background-compaction-result"` and `data` holding `version`, `upToEntryId`, `startedAt`, `completedAt`, `summary`, `firstKeptEntryId`, `tokensBefore`, `details`, optional `usage` and `fromExtension`. Older Atomic versions load both and ignore the unknown field and custom type.
+Atomic no longer writes a boundary while a tool call is still waiting for its result. A boundary from an earlier version written at such a point has `coveredThroughEntryId`, the last entry it covers; the waiting call's turn, from the entry after it to the boundary, replays unchanged after the compaction message.
+
+Boundaries written by earlier Atomic versions remain active and replay as written: their `summary` is a verbatim transcript with `(filtered N lines)` markers or a summary, a string `firstKeptEntryId` replays a kept tail, and `details` may carry `rung`, `backend` and other fields that are no longer written. Older sessions can also contain a `custom` entry with `customType: "atomic:background-compaction-result"` from the removed background compaction; it is ignored.
 
 Historical `compaction` records without `details.strategy: "verbatim-lines"` are retired summary-compaction records. They remain parseable and visible to audit/export tools but are inert in active LLM context.
 
@@ -272,7 +275,7 @@ Older Atomic versions stored logical entry/content-block deletions in `type:"con
 {"type":"context_compaction","id":"ctx12345","parentId":"f6g7h8i9","timestamp":"2024-12-03T14:12:00.000Z","promptVersion":1,"deletedTargets":[{"kind":"entry","entryId":"b2c3d4e5"}],"protectedEntryIds":["a1b2c3d4"],"stats":{"objectsBefore":20,"objectsAfter":19,"objectsDeleted":1,"tokensBefore":50000,"tokensAfter":43000,"percentReduction":14}}
 ```
 
-These records are archival and never produced or applied by current Atomic. When an old session resumes, previously hidden content may re-enter context until verbatim-line compaction creates an active boundary.
+These records are archival and never produced or applied by current Atomic. When an old session resumes, previously hidden content may re-enter context until a compaction creates an active boundary.
 
 ### ContextEditEntry
 
@@ -412,9 +415,9 @@ Entries form a tree:
 `buildSessionProjection()` walks the active branch from root to leaf and replays model, thinking-level, and context-window changes. It selects the latest `compaction` entry whose `details.strategy` is `"verbatim-lines"`, then applies the latest `context_edit` for each selected target. It returns the model-visible messages together with their source entries (`entries[].sourceEntry` and `entries[].messages`); omitted targets produce no message, replacements retain the source entry's role and metadata while changing only content, and the raw selected entries are not modified. `buildSessionContext()` returns just the messages, thinking level, and model from that projection. Provider requests are built from this projection.
 
 - With no active boundary, normal message, custom-message, and branch-summary entries are emitted verbatim.
-- With a boundary whose `firstKeptEntryId` is a string, Atomic emits a single custom-role `customType:"compaction"` message whose text is the durable string plus the losslessly serialized kept tail (the entries from that ID up to the boundary, with context edits applied and retained images kept as image blocks on that message), then the messages appended after the boundary. Kept-tail entries project no standalone messages of their own.
+- With a boundary whose `firstKeptEntryId` is a string, which only boundaries from earlier versions have, Atomic emits a single custom-role `customType:"compaction"` message whose text is the durable string plus the losslessly serialized kept tail (the entries from that ID up to the boundary, with context edits applied and retained images kept as image blocks on that message), then the messages appended after the boundary. Kept-tail entries project no standalone messages of their own.
 - With `firstKeptEntryId: null`, Atomic emits the boundary and post-boundary messages but no pre-boundary ordinary message.
-- With `coveredThroughEntryId`, only the kept tail up to that entry is serialized into the compaction message. The entries after it and before the boundary follow as ordinary messages, with context edits applied; an older `compaction` entry among them contributes nothing.
+- With `coveredThroughEntryId`, which only boundaries from earlier versions have, the entries after it and before the boundary follow the compaction message as ordinary messages, with context edits applied; an older `compaction` entry among them contributes nothing. On an earlier version's boundary with a kept tail, only the tail up to that entry is serialized into the compaction message.
 - If a corrupt/foreign boundary's non-null `firstKeptEntryId` is absent, Atomic emits the boundary followed by post-boundary messages rather than resurrecting all older content.
 - Legacy `context_compaction` entries and non-verbatim `compaction` entries are skipped as inert archival records.
 ## Parsing Example
@@ -436,7 +439,7 @@ for (const line of lines) {
       break;
     case "compaction":
       if (entry.details?.strategy === "verbatim-lines") {
-        console.log(`[${entry.id}] Verbatim compaction: ${entry.details.stats.linesKept}/${entry.details.stats.linesBefore} lines kept`);
+        console.log(`[${entry.id}] Compaction boundary: ${entry.details.form ?? "compacted"}, ${entry.tokensBefore} tokens before`);
       } else {
         console.log(`[${entry.id}] Retired summary-compaction record`);
       }
@@ -511,7 +514,7 @@ for (const stage of stages.filter((session) => session.internal)) {
 - `appendThinkingLevelChange(level)` - Record thinking change
 - `appendContextWindowChange(contextWindow)` - Record context-window selection in tokens
 - `appendModelChange(provider, modelId)` - Record model change
-- `appendCompaction(compactedText, firstKeptEntryId, tokensBefore, details)` - Add a durable verbatim-line compaction boundary; pass `null` when no pre-boundary message is retained
+- `appendCompaction(compactedText, firstKeptEntryId, tokensBefore, details)` - Add a durable compaction boundary; Atomic's own boundaries pass `null` for `firstKeptEntryId`
 - `appendCustomEntry(customType, data?)` - Extension state (not in context)
 - `appendSessionInfo(name)` - Set session display name; an empty string clears it
 - `appendSessionSummary(summary, summarizedThroughId, usage?)` - Store a generated resume-picker summary, anchored to the message it describes
@@ -541,7 +544,7 @@ for (const stage of stages.filter((session) => session.internal)) {
 - `loadFullHistory()` - Read missing sequence ranges and merge them in store order; resolves at once when every entry is held. Rejects with `SessionConflictError` if the session was replaced or recreated after it was opened
 - `getOmittedHistoryTotals()` - Usage and message counts of the entries a `{ history: "tail" }` open left out, or `undefined` when every entry is held
 - `getLastSeq()` - The session's last stored sequence, including entries not in memory
-- `getEntrySeq(id)` - A held entry's sequence, or `undefined` when it is not held
+- `getEntrySeq(id)` - A held entry's sequence, or `undefined` when it is not held. Subagent launch and restoration tolerate a `SessionManager` without `getEntrySeq` or `findEntrySeq`, falling back to `findEntrySeq`, full-history `getEntries()`, or `getBranch()`
 - `findEntrySeq(id)` - Look up an entry's sequence in the store without loading the earlier transcript
 - `forEachStoredEntry(fromSeq, visit)` - Visit every stored entry from `fromSeq` on in store order, reading the ones a `{ history: "tail" }` manager does not hold in pages and keeping none of them. Resolves with the last sequence visited
 - `getSessionRecoveryState()` - Persisted admission keys, delivered Intercom message ids and pooled workflow delivery ids (`deliveryOpIds`) used to prevent duplicate deliveries after resume

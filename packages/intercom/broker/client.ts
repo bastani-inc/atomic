@@ -26,6 +26,8 @@ import type {
 	HostedSessionAssignment,
 	HostedSessionFrameItem,
 } from "../types.js";
+import { IntercomReachUnsupportedError } from "../reach-errors.js";
+import { type IntercomReachPolicy, narrowMemberships } from "../reach-policy.js";
 import { buildSendSignature, PendingSendRegistry, PendingSendTimeoutError } from "./pending-send-registry.js";
 import { readSubagentMessageSource } from "../source-ownership.js";
 import { isMessage, isSessionInfo } from "./client-message-validation.js";
@@ -77,6 +79,7 @@ import {
 	VERIFIED_REGISTRATION_PROTOCOL,
 } from "./protocol-version.js";
 import { IntercomLiveRouteRefusedError, isLiveWorkflowStageRouteRefusalCode } from "../live-route-refusal.js";
+import { IntercomSupervisorAuthorizationRefusedError, SUPERVISOR_AUTHORIZATION_REFUSED_CODE } from "../supervisor-refusal.js";
 import { SEND_RESPONSE_TIMEOUT_MS } from "../retry-policy.js";
 import {
 	isWorkflowFutureStagePredictionFields,
@@ -157,6 +160,17 @@ const HELD_SEND_GRACE_MS = 5000;
 /** #5145: how many outcomes a client remembers hearing, so a second copy of one is not heard again. */
 const HEARD_OUTCOMES_MAX = 1_000;
 
+export function sameReachPolicy(left: IntercomReachPolicy | undefined, right: IntercomReachPolicy | undefined): boolean {
+	if (left === undefined || right === undefined) return left === right;
+	return (
+		left.home === right.home &&
+		left.reachable.length === right.reachable.length &&
+		left.reachable.every((group, index) => right.reachable[index] === group)
+	);
+}
+
+export { IntercomReachUnsupportedError } from "../reach-errors.js";
+
 export interface ExpectedRouting {
   readonly acrossMachines: boolean;
   /**
@@ -169,12 +183,14 @@ export interface ExpectedRouting {
 export interface SendOptions {
   text: string;
   attachments?: Attachment[];
+  displayRanges?: readonly import("../types.js").MessageDisplayRange[];
   replyTo?: string;
   expectsReply?: boolean;
   /** How a busy recipient receives the message; absent means `steer`. */
   delivery?: IntercomDeliveryMode;
   replyError?: string;
   messageId?: string;
+  beforeWrite?: (reach: IntercomReachPolicy | undefined) => void;
   /** The id every copy of one pattern send shares (`Message.broadcastId`). */
   broadcastId?: string;
   /** Internal caller-issued target identity; transport still uses the `to` argument. */
@@ -206,6 +222,7 @@ export interface IntercomClientOptions {
 	 * (#4561), looked up at each connection, since a broker that replaces another may record a different one (#5040).
 	 */
 	readonly brokerSocketPath?: string;
+	readonly reach?: () => IntercomReachPolicy | undefined;
 }
 
 export interface ReleasedChildReply {
@@ -463,6 +480,9 @@ export class IntercomClient extends EventEmitter {
 	private readonly connectTimeoutMs: number;
 	private readonly explicitBrokerSocketPath: string | undefined;
 	private readonly brokerAgentDir: string;
+	private readonly reachSource: (() => IntercomReachPolicy | undefined) | undefined;
+	private sentReach: IntercomReachPolicy | undefined;
+	private readonly pendingReach = new Map<string, { resolve(): void; reject(error: Error): void }>();
 	/** #3761: the broker of the current registration echoed `acknowledgesReceipt`, so it understands `received`. */
 	private brokerAcknowledgesReceipt = false;
 	/**
@@ -569,6 +589,7 @@ export class IntercomClient extends EventEmitter {
 		this.multiplexesPendingStageRoutes = options.multiplexesPendingStageRoutes === true;
 		this.explicitBrokerSocketPath = options.brokerSocketPath;
 		this.brokerAgentDir = getAgentDir();
+		this.reachSource = options.reach;
 	}
 
   private get brokerSocketPath(): string {
@@ -588,6 +609,8 @@ export class IntercomClient extends EventEmitter {
     for (const pending of this.pendingWorkflowInvocationClaims.values()) pending.reject(error);
     for (const pending of this.pendingStageRouteRegistrations.values()) pending.reject(error);
     for (const pending of this.pendingBrokerStatus.values()) pending.reject(error);
+    for (const pending of this.pendingReach.values()) pending.reject(error);
+    this.pendingReach.clear();
     this.pendingLists.clear();
     this.pendingGroupLists.clear();
     this.pendingSupervisorAuthorizations.clear();
@@ -817,11 +840,20 @@ export class IntercomClient extends EventEmitter {
           return;
         }
         try {
+          const reach = this.reachSource?.();
+          const registration = reach === undefined ? session : {
+            ...session,
+            group: reach.home,
+            groups: narrowMemberships(reach, [...normalizeGroups(session.groups, session.group)]),
+          };
+          this._groups = normalizeGroups(registration.groups, registration.group);
+          this.sentReach = reach;
           writeMessage(socket, {
             ...(expectedRouting?.verify === true
               ? { type: "register_verified", expectedRouting: { acrossMachines: expectedRouting.acrossMachines } }
               : { type: "register" }),
-            session,
+            session: registration,
+            ...(reach === undefined ? {} : { reach: { home: reach.home, reachable: [...reach.reachable] } }),
             protocol: { ...BROKER_PROTOCOL },
             ...(registrationGroup !== undefined ? { registrationGroup } : {}),
 			returnAddress: this.returnAddress,
@@ -899,6 +931,7 @@ export class IntercomClient extends EventEmitter {
             && brokerMessage.multiNodeRouting !== "unavailable")
           || (brokerMessage.extendsSaves !== undefined && brokerMessage.extendsSaves !== true)
           || (brokerMessage.marksEndedChildren !== undefined && brokerMessage.marksEndedChildren !== true)
+          || (brokerMessage.enforcesReach !== undefined && brokerMessage.enforcesReach !== true)
           || (brokerMessage.protocol !== undefined && !isBrokerProtocolRange(brokerMessage.protocol as JsonWireValue))) {
           throw new Error("Invalid registered message");
         }
@@ -914,6 +947,10 @@ export class IntercomClient extends EventEmitter {
           && (brokerMessage.multiNodeRouting !== "off") !== expected.acrossMachines
         ) {
           this.emit("_registration_failed", new IntercomRoutingChangedError(expected.acrossMachines));
+          break;
+        }
+        if (this.sentReach !== undefined && brokerMessage.enforcesReach !== true) {
+          this.emit("_registration_failed", new IntercomReachUnsupportedError());
           break;
         }
         this._sessionId = brokerMessage.sessionId;
@@ -934,6 +971,7 @@ export class IntercomClient extends EventEmitter {
         this.brokerExtendsSaves = this.brokerAcknowledgesReceipt && brokerMessage.extendsSaves === true;
         this.brokerMarksEndedChildren = brokerMessage.marksEndedChildren === true;
         this._brokerProtocol = protocolRangeOf(brokerMessage.protocol as BrokerProtocolRange | undefined);
+        void this.syncReach().catch(() => {});
         this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
         break;
       }
@@ -949,6 +987,8 @@ export class IntercomClient extends EventEmitter {
           ? new IntercomBrokerRetiringError(brokerMessage.reason)
           : brokerMessage.code === BROKER_ROUTING_CHANGED_CODE
           ? new IntercomRoutingChangedError(this.registrationExpectedRouting?.acrossMachines ?? false)
+          : brokerMessage.code === SUPERVISOR_AUTHORIZATION_REFUSED_CODE
+          ? new IntercomSupervisorAuthorizationRefusedError(brokerMessage.reason)
           : new Error(brokerMessage.reason);
         if (this._sessionId === null) {
           // Still registering: `connect()` owns the failure and its own cleanup.
@@ -1365,6 +1405,34 @@ export class IntercomClient extends EventEmitter {
         pending.resolve(brokerMessage.group);
         break;
       }
+      case "reach_ack": {
+        const { requestId, groups, reachable } = brokerMessage;
+        if (
+          typeof requestId !== "string" ||
+          !Array.isArray(groups) ||
+          !groups.every((group) => typeof group === "string") ||
+          !Array.isArray(reachable) ||
+          !reachable.every((group) => typeof group === "string")
+        ) {
+          throw new Error("Invalid reach_ack message");
+        }
+        const pending = this.pendingReach.get(requestId);
+        if (!pending) return;
+        this.pendingReach.delete(requestId);
+        this._groups = normalizeGroups(groups);
+        pending.resolve();
+        break;
+      }
+      case "reach_failed": {
+        if (typeof brokerMessage.requestId !== "string" || typeof brokerMessage.reason !== "string") {
+          throw new Error("Invalid reach_failed message");
+        }
+        const pending = this.pendingReach.get(brokerMessage.requestId);
+        if (!pending) return;
+        this.pendingReach.delete(brokerMessage.requestId);
+        pending.reject(new Error(brokerMessage.reason));
+        break;
+      }
       case "membership_ack": {
         const { requestId, groups } = brokerMessage;
         if (typeof requestId !== "string" || !Array.isArray(groups) || !groups.every((group) => typeof group === "string")) {
@@ -1563,6 +1631,38 @@ export class IntercomClient extends EventEmitter {
     });
   }
 
+  syncReach(): Promise<void> {
+    const reach = this.reachSource?.();
+    const sent = this.sentReach;
+    if (reach === undefined || sent === undefined || !this._sessionId || sameReachPolicy(sent, reach)) return Promise.resolve();
+    let socket: net.Socket;
+    try {
+      socket = this.requireActiveSocket();
+    } catch {
+      return Promise.resolve();
+    }
+    const requestId = randomUUID();
+    return new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (!this.pendingReach.delete(requestId)) return;
+        void this.requestTimeout(socket, new Error("Reach update timeout")).then(reject);
+      }, GROUP_REQUEST_TIMEOUT_MS);
+      this.pendingReach.set(requestId, {
+        resolve: () => { clearTimeout(timeout); resolve(); },
+        reject: (error) => { clearTimeout(timeout); reject(error); },
+      });
+      try {
+        writeMessage(socket, { type: "set_reach", requestId, reachable: [...reach.reachable] });
+        this.sentReach = reach;
+        this._groups = new Set(narrowMemberships(reach, [...this._groups]));
+      } catch (error) {
+        clearTimeout(timeout);
+        this.pendingReach.delete(requestId);
+        reject(toError(error));
+      }
+    });
+  }
+
   joinGroup(group: string): Promise<string[]> {
     return this.updateMembership("join_group", group);
   }
@@ -1637,7 +1737,7 @@ export class IntercomClient extends EventEmitter {
    */
   reserveRestoringRecipient(
     capability: string,
-    options: { group?: string; aliases?: readonly string[]; dormant?: boolean } = {},
+    options: { group?: string; aliases?: readonly string[]; dormant?: boolean; holdMs?: number } = {},
   ): Promise<void> {
     return this.restoringRecipientRequest({
       type: "reserve_restoring_recipient",
@@ -1645,6 +1745,7 @@ export class IntercomClient extends EventEmitter {
       ...(options.group === undefined ? {} : { group: options.group }),
       ...(options.aliases === undefined ? {} : { aliases: [...options.aliases] }),
       ...(options.dormant === true ? { dormant: true } : {}),
+      ...(options.holdMs === undefined ? {} : { holdMs: options.holdMs }),
     });
   }
 
@@ -2193,12 +2294,17 @@ export class IntercomClient extends EventEmitter {
       replyError: options.replyError,
       ...(options.broadcastId === undefined ? {} : { broadcastId: options.broadcastId }),
       source: this._messageSource,
-      content: { text: options.text, attachments: options.attachments },
+      content: {
+        text: options.text,
+        attachments: options.attachments,
+        ...(options.displayRanges === undefined ? {} : { displayRanges: options.displayRanges }),
+      },
     };
     if (options.onReplyTarget !== undefined) {
       this.pendingReplyTargets.set(acquired.attempt.attemptId, { messageId, bind: options.onReplyTarget });
     }
     try {
+      options.beforeWrite?.(this.sentReach);
 		writeMessage(socket, {
 			type,
 			to,

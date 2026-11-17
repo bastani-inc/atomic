@@ -15,6 +15,7 @@ import {
 	createAskUserQuestionToolDefinition,
 } from "../src/core/tools/ask-user-question/ask-user-question.ts";
 import type { QuestionParams } from "../src/core/tools/ask-user-question/tool/types.ts";
+import { ToolBlock, ToolBlockGroup, ToolBlockRecords } from "../src/modes/interactive/components/tool-block.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 
 function renderExportedDocument(htmlPath: string) {
@@ -207,18 +208,21 @@ test("HTML exports retain folded questionnaire summaries without duplicating raw
 		const questionExecution = document.getElementById("tool-call-question-call");
 		assert.ok(questionExecution);
 		assert.match(questionExecution.textContent ?? "", /Navigation.*Build it as shown/);
+		assert.doesNotMatch(questionExecution.textContent ?? "", /Questions · Navigation/);
 		assert.doesNotMatch(questionExecution.textContent ?? "", /User has answered your questions:/);
 		assert.equal(questionExecution.querySelector(".tool-output"), null);
 
 		const declinedExecution = document.getElementById("tool-call-declined-call");
 		assert.ok(declinedExecution);
-		assert.match(declinedExecution.textContent ?? "", /Declined · Nav \(Build \/ Skip\)/);
+		assert.match(declinedExecution.textContent ?? "", /Questions cancelled/);
+		assert.doesNotMatch(declinedExecution.textContent ?? "", /Questions · Nav/);
 		assert.doesNotMatch(declinedExecution.textContent ?? "", /User declined to answer questions/);
 		assert.equal(declinedExecution.querySelector(".tool-output"), null);
 
 		const answeredCtrlExecution = document.getElementById("tool-call-answered-ctrl-call");
 		assert.ok(answeredCtrlExecution);
-		assert.match(answeredCtrlExecution.textContent ?? "", /Nav → Typed · notes: note!/);
+		assert.match(answeredCtrlExecution.textContent ?? "", /Nav → "Typed" · notes: note!/);
+		assert.doesNotMatch(answeredCtrlExecution.textContent ?? "", /Questions · Nav/);
 		assert.doesNotMatch(answeredCtrlExecution.textContent ?? "", /User has answered your questions:/);
 		assert.equal(answeredCtrlExecution.querySelector(".tool-output"), null);
 
@@ -234,6 +238,181 @@ test("HTML exports retain folded questionnaire summaries without duplicating raw
 		const plainExecution = document.getElementById("tool-call-plain-id");
 		assert.ok(plainExecution);
 		assert.match(plainExecution.textContent ?? "", /Plain fallback body/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("HTML export replaces pending calls with canonical ToolBlock and ToolBlockGroup results at widths 80 and 160 without duplicate headers, HTML injection, or private fallback leaks (#5350)", async () => {
+	initTheme("dark");
+	const dir = mkdtempSync(join(tmpdir(), "atomic-canonical-export-"));
+	try {
+		const multiParams: QuestionParams = {
+			questions: [
+				{
+					question: "How should navigation work?",
+					header: "Nav <b>tag</b>",
+					options: [
+						{ label: "Build <script>alert(1)</script>", description: "Use mockups" },
+						{ label: "Simplify", description: "Fewer controls" },
+					],
+				},
+				{
+					question: "Which scope?",
+					header: "Scope",
+					options: [
+						{ label: "Full", description: "Everything" },
+						{ label: "Minimal", description: "Core only" },
+					],
+				},
+			],
+		};
+		const questionTool = createAskUserQuestionToolDefinition();
+		const canonicalGroupTool: ToolRenderers = {
+			renderCall: () => new ToolBlock({ status: "running", title: "Pending group call" }),
+			renderResult: (_result, options) =>
+				new ToolBlockGroup([
+					new ToolBlock({
+						status: "success",
+						title: "Group primary",
+						details: new ToolBlockRecords(
+							options.expanded
+								? ["step 1 <img src=x onerror=alert(1)>", "step 2"]
+								: ["step 1 <img src=x onerror=alert(1)>"],
+						),
+					}),
+				]),
+		};
+		const canonicalPendingTool: ToolRenderers = {
+			renderCall: () =>
+				new ToolBlockGroup([
+					new ToolBlock({ status: "running", title: "Canonical pending call", args: "<svg onload=alert(1)>" }),
+				]),
+		};
+		const privateThrowingTool: ToolRenderers = {
+			renderCall: () => {
+				throw new Error("call formatter exploded: secret-call-detail");
+			},
+			renderResult: () => {
+				throw new Error("result formatter exploded: secret-result-detail");
+			},
+		};
+
+		for (const width of [80, 160]) {
+			const session = SessionManager.inMemory(dir);
+			await session.appendMessage(
+				fauxAssistantMessage(
+					[
+						fauxToolCall("ask_user_question", multiParams, { id: "multi-question-call" }),
+						fauxToolCall("canonical_group", { target: "alpha" }, { id: "group-call" }),
+						fauxToolCall("canonical_pending", { target: "beta" }, { id: "pending-block-call" }),
+						fauxToolCall("private_tool", { apiKey: "super-secret-arg" }, { id: "private-call" }),
+					],
+					{ stopReason: "toolUse" },
+				),
+			);
+			await session.appendMessage({
+				role: "toolResult",
+				toolCallId: "multi-question-call",
+				toolName: "ask_user_question",
+				...buildQuestionnaireResponse(
+					{
+						answers: [
+							{
+								questionIndex: 0,
+								question: multiParams.questions[0]!.question,
+								kind: "option",
+								answer: "Build <script>alert(1)</script>",
+							},
+							{
+								questionIndex: 1,
+								question: multiParams.questions[1]!.question,
+								kind: "custom",
+								answer: "Custom <img src=x onerror=alert(1)>",
+							},
+						],
+						cancelled: false,
+					},
+					multiParams,
+				),
+				isError: false,
+				timestamp: Date.now(),
+			});
+			await session.appendMessage({
+				role: "toolResult",
+				toolCallId: "group-call",
+				toolName: "canonical_group",
+				content: [
+					{ type: "text", text: "retained group text" },
+					{ type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+				],
+				details: {},
+				isError: false,
+				timestamp: Date.now(),
+			});
+			await session.appendMessage({
+				role: "toolResult",
+				toolCallId: "private-call",
+				toolName: "private_tool",
+				content: [{ type: "text", text: "super-secret-raw-output" }],
+				details: {},
+				isError: false,
+				timestamp: Date.now(),
+			});
+
+			const output = await exportSessionToHtml(session, undefined, {
+				outputPath: join(dir, `export-${width}.html`),
+				toolRenderer: createToolHtmlRenderer({
+					getToolRenderers: (name) => {
+						if (name === "ask_user_question") return questionTool;
+						if (name === "canonical_group") return canonicalGroupTool;
+						if (name === "canonical_pending") return canonicalPendingTool;
+						if (name === "private_tool") return privateThrowingTool;
+						return undefined;
+					},
+					theme,
+					cwd: dir,
+					width,
+				}),
+			});
+			const { document } = renderExportedDocument(output);
+
+			const multiEl = document.getElementById("tool-call-multi-question-call");
+			assert.ok(multiEl);
+			const multiText = multiEl.textContent ?? "";
+			assert.match(multiText, /Nav <b>tag<\/b> → Build <script>alert\(1\)<\/script>/);
+			assert.match(multiText, /⎿\s+Scope → "Custom <img src=x onerror=alert\(1\)>"/);
+			assert.doesNotMatch(multiText, /Questions ·/);
+			assert.equal(multiEl.querySelector(".tool-output"), null);
+			assert.equal(multiEl.querySelector("script"), null);
+			assert.equal(multiEl.querySelector("b"), null);
+			assert.equal(multiEl.querySelector("img"), null);
+
+			const groupEl = document.getElementById("tool-call-group-call");
+			assert.ok(groupEl);
+			const groupText = groupEl.textContent ?? "";
+			assert.match(groupText, /Group primary/);
+			assert.doesNotMatch(groupText, /Pending group call/);
+			assert.equal((groupText.match(/Group primary/g) ?? []).length, 1);
+			assert.match(groupText, /step 1 <img src=x onerror=alert\(1\)>/);
+			assert.match(groupText, /step 2/);
+			assert.equal(groupEl.querySelector("img"), null);
+
+			const pendingBlockEl = document.getElementById("tool-call-pending-block-call");
+			assert.ok(pendingBlockEl);
+			assert.match(pendingBlockEl.textContent ?? "", /Canonical pending call\(<svg onload=alert\(1\)>\)/);
+			assert.equal(pendingBlockEl.querySelector("svg"), null);
+
+			const privateEl = document.getElementById("tool-call-private-call");
+			assert.ok(privateEl);
+			const privateText = privateEl.textContent ?? "";
+			assert.match(privateText, /private_tool/);
+			assert.match(privateText, /Result renderer failed/);
+			assert.doesNotMatch(
+				privateText,
+				/super-secret-arg|super-secret-raw-output|secret-call-detail|secret-result-detail/,
+			);
+		}
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

@@ -97,6 +97,7 @@ export interface StageControlHandle {
 	 * on a local worker). Handles with a session expose it through the session instead.
 	 */
 	streamingMessage?(): NonNullable<NonNullable<AgentSession["agent"]>["state"]["streamingMessage"]> | undefined;
+	inFlightAttemptUsage?(): import("../../shared/types.js").WorkflowModelUsage | undefined;
 	/** Set when the stage's session runs in another process. */
 	readonly placement?: StagePlacement;
 	/**
@@ -122,7 +123,7 @@ export interface StageControlHandle {
 	): Promise<BashResult>;
 	abortBash?(): void;
 	readonly isBashRunning?: boolean;
-	compact?(): Promise<void>;
+	compact?(instructions?: string): Promise<void>;
 	abortCompaction?(): void;
 	/**
 	 * Pending steering/follow-up text on this stage's session, kept current from

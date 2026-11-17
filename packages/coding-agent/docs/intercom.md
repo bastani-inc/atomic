@@ -15,6 +15,7 @@ The extension registers commands and tools at startup. Connections are lazy: a s
 - **Session messaging** - `send`, `ask` (never blocks; the reply arrives as a message), `reply`, `pending`, `cancel`, `list`, `groups`, and `status` via the `intercom` tool
 - **Runtime groups** - Add or remove named memberships without restarting; joined sessions keep their broker IDs and later subagents inherit the most recently joined membership
 - **Session and group discovery** - List connected sessions or every available group, including session counts and membership markers
+- **Host-set reach** - An SDK host can give a session its own group and the other groups it may reach, enforced by the broker (see [Reach policies](/intercom/reference#reach-policies))
 - **Keyboard overlay** - ALT+M or `/intercom` opens a session picker and compose overlay
 - **Attachments** - Share `file`, `snippet`, and `context` payloads between sessions
 - **Subagent escalation** - Delegated children get a `contact_supervisor` tool for decisions, structured interviews, and progress updates
@@ -157,7 +158,7 @@ The sender chooses `delivery` for each message; override the default by urgency.
 
 For example, `intercom({ action: "send", to: "worker", message: "Stop; the spec changed", delivery: "interrupt" })` stops the worker's current tool call. With `"interrupt"`, tools that ignore cancellation finish first, and completed side effects are not undone or replayed.
 
-This works for foreground and background children. Startup messages join the original task, multiple messages keep arrival order, and asks retain their reply thread. Subagent `pause` and `quit`, owner cancellation, host stop, and terminal children or closed stages take precedence over later input. Use an exact child name or full session ID from `intercom list`, not a workflow-stage path.
+This works for foreground and background children. Startup messages join the original task, multiple messages keep arrival order, and asks retain their reply thread. Messages from one sender always reach the recipient in the order they arrived, whichever way each is admitted: at once, after the recipient goes idle, on resume, or relayed by a closed workflow stage. A message admitted at once is written after any earlier message from the same sender that was still waiting for the recipient to go idle. Subagent `pause` and `quit`, owner cancellation, host stop, and terminal children or closed stages take precedence over later input. Use an exact child name or full session ID from `intercom list`, not a workflow-stage path.
 
 A busy non-interactive recipient that is neither an admitted subagent nor a workflow stage can still refuse a message without interrupting its task. A successful `send` receipt means the recipient saved the message, not that its model accepted it. The refusal carries the original reply thread: an `ask` gets it as a failed-ask message (or as an error while its call is still waiting); otherwise the sender sees **Intercom delivery failed** feedback with a `Sent:` timestamp. That feedback bypasses the ordinary idle queue and does not trigger a standalone agent turn. During an active turn, protected delivery makes it visible and reconciles it at a protocol-safe boundary. Its wording describes the refused send, not the recipient's later activity.
 

@@ -60,13 +60,10 @@ export interface CreateAgentSessionOptions {
 	thinkingLevel?: ThinkingLevel;
 	/**
 	 * Ordered fallback models as provider/model strings with optional :thinkingLevel suffix.
-	 * Used by main-chat turns and borrowed, planner-only, for compaction range planning when
-	 * the current model cannot produce a usable plan — so a configured candidate may receive
-	 * the compaction transcript. Borrowing never changes the session model or thinking level.
-	 * Default: settings.fallbackModels
+	 * Used by main-chat turns. Default: settings.fallbackModels
 	 */
 	fallbackModels?: string[];
-	/** Hard eligibility gate applied before fallback inference, including compaction borrowing. */
+	/** Hard eligibility gate applied before fallback inference. */
 	isFallbackModelAllowed?: (model: Model<Api>, effort: string | undefined) => boolean;
 	/** Models available for cycling (Ctrl+P in interactive mode) */
 	scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
@@ -130,6 +127,15 @@ export interface CreateAgentSessionOptions {
 	/** Typed capability policy for an in-process subagent child. */
 	subagentPolicy?: SubagentChildPolicy;
 	/**
+	 * The session's Intercom home group and the other groups it may reach. `group` replaces the group from
+	 * `ATOMIC_INTERCOM_GROUP`, Intercom `config.json` and the project; the session keeps its workflow extension. The session
+	 * lists, sends to and asks only sessions in `group`, `reachable`, or subgroups under `group`, and the workflow stages
+	 * it starts. It joins only `group` and `reachable` and can't leave `group`. Reach is one way. The broker enforces it. Change
+	 * `reachable` later with `session.intercom.setReachable(groups)`. Invalid values throw `IntercomPolicyError`.
+	 */
+	intercom?: import("./intercom-policy.ts").IntercomSessionOptions;
+	parentIntercomPolicy?: import("./intercom-policy.ts").IntercomPolicyView;
+	/**
 	 * Internal: parent-issued shell task owner for an in-process subagent child. Supplied by the
 	 * parent's child-session options, so child background shells appear in the parent's `/tasks`.
 	 */
@@ -145,11 +151,6 @@ export interface CreateAgentSessionOptions {
 	 * options from `getChildSessionOptions()` carry the parent's admission, or `null` when the parent holds none.
 	 */
 	resourceAdmission?: ResourceAdmission | null;
-	/**
-	 * Receives "compaction ready" wakes when a background compaction result is stored (#4330). Omitted,
-	 * the session notifies its own `onCompactionReady` listeners and applies the result at its next turn.
-	 */
-	compactionWake?: import("./compaction/background-compaction.ts").CompactionWakeDispatcher;
 	resourceAdmissionSignal?: AbortSignal;
 	resourceAdmissionDelegated?: boolean;
 	/**

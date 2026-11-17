@@ -46,9 +46,9 @@ Imported IDs are kept verbatim, including an empty ID. Resume an imported empty 
 { "sessions": { "storage": { "dir": "sessions" } } }
 ```
 
-This selects JSONL under `~/.atomic/sessions`. Use `{ "path": "sessions.sqlite" }` for another local SQLite file, `{ "memory": true }` for ephemeral sessions, or an adapter selection for a user-installed database driver. The `sessionDir` setting has been removed without an alias.
+This selects JSONL under `sessions` in the [storage home](/storage#storage-home) (`~/.atomic/sessions` by default, or `<agentDir>/sessions` when `ATOMIC_CODING_AGENT_DIR` is customized). Use `{ "path": "sessions.sqlite" }` for another local SQLite file, `{ "memory": true }` for ephemeral sessions, or an adapter selection for a user-installed database driver. The `sessionDir` setting has been removed without an alias.
 
-Precedence is SDK `sessionStore`, `--no-session`, `--session-dir <dir>` or `--session-store <path>` (mutually exclusive CLI selections), `--storage` or `--storage-file`, `ATOMIC_SESSIONS_STORAGE` or non-empty `ATOMIC_CODING_AGENT_SESSION_DIR`, `ATOMIC_STORAGE`, `sessions.storage`, shared `storage`, then the default SQLite file. Each selection wins as a whole; project selections replace global ones rather than merging fields. Relative settings paths resolve against Atomic home; `--session-dir`, `--session-store`, and `ATOMIC_CODING_AGENT_SESSION_DIR` resolve against the working directory. Changing stores selects a different history, and only the default store shows earlier JSONL sessions; keep the original store to return to it.
+Precedence is SDK `sessionStore`, `--no-session`, `--session-dir <dir>` or `--session-store <path>` (mutually exclusive CLI selections), `--storage` or `--storage-file`, `ATOMIC_SESSIONS_STORAGE` or non-empty `ATOMIC_CODING_AGENT_SESSION_DIR`, `ATOMIC_STORAGE`, `sessions.storage`, shared `storage`, then the default SQLite file. Each selection wins as a whole; project selections replace global ones rather than merging fields. Relative settings paths resolve against the [storage home](/storage#storage-home); `--session-dir`, `--session-store`, and `ATOMIC_CODING_AGENT_SESSION_DIR` resolve against the working directory. Changing stores selects a different history, and only the default store shows earlier JSONL sessions; keep the original store to return to it.
 
 `--storage '<json>'`, `--storage-file <path>`, and the `ATOMIC_STORAGE` and `ATOMIC_SESSIONS_STORAGE` variables select storage for one process, using the same JSON as the settings, without changing settings. `/resume` then lists the sessions in that process's store. See [Selecting storage per process](/storage#selecting-storage-per-process) for the precedence table and conflict rules.
 
@@ -83,7 +83,7 @@ For the JSONL file format and SessionManager API, see [Session Format](/session-
 | `/tree` | Navigate the current session tree |
 | `/fork` | Create a new session from a previous user message |
 | `/clone` | Duplicate the current active branch into a new session |
-| `/compact` | Compact transcript lines verbatim while preserving exactly the configured number of newest context-visible messages; see [Compaction](/compaction) |
+| `/compact [instructions]` | Clear the context window, or compact it with a configured compactor model; the agent recovers what it needs from session history. See [Compaction](/compaction) |
 | `/export [file]` | Export session to HTML |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
 
@@ -125,7 +125,7 @@ Sessions written in formats 1, 2, and 3, and early 0.9.38 alpha sessions whose h
 
 If the default store's earlier sessions folder holds several copies of one session, such as conflict copies left by a file-sync tool, the picker lists the copy with the newest message and opening the session imports that copy. Other copies stay on disk unchanged.
 
-Resuming restores saved verbatim compaction without another planning request. Older sessions with retired logical-deletion compaction can bring previously hidden content back into context.
+Resuming restores the saved compaction boundary without another model request. Older sessions with retired logical-deletion compaction can bring previously hidden content back into context.
 
 When you resume at startup with the default tool selection, Atomic restores the tools recorded in the session, including tools activated during the conversation. A tool the session dropped only because it was not available when a turn ran, for example while its extension had not loaded, comes back like in a new session; a tool an extension or SDK caller turned off with `setActiveTools` stays off. `--tools +name,-name` modifies that restored selection. Explicit `--tools name,...`, `--no-tools`, and `--no-builtin-tools` keep their requested tool restrictions, and excluded tools stay excluded. A later plain resume keeps the tools the session last ran with, as in upstream pi: tools an earlier `--tools`, `--no-tools`, `--exclude-tools` or `-name` modifier left out stay off, and `--tools +name` brings one back. Sessions with no recorded tool selection use the current defaults.
 
@@ -185,7 +185,7 @@ The agent can look back at this project's earlier sessions and workflow runs, ev
 
 `search` with `history://sessions`, `history://workflows` or `history://` finds text in the most recent records and labels each match with a URL and line number that `read` can open. Searching workflow runs also searches their stages' session transcripts, which session listings leave out because stage sessions are internal. A multi-record search covers one page, the newest 25 records unless you add `?limit=N` and `?offset=N`, and skips the current session, which you reach through its own `history://sessions/<id>` URL instead. Its first result, kept even when the search is narrowed with `:N-M`, says which records it covered and gives the URL that continues the search. When `history://` searches both and one of them cannot be read, for example because no workflow history is registered, the result names it and the reason beside the other's matches. A phrase that straddles a split point of a very long line can be missed.
 
-When a view or search covers other projects, its links carry `?project=` so they read back in the same scope. A workflow stage's session opens through its run even when the stage ran in its own directory or worktree. The current session always opens through its own URL. After a compaction removes lines from the agent's context, the compacted context names that URL so the agent can `search` it for the removed text, including text removed by earlier compactions of the same session, and `read` it with `:N-M`. It also points the agent at `history://sessions`, `history://workflows` and `history://` for the project's other sessions and workflow runs, before it redoes an investigation or when a removed decision, error message, file path or result matters, and reminds it that a multi-record search covers the newest records and pages on with `?offset=`. Compaction itself adds a short `Recalled context` section of matching lines from this history; see [Recalled context](/compaction#recalled-context).
+When a view or search covers other projects, its links carry `?project=` so they read back in the same scope. A workflow stage's session opens through its run even when the stage ran in its own directory or worktree. The current session always opens through its own URL. After a compaction, the boundary message names that exact URL, the lines that hold the earlier conversation and the line the boundary starts on, so the agent can `search` it and `read` narrow ranges with `:N-M` to recover what the task needs, including text from earlier compactions of the same session. See [Context cleared](/compaction#context-cleared).
 
 By default only the current project's history is visible. Other projects' sessions appear only when a sessions URL carries `?project=all` or `?project=<dir>`, which the agent uses only when you ask it to. Workflow history is always limited to the current project and includes runs you started with `/workflow` as well as runs the agent started, including finished runs that recorded no checkpoints and cancelled runs. `history://` is read-only.
 
@@ -278,6 +278,6 @@ Moved to [Compaction & Branch Summarization](/compaction#branch-summaries).
 
 ## Session Format
 
-Sessions contain message entries, model changes, thinking-level changes, context-window changes, labels, active verbatim `compaction` boundaries, branch summaries, and extension entries. Explicit JSONL stores and exports serialize those entries as JSONL. Retired `context_compaction` and non-verbatim `compaction` records remain parseable but inert.
+Sessions contain message entries, model changes, thinking-level changes, context-window changes, labels, active `compaction` boundaries, branch summaries, and extension entries. Explicit JSONL stores and exports serialize those entries as JSONL. Retired `context_compaction` and non-verbatim `compaction` records remain parseable but inert.
 
 For parsers, extensions, SDK usage, and the full SessionManager API, see [Session Format](/session-format).

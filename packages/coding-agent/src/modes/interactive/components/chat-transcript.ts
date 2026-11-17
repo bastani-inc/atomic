@@ -12,6 +12,7 @@ import {
 	type WheelScrollLines,
 } from "@bastani/atomic-tui";
 import { isUserPromptRow } from "./jump-to-latest.ts";
+import { disposeRenderer as disposeComponent } from "./renderer-disposal.js";
 import { WheelScrollAccelerator } from "./wheel-scroll-accelerator.ts";
 
 /**
@@ -69,8 +70,6 @@ interface TranscriptRowLayout {
 	segments: readonly RowWindowSegment[];
 	rowCount: number;
 }
-
-type DisposableComponent = Component & { dispose?: () => void };
 
 /** `ensureBlockCache` found every block current. */
 const UNCHANGED = Number.POSITIVE_INFINITY;
@@ -132,10 +131,14 @@ interface StaticComponentRows {
 type ComponentRows = WindowedComponentRows | StaticComponentRows;
 
 export function addChatTranscriptEntry(container: Container, component: Component, role: ChatTranscriptRole): void {
-	if (needsLeadingSpacer(role) && container.children.length > 0) {
+	if (needsLeadingSpacer(role) && container.children.length > 0 && !ownsLeadingSpacer(component)) {
 		container.addChild(new Spacer(1));
 	}
 	container.addChild(component);
+}
+
+function ownsLeadingSpacer(component: Component): boolean {
+	return "ownsLeadingSpacer" in component && component.ownsLeadingSpacer === true;
 }
 
 function needsLeadingSpacer(role: ChatTranscriptRole): boolean {
@@ -159,6 +162,8 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 	private blockCache: Array<CachedChatTranscriptBlock<TEntry> | undefined> = [];
 	private measuredRows: MeasuredRowWindow | undefined;
 	private readonly layout: TranscriptRowLayout = { starts: [], prompts: [], segments: [], rowCount: 0 };
+	private dirtyEntries = new WeakSet<TEntry>();
+	private staticComponents: readonly Component[] = [];
 	/** Per-entry heights recorded by the most recent `renderAllRows`. */
 	private staticSegments: readonly RowWindowSegment[] = [];
 	/** Width those heights were measured at; they mean nothing at another width. */
@@ -245,9 +250,17 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		return this.measuredRows;
 	}
 
+	requestEntryRender(entry: TEntry): void {
+		this.dirtyEntries.add(entry);
+		this.measuredRows = undefined;
+	}
+
 	invalidate(): void {
 		for (const block of this.blockCache) disposeComponent(block?.component);
+		for (const component of new Set(this.staticComponents)) disposeComponent(component);
 		this.blockCache = [];
+		this.staticComponents = [];
+		this.dirtyEntries = new WeakSet<TEntry>();
 		this.measuredRows = undefined;
 	}
 
@@ -304,18 +317,22 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		if (entry === undefined) return undefined;
 		const key = this.cacheKey?.(entry, index) ?? `${index}:${entry.role}`;
 		const spaced = index > 0 && needsLeadingSpacer(entry.role);
-		if (cached !== undefined && cached.width === width && sameCacheKey(cached.key, key)) {
-			return cached.spaced === spaced ? cached : withSpacing(cached, spaced);
+		const reusable = cached !== undefined && cached.width === width && sameCacheKey(cached.key, key);
+		if (reusable && !this.dirtyEntries.has(entry)) {
+			const cachedSpaced = spaced && leadsWithSpacer(cached.component, cached.body);
+			return cached.spaced === cachedSpaced ? cached : withSpacing(cached, cachedSpaced);
 		}
-		const component = this.renderEntry(entry);
+		this.dirtyEntries.delete(entry);
+		const component = reusable ? cached.component : this.renderEntry(entry);
 		const body = component.render(width);
 		const bodyPromptRows: number[] = [];
 		for (let row = 0; row < body.length; row++) {
 			if (isUserPromptRow(body[row] ?? "")) bodyPromptRows.push(row);
 		}
+		const blockSpaced = spaced && leadsWithSpacer(component, body);
 		return withSpacing(
-			{ entry, key, width, component, body, bodyPromptRows, spaced, lines: [], promptRows: [] },
-			spaced,
+			{ entry, key, width, component, body, bodyPromptRows, spaced: blockSpaced, lines: [], promptRows: [] },
+			blockSpaced,
 		);
 	}
 
@@ -353,12 +370,23 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 	private renderAllRows(width: number): string[] {
 		const lines: string[] = [];
 		const segments: RowWindowSegment[] = [];
-		for (let index = 0; index < this.entries.length; index += 1) {
-			const entry = this.entries[index];
-			if (entry === undefined) continue;
-			const block = this.renderEntryBlock(this.renderEntry(entry), entry, index, width);
-			segments.push({ id: entry, rows: block.length });
-			lines.push(...block);
+		const nextComponents: Component[] = [];
+		try {
+			for (let index = 0; index < this.entries.length; index += 1) {
+				const entry = this.entries[index];
+				if (entry === undefined) continue;
+				const component = this.renderEntry(entry);
+				nextComponents.push(component);
+				const block = this.renderEntryBlock(component, entry, index, width);
+				segments.push({ id: entry, rows: block.length });
+				for (const line of block) lines.push(line);
+			}
+		} finally {
+			const retained = new Set(nextComponents);
+			for (const component of new Set(this.staticComponents)) {
+				if (!retained.has(component)) disposeComponent(component);
+			}
+			this.staticComponents = nextComponents;
 		}
 		this.staticSegments = segments;
 		this.staticSegmentsWidth = width;
@@ -366,9 +394,11 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 	}
 
 	private renderEntryBlock(component: Component, entry: TEntry, index: number, width: number): string[] {
+		const rendered = component.render(width);
+		if (rendered.length === 0) return [];
 		const lines: string[] = [];
-		if (index > 0 && needsLeadingSpacer(entry.role)) lines.push("");
-		lines.push(...component.render(width));
+		if (index > 0 && needsLeadingSpacer(entry.role) && !ownsLeadingSpacer(component)) lines.push("");
+		for (const line of rendered) lines.push(line);
 		return lines;
 	}
 }
@@ -413,8 +443,8 @@ function withSpacing<TEntry extends ChatTranscriptEntryLike>(
 	};
 }
 
-function disposeComponent(component: Component | undefined): void {
-	(component as DisposableComponent | undefined)?.dispose?.();
+function leadsWithSpacer(component: Component, body: readonly string[]): boolean {
+	return body.length > 0 && !ownsLeadingSpacer(component);
 }
 
 /** Alt+wheel moves this many wheel steps at once, as the main transcript does. */

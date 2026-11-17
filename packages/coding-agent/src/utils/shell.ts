@@ -1,4 +1,4 @@
-import { accessSync, constants } from "node:fs";
+import { accessSync, constants, lstatSync, statSync } from "node:fs";
 import { delimiter, join, win32 } from "node:path";
 import { Worker } from "node:worker_threads";
 import { spawn, spawnSync } from "child_process";
@@ -41,6 +41,21 @@ function shellPathExists(path: string): boolean {
 	}
 }
 
+function isDirectoryEntry(path: string): boolean {
+	try {
+		const entry = lstatSync(path, { throwIfNoEntry: false });
+		if (entry === undefined || entry.isFile()) return false;
+		if (entry.isDirectory()) return true;
+		return entry.isSymbolicLink() && statSync(path, { throwIfNoEntry: false })?.isDirectory() === true;
+	} catch {
+		return false;
+	}
+}
+
+function executableCandidateExists(path: string): boolean {
+	return shellPathExists(path) && !isDirectoryEntry(path);
+}
+
 const MISSING_EXECUTABLE_RECHECK_MS = 30_000;
 
 interface ExecutableLookup {
@@ -53,7 +68,7 @@ const executablePathLookups = new Map<string, ExecutableLookup>();
 function isReusableLookup(lookup: ExecutableLookup): boolean {
 	return lookup.path === null
 		? Date.now() - lookup.checkedAt < MISSING_EXECUTABLE_RECHECK_MS
-		: shellPathExists(lookup.path);
+		: executableCandidateExists(lookup.path);
 }
 
 /**
@@ -61,7 +76,7 @@ function isReusableLookup(lookup: ExecutableLookup): boolean {
  * A missing executable is looked up again once its result is 30 seconds old.
  */
 function findExecutableOnPath(executable: string): string | null {
-	const key = `${executable}\0${process.env.PATH ?? ""}`;
+	const key = `${executable}\0${process.env.PATH ?? ""}\0${process.cwd()}`;
 	const cached = executablePathLookups.get(key);
 	if (cached && isReusableLookup(cached)) return cached.path;
 	const path = lookupExecutableOnPath(executable);
@@ -69,26 +84,23 @@ function findExecutableOnPath(executable: string): string | null {
 	return path;
 }
 
-function lookupExecutableOnPath(executable: string): string | null {
-	if (process.platform === "win32") {
-		// Windows: use 'where' and check the returned path.
-		try {
-			const result = spawnSync("where", [executable], {
-				encoding: "utf-8",
-				timeout: 5000,
-				env: createChildProcessEnvironment(),
-			});
-			if (result.status === 0 && result.stdout) {
-				const firstMatch = result.stdout.trim().split(/\r?\n/)[0];
-				if (firstMatch && shellPathExists(firstMatch)) {
-					return firstMatch;
-				}
-			}
-		} catch {
-			// Ignore errors
+function scanWindowsPath(executable: string): string | null {
+	const extensions = win32.extname(executable)
+		? [""]
+		: (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+	for (const entry of [process.cwd(), ...(process.env.PATH ?? "").split(win32.delimiter)]) {
+		const directory = entry.trim().replace(/^"(.*)"$/, "$1");
+		if (!directory) continue;
+		for (const extension of extensions) {
+			const candidate = win32.resolve(process.cwd(), directory, `${executable}${extension}`);
+			if (executableCandidateExists(candidate)) return candidate;
 		}
-		return null;
 	}
+	return null;
+}
+
+function lookupExecutableOnPath(executable: string): string | null {
+	if (process.platform === "win32") return scanWindowsPath(executable);
 
 	// Unix: Use 'which' and trust its output (handles Termux and special filesystems)
 	try {
@@ -119,7 +131,7 @@ function lookupExecutableOnPath(executable: string): string | null {
 export function getShellConfig(customShellPath?: string): ShellConfig {
 	// 1. Check user-specified shell path
 	if (customShellPath) {
-		if (shellPathExists(customShellPath)) {
+		if (executableCandidateExists(customShellPath)) {
 			return getBashShellConfig(customShellPath);
 		}
 		throw new Error(`Custom shell path not found: ${customShellPath}`);
@@ -138,7 +150,7 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 		}
 
 		for (const path of paths) {
-			if (shellPathExists(path)) {
+			if (executableCandidateExists(path)) {
 				return getBashShellConfig(path);
 			}
 		}
@@ -159,7 +171,7 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 	}
 
 	// Unix: try /bin/bash, then bash on PATH, then fallback to sh
-	if (shellPathExists("/bin/bash")) {
+	if (executableCandidateExists("/bin/bash")) {
 		return getBashShellConfig("/bin/bash");
 	}
 
@@ -180,14 +192,14 @@ export function getPowerShellConfig(): ShellConfig {
 	const programFiles = process.env.ProgramFiles;
 	if (!shell && programFiles) {
 		const pwsh7 = win32.join(programFiles, "PowerShell", "7", "pwsh.exe");
-		if (shellPathExists(pwsh7)) shell = pwsh7;
+		if (executableCandidateExists(pwsh7)) shell = pwsh7;
 	}
 
 	shell ??= findExecutableOnPath("powershell.exe");
 	const systemRoot = process.env.SystemRoot;
 	if (!shell && systemRoot) {
 		const windowsPowerShell = win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-		if (shellPathExists(windowsPowerShell)) shell = windowsPowerShell;
+		if (executableCandidateExists(windowsPowerShell)) shell = windowsPowerShell;
 	}
 
 	if (!shell) throw new Error("No PowerShell executable found. Install PowerShell or add it to PATH.");

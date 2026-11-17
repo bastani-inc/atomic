@@ -9,6 +9,7 @@ const [mode, directory, children, workers, scenario = "fanout"] = process.argv.s
 const ROOT = process.env.SHARED_POOL_ROOT;
 const jiti = createJiti(import.meta.url, { fsCache: true });
 const load = (relative) => jiti.import(fileURLToPath(new URL(relative, import.meta.url)));
+await load("../setup-packaged-local-worker.ts");
 const { workflow } = await load("../../packages/workflows/src/authoring/workflow.ts");
 const { JournalDurableBackend } = await load("../../packages/workflows/src/durable/journal/journal-backend.ts");
 const { resolveRunJournal } = await load("../../packages/workflows/src/durable/journal/resolution.ts");
@@ -49,7 +50,9 @@ const placementCode = (error) => {
 	return null;
 };
 
-const childPath = fileURLToPath(new URL("./shared-pool-child.ts", import.meta.url));
+const childPath = fileURLToPath(
+	new URL(scenario === "scale" ? "./shared-pool-scale-child.ts" : "./shared-pool-child.ts", import.meta.url),
+);
 const exportName =
 	{
 		bound: "boundChild",
@@ -58,6 +61,7 @@ const exportName =
 		remote: "remoteStageChild",
 		scale: "scaleChild",
 		sequential: "distributedChild",
+		sessions: "sessionChild",
 	}[scenario] ??
 	"sharedChild";
 // A journal whose server needs a token reads it from a file every host has (SHARED_POOL_TOKEN_FILE), as the adapter's
@@ -107,6 +111,8 @@ const parent = workflow({
 						? {}
 						: scenario === "remote"
 							? { directory }
+							: scenario === "sessions"
+								? { directory, index }
 							: scenario === "distributed" || scenario === "sequential"
 								? { index, workMs: Number(process.env.SHARED_POOL_WORK_MS ?? "5000") }
 								: scenario === "scale"

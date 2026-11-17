@@ -1,6 +1,6 @@
 /** Workflow authoring UI, builder, run, and result contract types. */
 
-import type { AgentSessionEvent, KeybindingsManager, ModelRouterOutput, Theme } from "@bastani/atomic";
+import type { AgentSessionEvent, KeybindingsManager, Theme } from "@bastani/atomic";
 import type { Component, OverlayHandle, OverlayOptions, TUI } from "@bastani/atomic-tui";
 import type { TSchema } from "typebox";
 import type { RunJournalOption } from "../durable/journal/resolution.js";
@@ -449,8 +449,6 @@ export interface StageSnapshot extends WorkflowSerializableObject {
 	readonly durationMs?: number;
 	readonly result?: WorkflowSerializableValue;
 	readonly error?: string;
-	/** Immutable automatic model selection, separate from the actual execution model. */
-	readonly routerSelection?: ModelRouterOutput;
 }
 
 export interface ToolNodeSnapshot extends WorkflowSerializableObject {

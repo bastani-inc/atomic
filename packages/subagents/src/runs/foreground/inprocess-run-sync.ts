@@ -1,6 +1,15 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { parseSessionStartTimeoutMs, serializeSessionStartError } from "@bastani/atomic";
+import {
+	formatNoUsableModelMessage,
+	isSessionStartTimeoutError,
+	parseSessionStartTimeoutMs,
+	type SessionStartTimeoutError,
+	type SkippedModel,
+	serializeSessionStartError,
+	sessionStartStepText,
+} from "@bastani/atomic";
+import type { Cleanup } from "../../../../coding-agent/src/core/tasks/contracts.js";
 import type { AgentConfig } from "../../agents/agent-types.js";
 import { ensureArtifactsDir, getArtifactPaths, writeArtifact } from "../../shared/artifacts.js";
 import { splitKnownThinkingSuffix, splitUnknownThinkingSuffix, THINKING_LEVELS } from "../../shared/model-info.js";
@@ -12,25 +21,23 @@ import type {
 	RunSyncOptions,
 	SingleResult,
 	SubagentToolResult,
+	TaskExecutionHooks,
 	Usage,
 } from "../../shared/types.js";
 import { resolveTopLevelParallelRunningCapacity } from "../../shared/types.js";
 import { getOrCreateSubagentControl, unregisterSubagentControl } from "../inprocess/control-registry.js";
 import type { AttemptOutcome, ChildSpec, ParentContext, SubagentControlRuntime } from "../inprocess/runner.js";
+import type { SessionStartProgress } from "../inprocess/session-start-budget.js";
 import { isParentCancellation } from "../shared/cancellation-recovery.js";
 import { filterSpawnableModelCandidates, skippedModelAttempt } from "../shared/model-candidate-filter.js";
-import {
-	buildModelCandidates,
-	launchRequestedModel,
-	modelConstraintsFallbackGate,
-	resolveModelCandidate,
-} from "../shared/model-fallback.js";
+import { buildModelCandidates, launchRequestedModel, resolveModelCandidate } from "../shared/model-fallback.js";
 import {
 	captureSingleOutputSnapshot,
 	formatSavedOutputReference,
 	resolveSingleOutput,
 	type SingleOutputSnapshot,
 } from "../shared/single-output.js";
+import { SUBAGENT_START_ATTEMPTS, type SubagentStartProgress } from "../shared/start-progress.js";
 import { registerExecutionIntercomDetach } from "./execution-intercom-detach.js";
 import { registerExecutionParentAskHandoff } from "./execution-parent-ask-handoff.js";
 import { missingCwdMessage } from "./subagent-executor-cwd.js";
@@ -195,8 +202,15 @@ function refusedResult(agent: AgentConfig, task: string, reason: string): Single
 	};
 }
 
-function noSpawnableCandidatesResult(agent: AgentConfig, task: string, skippedAttempts: ModelAttempt[]): SingleResult {
-	const reason = "No spawnable subagent model candidates after pre-spawn filtering.";
+function noSpawnableCandidatesResult(
+	agent: AgentConfig,
+	task: string,
+	skippedAttempts: ModelAttempt[],
+	skippedModels: readonly SkippedModel[],
+): SingleResult {
+	const reason = `No spawnable subagent model candidates after pre-spawn filtering. ${
+		skippedModels.length > 0 ? formatNoUsableModelMessage(skippedModels) : ""
+	}`.trim();
 	return { ...refusedResult(agent, task, reason), modelAttempts: skippedAttempts };
 }
 
@@ -207,7 +221,7 @@ function namedModelUnavailableResult(agent: AgentConfig, task: string, namedMode
 		...refusedResult(
 			agent,
 			task,
-			`Model ${namedModel} is not available${reasons.length ? ` (${reasons.join(" ")})` : ""}. No other model was used: a subagent launched on a named model runs only that model and its agent's fallbackModels that its modelConstraints allow.`,
+			`Model ${namedModel} is not available${reasons.length ? ` (${reasons.join(" ")})` : ""}. No other model was used: a subagent launched on a named model runs only that model and its agent's fallbackModels.`,
 		),
 		modelAttempts: skipped,
 	};
@@ -236,13 +250,13 @@ export async function runSingleInProcess(
 	const cwd = options.cwd ?? runtimeCwd;
 	if (!existsSync(cwd)) return refusedResult(agent, task, missingCwdMessage(cwd));
 	if (!statSync(cwd).isDirectory()) return refusedResult(agent, task, `cwd is not a directory: ${cwd}`);
-	options.modelRoute?.assertCurrent();
-	const launchModel = options.modelOverride ?? agent.model ?? "";
+	// An agent whose model is `auto` names none of its own: its launch resolves `auto` into `modelOverride`.
+	const agentModel = agent.model === "auto" ? undefined : agent.model;
+	const launchModel = options.modelOverride ?? agentModel ?? "";
 	// #4188: a launch that names a concrete model, in its call or its agent, runs that model and the fallbackModels its
 	// agent configures, and never another model it did not opt into: not the parent's model, nor a settings or parent
-	// session chain. An auto-routed launch keeps its ranked chain; a launch that names no model runs the parent's.
-	const namesModel =
-		!options.modelRoute && options.runsNamedModel !== false && launchModel !== "" && launchModel !== "auto";
+	// session chain. A launch on `auto`, or one that names no model, keeps the parent's model as its last fallback.
+	const namesModel = options.runsNamedModel !== false && launchModel !== "" && launchModel !== "auto";
 	// The model the launch named. A restored launch that continues on a fallback named the model it was first launched
 	// on: only that one runs as named, and it follows the model continued on, which must pass every gate.
 	const namedModel = namesModel ? (options.requestedModel ?? launchModel) : undefined;
@@ -252,48 +266,15 @@ export async function runSingleInProcess(
 		).baseModel;
 	const namedBase = namedModel === undefined ? undefined : baseOf(namedModel);
 	const continuesOnOther = namedBase !== undefined && baseOf(launchModel) !== namedBase;
-	// The launch's own constraints and its agent's gate every fallback; an auto route's gate already holds them.
-	const fallbackGate = options.modelRoute
-		? options.modelRoute.allowsModel
-		: modelConstraintsFallbackGate([agent.modelConstraints, options.modelConstraints]);
-	const seenModels = new Set<string>();
-	const fallbackLevels = options.modelRoute?.fallbackModels?.length
-		? [...options.modelRoute.fallbackModels.map(() => "off"), ...(agent.fallbackThinkingLevels ?? [])]
-		: agent.fallbackThinkingLevels;
-	const builtCandidates = buildModelCandidates(
-		options.modelOverride ?? agent.model,
-		[
-			...(continuesOnOther && namedModel !== undefined ? [namedModel] : []),
-			...(options.modelRoute?.fallbackModels ?? []),
-			...(agent.fallbackModels ?? []),
-		],
+	const fallbackLevels = agent.fallbackThinkingLevels;
+	const rawCandidates = buildModelCandidates(
+		options.modelOverride ?? agentModel,
+		[...(continuesOnOther && namedModel !== undefined ? [namedModel] : []), ...(agent.fallbackModels ?? [])],
 		options.availableModels,
 		options.preferredModelProvider,
-		namesModel
-			? undefined
-			: options.modelRoute && options.currentModel && options.currentThinkingLevel
-				? `${options.currentModel}:${options.currentThinkingLevel}`
-				: options.currentModel,
+		namesModel ? undefined : options.currentModel,
 		continuesOnOther && fallbackLevels ? ["", ...fallbackLevels] : fallbackLevels,
 	);
-	const rawCandidates = builtCandidates.filter((candidate) => {
-		if (!options.modelRoute) {
-			// A named model is the caller's choice. Every other candidate, a fallback, a model a restored child continues
-			// on, or the model a launch that names none starts on, must satisfy every constraint.
-			if (!fallbackGate || (namedBase !== undefined && splitKnownThinkingSuffix(candidate).baseModel === namedBase))
-				return true;
-			const resolved = options.resolveCandidateModel?.(candidate);
-			return resolved === undefined || fallbackGate(resolved.model, resolved.thinkingLevel);
-		}
-		if (!options.modelRoute.allowsCandidate(candidate, options.modelRoute.routerSelection.effort ?? "off"))
-			return false;
-		const { baseModel } = splitKnownThinkingSuffix(candidate);
-		if (seenModels.has(baseModel)) return false;
-		seenModels.add(baseModel);
-		return true;
-	});
-	if (!options.modelRoute && builtCandidates.length > 0 && rawCandidates.length === 0)
-		return refusedResult(agent, task, "No subagent model candidate satisfies the launch's modelConstraints.");
 	let filteredCandidates = filterSpawnableModelCandidates({
 		candidates: rawCandidates,
 		availableModels: options.availableModels,
@@ -316,12 +297,18 @@ export async function runSingleInProcess(
 					skippedModelAttempt(entry, `Skipped ${entry}: no available model matches it.`),
 				),
 			],
+			skippedModels: filteredCandidates.skippedModels,
 		};
 		if (filteredCandidates.candidates.length === 0)
 			return namedModelUnavailableResult(agent, task, namedModel ?? launchModel, filteredCandidates.skippedAttempts);
 	}
 	if (rawCandidates.length > 0 && filteredCandidates.candidates.length === 0)
-		return noSpawnableCandidatesResult(agent, task, filteredCandidates.skippedAttempts);
+		return noSpawnableCandidatesResult(
+			agent,
+			task,
+			filteredCandidates.skippedAttempts,
+			filteredCandidates.skippedModels,
+		);
 	const listedCandidate = filteredCandidates.candidates[0];
 	const fallbackCandidates = filteredCandidates.candidates.slice(1);
 	// Upstream pi #7897: a subagent that pins no model of its own inherits the
@@ -333,7 +320,7 @@ export async function runSingleInProcess(
 	// and no per-call override. An agent's own `thinking` still wins over the
 	// inherited level, and a candidate `:level` suffix wins over both.
 	const inheritsDispatchConfig =
-		agent.model === undefined &&
+		agentModel === undefined &&
 		(agent.fallbackModels === undefined || agent.fallbackModels.length === 0) &&
 		options.modelOverride === undefined;
 	// The candidate is only a string. `createAgentSession` selects a model from a
@@ -341,10 +328,6 @@ export async function runSingleInProcess(
 	// session file — which, for a fork-context child, is the parent's model.
 	// Resolving the candidate here is what makes the agent's configured model win.
 	const resolvedCandidate = listedCandidate ? options.resolveCandidateModel?.(listedCandidate) : undefined;
-	if (options.modelRoute && !resolvedCandidate)
-		throw new Error(
-			"Subagent auto-selected model could not be resolved before execution. Retry explicitly with the current catalog.",
-		);
 	// `provider/model:word` with a word that names no level runs that model at its default level, as at an effort it
 	// lacks, and is reported without the word; when its model does not resolve either, it never runs another model.
 	const unknownEffort = listedCandidate ? splitUnknownThinkingSuffix(listedCandidate) : undefined;
@@ -352,14 +335,12 @@ export async function runSingleInProcess(
 		return unknownModelResult(agent, task, listedCandidate, unknownEffort.effort, unknownEffort.baseModel);
 	const candidate =
 		resolvedCandidate?.unknownEffort !== undefined && unknownEffort ? unknownEffort.baseModel : listedCandidate;
-	// The effort a `provider/model:effort` launch asked for explicitly, a level or a word that names none; an
-	// auto-routed launch chose none itself.
+	// The effort a `provider/model:effort` launch asked for explicitly, a level or a word that names none.
 	const requestedModel = launchRequestedModel(agent, options);
 	const requestedSuffix = splitKnownThinkingSuffix(launchModel).thinkingSuffix.slice(1);
-	const requestedThinking = options.modelRoute
-		? undefined
-		: (THINKING_LEVELS.find((level) => level === requestedSuffix) ??
-			(launchModel ? options.resolveCandidateModel?.(launchModel)?.unknownEffort : undefined));
+	const requestedThinking =
+		THINKING_LEVELS.find((level) => level === requestedSuffix) ??
+		(launchModel ? options.resolveCandidateModel?.(launchModel)?.unknownEffort : undefined);
 	const orchestrationContext = workflowOrchestrationContext(options);
 	const outputSnapshot = captureSingleOutputSnapshot(options.outputPath);
 
@@ -394,6 +375,22 @@ export async function runSingleInProcess(
 		writeArtifact(artifactPaths.inputPath, `# Task for ${agent.name}\n\n${task}`);
 	}
 	const testSession = options.testSession ?? defaultTestSession();
+	// Where the child is in its start, across its attempts, until its first turn starts: never merely "running".
+	const launchedAt = Date.now();
+	let startAttempt = 1;
+	let stalledStart: SubagentStartProgress["stalled"];
+	const reportStart = (progress: SessionStartProgress | undefined, awaitingRelease = false) =>
+		options.taskExecution?.reportStart?.(
+			progress === undefined
+				? undefined
+				: {
+						...progress,
+						attempt: startAttempt,
+						launchedAt,
+						...(stalledStart === undefined ? {} : { stalled: stalledStart }),
+						...(awaitingRelease ? { awaitingRelease: true } : {}),
+					},
+		);
 	const spec: ChildSpec = {
 		taskName: agent.name,
 		childId: `${options.runId}:${options.index ?? 0}`,
@@ -420,17 +417,16 @@ export async function runSingleInProcess(
 				: {}),
 		...(artifactPaths?.outputPath ? { outputArtifactPath: artifactPaths.outputPath } : {}),
 		sessionStartTimeoutMs,
+		onStartProgress: (progress) => reportStart(progress),
 		...(requestedThinking === undefined ? {} : { requestedThinking }),
 		...(options.resolveCandidateModel ? { resolveCandidateModel: options.resolveCandidateModel } : {}),
 		tools: agent.tools,
 		mcpDirectTools: agent.mcpDirectTools,
 		skills: options.skills ?? agent.skills,
 		model: resolvedCandidate?.model,
-		thinkingLevel: (options.modelRoute && resolvedCandidate?.model.reasoning === false
-			? "off"
-			: (resolvedCandidate?.thinkingLevel ??
-				agent.thinking ??
-				(inheritsDispatchConfig ? options.currentThinkingLevel : undefined))) as ChildSpec["thinkingLevel"],
+		thinkingLevel: (resolvedCandidate?.thinkingLevel ??
+			agent.thinking ??
+			(inheritsDispatchConfig ? options.currentThinkingLevel : undefined)) as ChildSpec["thinkingLevel"],
 		parent,
 		intercom: options.orchestratorIntercomTarget
 			? {
@@ -451,8 +447,7 @@ export async function runSingleInProcess(
 			: undefined,
 		artifactJsonlPath: options.artifactConfig?.includeJsonl === true ? artifactPaths?.jsonlPath : undefined,
 		// A named model's own chain, even an empty one, replaces any chain the child session would otherwise take up.
-		...(fallbackCandidates.length || options.modelRoute || namesModel ? { fallbackModels: fallbackCandidates } : {}),
-		...(fallbackGate ? { isFallbackModelAllowed: fallbackGate } : {}),
+		...(fallbackCandidates.length || namesModel ? { fallbackModels: fallbackCandidates } : {}),
 		...(namedModel === undefined ? {} : { namedModel }),
 		...(requestedModel ? { requestedModel } : {}),
 		onProgress: options.onUpdate
@@ -486,15 +481,64 @@ export async function runSingleInProcess(
 	if (!admission.admitted) return refusedResult(agent, task, admission.refusal?.reason ?? "child admission refused");
 	const startedAt = Date.now();
 	const neverAbort = new AbortController().signal;
-	const running = control.startAttempt(
-		admission.admitted,
-		{ model: resolvedCandidate?.model, modelId: candidate, thinkingLevel: spec.thinkingLevel },
-		{
-			abort: options.taskExecution?.signal ?? options.signal ?? neverAbort,
-			interrupt: options.interruptSignal ?? neverAbort,
-		},
-		options.taskExecution,
-	);
+	const attemptCandidate = { model: resolvedCandidate?.model, modelId: candidate, thinkingLevel: spec.thinkingLevel };
+	const attemptSignals = {
+		abort: options.taskExecution?.signal ?? options.signal ?? neverAbort,
+		interrupt: options.interruptSignal ?? neverAbort,
+	};
+	// The task's execution is the child's start and run, a retried start included: its cleanup is the last attempt's.
+	let attemptCleanup: Promise<Cleanup> | undefined;
+	const attemptHooks: TaskExecutionHooks | undefined =
+		options.taskExecution === undefined
+			? undefined
+			: {
+					...options.taskExecution,
+					onExecution: (execution) => {
+						attemptCleanup = execution.cleanup;
+					},
+				};
+	let running = control.startAttempt(admission.admitted, attemptCandidate, attemptSignals, attemptHooks);
+	// A start that runs out of its budget is retried once, as soon as it has let go of its session; a retry that runs
+	// out of its budget too fails, naming the step each attempt stalled in.
+	const settled = (async (): Promise<AttemptOutcome> => {
+		const first = await running.promise;
+		const stall = startStall(first);
+		if (stall === undefined || first.status !== "error" || startAttempt >= SUBAGENT_START_ATTEMPTS) return first;
+		stalledStart = { step: stall.step, afterMs: stall.elapsedMs };
+		startAttempt += 1;
+		reportStart({ step: stall.step, startedAt: Date.now(), stepStartedAt: Date.now() }, true);
+		const releasedInTime = await settledWithin(
+			first.startReleased ?? Promise.resolve(),
+			Math.min((sessionStartTimeoutMs ?? SUBAGENT_START_RELEASE_WAIT_MS) / 2, SUBAGENT_START_RELEASE_WAIT_MS),
+		);
+		const stopped = attemptSignals.abort.aborted || attemptSignals.interrupt.aborted;
+		// A launch's retry starts in a fresh session: what the stalled start received as context for its first turn
+		// goes with it. A retry that reopens the child's own session finds it there already.
+		const carried = releasedInTime && spec.sessionManager === undefined ? await (first.startContext ?? []) : [];
+		// Sends to the child wait for the retry, now that the stalled start registered and took the earlier ones.
+		if (releasedInTime && !stopped) await options.onStartRetry?.();
+		const again =
+			releasedInTime && !stopped
+				? control.admitChildSession(
+						carried.length === 0 ? spec : { ...spec, startContext: [...(spec.startContext ?? []), ...carried] },
+						parent,
+					)
+				: undefined;
+		if (again?.admitted === undefined) {
+			reportStart(undefined);
+			if (stopped) return first;
+			const cause = `${first.cause} It was not retried: ${releasedInTime ? (again?.refusal?.reason ?? "its retry was refused") : "the stalled start did not let go of its session in time"}.`;
+			return { ...first, cause, envelope: cause };
+		}
+		control.supersedeStalledStart(first.path);
+		running = control.startAttempt(again.admitted, attemptCandidate, attemptSignals, attemptHooks);
+		const second = await running.promise;
+		const retryStall = startStall(second);
+		if (retryStall === undefined || second.status !== "error") return second;
+		const cause =
+			`Subagent did not start: its start stalled ${sessionStartStepText(stall.step)} after ${Math.round(stall.elapsedMs / 1000)}s and was retried once; the retry stalled ${sessionStartStepText(retryStall.step)} after ${Math.round(retryStall.elapsedMs / 1000)}s. ${retryStall.hint ?? ""}`.trim();
+		return { ...second, cause, envelope: cause };
+	})();
 	if (options.onUpdate) {
 		const launchModel = running.currentModel ?? candidate;
 		spec.onProgress?.({
@@ -531,12 +575,17 @@ export async function runSingleInProcess(
 		agent: agent.name,
 		isUnavailable: () => running.status !== "running" || detached,
 	});
-	const terminal = running.promise.then((value) => ({ kind: "terminal" as const, value }));
+	const lastCleanup = (): Promise<Cleanup> => attemptCleanup ?? Promise.resolve({ kind: "reaped" });
+	options.taskExecution?.onExecution({
+		result: settled,
+		cleanup: settled.then(lastCleanup, lastCleanup),
+	});
+	const terminal = settled.then((value) => ({ kind: "terminal" as const, value }));
 	const winner = await Promise.race([terminal, continuation.then(() => ({ kind: "continued" as const }))]);
 	if (winner.kind === "continued") {
 		detachCleanup();
 		parentAskCleanup();
-		void running.promise
+		void settled
 			.then(async (continuedOutcome) => {
 				const recovered = resultFromOutcome(
 					agent,
@@ -617,7 +666,6 @@ export async function runSingleInProcess(
 	parentAskCleanup();
 	const outcome = winner.value;
 	const result = resultFromOutcome(agent, task, outcome, startedAt, artifactPaths, requestedModel);
-	if (options.modelRoute) result.routerSelection = options.modelRoute.routerSelection;
 	if (filteredCandidates.skippedAttempts.length)
 		result.modelAttempts = [...filteredCandidates.skippedAttempts, ...(result.modelAttempts ?? [])];
 	const deliveredOutput = await control.deliverChildResult(
@@ -655,6 +703,40 @@ export async function runSingleInProcess(
 	};
 	options.onUpdate?.(update);
 	return result;
+}
+
+/**
+ * The longest a retry waits for a stalled start to let go of its session (half its start budget, at most this). A start
+ * still holding its session then, as one whose extension never returns, is not retried: two starts never share one
+ * session.
+ */
+const SUBAGENT_START_RELEASE_WAIT_MS = 30_000;
+
+/** The start-budget timeout an attempt failed with, if it did not start in time. */
+function startStall(outcome: AttemptOutcome): SessionStartTimeoutError | undefined {
+	return outcome.status === "error" &&
+		outcome.startError !== undefined &&
+		isSessionStartTimeoutError(outcome.startError)
+		? outcome.startError
+		: undefined;
+}
+
+/** Whether `promise` settled within `timeoutMs`. */
+function settledWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+	return new Promise((resolve) => {
+		const timer = setTimeout(() => resolve(false), timeoutMs);
+		timer.unref?.();
+		void promise.then(
+			() => {
+				clearTimeout(timer);
+				resolve(true);
+			},
+			() => {
+				clearTimeout(timer);
+				resolve(true);
+			},
+		);
+	});
 }
 
 function forgetIfReleased(control: SubagentControlRuntime, outcome: AttemptOutcome): void {
@@ -701,17 +783,5 @@ export async function runSync(
 			task,
 			`Unknown agent: ${agentName}`,
 		);
-	const route = options.modelRoute;
-	if (!route) return runSingleInProcess(runtimeCwd, agent, task, options);
-	const selection = route.routerSelection;
-	const result = await runSingleInProcess(runtimeCwd, agent, task, {
-		...options,
-		onUpdate: options.onUpdate
-			? (update) => {
-					for (const result of update.details?.results ?? []) result.routerSelection = selection;
-					options.onUpdate!(update);
-				}
-			: undefined,
-	});
-	return { ...result, routerSelection: selection };
+	return runSingleInProcess(runtimeCwd, agent, task, options);
 }

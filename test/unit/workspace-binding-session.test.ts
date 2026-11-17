@@ -87,7 +87,7 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
 
 function sessionOptions(extra: Parameters<typeof createAgentSession>[0]) {
 	return {
-		agentDir: join(dirs.home, "agent"),
+		agentDir: dirs.home,
 		model: faux.getModel(),
 		modelRuntime,
 		settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),

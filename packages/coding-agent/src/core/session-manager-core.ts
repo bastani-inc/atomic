@@ -7,6 +7,7 @@ import { createSessionCwdMatcher, normalizePath, pathsEqual, resolvePath } from 
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { SessionHistoryIndex } from "./session-history-index.ts";
+import { appendFailureWroteNothing } from "./session-manager-append-errors.ts";
 import { createBranchedSessionState } from "./session-manager-archive.ts";
 import { classifiedWorkflowMetadata, validSessionWorkflowMetadata } from "./session-manager-classification.ts";
 import {
@@ -63,7 +64,7 @@ import {
 	generateId,
 	validateSessionFileEntries,
 } from "./session-manager-validation.ts";
-import { assertSessionNotOpenElsewhere, holdSessionOpenMarker } from "./session-open-markers.ts";
+import { assertSessionNotOpenElsewhere, holdSessionOpenMarker } from "./session-open-markers.js";
 import { listSessionStore } from "./session-store-list.js";
 import {
 	assertSessionBlobStore,
@@ -79,15 +80,12 @@ import {
 	isStorageTransientError,
 	SessionBlobError,
 	type StorageFailureCause,
-	StoragePayloadTooLargeError,
 	StorageRollbackError,
 } from "./storage/errors.js";
 import {
 	SessionConflictError,
 	SessionFormatVersionError,
 	SessionIdMismatchError,
-	SessionInvalidTextError,
-	SessionInvalidTimestampError,
 	type SessionJsonValue,
 	SessionNotFoundError,
 	StorageUnavailableError,
@@ -104,23 +102,9 @@ import type {
 	SessionSnapshot,
 	SessionStore,
 } from "./storage/session/types.js";
+import { historyEntryLineCount, renderHistoryTranscript } from "./tools/history-transcript.ts";
 import { WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
 import type { WorktreeRootMapping, WorktreeSnapshot, WorktreeUnrestored } from "./worktree-snapshot/types.ts";
-
-/**
- * Whether a failed append certainly wrote nothing, so the store need not be read back (#4970): the storage layer
- * says so, or the store refused the entries or was closed before writing.
- */
-function wroteNothing(error: unknown): boolean {
-	return (
-		(isStorageTransientError(error) && error.outcome === "not-applied") ||
-		error instanceof SessionInvalidTextError ||
-		error instanceof SessionInvalidTimestampError ||
-		error instanceof StoragePayloadTooLargeError ||
-		// The session store's and the database's closed-store errors.
-		(error instanceof Error && error.name === "StoreClosedError")
-	);
-}
 
 /** How many times one append reads the store's new tail and tries again before its failure stands (#4970). */
 const MAX_APPEND_RECONCILES = 3;
@@ -332,7 +316,11 @@ export class SessionManager {
 		this.leafId = leafId;
 	}
 
-	async refreshFromStore(): Promise<boolean> {
+	refreshFromStore(): Promise<boolean> {
+		return this.runMutation(() => this.refreshStoredTail());
+	}
+
+	private async refreshStoredTail(): Promise<boolean> {
 		const { store, sessionId, lastSeq, historyEpoch, lastEntryId } = this;
 		const range = await readSessionRange(store, sessionId, Math.max(1, lastSeq), Number.MAX_SAFE_INTEGER);
 		if (this.sessionId !== sessionId || this.store !== store || this.lastSeq !== lastSeq) return false;
@@ -671,7 +659,7 @@ export class SessionManager {
 					this.deletedFromStore = true;
 					throw new SessionDeletedError(this.sessionId, { cause: error });
 				}
-				if (wroteNothing(error) || attempt > MAX_APPEND_RECONCILES) throw error;
+				if (appendFailureWroteNothing(error) || attempt > MAX_APPEND_RECONCILES) throw error;
 				const unknown = isStorageTransientError(error) && error.outcome === "unknown";
 				if (await this.reconcileAppend(entries, error, unknown, expectSeq)) return;
 				continue;
@@ -840,8 +828,31 @@ export class SessionManager {
 			return entry.id;
 		});
 	}
+	/**
+	 * The number of lines `history://sessions/<id>` shows for this session now: its header plus every stored entry's
+	 * lines. A session resumed from its tail reads the entries it does not hold from its store.
+	 */
+	async historyLineCount(): Promise<number> {
+		const header = this.getHeader();
+		if (!header) return 0;
+		let count = renderHistoryTranscript(this.recordHeader(header), [], true).lines.length;
+		if (this.hasFullHistory()) {
+			for (const entry of this.getEntries()) count += historyEntryLineCount(entry);
+			return count;
+		}
+		await this.forEachStoredEntry(1, (entry) => {
+			count += historyEntryLineCount(entry);
+		});
+		return count;
+	}
+
+	/**
+	 * Append a compaction boundary. `compactedText` may be a builder that receives the history's line count right
+	 * before the boundary, computed inside this queued mutation so no concurrent append can shift it, and returns the
+	 * boundary text with the details to store.
+	 */
 	appendCompaction(
-		compactedText: string,
+		compactedText: string | ((historyLines: number) => { text: string; details: VerbatimCompactionDetails }),
 		firstKeptEntryId: string | null,
 		tokensBefore: number,
 		details: VerbatimCompactionDetails,
@@ -853,11 +864,16 @@ export class SessionManager {
 			precondition?.();
 			if (firstKeptEntryId !== null) await this.requireEntry(firstKeptEntryId);
 			if (coveredThroughEntryId !== undefined) await this.requireEntry(coveredThroughEntryId);
+			const built =
+				typeof compactedText === "string"
+					? { text: compactedText, details }
+					: compactedText(await this.historyLineCount());
+			precondition?.();
 			const entry = createCompactionEntry(
-				compactedText,
+				built.text,
 				firstKeptEntryId,
 				tokensBefore,
-				details,
+				built.details,
 				usage,
 				this.byId,
 				this.leafId,

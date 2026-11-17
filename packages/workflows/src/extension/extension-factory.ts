@@ -10,7 +10,7 @@ import { deriveGraphTheme } from "../tui/graph-theme.js";
 import { registerInlineFormRenderer } from "../tui/inline-form-overlay.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { buildGraphOverlayAdapter } from "../tui/overlay-adapter.js";
-import { installStoreWidget, installToolExecutionHooks, scrollStoreWidget } from "../tui/store-widget-installer.js";
+import { installToolExecutionHooks } from "../tui/tool-execution-hooks.js";
 import type { PostMortemHandleResolution } from "../tui/workflow-attach-pane-types.js";
 import { adoptWorkflowSessionRunState } from "./adopt-session-run-state.js";
 import { registerCompletedStageIntercomAskRouter } from "./completed-stage-intercom-ask.js";
@@ -30,6 +30,7 @@ import { installInputInterceptor, type WorkflowCommandHandler } from "./workflow
 import { createGraphStageActions, type GraphStageActionDeps } from "./workflow-graph-stage-actions.js";
 import { createWorkflowObservation } from "./workflow-observation.js";
 import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
+import { workflowPanelSource } from "./workflow-panel-source.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import { createSessionRunControl } from "./workflow-session-run-control.js";
 import { overlaySurfaceFromContext } from "./workflow-targets.js";
@@ -74,18 +75,6 @@ function registerWorkflowShortcut(pi: ExtensionAPI, overlay: GraphOverlayPort, s
 	pi.registerShortcut("F2", {
 		description: "Open workflow orchestrator pane",
 		handler: openPane,
-	});
-	pi.registerShortcut("alt+pageUp", {
-		description: "Scroll background workflows up",
-		keybinding: "app.workflows.scrollUp",
-		preferEditor: true,
-		handler: () => scrollStoreWidget(store, -1),
-	});
-	pi.registerShortcut("alt+pageDown", {
-		description: "Scroll background workflows down",
-		keybinding: "app.workflows.scrollDown",
-		preferEditor: true,
-		handler: () => scrollStoreWidget(store, 1),
 	});
 }
 
@@ -188,7 +177,6 @@ function factory(pi: ExtensionAPI): void {
 		ensureWorkflowResourcesLoaded: runtimeState.ensureWorkflowResourcesLoaded,
 	});
 	const workflowCommands = new Map<string, WorkflowCommandHandler>();
-	const storeWidgetRef: { current: (() => void) | null } = { current: null };
 	const intercomControlRef: { current: (() => void) | null } = { current: null };
 	const executeWorkflowTool = makeExecuteWorkflowTool(
 		(ctx) => runtimeState.runtimeForContext(ctx),
@@ -204,16 +192,24 @@ function factory(pi: ExtensionAPI): void {
 	pi.on?.("session_shutdown", () => {
 		sessionContext = undefined;
 	});
-	pi.registerWorkflowRunControl?.(
-		createSessionRunControl({
-			execute: executeWorkflowTool,
-			context: () => sessionContext,
-			store: owner.store,
-			jobs: runState.jobs,
-			catalog: async () => {
-				const runtime = runtimeState.runtimeForContext(sessionContext);
-				return (await runtime.prepareDurableCatalog?.()) ?? { resumable: [], completed: [] };
-			},
+	const sessionRunControl = createSessionRunControl({
+		execute: executeWorkflowTool,
+		context: () => sessionContext,
+		store: owner.store,
+		jobs: runState.jobs,
+		catalog: async () => {
+			const runtime = runtimeState.runtimeForContext(sessionContext);
+			return (await runtime.prepareDurableCatalog?.()) ?? { resumable: [], completed: [] };
+		},
+	});
+	pi.registerWorkflowRunControl?.(sessionRunControl);
+	pi.registerAgentPanelSource?.(
+		workflowPanelSource(owner, {
+			open: (runId, options) =>
+				overlay.open(runId, overlaySurfaceFromContext(sessionContext), undefined, undefined, {
+					...(options?.onReturn === undefined ? {} : { onReturn: options.onReturn }),
+				}),
+			quit: (runId) => sessionRunControl.quit(runId),
 		}),
 	);
 	const executeWorkflowToolWithAutoAttach: typeof executeWorkflowTool = async (args, ctx, signal, onRunAccepted) => {
@@ -231,7 +227,9 @@ function factory(pi: ExtensionAPI): void {
 		return result;
 	};
 
-	registerWorkflowTool(pi, executeWorkflowToolWithAutoAttach, runtimeState.runWithLifecycleSuppressedForPolicy);
+	registerWorkflowTool(pi, executeWorkflowToolWithAutoAttach, runtimeState.runWithLifecycleSuppressedForPolicy, {
+		runs: owner.store,
+	});
 	registerWorkflowSlashCommand(pi, workflowCommands, {
 		owner,
 		runtimeProxy: runtimeState.runtimeProxy,
@@ -252,13 +250,11 @@ function factory(pi: ExtensionAPI): void {
 	registerWorkflowMessageRenderers(pi);
 	registerWorkflowLifecycleHandlers(pi, {
 		runtimeState,
-		storeWidgetRef,
 		intercomControlRef,
 		disposeObservation,
 		runState,
 	});
 
-	storeWidgetRef.current = installStoreWidget(pi, store);
 	installToolExecutionHooks(pi, store);
 	registerWorkflowShortcut(pi, overlay, store);
 	registerIntercomControl(pi, intercomControlRef, store);

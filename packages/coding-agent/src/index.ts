@@ -7,6 +7,19 @@ export {
 } from "./core/cache-warmer.ts";
 export * from "./core/event-subscriptions/index.js";
 export type { ExecuteToolOptions, ExtensionToolContext } from "./core/extensions/context-types.ts";
+export {
+	type HeldPrompt,
+	type HeldPromptAnswer,
+	type HeldPromptKind,
+	type HeldPromptResult,
+	type HeldPrompts,
+	type HeldPromptValue,
+	heldPrompts,
+	isHeldPromptInput,
+	isPresentationHostInput,
+	routeNamesPrompt,
+	watchHeldPromptAttention,
+} from "./core/extensions/held-prompts.ts";
 export type {
 	HostDiagnostic,
 	HostInput,
@@ -28,11 +41,12 @@ export type {
 	ToolLoadout,
 	ToolLoadoutChanges,
 	ToolNamespace,
+	ToolRenderContext,
 	ToolRendererResolver,
 	ToolRenderers,
 	ToolScriptAccess,
 } from "./core/extensions/tool-types.ts";
-export { type TakeoverMutex, takeTakeoverMutex } from "./core/lock-takeover.ts";
+export { type TakeoverMutex, takeTakeoverMutex } from "./core/lock-takeover.js";
 export { resolveRestoredModelReference } from "./core/model-resolver-initial.ts";
 export * from "./core/resume/index.ts";
 export type { UsageEntry } from "./core/session-manager.ts";
@@ -61,6 +75,23 @@ export {
 export { JsonlSessionStore } from "./core/storage/session/jsonl-session-store.js";
 // Internal trusted-host task integration (not model authority).
 export { AgentTaskHost, type AgentTaskHostBinding, type AgentTaskRunnerFactory } from "./core/tasks/agent-adapter.js";
+export {
+	type AgentPanelActionResult,
+	type AgentPanelAnswerOptions,
+	type AgentPanelItem,
+	type AgentPanelOpenOptions,
+	type AgentPanelSession,
+	type AgentPanelSource,
+	type AgentPanelSourceRegistration,
+	type AgentPanelState,
+	agentPanelItems,
+	agentPanelTaskId,
+	answerAgentPanelItem,
+	dismissedAgentPanelItems,
+	openAgentPanelItem,
+	stopAgentPanelItem,
+	subscribeAgentPanel,
+} from "./core/tasks/agent-panel-source.ts";
 export {
 	isRetryableTaskError,
 	isTaskCleanupAdmissionTimeoutError,
@@ -117,11 +148,14 @@ export {
 } from "./core/tasks/message-error.js";
 export {
 	bindOwnerTaskStore,
+	getOwnerTaskSession,
 	getOwnerTaskStore,
+	isTaskTurnInterrupted,
 	OwnerTaskStore,
 	type TaskActivity,
 	watchOwnerTaskStoreBinding,
 } from "./core/tasks/owner-store.js";
+export { belongsToSession, sessionTasks, taskSessionKey } from "./core/tasks/session-scope.js";
 export { automaticWaitBudgetMs } from "./core/tasks/supervisor.js";
 export { bindTaskResumer, type TaskResumer } from "./core/tasks/task-resumer.ts";
 export {
@@ -168,8 +202,33 @@ export {
 	renderNavKeyOverlay,
 	TwoPressConfirm,
 } from "./modes/interactive/components/nav-keys.ts";
+export {
+	NoticeLine,
+	type NoticeLineSpec,
+	type NoticeStatus,
+	noticeLineText,
+} from "./modes/interactive/components/notice-line.ts";
 export { renderTaskFooter, TaskList, taskListSections } from "./modes/interactive/components/task-list.js";
 export { TaskRow } from "./modes/interactive/components/task-row.js";
+export {
+	collapseToolBlockLines,
+	isToolBlock,
+	TOOL_BLOCK_LIMITS,
+	ToolBlock,
+	ToolBlockGroup,
+	ToolBlockMarkdown,
+	ToolBlockRecords,
+	type ToolBlockSpec,
+	type ToolBlockStatus,
+} from "./modes/interactive/components/tool-block.ts";
+export {
+	type BuiltinToolBlockContentPart,
+	type BuiltinToolBlockInput,
+	type BuiltinToolBlockPresentation,
+	type BuiltinToolBlockResult,
+	builtinToolBlockPresentation,
+} from "./modes/interactive/components/tool-block-families.ts";
+export { formatToolActionSummary } from "./modes/interactive/components/tool-block-summary.ts";
 export {
 	applyAssistantMessageDelta,
 	beginStreamingAssistantMessage,
@@ -223,6 +282,7 @@ export {
 	type SerializedGitHubCopilotError,
 	serializeGitHubCopilotError,
 } from "@bastani/atomic-ai";
+export { clampThinkingLevel, getSupportedThinkingLevels } from "@bastani/atomic-ai/compat";
 export { type Args, parseArgs } from "./cli/args.ts";
 // Config paths
 export {
@@ -323,9 +383,14 @@ export {
 	FileAuthStorageBackend,
 	InMemoryAuthStorageBackend,
 } from "./core/auth-storage-backends.ts";
+export {
+	type AutoModelSelection,
+	type AutoModelSettings,
+	type ResolveAutoModelOptions,
+	resolveAutoModel,
+} from "./core/auto-model.ts";
 export { type BashResult, executeBashWithOperations } from "./core/bash-executor.ts";
 export { getBuiltinPackagePaths } from "./core/builtin-packages.ts";
-export type { CompactionCacheMiss } from "./core/cache-stats.ts";
 export {
 	type CallbackActivityDescriptor,
 	type CallbackActivityKind,
@@ -341,57 +406,23 @@ export {
 	createGatewayBindingFetch,
 	type GatewayBindingFetchOptions,
 } from "./core/cloudflare-gateway-binding.ts";
-export {
-	BACKGROUND_COMPACTION_RESULT_TYPE,
-	type BackgroundCompactionResultRecord,
-	type BackgroundCompactionState,
-	type BackgroundCompactionStatus,
-	type CompactionReadyWake,
-	type CompactionWakeDispatcher,
-	DEFAULT_BACKGROUND_COMPACTION_THRESHOLD_PERCENT,
-	rehydrateBackgroundCompactionState,
-	type SerializedBackgroundCompactionState,
-	serializeBackgroundCompactionState,
-} from "./core/compaction/background-compaction.ts";
-export {
-	BackgroundCompactionCommitError,
-	BackgroundCompactionConfigError,
-	type BackgroundCompactionConfigReason,
-	type BackgroundCompactionConfigSource,
-	BackgroundCompactionDiscardedError,
-	type BackgroundCompactionDiscardReason,
-	BackgroundCompactionError,
-	type BackgroundCompactionErrorCode,
-	type BackgroundCompactionErrorFields,
-	BackgroundCompactionNotCompactableError,
-	BackgroundCompactionPersistError,
-	type BackgroundCompactionPhase,
-	BackgroundCompactionPlanningError,
-	isBackgroundCompactionCommitError,
-	isBackgroundCompactionConfigError,
-	isBackgroundCompactionDiscardedError,
-	isBackgroundCompactionError,
-	isBackgroundCompactionNotCompactableError,
-	isBackgroundCompactionPersistError,
-	isBackgroundCompactionPlanningError,
-	isRetryableBackgroundCompactionError,
-	isSerializedBackgroundCompactionError,
-	rehydrateBackgroundCompactionError,
-	type SerializedBackgroundCompactionError,
-	serializeBackgroundCompactionError,
-} from "./core/compaction/background-compaction-errors.ts";
 // Compaction
 export {
 	type BranchPreparation,
 	type BranchSummaryResult,
+	buildBoundaryText,
+	buildCompactorMessages,
+	COMPACTED_OUTPUT_MAX_TOKENS,
+	COMPACTOR_COMPRESSION_RATIO,
+	COMPACTOR_REQUEST_TIMEOUT_MS,
 	type CollectEntriesResult,
-	type CompactedTranscript,
-	type CompactionPlannerModel,
-	type CompactionPlanOptions,
-	type CompactionRung,
-	type CompactionRungResult,
-	type CompactionRunRequest,
-	type CompactionUrgency,
+	type CompactionBackend,
+	type CompactionForm,
+	type CompactionHistoryLocation,
+	type CompactionModelSelection,
+	CompactorFailure,
+	type CompactorMessage,
+	type CompactorRequest,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
 	DEFAULT_COMPACTION_SETTINGS,
@@ -401,20 +432,14 @@ export {
 	generateBranchSummary,
 	getLastAssistantUsage,
 	type LineRange,
-	type PlannerAuth,
-	type PlannerBudget,
-	type PlannerLimitClass,
-	type PlannerOutcome,
-	type PolicyRefusalPhase,
 	prepareBranchEntries,
 	prepareCompactionBoundary,
-	type ReleasedRange,
-	runVerbatimCompaction,
-	type SidecarDirectory,
+	requestCompactorOutput,
+	resolveCompactionModel,
+	SESSION_HISTORY_TOOL_NAME,
 	serializeConversation,
 	serializeConversationForCompaction,
 	shouldCompact,
-	startNewContextWindow,
 	type VerbatimCompactionDetails,
 	type VerbatimCompactionParameters,
 	type VerbatimCompactionPreparation,
@@ -453,14 +478,6 @@ export type {
 } from "./core/error-contract.ts";
 export { redactUrlCredentials } from "./core/error-contract.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.js";
-export {
-	AutoRoutingInferenceError,
-	type ModelRoute,
-	type ModelRoutingContext,
-	type ParallelSlot,
-	type RoutingInferenceBounds,
-	routeExecutionModel,
-} from "./core/execution-model-router.js";
 export { areExperimentalFeaturesEnabled } from "./core/experimental.ts";
 export { sessionScopedExtensionState } from "./core/extension-session-state.ts";
 export {
@@ -540,6 +557,15 @@ export {
 	serializeIntercomBrokerError,
 } from "./core/intercom-broker-error.ts";
 export {
+	confinedIntercomChildGroup,
+	IntercomPolicyError,
+	type IntercomPolicyView,
+	type IntercomReachApplier,
+	type IntercomSessionOptions,
+	MAX_INTERCOM_REACHABLE_GROUPS,
+	type SessionIntercom,
+} from "./core/intercom-policy.ts";
+export {
 	isProjectGroupError,
 	ProjectGroupError,
 	type ProjectGroupErrorCode,
@@ -578,6 +604,16 @@ export {
 } from "./core/mcp-servers.ts";
 export { convertToLlm } from "./core/messages.ts";
 export { modelCallUsage } from "./core/model-call-usage.ts";
+export {
+	type CredentialPartition,
+	formatNoUsableModelMessage,
+	NoUsableModelError,
+	partitionByCredentials,
+	providerOfModelReference,
+	type SkippedCandidate,
+	type SkippedModel,
+	type SkippedModelReason,
+} from "./core/model-credential-filter.ts";
 export type {
 	ModelFallbackFailureKind,
 	ModelFallbackFailureOptions,
@@ -586,6 +622,7 @@ export type {
 } from "./core/model-fallback-failures.ts";
 export {
 	errorMessage,
+	isProviderCredentialRejection,
 	isRetryableModelFailure,
 	isRetryableSameModelFailure,
 	isUnrecognizedModelFailure,
@@ -600,27 +637,6 @@ export {
 	type ModelLabelSubject,
 } from "./core/model-label.ts";
 export { ModelRegistry } from "./core/model-registry.ts";
-export {
-	eligiblePair,
-	type ModelConstraints,
-	ModelConstraintsSchema,
-	type ModelRouterOutput,
-	parseModelConstraints,
-	setsProviders,
-} from "./core/model-routing-constraints.js";
-export { reportModelRoutingDebug } from "./core/model-routing-debug.js";
-export {
-	DIFFICULTY_LEVELS,
-	type Difficulty,
-	MISTAKE_COST_LEVELS,
-	type MistakeCost,
-	mergeTaskNeeds,
-	parseTaskNeeds,
-	type TaskNeeds,
-	TaskNeedsSchema,
-	WORK_KINDS,
-	type WorkKind,
-} from "./core/model-routing-needs.js";
 export {
 	type CreateModelRuntimeOptions,
 	CredentialSynchronizationError,
@@ -817,6 +833,7 @@ export {
 	type SessionStartTimeoutDetails,
 	SessionStartTimeoutError,
 	serializeSessionStartError,
+	sessionStartStepText,
 } from "./core/session-start-errors.ts";
 export {
 	DEGRADED_RESTORE_RETENTION_DAYS,
@@ -840,10 +857,8 @@ export {
 } from "./core/session-worktree-snapshots.ts";
 export type { DefaultProjectTrust, QuietStartup } from "./core/settings-manager.ts";
 export {
-	type CompactionModelOverride,
 	type CompactionSettings,
 	type ImageSettings,
-	type ModelRoutingSettings,
 	type PackageSource,
 	type RetrySettings,
 	type Settings,
@@ -993,7 +1008,9 @@ export {
 export { boundOversizedText } from "./core/tools/oversized-tool-result.js";
 export {
 	assertPrivateDirectory,
+	assertPrivateDirectoryAsync,
 	ensurePrivateTempDir,
+	ensurePrivateTempDirAsync,
 	TempDirRefusedError,
 } from "./core/tools/session-temp-dir.ts";
 export {
@@ -1145,8 +1162,11 @@ export {
 } from "./modes/index.ts";
 // UI components for extensions
 export {
+	AgentTokenMeter,
 	ArminComponent,
 	AssistantMessageComponent,
+	agentTokenTotal,
+	applyAttachedComposer,
 	applyInputLabelToEditorTopRule,
 	BashExecutionComponent,
 	BorderedLoader,
@@ -1161,6 +1181,7 @@ export {
 	type ChatSessionHostEntry,
 	type ChatSessionHostOpts,
 	type ChatSessionHostStyle,
+	type ChatSessionInterruptedTurnSnapshot,
 	type ChatSessionSubmitMode,
 	type ChatSessionViewportSettings,
 	ChatTranscriptComponent,
@@ -1177,6 +1198,8 @@ export {
 	ExtensionInputComponent,
 	ExtensionSelectorComponent,
 	FooterComponent,
+	formatTokenCount,
+	formatTokenSegment,
 	INPUT_LABEL_MIN_COLUMNS,
 	type InputLabel,
 	type InputLabelKind,
@@ -1212,13 +1235,16 @@ export {
 	ShowImagesSelectorComponent,
 	SkillInvocationMessageComponent,
 	selectorHintEntries,
+	TASK_CHAT_OVERLAY_KEYS,
 	ThemeSelectorComponent,
 	ThinkingSelectorComponent,
+	type TokenSegmentMode,
 	ToolExecutionComponent,
 	type ToolExecutionOptions,
 	TRANSCRIPT_JUMP_TO_END_URL,
 	TranscriptFollowIndicator,
 	TreeSelectorComponent,
+	taskChatKeys,
 	themeSelectorStyle,
 	truncateToVisualLines,
 	UsageMeterComponent,

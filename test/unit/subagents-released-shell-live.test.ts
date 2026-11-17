@@ -6,8 +6,8 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import {
-	childTaskCompletionRoute,
 	createChildCommandTaskOwner,
+	deliverToLaunchingSession,
 	type TaskCompletionMessage,
 } from "../../packages/coding-agent/src/core/tasks/child-command-owner.js";
 import type { OperationId, TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
@@ -108,10 +108,12 @@ test(
 			bytes: Buffer.from("go\n"),
 		});
 		await host.waitForTask(taskId);
-		await childTaskCompletionRoute(host, taskId)?.deliver({
+		const [record] = host.taskRecords(new Set([taskId]));
+		assert.equal(record?.launchedBy, childSession.getSessionId(), "the shell names the child's session");
+		await deliverToLaunchingSession(host, childSession.getSessionId(), taskId, {
 			customType: "task_completion",
 			content: "build task finished",
-			details: {},
+			details: { completionId: "build-task-finished" },
 			display: true,
 		});
 
@@ -204,7 +206,7 @@ test(
 
 		await writeLine(host, taskId);
 		await host.waitForTask(taskId);
-		await childTaskCompletionRoute(host, taskId)?.deliver({
+		await deliverToLaunchingSession(host, childSession.getSessionId(), taskId, {
 			customType: "task_completion",
 			content: "build task finished",
 			details: { completionId: "done-1" },

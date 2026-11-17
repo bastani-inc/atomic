@@ -192,6 +192,25 @@ test("loading earlier history preserves only actual unread arrivals (#5243)", ()
 	}
 });
 
+test("same-conversation snapshots retain arrivals that have not painted yet (#5350)", () => {
+	initTheme("dark", false);
+	const host = new ChatSessionHost(hostOptions());
+	try {
+		host.replaceMessages(longConversation);
+		host.renderBody(80, 10);
+		host.handleInput(PAGE_UP);
+		host.renderBody(80, 10);
+		const arrival = { role: "user" as const, content: "NEW-SNAPSHOT-ARRIVAL", timestamp: 100 };
+		host.appendMessages([arrival]);
+		host.replaceMessages([...longConversation, arrival], { preserveUnread: true });
+		assert.match(text(host.renderBody(80, 10).slice(-1)), /1 new message/);
+		host.replaceMessages(longConversation);
+		assert.doesNotMatch(text(host.renderBody(80, 10)), /new message/);
+	} finally {
+		host.dispose();
+	}
+});
+
 test("compaction refresh while scrolled up preserves counted arrivals in a chat host (#5243)", () => {
 	initTheme("dark");
 	let compactedMessages: Array<Parameters<ChatSessionHost["replaceMessages"]>[0][number]> = [...longConversation];
@@ -230,17 +249,17 @@ test("compaction refresh while scrolled up preserves counted arrivals in a chat 
 			compactedText: "Compacted earlier context",
 			firstKeptEntryId: null,
 			tokensBefore: 4000,
-			rung: "planned" as const,
-			promptVersion: 6 as const,
+			form: "cleared" as const,
+			promptVersion: 7 as const,
 			parameters,
 			stats,
 		};
 		compactedMessages = [
 			createVerbatimCompactionMessage("Compacted earlier context", 4000, new Date(103).toISOString(), {
 				strategy: "verbatim-lines",
-				promptVersion: 6,
+				promptVersion: 7,
 				parameters,
-				rung: "planned",
+				form: "cleared",
 				stats,
 			}),
 			...longConversation.slice(-15),
@@ -281,17 +300,17 @@ test("compaction_end in the same frame as unpainted arrivals preserves the unrea
 		compactedText: "Compacted earlier context",
 		firstKeptEntryId: null,
 		tokensBefore: 4000,
-		rung: "planned" as const,
-		promptVersion: 6 as const,
+		form: "cleared" as const,
+		promptVersion: 7 as const,
 		parameters,
 		stats,
 	};
 	const compactedSnapshot = [
 		createVerbatimCompactionMessage("Compacted earlier context", 4000, new Date(103).toISOString(), {
 			strategy: "verbatim-lines",
-			promptVersion: 6,
+			promptVersion: 7,
 			parameters,
-			rung: "planned",
+			form: "cleared",
 			stats,
 		}),
 		...longConversation.slice(-15),
@@ -351,8 +370,8 @@ test("compaction_end that refreshes to a longer transcript while scrolled up doe
 		compactedText: "Compacted earlier context",
 		firstKeptEntryId: null,
 		tokensBefore: 4000,
-		rung: "planned" as const,
-		promptVersion: 6 as const,
+		form: "cleared" as const,
+		promptVersion: 7 as const,
 		parameters,
 		stats,
 	};
@@ -360,9 +379,9 @@ test("compaction_end that refreshes to a longer transcript while scrolled up doe
 	const compactedSnapshot = [
 		createVerbatimCompactionMessage("Compacted earlier context", 4000, new Date(103).toISOString(), {
 			strategy: "verbatim-lines",
-			promptVersion: 6,
+			promptVersion: 7,
 			parameters,
-			rung: "planned",
+			form: "cleared",
 			stats,
 		}),
 		...longConversation,
@@ -596,16 +615,18 @@ test("a chat's footer follows the session it is given, and counts the tasks of i
 		hostOptions({ footerData: FOOTER_DATA, getChatBoxSession: () => current, getTaskSource: () => undefined }),
 	);
 	try {
-		assert.deepEqual(text(withSource.renderFooter(80)).split("\n"), [
+		// A chat lists its own active tasks below its footer as agent-panel rows (#5224).
+		const rows = (footer: string) => footer.split("\n").map((line) => line.replace(/ {2,}/g, "  ").trimEnd());
+		assert.deepEqual(rows(text(withSource.renderFooter(80))), [
 			`first-model • ${BOX_FOOTER_CWD}`,
-			"Tasks  1 local agent running · /tasks",
+			"  ∀ worker  Footer count  running",
 		]);
 		for (const host of [bare, empty])
 			assert.deepEqual(text(host.renderFooter(80)).split("\n"), [`first-model • ${BOX_FOOTER_CWD}`]);
 		current = boxSession("second-model");
-		assert.deepEqual(text(withSource.renderFooter(80)).split("\n"), [
+		assert.deepEqual(rows(text(withSource.renderFooter(80))), [
 			`second-model • ${BOX_FOOTER_CWD}`,
-			"Tasks  1 local agent running · /tasks",
+			"  ∀ worker  Footer count  running",
 		]);
 	} finally {
 		withSource.dispose();
@@ -630,7 +651,7 @@ test("a chat that has an agent session counts the tasks of that session's own st
 		}),
 	);
 	try {
-		assert.match(text(host.renderFooter(80)), /Tasks {2}1 local agent running/);
+		assert.match(text(host.renderFooter(80)), /∀ worker {2}Owned by the session/);
 	} finally {
 		host.dispose();
 		await owned.dispose();

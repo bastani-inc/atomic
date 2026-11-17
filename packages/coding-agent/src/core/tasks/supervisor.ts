@@ -2,8 +2,9 @@ import { AsyncLocalStorage, AsyncResource } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type * as native from "@bastani/atomic-natives";
-import { createModuleRequire } from "../../utils/module-require.ts";
+import { createModuleRequire } from "../../utils/module-require.js";
 import type { AgentSession, AgentSessionEvent, CompactionReason } from "../agent-session.js";
+import type { MessageRenderer, ToolRenderers } from "../extensions/types.ts";
 import { currentResourceAdmission } from "../resource-admission-scope.ts";
 import type { ResourceAdmission, ResourcePermit } from "../sdk-types.ts";
 import type { SessionManager } from "../session-manager.ts";
@@ -43,7 +44,13 @@ export type ChatBoxSession = Pick<
 	| "compactionStartedAt"
 	| "isRetrying"
 	| "isBashRunning"
->;
+> & {
+	readonly getToolDefinition?: (toolName: string) => ToolRenderers | undefined;
+	readonly extensionRunner?: {
+		resolveToolRenderers?: (toolName: string, base: () => ToolRenderers | undefined) => ToolRenderers | undefined;
+		getMessageRenderer?: (customType: string) => MessageRenderer | undefined;
+	};
+};
 
 /** Messages a live session holds back until its turn ends. */
 export interface QueuedTaskMessages {
@@ -183,7 +190,8 @@ export type TrustedTaskHost = {
 	resourceAdmission?: ResourceAdmission;
 	/** Internal host/test configuration only; never tool input or user settings. */
 	commandResources?: Pick<native.CommandResourceOptions, "terminationGraceMs">;
-	onTaskSettled?(ref: C.NativeTaskRef, receipt: C.SettlementReceipt): void;
+	/** `timing` is the host's own record of the task: how long a command ran, from its launch to its settlement. */
+	onTaskSettled?(ref: C.NativeTaskRef, receipt: C.SettlementReceipt, timing?: C.SettlementTiming): void;
 	/** Once per task whose result settled before its process cleanup was confirmed; that cleanup continues. */
 	onTaskCleanupQuarantined?(ref: C.NativeTaskRef, resources: readonly C.ResourceFailure[]): void;
 	/** Heartbeat cadence for a launch that names none, fixed on its record at admission; omitted, none is recorded. */
@@ -322,7 +330,8 @@ function entriesAfterInherited(
 ): ReturnType<TaskTranscriptSource["getEntries"]> {
 	const throughId = inherited?.throughId;
 	if (throughId === undefined || throughId === null) return entries;
-	return entries.slice(entries.findLastIndex((entry) => entry.id === throughId) + 1);
+	const index = entries.findLastIndex((entry) => entry.id === throughId);
+	return index < 0 ? [] : entries.slice(index + 1);
 }
 
 /** History the runner produced; a forked child's inherited parent entries are excluded. */
@@ -333,16 +342,22 @@ export function taskOwnTranscriptEntries(task: TaskLease): ReturnType<TaskTransc
 }
 
 /** {@link taskOwnTranscriptEntries}, read from the task's session store when its transcript keeps none in memory. */
-export async function loadTaskOwnTranscriptEntries(
-	task: TaskLease,
-): Promise<ReturnType<TaskTranscriptSource["getEntries"]> | undefined> {
+export async function loadTaskOwnTranscriptHistory(task: TaskLease): Promise<TaskTranscriptHistory | undefined> {
 	const state = environment.tasks.get(task);
 	const source = state?.transcript;
 	if (!state || !source) return undefined;
-	if (!source.loadHistory) return entriesAfterInherited(source.getEntries(), state.inherited);
+	if (!source.loadHistory) return { entries: entriesAfterInherited(source.getEntries(), state.inherited) };
 	const history = await source.loadHistory();
 	// What a transcript keeps when its saved history is gone is the task's own entries only.
-	return history.unavailable === undefined ? entriesAfterInherited(history.entries, state.inherited) : history.entries;
+	return history.unavailable === undefined
+		? { entries: entriesAfterInherited(history.entries, state.inherited) }
+		: { entries: history.entries, unavailable: history.unavailable };
+}
+
+export async function loadTaskOwnTranscriptEntries(
+	task: TaskLease,
+): Promise<ReturnType<TaskTranscriptSource["getEntries"]> | undefined> {
+	return (await loadTaskOwnTranscriptHistory(task))?.entries;
 }
 
 /** Promise rejections, setup throws and consumer exceptions may be arbitrary JavaScript values. */
@@ -480,7 +495,6 @@ type LaunchHeartbeat = { heartbeatMs: number; taskId?: C.TaskId };
  */
 export type LaunchMetadata = {
 	/** Routing provenance, by task id. */
-	readonly routerSelections: Map<string, C.RouterSelection>;
 	/** The model each launch asked for, by task id. */
 	readonly requestedModels: Map<string, string>;
 	/**
@@ -492,6 +506,13 @@ export type LaunchMetadata = {
 	readonly executionTimeouts: Map<string, number>;
 	/** What each agent released while it waited waits on, by task id: it is released, not paused (#5031). */
 	readonly releases: Map<string, C.TaskReleased>;
+	/**
+	 * The session that launched each command in a shared owner, by launch operation: a command can settle, and be
+	 * reported, before its native start resolves, and it must already name that session.
+	 */
+	readonly launchers: Map<string, string>;
+	/** When each command was launched, by launch operation: its completion notice says how long it ran. */
+	readonly launchedAt: Map<string, number>;
 	/** The close that ended the owner, which every task that close cancelled names (#4639). Kept past the close. */
 	ownerClose?: C.OwnerCloseCause;
 };
@@ -514,13 +535,14 @@ function claimLaunchHeartbeat(
 }
 function record(value: native.TaskRecord, launches: LaunchMetadata): C.TaskRecord {
 	if (value.kind !== "agent" && value.kind !== "command") throw new Error(`Invalid native task kind: ${value.kind}`);
-	const routerSelection = launches.routerSelections.get(value.ref.taskId);
 	const requestedModel = launches.requestedModels.get(value.ref.taskId);
 	const heartbeatMs = launches.launchHeartbeats.get(value.launchOperationId)?.heartbeatMs;
+	const launchedBy = launches.launchers.get(value.launchOperationId);
 	return {
 		ref: reference(value.ref),
 		launchOperationId: value.launchOperationId as C.OperationId,
 		...(value.parentTaskId === undefined ? {} : { parentTaskId: value.parentTaskId as C.TaskId }),
+		...(launchedBy === undefined ? {} : { launchedBy }),
 		...(value.launchGroupId === undefined ? {} : { launchGroupId: value.launchGroupId }),
 		launchOrdinal: value.launchOrdinal,
 		kind: value.kind,
@@ -528,7 +550,6 @@ function record(value: native.TaskRecord, launches: LaunchMetadata): C.TaskRecor
 		...(value.agentName === undefined ? {} : { agentName: value.agentName }),
 		...(value.model === undefined ? {} : { model: value.model }),
 		...(value.thinking === undefined ? {} : { thinking: value.thinking }),
-		...(routerSelection ? { routerSelection } : {}),
 		...(requestedModel === undefined ? {} : { requestedModel }),
 		...(heartbeatMs === undefined ? {} : { heartbeatMs }),
 		execution: execution(value.execution, value.ref.taskId, launches),
@@ -894,7 +915,6 @@ export function taskHostStateSizesForTesting(owner: OwnerLease) {
 		unconfirmedCleanups: state.unconfirmedCleanups.size,
 		permits: state.permits.size,
 		commandStarts: state.commandStarts.size,
-		routerSelections: state.launches.routerSelections.size,
 		requestedModels: state.launches.requestedModels.size,
 		launchHeartbeats: state.launches.launchHeartbeats.size,
 		executionTimeouts: state.launches.executionTimeouts.size,
@@ -975,11 +995,12 @@ export class TaskSupervisor {
 					commandStarts: new Map(),
 					commandLaunches: new Map(),
 					launches: {
-						routerSelections: new Map(),
 						requestedModels: new Map(),
 						launchHeartbeats: new Map(),
 						executionTimeouts: new Map(),
 						releases: new Map(),
+						launchers: new Map(),
+						launchedAt: new Map(),
 					},
 				};
 				this.#owners.set(owner, ownerState);
@@ -1044,7 +1065,7 @@ export class TaskSupervisor {
 								launch.settled = { ref: record.ref, receipt: settled.value };
 								continue;
 							}
-							this.#notifyTaskSettled(ownerState, record.ref, settled.value);
+							this.#notifyTaskSettled(ownerState, record.ref, settled.value, record.launchOperationId);
 						} catch (error) {
 							failure ??= new Error(rejectionMessage(error));
 						}
@@ -1063,12 +1084,13 @@ export class TaskSupervisor {
 		state.tasks.delete(taskId);
 		state.settledTasks.delete(taskId);
 		state.quarantinedTasks.delete(taskId);
-		state.launches.routerSelections.delete(taskId);
 		state.launches.requestedModels.delete(taskId);
 		if (state.launches.launchHeartbeats.get(operation)?.taskId === taskId)
 			state.launches.launchHeartbeats.delete(operation);
 		state.launches.executionTimeouts.delete(taskId);
 		state.launches.releases.delete(taskId);
+		state.launches.launchers.delete(operation);
+		state.launches.launchedAt.delete(operation);
 		if (state.commandStarts.get(operation)?.task === task) state.commandStarts.delete(operation);
 	}
 	#evicted(task: TaskLease): boolean {
@@ -1141,17 +1163,29 @@ export class TaskSupervisor {
 			clearTimeout(timer);
 		}
 	}
-	#notifyTaskSettled(state: OwnerState, ref: C.NativeTaskRef, receipt: native.SettlementReceipt): void {
+	#notifyTaskSettled(
+		state: OwnerState,
+		ref: C.NativeTaskRef,
+		receipt: native.SettlementReceipt,
+		operation: string,
+	): void {
 		if (!state.host.binding.onTaskSettled || state.settledTasks.has(ref.taskId)) return;
 		// Runner outcomes and snapshot recovery share one delivery door. Mark before
 		// host code so reentrant drains or callback failures cannot redeliver.
 		state.settledTasks.add(ref.taskId);
-		state.host.binding.onTaskSettled(ref, {
-			taskId: receipt.taskId as C.TaskId,
-			cursor: cursor(receipt.cursor),
-			result: taskResult(receipt.result, receipt.taskId, state.launches),
-			completionId: receipt.completionId,
-		});
+		const launchedBy = state.launches.launchers.get(operation);
+		const launchedAt = state.launches.launchedAt.get(operation);
+		state.host.binding.onTaskSettled(
+			ref,
+			{
+				taskId: receipt.taskId as C.TaskId,
+				cursor: cursor(receipt.cursor),
+				result: taskResult(receipt.result, receipt.taskId, state.launches),
+				completionId: receipt.completionId,
+				...(launchedBy === undefined ? {} : { launchedBy }),
+			},
+			launchedAt === undefined ? undefined : { elapsedMs: Math.max(0, Date.now() - launchedAt) },
+		);
 	}
 	async startCommandTask(
 		owner: OwnerLease,
@@ -1204,14 +1238,20 @@ export class TaskSupervisor {
 		state.commandLaunches.set(operation, launch);
 		let held: HeldPermit | undefined;
 		let provisional: LaunchHeartbeat | undefined;
+		let registered = false;
 		try {
 			held = await this.#acquireProcessPermit(
 				state,
 				currentResourceAdmission() ?? state.host.binding.resourceAdmission,
 				signal,
 			);
-			const { heartbeatMs, ...nativeIntent } = intent;
+			const { heartbeatMs, launchedBy, ...nativeIntent } = intent;
 			const cadence = heartbeatMs ?? state.host.binding.defaultHeartbeatMs?.();
+			// Named before the native start: the command can settle, and be reported, before that start resolves.
+			if (!state.closing.signal.aborted) {
+				if (launchedBy !== undefined) state.launches.launchers.set(operation, launchedBy);
+				state.launches.launchedAt.set(operation, Date.now());
+			}
 			provisional = rememberLaunchHeartbeat(state.launches, operation, cadence);
 			let started: Awaited<ReturnType<native.TaskSupervisor["startCommandTask"]>>;
 			try {
@@ -1239,6 +1279,7 @@ export class TaskSupervisor {
 			if (!ref.ok) throw new Error(ref.error.message);
 			const id = ref.value.taskId as C.TaskId;
 			const existing = state.tasks.get(id);
+			registered = true;
 			if (existing) return { ok: true, value: existing };
 			// A closing owner forgets its launch metadata, maybe already: a late admission adds none (#4451).
 			if (!state.closing.signal.aborted) {
@@ -1289,6 +1330,11 @@ export class TaskSupervisor {
 			return { ok: true, value: task };
 		} finally {
 			this.#endCommandLaunch(state, operation, launch);
+			// A launch that admitted no task of its own names no launching session.
+			if (!registered) {
+				state.launches.launchers.delete(operation);
+				state.launches.launchedAt.delete(operation);
+			}
 			// A launch that admitted no task of its own keeps no provisional cadence (#4451).
 			if (state.launches.launchHeartbeats.get(operation) === provisional)
 				state.launches.launchHeartbeats.delete(operation);
@@ -1308,7 +1354,7 @@ export class TaskSupervisor {
 		if (settled === undefined) return;
 		launch.settled = undefined;
 		try {
-			this.#notifyTaskSettled(state, settled.ref, settled.receipt);
+			this.#notifyTaskSettled(state, settled.ref, settled.receipt, operation);
 		} catch {
 			// As in a drain, the host's failure neither redelivers the settlement nor undoes the launch.
 		}
@@ -1394,7 +1440,6 @@ export class TaskSupervisor {
 		const existing = state.tasks.get(id);
 		if (existing) return { ok: true, value: existing };
 		claimLaunchHeartbeat(state.launches, operation, id, cadence);
-		if (intent.routerSelection) state.launches.routerSelections.set(id, Object.freeze({ ...intent.routerSelection }));
 		if (intent.requestedModel) state.launches.requestedModels.set(id, intent.requestedModel);
 		const task = new TaskCapability();
 		Object.freeze(task);
@@ -1451,7 +1496,7 @@ export class TaskSupervisor {
 					}
 					return mapped(
 						this.#native.reportRunnerOutcome(runner.value, result),
-						(receipt) => this.#notifyTaskSettled(state, taskState.ref, receipt),
+						(receipt) => this.#notifyTaskSettled(state, taskState.ref, receipt, taskState.operation),
 						reportErrors,
 					);
 				});
@@ -1685,11 +1730,12 @@ export class TaskSupervisor {
 				this.#disposeRecordIndex(state);
 				// No watcher is left to read the closed owner's records, and none can start: its launch metadata goes
 				// with it (#4451).
-				state.launches.routerSelections.clear();
 				state.launches.requestedModels.clear();
 				state.launches.launchHeartbeats.clear();
 				state.launches.executionTimeouts.clear();
 				state.launches.releases.clear();
+				state.launches.launchers.clear();
+				state.launches.launchedAt.clear();
 			}
 		if (result.ok) {
 			for (const taskId of [...state.permits.keys()]) this.#releasePermit(state, taskId);

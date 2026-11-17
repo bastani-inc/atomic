@@ -89,15 +89,11 @@ export function hasGroup(groups: GroupMemberships, value?: string | null): boole
 interface HomeGroupContext {
 	orchestrationContext?: { intercomGroup?: string } | undefined;
 	subagentPolicy?: { intercomGroup?: string } | undefined;
+	intercomPolicy?: { home: string } | undefined;
 	/** Accepted from the live extension context but intentionally ignored for home resolution. */
 	sessionManager?: { getSessionId(): string } | undefined;
 }
 
-/**
- * The home group a session chose explicitly, with precedence (most specific first): admitted
- * subagentPolicy.intercomGroup > orchestrationContext.intercomGroup > env ATOMIC_INTERCOM_GROUP (also
- * PI_INTERCOM_GROUP legacy) > config.json "group". `undefined` when none applies.
- */
 export function explicitHomeGroup(
 	config: { group?: string } | undefined,
 	ctx?: HomeGroupContext | null,
@@ -109,6 +105,10 @@ export function explicitHomeGroup(
 	const fromContext = ctx?.orchestrationContext?.intercomGroup;
 	if (typeof fromContext === "string" && fromContext.trim().length > 0) {
 		return normalizeGroup(fromContext);
+	}
+	const fromHost = ctx?.intercomPolicy?.home;
+	if (typeof fromHost === "string" && fromHost.trim().length > 0) {
+		return normalizeGroup(fromHost);
 	}
 	const fromEnv = intercomGroupFromEnv();
 	if (typeof fromEnv === "string" && fromEnv.trim().length > 0) {
@@ -159,4 +159,21 @@ export function workflowInvocationRefusalFor(senderRegistrationGroup: string | u
 	return registration.startsWith("workflow:") && registration !== normalizeGroup(invocationGroup)
 		? workflowStageInvocationRefusal(registration, invocationGroup)
 		: workflowInvocationGroupRefusal(invocationGroup);
+}
+
+/**
+ * How long a recipient may answer a sender outside its groups after that sender's latest message reached it (a message
+ * queued for a workflow stage reaches it when the stage starts). See `broker/return-paths.ts`.
+ */
+export const RETURN_PATH_WINDOW_MS = 30 * 60_000;
+/** Messages a recipient may send back after the latest message that reached it: an answer, a correction and a final result. */
+export const RETURN_PATH_MESSAGE_LIMIT = 3;
+
+/** How the intercom tool tells the model about return paths, after "cross-group sends are rejected by the broker". */
+export const RETURN_PATH_TOOL_NOTE = `except an answer to a sender outside your groups whose message reached you (up to ${RETURN_PATH_MESSAGE_LIMIT} messages within ${Math.round(RETURN_PATH_WINDOW_MS / 60_000)} minutes of its latest one)`;
+
+/** Why a send to a sender whose return path has closed is refused. */
+export function returnPathClosedReason(sender: string): string {
+	const minutes = Math.round(RETURN_PATH_WINDOW_MS / 60_000);
+	return `${sender} is outside your intercom groups and its return path has closed: a session outside your groups can be answered with up to ${RETURN_PATH_MESSAGE_LIMIT} messages within ${minutes} minutes of its latest message to you. It reopens when ${sender} writes to you again.`;
 }

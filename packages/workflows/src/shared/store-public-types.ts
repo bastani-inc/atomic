@@ -1,4 +1,3 @@
-import type { SerializedBackgroundCompactionState } from "@bastani/atomic";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import type {
 	PendingStageMessage,
@@ -346,11 +345,6 @@ export interface Store {
 	recordStageSession(runId: string, stageId: string, session: { sessionId: string }): boolean;
 	/** Toggle the `attachable` flag on a stage. */
 	recordStageAttachable(runId: string, stageId: string, attachable: boolean): boolean;
-	/**
-	 * Record the background compaction state of a stage's session. Snapshot-only. An `idle` state is ignored for
-	 * a stage that never reported one, so stages that never compacted show no compaction state.
-	 */
-	recordStageCompaction(runId: string, stageId: string, compaction: SerializedBackgroundCompactionState): boolean;
 	/** Toggle the `attached` flag on a stage. Snapshot-only. */
 	recordStageAttached(runId: string, stageId: string, attached: boolean): boolean;
 	/** Mark a live stage as awaiting a user response, or restore it to running. */

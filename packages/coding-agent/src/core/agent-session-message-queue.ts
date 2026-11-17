@@ -8,7 +8,12 @@ import { cancelHeldInput, heldInputView } from "./agent-session-held-input.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { recordPersistenceFailure } from "./agent-session-persistence-failures.ts";
 import {
+	confirmCustomMessageWrite,
+	hasUncertainCustomMessageWrite,
 	isProtectedStreamingCustomMessage,
+	markCustomMessageDisplayed,
+	recordFailedCustomMessageWrite,
+	refreshFailedCustomMessageWrites,
 	restoreProtectedStreamingCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
 import { markQueuedMessageImages, waitForCustomMessagePreparation } from "./agent-session-prompt.ts";
@@ -203,6 +208,7 @@ async function admittedCustomMessage<T>(
 	if (boundary === undefined) return deliver();
 	await boundary.admit(options?.stageAdmissionKey, deliver, () => {
 		if (this._subagentMessageAdmission) throw new Error("Subagent execution is terminal and cannot accept messages");
+		if (options?.stayInSession) throw new Error("Workflow stage closed; the message waits for this session");
 		const router = this._orchestrationContext?.lateMessageRouter;
 		if (router === undefined) throw new Error("Workflow stage closed without a late-message router");
 		return router.routeMessage(message, options);
@@ -228,19 +234,19 @@ async function admittedCustomMessages<T>(
 ): Promise<void> {
 	const lifetime = sessionLifetime(this);
 	const timestamp = Date.now();
-	const appMessages = messages.map(
-		(message) =>
-			({
-				role: "custom" as const,
-				customType: message.customType,
-				content: message.content ?? [],
-				display: message.display,
-				details: message.details,
-				timestamp,
-				...(options?.excludeFromContext === true ? { excludeFromContext: true } : {}),
-				...(options?.stageAdmissionKey === undefined ? {} : { stageAdmissionKey: options.stageAdmissionKey }),
-			}) satisfies CustomMessage<T> & { stageAdmissionKey?: string },
-	);
+	const appMessages = messages.map((message, index) => {
+		const stageAdmissionKey = options?.stageAdmissionKeys?.[index] ?? options?.stageAdmissionKey;
+		return {
+			role: "custom" as const,
+			customType: message.customType,
+			content: message.content ?? [],
+			display: message.display,
+			details: message.details,
+			timestamp,
+			...(options?.excludeFromContext === true ? { excludeFromContext: true } : {}),
+			...(stageAdmissionKey === undefined ? {} : { stageAdmissionKey }),
+		} satisfies CustomMessage<T> & { stageAdmissionKey?: string };
+	});
 	if (appMessages.length === 0) return;
 	const boundary = this._subagentMessageAdmission ?? this._workflowStageAdmission;
 	const commit = async (): Promise<void> => {
@@ -254,6 +260,7 @@ async function admittedCustomMessages<T>(
 	if (boundary === undefined) return deliver();
 	await boundary.admit(options?.stageAdmissionKey, deliver, () => {
 		if (this._subagentMessageAdmission) throw new Error("Subagent execution is terminal and cannot accept messages");
+		if (options?.stayInSession) throw new Error("Workflow stage closed; the messages wait for this session");
 		const router = this._orchestrationContext?.lateMessageRouter;
 		if (router === undefined) throw new Error("Workflow stage closed without a late-message router");
 		return router.routeMessages(messages, options);
@@ -294,18 +301,42 @@ export async function _appendCustomMessage<T>(this: AgentSession, message: Custo
 		return;
 	}
 	const stageAdmissionMessage = message as StageAdmittedCustomMessage;
-	const entryId = await this.sessionManager.appendCustomMessageEntry(
-		message.customType,
-		message.content,
-		message.display,
-		message.details,
-		customMessageExcludesContext(message),
-		undefined,
-		stageAdmissionMessage.stageAdmissionKey,
-	);
+	const manager = this.sessionManager;
+	const key = stageAdmissionMessage.stageAdmissionKey;
+	const refresh = refreshFailedCustomMessageWrites(this);
+	if (refresh !== undefined) await refresh;
+	let entryId =
+		key === undefined || !hasUncertainCustomMessageWrite(manager, key)
+			? undefined
+			: manager
+					.getBranch()
+					.find(
+						(entry) =>
+							entry.type === "custom_message" &&
+							entry.stageAdmissionKey === key &&
+							entry.protectedReconciliation === undefined,
+					)?.id;
+	if (entryId === undefined) {
+		try {
+			entryId = await manager.appendCustomMessageEntry(
+				message.customType,
+				message.content,
+				message.display,
+				message.details,
+				customMessageExcludesContext(message),
+				undefined,
+				key,
+			);
+		} catch (error) {
+			if (key !== undefined) recordFailedCustomMessageWrite(manager, error, key);
+			throw error;
+		}
+	}
+	confirmCustomMessageWrite(manager, key);
 	this._entryIdsByMessage.set(message, entryId);
 	pendingCustomMessageSaves.get(message)?.resolve();
 	this._refreshFinalizedContext();
+	markCustomMessageDisplayed(this, entryId);
 	this._emit({ type: "message_start", message });
 	this._emit({ type: "message_end", message });
 }
@@ -427,6 +458,10 @@ async function sendInterruptCustomMessageUnlocked<T>(
 		return;
 	}
 	session._abortPreparedRunAtStart = false;
+	// The interrupt starts a request, so it passes the same check as a prompt: a context over the trigger is cleared first.
+	await session._compactBeforeContinuation();
+	assertSessionOpen(session);
+	if (lifetime.aborted) throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
 	await session.agent.prompt(message);
 }
 

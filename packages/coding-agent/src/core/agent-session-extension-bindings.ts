@@ -13,6 +13,7 @@ import {
 } from "./agent-session-state.ts";
 import { replaceSessionTaskOwner } from "./agent-session-tasks.js";
 import type { AgentSessionReloadOptions, ExtensionBindings } from "./agent-session-types.js";
+import { migrateCompactionModelSettings } from "./compaction/model-resolver.js";
 import { generateWorkflowSummary } from "./compaction/session-summarization.ts";
 import {
 	ExtensionStartupError,
@@ -53,6 +54,7 @@ import { applyToolModifiers } from "./settings-merge.js";
 import { getSkillCatalog } from "./skill-catalog.ts";
 import type { SlashCommandInfo } from "./slash-commands.js";
 import { createSyntheticSourceInfo } from "./source-info.ts";
+import { notifyAgentPanelSourceHubRebound } from "./tasks/agent-panel-source.ts";
 import { activatesOnRegistration, isRegisteredToolAllowed, isToolActivatable } from "./tool-selection.ts";
 import { getDefaultToolNames } from "./tools/index.js";
 import { trackTerminalWorkflowSummary } from "./workflow-summary-lifecycle.ts";
@@ -307,7 +309,16 @@ export async function bindExtensions(this: AgentSession, bindings: ExtensionBind
 		if (this._disposed) throw hostInputError("SessionClosed");
 		this._rebuildSystemPrompt(this.getActiveToolNames());
 	});
+	migrateSavedCompactionModel(this);
 	scheduleOpeningSummary(this);
+}
+
+/**
+ * Reset a saved `compactionModel` naming a chat or classifier model to `auto`, again now that extensions have
+ * registered their providers: a model an extension registers is unknown when the session is created.
+ */
+function migrateSavedCompactionModel(session: AgentSession): void {
+	migrateCompactionModelSettings(session.settingsManager, session._modelRuntime.getAllModels());
 }
 
 export async function _waitForExtensionStart(this: AgentSession): Promise<void> {
@@ -715,10 +726,6 @@ export function _bindExtensionCore(
 				const compact = async () => {
 					try {
 						const result = await this.compact({
-							...(options?.compression_ratio === undefined
-								? {}
-								: { compression_ratio: options.compression_ratio }),
-							...(options?.preserve_recent === undefined ? {} : { preserve_recent: options.preserve_recent }),
 							...(options?.query === undefined ? {} : { query: options.query }),
 							...(options?.compactionModel === undefined ? {} : { compactionModel: options.compactionModel }),
 						});
@@ -733,7 +740,6 @@ export function _bindExtensionCore(
 			},
 			getSystemPrompt: () => this.systemPrompt,
 			getDecisionModel: () => this.settingsManager.getDecisionModel(),
-			getModelRouting: () => this.settingsManager.getModelRouting(),
 			getHttpIdleTimeoutMs: () => this.settingsManager.getHttpIdleTimeoutMs(),
 			getSkillCatalog: () => getSkillCatalog(publication?.resourceLoader ?? this._resourceLoader),
 			getSystemPromptOptions: () => this._baseSystemPromptOptions,
@@ -801,6 +807,7 @@ async function reloadAdmitted(this: AgentSession, options?: AgentSessionReloadOp
 	} finally {
 		sessionGenerationClosing.delete(this);
 	}
+	migrateSavedCompactionModel(this);
 	if (options?.reason === "startup") {
 		sessionSummaryBackfills.delete(this);
 		scheduleOpeningSummary(this);
@@ -853,6 +860,15 @@ async function reloadGeneration(this: AgentSession, options?: AgentSessionReload
 				code: "ShutdownFailed",
 			});
 	});
+}
+
+/**
+ * Whether the session is closed, for a publication gate the new generation keeps for its whole life. Made outside the
+ * reload so it does not close over the reload's scope, which holds the retiring runner: each generation would otherwise
+ * keep the one before it, and every reload would stay in memory for as long as the session runs.
+ */
+function sessionClosedProbe(session: AgentSession): () => boolean {
+	return () => session._disposed;
 }
 
 async function reloadOwnedGeneration(
@@ -943,12 +959,13 @@ async function reloadOwnedGeneration(
 		new ModelRegistry(this._modelRuntime),
 		this._orchestrationContext,
 		this._subagentPolicy,
+		this._intercomPolicy,
 	);
 	const publication = new ExtensionPublicationGate(
 		resourceTransaction.loader,
 		candidateRunner,
 		this._modelRuntime,
-		() => this._disposed,
+		sessionClosedProbe(this),
 		this._extensionProviderIds,
 	);
 	let commitPreparedResources: (() => void) | undefined;
@@ -1033,6 +1050,7 @@ async function reloadOwnedGeneration(
 	// when reconstruction fails, and retain retiring cleanup through every step.
 	this._extensionRunner = candidateRunner;
 	this._workflows?.rebindObservers();
+	notifyAgentPanelSourceHubRebound(this);
 	retainedRuntimes.add(extensionsResult.runtime);
 	const failures: unknown[] = [];
 	try {
@@ -1119,6 +1137,9 @@ export async function completeStartupResources(this: AgentSession, resourceLoade
 		await startNewcomers();
 		assertSessionOpen(this);
 		await this.extendResourcesFromExtensions("startup");
+		// Startup completes once the project's trust is settled and its extensions are loaded: a trusted project's
+		// selection and a model those extensions register are both known now.
+		migrateSavedCompactionModel(this);
 	});
 }
 

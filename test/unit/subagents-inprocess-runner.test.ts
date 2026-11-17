@@ -11,10 +11,16 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { type AgentSessionEvent, getEnvNames } from "@bastani/atomic";
+import {
+	type AgentSessionEvent,
+	getEnvNames,
+	isSessionStartTimeoutError,
+	rehydrateSessionStartError,
+} from "@bastani/atomic";
 import { SubagentControl as NativeSubagentControl } from "@bastani/atomic-natives";
 import { test, vi } from "vitest";
 import { ENV_AGENT_DIR } from "../../packages/coding-agent/src/config.js";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
 import {
@@ -26,9 +32,12 @@ import {
 	inProcessChildBuiltinPackagePaths,
 	SubagentControlRuntime,
 } from "../../packages/subagents/src/runs/inprocess/runner.ts";
-import { DEFAULT_ARTIFACT_CONFIG } from "../../packages/subagents/src/shared/types.ts";
+import { DEFAULT_ARTIFACT_CONFIG, type TaskExecutionHooks } from "../../packages/subagents/src/shared/types.ts";
 import { DEFAULT_RUNNING_CAPACITY } from "../../packages/subagents/src/shared/types-runtime.ts";
 import { resultStatusLine } from "../../packages/subagents/src/tui/render-status-progress.js";
+import { sleep } from "../helpers/runtime.js";
+
+type BoundTranscriptSource = Parameters<NonNullable<TaskExecutionHooks["bindTranscript"]>>[0];
 
 const LIVE_CHILD_RESOURCE_RELOAD_TIMEOUT_MS = 120_000;
 
@@ -286,91 +295,6 @@ test(
 			assert.equal(result.model, "openai/non-reasoning-fixture");
 			assert.equal(result.thinking, "off");
 			assert.equal(result.progress?.thinking, "off");
-		} finally {
-			vi.unstubAllGlobals();
-			for (const name of agentDirEnvNames) {
-				if (previousAgentDirEnv[name] === undefined) delete process.env[name];
-				else process.env[name] = previousAgentDirEnv[name];
-			}
-			clearSubagentControls();
-			rmSync(root, { recursive: true, force: true });
-		}
-	},
-	LIVE_CHILD_RESOURCE_RELOAD_TIMEOUT_MS,
-);
-
-test(
-	"a fallback promoted without a child-options adapter never starts at a default effort its constraints forbid (#4188)",
-	async () => {
-		const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-default-effort-"));
-		const agentDir = join(root, "agent");
-		const agentDirEnvNames = getEnvNames(ENV_AGENT_DIR);
-		const previousAgentDirEnv = Object.fromEntries(agentDirEnvNames.map((name) => [name, process.env[name]]));
-		mkdirSync(join(root, ".atomic"), { recursive: true });
-		mkdirSync(agentDir, { recursive: true });
-		// The session's default effort is medium; the launch allows only high.
-		writeFileSync(join(root, ".atomic", "settings.json"), JSON.stringify({ defaultThinkingLevel: "medium" }), "utf8");
-		writeFileSync(
-			join(agentDir, "auth.json"),
-			JSON.stringify({ openai: { type: "api_key", key: "test-api-key" } }),
-			"utf8",
-		);
-		const fallback = {
-			id: "reasoning-fixture",
-			name: "Reasoning fixture",
-			reasoning: true,
-			input: ["text"],
-			contextWindow: 128_000,
-			maxTokens: 4_096,
-		};
-		writeFileSync(
-			join(agentDir, "models.json"),
-			JSON.stringify({
-				providers: {
-					openai: { api: "openai-responses", baseUrl: "https://api.openai.example/v1", models: [fallback] },
-				},
-			}),
-			"utf8",
-		);
-		for (const name of agentDirEnvNames) process.env[name] = agentDir;
-		const requests: string[] = [];
-		vi.stubGlobal(
-			"fetch",
-			vi.fn(async (url: string) => {
-				requests.push(String(url));
-				return completedOpenAIResponse();
-			}),
-		);
-		clearSubagentControls();
-		try {
-			const fallbackModel = {
-				...fallback,
-				provider: "openai",
-				api: "openai-responses",
-				baseUrl: "https://api.openai.example/v1",
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			} as never;
-			const result = await runSingleInProcess(
-				root,
-				{ ...sampleAgent(), fallbackModels: ["openai/reasoning-fixture"] },
-				"answer",
-				{
-					cwd: root,
-					runId: "promoted-default-effort",
-					// An unsuffixed named model on a provider without auth: its unsuffixed fallback starts in its place.
-					modelOverride: "locked/unavailable",
-					knownModelProviders: ["locked", "openai"],
-					availableModels: [{ provider: "openai", id: fallback.id, fullId: `openai/${fallback.id}` }],
-					modelConstraints: { allowedEfforts: ["high"] },
-					resolveCandidateModel: (candidate) =>
-						candidate === "openai/reasoning-fixture" ? { model: fallbackModel } : undefined,
-					testSession: false,
-				},
-			);
-
-			assert.deepEqual(requests, [], "no request at the medium default effort");
-			assert.equal(result.status, "error", JSON.stringify(result));
-			assert.match(result.error ?? "", /openai\/reasoning-fixture at medium effort .*modelConstraints/);
 		} finally {
 			vi.unstubAllGlobals();
 			for (const name of agentDirEnvNames) {
@@ -821,6 +745,369 @@ test("typed status is the sole result outcome discriminator", async () => {
 		assert.equal(resultStatusLine({ ...result, status: "skipped" }, ""), "Skipped");
 		assert.equal(resultStatusLine({ ...result, status: "continued" }, ""), "Continued");
 	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+const PARTIAL_HISTORY_METHODS = [
+	"getEntrySeq",
+	"findEntrySeq",
+	"getLastSeq",
+	"getHeldTail",
+	"getOmittedHistoryTotals",
+] as const;
+
+function withoutPartialHistoryMethods<T>(run: () => Promise<T>): Promise<T> {
+	const saved = new Map<string, PropertyDescriptor | undefined>();
+	for (const name of PARTIAL_HISTORY_METHODS) {
+		saved.set(name, Object.getOwnPropertyDescriptor(SessionManager.prototype, name));
+		Reflect.deleteProperty(SessionManager.prototype, name);
+	}
+	return run().finally(() => {
+		for (const [name, descriptor] of saved) {
+			if (descriptor) Object.defineProperty(SessionManager.prototype, name, descriptor);
+		}
+	});
+}
+
+const OMITTED_SDK_METHODS = new Set<PropertyKey>([
+	...PARTIAL_HISTORY_METHODS,
+	"loadFullHistory",
+	"hasFullHistory",
+	"getSessionStore",
+]);
+
+function createSdkSessionManagerDouble(
+	backing: SessionManager,
+	omitted: ReadonlySet<PropertyKey> = OMITTED_SDK_METHODS,
+): SessionManager {
+	return new Proxy(backing, {
+		getPrototypeOf: () => Object.prototype,
+		has: (target, prop) => (omitted.has(prop) ? false : Reflect.has(target, prop)),
+		get: (target, prop: keyof SessionManager) => {
+			if (omitted.has(prop)) return undefined;
+			const value = target[prop];
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+}
+
+async function createCompactedTailSession(
+	root: string,
+	name: string,
+): Promise<{ tail: SessionManager; leafId: string }> {
+	const dir = join(root, "sessions", name);
+	const writer = await SessionManager.create(root, dir);
+	for (let index = 0; index < 13; index += 1) {
+		await writer.appendMessage({ role: "user", content: `pre-${index}`, timestamp: index + 1 });
+	}
+	await writer.appendModelChange("anthropic", "claude-sonnet");
+	await writer.appendCompaction("summary", null, 100, {
+		strategy: "verbatim-lines",
+		promptVersion: 7,
+		parameters: { query: "" },
+		stats: {
+			linesBefore: 13,
+			linesDeleted: 13,
+			linesKept: 0,
+			rangeCount: 1,
+			tokensBefore: 100,
+			tokensAfter: 10,
+			percentReduction: 90,
+		},
+		form: "cleared",
+	});
+	const leafId = await writer.appendMessage({ role: "user", content: "post-compaction", timestamp: 20 });
+	const tail = await SessionManager.open(writer.getSessionFile()!, undefined, root, { history: "tail" });
+	assert.equal(tail.hasFullHistory(), false);
+	assert.equal(tail.getEntries().length, 3);
+	return { tail, leafId };
+}
+
+test("in-process subagent launch and transcript binding tolerate a SessionManager without getEntrySeq or loadFullHistory (#5316)", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-no-entry-seq-"));
+	clearSubagentControls();
+	try {
+		await withoutPartialHistoryMethods(async () => {
+			assert.equal("getEntrySeq" in SessionManager.prototype, false);
+			assert.equal("findEntrySeq" in SessionManager.prototype, false);
+
+			const freshLaunches: Array<{ leafId: string | null; leafSeq?: number }> = [];
+			const freshResult = await runSingleInProcess(root, sampleAgent(), "fresh without getEntrySeq", {
+				cwd: root,
+				runId: "no-entry-seq-fresh",
+				sessionDir: join(root, "sessions", "fresh"),
+				onChildLaunch: (launch) => freshLaunches.push({ leafId: launch.leafId, leafSeq: launch.leafSeq }),
+				testSession: { output: "fresh ok" },
+			});
+			assert.equal(freshResult.status, "ok");
+			assert.deepEqual(freshLaunches, [{ leafId: null, leafSeq: 0 }]);
+
+			const forkedSession = await SessionManager.create(root, join(root, "sessions", "forked"));
+			await forkedSession.appendMessage({ role: "user", content: "turn 1", timestamp: 1 });
+			await forkedSession.appendMessage({ role: "user", content: "turn 2", timestamp: 2 });
+			const thirdId = await forkedSession.appendMessage({ role: "user", content: "turn 3", timestamp: 3 });
+
+			const tailLaunches: Array<{ leafId: string | null; leafSeq?: number }> = [];
+			const tailResult = await runSingleInProcess(root, sampleAgent(), "fork tail without getEntrySeq", {
+				cwd: root,
+				runId: "no-entry-seq-tail",
+				sessionDir: join(root, "sessions", "tail"),
+				sessionManager: forkedSession,
+				onChildLaunch: (launch) => tailLaunches.push({ leafId: launch.leafId, leafSeq: launch.leafSeq }),
+				testSession: { output: "tail ok" },
+			});
+			assert.equal(tailResult.status, "ok");
+			assert.deepEqual(tailLaunches, [{ leafId: thirdId, leafSeq: 3 }]);
+
+			const branchedSession = await SessionManager.create(root, join(root, "sessions", "branched"));
+			const branchFirstId = await branchedSession.appendMessage({ role: "user", content: "turn 1", timestamp: 1 });
+			await branchedSession.appendMessage({ role: "user", content: "turn 2", timestamp: 2 });
+			await branchedSession.recordBranch(branchFirstId);
+			const branchedSdk = createSdkSessionManagerDouble(branchedSession);
+
+			const boundSources: BoundTranscriptSource[] = [];
+			const boundLaunches: Array<{ leafId: string | null; leafSeq?: number }> = [];
+			const control = new SubagentControlRuntime(
+				{ path: "no-entry-seq-control", depth: 0 },
+				join(root, "sessions", "control"),
+			);
+			control.registerAgents([sampleAgent()]);
+			const admitted = control.admitChildSession(
+				{
+					...sampleSpec(root),
+					sessionManager: branchedSdk,
+					testSession: { output: "branched ok" },
+				},
+				{ path: "no-entry-seq-control", depth: 0 },
+			);
+			assert.ok(admitted.admitted);
+			const attempt = await control.runChildAttempt(
+				admitted.admitted,
+				{},
+				{
+					abort: new AbortController().signal,
+					interrupt: new AbortController().signal,
+				},
+				undefined,
+				{
+					reportActivity: () => {},
+					bindTranscript: (source) => {
+						boundSources.push(source);
+					},
+					bindChildLaunch: (launch) => {
+						boundLaunches.push({ leafId: launch.leafId, leafSeq: launch.leafSeq });
+					},
+				},
+			);
+			assert.equal(attempt.status, "ok");
+			assert.deepEqual(boundLaunches, [{ leafId: branchFirstId, leafSeq: 1 }]);
+			const liveTranscript = boundSources.find((source) => "chatSession" in source);
+			assert.ok(liveTranscript);
+			assert.equal(liveTranscript.loadFullHistory, undefined);
+		});
+
+		const sdkBacking = SessionManager.inMemory(root);
+		const sdkFirstId = await sdkBacking.appendMessage({ role: "user", content: "sdk 1", timestamp: 1 });
+		const sdkSecondId = await sdkBacking.appendMessage({ role: "user", content: "sdk 2", timestamp: 2 });
+		assert.ok(sdkFirstId);
+		const sdkManager = createSdkSessionManagerDouble(sdkBacking);
+		assert.equal("getEntrySeq" in sdkManager, false);
+		assert.equal("getSessionStore" in sdkManager, false);
+		assert.equal(sdkManager instanceof SessionManager, false);
+		const sdkLaunches: Array<{ leafId: string | null; leafSeq?: number }> = [];
+		const sdkResult = await runSingleInProcess(root, sampleAgent(), "sdk session manager without getEntrySeq", {
+			cwd: root,
+			runId: "no-entry-seq-sdk",
+			sessionDir: join(root, "sessions", "sdk"),
+			sessionManager: sdkManager,
+			onChildLaunch: (launch) => sdkLaunches.push({ leafId: launch.leafId, leafSeq: launch.leafSeq }),
+			testSession: { output: "sdk ok" },
+		});
+		assert.equal(sdkResult.status, "ok");
+		assert.deepEqual(sdkLaunches, [{ leafId: sdkSecondId, leafSeq: 2 }]);
+
+		const sdkSources: BoundTranscriptSource[] = [];
+		const sdkControl = new SubagentControlRuntime(
+			{ path: "no-entry-seq-sdk-control", depth: 0 },
+			join(root, "sessions", "sdk-control"),
+		);
+		sdkControl.registerAgents([sampleAgent()]);
+		const sdkAdmitted = sdkControl.admitChildSession(
+			{
+				...sampleSpec(root),
+				sessionManager: sdkManager,
+				testSession: { output: "sdk settled ok" },
+			},
+			{ path: "no-entry-seq-sdk-control", depth: 0 },
+		);
+		assert.ok(sdkAdmitted.admitted);
+		const sdkAttempt = await sdkControl.runChildAttempt(
+			sdkAdmitted.admitted,
+			{},
+			{
+				abort: new AbortController().signal,
+				interrupt: new AbortController().signal,
+			},
+			undefined,
+			{
+				reportActivity: () => {},
+				bindTranscript: (source) => {
+					sdkSources.push(source);
+				},
+			},
+		);
+		assert.equal(sdkAttempt.status, "ok");
+		const settledSource = sdkSources.at(-1);
+		assert.ok(settledSource && "loadHistory" in settledSource && settledSource.loadHistory);
+		const loadedHistory = await settledSource.loadHistory();
+		assert.equal(loadedHistory.unavailable, undefined);
+		assert.ok(loadedHistory.entries.length >= 4);
+
+		const tailWithFind = await createCompactedTailSession(root, "tail-find");
+		const tailFindManager = createSdkSessionManagerDouble(tailWithFind.tail, new Set<PropertyKey>(["getEntrySeq"]));
+		const tailFindLaunches: Array<{ leafId: string | null; leafSeq?: number }> = [];
+		const tailFindResult = await runSingleInProcess(root, sampleAgent(), "partial tail with findEntrySeq", {
+			cwd: root,
+			runId: "no-entry-seq-tail-find",
+			sessionDir: join(root, "sessions", "tail-find-run"),
+			sessionManager: tailFindManager,
+			onChildLaunch: (launch) => tailFindLaunches.push({ leafId: launch.leafId, leafSeq: launch.leafSeq }),
+			testSession: { output: "tail find ok" },
+		});
+		assert.equal(tailFindResult.status, "ok");
+		assert.deepEqual(tailFindLaunches, [{ leafId: tailWithFind.leafId, leafSeq: 16 }]);
+		assert.equal(tailWithFind.tail.hasFullHistory(), false);
+
+		const tailWithHydrate = await createCompactedTailSession(root, "tail-hydrate");
+		const tailHydrateManager = createSdkSessionManagerDouble(
+			tailWithHydrate.tail,
+			new Set<PropertyKey>(["getEntrySeq", "findEntrySeq"]),
+		);
+		const tailHydrateLaunches: Array<{ leafId: string | null; leafSeq?: number }> = [];
+		const tailHydrateResult = await runSingleInProcess(root, sampleAgent(), "partial tail with loadFullHistory", {
+			cwd: root,
+			runId: "no-entry-seq-tail-hydrate",
+			sessionDir: join(root, "sessions", "tail-hydrate-run"),
+			sessionManager: tailHydrateManager,
+			onChildLaunch: (launch) => tailHydrateLaunches.push({ leafId: launch.leafId, leafSeq: launch.leafSeq }),
+			testSession: { output: "tail hydrate ok" },
+		});
+		assert.equal(tailHydrateResult.status, "ok");
+		assert.deepEqual(tailHydrateLaunches, [{ leafId: tailWithHydrate.leafId, leafSeq: 16 }]);
+		assert.equal(tailWithHydrate.tail.hasFullHistory(), true);
+
+		const tailUnhydratable = await createCompactedTailSession(root, "tail-unhydratable");
+		const tailUnhydratableManager = createSdkSessionManagerDouble(
+			tailUnhydratable.tail,
+			new Set<PropertyKey>(["getEntrySeq", "findEntrySeq", "loadFullHistory"]),
+		);
+		const tailUnhydratableLaunches: Array<{ leafId: string | null; leafSeq?: number }> = [];
+		const tailUnhydratableResult = await runSingleInProcess(
+			root,
+			sampleAgent(),
+			"partial tail without sequence or hydration methods",
+			{
+				cwd: root,
+				runId: "no-entry-seq-tail-unhydratable",
+				sessionDir: join(root, "sessions", "tail-unhydratable-run"),
+				sessionManager: tailUnhydratableManager,
+				onChildLaunch: (launch) =>
+					tailUnhydratableLaunches.push({ leafId: launch.leafId, leafSeq: launch.leafSeq }),
+				testSession: { output: "tail unhydratable ok" },
+			},
+		);
+		assert.equal(tailUnhydratableResult.status, "ok");
+		assert.deepEqual(tailUnhydratableLaunches, [{ leafId: tailUnhydratable.leafId, leafSeq: undefined }]);
+	} finally {
+		clearSubagentControls();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("in-process subagent launch bounds asynchronous leaf-sequence fallback by sessionStartTimeoutMs (#5316)", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-leaf-seq-timeout-"));
+	clearSubagentControls();
+	try {
+		const backing = SessionManager.inMemory(root);
+		await backing.appendMessage({ role: "user", content: "turn 1", timestamp: 1 });
+		const findEntered = Promise.withResolvers<void>();
+		const findPending = Promise.withResolvers<number | undefined>();
+		const stalledFindManager = new Proxy(backing, {
+			getPrototypeOf: () => Object.prototype,
+			has: (target, prop) => (prop === "getEntrySeq" ? false : Reflect.has(target, prop)),
+			get: (target, prop: keyof SessionManager) => {
+				if (prop === "getEntrySeq") return undefined;
+				if (prop === "findEntrySeq") {
+					return () => {
+						findEntered.resolve();
+						return findPending.promise;
+					};
+				}
+				const value = target[prop];
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+
+		const findLaunched = runSingleInProcess(root, sampleAgent(), "stalled findEntrySeq", {
+			cwd: root,
+			runId: "stalled-find-entry-seq",
+			sessionDir: join(root, "sessions", "stalled-find"),
+			sessionManager: stalledFindManager,
+			sessionStartTimeoutMs: 100,
+			testSession: { output: "done" },
+		});
+		await findEntered.promise;
+		const findOutcome = await Promise.race([findLaunched, sleep(1_500).then(() => "hung" as const)]);
+		findPending.resolve(1);
+		assert.notEqual(findOutcome, "hung");
+		assert.ok(findOutcome !== "hung");
+		assert.equal(findOutcome.status, "error");
+		assert.ok(findOutcome.startError);
+		const findTimeout = rehydrateSessionStartError(findOutcome.startError);
+		assert.ok(isSessionStartTimeoutError(findTimeout));
+		assert.equal(findTimeout.timeoutMs, 100);
+
+		const tailSession = await createCompactedTailSession(root, "stalled-load");
+		const loadEntered = Promise.withResolvers<void>();
+		const loadPending = Promise.withResolvers<void>();
+		const stalledLoadManager = new Proxy(tailSession.tail, {
+			getPrototypeOf: () => Object.prototype,
+			has: (target, prop) => (prop === "getEntrySeq" || prop === "findEntrySeq" ? false : Reflect.has(target, prop)),
+			get: (target, prop: keyof SessionManager) => {
+				if (prop === "getEntrySeq" || prop === "findEntrySeq") return undefined;
+				if (prop === "loadFullHistory") {
+					return () => {
+						loadEntered.resolve();
+						return loadPending.promise;
+					};
+				}
+				const value = target[prop];
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+
+		const loadLaunched = runSingleInProcess(root, sampleAgent(), "stalled loadFullHistory", {
+			cwd: root,
+			runId: "stalled-load-full-history",
+			sessionDir: join(root, "sessions", "stalled-load-run"),
+			sessionManager: stalledLoadManager,
+			resumeSession: true,
+			sessionStartTimeoutMs: 100,
+			testSession: { output: "done" },
+		});
+		await loadEntered.promise;
+		const loadOutcome = await Promise.race([loadLaunched, sleep(1_500).then(() => "hung" as const)]);
+		loadPending.resolve();
+		assert.notEqual(loadOutcome, "hung");
+		assert.ok(loadOutcome !== "hung");
+		assert.equal(loadOutcome.status, "error");
+		assert.ok(loadOutcome.startError);
+		const loadTimeout = rehydrateSessionStartError(loadOutcome.startError);
+		assert.ok(isSessionStartTimeoutError(loadTimeout));
+		assert.equal(loadTimeout.timeoutMs, 100);
+	} finally {
+		clearSubagentControls();
 		rmSync(root, { recursive: true, force: true });
 	}
 });

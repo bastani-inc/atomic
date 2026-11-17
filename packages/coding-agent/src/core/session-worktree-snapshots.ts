@@ -18,6 +18,8 @@ import {
 } from "./worktree-snapshot/best-restore.ts";
 import { DEGRADED_RESTORE_RETENTION_DAYS, snapshotBlobHashes } from "./worktree-snapshot/blob-store.ts";
 import {
+	type Checkout,
+	captureLocatedCheckout,
 	captureWorktreeSnapshot,
 	locateCheckout,
 	recordWorktreeCapture,
@@ -166,17 +168,17 @@ export class SessionWorktreeSnapshotRecorder {
 			);
 			return;
 		}
-		const roots = new Set<string>();
+		const checkouts = new Map<string, Checkout>();
 		for (const directory of directories) {
 			try {
 				const checkout = await locateCheckout(await nearestExisting(directory));
 				if (checkout instanceof Error) this.report(checkout);
-				else roots.add(checkout.root);
+				else if (!checkouts.has(checkout.root)) checkouts.set(checkout.root, checkout);
 			} catch (error) {
 				this.reportFailure(error);
 			}
 		}
-		for (const root of roots) {
+		for (const [root, checkout] of checkouts) {
 			// A pooled worktree this session no longer holds may be another session's work: never recorded as its (#4830).
 			if (!(await holdsSessionWorktree(this.deps.sessionManager, root))) {
 				this.report(new WorkspaceSnapshotError("pooled-worktree-lost", root));
@@ -188,11 +190,17 @@ export class SessionWorktreeSnapshotRecorder {
 			const pin = degradedRestorePin(this.deps.sessionManager, root);
 			try {
 				let captureMs = 0;
+				// The first capture uses the lookup above; one that a collection makes run again looks the checkout up anew.
+				let located: Checkout | undefined = checkout;
 				await recordWorktreeCapture(
 					blobs,
 					async () => {
 						const started = performance.now();
-						const result = await captureWorktreeSnapshot(root, { settings, previous, blobs });
+						const result =
+							located === undefined
+								? await captureWorktreeSnapshot(root, { settings, previous, blobs })
+								: await captureLocatedCheckout(located, { settings, previous, blobs });
+						located = undefined;
 						captureMs = Math.floor(performance.now() - started);
 						return result;
 					},
@@ -420,22 +428,26 @@ export async function holdSessionWorktrees(
 	from: SessionManager,
 	to: SessionManager,
 	storeDir: string = defaultWorktreeSnapshotStoreDir(),
+	signal?: AbortSignal,
 ): Promise<void> {
 	try {
 		const owner = sessionOwner(to);
 		const held = new Set<string>();
 		for (const lease of [...(sessionLeases.get(to) ?? [])]) {
+			signal?.throwIfAborted();
 			if (await keepsLease(to, lease)) held.add(lease.path);
 		}
 		for (const root of currentWorktreeSnapshots(to).keys()) {
+			signal?.throwIfAborted();
 			if (held.has(root)) continue;
 			try {
-				const lease = await holdRestoredWorktree(storeDir, root, owner);
+				const lease = await holdRestoredWorktree(storeDir, root, owner, signal);
 				if (lease !== undefined) {
 					holdFor(to, lease);
 					forfeitedWorktrees.get(owner.id)?.delete(worktreeKey(root));
 				}
 			} catch (error) {
+				if (signal?.aborted) break;
 				reportDebug("storage", "worktree-pool-hold-failed", { root, ...failureDebugFields(error) });
 				forfeit(owner.id, root);
 			}
@@ -892,7 +904,7 @@ export async function resumeSessionWorktree(
 	if (!options.settings.enabled) return { status: "none" };
 	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
 	// The session holds the pooled slots it owns before comparing them, so no claim resets one it continues in (#4748).
-	if (options.pool) await holdSessionWorktrees(sessionManager, sessionManager, storeDir);
+	if (options.pool) await holdSessionWorktrees(sessionManager, sessionManager, storeDir, options.signal);
 	const pending = options.pendingMappings ?? [];
 	const existing = [...sessionManager.getWorktreeRootMappings(), ...pending];
 	const records = sessionManager.getWorktreeSnapshotRecords();
@@ -1051,7 +1063,7 @@ export async function resumeSessionWorktree(
 							claimed = true;
 							return { status: "restored", path: claim.lease.path, warnings: claim.warnings };
 						}
-						lease = await admitSlot(storeDir, snapshot, owner);
+						lease = await admitSlot(storeDir, snapshot, owner, options.signal);
 						return restoreFresh(lease);
 					},
 					(outcome) =>
@@ -1274,6 +1286,7 @@ async function admitSlot(
 	storeDir: string,
 	snapshot: WorktreeSnapshot,
 	owner: PoolOwner,
+	signal?: AbortSignal,
 ): Promise<WorktreeLease | undefined> {
 	try {
 		return await admitPooledWorktree(
@@ -1283,10 +1296,12 @@ async function admitSlot(
 				root: snapshot.root,
 				lastState: { snapshotId: snapshot.id, head: snapshot.head, tree: snapshot.tree },
 				envHash: snapshot.envHash,
+				signal,
 			},
 			owner,
 		);
 	} catch (error) {
+		signal?.throwIfAborted();
 		reportDebug("storage", "worktree-pool-admit-failed", failureDebugFields(error));
 		return undefined;
 	}

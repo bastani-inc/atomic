@@ -6,10 +6,12 @@ import {
 	type AgentSession,
 	type AgentSessionEvent,
 	type AgentSessionEventListener,
+	AgentTokenMeter,
 	applyAssistantMessageDelta,
 	beginStreamingAssistantMessage,
 	buildSkillCatalog,
 	type CreateAgentSessionOptions,
+	type CustomMessageEntry,
 	createAgentSession,
 	DefaultResourceLoader,
 	type DetachedToolCall,
@@ -29,6 +31,7 @@ import {
 	type Skill,
 	type SubagentIntercomIdentity,
 	sliceHead,
+	watchHeldPromptAttention,
 } from "@bastani/atomic";
 import {
 	type Api,
@@ -87,7 +90,11 @@ import {
 } from "../shared/cancellation-recovery.js";
 import { type ChildModePolicy, resolveChildModePolicy } from "./child-policy.js";
 import { createInProcessChildPromptBehavior, createInProcessChildSystemPromptTransform } from "./prompt-behavior.js";
-import { SessionStartBudget } from "./session-start-budget.js";
+import {
+	SessionStartBudget,
+	type SessionStartProgress,
+	SUBAGENT_SESSION_START_TIMEOUT_MS,
+} from "./session-start-budget.js";
 
 export type ChildStatus = NativeAgentStatus | "killed";
 export type ContinuationReason = "intercom-coordination";
@@ -103,6 +110,28 @@ export interface ParentContext {
 	readonly orchestrationContext?: CreateAgentSessionOptions["orchestrationContext"];
 	readonly getChildSessionOptions?: (options: CreateAgentSessionOptions) => CreateAgentSessionOptions;
 	readonly resourceLoaderInheritanceSnapshot?: import("@bastani/atomic").DefaultResourceLoaderInheritanceSnapshot;
+}
+
+/**
+ * What a run's control keeps of the session that launched it: who it is, never the session itself. A control outlives
+ * its launching session, as a workflow stage's runs outlive the stage, so it must not hold the closures and snapshots of
+ * {@link ParentContext} that reach that session's history, extensions and tools. Each admission brings its own parent.
+ */
+export type ParentIdentity = Pick<
+	ParentContext,
+	"path" | "depth" | "sessionId" | "intercomGroup" | "workflowStageSubagentGuard"
+>;
+
+function parentIdentity(parent: ParentContext): ParentIdentity {
+	return {
+		path: parent.path,
+		depth: parent.depth,
+		...(parent.sessionId === undefined ? {} : { sessionId: parent.sessionId }),
+		...(parent.intercomGroup === undefined ? {} : { intercomGroup: parent.intercomGroup }),
+		...(parent.workflowStageSubagentGuard === undefined
+			? {}
+			: { workflowStageSubagentGuard: parent.workflowStageSubagentGuard }),
+	};
 }
 
 export interface TestSessionOptions {
@@ -196,6 +225,13 @@ export interface ChildSpec {
 	readonly outputArtifactPath?: string;
 	/** How long the child's session may take to start before the attempt fails; {@link SUBAGENT_SESSION_START_TIMEOUT_MS}. */
 	readonly sessionStartTimeoutMs?: number;
+	/** Hears where the child's start is, step by step, and `undefined` once its first turn starts or the start ends. */
+	readonly onStartProgress?: (progress: SessionStartProgress | undefined) => void;
+	/**
+	 * Messages an earlier start of this child that ran out of its budget had received as context for its first turn:
+	 * the retry is given them before its first turn, so none of them is lost with the stalled start.
+	 */
+	readonly startContext?: readonly StartContextMessage[];
 	/**
 	 * The thinking level the launch asked for explicitly (a `provider/model:effort` override). The child and every model
 	 * in its fallback chain run at it where that model supports it, and at that model's default level where it does not,
@@ -255,12 +291,35 @@ export function releasedEnvelope(waitingOn: readonly SubagentWaitingCall[]): str
 	return `Released while waiting on ${calls}. It holds nothing while it waits; a tool result, an Intercom message or ask, or resume wakes it from its saved session.`;
 }
 
+export { SUBAGENT_SESSION_START_TIMEOUT_MS } from "./session-start-budget.js";
+
+/** An Intercom message a start wrote into its session as context for its first turn. */
+export interface StartContextMessage {
+	readonly customType: string;
+	readonly content: CustomMessageEntry["content"];
+	readonly display: boolean;
+	readonly details?: unknown;
+}
+
 /**
- * How long a child may take to start: open its session, load its resources, create its agent session, including any
- * wait for a resource-admission permit, and dispatch its task. A child still starting then fails with a
- * `SessionStartTimeoutError` instead of staying running. Waiting for a running slot does not count.
+ * The Intercom messages a start that never ran a turn wrote into its session: received before its first turn, or
+ * while its task was being dispatched. No model saw them, so a retry carries them.
  */
-export const SUBAGENT_SESSION_START_TIMEOUT_MS = 5 * 60_000;
+function startContextMessages(sessionManager: SessionManager | undefined): StartContextMessage[] {
+	if (sessionManager === undefined) return [];
+	const messages: StartContextMessage[] = [];
+	for (const entry of sessionManager.getEntries()) {
+		if (entry.type === "message" && entry.message.role === "assistant") break;
+		if (entry.type !== "custom_message" || entry.customType !== "intercom_message") continue;
+		messages.push({
+			customType: entry.customType,
+			content: entry.content,
+			display: entry.display,
+			...(entry.details === undefined ? {} : { details: entry.details }),
+		});
+	}
+	return messages;
+}
 
 /** Atomic's thinking level when neither the model nor the settings configure one (the SDK's default). */
 const DEFAULT_THINKING_LEVEL: ThinkingLevel = "medium";
@@ -380,6 +439,16 @@ export type AttemptOutcome = (
 			readonly cause: string;
 			/** The typed failure when the child did not start within its start budget; `cause` is its message. */
 			readonly startError?: SessionStartError;
+			/**
+			 * Set with a start that ran out of its budget: settles once that start let go of its session, its late session
+			 * disposed, so another start may open the session again.
+			 */
+			readonly startReleased?: Promise<void>;
+			/**
+			 * Set with a start that ran out of its budget: once it is released, the messages it had received as context
+			 * for its first turn, which a retry in a fresh session carries over.
+			 */
+			readonly startContext?: Promise<readonly StartContextMessage[]>;
 			readonly stats: AttemptStats;
 			readonly path: string;
 			readonly envelope: string;
@@ -572,19 +641,30 @@ export function inProcessChildResourceLoaderOptions(input: {
 }
 
 /**
- * Resolves once the session has no turn running or starting and no interrupt delivery pending, or a stop fires.
+ * Resolves when the session can complete or release with no turn running or starting and no interrupt delivery pending,
+ * or once a stop fires. Normal completion seals message admission in the same synchronous check; interrupted turns
+ * waiting for input and children waiting on detached results keep it open.
  * `subscribeDrained` is told each time the session's count of running turns returns to zero.
  */
 export async function sessionDrained(
-	session: Pick<AgentSession, "subscribe" | "isStreaming" | "_activePromptCount" | "_pendingInterruptDeliveries">,
+	session: Pick<
+		AgentSession,
+		| "subscribe"
+		| "isStreaming"
+		| "_activePromptCount"
+		| "_pendingInterruptDeliveries"
+		| "_sealMessageAdmissionIfDrained"
+	>,
 	stops: readonly AbortSignal[],
 	subscribeDrained: (listener: () => void) => () => void,
+	waitsForNextTurn: () => boolean = () => false,
 ): Promise<void> {
 	// A session that does not count its turns has none running here.
 	const drained = () =>
 		(session._activePromptCount ?? 0) === 0 &&
 		(session._pendingInterruptDeliveries ?? 0) === 0 &&
-		!session.isStreaming;
+		!session.isStreaming &&
+		(waitsForNextTurn() || (session._sealMessageAdmissionIfDrained?.() ?? true));
 	while (!drained() && !stops.some((stop) => stop.aborted)) {
 		await new Promise<void>((resolve) => {
 			const unsubscribeDrained = subscribeDrained(() => done());
@@ -999,20 +1079,28 @@ function settledTranscript(
 	manager: SessionManager,
 	commands: TranscriptCommands | undefined,
 	inherited: string | null,
-	unsavedAnswer: AssistantMessage | undefined,
+	unsaved: SessionEntry | undefined,
 ): TranscriptSource {
 	const sessionId = manager.getSessionId();
 	const sessionFile = manager.getSessionFile();
 	// #5210: a final answer its session could not save is still shown, after what it saved, unless the session holds it.
-	const unsaved = unsavedAnswer === undefined ? undefined : unsavedAnswerEntry(manager, unsavedAnswer);
 	const kept = withUnsavedAnswer(promptAndAnswer(manager, inherited), unsaved);
 	// A child's own session file is read through a store opened for the read, so a finished child keeps no store of its
 	// own in memory; a session in a shared store, as a forked or resumed child's, is read from that store.
-	const store = sessionFile === undefined ? manager.getSessionStore() : undefined;
+	const store =
+		sessionFile === undefined && typeof manager.getSessionStore === "function"
+			? manager.getSessionStore()
+			: undefined;
+	const fallbackEntries =
+		sessionFile === undefined && store === undefined && typeof manager.getEntries === "function"
+			? [...manager.getEntries()]
+			: undefined;
 	const read = async (): Promise<SessionEntry[]> => {
 		const entries = store
 			? [...(await store.load(sessionId)).entries]
-			: await readSessionFileEntries(sessionFile!, sessionId);
+			: sessionFile !== undefined
+				? await readSessionFileEntries(sessionFile, sessionId)
+				: [...(fallbackEntries ?? [])];
 		return withUnsavedAnswer(entries, unsaved);
 	};
 	return {
@@ -1133,6 +1221,26 @@ function messagesSinceLaunch(manager: SessionManager, launchLeafId: string | nul
 	return branch.slice(launchIndex + 1).flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
 }
 
+function hasPartialHistory(manager: SessionManager): boolean {
+	if (typeof manager.hasFullHistory === "function" && !manager.hasFullHistory()) return true;
+	if (typeof manager.getHeldTail === "function" && manager.getHeldTail().fromSeq > 1) return true;
+	return false;
+}
+
+async function sessionLeafSeq(manager: SessionManager, leafId: string): Promise<number | undefined> {
+	if (typeof manager.findEntrySeq === "function") return await manager.findEntrySeq(leafId);
+	if (hasPartialHistory(manager)) {
+		if (typeof manager.loadFullHistory === "function") await manager.loadFullHistory();
+		if (hasPartialHistory(manager)) return undefined;
+	}
+	if (typeof manager.getEntries !== "function") return undefined;
+	const entries = manager.getEntries();
+	for (let index = entries.length - 1; index >= 0; index -= 1) {
+		if (entries[index]?.id === leafId) return index + 1;
+	}
+	return undefined;
+}
+
 /**
  * #5210: final answers children's sessions could not save, by child session id, held until the session is opened again
  * to resume and saves them. Only a storage failure adds one, and each child holds at most its last.
@@ -1204,7 +1312,7 @@ function namedModelId(spec: ChildSpec): string {
 
 /** Why no other model ran in place of a named model, as its failures say. */
 const NAMED_MODEL_RULE =
-	"No other model was used: a subagent launched on a named model runs only that model and its agent's fallbackModels that its modelConstraints allow.";
+	"No other model was used: a subagent launched on a named model runs only that model and its agent's fallbackModels.";
 
 /**
  * Why a child launched on a named model failed when that model, and every fallback it opted into, failed: the models
@@ -1260,7 +1368,7 @@ function assertStartModelAllowed(input: {
 	if (named?.provider === model.provider && named.id === model.id) return;
 	if (gate(model, effort)) return;
 	throw new Error(
-		`Model ${model.provider}/${model.id}${effort ? ` at ${effort} effort` : ""} would run${spec.namedModel ? ` in place of ${spec.namedModel}` : ""}, but the launch's modelConstraints do not allow it. No other model was used.`,
+		`Model ${model.provider}/${model.id}${effort ? ` at ${effort} effort` : ""} would run${spec.namedModel ? ` in place of ${spec.namedModel}` : ""}, but the session's fallback policy does not allow it. No other model was used.`,
 	);
 }
 
@@ -1510,7 +1618,7 @@ export interface RunningAttempt {
 
 export class SubagentControlRuntime {
 	readonly native: SubagentControl;
-	readonly parent: ParentContext;
+	readonly parent: ParentIdentity;
 	readonly sessionRoot: string;
 	private readonly runningAttempts = new Map<number, RunningAttempt>();
 	private readonly attemptTokens = new Map<string, number>();
@@ -1521,10 +1629,15 @@ export class SubagentControlRuntime {
 	private readonly killedChildren = new Set<string>();
 	/** The child id (`<runId>:<index>`) run control knows each admitted child path by. */
 	private readonly childIds = new Map<string, string>();
+	/**
+	 * Admitted paths of starts that ran out of their budget and were retried under a new path: the retry is the child,
+	 * and status lists it alone. Mirrors the native registry, which keeps every path for the control's lifetime.
+	 */
+	private readonly superseded = new Set<string>();
 	private nextAttemptId = 1;
 
 	constructor(parent: ParentContext, sessionRoot?: string, runningCapacity?: number) {
-		this.parent = { ...parent };
+		this.parent = parentIdentity(parent);
 		this.sessionRoot = trustedSessionRoot(this.parent, sessionRoot);
 		this.native = new SubagentControl(this.parent.path, runningCapacity);
 	}
@@ -1553,6 +1666,12 @@ export class SubagentControlRuntime {
 		return latest;
 	}
 
+	/** A stalled start of a child is retried under a new path: the stalled one is no longer the child. */
+	supersedeStalledStart(pathValue: string): void {
+		this.forgetReleasedChild(pathValue);
+		this.superseded.add(pathValue);
+	}
+
 	forgetReleasedChild(pathValue: string): void {
 		this.childIds.delete(pathValue);
 		this.delivered.delete(pathValue);
@@ -1562,6 +1681,14 @@ export class SubagentControlRuntime {
 
 	holdsNothing(): boolean {
 		return Object.values(this.registrySizes()).every((size) => size === 0);
+	}
+
+	/** No attempt of this run is in flight and none of its children is pending, running or continued. */
+	isFinished(): boolean {
+		if (this.runningAttempts.size > 0 || this.attemptTerminators.size > 0) return false;
+		return this.native
+			.listChildren()
+			.every((child) => child.status !== "pending" && child.status !== "running" && child.status !== "continued");
 	}
 
 	registerAgents(agents: readonly AgentConfig[]): void {
@@ -1673,9 +1800,10 @@ export class SubagentControlRuntime {
 
 		let openedThroughId: string | null = null;
 		let releasedAttempt = false;
-		let unsavedAnswer: AssistantMessage | undefined;
+		let unsavedAnswer: SessionEntry | undefined;
 		// Open while this attempt's session lives: a status a disposed session writes late is not the task's.
 		let statusesOpen = true;
+		let stopHeldPromptAttention: (() => void) | undefined;
 		let attemptedModels: string[] = candidateModelId ? [candidateModelId] : [];
 		// Background receipts can precede capacity acquisition and session loading. Publish
 		// only the concrete selection handed to createAgentSession, not a requested ID
@@ -1814,14 +1942,20 @@ export class SubagentControlRuntime {
 			`subagent ${admitted.identity.path}`,
 			admitted.spec.sessionStartTimeoutMs ?? SUBAGENT_SESSION_START_TIMEOUT_MS,
 			"opening-session",
+			admitted.spec.onStartProgress,
 		);
+		// What a start that ran out of its budget still holds: work that settles late, and the session it brings up.
+		const abandoned: Promise<unknown>[] = [];
+		const released = Promise.withResolvers<void>();
 		/** Settle with `work`, or fail once the start budget runs out; a result that arrives later is `abandon`ed. */
-		const beforeStartDeadline = <T>(work: Promise<T>, abandon?: (late: T) => void): Promise<T> =>
+		const beforeStartDeadline = <T>(work: Promise<T>, abandon?: (late: T) => unknown): Promise<T> =>
 			new Promise<T>((resolve, reject) => {
 				const expire = () => {
-					void work.then(
-						(late) => abandon?.(late),
-						() => undefined,
+					abandoned.push(
+						work.then(
+							(late) => abandon?.(late),
+							() => undefined,
+						),
 					);
 					reject(startBudget.signal.reason);
 				};
@@ -1840,13 +1974,21 @@ export class SubagentControlRuntime {
 			});
 		try {
 			const workflow = workflowMetadataFromContext(admitted.spec.parent?.orchestrationContext);
+			const canReopenFromStore =
+				admitted.sessionManager instanceof SessionManager &&
+				typeof admitted.sessionManager.getSessionStore === "function" &&
+				typeof admitted.sessionManager.getEntrySeq === typeof SessionManager.prototype.getEntrySeq;
+			const openOptions =
+				typeof SessionManager.prototype.getEntrySeq === "function" ? ({ history: "tail" } as const) : undefined;
 			const opening = admitted.sessionManager
-				? SessionManager.open(
-						admitted.sessionManager.getSessionStore(),
-						admitted.sessionManager.getSessionId(),
-						admitted.policy.cwd,
-						{ history: "tail" },
-					)
+				? canReopenFromStore
+					? SessionManager.open(
+							admitted.sessionManager.getSessionStore(),
+							admitted.sessionManager.getSessionId(),
+							admitted.policy.cwd,
+							openOptions,
+						)
+					: Promise.resolve(admitted.sessionManager)
 				: SessionManager.create(
 						admitted.policy.cwd,
 						admitted.sessionDir,
@@ -1953,6 +2095,10 @@ export class SubagentControlRuntime {
 			};
 			taskHooks?.bindChildSession?.(childSession);
 			admitted.spec.onChildSession?.(childSession);
+			if (taskHooks !== undefined)
+				stopHeldPromptAttention = watchHeldPromptAttention(childSession.sessionId, (report) =>
+					taskHooks.reportActivity(report),
+				);
 			if (workflow) await beforeStartDeadline(sessionManager.markSessionInternal(workflow));
 			const launchLeafId = sessionManager.getLeafId();
 			ownMessages = () => messagesSinceLaunch(sessionManager, launchLeafId);
@@ -2001,6 +2147,12 @@ export class SubagentControlRuntime {
 								for (const listener of turnDrainedListeners) listener();
 							},
 							taskPending: () => taskPending,
+							// Intercom registers the child before its first turn, inside this start's budget.
+							startup: {
+								signal: startBudget.signal,
+								enterStep: (step) => startBudget.enter(step),
+								firstTurnPending: () => startBudget.active && startBudget.currentStep !== "dispatching-task",
+							},
 							...(!childAllowsIntercom(inherited) ? { intercom: undefined, intercomGroup: undefined } : {}),
 						},
 						settingsManager,
@@ -2010,11 +2162,9 @@ export class SubagentControlRuntime {
 						initialContextTransform: promptBehavior.initialContextTransform,
 					}),
 					// The attempt already failed; a session that comes up after its deadline is never used.
-					(late) => void late.session.dispose().catch(() => undefined),
+					(late) => late.session.dispose().catch(() => undefined),
 				);
 			}
-			if (admitted.spec.resumeSession || admitted.spec.resumeFollowUps?.length) startBudget.end();
-			else startBudget.enter("dispatching-task");
 			session = created.session;
 			const release = admitted.spec.releaseWhenWaiting;
 			if (release !== undefined) session.setToolDetachment({ afterMs: release.afterMs });
@@ -2055,12 +2205,22 @@ export class SubagentControlRuntime {
 				);
 				await transcriptSession.interruptTurn();
 			};
+			const settleInterruptedTurns = async (): Promise<void> => {
+				while (interruptedTurnSettlement !== undefined && termination === undefined) {
+					const settlement = interruptedTurnSettlement;
+					interruptedTurnSettlement = undefined;
+					await settlement;
+				}
+			};
 			// Snapshot at the public session-event boundary, never ahead of its queued events.
 			let observedStreamingMessage: AssistantMessage | undefined;
+			const tokenMeter = new AgentTokenMeter(session.messages);
 			taskHooks?.bindTranscript?.({
 				getSessionId: () => sessionManager.getSessionId(),
-				getEntries: () => sessionManager.getEntries(),
-				loadFullHistory: () => sessionManager.loadFullHistory(),
+				getEntries: () => withUnsavedAnswer(sessionManager.getEntries(), unsavedAnswer),
+				...(typeof sessionManager.loadFullHistory === "function"
+					? { loadFullHistory: () => sessionManager.loadFullHistory() }
+					: {}),
 				subscribe: (listener) => transcriptSession.subscribe(listener),
 				getStreamingMessage: () => observedStreamingMessage,
 				getCompactionReason: compactionReasonReader(transcriptSession),
@@ -2079,14 +2239,22 @@ export class SubagentControlRuntime {
 				thinkingLevelForSession(session) ?? initialThinkingForAttempt(candidateModelId, configuredThinking);
 			attemptedModels = initialModelId ? [initialModelId] : [];
 			onModelChange?.(effectiveModelId, effectiveThinking);
+			const currentLeafId = sessionManager.getLeafId();
 			const childLaunch = {
 				model: effectiveModelId === undefined ? undefined : splitKnownThinkingSuffix(effectiveModelId).baseModel,
 				thinking: effectiveThinking,
-				leafId: sessionManager.getLeafId(),
-				leafSeq: sessionManager.getLeafId() === null ? 0 : sessionManager.getEntrySeq(sessionManager.getLeafId()!),
+				leafId: currentLeafId,
+				leafSeq:
+					currentLeafId === null
+						? 0
+						: typeof sessionManager.getEntrySeq === "function"
+							? sessionManager.getEntrySeq(currentLeafId)
+							: await beforeStartDeadline(sessionLeafSeq(sessionManager, currentLeafId)),
 			};
 			taskHooks?.bindChildLaunch?.(childLaunch);
 			admitted.spec.onChildLaunch?.(childLaunch);
+			if (admitted.spec.resumeSession || admitted.spec.resumeFollowUps?.length) startBudget.end();
+			else startBudget.enter("dispatching-task");
 			const progressState: AgentProgress = {
 				index: 0,
 				agent: admitted.spec.agent.name,
@@ -2097,7 +2265,7 @@ export class SubagentControlRuntime {
 				recentTools: [],
 				recentOutput: [],
 				toolCount: 0,
-				tokens: 0,
+				tokens: tokenMeter.total(),
 				durationMs: 0,
 				lastActivityAt: Date.now(),
 			};
@@ -2108,8 +2276,6 @@ export class SubagentControlRuntime {
 				const onProgress = admitted.spec.onProgress;
 				if (!onProgress && !taskHooks) return;
 				const now = Date.now();
-				if (!force && now - lastProgressEmit < 400) return;
-				lastProgressEmit = now;
 				progressState.durationMs = now - attemptStartedAt;
 				progressState.lastActivityAt = now;
 				taskHooks?.reportActivity({
@@ -2121,6 +2287,8 @@ export class SubagentControlRuntime {
 						tokenCount: progressState.tokens,
 					},
 				});
+				if (!force && now - lastProgressEmit < 400) return;
+				lastProgressEmit = now;
 				onProgress?.({ ...progressState, recentTools: [...progressState.recentTools] });
 			};
 			let activitySequence = 0;
@@ -2146,8 +2314,11 @@ export class SubagentControlRuntime {
 					observedStreamingMessage = beginStreamingAssistantMessage(event.message);
 				else if (event.type === "message_update" && observedStreamingMessage)
 					applyAssistantMessageDelta(observedStreamingMessage, event.assistantMessageEvent);
-				else if (event.type === "message_end" && event.message.role === "assistant")
+				else if (event.type === "message_end" && event.message.role === "assistant") {
 					observedStreamingMessage = undefined;
+					tokenMeter.settled(event.message);
+					progressState.tokens = tokenMeter.total();
+				}
 				const emission = progressEmissionFor(event.type);
 				if (event.type === "tool_execution_start") {
 					taskHooks?.reportActivity({
@@ -2176,13 +2347,7 @@ export class SubagentControlRuntime {
 					progressState.currentToolArgs = undefined;
 					progressState.currentToolStartedAt = undefined;
 				} else if (event.type === "message_end") {
-					const message = (event as { message?: { role?: string; usage?: { input?: number; output?: number } } })
-						.message;
-					if (message?.role === "assistant") {
-						progressState.turnCount = (progressState.turnCount ?? 0) + 1;
-						const usage = message.usage;
-						if (usage) progressState.tokens += (usage.input ?? 0) + (usage.output ?? 0);
-					}
+					if (event.message.role === "assistant") progressState.turnCount = (progressState.turnCount ?? 0) + 1;
 				}
 				if (emission !== "none") emitProgress(emission === "force");
 				if (event.type === "model_fallback_start" && !signals.abort.aborted) {
@@ -2202,7 +2367,15 @@ export class SubagentControlRuntime {
 			});
 			if (signals.abort.aborted) await terminate("abort");
 			if (signals.interrupt.aborted) await terminate("interrupt");
-			if (!termination && admitted.spec.resumeSession) await recoverChildSession(session, admitted.spec);
+			// What a stalled start of this child had received before its first turn is this start's context too.
+			for (const message of admitted.spec.startContext ?? []) {
+				if (termination) break;
+				await session.sendCustomMessage(message);
+			}
+			if (!termination && admitted.spec.resumeSession) {
+				await recoverChildSession(session, admitted.spec);
+				await settleInterruptedTurns();
+			}
 			const redispatched =
 				!termination && admitted.spec.redispatchDetachedCalls ? session.redispatchDetachedToolCalls() : undefined;
 			if (redispatched !== undefined) {
@@ -2251,10 +2424,10 @@ export class SubagentControlRuntime {
 						taskPending = false;
 						startBudget.end();
 					} else {
-						const prompting = session.prompt(
-							admitted.spec.task,
-							admitted.spec.resumeTaskLiteral ? LITERAL_TEXT : undefined,
-						);
+						const prompting = session.prompt(admitted.spec.task, {
+							streamingBehavior: "steer",
+							...(admitted.spec.resumeTaskLiteral ? LITERAL_TEXT : {}),
+						});
 						// Its task is dispatched once its agent starts; a prompt that settles first, refused or handled by an
 						// extension, ends dispatch too.
 						void prompting.then(markTaskDispatched, markTaskDispatched);
@@ -2269,18 +2442,19 @@ export class SubagentControlRuntime {
 				}
 			}
 			do {
-				while (interruptedTurnSettlement !== undefined && termination === undefined) {
-					const settlement = interruptedTurnSettlement;
-					interruptedTurnSettlement = undefined;
-					await settlement;
-				}
+				await settleInterruptedTurns();
 				// A turn that settled while the task was pending left message admission open: what it admitted since is
 				// answered before the execution ends and seals it.
 				if (prepared !== undefined && redispatched === undefined && termination === undefined)
-					await sessionDrained(session, [signals.abort, signals.interrupt], (listener) => {
-						turnDrainedListeners.add(listener);
-						return () => turnDrainedListeners.delete(listener);
-					});
+					await sessionDrained(
+						session,
+						[signals.abort, signals.interrupt],
+						(listener) => {
+							turnDrainedListeners.add(listener);
+							return () => turnDrainedListeners.delete(listener);
+						},
+						() => interruptedTurnSettlement !== undefined,
+					);
 			} while (interruptedTurnSettlement !== undefined && termination === undefined);
 			await terminating;
 			const stats = statsFor(session, admitted.identity.path);
@@ -2323,18 +2497,19 @@ export class SubagentControlRuntime {
 			}
 			// #5210: what the session could not save it still holds in memory; the child's answer is among it.
 			const unsaved = termination === undefined ? session.getPersistenceFailure() : undefined;
-			unsavedAnswer = unsaved === undefined ? undefined : finalAnswerOf(unsaved.unsavedMessages);
-			if (unsavedAnswer !== undefined) unsavedAnswers.set(sessionManager.getSessionId(), unsavedAnswer);
+			const finalAnswer = unsaved === undefined ? undefined : finalAnswerOf(unsaved.unsavedMessages);
+			if (finalAnswer !== undefined) {
+				unsavedAnswer = unsavedAnswerEntry(sessionManager, finalAnswer);
+				unsavedAnswers.set(sessionManager.getSessionId(), finalAnswer);
+			}
 			const producedMessages = ownMessages();
-			const output = outputFor(
-				unsavedAnswer === undefined ? producedMessages : [...producedMessages, unsavedAnswer],
-			);
+			const output = outputFor(finalAnswer === undefined ? producedMessages : [...producedMessages, finalAnswer]);
 			// A child that settled without a stop failed when its last turn failed or it completed no successful turn of
 			// its own (#3987, #4188). A named model's failure says that no other model ran in its place.
 			const failure = termination === undefined ? failedChildCause(producedMessages) : undefined;
 			const noOutput =
 				unsaved !== undefined
-					? unsavedWorkCause(unsaved.error, unsavedAnswer !== undefined)
+					? unsavedWorkCause(unsaved.error, finalAnswer !== undefined)
 					: failure?.modelError !== undefined && admitted.spec.namedModel !== undefined
 						? namedModelFailureCause(
 								admitted.spec.namedModel,
@@ -2435,6 +2610,12 @@ export class SubagentControlRuntime {
 				status,
 				cause,
 				...(startError === undefined ? {} : { startError }),
+				...(startError === undefined
+					? {}
+					: {
+							startReleased: released.promise,
+							startContext: released.promise.then(() => startContextMessages(transcriptManager)),
+						}),
 				stats,
 				path: admitted.identity.path,
 				envelope: boundedEnvelope(cause),
@@ -2462,6 +2643,7 @@ export class SubagentControlRuntime {
 					: settledCommands(sessionCommands(session, transcriptManager.getCwd()));
 			const settleTranscript = (): void => {
 				statusesOpen = false;
+				stopHeldPromptAttention?.();
 				taskHooks?.clearExtensionStatuses?.();
 				if (transcriptManager === undefined) return;
 				taskHooks?.bindTranscript?.(
@@ -2473,7 +2655,11 @@ export class SubagentControlRuntime {
 			const disposal = (async (): Promise<SessionDisposal> => {
 				try {
 					await session?.dispose();
-					if (releasedAttempt && transcriptManager !== undefined)
+					if (
+						releasedAttempt &&
+						transcriptManager !== undefined &&
+						typeof transcriptManager.getSessionStore === "function"
+					)
 						await transcriptManager.getSessionStore().releaseSession?.(transcriptManager.getSessionId());
 					return { cleanup: { kind: "reaped" } };
 				} catch (error) {
@@ -2495,6 +2681,7 @@ export class SubagentControlRuntime {
 				}
 			})();
 			onDisposal(disposal);
+			void Promise.allSettled([disposal, ...abandoned]).then(() => released.resolve());
 			if (releasedAttempt) await disposal;
 			if (this.attemptTokens.get(admitted.identity.path) === token)
 				this.attemptTokens.delete(admitted.identity.path);
@@ -2630,10 +2817,13 @@ export class SubagentControlRuntime {
 	}
 
 	listChildren(): readonly (Omit<ChildIdentity, "status"> & { status: ChildStatus })[] {
-		return this.native.listChildren().map((child) => ({
-			...child,
-			status: child.status === "interrupted" && this.killedChildren.has(child.path) ? "killed" : child.status,
-		}));
+		return this.native
+			.listChildren()
+			.filter((child) => !this.superseded.has(child.path))
+			.map((child) => ({
+				...child,
+				status: child.status === "interrupted" && this.killedChildren.has(child.path) ? "killed" : child.status,
+			}));
 	}
 
 	subscribe(pathValue: string, callback: (status: ChildStatus) => void): void {

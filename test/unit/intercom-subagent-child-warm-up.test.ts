@@ -36,7 +36,7 @@ type ConnectRegistration = Parameters<IntercomClient["connect"]>[0];
 
 vi.mock("../../packages/intercom/broker/spawn.js", () => ({ spawnBrokerIfNeeded: vi.fn() }));
 vi.mock("../../packages/intercom/broker/broker-routing.js", () => ({
-	queryBrokerRouting: async () => ({ acrossMachines: false, hasSharedStorage: false, protocol: { min: 1, max: 3 } }),
+	queryBrokerRouting: async () => ({ acrossMachines: false, hasSharedStorage: false, protocol: { min: 1, max: 4 } }),
 }));
 
 const EXTENSION_PATH = "<intercom>";
@@ -296,6 +296,65 @@ describe("Intercom heavy runtime admitted child registration", () => {
 		}
 	});
 
+	test("session_start waits for a held message to be saved as first-turn context (#5341)", async () => {
+		const saving = Promise.withResolvers<void>();
+		const releaseSave = Promise.withResolvers<void>();
+		const handlers: LifecycleHandlers = new Map();
+		const pi = harnessPi(handlers, new Map());
+		const sendMessage = vi.fn(async (_message: unknown, _options?: unknown) => {
+			saving.resolve();
+			await releaseSave.promise;
+		});
+		pi.sendMessage = sendMessage;
+		mockBrokerClient(() => {});
+		vi.mocked(IntercomClient.prototype.connect).mockImplementation(async function (this: IntercomClient) {
+			this.emit(
+				"message",
+				{
+					id: "held-message-sender",
+					cwd: process.cwd(),
+					model: "test-model",
+					pid: process.pid,
+					startedAt: Date.now(),
+					lastActivity: Date.now(),
+					groups: ["workflow:run-1"],
+				},
+				{ id: "held-before-first-turn", timestamp: Date.now(), content: { text: "held first-turn context" } },
+			);
+		});
+		vi.spyOn(IntercomClient.prototype, "listSessions").mockResolvedValue([]);
+		intercomHeavy(pi);
+		const ctx = connectedChildContext({
+			...admittedChildPolicy,
+			startup: {
+				signal: new AbortController().signal,
+				enterStep() {},
+				firstTurnPending: () => true,
+			},
+		});
+		let started = false;
+		const starting = emitThroughHost(handlers, ctx, SESSION_START).then((reported) => {
+			started = true;
+			return reported;
+		});
+		try {
+			await saving.promise;
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.equal(started, false, "the first turn cannot start while its held context is still being saved");
+			releaseSave.resolve();
+			assert.deepEqual(await starting, []);
+			assert.equal(sendMessage.mock.calls.length, 1);
+			const call = sendMessage.mock.calls[0];
+			assert.ok(call);
+			assert.match(JSON.stringify(call[0]), /Messages received before you started/);
+			assert.notEqual((call[1] as { triggerTurn?: boolean } | undefined)?.triggerTurn, true);
+		} finally {
+			releaseSave.resolve();
+			await starting;
+			await emitThroughHost(handlers, ctx, SESSION_SHUTDOWN);
+		}
+	});
+
 	test("leaves a session without a typed child identity lazy", async () => {
 		const current = heavyFixture();
 		try {
@@ -337,5 +396,67 @@ describe("Intercom admitted child broker-connect recovery through the real compo
 		} finally {
 			await emitThroughHost(handlers, ctx, SESSION_SHUTDOWN);
 		}
+	});
+});
+
+describe("Intercom admitted child registration before its first turn", () => {
+	afterEach(() => vi.useRealTimers());
+
+	function startingChildContext(signal: AbortSignal, steps: string[]): ExtensionContext {
+		return harnessContext({
+			cwd: process.cwd(),
+			hasUI: false,
+			subagentPolicy: {
+				...admittedChildPolicy,
+				startup: {
+					signal,
+					enterStep: (step) => steps.push(step),
+					firstTurnPending: () => true,
+				},
+			},
+		});
+	}
+
+	test("a child whose broker is unreachable at start keeps its start waiting until it registers", async () => {
+		vi.useFakeTimers();
+		const replayed: ExtensionContext[] = [];
+		const current = fixture([
+			{ error: new IntercomClientDisconnectedError() },
+			{ error: new IntercomClientDisconnectedError() },
+			{ module: heavyModule((ctx) => replayed.push(ctx)) },
+		]);
+		const steps: string[] = [];
+		const ctx = startingChildContext(new AbortController().signal, steps);
+		let started = false;
+		const starting = current.emitSessionStart(ctx).then((reported) => {
+			started = true;
+			return reported;
+		});
+		await vi.advanceTimersByTimeAsync(0);
+		assert.equal(started, false, "its extensions are still starting: the first turn cannot begin unregistered");
+		assert.deepEqual(steps, ["registering-intercom"], "its start names the step it waits in");
+		await vi.advanceTimersByTimeAsync(10_000);
+		const reported = await starting;
+		assert.deepEqual(reported, []);
+		assert.equal(current.imports, 3, "it retried until the broker took its registration");
+		assert.deepEqual(replayed, [ctx]);
+		assert.deepEqual(steps, ["registering-intercom", "creating-session"]);
+	});
+
+	test("a start given up while the broker is unreachable stops retrying", async () => {
+		vi.useFakeTimers();
+		const current = fixture([
+			{ error: new IntercomClientDisconnectedError() },
+			{ error: new IntercomClientDisconnectedError() },
+		]);
+		const budget = new AbortController();
+		const steps: string[] = [];
+		const starting = current.emitSessionStart(startingChildContext(budget.signal, steps));
+		await vi.advanceTimersByTimeAsync(0);
+		budget.abort(new Error("start budget ran out"));
+		const reported = await starting;
+		assert.deepEqual(reported, []);
+		assert.equal(current.imports, 1, "no attempt after the start was given up");
+		assert.deepEqual(steps, ["registering-intercom"]);
 	});
 });

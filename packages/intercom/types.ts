@@ -119,6 +119,11 @@ export interface GroupSummary {
 	member: boolean;
 }
 
+export interface ReachPolicyFrame {
+	home: string;
+	reachable: string[];
+}
+
 /** A broker's multi-node routing state, as `broker_status` reports it. */
 export interface BrokerMultiNodeStatus {
 	status: "off" | "starting" | "on" | "unavailable";
@@ -241,6 +246,11 @@ export interface ReleasedChildRefusal {
 
 export type IntercomDeliveryMode = "steer" | "followUp" | "interrupt";
 
+export interface MessageDisplayRange {
+  readonly start: number;
+  readonly end: number;
+}
+
 export interface Message {
   id: string;
   timestamp: number;
@@ -269,6 +279,7 @@ export interface Message {
   content: {
     text: string;
     attachments?: Attachment[];
+    displayRanges?: readonly MessageDisplayRange[];
   };
 }
 
@@ -302,6 +313,7 @@ export interface RegisterRequest {
 			acknowledgesReceipt?: true;
 			/** #4538: the wire protocol versions this client speaks; absent from a client of protocol 1 (0.9.71 and earlier). */
 			protocol?: { min: number; max: number };
+			reach?: ReachPolicyFrame;
 }
 
 export type ClientMessage =
@@ -329,7 +341,17 @@ export type ClientMessage =
    * with the capability. A `dormant` hold only keeps the child addressable until the supervisor that restores it
    * reserves the same child and group, which takes the hold over together with the sends held so far.
    */
-  | { type: "reserve_restoring_recipient"; requestId: string; capability: string; group?: string; aliases?: string[]; dormant?: boolean; wake?: boolean }
+  | {
+      type: "reserve_restoring_recipient";
+      requestId: string;
+      capability: string;
+      group?: string;
+      aliases?: string[];
+      dormant?: boolean;
+      wake?: boolean;
+      /** The child is starting: hold each send this long for it (bounded by the broker). */
+      holdMs?: number;
+    }
   /**
    * #3760: end that hold. With `gone` (the reason), held and later senders are told the child is gone. With `refusal`,
    * the senders held now are told that reason instead and later ones are routed normally. Otherwise held sends are
@@ -440,6 +462,7 @@ export type ClientMessage =
       group?: string;
       requestId?: string;
     }
+	| { type: "set_reach"; requestId: string; reachable: string[] }
 	/** Allowed before `register`: the broker's own status. */
 	| { type: "broker_status"; requestId: string }
 	/** Allowed before `register`: shut the broker down; its sessions reconnect to a new broker. */
@@ -472,16 +495,40 @@ export type BrokerMessage =
 			multiNodeRouting?: BrokerMultiNodeStatus["status"];
 			/** #4538: the wire protocol versions this broker accepts; absent on brokers of protocol 1. */
 			protocol?: { min: number; max: number };
+			enforcesReach?: true;
 	  }
 	| { type: "workflow_invocation_claimed"; requestId: string; claimed: boolean }
-  | { type: "registration_failed"; reason: string; code?: LiveWorkflowStageRouteRefusalCode; requestId?: string }
+  | {
+      type: "registration_failed";
+      reason: string;
+      code?: LiveWorkflowStageRouteRefusalCode | "reach_policy_refused" | "supervisor_authorization_refused";
+      requestId?: string;
+    }
   | { type: "question_target"; messageId: string; attemptId: string; sessionId: string }
  | { type: "sessions"; requestId: string; sessions: SessionInfo[]; workflowStages?: WorkflowStageRosterEntry[]; workflowFutureStages?: WorkflowFutureStageRosterEntry[]; restricted?: true }
 	| { type: "groups"; requestId: string; groups: GroupSummary[] }
 	| { type: "membership_ack"; requestId: string; groups: string[] }
+	| { type: "reach_ack"; requestId: string; reachable: string[]; groups: string[] }
+	| { type: "reach_failed"; requestId: string; reason: string }
   | { type: "supervisor_authorized"; requestId: string; capability: string; supervisorSessionId: string; childName: string }
   /** `hostedRecipient` names the hosted session the message is for, written only to the connection hosting it (#4642). */
-  | { type: "message"; from: SessionInfo; message: Message; channel?: "supervisor"; hostedRecipient?: string }
+  | {
+      type: "message";
+      from: SessionInfo;
+      message: Message;
+      channel?: "supervisor";
+      hostedRecipient?: string;
+      /**
+       * Multi-node: the origin broker carried this answer on a return path (its recipient wrote to its sender first).
+       * Set only between brokers, on outbox rows; never sent to a client.
+       */
+      returnPath?: true;
+      /**
+       * Multi-node: the stable registration identity of `from`, written by the origin broker, which the recipient's
+       * broker binds a return path to. Set only between brokers, on outbox rows; never sent to a client.
+       */
+      senderIdentity?: string;
+    }
 	| { type: "pending_stage_notification"; requestId: string; from: SessionInfo; message: Message }
 	| {
 			type: "pending_stage_message";

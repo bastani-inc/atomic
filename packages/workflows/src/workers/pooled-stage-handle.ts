@@ -295,8 +295,8 @@ export class PooledStageHandle implements StageControlHandle {
 		for (const id of this.bashRuns.keys()) void this.sessionCommand({ kind: "abort-bash", id }).catch(() => {});
 	}
 	/** Compacts the stage session's context in its worker; progress arrives as the session's compaction events. */
-	async compact(): Promise<void> {
-		await this.sessionCommand({ kind: "compact" });
+	async compact(instructions?: string): Promise<void> {
+		await this.sessionCommand({ kind: "compact", ...(instructions ? { instructions } : {}) });
 	}
 	abortCompaction(): void {
 		void this.sessionCommand({ kind: "abort-compaction" }).catch(() => {});

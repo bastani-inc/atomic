@@ -289,8 +289,8 @@ describe("ask_user_question transcript summary (#5224)", () => {
 			},
 			ONE,
 		);
-		assert.deepEqual(out.call, ["Navigation → Build it as shown"]);
-		assert.deepEqual(out.result, []);
+		assert.deepEqual(out.call, ["Questions · Navigation"]);
+		assert.deepEqual(out.result, [" ● Navigation → Build it as shown"]);
 	});
 
 	test("several answers get a line each, multi-select joined, with notes", () => {
@@ -304,9 +304,9 @@ describe("ask_user_question transcript summary (#5224)", () => {
 		});
 		assert.deepEqual(out.call, ["Questions · Navigation · Packaging · Layout"]);
 		assert.deepEqual(out.result, [
-			"Navigation → Simplify",
-			"Packaging → coding-agent, workflows",
-			"Layout → Sidebar · notes: keep it narrow",
+			" ● Navigation → Simplify",
+			"   ⎿  Packaging → coding-agent, workflows",
+			"   ⎿  Layout → Sidebar · notes: keep it narrow",
 		]);
 	});
 
@@ -335,8 +335,9 @@ describe("ask_user_question transcript summary (#5224)", () => {
 		}
 	});
 
-	test("a declined questionnaire says so and lists what was asked", () => {
+	test("a cancelled questionnaire renders a stopped header (#5350)", () => {
 		const out = render({ answers: [], cancelled: true }, ONE);
-		assert.deepEqual(out.call, ["Declined · Navigation (Build it as shown / Simplify)"]);
+		assert.deepEqual(out.call, ["Questions · Navigation"]);
+		assert.deepEqual(out.result, [" ◼ Questions cancelled"]);
 	});
 });

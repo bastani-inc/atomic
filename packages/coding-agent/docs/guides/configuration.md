@@ -19,9 +19,7 @@ Choose the provider and model you have configured, then add the settings you nee
   "theme": "dark",
   "compaction": {
     "enabled": true,
-    "reserveTokens": 16384,
-    "compression_ratio": 0.5,
-    "preserve_recent": 2
+    "reserveTokens": 16384
   },
   "retry": {
     "enabled": true,

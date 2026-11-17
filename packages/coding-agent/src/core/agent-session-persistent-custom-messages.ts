@@ -5,6 +5,9 @@ import type { DrainedAgentQueues } from "./agent-session-types.js";
 import { customMessageExcludesContext } from "./agent-session-types.js";
 import type { PendingRecoveryDelivery } from "./extensions/index.js";
 import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
+import { appendFailureWroteNothing } from "./session-manager-append-errors.ts";
+import { SessionDeletedError } from "./session-manager-errors.js";
+import { SessionConflictError, SessionNotFoundError } from "./storage/session/errors.js";
 
 type ProtectedDelivery = "steer" | "followUp";
 type ProtectedPhase = "queued" | "consumed-unpersisted" | "persistence-failed";
@@ -28,11 +31,118 @@ function protectedMessages(session: AgentSession): ProtectedStreamingCustomMessa
 	return session._protectedStreamingCustomMessages;
 }
 
-async function appendDurableDisplayCard(
+interface DurableDisplayCard {
+	readonly card: CustomMessage & { excludeFromContext: true };
+	readonly intentEntryId: string;
+}
+
+const displayedExcludedCards = new WeakMap<AgentSession, Set<string>>();
+const failedCardWrites = new WeakMap<AgentSession["sessionManager"], () => Promise<void>>();
+const uncertainCardKeys = new WeakMap<AgentSession["sessionManager"], Set<string>>();
+const pendingCardWrites = new WeakMap<AgentSession["sessionManager"], Map<string, Promise<DurableDisplayCard>>>();
+
+function displayedCards(session: AgentSession): Set<string> {
+	let displayed = displayedExcludedCards.get(session);
+	if (displayed === undefined) {
+		displayed = new Set(session.sessionManager.getBranch().map((entry) => entry.id));
+		displayedExcludedCards.set(session, displayed);
+	}
+	return displayed;
+}
+
+export function markCustomMessageDisplayed(session: AgentSession, entryId: string): void {
+	displayedCards(session).add(entryId);
+}
+
+export function refreshFailedCustomMessageWrites(session: AgentSession): Promise<void> | undefined {
+	displayedCards(session);
+	return failedCardWrites.get(session.sessionManager)?.();
+}
+
+export function hasUncertainCustomMessageWrite(manager: AgentSession["sessionManager"], key: string): boolean {
+	return uncertainCardKeys.get(manager)?.has(key) === true;
+}
+
+export function confirmCustomMessageWrite(manager: AgentSession["sessionManager"], key: string | undefined): void {
+	if (key !== undefined) uncertainCardKeys.get(manager)?.delete(key);
+}
+
+export function recordFailedCustomMessageWrite(
+	manager: AgentSession["sessionManager"],
+	error: unknown,
+	key?: string,
+): void {
+	if (
+		error instanceof SessionDeletedError ||
+		error instanceof SessionConflictError ||
+		appendFailureWroteNothing(error)
+	)
+		return;
+	if (key !== undefined) {
+		const uncertain = uncertainCardKeys.get(manager) ?? new Set<string>();
+		uncertain.add(key);
+		uncertainCardKeys.set(manager, uncertain);
+	}
+	failedCardWrites.set(manager, async () => {
+		try {
+			await manager.refreshFromStore();
+		} catch (refreshError) {
+			if (!(refreshError instanceof SessionNotFoundError)) throw refreshError;
+		}
+		failedCardWrites.delete(manager);
+	});
+}
+
+export function customMessageOccurrences<T>(messages: CustomMessage<T>[]): CustomMessage<T>[] {
+	const counts = new Map<string, number>();
+	for (const message of messages) {
+		const key = (message as StageAdmittedCustomMessage).stageAdmissionKey;
+		if (key !== undefined) counts.set(key, (counts.get(key) ?? 0) + 1);
+	}
+	const used = new Set(counts.keys());
+	const next = new Map<string, number>();
+	return messages.map((message) => {
+		const key = (message as StageAdmittedCustomMessage).stageAdmissionKey;
+		if (key === undefined || counts.get(key) === 1) return message;
+		counts.set(key, counts.get(key)! - 1);
+		let index = next.get(key) ?? 0;
+		while (used.has(`${key}#${index}`)) index++;
+		const occurrenceKey = `${key}#${index}`;
+		used.add(occurrenceKey);
+		next.set(key, index + 1);
+		return { ...message, stageAdmissionKey: occurrenceKey } satisfies StageAdmittedCustomMessage;
+	});
+}
+
+function appendDurableDisplayCard(
 	session: AgentSession,
 	message: CustomMessage,
-	delivery: ProtectedDelivery,
-): Promise<{ readonly card: CustomMessage & { excludeFromContext: true }; readonly intentEntryId: string }> {
+	delivery: ProtectedDelivery | undefined,
+): Promise<DurableDisplayCard> {
+	const key = (message as StageAdmittedCustomMessage).stageAdmissionKey;
+	if (key === undefined) return appendDisplayCardOccurrence(session, message, delivery);
+	const manager = session.sessionManager;
+	const pending = pendingCardWrites.get(manager) ?? new Map<string, Promise<DurableDisplayCard>>();
+	const existing = pending.get(key);
+	if (existing !== undefined) return existing;
+	const write = appendDisplayCardOccurrence(session, message, delivery);
+	pending.set(key, write);
+	pendingCardWrites.set(manager, pending);
+	const clear = () => {
+		if (pending.get(key) === write) pending.delete(key);
+		if (pending.size === 0) pendingCardWrites.delete(manager);
+	};
+	void write.then(clear, clear);
+	return write;
+}
+
+async function appendDisplayCardOccurrence(
+	session: AgentSession,
+	message: CustomMessage,
+	delivery: ProtectedDelivery | undefined,
+): Promise<DurableDisplayCard> {
+	const refresh = refreshFailedCustomMessageWrites(session);
+	if (refresh !== undefined) await refresh;
 	const card = { ...message, excludeFromContext: true } satisfies CustomMessage & { excludeFromContext: true };
 	const admitted = message as StageAdmittedCustomMessage;
 	// A retry after a failed flush must complete the already-appended occurrence
@@ -46,30 +156,37 @@ async function appendDurableDisplayCard(
 						(entry) =>
 							entry.type === "custom_message" &&
 							entry.stageAdmissionKey === admitted.stageAdmissionKey &&
-							protectedDelivery(entry.protectedReconciliation) !== undefined,
+							(delivery === undefined
+								? entry.protectedReconciliation === undefined
+								: protectedDelivery(entry.protectedReconciliation) !== undefined),
 					);
 	// The card and recovery marker share one append, so either both survive a
 	// process exit or neither does.
-	const intentEntryId =
-		partial?.id ??
-		(await session.sessionManager.appendCustomMessageEntry(
-			card.customType,
-			card.content,
-			card.display,
-			card.details,
-			true,
-			{ delivery },
-			admitted.stageAdmissionKey,
-		));
+	let intentEntryId = partial?.id;
+	if (intentEntryId === undefined) {
+		const manager = session.sessionManager;
+		try {
+			intentEntryId = await manager.appendCustomMessageEntry(
+				card.customType,
+				card.content,
+				card.display,
+				card.details,
+				true,
+				delivery === undefined ? undefined : { delivery },
+				admitted.stageAdmissionKey,
+			);
+		} catch (error) {
+			recordFailedCustomMessageWrite(manager, error, admitted.stageAdmissionKey);
+			throw error;
+		}
+	}
+	confirmCustomMessageWrite(session.sessionManager, admitted.stageAdmissionKey);
 	session._entryIdsByMessage.set(card, intentEntryId);
 	session._refreshFinalizedContext();
 	return { card, intentEntryId };
 }
 
 function emitDurableDisplayCard(session: AgentSession, card: CustomMessage): void {
-	// The card is already live and file-backed, and its protected reconciliation
-	// is registered. Public listeners remain fallible, but their errors cannot
-	// revoke admission or make the producer retry this committed occurrence.
 	try {
 		session._emit({ type: "message_start", message: card });
 	} catch {}
@@ -176,10 +293,26 @@ interface ProtectedAdmission {
 	reconciliations: CustomMessage[];
 }
 
+interface PreparedCard {
+	readonly card: CustomMessage;
+	readonly intentEntryId: string;
+	readonly reconciliation: CustomMessage;
+}
+
+/** How a queued batch reports its queueing, and what happens to the cards it saved before a later write failed. */
+interface ProtectedBatchQueueing {
+	/** Runs once reconciliations are queued, including those of a saved prefix queued after a failed write. */
+	readonly onQueued?: () => void;
+	/** Whether the saved prefix of a failed write is queued now; otherwise it waits for the retry or for recovery. */
+	readonly queuesSavedPrefix?: () => boolean;
+}
+
 async function prepareProtectedAdmission(
 	session: AgentSession,
 	messages: CustomMessage[],
 	delivery: ProtectedDelivery,
+	commitBatch?: (admission: ProtectedAdmission) => void,
+	queuesSavedPrefix: () => boolean = () => true,
 ): Promise<ProtectedAdmission> {
 	// While the initiating workflow tool is still executing, its assistant call
 	// may be ahead of SessionManager's async event writer. Wait only in that
@@ -187,13 +320,44 @@ async function prepareProtectedAdmission(
 	// be queued synchronously so agent-core's next native poll observes it.
 	if (session.agent.state.pendingToolCalls.size > 0) await session._agentEventQueue;
 	const owner = resolveWorkflowStageDeliveryTarget(session);
-	const prepared = [];
-	for (const message of messages) {
-		const { card, intentEntryId } = await appendDurableDisplayCard(owner, message, delivery);
-		prepared.push({ card, reconciliation: createProtectedReconciliation(message, intentEntryId) });
+	const prepared: PreparedCard[] = [];
+	const commit = (): ProtectedAdmission => {
+		const admission = registerProtectedAdmission(owner, prepared, delivery);
+		if (admission.reconciliations.length > 0) commitBatch?.(admission);
+		return admission;
+	};
+	try {
+		for (const message of customMessageOccurrences(messages)) {
+			const { card, intentEntryId } = await appendDurableDisplayCard(owner, message, delivery);
+			prepared.push({ card, intentEntryId, reconciliation: createProtectedReconciliation(message, intentEntryId) });
+		}
+	} catch (error) {
+		// The cards saved before the failed write reach the model now, and a retry finds them registered and skips them.
+		if (commitBatch !== undefined && prepared.length > 0 && queuesSavedPrefix()) commit();
+		throw error;
 	}
-	const cards = prepared.map((entry) => entry.card);
-	const reconciliations = prepared.map((entry) => entry.reconciliation);
+	return commit();
+}
+
+function registerProtectedAdmission(
+	owner: AgentSession,
+	prepared: readonly PreparedCard[],
+	delivery: ProtectedDelivery,
+): ProtectedAdmission {
+	const registered = new Set(
+		protectedMessages(owner).map((entry) => completedReconciliationIntent(entry.message.details)),
+	);
+	for (const entry of owner.sessionManager.getBranch()) {
+		if (entry.type === "custom_message" && entry.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE)
+			registered.add(completedReconciliationIntent(entry.details));
+	}
+	const unread = prepared.filter((entry) => {
+		if (registered.has(entry.intentEntryId)) return false;
+		registered.add(entry.intentEntryId);
+		return true;
+	});
+	const cards = unread.map((entry) => entry.card);
+	const reconciliations = unread.map((entry) => entry.reconciliation);
 	protectedMessages(owner).push(
 		...reconciliations.map((message) => ({ message, delivery, phase: "queued" as const })),
 	);
@@ -214,10 +378,10 @@ export async function admitProtectedStreamingCustomMessage(
 	session: AgentSession,
 	message: CustomMessage,
 	delivery: ProtectedDelivery,
-): Promise<CustomMessage> {
+): Promise<CustomMessage | undefined> {
 	const admission = await prepareProtectedAdmission(session, [message], delivery);
 	emitProtectedAdmission(admission);
-	return admission.reconciliations[0]!;
+	return admission.reconciliations[0];
 }
 
 /** Queue one hidden turn before public listeners can transfer its ownership. */
@@ -228,7 +392,8 @@ export async function queueProtectedStreamingCustomMessage(
 	priority = false,
 ): Promise<void> {
 	const admission = await prepareProtectedAdmission(session, [message], delivery);
-	admission.owner._queueAgentMessage(admission.reconciliations[0]!, priority ? "interrupt" : delivery);
+	for (const reconciliation of admission.reconciliations)
+		admission.owner._queueAgentMessage(reconciliation, priority ? "interrupt" : delivery);
 	emitProtectedAdmission(admission);
 }
 
@@ -237,12 +402,51 @@ export async function queueProtectedStreamingCustomMessages(
 	session: AgentSession,
 	messages: CustomMessage[],
 	delivery: ProtectedDelivery,
-): Promise<void> {
-	const admission = await prepareProtectedAdmission(session, messages, delivery);
-	for (const reconciliation of admission.reconciliations) {
-		admission.owner._queueAgentMessage(reconciliation, delivery);
+	queueing: ProtectedBatchQueueing = {},
+): Promise<number> {
+	const admission = await prepareProtectedAdmission(
+		session,
+		messages,
+		delivery,
+		(admission) => {
+			for (const reconciliation of admission.reconciliations) {
+				admission.owner._queueAgentMessage(reconciliation, delivery);
+			}
+			emitProtectedAdmission(admission);
+			queueing.onQueued?.();
+		},
+		queueing.queuesSavedPrefix,
+	);
+	return admission.reconciliations.length;
+}
+
+export async function queueHeldCustomMessages(
+	session: AgentSession,
+	messages: CustomMessage[],
+	delivery: ProtectedDelivery,
+	queueing: ProtectedBatchQueueing = {},
+): Promise<number> {
+	let queued = 0;
+	let contextual: CustomMessage[] = [];
+	for (const message of customMessageOccurrences(messages)) {
+		if (!customMessageExcludesContext(message)) {
+			contextual.push(message);
+			continue;
+		}
+		if (contextual.length > 0)
+			queued += await queueProtectedStreamingCustomMessages(session, contextual, delivery, queueing);
+		contextual = [];
+		const owner = resolveWorkflowStageDeliveryTarget(session);
+		const { card, intentEntryId } = await appendDurableDisplayCard(owner, message, undefined);
+		const displayed = displayedCards(owner);
+		if (!displayed.has(intentEntryId)) {
+			displayed.add(intentEntryId);
+			emitDurableDisplayCard(owner, card);
+		}
 	}
-	emitProtectedAdmission(admission);
+	if (contextual.length > 0)
+		queued += await queueProtectedStreamingCustomMessages(session, contextual, delivery, queueing);
+	return queued;
 }
 
 /** Start or queue an idle protected batch before exposing its display cards. */
@@ -251,17 +455,18 @@ export async function triggerProtectedStreamingCustomMessages(
 	messages: CustomMessage[],
 	delivery: ProtectedDelivery,
 ): Promise<void> {
-	const admission = await prepareProtectedAdmission(session, messages, delivery);
-	for (const reconciliation of admission.reconciliations) {
-		admission.owner._queueAgentMessage(reconciliation, delivery);
-	}
-	const owner = emitProtectedAdmission(admission);
-	if (owner.isStreaming || owner._isPreparingRun || owner._queuedMessagesPaused) return;
-	for (const reconciliation of admission.reconciliations) {
-		removeQueuedProtectedReference(owner, reconciliation);
-	}
-	const turn = owner._runAgentPrompt(admission.reconciliations);
-	void turn.catch(() => {});
+	await prepareProtectedAdmission(session, messages, delivery, (admission) => {
+		for (const reconciliation of admission.reconciliations) {
+			admission.owner._queueAgentMessage(reconciliation, delivery);
+		}
+		const owner = emitProtectedAdmission(admission);
+		if (owner.isStreaming || owner._isPreparingRun || owner._queuedMessagesPaused) return;
+		for (const reconciliation of admission.reconciliations) {
+			removeQueuedProtectedReference(owner, reconciliation);
+		}
+		const turn = owner._runAgentPrompt(admission.reconciliations);
+		void turn.catch(() => {});
+	});
 }
 
 /** Record that agent-core drained and consumed the hidden reconciliation. */

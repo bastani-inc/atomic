@@ -18,6 +18,7 @@ export {
 	type ChatSessionHostEntry,
 	type ChatSessionHostOpts,
 	type ChatSessionHostStyle,
+	type ChatSessionInterruptedTurnSnapshot,
 	type ChatSessionSubmitMode,
 	type ChatSessionViewportSettings,
 } from "./chat-session-host.ts";
@@ -48,6 +49,8 @@ export { FirstTimeSetupComponent, type FirstTimeSetupOptions, type FirstTimeSetu
 export { FooterComponent, UsageMeterComponent } from "./footer.ts";
 export { IdleStatus } from "./idle-status.ts";
 export {
+	type AttachedComposerStyle,
+	applyAttachedComposer,
 	applyInputLabelToEditorTopRule,
 	buildInputLabel,
 	INPUT_LABEL_MIN_COLUMNS,
@@ -79,8 +82,25 @@ export { SessionSelectorComponent } from "./session-selector.ts";
 export { type SettingsCallbacks, type SettingsConfig, SettingsSelectorComponent } from "./settings-selector.ts";
 export { ShowImagesSelectorComponent } from "./show-images-selector.ts";
 export { SkillInvocationMessageComponent } from "./skill-invocation-message.ts";
+export {
+	TASK_CHAT_OVERLAY_KEYS,
+	taskChatKeys,
+} from "./task-inspector.js";
 export { ThemeSelectorComponent } from "./theme-selector.ts";
 export { ThinkingSelectorComponent } from "./thinking-selector.ts";
+export { formatTokenCount, formatTokenSegment, type TokenSegmentMode } from "./token-segment.ts";
+export {
+	collapseToolBlockLines,
+	isToolBlock,
+	TOOL_BLOCK_LIMITS,
+	ToolBlock,
+	ToolBlockGroup,
+	ToolBlockMarkdown,
+	ToolBlockRecords,
+	type ToolBlockSpec,
+	type ToolBlockStatus,
+} from "./tool-block.ts";
+export { formatToolActionSummary } from "./tool-block-summary.ts";
 export { ToolExecutionComponent, type ToolExecutionOptions } from "./tool-execution.ts";
 export { TRANSCRIPT_JUMP_TO_END_URL, TranscriptFollowIndicator } from "./transcript-follow-indicator.ts";
 export { TreeSelectorComponent } from "./tree-selector.ts";
@@ -88,4 +108,5 @@ export { TrustSelectorComponent } from "./trust-selector.ts";
 export { UserMessageComponent } from "./user-message.ts";
 export { UserMessageSelectorComponent } from "./user-message-selector.ts";
 export { truncateToVisualLines, type VisualTruncateResult } from "./visual-truncate.ts";
+export { AgentTokenMeter, agentTokenTotal } from "./working-run-meter.ts";
 export { WorkingStatusComponent, type WorkingStatusComponentOptions } from "./working-status.ts";

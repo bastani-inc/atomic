@@ -334,7 +334,11 @@ async function runWorker(start: WorkerStart): Promise<void> {
 	// #4768: a model call to a scope of the root's fleet-wide rate limits takes a token from the coordinator first.
 	if (start.rateScopes !== undefined && start.rateScopes.length > 0)
 		setProviderRequestGate(
-			fleetRateGate(start.rateScopes, (provider, model) => request({ kind: "rate-acquire", provider, model })),
+			fleetRateGate(
+				start.rateScopes,
+				(provider, model, rateRequest) => request({ kind: "rate-acquire", provider, model, request: rateRequest }),
+				(rateRequest) => request({ kind: "rate-release", request: rateRequest }),
+			),
 		);
 	const definitions = await Promise.all(start.definitions.map(loadWorkerDefinition));
 	const durableSelection = process.env[POOL_DURABLE_JOURNAL_ENV];
@@ -470,6 +474,8 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		/** Attempts this worker has run to their end, completed or fenced. */
 		let attempts = 0;
 		let currentStore = createStore();
+		/** The session store of the attempt the worker runs: its reads of what it wrote wait for it to ship (#4768). */
+		let attemptSessions: SessionStore | undefined;
 		let activeController: AbortController | undefined;
 		const toolControls = createToolControlRegistry();
 		// Whether each stage started a turn in this attempt: a reconnecting root view redelivers
@@ -500,7 +506,8 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			(message) => tell({ ...message, id: 0 }),
 			() => control.state,
 			{
-				entries: async (sessionId) => (await sessions.load(sessionId)).entries,
+				// Through the attempt's own store, which ships what the attempt wrote of the session first (#4768).
+				entries: async (sessionId) => (await (attemptSessions ?? sessions).load(sessionId)).entries,
 				turnStarted: (handle) => turnStarted.has(handle),
 				prompts: () => prompts,
 				inbox: () => remoteInbox,
@@ -671,6 +678,17 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				await awaitAdmission(signal);
 				await admission?.validate(signal);
 			});
+			const attemptStageSessions = workerSessionStore({
+				reader: sessions,
+				backend: reader,
+				store,
+				root: start.root,
+				commit: write,
+				sync: async (sessionId) => {
+					await attemptRequests.send({ kind: "session-sync", ...(sessionId === undefined ? {} : { sessionId }) });
+				},
+			});
+			attemptSessions = attemptStageSessions;
 			const usageReports = () => collectWorkerUsage(store.runs());
 			const failPulse = (error: Error) => {
 				controller.abort(error);
@@ -734,13 +752,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 						stageUiBroker,
 						adapters: {
 							agentSession: admitted,
-							sessionStore: workerSessionStore({
-								reader: sessions,
-								backend: reader,
-								store,
-								root: start.root,
-								commit: write,
-							}),
+							sessionStore: attemptStageSessions,
 						},
 					}),
 				);
@@ -786,6 +798,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				attemptRequests.held = undefined;
 				prompts = undefined;
 				remoteInbox = undefined;
+				attemptSessions = undefined;
 				activeController = undefined;
 			}
 			if (replies.attemptFenced && !replies.rootLeaseLost) {

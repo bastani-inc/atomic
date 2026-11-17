@@ -10,6 +10,7 @@ import { createJiti } from "jiti";
 const [directory, maxWorkers] = process.argv.slice(2);
 const host = process.env.SHARED_POOL_HOST;
 const jiti = createJiti(import.meta.url, { fsCache: true });
+await jiti.import(fileURLToPath(new URL("../setup-packaged-local-worker.ts", import.meta.url)));
 const { startWorkflowWorkerHost } = await jiti.import(
 	fileURLToPath(new URL("../../packages/workflows/src/workers/worker-host.ts", import.meta.url)),
 );
@@ -64,10 +65,10 @@ const reporter = setInterval(() => {
 			reporting = undefined;
 		});
 }, 250);
+// SHARED_POOL_DRAIN_ON_TERM=1 (#4768): SIGTERM drains the host, as `atomic worker start` does, instead of stopping it.
 process.once("SIGTERM", () => {
 	clearInterval(reporter);
-	void workerHost
-		.stop()
+	void (process.env.SHARED_POOL_DRAIN_ON_TERM === "1" ? workerHost.drain() : workerHost.stop())
 		.then(() => process.exit(0))
 		.catch((error) => {
 			process.stderr.write(`${error?.stack ?? error}\n`);

@@ -80,6 +80,7 @@ import {
 	WORKFLOW_STAGE_END_CHILDREN_STATE,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import {
+	holdRunningSubagentChildren,
 	restoreSubagentChild,
 	restoreSubagentChildren,
 	SUBAGENT_AWAIT_INTERCOM_PEER_EVENT,
@@ -101,6 +102,8 @@ import {
 	takeStoppedQueuedSubagentChild,
 } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import { createExecutionScheduler } from "../../packages/subagents/src/runs/shared/parallel-utils.js";
+import { subagentStartHoldMs } from "../../packages/subagents/src/runs/shared/start-progress.js";
+import * as artifactStorage from "../../packages/subagents/src/shared/artifacts.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
 import {
 	type RunSyncOptions,
@@ -136,7 +139,7 @@ const RELEASED_CALL = { toolCallId: "ci-1", toolName: "wait_for_ci" } as const;
  */
 const RECORD_WAIT_MS = 20_000;
 /** A launch, a quit and a resume of a real in-process child session, each awaited through {@link RECORD_WAIT_MS}. */
-const LAUNCH_QUIT_RESUME_TIMEOUT_MS = 60_000;
+const LAUNCH_QUIT_RESUME_TIMEOUT_MS = 3 * RECORD_WAIT_MS;
 
 const agent: AgentConfig = {
 	name: "worker",
@@ -180,6 +183,8 @@ interface Harness {
 		| { drop: string[]; gone?: string; refusal?: string }
 		| { acknowledge: string }
 	>;
+	/** The hold of each starting child, as its capability and how long it holds sends. */
+	readonly startHolds: Array<{ readonly reserve: string; readonly holdMs: number }>;
 	readonly holds: Array<
 		{ reserve: string; aliases: readonly string[]; dormant?: true } | { release: string; gone?: string }
 	>;
@@ -251,6 +256,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 	const runs: Harness["runs"] = [];
 	const authorizations: string[] = [];
 	const holds: Harness["holds"] = [];
+	const startHolds: Harness["startHolds"] = [];
 	const releasedChildRequests: Harness["releasedChildRequests"] = [];
 	const notices: Harness["notices"] = [];
 	const firstNotice = Promise.withResolvers<void>();
@@ -274,11 +280,14 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 			}
 			if (channel === SUBAGENT_RESERVE_RESTORING_CHILD_EVENT) {
 				const request = data as SubagentReserveRestoringChildRequest;
-				holds.push({
-					reserve: request.capability,
-					aliases: request.aliases,
-					...(request.dormant === true ? { dormant: true as const } : {}),
-				});
+				if (request.holdMs !== undefined) startHolds.push({ reserve: request.capability, holdMs: request.holdMs });
+				// A launch holds sends to its starting child until it registers; run control's holds are the subject here.
+				if (request.holdMs === undefined || request.aliases.length > 0 || request.dormant === true)
+					holds.push({
+						reserve: request.capability,
+						aliases: request.aliases,
+						...(request.dormant === true ? { dormant: true as const } : {}),
+					});
 				request.completion = Promise.resolve();
 			}
 			if (channel === SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT)
@@ -365,6 +374,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 		authorizations,
 		releasedChildRequests,
 		holds,
+		startHolds,
 		settleAs: "ok",
 		completesWhenStopped: false,
 		resumedRunsWait: false,
@@ -554,6 +564,49 @@ function resumedTaskId(result: SubagentToolResult): string {
 	return taskId;
 }
 
+test("a stage closing during artifact preparation creates no child storage or authorization (#5285)", async () => {
+	const h = harness({ stage: true });
+	const entered = Promise.withResolvers<void>();
+	const artifacts = Promise.withResolvers<string>();
+	const readArtifacts = vi.spyOn(artifactStorage, "getArtifactsDir").mockImplementation(() => {
+		entered.resolve();
+		return artifacts.promise;
+	});
+	try {
+		const sessionDir = join(h.cwd, "not-created-after-close");
+		const pending = h.call({ agent: "worker", task: "do not start", sessionDir });
+		await entered.promise;
+		await h.stageBoundary!.close();
+		artifacts.resolve(join(h.cwd, "artifacts"));
+		const result = await pending;
+
+		assert.equal(result.isError, true);
+		assert.equal(existsSync(sessionDir), false, "closed preparation never creates its session root");
+		assert.deepEqual(h.authorizations, [], "closed preparation requests no supervisor authorization");
+		assert.deepEqual(h.runs, []);
+		assert.equal(h.deps.state.foregroundControls.size, 0);
+	} finally {
+		artifacts.resolve(join(h.cwd, "artifacts"));
+		readArtifacts.mockRestore();
+	}
+});
+
+test("an artifact preparation failure returns a subagent tool error (#5285)", async () => {
+	const h = harness();
+	const readArtifacts = vi
+		.spyOn(artifactStorage, "getArtifactsDir")
+		.mockRejectedValue(new Error("artifact storage unavailable"));
+	try {
+		const result = await h.call({ agent: "worker", task: "do not start" });
+		assert.equal(result.isError, true);
+		assert.match(text(result), /artifact storage unavailable/);
+		assert.deepEqual(h.runs, []);
+		assert.equal(h.deps.state.foregroundControls.size, 0);
+	} finally {
+		readArtifacts.mockRestore();
+	}
+});
+
 test("pause stops a running child resumably and holds sends to it until resume", async () => {
 	const h = harness();
 	const { record, taskId } = await h.launch("pause1");
@@ -634,101 +687,118 @@ test("pause of an SDK session's child that completes before the stop takes effec
 	);
 });
 
-test("resume with a message continues a paused child in the same run identity and delivers the message once", async () => {
-	const h = harness();
-	const { record } = await h.launch("steer1");
-	await h.call({ action: "pause", id: record.childId });
-	await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "paused");
+test(
+	"resume with a message continues a paused child in the same run identity and delivers the message once",
+	async () => {
+		const h = harness();
+		const { record } = await h.launch("steer1");
+		await h.call({ action: "pause", id: record.childId });
+		await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "paused");
 
-	const message = "Focus on the failing test first.";
-	const resumed = await h.call({ action: "resume", id: "subagent-worker-steer1", message });
-	assert.notEqual(resumed.isError, true, text(resumed));
-	assert.equal(resumed.details.runControl?.message, message);
-	assert.equal(resumed.details.runControl?.children[0]?.state, "running");
-	assert.equal(resumed.details.runControl?.children[0]?.childId, "steer1:0");
-	const newTaskId = resumedTaskId(resumed);
-	assert.notEqual(newTaskId, record.taskId);
-	await settled(h, newTaskId);
+		const message = "Focus on the failing test first.";
+		const resumed = await h.call({ action: "resume", id: "subagent-worker-steer1", message });
+		assert.notEqual(resumed.isError, true, text(resumed));
+		assert.equal(resumed.details.runControl?.message, message);
+		assert.equal(resumed.details.runControl?.children[0]?.state, "running");
+		assert.equal(resumed.details.runControl?.children[0]?.childId, "steer1:0");
+		const newTaskId = resumedTaskId(resumed);
+		assert.notEqual(newTaskId, record.taskId);
+		await settled(h, newTaskId);
 
-	const relaunch = h.runs.at(-1)!;
-	assert.equal(relaunch.task, message);
-	assert.equal(relaunch.options.runId, "steer1");
-	assert.equal(relaunch.options.index, 0);
-	assert.equal(relaunch.options.resumeSession, true);
-	assert.equal(relaunch.options.resumeToolResults, undefined, "a child that waited on nothing continues no turn");
-	assert.equal(relaunch.options.sessionManager?.getSessionId(), record.childSessionId);
-	assert.equal(relaunch.options.intercomSessionName, "subagent-worker-steer1");
-	assert.equal(relaunch.options.intercomGroup, "lane-group");
-	assert.equal(
-		relaunch.options.supervisorAuthorization?.capability,
-		"fresh-capability-1",
-		"resume takes over the hold pause placed, under its fresh capability",
-	);
-	assert.deepEqual(h.authorizations, ["subagent-worker-steer1"]);
-	assert.equal(h.runs.filter((run) => run.task === message).length, 1);
-	const final = await h.waitForLatest(
-		record.childId,
-		(candidate) => candidate.taskId === newTaskId && candidate.state === "terminal",
-	);
-	assert.equal(final.terminalStatus, "ok");
-	assert.equal(final.childSessionId, record.childSessionId);
-	assert.deepEqual(
-		relaunch.options.resumeFollowUps,
-		[SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT],
-		"the paused turn continues after the steer",
-	);
-	const childTranscript = transcript(final);
-	assert.equal(occurrences(childTranscript, message), 1);
-	assert.equal(occurrences(childTranscript, JSON.stringify(ORIGINAL_TASK)), 1);
-	assert.equal(occurrences(childTranscript, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT), 1);
-	assert.ok(
-		childTranscript.indexOf(message) < childTranscript.indexOf(SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT),
-		"the steer is delivered before the continuation",
-	);
-});
+		const relaunch = h.runs.at(-1)!;
+		assert.equal(relaunch.task, message);
+		assert.equal(relaunch.options.runId, "steer1");
+		assert.equal(relaunch.options.index, 0);
+		assert.equal(relaunch.options.resumeSession, true);
+		assert.equal(relaunch.options.resumeToolResults, undefined, "a child that waited on nothing continues no turn");
+		assert.equal(relaunch.options.sessionManager?.getSessionId(), record.childSessionId);
+		assert.equal(relaunch.options.intercomSessionName, "subagent-worker-steer1");
+		assert.equal(relaunch.options.intercomGroup, "lane-group");
+		assert.equal(
+			relaunch.options.supervisorAuthorization?.capability,
+			"fresh-capability-1",
+			"resume takes over the hold pause placed, under its fresh capability",
+		);
+		assert.deepEqual(h.authorizations, ["subagent-worker-steer1"]);
+		assert.equal(h.runs.filter((run) => run.task === message).length, 1);
+		const final = await h.waitForLatest(
+			record.childId,
+			(candidate) => candidate.taskId === newTaskId && candidate.state === "terminal",
+		);
+		assert.equal(final.terminalStatus, "ok");
+		assert.equal(final.childSessionId, record.childSessionId);
+		assert.deepEqual(
+			relaunch.options.resumeFollowUps,
+			[SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT],
+			"the paused turn continues after the steer",
+		);
+		const childTranscript = transcript(final);
+		assert.equal(occurrences(childTranscript, message), 1);
+		assert.equal(occurrences(childTranscript, JSON.stringify(ORIGINAL_TASK)), 1);
+		assert.equal(occurrences(childTranscript, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT), 1);
+		assert.ok(
+			childTranscript.indexOf(message) < childTranscript.indexOf(SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT),
+			"the steer is delivered before the continuation",
+		);
+	},
+	LAUNCH_QUIT_RESUME_TIMEOUT_MS,
+);
 
-test("quit stops a running child gracefully and resume without a message continues where it left off", async () => {
-	const h = harness();
-	const { record, taskId } = await h.launch("quit1");
+test(
+	"quit stops a running child gracefully and resume without a message continues where it left off",
+	async () => {
+		const h = harness();
+		const { record, taskId } = await h.launch("quit1");
 
-	const quit = await h.call({ action: "quit", id: "quit1" });
-	assert.notEqual(quit.isError, true, text(quit));
-	assert.match(text(quit), /Quit worker .*stays resumable/);
-	assert.equal(quit.details.runControl?.children[0]?.state, "quit");
-	await settled(h, taskId);
-	const stopped = await h.waitForLatest(record.childId, (candidate) => candidate.state === "terminal");
-	assert.equal(stopped.terminalStatus, "quit");
-	assert.deepEqual(h.holds, [], "quit holds nothing for the stopped child");
+		const quit = await h.call({ action: "quit", id: "quit1" });
+		assert.notEqual(quit.isError, true, text(quit));
+		assert.match(text(quit), /Quit worker .*stays resumable/);
+		assert.equal(quit.details.runControl?.children[0]?.state, "quit");
+		await settled(h, taskId);
+		const stopped = await h.waitForLatest(record.childId, (candidate) => candidate.state === "terminal");
+		assert.equal(stopped.terminalStatus, "quit");
+		assert.deepEqual(h.holds, [], "quit holds nothing for the stopped child");
 
-	const resumed = await h.call({ action: "resume", id: record.childId });
-	assert.notEqual(resumed.isError, true, text(resumed));
-	assert.equal(resumed.details.runControl?.message, undefined);
-	const newTaskId = resumedTaskId(resumed);
-	await settled(h, newTaskId);
-	assert.equal(h.runs.at(-1)?.task, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT);
-	assert.equal(h.runs.at(-1)?.options.supervisorAuthorization?.capability, "fresh-capability-1");
-	const final = await h.waitForLatest(
-		record.childId,
-		(candidate) => candidate.taskId === newTaskId && candidate.state === "terminal",
-	);
-	assert.equal(occurrences(transcript(final), SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT), 1);
-});
+		const resumed = await h.call({ action: "resume", id: record.childId });
+		assert.notEqual(resumed.isError, true, text(resumed));
+		assert.equal(resumed.details.runControl?.message, undefined);
+		const newTaskId = resumedTaskId(resumed);
+		await settled(h, newTaskId);
+		assert.equal(h.runs.at(-1)?.task, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT);
+		assert.equal(h.runs.at(-1)?.options.supervisorAuthorization?.capability, "fresh-capability-1");
+		assert.deepEqual(
+			h.startHolds,
+			[{ reserve: "fresh-capability-1", holdMs: subagentStartHoldMs(undefined) }],
+			"sends to the resumed child wait for it through its start",
+		);
+		const final = await h.waitForLatest(
+			record.childId,
+			(candidate) => candidate.taskId === newTaskId && candidate.state === "terminal",
+		);
+		assert.equal(occurrences(transcript(final), SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT), 1);
+	},
+	LAUNCH_QUIT_RESUME_TIMEOUT_MS,
+);
 
-test("a paused child resumed without a message is told to redo or continue the step the pause interrupted (#3996)", async () => {
-	const h = harness();
-	const { record, taskId } = await h.launch("pausestep1");
-	const paused = await h.call({ action: "pause", id: record.childId });
-	assert.notEqual(paused.isError, true, text(paused));
-	await settled(h, taskId);
-	await h.waitForLatest(record.childId, (candidate) => candidate.state === "terminal");
-	const resumed = await h.call({ action: "resume", id: record.childId });
-	assert.notEqual(resumed.isError, true, text(resumed));
-	await settled(h, resumedTaskId(resumed));
-	assert.match(
-		h.runs.at(-1)?.task ?? "",
-		/^Continue where you left off\. If a pause interrupted a command or step you were running, redo or continue that step as needed\./,
-	);
-});
+test(
+	"a paused child resumed without a message is told to redo or continue the step the pause interrupted (#3996)",
+	async () => {
+		const h = harness();
+		const { record, taskId } = await h.launch("pausestep1");
+		const paused = await h.call({ action: "pause", id: record.childId });
+		assert.notEqual(paused.isError, true, text(paused));
+		await settled(h, taskId);
+		await h.waitForLatest(record.childId, (candidate) => candidate.state === "terminal");
+		const resumed = await h.call({ action: "resume", id: record.childId });
+		assert.notEqual(resumed.isError, true, text(resumed));
+		await settled(h, resumedTaskId(resumed));
+		assert.match(
+			h.runs.at(-1)?.task ?? "",
+			/^Continue where you left off\. If a pause interrupted a command or step you were running, redo or continue that step as needed\./,
+		);
+	},
+	LAUNCH_QUIT_RESUME_TIMEOUT_MS,
+);
 
 const QUIT_PARITY_RUN_ID = "quitparity1";
 const QUIT_PARITY_CHILD_ID = `${QUIT_PARITY_RUN_ID}:0`;
@@ -736,99 +806,107 @@ const QUIT_PARITY_RESUME_CALL = `{ action: "resume", id: "${QUIT_PARITY_CHILD_ID
 const PAUSED_AWAITING_RESUME = /paused · awaiting resume/;
 const ENDED_FOR_GOOD_WORDING = /This execution has ended|Do not restart it|parent-handoff/;
 
-test("quit reports a child paused and awaiting resume with its resume call, as a workflow quit does, and status keeps listing it so across a restart", async () => {
-	const h = harness();
-	const { record, taskId } = await h.launch(QUIT_PARITY_RUN_ID);
+test(
+	"quit reports a child paused and awaiting resume with its resume call, as a workflow quit does, and status keeps listing it so across a restart",
+	async () => {
+		const h = harness();
+		const { record, taskId } = await h.launch(QUIT_PARITY_RUN_ID);
 
-	const quit = await h.call({ action: "quit", id: QUIT_PARITY_CHILD_ID });
-	assert.notEqual(quit.isError, true, text(quit));
-	assert.match(text(quit), PAUSED_AWAITING_RESUME);
-	assert.ok(text(quit).includes(QUIT_PARITY_RESUME_CALL), text(quit));
-	const observed = await h.host.waitForTask(taskId);
-	assert.ok(observed.ok && observed.value.kind === "settled");
-	assert.deepEqual(observed.value.result.kind === "cancelled" ? observed.value.result.cause : "", "quit");
-	await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "quit");
+		const quit = await h.call({ action: "quit", id: QUIT_PARITY_CHILD_ID });
+		assert.notEqual(quit.isError, true, text(quit));
+		assert.match(text(quit), PAUSED_AWAITING_RESUME);
+		assert.ok(text(quit).includes(QUIT_PARITY_RESUME_CALL), text(quit));
+		const observed = await h.host.waitForTask(taskId);
+		assert.ok(observed.ok && observed.value.kind === "settled");
+		assert.deepEqual(observed.value.result.kind === "cancelled" ? observed.value.result.cause : "", "quit");
+		await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "quit");
 
-	const watched = h.host.watchOwnerTasks();
-	assert.ok(watched.ok);
-	const task = watched.value.snapshot.tasks.find((candidate) => candidate.ref.taskId === taskId);
-	watched.value.dispose();
-	assert.ok(task?.execution.kind === "settled");
-	const notice = formatTaskCompletion(
-		{
-			completionId: "quit-parity",
-			ownerId: task.ref.ownerId,
-			taskId,
-			terminalSequence: "1" as Sequence,
-			result: task.execution.result,
-			display: false,
-		},
-		task,
-	);
-	assert.match(notice, /^Subagent worker quit · paused, awaiting resume/);
-	assert.ok(notice.includes(QUIT_PARITY_RESUME_CALL), notice);
-	assert.doesNotMatch(notice, ENDED_FOR_GOOD_WORDING);
+		const watched = h.host.watchOwnerTasks();
+		assert.ok(watched.ok);
+		const task = watched.value.snapshot.tasks.find((candidate) => candidate.ref.taskId === taskId);
+		watched.value.dispose();
+		assert.ok(task?.execution.kind === "settled");
+		const notice = formatTaskCompletion(
+			{
+				completionId: "quit-parity",
+				ownerId: task.ref.ownerId,
+				taskId,
+				terminalSequence: "1" as Sequence,
+				result: task.execution.result,
+				display: false,
+			},
+			task,
+		);
+		assert.match(notice, /^Subagent worker quit · paused, awaiting resume/);
+		assert.ok(notice.includes(QUIT_PARITY_RESUME_CALL), notice);
+		assert.doesNotMatch(notice, ENDED_FOR_GOOD_WORDING);
 
-	const statusLists = async (when: string) => {
-		for (const params of [
-			{ action: "status", id: QUIT_PARITY_CHILD_ID },
-			{ action: "status", id: taskId },
-			{ action: "status" },
-		] as const) {
-			const status = await h.call(params);
-			assert.notEqual(status.isError, true, `${when}: ${text(status)}`);
-			assert.match(
-				text(status),
-				/worker \(quitparity1:0, subagent-worker-quitparity1\) quit · paused · awaiting resume/,
-			);
-			assert.ok(text(status).includes(QUIT_PARITY_RESUME_CALL), `${when}: ${text(status)}`);
-			if (params.id !== taskId) assert.doesNotMatch(text(status), /cancelled|stopped/i);
-		}
-	};
-	await statusLists("before the restart");
-	const taskStatus = await h.call({ action: "status", id: taskId });
-	assert.match(
-		text(taskStatus),
-		/^worker \(quitparity1:0, subagent-worker-quitparity1\) quit · paused · awaiting resume/,
-	);
-	assert.match(
-		text(taskStatus),
-		/Output of task-[\w-]+ \(paused · awaiting resume, \d+ bytes\):\nFull output: /,
-		"status by task id keeps the child's retained output",
-	);
+		const statusLists = async (when: string) => {
+			for (const params of [
+				{ action: "status", id: QUIT_PARITY_CHILD_ID },
+				{ action: "status", id: taskId },
+				{ action: "status" },
+			] as const) {
+				const status = await h.call(params);
+				assert.notEqual(status.isError, true, `${when}: ${text(status)}`);
+				assert.match(
+					text(status),
+					/worker \(quitparity1:0, subagent-worker-quitparity1\) quit · paused · awaiting resume/,
+				);
+				assert.ok(text(status).includes(QUIT_PARITY_RESUME_CALL), `${when}: ${text(status)}`);
+				if (params.id !== taskId) assert.doesNotMatch(text(status), /cancelled|stopped/i);
+			}
+		};
+		await statusLists("before the restart");
+		const taskStatus = await h.call({ action: "status", id: taskId });
+		assert.match(
+			text(taskStatus),
+			/^worker \(quitparity1:0, subagent-worker-quitparity1\) quit · paused · awaiting resume/,
+		);
+		assert.match(
+			text(taskStatus),
+			/Output of task-[\w-]+ \(paused · awaiting resume, \d+ bytes\):\nFull output: /,
+			"status by task id keeps the child's retained output",
+		);
 
-	await h.closeOwnerAndReopen("session-close");
-	const outcomes = await restoreSubagentChildren(h.deps, h.ctx);
-	assert.deepEqual(outcomes, [], "a quit child is not relaunched at startup: it waits for resume");
-	await statusLists("after the restart");
-	const resumed = await h.call({ action: "resume", id: QUIT_PARITY_CHILD_ID });
-	assert.notEqual(resumed.isError, true, text(resumed));
-	await settled(h, resumedTaskId(resumed));
-});
+		await h.closeOwnerAndReopen("session-close");
+		const outcomes = await restoreSubagentChildren(h.deps, h.ctx);
+		assert.deepEqual(outcomes, [], "a quit child is not relaunched at startup: it waits for resume");
+		await statusLists("after the restart");
+		const resumed = await h.call({ action: "resume", id: QUIT_PARITY_CHILD_ID });
+		assert.notEqual(resumed.isError, true, text(resumed));
+		await settled(h, resumedTaskId(resumed));
+	},
+	LAUNCH_QUIT_RESUME_TIMEOUT_MS,
+);
 
-test("quitting an already-paused child keeps it resumable and resume then succeeds", async () => {
-	const h = harness();
-	const { record } = await h.launch("pq1");
-	await h.call({ action: "pause", id: record.childId });
-	await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "paused");
+test(
+	"quitting an already-paused child keeps it resumable and resume then succeeds",
+	async () => {
+		const h = harness();
+		const { record } = await h.launch("pq1");
+		await h.call({ action: "pause", id: record.childId });
+		await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "paused");
 
-	const quit = await h.call({ action: "quit", id: record.childId });
-	assert.notEqual(quit.isError, true, text(quit));
-	assert.match(text(quit), /stays resumable/);
-	assert.equal(quit.details.runControl?.children[0]?.state, "quit");
-	assert.equal(h.latest(record.childId)?.terminalStatus, "quit");
-	await sleep(0);
-	assert.deepEqual(
-		h.holds,
-		[{ reserve: "fresh-capability-1", aliases: [record.childSessionId] }, { release: "fresh-capability-1" }],
-		"quit ends the pause hold without calling the child gone",
-	);
+		const quit = await h.call({ action: "quit", id: record.childId });
+		assert.notEqual(quit.isError, true, text(quit));
+		assert.match(text(quit), /stays resumable/);
+		assert.equal(quit.details.runControl?.children[0]?.state, "quit");
+		assert.equal(h.latest(record.childId)?.terminalStatus, "quit");
+		await sleep(0);
+		assert.deepEqual(
+			h.holds,
+			[{ reserve: "fresh-capability-1", aliases: [record.childSessionId] }, { release: "fresh-capability-1" }],
+			"quit ends the pause hold without calling the child gone",
+		);
 
-	const resumed = await h.call({ action: "resume", id: record.childId, message: "pick it back up" });
-	assert.notEqual(resumed.isError, true, text(resumed));
-	await settled(h, resumedTaskId(resumed));
-	assert.equal(h.runs.at(-1)?.task, "pick it back up");
-});
+		const resumed = await h.call({ action: "resume", id: record.childId, message: "pick it back up" });
+		assert.notEqual(resumed.isError, true, text(resumed));
+		await settled(h, resumedTaskId(resumed));
+		assert.equal(h.runs.at(-1)?.task, "pick it back up");
+	},
+	LAUNCH_QUIT_RESUME_TIMEOUT_MS,
+);
 
 test("pause and quit with all: true act on every running child this session launched", async () => {
 	const h = harness();
@@ -849,64 +927,75 @@ test("pause and quit with all: true act on every running child this session laun
 	assert.equal((await h.call({ action: "resume", all: true })).isError, true);
 });
 
-test("resume continues completed and failed children in the same run identity", async () => {
-	const h = harness();
-	const { record, taskId } = await h.launch("done1");
-	await h.call({ action: "quit", id: record.childId });
-	await settled(h, taskId);
+const LAUNCH_QUIT_TWO_RESUMES_TIMEOUT_MS = 4 * RECORD_WAIT_MS;
+const LAUNCH_QUIT_THREE_RESUMES_TIMEOUT_MS = 5 * RECORD_WAIT_MS;
 
-	const first = await h.call({ action: "resume", id: record.childId, message: "finish up" });
-	await settled(h, resumedTaskId(first));
-	const completed = await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "ok");
+test(
+	"resume continues completed and failed children in the same run identity",
+	async () => {
+		const h = harness();
+		const { record, taskId } = await h.launch("done1");
+		await h.call({ action: "quit", id: record.childId });
+		await settled(h, taskId);
 
-	assert.deepEqual(h.runs.at(-1)?.options.resumeFollowUps, [SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT]);
+		const first = await h.call({ action: "resume", id: record.childId, message: "finish up" });
+		await settled(h, resumedTaskId(first));
+		const completed = await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "ok");
 
-	h.settleAs = "error";
-	const second = await h.call({ action: "resume", id: record.childId, message: "try the edge case" });
-	assert.notEqual(second.isError, true, text(second));
-	const failedTaskId = resumedTaskId(second);
-	await settled(h, failedTaskId);
-	const failed = await h.waitForLatest(
-		record.childId,
-		(candidate) => candidate.taskId === failedTaskId && candidate.state === "terminal",
-	);
-	assert.equal(failed.terminalStatus, "error");
+		assert.deepEqual(h.runs.at(-1)?.options.resumeFollowUps, [SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT]);
 
-	h.settleAs = "ok";
-	const third = await h.call({ action: "resume", id: record.childId, message: "once more" });
-	assert.notEqual(third.isError, true, text(third));
-	await settled(h, resumedTaskId(third));
-	for (const run of h.runs.slice(1)) {
-		assert.equal(run.options.runId, "done1");
-		assert.equal(run.options.index, 0);
-		assert.equal(run.options.sessionManager?.getSessionId(), completed.childSessionId);
-	}
-	for (const run of h.runs.slice(2)) assert.equal(run.options.resumeFollowUps, undefined, run.task);
-	const childTranscript = transcript(completed);
-	for (const message of ["finish up", "try the edge case", "once more"])
-		assert.equal(occurrences(childTranscript, message), 1);
-	assert.equal(
-		occurrences(childTranscript, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT),
-		1,
-		"only the interrupted turn is continued; a settled child gets exactly one fresh prompt per message",
-	);
-});
+		h.settleAs = "error";
+		const second = await h.call({ action: "resume", id: record.childId, message: "try the edge case" });
+		assert.notEqual(second.isError, true, text(second));
+		const failedTaskId = resumedTaskId(second);
+		await settled(h, failedTaskId);
+		const failed = await h.waitForLatest(
+			record.childId,
+			(candidate) => candidate.taskId === failedTaskId && candidate.state === "terminal",
+		);
+		assert.equal(failed.terminalStatus, "error");
 
-test("resume without a message continues a finished child with the continuation prompt", async () => {
-	const h = harness();
-	const { record, taskId } = await h.launch("idle1");
-	await h.call({ action: "quit", id: record.childId });
-	await settled(h, taskId);
-	await settled(h, resumedTaskId(await h.call({ action: "resume", id: record.childId, message: "wrap up" })));
-	await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "ok");
+		h.settleAs = "ok";
+		const third = await h.call({ action: "resume", id: record.childId, message: "once more" });
+		assert.notEqual(third.isError, true, text(third));
+		await settled(h, resumedTaskId(third));
+		for (const run of h.runs.slice(1)) {
+			assert.equal(run.options.runId, "done1");
+			assert.equal(run.options.index, 0);
+			assert.equal(run.options.sessionManager?.getSessionId(), completed.childSessionId);
+		}
+		for (const run of h.runs.slice(2)) assert.equal(run.options.resumeFollowUps, undefined, run.task);
+		const childTranscript = transcript(completed);
+		for (const message of ["finish up", "try the edge case", "once more"])
+			assert.equal(occurrences(childTranscript, message), 1);
+		assert.equal(
+			occurrences(childTranscript, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT),
+			1,
+			"only the interrupted turn is continued; a settled child gets exactly one fresh prompt per message",
+		);
+	},
+	LAUNCH_QUIT_THREE_RESUMES_TIMEOUT_MS,
+);
 
-	const result = await h.call({ action: "resume", id: record.childId });
-	assert.notEqual(result.isError, true, text(result));
-	await settled(h, resumedTaskId(result));
-	assert.equal(h.runs.at(-1)?.task, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT);
-	assert.equal(h.runs.at(-1)?.options.resumeFollowUps, undefined);
-	assert.equal(h.runs.at(-1)?.options.sessionManager?.getSessionId(), record.childSessionId);
-});
+test(
+	"resume without a message continues a finished child with the continuation prompt",
+	async () => {
+		const h = harness();
+		const { record, taskId } = await h.launch("idle1");
+		await h.call({ action: "quit", id: record.childId });
+		await settled(h, taskId);
+		await settled(h, resumedTaskId(await h.call({ action: "resume", id: record.childId, message: "wrap up" })));
+		await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "ok");
+
+		const result = await h.call({ action: "resume", id: record.childId });
+		assert.notEqual(result.isError, true, text(result));
+		await settled(h, resumedTaskId(result));
+		assert.equal(h.runs.at(-1)?.task, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT);
+		assert.equal(h.runs.at(-1)?.options.resumeFollowUps, undefined);
+		assert.equal(h.runs.at(-1)?.options.sessionManager?.getSessionId(), record.childSessionId);
+	},
+	LAUNCH_QUIT_TWO_RESUMES_TIMEOUT_MS,
+);
 
 test("a workflow stage generation closing for good ends its children, and resume names why (#3760)", async () => {
 	assert.equal(
@@ -1834,6 +1923,37 @@ async function resumeQueuedChildAfterRestart(
 	return { ...start, taskId: resumedTask };
 }
 
+test("a relaunched child names its owner's live Intercom id and holds sends for its start (#5341)", async () => {
+	const h = harness();
+	h.deps.config.sessionStartTimeoutMs = 60_000;
+	const holdsAtRetry: number[] = [];
+	const restarted = await restoreStartedChild(h, "restored-supervisor", {}, undefined, async () => {
+		h.deps.state!.ownIntercomSession = {
+			sessionId: h.sessionManager.getSessionId(),
+			intercomSessionId: "restored-owner-intercom-id",
+		};
+		await holdRunningSubagentChildren(h.deps.pi.events, h.ctx);
+		const runtime = h.deps.runtime!;
+		const runSync = runtime.runSync!;
+		runtime.runSync = async (...args) => {
+			holdsAtRetry.push(h.startHolds.length);
+			await args[4].onStartRetry?.();
+			holdsAtRetry.push(h.startHolds.length);
+			return runSync(...args);
+		};
+	});
+	assert.deepEqual(holdsAtRetry, [1, 2], "retrying the relaunch renews its starting hold before the next start");
+	assert.equal(restarted.options.orchestratorIntercomTarget, "restored-owner-intercom-id");
+	assert.match(restarted.agent?.systemPrompt ?? "", /restored-owner-intercom-id/);
+	assert.deepEqual(
+		h.startHolds,
+		Array.from({ length: 2 }, () => ({
+			reserve: restarted.options.supervisorAuthorization!.capability,
+			holdMs: subagentStartHoldMs(60_000),
+		})),
+	);
+});
+
 test("a started child of a user agent a project agent of the same name shadows is restored with the user agent (#3784)", async () => {
 	const h = harness();
 	h.agents = [userAgent, agent];
@@ -2036,8 +2156,8 @@ test("restoring a compacted forked child keeps launch-relative model changes wit
 				await source.appendThinkingLevelChange("low");
 				await source.appendCompaction("summary", null, 100, {
 					strategy: "verbatim-lines",
-					promptVersion: 6,
-					parameters: { compression_ratio: 0.5, preserve_recent: 0, query: "" },
+					promptVersion: 7,
+					parameters: { query: "" },
 					stats: {
 						linesBefore: 1,
 						linesDeleted: 1,
@@ -2047,7 +2167,7 @@ test("restoring a compacted forked child keeps launch-relative model changes wit
 						tokensAfter: 10,
 						percentReduction: 90,
 					},
-					rung: "planned",
+					form: "cleared",
 				});
 				childId = source.getSessionId();
 			},
@@ -2080,8 +2200,8 @@ test("restoring a compacted forked child keeps launch-relative model changes wit
 				await source.appendMessage({ role: "user", content: "old turn", timestamp: 1 });
 				await source.appendCompaction("summary", null, 100, {
 					strategy: "verbatim-lines",
-					promptVersion: 6,
-					parameters: { compression_ratio: 0.5, preserve_recent: 0, query: "" },
+					promptVersion: 7,
+					parameters: { query: "" },
 					stats: {
 						linesBefore: 1,
 						linesDeleted: 1,
@@ -2091,7 +2211,7 @@ test("restoring a compacted forked child keeps launch-relative model changes wit
 						tokensAfter: 10,
 						percentReduction: 90,
 					},
-					rung: "planned",
+					form: "cleared",
 				});
 				childId = source.getSessionId();
 			},
@@ -2102,6 +2222,302 @@ test("restoring a compacted forked child keeps launch-relative model changes wit
 		});
 	} finally {
 		hydrate.mockRestore();
+	}
+});
+
+const PARTIAL_HISTORY_METHODS = [
+	"getEntrySeq",
+	"findEntrySeq",
+	"getLastSeq",
+	"getHeldTail",
+	"getOmittedHistoryTotals",
+] as const;
+
+function withoutPartialHistoryMethods<T>(run: () => Promise<T>): Promise<T> {
+	const saved = new Map<string, PropertyDescriptor | undefined>();
+	for (const name of PARTIAL_HISTORY_METHODS) {
+		saved.set(name, Object.getOwnPropertyDescriptor(SessionManager.prototype, name));
+		Reflect.deleteProperty(SessionManager.prototype, name);
+	}
+	return run().finally(() => {
+		for (const [name, descriptor] of saved) {
+			if (descriptor) Object.defineProperty(SessionManager.prototype, name, descriptor);
+		}
+	});
+}
+
+test("launching and restoring subagent children tolerate a SessionManager without getEntrySeq or findEntrySeq (#5316)", async () => {
+	const h = harness();
+	usableModels(h, [sonnet, haiku]);
+	await withoutPartialHistoryMethods(async () => {
+		assert.equal("getEntrySeq" in h.sessionManager, false);
+		assert.equal("findEntrySeq" in h.sessionManager, false);
+
+		await h.sessionManager.appendModelChange(sonnet.provider, sonnet.id);
+		await h.sessionManager.appendThinkingLevelChange("high");
+		const forked = await forkFromParentConversation(h);
+		const forkedRestarted = await restoreStartedChild(
+			h,
+			"no-entry-seq-forked",
+			{ ...admittedOnSonnetHigh, sessionManager: forked },
+			undefined,
+			async () => {
+				const record = h.latest("no-entry-seq-forked:0");
+				assert.ok(record?.childSessionId);
+				assert.equal(record.launchLeafId, forked.getLeafId());
+				assert.equal(record.launchLeafSeq, forked.getEntries().length);
+				const source = record.childSessionFile
+					? await SessionManager.open(record.childSessionFile, undefined, record.cwd)
+					: await SessionManager.open(h.sessionManager.getSessionStore(), record.childSessionId, record.cwd);
+				await source.appendModelChange(haiku.provider, haiku.id);
+				await source.appendThinkingLevelChange("low");
+			},
+		);
+		assert.deepEqual(startedOn(h, "no-entry-seq-forked:0", forkedRestarted.taskId), {
+			model: `${haiku.provider}/${haiku.id}`,
+			thinking: "low",
+		});
+
+		const freshRestarted = await restoreStartedChild(
+			h,
+			"no-entry-seq-fresh",
+			admittedOnSonnetHigh,
+			undefined,
+			async () => {
+				const record = h.latest("no-entry-seq-fresh:0");
+				assert.ok(record?.childSessionId);
+				assert.equal(record.launchLeafId, null);
+				assert.equal(record.launchLeafSeq, 0);
+				const source = record.childSessionFile
+					? await SessionManager.open(record.childSessionFile, undefined, record.cwd)
+					: await SessionManager.open(h.sessionManager.getSessionStore(), record.childSessionId, record.cwd);
+				await source.appendModelChange(haiku.provider, haiku.id);
+				await source.appendThinkingLevelChange("low");
+			},
+		);
+		assert.deepEqual(startedOn(h, "no-entry-seq-fresh:0", freshRestarted.taskId), {
+			model: `${haiku.provider}/${haiku.id}`,
+			thinking: "low",
+		});
+
+		await h.sessionManager.appendModelChange(haiku.provider, haiku.id);
+		await h.sessionManager.appendThinkingLevelChange("low");
+		const legacyInheritedFork = await forkFromParentConversation(h);
+		const legacyInheritedRestarted = await restoreStartedChild(
+			h,
+			"no-entry-seq-legacy-inherited",
+			{ ...admittedOnSonnetHigh, sessionManager: legacyInheritedFork },
+			undefined,
+			async () => {
+				const record = h.latest("no-entry-seq-legacy-inherited:0");
+				assert.ok(record?.childSessionId);
+				const { launchLeafSeq: _seq, ...legacyRecord } = record;
+				await h.sessionManager.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, {
+					...legacyRecord,
+					launchModel: `${sonnet.provider}/${sonnet.id}`,
+					launchThinkingLevel: "high",
+				});
+			},
+		);
+		assert.deepEqual(startedOn(h, "no-entry-seq-legacy-inherited:0", legacyInheritedRestarted.taskId), {
+			model: `${sonnet.provider}/${sonnet.id}`,
+			thinking: "high",
+		});
+
+		await h.sessionManager.appendModelChange(sonnet.provider, sonnet.id);
+		await h.sessionManager.appendThinkingLevelChange("high");
+		const legacyChangedFork = await forkFromParentConversation(h);
+		const legacyChangedRestarted = await restoreStartedChild(
+			h,
+			"no-entry-seq-legacy-changed",
+			{ ...admittedOnSonnetHigh, sessionManager: legacyChangedFork },
+			undefined,
+			async () => {
+				const record = h.latest("no-entry-seq-legacy-changed:0");
+				assert.ok(record?.childSessionId);
+				const { launchLeafSeq: _seq, ...legacyRecord } = record;
+				await h.sessionManager.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, {
+					...legacyRecord,
+					launchModel: `${sonnet.provider}/${sonnet.id}`,
+					launchThinkingLevel: "high",
+				});
+				const source = record.childSessionFile
+					? await SessionManager.open(record.childSessionFile, undefined, record.cwd)
+					: await SessionManager.open(h.sessionManager.getSessionStore(), record.childSessionId, record.cwd);
+				await source.appendModelChange(haiku.provider, haiku.id);
+				await source.appendThinkingLevelChange("low");
+			},
+		);
+		assert.deepEqual(startedOn(h, "no-entry-seq-legacy-changed:0", legacyChangedRestarted.taskId), {
+			model: `${haiku.provider}/${haiku.id}`,
+			thinking: "low",
+		});
+
+		await h.sessionManager.appendModelChange(sonnet.provider, sonnet.id);
+		await h.sessionManager.appendThinkingLevelChange("high");
+		const siblingBranchFork = await forkFromParentConversation(h);
+		const siblingBranchRestarted = await restoreStartedChild(
+			h,
+			"no-entry-seq-sibling-branch",
+			{ ...admittedOnSonnetHigh, sessionManager: siblingBranchFork },
+			undefined,
+			async () => {
+				const record = h.latest("no-entry-seq-sibling-branch:0");
+				assert.ok(record?.childSessionId);
+				const { launchLeafSeq: _seq, ...legacyRecord } = record;
+				await h.sessionManager.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, {
+					...legacyRecord,
+					launchModel: `${sonnet.provider}/${sonnet.id}`,
+					launchThinkingLevel: "high",
+				});
+				const source = record.childSessionFile
+					? await SessionManager.open(record.childSessionFile, undefined, record.cwd)
+					: await SessionManager.open(h.sessionManager.getSessionStore(), record.childSessionId, record.cwd);
+				const firstEntry = source.getEntries()[0];
+				assert.ok(firstEntry);
+				await source.recordBranch(firstEntry.id);
+				await source.appendModelChange(haiku.provider, haiku.id);
+				await source.appendThinkingLevelChange("low");
+			},
+		);
+		assert.deepEqual(startedOn(h, "no-entry-seq-sibling-branch:0", siblingBranchRestarted.taskId), {
+			model: `${haiku.provider}/${haiku.id}`,
+			thinking: "low",
+		});
+	});
+
+	const compactedParent = await SessionManager.create(h.sessionManager.getSessionStore(), h.cwd);
+	for (let index = 0; index < 13; index += 1) {
+		await compactedParent.appendMessage({ role: "user", content: `pre-${index}`, timestamp: index + 1 });
+	}
+	await compactedParent.appendModelChange(sonnet.provider, sonnet.id);
+	await compactedParent.appendThinkingLevelChange("high");
+	await compactedParent.appendCompaction("summary", null, 100, {
+		strategy: "verbatim-lines",
+		promptVersion: 7,
+		parameters: { query: "" },
+		stats: {
+			linesBefore: 13,
+			linesDeleted: 13,
+			linesKept: 0,
+			rangeCount: 1,
+			tokensBefore: 100,
+			tokensAfter: 10,
+			percentReduction: 90,
+		},
+		form: "cleared",
+	});
+	await compactedParent.appendMessage({ role: "user", content: "after compaction", timestamp: 20 });
+	const tailFork = await SessionManager.open(
+		h.sessionManager.getSessionStore(),
+		compactedParent.getSessionId(),
+		h.cwd,
+		{ history: "tail" },
+	);
+	assert.equal(tailFork.hasFullHistory(), false);
+	const tailForkWithoutGetEntrySeq = new Proxy(tailFork, {
+		getPrototypeOf: () => Object.prototype,
+		has: (target, prop) => (prop === "getEntrySeq" ? false : Reflect.has(target, prop)),
+		get: (target, prop: keyof SessionManager) => {
+			if (prop === "getEntrySeq") return undefined;
+			const value = target[prop];
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+	const tailForkRestarted = await restoreStartedChild(
+		h,
+		"no-entry-seq-partial-tail-fork",
+		{
+			currentModel: `${haiku.provider}/${haiku.id}`,
+			currentThinkingLevel: "high",
+			preferredModelProvider: haiku.provider,
+			sessionManager: tailForkWithoutGetEntrySeq,
+		},
+		{ ...agent, model: `${haiku.provider}/${haiku.id}:high` },
+		async () => {
+			const record = h.latest("no-entry-seq-partial-tail-fork:0");
+			assert.ok(record?.childSessionId);
+			assert.equal(record.launchLeafSeq, 17);
+			const source = await SessionManager.open(
+				h.sessionManager.getSessionStore(),
+				record.childSessionId,
+				record.cwd,
+			);
+			await source.appendCompaction("child summary", null, 100, {
+				strategy: "verbatim-lines",
+				promptVersion: 7,
+				parameters: { query: "" },
+				stats: {
+					linesBefore: 1,
+					linesDeleted: 1,
+					linesKept: 0,
+					rangeCount: 1,
+					tokensBefore: 100,
+					tokensAfter: 10,
+					percentReduction: 90,
+				},
+				form: "cleared",
+			});
+		},
+	);
+	assert.deepEqual(startedOn(h, "no-entry-seq-partial-tail-fork:0", tailForkRestarted.taskId), {
+		model: `${haiku.provider}/${haiku.id}`,
+		thinking: "high",
+	});
+
+	const getEntrySeqDescriptor = Object.getOwnPropertyDescriptor(SessionManager.prototype, "getEntrySeq");
+	Reflect.deleteProperty(SessionManager.prototype, "getEntrySeq");
+	try {
+		const tailForkNoGetEntrySeqOnHost = await SessionManager.open(
+			h.sessionManager.getSessionStore(),
+			compactedParent.getSessionId(),
+			h.cwd,
+			{ history: "tail" },
+		);
+		assert.equal(tailForkNoGetEntrySeqOnHost.hasFullHistory(), false);
+		assert.equal(tailForkNoGetEntrySeqOnHost.getEntries().length, 5);
+		const tailRestoreNoGetEntrySeq = await restoreStartedChild(
+			h,
+			"no-entry-seq-partial-tail-restore",
+			{
+				currentModel: `${haiku.provider}/${haiku.id}`,
+				currentThinkingLevel: "high",
+				preferredModelProvider: haiku.provider,
+				sessionManager: tailForkNoGetEntrySeqOnHost,
+			},
+			{ ...agent, model: `${haiku.provider}/${haiku.id}:high` },
+			async () => {
+				const record = h.latest("no-entry-seq-partial-tail-restore:0");
+				assert.ok(record?.childSessionId);
+				assert.equal(record.launchLeafSeq, 21);
+				const source = await SessionManager.open(
+					h.sessionManager.getSessionStore(),
+					record.childSessionId,
+					record.cwd,
+				);
+				await source.appendCompaction("child summary", null, 100, {
+					strategy: "verbatim-lines",
+					promptVersion: 7,
+					parameters: { query: "" },
+					stats: {
+						linesBefore: 1,
+						linesDeleted: 1,
+						linesKept: 0,
+						rangeCount: 1,
+						tokensBefore: 100,
+						tokensAfter: 10,
+						percentReduction: 90,
+					},
+					form: "cleared",
+				});
+			},
+		);
+		assert.deepEqual(startedOn(h, "no-entry-seq-partial-tail-restore:0", tailRestoreNoGetEntrySeq.taskId), {
+			model: `${haiku.provider}/${haiku.id}`,
+			thinking: "high",
+		});
+	} finally {
+		if (getEntrySeqDescriptor) Object.defineProperty(SessionManager.prototype, "getEntrySeq", getEntrySeqDescriptor);
 	}
 });
 
@@ -3305,7 +3721,6 @@ test(
 			unconfirmedCleanups: 0,
 			permits: 0,
 			commandStarts: 0,
-			routerSelections: processWide.routerSelections,
 			requestedModels: processWide.requestedModels,
 			launchHeartbeats: processWide.launchHeartbeats,
 			executionTimeouts: processWide.executionTimeouts,

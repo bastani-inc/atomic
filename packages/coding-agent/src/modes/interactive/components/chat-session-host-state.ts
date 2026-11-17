@@ -4,12 +4,14 @@ import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provi
 import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { theme } from "../theme/theme.js";
-import { LiveChatEntriesController } from "./chat-message-renderer.ts";
+import { atomicWorkingFrame } from "./atomic-working-status.ts";
+import { type ChatMessageEntry, LiveChatEntriesController } from "./chat-message-renderer.ts";
 import type {
 	ChatSessionHostCommands,
 	ChatSessionHostEntry,
 	ChatSessionHostOpts,
 	ChatSessionHostStyle,
+	ChatSessionInterruptedTurnSnapshot,
 	ChatSessionSubmitMode,
 } from "./chat-session-host-types.ts";
 import {
@@ -22,7 +24,7 @@ import type { FooterComponent } from "./footer.ts";
 import { NewMessageCounter, pinnedPromptLine } from "./jump-to-latest.ts";
 import { keyText } from "./keybinding-hints.js";
 import { TranscriptFollowIndicator } from "./transcript-follow-indicator.ts";
-import { WorkingRunMeter } from "./working-run-meter.ts";
+import { WorkingRunMeter, type WorkingRunSnapshot } from "./working-run-meter.ts";
 
 export interface ChatSessionHostStateCallbacks<TExtraEntry extends ChatTranscriptEntryLike> {
 	renderEntry: (state: ChatSessionHostState<TExtraEntry>, entry: ChatSessionHostEntry<TExtraEntry>) => Component;
@@ -41,7 +43,9 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly getChatBoxSession: (() => ChatBoxSession | undefined) | undefined;
 	readonly getSessionMessages: (() => AgentSession["messages"] | undefined) | undefined;
 	readonly getTaskSource: (() => TaskViewSource | undefined) | undefined;
+	readonly echoedInitialPrompt: string | (() => string | undefined) | undefined;
 	readonly isStreamingOverride: (() => boolean) | undefined;
+	readonly workingTokenCount: (() => number | undefined) | undefined;
 	readonly isPaused: (() => boolean) | undefined;
 	readonly isDisabled: (() => boolean) | undefined;
 	readonly isBashRunningOverride: (() => boolean) | undefined;
@@ -73,7 +77,16 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	/** Recorded pause failure consumed by the first submit after settlement. */
 	interruptFailureMessage: string | undefined;
 	workingMessage: string | undefined;
-	workingFrame = 0;
+	lastWorkingMessage: string | undefined = undefined;
+	workedRun: { readonly message: string | undefined; readonly snapshot: WorkingRunSnapshot } | undefined = undefined;
+	interruptedTurnSnapshot: ChatSessionInterruptedTurnSnapshot | undefined = undefined;
+	seenFirstRawUser = false;
+	firstUserEntryExactText: string | undefined = undefined;
+	firstUserEntry: Extract<ChatMessageEntry, { kind: "user" }> | undefined = undefined;
+	get workingFrame(): number {
+		return atomicWorkingFrame();
+	}
+	set workingFrame(_value: number) {}
 	readonly newMessages = new NewMessageCounter();
 	compactionStartedAt: number | undefined;
 	readonly workingRunMeter = new WorkingRunMeter();
@@ -93,6 +106,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	/** Keeps input queued while automatic compaction hands off to a manual request. */
 	manualCompactionTakeoverPending = false;
 	animationTimer: ReturnType<typeof setInterval> | undefined;
+	stopAnimationClock: (() => void) | undefined;
 	metaTimer: ReturnType<typeof setInterval> | undefined;
 	bodyViewport: ScrollableComponentViewport;
 	transcriptComponent: ChatTranscriptComponent<ChatSessionHostEntry<TExtraEntry>>;
@@ -137,7 +151,9 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 		this.getChatBoxSession = opts.getChatBoxSession;
 		this.getSessionMessages = opts.getSessionMessages;
 		this.getTaskSource = opts.getTaskSource;
+		this.echoedInitialPrompt = opts.echoedInitialPrompt;
 		this.isStreamingOverride = opts.isStreaming;
+		this.workingTokenCount = opts.workingTokenCount;
 		this.workingLifecycleActive = opts.isStreaming?.() === true;
 		this.isPaused = opts.isPaused;
 		this.isDisabled = opts.isDisabled;

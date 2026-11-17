@@ -10,12 +10,39 @@
 export declare const __napiBindingTarget: 'native' | 'wasm32-wasi' | 'wasm32-wasip1' | undefined
 
 /**
- * An exclusive advisory lock this process holds on an open file (#5193), released by {@link AdvisoryLock.release},
- * when the object is collected, or by the kernel when this process dies.
+ * An exclusive or shared advisory lock this process holds on an open file (#5193, #5317), released by
+ * {@link AdvisoryLock.release}, when the object is collected, or by the kernel when this process dies.
  */
 export declare class AdvisoryLock {
   /** Releases the lock and closes its file; releasing it again does nothing. */
   release(): void
+}
+
+/** A process the host started with [`start_host_process`]. */
+export declare class HostProcess {
+  get pid(): number
+  /**
+   * Queues `chunk` for the process's standard input. False once input can no longer be written: it was ended, or
+   * the process's output thread finished.
+   */
+  write(chunk: Buffer): boolean
+  /** Closes standard input once everything queued was written. */
+  end(): void
+  /**
+   * Sends `signal` to the process, or to its process group when `group` is true. False once the process was
+   * reaped, after its output ended and its exit was reported, as its ID may name another process by then, or when
+   * the signal could not be sent.
+   */
+  kill(signal: number, group: boolean): boolean
+  /** Keeps the host's event loop alive until the process has ended, which is the default. */
+  ref(): void
+  /**
+   * Says the host has handled the process's `close`, after which it never signals it again: the process is reaped
+   * once it has exited and this was called, or the handle was dropped.
+   */
+  release(): void
+  /** Lets the host's event loop end while the process runs. */
+  unref(): void
 }
 
 export declare class HostSession {}
@@ -506,6 +533,31 @@ export type HostObservation =
   | { kind: 'background'; reason: string }
   | { kind: 'none'; reason: string }
 
+export interface HostProcessEvent {
+  kind: HostProcessEventKind
+  data?: Buffer
+  code?: number
+  signal?: number
+  errno?: string
+}
+
+export type HostProcessEventKind = 'stdout' | 'stdout-end' | 'stderr' | 'stderr-end' | 'exit' | 'stdin-error'
+
+export interface HostProcessOptions {
+  /** The program: a path, or a name looked up on the `PATH` of `env`. */
+  file: string
+  args: Array<string>
+  cwd?: string
+  /** The complete environment of the process. */
+  env: Record<string, string>
+  /** Which of standard input, output and error are pipes; the others are `/dev/null`. */
+  pipeStdin: boolean
+  pipeStdout: boolean
+  pipeStderr: boolean
+  /** Starts the process in a session of its own, as Node's `detached` does. */
+  detached: boolean
+}
+
 export type InputData =
   | { kind: 'bytes'; bytes: Buffer }
   | { kind: 'eof' }
@@ -774,6 +826,13 @@ export interface SettlementReceipt {
   completionId: string
 }
 
+/**
+ * Starts `options.file`, delivering its output, its end and its exit to `on_event` in the order they happened. A
+ * failure to start it throws with the errno name (`ENOENT`, `EACCES`, ...) as the error's code. Off Linux it always
+ * refuses with `ENOSYS`.
+ */
+export declare function startHostProcess(options: HostProcessOptions, onEvent: (event: HostProcessEvent) => void): HostProcess
+
 export interface SubscriptionDrain {
   reset: boolean
   snapshot?: OwnerSnapshot
@@ -843,14 +902,40 @@ export type TaskResult =
 export type TerminationCause = 'abort' | 'interrupt' | 'fail-fast-skip' | 'parent-shutdown'
 
 /**
- * Takes the exclusive advisory lock of the file at `path` (#5193): `flock` on Unix, `LockFileEx` on Windows. The
- * file is created when missing and never truncated or removed. Tried at once, then again until `waitMs` has passed;
- * `null` while another holder keeps it. Throws when the file cannot be opened or locked.
+ * Takes the exclusive advisory lock of the file at `path` (#5193, #5317): `flock` on Unix, `LockFileEx` on Windows.
+ * The file is created when missing, reopened if unlinked while acquiring the lock, and never truncated or removed.
+ * Tried at once, then again until `waitMs` has passed; `null` while another holder keeps it, a delete-pending file
+ * remains at `path` on Windows, or repeated path replacement exhausts `waitMs`. Throws when the file cannot be opened
+ * or locked.
  */
 export declare function tryAdvisoryLock(path: string, waitMs: number): AdvisoryLock | null
+
+/**
+ * Takes a shared advisory lock on the file at `path` (#5317): `flock` on Unix, `LockFileEx` on Windows. The file is
+ * created when missing, reopened if unlinked while acquiring the lock, and never truncated or removed. Tried at once,
+ * then again until `waitMs` has passed; `null` while an exclusive holder keeps it, a delete-pending file remains at
+ * `path` on Windows, or repeated path replacement exhausts `waitMs`. Throws when the file cannot be opened or locked.
+ */
+export declare function trySharedAdvisoryLock(path: string, waitMs: number): AdvisoryLock | null
 
 export type WaitOutcome =
   | { kind: 'settled'; taskId: string; result: TaskResult }
   | { kind: 'yielded'; taskId: string; waitId: string; reason: YieldReason }
+
+export interface WindowsAccessRule {
+  allow: boolean
+  sid: string
+}
+
+export declare function windowsDirectorySecurity(path: string): WindowsDirectorySecurity | null
+
+export interface WindowsDirectorySecurity {
+  currentSid: string
+  ownerSid: string
+  dacl: string
+  accessRules: Array<WindowsAccessRule>
+}
+
+export declare function windowsDirectorySecurityAsync(path: string): Promise<WindowsDirectorySecurity | undefined | null>
 
 export type YieldReason = 'explicit' | 'default-background' | 'elapsed' | 'intercom-coordination' | 'input-needed'

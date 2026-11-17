@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { exitedProcess } from "../../../test/helpers/exited-process.js";
+import { startHostProcessesThroughChildProcess } from "../../../test/helpers/host-spawn.js";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import type { SpawnFault } from "../../../test/helpers/worktree-snapshot-faults.js";
@@ -37,6 +38,8 @@ import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.t
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
 import { type PreparedSessionResume, type PrepareSessionResumeOptions, prepareSessionResume } from "../src/index.ts";
 import { forThisHost } from "./helpers/blueprint-fixtures.ts";
+
+startHostProcessesThroughChildProcess();
 
 useTemporaryAgentDir();
 
@@ -114,13 +117,6 @@ function slowLfs(command: string, args: readonly string[]): SpawnFault {
 function hangingLfs(): SpawnFault {
 	const script = `require("node:fs").appendFileSync(process.argv[1], "lfs-started\\n"); setTimeout(() => {}, 600000);`;
 	return { command: process.execPath, args: ["-e", script, markers()] };
-}
-
-/** The id of a process that has exited. */
-function exitedPid(): number {
-	return Number(
-		spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" }).stdout,
-	);
 }
 
 async function until(condition: () => boolean, what: string): Promise<void> {
@@ -411,18 +407,19 @@ describe("a multi-repository resume overlaps one repository's LFS download with 
 				"--git-path",
 				"atomic-lfs-pending.json",
 			);
-			const holdBy = (pid: number) => {
+			const holdBy = (holder: { readonly pid: number; readonly started?: string }) => {
 				const mark = JSON.parse(readFileSync(markPath, "utf8")) as { holder: { host: string } };
-				writeFileSync(markPath, JSON.stringify({ ...mark, holder: { host: mark.holder.host, pid } }));
+				const named = { host: mark.holder.host, pid: holder.pid, start: holder.started };
+				writeFileSync(markPath, JSON.stringify({ ...mark, holder: named }));
 			};
 			// Another Atomic process, still running, is downloading into the worktree.
-			holdBy(process.ppid);
+			holdBy({ pid: process.ppid });
 			lfs.fault = undefined;
 			const resumed = prepareSessionResume(manager, options());
 			await until(() => ran().filter((line) => line === "built-a").length === 2, "A to be built again");
 			await new Promise((resolve) => setTimeout(resolve, 500));
 			assert.ok(!ran().some((line) => line.startsWith("started-b")), "B waits for the download");
-			holdBy(exitedPid());
+			holdBy(exitedProcess());
 
 			ready(await resumed);
 			assert.ok(

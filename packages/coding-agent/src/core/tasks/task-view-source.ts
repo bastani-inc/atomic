@@ -3,10 +3,12 @@ import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { CompactionReason } from "../agent-session.js";
 import { sessionEntryToContextMessages } from "../session-manager-history.ts";
 import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.ts";
+import { activeToolExecutionStarts, type ToolExecutionStart } from "../tool-execution-timing.ts";
 import { taskOutputText } from "./command-output.js";
 import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
+import { bindTaskClockSource } from "./live-elapsed.js";
 import { TaskMessageError, TaskMessageTimeoutError } from "./message-error.js";
-import type { OwnerTaskStore, TaskActivity } from "./owner-store.js";
+import { isTaskTurnInterrupted, type OwnerTaskStore, type TaskActivity } from "./owner-store.js";
 import {
 	loadTaskOwnTranscriptEntries,
 	type TaskMessageDelivery,
@@ -38,6 +40,7 @@ export interface TaskTranscriptView {
 	/** On the latest page: why the task's session is compacting at the time of the read. */
 	readonly compactionReason?: CompactionReason;
 	readonly compactionStartedAt?: number;
+	readonly activeToolStarts?: readonly ToolExecutionStart[];
 }
 
 /** How an open transcript of a task follows it: through its live session, or by reading it again. */
@@ -68,9 +71,18 @@ export interface TaskDetailText {
  * names tasks by id, so a view never holds a task lease.
  */
 export interface TaskViewSource {
+	/** The session's own tasks: its shells and the subagents it launched, never a subagent's shells. */
 	readonly tasks: readonly TaskRecord[];
 	readonly backgroundTasks: readonly TaskRecord[];
+	/**
+	 * Every task of the session's owner, including the shells its subagents launched there, which their views list.
+	 * Absent where the source holds only the session's own.
+	 */
+	readonly ownerTasks?: readonly TaskRecord[];
+	readonly ownerBackgroundTasks?: readonly TaskRecord[];
 	readonly settlementOrder: ReadonlyMap<TaskId, bigint>;
+	panelRevision?(): number | undefined;
+	taskRecord?(id: TaskId): TaskRecord | undefined;
 	recentActivity(id: TaskId): TaskActivity[];
 	activityOmitted(id: TaskId): boolean;
 	subscribe(listener: () => void): () => void;
@@ -139,14 +151,22 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 	const taskReadOnlyReason = root.taskReadOnlyReason;
 	const taskStopped = root.taskStopped;
 	const view: TaskViewSource = {
+		// A subagent's shells are not its launcher's own tasks: they are read from the owner's.
 		get tasks() {
-			return launched(root.tasks);
+			return launched(root.ownerTasks ?? root.tasks);
 		},
 		get backgroundTasks() {
-			return launched(root.backgroundTasks);
+			return launched(root.ownerBackgroundTasks ?? root.backgroundTasks);
 		},
 		get settlementOrder() {
 			return root.settlementOrder;
+		},
+		panelRevision: () => root.panelRevision?.(),
+		taskRecord(id) {
+			const task = root.taskRecord
+				? root.taskRecord(id)
+				: root.tasks.find((candidate) => candidate.ref.taskId === id);
+			return task?.parentTaskId === launcher ? task : undefined;
 		},
 		recentActivity: (id) => root.recentActivity(id),
 		activityOmitted: (id) => root.activityOmitted(id),
@@ -173,6 +193,7 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 	};
 	views.set(launcher, view);
 	launchedViewRoots.set(view, root);
+	bindTaskClockSource(view, root);
 	return view;
 }
 
@@ -198,9 +219,17 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 		get backgroundTasks() {
 			return store.backgroundTasks;
 		},
+		get ownerTasks() {
+			return store.ownerTasks;
+		},
+		get ownerBackgroundTasks() {
+			return store.ownerBackgroundTasks;
+		},
 		get settlementOrder() {
 			return store.settlementOrder;
 		},
+		panelRevision: () => store.panelRevision,
+		taskRecord: (id) => store.taskRecord(id),
 		recentActivity: (id) => store.recentActivity(id),
 		activityOmitted: (id) => store.activityOmitted(id),
 		subscribe: (listener) => store.subscribe(listener),
@@ -318,13 +347,20 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 				return { ok: false, error: { message: "This task's turn cannot be interrupted from here." } };
 			try {
 				await interrupt.call(bound.value.session);
+				if (bound.value.session.isRunning?.() !== true) {
+					store.setTurnInterrupted(id, true);
+				}
 				return { ok: true, value: undefined };
 			} catch (error) {
 				return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } };
 			}
 		},
 		taskStopped(id) {
-			return taskResumer(store.supervisor)?.isStopped?.(id) === true;
+			const record = store.getTask(id);
+			return (
+				(record !== undefined && isTaskTurnInterrupted(record)) ||
+				taskResumer(store.supervisor)?.isStopped?.(id) === true
+			);
 		},
 		taskReadOnlyReason(id) {
 			const record = store.tasks.find((candidate) => candidate.ref.taskId === id);
@@ -361,7 +397,10 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			} catch (cause) {
 				throw new TaskMessageError("delivery-unconfirmed", { taskId: id, target }, { cause });
 			}
-			if (delivery.delivered) return;
+			if (delivery.delivered) {
+				store.setTurnInterrupted(id, false);
+				return;
+			}
 			if (delivery.reason === "unconfirmed")
 				throw new TaskMessageTimeoutError({
 					taskId: id,
@@ -377,6 +416,7 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 		},
 	};
 	sources.set(store, source);
+	bindTaskClockSource(source, store);
 	return source;
 }
 
@@ -429,6 +469,8 @@ function transcriptView(
 	});
 	const compactionReason = cursor === undefined ? session.getCompactionReason?.() : undefined;
 	const compactionStartedAt = compactionReason === undefined ? undefined : session.chatSession?.compactionStartedAt;
+	const activeToolStarts =
+		cursor === undefined && session.chatSession !== undefined ? activeToolExecutionStarts(session.chatSession) : [];
 	return {
 		ok: true,
 		value: {
@@ -436,6 +478,7 @@ function transcriptView(
 			...(page.ok && page.value.nextCursor !== undefined ? { nextCursor: page.value.nextCursor } : {}),
 			...(compactionReason === undefined ? {} : { compactionReason }),
 			...(compactionStartedAt === undefined ? {} : { compactionStartedAt }),
+			...(activeToolStarts.length === 0 ? {} : { activeToolStarts }),
 		},
 	};
 }

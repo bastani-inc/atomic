@@ -411,7 +411,7 @@ declare module "./interactive-mode-base.ts" {
 		handleArminSaysHi(): void;
 		handleDementedDelves(): void;
 		handleBashCommand(command: string, excludeFromContext?: boolean): Promise<void>;
-		handleCompactCommand(): Promise<void>;
+		handleCompactCommand(instructions?: string): Promise<void>;
 		stop(fullscreenExitOutput?: FullscreenExitOutput): void;
 	}
 }

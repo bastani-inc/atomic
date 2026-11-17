@@ -23,8 +23,10 @@ import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/int
 import { currentModelFullId } from "../shared/model-fallback.js";
 import { createExecutionScheduler } from "../shared/parallel-utils.js";
 import { injectSingleOutputInstruction, resolveSingleOutputPath } from "../shared/single-output.js";
+import { subagentStartHoldMs } from "../shared/start-progress.js";
 import type { WorktreeSetup } from "../shared/worktree.js";
 import { runOwnerlessChild } from "./ownerless-children.js";
+import { holdStartingChild, type StartingChildHold } from "./subagent-child-hold.js";
 import type { SubagentChildRecordSink } from "./subagent-child-records.js";
 import { markLiveResultIndices } from "./subagent-executor-live-update.js";
 import type { SubagentExecutorRuntimeDeps, TaskParam } from "./subagent-executor-types.js";
@@ -57,7 +59,8 @@ interface ForegroundParallelRunInput {
 	knownModelProviders: string[];
 	resolveCandidateModel: CandidateModelResolver;
 	modelOverrides: (string | undefined)[];
-	modelRoutes?: (import("../shared/model-router.js").ModelRoute | undefined)[];
+	/** Which tasks run `model: "auto"`, whose `modelOverrides` entry is the model it stood for, not one they named. */
+	autoModels?: readonly boolean[];
 	behaviors: ResolvedStepBehavior[];
 	/** Run-scoped directory holding the shared, precreated progress.md; set when any task tracks progress. */
 	progressDir?: string;
@@ -154,6 +157,8 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 	const host = input.ctx.getAgentTaskHost?.();
 	// Admit observations independently; only actual execution holds a concurrency slot.
 	const schedule = input.schedule ?? createExecutionScheduler(input.concurrencyLimit);
+	// Each child's hold on its Intercom target, until it registers or its start ends.
+	const startHolds = new Map<number, StartingChildHold>();
 	const runChild = async (task: TaskParam, index: number): Promise<SingleResult> => {
 		const behavior = input.behaviors[index];
 		const effectiveSkills = behavior?.skills;
@@ -178,6 +183,21 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				tools: (input.agentConfigs?.[index] ?? input.agents.find((agent) => agent.name === task.agent))?.tools,
 			}),
 		);
+		const childIntercomGroup = resolveChildIntercomGroup(
+			task.group ?? input.setIntercomGroup,
+			inheritedIntercomGroup(input.ctx),
+			input.sharedAutoIntercomGroup,
+			input.ctx.intercomPolicy,
+		);
+		// Sends to the child wait for it to register, before its first turn, instead of finding no session.
+		const startHold = await holdStartingChild({
+			events: input.intercomEvents,
+			intercomTarget: childIntercomTarget,
+			authorization: supervisorAuthorization,
+			group: childIntercomGroup,
+			holdMs: subagentStartHoldMs(input.sessionStartTimeoutMs),
+		});
+		startHolds.set(index, startHold);
 		const interruptController = new AbortController();
 		if (input.foregroundControl) {
 			input.foregroundControl.currentAgent = task.agent;
@@ -202,6 +222,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 		const runOptions: RunSyncOptions = {
 			runningCapacity: input.runningCapacity,
 			sessionStartTimeoutMs: input.sessionStartTimeoutMs,
+			onStartRetry: () => startHold.renew(),
 			getChildSessionOptions: input.ctx.getChildSessionOptionsResolver?.() ?? input.ctx.getChildSessionOptions,
 			resourceLoaderInheritanceSnapshot: input.resourceLoaderInheritanceSnapshot,
 			cwd: taskCwd,
@@ -228,19 +249,14 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			intercomSessionName: childIntercomTarget,
 			supervisorAuthorization,
 			orchestratorIntercomTarget: input.orchestratorIntercomTarget,
-			intercomGroup: resolveChildIntercomGroup(
-				task.group ?? input.setIntercomGroup,
-				inheritedIntercomGroup(input.ctx),
-				input.sharedAutoIntercomGroup,
-			),
+			intercomGroup: childIntercomGroup,
 			onDetachedExit: (result) => input.onDetachedExit?.(index, result),
 			intercomDetachSignal: intercomDetachController.signal,
 			onIntercomDetachCommit: () => intercomDetachController.abort(),
 			// Parallel requests use Intercom's correlated waiter in the original child.
 			// The single-child terminal handoff would cancel unrelated siblings here.
 			modelOverride: input.modelOverrides[index],
-			modelRoute: input.modelRoutes?.[index],
-			...(task.modelConstraints ? { modelConstraints: task.modelConstraints } : {}),
+			...(input.autoModels?.[index] ? { runsNamedModel: false as const } : {}),
 			availableModels: input.availableModels,
 			knownModelProviders: input.knownModelProviders,
 			resolveCandidateModel: input.resolveCandidateModel,
@@ -301,7 +317,6 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 					}
 				: undefined,
 		};
-		runOptions.modelRoute?.assertCurrent();
 		input.onExecution?.(index, input.ctx.cwd, runOptions);
 		if (host) {
 			if (input.wait?.kind !== "foreground") {
@@ -326,9 +341,11 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				schedule,
 				onTerminal: (child) => {
 					terminalChild = child;
+					startHold.settle(child);
 				},
 				recordChild: input.recordChild,
 			});
+			if (response.kind === "unstarted") startHold.settle();
 			if (terminalChild) return { ...terminalChild, taskResponse: response };
 			return {
 				agent: task.agent,
@@ -355,6 +372,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			runSync: (childTask, options) => input.runtime.runSync(launchCwd, taskAgents, task.agent, childTask, options),
 		}).result;
 		return launched.finally(() => {
+			startHold.settle();
 			if (input.foregroundControl?.currentIndex === index) {
 				input.foregroundControl.interrupt = undefined;
 				input.foregroundControl.updatedAt = Date.now();
@@ -365,6 +383,8 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 		try {
 			return await runChild(task, index);
 		} catch (error) {
+			// A launch that fails before its child starts ends its hold.
+			startHolds.get(index)?.settle();
 			// Cancelling the parent cancels the call; any other failure ends only this child.
 			if (input.signal.aborted) throw error;
 			return unstartedChildResult(task, error);

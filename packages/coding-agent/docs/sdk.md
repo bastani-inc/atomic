@@ -175,7 +175,7 @@ const { session, workspace: binding } = await createAgentSession({ workspace: ap
 const reviewer = await createAgentSession({ workspace: api.readOnly() });
 ```
 
-- **Resolution:** a local `repo` must be a repository root. A remote is cloned once per host into a shared store under `~/.atomic/repos/` and worktrees are added from it after a fetch, so they start from the remote as it is now. A missing branch is created from `base`. An existing worktree must belong to the repository and be on the branch. A worktree whose checkout was interrupted, for example by a crash, is added again on the next bind. Workspaces need git 2.33 or later. A `sessionManager` passed together with a workspace must already work inside its worktree, since shell commands run in its directory; one elsewhere fails with `WorkspaceConfigError` (field `sessionManager`). The check runs once the workspace is bound, because an `"auto"` worktree's path is known only then.
+- **Resolution:** a local `repo` must be a repository root. A remote is cloned once per host into a shared store under `repos/` in the [storage home](/storage#storage-home) (`~/.atomic/repos/` by default, or `<agentDir>/repos/` when `ATOMIC_CODING_AGENT_DIR` is customized) and worktrees are added from it after a fetch, so they start from the remote as it is now. A missing branch is created from `base`. An existing worktree must belong to the repository and be on the branch. A worktree whose checkout was interrupted, for example by a crash, is added again on the next bind. Workspaces need git 2.33 or later. A `sessionManager` passed together with a workspace must already work inside its worktree, since shell commands run in its directory; one elsewhere fails with `WorkspaceConfigError` (field `sessionManager`). The check runs once the workspace is bound, because an `"auto"` worktree's path is known only then.
 - **Working directory:** the session runs in the bound worktree. An explicit `cwd` resolves against it and must stay inside it.
 - **Read-only:** a `"read-only"` workspace does not offer `write`, `edit` or `todo`, also when an explicit `tools` list names them, and refuses them if one is active anyway. Shell tools still run. This is not operating-system sandboxing.
 - **Recording and resume:** the resolved binding is stored in the session as a `workspace_binding` entry and returned as `result.workspace` and `session.workspace`. Reopening that session with the same workspace restores the recorded binding: it verifies the repository and branch, re-adds a deleted worktree, and keeps the recorded base commit and label. To know the worktree before creating the session, for example to pass its directory as `cwd`, call `bindSessionWorkspace(workspace, sessionManager)` on the reopened session manager; it restores the recorded binding, or resolves the workspace when the session has none, and `createAgentSession` then reuses that binding.
@@ -266,7 +266,11 @@ Await every `SessionManager` mutation before reading dependent state. Writes res
 
 Pass `extensionBindings.humanInput` to answer extension dialogs and `ask_user_question` in a Node host. `HostInput` requires all five methods: `confirm`, `select`, `input`, `editor` and `questionnaire`. `QuestionParams` and `QuestionnaireResult` are exported from `@bastani/atomic`; questionnaire answers retain their question indices, answer kinds, selections, previews and notes.
 
-Each callback receives a `HostInputOptions` argument with a runtime-generated `requestId`, the originating `sessionId`, and an `AbortSignal`. Stop presenting the question when the signal aborts.
+Each callback receives a `HostInputOptions` argument with a runtime-generated `requestId`, the originating `sessionId`, and an `AbortSignal`. Route the question to that session, not whichever chat is currently visible, and stop presenting it when the signal aborts. Child sessions inherit an explicitly supplied `humanInput` adapter. In the interactive CLI, subagent questions wait in their own task views and workflow stage questions wait in their stage chats. Plain RPC clients and SDK hosts that provide only `uiContext` keep receiving child dialogs through that presentation, including subagents launched by workflow stages, since they have no built-in task inspector. Setting `mode: "tui"` alone does not enable held task prompts.
+
+Dialog options include `timeout` in milliseconds when the caller supplied it. The signal aborts when a timeout, cancellation, session shutdown or an answer from a stage chat or `workflow answer` ends a pending request. Stop showing the dialog on abort even if your callback has not returned. A settled host reply does not abort its signal, including when Atomic rejects that reply as invalid.
+
+For custom task views, see [Session-local task prompts](/sdk/reference#session-local-task-prompts).
 
 Return an actual boolean from `confirm`, a supplied choice or `undefined` from `select`, and a string or `undefined` from text dialogs. Atomic preserves empty strings, whitespace and choice order. Malformed replies reject with `InvalidHostInput`; false, cancellation and rejected callbacks never approve an action.
 
@@ -306,7 +310,7 @@ Extension authors should check `ctx.hasHumanInput` before asking questions and `
 
 #### Durable workflow approvals
 
-Workflow input uses the same callbacks for stage questionnaires and nested workflows. Requests include `workflowRunId` and `workflowStageId`; combine them with `requestId` to associate a question with its run. Author semantic `ctx.ui` calls rather than terminal-specific branches so the definition works across hosts.
+Workflow input uses the same callbacks for stage questionnaires, extension dialogs and nested workflows, including dialogs raised by local worker stages. Return the answer through the callback to let the waiting stage continue. Requests include `workflowRunId` and `workflowStageId`; combine them with `requestId` to associate a question with its run. A stage dialog and its questionnaire can be pending together, regardless of which arrives first. Keep both requests live until each settles: opening or answering either request does not withdraw or restart the other. A stage can then open another dialog with a new request ID. Answer that request separately, even when it comes from the same worker and stage. A replacement worker's new dialog also needs a fresh answer, even if its text matches an earlier dialog. Author semantic `ctx.ui` calls rather than terminal-specific branches so the definition works across hosts.
 
 A durable approval stays pending when input is unavailable, cancelled, or invalid. Withdrawing the adapter neither approves the request nor discards the run. Bind a new adapter to present a live pending request again. It receives a fresh request ID; late answers to the withdrawn request cannot authorize work.
 
@@ -371,11 +375,35 @@ const second = await createAgentSession({ journal: { memory: true } });
 
 Without a `journal` option, the session's own `workflows.journal` setting applies, including settings passed through `SettingsManager.inMemory({ workflows: { journal: { path: "./runs.sqlite" } } })`. A `memory: true` journal selected this way belongs to that session alone. Disposing a session closes the journals Atomic opened for it once no other session is using them, so runs kept in a memory journal end with the session. Atomic never closes a database or journal you supply.
 
-Without a per-run or per-session option, `ATOMIC_WORKFLOWS_JOURNAL` or a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH` wins, then `ATOMIC_STORAGE`, then `workflows.journal`, then shared top-level `storage`. Setting both journal variables is a conflict. Nearer-scope settings replace whole selections. Relative settings paths resolve against Atomic home. The default journal is the [journal store](/storage#the-workflow-journal-store) in `~/.atomic/workflows/journal/`, which finds any of its runs by ID; an empty shared selection uses `~/.atomic/storage.sqlite`. A run saved in an explicitly selected journal resumes from that journal, or from the store after `atomic storage adopt`. Invalid configuration and storage failures reject rather than switching to memory. See [Workflow storage settings](/settings#workflow-storage) and [Selecting storage per process](/storage#selecting-storage-per-process).
+Without a per-run or per-session option, `ATOMIC_WORKFLOWS_JOURNAL` or a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH` wins, then `ATOMIC_STORAGE`, then `workflows.journal`, then shared top-level `storage`. Setting both journal variables is a conflict. Nearer-scope settings replace whole selections. Relative settings paths resolve against the [storage home](/storage#storage-home). The default journal is the [journal store](/storage#the-workflow-journal-store) in `workflows/journal/` under the storage home (`~/.atomic/workflows/journal/` by default), which finds any of its runs by ID; an empty shared selection uses `storage.sqlite` under the storage home (`~/.atomic/storage.sqlite` by default). A run saved in an explicitly selected journal resumes from that journal, or from the store after `atomic storage adopt`. Invalid configuration and storage failures reject rather than switching to memory. See [Workflow storage settings](/settings#workflow-storage) and [Selecting storage per process](/storage#selecting-storage-per-process).
 
 ### Intercom in standalone workflows
 
 Workflow stages run by the standalone `run()` API can use Intercom when the stage has access to the `intercom` tool, including with `executionMode: "non_interactive"`. Atomic opens Intercom when an eligible stage starts and closes the workflow route when the run settles. Intercom remains unavailable when a stage excludes the tool or disables its builtin package. A local session that needs to steer a standalone run can join `workflow:<rootRunId>` and send to a stage or `workflow:<rootRunId>/**`. See [Programmatic usage](/workflows/api-reference#programmatic-usage) for details.
+
+### Intercom group and reach
+
+A host that runs several sessions in one process can give each one its own [Intercom](/intercom) group and decide which other groups it can reach. Pass `intercom` to `createAgentSession()`:
+
+```typescript
+const { session } = await createAgentSession({
+  intercom: { group: "doc-1842", reachable: ["doc-1907"] },
+});
+
+// Later, while the session runs:
+await session.intercom.setReachable(["doc-1907", "doc-2011"]);
+```
+
+- `group` is the session's home group. It takes precedence over `ATOMIC_INTERCOM_GROUP`, the Intercom `config.json` `"group"` and the project group. The session stays an ordinary top-level session and keeps its workflow extension.
+- `reachable` lists the other groups the session may reach. Missing or empty means none; up to 1,000 groups.
+- The session can `list`, `send` to and `ask` only sessions in `group`, `reachable`, or a subgroup under `group`, plus the workflow stages it starts. A send or ask to any other session is refused with a reason and is not queued.
+- `groups` shows only `group` and `reachable`, `join` accepts only those names, and `leave` can't remove `group`. A `list` or `status` peek is limited to groups the session reaches, including subgroups under its home.
+- Reach is one way: listing B's group lets the session reach B, not B reach the session. B can still reply to the session's asks.
+- Workflow stages keep their own subgroups under the run's `workflow:<rootRunId>` group, and the session keeps its control over them. A subagent launched with `group: "x"` is placed in `<group>/x`, which the session can reach. Stages and subagents never get the session's `reachable` groups: each reaches only its own group and the subgroups under it.
+- The Intercom broker holds and enforces the policy, so a client that skips the `intercom` tool cannot get around it. The policy is registered again after a reconnect or a broker restart.
+- A child workflow that runs on a [local worker pool](/workflows/api-reference#programmatic-usage) runs its stages in the worker processes, which follow their own Intercom settings and do not get this policy. Leave `localWorkers` off for sessions that need this isolation.
+
+`createAgentSessionFromServices()` accepts the same `intercom` option, so a runtime factory can pass it through. `session.intercom.setReachable(groups)` takes effect from the session's next Intercom call; its promise settles once the broker holds the new set, or at once while the session is not connected, which then registers with the new set. Narrowing it also leaves any group the session joined that is no longer reachable. `session.intercom.group` and `session.intercom.reachable` report the current policy. On a session created without the option, `group` is `undefined` and `setReachable` rejects with `IntercomPolicyError`; such sessions keep the usual Intercom rules. An invalid `intercom` option (an empty or reserved group name such as `auto`, or more than 1,000 reachable groups) makes `createAgentSession()` reject with `IntercomPolicyError` before anything is created.
 
 ### Workflow run control
 
@@ -573,7 +601,7 @@ interface AgentSession {
   readonly workflows: SessionWorkflows;
 
   // Model and thinking control
-  setModel(model: Model): Promise<void>;
+  setModel(model: Model, options?: { persist?: boolean; thinkingLevel?: ThinkingLevel }): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): void;
   cycleModel(): Promise<ModelCycleResult | undefined>;
   cycleThinkingLevel(): ThinkingLevel | undefined;
@@ -590,16 +618,9 @@ interface AgentSession {
   // In-place tree navigation within the current session file
   navigateTree(targetId: string, options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string }): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }>;
 
-  // Verbatim line compaction
-  compact(options?: SessionCompactOptions): Promise<VerbatimCompactionResult>; // Partial<VerbatimCompactionParameters> & { compactionModel?: string }
+  // Compaction: clear the context window, or replace it with a configured compactor's output
+  compact(options?: SessionCompactOptions): Promise<VerbatimCompactionResult>; // { query?: string; compactionModel?: string }
   abortCompaction(): void;
-
-  // Background compaction
-  readonly compaction: BackgroundCompactionState; // { state: "idle" | "running" | "ready" | "failed", upToEntryId?, startedAt?, error? }
-  onCompactionReady(listener: (state: BackgroundCompactionState) => void): () => void;
-  awaitBackgroundCompaction(): Promise<BackgroundCompactionState>;
-  setBackgroundCompactionEnabled(enabled: boolean): void;
-  setBackgroundCompactionThresholdPercent(percent: number): void;
 
   // Abort current operation; pauseQueuedMessages holds queued messages first
   abort(options?: { pauseQueuedMessages?: boolean }): Promise<void>;
@@ -608,6 +629,8 @@ interface AgentSession {
   dispose(): Promise<void>;
 }
 ```
+
+Pass `thinkingLevel` to `session.setModel(model, { thinkingLevel: "high" })` to choose a model and its reasoning level together. Unsupported levels are clamped to the model's supported levels. Add `persist: true` to save the model and reasoning preferences to global settings. Project overrides stay in the project settings file and still take precedence when a session starts.
 
 Always `await session.dispose()` in `finally`. Disposal immediately refuses new work, cancels and drains owned operations, settles questions, shuts down extensions and releases session leases. Repeated calls await the same outcome.
 
@@ -702,22 +725,13 @@ Caller-supplied `executeBash()` IDs remain correlation IDs, not unique operation
 
 #### Compaction and tree navigation
 
-`compact()` removes selected older transcript lines without asking the model to rewrite retained text. It appends a durable `compaction` entry with `details.strategy: "verbatim-lines"` and respects the configured recent-message count. See [Compaction](/compaction) for controls and [Session format](/session-format#compactionentry) for persisted fields.
+`compact()` stops the active run, then clears the context window: after the boundary the model sees the system prompt and one `Context cleared` message that tells the agent where its earlier conversation is in session history and what to recover first. With a compactor model configured, the compactor's output replaces the context instead. It appends a durable `compaction` entry with `details.strategy: "verbatim-lines"` and resolves with a `VerbatimCompactionResult` whose `form` is `cleared` or `compacted`. It rejects with `Nothing to compact` when nothing has entered the context since the last boundary. See [Compaction](/compaction) for behavior and [Session format](/session-format#compactionentry) for persisted fields.
 
-Pass `compactionModel` to choose the compaction model for one call without changing settings. It accepts the same exact `provider/model` IDs as the [`compactionModel` setting](/compaction#compaction-model): a chat model, a registered classifier, or `morph/morph-compactor`. An unknown ID rejects before the active run is interrupted. A call made while another manual compaction is running joins that run and uses its model.
-
-```typescript
-await session.compact({ compactionModel: "typesafe/jev-latest", query: "keep the auth decisions" });
-```
-
-[Background compaction](/compaction#background-compaction) runs automatically once context passes `compaction.backgroundThresholdPercent`. `session.compaction` reports its state, `onCompactionReady()` runs when a result is saved, and `awaitBackgroundCompaction()` waits until no background task is running. `abortCompaction()` also cancels a running background task. Pass `compactionWake` to `createAgentSession` to receive the "compaction ready" notice outside the session:
+Pass `query` to give compaction instructions: they are added to the boundary message and become a compactor's query. Pass `compactionModel` to choose the compaction model for one call without changing settings. It accepts `auto` or an exact compactor ID, such as `morph/morph-compactor`, like the [`compactionModel` setting](/compaction#compaction-model). A chat, classifier or unknown ID clears the context with a notice instead of failing. A call made while another manual compaction is running joins that run and uses its options. `compression_ratio` and `preserve_recent` are no longer options; they are ignored if passed.
 
 ```typescript
-const { session } = await createAgentSession({
-  compactionWake: { compactionReady: ({ sessionId, resultEntryId, upToEntryId }) => scheduleWake(sessionId) },
-});
-const state = await session.awaitBackgroundCompaction();
-if (state.state === "failed" && isBackgroundCompactionError(state.error)) console.warn(state.error.code, state.error.hint);
+const result = await session.compact({ query: "keep the auth decisions" });
+console.log(result.form, result.history?.boundaryLine);
 ```
 
 `session.navigateTree()` rejects during streaming, compaction, or branch summarization rather than queueing the navigation. The active branch stays unchanged. Wait for the operation to finish before retrying.

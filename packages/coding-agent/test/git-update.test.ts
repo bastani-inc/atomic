@@ -72,7 +72,7 @@ type GitSourceForTest = {
 
 interface PackageManagerPathInternals {
 	parseSource(source: string): GitSourceForTest;
-	getGitInstallPath(source: GitSourceForTest, scope: "temporary"): string;
+	getGitInstallPath(source: GitSourceForTest, scope: "temporary"): Promise<string>;
 }
 
 describe("DefaultPackageManager git update", () => {
@@ -412,7 +412,10 @@ describe("DefaultPackageManager git update", () => {
 	describe("temporary git sources", () => {
 		it("should refresh cached temporary git sources when resolving", async () => {
 			const managerWithPaths = packageManager as unknown as PackageManagerPathInternals;
-			const cachedDir = managerWithPaths.getGitInstallPath(managerWithPaths.parseSource(gitSource), "temporary");
+			const cachedDir = await managerWithPaths.getGitInstallPath(
+				managerWithPaths.parseSource(gitSource),
+				"temporary",
+			);
 			const extensionFile = join(cachedDir, "pi-extensions", "session-breakdown.ts");
 
 			rmSync(cachedDir, { recursive: true, force: true });
@@ -461,7 +464,10 @@ describe("DefaultPackageManager git update", () => {
 		it("should refresh temporary git sources pinned to a branch ref", async () => {
 			const managerWithPaths = packageManager as unknown as PackageManagerPathInternals;
 			const pinnedSource = `${gitSource}@main`;
-			const cachedDir = managerWithPaths.getGitInstallPath(managerWithPaths.parseSource(pinnedSource), "temporary");
+			const cachedDir = await managerWithPaths.getGitInstallPath(
+				managerWithPaths.parseSource(pinnedSource),
+				"temporary",
+			);
 			const extensionFile = join(cachedDir, "pi-extensions", "session-breakdown.ts");
 
 			rmSync(cachedDir, { recursive: true, force: true });

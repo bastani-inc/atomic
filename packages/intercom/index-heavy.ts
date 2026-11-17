@@ -33,7 +33,7 @@ import {
   type ReleasedChildWakeNotice,
   waitForIntercomPeer,
 } from "./session-recovery.js";
-import { APP_NAME, createGitEnvironment, type ExtensionAPI, IntercomRoutingMismatchError, IntercomRoutingUnavailableError, isIntercomBrokerStopTimeoutError, isIntercomBrokerUpgradeError, isIntercomRoutingChangedError, isIntercomRoutingMismatchError, isIntercomRoutingUnavailableError, isProjectGroupError, type ExtensionContext, processStorageEnvironment, reportDebug, type SessionEntry, sessionScopedExtensionState } from "@bastani/atomic";
+import { APP_NAME, createGitEnvironment, type ExtensionAPI, IntercomRoutingMismatchError, IntercomRoutingUnavailableError, isIntercomBrokerStopTimeoutError, isIntercomBrokerUpgradeError, isIntercomRoutingChangedError, isIntercomRoutingMismatchError, isIntercomRoutingUnavailableError, isProjectGroupError, type ExtensionContext, type IntercomPolicyView, processStorageEnvironment, reportDebug, type SessionEntry, sessionScopedExtensionState } from "@bastani/atomic";
 import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -41,6 +41,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
 	IntercomClient,
 	IntercomPendingStageRouteRefusedError,
+	IntercomReachUnsupportedError,
 	type PendingStageMessageRequest,
 	type PendingStageMessageResult,
 	type PendingStageNotificationRequest,
@@ -53,12 +54,14 @@ import {
   agreedProtocol,
   BROKER_PROTOCOL,
   decideBrokerProtocol,
+  REACH_POLICY_PROTOCOL,
   VERIFIED_REGISTRATION_PROTOCOL,
 } from "./broker/protocol-version.js";
+import { childReachPolicy, createReachPolicy, type IntercomReachPolicy, narrowMemberships } from "./reach-policy.js";
 import { localOnlyBrokerWarning, warnLocalOnlyBrokerWithoutUi } from "./local-only-broker.js";
 import { RECIPIENT_SAVING_REPORT_INTERVAL_MS } from "./retry-policy.js";
 import { IntercomRuntimeInactiveError } from "./runtime-inactive-error.js";
-import { InlineMessageComponent } from "./ui/inline-message.js";
+import { renderIntercomCustomMessage } from "./ui/inline-message.js";
 import { loadConfig, type IntercomConfig } from "./config.js";
 import type { SessionInfo, Message, WorkflowStageRosterAnnouncement, WorkflowPossibleStageAnnouncement, WorkflowRunParentAnnouncement } from "./types.js";
 import { ReplyTracker, restorePendingInboundAsks } from "./reply-tracker.js";
@@ -99,6 +102,7 @@ import { resolveSessionTargetId } from "./session-target.js";
 import { InboundMessageAdmission } from "./inbound-message-admission.js";
 import { BroadcastCopies } from "./broadcast-copies.js";
 import { registerLateStageMessageRouter } from "./late-stage-message-router.js";
+import { type AdmissionPlace, InboundAdmissionOrder } from "./inbound-admission-order.js";
 import { retryStableDelivery } from "./stable-delivery-retry.js";
 import type { IntercomExtensionTestOverrides } from "./intercom-test-seams.js";
 import { admitActiveSessionInbound } from "./active-session-admission.js";
@@ -117,13 +121,19 @@ import {
   jitteredReconnectDelayMs,
   reconnectDelayMs,
 } from "./reconnect-backoff.js";
-import { IntercomClientDisconnectedError, isIntercomBrokerRetiring } from "./recoverable-disconnect.js";
+import { IntercomClientDisconnectedError, isIntercomBrokerRetiring, isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
 import { registerWithBrokerSuccessor } from "./broker-successor-retry.js";
 import { isOwnerMissingRefusal, LIVE_ROUTE_OWNER_WAIT_MS, liveRouteOwnerRetryDelayMs } from "./live-route-refusal.js";
 import { RouteRetryWaiters, scheduledRetryFailure } from "./route-retry-waiters.js";
 import { createConcurrencyGate, ROUTE_CLIENT_CONNECT_CONCURRENCY } from "./route-connect-gate.js";
 import { isReleasedStageAnnouncement, RELEASED_STAGE_EVENT, ReleasedStagePeers } from "./released-stage-peers.js";
 import { SupervisorAuthorizationRegistry } from "./supervisor-authorization-registry.js";
+import {
+  isSupervisorAuthorizationRefusal,
+  pauseUnlessAborted,
+  SUPERVISOR_REFUSAL_RETRY_MS,
+  supervisorRefusalRetryDelayMs,
+} from "./supervisor-refusal.js";
 if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL === "1") {
   process.env.ATOMIC_INTERCOM_HEAVY_IMPORTED = "1";
 }
@@ -132,6 +142,29 @@ if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL_FILE) {
 }
 
 const INTERCOM_SESSION_ID_ENV = `${APP_NAME.toUpperCase()}_INTERCOM_SESSION_ID`;
+/**
+ * The longest a starting subagent's first turn waits, after it registered, for the messages held for it to be saved
+ * and written as that turn's context. They are written to its connection right after its registration.
+ */
+const STARTUP_ARRIVALS_WAIT_MS = 5_000;
+
+/** Wait for `work`, at most `timeoutMs`. */
+function settledWithin(work: Promise<unknown>, timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    timer.unref?.();
+    void work.then(
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+    );
+  });
+}
 const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
 const PENDING_STAGE_MESSAGE_EVENT = "atomic:workflow-pending-stage-message";
 const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
@@ -225,6 +258,14 @@ function isPendingStageRouteRegistrationEvent(value: unknown): value is PendingS
     event.capability.length > 0
   );
 }
+function readIntercomPolicy(ctx: ExtensionContext): IntercomPolicyView | undefined {
+  try {
+    return ctx.intercomPolicy;
+  } catch {
+    return undefined;
+  }
+}
+
 export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: IntercomExtensionTestOverrides = {}) {
   const inheritedIntercomSessionId = process.env[INTERCOM_SESSION_ID_ENV];
   const restoreIntercomSessionIdEnv = (): void => {
@@ -237,10 +278,24 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   const config: IntercomConfig = loadConfig();
   const legacyChildOrchestratorMetadata = readChildOrchestratorMetadata();
   let runtimeContext: ExtensionContext | null = null;
+  /**
+   * Why the broker refused the supervisor capability this child registered with, after it kept refusing it for
+   * {@link SUPERVISOR_REFUSAL_RETRY_MS}: the child then registers without it, so its start never fails on it, and
+   * reaches its supervisor by its orchestrator target with ordinary sends. A refusal is often a race: after a broker
+   * restart a child can register before its supervisor has reconnected and restored the capability. So the next
+   * connection tries the capability again.
+   */
+  let supervisorRefusal: string | undefined;
+  /** When the broker first refused the capability in the current run of refusals. */
+  let supervisorRefusedSince: number | undefined;
+  let supervisorRefusalAttempts = 0;
   function currentChildOrchestratorMetadata() {
-    return runtimeContext?.subagentPolicy !== undefined
+    const metadata = runtimeContext?.subagentPolicy !== undefined
       ? readChildOrchestratorMetadata(runtimeContext.subagentPolicy)
       : legacyChildOrchestratorMetadata;
+    if (metadata === null || supervisorRefusal === undefined || metadata.supervisor === undefined) return metadata;
+    const { supervisor: _refused, ...unverified } = metadata;
+    return { ...unverified, supervisorRefusal };
   }
   let currentSessionId: string | null = null;
   let currentModel = "unknown";
@@ -284,6 +339,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   let localOnlyWarned = false;
   let terminalHomeGroupError: Error | null = null;
   let joinedGroups: Set<string> | null = null;
+  let intercomPolicy: IntercomPolicyView | undefined;
+  let stopApplyingReach: (() => void) | undefined;
   const sessionMemberships = sessionScopedExtensionState<Map<string, readonly string[]>>(
     pi.lifecycleScope ?? pi.events ?? pi,
     "intercom:session-memberships:v1",
@@ -302,6 +359,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   }
   // #3761: a message counts as shown once its `intercom_message` card is on the session branch.
   const pendingIdleMessages = new InboundIdleQueue(() => consumedIntercomMessageIds(sessionBranch()));
+  /** Every path that writes an arriving message to the session takes its place here, in arrival order. */
+  const inboundOrder = new InboundAdmissionOrder();
   /** Whether this session is saved, so it can be resumed: anything but an in-memory (`--no-session`) store. */
   function sessionIsSaved(): boolean {
     try {
@@ -317,6 +376,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     appendHandled: (messageId) => pi.appendEntry(INTERCOM_INBOX_HANDLED_ENTRY, { messageId }),
   });
   const inboundDeliveries = new InboundMessageAdmission();
+  /** Messages a starting subagent is writing as context for its first turn; its start waits for them. */
+  const startupDeliveries = new Set<Promise<void>>();
+  /** Messages that arrived and are not yet saved and handed over. */
+  const arrivalsInFlight = new Set<Promise<void>>();
   const broadcastCopies = new BroadcastCopies();
   // #4751: the asks this session sent; their replies arrive as messages on this session's own thread.
   const outboundAsks = new OutboundAsks({
@@ -356,7 +419,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     report: ({ error, retrying, attempt, peers }) =>
       reportReleasedStageFailure("released-stage-reconnect-failed", error, { retrying, attempt, peers }),
     prepare: () => startBrokerIfNeeded(connectAbort.signal),
-    createClient: (returnAddress) => new IntercomClient(returnAddress),
+    createClient: (returnAddress) =>
+      new IntercomClient(returnAddress, {
+        reach: () => (currentReachPolicy() === undefined ? undefined : childReachPolicy(returnAddress)),
+      }),
     cwd: () => getLiveContext()?.cwd ?? process.cwd(),
     relay: (from, message, channel) => {
       // A released stage's copy of a broadcast this session already has, its own or another stage's, is not relayed.
@@ -484,6 +550,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       if (agreed === undefined || agreed < VERIFIED_REGISTRATION_PROTOCOL) {
         unverified = new IntercomRoutingUnavailableError("unsupported", "register", { cause: upgradeFailure });
       }
+      if (intercomPolicy !== undefined && (agreed === undefined || agreed < REACH_POLICY_PROTOCOL)) {
+        throw new IntercomReachUnsupportedError();
+      }
     } catch (error) {
       if (!isIntercomRoutingUnavailableError(error)) throw error;
       unverified = error;
@@ -524,6 +593,35 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const liveContext = getLiveContext();
     return resolveHomeGroup(config, liveContext, projectGroupOf(liveContext));
   }
+  function currentReachPolicy(): IntercomReachPolicy | undefined {
+    const policy = intercomPolicy;
+    return policy === undefined ? undefined : createReachPolicy(resolveSessionHomeGroup(), policy.reachable);
+  }
+  function applyReach(): Promise<void> {
+    const reach = currentReachPolicy();
+    if (reach === undefined) return Promise.resolve();
+    let persisted: Promise<void> = Promise.resolve();
+    if (joinedGroups !== null) {
+      const narrowed = narrowMemberships(reach, [...joinedGroups]);
+      if (narrowed.length !== joinedGroups.size) {
+        setJoinedGroups(narrowed);
+        persisted = persistJoinedGroups(narrowed.length === 1 ? null : narrowed);
+      }
+    }
+    const active = client;
+    const synced =
+      active === null || !active.isConnected()
+        ? Promise.resolve()
+        : active.syncReach().then(
+            () => {
+              if (client === active && joinedGroups !== null) setJoinedGroups(active.groups);
+            },
+            (error: Error) => {
+              if (!isRecoverableIntercomDisconnect(error)) throw error;
+            },
+          );
+    return Promise.all([persisted, synced]).then(() => {});
+  }
   function currentIntercomGroups(): Set<string> {
     return joinedGroups === null
       ? normalizeGroups(undefined, resolveSessionHomeGroup())
@@ -536,7 +634,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     joinedGroups = normalizeGroups(groups);
     const sessionId = currentSessionId;
     if (!sessionId) return;
-    setRuntimeIntercomGroup(sessionId, currentIntercomGroup());
+    setRuntimeIntercomGroup(sessionId, intercomPolicy === undefined ? currentIntercomGroup() : resolveSessionHomeGroup());
     sessionMemberships.set(sessionId, [...joinedGroups]);
   }
   function clearJoinedGroups(): void {
@@ -559,11 +657,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   }
   function persistedJoinedGroups(ctx: ExtensionContext): readonly string[] | undefined {
     try {
-      return readIntercomSessionMemberships(
+      const groups = readIntercomSessionMemberships(
         ctx.sessionManager.getEntries(),
         ctx.sessionManager.getSessionId(),
         resolveSessionHomeGroup(),
       );
+      const reach = currentReachPolicy();
+      return groups === undefined || reach === undefined ? groups : narrowMemberships(reach, groups);
     } catch {
       return undefined;
     }
@@ -617,7 +717,14 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     return Boolean(resolvedTo && activeClient?.sessionId && resolvedTo === activeClient.sessionId)
       || targets.has(to.trim().toLowerCase());
   }
-  registerLateStageMessageRouter(pi, inboundDeliveries, () => replyTracker, currentIntercomGroup, broadcastCopies);
+  registerLateStageMessageRouter(pi, inboundDeliveries, () => replyTracker, currentIntercomGroup, broadcastCopies, {
+    run: (operation) => inboundOrder.run(operation),
+    takeQueuedFrom: (senderIds) => {
+      const taken = [...senderIds].flatMap((senderId) => pendingIdleMessages.takeFromSender(senderId));
+      if (pendingIdleMessages.size === 0) clearInboundFlushTimer();
+      return taken.map(buildIncomingCustomMessage);
+    },
+  });
   const sendIncomingMessage = createIncomingMessageSender({
     pi,
     currentGeneration: () => runtimeGeneration,
@@ -635,6 +742,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       if (pendingIdleMessages.size === 0) clearInboundFlushTimer();
     },
     isCurrent: () => Boolean(getLiveContext()),
+    // A finished child's completion notice follows every message already in line, from it or from anyone else.
+    admissionPlace: () => inboundOrder.reserveBehindBusyLine(),
   });
   pi.on("session_shutdown", () => { unregisterTerminalOrderingBarrier(); });
   function scheduleInboundFlush(delayMs = INBOUND_FLUSH_DELAY_MS): void {
@@ -649,6 +758,14 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     }, delayMs);
   }
   function flushIdleMessages(generation = runtimeGeneration): void {
+    if (pendingIdleMessages.size === 0) {
+      return;
+    }
+    // The flush takes its own place in line, so it never writes a sender's queued message while an earlier admission
+    // of that sender's is still writing, nor after a later one that has not taken it yet.
+    void inboundOrder.run(() => flushIdleMessagesInOrder(generation)).catch(() => {});
+  }
+  async function flushIdleMessagesInOrder(generation: number): Promise<void> {
     if (pendingIdleMessages.size === 0) {
       return;
     }
@@ -672,10 +789,24 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const batch = planIdleBatch(entries);
     if (batch.replyContext) replyTracker.queueTurnContext({ from: batch.replyContext.from, message: batch.replyContext.message, receivedAt: Date.now() });
     const messages = entries.map(buildIncomingCustomMessage);
-    void retryStableDelivery({
+    await retryStableDelivery({
       deliver: () => typeof pi.sendMessages === "function" ? Promise.resolve(pi.sendMessages(messages, { triggerTurn: batch.triggerTurn })) : Promise.all(messages.map((message, index) => pi.sendMessage(message, batch.sendOptions[index]))).then(() => {}),
       isCurrent: () => Boolean(getLiveContext(ctx, generation)),
     }).catch(() => {});
+  }
+  /**
+   * One sender's messages reach the session in the order they arrived: before a message from `from` is admitted at
+   * once, its earlier messages still waiting for this session to go idle are written first, without a turn of their own.
+   */
+  async function admitEarlierFromSender(from: SessionInfo, generation: number): Promise<void> {
+    const earlier = pendingIdleMessages.takeFromSender(from.id);
+    if (pendingIdleMessages.size === 0) clearInboundFlushTimer();
+    for (const entry of earlier) {
+      await retryStableDelivery({
+        deliver: () => sendIncomingMessage(entry, "prelude", generation, false),
+        isCurrent: () => Boolean(getLiveContext(runtimeContext, generation)),
+      });
+    }
   }
   testOverrides.captureInboundHandler?.(handleIncomingMessage);
   function buildInboundEntry(from: SessionInfo, message: Message, channel?: "supervisor"): InboundMessageEntry {
@@ -725,6 +856,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     // #3983: a save that waits (a pooled stage's journal commit behind other writers) keeps its sender waiting.
     const saving = setInterval(() => receiver.reportSaving(message.id), RECIPIENT_SAVING_REPORT_INTERVAL_MS);
     saving.unref?.();
+    // Its place in line is taken now, on arrival: a slow save never lets a later message overtake it.
+    const place = inboundOrder.reserve();
+    // Until it is saved and handed over, the arrival is in flight: a starting subagent's first turn waits for it.
+    const arrived = Promise.withResolvers<void>();
+    arrivalsInFlight.add(arrived.promise);
+    void arrived.promise.finally(() => arrivalsInFlight.delete(arrived.promise));
     // #4907: a message too large for the context is saved and shown bounded; unconfirmed, the broker sends it again.
     inArrivalOrder(message, (bounded) => {
       const saved = durableInbox.receive(from, bounded, channel, () => {
@@ -732,17 +869,29 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         receiver.acknowledgeReceived(message.id);
       });
       void saved.finally(() => clearInterval(saving)).catch(() => {});
-      void saved.then((arrival) => {
-        if (arrival !== "fresh") return;
-        // A copy of a broadcast that a released stage this session hosts relayed first is saved and confirmed, not shown.
-        if (!shown) {
-          void durableInbox.handledWithoutCard(message.id);
-          return;
-        }
-        const liveContext = getLiveContext(runtimeContext, generation);
-        if (liveContext) void handleIncomingMessage(liveContext, from, bounded, channel);
-      });
-    }, () => clearInterval(saving));
+      void saved
+        .then(async (arrival) => {
+          if (arrival !== "fresh") {
+            place.cancel();
+            return;
+          }
+          // A copy of a broadcast that a released stage this session hosts relayed first is saved and confirmed, not shown.
+          if (!shown) {
+            place.cancel();
+            void durableInbox.handledWithoutCard(message.id);
+            return;
+          }
+          const liveContext = getLiveContext(runtimeContext, generation);
+          if (liveContext) await handleIncomingMessage(liveContext, from, bounded, channel, false, false, place);
+          else place.cancel();
+        })
+        .catch(() => place.cancel())
+        .finally(() => arrived.resolve());
+    }, () => {
+      clearInterval(saving);
+      place.cancel();
+      arrived.resolve();
+    });
   }
   /**
    * #3761: decide about the saved messages a resumed session never showed with #3760's interrupted-card decision.
@@ -754,7 +903,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
    * written in the batch that message starts rather than ahead of it. The card is marked `historyOnly`, so it never
    * starts that batch's turn or supplies its reply context, even when the message ahead of it leaves the queue first.
    */
-  async function replayDurableInbox(request: IntercomInboxReplayRequest): Promise<readonly string[]> {
+  function replayDurableInbox(request: IntercomInboxReplayRequest): Promise<readonly string[]> {
+    // Replay takes one place in line: what it writes or queues keeps its order against live arrivals.
+    return inboundOrder.run(() => replayDurableInboxInOrder(request));
+  }
+  async function replayDurableInboxInOrder(request: IntercomInboxReplayRequest): Promise<readonly string[]> {
     const liveContext = getLiveContext();
     if (!liveContext) return [];
     replyTracker = bindWorkflowReplyTracker(liveContext, replyTracker);
@@ -811,6 +964,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
    * are skipped, so nothing is delivered twice.
    */
   let redrainPendingStage: (() => void) | null = null;
+  /** What admitting one message leaves running after its place in line: the delivery its caller may wait for. */
+  interface Admitted {
+    readonly done?: Promise<void>;
+  }
   function handleIncomingMessage(
     ctx: ExtensionContext,
     from: SessionInfo,
@@ -821,20 +978,73 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     // disconnected). It takes the live path, keeping its delivery mode and reply context, and the returned
     // promise settles once the session admitted it, so the drain records its receipt only then.
     recoveredAfterStageStart = false,
+    // The place this message took in the admission line when it arrived; one is taken now when absent.
+    arrival?: AdmissionPlace,
   ): void | Promise<void> {
     const messageGeneration = runtimeGeneration;
     const liveContext = getLiveContext(ctx, messageGeneration);
     if (!liveContext) {
+      arrival?.cancel();
       if (receivedBeforeStageStart || recoveredAfterStageStart) throw new IntercomRuntimeInactiveError();
       return;
     }
+    const place = arrival ?? inboundOrder.reserve();
+    return place
+      .run(() => admitIncomingMessage(liveContext, from, message, channel, receivedBeforeStageStart, recoveredAfterStageStart, messageGeneration))
+      .then((admitted) => admitted.done);
+  }
+  /**
+   * Admits one message in its place in line. Everything it writes to the session is written before the next place
+   * starts; delivery it only starts (an active stage's or subagent's own FIFO, a foreground owner's handshake) is
+   * returned, not awaited, so a slow recipient never holds the line.
+   */
+  async function admitIncomingMessage(
+    liveContext: ExtensionContext,
+    from: SessionInfo,
+    message: Message,
+    channel: "supervisor" | undefined,
+    receivedBeforeStageStart: boolean,
+    recoveredAfterStageStart: boolean,
+    messageGeneration: number,
+  ): Promise<Admitted> {
     replyTracker = bindWorkflowReplyTracker(liveContext, replyTracker);
     const builtEntry = buildInboundEntry(from, message, channel);
     const framedEntry: InboundMessageEntry =
       receivedBeforeStageStart || recoveredAfterStageStart ? { ...builtEntry, stageQueued: true } : builtEntry;
     const entry = receivedBeforeStageStart ? framePreStartPendingStageMessage(framedEntry) : framedEntry;
     if (receivedBeforeStageStart) {
-      return sendIncomingMessage(entry, "prelude", messageGeneration, false);
+      await admitEarlierFromSender(from, messageGeneration);
+      await sendIncomingMessage(entry, "prelude", messageGeneration, false);
+      return {};
+    }
+    // A subagent that has not started its first turn, as one whose held sends the broker hands over as it registers,
+    // takes a message as context for that turn: written before it, without a turn of its own.
+    if (
+      !recoveredAfterStageStart &&
+      message.replyTo === undefined &&
+      liveContext.subagentPolicy?.startup?.firstTurnPending() === true
+    ) {
+      const admission = inboundDeliveries.admit(from, message);
+      if (admission.kind !== "reserved") return {};
+      const reservation = admission.reservation;
+      replyTracker.recordIncomingMessage(from, message);
+      const delivered = admitEarlierFromSender(from, messageGeneration)
+        .then(() =>
+          sendIncomingMessage(
+            framePreStartPendingStageMessage({ ...entry, receivedBeforeStart: true }),
+            "prelude",
+            messageGeneration,
+            false,
+          ),
+        )
+        .then(
+          () => inboundDeliveries.commit(reservation),
+          (error: unknown) => inboundDeliveries.release(reservation, toError(error)),
+        );
+      startupDeliveries.add(delivered);
+      void delivered.finally(() => startupDeliveries.delete(delivered));
+      await delivered;
+      return {};
     }
     const stageAdmission = liveContext.orchestrationContext?.kind === "workflow-stage"
       ? liveContext.orchestrationContext.messageAdmission
@@ -854,14 +1064,14 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         (runId) => stageAdmission.boundary.ownsSubagentRun(runId),
         () => durableInbox.handledWithoutCard(message.id),
       );
-      return;
+      return {};
     }
     const admission = inboundDeliveries.admit(from, message);
-    if (admission.kind !== "reserved") return;
+    if (admission.kind !== "reserved") return {};
     const reservation = admission.reservation;
     if (routeIncomingReply(replyWaiters.pending(), from, message)) {
       inboundDeliveries.commit(reservation);
-      return;
+      return {};
     }
     // #4751: a reply to one of this session's asks arrives as a message on its own thread; a refusal is a failed ask.
     const askReply = outboundAskFor(from, message);
@@ -869,19 +1079,23 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     if (askReply?.state === "answered" && message.replyError !== undefined) {
       void durableInbox.handledWithoutCard(message.id);
       inboundDeliveries.commit(reservation);
-      return;
+      return {};
     }
     if (askReply !== undefined) void outboundAsks.settle(askReply.ask.askId, message.replyError === undefined ? "answered" : "failed");
     if (isDeliveryFeedback(message) && askReply === undefined) {
       // Correlated asks were resolved above. A refusal of a fire-and-forget
       // send is feedback, not a new conversation to queue until parent idle.
-      return retryStableDelivery({
-        deliver: () => sendIncomingMessage(entry, "prelude", messageGeneration, false),
-        isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)),
-      }).then(
+      await admitEarlierFromSender(from, messageGeneration).then(
+        () =>
+          retryStableDelivery({
+            deliver: () => sendIncomingMessage(entry, "prelude", messageGeneration, false),
+            isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)),
+          }),
+      ).then(
         () => inboundDeliveries.commit(reservation),
         (error) => inboundDeliveries.release(reservation, toError(error)),
       );
+      return {};
     }
     const replyContext = replyTracker.recordIncomingMessage(from, message);
     const commit = (): void => { inboundDeliveries.commit(reservation); };
@@ -899,6 +1113,15 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       },
       failurePrefix: liveContext.subagentPolicy?.executionEnded === undefined ? undefined : "Subagent could not admit intercom ask",
     });
+    if (liveContext.subagentPolicy?.executionEnded !== undefined || liveContext.orchestrationContext?.kind === "workflow-stage") {
+      // An active subagent or stage admits through its own FIFO; anything this sender left waiting goes first.
+      try {
+        await admitEarlierFromSender(from, messageGeneration);
+      } catch (error) {
+        release(error);
+        return {};
+      }
+    }
     const activeDelivery = admitActiveSessionInbound(
       liveContext,
       (admissionBarrier) => {
@@ -924,95 +1147,111 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       if (recoveredAfterStageStart) {
         // A recovered message that was not admitted stays queued for the next drain, so the sender gets no
         // failure reply and the reservation is released for that redelivery.
-        return activeDelivery.then(commit, (error: unknown) => {
-          replyTracker.forgetIncomingMessage(replyContext);
-          inboundDeliveries.release(reservation, toError(error));
-          throw error;
-        });
+        return {
+          done: activeDelivery.then(commit, (error: unknown) => {
+            replyTracker.forgetIncomingMessage(replyContext);
+            inboundDeliveries.release(reservation, toError(error));
+            throw error;
+          }),
+        };
       }
       void activeDelivery.then(commit, release);
-      return;
+      return {};
     }
-    return (async () => {
-      try {
-        const activeContext = getLiveContext(liveContext, messageGeneration);
-        if (!activeContext) {
-          release(new Error("Intercom session retired before inbound delivery"));
-          return;
-        }
-        // #4751: the reply to an ask starts a turn when idle and otherwise arrives after the current tool call.
-        if (askReply !== undefined) {
-          await retryStableDelivery({ deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false), isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)) });
-          commit();
-          return;
-        }
-        // Parent-addressed peers need not match an exact child handshake. Reach
-        // SDK admission while this owner is observing a task: persistence and
-        // model-queue insertion then yield its waits, never the child execution.
-        if (!activeContext.isIdle() && !activeContext.getAgentTaskHost?.().hasActiveTaskWaits) {
-          if (!activeContext.hasUI) {
-            const activeClient = client;
-            if (!message.replyTo && activeClient?.isConnected()) {
-              try {
-                const refusal = "Message not accepted: recipient was busy in non-interactive mode. Its task was not interrupted.";
-                const result = await activeClient.send(from.id, {
-                  text: refusal,
-                  replyTo: message.id,
-                  replyError: refusal,
-                });
-                if (result.delivered && getLiveContext(liveContext, messageGeneration)) {
-                  replyTracker.markReplied(message.id);
-                }
-              } catch {
-                // Best-effort reply; keep the busy non-interactive session running either way.
-              }
-            }
-            await durableInbox.handledWithoutCard(message.id);
-            commit();
-            return;
-          }
-          // Establish queue ownership before probing asynchronously. If a terminal
-          // barrier wins the race, the later foreground callback cannot redeliver.
-          pendingIdleMessages.enqueue(entry);
-          commit();
-          await handleForegroundInboundDelivery({
-            handoff: foregroundDetachHandoff,
-            from,
-            message,
-            generation: messageGeneration,
-            surface: () => {
-              if (pendingIdleMessages.remove(entry)) {
-                replyTracker.queueTurnContext(replyContext);
-                void retryStableDelivery({ deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false), isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)) }).catch(() => {});
-              }
-            },
-            isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)),
-            onUnclaimed: () => {
-              // No exact foreground owner acknowledged the target. Preserve the
-              // established background/cross-session behavior by waiting for idle.
-              if (pendingIdleMessages.has(entry)) scheduleInboundFlush(INBOUND_IDLE_RETRY_MS);
-            },
-            onDelivered: () => { pendingIdleMessages.remove(entry); },
-          });
-          return;
-        }
-        // Observing parents still owe the exact child first refusal: its commit
-        // releases parallel/queued sibling observations as well as its own wait.
-        // Unrelated peers remain unclaimed and reach protected SDK admission.
-        if (!activeContext.isIdle()) {
-          const disposition = await foregroundDetachHandoff.claim(from, message, messageGeneration, () => Boolean(getLiveContext(liveContext, messageGeneration)));
-          if (disposition === "abandoned") {
-            release(new Error("Intercom session retired during foreground-owner admission"));
-            return;
-          }
-        }
-        replyTracker.queueTurnContext(replyContext);
+    try {
+      const activeContext = getLiveContext(liveContext, messageGeneration);
+      if (!activeContext) {
+        release(new Error("Intercom session retired before inbound delivery"));
+        return {};
+      }
+      // #4751: the reply to an ask starts a turn when idle and otherwise arrives after the current tool call.
+      if (askReply !== undefined) {
+        await admitEarlierFromSender(from, messageGeneration);
         await retryStableDelivery({ deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false), isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)) });
         commit();
-      } catch (error) {
-        release(error);
+        return {};
       }
-    })();
+      // Parent-addressed peers need not match an exact child handshake. Reach
+      // SDK admission while this owner is observing a task: persistence and
+      // model-queue insertion then yield its waits, never the child execution.
+      if (!activeContext.isIdle() && !activeContext.getAgentTaskHost?.().hasActiveTaskWaits) {
+        if (!activeContext.hasUI) {
+          const activeClient = client;
+          if (!message.replyTo && activeClient?.isConnected()) {
+            try {
+              const refusal = "Message not accepted: recipient was busy in non-interactive mode. Its task was not interrupted.";
+              const result = await activeClient.send(from.id, {
+                text: refusal,
+                replyTo: message.id,
+                replyError: refusal,
+              });
+              if (result.delivered && getLiveContext(liveContext, messageGeneration)) {
+                replyTracker.markReplied(message.id);
+              }
+            } catch {
+              // Best-effort reply; keep the busy non-interactive session running either way.
+            }
+          }
+          await durableInbox.handledWithoutCard(message.id);
+          commit();
+          return {};
+        }
+        // Establish queue ownership before probing asynchronously. If a terminal
+        // barrier wins the race, the later foreground callback cannot redeliver.
+        pendingIdleMessages.enqueue(entry);
+        commit();
+        // The foreground owner's handshake runs outside the line: only what it surfaces takes a new place.
+        const handoff = handleForegroundInboundDelivery({
+          handoff: foregroundDetachHandoff,
+          from,
+          message,
+          generation: messageGeneration,
+          surface: () => {
+            void inboundOrder
+              .run(async () => {
+                // The surfaced message goes with the messages its sender queued before it, never ahead of them.
+                const surfaced = pendingIdleMessages.takeFromSenderThrough(entry);
+                if (surfaced.length === 0) return;
+                if (pendingIdleMessages.size === 0) clearInboundFlushTimer();
+                for (const earlier of surfaced.slice(0, -1)) {
+                  await retryStableDelivery({
+                    deliver: () => sendIncomingMessage(earlier, "prelude", messageGeneration, false),
+                    isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)),
+                  });
+                }
+                replyTracker.queueTurnContext(replyContext);
+                await retryStableDelivery({ deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false), isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)) });
+              })
+              .catch(() => {});
+          },
+          isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)),
+          onUnclaimed: () => {
+            // No exact foreground owner acknowledged the target. Preserve the
+            // established background/cross-session behavior by waiting for idle.
+            if (pendingIdleMessages.has(entry)) scheduleInboundFlush(INBOUND_IDLE_RETRY_MS);
+          },
+          onDelivered: () => { pendingIdleMessages.remove(entry); },
+        }).catch((error: unknown) => release(error));
+        return { done: handoff };
+      }
+      // Observing parents still owe the exact child first refusal: its commit
+      // releases parallel/queued sibling observations as well as its own wait.
+      // Unrelated peers remain unclaimed and reach protected SDK admission.
+      if (!activeContext.isIdle()) {
+        const disposition = await foregroundDetachHandoff.claim(from, message, messageGeneration, () => Boolean(getLiveContext(liveContext, messageGeneration)));
+        if (disposition === "abandoned") {
+          release(new Error("Intercom session retired during foreground-owner admission"));
+          return {};
+        }
+      }
+      await admitEarlierFromSender(from, messageGeneration);
+      replyTracker.queueTurnContext(replyContext);
+      await retryStableDelivery({ deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false), isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)) });
+      commit();
+    } catch (error) {
+      release(error);
+    }
+    return {};
   }
   function handlePendingStageMessage(
     nextClient: IntercomClient,
@@ -1119,10 +1358,14 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 			if (activeContext === null || !activeContext.isIdle()) {
 				return reject(new Error("Intercom session is not ready for acknowledged notification delivery"));
 			}
-			replyTracker.queueTurnContext(replyContext);
-			await retryStableDelivery({
-				deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false),
-				isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)),
+			// In its place in line, after anything its sender left queued for this session.
+			await inboundOrder.run(async () => {
+				await admitEarlierFromSender(request.from, messageGeneration);
+				replyTracker.queueTurnContext(replyContext);
+				await retryStableDelivery({
+					deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false),
+					isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)),
+				});
 			});
 			commit();
 			return true;
@@ -1208,6 +1451,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       rejectReplyWaiter(new Error(`Disconnected while waiting for reply: ${error.message}`, { cause: error }));
       client = null;
       clientRegistrationGroup = null;
+      // A child that registered without its refused capability offers it again on its next connection: its
+      // supervisor may be back by then, as after a broker restart.
+      supervisorRefusal = undefined;
+      supervisorRefusedSince = undefined;
+      supervisorRefusalAttempts = 0;
       if (process.env[INTERCOM_SESSION_ID_ENV] === nextClient.sessionId) restoreIntercomSessionIdEnv();
       if (!shuttingDown && !disposed) {
         clearReconnectTimer();
@@ -1617,14 +1865,16 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 			preferredSessionId,
 			acknowledgesReceipt: true,
 			connectTimeoutMs: testOverrides.connectTimeoutMs?.(sessionIdAtStart),
+			reach: currentReachPolicy,
 		});
           client = nextClient;
           attachClientHandlers(nextClient);
+          let childMetadata: ReturnType<typeof currentChildOrchestratorMetadata> = null;
           try {
             await testOverrides.beforeConnectAttempt?.(reason);
             await startBrokerIfNeeded(signal);
             const expectedRouting = await settleBrokerRouting(contextAtStart, generationAtStart, signal);
-            const childMetadata = currentChildOrchestratorMetadata();
+            childMetadata = currentChildOrchestratorMetadata();
             // Snapshot after startup awaits: execution may have ended while disconnected.
             // connect writes registration synchronously, so no abort can interleave before that write.
             await nextClient.connect(
@@ -1679,6 +1929,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
               process.env[INTERCOM_SESSION_ID_ENV] = nextClient.sessionId;
             }
             reconnectAttempt = 0;
+            // Registered with the capability: a later refusal starts a new run of retries.
+            if (childMetadata?.supervisor !== undefined) {
+              supervisorRefusedSince = undefined;
+              supervisorRefusalAttempts = 0;
+            }
             if (nextClient.sessionId && nextClient.sessionId !== preferredSessionId) {
               await recordIntercomSessionIdentity(sessionIdAtStart, nextClient.sessionId);
             }
@@ -1702,6 +1957,25 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
             // ordering `ensurePendingStageRouteClient` already uses. `connectFailed` is set before the
             // `finally` runs, so it reschedules however this disconnect behaves.
             try { await nextClient.disconnect(); } catch {}
+            // A supervisor capability the broker refuses never ends the child's start. The refusal may be a race (its
+            // supervisor has not reconnected and restored it yet, as after a broker restart), so the child keeps
+            // offering it for a while; a capability still refused after that, such as one whose supervisor has
+            // released or gone, or a forged one, is dropped and the child registers without it.
+            if (
+              isSupervisorAuthorizationRefusal(error) &&
+              supervisorRefusal === undefined &&
+              childMetadata?.supervisor !== undefined &&
+              getLiveContext(contextAtStart, generationAtStart)
+            ) {
+              supervisorRefusedSince ??= Date.now();
+              if (Date.now() - supervisorRefusedSince < SUPERVISOR_REFUSAL_RETRY_MS) {
+                await pauseUnlessAborted(supervisorRefusalRetryDelayMs(supervisorRefusalAttempts++), signal);
+                if (!signal.aborted && getLiveContext(contextAtStart, generationAtStart)) continue;
+              } else {
+                supervisorRefusal = error instanceof Error ? error.message : String(error);
+                continue;
+              }
+            }
             // #3904: the run's owner registers its route on its own connection, which can still be
             // connecting, backing off or re-registering after a reconnect when the stage starts. The
             // stage waits for that owner on a fresh connection instead of failing every Intercom call.
@@ -1893,6 +2167,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         ...(request.group === undefined ? {} : { group: request.group }),
         aliases: request.aliases,
         ...(request.dormant === true ? { dormant: true } : {}),
+        ...(request.holdMs === undefined ? {} : { holdMs: request.holdMs }),
       }),
     );
   });
@@ -1975,6 +2250,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     },
     setRuntimeContext: (value) => {
       if (value !== null && connectAbort.signal.aborted) connectAbort = new AbortController();
+      stopApplyingReach?.();
+      stopApplyingReach = undefined;
+      intercomPolicy = value === null ? undefined : readIntercomPolicy(value);
+      stopApplyingReach = intercomPolicy?.onReachableChange(() => applyReach());
       brokerRouting = null;
       homeRoutedAcrossMachines = null;
       defaultGroupWarned = false;
@@ -2031,12 +2310,41 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const retainedMemberships = event.reason === "reload"
       ? sessionMemberships.get(ctx.sessionManager.getSessionId())
       : persistedJoinedGroups(ctx);
-    if (retainedMemberships) setJoinedGroups(retainedMemberships);
+    const reach = currentReachPolicy();
+    if (retainedMemberships) setJoinedGroups(reach === undefined ? retainedMemberships : narrowMemberships(reach, retainedMemberships));
     const pendingStageDelivery = ctx.orchestrationContext?.kind === "workflow-stage" ? ctx.orchestrationContext.pendingStageDelivery : undefined;
     if (pendingStageDelivery === undefined) {
       // An admitted child registers at startup so its supervisor and peers can
       // list and steer it before it uses Intercom itself.
-      if (ctx.subagentPolicy?.intercom !== undefined) await ensureConnected("startup");
+      if (ctx.subagentPolicy?.intercom !== undefined) {
+        // A start given up already never registers: its session is disposed unused.
+        const startup = ctx.subagentPolicy.startup;
+        if (startup?.signal.aborted === true) return;
+        const registered = await ensureConnected("startup");
+        // A start given up before its first turn leaves Intercom at once, before its session is disposed: later sends
+        // wait for the retry instead of reaching a session that will never run a turn.
+        startup?.signal.addEventListener(
+          "abort",
+          () => {
+            // The signal aborts only when the start runs out of its budget, before the child's first turn.
+            shuttingDown = true;
+            clearReconnectTimer();
+            const leaving = client;
+            client = null;
+            void leaving?.disconnect().catch(() => undefined);
+          },
+          { once: true },
+        );
+        // The sends the broker held for it follow its registration on the same connection: one round trip later
+        // they have all arrived, and its first turn waits until they are written as its context.
+        if (startup?.firstTurnPending() === true) {
+          await registered.listSessions().catch(() => undefined);
+          await settledWithin(
+            Promise.allSettled([...arrivalsInFlight, ...startupDeliveries]),
+            STARTUP_ARRIVALS_WAIT_MS,
+          );
+        }
+      }
       return;
     }
     const generation = runtimeGeneration;
@@ -2092,15 +2400,27 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   });
 
 
-  pi.registerMessageRenderer("intercom_message", (message, _options, theme) => {
-    const details = message.details as { from: SessionInfo; message: Message; replyCommand?: string; bodyText?: string; heading?: string } | undefined;
-    if (!details) return undefined;
-    return new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText, details.heading);
-  });
+  pi.registerMessageRenderer("intercom_message", renderIntercomCustomMessage);
 
   const replyWaits = replyWaitGates(() => client);
+  /**
+   * A child registered without the supervisor capability the broker kept refusing registers again with it, once: its
+   * supervisor may be back. Refused again, it registers without it at once, as before.
+   */
+  async function retrySupervisorAuthorization(): Promise<void> {
+    if (supervisorRefusal === undefined || disposed || shuttingDown) return;
+    const current = client;
+    supervisorRefusal = undefined;
+    // One attempt: a refusal now drops the capability again without the wait a start gives it.
+    supervisorRefusedSince = Date.now() - SUPERVISOR_REFUSAL_RETRY_MS;
+    client = null;
+    clientRegistrationGroup = null;
+    await current?.disconnect().catch(() => undefined);
+    await ensureConnected("tool");
+  }
   registerContactSupervisorTool(pi, {
     childOrchestratorMetadata: currentChildOrchestratorMetadata,
+    retrySupervisorAuthorization,
     ensureConnected,
     syncPresenceIdentity,
     resolveSessionTarget: resolveSessionTargetId,
@@ -2115,6 +2435,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     ...replyWaits,
     confirmSend: config.confirmSend,
     homeGroup: resolveSessionHomeGroup,
+    reachPolicy: currentReachPolicy,
     multiNodeRouting,
     setJoinedGroups: async (groups) => {
       setJoinedGroups(groups);

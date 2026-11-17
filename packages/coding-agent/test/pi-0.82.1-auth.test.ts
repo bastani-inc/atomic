@@ -9,6 +9,7 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { getBuiltinApiKeyLoginOptions } from "../src/modes/interactive/interactive-auth-routing.ts";
 import { resolveLoginProviderReference } from "../src/modes/interactive/login-provider-options.ts";
+import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.ts";
 import { createInMemoryModelRegistry, createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
 function jsonResponse(body: object, status = 200): Response {
@@ -121,6 +122,7 @@ describe("Pi 0.82.1 authentication integration", () => {
 		delete process.env.ANTHROPIC_API_KEY;
 		delete process.env.ANTHROPIC_OAUTH_TOKEN;
 		const directory = mkdtempSync(join(tmpdir(), "atomic-anthropic-bearer-models-"));
+		linkSharedTranspileCache(directory);
 		const storage = AuthStorage.inMemory();
 		const registry = await createInMemoryModelRegistry(storage);
 		const runtime = getModelRuntime(registry);

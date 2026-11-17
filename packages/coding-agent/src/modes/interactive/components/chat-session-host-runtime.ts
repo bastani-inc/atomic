@@ -1,4 +1,4 @@
-import { ATOMIC_WORKING_FRAME_MS, ATOMIC_WORKING_FRAMES } from "./atomic-working-status.ts";
+import { atomicWorkingFrame, watchAtomicWorkingClock } from "./atomic-working-status.ts";
 import type { ChatSessionHostState } from "./chat-session-host-state.ts";
 import { finalizeTerminalWorkflowToolEntries } from "./chat-session-host-terminal-cleanup.ts";
 import type { ChatSessionSubmitMode } from "./chat-session-host-types.ts";
@@ -37,9 +37,10 @@ export function startChatSessionWorkingLifecycle<TExtraEntry extends ChatTranscr
 ): void {
 	if (state.disposed) return;
 	clearChatSessionAnimation(state);
+	state.workedRun = undefined;
 	state.workingLifecycleActive = true;
 	state.workingLifecycleGeneration += 1;
-	state.workingFrame = 0;
+	state.workingFrame = atomicWorkingFrame();
 }
 
 export function stopChatSessionWorkingLifecycle<TExtraEntry extends ChatTranscriptEntryLike>(
@@ -117,7 +118,12 @@ export function settleChatSessionPromptLifecycle<TExtraEntry extends ChatTranscr
 function clearChatSessionAnimation<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 ): void {
-	clearInterval(state.animationTimer);
+	const stopClock = state.stopAnimationClock;
+	state.stopAnimationClock = undefined;
+	stopClock?.();
+	if (state.animationTimer !== undefined && typeof state.animationTimer !== "function") {
+		clearInterval(state.animationTimer);
+	}
 	state.animationTimer = undefined;
 	clearInterval(state.metaTimer);
 	state.metaTimer = undefined;
@@ -128,7 +134,12 @@ export function syncChatSessionAnimationTick<TExtraEntry extends ChatTranscriptE
 ): void {
 	const active = !state.disposed && (state.workingLifecycleActive || state.compacting);
 	if (active && process.env.ATOMIC_REDUCED_MOTION === "1") {
-		clearInterval(state.animationTimer);
+		const stopClock = state.stopAnimationClock;
+		state.stopAnimationClock = undefined;
+		stopClock?.();
+		if (state.animationTimer !== undefined && typeof state.animationTimer !== "function") {
+			clearInterval(state.animationTimer);
+		}
 		state.animationTimer = undefined;
 		if (state.metaTimer !== undefined) return;
 		const timer = setInterval(() => {
@@ -142,16 +153,28 @@ export function syncChatSessionAnimationTick<TExtraEntry extends ChatTranscriptE
 	}
 	clearInterval(state.metaTimer);
 	state.metaTimer = undefined;
-	if (active && !state.animationTimer) {
-		const timer = setInterval(() => {
-			if (state.disposed || state.animationTimer !== timer || (!state.workingLifecycleActive && !state.compacting)) {
+	if (active && !state.stopAnimationClock) {
+		let subscribed = true;
+		const unsubscribe = watchAtomicWorkingClock(() => {
+			if (
+				!subscribed ||
+				state.disposed ||
+				state.stopAnimationClock !== stop ||
+				(!state.workingLifecycleActive && !state.compacting)
+			) {
 				return;
 			}
-			state.workingFrame = (state.workingFrame + 1) % ATOMIC_WORKING_FRAMES.length;
+			state.workingFrame = atomicWorkingFrame();
 			state.requestRender?.();
-		}, ATOMIC_WORKING_FRAME_MS);
-		state.animationTimer = timer;
-		state.animationTimer.unref?.();
+		});
+		const stop = () => {
+			if (!subscribed) return;
+			subscribed = false;
+			unsubscribe();
+		};
+		state.stopAnimationClock = stop;
+		state.animationTimer = stop as unknown as ReturnType<typeof setInterval>;
+		state.workingFrame = atomicWorkingFrame();
 		return;
 	}
 	if (!active) clearChatSessionAnimation(state);

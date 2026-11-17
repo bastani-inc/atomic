@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, readlinkSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
 import {
 	brokerHostIdentity,
+	createBrokerHostIdentityReader,
 	HOST_COMMAND_ATTEMPTS,
 	type HostIdentitySources,
 	isProcessAlive,
@@ -27,6 +27,7 @@ import {
 } from "../../packages/intercom/broker/multinode-state-store.js";
 import { PendingQuestionIndex } from "../../packages/intercom/broker/pending-question-index.js";
 import { SupervisorChannelCache } from "../../packages/intercom/broker/supervisor-channel.js";
+import { keptExitedPid } from "../helpers/exited-process.js";
 import {
 	openMemoryHeldSendFixture,
 	openMemoryKnownSessionFixture,
@@ -251,7 +252,7 @@ test("an earlier instance whose pid's start cannot be read is not taken for it, 
 	assert.deepEqual(await leases.read({ kind: "broker", brokerId: "crashed" }), { status: "missing" });
 });
 
-test("a Windows process's start is read as its creation time, and a process of another platform's is not read (#5252)", () => {
+test("a Windows process's start is read as its creation time, and a process of another platform's is not read (#5252)", async () => {
 	const startOf = (pid: number) =>
 		[
 			"powershell",
@@ -262,11 +263,11 @@ test("a Windows process's start is read as its creation time, and a process of a
 		].join(" ");
 	// 2026-11-15T04:00:00.000Z as a Windows file time (100 ns since 1601).
 	const windows = fakeSources({ platform: "win32", commands: { [startOf(process.pid)]: "134391888000000000\r\n" } });
-	assert.equal(processStartedAt(process.pid, windows), Date.parse("2026-11-15T04:00:00.000Z"));
+	assert.equal(await processStartedAt(process.pid, windows), Date.parse("2026-11-15T04:00:00.000Z"));
 	// One whose start PowerShell does not answer is unknown.
-	assert.equal(processStartedAt(process.pid, fakeSources({ platform: "win32", commands: {} })), undefined);
+	assert.equal(await processStartedAt(process.pid, fakeSources({ platform: "win32", commands: {} })), undefined);
 	const linux = fakeSources({ platform: "linux" });
-	assert.equal(processStartedAt(process.pid, linux), null);
+	assert.equal(await processStartedAt(process.pid, linux), null);
 	assert.deepEqual(linux.runs, []);
 });
 
@@ -316,7 +317,7 @@ function fakeSources(
 		runs,
 		readFile: (path) => files.get(path) ?? missing(path),
 		readLink: (path) => host.links?.[path] ?? missing(path),
-		run: (command, args) => {
+		run: async (command, args) => {
 			runs.push(command);
 			const line = [command, ...args].join(" ");
 			if ((timedOut.get(line) ?? 0) < (host.timeouts?.[line] ?? 0)) {
@@ -342,14 +343,14 @@ const MAC_SESSION = "sysctl -n kern.bootsessionuuid";
 const WINDOWS_BOOT = WINDOWS_BOOT_TIME_COMMAND.join(" ");
 const BOOTED = "2026-11-15T04:00:00.1234560Z";
 
-test("on Linux a host is its boot id and process namespace (#5038)", () => {
+test("on Linux a host is its boot id and process namespace (#5038)", async () => {
 	const files = { "/proc/sys/kernel/random/boot_id": "boot-a\n", "/etc/machine-id": "ignored" };
 	const links = { "/proc/self/ns/pid": "pid:[7]" };
-	assert.equal(brokerHostIdentity(fakeSources({ platform: "linux", files, links })), "boot-a/pid:[7]");
-	assert.equal(brokerHostIdentity(fakeSources({ platform: "linux", files })), "boot-a");
+	assert.equal(await brokerHostIdentity(fakeSources({ platform: "linux", files, links })), "boot-a/pid:[7]");
+	assert.equal(await brokerHostIdentity(fakeSources({ platform: "linux", files })), "boot-a");
 });
 
-test("off Linux a host is the OS machine id with its boot (#5038)", () => {
+test("off Linux a host is the OS machine id with its boot (#5038)", async () => {
 	const windows = fakeSources({
 		platform: "win32",
 		commands: {
@@ -358,9 +359,9 @@ test("off Linux a host is the OS machine id with its boot (#5038)", () => {
 			[WINDOWS_BOOT]: `${BOOTED}\r\n`,
 		},
 	});
-	assert.equal(brokerHostIdentity(windows), `guid-w/boot-${BOOTED}`);
+	assert.equal(await brokerHostIdentity(windows), `guid-w/boot-${BOOTED}`);
 	assert.equal(
-		brokerHostIdentity(
+		await brokerHostIdentity(
 			fakeSources({ platform: "win32", commands: { [WINDOWS_REG]: "MachineGuid    REG_SZ    guid-w" } }),
 		),
 		undefined,
@@ -369,7 +370,7 @@ test("off Linux a host is the OS machine id with its boot (#5038)", () => {
 		platform: "darwin",
 		commands: { [MAC_IOREG]: '"IOPlatformUUID" = "uuid-m"', [MAC_SESSION]: "session-a\n" },
 	});
-	assert.equal(brokerHostIdentity(session), "uuid-m/session-session-a");
+	assert.equal(await brokerHostIdentity(session), "uuid-m/session-session-a");
 	const ioreg = fakeSources({
 		platform: "darwin",
 		commands: {
@@ -377,72 +378,81 @@ test("off Linux a host is the OS machine id with its boot (#5038)", () => {
 			[MAC_SESSION]: "s",
 		},
 	});
-	assert.equal(brokerHostIdentity(ioreg), "uuid-m/session-s");
+	assert.equal(await brokerHostIdentity(ioreg), "uuid-m/session-s");
 	assert.equal(
-		osMachineId(fakeSources({ platform: "win32", commands: { [WINDOWS_REG]: "no guid here" } })),
+		await osMachineId(fakeSources({ platform: "win32", commands: { [WINDOWS_REG]: "no guid here" } })),
 		undefined,
 	);
-	assert.equal(osMachineId(fakeSources({ platform: "darwin", commands: { [MAC_IOREG]: "no uuid here" } })), undefined);
 	assert.equal(
-		osMachineId(fakeSources({ platform: "darwin", commands: { [MAC_IOREG]: '"IOPlatformUUID"="tight"' } })),
+		await osMachineId(fakeSources({ platform: "darwin", commands: { [MAC_IOREG]: "no uuid here" } })),
+		undefined,
+	);
+	assert.equal(
+		await osMachineId(fakeSources({ platform: "darwin", commands: { [MAC_IOREG]: '"IOPlatformUUID"="tight"' } })),
 		"tight",
 	);
 	assert.deepEqual(fakeSources({ platform: "darwin" }).runs, []);
 });
 
-test("a host command that times out once, as PowerShell can on a loaded host, is run again, so every broker of the host reads one identity (#5252)", () => {
+test("a host command that times out once, as PowerShell can on a loaded host, is run again, so every broker of the host reads one identity (#5252)", async () => {
 	const commands = {
 		[WINDOWS_REG]: "MachineGuid    REG_SZ    guid-w",
 		[WINDOWS_BOOT]: BOOTED,
 	};
-	const steady = brokerHostIdentity(fakeSources({ platform: "win32", commands }));
+	const steady = await brokerHostIdentity(fakeSources({ platform: "win32", commands }));
 	assert.equal(steady, `guid-w/boot-${BOOTED}`);
 	for (const slow of [WINDOWS_BOOT, WINDOWS_REG]) {
 		const loaded = fakeSources({ platform: "win32", commands, timeouts: { [slow]: HOST_COMMAND_ATTEMPTS - 1 } });
-		assert.equal(brokerHostIdentity(loaded), steady, slow);
+		assert.equal(await brokerHostIdentity(loaded), steady, slow);
 	}
 	// One that never answers still leaves the host without that fact, after its attempts.
 	const hung = fakeSources({ platform: "win32", commands, timeouts: { [WINDOWS_BOOT]: HOST_COMMAND_ATTEMPTS } });
-	assert.equal(brokerHostIdentity(hung), undefined);
+	assert.equal(await brokerHostIdentity(hung), undefined);
 	assert.equal(hung.runs.filter((command) => command === WINDOWS_BOOT_TIME_COMMAND[0]).length, HOST_COMMAND_ATTEMPTS);
 });
 
-test("without a per-boot random value a host has no identity, so nothing is retired early (#5038)", () => {
+test("without a per-boot random value a host has no identity, so nothing is retired early (#5038)", async () => {
 	const guid = { [WINDOWS_REG]: "MachineGuid    REG_SZ    guid-w" };
 	const uuid = { [MAC_IOREG]: '"IOPlatformUUID" = "uuid-m"' };
 	// macOS whose sysctl fails, and Windows whose PowerShell fails, each with a machine id.
-	assert.equal(brokerHostIdentity(fakeSources({ platform: "darwin", commands: uuid })), undefined);
-	assert.equal(brokerHostIdentity(fakeSources({ platform: "win32", commands: guid })), undefined);
+	assert.equal(await brokerHostIdentity(fakeSources({ platform: "darwin", commands: uuid })), undefined);
+	assert.equal(await brokerHostIdentity(fakeSources({ platform: "win32", commands: guid })), undefined);
 	// Linux without a readable boot id, with a machine id the OS keeps anyway.
 	const machineIds = { "/etc/machine-id": "mid", "/var/lib/dbus/machine-id": "dbus" };
 	const links = { "/proc/self/ns/pid": "pid:[7]" };
-	assert.equal(brokerHostIdentity(fakeSources({ platform: "linux", files: machineIds, links })), undefined);
+	assert.equal(await brokerHostIdentity(fakeSources({ platform: "linux", files: machineIds, links })), undefined);
 	// FreeBSD and the rest have neither.
 	for (const platform of ["freebsd", "openbsd", "sunos", "aix"] as const) {
 		const host = fakeSources({ platform, files: machineIds, commands: { ...guid, ...uuid, [MAC_SESSION]: "s" } });
-		assert.equal(brokerHostIdentity(host), undefined, platform);
-		assert.equal(osMachineId(host), undefined, platform);
+		assert.equal(await brokerHostIdentity(host), undefined, platform);
+		assert.equal(await osMachineId(host), undefined, platform);
 		assert.deepEqual(host.runs, [], platform);
 		assert.equal(host.files.has(SAVED_ID_PATH), false, platform);
 	}
 });
 
-test("without an OS machine id a host keeps a random id saved once in the config directory (#5038)", () => {
+test("without an OS machine id a host keeps a random id saved once in the config directory (#5038)", async () => {
 	const host = fakeSources({ platform: "darwin", commands: { [MAC_SESSION]: "s" } });
-	const first = brokerHostIdentity(host);
+	const first = await brokerHostIdentity(host);
 	assert.match(first ?? "", /^[0-9a-f-]{36}\/session-s$/);
-	assert.equal(brokerHostIdentity(host), first);
+	assert.equal(await brokerHostIdentity(host), first);
 	assert.equal(host.files.get(SAVED_ID_PATH), first?.split("/")[0]);
-	assert.notEqual(brokerHostIdentity(fakeSources({ platform: "darwin", commands: { [MAC_SESSION]: "s" } })), first);
+	assert.notEqual(
+		await brokerHostIdentity(fakeSources({ platform: "darwin", commands: { [MAC_SESSION]: "s" } })),
+		first,
+	);
 	assert.equal(persistedMachineId(fakeSources({ platform: "win32", files: { [SAVED_ID_PATH]: " kept\n" } })), "kept");
 });
 
-test("a host with no machine id it can read or save has no identity (#5038)", () => {
+test("a host with no machine id it can read or save has no identity (#5038)", async () => {
 	const booted = { [WINDOWS_BOOT]: BOOTED };
-	assert.equal(brokerHostIdentity(fakeSources({ platform: "win32", commands: booted, unwritable: true })), undefined);
+	assert.equal(
+		await brokerHostIdentity(fakeSources({ platform: "win32", commands: booted, unwritable: true })),
+		undefined,
+	);
 });
 
-test("the real sources save a private machine id once and run commands (#5038)", () => {
+test("the real sources save a private machine id once and run commands (#5038)", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "intercom-host-"));
 	try {
 		const sources = systemSources(join(dir, "nested", "intercom"));
@@ -453,7 +463,7 @@ test("the real sources save a private machine id once and run commands (#5038)",
 		if (process.platform !== "win32") assert.equal(statSync(path).mode & 0o777, 0o600);
 		assert.throws(() => sources.writeNewPrivateFile(path, "other"), { code: "EEXIST" });
 		assert.equal(readFileSync(path, "utf8"), id);
-		assert.equal(sources.run(process.execPath, ["-e", "process.stdout.write('out')"]), "out");
+		assert.equal(await sources.run(process.execPath, ["-e", "process.stdout.write('out')"]), "out");
 		if (process.platform === "linux")
 			assert.equal(sources.readLink("/proc/self/ns/pid"), readlinkSync("/proc/self/ns/pid"));
 	} finally {
@@ -461,29 +471,101 @@ test("the real sources save a private machine id once and run commands (#5038)",
 	}
 });
 
+const HOST_COMMAND_RUN_MS = 300;
+const EVENT_LOOP_TICK_MS = 10;
+
+test("a host command runs while the broker's event loop keeps turning (#5252)", async () => {
+	const sources = systemSources(mkdtempSync(join(tmpdir(), "intercom-host-")));
+	let ticks = 0;
+	const ticking = setInterval(() => ticks++, EVENT_LOOP_TICK_MS);
+	try {
+		const output = await sources.run(process.execPath, [
+			"-e",
+			`setTimeout(() => process.stdout.write("out"), ${HOST_COMMAND_RUN_MS})`,
+		]);
+		assert.equal(output, "out");
+	} finally {
+		clearInterval(ticking);
+		rmSync(sources.configDir, { recursive: true, force: true });
+	}
+	assert.ok(ticks > 0, "the event loop turned while the command ran");
+});
+
 test("a process this one may not signal still counts as alive (#5038)", (context) => {
 	if (process.platform === "win32") return context.skip();
 	assert.equal(isProcessAlive(1), true);
 });
 
-test("by default a broker uses the real host identity, so its next instance supersedes it (#5038)", async () => {
+test("by default a broker supersedes an instance with an independently read real host identity (#5038, #5343)", async () => {
 	const { start } = await crashedCluster();
 	const socket = "/real-host/broker.sock";
-	const { leases, router: previous } = await start({ instanceKey: socket, hostIdentity: undefined });
+	const { leases, router: previous } = await start({
+		instanceKey: socket,
+		hostIdentity: await brokerHostIdentity(systemSources()),
+	});
 	await start({ instanceKey: socket, hostIdentity: undefined, isProcessAlive: () => false });
 	assert.deepEqual(await leases.read({ kind: "broker", brokerId: previous.brokerId }), { status: "missing" });
 });
 
-test("the real host's identity is stable (#5038)", () => {
-	const identity = brokerHostIdentity();
-	assert.equal(brokerHostIdentity(), identity);
+test("the real host's identity is stable across independent reads (#5038, #5343)", async () => {
+	const identity = await brokerHostIdentity(systemSources());
+	assert.ok(identity, "the real host provides an identity");
+	assert.equal(await brokerHostIdentity(systemSources()), identity);
 	if (process.platform === "linux") {
 		const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
 		assert.equal(identity, `${bootId}/${readlinkSync("/proc/self/ns/pid")}`);
 	}
 });
 
-test("clones with the same machine id started together are told apart by their boot (#5038)", () => {
+test("default host identity reads share one promise and match an independent read (#5252, #5343)", async () => {
+	const first = brokerHostIdentity();
+	assert.equal(brokerHostIdentity(), first);
+	assert.equal(await first, await brokerHostIdentity(systemSources()));
+	assert.equal(brokerHostIdentity(), first);
+});
+
+test("host identity readers share pending and successful reads per config directory (#5252, #5343)", async () => {
+	const host = fakeSources({
+		platform: "darwin",
+		commands: { [MAC_SESSION]: "session-a", [MAC_IOREG]: '"IOPlatformUUID" = "machine-a"' },
+	});
+	let configDir = "/config/first";
+	const read = createBrokerHostIdentityReader(() => ({ ...host, configDir }));
+	const first = read();
+	assert.equal(read(), first, "concurrent brokers share the pending read");
+	assert.equal(await first, "machine-a/session-session-a");
+	assert.equal(read(), first, "a successful read stays cached");
+	assert.deepEqual(host.runs, ["sysctl", "ioreg"]);
+
+	configDir = "/config/second";
+	const second = read();
+	assert.notEqual(second, first, "different config directories have separate reads");
+	assert.equal(await second, await first);
+	assert.equal(read(), second);
+	assert.deepEqual(host.runs, ["sysctl", "ioreg", "sysctl", "ioreg"]);
+	configDir = "/config/first";
+	assert.equal(read(), first, "reading another directory does not evict this one");
+});
+
+test("an unsuccessful host identity read is evicted before the next broker retries (#5252, #5343)", async () => {
+	const commands: Record<string, string> = {};
+	const host = fakeSources({ platform: "darwin", commands });
+	const read = createBrokerHostIdentityReader(() => host);
+	const failed = read();
+	assert.equal(read(), failed, "concurrent brokers share even a failing read");
+	assert.equal(await failed, undefined);
+
+	commands[MAC_SESSION] = "session-a";
+	commands[MAC_IOREG] = '"IOPlatformUUID" = "machine-a"';
+	const retry = read();
+	assert.notEqual(retry, failed, "a broker retries after the failed read settles");
+	assert.equal(read(), retry);
+	assert.equal(await retry, "machine-a/session-session-a");
+	assert.equal(read(), retry, "the retry's successful identity stays cached");
+	assert.deepEqual(host.runs, ["sysctl", "sysctl", "ioreg"]);
+});
+
+test("clones with the same machine id started together are told apart by their boot (#5038)", async () => {
 	const mac = (session: string) =>
 		brokerHostIdentity(
 			fakeSources({
@@ -491,7 +573,7 @@ test("clones with the same machine id started together are told apart by their b
 				commands: { [MAC_IOREG]: '"IOPlatformUUID" = "cloned"', [MAC_SESSION]: session },
 			}),
 		);
-	assert.notEqual(mac("session-1"), mac("session-2"));
+	assert.notEqual(await mac("session-1"), await mac("session-2"));
 	const windows = (booted: string) =>
 		brokerHostIdentity(
 			fakeSources({
@@ -499,7 +581,7 @@ test("clones with the same machine id started together are told apart by their b
 				commands: { [WINDOWS_REG]: "MachineGuid    REG_SZ    cloned", [WINDOWS_BOOT]: booted },
 			}),
 		);
-	assert.notEqual(windows("2026-11-15T04:00:00.1000000Z"), windows("2026-11-15T04:00:00.1000010Z"));
+	assert.notEqual(await windows("2026-11-15T04:00:00.1000000Z"), await windows("2026-11-15T04:00:00.1000010Z"));
 });
 
 test("two machines with the same host name and boot minute but different machine ids never retire each other (#5038)", async () => {
@@ -511,10 +593,18 @@ test("two machines with the same host name and boot minute but different machine
 				commands: { [WINDOWS_REG]: `MachineGuid    REG_SZ    ${guid}`, [WINDOWS_BOOT]: BOOTED },
 			}),
 		);
-	assert.notEqual(machine("guid-1"), machine("guid-2"));
+	assert.notEqual(await machine("guid-1"), await machine("guid-2"));
 	// Each sees the other's pid as exited, as a pid from another machine would be.
-	const first = await start({ instanceKey: SOCKET, hostIdentity: machine("guid-1"), isProcessAlive: () => false });
-	const second = await start({ instanceKey: SOCKET, hostIdentity: machine("guid-2"), isProcessAlive: () => false });
+	const first = await start({
+		instanceKey: SOCKET,
+		hostIdentity: await machine("guid-1"),
+		isProcessAlive: () => false,
+	});
+	const second = await start({
+		instanceKey: SOCKET,
+		hostIdentity: await machine("guid-2"),
+		isProcessAlive: () => false,
+	});
 	for (const { router } of [first, second]) {
 		assert.equal((await first.leases.read({ kind: "broker", brokerId: router.brokerId })).status, "found");
 	}
@@ -544,8 +634,10 @@ test("a broker records its own process id, and a membership without one is never
 
 test("a process counts as alive while it runs and dead once it exited (#5038)", async () => {
 	assert.equal(isProcessAlive(process.pid), true);
-	const child = spawn(process.execPath, ["-e", ""]);
-	const pid = child.pid!;
-	await new Promise((resolve) => child.once("exit", resolve));
-	assert.equal(isProcessAlive(pid), false);
+	const exited = await keptExitedPid();
+	try {
+		assert.equal(isProcessAlive(exited.pid), false);
+	} finally {
+		await exited.release();
+	}
 });

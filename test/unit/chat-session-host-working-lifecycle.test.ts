@@ -67,7 +67,7 @@ test("ChatSessionHost advances the exact luminous ramp every lifecycle-relative 
 		},
 	});
 	const assertPhase = (color: string, bold: boolean, label: string): void => {
-		assert.equal(workingLine(host), " ∀ Working...", label);
+		assert.equal(workingLine(host), " ∀ Working…", label);
 		assert.equal(renderedRgb(host), color, `${label} color`);
 		assert.equal(isBold(host), bold, `${label} weight`);
 	};
@@ -113,9 +113,9 @@ test("ChatSessionHost preserves caller-owned accent styling without a palette", 
 	try {
 		host.applyAgentEvent({ type: "agent_start" } as never);
 		timers.advanceBy(264);
-		assert.equal(rawWorkingLine(host), " <red>∀</red> Working...");
+		assert.equal(rawWorkingLine(host), " <red>∀</red> Working…");
 		timers.advanceBy(88);
-		assert.equal(rawWorkingLine(host), " <red-bold>∀</red-bold> Working...");
+		assert.equal(rawWorkingLine(host), " <red-bold>∀</red-bold> Working…");
 	} finally {
 		host.dispose();
 		timers.restore();
@@ -140,7 +140,7 @@ test("ChatSessionHost resets luminous phase and cadence on every turn start", ()
 
 		host.applyAgentEvent({ type: "turn_start" } as never);
 		assert.equal(selections, 1);
-		assert.equal(workingLine(host), " ∀ Schlepping...");
+		assert.equal(workingLine(host), " ∀ Schlepping…");
 		assert.equal(renderedRgb(host), "#101010", "turn reset returns to deep neutral");
 		assert.equal(isBold(host), false, "turn reset returns to regular weight");
 		assert.equal(timers.intervalCount(), 1, "turn_start replaces rather than duplicates the timer");
@@ -242,7 +242,7 @@ test("ChatSessionHost terminal cleanup stops ordinary and compaction animation w
 			assert.equal(timers.intervalCount(), 0, terminalEvent.type);
 			assert.deepEqual(host.renderWorkingStatus(64), [], terminalEvent.type);
 			const body = host.renderBody(80, 8).join("\n");
-			assert.doesNotMatch(body, /Working\.\.\.|Schlepping\.\.\./);
+			assert.doesNotMatch(body, /Working…|Schlepping…/);
 			if (factualCopy) assert.equal((body.match(new RegExp(factualCopy, "g")) ?? []).length, 1);
 		} finally {
 			host.dispose();
@@ -282,7 +282,7 @@ test("ChatSessionHost reduced motion keeps each lifecycle static while metadata 
 		},
 	});
 	try {
-		assert.equal(workingLine(host), " ∀ Working...");
+		assert.equal(workingLine(host), " ∀ Working…");
 		assert.equal(host.hasAnimationTick(), false);
 		host.applyAgentEvent({ type: "agent_start" } as never);
 		host.applyAgentEvent({ type: "turn_start" } as never);
@@ -353,7 +353,7 @@ test("ChatSessionHost stops lifecycle animation on failed or cancelled compactio
 			assert.deepEqual(host.renderWorkingStatus(64), []);
 			const body = host.renderBody(80, 8).join("\n");
 			assert.equal((body.match(new RegExp(factualCopy, "g")) ?? []).length, 1);
-			assert.doesNotMatch(body, /Working\.\.\.|Schlepping\.\.\./);
+			assert.doesNotMatch(body, /Working…|Schlepping…/);
 		} finally {
 			host.dispose();
 			timers.restore();

@@ -127,6 +127,7 @@ export interface StageChatViewContext {
 	requestRender: (() => void) | undefined;
 	requestFocus: (() => void) | undefined;
 	focusHoldTimer: ReturnType<typeof setInterval> | undefined;
+	promptCountdownTimer: ReturnType<typeof setInterval> | undefined;
 	piTui: TUI | undefined;
 	piTheme: unknown;
 	piKeybindings: unknown;
@@ -151,6 +152,8 @@ export interface StageChatViewContext {
 	promptScrollOffset: number;
 	promptMaxScroll: number;
 	promptVisibleRows: number;
+	helpOpen: boolean;
+	interruptedByEscape: boolean;
 	localPaused: boolean;
 	lastObservedStageStatus: StageStatus | undefined;
 	lastObservedRunStatus: RunStatus | undefined;

@@ -143,16 +143,16 @@ test("main chat jump-to-latest pill keeps unpainted arrivals when compaction_end
 			compactedText: "Compacted earlier turns",
 			firstKeptEntryId: entries[8]!.id,
 			tokensBefore: 1200,
-			rung: "planned" as const,
-			promptVersion: 6 as const,
+			form: "cleared" as const,
+			promptVersion: 7 as const,
 			parameters,
 			stats,
 		};
 		await mode.sessionManager.appendCompaction("Compacted earlier turns", coveredThroughId, 1200, {
 			strategy: "verbatim-lines",
-			promptVersion: 6,
+			promptVersion: 7,
 			parameters,
-			rung: "planned",
+			form: "cleared",
 			stats,
 		});
 
@@ -414,9 +414,9 @@ async function compactFirstEight(mode: InteractiveMode): Promise<void> {
 	const entries = mode.sessionManager.getEntries();
 	await mode.sessionManager.appendCompaction("Compacted earlier turns", entries[7]!.id, 1200, {
 		strategy: "verbatim-lines",
-		promptVersion: 6,
+		promptVersion: 7,
 		parameters: compactionParameters,
-		rung: "planned",
+		form: "cleared",
 		stats: compactionStats,
 	});
 	await mode.handleEvent({
@@ -426,8 +426,8 @@ async function compactFirstEight(mode: InteractiveMode): Promise<void> {
 			compactedText: "Compacted earlier turns",
 			firstKeptEntryId: entries[8]!.id,
 			tokensBefore: 1200,
-			rung: "planned" as const,
-			promptVersion: 6 as const,
+			form: "cleared" as const,
+			promptVersion: 7 as const,
 			parameters: compactionParameters,
 			stats: compactionStats,
 		},
@@ -795,4 +795,84 @@ test("an extension's navigateTree keeps an arrival that was not painted yet coun
 		chat.paint();
 		assert.equal(chat.pill(), "↓ 2 new messages · ctrl+end");
 	}, runtimeHost);
+});
+
+test("swapping a rewritten prompt touches only the children it adds and replaces (#5323)", async () => {
+	async function measureSwap(historyCount: number): Promise<{
+		reads: number;
+		classified: number;
+		emptyReads: number;
+		emptyClassified: number;
+	}> {
+		let reads = 0;
+		let classified = 0;
+		let emptyReads = 0;
+		let emptyClassified = 0;
+		await withFullscreenChat(async ({ mode, paint, scrollUp, pill }) => {
+			for (let index = 1; index <= historyCount; index += 1) {
+				mode.addMessageToChat({ role: "user", content: `Earlier message ${index}`, timestamp: 300 + index });
+			}
+			let readCount = 0;
+			mode.chatContainer.children = new Proxy(mode.chatContainer.children, {
+				get(target, property, receiver) {
+					if (typeof property === "string" && /^(0|[1-9]\d*)$/.test(property)) {
+						readCount += 1;
+					}
+					return Reflect.get(target, property, receiver);
+				},
+			});
+			paint();
+			scrollUp();
+
+			mode.renderDeferredUserInput("Original prompt");
+			mode.renderDeferredUserInput("Held prompt");
+			paint();
+			assert.equal(pill(), "↓ 2 new messages · ctrl+end");
+			mode.expectStartedUserInput("Original prompt", mode.userMessagesShownBySession);
+
+			const has = messageComponents.has;
+			let classifiedCount = 0;
+			messageComponents.has = function (this: WeakSet<Component>, child: Component): boolean {
+				classifiedCount += 1;
+				return has.call(this, child);
+			};
+			try {
+				readCount = 0;
+				classifiedCount = 0;
+				mode.showSessionUserMessage({ role: "user", content: "Rewritten prompt", timestamp: 10_000 });
+				reads = readCount;
+				classified = classifiedCount;
+
+				mode.expectStartedUserInput("Held prompt", mode.userMessagesShownBySession);
+				readCount = 0;
+				classifiedCount = 0;
+				mode.showSessionUserMessage({ role: "user", content: "", timestamp: 10_001 });
+				emptyReads = readCount;
+				emptyClassified = classifiedCount;
+			} finally {
+				messageComponents.has = has;
+			}
+
+			paint();
+			assert.equal(pill(), "↓ 1 new message · ctrl+end");
+			const tailTranscript = mode.chatContainer.children
+				.slice(-2)
+				.flatMap((child) => child.render(80))
+				.join("\n");
+			assert.match(tailTranscript, /Rewritten prompt/);
+			assert.doesNotMatch(tailTranscript, /Original prompt|Held prompt/);
+		});
+		return { reads, classified, emptyReads, emptyClassified };
+	}
+
+	const small = await measureSwap(200);
+	const large = await measureSwap(2_000);
+	assert.equal(large.reads, small.reads);
+	assert.ok(large.reads <= 32, `expected proportional child reads, got ${large.reads}`);
+	assert.equal(small.classified, 4);
+	assert.equal(large.classified, 4);
+	assert.equal(large.emptyReads, small.emptyReads);
+	assert.ok(large.emptyReads <= 12, `expected proportional empty-rewrite child reads, got ${large.emptyReads}`);
+	assert.equal(small.emptyClassified, 2);
+	assert.equal(large.emptyClassified, 2);
 });

@@ -56,6 +56,7 @@ import { inheritsDebugSetting, setDebugSetting } from "./core/debug-setting.ts";
 import { DEFAULT_THINKING_LEVEL } from "./core/defaults.ts";
 import type { LoadExtensionsResult } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
+import { markLifecycleTiming } from "./core/lifecycle-timings.ts";
 import { limitMandatoryIntercomToTool } from "./core/mandatory-resource-loader.ts";
 import { formatModelLabel } from "./core/model-label.ts";
 import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "./core/model-refresh-timeout.ts";
@@ -77,6 +78,7 @@ import { deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { recordStartupThinkingLevel, savedConversationThinkingLevel } from "./core/startup-thinking-level.ts";
 import { isTeamProfileError, StorageConfigError } from "./core/storage/errors.js";
+import { takeStorageAdoptionNotice } from "./core/storage/file-identity.js";
 import {
 	hasProcessStorageSelection,
 	processSharedStorageSelection,
@@ -391,6 +393,7 @@ async function exitAfterCommand(): Promise<void> {
 	process.exit(exitCode);
 }
 export async function main(argv: string[], options?: MainOptions) {
+	markLifecycleTiming("main-entry");
 	// Consume the private engine handshake before anything else: the bootstrap
 	// file carries engine role, host PID, guardian path, and any API key, is read
 	// once, and is unlinked immediately. Nothing engine-only ever reaches the
@@ -738,6 +741,7 @@ export async function main(argv: string[], options?: MainOptions) {
 		}
 	}
 	time("createSessionManager");
+	markLifecycleTiming("session-opened");
 	isolateInteractiveHost &&= canIsolateSessionStore(sessionManager.getSessionStore());
 
 	const sessionCwd = sessionManager.getCwd();
@@ -1208,6 +1212,7 @@ export async function main(argv: string[], options?: MainOptions) {
 		appMode === "interactive" || engineEnv.child === "1",
 	);
 	endTimingSpan(runtimeCreationSpan);
+	markLifecycleTiming("runtime-created");
 	const { services, session, modelFallbackMessage } = runtime;
 	if (engineEnv.child === "1" && services.completeStartup) runtime.replaceModelFallback();
 	const { settingsManager, modelRuntime } = services;
@@ -1240,10 +1245,13 @@ export async function main(argv: string[], options?: MainOptions) {
 	const scopedModels = [...session.scopedModels];
 	time("resolveModelScope");
 	const storageWarning = await sharedStorageWarning;
+	const storageAdoptionNotice =
+		engineEnv.child === "1" ? undefined : takeStorageAdoptionNotice(agentDir, startupSettingsManager.getSettings());
 	const startupDiagnostics = deduplicateDiagnostics([
 		...startupSettingsDiagnostics,
 		...startupResumeDiagnostics(appMode, worktreeRestoreDiagnostics, engineEnv.child === "1"),
 		...runtime.diagnostics,
+		...(storageAdoptionNotice === undefined ? [] : [{ type: "info" as const, message: storageAdoptionNotice }]),
 		...(storageWarning === undefined ? [] : [{ type: "warning" as const, message: storageWarning }]),
 	]);
 	const hasRuntimeErrors = runtime.diagnostics.some((diagnostic) => diagnostic.type === "error");

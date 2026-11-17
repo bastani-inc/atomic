@@ -11,7 +11,6 @@ import { installCompactionHook } from "../shared/persistence-compaction-policy.j
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { Store } from "../shared/store.js";
 import { clearForms } from "../tui/inline-form-store.js";
-import { installStoreWidget } from "../tui/store-widget-installer.js";
 import { currentWorkflowSessionRunState, type WorkflowSessionRunState } from "./adopt-session-run-state.js";
 import { WORKFLOW_CONFIG_DEFAULTS } from "./config-loader.js";
 import type { WorkflowExtensionRuntimeState } from "./extension-runtime-state.js";
@@ -24,7 +23,9 @@ import { workflowCaller } from "./workflow-instance-owner.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 
 interface WorkflowLifetime {
-	readonly generations: Set<(boundary?: "quit" | "switch") => Promise<void>>;
+	readonly generations: Set<QuitGenerationRuns>;
+	/** The run-scoped instances each generation's quit acts on. */
+	generationRunStates?: WeakMap<QuitGenerationRuns, GenerationRunState>;
 	closing?: Promise<void>;
 	startupStarted?: boolean;
 	/** Runs the departing session released on a session switch, until the successor announces them. */
@@ -33,6 +34,37 @@ interface WorkflowLifetime {
 	pendingSwitchHandoff?: () => Promise<void>;
 	/** A handoff already running, so that closing the lifetime never overlaps it. */
 	activeSwitchHandoff?: Promise<void>;
+}
+
+type QuitGenerationRuns = (boundary?: "quit" | "switch") => Promise<void>;
+type GenerationRunState = Pick<
+	WorkflowSessionRunState,
+	"store" | "stageControlRegistry" | "toolControlRegistry" | "jobs"
+>;
+
+function sameRunState(left: GenerationRunState, right: GenerationRunState): boolean {
+	return (
+		left.store === right.store &&
+		left.stageControlRegistry === right.stageControlRegistry &&
+		left.toolControlRegistry === right.toolControlRegistry &&
+		left.jobs === right.jobs
+	);
+}
+
+/**
+ * Keep one quit per set of run-scoped instances. A `/reload` evaluates this module again and starts a new generation
+ * over the same instances, and the departing generation's quit, which closes over its whole extension API, would
+ * otherwise stay in the lifetime for as long as the session runs, one more per reload. What each quit acts on is kept
+ * on the lifetime, which every generation of the session shares. A generation over other instances is still kept.
+ */
+function addGeneration(lifetime: WorkflowLifetime, quit: QuitGenerationRuns, runState: GenerationRunState): void {
+	lifetime.generationRunStates ??= new WeakMap();
+	for (const earlier of lifetime.generations) {
+		const earlierState = lifetime.generationRunStates.get(earlier);
+		if (earlierState !== undefined && sameRunState(earlierState, runState)) lifetime.generations.delete(earlier);
+	}
+	lifetime.generationRunStates.set(quit, runState);
+	lifetime.generations.add(quit);
 }
 
 const startupRecoveries = new Set<Promise<void>>();
@@ -112,6 +144,16 @@ function releasedRunsNotice(runs: readonly { readonly id: string; readonly name:
 	].join("\n");
 }
 
+function blockedAtRest(
+	run: { readonly endedAt?: number; readonly blockedAt?: number; readonly failureDisposition?: string } | undefined,
+): boolean {
+	return (
+		run !== undefined &&
+		run.endedAt === undefined &&
+		(run.blockedAt !== undefined || run.failureDisposition === "active_blocked")
+	);
+}
+
 function eventReason(event: unknown): string | undefined {
 	return typeof event === "object" && event !== null && "reason" in event
 		? (event as { readonly reason?: string }).reason
@@ -120,7 +162,6 @@ function eventReason(event: unknown): string | undefined {
 
 export interface WorkflowLifecycleRegistrationDeps {
 	runtimeState: WorkflowExtensionRuntimeState;
-	storeWidgetRef: { current: (() => void) | null };
 	intercomControlRef: { current: (() => void) | null };
 	disposeObservation?: () => void;
 	/** The owning session's run-scoped instances; defaults to the current ones. */
@@ -156,7 +197,13 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 					);
 				const failures = results
 					.flatMap((result) => (result.ok ? [] : [result]))
-					.filter((result) => !(boundary === "switch" && result.reason === "no_active_stages"));
+					.filter(
+						(result) =>
+							!(
+								result.reason === "no_active_stages" &&
+								(boundary === "switch" || blockedAtRest(store.run(result.runId)))
+							),
+					);
 				if (failures.length > 0)
 					throw new Error(
 						failures
@@ -179,7 +226,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			},
 			() => stageControlRegistry.clear(),
 		]);
-	lifetime.generations.add(quitAndCheckpointRuns);
+	addGeneration(lifetime, quitAndCheckpointRuns, { store, stageControlRegistry, toolControlRegistry, jobs });
 	const { runtimeState } = deps;
 	const confirmSessionSwitch = async (
 		reason: SessionSwitchReason,
@@ -300,10 +347,6 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 				deps.intercomControlRef.current?.();
 				deps.intercomControlRef.current = null;
 			},
-			() => {
-				deps.storeWidgetRef.current?.();
-				deps.storeWidgetRef.current = null;
-			},
 			() => runtimeState.resetWorkflowDiscoveryForSession(),
 			() => runtimeState.setNotificationsActive(false),
 			() => deps.disposeObservation?.(),
@@ -372,8 +415,6 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		if (ctx?.ui) {
 			const diagnostics = formatStartupDiagnostics(runtimeState.configLoadRef.current, null);
 			if (diagnostics !== null) ctx.ui.notify?.(diagnostics, "warning");
-			deps.storeWidgetRef.current?.();
-			deps.storeWidgetRef.current = installStoreWidget({ ui: ctx.ui }, store);
 		}
 		if (isSessionSwitch(reason) && sessionCaller !== undefined) {
 			const backend = availableStoreDurableBackend(store);
@@ -428,6 +469,9 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 					lifetime.generations.clear();
 				},
 			]);
+			// The lifetime outlives this session for as long as anything holds its scope; an ended session hands
+			// nothing to a successor, so its handoff, and the session it closes over, go with it.
+			if (lifetime.pendingSwitchHandoff === handOffRunsToSuccessor) lifetime.pendingSwitchHandoff = undefined;
 			await lifetime.closing;
 		} else if (isSessionSwitch(reason)) {
 			await attemptAll([closeGeneration, handOffRunsToSuccessor]);

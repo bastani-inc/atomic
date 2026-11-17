@@ -1,9 +1,7 @@
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import { createAutoCompactionCompletion, hasPendingManualCompactionTakeover } from "./agent-session-auto-compaction.ts";
-import type { CommittedBackgroundCompaction } from "./agent-session-background-compaction.ts";
 import { emitSessionCompactFailed } from "./agent-session-compaction.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
-import { authForStream } from "./agent-session-models.ts";
 import { rethrowUnlessReportedPersistenceFailure } from "./agent-session-persistence-failures.ts";
 import { estimateContextTokens, shouldCompact, type VerbatimCompactionResult } from "./compaction/index.ts";
 import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
@@ -30,10 +28,6 @@ export async function _preflightPostToolContext(
 	const hardInputLimit = model.contextWindow;
 	const projectedTokens = estimateContextTokens(messages).tokens;
 	if (!shouldCompact(projectedTokens, hardInputLimit, settings)) return messages;
-	// Only a context that genuinely will not fit may clear a sub-minimum region.
-	// The threshold sits at `contextWindow - reserveTokens`, well below the hard
-	// limit, so a crossing alone is no reason to destroy context.
-	const overHardLimit = hardInputLimit > 0 && projectedTokens > hardInputLimit;
 
 	// Tool-result persistence is ordered on AgentSession's event queue, while Pi
 	// may reach its next-turn hook as soon as its own listener barrier settles.
@@ -61,8 +55,6 @@ export async function _preflightPostToolContext(
 	// inside the cleanup scope: `_emit` runs subscribers synchronously, so a
 	// throwing listener would otherwise leave ownership set with no `finally` to
 	// clear it. A manual takeover also awaits this settlement before it writes.
-	// A ready background result committed before a later failure: it is already in context.
-	let committedBackground: CommittedBackgroundCompaction | undefined;
 	try {
 		this._autoCompactionAbortController = abortController;
 		this._autoCompactionCompletion = completion.promise;
@@ -70,44 +62,14 @@ export async function _preflightPostToolContext(
 		this._compactionStartedAt = Date.now();
 		this._emit({ type: "compaction_start", reason: "threshold", midTurn: true });
 
-		const ready = await this._useReadyBackgroundCompaction(model);
-		committedBackground = ready;
-		let foregroundErrorMessage: string | undefined;
-		let result: VerbatimCompactionResult | undefined;
-		if (ready?.sufficient === true) result = ready.result;
-		else {
-			try {
-				result =
-					(await this._applyVerbatimCompaction({
-						resolvePlannerAuth: async (candidate, signal) => {
-							const auth = await this._getRequiredRequestAuth(candidate, signal ?? abortController.signal);
-							return auth.apiKey || auth.headers ? authForStream(this, auth) : undefined;
-						},
-						abortController,
-						backupLabel: "auto-compact",
-						reason: "threshold",
-						onCompactionSource: (value) => {
-							fromExtension = value;
-						},
-						// A mid-turn planner failure must reach the fresh rung so the active
-						// turn can continue. `_applyVerbatimCompaction` still treats a fitting
-						// no-preparation threshold crossing as a safe no-op.
-						urgency: "load_bearing",
-						// A committed background result changed the context: only the
-						// projection after it can prove the context still does not fit (#4977).
-						...((ready ? ready.projectedTokens > hardInputLimit : overHardLimit)
-							? { allowSmallRegion: true }
-							: {}),
-					})) ?? ready?.result;
-			} catch (error) {
-				// A cancel still ends the turn. Any other foreground failure keeps the committed background
-				// boundary, which is already in context, and reports the failure with it (#4977).
-				if (ready === undefined || abortController.signal.aborted) throw error;
-				foregroundErrorMessage = postToolFailureMessage(error);
-				result = ready.result;
-			}
-		}
-		const fromBackground = ready !== undefined && result === ready.result;
+		const result = await this._applyVerbatimCompaction({
+			abortController,
+			backupLabel: "auto-compact",
+			reason: "threshold",
+			onCompactionSource: (value) => {
+				fromExtension = value;
+			},
+		});
 		if (!result) {
 			// Nothing was compactable and the projected context still fits, so the
 			// follow-up request can be sent unchanged. That is a successful no-op,
@@ -124,12 +86,7 @@ export async function _preflightPostToolContext(
 			return messages;
 		}
 
-		this._pendingPostToolCompactionGuard = {
-			hardInputLimit,
-			result,
-			...(fromBackground ? { background: ready } : {}),
-			...(foregroundErrorMessage ? { errorMessage: foregroundErrorMessage } : {}),
-		};
+		this._pendingPostToolCompactionGuard = { hardInputLimit, result };
 		// `AgentState.messages` has an asymmetric accessor pair: the setter copies,
 		// while the getter returns the live internal array. Return a separate array
 		// so the loop and reducer cannot append the next message twice.
@@ -147,13 +104,12 @@ export async function _preflightPostToolContext(
 		this._emit({
 			type: "compaction_end",
 			reason: "threshold",
-			result: committedBackground?.result,
+			result: undefined,
 			aborted,
 			willRetry: false,
 			midTurn: true,
 			...(hasPendingManualCompactionTakeover.call(this) ? { manualTakeoverPending: true } : {}),
 			...(aborted ? {} : { errorMessage }),
-			...(committedBackground ? { background: true as const } : {}),
 		});
 		await emitSessionCompactFailed(this, {
 			reason: "threshold",
@@ -224,9 +180,6 @@ export function _finishPostToolCompactionPreflight(this: AgentSession, messages:
 		willRetry: false,
 		midTurn: true,
 		...(hasPendingManualCompactionTakeover.call(this) ? { manualTakeoverPending: true } : {}),
-		...(pending.background ? { background: true as const } : {}),
-		...(pending.background?.cacheMiss ? { cacheMiss: pending.background.cacheMiss } : {}),
-		...(pending.errorMessage ? { errorMessage: pending.errorMessage } : {}),
 	});
 	return providerBoundMessages;
 }
@@ -234,10 +187,6 @@ export function _finishPostToolCompactionPreflight(this: AgentSession, messages:
 export interface PendingPostToolCompactionGuard {
 	hardInputLimit: number;
 	result: VerbatimCompactionResult;
-	/** Set when a stored background result supplied the boundary. */
-	background?: CommittedBackgroundCompaction;
-	/** Why the foreground compaction after a committed background result failed; the turn continues (#4977). */
-	errorMessage?: string;
 }
 
 export const agentSessionPostToolCompactionMethods = {

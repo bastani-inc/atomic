@@ -1,24 +1,20 @@
 /**
- * RFC §8 — Integration: the load-bearing post-tool chain, driven through the
- * real prompt/tool/provider sequence rather than by calling preflight directly.
- *
- * A mid-turn compaction is the case where failure used to kill an active turn,
- * so this exercises the whole ladder there: primary planner failure, one planner
- * invocation per configured fallback, the fresh boundary, its user-visible
- * notice, exactly one follow-up chat request, and no `agent.continue()`.
+ * Integration: the post-tool clear, driven through the real prompt/tool/provider sequence rather than by calling
+ * preflight directly. A mid-turn compaction makes no model call: it writes one boundary after the whole tool batch,
+ * the next request carries exactly the system prompt and one `Context cleared` message, the turn finishes with one
+ * follow-up chat request, and no `agent.continue()` is scheduled.
  */
 
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { Agent, type AgentTool, type StreamFn } from "@bastani/atomic-agent-core";
-import type { Api, AssistantMessage, Model } from "@bastani/atomic-ai/compat";
-import { getCurrentSystemPrompt, getModel } from "@bastani/atomic-ai/compat";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
+import { getModel } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { test } from "vitest";
 import { AgentSession, type AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import type { VerbatimCompactionDetails } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
-import { RANGE_PLANNER_SYSTEM_PROMPT } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
 import { convertToLlm } from "../../packages/coding-agent/src/core/messages.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
@@ -41,38 +37,12 @@ const largeResultTool: AgentTool = {
 const longPrompt = Array.from({ length: 40 }, (_, index) => `context line ${index + 1}`).join("\n");
 
 interface Traffic {
-	planner: string[];
-	chat: string[];
+	/** The messages of every model request, in order. */
+	requests: Array<Array<{ role: string; content?: unknown }>>;
 }
 
-function message(model: Model<Api>, body: Partial<AssistantMessage>): AssistantMessage {
-	return {
-		role: "assistant",
-		content: [],
-		api: model.api,
-		provider: model.provider,
-		model: model.id,
-		usage: {
-			input: 900,
-			output: 20,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 920,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		},
-		stopReason: "stop",
-		timestamp: Date.now(),
-		...body,
-	} as AssistantMessage;
-}
-
-/**
- * One stream function for both lanes. Planner requests are identified by the
- * range-planner system prompt, so chat turns and planner attempts stay countable
- * apart without stubbing the session. The chat lane uses the real faux event
- * stream because the agent loop consumes streamed events, not just `result()`.
- */
-function laneStream(traffic: Traffic): StreamFn {
+/** Records every model request; compaction must add none of its own. */
+function recordingStream(traffic: Traffic): StreamFn {
 	const chat = createFauxStreamFn([
 		{
 			toolCalls: [{ id: "call-1", name: "large_result", args: {} }],
@@ -80,31 +50,29 @@ function laneStream(traffic: Traffic): StreamFn {
 		},
 		"completed after compaction",
 	]);
-	return ((
-		model: Model<Api>,
-		context: { systemPrompt?: string; messages?: Array<{ role: string }> },
-		options?: unknown,
-	) => {
-		const label = `${model.provider}/${model.id}`;
-		const systemPrompt = context.systemPrompt ?? (context.messages ? getCurrentSystemPrompt(context.messages) : "");
-		if (systemPrompt === RANGE_PLANNER_SYSTEM_PROMPT) {
-			traffic.planner.push(label);
-			return { result: async () => message(model, { stopReason: "error", errorMessage: "429 Too Many Requests" }) };
-		}
-		traffic.chat.push(label);
+	return ((model: Model<Api>, context: { messages?: Array<{ role: string }> }, options?: unknown) => {
+		traffic.requests.push(structuredClone(context.messages ?? []));
 		return chat.streamFn(model as never, context as never, options as never);
 	}) as unknown as StreamFn;
 }
 
-test("post-tool preflight: every model fails, the turn still completes on the fresh rung", async () => {
+function textOf(content: unknown): string {
+	if (typeof content === "string") return content;
+	return (content as Array<{ type: string; text?: string }>)
+		.filter((block) => block.type === "text")
+		.map((block) => block.text ?? "")
+		.join("\n");
+}
+
+test("post-tool preflight clears the context with no model call and the turn finishes on one follow-up request", async () => {
 	initTheme("dark");
-	const traffic: Traffic = { planner: [], chat: [] };
+	const traffic: Traffic = { requests: [] };
 	const model = { ...SESSION_MODEL, contextWindow: 2_000 } as Model<Api>;
 	const manager = SessionManager.inMemory();
 	const agent = new Agent({
 		getApiKey: () => "test-key",
 		initialState: { model, systemPrompt: "test", tools: [], thinkingLevel: "high" },
-		streamFn: laneStream(traffic),
+		streamFn: recordingStream(traffic),
 	});
 	agent.convertToLlm = convertToLlm;
 	let continued = 0;
@@ -126,7 +94,7 @@ test("post-tool preflight: every model fails, the turn still completes on the fr
 	const settingsManager = SettingsManager.inMemory();
 	settingsManager.applyOverrides({
 		retry: { enabled: false, maxRetries: 0, baseDelayMs: 0 },
-		compaction: { enabled: true, reserveTokens: 1_200, compression_ratio: 0.5, preserve_recent: 2 },
+		compaction: { enabled: true, reserveTokens: 1_200 },
 	});
 	const session = new AgentSession({
 		agent,
@@ -152,45 +120,66 @@ test("post-tool preflight: every model fails, the turn still completes on the fr
 		assert.equal(starts.length, 1, JSON.stringify({ traffic, events }));
 		assert.equal(starts[0].midTurn, true);
 
-		// 3-4: the primary failed and each configured fallback got exactly one
-		// planner invocation, in configured order.
-		assert.deepEqual(traffic.planner, ["anthropic/claude-sonnet-4-5", "openai/gpt-5.1", "google/gemini-2.5-pro"]);
+		// 3: no compaction model call: only the two chat requests of the turn reached a provider.
+		assert.equal(traffic.requests.length, 2, JSON.stringify(traffic.requests.map((request) => request.length)));
 
-		// 5: all failed, so the boundary is the fresh rung.
-		const boundary = manager.getBranch().find((entry) => entry.type === "compaction");
-		assert.ok(boundary, "no compaction boundary was persisted");
-		const details = (boundary as { details?: VerbatimCompactionDetails }).details;
-		assert.equal(details?.rung, "fresh");
-		assert.equal(details?.plannerModel, undefined);
+		// 4: one boundary, placed after the whole tool batch, so the call and its result are both behind it.
+		const branch = manager.getBranch();
+		const boundaryIndex = branch.findIndex((entry) => entry.type === "compaction");
+		assert.ok(boundaryIndex >= 0, "no compaction boundary was persisted");
+		const boundary = branch[boundaryIndex] as { summary: string; details?: VerbatimCompactionDetails };
+		const before = branch.slice(0, boundaryIndex);
+		assert.ok(before.some((entry) => entry.type === "message" && entry.message.role === "toolResult"));
+		assert.ok(
+			!branch
+				.slice(boundaryIndex + 1)
+				.some((entry) => entry.type === "message" && entry.message.role === "toolResult"),
+		);
+		const details = boundary.details;
+		assert.equal(details?.form, "cleared");
+		assert.equal(details?.history?.sessionId, manager.getSessionId());
 
-		// 6: the rung the user sees says the context was cleared.
+		// 5: the follow-up request is the system prompt plus one Context cleared message. This agent has neither
+		// `read` nor `search`, so the only other thing it sees is the declaration of its own-session history tool.
+		const followUp = traffic.requests[1];
+		assert.deepEqual(
+			followUp.map((message) => message.role),
+			["system", "user", "system"],
+		);
+		const declared = (followUp[2] as { toolsAdded?: Array<{ name: string }> }).toolsAdded ?? [];
+		assert.deepEqual(
+			declared.map((tool) => tool.name),
+			["session_history"],
+		);
+		assert.equal(textOf(followUp[2].content), "");
+		const cleared = textOf(followUp[1].content);
+		assert.ok(cleared.startsWith("Context cleared."), cleared);
+		assert.ok(cleared.includes(`history://sessions/${manager.getSessionId()}`), cleared);
+		assert.ok(cleared.includes("session_history"), cleared);
+		assert.equal(cleared, boundary.summary);
+
+		// 6: the boundary line the user sees.
 		const rendered = stripVTControlCharacters(
-			new CompactionBoundaryMessageComponent({
-				text: (boundary as { summary?: string }).summary ?? "",
-				stats: details!.stats,
-				rung: details!.rung,
-			})
+			new CompactionBoundaryMessageComponent({ text: boundary.summary, form: details!.form, stats: details!.stats })
 				.render(200)
 				.join("\n"),
 		);
-		assert.ok(rendered.includes("∀ Context cleared (compaction degraded)"), rendered);
+		assert.match(rendered, /⚛ Context cleared · [\d.,k]+ tokens/u);
+		assert.ok(!rendered.includes("degraded"));
 
-		// 7-8: exactly one follow-up chat request, and it finished the original turn.
-		assert.equal(traffic.chat.length, 2);
+		// 7-8: the follow-up request finished the original turn, and no continuation was scheduled.
 		assert.equal(session.getLastAssistantText(), "completed after compaction");
-
-		// 9: the mid-turn path never schedules another continuation.
 		assert.equal(continued, 0);
 
 		const ends = events.filter((event) => event.type === "compaction_end") as Array<{
 			midTurn?: boolean;
 			errorMessage?: string;
-			result?: { rung?: string };
+			result?: { form?: string };
 		}>;
 		assert.equal(ends.length, 1);
 		assert.equal(ends[0].midTurn, true);
 		assert.equal(ends[0].errorMessage, undefined);
-		assert.equal(ends[0].result?.rung, "fresh");
+		assert.equal(ends[0].result?.form, "cleared");
 	} finally {
 		session.dispose();
 	}

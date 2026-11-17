@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { parseModelConstraints } from "../shared/model-constraints.js";
+import { warnRemovedRoutingOption } from "../shared/removed-routing-warning.js";
 import { getProjectAgentSettingsPath, getUserAgentSettingsPath } from "./agent-paths.js";
 import {
 	type AgentConfig,
@@ -44,7 +44,6 @@ function arraysEqual(a: string[] | undefined, b: string[] | undefined): boolean 
 function cloneOverrideBase(agent: AgentConfig): BuiltinAgentOverrideBase {
 	return {
 		model: agent.model,
-		modelConstraints: structuredClone(agent.modelConstraints),
 		fallbackModels: agent.fallbackModels ? [...agent.fallbackModels] : undefined,
 		fallbackThinkingLevels: agent.fallbackThinkingLevels ? [...agent.fallbackThinkingLevels] : undefined,
 		thinking: agent.thinking,
@@ -63,9 +62,6 @@ function cloneOverrideBase(agent: AgentConfig): BuiltinAgentOverrideBase {
 function cloneOverrideValue(override: BuiltinAgentOverrideConfig): BuiltinAgentOverrideConfig {
 	return {
 		...(override.model !== undefined ? { model: override.model } : {}),
-		...(override.modelConstraints !== undefined
-			? { modelConstraints: structuredClone(override.modelConstraints) }
-			: {}),
 		...(override.fallbackModels !== undefined
 			? { fallbackModels: override.fallbackModels === false ? false : [...override.fallbackModels] }
 			: {}),
@@ -142,6 +138,9 @@ function parseOverrideStringArrayOrFalse(
 	return items;
 }
 
+/** Override fields of the removed automatic model routing: ignored, and named once so a saved restriction is not lost unseen. */
+const REMOVED_ROUTING_OVERRIDE_FIELDS = ["modelConstraints", "taskNeeds"] as const;
+
 function parseBuiltinOverrideEntry(
 	name: string,
 	value: unknown,
@@ -153,6 +152,7 @@ function parseBuiltinOverrideEntry(
 
 	const input = value as Record<string, unknown>;
 	const override: BuiltinAgentOverrideConfig = {};
+	for (const field of REMOVED_ROUTING_OVERRIDE_FIELDS) if (field in input) warnRemovedRoutingOption(field);
 
 	if ("model" in input) {
 		if (typeof input.model === "string" || input.model === false) override.model = input.model;
@@ -161,7 +161,6 @@ function parseBuiltinOverrideEntry(
 				`Builtin override '${name}' in '${filePath}' has invalid 'model'; expected a string or false.`,
 			);
 	}
-	if ("modelConstraints" in input) override.modelConstraints = parseModelConstraints(input.modelConstraints);
 
 	if ("thinking" in input) {
 		if (typeof input.thinking === "string" || input.thinking === false) override.thinking = input.thinking;
@@ -303,7 +302,6 @@ function applyBuiltinOverride(
 	};
 
 	if (override.model !== undefined) next.model = override.model === false ? undefined : override.model;
-	if (override.modelConstraints !== undefined) next.modelConstraints = structuredClone(override.modelConstraints);
 	if (override.fallbackModels !== undefined) {
 		next.fallbackModels = override.fallbackModels === false ? undefined : [...override.fallbackModels];
 	}
@@ -367,7 +365,6 @@ export function buildBuiltinOverrideConfig(
 	draft: Pick<
 		AgentConfig,
 		| "model"
-		| "modelConstraints"
 		| "fallbackModels"
 		| "fallbackThinkingLevels"
 		| "thinking"
@@ -385,8 +382,6 @@ export function buildBuiltinOverrideConfig(
 	const override: BuiltinAgentOverrideConfig = {};
 
 	if (draft.model !== base.model) override.model = draft.model ?? false;
-	if (JSON.stringify(draft.modelConstraints) !== JSON.stringify(base.modelConstraints))
-		override.modelConstraints = structuredClone(draft.modelConstraints ?? {});
 	if (!arraysEqual(draft.fallbackModels, base.fallbackModels))
 		override.fallbackModels = draft.fallbackModels ? [...draft.fallbackModels] : false;
 	if (!arraysEqual(draft.fallbackThinkingLevels, base.fallbackThinkingLevels))

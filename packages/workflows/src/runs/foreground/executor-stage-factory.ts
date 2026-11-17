@@ -20,7 +20,7 @@ import {
 } from "../../shared/stage-wait.js";
 import { StageWaitRecordError, type StageWaitRecordPhase } from "../../shared/stage-wait-errors.js";
 import type { Store } from "../../shared/store.js";
-import type { StageSnapshot } from "../../shared/store-types.js";
+import type { PendingPrompt, StageSnapshot } from "../../shared/store-types.js";
 import { elapsedStageMs, rebasedStageStartedAt, stageTimingFields } from "../../shared/timing.js";
 import type { StageOptions, WorkflowArtifact } from "../../shared/types.js";
 import type { WorkflowFailure } from "../../shared/workflow-failures.js";
@@ -58,7 +58,6 @@ import type { ParallelFailFastScope, StageSessionCheckpointOptions } from "./exe
 import { createWorkflowPendingStageDelivery } from "./pending-stage-delivery.js";
 import type { RunStageResidency } from "./run-residency.js";
 import { StageAbortListeners } from "./stage-abort-listeners.js";
-import { recordStageSessionCompaction } from "./stage-background-compaction.js";
 import type { StageControlRegistry } from "./stage-control-registry.js";
 import { persistStageEndWhenRunEndsIt, runEndedInFlightStages } from "./stage-end-by-run-end.js";
 import { type IdleStage, stageIdleReleaser } from "./stage-idle-release.js";
@@ -158,7 +157,6 @@ export function createWorkflowStageFactory(input: {
 				? options
 				: {
 						...(options ?? {}),
-						routerSelection: executeReplaySource.routerSelection,
 						context: options?.context ?? "fork",
 						forkFromSessionId: options?.forkFromSessionId ?? executeReplaySource.sessionId,
 						forkFromEntryId: options?.forkFromSessionId === undefined ? undefined : options.forkFromEntryId,
@@ -551,23 +549,41 @@ export function createWorkflowStageFactory(input: {
 				}
 			}),
 		);
+		let dialogCheckpointChain = Promise.resolve();
+		let dialogCheckpointFailure: unknown;
+		const unregisterStageDialogJournal = input.stageUiBroker.registerDialogJournal(
+			input.runId,
+			stageId,
+			(request) => {
+				if (dialogCheckpointFailure !== undefined) return Promise.reject(dialogCheckpointFailure);
+				if (state.stageFinalized) return Promise.resolve();
+				const snapshot = stageDialogCheckpoint(stageSnapshot, innerCtx.__sessionMeta(), request);
+				const write = dialogCheckpointChain.then(async () => {
+					await input.opts.onStageSession?.(input.runId, snapshot, { forceDurable: true });
+				});
+				dialogCheckpointChain = write.catch((error: unknown) => {
+					dialogCheckpointFailure ??= error;
+					void runtime.innerCtx.abort().catch(() => {});
+				});
+				return write;
+			},
+		);
 
 		const disposeInnerContext = async (): Promise<void> => {
 			idleReleaser.unwatch(stageId);
 			unsubscribeAskUserQuestionWatcher();
 			unsubscribeQueuedUserMessageWatcher();
+			unregisterStageDialogJournal();
 			activeAskUserQuestionCalls.clear();
 			state.activeAskUserQuestionAnonymousCalls = 0;
 			input.activeStore.recordStageAwaitingInput(input.runId, stageId, false);
 			input.stageUiBroker.clearStagePrompt(input.runId, stageId);
-			const session = innerCtx.__agentSession();
 			try {
 				await innerCtx.__dispose();
 			} finally {
 				// The stage's mailbox lives as long as the stage.
 				wakeDispatcher.close(wakeKey);
 			}
-			recordStageSessionCompaction(input.activeStore, input.runId, stageId, session);
 		};
 
 		const captureStageSessionMeta = async (checkpointOptions?: StageSessionCheckpointOptions): Promise<void> => {
@@ -576,10 +592,15 @@ export function createWorkflowStageFactory(input: {
 			if (meta.sessionId !== undefined)
 				input.activeStore.recordStageSession(input.runId, stageId, { sessionId: meta.sessionId });
 			if (changed) announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
-			const pending = input.opts.onStageSession?.(input.runId, stageSnapshot, checkpointOptions);
 			announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
+			const pending = dialogCheckpointChain.then(() => {
+				if (dialogCheckpointFailure !== undefined) throw dialogCheckpointFailure;
+				return input.opts.onStageSession?.(input.runId, stageSnapshot, checkpointOptions);
+			});
 			if (checkpointOptions?.forceDurable === true || checkpointOptions?.awaitDurable === true) {
 				await pending;
+				await dialogCheckpointChain;
+				if (dialogCheckpointFailure !== undefined) throw dialogCheckpointFailure;
 				return;
 			}
 			void Promise.resolve(pending).catch(() => {});
@@ -628,6 +649,7 @@ export function createWorkflowStageFactory(input: {
 		};
 
 		const persistStageEnd = async (): Promise<void> => {
+			await dialogCheckpointChain;
 			if (input.opts.onStageEnd) {
 				await runCallback(
 					{ kind: "workflow.stage_adapter", name: `onStageEnd:${name}`, runId: input.runId, stageId },
@@ -661,9 +683,6 @@ export function createWorkflowStageFactory(input: {
 					...(stageSnapshot.sessionFile !== undefined ? { sessionFile: stageSnapshot.sessionFile } : {}),
 					...(stageSnapshot.modelAttempts !== undefined ? { modelAttempts: stageSnapshot.modelAttempts } : {}),
 					...(stageSnapshot.rateLimits !== undefined ? { rateLimits: stageSnapshot.rateLimits } : {}),
-					...(stageSnapshot.routerSelection !== undefined
-						? { routerSelection: stageSnapshot.routerSelection }
-						: {}),
 					...(stageSnapshot.result !== undefined && stageSnapshot.status === "completed"
 						? { summary: stageSnapshot.result }
 						: {}),
@@ -936,10 +955,38 @@ export function createWorkflowStageFactory(input: {
 			},
 			evict: () => {
 				unreachableStageContexts.unregister(state);
+				unregisterStageDialogJournal();
 				runtime.unregisterStageHandle();
 			},
 		});
 		return context;
+	};
+}
+
+function stageDialogCheckpoint(
+	stage: StageSnapshot,
+	meta: { readonly sessionId?: string; readonly sessionFile?: string },
+	request: PendingPrompt | undefined,
+): StageSnapshot {
+	const { promptAnswerState, ...settled } = stage;
+	return {
+		...(request === undefined ? stage : settled),
+		...(meta.sessionId !== undefined ? { sessionId: meta.sessionId } : {}),
+		...(meta.sessionFile !== undefined ? { sessionFile: meta.sessionFile } : {}),
+		...(request === undefined
+			? {
+					...(stage.pendingPrompt !== undefined ? { pendingPrompt: structuredClone(stage.pendingPrompt) } : {}),
+					...(stage.promptFootprint !== undefined
+						? { promptFootprint: structuredClone(stage.promptFootprint) }
+						: {}),
+				}
+			: {
+					...(promptAnswerState === undefined || promptAnswerState === "available" ? {} : { promptAnswerState }),
+					status: "awaiting_input",
+					awaitingInputSince: request.createdAt,
+					pendingPrompt: structuredClone(request),
+					promptFootprint: structuredClone(request),
+				}),
 	};
 }
 

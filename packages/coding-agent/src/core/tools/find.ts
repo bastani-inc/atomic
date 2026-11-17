@@ -3,16 +3,17 @@ import { stat as fsStat } from "node:fs/promises";
 import path, { type PlatformPath } from "node:path";
 import type { AgentTool } from "@bastani/atomic-agent-core";
 import { Text } from "@bastani/atomic-tui";
-import { spawn } from "child_process";
 import { Minimatch } from "minimatch";
 import { type Static, Type } from "typebox";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
+import { spawnHostProcess } from "../../utils/host-spawn.ts";
 import { attachLineReader } from "../../utils/lines.ts";
 import type { ManagedToolError } from "../../utils/managed-tool-errors.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import { withBuiltinToolBlockRenderers } from "./builtin-renderers.js";
 import { FileToolAbortedError } from "./file-tool-errors.ts";
 import { literalPathLike, normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
 import { pathExists, resolveToCwd } from "./path-utils.ts";
@@ -434,7 +435,7 @@ export function createFindToolDefinition(
 	options?: FindToolOptions,
 ): ToolDefinition<typeof findSchema, FindToolDetails | undefined> {
 	const customOps = options?.operations;
-	return {
+	return withBuiltinToolBlockRenderers<ToolDefinition<typeof findSchema, FindToolDetails | undefined>>({
 		name: "find",
 		label: "find",
 		description: "Find filesystem paths by glob; use search when you need content matches instead of path matches.",
@@ -747,7 +748,7 @@ export function createFindToolDefinition(
 							}
 							if (signal?.aborted) return false;
 							return await new Promise<boolean>((resolveTarget, rejectTarget) => {
-								const child = spawn(fdPath, args, {
+								const child = spawnHostProcess(fdPath, args, {
 									env: createChildProcessEnvironment(),
 									stdio: ["ignore", "pipe", "pipe"],
 								});
@@ -768,7 +769,7 @@ export function createFindToolDefinition(
 								child.stderr?.on("data", (chunk) => {
 									stderr += chunk.toString();
 								});
-								detachLines = attachLineReader(child.stdout, (rawLine) => {
+								detachLines = attachLineReader(child.stdout!, (rawLine) => {
 									if (windowsPathMatcher) {
 										const matchPath = relativizeFindResultPath(
 											cleanFdLine(rawLine).replaceAll("\\", "/"),
@@ -860,7 +861,7 @@ export function createFindToolDefinition(
 			text.setText(formatFindResult(result, options, theme, context.showImages));
 			return text;
 		},
-	};
+	});
 }
 export function createFindTool(cwd: string, options?: FindToolOptions): AgentTool<typeof findSchema> {
 	return wrapToolDefinition(createFindToolDefinition(cwd, options));

@@ -1,15 +1,16 @@
 import { stat as fsStat } from "node:fs/promises";
 import type { AgentTool } from "@bastani/atomic-agent-core";
 import { Text } from "@bastani/atomic-tui";
-import { spawn } from "child_process";
 import path from "path";
 import { type Static, Type } from "typebox";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
+import { spawnHostProcess } from "../../utils/host-spawn.ts";
 import { attachLineReader } from "../../utils/lines.ts";
 import type { ManagedToolError } from "../../utils/managed-tool-errors.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import { withBuiltinToolBlockRenderers } from "./builtin-renderers.js";
 import { resolveToCwd } from "./path-utils.ts";
 import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.ts";
 import { loadNativeSearchBinding, type NativeGrepMatch } from "./search-native.ts";
@@ -215,7 +216,7 @@ export function createGrepToolDefinition(
 	options?: GrepToolOptions,
 ): ToolDefinition<typeof grepSchema, GrepToolDetails | undefined> {
 	const customOps = options?.operations;
-	return {
+	return withBuiltinToolBlockRenderers<ToolDefinition<typeof grepSchema, GrepToolDetails | undefined>>({
 		name: "grep",
 		label: "grep",
 		description: `Search file contents for a pattern. Returns matching lines with file paths and line numbers. Respects .gitignore. Output is truncated to ${DEFAULT_LIMIT} matches or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Long lines are truncated to ${GREP_MAX_LINE_LENGTH} chars.`,
@@ -389,7 +390,7 @@ export function createGrepToolDefinition(
 						if (contentMode && contextAfterValue > 0) args.push("--after-context", String(contextAfterValue));
 						args.push("--", pattern, isDirectory ? "." : searchPath);
 
-						const child = spawn(rgPath, args, {
+						const child = spawnHostProcess(rgPath, args, {
 							cwd: isDirectory ? searchPath : undefined,
 							env: createChildProcessEnvironment(),
 							stdio: ["ignore", "pipe", "pipe"],
@@ -524,7 +525,7 @@ export function createGrepToolDefinition(
 							if (matchCount >= effectiveLimit) limitHit = true;
 						};
 
-						detachLines = attachLineReader(child.stdout, (line) => {
+						detachLines = attachLineReader(child.stdout!, (line) => {
 							if (done || !line.trim() || (mode === "filesWithMatches" && matchCount >= effectiveLimit)) return;
 							let event: unknown;
 							try {
@@ -656,7 +657,7 @@ export function createGrepToolDefinition(
 			text.setText(formatGrepResult(result, options, theme, context.showImages));
 			return text;
 		},
-	};
+	});
 }
 
 export function createGrepTool(cwd: string, options?: GrepToolOptions): AgentTool<typeof grepSchema> {

@@ -1210,7 +1210,6 @@ describe("open-claude-design reference images: workflow flow", () => {
 				assert.equal(prompt.includes("references/"), false, name);
 			}
 		}
-		assert.equal(ctx.calls.taskOptions["generate-1"]?.[0]?.taskNeeds, undefined);
 		assert.equal(ctx.calls.uiSelects.length, 1);
 		assert.equal(ctx.calls.uiSelects[0]?.message.includes("Reference images"), false);
 		assert.deepEqual(promptTags(ctx.calls.prompts["generate-1"]?.[0] ?? ""), GENERATE_PROMPT_TAGS);
@@ -1315,7 +1314,6 @@ describe("open-claude-design reference images: workflow flow", () => {
 			join(String(result.artifact_dir), "references.md"),
 			...status.paths,
 		]);
-		assert.deepEqual(ctx.calls.taskOptions["generate-1"]?.[0]?.taskNeeds, { needsImages: true });
 		assert.equal(ctx.calls.taskOptions["generate-1"]?.[0]?.model, "auto");
 		const prompt = ctx.calls.prompts["generate-1"]?.[0] ?? "";
 		const section = promptSection(prompt, "reference_images").split("\n");
@@ -1381,7 +1379,6 @@ describe("open-claude-design reference images: workflow flow", () => {
 			readPaths(ctx.calls.taskOptions.exporter?.[0]).map((path) => basename(path)),
 			["design-context.md", "references.md"],
 		);
-		assert.equal(ctx.calls.taskOptions.exporter?.[0]?.taskNeeds, undefined);
 	});
 
 	test("base64 image data never reaches the node result, outputs, tool arguments or prompts (#4590)", async () => {

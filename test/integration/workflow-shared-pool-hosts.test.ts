@@ -232,7 +232,7 @@ async function runsFanOutThroughHostDeath(
 		for (const table of ["work", "pool", "resource_permits", "stage_workspaces", "stage_inputs", "pool_hosts"])
 			assert.ok(tables.includes(`${PREFIX}wf_runs_${table}`), table);
 		for (const host of ["A", "B"]) {
-			const state = join(s.directory, host, "workflows", "pool");
+			const state = join(s.directory, host, "agent", "workflows", "pool");
 			const databases = existsSync(state) ? readdirSync(state).filter((name) => name.endsWith(".sqlite")) : [];
 			assert.deepEqual(databases, [], `host ${host} kept no coordination database`);
 		}
@@ -301,24 +301,43 @@ test.skipIf(process.platform === "win32")(
 			"shared-pool-shipping",
 			{ SHARED_POOL_CHECKPOINT_SHIPPING: JSON.stringify({ intervalMs: 100 }) },
 			async (running) => {
-				shipped = await shippedFromLocalJournal(join(running.directory, "B", "workflows", "pool", "ship"));
+				shipped = await shippedFromLocalJournal(join(running.directory, "B", "agent", "workflows", "pool", "ship"));
 			},
 		);
 		try {
 			assert.ok(shipped.length > 0, "host B shipped the checkpoints it accepted through its local journal");
 			for (const { work, generation } of shipped) {
-				const recorded = await s.query(
-					`SELECT e.key FROM ${PREFIX}wf_runs_pool_operations o JOIN ${PREFIX}wf_events e ON e.run_id = ? AND e.seq = json_extract(o.receipt, '$.seq') WHERE o.work = ? AND o.generation = ?`,
-					s.root,
+				const batches = await s.query(
+					`SELECT events FROM ${PREFIX}wf_runs_ship_batches WHERE work = ? AND generation = ?`,
 					work,
 					generation,
 				);
-				assert.ok(
-					recorded.length > 0,
-					`the checkpoints host B shipped for ${work} generation ${generation} are in the shared journal`,
+				assert.ok(batches.length > 0, `host B shipped ${work} generation ${generation} in batches`);
+				// Every write of the attempt went through host B's local journal: its stage's session writes and the
+				// checkpoint that billed the stage's usage too. A direct commit would have left its receipt.
+				const committed = await s.query(
+					`SELECT operation FROM ${PREFIX}wf_runs_pool_operations WHERE work = ? AND generation = ? AND operation NOT IN ('pool-confirmed', 'pool-handoff')`,
+					work,
+					generation,
 				);
+				assert.deepEqual(committed, [], `no write of ${work} generation ${generation} was committed directly`);
 			}
-			const ship = join(s.directory, "B", "workflows", "pool", "ship");
+			// Each child's stage transcript reached the shared journal whole: its session holds the stage's reply.
+			const outcome = await readJson<{ children: { stageReply?: string }[] }>(
+				join(s.directory, "outcome-resume.json"),
+			);
+			for (const { stageReply } of outcome.children) {
+				const replies = await s.query(
+					`SELECT e.session_id FROM ${PREFIX}wf_runs_pool_session_entries e WHERE e.entry_json LIKE ?`,
+					`%"text":"${stageReply}"%`,
+				);
+				assert.ok(replies.length > 0, `the stage that replied ${stageReply} has its reply in its shared session`);
+			}
+			const usage = await s.query(
+				`SELECT COUNT(DISTINCT key) AS stages FROM ${PREFIX}wf_runs_pool_usage WHERE input > 0`,
+			);
+			assert.ok(Number(usage[0]?.stages) >= CHILDREN, "every child's stage billed its usage");
+			const ship = join(s.directory, "B", "agent", "workflows", "pool", "ship");
 			assert.deepEqual(
 				readdirSync(ship, { recursive: true, encoding: "utf8" }).filter((name) => name.endsWith(".sqlite")),
 				[],

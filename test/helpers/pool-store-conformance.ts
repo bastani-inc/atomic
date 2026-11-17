@@ -6,16 +6,23 @@ import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/int
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { poolStageUsageKey } from "../../packages/workflows/src/durable/journal/pool-stage-usage.js";
 import { SqlFleetStore } from "../../packages/workflows/src/durable/journal/sql-fleet.js";
+import type { PoolMutation, PoolWork } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { openSqlPoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
-import { SqlRateBuckets } from "../../packages/workflows/src/durable/journal/sql-rate-buckets.js";
+import { readFleetRateUsage, SqlRateBuckets } from "../../packages/workflows/src/durable/journal/sql-rate-buckets.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
+import {
+	readSharedPoolFleet,
+	readSharedPoolStats,
+	SqlSharedPool,
+} from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
 import { isStaleLeaseError, type Lease, RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { isStaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
+import { CheckpointShipping } from "../../packages/workflows/src/workers/checkpoint-shipping.js";
 import { openPoolSessions } from "../../packages/workflows/src/workers/pool-session-store.js";
 import { SqlResourceAdmission } from "../../packages/workflows/src/workers/resource-admission.js";
+import { ShipShard } from "../../packages/workflows/src/workers/ship-shard.js";
 import { interceptingDatabase } from "./intercepting-database.js";
 import { staleWorkLease } from "./pool-errors.js";
 import { poolWorkFixture } from "./pool-journal.js";
@@ -366,6 +373,137 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 				);
 				await assertDenseEvents(f, size + 1);
 			});
+		for (const maxBatch of [1_000, 2])
+			test(`a host's shipped session writes, checkpoints and billed usage, ${maxBatch === 2 ? "in batches of two" : "in one batch"}, leave what committing them one by one leaves (#4768)`, async (f) => {
+				const direct = poolWorkFixture("direct");
+				const shipped = poolWorkFixture("shipped");
+				for (const item of [direct, shipped]) await f.pool.enqueue(f.lease, item.work, item.boundary);
+				const claimed = async (item: ReturnType<typeof poolWorkFixture>) => {
+					const attempt = await f.pool.claim(
+						f.lease,
+						`worker-${item.work.boundaryId}`,
+						[{ definition: item.work.definition, digest: item.work.digest }],
+						60_000,
+						{
+							kind: "work",
+							id: (await f.pool.inspect("root")).find((queued) => queued.boundaryId === item.work.boundaryId)!
+								.id,
+							generation: 0,
+						},
+					);
+					assert.ok(attempt);
+					return attempt;
+				};
+				const directAttempt = await claimed(direct);
+				const shippedAttempt = await claimed(shipped);
+				const journal = await f.peer();
+				const host = await openSqlPoolQueue(journal);
+				const ledger = await openSqlPoolUsage(journal);
+				for (const [index, mutation] of sessionWrites(direct, "direct-session").entries())
+					await f.pool.commit(f.lease, directAttempt, `op-${index}`, mutation);
+				const { shipping, receipts } = await shippingHost(host, f.lease, shippedAttempt, maxBatch);
+				for (const [index, mutation] of sessionWrites(shipped, "shipped-session").entries())
+					receipts.push(await shipping.commit(shippedAttempt, mutation, unshipped, { operation: `op-${index}` }));
+				assert.ok(
+					receipts.every((receipt) => receipt.local === true),
+					"the host acknowledged every write locally",
+				);
+				assert.deepEqual(
+					receipts.flatMap((receipt) => (receipt.lastSeq === undefined ? [] : [receipt.lastSeq])),
+					[1, 2, 4, 2, 3],
+					"each session write's receipt carries the sequence the session store gives it",
+				);
+				const usage = { input: 7, output: 3, cacheRead: 0, cacheWrite: 0, cost: 0.5 };
+				assert.deepEqual(
+					await ledger.total("root"),
+					{ ...usage, input: 14, output: 6, cost: 1 },
+					"billed as accepted",
+				);
+				await shipping.flush(shippedAttempt);
+				await shipping.close();
+				assert.deepEqual(await ledger.total("root"), { ...usage, input: 14, output: 6, cost: 1 }, "never twice");
+				const sessions = await openPoolSessions(sqlPoolStorage(journal)!);
+				try {
+					const [one, other] = [await sessions.load("direct-session"), await sessions.load("shipped-session")];
+					assert.equal(other.lastSeq, one.lastSeq);
+					assert.deepEqual(other.entries, one.entries);
+					assert.deepEqual({ ...other.header, id: "" }, { ...one.header, id: "" });
+					const listed = new Map<string, unknown>();
+					for await (const summary of sessions.list({ cwd: "/gone/scratch", includeInternal: true }))
+						listed.set(summary.id, { messageCount: summary.messageCount, firstMessage: summary.firstMessage });
+					assert.deepEqual(listed.get("shipped-session"), listed.get("direct-session"));
+					if (sessions.readResume !== undefined) {
+						const [a, b] = [
+							await sessions.readResume("direct-session"),
+							await sessions.readResume("shipped-session"),
+						];
+						assert.deepEqual(
+							b.branch.map((stored) => [stored.seq, stored.entry.id]),
+							a.branch.map((stored) => [stored.seq, stored.entry.id]),
+						);
+					}
+				} finally {
+					await sessions.close();
+				}
+				// The same checkpoints, each the same value, in the same order: a session write's event records only the
+				// checkpoint it binds with.
+				const recorded = async (scope: string, name: string) =>
+					(
+						await f.database.all<{ key: string; payload: string }>(
+							`SELECT key, payload FROM ${f.table("wf_events")} WHERE run_id = ? AND key LIKE ? ORDER BY seq`,
+							"root",
+							`%${scope}:%`,
+						)
+					).map((row) => JSON.parse(`[${row.key},${row.payload}]`.replaceAll(name, "child")));
+				const shippedEvents = await recorded(shipped.work.scope, "shipped");
+				assert.equal(shippedEvents.length, 4, "two session bindings, a tool checkpoint and the stage's end");
+				assert.deepEqual(shippedEvents, await recorded(direct.work.scope, "direct"));
+				await assertDenseEvents(f);
+			});
+
+		test("a replaced attempt's unshipped session writes never reach its session, and the replacement continues it from what was shipped (#4768)", async (f) => {
+			const item = poolWorkFixture("takeover");
+			await f.pool.enqueue(f.lease, item.work, item.boundary);
+			const definitionOf = [{ definition: item.work.definition, digest: item.work.digest }];
+			const first = (await f.pool.claim(f.lease, "worker-1", definitionOf, 60_000)) as PoolWork;
+			assert.ok(first);
+			const writes = sessionWrites(item, "taken-over");
+			const hostA = await openSqlPoolQueue(await f.peer());
+			const a = await shippingHost(hostA, f.lease, first, 1_000);
+			// Host A ships the create and the first append, then keeps the next append and dies before it ships it.
+			await a.shipping.commit(first, writes[0]!, unshipped);
+			await a.shipping.commit(first, writes[1]!, unshipped, { operation: "a-1" });
+			await a.shipping.flush(first);
+			await a.shipping.commit(first, writes[3]!, unshipped, { operation: "a-3" });
+			await f.database.run(`UPDATE ${f.table("wf_runs_work")} SET expires_at = 0`);
+			assert.equal(await f.pool.expire(f.lease, first), true);
+			const second = (await f.pool.claim(f.lease, "worker-2", definitionOf, 60_000)) as PoolWork;
+			assert.equal(second.generation, first.generation + 1);
+			// Host A's late batch is refused as a whole, and what it held is dropped.
+			await assert.rejects(a.shipping.flush(first), isStaleWorkLeaseError);
+			await a.shipping.close();
+			const hostB = await openSqlPoolQueue(await f.peer());
+			const b = await shippingHost(hostB, f.lease, second, 1_000);
+			const resumed = {
+				kind: "session-append",
+				sessionId: "taken-over",
+				entries: [{ ...messages[0]!, id: "replayed", parentId: "m-2" }],
+				expectSeq: 2,
+			} as PoolMutation;
+			assert.equal((await b.shipping.commit(second, resumed, unshipped, { operation: "b-1" })).lastSeq, 3);
+			await b.shipping.flush(second);
+			await b.shipping.close();
+			const sessions = await openPoolSessions(sqlPoolStorage(f.journal)!);
+			try {
+				assert.deepEqual(
+					(await sessions.load("taken-over")).entries.map((entry) => entry.id),
+					["m-1", "m-2", "replayed"],
+				);
+			} finally {
+				await sessions.close();
+			}
+		});
+
 		test("1000 commits of 256 KiB checkpoints, one after another, all commit and read back intact", async (f) => {
 			await f.pool.enqueue(f.lease, work, boundary);
 			const attempt = await f.pool.claim(f.lease, "worker", [definition], 60_000);
@@ -464,10 +602,298 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 			);
 			const store = await SqlFleetStore.open(peerJournal);
 			const snapshot = await store.snapshot();
-			assert.deepEqual(snapshot.roots, [{ root: "root", ready: 2, leased: 1, sessionLimit: 2, blocked: false }]);
+			assert.deepEqual(snapshot.roots, [
+				{ root: "root", ready: 2, leased: 1, started: 0, sessionLimit: 2, blocked: false },
+			]);
 			assert.deepEqual([...snapshot.leased], [["h1", 1]]);
 			await shared.publishBudget(f.lease, true);
 			assert.equal((await store.snapshot()).roots[0]?.blocked, true);
+		});
+
+		test("fleet rate observations count started attempts, not restore renewals or earlier generations (#4768)", async (f) => {
+			const shared = await SqlSharedPool.open(f.journal, f.pool);
+			await shared.publishConfig(f.lease, sharedConfig);
+			await f.pool.enqueue(f.lease, work, boundary);
+			const peer = await SqlFleetStore.open(await f.peer());
+			const counts = async () => {
+				const [root] = (await peer.snapshot()).roots;
+				return [root?.leased, root?.started];
+			};
+			const claim = async () => {
+				const claimed = await f.pool.claim(f.lease, "h1/worker-1", [definition], 60_000);
+				assert.ok(claimed);
+				return claimed;
+			};
+			const restoring = await claim();
+			assert.deepEqual(await counts(), [1, 0]);
+			await f.pool.renew(f.lease, restoring, 60_000);
+			await f.pool.extend(f.lease, restoring, 60_000);
+			assert.deepEqual(await counts(), [1, 0], "lease maintenance during restore does not start the child");
+			assert.equal(await f.pool.releaseUnplaced(f.lease, restoring), true);
+			const started = await claim();
+			assert.deepEqual(await counts(), [1, 0], "a placement handoff does not confirm the next claim");
+			await f.pool.heartbeat(f.lease, started, 60_000, async () => {});
+			assert.deepEqual(await counts(), [1, 1], "the worker's first heartbeat starts the observation");
+			assert.equal(await f.pool.releaseExited(f.lease, started), true);
+			assert.deepEqual(await counts(), [0, 0]);
+			const replay = await claim();
+			assert.ok(replay.generation > started.generation);
+			assert.deepEqual(await counts(), [1, 0], "a previous generation's confirmation cannot start its replay");
+			await f.pool.heartbeat(f.lease, replay, 60_000, async () => {});
+			assert.deepEqual(await counts(), [1, 1]);
+			await f.pool.complete(f.lease, replay, {
+				runId: replay.childRunId,
+				status: "completed",
+				stages: [],
+				toolNodes: [],
+			});
+			assert.deepEqual(await counts(), [0, 0], "completed attempts stop contributing busy time");
+		});
+
+		test("fleet status reads the controller that holds the fleet's lease, its latest decisions and every rate limit, from any connection (#4768)", async (f) => {
+			const shared = await SqlSharedPool.open(f.journal, f.pool);
+			await shared.publishConfig(f.lease, sharedConfig);
+			const controller = await SqlFleetStore.open(f.journal);
+			assert.deepEqual(await controller.acquire("controller-a", undefined, 60_000), { held: true, epoch: 1 });
+			const fence = { holder: "controller-a", epoch: 1 };
+			for (let step = 1; step <= 7; step++)
+				await controller.record(fence, { kind: "scale-up", target: step + 1, live: step, reason: `step ${step}` });
+			await controller.record(fence, {
+				kind: "error",
+				reason: "scaleTo https://me:secret@vault.example/x failed",
+				error: "WorkerProvisionerError: az: https://me:secret@vault.example/x denied",
+			});
+			const buckets = await SqlRateBuckets.open(f.journal);
+			await buckets.acquire("anthropic", 1, { intervalMs: 1_000, burst: 2 });
+			await buckets.cooldown("openai/gpt", 30_000);
+			await buckets.cooldown("expired", 1);
+			const cooledBy = await databaseNow(f.database);
+			while ((await databaseNow(f.database)) <= cooledBy + 2) await delay(1);
+			const peer = await f.peer();
+			const fleet = (await readSharedPoolStats(peer, "root"))!.fleet;
+			assert.deepEqual(
+				{ holder: fleet.controller?.holder, epoch: fleet.controller?.epoch },
+				{ holder: "controller-a", epoch: 1 },
+			);
+			assert.ok(
+				fleet.controller !== undefined &&
+					fleet.controller.renewedAgoMs >= 0 &&
+					fleet.controller.renewedAgoMs < 60_000,
+				JSON.stringify(fleet.controller),
+			);
+			assert.deepEqual(
+				fleet.scaleEvents?.map((event) => [
+					event.seq,
+					event.kind,
+					event.target,
+					event.live,
+					event.reason,
+					event.error,
+				]),
+				[
+					[
+						8,
+						"error",
+						undefined,
+						undefined,
+						"scaleTo https://vault.example/x failed",
+						{ name: "WorkerProvisionerError", message: "az: https://vault.example/x denied" },
+					],
+					[7, "scale-up", 8, 7, "step 7", undefined],
+					[6, "scale-up", 7, 6, "step 6", undefined],
+					[5, "scale-up", 6, 5, "step 5", undefined],
+					[4, "scale-up", 5, 4, "step 4", undefined],
+				],
+			);
+			assert.deepEqual(
+				fleet.rateLimits?.map((limit) => [limit.scope, limit.requestsPerMinute, limit.cooldownInMs > 0]),
+				[
+					["anthropic", 60, false],
+					["openai/gpt", undefined, true],
+				],
+			);
+			const cooling = fleet.rateLimits![1]!.cooldownInMs;
+			assert.ok(cooling > 0 && cooling <= 30_000, String(cooling));
+			const fromFleet = (await readSharedPoolFleet(peer))!.fleet;
+			assert.deepEqual(
+				[
+					fromFleet.controller?.holder,
+					fromFleet.scaleEvents?.map((event) => event.seq),
+					fromFleet.rateLimits?.length,
+				],
+				["controller-a", [8, 7, 6, 5, 4], 2],
+			);
+			await controller.release(fence);
+			const after = (await readSharedPoolStats(peer, "root"))!.fleet;
+			assert.equal(after.controller, undefined, "a controller that gave its lease up holds no fleet");
+			assert.equal(after.scaleEvents?.length, 5);
+		});
+
+		test("a host's checkpoint shipping and its children's progress reach fleet status from any connection, until a host of 0.9.88 reports in its place (#4768)", async (f) => {
+			const shared = await SqlSharedPool.open(f.journal, f.pool);
+			await shared.publishConfig(f.lease, sharedConfig);
+			const item = poolWorkFixture("progress");
+			await f.pool.enqueue(f.lease, item.work, item.boundary);
+			const claimed = await f.pool.claim(f.lease, "h1/worker-1", [definition], 60_000);
+			assert.ok(claimed);
+			const report = {
+				host: "h1",
+				labels: {},
+				git: "unavailable" as const,
+				restore: false,
+				workers: 1,
+				maxWorkers: 1,
+				roots: ["root"],
+				busy: 1,
+			};
+			await shared.reportHost({
+				...report,
+				shipping: {
+					lagMs: 1_500,
+					pending: 4,
+					lagging: true,
+					error: { name: "StorageError", message: "fetch libsql://me:pw@db.example/x failed" },
+				},
+				progress: [{ work: claimed.id, agoMs: 250, checkpoints: 3 }],
+			});
+			const reportedBy = await databaseNow(f.database);
+			const reportAgeMs = 50;
+			while ((await databaseNow(f.database)) < reportedBy + reportAgeMs) await delay(1);
+			const peer = await f.peer();
+			const stats = (await readSharedPoolStats(peer, "root"))!;
+			assert.deepEqual(stats.hosts.find((host) => host.host === "h1")?.shipping, {
+				lagMs: 1_500,
+				pending: 4,
+				lagging: true,
+				error: { name: "StorageError", message: "fetch libsql://db.example/x failed" },
+			});
+			const [lease] = stats.leases;
+			assert.equal(lease?.checkpoints, 3);
+			assert.ok(
+				lease?.lastProgressAgoMs !== undefined &&
+					lease.lastProgressAgoMs >= 250 + reportAgeMs &&
+					lease.lastProgressAgoMs < 60_250,
+				JSON.stringify(lease),
+			);
+			const older = await release0988();
+			const olderJournal = await f.peer();
+			older.adopt(olderJournal);
+			const olderPool = await older.SqlSharedPool.open(olderJournal, await openSqlPoolQueue(olderJournal));
+			const reported = await databaseNow(f.database);
+			while ((await databaseNow(f.database)) <= reported) await delay(1);
+			await olderPool.reportHost(report);
+			const replaced = (await readSharedPoolStats(peer, "root"))!;
+			assert.equal(replaced.hosts.find((host) => host.host === "h1")?.shipping, undefined);
+			assert.deepEqual(
+				replaced.leases.map((entry) => [entry.lastProgressAgoMs, entry.checkpoints]),
+				[[undefined, undefined]],
+				"a report of a version that sends no progress hides what an earlier report of the host sent",
+			);
+		});
+
+		for (const first of ["0.9.88", "this version"] as const)
+			test(`a 0.9.88 host and this version share one pool's registry and rate buckets when ${first} opens them first (#4768)`, async (f) => {
+				const older = await release0988();
+				const olderJournal = await f.peer();
+				older.adopt(olderJournal);
+				const newerJournal = await f.peer();
+				const openOlder = async () => ({
+					pool: await older.SqlSharedPool.open(olderJournal, await openSqlPoolQueue(olderJournal)),
+					buckets: await older.SqlRateBuckets.open(olderJournal),
+				});
+				const openNewer = async () => ({
+					pool: await SqlSharedPool.open(newerJournal, await openSqlPoolQueue(newerJournal)),
+					buckets: await SqlRateBuckets.open(newerJournal),
+				});
+				const [olderStores, newerStores] =
+					first === "0.9.88"
+						? [await openOlder(), await openNewer()]
+						: await (async () => {
+								const newer = await openNewer();
+								return [await openOlder(), newer] as const;
+							})();
+				await newerStores.pool.publishConfig(f.lease, sharedConfig);
+				const host = (name: string) => ({
+					host: name,
+					labels: {},
+					git: "unavailable" as const,
+					restore: false,
+					workers: 1,
+					maxWorkers: 2,
+					roots: ["root"],
+					busy: 0,
+				});
+				await olderStores.pool.reportHost(host("h-0.9.88"));
+				await newerStores.pool.reportHost({ ...host("h-new"), shipping: { lagMs: 0, pending: 0 } });
+				const shape = { intervalMs: 1_000, burst: 10 };
+				assert.deepEqual(await olderStores.buckets.acquire("anthropic", 2, shape), { granted: 2 });
+				assert.deepEqual(await newerStores.buckets.acquire("anthropic", 3, shape), { granted: 3 });
+				const reopened = await openOlder();
+				await reopened.pool.reportHost(host("h-0.9.88"));
+				assert.deepEqual(await reopened.buckets.acquire("anthropic", 1, shape), { granted: 1 });
+				assert.deepEqual(
+					(await reopened.pool.registeredHosts()).map((entry: { host: string; maxWorkers: number }) => [
+						entry.host,
+						entry.maxWorkers,
+					]),
+					[
+						["h-0.9.88", 2],
+						["h-new", 2],
+					],
+				);
+				const stats = (await readSharedPoolStats(newerJournal, "root"))!;
+				assert.deepEqual(
+					stats.hosts.map((entry) => [entry.host, entry.shipping]),
+					[
+						["h-0.9.88", undefined],
+						["h-new", { lagMs: 0, pending: 0 }],
+					],
+				);
+				const epoch = await newerStores.buckets.registerWaiting("anthropic", "h-new");
+				await newerStores.buckets.reportWaiting([{ reporter: "h-new", scope: "anthropic", waitingMs: 750, epoch }]);
+				await newerStores.buckets.reportWaiting([{ reporter: "h-new", scope: "anthropic", waitingMs: 750, epoch }]);
+				await newerStores.buckets.reportWaiting([{ reporter: "h-new", scope: "anthropic", waitingMs: 500, epoch }]);
+				assert.deepEqual(
+					(await readFleetRateUsage(newerJournal)).map((usage) => [usage.scope, usage.acquired, usage.waitingMs]),
+					[["anthropic", 3, 750]],
+					"0.9.88 hosts change neither counter, so their unmeasured waits make mixed-version caps more permissive",
+				);
+			});
+
+		test("concurrent rate reporters compact retired totals and reject late registrations and updates (#4768)", async (f) => {
+			const store = await SqlRateBuckets.open(f.journal);
+			await store.acquire("p", 0, { intervalMs: 1_000, burst: 1 });
+			const epochs = new Map<string, number>();
+			for (const reporter of ["old-a", "old-b"]) {
+				const epoch = await store.registerWaiting("p", reporter);
+				epochs.set(reporter, epoch);
+				await store.reportWaiting([{ scope: "p", reporter, waitingMs: 100, epoch }]);
+			}
+			const runs = sqlPoolStorage(f.journal)!.tables.runs;
+			await f.database.run(`UPDATE ${runs}_rate_waiting SET updated_at = 0`);
+			const other = await SqlRateBuckets.open(await f.peer());
+			const [one, two] = await Promise.all([
+				store.registerWaiting("p", "live-a"),
+				other.registerWaiting("p", "live-b"),
+			]);
+			await Promise.all([
+				store.reportWaiting([{ scope: "p", reporter: "live-a", waitingMs: 50, epoch: one }]),
+				other.reportWaiting([{ scope: "p", reporter: "live-b", waitingMs: 50, epoch: two }]),
+			]);
+			assert.equal(Number((await f.database.get(`SELECT COUNT(*) AS count FROM ${runs}_rate_waiting`))?.count), 2);
+			assert.equal((await readFleetRateUsage(f.journal))[0]?.waitingMs, 300);
+			assert.deepEqual(
+				(
+					await store.reportWaiting([
+						{ scope: "p", reporter: "old-a", waitingMs: 100, epoch: epochs.get("old-a")! },
+					])
+				).expired,
+				[{ scope: "p", reporter: "old-a" }],
+			);
+			const late = await other.registerWaiting("p", "old-a");
+			assert.notEqual(late, epochs.get("old-a"));
+			await store.reportWaiting([{ scope: "p", reporter: "old-a", waitingMs: 100, epoch: epochs.get("old-a")! }]);
+			assert.equal((await readFleetRateUsage(f.journal))[0]?.waitingMs, 300);
 		});
 
 		test("one fleet controller holds the lease and records under it until another takes it over", async (f) => {
@@ -540,6 +966,31 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 					);
 					assert.equal(outcome.cooldownMs, 0);
 				}
+			assert.deepEqual(failures, []);
+		});
+
+		test("a rate bucket whose interval is not a whole number of milliseconds grants no more than its rate (#4768)", async (f) => {
+			// About 17 391 requests a minute: the bucket keeps its schedule in whole milliseconds, and a schedule rounded
+			// down by a fraction of the interval at each grant would let every host through faster than the rate.
+			const shape = { intervalMs: 3.45, burst: 50 };
+			const failures: Error[] = [];
+			const hosts = await Promise.all(
+				Array.from({ length: 6 }, async () => SqlRateBuckets.open(await f.peer(failures))),
+			);
+			// Each host has written to the bucket once, taking nothing, before the clock starts: the elapsed time is the
+			// acquires' own, not their connections' setup.
+			await Promise.all(hosts.map((store) => store.acquire("anthropic", 0, shape)));
+			const started = await databaseNow(f.database);
+			const outcomes = await Promise.all(
+				hosts.flatMap((store) => Array.from({ length: 25 }, () => store.acquire("anthropic", 1, shape))),
+			);
+			const elapsedMs = (await databaseNow(f.database)) - started;
+			const granted = outcomes.reduce((sum, outcome) => sum + outcome.granted, 0);
+			// GCRA's bound: its burst, plus one token per interval of the database's clock that passed.
+			assert.ok(
+				granted <= shape.burst + elapsedMs / shape.intervalMs + 1e-6,
+				JSON.stringify({ granted, elapsedMs }),
+			);
 			assert.deepEqual(failures, []);
 		});
 
@@ -742,6 +1193,96 @@ function toolCheckpointOf(item: ReturnType<typeof poolWorkFixture>, step: number
 	};
 }
 
+const unshipped = async (): Promise<never> => assert.fail("a write the host keeps is not committed directly");
+
+/** A host's shipping of `attempt` into `queue`, through a local journal of its own. */
+async function shippingHost(
+	queue: Awaited<ReturnType<typeof openSqlPoolQueue>>,
+	lease: Lease,
+	attempt: PoolWork,
+	maxBatch: number,
+) {
+	const shard = await ShipShard.open(":memory:", "root");
+	const shipping = new CheckpointShipping(shard, {
+		intervalMs: 60_000,
+		maxBatch,
+		maxLagMs: 600_000,
+		host: `host-${attempt.worker}`,
+		deliver: (held, batch) => queue.shipBatch(lease, held, batch),
+		sessionState: (held, session) => queue.poolSessionState(held.id, session),
+		snapshotsStored: (checkpoint) => queue.assertSnapshotsStored(checkpoint),
+	});
+	await shipping.hold(attempt, 60_000);
+	return { shipping, receipts: [] as { readonly local?: true; readonly lastSeq?: number }[] };
+}
+
+/**
+ * A stage's session writes and checkpoints, as an agent stage of `item`'s child makes them: a create, appends, a tool
+ * checkpoint between them, a replace, and the checkpoint that ends the stage and bills its usage.
+ */
+function sessionWrites(item: ReturnType<typeof poolWorkFixture>, sessionId: string): PoolMutation[] {
+	const { scope } = item.work;
+	const childRun = { ...item.boundary.topology!.boundary!.child };
+	const stage = {
+		kind: "stage" as const,
+		workflowId: "root",
+		name: "stage",
+		replayKey: `${scope}:stage`,
+		sessionId,
+		completedAt: 1,
+		topology: { version: 1 as const, stageId: "stage", parentIds: [], sourceOrder: 0, run: childRun },
+	};
+	const header = { id: sessionId, version: 4 as const, createdAt: "2026-01-01T00:00:00Z", cwd: "/gone/scratch" };
+	const entry = (id: string, parentId: string | null, text: string): SessionEntry => ({
+		type: "message",
+		id,
+		parentId,
+		timestamp: "2026-01-01T00:00:00Z",
+		message: { role: "user", content: text, timestamp: 1 },
+	});
+	return [
+		{
+			kind: "session-create",
+			checkpoint: { ...stage, checkpointId: `${scope}:session:0` },
+			header,
+			entries: [entry("m-1", null, "first \u0000 prompt")],
+		},
+		{ kind: "session-append", sessionId, entries: [entry("m-2", "m-1", "second")], expectSeq: 1 },
+		{ kind: "checkpoint", checkpoint: toolCheckpointOf(item, 1) },
+		{
+			kind: "session-append",
+			sessionId,
+			entries: [entry("m-3", "m-2", "third"), entry("m-4", "m-3", "fourth")],
+			expectSeq: 2,
+		},
+		{
+			kind: "session-replace",
+			checkpoint: { ...stage, checkpointId: `${scope}:session:1`, completedAt: 2 },
+			header,
+			entries: [entry("m-1", null, "first \u0000 prompt"), entry("c-1", "m-1", "compacted")],
+			expectSeq: 4,
+		},
+		{ kind: "session-append", sessionId, entries: [entry("m-5", "c-1", "after")], expectSeq: 2 },
+		{
+			kind: "checkpoint",
+			checkpoint: {
+				...stage,
+				checkpointId: `${scope}:stage:complete`,
+				completedAt: 3,
+				output: "done",
+				topology: { ...stage.topology, status: "completed" },
+				modelAttempts: [
+					{
+						model: "fixture",
+						success: true,
+						usage: { input: 7, output: 3, cacheRead: 0, cacheWrite: 0, cost: 0.5 },
+					},
+				],
+			} as unknown as DurableToolCheckpoint,
+		},
+	] as PoolMutation[];
+}
+
 /** A tool output of about 256 KiB, its text distinct for each `step`. */
 function largeOutput(step: number): { readonly step: number; readonly text: string } {
 	const unit = `${step}:"quoted" \\ é;`;
@@ -767,6 +1308,41 @@ async function assertDenseEvents(f: { database: SqliteDatabase; table: (name: st
 			count,
 			"every checkpoint was recorded",
 		);
+}
+
+interface Release0988Stores {
+	readonly SqlSharedPool: {
+		open(
+			journal: SqlRunJournal,
+			queue: Awaited<ReturnType<typeof openSqlPoolQueue>>,
+		): Promise<{
+			reportHost(host: Parameters<SqlSharedPool["reportHost"]>[0]): Promise<void>;
+			registeredHosts(): Promise<readonly { readonly host: string; readonly maxWorkers: number }[]>;
+		}>;
+	};
+	readonly SqlRateBuckets: {
+		open(journal: SqlRunJournal): Promise<Pick<SqlRateBuckets, "acquire">>;
+	};
+	adopt(journal: SqlRunJournal): void;
+}
+
+let release0988Promise: Promise<Release0988Stores> | undefined;
+
+function release0988(): Promise<Release0988Stores> {
+	const fixture = (name: string) => `../fixtures/shared-pool-0.9.88/durable/journal/${name}`;
+	if (release0988Promise === undefined) {
+		release0988Promise = (async () => {
+			const internal = await import(fixture("internal.ts"));
+			const pool = await import(fixture("sql-shared-pool.ts"));
+			const buckets = await import(fixture("sql-rate-buckets.ts"));
+			return {
+				SqlSharedPool: pool.SqlSharedPool,
+				SqlRateBuckets: buckets.SqlRateBuckets,
+				adopt: (journal) => internal.registerSqlPoolStorage(journal, sqlPoolStorage(journal)!),
+			};
+		})();
+	}
+	return release0988Promise;
 }
 
 function delay(ms: number): Promise<void> {

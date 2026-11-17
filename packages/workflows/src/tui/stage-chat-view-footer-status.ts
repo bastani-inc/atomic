@@ -1,9 +1,20 @@
-import type { AgentSession } from "@bastani/atomic";
-import { Box, Text } from "@bastani/atomic-tui";
+import {
+	type AgentSession,
+	applyAttachedComposer,
+	type NavKeybindings,
+	type NavKeyStyle,
+	navEntryKeys,
+	renderNavHintLine,
+	renderNavKeyOverlay,
+	TASK_CHAT_OVERLAY_KEYS,
+	taskChatKeys,
+} from "@bastani/atomic";
+import { Box, getKeybindings, Text } from "@bastani/atomic-tui";
 import { isTerminalStageStatus } from "../shared/store-internal.js";
 import type { StageSnapshot } from "../shared/store-types.js";
+import { elapsedStageMs } from "../shared/timing.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
-import { APP_ACTION, isKeybindingsLike, navKeyLabel } from "./keybindings-adapter.js";
+import { APP_ACTION, isKeybindingsLike } from "./keybindings-adapter.js";
 import { wrapIdentifierLines } from "./run-identity-rows.js";
 import {
 	bgFn,
@@ -14,52 +25,76 @@ import {
 	trailingWidgetBorderChar,
 	widgetHintTargetLineIndex,
 } from "./stage-chat-view-render-helpers.js";
+import { isAbortableStreamingSession, isBlocked } from "./stage-chat-view-state.js";
 import type { StageChatViewContext } from "./stage-chat-view-types.js";
-import { applyStageLabelToEditorTopRule, applyStageLabelToWidgetTopRule } from "./stage-input-label.js";
+import {
+	applyStageLabelToEditorTopRule,
+	applyStageLabelToWidgetTopRule,
+	resolvedStageName,
+} from "./stage-input-label.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
-/**
- * Pass-through rule callback for chatHostStyle (Case 1 of issue #2886).
- *
- * Label injection for the editor top rule happens AFTER CustomEditor has
- * finished wrapping — see injectStageLabelIntoEditorTopRule(). Injecting
- * inside the rule() callback breaks CustomEditor.isEditorBorderLine(), which
- * uses a pattern match to detect borders and would incorrectly treat a
- * label-decorated line as content, prepending ❯ instead of extending the
- * border.
- */
-export function stageLabelRule(
-	_ctx: StageChatViewContext,
-	_stageName: string | undefined,
-	hex: string,
-	text: string,
-): string {
-	return hexToAnsi(hex) + text + RESET;
+interface HostTheme {
+	fg(color: string, text: string): string;
+	bold?(text: string): string;
 }
 
-/**
- * Post-process rendered editor lines to inject `[stage: name]` into the top
- * rule line (Case 1 of issue #2886).
- *
- * Uses the first rendered editor line only, including a scrolled `↑ N more`
- * top border, and never a later bottom rule. Duplicate detection ignores
- * draft content. Runs AFTER CustomEditor.render() so ❯ stays on the content
- * line.
- *
- * Styling: `[stage: ` in textMuted, name in bold text, 40-column minimum floor.
- */
+function hostThemeOf(candidate: unknown): HostTheme | undefined {
+	return typeof candidate === "object" &&
+		candidate !== null &&
+		typeof (candidate as { fg?: unknown }).fg === "function"
+		? (candidate as HostTheme)
+		: undefined;
+}
+
 export function injectStageLabelIntoEditorTopRule(
 	ctx: StageChatViewContext,
 	stageName: string | undefined,
 	editorLines: readonly string[],
+	stage?: StageSnapshot,
+	now = Date.now(),
 ): string[] {
-	return applyStageLabelToEditorTopRule(ctx.theme, stageName, editorLines);
+	const cleanStageName = resolvedStageName(stageName);
+	if (cleanStageName === undefined) return applyStageLabelToEditorTopRule(ctx.theme, cleanStageName, editorLines);
+	const waiting = stage?.status === "awaiting_input";
+	const elapsed = stage?.status === "running" ? elapsedStageMs(stage, now) : undefined;
+	const state =
+		stage === undefined
+			? undefined
+			: waiting
+				? "needs input"
+				: elapsed !== undefined
+					? formatStageElapsed(elapsed)
+					: stage.status === "completed"
+						? "done"
+						: stage.status;
+	const label = ["stage", cleanStageName, state].filter(Boolean).join(" · ");
+	const t = ctx.theme;
+	const hostTheme = hostThemeOf(ctx.piTheme);
+	return applyAttachedComposer(
+		{
+			accent: (text) => (hostTheme ? hostTheme.fg("accent", text) : paint(text, t.accent)),
+			text: (text) => (hostTheme ? hostTheme.fg("text", text) : paint(text, t.text)),
+			dim: (text) => (hostTheme ? hostTheme.fg("dim", text) : paint(text, t.dim)),
+		},
+		label,
+		ctx.chatHost.hasInputText() ? undefined : `${waiting ? "Answer" : "Message"} ${cleanStageName}…`,
+		editorLines,
+	);
+}
+
+function formatStageElapsed(ms: number): string {
+	const seconds = Math.max(0, Math.floor(ms / 1000));
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
 export function renderHeader(ctx: StageChatViewContext, width: number, stage: StageSnapshot | undefined): string[] {
 	const t = ctx.theme;
 	// While a pooled stage moves to a replacement attempt, its run may be republished before the stage is.
-	const stageName = stage?.name ?? ctx.handle?.stageName ?? "stage";
+	const stageName = resolvedStageName(stage?.name ?? ctx.handle?.stageName) ?? "stage";
+	const workflowName = resolvedStageName(ctx.workflowName) ?? "workflow";
 	const sid = ctx.handle?.sessionId ?? stage?.sessionId;
 	const prefixWidth = visibleWidth("   STAGE  ");
 	const separatorWidth = visibleWidth(" / ");
@@ -82,16 +117,16 @@ export function renderHeader(ctx: StageChatViewContext, width: number, stage: St
 	const rightWidth = meta ? visibleWidth(meta) + 1 : 0;
 	const singleRowNameBudget = width - prefixWidth - separatorWidth - rightWidth - (meta ? 1 : 0);
 
-	const fullNameWidth = visibleWidth(ctx.workflowName) + visibleWidth(stageName);
+	const fullNameWidth = visibleWidth(workflowName) + visibleWidth(stageName);
 	if (!sid || singleRowNameBudget >= fullNameWidth) {
-		const names = fitHeaderNames(ctx.workflowName, stageName, Math.max(2, singleRowNameBudget));
+		const names = fitHeaderNames(workflowName, stageName, Math.max(2, singleRowNameBudget));
 		const left = renderHeaderLeft(ctx, names.workflow, names.stage);
 		const right = meta ? `${paint(meta, t.dim)} ` : "";
 		const gap = Math.max(0, width - visibleWidth(left) - visibleWidth(right));
 		return [left + " ".repeat(gap) + right];
 	}
 
-	const names = fitHeaderNames(ctx.workflowName, stageName, Math.max(2, width - prefixWidth - separatorWidth));
+	const names = fitHeaderNames(workflowName, stageName, Math.max(2, width - prefixWidth - separatorWidth));
 	const left = renderHeaderLeft(ctx, names.workflow, names.stage);
 	const lines = [left + " ".repeat(Math.max(0, width - visibleWidth(left)))];
 	if (visibleWidth(meta) + 1 <= width) {
@@ -143,22 +178,95 @@ export function sepRule(ctx: StageChatViewContext, width: number): string {
 	return hexToAnsi(ctx.theme.borderDim) + "─".repeat(width) + RESET;
 }
 
+export function stageNavKeyStyle(ctx: StageChatViewContext): NavKeyStyle {
+	const t = ctx.theme;
+	const hostTheme = hostThemeOf(ctx.piTheme);
+	if (hostTheme) {
+		return {
+			dim: (text) => hostTheme.fg("dim", text),
+			text: (text) => hostTheme.fg("text", text),
+			muted: (text) => hostTheme.fg("muted", text),
+			border: (text) => hostTheme.fg("borderMuted", text),
+			bold: (text) =>
+				typeof hostTheme.bold === "function" ? hostTheme.bold(text) : paint(text, t.text, { bold: true }),
+		};
+	}
+	return {
+		dim: (text) => paint(text, t.dim),
+		text: (text) => paint(text, t.text),
+		muted: (text) => paint(text, t.textMuted),
+		border: (text) => paint(text, t.borderDim),
+		bold: (text) => paint(text, t.text, { bold: true }),
+	};
+}
+
+function stageNavKeybindings(ctx: Pick<StageChatViewContext, "piKeybindings">): NavKeybindings {
+	const candidate = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
+	const fallback = getKeybindings();
+	return {
+		matches: (data, action) =>
+			candidate
+				? candidate.matches(data, action)
+				: fallback.matches(data, action as Parameters<typeof fallback.matches>[1]),
+		getKeys: (action) => {
+			const keys =
+				candidate && typeof candidate.getKeys === "function"
+					? candidate.getKeys(action)
+					: fallback.getKeys(action as Parameters<typeof fallback.getKeys>[0]);
+			return action === "app.interrupt" ? keys : keys.filter((key) => key !== "esc" && key !== "escape");
+		},
+	};
+}
+
+export function isStageChatInterruptible(ctx: StageChatViewContext): boolean {
+	return (
+		isAbortableStreamingSession(ctx) ||
+		ctx.chatHost.isCompacting() ||
+		ctx.chatHost.isBashRunning() ||
+		ctx.chatHost.isEditingBashCommand()
+	);
+}
+
+export function hasStageChatTasks(ctx: StageChatViewContext): boolean {
+	return ctx.chatHost.hasBackgroundTasks();
+}
+
+export function renderStageChatKeyOverlay(ctx: StageChatViewContext, width: number): string[] {
+	const keybindings = stageNavKeybindings(ctx);
+	const interruptible = isStageChatInterruptible(ctx);
+	const hasTasks = hasStageChatTasks(ctx);
+	const expandable = ctx.setToolsExpanded !== undefined;
+	const overlayKeys = TASK_CHAT_OVERLAY_KEYS.flatMap((entry) => {
+		if (entry.keys === "esc" && !interruptible) return [];
+		if (entry.action === "app.tools.expand" && !expandable) return [];
+		if (entry.action === "app.nav.back" && hasTasks)
+			return [entry, { action: "app.agents.focus", label: "agents, on an empty prompt" }];
+		return [entry];
+	});
+	return renderNavKeyOverlay("keys · stage chat", overlayKeys, width, stageNavKeyStyle(ctx), keybindings);
+}
+
+export function renderStageChatHintLine(ctx: StageChatViewContext, width: number): string {
+	const keybindings = stageNavKeybindings(ctx);
+	const blocked = isBlocked(ctx);
+	const chatKeys = taskChatKeys(
+		"graph",
+		isStageChatInterruptible(ctx),
+		!blocked && hasStageChatTasks(ctx),
+		ctx.setToolsExpanded !== undefined,
+	).filter((entry) => !blocked || entry.action !== APP_ACTION.keysHelp);
+	return renderNavHintLine(chatKeys, width, stageNavKeyStyle(ctx), keybindings);
+}
+
 export function renderFooterWithOrchestratorReturnHint(
 	ctx: StageChatViewContext,
 	width: number,
 	footerLines: readonly string[],
 ): string[] {
-	if (footerLines.length === 0) {
-		return [mergeOrchestratorReturnHintIntoLine(ctx, "", width)];
+	if (stackedStageDialogOpen(ctx) || closableQuestionCardOpen(ctx)) {
+		return [mergeOrchestratorReturnHintIntoLine(ctx, footerLines[0] ?? "", width)];
 	}
-	const lines = [...footerLines];
-	const hasTasks = ctx.chatHost.renderTaskFooter(width).length > 0;
-	// Never trade the task status or /tasks route for the graph shortcut.
-	// With tasks, share the identity line instead and leave MCP intact.
-	if (hasTasks && lines.length === 1) lines.unshift("");
-	const hintIndex = hasTasks ? 0 : lines.length - 1;
-	lines[hintIndex] = mergeOrchestratorReturnHintIntoLine(ctx, lines[hintIndex] ?? "", width);
-	return lines;
+	return [...footerLines, renderStageChatHintLine(ctx, width)];
 }
 export function renderReadOnlyArchiveFooter(ctx: StageChatViewContext, width: number): string[] {
 	const closeHint = paint("ctrl+c", ctx.theme.text, { bold: true }) + paint(" to close", ctx.theme.textMuted);
@@ -183,6 +291,42 @@ export function embedStageLabelInWidgetTopRule(
 	width: number,
 ): string[] {
 	return applyStageLabelToWidgetTopRule(ctx.theme, stageName, widgetLines, width);
+}
+
+export function embedCustomUiBackHint(
+	ctx: StageChatViewContext,
+	widgetLines: readonly string[],
+	width: number,
+): string[] {
+	const backKey = backToGraphKey(ctx);
+	if (!backKey || widgetLines.length < 2 || ctx.mountedCustomUi?.component.capturesBack?.() === true) {
+		return [...widgetLines];
+	}
+	let bottomBorderIndex = -1;
+	for (let index = widgetLines.length - 1; index >= 0; index -= 1) {
+		const plain = stripAnsi(widgetLines[index] ?? "").trim();
+		if (plain.length >= 2 && "╰└+".includes(plain[0] ?? "") && "╯┘+".includes(plain.at(-1) ?? "")) {
+			bottomBorderIndex = index;
+			break;
+		}
+	}
+	if (bottomBorderIndex < 0 || bottomBorderIndex + 1 >= widgetLines.length) return [...widgetLines];
+	const hintIndex = bottomBorderIndex + 1;
+	const hintLine = widgetLines[hintIndex] ?? "";
+	const hintPlain = stripAnsi(hintLine).trim();
+	if (hintPlain.length === 0 || hintPlain.includes(`${backKey} graph`)) return [...widgetLines];
+	const suffixPlain = ` · ${backKey} graph`;
+	const hostTheme = hostThemeOf(ctx.piTheme);
+	const suffixStyled = hostTheme ? hostTheme.fg("dim", suffixPlain) : paint(suffixPlain, ctx.theme.dim);
+	const suffixWidth = visibleWidth(suffixPlain);
+	const trimmedLine = hintLine.trimEnd();
+	const nextHint =
+		visibleWidth(trimmedLine) + suffixWidth <= width
+			? `${trimmedLine}${suffixStyled}`
+			: `${truncateToWidth(trimmedLine, Math.max(0, width - suffixWidth), "")}${suffixStyled}`;
+	const lines = [...widgetLines];
+	lines[hintIndex] = nextHint;
+	return lines;
 }
 
 export function embedOrchestratorReturnHintInWidget(
@@ -218,11 +362,14 @@ function mergeOrchestratorReturnHintIntoLine(
 		minimumPrefixWidth?: number;
 	} = {},
 ): string {
-	// An open choice or yes/no card: ← moves its selection, so its only way out is Esc, which closes the card.
-	const cardOpen = closableQuestionCardOpen(ctx);
-	const key = cardOpen ? "esc" : backToGraphKey(ctx);
-	const full = cardOpen ? " close" : " return to graph";
-	const compact = cardOpen ? " close" : " graph";
+	const stackedDialog = stackedStageDialogOpen(ctx);
+	const cardOpen = stackedDialog || closableQuestionCardOpen(ctx);
+	const backKey = stackedDialog ? "" : backToGraphKey(ctx);
+	if (!cardOpen && !backKey) return line;
+	const key = backKey || "esc";
+	const action = stackedDialog ? " cancel" : " close";
+	const full = cardOpen ? (backKey ? ` graph · esc${action}` : action) : " return to graph";
+	const compact = cardOpen ? full : " graph";
 	const fullHint = {
 		plain: `${key}${full}`,
 		styled: paint(key, ctx.theme.text, { bold: true }) + paint(full, ctx.theme.textMuted),
@@ -315,8 +462,20 @@ export function closableQuestionCardOpen(
 	);
 }
 
+export function stackedStageDialogOpen(
+	ctx: Pick<StageChatViewContext, "promptState"> &
+		Partial<Pick<StageChatViewContext, "dismissedPromptId" | "mountedCustomUi">>,
+): boolean {
+	const prompt = ctx.promptState?.prompt;
+	return (
+		ctx.mountedCustomUi !== null &&
+		ctx.mountedCustomUi !== undefined &&
+		prompt?.source === "stage-dialog" &&
+		prompt.id !== ctx.dismissedPromptId
+	);
+}
+
 /** The key that returns from a stage chat to its graph, as its hints name it. */
 export function backToGraphKey(ctx: Pick<StageChatViewContext, "piKeybindings">): string {
-	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
-	return navKeyLabel(keybindings, APP_ACTION.navBack, "←") || "←";
+	return navEntryKeys(stageNavKeybindings(ctx), { action: APP_ACTION.navBack, label: "graph" });
 }

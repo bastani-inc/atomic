@@ -506,8 +506,6 @@ impl Actor {
 	}
 	#[cfg(unix)]
 	fn run_command(&self, runner: &RunnerLease, command: &CommandTask) {
-		use std::os::unix::process::CommandExt;
-		use std::process::{Command, Stdio};
 		// A delegated cgroup v2 child, where there is one, that the pipe leader enters before exec (#5057).
 		#[cfg(target_os = "linux")]
 		let cgroup = cgroup::Cgroup::create();
@@ -521,20 +519,6 @@ impl Actor {
 					Ok((ProcessResource::Pty(pty), Some(writer), reader, Box::new(io::empty()), None))
 				},
 				CommandTerminal::Pipe {} => {
-					let mut spawn = if let Some(shell) = &command.intent.shell {
-						let mut spawn = Command::new(shell.program.process_text());
-						spawn.args(shell.args.iter().map(JsString::process_text));
-						spawn
-					} else {
-						let mut spawn = Command::new("/bin/sh");
-						spawn.arg("-c");
-						spawn
-					};
-					spawn
-						.arg(command.intent.command.process_text())
-						.stdin(Stdio::piped())
-						.stdout(Stdio::piped())
-						.stderr(Stdio::piped());
 					if command.file_spool() {
 						let mut store = command.output.lock().unwrap();
 						store.background();
@@ -545,51 +529,63 @@ impl Actor {
 							)));
 						}
 					}
-					if let Some(cwd) = &command.intent.cwd {
-						spawn.current_dir(cwd.process_text());
-					}
-					if command.intent.inherit_env == Some(false) {
-						spawn.env_clear();
-					}
-					if let Some(env) = &command.intent.env {
-						spawn.envs(env.iter().map(|(key, value)| (key, value.process_text())));
-					}
-					// A session of its own, whose ID is the leader's PID: cleanup ends every process left in it,
-					// including descendants that moved to another process group (#5057). Host death is the
-					// guardian's (see `guardian`), not PR_SET_PDEATHSIG's: that fires when the spawning thread
-					// ends, which would kill a leader whose failed cleanup must keep it owned and reapable.
-					unsafe {
-						spawn.pre_exec(move || {
-							if libc::setsid() < 0 {
-								return Err(io::Error::last_os_error());
-							}
-							#[cfg(target_os = "linux")]
-							if let Some(procs) = procs {
-								cgroup::Cgroup::enter(procs);
-							}
-							Ok(())
-						});
-					}
-					let mut child = spawn.spawn().map_err(explain_spawn_error)?;
-					let stdin = child.stdin.take().unwrap();
-					let stdout = child.stdout.take();
-					let stderr = child.stderr.take();
+					#[cfg(target_os = "linux")]
+					let (child, stdin, stdout, stderr) = spawn_pipe_command(&command.intent, procs)?;
+					#[cfg(not(target_os = "linux"))]
+					let (child, stdin, stdout, stderr) = {
+						use std::os::unix::process::CommandExt;
+						use std::process::{Command, Stdio};
+						let mut spawn = if let Some(shell) = &command.intent.shell {
+							let mut spawn = Command::new(shell.program.process_text());
+							spawn.args(shell.args.iter().map(JsString::process_text));
+							spawn
+						} else {
+							let mut spawn = Command::new("/bin/sh");
+							spawn.arg("-c");
+							spawn
+						};
+						spawn
+							.arg(command.intent.command.process_text())
+							.stdin(Stdio::piped())
+							.stdout(Stdio::piped())
+							.stderr(Stdio::piped());
+						if let Some(cwd) = &command.intent.cwd {
+							spawn.current_dir(cwd.process_text());
+						}
+						if command.intent.inherit_env == Some(false) {
+							spawn.env_clear();
+						}
+						if let Some(env) = &command.intent.env {
+							spawn.envs(env.iter().map(|(key, value)| (key, value.process_text())));
+						}
+						// A session of its own, whose ID is the leader's PID: cleanup ends every process left in it,
+						// including descendants that moved to another process group (#5057). Host death is the
+						// guardian's (see `guardian`), not PR_SET_PDEATHSIG's: that fires when the spawning thread
+						// ends, which would kill a leader whose failed cleanup must keep it owned and reapable.
+						unsafe {
+							spawn.pre_exec(move || {
+								if libc::setsid() < 0 {
+									return Err(io::Error::last_os_error());
+								}
+								Ok(())
+							});
+						}
+						let mut child = spawn.spawn().map_err(explain_spawn_error)?;
+						let stdin = child.stdin.take().unwrap();
+						let stdout = child.stdout.take().unwrap();
+						let stderr = child.stderr.take().unwrap();
+						(child, File::from(std::os::fd::OwnedFd::from(stdin)), stdout, stderr)
+					};
 					let error = make_nonblocking(&stdin)
-						.and_then(|()| stdout.as_ref().map_or(Ok(()), make_nonblocking))
-						.and_then(|()| stderr.as_ref().map_or(Ok(()), make_nonblocking))
+						.and_then(|()| make_nonblocking(&stdout))
+						.and_then(|()| make_nonblocking(&stderr))
 						.err()
 						.map(|error| error.to_string());
 					Ok((
 						ProcessResource::Pipe(child),
 						Some(Box::new(stdin)),
-						stdout.map_or_else(
-							|| Box::new(io::empty()) as ProcessReader,
-							|reader| Box::new(reader),
-						),
-						stderr.map_or_else(
-							|| Box::new(io::empty()) as ProcessReader,
-							|reader| Box::new(reader),
-						),
+						Box::new(stdout),
+						Box::new(stderr),
 						error,
 					))
 				},
@@ -1188,6 +1184,56 @@ fn explain_spawn_error(error: io::Error) -> io::Error {
 		}
 	}
 	error
+}
+/// Starts a pipe command on Linux without copying the host's address space (see `crate::spawn`): in a session of its
+/// own, whose ID is the leader's PID, so cleanup ends every process left in it, including descendants that moved to
+/// another process group (#5057), and in the cgroup `procs` belongs to before it runs anything. Host death is the
+/// guardian's (see `guardian`), not PR_SET_PDEATHSIG's: that fires when the spawning thread ends, which would kill a
+/// leader whose failed cleanup must keep it owned and reapable.
+#[cfg(target_os = "linux")]
+fn spawn_pipe_command(
+	intent: &CommandIntent,
+	procs: Option<libc::c_int>,
+) -> io::Result<(crate::spawn::SpawnedChild, File, File, File)> {
+	use std::ffi::OsString;
+	use std::os::fd::AsRawFd;
+	let (program, mut args): (OsString, Vec<OsString>) = match &intent.shell {
+		Some(shell) => (
+			shell.program.process_text().into(),
+			shell.args.iter().map(|arg| arg.process_text().into()).collect(),
+		),
+		None => ("/bin/sh".into(), vec!["-c".into()]),
+	};
+	args.push(intent.command.process_text().into());
+	let env = crate::spawn::child_environment(
+		intent.inherit_env != Some(false),
+		intent
+			.env
+			.iter()
+			.flatten()
+			.map(|(key, value)| (OsString::from(key), OsString::from(value.process_text()))),
+	);
+	let cwd = intent.cwd.as_ref().map(|cwd| PathBuf::from(cwd.process_text()));
+	let request = crate::spawn::SpawnRequest::new(
+		&program,
+		args,
+		env,
+		cwd.as_deref(),
+		true,
+		crate::spawn::SignalDefaults::Handled,
+	)?;
+	let pipes = crate::spawn::stdio_pipes()?;
+	let pid = crate::spawn::spawn(
+		&request,
+		[pipes.child[0].as_raw_fd(), pipes.child[1].as_raw_fd(), pipes.child[2].as_raw_fd()],
+		procs,
+	)?;
+	Ok((
+		crate::spawn::SpawnedChild::new(pid),
+		File::from(pipes.stdin),
+		File::from(pipes.stdout),
+		File::from(pipes.stderr),
+	))
 }
 #[cfg(unix)]
 fn make_nonblocking(fd: &impl std::os::fd::AsRawFd) -> io::Result<()> {
@@ -1988,6 +2034,59 @@ mod tests {
 		unsafe { libc::kill(-pid, libc::SIGCONT) };
 		actor.shutdown();
 	}
+	/// Memory the host holds while it starts commands: a fork copies the page tables of all of it first, about 65 ms
+	/// per GiB on Linux.
+	#[cfg(target_os = "linux")]
+	const HOST_MEMORY_BYTES: usize = 1024 * 1024 * 1024;
+	/// The longest a command may take to start, at the median of [`COMMAND_STARTS`]: a start that does not copy the
+	/// address space takes well under 5 ms at any size, and a fork of [`HOST_MEMORY_BYTES`] 40 ms or more even on fast
+	/// hardware. The median keeps a slow moment of a loaded machine from deciding the result.
+	#[cfg(target_os = "linux")]
+	const COMMAND_START_BUDGET: Duration = Duration::from_millis(25);
+	#[cfg(target_os = "linux")]
+	const COMMAND_STARTS: usize = 9;
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn a_host_holding_a_gigabyte_starts_commands_without_a_fork_of_it_5345() {
+		// Measured in a test process of its own, so the memory it holds never slows the forks of tests running
+		// alongside it, such as the PTY ones.
+		const MEASURING: &str = "ATOMIC_TEST_COMMAND_START_MEASURING";
+		if std::env::var_os(MEASURING).is_none() {
+			let status = std::process::Command::new(std::env::current_exe().unwrap())
+				.args([
+					"--exact",
+					"task_supervisor::process::tests::a_host_holding_a_gigabyte_starts_commands_without_a_fork_of_it_5345",
+					"--nocapture",
+					"--test-threads=1",
+				])
+				.env(MEASURING, "1")
+				.status()
+				.unwrap();
+			assert!(status.success(), "the measuring test process failed");
+			return;
+		}
+		let held = vec![1u8; HOST_MEMORY_BYTES];
+		let (actor, owner) = command_owner();
+		let mut starts: Vec<Duration> = (0..COMMAND_STARTS)
+			.map(|run| {
+				let started = Instant::now();
+				actor
+					.start_command(&owner, pipe_intent("true"), format!("start-{run}").into())
+					.unwrap();
+				started.elapsed()
+			})
+			.collect();
+		starts.sort();
+		let median = starts[starts.len() / 2];
+		assert!(
+			median <= COMMAND_START_BUDGET,
+			"commands took {median:?} to start at the median: {starts:?}"
+		);
+		assert_eq!(held[HOST_MEMORY_BYTES - 1], 1);
+		actor.shutdown();
+	}
+
 	#[cfg(unix)]
 	#[test]
 	fn started_command_exposes_its_process_group_for_identity_only() {

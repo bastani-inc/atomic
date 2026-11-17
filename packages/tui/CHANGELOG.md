@@ -7,11 +7,16 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 ### Added
 
 - `TUI.requestImmediateRender()` renders on the next tick, ahead of the frame pacing `requestRender()` applies, for a frame that answers the user's own keystroke.
+- `Markdown` accepts per-instance `hyperlinks: false` to display links as text and URLs without OSC 8, and `images: false` to display image placeholders. Other Markdown instances keep their existing behavior ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Changed
 
 - The fullscreen renderer no longer lays out the screen under an overlay that covers all of it, until the overlay stops covering it.
 - A focused component whose input handler returns a promise is repainted when the promise settles, rather than right after the key is routed.
+
+### Fixed
+
+- F1–F5 and Page Up/Down sent as `ESC [ [ …` (libuv on Windows, the Linux console) are read as one key instead of typing their final letter into the editor
 
 ## [0.9.88] - 2026-11-16
 

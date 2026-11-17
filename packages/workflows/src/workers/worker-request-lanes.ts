@@ -57,6 +57,7 @@ export const WORKER_REQUEST_LANES: Readonly<Record<AnsweredWorkerRequest, Worker
 	recycle: "barrier",
 	complete: "barrier",
 	commit: "commits",
+	"session-sync": "commits",
 	"stage-workspace": "commits",
 	heartbeat: "heartbeats",
 	control: "heartbeats",
@@ -68,6 +69,7 @@ export const WORKER_REQUEST_LANES: Readonly<Record<AnsweredWorkerRequest, Worker
 	"delivery-ready": "detached",
 	place: "detached",
 	"rate-acquire": "detached",
+	"rate-release": "detached",
 };
 
 /** Schedules one worker's requests by {@link WorkerRequestLane}; a request that fails releases its successors too. */

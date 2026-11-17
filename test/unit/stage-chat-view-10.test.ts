@@ -273,11 +273,11 @@ describe("StageChatView", () => {
 		});
 
 		await vi.waitFor(() => {
-			assert.match(stripAnsi(view.render(96).join("\n")), /\$ echo persisted/);
+			assert.match(stripAnsi(view.render(96).join("\n")), /Bash\(echo persisted\)/);
 			assert.ok(renders > 0);
 		});
 		const rendered = stripAnsi(view.render(96).join("\n"));
-		assert.match(rendered, /\$ echo persisted/);
+		assert.match(rendered, /Bash\(echo persisted\)/);
 		assert.doesNotMatch(rendered, /\$ \.\.\./);
 		assert.match(rendered, /persisted/);
 		assert.match(rendered, /READ-ONLY SESSION/);

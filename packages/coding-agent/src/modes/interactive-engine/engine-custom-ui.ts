@@ -13,6 +13,7 @@ import { runCallback, runSynchronousCallback } from "../../core/callback-activit
 import type { HostCustomUiState, HostCustomUiStateListener } from "../../core/extensions/index.js";
 import type { ScrollableWidgetComponent, WidgetScrollRequest } from "../../core/extensions/ui-types.js";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
+import { sourceError } from "../../core/tasks/agent-panel-source.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import type { Theme } from "../interactive/theme/theme.js";
 import { theme } from "../interactive/theme/theme.js";
@@ -183,6 +184,13 @@ function jsonResult(value: object | boolean | null | number | string | undefined
 	return decoded;
 }
 
+const GENERIC_SOURCE_FAILURE = sourceError(Object.create(null)).message;
+
+function renderError(error: unknown): Error {
+	const message = sourceError(error).message;
+	return new Error(message === GENERIC_SOURCE_FAILURE ? "Remote component render failed." : message);
+}
+
 export class EngineCustomUiService {
 	private readonly widgetIds = new Map<string, string>();
 	private readonly active = new Map<string, ActiveComponent>();
@@ -217,7 +225,9 @@ export class EngineCustomUiService {
 		const componentId = `remote_widget_${++this.nextId}`;
 		this.widgetIds.set(key, componentId);
 		const terminal = new RemoteTerminal(() => this.send({ type: "engine_custom_invalidate", componentId }));
-		const tui = new BackgroundRenderTui(terminal, this.backgroundRenders, `check:${componentId}`);
+		const tui = new BackgroundRenderTui(terminal, this.backgroundRenders, `check:${componentId}`, (error) =>
+			this.sendComponentRenderFailure(componentId, error),
+		);
 		this.followHostMode(tui, componentId);
 		ensurePngTranscoder(() => {
 			tui.invalidate();
@@ -227,6 +237,7 @@ export class EngineCustomUiService {
 			.then((component) => {
 				if (this.widgetIds.get(key) !== componentId) {
 					component.dispose?.();
+					tui.stop();
 					return;
 				}
 				tui.addChild(component);
@@ -247,13 +258,14 @@ export class EngineCustomUiService {
 					...(scroll ? { widgetScroll: scroll } : {}),
 				});
 			})
-			.catch((error: Error) => {
+			.catch((error: unknown) => {
 				if (this.widgetIds.get(key) === componentId) this.widgetIds.delete(key);
+				tui.stop();
 				this.send({
 					type: "engine_custom_frame",
 					componentId,
 					requestId: 0,
-					lines: [`Widget ${key} failed: ${error.message}`],
+					lines: [`Widget ${key} failed: ${renderError(error).message}`],
 				});
 			});
 	}
@@ -403,6 +415,7 @@ export class EngineCustomUiService {
 				record.terminal.columns = Math.max(1, command.width);
 				record.terminal.rows = Math.max(1, command.rows);
 				const { componentId, requestId } = command;
+				record.lastRequestId = requestId;
 				if (record.widgetKey !== undefined) {
 					this.backgroundRenders.schedule(`frame:${componentId}`, () =>
 						this.renderWidgetFrame(componentId, requestId, record),
@@ -410,7 +423,6 @@ export class EngineCustomUiService {
 					break;
 				}
 				// Answered at once, and through the component's TUI so a paint it already had scheduled is not repeated.
-				record.lastRequestId = requestId;
 				record.frameRequested = true;
 				record.staleWhileHidden = false;
 				record.tui.renderNow();
@@ -494,6 +506,8 @@ export class EngineCustomUiService {
 		const requestId = record.lastRequestId;
 		if (requestId === undefined || record.hidden === true) {
 			if (record.staleWhileHidden === true) return;
+			if (requestId === undefined && record.hidden !== true && !this.rendersWithoutFailure(componentId, record))
+				return;
 			record.staleWhileHidden = record.hidden === true;
 			this.send({ type: "engine_custom_invalidate", componentId });
 			return;
@@ -502,19 +516,32 @@ export class EngineCustomUiService {
 		record.frameRequested = false;
 		record.staleWhileHidden = false;
 		let lines: string[];
+		let scrollRequest: WidgetScrollRequest | undefined;
 		try {
 			lines = runSynchronousCallback({ kind: "renderer", name: componentId }, () =>
 				record.component.render(record.terminal.columns),
 			);
+			scrollRequest = (record.component as ScrollableWidgetComponent).getScrollRequest?.();
 		} catch (error) {
 			record.lastFrame = undefined;
-			this.sendRenderFailure(componentId, requestId, error instanceof Error ? error : new Error(String(error)));
+			this.sendRenderFailure(componentId, requestId, error);
 			return;
 		}
-		const scrollRequest = (record.component as ScrollableWidgetComponent).getScrollRequest?.();
 		if (!requested && record.lastFrame !== undefined && sameFrame(record.lastFrame, lines, scrollRequest)) return;
 		record.lastFrame = { lines: [...lines], scrollRequest };
 		this.sendFrame(componentId, requestId, record, lines);
+	}
+
+	private rendersWithoutFailure(componentId: string, record: ActiveComponent): boolean {
+		try {
+			runSynchronousCallback({ kind: "renderer", name: componentId }, () =>
+				record.component.render(record.terminal.columns),
+			);
+			return true;
+		} catch (error) {
+			this.sendRenderFailure(componentId, 0, error);
+			return false;
+		}
 	}
 
 	/** Renders a widget frame on the background lane. A widget closed while the render waited gets none. */
@@ -526,7 +553,7 @@ export class EngineCustomUiService {
 			);
 			this.sendFrame(componentId, requestId, record, lines);
 		} catch (error) {
-			this.sendRenderFailure(componentId, requestId, error instanceof Error ? error : new Error(String(error)));
+			this.sendRenderFailure(componentId, requestId, error);
 		}
 	}
 
@@ -541,12 +568,18 @@ export class EngineCustomUiService {
 		});
 	}
 
-	private sendRenderFailure(componentId: string, requestId: number, error: Error): void {
+	private sendComponentRenderFailure(componentId: string, error: unknown): void {
+		const record = this.active.get(componentId);
+		if (!record) return;
+		this.sendRenderFailure(componentId, record.lastRequestId ?? 0, error);
+	}
+
+	private sendRenderFailure(componentId: string, requestId: number, error: unknown): void {
 		this.send({
 			type: "engine_custom_frame",
 			componentId,
 			requestId,
-			lines: [`Remote component render failed: ${error.message}`],
+			lines: [`Remote component render failed: ${renderError(error).message}`],
 		});
 	}
 	private notifyWidgetRelease(key: string): void {
