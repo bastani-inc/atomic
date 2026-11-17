@@ -38,15 +38,40 @@ test("a block whose every stack runs in another change's area belongs to that ch
 	);
 	assert.equal(blockOwner(block(["capture file:///x/dist/core/worktree-snapshot/capture.js:1"]), areas), "#5345");
 	for (const frame of [
-		"confirmRetiredShardUnused file:///repo/packages/workflows/src/workers/ship-shard.ts:120:5",
-		"confirmRetiredShardUnused file:///pkg/dist/builtin/workflows/src/workers/ship-shard.js:120:5",
-		"confirmRetiredShardUnused file:///pkg/dist/builtin/workflows/src/extension/index.bundle.mjs:9120:5",
+		"holdsNothingSync (file:///repo/packages/workflows/src/workers/ship-shard.ts:704:5)",
+		"onlyConnectionSync (file:///pkg/dist/builtin/workflows/src/workers/ship-shard.js:712:5)",
+		"shardOwnerSync (file:///pkg/dist/builtin/workflows/src/extension/index.bundle.mjs:86828:5)",
+		"statement (file:///pkg/dist/core/storage/node-sqlite.js:1164:5)",
+		"databaseNow (file:///pkg/dist/core/storage/node-sqlite.js:45:5)",
 	]) {
 		assert.equal(
-			blockOwner(block(["prepare node:sqlite", frame]), OWNED_ELSEWHERE),
+			blockOwner(block(["prepare (node:sqlite:1:1)", frame]), OWNED_ELSEWHERE),
 			"#5376 (node:sqlite statements off the event loop)",
 		);
 	}
+	assert.equal(
+		blockOwner(
+			block([
+				"prepare (node:sqlite:1:1)",
+				"(anonymous) (file:///pkg/dist/core/storage/node-sqlite.js:1175:30)",
+				"driver (file:///pkg/dist/core/storage/node-sqlite.js:935:16)",
+				"execute (file:///pkg/dist/core/storage/node-sqlite.js:1161:21)",
+				"all (file:///pkg/dist/core/storage/node-sqlite.js:1175:21)",
+			]),
+			[
+				{
+					owner: "#5376 (node:sqlite statements off the event loop)",
+					functions: [
+						{
+							file: "packages/coding-agent/src/core/storage/node-sqlite.ts",
+							name: "NodeSqliteDatabase.createExecutor/<returned>.all/execute()",
+						},
+					],
+				},
+			],
+		),
+		"#5376 (node:sqlite statements off the event loop)",
+	);
 });
 
 test("a block with any stack in this code's own modules, or in two areas, is not deferred", () => {
@@ -79,16 +104,16 @@ test("a block with any stack in this code's own modules, or in two areas, is not
 				durationMs: 400,
 				samples: 3,
 				hotFrames: [
-					{ count: 3, frame: "rebuildIndex file:///x/dist/builtin/workflows/src/fleet/controller.js:10" },
+					{ count: 3, frame: "rebuildIndex (file:///x/dist/builtin/workflows/src/fleet/controller.js:10:5)" },
 				],
 				stacks: [
 					{
 						count: 3,
 						frames: [
-							"rebuildIndex file:///x/dist/builtin/workflows/src/fleet/controller.js:10",
-							"journalStep file:///x/dist/builtin/workflows/src/fleet/controller.js:40",
-							"commitAlone file:///x/dist/core/storage/node-sqlite.js:1500",
-							"runBatch file:///x/dist/core/storage/node-sqlite.js:1420",
+							"rebuildIndex (file:///x/dist/builtin/workflows/src/fleet/controller.js:10:5)",
+							"journalStep (file:///x/dist/builtin/workflows/src/fleet/controller.js:40:5)",
+							"commitAlone (file:///x/dist/core/storage/node-sqlite.js:1500:5)",
+							"runBatch (file:///x/dist/core/storage/node-sqlite.js:1420:5)",
 						],
 					},
 				],
@@ -97,4 +122,14 @@ test("a block with any stack in this code's own modules, or in two areas, is not
 		),
 		undefined,
 	);
+	for (const frames of [
+		["rebuildIndex (file:///pkg/dist/builtin/workflows/src/extension/index.bundle.mjs:9120:5)"],
+		["(anonymous) (file:///pkg/dist/builtin/workflows/src/extension/index.bundle.mjs:9120:5)"],
+		["readdirSync (node:fs:1:1)", "liveTicketEntries (file:///pkg/dist/core/storage/node-sqlite.js:238:5)"],
+		["realpathSync (node:fs:1:1)", "acquireOpenLockSync (file:///pkg/dist/core/storage/node-sqlite.js:615:5)"],
+		["closeSync (node:fs:1:1)", "close (file:///pkg/dist/core/storage/node-sqlite.js:465:5)"],
+		["prepare (node:sqlite:1:1)", "(anonymous) (file:///pkg/dist/core/storage/node-sqlite.js:1175:30)"],
+	]) {
+		assert.equal(blockOwner(block(frames), OWNED_ELSEWHERE), undefined);
+	}
 });

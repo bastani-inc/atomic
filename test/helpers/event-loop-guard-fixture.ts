@@ -256,6 +256,51 @@ export function describeBlock(block: BlockRecord): string {
  * `packages/coding-agent/src/core/tools/x.ts` and for `.../dist/core/tools/x.js`, `builtin/intercom/broker/y` for
  * `packages/intercom/broker/y.ts` and its copy under `dist/builtin/intercom/`.
  */
+const SHIP_SHARD_PATH = "packages/workflows/src/workers/ship-shard";
+const NODE_SQLITE_PATH = "packages/coding-agent/src/core/storage/node-sqlite";
+
+const SHIP_SHARD_FUNCTIONS: ReadonlySet<string> = new Set([
+	"holdsNothingSync",
+	"onlyConnectionSync",
+	"shardOwnerSync",
+	"removeConfirmedShard",
+	"removeUnchanged",
+	"retireEndedShipShards",
+	"holdsNothing",
+	"shardOwner",
+	"inspectShard",
+	"idleShard",
+	"underJournalLock",
+	"removeShardFiles",
+	"shipJournalDirectory",
+	"shipRootFile",
+	"shipShardPath",
+	"shipEventOf",
+	"shipBatchId",
+	"shipDigest",
+]);
+
+const NODE_SQLITE_DEFAULT_SELECTORS = [
+	"databaseNow",
+	"NodeSqliteDatabase.tryBegin/this.driver()",
+	"NodeSqliteDatabase.dataVersion/this.driver()",
+	"NodeSqliteDatabase.createExecutor/statement",
+	"NodeSqliteDatabase.createExecutor/<returned>.exec/execute()",
+	"NodeSqliteDatabase.createExecutor/<returned>.run/execute()",
+	"NodeSqliteDatabase.createExecutor/<returned>.get/execute()",
+	"NodeSqliteDatabase.createExecutor/<returned>.all/execute()",
+	"NodeSqliteDatabase.close/this.tail.then()/this.driver()",
+	"openConnection",
+	"openNodeSqliteDatabase",
+	"openNodeSqliteDatabase/switchToWriteAheadLog()",
+] as const;
+
+const WORKFLOW_BUNDLE_TAILS = [
+	"builtin/workflows/src/extension/index.bundle",
+	"builtin/workflows/src/extension/local-worker-entry",
+	"builtin/workflows/src/index",
+] as const;
+
 function modulePathTails(path: string): string[] {
 	const normalized = path.replaceAll("\\", "/").replace(/\.(?:[cm]?[jt]s)$/, "");
 	if (normalized.startsWith("packages/coding-agent/src/")) {
@@ -264,14 +309,82 @@ function modulePathTails(path: string): string[] {
 	const match = /^packages\/([^/]+)\/(.+)$/.exec(normalized);
 	if (!match) return [normalized];
 	const [, pkg, rest] = match;
-	const tails = [`${pkg}/${rest}`, `builtin/${pkg}/${rest.replace(/^src\//, "")}`];
-	if (normalized === "packages/workflows/src/workers/ship-shard") {
-		tails.push("builtin/workflows/src/extension/index.bundle");
-	}
-	return tails;
+	return [`${pkg}/${rest}`, `builtin/${pkg}/${rest.replace(/^src\//, "")}`];
 }
 
-const isApplicationFrame = (frame: string) => !frame.startsWith("… ") && !/\bnode:/.test(frame) && /[\\/]/.test(frame);
+function selectorRuntimeNames(selectorName: string): string[] {
+	const parts = selectorName.split("/");
+	const names = new Set<string>();
+	const definitions = parts.filter((part) => !part.endsWith("()"));
+	const leaf = definitions.at(-1);
+	if (leaf !== undefined) {
+		if (leaf.startsWith("<returned>.")) {
+			names.add(leaf.slice("<returned>.".length));
+		} else {
+			names.add(leaf);
+			const dot = leaf.lastIndexOf(".");
+			if (dot !== -1 && leaf !== "NodeSqliteDatabase.close") {
+				names.add(leaf.slice(dot + 1));
+			}
+		}
+	}
+	for (const part of parts) {
+		if (!part.endsWith("()")) continue;
+		const call = part.slice(0, -2);
+		const callee = call.slice(call.lastIndexOf(".") + 1);
+		if (callee !== "then" && callee !== "catch" && callee !== "finally") {
+			names.add(callee);
+		}
+	}
+	if (selectorName.startsWith("NodeSqliteDatabase.close/")) {
+		names.add("finalizeReleasedStatements");
+	}
+	return [...names];
+}
+
+interface ParsedFrame {
+	readonly fn: string;
+	readonly url: string;
+}
+
+function parseFrame(frame: string): ParsedFrame | undefined {
+	const trimmed = frame.trim();
+	if (trimmed.startsWith("… ")) return undefined;
+	const split = trimmed.lastIndexOf(" ");
+	if (split <= 0) return undefined;
+	const fn = trimmed.slice(0, split).trim();
+	const raw = trimmed.slice(split + 1).trim();
+	const location = (raw.startsWith("(") && raw.endsWith(")") ? raw.slice(1, -1) : raw).replaceAll("\\", "/");
+	const lineMatch = /^(.*?):\d+(?::\d+)?$/.exec(location);
+	const url = lineMatch ? lineMatch[1]! : location;
+	return { fn, url };
+}
+
+const isAnonymousFn = (fn: string) => fn === "(anonymous)" || fn === "<anonymous>";
+
+function hotApplicationFrame(
+	frames: readonly string[],
+): { readonly url: string; readonly fns: readonly string[] } | undefined {
+	const parsed: ParsedFrame[] = [];
+	for (const raw of frames) {
+		if (raw.trim().startsWith("… ")) continue;
+		const frame = parseFrame(raw);
+		if (frame === undefined) return undefined;
+		if (frame.url.startsWith("node:")) continue;
+		if (!/[\\/]/.test(frame.url)) return undefined;
+		parsed.push(frame);
+	}
+	const hot = parsed[0];
+	if (hot === undefined) return undefined;
+	if (!isAnonymousFn(hot.fn)) return { url: hot.url, fns: [hot.fn] };
+	const callers: string[] = [];
+	for (const caller of parsed.slice(1, 3)) {
+		if (caller.url === hot.url && !isAnonymousFn(caller.fn)) callers.push(caller.fn);
+	}
+	return { url: hot.url, fns: callers };
+}
+
+const urlMatchesTail = (url: string, tail: string) => url.includes(tail.endsWith("/") ? tail : `${tail}.`);
 
 /**
  * The open change that owns the code a block spent its samples in, when every hot frame it names lies in one such
@@ -279,20 +392,73 @@ const isApplicationFrame = (frame: string) => !frame.startsWith("… ") && !/\bn
  */
 export function blockOwner(
 	block: BlockRecord,
-	areas: readonly { readonly owner: string; readonly paths: readonly string[] }[],
+	areas: readonly {
+		readonly owner: string;
+		readonly paths?: readonly string[];
+		readonly functions?: readonly { readonly file: string; readonly name: string }[];
+	}[],
 ): string | undefined {
-	const tails = areas.map((area) => ({ owner: area.owner, tails: area.paths.flatMap(modulePathTails) }));
-	const ownerOfFrame = (frame: string) =>
-		tails.find((area) =>
-			area.tails.some((tail) => frame.replaceAll("\\", "/").includes(tail.endsWith("/") ? tail : `${tail}.`)),
-		)?.owner;
+	const compiled = areas.map((area) => {
+		const rawPaths = area.paths ?? [];
+		const plainPaths = rawPaths.filter((path) => {
+			const norm = path.replaceAll("\\", "/").replace(/\.(?:[cm]?[jt]s)$/, "");
+			return norm !== NODE_SQLITE_PATH;
+		});
+		const hasShipShard = rawPaths.some(
+			(path) => path.replaceAll("\\", "/").replace(/\.(?:[cm]?[jt]s)$/, "") === SHIP_SHARD_PATH,
+		);
+		const functionSelectors = [
+			...(area.functions ?? []),
+			...(rawPaths.some((path) => path.replaceAll("\\", "/").replace(/\.(?:[cm]?[jt]s)$/, "") === NODE_SQLITE_PATH)
+				? NODE_SQLITE_DEFAULT_SELECTORS.map((name) => ({ file: `${NODE_SQLITE_PATH}.ts`, name }))
+				: []),
+		];
+		const byFile = new Map<string, Set<string>>();
+		for (const selector of functionSelectors) {
+			let set = byFile.get(selector.file);
+			if (!set) {
+				set = new Set();
+				byFile.set(selector.file, set);
+			}
+			for (const fn of selectorRuntimeNames(selector.name)) set.add(fn);
+		}
+		return {
+			owner: area.owner,
+			tails: plainPaths.flatMap(modulePathTails),
+			hasShipShard,
+			functions: [...byFile.entries()].map(([file, names]) => ({ tails: modulePathTails(file), names })),
+		};
+	});
+	const ownerOfStack = (frames: readonly string[]): string | undefined => {
+		const hot = hotApplicationFrame(frames);
+		if (hot === undefined || hot.fns.length === 0) return undefined;
+		for (const area of compiled) {
+			if (area.tails.some((tail) => urlMatchesTail(hot.url, tail))) return area.owner;
+			if (
+				area.hasShipShard &&
+				WORKFLOW_BUNDLE_TAILS.some((tail) => urlMatchesTail(hot.url, tail)) &&
+				hot.fns.some((fn) => SHIP_SHARD_FUNCTIONS.has(fn))
+			) {
+				return area.owner;
+			}
+			for (const entry of area.functions) {
+				if (
+					entry.tails.some((tail) => urlMatchesTail(hot.url, tail)) &&
+					hot.fns.some(
+						(fn) =>
+							entry.names.has(fn) ||
+							(fn !== "close" && !fn.endsWith(".close") && entry.names.has(fn.slice(fn.lastIndexOf(".") + 1))),
+					)
+				) {
+					return area.owner;
+				}
+			}
+		}
+		return undefined;
+	};
 	const owners = new Set<string | undefined>();
-	for (const stack of block.stacks) {
-		const hot = stack.frames.find(isApplicationFrame);
-		owners.add(hot === undefined ? undefined : ownerOfFrame(hot));
-	}
-	const hottest = block.hotFrames.map((hot) => hot.frame).find(isApplicationFrame);
-	if (hottest !== undefined) owners.add(ownerOfFrame(hottest));
+	for (const stack of block.stacks) owners.add(ownerOfStack(stack.frames));
+	if (block.hotFrames.length > 0) owners.add(ownerOfStack(block.hotFrames.map((hot) => hot.frame)));
 	if (owners.size !== 1) return undefined;
 	return [...owners][0];
 }
