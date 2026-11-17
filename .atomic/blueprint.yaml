@@ -31,6 +31,9 @@ knowledge:
       scripts/*.test.mjs tests run with `npm run test:scripts` (`node --test`). Build first: several
       suites load the built packages. Focused TUI tests run with `node --test packages/tui/test/<name>.test.ts`;
       the TUI workspace's npm test script always expands its full test glob, even when a filename is appended.
+      Before real CLI captures, run `npm run build`; `npm run check` does not refresh the compiled CLI's
+      builtin assets. Exercise `/tasks` and stage chats too: direct component tests do not cover RPC-hosted
+      widget renderer resolution.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run

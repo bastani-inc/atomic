@@ -469,6 +469,31 @@ test("inbound card collapses >4 rendered rows to 3 rows + hint and shows full bo
 	assert.ok(narrow.endsWith("…"));
 });
 
+test("render-only Supervisor registration fills metadata-only tool definitions (#5350)", () => {
+	initTheme("dark", false);
+	let resolver: import("../../packages/coding-agent/src/core/extensions/types.ts").ToolRendererResolver | undefined;
+	intercom({
+		on() {},
+		registerTool() {},
+		registerCommand() {},
+		registerShortcut() {},
+		registerMessageRenderer() {},
+		registerToolRenderer(value: NonNullable<typeof resolver>) {
+			resolver = value;
+		},
+		events: { on: () => () => {}, emit() {} },
+	} as never);
+	assert.ok(resolver);
+	const definition = resolver("contact_supervisor", () => ({ label: "Contact Supervisor" }));
+	assert.ok(definition?.renderCall);
+	assert.ok(definition?.renderResult);
+	const custom = { renderResult: () => ({ render: () => ["private projection"], invalidate() {} }) };
+	assert.equal(
+		resolver("contact_supervisor", () => custom),
+		custom,
+	);
+});
+
 test("main chat, subagent view and stage chat resolve the exact same intercom_message card component (#5350)", () => {
 	initTheme("dark", false);
 	let lightRenderer: ConstructorParameters<typeof CustomMessageComponent>[1];

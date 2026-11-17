@@ -157,6 +157,9 @@ export class RpcSessionBinding {
 					inputForm: this.inputForm,
 					footerDataProvider,
 					capabilities: this.extensionUICapabilities,
+					getToolDefinition: (name) =>
+						session.extensionRunner.resolveToolRenderers(name, () => session.getToolDefinition(name)),
+					getCustomMessageRenderer: (name) => session.extensionRunner.getMessageRenderer(name),
 				}),
 				mode: this.customUi ? "tui" : "rpc",
 				commandContextActions: {

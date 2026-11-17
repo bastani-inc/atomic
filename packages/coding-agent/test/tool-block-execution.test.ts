@@ -205,6 +205,25 @@ test("a failed custom result renderer does not expose its hidden raw output (#52
 	}
 });
 
+test("fallback argument summaries shorten complete Unicode graphemes (#5350)", () => {
+	const component = new ToolExecutionComponent(
+		"custom_action",
+		"unicode-fallback",
+		{ value: `${"a".repeat(60)}😀😀end` },
+		{},
+		undefined,
+		ui,
+		"/workspace",
+	);
+	try {
+		const line = component.render(160).map(stripTerminalSequences).join("\n");
+		assert.doesNotMatch(line, /[\ud800-\udfff]/u);
+		assert.match(line, /😀…\)/u);
+	} finally {
+		component.dispose();
+	}
+});
+
 test("unknown extension calls use a labeled compact header instead of raw JSON (#5224)", () => {
 	const component = new ToolExecutionComponent(
 		"custom_action",

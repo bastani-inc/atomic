@@ -1,5 +1,14 @@
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
-import { type Component, Container, getCapabilities, Image, Spacer, Text, type TUI } from "@bastani/atomic-tui";
+import {
+	type Component,
+	Container,
+	getCapabilities,
+	Image,
+	Spacer,
+	Text,
+	type TUI,
+	truncateToWidth,
+} from "@bastani/atomic-tui";
 import type { TSchema } from "typebox";
 import type { ToolDefinition, ToolRenderContext, ToolRenderers } from "../../../core/extensions/types.ts";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
@@ -186,7 +195,7 @@ export class ToolExecutionComponent extends Container {
 						.map(([key, value]) => {
 							const raw = typeof value === "string" ? value : (JSON.stringify(value) ?? "");
 							const text = terminalDisplayText(raw).replace(/[\r\n\t]/g, " ");
-							return `${terminalDisplayText(key)}=${text.length > 64 ? `${text.slice(0, 63)}…` : text}`;
+							return `${terminalDisplayText(key)}=${truncateToWidth(text, 64, "…")}`;
 						})
 						.join(" · ")
 				: String(this.args ?? "");

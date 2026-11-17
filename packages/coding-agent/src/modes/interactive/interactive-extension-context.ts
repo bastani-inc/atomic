@@ -242,19 +242,25 @@ InteractiveModeBase.prototype.createExtensionUIContext = function (this: Interac
 		},
 		getToolsExpanded: () => this.toolOutputExpanded,
 		setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
-		getChatRenderSettings: () => ({
-			hideThinkingBlock: this.hideThinkingBlock,
-			hiddenThinkingLabel: this.hiddenThinkingLabel,
-			toolOutputExpanded: this.toolOutputExpanded,
-			showImages: this.settingsManager.getShowImages(),
-			imageWidthCells: this.settingsManager.getImageWidthCells(),
-			outputPad: this.outputPad,
-			renderLatex: this.settingsManager.getLatexRenderingEnabled(),
-			fullscreenScrollbar: this.settingsManager.getFullscreenScrollbar(),
-			fullscreenWheelScrollLines: this.settingsManager.getFullscreenWheelScrollLines(),
-			markdownTransformers: this.getMarkdownTransformers(),
-			getToolDefinition: (toolName: string) => this.getRegisteredToolDefinition(toolName),
-			getCustomMessageRenderer: (customType: string) => this.session.extensionRunner.getMessageRenderer(customType),
-		}),
+		getChatRenderSettings: () => {
+			const rendering = this.chatMessageRenderOptions();
+			return {
+				hideThinkingBlock: this.hideThinkingBlock,
+				hiddenThinkingLabel: this.hiddenThinkingLabel,
+				toolOutputExpanded: this.toolOutputExpanded,
+				showImages: this.settingsManager.getShowImages(),
+				imageWidthCells: this.settingsManager.getImageWidthCells(),
+				outputPad: this.outputPad,
+				renderLatex: this.settingsManager.getLatexRenderingEnabled(),
+				fullscreenScrollbar: this.settingsManager.getFullscreenScrollbar(),
+				fullscreenWheelScrollLines: this.settingsManager.getFullscreenWheelScrollLines(),
+				markdownTransformers: this.getMarkdownTransformers(),
+				createToolComponent: rendering.createToolComponent,
+				createCustomMessageComponent: rendering.createCustomMessageComponent,
+				getToolDefinition: (toolName: string) => this.getRegisteredToolDefinition(toolName),
+				getCustomMessageRenderer: (customType: string) =>
+					this.session.extensionRunner.getMessageRenderer(customType),
+			};
+		},
 	};
 };

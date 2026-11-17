@@ -469,7 +469,16 @@ describe("a live subagent's chat box (#4640)", () => {
 			const settings = opened[0]?.getChatRenderSettings?.();
 			assert.equal(settings?.getToolDefinition?.("contact_supervisor"), childTool);
 			assert.equal(settings?.getCustomMessageRenderer?.("intercom_message"), childMessage);
-			assert.equal(settings?.getToolDefinition?.("other"), parentTool);
+			const unavailable = settings?.getToolDefinition?.("other");
+			assert.notEqual(unavailable, parentTool);
+			assert.match(
+				stripVTControlCharacters(
+					unavailable!.renderCall!({}, {} as never, { outputPad: 0 } as never)
+						.render(80)
+						.join("\n"),
+				),
+				/Tool renderer unavailable/,
+			);
 			assert.equal(settings?.getCustomMessageRenderer?.("other"), parentMessage);
 		} finally {
 			page.dispose();

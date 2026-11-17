@@ -25,6 +25,8 @@ A block does not add a leading blank line; its container controls spacing betwee
 
 In ordinary tool renderers, return only the call title from `renderCall` and unframed result content from `renderResult`; Atomic supplies the state glyph and connectors. Return `ToolBlockRecords` when several results need separate connectors.
 
+When embedding `ChatSessionHost`, forward the complete `ctx.ui.getChatRenderSettings()` result. Its optional component factories preserve remote tool renderers and the attached chat's repaint and expansion settings. Do not copy only `getToolDefinition`.
+
 The `Markdown` component from `@bastani/atomic-tui` also accepts per-instance `hyperlinks: false` and `images: false` in its sixth constructor argument. These options do not change other components or terminal capabilities.
 
 ## Component Interface

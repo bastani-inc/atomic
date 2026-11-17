@@ -478,32 +478,33 @@ InteractiveModeBase.prototype.chatMessageRenderOptions = function (
 			? undefined
 			: (customType) => this.session.extensionRunner.getMessageRenderer(customType),
 		createToolComponent: isolated
-			? (entry) => {
+			? (entry, context) => {
 					const component = new RemoteToolExecutionComponent(
 						entry.toolName,
 						entry.toolCallId,
 						entry.args,
 						{
-							showImages: this.settingsManager.getShowImages(),
-							imageWidthCells: this.settingsManager.getImageWidthCells(),
-							outputPad: this.outputPad,
+							showImages: context?.showImages ?? this.settingsManager.getShowImages(),
+							imageWidthCells: context?.imageWidthCells ?? this.settingsManager.getImageWidthCells(),
+							outputPad: context?.outputPad ?? this.outputPad,
+							rendererTaskId: entry.rendererTaskId,
 						},
 						this.runtimeHost as IsolatedInteractiveRuntime,
-						() => this.ui.requestRender(),
+						context?.requestRender ?? (() => this.ui.requestRender()),
 					);
-					applyToolEntryState(component, entry, this.toolOutputExpanded);
+					applyToolEntryState(component, entry, context?.expanded ?? this.toolOutputExpanded);
 					return component;
 				}
 			: undefined,
 		createCustomMessageComponent: isolated
-			? (message) => {
+			? (message, context) => {
 					const component = new RemoteCustomMessageComponent(
 						message,
 						this.runtimeHost as IsolatedInteractiveRuntime,
-						() => this.ui.requestRender(),
-						this.outputPad,
+						context?.requestRender ?? (() => this.ui.requestRender()),
+						context?.outputPad ?? this.outputPad,
 					);
-					component.setExpanded(this.toolOutputExpanded);
+					component.setExpanded(context?.expanded ?? this.toolOutputExpanded);
 					return component;
 				}
 			: undefined,
