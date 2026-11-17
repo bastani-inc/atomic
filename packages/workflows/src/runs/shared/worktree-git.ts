@@ -169,9 +169,7 @@ function* shouldPreserveLogicalPath(logicalPath: string): WorktreeSteps<boolean>
 	for (const ancestor of pathAncestors(logicalPath)) {
 		try {
 			if ((yield* io("lstat", ancestor)).isSymbolicLink() && hasGrandparent(ancestor)) return true;
-		} catch {
-			// An ancestor that cannot be inspected preserves nothing.
-		}
+		} catch {}
 	}
 	return false;
 }
@@ -797,10 +795,6 @@ function* setupGitWorktreeSteps(options: GitWorktreeSetupOptions): WorktreeSteps
 	return yield* setupGitWorktreeFromRequest(yield* resolveGitWorktreeSetupRequest(options));
 }
 
-/**
- * The SDK's synchronous setup, for workflow authors' own scripts: the same steps the engine runs without blocking,
- * performed synchronously.
- */
 export function setupGitWorktree(options: GitWorktreeSetupOptions): GitWorktreeSetupResult {
 	return runWorktreeStepsSync(setupGitWorktreeSteps(options)).result;
 }

@@ -8,7 +8,6 @@ import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
 import { createSubagentControl } from "../../packages/subagents/src/runs/inprocess/runner.ts";
 
-/** A path whose `stat`, or text whose `appendFile` or `writeFile`, waits for `release`, so the next one finishes first. */
 const slow = vi.hoisted(() => ({
 	statPath: undefined as string | undefined,
 	appendText: undefined as string | undefined,
@@ -82,7 +81,6 @@ test("a run's children are numbered in the order they were launched, whichever c
 			testSession: { output: `result ${index}` },
 		}),
 	);
-	// The second launch has checked its cwd and waits for the first, which has not.
 	await new Promise((resolve) => setTimeout(resolve, 50));
 	released.resolve();
 	const results = await Promise.all(launches);

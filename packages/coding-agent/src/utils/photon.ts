@@ -57,9 +57,7 @@ function getCandidateWasmPaths(): string[] {
 	try {
 		const entryPath = require.resolve("@silvia-odwyer/photon-node");
 		candidates.push(path.join(path.dirname(entryPath), WASM_FILENAME));
-	} catch {
-		// In standalone binaries require.resolve may not resolve the package path on disk.
-	}
+	} catch {}
 	candidates.push(...getFallbackWasmPaths());
 	return candidates;
 }

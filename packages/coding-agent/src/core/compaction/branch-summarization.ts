@@ -242,7 +242,6 @@ export function prepareBranchEntries(
 	return collectBranchEntries(entries, tokenBudget, (path) => normalizeFileOpPath(path, cwd));
 }
 
-/** {@link prepareBranchEntries} without a cwd: the paths of its file operations are kept as written. */
 export function prepareBranchEntriesAsWritten(entries: SessionEntry[], tokenBudget: number = 0): BranchPreparation {
 	return collectBranchEntries(entries, tokenBudget, (path) => path);
 }

@@ -370,12 +370,10 @@ export function fileIdentity(path: string): string | undefined {
 	}
 }
 
-/** {@link fileIdentity} without blocking the event loop. */
 export async function fileIdentityAsync(path: string): Promise<string | undefined> {
 	try {
 		const { dev, ino } = await stat(path, { bigint: true });
 		if (ino !== 0n) return `${dev}:${ino}`;
-		// The promise API's realpath is the native one, as `realpathSync.native` is.
 		return realPathIdentity(await realpath(path));
 	} catch {
 		return undefined;

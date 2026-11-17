@@ -50,7 +50,6 @@ const WORKFLOW_MODULE_GRAPH_RELOAD_TIMEOUT_MS = 120_000;
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const workflowsSrc = join(repoRoot, "packages/workflows/src");
 const graphEntry = join(repoRoot, "test/helpers/workflow-graph-generation.ts");
-/** The host loader's transpile cache directory, resolved before each evaluation as the host loader resolves it. */
 let transpileCacheDir: string | undefined;
 const hostLoaderTransform = createTypeScriptSourceSpecifierTransform(
 	createJiti,

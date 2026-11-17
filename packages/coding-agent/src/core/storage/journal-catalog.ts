@@ -1,5 +1,6 @@
-import { access, mkdir, open } from "node:fs/promises";
+import { mkdir, open } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
+import { pathExists as exists } from "../../utils/path-exists.js";
 import { attachCleanupCause } from "./cleanup.js";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "./database.js";
 import {
@@ -31,16 +32,6 @@ export const JOURNAL_BUSY_STATUSES = ["running"] as const;
 export const JOURNAL_FINISHED_STATUSES = ["completed", "failed", "cancelled"] as const;
 
 const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
-
-/** Whether `path` exists, as `existsSync` answers: any error means it does not. */
-async function exists(path: string): Promise<boolean> {
-	try {
-		await access(path);
-		return true;
-	} catch {
-		return false;
-	}
-}
 
 export type JournalShardKind = "native" | "adopted";
 

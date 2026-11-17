@@ -173,8 +173,6 @@ export async function markPathIgnoredByCloudSync(path: string): Promise<void> {
 		try {
 			const child = spawnProcess(command, args, { stdio: "ignore" });
 			await waitForChildProcess(child);
-		} catch {
-			// Best-effort attribute setting when xattr/setfattr is unavailable.
-		}
+		} catch {}
 	}
 }

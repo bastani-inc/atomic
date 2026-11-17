@@ -70,7 +70,6 @@ const liveAt = (path: string) => {
 };
 const live = (cwd: string) => liveAt(join(cwd, ".git"));
 
-/** Branch reads and watcher installation finish on their own, after the call that starts them. */
 const eventually = (assertion: () => void) => vi.waitFor(assertion);
 const renderedUntil = async (render: () => string[], pattern: RegExp) =>
 	eventually(() => assert.match(stripAnsi(render().join("\n")), pattern));

@@ -1,14 +1,4 @@
 #!/usr/bin/env node
-/**
- * Fails when a blocking API is reachable from the interactive host's entry points.
- *
- *   node scripts/event-loop/check-event-loop.ts             violations, exit 1 when there are any
- *   node scripts/event-loop/check-event-loop.ts --paths     each with the call path from its entry point
- *   node scripts/event-loop/check-event-loop.ts --json      the same as JSON
- *   node scripts/event-loop/check-event-loop.ts --explain 'packages/tui/src/tui.ts#TuiBase.doRender'
- *
- * See scripts/event-loop/README.md for what is checked and how to fix or review a finding.
- */
 import { type CallGraph, CallGraphBuilder, type EdgeKind, type GraphFunction } from "./call-graph.ts";
 import {
 	type EventLoopPolicy,
@@ -20,7 +10,6 @@ import { ANALYSIS_TSCONFIG, openProject, REPO_ROOT } from "./program.ts";
 import { type Arrival, pathTo, type Reached, reach, registrationsByRegistrar } from "./reachability.ts";
 import { findBacktrackingRisks } from "./regex-safety.ts";
 
-/** A regular expression on an interactive path that can backtrack super-linearly on some input. */
 export interface RegexFinding {
 	readonly file: string;
 	readonly line: number;
@@ -38,17 +27,13 @@ export interface Violation {
 	readonly category: string;
 	readonly function: string;
 	readonly inAsyncFunction: boolean;
-	/** Set when another open change owns this call (`OWNED_ELSEWHERE`); such findings do not fail the check. */
 	readonly ownedBy: string | undefined;
 	readonly path: readonly string[];
 }
 
 export interface EventLoopReport {
-	/** Findings that fail the check. */
 	readonly violations: readonly Violation[];
-	/** Findings in areas another open change owns. */
 	readonly deferred: readonly Violation[];
-	/** Backtracking regular expressions on interactive paths that no reviewed entry accepts. */
 	readonly regexFindings: readonly RegexFinding[];
 	readonly analysisErrors: readonly string[];
 	readonly warnings: readonly string[];
@@ -86,7 +71,6 @@ function describeArrival(graph: CallGraph, id: number, arrival: Arrival): string
 	}
 }
 
-/** The top-level nodes of the startup modules and of everything they import statically. */
 function startupModuleNodes(graph: CallGraph, startupModules: readonly string[], policyErrors: string[]): Set<number> {
 	const files = new Set<string>();
 	const stack: string[] = [];

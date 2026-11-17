@@ -1,8 +1,9 @@
 import { existsSync } from "node:fs";
-import { access, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { gt, maxSatisfying, rcompare, satisfies } from "semver";
 import { APP_NAME, CONFIG_DIR_NAME, getProjectConfigDirs } from "../config.js";
+import { pathExists as exists } from "../utils/path-exists.js";
 import { markPathIgnoredByCloudSync } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { runCommand, runCommandCapture, runCommandSync } from "./package-manager-command.ts";
@@ -72,7 +73,6 @@ export function runNpmCommandSync(context: PackageManagerContext, args: string[]
 	return runCommandSync(npmCommand.command, [...npmCommand.args, ...args]);
 }
 
-/** {@link runNpmCommandSync} without blocking: the command's trimmed output, given up after `NETWORK_TIMEOUT_MS`. */
 function runNpmCommandCapture(context: PackageManagerContext, args: string[]): Promise<string> {
 	const npmCommand = getNpmCommand(context);
 	const options = { timeoutMs: NETWORK_TIMEOUT_MS };
@@ -80,12 +80,6 @@ function runNpmCommandCapture(context: PackageManagerContext, args: string[]): P
 		? context.driver.runCommandCapture(npmCommand.command, [...npmCommand.args, ...args], options)
 		: runCommandCapture(npmCommand.command, [...npmCommand.args, ...args], options);
 }
-
-const exists = (path: string): Promise<boolean> =>
-	access(path).then(
-		() => true,
-		() => false,
-	);
 
 export function getGitDependencyInstallArgs(context: PackageManagerContext): string[] {
 	switch (getPackageManagerName(context)) {
@@ -218,7 +212,6 @@ function globalNpmRootCommandKey(context: PackageManagerContext): string {
 	return [npmCommand.command, ...npmCommand.args].join("\0");
 }
 
-/** The arguments that print the global package root, and how their output names it. */
 function globalNpmRootQuery(context: PackageManagerContext): { args: string[]; root: (output: string) => string } {
 	if (getPackageManagerName(context) === "bun") {
 		return {
@@ -240,10 +233,8 @@ export function getGlobalNpmRoot(context: PackageManagerContext): string {
 	return context.globalNpmRoot;
 }
 
-/** Global root lookups in flight, so concurrent checks of one context run the command once. */
 const globalNpmRootLookups = new WeakMap<PackageManagerContext, { commandKey: string; root: Promise<string> }>();
 
-/** {@link getGlobalNpmRoot} without blocking; it shares the context's cached root. */
 async function getGlobalNpmRootAsync(context: PackageManagerContext): Promise<string> {
 	const commandKey = globalNpmRootCommandKey(context);
 	if (context.globalNpmRoot && context.globalNpmRootCommandKey === commandKey) {
@@ -320,7 +311,6 @@ export function getNpmInstallPath(
 	return legacyPath && existsSync(legacyPath) ? legacyPath : managedPath;
 }
 
-/** {@link getNpmInstallPath} without blocking. */
 export async function getNpmInstallPathAsync(
 	context: PackageManagerContext,
 	source: NpmSource,
@@ -348,7 +338,6 @@ export async function findExistingNpmInstallPath(
 	return (await exists(path)) ? path : undefined;
 }
 
-/** Where a package may be installed, in the order it is looked for: `installPath`, then older project config dirs. */
 function npmInstallCandidates(
 	context: PackageManagerContext,
 	source: NpmSource,
@@ -374,7 +363,6 @@ export function getExistingNpmInstallPath(
 	);
 }
 
-/** {@link getExistingNpmInstallPath} without blocking. */
 export async function getExistingNpmInstallPathAsync(
 	context: PackageManagerContext,
 	source: NpmSource,

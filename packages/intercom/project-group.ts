@@ -5,10 +5,10 @@
  */
 import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { existsSync } from "node:fs";
-import { access } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { ProjectGroupError } from "@bastani/atomic";
 import { readSharedStorageSetting, readSharedStorageSettingAsync } from "./broker/shared-storage-setting.js";
+import { pathExists } from "./path-exists.js";
 
 export const PROJECT_GROUP_PREFIX = "project:";
 /** The warning for joining `default` explicitly while multi-node routing is on, without a label: the UI adds its own. */
@@ -103,14 +103,6 @@ function gitFailed(
   });
 }
 
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 async function repositoryMarkerAsync(directory: string): Promise<string | undefined> {
   for (let current = directory; ; current = dirname(current)) {

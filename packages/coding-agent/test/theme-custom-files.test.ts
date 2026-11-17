@@ -37,7 +37,6 @@ test("a custom theme file added while running is listed and selectable once the 
 test("selecting a custom theme reads it from memory, not from the disk", () => {
 	writeCustomTheme("read-at-startup");
 	initTheme("dark");
-	// The file is gone, but the theme was read before the first frame.
 	rmSync(join(agentDir, "themes", "read-at-startup.json"));
 
 	assert.deepEqual(setTheme("read-at-startup"), { success: true });

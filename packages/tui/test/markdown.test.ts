@@ -1118,14 +1118,8 @@ Inline \(A_{sf}\)`,
 		});
 
 		describe("long runs of spaces", () => {
-			/**
-			 * Each source repeats a space this many times where a regular expression used to backtrack, which took
-			 * seconds per render; one pass over it takes milliseconds.
-			 */
 			const RUN = 100_000;
-			/** Rescanning a lazy body was cheaper per step, so the unclosed openers need a longer run to take seconds. */
 			const LONG_RUN = 4 * RUN;
-			/** Far above one render of these sources on a loaded machine, far below what the backtracking took. */
 			const RENDER_BUDGET_MS = 1_000;
 			const render = (source: string) =>
 				new Markdown(source, 0, 0, defaultMarkdownTheme).render(80).map((line) => stripAnsi(line).trimEnd());

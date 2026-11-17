@@ -1,9 +1,9 @@
-import { access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getBinDir } from "../../config.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createGitEnvironment } from "../../utils/git-env.ts";
+import { pathExists } from "../../utils/path-exists.js";
 import {
 	GitUnavailableError,
 	gitInstallCommand,
@@ -55,7 +55,6 @@ export interface WorkspaceGitCommand {
 	/** Return a non-zero exit instead of throwing `git-failed`. */
 	readonly allowFailure?: boolean;
 	readonly timeoutMs?: number;
-	/** Called with git's pid once it started; a throw or rejection stops git and fails the command. */
 	readonly onSpawn?: (pid: number) => void | Promise<void>;
 }
 
@@ -113,15 +112,7 @@ async function executable(signal: AbortSignal | undefined): Promise<WorkspaceGit
 	}
 }
 
-/** Whether `path` exists, as `existsSync` answers: any error means it does not. */
-export async function pathExists(path: string): Promise<boolean> {
-	try {
-		await access(path);
-		return true;
-	} catch {
-		return false;
-	}
-}
+export { pathExists };
 
 /**
  * Run one git command through the configured executable. Cancellation and timeouts stop git and wait for it to exit,

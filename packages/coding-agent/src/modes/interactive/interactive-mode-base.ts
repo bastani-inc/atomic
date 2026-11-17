@@ -679,7 +679,6 @@ export class InteractiveModeBase {
 			// what gets painted is the transcript, not the focused dialog.
 			while (this.renderer.hasOverlayEntries) this.renderer.hideOverlay();
 			if (isViewportTUI(this.renderer)) this.renderer.setLayoutRoot(this.documentContainer);
-			// The transcript printed holds the history a long session is still building behind its end.
 			finishChatHistory(this.chatContainer);
 		}
 		// `resume-hint` keeps whatever the alternate screen held: the prior
@@ -737,7 +736,6 @@ export class InteractiveModeBase {
 		this.ui = createInteractiveTuiReference(() => this.renderer);
 		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
 		this.headerContainer = new Container();
-		// The fullscreen transcript renders what its viewport shows, and the rest in the background.
 		this.documentContainer = new WindowedContainer();
 		this.documentContainer.addChild(this.headerContainer);
 		this.chatContainer = new StartupChatContainer(isChatMessageComponent);
@@ -831,12 +829,7 @@ export class InteractiveModeBase {
 	 * repaint the final frame while the process is exiting.
 	 */
 	isShuttingDown = false;
-	/**
-	 * Set by a quit that waits for `exitOutputWritten` before the process exits: stopping then writes the transcript
-	 * onto the main screen a slice at a time, so a long one never holds the event loop.
-	 */
 	writeExitOutputInSlices = false;
-	/** What stopping writes onto the main screen, settled once written. */
 	exitOutputWritten: Promise<void> | undefined;
 	installChangeWarningShown = false;
 }

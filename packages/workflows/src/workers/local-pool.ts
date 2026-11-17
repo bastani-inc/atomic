@@ -218,8 +218,6 @@ function launchCoordinatorProcess(logPath: string): Coordinator {
 					logFailure,
 				}),
 			);
-		// The loss names why its log could not be written, so an exit before the log's opening settled waits for it.
-		// Otherwise the pool hears of the loss as the exit is announced, before anything that runs after it.
 		if (logOpenSettled) loseToExit();
 		else void log.opened.then(loseToExit);
 	});

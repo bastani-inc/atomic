@@ -100,7 +100,6 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			renameSession?: (session: SessionInfo, currentName: string | undefined) => Promise<void>;
 			deleteSession?: (sessionId: string) => Promise<void>;
 			showRenameHint?: boolean;
-			/** The keybindings in effect, loaded once by whoever shows the selector. */
 			keybindings?: KeybindingsManager;
 			/**
 			 * Rows to display in the first rendered frame before the async loader
@@ -383,10 +382,6 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		}
 	}
 
-	/**
-	 * Resolves the symlinks of the shown sessions' paths off the event loop, then shows the same sessions again so
-	 * threading and the current-session check compare canonical paths. Until then they compare by spelling.
-	 */
 	private async refreshPathKeys(
 		scope: SessionScope,
 		sessions: SessionInfo[],

@@ -29,7 +29,6 @@ import { liveChildEnvironment } from "../helpers/live-child-environment.js";
 import { agent } from "../helpers/released-task-launch.js";
 import { trackSessions } from "../helpers/track-sessions.js";
 
-/** How long a lookup a released child's start began may take to end before its resources count as kept. */
 const TRANSIENT_RESOURCES_SETTLE_MS = 5_000;
 
 const CHILD_LOAD_TIMEOUT_MS = 120_000;
@@ -187,8 +186,6 @@ test(
 			Object.fromEntries(
 				Object.entries(liveAsyncResources()).filter(([type, count]) => count > (resources[type] ?? 0)),
 			);
-		// A child's start runs its lookups (such as the Git lookup of its Intercom group) without blocking, so one can
-		// still be ending as the child is released; what stays is what grows with the children.
 		const settleBy = Date.now() + TRANSIENT_RESOURCES_SETTLE_MS;
 		while (Object.keys(grownResources()).length > 0 && Date.now() < settleBy)
 			await new Promise((resolve) => setTimeout(resolve, 20));

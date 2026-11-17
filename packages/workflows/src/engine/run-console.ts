@@ -37,13 +37,11 @@ export const MAX_CONSOLE_LOG_DIRECTORY_BYTES = 1024 * 1024 * 1024;
 const MAX_CAUSE_DEPTH = 8;
 const LOG_NAME = /^(\d+)-\d+\.log$/;
 
-/** Text accepted into a log, with the announcement to print once it is on disk. */
 interface QueuedText {
 	readonly text: string;
 	readonly announcement?: string;
 }
 
-/** Text the writer is writing, until it knows the write completed. */
 interface InFlight {
 	readonly buffer: Buffer;
 	readonly announcements: readonly string[];
@@ -52,26 +50,20 @@ interface InFlight {
 interface ProcessLog {
 	readonly directory: string;
 	readonly path: string;
-	/** Creating and pruning `directory`; the log is opened after it. */
 	readonly directoryReady: Promise<void>;
-	/** Bytes accepted, written or still queued. */
 	bytes: number;
-	/** Bytes known to be in the file. */
 	written: number;
 	capped: boolean;
 	handle: FileHandle | undefined;
 	readonly queue: QueuedText[];
 	inFlight: InFlight | undefined;
-	/** The writer appending `queue`, while one runs. */
 	writing: Promise<void> | undefined;
 }
 
 interface RouterState {
 	logDirectory: string | undefined;
-	/** Creating and pruning the log directory routing last started with. */
 	directoryReady: Promise<void>;
 	log: ProcessLog | undefined;
-	/** Logs not closed yet: the current one, and stopped ones still writing their queue. */
 	readonly open: Set<ProcessLog>;
 	/** Set once a write failed; routed output is dropped from then on. */
 	failed: boolean;
@@ -94,7 +86,6 @@ function isAbortCancellation(value: unknown, depth = 0): boolean {
 	}
 }
 
-/** Writes every byte of `buffer`, or throws. */
 async function writeAll(handle: FileHandle, buffer: Buffer): Promise<void> {
 	let offset = 0;
 	while (offset < buffer.length) {
@@ -129,7 +120,6 @@ async function closeLog(state: RouterState, log: ProcessLog): Promise<void> {
 	await handle?.close().catch(() => undefined);
 }
 
-/** A write failed: report it once, and drop the queue and every later routed call. */
 async function failLog(state: RouterState, log: ProcessLog, error: unknown): Promise<void> {
 	const path = log.handle === undefined ? log.directory : log.path;
 	log.queue.length = 0;
@@ -145,7 +135,6 @@ async function failLog(state: RouterState, log: ProcessLog, error: unknown): Pro
 	await closeLog(state, log);
 }
 
-/** Appends the queue in call order: one writer per log, started by queued text and ending once the queue is empty. */
 function startWriting(state: RouterState, log: ProcessLog): void {
 	if (log.writing !== undefined) return;
 	log.writing = (async () => {
@@ -172,14 +161,12 @@ function startWriting(state: RouterState, log: ProcessLog): void {
 	})();
 }
 
-/** Accepts `text` into the log; returns its size in bytes. */
 function enqueue(state: RouterState, log: ProcessLog, text: string, announcement?: string): number {
 	log.queue.push(announcement === undefined ? { text } : { text, announcement });
 	startWriting(state, log);
 	return Buffer.byteLength(text);
 }
 
-/** Writes every byte of `buffer` at `position`, or throws. */
 function writeAllSync(fd: number, buffer: Buffer, position: number): void {
 	let offset = 0;
 	while (offset < buffer.length) {
@@ -201,7 +188,6 @@ function writeQueuedAtExit(state: RouterState): void {
 		try {
 			let fd = log.handle?.fd;
 			if (fd === undefined) {
-				// The writer may have created the file without getting its handle back, so it need not be new.
 				mkdirSync(log.directory, { recursive: true });
 				fd = openSync(log.path, "a");
 			}
@@ -215,11 +201,6 @@ function writeQueuedAtExit(state: RouterState): void {
 	}
 }
 
-/**
- * Accepts one routed call; returns whether its text goes to the log. Every write leaves room for the process-limit
- * marker, so the log never exceeds its limit, markers included. `announcement` is printed once the call's line is in
- * the file.
- */
 function append(
 	state: RouterState,
 	log: ProcessLog,
@@ -257,7 +238,6 @@ function append(
 function write(state: RouterState, method: ConsoleMethod, args: unknown[], run: RunConsole, directory: string): void {
 	if (state.failed) return;
 	const log = processLog(state, directory);
-	// A cancellation never names the log; any other first line of a run does, once it is on disk.
 	const announcement =
 		run.announced || args.some((arg) => isAbortCancellation(arg))
 			? undefined
@@ -352,7 +332,6 @@ export function routeWorkflowConsoleOutput(logDirectory: string, now = Date.now(
 	state.logDirectory = logDirectory;
 }
 
-/** Resolves once every console call routed so far is in its log, or dropped after a failed write. */
 export async function flushWorkflowConsoleOutput(): Promise<void> {
 	const state = routerBag()[ROUTER_KEY];
 	if (state === undefined) return;
@@ -360,10 +339,6 @@ export async function flushWorkflowConsoleOutput(): Promise<void> {
 	for (const log of [...state.open]) while (log.writing !== undefined) await log.writing;
 }
 
-/**
- * Restores stderr for every later console call and closes the log once its directory is ready and its queued output is
- * written; output already routed stays in its file.
- */
 export async function stopRoutingWorkflowConsoleOutput(): Promise<void> {
 	const state = routerBag()[ROUTER_KEY];
 	if (state === undefined) return;
@@ -377,7 +352,6 @@ export async function stopRoutingWorkflowConsoleOutput(): Promise<void> {
 	await closeLog(state, log);
 }
 
-/** This process's workflow log, once something was routed to it. */
 export function workflowConsoleLogPath(): string | undefined {
 	return routerBag()[ROUTER_KEY]?.log?.path;
 }

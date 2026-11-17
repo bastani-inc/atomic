@@ -143,11 +143,6 @@ function prepareDurableAuthority(storagePath: string): Buffer | undefined {
 	return key;
 }
 
-/**
- * Bounded in-memory operation authority used by the interactive host for
- * inbound message deduplication and local subagent relay admission without
- * touching disk or SQLite.
- */
 export class InMemoryDeliveredMessageCache {
 	private readonly delivered = new Map<string, DeliveredMessage>();
 	private retainedBytes = 0;

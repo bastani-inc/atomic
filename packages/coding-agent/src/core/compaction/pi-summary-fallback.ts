@@ -202,7 +202,6 @@ export function preparePiSummaryCompaction(
 	return collectPiSummaryCompaction(pathEntries, settings, (path) => normalizeFileOpPath(path, cwd), plannedCut);
 }
 
-/** {@link preparePiSummaryCompaction} with each file operation's path given as `normalize` returns it. */
 function collectPiSummaryCompaction(
 	pathEntries: SessionEntry[],
 	settings: PiSummarySettings,
@@ -369,7 +368,6 @@ export async function runPiSummaryFallback(
 	planner: BorrowedPlanner,
 	options: RangePlannerOptions & { signal?: AbortSignal; cwd?: string; plannedCut?: PiSummaryPlannedCut },
 ): Promise<PiSummaryResult> {
-	// File operations are collected as written and resolved against the cwd afterwards, without blocking.
 	const collected = collectPiSummaryCompaction(entries, settings, (path) => path, options.plannedCut);
 	if (!collected) throw new Error("No compactable history for pi summary fallback");
 	const preparation = { ...collected, fileOps: await normalizeFileOpsAsync(collected.fileOps, options.cwd) };

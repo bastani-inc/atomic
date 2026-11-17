@@ -1,7 +1,3 @@
-/**
- * Drives a real terminal program through a pseudo-terminal: the native `PtySession` (ConPTY on Windows, a Unix pty
- * elsewhere) runs it, and a headless xterm renders what it draws and answers its terminal queries, as a terminal does.
- */
 import { createRequire } from "node:module";
 import { Terminal } from "@xterm/headless";
 import { sleep } from "./runtime.js";
@@ -32,13 +28,9 @@ export interface PtyExit {
 }
 
 export interface PtyProgram {
-	/** Settles when the program exits, or when `timeoutMs` kills it. */
 	readonly exited: Promise<PtyExit>;
-	/** Sends input as the terminal would: text as typed, keys as their escape sequences. */
 	write(data: string): void;
-	/** The visible screen, one line per row. */
 	screen(): string;
-	/** Polls the screen until `predicate` holds, failing with the screen after `timeoutMs`. */
 	waitForScreen(predicate: (screen: string) => boolean, timeoutMs: number, what: string): Promise<void>;
 	kill(): void;
 }
@@ -48,7 +40,6 @@ export interface PtyProgramOptions {
 	readonly args: readonly string[];
 	readonly cwd: string;
 	readonly env: Record<string, string>;
-	/** The native session kills the program after this long. */
 	readonly timeoutMs: number;
 	readonly cols: number;
 	readonly rows: number;
@@ -62,10 +53,7 @@ export function startPtyProgram(options: PtyProgramOptions): PtyProgram {
 	};
 	const session = new PtySession();
 	const terminal = new Terminal({ cols: options.cols, rows: options.rows, allowProposedApi: true });
-	// What the terminal answers to the program's queries (cursor position, device attributes) goes back to it.
 	terminal.onData((data) => session.write(data));
-	// The session appends `command` after `shellArgs`; running the executable as the "shell" passes every argument
-	// as it is, with no shell quoting on any platform.
 	const [command = "", ...leading] = [...options.args].reverse();
 	const exited = session
 		.start(

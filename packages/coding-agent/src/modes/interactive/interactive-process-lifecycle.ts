@@ -124,7 +124,6 @@ InteractiveModeBase.prototype.shutdown = async function (
 	this.themeController.disableAutoSync();
 	await this.ui.terminal.drainInput(SHUTDOWN_INPUT_DRAIN_MAX_MS, SHUTDOWN_INPUT_DRAIN_IDLE_MS);
 
-	// The transcript printed on quitting holds the history a long session may still be building, a slice at a time.
 	await chatHistoryBuilt(this.chatContainer);
 	this.writeExitOutputInSlices = true;
 	this.stop();

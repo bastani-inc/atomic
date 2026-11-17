@@ -1081,7 +1081,6 @@ function settledTranscript(
 	commands: TranscriptCommands | undefined,
 	inherited: string | null,
 	unsavedAnswer: AssistantMessage | undefined,
-	/** Settles once the child's session is disposed, when a source bound before that reads its saved history. */
 	disposed?: Promise<unknown>,
 ): TranscriptSource {
 	const sessionId = manager.getSessionId();
@@ -1546,15 +1545,9 @@ export function progressEmissionFor(eventType: AgentSessionEvent["type"]): Progr
 
 interface EventLog {
 	append(event: AgentSessionEvent): void;
-	/** Settles once every event appended so far is written, or the log has stopped. */
 	flush(): Promise<void>;
 }
 
-/**
- * A child session's events, appended to `pathValue` as JSON lines in the order they happened while the file stays
- * within the JSONL cap. Each event is serialized when it happens and written behind the ones before it, in batches; a
- * write that fails stops the log.
- */
 function createEventLog(pathValue: string): EventLog {
 	let pending: string[] = [];
 	let stopped = false;
@@ -1605,10 +1598,8 @@ function createEventLog(pathValue: string): EventLog {
 	};
 }
 
-/** Appends to each run history file, keyed by path, in the order they were asked for. */
 const runHistoryAppends = new Map<string, Promise<void>>();
 
-/** Appends `line` to the run history `file` once `ready` settles, after every append asked for before it. */
 function appendRunHistory(file: string, line: string, ready: Promise<void>): Promise<void> {
 	void ready.catch(() => undefined);
 	const appended = (runHistoryAppends.get(file) ?? Promise.resolve())
@@ -1770,7 +1761,6 @@ export class SubagentControlRuntime {
 		return this.admitCheckedChildSession(spec, await checkLaunchCwd(spec.cwd), parent);
 	}
 
-	/** Admits a child within the call, given its launch's check of `spec.cwd`. */
 	admitCheckedChildSession(spec: ChildSpec, cwd: CwdVerdict, parent: ParentContext = this.parent): AdmittedResult {
 		if (cwd.state !== "directory") {
 			return {
@@ -2055,7 +2045,6 @@ export class SubagentControlRuntime {
 				typeof admitted.sessionManager.getEntrySeq === typeof SessionManager.prototype.getEntrySeq;
 			const openOptions =
 				typeof SessionManager.prototype.getEntrySeq === "function" ? ({ history: "tail" } as const) : undefined;
-			// The session opens once its directory exists.
 			const opening = mkdir(admitted.sessionDir, { recursive: true }).then(() =>
 				admitted.sessionManager
 					? canReopenFromStore
@@ -2153,8 +2142,6 @@ export class SubagentControlRuntime {
 				);
 				return { inherited, extensionBindings, settingsManager, explicitEffort, resourceLoader, reloaded };
 			};
-			// Prepared while its session opens; a failure is reported once the session is open and bound, where a launch
-			// that cannot run has always failed.
 			const preparing:
 				| Promise<Awaited<ReturnType<typeof prepareChildSession>> | { readonly error: unknown }>
 				| undefined = admitted.spec.testSession
@@ -2718,7 +2705,6 @@ export class SubagentControlRuntime {
 				taskHooks?.clearExtensionStatuses?.();
 				if (transcriptManager === undefined) return;
 				const commands = await keptCommands;
-				// A source bound early (#5210, below) already shows the settled chat; it is replaced only to add its commands.
 				if (earlyBound && commands === undefined) return;
 				taskHooks?.bindTranscript?.(
 					releasedAttempt
@@ -2754,9 +2740,6 @@ export class SubagentControlRuntime {
 					await settleTranscript();
 				}
 			})();
-			// #5210: the live session lacks the final answer it could not save, so the child's task shows what it settled
-			// with as soon as it settles, which is when its completion card and /tasks read it, not once its session is
-			// disposed. Its saved history is read after the disposal.
 			if (unsavedAnswer !== undefined && !releasedAttempt && transcriptManager !== undefined) {
 				earlyBound = true;
 				taskHooks?.bindTranscript?.(
@@ -2770,7 +2753,6 @@ export class SubagentControlRuntime {
 				this.attemptTokens.delete(admitted.identity.path);
 			if (this.attemptTerminators.get(admitted.identity.path) === terminate)
 				this.attemptTerminators.delete(admitted.identity.path);
-			// The attempt's events are all in its artifact once it returns.
 			if (eventLog) await eventLog.flush();
 		}
 	}
@@ -2892,7 +2874,6 @@ export class SubagentControlRuntime {
 				outputPath: paths.outputPath,
 			});
 		})();
-		// The result's place in the run's history is taken as it is delivered, before its files are written.
 		await appendRunHistory(
 			join(artifactDir, "run-history.jsonl"),
 			`${JSON.stringify(deliveredEnvelope)}\n`,

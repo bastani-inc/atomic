@@ -1,6 +1,7 @@
-import { access, readFile, stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { glob } from "glob";
+import { pathExists as exists } from "../utils/path-exists.js";
 import { stripBom } from "../utils/text.ts";
 import {
 	conventionDirsForResource,
@@ -25,15 +26,6 @@ import type {
 	ResourceMap,
 	ResourceType,
 } from "./package-manager-types.ts";
-
-async function exists(path: string): Promise<boolean> {
-	try {
-		await access(path);
-		return true;
-	} catch {
-		return false;
-	}
-}
 
 async function readPiManifest(packageRoot: string): Promise<ReturnType<typeof getManifestFromPackageJson> | null> {
 	try {

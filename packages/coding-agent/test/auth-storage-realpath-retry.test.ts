@@ -10,7 +10,6 @@ import { FileAuthStorageBackend } from "../src/core/auth-storage-backends.js";
 type RealpathOverride = (path: string, call: number) => string;
 
 const realpath = vi.hoisted(() => ({ override: undefined as RealpathOverride | undefined, calls: 0 }));
-/** The same state, as the asynchronous `realpath` mock reads it. */
 const resolved = realpath;
 
 vi.mock("fs", async (importOriginal) => {

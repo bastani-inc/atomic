@@ -94,7 +94,6 @@ export function resolveNativeWatchPath(path: string, options: SafeFsWatchOptions
 	return checkedWindowsWatchPath(path, resolvedPath, platform);
 }
 
-/** {@link resolveNativeWatchPath} without blocking the event loop while the path is canonicalized. */
 export async function resolveNativeWatchPathAsync(
 	path: string,
 	options: SafeFsWatchOptions = {},
@@ -154,7 +153,6 @@ export function watchWithErrorHandler(
 	return watchResolvedPath(resolveNativeWatchPath(path, options), listener, onError, options);
 }
 
-/** {@link watchWithErrorHandler} without blocking the event loop while the path is canonicalized. */
 export function watchWithErrorHandlerAsync(
 	path: string,
 	listener: WatchListener<string>,

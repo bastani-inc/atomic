@@ -34,7 +34,6 @@ export function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOp
 	collectFileOpsFromMessage(message, fileOps, (path) => normalizeFileOpPath(path, cwd));
 }
 
-/** {@link extractFileOpsFromMessage} with each path given as `normalize` returns it. */
 export function collectFileOpsFromMessage(
 	message: AgentMessage,
 	fileOps: FileOperations,
@@ -75,7 +74,6 @@ export function normalizeFileOpPath(path: string, cwd?: string): string {
 	return relativeFileOpPath(resolveToCwd(path, cwd), cwd);
 }
 
-/** {@link normalizeFileOpPath} without blocking the event loop. */
 async function normalizeFileOpPathAsync(path: string, cwd?: string): Promise<string> {
 	if (cwd === undefined || /^[a-z][a-z0-9+.-]*:\/\//i.test(path)) return path;
 	return relativeFileOpPath(await resolveToCwdAsync(path, cwd), cwd);
@@ -88,10 +86,6 @@ function relativeFileOpPath(absolutePath: string, cwd: string): string {
 		: relativePath || ".";
 }
 
-/**
- * File operations collected without a `cwd`, normalized against `cwd` as collecting them with it would have: the same
- * paths in the same order.
- */
 export async function normalizeFileOpsAsync(fileOps: FileOperations, cwd?: string): Promise<FileOperations> {
 	const normalize = async (paths: Set<string>) => {
 		const normalized = new Set<string>();

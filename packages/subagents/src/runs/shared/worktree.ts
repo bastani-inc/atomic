@@ -11,6 +11,7 @@ import {
 	isPathInside,
 	killProcessTree,
 } from "@bastani/atomic";
+import { pathExists } from "../../shared/path-exists.js";
 import { performPostCreationSetup } from "./worktree-post-create.js";
 import { findCanonicalGitRoot } from "./worktree-root.js";
 export interface WorktreeSetup {
@@ -95,15 +96,6 @@ const DEFAULT_WORKTREE_SETUP_HOOK_TIMEOUT_MS = 30000;
 const GIT_OUTPUT_MAX_BUFFER = 512 * 1024 * 1024;
 const HOOK_OUTPUT_MAX_BUFFER = 64 * 1024 * 1024;
 const C_GIT_LOCALE_ENV: NodeJS.ProcessEnv = { LC_ALL: "C", LANGUAGE: "C" };
-
-async function pathExists(target: string): Promise<boolean> {
-	try {
-		await fs.access(target);
-		return true;
-	} catch {
-		return false;
-	}
-}
 
 interface SpawnCollectOptions {
 	cwd?: string;

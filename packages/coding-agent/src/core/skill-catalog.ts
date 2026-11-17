@@ -49,7 +49,6 @@ function candidateId(canonicalPath: string): string {
 	return `skill_${createHash("sha256").update(canonicalPath).digest("hex").slice(0, 20)}`;
 }
 
-/** The real path of a skill file or directory, as a catalog compares them. */
 export type SkillPathResolver = (path: string) => string;
 
 function createCanonicalPathLookup(): SkillPathResolver {
@@ -64,7 +63,6 @@ function createCanonicalPathLookup(): SkillPathResolver {
 	};
 }
 
-/** The paths whose real paths a catalog of `skills` compares, and those `diagnostics`' skill collisions name. */
 function skillCatalogPaths(skills: readonly Skill[], diagnostics: readonly ResourceDiagnostic[]): Set<string> {
 	const paths = new Set<string>();
 	for (const skill of skills) {
@@ -79,10 +77,6 @@ function skillCatalogPaths(skills: readonly Skill[], diagnostics: readonly Resou
 	return paths;
 }
 
-/**
- * Resolve, without blocking the event loop, the real paths a catalog of `skills` compares and those `diagnostics`'
- * skill collisions name, for {@link buildSkillCatalogWith} and {@link decorateSkillDiagnostics}.
- */
 export async function resolveSkillCatalogPaths(
 	skills: readonly Skill[],
 	diagnostics: readonly ResourceDiagnostic[] = [],
@@ -229,7 +223,6 @@ export function buildSkillCatalog(allSkills: readonly Skill[], winners?: readonl
 	return buildSkillCatalogWith(allSkills, winners, createCanonicalPathLookup());
 }
 
-/** {@link buildSkillCatalog} without blocking the event loop: the skill files' real paths are resolved first. */
 export async function buildSkillCatalogAsync(
 	allSkills: readonly Skill[],
 	winners?: readonly Skill[],
@@ -237,15 +230,10 @@ export async function buildSkillCatalogAsync(
 	return buildSkillCatalogWith(allSkills, winners, await resolveSkillCatalogPaths([...allSkills, ...(winners ?? [])]));
 }
 
-/** A catalog with no skills. */
 export function emptySkillCatalog(): SkillCatalog {
 	return buildSkillCatalogWith([], undefined, (path) => path);
 }
 
-/**
- * {@link buildSkillCatalog} comparing the skill files by the real paths `realPathOf` resolved ahead, from
- * {@link resolveSkillCatalogPaths} of the same skills, so building the catalog never touches the disk.
- */
 export function buildSkillCatalogWith(
 	allSkills: readonly Skill[],
 	winners: readonly Skill[] | undefined,
@@ -407,10 +395,6 @@ export async function expandSkillCommand(
 	}
 }
 
-/**
- * `diagnostics` with each skill collision naming the catalog candidates it is between. `realPathOf` is
- * {@link resolveSkillCatalogPaths} of the catalog's skills and these diagnostics.
- */
 export function decorateSkillDiagnostics(
 	diagnostics: readonly ResourceDiagnostic[],
 	catalog: SkillCatalog,

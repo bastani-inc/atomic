@@ -87,11 +87,6 @@ function resolveStoragePath(path: string, base: string, source: "cli" | "env" | 
 	}
 }
 
-/**
- * The session storage a caller selects: an SDK store or selection, then the command line, then the process
- * environment, then settings. Reads the settings files synchronously when `options` carries no settings; a caller that
- * has them uses {@link selectSessionStorageWithSettings}, and {@link resolveSessionStore} reads them asynchronously.
- */
 export function selectSessionStorage(
 	cwd: string,
 	options: SessionStorageOptions = {},
@@ -103,7 +98,6 @@ export function selectSessionStorage(
 	);
 }
 
-/** {@link selectSessionStorage} for a caller that already has the settings, so it never reads the settings files. */
 export function selectSessionStorageWithSettings(
 	cwd: string,
 	options: SessionStorageOptions & { readonly settings: Settings },
@@ -135,7 +129,6 @@ function* selectSessionStorageSteps(
 	);
 }
 
-/** The session storage `options` or the process environment select; `undefined` leaves the choice to settings. */
 function* selectSessionStorageBeforeSettingsSteps(
 	cwd: string,
 	options: SessionStorageOptions,

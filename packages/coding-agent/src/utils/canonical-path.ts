@@ -12,7 +12,6 @@ export function canonicalizePath(path: string): string {
 	}
 }
 
-/** Resolve symlinks asynchronously, retaining the original spelling when the target cannot be resolved. */
 export async function canonicalizePathAsync(path: string): Promise<string> {
 	try {
 		return await realpathAsync(path);
@@ -36,7 +35,6 @@ export function createSessionCwdMatcher(cwd: string): (candidate: string | undef
 	};
 }
 
-/** Cache project identities asynchronously for one lookup; missing paths retain their exact stored spelling. */
 export function createSessionCwdMatcherAsync(cwd: string): (candidate: string | undefined) => Promise<boolean> {
 	const resolved = new Map<string, Promise<string>>();
 	const resolveCached = (target: string): Promise<string> => {

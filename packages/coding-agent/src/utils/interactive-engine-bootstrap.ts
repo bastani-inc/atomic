@@ -79,7 +79,6 @@ export function removeOwnedInteractiveEngineBootstrap(handle: InteractiveEngineB
 	rmSync(handle.directory, { recursive: true, force: true });
 }
 
-/** {@link writeInteractiveEngineBootstrap} without blocking the event loop. */
 export async function writeInteractiveEngineBootstrapAsync(
 	record: Omit<InteractiveEngineBootstrap, "version">,
 ): Promise<InteractiveEngineBootstrapHandle> {
@@ -98,7 +97,6 @@ export async function writeInteractiveEngineBootstrapAsync(
 	return { path, directory };
 }
 
-/** {@link removeOwnedInteractiveEngineBootstrap} without blocking the event loop. */
 export async function removeOwnedInteractiveEngineBootstrapAsync(
 	handle: InteractiveEngineBootstrapHandle | undefined,
 ): Promise<void> {

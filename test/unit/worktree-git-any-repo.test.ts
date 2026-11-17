@@ -28,7 +28,6 @@ import type {
 	GitWorktreeSetupResult,
 } from "../../packages/workflows/src/runs/shared/worktree-types.js";
 
-/** The SDK's synchronous setup and the engine's non-blocking one run the same steps; each scenario runs on both. */
 const SETUP_DRIVERS: ReadonlyArray<
 	readonly [string, (options: GitWorktreeSetupOptions) => Promise<GitWorktreeSetupResult>]
 > = [

@@ -30,7 +30,6 @@ export function getResourcePathKey(path: string): string {
 	return isSyntheticPath(path) ? path : getPathComparisonKey(canonicalizePath(path));
 }
 
-/** {@link getResourcePathKey} without blocking the event loop on the path's symlinks. */
 export async function getResourcePathKeyAsync(path: string): Promise<string> {
 	return isSyntheticPath(path) ? path : getPathComparisonKey(await canonicalizePathAsync(path));
 }

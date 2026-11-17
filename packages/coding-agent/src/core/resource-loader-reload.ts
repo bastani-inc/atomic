@@ -1,6 +1,7 @@
-import { access, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
+import { pathExists as exists } from "../utils/path-exists.js";
 import { canonicalizePathAsync, isLocalPath, resolvePath } from "../utils/paths.ts";
 import { getAllBuiltinPackageLocations, getMandatoryBuiltinExtensionPaths } from "./builtin-packages.ts";
 import { filterSupersededHerdrIntegrationPaths } from "./extensions/herdr-file-integration.ts";
@@ -49,12 +50,6 @@ import type { ResourceLoaderReloadOptions } from "./resource-loader-types.ts";
 import { buildSkillCatalogAsync } from "./skill-catalog.ts";
 import { BUILTIN_PATH_PREFIX } from "./source-info.ts";
 import { endTimingSpan, resetTimings, startTimingSpan } from "./timings.ts";
-
-const exists = (path: string): Promise<boolean> =>
-	access(path).then(
-		() => true,
-		() => false,
-	);
 
 async function filterDisabledBuiltinExtensionPaths(paths: string[], disabled: Set<string>): Promise<string[]> {
 	if (disabled.size === 0) return paths;
@@ -145,7 +140,6 @@ function addCliMetadata(cliExtensionPaths: ResolvedPaths, metadataByPath: Map<st
 	}
 }
 
-/** The append-system-prompt inputs, each read from its file when it names one. */
 async function resolvePromptInputs(inputs: readonly string[]): Promise<string[]> {
 	const resolved: string[] = [];
 	for (const input of inputs) {
@@ -230,7 +224,6 @@ export async function prepareDefaultResourceLoaderReload(
 ): Promise<() => Promise<void>> {
 	const state = resourceInternals(loader);
 	resetTimings("extensions");
-	// Extensions and the processes they start select storage by the names of the packages this loader registered.
 	await hostStoragePackagesRegistered();
 	if (state.loaded) {
 		clearExtensionCache();
@@ -270,7 +263,6 @@ export async function prepareDefaultResourceLoaderReload(
 				: deferredExtensions;
 			const emptySkills = state.skillsOverride ? state.skillsOverride({ skills: [], diagnostics: [] }) : undefined;
 			const skills = emptySkills?.skills ?? [];
-			// Built before the resources are replaced, so they are replaced together.
 			const skillCatalog = await buildSkillCatalogAsync(skills);
 			state.extensionsResult = extensionsResult;
 			state.extensionSkillSourceInfos = new Map();

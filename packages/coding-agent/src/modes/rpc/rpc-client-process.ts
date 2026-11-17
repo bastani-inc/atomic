@@ -32,7 +32,6 @@ export interface RpcClientProcessOptions {
 	interactiveEngine: boolean;
 	/** Credential handed to the engine child through the bootstrap file, never argv or env. */
 	interactiveEngineApiKey?: string;
-	/** Bootstrap directory and record prepared off the event loop before spawning. */
 	preparedBootstrap?: PreparedRpcClientBootstrap;
 }
 

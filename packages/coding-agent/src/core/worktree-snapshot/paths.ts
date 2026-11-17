@@ -31,7 +31,6 @@ export function canonicalizeWorktreePath(path: string): string {
 	}
 }
 
-/** {@link canonicalizeWorktreePath} without blocking the event loop. */
 export async function canonicalizeWorktreePathAsync(path: string): Promise<string> {
 	const absolute = resolve(path);
 	try {
@@ -41,17 +40,10 @@ export async function canonicalizeWorktreePathAsync(path: string): Promise<strin
 	}
 }
 
-/**
- * A computation over worktree paths that yields each path whose {@link canonicalizeWorktreePath} form it needs and
- * receives that form back, so one implementation runs synchronously ({@link runCanonicalSteps}) and without blocking
- * the event loop ({@link runCanonicalStepsAsync}).
- */
 export type CanonicalSteps<T> = Generator<string, T, string>;
 
-/** The canonical form of a path, read asynchronously; one lookup reads each path once. */
 export type CanonicalPaths = (path: string) => Promise<string>;
 
-/** A {@link CanonicalPaths} that reads each path once and reuses the answer for the rest of one lookup. */
 export function canonicalPaths(): CanonicalPaths {
 	const read = new Map<string, Promise<string>>();
 	return (path) => {
@@ -65,14 +57,12 @@ export function canonicalPaths(): CanonicalPaths {
 	};
 }
 
-/** Runs `steps`, canonicalizing each path it asks for synchronously. */
 export function runCanonicalSteps<T>(steps: CanonicalSteps<T>): T {
 	let step = steps.next();
 	while (!step.done) step = steps.next(canonicalizeWorktreePath(step.value));
 	return step.value;
 }
 
-/** Runs `steps` without blocking the event loop, canonicalizing each path it asks for through `canonical`. */
 export async function runCanonicalStepsAsync<T>(
 	steps: CanonicalSteps<T>,
 	canonical: CanonicalPaths = canonicalPaths(),

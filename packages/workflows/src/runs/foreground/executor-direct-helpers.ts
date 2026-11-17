@@ -161,7 +161,6 @@ export function stageOptionsWithInputDefaults<T extends StageOptions>(
 	});
 }
 
-/** Refuses stage options whose worktree cannot be set up, before anything is set up for them. */
 export function assertStageGitWorktreeOptions(options: StageOptions | undefined): void {
 	if (options === undefined) return;
 	assertWorkspaceCompatible(options);

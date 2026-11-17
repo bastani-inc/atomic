@@ -74,7 +74,6 @@ function abandonOpening(
 		});
 }
 
-/** The settings that choose a run's journal when its caller names none, read without blocking the event loop. */
 export async function readDurableJournalSettings(
 	options: Pick<DurableBackendOptions, "cwd" | "agentDir" | "projectTrusted"> = {},
 ): Promise<RunJournalSettings> {
@@ -84,11 +83,6 @@ export async function readDurableJournalSettings(
 	return manager.getSettings();
 }
 
-/**
- * The backend a journal choice or the settings select. Registered for its holder before this returns: a release that
- * follows the call at once finds it. Reads the settings files synchronously when the caller passes neither a journal
- * nor settings; {@link initializeDurableBackendReadingSettings} reads them first without blocking.
- */
 export async function initializeDurableBackend(options: DurableBackendOptions = {}): Promise<DurableWorkflowBackend> {
 	const settings =
 		options.journal === undefined
@@ -100,7 +94,6 @@ export async function initializeDurableBackend(options: DurableBackendOptions = 
 	return openDurableBackend(options, settings);
 }
 
-/** {@link initializeDurableBackend} for callers on the event loop: settings it must read are read without blocking. */
 export async function initializeDurableBackendReadingSettings(
 	options: DurableBackendOptions = {},
 ): Promise<DurableWorkflowBackend> {

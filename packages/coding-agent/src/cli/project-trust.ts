@@ -20,7 +20,6 @@ export function ignoredProjectSettingsWarning(
 	return untrustedProjectSettingsWarning(cwd);
 }
 
-/** Only print, JSON and RPC runs outside the interactive engine get here. */
 function untrustedProjectSettingsWarning(cwd: string): string | undefined {
 	const ignored = getProjectConfigPaths(cwd, "settings.json").filter((path) => existsSync(path));
 	if (ignored.length === 0) return undefined;

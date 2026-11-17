@@ -226,7 +226,6 @@ test(
 			)[process.platform === "win32" ? "win32" : "linux"];
 			const sorted = await sequencer.sort([...specifications]);
 			assert.equal(sorted.length, specifications.length);
-			// The gates' projects run after the rest, in their groupOrder: the load gate, then the event-loop guard.
 			assert.deepEqual(
 				sorted.slice(-2).map((specification) => specification.project.name),
 				["integration-load-gate", "integration-ui-gate"],

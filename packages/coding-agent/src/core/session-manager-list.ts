@@ -1,10 +1,11 @@
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { Message, TextContent } from "@bastani/atomic-ai/compat";
 import type { Stats } from "fs";
-import { access, readdir, readFile, stat } from "fs/promises";
+import { readdir, readFile, stat } from "fs/promises";
 import { basename, join } from "path";
 import { getSessionsDir } from "../config.js";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
+import { pathExists as exists } from "../utils/path-exists.js";
 import { createSessionCwdMatcherAsync, normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import { classifiedWorkflowMetadata } from "./session-manager-classification.ts";
 import { getLatestSessionSummary } from "./session-manager-entries.ts";
@@ -269,17 +270,6 @@ export function resolveParentSessionPaths(sessions: SessionInfo[]): SessionInfo[
 	});
 }
 
-/** Whether `path` exists, as `existsSync` answers: any error means it does not. */
-async function exists(path: string): Promise<boolean> {
-	try {
-		await access(path);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-/** `inspect` runs on each session before it is reported, so `onProgress` can filter on what it learned. */
 export async function listSessionsFromDir(
 	dir: string,
 	onProgress?: SessionListProgress,
@@ -332,7 +322,6 @@ export async function listProjectSessions(
 	const dir = sessionDir ? normalizePath(sessionDir) : await getDefaultSessionDirAsync(cwd);
 	const filterCwd = sessionDir !== undefined && !pathsEqual(dir, getDefaultSessionDirPath(cwd));
 	const matchesCwd = createSessionCwdMatcherAsync(resolvePath(cwd));
-	// Session files whose project is `cwd`, learned as each one is read so progress can filter synchronously.
 	const matching = new Set<string>();
 	const inspect = filterCwd
 		? async (session: SessionInfo) => {

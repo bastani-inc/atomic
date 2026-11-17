@@ -469,22 +469,16 @@ interface CandidateIndex {
 	readonly functionBodies: ReadonlyMap<string, readonly Token[]>;
 }
 
-/** A source file a scan reads, with its tokens and the imports it declares. */
 interface ScannedSource {
 	readonly source: string;
 	readonly tokens: readonly Token[];
 	readonly imports: ReadonlyMap<string, ImportBinding>;
 }
 
-/**
- * The files one scan reads, read off the event loop before the scan, which then runs synchronously over them. A path
- * is a file when its read succeeded, as the scan's import resolution requires.
- */
 class ScanFiles {
 	private readonly texts = new Map<string, string | Error>();
 	private readonly sources = new Map<string, ScannedSource>();
 
-	/** Reads `path` unless it was read already; whether it is a readable file. */
 	async load(path: string): Promise<boolean> {
 		if (!this.texts.has(path)) {
 			try {
@@ -500,7 +494,6 @@ class ScanFiles {
 		return typeof this.texts.get(path) === "string";
 	}
 
-	/** The source read at `path`, tokenized once; why it could not be read when it could not. */
 	read(path: string): ScannedSource | Error {
 		const text = this.texts.get(path) ?? new Error(`${path} was not read before the scan`);
 		if (text instanceof Error) return text;
@@ -516,10 +509,6 @@ class ScanFiles {
 	}
 }
 
-/**
- * Reads every file a scan from `entryPath` can reach: the entry, then each file its imports resolve to, transitively,
- * probing every candidate the scan's resolution probes up to the first file.
- */
 async function readScanFiles(entryPath: string): Promise<ScanFiles> {
 	const files = new ScanFiles();
 	const queue = [entryPath];
@@ -2611,7 +2600,6 @@ function relativeImportTargets(unit: FileUnit, importingFile: string, files: Sca
 	return [...new Set(targets)].sort();
 }
 
-/** The files a relative specifier can name, in the order TS/JS conventions probe them; none for another specifier. */
 function relativeSpecifierCandidates(specifier: string, importingFile: string): string[] {
 	if (!specifier.startsWith(".")) return [];
 	const candidates: string[] = [];
@@ -2633,7 +2621,6 @@ function resolveRelativeSpecifier(specifier: string, importingFile: string, file
 	return relativeSpecifierCandidates(specifier, importingFile).find((candidate) => files.isFile(candidate));
 }
 
-/** The builtin definition a builtin barrel or subpath import names, if `binding` is one. */
 function builtinStem(binding: ImportBinding): string | undefined {
 	if (BUILTIN_BARREL_SPECIFIERS.has(binding.specifier)) return binding.importedName;
 	const subpath = BUILTIN_SUBPATH_PREFIXES.find((prefix) => binding.specifier.startsWith(prefix));

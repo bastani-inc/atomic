@@ -99,7 +99,6 @@ export function createHerdrExtension(options: HerdrExtensionOptions = {}): Exten
 			if (boundSessionManager && ctx.sessionManager !== boundSessionManager) return;
 			const environment = captureHerdrEnvironment(options.env ?? process.env);
 			if (!environment || ctx.mode !== "tui" || !ctx.hasUI || ctx.subagentPolicy || ctx.orchestrationContext) return;
-			// The settings are read without blocking; an answer already at hand is used on this turn, as before.
 			const isEnabled = (options.enabled ?? enabled)(ctx);
 			if (typeof isEnabled !== "boolean") {
 				const stopped = stops.get(runner);

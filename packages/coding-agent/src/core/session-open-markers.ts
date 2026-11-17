@@ -54,7 +54,6 @@ export interface SessionOpenHolder {
 /** Marker files under an agent directory, for stores that keep no markers. */
 class FileOpenMarkers implements SessionOpenMarkerStore {
 	private readonly agentDir: string;
-	/** Each marker file's writes and removals still running, so they land in the order they were asked for. */
 	private readonly pending = new Map<string, Promise<void>>();
 
 	constructor(agentDir: string) {
@@ -90,13 +89,9 @@ class FileOpenMarkers implements SessionOpenMarkerStore {
 			try {
 				await rm(path);
 				await rmdir(directory);
-			} catch {
-				// Another process's marker may remain in the directory, or it is gone already.
-			}
+			} catch {}
 		});
 	}
-
-	/** {@link remove} for exit handlers, which cannot wait. */
 
 	removeSync(sessionId: string, token: string): void {
 		const directory = this.directory(sessionId);
@@ -110,7 +105,6 @@ class FileOpenMarkers implements SessionOpenMarkerStore {
 
 	async list(sessionId: string): Promise<readonly SessionOpenMarkerAge[]> {
 		const directory = this.directory(sessionId);
-		// This process's writes and removals asked for before the listing are part of it.
 		await Promise.all([...this.pending].flatMap(([path, settled]) => (dirname(path) === directory ? [settled] : [])));
 		let names: string[];
 		try {
@@ -211,7 +205,6 @@ export function holdSessionOpenMarker(
 		marker = { markers, sessionId, holds: 0, releaseClaim: attachSessionClaim(sessionId) };
 		sessions.set(sessionId, marker);
 		heldCount++;
-		// Best effort, as above. A file marker's removal waits for this write.
 		markers.put(sessionId, ownMarker()).catch(() => {});
 		if (heartbeat === undefined) {
 			heartbeat = setInterval(refreshMarkers, HEARTBEAT_MS);

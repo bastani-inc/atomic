@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, type Stats } from "node:fs";
-import { access, lstat, mkdir, open, readdir, readFile, realpath, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, readFile, realpath, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
+import { pathExists } from "../../utils/path-exists.js";
 import { releaseLock } from "../lock-release.ts";
 import { takeTakeoverMutexAsync } from "../lock-takeover.ts";
 import { renameWithRetry } from "../rename-retry.ts";
@@ -563,7 +564,6 @@ export function objectStorePath(storeDir: string, remotes: readonly string[], ro
 	return existsSync(named(current)) || !existsSync(named(legacy)) ? named(current) : named(legacy);
 }
 
-/** {@link objectStorePath} without blocking the event loop on its existence checks. */
 async function objectStorePathAsync(
 	storeDir: string,
 	remotes: readonly string[],
@@ -2058,7 +2058,6 @@ async function checkPathBudget(
 	snapshotId: string | null,
 ): Promise<void> {
 	if (process.platform !== "win32") return;
-	// A failure to name the store skips the check, as it does in the check itself.
 	const named = await store().then(
 		(value) => ({ value }),
 		() => undefined,
@@ -2192,14 +2191,6 @@ async function moveIntoPlace(
 		}
 		throw error;
 	}
-}
-
-/** Whether anything is at `path`, as `existsSync` answers: any failure to reach it is no. */
-function pathExists(path: string): Promise<boolean> {
-	return access(path).then(
-		() => true,
-		() => false,
-	);
 }
 
 /** The entry at `path`, or undefined when there is none. */

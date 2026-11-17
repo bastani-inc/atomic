@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { type AdvisoryLock, renameNoReplaceAsync, tryAdvisoryLockAsync } from "@bastani/atomic-natives";
+import { pathExists } from "../../shared/path-exists.js";
 import { addNamedWorktree } from "./named-worktree-git.js";
 import { ensureWorktreeIgnore, runGit } from "./worktree.js";
 import { findCanonicalGitRoot } from "./worktree-root.js";
@@ -89,15 +90,6 @@ export class WorktreeBusyError extends Error {
 			`worktree: ${state} at ${worktreePath}.${lock}${wait} Once no Git process is using this worktree or repository, inspect and save any files you need. Run git worktree unlock ${JSON.stringify(worktreePath)}, remove the worktree directory, then run git worktree prune. Remove any stale HEAD.lock and branch reference .lock files before launching again.${locations} If its metadata is intact, git worktree remove --force --force ${JSON.stringify(worktreePath)} also removes the worktree. Do not repair a partial checkout by deleting only index.lock.`,
 		);
 		this.name = "WorktreeBusyError";
-	}
-}
-
-async function pathExists(target: string): Promise<boolean> {
-	try {
-		await fs.access(target);
-		return true;
-	} catch {
-		return false;
 	}
 }
 

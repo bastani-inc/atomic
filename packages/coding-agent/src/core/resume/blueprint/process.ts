@@ -96,7 +96,6 @@ export async function runLoggedProcess(
 		let timedOut = false;
 		let stopped = false;
 		let writeError: Error | undefined;
-		/** The copied output still being written to the log, in the order it was read. */
 		let copying = Promise.resolve();
 		const stop = () => {
 			stopped = true;
@@ -183,7 +182,6 @@ export async function runLoggedProcess(
 
 const writeToFd = promisify(write);
 
-/** Appends all of `data` to `log`. */
 export async function appendToLog(log: StepLog, data: string | Buffer): Promise<void> {
 	const chunk = typeof data === "string" ? Buffer.from(data) : data;
 	let written = 0;

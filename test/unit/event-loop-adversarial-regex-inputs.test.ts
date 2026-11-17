@@ -10,22 +10,9 @@ import { detectSubagentError } from "../../packages/subagents/src/shared/utils.t
 import { extractOutputTarget } from "../../packages/subagents/src/tui/render-status-progress.ts";
 import { parse_rubric } from "../../packages/workflows/builtin/verification-criteria.ts";
 
-/**
- * Each input repeats one character this many times where a regular expression
- * used to backtrack. That cost grew with the square of the run: seconds for this
- * length even on a fast machine. Reading the run once takes well under a
- * millisecond.
- */
 const RUN = 100_000;
-/** Where the backtracking only rescanned a lazy body, each step was cheaper: this longer run still took seconds. */
 const LONG_RUN = 4 * RUN;
-/** The exit-code pattern grew with the cube of its run, so a far shorter run already took seconds. */
 const CUBIC_RUN = 3_000;
-/**
- * Far above what one linear pass over these inputs needs on a loaded machine
- * (tens of milliseconds at most, for rendering the longest run), and far below
- * what the backtracking took, so load cannot flip the outcome.
- */
 const ADVERSARIAL_INPUT_BUDGET_MS = 1_000;
 
 function timed<T>(run: () => T): T {
@@ -113,7 +100,6 @@ describe("model-written commands and tasks", () => {
 });
 
 describe("prompts", () => {
-	/** What the orchestration skill was stripped with before: two global replacements. */
 	function stripWithPatterns(prompt: string): string {
 		return prompt
 			.replace(/\n{0,2}<skill\s+name=["']subagent(?:@[^"']*)?["'][^>]*>[\s\S]*?<\/skill>\n{0,2}/g, "\n\n")

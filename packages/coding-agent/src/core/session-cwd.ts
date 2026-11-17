@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { access } from "node:fs/promises";
+import { pathExists } from "../utils/path-exists.js";
 
 export interface SessionCwdIssue {
 	sessionFile?: string;
@@ -12,7 +12,6 @@ interface SessionCwdSource {
 	getSessionFile(): string | undefined;
 }
 
-/** The session file and the working directory it records, for a session kept in a file that records one. */
 function fileSessionCwd(sessionManager: SessionCwdSource): { sessionFile: string; sessionCwd: string } | undefined {
 	const sessionFile = sessionManager.getSessionFile();
 	if (!sessionFile) {
@@ -20,16 +19,6 @@ function fileSessionCwd(sessionManager: SessionCwdSource): { sessionFile: string
 	}
 	const sessionCwd = sessionManager.getCwd();
 	return sessionCwd ? { sessionFile, sessionCwd } : undefined;
-}
-
-/** Whether `path` exists, as `existsSync` answers: any error means it does not. */
-async function pathExists(path: string): Promise<boolean> {
-	try {
-		await access(path);
-		return true;
-	} catch {
-		return false;
-	}
 }
 
 export function getMissingSessionCwdIssue(
@@ -43,7 +32,6 @@ export function getMissingSessionCwdIssue(
 	return { ...recorded, fallbackCwd };
 }
 
-/** {@link getMissingSessionCwdIssue} without blocking the event loop. */
 async function getMissingSessionCwdIssueAsync(
 	sessionManager: SessionCwdSource,
 	fallbackCwd: string,
@@ -215,7 +203,6 @@ interface StoredSessionCwdSource extends SessionCwdSource {
  * The missing-cwd issue for a resumed session kept in database storage, which has no session file: its recorded cwd
  * may be another machine's path. New sessions and in-memory sessions have none.
  */
-/** The working directory a resumed session kept in database storage records, if it records one. */
 function storedSessionCwd(sessionManager: StoredSessionCwdSource): string | undefined {
 	if (sessionManager.getSessionFile() || !sessionManager.isPersisted() || sessionManager.getEntries().length === 0) {
 		return undefined;
@@ -246,7 +233,6 @@ export function findMissingSessionCwdIssue(
 	);
 }
 
-/** {@link findMissingSessionCwdIssue} without blocking the event loop. */
 export async function findMissingSessionCwdIssueAsync(
 	sessionManager: StoredSessionCwdSource,
 	fallbackCwd: string,

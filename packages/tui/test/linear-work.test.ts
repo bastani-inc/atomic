@@ -10,55 +10,20 @@ import { TuiMainScreen } from "../src/tui-main-screen.ts";
 import { extractSegments, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../src/utils.ts";
 import { measureStringWork } from "./string-work.ts";
 
-/**
- * Input sizes ten times apart. A bound per unit of input that holds at both leaves no room for work that grows with
- * the square of the input.
- */
 const SIZES = [2_000, 20_000] as const;
-/**
- * String work per character of one scan over styled text: the escape scan reads each character, the grapheme
- * segmenter yields it, the width checks read each grapheme's first code point, and slices copy what the scan keeps.
- */
 const SCAN_WORK_PER_CHARACTER = 8;
-/**
- * String work per character of one scan over text made of unterminated escape introducers. Each introducer reads up
- * to 32 characters ahead before it consults the search it remembers (`DIRECT_TERMINATOR_SEARCH` in utils.ts), so with
- * an introducer every other character a scan reads each character about 16 times more than it reads plain text.
- */
 const ESCAPE_DENSE_SCAN_WORK_PER_CHARACTER = 48;
-/** Scans wrapping makes over its input: it measures the line, splits it into tokens, and measures and breaks each. */
 const WRAP_SCANS = 3;
-/** Scans compositing makes per character of base and overlay input: it cuts both and measures the composed line. */
 const COMPOSITE_SCANS = 2;
-/** Line reads per frame: the diff reads every previous and new line, and image placement checks read both again. */
 const FRAME_READS_PER_LINE = 8;
-/**
- * String work per character of a frame: each line is stripped of prompt markers, checked for fake cursors, cursor
- * markers and images, reset, normalized and, when it changed, written.
- */
 const FRAME_WORK_PER_CHARACTER = 16;
 
-/**
- * String work per character of a fuzzy match of a query a tenth as long as its text. The greedy alignment scans the text
- * once, and each contiguous occurrence scored is found by comparing the query once. An occurrence more than 100
- * characters after the first cannot score better than it, so at most 101 are compared: with the query a tenth of the
- * text, about 10 characters per character of input.
- */
 const REPEATED_QUERY_WORK_PER_CHARACTER = 16;
-/**
- * String work per character of item text and query token when filtering: each item's text is lowercased, then scanned
- * by the greedy alignment and the contiguous occurrence search, once per token.
- */
 const FILTER_WORK_PER_CHARACTER_PER_TOKEN = 8;
-/** String work per character of a select list's items and filter: each value is lowercased once, the filter once. */
 const SELECT_FILTER_WORK_PER_CHARACTER = 2;
 
 let inputSalt = 0;
 
-/**
- * Text of exactly `length` characters made by repeating `pieces` from a position that changes on every call, so
- * `visibleWidth`'s cache of measured strings never answers for a string under measurement.
- */
 function textOf(pieces: readonly string[], length: number): string {
 	let text = "";
 	for (let index = inputSalt++; text.length < length; index++) text += pieces[index % pieces.length];
@@ -96,7 +61,6 @@ const INPUTS: readonly Input[] = [
 	},
 ];
 
-/** Runs `measure` on each input at each size and asserts its string work stays within `scans` scans of the input. */
 function assertLinear(scans: number, measure: (make: (length: number) => string, length: number) => number): void {
 	for (const input of INPUTS) {
 		for (const length of SIZES) {
@@ -220,10 +184,8 @@ class CountingTerminal implements Terminal {
 	setProgramStatus(): void {}
 }
 
-/** Line reads through every array `countReads` wrapped. */
 let lineReads = 0;
 
-/** `lines`, counting every read of one of its elements into `lineReads`. */
 function countReads(lines: string[]): string[] {
 	return new Proxy(lines, {
 		get(target, property, receiver) {
@@ -233,7 +195,6 @@ function countReads(lines: string[]): string[] {
 	});
 }
 
-/** The main screen's frame lines count their reads from the line diff on, and become the previous frame's lines. */
 class CountingMainScreen extends TuiMainScreen {
 	protected override applyLineResets(lines: string[]): string[] {
 		return countReads(super.applyLineResets(lines));

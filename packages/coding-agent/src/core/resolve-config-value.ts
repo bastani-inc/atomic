@@ -10,7 +10,6 @@ import { containProcessTree } from "./process-tree-containment.ts";
 
 // Cache for shell command results (persists for process lifetime)
 const commandResultCache = new Map<string, string | undefined>();
-/** The asynchronous runs of commands not cached yet, so concurrent resolutions run each command once. */
 const commandRuns = new Map<string, Promise<string | undefined>>();
 // Last observed uncached result, used only for privacy screening, never auth resolution.
 const observedCommandResults = new Map<string, string>();
@@ -161,7 +160,6 @@ export function resolveConfigValue(config: string, env?: Record<string, string>)
 	return resolveTemplate(reference.parts, env);
 }
 
-/** {@link resolveConfigValue} without blocking the event loop: a command runs asynchronously, with the same cache. */
 export async function resolveConfigValueAsync(
 	config: string,
 	env?: Record<string, string>,
@@ -194,11 +192,6 @@ export function containsConfiguredValue(serialized: string, config: string, env?
 
 const LINE_TERMINATORS = new Set(["\n", "\r", "\u2028", "\u2029"]);
 
-/**
- * What `/^(?:Bearer|Basic)\s+(.+)$/i` captures, in one pass: that pattern backtracks quadratically over a long run of
- * whitespace. The credential follows the whitespace after the scheme; when only whitespace follows, it is the last of
- * at least two whitespace characters, as `.+` takes the last one back from `\s+`.
- */
 function authorizationCredential(value: string): string | undefined {
 	const scheme = /^(?:Bearer|Basic)/i.exec(value);
 	if (scheme === null) return undefined;
@@ -285,20 +278,15 @@ function executeCommand(commandConfig: string): string | undefined {
 	return result;
 }
 
-/** How long a configured command may run, as for the synchronous resolution. */
 const COMMAND_TIMEOUT_MS = 10_000;
-/** The output a command may print before it is stopped: the `maxBuffer` the synchronous resolution has. */
 const MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024;
 
 interface CommandOutcome {
-	/** Why the command could not run, or was stopped. */
 	readonly error?: NodeJS.ErrnoException;
-	/** Its exit status; null when a signal ended it. */
 	readonly status: number | null;
 	readonly stdout: string;
 }
 
-/** Runs `file` as `spawnSync` runs it here, with stderr ignored, without blocking the event loop. */
 function runCommand(
 	file: string,
 	args: readonly string[],
@@ -368,7 +356,6 @@ function runCommand(
 		});
 		child.on("close", (status) => finish(status));
 		if (options.input !== undefined) {
-			// A command that exits without reading its input closes the pipe; that is its own outcome.
 			child.stdin?.on("error", () => {});
 			child.stdin?.end(options.input);
 		}
@@ -401,7 +388,6 @@ async function executeWithConfiguredShellAsync(
 
 async function executeWithDefaultShellAsync(command: string): Promise<string | undefined> {
 	try {
-		// `execSync` runs the command through the default shell with stdin ignored, and fails unless it exits with 0.
 		const result = await runCommand(command, [], { shell: true, windowsHide: false });
 		if (result.error || result.status !== 0) return undefined;
 		return result.stdout.trim() || undefined;
@@ -423,7 +409,6 @@ async function executeCommandUncachedAsync(commandConfig: string): Promise<strin
 	return result;
 }
 
-/** {@link executeCommand} without blocking the event loop. */
 async function executeCommandAsync(commandConfig: string): Promise<string | undefined> {
 	if (commandResultCache.has(commandConfig)) {
 		return commandResultCache.get(commandConfig);
@@ -453,7 +438,6 @@ export function resolveConfigValueUncached(config: string, env?: Record<string, 
 	return resolveTemplate(reference.parts, env);
 }
 
-/** {@link resolveConfigValueUncached} without blocking the event loop. */
 export async function resolveConfigValueUncachedAsync(
 	config: string,
 	env?: Record<string, string>,
@@ -473,7 +457,6 @@ export function resolveConfigValueOrThrow(config: string, description: string, e
 	throw unresolvedConfigValueError(config, description, env);
 }
 
-/** {@link resolveConfigValueOrThrow} without blocking the event loop. */
 export async function resolveConfigValueOrThrowAsync(
 	config: string,
 	description: string,
@@ -536,7 +519,6 @@ export function resolveHeadersOrThrow(
 	return Object.keys(resolved).length > 0 ? resolved : undefined;
 }
 
-/** {@link resolveHeadersOrThrow} without blocking the event loop. */
 export async function resolveHeadersOrThrowAsync(
 	headers: Record<string, string> | undefined,
 	description: string,

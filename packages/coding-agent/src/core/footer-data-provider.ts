@@ -58,7 +58,6 @@ export function findGitPaths(cwd: string): GitPaths | null {
 	}
 }
 
-/** {@link findGitPaths} without blocking: the same walk and the same answers. */
 export async function findGitPathsAsync(cwd: string): Promise<GitPaths | null> {
 	let dir = cwd;
 	while (true) {
@@ -128,7 +127,6 @@ async function resolveBranchWithGitAsync(repoDir: string): Promise<string | null
 	});
 }
 
-/** The branch HEAD names: "detached" without one, null outside a repository or when HEAD cannot be read. */
 async function readGitBranch(gitPaths: GitPaths | null): Promise<string | null> {
 	try {
 		if (!gitPaths) return null;
@@ -143,7 +141,6 @@ async function readGitBranch(gitPaths: GitPaths | null): Promise<string | null> 
 	}
 }
 
-/** What identifies the state of a reftable `tables.list`, or null when it cannot be read. */
 async function readReftableTablesListFingerprint(tablesListPath: string | null): Promise<string | null> {
 	if (!tablesListPath) return null;
 	try {
@@ -155,13 +152,11 @@ async function readReftableTablesListFingerprint(tablesListPath: string | null):
 	}
 }
 
-/** The branch last read for a cwd nobody subscribed to; read again on the next lookup after the read finished. */
 interface UnleasedBranch {
 	branch: string | null;
 	reading: boolean;
 }
 
-/** Cwds whose last unleased branch is kept; the oldest is forgotten first. */
 const MAX_UNLEASED_BRANCHES = 32;
 
 function isWslEnvironment(): boolean {
@@ -224,10 +219,6 @@ export class FooterDataProvider {
 		}
 	}
 
-	/**
-	 * Current git branch for the displayed session cwd, defaulting to this provider's cwd. It is read from memory: the
-	 * first lookup starts reading it and returns null, and branch-change listeners hear when it is known.
-	 */
 	getGitBranch(cwd = this.cwd): string | null {
 		if (this.disposed) return null;
 		if (cwd !== this.cwd) {
@@ -239,10 +230,6 @@ export class FooterDataProvider {
 		return this.cachedBranch ?? null;
 	}
 
-	/**
-	 * A read without a viewer retains no watcher or child provider: each lookup returns the branch last read and reads
-	 * it again, and branch-change listeners hear when it changed.
-	 */
 	private getUnleasedGitBranch(cwd: string): string | null {
 		let entry = this.unleasedBranches.get(cwd);
 		if (!entry) {
@@ -378,7 +365,6 @@ export class FooterDataProvider {
 		this.unleasedBranches.clear();
 	}
 
-	/** The git paths of the current cwd, found once per cwd. */
 	private ensureGitPaths(): Promise<GitPaths | null> {
 		if (this.gitPaths !== undefined) return Promise.resolve(this.gitPaths);
 		const generation = this.cwdGeneration;
@@ -422,13 +408,11 @@ export class FooterDataProvider {
 			if (this.disposed || generation !== this.cwdGeneration) return;
 			const previous = this.cachedBranch;
 			this.cachedBranch = nextBranch;
-			// Before the first read, renders showed no branch.
 			if (previous === undefined ? nextBranch !== null : previous !== nextBranch) this.notifyBranchChange();
 		} finally {
 			this.refreshInFlight = false;
 			if (!this.disposed) {
 				if (generation !== this.cwdGeneration) {
-					// The cwd changed during the read: read the new one, which renders already asked for.
 					this.refreshPending = false;
 					void this.refreshGitBranchAsync();
 				} else if (this.refreshPending) {
@@ -512,7 +496,6 @@ export class FooterDataProvider {
 		this.scheduleGitWatcherRetry();
 	}
 
-	/** Refresh unless `tables.list` is as last seen. Checks run in order, so the newest state is the one kept. */
 	private scheduleReftableRefresh(): void {
 		const tablesListPath = this.reftableTablesListPath;
 		const generation = this.watcherGeneration;

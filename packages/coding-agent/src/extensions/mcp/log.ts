@@ -47,7 +47,6 @@ export class McpServerLog {
 		this.appending = this.appending.then(() => this.append(line));
 	}
 
-	/** Resolves once every message written so far is in the file, or was dropped because it could not be. */
 	flush(): Promise<void> {
 		return this.appending;
 	}

@@ -21,7 +21,6 @@ vi.mock("node:fs", async (importOriginal) => {
 	};
 });
 
-// Debug records are appended asynchronously; count those appends the same way.
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs/promises")>();
 	const appendFile = ((...args: Parameters<typeof actual.appendFile>) => {

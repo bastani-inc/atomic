@@ -1,4 +1,4 @@
-import { access, readFile, rm, stat, readdir, open, realpath, lstat, mkdir, writeFile } from "node:fs/promises";
+import { readFile, rm, stat, readdir, open, realpath, lstat, mkdir, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createOwnerState } from "./owner-state.js";
@@ -14,6 +14,7 @@ import type { ExtractedContent } from "./extract.js";
 import { flattenTruncatedString } from "./flat-string.js";
 import { checkGhAvailable, checkRepoSize, fetchViaApi, showGhHint } from "./github-api.js";
 import { BINARY_EXTENSIONS, MAX_INLINE_FILE_CHARS, MAX_TREE_ENTRIES, NOISE_DIRS, assertValidGitHubCoordinates, chosenDefaultGitHubClonePath, loadGitHubConfig, parseGitHubUrl, resetGitHubConfig, type GitHubCloneConfig, type GitHubUrlInfo } from "./github-config.js";
+import { pathExists as targetExists } from "./path-exists.js";
 export { parseGitHubUrl, type GitHubUrlInfo } from "./github-config.js";
 
 /** Written into every clone directory this tool creates; nothing without it is ever removed. */
@@ -69,14 +70,6 @@ async function pathExists(path: string): Promise<boolean> {
 	}
 }
 
-async function targetExists(path: string): Promise<boolean> {
-	try {
-		await access(path);
-		return true;
-	} catch {
-		return false;
-	}
-}
 
 /**
  * True when `path` is strictly inside the clone root after resolving every symlink along it.
@@ -90,7 +83,6 @@ async function isConfined(root: string, path: string): Promise<boolean> {
 		const realPath = join(await realpath(existing), relative(existing, path));
 		return isInside(await realpath(root), realPath);
 	} catch (error) {
-		// Windows may allow access to a dangling junction even though its target cannot be resolved.
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code === "ENOENT" || code === "ENOTDIR") return false;
 		throw error;
@@ -136,7 +128,6 @@ function execClone(args: string[], paths: ClonePaths, timeoutMs: number, signal?
 			settled = true;
 			clearTimeout(timer);
 			if (signal) signal.removeEventListener("abort", onAbort);
-			child.stdin?.destroy();
 			child.stdout?.destroy();
 			child.stderr?.destroy();
 			if (!failed && !stopped) tree?.release();
@@ -149,7 +140,6 @@ function execClone(args: string[], paths: ClonePaths, timeoutMs: number, signal?
 		};
 		const stop = () => {
 			stopped = true;
-			child.stdin?.destroy();
 			child.stdout?.destroy();
 			child.stderr?.destroy();
 			if (!tree?.terminate()) {
@@ -638,7 +628,6 @@ export function clearCloneCache(): Promise<void> {
 	state.cache.clear();
 	resetGitHubConfig();
 	for (const entry of entries) entry.abort();
-	// Invalidated clones finish before they are removed, and new clones wait until their old directory is gone.
 	const cleanup = state.cleanup.then(async () => {
 		for (const entry of entries) {
 			await entry.clonePromise.catch(() => null);

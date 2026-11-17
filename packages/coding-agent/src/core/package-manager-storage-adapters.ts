@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
-import { access, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, resolve } from "node:path";
+import { pathExists as exists } from "../utils/path-exists.js";
 import { isLocalPath, resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { getExistingGitInstallPathAsync } from "./package-manager-git.ts";
@@ -30,12 +31,6 @@ async function readJson(path: string): Promise<object | undefined> {
 		return undefined;
 	}
 }
-
-const exists = (path: string): Promise<boolean> =>
-	access(path).then(
-		() => true,
-		() => false,
-	);
 
 /** Where a user-scope package source is installed, without consulting the global npm root. */
 async function installedPackageRoot(
@@ -99,7 +94,6 @@ function readPackageJsonSync(root: string): { name?: string } | undefined {
 	}
 }
 
-/** The package directories among `sources`, relative ones resolved against `cwd`. */
 function localPackageRoots(sources: readonly string[] | undefined, cwd: string): string[] {
 	const roots: string[] = [];
 	for (const source of sources ?? []) {
@@ -129,13 +123,8 @@ export function registerHostStoragePackages(sources: readonly string[] | undefin
 	for (const root of localPackageRoots(sources, cwd)) addHostStoragePackage(root, readPackageJsonSync(root));
 }
 
-/** The {@link registerHostStoragePackagesAsync} calls still reading their packages, chained in call order. */
 let pendingHostStorageRegistrations: Promise<void> = Promise.resolve();
 
-/**
- * {@link registerHostStoragePackages} without blocking. Registrations complete in call order, and storage that selects
- * an adapter by name waits for them through {@link hostStoragePackagesRegistered}.
- */
 export function registerHostStoragePackagesAsync(sources: readonly string[] | undefined, cwd: string): Promise<void> {
 	const roots = localPackageRoots(sources, cwd);
 	const registration = pendingHostStorageRegistrations.then(async () => {
@@ -148,7 +137,6 @@ export function registerHostStoragePackagesAsync(sources: readonly string[] | un
 	return registration;
 }
 
-/** Settles once every {@link registerHostStoragePackagesAsync} call made so far has registered its adapters. */
 export function hostStoragePackagesRegistered(): Promise<void> {
 	return pendingHostStorageRegistrations;
 }

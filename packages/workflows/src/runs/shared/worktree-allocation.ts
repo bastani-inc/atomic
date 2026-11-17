@@ -20,7 +20,6 @@ function nextBucketId(): string {
 	return nextBucketIdOverride?.() ?? randomBytes(2).toString("hex");
 }
 
-/** Replace the random bucket identifier source while `callback` runs, until the promise it returns settles when it returns one. */
 export function withWorktreeBucketIdsForTest<T>(next: () => string, callback: () => T): T {
 	const previous = nextBucketIdOverride;
 	nextBucketIdOverride = next;

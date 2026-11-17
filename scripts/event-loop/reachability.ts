@@ -1,23 +1,18 @@
 import type { CallGraph, EdgeKind, GraphFunction, SinkRegistration } from "./call-graph.ts";
 
-/** How a function was reached: from its parent over an edge, or as a callback registered through a sink. */
 export type Arrival =
 	| { readonly kind: "root"; readonly reason: string }
 	| { readonly kind: "edge"; readonly from: number; readonly edge: EdgeKind }
 	| { readonly kind: "registered"; readonly from: number; readonly sink: string; readonly line: number };
 
 export interface ReachOptions {
-	/** Functions the walk never enters, with why. */
 	readonly stopAt: ReadonlyMap<number, string>;
-	/** Follow sink registrations made by reached functions. */
 	readonly followRegistrations: boolean;
-	/** Edges the walk does not take. */
 	readonly skipEdge?: (from: number, to: number, edge: EdgeKind) => boolean;
 }
 
 export interface Reached {
 	readonly arrivals: ReadonlyMap<number, Arrival>;
-	/** Stopped functions the walk would have entered, with the function that tried. */
 	readonly stoppedFrom: ReadonlyMap<number, number>;
 }
 
@@ -31,7 +26,6 @@ export function registrationsByRegistrar(graph: CallGraph): Map<number, SinkRegi
 	return index;
 }
 
-/** Breadth-first, so each arrival chain is a shortest path from a root. */
 export function reach(
 	graph: CallGraph,
 	roots: ReadonlyMap<number, string>,
@@ -72,7 +66,6 @@ export function reach(
 	return { arrivals, stoppedFrom };
 }
 
-/** The chain of functions from a root to `id`, root first. */
 export function pathTo(reached: Reached, id: number): Array<{ readonly id: number; readonly arrival: Arrival }> {
 	const chain: Array<{ readonly id: number; readonly arrival: Arrival }> = [];
 	let current: number | undefined = id;

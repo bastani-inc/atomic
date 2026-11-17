@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
-import { access, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { getPackageDir, isBunBinary } from "../config.js";
+import { pathExists as exists } from "../utils/path-exists.js";
 import { moduleDirFromMetaUrl } from "../utils/split-launcher.ts";
 import { stripBom } from "../utils/text.ts";
 import { type BuiltinPackageDirName, requiredEntriesForBuiltin } from "./builtin-install-layout.ts";
@@ -81,12 +82,6 @@ function isPackageDir(dir: string, descriptor: BuiltinPackageDescriptor): boolea
 	);
 }
 
-const exists = (path: string): Promise<boolean> =>
-	access(path).then(
-		() => true,
-		() => false,
-	);
-
 async function isPackageDirAsync(dir: string, descriptor: BuiltinPackageDescriptor): Promise<boolean> {
 	const entries = await Promise.all(descriptor.requiredEntries.map((entry) => exists(join(dir, entry))));
 	if (!entries.includes(true)) return false;
@@ -103,7 +98,6 @@ function distCandidates(context: BuiltinPackageCandidateContext, descriptor: Bui
 	];
 }
 
-/** Where a builtin may be, most preferred first, each once. */
 function builtinCandidates(context: BuiltinPackageCandidateContext, descriptor: BuiltinPackageDescriptor): string[] {
 	return [
 		...new Set(
@@ -124,16 +118,12 @@ function getBuiltinPackageCandidateContext(
 }
 
 interface BuiltinPackageDiscovery {
-	/** Every verified root of each builtin, in the order its candidates are preferred. */
 	readonly roots: ReadonlyMap<BuiltinPackageDescriptor, readonly string[]>;
-	/** The extension entries the manifests of the mandatory builtins' preferred roots list. */
 	readonly mandatoryExtensionPaths: readonly string[];
 }
 
-/** Discoveries by package directory: the shipped builtins do not change while Atomic runs. */
 const builtinPackageDiscoveries = new Map<string, BuiltinPackageDiscovery>();
 
-/** The preferred roots of the builtins Atomic must load in every model session. */
 function mandatoryRoots(roots: BuiltinPackageDiscovery["roots"]): string[] {
 	return BUILTIN_PACKAGES.filter((descriptor) => descriptor.mandatory).flatMap(
 		(descriptor) => roots.get(descriptor)?.slice(0, 1) ?? [],
@@ -160,11 +150,6 @@ function readManifestExtensionPaths(packageDir: string): string[] {
 	}
 }
 
-/**
- * The builtins shipped with the package directory in effect, kept after the first lookup. The discovery this module
- * starts when it loads normally provides them; this reads them itself only for a lookup that comes first, while
- * Atomic starts, or under another package directory.
- */
 function discoverBuiltinPackages(): BuiltinPackageDiscovery {
 	const packageDir = getPackageDir();
 	const known = builtinPackageDiscoveries.get(packageDir);
@@ -184,7 +169,6 @@ function discoverBuiltinPackages(): BuiltinPackageDiscovery {
 	return discovery;
 }
 
-/** {@link discoverBuiltinPackages} without blocking, so the lookups after startup find the builtins in memory. */
 async function preloadBuiltinPackages(): Promise<void> {
 	const packageDir = getPackageDir();
 	if (builtinPackageDiscoveries.has(packageDir)) return;

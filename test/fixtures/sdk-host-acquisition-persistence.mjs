@@ -34,7 +34,6 @@ try {
   const a = session.executeBash("first", undefined, { id: "raw id  ", operations });
   const b = session.executeBash("second", undefined, { id: "raw id  ", operations });
   try {
-   // Both commands start once their environment is read; disposal must then abort them.
    const started = Date.now() + 10_000;
    while (signals.length < 2 && Date.now() < started) await tick();
    const close = session.dispose(); await tick();

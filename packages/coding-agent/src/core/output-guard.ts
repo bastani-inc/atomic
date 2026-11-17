@@ -31,11 +31,6 @@ interface DescriptorWrite {
 	readonly callback: RawWriteCallback;
 }
 
-/**
- * Writes stdout through its file descriptor on the runtime's thread pool, so the thread that waits for a slow reader
- * is never the event loop's. One write is in flight at a time and writes leave in the order they were made, so records
- * never interleave.
- */
 class StdoutDescriptorWriter {
 	private readonly queue: DescriptorWrite[] = [];
 	private writing = false;
@@ -52,7 +47,6 @@ class StdoutDescriptorWriter {
 		if (next) this.writeFrom(next, 0);
 	}
 
-	/** A write may take part of the bytes; the rest follows, after a pause when the pipe took none. */
 	private writeFrom(entry: DescriptorWrite, offset: number): void {
 		if (offset === entry.bytes.length) {
 			this.writeNext();
@@ -72,7 +66,6 @@ class StdoutDescriptorWriter {
 	}
 }
 
-/** Set for the life of the process once chosen: switching back while a write is in flight could reorder records. */
 let stdoutDescriptorWriter: StdoutDescriptorWriter | undefined;
 
 function getRawStdoutWrite(): StdoutTakeoverState["rawStdoutWrite"] {
@@ -82,7 +75,6 @@ function getRawStdoutWrite(): StdoutTakeoverState["rawStdoutWrite"] {
 	return process.stdout.write.bind(process.stdout) as StdoutTakeoverState["rawStdoutWrite"];
 }
 
-/** Where records go: the descriptor writer once a protocol chose it, otherwise the stdout stream. */
 function getRawStdoutRecordWrite(): RawWrite {
 	return stdoutDescriptorWriter?.write ?? getRawStdoutWrite();
 }
@@ -112,12 +104,6 @@ async function writeRawStdoutChunk(text: string): Promise<void> {
 }
 
 export interface StdoutTakeoverOptions {
-	/**
-	 * Never let the reader of a stdout pipe hold this process's event loop. On Windows, Node and Bun write to a pipe
-	 * synchronously: a write that does not fit the pipe's buffer blocks the thread until the reader has taken the rest,
-	 * however long the reader is busy. With this set, records go to the file descriptor through the thread pool there
-	 * instead. Elsewhere pipe writes are already asynchronous, and a terminal keeps its stream.
-	 */
 	nonBlockingPipe?: boolean;
 }
 
@@ -194,12 +180,6 @@ export function isStdoutTakenOver(): boolean {
 	return stdoutTakeoverState !== undefined;
 }
 
-/**
- * Hand a small control frame to stdout at once, ahead of records still waiting in `writeRawStdout`'s queue, so it
- * leaves before synchronous user code begins. Behind a write already in flight it waits its turn. The descriptor
- * writer returns a best-effort completion: async user callbacks wait for it before running, so a busy callback cannot
- * hold the completion of an earlier write and leave its own attribution queued until after it finishes.
- */
 export function writeRawStdoutControl(text: string): void | Promise<void> {
 	if (text.length === 0) return;
 	if (stdoutDescriptorWriter) {

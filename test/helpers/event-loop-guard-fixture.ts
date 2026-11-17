@@ -1,8 +1,3 @@
-/**
- * The fixture of the interactive event-loop guard (test/integration/interactive-event-loop-guard.test.ts): an agent
- * directory whose only model is a scripted loopback provider, a workflow, a large resumable session, the package laid
- * out as npm installs it, and the records the event-loop diagnostic writes.
- */
 import { copyFileSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileExistsSync, readTextSync } from "./runtime.js";
@@ -15,7 +10,6 @@ const STAGE_MARKER = "GUARD-STAGE";
 const PROVIDER = "guard-loopback";
 const MODEL = "guard-model";
 
-/** A long markdown answer: headings, lists, code and a table, the shapes the renderer works hardest on. */
 function longMarkdown(sections: number): string {
 	const parts: string[] = [];
 	for (let section = 1; section <= sections; section++) {
@@ -29,16 +23,10 @@ function longMarkdown(sections: number): string {
 	return parts.join("\n");
 }
 
-/** What the scripted model answers, named by the label the guard waits for. */
 export type GuardReply = ScriptedReply & {
 	readonly label: "stream" | "parent" | "parent-final" | "child" | "stage" | "other";
 };
 
-/**
- * The scripted model. A prompt with `STREAM_MARKER` streams a long answer for about six seconds; one with
- * `SUBAGENTS_MARKER` delegates to four workers, whose prompts and the workflow's stage prompts each stream a shorter
- * answer; anything else (workflow notices, for instance) gets a one-word reply.
- */
 export function guardReply(request: ChatRequest): GuardReply {
 	const last = request.messages.at(-1);
 	const lastUser = [...request.messages].reverse().find((message) => message.role === "user");
@@ -76,7 +64,6 @@ export function guardReply(request: ChatRequest): GuardReply {
 }
 
 export const GUARD_WORKFLOW = "event-loop-guard";
-/** Stages the guard workflow runs: four in parallel, then a summary. */
 export const GUARD_WORKFLOW_STAGES = 5;
 
 const WORKFLOW_SOURCE = `import { workflow } from "@bastani/atomic/workflows";
@@ -96,7 +83,6 @@ export default workflow({
 });
 `;
 
-/** An agent directory whose default model is the scripted provider at `baseUrl`, with the guard workflow. */
 export function prepareAgentDir(agentDir: string, baseUrl: string): void {
 	mkdirSync(join(agentDir, "workflows"), { recursive: true });
 	const model = {
@@ -105,7 +91,6 @@ export function prepareAgentDir(agentDir: string, baseUrl: string): void {
 		reasoning: false,
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		// The resumed transcript is far larger than any real window; it must not be compacted on open.
 		contextWindow: 100_000_000,
 		maxTokens: 8_192,
 	};
@@ -125,11 +110,6 @@ export function prepareAgentDir(agentDir: string, baseUrl: string): void {
 	writeFileSync(join(agentDir, `workflows/${GUARD_WORKFLOW}.ts`), WORKFLOW_SOURCE);
 }
 
-/**
- * The package at `packageRoot` as npm installs it, at `target`: metadata, `dist` and `docs`, and no `src`. Pointed at
- * by `ATOMIC_PACKAGE_DIR`, it makes the built CLI load its builtin extensions from the bundles in `dist/builtin`, as an
- * install does, rather than from the repository's TypeScript sources through jiti.
- */
 export function prepareInstalledPackage(packageRoot: string, target: string): void {
 	mkdirSync(target, { recursive: true });
 	for (const file of ["package.json", "CHANGELOG.md"]) copyFileSync(join(packageRoot, file), join(target, file));
@@ -138,7 +118,6 @@ export function prepareInstalledPackage(packageRoot: string, target: string): vo
 	}
 }
 
-/** A JSONL session of `turns` turns of four entries (prompt, tool call, tool result, answer), in format 4. */
 export function writeLargeSession(directory: string, cwd: string, id: string, turns: number): void {
 	mkdirSync(directory, { recursive: true });
 	const lines = [JSON.stringify({ type: "session", version: 4, id, createdAt: new Date(0).toISOString(), cwd })];
@@ -199,7 +178,6 @@ export function writeLargeSession(directory: string, cwd: string, id: string, tu
 export type ProcessRole = "host" | "engine";
 export type Phase = "startup" | "session" | "shutdown";
 
-/** A `delay` record of the event-loop diagnostic. */
 export interface DelayRecord {
 	readonly type: "delay";
 	readonly role: ProcessRole;
@@ -213,7 +191,6 @@ export interface DelayRecord {
 	readonly maxMs: number;
 }
 
-/** A `block` record of the event-loop diagnostic. */
 export interface BlockRecord {
 	readonly type: "block";
 	readonly role: ProcessRole;
@@ -243,7 +220,6 @@ export function delayOf(records: readonly LogRecord[], role: ProcessRole, phase:
 	);
 }
 
-/** A block record as a failure message shows it: where it was, how long, and the frames that held the loop. */
 export function describeBlock(block: BlockRecord): string {
 	const stack = block.stacks[0]?.frames ?? [];
 	const frames = [...block.hotFrames.slice(0, 5).map((hot) => `${hot.count}/${block.samples} ${hot.frame}`)];
@@ -251,11 +227,6 @@ export function describeBlock(block: BlockRecord): string {
 	return [`${block.role} block at ${block.at}: ${block.durationMs} ms`, ...frames, ...outer].join("\n    ");
 }
 
-/**
- * The module path a frame names as it appears in both the sources and the built package: `core/tools/x` for
- * `packages/coding-agent/src/core/tools/x.ts` and for `.../dist/core/tools/x.js`, `builtin/intercom/broker/y` for
- * `packages/intercom/broker/y.ts` and its copy under `dist/builtin/intercom/`.
- */
 const SHIP_SHARD_PATH = "packages/workflows/src/workers/ship-shard";
 const NODE_SQLITE_PATH = "packages/coding-agent/src/core/storage/node-sqlite";
 
@@ -386,10 +357,6 @@ function hotApplicationFrame(
 
 const urlMatchesTail = (url: string, tail: string) => url.includes(tail.endsWith("/") ? tail : `${tail}.`);
 
-/**
- * The open change that owns the code a block spent its samples in, when every hot frame it names lies in one such
- * change's area (scripts/event-loop/policy.ts, OWNED_ELSEWHERE); undefined when any of the block is this code's own.
- */
 export function blockOwner(
 	block: BlockRecord,
 	areas: readonly {

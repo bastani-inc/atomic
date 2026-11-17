@@ -103,7 +103,6 @@ export class RpcClient extends RpcClientApi {
 	private stderr = "";
 	private exitError: Error | null = null;
 	private engineMonitor: InteractiveEngineMonitor | undefined;
-	/** The monitor of a start still writing its bootstrap, so a wait begun as it starts waits for its engine. */
 	private startingMonitor: Promise<InteractiveEngineMonitor | undefined> | undefined;
 	private eventBuffer: RpcEventBuffer | undefined;
 	private stdinWriter: QueuedWriter | undefined;
@@ -446,7 +445,6 @@ export class RpcClient extends RpcClientApi {
 	waitForInteractiveEngineResources(): Promise<void> {
 		return this.whenEngineMonitor((monitor) => monitor.waitUntilResourcesReady());
 	}
-	/** Waits on the engine of a start in progress, or else of the running engine; resolves when there is none. */
 	private whenEngineMonitor(wait: (monitor: InteractiveEngineMonitor) => Promise<void>): Promise<void> {
 		const starting = this.startingMonitor;
 		if (starting !== undefined)

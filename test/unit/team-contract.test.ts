@@ -709,7 +709,6 @@ describe("the team adapter check at startup (#4320)", () => {
 			);
 			writeSettings({ packages: [packageRoot] });
 			await assertTeamAdapterInstalled(agentDir, { adapter: LIBSQL_ADAPTER_PACKAGE });
-			// Loaded once per agent directory, however it is spelled: without the package it is not loaded again.
 			writeSettings({});
 			await assertTeamAdapterInstalled(join(agentDir, "."), { adapter: LIBSQL_ADAPTER_PACKAGE });
 		},

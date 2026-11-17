@@ -107,10 +107,6 @@ export interface RunSyncOptions {
 	getChildSessionOptions?: import("@bastani/atomic").ExtensionContext["getChildSessionOptions"];
 	resourceLoaderInheritanceSnapshot?: import("@bastani/atomic").DefaultResourceLoaderInheritanceSnapshot;
 	cwd?: string;
-	/**
-	 * The launch's check of the cwd its child runs in. With one, a run admits and starts its child within the call;
-	 * without one it checks the cwd itself first.
-	 */
 	cwdVerdict?: CwdVerdict;
 	signal?: AbortSignal;
 	interruptSignal?: AbortSignal;

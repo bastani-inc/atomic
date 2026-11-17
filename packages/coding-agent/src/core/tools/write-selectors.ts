@@ -158,10 +158,6 @@ async function writeConflictSelector(path: string, content: string, cwd: string)
 
 let classifying: Promise<unknown> = Promise.resolve();
 
-/**
- * Runs `classify` once every earlier call's has settled, so concurrent writes reach the file mutation queue in the
- * order they were made, as they did when a selector was classified synchronously.
- */
 function inCallOrder<T>(classify: () => Promise<T>): Promise<T> {
 	const result = classifying.then(classify);
 	classifying = result.catch(() => undefined);

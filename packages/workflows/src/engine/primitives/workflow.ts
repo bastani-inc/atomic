@@ -74,7 +74,6 @@ export function createChildWorkflowRunner(input: {
 		...args: WorkflowRunChildArgs<TChildRunInputs>
 	): Promise<WorkflowChildResult<TChildOutputs>> => {
 		const options: WorkflowRunChildOptions<TChildRunInputs> = args[0] ?? {};
-		// Taken before anything is awaited, so children bind one workspace in the order they were started.
 		const bindingTurn =
 			options.workspace === undefined ? undefined : takeWorkspaceBindingTurn(input.runtime, options.workspace);
 		try {
@@ -325,10 +324,8 @@ export function createChildWorkflowRunner(input: {
 	};
 }
 
-/** Each run's latest workspace binding per workspace, so children bind one workspace in the order they were started. */
 const workspaceBindingTails = new WeakMap<object, Map<string, Promise<void>>>();
 
-/** A turn to bind `workspace` in `owner`'s run, after every child started before it; `done` may be called again. */
 function takeWorkspaceBindingTurn(
 	owner: object,
 	workspace: Workspace,

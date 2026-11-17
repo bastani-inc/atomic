@@ -1,28 +1,13 @@
-/**
- * A protocol process writing to its stdout pipe keeps its event loop turning while the reader on the other end stops
- * reading, and the reader still receives every record whole and in order.
- *
- * The isolated engine sends the interactive host megabytes of frames when a long session resumes, while the host is
- * busy drawing it. On Windows, Node and Bun write to a stdout pipe synchronously: a write that does not fit the pipe's
- * buffer holds the writer's thread until the reader has taken the rest.
- */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { describe, test } from "vitest";
 import { bunExecutable } from "../helpers/runtime.js";
 
 const OUTPUT_GUARD = new URL("../../packages/coding-agent/src/core/output-guard.ts", import.meta.url).href;
-/** Far more than any pipe buffers: the record cannot leave while the reader has stopped. */
 const RECORD_BYTES = 8 * 1024 * 1024;
-/** How long the reader stops reading once the first bytes arrive. */
 const STALLED_READER_MS = 1_500;
-/**
- * The longest the writer's 5 ms timer may go without firing. Windows timers tick every 15.6 ms and a loaded runner
- * adds to that; a writer held by the stalled reader shows the whole stall.
- */
 const TIMER_GAP_BOUND_MS = 250;
 
-/** Writes four records, the second of RECORD_BYTES and the third a control frame, and reports its timer's longest gap. */
 const WRITER = `
 const guard = await import(${JSON.stringify(OUTPUT_GUARD)});
 guard.takeOverStdout({ nonBlockingPipe: true });
@@ -51,7 +36,6 @@ interface WriterResult {
 	readonly stderr: string;
 }
 
-/** Runs the writer with its stdout piped here, and stops reading that pipe for STALLED_READER_MS after its first bytes. */
 function runWriter(executable: string, args: readonly string[]): Promise<WriterResult> {
 	const child = spawn(executable, [...args, WRITER], { stdio: ["ignore", "pipe", "pipe"] });
 	const chunks: Buffer[] = [];

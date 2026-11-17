@@ -178,7 +178,6 @@ export class PersistedOutputFile {
 		this.stream = stream;
 	}
 
-	/** Opens and verifies the owner-only file before returning a writer or advertising its path. */
 	static async create(path: string, options: PersistedOutputFileOptions = {}): Promise<PersistedOutputFile> {
 		const handle = await openFileWithEnforcedMode(path);
 		try {

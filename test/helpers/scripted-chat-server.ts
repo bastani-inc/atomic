@@ -1,8 +1,3 @@
-/**
- * A loopback OpenAI-compatible chat-completions provider that streams scripted replies, so a real Atomic process,
- * its isolated engine, workflow stages and subagents all reach one scripted model over HTTP as they would a real one.
- * Configure it in `models.json` with `api: "openai-completions"` and `baseUrl: <url>`.
- */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { sleep } from "./runtime.js";
@@ -23,24 +18,19 @@ export interface ScriptedToolCall {
 }
 
 export interface ScriptedReply {
-	/** Text streamed in `chunks` pieces, one every `chunkDelayMs`. */
 	readonly text: string;
 	readonly chunks: number;
 	readonly chunkDelayMs: number;
-	/** Tool calls sent after the text, ending the turn with `tool_calls`. */
 	readonly toolCalls?: readonly ScriptedToolCall[];
 }
 
 export interface ScriptedChatServer {
 	readonly baseUrl: string;
-	/** Every reply finished so far, by the label the script gave it. */
 	readonly completed: string[];
-	/** Replies still streaming. */
 	streaming(): number;
 	close(): Promise<void>;
 }
 
-/** The text of a message, whether its content is a string or parts. */
 export function messageText(message: ChatMessage | undefined): string {
 	const content = message?.content;
 	if (typeof content === "string") return content;
@@ -94,7 +84,6 @@ async function stream(response: ServerResponse, reply: ScriptedReply): Promise<v
 	response.end("data: [DONE]\n\n");
 }
 
-/** Serves `script`'s reply to every request; `label` names a request in `completed` once its reply has streamed. */
 export async function startScriptedChatServer(
 	script: (request: ChatRequest) => ScriptedReply & { readonly label: string },
 ): Promise<ScriptedChatServer> {

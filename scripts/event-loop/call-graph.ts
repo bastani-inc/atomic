@@ -1,22 +1,3 @@
-/**
- * Builds a call graph of the shipped TypeScript sources with the TypeScript 7 compiler API, so that
- * `check-event-loop.ts` can walk it from the interactive entry points.
- *
- * Nodes are function bodies: functions, methods, constructors, accessors, arrow functions, function expressions,
- * class field initializers, static blocks, and each module's top-level code. An edge means the source may run the
- * target on the same turn of the event loop or schedule it later:
- *
- * - `call`: a call, `new`, tagged template or accessor resolved by the type checker to a declaration;
- * - `reference`: a function passed or stored as a value (a callback), resolved the same way;
- * - `dispatch`: an interface or base-class member call, to every class implementing or overriding that member;
- * - `closure`: a function or arrow created by the source, which may run it or hand it to code that does;
- * - `import`: a dynamic `import()` (running the module's top level) and a module's static imports.
- *
- * What the graph cannot see: calls through `any`, through a callback parameter (`listener(data)`), or through a
- * function kept in a collection. Callbacks are reached instead where they are created (`closure`) or registered
- * (the policy's sinks), which is what makes those calls visible to the check.
- */
-
 import { isBuiltin } from "node:module";
 import {
 	type ArrowFunction,
@@ -87,21 +68,16 @@ export interface RegexUse {
 
 export interface GraphFunction {
 	readonly id: number;
-	/** Repository-relative path with forward slashes. */
 	readonly file: string;
-	/** 1-based line of the declaration. */
 	readonly line: number;
-	/** Qualified name, unique within its file: `Class.method`, `outer/inner`, `Class.method/stdin.on("data")`. */
 	readonly name: string;
 	readonly kind: FunctionKind;
-	/** Declared `async`: a blocking call in it can become an `await` without changing its callers. */
 	readonly isAsync: boolean;
 	readonly edges: Map<number, EdgeKind>;
 	readonly blocking: BlockingUse[];
 	readonly regexes: RegexUse[];
 }
 
-/** A callback handed to a registration API (a sink), which calls it later from the event loop. */
 export interface SinkRegistration {
 	readonly registrar: number;
 	readonly sink: string;
@@ -110,29 +86,19 @@ export interface SinkRegistration {
 	readonly continuation?: boolean;
 }
 
-/** A declaration that registers callbacks: what the callee of a call must resolve to. */
 export interface SinkSpec {
-	/** A suffix of the declaring file's path, such as `@types/node/events.d.ts`. */
 	readonly file: string;
-	/** The enclosing class or interface, when the declaration is a member. */
 	readonly owner?: string;
 	readonly names: readonly string[];
-	/** Only calls whose first argument is one of these string literals register (event names). */
 	readonly events?: readonly string[];
 	readonly continuation?: boolean;
 }
 
 export interface CallGraph {
 	readonly functions: readonly GraphFunction[];
-	/**
-	 * The functions that implement `member` of the class or interface `typeName` declared in `file`: its own and those
-	 * of every class that extends or implements it.
-	 */
 	readonly implementationsOf: (file: string, typeName: string, member: string) => readonly number[];
 	readonly sinkRegistrations: readonly SinkRegistration[];
-	/** Each analyzed module's top-level node, by repository-relative path. */
 	readonly modules: ReadonlyMap<string, number>;
-	/** The repository-relative modules each module imports statically. */
 	readonly staticImports: ReadonlyMap<string, ReadonlySet<string>>;
 	readonly stats: CallGraphStats;
 }
@@ -152,13 +118,8 @@ export interface CallGraphStats {
 
 export interface CallGraphOptions {
 	readonly repoRoot: string;
-	/** Whether a repository-relative source path belongs to the analyzed code. */
 	readonly isAnalyzedFile: (relativePath: string) => boolean;
 	readonly sinks: readonly SinkSpec[];
-	/**
-	 * Calls whose callbacks never run while the user interacts, such as `process.on("exit")`: the callbacks get no
-	 * closure edge from the function that registers them.
-	 */
 	readonly detachedCallbacks: readonly SinkSpec[];
 }
 
@@ -172,7 +133,6 @@ interface PendingReference {
 	readonly name: string;
 }
 
-/** What an expression may evaluate to, as far as functions go: closures it creates and references it makes. */
 interface ValueSources {
 	readonly functions: readonly number[];
 	readonly references: readonly number[];
@@ -209,7 +169,6 @@ interface ClassInfo {
 interface InterfaceInfo {
 	readonly key: string;
 	readonly heritage: Node[];
-	/** Declaration keys of the interface's own members, by name. */
 	readonly members: Map<string, string[]>;
 }
 
@@ -268,7 +227,6 @@ const VALUE_OPERATORS = new Set<SyntaxKind>([
 
 const RESOLVE_BATCH = 8_000;
 
-/** Declarations that hold a value a function can flow into: parameters, variables and properties. */
 const VALUE_LOCATIONS = new Set<SyntaxKind>([
 	SyntaxKind.Parameter,
 	SyntaxKind.VariableDeclaration,
@@ -278,7 +236,6 @@ const VALUE_LOCATIONS = new Set<SyntaxKind>([
 	SyntaxKind.PropertyAssignment,
 ]);
 
-/** Handler properties (`onSubmit`, `onData`): assigning a function to one registers it for an event. */
 const HANDLER_PROPERTY = /^on[A-Z]/;
 
 function declarationKey(path: string, node: Node): string {
@@ -326,7 +283,6 @@ function stringArgument(node: Node | undefined): string | undefined {
 	return undefined;
 }
 
-/** A dotted expression's text (`process.stdin.on`), or undefined for anything else. */
 function dottedText(node: Node): string | undefined {
 	const target = unwrapExpression(node);
 	if (isIdentifier(target)) return target.text;
@@ -376,7 +332,6 @@ function functionKind(node: Node): FunctionKind {
 	}
 }
 
-/** Whether `node` sits where its value is used as a value: passed, stored, returned or assigned. */
 function isValuePosition(node: Node): boolean {
 	let child = node;
 	let parent = node.parent as Node | undefined;
@@ -448,23 +403,15 @@ function classifyRequiredExport(required: RequiredExport, name: string): Blockin
 
 export class CallGraphBuilder {
 	private readonly functions: GraphFunction[] = [];
-	/** The function each function was created in, or -1 for module and class-level nodes. */
 	private readonly lexicalParents: number[] = [];
-	/** Functions assigned to a property or variable after its declaration: `x.onData = (d) => …`. */
 	private readonly pendingAssignments: Array<{ readonly target: Node } & ValueSources> = [];
-	/** Each function's parameter declarations, in order; the index of a rest parameter, if any. */
 	private readonly functionParameters = new Map<number, { readonly keys: readonly string[]; readonly rest: number }>();
-	/** Object literal properties whose value is a reference: `{ onData: handler }`. */
 	private readonly pendingObjectValues: Array<{ readonly literal: Node; readonly name: string } & ValueSources> = [];
-	/** Declaration keys of the parameters, variables and properties each reference resolved to. */
 	private readonly referenceLocations: Array<readonly string[] | undefined> = [];
-	/** Assignments resolved to the declarations they write. */
 	private readonly assignmentFlows: Array<{ readonly into: readonly string[] } & ValueSources> = [];
 	private readonly detachedFunctions = new Set<number>();
-	/** References passed to a call whose callbacks only run as the process exits. */
 	private readonly detachedReferences = new Set<number>();
 	private readonly pendingNameChecks: number[] = [];
-	/** References whose type names a declaration, so a name alone says nothing about them. */
 	private readonly typedReferences = new Set<number>();
 	private readonly objectValueFlows: Array<{ readonly into: readonly string[] } & ValueSources> = [];
 	private readonly assignedFunctions = new Map<string, number[]>();
@@ -649,7 +596,6 @@ export class CallGraphBuilder {
 		return container.kind === "module" ? "" : container.name;
 	}
 
-	/** The local name of a function expression or arrow function: what it is assigned to or passed to. */
 	private closureName(node: Node): string {
 		let parent = node.parent as Node | undefined;
 		while (parent !== undefined && EXPRESSION_WRAPPERS.has(parent.kind)) parent = parent.parent as Node | undefined;
@@ -840,7 +786,6 @@ export class CallGraphBuilder {
 		node.forEachChild((child) => this.visit(child, inner));
 	}
 
-	/** The object literal and property a function is the value of: `{ m() {} }` or `{ m: () => … }`. */
 	private objectMemberOf(node: Node): { literal: Node; name: string } | undefined {
 		let parent = node.parent as Node | undefined;
 		if (parent?.kind === SyntaxKind.ObjectLiteralExpression) {
@@ -855,11 +800,6 @@ export class CallGraphBuilder {
 		return { literal, name };
 	}
 
-	/**
-	 * An object literal's methods implement the members of the type the literal is checked against (a `Component`,
-	 * a `ToolDefinition`, an options type): calls through that type reach them. A method the walk cannot attach to a
-	 * declared member, of a literal that is not simply stored, gets a closure edge from its creator instead.
-	 */
 	private resolveObjectMembers(): void {
 		this.resolveObjectValues();
 		const byLiteral = new Map<Node, Array<(typeof this.pendingObjectMembers)[number]>>();
@@ -903,7 +843,6 @@ export class CallGraphBuilder {
 		}
 	}
 
-	/** `{ name: reference }`: the reference flows into the property the literal is checked against. */
 	private resolveObjectValues(): void {
 		const checker = this.project.checker;
 		const types = new Map<Node, ReturnType<typeof checker.getContextualType>>();
@@ -937,7 +876,6 @@ export class CallGraphBuilder {
 		}
 	}
 
-	/** The name of whatever holds an object literal, for naming its methods. */
 	private objectOwnerName(objectLiteral: Node | undefined): string {
 		const parent = objectLiteral?.parent as Node | undefined;
 		if (parent === undefined) return "<object>";
@@ -957,13 +895,6 @@ export class CallGraphBuilder {
 		this.initializerFunctions.set(key, list);
 	}
 
-	/**
-	 * Records `id` under each declaration whose value it becomes: a variable, field, parameter default, object property
-	 * (also under every enclosing property and the variable holding the object), or an assigned property. Returns
-	 * whether the function is only stored there, so its creator does not run it: such a function is reached through
-	 * references to what holds it. A function passed to a call on the way may be run by that call, so it is not
-	 * only stored.
-	 */
 	private bindToDeclarations(node: Node, id: number, context: WalkContext): boolean {
 		const path = context.file.path;
 		let child = node;
@@ -1014,7 +945,6 @@ export class CallGraphBuilder {
 		return parent !== undefined && isCallExpression(parent) && this.isDetachedCall(parent);
 	}
 
-	/** A call whose callbacks only run as the process exits, such as `process.on("exit", …)`. */
 	private isDetachedCall(call: Node): boolean {
 		if (!isCallExpression(call)) return false;
 		const callee = dottedText(call.expression);
@@ -1260,7 +1190,6 @@ export class CallGraphBuilder {
 		});
 	}
 
-	/** Visits `visitInner` and returns the closures and value references it created in the current container. */
 	private captureCreated(context: WalkContext, visitInner: () => void): { functions: number[]; references: number[] } {
 		const firstReference = this.references.length;
 		const firstFunction = this.functions.length;
@@ -1277,10 +1206,6 @@ export class CallGraphBuilder {
 		return { functions, references };
 	}
 
-	/**
-	 * `x.handler = value` and `variable = value`: functions the value may be flow into the declaration written, and a
-	 * function assigned to a handler property (`x.onSubmit = …`) is registered to run when `x` reports the event.
-	 */
 	private visitAssignment(node: Node, context: WalkContext): boolean {
 		if (!isBinaryExpression(node) || node.operatorToken.kind !== SyntaxKind.EqualsToken) return false;
 		const left = unwrapExpression(node.left);
@@ -1300,10 +1225,6 @@ export class CallGraphBuilder {
 		return true;
 	}
 
-	/**
-	 * `{ name: value }`: a referenced function flows into the property the literal is checked against, and an options
-	 * object's handler (`{ onSubmit: handler }`) is registered to run when the receiver reports the event.
-	 */
 	private visitObjectProperty(node: Node, context: WalkContext): boolean {
 		const property = memberName(node);
 		const initializer = (node as Node & { readonly initializer?: Node }).initializer;
@@ -1418,10 +1339,6 @@ export class CallGraphBuilder {
 		}
 	}
 
-	/**
-	 * A loop that only reads a clock until it says stop: it holds the thread for the whole wait. A loop that also
-	 * does work, or awaits, is not one.
-	 */
 	private checkBusyWait(loop: Node, context: WalkContext): void {
 		let readsClock = false;
 		let doesOtherWork = false;
@@ -1489,7 +1406,6 @@ export class CallGraphBuilder {
 		return undefined;
 	}
 
-	/** The functions a resolved symbol may run, or a blocking API when it is an external declaration. */
 	private resolveSymbol(
 		symbol: TsSymbol,
 		role: ReferenceRole,
@@ -1585,7 +1501,6 @@ export class CallGraphBuilder {
 		}
 	}
 
-	/** Every class below `typeKey` (a class or interface) that defines or inherits `member`. */
 	private addImplementations(typeKey: string, member: string, into: Set<number>): void {
 		for (const classKey of this.subtypes.get(typeKey) ?? []) {
 			let current: string | undefined = classKey;
@@ -1904,7 +1819,6 @@ export class CallGraphBuilder {
 		}
 	}
 
-	/** Attaches functions assigned to a property or variable to every declaration of that property or variable. */
 	private resolveAssignments(): void {
 		const pending = this.pendingAssignments;
 		for (let start = 0; start < pending.length; start += RESOLVE_BATCH) {
@@ -1959,12 +1873,6 @@ export class CallGraphBuilder {
 		for (const assignment of this.assignedHandlers) this.applyAssignedHandler(assignment, resolved);
 	}
 
-	/**
-	 * Functions flow into parameters at call sites, into properties and variables through assignments, and into an
-	 * options type's properties through object literals; a call or reference through one of those reaches every
-	 * function that can flow there. Solved to a fixed point, then each such reference gains its edges and `resolved`
-	 * its functions (so sinks see a registered parameter's functions).
-	 */
 	private propagateValues(resolved: Array<readonly number[]>): void {
 		type Flow = {
 			readonly into: readonly string[];
@@ -2046,9 +1954,6 @@ export class CallGraphBuilder {
 			const added = [...reached].filter((id) => !known.has(id));
 			if (added.length === 0) return;
 			resolved[index] = [...known, ...added];
-			// A function calling or passing on its own parameter runs within its caller's call, and the caller already
-			// reaches what it passed. Only a parameter used from a closure that outlives the call, or a stored value,
-			// needs edges of its own.
 			const ownParameterOnly = locations.every((location) => parameterOwner.get(location) === reference.container);
 			if (ownParameterOnly) return;
 			this.stats.resolvedThroughFlow++;
@@ -2057,11 +1962,6 @@ export class CallGraphBuilder {
 		});
 	}
 
-	/**
-	 * A callee that resolved to a variable, binding or property with no known function behind it (a destructured
-	 * `await import()`, a `const f = cond ? a : b`) is looked up again through its type, whose symbol is the function
-	 * declaration when there is one.
-	 */
 	private resolveThroughTypes(resolved: Array<readonly number[]>): void {
 		const pending = this.typeFallbacks;
 		for (let start = 0; start < pending.length; start += RESOLVE_BATCH) {
@@ -2134,10 +2034,6 @@ export class CallGraphBuilder {
 		return functions;
 	}
 
-	/**
-	 * A call through a variable, parameter or property nothing resolves: its name is the last evidence. Decided after
-	 * the type and value-flow passes, which may still find the function or declaration it calls.
-	 */
 	private recordUnresolvedBlocking(reference: PendingReference, symbol?: TsSymbol, index?: number): void {
 		if (symbol !== undefined) {
 			const flags = this.aliased(symbol).flags;

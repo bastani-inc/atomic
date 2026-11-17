@@ -21,7 +21,6 @@ export function inheritChildSessionOptions(
 	return inheritChildSessionOptionsWithDefaults(parent, child, availableToolNames, getDefaultToolNames());
 }
 
-/** {@link inheritChildSessionOptions} using `defaultToolNames` resolved ahead of time without touching the disk. */
 export function inheritChildSessionOptionsWithDefaults(
 	parent: CreateAgentSessionOptions,
 	child: CreateAgentSessionOptions,

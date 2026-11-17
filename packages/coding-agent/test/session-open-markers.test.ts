@@ -304,7 +304,6 @@ describe("a session open in this process (#4971)", () => {
 		const running = await saved("running");
 		const deleter = await saved("deleter");
 		hold(running);
-		// The mark is written once this process finds it.
 		await findSessionOpenHolder(running.getSessionId());
 		const markers = markersOf(running.getSessionId());
 		const [marker] = readdirSync(markers);

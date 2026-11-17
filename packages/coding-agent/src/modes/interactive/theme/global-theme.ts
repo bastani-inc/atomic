@@ -41,7 +41,6 @@ let themeWatcher: fs.FSWatcher | undefined;
 let themeReloadTimer: NodeJS.Timeout | undefined;
 let themeWatchFilePath: string | undefined;
 let themeWatchFileListener: ((current: fs.Stats, previous: fs.Stats) => void) | undefined;
-/** Bumped whenever the watcher stops, so a watcher whose setup is still checking the file does not start. */
 let themeWatcherGeneration = 0;
 let onThemeChangeCallback: (() => void) | undefined;
 
@@ -129,7 +128,6 @@ function startThemeWatcher(): void {
 			// Keep the last successfully loaded theme active if the file is temporarily missing
 			return;
 		}
-		// Ignore reads that finish after switching themes or stopping the watcher
 		if (currentThemeName !== watchedThemeName || generation !== themeWatcherGeneration) {
 			return;
 		}

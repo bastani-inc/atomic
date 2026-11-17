@@ -40,7 +40,6 @@ const terminal: Array<{ readonly method: Method; readonly text: string }> = [];
 const saved = { log: console.log, warn: console.warn, error: console.error };
 const root = mkdtempSync(join(tmpdir(), "atomic-run-console-"));
 const EXIT_CHILD = join(moduleDir(import.meta.url), "..", "fixtures", "workflow-run-console-exit-child.ts");
-/** Starts a Bun process that loads the workflows engine sources. */
 const CHILD_PROCESS_TIMEOUT_MS = 60_000;
 let directories = 0;
 const opened: RunRejectionScope[] = [];
@@ -84,7 +83,6 @@ function quitAbort(runId: string): Error {
 	return Object.assign(new Error(`atomic-workflows: run ${runId} suspended by workflow quit`), { name: "AbortError" });
 }
 
-/** The log's lines as `<run> <method> <text>`, without their timestamps, once everything routed so far is written. */
 async function logLines(): Promise<string[]> {
 	await flushWorkflowConsoleOutput();
 	const path = workflowConsoleLogPath();

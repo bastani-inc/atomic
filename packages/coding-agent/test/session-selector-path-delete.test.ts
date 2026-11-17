@@ -305,7 +305,6 @@ describe("session selector path/delete interactions", () => {
 			() => {},
 			{ keybindings },
 		);
-		// The picker threads by canonical path once it has resolved the aliases off the event loop.
 		await vi.waitFor(() => {
 			const output = stripAnsi(selector.render(120).join("\n"));
 			expect(output).toContain("Parent");

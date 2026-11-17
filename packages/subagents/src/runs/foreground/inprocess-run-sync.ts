@@ -236,20 +236,13 @@ function unknownModelResult(agent: AgentConfig, task: string, candidate: string,
 	);
 }
 
-/** Where one launch stands in its run's admission order. */
 interface AdmissionTurn {
-	/** Settles once every launch of the run that started before this one has been admitted or has ended; none is ahead. */
 	readonly ahead: Promise<void> | undefined;
 	release(): void;
 }
 
 const admissionQueues = new Map<string, { pending: number; tail: Promise<void> }>();
 
-/**
- * A turn in the admission order of run `runId`. The control plane numbers a run's children in the order it admits
- * them, and a launch can wait before its admission, to check its cwd, so it is admitted after the launches of its run
- * that started before it. With none of them still waiting it is admitted at once, within its call.
- */
 function takeAdmissionTurn(runId: string): AdmissionTurn {
 	const queue = admissionQueues.get(runId) ?? { pending: 0, tail: Promise.resolve() };
 	const ahead = queue.pending > 0 ? queue.tail : undefined;

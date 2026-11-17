@@ -4,7 +4,7 @@
 
 import chalk from "chalk";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
-import { access, mkdir, readdir, readFile, rename, rm, writeFile } from "fs/promises";
+import { mkdir, readdir, readFile, rename, rm, writeFile } from "fs/promises";
 import { dirname, join } from "path";
 import { CONFIG_DIR_NAME, getAgentConfigPaths, getAgentDir, getBinDir } from "./config.js";
 import { migrateKeybindingsConfig } from "./core/keybindings.ts";
@@ -21,18 +21,10 @@ import {
 	migrateModelsJsonConfigValues,
 	migrateModelsJsonConfigValuesAsync,
 } from "./migrations-config-values.ts";
+import { pathExists } from "./utils/path-exists.js";
 import { stripBom } from "./utils/text.ts";
 
 const EXTENSIONS_DOC_URL = "https://docs.bastani.ai/extensions";
-
-async function pathExists(targetPath: string): Promise<boolean> {
-	try {
-		await access(targetPath);
-		return true;
-	} catch {
-		return false;
-	}
-}
 
 /**
  * Migrate legacy oauth.json and settings.json apiKeys to auth.json.
@@ -112,9 +104,7 @@ export async function migrateAuthToAuthJsonAsync(): Promise<string[]> {
 				providers.push(provider);
 			}
 			await rename(oauthPath, `${oauthPath}.migrated`);
-		} catch {
-			// Skip on error
-		}
+		} catch {}
 	}
 
 	if (await pathExists(settingsPath)) {
@@ -131,9 +121,7 @@ export async function migrateAuthToAuthJsonAsync(): Promise<string[]> {
 				delete settings.apiKeys;
 				await writeFile(settingsPath, JSON.stringify(settings, null, 2));
 			}
-		} catch {
-			// Skip on error
-		}
+		} catch {}
 	}
 
 	if (Object.keys(migrated).length > 0) {
@@ -278,9 +266,7 @@ export async function migrateSessionsFromAgentRootAsync(): Promise<void> {
 			if (await pathExists(newPath)) continue;
 
 			await rename(file, newPath);
-		} catch {
-			// Skip files that can't be migrated
-		}
+		} catch {}
 	}
 }
 
@@ -356,9 +342,7 @@ async function migrateKeybindingsConfigFileAsync(): Promise<void> {
 		const { config, migrated } = migrateKeybindingsConfig(parsed as Record<string, unknown>);
 		if (!migrated) return;
 		await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
-	} catch {
-		// Ignore missing or malformed files during migration
-	}
+	} catch {}
 }
 
 /**
@@ -427,15 +411,11 @@ async function migrateToolsToBinAsync(): Promise<void> {
 				try {
 					await rename(oldPath, newPath);
 					movedAny = true;
-				} catch {
-					// Ignore errors
-				}
+				} catch {}
 			} else {
 				try {
 					await rm(oldPath, { force: true });
-				} catch {
-					// Ignore
-				}
+				} catch {}
 			}
 		}
 	}
@@ -476,9 +456,7 @@ function checkDeprecatedExtensionDirs(baseDir: string, label: string): string[] 
 					`${label} tools/ directory contains custom tools. Custom tools have been merged into extensions.`,
 				);
 			}
-		} catch {
-			// Ignore read errors
-		}
+		} catch {}
 	}
 
 	return warnings;
@@ -602,9 +580,6 @@ export function runMigrations(
 	return { migratedAuthProviders, deprecationWarnings };
 }
 
-/**
- * Run all migrations asynchronously without blocking the event loop.
- */
 export async function runMigrationsAsync(
 	cwd: string,
 	options?: { projectTrusted?: boolean },

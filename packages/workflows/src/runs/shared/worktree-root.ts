@@ -86,12 +86,10 @@ export function* findCanonicalGitRootSteps(cwd: string): WorktreeSteps<string | 
 	return repoRoot === undefined ? undefined : yield* resolveMainRepoRootSteps(repoRoot);
 }
 
-/** Find the nearest checkout root without invoking Git. */
 export function findGitRoot(cwd: string): Promise<string | undefined> {
 	return runWorktreeSteps(findGitRootSteps(cwd));
 }
 
-/** Resolve only standard `git worktree add` layouts to their main checkout. */
 export function resolveMainRepoRoot(repoRoot: string): Promise<string | undefined> {
 	return runWorktreeSteps(resolveMainRepoRootSteps(repoRoot));
 }

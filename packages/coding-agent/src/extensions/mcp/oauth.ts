@@ -112,7 +112,6 @@ function mergeScopes(...scopes: (string | undefined)[]): string | undefined {
 type StoredState = McpOAuthState & { credentialGeneration?: string };
 type StoredStates = Record<string, StoredState>;
 const refreshQueues = new WeakMap<AuthStorageBackend, Map<string, Promise<unknown>>>();
-/** The last asynchronous write queued to each backend in this process, so writes land in the order they were made. */
 const writeQueues = new WeakMap<AuthStorageBackend, Promise<unknown>>();
 
 function parseStates(content: string | undefined): StoredStates {
@@ -144,7 +143,6 @@ export interface McpOAuthServerStore extends McpOAuthStateStore {
 /** Per-server OAuth state (client registration, tokens, pending PKCE verifier) in `mcp-auth.json`. */
 export class McpOAuthCredentialStore {
 	private readonly backend: AuthStorageBackend;
-	/** The reads of `backend` that never block the event loop. */
 	private readonly reads: AsyncAuthStorageReads;
 	/** Directory for the refresh lock files. Without one, refreshes are only serialized in this process. */
 	private readonly lockDir: string | undefined;
@@ -158,14 +156,11 @@ export class McpOAuthCredentialStore {
 	forServer(name: string, serverUrl: string): McpOAuthServerStore {
 		const { key, legacyKey } = storeKeys(name, serverUrl);
 		const scoped = (fenced: boolean): McpOAuthStateStore => {
-			// The credential generation a fenced flow owns, checked before each read and write: read as the flow starts,
-			// in turn with this process's writes, so a revocation made after the flow started is never read as its own.
 			const generation = fenced
 				? this.inWriteTurn(() => this.readAsync()).then(
 						(initial) => (initial[key] ?? initial[legacyKey])?.credentialGeneration,
 					)
 				: undefined;
-			// A flow that never reads or writes never asks for its generation.
 			generation?.catch(() => {});
 			const check = (state: StoredState | undefined, owned: string | undefined) => {
 				if (fenced && state?.credentialGeneration !== owned) throw new McpSignInCancelledError();
@@ -282,7 +277,6 @@ export class McpOAuthCredentialStore {
 		return (states[key] ?? states[legacyKey])?.tokens;
 	}
 
-	/** {@link McpOAuthCredentialStore.tokens} without blocking the event loop. */
 	async tokensAsync(name: string, serverUrl: string): Promise<McpOAuthState["tokens"]> {
 		const { key, legacyKey } = storeKeys(name, serverUrl);
 		const states = await this.inWriteTurn(() => this.readAsync());
@@ -318,7 +312,6 @@ export class McpOAuthCredentialStore {
 		return this.backend.withLock((current) => ({ result: parseStates(current) }));
 	}
 
-	/** {@link McpOAuthCredentialStore.read} without blocking the event loop. */
 	private async readAsync(): Promise<StoredStates> {
 		if (this.reads.readAsync) return parseStates(await this.reads.readAsync());
 		return this.backend.withLockAsync(async (current) => ({ result: parseStates(current) }));
@@ -332,7 +325,6 @@ export class McpOAuthCredentialStore {
 		});
 	}
 
-	/** {@link McpOAuthCredentialStore.write} without blocking the event loop. */
 	private writeAsync(update: (states: StoredStates) => void): Promise<void> {
 		return this.inWriteTurn(() =>
 			this.backend.withLockAsync(async (current) => {
@@ -343,10 +335,6 @@ export class McpOAuthCredentialStore {
 		);
 	}
 
-	/**
-	 * Runs `write` once every earlier asynchronous read or write of this process to the backend has ended, so they take
-	 * effect in the order they were made, as synchronous ones did.
-	 */
 	private inWriteTurn<T>(write: () => Promise<T>): Promise<T> {
 		const previous = writeQueues.get(this.backend) ?? Promise.resolve();
 		const running = previous.catch(() => undefined).then(write);
@@ -355,7 +343,6 @@ export class McpOAuthCredentialStore {
 	}
 }
 
-/** The revocation of a server's credentials, and whether it removed any. */
 function revoke(name: string, serverUrl: string): { update: (states: StoredStates) => void; removed: () => boolean } {
 	const { key, legacyKey } = storeKeys(name, serverUrl);
 	const hasCredentials = (state: StoredState | undefined) =>

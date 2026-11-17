@@ -1040,7 +1040,6 @@ for (const kind of ["intercom", "supervisor"] as const) {
 			const childTarget = "subagent-worker-joined-1";
 			const recovered: SingleResult[] = [];
 			const recoveredExit = Promise.withResolvers<SingleResult>();
-			// Handed its cwd check, the run starts its child, and registers it for the handoff, within the call.
 			const cwdVerdict = await checkLaunchCwd(dir);
 			const foreground = runSync(
 				dir,

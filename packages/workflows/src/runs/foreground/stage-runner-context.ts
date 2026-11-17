@@ -79,7 +79,6 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 		effectiveStageOptions,
 		structuredOutputCapture,
 	);
-	/** The stage's options once its worktree is set up, applied before its session, prompts and completions start. */
 	const stageOptionsApplied = opts.stageOptionsReady?.then((resolved) => {
 		stageCwd = stageCwdOf(resolved);
 		effectiveStageOptions = effectiveOptionsOf(resolved);
@@ -87,7 +86,6 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 		controller.useStageOptions(effectiveStageOptions, stageCwd);
 	});
 	if (stageOptionsApplied !== undefined) {
-		// Each use of the stage reports a setup that failed; a stage never used reports nothing.
 		stageOptionsApplied.catch(() => {});
 		controller.waitForStageOptions(stageOptionsApplied);
 	}

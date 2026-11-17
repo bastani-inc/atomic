@@ -1,10 +1,10 @@
 import { accessSync, constants } from "node:fs";
-import { access } from "node:fs/promises";
 import { delimiter, join, win32 } from "node:path";
 import { Worker } from "node:worker_threads";
 import { execFile, spawn, spawnSync } from "child_process";
 import { getBinDir } from "../config.js";
 import { createChildProcessEnvironment } from "./child-process.ts";
+import { pathExists as shellPathExistsAsync } from "./path-exists.js";
 import { getGitShellEnvironment, getGitShellEnvironmentAsync } from "./tools-manager.ts";
 
 export interface ShellConfig {
@@ -36,15 +36,6 @@ function getBashShellConfig(shell: string): ShellConfig {
 function shellPathExists(path: string): boolean {
 	try {
 		accessSync(path, constants.F_OK);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-async function shellPathExistsAsync(path: string): Promise<boolean> {
-	try {
-		await access(path, constants.F_OK);
 		return true;
 	} catch {
 		return false;
@@ -240,7 +231,6 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 	return { shell: "sh", args: ["-c"] };
 }
 
-/** {@link getShellConfig} without blocking the event loop. */
 export async function getShellConfigAsync(customShellPath?: string): Promise<ShellConfig> {
 	if (customShellPath) {
 		if (await shellPathExistsAsync(customShellPath)) {
@@ -315,7 +305,6 @@ export function getPowerShellConfig(): ShellConfig {
 	return { shell, args: [...POWERSHELL_ARGS] };
 }
 
-/** {@link getPowerShellConfig} without blocking the event loop. */
 export async function getPowerShellConfigAsync(): Promise<ShellConfig> {
 	if (process.platform !== "win32") throw new Error("The powershell tool is only available on Windows.");
 	let shell = await findExecutableOnPathAsync("pwsh.exe");
@@ -345,7 +334,6 @@ export function isPowerShellAvailable(): boolean {
 	}
 }
 
-/** {@link isPowerShellAvailable} without blocking the event loop. */
 export async function isPowerShellAvailableAsync(): Promise<boolean> {
 	try {
 		await getPowerShellConfigAsync();
@@ -378,7 +366,6 @@ export function getShellEnv(): NodeJS.ProcessEnv {
 	return buildShellEnv(getGitShellEnvironment(process.env));
 }
 
-/** {@link getShellEnv} without blocking the event loop. */
 export async function getShellEnvAsync(): Promise<NodeJS.ProcessEnv> {
 	return buildShellEnv(await getGitShellEnvironmentAsync(process.env));
 }

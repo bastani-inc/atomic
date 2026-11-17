@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import {
-	access,
 	copyFile,
 	type FileHandle,
 	lstat,
@@ -15,6 +14,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { pathExists } from "../../utils/path-exists.js";
 import { renameWithRetry } from "../rename-retry.ts";
 import { snapshotBlobHashes } from "./blob-store.ts";
 import { computeEnvironmentHash, sha256Hex, snapshotBlob } from "./env-hash.ts";
@@ -726,14 +726,6 @@ async function fileBytes(path: string): Promise<number> {
 }
 
 type PathOmission = Extract<WorktreeSnapshotOmission, { readonly path: string }>;
-
-/** Whether anything is at `path`, as `existsSync` answers: any failure to reach it is no. */
-function pathExists(path: string): Promise<boolean> {
-	return access(path).then(
-		() => true,
-		() => false,
-	);
-}
 
 /** How long checking the submodules of one capture may take; a submodule not checked by then is listed as unchecked. */
 export const SUBMODULE_CHECK_TIMEOUT_MS = 10_000;

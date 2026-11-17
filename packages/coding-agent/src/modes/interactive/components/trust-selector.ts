@@ -9,7 +9,6 @@ export type TrustSelection = Pick<ProjectTrustOption, "trusted" | "updates">;
 
 export interface TrustSelectorOptions {
 	cwd: string;
-	/** The path a decision about `cwd` is saved under: `getProjectTrustPath(cwd)`. */
 	trustPath: string;
 	savedDecision: ProjectTrustStoreEntry | null;
 	projectTrusted: boolean;

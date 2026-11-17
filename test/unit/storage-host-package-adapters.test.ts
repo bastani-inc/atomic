@@ -114,7 +114,6 @@ test("a package name registered by the first of two loaders created together kee
 		await writeFileEnsuringDir(join(agentDir, "settings.json"), JSON.stringify({ packages: [] }));
 		await writePackage(join(home, "first"), "@atomic-test/registered-first", { "./adapter.ts": "first" });
 		await writePackage(join(home, "second"), "@atomic-test/registered-first", { "./adapter.ts": "second" });
-		// The first package's manifest takes longer to read, so it would register second if registrations raced.
 		await writeFileEnsuringDir(
 			join(home, "first", "package.json"),
 			`${JSON.stringify({ name: "@atomic-test/registered-first", atomic: { storageAdapters: ["./adapter.ts"] } })}${" ".repeat(4_000_000)}`,

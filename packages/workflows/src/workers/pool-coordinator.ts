@@ -2595,7 +2595,6 @@ export class PoolCoordinator {
 				if (retired) return;
 				retired = true;
 				slot.exited.abort();
-				// The errors name why the log could not be written, which its opening says.
 				void Promise.all([Promise.race([closed, delay(STDERR_DRAIN_GRACE_MS)]), log.opened]).then(() =>
 					reject(
 						timedOutAt === undefined

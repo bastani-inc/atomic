@@ -837,7 +837,6 @@ async function constructAgentSession(
 		}
 	}
 
-	// The session's ask_user_question definition takes its guidance from this read.
 	await refreshAskUserQuestionConfig();
 	const providerRollback = modelRuntime.createExtensionProviderTransaction();
 	let session: AgentSession;

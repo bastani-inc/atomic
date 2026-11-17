@@ -237,17 +237,10 @@ function getPiDocsClassification(absolutePath: string): CompactReadClassificatio
 	}
 	return undefined;
 }
-/** Renderer state of a `read` row, kept in `ToolRenderContext.state`. */
 export interface ReadRenderState {
-	/** The path being resolved for the row's label, as `cwd` and path joined by a NUL. */
 	resolving?: string;
-	/** Where that path resolved, once it has. */
 	resolved?: { readonly key: string; readonly path: string };
 }
-/**
- * Where the row's path resolves, without blocking the render. A path whose `@`-stripped, space-normalised spelling
- * differs from the literal one needs existence checks: those run in the background and redraw the row when done.
- */
 function resolveRenderedReadPath(rawPath: string, cwd: string, context: ToolRenderContext<ReadRenderState>): string {
 	const unambiguous = resolveToCwdIfUnambiguous(rawPath, cwd);
 	if (unambiguous !== undefined) return unambiguous;

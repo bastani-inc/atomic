@@ -33,11 +33,6 @@ function replaceTabs(text: string): string {
 	return text.replace(/\t/g, "   ");
 }
 
-/**
- * Word edits beyond which a modified line is shown without word highlights. Highlights of more changed words than this
- * show little, and stopping there bounds the word diff, which otherwise compares every word of two long, very different
- * lines with every other.
- */
 const MAX_HIGHLIGHTED_WORD_EDITS = 64;
 
 /**

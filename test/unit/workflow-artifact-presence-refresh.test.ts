@@ -10,7 +10,6 @@ import {
 	workflowRunArtifactsIntact,
 } from "../../packages/workflows/src/shared/workflow-artifacts.js";
 
-/** The first existence check waits for `release`, as a slow disk's does, so a refresh can start while it is in flight. */
 const slowFirstCheck = vi.hoisted(() => ({ release: undefined as Promise<void> | undefined, used: false }));
 
 vi.mock("../../packages/workflows/src/shared/path-exists.js", async (importOriginal) => {
@@ -53,7 +52,6 @@ test("a refresh reads an artifact directory created after a background read of i
 
 		const released = Promise.withResolvers<void>();
 		slowFirstCheck.release = released.promise;
-		// This answer starts a background read, which looks before the directory exists and finishes after it does.
 		assert.equal(workflowRunArtifactsIntact(continuation), false);
 		await mkdir(join(root, "runs", originId), { recursive: true });
 		const refreshed = refreshWorkflowArtifactPresence([continuation]);

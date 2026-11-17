@@ -592,20 +592,15 @@ InteractiveModeBase.prototype.renderSessionContext = function (
 	this.ui.requestRender();
 };
 
-/** One addition a session's entries make to the chat, in order. */
 type TranscriptStep =
 	| { readonly kind: "entry"; readonly entry: ChatMessageEntry }
 	| { readonly kind: "custom"; readonly entry: CustomEntry }
 	| { readonly kind: "cost"; readonly type: "compaction" | "branch_summary"; readonly usage: Usage };
 
-/** Steps of a long session's end built at once: more than a terminal shows, so its first frame is full. */
 const TAIL_STEPS = 128;
-/** How long building the history before a session's end may run before it yields the event loop. */
 const HISTORY_SLICE_BUDGET_MS = 8;
-/** At most this many steps of that history are built in one slice, however fast each is. */
 const HISTORY_SLICE_STEPS = 24;
 
-/** The chat's additions for `sessionEntries`, in order; adds user prompts to the editor history when asked. */
 function planTranscript(
 	mode: InteractiveModeBase,
 	sessionEntries: SessionEntry[],
@@ -655,7 +650,6 @@ function planTranscript(
 	return steps;
 }
 
-/** Adds one step's components to the end of `mode.chatContainer`. */
 function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep): void {
 	if (step.kind === "custom") {
 		mode.addCustomEntryToChat(step.entry);
@@ -673,17 +667,10 @@ function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep): voi
 	}
 }
 
-/**
- * Builds the history before a session's end into the chat, before `end`, a bounded slice per event-loop turn and
- * newest first, so a long session's end shows at once and its history fills in behind it. Ends early when the chat is
- * cleared. The chat is built exactly as all at once: every step follows other chat content, so each takes the spacing
- * it would there.
- */
 function buildHistoryInSlices(mode: InteractiveModeBase, history: readonly TranscriptStep[], end: Component): void {
 	const chat = mode.chatContainer;
 	let remaining = history.length;
 	let before = end;
-	/** Builds up to `maxSteps` steps within `budgetMs`; whether steps remain. */
 	const build = (budgetMs: number, maxSteps: number): boolean => {
 		const at = chat.children.indexOf(before);
 		if (at < 0 || remaining === 0) return false;
@@ -691,8 +678,6 @@ function buildHistoryInSlices(mode: InteractiveModeBase, history: readonly Trans
 		const built: Component[][] = [];
 		const preceding = new Spacer(0);
 		const scratch = new Container();
-		// The step functions add to the chat; for this synchronous slice they add to a scratch container that, like
-		// the chat at this point, already holds content.
 		mode.chatContainer = scratch;
 		try {
 			for (let steps = 0; remaining > 0 && steps < maxSteps; steps++) {
@@ -745,9 +730,6 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 		this.updateEditorBorderColor();
 	}
 	const steps = planTranscript(this, sessionEntries, options);
-	// The fullscreen transcript shows a long session's end built now, and its history as it is built behind it, so
-	// resuming never blocks on the history. The main-screen renderer prints the transcript in order, so it is built
-	// at once.
 	const tailStart = this.ui.mode === "fullscreen" ? Math.max(0, steps.length - TAIL_STEPS) : 0;
 	if (tailStart > 0) {
 		const historyEnd = new Spacer(0);
@@ -811,10 +793,6 @@ InteractiveModeBase.prototype.renderInitialMessages = function (this: Interactiv
 	}
 };
 
-/**
- * Warns that this untrusted project's resources are ignored, when it has resources that need trust. Finding them walks
- * the file system, so the warning's place in the chat is kept and filled once the walk answers.
- */
 function renderProjectTrustWarningIfNeeded(mode: InteractiveModeBase): void {
 	if (mode.settingsManager.isProjectTrusted()) {
 		return;
@@ -824,7 +802,6 @@ function renderProjectTrustWarningIfNeeded(mode: InteractiveModeBase): void {
 	const slot = new Container();
 	chat.addChild(slot);
 	const settle = (requiresTrust: boolean) => {
-		// A chat rebuilt meanwhile was given its own warning.
 		if (!chat.children.includes(slot)) return;
 		if (!requiresTrust) {
 			chat.removeChild(slot);
@@ -879,7 +856,6 @@ InteractiveModeBase.prototype.getUserInput = async function (
 					// extensions — render them right after the input handler is ready
 					// instead of gating them behind the deferred extension reload (or,
 					// when the user types immediately, behind the whole agent turn).
-					// Deferred startup gets here before it has read the changelog.
 					await preloadChangelog(getChangelogPath());
 					this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
 					if (this.deferredStartupPending) {

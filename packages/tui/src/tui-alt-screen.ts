@@ -83,14 +83,8 @@ const ALT_WHEEL_SCROLL_MULTIPLIER = 5;
 const MAX_CACHED_OFFSCREEN_KITTY_IMAGES = 16;
 const MAX_CACHED_OFFSCREEN_KITTY_TRANSMISSION_BYTES = 32 * 1024 * 1024;
 const MAX_CACHED_OFFSCREEN_KITTY_DECODED_BYTES = 64 * 1024 * 1024;
-/**
- * The most one write carries when stopping writes the transcript in slices. A terminal takes a write whole (on Linux
- * the write blocks until it has), so this bounds how long one write holds the event loop.
- */
 const EXIT_WRITE_CHARACTERS = 16 * 1024;
-/** Rows of transcript prepared for writing at a time when stopping writes it in slices. */
 const EXIT_PREPARE_ROWS = 512;
-/** How long stopping may prepare and write the transcript before it yields the event loop. */
 const EXIT_SLICE_BUDGET_MS = 8;
 const DOUBLE_CLICK_INTERVAL_MS = 500;
 const COPY_ERROR_FLASH_DURATION_MS = 5000;
@@ -220,7 +214,6 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	readonly [VIEWPORT_TUI] = true as const;
 	private previousScreen: string[] = [];
 	private lastDocument: string[] = [];
-	/** Counts transcript writes started by stop(); a newer one, or a start(), ends the one in progress. */
 	private exitWrites = 0;
 	private previousScreenWidth = 0;
 	private previousScreenHeight = 0;
@@ -364,7 +357,6 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	protected override beforeTerminalStart(): void {
-		// A transcript still being written from the last stop must not land on the alternate screen.
 		this.exitWrites++;
 		this.stopSelectionAutoScroll();
 		this.selectionPressActive = false;
@@ -469,7 +461,6 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		restoreCapabilities();
 	}
 
-	/** Transcript rows as stopping writes them onto the main screen. */
 	private prepareExitRows(lines: string[], width: number): string[] {
 		const documentLines = this.resolveFakeCursors(lines).map((line) => line.replace(OSC133_ZONE_PREFIX, ""));
 		return this.applyLineResets(documentLines.map((line) => line.replaceAll(CURSOR_MARKER, ""))).map((line) =>
@@ -477,10 +468,6 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		);
 	}
 
-	/**
-	 * Writes the transcript onto the main screen as the synchronous stop does, rendering, preparing and writing a bounded
-	 * slice at a time. A start() before it is done ends it.
-	 */
 	private async writeTranscriptInSlices(write: number): Promise<void> {
 		const width = Math.max(1, this.terminal.columns);
 		const lines =
@@ -488,7 +475,6 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				? await this.layoutRoot.renderInSlices(width)
 				: this.render(width);
 		let deadline = performance.now() + EXIT_SLICE_BUDGET_MS;
-		/** Yields the event loop once the slice's time is spent; whether this write is still wanted. */
 		const proceed = async (): Promise<boolean> => {
 			if (performance.now() >= deadline) {
 				await new Promise((resolve) => setImmediate(resolve));
@@ -497,12 +483,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			return write === this.exitWrites;
 		};
 		let buffer = EXIT_TRANSCRIPT_START;
-		/** Writes the buffer while it holds at least `minimum` characters, a bounded write at a time. */
 		const writeBuffer = async (minimum: number): Promise<boolean> => {
 			while (buffer.length > 0 && buffer.length >= minimum) {
 				let end = Math.min(buffer.length, EXIT_WRITE_CHARACTERS);
-				// Each write is encoded on its own: a surrogate pair split between two would arrive as two
-				// replacement characters.
 				const last = buffer.charCodeAt(end - 1);
 				if (end < buffer.length && end > 1 && last >= 0xd800 && last <= 0xdbff) end--;
 				this.terminal.write(buffer.slice(0, end));
@@ -614,7 +597,6 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private scrollToPrompt(direction: -1 | 1): void {
 		if (!this.currentLayout) return;
 		const scrollView = this.getPrimaryScrollView();
-		// Prompts are found in every row, so windowed content renders what it has not yet, and is laid out again.
 		if (this.settleScrollContent(scrollView)) this.currentLayout = this.layoutFrame();
 		const lines = getScrollContentRows(getScrollViewBox(this.currentLayout, scrollView));
 		if (!lines) return;
@@ -1827,7 +1809,6 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return renderLayoutFrame(this.layoutRoot ?? this.implicitScrollView, width, height, () => this.requestRender());
 	}
 
-	/** Renders the rows of the scroll view's windowed content that are not current; whether it has such content. */
 	private settleScrollContent(scrollView: ScrollView): boolean {
 		const box = this.currentLayout ? getScrollViewBox(this.currentLayout, scrollView) : undefined;
 		const content = box?.children[0]?.component;
@@ -1840,7 +1821,6 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (this.stopped || !this.altScreenActive) return;
 		const width = Math.max(1, this.terminal.columns);
 		const height = Math.max(1, this.terminal.rows);
-		// Search reads every row, so windowed content renders what it has not yet before it is laid out.
 		if (this.activeSearch?.query.trim()) this.settleScrollContent(this.getPrimaryScrollView());
 		let nextLayout = this.layoutFrame();
 		if (this.refreshSearch(nextLayout)) nextLayout = this.layoutFrame();

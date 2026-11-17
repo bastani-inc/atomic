@@ -122,7 +122,6 @@ async function originalRoot(
 	return root;
 }
 
-/** Physical paths of worktree roots, each read once for one lookup ({@link canonicalizeWorktreePathAsync}). */
 type CanonicalLookup = (path: string) => Promise<string>;
 
 function canonicalLookup(): CanonicalLookup {
@@ -137,7 +136,6 @@ function canonicalLookup(): CanonicalLookup {
 	};
 }
 
-/** `Array.prototype.findLast` with an asynchronous predicate, asked from the last mapping back. */
 async function findLastMapping(
 	mappings: readonly WorktreeRootMapping[],
 	matches: (mapping: WorktreeRootMapping) => Promise<boolean>,

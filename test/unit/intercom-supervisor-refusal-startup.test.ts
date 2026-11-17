@@ -151,14 +151,8 @@ afterEach(() => vi.useRealTimers());
 
 const realSetTimeout = globalThis.setTimeout;
 const realNow = performance.now.bind(performance);
-/** Real time the child's start may take to reach the broker: it reads its configuration and project group first. */
 const FIRST_REGISTRATION_WAIT_MS = 10_000;
 
-/**
- * Waits in real time until the child first offers its registration, then advances the fake clock in steps until
- * `done()`. The start's disk reads and Git lookup finish in real time, not on the fake clock, so fake time runs only
- * once the start is waiting on the broker's answers.
- */
 async function advanceUntil(
 	child: { readonly registrations: readonly object[] },
 	done: () => boolean,

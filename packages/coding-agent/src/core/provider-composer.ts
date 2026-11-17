@@ -245,7 +245,6 @@ export function resolveConfiguredModelHeaders(
 	);
 }
 
-/** {@link resolveConfiguredModelHeaders} without blocking the event loop: a `!` command header runs asynchronously. */
 export function resolveConfiguredModelHeadersAsync(
 	model: AnyModel,
 	config: ModelsJsonProvider | undefined,
@@ -276,7 +275,6 @@ export function resolveCompatibilityRequestConfig(
 	return compatibilityRequestConfig(model, config, extension, configured);
 }
 
-/** {@link resolveCompatibilityRequestConfig} without blocking the event loop. */
 export async function resolveCompatibilityRequestConfigAsync(
 	model: AnyModel,
 	config: ModelsJsonProvider | undefined,

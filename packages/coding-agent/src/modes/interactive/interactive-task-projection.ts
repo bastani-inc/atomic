@@ -4,7 +4,6 @@ import { getOwnerTaskStore, type OwnerTaskStore, watchOwnerTaskStoreBinding } fr
 import { messageComponents } from "./chat-message-count.ts";
 import { countTasksBy, TaskRow, taskNameAndTitle, taskSiblings } from "./components/task-row.js";
 
-/** The store's tasks as rows read them: the list, each task by id, and how many share each name and title. */
 function taskSnapshot(tasks: readonly TaskRecord[]) {
 	const siblings = taskSiblings(tasks);
 	return {
@@ -43,7 +42,6 @@ export function refreshInteractiveTasks(mode: InteractiveTaskHost): void {
 	bindings.delete(mode);
 	if (!store) return;
 	const mounted = new Map<TaskId, Component>();
-	// One snapshot of the store's tasks per change, shared by every row's render until the next change.
 	let snapshot = taskSnapshot(store.tasks);
 	const update = () => {
 		snapshot = taskSnapshot(store.tasks);

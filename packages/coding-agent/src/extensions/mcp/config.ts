@@ -371,15 +371,9 @@ function editMcpServersSync(
 	writeSettingsFile(target, output);
 }
 
-/** The edit of each `mcp.json` that runs last; a later edit of the same file waits for it. */
 const pendingEdits = new Map<string, Promise<void>>();
 let editRegistrationQueue = Promise.resolve();
 
-/**
- * Read an `mcp.json` (an empty config when missing), let `edit` change its `mcpServers`, and write
- * it back with its indentation when `edit` returns true. Other content is kept. Edits of one file
- * run one at a time, so none is lost to another that read the file before it was written.
- */
 function editMcpServers(
 	path: string,
 	edit: (servers: Record<string, unknown> | undefined, parsed: Record<string, unknown>) => boolean,

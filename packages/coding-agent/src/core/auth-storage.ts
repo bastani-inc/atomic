@@ -36,10 +36,8 @@ export type AuthStorageData = Record<string, Credential>;
 export class AuthStorage implements CredentialStore {
 	private data: AuthStorageData = {};
 	private loadedVersion: string | undefined;
-	/** Counts the changes of `data`, so an asynchronous reload never replaces data newer than what it read. */
 	private generation = 0;
 	private storage: AuthStorageBackend;
-	/** The reads this store makes without blocking the event loop. */
 	private reads: AsyncAuthStorageReads;
 
 	private constructor(storage: AuthStorageBackend) {
@@ -51,7 +49,6 @@ export class AuthStorage implements CredentialStore {
 		return AuthStorage.fromStorage(AuthStorage.fileBackend(authPath));
 	}
 
-	/** {@link AuthStorage.create} without blocking the event loop: auth.json is read asynchronously. */
 	static async createAsync(authPath?: string | string[]): Promise<AuthStorage> {
 		const storage = new AuthStorage(AuthStorage.fileBackend(authPath));
 		await storage.reloadAsync();
@@ -93,7 +90,6 @@ export class AuthStorage implements CredentialStore {
 		return content;
 	}
 
-	/** {@link readStorageContent} through the backend's asynchronous members, for a backend that has them. */
 	private async readStorageContentAsync(): Promise<string | undefined> {
 		if (this.reads.readAsync) return this.reads.readAsync();
 		let content: string | undefined;
@@ -111,7 +107,6 @@ export class AuthStorage implements CredentialStore {
 		this.loadFromStorage(this.readStorageVersion());
 	}
 
-	/** {@link AuthStorage.reload} without blocking the event loop. */
 	async reloadAsync(): Promise<void> {
 		const generation = this.generation;
 		await this.loadFromStorageAsync(await this.readStorageVersionAsync(), generation);
@@ -124,7 +119,6 @@ export class AuthStorage implements CredentialStore {
 		return this.loadFromStorage(version);
 	}
 
-	/** {@link AuthStorage.reloadIfChanged} without blocking the event loop. */
 	async reloadIfChangedAsync(): Promise<boolean> {
 		if (!this.reads.versionAsync && !this.reads.readAsync) return false;
 		const generation = this.generation;
@@ -158,7 +152,6 @@ export class AuthStorage implements CredentialStore {
 		}
 	}
 
-	/** Loads the storage read at `version`, unless `data` changed since `generation`: what changed it is newer. */
 	private async loadFromStorageAsync(version: string | undefined, generation: number): Promise<boolean> {
 		try {
 			const content = await this.readStorageContentAsync();
@@ -302,7 +295,6 @@ export class ReadOnlyAuthStorage implements CredentialStore {
 		return this.data;
 	}
 
-	/** {@link load} without blocking the event loop. */
 	private async loadAsync(): Promise<AuthStorageData> {
 		if (this.data !== undefined) return this.data;
 		let content: string | undefined;
@@ -354,12 +346,10 @@ export class ReadOnlyAuthStorage implements CredentialStore {
 	}
 }
 
-/** The no-refresh path must not turn a corrupt auth file into an empty credential set: invalid state is surfaced. */
 function readFailure(error: unknown): Error {
 	return new Error(`Failed to read auth.json: ${error instanceof Error ? error.message : String(error)}`);
 }
 
-/** auth.json as `ReadOnlyAuthStorage` reads it: malformed data fails closed, without touching the file. */
 function parseReadOnlyAuth(content: string | undefined): AuthStorageData {
 	let parsed: unknown;
 	try {

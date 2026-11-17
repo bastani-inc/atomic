@@ -36,10 +36,6 @@ export async function withFileMutationQueue<T>(filePath: string, fn: () => Promi
 	);
 }
 
-/**
- * {@link withFileMutationQueue} for a path that still has to be resolved. The operation takes its place in the queue
- * when this is called, so operations on one file keep their call order however long each path takes to resolve.
- */
 export async function withResolvingFileMutationQueue<T>(
 	resolveFilePath: () => Promise<string>,
 	fn: (filePath: string) => Promise<T>,

@@ -104,10 +104,6 @@ function bindValues(params: readonly SqliteSelectorValue[]): unknown[] {
 	return params.map((param) => (typeof param === "boolean" ? (param ? 1 : 0) : param));
 }
 
-/**
- * One SQLite database a selector reads or writes, opened with `node:sqlite` on a worker thread so that opening it and
- * every statement it runs wait off the event loop. Booleans are stored as integer 1/0, as `node:sqlite` refuses them.
- */
 export class SqliteSelectorConnection {
 	private readonly waiting = new Map<number, Waiting>();
 	private nextId = 1;
@@ -148,7 +144,6 @@ export class SqliteSelectorConnection {
 		return this.request({ kind: "all", sql, params: bindValues(params) }) as Promise<SqliteSelectorRow[]>;
 	}
 
-	/** At most `limit` rows, stepping the statement only as far as it needs to. */
 	rows(sql: string, limit: number): Promise<SqliteSelectorRow[]> {
 		return this.request({ kind: "rows", sql, params: [], limit }) as Promise<SqliteSelectorRow[]>;
 	}
@@ -157,7 +152,6 @@ export class SqliteSelectorConnection {
 		return this.request({ kind: "run", sql, params: bindValues(params) }) as Promise<{ changes: number }>;
 	}
 
-	/** Closes the database, then ends the worker; a statement still running finishes first. */
 	close(): Promise<void> {
 		this.closing ??= this.request({ kind: "close" }).then(
 			() => this.worker.terminate().then(() => undefined),

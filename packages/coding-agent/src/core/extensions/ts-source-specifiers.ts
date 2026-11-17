@@ -188,7 +188,6 @@ export function createTypeScriptSourceSpecifierTransform(
 		}
 		return { code };
 	};
-	// The transform stays synchronous for jiti; its asynchronous owner waits for publication before returning.
 	return Object.assign(transform, {
 		async flush(): Promise<void> {
 			while (writes.size > 0) await Promise.all(writes);

@@ -386,7 +386,6 @@ function buildHostPickerUi(calls: CapturedCustomCall[], mockOpts: MockUiOpts = {
 						? { rows: mockOpts.rows, columns: mockOpts.columns }
 						: undefined,
 			};
-			// Like the interactive host, the factory gets the keybindings in effect.
 			const mounted = factoryArg(tui, {}, new KeybindingsManager(), (result) => resolve(result as undefined));
 			if (mounted instanceof Promise) {
 				throw new Error("test factory should be sync");

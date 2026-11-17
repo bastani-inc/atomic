@@ -6,15 +6,11 @@ const SIGKILL_ESCALATION_MS = 100;
 export interface SpawnCollectOptions {
 	readonly cwd: string;
 	readonly env: NodeJS.ProcessEnv;
-	/** Milliseconds before the process is sent SIGTERM and the result carries an `ETIMEDOUT` error. */
 	readonly timeout: number;
-	/** Bytes each of stdout and stderr may carry before the process is sent SIGTERM and the result carries `ENOBUFS`. */
 	readonly maxBuffer: number;
-	/** Written to the process's stdin, which is then closed; without it stdin is ignored. */
 	readonly input?: string;
 }
 
-/** What a process left once it closed, in the shape `spawnSync` reports it. */
 export interface SpawnCollectResult {
 	readonly stdout: string;
 	readonly stderr: string;
@@ -27,12 +23,6 @@ function codedError(command: string, code: string): Error {
 	return Object.assign(new Error(`spawn ${command} ${code}`), { code });
 }
 
-/**
- * Runs `command` without a shell and collects its output, as `spawnSync` does, without blocking: a timeout or an
- * output over `maxBuffer` ends the process with SIGTERM and is reported as `ETIMEDOUT` or `ENOBUFS`, a process that
- * cannot start is reported by its spawn error, and a failed write of `input` (a process that exits without reading
- * it) is reported alongside the status the process exited with.
- */
 export function spawnCollect(
 	command: string,
 	args: readonly string[],
@@ -64,7 +54,6 @@ export function spawnCollect(
 			settled = true;
 			clearTimeout(timer);
 			clearTimeout(killTimer);
-			// The runtime's own `timeout` may end the process before the timer below reports it.
 			if (error === undefined && signal !== null && Date.now() - startedAt >= options.timeout)
 				error = codedError(command, "ETIMEDOUT");
 			if (!stopped && error === undefined) tree?.release();

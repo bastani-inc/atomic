@@ -605,7 +605,6 @@ export async function runAgentTask(input: {
 				...(input.intentTask === undefined ? {} : { intentTask: input.intentTask }),
 				options: {
 					...input.options,
-					// It starts where its cwd is now, as its original launch did.
 					cwdVerdict: undefined,
 					signal: undefined,
 					interruptSignal: undefined,
@@ -627,7 +626,6 @@ export async function runAgentTask(input: {
 				operation: `${input.options.runId}:${input.options.index ?? 0}:resume:${randomUUID()}`,
 			}),
 	});
-	// Checked before its task starts, so its dispatch admits and starts the child within that dispatch.
 	const cwdVerdict =
 		input.options.cwdVerdict?.path === childCwd
 			? input.options.cwdVerdict
@@ -761,7 +759,6 @@ export async function runAgentTask(input: {
 								onExecution: (execution) => {
 									executionBound = true;
 									trackChildClosing(childId, execution.cleanup);
-									// The host ends a cancelled task at its cleanup, with or without its result: the result goes first.
 									void Promise.allSettled([result])
 										.then(() => execution.cleanup)
 										.then(cleaned.resolve, (error) =>

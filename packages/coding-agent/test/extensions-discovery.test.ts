@@ -65,7 +65,6 @@ describe("extensions discovery", () => {
 		const writeFile = fs.promises.writeFile;
 		const cacheWrites: Promise<void>[] = [];
 		let pendingWrites = 0;
-		// Hold the disk writes long enough for an untracked load to return while its publication is still pending.
 		const CACHE_WRITE_LATENCY_MS = 100;
 		const write = vi.spyOn(fs.promises, "writeFile").mockImplementation(async (...args) => {
 			if (typeof args[0] !== "string" || !args[0].includes(`${path.sep}cache${path.sep}jiti${path.sep}`))

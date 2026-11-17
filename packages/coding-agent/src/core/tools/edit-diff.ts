@@ -601,11 +601,6 @@ export interface EditDiff {
  */
 const DIFF_WINDOW_MARGIN_LINES = 32;
 
-/**
- * Line edits beyond which a window is shown as its changed lines replaced whole. jsdiff's search compares lines on
- * every diagonal it reaches, so two long blocks with little in common cost the product of their lengths. Stopping at
- * this many edits bounds that cost, and a change this large reads as a replaced block anyway.
- */
 const MAX_LINE_EDITS = 256;
 
 /**
@@ -647,13 +642,11 @@ export function generateEditDiff(
 	return { diff: output.join("\n"), patch, firstChangedLine };
 }
 
-/** Line changes and patch hunks of one window, numbered from its first line. */
 interface WindowDiff {
 	parts: Diff.ChangeObject<string>[];
 	hunks: Diff.StructuredPatchHunk[];
 }
 
-/** jsdiff's line diff of a window, or its changed lines replaced whole when it needs more than MAX_LINE_EDITS edits. */
 function diffWindow(path: string, oldText: string, newText: string, contextLines: number): WindowDiff {
 	const options = { context: contextLines, maxEditLength: MAX_LINE_EDITS };
 	const parts = Diff.diffLines(oldText, newText, options);
@@ -661,7 +654,6 @@ function diffWindow(path: string, oldText: string, newText: string, contextLines
 	return parts && patch ? { parts, hunks: patch.hunks } : replacedBlockDiff(oldText, newText, contextLines);
 }
 
-/** Lines of `text` as jsdiff's line diff splits them, each with its line feed. */
 function splitLinesWithFeeds(text: string): string[] {
 	const lines: string[] = [];
 	let start = 0;
@@ -673,11 +665,6 @@ function splitLinesWithFeeds(text: string): string[] {
 	return lines;
 }
 
-/**
- * The diff that keeps the lines the two texts start and end with in common and replaces every line between them, in
- * the form jsdiff gives a diff and a patch: removed lines before added ones, one hunk with up to `contextLines`
- * unchanged lines on each side, and a marker after a last line without a line feed.
- */
 function replacedBlockDiff(oldText: string, newText: string, contextLines: number): WindowDiff {
 	const oldLines = splitLinesWithFeeds(oldText);
 	const newLines = splitLinesWithFeeds(newText);

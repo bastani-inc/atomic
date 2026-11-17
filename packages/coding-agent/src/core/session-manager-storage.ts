@@ -107,19 +107,11 @@ export function parseSessionEntries(content: string): FileEntry[] {
 	return entries;
 }
 
-/**
- * The first line of a file, fed chunk by chunk. The full first line is read rather than a fixed 512-byte window so
- * very long headers (e.g. internal workflow headers carrying stage metadata) are not truncated and dropped from
- * listing/resume filtering. Callers read with a small dedicated header buffer instead of the 1MiB transcript buffer
- * so prefiltering internal sessions during listing stays cheap, in chunks until the first newline (or EOF) so headers
- * larger than one chunk are handled correctly.
- */
 class SessionHeaderLine {
 	private readonly decoder = new StringDecoder("utf8");
 	private pending = "";
 	private foundNewline = false;
 
-	/** Takes the next chunk, empty at EOF; true once the first line is complete. */
 	push(chunk: Buffer): boolean {
 		if (chunk.length === 0) return true;
 		this.pending += this.decoder.write(chunk);
@@ -160,7 +152,6 @@ export function readSessionHeader(filePath: string): SessionHeader | null {
 	}
 }
 
-/** {@link readSessionHeader} without blocking the event loop. */
 export async function readSessionHeaderAsync(filePath: string): Promise<SessionHeader | null> {
 	try {
 		const file = await open(filePath, "r");

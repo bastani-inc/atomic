@@ -717,7 +717,6 @@ describe("tool path mapping for restored worktrees (#4329)", () => {
 		const worktree = join(root, "wt");
 		assert.equal(resolveToCwdIfUnambiguous("a.txt", worktree), join(worktree, "a.txt"));
 		await withWorktreeRootMappings([mapping("/nodeA/repo", worktree)], async () => {
-			// Mapping a path reads its symbolic links from the disk, which a row's synchronous label never does.
 			assert.equal(resolveToCwdIfUnambiguous("/nodeA/repo/a.txt", worktree), undefined);
 			assert.equal(await resolveToCwdAsync("/nodeA/repo/a.txt", worktree), join(worktree, "a.txt"));
 			assert.equal(await resolveReadPathAsync("/nodeA/repo/a.txt", worktree), join(worktree, "a.txt"));

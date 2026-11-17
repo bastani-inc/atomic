@@ -441,7 +441,6 @@ for (const cancel of ["dispose", "id", "settled-peer"] as const) {
 	test(`review F duplicate shell IDs cancel every operation (${cancel})`, async () => {
 		const f = await fixture();
 		const { session } = await createAgentSession(f.options);
-		// By command: the two commands read their environments concurrently, so either may reach its shell first.
 		const running = new Map<string, { readonly signal: AbortSignal; readonly finish: () => void }>();
 		const operations = {
 			exec: async (command: string, _cwd: string, { signal }: { signal?: AbortSignal }) =>

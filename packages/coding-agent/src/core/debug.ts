@@ -93,7 +93,6 @@ function recordFailure(path: string, error: unknown): void {
 	console.warn(debugLogFailure.message);
 }
 
-/** Resolves once every debug record reported so far is in its file, or its failure is recorded. */
 export async function flushDebugLog(): Promise<void> {
 	await writer.written();
 }

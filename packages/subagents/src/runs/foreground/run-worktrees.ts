@@ -1,4 +1,4 @@
-import { access } from "node:fs/promises";
+import { pathExists } from "../../shared/path-exists.js";
 import { ensureNamedWorktree, type NamedWorktree, type NamedWorktreeOptions } from "../shared/named-worktree.js";
 import {
 	cleanupWorktrees,
@@ -42,7 +42,6 @@ interface RunWorktrees {
 	readonly removed: Set<number>;
 	/** The run returned: nothing more is launched by it, so worktrees go once no execution holds them. */
 	returned: boolean;
-	/** Serializes sweeps and resumes of this run's worktrees. */
 	sweeping: Promise<void>;
 	/** Edits are saved as a patch before a worktree is removed, also for a run tracked again after a restart. */
 	readonly diffs?: {
@@ -51,15 +50,6 @@ interface RunWorktrees {
 		/** Where a resumed child saves its edits, past the patches its earlier executions saved. */
 		readonly patchPaths: Map<number, string>;
 	};
-}
-
-async function pathExists(target: string): Promise<boolean> {
-	try {
-		await access(target);
-		return true;
-	} catch {
-		return false;
-	}
 }
 
 /** Runs whose worktrees still exist in this process, by run id. */

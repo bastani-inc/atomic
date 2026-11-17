@@ -162,7 +162,6 @@ test("shared task context resolves and watches the stage cwd branch without chan
 	let changes = 0;
 	provider.onBranchChange(() => changes++);
 	try {
-		// Branches are read in the background; the first paint shows them once read.
 		await vi.waitFor(() => assert.match(stripAnsi(footer.render(160).join("\n")), /stage \(stage-branch\)/));
 		await vi.waitFor(() => assert.equal(provider.getGitBranch(), "main"));
 		assert.match(stripAnsi(footer.render(160).join("\n")), /MCP: 0\/1 servers/);

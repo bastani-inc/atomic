@@ -256,7 +256,6 @@ async function adoptedHostId(agentDir: string): Promise<string | undefined> {
 	return owner !== undefined && (await sameDirectoryAsync(owner, self)) ? id : undefined;
 }
 
-/** Calls of {@link poolHostId} still running, by agent directory: one made at the same time gets the same id. */
 const hostIdsInProgress = new Map<string, Promise<string>>();
 
 /**

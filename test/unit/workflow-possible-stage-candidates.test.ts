@@ -12,7 +12,6 @@ import { makeTempDirectory, removeTempDirectory, writeTextSync } from "../helper
 
 /** Paths mapped to how many more reads succeed before every later read fails, to simulate a file that vanishes. */
 const readBudgets = vi.hoisted(() => new Map<string, number>());
-/** Paths whose read fails although the file exists. */
 const unreadableSources = vi.hoisted(() => new Set<string>());
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const fs = await importOriginal<typeof import("node:fs/promises")>();

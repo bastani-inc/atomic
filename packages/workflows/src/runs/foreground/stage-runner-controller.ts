@@ -555,9 +555,7 @@ export class StageSessionController {
 		}
 	}
 
-	/** The directory of a stage without its own cwd: the stage's, once its worktree is set up. */
 	private stageDefaultCwd: string | undefined;
-	/** Applying the stage's options once its worktree is set up; no session opens before it settles. */
 	private stageOptionsReady: Promise<void> | undefined;
 
 	constructor(
@@ -598,7 +596,6 @@ export class StageSessionController {
 		return this.session;
 	}
 
-	/** The stage's options once its worktree is set up, replacing those it was created with. */
 	useStageOptions(options: StageOptions | undefined, defaultCwd: string): void {
 		this.effectiveStageOptions = options;
 		this.stageDefaultCwd = defaultCwd;
@@ -606,7 +603,6 @@ export class StageSessionController {
 			this.meta.stageOptions = { ...this.meta.stageOptions, model: this.autoModel };
 	}
 
-	/** Opens no session until `ready` settles, and none at all when it rejects: each attempt fails with its error. */
 	waitForStageOptions(ready: Promise<void>): void {
 		this.stageOptionsReady = ready;
 	}

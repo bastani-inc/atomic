@@ -1,6 +1,6 @@
 import { accessSync, constants } from "node:fs";
-import { access } from "node:fs/promises";
 import { dirname } from "node:path";
+import { pathExists } from "../../utils/path-exists.js";
 import { normalizePath, resolvePath } from "../../utils/paths.ts";
 import { currentWorktreeRootMappings, mapPathForCwd, mapPathForCwdAsync } from "../resume/path-mapping.ts";
 
@@ -30,14 +30,7 @@ function fileExists(filePath: string): boolean {
 	}
 }
 
-export async function pathExists(filePath: string): Promise<boolean> {
-	try {
-		await access(filePath, constants.F_OK);
-		return true;
-	} catch {
-		return false;
-	}
-}
+export { pathExists };
 
 export function expandPath(filePath: string): string {
 	return normalizePath(filePath, { normalizeUnicodeSpaces: true, stripAtPrefix: true });
@@ -50,7 +43,6 @@ function resolveLiteralAndNormalized(filePath: string, cwd: string): { literal: 
 	};
 }
 
-/** {@link resolveLiteralAndNormalized} without blocking the event loop on mapping restored checkouts. */
 async function resolveLiteralAndNormalizedAsync(
 	filePath: string,
 	cwd: string,
@@ -79,20 +71,13 @@ export function resolveToCwd(filePath: string, cwd: string): string {
 	return normalized;
 }
 
-/**
- * {@link resolveToCwd} where no existence check can change its answer: when the literal and normalised spellings are
- * the same path. Undefined when they differ, and while the current work has restored checkouts, whose mapping reads the
- * disk: {@link resolveToCwdAsync} answers then.
- */
 export function resolveToCwdIfUnambiguous(filePath: string, cwd: string): string | undefined {
 	if (currentWorktreeRootMappings().length > 0) return undefined;
-	// Without restored checkouts, no path is mapped.
 	const literal = resolvePath(filePath, cwd);
 	const normalized = resolvePath(filePath, cwd, { normalizeUnicodeSpaces: true, stripAtPrefix: true });
 	return literal === normalized ? literal : undefined;
 }
 
-/** {@link resolveToCwd} without blocking the event loop on its existence checks. */
 export async function resolveToCwdAsync(filePath: string, cwd: string): Promise<string> {
 	const { literal, normalized } = await resolveLiteralAndNormalizedAsync(filePath, cwd);
 	if (await pathExists(literal)) return literal;

@@ -40,7 +40,6 @@ vi.mock("@bastani/atomic", async (importOriginal) => {
 import { spawnCollect } from "../../packages/workflows/src/runs/shared/spawn-collect.js";
 
 const node = process.execPath;
-/** Long enough that a loaded runner still starts the child well inside it. */
 const GENEROUS_TIMEOUT_MS = 20_000;
 
 function errorCode(error: Error | undefined): string | undefined {

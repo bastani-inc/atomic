@@ -34,7 +34,6 @@ export interface ImageRenderOptions {
 }
 
 let cachedCapabilities: TerminalCapabilities | null = null;
-/** Whether the cached capabilities were detected, not set by {@link setCapabilities}. */
 let cachedCapabilitiesDetected = false;
 let capabilityOverrides: Partial<TerminalCapabilities> = {};
 
@@ -49,7 +48,6 @@ export function setCellDimensions(dims: CellDimensions): void {
 	cellDimensions = dims;
 }
 
-/** What tmux answered about forwarding hyperlinks; undefined until it answered. */
 let tmuxForwardsHyperlinks: boolean | undefined;
 let tmuxHyperlinksAsked = false;
 

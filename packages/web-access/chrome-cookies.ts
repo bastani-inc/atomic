@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
 import { createDecipheriv, pbkdf2 } from "node:crypto";
-import { access, copyFile, mkdtemp, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, rm } from "node:fs/promises";
 import { homedir, platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { Worker } from "node:worker_threads";
 import { createChildProcessEnvironment } from "@bastani/atomic";
+import { pathExists } from "./path-exists.js";
 
 const pbkdf2Async = promisify(pbkdf2);
 
@@ -364,14 +365,6 @@ function expandHosts(host: string): string[] {
 	return Array.from(candidates);
 }
 
-async function pathExists(filePath: string): Promise<boolean> {
-	try {
-		await access(filePath);
-		return true;
-	} catch {
-		return false;
-	}
-}
 
 async function copySidecar(srcDb: string, targetDb: string, suffix: string): Promise<void> {
 	const sidecar = `${srcDb}${suffix}`;

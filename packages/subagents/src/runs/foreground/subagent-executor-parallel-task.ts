@@ -158,9 +158,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 	const host = input.ctx.getAgentTaskHost?.();
 	// Admit observations independently; only actual execution holds a concurrency slot.
 	const schedule = input.schedule ?? createExecutionScheduler(input.concurrencyLimit);
-	// Reserve ordered tickets synchronously before any async setup so admission and slots follow task order.
 	const tickets = input.tasks.map((task) => task[TASK_EXECUTION_TICKETS]?.[0] ?? schedule.reserve?.());
-	// Every child's cwd is checked before any launches, so siblings still launch in their order.
 	const cwdVerdicts = await Promise.all(
 		input.tasks.map((task, index) =>
 			checkLaunchCwd(resolveParallelTaskCwd(task, input.paramsCwd, input.worktreeSetup, index)),

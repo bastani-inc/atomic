@@ -29,12 +29,9 @@ Atomics.notify(gate, 0);
 \`, { eval: true, workerData: { ...${JSON.stringify(paths)}, gate, holdMs: ${holdMs} } }).unref();
 `;
 }
-/** A real Bun child process that saves and exits. */
 const EXITING_CHILD_TIMEOUT_MS = 60_000;
 
-/** How often the probe timer ticks while a save waits for a lock another process holds. */
 const PROBE_INTERVAL_MS = 5;
-/** Ticks the probe must see during that wait, which lasts about 200 ms: a blocked event loop sees none. */
 const MIN_PROBE_TICKS = 5;
 
 let directory: string;
@@ -56,7 +53,6 @@ afterEach(() => {
 });
 
 it("waits for another process's settings lock without blocking the event loop", async () => {
-	// A fresh lock with no holder record: another process holds it, and it is not stale.
 	mkdirSync(join(agentDir, "settings.json.lock"));
 	const manager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	manager.setTheme("dark");

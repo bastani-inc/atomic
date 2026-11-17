@@ -80,7 +80,6 @@ function normalizeExisting(path: string): string {
 	return join(realpathSync.native(existing), ...missing);
 }
 
-/** Asynchronous variant of {@link resolvePhysicalPath} with identical resolution and error semantics. */
 export async function resolvePhysicalPathAsync(path: string): Promise<string> {
 	const absolute = resolve(path);
 	let resolved = parse(absolute).root;

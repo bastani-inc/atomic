@@ -9,7 +9,6 @@ export interface DeleteSessionFileResult {
 	error?: string;
 }
 
-/** A `trash` that has not finished by then is treated as failed, and the file is unlinked instead. */
 const TRASH_TIMEOUT_MS = 30_000;
 
 interface TrashResult {
@@ -29,7 +28,6 @@ function runTrash(args: string[]): Promise<TrashResult> {
 					resolve({ status: 0, stderr });
 					return;
 				}
-				// A numeric code is the exit status; anything else means `trash` did not run to completion.
 				if (typeof error.code === "number") resolve({ status: error.code, stderr });
 				else resolve({ status: null, stderr, error });
 			},

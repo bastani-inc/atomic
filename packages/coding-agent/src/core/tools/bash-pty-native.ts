@@ -348,7 +348,6 @@ export async function executeNativePty(
 	if (!loaded.ok) throw loaded.error;
 	const shellConfig = options.shellConfig ?? (await getShellConfigAsync(options.shellPath));
 	const shellEnv = await getShellEnvAsync();
-	// Checked after the shell lookups, so a command cancelled during them never starts.
 	if (options.signal?.aborted) throw new Error("aborted");
 	const session = new loaded.binding.PtySession();
 	const onAbort = () => {

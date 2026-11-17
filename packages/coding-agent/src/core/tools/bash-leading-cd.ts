@@ -91,7 +91,6 @@ export function stripLeadingCdCommand(command: string, cwd: string): LeadingCdSp
 	return parsed && finishLeadingCd(parsed, cwd, getShellEnv());
 }
 
-/** {@link stripLeadingCdCommand} without blocking the event loop. */
 export async function stripLeadingCdCommandAsync(
 	command: string,
 	cwd: string,

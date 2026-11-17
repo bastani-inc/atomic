@@ -33,7 +33,6 @@ export class StartupChatContainer extends WindowedContainer {
 		if (counted) this.recount(counted, this.isCounted(component) ? 1 : 0);
 	}
 
-	/** Inserts `components` at `index`, keeping the count of the counted ones current. */
 	insertChildren(index: number, components: readonly Component[]): void {
 		const counted = this.current();
 		this.children.splice(index, 0, ...components);
@@ -89,13 +88,8 @@ interface ChatHistoryBuild {
 	readonly finish: () => void;
 }
 
-/** The history being built into each chat behind the end of a long session, until it is built or the chat cleared. */
 const chatHistoryBuilds = new WeakMap<Container, ChatHistoryBuild>();
 
-/**
- * Tracks the history being built into `chat`; `finish` builds the rest at once. Call `done` once it is built, or the
- * chat no longer shows it.
- */
 export function trackChatHistoryBuild(chat: Container, finish: () => void): { done(): void } {
 	let settle = (): void => {};
 	const build: ChatHistoryBuild = { built: new Promise<void>((resolve) => (settle = resolve)), finish };
@@ -108,12 +102,10 @@ export function trackChatHistoryBuild(chat: Container, finish: () => void): { do
 	};
 }
 
-/** Settles once the history being built into `chat`, if any, is built. */
 export function chatHistoryBuilt(chat: Container | undefined): Promise<void> {
 	return (chat && chatHistoryBuilds.get(chat)?.built) ?? Promise.resolve();
 }
 
-/** Builds the rest of the history being built into `chat`, if any, at once. */
 export function finishChatHistory(chat: Container | undefined): void {
 	if (chat) chatHistoryBuilds.get(chat)?.finish();
 }

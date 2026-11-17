@@ -34,7 +34,6 @@ function fileSafe(value: string): string {
 	return value.replace(/[^A-Za-z0-9._-]+/g, "_");
 }
 
-/** The private directory every copy is written in, created once; a creation that fails is tried again next time. */
 function privateCopyRoot(): Promise<string> {
 	copyRoot ??= mkdtemp(join(tmpdir(), "atomic-subagent-output-")).then(
 		(root) => {

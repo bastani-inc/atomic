@@ -350,10 +350,6 @@ export interface BashToolOptions {
 	taskOwner?: SupervisedCommandOwner;
 	/** Expose the execution-time Atomic session snapshot and PI compatibility aliases. Default: true. */
 	exposeSessionEnvironment?: boolean;
-	/**
-	 * Prefix prepended to every shell command before execution; read again for each command. A promise is awaited, and
-	 * one that resolves to undefined adds nothing.
-	 */
 	readonly commandPrefix?: string | Promise<string | undefined>;
 	/** Override shell executable resolution for local bash operations. */
 	shellPath?: string;

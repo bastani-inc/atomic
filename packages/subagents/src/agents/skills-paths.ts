@@ -79,7 +79,6 @@ export type GlobalNpmRootExec = (command: string, options: GlobalNpmRootExecOpti
 
 const execAsync: GlobalNpmRootExec = promisify(exec);
 let execGlobalNpmRoot = execAsync;
-/** The probe of the global npm root, shared by every caller until the cache is cleared; null when it failed. */
 let globalNpmRoot: Promise<string | null> | undefined;
 const GLOBAL_NPM_ROOT_TIMEOUT_MS = 2500;
 

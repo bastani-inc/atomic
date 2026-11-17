@@ -109,7 +109,6 @@ export interface LifecycleTraceLine {
 
 let traceWriter: DiagnosticWriter | undefined;
 
-/** Settles once every trace line marked so far is in the trace file. */
 export function lifecycleTraceWritten(): Promise<void> {
 	return traceWriter?.written() ?? Promise.resolve();
 }

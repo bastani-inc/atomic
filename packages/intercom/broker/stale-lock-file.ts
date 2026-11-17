@@ -64,7 +64,6 @@ async function removeFileAsync(path: string): Promise<void> {
   try {
     await unlink(path);
   } catch {
-    // Already removed.
   }
 }
 

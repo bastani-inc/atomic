@@ -22,9 +22,7 @@ export interface DebugLogRecord {
 export interface DebugLogFixture {
 	readonly agentDir: string;
 	readonly path: string;
-	/** Every record reported so far, once written; empty when the log was never created. */
 	records(): Promise<DebugLogRecord[]>;
-	/** Whether anything created the debug log file, once the records reported so far are written. */
 	exists(): Promise<boolean>;
 }
 

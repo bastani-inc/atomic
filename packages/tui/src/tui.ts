@@ -465,10 +465,6 @@ export type TuiMode = "regular" | "fullscreen";
 export interface TuiStopOptions {
 	/** Leave renderer output in place for another TUI taking over the same terminal. */
 	preserveScreen?: boolean;
-	/**
-	 * Write the output left on the terminal after stopping (in fullscreen mode, the transcript) a bounded slice at a time
-	 * across event-loop turns, rather than at once. `whenStopped()` settles once all of it is written.
-	 */
 	writeInSlices?: boolean;
 }
 
@@ -491,7 +487,6 @@ export interface TUI extends Component {
 	hasOverlay(): boolean;
 	start(): void;
 	stop(options?: TuiStopOptions): void;
-	/** Settles once the output of the last stop() is written; see `TuiStopOptions.writeInSlices`. */
 	whenStopped(): Promise<void>;
 	renderNow(force?: boolean): void;
 	requestRender(force?: boolean): void;
@@ -533,7 +528,6 @@ export abstract class TuiBase extends Container implements TUI {
 	private clearOnShrink = false;
 	protected fullRedrawCount = 0;
 	protected stopped = false;
-	/** The output the last stop() writes, settled once written. */
 	protected stopOutput: Promise<void> = Promise.resolve();
 	/**
 	 * Color queries waiting for their DA1 reply, oldest first. Terminals answer in order, so color

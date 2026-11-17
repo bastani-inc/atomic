@@ -45,7 +45,6 @@ InteractiveModeBase.prototype.maybeShowInstallChangeWarning = async function (
 	if (this.installChangeWarningShown) return true;
 	const change = await detectInstallChangeAsync();
 	if (!change) return false;
-	// Another failure may have shown it while the installed package was read.
 	if (this.installChangeWarningShown) return true;
 	this.installChangeWarningShown = true;
 	const cause =

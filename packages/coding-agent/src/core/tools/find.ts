@@ -91,7 +91,6 @@ function formatTimeoutSeconds(timeoutMs: number): string {
 	return Number.isInteger(seconds) ? String(seconds) : seconds.toFixed(1);
 }
 const VIRTUAL_INTERNAL_SCHEMES = ["history", "conflict", "tool-output"] as const;
-/** Whether `candidate` is a directory. A missing entry is not; any other stat error throws. */
 async function isDirectoryEntry(candidate: string): Promise<boolean> {
 	try {
 		return (await fsStat(candidate)).isDirectory();

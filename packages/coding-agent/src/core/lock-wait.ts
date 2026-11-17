@@ -36,7 +36,6 @@ export interface LockWait {
 	readonly contended: (error: unknown, waitedMs: number) => Error;
 }
 
-/** {@link LockWait} for {@link waitForLock}, whose takeover runs without blocking the event loop. */
 export interface AsyncLockWait extends Omit<LockWait, "takeOver"> {
 	readonly takeOver?: () => Promise<boolean>;
 }
@@ -52,7 +51,6 @@ class LockWaiter {
 	private pollMs: number;
 	private readonly wait: Omit<LockWait, "takeOver">;
 
-	/** `holder` is the lock directory in place before the first attempt. */
 	constructor(wait: Omit<LockWait, "takeOver">, holder: string | undefined) {
 		this.wait = wait;
 		this.holder = holder;
@@ -60,10 +58,6 @@ class LockWaiter {
 		this.pollMs = wait.pollMinMs;
 	}
 
-	/**
-	 * How long to sleep before the next attempt after `error`, now that `holder` is the lock directory in place; throws
-	 * when the wait is over.
-	 */
 	next(error: unknown, holder: string | undefined): number {
 		const now = Date.now();
 		if (holder !== this.holder) {
@@ -127,10 +121,6 @@ export function waitForLockSync<T>(acquire: (fs: LockFileSystem) => T, wait: Loc
 	}
 }
 
-/**
- * {@link waitForLockSync} for an asynchronous `acquire`, which never blocks the event loop: the takeover, the holder
- * checks and the waits between attempts are asynchronous. `signal` stops the wait.
- */
 export async function waitForLock<T>(
 	acquire: (fs: LockFileSystem) => Promise<T>,
 	wait: AsyncLockWait,
@@ -154,14 +144,8 @@ export async function waitForLock<T>(
 	}
 }
 
-/** The last turn queued for each lock in this process, by the path of the file it guards. */
 const lockTurns = new Map<string, Promise<void>>();
 
-/**
- * Runs `fn` once every earlier turn of this process for the lock of `path` has ended. Synchronous saves never overlapped
- * in one process; queued this way, asynchronous ones take the lock one after another too, in the order they were made,
- * rather than contending for it as other processes do and failing after a holder wait meant for another process.
- */
 export async function inLockTurn<T>(path: string, fn: () => Promise<T>): Promise<T> {
 	const previous = lockTurns.get(path) ?? Promise.resolve();
 	let end!: () => void;

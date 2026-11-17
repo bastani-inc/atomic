@@ -3,7 +3,6 @@ import { containsCredential, containsCredentialValue } from "./credential-screen
 
 interface ReloadableCredentialStore {
 	reload(): void | Promise<void>;
-	/** {@link ReloadableCredentialStore.reload} without blocking the event loop, where the store offers it. */
 	reloadAsync?(): Promise<void>;
 	reloadIfChanged?(): boolean;
 }

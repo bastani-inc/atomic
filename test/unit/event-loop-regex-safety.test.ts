@@ -35,13 +35,9 @@ describe("exponential backtracking", () => {
 		["(\\w+\\s?)+$", "", "(\\w+\\s?)+"],
 		["(a|aa)*c", "", "(a|aa)*"],
 		["(\\n\\s*)+$", "", "(\\n\\s*)+"],
-		// The alternatives overlap only on a two-character sequence: "\r\n" is one alternative or two.
 		["(\\r\\n|\\r|\\n)+$", "", "(\\r\\n|\\r|\\n)+"],
-		// A small bound inside an unbounded repetition still splits a run in exponentially many ways.
 		["(a{1,3})+$", "", "(a{1,3})+"],
-		// Case-insensitive classes overlap: \w matches K, and so does the Kelvin sign under `iu`.
 		["([a-z]|\\u212A)+$", "iu", "([a-z]|\\u212A)+"],
-		// A lookahead body is analysed as a pattern of its own.
 		["^(?=(a+)+$)", "", "(a+)+"],
 	];
 	for (const [pattern, flags, subPattern] of cases) {
@@ -69,16 +65,11 @@ describe("polynomial backtracking", () => {
 		[".*,.*=", "", ["polynomial: .*,.*"]],
 		["^(.*?)\\s*$", "", ["polynomial: (.*?)\\s*"]],
 		["a+?a+?b", "", ["polynomial: a+?a+?"]],
-		// Copies of a bounded repetition trade with each other.
 		["(a+){2,5}$", "", ["polynomial: (a+){2,5}"]],
 		["\\p{L}+\\p{L}+$", "u", ["polynomial: \\p{L}+\\p{L}+"]],
-		// A modifier group makes `a+` match the `A` run too.
 		["^(?i:a+)A+$", "", ["polynomial: (?i:a+)A+"]],
-		// The backreference must repeat what the group matched, and both can grow.
 		["(a*)\\1b", "", ["polynomial: (a*)\\1"]],
-		// `.` stops at a line break that `\s*` can cross, so the end anchor can fail after a run of spaces.
 		["^\\s*(.*)$", "", ["polynomial: \\s*(.*)"]],
-		// A bounded repetition with a wide bound costs as much as an unbounded one.
 		["\\d{1,100}\\d{1,100}x", "", ["polynomial: \\d{1,100}\\d{1,100}"]],
 	];
 	for (const [pattern, flags, expected] of cases) {
@@ -113,8 +104,6 @@ describe("patterns that never backtrack super-linearly", () => {
 		["(?<=a)b+(?!c)", "", "lookarounds"],
 		["\\w+(?=\\s)", "", "lookahead after a repetition"],
 		["\\x1b\\[[0-9;]*m", "g", "ANSI colour sequence"],
-		// Each branch has one repetition; the cost of retrying `\s+$` at every start of an unanchored search is the
-		// search loop's, which every unanchored pattern with a leading repetition shares, not an ambiguity.
 		["^\\s+|\\s+$", "g", "trim"],
 		["a+b", "", "search-loop retries are not an ambiguity"],
 		["(\\w+\\s?)+", "", "nothing after the repetition can fail"],
@@ -131,7 +120,6 @@ describe("patterns that never backtrack super-linearly", () => {
 		["(?<x>a+)+\\k<x>", "", "the backreference always lets the match end"],
 		["(?:^|,)([^,]*)", "", "separated fields"],
 		["^(.*?)(?<!\\s)\\s*\\{#([A-Za-z0-9_-]+)\\}\\s*$", "", "the lookbehind pins where the name ends"],
-		// Regular expressions from this repository's shipped sources.
 		["\\x1b\\]8;[^\\x07\\x1b]*(?:\\x07|\\x1b\\\\)", "g", "OSC 8 hyperlink"],
 		["^(?:<{7}|\\|{7}|={7}|>{7})(?:[ \\r]|$)", "", "conflict marker"],
 		["[^\\n]*\\n|[^\\n]+$", "g", "line splitter"],

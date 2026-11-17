@@ -1,17 +1,7 @@
 import { spawn } from "child_process";
 import { randomUUID } from "crypto";
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync, unlinkSync, writeFileSync } from "fs";
-import {
-  access,
-  appendFile,
-  chmod,
-  type FileHandle,
-  mkdir,
-  open,
-  readFile,
-  unlink,
-  writeFile,
-} from "node:fs/promises";
+import { appendFile, chmod, type FileHandle, mkdir, open, readFile, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
@@ -63,15 +53,8 @@ import {
   getBrokerSpawnLockPath,
   getIntercomDirPath,
 } from "./paths.js";
+import { pathExists } from "../path-exists.js";
 
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /** Package root whether this module is `broker/spawn.ts` or the installed `index.bundle.mjs`. */
 export function resolveIntercomPackageRoot(moduleHref: string): string {
@@ -455,14 +438,12 @@ export async function readBrokerLogTailAsync(
     const { bytesRead } = await handle.read(buffer, 0, length, size - length);
     return decodeLogTail(buffer.subarray(0, bytesRead));
   } catch {
-    // A missing or unreadable log simply yields no diagnostic tail.
     return "";
   } finally {
     if (handle !== undefined) {
       try {
         await handle.close();
       } catch {
-        // Already closed.
       }
     }
   }
@@ -580,7 +561,6 @@ async function spawnBrokerHoldingLock(
     }
     child.unref();
 
-    // Listened to before anything awaits: a spawn that fails reports its error on the next tick.
     const started = new Promise<void>((resolve, reject) => {
       const cleanup = () => {
         child.off("error", onError);

@@ -210,7 +210,6 @@ test("closing a workflow stage cancels its detached single child without a late 
 		await closeStage(boundary);
 		assert.equal(run.detachedResults.length, 1, "repeated close is idempotent");
 		assert.equal(emitter.listenerCount(INTERCOM_DETACH_REQUEST_EVENT), 0);
-		// A detached child's transient progress directory is removed once its exit is reported.
 		await vi.waitFor(() =>
 			assert.equal(fileExistsSync(join(root, "subagent-artifacts", "progress", launched.runId)), false),
 		);

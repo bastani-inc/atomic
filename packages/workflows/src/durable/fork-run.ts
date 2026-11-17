@@ -188,7 +188,6 @@ interface ForkOptionsToValidate {
 	readonly processBound?: readonly string[];
 }
 
-/** Whether a fork's `cwd` names an existing directory, and why it could not be read when it could not. */
 interface ForkCwdCheck {
 	readonly directory: boolean;
 	readonly cause?: Error;
@@ -220,7 +219,6 @@ export async function validateForkOptions(
 	);
 }
 
-/** {@link validateForkOptions} for options without a `cwd`, which need no file system. */
 export function validateForkOptionsWithoutCwd(
 	source: ForkConfigSource,
 	runId: unknown,

@@ -461,7 +461,6 @@ async function processStartTime(pid: number): Promise<string | null> {
 		const stat = await readFile(`/proc/${pid}/stat`, "utf-8");
 		return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] ?? null;
 	} catch (error) {
-		// Gone, before its entry was opened (ENOENT) or while it was read (ESRCH).
 		const code = (error as { readonly code?: unknown }).code;
 		if (code === "ENOENT" || code === "ESRCH") return null;
 		throw error;

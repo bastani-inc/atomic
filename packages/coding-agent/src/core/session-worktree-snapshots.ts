@@ -498,7 +498,6 @@ export function mapRestoredPath(path: string, mappings: readonly WorktreeRootMap
 	return runCanonicalSteps(restoredPath(path, mappings));
 }
 
-/** {@link mapRestoredPath} without blocking the event loop. */
 export function mapRestoredPathAsync(path: string, mappings: readonly WorktreeRootMapping[]): Promise<string> {
 	return runCanonicalStepsAsync(restoredPath(path, mappings));
 }
@@ -675,7 +674,6 @@ export function degradedRestorePin(
 	return runCanonicalSteps(pinOf(sessionManager, root));
 }
 
-/** {@link degradedRestorePin} without blocking the event loop. */
 function degradedRestorePinAsync(
 	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeRootMappings">,
 	root: string,

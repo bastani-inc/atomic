@@ -15,7 +15,6 @@ function asError(value: unknown): Error {
 
 /** A child process's stderr log. */
 export interface ProcessLog {
-	/** Settles once the log is open, or its failure has been reported. */
 	readonly opened: Promise<void>;
 	/** Stops writing the log, drains the process's stderr from then on, and resolves once the log's file is closed. */
 	close(): Promise<void>;

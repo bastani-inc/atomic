@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { ensurePrivateTempDirAsync, getAgentConfigPaths } from "@bastani/atomic";
 import { appendToActiveEventWriter } from "./event-jsonl-writer.js";
 import { publishFileExclusive, unlinkIfPresent } from "./exclusive-file-publication.js";
+import { pathExists as exists } from "./path-exists.js";
 import type { ArtifactPaths } from "./types.js";
 
 const CLEANUP_MARKER_FILE = ".last-cleanup";
@@ -63,7 +64,6 @@ async function cleanupOldArtifactEntry(entryPath: string, cutoff: number): Promi
 				await cleanupOldArtifactEntry(path.join(entryPath, child), cutoff);
 			}
 			if ((await fs.readdir(entryPath)).length === 0 && stat.mtimeMs < cutoff) {
-				// A progress writer may have added a fresh child since readdir; never remove a nonempty directory.
 				await fs.rmdir(entryPath);
 			}
 			return;
@@ -95,15 +95,6 @@ export async function cleanupOldArtifacts(dir: string, maxAgeDays: number): Prom
 	}
 
 	await fs.writeFile(markerPath, String(now));
-}
-
-async function exists(file: string): Promise<boolean> {
-	try {
-		await fs.access(file);
-		return true;
-	} catch {
-		return false;
-	}
 }
 
 async function markerIsFresh(markerPath: string, now: number): Promise<boolean> {

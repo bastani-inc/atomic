@@ -86,11 +86,6 @@ const project = (
  */
 const loadGate = "test/integration/workflow-pool-load-gate.test.ts";
 
-/**
- * The interactive event-loop guard holds the event-loop delay of a real CLI and its engine to fixed budgets, so it too
- * must not share the runner, with other files or with the load gate's 150 workers. Its project runs after the load
- * gate's (`groupOrder: 2`); `npm run test:integration` selects it with the others.
- */
 const uiGate = "test/integration/interactive-event-loop-guard.test.ts";
 
 /**

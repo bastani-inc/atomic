@@ -1,5 +1,5 @@
-import { access } from "node:fs/promises";
 import { gt } from "semver";
+import { pathExists as exists } from "../utils/path-exists.js";
 import { runWithConcurrency } from "./package-manager-command.ts";
 import { GIT_UPDATE_CONCURRENCY, UPDATE_CHECK_CONCURRENCY } from "./package-manager-constants.ts";
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
@@ -42,12 +42,6 @@ import type {
 	ParsedSource,
 	SourceScope,
 } from "./package-manager-types.ts";
-
-const exists = (path: string): Promise<boolean> =>
-	access(path).then(
-		() => true,
-		() => false,
-	);
 
 export async function install(
 	context: PackageManagerContext,

@@ -63,24 +63,14 @@ export interface SettingsStorage {
 	 * hide or outrank a value in another. Storage without layers can omit this; `withLock` content is then one layer.
 	 */
 	readLayers?(scope: SettingsScope): SettingsLayer[];
-	/**
-	 * {@link SettingsStorage.withLock} without blocking the event loop. When present, the manager loads and saves through
-	 * the asynchronous members once it is created; storage without them keeps working through the synchronous ones.
-	 */
 	withLockAsync?(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): Promise<void>;
-	/** {@link SettingsStorage.withPrimaryWriteLock} without blocking the event loop. */
 	withPrimaryWriteLockAsync?(
 		scope: SettingsScope,
 		fn: (currentPrimary: string | undefined) => string | undefined,
 	): Promise<void>;
-	/** {@link SettingsStorage.readLayers} without blocking the event loop. */
 	readLayersAsync?(scope: SettingsScope): Promise<SettingsLayer[]>;
 }
 
-/**
- * What the settings manager loads and saves through once it is created: a storage's asynchronous members, or, for a
- * storage that has only synchronous ones, those called in turn.
- */
 export interface AsyncSettingsStorage {
 	withLockAsync(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): Promise<void>;
 	withPrimaryWriteLockAsync?(

@@ -721,7 +721,6 @@ for (const wait of [undefined, { kind: "background" }, { kind: "foreground", bud
 						),
 					STATE_POLL,
 				);
-				// Each worktree's branch is deleted once its checkout is gone, so the branches follow the worktrees.
 				await vi.waitFor(
 					() =>
 						assert.equal(

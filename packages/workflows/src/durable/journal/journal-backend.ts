@@ -229,7 +229,6 @@ function sharingWrittenText(entry: JournalEntry, written: BackendEvent): Journal
 	return { ...entry, event: { ...folded, payload } };
 }
 
-/** `entry` as folds read it: a stage checkpoint recorded before #3700 carries the session id its transcript names. */
 async function migratedEntry(entry: JournalEntry): Promise<JournalEntry> {
 	const event = entry.event as BackendEvent;
 	if (event.type !== E.checkpointRecorded || event.payload.kind !== "stage") return entry;

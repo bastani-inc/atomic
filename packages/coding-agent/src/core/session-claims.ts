@@ -80,7 +80,6 @@ function readClaim(path: string): ReadClaim | undefined {
 	return parseClaim(text, ageMs);
 }
 
-/** {@link readClaim} without blocking the event loop. */
 async function readClaimAsync(path: string): Promise<ReadClaim | undefined> {
 	let text: string;
 	let ageMs: number;
@@ -193,7 +192,6 @@ function ownClaim(path: string): boolean {
 	return readClaim(path)?.record?.token === PROCESS_TOKEN;
 }
 
-/** Stops holding `claim`; false when this process no longer held it. */
 function forgetClaim(sessionId: string, claim: HeldClaim): boolean {
 	if (held.get(sessionId) !== claim) return false;
 	held.delete(sessionId);
@@ -213,14 +211,11 @@ function dropClaim(sessionId: string, claim: HeldClaim): void {
 	}
 }
 
-/** {@link dropClaim} without blocking the event loop. Never rejects. */
 async function dropClaimAsync(sessionId: string, claim: HeldClaim): Promise<void> {
 	if (!forgetClaim(sessionId, claim)) return;
 	try {
 		if ((await readClaimAsync(claim.path))?.record?.token === PROCESS_TOKEN) await rm(claim.path);
-	} catch {
-		// Gone already; a claim left behind is taken over once this process is gone.
-	}
+	} catch {}
 }
 
 // A process that exits with claims removes them; one killed leaves them for the next resume to take over.

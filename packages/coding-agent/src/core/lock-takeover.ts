@@ -13,11 +13,12 @@ import {
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { access, link, mkdir, readdir, readFile, rename, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
+import { link, mkdir, readdir, readFile, rename, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { createModuleRequire } from "../utils/module-require.ts";
+import { pathExists } from "../utils/path-exists.js";
 import { processStartToken, processStartTokenAsync } from "./process-start-token.ts";
 
 /*
@@ -54,9 +55,7 @@ export function takeoverLockPath(lockPath: string): string {
 export interface NativeLocks {
 	tryAdvisoryLock(path: string, waitMs: number): { release(): void } | null;
 	renameNoReplace(from: string, to: string): boolean;
-	/** {@link NativeLocks.tryAdvisoryLock} on a worker thread; missing from a native module built before it. */
 	tryAdvisoryLockAsync?(path: string, waitMs: number): Promise<{ release(): void } | null>;
-	/** {@link NativeLocks.renameNoReplace} on a worker thread; missing from a native module built before it. */
 	renameNoReplaceAsync?(from: string, to: string): Promise<boolean>;
 }
 
@@ -86,19 +85,13 @@ export function setNativeLocksForTesting(value: NativeLocks | null | undefined):
 	warnedUnopenable.clear();
 }
 
-/** The native locks as the asynchronous takeover uses them, which never wait on the event loop's thread. */
 interface AsyncNativeLocks {
 	tryAdvisoryLock(path: string, waitMs: number): Promise<{ release(): void } | null>;
 	renameNoReplace(from: string, to: string): Promise<boolean>;
 }
 
-/** How often an asynchronous taker tries the advisory lock again while another process holds it. */
 const ADVISORY_LOCK_RETRY_MS = 5;
 
-/**
- * The native locks for the asynchronous takeover, or null as {@link locks} is: the native module's worker-thread
- * bindings, or, from a module built before them, its synchronous ones, the lock tried without waiting between sleeps.
- */
 function asyncLocks(): AsyncNativeLocks | null {
 	const native = locks();
 	if (native === null) return null;
@@ -165,7 +158,6 @@ export function processMayRun(record: ProcessRecord): boolean {
 	return processAlive(record.pid);
 }
 
-/** {@link processMayRun} without blocking the event loop. */
 export async function processMayRunAsync(record: ProcessRecord): Promise<boolean> {
 	if (record.host !== hostname()) return true;
 	const started = record.started === undefined ? undefined : await processStartTokenAsync(record.pid);
@@ -175,7 +167,6 @@ export async function processMayRunAsync(record: ProcessRecord): Promise<boolean
 
 let ownStart: Promise<string | undefined> | undefined;
 
-/** When this process started, as {@link processStartToken} names it: read once, since it never changes. */
 function ownStartToken(): Promise<string | undefined> {
 	ownStart ??= processStartTokenAsync(process.pid);
 	return ownStart;
@@ -192,7 +183,6 @@ export function lockHolder(lockPath: string): string | undefined {
 	}
 }
 
-/** {@link lockHolder} without blocking the event loop. */
 export async function lockHolderAsync(lockPath: string): Promise<string | undefined> {
 	try {
 		const stats = await stat(lockPath);
@@ -230,7 +220,6 @@ function parseMutexOwner(content: string): MutexOwner | undefined {
 	return owner as MutexOwner;
 }
 
-/** The stats of `path`, or undefined when nothing is there, as `statSync` with `throwIfNoEntry: false` reports it. */
 async function statIfPresent(path: string): Promise<nodeFs.Stats | undefined> {
 	try {
 		return await stat(path);
@@ -252,7 +241,6 @@ export interface TakeoverMutex {
 	release(): void;
 }
 
-/** A {@link TakeoverMutex} taken without blocking the event loop, checked and given up the same way. */
 export interface AsyncTakeoverMutex {
 	owned(): Promise<boolean>;
 	release(): Promise<void>;
@@ -273,7 +261,6 @@ export function removeAside(path: string): void {
 	}
 }
 
-/** {@link removeAside} without blocking the event loop. */
 export async function removeAsideAsync(path: string): Promise<void> {
 	try {
 		await rm(path, { recursive: true, force: true });
@@ -318,7 +305,6 @@ function removeStaleMutex(mutexPath: string): boolean {
 	return true;
 }
 
-/** {@link removeStaleMutex} without blocking the event loop. */
 async function removeStaleMutexAsync(mutexPath: string): Promise<boolean> {
 	const judged = await lockHolderAsync(mutexPath);
 	if (judged === undefined) return true;
@@ -387,7 +373,6 @@ export function takeTakeoverMutex(
 	};
 }
 
-/** {@link takeTakeoverMutex} without blocking the event loop: the advisory lock is tried again after a sleep. */
 export async function takeTakeoverMutexAsync(
 	lockPath: string,
 	waitMs: number = TAKEOVER_MUTEX_WAIT_MS,
@@ -424,15 +409,6 @@ export async function takeTakeoverMutexAsync(
 	};
 }
 
-async function pathExists(path: string): Promise<boolean> {
-	try {
-		await access(path);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
 const warnedUnopenable = new Set<string>();
 
 function warnUnopenable(file: string, error: unknown): void {
@@ -463,7 +439,6 @@ export function putBack(aside: string, path: string): boolean {
 	}
 }
 
-/** {@link putBack} without blocking the event loop. */
 export async function putBackAsync(aside: string, path: string): Promise<boolean> {
 	try {
 		if ((await stat(aside)).isDirectory()) {
@@ -529,7 +504,6 @@ function takeDirectoryMutex(lockPath: string, native?: NativeLocks): TakeoverMut
 	return take() ?? (removeStaleMutex(path) ? take() : undefined);
 }
 
-/** {@link takeDirectoryMutex} without blocking the event loop. */
 async function takeDirectoryMutexAsync(
 	lockPath: string,
 	native?: AsyncNativeLocks,
@@ -555,9 +529,7 @@ async function takeDirectoryMutexAsync(
 				const leaving = staging(path);
 				await rename(path, leaving);
 				await rm(leaving, { recursive: true, force: true });
-			} catch {
-				// Left behind, it names this process, and its owner check frees it once this process is gone.
-			}
+			} catch {}
 		},
 	};
 	const take = async (): Promise<AsyncTakeoverMutex | undefined> => {
@@ -569,9 +541,7 @@ async function takeDirectoryMutexAsync(
 		}
 		try {
 			await writeFile(mutexOwnerPath(path), JSON.stringify(owner));
-		} catch {
-			// A mutex that names no owner is not owned: this process moves nothing, and it goes stale by its age.
-		}
+		} catch {}
 		return mutex;
 	};
 	return (await take()) ?? ((await removeStaleMutexAsync(path)) ? take() : undefined);
@@ -600,16 +570,13 @@ function createWithOwner(path: string, owner: MutexOwner, native: NativeLocks): 
 	return false;
 }
 
-/** {@link createWithOwner} without blocking the event loop. */
 async function createWithOwnerAsync(path: string, owner: MutexOwner, native: AsyncNativeLocks): Promise<boolean> {
 	const made = staging(path);
 	try {
 		await mkdir(made);
 		await writeFile(mutexOwnerPath(made), JSON.stringify(owner));
 		if (await native.renameNoReplace(made, path)) return true;
-	} catch {
-		// Not made: the mutex is not taken.
-	}
+	} catch {}
 	await removeAsideAsync(made);
 	return false;
 }
@@ -632,7 +599,6 @@ function removeLeftoverStaging(lockPath: string): void {
 	}
 }
 
-/** {@link removeLeftoverStaging} without blocking the event loop. */
 async function removeLeftoverStagingAsync(lockPath: string): Promise<void> {
 	const path = takeoverMutexPath(lockPath);
 	const prefix = `${basename(path)}.`;
@@ -641,9 +607,7 @@ async function removeLeftoverStagingAsync(lockPath: string): Promise<void> {
 			if (name.startsWith(prefix) && name.endsWith(".tmp"))
 				await rm(join(dirname(path), name), { recursive: true, force: true });
 		}
-	} catch {
-		// Best effort: a leftover is only clutter.
-	}
+	} catch {}
 }
 
 /** The file beside lock directory `lockPath` that names its holder. */
@@ -674,7 +638,6 @@ export function removeLeftoverHolderFiles(lockPath: string): void {
 	}
 }
 
-/** {@link removeLeftoverHolderFiles} without blocking the event loop. */
 export async function removeLeftoverHolderFilesAsync(lockPath: string): Promise<void> {
 	const directory = dirname(lockPath);
 	const prefix = `${basename(lockHolderPath(lockPath))}.`;
@@ -685,9 +648,7 @@ export async function removeLeftoverHolderFilesAsync(lockPath: string): Promise<
 			const stats = await statIfPresent(path);
 			if (stats !== undefined && Date.now() - stats.mtimeMs > HOLDER_TEMP_STALE_MS) await rm(path, { force: true });
 		}
-	} catch {
-		// Best effort: a leftover file is only clutter.
-	}
+	} catch {}
 }
 
 /**
@@ -710,7 +671,6 @@ export function removeStaleLock(lockPath: string, staleMs: number): void {
 	}
 }
 
-/** {@link removeStaleLock} without blocking the event loop. */
 export async function removeStaleLockAsync(lockPath: string, staleMs: number): Promise<void> {
 	const mutex = await takeTakeoverMutexAsync(lockPath);
 	if (mutex === undefined) return;
@@ -758,7 +718,6 @@ export function guardLockRemoval(lockPath: string, staleMs: number): LockRemoval
 	};
 }
 
-/** {@link guardLockRemoval} for proper-lockfile's `lockSync`, which removes a stale lock with `rmdirSync`. */
 export function guardLockRemovalSync(lockPath: string, staleMs: number): LockRemovalGuard {
 	const target = resolve(lockPath);
 	let taking = true;

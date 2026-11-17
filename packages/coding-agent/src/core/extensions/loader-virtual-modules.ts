@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import type { createJiti } from "jiti";
 import { getAgentDir, getExtensionTranspileCacheDir, isBunBinary, isBundledBuild } from "../../config.js";
 import { resolutionBaseUrl } from "../../utils/module-require.ts";
+import { pathExists } from "../../utils/path-exists.js";
 import { pathsEqual, resolvePath } from "../../utils/paths.ts";
 import { moduleDirFromMetaUrl } from "../../utils/split-launcher.ts";
 import {
@@ -200,13 +201,11 @@ async function persistGraphManifest(contents: string, manifestFile: string, cach
 	}
 }
 
-/** The last write queued for each manifest file; writes land in the order they were made, and reads wait for them. */
 const graphManifestWrites = new Map<string, Promise<void>>();
 
 function writeGraphManifest(manifest: ExtensionGraphManifest, cacheDir: string | undefined): Promise<void> {
 	if (cacheDir === undefined) return Promise.resolve();
 	const manifestFile = graphManifestPath(manifest.extensionPath, cacheDir);
-	// Serialized now: a deferred merge keeps changing the retained manifest after this write is queued.
 	const contents = JSON.stringify(manifest);
 	const write = (graphManifestWrites.get(manifestFile) ?? Promise.resolve()).then(() =>
 		persistGraphManifest(contents, manifestFile, cacheDir),
@@ -465,15 +464,8 @@ async function findPackageRoot(packageName: string, searchPaths?: string[]): Pro
 	throw new Error(`Cannot locate package directory for "${packageName}"`);
 }
 
-/** The `fs.realpath` that `realpathSync` is, without blocking. */
 const realpathJs = promisify(fs.realpath);
 
-function pathExists(target: string): Promise<boolean> {
-	return fs.promises.access(target).then(
-		() => true,
-		() => false,
-	);
-}
 function currentModuleDir(): string {
 	return moduleDirFromMetaUrl(import.meta.url, "dist", "core", "extensions");
 }
@@ -683,7 +675,6 @@ async function importExtensionModule(
 	// Import the real path so a symlinked entry (a pnpm store package) resolves its dependencies next to the real
 	// file; extensionPath stays the cache and graph key.
 	const importPath = await realpathJs(extensionPath).catch(() => extensionPath);
-	// Each load owns its cache publications; the Babel host remains shared by the transform implementation.
 	const transformSource = createTypeScriptSourceSpecifierTransform(
 		createJitiImpl,
 		resolutionBaseUrl(import.meta.url),
@@ -743,7 +734,6 @@ async function importExtensionModule(
 			try {
 				return await loadedFactory(pi);
 			} finally {
-				// A factory can load more modules; those publications belong to its initialization too.
 				await transformSource.flush();
 			}
 		};

@@ -65,12 +65,6 @@ const SATURATED_TURN_MS = 20;
  * and about 110 after it; the bound leaves room for scheduling noise but not for a per-byte or per-entry regression.
  */
 const START_LOOP_TURN_BOUND = 200;
-/**
- * The fs requests a child's start makes up to its first provider request: 861 before #4319, about 110 after it. Since
- * resource discovery stopped blocking the event loop, the existence checks and real-path lookups it used to make
- * synchronously (uncounted here) are asynchronous requests too, which brings a start to about 280, without a per-byte
- * or per-entry cost. The bound leaves room for scheduling noise but not for the regression #4319 removed.
- */
 const START_FS_OPERATION_BOUND = 400;
 
 /**

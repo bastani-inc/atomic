@@ -3,11 +3,9 @@ import { test } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import type { AuthStorageBackend, LockResult } from "../src/core/auth-storage-backends.ts";
 
-/** A backend another process writes to, whose asynchronous read can be held after it took its content. */
 class HeldReadBackend implements AuthStorageBackend {
 	content = JSON.stringify({ anthropic: { type: "api_key", key: "loaded" } });
 	private revision = 1;
-	/** While set, a read waits for it after taking the content it returns. */
 	hold: Promise<void> | undefined;
 
 	writtenElsewhere(content: string): void {
@@ -47,7 +45,6 @@ test("an asynchronous reload never replaces credentials saved while it read", as
 		release = resolve;
 	});
 
-	// The read sees the change made elsewhere and takes that content, then waits.
 	const listing = storage.list();
 	await storage.modify("anthropic", async () => ({ type: "api_key", key: "saved" }));
 	release();

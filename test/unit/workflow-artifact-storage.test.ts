@@ -551,7 +551,6 @@ test("multi-hop continuations detect and check their original artifact owner", a
 	}
 });
 
-/** How long a loaded runner may take to finish a background read of a directory's presence. */
 const PRESENCE_READ_TIMEOUT_MS = 10_000;
 
 test("an artifact directory not read yet counts as intact, and each answer reads it again for the next", async () => {

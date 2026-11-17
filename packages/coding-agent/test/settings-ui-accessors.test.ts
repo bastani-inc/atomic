@@ -29,7 +29,6 @@ describe("outputPad and externalEditor settings", () => {
 		expect(manager.getOutputPad()).toBe(0);
 		manager.setOutputPad(1);
 		expect(manager.getOutputPad()).toBe(1);
-		// Saves are asynchronous: let them land before the directory is removed.
 		await manager.flush();
 	});
 

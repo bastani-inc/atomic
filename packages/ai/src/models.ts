@@ -753,7 +753,6 @@ class ModelsImpl implements MutableModels {
 			if (!callerSignal.aborted) throw error;
 		}
 
-		// Providers settle in whatever order their reads finish; report failures in registration order.
 		const orderedErrors = new Map<string, Error>();
 		for (const provider of providers) {
 			const error = errors.get(provider.id);

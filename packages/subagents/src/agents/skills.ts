@@ -204,7 +204,6 @@ async function loadSkills(cwd: string): Promise<CachedSkillEntry[]> {
 	return [...dedupedByName.values()].sort((a, b) => a.order - b.order);
 }
 
-/** The skills of `cwd`, loaded once for every caller within the cache's lifetime; a load that fails is not kept. */
 function getCachedSkills(cwd: string): Promise<CachedSkillEntry[]> {
 	const now = Date.now();
 	if (loadSkillsCache && loadSkillsCache.cwd === cwd && now - loadSkillsCache.timestamp < LOAD_SKILLS_CACHE_TTL_MS) {

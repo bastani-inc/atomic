@@ -13,7 +13,6 @@ import type { StageExecutionMeta } from "../../packages/workflows/src/shared/typ
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
 
-/** Every synchronous spawn of git, which a running workflow must never make. */
 const syncGitSpawns = vi.hoisted(() => [] as string[][]);
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
@@ -53,7 +52,6 @@ afterEach(() => {
 	rmSync(root, { recursive: true, force: true });
 });
 
-/** A complete adapter that records the directory each stage runs in. */
 function recordingAdapters(cwds: Map<string, string | undefined>) {
 	return {
 		complete: {
@@ -78,7 +76,6 @@ test("a worktree-input run's stages run in the worktree, which is set up without
 		run: async (ctx) => {
 			await ctx.stage("first").complete("one");
 			await ctx.stage("second").complete("two");
-			// The stage is returned at once; its own worktree is set up before it does any work.
 			const explicit = ctx.stage("explicit", { gitWorktreeDir: otherWorktree });
 			otherExistedAtSpawn = existsSync(otherWorktree);
 			await explicit.complete("three");
@@ -229,7 +226,6 @@ test("a child run whose input worktree cannot be set up reports it where it read
 			cwd: sourceCwd,
 			store: createStore(),
 			durableBackend: await JournalTestBackend.create(),
-			// Workspace snapshots read the run's directory at each checkpoint; here only the body reads it.
 			snapshots: { enabled: false },
 		},
 	);

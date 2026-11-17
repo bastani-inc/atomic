@@ -524,7 +524,6 @@ async function isTrusted(config: BlueprintBuildConfig, root: string): Promise<bo
 	}
 }
 
-/** Those of `repositories` that `config` trusts, in order. */
 async function trustedOf(
 	repositories: readonly BlueprintRepository[],
 	config: BlueprintBuildConfig,

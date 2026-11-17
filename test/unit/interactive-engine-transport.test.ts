@@ -238,7 +238,6 @@ test("a later async attribution cannot overtake the callback whose start record 
 		await firstInvoked.promise;
 		await secondInvoked.promise;
 		assert.deepEqual(events, ["start:first", "invoke:first", "start:second", "invoke:second"]);
-		// Waiting for attribution must not serialize the work the callbacks return.
 		await second;
 	} finally {
 		firstWritten.resolve();

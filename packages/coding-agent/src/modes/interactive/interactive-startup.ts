@@ -295,8 +295,6 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	// still stay behind the engine-bound gate below.
 	markLifecycleTiming("tui-start");
 	this.ui.start();
-	// The first frame is on its way and keys reach the editor from here on: what the host does next, the deferred
-	// startup included, happens while the user works.
 	markEventLoopStartupComplete();
 	this.programStatus.report();
 	ensurePngTranscoder(() => {

@@ -12,10 +12,11 @@ import {
 	statSync,
 	writeFileSync,
 } from "fs";
-import { access, chmod, mkdir, readFile, rm, stat, writeFile } from "fs/promises";
+import { chmod, mkdir, readFile, rm, stat, writeFile } from "fs/promises";
 import { basename, dirname, join } from "path";
 import lockfile, { type LockOptions } from "proper-lockfile";
 import { getAgentDir } from "../config.js";
+import { pathExists } from "../utils/path-exists.js";
 import { normalizePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import type { AuthStorageData } from "./auth-storage.ts";
@@ -100,7 +101,6 @@ function resolveExistingAuthPath(path: string): string {
 
 const realpathAsync = promisify(realpathCallback);
 
-/** {@link resolveExistingAuthPath} without blocking the event loop. */
 async function resolveExistingAuthPathAsync(path: string): Promise<string> {
 	for (let attempt = 1; ; attempt++) {
 		try {
@@ -109,16 +109,6 @@ async function resolveExistingAuthPathAsync(path: string): Promise<string> {
 			const code = error instanceof Error && "code" in error ? error.code : undefined;
 			if (code !== "ENOENT" || attempt === REALPATH_ATTEMPTS || !(await pathExists(path))) throw error;
 		}
-	}
-}
-
-/** Whether something is at `path`, as `existsSync` answers it. */
-async function pathExists(path: string): Promise<boolean> {
-	try {
-		await access(path);
-		return true;
-	} catch {
-		return false;
 	}
 }
 
@@ -153,14 +143,12 @@ function describeFileVersion(path: string): string {
 	}
 }
 
-/** {@link describeFileVersion} without blocking the event loop. */
 async function describeFileVersionAsync(path: string): Promise<string> {
 	try {
 		const stats = await stat(path, { bigint: true });
 		return `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}`;
 	} catch (error) {
 		const code = error instanceof Error && "code" in error ? String(error.code) : "unknown";
-		// As `statSync` with `throwIfNoEntry: false` reports a missing file.
 		return code === "ENOENT" || code === "ENOTDIR" ? "absent" : `unreadable:${code}`;
 	}
 }
@@ -181,12 +169,7 @@ export interface AuthStorageBackend {
 	 */
 	read?(): string | undefined;
 	version?(): string;
-	/**
-	 * {@link AuthStorageBackend.read} without blocking the event loop. Optional like `read`: `AuthStorage` uses it when
-	 * present, and the synchronous members otherwise.
-	 */
 	readAsync?(): Promise<string | undefined>;
-	/** {@link AuthStorageBackend.version} without blocking the event loop. */
 	versionAsync?(): Promise<string>;
 	deleteProvider?(provider: string): string | undefined;
 	deleteProviderAsync?(provider: string): Promise<string | undefined>;
@@ -199,19 +182,16 @@ export interface AuthStorageBackend {
 	withLockAsync<T>(fn: (current: string | undefined) => Promise<LockResult<T>>): Promise<T>;
 }
 
-/** The lock-free reads `AuthStorage` makes once it is created, none of which blocks the event loop. */
 export interface AsyncAuthStorageReads {
 	readAsync?(): Promise<string | undefined>;
 	versionAsync?(): Promise<string>;
 }
 
-/** The reads of a backend written before the asynchronous ones; {@link FileAuthStorageBackend} is never one. */
 interface SynchronousAuthStorageReads {
 	read?(): string | undefined;
 	version?(): string;
 }
 
-/** Reads through the synchronous members of a backend that has no asynchronous ones. */
 class SynchronousAuthStorageReadsAdapter implements AsyncAuthStorageReads {
 	readonly readAsync?: () => Promise<string | undefined>;
 	readonly versionAsync?: () => Promise<string>;
@@ -223,7 +203,6 @@ class SynchronousAuthStorageReadsAdapter implements AsyncAuthStorageReads {
 	}
 }
 
-/** The asynchronous reads of `backend`, or its synchronous ones behind them when it has none. */
 export function asyncAuthStorageReads(backend: AuthStorageBackend): AsyncAuthStorageReads {
 	return typeof backend.readAsync === "function" || typeof backend.versionAsync === "function"
 		? backend
@@ -324,7 +303,6 @@ export class FileAuthStorageBackend implements AuthStorageBackend, AsyncAuthStor
 		chmodSync(this.authPath, 0o600);
 	}
 
-	/** {@link ensureFileExists} without blocking the event loop. */
 	private async ensureFileExistsAsync(): Promise<void> {
 		try {
 			await writeFile(this.authPath, "{}", { ...AUTH_FILE_WRITE_OPTIONS, flag: "wx" });
@@ -425,7 +403,6 @@ export class FileAuthStorageBackend implements AuthStorageBackend, AsyncAuthStor
 		return found ? JSON.stringify(merged, null, 2) : undefined;
 	}
 
-	/** {@link readMergedAuth} without blocking the event loop. */
 	private async readMergedAuthAsync(): Promise<string | undefined> {
 		let merged: AuthStorageData = {};
 		let found = false;
@@ -469,7 +446,6 @@ export class FileAuthStorageBackend implements AuthStorageBackend, AsyncAuthStor
 		}
 	}
 
-	/** {@link writeAtomic} without blocking the event loop. */
 	private async writeAtomicAsync(content: string, requestedPath = this.authPath): Promise<void> {
 		const path = (await pathExists(requestedPath))
 			? await resolveExistingAuthPathAsync(requestedPath)
@@ -480,14 +456,11 @@ export class FileAuthStorageBackend implements AuthStorageBackend, AsyncAuthStor
 		try {
 			await writeFile(tempPath, content, { ...AUTH_FILE_WRITE_OPTIONS, mode });
 			await chmod(tempPath, mode);
-			// Reads take no lock, and Windows refuses for a moment to rename over a file another process is reading.
 			await renameReplacingAsync(tempPath, path);
 		} catch (error) {
 			try {
 				if (await pathExists(tempPath)) await rm(tempPath, { force: true });
-			} catch {
-				// Best-effort cleanup; ignore.
-			}
+			} catch {}
 			throw error;
 		}
 	}
@@ -515,7 +488,6 @@ export class FileAuthStorageBackend implements AuthStorageBackend, AsyncAuthStor
 		].sort();
 	}
 
-	/** {@link existingResolvedReadPaths} without blocking the event loop. */
 	private async existingResolvedReadPathsAsync(): Promise<string[]> {
 		const resolved: string[] = [];
 		for (const path of this.readPaths) {

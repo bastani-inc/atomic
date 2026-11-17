@@ -1,17 +1,10 @@
-import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { getProjectConfigDirs } from "../config.js";
+import { pathExists as exists } from "../utils/path-exists.js";
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
 import { getLoaderAgentDirs } from "./resource-loader-paths.ts";
 
-const exists = (path: string): Promise<boolean> =>
-	access(path).then(
-		() => true,
-		() => false,
-	);
-
-/** The first of `candidates` that exists. */
 async function firstExisting(candidates: readonly string[]): Promise<string | undefined> {
 	for (const candidate of candidates) {
 		if (await exists(candidate)) return candidate;

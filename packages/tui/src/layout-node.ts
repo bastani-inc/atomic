@@ -31,10 +31,6 @@ export interface ScrollLayoutState {
 	readonly viewportHeight: number;
 	readonly isFollowingEnd: boolean;
 	getContentWidth(width: number): number;
-	/**
-	 * `anchoredScrollTop` is where the content that was at the top is now, when the content's height above it changed;
-	 * it replaces the scroll position unless the view follows the end.
-	 */
 	updateLayout(
 		contentHeight: number,
 		viewportHeight: number,

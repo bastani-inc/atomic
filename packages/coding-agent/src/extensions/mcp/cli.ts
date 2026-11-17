@@ -250,7 +250,6 @@ export async function runMcpCommand(args: string[], options: McpCommandOptions):
 			? `${projectConfig} is ignored because the project is not trusted. Start ${APP_NAME} in the project to trust it.`
 			: undefined;
 	const credentials = options.credentials ?? new McpOAuthCredentialStore();
-	// Server log messages are appended in the background; the command waits for them before it returns.
 	const serverLog = new McpServerLog(join(options.agentDir, "mcp.log"));
 	const providerToken = options.providerToken ?? createProviderTokenReader(options.agentDir, serverLog);
 	try {

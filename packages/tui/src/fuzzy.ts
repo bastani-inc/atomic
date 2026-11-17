@@ -9,15 +9,8 @@ export interface FuzzyMatch {
 	score: number;
 }
 
-/** Score each position of a match earns when it starts a word. */
 const WORD_BOUNDARY_BONUS = 10;
-/** Score each position of a match costs per character it lies into the text. */
 const POSITION_PENALTY = 0.1;
-/**
- * Characters after the first contiguous occurrence of the query beyond which no occurrence scores better. Each of the
- * query's positions costs `POSITION_PENALTY` more per character later it starts, and can win back at most
- * `WORD_BOUNDARY_BONUS`, so an occurrence starting more than this many characters after the first scores worse.
- */
 const BETTER_OCCURRENCE_SPAN = WORD_BOUNDARY_BONUS / POSITION_PENALTY;
 
 function scorePositions(textLower: string, positions: readonly number[]): number {
@@ -77,7 +70,6 @@ function matchQuery(normalizedQuery: string, textLower: string): FuzzyMatch {
 
 	// The greedy alignment can scatter the query over an earlier, unrelated part of the text,
 	// e.g. "opus" in "openrouter openrouter/anthropic/claude-opus" takes o, p, u from "openrouter".
-	// Also score the contiguous occurrences that can beat the first one, and keep the best alignment.
 	const firstStart = textLower.indexOf(normalizedQuery);
 	for (
 		let start = firstStart;

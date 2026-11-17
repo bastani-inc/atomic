@@ -6,81 +6,48 @@ import {
 	type TuiMouseEvent,
 } from "../tui.ts";
 
-/** Rows of laid-out content, read one at a time. A `readonly string[]` is one. */
 export interface WindowRows {
 	readonly length: number;
 	at(index: number): string | undefined;
 }
 
 export interface WindowRequest {
-	/** Width the children render at. */
 	readonly width: number;
-	/** The first row shown before this layout, in the rows of the previous one. */
 	readonly top: number;
-	/** Rows shown. */
 	readonly height: number;
-	/** Show the last rows, rather than the content that was at `top`. */
 	readonly followEnd: boolean;
-	/** Asks for another frame: called when rendering after this layout changed the height of a child. */
 	readonly requestRender: () => void;
 }
 
 export interface WindowLayout extends WindowRows {
-	/** The first row to show: where the content that was at `top` is now, or the last page when following the end. */
 	readonly top: number;
 }
 
-/** How long one background slice may render children before it yields the event loop. */
 const SLICE_BUDGET_MS = 8;
-/** At most this many children render in one background slice, however fast each one is. */
 const SLICE_CHILDREN = 48;
-/**
- * A child can change without its container knowing: an expanded tool, a frame an engine sent. After frames, a sweep
- * renders every child again, a slice at a time, to find the heights that changed off screen; at most this often.
- */
 const SWEEP_INTERVAL_MS = 1_000;
-/** Layout passes over the window: rendering it can change heights, which moves the rows the window shows. */
 const MAX_WINDOW_PASSES = 4;
 
 interface Entry {
 	readonly component: Component;
-	/** The rows of the last render, at `width`. */
 	lines: readonly string[];
 	width: number;
-	/** Whether `lines` are the child's rows at the layout's width: rendered at it, and not invalidated since. */
 	current: boolean;
-	/** `lines.length` once current; until then, the height the child is laid out with. */
 	height: number;
-	/** Position in the layout. */
 	index: number;
-	/** The layout that last rendered it, so one layout renders a child once. */
 	renderedIn: number;
 }
 
-/** Each child's entry, wherever it is laid out. */
 const entries = new WeakMap<Component, Entry>();
-/** Counts changes that leave a child not current: a new child, an invalidation, a new width. */
 let staleChanges = 0;
 
 function yieldThen(run: () => void): void {
 	setImmediate(run).unref();
 }
 
-/**
- * A vertical list of children laid out by a scroll view without rendering every child for every frame. A frame renders
- * the children its viewport shows, and a viewport's worth above and below; the others keep the rows they rendered last
- * and their heights. Children not rendered yet at the width (new, invalidated, or after a resize) count with an
- * estimated height and render in the background, a bounded slice per event-loop turn. While the scroll view does not
- * follow the end, the content at its top stays in place as heights above it change.
- *
- * Children that are themselves windowed containers are laid out as part of this one. Rendered directly, it renders
- * like any container.
- */
 export class WindowedContainer extends Container {
 	private laidOut: Entry[] = [];
-	/** `offsets[i]` is the first row of `laidOut[i]`; the last one is the number of rows. */
 	private offsets: number[] = [0];
-	/** Offsets from this index on are out of date; `Infinity` when none are. */
 	private staleOffsetsFrom = Number.POSITIVE_INFINITY;
 	private width = 0;
 	private layouts = 0;
@@ -91,16 +58,11 @@ export class WindowedContainer extends Container {
 	private lastRowIndex = 0;
 	private lastTop = 0;
 	private requestRender: (() => void) | undefined;
-	/**
-	 * The background pass in progress: from the window up, then down. A full pass renders every child; otherwise it
-	 * renders only those not current.
-	 */
 	private sweep: { stale: number; up: number; down: number; full: boolean } | undefined;
 	private sweepScheduled = false;
 	private lastFullSweepAt = Number.NEGATIVE_INFINITY;
 	private sweptStale = -1;
 
-	/** The children this container lays out. */
 	protected windowChildren(): readonly Component[] {
 		return this.children;
 	}
@@ -116,13 +78,10 @@ export class WindowedContainer extends Container {
 		super.invalidate();
 	}
 
-	/** Lays the children out and renders the ones the window shows. See the class comment. */
 	layoutWindow(request: WindowRequest): WindowLayout {
 		const width = Math.max(1, Math.floor(request.width));
 		const height = Math.max(0, Math.floor(request.height));
 		this.requestRender = request.requestRender;
-		// Preserve the visible content only while the view stays put. A new scroll target uses the measured rows,
-		// not the old offsets that a background sweep's height changes have made stale.
 		const anchor = request.top === this.lastTop ? this.locateAnchor(request.top) : undefined;
 		if (width !== this.width) {
 			this.width = width;
@@ -144,16 +103,11 @@ export class WindowedContainer extends Container {
 		return { top, length, at: (index) => this.rowAt(index) };
 	}
 
-	/**
-	 * Renders every child laid out at the last layout's width, so the rows the next layout reads are the ones the
-	 * children render now.
-	 */
 	settleRows(): void {
 		if (this.width === 0) return;
 		for (const entry of this.laidOut) this.renderEntry(entry, this.width);
 	}
 
-	/** Renders like `render(width)`, rendering at most a slice of children per event-loop turn. */
 	async renderInSlices(width: number): Promise<string[]> {
 		const safeWidth = Math.max(1, Math.floor(width));
 		if (safeWidth !== this.width) {
@@ -201,7 +155,6 @@ export class WindowedContainer extends Container {
 		return entry.lines[row - (this.offsets[index] ?? 0)] ?? "";
 	}
 
-	/** The index of the child holding `row`, by the offsets of the last layout. */
 	private indexAt(row: number): number {
 		let low = 0;
 		let high = this.laidOut.length - 1;
@@ -234,7 +187,6 @@ export class WindowedContainer extends Container {
 		return Math.max(0, Math.min(maxTop, top));
 	}
 
-	/** Brings the laid-out children up to date with the children, reusing the entries of the ones laid out before. */
 	private syncEntries(): void {
 		const laidOut = this.laidOut;
 		let index = 0;
@@ -297,7 +249,6 @@ export class WindowedContainer extends Container {
 		this.staleOffsetsFrom = Number.POSITIVE_INFINITY;
 	}
 
-	/** Renders the children holding rows [start, end) that this layout has not rendered; whether a height changed. */
 	private renderRows(start: number, end: number, width: number, layout: number): boolean {
 		if (this.laidOut.length === 0) return false;
 		let changed = false;
@@ -315,7 +266,6 @@ export class WindowedContainer extends Container {
 		return changed;
 	}
 
-	/** Renders one child; whether its height changed. */
 	private renderEntry(entry: Entry, width: number): boolean {
 		const lines = entry.component.render(width);
 		if (entry.width === 0) {
@@ -331,10 +281,6 @@ export class WindowedContainer extends Container {
 		return true;
 	}
 
-	/**
-	 * Renders the children in the background: those not current right away, and every child at most once per sweep
-	 * interval after frames, to find the heights that changed off screen.
-	 */
 	private scheduleSweep(): void {
 		if (this.sweepScheduled) return;
 		this.sweepScheduled = true;

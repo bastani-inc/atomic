@@ -294,7 +294,6 @@ export function reconcileQueuedSubmissions(mode: InteractiveModeBase, queue: Que
 	else unconfirmedHandOffs.set(mode, remaining);
 }
 
-/** Copies of each text `after` lists beyond those `before` listed: each listed in `before` matches one in `after`. */
 function addedMessages(before: readonly string[], after: readonly string[]): Map<string, number> {
 	const unmatched = new Map<string, number>();
 	for (const text of before) unmatched.set(text, (unmatched.get(text) ?? 0) + 1);
@@ -305,7 +304,6 @@ function addedMessages(before: readonly string[], after: readonly string[]): Map
 	return added;
 }
 
-/** Take one copy of `text` from `copies`, if one is left. */
 function takeCopy(copies: Map<string, number>, text: string): boolean {
 	const count = copies.get(text) ?? 0;
 	if (count === 0) return false;

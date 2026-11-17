@@ -29,7 +29,6 @@ export class ArtifactManager {
 		return this.#dir;
 	}
 
-	/** Scans the directory once; concurrent callers share the scan, so ids stay sequential. */
 	#init(): Promise<void> {
 		this.#initialized ??= (async () => {
 			let max = -1;

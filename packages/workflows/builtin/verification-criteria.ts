@@ -66,8 +66,6 @@ export class EmptyCriterion extends RubricError {
   }
 }
 
-// The name never ends in whitespace (the lazy match stops before it), so `(?<!\s)` rejects every end inside a run
-// of spaces at once instead of rescanning the rest of the run from each of them.
 const CRITERION_ID_ANCHOR = /^(.*?)(?<!\s)\s*\{#([A-Za-z0-9_-]+)\}\s*$/;
 const SLUG_MAX_LENGTH = 40;
 

@@ -11,7 +11,6 @@ import { splitThemeColors, withThemeTokenFallbacks } from "./theme-tokens.ts";
 
 let BUILTIN_THEMES: { directory: string; themes: Record<string, ThemeJson> } | undefined;
 const registeredThemes = new Map<string, Theme>();
-/** The JSON each theme loaded from a file was made from, which exports read for its raw colors. */
 const themeSources = new WeakMap<Theme, ThemeJson>();
 
 interface CustomThemeFile {
@@ -19,7 +18,6 @@ interface CustomThemeFile {
 	content: string;
 }
 
-/** The `.json` files of the custom themes directory by file name, as last read. */
 let customThemeFiles: { directory: string; files: Map<string, CustomThemeFile> } | undefined;
 
 export interface ThemeInfo {
@@ -36,7 +34,6 @@ function loadedBuiltinThemes(): { directory: string; themes: Record<string, Them
 	return BUILTIN_THEMES;
 }
 
-/** Reads the bundled themes, once: {@link readThemeFiles} does before the first frame. */
 function readBuiltinThemes(): { directory: string; themes: Record<string, ThemeJson> } {
 	const themesDir = getThemesDir();
 	const themes: Record<string, ThemeJson> = {};
@@ -59,17 +56,12 @@ function getCustomThemeFiles(): Map<string, CustomThemeFile> {
 	return customThemeFiles.files;
 }
 
-/**
- * Reads the custom themes directory into memory: {@link readThemeFiles} does before the first frame, and
- * {@link refreshCustomThemes} reads it again without blocking.
- */
 function readCustomThemeFiles(customThemesDir: string): Map<string, CustomThemeFile> {
 	const files = new Map<string, CustomThemeFile>();
 	let entries: string[];
 	try {
 		entries = fs.readdirSync(customThemesDir);
 	} catch {
-		// No directory: no custom themes.
 		return files;
 	}
 	for (const file of entries) {
@@ -79,32 +71,23 @@ function readCustomThemeFiles(customThemesDir: string): Map<string, CustomThemeF
 		const themePath = path.join(customThemesDir, file);
 		try {
 			files.set(file, { path: themePath, content: fs.readFileSync(themePath, "utf-8") });
-		} catch {
-			// An unreadable file is not a theme; the resource loader reports it during startup/reload.
-		}
+		} catch {}
 	}
 	return files;
 }
 
-/**
- * Reads the bundled and custom theme files into memory, which theme lookups and lists use from then on. Runs before
- * the first frame, so that nothing the interactive host does later reads them synchronously.
- */
 export function readThemeFiles(): void {
 	getBuiltinThemes();
 	getCustomThemeFiles();
 }
 
-/** Reads the custom themes directory again, without blocking, for the theme lists and lookups that follow. */
 export async function refreshCustomThemes(): Promise<void> {
 	const customThemesDir = getCustomThemesDir();
 	const files = new Map<string, CustomThemeFile>();
 	let entries: string[] = [];
 	try {
 		entries = await fs.promises.readdir(customThemesDir);
-	} catch {
-		// No directory: no custom themes.
-	}
+	} catch {}
 	for (const file of entries) {
 		if (!file.endsWith(".json")) {
 			continue;
@@ -112,14 +95,11 @@ export async function refreshCustomThemes(): Promise<void> {
 		const themePath = path.join(customThemesDir, file);
 		try {
 			files.set(file, { path: themePath, content: await fs.promises.readFile(themePath, "utf-8") });
-		} catch {
-			// An unreadable file is not a theme; the resource loader reports it during startup/reload.
-		}
+		} catch {}
 	}
 	customThemeFiles = { directory: customThemesDir, files };
 }
 
-/** Whether `<name>.json` is in the custom themes directory, as last read, or a registered theme was loaded from it. */
 export function hasCustomThemeFile(name: string): boolean {
 	const fileName = `${name}.json`;
 	if (getCustomThemeFiles().has(fileName)) return true;

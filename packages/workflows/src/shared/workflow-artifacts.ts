@@ -98,10 +98,6 @@ export function workflowRunHasArtifactReference(
 	return workflowRunReferencedArtifactOwnerIds(run, sessionRuns).length > 0;
 }
 
-/**
- * Whether each artifact run directory existed when it was last read, by path. Reads happen off the event loop: when a
- * run directory is made or removed here, and in {@link refreshWorkflowArtifactPresence}.
- */
 const artifactRunPresence = new Map<string, boolean>();
 const pendingPresenceReads = new Map<string, Promise<void>>();
 
@@ -125,13 +121,11 @@ function referencedArtifactRunPaths(
 	return workflowRunReferencedArtifactOwnerIds(run, sessionRuns).map(workflowArtifactRunPath);
 }
 
-/** Reads whether the artifact directories `runs` name exist, for {@link workflowRunArtifactsIntact} to answer from. */
 export async function refreshWorkflowArtifactPresence(
 	runs: readonly ArtifactReferenceSnapshot[],
 	sessionRuns: readonly RunSnapshot[] = store.runs(),
 ): Promise<void> {
 	const paths = new Set(runs.flatMap((run) => referencedArtifactRunPaths(run, sessionRuns)));
-	// A read already in flight may have looked before this call; the answer reads each directory again after it.
 	await Promise.all(
 		[...paths].map((path) =>
 			(pendingPresenceReads.get(path) ?? Promise.resolve()).then(() => readArtifactRunPresence(path)),
@@ -139,11 +133,6 @@ export async function refreshWorkflowArtifactPresence(
 	);
 }
 
-/**
- * Return integrity only for identity-scoped owners whose artifacts the snapshot names, as their directories were last
- * read (see {@link refreshWorkflowArtifactPresence}); a directory not read yet counts as intact. Each call reads the
- * directories again in the background, so the next answer is current.
- */
 export function workflowRunArtifactsIntact(
 	run: ArtifactReferenceSnapshot,
 	sessionRuns: readonly RunSnapshot[] = store.runs(),

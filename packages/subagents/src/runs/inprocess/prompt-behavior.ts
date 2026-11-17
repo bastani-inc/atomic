@@ -77,14 +77,6 @@ const SKILL_OPEN = "<skill>";
 const SKILL_CLOSE = "</skill>";
 const WHITESPACE_RUN = /\s*/y;
 
-/**
- * Removes each `<skill>` block that names the subagent skill, together with the
- * spaces and tabs before it and the whitespace after it. A block runs from a
- * `<skill>` to the first `</skill>` after it, and blocks never overlap: exactly
- * what a global search for `[ \t]*<skill>[\s\S]*?<\/skill>\s*` finds, but in one
- * pass. That search restarted inside every run of spaces and at every unclosed
- * `<skill>`, so a long run in an inherited prompt took seconds.
- */
 function stripSkillBlocksNamingSubagent(prompt: string): string {
 	let output = "";
 	let copied = 0;

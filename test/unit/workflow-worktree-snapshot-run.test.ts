@@ -270,7 +270,6 @@ test("after a restore, stages and tasks created back to back keep their order an
 			});
 			if (attempt++ === 0) throw new Error("interrupted");
 			const sub = join(clone, "sub");
-			// Created on one turn: mapping their directories, which reads the disk, must not reorder them.
 			const first = ctx.stage("first", { cwd: sub });
 			const second = ctx.stage("second", { cwd: sub });
 			const tasks = [ctx.task("task-a", { prompt: "a", cwd: sub }), ctx.task("task-b", { prompt: "b", cwd: sub })];

@@ -1,6 +1,7 @@
-import { access, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { APP_NAME } from "../config.js";
+import { pathExists as exists } from "../utils/path-exists.js";
 import { stripBom } from "../utils/text.ts";
 import { FORKED_PACKAGE_NAMES } from "./extensions/forked-package-names.ts";
 import type { Extension, LoadExtensionsResult } from "./extensions/types.ts";
@@ -16,12 +17,6 @@ const HOST_PROVIDED_EXTENSION_PACKAGES = new Set([
 	"@sinclair/typebox",
 	"typebox",
 ]);
-
-const exists = (path: string): Promise<boolean> =>
-	access(path).then(
-		() => true,
-		() => false,
-	);
 
 export async function collectExtensionPackageWarnings(
 	extensionPaths: string[],

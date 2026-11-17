@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { access, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { APP_NAME, getProjectConfigDirs } from "../config.js";
 import { type GitSource, parseGitUrl } from "../utils/git.ts";
 import { isGitProvisionError } from "../utils/git-errors.ts";
+import { pathExists as exists } from "../utils/path-exists.js";
 import { stripBom } from "../utils/text.ts";
 import { getToolEnv, getToolPath } from "../utils/tools-manager.ts";
 import { runCommand, runCommandCapture } from "./package-manager-command.ts";
@@ -63,12 +64,6 @@ async function captureGitProcess(
 		: runCommandCapture(git.path, args, gitOptions);
 }
 
-const exists = (path: string): Promise<boolean> =>
-	access(path).then(
-		() => true,
-		() => false,
-	);
-
 function getSafeGitRef(ref: string): string {
 	if (!isSafeGitRef(ref)) {
 		throw new Error(`Invalid git ref: ${JSON.stringify(ref)}`);
@@ -91,7 +86,6 @@ function isSafeGitRef(ref: string): boolean {
 		.every((part) => part && part !== "." && part !== ".." && !part.startsWith(".") && !part.endsWith(".lock"));
 }
 
-/** Where an installed git package may be, in the order it is looked for. */
 function gitInstallCandidates(
 	context: PackageLocationContext,
 	source: GitSource,
@@ -118,7 +112,6 @@ export function getExistingGitInstallPath(
 	return gitInstallCandidates(context, source, scope).find((candidate) => existsSync(candidate));
 }
 
-/** {@link getExistingGitInstallPath} without blocking. */
 export async function getExistingGitInstallPathAsync(
 	context: PackageLocationContext,
 	source: GitSource,

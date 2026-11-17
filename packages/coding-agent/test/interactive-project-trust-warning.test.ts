@@ -24,7 +24,6 @@ function writeProjectSettings(): void {
 	writeFileSync(join(projectDir, ".atomic", "settings.json"), JSON.stringify({ defaultTools: ["+codemode"] }));
 }
 
-/** Renders the initial chat, once the walk for trust-gated resources has answered. */
 async function renderInitialChat(projectTrusted: boolean): Promise<string> {
 	const chatContainer = new Container();
 	const mode = {
@@ -42,7 +41,6 @@ async function renderInitialChat(projectTrusted: boolean): Promise<string> {
 		settingsManager: { isProjectTrusted: () => projectTrusted },
 	};
 	InteractiveModeBase.prototype.renderInitialMessages.call(mode as never);
-	// The warning's place is an empty container until the walk answers: filled, or removed.
 	await vi.waitFor(() =>
 		expect(chatContainer.children.some((child) => child instanceof Container && child.children.length === 0)).toBe(
 			false,

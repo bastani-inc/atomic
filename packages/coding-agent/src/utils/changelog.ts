@@ -26,7 +26,6 @@ const GITHUB_REPO = "bastani-inc/atomic";
 const CHANGELOG_LINK_BASE_PATH = "packages/coding-agent";
 const LEGACY_REPO_RE = /^https:\/\/github\.com\/(?:badlogic|earendil-works)\/pi-mono(?=\/|$)/;
 const URL_SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
-// `[^)]*` takes whitespace too, so one `\s` starts a link title: a long unclosed run is not split two ways.
 const INLINE_MARKDOWN_LINK_RE = /(!?\[[^\]\n]+\]\()([^\s)]+)((?:\s[^)]*)?\))/g;
 
 interface ParsedVersion extends VersionParts {
@@ -218,9 +217,6 @@ export function parseChangelog(changelogPath: string): ChangelogEntry[] {
 	}
 }
 
-/**
- * Parse changelog entries asynchronously from CHANGELOG.md.
- */
 export async function parseChangelogAsync(changelogPath: string): Promise<ChangelogEntry[]> {
 	try {
 		const content = await readFile(changelogPath, "utf-8");
@@ -236,9 +232,6 @@ export async function parseChangelogAsync(changelogPath: string): Promise<Change
 	}
 }
 
-/**
- * Preload changelog entries asynchronously into memory for synchronous startup readers.
- */
 export async function preloadChangelog(changelogPath: string): Promise<ChangelogEntry[]> {
 	const existing = cachedChangelogByPath.get(changelogPath);
 	if (existing !== undefined) {
@@ -247,9 +240,6 @@ export async function preloadChangelog(changelogPath: string): Promise<Changelog
 	return parseChangelogAsync(changelogPath);
 }
 
-/**
- * Return previously preloaded changelog entries without touching the filesystem.
- */
 export function getCachedChangelog(changelogPath: string): ChangelogEntry[] {
 	const cached = cachedChangelogByPath.get(changelogPath);
 	return cached ? [...cached] : [];

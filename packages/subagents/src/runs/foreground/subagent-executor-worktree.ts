@@ -1,5 +1,5 @@
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { pathExists } from "../../shared/path-exists.js";
 import type { ResolvedStepBehavior } from "../../shared/settings.js";
 import type { ExtensionConfig, SubagentToolResult } from "../../shared/types.js";
 import { resolveChildCwd } from "../../shared/utils.js";
@@ -22,15 +22,6 @@ export function buildParallelModeError(message: string): SubagentToolResult {
 		isError: true,
 		details: { mode: "parallel" as const, results: [] },
 	};
-}
-
-async function pathExists(target: string): Promise<boolean> {
-	try {
-		await fs.access(target);
-		return true;
-	} catch {
-		return false;
-	}
 }
 
 export async function createParallelWorktreeSetup(

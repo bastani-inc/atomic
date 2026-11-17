@@ -28,12 +28,10 @@ export interface LayoutBox {
 	children: LayoutBox[];
 	parent?: LayoutBox;
 	lines?: readonly string[];
-	/** The rows of content laid out as a window (a `WindowedContainer`), in place of `lines`. */
 	rows?: WindowRows;
 	lineOffset?: number;
 	scrollView?: ScrollView;
 	scrollContentLines?: readonly string[];
-	/** The rows of a scroll view's windowed content, in place of `scrollContentLines`. */
 	scrollContentRows?: WindowRows;
 	layer: number;
 }
@@ -261,10 +259,6 @@ function layoutComponent(
 	return box;
 }
 
-/**
- * A scroll view over windowed content: the content renders the rows the viewport shows, and keeps the content at the
- * top in place while heights above it change.
- */
 function layoutWindowedScroll(
 	context: LayoutContext,
 	component: Component,
@@ -306,7 +300,6 @@ function layoutWindowedScroll(
 	return box;
 }
 
-/** The rows of a scroll view's content, however it was laid out. */
 export function getScrollContentRows(box: LayoutBox | undefined): WindowRows | undefined {
 	return box?.scrollContentRows ?? box?.scrollContentLines;
 }

@@ -22,24 +22,12 @@ import { taskRecord } from "../helpers/task-record.js";
 initTheme();
 setKeybindings(new KeybindingsManager());
 
-/**
- * Task counts ten times apart. A bound per task that holds at both leaves no room for work that grows with the square
- * of the number of tasks.
- */
 const TASK_COUNTS = [100, 1_000] as const;
-/** Width rows render at. */
 const WIDTH = 80;
-/**
- * String work per task of rendering its row: a few lines of at most WIDTH columns, each cleaned of control characters,
- * styled and cut to width, plus its display label measured once for the list.
- */
 const ROW_WORK_PER_TASK = 4_000;
-/** Reads per chat entry or child of one task update: the entries are indexed once and each task looked up once. */
 const READS_PER_ENTRY = 4;
-/** Order comparisons per task and doubling of the task count: a comparison sort. */
 const COMPARISONS_PER_TASK_PER_DOUBLING = 4;
 
-/** `count` tasks: every fourth shares its title with the one before, and every third is in a launch group of three. */
 function tasks(count: number): TaskRecord[] {
 	return Array.from({ length: count }, (_, index) => ({
 		...taskRecord(`task-${index}`, index % 5 === 0 ? "command" : "agent"),
@@ -50,7 +38,6 @@ function tasks(count: number): TaskRecord[] {
 	}));
 }
 
-/** `array`, counting every read of one of its elements into `reads.count`. */
 function countReads<T>(array: T[], reads: { count: number }): T[] {
 	return new Proxy(array, {
 		get(target, property, receiver) {

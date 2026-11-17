@@ -24,7 +24,6 @@ export function processStartToken(pid: number): string | undefined {
 	}
 }
 
-/** {@link processStartToken} without blocking the event loop: the same token, read asynchronously. */
 export async function processStartTokenAsync(pid: number): Promise<string | undefined> {
 	if (process.platform === "win32") {
 		const created = await windowsCreationTimeAsync(pid);
@@ -97,7 +96,6 @@ function windowsCreationTime(pid: number): string | undefined {
 	return recordFallbackRead(pid, now, result.error, result.stdout);
 }
 
-/** {@link windowsCreationTime} with the PowerShell fallback run asynchronously. */
 async function windowsCreationTimeAsync(pid: number): Promise<string | undefined> {
 	const native = nativeCreationTime();
 	if (native !== null) return nativeWindowsCreationTime(native, pid);

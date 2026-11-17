@@ -1,30 +1,17 @@
 import { isParentCancellation } from "./cancellation-recovery.js";
 
-/**
- * An ordered reservation on an {@link ExecutionScheduler}, taken synchronously before async setup so admission and
- * slot grants follow call order rather than I/O completion order.
- */
 export type ExecutionTicket = ((dispatch: () => Promise<void>) => void) & {
 	readonly limit?: number;
-	/** The shared scheduler this ticket belongs to, for later wakes or resumes of the child. */
 	readonly scheduler: ExecutionScheduler;
-	/**
-	 * Resolves once this ticket and every earlier ticket have either been admitted and entered execution (if granted a
-	 * slot), been queued behind the concurrency limit after observation, or released their reservation.
-	 */
 	readonly admitted: Promise<void>;
-	/** Marks that this ticket's task has registered its launch observation. */
 	readonly onObserved: () => void;
-	/** Marks that a dispatched task has entered its runner. */
 	readonly onEntered: () => void;
-	/** Releases this ticket if setup ended or failed before execution. Safe to call multiple times. */
 	readonly release: () => void;
 };
 
 /** Dispatches at most `limit` at a time, in order; `limit` lets a child record its run's limit as plain data (#4856). */
 export type ExecutionScheduler = ((dispatch: () => Promise<void>) => void) & {
 	readonly limit?: number;
-	/** Take an ordered ticket synchronously before async setup. */
 	readonly reserve?: () => ExecutionTicket;
 };
 

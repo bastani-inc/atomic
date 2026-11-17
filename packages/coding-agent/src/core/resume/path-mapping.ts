@@ -68,13 +68,11 @@ export function mapPathForCwd(path: string, cwd: string): string {
 	return mapped === resolve(path) ? path : mapped;
 }
 
-/** {@link mapPathForCwd} without blocking the event loop. */
 export async function mapPathForCwdAsync(path: string, cwd: string): Promise<string> {
 	const mapped = await mapRestoredPathAsync(path, mappingsForCwd(cwd));
 	return mapped === resolve(path) ? path : mapped;
 }
 
-/** The current restores that may redirect a path for work in `cwd`: none of a recorded checkout `cwd` is in. */
 function mappingsForCwd(cwd: string): readonly WorktreeRootMapping[] {
 	const base = resolve(cwd);
 	return currentWorktreeRootMappings().filter((mapping) => !isInside(resolve(mapping.from), base));

@@ -2632,7 +2632,6 @@ async function launchWorktreeRun(
 	return runs();
 }
 
-/** Cleanup removes the checkout before deleting its branch; until then Git still uses the fixture repository. */
 async function waitForWorktreeCleanup(h: Harness, child: SubagentChildRecord): Promise<void> {
 	const branch = child.worktree?.branch;
 	assert.ok(branch, "the child record names its worktree branch");

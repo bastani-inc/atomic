@@ -7,7 +7,6 @@ import { hasEntryNewerThan } from "../../packages/subagents/src/runs/inprocess/r
 
 const scanInstrumentation = vi.hoisted(() => ({ active: false, readdirCalls: [] as string[] }));
 
-// Instrument readdir so the test can count directory reads, and normalize
 // entry order so the fresh top-level entry is always scanned first.
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs/promises")>();

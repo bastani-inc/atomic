@@ -1,16 +1,3 @@
-/**
- * Counts the string work a synchronous function does, so a test can bound it by the size of its input instead of by
- * wall-clock time. The count is the sum of:
- *
- * - characters the grapheme or word segmenter yields,
- * - characters read one at a time with `charCodeAt` or `codePointAt`,
- * - characters `indexOf` and `includes` scan, up to and including a match,
- * - characters `slice` and `substring` copy,
- * - characters `toLowerCase`, `trim`, `trimEnd`, `split`, `replace` and `replaceAll` read, which is the whole string.
- *
- * A pass that reads the rest of its input again for every character it consumes counts quadratically many. Indexing a
- * string with brackets is not counted: it cannot be intercepted.
- */
 export function measureStringWork<T>(run: () => T): { value: T; work: number } {
 	let work = 0;
 	const proto = String.prototype;

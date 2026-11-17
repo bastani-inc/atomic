@@ -9,12 +9,13 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { access, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAMES } from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
+import { pathExists } from "../utils/path-exists.js";
 import { canonicalizePath, canonicalizePathAsync, getHomeDir, pathsEqual, resolvePath } from "../utils/paths.ts";
 import { releaseLock, releaseLockSync } from "./lock-release.ts";
 import { inLockTurn, type LockWait, waitForLock, waitForLockSync } from "./lock-wait.ts";
@@ -58,7 +59,6 @@ function normalizeCwd(cwd: string): string {
 	return canonicalizePath(resolvePath(cwd));
 }
 
-/** {@link normalizeCwd} without blocking the event loop on the symlinks of `cwd`. */
 function normalizeCwdAsync(cwd: string): Promise<string> {
 	return canonicalizePathAsync(resolvePath(cwd));
 }
@@ -72,7 +72,6 @@ function findNearestTrustEntry(data: TrustFile, cwd: string): ProjectTrustStoreE
 	return findNearestTrustEntryFrom(data, normalizeCwd(cwd));
 }
 
-/** {@link findNearestTrustEntry} without blocking the event loop on the symlinks of `cwd`. */
 async function findNearestTrustEntryAsync(data: TrustFile, cwd: string): Promise<ProjectTrustStoreEntry | null> {
 	return findNearestTrustEntryFrom(data, await normalizeCwdAsync(cwd));
 }
@@ -99,7 +98,6 @@ export function getProjectTrustPath(cwd: string): string {
 	return normalizeCwd(cwd);
 }
 
-/** {@link getProjectTrustPath} without blocking the event loop on the symlinks of `cwd`. */
 export function getProjectTrustPathAsync(cwd: string): Promise<string> {
 	return normalizeCwdAsync(cwd);
 }
@@ -120,7 +118,6 @@ export function getProjectTrustOptions(cwd: string, options?: { includeSessionOn
 	return projectTrustOptionsFor(getProjectTrustPath(cwd), options);
 }
 
-/** {@link getProjectTrustOptions} without blocking the event loop on the symlinks of `cwd`. */
 export async function getProjectTrustOptionsAsync(
 	cwd: string,
 	options?: { includeSessionOnly?: boolean },
@@ -128,7 +125,6 @@ export async function getProjectTrustOptionsAsync(
 	return projectTrustOptionsFor(await getProjectTrustPathAsync(cwd), options);
 }
 
-/** The trust choices for the project whose {@link getProjectTrustPath} is `trustPath`. */
 export function projectTrustOptionsFor(
 	trustPath: string,
 	options?: { includeSessionOnly?: boolean },
@@ -199,7 +195,6 @@ function readTrustFileStrict(path: string): TrustFile {
 	return parseTrustFile(path, content);
 }
 
-/** {@link readTrustFileStrict} without blocking the event loop. */
 async function readTrustFileStrictAsync(path: string): Promise<TrustFile> {
 	let content: string;
 	try {
@@ -247,7 +242,6 @@ function readTrustFileForRead(path: string): TrustFile {
 	}
 }
 
-/** {@link readTrustFileForRead} without blocking the event loop. */
 async function readTrustFileForReadAsync(path: string): Promise<TrustFile> {
 	try {
 		return await readTrustFileStrictAsync(path);
@@ -271,7 +265,6 @@ function readTrustFileForWrite(path: string): TrustFile {
 	}
 }
 
-/** {@link readTrustFileForWrite} without blocking the event loop. */
 async function readTrustFileForWriteAsync(path: string): Promise<TrustFile> {
 	try {
 		return await readTrustFileStrictAsync(path);
@@ -309,7 +302,6 @@ function writeTrustFile(path: string, data: TrustFile): void {
 
 const realpathAsync = promisify(realpathCallback);
 
-/** {@link writeTrustFile} without blocking the event loop. */
 async function writeTrustFileAsync(path: string, data: TrustFile): Promise<void> {
 	const target = (await pathExists(path)) ? await realpathAsync(path) : path;
 	const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
@@ -319,16 +311,6 @@ async function writeTrustFileAsync(path: string, data: TrustFile): Promise<void>
 	} catch (error) {
 		await rm(temporary, { force: true });
 		throw error;
-	}
-}
-
-/** Whether something is at `path`, as `existsSync` answers it. */
-async function pathExists(path: string): Promise<boolean> {
-	try {
-		await access(path);
-		return true;
-	} catch {
-		return false;
 	}
 }
 
@@ -347,7 +329,6 @@ function acquireTrustLockSync(path: string): () => void {
 	);
 }
 
-/** {@link acquireTrustLockSync} without blocking the event loop. */
 async function acquireTrustLock(path: string): Promise<() => Promise<void>> {
 	const trustDir = dirname(path);
 	await mkdir(trustDir, { recursive: true });
@@ -399,7 +380,6 @@ function withTrustFileLock<T>(path: string, fn: () => T): T {
 	}
 }
 
-/** {@link withTrustFileLock} without blocking the event loop; saves in this process take the lock in turn. */
 function withTrustFileLockAsync<T>(path: string, fn: () => Promise<T>): Promise<T> {
 	return inLockTurn(path, async () => {
 		const release = await acquireTrustLock(path);
@@ -515,13 +495,11 @@ export function hasProjectTrustInputs(cwd: string): boolean {
 	}
 }
 
-/** {@link hasProjectConfigDir} without blocking the event loop. */
 export async function hasProjectConfigDirAsync(cwd: string): Promise<boolean> {
 	const projectCwd = await canonicalizePathAsync(resolvePath(cwd));
 	return someAsync(CONFIG_DIR_NAMES, (configDirName) => pathExists(join(projectCwd, configDirName)));
 }
 
-/** {@link hasTrustRequiringProjectResources} without blocking the event loop. */
 export async function hasTrustRequiringProjectResourcesAsync(cwd: string): Promise<boolean> {
 	if ((await hasTrustRequiringConfigResourcesAsync(cwd)) || (await hasNearestProjectRootAgentResourcesAsync(cwd))) {
 		return true;
@@ -543,7 +521,6 @@ export async function hasTrustRequiringProjectResourcesAsync(cwd: string): Promi
 	}
 }
 
-/** {@link hasProjectTrustInputs} without blocking the event loop. */
 export async function hasProjectTrustInputsAsync(cwd: string): Promise<boolean> {
 	let currentDir = await canonicalizePathAsync(resolvePath(cwd));
 	if (
@@ -614,7 +591,6 @@ async function hasNearestProjectRootAgentResourcesAsync(cwd: string): Promise<bo
 	}
 }
 
-/** Whether `test` holds for any of `items`, tried in order until one does, as `Array.prototype.some`. */
 async function someAsync<T>(items: readonly T[], test: (item: T) => Promise<boolean>): Promise<boolean> {
 	for (const item of items) {
 		if (await test(item)) return true;
@@ -637,12 +613,10 @@ export class ProjectTrustStore {
 		return findNearestTrustEntry(readTrustFileForRead(this.trustPath), cwd);
 	}
 
-	/** {@link ProjectTrustStore.get} without blocking the event loop. */
 	async getAsync(cwd: string): Promise<ProjectTrustDecision> {
 		return (await this.getEntryAsync(cwd))?.decision ?? null;
 	}
 
-	/** {@link ProjectTrustStore.getEntry} without blocking the event loop. */
 	async getEntryAsync(cwd: string): Promise<ProjectTrustStoreEntry | null> {
 		return findNearestTrustEntryAsync(await readTrustFileForReadAsync(this.trustPath), cwd);
 	}
@@ -651,7 +625,6 @@ export class ProjectTrustStore {
 		this.setMany([{ path: cwd, decision }]);
 	}
 
-	/** {@link ProjectTrustStore.set} without blocking the event loop. */
 	async setAsync(cwd: string, decision: ProjectTrustDecision): Promise<void> {
 		await this.setManyAsync([{ path: cwd, decision }]);
 	}
@@ -663,7 +636,6 @@ export class ProjectTrustStore {
 		});
 	}
 
-	/** {@link ProjectTrustStore.setMany} without blocking the event loop. */
 	async setManyAsync(decisions: ProjectTrustUpdate[]): Promise<void> {
 		const normalized = await Promise.all(
 			decisions.map(async ({ path, decision }) => ({ path: await normalizeCwdAsync(path), decision })),
@@ -675,7 +647,6 @@ export class ProjectTrustStore {
 	}
 }
 
-/** Apply `decisions`, whose paths are already normalized, to `data`. */
 function applyTrustUpdates(data: TrustFile, decisions: ProjectTrustUpdate[]): TrustFile {
 	for (const { path: key, decision } of decisions) {
 		for (const existingKey of findTrustFileKeys(data, key)) {

@@ -109,8 +109,6 @@ function tokenizeInlineLatex(source: string): LatexToken | undefined {
 	return { type: "latex", raw, text };
 }
 
-// The last cell already ends in `[ \t]*`, so only a trailing pipe brings more: a row ending in a long run of
-// spaces is read once instead of split between two `[ \t]*` in every way.
 const TABLE_DELIMITER_ROW_REGEX = /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*(?:\|[ \t]*)?$/;
 
 // A GFM table starts with a header row followed by a delimiter row such as "|---|---|" or "| --- |".
@@ -130,8 +128,6 @@ function containsTableStart(source: string): boolean {
 function tokenizeBlockLatex(source: string): LatexToken | undefined {
 	// Display math never spans a table. Without this check, an unclosed "$$" or "\[" pairs with a later
 	// opener or stays pending, swallowing the table. See https://github.com/earendil-works/pi/issues/11159.
-	// The opener's trailing spaces are all taken before the body starts (the body could only take them where the
-	// closing delimiter is missing, and then every split fails), so an unclosed opener is scanned once.
 	const dollarMatch = /^ {0,3}\$\$[ \t]*(?:\n|(?![ \t]))([\s\S]*?)\$\$[ \t]*(?:\n|$)/.exec(source);
 	if (dollarMatch?.[1] && !containsTableStart(dollarMatch[1])) {
 		return { type: "latexBlock", raw: dollarMatch[0], text: dollarMatch[1].trim() };

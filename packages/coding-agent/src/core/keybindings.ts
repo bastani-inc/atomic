@@ -346,7 +346,6 @@ function loadRawConfig(path: string): Record<string, unknown> | undefined {
 	}
 }
 
-/** {@link loadRawConfig} without blocking the event loop. */
 async function loadRawConfigAsync(path: string): Promise<Record<string, unknown> | undefined> {
 	try {
 		await access(path);
@@ -384,7 +383,6 @@ export class KeybindingsManager extends TuiKeybindingsManager {
 		this.setUserBindings(KeybindingsManager.loadFromFile(this.configPath));
 	}
 
-	/** {@link KeybindingsManager.reload} without blocking the event loop. */
 	async reloadAsync(): Promise<void> {
 		if (!this.configPath) return;
 		this.setUserBindings(KeybindingsManager.toUserBindings(await loadRawConfigAsync(this.configPath)));

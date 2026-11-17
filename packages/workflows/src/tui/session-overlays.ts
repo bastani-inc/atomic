@@ -130,7 +130,6 @@ export function openSessionPicker(
 				pickerRevision++;
 				tui.requestRender?.();
 			});
-			// Resume rows hide runs whose artifacts are gone: read them now and show the rows again once read.
 			if (intent === "resume")
 				void refreshWorkflowArtifactPresence(store.runs()).then(() => {
 					if (settled) return;

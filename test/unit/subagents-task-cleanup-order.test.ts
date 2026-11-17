@@ -41,7 +41,6 @@ test("a stopped child's result reaches its task before the host takes the child'
 						cleanup: cleanup.promise,
 					});
 					await new Promise((resolve) => options.signal?.addEventListener("abort", resolve, { once: true }));
-					// The child's session is gone; the run still saves what it produced before it returns.
 					cleanup.resolve({ kind: "reaped" });
 					await new Promise((resolve) => setTimeout(resolve, 20));
 					return {

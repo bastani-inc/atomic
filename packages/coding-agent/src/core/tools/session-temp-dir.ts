@@ -777,7 +777,6 @@ async function startPrivateRootVerification(): Promise<void> {
 	} catch {}
 }
 
-/** Whether a live session currently protects this exact directory from the sweeper. */
 export function isProtectedSessionTempDir(path: string): boolean {
 	return protectedPathCounts.has(path);
 }
@@ -810,9 +809,7 @@ async function baseTempDirsAsync(): Promise<BaseTempDirs> {
 	let canonical = raw;
 	try {
 		canonical = await realpathAsync(raw);
-	} catch {
-		// An unresolvable temp directory is checked as given.
-	}
+	} catch {}
 	cachedBaseTempDirs = { raw, canonical };
 	return cachedBaseTempDirs;
 }
@@ -839,7 +836,6 @@ async function verifyOwnedDirectoryAsync(path: string, known?: Stats, strict = f
 		if (refusal !== undefined) {
 			throw new TempDirRefusedError(path, refusal);
 		}
-		// The ACL read yields: the path must still be the same real directory it began with.
 		const current = await lstat(path);
 		if (
 			current.isSymbolicLink() ||
@@ -860,8 +856,6 @@ async function verifyOwnedDirectoryAsync(path: string, known?: Stats, strict = f
 		return;
 	}
 	if (strict && (stat.mode & 0o077) !== 0) {
-		// Someone else could already have written into it; repairing the mode
-		// would not undo that, so the directory is refused instead.
 		throw new TempDirRefusedError(path, "it is accessible to other accounts");
 	}
 	try {
@@ -886,7 +880,6 @@ async function ensureOwnedDirectoryAsync(path: string, strict = false): Promise<
 		try {
 			await mkdir(path, { recursive: false, mode: SESSION_TEMP_DIR_MODE });
 		} catch (error) {
-			// A concurrent creator winning the race is fine; anything else is not.
 			if (getErrnoCode(error) !== "EEXIST") {
 				throw new TempDirRefusedError(path, "it could not be created");
 			}
@@ -943,9 +936,7 @@ async function rememberPrivateTempDirAsync(key: string, path: string, depth: num
 			directories.push(await privateDirectoryIdentityAsync(current));
 		}
 		privateTempDirs.set(key, { path, directories: directories.reverse() });
-	} catch {
-		// Not remembered; the next call checks it from scratch.
-	}
+	} catch {}
 	return path;
 }
 
@@ -1052,8 +1043,6 @@ async function ensureLeafDirectoryAsync(dir: string): Promise<void> {
 		if (!(await lstat(dir)).isDirectory()) {
 			await rm(dir, { force: true });
 		}
-	} catch {
-		// Nothing at the path yet, or it cannot be inspected; creation decides.
-	}
+	} catch {}
 	await ensureOwnedDirectoryAsync(dir);
 }

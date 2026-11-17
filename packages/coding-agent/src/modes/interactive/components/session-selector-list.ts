@@ -165,10 +165,6 @@ export class SessionList implements Component, Focusable {
 		this.setConfirmingDeleteSession(selected.session);
 	}
 
-	/**
-	 * Same id, in the same directory once both directories' symlinks are resolved; before that, the same id is enough,
-	 * so the active session is never offered for deletion while its aliases are still being resolved.
-	 */
 	private isCurrentSession(session: SessionInfo): boolean {
 		if (this.currentSession === undefined || session.id !== this.currentSession.id) return false;
 		const directory = this.currentSession.directory;

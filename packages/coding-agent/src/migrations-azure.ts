@@ -1,11 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
-import { access, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { getAgentConfigPaths, getProjectConfigPaths } from "./config.js";
 import { FileAuthStorageBackend } from "./core/auth-storage-backends.ts";
 import { normalizeAzureSettings, normalizeProviderKeys } from "./core/azure-provider-compat.js";
 import { failureDebugFields, reportDebug, reportDebugAsync } from "./core/debug.ts";
 import type { Settings } from "./core/settings-types.ts";
 import { parseJsonFileContent, stripJsonComments } from "./utils/json.ts";
+import { pathExists as exists } from "./utils/path-exists.js";
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 type JsonObject = { [key: string]: JsonValue };
@@ -48,15 +49,6 @@ export function migrateAzureProvider(cwd: string, options?: { projectTrusted?: b
 
 function reportMigrationFailure(path: string, error: unknown): void {
 	reportDebug("storage", "azure-migration-skipped", { path, ...failureDebugFields(error) });
-}
-
-async function exists(path: string): Promise<boolean> {
-	try {
-		await access(path);
-		return true;
-	} catch {
-		return false;
-	}
 }
 
 export async function migrateAzureProviderAsync(cwd: string, options?: { projectTrusted?: boolean }): Promise<void> {

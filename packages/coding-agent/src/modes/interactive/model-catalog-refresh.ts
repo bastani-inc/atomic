@@ -54,14 +54,12 @@ class ModelCatalogRefreshCoordinator {
 	refresh(modelRuntime: ModelCatalogRuntime, request: ModelCatalogRefreshRequest): Promise<ModelsRefreshResult> {
 		const { signal, ...options } = request;
 		signal.throwIfAborted();
-		// A caller that stops waiting before its key is known starts no work.
 		return refreshKey(modelRuntime, options).then((key) => {
 			signal.throwIfAborted();
 			return this.join(modelRuntime, key, options, signal);
 		});
 	}
 
-	/** Join the pass running for `key`, or start it. Synchronous, so requests that read the same key share one pass. */
 	private join(
 		modelRuntime: ModelCatalogRuntime,
 		key: string,

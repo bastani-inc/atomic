@@ -50,7 +50,6 @@ export interface EngineRuntimeInput {
 	readonly workflowInvocationCwd: string;
 	readonly gitWorktreeSetupCache: GitWorktreeSetupCache;
 	readonly worktreeSymlinkDirectories?: readonly string[];
-	/** Set for a run resumed with restores: maps a stage's or task's paths as it starts. */
 	readonly mapRestoredOptions?: StageOptionsMapper | undefined;
 	readonly stageRegistry: StageControlRegistry;
 	readonly stageUiBroker: StageUiBroker;

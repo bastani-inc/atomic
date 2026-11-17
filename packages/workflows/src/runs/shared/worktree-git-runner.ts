@@ -44,7 +44,6 @@ function gitEnvironment(gitEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 		createChildProcessEnvironment(undefined, gitEnv),
 	);
 }
-/** Runs git and waits for it, for the synchronous `setupGitWorktree` of the SDK only; the engine runs {@link spawnGit}. */
 function spawnGitSync(cwd: string, args: readonly string[]): GitResult {
 	const git = resolveGitSync();
 	const startedAt = Date.now();
@@ -75,11 +74,9 @@ async function spawnGit(cwd: string, args: readonly string[], plain: boolean): P
 	});
 	return { ...result, elapsedMs: Math.max(0, Date.now() - startedAt) };
 }
-/** A git run before its diagnostics are added, synchronously: a test's runner when one is set. */
 export function rawGitSync(cwd: string, args: readonly string[]): GitResult {
 	return gitRunnerOverride === undefined ? spawnGitSync(cwd, args) : gitRunnerOverride(cwd, args);
 }
-/** A git run before its diagnostics are added: a test's runner when one is set. */
 export async function rawGit(cwd: string, args: readonly string[], plain = false): Promise<GitResult> {
 	return gitRunnerOverride === undefined ? await spawnGit(cwd, args, plain) : gitRunnerOverride(cwd, args);
 }
@@ -119,7 +116,6 @@ export async function prepareTaskGit(signal: AbortSignal): Promise<void> {
 		if (!isGitProvisionError(error)) throw error;
 	});
 }
-/** Runs git through `runner` while `callback` runs, until the promise it returns settles when it returns one. */
 export function withGitRunnerForTest<T>(runner: GitRunner, callback: () => T): T {
 	const previous = gitRunnerOverride;
 	gitRunnerOverride = runner;
@@ -184,5 +180,4 @@ export function gitFailureMessage(result: GitResult): string {
 	}
 	return `${result.stderr.trim() || result.stdout.trim() || `git exited with status ${result.status}`}${diagnosticSuffix(result)}`;
 }
-/** How many times a read-only git probe runs when it keeps timing out. */
 export const GIT_READ_ONLY_PROBE_TIMEOUT_ATTEMPTS = 2;

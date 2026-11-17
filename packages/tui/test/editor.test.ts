@@ -42,7 +42,6 @@ async function flushAutocomplete(): Promise<void> {
 	await new Promise((resolve) => setImmediate(resolve));
 }
 
-/** File suggestions read the directory in the background; wait until a completion was applied. */
 async function waitForText(editor: Editor, expected: string): Promise<void> {
 	const deadline = Date.now() + 5000;
 	while (editor.getText() !== expected && Date.now() < deadline) {

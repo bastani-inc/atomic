@@ -96,7 +96,6 @@ describe("foreground intercom detach routing", () => {
 					resolveRecovery();
 				},
 			});
-			// Setup checks the cwd asynchronously; a child cannot ask for a handoff until it has launched.
 			await Promise.all([launched.promise]);
 			await sleep(25);
 			await handoff(eventBus(emitter), { requestId: "q", childIntercomTarget: "child-a" });
@@ -140,7 +139,6 @@ describe("foreground intercom detach routing", () => {
 				testSession: { output: "detached findings", promptGate: gate.promise },
 				onDetachedExit: (result) => recoveredResult(result),
 			});
-			// Setup checks the cwd asynchronously; a child cannot ask for a handoff until it has launched.
 			await Promise.all([launched.promise]);
 			await sleep(25);
 			await handoff(eventBus(emitter), { requestId: "q", childIntercomTarget: "child-a" });
@@ -184,7 +182,6 @@ describe("foreground intercom detach routing", () => {
 			});
 			let acknowledged = 0;
 			emitter.on(INTERCOM_DETACH_RESPONSE_EVENT, () => acknowledged++);
-			// Setup checks the cwd asynchronously; a child cannot ask for a handoff until it has launched.
 			await Promise.all([firstLaunched.promise, secondLaunched.promise]);
 			await sleep(25);
 			const route = {
@@ -229,7 +226,6 @@ describe("foreground intercom detach routing", () => {
 				testSession: { output: "too late", promptGate: gate.promise },
 				onDetachedExit: (result) => recovered.push(result),
 			});
-			// Setup checks the cwd asynchronously; a child cannot ask for a handoff until it has launched.
 			await Promise.all([launched.promise]);
 			await sleep(25);
 			await handoff(bus, { requestId: "q", childIntercomTarget: "child-a" });
@@ -261,7 +257,6 @@ describe("foreground intercom detach routing", () => {
 				signal: controller.signal,
 				testSession: { output: "too late", promptGate: gate.promise },
 			});
-			// Setup checks the cwd asynchronously; a child cannot ask for a handoff until it has launched.
 			await Promise.all([launched.promise]);
 			await sleep(25);
 			controller.abort();
@@ -303,7 +298,6 @@ describe("foreground intercom detach routing", () => {
 				});
 			const first = launch(0, "child-a", firstGate);
 			const sibling = launch(1, "child-b", secondGate);
-			// Setup checks the cwd asynchronously; a child cannot ask for a handoff until it has launched.
 			await Promise.all(launched.map((ready) => ready.promise));
 			await handoff(bus, { requestId: "parallel-question", childIntercomTarget: "child-a" });
 			const placeholders = await Promise.all([first, sibling]);
@@ -333,7 +327,6 @@ describe("foreground intercom detach routing", () => {
 				intercomEvents: bus,
 				testSession: { output: "background result", promptGate: gate.promise },
 			});
-			// Setup checks the cwd asynchronously; a child cannot ask for a handoff until it has launched.
 			await Promise.all([launched.promise]);
 			await sleep(20);
 			bus.emit(INTERCOM_DETACH_REQUEST_EVENT, {
@@ -372,7 +365,6 @@ describe("foreground intercom detach routing", () => {
 					recoveredExit.resolve();
 				},
 			});
-			// Setup checks the cwd asynchronously; a child cannot ask for a handoff until it has launched.
 			await Promise.all([launched.promise]);
 			await sleep(20);
 			const request = {
@@ -413,7 +405,6 @@ describe("foreground intercom detach routing", () => {
 				intercomEvents: bus,
 				testSession: { output: "normal", promptGate: gate.promise },
 			});
-			// Setup checks the cwd asynchronously; a child cannot ask for a handoff until it has launched.
 			await Promise.all([launched.promise]);
 			await sleep(20);
 			const route = { requestId: "q", messageId: "q", senderId: "child-id", childIntercomTarget: "child-a" };
@@ -442,7 +433,6 @@ describe("foreground intercom detach routing", () => {
 				intercomEvents: bus,
 				testSession: { output: "normal", promptGate: gate.promise },
 			});
-			// Setup checks the cwd asynchronously; a child cannot ask for a handoff until it has launched.
 			await Promise.all([launched.promise]);
 			await sleep(20);
 			bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "legacy" });
@@ -469,7 +459,6 @@ describe("foreground intercom detach routing", () => {
 				intercomEvents: bus,
 				testSession: { output: "normal", promptGate: gate.promise },
 			});
-			// Setup checks the cwd asynchronously; a child cannot ask for a handoff until it has launched.
 			await Promise.all([launched.promise]);
 			await sleep(20);
 			bus.emit(INTERCOM_DETACH_REQUEST_EVENT, {
@@ -509,7 +498,6 @@ test("task hooks retain the live result through tool activity and exact Intercom
 		const reports: Parameters<TaskExecutionHooks["reportActivity"]>[0][] = [];
 		let yields = 0;
 		let launches = 0;
-		// Handed its cwd check, the run starts its child within the call.
 		const cwdVerdict = await checkLaunchCwd(dir);
 		const launched = Promise.withResolvers<void>();
 		const pending = runSync(dir, [bridgedAgent()], "fake-worker", "task", {

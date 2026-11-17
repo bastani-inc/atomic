@@ -853,7 +853,6 @@ test("a child that finishes normally does not keep its worktree (#4326)", async 
 	h.originalGate?.resolve();
 	await settled(h, taskId);
 	await h.waitForLatest("wt-finished:0", (record) => record.terminalStatus === "ok");
-	// Cleanup removes the checkout, then deletes its branch; until then Git still uses the fixture repository.
 	const branchListed = () =>
 		execFileSync("git", ["branch", "--list", worktree.branch], { cwd: repo, encoding: "utf8" }).trim() !== "";
 	const deadline = Date.now() + RECORD_WAIT_MS;

@@ -85,7 +85,6 @@ export function getToolStatus(this: AgentSession): ToolStatusReport {
 	return toolStatusReport(this, getGitStatus());
 }
 
-/** {@link getToolStatus} with git resolved without blocking the event loop. */
 export async function getToolStatusAsync(this: AgentSession): Promise<ToolStatusReport> {
 	const git = await getGitStatusAsync();
 	return toolStatusReport(this, git);

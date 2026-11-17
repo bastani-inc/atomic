@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createChildProcessEnvironment, getProjectConfigDirs } from "@bastani/atomic";
 import type { AgentConfig } from "../agents/agents.js";
+import { pathExists } from "../shared/path-exists.js";
 import type { ExtensionConfig, IntercomBridgeConfig, IntercomBridgeMode } from "../shared/types.js";
 import { getAgentDir } from "../shared/utils.js";
 
@@ -112,15 +113,6 @@ function resolveIntercomBridgeConfig(value: ExtensionConfig["intercomBridge"]): 
 		mode: resolveIntercomBridgeMode(value.mode),
 		instructionFile: typeof value.instructionFile === "string" ? value.instructionFile : "",
 	};
-}
-
-async function pathExists(filePath: string): Promise<boolean> {
-	try {
-		await fs.access(filePath);
-		return true;
-	} catch {
-		return false;
-	}
 }
 
 async function readJsonBestEffort(filePath: string): Promise<unknown> {

@@ -210,7 +210,6 @@ describe("session claims (#5135)", () => {
 		const old = new Date(Date.now() - 50_000);
 		utimesSync(claimFile(sessionId), old, old);
 		vi.advanceTimersByTime(15_000);
-		// The heartbeat refreshes the claim without waiting for the file system.
 		for (let attempt = 0; attempt < 200 && Date.now() - statSync(claimFile(sessionId)).mtimeMs >= 10_000; attempt++)
 			await new Promise((resolve) => setTimeout(resolve, 5));
 		assert.ok(Date.now() - statSync(claimFile(sessionId)).mtimeMs < 10_000, "the heartbeat refreshed the claim");

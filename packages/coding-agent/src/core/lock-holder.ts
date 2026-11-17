@@ -62,7 +62,6 @@ export function recordLockHolder(lockPath: string): void {
 
 let ownStart: Promise<string | undefined> | undefined;
 
-/** {@link recordLockHolder} without blocking the event loop. */
 export async function recordLockHolderAsync(lockPath: string): Promise<void> {
 	const lock = await lockHolderAsync(lockPath);
 	if (lock === undefined) return;
@@ -87,13 +86,10 @@ export function clearLockHolder(lockPath: string): void {
 	}
 }
 
-/** {@link clearLockHolder} without blocking the event loop. */
 export async function clearLockHolderAsync(lockPath: string): Promise<void> {
 	try {
 		await rm(lockHolderPath(lockPath), { force: true });
-	} catch {
-		// A holder record left behind names a lock directory that no longer exists, so it is never acted on.
-	}
+	} catch {}
 }
 
 function readHolderRecord(lockPath: string): LockHolderRecord | undefined {
@@ -158,7 +154,6 @@ export function takeOverDeadHolder(lockPath: string): boolean {
 	}
 }
 
-/** {@link takeOverDeadHolder} without blocking the event loop. */
 export async function takeOverDeadHolderAsync(lockPath: string): Promise<boolean> {
 	const record = await readHolderRecordAsync(lockPath);
 	if (record === undefined || (await lockHolderAsync(lockPath)) !== record.lock || (await processMayRunAsync(record)))

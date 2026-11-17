@@ -1,22 +1,16 @@
 import { existsSync, readFileSync, realpath as realpathCallback, realpathSync, statSync } from "node:fs";
-import { access, readFile, realpath, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, sep } from "node:path";
 import { promisify } from "node:util";
 import chalk from "chalk";
 import { getAgentDir, getAgentDirs } from "../config.js";
+import { pathExists as exists } from "../utils/path-exists.js";
 import { canonicalizePath, resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { findGitPaths, findGitPathsAsync } from "./footer-data-provider.ts";
 
 type ContextFile = { path: string; content: string };
 
-const exists = (path: string): Promise<boolean> =>
-	access(path).then(
-		() => true,
-		() => false,
-	);
-
-/** The file's content when `input` names an existing file, else `input` itself as literal prompt text. */
 export async function resolvePromptInput(input: string | undefined, description: string): Promise<string | undefined> {
 	if (!input) {
 		return undefined;
@@ -47,7 +41,6 @@ export async function resolveExistingPromptSourcePaths(inputs: readonly string[]
 	return paths.filter((path): path is string => path !== undefined);
 }
 
-/** The context file names a directory may hold, most specific first; the first that is a file is used. */
 const CONTEXT_FILE_NAMES = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
 
 function loadContextFileFromDir(dir: string): ContextFile | null {
@@ -118,7 +111,6 @@ function realPath(path: string): string {
 
 const realpathJs = promisify(realpathCallback);
 
-/** {@link realPath} without blocking: `realpath` of `node:fs/promises` is the native one, and `fs.realpath` the other. */
 async function realPathAsync(path: string): Promise<string> {
 	try {
 		return await realpath(path);
@@ -176,7 +168,6 @@ function findShadowedContextFile(cwd: string): string | undefined {
 	return join(mainRepoRoot, basename(worktreeContextFile.path));
 }
 
-/** {@link findShadowedContextFile} without blocking on the files it reads. */
 async function findShadowedContextFileAsync(cwd: string): Promise<string | undefined> {
 	const gitPaths = await findGitPathsAsync(cwd);
 	if (!gitPaths) return undefined;
@@ -200,16 +191,10 @@ interface ProjectContextFileOptions {
 	projectTrusted?: boolean;
 }
 
-/** The agent directories whose context files load first, lowest priority first. */
 function contextAgentDirs(agentDir: string): string[] {
 	return Array.from(new Set(agentDir === getAgentDir() ? getAgentDirs() : [agentDir])).reverse();
 }
 
-/**
- * The context files to load, from those found in the agent directories and in each directory from cwd up to the root
- * (null where a directory has none, or where its file is the main repo copy a nested worktree's own copy shadows): the
- * agent directories' first, then the ancestors' from the root down, each path once.
- */
 function orderContextFiles(
 	agentContextFiles: ReadonlyArray<ContextFile | null>,
 	ancestorContextFiles: ReadonlyArray<ContextFile | null>,
@@ -253,7 +238,6 @@ export function loadProjectContextFiles(options: ProjectContextFileOptions): Arr
 	return orderContextFiles(agentContextFiles, ancestorContextFiles);
 }
 
-/** {@link loadProjectContextFiles} without blocking on the files it reads. */
 export async function loadProjectContextFilesAsync(options: ProjectContextFileOptions): Promise<ContextFile[]> {
 	const resolvedCwd = resolvePath(options.cwd);
 	const agentContextFiles = await Promise.all(
@@ -262,8 +246,6 @@ export async function loadProjectContextFilesAsync(options: ProjectContextFileOp
 	if (options.projectTrusted === false) return orderContextFiles(agentContextFiles, []);
 
 	const shadowedContextFile = await findShadowedContextFileAsync(resolvedCwd);
-	// Each directory chooses its own highest-priority file. Probe directories together so an absent context file does
-	// not add one saturated loop turn per candidate per ancestor, while Promise.all keeps inheritance in path order.
 	const ancestorContextFiles = await Promise.all(
 		getAncestorDirectories(resolvedCwd).map(async (currentDir) => {
 			const contextFile = await loadContextFileFromDirAsync(currentDir);

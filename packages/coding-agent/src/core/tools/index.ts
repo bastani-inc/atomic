@@ -208,7 +208,6 @@ export function getDefaultToolNames(options?: { powerShellAvailable?: boolean })
 	return defaultToolNamesFor(options?.powerShellAvailable ?? isPowerShellAvailable());
 }
 
-/** {@link getDefaultToolNames} without blocking the event loop. */
 export async function getDefaultToolNamesAsync(options?: {
 	powerShellAvailable?: boolean;
 }): Promise<readonly ToolName[]> {
@@ -325,7 +324,6 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): B
 	return createToolDefinitionsFor(cwd, options, isPowerShellAvailable());
 }
 
-/** {@link createAllToolDefinitions} with PowerShell availability the caller already resolved. */
 export function createToolDefinitionsFor(
 	cwd: string,
 	options: ToolsOptions | undefined,

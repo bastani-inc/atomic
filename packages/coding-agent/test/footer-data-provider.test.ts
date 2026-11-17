@@ -59,7 +59,6 @@ type ReftableWatcherTestAccess = {
 	handleReftableDirectoryEvent: (filename: string | Buffer | null) => void;
 };
 
-/** Start the watchers and wait until the reftable ones are installed; call before faking timers. */
 async function startReftableWatchers(provider: FooterDataProvider): Promise<ReftableWatcherTestAccess> {
 	provider.startGitWatcher();
 	const access = provider as unknown as ReftableWatcherTestAccess;
@@ -119,7 +118,6 @@ async function advanceTimersByTime(ms: number): Promise<void> {
 	await Promise.resolve();
 }
 
-/** The branch once its first read finished. */
 async function resolvedBranch(provider: FooterDataProvider): Promise<string | null> {
 	provider.getGitBranch();
 	const internals = provider as unknown as { cachedBranch: string | null | undefined };
@@ -127,13 +125,11 @@ async function resolvedBranch(provider: FooterDataProvider): Promise<string | nu
 	return provider.getGitBranch();
 }
 
-/** Wait for a branch refresh to finish reading HEAD and asking git. */
 async function settledRefresh(provider: FooterDataProvider): Promise<void> {
 	const internals = provider as unknown as { refreshInFlight: boolean };
 	await vi.waitFor(() => expect(internals.refreshInFlight).toBe(false));
 }
 
-/** Let reftable events finish comparing tables.list, which reads the file. */
 async function settleReftableChecks(access: ReftableWatcherTestAccess): Promise<void> {
 	await access.reftableTablesListCheck;
 }
@@ -180,7 +176,6 @@ describe("FooterDataProvider reftable branch detection", () => {
 		try {
 			const repaint = vi.fn();
 			provider.onBranchChange(repaint);
-			// A render must not wait for the disk: the first lookup has nothing to show yet.
 			expect(provider.getGitBranch()).toBeNull();
 			await vi.waitFor(() => expect(repaint).toHaveBeenCalledTimes(1));
 			expect(provider.getGitBranch()).toBe("main");

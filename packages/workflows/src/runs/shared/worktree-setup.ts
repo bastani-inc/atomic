@@ -266,7 +266,6 @@ async function runWorktreeSetupHook(hook: ResolvedWorktreeSetupHook, input: Work
 	return [...uniquePaths];
 }
 
-/** How long cleanup waits after removing a worktree before deleting its branch, for git to release its locks. */
 const GIT_LOCK_RELEASE_WAIT_MS = 100;
 
 /**

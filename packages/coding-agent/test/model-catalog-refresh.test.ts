@@ -19,7 +19,6 @@ function successfulRefresh(): ModelsRefreshResult {
 	return { aborted: false, errors: new Map() };
 }
 
-/** Let every request made so far read its catalog-input key, which happens after the call. */
 function keysRead(): Promise<void> {
 	return new Promise((resolve) => setImmediate(resolve));
 }
@@ -306,7 +305,6 @@ describe("interactive model catalog refresh", () => {
 		const controller = new AbortController();
 
 		const first = refreshModelCatalogs(runtime, { signal: controller.signal });
-		// models.json changes between the two requests; each read sees its own content.
 		const second = refreshModelCatalogs(runtime, { signal: controller.signal });
 		keys[1]!.resolve("0:new-models-json");
 		keys[0]!.resolve("0:old-models-json");

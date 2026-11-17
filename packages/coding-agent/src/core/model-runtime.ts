@@ -178,12 +178,9 @@ export class ModelRuntime implements Models {
 	private snapshot: ModelRuntimeSnapshot = createEmptyModelRuntimeSnapshot();
 	private snapshotGeneration = 0;
 	private catalogInputsGeneration = 0;
-	/** {@link catalogInputsGeneration} without the models.json changes, which catalog-input keys carry as a hash. */
 	private ownCatalogInputsGeneration = 0;
 	private observedModelsFileToken: string | undefined;
-	/** The models.json reads in the order they were asked for, so the last read is the one observed last. */
 	private modelsFileObservations: Promise<void> = Promise.resolve();
-	/** The read asked for in the current tick, which other requests in that tick share. */
 	private sameTickModelsFileObservation: Promise<string> | undefined;
 	private readonly externalProviderAuthStatuses = new Map<string, AuthStatus>();
 	private readonly externalStatusCredentials = new Map<string, Credential | undefined>();
@@ -677,7 +674,6 @@ export class ModelRuntime implements Models {
 			this.extensionProviders.get(model.provider),
 		);
 	}
-	/** @internal {@link ModelRuntime.getCompatibilityRequestConfig} without blocking the event loop. */
 	getCompatibilityRequestConfigAsync(model: Model<Api>): Promise<CompatibilityRequestConfig> {
 		model = normalizeModelProvider(model);
 		return resolveCompatibilityRequestConfigAsync(
@@ -866,14 +862,6 @@ export class ModelRuntime implements Models {
 		return this.catalogInputsGeneration;
 	}
 
-	/**
-	 * What decides whether a catalog request may join a pass already running: two requests with the same key ask
-	 * for the same inputs. The key is the generation of this runtime's own writes (credentials and provider
-	 * registrations, as for {@link getCatalogInputsGeneration}) captured when this is called, plus the hash of
-	 * models.json read after the call. So a request issued after any of those changes, including an external
-	 * models.json edit, never gets the key of a pass started before it. Requests in the same tick share one read of
-	 * the file, and so one key.
-	 */
 	readCatalogInputsKey(): Promise<string> {
 		const generation = this.ownCatalogInputsGeneration;
 		return this.observeModelsFile().then((modelsFile) => `${generation}:${modelsFile}`);
@@ -902,7 +890,6 @@ export class ModelRuntime implements Models {
 		return this.applyObservedModelsFileToken(this.readModelsFileTokenSync());
 	}
 
-	/** Read models.json and bump the generation when it changed since the last read; resolves to its hash. */
 	private observeModelsFile(): Promise<string> {
 		if (this.sameTickModelsFileObservation) return this.sameTickModelsFileObservation;
 		const observation = this.modelsFileObservations.then(async () =>

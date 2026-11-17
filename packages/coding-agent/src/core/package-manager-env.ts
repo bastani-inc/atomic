@@ -19,10 +19,6 @@ function readProcessStartEnvironment(): NodeJS.ProcessEnv | undefined {
 	}
 }
 
-/**
- * The environment this process started with, read once when this module loads, for a runtime whose `process.env` is
- * empty (a sandboxed Bun binary). It never changes, so commands spawned later do not read it again.
- */
 const processStartEnvironment =
 	process.platform === "linux" && Object.keys(process.env).length === 0 ? readProcessStartEnvironment() : undefined;
 

@@ -57,7 +57,6 @@ async function executeBashOperation(
 	// Apply command prefix if configured (e.g., "shopt -s expand_aliases" for alias support)
 	const prefix = await shellCommandPrefixFor(this, this.settingsManager.getShellCommandPrefix());
 	const env = { ...(await getShellEnvAsync()) };
-	// A command cancelled while its prefix and environment were read never starts.
 	if (abortController.signal.aborted) return cancelBeforeStart();
 	const shellPath = this.settingsManager.getShellPath();
 	const resolvedCommand = prefix ? `${prefix}\n${command}` : command;

@@ -17,11 +17,12 @@ import {
 	statSync,
 	writeFileSync,
 } from "fs";
-import { access, lstat, mkdir, readFile, readlink } from "fs/promises";
+import { lstat, mkdir, readFile, readlink } from "fs/promises";
 import { dirname, isAbsolute, join, resolve, sep } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME } from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
+import { pathExists } from "../utils/path-exists.js";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { normalizeAzureSettings } from "./azure-provider-compat.js";
 import {
@@ -115,17 +116,6 @@ function tooManySymlinks(path: string): Error {
 	});
 }
 
-/** Whether something is at `path`, as `existsSync` answers it. */
-async function pathExists(path: string): Promise<boolean> {
-	try {
-		await access(path);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-/** The `lstat` of `path`, or undefined when nothing is there, as `lstatSync` with `throwIfNoEntry: false` reports it. */
 async function lstatIfPresent(path: string): Promise<Awaited<ReturnType<typeof lstat>> | undefined> {
 	try {
 		return await lstat(path);
@@ -136,7 +126,6 @@ async function lstatIfPresent(path: string): Promise<Awaited<ReturnType<typeof l
 	}
 }
 
-/** The content of the file at `path`, or undefined when there is none, as `existsSync` and `readFileSync` read it. */
 async function readIfPresent(path: string): Promise<string | undefined> {
 	return (await pathExists(path)) ? readFile(path, "utf-8") : undefined;
 }
@@ -172,7 +161,6 @@ export function writeSettingsFile(path: string, content: string): SettingsFileWr
 	}
 }
 
-/** {@link writeSettingsFile} without blocking the event loop. */
 export async function writeSettingsFileAsync(path: string, content: string): Promise<SettingsFileWrite> {
 	const target = await settingsFileTargetAsync(path);
 	const mode = (await pathExists(target)) ? (await fsPromises.stat(target)).mode & 0o777 : undefined;
@@ -197,7 +185,6 @@ export async function writeSettingsFileAsync(path: string, content: string): Pro
 	}
 }
 
-/** The settings files whose lock an asynchronous save of this process holds now. */
 const locksHeldAsynchronously = new Set<string>();
 const lockCreations = new Map<string, LockDirectoryCreation>();
 
@@ -240,7 +227,6 @@ export class FileSettingsStorage implements SettingsStorage, AsyncSettingsStorag
 	private projectSettingsPath: string;
 	private globalReadPaths: string[];
 	private projectReadPaths: string[];
-	/** The content of each read path as this storage last read or wrote it; undefined when the file was absent. */
 	private knownContent = new Map<string, string | undefined>();
 
 	constructor(cwd: string, agentDir: string, options?: { globalReadPaths?: string[]; projectReadPaths?: string[] }) {
@@ -267,10 +253,6 @@ export class FileSettingsStorage implements SettingsStorage, AsyncSettingsStorag
 			: (scope === "global" ? this.globalReadPaths : this.projectReadPaths)[index];
 	}
 
-	/**
-	 * Index of the first read path that sets the field, which is the one whose value takes effect: as the files were
-	 * when this storage last read or wrote them, which is what the settings loaded from it hold.
-	 */
 	private fieldSourceIndex(scope: SettingsScope, field: string): number | undefined {
 		const readPaths = scope === "global" ? this.globalReadPaths : this.projectReadPaths;
 		for (const [index, readPath] of readPaths.entries()) {
@@ -286,12 +268,10 @@ export class FileSettingsStorage implements SettingsStorage, AsyncSettingsStorag
 		return undefined;
 	}
 
-	/** Records `content` as what the file at `path` holds now; undefined when it is absent. */
 	private remember(path: string, content: string | undefined): void {
 		this.knownContent.set(normalizePath(path), content);
 	}
 
-	/** Records the files of `scope` as `layers`, the ones that exist, and returns them. */
 	private rememberLayers(scope: SettingsScope, layers: SettingsLayer[]): SettingsLayer[] {
 		for (const readPath of scope === "global" ? this.globalReadPaths : this.projectReadPaths)
 			this.knownContent.set(readPath, layers.find((layer) => layer.path === readPath)?.content);
@@ -336,7 +316,6 @@ export class FileSettingsStorage implements SettingsStorage, AsyncSettingsStorag
 		};
 	}
 
-	/** {@link acquireLockSyncWithRetry} without blocking the event loop: every wait, takeover and holder record is asynchronous. */
 	private async acquireLockWithRetry(path: string): Promise<() => Promise<void>> {
 		const lockPath = `${path}.lock`;
 		let release: () => Promise<void>;
@@ -384,7 +363,6 @@ export class FileSettingsStorage implements SettingsStorage, AsyncSettingsStorag
 		return merged === undefined ? undefined : JSON.stringify(merged, null, 2);
 	}
 
-	/** Merges the file at `path`, read as `content` (undefined when absent), over the files of lower precedence. */
 	private mergeFile(merged: Settings | undefined, path: string, content: string | undefined): Settings | undefined {
 		this.remember(path, content);
 		if (content === undefined) return merged;
@@ -426,7 +404,6 @@ export class FileSettingsStorage implements SettingsStorage, AsyncSettingsStorag
 		}
 	}
 
-	/** {@link readLayers} without blocking the event loop. */
 	async readLayersAsync(scope: SettingsScope): Promise<SettingsLayer[]> {
 		const path = scope === "global" ? this.globalSettingsPath : this.projectSettingsPath;
 		const readPaths = scope === "global" ? this.globalReadPaths : this.projectReadPaths;
@@ -490,7 +467,6 @@ export class FileSettingsStorage implements SettingsStorage, AsyncSettingsStorag
 		}
 	}
 
-	/** {@link withLock} without blocking the event loop. */
 	async withLockAsync(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): Promise<void> {
 		const path = scope === "global" ? this.globalSettingsPath : this.projectSettingsPath;
 		const readPaths = scope === "global" ? this.globalReadPaths : this.projectReadPaths;
@@ -543,10 +519,6 @@ export class FileSettingsStorage implements SettingsStorage, AsyncSettingsStorag
 		}
 	}
 
-	/**
-	 * {@link withPrimaryWriteLock} as the process exits. When an asynchronous save of this process holds the file's lock,
-	 * it never resumes, so the file is written under that lock rather than waiting for it.
-	 */
 	withPrimaryWriteLockAtExit(
 		scope: SettingsScope,
 		fn: (currentPrimary: string | undefined) => string | undefined,
@@ -566,7 +538,6 @@ export class FileSettingsStorage implements SettingsStorage, AsyncSettingsStorag
 		}
 	}
 
-	/** {@link withPrimaryWriteLock} without blocking the event loop. */
 	async withPrimaryWriteLockAsync(
 		scope: SettingsScope,
 		fn: (currentPrimary: string | undefined) => string | undefined,
@@ -620,14 +591,12 @@ export class InMemorySettingsStorage implements SettingsStorage, AsyncSettingsSt
 	}
 }
 
-/** What a storage written before the asynchronous members has (#2299); {@link FileSettingsStorage} is never one. */
 interface SynchronousSettingsStorage {
 	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void;
 	withPrimaryWriteLock?(scope: SettingsScope, fn: (currentPrimary: string | undefined) => string | undefined): void;
 	readLayers?(scope: SettingsScope): SettingsLayer[];
 }
 
-/** Loads and saves through the synchronous members of a storage that has no asynchronous ones. */
 class SynchronousSettingsStorageAdapter implements AsyncSettingsStorage {
 	readonly withPrimaryWriteLockAsync?: (
 		scope: SettingsScope,
@@ -651,7 +620,6 @@ class SynchronousSettingsStorageAdapter implements AsyncSettingsStorage {
 	}
 }
 
-/** The asynchronous members of `storage`, or its synchronous ones behind them when it has none. */
 export function asyncSettingsStorage(storage: SettingsStorage): AsyncSettingsStorage {
 	return hasAsyncMembers(storage) ? storage : new SynchronousSettingsStorageAdapter(storage);
 }

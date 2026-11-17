@@ -95,16 +95,13 @@ export type TaskRowOptions = {
 	expanded?: boolean;
 	duplicate?: boolean;
 	hint?: boolean;
-	/** The tasks listed with this one. Pass the list `taskSiblings` returns, so its rows share one index of it. */
 	siblings?: readonly TaskRecord[];
 	activity?: readonly TaskActivity[];
 	activityOmitted?: boolean;
 };
 
-/** A task's launch group within a sibling list: its members in list order, and each member's first position. */
 type LaunchGroup = { tasks: TaskRecord[]; positions: Map<TaskId, number> };
 
-/** Launch groups of a sibling list, and the ids of its tasks by display label for each row width labels are cut to. */
 class SiblingIndex {
 	private readonly tasks: readonly TaskRecord[];
 	private readonly groups = new Map<string, LaunchGroup>();
@@ -122,11 +119,9 @@ class SiblingIndex {
 			group.tasks.push(task);
 		}
 	}
-	/** The siblings launched with `task`, in list order, empty when none was. */
 	groupOf(task: TaskRecord): LaunchGroup {
 		return (task.launchGroupId && this.groups.get(task.launchGroupId)) || { tasks: [], positions: new Map() };
 	}
-	/** Whether a sibling other than `task` shows the same label as `task` when labels are cut to `width`. */
 	sharesLabel(task: TaskRecord, width: number): boolean {
 		let byLabel = this.labels.get(width);
 		if (!byLabel) {
@@ -146,22 +141,16 @@ class SiblingIndex {
 
 const siblingIndexes = new WeakMap<readonly TaskRecord[], SiblingIndex>();
 
-/**
- * A frozen copy of `tasks` for every row listing them to share as siblings. It is indexed once, so a row finds its
- * launch group and same-labelled siblings without scanning the list; a list of other origin is indexed for each row.
- */
 export function taskSiblings(tasks: readonly TaskRecord[]): readonly TaskRecord[] {
 	const siblings = Object.freeze([...tasks]);
 	siblingIndexes.set(siblings, new SiblingIndex(siblings));
 	return siblings;
 }
 
-/** A key two tasks share exactly when their agent names and titles are equal. */
 export function taskNameAndTitle(task: TaskRecord): string {
 	return JSON.stringify([task.agentName ?? null, task.title]);
 }
 
-/** How many of `tasks` share each key. */
 export function countTasksBy(tasks: readonly TaskRecord[], key: (task: TaskRecord) => string): Map<string, number> {
 	const counts = new Map<string, number>();
 	for (const task of tasks) {

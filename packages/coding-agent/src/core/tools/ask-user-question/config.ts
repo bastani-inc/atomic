@@ -19,7 +19,6 @@ export interface AskUserQuestionConfig {
 let loaded: AskUserQuestionConfig | undefined;
 let reading: Promise<AskUserQuestionConfig> | undefined;
 
-/** Reads the config file again without blocking; {@link loadConfig} serves what it read. */
 export function refreshConfig(): Promise<AskUserQuestionConfig> {
 	reading ??= readConfig().then((config) => {
 		loaded = config;
@@ -29,11 +28,6 @@ export function refreshConfig(): Promise<AskUserQuestionConfig> {
 	return reading;
 }
 
-/**
- * The config as last read, served from memory so a tool definition is created without file I/O once a read has finished;
- * a call before any read reads the file. Each later call refreshes it in the background, so an edited file applies to the
- * definitions created after that read.
- */
 export function loadConfig(): AskUserQuestionConfig {
 	if (loaded === undefined) {
 		loaded = readConfigSync();

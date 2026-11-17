@@ -126,22 +126,15 @@ export interface TuiMainScreenRenderState {
 
 let debugLogAppends: Promise<void> = Promise.resolve();
 
-/** Appends a debug log entry in the background, after the entries before it. Logging errors are ignored. */
 function appendDebugLog(logPath: string, data: string): void {
 	debugLogAppends = debugLogAppends.then(async () => {
 		try {
 			await fs.promises.mkdir(path.dirname(logPath), { recursive: true });
 			await fs.promises.appendFile(logPath, data);
-		} catch {
-			// Debug logging must not break rendering.
-		}
+		} catch {}
 	});
 }
 
-/**
- * Writes the dump of a frame that cannot be drawn. It is written before the render throws, which ends the process,
- * so it stays synchronous: written later, it would never be.
- */
 function writeRenderCrashLog(crashLogPath: string, crashData: string): void {
 	fs.mkdirSync(path.dirname(crashLogPath), { recursive: true });
 	fs.writeFileSync(crashLogPath, crashData);

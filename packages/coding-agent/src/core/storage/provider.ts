@@ -1,9 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
-import { access, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Jiti, JitiResolveOptions } from "jiti";
 import { createSessionCwdMatcherAsync } from "../../utils/canonical-path.ts";
+import { pathExists } from "../../utils/path-exists.js";
 import { abortSnapshotCollectionsOn, runningSnapshotCollectionsOn } from "../worktree-snapshot/blob-store.ts";
 import type { SqliteDatabase, SqliteValue, StorageDescriptor } from "./database.js";
 import {
@@ -56,13 +57,6 @@ export async function secretFilePathAsync(file: string, agentDir: string): Promi
 	if (paths.primary === paths.legacy) return paths.primary;
 	if (!(await pathExists(paths.legacy)) && !paths.managedLegacyToken) return paths.primary;
 	return (await pathExists(paths.primary)) ? paths.primary : paths.legacy;
-}
-
-function pathExists(path: string): Promise<boolean> {
-	return access(path).then(
-		() => true,
-		() => false,
-	);
 }
 
 function relativeSecretPaths(file: string, agentDir: string, home: string): RelativeSecretPaths {

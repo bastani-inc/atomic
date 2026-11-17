@@ -705,10 +705,6 @@ function sharingOutputAsResult(checkpoint: DurableCheckpoint): DurableCheckpoint
 		: checkpoint;
 }
 
-/**
- * A recorded checkpoint as a run's indexes keep it, with a stage's implied topology. A stage checkpoint recorded before
- * #3700 has its session already read from its file (see {@link migrateStageSessionCheckpoint}).
- */
 export function normalizedCheckpoint(recorded: DurableCheckpoint): DurableCheckpoint {
 	const checkpoint = sharingOutputAsResult(recorded);
 	return checkpoint.kind === "stage" && checkpoint.topology === undefined

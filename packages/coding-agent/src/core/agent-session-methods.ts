@@ -241,7 +241,6 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	getToolDefinition(name: string): ToolDefinition | undefined;
 	/** Explain which tools are active, which are not (and why), and which selected names nothing registered. */
 	getToolStatus(): ToolStatusReport;
-	/** {@link getToolStatus} without blocking the event loop while git is resolved. */
 	getToolStatusAsync(): Promise<ToolStatusReport>;
 	setActiveToolsByName(toolNames: string[]): void;
 	_setActiveTools(toolNames: string[]): void;

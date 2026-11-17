@@ -19,29 +19,10 @@ import {
 const ROOT = resolve(moduleDir(import.meta.url), "../..");
 const FIXTURE = join(ROOT, "test/fixtures/event-loop-block-monitor.ts");
 
-/**
- * The block threshold the children run with. Far above the few milliseconds an idle loop is late, and high enough
- * that a scheduler stall on a loaded runner would have to last most of it, and land on the brief block, to carry that
- * block over it.
- */
 const THRESHOLD_MS = 200;
-/**
- * The block the log must name. On Node the watchdog attaches the debugger only once a block crosses the threshold,
- * and attaching took the main thread 30–140 ms (measured with the coding-agent module graph loaded), so the first
- * stack arrives a little after `THRESHOLD_MS` plus that. A second of block leaves room for several samples under load.
- */
 const LONG_BLOCK_MS = 1_000;
-/** The block the log must not record: a tenth of the threshold. */
 const SHORT_BLOCK_MS = 20;
-/**
- * Idle time around each block. The Node watchdog worker must be running before the long block starts (it booted in
- * about 50 ms idle), and the delay records need ticks on either side of the phase boundary.
- */
 const SETTLE_MS = 500;
-/**
- * One child: loading the module through jiti (about 1 s on Node idle), five settles and the blocks, 3.8 s in all
- * idle. The budget leaves a loaded runner five times that and still ends the child before the test's own timeout.
- */
 const CHILD_TIMEOUT_MS = 20_000;
 
 const RUNTIMES = [
@@ -51,7 +32,6 @@ const RUNTIMES = [
 
 interface ChildReport {
 	readonly started: boolean;
-	/** On Node, the async resources that starting the monitor created; Bun does not report them. */
 	readonly created: readonly string[];
 }
 
@@ -108,7 +88,6 @@ function readLog(path: string): LogRecord[] {
 		.map((line) => JSON.parse(line) as LogRecord);
 }
 
-/** The block records with a stack that passes through `functionName`. */
 function blocksNaming(records: readonly LogRecord[], functionName: string): LogRecord[] {
 	return records.filter(
 		(record) =>
@@ -139,7 +118,6 @@ for (const runtime of RUNTIMES) {
 				`the long block's record is under the threshold: ${long[0]?.durationMs} ms`,
 			);
 			assert.equal(long[0]?.pid, start?.pid);
-			// The hot frames name it too. Not in every sample: an optimized loop can be reported as its caller.
 			assert.ok(
 				long[0]?.hotFrames?.some((entry) => entry.frame.startsWith("holdTheEventLoopForLong ")),
 				`the hot frames do not name the function: ${JSON.stringify(long[0]?.hotFrames)}`,
@@ -155,7 +133,6 @@ for (const runtime of RUNTIMES) {
 			assert.ok((startup?.maxMs ?? 0) >= LONG_BLOCK_MS * 0.9, `startup max ${startup?.maxMs} ms`);
 			assert.ok((session?.ticks ?? 0) > 0);
 			assert.ok((session?.maxMs ?? Infinity) < THRESHOLD_MS, `session max ${session?.maxMs} ms`);
-			// An inspector session still attached at exit makes Node print this to the terminal.
 			assert.doesNotMatch(stderr, /debugger/i);
 		});
 
@@ -173,7 +150,6 @@ for (const runtime of RUNTIMES) {
 			assert.equal(session?.phase, "session");
 			const [long] = blocksNaming(records, "holdTheEventLoopForLong");
 			assert.ok(long, `no record of the long block:\n${JSON.stringify(records, null, 1)}`);
-			// Timestamps are whole milliseconds; the block ends as the session starts, not after.
 			const blockEnd = Date.parse(long.at) + (long.durationMs ?? 0);
 			assert.ok(
 				blockEnd <= Date.parse(session.at) + 1,

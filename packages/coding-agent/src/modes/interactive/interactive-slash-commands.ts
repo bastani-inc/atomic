@@ -238,10 +238,8 @@ InteractiveModeBase.prototype.handleImportCommand = async function (
 	}
 };
 
-/** A `gh auth status` that has not answered by then counts as not logged in. */
 const GH_AUTH_STATUS_TIMEOUT_MS = 30_000;
 
-/** The exit status of `gh auth status`, or null when gh could not be run. */
 function ghAuthStatus(): Promise<number | null> {
 	return new Promise((resolve) => {
 		const child = spawn("gh", ["auth", "status"], {

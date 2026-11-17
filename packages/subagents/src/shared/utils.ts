@@ -170,11 +170,6 @@ export function compactForegroundDetails(details: Details): Details {
 	};
 }
 
-/**
- * `exit`, `exited with code 2`, `Exit status: 2`: every run of whitespace has one
- * place to go, so tool output with a long run after `exit` is read once rather
- * than split between neighbouring `\s*` in every way.
- */
 const EXIT_CODE_PATTERN = /exit(?:ed)?\s*(?:with\s*)?(?:(?:code|status)\s*)?(?::\s*)?(\d+)/i;
 
 /**

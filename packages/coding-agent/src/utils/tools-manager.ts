@@ -1,20 +1,7 @@
 import { execFile, spawnSync } from "child_process";
 import { createHash, randomUUID } from "crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "fs";
-import {
-	access,
-	chmod,
-	lstat,
-	mkdir,
-	mkdtemp,
-	readdir,
-	readFile,
-	readlink,
-	rename,
-	rm,
-	stat,
-	writeFile,
-} from "fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, stat, writeFile } from "fs/promises";
 import { arch, hostname, platform } from "os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import lockfile from "proper-lockfile";
@@ -46,6 +33,7 @@ import {
 	ManagedToolTimeoutError,
 } from "./managed-tool-errors.ts";
 import { fetchWithRetry } from "./management-http.ts";
+import { pathExists } from "./path-exists.js";
 import { getPiUserAgent } from "./pi-user-agent.ts";
 
 const TOOLS_DIR = getBinDir();
@@ -96,15 +84,6 @@ const TOOLS: Record<string, ToolConfig> = {
 		getAssetName: (version, target) => `ripgrep-${version}-${target}`,
 	},
 };
-
-async function pathExists(targetPath: string): Promise<boolean> {
-	try {
-		await access(targetPath);
-		return true;
-	} catch {
-		return false;
-	}
-}
 
 // Check if a command exists in PATH by trying to run it
 function commandExists(cmd: string): Promise<boolean> {
@@ -1372,9 +1351,6 @@ export function resolveGitSync(): ResolvedGit {
 	return toResolvedGit(selectGitSync());
 }
 
-/**
- * Asynchronous equivalent of {@link resolveGitSync}: resolves an installed system or provisioned git without downloading.
- */
 export async function resolveInstalledGit(): Promise<ResolvedGit> {
 	return toResolvedGit(await selectInstalledGitAsync());
 }
@@ -1564,7 +1540,6 @@ export function getGitStatus(): GitToolStatus {
 	}
 }
 
-/** Asynchronous equivalent of {@link getGitStatus}. */
 export async function getGitStatusAsync(): Promise<GitToolStatus> {
 	try {
 		const selection = await selectInstalledGitAsync();

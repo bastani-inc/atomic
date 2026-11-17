@@ -1126,8 +1126,9 @@ Use the asynchronous helpers in a host that must keep accepting input while it r
 | `takeTakeoverMutexAsync` | Acquire a takeover mutex asynchronously; await the returned mutex's `release()` |
 | `resolveInstalledGit`, `getGitStatusAsync`, `AgentSession.getToolStatusAsync` | Resolve installed Git or collect Git and session tool status asynchronously without provisioning a missing tool |
 | `appendDebugRecordAsync`, `reportDebugAsync`, `flushDebugLog` | Append debug records off the host thread, or wait for queued records before inspecting their files |
+| `containProcessTree`, `processTreeEnded`, `killProcessTree` | Contain a child tree on Windows, wait for a contained tree to end, or terminate an owned process group across platforms |
 
-Await each operation before starting work that depends on its result. MCP edits of one file are queued. A synchronous MCP edit rejects before changing a file while an asynchronous edit is pending; await that edit before retrying, or use the asynchronous forms throughout. `emptySkillCatalog()` is synchronous because it does no I/O. `savedProjectTrust()` still returns a boolean predicate for synchronous SDK callers. For direct environment credential checks, `@bastani/atomic-ai` also exports `getEnvApiKeyAsync()` alongside synchronous `getEnvApiKey()`.
+Await each operation before starting work that depends on its result. MCP edits of one file are queued. A synchronous MCP edit rejects before changing a file while an asynchronous edit is pending; await that edit before retrying, or use the asynchronous forms throughout. `emptySkillCatalog()` is synchronous because it does no I/O. `savedProjectTrust()` still returns a boolean predicate for synchronous SDK callers. For direct environment credential checks, `@bastani/atomic-ai` also exports `getEnvApiKeyAsync()` alongside synchronous `getEnvApiKey()`. Use process-containment helpers only with child process IDs your integration owns. `containProcessTree()` returns `undefined` off Windows; release a retained containment before closing it on normal completion, or terminate it before closing it on cancellation.
 
 ## Private temp directories
 

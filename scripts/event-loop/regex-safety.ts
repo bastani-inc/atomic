@@ -1,41 +1,3 @@
-/**
- * Finds regular expressions whose backtracking can block the event loop.
- *
- * JavaScript regular expressions run on a backtracking matcher. When a part of
- * a pattern can match the same text in more than one way and the rest of the
- * pattern then fails, the matcher retries every way before giving up. For some
- * patterns the number of ways grows exponentially with the input; for others it
- * grows polynomially. A few kilobytes of model output, tool output, or file
- * content are then enough to block the event loop for seconds or forever.
- *
- * `findBacktrackingRisks` decides this statically. It parses the pattern with
- * the ECMAScript grammar (`@eslint-community/regexpp`, every flag including `u`
- * and `v`), turns it into an automaton whose states are the characters the
- * pattern consumes, and looks for two shapes of ambiguity:
- *
- * - exponential: a repetition that can read the same text along two different
- *   paths back to itself, such as nested quantifiers (`(a+)+`) or repeated
- *   alternatives that overlap (`(a|a)*`, `(\w|\d)+`, `(\r\n|\r|\n)+`);
- * - polynomial: two different repetitions that can both consume a run of one
- *   character with nothing forcing where one stops and the next starts
- *   (`\s*\s*$`, `a*a*b`, `.*,.*=`, `^(.*?)\s*$`).
- *
- * Character-set semantics (case folding, `\w` under `iu`, Unicode properties,
- * `v`-flag set operations) come from `regexp-ast-analysis`. A risk is reported
- * only when the input can force failure after the ambiguous part: if the
- * pattern can always accept right there, the first path succeeds and nothing
- * is retried.
- *
- * Not reported: the quadratic cost every unanchored search pays when its
- * leading repetition fails at every start position (`/\s+$/` or `/a+b/` on a
- * long run). That cost belongs to the search loop rather than to an ambiguity
- * in the pattern, is shared by most unanchored regular expressions, and grows
- * one degree slower than the polynomial shape above.
- *
- * Running this file scans source trees: `node scripts/event-loop/regex-safety.ts
- * [--json] [paths...]` prints every risky regular expression with its location
- * and exits 1 when it found any.
- */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { extname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -55,78 +17,47 @@ import {
 export type RegexRiskKind = "exponential" | "polynomial";
 
 export interface RegexRisk {
-	/**
-	 * `exponential`: some input makes the matcher try exponentially many ways
-	 * through `subPattern`. `polynomial`: some input makes it try at least
-	 * quadratically many splits per match attempt.
-	 */
 	readonly kind: RegexRiskKind;
-	/** The offending part of the pattern, exactly as written. */
 	readonly subPattern: string;
-	/** Which parts compete and which repeated input drives the backtracking. */
 	readonly reason: string;
 }
 
 export interface RegexSource {
 	readonly file: string;
-	/** One-based line of the regular expression literal or `RegExp` call. */
 	readonly line: number;
 	readonly pattern: string;
 	readonly flags: string;
 }
 
-/**
- * A bounded repetition is expanded into its copies when it has at most this
- * many optional repetitions; a wider one counts as unbounded, because its worst
- * case then grows with the bound instead of staying a small constant.
- */
 const MAX_EXPANDED_OPTIONAL_REPETITIONS = 16;
-/** A bounded repetition never expands into more characters than this. */
 const MAX_EXPANDED_POSITIONS = 256;
-/** Ways of reading the same text are counted only up to "more than one". */
 const AMBIGUOUS = 2;
-/** The multi-character ambiguity check pairs every two edges of a loop; skip loops larger than this. */
 const MAX_PAIRED_EDGES = 4_000_000;
 
 type CharSet = ReturnType<typeof Chars.all>;
 type Direction = "ltr" | "rtl";
 
-/** Zero-width conditions met at one input position, collected along a path that consumes nothing. */
 interface Guard {
-	/** Characters allowed just before the position. */
 	readonly prev: CharSet;
-	/** Whether the position may be the start of the input. */
 	readonly atStart: boolean;
-	/** Characters allowed just after the position. */
 	readonly next: CharSet;
-	/** Whether the position may be the end of the input. */
 	readonly atEnd: boolean;
-	/** `\b` requires `word`, `\B` requires `nonword`. */
 	readonly boundary: "any" | "word" | "nonword";
-	/** Whether some assertion or backreference on the path can fail. */
 	readonly conditional: boolean;
 }
 
-/** One character the pattern consumes. */
 interface Position {
 	readonly chars: CharSet;
-	/** The pattern node that consumes it. */
 	readonly origin: AST.Node;
 }
 
-/** A way to move from one consumed character to the next. */
 interface Edge {
 	readonly from: number;
 	readonly to: number;
-	/** Characters this step can consume. */
 	readonly label: CharSet;
-	/** Characters the previous step can have consumed for this step to be allowed. */
 	readonly prev: CharSet;
-	/** A `\b` (`word`) or `\B` (`nonword`) between the two characters. */
 	readonly boundary: Guard["boundary"];
-	/** How many distinct paths of the pattern take this edge, capped at {@link AMBIGUOUS}. */
 	count: number;
-	/** The pattern nodes whose sequencing or repetition creates the edge. */
 	readonly via: AST.Node[];
 }
 
@@ -141,7 +72,6 @@ interface EmptyPath {
 	readonly count: number;
 }
 
-/** A Glushkov-style summary of a sub-pattern: what it can start and end with, and how it can match nothing. */
 interface Fragment {
 	readonly first: readonly Entry[];
 	readonly last: readonly Entry[];
@@ -169,13 +99,6 @@ interface Finding {
 
 const parser = new RegExpParser({ ecmaVersion: 2025 });
 
-/**
- * Returns every super-linear backtracking risk in a JavaScript regular
- * expression, given its source and flags as `new RegExp(pattern, flags)` would
- * receive them. An empty array means none was found.
- *
- * @throws SyntaxError when the pattern or flags are not valid JavaScript.
- */
 export function findBacktrackingRisks(pattern: string, flags: string): RegexRisk[] {
 	const parsedFlags = parser.parseFlags(flags);
 	const ast = parser.parsePattern(pattern, 0, pattern.length, {
@@ -234,10 +157,6 @@ function createContext(flags: ReadonlyFlags, reversed: boolean): Context {
 	};
 }
 
-// ---------------------------------------------------------------------------
-// Automaton construction
-// ---------------------------------------------------------------------------
-
 const charSetKeys = new WeakMap<CharSet, string>();
 function charSetKey(chars: CharSet): string {
 	let key = charSetKeys.get(chars);
@@ -265,7 +184,6 @@ function guardKey(guard: Guard): string {
 	return key;
 }
 
-/** Both guards at once, or `undefined` when no input position can satisfy them. */
 function combine(context: Context, a: Guard, b: Guard): Guard | undefined {
 	if (a === context.open) return b;
 	if (b === context.open) return a;
@@ -282,7 +200,6 @@ function combine(context: Context, a: Guard, b: Guard): Guard | undefined {
 	return { prev, atStart, next, atEnd, boundary, conditional: a.conditional || b.conditional };
 }
 
-/** The characters that can follow `prevChars` across `guard` into `nextChars`. */
 function transition(
 	context: Context,
 	prevChars: CharSet,
@@ -336,10 +253,6 @@ function addEdge(context: Context, from: Entry, to: Entry, via: AST.Node): void 
 	});
 }
 
-/**
- * Whether `edge` can be taken inside a run of `char`: the step reads `char`
- * right after another `char`. A `\b` between two equal characters never holds.
- */
 function readsRun(edge: Edge, char: number): boolean {
 	return edge.label.has(char) && edge.prev.has(char) && edge.boundary !== "word";
 }
@@ -411,7 +324,6 @@ function concat(context: Context, a: Fragment, b: Fragment, via: AST.Node): Frag
 	return { first: mergeEntries(first), last: mergeEntries(last), empty: mergeEmpty(empty) };
 }
 
-/** `fragment?`: an iteration that matches nothing is rejected, so the only empty path is skipping it. */
 function optional(context: Context, fragment: Fragment): Fragment {
 	return { first: fragment.first, last: fragment.last, empty: [{ guard: context.open, count: 1 }] };
 }
@@ -466,7 +378,6 @@ function characters(
 ): Fragment {
 	const set = toUnicodeSet(node, flags);
 	if (set.accept.isEmpty) return leaf(context, set.chars, node);
-	// A `v`-flag class that also matches strings: each string is a sequence of characters.
 	const parts: Fragment[] = set.chars.isEmpty ? [] : [leaf(context, set.chars, node)];
 	for (const word of set.accept.wordSets) {
 		let fragment = epsilon(context);
@@ -533,11 +444,6 @@ function assertion(context: Context, node: AST.Assertion, flags: ReadonlyFlags):
 	}
 }
 
-/**
- * A backreference repeats text its group consumed: model it as up to that many
- * of the group's characters. It can match nothing only when its group may not
- * have participated or may have matched nothing.
- */
 function backreference(context: Context, node: AST.Backreference, flags: ReadonlyFlags): Fragment {
 	const groups = Array.isArray(node.resolved) ? node.resolved : [node.resolved];
 	let chars = context.none;
@@ -556,7 +462,6 @@ function backreference(context: Context, node: AST.Backreference, flags: Readonl
 	return min === 0 ? { ...repeated, empty: [skip] } : repeated;
 }
 
-/** How many positions one copy of `node` creates, counting expanded bounded repetitions. */
 function size(node: AST.Element | AST.Alternative): number {
 	switch (node.type) {
 		case "Alternative":
@@ -603,16 +508,11 @@ function repeat(
 	return { first: body.first, last: body.last, empty: min === 0 ? [{ guard: context.open, count: 1 }] : body.empty };
 }
 
-// ---------------------------------------------------------------------------
-// Ambiguity analysis
-// ---------------------------------------------------------------------------
-
 interface Graph {
 	readonly size: number;
 	readonly successors: readonly (readonly number[])[];
 }
 
-/** Tarjan's algorithm, iterative. Returns the component index of every node. */
 function components(graph: Graph): number[] {
 	const index = new Array<number>(graph.size).fill(-1);
 	const low = new Array<number>(graph.size).fill(0);
@@ -669,7 +569,6 @@ function graphOf(size: number, edges: readonly Edge[]): Graph {
 	return { size, successors };
 }
 
-/** One character standing for each class of characters that every label either contains entirely or not at all. */
 function representatives(labels: readonly CharSet[]): number[] {
 	const unique = new Map<string, CharSet>();
 	for (const label of labels) unique.set(charSetKey(label), label);
@@ -693,7 +592,6 @@ function representatives(labels: readonly CharSet[]): number[] {
 	return [...classes.values()].map((starts) => readableMember(sets, starts));
 }
 
-/** A printable character from the class that `starts` begins, when it has one. */
 function readableMember(sets: readonly CharSet[], starts: readonly number[]): number {
 	const signature = (char: number): string => sets.map((set) => (set.has(char) ? "1" : "0")).join("");
 	const wanted = signature(starts[0]!);
@@ -740,17 +638,12 @@ function analyse(context: Context, body: Fragment, pattern: string): Finding[] {
 		list.push(exit.guard);
 		exits.set(exit.position, list);
 	}
-	/**
-	 * Whether the match can end at `node` in the middle of a run of `pumped`:
-	 * then the backtracker finds that match before it explores the ambiguity.
-	 */
 	const acceptsWithin = (node: number, pumped: CharSet): boolean =>
 		(exits.get(node) ?? []).some((guard) => {
 			if (!guard.conditional) return true;
 			const inside = pumped.intersect(guard.prev).intersect(guard.next);
 			if (inside.isEmpty) return false;
 			if (guard.boundary === "any") return true;
-			// Inside a run, both neighbours come from the run: `\b` needs them to differ in wordness, `\B` to agree.
 			const words = inside.intersect(context.word);
 			const sameWordness = inside.isSubsetOf(context.word) || words.isEmpty;
 			return guard.boundary === "nonword" || !sameWordness;
@@ -758,11 +651,6 @@ function analyse(context: Context, body: Fragment, pattern: string): Finding[] {
 	const leaving: Edge[][] = positions.map(() => []);
 	for (const edge of edges) leaving[edge.from]!.push(edge);
 	const accepts = acceptsEverything(context, exits, leaving);
-	/**
-	 * Whether, after pumping `pumped` from `seeds`, every way forward can be made
-	 * to fail: no position the run reaches can end the match inside the run, and
-	 * none accepts whatever follows the run.
-	 */
 	const failsAfter: FailsAfter = (seeds, pumped) => {
 		const seen = new Set<number>();
 		const work = [...seeds];
@@ -780,12 +668,6 @@ function analyse(context: Context, body: Fragment, pattern: string): Finding[] {
 	return [...exponential(context, edges, failsAfter), ...polynomial(context, edges, failsAfter, pattern)];
 }
 
-/**
- * Which positions accept every continuation of the input: whatever comes next
- * (a character or the end), the match can end there or move on to another such
- * position. Computed as a greatest fixpoint. No suffix can make a run that
- * reaches such a position fail, so ambiguity before it is never explored.
- */
 function acceptsEverything(
 	context: Context,
 	exits: ReadonlyMap<number, readonly Guard[]>,
@@ -833,12 +715,6 @@ function exponential(context: Context, edges: readonly Edge[], failsAfter: Fails
 	return findings;
 }
 
-/**
- * A strongly connected set of positions that reads one repeated character has
- * two different ways back to some position exactly when it has more edges than
- * positions. Two cycles of lengths `a` and `b` then read `c^(ab)` in two ways,
- * and `k` such blocks in `2^k` ways.
- */
 function singleCharacterAmbiguity(
 	context: Context,
 	inner: readonly Edge[],
@@ -868,12 +744,6 @@ function singleCharacterAmbiguity(
 	return undefined;
 }
 
-/**
- * The general test for exponential ambiguity: in the product of the loop with
- * itself, some diagonal pair `(q, q)` reaches itself again through a pair of
- * different edges reading the same character, so two different paths read the
- * same text from `q` back to `q`.
- */
 function multiCharacterAmbiguity(
 	context: Context,
 	inner: readonly Edge[],
@@ -951,11 +821,6 @@ function exponentialFinding(
 	return { kind: "exponential", start: owner.start, end: owner.end, reason };
 }
 
-/**
- * Two different repetitions that can each read a run of the same character,
- * one reachable from the other on that character, can split the run between
- * them in many ways: quadratically many for two, `n^k` for `k` in a row.
- */
 function polynomial(context: Context, edges: readonly Edge[], failsAfter: FailsAfter, pattern: string): Finding[] {
 	const findings: Finding[] = [];
 	const size = context.positions.length;
@@ -1010,12 +875,6 @@ function polynomial(context: Context, edges: readonly Edge[], failsAfter: FailsA
 	return findings;
 }
 
-/**
- * For every component, the longest chain of repetitions on the run's character
- * that ends with it (`before`) and that starts with it (`after`), each counting
- * the component itself when it repeats. Tarjan numbers components so that every
- * edge between two of them leads to a lower number.
- */
 function chainLengths(
 	component: readonly number[],
 	reading: readonly Edge[],
@@ -1062,7 +921,6 @@ function polynomialFinding(
 	return { kind: "polynomial", start, end, reason };
 }
 
-/** The source range covering both repetitions, widened to whole elements of their common sequence. */
 function span(first: AST.Node, second: AST.Node): [number, number] {
 	if (first === second) {
 		const outer = repeatingAncestor(first.parent ?? first);
@@ -1084,7 +942,6 @@ function isRepeating(node: AST.Node): boolean {
 	return node.type === "Quantifier" && node.max > 1;
 }
 
-/** The innermost repetition containing `node`, or `node` itself when none does. */
 function repeatingAncestor(node: AST.Node): AST.Node {
 	for (let current: AST.Node | null = node; current; current = current.parent) {
 		if (isRepeating(current)) return current;
@@ -1109,11 +966,6 @@ function commonAncestor(nodes: readonly AST.Node[]): AST.Node {
 	return common[common.length - 1]!;
 }
 
-/**
- * One finding per kind and range. A polynomial finding adds nothing when an
- * exponential finding contains it, or when it spans other polynomial findings:
- * two repetitions trading through a third already trade with that third.
- */
 function dedupe(findings: readonly Finding[]): Finding[] {
 	const unique = new Map<string, Finding>();
 	for (const finding of findings) {
@@ -1136,18 +988,6 @@ function dedupe(findings: readonly Finding[]): Finding[] {
 		.sort((a, b) => a.start - b.start || a.end - b.end);
 }
 
-// ---------------------------------------------------------------------------
-// Extraction from source text
-// ---------------------------------------------------------------------------
-
-/**
- * Returns every regular expression written in `sourceText` whose pattern and
- * flags are known statically: regular expression literals, and `new RegExp(...)`
- * or `RegExp(...)` calls whose pattern is a string literal, a template without
- * substitutions, or a ``String.raw`...` `` template without substitutions, and
- * whose flags are absent or literal. The source is parsed as TypeScript (with
- * JSX for `.tsx`/`.jsx`), so division is never mistaken for a regular expression.
- */
 export function extractRegexSources(file: string, sourceText: string): RegexSource[] {
 	const extension = extname(file);
 	const program = parseSource(sourceText, {
@@ -1195,11 +1035,6 @@ function staticString(node: SourceNode): string | undefined {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Standalone scan
-// ---------------------------------------------------------------------------
-
-/** The shipped sources of every package, relative to the repository root. */
 export const SHIPPED_SOURCE_ROOTS: readonly string[] = [
 	"packages/agent/src",
 	"packages/ai/src",
@@ -1243,11 +1078,9 @@ function collectFiles(path: string, files: string[]): void {
 
 export interface ScannedRegex extends RegexSource {
 	readonly risks: readonly RegexRisk[];
-	/** Set when the pattern could not be parsed. */
 	readonly error?: string;
 }
 
-/** Scans files and directories (recursively) and returns every regular expression found, with its risks. */
 export function scanPaths(paths: readonly string[], baseDirectory = process.cwd()): ScannedRegex[] {
 	const files: string[] = [];
 	for (const path of paths) collectFiles(resolve(baseDirectory, path), files);

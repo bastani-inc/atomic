@@ -52,7 +52,6 @@ async function projectAgentSources(
 		: { readDirs: [], preferredDir, settingsPaths: [] };
 }
 
-/** The agents of every directory in `dirs`, in their order. */
 async function loadAgentsFromDirs(dirs: readonly string[], source: "user" | "project"): Promise<AgentConfig[]> {
 	const agents: AgentConfig[] = [];
 	for (const dir of dirs) agents.push(...(await loadAgentsFromDir(dir, source)));

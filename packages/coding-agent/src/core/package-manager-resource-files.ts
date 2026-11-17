@@ -1,6 +1,7 @@
-import { access, readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
+import { pathExists as exists } from "../utils/path-exists.js";
 import { stripBom } from "../utils/text.ts";
 import { NestedGitignore } from "./gitignore-rules.ts";
 import { getManifestFromPackageJson } from "./package-manager-manifest.ts";
@@ -17,15 +18,6 @@ type DirEntryInfo = {
 	isDir: boolean;
 	isFile: boolean;
 };
-
-async function exists(path: string): Promise<boolean> {
-	try {
-		await access(path);
-		return true;
-	} catch {
-		return false;
-	}
-}
 
 async function withIgnoreRules(rules: NestedGitignore, dir: string, rootDir: string): Promise<NestedGitignore> {
 	const contents: string[] = [];

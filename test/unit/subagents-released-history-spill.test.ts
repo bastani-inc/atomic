@@ -169,10 +169,6 @@ async function ownerOf(store: SessionStore, closeStore: () => Promise<void>) {
 		answer();
 		await ended();
 	};
-	/**
-	 * The cleanup each of the owner's tasks ended with: `"reaped"` once its session closed cleanly. A task's cleanup is
-	 * confirmed in the background after it settles, so this waits until no task's cleanup is still active.
-	 */
 	const taskCleanups = async () => {
 		const kinds = () => {
 			const watched = host.watchOwnerTasks();

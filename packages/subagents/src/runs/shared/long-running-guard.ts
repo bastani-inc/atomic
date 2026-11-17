@@ -33,8 +33,6 @@ const MUTATING_BASH_PATTERNS = [
 	/(^|[;&|()\s])touch\s+/,
 	/(^|[;&|()\s])git\s+apply\b/,
 	/(^|[;&|()\s])patch\s+/,
-	// `\s(?:[^\S\n]*\n)*` matches what `\s+` did here, since the class after it takes any whitespace but a line break,
-	// and reads a long run of spaces one way instead of splitting it between the two.
 	/(^|[;&|()\s])sed\s(?:[^\S\n]*\n)*[^\n;&|]*\s-i\b/,
 	/(^|[;&|()\s])perl\s(?:[^\S\n]*\n)*[^\n;&|]*\s-pi\b/,
 	/(^|[;&|()]|\n)\s*tee\s+[^|&;]+/,

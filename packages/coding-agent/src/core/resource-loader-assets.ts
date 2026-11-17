@@ -1,9 +1,10 @@
-import { access, readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { getProjectConfigDirs } from "../config.js";
 import { type ColorMode, resolveColorMode } from "../modes/interactive/theme/color-utils.ts";
 import { loadThemeFromContent, type Theme } from "../modes/interactive/theme/theme.js";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
+import { pathExists as existsAsync } from "../utils/path-exists.js";
 import type { ResourceDiagnostic, ResourceOverlap } from "./diagnostics.ts";
 import type { PathMetadata } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
@@ -17,15 +18,6 @@ import type { LoadSkillsResult, Skill } from "./skills.ts";
 import { loadSkillsAsync } from "./skills-async.ts";
 
 const RESOURCE_LOAD_YIELD_AFTER_MS = 8;
-
-async function existsAsync(path: string): Promise<boolean> {
-	try {
-		await access(path);
-		return true;
-	} catch {
-		return false;
-	}
-}
 
 async function applySkillsResult(
 	loader: DefaultResourceLoader,

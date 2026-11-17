@@ -7,7 +7,6 @@ import { DETACHED_CALLBACKS, type EventLoopPolicy, SINKS } from "../../scripts/e
 import { REPO_ROOT } from "../../scripts/event-loop/program.ts";
 
 const FIXTURE = join(REPO_ROOT, "test", "fixtures", "event-loop");
-/** Starting the TypeScript 7 compiler process and loading the fixture program. */
 const COMPILER_START_TIMEOUT_MS = 60_000;
 
 const fixturePolicy: EventLoopPolicy = {

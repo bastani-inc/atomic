@@ -23,7 +23,6 @@ export function getDefaultSessionDir(cwd: string, agentDir: string = getDefaultA
 	return sessionDir;
 }
 
-/** {@link getDefaultSessionDir} without blocking the event loop. */
 export async function getDefaultSessionDirAsync(cwd: string, agentDir: string = getDefaultAgentDir()): Promise<string> {
 	const sessionDir = getDefaultSessionDirPath(cwd, agentDir);
 	try {

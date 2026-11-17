@@ -1,11 +1,3 @@
-/**
- * Resuming a long session keeps the interactive host responsive: the fullscreen transcript renders what its viewport
- * shows, and the rest of the transcript is built and rendered in bounded slices across event-loop turns.
- *
- * Work is counted rather than timed: transcript components rendered and components built, in one frame and in each
- * event-loop turn, at two transcript lengths ten times apart. A bound proportional to the viewport that holds at both
- * leaves no room for work that grows with the transcript.
- */
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { ScrollView, type TuiAltScreen } from "@bastani/atomic-tui";
@@ -24,27 +16,11 @@ import { measureStringWork } from "../../packages/tui/test/string-work.ts";
 
 const COLUMNS = 100;
 const ROWS = 24;
-/** Turns of four session entries (a prompt, a tool call, its result and an answer); the second length is ten times the first. */
 const TURNS = [150, 1_500] as const;
-/**
- * Transcript components a frame may render per terminal row: those its viewport shows, and a viewport's worth above and
- * below it, which a page up or down shows next. Each component is at least a row tall.
- */
 const RENDERS_PER_ROW = 4;
-/**
- * String work a frame may do per terminal cell: each screen row is stripped of prompt marks, checked for cursors and
- * images, reset, normalized and written (see FRAME_WORK_PER_CHARACTER in packages/tui/test/linear-work.test.ts).
- */
 const STRING_WORK_PER_CELL = 64;
-/**
- * Components one event-loop turn may build and render per terminal row while a resumed transcript fills in: the
- * transcript's tail shown first, then a slice of the history before it, a slice of rendering in the background, and a
- * frame.
- */
 const RESUME_WORK_PER_ROW = 12;
-/** Event-loop turns a resumed transcript may take to fill in completely, per thousand turns of history. */
 const FILL_TURNS_PER_THOUSAND_TURNS = 4_000;
-/** Turns without work after which the transcript counts as filled in. */
 const QUIET_TURNS = 20;
 
 let renders = 0;
@@ -172,7 +148,6 @@ interface ResumedTranscript {
 	readonly transcript: ScrollView;
 }
 
-/** The interactive host's fullscreen transcript for a session of `turns` turns, before it renders the session. */
 function openResumedSession(turns: number): ResumedTranscript {
 	const terminal = new RecordingTerminal();
 	terminal.columns = COLUMNS;
@@ -193,15 +168,10 @@ function nextTurn(): Promise<void> {
 	return new Promise((resolve) => setImmediate(resolve));
 }
 
-/** Transcript components rendered and built so far. */
 function workDone(mode: InteractiveMode): number {
 	return renders + mode.chatContainer.children.length;
 }
 
-/**
- * Runs event-loop turns until the transcript holds a component for every turn's prompt and a run of turns passes without
- * work, reporting the work of each turn.
- */
 async function fillIn(mode: InteractiveMode, turns: number, onTurn: (work: number) => void = () => {}): Promise<void> {
 	let quietTurns = 0;
 	for (let turn = 0; quietTurns < QUIET_TURNS; turn++) {
@@ -218,7 +188,6 @@ async function fillIn(mode: InteractiveMode, turns: number, onTurn: (work: numbe
 	}
 }
 
-/** Asserts the transcript, rendered in full, holds every turn's prompt once and in order. */
 function assertHoldsEveryTurn(mode: InteractiveMode, turns: number): void {
 	const prompts = mode.documentContainer
 		.render(COLUMNS)

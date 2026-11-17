@@ -9,7 +9,6 @@ const IMAGE_FILENAME = "clankolas.png";
 
 let announcementImage: Promise<string | undefined> | undefined;
 
-/** The announcement image, read once; undefined when the bundled asset cannot be read. */
 export function loadEarendilAnnouncementImage(): Promise<string | undefined> {
 	announcementImage ??= getBundledInteractiveAssetPathAsync(IMAGE_FILENAME)
 		.then((path) => readFile(path))

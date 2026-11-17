@@ -67,7 +67,6 @@ describe("startup catalog refresh against a stalled registry", () => {
 		// releases only its own waiter.
 		const selector = new AbortController();
 		const selectorRefresh = refreshModelCatalogs(harness.modelRuntime, { signal: selector.signal });
-		// The selector joins once its catalog-input key is read.
 		await vi.advanceTimersByTimeAsync(0);
 		expect(harness.refreshCalls()).toBe(1);
 		selector.abort();

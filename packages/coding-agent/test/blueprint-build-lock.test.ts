@@ -20,7 +20,6 @@ import { buildLockPath, settleOtherBuilds, withBuildLocks } from "../src/core/re
 import { runLoggedProcess } from "../src/core/resume/blueprint/process.ts";
 import { processStartToken } from "../src/core/worktree-snapshot/pool.ts";
 
-// Process creation is real; execFile is only watched, to tell when a build lock lists this host's processes.
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
 	return { ...actual, execFile: vi.fn(actual.execFile) };

@@ -40,7 +40,6 @@ function nestedEntries(field: keyof Settings, value: unknown): Record<string, un
 	return isPlainObject(value) ? value : {};
 }
 
-/** What a save writes to a scope's primary settings file, from the file as it is under the lock. */
 type PersistSettings = (currentPrimary: string | undefined) => string | undefined;
 
 interface UnsavedWrite {
@@ -49,7 +48,6 @@ interface UnsavedWrite {
 	readonly persist: PersistSettings;
 }
 
-/** The saves of every settings manager of this process that have not finished, in the order they were made. */
 const unsavedWrites: UnsavedWrite[] = [];
 let exitSaveRegistered = false;
 
@@ -60,7 +58,6 @@ export class SettingsManager {
 	}
 
 	private storage: SettingsStorage;
-	/** What this manager loads and saves through once it is created, without blocking the event loop. */
 	private asyncStorage: AsyncSettingsStorage;
 	private globalSettings: Settings;
 	private projectSettings: Settings;
@@ -118,7 +115,6 @@ export class SettingsManager {
 		return SettingsManager.fromStorage(SettingsManager.fileStorage(cwd, agentDir), options);
 	}
 
-	/** {@link SettingsManager.create} without blocking the event loop: the settings files are read asynchronously. */
 	static async createAsync(
 		cwd: string,
 		agentDir: string = getAgentDir(),
@@ -126,7 +122,6 @@ export class SettingsManager {
 	): Promise<SettingsManager> {
 		const storage = SettingsManager.fileStorage(cwd, agentDir);
 		const projectTrusted = options.projectTrusted ?? true;
-		// What this process saved before is read back, as a synchronous save was always on disk before the next read.
 		await SettingsManager.unsavedWritesSettled();
 		const globalLoad = await SettingsManager.tryLoadFromStorageAsync(storage, storage, "global");
 		const projectLoad = await SettingsManager.tryLoadFromStorageAsync(storage, storage, "project", projectTrusted);
@@ -192,7 +187,6 @@ export class SettingsManager {
 		const initialSettings = SettingsManager.migrateSettings(structuredClone(settings) as Record<string, unknown>);
 		const content = JSON.stringify(initialSettings, null, 2);
 		storage.withLock("global", () => content);
-		// What `fromStorage` would read back: the settings just stored, and no project settings.
 		const globalLoad = SettingsManager.tryLoad(() => SettingsManager.parseLayers(storage, "global", [{ content }]));
 		const projectLoad: SettingsLoad = { settings: {}, invalid: [], error: null };
 		return SettingsManager.fromLoads(storage, globalLoad, projectLoad, true);
@@ -448,7 +442,6 @@ export class SettingsManager {
 		);
 	}
 
-	/** {@link SettingsManager.setProjectTrusted} without blocking the event loop: project settings are read asynchronously. */
 	async setProjectTrustedAsync(trusted: boolean): Promise<void> {
 		if (this.projectTrusted === trusted) {
 			return;
@@ -456,7 +449,6 @@ export class SettingsManager {
 		const projectLoad = trusted
 			? await SettingsManager.tryLoadFromStorageAsync(this.storage, this.asyncStorage, "project", true)
 			: undefined;
-		// Another change of trust may have landed while the project settings were read.
 		if (this.projectTrusted === trusted) {
 			return;
 		}
@@ -498,7 +490,6 @@ export class SettingsManager {
 				"project",
 				this.projectTrusted,
 			);
-			// A setting changed while the files were read is in a save queued meanwhile: read again once it is saved.
 			if (this.writeQueue === writes) break;
 		}
 		if (!globalLoad.error) {
@@ -636,10 +627,6 @@ export class SettingsManager {
 		this.modifiedProjectNestedFields.clear();
 	}
 
-	/**
-	 * Queues a save of `scope` in order with this manager's other saves. Saves do not block the event loop; one that has
-	 * not finished when the process exits is written then (see {@link SettingsManager.saveUnsavedWritesAtExit}).
-	 */
 	private enqueueWrite(scope: SettingsScope, persist: PersistSettings): void {
 		const owner = settingsWriteOwner.getStore() ?? ownedSettingsManagers.get(this);
 		const unsaved: UnsavedWrite = { manager: this, scope, persist };
@@ -667,11 +654,6 @@ export class SettingsManager {
 			});
 	}
 
-	/**
-	 * Writes, as the process exits, the saves that have not finished: synchronous saves were always written before an
-	 * exit, and an asynchronous one still in progress never resumes. A save is written again when it had already reached
-	 * its file; saving the same values twice changes nothing.
-	 */
 	private static saveUnsavedWritesAtExit(): void {
 		for (const { manager, scope, persist } of unsavedWrites.splice(0)) {
 			if (scope === "project" && !manager.projectTrusted) continue;
@@ -680,13 +662,10 @@ export class SettingsManager {
 					manager.storage.withPrimaryWriteLockAtExit(scope, persist);
 				else if (manager.storage.withPrimaryWriteLock) manager.storage.withPrimaryWriteLock(scope, persist);
 				else manager.storage.withLock(scope, persist);
-			} catch {
-				// The process is exiting: a save that fails now has nowhere to be reported.
-			}
+			} catch {}
 		}
 	}
 
-	/** Resolves once every save this process made so far has finished, in whichever manager made it. */
 	private static async unsavedWritesSettled(): Promise<void> {
 		while (unsavedWrites.length > 0) {
 			await Promise.all([...new Set(unsavedWrites.map(({ manager }) => manager.writeQueue))]);
@@ -744,7 +723,6 @@ export class SettingsManager {
 		this.enqueueWrite(scope, persist);
 	}
 
-	/** Saves `persist` to the primary file of `scope`, under its lock. */
 	private static async writePrimary(
 		storage: AsyncSettingsStorage,
 		scope: SettingsScope,

@@ -1873,7 +1873,6 @@ test("public disposal aborts and drains active shell work and pending human inpu
 	});
 	let aborted = false;
 	let markStarted!: () => void;
-	// The shell starts once its prefix and environment are read; disposal before that cancels it before it starts.
 	const started = new Promise<void>((resolve) => {
 		markStarted = resolve;
 	});
@@ -5077,8 +5076,6 @@ test.each([false, true])(
 		);
 		try {
 			await admitted.promise;
-			// Reload resolves resource paths asynchronously after the factories run. Wait until rollback has sealed the
-			// omitted set before releasing its admitted callback, rather than racing that I/O with a fixed delay.
 			await vi.waitFor(() =>
 				assert.throws(() => {
 					const unsubscribe = other.events.on("probe", () => {});

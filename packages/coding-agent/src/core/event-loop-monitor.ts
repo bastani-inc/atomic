@@ -1,30 +1,3 @@
-/**
- * The opt-in event-loop block diagnostic.
- *
- * With `ATOMIC_EVENT_LOOP_BLOCK_MS` set to a positive whole number of milliseconds, the interactive host and its
- * isolated engine each append JSON lines to one file (`ATOMIC_EVENT_LOOP_BLOCK_LOG`, or `event-loop-blocks.jsonl` in
- * the agent directory):
- * - `start`: the process started watching its event loop;
- * - `block`: the event loop turned that many milliseconds or more after it was due, with the stacks of the code that
- *   held it;
- * - `delay`: the process's event-loop delay (p50, p99, max) over each phase of its life: its startup, written once it
- *   is ready for input (the host once it starts drawing its first frame, when its editor takes keys; the engine once
- *   its session and extensions are loaded); its session, written once it starts to quit; and its shutdown, written as
- *   it exits. A process that never becomes ready, or is ended before it can quit (as Windows ends the engine), writes
- *   the phase it was in as far as it got.
- *
- * Unset, nothing here runs: no timer, worker, profiler or histogram.
- *
- * A heartbeat timer on the main thread finds the blocks: the event loop was blocked for however much later than its
- * interval a beat runs. Stacks come from the runtime's inspector:
- * - Node: a worker thread reads the beat's timestamp from shared memory. Once it is a threshold late, the worker
- *   attaches an inspector session to the main thread and pauses it every few milliseconds until the block ends,
- *   taking the stack each time, then detaches. The debugger is attached only while a block lasts, because attached it
- *   makes every `await` several times slower; attaching it takes the main thread tens of milliseconds, inside the
- *   block it is reporting.
- * - Bun: Bun cannot pause the main thread from a worker, so the main thread keeps a sampling CPU profile, restarted
- *   every few seconds to bound its memory, and reads the samples taken during a block once the block ends.
- */
 import { appendFileSync, mkdirSync } from "node:fs";
 import type { Profiler, Session } from "node:inspector";
 import { dirname, join, resolve } from "node:path";
@@ -36,31 +9,24 @@ import { DiagnosticWriter } from "./diagnostic-writer.ts";
 
 export const EVENT_LOOP_BLOCK_MS_ENV = "ATOMIC_EVENT_LOOP_BLOCK_MS";
 export const EVENT_LOOP_BLOCK_LOG_ENV = "ATOMIC_EVENT_LOOP_BLOCK_LOG";
-/** The log's name in the agent directory when `ATOMIC_EVENT_LOOP_BLOCK_LOG` is unset. */
 export const EVENT_LOOP_BLOCK_LOG_NAME = "event-loop-blocks.jsonl";
 
-/** The process that draws the terminal UI (and, without an isolated engine, also runs the agent), or the engine. */
 export type EventLoopProcessRole = "host" | "engine";
 
-/** How a process's records get their stacks. */
 export type EventLoopStackSource = "debugger" | "profiler" | "unavailable";
 
-/** One stack the blocking code was seen in, innermost frame first, and how many samples saw it. */
 export interface EventLoopBlockStack {
 	readonly count: number;
 	readonly frames: readonly string[];
 }
 
-/** A frame and how many of a block's samples passed through it. */
 export interface EventLoopHotFrame {
 	readonly count: number;
 	readonly frame: string;
 }
 
-/** The phases a process's event-loop delay is recorded in. */
 export type EventLoopPhase = "startup" | "session" | "shutdown";
 
-/** A process's event-loop delay over one phase of its life, in milliseconds past each due turn. */
 export interface EventLoopDelaySummary {
 	readonly durationMs: number;
 	readonly ticks: number;
@@ -70,7 +36,6 @@ export interface EventLoopDelaySummary {
 }
 
 interface RecordBase {
-	/** When the record's subject began (a block: when the loop was due to turn), as an ISO timestamp. */
 	readonly at: string;
 	readonly role: EventLoopProcessRole;
 	readonly pid: number;
@@ -87,49 +52,24 @@ export type EventLoopRecord =
 			readonly type: "block";
 			readonly durationMs: number;
 			readonly thresholdMs: number;
-			/** Stack samples taken during the block. */
 			readonly samples: number;
-			/** The frames most samples passed through, the most specific first among equals: where the time went. */
 			readonly hotFrames: readonly EventLoopHotFrame[];
-			/** The most frequent identical stacks. */
 			readonly stacks: readonly EventLoopBlockStack[];
 	  })
 	| (RecordBase & { readonly type: "delay"; readonly phase: EventLoopPhase } & EventLoopDelaySummary);
 
-/** How often the main thread stamps the heartbeat. A blocked loop delays the next beat by as long as it is blocked. */
 const HEARTBEAT_MS = 20;
-/** How often the Node watchdog worker checks the heartbeat. */
 const WATCH_POLL_MS = 10;
-/** Time between two stack samples of one block on Node; each pause holds the main thread for about a millisecond. */
 const STACK_SAMPLE_INTERVAL_MS = 20;
-/** Samples taken of one block at most, so a block of minutes costs no more than one of seconds. */
 const MAX_STACK_SAMPLES = 50;
-/**
- * Frames kept at each end of a deeper stack: the innermost say what ran, the outermost what started it (a module
- * load, a timer, a message handler).
- */
 const STACK_END_FRAMES = 12;
-/** Distinct stacks kept in a block record, most frequent first. */
 const MAX_BLOCK_STACKS = 3;
-/** Hot frames kept in a block record. */
 const MAX_HOT_FRAMES = 10;
-/**
- * How long the main thread waits for the Node worker's samples of a block it found. The worker posts them as soon as
- * it sees the next beat, so they arrive within a beat or two; a starved worker that never noticed the block sends
- * none, and the record is written without stacks.
- */
 const BLOCK_SAMPLES_GRACE_MS = 1_000;
-/**
- * Bun's profile sampling interval. A block at the smallest useful threshold of tens of milliseconds still gets tens of
- * samples, at a few percent of CPU while JavaScript runs (1 ms cost about twice as much); an idle loop takes none.
- */
 const PROFILE_SAMPLING_INTERVAL_US = 2_000;
-/** Bun's profile is restarted this often, so it holds a few seconds of samples at most. */
 const PROFILE_WINDOW_MS = 5_000;
-/** The delay histogram's sampling interval, Node's default. */
 const DELAY_RESOLUTION_MS = 10;
 
-/** The threshold `env` sets: a positive whole number of milliseconds, or nothing. */
 export function eventLoopBlockThresholdMs(env: NodeJS.ProcessEnv = process.env): number | undefined {
 	const raw = env[EVENT_LOOP_BLOCK_MS_ENV]?.trim();
 	if (raw === undefined || !/^\d+$/.test(raw)) return undefined;
@@ -137,7 +77,6 @@ export function eventLoopBlockThresholdMs(env: NodeJS.ProcessEnv = process.env):
 	return thresholdMs > 0 && Number.isSafeInteger(thresholdMs) ? thresholdMs : undefined;
 }
 
-/** The log `env` selects; a relative path resolves against `cwd`. */
 export function eventLoopBlockLogPath(env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): string {
 	const named = env[EVENT_LOOP_BLOCK_LOG_ENV]?.trim();
 	return named ? resolve(cwd, named) : join(getAgentDir(), EVENT_LOOP_BLOCK_LOG_NAME);
@@ -145,20 +84,17 @@ export function eventLoopBlockLogPath(env: NodeJS.ProcessEnv = process.env, cwd 
 
 const roundMs = (ms: number) => Math.round(ms * 10) / 10;
 
-/** A stack frame as `Error.stack` names it, from 0-based line and column numbers. */
 export function formatStackFrame(functionName: string, url: string, lineNumber: number, columnNumber: number): string {
 	const name = functionName || "(anonymous)";
 	return url ? `${name} (${url}:${lineNumber + 1}:${columnNumber + 1})` : name;
 }
 
-/** A stack, innermost frame first, with only `STACK_END_FRAMES` kept at each end when it is deeper than both. */
 export function trimStack(frames: readonly string[]): string[] {
 	if (frames.length <= STACK_END_FRAMES * 2) return [...frames];
 	const omitted = frames.length - STACK_END_FRAMES * 2;
 	return [...frames.slice(0, STACK_END_FRAMES), `… ${omitted} frames …`, ...frames.slice(-STACK_END_FRAMES)];
 }
 
-/** Groups identical stacks, most frequent first, keeping the first `MAX_BLOCK_STACKS`. */
 export function summarizeStacks(samples: readonly (readonly string[])[]): EventLoopBlockStack[] {
 	const counts = new Map<string, EventLoopBlockStack>();
 	for (const frames of samples) {
@@ -170,10 +106,6 @@ export function summarizeStacks(samples: readonly (readonly string[])[]): EventL
 
 const nodeFunctionFrames = new WeakMap<readonly string[], readonly string[]>();
 
-/**
- * The frames the most samples passed through, keeping the first `MAX_HOT_FRAMES`. Among frames every sample passed
- * through, the innermost is the most specific answer to what held the loop, so equal counts order by depth.
- */
 export function hotFrames(samples: readonly (readonly string[])[]): EventLoopHotFrame[] {
 	const frames = new Map<string, { frame: string; count: number; depth: number }>();
 	for (const stack of samples) {
@@ -199,10 +131,6 @@ export function hotFrames(samples: readonly (readonly string[])[]): EventLoopHot
 		.map(({ frame, count }) => ({ count, frame }));
 }
 
-/**
- * The stacks of the samples `profile` took between `fromUs` and `untilUs`, innermost frame first. Bun's profile times
- * are epoch microseconds, as `performance.timeOrigin + performance.now()` reads them.
- */
 export function profileStacksBetween(profile: Profiler.Profile, fromUs: number, untilUs: number): string[][] {
 	const nodes = new Map(profile.nodes.map((node) => [node.id, node]));
 	const parents = new Map<number, number>();
@@ -225,36 +153,20 @@ export function profileStacksBetween(profile: Profiler.Profile, fromUs: number, 
 	return stacks;
 }
 
-/** A frame the Node worker read from a paused main thread: function name, script URL, 0-based line and column. */
 type WorkerFrame = readonly [string, string, number, number, number, number];
 
 interface WorkerBlockSamples {
-	/** The heartbeat stamp, epoch microseconds, the block followed. */
 	readonly sinceUs: number;
 	readonly samples: readonly (readonly WorkerFrame[])[];
 }
 
-/** Slots of the Int32 state the Node main thread and its watchdog share. */
 const WatchdogState = {
-	/** Set by the main thread as it exits: the watchdog detaches and starts nothing more. */
 	Exiting: 0,
-	/** Set by the watchdog while its inspector session is attached to the main thread. */
 	Attached: 1,
 } as const;
 
-/**
- * How long an exiting Node process waits for its watchdog to detach. Node prints "Waiting for the debugger to
- * disconnect..." to stderr (the terminal) when a process exits with an inspector session attached, as it is when the
- * process exits inside a block the watchdog is sampling. The watchdog checks every `WATCH_POLL_MS`.
- */
 const DETACH_ON_EXIT_MS = 100;
 
-/**
- * The Node watchdog worker, evaluated as CommonJS so it needs no file of its own in any install layout. It reads the
- * main thread's heartbeat stamp; once the stamp is a threshold late it attaches the debugger to the main thread and
- * pauses it every `sampleIntervalMs` for its stack, and when the next beat arrives it detaches and posts the stacks.
- * A sample taken once the heartbeat has moved on belongs to later code, and is dropped.
- */
 const WATCHDOG_SOURCE = `
 const { parentPort, workerData } = require("node:worker_threads");
 const { Session } = require("node:inspector");
@@ -317,18 +229,13 @@ setInterval(() => {
 }, pollMs);
 `;
 
-/** Where a block's stacks come from. */
 interface StackSampler {
 	readonly source: EventLoopStackSource;
-	/** The stacks sampled between the beat at `sinceUs` and the one at `untilUs` that followed the block. */
 	stacksOf(sinceUs: number, untilUs: number): Promise<readonly (readonly string[])[]>;
-	/** Called on every heartbeat with the time it ran. */
 	beat(nowUs: number): void;
-	/** Called as the process exits. */
 	exit(): void;
 }
 
-/** Node: the watchdog worker samples the main thread while a block lasts. */
 class DebuggerSampler implements StackSampler {
 	readonly source = "debugger";
 	private readonly stamp = new BigInt64Array(new SharedArrayBuffer(BigInt64Array.BYTES_PER_ELEMENT));
@@ -364,15 +271,12 @@ class DebuggerSampler implements StackSampler {
 			if (waiter === undefined) this.arrived.set(sinceUs, stacks);
 			else waiter(stacks);
 		});
-		// A watchdog that fails costs the records their stacks, never the process.
 		worker.on("error", () => {});
-		// After the listeners: adding a message listener to an unreferenced worker references it again.
 		worker.unref();
 	}
 
 	beat(nowUs: number): void {
 		Atomics.store(this.stamp, 0, BigInt(nowUs));
-		// Samples of a block the main thread measured under the threshold (the clocks differ by a little) are never asked for.
 		for (const sinceUs of this.arrived.keys()) {
 			if (nowUs - sinceUs > BLOCK_SAMPLES_GRACE_MS * 1000) this.arrived.delete(sinceUs);
 		}
@@ -381,7 +285,6 @@ class DebuggerSampler implements StackSampler {
 	exit(): void {
 		Atomics.store(this.state, WatchdogState.Exiting, 1);
 		const deadline = performance.now() + DETACH_ON_EXIT_MS;
-		// A busy wait in JavaScript, not Atomics.wait: the detach is carried out by this thread, between statements.
 		while (Atomics.load(this.state, WatchdogState.Attached) === 1 && performance.now() < deadline) {}
 	}
 
@@ -404,11 +307,9 @@ class DebuggerSampler implements StackSampler {
 	}
 }
 
-/** Bun: a rolling sampling profile of the main thread, read once a block has ended. */
 class ProfileSampler implements StackSampler {
 	readonly source = "profiler";
 	private startedUs = 0;
-	/** Profile stops and restarts, one at a time. */
 	private queue: Promise<unknown> = Promise.resolve();
 
 	private readonly session: Session;
@@ -451,7 +352,6 @@ class ProfileSampler implements StackSampler {
 	}
 }
 
-/** Without a working inspector, blocks are still recorded, with no stacks. */
 const noStacks: StackSampler = {
 	source: "unavailable",
 	stacksOf: () => Promise.resolve([]),
@@ -522,11 +422,8 @@ class EventLoopMonitor {
 		});
 	}
 
-	/** Writes the phase that ends here and starts `next`, unless the process is already past it. */
 	enter(next: EventLoopPhase): void {
 		if (PHASES.indexOf(next) <= PHASES.indexOf(this.phase)) return;
-		// A block the phase ends inside belongs to this phase, but its histogram would count it only at its next tick. It
-		// is beaten and counted here, and the next phase gets a histogram of its own that starts after it.
 		const lateMs = this.beat();
 		const ended = this.delayRecord(lateMs);
 		if (next === "shutdown") this.writeAtQuit(ended);
@@ -537,7 +434,6 @@ class EventLoopMonitor {
 		this.phaseStartedUs = epochUs();
 	}
 
-	/** Records a block that ends now, and returns how late this beat is in milliseconds. */
 	private beat(): number {
 		const nowUs = epochUs();
 		const sinceUs = this.lastBeatUs;
@@ -566,9 +462,7 @@ class EventLoopMonitor {
 		};
 	}
 
-	/** This phase's delay so far; `lateMs` is a late tick the histogram has not counted yet. */
 	private delayRecord(lateMs = 0): EventLoopRecord {
-		// Node records each tick's whole interval, Bun only how late it was.
 		const lagMs = (nanoseconds: number) =>
 			roundMs(Math.max(0, nanoseconds / 1e6 - (isBunRuntime ? 0 : DELAY_RESOLUTION_MS)));
 		const ticks = this.histogram.count;
@@ -586,32 +480,20 @@ class EventLoopMonitor {
 		};
 	}
 
-	/** Records written while the session runs: appended in order without blocking the loop they measure. */
 	private write(record: EventLoopRecord): void {
 		void this.writer.append(this.logPath, `${JSON.stringify(record)}\n`);
 	}
 
-	/**
-	 * Records written as the process quits, synchronously: Windows ends the engine as soon as its host quits, before an
-	 * asynchronous write could land. Anything still queued is written first, in order.
-	 */
 	private writeAtQuit(record: EventLoopRecord): void {
 		this.writer.flushSync();
 		try {
 			appendFileSync(this.logPath, `${JSON.stringify(record)}\n`);
-		} catch {
-			// As above: a lost record, never a lost session.
-		}
+		} catch {}
 	}
 }
 
 let monitor: EventLoopMonitor | undefined;
 
-/**
- * Starts the event-loop block diagnostic in this process when `ATOMIC_EVENT_LOOP_BLOCK_MS` asks for it, and returns
- * whether it did. Otherwise it returns false having started nothing. A relative `ATOMIC_EVENT_LOOP_BLOCK_LOG` is made
- * absolute in this process's environment, so an engine started in another directory writes to the same file.
- */
 export function startEventLoopMonitor(role: EventLoopProcessRole, env: NodeJS.ProcessEnv = process.env): boolean {
 	if (monitor !== undefined) return true;
 	const thresholdMs = eventLoopBlockThresholdMs(env);
@@ -631,18 +513,10 @@ export function startEventLoopMonitor(role: EventLoopProcessRole, env: NodeJS.Pr
 	return true;
 }
 
-/**
- * Ends the startup phase of the event-loop delay record: the process is ready for input. The interactive host calls it
- * as it starts its terminal and first frame, before its deferred startup; the engine once its resources are loaded.
- */
 export function markEventLoopStartupComplete(): void {
 	monitor?.enter("session");
 }
 
-/**
- * Ends the session phase of the event-loop delay record: the process has started to quit. The engine calls it when the
- * host announces a quit, because Windows ends the engine without letting it exit on its own.
- */
 export function markEventLoopShutdown(): void {
 	monitor?.enter("shutdown");
 }

@@ -92,7 +92,6 @@ describe("model catalog refresh across a models.json change", () => {
 		const [first, second] = await Promise.all([runtime.readCatalogInputsKey(), runtime.readCatalogInputsKey()]);
 		expect(second).toBe(first);
 
-		// A same-length rewrite: only the content hash tells the two apart.
 		writeModels(modelsPath, "new-key", "new-model");
 		expect(await runtime.readCatalogInputsKey()).not.toBe(first);
 	});
@@ -166,7 +165,6 @@ describe("model catalog refresh across a models.json change", () => {
 		await waitForPasses(() => passes, 1);
 		const keyReads = vi.spyOn(runtime, "readCatalogInputsKey");
 		const selectorRefresh = refreshModelCatalogs(runtime, { signal: selectorController.signal });
-		// The selector joins once its key is read, which happens after the call.
 		await keyReads.mock.results[0]?.value;
 		await new Promise((resolve) => setImmediate(resolve));
 

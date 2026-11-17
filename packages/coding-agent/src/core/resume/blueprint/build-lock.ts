@@ -95,14 +95,6 @@ async function removeLock(file: string): Promise<void> {
 	} catch {}
 }
 
-/**
- * Records in the locks at `files` that step process `pid` of this build started (`running`) or ended, synchronously
- * (#4748). A step's start must be on disk before control returns to what spawned it: a host killed while the step runs
- * then leaves a lock that names it, which the next build needs to stop it, and only a synchronous write guarantees
- * that. Its end is written the same way, so the writes keep their order. When the step started is read without
- * blocking and written once read, while that step still runs; a lock written before then names the step without its
- * start, which a later build treats as a step it cannot prove.
- */
 function recordStepProcessDurably(
 	files: readonly string[],
 	holder: LockedProcess,
@@ -234,7 +226,6 @@ async function stopProven(
 	}
 }
 
-/** Those of `steps` whose {@link identity} is `wanted`, in order. */
 async function stepsThatAre(steps: readonly LockedProcess[], wanted: "same" | "unknown"): Promise<LockedProcess[]> {
 	const found: LockedProcess[] = [];
 	for (const step of steps) if ((await identity(step)) === wanted) found.push(step);
@@ -375,7 +366,6 @@ async function takeBuildMutex(file: string): Promise<AsyncTakeoverMutex | undefi
 export interface SettledBuilds {
 	/** The warnings for the user: a wait timed out, a step may still run, or a lock could not be read. */
 	readonly warnings: string[];
-	/** Lets other processes build the worktrees again: called once this process's build of them settled. Never rejects. */
 	release(): Promise<void>;
 }
 

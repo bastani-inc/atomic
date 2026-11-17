@@ -24,7 +24,6 @@ vi.mock("../src/utils/tools-manager.js", async (importOriginal) => ({
 
 import { FooterDataProvider } from "../src/core/footer-data-provider.js";
 
-/** The branch after one complete read, which a render starts on its first lookup. */
 async function readBranch(provider: FooterDataProvider): Promise<string | null> {
 	await (provider as unknown as { refreshGitBranchAsync(): Promise<void> }).refreshGitBranchAsync();
 	return provider.getGitBranch();

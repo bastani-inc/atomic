@@ -608,7 +608,6 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		const onConnectionChange = (connection: McpServerConnection) => {
 			if (connection.state !== "needs-auth") tokensAtSignIn.delete(connection);
 			else if (!tokensAtSignIn.has(connection)) {
-				// Read as the sign-in becomes needed; a failed read surfaces when the tokens are compared.
 				const tokens = storedTokens(connection);
 				tokens.catch(() => {});
 				tokensAtSignIn.set(connection, tokens);

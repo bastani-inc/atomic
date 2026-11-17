@@ -52,7 +52,6 @@ export function readOsRelease(paths: readonly string[] = OS_RELEASE_PATHS): OsRe
 	return value;
 }
 
-/** Asynchronous variant of {@link readOsRelease} sharing the same process-wide default-paths cache. */
 export async function readOsReleaseAsync(paths: readonly string[] = OS_RELEASE_PATHS): Promise<OsRelease | undefined> {
 	if (paths === OS_RELEASE_PATHS && cachedOsRelease !== undefined) return cachedOsRelease.value;
 	let value: OsRelease | undefined;

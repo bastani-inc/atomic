@@ -160,7 +160,6 @@ export function validateProcessStorage(agentDir: string): void {
 	environmentTeamProfile();
 }
 
-/** {@link validateProcessStorage} without blocking the event loop on the team profile's token file. */
 export async function validateProcessStorageAsync(agentDir: string): Promise<void> {
 	environmentChoices(agentDir);
 	await environmentTeamProfileAsync();
@@ -290,7 +289,6 @@ export function processSharedStorageSelection(): string | undefined {
 	return team === undefined ? undefined : JSON.stringify(team);
 }
 
-/** {@link processSharedStorageSelection} without blocking the event loop on the team profile's token file. */
 export async function processSharedStorageSelectionAsync(): Promise<string | undefined> {
 	const cli = registry[CLI_SELECTION];
 	if (cli !== undefined) return JSON.stringify(cli.value);
@@ -308,7 +306,6 @@ export function processStorageEnvironment(): NodeJS.ProcessEnv {
 	return { ...process.env, [STORAGE_ENV]: processSharedStorageSelection() ?? "" };
 }
 
-/** {@link processStorageEnvironment} without blocking the event loop on the team profile's token file. */
 export async function processStorageEnvironmentAsync(): Promise<NodeJS.ProcessEnv> {
 	const selection = await processSharedStorageSelectionAsync();
 	return { ...process.env, [STORAGE_ENV]: selection ?? "" };

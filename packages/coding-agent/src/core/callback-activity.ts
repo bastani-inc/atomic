@@ -36,7 +36,6 @@ export interface CallbackActivityDescriptor {
 
 let reporter: CallbackActivityReporter | undefined;
 let nextActivityId = 0;
-/** Only the start record's write and synchronous invocation are ordered; the callbacks' work stays concurrent. */
 let pendingCallbackStart: Promise<void> | undefined;
 
 export function setCallbackActivityReporter(next: CallbackActivityReporter | undefined): void {
@@ -58,7 +57,6 @@ function beginActivity(descriptor: CallbackActivityDescriptor):
 		startedAt: performance.now(),
 	};
 	const started = activeReporter.started(activity);
-	// Attribution is diagnostic: a closed transport cannot fail the callback or leave a rejected write unhandled.
 	const written = started === undefined ? undefined : started.catch(() => {});
 	return { activity, reporter: activeReporter, written };
 }

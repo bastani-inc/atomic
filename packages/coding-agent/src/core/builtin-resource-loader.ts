@@ -19,7 +19,6 @@ import { SettingsManager } from "./settings-manager.ts";
 import { buildSkillCatalogWith } from "./skill-catalog.ts";
 import { BUILTIN_PATH_PREFIX } from "./source-info.ts";
 
-/** `realpathSync` without blocking; a path it cannot resolve stays as it is. */
 const realpathJs = promisify(realpath);
 
 /** Adds shipped resources without changing the caller's loader or its discovery options. */
@@ -33,15 +32,7 @@ class BuiltinResourceLoader implements ResourceLoader {
 	private disabledRoots: string[] = [];
 	private readonly disableWorkflowExtension: boolean;
 	private readonly ownsDiscovery: boolean;
-	/**
-	 * Real paths of the resources and extensions this loader has seen, resolved ahead of time so the getters, which
-	 * are synchronous, never touch the disk.
-	 */
 	private readonly realPaths = new Map<string, string>();
-	/**
-	 * The real path of `path` as this loader last resolved it. A path it has not seen, which only a delegate reloaded
-	 * behind its back can list, counts as its own real path until the background resolution started here completes.
-	 */
 	private canonical(path: string): string {
 		const known = this.realPaths.get(path);
 		if (known !== undefined) return known;
@@ -49,7 +40,6 @@ class BuiltinResourceLoader implements ResourceLoader {
 		void this.resolveRealPaths([path]);
 		return path;
 	}
-	/** Resolves `paths` again, so a link changed since the last reload is followed to its new target. */
 	private async resolveRealPaths(paths: Iterable<string>): Promise<void> {
 		const unique = [...new Set(paths)];
 		const resolved = await Promise.all(unique.map((path) => realpathJs(path).catch(() => path)));
@@ -57,11 +47,9 @@ class BuiltinResourceLoader implements ResourceLoader {
 			this.realPaths.set(path, resolved[index]!);
 		});
 	}
-	/** Resolves the real paths of everything the delegate and the bundled assets currently list. */
 	private async resolveResourceRealPaths(): Promise<void> {
 		await this.resolveRealPaths([
 			...(this.delegate.getWorkflowResources?.() ?? []).map((resource) => resource.path),
-			// A skill catalog also compares the real paths of the skills' directories.
 			...[this.delegate.getSkills(), this.assets.getSkills()].flatMap(({ skills }) =>
 				skills.flatMap((skill) => [skill.filePath, dirname(skill.filePath)]),
 			),

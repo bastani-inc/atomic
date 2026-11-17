@@ -9,15 +9,9 @@ import { VirtualTerminal } from "./virtual-terminal.ts";
 const COLUMNS = 40;
 const ROWS = 8;
 const PROMPT = "\x1b]133;A\x07";
-/**
- * Children a frame renders at most: those holding the viewport's rows and a viewport's worth above and below, each at
- * least a row tall, over the layout's passes as the heights of children not rendered before replace their estimates.
- */
 const RENDERED_PER_FRAME = 4 * 3 * ROWS;
-/** How long a test waits for a sweep: sweeps follow frames at most every 250 ms, and take a few event-loop turns. */
 const SWEEP_WAIT_MS = 5_000;
 
-/** A transcript entry: a few rows naming it, counting its renders. */
 class Entry implements Component {
 	renders = 0;
 	mouseRows: number[] = [];
@@ -70,7 +64,6 @@ async function screen(session: Session): Promise<string[]> {
 	return session.terminal.getViewport();
 }
 
-/** Runs event-loop turns until the windowed content's background rendering is done. */
 async function settle(): Promise<void> {
 	for (let turn = 0; turn < 50; turn++) await new Promise((resolve) => setImmediate(resolve));
 }
@@ -81,7 +74,6 @@ describe("WindowedContainer in a scroll view", () => {
 		for (const child of entries(200)) content.addChild(child);
 		const request = { width: COLUMNS, height: ROWS, followEnd: false, requestRender() {} };
 		content.layoutWindow({ ...request, top: 0 });
-		// As a background sweep does, measure the offscreen entries before the next layout updates its offsets.
 		content.settleRows();
 		const rows = content.layoutWindow({ ...request, top: 300 });
 		assert.equal(rows.top, 300);
@@ -159,7 +151,6 @@ describe("WindowedContainer in a scroll view", () => {
 			session.tui.scrollToTop();
 			await screen(session);
 			children[90]!.height += 30;
-			// No invalidation: a sweep after a frame finds the change.
 			const deadline = Date.now() + SWEEP_WAIT_MS;
 			for (;;) {
 				await new Promise((resolve) => setTimeout(resolve, 20));

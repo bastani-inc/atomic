@@ -79,10 +79,8 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 				!runtime.agentStageReplaysSavedResult(name, stageOptions)
 			)
 				await prepareTaskGit(runtime.signal);
-			// A task of a run resumed with restores maps its directory and worktree as it starts, after its stage spawned.
 			const mapRestored = runtime.mapRestoredOptions;
 			const mapsPaths = restoresStagePaths(mapRestored, taskOptions);
-			// A live task's worktree is set up once its stage spawned, as its stage starts; its prompt names files there.
 			let livePreparation: Promise<StageOptions | undefined> | undefined;
 			const prepareLive = async (): Promise<StageOptions | undefined> => {
 				try {
@@ -96,8 +94,6 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 						)) ?? preparedOptions;
 					return taskStageOptions(resolvedTaskOptions);
 				} catch (error) {
-					// The task's stage fails with this error, which says the task needs git when that is why, naming its
-					// worktree where the run's restores put it.
 					const named = mapRestored === undefined ? options : await mapRestored(options).catch(() => options);
 					throw gitRequired(error, name, named);
 				}
@@ -116,9 +112,7 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 					: {}),
 			});
 			const stage = stageHandle.context;
-			// A replayed task never prepares: its prompt names the paths it ran in, where the restores put them.
 			if (mapsPaths && livePreparation === undefined) resolvedTaskOptions = await mapRestored(resolvedTaskOptions);
-			// A setup that failed fails the stage's prompt with its error, so the prompt is not built from it.
 			const setupFailed =
 				livePreparation !== undefined &&
 				(await livePreparation.then(
@@ -181,7 +175,6 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 		};
 		try {
 			const result = await runTaskOnce(options, async () => {
-				// The task's worktree is made from its directory where the run's restores put it.
 				const mapped =
 					runtime.mapRestoredOptions === undefined ? options : await runtime.mapRestoredOptions(options);
 				prepared = await prepareTaskWorktrees(

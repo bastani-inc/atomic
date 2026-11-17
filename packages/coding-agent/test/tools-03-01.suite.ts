@@ -307,7 +307,6 @@ describe("Coding Agent Tools", () => {
 		it("should include EACCES in diff preview for unreadable files", async () => {
 			const unreadableFile = join(testDir, "unreadable-preview.txt");
 			writeFileSync(unreadableFile, "hello\n");
-			// Only the read-permission check fails: the file still exists, as an unreadable file does.
 			const realAccess = vi.mocked(access).getMockImplementation();
 			vi.mocked(access).mockImplementation(async (path, mode) => {
 				if (path === unreadableFile && mode === constants.R_OK) {

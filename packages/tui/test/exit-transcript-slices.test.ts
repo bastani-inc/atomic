@@ -6,12 +6,7 @@ import type { Terminal } from "../src/terminal.ts";
 import type { Component } from "../src/tui.ts";
 import { TuiAltScreen } from "../src/tui-alt-screen.ts";
 
-/** Lines of the transcript quitting writes to the main screen: tens of thousands, as a long session leaves. */
 const TRANSCRIPT_LINES = 40_000;
-/**
- * The most one write may carry while the transcript is written in slices. A terminal takes a write in one piece (on
- * Linux the write blocks until it has), so the largest write bounds how long the loop waits on the terminal.
- */
 const MAX_SLICED_WRITE_CHARACTERS = 64 * 1024;
 
 class RecordingTerminal implements Terminal {
@@ -85,7 +80,6 @@ function windowedTranscript(): WindowedContainer {
 	return root;
 }
 
-/** Runs a fullscreen session over the transcript and returns what stopping it writes, by event-loop turn. */
 async function exitOutput(
 	writeInSlices: boolean,
 	layoutRoot: () => Component = () => new ScrollView(new Transcript(), { follow: "end", primary: true }),

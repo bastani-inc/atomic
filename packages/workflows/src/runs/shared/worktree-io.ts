@@ -19,25 +19,16 @@ import {
 } from "./worktree-git-runner.js";
 import type { GitResult } from "./worktree-types.js";
 
-/**
- * The I/O the reusable worktree setup performs, each operation as its synchronous form behaves. The setup is written
- * once, as {@link WorktreeSteps} that yield these operations and receive their results; {@link runWorktreeStepsSync}
- * performs them synchronously for the SDK's `setupGitWorktree`, {@link runWorktreeSteps} without blocking for the
- * engine. An operation that throws throws at the step that yielded it.
- */
 interface WorktreeIo {
-	/** A git run without its diagnostics; it reports failures in its result rather than throwing. */
 	git(cwd: string, args: readonly string[]): GitResult;
 	stat(path: string): Stats;
 	lstat(path: string): Stats;
-	/** The path's real path, as `fs.realpathSync.native` resolves it. */
 	realpath(path: string): string;
 	readdir(path: string): string[];
 	readdirEntries(path: string): Dirent[];
 	readFile(path: string): string;
 	mkdir(path: string, recursive: boolean): void;
 	rmdir(path: string): void;
-	/** Writes a file that must not exist yet. */
 	writeNewFile(path: string, data: string): void;
 }
 
@@ -50,7 +41,6 @@ type AsyncWorktreeIo = {
 	readonly [Op in WorktreeIoOp]: (...args: Parameters<WorktreeIo[Op]>) => Promise<ReturnType<WorktreeIo[Op]>>;
 };
 
-/** Steps of the worktree setup returning `T`: each yields an I/O operation and receives what it returned. */
 export type WorktreeSteps<T> = Generator<WorktreeIoRequest, T, WorktreeIoResult>;
 
 const syncIo: WorktreeIo = {
@@ -83,7 +73,6 @@ const asyncIo: AsyncWorktreeIo = {
 	writeNewFile: (path, data) => writeFile(path, data, { encoding: "utf8", flag: "wx" }),
 };
 
-/** One I/O operation of the setup: what `op` returns, or its error thrown here. */
 export function* io<Op extends WorktreeIoOp>(
 	op: Op,
 	...args: Parameters<WorktreeIo[Op]>
@@ -91,7 +80,6 @@ export function* io<Op extends WorktreeIoOp>(
 	return (yield { op, args } as WorktreeIoRequest) as ReturnType<WorktreeIo[Op]>;
 }
 
-/** Runs the steps, performing each operation synchronously. */
 export function runWorktreeStepsSync<T>(steps: WorktreeSteps<T>): T {
 	let next = steps.next();
 	while (!next.done) {
@@ -109,7 +97,6 @@ export function runWorktreeStepsSync<T>(steps: WorktreeSteps<T>): T {
 	return next.value;
 }
 
-/** Runs the steps, performing each operation without blocking. */
 export async function runWorktreeSteps<T>(steps: WorktreeSteps<T>): Promise<T> {
 	let next = steps.next();
 	while (!next.done) {
@@ -131,7 +118,6 @@ export function* gitSteps(cwd: string, args: readonly string[]): WorktreeSteps<G
 	return withDiagnostics(yield* io("git", cwd, args), cwd, args);
 }
 
-/** A read-only git probe, run again while it times out, up to its attempt limit. */
 export function* gitReadOnlyProbeSteps(cwd: string, args: readonly string[]): WorktreeSteps<GitResult> {
 	let attempts = 1;
 	let result = yield* gitSteps(cwd, args);

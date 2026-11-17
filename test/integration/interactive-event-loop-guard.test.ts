@@ -1,15 +1,3 @@
-/**
- * The interactive host and its isolated engine keep their event loops responsive while a user works.
- *
- * Each scenario starts the built CLI (laid out as npm installs it) in a pseudo-terminal with the event-loop diagnostic
- * on, so the host and the engine each write their event-loop delay for startup and for the rest of the session, and
- * every block with its stacks. A scripted loopback provider plays the model. The scenarios: typing and editing, a long
- * answer streaming while the user types ahead and pages, a workflow of five stages, four subagents, and paging through
- * a resumed transcript of 10,400 entries. Each scenario is its own launch, so its numbers are its own.
- *
- * The file runs in its own Vitest project after every other integration file (see vitest.config.ts): the budgets hold
- * a real process's delay, which a runner busy with other files would add to.
- */
 import assert from "node:assert/strict";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -45,68 +33,25 @@ const ROOT = join(moduleDir(import.meta.url), "../..");
 const PACKAGE = join(ROOT, "packages/coding-agent");
 const CLI = join(PACKAGE, "dist/cli.js");
 
-/**
- * Host budgets. The host draws every frame and echoes every keystroke, so its delay is the lag a user sees. Input that
- * answers within 100 ms feels instant: a p99 under half that keeps a typing burst smooth, and no single stall may
- * reach 150 ms, where a keystroke visibly lands late and the spinner and streamed text stop. They hold from the host's
- * first frame on, its deferred startup included. Measured in milliseconds over every scenario, on a local Linux
- * machine and two runs each on a remote Linux and a remote Windows runner (Windows timers add about 5.6 ms to every
- * tick): p99 was 1.1–12.1 on Linux and 9.8–21.7 on Windows; max 9–88 on Linux and 24–54 on Windows. Before its first
- * frame (0.3–0.7 s) the host's longest block was 112 ms, and once 1.5 s on a fresh Windows runner, spawning the
- * engine.
- */
 const HOST_LOOP_DELAY_P99_BUDGET_MS = 50;
 const HOST_LOOP_DELAY_MAX_BUDGET_MS = 150;
-/**
- * Engine budgets. The engine runs the agent, its tools and extensions; its stalls hold back streamed text, tool
- * progress and extension frames on their way to the host, and the host's requests (custom UI input, renders) waiting
- * on them. A pause of a quarter second in streamed output reads as a hiccup, a longer one as a hang. Measured as
- * above: p99 0.6–5.3 on Linux and 5.9–14.4 on Windows; max 15–101 on Linux and 62–143 on Windows, except a workflow's
- * journal statements on the node:sqlite driver (up to 545 ms on Windows), which the failure message names as another
- * change's (#5376). Its startup, until its session and extensions are loaded, is a one-time load of 0.5–3.7 s
- * (single module evaluations of 0.1–2.1 s) while the host's editor already takes keys; it is reported in the failure
- * message but not held to these budgets.
- */
 const ENGINE_LOOP_DELAY_P99_BUDGET_MS = 50;
 const ENGINE_LOOP_DELAY_MAX_BUDGET_MS = 250;
-/**
- * The diagnostic's block threshold: the smallest max budget. A block this long already fails a budget, so the stack
- * capture that lengthens it on Node (it attaches the debugger inside the block) never decides a result, and the
- * failure message names the code that held the loop.
- */
 const BLOCK_THRESHOLD_MS = Math.min(HOST_LOOP_DELAY_MAX_BUDGET_MS, ENGINE_LOOP_DELAY_MAX_BUDGET_MS);
-/**
- * A session phase must hold enough ticks for its p99 to be the 99th percentile of many, not one of the last few
- * (event-loop-lag.ts, LAG_TAIL_SAMPLES): 500 ticks of the diagnostic's 10 ms histogram, five seconds.
- */
 const MIN_SESSION_TICKS = 100 * LAG_TAIL_SAMPLES;
-/**
- * Each scenario drives the terminal at least this long, so both processes' session phases reach MIN_SESSION_TICKS:
- * Windows timers fire every 15.6 ms rather than every 10, so 500 ticks there take about eight seconds.
- */
 const MIN_SCENARIO_MS = 10_000;
 
 const COLS = 120;
 const ROWS = 40;
-/** Turns of four entries in the resumed transcript: 10,400 entries. */
 const RESUMED_TURNS = 2_600;
 const RESUMED_SESSION_ID = "01900000-0000-7000-8000-000000000001";
 
-/**
- * Starting the CLI and its engine: about 2 s with the extension cache warm and 3 s cold on an idle Linux machine;
- * Windows and a loaded runner take several times that.
- */
 const STARTUP_BUDGET_MS = 60_000;
-/** The longest scenario (subagents) takes about 20 s idle. */
 const SCENARIO_BUDGET_MS = 90_000;
-/** Quitting: the engine's session shutdown and both processes' exit records. */
 const EXIT_BUDGET_MS = 30_000;
-/** A real CLI and engine through a pseudo-terminal: startup, the scenario and exit, each within its own budget. */
 const SCENARIO_TIMEOUT_MS = STARTUP_BUDGET_MS + SCENARIO_BUDGET_MS + EXIT_BUDGET_MS + 10_000;
 const LOG_POLL_MS = 100;
-/** Idle time after the editor first draws, before the scenario clears it and starts. */
 const EDITOR_SETTLE_MS = 500;
-/** How long the provider must be idle before a scenario that waits on model replies counts as settled. */
 const PROVIDER_QUIET_MS = 2_000;
 
 const KEY = {
@@ -123,14 +68,12 @@ const KEY = {
 	wheelDown: `\x1b[<65;${COLS / 2};${ROWS / 2}M`,
 } as const;
 
-/** Keystrokes 15 ms apart: a fast typist. */
 const TYPING_INTERVAL_MS = 15;
 
 let root: string;
 let agentDir: string;
 let packageDir: string;
 let server: ScriptedChatServer;
-/** The last prompt of every provider request, for failure messages. */
 const prompts: string[] = [];
 
 beforeAll(async () => {
@@ -175,10 +118,6 @@ async function waitForRecords(
 
 const bothReady = (records: readonly LogRecord[]) =>
 	delayOf(records, "host", "startup") !== undefined && delayOf(records, "engine", "startup") !== undefined;
-/**
- * The records quitting leaves: the host's last phase, written as it exits, and the engine's session, written when the
- * host announces the quit. The engine's shutdown record is written only where it exits on its own: Windows ends it.
- */
 const quitRecorded = (records: readonly LogRecord[]) =>
 	delayOf(records, "host", "shutdown") !== undefined && delayOf(records, "engine", "session") !== undefined;
 
@@ -194,10 +133,6 @@ interface ScenarioResult {
 	readonly blocks: readonly BlockRecord[];
 }
 
-/**
- * The phase a block ran in: the one it started in. A process ends any block still running when it enters a phase, and
- * counts it in the phase it leaves, so no block runs across two.
- */
 function phaseOf(block: BlockRecord, delays: ProcessDelays): Phase {
 	const start = Date.parse(block.at);
 	if (delays.shutdown !== undefined && start >= Date.parse(delays.shutdown.at)) return "shutdown";
@@ -226,7 +161,6 @@ async function runScenario(
 			ATOMIC_SKIP_VERSION_CHECK: "1",
 			ATOMIC_TELEMETRY: "0",
 			CI: "0",
-			// Vitest's NODE_ENV=test would put workflow stages and subagents on their test sessions.
 			NODE_ENV: "",
 			NODE_OPTIONS: "",
 			TERM: "xterm-256color",
@@ -238,7 +172,6 @@ async function runScenario(
 	try {
 		await waitForRecords(log, bothReady, STARTUP_BUDGET_MS, `${name}: host and engine ready`, program);
 		await program.waitForScreen((screen) => screen.includes("❯"), STARTUP_BUDGET_MS, "the editor");
-		// Under ConPTY a stray character can reach the editor while the terminal answers startup queries; start empty.
 		await sleep(EDITOR_SETTLE_MS);
 		program.write(KEY.clearLine);
 		const drivenAt = Date.now();
@@ -262,7 +195,6 @@ async function runScenario(
 			delays: { host: delays("host"), engine: delays("engine") },
 			blocks: records.filter((record): record is BlockRecord => record.type === "block"),
 		};
-		// Measurement runs collect every scenario's numbers here.
 		const report = process.env.EVENT_LOOP_GUARD_REPORT;
 		if (report) appendFileSync(report, `${JSON.stringify({ platform: process.platform, ...result })}\n`);
 		return result;
@@ -271,15 +203,6 @@ async function runScenario(
 	}
 }
 
-/**
- * Fails naming every budget a scenario broke, with the blocks of that process and phase and their stacks. The host is
- * held to its budgets from its first frame on, when its editor takes keys, its deferred startup included; only what
- * comes before that frame is its startup. The engine's startup, until its session and extensions are loaded, is a
- * one-time load the user does not wait on: the host's editor already takes keys, and a prompt sent meanwhile waits for
- * the engine to be ready. Like quitting, it is reported in the failure message but not budgeted. A broken max whose
- * every block over the budget ran in code another open change is making non-blocking (the static check's
- * OWNED_ELSEWHERE) is printed as theirs instead of failing; a broken p99, or any block of this code's own, fails.
- */
 function assertWithinBudgets(result: ScenarioResult): void {
 	const violations: string[] = [];
 	const deferred: string[] = [];
@@ -351,7 +274,6 @@ async function press(program: PtyProgram, key: string, times: number, intervalMs
 	}
 }
 
-/** Waits for `count` more replies labelled `label` from `from` on, then for the provider to stay idle a while. */
 async function waitForReplies(
 	program: PtyProgram,
 	label: GuardReply["label"],

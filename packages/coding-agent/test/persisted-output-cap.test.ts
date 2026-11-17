@@ -219,8 +219,6 @@ describe("persisted-output cap", () => {
 	});
 
 	it("refuses to create a spill file over anything that already exists", async () => {
-		// Verification must reject before a caller gets a writer and a path to
-		// advertise. A directory and a plain file both refuse.
 		const directoryPath = join(sandbox, "not-a-file");
 		mkdirSync(directoryPath, { recursive: true });
 		const occupiedPath = join(sandbox, "already-here.log");

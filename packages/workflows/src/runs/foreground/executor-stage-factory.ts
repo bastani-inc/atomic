@@ -74,10 +74,8 @@ import type { StageWaitHooks } from "./stage-runner-types.js";
 import { createStageSessionHeartbeat } from "./stage-session-heartbeat.js";
 import { type StageWakeDispatcher, stageWakeKey } from "./stage-wake-dispatcher.js";
 
-/** Maps a stage's or task's paths to where a run's restores put them, once it starts. */
 export type StageOptionsMapper = <T extends StageOptions>(options: T) => Promise<T>;
 
-/** Whether `mapRestoredOptions` has paths of `options` to map. */
 export function restoresStagePaths(
 	mapRestoredOptions: StageOptionsMapper | undefined,
 	options: StageOptions | undefined,
@@ -106,7 +104,6 @@ export function createWorkflowStageFactory(input: {
 	readonly inputRuntimeDefaults: Partial<StageOptions>;
 	readonly workflowInvocationCwd: string;
 	readonly gitWorktreeSetupCache: GitWorktreeSetupCache;
-	/** Set for a run resumed with restores: a stage maps its working directory and worktree as it starts. */
 	readonly mapRestoredOptions?: StageOptionsMapper | undefined;
 	readonly stageRegistry: StageControlRegistry;
 	readonly stageUiBroker: StageUiBroker;
@@ -162,15 +159,9 @@ export function createWorkflowStageFactory(input: {
 		const replaySource = replayDecision.kind === "replay" ? replayDecision.source : undefined;
 		const executeReplaySource = replayDecision.kind === "execute" ? replayDecision.source : undefined;
 		const shouldReplay = replaySource !== undefined;
-		/**
-		 * The options of a live stage whose worktree is set up after it spawns: the stage spawns at once, and its
-		 * session, tools and prompts wait for them. A replayed stage never sets anything up.
-		 */
 		let liveOptions: Promise<StageOptions | undefined> | undefined;
 		if (!shouldReplay) {
 			input.assertLiveWorkAllowed?.();
-			// In a run resumed with restores, the stage's directory and worktree are mapped as it starts; live options
-			// that prepare themselves map their own.
 			const mapRestored = input.mapRestoredOptions;
 			const mapsPaths = prepareLiveOptions === undefined && restoresStagePaths(mapRestored, options);
 			if (prepareLiveOptions !== undefined || typeof options?.gitWorktreeDir === "string") {
@@ -201,7 +192,6 @@ export function createWorkflowStageFactory(input: {
 						forkFromEntryId:
 							stageOptions?.forkFromSessionId === undefined ? undefined : stageOptions.forkFromEntryId,
 					};
-		// One group for the stage: resolving a boolean subgroup again would name another.
 		const intercomGroup =
 			options?.durableIntercomGroup ?? resolveStageGroup(replayOptionsOf(options), input.workflowIntercomGroup);
 		const contextOptionsOf = (stageOptions: StageOptions | undefined): StageOptions | undefined => {
@@ -252,7 +242,6 @@ export function createWorkflowStageFactory(input: {
 		});
 
 		if (shouldReplay) {
-			// A replayed stage starts nothing: it works where the run's restores put its directory as soon as that is known.
 			if (options !== undefined && restoresStagePaths(input.mapRestoredOptions, options))
 				void input.mapRestoredOptions(options).then(
 					(mapped) => setStageWorkingDirectory(stageSnapshot, mapped.cwd),
@@ -735,7 +724,6 @@ export function createWorkflowStageFactory(input: {
 				return false;
 			}
 			state.stageFinalized = true;
-			// A task's worktree diffs are read before the stage ends in the store, which then names them.
 			const pendingArtifacts = input.takeTerminalArtifacts?.(replayKey);
 			const artifacts = pendingArtifacts === undefined ? undefined : await pendingArtifacts;
 			if (state.skippedForParallelFailFast) {

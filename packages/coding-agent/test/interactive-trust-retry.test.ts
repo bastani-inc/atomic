@@ -43,7 +43,6 @@ it.each(["cancel", "save"] as const)("/trust retries a failed save and can %s (#
 	};
 	try {
 		InteractiveModeBase.prototype.showTrustSelector.call(mode as never);
-		// The selector mounts once the trust path is resolved, and each save settles asynchronously.
 		await vi.waitFor(() => assert.ok(mounted));
 		const selector = mounted!;
 		writeFileSync(agentDir, "blocks trust storage");

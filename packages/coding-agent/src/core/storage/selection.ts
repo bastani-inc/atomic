@@ -481,7 +481,6 @@ export function readTeamTokenFile(
 	return teamTokenOf(text, path, source, field, read);
 }
 
-/** {@link readTeamTokenFile} without blocking the event loop. */
 export async function readTeamTokenFileAsync(
 	path: string,
 	source: TeamInputSource,
@@ -509,7 +508,6 @@ function unreadableTokenFile(
 	});
 }
 
-/** The token a token file's `text` holds, read as {@link readTeamTokenFile} reads it. */
 function teamTokenOf(
 	text: string,
 	path: string,
@@ -633,17 +631,12 @@ export function environmentTeamProfile(env: NodeJS.ProcessEnv = process.env): Te
 	return parsed?.selection;
 }
 
-/**
- * The team database `ATOMIC_PROFILE=ci` selects, checked in every way but reading its token file: the selection does not
- * depend on the token. {@link environmentTeamProfile} also reads the file.
- */
 export function environmentTeamProfileSelection(
 	env: NodeJS.ProcessEnv = process.env,
 ): TeamStorageSelection | undefined {
 	return parseEnvironmentTeamProfile(env)?.selection;
 }
 
-/** {@link environmentTeamProfile} without blocking the event loop: the token file is checked asynchronously. */
 export async function environmentTeamProfileAsync(
 	env: NodeJS.ProcessEnv = process.env,
 ): Promise<TeamStorageSelection | undefined> {
@@ -652,10 +645,6 @@ export async function environmentTeamProfileAsync(
 	return parsed?.selection;
 }
 
-/**
- * The selection of {@link environmentTeamProfile} and the token file it references, if any, checked in every way but
- * reading that file, which is the last check.
- */
 function parseEnvironmentTeamProfile(
 	env: NodeJS.ProcessEnv,
 ): { readonly selection: TeamStorageSelection; readonly tokenFile?: string } | undefined {

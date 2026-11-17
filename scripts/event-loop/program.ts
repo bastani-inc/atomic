@@ -10,7 +10,6 @@ export interface OpenedProject {
 	close(): void;
 }
 
-/** Starts the TypeScript 7 compiler in a child process and loads `tsconfig` as one program. */
 export function openProject(tsconfig = ANALYSIS_TSCONFIG, cwd = REPO_ROOT): OpenedProject {
 	const api = new API({ cwd });
 	const snapshot = api.updateSnapshot({ openProjects: [tsconfig] });

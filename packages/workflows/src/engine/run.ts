@@ -474,11 +474,6 @@ async function mapInputWorktree(
 		: { ...defaults, gitWorktreeDir: await mapWorkflowWorktreePath(defaults.gitWorktreeDir, mappings) };
 }
 
-/**
- * Maps the working directory and worktree of a stage or task of a run resumed on this node to the worktrees its
- * restores put them in; undefined without restores. Mapping reads symbolic links from the disk, so stages and tasks are
- * created with the paths as given, in call order, and map them as they start.
- */
 function restoredStageOptionsMapper(mappings: readonly WorktreeRootMapping[]): StageOptionsMapper | undefined {
 	if (mappings.length === 0) return undefined;
 	return async (options) => ({
@@ -711,7 +706,6 @@ async function executeRun(
 	const tracker = new GraphFrontierTracker();
 	const inputConcurrency = resolveInputConcurrency(def.inputs, resolvedInputs);
 	const inputDefaults = resolveInputRuntimeDefaults(def, resolvedInputs, opts.workspace);
-	// Only a run resumed with restores waits here to map its input worktree; any other run registers on this turn.
 	const inputRuntimeDefaults =
 		(opts.worktreeRootMappings ?? []).length === 0
 			? inputDefaults
@@ -720,10 +714,6 @@ async function executeRun(
 	const gitWorktreeSetupCache = gitWorktreeSetupCacheOwner.cache;
 	const workflowInvocationCwd = opts.cwd ?? process.cwd();
 	let workflowCwd: { readonly cwd: string } | { readonly failure: Error } | undefined;
-	/**
-	 * Sets up the run's input worktree before anything reads the run's directory, which is read synchronously
-	 * (`ctx.cwd`). A setup that fails is thrown where the directory is read, as when the setup ran at that read.
-	 */
 	const prepareWorkflowCwd = async (): Promise<void> => {
 		try {
 			workflowCwd = {
@@ -1265,7 +1255,6 @@ async function executeRun(
 		task: taskRunners.task,
 		recordCachedTask: recordCachedStage,
 		beforeCheckpoint: drainBeforeCheckpoint,
-		// A task records the snapshot of the directory it ran in, where its restore put it.
 		recordLiveCheckpoint:
 			mapRestoredOptions === undefined
 				? recordLiveCheckpoint

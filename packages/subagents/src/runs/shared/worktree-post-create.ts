@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { pathExists } from "../../shared/path-exists.js";
 
 export interface WorktreeGitResult {
 	stdout: string;
@@ -8,14 +9,6 @@ export interface WorktreeGitResult {
 }
 export type WorktreeGitRunner = (cwd: string, args: string[]) => Promise<WorktreeGitResult> | WorktreeGitResult;
 
-async function pathExists(target: string): Promise<boolean> {
-	try {
-		await fs.access(target);
-		return true;
-	} catch {
-		return false;
-	}
-}
 async function tracked(runGit: WorktreeGitRunner, repo: string, relativePath: string): Promise<boolean> {
 	return (await runGit(repo, ["ls-files", "--error-unmatch", "--", relativePath])).status === 0;
 }

@@ -27,7 +27,6 @@ type ChangelogHost = {
 	reportInstallTelemetry: ReturnType<typeof vi.fn<(version: string) => void>>;
 };
 
-// Startup loads the changelog before it decides what What's New shows.
 async function getChangelogForDisplay(host: ChangelogHost): Promise<string | undefined> {
 	await preloadChangelog(changelogFixture.path);
 	const fn = Reflect.get(InteractiveMode.prototype, "getChangelogForDisplay") as (

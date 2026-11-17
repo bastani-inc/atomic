@@ -187,7 +187,6 @@ export function runOwnerlessChild(input: {
 					task: resumed.message ? `${input.task}\n\n${resumed.message}` : input.task,
 					options: {
 						...input.options,
-						// It starts where its cwd is now, as its original launch did.
 						cwdVerdict: undefined,
 						signal: undefined,
 						supervisorAuthorization: resumed.supervisorAuthorization,

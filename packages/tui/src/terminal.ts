@@ -108,7 +108,6 @@ export interface Terminal {
 	// Write output to terminal
 	write(data: string): void;
 
-	/** Settles once everything written so far has reached the terminal. Without it, writes count as done at once. */
 	flush?(): Promise<void>;
 
 	// Get terminal dimensions
@@ -162,10 +161,6 @@ export function resolveEscapeTimeoutMs(env: NodeJS.ProcessEnv = process.env): nu
 	return DEFAULT_ESCAPE_TIMEOUT_MS;
 }
 
-/**
- * Appends everything written to the terminal to `target` (`TUI_WRITE_LOG`), in order and in the background. A
- * directory gets a new file for this process; anything else is the file. Logging errors are ignored.
- */
 function createWriteLog(target: string): ((data: string) => void) | undefined {
 	if (!target) return undefined;
 	const now = new Date();
@@ -570,7 +565,6 @@ export class ProcessTerminal implements Terminal {
 
 	flush(): Promise<void> {
 		if (process.stdout.writableLength === 0 || process.stdout.destroyed) return Promise.resolve();
-		// The callback of a write runs once every write before it is done.
 		return new Promise((resolve) => process.stdout.write("", () => resolve()));
 	}
 
