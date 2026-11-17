@@ -2,7 +2,7 @@ import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import { Box, type Component, Container, getCapabilities, Image, Spacer, Text, type TUI } from "@bastani/atomic-tui";
 import type { TSchema } from "typebox";
 import type { ToolDefinition, ToolRenderContext, ToolRenderers } from "../../../core/extensions/types.ts";
-import { allToolNames, createToolDefinition, type ToolName } from "../../../core/tools/index.js";
+import { allToolNames, createLoadedToolDefinition, type ToolName } from "../../../core/tools/index.js";
 import { formatToolCallWithArgs, getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
 import { ensurePngTranscoder } from "../../../utils/image-convert.ts";
 import { theme } from "../theme/theme.js";
@@ -78,7 +78,7 @@ export class ToolExecutionComponent extends Container {
 		this.args = args;
 		this.toolDefinition = toolDefinition;
 		this.builtInToolDefinition = allToolNames.has(toolName as ToolName)
-			? createToolDefinition(toolName as ToolName, cwd)
+			? createLoadedToolDefinition(toolName as ToolName, cwd)
 			: undefined;
 		this.showImages = options.showImages ?? true;
 		this.imageWidthCells = options.imageWidthCells ?? 60;
