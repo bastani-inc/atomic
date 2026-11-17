@@ -7,6 +7,19 @@ export {
 } from "./core/cache-warmer.ts";
 export * from "./core/event-subscriptions/index.js";
 export type { ExecuteToolOptions, ExtensionToolContext } from "./core/extensions/context-types.ts";
+export {
+	type HeldPrompt,
+	type HeldPromptAnswer,
+	type HeldPromptKind,
+	type HeldPromptResult,
+	type HeldPrompts,
+	type HeldPromptValue,
+	heldPrompts,
+	isHeldPromptInput,
+	isPresentationHostInput,
+	routeNamesPrompt,
+	watchHeldPromptAttention,
+} from "./core/extensions/held-prompts.ts";
 export type {
 	HostDiagnostic,
 	HostInput,
@@ -33,7 +46,7 @@ export type {
 	ToolRenderers,
 	ToolScriptAccess,
 } from "./core/extensions/tool-types.ts";
-export { type TakeoverMutex, takeTakeoverMutex } from "./core/lock-takeover.ts";
+export { type TakeoverMutex, takeTakeoverMutex } from "./core/lock-takeover.js";
 export { resolveRestoredModelReference } from "./core/model-resolver-initial.ts";
 export * from "./core/resume/index.ts";
 export type { UsageEntry } from "./core/session-manager.ts";
@@ -378,7 +391,6 @@ export {
 } from "./core/auto-model.ts";
 export { type BashResult, executeBashWithOperations } from "./core/bash-executor.ts";
 export { getBuiltinPackagePaths } from "./core/builtin-packages.ts";
-export type { CompactionCacheMiss } from "./core/cache-stats.ts";
 export {
 	type CallbackActivityDescriptor,
 	type CallbackActivityKind,
@@ -394,57 +406,23 @@ export {
 	createGatewayBindingFetch,
 	type GatewayBindingFetchOptions,
 } from "./core/cloudflare-gateway-binding.ts";
-export {
-	BACKGROUND_COMPACTION_RESULT_TYPE,
-	type BackgroundCompactionResultRecord,
-	type BackgroundCompactionState,
-	type BackgroundCompactionStatus,
-	type CompactionReadyWake,
-	type CompactionWakeDispatcher,
-	DEFAULT_BACKGROUND_COMPACTION_THRESHOLD_PERCENT,
-	rehydrateBackgroundCompactionState,
-	type SerializedBackgroundCompactionState,
-	serializeBackgroundCompactionState,
-} from "./core/compaction/background-compaction.ts";
-export {
-	BackgroundCompactionCommitError,
-	BackgroundCompactionConfigError,
-	type BackgroundCompactionConfigReason,
-	type BackgroundCompactionConfigSource,
-	BackgroundCompactionDiscardedError,
-	type BackgroundCompactionDiscardReason,
-	BackgroundCompactionError,
-	type BackgroundCompactionErrorCode,
-	type BackgroundCompactionErrorFields,
-	BackgroundCompactionNotCompactableError,
-	BackgroundCompactionPersistError,
-	type BackgroundCompactionPhase,
-	BackgroundCompactionPlanningError,
-	isBackgroundCompactionCommitError,
-	isBackgroundCompactionConfigError,
-	isBackgroundCompactionDiscardedError,
-	isBackgroundCompactionError,
-	isBackgroundCompactionNotCompactableError,
-	isBackgroundCompactionPersistError,
-	isBackgroundCompactionPlanningError,
-	isRetryableBackgroundCompactionError,
-	isSerializedBackgroundCompactionError,
-	rehydrateBackgroundCompactionError,
-	type SerializedBackgroundCompactionError,
-	serializeBackgroundCompactionError,
-} from "./core/compaction/background-compaction-errors.ts";
 // Compaction
 export {
 	type BranchPreparation,
 	type BranchSummaryResult,
+	buildBoundaryText,
+	buildCompactorMessages,
+	COMPACTED_OUTPUT_MAX_TOKENS,
+	COMPACTOR_COMPRESSION_RATIO,
+	COMPACTOR_REQUEST_TIMEOUT_MS,
 	type CollectEntriesResult,
-	type CompactedTranscript,
-	type CompactionPlannerModel,
-	type CompactionPlanOptions,
-	type CompactionRung,
-	type CompactionRungResult,
-	type CompactionRunRequest,
-	type CompactionUrgency,
+	type CompactionBackend,
+	type CompactionForm,
+	type CompactionHistoryLocation,
+	type CompactionModelSelection,
+	CompactorFailure,
+	type CompactorMessage,
+	type CompactorRequest,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
 	DEFAULT_COMPACTION_SETTINGS,
@@ -454,20 +432,14 @@ export {
 	generateBranchSummary,
 	getLastAssistantUsage,
 	type LineRange,
-	type PlannerAuth,
-	type PlannerBudget,
-	type PlannerLimitClass,
-	type PlannerOutcome,
-	type PolicyRefusalPhase,
 	prepareBranchEntries,
 	prepareCompactionBoundary,
-	type ReleasedRange,
-	runVerbatimCompaction,
-	type SidecarDirectory,
+	requestCompactorOutput,
+	resolveCompactionModel,
+	SESSION_HISTORY_TOOL_NAME,
 	serializeConversation,
 	serializeConversationForCompaction,
 	shouldCompact,
-	startNewContextWindow,
 	type VerbatimCompactionDetails,
 	type VerbatimCompactionParameters,
 	type VerbatimCompactionPreparation,
@@ -885,7 +857,6 @@ export {
 } from "./core/session-worktree-snapshots.ts";
 export type { DefaultProjectTrust, QuietStartup } from "./core/settings-manager.ts";
 export {
-	type CompactionModelOverride,
 	type CompactionSettings,
 	type ImageSettings,
 	type PackageSource,

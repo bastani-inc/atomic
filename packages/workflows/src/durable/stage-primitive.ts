@@ -105,9 +105,10 @@ export async function recordStageSessionCheckpoint(
 	options?: { readonly force?: boolean },
 ): Promise<boolean> {
 	const replayKey = deps.replayKeyForCompletedStage?.(stage) ?? stage.replayKey ?? deps.nextReplayKey(stage.name);
-	if (stage.sessionId === undefined) return false;
-	const checkpointNow = deps.now?.() ?? Date.now();
-	const durationMs = elapsedStageMs(stage, checkpointNow) ?? 0;
+	const stageDialog = stage.promptFootprint?.source === "stage-dialog";
+	if (stage.sessionId === undefined && (options?.force !== true || !stageDialog)) return false;
+	const now = deps.now?.() ?? Date.now();
+	const durationMs = elapsedStageMs(stage, now) ?? 0;
 	const current = deps.backend.getStageSession(deps.workflowId, replayKey);
 	if (
 		options?.force !== true &&
@@ -119,6 +120,10 @@ export async function recordStageSessionCheckpoint(
 		(current.attempt ?? 0) === (durableWorkflowAttempt(deps.backend, deps.workflowId) ?? 0)
 	)
 		return false;
+	const checkpointNow =
+		options?.force === true && stageDialog
+			? Math.max(now, latestStageRecordAt(deps.backend, deps.workflowId, replayKey))
+			: now;
 	const checkpoint: DurableStageCheckpoint = {
 		kind: "stage",
 		workflowId: deps.workflowId,
@@ -1015,6 +1020,18 @@ function stageSessionCheckpointId(
 		durationMs,
 		...(stage.wait === undefined ? {} : { wait: stage.wait }),
 		...(stage.waitResults === undefined ? {} : { waitResults: stage.waitResults }),
+		...(stage.promptFootprint?.source !== "stage-dialog"
+			? {}
+			: stage.pendingPrompt === undefined
+				? {
+						promptFootprintId: stage.promptFootprint.id,
+						promptStatus: stage.status,
+						promptAnswerState: stage.promptAnswerState ?? null,
+					}
+				: {
+						pendingPromptId: stage.pendingPrompt.id,
+						promptStatus: stage.status,
+					}),
 		...(forcedAt === undefined ? {} : { forcedAt }),
 		...(attempt === undefined ? {} : { attempt }),
 	})}`;

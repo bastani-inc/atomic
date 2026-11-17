@@ -681,9 +681,9 @@
       "part": "Part 2 - Session mastery",
       "lesson": "2.2 Verbatim compaction",
       "anchor": "#22-verbatim-compaction",
-      "title": "Verbatim compaction",
-      "blurb": "Compaction deletes low-value transcript lines without rewriting what survives; <code>&lt;keepContext&gt;</code> pins exact text.",
-      "alt": "Atomic answering after compaction by quoting the pinned keepContext repo rule back byte-exact",
+      "title": "Context compaction",
+      "blurb": "Compaction clears the context window, and the agent recovers what it needs from session history, <code>&lt;keepContext&gt;</code> spans first and verbatim.",
+      "alt": "Atomic answering after compaction by quoting a keepContext repo rule back exactly",
       "interactions": [
         "pin a rule inside a keepContext block and have it acknowledged",
         "/compact",

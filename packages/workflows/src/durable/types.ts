@@ -309,6 +309,10 @@ export interface DurableStageCheckpoint {
 	readonly startedAt?: number;
 	/** Original stage end timestamp, when available. */
 	readonly endedAt?: number;
+	readonly awaitingInputSince?: number;
+	readonly pendingPrompt?: import("../shared/store-types.js").PendingPrompt;
+	readonly promptFootprint?: import("../shared/store-types.js").PendingPrompt;
+	readonly promptAnswerState?: import("../shared/store-types.js").StageSnapshot["promptAnswerState"];
 	/** Original stage duration, when available. */
 	readonly durationMs?: number;
 	/** Display/result text recorded for the completed stage. */

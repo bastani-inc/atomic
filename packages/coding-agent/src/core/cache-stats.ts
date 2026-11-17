@@ -152,50 +152,6 @@ export function detectCacheMiss(
 	return detect(scan(entries, models).prev, message, models);
 }
 
-/** The prompt-cache miss a compaction commit causes on the next request: the cached prefix it rewrites. */
-export interface CompactionCacheMiss {
-	expectedMissedTokens: number;
-	/** Extra cost over a cache hit. */
-	expectedMissedCost: number;
-	/** Cost of the missed tokens at the uncached rate; undefined when there is no pricing. */
-	expectedRebilledCost?: number;
-}
-
-/**
- * Estimate the cache miss of committing a compaction boundary: the next request re-bills its prompt
- * (at most the previously cached prompt) at the uncached rate. Undefined when the last request
- * reported no prompt caching.
- */
-export function estimateCompactionCacheMiss(
-	entries: SessionEntry[],
-	promptTokensAfter: number,
-	models: ModelPriceSource,
-): CompactionCacheMiss | undefined {
-	const prev = scan(entries, models).prev;
-	if (!prev?.reportedCache) return undefined;
-	const expectedMissedTokens = Math.max(0, Math.min(prev.promptTokens, promptTokensAfter));
-	if (expectedMissedTokens === 0) return undefined;
-	let last: AssistantMessage | undefined;
-	for (let index = entries.length - 1; index >= 0 && !last; index--) {
-		const entry = entries[index];
-		if (entry.type === "message" && entry.message.role === "assistant") last = entry.message;
-	}
-	const usage = last?.usage;
-	const model = models.getModel(prev.provider, prev.model);
-	const paidTokens = usage ? usage.input + usage.cacheWrite : 0;
-	const paidRate =
-		usage && paidTokens > 0
-			? (usage.cost.input + usage.cost.cacheWrite) / paidTokens
-			: (model?.cost.input ?? 0) / 1_000_000;
-	const readRate =
-		usage && usage.cacheRead > 0 ? usage.cost.cacheRead / usage.cacheRead : (model?.cost.cacheRead ?? 0) / 1_000_000;
-	return {
-		expectedMissedTokens,
-		expectedMissedCost: expectedMissedTokens * Math.max(0, paidRate - readRate),
-		...(paidRate > 0 ? { expectedRebilledCost: expectedMissedTokens * paidRate } : {}),
-	};
-}
-
 /**
  * Format a cache-miss dollar amount. A nonzero amount too small for `decimals` renders as an upper
  * bound (`<$0.001`) rather than a definitive zero.
@@ -216,11 +172,6 @@ function describeMissCost(rebilledCost: number | undefined, extraCost: number, r
 /** The notice for a detected prompt-cache miss, shared by the live and history renderings. */
 export function formatCacheMissNotice(miss: CacheMiss): string {
 	return `Prompt cache miss${describeCacheMissCause(miss)}: ${miss.missedTokens.toLocaleString()} tokens re-billed (${describeMissCost(miss.rebilledCost, miss.missedCost, miss.reportedRequestCost)})`;
-}
-
-/** The notice for the prompt-cache miss a committed background compaction causes. */
-export function formatCompactionCacheMissNotice(miss: CompactionCacheMiss): string {
-	return `Prompt cache miss expected after background compaction: ${miss.expectedMissedTokens.toLocaleString()} tokens re-billed (${describeMissCost(miss.expectedRebilledCost, miss.expectedMissedCost)})`;
 }
 
 /** The session stats value for cache waste: the total extra cost over cache hits. */

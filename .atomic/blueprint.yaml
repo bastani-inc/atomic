@@ -41,6 +41,11 @@ knowledge:
       npx.cmd passes through cmd.exe and fails once the command exceeds its 8191-character limit.
       `test/unit/storage-libsql-close-once.test.ts` runs native-driver close regressions in child processes
       with glibc freed-memory poisoning on Linux, and checks file release directly on Windows.
+      To select coding-agent files, run `cd packages/coding-agent && npx vitest run test/<name>.test.ts`;
+      its config resolves `test/` from that working directory.
+      For concurrent-session coverage, use
+      `npm run test --workspace=@bastani/atomic -- agent-session-concurrent-` to select the five
+      `.suite.ts` files; the `agent-session-concurrent.test.ts` wrapper is excluded.
       Finish `npm run check` and `npm run build` before running suites that import built packages:
       typechecking rebuilds dist in place and cleans provider data.
       Validate named-worktree permissions with a private default umask:
@@ -62,6 +67,10 @@ knowledge:
       from `packages/coding-agent/test/helpers/shared-transpile-cache.ts` to reuse the suite's warmed compilation cache;
       keep cold-cache coverage separate.
       Measure task-list key-to-paint latency with `bun run scripts/perf/tasks-board/benchmark.ts 100,1000,10000 30`.
+      For isolated CLI UI checks, set ATOMIC_CODING_AGENT_DIR to a fresh temporary profile and pass
+      --offline. ATOMIC_AGENT_DIR does not select the CLI profile.
+      Bare Node type stripping does not resolve source .js import paths to .ts. Node child probes that
+      import source modules use the resolution hook shown in packages/coding-agent/test/read-streaming.test.ts.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run

@@ -32,7 +32,7 @@ Startup lists loaded context files, skills, prompts, and extensions by name. Cus
 
 While the agent works, `∀` pulses beside a working message, followed by the current run's elapsed time and output tokens. A new run starts a fresh meter; steering keeps the current run's meter. Retry, fallback, compaction, cancellation, and error messages take precedence; approval prompts hide ordinary activity. Set `ATOMIC_REDUCED_MOTION=1` for a static indicator or `NO_COLOR` for activity without foreground colors. Elapsed time still updates once per second with reduced motion. Extensions can [customize the indicator](/tui#pattern-4b-working-indicator-customization).
 
-Compaction uses a still `∀` mark with elapsed time and the cancel key. Opening a chat during compaction shows the time since that compaction began. Afterwards, `∀ Context compacted` shows estimated message-token counts before and after; use the expand key, normally Ctrl+O, to read the summary and the context size before compaction, which can differ from the message-token estimate.
+Compaction uses a still `∀` mark with elapsed time and the cancel key. Opening a chat during compaction shows the time since that compaction began. Afterwards, one line marks the boundary: `⚛ Context cleared · 182k tokens`, or `⚛ Context compacted · morph/morph-compactor · 182k → 21.4k tokens` when a compactor model ran. Use the expand key, normally Ctrl+O, to read the whole boundary message: where the earlier conversation is in session history, what the agent recovers first, and any compacted text.
 
 ### Editor Features
 
@@ -88,7 +88,7 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/tree` | Jump to any point in the session and continue from there |
 | `/fork` | Create a new session from a previous user message |
 | `/clone` | Duplicate the current active branch into a new session |
-| `/compact` | Run Verbatim Compaction with transcript-bound deletion tools |
+| `/compact [instructions]` | Clear the context window; the agent recovers what it needs from session history |
 | `/copy` | Copy last assistant message to clipboard |
 | `/export [file]` | Export session to HTML |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
@@ -151,7 +151,7 @@ Useful session commands:
 - `/tree` navigates the in-file session tree and can summarize abandoned branches.
 - `/fork` creates a new session from an earlier user message.
 - `/clone` duplicates the current active branch into a new session file.
-- `/compact` uses verbatim line compaction: the model selects one-based numbered ranges to delete, Atomic validates them, and retained text is reconstructed mechanically with `(filtered N lines)` markers. Exactly the configured number of newest context-visible messages remains ordinary; the default is two and zero preserves none.
+- `/compact [instructions]` clears the context window. The model then sees the system prompt and one message that says where the earlier conversation is in session history and what to recover first, followed by your instructions. With a compactor model configured, the compactor's output replaces the context instead.
 
 See [Sessions](/sessions) and [Compaction](/compaction) for details.
 

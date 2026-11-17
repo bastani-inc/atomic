@@ -5,14 +5,16 @@ const COMPACT_THRESHOLD_TOKENS = 100_000;
 export default function (pi: ExtensionAPI) {
 	let previousTokens: number | null | undefined;
 
-	const triggerCompaction = (ctx: ExtensionContext) => {
+	const triggerCompaction = (ctx: ExtensionContext, instructions?: string) => {
 		if (ctx.hasUI) {
 			ctx.ui.notify("Compaction started", "info");
 		}
 		ctx.compact({
-			onComplete: () => {
+			// Instructions tell the agent what to recover first after the context is cleared.
+			...(instructions ? { query: instructions } : {}),
+			onComplete: (result) => {
 				if (ctx.hasUI) {
-					ctx.ui.notify("Compaction completed", "info");
+					ctx.ui.notify(`Context ${result.form}`, "info");
 				}
 			},
 			onError: (error) => {
@@ -40,15 +42,9 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("trigger-compact", {
-		description: "Trigger compaction immediately",
+		description: "Trigger compaction immediately; optional instructions say what to recover first",
 		handler: async (args, ctx) => {
-			if (args.trim() && ctx.hasUI) {
-				ctx.ui.notify(
-					"/trigger-compact ignores arguments; Verbatim Compaction uses a fixed deletion planner",
-					"warning",
-				);
-			}
-			triggerCompaction(ctx);
+			triggerCompaction(ctx, args.trim() || undefined);
 		},
 	});
 }

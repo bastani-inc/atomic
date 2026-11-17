@@ -6,6 +6,8 @@ import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybind
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskFixture } from "../helpers/task-projection.js";
+import { taskRecord } from "../helpers/task-record.js";
+import { transcriptOnlySource } from "../helpers/task-transcript-environment.js";
 
 // RFC #2884: real owner tasks remain inspectable and cancellation needs target confirmation.
 test("inspector keeps selected live task reachable in a short viewport and confirms cancellation", async () => {
@@ -140,5 +142,132 @@ test("inspector orders tasks settled within one drain by settlement, not launch 
 	} finally {
 		inspector.dispose();
 		await fixture.dispose();
+	}
+});
+
+test("peek card and detail page show 3m and 1h 6m beside board rows instead of 3m 12s or 66m 40s (#5239)", () => {
+	initTheme("dark");
+	const previous = getKeybindings();
+	setKeybindings(new KeybindingsManager());
+	const threeMin = {
+		...taskRecord("three-min", "command"),
+		title: "build-step",
+		execution: { kind: "settled" as const, result: { kind: "completed" as const, output: taskRecord("x").output } },
+		metrics: { elapsedMs: 192_000 },
+	};
+	const hourSix = {
+		...taskRecord("hour-six", "agent"),
+		agentName: "worker",
+		title: "long-audit",
+		execution: { kind: "settled" as const, result: { kind: "completed" as const, output: taskRecord("y").output } },
+		metrics: { elapsedMs: 4_000_000 },
+	};
+	const source = transcriptOnlySource({
+		tasks: [threeMin, hourSix],
+		backgroundTasks: [threeMin, hourSix],
+		recentActivity: () => [],
+		activityOmitted: () => false,
+		stdinAvailable: () => false,
+		taskDetailText: () => ({}),
+		readTaskOutput: async () => ({ ok: true, value: { text: "", omitted: false } }),
+	});
+	const inspector = new TaskInspector(
+		source,
+		() => {},
+		() => {},
+	);
+	try {
+		inspector.open(hourSix.ref.taskId);
+		inspector.handleInput(" ");
+		const hourPeek = stripVTControlCharacters(inspector.renderViewport(100, 16).join("\n"));
+		assert.match(hourPeek, /\b1h 6m\b/);
+		assert.doesNotMatch(hourPeek, /66m 40s/);
+		inspector.handleInput(" ");
+
+		inspector.open(threeMin.ref.taskId);
+		inspector.handleInput(" ");
+		const threeMinPeek = stripVTControlCharacters(inspector.renderViewport(100, 16).join("\n"));
+		assert.match(threeMinPeek, /\b3m\b/);
+		assert.doesNotMatch(threeMinPeek, /3m 12s/);
+		inspector.handleInput("\r");
+		const detailText = stripVTControlCharacters(inspector.renderViewport(100, 16).join("\n"));
+		assert.match(detailText, /\b3m\b/);
+		assert.doesNotMatch(detailText, /3m 12s/);
+	} finally {
+		inspector.dispose();
+		setKeybindings(previous);
+	}
+});
+
+test("shell input sheet keeps its task title when the task leaves the list while open (#5239)", async () => {
+	initTheme("dark");
+	const previous = getKeybindings();
+	setKeybindings(new KeybindingsManager({ "app.tasks.input": "i" }));
+	const shellTask = {
+		...taskRecord("shell-target", "command"),
+		title: "deploy-watcher",
+		metrics: { elapsedMs: 192_000 },
+	};
+	const otherShell = {
+		...taskRecord("shell-other", "command"),
+		title: "other-job",
+	};
+	let currentTasks = [shellTask, otherShell];
+	const listeners = new Set<() => void>();
+	const writtenTargets: Array<{ id: string; value: string }> = [];
+	const base = transcriptOnlySource({
+		tasks: currentTasks,
+		backgroundTasks: currentTasks,
+		recentActivity: () => [],
+		activityOmitted: () => false,
+		stdinAvailable: (id) => id === shellTask.ref.taskId,
+		writeTaskInput: async (id, value) => {
+			writtenTargets.push({ id, value });
+			return { ok: true, value: { acceptedBytes: value.length } };
+		},
+	});
+	const source = Object.defineProperties(
+		{
+			...base,
+			subscribe(listener: () => void) {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
+		},
+		{
+			tasks: { get: () => currentTasks },
+			backgroundTasks: { get: () => currentTasks },
+		},
+	);
+	const inspector = new TaskInspector(
+		source,
+		() => {},
+		() => {},
+	);
+	try {
+		inspector.open(shellTask.ref.taskId);
+		inspector.handleInput("i");
+		assert.equal(inspector.navigation.focus.kind, "stdin");
+		const before = stripVTControlCharacters(inspector.renderViewport(80, 10).join("\n"));
+		assert.match(before, /Input to deploy-watcher/);
+
+		currentTasks = [otherShell];
+		for (const listener of listeners) listener();
+		const withSurvivor = stripVTControlCharacters(inspector.renderViewport(80, 10).join("\n"));
+		assert.match(withSurvivor, /Input to deploy-watcher/);
+		assert.doesNotMatch(withSurvivor, /Input to other-job/);
+		for (const ch of "ping") inspector.handleInput(ch);
+		inspector.handleInput("\r");
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.deepEqual(writtenTargets, [{ id: shellTask.ref.taskId, value: "ping" }]);
+
+		currentTasks = [];
+		for (const listener of listeners) listener();
+		const whenEmpty = stripVTControlCharacters(inspector.renderViewport(80, 10).join("\n"));
+		assert.match(whenEmpty, /Input to deploy-watcher/);
+		assert.doesNotMatch(whenEmpty, /Input to\s*$/m);
+	} finally {
+		inspector.dispose();
+		setKeybindings(previous);
 	}
 });

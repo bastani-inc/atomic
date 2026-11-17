@@ -1,23 +1,15 @@
-import type { ThinkingLevel } from "@bastani/atomic-agent-core";
-import type { ProviderHeaders } from "@bastani/atomic-ai";
-import type { Api, Model, Usage } from "@bastani/atomic-ai/compat";
+import type { Usage } from "@bastani/atomic-ai/compat";
 import type { CompactionSettings } from "./compaction.ts";
 
-export const VERBATIM_COMPACTION_PROMPT_VERSION = 6 as const;
+export const VERBATIM_COMPACTION_PROMPT_VERSION = 7 as const;
 /** First prompt version whose durable transcripts carry no `[Assistant thinking]: ` sections. */
 export const THINKING_FREE_PROMPT_VERSION = 5;
+/** First prompt version whose boundary text is the whole `Context cleared` or `Context compacted` message. */
+export const CONTEXT_CLEARED_PROMPT_VERSION = 7;
 export const VERBATIM_COMPACTION_STRATEGY = "verbatim-lines" as const;
 
-export const DEFAULT_COMPRESSION_RATIO = 0.5;
-export const DEFAULT_PRESERVE_RECENT = 2;
-export const MIN_COMPACTABLE_REGION_LINES = 20;
-
 export interface VerbatimCompactionParameters {
-	/** Fraction of compactable region lines to keep. */
-	compression_ratio: number;
-	/** Recent context-eligible messages retained outside the compactable region. */
-	preserve_recent: number;
-	/** Relevance focus used by the range planner. */
+	/** The `/compact` instructions, or else the latest user request. */
 	query: string;
 }
 
@@ -28,52 +20,16 @@ export interface LineRange {
 	end: number;
 }
 
-/** Why a `<keepContext>` span lost its protection: a newer identical copy exists, or protection was over budget. */
-export type KeepContextReleaseReason = "duplicate" | "budget";
-
-/** A whole `<keepContext>` span that compaction ranked as ordinary content instead of protecting. */
-export interface ReleasedRange extends LineRange {
-	reason: KeepContextReleaseReason;
-}
-
-export type RawLineEndpoint = number | string | boolean | null;
-
-export interface RawLineRange {
-	start?: RawLineEndpoint;
-	end?: RawLineEndpoint;
-}
-
+/** The conversation since the last boundary, serialized one line per element, for extension hooks. */
 export interface NumberedRegion {
 	readonly __brand: "NumberedRegion";
 	lines: string[];
 	/**
-	 * Where each serialized message lies, as the serializer recorded it. Roles and message starts come
-	 * from here, never from body text. `previousSummary` marks the prior boundary's flat text.
+	 * Where each serialized message lies, as the serializer recorded it. `previousSummary` marks the prior boundary's
+	 * text.
 	 */
 	messageSpans?: { role: "user" | "assistant" | "tool"; start: number; end: number; previousSummary?: true }[];
-	headerLineNumbers: ReadonlySet<number>;
-	priorMarkerNs: ReadonlyMap<number, number>;
-	/** Optional future protected spans, expressed as one-based line numbers. */
-	protectedLineNumbers?: ReadonlySet<number>;
-	/** `<keepContext>` spans whose protection was released, oldest first; absent when none were. */
-	releasedRanges?: readonly ReleasedRange[];
 	tokenEstimate: number;
-}
-
-export type ValidatedRanges = readonly LineRange[] & { readonly __brand: "ValidatedRanges" };
-
-export interface CompactedTranscript {
-	text: string;
-	ranges: LineRange[];
-	/**
-	 * Ranges force-preserved by `<keepContext>` protection; empty when nothing was protected.
-	 * Reported so protection that fired unexpectedly — a transcript that quotes tag text, say —
-	 * is diagnosable rather than a silent reduction in what compaction reclaimed.
-	 */
-	keptRanges: LineRange[];
-	/** `<keepContext>` spans whose protection was released, with the reason; empty when none were. */
-	releasedRanges: ReleasedRange[];
-	stats: VerbatimCompactionStats;
 }
 
 export interface VerbatimCompactionStats {
@@ -86,65 +42,45 @@ export interface VerbatimCompactionStats {
 	percentReduction: number;
 }
 
-/** How much the caller can afford to lose if compaction does not happen. */
-export type CompactionUrgency =
-	/** Manual /compact, threshold auto-compaction — failing is safe. */
-	| "recoverable"
-	/** Overflow recovery, post-tool preflight — failing kills the turn. */
-	| "load_bearing";
-
-/** How a durable compaction boundary was produced. */
-export type CompactionRung = "planned" | "extension" | "fresh";
-
-/** Credentials for one planner request. Resolved per model, never shared. */
-export interface PlannerAuth {
-	apiKey?: string;
-	headers?: ProviderHeaders;
-	baseUrl?: string;
-}
-
 /**
- * What one planner request may spend.
+ * How a boundary replaced the context window.
  *
- * `maxTokens` is declared `undefined`, not `number | undefined`: the type
- * forbids reintroducing the `0.8 * reserveTokens` output cap without changing
- * the type and failing review. pi-ai's `clampMaxTokensToContext` is the only bound.
+ * `cleared`: no model call; the boundary message tells the agent to recover from this session's history.
+ * `compacted`: a compactor model or an extension supplied replacement text, followed by the same recovery instructions.
  */
-export interface PlannerBudget {
-	readonly maxTokens: undefined;
-	readonly reasoning: ThinkingLevel | undefined;
+export type CompactionForm = "cleared" | "compacted";
+
+/** Who supplied the replacement text of a `compacted` boundary. */
+export type CompactionBackend = "compactor" | "extension";
+
+/** Where the boundary sits in `history://sessions/<sessionId>`, as advertised to the agent. */
+export interface CompactionHistoryLocation {
+	sessionId: string;
+	/** The last line of the earlier conversation; the boundary starts on the next line. */
+	linesBefore: number;
+	/** The first line of the boundary entry. */
+	boundaryLine: number;
+	/** The number of lines in the history right after the boundary was written. */
+	totalLines: number;
 }
 
-/**
- * A planner-only model borrowing. Cannot be confused with a session model switch.
- *
- * It carries no attempted-set key: the effective identity of an attempt is
- * `provider/model:<effective reasoning>`, derived from `model` and
- * `budget.reasoning` by `plannerAttemptKey`. Storing a key resolved from the raw
- * optional suffix would let the same effective request run twice.
- */
-export interface BorrowedPlanner {
-	readonly model: Model<Api>;
-	readonly budget: PlannerBudget;
-	readonly auth: PlannerAuth;
-}
-
-/** Identity of the model that ranked the deleted lines, when it was borrowed. */
-export interface CompactionPlannerModel {
-	provider: string;
-	id: string;
-	thinkingLevel?: ThinkingLevel;
-}
+/** How the agent reaches its history after a boundary: its own `read` and `search` tools, or the restricted history tool. */
+export type HistoryAccess = "read-search" | "session-history-tool";
 
 export interface VerbatimCompactionDetails {
 	strategy: typeof VERBATIM_COMPACTION_STRATEGY;
 	promptVersion: typeof VERBATIM_COMPACTION_PROMPT_VERSION;
 	parameters: VerbatimCompactionParameters;
 	stats: VerbatimCompactionStats;
-	rung: CompactionRung;
-	backend?: "planner" | "classifier" | "morph" | "summary";
+	form: CompactionForm;
+	backend?: CompactionBackend;
+	/** The compactor model, as `provider/model`, when one produced the text. */
 	model?: string;
-	summary?: { readFiles: string[]; modifiedFiles: string[] };
+	/** Why the configured compactor was not used and the context was cleared instead. */
+	fallbackReason?: string;
+	history?: CompactionHistoryLocation;
+	/** How the boundary told the agent to reach its history; a resumed session decides from its resumed tools. */
+	historyAccess?: HistoryAccess;
 	/**
 	 * Authoritative whole-context count, projected for display only. Populated by
 	 * `createVerbatimCompactionMessage` on the rendered message; it is not
@@ -152,18 +88,13 @@ export interface VerbatimCompactionDetails {
 	 * `CompactionEntry.tokensBefore`.
 	 */
 	tokensBefore?: number;
-	/** Present only when a borrowed fallback model ranked the lines. */
-	plannerModel?: CompactionPlannerModel;
-	/** Present only on a fresh rung reached after planning failed, e.g. `Compaction planning timed out after 300000 ms`. */
-	freshReason?: string;
-	/** Present only when `<keepContext>` spans lost their protection in this compaction. */
-	releasedRanges?: ReleasedRange[];
 	backupPath?: string;
 }
 
 export interface VerbatimCompactionPreparation {
-	/** First context-visible tail entry, or null when no pre-boundary message is retained. */
+	/** Always null: a boundary keeps no earlier message in context. */
 	firstKeptEntryId: string | null;
+	/** Everything in context since the previous boundary, serialized for extension hooks. */
 	region: NumberedRegion;
 	regionEntryIds: string[];
 	keptTailMessageCount: number;
@@ -173,23 +104,20 @@ export interface VerbatimCompactionPreparation {
 }
 
 export interface VerbatimCompactionResult {
+	/** The whole boundary message the model sees after the boundary. */
 	compactedText: string;
 	firstKeptEntryId: string | null;
 	tokensBefore: number;
 	stats: VerbatimCompactionStats;
 	parameters: VerbatimCompactionParameters;
 	promptVersion: typeof VERBATIM_COMPACTION_PROMPT_VERSION;
-	rung: CompactionRung;
-	backend?: "planner" | "classifier" | "morph" | "summary";
+	form: CompactionForm;
+	backend?: CompactionBackend;
 	model?: string;
-	summary?: { readFiles: string[]; modifiedFiles: string[] };
-	/** Present only when a borrowed fallback model ranked the lines. */
-	plannerModel?: CompactionPlannerModel;
-	/** Present only on a fresh rung reached after planning failed: why no planner could rank the lines. */
-	freshReason?: string;
-	/** Aggregate usage across every planner request and retry in this compaction. */
+	/** Why the configured compactor was not used and the context was cleared instead. */
+	fallbackReason?: string;
+	history?: CompactionHistoryLocation;
+	/** Usage reported by the compactor endpoint, when it ran. */
 	usage?: Usage;
-	/** Present only when `<keepContext>` spans lost their protection in this compaction. */
-	releasedRanges?: ReleasedRange[];
 	backupPath?: string;
 }

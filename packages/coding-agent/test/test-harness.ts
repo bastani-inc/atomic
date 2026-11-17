@@ -27,7 +27,7 @@ import type {
 	Usage,
 } from "@bastani/atomic-ai/compat";
 import { createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
-import { AgentSession, type AgentSessionConfig, type AgentSessionEvent } from "../src/core/agent-session.js";
+import { AgentSession, type AgentSessionEvent } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";
 import { SessionManager } from "../src/core/session-manager.js";
@@ -360,8 +360,6 @@ export interface HarnessOptions {
 	configureAgent?: (agent: Agent) => void;
 	/** Session manager to use. Default: in-memory. */
 	sessionManager?: SessionManager;
-	/** Background compaction wake dispatcher passed to the session. */
-	compactionWake?: AgentSessionConfig["compactionWake"];
 }
 
 export interface Harness {
@@ -432,7 +430,6 @@ async function createHarnessWithResourceLoader(
 		modelRuntime,
 		resourceLoader,
 		baseToolsOverride: options.baseToolsOverride,
-		...(options.compactionWake ? { compactionWake: options.compactionWake } : {}),
 	});
 
 	const events: AgentSessionEvent[] = [];

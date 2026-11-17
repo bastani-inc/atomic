@@ -498,7 +498,7 @@ test("the default workflow adapter rejects an unavailable persistent store inste
 	const cwd = makeTempDirectory("atomic-sdk-run-unavailable-session-");
 	try {
 		const agentDir = join(cwd, "agent");
-		await writeFileEnsuringDir(join(cwd, "workflows"), "not a directory");
+		await writeFileEnsuringDir(join(agentDir, "workflows"), "not a directory");
 		const adapter = createAgentSessionAdapter({
 			cwd,
 			agentDir,
@@ -509,7 +509,7 @@ test("the default workflow adapter rejects an unavailable persistent store inste
 		await assert.rejects(adapter.create({}), (error: Error) => {
 			assert.ok(error instanceof StorageUnavailableError);
 			assert.equal(error.adapter, "node-sqlite");
-			assert.equal(error.location, join(cwd, "workflows", "journal.sqlite"));
+			assert.equal(error.location, join(agentDir, "workflows", "journal.sqlite"));
 			return true;
 		});
 	} finally {

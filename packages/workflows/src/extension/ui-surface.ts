@@ -55,6 +55,7 @@ export interface PiCustomComponent {
 	handleInput?: (data: string) => boolean;
 	invalidate?: () => void;
 	dispose?: () => void;
+	capturesBack?: () => boolean;
 }
 
 /**

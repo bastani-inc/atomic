@@ -496,7 +496,7 @@ A call started again by `redispatchDetachedToolCalls()` reports no progress from
 
 `ask_user_question` is detachable only in a workflow stage's own session, where the question waits in the stage's UI rather than the session's: the stage releases its session while the model waits on the user's answer. In other sessions it always runs inline, because its question ends with the session that asked it. A shell `wait` whose task is gone after a restart returns an error result whose `details.error` is the serialized `TaskToolError` (see [Owner-bound task supervisor](#owner-bound-task-supervisor-s1)).
 
-While a transcript waits on a detached call's result, a background task's completion notice is saved but not added to the conversation, so nothing comes between the call and its result. It is delivered once `resumeDetachedTurn()` has continued the turn. A compaction of such a transcript covers only what precedes the call's turn, even when notifications or other messages were added after it, so the call stays a tool call that its result can answer.
+While a transcript waits on a detached call's result, a background task's completion notice is saved but not added to the conversation, so nothing comes between the call and its result. It is delivered once `resumeDetachedTurn()` has continued the turn. No compaction boundary is written while the transcript waits on a detached call's result: automatic compaction clears the context just before the request that continues with the result, and `compact()` is rejected while a call is still waiting.
 
 `ToolDetachmentError` reports a refused detachment operation; nothing changed when it is thrown. Check it with `isToolDetachmentError(error)`, or find it in a cause chain with `findToolDetachmentError(error)`, and branch on `code`:
 
@@ -1111,7 +1111,7 @@ To pass one between processes, `serializeDebugError(error)` turns it into a `Ser
 
 `ensurePrivateTempDirAsync(...segments)` creates or reuses a directory that only the current account can use, and returns its path. `assertPrivateDirectoryAsync(path)` checks that an existing `path` is a real directory owned by the current account that no other account can open. It rejects with `TempDirRefusedError` for a security refusal. File system errors while inspecting the path, such as `ENOENT` for a missing path, propagate unchanged. Relative paths are resolved against the working directory when the call starts. Neither blocks the main thread.
 
-On Windows, the check reads the directory's owner and access list with PowerShell, which can take seconds on a busy machine, so prefer the asynchronous forms. The synchronous `ensurePrivateTempDir()` and `assertPrivateDirectory()` never wait for that read. They accept a directory already checked in this process. Otherwise they start the check in the background: `assertPrivateDirectory()` throws `TempDirRefusedError` with the reason `its ownership is still being verified`, and `ensurePrivateTempDir()` returns another private directory. A later call accepts the directory once the check passes.
+On Windows, the native module reads the directory's owner and access list directly. If the native reader is unavailable or cannot read the directory, an asynchronous PowerShell check provides the fallback. Prefer the asynchronous forms to wait for either reader. The synchronous `ensurePrivateTempDir()` and `assertPrivateDirectory()` never wait for that read. They accept a directory already checked in this process. Otherwise they start the check in the background: `assertPrivateDirectory()` throws `TempDirRefusedError` with the reason `its ownership is still being verified`, and `ensurePrivateTempDir()` returns another private directory. A later call accepts the directory once the check passes.
 
 ## Exports
 
@@ -1390,6 +1390,23 @@ An owner keeps its 256 most recently finished tasks (`FINISHED_TASK_RETENTION`):
 For shell integration, use the exported Bash and PowerShell factories with a trusted `taskOwner` binding. Execution timeout and observation budget are separate. The automatic command wait is normally 10000 ms; `until-settled` waits for completion. A yielded command remains owned, and later waits can read retained output with explicit omission markers.
 
 Without a supported owner, explicit background execution is refused. Native Windows legacy WSL `bash.exe` is not supported for owned commands; run Atomic inside WSL instead. See [waiting for shell tasks](#waiting-for-existing-shell-tasks) and [Background tasks](/background-tasks) for caller usage.
+
+### Session-local task prompts
+
+`heldPrompts()` returns the process-local `HeldPrompts` registry used by interactive task views. A `HeldPrompt` has `sessionId`, `promptId`, `kind`, `question`, `title` and `createdAt`, plus the applicable `message`, `choices`, `placeholder`, `initial` or questionnaire `params`. Timed dialogs also have an absolute `expiresAt` timestamp in milliseconds. These prompts are not persisted across process restarts.
+
+- `current(sessionId)` reads that session's first pending prompt. Concurrent requests queue in arrival order.
+- `subscribe(listener)` calls `listener(sessionId)` when that session's queue changes and returns an unsubscribe function.
+- `answer({ sessionId, promptId }, { value })` returns `{ ok: true }` only for the current matching prompt and a valid `HeldPromptValue`. A refused answer returns `{ ok: false, reason }` without settling the prompt. Values are booleans for confirmations, literal option labels for selections, strings for text dialogs and `QuestionnaireResult` for questionnaires. There is no typed-reply parser.
+- `cancel({ sessionId, promptId })` cancels only the current matching prompt and returns whether it did so. It never approves a confirmation.
+- `isCurrent(route)` and `routeNamesPrompt(route, prompt)` check both identities. Never answer whichever session happens to be visible without checking its route.
+- `hold(prompt, signal, cancelValue)` lets an input adapter enqueue a prompt and await its validated answer. It adds `createdAt`; supply a unique `promptId` and the asking `sessionId`. Aborting `signal` removes that request, including one still queued. The adapter owns timeout cancellation; `expiresAt` supplies countdown display, not a second timer.
+
+`HeldPromptKind`, `HeldPromptAnswer` and `HeldPromptResult` describe these calls. `HeldPrompts` is exported as a type; use `heldPrompts()` to obtain the registry. A view can preserve its unsent form state while navigating away, but should discard it once its prompt is no longer current.
+
+`watchHeldPromptAttention(sessionId, report)` maps the current prompt to task `input-needed` activity, clears attention when it settles and returns a stop function that unsubscribes and clears its last report. `isHeldPromptInput(input)` distinguishes Atomic's held-prompt adapter from an SDK host's adapter when forwarding child bindings. `isPresentationHostInput(input)` identifies a fallback adapter for a launching chat's presentation, so workflow stage hosts can discard that adapter without discarding explicitly supplied SDK input.
+
+Only Atomic's interactive hosts with a task inspector hold child prompts automatically. A plain RPC or SDK `uiContext` binding continues presenting them through its existing dialogs. Custom hosts that need session-local forms should supply their own `humanInput` adapter and route requests by `HostInputOptions.sessionId`. Workflow stage dialogs use their run's pending prompts instead; see [Workflow input](/workflows/operations).
 
 ### Task transcript references
 

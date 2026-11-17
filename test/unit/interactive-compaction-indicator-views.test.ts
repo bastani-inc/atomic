@@ -221,7 +221,7 @@ async function createCompactingMode(): Promise<CompactingMode> {
 			const compaction = gate.arm();
 			const run =
 				reason === "manual"
-					? mode.session.compact({ preserve_recent: 2 })
+					? mode.session.compact()
 					: (mode.session as unknown as AutoCompactionRunner)._runAutoCompaction(reason, false);
 			await compaction.entered;
 			assert.equal(mode.session.isCompacting, true, "the session is really compacting");

@@ -264,15 +264,26 @@ function rankPanelSession(
 
 	if (store !== undefined) {
 		const source = ownerTaskViewSource(store);
+		const taskDismissed = dismissedTasks(source);
+		const storeDismissed = dismissedTasks(store);
 		const sourceClocks = taskClockOf(source);
 		const tasks = source.backgroundTasks;
 		for (let i = tasks.length - 1; i >= 0; i--) {
 			const task = tasks[i]!;
 			if (task.parentTaskId !== undefined) continue;
-			if (dismissed.size > 0 && dismissed.has(`task:${task.ref.taskId}`)) continue;
+			const id = task.ref.taskId;
 			const rowState = taskPanelState(task);
-			if (rowState === "done" || rowState === "failed" || rowState === "stopped") {
-				const id = task.ref.taskId;
+			const finishedState =
+				task.execution.kind === "settled" &&
+				(rowState === "done" || rowState === "failed" || rowState === "stopped");
+			if (!finishedState) {
+				if (dismissed.size > 0) dismissed.delete(`task:${id}`);
+				if (taskDismissed.size > 0) taskDismissed.delete(id);
+				if (storeDismissed.size > 0) storeDismissed.delete(id);
+			} else if (dismissed.size > 0 && dismissed.has(`task:${id}`)) {
+				continue;
+			}
+			if (finishedState) {
 				if (!state.model.keepFinished(id, false, now, pass, true)) continue;
 				expiresAt = Math.min(expiresAt, state.model.finishedSince(id, true)! + AGENT_PANEL_DROP_MS);
 				total++;
@@ -769,6 +780,7 @@ export async function showAgentPanel(
 						tui.requestRender();
 					},
 					dismiss(row) {
+						if (!isFinishedPanelRow(row)) return;
 						dismissedAgentPanelItems(session).add(row.id);
 						const taskId = panelTaskId(row);
 						if (taskId !== undefined && store !== undefined)

@@ -219,7 +219,7 @@ describe("workflow resume — durable regression coverage", () => {
 		assert.ok(customCalls.length >= 1);
 		const rendered = visibleText(customCalls[0]!.component.render(100));
 		assert.match(rendered, /Resume workflow run/);
-		assert.match(rendered, /durable-tree-wf · durable-\s+paused · 1 checkpoint/);
+		assert.match(rendered, /durable-tree-wf\s+paused · /);
 		assert.doesNotMatch(rendered, /Resumable workflows/);
 
 		customCalls[0]!.component.handleInput?.("\u001b");
@@ -263,7 +263,7 @@ describe("workflow resume — durable regression coverage", () => {
 		const rendered = visibleText(customCalls[0]!.component.render(100));
 		assert.doesNotMatch(rendered, /old-missing-definition/);
 		assert.doesNotMatch(rendered, /old-running-definition/);
-		assert.match(rendered, /visible-paused-definition · visible-\s+paused · 1 checkpoint/);
+		assert.match(rendered, /visible-paused-definition\s+paused · /);
 
 		customCalls[0]!.component.handleInput?.("\u001b");
 		await handlerPromise;

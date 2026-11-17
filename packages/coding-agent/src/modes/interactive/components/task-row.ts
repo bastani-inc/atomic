@@ -8,6 +8,7 @@ import { liveElapsedMs, taskClockOf, taskClockRunning } from "../../../core/task
 import { isTaskTurnInterrupted, type TaskActivity } from "../../../core/tasks/owner-store.js";
 import { sanitizeTerminalText } from "../../../utils/terminal-text.ts";
 import { theme } from "../theme/theme.js";
+import { formatPanelElapsed } from "./agent-panel.ts";
 import { keyHintIfBound as keyHint } from "./keybinding-hints.js";
 
 const EMOJI_OR_IGNORABLE_PATTERN = String.raw`(\p{RGI_Emoji}|\p{Extended_Pictographic}(?:\ufe0f|\p{Emoji_Modifier})*(?:\u200d\p{Extended_Pictographic}(?:\ufe0f|\p{Emoji_Modifier})*)+|[\p{Extended_Pictographic}\p{Emoji_Presentation}]\ufe0f)|\p{Default_Ignorable_Code_Point}`;
@@ -55,8 +56,7 @@ export function taskShortId(task: TaskRecord): string {
 	return createHash("sha256").update(task.ref.taskId).digest("hex").slice(0, 6);
 }
 export function taskDuration(milliseconds: number): string {
-	const seconds = Math.max(0, Math.floor(milliseconds / 1000));
-	return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+	return formatPanelElapsed(milliseconds);
 }
 
 /** One semantic status palette for inline rows, lists and detail headers. */
@@ -99,7 +99,7 @@ export function taskMetricsText(task: TaskRecord): string {
 			: (taskClockOf(task)?.elapsedMs(task.ref.taskId, metrics.elapsedMs, running) ??
 				liveElapsedMs(task.ref.taskId, metrics.elapsedMs, running));
 	return [
-		elapsedMs === undefined ? "" : taskDuration(elapsedMs),
+		elapsedMs === undefined ? "" : formatPanelElapsed(elapsedMs),
 		metrics?.tokenCount === undefined ? "" : `${metrics.tokenCount.toLocaleString("en-US")} tokens`,
 		metrics?.toolCount === undefined ? "" : `${metrics.toolCount} ${metrics.toolCount === 1 ? "tool" : "tools"}`,
 	]
@@ -164,7 +164,7 @@ export class TaskRow implements Component {
 				? ` · ${taskDisplayText(task.currentAction.tool)} ${taskDisplayText(task.currentAction.text)}`
 				: "";
 		const tools = task.metrics?.toolCount === undefined ? "" : ` · ${task.metrics.toolCount} tool uses`;
-		const duration = task.metrics?.elapsedMs === undefined ? "" : ` · ${taskDuration(task.metrics.elapsedMs)}`;
+		const duration = task.metrics?.elapsedMs === undefined ? "" : ` · ${formatPanelElapsed(task.metrics.elapsedMs)}`;
 		lines.push(theme.fg("dim", truncateToWidth(`  ${state}${badge}${tools}${duration}${action}`, width)));
 		if (this.options.expanded) {
 			lines.push(theme.fg("dim", truncateToWidth(`  ${task.ref.taskId} · owner ${task.ref.ownerId}`, width)));

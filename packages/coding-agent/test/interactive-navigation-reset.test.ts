@@ -62,7 +62,7 @@ function navigationHost(followUp: string[]): { context: NavigationHost; tui: Tui
 		setCustomEditorComponent: noop,
 		setWorkingIndicator: noop,
 		setHiddenThinkingLabel: noop,
-		defaultWorkingMessage: "Working...",
+		defaultWorkingMessage: "Working…",
 		workingVisible: true,
 		workingRunMeter: new WorkingRunMeter(),
 		keybindings: new KeybindingsManager(),

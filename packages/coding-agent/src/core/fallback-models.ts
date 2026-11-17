@@ -2,8 +2,8 @@
  * Shared resolution of `settings.fallbackModels` entries.
  *
  * These helpers were module-private to `agent-session-retry.ts`. They are
- * extracted (not copied) so compaction planner borrowing resolves candidates
- * with exactly the same semantics as main-chat model fallback, without reusing
+ * extracted (not copied) so every caller resolves candidates with exactly the
+ * same semantics as main-chat model fallback, without reusing
  * `_trySwitchToFallbackModel`, which is main-chat turn machinery.
  */
 

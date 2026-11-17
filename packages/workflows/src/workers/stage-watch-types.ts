@@ -184,7 +184,7 @@ export type PooledTaskReply =
  * output streams back as the session's `bash_execution_update` events carrying `id`.
  */
 export type PooledStageSessionCommand =
-	| { readonly kind: "compact" }
+	| { readonly kind: "compact"; readonly instructions?: string }
 	| { readonly kind: "abort-compaction" }
 	| { readonly kind: "bash"; readonly id: string; readonly command: string; readonly excludeFromContext?: boolean }
 	| { readonly kind: "abort-bash"; readonly id: string }

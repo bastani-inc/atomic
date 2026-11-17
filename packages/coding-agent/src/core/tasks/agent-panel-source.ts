@@ -269,21 +269,42 @@ export function shortTaskTitle(title: string): string {
 
 const cachedTaskItems = new WeakMap<
 	TaskRecord,
-	{ readonly taskId: string; readonly clocks: TaskElapsedClocks | undefined; readonly item: AgentPanelItem }
+	{
+		readonly taskId: string;
+		readonly clocks: TaskElapsedClocks | undefined;
+		readonly interrupted: boolean;
+		readonly item: AgentPanelItem;
+	}
 >();
 const lazyTaskItems = new WeakMap<
 	TaskRecord,
-	{ readonly state: AgentPanelState; readonly clocks: TaskElapsedClocks | undefined; readonly item: AgentPanelItem }
+	{
+		readonly state: AgentPanelState;
+		readonly clocks: TaskElapsedClocks | undefined;
+		readonly interrupted: boolean;
+		readonly item: AgentPanelItem;
+	}
 >();
 const lazyTaskRecords = new WeakMap<
 	AgentPanelItem,
 	{ readonly task: TaskRecord; readonly clocks: TaskElapsedClocks | undefined }
 >();
+const interruptedTaskItems = new WeakSet<object>();
+
+export function markInterruptedPanelTask<T extends object>(item: T): T {
+	interruptedTaskItems.add(item);
+	return item;
+}
+
+export function isInterruptedPanelTask(item: object): boolean {
+	return interruptedTaskItems.has(item);
+}
 
 export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks): AgentPanelItem {
 	const clocks = sourceClocks ?? taskClockOf(task);
 	const cached = cachedTaskItems.get(task);
 	const state = taskPanelState(task);
+	const interrupted = task.execution.kind !== "settled" && state === "stopped";
 	const question = task.attention.kind === "input-needed" ? task.attention.prompt || undefined : undefined;
 	const kind = task.kind === "agent" ? "agent" : "shell";
 	const name = task.kind === "agent" ? (task.agentName ?? "agent") : "shell";
@@ -295,6 +316,7 @@ export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks
 	if (
 		cached !== undefined &&
 		cached.clocks === clocks &&
+		cached.interrupted === interrupted &&
 		cached.taskId === task.ref.taskId &&
 		cached.item.kind === kind &&
 		cached.item.state === state &&
@@ -317,15 +339,22 @@ export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks
 		...(question ? { question } : {}),
 		...(reason === undefined ? {} : { reason }),
 	};
+	if (interrupted) markInterruptedPanelTask(item);
 	if (clocks !== undefined) bindTaskClock(item, clocks);
-	cachedTaskItems.set(task, { taskId: task.ref.taskId, clocks, item });
+	cachedTaskItems.set(task, { taskId: task.ref.taskId, clocks, interrupted, item });
 	return item;
 }
 
 export function lazyTaskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks): AgentPanelItem {
 	const state = taskPanelState(task);
+	const interrupted = task.execution.kind !== "settled" && state === "stopped";
 	const cached = lazyTaskItems.get(task);
-	if (cached !== undefined && cached.state === state && cached.clocks === sourceClocks) {
+	if (
+		cached !== undefined &&
+		cached.state === state &&
+		cached.clocks === sourceClocks &&
+		cached.interrupted === interrupted
+	) {
 		return cached.item;
 	}
 	const item: AgentPanelItem = {
@@ -339,7 +368,8 @@ export function lazyTaskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedCl
 			return taskPanelItem(task, sourceClocks).task;
 		},
 	};
-	lazyTaskItems.set(task, { state, clocks: sourceClocks, item });
+	if (interrupted) markInterruptedPanelTask(item);
+	lazyTaskItems.set(task, { state, clocks: sourceClocks, interrupted, item });
 	lazyTaskRecords.set(item, { task, clocks: sourceClocks });
 	return item;
 }
@@ -359,9 +389,9 @@ export function taskPanelItems(
 	const sourceClocks = taskClockOf(source);
 	const items: AgentPanelItem[] = [];
 	for (const task of source.backgroundTasks) {
-		if ((topLevelOnly && task.parentTaskId !== undefined) || (hasDismissed && dismissed.has(task.ref.taskId))) {
-			continue;
-		}
+		if (topLevelOnly && task.parentTaskId !== undefined) continue;
+		const finishedState = task.execution.kind === "settled";
+		if (finishedState && hasDismissed && dismissed.has(task.ref.taskId)) continue;
 		items.push(taskPanelItem(task, sourceClocks));
 	}
 	return items;
@@ -456,7 +486,6 @@ function markUnattachable(promise: Promise<unknown>): void {
 		if (unattachablePromises.has(rejected)) return;
 		if (hasUnhandledRejectionOwner(onUnattachableRejection, rejected, reason)) return;
 		if (!shouldThrowUnhandledRejection(reason)) return;
-		if (process.listenerCount("unhandledRejection") === 1) throw reason;
 		throw reason;
 	};
 	Reflect.defineProperty(onUnattachableRejection, UNHANDLED_REJECTION_OWNER, {
@@ -1009,13 +1038,20 @@ export function agentPanelExtensionItems(
 	const hasDismissed = dismissed.size > 0;
 	const hub = hubOf(session);
 	const sources = hub?.all() ?? [];
-	if (report !== undefined && hub !== undefined) {
-		for (const [source, error] of hub.failures()) reportSourceOnce(source, error, report);
+	const hubFailures = hub?.failures();
+	let hasSourceError = (hubFailures?.length ?? 0) > 0;
+	if (report !== undefined && hubFailures !== undefined) {
+		for (const [source, error] of hubFailures) reportSourceOnce(source, error, report);
 	}
 	const items: AgentPanelItem[] = [];
 	const seenIds = sources.length > 1 ? new Set<string>() : undefined;
 	for (const source of sources) {
-		for (const item of sourceItems(source, report)) {
+		const entry = readSourceCache(source);
+		if (entry.error !== undefined) {
+			hasSourceError = true;
+			reportSourceOnce(source, entry.error, report);
+		}
+		for (const item of entry.items) {
 			if (seenIds !== undefined) {
 				if (seenIds.has(item.id)) {
 					reportSourceOnce(
@@ -1051,7 +1087,7 @@ export function agentPanelExtensionItems(
 	else clocks?.clear();
 	const viewed = viewedBySession.get(session);
 	const liveIds =
-		(viewed !== undefined && viewed.size > 0) || (hasDismissed && sources.length > 0)
+		!hasSourceError && ((viewed !== undefined && viewed.size > 0) || (hasDismissed && sources.length > 0))
 			? new Set(items.map((item) => item.id))
 			: undefined;
 	if (viewed !== undefined && viewed.size > 0 && liveIds !== undefined) {
@@ -1066,6 +1102,17 @@ export function agentPanelExtensionItems(
 		for (const item of items) {
 			if (dismissed.has(item.id) && item.state !== "done" && item.state !== "failed" && item.state !== "stopped") {
 				dismissed.delete(item.id);
+			}
+		}
+		const store = getOwnerTaskStore(session);
+		if (store !== undefined) {
+			for (const id of [...dismissed]) {
+				const taskId = agentPanelTaskId(id);
+				if (taskId === undefined) continue;
+				const task = store.taskRecord(taskId);
+				if (task !== undefined && task.execution.kind !== "settled") {
+					dismissed.delete(id);
+				}
 			}
 		}
 	}

@@ -261,15 +261,13 @@ if (usage && usage.tokens > 100_000) {
 
 ### ctx.compact()
 
-Trigger Atomic's verbatim line compactor without awaiting completion. The planner emits numbered deleted-line ranges only; Atomic validates them and reconstructs retained text mechanically. Use `compression_ratio` (fraction of compactable lines to keep), client-side `preserve_recent` (an exact context-visible message count), and `query` to tune the run, `compactionModel` to pick an exact compaction model for this run without changing settings, and `onComplete`/`onError` for follow-up actions.
+Trigger compaction without awaiting completion. By default it clears the context window, and the agent recovers what it needs from session history; with a compactor model configured, the compactor's output replaces the context. Pass `query` to give compaction instructions, which are added to the boundary message and become a compactor's query; `compactionModel` to choose `auto` or an exact compactor model for this run without changing settings; and `onComplete`/`onError` for follow-up actions. `compression_ratio` and `preserve_recent` are no longer options and are ignored if passed.
 
 ```typescript
 ctx.compact({
-  compression_ratio: 0.5, // fraction of compactable lines to keep
-  preserve_recent: 2,    // protect exactly the newest two context-visible messages
   query: "keep active migration details",
   onComplete: (result) => {
-    ctx.ui.notify(`Compaction kept ${result.stats.linesKept}/${result.stats.linesBefore} lines`, "info");
+    ctx.ui.notify(`Context ${result.form}: ${result.stats.tokensBefore} → ${result.stats.tokensAfter} tokens`, "info");
   },
   onError: (error) => {
     ctx.ui.notify(`Compaction failed: ${error.message}`, "error");
@@ -277,7 +275,7 @@ ctx.compact({
 });
 ```
 
-The planner cannot author context text: only validated line ranges enter the mechanical reconstruction path. The `query` parameter guides relevance selection inside the fixed prompt; it is not replacement prose. Extensions that need an offline replacement can return `compactedText` from `session_before_compact`.
+Extensions that need their own replacement text can return `compactedText` from `session_before_compact`. See [Compaction](/compaction) for both forms.
 
 ### ctx.getSystemPrompt()
 

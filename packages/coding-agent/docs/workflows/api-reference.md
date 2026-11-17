@@ -878,7 +878,7 @@ To send your own kind:
    ```typescript
    declare module "@bastani/atomic/workflows" {
      interface StageWakeKinds {
-       "compaction-ready": { readonly summaryEntryId: string };
+       "index-ready": { readonly indexPath: string };
      }
    }
    ```
@@ -888,15 +888,15 @@ To send your own kind:
    ```typescript
    import { deliverStageWake, registerStageWakeKind } from "@bastani/atomic/workflows";
 
-   const unregister = registerStageWakeKind("compaction-ready", async (wake, { runId, stageId, waiting, signal }) => {
-     await applySummary(runId, stageId, wake.summaryEntryId, signal);
+   const unregister = registerStageWakeKind("index-ready", async (wake, { runId, stageId, waiting, signal }) => {
+     await loadIndex(runId, stageId, wake.indexPath, signal);
    });
    ```
 
 3. Deliver messages by run and stage id:
 
    ```typescript
-   const { status } = deliverStageWake(runId, stageId, { kind: "compaction-ready", summaryEntryId });
+   const { status } = deliverStageWake(runId, stageId, { kind: "index-ready", indexPath });
    ```
 
 A stage handles each message in this order:
@@ -974,7 +974,7 @@ Follow-ups accepted before the stage closes append numbered supplements. Correct
 
 A stage declaring `output` also gets a rendered companion transcript. Describe the deliverable in the prompt rather than asking the model to write the runner-owned artifact.
 
-The companion transcript lives under the durable Atomic config root at `~/.atomic/workflows/runs/<runId>/transcripts/`, or the equivalent configured agent root. `ATOMIC_WORKFLOW_ARTIFACT_DIR` overrides that root. It refreshes when newly admitted answers update the artifact before close.
+The companion transcript lives under `workflows/runs/<runId>/transcripts/` in the [storage home](/storage#storage-home) (`~/.atomic/workflows/runs/<runId>/transcripts/` by default, or `<agentDir>/workflows/runs/<runId>/transcripts/` when `ATOMIC_CODING_AGENT_DIR` is customized). `ATOMIC_WORKFLOW_ARTIFACT_DIR` overrides that root. It refreshes when newly admitted answers update the artifact before close.
 
 The transcript never lives in the repository or OS temporary storage. Its home-scoped location survives worktree deletion and temp purges, and keeps full tool output, which may contain secrets, out of accidental commits.
 
@@ -1885,7 +1885,7 @@ interface PoolCoordinationStats {
 
 `requests` counts worker requests by kind (`heartbeat`, `commit`, `claim`, `activity`, `control`, ...) and the root's commands as `root-<kind>`. `writes` counts the journal write transactions the coordinator submitted, by the kind of request that caused them, `recovery` for expired-lease recovery, and `other` for the rest. `perSecond` is `count` divided by the seconds since `since`. The counts are refreshed at most once a second while they change. Read them from `store.run(rootId)?.pool?.coordination`. In [debug mode](/development#debugging), `workflow` status shows them as one `pool:` line for each root with a pool, and each update is written to the debug log.
 
-The pool runs children once any worker is ready and fails only when no worker starts. A worker that dies while it runs a child is replaced, and the child replays from its last committed checkpoint. Each worker's standard error is written to `worker-logs/<root run ID>/<worker ID>.log` in the journal's directory (for a journal in another database, in `workflows/pool/` beside the agent directory); worker failure errors name that file in their `logPath`. See [Worker startup and failures](/workflows/operations#worker-startup-and-failures).
+The pool runs children once any worker is ready and fails only when no worker starts. A worker that dies while it runs a child is replaced, and the child replays from its last committed checkpoint. Each worker's standard error is written to `worker-logs/<root run ID>/<worker ID>.log` in the journal's directory (for a journal in another database, in `workflows/pool/` under the [storage home](/storage#storage-home): `~/.atomic/workflows/pool/` by default, or `<agentDir>/workflows/pool/` when `ATOMIC_CODING_AGENT_DIR` is customized); worker failure errors name that file in their `logPath`. See [Worker startup and failures](/workflows/operations#worker-startup-and-failures).
 
 Workers are supported only on Linux and macOS hosts with native process identity and boot identity. Windows and hosts without those capabilities refuse activation with `SharedPoolSetupError` (code `process-containment-unavailable`, operation `local-pool`), including when no process cap is configured. Without [shared placement](#shared-placement-and-worker-hosts), every worker runs on the root's machine. The root's journal need not be a local file. A journal selected with `RunOpts.journal`, `--storage`, `ATOMIC_WORKFLOWS_JOURNAL` or settings can be any [storage adapter](/storage), such as libSQL or Turso, or a SQLite file with a custom prefix; the workers open it through the same selection, and the pool keeps its queue, leases and admission state in a SQLite database on the machine that runs it. A root on such a journal resumes only on the machine whose pool database holds its work; resuming it elsewhere fails with an error naming that machine. A journal passed to the SDK as an object, and a memory journal, cannot host workers because the worker processes cannot open them. Pooled SDK runs reject process-bound adapters, UI, persistence, and similar runtime overrides before worker launch. `ui` is accepted: it answers the `ctx.ui` prompts (`input`, `confirm`, `select`, `editor`) of children on local workers, and each answer is sent to the worker that asked. If a `ui` call rejects, the prompt fails in that child with the same error. `stageUiBroker` is accepted: a stage on a local worker that asks `ask_user_question` raises the same form there, and its answer is sent to the worker that asked. A `ctx.ui.custom` prompt in a child on a local worker fails that child with an error, since its component cannot be shown outside the worker. `stageControlRegistry` is accepted: while a stage runs on a worker, the registry holds a handle for it whose `sendUserMessage`, `steer`, `followUp` and `subscribe` reach that stage and report the same delivery actions as an in-process stage. The handle streams the stage's events only while something subscribes or a message is on its way. The CLI keeps its host-specific bindings at the root and gives worker sessions their own adapters.
 
@@ -2283,7 +2283,7 @@ The public authoring declaration intentionally excludes runtime-only executor fi
 
 #### Typed failures of child workflows
 
-When a child workflow fails on a typed error, in this process or on a pooled worker of this machine or another one, the parent's error has the same class in its `cause` chain with its `code`, `hint`, `retryable`, fields and its own causes, so `instanceof`, guards such as `isWorkspaceBindingError(error)`, and finders such as `findStageWaitError(error)` match it. The failed child's `RunResult` and the failed stage's snapshot carry it as `failureDetail`; `error` keeps the text. `failureDetail` is a `SerializedError` (from `@bastani/atomic/workflows`): `name`, `code`, `message`, `hint`, `retryable`, `family`, `fields`, `cause`, `cleanupCause`, and, for members of a family's own JSON form that have no place of their own, `extra` (a workspace error's `reason`, a background compaction error's `phase`). It holds the first error of a family in the table below in the failure's cause chain, outermost first, with that error's own causes. `rehydrateError(failureDetail)` rebuilds it as its class; `serializeError(error)` makes one.
+When a child workflow fails on a typed error, in this process or on a pooled worker of this machine or another one, the parent's error has the same class in its `cause` chain with its `code`, `hint`, `retryable`, fields and its own causes, so `instanceof`, guards such as `isWorkspaceBindingError(error)`, and finders such as `findStageWaitError(error)` match it. The failed child's `RunResult` and the failed stage's snapshot carry it as `failureDetail`; `error` keeps the text. `failureDetail` is a `SerializedError` (from `@bastani/atomic/workflows`): `name`, `code`, `message`, `hint`, `retryable`, `family`, `fields`, `cause`, `cleanupCause`, and, for members of a family's own JSON form that have no place of their own, `extra` (such as a workspace error's `reason`). It holds the first error of a family in the table below in the failure's cause chain, outermost first, with that error's own causes. `rehydrateError(failureDetail)` rebuilds it as its class; `serializeError(error)` makes one.
 
 | `family` | Errors | Guard |
 | --- | --- | --- |
@@ -2298,7 +2298,6 @@ When a child workflow fails on a typed error, in this process or on a pooled wor
 | `decision` | `DecisionError` and its subclasses | `isDecisionError` |
 | `task-evicted` | `TaskEvictedError` | `isTaskEvictedError` |
 | `agent-rehydrate` | `AgentRehydrateError`, `AgentReleaseConfigError` | `isAgentRehydrateError` |
-| `background-compaction` | `BackgroundCompactionError` and its subclasses | `isBackgroundCompactionError` |
 | `github-copilot` | `GitHubCopilotError` and its subclasses | `isGitHubCopilotError` |
 | `debug` | `DebugError`, `DebugLogUnwritableError`, `DebugConfigError` | `isDebugError` |
 | `edit-tool` | `EditToolError` and its subclasses | `isEditToolError` |
@@ -2393,7 +2392,7 @@ A custom journal can also implement optional members that `SqlRunJournal` alread
 
 The types `RunVersion`, `RunSnapshotTail`, `RunJournalBatchAppend` and `RunJournalSeedEvent` are exported from `@bastani/atomic/storage`. When these members are present, `registerRunJournalConformance` also checks them.
 
-Precedence is `RunOpts.journal` (`createAgentSession({ journal })` for a session's `workflow` tool), `--storage` or `--storage-file`, `ATOMIC_WORKFLOWS_JOURNAL` or non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, `ATOMIC_STORAGE`, `workflows.journal`, shared top-level `storage`, then the default journal store in `~/.atomic/workflows/journal/`. Nearer settings selections replace whole objects, never merge options or secrets. Relative settings paths resolve against Atomic home. Invalid selected values raise `StorageConfigError`; storage failures reject the call without selecting memory. Resume a run from the journal that holds it: the store finds its own and adopted runs by ID; a run in an explicitly selected file needs that selection or `atomic storage adopt`.
+Precedence is `RunOpts.journal` (`createAgentSession({ journal })` for a session's `workflow` tool), `--storage` or `--storage-file`, `ATOMIC_WORKFLOWS_JOURNAL` or non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, `ATOMIC_STORAGE`, `workflows.journal`, shared top-level `storage`, then the default journal store in `workflows/journal/` under the [storage home](/storage#storage-home) (`~/.atomic/workflows/journal/` by default). Nearer settings selections replace whole objects, never merge options or secrets. Relative settings paths resolve against the [storage home](/storage#storage-home). Invalid selected values raise `StorageConfigError`; storage failures reject the call without selecting memory. Resume a run from the journal that holds it: the store finds its own and adopted runs by ID; a run in an explicitly selected file needs that selection or `atomic storage adopt`.
 
 ```ts
 import { run } from "@bastani/atomic/workflows";

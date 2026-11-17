@@ -10,22 +10,13 @@ import type { SessionEntry, SessionProjection } from "../session-manager.ts";
 
 export interface CompactionSettings {
 	enabled: boolean;
+	/** Free context tokens below which automatic compaction starts. */
 	reserveTokens: number;
-	/** Fraction of compactable context to keep. 0.3 is aggressive, 0.7 is light. */
-	compression_ratio: number;
-	/** Number of recent context-eligible messages to preserve in standard mode. */
-	preserve_recent: number;
-	/** Focus query for relevance-based pruning; auto-detected when omitted in settings/options. */
-	query?: string;
-	/** Share of the keep target `<keepContext>` spans may fill before older spans are released; 0.5 when omitted. */
-	keepContextShare?: number;
 }
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	enabled: true,
 	reserveTokens: 16384,
-	compression_ratio: 0.5,
-	preserve_recent: 2,
 };
 
 /**
@@ -199,8 +190,8 @@ export function shouldCompact(contextTokens: number, contextWindow: number, sett
  * Providers fold image tokens into their reported prompt/input usage, so usage-based
  * accounting already captures actual image cost. For heuristic paths (trailing
  * messages without usage, transcript content-block estimates) a single conservative
- * fixed estimate keeps both the context-window threshold check and the transcript
- * planner consistent.
+ * fixed estimate keeps the context-window threshold check and the compaction estimates
+ * consistent.
  */
 export const ESTIMATED_IMAGE_CHARS = 4800;
 export const ESTIMATED_IMAGE_TOKENS = Math.ceil(ESTIMATED_IMAGE_CHARS / 4);

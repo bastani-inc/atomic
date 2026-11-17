@@ -562,8 +562,8 @@ Explore the rest of Atomic’s real recorded capabilities, with public docs and 
 </tr>
 <tr>
 <td width="42%" valign="top">
-<h4>Verbatim compaction</h4>
-<p>Compaction deletes low-value transcript lines without rewriting what survives; <code>&lt;keepContext&gt;</code> pins exact text.</p>
+<h4>Context compaction</h4>
+<p>Compaction clears the context window, and the agent recovers what it needs from session history, <code>&lt;keepContext&gt;</code> spans first and verbatim.</p>
 <p><a href="https://docs.bastani.ai/compaction"><sub>Atomic docs · Compaction</sub></a></p>
 <p><a href="https://github.com/bastani-inc/atomic-crash-course#22-verbatim-compaction"><sub>Crash course · 2.2 Verbatim compaction</sub></a></p>
 </td>
@@ -571,7 +571,7 @@ Explore the rest of Atomic’s real recorded capabilities, with public docs and 
 <a href="https://github.com/bastani-inc/atomic-crash-course#22-verbatim-compaction">
 <picture>
 <source srcset="assets/feature-wall/06-verbatim-compaction.gif" type="image/gif">
-<img src="assets/feature-wall/06-verbatim-compaction.jpg" alt="Atomic answering after compaction by quoting the pinned keepContext repo rule back byte-exact" width="100%">
+<img src="assets/feature-wall/06-verbatim-compaction.jpg" alt="Atomic answering after compaction by quoting a keepContext repo rule back exactly" width="100%">
 </picture>
 </a>
 </td>

@@ -193,7 +193,8 @@ describe("SettingsManager layered settings provenance", () => {
 		const compaction = manager.getCompactionSettings();
 		assert.equal(compaction.enabled, false);
 		assert.equal(compaction.reserveTokens, 16384);
-		assert.equal(compaction.preserve_recent, 4);
+		// A removed key read from the fallback file still merges as a sibling; nothing reads it any more.
+		assert.equal((manager.getSettings().compaction as { preserve_recent?: number }).preserve_recent, 4);
 	});
 
 	it("keeps alternate SettingsStorage implementations source-compatible (#2299)", async () => {

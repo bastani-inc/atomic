@@ -37,8 +37,8 @@ beforeEach(() => {
 	directory = makeTempDirectory("default-journal-entry-");
 	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", join(directory, "agent"));
 	vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", undefined);
-	expectedPath = join(directory, "workflows", "journal.sqlite");
-	expectedStore = join(directory, "workflows", "journal");
+	expectedPath = join(directory, "agent", "workflows", "journal.sqlite");
+	expectedStore = join(directory, "agent", "workflows", "journal");
 	assert.equal(getAgentDir(), join(directory, "agent"));
 	assert.equal(getDurableBackendProcessOwner().selectedBackends, undefined);
 });

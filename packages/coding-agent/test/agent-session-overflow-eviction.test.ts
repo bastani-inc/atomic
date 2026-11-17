@@ -36,7 +36,8 @@ describe("AgentSession auth-missing compaction failure semantics", () => {
 		events = [];
 		const faux = registerFauxProvider();
 		unregister = () => faux.unregister();
-		const model = { ...faux.getModel(), contextWindow: 200, maxInputTokens: 200 };
+		// Large enough that a cleared context fits below the trigger.
+		const model = { ...faux.getModel(), contextWindow: 50_000, maxInputTokens: 50_000 };
 		const agent = new Agent({ initialState: { model, systemPrompt: "Test", tools: [] } });
 		sessionManager = SessionManager.inMemory();
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
@@ -73,11 +74,7 @@ describe("AgentSession auth-missing compaction failure semantics", () => {
 		await sessionManager.appendMessage(text("user", "Only one context-eligible entry is not enough to compact."));
 	}
 
-	it("completes load-bearing overflow recovery even when the region is barely compactable", async () => {
-		// A load-bearing caller must reach a terminal rung. Refusing here is what
-		// left a mid-turn preflight with nothing to do and killed the active turn,
-		// so a sub-minimum region now goes straight to the credential-free fresh
-		// rung instead of raising "nothing more was safely deletable".
+	it("clears even a single-message context on overflow, with no credentials needed", async () => {
 		await seedUnpreparableBranch();
 		await (session as unknown as AutoCompactionSurface)._runAutoCompaction("overflow", false, "load_bearing");
 
@@ -85,57 +82,39 @@ describe("AgentSession auth-missing compaction failure semantics", () => {
 		expect(end).toMatchObject({ type: "compaction_end", reason: "overflow", aborted: false });
 		if (end?.type !== "compaction_end") throw new Error("missing compaction_end");
 		expect(end.errorMessage).toBeUndefined();
-		expect(end.result?.rung).toBe("fresh");
+		expect(end.result?.form).toBe("cleared");
 
 		const boundaries = sessionManager.getEntries().filter((entry) => entry.type === "compaction");
 		expect(boundaries).toHaveLength(1);
-		expect((boundaries[0] as { details?: { rung?: string } }).details?.rung).toBe("fresh");
+		expect((boundaries[0] as { details?: { form?: string } }).details?.form).toBe("cleared");
 	});
 
-	it("keeps threshold auto-compaction with no preparable transcript as a silent no-op", async () => {
+	it("keeps threshold auto-compaction of an already-cleared context a silent no-op", async () => {
 		await seedUnpreparableBranch();
+		await (session as unknown as AutoCompactionSurface)._runAutoCompaction("threshold", false, "recoverable");
+		events.length = 0;
 		await (session as unknown as AutoCompactionSurface)._runAutoCompaction("threshold", false, "recoverable");
 
 		const end = events.find((event) => event.type === "compaction_end" && event.reason === "threshold");
 		expect(end).toMatchObject({ type: "compaction_end", reason: "threshold", result: undefined, aborted: false });
 		expect(end && "errorMessage" in end ? end.errorMessage : undefined).toBeUndefined();
-		expect(sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(0);
+		expect(sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(1);
 	});
 
-	it("completes load-bearing overflow compaction on the fresh rung when auth is missing", async () => {
-		// Missing credentials are ladder control flow, not an early throw: overflow
-		// recovery is load-bearing, so it falls through to the credential-free
-		// fresh rung instead of killing the turn.
-		await seedCompactableBranch();
-		await (session as unknown as AutoCompactionSurface)._runAutoCompaction("overflow", true, "load_bearing");
+	for (const [reason, urgency, willRetry] of [
+		["overflow", "load_bearing", true],
+		["threshold", "recoverable", false],
+	] as const) {
+		it(`completes ${reason} compaction when the model has no credentials, since it calls no model`, async () => {
+			await seedCompactableBranch();
+			await (session as unknown as AutoCompactionSurface)._runAutoCompaction(reason, willRetry, urgency);
 
-		const end = events.find((event) => event.type === "compaction_end" && event.reason === "overflow");
-		expect(end).toMatchObject({ type: "compaction_end", reason: "overflow", aborted: false, willRetry: true });
-		if (end?.type !== "compaction_end") throw new Error("missing compaction_end");
-		expect(end.errorMessage).toBeUndefined();
-		expect(end.result?.rung).toBe("fresh");
-		// Nothing was borrowed: no fallback models are configured here.
-		expect(end.result?.plannerModel).toBeUndefined();
-
-		const boundaries = sessionManager.getEntries().filter((entry) => entry.type === "compaction");
-		expect(boundaries).toHaveLength(1);
-		expect((boundaries[0] as { details?: { rung?: string } }).details?.rung).toBe("fresh");
-	});
-
-	it("fails threshold compaction without persistence when auth is missing", async () => {
-		await seedCompactableBranch();
-		await (session as unknown as AutoCompactionSurface)._runAutoCompaction("threshold", true, "recoverable");
-
-		const end = events.find((event) => event.type === "compaction_end" && event.reason === "threshold");
-		expect(end).toMatchObject({
-			type: "compaction_end",
-			reason: "threshold",
-			result: undefined,
-			aborted: false,
-			willRetry: false,
+			const end = events.find((event) => event.type === "compaction_end" && event.reason === reason);
+			expect(end).toMatchObject({ type: "compaction_end", reason, aborted: false, willRetry });
+			if (end?.type !== "compaction_end") throw new Error("missing compaction_end");
+			expect(end.errorMessage).toBeUndefined();
+			expect(end.result?.form).toBe("cleared");
+			expect(sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(1);
 		});
-		if (end?.type !== "compaction_end") throw new Error("missing compaction_end");
-		expect(end.errorMessage).toContain("No API key found for faux");
-		expect(sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(0);
-	});
+	}
 });

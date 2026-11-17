@@ -101,7 +101,7 @@ const ARGUMENT_COMMANDS: ReadonlyArray<{ name: string; argument: string; expecte
 	{ name: "session", argument: "snapshot", expected: ["handleSessionSnapshotCommand"] },
 	{ name: "login", argument: "anthropic", expected: ["handleLoginCommand", "anthropic"] },
 	{ name: "logout", argument: "anthropic", expected: ["showOAuthSelector", "logout", "anthropic"] },
-	{ name: "compact", argument: "focus on X", expected: ["showWarning", "Usage: /compact"] },
+	{ name: "compact", argument: "focus on X", expected: ["handleCompactCommand", "focus on X"] },
 ];
 
 /** Built-ins that take no argument, with the call each makes when submitted bare. */

@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { createModuleRequire } from "../utils/module-require.ts";
+import { createModuleRequire } from "../utils/module-require.js";
 
 export interface ProcessTreeContainment {
 	terminate(): boolean;

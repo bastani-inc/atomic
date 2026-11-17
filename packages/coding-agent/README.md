@@ -186,7 +186,7 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 | `/tree` | Jump to any point in the session and continue from there |
 | `/fork` | Create a new session from a previous user message |
 | `/clone` | Duplicate the current active branch into a new session |
-| `/compact` | Delete safe older transcript objects verbatim |
+| `/compact [instructions]` | Clear the context window; the agent recovers what it needs from session history |
 | `/copy` | Copy last assistant message to clipboard |
 | `/export [file]` | Export session to HTML file |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
@@ -269,13 +269,13 @@ Use `/session` in interactive mode to see the current session ID before reusing 
 
 ### Compaction
 
-Long sessions can exhaust context windows. Compaction now uses deletion-only context compaction by default: the selected model proposes safe deletion targets, Atomic validates them locally, and retained transcript content stays verbatim.
+Long sessions can exhaust context windows. By default, compaction makes no model call: it clears the context window and leaves one message that tells the agent where its earlier conversation is in session history and what to recover first, such as `<keepContext>` spans, your requests and constraints. The agent recovers it with its own `read` and `search` tools. With a compactor model such as `morph/morph-compactor` set in `compactionModel`, the compactor's output replaces the context instead.
 
-**Manual:** `/compact` has no prompt arguments.
+**Manual:** `/compact [instructions]`. Instructions tell the agent what to recover first.
 
-**Automatic:** Enabled by default. Triggers on context overflow (recovers and retries) or when approaching the limit (proactive). Configure via `/settings` or `settings.json`. Automatic compaction uses the same verbatim deletion path.
+**Automatic:** Enabled by default. Triggers on context overflow (compacts and retries once) or when approaching the limit. Configure via `/settings` or `settings.json`.
 
-The full history still remains in the JSONL file; use `/tree` to revisit. See [docs/compaction.md](docs/compaction.md) for internals.
+The full history stays in the session; use `/tree` to revisit it. See [docs/compaction.md](docs/compaction.md) for details.
 
 Session model context is projected from append-only history. Extensions can append a `context_edit` to omit or replace an earlier message only for future model requests; raw history and usage remain unchanged:
 

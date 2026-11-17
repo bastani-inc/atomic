@@ -1,20 +1,26 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
+import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import {
 	type AgentPanelItem,
 	AgentPanelSourceHub,
+	dismissedAgentPanelItems,
 	openAgentPanelItem,
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
-import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
+import { bindOwnerTaskStore, setTaskTurnInterrupted } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
+import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import {
 	AGENT_PANEL_DROP_MS,
 	AgentPanelFocus,
 	type AgentPanelStyle,
+	isFinishedPanelRow,
 	renderAgentPanelHint,
 	renderAgentPanelRows,
 } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
+import { dismissedTasks } from "../../packages/coding-agent/src/modes/interactive/components/task-dismissal.js";
+import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import {
 	agentPanelRows,
@@ -319,5 +325,78 @@ test("a source's viewed flag starts the finished workflow drop timer (#5239)", a
 		dispose();
 		hub.dispose();
 		vi.useRealTimers();
+	}
+});
+
+test("an interrupted-but-running subagent is treated as live for x in the panel and stays in /tasks until stopped (#5239)", async () => {
+	initTheme("dark");
+	const previousKeys = getKeybindings();
+	setKeybindings(new KeybindingsManager());
+	const fixture = taskFixture();
+	try {
+		await fixture.start("Inspect concurrent spawn locks.");
+		const session = {};
+		bindOwnerTaskStore(session, fixture.store);
+		const taskId = fixture.store.tasks[0]!.ref.taskId;
+		setTaskTurnInterrupted(fixture.store, taskId, true);
+
+		const initialRows = agentPanelRows(session);
+		assert.equal(initialRows.length, 1);
+		assert.equal(initialRows[0]?.state, "stopped");
+		assert.equal(isFinishedPanelRow(initialRows[0]!), false);
+
+		await showAgentPanel(session, {
+			custom: async (
+				factory: (...args: never[]) => {
+					render(width: number): string[];
+					handleInput(data: string): void;
+					dispose(): void;
+				},
+			) => {
+				const component = factory(
+					{ requestRender() {} } as never,
+					theme as never,
+					new KeybindingsManager() as never,
+					(() => {}) as never,
+				);
+				try {
+					const initialLines = component.render(100).map(stripVTControlCharacters);
+					assert.match(initialLines.join("\n"), /stopped/);
+					assert.match(initialLines.at(-1) ?? "", /\bx stop\b/);
+					assert.doesNotMatch(initialLines.at(-1) ?? "", /\bx dismiss\b/);
+
+					component.handleInput("x");
+					const afterFirstX = component.render(100).map(stripVTControlCharacters);
+					assert.match(afterFirstX.at(-1) ?? "", /Press x again within 3s to stop/);
+					assert.equal(dismissedAgentPanelItems(session).has(`task:${taskId}`), false);
+					assert.equal(dismissedTasks(ownerTaskViewSource(fixture.store)).has(taskId), false);
+					assert.equal(agentPanelRows(session).length, 1);
+
+					const inspector = new TaskInspector(
+						ownerTaskViewSource(fixture.store),
+						() => {},
+						() => {},
+					);
+					try {
+						const pickerText = inspector.renderPicker(100, 16).map(stripVTControlCharacters).join("\n");
+						assert.match(pickerText, /Inspect concurrent spawn locks\./);
+						assert.match(pickerText, /\bx stop\b/);
+						assert.doesNotMatch(pickerText, /\bx dismiss\b/);
+					} finally {
+						inspector.dispose();
+					}
+
+					component.handleInput("x");
+					await new Promise<void>((resolve) => setImmediate(resolve));
+					fixture.store.drain();
+					assert.equal(fixture.store.tasks[0]!.execution.kind, "settled");
+				} finally {
+					component.dispose();
+				}
+			},
+		} as never);
+	} finally {
+		await fixture.dispose();
+		setKeybindings(previousKeys);
 	}
 });
