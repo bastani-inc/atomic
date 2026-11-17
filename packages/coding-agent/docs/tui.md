@@ -440,7 +440,7 @@ const choice = await ctx.ui.custom<string | null>((tui, _theme, _kb, done) => {
 });
 ```
 
-Selector uses ↑↓ to select (wrapping) and pgup/pgdn to page. Enter chooses, and → chooses when the search is empty. Esc clears the search before it cancels, and ctrl+c always cancels. Options worth knowing:
+Keys: ↑↓ select (wrapping), pgup/pgdn page, home/end jump to the ends when there is no search box, enter or → choose, esc clears the search before it cancels, and ctrl+c always cancels. With mouse reporting, a click chooses a row (toggles it in a multi-select) and the wheel moves the selection, stopping at the ends. Options worth knowing:
 
 | Option | Effect |
 | --- | --- |
@@ -451,7 +451,7 @@ Selector uses ↑↓ to select (wrapping) and pgup/pgdn to page. Enter chooses, 
 | `onSelectionChange` | Reports the selected row when navigation or filtering changes its identity, or `undefined` when no enabled row matches. |
 | `extraKeys` | Keys of your own, each with a hint and an `enabled(item)` check, so a key that does nothing for the selected row is not shown. |
 | `group` on items | Rows with the same group are listed under a section label (hidden while searching). |
-| `disabled` on items | Drawn dim, skipped by ↑↓ and never chosen by enter or a mouse click. |
+| `disabled` on items | Drawn dim, skipped by ↑↓ and the wheel, and refused by enter and clicks. |
 | `mark` on items | `"on"`/`"off"` draw `●`/`○` for the current value; `"checked"`/`"unchecked"` draw `[✓]`/`[ ]` for a row enter switches on and off. |
 | `labelStyle` on items | Paints the label yourself, told whether the row is selected. |
 | `subtitle` | Dim text under the title; each `\n` starts a line and long lines wrap. |
@@ -461,6 +461,8 @@ Without a search box, `?` shows the picker's keys and `j`/`k` move like ↓/↑.
 Use `setItems()` to replace row data. When external data used by a custom `style` or an extra key's `enabled` callback changes, call `selector.invalidate()` before requesting a render. A row's `labelStyle` still runs on each render, so animated labels can update without replacing the rows.
 
 For live lists, call `selector.setItems(nextItems)` and then `tui.requestRender()`. Updates keep the search text and selected item by its `id`. If that item disappears, becomes disabled, or no longer matches the search, selection moves to the first enabled match. Checked items that disappear are removed from the selection.
+
+`SelectorState` holds a picker's search, selection and checked rows without drawing anything, and `selectorHintEntries(state, options)` returns the keys its hint line lists, so you can test a picker's behaviour without rendering it. `themeSelectorStyle()` returns the active theme's picker colours; pass `style: PLAIN_SELECTOR_STYLE` for output without colour.
 
 ### Pattern 1b: Selection Dialog (SelectList)
 
@@ -838,6 +840,45 @@ export default function (pi: ExtensionAPI) {
 - **Pass `undefined`** to restore the default editor: `ctx.ui.setEditorComponent(undefined)`
 
 **Examples:** [modal-editor.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/modal-editor.ts)
+
+### Pattern 7b: Attached Composer
+
+A chat that talks to something other than the main agent should not look like the main chat. `applyAttachedComposer(style, label, placeholder, lines)` takes an editor's rendered lines and returns them in the form Atomic uses for subagent and workflow stage chats: heavy accent rules above and below the prompt, the top rule ending in a bold `label`, and a dim `placeholder` after the cursor while nothing is typed.
+
+```typescript
+import { applyAttachedComposer, CustomEditor, type ExtensionAPI, type Theme } from "@bastani/atomic";
+
+class ReviewerEditor extends CustomEditor {
+  appTheme?: Theme;
+
+  render(width: number): string[] {
+    const theme = this.appTheme;
+    if (theme === undefined) return super.render(width);
+    return applyAttachedComposer(
+      {
+        accent: (text) => theme.fg("accent", text),
+        text: (text) => theme.fg("text", text),
+        dim: (text) => theme.fg("dim", text),
+      },
+      "reviewer · checking the diff · 2m",
+      "Message reviewer…",
+      super.render(width),
+    );
+  }
+}
+
+export default function (pi: ExtensionAPI) {
+  pi.on("session_start", (_event, ctx) => {
+    ctx.ui.setEditorComponent((tui, editorTheme, keybindings) => {
+      const editor = new ReviewerEditor(tui, editorTheme, keybindings);
+      editor.appTheme = ctx.ui.theme;
+      return editor;
+    });
+  });
+}
+```
+
+It replaces only a plain or scrolled editor rule: a first or last line that is not a rule, such as one your editor draws itself, is left as it is. A long label is cut with `…` to fit. Below `INPUT_LABEL_MIN_COLUMNS` (40) columns, the rules stay heavy without the label. Pass `undefined` for `label` or `placeholder` to leave either out.
 
 ## Key Rules
 

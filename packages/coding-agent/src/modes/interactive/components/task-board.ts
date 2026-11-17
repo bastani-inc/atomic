@@ -1,6 +1,7 @@
 import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { AgentPanelItem } from "../../../core/tasks/agent-panel-source.ts";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
+import { taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.ts";
 import { theme } from "../theme/theme.js";
 import { taskDisplayText, taskDuration, taskLabel, taskState } from "./task-row.js";
 
@@ -123,12 +124,20 @@ export function stateGlyph(state: TaskBoardState): Glyph {
 /** `87.4k`, as rows and the panel show token counts. */
 export function compactTokens(tokens: number): string {
 	if (tokens < 1000) return String(tokens);
-	if (tokens < 1_000_000) return `${(tokens / 1000).toFixed(1)}k`;
-	return `${(tokens / 1_000_000).toFixed(1)}M`;
+	if (tokens < 999_950) return `${(tokens / 1000).toFixed(1)}k`;
+	if (tokens < 999_950_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+	return `${(tokens / 1_000_000_000).toFixed(1)}B`;
 }
 
 function rowElapsed(row: TaskBoardRow): number | undefined {
-	return row.kind === "task" ? row.task.metrics?.elapsedMs : row.item.elapsedMs;
+	if (row.kind === "task") return row.task.metrics?.elapsedMs;
+	if (row.item.kind !== "workflow" && row.item.state !== "queued") {
+		const clocks = taskClockOf(row.item);
+		if (clocks !== undefined) {
+			return clocks.elapsedMs(row.item.id, row.item.elapsedMs, taskClockRunning(row.item.state));
+		}
+	}
+	return row.item.elapsedMs;
 }
 function rowTokens(row: TaskBoardRow): number | undefined {
 	return row.kind === "task" ? row.task.metrics?.tokenCount : row.item.tokens;
@@ -164,7 +173,7 @@ export function renderBoardRow(row: TaskBoardRow, selected: boolean, width: numb
 		row.kind === "item" && row.item.progress && state !== "input"
 			? `${row.item.kind === "workflow" ? "stage " : ""}${row.item.progress.done}/${row.item.progress.total}`
 			: "";
-	const reason = row.kind === "item" && state === "failed" && row.item.reason ? row.item.reason : "";
+	const reason = row.kind === "item" && state === "failed" && row.item.reason ? taskDisplayText(row.item.reason) : "";
 	const task = [rowTask(row), progress, reason].filter(Boolean).join(" · ");
 	const meta = width < 40 ? "" : rowMeta(row);
 	const fixed = 2 + 2 + nameColumn + (meta ? 2 + visibleWidth(meta) : 0);

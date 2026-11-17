@@ -13,6 +13,7 @@ import {
 	type AgentPanelStyle,
 	renderAgentPanelRows,
 } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { inspectRun } from "../../packages/workflows/src/runs/background/run-inspect.js";
 import { MAX_CAUSE_DEPTH } from "../../packages/workflows/src/shared/error-cause-chain.js";
 import { type SerializedError, serializeError } from "../../packages/workflows/src/shared/error-codec.js";
@@ -181,6 +182,7 @@ test.each(["card", "detail", "listing", "panel"])(
 			assertSafeRows(rows.flatMap((row) => [row.label, row.description ?? ""]));
 			assert.ok(rows[0]?.description?.includes("model"));
 		} else {
+			initTheme("dark");
 			assertSafeRows(
 				renderAgentPanelRows(
 					panelItemsFromSnapshot(

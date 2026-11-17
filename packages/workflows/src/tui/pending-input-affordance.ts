@@ -252,7 +252,7 @@ function descriptorOccurrence(
 
 function runPromptOccurrence(run: RunSnapshot, prompt: PendingPrompt): PendingInputOccurrence {
 	const message = sanitizePromptDisplay(prompt.message);
-	return descriptorOccurrence(run, null, prompt.id, message, isDisplayablePrompt(message));
+	return descriptorOccurrence(run, null, prompt.id, message, prompt.kind !== "custom" && isDisplayablePrompt(message));
 }
 
 function structuredOccurrence(
@@ -321,7 +321,13 @@ function runPromptOccurrenceForStage(
 	prompt: PendingPrompt,
 ): PendingInputOccurrence {
 	const message = sanitizePromptDisplay(prompt.message);
-	return descriptorOccurrence(run, stage.id, prompt.id, message, isDisplayablePrompt(message));
+	return descriptorOccurrence(
+		run,
+		stage.id,
+		prompt.id,
+		message,
+		prompt.kind !== "custom" && stage.promptFootprint?.kind !== "custom" && isDisplayablePrompt(message),
+	);
 }
 
 function pendingInputOccurrences(run: RunSnapshot): PendingInputOccurrence[] {

@@ -2,6 +2,7 @@ import { type AgentSession, applyAttachedComposer } from "@bastani/atomic";
 import { Box, Text } from "@bastani/atomic-tui";
 import { isTerminalStageStatus } from "../shared/store-internal.js";
 import type { StageSnapshot } from "../shared/store-types.js";
+import { elapsedStageMs } from "../shared/timing.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
 import { APP_ACTION, isKeybindingsLike, navKeyLabel } from "./keybindings-adapter.js";
 import { wrapIdentifierLines } from "./run-identity-rows.js";
@@ -37,17 +38,6 @@ export function stageLabelRule(
 	return hexToAnsi(hex) + text + RESET;
 }
 
-/**
- * Post-process rendered editor lines to inject `[stage: name]` into the top
- * rule line (Case 1 of issue #2886).
- *
- * Uses the first rendered editor line only, including a scrolled `↑ N more`
- * top border, and never a later bottom rule. Duplicate detection ignores
- * draft content. Runs AFTER CustomEditor.render() so ❯ stays on the content
- * line.
- *
- * Styling: `[stage: ` in textMuted, name in bold text, 40-column minimum floor.
- */
 export function injectStageLabelIntoEditorTopRule(
 	ctx: StageChatViewContext,
 	stageName: string | undefined,
@@ -56,15 +46,15 @@ export function injectStageLabelIntoEditorTopRule(
 	now = Date.now(),
 ): string[] {
 	if (stageName === undefined) return applyStageLabelToEditorTopRule(ctx.theme, stageName, editorLines);
-	// The attached composer: accent rules naming the stage and its state, and where typing goes.
 	const waiting = stage?.status === "awaiting_input";
+	const elapsed = stage?.status === "running" ? elapsedStageMs(stage, now) : undefined;
 	const state =
 		stage === undefined
 			? undefined
 			: waiting
 				? "needs input"
-				: stage.status === "running" && stage.startedAt !== undefined
-					? formatStageElapsed(now - stage.startedAt)
+				: elapsed !== undefined
+					? formatStageElapsed(elapsed)
 					: stage.status === "completed"
 						? "done"
 						: stage.status;
@@ -82,7 +72,6 @@ export function injectStageLabelIntoEditorTopRule(
 	);
 }
 
-/** `41m`, `1h 31m`, `9s`, as the agent panel shows elapsed time. */
 function formatStageElapsed(ms: number): string {
 	const seconds = Math.max(0, Math.floor(ms / 1000));
 	if (seconds < 60) return `${seconds}s`;

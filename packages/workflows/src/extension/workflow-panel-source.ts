@@ -1,8 +1,13 @@
 import type { AgentPanelOpenOptions, AgentPanelSource, WorkflowRunControlOutcome } from "@bastani/atomic";
 import { readGraphStoreSnapshot } from "../shared/store-observation.js";
-import { panelItemsFromSnapshot, panelRunId } from "../tui/panel-runs.js";
+import {
+	answerPanelRun,
+	markWorkflowRunViewed,
+	panelItemsFromSnapshot,
+	panelRunId,
+	viewedWorkflowRuns,
+} from "../tui/panel-runs.js";
 import type { WorkflowOwnerResources } from "./workflow-owner-resources.js";
-import { workflowAnswerAction } from "./workflow-tool-answer.js";
 
 export interface WorkflowPanelSourceDeps {
 	open(runId: string, options?: AgentPanelOpenOptions): void;
@@ -10,12 +15,16 @@ export interface WorkflowPanelSourceDeps {
 }
 
 export function workflowPanelSource(owner: WorkflowOwnerResources, deps: WorkflowPanelSourceDeps): AgentPanelSource {
+	const viewedRuns = viewedWorkflowRuns(owner.store);
 	return {
-		items: () => panelItemsFromSnapshot(readGraphStoreSnapshot(owner.store)),
+		items: () => panelItemsFromSnapshot(readGraphStoreSnapshot(owner.store), Date.now(), viewedRuns),
 		subscribe: (listener) => owner.store.subscribeInvalidation(listener),
 		open: (id, options) => {
 			const runId = panelRunId(id);
-			if (runId !== undefined) deps.open(runId, options);
+			if (runId === undefined) return false;
+			markWorkflowRunViewed(runId, owner.store);
+			deps.open(runId, options);
+			return true;
 		},
 		stop: async (id) => {
 			const runId = panelRunId(id);
@@ -29,11 +38,6 @@ export function workflowPanelSource(owner: WorkflowOwnerResources, deps: Workflo
 				return { ok: false, reason: error instanceof Error ? error.message : String(error) };
 			}
 		},
-		answer: async (id, text) => {
-			const runId = panelRunId(id);
-			if (runId === undefined) return { ok: false, reason: "not a workflow run" };
-			const result = await workflowAnswerAction({ action: "answer", runId, text }, owner);
-			return result.status === "ok" ? { ok: true } : { ok: false, reason: result.message ?? result.status };
-		},
+		answer: (id, text, options) => answerPanelRun(id, text, owner, options),
 	};
 }

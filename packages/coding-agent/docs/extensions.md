@@ -601,6 +601,10 @@ Moved to [Extension API reference](/extensions/api-reference#pi-registershortcut
 
 Moved to [Extension API reference](/extensions/api-reference#pi-registerflag-name-options).
 
+### pi.registerAgentPanelSource(source)
+
+Moved to [Extension API reference](/extensions/api-reference#pi-registeragentpanelsource-source).
+
 ### pi.exec(command, args, options?)
 
 Moved to [Extension API reference](/extensions/api-reference#pi-exec-command-args-options).

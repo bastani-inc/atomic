@@ -60,7 +60,7 @@ Named workflow runs execute in the background. By default, after launch expect a
 
 For deliberately authored multi-item graphs, see [Task queues and software factories](/workflows/reliable-design#task-queues-and-software-factories). To start a workflow, use `workflow({ action: "run", workflow: "<name>", inputs: {...} })` after inspecting its required inputs with `workflow({ action: "inputs", workflow: "<name>" })`.
 
-The agent panel below the prompt lists top-level runs with their stage progress, current stage and elapsed time; a run that waits on a question shows `◆` and the question. Press ↓ on an empty prompt and Enter on a run to open its graph. Use `/workflow status` for full details, including resumable quit runs. See [runs in the agent panel](/workflows/operations#runs-in-the-agent-panel).
+The agent panel below the prompt lists top-level runs with their stage progress, current stage and elapsed time; a run that waits for input shows `◆` and, when it waits on one question, the question. Press ↓ on an empty prompt and Enter on a run to open its graph. Use `/workflow status` for full details, including resumable quit runs. See [runs in the agent panel](/workflows/operations#runs-in-the-agent-panel).
 
 ## Atomic vs Claude Code Dynamic Workflows
 

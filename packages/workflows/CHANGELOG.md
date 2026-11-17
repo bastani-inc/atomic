@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- A reply sent from a workflow's `/tasks` card is refused if the pending question changed after typing began. SDK replies must include the captured prompt identity, so identical question text cannot direct an old reply to a replacement question ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Workflow rows in the agent panel now count expanded nested, dynamic and fan-out stages, omit empty progress bars on tools-only runs, and show the choices for a pending single-select question. Run and stage names display terminal controls as inert text, and unchanged stage progress is reused between refreshes ([#5239](https://github.com/bastani-inc/atomic/pull/5239))
 - Fixed escaped `\"` and `\\` inside double-quoted `/workflow` arguments being parsed incorrectly ([#5245](https://github.com/bastani-inc/atomic/pull/5245))
 - Fixed workflow input inspection and forms crashing on defaults that cannot be JSON encoded. Those defaults are omitted from input metadata and left blank in the picker, with validation deferred to the run ([#5245](https://github.com/bastani-inc/atomic/pull/5245))
@@ -31,6 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Removed
 
+- The below-editor `BACKGROUND` workflow list and its Alt+K/J scrolling. Each run now has a row in the main chat's agent panel with its stage progress, current stage and any waiting input; Enter on it opens the graph ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - The below-editor `BACKGROUND` workflow list and its Alt+K/J scrolling. Each run now has a row in the main chat's agent panel with its stage progress, current stage and any waiting question; Enter on it opens the graph ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ## [0.9.88] - 2026-11-16
