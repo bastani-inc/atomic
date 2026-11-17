@@ -2084,7 +2084,6 @@ export class SubagentControlRuntime {
 			};
 			taskHooks?.bindChildSession?.(childSession);
 			admitted.spec.onChildSession?.(childSession);
-			// The child's own prompts wait in its session; its task shows them as needing input, attributed to it.
 			if (taskHooks !== undefined)
 				stopHeldPromptAttention = watchHeldPromptAttention(childSession.sessionId, (report) =>
 					taskHooks.reportActivity(report),

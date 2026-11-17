@@ -61,10 +61,43 @@ function nextRequestId(): string {
 	return `stage-ui-${randomUUID()}`;
 }
 
+export type StageDialogJournal = (request?: PendingPrompt) => Promise<void>;
+
+export interface StageDialogRequest {
+	readonly signal?: AbortSignal;
+	readonly timeout?: number;
+	readonly answerWithHost?: () => Promise<PrimitivePromptAnswer | undefined>;
+	readonly unrecorded?: () => Promise<PrimitivePromptAnswer | undefined>;
+}
+
+function writeDialogJournal(journal: StageDialogJournal, request?: PendingPrompt): Promise<void> {
+	try {
+		return journal(request);
+	} catch (error) {
+		return Promise.reject(error);
+	}
+}
+
+function untilSettledOrAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+	if (signal === undefined) return promise;
+	return new Promise<T>((resolve, reject) => {
+		const onAbort = () => reject(signal.reason);
+		if (signal.aborted) {
+			onAbort();
+			return;
+		}
+		signal.addEventListener("abort", onAbort, { once: true });
+		promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+	});
+}
+
 export class StageUiBroker {
 	private readonly store: Store;
 	private readonly pending = new Map<string, StageCustomUiRequest>();
 	private readonly dialogs = new Map<string, string>();
+	private readonly turns = new Map<string, PromiseWithResolvers<void>[]>();
+	private readonly customTurns = new Set<string>();
+	private readonly dialogJournals = new Map<string, StageDialogJournal>();
 	private readonly hosts = new Map<string, StageCustomUiHost>();
 	// Headless-answer adapters keyed by (runId, stageId). Populated by the
 	// executor's ask_user_question watcher and the readiness gate so a brokered
@@ -298,52 +331,107 @@ export class StageUiBroker {
 		return this.dialogs.has(key(runId, stageId));
 	}
 
+	registerDialogJournal(runId: string, stageId: string, journal: StageDialogJournal): () => void {
+		const hostKey = key(runId, stageId);
+		this.dialogJournals.set(hostKey, journal);
+		return () => {
+			if (this.dialogJournals.get(hostKey) === journal) this.dialogJournals.delete(hostKey);
+		};
+	}
+
 	async requestDialog(
 		runId: string,
 		stageId: string,
 		descriptor: Omit<PendingPrompt, "id" | "createdAt" | "kind"> & { readonly kind: PrimitivePromptKind },
-		signal?: AbortSignal,
-		answerWithHost?: () => Promise<PrimitivePromptAnswer | undefined>,
+		request: StageDialogRequest = {},
 	): Promise<PrimitivePromptAnswer | undefined> {
-		signal?.throwIfAborted();
-		const hostKey = key(runId, stageId);
-		if (this.dialogs.has(hostKey) || this.pending.has(hostKey)) {
-			throw new Error(`atomic-workflows: stage ${stageId} already has a pending dialog`);
+		request.signal?.throwIfAborted();
+		if (this.store.run(runId)?.stages.some((stage) => stage.id === stageId) !== true) {
+			const unrecorded = request.answerWithHost ?? request.unrecorded;
+			return unrecorded === undefined ? undefined : unrecorded();
 		}
-		const prompt = { ...descriptor, source: "stage-dialog" as const, id: nextRequestId(), createdAt: Date.now() };
-		this.dialogs.set(hostKey, prompt.id);
-		const onAbort = () => {
+		const requestedAt = Date.now();
+		const turn = this.takeTurn(key(runId, stageId));
+		try {
+			if (turn.ready !== undefined) await untilSettledOrAborted(turn.ready, request.signal);
+			return await this.askDialog(
+				runId,
+				stageId,
+				{
+					...descriptor,
+					source: "stage-dialog",
+					id: nextRequestId(),
+					createdAt: Date.now(),
+					...(request.timeout === undefined ? {} : { expiresAt: requestedAt + request.timeout }),
+				},
+				request,
+			);
+		} finally {
+			turn.release();
+		}
+	}
+
+	private takeTurn(hostKey: string): { readonly ready: Promise<void> | undefined; readonly release: () => void } {
+		const line = this.turns.get(hostKey) ?? [];
+		const turn = Promise.withResolvers<void>();
+		line.push(turn);
+		this.turns.set(hostKey, line);
+		return {
+			ready: line.length === 1 ? undefined : turn.promise,
+			release: () => {
+				const index = line.indexOf(turn);
+				if (index < 0) return;
+				line.splice(index, 1);
+				if (line.length === 0) {
+					if (this.turns.get(hostKey) === line) this.turns.delete(hostKey);
+				} else if (index === 0) line[0]!.resolve();
+			},
+		};
+	}
+
+	private async askDialog(
+		runId: string,
+		stageId: string,
+		prompt: PendingPrompt & { readonly kind: PrimitivePromptKind },
+		{ signal, answerWithHost }: StageDialogRequest,
+	): Promise<PrimitivePromptAnswer | undefined> {
+		const hostKey = key(runId, stageId);
+		const journal = this.dialogJournals.get(hostKey);
+		const cancel = () => {
 			this.store.resolveStagePendingPrompt(runId, stageId, prompt.id, undefined, { recordAnswer: false });
 		};
-		signal?.addEventListener("abort", onAbort, { once: true });
+		this.dialogs.set(hostKey, prompt.id);
 		try {
+			if (journal !== undefined) await untilSettledOrAborted(writeDialogJournal(journal, prompt), signal);
+			signal?.throwIfAborted();
+			signal?.addEventListener("abort", cancel, { once: true });
 			if (!this.store.recordStagePendingPrompt(runId, stageId, prompt)) {
 				throw new Error(`atomic-workflows: stage ${stageId} cannot accept a dialog`);
 			}
 			const answered = this.store.getStagePromptAnswer(runId, stageId);
-			const waiter =
+			const response =
 				answered?.promptId === prompt.id
-					? Promise.resolve(answered.value)
-					: this.store.awaitStagePendingPrompt(runId, stageId, prompt.id);
-			if (signal?.aborted) onAbort();
-			const response = await new Promise<unknown>((resolve, reject) => {
-				waiter.then(resolve, reject);
-				if (!answerWithHost || signal?.aborted || answered?.promptId === prompt.id) return;
-				Promise.resolve()
-					.then(answerWithHost)
-					.then((value) => {
-						if (signal?.aborted) return;
-						this.store.resolveStagePendingPrompt(runId, stageId, prompt.id, value, {
-							recordAnswer: value !== undefined,
+					? answered.value
+					: await new Promise<unknown>((resolve, reject) => {
+							this.store.awaitStagePendingPrompt(runId, stageId, prompt.id).then(resolve, reject);
+							if (!answerWithHost) return;
+							Promise.resolve()
+								.then(answerWithHost)
+								.then((value) => {
+									if (signal?.aborted) return;
+									this.store.resolveStagePendingPrompt(runId, stageId, prompt.id, value, {
+										recordAnswer: value !== undefined,
+									});
+								}, reject);
 						});
-					}, reject);
-			});
 			signal?.throwIfAborted();
 			return response === undefined ? undefined : requirePrimitivePromptAnswer(prompt, response);
 		} finally {
-			onAbort();
-			signal?.removeEventListener("abort", onAbort);
+			signal?.removeEventListener("abort", cancel);
+			cancel();
 			if (this.dialogs.get(hostKey) === prompt.id) this.dialogs.delete(hostKey);
+			if (journal !== undefined && this.dialogJournals.get(hostKey) === journal)
+				void writeDialogJournal(journal).catch(() => {});
 		}
 	}
 
@@ -363,11 +451,34 @@ export class StageUiBroker {
 			return Promise.reject(signal.reason ?? new Error("atomic-workflows: stage UI request aborted"));
 		}
 		const hostKey = key(runId, stageId);
-		const existing = this.pending.get(hostKey);
-		if (existing || this.dialogs.has(hostKey)) {
+		if (this.pending.has(hostKey) || this.customTurns.has(hostKey)) {
 			return Promise.reject(new Error(`atomic-workflows: stage ${stageId} already has a pending custom UI request`));
 		}
+		const turn = this.takeTurn(hostKey);
+		this.customTurns.add(hostKey);
+		const release = () => {
+			this.customTurns.delete(hostKey);
+			turn.release();
+		};
+		const open = () => this.openCustomUi(runId, stageId, factory, options, signal, sessionId, humanInput, release);
+		if (turn.ready === undefined) return open();
+		return untilSettledOrAborted(turn.ready, signal).then(open, (error: unknown) => {
+			release();
+			throw error;
+		});
+	}
 
+	private openCustomUi<T>(
+		runId: string,
+		stageId: string,
+		factory: PiCustomOverlayFactory<T>,
+		options: PiCustomOverlayOptions | undefined,
+		signal: AbortSignal | undefined,
+		sessionId: string | undefined,
+		humanInput: StageQuestionnaireInput | undefined,
+		release: () => void,
+	): Promise<T> {
+		const hostKey = key(runId, stageId);
 		let request!: StageCustomUiRequest<T>;
 		const promise = new Promise<T>((resolve, reject) => {
 			request = {
@@ -400,6 +511,7 @@ export class StageUiBroker {
 
 		return promise.finally(() => {
 			signal?.removeEventListener("abort", onAbort);
+			release();
 		});
 	}
 

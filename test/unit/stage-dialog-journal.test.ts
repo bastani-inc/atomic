@@ -57,6 +57,7 @@ function sessionOptions(root: string): CreateAgentSessionOptions {
 function stageSessionWithAction(
 	root: string,
 	action: (session: AgentSession) => Promise<string>,
+	startup?: (session: AgentSession) => Promise<void>,
 ): (options?: CreateAgentSessionOptions) => Promise<{ session: StageSessionRuntime }> {
 	return async (options) => {
 		const { session } = await createAgentSession({
@@ -65,6 +66,7 @@ function stageSessionWithAction(
 			...(options?.extensionBindings !== undefined ? { extensionBindings: options.extensionBindings } : {}),
 		});
 		cleanups.push(() => session.dispose());
+		await startup?.(session);
 		const listeners = new Set<(event: { type: string; [key: string]: unknown }) => void>();
 		const emit = (event: { type: string; [key: string]: unknown }) => {
 			for (const listener of [...listeners]) listener(event);
@@ -366,6 +368,12 @@ test("session checkpoint callbacks wait for earlier dialog writes before startin
 	void result.catch(() => {});
 	try {
 		await writeStarted.promise;
+		await setImmediate();
+		assert.equal(store.run(runId)!.stages[0]!.pendingPrompt, undefined, "the dialog waits for its write");
+		assert.equal(metadataCalled, false, "later session metadata must not overtake an outstanding dialog write");
+	} finally {
+		pendingWrite.resolve();
+		await vi.waitFor(() => assert.equal(store.run(runId)?.stages[0]?.pendingPrompt?.kind, "input"));
 		const stage = store.run(runId)!.stages[0]!;
 		assert.equal(
 			(
@@ -376,10 +384,6 @@ test("session checkpoint callbacks wait for earlier dialog writes before startin
 			).status,
 			"ok",
 		);
-		await setImmediate();
-		assert.equal(metadataCalled, false, "later session metadata must not overtake an outstanding dialog write");
-	} finally {
-		pendingWrite.resolve();
 		await metadataStarted.promise;
 		metadataResult.reject(new Error("session metadata refused"));
 		const outcome = await result;
@@ -558,4 +562,193 @@ test("a stage dialog whose durable checkpoint write is refused fails the stage c
 	assert.match(result.error ?? "", /journal storage refused stage dialog checkpoint/);
 	assert.equal(result.stages[0]?.status, "failed");
 	assert.equal(result.stages[0]?.pendingPrompt, undefined);
+});
+
+function holdDialogRequestCommits(backend: Awaited<ReturnType<typeof createMemoryTestBackend>>) {
+	const release = Promise.withResolvers<void>();
+	const requested = Promise.withResolvers<void>();
+	const state = { committed: false, requested: requested.promise, release: () => release.resolve() };
+	const originalCommit = backend.commitCheckpoint.bind(backend);
+	backend.commitCheckpoint = async (checkpoint, options) => {
+		if (checkpoint.kind !== "stage" || checkpoint.pendingPrompt === undefined)
+			return originalCommit(checkpoint, options);
+		requested.resolve();
+		await release.promise;
+		const committed = await originalCommit(checkpoint, options);
+		state.committed = true;
+		return committed;
+	};
+	return state;
+}
+
+test("an SDK host is asked a stage dialog only after its request checkpoint is durable", async () => {
+	const root = mkdtempSync(join(tmpdir(), "stage-dialog-host-durable-"));
+	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+	const backend = await createMemoryTestBackend();
+	const scope = {};
+	const store = adoptStore(scope);
+	const broker = adoptStageUiBroker(scope, false, store);
+	const runId = testRunId("stage-dialog-host-durable");
+	const request = holdDialogRequestCommits(backend);
+	const askedAfterCommit: boolean[] = [];
+	const host: HostInput = {
+		confirm: async () => {
+			askedAfterCommit.push(request.committed);
+			return true;
+		},
+		select: async () => undefined,
+		input: async () => undefined,
+		editor: async () => undefined,
+		questionnaire: async () => ({ answers: [], cancelled: true }),
+	};
+	const def = workflow({
+		name: "stage-dialog-host-durable",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.stage("asker").prompt("deploy");
+			return {};
+		},
+	});
+	const adapters = buildRuntimeAdapters(
+		{},
+		{
+			stageUiBroker: broker,
+			createAgentSession: stageSessionWithAction(root, async (session) => {
+				await session.bindExtensions({ humanInput: host });
+				return `approved:${await session.extensionRunner.createContext().ui.confirm("Allow deploy?", "Deploy")}`;
+			}),
+		},
+	);
+	const result = run(def, {}, { runId, store, stageUiBroker: broker, durableBackend: backend, adapters });
+	await request.requested;
+	for (let turn = 0; turn < 5; turn++) await setImmediate();
+	assert.deepEqual(askedAfterCommit, [], "the SDK host is not asked while the request is not yet durable");
+	request.release();
+	const outcome = await result;
+	assert.equal(outcome.status, "completed", outcome.error);
+	assert.deepEqual(askedAfterCommit, [true]);
+	assert.equal(outcome.stages[0]?.result, "approved:true");
+});
+
+test("a stage dialog is neither shown nor answerable before its request checkpoint is durable", async () => {
+	const root = mkdtempSync(join(tmpdir(), "stage-dialog-answer-durable-"));
+	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+	const backend = await createMemoryTestBackend();
+	const scope = {};
+	const store = adoptStore(scope);
+	const broker = adoptStageUiBroker(scope, false, store);
+	const owner = { ...captureWorkflowOwnerResources(), store, stageUiBroker: broker };
+	const runId = testRunId("stage-dialog-answer-durable");
+	const request = holdDialogRequestCommits(backend);
+	const actedAfterCommit: boolean[] = [];
+	const def = workflow({
+		name: "stage-dialog-answer-durable",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.stage("asker").prompt("deploy");
+			return {};
+		},
+	});
+	const adapters = buildRuntimeAdapters(
+		{},
+		{
+			stageUiBroker: broker,
+			createAgentSession: stageSessionWithAction(root, async (session) => {
+				const approved = await session.extensionRunner.createContext().ui.confirm("Allow deploy?", "Deploy");
+				actedAfterCommit.push(request.committed);
+				return `approved:${approved}`;
+			}),
+		},
+	);
+	const result = run(def, {}, { runId, store, stageUiBroker: broker, durableBackend: backend, adapters });
+	await request.requested;
+	for (let turn = 0; turn < 5; turn++) await setImmediate();
+	const waiting = store.run(runId)!.stages[0]!;
+	assert.equal(
+		waiting.pendingPrompt,
+		undefined,
+		"no stage chat or workflow answer sees the dialog before it is durable",
+	);
+	assert.notEqual(waiting.status, "awaiting_input");
+	request.release();
+	await vi.waitFor(() => assert.equal(store.run(runId)?.stages[0]?.pendingPrompt?.kind, "confirm"), {
+		timeout: STAGE_PROMPT_WAIT_MS,
+	});
+	const stage = store.run(runId)!.stages[0]!;
+	assert.equal(
+		(
+			await workflowAnswerAction(
+				{ action: "answer", runId, stageId: stage.id, promptId: stage.pendingPrompt!.id, response: true },
+				owner,
+			)
+		).status,
+		"ok",
+	);
+	const outcome = await result;
+	assert.equal(outcome.status, "completed", outcome.error);
+	assert.deepEqual(actedAfterCommit, [true]);
+	assert.equal(outcome.stages[0]?.result, "approved:true");
+});
+
+test("a dialog a stage asks while its session is still being created waits for its durable request", async () => {
+	const root = mkdtempSync(join(tmpdir(), "stage-dialog-startup-"));
+	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+	const backend = await createMemoryTestBackend();
+	const scope = {};
+	const store = adoptStore(scope);
+	const broker = adoptStageUiBroker(scope, false, store);
+	const runId = testRunId("stage-dialog-startup");
+	const request = holdDialogRequestCommits(backend);
+	const askedAfterCommit: boolean[] = [];
+	const hostAsked = Promise.withResolvers<void>();
+	const host: HostInput = {
+		confirm: async () => {
+			askedAfterCommit.push(request.committed);
+			hostAsked.resolve();
+			return true;
+		},
+		select: async () => undefined,
+		input: async () => undefined,
+		editor: async () => undefined,
+		questionnaire: async () => ({ answers: [], cancelled: true }),
+	};
+	let startupApproved: boolean | undefined;
+	const def = workflow({
+		name: "stage-dialog-startup",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.stage("asker").prompt("start");
+			return {};
+		},
+	});
+	const adapters = buildRuntimeAdapters(
+		{},
+		{
+			stageUiBroker: broker,
+			createAgentSession: stageSessionWithAction(
+				root,
+				async () => `startup:${startupApproved}`,
+				async (session) => {
+					await session.bindExtensions({ humanInput: host });
+					startupApproved = await session.extensionRunner.createContext().ui.confirm("Allow setup?", "Startup");
+				},
+			),
+		},
+	);
+	const result = run(def, {}, { runId, store, stageUiBroker: broker, durableBackend: backend, adapters });
+	await Promise.race([request.requested, hostAsked.promise]);
+	for (let turn = 0; turn < 5; turn++) await setImmediate();
+	assert.deepEqual(askedAfterCommit, [], "a startup dialog is not answered before its request is durable");
+	assert.equal(store.run(runId)!.stages[0]!.pendingPrompt, undefined);
+	request.release();
+	const outcome = await result;
+	assert.equal(outcome.status, "completed", outcome.error);
+	assert.deepEqual(askedAfterCommit, [true]);
+	assert.equal(outcome.stages[0]?.result, "startup:true");
 });

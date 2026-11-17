@@ -154,6 +154,7 @@ export interface PendingPrompt {
 	readonly customIdentitySource?: CustomPromptIdentitySource;
 	/** Issue timestamp (ms since epoch). */
 	readonly createdAt: number;
+	readonly expiresAt?: number;
 }
 
 /** Discriminates the brokered structured-prompt source. */

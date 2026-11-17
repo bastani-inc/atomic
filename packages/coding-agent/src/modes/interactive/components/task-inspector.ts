@@ -475,7 +475,6 @@ export class TaskInspector implements Component {
 			return true;
 		}
 		if (matchesKey(data, "escape")) {
-			// Esc on the subagent's own question cancels that question, not its turn.
 			if (transcript.takesEscape?.() === true) return transcript.handleInput(data);
 			if (transcript.interruptible()) void this.interruptTranscript(transcript);
 			this.requestRender();
@@ -560,6 +559,9 @@ export class TaskInspector implements Component {
 		const activeKeys = taskChatKeys(back, !questionActive && transcript.interruptible()).flatMap((entry) => {
 			if (entry.action === "app.nav.back") {
 				return !questionActive || transcript.cursorAtStart() ? [{ keys: backKeys, label: back }] : [];
+			}
+			if (entry.keys === "pgup/pgdn" && transcript.capturesPageScroll?.() === true) {
+				return [{ keys: "pgup/pgdn", label: "page" }];
 			}
 			if (questionActive && entry.action === "app.keys.help") return [];
 			return [entry];

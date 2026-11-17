@@ -37,7 +37,13 @@ import {
 	runExtensionCleanup,
 	sealExtensionWork,
 } from "./extension-work.ts";
-import { heldPromptInput, isHeldPromptInput } from "./held-prompts.ts";
+import {
+	childPresentationInput,
+	hasTaskPromptHost,
+	heldPromptInput,
+	isHeldPromptInput,
+	presentationHostInput,
+} from "./held-prompts.ts";
 import {
 	copyHostQuestionnaire,
 	type HostDiagnostic,
@@ -262,18 +268,15 @@ export class ExtensionRunner {
 	getWorkflowActivitySnapshot(): WorkflowActivitySnapshotFrame {
 		return this.runtime.workflowActivityHub.getSnapshotFrame();
 	}
-	/**
-	 * The host bindings a child session (a subagent, a workflow stage) or a replacement session inherits: the host's own
-	 * `humanInput` adapter, which is told the asking session's id with each request, and never this session's
-	 * presentation. Under an interactive session (one with a presentation, or one whose own prompts are held) a child
-	 * gets the held-prompt input instead: its prompts wait in its own session, shown in its own view and on its
-	 * launcher's `/tasks`. This session's chat answers only its own prompts.
-	 */
 	getChildHostBindings(): import("../agent-session-types.js").ExtensionBindings {
 		const inherited = isHeldPromptInput(this.humanInput) && this.hadPresentation ? undefined : this.humanInput;
 		return {
 			humanInput:
-				inherited !== undefined ? inherited : this.presentationInput !== undefined ? heldPromptInput : undefined,
+				inherited !== undefined
+					? inherited
+					: hasTaskPromptHost(this.presentationUI)
+						? heldPromptInput
+						: (childPresentationInput(this.presentationUI) ?? this.presentationInput),
 			onDiagnostic: this.onDiagnostic,
 		};
 	}
@@ -513,10 +516,6 @@ export class ExtensionRunner {
 		this.refreshHostInput();
 	}
 
-	/**
-	 * Where this session's prompts go: a host's own adapter; else this session's presentation; else, held in this
-	 * session when its launcher gave it the held-prompt input. `null` withdraws input.
-	 */
 	private resolvedHostInput(): HostInput | undefined {
 		const bound = this.humanInput;
 		if (bound === null) return undefined;
@@ -556,13 +555,13 @@ export class ExtensionRunner {
 			this.presentationUI = uiContext;
 			const ui = uiContext;
 			this.presentationInput = ui
-				? {
+				? presentationHostInput({
 						confirm: (title, message, options) => ui.confirm(title, message, options),
 						select: (title, choices, options) => ui.select(title, choices, options),
 						input: (title, placeholder, options) => ui.input(title, placeholder, options),
 						editor: (title, initial, options) => ui.editor(title, initial, options),
 						questionnaire: (params, options) => presentQuestionnaire(ui, params, options.signal),
-					}
+					})
 				: undefined;
 			this.refreshHostInput();
 		}

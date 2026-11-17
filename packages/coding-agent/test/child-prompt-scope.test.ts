@@ -6,7 +6,7 @@ import { stripVTControlCharacters } from "node:util";
 import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, test } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
-import { type HeldPrompt, heldPromptInput, heldPrompts } from "../src/core/extensions/held-prompts.js";
+import { type HeldPrompt, heldPromptInput, heldPrompts, taskPromptHost } from "../src/core/extensions/held-prompts.js";
 import type { HostInput, HostInputOptions } from "../src/core/extensions/host-input.js";
 import type { ExtensionUIContext, SubagentChildPolicy } from "../src/core/extensions/index.js";
 import { noOpUIContext } from "../src/core/extensions/runner-ui.js";
@@ -23,6 +23,7 @@ import { heldPromptForm } from "../src/modes/interactive/components/held-prompt-
 import { TaskInspector } from "../src/modes/interactive/components/task-inspector.js";
 import { themedChatHostStyle } from "../src/modes/interactive/components/task-transcript-page.js";
 import { getEditorTheme, initTheme } from "../src/modes/interactive/theme/theme.js";
+import { createRpcExtensionUIContext, type RpcPendingExtensionRequests } from "../src/modes/rpc/rpc-extension-ui.js";
 import { createTestResourceLoader } from "./utilities.js";
 
 const cleanups: Array<() => Promise<void> | void> = [];
@@ -65,8 +66,8 @@ async function newSession(root: string, options: CreateAgentSessionOptions = {})
 }
 
 /** A chat's presentation: records every prompt it is asked to show. */
-function chatUi(shown: string[]): ExtensionUIContext {
-	return {
+function chatUi(shown: string[], interactive = true): ExtensionUIContext {
+	const ui: ExtensionUIContext = {
 		...noOpUIContext,
 		confirm: async (title) => {
 			shown.push(`confirm ${title}`);
@@ -84,11 +85,16 @@ function chatUi(shown: string[]): ExtensionUIContext {
 			shown.push(`editor ${title}`);
 			return "edited";
 		},
+		hostQuestionnaire: async () => {
+			shown.push("questionnaire");
+			return { answers: [], cancelled: true };
+		},
 		custom: async () => {
 			shown.push("questionnaire");
 			return { answers: [], cancelled: true } as never;
 		},
 	};
+	return interactive ? taskPromptHost(ui) : ui;
 }
 
 function subagentPolicy(): SubagentChildPolicy {
@@ -230,11 +236,11 @@ test("a subagent's dialog waits in its own session, and a reply meant for an ear
 	const secondPrompt = heldPrompts().current(childId);
 	assert.ok(secondPrompt);
 	assert.notEqual(secondPrompt.promptId, firstPrompt.promptId);
-	assert.equal(heldPrompts().answer(firstRoute, { text: "yes" }).ok, false, "a stale reply is refused");
+	assert.equal(heldPrompts().answer(firstRoute, { value: true }).ok, false, "a stale reply is refused");
 	assert.equal(heldPrompts().cancel(firstRoute), false);
 	assert.equal(heldPrompts().current(childId)?.promptId, secondPrompt.promptId, "the later prompt still waits");
 	assert.equal(
-		heldPrompts().answer({ sessionId: childId, promptId: secondPrompt.promptId }, { text: "yes" }).ok,
+		heldPrompts().answer({ sessionId: childId, promptId: secondPrompt.promptId }, { value: true }).ok,
 		true,
 	);
 	assert.equal(await second, true);
@@ -263,7 +269,7 @@ test("a subagent's held prompt ends with its session, never moved to its parent"
 	assert.deepEqual(parentChat, []);
 });
 
-test("held prompt answers validate values, prefer literal numeric option labels over 1-based positions, and keep questionnaire summaries single-line", async () => {
+test("held prompt answers validate form values, preserve numeric option labels, and keep questionnaire summaries single-line", async () => {
 	const controller = new AbortController();
 	cleanups.push(() => controller.abort());
 	const sessionId = "held-validation-session";
@@ -282,8 +288,7 @@ test("held prompt answers validate values, prefer literal numeric option labels 
 		"an invalid choice value is refused without settling the prompt",
 	);
 	assert.equal(heldPrompts().current(sessionId)?.promptId, selectHeld.promptId);
-	// "1" is an explicit option label ("1" at index 1), so literal label match wins over 1-based index 1 ("alpha").
-	assert.equal(heldPrompts().answer(selectRoute, { text: "1" }).ok, true);
+	assert.equal(heldPrompts().answer(selectRoute, { value: "1" }).ok, true);
 	assert.equal(await selectPromise, "1");
 
 	const numericSelect = heldPromptInput.select("Pick port", ["3000", "8080"], {
@@ -291,7 +296,7 @@ test("held prompt answers validate values, prefer literal numeric option labels 
 		requestId: "select-2",
 		sessionId,
 	});
-	assert.equal(heldPrompts().answer({ sessionId, promptId: "select-2" }, { text: "8080" }).ok, true);
+	assert.equal(heldPrompts().answer({ sessionId, promptId: "select-2" }, { value: "8080" }).ok, true);
 	assert.equal(await numericSelect, "8080");
 
 	const confirmPromise = heldPromptInput.confirm("Proceed?", "detail", {
@@ -299,10 +304,7 @@ test("held prompt answers validate values, prefer literal numeric option labels 
 		requestId: "confirm-1",
 		sessionId,
 	});
-	assert.equal(
-		heldPrompts().answer({ sessionId, promptId: "confirm-1" }, { value: "yes" as unknown as boolean }).ok,
-		false,
-	);
+	assert.equal(heldPrompts().answer({ sessionId, promptId: "confirm-1" }, { value: "yes" }).ok, false);
 	assert.equal(heldPrompts().answer({ sessionId, promptId: "confirm-1" }, { value: true }).ok, true);
 	assert.equal(await confirmPromise, true);
 
@@ -583,3 +585,48 @@ test("task detail Open question opens the subagent transcript, and ← preserves
 	assert.doesNotMatch(plain(), /esc\/←\s+back/);
 	assert.match(plain(), /←\s+back, on an empty prompt/);
 });
+
+for (const mode of [undefined, "rpc", "tui"] as const) {
+	test(`a ${mode ?? "plain SDK"} presentation without a task inspector still answers child dialogs (#5354)`, async () => {
+		const root = tempRoot();
+		const shown: string[] = [];
+		const parent = await newSession(root);
+		const pending: RpcPendingExtensionRequests = new Map();
+		const rpc = createRpcExtensionUIContext({
+			pendingExtensionRequests: pending,
+			capabilities: { questionnaire: true },
+			output: (request) => {
+				if (!("id" in request) || typeof request.id !== "string" || !("method" in request)) return;
+				const reply = pending.get(request.id);
+				if (request.method === "confirm") {
+					shown.push("confirm Allow?");
+					reply?.resolve({ type: "extension_ui_response", id: request.id, confirmed: true });
+				} else if (request.method === "questionnaire") {
+					shown.push("questionnaire");
+					reply?.resolve({ type: "extension_ui_response", id: request.id, cancelled: true });
+				} else if (["select", "input", "editor"].includes(String(request.method))) {
+					const method = String(request.method);
+					shown.push(`${method} ${method === "select" ? "Pick" : method === "input" ? "Name" : "Edit"}`);
+					reply?.resolve({
+						type: "extension_ui_response",
+						id: request.id,
+						value: method === "select" ? "one" : method === "input" ? "typed" : "edited",
+					});
+				}
+			},
+		});
+		await parent.bindExtensions({
+			uiContext: mode === "rpc" ? rpc : chatUi(shown, false),
+			...(mode === undefined ? {} : { mode }),
+		});
+		const child = await subagentOf(parent, root);
+		const ui = child.extensionRunner.createContext().ui;
+		assert.equal(await ui.confirm("Allow?", "child asks", { timeout: 20 }), true);
+		assert.equal(await ui.select("Pick", ["one", "two"], { timeout: 20 }), "one");
+		assert.equal(await ui.input("Name", undefined, { timeout: 20 }), "typed");
+		assert.equal(await ui.editor("Edit", "draft", { timeout: 20 }), "edited");
+		await ask(child);
+		assert.equal(heldPrompts().current(child.sessionManager.getSessionId()), undefined);
+		assert.deepEqual(shown, ["confirm Allow?", "select Pick", "input Name", "editor Edit", "questionnaire"]);
+	});
+}

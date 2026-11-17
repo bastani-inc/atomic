@@ -148,13 +148,10 @@ export class QuestionnaireSession {
 		this.viewAdapter.apply(this.state);
 	}
 
-	/** Whether ← moves within the form now: between question tabs, or in a typed answer or note. */
 	capturesBack(): boolean {
-		return (
-			this.isMulti ||
-			(this.state.inputMode && readInputCursor(this.inlineInput) > 0) ||
-			(this.state.notesVisible && readInputCursor(this.notesInput) > 0)
-		);
+		if (this.state.notesVisible) return readInputCursor(this.notesInput) > 0;
+		if (this.state.inputMode) return readInputCursor(this.inlineInput) > 0;
+		return this.state.currentTab > 0;
 	}
 
 	dispatch(data: string): boolean {

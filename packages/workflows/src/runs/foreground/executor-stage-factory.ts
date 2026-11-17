@@ -20,7 +20,7 @@ import {
 } from "../../shared/stage-wait.js";
 import { StageWaitRecordError, type StageWaitRecordPhase } from "../../shared/stage-wait-errors.js";
 import type { Store } from "../../shared/store.js";
-import type { StageSnapshot } from "../../shared/store-types.js";
+import type { PendingPrompt, StageSnapshot } from "../../shared/store-types.js";
 import { elapsedStageMs, rebasedStageStartedAt, stageTimingFields } from "../../shared/timing.js";
 import type { StageOptions, WorkflowArtifact } from "../../shared/types.js";
 import type { WorkflowFailure } from "../../shared/workflow-failures.js";
@@ -551,51 +551,31 @@ export function createWorkflowStageFactory(input: {
 				}
 			}),
 		);
-		let observedPendingPromptId: string | undefined;
 		let dialogCheckpointChain = Promise.resolve();
 		let dialogCheckpointFailure: unknown;
-		const unsubscribeStageDialogWatcher = input.activeStore.subscribeInvalidation((changes) => {
-			if (changes !== undefined && !changes.some((change) => change.runId === input.runId)) return;
-			const currentPromptId = stageSnapshot.pendingPrompt?.id;
-			if (currentPromptId === observedPendingPromptId) return;
-			observedPendingPromptId = currentPromptId;
-			if (state.stageFinalized) return;
-			const meta = innerCtx.__sessionMeta();
-			const snapshotCopy: StageSnapshot = {
-				...stageSnapshot,
-				...(meta.sessionId !== undefined ? { sessionId: meta.sessionId } : {}),
-				...(meta.sessionFile !== undefined ? { sessionFile: meta.sessionFile } : {}),
-				...(stageSnapshot.pendingPrompt !== undefined
-					? { pendingPrompt: structuredClone(stageSnapshot.pendingPrompt) }
-					: {}),
-				...(stageSnapshot.promptFootprint !== undefined
-					? { promptFootprint: structuredClone(stageSnapshot.promptFootprint) }
-					: {}),
-			};
-			dialogCheckpointChain = dialogCheckpointChain
-				.then(async () => {
-					await input.opts.onStageSession?.(input.runId, snapshotCopy, { forceDurable: true });
-				})
-				.catch((error: unknown) => {
+		const unregisterStageDialogJournal = input.stageUiBroker.registerDialogJournal(
+			input.runId,
+			stageId,
+			(request) => {
+				if (dialogCheckpointFailure !== undefined) return Promise.reject(dialogCheckpointFailure);
+				if (state.stageFinalized) return Promise.resolve();
+				const snapshot = stageDialogCheckpoint(stageSnapshot, innerCtx.__sessionMeta(), request);
+				const write = dialogCheckpointChain.then(async () => {
+					await input.opts.onStageSession?.(input.runId, snapshot, { forceDurable: true });
+				});
+				dialogCheckpointChain = write.catch((error: unknown) => {
 					dialogCheckpointFailure ??= error;
-					if (stageSnapshot.pendingPrompt !== undefined) {
-						input.activeStore.resolveStagePendingPrompt(
-							input.runId,
-							stageId,
-							stageSnapshot.pendingPrompt.id,
-							stageSnapshot.pendingPrompt.kind === "confirm" ? false : undefined,
-							{ recordAnswer: false },
-						);
-					}
 					void runtime.innerCtx.abort().catch(() => {});
 				});
-		});
+				return write;
+			},
+		);
 
 		const disposeInnerContext = async (): Promise<void> => {
 			idleReleaser.unwatch(stageId);
 			unsubscribeAskUserQuestionWatcher();
 			unsubscribeQueuedUserMessageWatcher();
-			unsubscribeStageDialogWatcher();
+			unregisterStageDialogJournal();
 			activeAskUserQuestionCalls.clear();
 			state.activeAskUserQuestionAnonymousCalls = 0;
 			input.activeStore.recordStageAwaitingInput(input.runId, stageId, false);
@@ -982,10 +962,38 @@ export function createWorkflowStageFactory(input: {
 			},
 			evict: () => {
 				unreachableStageContexts.unregister(state);
+				unregisterStageDialogJournal();
 				runtime.unregisterStageHandle();
 			},
 		});
 		return context;
+	};
+}
+
+function stageDialogCheckpoint(
+	stage: StageSnapshot,
+	meta: { readonly sessionId?: string; readonly sessionFile?: string },
+	request: PendingPrompt | undefined,
+): StageSnapshot {
+	const { promptAnswerState, ...settled } = stage;
+	return {
+		...(request === undefined ? stage : settled),
+		...(meta.sessionId !== undefined ? { sessionId: meta.sessionId } : {}),
+		...(meta.sessionFile !== undefined ? { sessionFile: meta.sessionFile } : {}),
+		...(request === undefined
+			? {
+					...(stage.pendingPrompt !== undefined ? { pendingPrompt: structuredClone(stage.pendingPrompt) } : {}),
+					...(stage.promptFootprint !== undefined
+						? { promptFootprint: structuredClone(stage.promptFootprint) }
+						: {}),
+				}
+			: {
+					...(promptAnswerState === undefined || promptAnswerState === "available" ? {} : { promptAnswerState }),
+					status: "awaiting_input",
+					awaitingInputSince: request.createdAt,
+					pendingPrompt: structuredClone(request),
+					promptFootprint: structuredClone(request),
+				}),
 	};
 }
 

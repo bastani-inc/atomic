@@ -118,14 +118,6 @@ export class HostInputBridge {
 	}
 
 	wrap(ui: ExtensionUIContext, presentationHost?: HostInput, scope: WorkflowIdentity = {}): ExtensionUIContext {
-		const hostOptions = (
-			host: HostInput,
-			identity: HostInputOptions,
-			options: ExtensionUIDialogOptions | undefined,
-		): HostInputOptions =>
-			host === presentationHost && options?.timeout !== undefined
-				? { ...identity, timeout: options.timeout }
-				: identity;
 		const stageDialog = (ui as ExtensionUIContext & { [STAGE_DIALOG]?: StageDialogRoute })[STAGE_DIALOG];
 		const requestDialog = <T extends StageDialogAnswer>(
 			descriptor: StageDialogDescriptor,
@@ -157,7 +149,7 @@ export class HostInputBridge {
 			confirm: (title, message, options) =>
 				requestDialog(
 					{ kind: "confirm", message: `${title}\n\n${message}` },
-					(host, identity) => host.confirm(title, message, hostOptions(host, identity, options)),
+					(host, identity) => host.confirm(title, message, identity),
 					(value) => typeof value === "boolean",
 					options,
 					() => false,
@@ -165,7 +157,7 @@ export class HostInputBridge {
 			select: (title, choices, options) =>
 				requestDialog(
 					{ kind: "select", message: title, choices },
-					(host, identity) => host.select(title, choices, hostOptions(host, identity, options)),
+					(host, identity) => host.select(title, choices, identity),
 					(value) => value === undefined || (typeof value === "string" && choices.includes(value)),
 					options,
 					() => undefined,
@@ -173,7 +165,7 @@ export class HostInputBridge {
 			input: (title, placeholder, options) =>
 				requestDialog(
 					{ kind: "input", message: placeholder ? `${title}\n\n${placeholder}` : title },
-					(host, identity) => host.input(title, placeholder, hostOptions(host, identity, options)),
+					(host, identity) => host.input(title, placeholder, identity),
 					validText,
 					options,
 					() => undefined,
@@ -181,7 +173,7 @@ export class HostInputBridge {
 			editor: (title, initial, options) =>
 				requestDialog(
 					{ kind: "editor", message: title, initial },
-					(host, identity) => host.editor(title, initial, hostOptions(host, identity, options)),
+					(host, identity) => host.editor(title, initial, identity),
 					validText,
 					options,
 					() => undefined,
@@ -250,6 +242,7 @@ export class HostInputBridge {
 			ownerSignal?.removeEventListener("abort", abort);
 			if (onAbort) controller.signal.removeEventListener("abort", onAbort);
 			this.pending.delete(controller);
+			controller.abort();
 		};
 		if (options?.signal?.aborted || ownerSignal?.aborted) {
 			if (options?.signal?.aborted) cancelCaller();
@@ -266,6 +259,7 @@ export class HostInputBridge {
 					signal: controller.signal,
 					requestId: randomUUID(),
 					sessionId: options?.sessionId ?? this.sessionId(),
+					...(options?.timeout !== undefined ? { timeout: options.timeout } : {}),
 					...(options?.workflowRunId !== undefined ? { workflowRunId: options.workflowRunId } : {}),
 					...(options?.workflowStageId !== undefined ? { workflowStageId: options.workflowStageId } : {}),
 				}),

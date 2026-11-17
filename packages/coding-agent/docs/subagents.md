@@ -332,7 +332,9 @@ Cancelling a subagent from `/tasks` stops it for good: its row shows **Killed (n
 
 The list opens as a compact inline widget, like the `/workflows` picker. Detail, transcript, input, and stop-confirmation pages are fullscreen; returning to the list preserves selection. Every agent row includes its resolved model and reasoning level when available, including completed background tasks.
 
-A subagent's `ask_user_question` and extension dialogs wait in that subagent's own chat. Its task shows that it needs input. Open the task's transcript to answer; the main chat and sibling sessions remain usable and cannot answer the question accidentally. Leaving the subagent's view keeps its question and form state pending. Escape in that question cancels it without approving anything.
+In the interactive CLI, a subagent's `ask_user_question` and extension dialogs wait in that subagent's own chat. Its task shows that it needs input. Open the task's transcript to answer; the main chat and sibling sessions remain usable and cannot answer the question accidentally. Leaving the subagent's view keeps its question and form state pending. In a several-question form, Left steps through earlier tabs, then leaves from the first question; at the start of a typed answer or note, it leaves without clearing the draft. The hint line shows the active Back key. Escape in the question cancels it without approving anything. Timed dialogs show their remaining seconds. PageUp/PageDown page a selection with more than ten choices; otherwise they scroll the transcript.
+
+Plain RPC clients and SDK hosts without a task inspector keep receiving child questions through their existing input presentation. SDK hosts should route `humanInput` requests by the asking `sessionId`; see [Human input without a terminal](/sdk#human-input-without-a-terminal).
 
 Opening `/tasks` while the main chat has a question does not answer or cancel that main-chat question. It returns with its selection intact when task navigation closes.
 

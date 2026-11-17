@@ -981,6 +981,7 @@ export interface PendingPrompt extends WorkflowSerializableObject {
 	readonly customIdentityHash?: string;
 	readonly customIdentitySource?: CustomPromptIdentitySource;
 	readonly createdAt: number;
+	readonly expiresAt?: number;
 }
 
 export interface ToolEvent {

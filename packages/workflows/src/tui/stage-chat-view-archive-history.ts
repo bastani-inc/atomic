@@ -5,6 +5,7 @@ import { renderRoundedBoxLines } from "./chat-surface.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
 import {
 	type PromptCardLayout,
+	promptCardMessage,
 	renderPromptCardLayout,
 	renderPromptIdentityBanner,
 	renderPromptRunIdBanner,
@@ -303,7 +304,7 @@ function renderPrimitivePromptBody(ctx: StageChatViewContext, width: number, bud
 	setEditorBorderColor(editor, (text) => hexToAnsi(ctx.theme.accent) + text + RESET);
 
 	const innerWidth = Math.max(2, width - 2);
-	const messageLines = new Text(paint(state.prompt.message, ctx.theme.text), 2, 0).render(innerWidth);
+	const messageLines = new Text(paint(promptCardMessage(state.prompt), ctx.theme.text), 2, 0).render(innerWidth);
 	const responseLines = new Text(paint("response", ctx.theme.textMuted, { bold: true }), 2, 0).render(innerWidth);
 	const editorLines = editor.render(Math.max(20, innerWidth - 4)).map((line) => `  ${line}`);
 	const hintLines = new Text(renderHintsForPrompt(state.prompt.kind, ctx.theme), 2, 0).render(innerWidth);

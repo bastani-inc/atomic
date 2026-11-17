@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
+import { heldPrompts, taskPromptHost } from "../../packages/coding-agent/src/core/extensions/held-prompts.js";
 import type { HostInput, HostInputOptions } from "../../packages/coding-agent/src/core/extensions/host-input.js";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.js";
 import { noOpUIContext } from "../../packages/coding-agent/src/core/extensions/runner-ui.js";
@@ -100,13 +101,13 @@ async function workflowStage(root: string, main: AgentSession) {
 	return { stage: created.session, store, broker };
 }
 
-test("a workflow stage's dialogs, and its subagent's prompts, never open in the main chat", async () => {
+test("a workflow stage's dialogs, and its subagent's prompts, never open in an interactive main chat", async () => {
 	const root = mkdtempSync(join(tmpdir(), "stage-prompt-scope-"));
 	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
 	const shown: string[] = [];
 	const { session: main } = await createAgentSession(sessionOptions(root));
 	cleanups.push(() => main.dispose());
-	await main.bindExtensions({ uiContext: mainChat(shown), mode: "tui" });
+	await main.bindExtensions({ uiContext: taskPromptHost(mainChat(shown)), mode: "tui" });
 	const { stage } = await workflowStage(root, main);
 
 	// An extension in the stage (a permission gate, say) asks before a tool runs.
@@ -324,13 +325,19 @@ test("aborting a stage dialog does not approve it or let a stale reply answer it
 	assert.deepEqual(shown, ["confirm Main?"]);
 });
 
-test("a stage cannot replace a live dialog with a custom prompt", async () => {
+test("a stage's custom prompt waits behind its live dialog instead of replacing it", async () => {
 	const root = mkdtempSync(join(tmpdir(), "stage-dialog-collision-"));
 	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
 	const { session: main } = await createAgentSession(sessionOptions(root));
 	cleanups.push(() => main.dispose());
 	await main.bindExtensions({ uiContext: mainChat([]), mode: "tui" });
 	const { stage, store, broker } = await workflowStage(root, main);
+	const shownCustom: string[] = [];
+	cleanups.push(
+		broker.registerHost("3a8b8e63-2704-4212-af75-60bff16c299b", "stage-1", {
+			showCustomUi: (request) => shownCustom.push(request.id),
+		}),
+	);
 	const dialogController = new AbortController();
 	const pending = stage.extensionRunner
 		.createContext()
@@ -338,18 +345,52 @@ test("a stage cannot replace a live dialog with a custom prompt", async () => {
 	void pending.catch(() => {});
 	const prompt = store.runs()[0]!.stages[0]!.pendingPrompt!;
 	const customController = new AbortController();
-	const collision = broker.requestCustomUi(
+	const custom = broker.requestCustomUi(
 		"3a8b8e63-2704-4212-af75-60bff16c299b",
 		"stage-1",
 		() => ({ render: () => [] }),
 		undefined,
 		customController.signal,
 	);
-	customController.abort(new Error("accepted second prompt"));
-	await assert.rejects(collision, /already has a pending/);
+	void custom.catch(() => {});
+	await assert.rejects(
+		broker.requestCustomUi("3a8b8e63-2704-4212-af75-60bff16c299b", "stage-1", () => ({ render: () => [] })),
+		/already has a pending custom UI request/,
+	);
+	await new Promise((resolve) => setImmediate(resolve));
 	assert.equal(store.runs()[0]!.stages[0]!.pendingPrompt?.id, prompt.id);
+	assert.deepEqual(shownCustom, []);
 	dialogController.abort();
 	assert.equal(await pending, undefined);
+	await vi.waitFor(() => assert.equal(shownCustom.length, 1));
+	customController.abort(new Error("custom dismissed"));
+	await assert.rejects(custom, /custom dismissed/);
+});
+
+test("a subagent a stage launches under a task-holding chat waits in its own session, not the stage's or main chat", async () => {
+	const root = mkdtempSync(join(tmpdir(), "stage-subagent-held-"));
+	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+	const shown: string[] = [];
+	const { session: main } = await createAgentSession(sessionOptions(root));
+	cleanups.push(() => main.dispose());
+	await main.bindExtensions({
+		uiContext: taskPromptHost(mainChat(shown)),
+		mode: "tui",
+	});
+	const { stage, store } = await workflowStage(root, main);
+	const { session: child } = await createAgentSession({
+		...stage.extensionRunner.createContext().getChildSessionOptions!({ cwd: root }),
+		...sessionOptions(root),
+	});
+	cleanups.push(() => child.dispose());
+	const controller = new AbortController();
+	const asked = child.extensionRunner.createContext().ui.input("Name", undefined, { signal: controller.signal });
+	void asked.catch(() => {});
+	await vi.waitFor(() => assert.equal(heldPrompts().current(child.sessionId)?.kind, "input"));
+	assert.equal(store.runs()[0]!.stages[0]!.pendingPrompt, undefined);
+	controller.abort();
+	await asked.catch(() => undefined);
+	assert.deepEqual(shown, []);
 });
 
 test("a stage's explicit SDK host answers its journalled dialog with the asking session identity", async () => {
@@ -388,3 +429,124 @@ test("a stage's explicit SDK host answers its journalled dialog with the asking 
 	);
 	assert.deepEqual(shown, []);
 });
+
+test("a stage's concurrent dialogs wait their turn and each gets its own answer", async () => {
+	const root = mkdtempSync(join(tmpdir(), "stage-dialog-queue-"));
+	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+	const shown: string[] = [];
+	const { session: main } = await createAgentSession(sessionOptions(root));
+	cleanups.push(() => main.dispose());
+	await main.bindExtensions({ uiContext: mainChat(shown), mode: "tui" });
+	const { stage, store, broker } = await workflowStage(root, main);
+	const owner = { ...captureWorkflowOwnerResources(), store, stageUiBroker: broker };
+	const ui = stage.extensionRunner.createContext().ui;
+	const first = ui.confirm("Allow rm?", "first tool");
+	const second = ui.select("Pick target", ["staging", "prod"]);
+	void first.catch(() => {});
+	void second.catch(() => {});
+	const pendingKind = () => store.run("3a8b8e63-2704-4212-af75-60bff16c299b")?.stages[0]?.pendingPrompt?.kind;
+	await vi.waitFor(() => assert.equal(pendingKind(), "confirm"));
+	const answer = async (response: string | boolean) => {
+		const prompt = store.run("3a8b8e63-2704-4212-af75-60bff16c299b")!.stages[0]!.pendingPrompt!;
+		return workflowAnswerAction(
+			{
+				action: "answer",
+				runId: "3a8b8e63-2704-4212-af75-60bff16c299b",
+				stageId: "stage-1",
+				promptId: prompt.id,
+				response,
+			},
+			owner,
+		);
+	};
+	assert.equal((await answer(true)).status, "ok");
+	assert.equal(await first, true);
+	await vi.waitFor(() => assert.equal(pendingKind(), "select"));
+	assert.equal((await answer("prod")).status, "ok");
+	assert.equal(await second, "prod");
+	assert.deepEqual(shown, []);
+});
+
+test("a stage dialog's timeout is shown as its prompt's deadline", async () => {
+	const root = mkdtempSync(join(tmpdir(), "stage-dialog-deadline-"));
+	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+	const { session: main } = await createAgentSession(sessionOptions(root));
+	cleanups.push(() => main.dispose());
+	await main.bindExtensions({ uiContext: mainChat([]), mode: "tui" });
+	const { stage, store } = await workflowStage(root, main);
+	const controller = new AbortController();
+	const before = Date.now();
+	const pending = stage.extensionRunner
+		.createContext()
+		.ui.confirm("Allow?", "Stage permission", { timeout: 60_000, signal: controller.signal });
+	await vi.waitFor(() =>
+		assert.equal(store.run("3a8b8e63-2704-4212-af75-60bff16c299b")?.stages[0]?.pendingPrompt?.kind, "confirm"),
+	);
+	const after = Date.now();
+	const expiresAt = store.run("3a8b8e63-2704-4212-af75-60bff16c299b")!.stages[0]!.pendingPrompt!.expiresAt;
+	assert.ok(expiresAt !== undefined && expiresAt >= before + 60_000 && expiresAt <= after + 60_000, `${expiresAt}`);
+	controller.abort();
+	assert.equal(await pending, false);
+});
+
+test("a queued stage dialog cancelled while another is live does not let a later dialog jump the queue", async () => {
+	const root = mkdtempSync(join(tmpdir(), "stage-dialog-queue-cancel-"));
+	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+	const { session: main } = await createAgentSession(sessionOptions(root));
+	cleanups.push(() => main.dispose());
+	await main.bindExtensions({ uiContext: mainChat([]), mode: "tui" });
+	const { stage, store, broker } = await workflowStage(root, main);
+	const owner = { ...captureWorkflowOwnerResources(), store, stageUiBroker: broker };
+	const ui = stage.extensionRunner.createContext().ui;
+	const pendingPrompt = () => store.run("3a8b8e63-2704-4212-af75-60bff16c299b")?.stages[0]?.pendingPrompt;
+	const live = ui.confirm("Allow rm?", "live tool");
+	void live.catch(() => {});
+	await vi.waitFor(() => assert.equal(pendingPrompt()?.kind, "confirm"));
+	const livePrompt = pendingPrompt()!;
+	const queuedController = new AbortController();
+	const queued = ui.input("Queued", undefined, { signal: queuedController.signal });
+	queuedController.abort();
+	assert.equal(await queued, undefined);
+	let laterSettled = false;
+	const later = ui.select("Pick target", ["staging", "prod"]).finally(() => {
+		laterSettled = true;
+	});
+	void later.catch(() => {});
+	for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(laterSettled, false, "the later dialog waits for the live one");
+	assert.equal(pendingPrompt()?.id, livePrompt.id);
+	const answer = async (promptId: string, response: string | boolean) =>
+		workflowAnswerAction(
+			{ action: "answer", runId: "3a8b8e63-2704-4212-af75-60bff16c299b", stageId: "stage-1", promptId, response },
+			owner,
+		);
+	assert.equal((await answer(livePrompt.id, true)).status, "ok");
+	assert.equal(await live, true);
+	await vi.waitFor(() => assert.equal(pendingPrompt()?.kind, "select"));
+	assert.equal((await answer(pendingPrompt()!.id, "prod")).status, "ok");
+	assert.equal(await later, "prod");
+});
+
+for (const mode of [undefined, "rpc"] as const) {
+	test(`a subagent keeps its ${mode ?? "SDK"} presentation route through a workflow stage (#5354)`, async () => {
+		const root = mkdtempSync(join(tmpdir(), "stage-subagent-presentation-"));
+		cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+		const shown: string[] = [];
+		const { session: main } = await createAgentSession(sessionOptions(root));
+		cleanups.push(() => main.dispose());
+		await main.bindExtensions({ uiContext: mainChat(shown), ...(mode === undefined ? {} : { mode }) });
+		const { stage, store } = await workflowStage(root, main);
+		const { session: child } = await createAgentSession({
+			...stage.extensionRunner.createContext().getChildSessionOptions!({ cwd: root }),
+			...sessionOptions(root),
+		});
+		cleanups.push(() => child.dispose());
+		assert.equal(
+			await child.extensionRunner.createContext().ui.input("Child name", undefined, { timeout: 20 }),
+			"typed",
+		);
+		assert.deepEqual(shown, ["input Child name"]);
+		assert.equal(store.runs()[0]!.stages[0]!.pendingPrompt, undefined);
+		assert.equal(heldPrompts().current(child.sessionId), undefined);
+	});
+}

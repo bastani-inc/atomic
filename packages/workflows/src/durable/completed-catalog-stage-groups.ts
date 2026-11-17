@@ -332,8 +332,6 @@ export function mergeStageDraft(
 	checkpoint: DurableStageCheckpoint,
 	sequence: number,
 ): StageDraft {
-	// A task result can settle after its stage checkpoint with only the
-	// envelope's synthetic root topology. It must not erase owning-run identity.
 	const topology =
 		existing?.topology?.run !== undefined && checkpoint.topology?.run === undefined
 			? existing.topology

@@ -1374,6 +1374,23 @@ For shell integration, use the exported Bash and PowerShell factories with a tru
 
 Without a supported owner, explicit background execution is refused. Native Windows legacy WSL `bash.exe` is not supported for owned commands; run Atomic inside WSL instead. See [waiting for shell tasks](#waiting-for-existing-shell-tasks) and [Background tasks](/background-tasks) for caller usage.
 
+### Session-local task prompts
+
+`heldPrompts()` returns the process-local `HeldPrompts` registry used by interactive task views. A `HeldPrompt` has `sessionId`, `promptId`, `kind`, `question`, `title` and `createdAt`, plus the applicable `message`, `choices`, `placeholder`, `initial` or questionnaire `params`. Timed dialogs also have an absolute `expiresAt` timestamp in milliseconds. These prompts are not persisted across process restarts.
+
+- `current(sessionId)` reads that session's first pending prompt. Concurrent requests queue in arrival order.
+- `subscribe(listener)` calls `listener(sessionId)` when that session's queue changes and returns an unsubscribe function.
+- `answer({ sessionId, promptId }, { value })` returns `{ ok: true }` only for the current matching prompt and a valid `HeldPromptValue`. A refused answer returns `{ ok: false, reason }` without settling the prompt. Values are booleans for confirmations, literal option labels for selections, strings for text dialogs and `QuestionnaireResult` for questionnaires. There is no typed-reply parser.
+- `cancel({ sessionId, promptId })` cancels only the current matching prompt and returns whether it did so. It never approves a confirmation.
+- `isCurrent(route)` and `routeNamesPrompt(route, prompt)` check both identities. Never answer whichever session happens to be visible without checking its route.
+- `hold(prompt, signal, cancelValue)` lets an input adapter enqueue a prompt and await its validated answer. It adds `createdAt`; supply a unique `promptId` and the asking `sessionId`. Aborting `signal` removes that request, including one still queued. The adapter owns timeout cancellation; `expiresAt` supplies countdown display, not a second timer.
+
+`HeldPromptKind`, `HeldPromptAnswer` and `HeldPromptResult` describe these calls. `HeldPrompts` is exported as a type; use `heldPrompts()` to obtain the registry. A view can preserve its unsent form state while navigating away, but should discard it once its prompt is no longer current.
+
+`watchHeldPromptAttention(sessionId, report)` maps the current prompt to task `input-needed` activity, clears attention when it settles and returns a stop function that unsubscribes and clears its last report. `isHeldPromptInput(input)` distinguishes Atomic's held-prompt adapter from an SDK host's adapter when forwarding child bindings. `isPresentationHostInput(input)` identifies a fallback adapter for a launching chat's presentation, so workflow stage hosts can discard that adapter without discarding explicitly supplied SDK input.
+
+Only Atomic's interactive hosts with a task inspector hold child prompts automatically. A plain RPC or SDK `uiContext` binding continues presenting them through its existing dialogs. Custom hosts that need session-local forms should supply their own `humanInput` adapter and route requests by `HostInputOptions.sessionId`. Workflow stage dialogs use their run's pending prompts instead; see [Workflow input](/workflows/operations).
+
 ### Task transcript references
 
 Task inspectors show references to the bound child conversation: prompts, responses, thinking blocks, tool calls and results, compaction boundaries, branch summaries, and displayed extension messages. Model-only custom messages and entries a chat does not render are left out. An unbound or empty history reports `Transcript unavailable`. Saved history is not authority to restart or control a task.

@@ -1,6 +1,12 @@
-import { getKeybindings, type KeybindingsManager, matchesKey, Text } from "@bastani/atomic-tui";
+import {
+	getKeybindings,
+	matchesKey,
+	Text,
+	type KeybindingsManager as TuiKeybindingsManager,
+} from "@bastani/atomic-tui";
 import { type HeldPrompt, heldPrompts } from "../../../core/extensions/held-prompts.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
+import { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { TaskMessageError } from "../../../core/tasks/message-error.js";
 import type { TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
@@ -65,8 +71,8 @@ export interface TaskTranscriptPage {
 	cursorAtStart(): boolean;
 	/** Whether the page takes Escape and Left itself, as while its own task list is open. */
 	handlesBack(): boolean;
-	/** Whether Escape belongs to the page now, as while it shows its session's own question (Esc cancels it). */
 	takesEscape?(): boolean;
+	capturesPageScroll?(): boolean;
 	/** Whether Esc would interrupt the task's current turn now. */
 	interruptible(): boolean;
 	/** Interrupts the task's current turn; the task keeps running and waits for its next message. */
@@ -92,10 +98,10 @@ export function themedChatHostStyle(): ChatSessionHostStyle {
 	};
 }
 
-function keybindingsOf(candidate: unknown): Pick<KeybindingsManager, "matches"> {
-	const keybindings = candidate as Partial<Pick<KeybindingsManager, "matches">> | undefined;
+function keybindingsOf(candidate: unknown): Pick<TuiKeybindingsManager, "matches"> {
+	const keybindings = candidate as Partial<Pick<TuiKeybindingsManager, "matches">> | undefined;
 	return typeof keybindings?.matches === "function"
-		? (keybindings as Pick<KeybindingsManager, "matches">)
+		? (keybindings as Pick<TuiKeybindingsManager, "matches">)
 		: getKeybindings();
 }
 
@@ -204,13 +210,11 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		});
 		this.restoreDraft();
 		this.restoreUndelivered();
-		// The subagent's own question shows here, in its view, and nowhere in the chat that opened it.
 		this.unsubscribePrompts = heldPrompts().subscribe((sessionId) => {
 			if (sessionId === this.childSessionId() || sessionId === this.shownPromptSessionId) this.requestRender();
 		});
 	}
 
-	/** The subagent's session: the one its task's question names, else the session this page follows. */
 	private childSessionId(): string | undefined {
 		const task = this.source.tasks.find((candidate) => candidate.ref.taskId === this.taskId);
 		const sessionId =
@@ -221,7 +225,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		return sessionId;
 	}
 
-	/** The question the subagent waits on, held in its own session, if any. */
 	heldPrompt(): HeldPrompt | undefined {
 		const task = this.source.tasks.find((candidate) => candidate.ref.taskId === this.taskId);
 		if (task?.execution.kind === "settled") return undefined;
@@ -229,13 +232,12 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		return sessionId === undefined ? undefined : heldPrompts().current(sessionId);
 	}
 
-	/** The held question's form, kept while it waits: opening this view again shows it exactly as it was left. */
 	private heldForm(): HeldPromptForm | undefined {
 		const prompt = this.heldPrompt();
 		if (prompt === undefined) return undefined;
 		return heldPromptForm(prompt, {
 			...(this.env.tui === undefined ? {} : { tui: this.env.tui }),
-			...(this.env.keybindings === undefined ? {} : { keybindings: this.env.keybindings }),
+			...(this.env.keybindings instanceof KeybindingsManager ? { keybindings: this.env.keybindings } : {}),
 			requestRender: this.requestRender,
 		});
 	}
@@ -310,13 +312,10 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.requestRender();
 			return true;
 		}
-		// The subagent's question is modal in its view while it waits: it takes every key, and Esc cancels it.
 		const form = this.chat.hasTaskInspector ? undefined : this.heldForm();
 		if (form !== undefined) {
 			const selectorPages =
-				this.heldPrompt()?.kind === "select" &&
-				(this.heldPrompt()?.choices?.length ?? 0) > 10 &&
-				(matchesKey(data, "pageUp") || matchesKey(data, "pageDown"));
+				this.capturesPageScroll() && (matchesKey(data, "pageUp") || matchesKey(data, "pageDown"));
 			if (!selectorPages && this.chat.handleScrollInput(data)) {
 				this.requestRender();
 				return true;
@@ -393,13 +392,11 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	}
 
 	hasDraft(): boolean {
-		// A question's form takes every key it uses, `?` among them.
 		if (!this.chat.hasTaskInspector && this.heldPrompt() !== undefined) return true;
 		return this.chat.hasInputText();
 	}
 
 	cursorAtStart(): boolean {
-		// ← leaves a waiting question without answering or cancelling it, except where its form moves with ←.
 		const form = this.chat.hasTaskInspector ? undefined : this.heldForm();
 		if (form !== undefined) return form.capturesBack?.() !== true;
 		return this.chat.inputCursorAtStart();
@@ -411,6 +408,14 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	takesEscape(): boolean {
 		return !this.chat.hasTaskInspector && this.heldPrompt() !== undefined;
+	}
+
+	capturesPageScroll(): boolean {
+		return (
+			!this.chat.hasTaskInspector &&
+			this.heldPrompt()?.kind === "select" &&
+			(this.heldPrompt()?.choices?.length ?? 0) > 10
+		);
 	}
 
 	interruptible(): boolean {

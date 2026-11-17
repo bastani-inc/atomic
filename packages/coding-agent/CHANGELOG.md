@@ -8,6 +8,7 @@
 
 ### Added
 
+- `heldPrompts()` and the `HeldPrompt*` types let task-view hosts inspect, subscribe to, answer and cancel session-local prompts by session and prompt id. `routeNamesPrompt`, `isHeldPromptInput`, `isPresentationHostInput` and `watchHeldPromptAttention` support input routing and task attention ([#5354](https://github.com/bastani-inc/atomic/pull/5354))
 - `ATOMIC_STARTUP_TRACE` names a file to which Atomic appends each startup milestone (process start, first paint, engine ready, first provider request) with its wall-clock time; an interactive session's engine writes to the same file
 - `ensurePrivateTempDirAsync()` and `assertPrivateDirectoryAsync()` for extensions and SDK integrations: they create or check a directory private to the current account without blocking, waiting for the Windows owner and access-list check ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
 
@@ -39,7 +40,7 @@
 - Private temporary storage is no longer reused through a directory link, a runtime directory opened to other accounts, or a replaced root, including a Windows replacement with the same creation time. Runtime directory paths with trailing separators or `..` cannot bypass the checks. Temporary installs and caches fall back to another private directory instead ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
 - Replacing a submission echo with a prompt rewritten by an `input` hook, or inserting a custom message ahead of a streaming reply, now touches only the tail of the chat container instead of scanning the whole transcript, keeping prompt swaps fast in long sessions ([#5323](https://github.com/bastani-inc/atomic/issues/5323))
 - Corrected new-message counts when a transcript insertion or removal is followed by another change that restores its earlier child count ([#5323](https://github.com/bastani-inc/atomic/issues/5323))
-- Questions and extension dialogs stay with the session that asked them. A subagent's question waits in its own task view, and a workflow stage's question in its stage chat, instead of opening in and blocking the launching chat. SDK hosts still receive the asking session's identity ([#5354](https://github.com/bastani-inc/atomic/pull/5354))
+- In the interactive CLI, questions and extension dialogs stay with the session that asked them. A subagent's question waits in its own task view, and a workflow stage's question in its stage chat, instead of opening in and blocking the launching chat. Forms keep their drafts when left and show countdowns for timed dialogs. SDK input adapters receive the asking session's identity; plain RPC clients and SDK hosts without a task inspector keep receiving child dialogs through their existing presentation ([#5354](https://github.com/bastani-inc/atomic/pull/5354))
 
 ## [0.9.88] - 2026-11-16
 

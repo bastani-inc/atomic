@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `PendingPrompt.source` identifies a stage's extension dialog as `stage-dialog`; `expiresAt` gives its timeout deadline when one was set. Hosts can show these prompts in their stage chats and answer them through the workflow tool ([#5354](https://github.com/bastani-inc/atomic/pull/5354))
+
 ### Changed
 
 - The `workflow` tool's row in the chat now looks like every other tool's, instead of drawing its own rounded panels. A run reads `Workflow(<name> · <what it was asked>)` and the other actions `workflow <action> <target>`, each with one result line. A run's line follows the run until it ends (`∀ Running · 1/3 stages · ↓ 22.4k tokens`, `! Waiting for input at review`, `✓ Completed in 4s · 3 stages · 32.4k tokens`, `✗ Failed at review · <reason>`), and Ctrl+O expands the row to the run's inputs, stages and outputs ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
@@ -21,8 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Workflow discovery checks the bundled workflows once per process. Startup checked them twice, and `/workflow reload` and every `/workflow resume` of a durable run checked them again, each time reading and scanning their sources: about 180 ms on Windows and 120 ms on Linux ([#5319](https://github.com/bastani-inc/atomic/issues/5319))
 - When another process on Windows holds `.atomic/workflows/status.json` open for a long read, the status writer now waits out the reader across its retry backoff instead of recording a `status file write failed` warning notice on each attempt, and writes the latest status as soon as the workflow changes after the reader closes the file. A hold that lasts beyond the retry backoff (about 21 seconds) still records one warning. At shutdown, Atomic retries a held status file for about one second and records a warning if it still cannot replace it ([#5322](https://github.com/bastani-inc/atomic/issues/5322))
 - Design workflows no longer pause other tools while Windows verifies temporary artifact storage ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
-
-- A stage's extension dialogs, including permission confirmations, selections and text editors, now wait in that stage's chat and accept the `workflow` tool's `answer` action with the current prompt id. Saved run history retains their kind and status without storing raw answers or reusing an earlier permission. They no longer open in the launching chat, take answers intended for another session, or hide the stage's transcript after it finishes ([#5354](https://github.com/bastani-inc/atomic/pull/5354))
+- A stage's extension dialogs, including permission confirmations, selections and text editors, now wait in that stage's chat and accept the `workflow` tool's `answer` action with the current prompt id. Concurrent dialogs queue and timed dialogs show a countdown. Each request is saved before presentation or approval, and answering elsewhere dismisses its SDK dialog. Saved run history retains the kind and status without raw answers or reusable permissions. Stage dialogs no longer open in the launching chat, take another session's answers or hide the finished stage's transcript. Existing workflow prompt nodes keep their replay identity across worker replacement ([#5354](https://github.com/bastani-inc/atomic/pull/5354))
 
 ## [0.9.88] - 2026-11-16
 

@@ -25,8 +25,10 @@ import { join } from "node:path";
 import {
 	type CreateAgentSessionOptions,
 	type DefaultResourceLoaderInheritanceSnapshot,
+	type HostInput,
 	type HostInputOptions,
 	isHeldPromptInput,
+	isPresentationHostInput,
 	isStaleExtensionContextError,
 	ModelRuntime,
 	noOpUIContext,
@@ -42,7 +44,7 @@ import type {
 import { cleanupFailedStageSessionBinding } from "../runs/foreground/stage-runner-session.js";
 import { setAgentSessionAdapterDefaultCwd } from "../runs/foreground/stage-runner-session-options.js";
 import { resolveStageGroup, stageHasIntercomAccess } from "../shared/intercom-group.js";
-import { currentStageUiBroker, type StageUiBroker } from "../shared/stage-ui-broker.js";
+import { currentStageUiBroker, type StageDialogRequest, type StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { StageExecutionMeta, StageOptions } from "../shared/types.js";
 import type { PiCodingAgentSdk, PrepareAtomicStageSessionOptions } from "./atomic-stage-session.js";
 import { prepareAtomicStageSessionOptions } from "./atomic-stage-session.js";
@@ -433,14 +435,25 @@ function shouldBindStageUiContext(pi: RuntimeWiringSurface, meta: StageExecution
 	return pi.ui !== undefined || meta !== undefined;
 }
 
-function mergeStageDialogSignal(
+function stageDialogRequest(
 	stageSignal: AbortSignal | undefined,
+	kind: PrimitiveDialogKind,
 	options: PiUIDialogOptions | undefined,
-): AbortSignal | undefined {
+	answerWithHost?: StageDialogRequest["answerWithHost"],
+): StageDialogRequest {
 	const signals = [stageSignal, options?.signal].filter((signal): signal is AbortSignal => signal !== undefined);
 	if (options?.timeout !== undefined) signals.push(AbortSignal.timeout(options.timeout));
-	return signals.length === 0 ? undefined : AbortSignal.any(signals);
+	return {
+		...(signals.length === 0 ? {} : { signal: AbortSignal.any(signals) }),
+		...(options?.timeout === undefined ? {} : { timeout: options.timeout }),
+		...(answerWithHost === undefined ? {} : { answerWithHost }),
+		unrecorded: async () => (kind === "confirm" ? false : undefined),
+	};
 }
+
+type PrimitiveDialogKind = Parameters<StageUiBroker["requestDialog"]>[2]["kind"];
+
+const TASK_PROMPT_HOST = Symbol.for("atomic-coding-agent/task-prompt-host@1");
 
 function makeStageExtensionUiContext(
 	ui: PiUISurface,
@@ -448,24 +461,29 @@ function makeStageExtensionUiContext(
 	broker: StageUiBroker,
 	inheritedBindingRevision: number,
 	explicitInput: boolean,
+	holdsChildPrompts: boolean,
+	childInput: HostInput | undefined,
 ) {
 	let questionnaireSessionId: string | undefined;
 	let questionnaireInput: StageQuestionnaireInput | undefined;
 	const stageUi: object = {
+		...(holdsChildPrompts ? { [TASK_PROMPT_HOST]: true } : {}),
+		...(childInput === undefined
+			? {}
+			: { [Symbol.for("atomic-coding-agent/child-presentation-input@1")]: childInput }),
 		[Symbol.for("atomic-coding-agent/stage-dialog@1")]:
 			meta === undefined
 				? undefined
 				: (
 						descriptor: Parameters<StageUiBroker["requestDialog"]>[2],
 						identity: HostInputOptions,
-						answerWithHost?: Parameters<StageUiBroker["requestDialog"]>[4],
+						answerWithHost?: StageDialogRequest["answerWithHost"],
 					) =>
 						broker.requestDialog(
 							meta.runId,
 							meta.stageId,
 							descriptor,
-							mergeStageDialogSignal(meta.signal, identity),
-							answerWithHost,
+							stageDialogRequest(meta.signal, descriptor.kind, identity, answerWithHost),
 						),
 		[Symbol.for("atomic-coding-agent/stage-questionnaire@1")]:
 			meta === undefined
@@ -489,7 +507,7 @@ function makeStageExtensionUiContext(
 							meta.runId,
 							meta.stageId,
 							{ kind: "select", message: title, choices },
-							mergeStageDialogSignal(meta.signal, options),
+							stageDialogRequest(meta.signal, "select", options),
 						);
 						return typeof value === "string" ? value : undefined;
 					},
@@ -501,7 +519,7 @@ function makeStageExtensionUiContext(
 							meta.runId,
 							meta.stageId,
 							{ kind: "confirm", message: `${title}\n\n${message}` },
-							mergeStageDialogSignal(meta.signal, options),
+							stageDialogRequest(meta.signal, "confirm", options),
 						)) === true,
 		input:
 			meta === undefined
@@ -511,7 +529,7 @@ function makeStageExtensionUiContext(
 							meta.runId,
 							meta.stageId,
 							{ kind: "input", message: placeholder ? `${title}\n\n${placeholder}` : title },
-							mergeStageDialogSignal(meta.signal, options),
+							stageDialogRequest(meta.signal, "input", options),
 						);
 						return typeof value === "string" ? value : undefined;
 					},
@@ -564,7 +582,7 @@ function makeStageExtensionUiContext(
 							meta.runId,
 							meta.stageId,
 							{ kind: "editor", message: title, initial },
-							mergeStageDialogSignal(meta.signal, options),
+							stageDialogRequest(meta.signal, "editor", options),
 						);
 						return typeof value === "string" ? value : undefined;
 					},
@@ -696,10 +714,12 @@ export function buildRuntimeAdapters(
 					pi.getChildSessionOptions?.(stripWorkflowOnlyOptions(stageOptions) ?? {}) ??
 					stripWorkflowOnlyOptions(stageOptions) ??
 					{};
-				// A stage asks in its own stage chat, never held as a subagent's prompts are: the held-prompt input its
-				// launcher would give a child is not the stage's.
-				if (isHeldPromptInput(inheritedOptions.extensionBindings?.humanInput)) {
-					const { humanInput: _held, ...bindings } = inheritedOptions.extensionBindings ?? {};
+				const inheritedInput = inheritedOptions.extensionBindings?.humanInput;
+				const holdsChildPrompts =
+					isHeldPromptInput(inheritedInput) ||
+					(pi.ui as { [TASK_PROMPT_HOST]?: boolean } | undefined)?.[TASK_PROMPT_HOST] === true;
+				if (isHeldPromptInput(inheritedInput) || isPresentationHostInput(inheritedInput)) {
+					const { humanInput: _launcherInput, ...bindings } = inheritedOptions.extensionBindings ?? {};
 					inheritedOptions.extensionBindings = bindings;
 				}
 				await resolveStageModel(
@@ -724,6 +744,8 @@ export function buildRuntimeAdapters(
 							// Creation binds a supplied adapter once; only later explicit binds change ownership.
 							inheritedOptions.extensionBindings?.humanInput === undefined ? 0 : 1,
 							stageOptions.extensionBindings?.humanInput !== undefined,
+							holdsChildPrompts,
+							isPresentationHostInput(inheritedInput) ? inheritedInput : undefined,
 						)
 					: undefined;
 				if (stageUi)

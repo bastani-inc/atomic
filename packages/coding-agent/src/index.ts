@@ -16,6 +16,7 @@ export {
 	type HeldPromptValue,
 	heldPrompts,
 	isHeldPromptInput,
+	isPresentationHostInput,
 	routeNamesPrompt,
 	watchHeldPromptAttention,
 } from "./core/extensions/held-prompts.ts";

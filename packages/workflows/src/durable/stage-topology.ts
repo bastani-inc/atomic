@@ -59,6 +59,7 @@ export function durableStageCheckpointMetadata(
 	run?: DurableStageRunTopology,
 	sourceOrder?: number,
 ): Partial<DurableStageCheckpoint> {
+	const stageDialog = stage.promptFootprint?.source === "stage-dialog";
 	return {
 		topology: {
 			version: DURABLE_STAGE_TOPOLOGY_VERSION,
@@ -73,14 +74,14 @@ export function durableStageCheckpointMetadata(
 		},
 		...(stage.startedAt !== undefined ? { startedAt: stage.startedAt } : {}),
 		...(stage.endedAt !== undefined ? { endedAt: stage.endedAt } : {}),
-		...(stage.status === "awaiting_input" && stage.awaitingInputSince !== undefined
+		...(stageDialog && stage.status === "awaiting_input" && stage.awaitingInputSince !== undefined
 			? { awaitingInputSince: stage.awaitingInputSince }
 			: {}),
-		...(stage.status === "awaiting_input" && stage.pendingPrompt !== undefined
+		...(stageDialog && stage.status === "awaiting_input" && stage.pendingPrompt !== undefined
 			? { pendingPrompt: structuredClone(stage.pendingPrompt) }
 			: {}),
-		...(stage.promptFootprint !== undefined ? { promptFootprint: structuredClone(stage.promptFootprint) } : {}),
-		...(stage.promptAnswerState !== undefined ? { promptAnswerState: stage.promptAnswerState } : {}),
+		...(stageDialog ? { promptFootprint: structuredClone(stage.promptFootprint) } : {}),
+		...(stageDialog && stage.promptAnswerState !== undefined ? { promptAnswerState: stage.promptAnswerState } : {}),
 		...(stage.result !== undefined ? { result: stage.result } : {}),
 		...(stage.sessionId !== undefined ? { sessionId: stage.sessionId } : {}),
 		...(stage.sessionFile !== undefined ? { sessionFile: stage.sessionFile } : {}),
