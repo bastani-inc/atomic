@@ -25,6 +25,7 @@
  *   every few seconds to bound its memory, and reads the samples taken during a block once the block ends.
  */
 import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFile } from "node:fs/promises";
 import type { Profiler, Session } from "node:inspector";
 import { dirname, join, resolve } from "node:path";
 import { type IntervalHistogram, monitorEventLoopDelay } from "node:perf_hooks";
@@ -454,6 +455,8 @@ const PHASES: readonly EventLoopPhase[] = ["startup", "session", "shutdown"];
 
 class EventLoopMonitor {
 	private readonly histogram: IntervalHistogram;
+	private readonly pending: string[] = [];
+	private draining: Promise<void> | undefined;
 	private readonly sampler: StackSampler;
 	private lastBeatUs: number;
 	private phase: EventLoopPhase = "startup";
@@ -476,7 +479,7 @@ class EventLoopMonitor {
 		setInterval(() => this.beat(), HEARTBEAT_MS).unref();
 		process.once("exit", () => {
 			this.sampler.exit();
-			this.writeDelay();
+			this.writeAtQuit(this.delayRecord());
 		});
 		this.write({
 			type: "start",
@@ -492,7 +495,9 @@ class EventLoopMonitor {
 	/** Writes the phase that ends here and starts `next`, unless the process is already past it. */
 	enter(next: EventLoopPhase): void {
 		if (PHASES.indexOf(next) <= PHASES.indexOf(this.phase)) return;
-		this.writeDelay();
+		const ended = this.delayRecord();
+		if (next === "shutdown") this.writeAtQuit(ended);
+		else this.write(ended);
 		this.histogram.reset();
 		this.phase = next;
 		this.phaseStartedUs = epochUs();
@@ -521,12 +526,12 @@ class EventLoopMonitor {
 		this.sampler.beat(nowUs);
 	}
 
-	private writeDelay(): void {
+	private delayRecord(): EventLoopRecord {
 		// Node records each tick's whole interval, Bun only how late it was.
 		const lagMs = (nanoseconds: number) =>
 			roundMs(Math.max(0, nanoseconds / 1e6 - (isBunRuntime ? 0 : DELAY_RESOLUTION_MS)));
 		const ticks = this.histogram.count;
-		this.write({
+		return {
 			type: "delay",
 			at: new Date(this.phaseStartedUs / 1000).toISOString(),
 			role: this.role,
@@ -537,14 +542,37 @@ class EventLoopMonitor {
 			p50Ms: ticks === 0 ? 0 : lagMs(this.histogram.percentile(50)),
 			p99Ms: ticks === 0 ? 0 : lagMs(this.histogram.percentile(99)),
 			maxMs: ticks === 0 ? 0 : lagMs(this.histogram.max),
-		});
+		};
 	}
 
+	/** Records written while the session runs: appended in order without blocking the loop they measure. */
 	private write(record: EventLoopRecord): void {
+		this.pending.push(`${JSON.stringify(record)}\n`);
+		if (this.draining === undefined) this.draining = this.drain();
+	}
+
+	private async drain(): Promise<void> {
+		while (this.pending.length > 0) {
+			const chunk = this.pending.splice(0).join("");
+			try {
+				await appendFile(this.logPath, chunk);
+			} catch {
+				// The log was writable at start; a later failure loses those records, never the session.
+			}
+		}
+		this.draining = undefined;
+	}
+
+	/**
+	 * Records written as the process quits, synchronously: Windows ends the engine as soon as its host quits, before an
+	 * asynchronous write could land. Anything still queued is written first, in order.
+	 */
+	private writeAtQuit(record: EventLoopRecord): void {
+		const chunk = [...this.pending.splice(0), `${JSON.stringify(record)}\n`].join("");
 		try {
-			appendFileSync(this.logPath, `${JSON.stringify(record)}\n`);
+			appendFileSync(this.logPath, chunk);
 		} catch {
-			// The log was writable at start; a later failure loses that record, never the session.
+			// As above: a lost record, never a lost session.
 		}
 	}
 }
