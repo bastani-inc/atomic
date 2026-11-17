@@ -40,6 +40,7 @@ export {
 	getWriterQueueDegradation,
 	getWriterQueueStats,
 	openNodeSqliteDatabase,
+	sqliteFilePath,
 	type WriterQueueStats,
 	wrapNodeSqliteDatabase,
 } from "./node-sqlite.js";
