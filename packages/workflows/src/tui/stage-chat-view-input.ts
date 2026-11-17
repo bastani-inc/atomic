@@ -5,6 +5,7 @@ import {
 	isPrimitivePrompt,
 	primitivePromptAnswerExpectation,
 } from "../shared/prompt-answer.js";
+import { isWorkflowPromptStage } from "../shared/stage-prompt.js";
 
 import { APP_ACTION, isKeybindingsLike, matchesAction, matchesNavAction, TUI_ACTION } from "./keybindings-adapter.js";
 import { parseTerminalMouseInput, terminalMouseWheelDirection } from "./mouse-input.js";
@@ -48,15 +49,23 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 		return true;
 	}
 	if (isHostThinkingToggle(ctx, data)) return false;
-	if (ctx.mountedCustomUi) {
+	const stage = currentStage(ctx);
+	if (ctx.mountedCustomUi && stage?.pendingPrompt?.source !== "stage-dialog") {
 		return handleMountedCustomUiInput(ctx, data);
 	}
-	const stage = currentStage(ctx);
 	syncPromptState(ctx, stage?.pendingPrompt);
 	const readOnlyArchive = isReadOnlyArchive(ctx, stage);
-	const readOnlyPromptArchive = readOnlyArchive && stage?.promptFootprint !== undefined;
+	const readOnlyPromptArchive = readOnlyArchive && isWorkflowPromptStage(stage);
 
 	if (ctx.promptState && promptCardShown(ctx)) {
+		if (ctx.mountedCustomUi && ctx.promptState.prompt.source === "stage-dialog" && matchesKey(data, Key.escape)) {
+			resolvePromptResponse(
+				ctx,
+				ctx.promptState.prompt.id,
+				ctx.promptState.prompt.kind === "confirm" ? false : undefined,
+			);
+			return true;
+		}
 		if (isClosableQuestion(ctx.promptState.prompt.kind) && matchesKey(data, Key.escape)) {
 			ctx.dismissedPromptId = ctx.promptState.prompt.id;
 			return true;
@@ -70,21 +79,6 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 		handlePromptInput(ctx, data);
 		return true;
 	}
-	if (matchesKey(data, Key.escape)) {
-		if (ctx.chatHost.isCompacting() || ctx.chatHost.isBashRunning() || ctx.chatHost.isEditingBashCommand()) {
-			return ctx.chatHost.handleInput(data);
-		}
-		if (isAbortableStreamingSession(ctx)) {
-			recordStageEscapeInterrupt(ctx);
-		}
-		return true;
-	}
-	if (handleToolsExpandInput(ctx, data)) return true;
-	if (readOnlyPromptArchive && handlePromptScrollInput(ctx, data, true)) {
-		return true;
-	}
-	if (handleStageChatJumpToBottom(ctx, data)) return true;
-	if (ctx.chatHost.handleScrollInput(data)) return true;
 	if (ctx.promptState && !promptCardShown(ctx) && matchesKey(data, Key.enter)) {
 		if (!ctx.chatHost.hasInputText()) {
 			ctx.dismissedPromptId = null;
@@ -115,6 +109,24 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 		resolvePromptResponse(ctx, prompt.id, trimmed, { suppressNextGraphSubmit: true });
 		return true;
 	}
+	if (ctx.mountedCustomUi) {
+		return handleMountedCustomUiInput(ctx, data);
+	}
+	if (matchesKey(data, Key.escape)) {
+		if (ctx.chatHost.isCompacting() || ctx.chatHost.isBashRunning() || ctx.chatHost.isEditingBashCommand()) {
+			return ctx.chatHost.handleInput(data);
+		}
+		if (isAbortableStreamingSession(ctx)) {
+			recordStageEscapeInterrupt(ctx);
+		}
+		return true;
+	}
+	if (handleToolsExpandInput(ctx, data)) return true;
+	if (readOnlyPromptArchive && handlePromptScrollInput(ctx, data, true)) {
+		return true;
+	}
+	if (handleStageChatJumpToBottom(ctx, data)) return true;
+	if (ctx.chatHost.handleScrollInput(data)) return true;
 	if (isBackToGraphInput(ctx, data)) {
 		recordCurrentPromptDraft(ctx);
 		ctx.onDetach();

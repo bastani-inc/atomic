@@ -20,7 +20,7 @@ import {
 	type ResumeNotice,
 	sessionResumeOptions,
 } from "./core/resume/session-resume.ts";
-import { claimSession } from "./core/session-claims.ts";
+import { claimSession, prepareSessionClaim } from "./core/session-claims.js";
 import {
 	formatMissingSessionCwdPrompt,
 	getMissingSessionCwdOptions,
@@ -30,7 +30,7 @@ import {
 import { ownedSessionManagerStores } from "./core/session-lifecycle-work.ts";
 import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
 import { classifiedWorkflowMetadata, workflowSessionMetadataFromEnv } from "./core/session-manager-classification.ts";
-import { assertSessionNotOpenElsewhere } from "./core/session-open-markers.ts";
+import { assertSessionNotOpenElsewhere } from "./core/session-open-markers.js";
 import { resolveSessionStore, selectSessionStorage } from "./core/session-storage.js";
 import {
 	deleteSessionWithSnapshotRefs,
@@ -676,6 +676,7 @@ export async function openCliSession(
 	};
 	if (resuming && options.claim !== false && sessionManager.isPersisted()) {
 		try {
+			await prepareSessionClaim(sessionManager.getSessionId(), { agentDir: options.agentDir });
 			releaseClaim = claimSession(sessionManager.getSessionId(), { agentDir: options.agentDir });
 		} catch (error) {
 			options.progress?.done();

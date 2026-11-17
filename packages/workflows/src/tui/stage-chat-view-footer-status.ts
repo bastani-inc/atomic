@@ -360,11 +360,13 @@ function mergeOrchestratorReturnHintIntoLine(
 		minimumPrefixWidth?: number;
 	} = {},
 ): string {
-	const cardOpen = closableQuestionCardOpen(ctx);
+	const stackedDialog = stackedStageDialogOpen(ctx);
+	const cardOpen = stackedDialog || closableQuestionCardOpen(ctx);
 	const backKey = backToGraphKey(ctx);
 	if (!cardOpen && !backKey) return line;
 	const key = backKey || "esc";
-	const full = cardOpen ? (backKey ? " graph · esc close" : " close") : " return to graph";
+	const action = stackedDialog ? " cancel" : " close";
+	const full = cardOpen ? (backKey ? ` graph · esc${action}` : action) : " return to graph";
 	const compact = cardOpen ? full : " graph";
 	const fullHint = {
 		plain: `${key}${full}`,
@@ -455,6 +457,19 @@ export function closableQuestionCardOpen(
 	const prompt = ctx.promptState?.prompt;
 	return (
 		prompt !== undefined && prompt.kind !== "input" && prompt.kind !== "editor" && prompt.id !== ctx.dismissedPromptId
+	);
+}
+
+function stackedStageDialogOpen(
+	ctx: Pick<StageChatViewContext, "promptState"> &
+		Partial<Pick<StageChatViewContext, "dismissedPromptId" | "mountedCustomUi">>,
+): boolean {
+	const prompt = ctx.promptState?.prompt;
+	return (
+		ctx.mountedCustomUi !== null &&
+		ctx.mountedCustomUi !== undefined &&
+		prompt?.source === "stage-dialog" &&
+		prompt.id !== ctx.dismissedPromptId
 	);
 }
 

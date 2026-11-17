@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { getAgentDir, openNodeSqliteDatabase, StorageConfigError } from "@bastani/atomic";
 import { type StorageInputSelection, selectsDefaultJournalStore } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test, vi } from "vitest";
@@ -83,7 +83,7 @@ test("settings path resolves relative to Atomic home and overrides the default",
 		settings: { workflows: { journal: { path: "nested/settings.sqlite", memory: false } } },
 	});
 	assert.ok(journal instanceof SqlRunJournal);
-	assert.equal(journal.path, join(dirname(getAgentDir()), "nested/settings.sqlite"));
+	assert.equal(journal.path, join(getAgentDir(), "nested/settings.sqlite"));
 });
 
 test("absolute settings paths are preserved", async () => {
@@ -111,11 +111,11 @@ test("absent and empty settings and memory false use the persistent default jour
 	]) {
 		const journal = await resolve({ settings });
 		assert.ok(isShardedRunJournal(journal));
-		assert.equal(journal.directory, join(dirname(getAgentDir()), "workflows", "journal"));
+		assert.equal(journal.directory, join(getAgentDir(), "workflows", "journal"));
 	}
 	assert.deepEqual(selectRunJournal({ settings: { workflows: { journal: { prefix: "isolated_" } } } }), {
 		kind: "sqlite",
-		path: join(dirname(getAgentDir()), "workflows", "journal.sqlite"),
+		path: join(getAgentDir(), "workflows", "journal.sqlite"),
 		prefix: "isolated_",
 	});
 });
@@ -136,13 +136,13 @@ test("selected settings with nonempty path and memory true fail with exact typed
 test("journal settings override shared storage outright and shared storage overrides the default", async () => {
 	const shared = await resolve({ settings: { storage: { path: "shared.sqlite" } } });
 	assert.ok(shared instanceof SqlRunJournal);
-	assert.equal(shared.path, join(dirname(getAgentDir()), "shared.sqlite"));
+	assert.equal(shared.path, join(getAgentDir(), "shared.sqlite"));
 	const sharedDefault = await resolve({ settings: { storage: {} } });
 	assert.ok(sharedDefault instanceof SqlRunJournal);
-	assert.equal(sharedDefault.path, join(dirname(getAgentDir()), "storage.sqlite"));
+	assert.equal(sharedDefault.path, join(getAgentDir(), "storage.sqlite"));
 	const explicit = await resolve({ settings: { workflows: { journal: {} }, storage: { memory: true } } });
 	assert.ok(isShardedRunJournal(explicit));
-	assert.equal(explicit.directory, join(dirname(getAgentDir()), "workflows", "journal"));
+	assert.equal(explicit.directory, join(getAgentDir(), "workflows", "journal"));
 	assert.ok(
 		(await resolve({
 			settings: { workflows: { journal: { memory: true } }, storage: { path: "shared.sqlite" } },

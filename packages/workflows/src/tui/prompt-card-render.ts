@@ -85,6 +85,13 @@ export function renderPromptRunIdBanner(identity: PromptCardIdentity, theme: Gra
 	return [...banner.slice(0, -2), banner.at(-1)!];
 }
 
+export function promptCardMessage(prompt: PendingPrompt): string {
+	if (prompt.expiresAt === undefined) return prompt.message;
+	const seconds = Math.max(0, Math.ceil((prompt.expiresAt - Date.now()) / 1000));
+	const [heading = "", ...details] = prompt.message.split("\n");
+	return [`${heading} (${seconds}s)`, ...details].join("\n");
+}
+
 const STANDARD_PROMPT_FIXED_ROWS = 5;
 const NORMAL_SPACING_ROWS = 3;
 
@@ -175,7 +182,7 @@ function renderPromptBodyBlock(
 	maxRows: number | undefined,
 	messageOffset: number,
 ): PromptCardLayout {
-	const messageRows = wrapText(state.prompt.message, innerWidth - 4);
+	const messageRows = wrapText(promptCardMessage(state.prompt), innerWidth - 4);
 	const totalQuestionRows = messageRows.length;
 	if (maxRows !== undefined && maxRows === 0) {
 		return { lines: [], totalQuestionRows, visibleQuestionRows: 0 };
