@@ -2,10 +2,16 @@ import assert from "node:assert/strict";
 import chalk from "chalk";
 import { applyPatch, lineDiff, wordDiff } from "diff";
 import { beforeAll, describe, it } from "vitest";
+import { measureStringWork } from "../../tui/test/string-work.ts";
+import type { SessionInfo } from "../src/core/session-manager.ts";
 import { generateEditDiff, generateUnifiedPatch } from "../src/core/tools/edit-diff.ts";
 import { renderDiff } from "../src/modes/interactive/components/diff.ts";
+import { SelectorState } from "../src/modes/interactive/components/selector.ts";
+import { filterAndSortSessions } from "../src/modes/interactive/components/session-selector-search.ts";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import { reconcileQueuedSubmissions, showSubmissionAsQueued } from "../src/modes/interactive/interactive-queueing.ts";
+import { StartupChatContainer } from "../src/modes/interactive/interactive-startup-chat-container.ts";
+import { getModelSelectorSearchText } from "../src/modes/interactive/model-search.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
 beforeAll(() => initTheme("dark"));
@@ -26,6 +32,18 @@ const WORD_COMPARISONS_PER_WORD = 4;
  * few per line.
  */
 const LINE_COMPARISONS_PER_LINE = 32;
+/** Classifications per child appended to the transcript: the appended child is classified once. */
+const CLASSIFICATIONS_PER_CHILD = 2;
+/**
+ * String work per character of the session fields a query token searches: a field is lowercased once and scanned for
+ * the token, and the name, summary and directory are fuzzy matched too when the token is not found literally.
+ */
+const SESSION_SEARCH_WORK_PER_CHARACTER_PER_TOKEN = 3;
+/**
+ * String work per character of a row's search text and query token: the text is joined from the row's fields once,
+ * then lowercased, scanned by the greedy alignment and searched for contiguous occurrences once per token.
+ */
+const SELECTOR_SEARCH_WORK_PER_CHARACTER_PER_TOKEN = 4;
 
 type Differ = { equals(left: string, right: string, options: object): boolean };
 
@@ -118,6 +136,91 @@ describe("diff rendering does work linear in its input", () => {
 			});
 			const bound = LINE_COMPARISONS_PER_LINE * 2 * count;
 			assert.ok(made <= bound, `${count} lines: ${made} line comparisons, bound ${bound}`);
+		}
+	});
+});
+
+describe("transcript append does work linear in the transcript", () => {
+	it("counting messages after each append classifies each child a bounded number of times", () => {
+		for (const count of SIZES) {
+			let classifications = 0;
+			const chat = new StartupChatContainer(() => {
+				classifications++;
+				return true;
+			});
+			for (let index = 0; index < count; index++) {
+				chat.addChild({ render: () => [`message ${index}`], invalidate() {} });
+				assert.equal(chat.countedChildren(), index + 1);
+			}
+			const bound = CLASSIFICATIONS_PER_CHILD * count;
+			assert.ok(classifications <= bound, `${count} children: ${classifications} classifications`);
+		}
+	});
+});
+
+describe("selector search does work linear in its input", () => {
+	it("filterAndSortSessions searches each session's fields a bounded number of times per query token", () => {
+		const query = 'render "event loop" fix';
+		const tokens = 3;
+		for (const count of SIZES) {
+			const sessions: SessionInfo[] = Array.from({ length: count }, (_, index) => ({
+				path: `/sessions/${index}.jsonl`,
+				id: `session-${index}`,
+				cwd: `/work/project-${index % 17}`,
+				name: index % 5 === 0 ? `Render fix ${index}` : undefined,
+				summary: `Summary ${index} of the event loop work`,
+				created: new Date(index),
+				modified: new Date(index),
+				messageCount: 3,
+				firstMessage: "hello",
+				allMessagesText: `fix the render path ${index}. the event loop stays responsive.`,
+			}));
+			const searched = sessions.reduce(
+				(sum, session) =>
+					sum +
+					session.id.length +
+					session.cwd.length +
+					(session.name?.length ?? 0) +
+					(session.summary?.length ?? 0) +
+					session.allMessagesText.length,
+				0,
+			);
+			const { value, work } = measureStringWork(() => filterAndSortSessions(sessions, query, "relevance"));
+			assert.ok(value.length > 0);
+			const bound = SESSION_SEARCH_WORK_PER_CHARACTER_PER_TOKEN * tokens * searched;
+			assert.ok(work <= bound, `${count} sessions: ${work} string work, bound ${bound}`);
+		}
+	});
+});
+
+describe("model search does work linear in its input", () => {
+	it("the model selector filters its rows with work linear in their search text for each query token", () => {
+		const query = "anthropic sonnet 4";
+		const tokens = 3;
+		for (const count of SIZES) {
+			const items = Array.from({ length: count }, (_, index) => {
+				const model = {
+					id: `model-${index}-sonnet-4`,
+					provider: index % 2 === 0 ? "anthropic" : `openrouter-${index % 40}`,
+					name: `Model ${index}`,
+				};
+				return {
+					id: `${model.provider}/${model.id}`,
+					value: model,
+					label: model.id,
+					description: model.name,
+					searchText: getModelSelectorSearchText(model),
+				};
+			});
+			const state = new SelectorState({ items });
+			const { work } = measureStringWork(() => state.setQuery(query));
+			assert.ok(state.getVisible().length > 0);
+			const searched = items.reduce(
+				(sum, item) => sum + item.label.length + item.description.length + item.searchText.length + 3,
+				0,
+			);
+			const bound = SELECTOR_SEARCH_WORK_PER_CHARACTER_PER_TOKEN * tokens * searched;
+			assert.ok(work <= bound, `${count} models: ${work} string work, bound ${bound}`);
 		}
 	});
 });
