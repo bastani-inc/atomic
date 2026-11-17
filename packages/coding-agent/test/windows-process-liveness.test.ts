@@ -1,5 +1,5 @@
-import { spawn } from "node:child_process";
 import { describe, expect, it } from "vitest";
+import { keptExitedPid } from "../../../test/helpers/exited-process.js";
 import { isWindowsProcessAlive } from "../src/utils/child-process.ts";
 
 describe("isWindowsProcessAlive", () => {
@@ -8,9 +8,11 @@ describe("isWindowsProcessAlive", () => {
 	});
 
 	it("reports an exited child as gone", async () => {
-		const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore", windowsHide: true });
-		await new Promise<void>((resolve) => child.once("exit", () => resolve()));
-		expect(child.pid).toBeTypeOf("number");
-		expect(isWindowsProcessAlive(child.pid as number)).toBe(false);
+		const exited = await keptExitedPid();
+		try {
+			expect(isWindowsProcessAlive(exited.pid)).toBe(false);
+		} finally {
+			await exited.release();
+		}
 	});
 });
