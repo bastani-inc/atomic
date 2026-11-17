@@ -1079,6 +1079,7 @@ for (const block of response.content) {
 
 | Model | Providers | Levels | `off` | `minimal` |
 | --- | --- | --- | --- | --- |
+| GPT-6.2 Astra, GPT-6.2 Sol | OpenAI, Azure and Codex Responses | `low`, `medium`, `high`, `xhigh`, `max` | No | No |
 | GPT-6.1 Sol | OpenAI, Azure and Codex Responses | `low`, `medium`, `high`, `xhigh`, `max` | No | Codex UI alias that sends `low` |
 | GPT-6.1 Terra | OpenAI, Azure and Codex Responses | `off`, `low`, `medium`, `high`, `xhigh`, `max` | Sends reasoning effort `none` | Codex UI alias that sends `low` |
 
@@ -1887,7 +1888,7 @@ Built-in login and refresh flows are private provider implementations. Use provi
 
 Provider notes:
 
-**OpenAI Codex**: Requires a ChatGPT subscription with model access. Includes GPT-6.1 Sol and Codex models with extended context windows and reasoning capabilities. The library handles session-based prompt caching when `sessionId` is provided unless `cacheRetention` is `"none"`. Set `transport` to `"sse"`, `"websocket"`, or `"auto"` for Codex Responses transport selection. WebSocket connections with a `sessionId` and caching enabled are reused per session and expire after 5 minutes of inactivity.
+**OpenAI Codex**: Requires a ChatGPT subscription with model access. Includes GPT-6.2 Sol and Codex models with extended context windows and reasoning capabilities. The library handles session-based prompt caching when `sessionId` is provided unless `cacheRetention` is `"none"`. Set `transport` to `"sse"`, `"websocket"`, or `"auto"` for Codex Responses transport selection. WebSocket connections with a `sessionId` and caching enabled are reused per session and expire after 5 minutes of inactivity.
 
 Call `cleanupSessionResources(sessionId)` when finished with a Codex session so its pooled WebSocket connection does not keep the process alive. Import it from `@bastani/atomic-ai`.
 

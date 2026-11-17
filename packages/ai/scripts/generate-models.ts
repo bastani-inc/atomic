@@ -37,6 +37,7 @@ import {
 	createModelDataManifest,
 	type ModelDataStructure,
 	MODEL_DATA_MANIFEST_FILE,
+	modelDataInputsHash,
 	readModelDataProviderIds,
 	validateGeneratedModelData,
 	validateModelDataDirectory,
@@ -684,7 +685,7 @@ async function generateModels() {
 			}
 			writeJson(
 				join(stagedDataDir, MODEL_DATA_MANIFEST_FILE),
-				createModelDataManifest(modelDataStructure, fileContents, generatedAt),
+				createModelDataManifest(modelDataStructure, fileContents, generatedAt, modelDataInputsHash(packageRoot)),
 			);
 			validateModelDataDirectory(modelDataStructure, stagedDataDir);
 

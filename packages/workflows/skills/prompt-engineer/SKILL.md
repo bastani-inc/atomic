@@ -28,6 +28,7 @@ Create or revise prompts for the user's target model. Keep the common prompt por
 
 | Target | Read | Main distinctions |
 | --- | --- | --- |
+| GPT-6.2 Astra, Sol | `references/gpt_6_2.md` | Astra vs Sol positioning, effort migration (no `none`), more concise default writing, task completion and approval boundaries, coding conventions, append-only prompts that keep reasoning and cache |
 | GPT-6.1 Sol | `references/gpt_6_1_sol.md` | Supported-effort migration, task and approval contracts, selective Astra-observed templates, tool and conversation compatibility |
 | GPT-6.1 Terra | `references/gpt_6_1_terra.md` | Visual, computer-use, and writing task contracts; start at `medium` effort (`none` supported); same-effort migration from GPT-5.6 Terra; selective Astra-observed templates |
 | GPT-6 Astra, Luna (and existing GPT-6 Sol) | `references/gpt_6.md` | OpenAI's official templates for approval pauses, skill-instruction conflicts, writing style, delegation, and verification; Sol/Luna effort and tool-calling support |
