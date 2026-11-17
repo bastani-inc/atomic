@@ -27,7 +27,7 @@ import type {
 	HostedSessionFrameItem,
 } from "../types.js";
 import { IntercomReachUnsupportedError } from "../reach-errors.js";
-import type { IntercomReachPolicy } from "../reach-policy.js";
+import { type IntercomReachPolicy, narrowMemberships } from "../reach-policy.js";
 import { buildSendSignature, PendingSendRegistry, PendingSendTimeoutError } from "./pending-send-registry.js";
 import { readSubagentMessageSource } from "../source-ownership.js";
 import { isMessage, isSessionInfo } from "./client-message-validation.js";
@@ -1656,6 +1656,8 @@ export class IntercomClient extends EventEmitter {
       try {
         writeMessage(socket, { type: "set_reach", requestId, reachable: [...reach.reachable] });
         this.sentReach = reach;
+        // The broker drops memberships outside the new reach as it applies it; so does this client's view, at once.
+        this._groups = new Set(narrowMemberships(reach, [...this._groups]));
       } catch (error) {
         clearTimeout(timeout);
         this.pendingReach.delete(requestId);
