@@ -18,6 +18,7 @@ const {
 	resetSessionTempCleanupScheduleForTesting,
 	SESSION_TEMP_CLEANUP_DELAY_MS,
 	scheduleSessionTempCleanup,
+	waitForSessionTempCleanupForTesting,
 } = await import("../src/core/tools/session-temp-cleanup.js");
 const { getTempRootDir, resetSessionTempDirStateForTesting } = await import("../src/core/tools/session-temp-dir.js");
 
@@ -50,7 +51,7 @@ test("the deferred sweep is armed once, outside the async context of the session
 
 test.skipIf(process.platform !== "win32")(
 	"the deferred sweep verifies the temp root without starting PowerShell on the main thread (#5324)",
-	() => {
+	async () => {
 		const sandbox = realpathSync(mkdtempSync(join(tmpdir(), "atomic-deferred-sweep-")));
 		sandboxes.push(sandbox);
 		for (const key of ["TEMP", "TMP", "TMPDIR"]) vi.stubEnv(key, sandbox);
@@ -62,6 +63,7 @@ test.skipIf(process.platform !== "win32")(
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 		scheduleSessionTempCleanup({ sessionsRoots: [] });
 		vi.advanceTimersByTime(SESSION_TEMP_CLEANUP_DELAY_MS);
+		await waitForSessionTempCleanupForTesting();
 
 		assert.ok(existsSync(join(root, CLEANUP_MARKER_FILE)), "the sweep verified the temp root and ran");
 		assert.deepEqual(
