@@ -187,9 +187,34 @@ export function analyzeEventLoop(graph: CallGraph, policy: EventLoopPolicy = INT
 		policy.ownedElsewhere.find((area) =>
 			area.paths.some((path) => (path.endsWith("/") ? file.startsWith(path) : file === path)),
 		)?.owner;
+	// A second walk that does not enter areas other changes own: a call reached only through one of them is theirs to
+	// remove (their change makes the caller non-blocking), so it is deferred to them, not failed here.
+	const ownedFunctions = new Map(startupOnly);
+	for (const fn of graph.functions) {
+		const owner = ownerOf(fn.file);
+		if (owner !== undefined) ownedFunctions.set(fn.id, owner);
+	}
+	const withoutOwnedAreas = reach(
+		graph,
+		roots,
+		{
+			stopAt: ownedFunctions,
+			followRegistrations: true,
+			skipEdge: (_from, to, edge) => edge === "import" && loadedAtStartup.has(to),
+		},
+		registrations,
+	);
+	const throughOwnedArea = (id: number) => {
+		for (const step of pathTo(interactive, id)) {
+			const owner = ownerOf(graph.functions[step.id].file);
+			if (owner !== undefined) return owner;
+		}
+		return undefined;
+	};
 	const findings: Violation[] = [];
 	for (const [id] of interactive.arrivals) {
 		const fn = graph.functions[id];
+		const ownedBy = ownerOf(fn.file) ?? (withoutOwnedAreas.arrivals.has(id) ? undefined : throughOwnedArea(id));
 		for (const use of fn.blocking) {
 			findings.push({
 				file: fn.file,
@@ -198,8 +223,10 @@ export function analyzeEventLoop(graph: CallGraph, policy: EventLoopPolicy = INT
 				category: use.api.category,
 				function: fn.name,
 				inAsyncFunction: fn.isAsync,
-				ownedBy: ownerOf(fn.file),
-				path: pathTo(interactive, id).map((step) => describeArrival(graph, step.id, step.arrival)),
+				ownedBy,
+				path: pathTo(withoutOwnedAreas.arrivals.has(id) ? withoutOwnedAreas : interactive, id).map((step) =>
+					describeArrival(graph, step.id, step.arrival),
+				),
 			});
 		}
 	}

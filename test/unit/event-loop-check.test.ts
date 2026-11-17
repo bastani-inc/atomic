@@ -87,10 +87,10 @@ describe("event-loop check", () => {
 		assert.match(key.path[0], /process\.stdin\.on\("data"\).*registered with/);
 	});
 
-	test("defers findings in areas another change owns, and keeps reviewed startup helpers out of the walk", () => {
+	test("defers findings in areas another change owns, or reached only through them, and keeps reviewed startup helpers out of the walk", () => {
 		assert.deepEqual(
 			report.deferred.map((v) => `${v.function} ${v.api} ${v.ownedBy}`),
-			["listOwnedArea fs.readdirSync another change"],
+			["readHelperOnlyOwnedCodeCalls fs.readFileSync another change", "listOwnedArea fs.readdirSync another change"],
 		);
 		assert.equal(
 			report.violations.some((v) => v.function === "reviewedStartupHelper"),
