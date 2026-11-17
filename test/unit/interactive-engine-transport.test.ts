@@ -157,7 +157,9 @@ test("activity watchdog retains nested and concurrent attribution", async () => 
 test("callback activity attribution starts when each callback can run", async () => {
 	const started: string[] = [];
 	setCallbackActivityReporter({
-		started: (activity) => started.push(`${activity.kind} ${activity.name}`),
+		started: (activity) => {
+			started.push(`${activity.kind} ${activity.name}`);
+		},
 		finished: () => {},
 	});
 	try {
@@ -166,6 +168,100 @@ test("callback activity attribution starts when each callback can run", async ()
 		});
 		const lifecycle = runCallback({ kind: "extension.hook", name: "turn_start" }, () => {});
 		await Promise.all([tool, lifecycle]);
+	} finally {
+		setCallbackActivityReporter(undefined);
+	}
+});
+
+test("an async callback waits for its activity-start record to be written before entering user code", async () => {
+	const writing = Promise.withResolvers<void>();
+	const written = Promise.withResolvers<void>();
+	const events: string[] = [];
+	setCallbackActivityReporter({
+		started: async () => {
+			events.push("writing");
+			writing.resolve();
+			await written.promise;
+			events.push("written");
+		},
+		finished: () => {
+			events.push("finished");
+		},
+	});
+	const callback = runCallback({ kind: "tool.execute", name: "busy_loop" }, () => {
+		events.push("callback");
+	});
+	try {
+		await writing.promise;
+		assert.deepEqual(events, ["writing"], "the user callback ran before its attribution reached the host");
+		written.resolve();
+		await callback;
+		assert.deepEqual(events, ["writing", "written", "callback", "finished"]);
+	} finally {
+		written.resolve();
+		await callback;
+		setCallbackActivityReporter(undefined);
+	}
+});
+
+test("a later async attribution cannot overtake the callback whose start record is still being written", async () => {
+	const firstWriting = Promise.withResolvers<void>();
+	const firstWritten = Promise.withResolvers<void>();
+	const firstInvoked = Promise.withResolvers<void>();
+	const firstWork = Promise.withResolvers<void>();
+	const secondInvoked = Promise.withResolvers<void>();
+	const events: string[] = [];
+	setCallbackActivityReporter({
+		started: async (activity) => {
+			events.push(`start:${activity.name}`);
+			if (activity.name === "first") {
+				firstWriting.resolve();
+				await firstWritten.promise;
+			}
+		},
+		finished: () => {},
+	});
+	const first = runCallback({ kind: "tool.execute", name: "first" }, () => {
+		events.push("invoke:first");
+		firstInvoked.resolve();
+		return firstWork.promise;
+	});
+	const second = runCallback({ kind: "extension.hook", name: "second" }, () => {
+		events.push("invoke:second");
+		secondInvoked.resolve();
+	});
+	try {
+		await firstWriting.promise;
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.deepEqual(events, ["start:first"], "the second callback replaced the first callback's attribution");
+		firstWritten.resolve();
+		await firstInvoked.promise;
+		await secondInvoked.promise;
+		assert.deepEqual(events, ["start:first", "invoke:first", "start:second", "invoke:second"]);
+		// Waiting for attribution must not serialize the work the callbacks return.
+		await second;
+	} finally {
+		firstWritten.resolve();
+		firstWork.resolve();
+		await Promise.all([first, second]);
+		setCallbackActivityReporter(undefined);
+	}
+});
+
+test("a failed activity-start write does not fail user work or hold later callback starts", async () => {
+	const events: string[] = [];
+	setCallbackActivityReporter({
+		started: async () => {
+			throw Object.assign(new Error("stdout closed"), { code: "EPIPE" });
+		},
+		finished: () => {},
+	});
+	try {
+		await Promise.all([
+			runCallback({ kind: "tool.execute", name: "first" }, () => events.push("first")),
+			runCallback({ kind: "tool.execute", name: "second" }, () => events.push("second")),
+		]);
+		assert.deepEqual(events, ["first", "second"]);
 	} finally {
 		setCallbackActivityReporter(undefined);
 	}

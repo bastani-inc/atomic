@@ -256,21 +256,23 @@ export function loadProjectContextFiles(options: ProjectContextFileOptions): Arr
 /** {@link loadProjectContextFiles} without blocking on the files it reads. */
 export async function loadProjectContextFilesAsync(options: ProjectContextFileOptions): Promise<ContextFile[]> {
 	const resolvedCwd = resolvePath(options.cwd);
-	const agentContextFiles: Array<ContextFile | null> = [];
-	for (const dir of contextAgentDirs(resolvePath(options.agentDir))) {
-		agentContextFiles.push(await loadContextFileFromDirAsync(dir));
-	}
+	const agentContextFiles = await Promise.all(
+		contextAgentDirs(resolvePath(options.agentDir)).map((dir) => loadContextFileFromDirAsync(dir)),
+	);
 	if (options.projectTrusted === false) return orderContextFiles(agentContextFiles, []);
 
 	const shadowedContextFile = await findShadowedContextFileAsync(resolvedCwd);
-	const ancestorContextFiles: Array<ContextFile | null> = [];
-	for (const currentDir of getAncestorDirectories(resolvedCwd)) {
-		const contextFile = await loadContextFileFromDirAsync(currentDir);
-		const isShadowed =
-			shadowedContextFile !== undefined &&
-			contextFile !== null &&
-			samePath(join(await realPathAsync(currentDir), basename(contextFile.path)), shadowedContextFile);
-		ancestorContextFiles.push(isShadowed ? null : contextFile);
-	}
+	// Each directory chooses its own highest-priority file. Probe directories together so an absent context file does
+	// not add one saturated loop turn per candidate per ancestor, while Promise.all keeps inheritance in path order.
+	const ancestorContextFiles = await Promise.all(
+		getAncestorDirectories(resolvedCwd).map(async (currentDir) => {
+			const contextFile = await loadContextFileFromDirAsync(currentDir);
+			const isShadowed =
+				shadowedContextFile !== undefined &&
+				contextFile !== null &&
+				samePath(join(await realPathAsync(currentDir), basename(contextFile.path)), shadowedContextFile);
+			return isShadowed ? null : contextFile;
+		}),
+	);
 	return orderContextFiles(agentContextFiles, ancestorContextFiles);
 }

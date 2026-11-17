@@ -12,7 +12,12 @@ import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 test.sequential("real workflow author, ctx.tool, and stage adapter callbacks report activity", async () => {
 	const started: CallbackActivity[] = [];
-	setCallbackActivityReporter({ started: (activity) => started.push(activity), finished: () => {} });
+	setCallbackActivityReporter({
+		started: (activity) => {
+			started.push(activity);
+		},
+		finished: () => {},
+	});
 	try {
 		const definition = workflow({
 			name: "activity-fixture",
