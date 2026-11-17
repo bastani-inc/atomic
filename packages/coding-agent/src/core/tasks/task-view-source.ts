@@ -69,8 +69,15 @@ export interface TaskDetailText {
  * names tasks by id, so a view never holds a task lease.
  */
 export interface TaskViewSource {
+	/** The session's own tasks: its shells and the subagents it launched, never a subagent's shells. */
 	readonly tasks: readonly TaskRecord[];
 	readonly backgroundTasks: readonly TaskRecord[];
+	/**
+	 * Every task of the session's owner, including the shells its subagents launched there, which their views list.
+	 * Absent where the source holds only the session's own.
+	 */
+	readonly ownerTasks?: readonly TaskRecord[];
+	readonly ownerBackgroundTasks?: readonly TaskRecord[];
 	readonly settlementOrder: ReadonlyMap<TaskId, bigint>;
 	panelRevision?(): number | undefined;
 	taskRecord?(id: TaskId): TaskRecord | undefined;
@@ -142,11 +149,12 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 	const taskReadOnlyReason = root.taskReadOnlyReason;
 	const taskStopped = root.taskStopped;
 	const view: TaskViewSource = {
+		// A subagent's shells are not its launcher's own tasks: they are read from the owner's.
 		get tasks() {
-			return launched(root.tasks);
+			return launched(root.ownerTasks ?? root.tasks);
 		},
 		get backgroundTasks() {
-			return launched(root.backgroundTasks);
+			return launched(root.ownerBackgroundTasks ?? root.backgroundTasks);
 		},
 		get settlementOrder() {
 			return root.settlementOrder;
@@ -208,6 +216,12 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 		},
 		get backgroundTasks() {
 			return store.backgroundTasks;
+		},
+		get ownerTasks() {
+			return store.ownerTasks;
+		},
+		get ownerBackgroundTasks() {
+			return store.ownerBackgroundTasks;
 		},
 		get settlementOrder() {
 			return store.settlementOrder;

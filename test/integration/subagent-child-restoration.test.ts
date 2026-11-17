@@ -914,7 +914,8 @@ test("a restored child's pre-restart Intercom id is recognized while a sibling i
 
 		slowSibling.reject(new Error("the sibling's session is gone"));
 		await restoring;
-		assert.match(refusal ?? "", /subagent-worker-known1-1.*has not reconnected to Intercom/);
+		// The relaunched child that has not registered is still starting: its hold keeps the send, which goes out.
+		assert.equal(refusal, undefined);
 		assert.match(slowRefusal ?? "", /subagent-worker-slow1-1.*is still being restored/);
 	} finally {
 		slowSibling.reject(new Error("the sibling's session is gone"));
@@ -959,8 +960,9 @@ test("a restored child's pre-restart Intercom id is matched past a sibling's, an
 		const owner = parent.sessionManager.getSessionId();
 		const entries = parent.sessionManager.getEntries();
 
+		// The relaunched child that has not registered is still starting: its hold keeps the send, which goes out.
 		const second = await awaitSubagentChildRestoration(owner, entries, previousIds.get("second1:0")!, RECORD_WAIT_MS);
-		assert.match(second ?? "", /subagent-worker-second1-1.*has not reconnected to Intercom/);
+		assert.equal(second, undefined);
 
 		// Every id is known, so a target that is none of them is not held until the deadline.
 		const started = Date.now();

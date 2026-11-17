@@ -1,11 +1,9 @@
 export type TokenSegmentMode = "requesting" | "receiving";
 
+const COMPACT_TOKEN_COUNT = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
+
 export function formatTokenCount(count: number): string {
-	const tokens = Math.max(0, Math.round(count));
-	if (tokens < 1000) return `${tokens}`;
-	if (tokens < 999_500) return `${(tokens / 1000).toFixed(tokens < 99_950 ? 1 : 0)}k`;
-	if (tokens < 999_500_000) return `${(tokens / 1_000_000).toFixed(tokens < 99_950_000 ? 1 : 0)}M`;
-	return `${(tokens / 1_000_000_000).toFixed(tokens < 99_950_000_000 ? 1 : 0)}B`;
+	return COMPACT_TOKEN_COUNT.format(Math.max(0, Math.round(count))).toLowerCase();
 }
 
 export function formatTokenSegment(segment: { readonly mode: TokenSegmentMode; readonly count: number }): string {

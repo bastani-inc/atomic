@@ -419,10 +419,18 @@ test.runIf(process.platform !== "win32")(
 				const notice = completionNoticeFromDetails(message.details);
 				assert.ok(notice);
 				const rows = new TaskCompletionMessage(notice, false).render(100);
-				const text = rows.map(stripVTControlCharacters).join("\n");
-				assert.match(text, exitCode === 0 ? /Background shell completed/ : /Background shell failed/);
-				assert.match(text, /Shell result preview/);
-				assert.match(rows[0], /\x1b\[48;/);
+				assert.equal(rows.length, 1, "one notice line");
+				assert.match(
+					stripVTControlCharacters(rows[0]!),
+					// The line ends with how long the command ran.
+					exitCode === 0
+						? /^● Background command ".*" completed \(exit code 0\) · \d+s$/
+						: new RegExp(`^✗ Background command ".*" failed \\(exit code ${exitCode}\\) · \\d+s$`),
+				);
+				assert.match(
+					new TaskCompletionMessage(notice, true).render(100).map(stripVTControlCharacters).join("\n"),
+					/Shell result preview/,
+				);
 				await session._taskCompletionOutbox?.flush();
 				assert.equal(sendCustomMessage.mock.calls.length, expectedCount);
 			}

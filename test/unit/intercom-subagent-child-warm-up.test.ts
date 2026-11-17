@@ -339,3 +339,65 @@ describe("Intercom admitted child broker-connect recovery through the real compo
 		}
 	});
 });
+
+describe("Intercom admitted child registration before its first turn", () => {
+	afterEach(() => vi.useRealTimers());
+
+	function startingChildContext(signal: AbortSignal, steps: string[]): ExtensionContext {
+		return harnessContext({
+			cwd: process.cwd(),
+			hasUI: false,
+			subagentPolicy: {
+				...admittedChildPolicy,
+				startup: {
+					signal,
+					enterStep: (step) => steps.push(step),
+					firstTurnPending: () => true,
+				},
+			},
+		});
+	}
+
+	test("a child whose broker is unreachable at start keeps its start waiting until it registers", async () => {
+		vi.useFakeTimers();
+		const replayed: ExtensionContext[] = [];
+		const current = fixture([
+			{ error: new IntercomClientDisconnectedError() },
+			{ error: new IntercomClientDisconnectedError() },
+			{ module: heavyModule((ctx) => replayed.push(ctx)) },
+		]);
+		const steps: string[] = [];
+		const ctx = startingChildContext(new AbortController().signal, steps);
+		let started = false;
+		const starting = current.emitSessionStart(ctx).then((reported) => {
+			started = true;
+			return reported;
+		});
+		await vi.advanceTimersByTimeAsync(0);
+		assert.equal(started, false, "its extensions are still starting: the first turn cannot begin unregistered");
+		assert.deepEqual(steps, ["registering-intercom"], "its start names the step it waits in");
+		await vi.advanceTimersByTimeAsync(10_000);
+		const reported = await starting;
+		assert.deepEqual(reported, []);
+		assert.equal(current.imports, 3, "it retried until the broker took its registration");
+		assert.deepEqual(replayed, [ctx]);
+		assert.deepEqual(steps, ["registering-intercom", "creating-session"]);
+	});
+
+	test("a start given up while the broker is unreachable stops retrying", async () => {
+		vi.useFakeTimers();
+		const current = fixture([
+			{ error: new IntercomClientDisconnectedError() },
+			{ error: new IntercomClientDisconnectedError() },
+		]);
+		const budget = new AbortController();
+		const steps: string[] = [];
+		const starting = current.emitSessionStart(startingChildContext(budget.signal, steps));
+		await vi.advanceTimersByTimeAsync(0);
+		budget.abort(new Error("start budget ran out"));
+		const reported = await starting;
+		assert.deepEqual(reported, []);
+		assert.equal(current.imports, 1, "no attempt after the start was given up");
+		assert.deepEqual(steps, ["registering-intercom"]);
+	});
+});
