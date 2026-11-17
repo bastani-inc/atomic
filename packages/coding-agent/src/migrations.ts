@@ -8,6 +8,8 @@ import { mkdir, readdir, readFile, rename, rm, writeFile } from "fs/promises";
 import { dirname, join } from "path";
 import { CONFIG_DIR_NAME, getAgentConfigPaths, getAgentDir, getBinDir } from "./config.js";
 import { migrateKeybindingsConfig } from "./core/keybindings.ts";
+import { FileSettingsStorage } from "./core/settings-storage.ts";
+import type { SettingsScope } from "./core/settings-types.ts";
 import {
 	applyEarlyInputChunk,
 	type EarlyInputState,
@@ -21,6 +23,8 @@ import {
 	migrateModelsJsonConfigValues,
 	migrateModelsJsonConfigValuesAsync,
 } from "./migrations-config-values.ts";
+import { warnDeprecation } from "./utils/deprecation.js";
+import { parseJsonFileContent } from "./utils/json.ts";
 import { pathExists } from "./utils/path-exists.ts";
 import { stripBom } from "./utils/text.ts";
 
@@ -558,6 +562,94 @@ async function waitForDeprecationKeypress(warnings: string[], stdin: KeypressInp
 	console.log();
 }
 
+function hasModelRouting(content: string): boolean {
+	const settings = parseJsonFileContent(content);
+	return typeof settings === "object" && settings !== null && Object.hasOwn(settings, "modelRouting");
+}
+
+function savesModelRouting(path: string): boolean {
+	try {
+		return hasModelRouting(readFileSync(path, "utf-8"));
+	} catch {
+		return false;
+	}
+}
+
+async function savesModelRoutingAsync(path: string): Promise<boolean> {
+	try {
+		return hasModelRouting(await readFile(path, "utf-8"));
+	} catch {
+		return false;
+	}
+}
+
+function modelRoutingSettingsFiles(cwd: string, options?: { projectTrusted?: boolean }): [SettingsScope, string][] {
+	const files: [SettingsScope, string][] = [["global", join(getAgentDir(), "settings.json")]];
+	if (options?.projectTrusted === true) files.push(["project", join(cwd, CONFIG_DIR_NAME, "settings.json")]);
+	return files;
+}
+
+/** The settings file without `modelRouting`, or `undefined` to leave it as it is. */
+function withoutModelRouting(current: string | undefined): string | undefined {
+	const settings = current === undefined ? undefined : parseJsonFileContent(current);
+	if (typeof settings !== "object" || settings === null || Array.isArray(settings)) return undefined;
+	if (!Object.hasOwn(settings, "modelRouting")) return undefined;
+	delete (settings as Record<string, unknown>).modelRouting;
+	return JSON.stringify(settings, null, 2);
+}
+
+function warnModelRoutingRemoved(scope: SettingsScope): void {
+	warnDeprecation(
+		`Removed the "modelRouting" setting from ${scope} settings: automatic model routing was removed, so "auto" runs your default model and its provider and model restrictions no longer limit "auto" or any fallback model.`,
+		{ showInUi: true },
+	);
+}
+
+/**
+ * Delete the removed `modelRouting` setting from Atomic's global settings file and, when the project is trusted, from
+ * its project settings file, and say so once. The file is rewritten under its settings lock, so settings another
+ * process saves meanwhile are kept. A file that cannot be written keeps the key, which loading it reports as ignored.
+ */
+export function removeSavedModelRoutingSetting(cwd: string, options?: { projectTrusted?: boolean }): void {
+	const storage = new FileSettingsStorage(cwd, getAgentDir());
+	for (const [scope, path] of modelRoutingSettingsFiles(cwd, options)) {
+		if (!savesModelRouting(path)) continue;
+		let removed = false;
+		try {
+			storage.withPrimaryWriteLock(scope, (current) => {
+				const next = withoutModelRouting(current);
+				removed = next !== undefined;
+				return next;
+			});
+		} catch {
+			removed = false;
+		}
+		if (removed) warnModelRoutingRemoved(scope);
+	}
+}
+
+/** {@link removeSavedModelRoutingSetting} without blocking the event loop, for settings trusted after startup. */
+export async function removeSavedModelRoutingSettingAsync(
+	cwd: string,
+	options?: { projectTrusted?: boolean },
+): Promise<void> {
+	const storage = new FileSettingsStorage(cwd, getAgentDir());
+	for (const [scope, path] of modelRoutingSettingsFiles(cwd, options)) {
+		if (!(await savesModelRoutingAsync(path))) continue;
+		let removed = false;
+		try {
+			await storage.withPrimaryWriteLockAsync(scope, (current) => {
+				const next = withoutModelRouting(current);
+				removed = next !== undefined;
+				return next;
+			});
+		} catch {
+			removed = false;
+		}
+		if (removed) warnModelRoutingRemoved(scope);
+	}
+}
+
 /**
  * Run all migrations. Called once on startup.
  *
@@ -576,6 +668,7 @@ export function runMigrations(
 	migrateSessionsFromAgentRoot();
 	migrateToolsToBin();
 	migrateKeybindingsConfigFile();
+	removeSavedModelRoutingSetting(cwd, options);
 	const deprecationWarnings = migrateExtensionSystem(cwd, options);
 	return { migratedAuthProviders, deprecationWarnings };
 }
@@ -593,6 +686,7 @@ export async function runMigrationsAsync(
 	await migrateSessionsFromAgentRootAsync();
 	await migrateToolsToBinAsync();
 	await migrateKeybindingsConfigFileAsync();
+	await removeSavedModelRoutingSettingAsync(cwd, options);
 	const deprecationWarnings = await migrateExtensionSystemAsync(cwd, options);
 	return { migratedAuthProviders, deprecationWarnings };
 }
