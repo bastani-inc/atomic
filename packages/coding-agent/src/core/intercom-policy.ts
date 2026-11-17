@@ -19,8 +19,9 @@ export interface SessionIntercom {
 	readonly reachable: readonly string[];
 	/**
 	 * Replace the groups the session may reach. It takes effect from the session's next Intercom call; the promise
-	 * settles once the broker holds the new reach, or at once while the session is not connected, in which case it
-	 * registers with the new reach. Throws `IntercomPolicyError` for a session created without the `intercom` option.
+	 * settles once the broker holds the new reach, or at once while the session is not connected (or its connection
+	 * closes first), in which case it registers with the new reach. Rejects with `IntercomPolicyError` for a session
+	 * created without the `intercom` option.
 	 */
 	setReachable(groups: readonly string[]): Promise<void>;
 }
