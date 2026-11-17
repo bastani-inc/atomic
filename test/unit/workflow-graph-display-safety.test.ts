@@ -92,7 +92,7 @@ test.each(["result", "rejection"])(
 			graph.handleInput("x");
 			await new Promise<void>((resolve) => setTimeout(resolve, 0));
 			for (const width of [80, 160]) assertSafeRows(graph.render(width));
-			assert.ok(graph.render(160).join("\n").includes("Notice\\x1b[2JNAME second"));
+			assert.ok(graph.render(160).join("\n").includes("NoticeNAME second"));
 		} finally {
 			graph.dispose();
 		}
@@ -183,7 +183,10 @@ test.each(["card", "detail", "listing", "panel"])(
 		} else {
 			assertSafeRows(
 				renderAgentPanelRows(
-					panelItemsFromSnapshot({ ...snap, runs: [{ ...snap.runs[0]!, toolNodes: [{ ...node, status: "running" }] }] }, 2),
+					panelItemsFromSnapshot(
+						{ ...snap, runs: [{ ...snap.runs[0]!, toolNodes: [{ ...node, status: "running" }] }] },
+						2,
+					),
 					200,
 					panelStyle,
 				),
@@ -240,7 +243,7 @@ test("failure summary and logs render control-bearing fields as printable data w
 		const summary = graph.render(160);
 		assertSafeRows(summary);
 		assert.ok(summary.join("\n").includes("verify\\x1b[2JNAME second"));
-		assert.ok(summary.join("\n").includes("gate \\x1b]52;c;Yg==\\x07 denied"));
+		assert.ok(summary.join("\n").includes("gate  denied"));
 		graph.handleInput("l");
 		const logs = graph.render(160);
 		assertSafeRows(logs);

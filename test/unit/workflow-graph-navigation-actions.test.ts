@@ -81,7 +81,7 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 	});
 
 	it.each([{ bindings: ["z"] }, { bindings: ["escape", "z"] }, { bindings: ["o", "z"] }])(
-		"stop confirmation names the pressed binding from $bindings (#5234, #5255)",
+		"stop confirmation names the pressed binding from $bindings (#5224)",
 		async ({ bindings }) => {
 			const stop = vi.fn(async () => ({ ok: true, message: "stopped" }));
 			const graph = view([stage("A", "running")], {

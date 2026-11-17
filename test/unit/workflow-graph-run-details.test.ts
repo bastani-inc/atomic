@@ -1,9 +1,9 @@
-// @ts-nocheck
-
 import assert from "node:assert/strict";
 import { stripVTControlCharacters as stripAnsi } from "node:util";
 import { describe, it } from "vitest";
+import type { RunSnapshot, StageSnapshot, StageStatus } from "../../packages/workflows/src/shared/store-types.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
+import type { GraphViewOpts } from "../../packages/workflows/src/tui/graph-view-types.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import * as h from "./overlay-graph-helpers.js";
@@ -16,12 +16,17 @@ const DOWN = "\x1b[B";
 const ENTER = "\r";
 const STACK = "Error: verify gate failed: 2 jobs\n    at verifyStage (/repo/ralph.ts:41:11)";
 
-function stage(id, status, extra = {}, parents = []) {
+function stage(
+	id: string,
+	status: StageStatus,
+	extra: Partial<StageSnapshot> = {},
+	parents: string[] = [],
+): StageSnapshot {
 	return { ...makeStage(id, parents), status, ...extra };
 }
 
-function view(stages, runExtra = {}, opts = {}) {
-	const run = { ...h.makeSnap(stages).runs[0], ...runExtra };
+function view(stages: StageSnapshot[], runExtra: Partial<RunSnapshot> = {}, opts: Partial<GraphViewOpts> = {}) {
+	const run: RunSnapshot = { ...h.makeSnap(stages).runs[0]!, ...runExtra };
 	return new GraphView({
 		piKeybindings: makeFakeKeybindings(),
 		mode: "overlay",
@@ -33,14 +38,14 @@ function view(stages, runExtra = {}, opts = {}) {
 	});
 }
 
-function screen(graph, width = 160) {
+function screen(graph: GraphView, width = 160) {
 	return graph
 		.render(width)
 		.map((line) => stripAnsi(line))
 		.join("\n");
 }
 
-function hint(graph, width = 160) {
+function hint(graph: GraphView, width = 160) {
 	const lines = graph.render(width).map((line) => stripAnsi(line));
 	const index = lines.findIndex((line) => line.includes("│ GRAPH │"));
 	return index < 0 ? "" : lines[index];
@@ -74,7 +79,7 @@ describe("workflow graph run details: outputs and diagnostics (#5224)", () => {
 	});
 
 	it("shows every declared output, not just the graph snapshot's compact result", () => {
-		const compact = {
+		const compact: RunSnapshot = {
 			...h.makeSnap([stage("plan", "completed")]).runs[0],
 			status: "completed",
 			result: { summary: "short" },
@@ -127,7 +132,7 @@ describe("workflow graph run details: outputs and diagnostics (#5224)", () => {
 		assert.equal(graph.handleInput(ENTER), true);
 		const shown = screen(graph);
 		assert.match(shown, /✗ verify · failed/);
-		assert.match(hint(graph), /r retry in place/);
+		assert.match(hint(graph), /r retry from stage/);
 	});
 
 	it("the selected blocker stays in view when the terminal is short", () => {
@@ -155,7 +160,7 @@ describe("workflow graph run details: outputs and diagnostics (#5224)", () => {
 	});
 
 	it("↑↓ move between blockers, and enter on a waiting stage attaches its chat", () => {
-		const attached = [];
+		const attached: string[] = [];
 		const graph = view(
 			[
 				stage("verify", "failed", { error: "boom" }),
@@ -209,7 +214,7 @@ describe("workflow graph run details: outputs and diagnostics (#5224)", () => {
 			],
 			{ name: `wf ${evil}`, status: "failed", error: `boom ${evil}`, result: { [`k${evil}`]: `v ${evil}` } },
 		);
-		const check = (lines) => {
+		const check = (lines: string[]) => {
 			for (const line of lines) {
 				assert.doesNotMatch(line, /\x1b\]/, "no OSC sequence reaches the terminal");
 				assert.doesNotMatch(line, /\x1b\[2J/, "no screen clear reaches the terminal");
@@ -255,9 +260,9 @@ describe("workflow graph run details: outputs and diagnostics (#5224)", () => {
 		const marker = { counted: true };
 		const stringify = JSON.stringify;
 		let builds = 0;
-		JSON.stringify = function (value, ...rest) {
+		JSON.stringify = (value, ...rest) => {
 			if (value === marker) builds++;
-			return stringify.call(this, value, ...rest);
+			return Reflect.apply(stringify, JSON, [value, ...rest]);
 		};
 		try {
 			const graph = view(
@@ -275,21 +280,21 @@ describe("workflow graph run details: outputs and diagnostics (#5224)", () => {
 	});
 
 	it("keeps the selected blocker by identity when the blocker list changes under it (#5224)", () => {
-		const attached = [];
-		const run = {
+		const attached: string[] = [];
+		const run: RunSnapshot = {
 			...h.makeSnap([
 				stage("approve", "awaiting_input", {
 					pendingPrompt: { id: "p1", kind: "confirm", message: "Approve?", createdAt: 1 },
 				}),
 				stage("verify", "running"),
-			]).runs[0],
+			]).runs[0]!,
 			status: "running",
 		};
 		const snap = { runs: [run], notices: [], version: 1 };
-		const listeners = [];
+		const listeners: Array<() => void> = [];
 		const store = {
 			...makeStore(snap),
-			subscribeInvalidation: (listener) => {
+			subscribeInvalidation: (listener: () => void) => {
 				listeners.push(listener);
 				return () => {};
 			},

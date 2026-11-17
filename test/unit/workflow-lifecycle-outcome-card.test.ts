@@ -1,5 +1,3 @@
-// @ts-nocheck
-
 import assert from "node:assert/strict";
 import { stripVTControlCharacters as stripAnsi } from "node:util";
 import { describe, test } from "vitest";
@@ -8,8 +6,11 @@ import {
 	formatWorkflowLifecycleNoticeText,
 	installWorkflowLifecycleNotifications,
 	registerLifecycleNoticeRenderer,
+	type WorkflowLifecycleNoticeDetails,
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
+import type { PiMessageRenderer } from "../../packages/workflows/src/extension/public-types.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 
 const STACK =
@@ -17,30 +18,31 @@ const STACK =
 
 function setup() {
 	const store = createStore();
-	const sent = [];
+	const sent: Array<{ details?: WorkflowLifecycleNoticeDetails }> = [];
 	installWorkflowLifecycleNotifications({
 		store,
 		config: { enabled: true, notifyOn: ["completed", "failed"] },
 		state: createWorkflowLifecycleNotificationState(),
 		sendMessage(message) {
-			sent.push(message);
+			sent.push(message as { details?: WorkflowLifecycleNoticeDetails });
 		},
 	});
-	let renderer: ((payload: unknown) => { render(width: number): string[] }) | undefined;
+	let renderer: PiMessageRenderer | undefined;
 	registerLifecycleNoticeRenderer({
 		rendererHost: {},
 		registerMessageRenderer(_event, r) {
 			renderer = r;
 		},
 	});
-	const card = (message, width = 100) =>
-		renderer!({ details: message.details })
-			.render(width)
-			.map((line) => stripAnsi(line));
+	const card = (message: { details?: WorkflowLifecycleNoticeDetails }, width = 100) => {
+		const component = renderer?.({ details: message.details });
+		assert.ok(component && typeof component !== "string");
+		return component.render(width).map((line) => stripAnsi(line));
+	};
 	return { store, sent, card };
 }
 
-function startRun(store, id, stages = []) {
+function startRun(store: ReturnType<typeof createStore>, id: string, stages: StageSnapshot[] = []) {
 	store.recordRunStart({ id, name: "ralph", inputs: {}, status: "running", toolNodes: [], stages, startedAt: 1 });
 }
 
@@ -85,7 +87,7 @@ describe("workflow completion card: outputs and diagnostics (#5224)", () => {
 		assert.match(text, /error\s+verify gate failed: 2 jobs/);
 		assert.doesNotMatch(text, /at verifyStage/);
 		assert.match(text, /full log: \/workflows run-bad, then o and l/);
-		// What the model reads keeps the full error: only the card shortens it.
+		assert.ok(notice.details);
 		assert.match(formatWorkflowLifecycleNoticeText(notice.details), /verify gate failed: 2 jobs/);
 	});
 	test("names, outputs and reasons on the card are inert, never live escape sequences (#5224)", async () => {
@@ -104,15 +106,17 @@ describe("workflow completion card: outputs and diagnostics (#5224)", () => {
 		await Promise.resolve();
 		const notice = sent.find((message) => message.details?.kind === "completed");
 		assert.ok(notice);
-		let renderer: ((payload: unknown) => { render(width: number): string[] }) | undefined;
+		let renderer: PiMessageRenderer | undefined;
 		registerLifecycleNoticeRenderer({
 			rendererHost: {},
 			registerMessageRenderer(_event, r) {
 				renderer = r;
 			},
 		});
+		const component = renderer?.({ details: notice.details });
+		assert.ok(component && typeof component !== "string");
 		for (const width of [80, 160]) {
-			for (const line of renderer!({ details: notice.details }).render(width)) {
+			for (const line of component.render(width)) {
 				assert.doesNotMatch(line, /\x1b\]/);
 				assert.doesNotMatch(line, /\x1b\[2J/);
 				assert.doesNotMatch(line, /\u202e/);

@@ -356,7 +356,6 @@ function renderNotice(title: string, message: string, opts: RenderResultOpts | u
 	const contentWidth = width && width > 0 ? Math.max(1, width - 4) : undefined;
 	return renderRoundedBox({
 		title,
-		// Notices quote run names, errors and results, which are untrusted: they are shown, never obeyed.
 		bodyLines: noticeBodyLines(inertDisplayText(message), contentWidth),
 		theme,
 		width,
@@ -403,7 +402,6 @@ function transcriptNoticeText(result: TranscriptResult): string {
 	return entriesText;
 }
 
-/** An error's message lines, never its stack frames: they stay in the tool result the model reads. */
 function errorNoticeText(errorText: string): string {
 	const { kept, frames } = withoutStackFrames(errorText);
 	const body = kept.join("\n").trimEnd();

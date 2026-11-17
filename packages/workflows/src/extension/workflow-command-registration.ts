@@ -56,7 +56,6 @@ export interface WorkflowSlashCommandDeps {
 	runWithLifecycleSuppressedForPolicy: <T>(policy: WorkflowExecutionPolicy, fn: () => Promise<T>) => Promise<T>;
 	runControl: WorkflowRunControlDeps;
 	owner?: WorkflowOwnerResources;
-	/** The latest discovery's diagnostics, so `/workflows` can list the definitions that failed to load. */
 	discoveryDiagnostics?: () => readonly DiscoveryDiagnostic[];
 }
 

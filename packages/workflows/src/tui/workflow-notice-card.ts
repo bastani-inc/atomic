@@ -62,7 +62,6 @@ export function renderWorkflowNoticeCard(input: WorkflowNoticeCardOpts): string[
 	});
 }
 
-/** Every text a card shows comes from runs, stages, prompts and errors: it is shown, never obeyed by the terminal. */
 function inertCardText(opts: WorkflowNoticeCardOpts): WorkflowNoticeCardOpts {
 	return {
 		...opts,
