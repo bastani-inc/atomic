@@ -73,6 +73,7 @@ export async function startFallbackWidgetScenario(explicitModel = true) {
 		_fallbackModels: ["other/model-b-fast:medium", "other/model-b-fast:low", "openai/model-c:literal:off"],
 		_fallbackAttemptedKeys: new Set<string>(),
 		_fallbackBlockedModels: [] as Model<"openai-completions">[],
+		_fallbackBlockedProviders: new Set<string>(),
 		_retryAttempt: 0,
 		settingsManager: { getDefaultThinkingLevel: () => "high", getDefaultProvider: () => "openai" },
 		_modelRuntime: {

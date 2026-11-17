@@ -144,6 +144,8 @@ export interface WorkflowModelCatalogPort {
 	readonly currentModel?: WorkflowModelValue;
 	readonly preferredProvider?: string;
 	recordWarning?: (warning: string) => void;
+	hasCredentials?(provider: string): boolean;
+	resolveProvider?(reference: string): string | undefined;
 }
 
 /** A decision a workflow asks of the host's decision model; the host supplies settings, registry and current model. */

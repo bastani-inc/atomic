@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { test } from "vitest";
 import { createVitest } from "vitest/node";
@@ -114,6 +115,7 @@ const SHARDED_SUITES: readonly ShardedSuite[] = [
 ];
 
 const INTEGRATION = SHARDED_SUITES[1]!;
+const CODING_AGENT = SHARDED_SUITES[2]!;
 
 /**
  * Shard counts to split each suite into. CI runs three or four per suite today; every file must run exactly once for
@@ -179,6 +181,32 @@ for (const suite of SHARDED_SUITES) {
 		REAL_VITEST_TIMEOUT_MS,
 	);
 }
+
+test(
+	"the coding-agent suite does not collect a scratch suite another test is running under its test directory",
+	async () => {
+		// test-suite-runner.test.ts runs a suite of its own through the coding-agent config, so for the half minute that test
+		// takes, the suite file sits under packages/coding-agent/test/. A run globbing the coding-agent suite meanwhile, as
+		// the sharding check above does once per shard, saw it in some shards' file lists and not in others', and on a
+		// Windows unit shard 258 files went to two shards while 256 went to none.
+		const scratch = mkdtempSync(join(repository, "packages/coding-agent/test/.tmp-test-suite-runner-real-"));
+		try {
+			writeFileSync(join(scratch, "suite.test.ts"), 'import { test } from "vitest";\ntest("scratch", () => {});\n');
+			const { vitest, specifications } = await suiteSpecifications(CODING_AGENT, "1/1");
+			await vitest.close();
+			assert.ok(specifications.length > 0, "the coding-agent suite globbed no files");
+			assert.deepEqual(
+				specifications
+					.map((specification) => specification.moduleId)
+					.filter((file) => file.includes(".tmp-test-suite-runner-real-")),
+				[],
+			);
+		} finally {
+			rmSync(scratch, { recursive: true, force: true });
+		}
+	},
+	REAL_VITEST_TIMEOUT_MS,
+);
 
 test(
 	"the configured sequencer starts a shard's longest recorded files first",

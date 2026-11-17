@@ -65,7 +65,9 @@ Fallback does not retry refused tool calls, ordinary task or tool failures, vali
 
 There is no per-attempt idle watchdog or child wall-clock kill cap. Quiet provider responses may finish; only explicit termination or a provider failure supplies a retryable cause.
 
-For concrete-model calls, a known provider without configured auth is recorded as a skipped attempt. Unknown/custom providers are still attempted. For a child that names no model, this pre-admission check never filters out the final current user-selected model.
+For concrete-model calls, a known provider without configured auth is recorded as a skipped attempt before the child starts. Unknown/custom providers are still attempted. When every candidate is skipped, the launch fails with an error that names each model and the provider it lacks. For a child that names no model, this pre-admission check never filters out the final current user-selected model.
+
+A credential rejection, such as HTTP 401, a rejected API key, or an invalidated token, takes the failing provider out of the child's chain: the child moves to its next fallback of another provider at once and does not ask the rejecting provider again. A model-scoped HTTP 403, such as missing model access or moderation, blocks only that model so other models on the same provider remain eligible.
 
 A fallback may send the same prompt and context to a different provider. Choose models that meet your cost, privacy, and data-handling requirements. Each candidate can carry its own [reasoning effort](#reasoning-levels).
 

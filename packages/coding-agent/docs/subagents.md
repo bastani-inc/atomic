@@ -58,6 +58,8 @@ The catalog uses the same effective discovery rules as execution, so overridden 
 
 All builtin subagents default to `model: "auto"`, which runs your default model (the one you last chose with `/model`) at its default thinking level, or the launching session's model when no default model is configured. You can also set `auto` on a custom agent or call. A concrete per-call model overrides the builtin default. Custom agents with no model keep their existing inheritance. See [Automatic model selection](/subagents/reference#automatic-model-selection) for configuration and failure handling.
 
+A child never waits on a model it cannot use. A model in a child's fallback chain whose provider has no credentials is skipped before the child starts, listed in its model attempts. A provider that rejects its credentials during the task is not asked again; the child moves to its next fallback of another provider. When no model in the chain has credentials, the launch fails at once with an error naming each model and the provider it lacks. See [Fallbacks and credentials](/models#fallbacks-and-credentials).
+
 ## Subagent execution is non-interactive
 
 Supported subagent launches start immediately without opening a preview/editor prompt or waiting for terminal input. This applies to single, parallel, forked, fanout, and prompt-template execution. Ask any necessary questions in the parent conversation before delegating.

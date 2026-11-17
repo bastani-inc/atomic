@@ -3,6 +3,7 @@ import {
 	type CreateAgentSessionOptions,
 	DecisionModelUnavailableError,
 	decide,
+	providerOfModelReference,
 	resolveAutoModel,
 } from "@bastani/atomic";
 import type { RunJournalSettings } from "../durable/journal/resolution.js";
@@ -43,9 +44,14 @@ export function workflowModelCatalogFromContext(
 	return {
 		autoModel: () => {
 			const current = live();
+			const registry = current.modelRegistry;
+			// A stale availability list can still name a provider whose credentials are gone; `auto` never stands for it.
+			const availableModels = (registry?.getAvailable() ?? []).filter(
+				(model) => registry?.hasConfiguredAuth?.({ provider: String(model.provider) }) ?? true,
+			);
 			const selected = resolveAutoModel({
 				settings: readSettings?.(),
-				availableModels: current.modelRegistry?.getAvailable() ?? [],
+				availableModels,
 				...(current.model === undefined ? {} : { sessionModel: current.model }),
 				...(current.thinkingLevel === undefined ? {} : { sessionThinkingLevel: current.thinkingLevel }),
 			});
@@ -83,6 +89,19 @@ export function workflowModelCatalogFromContext(
 					},
 					autoAdvanceAfterSteer: () => autoAdvanceAfterSteerSetting(readSettings?.()),
 				}),
+		resolveProvider: (reference: string): string | undefined =>
+			providerOfModelReference(
+				reference,
+				live()
+					.modelRegistry?.getAll?.()
+					.map((model) => String(model.provider)),
+			),
+		hasCredentials: (provider: string): boolean => {
+			const registry = live().modelRegistry;
+			if (!registry?.getAll?.().some((model) => String(model.provider) === provider)) return true;
+			if (registry.hasConfiguredAuth) return registry.hasConfiguredAuth({ provider });
+			return registry.getAvailable().some((model) => String(model.provider) === provider);
+		},
 		listModels: async (): Promise<readonly WorkflowModelInfo[]> => {
 			const current = live();
 			const available =

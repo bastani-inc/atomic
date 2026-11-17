@@ -1,9 +1,11 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
+	formatNoUsableModelMessage,
 	isSessionStartTimeoutError,
 	parseSessionStartTimeoutMs,
 	type SessionStartTimeoutError,
+	type SkippedModel,
 	serializeSessionStartError,
 	sessionStartStepText,
 } from "@bastani/atomic";
@@ -200,8 +202,15 @@ function refusedResult(agent: AgentConfig, task: string, reason: string): Single
 	};
 }
 
-function noSpawnableCandidatesResult(agent: AgentConfig, task: string, skippedAttempts: ModelAttempt[]): SingleResult {
-	const reason = "No spawnable subagent model candidates after pre-spawn filtering.";
+function noSpawnableCandidatesResult(
+	agent: AgentConfig,
+	task: string,
+	skippedAttempts: ModelAttempt[],
+	skippedModels: readonly SkippedModel[],
+): SingleResult {
+	const reason = `No spawnable subagent model candidates after pre-spawn filtering. ${
+		skippedModels.length > 0 ? formatNoUsableModelMessage(skippedModels) : ""
+	}`.trim();
 	return { ...refusedResult(agent, task, reason), modelAttempts: skippedAttempts };
 }
 
@@ -288,12 +297,18 @@ export async function runSingleInProcess(
 					skippedModelAttempt(entry, `Skipped ${entry}: no available model matches it.`),
 				),
 			],
+			skippedModels: filteredCandidates.skippedModels,
 		};
 		if (filteredCandidates.candidates.length === 0)
 			return namedModelUnavailableResult(agent, task, namedModel ?? launchModel, filteredCandidates.skippedAttempts);
 	}
 	if (rawCandidates.length > 0 && filteredCandidates.candidates.length === 0)
-		return noSpawnableCandidatesResult(agent, task, filteredCandidates.skippedAttempts);
+		return noSpawnableCandidatesResult(
+			agent,
+			task,
+			filteredCandidates.skippedAttempts,
+			filteredCandidates.skippedModels,
+		);
 	const listedCandidate = filteredCandidates.candidates[0];
 	const fallbackCandidates = filteredCandidates.candidates.slice(1);
 	// Upstream pi #7897: a subagent that pins no model of its own inherits the

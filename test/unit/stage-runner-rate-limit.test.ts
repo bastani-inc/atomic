@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { recordProviderRateLimit } from "@bastani/atomic";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import type { AgentSessionAdapter, InternalStageContext, StageSessionRuntime } from "./stage-runner-helpers.js";
 import {
@@ -795,6 +796,37 @@ test("a 429 naming the limited model does not delay another model on the same pr
 		await vi.advanceTimersByTimeAsync(0);
 		assert.equal(await pending, "ok");
 		assert.deepEqual(calls, ["scoped-account/model-a", "scoped-account/model-b"]);
+	} finally {
+		await ctx.abort();
+	}
+});
+
+test("cooldown recovery never revives a provider after another model rejects its credentials", async () => {
+	const calls: string[] = [];
+	recordProviderRateLimit(
+		"auth-revival",
+		{ status: 429, message: "Rate limit reached for model-b", retryAfterMs: 5000 },
+		"model-b",
+	);
+	recordProviderRateLimit("auth-revival-other", { status: 429, retryAfterMs: 10_000 });
+	const ctx = fallbackChainContext(
+		["auth-revival/model-a", "auth-revival/model-b", "auth-revival-other/model"],
+		(model) =>
+			model === "auth-revival/model-b"
+				? Object.assign(new Error("401 invalid API key"), { status: 401 })
+				: Object.assign(new Error(`429 Rate limit reached for ${model.split("/")[1]}`), {
+						status: 429,
+						retryAfterMs: 1000,
+					}),
+		calls,
+	);
+	try {
+		const outcome = await settleOnFakeTimers(ctx.prompt("go"));
+		assert.ok("error" in outcome);
+		assert.match(String(outcome.error), /429/);
+		assert.equal(calls.filter((model) => model === "auth-revival/model-a").length, 3);
+		assert.equal(calls.filter((model) => model === "auth-revival/model-b").length, 1);
+		assert.equal(calls.filter((model) => model === "auth-revival-other/model").length, 9);
 	} finally {
 		await ctx.abort();
 	}

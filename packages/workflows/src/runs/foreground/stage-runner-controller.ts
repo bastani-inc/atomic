@@ -8,11 +8,15 @@ import {
 	type ExtensionToolContext,
 	findToolDetachmentError,
 	isExtensionStartupFailure,
+	isProviderCredentialRejection,
 	isTaskCleanupError,
 	isTransientExtensionStartupFailure,
 	modelCallUsage,
+	NoUsableModelError,
 	type PromptOptions,
 	parkWorkflowStageForRelease,
+	partitionByCredentials,
+	providerOfModelReference,
 	reportDebug,
 	type SessionManager,
 	type SessionStore,
@@ -454,6 +458,7 @@ export class StageSessionController {
 	private pendingDisposal = false;
 	private disposalPromise: Promise<void> | undefined;
 	private pendingThinkingLevel: Parameters<StageContext["setThinkingLevel"]>[0] | undefined;
+	private thinkingLevelRevision = 0;
 	private requestedThinkingLevel: Parameters<StageContext["setThinkingLevel"]>[0] | undefined;
 	private readonly pendingListeners = new Set<(event: StageSessionEvent) => void>();
 	private readonly pauseControl = new StageSessionPause(
@@ -468,6 +473,8 @@ export class StageSessionController {
 	private scopedModelsPromise: Promise<WorkflowResolvedScopedModel[] | undefined> | undefined;
 	/** What `model: "auto"` stands for, `provider/id[:effort]`, resolved when the stage is created. */
 	private readonly autoModel: string | undefined;
+	/** `provider/id` of the primary model `auto` resolved to, already checked for what the stage needs. */
+	private verifiedPrimaryId: string | undefined;
 	/** Why `auto` has no model for this task: it reads images and no candidate accepts image input. */
 	private autoImageInputError: string | undefined;
 	private activeCandidateIndex: number | undefined;
@@ -711,6 +718,16 @@ export class StageSessionController {
 		if (this.session) await this.session.setThinkingLevel(level);
 		else this.requestedThinkingLevel = level;
 		this.pendingThinkingLevel = level;
+		this.thinkingLevelRevision++;
+	}
+
+	async cycleThinkingLevel(): ReturnType<StageSessionRuntime["cycleThinkingLevel"]> {
+		const level = await this.requireSession("cycleThinkingLevel").cycleThinkingLevel();
+		if (level !== undefined) {
+			this.pendingThinkingLevel = level;
+			this.thinkingLevelRevision++;
+		}
+		return level;
 	}
 
 	/** `provider/id:effort` for the model `model: "auto"` stands for: the user's default model, else the session's. */
@@ -731,7 +748,7 @@ export class StageSessionController {
 		const options = this.effectiveStageOptions;
 		if (options?.model !== "auto") return options?.model;
 		if (this.autoImageInputError !== undefined) throw new Error(this.autoImageInputError);
-		if (this.autoModel !== undefined) return this.autoModel;
+		if (this.autoModel !== undefined) return this.verifiedPrimary(this.autoModel);
 		const cwd = options.cwd ?? this.opts.defaultCwd;
 		const modelRuntime = options.modelRuntime ?? this.sharedModelRuntime;
 		const needsImageInput = options.autoNeedsImageInput === true;
@@ -749,7 +766,17 @@ export class StageSessionController {
 		const resolved = autoModelReference(selected);
 		if (resolved !== undefined && this.meta.stageOptions?.model === "auto")
 			this.meta.stageOptions = { ...this.meta.stageOptions, model: resolved };
-		return resolved;
+		return resolved === undefined ? undefined : this.verifiedPrimary(resolved);
+	}
+
+	/**
+	 * Remember the primary model `auto` stands for, which its resolution already checked against what the stage needs.
+	 * Any other candidate, including one that leads the chain after credential checks skipped the primary, is checked
+	 * before it runs.
+	 */
+	private verifiedPrimary(reference: string): string {
+		this.verifiedPrimaryId = splitReasoningSuffix(reference).baseModel;
+		return reference;
 	}
 
 	async setModel(model: NonNullable<CreateAgentSessionOptions["model"]>): Promise<void> {
@@ -805,7 +832,7 @@ export class StageSessionController {
 					release(true);
 					if (this.sessionPromise === pending) {
 						this.sessionPromise = undefined;
-						this.activeCandidateIndex = undefined;
+						if (this.releasedSettings === undefined) this.activeCandidateIndex = undefined;
 					}
 				},
 			);
@@ -1380,7 +1407,10 @@ export class StageSessionController {
 		this.releasedWait = wait;
 		this.givenUp = wait;
 		this.reattachSessionId = current.sessionId;
-		this.releasedSettings = { model: current.model, thinkingLevel: current.thinkingLevel };
+		this.releasedSettings = {
+			model: current.model,
+			thinkingLevel: current.thinkingLevel ?? this.pendingThinkingLevel,
+		};
 		this.session = undefined;
 		this.sessionPromise = undefined;
 		this.resumeCurrentSession = false;
@@ -2289,6 +2319,21 @@ export class StageSessionController {
 			walk.rateLimited.add(index);
 		}
 		walk.remaining.delete(index);
+		const provider = this.candidateProvider(candidates[index]);
+		if (provider !== undefined && isProviderCredentialRejection(error)) {
+			for (const other of new Set([...walk.remaining, ...walk.rateLimited])) {
+				const candidate = candidates[other];
+				if (candidate === undefined || this.candidateProvider(candidate) !== provider) continue;
+				walk.remaining.delete(other);
+				walk.rateLimited.delete(other);
+				walk.rateLimitFailures.delete(other);
+				this.modelAttempts.push({
+					model: candidate.id,
+					success: false,
+					error: `Skipped ${candidate.id}: provider '${provider}' rejected its credentials.`,
+				});
+			}
+		}
 		// #3984: when every candidate left is throttled, the chain is not exhausted but cooling. Give each
 		// throttled candidate a fresh budget and wait for the earliest cooldown (none when one is already
 		// ready), if it fits the retry-hint cap, at most `retry.maxRetries` times per walk.
@@ -2312,9 +2357,10 @@ export class StageSessionController {
 	): Promise<number | undefined> {
 		for (;;) {
 			const index = await this.selectReadyCandidateByAvailability(candidates, walk, start);
-			// The primary candidate of an image-reading `auto` task already sees images; each fallback is checked now.
-			if (index === undefined || index === 0 || !this.autoTaskReadsImages()) return index;
-			if (await this.fallbackSeesImages(candidates[index]!)) return index;
+			// The primary model of an image-reading `auto` task already sees images; every other candidate is checked now.
+			if (index === undefined || !this.autoTaskReadsImages()) return index;
+			const candidate = candidates[index]!;
+			if (candidate.id === this.verifiedPrimaryId || (await this.fallbackSeesImages(candidate))) return index;
 			walk.remaining.delete(index);
 		}
 	}
@@ -2673,7 +2719,7 @@ export class StageSessionController {
 				fallbackModels: this.effectiveStageOptions?.fallbackModels ?? [],
 				catalog: this.modelCatalog,
 				includeCurrentModel: this.autoModel !== undefined,
-			}),
+			}).then((candidates) => this.withCredentials(candidates)),
 		);
 
 		return this.candidatesPromise;
@@ -2712,9 +2758,45 @@ export class StageSessionController {
 		start: number,
 	): Promise<number | undefined> {
 		for (let index = start; index < candidates.length; index += 1) {
-			if (index === 0 || (await this.fallbackSeesImages(candidates[index]!))) return index;
+			const candidate = candidates[index]!;
+			if (candidate.id === this.verifiedPrimaryId || (await this.fallbackSeesImages(candidate))) return index;
 		}
 		return undefined;
+	}
+
+	private candidateProvider(candidate: WorkflowResolvedModelCandidate | undefined): string | undefined {
+		if (candidate === undefined) return undefined;
+		return (
+			candidate.provider ??
+			(typeof candidate.value === "string"
+				? (this.modelCatalog?.resolveProvider?.(candidate.value) ?? providerOfModelReference(candidate.value))
+				: String(candidate.value.provider))
+		);
+	}
+
+	private withCredentials(candidates: WorkflowResolvedModelCandidate[]): WorkflowResolvedModelCandidate[] {
+		const catalog = this.modelCatalog;
+		if (catalog?.hasCredentials === undefined) return candidates;
+		const { usable, skipped } = partitionByCredentials(
+			candidates,
+			(candidate) => this.candidateProvider(candidate),
+			(provider) => catalog.hasCredentials!(provider),
+		);
+		if (skipped.length === 0) return candidates;
+		const skippedModels = skipped.map(({ candidate, provider }) => ({
+			model: candidate.id,
+			provider,
+			reason: "no-credentials" as const,
+		}));
+		for (const entry of skippedModels)
+			this.modelAttempts.push({
+				model: entry.model,
+				success: false,
+				error: `Skipped ${entry.model}: provider '${entry.provider}' has no credentials.`,
+			});
+		this.notifyModelFallbackMetaChange();
+		if (usable.length === 0) throw new NoUsableModelError(skippedModels);
+		return usable;
 	}
 
 	private async createInitialSession(consumer: AgentSessionConsumer): Promise<StageSessionRuntime> {
@@ -2736,19 +2818,27 @@ export class StageSessionController {
 		}
 		if (this.reattachSessionId !== undefined) {
 			const resumed = await this.createSession(undefined, consumer, { restoreSavedModel: true });
-			const restoredId = workflowModelId(resumed.model);
+			const restoredId =
+				workflowModelId(resumed.model ?? this.releasedSettings?.model) ??
+				(this.releasedSettings === undefined ? undefined : this.selectedModel);
+			const restoredThinkingLevel = resumed.thinkingLevel ?? this.pendingThinkingLevel;
 			const exactRestoredIndex =
 				restoredId === undefined
 					? -1
 					: candidates.findIndex(
-							(entry) => entry.id === restoredId && entry.reasoningLevel === resumed.thinkingLevel,
+							(entry) => entry.id === restoredId && entry.reasoningLevel === restoredThinkingLevel,
 						);
-			// An unspecified effort accepts the SDK's effective effort, but must not
-			// shadow a later candidate explicitly declaring the saved reasoning tier.
+			const retainedIndex =
+				this.releasedSettings !== undefined &&
+				this.activeCandidateIndex !== undefined &&
+				candidates[this.activeCandidateIndex]?.id === restoredId
+					? this.activeCandidateIndex
+					: undefined;
 			const restoredIndex =
-				exactRestoredIndex >= 0
+				retainedIndex ??
+				(exactRestoredIndex >= 0
 					? exactRestoredIndex
-					: candidates.findIndex((entry) => entry.id === restoredId && entry.reasoningLevel === undefined);
+					: candidates.findIndex((entry) => entry.id === restoredId && entry.reasoningLevel === undefined));
 			this.activeCandidateIndex = restoredIndex >= 0 ? restoredIndex : undefined;
 			this.selectedModel = restoredId ?? first.id;
 			this.resumeCurrentSession = true;
@@ -3116,11 +3206,15 @@ export class StageSessionController {
 		const attachedSession = session instanceof Promise ? await session : session;
 		this.reportStartupPhase("delivery-readiness");
 		try {
+			if (resumeOptions?.restoreSavedModel && attachedSession.thinkingLevel === undefined)
+				this.pendingThinkingLevel ??= this.releasedSettings?.thinkingLevel;
 			const thinkingLevel =
 				this.requestedThinkingLevel ??
 				(asAgentSession(attachedSession) === undefined ? this.pendingThinkingLevel : undefined);
 			if (thinkingLevel !== undefined) {
+				const thinkingLevelRevision = this.thinkingLevelRevision;
 				await attachedSession.setThinkingLevel(thinkingLevel);
+				if (this.thinkingLevelRevision === thinkingLevelRevision) this.pendingThinkingLevel = thinkingLevel;
 				this.requestedThinkingLevel = undefined;
 			}
 			await this.sharedOrchestrationContext?.pendingStageDelivery?.ready(attachedSession.sessionId);
@@ -3284,6 +3378,7 @@ export class StageSessionController {
 			this.unresolvedContextOverflowMessage = undefined;
 			try {
 				this.reportStartupPhase("first-dispatch");
+				// A live resume loops here without returning through the outer retry guard.
 				await this.waitForProvider(this.currentModelValue());
 				const detachedResults = this.pendingDetachedResults;
 				this.pendingDetachedResults = undefined;
@@ -3416,7 +3511,7 @@ export class StageSessionController {
 				this.notifyModelFallbackMetaChange();
 				throw err;
 			}
-			if (isWorkflowRateLimit(err)) {
+			if (isWorkflowRateLimit(err) || isProviderCredentialRejection(err)) {
 				for (let index = 0; index < currentIndex; index++) walk.remaining.add(index);
 				this.recordCandidateFailure(walk, currentIndex, err, candidates);
 				if (walk.remaining.size === 0) {

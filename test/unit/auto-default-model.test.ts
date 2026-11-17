@@ -588,6 +588,32 @@ async function stageFixture(settings: Settings, fixture: Parameters<typeof model
 	return { ...m, models: catalog, admissions, thinkingChanges, adapters, store: createStore() };
 }
 
+test("auto never resolves to a default model whose provider has no credentials, even from a stale availability list", async () => {
+	const m = await models();
+	// The availability list still names the logged-out provider's default model; its credentials are gone.
+	const registry = {
+		getAvailable: () => [m.defaultModel, m.sessionModel],
+		hasConfiguredAuth: (model: { readonly provider: string }) => model.provider !== HOME || false,
+	};
+	const loggedOut = workflowModelCatalogFromContext(
+		{ model: m.sessionModel, thinkingLevel: "low", modelRegistry: registry as never },
+		undefined,
+		() => WITH_DEFAULT,
+	);
+	// Every HOME model is logged out here, so `auto` keeps the launching session's model.
+	assert.deepEqual(loggedOut?.autoModel?.(), { model: m.sessionModel, thinkingLevel: "low" });
+	const loggedIn = workflowModelCatalogFromContext(
+		{
+			model: m.sessionModel,
+			thinkingLevel: "low",
+			modelRegistry: { ...registry, hasConfiguredAuth: () => true } as never,
+		},
+		undefined,
+		() => WITH_DEFAULT,
+	);
+	assert.deepEqual(loggedIn?.autoModel?.(), { model: m.defaultModel, thinkingLevel: "high" });
+});
+
 test("an auto stage runs the configured default model and effort with no model request", async () => {
 	const f = await stageFixture(WITH_DEFAULT);
 	const def = workflow({

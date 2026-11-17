@@ -35,6 +35,16 @@ TypeSafe Jev and Cloudflare Clef classifiers are also available through their pr
 
 Each System One service takes images in its own request format, which the model's `compat.imageInput` selects. Built-in models set it, so overriding a provider's `baseUrl` keeps it. A custom provider that proxies another service's classifiers sets `imageInput` and `sendImageOptInHeader` in its provider-level `compat` in `models.json`; see [System One compatibility](/models-configuration#typesafe-system-one). OpenRouter in particular answers requests in TypeSafe's format without an error but drops the images, so a proxy that reaches OpenRouter needs `"imageInput": "state-image-urls"` and `"sendImageOptInHeader": false`.
 
+## Fallbacks and credentials
+
+A model chain is a pinned model followed by `fallbackModels` in a session, subagent, or workflow stage; `model: "auto"` starts the chain with your default model:
+
+- Candidates whose providers lack usable credentials are skipped before any request (`fallback.skipped` on session `model_change` entries; `modelAttempts` on subagents and stages). `auto` never stands for a default model whose provider has no credentials.
+- A provider that rejects credentials (HTTP 401, an invalid, expired, leaked, disabled, or restricted API key, an invalid request signature, an expired or invalid security token, an invalidated token, or a suspended API consumer) is skipped for the rest of that walk. A model-scoped HTTP 403 (such as missing model access or moderation) blocks only that model, leaving other models on that provider eligible.
+- A chain with no usable model fails at once naming each model and missing provider, or blocks for resume in a workflow stage. A single pinned model with no fallbacks is never replaced.
+
+A workflow task with `model: "auto"` that reads images runs only on models that accept image input, and its fallbacks skip models that do not.
+
 ## Table of Contents
 
 - [Minimal Example](/models#minimal-example)
