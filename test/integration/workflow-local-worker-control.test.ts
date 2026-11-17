@@ -150,12 +150,15 @@ async function realWorker(scenario: WorkerScenario, workerEntry: string, directo
 			if (!worker.connected) return;
 			// A worker this answer ends can exit while the answer is in flight; its channel then fails with EPIPE, and on
 			// Windows `connected` can still read true when that failure is reported.
-			worker.send(
-				answer === undefined ? { id: message.id, value: plainAnswer(message) } : { id: message.id, ...answer },
-				(error) => {
+			const reply =
+				answer === undefined ? { id: message.id, value: plainAnswer(message) } : { id: message.id, ...answer };
+			try {
+				worker.send(reply, (error) => {
 					if (error && worker.connected && !channelClosedByExit(error)) throw error;
-				},
-			);
+				});
+			} catch (error) {
+				if (worker.connected && !(error instanceof Error && channelClosedByExit(error))) throw error;
+			}
 		});
 	});
 	const plainAnswer = (message: WorkerRequest): unknown => {

@@ -89,15 +89,11 @@ export function hasGroup(groups: GroupMemberships, value?: string | null): boole
 interface HomeGroupContext {
 	orchestrationContext?: { intercomGroup?: string } | undefined;
 	subagentPolicy?: { intercomGroup?: string } | undefined;
+	intercomPolicy?: { home: string } | undefined;
 	/** Accepted from the live extension context but intentionally ignored for home resolution. */
 	sessionManager?: { getSessionId(): string } | undefined;
 }
 
-/**
- * The home group a session chose explicitly, with precedence (most specific first): admitted
- * subagentPolicy.intercomGroup > orchestrationContext.intercomGroup > env ATOMIC_INTERCOM_GROUP (also
- * PI_INTERCOM_GROUP legacy) > config.json "group". `undefined` when none applies.
- */
 export function explicitHomeGroup(
 	config: { group?: string } | undefined,
 	ctx?: HomeGroupContext | null,
@@ -109,6 +105,10 @@ export function explicitHomeGroup(
 	const fromContext = ctx?.orchestrationContext?.intercomGroup;
 	if (typeof fromContext === "string" && fromContext.trim().length > 0) {
 		return normalizeGroup(fromContext);
+	}
+	const fromHost = ctx?.intercomPolicy?.home;
+	if (typeof fromHost === "string" && fromHost.trim().length > 0) {
+		return normalizeGroup(fromHost);
 	}
 	const fromEnv = intercomGroupFromEnv();
 	if (typeof fromEnv === "string" && fromEnv.trim().length > 0) {
