@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { hostname } from "node:os";
@@ -36,6 +36,8 @@ const children: ChildProcessWithoutNullStreams[] = [];
 
 /** What the build's step did, in order. */
 const markers = () => sandbox.path("markers.txt");
+/** The worktree each run of the build's step started in, in order. */
+const places = () => sandbox.path("places.txt");
 /** The file the build's step waits for, so a test decides when the build ends. */
 const gate = () => sandbox.path("gate");
 /** The file the model's bash call or the user's shell command writes. */
@@ -125,6 +127,7 @@ async function recordedSession(afterGate = ""): Promise<{ sessionId: string; sto
 		"maintenance:",
 		"  - name: Install dependencies",
 		"    run: |",
+		`      basename "$PWD" >> "${shellPath(places())}"`,
 		`      echo started >> "${shellPath(markers())}"`,
 		`      while [ ! -f "${shellPath(gate())}" ]; do sleep 0.05; done`,
 		`      echo built >> "${shellPath(markers())}"`,
@@ -412,31 +415,72 @@ describe("a resume without a UI whose blueprint build runs behind the first turn
 		CLI_RESUME_TIMEOUT_MS,
 	);
 
-	// Stopping a leftover step needs its recorded start to prove it is that step; without process starts, nothing is
-	// stopped and the resume warns instead.
-	test.skipIf(processStartToken(process.pid) === undefined)(
-		"a resume after its host was killed during the build stops the build's leftover steps before building again (#4748)",
-		async () => {
-			const recorded = await recordedSession();
-			const killed = resume(recorded, "-p", "hello");
-			killed.child.stdin.end();
-			await until(() => ran().includes("started"), "the build to start");
-			killed.child.kill("SIGKILL");
-			await killed.exited;
-			// The killed host may have held the settings lock, so the trust this run needs comes from --approve.
-			const again = resume(recorded, "--approve", "-p", "hello");
-			again.child.stdin.end();
-			await until(() => count("started") === 2, "the second build to start").catch((error: Error) => {
-				const state = again.child.exitCode === null ? "still running" : `exited ${again.child.exitCode}`;
-				throw new Error(`${error.message}; the second resume (${state}) wrote: ${again.err()}${again.out()}`);
-			});
-			writeFileSync(gate(), "");
-			assert.equal(await again.exited, 0);
-			await sleep(HOLD_MS);
-			assert.deepEqual(ran(), ["started", "started", "built"], "only the second build ran to its end");
-		},
-		CLI_RESUME_TIMEOUT_MS,
-	);
+	/** The restored worktrees of the store, by slot name. */
+	const storeDir = () => sandbox.path("agent", "worktree-snapshots");
+	const worktreesDir = () => join(storeDir(), "worktrees");
+	/** The worktree each run of the step started in. */
+	const startedIn = () => (existsSync(places()) ? readFileSync(places(), "utf8").trim().split(/\r?\n/) : []);
+	/** The step processes the build lock of the worktree `slot` names. */
+	const lockedSteps = (slot: string): number => {
+		try {
+			const lock = JSON.parse(readFileSync(buildLockPath(storeDir(), join(worktreesDir(), slot)), "utf8"));
+			return Array.isArray(lock.steps) ? lock.steps.length : 0;
+		} catch {
+			return 0;
+		}
+	};
+
+	// On Windows a step's process is in a job object that ends with the host that started it, so the worktree is built
+	// again in place. Stopping a leftover step needs its recorded start to prove it is that step.
+	for (const window of ["after the build lock named the step", "before the build lock named the step"] as const) {
+		test.skipIf(process.platform === "win32" || processStartToken(process.pid) === undefined)(
+			`a resume after its host was killed during the build, ${window}, cancels that build and builds a fresh worktree (#5379)`,
+			async () => {
+				const recorded = await recordedSession();
+				const killed = resume(recorded, "-p", "hello");
+				killed.child.stdin.end();
+				await until(() => ran().includes("started"), "the build to start");
+				const [cancelled] = startedIn();
+				if (window === "after the build lock named the step") {
+					await until(() => lockedSteps(cancelled!) > 0, "the build lock to name the step");
+				}
+				killed.child.kill("SIGKILL");
+				await killed.exited;
+				// A kill that lands between the step's start and its record leaves no lock that names it.
+				if (window === "before the build lock named the step") {
+					rmSync(buildLockPath(storeDir(), join(worktreesDir(), cancelled!)), { force: true });
+				}
+				// The killed host may have held the settings lock, so the trust this run needs comes from --approve.
+				const again = resume(recorded, "--approve", "-p", "hello");
+				again.child.stdin.end();
+				await until(() => count("started") === 2, "the second build to start").catch((error: Error) => {
+					const state = again.child.exitCode === null ? "still running" : `exited ${again.child.exitCode}`;
+					throw new Error(`${error.message}; the second resume (${state}) wrote: ${again.err()}${again.out()}`);
+				});
+				const [, fresh] = startedIn();
+				assert.notEqual(fresh, cancelled, "the second build runs in another worktree");
+				writeFileSync(gate(), "");
+				assert.equal(await again.exited, 0);
+				await sleep(HOLD_MS);
+				const warning = again
+					.err()
+					.split("\n")
+					.filter(
+						(line) => line.includes("may still be running") && line.includes(join(worktreesDir(), cancelled!)),
+					);
+				assert.equal(warning.length, 1, again.err());
+				assert.match(warning[0]!, /blueprint-logs/);
+				if (window === "after the build lock named the step") {
+					assert.deepEqual(ran(), ["started", "started", "built"], "the recorded step was stopped");
+				} else {
+					// The step no lock named was not stopped: it ended in the worktree set aside for it, not in the fresh one.
+					assert.deepEqual([...ran()].sort(), ["built", "built", "started", "started"]);
+				}
+				assert.deepEqual(startedIn(), [cancelled, fresh], "no build ran in the cancelled worktree again");
+			},
+			CLI_RESUME_TIMEOUT_MS,
+		);
+	}
 
 	for (const mode of ["text", "json"] as const) {
 		test.skipIf(processStartToken(process.pid) === undefined)(

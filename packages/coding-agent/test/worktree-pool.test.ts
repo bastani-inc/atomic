@@ -9,6 +9,7 @@ import { bunExecutable } from "../../../test/helpers/runtime.js";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox, loseSnapshotBlobs } from "../../../test/helpers/worktree-snapshot.js";
 import { renameWithRetry } from "../src/core/rename-retry.ts";
+import { rootKey, updateLedger } from "../src/core/resume/blueprint/ledger.ts";
 import {
 	continueSessionWhereItWorked,
 	type PreparedSessionResume,
@@ -18,6 +19,7 @@ import {
 } from "../src/core/resume/session-resume.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import {
+	mapRestoredPath,
 	pooledWorktreeOwnedElsewhere,
 	releaseSessionWorktrees,
 	resumeSessionWorktree,
@@ -846,4 +848,73 @@ describe("worktree pool lease edges (#4748)", () => {
 			}
 		},
 	);
+});
+
+describe("a worktree whose blueprint build was cancelled (#5379)", () => {
+	// On Windows a build's steps end with the process that started them, and the worktree is built again in place.
+	test.skipIf(process.platform === "win32")(
+		"is restored fresh, never claimed by another session while a process works in it, and removed once none does (#5379)",
+		async () => {
+			const { snapshot, clone } = await recordedSnapshot();
+			const owner = await sessionOf(clone, snapshot);
+			const cancelled = await restoredRoot(owner);
+			assert.equal(cancelled, slot(snapshot, 0));
+			// The build of the worktree never finished, and its process is gone; a step it started still works there.
+			await updateLedger(storeDir(), (ledger) => ({
+				...ledger,
+				roots: { ...ledger.roots, [rootKey(cancelled)]: { state: "running", at: new Date().toISOString() } },
+			}));
+			const step = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+				cwd: cancelled,
+				stdio: "ignore",
+			});
+			try {
+				const prepared = await prepareSessionResume(owner, prepareOptions({ blueprints: "build" }));
+				assert.equal(prepared.status, "ready");
+				if (prepared.status !== "ready") return;
+				opened.push(prepared.sessionManager);
+				const fresh = mapRestoredPath(clone, prepared.sessionManager.getWorktreeRootMappings());
+				assert.equal(fresh, slot(snapshot, 1), "the session continues in a fresh worktree");
+				assert.ok(
+					prepared.notices.some(
+						(notice) => notice.message.includes(cancelled) && notice.message.includes("may still be running"),
+					),
+					JSON.stringify(prepared.notices),
+				);
+				assert.equal(await pooledWorktreeOwnedElsewhere(storeDir(), cancelled, owner.getSessionId()), true);
+
+				const other = await restoredRoot(await sessionOf(clone, snapshot));
+				assert.equal(other, slot(snapshot, 2), "no session claims the cancelled worktree");
+				const repository = repositoryIdOf(snapshot.remotes);
+				assert.deepEqual(await evictIdleWorktrees(storeDir(), repository, { maxIdle: 0, settings }), []);
+				assert.equal(existsSync(cancelled), true, "kept while a process works in it");
+			} finally {
+				step.kill("SIGKILL");
+			}
+			await new Promise((resolve) => step.once("exit", resolve));
+			const removed = await evictIdleWorktrees(storeDir(), repositoryIdOf(snapshot.remotes), {
+				maxIdle: 2,
+				settings,
+			});
+			assert.deepEqual(removed, [cancelled]);
+			assert.equal(existsSync(cancelled), false);
+		},
+	);
+
+	test("a worktree whose last build finished is built again in place, with no fresh restore (#5379)", async () => {
+		const { snapshot, clone } = await recordedSnapshot();
+		const owner = await sessionOf(clone, snapshot);
+		const root = await restoredRoot(owner);
+		await updateLedger(storeDir(), (ledger) => ({
+			...ledger,
+			roots: { ...ledger.roots, [rootKey(root)]: { state: "failed", at: new Date().toISOString() } },
+		}));
+		const prepared = await prepareSessionResume(owner, prepareOptions({ blueprints: "build" }));
+		assert.equal(prepared.status, "ready");
+		if (prepared.status !== "ready") return;
+		opened.push(prepared.sessionManager);
+		assert.equal(mapRestoredPath(clone, prepared.sessionManager.getWorktreeRootMappings()), root);
+		assert.equal(existsSync(slot(snapshot, 1)), false);
+		assert.deepEqual(prepared.notices, []);
+	});
 });

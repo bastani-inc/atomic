@@ -18,7 +18,7 @@ import { dirname, join } from "node:path";
 import { killProcessTree } from "../../../utils/shell.ts";
 import { prepareTakeoverMutex, type TakeoverMutex, takeTakeoverMutex } from "../../lock-takeover.js";
 import { processStartToken, readProcessStartToken } from "../../process-start-token.js";
-import { rootKey } from "./ledger.ts";
+import { readLedger, rootKey } from "./ledger.ts";
 import { stepProcessWatcher } from "./process.ts";
 
 interface LockedProcess {
@@ -379,6 +379,58 @@ export async function settleOtherBuilds(
 		throw error;
 	}
 	return { warnings, release };
+}
+
+/** A build of a restored worktree that never finished and that no process builds any more (#5379). */
+export interface CancelledBuild {
+	readonly root: string;
+	/** When it started, as the ledger recorded it. */
+	readonly startedAt: string;
+	/** Where its step logs are, named after the build: a glob of them, or their directory for a build of before #5379. */
+	readonly logs: string;
+}
+
+/**
+ * The builds of the restored worktrees at `roots` that were cancelled (#5379): the ledger says their last build never
+ * finished, and no process builds them any more, as when the process that built one was killed. Other processes'
+ * builds of them are settled first ({@link settleOtherBuilds}): a live one is waited for, and the step processes the
+ * build lock of a dead one names are stopped where they are proven to be that build's. A step the lock did not name
+ * cannot be told apart, so it may still run in the worktree: the caller never builds there again. Resolves the cancelled
+ * builds and the warnings of settling; a ledger that cannot be read cancels nothing, and the build that follows reports
+ * it. Only `options.signal` aborting rejects.
+ */
+export async function cancelledBuilds(
+	storeDir: string,
+	roots: readonly string[],
+	options: SettleOtherBuildsOptions = {},
+): Promise<{ readonly cancelled: CancelledBuild[]; readonly warnings: string[] }> {
+	const unfinished = async () => {
+		const ledger = await readLedger(storeDir).catch(() => undefined);
+		return roots.flatMap((root) => {
+			const entry = ledger?.roots[rootKey(root)];
+			if (entry?.state !== "running") return [];
+			const logs = join(storeDir, "blueprint-logs");
+			return [
+				{ root, startedAt: entry.at, logs: entry.build === undefined ? logs : join(logs, `${entry.build}-*.log`) },
+			];
+		});
+	};
+	// A resume whose worktrees' builds all finished settles nothing here: they are built in place as before.
+	const candidates = await unfinished();
+	if (candidates.length === 0) return { cancelled: [], warnings: [] };
+	const settled = await settleOtherBuilds(
+		storeDir,
+		candidates.map((candidate) => candidate.root),
+		options,
+	);
+	try {
+		// Read again once settled: a build another process was running meanwhile may have finished.
+		const settledRoots = new Set(candidates.map((candidate) => candidate.root));
+		const cancelled = (await unfinished()).filter((build) => settledRoots.has(build.root));
+		return { cancelled, warnings: settled.warnings };
+	} finally {
+		settled.release();
+	}
 }
 
 function recordStep(steps: Map<number, LockedProcess>, pid: number, write: () => void): void {

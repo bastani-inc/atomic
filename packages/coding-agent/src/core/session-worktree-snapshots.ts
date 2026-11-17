@@ -60,6 +60,7 @@ import {
 	recordPooledWorktreeState,
 	releaseRestoredWorktree,
 	type WorktreeLease,
+	worktreeSetAside,
 } from "./worktree-snapshot/pool.ts";
 import {
 	defaultWorktreeSnapshotStoreDir,
@@ -404,14 +405,16 @@ async function holdsSessionWorktree(sessionManager: SessionManager, root: string
 
 /**
  * Whether the worktree at `root` is a pooled slot that another session owns (#4748), or that session `sessionId`
- * could not hold or lost while it was stalled (#4830): this session must not continue in it, and restores its checkout
- * fresh as if the worktree were gone. Reads only; false for any unpooled path.
+ * could not hold or lost while it was stalled (#4830), or a restored worktree set aside after its blueprint build was
+ * cancelled (#5379): this session must not continue in it, and restores its checkout fresh as if the worktree were
+ * gone. Reads only; false for any other unpooled path.
  */
 export async function pooledWorktreeOwnedElsewhere(
 	storeDir: string,
 	root: string,
 	sessionId: string,
 ): Promise<boolean> {
+	if (await worktreeSetAside(storeDir, root)) return true;
 	const holder = await pooledWorktreeHolder(storeDir, root);
 	if (holder === "unpooled") return false;
 	return holder.owner?.kind !== "session" || holder.owner.id !== sessionId || forfeited(sessionId, root);

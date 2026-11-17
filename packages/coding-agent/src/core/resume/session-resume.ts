@@ -34,7 +34,9 @@ import { isHeadOnlyAdvance } from "../worktree-snapshot/head-advance.ts";
 import {
 	DEFAULT_MAX_IDLE_PER_REPOSITORY,
 	pooledWorktreeHolder,
+	setAsideWorktree,
 	type WorktreePoolSettings,
+	worktreeSetAside,
 } from "../worktree-snapshot/pool.ts";
 import { sameRemote } from "../worktree-snapshot/repository-identity.ts";
 import {
@@ -58,7 +60,7 @@ import {
 	holdToolsUntilBuilt,
 } from "./blueprint/barrier.ts";
 import type { BlueprintBuildConfig } from "./blueprint/build.ts";
-import { settleOtherBuilds, withBuildLocks } from "./blueprint/build-lock.ts";
+import { cancelledBuilds, settleOtherBuilds, withBuildLocks } from "./blueprint/build-lock.ts";
 import {
 	BLUEPRINT_BUILDING_CONTEXT,
 	type BlueprintCheckout,
@@ -432,6 +434,8 @@ async function prepareResume(
 		type: "warning",
 		message: formatLapsedPinNotice(lapsed),
 	}));
+	// A worktree whose blueprint build was cancelled is set aside before anything is compared: it is restored fresh.
+	notices.push(...(await setAsideCancelledBuilds(sessionManager, storeDir, options)));
 	const checkoutCount = currentWorktreeSnapshots(sessionManager).size;
 	options.onProgress?.(
 		`Checking ${checkoutCount === 1 ? "1 checkout" : `${checkoutCount} checkouts`} against the session's snapshots`,
@@ -1134,6 +1138,54 @@ async function setUpCheckoutBlueprints(
 /** The blueprint builds this process runs, by the restored worktree they build, each settling once its build has. */
 const buildsInProgress = new Map<string, Promise<undefined>>();
 
+/**
+ * Cancels the blueprint build of each restored worktree of the session that never finished and that no process builds
+ * any more, as when the process that built it was killed (#5379), and sets that worktree aside: the resume restores a
+ * fresh worktree in its place, as for a worktree that is gone, and builds that one. The build lock's step processes are
+ * stopped where they are proven to be that build's, but a step the lock did not name cannot be identified, so the
+ * worktree is never built or handed to a session again, and the user is warned that a step may still run there.
+ * Resolves the warnings. On Windows each step ends with the process that started it, so nothing is set aside and the
+ * worktree is built again in place.
+ */
+async function setAsideCancelledBuilds(
+	sessionManager: SessionCheckouts,
+	storeDir: string,
+	options: PrepareSessionResumeOptions,
+): Promise<ResumeNotice[]> {
+	if (process.platform === "win32" || options.blueprints === "skip" || !options.settings.enabled) return [];
+	const roots: string[] = [];
+	for (const root of currentWorktreeSnapshots(sessionManager).keys()) {
+		if (!isInside(storeDir, root) || options.keepInPlace?.has(root) || buildInProgress(root) !== undefined) continue;
+		if (!(await worktreeSetAside(storeDir, root))) roots.push(root);
+	}
+	if (roots.length === 0) return [];
+	const { cancelled, warnings } = await cancelledBuilds(storeDir, roots, {
+		signal: options.signal,
+		onWait: (root, message) => {
+			options.onProgress?.(message);
+			announceBlueprintBuildWaiting(root, message);
+		},
+	});
+	const notices: ResumeNotice[] = warnings.map((message) => ({ type: "warning", message }));
+	for (const build of cancelled) {
+		const running = `A step of the cancelled build may still be running in ${build.root}; its log is ${build.logs}.`;
+		try {
+			await setAsideWorktree(storeDir, build.root, { startedAt: build.startedAt, logs: build.logs });
+			notices.push({
+				type: "warning",
+				message: `The blueprint build of ${build.root} did not finish, so it was cancelled and the worktree set aside; a fresh worktree is restored and built instead. ${running}`,
+			});
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			notices.push({
+				type: "warning",
+				message: `The blueprint build of ${build.root} did not finish, so it was cancelled; a fresh worktree is restored and built instead, but the worktree could not be set aside (${reason.slice(0, 200)}), so another Atomic process may still use it. ${running}`,
+			});
+		}
+	}
+	return notices;
+}
+
 /** The build this process runs of the worktree at `root`, if one runs. */
 function buildInProgress(root: string): Promise<undefined> | undefined {
 	return buildsInProgress.get(resolve(root));
@@ -1215,6 +1267,9 @@ export async function continueSessionWhereItWorked(
 		options.signal?.throwIfAborted();
 		const cwd = mapRestoredPath(opened.getCwd(), opened.getWorktreeRootMappings());
 		const checkouts = currentWorktreeSnapshots(opened);
+		// A worktree whose blueprint build was cancelled is not one to continue in: it is set aside and restored fresh.
+		const cancelled = await setAsideCancelledBuilds(opened, storeDir, options);
+		if (cancelled.length > 0) options.onNotices?.(cancelled);
 		const own = await checkoutsWorkedHere(
 			checkouts,
 			cwd,
@@ -1264,6 +1319,8 @@ async function checkoutsWorkedHere(
 	const own = new Set<string>();
 	for (const [root, snapshot] of checkouts) {
 		if (!existsSync(isInside(root, cwd) ? cwd : root)) continue;
+		// A worktree set aside after its build was cancelled is restored fresh (#5379).
+		if (await worktreeSetAside(storeDir, root)) continue;
 		const holder = await pooledWorktreeHolder(storeDir, root);
 		if (holder !== "unpooled") {
 			// Slots share their repository's object store, so only the pool record tells whose work a slot holds, and a
