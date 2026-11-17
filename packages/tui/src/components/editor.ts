@@ -37,6 +37,13 @@ const PASTE_MARKER_REGEX = /\[paste #(\d+)( (\+\d+ lines|\d+ chars))?\]/g;
 const PASTE_MARKER_SINGLE = /^\[paste #(\d+)( (\+\d+ lines|\d+ chars))?\]$/;
 
 /** Check if a segment is a paste marker (i.e. was merged by segmentWithMarkers). */
+function keyIdentity(key: string): string {
+	const parts = key.toLowerCase().split("+");
+	const base = parts.pop() ?? "";
+	const name = base === "return" ? "enter" : base === "esc" ? "escape" : base;
+	return [...["ctrl", "shift", "alt", "super"].filter((modifier) => parts.includes(modifier)), name].join("+");
+}
+
 function isPasteMarker(segment: string): boolean {
 	return segment.length >= 10 && PASTE_MARKER_SINGLE.test(segment);
 }
@@ -255,16 +262,19 @@ interface LayoutLine {
 	cursorPos?: number;
 }
 
+/** One key the open @ or / menu offers: the keybindings that trigger it and what it does. */
 export interface EditorAutocompleteHintEntry {
 	readonly actions: readonly Keybinding[];
 	readonly resolvedKeys?: readonly string[];
 	readonly label: string;
+	/** Kept when a narrow line has to drop entries. */
 	readonly essential?: boolean;
 }
 
 export interface EditorTheme {
 	borderColor: (str: string) => string;
 	selectList: SelectListTheme;
+	/** Draws the one hint line under the open @ or / menu; without it the menu has no hint line. */
 	autocompleteHint?: (entries: readonly EditorAutocompleteHintEntry[], width: number) => string;
 }
 
@@ -467,13 +477,24 @@ export class Editor implements Component, Focusable {
 		if (list.getItemCount() > 1) entries.push({ actions: ["tui.select.up", "tui.select.down"], label: "select" });
 		if (list.getSelectedItem()) {
 			entries.push({ actions: ["tui.input.tab"], label: "complete", essential: true });
-			const runs = this.autocompletePrefix.startsWith("/");
-			entries.push({ actions: ["tui.select.confirm"], label: runs ? "run" : "insert", essential: true });
+			if (!this.autocompletePrefix.startsWith("/")) {
+				entries.push({ actions: ["tui.select.confirm"], label: "insert", essential: true });
+			} else {
+				const kb = getKeybindings();
+				const submits = new Set(kb.getKeys("tui.input.submit").map(keyIdentity));
+				const newLines = new Set(kb.getKeys("tui.input.newLine").map(keyIdentity));
+				const runKeys = kb
+					.getKeys("tui.select.confirm")
+					.filter((key) => submits.has(keyIdentity(key)) && !newLines.has(keyIdentity(key)));
+				if (runKeys.length > 0)
+					entries.push({ actions: ["tui.select.confirm"], resolvedKeys: runKeys, label: "run", essential: true });
+			}
 		}
 		entries.push({ actions: ["tui.select.cancel"], label: "close", essential: true });
 		return render(entries, width);
 	}
 
+	/** Past prompts for up/down and history search, newest first. */
 	getHistory(): readonly string[] {
 		return [...this.history];
 	}
@@ -871,10 +892,6 @@ export class Editor implements Component, Focusable {
 					if (this.autocompletePrefix.startsWith("/")) {
 						this.cancelAutocomplete();
 						// Fall through to submit
-						if (!kb.matches(data, "tui.input.submit")) {
-							if (!this.disableSubmit) this.submitValue();
-							return;
-						}
 					} else {
 						this.cancelAutocomplete();
 						if (this.onChange) this.onChange(this.getText());

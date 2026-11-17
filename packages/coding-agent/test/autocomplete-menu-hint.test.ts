@@ -150,7 +150,12 @@ describe("the @ and / menus' hint line in Atomic's theme (#5224)", () => {
 		[
 			"confirm falls back after the return alias",
 			{ "tui.input.tab": ["return", "tab"], "tui.select.confirm": ["enter", "ctrl+q"] },
-			"↑↓ select · enter complete · ctrl+q run · esc close",
+			"↑↓ select · enter complete · esc close",
+		],
+		[
+			"enter adds a line and ctrl+enter submits",
+			{ "tui.input.submit": "ctrl+enter", "tui.input.newLine": "enter" },
+			"↑↓ select · tab complete · esc close",
 		],
 	] satisfies Array<[string, KeybindingsConfig, string]>) {
 		it(`names only keys that reach their menu action when ${name} (#5347)`, async () => {
@@ -181,16 +186,24 @@ describe("the @ and / menus' hint line in Atomic's theme (#5224)", () => {
 			assert.equal(editor.isShowingAutocomplete(), false);
 			assert.deepEqual(sent, [], "Tab completes rather than running a selected command");
 
-			const runKey = / (\S+) run · /.exec(` ${hint}`)?.[1];
-			if (runKey === undefined) return;
-			editor.setText("");
-			editor.handleInput("/");
-			await flushAutocomplete();
 			const sequences: Record<string, string> = { enter: "\r", "ctrl+q": "\x11" };
-			const runSequence = sequences[runKey];
-			assert.ok(runSequence, `no input sequence for the advertised run key in ${hint}`);
-			editor.handleInput(runSequence);
-			assert.deepEqual(sent, ["/tree"], `${runKey} runs the selected command as advertised`);
+			const confirmKeys = [overrides["tui.select.confirm"] ?? "enter"].flat();
+			for (const key of confirmKeys) {
+				const sequence = sequences[key];
+				if (sequence === undefined) continue;
+				editor.setText("");
+				sent.length = 0;
+				editor.handleInput("/");
+				await flushAutocomplete();
+				if (!editor.isShowingAutocomplete()) continue;
+				const advertised = hint.split(" · ").includes(`${key} run`);
+				editor.handleInput(sequence);
+				assert.deepEqual(
+					sent,
+					advertised ? ["/tree"] : [],
+					`${key} ${advertised ? "runs the command it advertises" : "is not advertised and does not run"}`,
+				);
+			}
 		});
 	}
 

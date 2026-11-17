@@ -6,7 +6,7 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ### Added
 
-- `EditorTheme.autocompleteHint` draws one hint line under the editor's open autocomplete menu from the entries the editor passes: select (when there is more than one row), complete, run or insert, and close. An entry's optional `resolvedKeys` names keys that reach the menu when an app handles shortcuts first. `Editor.getHistory()` returns the prompt history, newest first, and `SelectList.getItemCount()` the number of rows after its filter ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- `EditorTheme.autocompleteHint` draws one hint line under the editor's open autocomplete menu from the entries the editor passes: select (when there is more than one row), complete, run or insert, and close. An entry's optional `resolvedKeys` names keys that reach the menu when an app handles shortcuts first. The `/` menu names `run` only for a confirm key that also submits the prompt. `Editor.getHistory()` returns the prompt history, newest first, and `SelectList.getItemCount()` the number of rows after its filter ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - `Markdown` accepts per-instance `hyperlinks: false` to display links as text and URLs without OSC 8, and `images: false` to display image placeholders. Other Markdown instances keep their existing behavior ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Changed
@@ -15,7 +15,6 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ### Fixed
 
-- When the autocomplete confirm key is not also a submit key, choosing a command in the `/` menu with it now runs the command, as Enter does, instead of only completing it
 - F1–F5 and Page Up/Down sent as `ESC [ [ …` (libuv on Windows, the Linux console) are read as one key instead of typing their final letter into the editor
 
 ## [0.9.88] - 2026-11-16

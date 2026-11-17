@@ -5,6 +5,7 @@ import {
 	type EditorOptions,
 	type EditorTheme,
 	isKeyRepeat,
+	type KeyId,
 	matchesKey,
 	renderFakeCursor,
 	type TUI,
@@ -188,7 +189,10 @@ export class CustomEditor extends Editor {
 		return entries.map((entry) => ({
 			...entry,
 			resolvedKeys: entry.actions.flatMap((action) => {
-				const key = available.get(action)?.[0];
+				const allowed = entry.resolvedKeys?.map((key) => keybindingIdentity(key as KeyId));
+				const key = available
+					.get(action)
+					?.find((candidate) => allowed === undefined || allowed.includes(keybindingIdentity(candidate as KeyId)));
 				return key === undefined ? [] : [key];
 			}),
 		}));
