@@ -3,8 +3,6 @@ import { ensurePrivateTempDirAsync } from "@bastani/atomic";
 import { findReadableConfigPath } from "./config-paths.ts";
 import { createOwnerState } from "./owner-state.js";
 
-const CONFIG_PATH = findReadableConfigPath();
-
 export const BINARY_EXTENSIONS = new Set([
 	".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".svg", ".tiff", ".tif",
 	".mp3", ".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".wav", ".ogg", ".webm", ".flac", ".aac",
@@ -99,9 +97,10 @@ export async function loadGitHubConfig(): Promise<GitHubCloneConfig> {
 		cloneTimeoutSeconds: 30,
 	};
 
+	const configPath = await findReadableConfigPath();
 	let configExists = true;
 	try {
-		await access(CONFIG_PATH);
+		await access(configPath);
 	} catch {
 		configExists = false;
 	}
@@ -111,13 +110,13 @@ export async function loadGitHubConfig(): Promise<GitHubCloneConfig> {
 		return config;
 	}
 
-	const rawText = await readFile(CONFIG_PATH, "utf-8");
+	const rawText = await readFile(configPath, "utf-8");
 	let raw: { githubClone?: { enabled?: unknown; maxRepoSizeMB?: unknown; cloneTimeoutSeconds?: unknown; clonePath?: unknown } };
 	try {
 		raw = JSON.parse(rawText) as { githubClone?: { enabled?: unknown; maxRepoSizeMB?: unknown; cloneTimeoutSeconds?: unknown; clonePath?: unknown } };
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
-		throw new Error(`Failed to parse ${CONFIG_PATH}: ${message}`);
+		throw new Error(`Failed to parse ${configPath}: ${message}`);
 	}
 
 	const gc = raw.githubClone ?? {};

@@ -49,7 +49,7 @@ async function getApiKey(): Promise<string> {
 	const config = await loadConfig();
 	const key = normalizeApiKey(process.env.PERPLEXITY_API_KEY) ?? normalizeApiKey(config.perplexityApiKey);
 	if (!key) {
-		const configPath = findReadableConfigPath();
+		const configPath = await findReadableConfigPath();
 		throw new Error(
 			"Perplexity API key not found. Either:\n" +
 			`  1. Create ${configPath} with { "perplexityApiKey": "your-key" }\n` +

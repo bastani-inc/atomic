@@ -23,7 +23,7 @@ export function createAsyncOwnerState<T>(load: () => Promise<T>): () => Promise<
 }
 
 export async function readWebSearchConfigFile<T extends object>(): Promise<T | null> {
-	const primaryPath = findReadableConfigPath();
+	const primaryPath = await findReadableConfigPath();
 	const userPaths = getUserConfigPaths("web-search.json");
 	const candidates =
 		primaryPath && (userPaths.length === 0 || primaryPath !== userPaths[0])

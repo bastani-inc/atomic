@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createCipheriv, pbkdf2Sync } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test, vi } from "vitest";
@@ -31,46 +31,56 @@ afterEach(() => {
 	vi.unstubAllEnvs();
 });
 
-test("getGoogleCookies reads and decrypts Chromium cookies via worker thread without blocking", async () => {
-	if (process.platform !== "linux" && process.platform !== "darwin") return;
-
-	const home = makeTempDirectory("chrome-cookies-home-");
-	vi.stubEnv("HOME", home);
-	try {
-		const baseDir =
-			process.platform === "darwin" ? "Library/Application Support/net.imput.helium" : ".config/chromium";
-		const cookiesPath = join(home, baseDir, "Default", "Cookies");
-		mkdirSync(dirname(cookiesPath), { recursive: true });
-
-		const db = new DatabaseSync(cookiesPath);
+test.runIf(process.platform === "linux")(
+	"getGoogleCookies decrypts Chromium cookies without querying SQLite on the main thread (#5377)",
+	async () => {
+		const home = makeTempDirectory("chrome-cookies-home-");
+		const binDir = join(home, "bin");
+		mkdirSync(binDir);
+		writeFileSync(
+			join(binDir, "secret-tool"),
+			`#!/bin/sh
+printf '%s\\n' "$*" > "$HOME/secret-tool-args"
+printf '%s\\n' 'fixture-cookie-password'
+`,
+			{ mode: 0o700 },
+		);
+		vi.stubEnv("HOME", home);
+		vi.stubEnv("PATH", binDir);
 		try {
-			db.exec("CREATE TABLE meta (key TEXT PRIMARY KEY, value INTEGER)");
-			db.exec(
-				"CREATE TABLE cookies (name TEXT, value TEXT, host_key TEXT, encrypted_value BLOB, expires_utc INTEGER)",
-			);
-			db.prepare("INSERT INTO meta (key, value) VALUES ('version', 24)").run();
+			const cookiesPath = join(home, ".config/chromium", "Default", "Cookies");
+			mkdirSync(dirname(cookiesPath), { recursive: true });
 
-			const iterations = process.platform === "darwin" ? 1003 : 1;
-			const encryptedSid = encryptChromiumCookie("decrypted-psid", "peanuts", iterations, true);
-			db.prepare(
-				"INSERT INTO cookies (name, value, host_key, encrypted_value, expires_utc) VALUES (?, ?, ?, ?, ?)",
-			).run("__Secure-1PSID", "", ".google.com", encryptedSid, 100);
-			db.prepare(
-				"INSERT INTO cookies (name, value, host_key, encrypted_value, expires_utc) VALUES (?, ?, ?, ?, ?)",
-			).run("__Secure-1PSIDTS", "plain-psidts", "gemini.google.com", new Uint8Array(0), 200);
-		} finally {
-			db.close();
-		}
+			const db = new DatabaseSync(cookiesPath);
+			try {
+				db.exec("CREATE TABLE meta (key TEXT PRIMARY KEY, value INTEGER)");
+				db.exec(
+					"CREATE TABLE cookies (name TEXT, value TEXT, host_key TEXT, encrypted_value BLOB, expires_utc INTEGER)",
+				);
+				db.prepare("INSERT INTO meta (key, value) VALUES ('version', 24)").run();
 
-		if (process.platform === "linux") {
+				const encryptedSid = encryptChromiumCookie("decrypted-psid", "fixture-cookie-password", 1, true);
+				db.prepare(
+					"INSERT INTO cookies (name, value, host_key, encrypted_value, expires_utc) VALUES (?, ?, ?, ?, ?)",
+				).run("__Secure-1PSID", "", ".google.com", encryptedSid, 100);
+				db.prepare(
+					"INSERT INTO cookies (name, value, host_key, encrypted_value, expires_utc) VALUES (?, ?, ?, ?, ?)",
+				).run("__Secure-1PSIDTS", "plain-psidts", "gemini.google.com", new Uint8Array(0), 200);
+			} finally {
+				db.close();
+			}
+
+			const mainThreadQueries = vi.spyOn(DatabaseSync.prototype, "prepare");
 			const result = await getGoogleCookies({
 				requiredCookies: ["__Secure-1PSID", "__Secure-1PSIDTS"],
 			});
 			assert.ok(result);
 			assert.equal(result.cookies["__Secure-1PSID"], "decrypted-psid");
 			assert.equal(result.cookies["__Secure-1PSIDTS"], "plain-psidts");
+			assert.equal(mainThreadQueries.mock.calls.length, 0, "SQLite queries must run off the main thread");
+			assert.equal(readFileSync(join(home, "secret-tool-args"), "utf8"), "lookup application chromium\n");
+		} finally {
+			removeTempDirectory(home);
 		}
-	} finally {
-		removeTempDirectory(home);
-	}
-});
+	},
+);
