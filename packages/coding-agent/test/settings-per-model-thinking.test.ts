@@ -1,5 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
-import type { Container, SelectItem, SelectList } from "@bastani/atomic-tui";
+import type { Container } from "@bastani/atomic-tui";
 import { beforeAll, expect, test, vi } from "vitest";
 import { buildSettingsItems } from "../src/modes/interactive/components/settings-selector-items.ts";
 import type { SettingsCallbacks, SettingsConfig } from "../src/modes/interactive/components/settings-selector-types.ts";
@@ -99,10 +99,8 @@ test("selecting the empty-state row closes without mutating overrides", () => {
 		done,
 	);
 
-	const selectList = Reflect.get(submenu, "selectList") as SelectList;
-	const options = Reflect.get(submenu, "allOptions") as SelectItem[];
-	expect(options).toHaveLength(1);
-	selectList.onSelect?.(options[0]!);
+	expect(render(submenu)).toContain("No models available");
+	submenu.handleInput?.("\r");
 
 	expect(onModelThinkingLevelChange).not.toHaveBeenCalled();
 	expect(onModelThinkingLevelRemove).not.toHaveBeenCalled();
@@ -110,8 +108,8 @@ test("selecting the empty-state row closes without mutating overrides", () => {
 	expect(done).toHaveBeenCalledWith();
 });
 
-// Upstream pi #8900 keeps the configured per-model thinking level marked with a leading "✓ "
-// while the cursor browses. Upstream marks the level label in a two-stage picker; Atomic
+// Upstream pi #8900 keeps the configured per-model thinking level marked while the cursor browses;
+// the shared picker marks it "●" and the other rows "○" (#5224). Upstream marks the level label in a two-stage picker; Atomic
 // flattened that into one model × level list, so the marker lands on the row whose level is the
 // configured override, and the clear-override row is padded to stay aligned.
 test("keeps the configured per-model thinking level marked while browsing", () => {
@@ -133,16 +131,19 @@ test("keeps the configured per-model thinking level marked while browsing", () =
 		return row;
 	};
 
-	// The cursor opens on "off"; the configured level is still the one carrying the marker, and
-	// every unmarked row is padded to the same column so the list stays aligned.
-	expect(rowFor("off").startsWith("❯   ")).toBe(true);
-	expect(rowFor("medium · default").startsWith("  ✓ ")).toBe(true);
-	expect(rowFor("high").startsWith("    ")).toBe(true);
-	expect(rowFor("clear override").startsWith("    ")).toBe(true);
+	// The shared picker opens on the configured override, as every picker opens on its current value; the other
+	// rows carry "○" in the same column so the list stays aligned.
+	expect(rowFor("off").startsWith("   ○ ")).toBe(true);
+	expect(rowFor("medium · default").startsWith(" ❯ ● ")).toBe(true);
+	expect(rowFor("high").startsWith("   ○ ")).toBe(true);
+	expect(rowFor("clear override").startsWith("   ○ ")).toBe(true);
 
 	// Browsing away must not move or drop the marker.
 	submenu.handleInput?.("\x1b[B");
-	expect(rowFor("off").startsWith("    ")).toBe(true);
-	expect(rowFor("minimal").startsWith("❯   ")).toBe(true);
-	expect(rowFor("medium · default").startsWith("  ✓ ")).toBe(true);
+	expect(rowFor("high").startsWith(" ❯ ○ ")).toBe(true);
+	expect(rowFor("medium · default").startsWith("   ● ")).toBe(true);
+	submenu.handleInput?.("\x1b[A");
+	submenu.handleInput?.("\x1b[A");
+	expect(rowFor("low").startsWith(" ❯ ○ ")).toBe(true);
+	expect(rowFor("medium · default").startsWith("   ● ")).toBe(true);
 });

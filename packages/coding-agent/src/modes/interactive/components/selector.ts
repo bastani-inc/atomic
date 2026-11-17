@@ -89,8 +89,15 @@ export interface SelectorOptions<T> {
 	readonly initialId?: string;
 	/** Rows checked first in a multi-select. */
 	readonly initialChecked?: readonly string[];
-	/** Hint label for enter. Default `choose` (single) or `confirm` (multi). */
-	readonly confirmLabel?: string;
+	/**
+	 * Hint label for enter. Default `choose` (single) or `confirm` (multi). A function names it for the selected row;
+	 * `undefined` leaves enter out of the hint for that row.
+	 */
+	readonly confirmLabel?: string | ((item: SelectorItem<T>) => string | undefined);
+	/** Space chooses the selected row like enter while the search is empty, and the hint shows `enter/space`. */
+	readonly spaceConfirms?: boolean;
+	/** Dim text about the selected row, wrapped under the list. */
+	readonly selectedDetail?: (item: SelectorItem<T>) => string | undefined;
 	/** Hint label for esc when the search is empty. Default `cancel`. */
 	readonly cancelLabel?: string;
 	/** Space opens a preview of the selected row; the hint shows `space <previewLabel>`. */
@@ -349,6 +356,7 @@ export function selectorHintEntries<T>(
 		| "search"
 		| "numbered"
 		| "confirmLabel"
+		| "spaceConfirms"
 		| "cancelLabel"
 		| "onPreview"
 		| "previewLabel"
@@ -370,12 +378,18 @@ export function selectorHintEntries<T>(
 	if (multi && selected) entries.push({ keys: "space", label: "toggle" });
 	if (!multi && selected && options.onPreview)
 		entries.push(tagHintEntry({ keys: "space", label: options.previewLabel ?? "preview" }, "preview"));
-	if (multi ? state.getChecked().length > 0 || selected !== undefined : selected) {
-		entries.push({
-			action: "tui.select.confirm",
-			label: options.confirmLabel ?? (multi ? "confirm" : "choose"),
-			role: "confirm",
-		});
+	const confirmLabel =
+		typeof options.confirmLabel === "function"
+			? selected && options.confirmLabel(selected)
+			: (options.confirmLabel ?? (multi ? "confirm" : "choose"));
+	if (confirmLabel && (multi ? state.getChecked().length > 0 || selected !== undefined : selected)) {
+		const spaceToo = options.spaceConfirms === true && !multi && !state.getQuery();
+		const enter = navActionText(keybindings, "tui.select.confirm");
+		entries.push(
+			spaceToo && enter
+				? { keys: `${enter}/space`, label: confirmLabel, role: "confirm" }
+				: { action: "tui.select.confirm", label: confirmLabel, role: "confirm" },
+		);
 	}
 	for (const extra of options.extraKeys ?? []) {
 		if (extra.enabled?.(selected) ?? true) entries.push({ ...extra.hint, role: "extra" });
@@ -612,6 +626,14 @@ export class Selector<T> implements Component, Focusable {
 		) {
 			this.confirm();
 			return;
+		} else if (
+			data === " " &&
+			this.options.spaceConfirms === true &&
+			this.state.mode === "single" &&
+			!this.state.getQuery()
+		) {
+			this.confirm();
+			return;
 		} else if (data === " " && this.state.mode === "multi") {
 			if (selected) this.state.toggle(selected.id);
 			return;
@@ -734,6 +756,13 @@ export class Selector<T> implements Component, Focusable {
 		if (lines.length > 0) lines.push("");
 		this.rowLines = new Map();
 		lines.push(...this.renderRows(width, lines.length));
+		const selectedItem = this.state.getSelected();
+		const detail = selectedItem ? this.options.selectedDetail?.(selectedItem) : undefined;
+		if (detail) {
+			lines.push("");
+			for (const wrapped of wrapTextWithAnsi(detail, Math.max(1, inner - 2)))
+				lines.push(`  ${this.style.muted(wrapped)}`);
+		}
 		if (this.notice) {
 			lines.push("");
 			lines.push(`  ${this.style.tone(this.notice.tone, truncateToWidth(this.notice.text, inner))}`);
