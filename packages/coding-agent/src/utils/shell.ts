@@ -131,7 +131,7 @@ function lookupExecutableOnPath(executable: string): string | null {
 export function getShellConfig(customShellPath?: string): ShellConfig {
 	// 1. Check user-specified shell path
 	if (customShellPath) {
-		if (shellPathExists(customShellPath)) {
+		if (executableCandidateExists(customShellPath)) {
 			return getBashShellConfig(customShellPath);
 		}
 		throw new Error(`Custom shell path not found: ${customShellPath}`);
@@ -150,7 +150,7 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 		}
 
 		for (const path of paths) {
-			if (shellPathExists(path)) {
+			if (executableCandidateExists(path)) {
 				return getBashShellConfig(path);
 			}
 		}
@@ -171,7 +171,7 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 	}
 
 	// Unix: try /bin/bash, then bash on PATH, then fallback to sh
-	if (shellPathExists("/bin/bash")) {
+	if (executableCandidateExists("/bin/bash")) {
 		return getBashShellConfig("/bin/bash");
 	}
 
@@ -192,14 +192,14 @@ export function getPowerShellConfig(): ShellConfig {
 	const programFiles = process.env.ProgramFiles;
 	if (!shell && programFiles) {
 		const pwsh7 = win32.join(programFiles, "PowerShell", "7", "pwsh.exe");
-		if (shellPathExists(pwsh7)) shell = pwsh7;
+		if (executableCandidateExists(pwsh7)) shell = pwsh7;
 	}
 
 	shell ??= findExecutableOnPath("powershell.exe");
 	const systemRoot = process.env.SystemRoot;
 	if (!shell && systemRoot) {
 		const windowsPowerShell = win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-		if (shellPathExists(windowsPowerShell)) shell = windowsPowerShell;
+		if (executableCandidateExists(windowsPowerShell)) shell = windowsPowerShell;
 	}
 
 	if (!shell) throw new Error("No PowerShell executable found. Install PowerShell or add it to PATH.");

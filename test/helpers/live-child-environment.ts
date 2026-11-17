@@ -16,6 +16,8 @@ import type { RunSyncOptions } from "../../packages/subagents/src/shared/types.t
 import { settle } from "../../scripts/perf/idle-agents/scripted-model.js";
 import { removeTempRootReleasingBroker } from "./detached-broker.js";
 
+export const LIVE_CHILD_START_WAIT_MS = 60_000;
+
 export interface LiveChildOptions {
 	readonly models?: ReadonlyArray<{ readonly id: string; readonly reasoning?: boolean }>;
 	readonly fallbackModels?: readonly string[];

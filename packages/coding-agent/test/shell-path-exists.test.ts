@@ -93,6 +93,39 @@ describe("Windows Store shell aliases", () => {
 		assert.equal(shell.getShellConfig(alias).shell, alias);
 	});
 
+	it("rejects an explicitly configured directory named like a shell (#5324)", () => {
+		const directory = "D:\\tools\\bash.exe";
+		standIns.directories.add(directory);
+
+		assert.throws(() => shell.getShellConfig(directory), /Custom shell path not found/);
+	});
+
+	it("skips a directory named pwsh.exe in the known installation location (#5324)", () => {
+		const directory = "D:\\Apps\\PowerShell\\7\\pwsh.exe";
+		const executable = "E:\\Tools\\powershell.exe";
+		standIns.directories.add(directory);
+		vi.stubEnv("ProgramFiles", "D:\\Apps");
+		vi.stubEnv("PATH", "E:\\Tools");
+		accessSyncMock.mockImplementation((path: string) => {
+			if (path !== directory && path !== executable) throw Object.assign(new Error("not found"), { code: "ENOENT" });
+		});
+
+		assert.equal(shell.getPowerShellConfig().shell, executable);
+	});
+
+	it("skips a directory named bash.exe in the known installation location (#5324)", () => {
+		const directory = "D:\\Apps\\Git\\bin\\bash.exe";
+		const executable = `${aliasesDir}\\bash.exe`;
+		standIns.directories.add(directory);
+		vi.stubEnv("ProgramFiles", "D:\\Apps");
+		vi.stubEnv("PATH", aliasesDir);
+		accessSyncMock.mockImplementation((path: string) => {
+			if (path !== directory && path !== executable) throw Object.assign(new Error("not found"), { code: "ENOENT" });
+		});
+
+		assert.equal(shell.getShellConfig().shell, executable);
+	});
+
 	it("returns a relative PATH entry's match as an absolute path, so it starts from any working directory (#5324)", () => {
 		vi.stubEnv("PATH", "relative-bin");
 

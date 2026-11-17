@@ -288,6 +288,7 @@ async function startFixture(options: { readonly parentAdmission?: ResourceAdmiss
 		releaseAfterMs?: number,
 	): {
 		readonly reached: () => boolean;
+		readonly isHeld: () => boolean;
 		readonly held: Promise<void>;
 		readonly release: () => void;
 		readonly shutdown: Promise<void>;
@@ -299,9 +300,13 @@ async function startFixture(options: { readonly parentAdmission?: ResourceAdmiss
 		const shutdown = new Promise<void>((resolve) => {
 			shutdownVisited = () => resolve();
 		});
+		let released = false;
 		let release: () => void = () => undefined;
 		const held = new Promise<void>((resolve) => {
-			release = () => resolve();
+			release = () => {
+				released = true;
+				resolve();
+			};
 		});
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		globals[STALL_HOOK] = (at) => {
@@ -331,7 +336,7 @@ async function startFixture(options: { readonly parentAdmission?: ResourceAdmiss
 				"}",
 			].join("\n"),
 		);
-		return { reached: () => reached, held: holding.promise, release, shutdown };
+		return { reached: () => reached, isHeld: () => reached && !released, held: holding.promise, release, shutdown };
 	};
 	/** A child-only extension that records, at its session_start and its first turn, the start the host gave it. */
 	const recordStartupHooks = (): Array<{
@@ -503,8 +508,6 @@ test(
 	REAL_CHILD_SESSION_TIMEOUT_MS,
 );
 
-const TIMEOUT_REPORT_GRACE_MS = 2_000;
-
 const nextMacrotask = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 for (const point of ["input", "before_agent_start"] as const) {
@@ -514,15 +517,11 @@ for (const point of ["input", "before_agent_start"] as const) {
 			const fixture = await startFixture();
 			const stall = fixture.stallChildAt(point);
 			const launched = fixture.launch(`start-never-settles-${point}`, STALL_START_BUDGET_MS);
-			// Its budget runs from the stall, so the launch has that long and the grace to settle from there.
 			await Promise.race([stall.held, launched]);
-			const outcome = await Promise.race([
-				launched,
-				sleep(STALL_START_BUDGET_MS + TIMEOUT_REPORT_GRACE_MS).then(() => "hung" as const),
-			]);
+			const outcome = await launched;
 
 			assert.ok(stall.reached(), `the child's ${point} handling was held`);
-			assert.ok(outcome !== "hung", "the launch settled while its handler was still held");
+			assert.equal(stall.isHeld(), true, "the launch settled while its handler was still held");
 			const error = startTimeoutOf(outcome);
 			assertMeasuredPhase(error, "dispatch");
 			assert.equal(error.step, "dispatching-task");

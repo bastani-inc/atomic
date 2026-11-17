@@ -53,8 +53,10 @@ describe("PowerShell executable lookup", () => {
 		process.env.PATH = "C:\\first-empty;C:\\first-lookup-path";
 		existing.add("C:\\first-lookup-path\\pwsh.exe");
 		expect(getPowerShellConfig().shell).toBe("C:\\first-lookup-path\\pwsh.exe");
+		const lookups = accessSync.mock.calls.length;
 		expect(getPowerShellConfig().shell).toBe("C:\\first-lookup-path\\pwsh.exe");
 		expect(getPowerShellConfig().shell).toBe("C:\\first-lookup-path\\pwsh.exe");
+		expect(accessSync.mock.calls.length).toBe(lookups + 2);
 		expect(lookupsIn("C:\\first-empty")).toBe(1);
 	});
 
@@ -62,18 +64,33 @@ describe("PowerShell executable lookup", () => {
 		existing.add("C:\\second-lookup-path\\pwsh.exe");
 		process.env.PATH = "C:\\second-empty;C:\\second-lookup-path";
 		getPowerShellConfig();
-		process.env.PATH = "C:\\second-empty;C:\\second-lookup-path;C:\\third-lookup-path";
-		getPowerShellConfig();
+		process.env.PATH = "C:\\second-empty;C:\\third-lookup-path";
+		existing.add("C:\\third-lookup-path\\pwsh.exe");
+		expect(getPowerShellConfig().shell).toBe("C:\\third-lookup-path\\pwsh.exe");
 		expect(lookupsIn("C:\\second-empty")).toBe(2);
+	});
+
+	it("resolves a relative PATH again when the working directory changes (#5324)", () => {
+		process.env.PATH = "relative-bin";
+		existing.add("C:\\first-project\\relative-bin\\pwsh.exe");
+		existing.add("C:\\second-project\\relative-bin\\pwsh.exe");
+		const cwd = vi.spyOn(process, "cwd").mockReturnValue("C:\\first-project");
+		try {
+			assert.equal(getPowerShellConfig().shell, "C:\\first-project\\relative-bin\\pwsh.exe");
+			cwd.mockReturnValue("C:\\second-project");
+			assert.equal(getPowerShellConfig().shell, "C:\\second-project\\relative-bin\\pwsh.exe");
+		} finally {
+			cwd.mockRestore();
+		}
 	});
 
 	it("finds PowerShell installed after a missed lookup without a PATH change", () => {
 		vi.useFakeTimers();
 		process.env.PATH = "C:\\install-later-path";
 		assert.throws(() => getPowerShellConfig(), /No PowerShell executable found/);
-		const missedLookups = lookupsIn("C:\\install-later-path");
+		const missedLookups = accessSync.mock.calls.length;
 		assert.throws(() => getPowerShellConfig(), /No PowerShell executable found/);
-		assert.equal(lookupsIn("C:\\install-later-path"), missedLookups);
+		assert.equal(accessSync.mock.calls.length, missedLookups);
 
 		existing.add("C:\\install-later-path\\pwsh.exe");
 		vi.advanceTimersByTime(30_000);

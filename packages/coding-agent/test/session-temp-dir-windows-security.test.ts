@@ -253,6 +253,65 @@ describe("windows session temp root verification", () => {
 	const savedEnv = new Map<string, string | undefined>();
 	let sandbox: string;
 
+	function withNativeDacl(sddl: string | null, inspect: (descriptor: WindowsDirectorySecurity) => void): void {
+		const dir = mkdtempSync(join(sandbox, "native-dacl-"));
+		const backup = `${dir}.acl`;
+		const saved = spawnSyncCollect(["icacls", dir, "/save", backup]);
+		assert.equal(saved.exitCode, 0, saved.stderr.toString());
+		try {
+			const applied = spawnSyncCollect(
+				[
+					"powershell.exe",
+					"-NoProfile",
+					"-NonInteractive",
+					"-Command",
+					`
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class AtomicDaclFixture {
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern uint SetNamedSecurityInfoW(string path, int type, uint information, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+    public static uint SetDacl(string path, IntPtr dacl) {
+        return SetNamedSecurityInfoW(path, 1, 0x80000004, IntPtr.Zero, IntPtr.Zero, dacl, IntPtr.Zero);
+    }
+}
+'@
+$pointer = [IntPtr]::Zero
+try {
+    if ($env:ATOMIC_TEST_DACL_SDDL) {
+        $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        $sddl = $env:ATOMIC_TEST_DACL_SDDL.Replace('{currentSid}', $sid)
+        $descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new($sddl)
+        $acl = $descriptor.DiscretionaryAcl
+        $bytes = [byte[]]::new($acl.BinaryLength)
+        $acl.GetBinaryForm($bytes, 0)
+        $pointer = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bytes.Length)
+        [System.Runtime.InteropServices.Marshal]::Copy($bytes, 0, $pointer, $bytes.Length)
+    }
+    $status = [AtomicDaclFixture]::SetDacl($env:ATOMIC_TEST_DACL_PATH, $pointer)
+    if ($status -ne 0) { throw "SetNamedSecurityInfoW failed: $status" }
+} finally {
+    if ($pointer -ne [IntPtr]::Zero) { [System.Runtime.InteropServices.Marshal]::FreeHGlobal($pointer) }
+}
+`,
+				],
+				{ env: { ...process.env, ATOMIC_TEST_DACL_PATH: dir, ATOMIC_TEST_DACL_SDDL: sddl ?? "" } },
+			);
+			assert.equal(applied.exitCode, 0, applied.stderr.toString());
+			const binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+				windowsDirectorySecurity: (path: string) => WindowsDirectorySecurity | null;
+			};
+			const descriptor = binding.windowsDirectorySecurity(dir);
+			assert.ok(descriptor, "the native module reads the fixture's descriptor");
+			inspect(descriptor);
+		} finally {
+			const restored = spawnSyncCollect(["icacls", sandbox, "/restore", backup]);
+			assert.equal(restored.exitCode, 0, restored.stderr.toString());
+		}
+	}
+
 	beforeAll(() => {
 		sandbox = realpathSync(mkdtempSync(join(tmpdir(), "atomic-win-acl-")));
 		for (const key of envKeys) {
@@ -329,6 +388,29 @@ describe("windows session temp root verification", () => {
 			assert.equal(binding.windowsDirectorySecurity(join(sandbox, "missing")), null);
 		},
 	);
+
+	it.skipIf(!isWindows)("the native module distinguishes a null DACL from an empty DACL (#5324)", () => {
+		withNativeDacl(null, (descriptor) => {
+			assert.equal(descriptor.dacl, "");
+			assert.deepEqual(descriptor.accessRules, []);
+			assert.equal(evaluateWindowsDirectorySecurity(descriptor), "it has no access control list");
+		});
+		withNativeDacl("D:P", (descriptor) => {
+			assert.match(descriptor.dacl, /^D:[A-Z]*$/);
+			assert.deepEqual(descriptor.accessRules, []);
+			assert.equal(evaluateWindowsDirectorySecurity(descriptor), undefined);
+		});
+	});
+
+	it.skipIf(!isWindows)("the native module preserves deny ACEs and their SIDs (#5324)", () => {
+		withNativeDacl("D:P(D;;0x2;;;WD)(A;;FA;;;{currentSid})", (descriptor) => {
+			assert.deepEqual(descriptor.accessRules, [
+				{ allow: false, sid: "S-1-1-0" },
+				{ allow: true, sid: descriptor.currentSid },
+			]);
+			assert.equal(evaluateWindowsDirectorySecurity(descriptor), undefined);
+		});
+	});
 
 	it.skipIf(!isWindows)("refuses a pre-created root whose DACL grants Everyone access", () => {
 		const root = getTempRootDir();
