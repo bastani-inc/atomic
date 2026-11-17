@@ -36,13 +36,14 @@ knowledge:
       the TUI workspace's npm test script always expands its full test glob, even when a filename is appended.
       For focused root tests use `npm run test:unit -- test/unit/<file>.test.ts`;
       the test-suite-runner fixtures need npm's node_modules/.bin on PATH for their nested Vitest commands.
-      `test/unit/storage-libsql-close-once.test.ts` runs native-driver close regressions in child processes
-      with glibc freed-memory poisoning on Linux, and checks file release directly on Windows.
+      Finish `npm run check` before running suites that import built packages: typechecking rebuilds dist in place
+      and cleans provider data. `test/unit/storage-libsql-close-once.test.ts` runs native-driver close regressions
+      in child processes with glibc freed-memory poisoning on Linux, and checks file release directly on Windows.
       Validate named-worktree permissions with a private default umask:
       `(umask 0022; npx --no-install vitest --run --project unit test/unit/subagents-named-worktree-locks.test.ts)`.
       Localized named-worktree recovery fixtures write the translated marker while Git is paused, so they do not
-      require installed locales or a Git build with gettext support. Finish `npm run check` before running
-      suites that import built packages: typechecking rebuilds dist in place and cleans provider data.
+      require installed locales or a Git build with gettext support. Verify both files without system locales with:
+      `(umask 022; LOCPATH=/nonexistent npx vitest run --project unit test/unit/subagents-named-worktree-locks.test.ts test/unit/subagents-named-worktree-recovery.test.ts)`.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run
