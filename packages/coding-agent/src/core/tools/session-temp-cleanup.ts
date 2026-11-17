@@ -410,6 +410,11 @@ interface CleanupGate {
 	protectedPaths: ReadonlySet<string>;
 }
 
+interface ScannedRoot {
+	path: string;
+	identity: FileIdentity;
+}
+
 /**
  * Run `scan` under the marker/lock protocol for one target.
  *
@@ -419,18 +424,28 @@ interface CleanupGate {
  */
 async function withCleanupGate(
 	controlDir: string,
+	scanRoot: ScannedRoot,
 	options: SweepOptions,
 	scan: (gate: CleanupGate) => void,
 ): Promise<SweepOutcome> {
 	const now = options.now ?? Date.now();
 	const throttleMs = options.throttleMs ?? SESSION_TEMP_CLEANUP_INTERVAL_MS;
+	let controlReady = false;
 	try {
 		// The control root lives under the owner temp root, so create it through the
 		// same validated, non-recursive path the spill directories use.
-		await ensureTempDirAsync(controlDir);
+		await ensureTempDirAsync(controlDir, { preserveExistingLeaf: controlDir === scanRoot.path });
+		controlReady = true;
 	} catch {
 		// Without a control directory there is nowhere to record the throttle;
 		// skip rather than sweep unthrottled and unlocked.
+		controlReady = false;
+	}
+	const currentRootIdentity = realDirectoryIdentity(scanRoot.path);
+	if (currentRootIdentity === undefined || !sameFileIdentity(scanRoot.identity, currentRootIdentity)) {
+		return "missing";
+	}
+	if (!controlReady) {
 		return "locked";
 	}
 	const markerPath = join(controlDir, CLEANUP_MARKER_FILE);
@@ -456,7 +471,7 @@ async function withCleanupGate(
 				return false;
 			},
 			cutoff: now - (options.retentionMs ?? SESSION_TEMP_RETENTION_MS),
-			protectedPaths: new Set(options.protectedPaths ?? []),
+			protectedPaths: new Set(options.protectedPaths ?? getProtectedSessionTempDirs()),
 		});
 		if (!aborted && ownsCleanupLock(lockPath, token)) {
 			// Failing to publish the marker only means the sweep repeats sooner.
@@ -489,14 +504,11 @@ export async function sweepSessionTempRoot(
 	root: string = getTempRootDir(),
 	options: SweepOptions = {},
 ): Promise<SweepOutcome> {
-	if (!isRealDirectory(root)) {
+	const rootIdentity = realDirectoryIdentity(root);
+	if (rootIdentity === undefined) {
 		return "missing";
 	}
-	const gateOptions: SweepOptions = {
-		...options,
-		protectedPaths: options.protectedPaths ?? getProtectedSessionTempDirs(),
-	};
-	return withCleanupGate(root, gateOptions, (gate) => {
+	return withCleanupGate(root, { path: root, identity: rootIdentity }, options, (gate) => {
 		let entries: string[];
 		try {
 			entries = readdirSync(root);
@@ -570,35 +582,37 @@ function reapToolResultsDir(parent: string, cutoff: number, protectedPaths: Read
  * `.jsonl` transcripts.
  */
 export async function sweepToolResultsRoot(sessionsRoot: string, options: SweepOptions = {}): Promise<SweepOutcome> {
-	if (!isRealDirectory(sessionsRoot)) {
+	const rootIdentity = realDirectoryIdentity(sessionsRoot);
+	if (rootIdentity === undefined) {
 		return "missing";
 	}
-	const gateOptions: SweepOptions = {
-		...options,
-		protectedPaths: options.protectedPaths ?? getProtectedSessionTempDirs(),
-	};
-	return withCleanupGate(getCleanupControlDir(sessionsRoot, options.controlRoot), gateOptions, (gate) => {
-		let entries: string[];
-		try {
-			entries = readdirSync(sessionsRoot);
-		} catch {
-			return;
-		}
-		for (const entry of entries) {
-			const projectDir = join(sessionsRoot, entry);
-			if (!isRealDirectory(projectDir) || gate.protectedPaths.has(projectDir)) {
-				continue;
-			}
-			if (!gate.ownsLock()) {
+	return withCleanupGate(
+		getCleanupControlDir(sessionsRoot, options.controlRoot),
+		{ path: sessionsRoot, identity: rootIdentity },
+		options,
+		(gate) => {
+			let entries: string[];
+			try {
+				entries = readdirSync(sessionsRoot);
+			} catch {
 				return;
 			}
-			try {
-				reapToolResultsDir(projectDir, gate.cutoff, gate.protectedPaths);
-			} catch {
-				// Keep going so one unreadable project directory does not block the rest.
+			for (const entry of entries) {
+				const projectDir = join(sessionsRoot, entry);
+				if (!isRealDirectory(projectDir) || gate.protectedPaths.has(projectDir)) {
+					continue;
+				}
+				if (!gate.ownsLock()) {
+					return;
+				}
+				try {
+					reapToolResultsDir(projectDir, gate.cutoff, gate.protectedPaths);
+				} catch {
+					// Keep going so one unreadable project directory does not block the rest.
+				}
 			}
-		}
-	});
+		},
+	);
 }
 
 /**
@@ -612,23 +626,25 @@ export async function sweepSessionDirToolResults(
 	sessionDir: string,
 	options: SweepOptions = {},
 ): Promise<SweepOutcome> {
-	if (!isRealDirectory(sessionDir)) {
+	const rootIdentity = realDirectoryIdentity(sessionDir);
+	if (rootIdentity === undefined) {
 		return "missing";
 	}
-	const gateOptions: SweepOptions = {
-		...options,
-		protectedPaths: options.protectedPaths ?? getProtectedSessionTempDirs(),
-	};
-	return withCleanupGate(getCleanupControlDir(sessionDir, options.controlRoot), gateOptions, (gate) => {
-		if (!gate.ownsLock()) {
-			return;
-		}
-		try {
-			reapToolResultsDir(sessionDir, gate.cutoff, gate.protectedPaths);
-		} catch {
-			// Best effort.
-		}
-	});
+	return withCleanupGate(
+		getCleanupControlDir(sessionDir, options.controlRoot),
+		{ path: sessionDir, identity: rootIdentity },
+		options,
+		(gate) => {
+			if (!gate.ownsLock()) {
+				return;
+			}
+			try {
+				reapToolResultsDir(sessionDir, gate.cutoff, gate.protectedPaths);
+			} catch {
+				// Best effort.
+			}
+		},
+	);
 }
 
 export interface SessionTempCleanupOptions extends SweepOptions {

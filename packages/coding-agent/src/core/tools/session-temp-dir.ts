@@ -576,7 +576,7 @@ function canonicalTempChild(dir: string, base: BaseTempDirs): string | undefined
  * loses a convenience artifact, while failing open writes tool output into a
  * directory someone else controls.
  */
-export function ensureTempDir(dir: string): string {
+export function ensureTempDir(dir: string, options: { preserveExistingLeaf?: boolean } = {}): string {
 	const base = baseTempDirs();
 	const checkedDir = canonicalTempChild(dir, base);
 	if (checkedDir !== undefined) {
@@ -590,13 +590,21 @@ export function ensureTempDir(dir: string): string {
 			current = join(current, part);
 			ensureOwnedDirectory(current);
 		}
-		ensureLeafDirectory(checkedDir);
+		if (options.preserveExistingLeaf) {
+			ensureOwnedDirectory(checkedDir);
+		} else {
+			ensureLeafDirectory(checkedDir);
+		}
 	} else {
 		// A caller-supplied directory outside the system temp base (a session
 		// directory, for instance) is the caller's to own; only the leaf is ours.
 		if (!(ensuredDirs.has(dir) && isRealDirectory(dir))) {
 			mkdirSync(dirname(dir), { recursive: true, mode: SESSION_TEMP_DIR_MODE });
-			ensureLeafDirectory(dir);
+			if (options.preserveExistingLeaf) {
+				ensureOwnedDirectory(dir);
+			} else {
+				ensureLeafDirectory(dir);
+			}
 		}
 	}
 	ensuredDirs.add(dir);
@@ -618,8 +626,8 @@ export function ensureSessionTempDir(explicitDir?: string): string {
 	return ensureTempDir(explicitDir ?? resolveSessionTempDirPath());
 }
 
-export function ensureTempDirAsync(dir: string): Promise<string> {
-	return afterVerification(() => ensureTempDir(dir));
+export function ensureTempDirAsync(dir: string, options: { preserveExistingLeaf?: boolean } = {}): Promise<string> {
+	return afterVerification(() => ensureTempDir(dir, options));
 }
 
 export function getSessionTempDirAsync(sessionId?: string): Promise<string> {

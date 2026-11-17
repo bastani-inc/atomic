@@ -25,7 +25,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { type ChildProcess, spawn } from "node:child_process";
 import { statSync } from "node:fs";
 import type { Socket } from "node:net";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import type { Readable } from "node:stream";
 import { clearTimeout, setTimeout } from "node:timers";
 
@@ -351,12 +351,13 @@ export function readWindowsDirectorySecurityAsync(
 	options: ReadWindowsDirectorySecurityOptions = {},
 ): Promise<WindowsDirectorySecurity | undefined> {
 	if (options.signal?.aborted) return Promise.resolve(undefined);
-	const identity = options.identity ?? identityOf(path);
+	const resolvedPath = resolve(path);
+	const identity = options.identity ?? identityOf(resolvedPath);
 	if (identity === undefined) return Promise.resolve(undefined);
-	const key = `${identity}\0${path}`;
+	const key = `${identity}\0${resolvedPath}`;
 	let read = sharedReads.get(key);
 	if (read === undefined) {
-		read = new SharedSecurityRead(path, key);
+		read = new SharedSecurityRead(resolvedPath, key);
 		sharedReads.set(key, read);
 	}
 	return read.join(options.timeoutMs ?? READ_SECURITY_TIMEOUT_MS, options.signal, options.background ?? false);
@@ -446,15 +447,16 @@ export async function verifyWindowsDirectorySecurityAsync(
 	signal?: AbortSignal,
 	options: { background?: boolean } = {},
 ): Promise<string | undefined> {
-	const identity = identityOf(path);
+	const resolvedPath = resolve(path);
+	const identity = identityOf(resolvedPath);
 	if (identity === undefined) {
 		return "its ownership could not be verified";
 	}
-	if (verifiedWithoutReading(path, identity)) {
+	if (verifiedWithoutReading(resolvedPath, identity)) {
 		return undefined;
 	}
 	const generation = stateGeneration;
-	const security = await securityReader(path, { signal, background: options.background, identity });
+	const security = await securityReader(resolvedPath, { signal, background: options.background, identity });
 	if (security === undefined) {
 		return "its ownership could not be verified";
 	}
@@ -463,13 +465,15 @@ export async function verifyWindowsDirectorySecurityAsync(
 		return refusal ?? "its ownership could not be verified";
 	}
 	if (refusal !== undefined) {
-		verifiedPaths.delete(path);
+		if (verifiedPaths.get(resolvedPath) === identity) {
+			verifiedPaths.delete(resolvedPath);
+		}
 		return refusal;
 	}
-	if (identityOf(path) !== identity) {
+	if (identityOf(resolvedPath) !== identity) {
 		return "its ownership could not be verified";
 	}
-	verifiedPaths.set(path, identity);
+	verifiedPaths.set(resolvedPath, identity);
 	return undefined;
 }
 
@@ -477,16 +481,17 @@ export function verifyWindowsDirectorySecurity(
 	path: string,
 	options: { startVerification?: boolean } = {},
 ): string | undefined {
-	const identity = identityOf(path);
+	const resolvedPath = resolve(path);
+	const identity = identityOf(resolvedPath);
 	if (identity === undefined) {
 		return "its ownership could not be verified";
 	}
-	if (verifiedWithoutReading(path, identity)) {
+	if (verifiedWithoutReading(resolvedPath, identity)) {
 		return undefined;
 	}
 	if (options.startVerification !== false) {
 		outsideAnyCaller(() => {
-			verifyWindowsDirectorySecurityAsync(path, undefined, { background: true }).catch(() => undefined);
+			verifyWindowsDirectorySecurityAsync(resolvedPath, undefined, { background: true }).catch(() => undefined);
 		});
 	}
 	return VERIFICATION_PENDING_REASON;
