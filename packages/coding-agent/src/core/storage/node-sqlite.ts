@@ -1199,7 +1199,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 				if (!behind) {
 					const refused = this.attemptBegin();
 					if (refused === undefined) {
-						await this.acquired(waitStarted);
+						this.acquired(waitStarted);
 						return;
 					}
 					lastCause = refused;
@@ -1220,7 +1220,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 				const stalledMs = performance.now() - stalledSince;
 				if (stalledMs >= lockWaitMs) throw await this.lockWaitTimeout(lockWaitMs, stalledMs, behind, lastCause);
 				if (!behind && committed && (await this.attemptThroughRelease())) {
-					await this.acquired(waitStarted);
+					this.acquired(waitStarted);
 					return;
 				}
 				const recheckMs =
@@ -1298,9 +1298,9 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		);
 	}
 
-	private async acquired(waitStarted: number): Promise<void> {
+	private acquired(waitStarted: number): void {
+		this.holderRecord?.held();
 		this.lockUse.acquired(waitStarted);
-		await this.holderRecord?.held();
 	}
 
 	/**
