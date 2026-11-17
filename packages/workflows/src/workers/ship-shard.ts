@@ -18,8 +18,8 @@ async function tryRootLock(path: string): Promise<AdvisoryLock | null> {
 }
 
 async function tryOpenLock(location: string): Promise<AdvisoryLock | null> {
-	const { tryAdvisoryLock } = await import("@bastani/atomic-natives");
-	return tryAdvisoryLock(`${location}-open.lock`, 0);
+	const { tryAdvisoryLockAsync } = await import("@bastani/atomic-natives");
+	return tryAdvisoryLockAsync(`${location}-open.lock`, 0);
 }
 
 export function shipJournalDirectory(stateDirectory: string, journalIdentity: string): string {

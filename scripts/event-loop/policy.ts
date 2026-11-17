@@ -176,8 +176,12 @@ export interface OwnedArea {
  */
 export const OWNED_ELSEWHERE: readonly OwnedArea[] = [
 	{
-		owner: "#5376 (the node:sqlite storage driver off the event loop)",
-		paths: ["packages/coding-agent/src/core/storage/node-sqlite.ts"],
+		owner: "#5376 (node:sqlite statements off the event loop)",
+		paths: [
+			"packages/coding-agent/src/core/storage/node-sqlite.ts",
+			// The in-process connection that confirms a retired shard is unused before its files are removed.
+			"packages/workflows/src/workers/ship-shard.ts",
+		],
 	},
 ];
 
