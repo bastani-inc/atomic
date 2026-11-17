@@ -228,6 +228,10 @@ export class JournalSchemaVersionError extends StorageSchemaVersionError {
 	}
 }
 
+export interface JournalKeyRangeReadOptions {
+	readonly overview?: boolean;
+}
+
 export class RunNotFoundError extends JournalError {
 	readonly runId: string;
 

@@ -18,7 +18,6 @@ import {
 	type StorageDialect,
 	StorageError,
 	StorageProvider,
-	storedJournalPayload,
 	storedJsonChunks,
 	withJournalPayloads,
 } from "@bastani/atomic/storage";
@@ -45,7 +44,9 @@ import {
 	poolSchemaLedger,
 	poolSessionPrefix,
 	type SqlPoolStorage,
+	STAGE_OVERVIEW_PAYLOAD_CHARS,
 	sqlPoolStorage,
+	storedEventPayload,
 } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import { CONFIRMED_OPERATION, HANDOFF_OPERATION } from "./pool-attempt-operations.js";
@@ -767,12 +768,14 @@ export class SqlPoolQueue {
 		payload: string,
 		at: string,
 		atParams: readonly SqliteValue[],
-		value?: unknown,
+		value?: DurableCheckpoint,
 		/** A process of an older build may be reading the journal: the payload stays in its row (#4965). */
 		whole = false,
 	): SqliteStatement[] {
 		const { events, eventChunks } = this.journal;
-		const stored = whole ? { payload, chunks: [] } : storedJournalPayload(payload, value);
+		const stored = whole
+			? { payload, chunks: [] }
+			: storedEventPayload(RUN_EVENT_TYPES.checkpointRecorded, payload, value);
 		const columns = "run_id, seq, epoch, key, type, payload, at, chunks";
 		const row: SqliteStatement =
 			seq === undefined
@@ -2180,9 +2183,15 @@ export class SqlPoolQueue {
 							key: event.key,
 							checkpoint: stored.checkpoint,
 						});
-						const row = (await this.keepsWhole(read, stored.payload))
-							? { payload: stored.payload, chunks: [] }
-							: storedJournalPayload(stored.payload, stored.checkpoint);
+						const chunked = storedEventPayload(
+							RUN_EVENT_TYPES.checkpointRecorded,
+							stored.payload,
+							stored.checkpoint,
+						);
+						const row =
+							chunked.chunks.length > 0 && (await this.storage.olderBuildLive(read))
+								? { payload: stored.payload, chunks: [] }
+								: chunked;
 						rows.push({ key: event.key, payload: row.payload, chunks: row.chunks });
 					}
 					return { work, rows, sessions: folded.writes(), billed, kept };
@@ -2852,7 +2861,9 @@ export class SqlPoolQueue {
 				this.now,
 				[],
 				checkpoint,
-				await this.keepsWhole(read, payload),
+				checkpoint.kind === "stage" && payload.length > STAGE_OVERVIEW_PAYLOAD_CHARS
+					? await this.storage.olderBuildLive(read)
+					: await this.keepsWhole(read, payload),
 			),
 		);
 		const billed = poolCheckpointUsage(checkpoint);

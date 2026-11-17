@@ -32,6 +32,7 @@ import { createWorkflowObservation } from "./workflow-observation.js";
 import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
 import { workflowPanelSource } from "./workflow-panel-source.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
+import { createWorkflowResumeProvider } from "./workflow-resume-provider.js";
 import { createSessionRunControl } from "./workflow-session-run-control.js";
 import { overlaySurfaceFromContext } from "./workflow-targets.js";
 import { makeExecuteWorkflowTool } from "./workflow-tool.js";
@@ -192,16 +193,29 @@ function factory(pi: ExtensionAPI): void {
 	pi.on?.("session_shutdown", () => {
 		sessionContext = undefined;
 	});
-	const sessionRunControl = createSessionRunControl({
-		execute: executeWorkflowTool,
+	const resumeProvider = createWorkflowResumeProvider({
+		owner,
+		pi,
+		overlay,
 		context: () => sessionContext,
-		store: owner.store,
-		jobs: runState.jobs,
-		catalog: async () => {
-			const runtime = runtimeState.runtimeForContext(sessionContext);
-			return (await runtime.prepareDurableCatalog?.()) ?? { resumable: [], completed: [] };
-		},
+		runtimeForContext: runtimeState.runtimeForContext,
+		ensureWorkflowResourcesLoaded: runtimeState.ensureWorkflowResourcesLoaded,
+		beforeRestoreCompleted: runtimeState.beforeRestoreCompleted,
+		isGenerationCurrent: () => (liveGeneration()?.pi ?? pi) === pi && !ownerSessionClosing(),
 	});
+	const sessionRunControl = {
+		...createSessionRunControl({
+			execute: executeWorkflowTool,
+			context: () => sessionContext,
+			store: owner.store,
+			jobs: runState.jobs,
+			catalog: async () => {
+				const runtime = runtimeState.runtimeForContext(sessionContext);
+				return (await runtime.prepareDurableCatalog?.()) ?? { resumable: [], completed: [] };
+			},
+		}),
+		...resumeProvider,
+	};
 	pi.registerWorkflowRunControl?.(sessionRunControl);
 	pi.registerAgentPanelSource?.(
 		workflowPanelSource(owner, {
@@ -245,6 +259,7 @@ function factory(pi: ExtensionAPI): void {
 			runtimeForContext: runtimeState.runtimeForContext,
 			ensureWorkflowResourcesLoaded: runtimeState.ensureWorkflowResourcesLoaded,
 			beforeRestoreCompleted: runtimeState.beforeRestoreCompleted,
+			isGenerationCurrent: () => (liveGeneration()?.pi ?? pi) === pi && !ownerSessionClosing(),
 		},
 	});
 	registerWorkflowMessageRenderers(pi);

@@ -104,10 +104,8 @@ describe("an agent without read or search after a clear", () => {
 		const [searched, read] = toolResultText(harness, SESSION_HISTORY_TOOL_NAME);
 		assert.ok(searched?.includes(`${url}:`), searched);
 		assert.ok(searched?.includes("line 42 of a large file the subagent read"), searched);
-		const readLines = read?.split("\n") ?? [];
-		assert.equal(readLines[0], `1: # session ${harness.session.sessionId}`, read);
-		assert.match(readLines[1] ?? "", /^2: created: /u);
-		assert.match(readLines[2] ?? "", /^\[lines 1-2 of \d+\]$/u);
+		assert.match(read ?? "", new RegExp(`^# session ${harness.session.sessionId} entries 1-2 of \\d+\n`, "u"));
+		assert.ok(read?.includes("Read the file and summarize it"), read);
 		const definition = harness.session.getToolDefinition(SESSION_HISTORY_TOOL_NAME);
 		assert.ok(definition, "the history tool is registered");
 		assert.deepEqual(Object.keys((definition.parameters as { properties: object }).properties).sort(), [

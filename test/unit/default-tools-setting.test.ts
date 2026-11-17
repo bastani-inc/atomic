@@ -16,6 +16,7 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { allToolNames, getDefaultToolNames } from "../../packages/coding-agent/src/core/tools/index.js";
 import { isPowerShellAvailable } from "../../packages/coding-agent/src/utils/shell.js";
+import { linkSharedTranspileCache } from "../../packages/coding-agent/test/helpers/shared-transpile-cache.js";
 import {
 	fileExistsSync,
 	makeDirectorySync,
@@ -49,6 +50,8 @@ function sessionRoots(prefix: string): { cwd: string; agentDir: string } {
 	const cwd = tempDir(prefix);
 	const agentDir = join(cwd, "agent");
 	makeDirectorySync(agentDir, { recursive: true });
+	// Each session loads the builtin packages; the run's shared cache spares compiling their graph again every time.
+	linkSharedTranspileCache(agentDir);
 	return { cwd, agentDir };
 }
 

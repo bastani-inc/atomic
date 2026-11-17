@@ -2,7 +2,9 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { createToolDefinition } from "../src/core/tools/index.ts";
 import { createSearchToolDefinition } from "../src/core/tools/search.ts";
+import { sqlite } from "./helpers/sqlite.js";
 
 const tempDirs: string[] = [];
 
@@ -89,5 +91,97 @@ describe("search pagination feedback", () => {
 			),
 		);
 		expect(output).toContain("skip is ignored for single-file search");
+	});
+
+	it("does not count colon-bearing context rows toward the per-group match cap (#5250)", async () => {
+		const dir = await tempDir();
+		const content = Array.from({ length: 6 }, (_, index) =>
+			[`before ${index}`, `needle ${index}`, `after ${index}a`, `after ${index}b`, `after ${index}c`].join("\n"),
+		).join("\n");
+		await createToolDefinition("write", dir).execute(
+			"write-archive-member",
+			{ path: "bundle.zip:a: b.txt", content: `${content}\n` },
+			undefined,
+			undefined,
+			{} as never,
+		);
+		const search = createSearchToolDefinition(dir);
+		const output = text(
+			await search.execute(
+				"search-archive-context-lines",
+				{ pattern: "needle", paths: "bundle.zip:" },
+				undefined,
+				undefined,
+				{} as never,
+			),
+		);
+		expect(output.split("\n")).toHaveLength(30);
+		expect(output).toContain("needle 5");
+	});
+
+	it("keeps scheme-prefixed context rows with colons in their own search group (#5250)", async () => {
+		const dir = await tempDir();
+		await mkdir(join(dir, ".agents", "skills", "first"), { recursive: true });
+		await mkdir(join(dir, ".agents", "skills", "second"), { recursive: true });
+		await writeFile(
+			join(dir, ".agents", "skills", "first", "SKILL.md"),
+			"needle 1\ncontext: detail\nneedle 2\n",
+			"utf8",
+		);
+		await writeFile(join(dir, ".agents", "skills", "second", "SKILL.md"), "needle 3\n", "utf8");
+		const search = createSearchToolDefinition(dir);
+		const firstPage = text(
+			await search.execute(
+				"search-skill-url-order",
+				{ pattern: "needle", paths: "skill://first/SKILL.md" },
+				undefined,
+				undefined,
+				{} as never,
+			),
+		);
+		expect(firstPage.split("\n")).toEqual([
+			"skill://first/SKILL.md:1: needle 1",
+			"skill://first/SKILL.md-2- context: detail",
+			"skill://first/SKILL.md:3: needle 2",
+		]);
+		const secondPage = text(
+			await search.execute(
+				"search-skill-url-skip",
+				{ pattern: "needle", paths: ["skill://first/SKILL.md", "skill://second/SKILL.md"], skip: 1 },
+				undefined,
+				undefined,
+				{} as never,
+			),
+		);
+		expect(secondPage).toBe("skill://second/SKILL.md:1: needle 3");
+	});
+
+	it("counts SQLite text primary-key match rows toward the per-group match cap (#5250)", async () => {
+		const mod = sqlite();
+		const dir = await tempDir();
+		const db = new mod.Database(join(dir, "rows.sqlite"));
+		try {
+			db.run("CREATE TABLE records (id TEXT PRIMARY KEY, value TEXT)");
+			db.run("BEGIN");
+			for (let index = 0; index < 30; index++)
+				db.run("INSERT INTO records VALUES (?, ?)", `item-${index}`, "needle");
+			db.run("COMMIT");
+		} finally {
+			db.close();
+		}
+		const search = createSearchToolDefinition(dir);
+		const output = text(
+			await search.execute(
+				"search-sqlite-text-pk-cap",
+				{ pattern: "needle", paths: "rows.sqlite:records" },
+				undefined,
+				undefined,
+				{} as never,
+			),
+		);
+		expect(output.split("\n")).toHaveLength(20);
+		expect(output).toContain("rows.sqlite:records:item-0:");
+		expect(output).toContain("rows.sqlite:records:item-19:");
+		expect(output).not.toContain("rows.sqlite:records:item-20:");
 	});
 });

@@ -501,9 +501,10 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				this.editor.setText("");
 				return;
 			}
-			if (bare("resume")) {
-				this.showSessionSelector();
+			if (command === "resume") {
 				this.editor.setText("");
+				if (argument) await this.handleResumeTarget(argument);
+				else this.showSessionSelector();
 				return;
 			}
 			if (bare("quit") || bare("exit")) {

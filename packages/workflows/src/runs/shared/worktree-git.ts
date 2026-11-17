@@ -9,8 +9,15 @@ import {
 } from "./worktree-allocation.js";
 import { type GitWorktreeGenerationAnchor, openGitWorktreeGenerationAnchor } from "./worktree-generation.js";
 import { gitFailureMessage, isGitTimeoutResult, runGit, runGitReadOnlyProbe } from "./worktree-git-runner.js";
-import { findCanonicalGitRoot } from "./worktree-root.js";
+import { findCanonicalGitRoot, resolveGitHeadBranch } from "./worktree-root.js";
 import type { GitResult, GitWorktreeSetupOptions, GitWorktreeSetupResult } from "./worktree-types.js";
+
+export function resolveInvocationGitBranch(cwd: string): string | undefined {
+	return resolveGitHeadBranch(cwd, (repoRoot) => {
+		const result = runGitReadOnlyProbe(repoRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+		return result.status === 0 ? result.stdout.trim() : undefined;
+	});
+}
 
 export { withWorktreeBucketIdsForTest } from "./worktree-allocation.js";
 export type { GitRunner } from "./worktree-git-runner.js";

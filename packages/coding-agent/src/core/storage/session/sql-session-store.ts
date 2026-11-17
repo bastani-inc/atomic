@@ -29,6 +29,7 @@ import {
 	sessionTailFrom,
 	stateSeqsBefore,
 } from "./session-resume.js";
+import { SqlSessionSearchIndex, yieldTurn } from "./session-search-index.js";
 import {
 	applySessionSummaryEntries,
 	materializeSessionSummaryMetadata,
@@ -39,6 +40,9 @@ import type {
 	SessionBlob,
 	SessionCompactionPoint,
 	SessionCwdMatcher,
+	SessionEntriesPage,
+	SessionEntriesQuery,
+	SessionEntryAt,
 	SessionEntryRange,
 	SessionListQuery,
 	SessionOpenMarker,
@@ -133,6 +137,14 @@ type ListingRow = HeaderRow & {
 	revision: string;
 };
 type SummaryRow = ListingRow & { search_texts_json: string };
+type ListingWindowRow = ListingRow & {
+	upto: number | bigint | null;
+	ord: number | bigint | null;
+	key_row: number | bigint | null;
+	fetched: number | bigint | null;
+	batch_chars: number | bigint | null;
+	page_chars: number | bigint | null;
+};
 /** A row's key and how many characters its stored text holds, for reading rows in pages. */
 type SizedRow = SqliteRow & { size: number | bigint | null };
 /** Cumulative text (0 when the whole batch fits), batch text, and batch row count including lookahead. */
@@ -242,11 +254,23 @@ async function migrateLegacyBlobBatch(
 /** Every listing column except search text, so an unchanged row keeps its cached summary. */
 const LISTING_COLUMNS =
 	"id, cwd, internal, header_json, last_seq, modified_at, message_count, first_message, name, has_name, summary, summarized_through_id, revision";
+const LISTING_SELECT_COLUMNS = LISTING_COLUMNS.split(", ")
+	.map((column) => `s.${column}`)
+	.join(", ");
 /** The characters a listing row holds, its search text aside, for reading listings in pages (#4954). */
 const LISTING_SIZE =
 	"length(id) + length(cwd) + length(header_json) + length(modified_at) + length(first_message) + COALESCE(length(name), 0) + COALESCE(length(summary), 0) + COALESCE(length(summarized_through_id), 0) + length(revision) + 256";
 /** Rows whose search text is read per query; well under SQLite's bound-parameter limit. */
 export const LISTING_FETCH_BATCH = 500;
+const LISTING_CWD_PAGE = 2_000;
+const STUB_ENTRY: SessionEntry = {
+	type: "custom",
+	id: "",
+	parentId: null,
+	timestamp: "1970-01-01T00:00:00.000Z",
+	customType: "",
+};
+
 /** Listing scopes (visibility and project) kept at once; the picker uses two. */
 const LISTING_SCOPES = 8;
 /**
@@ -285,6 +309,17 @@ function listingVersion(row: ListingRow): string {
 	return `${row.revision}\u0000${row.last_seq}\u0000${row.modified_at}\u0000${row.message_count}\u0000${row.has_name}\u0000${row.name}\u0000${row.summarized_through_id}\u0000${row.summary}\u0000${row.first_message}\u0000${row.header_json}`;
 }
 
+async function entryByteLengthOf(database: SqliteDatabase): Promise<(expression: string) => string> {
+	const dialect = dialectOf(database);
+	if (dialect.name !== "sqlite") return dialect.textByteLength;
+	try {
+		await database.get("SELECT octet_length('') AS bytes");
+		return (expression) => `octet_length(${expression})`;
+	} catch {
+		return dialect.textByteLength;
+	}
+}
+
 export class SqlSessionStore implements SessionStore {
 	private readonly database: SqliteDatabase;
 	private readonly dialect: StorageDialect;
@@ -298,6 +333,8 @@ export class SqlSessionStore implements SessionStore {
 	private readonly blobTable: SqlSnapshotBlobStore;
 	/** Set by `open`, once the store exists (#4971). */
 	openMarkers!: SqlSessionOpenMarkers;
+	readonly searchIndex?: SqlSessionSearchIndex;
+	private readonly entryByteLength: (expression: string) => string;
 	/** Session ids of each recently listed scope, valid while the store's change token is unchanged. */
 	private readonly scopes = new Map<string, { readonly token: string | undefined; readonly ids: readonly string[] }>();
 	/** Listed summaries of sessions that still exist at the cached version; never more than the store holds. */
@@ -320,15 +357,19 @@ export class SqlSessionStore implements SessionStore {
 		cwdMatcher: SessionCwdMatcher | undefined,
 		snapshotBlobs: SqlSnapshotBlobStore,
 		legacyBlobData: boolean,
+		searchIndex: SqlSessionSearchIndex | undefined,
+		entryByteLength: (expression: string) => string,
 	) {
 		this.database = database;
 		this.dialect = dialectOf(database);
+		this.entryByteLength = entryByteLength;
 		this.tables = tables;
 		this.prefix = prefix ?? "";
 		this.cwdMatcher = cwdMatcher;
 		this.snapshotBlobs = snapshotBlobs;
 		this.blobTable = snapshotBlobs;
 		this.legacyBlobData = legacyBlobData;
+		if (searchIndex !== undefined) this.searchIndex = searchIndex;
 	}
 
 	static async open(
@@ -478,7 +519,17 @@ export class SqlSessionStore implements SessionStore {
 			);
 		}
 		const blobs = await SqlSnapshotBlobStore.open(database, options.prefix);
-		const store = new SqlSessionStore(database, tables, options.prefix, options.cwdMatcher, blobs, legacyBlobData);
+		const searchIndex = await SqlSessionSearchIndex.open(database, tables, options.prefix);
+		const store = new SqlSessionStore(
+			database,
+			tables,
+			options.prefix,
+			options.cwdMatcher,
+			blobs,
+			legacyBlobData,
+			searchIndex,
+			await entryByteLengthOf(database),
+		);
 		store.openMarkers = new SqlSessionOpenMarkers(database, presence.open, () => store.assertOpen());
 		return store;
 	}
@@ -601,6 +652,7 @@ export class SqlSessionStore implements SessionStore {
 			validateSessionHeader(header);
 			validateSessionEntries(entries);
 			if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
+			await this.searchIndex?.forgetWithin(tx, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.entryChunks} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.entries} WHERE session_id = ?`, sessionId);
@@ -623,6 +675,91 @@ export class SqlSessionStore implements SessionStore {
 		return this.transaction((tx) => this.read(tx, sessionId), SESSION_TRANSACTION);
 	}
 
+	async readEntryRange(sessionId: string, query: SessionEntriesQuery): Promise<SessionEntriesPage> {
+		this.assertOpen();
+		validateSessionText("sessionId", sessionId);
+		query.signal?.throwIfAborted();
+		const session = await this.database.get<SqliteRow & { last_seq: number | bigint }>(
+			`SELECT last_seq FROM ${this.tables.sessions} WHERE id = ?`,
+			sessionId,
+		);
+		if (!session) throw new SessionNotFoundError(sessionId);
+		const lastSeq = Number(session.last_seq);
+		const fromSeq = Math.max(1, query.fromSeq);
+		const toSeq = Math.min(query.toSeq, lastSeq);
+		if (fromSeq > toSeq) return { lastSeq, entries: [], throughSeq: Math.max(toSeq, fromSeq - 1) };
+		if (query.maxChars !== undefined && query.maxChars <= 0) return { lastSeq, entries: [], throughSeq: fromSeq - 1 };
+		const skippedSet = query.skipTypes === undefined ? undefined : new Set(query.skipTypes);
+		const skippedPrefixes = (query.skipTypes ?? []).map((type) => `{"type":${JSON.stringify(type)},`);
+		const largeBytes = query.largeEntryBytes ?? 0x7fffffff;
+		const rows = await this.database.all<
+			SqliteRow & {
+				seq: number | bigint;
+				entry_json: string | null;
+				entry_head: string;
+				chunks: number | bigint;
+				remaining: number | bigint;
+				entry_type: string | null;
+			}
+		>(
+			`WITH sized AS (
+				SELECT seq, chunks, ${this.entryByteLength("entry_json")} AS raw_bytes,
+					${this.entryByteLength("entry_json")} + chunks * ? AS bytes
+				FROM ${this.tables.entries}
+				WHERE session_id = ? AND seq >= ? AND seq <= ?
+			),
+			paged AS (
+				SELECT seq, chunks, raw_bytes, count(*) OVER () AS remaining,
+					sum(bytes) OVER (ORDER BY seq) - bytes AS before_chars
+				FROM sized
+			)
+			SELECT p.seq, CASE WHEN p.chunks = 0 AND p.raw_bytes <= ? THEN e.entry_json END AS entry_json,
+				substr(e.entry_json, 1, 64) AS entry_head, p.chunks, p.remaining,
+				CASE WHEN p.chunks = 0 AND p.raw_bytes > ? AND substr(e.entry_json, 1, 8) <> '{"type":'
+					THEN ${this.dialect.jsonText("e.entry_json", "type")} END AS entry_type
+			FROM paged p
+			JOIN ${this.tables.entries} e ON e.session_id = ? AND e.seq = p.seq
+			WHERE p.before_chars < ?
+			ORDER BY p.seq`,
+			SESSION_ENTRY_CHUNK_BYTES,
+			sessionId,
+			fromSeq,
+			toSeq,
+			largeBytes,
+			largeBytes,
+			sessionId,
+			query.maxChars ?? Number.MAX_SAFE_INTEGER,
+		);
+		const entries: SessionEntryAt[] = [];
+		for (const row of rows) {
+			query.signal?.throwIfAborted();
+			if (skippedPrefixes.some((prefix) => row.entry_head.startsWith(prefix))) {
+				continue;
+			}
+			const seq = Number(row.seq);
+			const chunks = Number(row.chunks);
+			if (chunks > 0) {
+				const rawChunks = await this.readRawEntryChunks(this.database, sessionId, seq, chunks, query.signal);
+				const bytes = rawChunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+				if (bytes > largeBytes) entries.push({ seq, entry: STUB_ENTRY, rawChunks });
+				else {
+					const parsed = JSON.parse(Buffer.concat(rawChunks).toString("utf8")) as SessionEntry;
+					if (!skippedSet?.has(parsed.type)) entries.push({ seq, entry: parsed });
+				}
+			} else if (row.entry_json === null) {
+				if (row.entry_type !== null && skippedSet?.has(row.entry_type)) continue;
+				const rawChunks = await this.readInlineEntryBytes(sessionId, seq);
+				entries.push({ seq, entry: STUB_ENTRY, rawChunks });
+			} else {
+				const parsed = JSON.parse(row.entry_json) as SessionEntry;
+				if (!skippedSet?.has(parsed.type)) entries.push({ seq, entry: parsed });
+			}
+		}
+		const last = rows.at(-1);
+		const throughSeq = last !== undefined && rows.length < Number(last.remaining) ? Number(last.seq) : toSeq;
+		return { lastSeq, entries, throughSeq };
+	}
+
 	async readHeader(sessionId: string): Promise<SessionRecordHeader | undefined> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
@@ -637,6 +774,7 @@ export class SqlSessionStore implements SessionStore {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		await this.transaction(async (tx) => {
+			await this.searchIndex?.forgetWithin(tx, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.blobChunks} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.blobs} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
@@ -772,6 +910,14 @@ export class SqlSessionStore implements SessionStore {
 		this.assertListing(query);
 		// Validate the original query before binding only matching stored spellings below.
 		if (query.cwd?.includes("\0")) throw new StorageInvalidTextError(0);
+		if (query.withoutSearchText) {
+			for await (const summary of this.listWithoutSearchText(query)) {
+				this.assertListing(query);
+				yield summary;
+			}
+			this.assertListing(query);
+			return;
+		}
 		const listed = this.listing.then(() => this.listScope(query));
 		this.listing = listed.then(
 			() => {},
@@ -853,29 +999,127 @@ export class SqlSessionStore implements SessionStore {
 		return JSON.stringify(Object.values(row ?? {}).map(String));
 	}
 
-	/** The scope's session ids in store order, with a current summary cached for each. */
-	private async readScope(query: SessionListQuery, listedBefore: boolean): Promise<readonly string[]> {
+	private async *listWithoutSearchText(query: SessionListQuery): AsyncIterable<SessionSummary> {
+		await this.assertReadableSchema(this.database);
+		const scope = await this.scopeOf(query, true);
+		if (scope === undefined) return;
+		const order = this.dialect.rowOrder();
+		const bound = await this.database.get<SqliteRow & { upper: number | bigint | null }>(
+			`SELECT max(${order}) AS upper FROM ${this.tables.sessions}`,
+		);
+		const upper = Number(bound?.upper ?? 0);
+		const seen = new Set<string>();
+		for (let after = 0, limit: number = SESSION_READ_FETCH.first; after < upper; ) {
+			this.assertListing(query);
+			const rows = await this.database.all<ListingWindowRow>(
+				`WITH keyed AS MATERIALIZED (
+					SELECT ${order} AS ord, row_number() OVER (ORDER BY ${order}) AS key_row,
+						CASE WHEN ${scope.where} THEN ${LISTING_SIZE} END AS size
+					FROM ${this.tables.sessions} WHERE ${order} > ? AND ${order} <= ?
+					ORDER BY ${order} LIMIT ?
+				), bound AS (SELECT max(ord) AS upto FROM keyed),
+				page AS (
+					SELECT ord, key_row, count(*) OVER () AS fetched,
+						row_number() OVER (ORDER BY ord) AS page_row,
+						sum(size) OVER () AS batch_chars,
+						sum(size) OVER (ORDER BY ord) AS page_chars
+					FROM keyed WHERE size IS NOT NULL
+				), kept AS MATERIALIZED (
+					SELECT ord, key_row, fetched, batch_chars, page_chars FROM page
+					WHERE page_chars <= ? OR page_row = 1
+				)
+				SELECT bound.upto, kept.ord, kept.key_row, kept.fetched, kept.batch_chars, kept.page_chars,
+					${LISTING_SELECT_COLUMNS}
+				FROM bound
+				LEFT JOIN kept ON 1 = 1
+				LEFT JOIN ${this.tables.sessions} AS s ON ${this.dialect.rowOrder("s")} = kept.ord
+				ORDER BY kept.ord`,
+				...scope.params,
+				after,
+				upper,
+				limit,
+				SESSION_READ_PAGE_CHARS,
+			);
+			const upto = rows[0]?.upto;
+			if (upto === null || upto === undefined) break;
+			const listed = rows.filter((row) => row.ord !== null);
+			for (const row of listed) {
+				if (!seen.has(row.id) && scope.inScope(row)) {
+					seen.add(row.id);
+					yield summaryFromRow({ ...row, search_texts_json: "[]" });
+				}
+			}
+			const last = listed.at(-1);
+			const clipped = last !== undefined && listed.length < Number(last.fetched);
+			after = clipped ? Number(last.ord) : Number(upto);
+			const batchChars = Number(listed[0]?.batch_chars ?? 0);
+			const pageChars = Number(last?.page_chars ?? 0);
+			const next = !clipped
+				? limit * 4
+				: batchChars - pageChars <= SESSION_READ_PAGE_CHARS * 4
+					? limit
+					: Math.max(SESSION_READ_FETCH.min, Number(last.key_row) * 2);
+			limit = Math.min(SESSION_READ_FETCH.max, next);
+			await yieldTurn();
+		}
+		this.assertListing(query);
+	}
+
+	private async distinctCwds(paced: boolean, query: SessionListQuery): Promise<string[]> {
+		if (!paced)
+			return (
+				await this.database.all<SqliteRow & { cwd: string }>(`SELECT DISTINCT cwd FROM ${this.tables.sessions}`)
+			).map((project) => project.cwd);
+		const order = this.dialect.rowOrder();
+		const cwds = new Set<string>();
+		for (let after = 0; ; ) {
+			this.assertListing(query);
+			const rows = await this.database.all<SqliteRow & { ord: number | bigint; cwd: string }>(
+				`SELECT ${order} AS ord, cwd FROM ${this.tables.sessions} WHERE ${order} > ? ORDER BY ${order} LIMIT ?`,
+				after,
+				LISTING_CWD_PAGE,
+			);
+			for (const row of rows) cwds.add(row.cwd);
+			if (rows.length < LISTING_CWD_PAGE) return [...cwds];
+			after = Number(rows.at(-1)!.ord);
+			await yieldTurn();
+		}
+	}
+
+	private async scopeOf(
+		query: SessionListQuery,
+		paced: boolean,
+	): Promise<
+		| { readonly where: string; readonly params: SqliteValue[]; readonly inScope: (row: ListingRow) => boolean }
+		| undefined
+	> {
 		const matchesCwd =
 			query.cwd === undefined
 				? undefined
 				: (this.cwdMatcher?.(query.cwd) ?? ((candidate: string | undefined) => candidate === query.cwd));
 		let projectCwds: string[] | undefined;
 		if (matchesCwd) {
-			const projects = await this.database.all<SqliteRow & { cwd: string }>(
-				`SELECT DISTINCT cwd FROM ${this.tables.sessions}`,
-			);
-			projectCwds = projects.map((project) => project.cwd).filter(matchesCwd);
+			projectCwds = (await this.distinctCwds(paced, query)).filter(matchesCwd);
 			this.assertListing(query);
-			if (projectCwds.length === 0) return [];
+			if (projectCwds.length === 0) return undefined;
 		}
 		const idPrefix = query.idPrefix?.toLowerCase();
-		const scope = `(? = 1 OR internal = 0)${projectCwds ? ` AND cwd IN (${projectCwds.map(() => "?").join(", ")})` : ""}${idPrefix === undefined ? "" : " AND substr(lower(id), 1, ?) = ?"}`;
-		const params = [
-			query.includeInternal ? 1 : 0,
-			...(projectCwds ?? []),
-			...(idPrefix === undefined ? [] : [idPrefix.length, idPrefix]),
-		];
-		const inScope = (row: ListingRow) => !matchesCwd || matchesCwd(row.cwd);
+		return {
+			where: `(? = 1 OR internal = 0)${projectCwds ? ` AND cwd IN (${projectCwds.map(() => "?").join(", ")})` : ""}${idPrefix === undefined ? "" : " AND substr(lower(id), 1, ?) = ?"}`,
+			params: [
+				query.includeInternal ? 1 : 0,
+				...(projectCwds ?? []),
+				...(idPrefix === undefined ? [] : [idPrefix.length, idPrefix]),
+			],
+			inScope: (row: ListingRow) => !matchesCwd || matchesCwd(row.cwd),
+		};
+	}
+
+	/** The scope's session ids in store order, with a current summary cached for each. */
+	private async readScope(query: SessionListQuery, listedBefore: boolean): Promise<readonly string[]> {
+		const resolved = await this.scopeOf(query, false);
+		if (resolved === undefined) return [];
+		const { where: scope, params, inScope } = resolved;
 		if (listedBefore) {
 			const rows = (await this.readListingRows(scope, params)).filter(inScope);
 			this.assertListing(query);
@@ -1470,8 +1714,19 @@ export class SqlSessionStore implements SessionStore {
 
 	/** The JSON of a long entry, from its chunks, one statement each. */
 	private async readEntryChunks(tx: SqliteExecutor, sessionId: string, seq: number, count: number): Promise<string> {
+		return Buffer.concat(await this.readRawEntryChunks(tx, sessionId, seq, count)).toString("utf8");
+	}
+
+	private async readRawEntryChunks(
+		tx: SqliteExecutor,
+		sessionId: string,
+		seq: number,
+		count: number,
+		signal?: AbortSignal,
+	): Promise<Uint8Array[]> {
 		const chunks: Uint8Array[] = [];
 		for (let index = 0; index < count; index++) {
+			signal?.throwIfAborted();
 			const chunk = await tx.get<SqliteRow & { data: Uint8Array }>(
 				`SELECT data FROM ${this.tables.entryChunks} WHERE session_id = ? AND seq = ? AND idx = ?`,
 				sessionId,
@@ -1482,8 +1737,26 @@ export class SqlSessionStore implements SessionStore {
 				throw new StorageError(`Session ${sessionId} entry ${seq} is missing chunk ${index} of ${count}`);
 			}
 			chunks.push(chunk.data);
+			if (signal !== undefined && index + 1 < count) await yieldTurn();
 		}
-		return Buffer.concat(chunks).toString("utf8");
+		return chunks;
+	}
+
+	private async readInlineEntryBytes(sessionId: string, seq: number): Promise<Uint8Array[]> {
+		if (this.dialect.name === "sqlite") {
+			const row = await this.database.get<SqliteRow & { data: Uint8Array }>(
+				`SELECT CAST(entry_json AS BLOB) AS data FROM ${this.tables.entries} WHERE session_id = ? AND seq = ?`,
+				sessionId,
+				seq,
+			);
+			return row ? [row.data] : [];
+		}
+		const row = await this.database.get<SqliteRow & { entry_json: string }>(
+			`SELECT entry_json FROM ${this.tables.entries} WHERE session_id = ? AND seq = ?`,
+			sessionId,
+			seq,
+		);
+		return row ? [new TextEncoder().encode(row.entry_json)] : [];
 	}
 
 	private forWrite(

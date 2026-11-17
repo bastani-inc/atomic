@@ -115,13 +115,26 @@ function readNumber(value: string, start: number): { value: number; end: number 
 	if (index === start) return undefined;
 	return { value: Number.parseInt(value.slice(start, index), 10), end: index };
 }
-function parseLineRangeToken(token: string, invalid: (message: string) => void): ReadLineRange | undefined {
+type SelectorUnit = "line" | "entry";
+
+function isHistorySessionEntryPath(pathValue: string): boolean {
+	return /^history:\/\/sessions\/[^/?#]+/.test(pathValue);
+}
+
+function parseLineRangeToken(
+	token: string,
+	invalid: (message: string) => void,
+	unit: SelectorUnit = "line",
+): ReadLineRange | undefined {
+	const label = unit === "entry" ? "entry" : "line";
+	const title = unit === "entry" ? "Entry" : "Line";
+	const plural = unit === "entry" ? "entries" : "lines";
 	let index = token[0]?.toLowerCase() === "l" ? 1 : 0;
 	const startNumber = readNumber(token, index);
 	if (!startNumber) return undefined;
 	const start = startNumber.value;
 	if (start < 1) {
-		invalid("Line selector 0 is invalid; lines are 1-indexed. Use :1.");
+		invalid(`${title} selector 0 is invalid; ${plural} are 1-indexed. Use :1.`);
 		return undefined;
 	}
 	index = startNumber.end;
@@ -135,29 +148,32 @@ function parseLineRangeToken(token: string, invalid: (message: string) => void):
 		index++;
 	}
 	if (!separator) {
-		invalid(`Invalid line selector: ${token}`);
+		invalid(`Invalid ${label} selector: ${token}`);
 		return undefined;
 	}
 	if (token[index]?.toLowerCase() === "l") index++;
 	const endNumber = readNumber(token, index);
 	if (!endNumber) {
-		if (separator === "+") invalid(`Invalid line selector :${token}; + requires a line count >= 1.`);
+		if (separator === "+")
+			invalid(
+				`Invalid ${label} selector :${token}; + requires ${unit === "entry" ? "an entry" : "a line"} count >= 1.`,
+			);
 		return separator === "+" ? undefined : { start };
 	}
 	if (endNumber.end !== token.length) {
-		invalid(`Invalid line selector: ${token}`);
+		invalid(`Invalid ${label} selector: ${token}`);
 		return undefined;
 	}
 	const parsed = endNumber.value;
 	if (separator === "+") {
 		if (parsed < 1) {
-			invalid(`Invalid line selector :${token}; + count must be >= 1.`);
+			invalid(`Invalid ${label} selector :${token}; + count must be >= 1.`);
 			return undefined;
 		}
 		return { start, end: start + parsed - 1 };
 	}
 	if (parsed < start) {
-		invalid(`Invalid line selector :${token}; end must be >= start.`);
+		invalid(`Invalid ${label} selector :${token}; end must be >= start.`);
 		return undefined;
 	}
 	return { start, end: parsed };
@@ -179,15 +195,20 @@ function isLineRangeListCandidate(value: string): boolean {
 	return true;
 }
 
-function parseLineRangeList(value: string, invalid: (message: string) => void): ReadLineRange[] | undefined {
+function parseLineRangeList(
+	value: string,
+	invalid: (message: string) => void,
+	unit: SelectorUnit = "line",
+): ReadLineRange[] | undefined {
 	if (!isLineRangeListCandidate(value)) return undefined;
 	const ranges: ReadLineRange[] = [];
+	const label = unit === "entry" ? "entry" : "line";
 	for (const token of value.split(",")) {
 		if (!token) {
-			invalid(`Invalid line selector: ${value}`);
+			invalid(`Invalid ${label} selector: ${value}`);
 			return undefined;
 		}
-		const range = parseLineRangeToken(token, invalid);
+		const range = parseLineRangeToken(token, invalid, unit);
 		if (!range) return undefined;
 		ranges.push(range);
 	}
@@ -202,10 +223,11 @@ function extractTrailingLineRange(
 ): { path: string; ranges: ReadLineRange[] } | undefined {
 	const colonIndex = value.lastIndexOf(":");
 	if (colonIndex < 0) return undefined;
-	const rangeText = value.slice(colonIndex + 1);
-	const ranges = parseLineRangeList(rangeText, invalid);
-	if (!ranges) return undefined;
 	const path = value.slice(0, colonIndex);
+	const unit: SelectorUnit = isHistorySessionEntryPath(path) ? "entry" : "line";
+	const rangeText = value.slice(colonIndex + 1);
+	const ranges = parseLineRangeList(rangeText, invalid, unit);
+	if (!ranges) return undefined;
 	// Support the `file:START:END` (and grep-style `file:LINE:COL`) colon
 	// convention: a trailing bare-number segment preceded by another bare-number
 	// segment reads as START..END. Without this the leading number stays glued to

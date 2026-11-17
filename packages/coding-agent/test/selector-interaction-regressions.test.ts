@@ -646,5 +646,21 @@ describe("selector interaction and rendering regressions (#5237)", () => {
 		customCancel.handleInput("\x1b[99;6u");
 		assert.equal(cancelled, false);
 		assert.equal(customCancel.state.getQuery(), "");
+
+		for (const ctrlC of ["\x03", "\x1b[99;5u", "\x1b[1089::99;5u", "\x1b[27;5;99~"]) {
+			let helpCancelled = 0;
+			const withHelp = new Selector<string>({
+				title: "Models",
+				items: rows,
+				style: PLAIN_SELECTOR_STYLE,
+				onCancel: () => {
+					helpCancelled++;
+				},
+			});
+			withHelp.handleInput("?");
+			assert.ok(withHelp.render(80).some((line) => plain(line).includes("close this help")));
+			withHelp.handleInput(ctrlC);
+			assert.equal(helpCancelled, 1);
+		}
 	});
 });

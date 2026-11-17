@@ -10,7 +10,7 @@ import {
 	type StorageDescriptor,
 	type StorageFailureCause,
 } from "@bastani/atomic/storage";
-import { journalKeyRangeRead } from "./internal.js";
+import { type JournalKeyRangeReadOptions, journalKeyRangeRead } from "./internal.js";
 import {
 	type AppendOutcome,
 	JOURNAL_LEASE,
@@ -657,7 +657,12 @@ export class ShardedRunJournal implements RunJournal {
 	 * backend narrows the checkpoints of a root without reading the whole root. A run that moved to another shard while
 	 * it was read is read again there, and an event already returned is not returned twice.
 	 */
-	async *readKeyRange(runId: string, fromKey: string, toKey: string): AsyncIterable<JournalEntry> {
+	async *readKeyRange(
+		runId: string,
+		fromKey: string,
+		toKey: string,
+		options?: JournalKeyRangeReadOptions,
+	): AsyncIterable<JournalEntry> {
 		this.assertOpen();
 		validateText("runId", runId);
 		validateText("key", fromKey);
@@ -668,7 +673,9 @@ export class ShardedRunJournal implements RunJournal {
 			const shard = current.journal;
 			const read = journalKeyRangeRead(shard);
 			const entries: AsyncIterable<JournalEntry> =
-				read === undefined ? filterKeyRange(shard.read(runId), fromKey, toKey) : read(runId, fromKey, toKey);
+				read === undefined
+					? filterKeyRange(shard.read(runId), fromKey, toKey)
+					: read(runId, fromKey, toKey, options);
 			for await (const entry of entries) {
 				this.assertOpen();
 				if (returned.has(entry.seq)) continue;

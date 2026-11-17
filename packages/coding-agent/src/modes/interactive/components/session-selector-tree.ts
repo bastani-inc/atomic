@@ -16,34 +16,66 @@ export interface FlatSessionNode {
 	ancestorContinues: boolean[];
 }
 
+const pathKeys = new WeakMap<SessionInfo, { path: string; key: string }>();
+
+function sessionPathKey(session: SessionInfo): string {
+	const cached = pathKeys.get(session);
+	if (cached?.path === session.path) return cached.key;
+	const key = getSessionPathKey(session.path);
+	pathKeys.set(session, { path: session.path, key });
+	return key;
+}
+
+function removeParentCycles(parents: Map<SessionTreeNode, SessionTreeNode>): void {
+	const visitedFrom = new Map<SessionTreeNode, SessionTreeNode>();
+	for (const origin of parents.keys()) {
+		let node: SessionTreeNode | undefined = origin;
+		while (node && !visitedFrom.has(node)) {
+			visitedFrom.set(node, origin);
+			node = parents.get(node);
+		}
+		if (node && visitedFrom.get(node) === origin) parents.delete(node);
+	}
+}
+
 /**
  * Build a tree structure from sessions based on parentSessionPath.
  * Returns root nodes sorted by modified date (descending).
  */
 export function buildSessionTree(sessions: SessionInfo[]): SessionTreeNode[] {
+	const nodes = sessions.map((session): SessionTreeNode => ({ session, children: [] }));
 	const byPath = new Map<string, SessionTreeNode>();
+	for (const node of nodes) byPath.set(node.session.path, node);
+	let byKey: Map<string, SessionTreeNode> | undefined;
+	const parentOf = (parentPath: string): SessionTreeNode | undefined => {
+		const exact = byPath.get(parentPath);
+		if (exact) return exact;
+		if (!byKey) {
+			byKey = new Map();
+			for (const node of nodes) byKey.set(sessionPathKey(node.session), node);
+		}
+		return byKey.get(getSessionPathKey(parentPath));
+	};
 
-	for (const session of sessions) {
-		byPath.set(getSessionPathKey(session.path), { session, children: [] });
+	const parents = new Map<SessionTreeNode, SessionTreeNode>();
+	for (const node of nodes) {
+		const parentPath = node.session.parentSessionPath;
+		const parent = parentPath ? parentOf(parentPath) : undefined;
+		if (parent && parent !== node) parents.set(node, parent);
 	}
+	removeParentCycles(parents);
 
 	const roots: SessionTreeNode[] = [];
-
-	for (const session of sessions) {
-		const node = byPath.get(getSessionPathKey(session.path))!;
-		const parentPath = session.parentSessionPath ? getSessionPathKey(session.parentSessionPath) : undefined;
-
-		if (parentPath && byPath.has(parentPath)) {
-			byPath.get(parentPath)!.children.push(node);
-		} else {
-			roots.push(node);
-		}
+	for (const node of nodes) {
+		const parent = parents.get(node);
+		if (parent) parent.children.push(node);
+		else roots.push(node);
 	}
 
 	// Sort children and roots by modified date (descending)
-	const sortNodes = (nodes: SessionTreeNode[]): void => {
-		nodes.sort((a, b) => b.session.modified.getTime() - a.session.modified.getTime());
-		for (const node of nodes) {
+	const sortNodes = (list: SessionTreeNode[]): void => {
+		list.sort((a, b) => b.session.modified.getTime() - a.session.modified.getTime());
+		for (const node of list) {
 			sortNodes(node.children);
 		}
 	};

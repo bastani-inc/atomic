@@ -9,6 +9,9 @@ import {
 	type StorageDialect,
 	type StorageNotificationSubscription,
 	type StorageNotifications,
+	type StoredJournalPayload,
+	storedJournalPayload,
+	storedJsonChunks,
 } from "@bastani/atomic/storage";
 import {
 	type AppendOutcome,
@@ -336,8 +339,87 @@ export function observeSqlPoolTransactions(journal: RunJournal, observe: () => v
 	});
 }
 
+export const STAGE_OVERVIEW_PAYLOAD_CHARS = 4096;
+
+interface StageOverviewAttempt {
+	readonly model: string;
+	readonly success: boolean;
+	readonly usage?: unknown;
+}
+
+interface StageOverviewCheckpoint {
+	readonly kind: "stage";
+	readonly workflowId?: unknown;
+	readonly checkpointId?: unknown;
+	readonly name?: unknown;
+	readonly replayKey?: unknown;
+	readonly completedAt?: unknown;
+	readonly topology?: unknown;
+	readonly sessionId?: unknown;
+	readonly output?: unknown;
+	readonly startedAt?: unknown;
+	readonly endedAt?: unknown;
+	readonly durationMs?: unknown;
+	readonly modelAttempts?: readonly StageOverviewAttempt[];
+	readonly worktreeSnapshots?: unknown;
+}
+
+function isStageCheckpointRecord(value: object): value is StageOverviewCheckpoint {
+	return "kind" in value && value.kind === "stage";
+}
+
+function stageOverviewPayloadStub(checkpoint: StageOverviewCheckpoint): string {
+	return JSON.stringify({
+		overviewStub: 1,
+		kind: checkpoint.kind,
+		workflowId: checkpoint.workflowId,
+		checkpointId: checkpoint.checkpointId,
+		name: checkpoint.name,
+		replayKey: checkpoint.replayKey,
+		completedAt: checkpoint.completedAt,
+		...(checkpoint.topology === undefined ? {} : { topology: checkpoint.topology }),
+		...(checkpoint.sessionId === undefined ? {} : { sessionId: checkpoint.sessionId }),
+		...(checkpoint.output === undefined ? {} : { output: null }),
+		...(checkpoint.startedAt === undefined ? {} : { startedAt: checkpoint.startedAt }),
+		...(checkpoint.endedAt === undefined ? {} : { endedAt: checkpoint.endedAt }),
+		...(checkpoint.durationMs === undefined ? {} : { durationMs: checkpoint.durationMs }),
+		...(checkpoint.modelAttempts === undefined
+			? {}
+			: {
+					modelAttempts: checkpoint.modelAttempts.map(({ model, success, usage }) => ({
+						model,
+						success,
+						...(usage === undefined ? {} : { usage }),
+					})),
+				}),
+		...(checkpoint.worktreeSnapshots === undefined ? {} : { worktreeSnapshots: checkpoint.worktreeSnapshots }),
+	});
+}
+
+export function storedEventPayload(type: string, json: string, value?: unknown): StoredJournalPayload {
+	if (type === RUN_EVENT_TYPES.checkpointRecorded && json.length > STAGE_OVERVIEW_PAYLOAD_CHARS) {
+		const parsed = value === undefined ? (JSON.parse(json) as unknown) : value;
+		if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) && isStageCheckpointRecord(parsed)) {
+			return {
+				payload: stageOverviewPayloadStub(parsed),
+				chunks: storedJsonChunks(json) ?? [Buffer.from(json, "utf8")],
+			};
+		}
+	}
+	return storedJournalPayload(json, value);
+}
+
+export interface JournalKeyRangeReadOptions {
+	readonly overview?: boolean;
+}
+
 /** A run's events whose key is at least `fromKey` and below `toKey`, read through the journal's key index. */
-export type JournalKeyRangeRead = (runId: string, fromKey: string, toKey: string) => AsyncIterable<JournalEntry>;
+export type JournalKeyRangeRead = (
+	runId: string,
+	fromKey: string,
+	toKey: string,
+	options?: JournalKeyRangeReadOptions,
+) => AsyncIterable<JournalEntry>;
 
 const keyRangeReads = new WeakMap<RunJournal, JournalKeyRangeRead>();
 

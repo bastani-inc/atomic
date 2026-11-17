@@ -13,6 +13,7 @@ import type { ResourceLoader } from "../src/core/resource-loader-types.js";
 import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.js";
 
 const REAL_SDK_WORKFLOW_RELOAD_TIMEOUT_MS = 120_000;
 
@@ -73,6 +74,7 @@ test(
 		const root = mkdtempSync(join(tmpdir(), "atomic-sdk-package-workflows-"));
 		const cwd = join(root, "project");
 		const agentDir = join(root, "agent");
+		linkSharedTranspileCache(agentDir);
 		const packageDir = join(root, "package");
 		const workflowsDir = join(packageDir, "workflows");
 		const resultPath = join(root, "workflow-result.txt");
@@ -231,6 +233,7 @@ for (const workflowAccess of ["absent", "snapshot", "refresh"] as const) {
 		async () => {
 			const root = mkdtempSync(join(tmpdir(), "atomic-sdk-custom-workflows-"));
 			const agentDir = join(root, "agent");
+			linkSharedTranspileCache(agentDir);
 			const workflowPath = join(root, "custom.ts");
 			const disabledPath = join(root, "disabled.ts");
 			writeWorkflow(workflowPath, "sdk-custom-first");
@@ -301,6 +304,7 @@ test(
 		const root = mkdtempSync(join(tmpdir(), "atomic-sdk-untrusted-workflows-"));
 		const cwd = join(root, "project");
 		const agentDir = join(root, "agent");
+		linkSharedTranspileCache(agentDir);
 		const packageDir = join(root, "package");
 		let requests = 0;
 		const server = createServer((_request, response) => {

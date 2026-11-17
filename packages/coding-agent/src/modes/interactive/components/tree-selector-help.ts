@@ -4,9 +4,9 @@ import {
 	type Focusable,
 	getKeybindings,
 	type Keybinding,
+	sliceByColumn,
 	truncateToWidth,
 	visibleWidth,
-	wrapTextWithAnsi,
 } from "@bastani/atomic-tui";
 import { theme } from "../theme/theme.js";
 import { formatKeyText } from "./keybinding-hints.js";
@@ -25,15 +25,26 @@ export class SearchLine implements Component, Focusable {
 
 	render(width: number): string[] {
 		if (width <= 0) return [""];
-
 		const query = this.treeList.getSearchQuery();
-		const line = query
-			? `  ${theme.fg("muted", "Type to search:")} ${theme.fg("accent", query)}`
-			: `  ${theme.fg("muted", "Type to search:")} `;
-		if (!this.focused) return [truncateToWidth(line, width)];
-
-		const content = truncateToWidth(line, Math.max(0, width - 1));
-		return [`${content}${CURSOR_MARKER}\x1b[7m \x1b[27m`];
+		const boxWidth = Math.max(8, width - 2);
+		const field = Math.max(1, boxWidth - 4);
+		const prompt = theme.fg("text", "⌕ ");
+		const cursor = this.focused ? `${CURSOR_MARKER}\x1b[7m \x1b[27m` : "";
+		const room = Math.max(1, field - 2 - (this.focused ? 1 : 0));
+		const shown =
+			visibleWidth(query) > room ? `…${sliceByColumn(query, visibleWidth(query) - room + 1, room - 1)}` : query;
+		const text = query ? theme.fg("text", shown) : this.focused ? "" : theme.fg("dim", "Search…");
+		const placeholder = !query && this.focused ? theme.fg("dim", "Search…") : "";
+		const content = query
+			? `${prompt}${text}${cursor}`
+			: truncateToWidth(`${prompt}${text}${cursor}${placeholder}`, field, "");
+		const pad = " ".repeat(Math.max(0, field - visibleWidth(content)));
+		const border = (value: string) => theme.fg(query ? "muted" : "borderMuted", value);
+		return [
+			` ${border(`╭${"─".repeat(boxWidth - 2)}╮`)}`,
+			` ${border("│ ")}${content}${pad}${border(" │")}`,
+			` ${border(`╰${"─".repeat(boxWidth - 2)}╯`)}`,
+		].map((line) => (visibleWidth(line) > width ? truncateToWidth(line, width) : line));
 	}
 
 	handleInput(_keyData: string): boolean {
@@ -46,47 +57,29 @@ export class TreeHelp implements Component {
 	invalidate(): void {}
 
 	render(width: number): string[] {
-		const items = TREE_HELP_ITEMS.map(({ keys, label, labelFirst }) => {
+		const items = TREE_HELP_ITEMS.map(({ keys, label, labelFirst, drop }) => {
 			const text = formatHelpKeys(keys);
-			if (!text) return label;
-			return labelFirst ? `${label} ${text}` : `${text} ${label}`;
+			return { text: !text ? label : labelFirst ? `${label} ${text}` : `${text} ${label}`, drop };
 		});
-
-		const availableWidth = Math.max(1, width);
-		const indent = "  ";
-		const separator = " · ";
-		const lines: string[] = [];
-		let currentLine = "";
-
-		for (const item of items) {
-			const candidate = currentLine
-				? `${currentLine}${separator}${item}`
-				: visibleWidth(`${indent}${item}`) <= availableWidth
-					? `${indent}${item}`
-					: item;
-			if (!currentLine || visibleWidth(candidate) <= availableWidth) {
-				currentLine = candidate;
-				continue;
-			}
-
-			lines.push(...wrapTextWithAnsi(currentLine.trimEnd(), availableWidth));
-			currentLine = visibleWidth(`${indent}${item}`) <= availableWidth ? `${indent}${item}` : item;
+		const room = Math.max(1, width - 2);
+		const kept = [...items];
+		const line = () => kept.map((item) => item.text).join(" · ");
+		const byDrop = [...items].filter((item) => item.drop !== undefined).sort((a, b) => (a.drop ?? 0) - (b.drop ?? 0));
+		for (const item of byDrop) {
+			if (visibleWidth(line()) <= room) break;
+			kept.splice(kept.indexOf(item), 1);
 		}
-
-		if (currentLine) {
-			lines.push(...wrapTextWithAnsi(currentLine.trimEnd(), availableWidth));
-		}
-
-		return lines.map((line) => theme.fg("muted", line));
+		return [theme.fg("dim", truncateToWidth(`  ${line()}`, width, "…"))];
 	}
 }
 
-const TREE_HELP_ITEMS: Array<{ keys: Keybinding[]; label: string; labelFirst?: boolean }> = [
+const TREE_HELP_ITEMS: Array<{ keys: Keybinding[]; label: string; labelFirst?: boolean; drop?: number }> = [
 	{ keys: ["tui.select.up", "tui.select.down"], label: "move" },
-	{ keys: ["tui.editor.cursorLeft", "tui.editor.cursorRight"], label: "page" },
-	{ keys: ["app.tree.foldOrUp", "app.tree.unfoldOrDown"], label: "branch" },
-	{ keys: ["app.tree.editLabel"], label: "label" },
-	{ keys: ["app.tree.toggleLabelTimestamp"], label: "label time" },
+	{ keys: ["tui.select.confirm"], label: "go here" },
+	{ keys: ["tui.editor.cursorLeft", "tui.editor.cursorRight"], label: "page", drop: 3 },
+	{ keys: ["app.tree.foldOrUp", "app.tree.unfoldOrDown"], label: "branch", drop: 5 },
+	{ keys: ["app.tree.editLabel"], label: "label", drop: 4 },
+	{ keys: ["app.tree.toggleLabelTimestamp"], label: "label time", drop: 1 },
 	{
 		keys: [
 			"app.tree.filter.default",
@@ -97,8 +90,10 @@ const TREE_HELP_ITEMS: Array<{ keys: Keybinding[]; label: string; labelFirst?: b
 		],
 		label: "filters",
 		labelFirst: true,
+		drop: 0,
 	},
-	{ keys: ["app.tree.filter.cycleForward", "app.tree.filter.cycleBackward"], label: "cycle", labelFirst: true },
+	{ keys: ["app.tree.filter.cycleForward", "app.tree.filter.cycleBackward"], label: "filter", drop: 2 },
+	{ keys: ["tui.select.cancel"], label: "cancel" },
 ];
 
 function formatHelpKeys(keybindings: Keybinding[]): string {
@@ -115,7 +110,9 @@ function formatHelpKeys(keybindings: Keybinding[]): string {
 		.replace(/\bup\b/g, "↑")
 		.replace(/\bdown\b/g, "↓")
 		.replace(/\bleft\b/g, "←")
-		.replace(/\bright\b/g, "→");
+		.replace(/\bright\b/g, "→")
+		.replace("↑/↓", "↑↓")
+		.replace("←/→", "←→");
 }
 
 function compactRawKeys(keys: string[]): string {

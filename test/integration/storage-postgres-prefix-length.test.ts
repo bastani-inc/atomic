@@ -122,7 +122,8 @@ async function createdIdentifiers(database: SqliteDatabase): Promise<string[]> {
 		SELECT relname AS name FROM pg_class c WHERE relnamespace = current_schema()::regnamespace AND (relkind = 'r'
 			OR relkind = 'i' AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conindid = c.oid))
 		UNION SELECT tgname FROM pg_trigger WHERE NOT tgisinternal
-		UNION SELECT proname FROM pg_proc WHERE pronamespace = current_schema()::regnamespace
+		UNION SELECT proname FROM pg_proc p WHERE pronamespace = current_schema()::regnamespace
+			AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')
 		ORDER BY 1`);
 	return rows.map((row) => String(row.name));
 }
