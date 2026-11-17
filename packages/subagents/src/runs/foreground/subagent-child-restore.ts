@@ -31,9 +31,9 @@ import {
 	resolveIntercomSessionTarget,
 } from "../../intercom/intercom-bridge.js";
 import { childAllowsIntercom } from "../../intercom/supervisor-authorization.js";
+import { type CwdVerdict, checkLaunchCwd } from "../../shared/launch-cwd.js";
 import { collectKnownModelProviders, toModelInfo } from "../../shared/model-info.js";
 import { createCandidateModelResolver } from "../../shared/model-resolution.js";
-import { pathExists } from "../../shared/path-exists.js";
 import {
 	getCurrentSubagentDepth,
 	type IntercomEventBus,
@@ -486,9 +486,11 @@ async function relaunchChild(
 	// be gone, and the worktree that was restored for that directory is where it continues.
 	const scope = currentWorktreeRootMappings();
 	let cwd = mapRestoredPath(record.cwd, scope);
+	let cwdVerdict: CwdVerdict;
 	let sessionManager: SessionManager | undefined;
 	if (fresh) {
-		if (!(await pathExists(cwd))) return unrestorable(`its working directory no longer exists: ${cwd}`);
+		cwdVerdict = await checkLaunchCwd(cwd);
+		if (cwdVerdict.state === "missing") return unrestorable(`its working directory no longer exists: ${cwd}`);
 		// A forked launch starts on the branch it prepared from its owner's conversation, never on a fresh context.
 		if (fresh.forkSession) {
 			const branch = await reopenChildSession(ctx, {
@@ -508,7 +510,8 @@ async function relaunchChild(
 		if ("reason" in reopened) return unrestorable(reopened.reason);
 		sessionManager = await continueChildWhereItWorked(ctx, cwd, reopened.sessionManager);
 		cwd = mapRestoredPath(sessionManager.getCwd(), scope);
-		if (!(await pathExists(cwd))) return unrestorable(`its working directory no longer exists: ${cwd}`);
+		cwdVerdict = await checkLaunchCwd(cwd);
+		if (cwdVerdict.state === "missing") return unrestorable(`its working directory no longer exists: ${cwd}`);
 		const previousIntercomId = readPreviousIntercomId(sessionManager);
 		onReopened(previousIntercomId);
 		if (previousIntercomId) await hold?.add(previousIntercomId);
@@ -634,6 +637,7 @@ async function relaunchChild(
 		getChildSessionOptions: ctx.getChildSessionOptionsResolver?.() ?? ctx.getChildSessionOptions,
 		resourceLoaderInheritanceSnapshot: deps.pi.getResourceLoaderInheritanceSnapshot?.(),
 		cwd: cwd,
+		cwdVerdict,
 		runId: record.runId,
 		index: record.index,
 		sessionDir:

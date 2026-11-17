@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { describe, test } from "vitest";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
+import { checkLaunchCwd } from "../../packages/subagents/src/shared/launch-cwd.js";
 import type { SingleResult, TaskExecutionHooks } from "../../packages/subagents/src/shared/types.js";
 import {
 	INTERCOM_DETACH_REQUEST_EVENT,
@@ -463,7 +464,10 @@ test("task hooks retain the live result through tool activity and exact Intercom
 		const reports: Parameters<TaskExecutionHooks["reportActivity"]>[0][] = [];
 		let yields = 0;
 		let launches = 0;
+		// Handed its cwd check, the run starts its child within the call.
+		const cwdVerdict = await checkLaunchCwd(dir);
 		const pending = runSync(dir, [bridgedAgent()], "fake-worker", "task", {
+			cwdVerdict,
 			runId: "task-hooks",
 			intercomSessionName: "child-a",
 			allowIntercomDetach: true,
@@ -546,7 +550,9 @@ test("task hooks retain the live result through tool activity and exact Intercom
 test("task cleanup failure preserves successful execution and is not reaped", async () => {
 	await withTempDir(async (dir) => {
 		let execution: Parameters<TaskExecutionHooks["onExecution"]>[0] | undefined;
+		const cwdVerdict = await checkLaunchCwd(dir);
 		const pending = runSync(dir, [bridgedAgent()], "fake-worker", "task", {
+			cwdVerdict,
 			runId: "cleanup-failed",
 			taskExecution: {
 				signal: new AbortController().signal,
@@ -581,7 +587,9 @@ test("task signal cancels the original execution after Intercom yields", async (
 		const controller = new AbortController();
 		const bus = eventBus(new EventEmitter());
 		let execution: Parameters<TaskExecutionHooks["onExecution"]>[0] | undefined;
+		const cwdVerdict = await checkLaunchCwd(dir);
 		const pending = runSync(dir, [bridgedAgent()], "fake-worker", "task", {
+			cwdVerdict,
 			runId: "task-cancel",
 			allowIntercomDetach: true,
 			intercomSessionName: "child-a",
@@ -618,8 +626,10 @@ test("task group detach yields every active sibling once without ending their pr
 		const yields = [0, 0];
 		let commits = 0;
 		const executions: Array<Parameters<TaskExecutionHooks["onExecution"]>[0]> = [];
+		const cwdVerdict = await checkLaunchCwd(dir);
 		const pending = [0, 1].map((index) =>
 			runSync(dir, [bridgedAgent()], "fake-worker", " x ", {
+				cwdVerdict,
 				runId: `task-group-${index}`,
 				intercomSessionName: `child-${index}`,
 				allowIntercomDetach: true,

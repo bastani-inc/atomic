@@ -1,8 +1,8 @@
-import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { parseSessionStartTimeoutMs, serializeSessionStartError } from "@bastani/atomic";
 import type { AgentConfig } from "../../agents/agent-types.js";
 import { ensureArtifactsDir, getArtifactPaths, writeArtifact } from "../../shared/artifacts.js";
+import { checkLaunchCwd } from "../../shared/launch-cwd.js";
 import { splitKnownThinkingSuffix, splitUnknownThinkingSuffix, THINKING_LEVELS } from "../../shared/model-info.js";
 import type {
 	AgentProgress,
@@ -224,27 +224,36 @@ function unknownModelResult(agent: AgentConfig, task: string, candidate: string,
 
 /** Where one launch stands in its run's admission order. */
 interface AdmissionTurn {
-	/** Settles once every launch of the run that started before this one has been admitted or has ended. */
-	readonly ready: Promise<void>;
+	/** Settles once every launch of the run that started before this one has been admitted or has ended; none is ahead. */
+	readonly ahead: Promise<void> | undefined;
 	release(): void;
 }
 
-const admissionQueues = new Map<string, Promise<void>>();
+const admissionQueues = new Map<string, { pending: number; tail: Promise<void> }>();
 
 /**
  * A turn in the admission order of run `runId`. The control plane numbers a run's children in the order it admits
- * them, and the checks a launch makes before admission are asynchronous, so a launch waits for the ones that started
- * before it to be admitted, or to end, before it is admitted itself.
+ * them, and a launch can wait before its admission, to check its cwd, so it is admitted after the launches of its run
+ * that started before it. With none of them still waiting it is admitted at once, within its call.
  */
 function takeAdmissionTurn(runId: string): AdmissionTurn {
-	const ready = admissionQueues.get(runId) ?? Promise.resolve();
+	const queue = admissionQueues.get(runId) ?? { pending: 0, tail: Promise.resolve() };
+	const ahead = queue.pending > 0 ? queue.tail : undefined;
 	const released = Promise.withResolvers<void>();
-	const tail = ready.then(() => released.promise);
-	admissionQueues.set(runId, tail);
-	void tail.then(() => {
-		if (admissionQueues.get(runId) === tail) admissionQueues.delete(runId);
-	});
-	return { ready, release: () => released.resolve() };
+	queue.pending += 1;
+	queue.tail = queue.tail.then(() => released.promise);
+	admissionQueues.set(runId, queue);
+	let open = true;
+	return {
+		ahead,
+		release() {
+			if (!open) return;
+			open = false;
+			released.resolve();
+			queue.pending -= 1;
+			if (queue.pending === 0 && admissionQueues.get(runId) === queue) admissionQueues.delete(runId);
+		},
+	};
 }
 
 export async function runSingleInProcess(
@@ -274,9 +283,10 @@ async function launchSingleInProcess(
 		"sessionStartTimeoutMs",
 	);
 	const cwd = options.cwd ?? runtimeCwd;
-	const cwdStat = await stat(cwd).catch(() => undefined);
-	if (!cwdStat) return refusedResult(agent, task, missingCwdMessage(cwd));
-	if (!cwdStat.isDirectory()) return refusedResult(agent, task, `cwd is not a directory: ${cwd}`);
+	// A launch that checked its cwd starts its child within this call; one that did not checks it here.
+	const cwdVerdict = options.cwdVerdict?.path === cwd ? options.cwdVerdict : await checkLaunchCwd(cwd);
+	if (cwdVerdict.state === "missing") return refusedResult(agent, task, missingCwdMessage(cwd));
+	if (cwdVerdict.state === "not-directory") return refusedResult(agent, task, `cwd is not a directory: ${cwd}`);
 	options.modelRoute?.assertCurrent();
 	const launchModel = options.modelOverride ?? agent.model ?? "";
 	// #4188: a launch that names a concrete model, in its call or its agent, runs that model and the fallbackModels its
@@ -523,8 +533,8 @@ async function launchSingleInProcess(
 				}
 			: undefined,
 	};
-	await turn.ready;
-	const admission = await control.admitChildSession(spec, parent);
+	if (turn.ahead) await turn.ahead;
+	const admission = control.admitCheckedChildSession(spec, cwdVerdict, parent);
 	turn.release();
 	if (!admission.admitted) return refusedResult(agent, task, admission.refusal?.reason ?? "child admission refused");
 	const startedAt = Date.now();

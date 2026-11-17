@@ -22,6 +22,7 @@ import type {
 import type { TaskTranscriptSource } from "../../../../coding-agent/src/core/tasks/supervisor.js";
 import type { AgentConfig } from "../../agents/agents.js";
 import { sendTaskTranscriptMessage } from "../../intercom/task-message.js";
+import { checkLaunchCwd } from "../../shared/launch-cwd.js";
 import { taskRecordModel } from "../../shared/model-info.js";
 import type { IntercomEventBus, RunSyncOptions, SingleResult, SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
@@ -592,6 +593,8 @@ export async function runAgentTask(input: {
 				...(input.intentTask === undefined ? {} : { intentTask: input.intentTask }),
 				options: {
 					...input.options,
+					// It starts where its cwd is now, as its original launch did.
+					cwdVerdict: undefined,
 					signal: undefined,
 					interruptSignal: undefined,
 					intercomDetachSignal: undefined,
@@ -612,6 +615,9 @@ export async function runAgentTask(input: {
 				operation: `${input.options.runId}:${input.options.index ?? 0}:resume:${randomUUID()}`,
 			}),
 	});
+	// Checked before its task starts, so its dispatch admits and starts the child within that dispatch.
+	const cwdVerdict =
+		input.options.cwdVerdict?.path === childCwd ? input.options.cwdVerdict : await checkLaunchCwd(childCwd);
 	input.options.modelRoute?.assertCurrent();
 	const started = await input.host.startAgentTask(
 		{
@@ -665,6 +671,7 @@ export async function runAgentTask(input: {
 					const ownerSessionId = input.recordChild?.ownerSessionId;
 					const child = await input.runtime.runSync(input.cwd, input.agents, input.agent, input.task, {
 						...input.options,
+						cwdVerdict,
 						// A background child is released while it waits, and its owner wakes it (#4326).
 						...(input.options.releaseWhenWaiting === undefined &&
 						ownerSessionId !== undefined &&
@@ -709,12 +716,17 @@ export async function runAgentTask(input: {
 							onExecution: (execution) => {
 								executionBound = true;
 								trackChildClosing(childId, execution.cleanup);
-								void execution.cleanup.then(cleaned.resolve, (error) =>
-									cleaned.resolve({
-										kind: "failed",
-										resources: [{ resource: "agent-session", code: "CleanupFailed", message: String(error) }],
-									}),
-								);
+								// The host ends a cancelled task at its cleanup, with or without its result: the result goes first.
+								void Promise.allSettled([result])
+									.then(() => execution.cleanup)
+									.then(cleaned.resolve, (error) =>
+										cleaned.resolve({
+											kind: "failed",
+											resources: [
+												{ resource: "agent-session", code: "CleanupFailed", message: String(error) },
+											],
+										}),
+									);
 							},
 							yieldTaskWait: () => {
 								parentObserving = false;

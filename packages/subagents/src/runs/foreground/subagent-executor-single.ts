@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { normalizeSkillInput } from "../../agents/skills.js";
 import { INTERCOM_BRIDGE_MARKER, resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.js";
 import { requestSupervisorAuthorization } from "../../intercom/supervisor-authorization.js";
+import { checkLaunchCwd } from "../../shared/launch-cwd.js";
 import { collectKnownModelProviders, type ModelInfo, toModelInfo } from "../../shared/model-info.js";
 import { createCandidateModelResolver } from "../../shared/model-resolution.js";
 import {
@@ -216,12 +217,14 @@ export async function runSinglePath(
 			childIntercomTarget,
 			ctx.getChildSessionOptions?.({ tools: agentConfig.tools }),
 		);
+		const cwdVerdict = await checkLaunchCwd(effectiveCwd);
 		const runOptions: RunSyncOptions = {
 			runningCapacity: deps.config.parallel?.runningCapacity,
 			sessionStartTimeoutMs: deps.config.sessionStartTimeoutMs,
 			getChildSessionOptions: ctx.getChildSessionOptionsResolver?.() ?? ctx.getChildSessionOptions,
 			resourceLoaderInheritanceSnapshot: deps.pi.getResourceLoaderInheritanceSnapshot?.(),
 			cwd: effectiveCwd,
+			cwdVerdict,
 			signal,
 			interruptSignal: interruptController.signal,
 			...(progressDir ? { progressPath: path.join(progressDir, "progress.md") } : {}),

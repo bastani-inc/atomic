@@ -17,7 +17,7 @@ const capture = vi.hoisted(() => ({ spec: undefined as ChildSpec | undefined }))
 vi.mock("../../packages/subagents/src/runs/inprocess/control-registry.ts", () => ({
 	getOrCreateSubagentControl: () => ({
 		registerAgents: () => {},
-		admitChildSession: (spec: ChildSpec) => {
+		admitCheckedChildSession: (spec: ChildSpec) => {
 			capture.spec = spec;
 			return { refusal: { reason: "dispatch boundary captured; no child execution" } };
 		},

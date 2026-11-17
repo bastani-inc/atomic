@@ -58,6 +58,7 @@ import {
 import { childAllowsIntercom } from "../../intercom/supervisor-authorization.js";
 import { ensureArtifactsDir, writeArtifact, writeMetadata } from "../../shared/artifacts.js";
 import { DEFAULT_MAX_JSONL_BYTES } from "../../shared/jsonl-writer.js";
+import { type CwdVerdict, checkLaunchCwd } from "../../shared/launch-cwd.js";
 import {
 	resolveEffectiveThinking,
 	splitKnownThinkingSuffix,
@@ -1631,8 +1632,12 @@ export class SubagentControlRuntime {
 	}
 
 	async admitChildSession(spec: ChildSpec, parent: ParentContext = this.parent): Promise<AdmittedResult> {
-		const cwdStat = await stat(spec.cwd).catch(() => undefined);
-		if (!cwdStat?.isDirectory()) {
+		return this.admitCheckedChildSession(spec, await checkLaunchCwd(spec.cwd), parent);
+	}
+
+	/** Admits a child within the call, given its launch's check of `spec.cwd`. */
+	admitCheckedChildSession(spec: ChildSpec, cwd: CwdVerdict, parent: ParentContext = this.parent): AdmittedResult {
+		if (cwd.state !== "directory") {
 			return {
 				refusal: {
 					kind: "invalidCwd",
@@ -1649,7 +1654,6 @@ export class SubagentControlRuntime {
 		if (spec.childId !== undefined) this.childIds.set(identity.path, spec.childId);
 		const childModePolicy = resolveChildModePolicy(spec);
 		const sessionDir = spec.sessionManager?.getSessionDir() || sessionDirectory(this.sessionRoot, identity.path);
-		await mkdir(sessionDir, { recursive: true });
 		return {
 			admitted: AdmittedChild.create({
 				identity,
@@ -1904,18 +1908,21 @@ export class SubagentControlRuntime {
 			});
 		try {
 			const workflow = workflowMetadataFromContext(admitted.spec.parent?.orchestrationContext);
-			const opening = admitted.sessionManager
-				? SessionManager.open(
-						admitted.sessionManager.getSessionStore(),
-						admitted.sessionManager.getSessionId(),
-						admitted.policy.cwd,
-						{ history: "tail" },
-					)
-				: SessionManager.create(
-						admitted.policy.cwd,
-						admitted.sessionDir,
-						workflow ? { internal: true, workflow } : { internal: true },
-					);
+			// The session opens once its directory exists.
+			const opening = mkdir(admitted.sessionDir, { recursive: true }).then(() =>
+				admitted.sessionManager
+					? SessionManager.open(
+							admitted.sessionManager.getSessionStore(),
+							admitted.sessionManager.getSessionId(),
+							admitted.policy.cwd,
+							{ history: "tail" },
+						)
+					: SessionManager.create(
+							admitted.policy.cwd,
+							admitted.sessionDir,
+							workflow ? { internal: true, workflow } : { internal: true },
+						),
+			);
 			// The fallback gate the child session gets, its own with its parent's, to check the model it starts on.
 			let startGate: CreateAgentSessionOptions["isFallbackModelAllowed"];
 			const prepareChildSession = () => {
@@ -2561,7 +2568,7 @@ export class SubagentControlRuntime {
 			if (this.attemptTerminators.get(admitted.identity.path) === terminate)
 				this.attemptTerminators.delete(admitted.identity.path);
 			// The attempt's events are all in its artifact once it returns.
-			await eventLog?.flush();
+			if (eventLog) await eventLog.flush();
 		}
 	}
 
