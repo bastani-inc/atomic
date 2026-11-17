@@ -54,6 +54,7 @@ import {
 	abortSessionWork,
 	drainSessionReload,
 	drainSessionWork,
+	drainSessionWorkWithin,
 	hasCallingSessionWork,
 	ownedSessionPermits,
 	ownedSessionStores,
@@ -768,7 +769,7 @@ export function closeAgentSession(
 			else retired.resolve();
 		}
 		await attempt("terminal workflow summaries", () => drainTerminalWorkflowSummaries(session));
-		await attempt("active work", () => drainSessionWork(session));
+		await attempt("active work", () => drainSessionWorkWithin(session));
 		await attempt("detached calls", () => releaseDetachedCallHolds(session));
 		await attempt("events", async () => {
 			await session._agentEventQueue.catch(() => {});

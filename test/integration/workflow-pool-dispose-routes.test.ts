@@ -105,6 +105,61 @@ test("a failed worker cleanup still releases the root's Intercom routes and repo
 	}
 });
 
+test("a stage watcher that throws as its pool closes still lets the pool close its coordinator, and the close reports the listener's error", async () => {
+	const directory = makeTempDirectory("pool-dispose-watcher-");
+	const path = join(directory, "journal.sqlite");
+	const releasePath = join(directory, "release");
+	writeTextSync(releasePath, "");
+	const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
+	const childPath = fileURLToPath(new URL("../fixtures/pool-heartbeat-child.ts", import.meta.url));
+	const child = await loadWorkerDefinition({
+		path: childPath,
+		exportName: "child",
+		digest: await definitionDigest(childPath),
+	});
+	const pool = new LocalWorkerPool(backend, {
+		journalPath: path,
+		workers: 1,
+		definitions: [{ definition: child, path: childPath, exportName: "child" }],
+		admission: { limits: { session: 1 } },
+		coordinator: "in-process",
+	});
+	const opened = journals.opened - journals.closed;
+	try {
+		const result = await run(
+			workflow({
+				name: "dispose-watcher-root",
+				description: "",
+				inputs: {},
+				outputs: {},
+				async run(ctx) {
+					await ctx.workflow(child, { inputs: { releasePath, tools: 1 } });
+					return {};
+				},
+			}),
+			{},
+			{ runId: "root", cwd: directory, store: createStore(), durableBackend: backend },
+		);
+		assert.equal(result.status, "completed", JSON.stringify(result));
+		assert.equal(journals.opened - journals.closed, opened + 1, "the coordinator has its own journal open");
+		const listenerFailure = new Error("the view watching the stage failed");
+		const watched = pool.watchPooledStage({ runId: "root", stageId: "watched" }, (message) => {
+			if (message.kind === "ended") throw listenerFailure;
+		});
+		await assert.rejects(pool.close(), (error: unknown) => error === listenerFailure);
+		await watched;
+		assert.equal(
+			journals.opened - journals.closed,
+			opened,
+			"the coordinator closed its journal though a watcher threw",
+		);
+	} finally {
+		await pool.close().catch(() => {});
+		await backend.close();
+		removeTempDirectory(directory);
+	}
+});
+
 test("closing a pool releases its pooled runs' route claims on the root's store (#3903)", async () => {
 	const directory = makeTempDirectory("pool-dispose-claims-");
 	const path = join(directory, "journal.sqlite");

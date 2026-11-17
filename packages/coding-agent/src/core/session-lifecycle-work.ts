@@ -180,6 +180,45 @@ export async function drainSessionWork(
 	}
 }
 
+/**
+ * How long disposal waits for a session's work to settle once it has cancelled it. Work that observes its cancellation
+ * settles at once, and a storage append that waits for a busy database's write lock settles within that lock wait (30 s
+ * by default); work still running after this is stuck, such as a storage append that never settles, and disposal
+ * closes the session without it rather than hang.
+ */
+export const SESSION_WORK_DRAIN_MS = 60_000;
+
+/** Thrown, as a cause of `ShutdownFailed`, when disposal stopped waiting for work that did not settle. */
+export class SessionWorkUnsettledError extends Error {
+	readonly code = "SessionWorkUnsettled";
+	readonly pending: number;
+	readonly waitedMs: number;
+
+	constructor(pending: number, waitedMs: number) {
+		super(
+			`${pending} session ${pending === 1 ? "operation" : "operations"} still running ${waitedMs / 1000} s after disposal cancelled ${pending === 1 ? "it" : "them"}; the session closed without waiting for ${pending === 1 ? "it" : "them"} to finish`,
+		);
+		this.name = "SessionWorkUnsettledError";
+		this.pending = pending;
+		this.waitedMs = waitedMs;
+	}
+}
+
+/** `drainSessionWork` for disposal: waits at most `limitMs`, then throws `SessionWorkUnsettledError`. */
+export async function drainSessionWorkWithin(session: object, limitMs = SESSION_WORK_DRAIN_MS): Promise<void> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const expired = new Promise<true>((resolve) => {
+		timer = setTimeout(() => resolve(true), limitMs);
+	});
+	try {
+		const drained = drainSessionWork(session).then(() => false as const);
+		if (await Promise.race([drained, expired]))
+			throw new SessionWorkUnsettledError(work.get(session)?.size ?? 0, limitMs);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 export function renewSessionWork(session: object): void {
 	lifetimes.delete(session);
 	quitSignals.delete(session);
