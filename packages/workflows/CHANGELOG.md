@@ -2,22 +2,40 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed the `/workflow` command and all of its subcommands. The workflow commands are now `/workflows` and `/workflow-authoring`, and neither takes flags. The `workflow` tool and the SDK are unchanged. **Migration:**
+  - `/workflow <name> [key=value ...]`, `/workflow list`, `/workflow inputs <name>` and `/workflow <name> --help`: ask the agent, which uses the `workflow` tool.
+  - `/workflow status [run-id]`: `/workflows`, or `/workflows <run-id>` for one run's graph.
+  - `/workflow pause`: `p` in the run's graph. `/workflow quit`: `q` twice in the run's graph.
+  - `/workflow resume <run-id>`: `r` in the run's graph for this session's runs; `/resume` for runs left by an earlier session or interrupted by a restart.
+  - `/workflow resume <run-id> --accept-entry-changes`: resume from `/resume`, which asks `Workflow definition changed since this run started · enter resume with the new definition · esc cancel`.
+  - `/workflow fork <run-id> [--from <stage>]`: `d` on a finished stage in the graph, then `f` in its detail, which asks `New run from <stage>? enter confirm · esc cancel`.
+  - `/workflow reload`: `/reload`.
+  - `/workflow pause <run-id> <stage>` and `/workflow resume <run-id> <stage>`: `x` twice on the stage in the graph stops it, and its stage chat resumes it ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+
+### Added
+
+- `/workflow-authoring` adds the workflow authoring guide to the conversation without starting a model turn and shows `Loaded workflow authoring reference (ctrl+o to expand)`. `/workflow-authoring <request>` also submits the request ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- The workflow graph has run keys: `p` pauses the run, `r` resumes a paused or blocked run, and `q` pressed twice within 3 seconds quits it so it can be resumed. `d` opens the detail of a completed or failed stage. A completed stage's detail shows its duration and tokens, with `f fork from stage · t transcript · l logs · esc back`; a failed stage's detail adds `r retry from stage` ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+
 ### Changed
 
+- `h` in the workflow graph hides it and returns to the view that opened it, such as the workflow list or agent panel ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - An attached stage chat's composer has heavy accent rules naming `stage · <name> · <state>` and a `Message <stage>…` placeholder (`Answer <stage>…` while it waits on a question), matching a subagent's chat ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
-- `/workflows` lists the session's runs and the registered workflow definitions in one sheet, unless the session has exactly one run, which opens straight into its graph. Runs show their status, stage, elapsed time and cost, or a failed run's short reason; definitions show their description and how many inputs they take. Rows update while the sheet is open and keep your search and selected run. If the rows change while you are moving through them, Enter is ignored until the new rows are shown; press it again. Type to search; Esc clears the search, and Esc with an empty search closes the sheet. Enter opens a run's graph, and Esc at the graph's top returns to the sheet; Enter on a definition starts it, asking for its inputs first. With no runs and no definitions it says "No workflows in this session." ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
-- The workflow inputs form never fills in an answer for you: a select or boolean input without a `default` starts unchosen, instead of on its first choice or off, so a required one must be answered and an optional one is left out. Each field shows `✓`, or `✗` with the reason (`choose one`, `must be a whole number`, …), from the start, and a fractional integer or an unrecognised boolean is refused in the form, instead of a fractional integer failing the run afterwards or an unrecognised boolean being read as off. Array, object, record, nullable and constant inputs read JSON and keep other text as written, so `5` fills a `Type.Literal(5)` input, and they show `✓` only for a value the run accepts ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- `/workflows` lists the session's runs under the title **Workflows**. Rows show each run's status, stage, elapsed time and cost, or a failed run's short reason; Space previews a run, typing searches, and Enter opens its graph. Rows update while the list is open and keep your search and selection, and Enter waits for changed rows to be shown before acting. Esc clears the search first, then closes the list. With no runs it shows `No workflows in this session.` and closes with Esc, not Enter ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- `workflow` tool `inputs` and `get` results omit defaults that JSON cannot represent, such as functions, BigInt values and infinite numbers; the run still applies and checks the original default ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- `workflow` tool `inputs` and `get` results include declared input constraints: text length, pattern, format, numeric bounds, multiples and constants ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Fixed
 
 - Fixed `/workflows` never finishing when the host closed its picker without showing it ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
-- Fixed boolean workflow inputs such as `1` and `TRUE` displaying or toggling inconsistently with their submitted value in the picker and inline form ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
-- Fixed whitespace-only optional workflow inputs overriding defaults instead of being left out, and JSON-looking text inputs being submitted as objects or arrays instead of literal strings ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
-- Fixed workflow input forms interpreting terminal commands embedded in field names, descriptions, choices or prefilled values instead of displaying them as text ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- Fixed workflow lifecycle notices writing terminal control sequences from workflow names, run IDs and error text to the terminal. Those sequences are now inert, including in narrow layouts ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- Fixed workflow input listings and tool results throwing on defaults that JSON cannot encode, such as BigInt values ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Removed
 
-- The below-editor `BACKGROUND` workflow list and its Alt+K/J scrolling. Each run now has a row in the main chat's agent panel with its stage progress, current stage and any waiting question; Enter on it opens the graph ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- The below-editor `BACKGROUND` workflow list and its Alt+K/J and Alt+PageUp/PageDown scrolling. Each run now has a row in the main chat's agent panel with its stage progress, current stage and any waiting question; Enter on it opens the graph ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ## [0.9.88] - 2026-11-16
 

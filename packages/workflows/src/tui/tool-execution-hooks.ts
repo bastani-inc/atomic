@@ -1,12 +1,7 @@
-/**
- * Tool execution hooks: record a workflow stage's live tool calls on its graph node from the host's tool events.
- */
-
 import type { Store } from "../shared/store.js";
 import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { StoreSnapshot } from "../shared/store-types.js";
 
-/** The parts of the extension API the hooks subscribe through. */
 export interface LiveWidgetAPI {
 	on?: (event: string, handler: (payload: unknown, context?: unknown) => void) => void;
 	events?: {

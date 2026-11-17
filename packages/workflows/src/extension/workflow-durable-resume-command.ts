@@ -40,13 +40,8 @@ export interface WorkflowResumeCatalog {
 	readonly completed: readonly ResumableWorkflowEntry[];
 }
 
-/**
- * `/workflow resume <id> --accept-entry-changes`: resume a root whose local worker definitions' entry modules were
- * edited since it last ran, running its unfinished children with the edited modules (#4200).
- */
 export const ACCEPT_ENTRY_CHANGES_FLAG = "--accept-entry-changes";
 
-/** What a `/workflow resume` command line asks of the resume beyond its target. */
 export interface DurableResumeCommandOptions {
 	readonly acceptEntryChanges?: boolean;
 }
@@ -181,13 +176,13 @@ export async function handleDurableResume(
 
 	if (allOpenable.length === 0) {
 		fail(
-			"No resumable or completed durable workflows found. Usage: /workflow resume <id> (or /resume for Atomic sessions).",
+			"No resumable or completed durable workflows found. Usage: /resume <id> (or /resume for sessions and workflow runs).",
 		);
 		return true;
 	}
 	if (!policy.allowInputPicker) {
 		const instruction = catalog.completed.length === 0 ? "Resume with" : "Resume/open with";
-		print(`${formatResumableWorkflowList(allOpenable)}\n\n${instruction}: /workflow resume <id>`);
+		print(`${formatResumableWorkflowList(allOpenable)}\n\n${instruction}: /resume <id>`);
 		return true;
 	}
 	let picked: Awaited<ReturnType<typeof openWorkflowResumeSelector>>;

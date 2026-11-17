@@ -2,20 +2,27 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed the `/workflow` slash command and all of its subcommands; `/workflows` (`Browse running and completed workflows`) and `/workflow-authoring` (`Load the reference for writing workflow definitions`) are the workflow commands, and neither takes flags. Ask the agent to run, list or inspect workflows (it uses the `workflow` tool). Pause, resume and quit a run with `p`, `r` and `q` in its graph, fork with `f` in a finished stage's detail (`d`), resume runs from earlier sessions with `/resume`, and rescan workflow resources with `/reload`. The workflows package changelog lists where each subcommand went ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+
 ### Added
 
-- `AgentSession.interruptTurn()` ends the current turn without closing a subagent child to further messages, and `WorkflowRunControl` gains optional `panelRuns()`, `subscribePanelRuns()` and `openRun()` for the agent panel ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- `ExtensionAPI.registerAgentPanelSource()` adds an extension's items, such as the workflows extension's runs, to the agent panel and `/tasks` ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- `SelectorState` gains a `maxVisible` getter and `setMaxVisible()` to change how many rows a picker shows, and `setItems()` drops checked ids whose rows were removed ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Changed
 
 - The main chat's below-prompt task line is now the **agent panel**: one row per running or recent background subagent, workflow run and shell, with its status glyph, name, task, elapsed time and tokens (a workflow run shows its stage progress, current stage, waiting question or failure reason). ↓ on an empty prompt focuses it; Enter or → opens a subagent's or shell's chat, or a run's graph; `x` twice stops; finished rows fade and leave after a few minutes. A stage or subagent chat lists its own active tasks below its prompt in the same rows, and `renderTaskFooter` renders those rows ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - A subagent's chat has an attached composer: heavy accent rules naming the subagent, its task and its state (`debugger · #5220 spawn lock · 18m`), and a `Message debugger…` placeholder (`Answer debugger…` while it waits on a question). Opened from the agent panel, ← on its empty prompt returns to the main chat ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - `/tasks` lists workflow runs beside subagents and shells, grouped **Needs input**, **Working** and **Done** under a header with their counts. Space on a waiting row or a workflow run opens a peek card with its question and a reply box, `/` filters the list, and Enter on a run opens its graph ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
-- The host input form (`ctx.ui.hostInputForm`, used by `/workflow <name>`) shows on each field whether its value is ready, `✓` or `✗` with the reason, and refuses a fractional `integer`, and a `boolean` other than `true`, `false`, `on`, `off`, `1` or `0`, instead of reading it as off. `HostInputFormField` gains `const`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`, `minLength`, `maxLength`, `pattern`, `format` and `schema`, which the form checks each value against ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- The host input form (`ctx.ui.hostInputForm`) shows on each field whether its value is ready, `✓` or `✗` with the reason, and refuses a fractional `integer`, and a `boolean` other than `true`, `false`, `on`, `off`, `1` or `0`, instead of reading it as off ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- Inline navigation views temporarily hide extension widgets above and below the editor, including the agent panel, and queued-message and pending-shell previews so the view's rows and key hints stay visible. Closing the last inline navigation view restores their latest content ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Fixed
 
 - Fixed the host input form (`ctx.ui.hostInputForm`) writing terminal control sequences from field names, descriptions, choices, placeholders and prefilled values to the terminal, and drawing lines wider than a narrow terminal. Control characters now show escaped, and every line fits the width ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- Fixed host input forms accepting integers outside JavaScript's safe integer range and silently rounding their value. They now show a validation error ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Fixed `ctx.ui.hostInputForm` never settling under the isolated interactive engine when the host could not read the form's fields, such as a non-string `description`. The call now rejects, and requests that cannot be sent release their pending form and abort listener ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Removed

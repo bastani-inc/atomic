@@ -77,7 +77,8 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/model` | Switch models and automatically save the startup default |
 | `/thinking` | Switch thinking level and automatically save the startup default |
 | `/scoped-models` | Enable/disable models for CTRL+P cycling |
-| `/workflow` | List/run workflows; inspect, pause, quit, or resume runs; reload workflow resources |
+| `/workflows` | Browse running and completed workflows |
+| `/workflow-authoring` | Load the reference for writing workflow definitions |
 | `/settings` | Theme, message delivery, transport, and other preferences |
 | `/resume` | Pick from previous sessions |
 | `/new` | Start a new session |
@@ -91,7 +92,7 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/copy` | Copy last assistant message to clipboard |
 | `/export [file]` | Export session to HTML |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
-| `/reload` | Reload keybindings, extensions, skills, prompts, and context files |
+| `/reload` | Reload keybindings, extensions, skills, prompts, context files and workflow resources |
 | `/hotkeys` | Show all keyboard shortcuts |
 | `/changelog` | Display the full version history |
 | `/exit` | Exit Atomic |

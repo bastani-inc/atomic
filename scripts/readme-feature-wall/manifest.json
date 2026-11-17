@@ -353,7 +353,7 @@
       "lesson": "W.3 Inspect and control workflows",
       "anchor": "#61-touring-the-builtins",
       "title": "Inspect and control workflows",
-      "blurb": "List definitions, inspect input contracts, check live status, and open a run graph with <code>/workflows</code>.",
+      "blurb": "Browse running and completed workflows with <code>/workflows</code>, then pause, resume or quit a run from its graph.",
       "alt": "An earlier Atomic session listing workflows, inspecting inputs and status, and opening the live control-demo graph",
       "interactions": [
         "/workflow list",
@@ -635,8 +635,8 @@
       "lesson": "W.2 Run a workflow with typed inputs",
       "anchor": "#61-touring-the-builtins",
       "title": "Run a workflow with typed inputs",
-      "blurb": "Use <code>/workflow &lt;name&gt; key=value</code> to validate static inputs against TypeBox before a run starts.",
-      "alt": "Atomic showing the typed-input-demo input contract, launching it with a string path and integer depth, and listing its live run status",
+      "blurb": "Ask for a workflow by name; the workflow tool validates its typed inputs against TypeBox before the run starts.",
+      "alt": "An earlier Atomic session showing the typed-input-demo input contract, launching it with a string path and integer depth, and listing its live run status",
       "interactions": [
         "/workflow inputs typed-input-demo",
         "/workflow typed-input-demo path=src-client.ts depth=2",

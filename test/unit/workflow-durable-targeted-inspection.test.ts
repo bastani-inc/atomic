@@ -170,7 +170,7 @@ describe("targeted durable workflow inspection", () => {
 		if (result.action !== "statusDetail" || "error" in result) assert.fail("expected durable run detail");
 		assert.equal(result.detail.status, "crashed");
 		assert.equal(result.detail.resumable, true);
-		assert.match(result.detail.resumeGuidance ?? "", new RegExp(`/workflow resume ${ROOT_ID}`));
+		assert.match(result.detail.resumeGuidance ?? "", new RegExp(`Resume ${ROOT_ID} explicitly with /resume`));
 		assert.deepEqual(
 			result.detail.stages.map((stage) => [stage.name, stage.status, stage.sessionId, stage.sessionFile]),
 			[["draft", "running", "phase-6-session", "/tmp/retained-phase-6.jsonl"]],

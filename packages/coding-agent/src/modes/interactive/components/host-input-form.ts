@@ -10,8 +10,6 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@bastani/atomic-tui";
-import { type TSchema, Type } from "typebox";
-import { Value } from "typebox/value";
 import type { HostInputFormField, HostInputFormRequest } from "../../../core/extensions/ui-types.js";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { Theme } from "../theme/theme.js";
@@ -63,96 +61,6 @@ function sanitizeDisplayText(value: string, tabWidth = 4): string {
 
 function sanitizeSingleLine(value: string): string {
 	return sanitizeDisplayText(value).replace(/\n/g, " ");
-}
-
-const INVALID_PATTERN = "invalid pattern in the workflow schema";
-
-function firstSchemaError(def: TSchema, value: unknown, kind: string): string {
-	const errors = [...Value.Errors(def, value)];
-	const depth = (path: string): number => path.split("/").length;
-	const first = errors.reduce<(typeof errors)[number] | undefined>(
-		(best, error) => (best === undefined || depth(error.schemaPath) < depth(best.schemaPath) ? error : best),
-		undefined,
-	);
-	if (first === undefined) return `does not match ${kind} schema`;
-	const where = first.instancePath ? `${first.instancePath} ` : "";
-	switch (first.keyword) {
-		case "const":
-			return `${where}must equal ${JSON.stringify(first.params.allowedValue)}`;
-		case "minLength":
-		case "maxLength":
-			return `${where}${first.message} (${first.keyword} ${first.params.limit})`;
-		default:
-			return `${where}${first.message}`;
-	}
-}
-
-function checkSchema(schema: TSchema, value: unknown, kind: string): string | undefined {
-	try {
-		return Value.Check(schema, value) ? undefined : firstSchemaError(schema, value, kind);
-	} catch (error) {
-		if (error instanceof SyntaxError) return INVALID_PATTERN;
-		return error instanceof Error && error.message ? error.message : `does not match ${kind} schema`;
-	}
-}
-
-function schemaValue(schema: TSchema, text: string): unknown {
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(text, (_key, value) => {
-			if (typeof value === "number" && !Number.isFinite(value)) {
-				throw new RangeError("non-finite number");
-			}
-			return value;
-		});
-	} catch {
-		return text;
-	}
-	if (checkSchema(schema, parsed, "value") === undefined) return parsed;
-	return checkSchema(schema, text, "value") === undefined ? text : parsed;
-}
-
-function schemaConstraintReason(field: HostInputFormField, value: number | string): string | undefined {
-	if (field.const !== undefined && value !== field.const) {
-		return `must equal ${JSON.stringify(field.const)}`;
-	}
-	if (field.type === "integer" || field.type === "number") {
-		if (typeof value !== "number") return undefined;
-		if (
-			field.minimum === undefined &&
-			field.maximum === undefined &&
-			field.exclusiveMinimum === undefined &&
-			field.exclusiveMaximum === undefined &&
-			field.multipleOf === undefined
-		) {
-			return undefined;
-		}
-		const opts = {
-			...(field.minimum !== undefined ? { minimum: field.minimum } : {}),
-			...(field.maximum !== undefined ? { maximum: field.maximum } : {}),
-			...(field.exclusiveMinimum !== undefined ? { exclusiveMinimum: field.exclusiveMinimum } : {}),
-			...(field.exclusiveMaximum !== undefined ? { exclusiveMaximum: field.exclusiveMaximum } : {}),
-			...(field.multipleOf !== undefined ? { multipleOf: field.multipleOf } : {}),
-		};
-		const schema = field.type === "integer" ? Type.Integer(opts) : Type.Number(opts);
-		return checkSchema(schema, value, field.type);
-	}
-	if (typeof value !== "string") return undefined;
-	if (
-		field.minLength === undefined &&
-		field.maxLength === undefined &&
-		field.pattern === undefined &&
-		field.format === undefined
-	) {
-		return undefined;
-	}
-	const schema = Type.String({
-		...(field.minLength !== undefined ? { minLength: field.minLength } : {}),
-		...(field.maxLength !== undefined ? { maxLength: field.maxLength } : {}),
-		...(field.pattern !== undefined ? { pattern: field.pattern } : {}),
-		...(field.format !== undefined ? { format: field.format } : {}),
-	});
-	return checkSchema(schema, value, "text");
 }
 
 function rawColumn(line: string, displayColumn: number): number {
@@ -550,31 +458,21 @@ export class HostInputFormComponent implements Component, Focusable {
 			return "required";
 		}
 		if (empty) return undefined;
-		if (field.schema !== undefined) {
-			const schema = field.schema as TSchema;
-			return checkSchema(schema, schemaValue(schema, value), "value");
-		}
 		if (field.type === "select") {
 			return (field.choices ?? []).includes(value) ? undefined : "not in choices";
 		}
 		if (field.type === "boolean") {
-			const normalized = value.trim().toLowerCase();
-			if (!BOOLEAN_TEXT.has(normalized)) return "must be on or off";
-			const parsed = normalized === "true" || normalized === "1" || normalized === "on";
-			if (field.const !== undefined && parsed !== field.const) return `must equal ${JSON.stringify(field.const)}`;
-			return undefined;
+			return BOOLEAN_TEXT.has(value.trim().toLowerCase()) ? undefined : "must be on or off";
 		}
 		if (field.type === "integer") {
 			const n = Number(value);
 			if (!Number.isInteger(n)) return "must be a whole number";
-			return schemaConstraintReason(field, n);
+			return Number.isSafeInteger(n) ? undefined : `must be a whole number within ±${Number.MAX_SAFE_INTEGER}`;
 		}
 		if (field.type === "number") {
-			const n = Number(value);
-			if (!Number.isFinite(n)) return "must be a number";
-			return schemaConstraintReason(field, n);
+			return Number.isFinite(Number(value)) ? undefined : "must be a number";
 		}
-		return schemaConstraintReason(field, value);
+		return undefined;
 	}
 
 	private moveFocus(delta: number): void {
@@ -650,8 +548,10 @@ export class HostInputFormComponent implements Component, Focusable {
 	private footerRow(): string {
 		const key = (k: string): string => this.theme.fg("accent", k);
 		const dim = (t: string): string => this.theme.fg("dim", t);
-		const sep = dim("  ·  ");
-		return `${key("Tab")} ${dim("move")}${sep}${key("Enter")} ${dim("continue / run")}${sep}${key("Esc")} ${dim("cancel")}`;
+		const sep = dim(" · ");
+		const focused = this.fields[this.focusedIndex];
+		const enter = focused === undefined ? "submit" : focused.type === "text" ? "new line" : "next";
+		return `${key("enter")} ${dim(enter)}${sep}${key("tab")} ${dim("between fields")}${sep}${key("esc")} ${dim("cancel")}`;
 	}
 
 	private frame(body: readonly string[], inner: number, cw: number, boxWidth: number): string[] {

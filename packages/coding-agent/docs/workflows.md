@@ -48,7 +48,7 @@ For checking changes and sharing results in PRs, see [Verification and evidence]
 
 The agent decides whether a workflow fits. Non-trivial work with structure and a verifiable objective runs as a workflow unless you ask for inline execution: implementation, bug fixes, debugging, migrations, multi-file changes with validation, and requests phrased as "repeat until" or "fix until green". Brainstorming, discussion, unclear goals, tiny low-risk answers or edits, or an explicit request to work inline, quickly or without a workflow stays inline. To launch, inspect the input contract with `workflow inputs`, then call `workflow run` with the registered workflow name and inputs. Ask only for genuinely missing information.
 
-Safety, authorization, testing and evidence requirements remain in force. For an active user-requested switch to inline, safely hold/stop the affected run and reconcile completed work and in-flight effects before continuing without duplicates. User `/workflow` commands launch directly; authored `ctx.workflow(...)` remains internal composition.
+Safety, authorization, testing and evidence requirements remain in force. For an active user-requested switch to inline, safely hold/stop the affected run and reconcile completed work and in-flight effects before continuing without duplicates. Authored `ctx.workflow(...)` remains internal composition.
 
 ```ts
 workflow({ action: "inputs", workflow: "fan-out-and-synthesize" })
@@ -63,7 +63,8 @@ For authored graphs, design elapsed time using [runtime-aware scheduling and est
 
 | User need | Use |
 |-----------|-----|
-| Run, inspect, pause, quit, resume, or check status for an existing workflow | `/workflow ...` or `workflow({ action: ... })` |
+| Inspect, pause, resume, or check status for this session's runs | `/workflows` or `workflow({ action: ... })` |
+| Resume a run from an earlier session | `/resume` |
 | Open a run's graph and stage chats | `/workflows [run-id]` |
 | Run repository-wide research | Compose `fan-out-and-synthesize` with repository-focused branches, artifact outputs, and a synthesis barrier, or author a smaller task-specific research workflow. |
 | Run an implementation/review loop | Author a task-specific worker → fresh verifier → reducer loop with explicit evidence, repair bounds, and stop conditions. |

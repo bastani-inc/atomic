@@ -141,7 +141,7 @@ describe("StageWaitError family: classes (#4309)", () => {
 				},
 				{ code: "results-not-saved" },
 			).message,
-			'Cannot rehydrate stage "implement": session s-1 returned from its detached turn without saving the results of c1, c2 (results-not-saved). Resume the run with /workflow resume run-1: the stage continues its turn from the results it recorded with its wait, which stay recorded until a turn that uses them is saved.',
+			'Cannot rehydrate stage "implement": session s-1 returned from its detached turn without saving the results of c1, c2 (results-not-saved). Resume run run-1 from /workflows or /resume: the stage continues its turn from the results it recorded with its wait, which stay recorded until a turn that uses them is saved.',
 		);
 		assert.equal(
 			new StageWakeError({ runId: "run-1", stageId: "stage-7", kind: "compaction-ready" }).message,

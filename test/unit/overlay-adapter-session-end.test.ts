@@ -3,12 +3,10 @@ import { test } from "vitest";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import type { PiOverlayHandle } from "../../packages/workflows/src/extension/wiring.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { buildGraphOverlayAdapter } from "../../packages/workflows/src/tui/overlay-adapter.js";
-import { openSessionPicker } from "../../packages/workflows/src/tui/session-overlays.js";
 import { sleep } from "../helpers/runtime.js";
 
-test("a graph overlay dismissed by session shutdown neither leaks the abort nor stays mounted", async () => {
+test("a graph overlay dismissed by session shutdown neither leaks the abort nor stays mounted (#5224)", async () => {
 	initTheme("dark");
 	const store = createStore();
 	const unhandled: unknown[] = [];
@@ -49,24 +47,6 @@ test("a graph overlay dismissed by session shutdown neither leaks the abort nor 
 		assert.equal(mounts, 2, "a later open must mount a fresh overlay instead of reusing the dismissed one");
 	} finally {
 		adapter.close();
-		process.off("unhandledRejection", onUnhandled);
-	}
-});
-
-test("a workflow session picker aborted before mounting resolves as closed without leaking the abort", async () => {
-	const unhandled: unknown[] = [];
-	const onUnhandled = (reason: unknown) => unhandled.push(reason);
-	process.on("unhandledRejection", onUnhandled);
-	try {
-		const result = await openSessionPicker(
-			{ custom: () => Promise.reject(new DOMException("The operation was aborted.", "AbortError")) },
-			createStore(),
-			deriveGraphTheme({}),
-		);
-		await sleep(10);
-		assert.deepEqual(result, { kind: "close" });
-		assert.deepEqual(unhandled, []);
-	} finally {
 		process.off("unhandledRejection", onUnhandled);
 	}
 });

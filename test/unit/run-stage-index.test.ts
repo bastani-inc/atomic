@@ -3,8 +3,8 @@ import { describe, test } from "vitest";
 import { pendingWorkflowStageStatuses } from "../../packages/workflows/src/shared/pending-stage-status.js";
 import { runIndicatorStatus } from "../../packages/workflows/src/shared/run-indicator-status.js";
 import { runStageIndex } from "../../packages/workflows/src/shared/run-stage-index.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { PendingPrompt, RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { visibleRootPendingInput } from "../../packages/workflows/src/tui/pending-input-affordance.js";
 
 function stage(id: string, overrides: Partial<StageSnapshot> = {}): StageSnapshot {
 	return { id, name: id, status: "completed", parentIds: [], toolEvents: [], ...overrides };
@@ -77,7 +77,7 @@ describe("the index of a run's stages (#4642)", () => {
 		const ask = () => {
 			runIndicatorStatus(frozen, runs);
 			pendingWorkflowStageStatuses(frozen);
-			visibleRootPendingInput(frozen, runs);
+			runStageIndex(frozen).waiting;
 		};
 		ask();
 		const afterFirst = reads.status;
@@ -99,5 +99,67 @@ describe("the index of a run's stages (#4642)", () => {
 		assert.equal(runIndicatorStatus(live, [live]), "running");
 		live.stages = [stage("c", { status: "awaiting_input" })];
 		assert.equal(runIndicatorStatus(live, [live]), "awaiting_input");
+	});
+
+	test("pause, resume, and block keep a stage's pending prompt waiting, and answering while paused clears it (#3027, #5224)", () => {
+		const store = createStore();
+		store.recordRunStart({
+			id: "pause-owner",
+			name: "pausable",
+			inputs: {},
+			status: "running",
+			startedAt: 1_000,
+			toolNodes: [],
+			stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
+		});
+		const pausePrompt: PendingPrompt = {
+			id: "pp",
+			kind: "confirm",
+			message: "Approve while paused?",
+			createdAt: 1,
+		};
+		assert.equal(store.recordStagePendingPrompt("pause-owner", "ask", pausePrompt), true);
+
+		const assertWaiting = () => {
+			const runs = store.runs();
+			assert.equal(runIndicatorStatus(runs[0]!, runs), "awaiting_input");
+			assert.equal(runStageIndex(runs[0]!).awaitingInput, true);
+			assert.deepEqual(
+				runStageIndex(runs[0]!).waiting.map((entry) => entry.id),
+				["ask"],
+			);
+		};
+
+		assert.equal(store.recordStagePaused("pause-owner", "ask"), true);
+		const paused = store.runs()[0]!.stages[0]!;
+		assert.equal(paused.status, "paused");
+		assert.equal(paused.awaitingInputSince, undefined);
+		assert.equal(paused.pendingPrompt?.id, "pp");
+		assertWaiting();
+
+		assert.equal(store.recordStageResumed("pause-owner", "ask"), true);
+		assertWaiting();
+
+		assert.equal(store.recordStageBlocked("pause-owner", "ask", "other"), true);
+		assertWaiting();
+
+		const answering = createStore();
+		answering.recordRunStart({
+			id: "pause-owner",
+			name: "pausable",
+			inputs: {},
+			status: "running",
+			startedAt: 1_000,
+			toolNodes: [],
+			stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
+		});
+		assert.equal(answering.recordStagePendingPrompt("pause-owner", "ask", pausePrompt), true);
+		assert.equal(answering.recordStagePaused("pause-owner", "ask"), true);
+		assert.equal(answering.resolveStagePendingPrompt("pause-owner", "ask", "pp", true), true);
+		const runs = answering.runs();
+		assert.equal(runs[0]!.stages[0]!.status, "paused");
+		assert.equal(runIndicatorStatus(runs[0]!, runs), "running");
+		assert.equal(runStageIndex(runs[0]!).awaitingInput, false);
+		assert.deepEqual(runStageIndex(runs[0]!).waiting, []);
 	});
 });

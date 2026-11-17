@@ -61,7 +61,7 @@ To move existing runs and sessions to another store, see [Exporting and importin
 In this release:
 
 - **Sessions**, including entries whose text holds NUL characters or lone surrogates, such as some tool output.
-- **Workflow runs**: starting, running and resuming them, and the `/workflow resume` list, from any machine that selects the database.
+- **Workflow runs**: starting, running and resuming them, and the resumable runs in `/resume`, from any machine that selects the database.
 - **Intercom's multi-node routing**: sessions on different machines that select the same database message each other.
 - **Moving data in and out**: `atomic storage export` and `atomic storage import` with a PostgreSQL database, for sessions and workflow runs.
 - **Worker pools**: roots with shared placement and their worker hosts, with `atomic worker start`, `status`, `metrics` and `controller --db postgres://…`. The pool's queue, leases, resource admission, pooled-stage transcripts and fleet controller live in the database. See [Running workers on many machines](/guides/worker-hosts).
@@ -264,7 +264,7 @@ For a self-hosted sqld started with `--enable-namespaces`, add `"namespace": "<n
 
 Save the token with `turso db tokens create <db> > turso-token` and keep it readable only by you (`chmod 600`); a trailing newline is ignored. A relative `file` resolves against Atomic home, normally `~/.atomic`. Use `{ "env": "TURSO_TOKEN" }` instead to read it from an environment variable. For a local database file, use a `file:` URL such as `file:/home/me/shared.sqlite` and omit `secrets`. Every machine that uses the same `storage` block shares the same sessions, workflow runs, and Intercom routing; add a `prefix` to keep projects or teams apart. See [Sharing storage across hosts](#sharing-storage-across-hosts).
 
-A process that stops for a while in the middle of a write, for example one paused by a signal, starved of CPU, or on a laptop that slept, can find on resuming that the server expired its idle stream or rolled back its transaction; a server that is restarting refuses connections for a moment. A request the server leaves unanswered for 30 seconds is abandoned and reported the same way, with `outcome: "unknown"`. The adapter reports these as `StorageTransientError`, and a statement, a batch, or a workflow journal or session write that they ended before it wrote anything runs again, up to five times over about four seconds. A write whose connection broke after the server may have applied it is never sent again: it fails with `StorageTransientError` and `outcome: "unknown"`. Workflow runs that still fail this way can be continued with `/workflow resume`.
+A process that stops for a while in the middle of a write, for example one paused by a signal, starved of CPU, or on a laptop that slept, can find on resuming that the server expired its idle stream or rolled back its transaction; a server that is restarting refuses connections for a moment. A request the server leaves unanswered for 30 seconds is abandoned and reported the same way, with `outcome: "unknown"`. The adapter reports these as `StorageTransientError`, and a statement, a batch, or a workflow journal or session write that they ended before it wrote anything runs again, up to five times over about four seconds. A write whose connection broke after the server may have applied it is never sent again: it fails with `StorageTransientError` and `outcome: "unknown"`. Workflow runs that still fail this way can be resumed from `/resume`.
 
 #### Size limits
 
@@ -441,7 +441,7 @@ Import takes the write lock of every journal file it writes runs to, and compare
 
 After import, sessions resolve for `--session`, `/resume` and `history://sessions`. Runs resolve by ID for status, resume, attach, fork and `history://workflows`.
 
-Leases, local-worker pool state and worktree snapshot contents of workflow runs are not exported. An imported run has no owner: a run that was running when it was exported is an interrupted run here. The resume picker and `/workflow resume` offer it once it has completed at least one step. Import refuses to add events to a run that a process on this machine renewed the lease of in the last two minutes, because that run may still be running here. Resume treats a run whose working directory differs from the current one as a run from another project, so restore the checkout at the same path.
+Leases, local-worker pool state and worktree snapshot contents of workflow runs are not exported. An imported run has no owner: a run that was running when it was exported is an interrupted run here. The `/resume` picker offers it once it has completed at least one step. Import refuses to add events to a run that a process on this machine renewed the lease of in the last two minutes, because that run may still be running here. Resume treats a run whose working directory differs from the current one as a run from another project, so restore the checkout at the same path.
 
 #### Which storage they use
 
@@ -520,7 +520,7 @@ mkdir -p "$STATE_DIR" && atomic storage import "$STATE_DIR"
 atomic storage export "$STATE_DIR"
 ```
 
-To carry only runs that can still be resumed, export with `--unfinished`. An interrupted run imported this way resumes with `/workflow resume <runId>` in the next job. A session imported this way continues with `atomic --session <id>`. Add `--since` or `--limit` to keep the saved directory small.
+To carry only runs that can still be resumed, export with `--unfinished`. An interrupted run imported this way resumes from `/resume` or the workflow tool's `resume` action in the next job. A session imported this way continues with `atomic --session <id>`. Add `--since` or `--limit` to keep the saved directory small.
 
 ### When to select a journal
 

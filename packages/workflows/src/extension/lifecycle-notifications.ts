@@ -384,7 +384,7 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
 		return `▶ ${actor} started workflow "${workflowName}" (run ${details.runId}). It is running in the background; you will be notified when it completes.`;
 	}
 	if (details.kind === "completed") {
-		return `✓ Workflow "${workflowName}" completed (run ${details.runId})${origin}. Inspect: /workflow status ${details.runId}`;
+		return `✓ Workflow "${workflowName}" completed (run ${details.runId})${origin}. Inspect: /workflows ${details.runId}`;
 	}
 	if (details.kind === "failed") {
 		const stage = details.stageName ?? details.failedStageId ?? details.stageId;
@@ -393,21 +393,21 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
 		const errorText = details.error ? `: ${details.error}` : "";
 		const outputsText = formatLifecycleOutputs(details.outputs);
 		const outputSuffix = outputsText === undefined ? "" : ` Partial outputs: ${outputsText}`;
-		return `✗ Workflow "${workflowName}" failed (run ${details.runId}${failureSite})${origin}${errorText}${outputSuffix}. Inspect: /workflow status ${details.runId}`;
+		return `✗ Workflow "${workflowName}" failed (run ${details.runId}${failureSite})${origin}${errorText}${outputSuffix}. Inspect: /workflows ${details.runId}`;
 	}
 	if (details.kind === "blocked") {
 		const errorText = details.error ? `: ${details.error}` : "";
 		if (details.budgetExceeded === true) {
 			const dimension = details.budgetDimension === undefined ? "" : ` ${details.budgetDimension}`;
-			return `! Workflow "${workflowName}" stopped at its${dimension} budget limit (run ${details.runId})${origin}${errorText}. Summarize progress and the estimated next steps, then ask the user whether to proceed — prefer the ask_user_question tool when it is available — and after approval resume with a raised budget: workflow({ action: "resume", runId: "${details.runId}", budget: { ... } }). Inspect: /workflow status ${details.runId}`;
+			return `! Workflow "${workflowName}" stopped at its${dimension} budget limit (run ${details.runId})${origin}${errorText}. Summarize progress and the estimated next steps, then ask the user whether to proceed — prefer the ask_user_question tool when it is available — and after approval resume with a raised budget: workflow({ action: "resume", runId: "${details.runId}", budget: { ... } }). Inspect: /workflows ${details.runId}`;
 		}
 		const stateText = details.active === true ? "is blocked" : "ended blocked";
-		return `! Workflow "${workflowName}" ${stateText} (run ${details.runId})${origin}${errorText}. Unless the user has requested inline/no-workflow execution, resume or steer the run, or continue with a follow-up workflow. For an explicit inline switch, safely hold/stop the affected run, reconcile completed work and in-flight side effects, then continue inline without duplicate execution; completed work is not undone. Preserve safety, authorization and validation requirements. Resolve material ambiguity from the objective and repository evidence. Inspect: /workflow status ${details.runId}`;
+		return `! Workflow "${workflowName}" ${stateText} (run ${details.runId})${origin}${errorText}. Unless the user has requested inline/no-workflow execution, resume or steer the run, or continue with a follow-up workflow. For an explicit inline switch, safely hold/stop the affected run, reconcile completed work and in-flight side effects, then continue inline without duplicate execution; completed work is not undone. Preserve safety, authorization and validation requirements. Resolve material ambiguity from the objective and repository evidence. Inspect: /workflows ${details.runId}`;
 	}
 	if (details.kind === "budget_warning") {
 		const warningText = details.error ? `: ${details.error}` : "";
 		const dimension = details.budgetDimension ?? "duration";
-		return `! Workflow "${workflowName}" is approaching its ${dimension} budget (run ${details.runId})${origin}${warningText}. Inspect: /workflow status ${details.runId}`;
+		return `! Workflow "${workflowName}" is approaching its ${dimension} budget (run ${details.runId})${origin}${warningText}. Inspect: /workflows ${details.runId}`;
 	}
 	if (details.kind === "paused" || details.kind === "quit") {
 		const stopStage = details.stageName ?? details.stageId;
@@ -418,7 +418,7 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
 		const verb = details.kind === "paused" ? "paused" : "quit";
 		const noun = details.kind === "paused" ? "pause" : "stop";
 		const glyph = details.kind === "paused" ? "⏸" : "⏹";
-		return `${glyph} ${actor} ${verb} the ${scopeText} "${workflowName}" (run ${details.runId})${origin}${stageText}. This ${noun} was deliberate and user-requested; do not resume it or take over the work unless asked. Resume: /workflow resume ${details.runId}`;
+		return `${glyph} ${actor} ${verb} the ${scopeText} "${workflowName}" (run ${details.runId})${origin}${stageText}. This ${noun} was deliberate and user-requested; do not resume it or take over the work unless asked. Resume from /workflows ${details.runId}`;
 	}
 	if (details.kind === "resumed") {
 		const resumedStage = details.stageName ?? details.stageId;
@@ -739,7 +739,7 @@ function renderLifecycleNoticeCard(
 			{ label: "resumable", value: resumableFieldValue(details), tone: "muted" },
 			{ label: "duration", value: formatDurationMs(details.durationMs), tone: "muted" },
 		],
-		hints: [lifecycleNoticeHint(details)],
+		hints: [`/workflows ${details.runId}`],
 		fallbackText: opts.fallbackText,
 		width: opts.width,
 		...(opts.theme ? { theme: opts.theme } : {}),
@@ -829,13 +829,6 @@ function lifecycleNoticeHeadline(details: WorkflowLifecycleNoticeDetails): strin
 		default:
 			return `Workflow "${name}" completed`;
 	}
-}
-
-function lifecycleNoticeHint(details: WorkflowLifecycleNoticeDetails): string {
-	if (details.kind === "awaiting_input") return `/workflows ${details.runId}`;
-	if (details.kind === "paused" || details.kind === "quit") return `/workflow resume ${details.runId}`;
-	if (details.kind === "blocked" && details.budgetExceeded === true) return `/workflow resume ${details.runId}`;
-	return `/workflow status ${details.runId}`;
 }
 
 function resumableFieldValue(details: WorkflowLifecycleNoticeDetails): string | undefined {

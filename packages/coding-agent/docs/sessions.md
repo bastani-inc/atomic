@@ -66,7 +66,7 @@ const { session } = await createAgentSession({
 
 Use `{ kind: "memory" }` for an explicit ephemeral SDK session or `{ kind: "jsonl", dir: "/data/sessions" }` for JSONL. An existing `sessionManager` remains caller-owned and bypasses store selection.
 
-Workflows launched from a non-default session directory also save their stage transcripts there. A headless command such as `atomic --mode json --session-dir <dir> -p '/workflow <name> ...'` therefore captures the main and stage transcripts together. An explicit per-stage `sessionDir` overrides the inherited directory.
+Workflows launched from a non-default session directory also save their stage transcripts there. A headless prompt such as `atomic --mode json --session-dir <dir> -p 'Run the <name> workflow with ...'` therefore captures the main and stage transcripts together. An explicit per-stage `sessionDir` overrides the inherited directory.
 
 When the host uses the default store, stages also use the default SQLite database unless they explicitly choose a directory.
 
@@ -170,7 +170,7 @@ You can search, navigate, or cancel while the picker loads sessions. Closing it 
 
 ### Internal (workflow) sessions
 
-Sessions created by workflow stage execution are marked as **internal** and are excluded from the standard `/resume`, `atomic -r`, and `--continue` history by default. Use `/workflow resume <runId>` or the workflow tool's resume/status actions to inspect and continue a workflow run and its stages. A workflow stage session can also be opened directly by passing its session ID to `--session`. A stage's own transcript is recalled with `history://sessions/<id>` like any other session.
+Sessions created by workflow stage execution are marked as **internal** and are excluded from the standard `/resume`, `atomic -r`, and `--continue` history by default. Use `/workflows` to open this session's runs, `/resume` to continue a run from an earlier session, or the workflow tool's resume/status actions. A workflow stage session can also be opened directly by passing its session ID to `--session`. A stage's own transcript is recalled with `history://sessions/<id>` like any other session.
 
 ## Recalling earlier work
 
@@ -187,7 +187,7 @@ The agent can look back at this project's earlier sessions and workflow runs, ev
 
 When a view or search covers other projects, its links carry `?project=` so they read back in the same scope. A workflow stage's session opens through its run even when the stage ran in its own directory or worktree. The current session always opens through its own URL. After a compaction removes lines from the agent's context, the compacted context names that URL so the agent can `search` it for the removed text, including text removed by earlier compactions of the same session, and `read` it with `:N-M`. It also points the agent at `history://sessions`, `history://workflows` and `history://` for the project's other sessions and workflow runs, before it redoes an investigation or when a removed decision, error message, file path or result matters, and reminds it that a multi-record search covers the newest records and pages on with `?offset=`. Compaction itself adds a short `Recalled context` section of matching lines from this history; see [Recalled context](/compaction#recalled-context).
 
-By default only the current project's history is visible. Other projects' sessions appear only when a sessions URL carries `?project=all` or `?project=<dir>`, which the agent uses only when you ask it to. Workflow history is always limited to the current project and includes runs you started with `/workflow` as well as runs the agent started, including finished runs that recorded no checkpoints and cancelled runs. `history://` is read-only.
+By default only the current project's history is visible. Other projects' sessions appear only when a sessions URL carries `?project=all` or `?project=<dir>`, which the agent uses only when you ask it to. Workflow history is always limited to the current project and includes every run of the project that the agent started, including finished runs that recorded no checkpoints and cancelled runs. `history://` is read-only.
 
 ## Naming Sessions
 

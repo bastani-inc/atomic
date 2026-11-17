@@ -332,7 +332,7 @@ picker.update(await loadMoreRows()); // merge late rows into the open picker
 const path = await picker.result;    // selected row's path, or undefined on cancel
 ```
 
-`/workflow resume` uses this picker.
+`/resume` uses this picker for workflow runs from earlier sessions.
 
 ### Host-native input form
 
@@ -355,21 +355,6 @@ try {
 
 Field types are `string`, `text`, `number`, `integer`, `boolean`, and `select`. Initial and returned values are raw strings; the caller owns domain coercion.
 
-A field can also carry constraints, which decide whether its value is ready. When `schema` is present, it replaces all other checks, including the field type and select choices:
-
-| Field | Applies to | Checks |
-|---|---|---|
-| `const` | all but `select` | the value equals it (a `boolean` compares on or off) |
-| `minimum`, `maximum` | `number`, `integer` | inclusive bounds |
-| `exclusiveMinimum`, `exclusiveMaximum` | `number`, `integer` | exclusive bounds |
-| `multipleOf` | `number`, `integer` | the value is a multiple of it |
-| `minLength`, `maxLength` | `string`, `text` | length in characters |
-| `pattern` | `string`, `text` | a regular expression, compiled with the `u` flag |
-| `format` | `string`, `text` | a JSON Schema format such as `email`, `uuid` or `date-time` |
-| `schema` | any | a JSON Schema the value must match: the text is read as JSON when that value matches the schema, otherwise as the string itself |
-
 Every current interactive Atomic host exposes the optional capability, while headless RPC and print surfaces omit it. Keep a legacy fallback only when compatibility with older hosts is required.
 
-Each field's header shows whether its value is ready: `✓`, or `✗` with the reason (`required`, `choose one`, `choose on or off`, `must be a whole number`, `must be a number`, `must be on or off`, `not in choices`, `must equal <value>`, the broken constraint such as `must be >= 1` or `must not have more than 100 characters (maxLength 100)`, or `invalid pattern in the workflow schema` when a `pattern` does not compile). Enter on the submit button runs only when every field is ready. A boolean accepts `true`, `false`, `on`, `off`, `1` or `0`; anything else is refused rather than read as off.
-
-`/workflow <name>` uses this input form.
+Each field's header shows whether its value is ready: `✓`, or `✗` with the reason (`required`, `choose one`, `choose on or off`, `must be a whole number`, `must be a whole number within ±9007199254740991`, `must be a number`, `must be on or off`, or `not in choices`). Integers must stay within JavaScript's safe integer range so their value is not rounded. Enter on the submit button runs only when every field is ready. A boolean accepts `true`, `false`, `on`, `off`, `1` or `0`; anything else is refused rather than read as off.

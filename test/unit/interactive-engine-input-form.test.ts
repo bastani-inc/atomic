@@ -157,7 +157,7 @@ describe("engine input form protocol", () => {
 	});
 });
 
-test("a form the host cannot read fails its open instead of leaving it waiting (#5245)", async () => {
+test("a form the host cannot read fails its open instead of leaving it waiting (#5224)", async () => {
 	const bridge = makeBridge();
 	const result = bridge.child.open({
 		title: "demo",
@@ -173,6 +173,55 @@ test("a form the host cannot read fails its open instead of leaving it waiting (
 	assert.equal(settled, "The host could not read this input form.");
 	assert.equal(bridge.mounts.length, 0);
 	bridge.controller.dispose();
+});
+
+test("the in-process host refuses the same unreadable forms as the isolated engine, without mounting them (#5224)", async () => {
+	const unreadable: Record<string, HostInputFormField> = {
+		description: { name: "prompt", type: "string", initialValue: "", description: 7 as unknown as string },
+		type: { name: "when", type: "date" as HostInputFormField["type"], initialValue: "" },
+		initialValue: { name: "prompt", type: "string" } as HostInputFormField,
+	};
+	const outcome = (result: Promise<unknown>) =>
+		Promise.race([
+			result.then(
+				() => "resolved",
+				(error: Error) => error.message,
+			),
+			sleep(200).then(() => "pending"),
+		]);
+	for (const [label, field] of Object.entries(unreadable)) {
+		const bridge = makeBridge();
+		const isolated = await outcome(bridge.child.open({ title: label, fields: [field] }));
+		bridge.controller.dispose();
+		let mounted = 0;
+		const local = await outcome(
+			openLocalHostInputForm(
+				{
+					custom: (factory) =>
+						new Promise((resolve) => {
+							const component = factory(
+								{ requestRender: () => {}, terminal: { rows: 40, columns: 100 } } as never,
+								theme,
+								new KeybindingsManager(),
+								resolve,
+							) as HostInputFormComponent;
+							mounted += 1;
+							component.render(100);
+						}),
+				},
+				{ title: label, fields: [field] },
+			),
+		);
+		assert.deepEqual(
+			{ label, isolated, local, mounted },
+			{
+				label,
+				isolated: "The host could not read this input form.",
+				local: "The host could not read this input form.",
+				mounted: 0,
+			},
+		);
+	}
 });
 
 describe("host-native input form", () => {

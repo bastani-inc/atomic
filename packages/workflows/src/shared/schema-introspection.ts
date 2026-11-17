@@ -7,7 +7,6 @@ import {
 	IsNumber,
 	IsObject,
 	IsOptional,
-	IsRefine,
 	IsString,
 	IsUnion,
 	type TSchema,
@@ -42,13 +41,34 @@ function isStringLiteralUnion(schema: TSchema): boolean {
 	return members.length > 0 && members.every((m) => IsLiteralString(m));
 }
 
-function hasRefine(value: unknown, seen = new Set<object>()): boolean {
-	if (typeof value !== "object" || value === null) return false;
+function canRoundTripJson(value: unknown, seen = new Set<object>()): boolean {
+	if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+	if (typeof value === "number") return Number.isFinite(value);
+	if (typeof value !== "object") return false;
 	if (seen.has(value)) return false;
+	if (Array.isArray(value)) {
+		seen.add(value);
+		try {
+			for (let i = 0; i < value.length; i++) {
+				if (!(i in value) || !canRoundTripJson(value[i], seen)) return false;
+			}
+			return true;
+		} finally {
+			seen.delete(value);
+		}
+	}
+	const proto = Object.getPrototypeOf(value);
+	if (proto !== Object.prototype && proto !== null) return false;
+	if (typeof (value as { toJSON?: unknown }).toJSON === "function") return false;
 	seen.add(value);
-	if (IsRefine(value)) return true;
-	if (Array.isArray(value)) return value.some((item) => hasRefine(item, seen));
-	return Object.values(value).some((item) => hasRefine(item, seen));
+	try {
+		for (const key of Object.keys(value)) {
+			if (!canRoundTripJson((value as Record<string, unknown>)[key], seen)) return false;
+		}
+		return true;
+	} finally {
+		seen.delete(value);
+	}
 }
 
 export function schemaFieldKind(schema: TSchema): SchemaFieldKind {
@@ -93,7 +113,11 @@ export function deriveInputField(name: string, schema: TSchema): WorkflowInputEn
 		required: schemaIsRequired(schema),
 	};
 	if (description !== undefined) entry.description = description;
-	if (def !== undefined) entry.default = def;
+	if (def !== undefined) {
+		try {
+			if (canRoundTripJson(def) && JSON.stringify(def) !== undefined) entry.default = def;
+		} catch {}
+	}
 	if (choices !== undefined) entry.choices = choices;
 	if (typeof m.const === "string" || typeof m.const === "number" || typeof m.const === "boolean") {
 		entry.const = m.const;
@@ -111,20 +135,6 @@ export function deriveInputField(name: string, schema: TSchema): WorkflowInputEn
 	if (typeof m.maxLength === "number" && Number.isFinite(m.maxLength)) entry.maxLength = m.maxLength;
 	if (typeof m.pattern === "string") entry.pattern = m.pattern;
 	if (typeof m.format === "string") entry.format = m.format;
-	if (hasRefine(schema)) {
-		entry.validationDeferred = true;
-	}
-	if (entry.type === "unknown" || entry.type === "object" || entry.type === "array") {
-		try {
-			entry.schema = JSON.parse(
-				JSON.stringify(schema, function (this: object, key, value: unknown) {
-					return key === "~refine" && IsRefine(this) ? undefined : value;
-				}),
-			) as WorkflowInputEntry["schema"];
-		} catch {
-			entry.validationDeferred = true;
-		}
-	}
 	return entry;
 }
 

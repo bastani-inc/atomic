@@ -111,7 +111,7 @@ describe("workflow lifecycle parent reconciliation", () => {
 		assert.equal(card.display, true);
 		assert.equal(
 			card.content,
-			'✓ Workflow "fast-final" completed (run run-fast-final). Inspect: /workflow status run-fast-final',
+			'✓ Workflow "fast-final" completed (run run-fast-final). Inspect: /workflows run-fast-final',
 		);
 		const cardDetails = card.details as WorkflowLifecycleNoticeDetails | undefined;
 		assert.equal(cardDetails?.kind, "completed");

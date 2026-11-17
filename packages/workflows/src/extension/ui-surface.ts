@@ -1,5 +1,4 @@
 import type { ChatMessageRenderOptions, ChatSessionViewportSettings } from "@bastani/atomic";
-import type { WorkflowInputJson } from "./render-result.js";
 
 // ---------------------------------------------------------------------------
 // UI adapter — maps pi ctx.ui dialog surface to WorkflowUIAdapter
@@ -73,21 +72,6 @@ export interface PiOverlayHandle {
 	isFocused(): boolean;
 }
 
-/**
- * Options accepted by Pi/pi's real `ctx.ui.custom(factory, options)`
- * overlay primitive. Aligned with the shape documented in
- * `@bastani/atomic docs/tui.md` and
- * `@bastani/atomic-tui dist/tui.d.ts`.
- *
- * Workflow pickers (`session-overlays.ts`, `inputs-overlay.ts`) mount
- * with `overlay: false`, which causes the host to REPLACE the editor
- * with the picker inline at the editor's natural position — see
- * those files for the placement rationale.
- *
- * `onHandle` is honoured today only by the full-screen graph overlay
- * (`overlay-adapter.ts`); inline pickers leave it unset and dismiss
- * via the factory `done()` callback.
- */
 export interface PiHostCustomUiState {
 	blockingInlineCustomUiDepth: number;
 	blockingInlineCustomUiActive: boolean;
@@ -174,17 +158,6 @@ export interface PiHostInputFormField {
 	choices?: string[];
 	placeholder?: string;
 	initialValue: string;
-	const?: string | number | boolean;
-	minimum?: number;
-	maximum?: number;
-	exclusiveMinimum?: number;
-	exclusiveMaximum?: number;
-	multipleOf?: number;
-	minLength?: number;
-	maxLength?: number;
-	pattern?: string;
-	format?: string;
-	schema?: { readonly [key: string]: WorkflowInputJson };
 }
 
 export interface PiHostInputFormRequest {

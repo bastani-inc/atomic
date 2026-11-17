@@ -492,7 +492,7 @@ describe("installWorkflowLifecycleNotifications", () => {
 		assert.match(text, /✓ Workflow "cards" completed/);
 		assert.match(text, /workflow\s+cards/);
 		assert.match(text, /run\s+run-card/);
-		assert.match(text, /▸ \/workflow status run-card/);
+		assert.match(text, /▸ \/workflows run-card/);
 	});
 
 	test("wraps long lifecycle notices to the render width so no rendered line overflows the terminal (#1109 width-overflow crash)", () => {
@@ -531,7 +531,7 @@ describe("installWorkflowLifecycleNotifications", () => {
 		}
 
 		// Where the terminal is wide enough to hold the run id token, wrapping must
-		// not drop it so `/workflow status <id>` stays usable.
+		// not drop it so `/workflows <id>` stays usable.
 		for (const width of [120, 80, 40]) {
 			const lines = component.render(width);
 			assert.ok(

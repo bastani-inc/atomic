@@ -51,14 +51,6 @@ import { getWorkflowStatusRenderRuns } from "./workflow-status-summary.js";
  * canonical `RunSnapshot` shape directly; the intermediate `runs` projection
  * is gone. */
 
-export type WorkflowInputJson =
-	| string
-	| number
-	| boolean
-	| null
-	| readonly WorkflowInputJson[]
-	| { readonly [key: string]: WorkflowInputJson };
-
 export interface WorkflowInputEntry {
 	name: string;
 	type: string;
@@ -77,8 +69,6 @@ export interface WorkflowInputEntry {
 	maxLength?: number;
 	pattern?: string;
 	format?: string;
-	schema?: { readonly [key: string]: WorkflowInputJson };
-	validationDeferred?: boolean;
 }
 
 /**
@@ -297,14 +287,7 @@ export type WorkflowRegisteredToolResult = WorkflowToolResult | WorkflowTimeoutR
 export interface RenderResultOpts {
 	isPartial?: boolean;
 	errorText?: string;
-	/**
-	 * Host-provided render width in terminal cells. Tool renderers pass the
-	 * component width here so workflow tool output uses the same sizing path as
-	 * `/workflow` slash-command chat surfaces.
-	 */
 	width?: number;
-	/** Original workflow inputs from the tool call, used to render the same
-	 * dispatch confirmation card as `/workflow <name> ...` for background runs. */
 	runInputs?: Readonly<WorkflowInputValues>;
 	/**
 	 * Suppress ANSI colour output (CLI flag paths / non-TTY consumers).
@@ -544,8 +527,6 @@ function renderResultBody(result: WorkflowRegisteredToolResult | null | undefine
 				const label = r.name ? ` (${r.name})` : "";
 				return renderNotice("WORKFLOW RUN", `${r.runId}${label}: ${r.status}`, opts, themed);
 			}
-			// Background dispatch — reuse the same confirmation card rendered by
-			// `/workflow <name> ...` when we have the workflow name and run id.
 			if (r.name && r.runId) {
 				return renderDispatchConfirm({
 					workflowName: r.name,

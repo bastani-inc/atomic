@@ -179,13 +179,6 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 			return { action: "inputs", name, inputs: inputSchema };
 		}
 
-		// -----------------------------------------------------------------------
-		// run — always dispatched as a background run. The chat editor stays
-		// free; the workflow surfaces progress through the store, the widget,
-		// and the graph viewer overlay. Foreground execution is no longer a
-		// user-facing option — call `run()` directly from src/runs/foreground
-		// /executor.js if you need synchronous semantics in code or tests.
-		// -----------------------------------------------------------------------
 		case "run": {
 			const def = opts.registry.get(name);
 			if (!def) {

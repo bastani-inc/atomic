@@ -4,6 +4,7 @@ import { parseSerializedDecisionError, type SerializedDecisionError } from "../.
 import type { UIPromptEndEvent, UIPromptStartEvent } from "../../core/extensions/agent-events.ts";
 import type {
 	HostInputFormField,
+	HostInputFormRequest,
 	HostSessionPickerRow,
 	WidgetScrollRequest,
 	WidgetScrollState,
@@ -429,26 +430,7 @@ function parseInputFormFields(value: JsonValue | undefined): HostInputFormField[
 	const fields: HostInputFormField[] = [];
 	for (const entry of value) {
 		if (!isJsonObject(entry)) return undefined;
-		const {
-			name,
-			type,
-			description,
-			required,
-			choices,
-			placeholder,
-			initialValue,
-			const: constVal,
-			minimum,
-			maximum,
-			exclusiveMinimum,
-			exclusiveMaximum,
-			multipleOf,
-			minLength,
-			maxLength,
-			pattern,
-			format,
-			schema,
-		} = entry;
+		const { name, type, description, required, choices, placeholder, initialValue } = entry;
 		if (
 			typeof name !== "string" ||
 			!INPUT_FORM_FIELD_TYPES.includes(type as HostInputFormField["type"]) ||
@@ -460,32 +442,6 @@ function parseInputFormFields(value: JsonValue | undefined): HostInputFormField[
 		if (choices !== undefined && (!Array.isArray(choices) || !choices.every((choice) => typeof choice === "string")))
 			return undefined;
 		if (placeholder !== undefined && typeof placeholder !== "string") return undefined;
-		if (
-			constVal !== undefined &&
-			typeof constVal !== "string" &&
-			typeof constVal !== "number" &&
-			typeof constVal !== "boolean"
-		)
-			return undefined;
-		if (minimum !== undefined && (typeof minimum !== "number" || !Number.isFinite(minimum))) return undefined;
-		if (maximum !== undefined && (typeof maximum !== "number" || !Number.isFinite(maximum))) return undefined;
-		if (
-			exclusiveMinimum !== undefined &&
-			(typeof exclusiveMinimum !== "number" || !Number.isFinite(exclusiveMinimum))
-		)
-			return undefined;
-		if (
-			exclusiveMaximum !== undefined &&
-			(typeof exclusiveMaximum !== "number" || !Number.isFinite(exclusiveMaximum))
-		)
-			return undefined;
-		if (multipleOf !== undefined && (typeof multipleOf !== "number" || !Number.isFinite(multipleOf)))
-			return undefined;
-		if (minLength !== undefined && (typeof minLength !== "number" || !Number.isFinite(minLength))) return undefined;
-		if (maxLength !== undefined && (typeof maxLength !== "number" || !Number.isFinite(maxLength))) return undefined;
-		if (pattern !== undefined && typeof pattern !== "string") return undefined;
-		if (format !== undefined && typeof format !== "string") return undefined;
-		if (schema !== undefined && !isJsonObject(schema)) return undefined;
 		fields.push({
 			name,
 			type: type as HostInputFormField["type"],
@@ -494,17 +450,6 @@ function parseInputFormFields(value: JsonValue | undefined): HostInputFormField[
 			...(typeof required === "boolean" ? { required } : {}),
 			...(Array.isArray(choices) ? { choices: choices as string[] } : {}),
 			...(typeof placeholder === "string" ? { placeholder } : {}),
-			...(constVal !== undefined ? { const: constVal } : {}),
-			...(typeof minimum === "number" ? { minimum } : {}),
-			...(typeof maximum === "number" ? { maximum } : {}),
-			...(typeof exclusiveMinimum === "number" ? { exclusiveMinimum } : {}),
-			...(typeof exclusiveMaximum === "number" ? { exclusiveMaximum } : {}),
-			...(typeof multipleOf === "number" ? { multipleOf } : {}),
-			...(typeof minLength === "number" ? { minLength } : {}),
-			...(typeof maxLength === "number" ? { maxLength } : {}),
-			...(typeof pattern === "string" ? { pattern } : {}),
-			...(typeof format === "string" ? { format } : {}),
-			...(schema !== undefined && isJsonObject(schema) ? { schema: schema as HostInputFormField["schema"] } : {}),
 		});
 	}
 	return fields;
@@ -561,6 +506,29 @@ function parseJsonObject(line: string): JsonObject | undefined {
 		return undefined;
 	}
 	return isJsonObject(value) ? value : undefined;
+}
+
+export function readHostInputFormRequest(request: unknown): HostInputFormRequest | undefined {
+	let text: string | undefined;
+	try {
+		text = JSON.stringify(request);
+	} catch {
+		return undefined;
+	}
+	const value = text === undefined ? undefined : parseJsonObject(text);
+	return value === undefined ? undefined : parseHostInputFormRequest(value);
+}
+
+function parseHostInputFormRequest(value: JsonObject): HostInputFormRequest | undefined {
+	const fields = parseInputFormFields(value.fields);
+	return typeof value.title === "string" && fields
+		? {
+				title: value.title,
+				fields,
+				...(typeof value.heading === "string" ? { heading: value.heading } : {}),
+				...(typeof value.submitLabel === "string" ? { submitLabel: value.submitLabel } : {}),
+			}
+		: undefined;
 }
 
 export function parseInteractiveEngineMessage(line: string): InteractiveEngineMessage | undefined {
@@ -751,16 +719,9 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				: undefined;
 		case "engine_input_form_open": {
 			if (typeof value.componentId !== "string") return undefined;
-			const fields = parseInputFormFields(value.fields);
-			return typeof value.title === "string" && fields
-				? {
-						type: value.type,
-						componentId: value.componentId,
-						title: value.title,
-						fields,
-						...(typeof value.heading === "string" ? { heading: value.heading } : {}),
-						...(typeof value.submitLabel === "string" ? { submitLabel: value.submitLabel } : {}),
-					}
+			const request = parseHostInputFormRequest(value);
+			return request
+				? { type: value.type, componentId: value.componentId, ...request }
 				: { type: "engine_input_form_refused", componentId: value.componentId };
 		}
 		default:

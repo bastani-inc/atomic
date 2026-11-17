@@ -31,10 +31,7 @@ import type {
 	PiCustomOverlayFunction,
 } from "../../packages/workflows/src/extension/wiring.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import {
-	openWorkflowsListing,
-	type WorkflowsListingDefinition,
-} from "../../packages/workflows/src/tui/workflows-listing.js";
+import { openWorkflowsListing } from "../../packages/workflows/src/tui/workflows-listing.js";
 import { ScreenTerminal } from "../helpers/screen-terminal.js";
 import { fakeFooterAgentSession } from "./stage-chat-view-helpers.js";
 
@@ -49,7 +46,7 @@ afterEach(() => setKeybindings(previousKeys));
 const DOWN = "\x1b[B";
 const STATUS = "MCP  1 server · 3 tools";
 const RUNS: RunSnapshot[] = Array.from(
-	{ length: 12 },
+	{ length: 20 },
 	(_, index): RunSnapshot => ({
 		id: `run-${String(index + 1).padStart(2, "0")}-0000`,
 		name: "ralph",
@@ -60,11 +57,6 @@ const RUNS: RunSnapshot[] = Array.from(
 		startedAt: Date.now() - index * 60_000,
 	}),
 );
-const DEFINITIONS: WorkflowsListingDefinition[] = Array.from({ length: 8 }, (_, index) => ({
-	normalizedName: `workflow-${index + 1}`,
-	description: `Run workflow ${index + 1}`,
-	inputs: {},
-}));
 const PANEL_ROWS: AgentPanelRow[] = RUNS.map((run) => ({
 	id: `workflow:${run.id}`,
 	kind: "workflow",
@@ -124,11 +116,11 @@ async function sweepFullscreen(columns: number, rows: number): Promise<void> {
 			},
 			options as Parameters<typeof context.showExtensionCustom>[1],
 		);
-	const pending = openWorkflowsListing({ custom }, { runs: () => RUNS, definitions: () => DEFINITIONS });
+	const pending = openWorkflowsListing({ custom }, { runs: () => RUNS });
 	await new Promise((resolve) => setImmediate(resolve));
 	try {
 		assert.ok(sheet);
-		for (let step = 0; step <= RUNS.length + DEFINITIONS.length; step++) {
+		for (let step = 0; step <= RUNS.length; step++) {
 			tui.renderNow();
 			assertSheetVisible(getLayoutFrame(tui).lines, `at ${columns}x${rows}, step ${step}`);
 			terminal.input(DOWN);
@@ -157,13 +149,15 @@ async function sweepMainScreen(columns: number, rows: number): Promise<void> {
 	const footerContainer = new Container();
 	footerContainer.addChild(new FooterComponent(fakeFooterAgentSession(), footerData));
 	const widgetsBelow = new Container();
-	InteractiveMode.prototype.renderWidgetContainer.call(
-		{} as InteractiveMode,
-		widgetsBelow,
-		new Map([["atomic.agent-panel", panelWidget()]]),
-		false,
-		true,
-	);
+	const widgetHost = {
+		ui: tui,
+		widgetContainerAbove: widgetsAbove,
+		widgetContainerBelow: widgetsBelow,
+		extensionWidgetsAbove: new Map<string, Component>(),
+		extensionWidgetsBelow: new Map<string, Component>([["atomic.agent-panel", panelWidget()]]),
+		navigationInlineCustomUiDepth: 0,
+		renderWidgetContainer: InteractiveMode.prototype.renderWidgetContainer,
+	};
 	for (const child of [
 		transcript,
 		widgetsAbove,
@@ -176,7 +170,11 @@ async function sweepMainScreen(columns: number, rows: number): Promise<void> {
 	let sheet: PiCustomComponent | undefined;
 	void openWorkflowsListing(
 		{
-			custom: (factory) => {
+			custom: (factory, options) => {
+				if (options?.purpose === "navigation") {
+					widgetHost.navigationInlineCustomUiDepth = 1;
+					InteractiveMode.prototype.renderWidgets.call(widgetHost as unknown as InteractiveMode);
+				}
 				sheet = factory(
 					{ mode: tui.mode, terminal: tui.terminal, requestRender: () => tui.requestRender() },
 					undefined,
@@ -195,12 +193,12 @@ async function sweepMainScreen(columns: number, rows: number): Promise<void> {
 				return new Promise<undefined>(() => {});
 			},
 		},
-		{ runs: () => RUNS, definitions: () => DEFINITIONS },
+		{ runs: () => RUNS },
 	);
 	tui.start();
 	try {
 		await terminal.waitForRender();
-		for (let step = 0; step <= RUNS.length + DEFINITIONS.length; step++) {
+		for (let step = 0; step <= RUNS.length; step++) {
 			assertSheetVisible(await terminal.flushAndGetViewport(), `at ${columns}x${rows}, step ${step}`);
 			terminal.sendInput(DOWN);
 			await terminal.waitForRender();
@@ -220,10 +218,10 @@ const SIZES: ReadonlyArray<readonly [number, number]> = [
 ];
 
 for (const [columns, rows] of SIZES) {
-	test(`/workflows keeps its title, search, selection and hint on screen in the fullscreen layout at ${columns}x${rows} with a status row and agent panel (#5245)`, async () => {
+	test(`/workflows keeps its title, search, selection and hint on screen in the fullscreen layout at ${columns}x${rows} with a status row and agent panel (#5224)`, async () => {
 		await sweepFullscreen(columns, rows);
 	});
-	test(`/workflows keeps its title, search, selection and hint on screen in the main-screen layout at ${columns}x${rows} with a status row and agent panel (#5245)`, async () => {
+	test(`/workflows keeps its title, search, selection and hint on screen in the main-screen layout at ${columns}x${rows} with a status row and agent panel (#5224)`, async () => {
 		await sweepMainScreen(columns, rows);
 	});
 }

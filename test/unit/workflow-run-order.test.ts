@@ -1,22 +1,15 @@
-/**
- * The `/workflows` picker and the `/workflow status` list order runs the
- * way `/tasks` does: status rank first, newest first within a status.
- */
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import { SelectorState } from "../../packages/coding-agent/src/modes/interactive/components/selector.js";
 import {
 	createRunIndicatorStatusResolver,
 	runIndicatorStatus,
 } from "../../packages/workflows/src/shared/run-indicator-status.js";
 import { sortRunsByStatus } from "../../packages/workflows/src/shared/run-order.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import {
-	createSessionPickerState,
-	handleSessionPickerInput,
-	selectRunsForPicker,
-	syncSessionPickerSelection,
-} from "../../packages/workflows/src/tui/session-picker.js";
+import { selectRunsForPicker } from "../../packages/workflows/src/tui/session-picker.js";
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
+import { workflowsListingItems } from "../../packages/workflows/src/tui/workflows-listing.js";
 
 const NOW = 10_000_000;
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
@@ -189,58 +182,46 @@ test("resolves each run's indicator status exactly once per sort (#3824)", () =>
 	);
 });
 
-test("picker keeps the selected run selected when another run starts awaiting input (#3824)", () => {
+test("listing keeps the selected run selected when a newer run arrives (#3824)", () => {
 	const alpha = makeRun({ id: "alpha", name: "Alpha", status: "running", startedAt: 300 });
 	const beta = makeRun({ id: "beta", name: "Beta", status: "running", startedAt: 200 });
-	const state = createSessionPickerState();
-	const before = selectRunsForPicker([alpha, beta], "", true, NOW);
-	syncSessionPickerSelection(state, before);
-	assert.equal(before[state.selectedIndex]?.run.id, "alpha");
+	const state = new SelectorState({ items: workflowsListingItems([alpha, beta], NOW) });
+	assert.equal(state.getSelected()?.value.runId, "alpha");
 
-	const after = selectRunsForPicker([alpha, withPrompt(beta)], "", true, NOW);
-	assert.deepEqual(
-		after.map((row) => row.run.id),
-		["beta", "alpha"],
-	);
-	syncSessionPickerSelection(state, after);
-	assert.deepEqual(handleSessionPickerInput("\r", state, after), { kind: "connect", runId: "alpha" });
-	assert.equal(state.selectedIndex, 1);
+	const gamma = makeRun({ id: "gamma", name: "Gamma", status: "running", startedAt: 400 });
+	state.setItems(workflowsListingItems([alpha, beta, gamma], NOW));
+	assert.equal(state.getSelected()?.value.runId, "alpha");
+	assert.equal(state.getSelectedIndex(), 1);
 });
 
-test("picker moves from the re-anchored selection after a live reorder (#3824)", () => {
+test("listing moves from the re-anchored selection after a live refresh (#3824)", () => {
 	const alpha = makeRun({ id: "alpha", status: "running", startedAt: 300 });
 	const beta = makeRun({ id: "beta", status: "running", startedAt: 200 });
 	const gamma = makeRun({ id: "gamma", status: "running", startedAt: 100 });
-	const state = createSessionPickerState();
-	syncSessionPickerSelection(state, selectRunsForPicker([alpha, beta, gamma], "", true, NOW));
+	const state = new SelectorState({ items: workflowsListingItems([alpha, beta, gamma], NOW) });
 
-	const reordered = selectRunsForPicker([alpha, beta, withPrompt(gamma)], "", true, NOW);
-	syncSessionPickerSelection(state, reordered);
-	handleSessionPickerInput("\x1b[B", state, reordered);
-	assert.equal(reordered[state.selectedIndex]?.run.id, "beta");
-	assert.equal(state.selectedRunId, "beta");
+	const newer = makeRun({ id: "newer", status: "running", startedAt: 400 });
+	state.setItems(workflowsListingItems([newer, alpha, beta, gamma], NOW));
+	state.move(1);
+	assert.equal(state.getSelected()?.value.runId, "beta");
 });
 
-test("picker clamps the selection to the last row when the selected last run disappears", () => {
+test("listing clamps the selection to the last row when the selected last run disappears (#3824)", () => {
 	const alpha = makeRun({ id: "alpha", status: "running", startedAt: 300 });
 	const beta = makeRun({ id: "beta", status: "running", startedAt: 200 });
 	const gamma = makeRun({ id: "gamma", status: "running", startedAt: 100 });
-	const state = createSessionPickerState();
-	const before = selectRunsForPicker([alpha, beta, gamma], "", true, NOW);
-	syncSessionPickerSelection(state, before);
-	handleSessionPickerInput("\x1b[B", state, before);
-	handleSessionPickerInput("\x1b[B", state, before);
-	assert.equal(state.selectedRunId, "gamma");
+	const state = new SelectorState({ items: workflowsListingItems([alpha, beta, gamma], NOW) });
+	state.move(1);
+	state.move(1);
+	assert.equal(state.getSelected()?.value.runId, "gamma");
 
-	const after = selectRunsForPicker([alpha, beta], "", true, NOW);
-	syncSessionPickerSelection(state, after);
-	assert.equal(state.selectedIndex, 1);
-	assert.equal(state.selectedRunId, "beta");
-	assert.deepEqual(handleSessionPickerInput("\r", state, after), { kind: "connect", runId: "beta" });
+	state.setItems(workflowsListingItems([alpha, beta], NOW));
+	assert.equal(state.getSelectedIndex(), 1);
+	assert.equal(state.getSelected()?.value.runId, "beta");
 
-	syncSessionPickerSelection(state, []);
-	assert.equal(state.selectedIndex, 0);
-	assert.equal(state.selectedRunId, undefined);
+	state.setItems([]);
+	assert.equal(state.getSelectedIndex(), 0);
+	assert.equal(state.getSelected(), undefined);
 });
 
 test("shared indicator resolver matches per-run resolution across nested and cyclic ancestry (#3824)", () => {

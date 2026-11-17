@@ -154,7 +154,7 @@ test("a paused root with durable progress says it can be resumed from a new proc
 	progress.completedCheckpoints = 3;
 	const withProgress = await pauseRun(root, options);
 	const message = withProgress.ok ? (withProgress.message ?? "") : JSON.stringify(withProgress);
-	assert.match(message, /\/workflow resume /);
+	assert.match(message, /\/resume /);
 	assert.match(message, /new Atomic process/);
 	assert.doesNotMatch(message, /on this live process/);
 });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { stripVTControlCharacters } from "node:util";
-import { type Component, getKeybindings, setKeybindings } from "@bastani/atomic-tui";
+import { type Component, getKeybindings, setKeybindings, Text } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { FooterDataProvider } from "../../packages/coding-agent/src/core/footer-data-provider.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
@@ -9,6 +9,7 @@ import {
 	type AgentPanelRow,
 	renderAgentPanelRows,
 } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
+import { BashExecutionComponent } from "../../packages/coding-agent/src/modes/interactive/components/bash-execution.js";
 import { FooterComponent } from "../../packages/coding-agent/src/modes/interactive/components/footer.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { themedAgentPanelStyle } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
@@ -22,10 +23,7 @@ import type {
 	PiCustomOverlayFunction,
 } from "../../packages/workflows/src/extension/wiring.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import {
-	openWorkflowsListing,
-	type WorkflowsListingDefinition,
-} from "../../packages/workflows/src/tui/workflows-listing.js";
+import { openWorkflowsListing } from "../../packages/workflows/src/tui/workflows-listing.js";
 import { fakeFooterAgentSession } from "./stage-chat-view-helpers.js";
 
 let previousKeys: ReturnType<typeof getKeybindings>;
@@ -52,7 +50,7 @@ function cleanScreen(lines: readonly string[]): string {
 	return lines.map((line) => stripVTControlCharacters(line.replace(/\x1b_pi:[^\x07]*\x07/g, ""))).join("\n");
 }
 
-test("a clock tick whose Date.now delta reads 999 ms still repaints the elapsed text (#5245)", () => {
+test("a clock tick whose Date.now delta reads 999 ms still repaints the elapsed text (#5224)", () => {
 	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
 	vi.setSystemTime(T0);
 	let component: PiCustomComponent | undefined;
@@ -82,7 +80,6 @@ test("a clock tick whose Date.now delta reads 999 ms still repaints the elapsed 
 		},
 		{
 			runs: () => [run({ id: "aaaaaaaa", name: "wf", status: "running", startedAt: T0 - 2_000 })],
-			definitions: () => [],
 		},
 	);
 	assert.ok(component);
@@ -96,7 +93,7 @@ test("a clock tick whose Date.now delta reads 999 ms still repaints the elapsed 
 	component.dispose?.();
 });
 
-test("the clock tick does not request a frame when only an off-page run changes (#5245)", () => {
+test("the clock tick does not request a frame when only an off-page run changes (#5224)", () => {
 	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
 	vi.setSystemTime(T0);
 	let component: PiCustomComponent | undefined;
@@ -128,7 +125,7 @@ test("the clock tick does not request a frame when only an off-page run changes 
 					) as PiCustomComponent;
 				}),
 		},
-		{ runs: () => runs, definitions: () => [] },
+		{ runs: () => runs },
 	);
 	assert.ok(component);
 	component.render(100);
@@ -143,13 +140,17 @@ test("the clock tick does not request a frame when only an off-page run changes 
 	component.dispose?.();
 });
 
-for (const [columns, rows, widgetRows] of [
-	[80, 24, 1],
-	[80, 24, 8],
-	[100, 30, 8],
+for (const [columns, rows, widgetRows, followUpCount, shellRows, working] of [
+	[80, 24, 1, 0, 0, false],
+	[80, 24, 8, 0, 0, false],
+	[100, 30, 8, 0, 0, false],
+	[80, 24, 1, 6, 0, false],
+	[80, 24, 1, 0, 8, false],
+	[100, 30, 1, 6, 8, true],
+	[120, 40, 1, 6, 8, true],
 ] as const) {
-	test(`/workflows keeps its hint visible with ${widgetRows}-row widgets at ${columns}x${rows} and restores them on close (#5245)`, async () => {
-		const runs: RunSnapshot[] = Array.from({ length: 12 }, (_, index) =>
+	test(`/workflows keeps its hint visible with ${widgetRows}-row widgets, ${followUpCount} queued follow-ups and ${shellRows} shell rows at ${columns}x${rows}, working=${working} (#5224)`, async () => {
+		const runs: RunSnapshot[] = Array.from({ length: 20 }, (_, index) =>
 			run({
 				id: `run-${String(index + 1).padStart(2, "0")}-0000`,
 				name: "ralph",
@@ -158,11 +159,6 @@ for (const [columns, rows, widgetRows] of [
 				startedAt: T0 - index * 60_000,
 			}),
 		);
-		const definitions: WorkflowsListingDefinition[] = Array.from({ length: 8 }, (_, index) => ({
-			normalizedName: `workflow-${index + 1}`,
-			description: `Run workflow ${index + 1}`,
-			inputs: {},
-		}));
 		const panelRows: AgentPanelRow[] = runs.map((entry) => ({
 			id: `workflow:${entry.id}`,
 			kind: "workflow",
@@ -186,7 +182,23 @@ for (const [columns, rows, widgetRows] of [
 			tuiInputSubscriptions: new Set(),
 			programStatus: { report() {}, setBlocked() {} },
 			activeSelectorDispose: undefined,
+			compactionQueuedMessages: [],
+			pendingBashComponents: [],
 		});
+		const followUps = Array.from({ length: followUpCount }, (_, index) => `queued-follow-up-${index}`);
+		Object.assign(context.session, {
+			getSteeringMessages: () => [],
+			getFollowUpMessages: () => followUps,
+		});
+		const shell = new BashExecutionComponent("echo pending-shell", tui);
+		if (shellRows > 0) {
+			shell.appendOutput(
+				Array.from({ length: shellRows }, (_, index) => `pending-shell-output-${index}`).join("\n"),
+			);
+			context.pendingBashComponents.push(shell);
+		}
+		context.updatePendingMessagesDisplay();
+		if (working) context.statusContainer.addChild(new Text("Working…", 0, 0));
 		const editor = context.editor as unknown as { getText(): string; setText(text: string): void };
 		editor.getText = () => "";
 		editor.setText = () => {};
@@ -227,27 +239,45 @@ for (const [columns, rows, widgetRows] of [
 				},
 				options as Parameters<typeof context.showExtensionCustom>[1],
 			);
-		const pending = openWorkflowsListing({ custom }, { runs: () => runs, definitions: () => definitions });
+		const pending = openWorkflowsListing({ custom }, { runs: () => runs });
 		await new Promise((resolve) => setImmediate(resolve));
 		try {
 			assert.ok(sheet);
-			for (let step = 0; step <= runs.length + definitions.length; step++) {
+			for (let step = 0; step <= runs.length; step++) {
+				if (step === 1 && shellRows > 0) {
+					shell.appendOutput("\npending-shell-live-update");
+					context.pendingMessagesContainer.addChild(new Text("pending-shell-added-while-open", 0, 0));
+				}
+				if (step === 2 && followUpCount > 0) {
+					followUps.push("queued-follow-up-added-while-open");
+					context.updatePendingMessagesDisplay();
+				}
 				tui.renderNow();
 				const text = cleanScreen(getLayoutFrame(tui).lines);
 				assert.match(text, /Workflows/, `title hidden at step ${step}\n${text}`);
 				assert.match(text, /Search…/, `search hidden at step ${step}\n${text}`);
 				assert.match(text, /❯/, `selection hidden at step ${step}\n${text}`);
 				assert.match(text, /enter open/, `hint hidden at step ${step}\n${text}`);
-				assert.doesNotMatch(text, /above-widget|below-widget/);
+				assert.doesNotMatch(text, /above-widget|below-widget|queued-follow-up|pending-shell/);
 				terminal.input(DOWN);
 			}
 			sheet.dispose?.();
 			sheet = undefined;
 			await pending;
+			if (followUpCount > 0 || shellRows > 0) terminal.resize(columns, 60);
 			tui.renderNow();
 			const afterClose = cleanScreen(getLayoutFrame(tui).lines);
 			assert.match(afterClose, /below-widget/);
 			assert.match(afterClose, /above-widget-0/);
+			const pendingPreview = cleanScreen(context.pendingMessagesContainer.render(columns));
+			if (followUpCount > 0) {
+				assert.match(afterClose, /queued-follow-up-0/);
+				assert.match(pendingPreview, /queued-follow-up-added-while-open/);
+			}
+			if (shellRows > 0) {
+				assert.match(afterClose, /pending-shell/);
+				assert.match(pendingPreview, /pending-shell-live-update/);
+			}
 		} finally {
 			sheet?.dispose?.();
 			await pending;

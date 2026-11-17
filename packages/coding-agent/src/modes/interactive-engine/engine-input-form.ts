@@ -38,8 +38,10 @@ export class EngineInputFormService {
 			rejectResult = reject;
 		});
 		const onAbort = () => {
-			this.send({ type: "engine_input_form_close", componentId });
 			record.resolve(undefined);
+			try {
+				this.send({ type: "engine_input_form_close", componentId });
+			} catch {}
 		};
 		const settle = (): boolean => {
 			if (record.settled) return false;

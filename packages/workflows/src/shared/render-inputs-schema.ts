@@ -4,8 +4,6 @@
  * metadata:
  *
  *   - renderResult({ action: "inputs", ... })  (LLM tool path; see render-result.ts)
- *   - /workflow inputs <name>                  (slash command; extension/index.ts)
- *   - /workflow <name> --help                  (slash help branch)
  *   - programmatic workflow validation failures
  *
  * The renderer has two output modes:
@@ -157,5 +155,5 @@ function inputsSummary(name: string, inputs: readonly WorkflowInputEntry[]): str
 	const total = inputs.length;
 	const totalLabel = `${total} input${total === 1 ? "" : "s"}`;
 	const reqLabel = `${required} required`;
-	return `${totalLabel}  ·  ${reqLabel}  ·  pass via key=value or run \`/workflow ${name}\` with no args for picker`;
+	return `${totalLabel}  ·  ${reqLabel}  ·  pass via key=value or run \`workflow({ action: "run", workflow: "${name}", inputs })\``;
 }

@@ -7,7 +7,7 @@ import { initTheme, theme } from "../../packages/coding-agent/src/modes/interact
 import { ScreenTerminal } from "../helpers/screen-terminal.js";
 
 for (const type of ["string", "text"] as const) {
-	test(`keeps raw ${type} input intact when editing an escaped prefill (#5245)`, () => {
+	test(`keeps raw ${type} input intact when editing an escaped prefill (#5224)`, () => {
 		initTheme("dark");
 		const raw = "before\x1b]52;c;QVVESVQ=\x07after";
 		const submitted: Record<string, string>[] = [];
@@ -26,7 +26,7 @@ for (const type of ["string", "text"] as const) {
 		assert.deepEqual(submitted, [{ value: `${raw}x` }]);
 	});
 
-	test(`keeps pasted terminal commands inert in a ${type} field (#5245)`, () => {
+	test(`keeps pasted terminal commands inert in a ${type} field (#5224)`, () => {
 		initTheme("dark");
 		const payload = "\x1b]52;c;QVVESVQ=\x07";
 		const submitted: Record<string, string>[] = [];

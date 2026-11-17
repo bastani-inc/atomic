@@ -197,7 +197,7 @@ describe("renderStatusList — populated", () => {
 		assert.equal(idRows.length, 3, "3 runs × 1 complete identity row");
 
 		// Trailing hint references the most-recently-active run (def456, 42s ago).
-		assert.match(plain, /▸ \/workflow status def456uuid/);
+		assert.match(plain, /▸ \/workflows def456uuid/);
 		assert.match(plain, /drill into a run/);
 	});
 
@@ -371,7 +371,7 @@ describe("renderStatusList — populated", () => {
 		const plain = stripAnsi(out);
 		assert.match(plain, /BACKGROUND {2}1 run {2}1 quit/);
 		assert.match(plain, /resume-me/);
-		assert.match(plain, /resumable via \/workflow resume/);
+		assert.match(plain, /resumable via \/resume/);
 		assert.doesNotMatch(plain, /failed/);
 	});
 	test("quit run with a pending prompt keeps the prompt-free resumable card byte-identical", () => {
@@ -401,7 +401,7 @@ describe("renderStatusList — populated", () => {
 		const plain = stripAnsi(promptedOutput);
 		assert.match(plain, new RegExp(`${statusIcon("pending")}\\s+quit-prompt-list`));
 		assert.match(plain, new RegExp(`resume-me.*${statusIcon("pending")}\\s+quit`));
-		assert.match(plain, /resumable via \/workflow resume/);
+		assert.match(plain, /resumable via \/resume/);
 	});
 
 	test("mixed running and paused snapshot keeps paused runs out of running counts and labels their rows", () => {
@@ -509,7 +509,7 @@ describe("renderStatusList — populated", () => {
 		assert.match(out, /●\s+xyz000/, "plain entry has status glyph and run id");
 		assert.match(out, /scratch/);
 		assert.match(out, /single\s+\[●\]/);
-		assert.match(out, /▸ \/workflow status xyz000/);
+		assert.match(out, /▸ \/workflows xyz000/);
 	});
 
 	test("failed run carries the killed/failed-at-stage meta", () => {
@@ -760,7 +760,7 @@ describe("renderStatusList — populated", () => {
 		const lines = renderStatusList([run], { width: 44, theme }).split("\n");
 		const hintLines = lines.filter((line) => {
 			const plain = stripAnsi(line);
-			return plain.includes("/workflow status") || plain.includes("76-d1a348f582ae");
+			return plain.includes("/workflows") || plain.includes("76-d1a348f582ae");
 		});
 
 		assert.equal(hintLines.length, 2, "the full hint id wraps across two rows");

@@ -53,6 +53,8 @@ export interface PiMessageRenderComponent {
 
 export interface PiMessageRenderOptions {
 	expanded: boolean;
+	outputPad?: number;
+	keyText?: (keybinding: string) => string;
 }
 
 export type PiMessageRendererResult = string | PiMessageRenderComponent | null | undefined;
@@ -193,7 +195,6 @@ export interface ExtensionAPI {
 	readonly lifecycleScope?: object;
 	registerWorkflowActivityPublisher?: () => WorkflowActivityPublisher;
 	registerWorkflowRunControl?: (control: WorkflowRunControl) => WorkflowRunControlRegistration;
-	/** Lists this extension's runs in the host's agent panel and `/tasks` (#5224). */
 	registerAgentPanelSource?: (source: AgentPanelSource) => AgentPanelSourceRegistration;
 	/** Present only when this extension instance belongs to an admitted in-process subagent child. */
 	readonly subagentPolicy?: CreateAgentSessionOptions["subagentPolicy"];
@@ -202,6 +203,10 @@ export interface ExtensionAPI {
 	registerMessageRenderer?: (event: string, renderer: PiMessageRenderer) => void;
 	sendMessage?: StageLateMessageRouter["routeMessage"];
 	sendMessages?: StageLateMessageRouter["routeMessages"];
+	sendUserMessage?: (
+		content: string,
+		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
+	) => void | Promise<void>;
 	registerFlag?: (name: string, opts: PiFlagNamedOpts) => void;
 	getWorkflowHostModules?: import("./workflow-module-loader.js").WorkflowHostModuleProvider;
 	refreshWorkflowResources?: () => Promise<readonly WorkflowResourceInfo[]>;

@@ -148,7 +148,6 @@ export type {
 	HostCustomUiStateListener,
 	HostInputFormField,
 	HostInputFormFieldType,
-	HostInputFormJson,
 	HostInputFormRequest,
 	HostSessionPickerHandle,
 	HostSessionPickerRequest,

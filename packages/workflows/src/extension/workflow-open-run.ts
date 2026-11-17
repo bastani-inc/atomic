@@ -4,7 +4,7 @@ import { subscribeStoreInvalidation } from "../shared/store-observation.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { renderSessionList } from "../tui/session-list.js";
-import { openWorkflowsListing, type WorkflowsListingDefinition } from "../tui/workflows-listing.js";
+import { openWorkflowsListing } from "../tui/workflows-listing.js";
 import type { PiCommandContext } from "./public-types.js";
 import { tokenizeWorkflowArgs, type WorkflowCommandReporter } from "./workflow-command-utils.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
@@ -19,8 +19,6 @@ export interface OpenWorkflowRunOptions {
 export interface WorkflowsCommandDeps {
 	readonly overlay: GraphOverlayPort;
 	readonly store: Store;
-	readonly definitions?: () => readonly WorkflowsListingDefinition[];
-	readonly startDefinition?: (name: string) => Promise<void>;
 }
 
 export function openWorkflowRun(
@@ -72,9 +70,7 @@ export async function handleWorkflowsCommand(
 		return;
 	}
 	const runs = topLevelWorkflowRuns(store.runs());
-	const definitions = deps.definitions?.() ?? [];
-	if (runs.length === 0 && (definitions.length === 0 || !interactive))
-		return reporter.info("No workflows in this session.");
+	if (runs.length === 0 && !interactive) return reporter.info("No workflows in this session.");
 	if (!interactive) return reporter.info(renderSessionList(store.runs(), { theme, includeAll: true }));
 	if (runs.length === 1) {
 		openWorkflowRun(runs[0]!.id, ctx, deps);
@@ -93,17 +89,14 @@ async function showWorkflowsListing(
 ): Promise<void> {
 	const { store } = deps;
 	const reopen = (): void => {
-		showWorkflowsListing(ctx, reporter, deps, picked?.kind === "run" ? picked.runId : undefined).catch(
-			(error: unknown) =>
-				reporter.error(`/workflows failed: ${error instanceof Error ? error.message : String(error)}`),
+		showWorkflowsListing(ctx, reporter, deps, picked?.runId).catch((error: unknown) =>
+			reporter.error(`/workflows failed: ${error instanceof Error ? error.message : String(error)}`),
 		);
 	};
 	const picked = await openWorkflowsListing(ctx.ui, {
 		runs: () => store.runs(),
-		definitions: () => deps.definitions?.() ?? [],
 		subscribe: (listener) => subscribeStoreInvalidation(store, listener),
-		initialId: selectRunId === undefined ? undefined : `run:${selectRunId}`,
+		selectRunId,
 	});
 	if (picked?.kind === "run") openWorkflowRun(picked.runId, ctx, deps, { onReturn: reopen });
-	else if (picked?.kind === "definition") await deps.startDefinition?.(picked.name);
 }

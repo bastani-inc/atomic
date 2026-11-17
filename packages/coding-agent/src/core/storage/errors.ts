@@ -958,7 +958,7 @@ function catalogText(init: JournalCatalogErrorInit, detail: string | null): { me
 				message: `Workflow run not found: ${init.runId ?? "unknown"} in ${init.selection ?? subject} (run-not-found).`,
 				hint: init.localOnly
 					? `This machine uses local-only storage and is not joined to shared storage. If the run started on another machine, join its storage with \`${SHARED_STORAGE_JOIN_HINT}\`; if it is in an older journal file, adopt it with \`${JOURNAL_ADOPT_COMMAND}\`.`
-					: "The shared storage selected here does not hold this run; check the run ID with `/workflow status`.",
+					: "The shared storage selected here does not hold this run; check the run ID with `/workflows`.",
 			};
 	}
 }

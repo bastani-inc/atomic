@@ -88,7 +88,7 @@ test("JournalCatalogError renders each code's message and hint from its fields (
 		[
 			new JournalCatalogError({ code: "run-not-found", catalogPath, localOnly: false }),
 			`Workflow run not found: unknown in ${catalogPath} (run-not-found).`,
-			"The shared storage selected here does not hold this run; check the run ID with `/workflow status`.",
+			"The shared storage selected here does not hold this run; check the run ID with `/workflows`.",
 		],
 	];
 	for (const [error, message, hint] of cases) {

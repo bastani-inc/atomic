@@ -4,7 +4,7 @@ export const WORKFLOW_SELECTION_GUIDANCE =
 export const WORKFLOW_TOOL_DESCRIPTION =
 	WORKFLOW_SELECTION_GUIDANCE +
 	" " +
-	"Run starts the named workflow and returns its runId; invalid inputs fail without launching. User /workflow commands launch directly and authored ctx.workflow(...) remains internal composition. " +
+	"Run starts the named workflow and returns its runId; invalid inputs fail without launching. Authored ctx.workflow(...) remains internal composition. " +
 	"When workflow execution fits but another shape would better achieve the task, author a custom TypeScript workflow({...}) inline with normal coding tools, reload it, and run it; after successfully creating and reloading a newly authored custom workflow, report the folder containing its generated code as 'Custom workflow created. You can inspect its code at: <workflow-folder-path>'; do this only for newly created custom workflows, never builtin or pre-existing workflows; " +
 	"discover with list/get/inputs/models, list session runs with status (no runId; statusFilter narrows the list), inspect status/stages/stage details (status with runId includes the final result; add summary:true for just status, result and blockers), " +
 	"answer pending prompts only while the root workflow is nonterminal, pause/resume/quit runs, fork a durable run into a new run (fork with runId, optional fromStage and replacement inputs, to retry from a stage; the source run is never changed), and reload workflow resources. " +

@@ -41,7 +41,7 @@ test("synchronous fork lookups keep their receiver and release the busy state af
 		graph.handleInput("f");
 		await settle();
 		assert.equal(actions.attempts, 2);
-		assert.ok(stripVTControlCharacters(graph.render(160).join("\n")).includes("enter fork"));
+		assert.ok(stripVTControlCharacters(graph.render(160).join("\n")).includes("enter confirm"));
 	} finally {
 		graph.dispose();
 	}
@@ -91,6 +91,9 @@ test("graph action resource failures always resolve to an error result (#5234)",
 		() => actions.retry!("missing", "stage"),
 		() => actions.fork!("missing", "stage"),
 		() => actions.forkTarget!("missing", "stage"),
+		() => actions.pauseRun!("missing"),
+		() => actions.resumeRun!("missing"),
+		() => actions.quitRun!("missing"),
 	]) {
 		const outcome = await request();
 		assert.equal(outcome.ok, false);

@@ -167,8 +167,11 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		},
 	);
 
-	it("Enter on a failed stage opens its failure detail with the reason and its actions, never a stack trace", () => {
+	it("Enter on a failed stage opens its failure detail with the reason, tokens and actions, never a stack trace", () => {
 		const failed = stage("verify", "failed", {
+			startedAt: 1_000,
+			endedAt: 241_000,
+			modelAttempts: [{ model: "mock", status: "failed", usage: { input: 10_000, output: 2_400 } }],
 			error: "gate failed: unit-tests (windows-x64, 2/5)\n    at runGate (gate.ts:12:3)",
 		});
 		const graph = view([failed], {
@@ -181,22 +184,17 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 			},
 		});
 		assert.match(hint(graph), /↵ open failure detail/);
+		assert.match(hint(graph), /d details/);
 		graph.handleInput(ENTER);
 		const text = graph
 			.render(160)
 			.map((line) => stripAnsi(line))
 			.join("\n");
-		assert.match(text, /✗ verify · failed/);
+		assert.match(text, /✗ verify · failed after 4m · 12\.4k tokens/);
 		assert.match(text, /Reason\s+gate failed: unit-tests \(windows-x64, 2\/5\)/);
 		assert.doesNotMatch(text, /at runGate/, "the summary keeps the stack under logs");
 		const detailHint = hint(graph);
-		for (const key of [
-			/esc back to graph/,
-			/r retry in place/,
-			/f fork from this stage \(reruns it\)/,
-			/t transcript/,
-			/l logs/,
-		]) {
+		for (const key of [/r retry from stage/, /f fork from stage/, /t transcript/, /l logs/, /esc back/]) {
 			assert.match(detailHint, key);
 		}
 		graph.handleInput("l");
@@ -209,6 +207,124 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 			"l shows the full log",
 		);
 		assert.match(hint(graph), /l summary/);
+		graph.dispose();
+	});
+
+	it("d on a completed stage opens its detail with completed header, fork/transcript/logs/back and no retry, while Enter opens its chat (#5224)", async () => {
+		const doneStage = stage("plan", "completed", {
+			startedAt: 1_000,
+			endedAt: 61_000,
+			result: "Plan approved\nsecond line",
+			modelAttempts: [{ model: "mock", status: "completed", usage: { input: 3_000, output: 1_200 } }],
+		});
+		const retry = vi.fn(async () => ({ ok: true, message: "retried" }));
+		const fork = vi.fn(async () => ({ ok: true, message: "Forked run-1 into run-2", runId: "run-2" }));
+		const forkTarget = vi.fn(async () => ({ ok: true, stagePath: "plan", rerunToolSteps: 0, live: false }));
+		const onStageAttach = vi.fn();
+		const onShowRun = vi.fn();
+		const graph = view([doneStage], {
+			piTui: { terminal: { rows: 40 } },
+			onStageAttach,
+			onShowRun,
+			stageActions: { retry, fork, forkTarget },
+		});
+		assert.match(hint(graph), /↵ open stage chat {2}· {2}d details/);
+		graph.handleInput(ENTER);
+		assert.deepEqual(onStageAttach.mock.calls[0], ["run-1", "plan"]);
+
+		graph.handleInput("d");
+		const text = graph
+			.render(160)
+			.map((line) => stripAnsi(line))
+			.join("\n");
+		assert.match(text, /✓ plan · completed in 1m · 4\.2k tokens/);
+		const detailHint = hint(graph).split("\n")[1];
+		assert.match(detailHint, /f fork from stage {2}· {2}t transcript {2}· {2}l logs {2}· {2}esc back/);
+		assert.doesNotMatch(detailHint, /retry/);
+
+		graph.handleInput("r");
+		assert.equal(retry.mock.calls.length, 0);
+
+		graph.handleInput("f");
+		await settle();
+		assert.match(hint(graph), /New run from plan\?/);
+		assert.match(hint(graph), /enter confirm {2}· {2}esc cancel/);
+		graph.handleInput(ENTER);
+		await settle();
+		assert.equal(fork.mock.calls.length, 1);
+		assert.equal(onShowRun.mock.calls[0]?.[0], "run-2");
+		graph.dispose();
+	});
+
+	it("p pauses a running run, r resumes a paused or blocked run, and q quits after a second press within 3s (#5224)", async () => {
+		const snap = makeSnap([stage("A", "running"), stage("B", "pending", {}, ["A"])]);
+		let notify = () => {};
+		const store = {
+			...makeStore(snap),
+			subscribeInvalidation: (listener: () => void) => {
+				notify = listener;
+				return () => {};
+			},
+		};
+		const pauseRun = vi.fn(async () => ({ ok: true, message: "Paused run-1" }));
+		const resumeRun = vi.fn(async () => ({ ok: true, message: "Resumed run-1" }));
+		const quitRun = vi.fn(async () => ({ ok: true, message: "Quit run-1" }));
+		const stop = vi.fn(async () => ({ ok: true, message: "Stopped A" }));
+		const graph = view([], {
+			store,
+			stageActions: { stop, pauseRun, resumeRun, quitRun },
+		});
+
+		const runningHint = hint(graph, 160).split("\n")[1];
+		assert.match(
+			runningHint,
+			/esc back {2}· {2}↵ open stage chat {2}· {2}↓ move {2}· {2}x stop stage {2}· {2}p pause run {2}· {2}q quit run/,
+		);
+		assert.doesNotMatch(runningHint, /r resume run|d details/);
+
+		graph.handleInput("r");
+		assert.equal(resumeRun.mock.calls.length, 0);
+
+		graph.handleInput("p");
+		assert.deepEqual(pauseRun.mock.calls[0], ["run-1"]);
+		await settle();
+		assert.match(hint(graph), /Paused run-1/);
+
+		snap.runs[0].status = "paused";
+		snap.runs[0].stages[0] = stage("A", "paused");
+		snap.version += 1;
+		notify();
+
+		const pausedHint = hint(graph, 160).split("\n")[1];
+		assert.match(pausedHint, /r resume run {2}· {2}q quit run/);
+		assert.doesNotMatch(pausedHint, /p pause run|x stop stage/);
+
+		graph.handleInput("p");
+		assert.equal(pauseRun.mock.calls.length, 1);
+
+		graph.handleInput("r");
+		assert.deepEqual(resumeRun.mock.calls[0], ["run-1"]);
+		await settle();
+
+		graph.handleInput("q");
+		assert.equal(quitRun.mock.calls.length, 0);
+		assert.match(hint(graph, 160).split("\n")[1], /q again to quit test-workflow/);
+
+		snap.runs[0].status = "blocked";
+		snap.version += 1;
+		notify();
+		assert.doesNotMatch(
+			hint(graph, 160).split("\n")[1],
+			/q again to quit/,
+			"a run state change disarms the pending quit confirmation",
+		);
+		graph.handleInput("q");
+		assert.equal(quitRun.mock.calls.length, 0, "first press in the new state re-arms instead of quitting");
+		assert.match(hint(graph, 160).split("\n")[1], /q again to quit test-workflow/);
+		graph.handleInput("q");
+		assert.deepEqual(quitRun.mock.calls[0], ["run-1"]);
+		await settle();
+		assert.match(hint(graph), /Quit run-1/);
 		graph.dispose();
 	});
 
@@ -241,15 +357,15 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		const asking = hint(graph);
 		assert.match(
 			asking,
-			/Fork from verify: reruns it and 2 completed tool steps in a new run\. Stops this run first, resumably\./,
+			/New run from verify\? Reruns it and 2 completed tool steps in a new run\. Stops this run first, resumably\./,
 		);
-		assert.match(asking, /enter fork {2}· {2}esc cancel/);
+		assert.match(asking, /enter confirm {2}· {2}esc cancel/);
 		assert.equal(fork.mock.calls.length, 0, "nothing forks before Enter");
 		graph.handleInput(LEFT);
-		assert.match(hint(graph), /enter fork/, "Left does not cancel the confirmation (#5234)");
+		assert.match(hint(graph), /enter confirm/, "Left does not cancel the confirmation (#5234)");
 		graph.handleInput(ESC);
-		assert.doesNotMatch(hint(graph), /Fork from verify/, "Esc cancels the confirmation");
-		assert.match(hint(graph), /f fork from this stage/, "and stays in the detail");
+		assert.doesNotMatch(hint(graph), /New run from verify/, "Esc cancels the confirmation");
+		assert.match(hint(graph), /f fork from stage/, "and stays in the detail");
 		graph.handleInput("f");
 		await settle();
 		graph.handleInput(ENTER);
@@ -284,16 +400,16 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		graph.handleInput(ENTER);
 		graph.handleInput("f");
 		await settle();
-		assert.match(hint(graph), /enter fork/);
+		assert.match(hint(graph), /enter confirm/);
 		snap.runs[0].stages[0] = stage("verify", "running");
 		snap.version += 1;
 		notify();
-		assert.doesNotMatch(hint(graph), /Fork from verify|enter fork/);
+		assert.doesNotMatch(hint(graph), /New run from verify|enter confirm/);
 		snap.runs[0].stages[0] = stage("verify", "failed", { error: "failed again" });
 		snap.version += 1;
 		notify();
 		graph.handleInput(ENTER);
-		assert.doesNotMatch(hint(graph), /enter fork/);
+		assert.doesNotMatch(hint(graph), /enter confirm/);
 		graph.handleInput(ENTER);
 		assert.equal(fork.mock.calls.length, 0);
 		graph.dispose();
@@ -367,14 +483,14 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 			graph.handleInput(ENTER);
 			graph.handleInput("f");
 			await settle();
-			assert.match(hint(graph), /enter fork/);
+			assert.match(hint(graph), /enter confirm/);
 			snap.runs = [];
 			snap.version++;
 			notify();
 			graph.render(160);
 			graph.handleInput(ENTER);
 			assert.equal(fork.mock.calls.length, 0);
-			assert.doesNotMatch(hint(graph), /enter fork|retry in place/);
+			assert.doesNotMatch(hint(graph), /enter confirm|retry from stage/);
 		} finally {
 			graph.dispose();
 		}
@@ -395,7 +511,7 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		graph.handleInput(ENTER);
 		target.resolve({ ok: true, stagePath: "verify", rerunToolSteps: 0, live: false });
 		await settle();
-		assert.doesNotMatch(hint(graph), /Fork from verify|enter fork|Checking where/);
+		assert.doesNotMatch(hint(graph), /New run from verify|enter confirm|Checking where/);
 		graph.handleInput(ENTER);
 		assert.equal(fork.mock.calls.length, 0);
 		graph.dispose();
@@ -566,7 +682,7 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		graph.handleInput("f");
 		await settle();
 		assert.match(hint(graph), /A fork can't start at this stage/);
-		assert.doesNotMatch(hint(graph), /enter fork/);
+		assert.doesNotMatch(hint(graph), /enter confirm/);
 		graph.dispose();
 	});
 

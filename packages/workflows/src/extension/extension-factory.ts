@@ -7,7 +7,6 @@ import { subscribeIntercomControl } from "../intercom/result-intercom.js";
 import type { Store } from "../shared/store.js";
 import { registerChatSurfaceRenderer } from "../tui/chat-surface-message.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
-import { registerInlineFormRenderer } from "../tui/inline-form-overlay.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { buildGraphOverlayAdapter } from "../tui/overlay-adapter.js";
 import { panelItemsFromSnapshot, panelRunId } from "../tui/panel-runs.js";
@@ -46,7 +45,7 @@ function registerWorkflowMessageRenderers(pi: ExtensionAPI): void {
 	pi.registerMessageRenderer("workflow.run.end", (payload) =>
 		dynamicTextRenderComponent(() => renderRunSummary(payload as RunEndPayload)),
 	);
-	registerInlineFormRenderer(pi, deriveGraphTheme({}));
+	pi.registerMessageRenderer("workflows:input-form", () => null);
 	registerChatSurfaceRenderer(pi, deriveGraphTheme({}));
 }
 

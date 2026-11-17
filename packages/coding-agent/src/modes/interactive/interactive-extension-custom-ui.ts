@@ -382,7 +382,7 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 				} else {
 					inlineMount = component;
 					const deferFocus = this.shouldDeferInlineCustomUiFocus();
-					this.pushExtensionDialog(component, options?.blocked, !deferFocus);
+					this.pushExtensionDialog(component, options?.blocked, !deferFocus, releaseHostCustomUi);
 					if (deferFocus) {
 						this.pendingInlineCustomUiFocus = component;
 						this.notifyHostCustomUiStateListeners();

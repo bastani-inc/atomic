@@ -55,7 +55,7 @@ A background subagent that was released while it waited keeps its session in the
 
 ## Resume a workflow run
 
-Resume a run with `/workflow resume <run>`, or from the SDK with `run(definition, inputs, { runId })`. A run restores its checkouts from the snapshots on its checkpoints, once, before it continues; see [Worktree snapshots](/worktree-snapshots):
+Resume a run from `/resume`, with the `workflow` tool's `resume` action, or from the SDK with `run(definition, inputs, { runId })`. A run restores its checkouts from the snapshots on its checkpoints, once, before it continues; see [Worktree snapshots](/worktree-snapshots):
 
 - Each checkout gets its latest recorded state. Completed `ctx.tool` calls are not run again; the step that was interrupted runs again in the restored worktree.
 - A child workflow bound to a repository with `workspace({ repo, branch })` continues in its restored worktree, also when its repository or branch exists only on the machine that recorded it.
@@ -65,7 +65,7 @@ Resume a run with `/workflow resume <run>`, or from the SDK with `run(definition
 
 Each checkout the run restores gets its blueprints built, as below, before the run continues, and absolute paths from the earlier machine resolve in the restored worktrees for the run's tools. A missing Git is reported before anything is restored or claimed. A blueprint never stops a run or a pooled child: a step that fails is reported as a warning, and the run continues in the restored worktree.
 
-`run()` with the id of a run in shared storage stops after 15 seconds with a retryable `ResumeCatalogTimeoutError` when the storage does not answer; once it answers, listing the journal's runs is not bounded, and a retry opens the journal again. `/workflow resume` with a run id this machine cannot find fails with the journal's `run-not-found` error, which tells a machine on local storage only to join the shared storage. `run()` with a run id its journal does not hold starts a new run under that id, so check with `atomic storage status` that the machine uses the shared storage before resuming a run from the SDK. If the machine that ran it stopped without releasing it, another machine can take the run over two minutes after its last heartbeat; until then the resume reports that another execution owns it before it restores or sets up anything, and resuming again later continues it.
+`run()` with the id of a run in shared storage stops after 15 seconds with a retryable `ResumeCatalogTimeoutError` when the storage does not answer; once it answers, listing the journal's runs is not bounded, and a retry opens the journal again. Resuming a run id this machine cannot find fails with the journal's `run-not-found` error, which tells a machine on local storage only to join the shared storage. `run()` with a run id its journal does not hold starts a new run under that id, so check with `atomic storage status` that the machine uses the shared storage before resuming a run from the SDK. If the machine that ran it stopped without releasing it, another machine can take the run over two minutes after its last heartbeat; until then the resume reports that another execution owns it before it restores or sets up anything, and resuming again later continues it.
 
 ## Set the environment up with a blueprint
 

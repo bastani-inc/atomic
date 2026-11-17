@@ -4,7 +4,7 @@ Use this guide to turn an objective into an acyclic, evidence-producing workflow
 
 The agent decides whether a workflow fits. Non-trivial work with structure and a verifiable objective runs as a workflow unless you ask for inline execution: implementation, bug fixes, debugging, migrations, multi-file changes with validation, and requests phrased as "repeat until" or "fix until green". Brainstorming, discussion, unclear goals, tiny low-risk answers or edits, or an explicit request to work inline, quickly or without a workflow stays inline. To launch, inspect the input contract with `workflow inputs`, then call `workflow run` with the registered workflow name and inputs. Ask only for genuinely missing information.
 
-Preserve the user's actual words, uncertainty and preferences; do not turn discussion into an implementation objective. User-issued `/workflow` commands launch directly and authored `ctx.workflow(...)` remains internal composition. For workflow authoring, carry the [domain/environment verification and media evidence contract](/workflows/verification) into worker, reviewer and final handoff prompts.
+Preserve the user's actual words, uncertainty and preferences; do not turn discussion into an implementation objective. Authored `ctx.workflow(...)` remains internal composition. For workflow authoring, carry the [domain/environment verification and media evidence contract](/workflows/verification) into worker, reviewer and final handoff prompts.
 
 ## Choosing an Execution Shape
 
@@ -151,7 +151,7 @@ Do not confuse splitting a queue across runs with splitting one objective across
 
 A natural-language request for a worktree does not configure runner isolation. Inspect the named workflow's inputs first. Each per-item definition must declare and implement its reusable-worktree and branch inputs, and the dispatcher must pass distinct values explicitly. With `worktreeFromInputs`, a missing target is created as a detached checkout from `baseBranch`, while an existing same-repository worktree is reused as-is. Neither case checks out the feature branch named by a separate `branch` input, so the item workflow must enforce that branch step itself.
 
-**Supported example: two independent top-level issue runs with a bound of 2.** First save this complete project workflow as `.atomic/workflows/issue-to-pr.ts`, then run `/workflow reload`. It is a user-defined workflow built only from supported authoring APIs, not a bundled workflow name that Atomic installs by default.
+**Supported example: two independent top-level issue runs with a bound of 2.** First save this complete project workflow as `.atomic/workflows/issue-to-pr.ts`, then run `/reload`. It is a user-defined workflow built only from supported authoring APIs, not a bundled workflow name that Atomic installs by default.
 
 ```ts
 // .atomic/workflows/issue-to-pr.ts
@@ -291,7 +291,7 @@ export default workflow({
 
 The workflow binding creates or validates the reusable worktree before `run` starts. The first durable tool then creates or checks out the requested feature branch, so worktree setup's detached checkout never becomes the implementation branch. The item run owns branch setup → implementation → bounded review/repair → deterministic checks → push → PR creation. A failed review or check fails that item before push/PR.
 
-For each item, inspect the workflow's inputs with `workflow({ action: "inputs", workflow: "<name>" })`, then prepare inputs and launch with `workflow({ action: "run", workflow: "<name>", inputs: {...} })`. Item runs are top-level and independent. Admit no third run until one ends to preserve the bound of 2. Explicit user `/workflow` commands remain available for deliberate exact-name launches.
+For each item, inspect the workflow's inputs with `workflow({ action: "inputs", workflow: "<name>" })`, then prepare inputs and launch with `workflow({ action: "run", workflow: "<name>", inputs: {...} })`. Item runs are top-level and independent. Admit no third run until one ends to preserve the bound of 2. A user can still ask the agent to launch an exact workflow name.
 
 ```ts
 workflow({ action: "run", workflow: "issue-to-pr", inputs: {

@@ -117,10 +117,6 @@ export function tokenizeWorkflowArgs(args: string): string[] {
 		const ch = args[i]!;
 		if (quote !== undefined) {
 			buf += ch;
-			if (quote === '"' && ch === "\\" && i + 1 < args.length) {
-				buf += args[++i];
-				continue;
-			}
 			if (ch === quote) quote = undefined;
 			continue;
 		}
@@ -146,7 +142,7 @@ export function tokenizeWorkflowArgs(args: string): string[] {
 }
 
 export function parseWorkflowArgs(tokens: string[]): WorkflowInputValues {
-	const result: Record<string, WorkflowSerializableValue> = {};
+	const result: Record<string, WorkflowSerializableValue> = Object.create(null);
 	for (const token of tokens) {
 		if ((token.startsWith("{") && token.endsWith("}")) || (token.startsWith("[") && token.endsWith("]"))) {
 			try {
@@ -168,5 +164,5 @@ export function parseWorkflowArgs(tokens: string[]): WorkflowInputValues {
 			result[key] = value;
 		}
 	}
-	return result;
+	return { ...result };
 }

@@ -1,8 +1,11 @@
 import type { TUI } from "@bastani/atomic-tui";
 import type { ExtensionUIContext, HostInputFormRequest } from "../../../core/extensions/ui-types.js";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
+import { readHostInputFormRequest } from "../../interactive-engine/protocol.ts";
 import type { Theme } from "../theme/theme.js";
 import { HostInputFormComponent } from "./host-input-form.ts";
+
+export const HOST_INPUT_FORM_UNREADABLE = "The host could not read this input form.";
 
 export type HostInputFormUi = Pick<ExtensionUIContext, "custom"> &
 	Partial<Pick<ExtensionUIContext, "setWorkingVisible">>;
@@ -84,6 +87,8 @@ export function openLocalHostInputForm(
 	ui: HostInputFormUi,
 	request: HostInputFormRequest,
 ): Promise<Record<string, string> | undefined> {
+	const readable = readHostInputFormRequest(request);
+	if (readable === undefined) return Promise.reject(new Error(HOST_INPUT_FORM_UNREADABLE));
 	return new Promise((resolve) => {
 		let settled = false;
 		const settle = (values: Record<string, string> | undefined): void => {
@@ -91,7 +96,7 @@ export function openLocalHostInputForm(
 			settled = true;
 			resolve(values);
 		};
-		mountHostInputForm(ui, request, {
+		mountHostInputForm(ui, readable, {
 			onSubmit: (values) => settle(values),
 			onCancel: () => settle(undefined),
 		});

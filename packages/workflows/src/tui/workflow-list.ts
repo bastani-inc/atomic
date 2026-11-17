@@ -1,25 +1,3 @@
-/**
- * `/workflow list` catalogue — rounded workflow-tool output surface.
- *
- * Visual contract:
- *  - One rounded `WORKFLOWS` panel with the registered count in the title.
- *  - One rounded card per workflow:
- *      title: workflow name
- *      row 1: muted description
- *      row 2: dim "inputs"  ·  signature
- *  - Hint rows pointing at `/workflow <name> …` and `/workflow inputs <name>`.
- *
- * Truncation policy:
- *  - workflow name in tag end-truncates with `…`;
- *  - description end-truncates to the row width;
- *  - input signature renders the first 3 inputs inline, then `+N more`.
- *  - optional inputs are marked with a trailing `?`.
- *
- * cross-ref:
- *  - src/tui/chat-surface.ts shared primitives
- *  - src/extension/dispatcher.ts list result with `items` metadata
- */
-
 import { chatWidth, ELLIPSIS, renderHintRows, renderRoundedBox } from "./chat-surface.js";
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
@@ -74,8 +52,8 @@ export function renderWorkflowList(entries: readonly WorkflowListEntry[], opts: 
 		body.push(
 			...renderHintRows(
 				[
-					{ command: "/workflow <name> …", hint: "run a workflow" },
-					{ command: "/workflow inputs <name>", hint: "inspect input schema" },
+					{ command: "workflow run <name> …", hint: "run a workflow" },
+					{ command: "workflow inputs <name>", hint: "inspect input schema" },
 				],
 				opts.theme,
 			)

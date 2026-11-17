@@ -1,21 +1,16 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { getKeybindings, StdinBuffer, setKeybindings, TuiMainScreen } from "@bastani/atomic-tui";
-import { Type } from "typebox";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import type { PiCustomComponent } from "../../packages/workflows/src/extension/wiring.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import type { WorkflowInputSchemaMap } from "../../packages/workflows/src/shared/types.js";
 import {
-	inputsSummary,
 	openWorkflowsListing,
 	runRowDescription,
 	shortFailureReason,
-	type WorkflowsListingDefinition,
 	workflowsListingItems,
 } from "../../packages/workflows/src/tui/workflows-listing.js";
 
@@ -48,15 +43,7 @@ function stages(statuses: readonly StageSnapshot["status"][]): StageSnapshot[] {
 	);
 }
 
-function definition(
-	name: string,
-	description: string,
-	inputs: WorkflowInputSchemaMap = {},
-): WorkflowsListingDefinition {
-	return { normalizedName: name, description, inputs };
-}
-
-test("/workflows lists runs newest first, then definitions by name, in two groups (#5224)", () => {
+test("/workflows lists top-level runs newest first and excludes child runs (#5224)", () => {
 	const items = workflowsListingItems(
 		[
 			run({ id: "old", status: "completed", startedAt: NOW - 3_600_000, endedAt: NOW - 3_000_000 }),
@@ -64,21 +51,15 @@ test("/workflows lists runs newest first, then definitions by name, in two group
 			run({ id: "child", status: "running", parentRunId: "new" } as Partial<RunSnapshot> &
 				Pick<RunSnapshot, "id" | "status">),
 		],
-		[definition("ralph", "iterate a fix until its checks pass"), definition("deep-research", "research a topic")],
 		NOW,
 	);
 	assert.deepEqual(
-		items.map((item) => [item.group, item.id]),
-		[
-			["Runs", "run:new"],
-			["Runs", "run:old"],
-			["Definitions", "definition:deep-research"],
-			["Definitions", "definition:ralph"],
-		],
+		items.map((item) => item.id),
+		["run:new", "run:old"],
 		"a child run is not listed on its own",
 	);
 	assert.deepEqual(items[0]?.value, { kind: "run", runId: "new" });
-	assert.deepEqual(items[3]?.value, { kind: "definition", name: "ralph" });
+	assert.deepEqual(items[1]?.value, { kind: "run", runId: "old" });
 });
 
 test("a run's second line reads status · stage n/m <stage> · elapsed · cost (#5224)", () => {
@@ -112,34 +93,15 @@ test("a failed run names its failed stage and a short reason, never a stack trac
 	assert.match(text, /^failed · stage 2\/3 build · 1m ago · 11m · ✗ gate failed: 2 jobs$/);
 	assert.doesNotMatch(text, /\bat verify\b/);
 	assert.equal(shortFailureReason({ error: "x".repeat(100) })?.length, 60);
-	const item = workflowsListingItems([failed], [], NOW)[0];
+	const item = workflowsListingItems([failed], NOW)[0];
 	assert.equal(item?.tag, "✗");
 	assert.equal(item?.tagTone, "error");
-	const stopped = workflowsListingItems([run({ id: "s", status: "cancelled", endedAt: NOW })], [], NOW)[0];
+	const stopped = workflowsListingItems([run({ id: "s", status: "cancelled", endedAt: NOW })], NOW)[0];
 	assert.equal(stopped?.tag, "◼", "stopped looks different from failed");
 	assert.match(stopped?.description ?? "", /^stopped/);
 });
 
-test("a definition's row summarises its inputs and how many are required (#5245/#5224)", () => {
-	assert.equal(inputsSummary({}), "no inputs");
-	const authored = workflow({
-		name: "ralph",
-		description: "iterate a fix\nmore detail",
-		inputs: {
-			objective: Type.String(),
-			confirm: Type.Boolean(),
-			note: Type.Optional(Type.String()),
-			max_loops: Type.Integer({ default: 10 }),
-		},
-		outputs: {},
-		run: async () => ({}),
-	});
-	assert.equal(inputsSummary(authored.inputs), "4 inputs (2 required)");
-	const item = workflowsListingItems([], [authored], NOW)[0];
-	assert.equal(item?.description, "iterate a fix · 4 inputs (2 required)");
-});
-
-test("/workflows uses effective run status for blocked runs and returned failures (#5245/#5224)", () => {
+test("/workflows uses effective run status for blocked runs, returned failures, and gracefully quit runs (#5224)", () => {
 	const store = createStore();
 	store.recordRunStart({ ...run({ id: "auth", status: "running", name: "needs-authorization" }) });
 	store.recordRunBlocked("auth", "Please sign in", {
@@ -151,9 +113,12 @@ test("/workflows uses effective run status for blocked runs and returned failure
 	});
 	store.recordRunStart({ ...run({ id: "returned", status: "running", name: "deployment" }) });
 	store.recordRunEnd("returned", "completed", { status: "failed", summary: "Deployment did not finish" });
-	const items = workflowsListingItems(store.runs(), [], NOW);
+	store.recordRunStart({ ...run({ id: "quit-run", status: "running", name: "alpha" }) });
+	store.recordRunPaused("quit-run", undefined, { exitReason: "quit" });
+	const items = workflowsListingItems(store.runs(), NOW);
 	const authItem = items.find((item) => item.id === "run:auth");
 	const returnedItem = items.find((item) => item.id === "run:returned");
+	const quitItem = items.find((item) => item.id === "run:quit-run");
 	assert.match(authItem?.description ?? "", /^blocked · .* · ✗ Please sign in$/);
 	assert.equal(authItem?.tagTone, "warning");
 	assert.match(authItem?.searchText ?? "", /\bblocked\b/);
@@ -161,9 +126,115 @@ test("/workflows uses effective run status for blocked runs and returned failure
 	assert.equal(returnedItem?.tag, "✗");
 	assert.equal(returnedItem?.tagTone, "error");
 	assert.match(returnedItem?.searchText ?? "", /\bfailed\b/);
+	assert.match(quitItem?.description ?? "", /^quit · /);
+	assert.equal(quitItem?.tag, "○");
+	assert.equal(quitItem?.tagTone, "muted");
+	assert.match(quitItem?.searchText ?? "", /\bquit\b/);
 });
 
-test("/workflows sanitizes terminal control sequences in row text while preserving target ids (#5245)", async () => {
+test("/workflows uses the first non-blank line of text inputs, omits non-finite numbers, and never splits surrogate pairs (#5224)", () => {
+	const leadingBlank = run({
+		id: "abcdef0123",
+		name: "deploy",
+		status: "running",
+		inputs: { objective: "\nship the release" },
+	});
+	const blankOnly = run({
+		id: "1234567890",
+		name: "deploy",
+		status: "running",
+		inputs: { a: "  \n\t\n   ", b: "" },
+	});
+	const nonFiniteCost = run({
+		id: "aaaaaaaa",
+		status: "running",
+		budgetState: { accounting: { cost: Number.NaN } } as RunSnapshot["budgetState"],
+	});
+	const nonFiniteTimes = run({
+		id: "bbbbbbbb",
+		status: "completed",
+		startedAt: Number.NaN,
+		endedAt: Number.NaN,
+	});
+	const boundaryEmoji = "\u{1F600}";
+	const astralInput = run({
+		id: "cccccccc",
+		name: "deploy",
+		status: "running",
+		inputs: { objective: `${"a".repeat(38)}${boundaryEmoji}tail` },
+	});
+	const astralError = shortFailureReason({ error: `${"x".repeat(58)}${boundaryEmoji}tail` });
+	const items = workflowsListingItems([leadingBlank, blankOnly, nonFiniteCost, nonFiniteTimes, astralInput], NOW);
+	const byId = new Map(items.map((item) => [item.id, item]));
+	assert.equal(byId.get("run:abcdef0123")?.label, "deploy · ship the release");
+	assert.equal(byId.get("run:1234567890")?.label, "deploy · 12345678");
+	assert.equal(byId.get("run:aaaaaaaa")?.description, "running · 12m");
+	assert.equal(byId.get("run:bbbbbbbb")?.description, "completed");
+	for (const item of items) {
+		assert.doesNotMatch(item.description ?? "", /NaN|Infinity/);
+		assert.doesNotMatch(item.label, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+	}
+	assert.equal(astralError, `${"x".repeat(58)}…`);
+	assert.doesNotMatch(astralError ?? "", /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+});
+
+test("/workflows offers Space preview on the selected run and matches the live hint line (#5224)", async () => {
+	initTheme("dark");
+	const runs = [
+		run({
+			id: "aaaa1111-2222",
+			name: "ralph",
+			status: "running",
+			startedAt: NOW,
+			inputs: { objective: "fix shipping" },
+			stages: stages(["completed", "running"]),
+		}),
+		run({
+			id: "bbbb3333-4444",
+			name: "deploy",
+			status: "completed",
+			startedAt: NOW - 120_000,
+			endedAt: NOW - 60_000,
+		}),
+	];
+	let component: PiCustomComponent | undefined;
+	let closed = 0;
+	const pending = openWorkflowsListing(
+		{
+			custom: (factory) =>
+				new Promise<undefined>((resolve) => {
+					component = factory({ requestRender() {}, terminal: { rows: 30 } }, undefined, undefined, () => {
+						closed++;
+						resolve(undefined);
+					}) as PiCustomComponent;
+				}),
+		},
+		{ runs: () => runs },
+	);
+	try {
+		assert.ok(component);
+		const initial = stripVTControlCharacters(component.render(120).join("\n"));
+		assert.match(initial, /↑↓ select · space preview · enter open · type to search · esc close/);
+		assert.doesNotMatch(initial, /id aaaa1111-2222/);
+		component.handleInput?.(" ");
+		const previewed = stripVTControlCharacters(component.render(120).join("\n"));
+		assert.match(previewed, /id aaaa1111-2222/);
+		assert.match(previewed, /plan \(completed\) · build \(running\)/);
+		assert.match(previewed, /↑↓ select · space close preview · enter open · type to search · esc close/);
+		component.handleInput?.("\x1b");
+		assert.equal(closed, 0, "Esc closes the preview card before closing the sheet");
+		const afterEsc = stripVTControlCharacters(component.render(120).join("\n"));
+		assert.doesNotMatch(afterEsc, /id aaaa1111-2222/);
+		assert.match(afterEsc, /↑↓ select · space preview · enter open · type to search · esc close/);
+		component.handleInput?.("\x1b");
+		assert.equal(closed, 1);
+		assert.equal(await pending, undefined);
+	} finally {
+		component?.dispose?.();
+	}
+});
+
+test("/workflows sanitizes terminal control sequences in row text while preserving target ids (#5224)", async () => {
 	initTheme("dark");
 	const payload = "\x1b]52;c;QVVESVQ=\x07";
 	const runs = [
@@ -189,14 +260,12 @@ test("/workflows sanitizes terminal control sequences in row text while preservi
 			],
 		}),
 	];
-	const defs = [definition(`${payload}def`, `${payload}description`)];
-	const items = workflowsListingItems(runs, defs, NOW);
+	const items = workflowsListingItems(runs, NOW);
 	for (const item of items) {
 		assert.equal(item.label.includes(payload), false);
 		assert.equal((item.description ?? "").includes(payload), false);
 		assert.equal((item.searchText ?? "").includes(payload), false);
 	}
-	assert.deepEqual(items.at(-1)?.value, { kind: "definition", name: `${payload}def` });
 
 	const terminal = new ScreenTerminal(100, 30);
 	const writes: string[] = [];
@@ -228,7 +297,7 @@ test("/workflows sanitizes terminal control sequences in row text while preservi
 					});
 				}),
 		},
-		{ runs: () => runs, definitions: () => defs },
+		{ runs: () => runs },
 	);
 	try {
 		tui.start();
@@ -244,7 +313,7 @@ test("/workflows sanitizes terminal control sequences in row text while preservi
 	}
 });
 
-test("/workflows advances elapsed and relative-end labels on render without a store write (#5245)", async () => {
+test("/workflows advances elapsed and relative-end labels on render without a store write (#5224)", async () => {
 	initTheme("dark");
 	let clockNow = 100_000;
 	const spy = vi.spyOn(Date, "now").mockImplementation(() => clockNow);
@@ -271,7 +340,7 @@ test("/workflows advances elapsed and relative-end labels on render without a st
 					) as PiCustomComponent;
 				}),
 		},
-		{ runs: () => runs, definitions: () => [] },
+		{ runs: () => runs },
 	);
 	try {
 		assert.ok(component);
@@ -293,7 +362,7 @@ test("/workflows advances elapsed and relative-end labels on render without a st
 	}
 });
 
-test("/workflows guards confirmation when a clock advance drops the searched row before painting (#5245)", async () => {
+test("/workflows guards confirmation when a clock advance drops the searched row before painting (#5224)", async () => {
 	initTheme("dark");
 	let clockNow = 100_000;
 	const spy = vi.spyOn(Date, "now").mockImplementation(() => clockNow);
@@ -313,7 +382,7 @@ test("/workflows guards confirmation when a clock advance drops the searched row
 					}) as PiCustomComponent;
 				}),
 		},
-		{ runs: () => [runs[0]!, { ...runs[1]!, status: "failed", endedAt: 20_000 }], definitions: () => [] },
+		{ runs: () => [runs[0]!, { ...runs[1]!, status: "failed", endedAt: 20_000 }] },
 	);
 	try {
 		assert.ok(component);
@@ -326,6 +395,45 @@ test("/workflows guards confirmation when a clock advance drops the searched row
 		component.handleInput?.("\r");
 		assert.equal(closed, 1);
 		assert.deepEqual(await pending, { kind: "run", runId: "fallback" });
+	} finally {
+		component?.dispose?.();
+		spy.mockRestore();
+	}
+});
+
+test("/workflows guards typed search plus Enter when a clock advance changes descriptions before painting (#5224)", async () => {
+	initTheme("dark");
+	const T0 = 10_000_000;
+	let clockNow = T0;
+	const spy = vi.spyOn(Date, "now").mockImplementation(() => clockNow);
+	const runs = [
+		run({ id: "bbbbbbbb", name: "wf2", status: "completed", startedAt: T0 - 62_000, endedAt: T0 - 59_500 }),
+		run({ id: "cccccccc", name: "nxoxw", status: "running", startedAt: T0 - 120_000 }),
+	];
+	let component: PiCustomComponent | undefined;
+	let closed = 0;
+	const pending = openWorkflowsListing(
+		{
+			custom: (factory) =>
+				new Promise<undefined>((resolve) => {
+					component = factory({ requestRender() {}, terminal: { rows: 40 } }, undefined, undefined, () => {
+						closed++;
+						resolve(undefined);
+					}) as PiCustomComponent;
+				}),
+		},
+		{ runs: () => runs },
+	);
+	try {
+		assert.ok(component);
+		assert.match(stripVTControlCharacters(component.render(100).join("\n")), /just now/);
+		clockNow += 1_000;
+		for (const key of "now\r") component.handleInput?.(key);
+		assert.equal(closed, 0, "typed search after a clock change must paint before confirming");
+		assert.match(stripVTControlCharacters(component.render(100).join("\n")), /❯ nxoxw · cccccccc/);
+		component.handleInput?.("\r");
+		assert.equal(closed, 1);
+		assert.deepEqual(await pending, { kind: "run", runId: "cccccccc" });
 	} finally {
 		component?.dispose?.();
 		spy.mockRestore();
@@ -354,14 +462,14 @@ test("runs of one workflow are told apart by their first input, and a run waitin
 		inputs: {},
 		startedAt: NOW - 60_000,
 	});
-	const [first, second] = workflowsListingItems([waiting, other], [], NOW);
+	const [first, second] = workflowsListingItems([waiting, other], NOW);
 	assert.equal(first?.label, "approve-demo · 22222222", "no input: the run's short id");
 	assert.equal(second?.label, "approve-demo · rename a file");
 	assert.match(second?.description ?? "", /^needs input · Approve this plan\? · /);
 	assert.equal(second?.tag, "◆");
 });
 
-test("an open workflows sheet refreshes runs without losing its search or selection (#5245)", async () => {
+test("an open workflows sheet refreshes runs without losing its search or selection (#5224)", async () => {
 	initTheme("dark");
 	let runs = [
 		run({ id: "first", status: "running", startedAt: NOW }),
@@ -387,7 +495,6 @@ test("an open workflows sheet refreshes runs without losing its search or select
 				reads++;
 				return runs;
 			},
-			definitions: () => [],
 			subscribe: (listener) => {
 				notify = listener;
 				return () => released++;
@@ -423,7 +530,7 @@ test("an open workflows sheet refreshes runs without losing its search or select
 	}
 });
 
-test("/workflows excludes active pauses and clamps recorded elapsed time (#5245/#5224)", () => {
+test("/workflows excludes active pauses and clamps recorded elapsed time (#5224)", () => {
 	const paused = run({
 		id: "paused",
 		status: "paused",
@@ -436,7 +543,7 @@ test("/workflows excludes active pauses and clamps recorded elapsed time (#5245/
 	assert.equal(runRowDescription({ ...paused, durationMs: -1 }, NOW), "paused · stage 1/1 · 0s");
 });
 
-async function liveListing(initialRuns: RunSnapshot[], definitions: WorkflowsListingDefinition[] = []) {
+async function liveListing(initialRuns: RunSnapshot[]) {
 	initTheme("dark");
 	let runs = initialRuns;
 	let notify = () => {};
@@ -458,7 +565,6 @@ async function liveListing(initialRuns: RunSnapshot[], definitions: WorkflowsLis
 		},
 		{
 			runs: () => runs,
-			definitions: () => definitions,
 			subscribe: (listener) => {
 				notify = listener;
 				return () => releases++;
@@ -486,7 +592,7 @@ async function liveListing(initialRuns: RunSnapshot[], definitions: WorkflowsLis
 }
 
 for (const confirm of ["\r", "\x1b[C"]) {
-	test(`/workflows honors Down followed by ${JSON.stringify(confirm)} before another frame (#5245)`, async () => {
+	test(`/workflows honors Down followed by ${JSON.stringify(confirm)} before another frame (#5224)`, async () => {
 		const fixture = await liveListing([
 			run({ id: "alpha", status: "running", startedAt: NOW }),
 			run({ id: "beta", status: "running", startedAt: NOW - 1 }),
@@ -506,24 +612,23 @@ for (const confirm of ["\r", "\x1b[C"]) {
 }
 
 for (const key of ["\r", "\x1b[C"]) {
-	test(`/workflows paints a replacement before confirming it with ${JSON.stringify(key)} (#5245/#5224)`, async () => {
-		const fixture = await liveListing(
-			[
-				run({ id: "bbbbbbbb", status: "running", startedAt: NOW }),
-				run({ id: "aaaaaaaa", status: "running", startedAt: NOW - 1 }),
-			],
-			[definition("deploy", "Deploy without inputs")],
-		);
+	test(`/workflows paints a replacement before confirming it with ${JSON.stringify(key)} (#5224)`, async () => {
+		const fallback = run({ id: "cccccccc", name: "deploy", status: "running", startedAt: NOW - 2 });
+		const fixture = await liveListing([
+			run({ id: "bbbbbbbb", status: "running", startedAt: NOW }),
+			run({ id: "aaaaaaaa", status: "running", startedAt: NOW - 1 }),
+			fallback,
+		]);
 		try {
 			assert.match(stripVTControlCharacters(fixture.component.render(120).join("\n")), /❯ ralph · bbbbbbbb/);
-			fixture.update([]);
+			fixture.update([fallback]);
 			fixture.component.handleInput?.(key);
 			fixture.component.handleInput?.(key);
-			assert.equal(fixture.closeCalls, 0, "neither key may start an unseen definition");
+			assert.equal(fixture.closeCalls, 0, "neither key may confirm an unseen replacement");
 			assert.ok(fixture.rendersRequested > 0);
-			assert.match(stripVTControlCharacters(fixture.component.render(120).join("\n")), /❯ deploy/);
+			assert.match(stripVTControlCharacters(fixture.component.render(120).join("\n")), /❯ deploy · cccccccc/);
 			fixture.component.handleInput?.(key);
-			assert.deepEqual(await fixture.result, { kind: "definition", name: "deploy" });
+			assert.deepEqual(await fixture.result, { kind: "run", runId: "cccccccc" });
 			assert.equal(fixture.releases, 1);
 		} finally {
 			fixture.component.dispose?.();
@@ -531,18 +636,18 @@ for (const key of ["\r", "\x1b[C"]) {
 	});
 }
 
-test("/workflows honors a typed search and Enter before another frame (#5245)", async () => {
-	const fixture = await liveListing(
-		[run({ id: "alpha", status: "running" })],
-		[definition("deploy", "Deploy without inputs")],
-	);
+test("/workflows honors a typed search and Enter before another frame (#5224)", async () => {
+	const fixture = await liveListing([
+		run({ id: "alpha", status: "running", startedAt: NOW }),
+		run({ id: "deploy-1", name: "deploy", status: "running", startedAt: NOW - 1 }),
+	]);
 	const stdin = new StdinBuffer();
 	stdin.on("data", (key) => fixture.component.handleInput?.(key));
 	try {
 		fixture.component.render(120);
 		stdin.process("deploy\r");
 		assert.equal(fixture.closeCalls, 1);
-		assert.deepEqual(await fixture.result, { kind: "definition", name: "deploy" });
+		assert.deepEqual(await fixture.result, { kind: "run", runId: "deploy-1" });
 	} finally {
 		stdin.destroy();
 		fixture.component.dispose?.();
@@ -550,7 +655,7 @@ test("/workflows honors a typed search and Enter before another frame (#5245)", 
 });
 
 for (const chunk of ["\r", "\x1b[B\r"]) {
-	test(`/workflows waits for its first frame before confirming ${JSON.stringify(chunk)} (#5245)`, async () => {
+	test(`/workflows waits for its first frame before confirming ${JSON.stringify(chunk)} (#5224)`, async () => {
 		const fixture = await liveListing([
 			run({ id: "alpha", status: "running", startedAt: NOW }),
 			run({ id: "beta", status: "running", startedAt: NOW - 1 }),
@@ -575,23 +680,21 @@ for (const chunk of ["\r", "\x1b[B\r"]) {
 }
 
 for (const confirm of ["\r", "\x1b[C"]) {
-	test(`/workflows waits for a refreshed frame after moving off a definition with ${JSON.stringify(confirm)} (#5245)`, async () => {
-		const fixture = await liveListing(
-			[run({ id: "alpha", status: "running" })],
-			[definition("deploy", "Deploy without inputs")],
-		);
+	test(`/workflows waits for a refreshed frame after moving off a run with ${JSON.stringify(confirm)} (#5224)`, async () => {
+		const fallback = run({ id: "deploy-1", name: "deploy", status: "running", startedAt: NOW - 1 });
+		const fixture = await liveListing([run({ id: "alpha", status: "running", startedAt: NOW }), fallback]);
 		const stdin = new StdinBuffer();
 		stdin.on("data", (key) => fixture.component.handleInput?.(key));
 		try {
 			fixture.component.handleInput?.("\x1b[B");
-			assert.match(stripVTControlCharacters(fixture.component.render(120).join("\n")), /❯ deploy/);
-			fixture.update([]);
+			assert.match(stripVTControlCharacters(fixture.component.render(120).join("\n")), /❯ deploy · deploy-1/);
+			fixture.update([fallback]);
 			stdin.process(`\x1b[A${confirm}`);
-			assert.equal(fixture.closeCalls, 0, "Up must not start the definition it tried to leave");
+			assert.equal(fixture.closeCalls, 0, "Up must not confirm the row it tried to leave");
 			fixture.component.render(120);
 			stdin.process(confirm);
 			assert.equal(fixture.closeCalls, 1);
-			assert.deepEqual(await fixture.result, { kind: "definition", name: "deploy" });
+			assert.deepEqual(await fixture.result, { kind: "run", runId: "deploy-1" });
 		} finally {
 			stdin.destroy();
 			fixture.component.dispose?.();
@@ -599,26 +702,27 @@ for (const confirm of ["\r", "\x1b[C"]) {
 	});
 }
 
-test("/workflows waits for a refreshed frame after navigation before a store change (#5245)", async () => {
+test("/workflows waits for a refreshed frame after navigation before a store change (#5224)", async () => {
 	const alpha = run({ id: "alpha", status: "running", startedAt: NOW - 1 });
 	const beta = run({ id: "beta", status: "running", startedAt: NOW });
-	const fixture = await liveListing([alpha, beta], [definition("deploy", "Deploy without inputs")]);
+	const gamma = run({ id: "gamma", name: "deploy", status: "running", startedAt: NOW - 2 });
+	const fixture = await liveListing([alpha, beta, gamma]);
 	try {
 		assert.match(stripVTControlCharacters(fixture.component.render(120).join("\n")), /❯ ralph · beta/);
 		fixture.component.handleInput?.("\x1b[B");
-		fixture.update([beta]);
+		fixture.update([beta, gamma]);
 		fixture.component.handleInput?.("\r");
 		assert.equal(fixture.closeCalls, 0, "the refresh must not replace the row chosen by Down");
-		assert.match(stripVTControlCharacters(fixture.component.render(120).join("\n")), /❯ deploy/);
+		assert.match(stripVTControlCharacters(fixture.component.render(120).join("\n")), /❯ deploy · gamma/);
 		fixture.component.handleInput?.("\r");
 		assert.equal(fixture.closeCalls, 1);
-		assert.deepEqual(await fixture.result, { kind: "definition", name: "deploy" });
+		assert.deepEqual(await fixture.result, { kind: "run", runId: "gamma" });
 	} finally {
 		fixture.component.dispose?.();
 	}
 });
 
-test("/workflows does not confirm a search replacement before painting, even after cursor input (#5245/#5224)", async () => {
+test("/workflows does not confirm a search replacement before painting, even after cursor input (#5224)", async () => {
 	const selected = run({ id: "bbbbbbbb", status: "running", startedAt: NOW });
 	const other = run({ id: "aaaaaaaa", status: "running", startedAt: NOW - 1 });
 	const fixture = await liveListing([selected, other]);
@@ -638,7 +742,7 @@ test("/workflows does not confirm a search replacement before painting, even aft
 	}
 });
 
-test("/workflows still confirms the painted row when other runs change (#5245/#5224)", async () => {
+test("/workflows still confirms the painted row when other runs change (#5224)", async () => {
 	const selected = run({ id: "selected", status: "running" });
 	const fixture = await liveListing([selected]);
 	try {
@@ -651,7 +755,7 @@ test("/workflows still confirms the painted row when other runs change (#5245/#5
 	}
 });
 
-test("/workflows settles when a custom UI host resolves without mounting (#5245/#5224)", async () => {
+test("/workflows settles when a custom UI host resolves without mounting (#5224)", async () => {
 	let settled = false;
 	let factoryCalled = false;
 	const pending = openWorkflowsListing(
@@ -661,7 +765,6 @@ test("/workflows settles when a custom UI host resolves without mounting (#5245/
 				factoryCalled = true;
 				return [];
 			},
-			definitions: () => [],
 		},
 	);
 	void pending.then(() => {
@@ -673,7 +776,7 @@ test("/workflows settles when a custom UI host resolves without mounting (#5245/
 	assert.equal(await pending, undefined);
 });
 
-test("/workflows mounts as navigation rather than an approval prompt (#5245/#5224)", async () => {
+test("/workflows mounts as navigation rather than an approval prompt (#5224)", async () => {
 	let purpose: string | undefined;
 	const pending = openWorkflowsListing(
 		{
@@ -681,14 +784,14 @@ test("/workflows mounts as navigation rather than an approval prompt (#5245/#522
 				purpose = options.purpose;
 			},
 		},
-		{ runs: () => [], definitions: () => [] },
+		{ runs: () => [] },
 	);
 	assert.equal(purpose, "navigation");
 	assert.equal(await pending, undefined);
 });
 
 for (const mode of ["reject", "throw"] as const) {
-	test(`/workflows settles when its custom UI host fails before mounting with ${mode} (#5245/#5224)`, async () => {
+	test(`/workflows settles when its custom UI host fails before mounting with ${mode} (#5224)`, async () => {
 		const failure = new Error("host unavailable");
 		const pending = openWorkflowsListing(
 			{
@@ -697,7 +800,7 @@ for (const mode of ["reject", "throw"] as const) {
 					return Promise.reject(failure);
 				},
 			},
-			{ runs: () => [], definitions: () => [] },
+			{ runs: () => [] },
 		);
 		let settled = false;
 		void pending.then(() => {
@@ -710,7 +813,7 @@ for (const mode of ["reject", "throw"] as const) {
 }
 
 for (const mode of ["resolve", "reject"] as const) {
-	test(`/workflows releases its subscription when the mounted host later ${mode}s (#5245/#5224)`, async () => {
+	test(`/workflows releases its subscription when the mounted host later ${mode}s (#5224)`, async () => {
 		initTheme("dark");
 		let mounted: PiCustomComponent | undefined;
 		let releases = 0;
@@ -721,7 +824,7 @@ for (const mode of ["resolve", "reject"] as const) {
 					if (mode === "reject") throw new Error("mount aborted");
 				},
 			},
-			{ runs: () => [], definitions: () => [], subscribe: () => () => releases++ },
+			{ runs: () => [], subscribe: () => () => releases++ },
 		);
 		let settled = false;
 		void pending.then(() => {
@@ -737,7 +840,7 @@ for (const mode of ["resolve", "reject"] as const) {
 	});
 }
 
-test("/workflows keeps its chosen row when done synchronously disposes the mount (#5245/#5224)", async () => {
+test("/workflows keeps its chosen row when done synchronously disposes the mount (#5224)", async () => {
 	initTheme("dark");
 	let mounted: PiCustomComponent | undefined;
 	let closed = 0;
@@ -755,7 +858,6 @@ test("/workflows keeps its chosen row when done synchronously disposes the mount
 		},
 		{
 			runs: () => [run({ id: "chosen", status: "running" })],
-			definitions: () => [],
 			subscribe: () => () => releases++,
 		},
 	);

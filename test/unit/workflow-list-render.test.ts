@@ -86,8 +86,8 @@ describe("renderWorkflowList — populated", () => {
 		assert.match(plain, /num_attempts\?/);
 
 		// Hint rows.
-		assert.match(plain, /▸ \/workflow <name> …/);
-		assert.match(plain, /▸ \/workflow inputs <name>/);
+		assert.match(plain, /▸ workflow run <name> …/);
+		assert.match(plain, /▸ workflow inputs <name>/);
 	});
 
 	test("required-only signature has no `?` marker", () => {
