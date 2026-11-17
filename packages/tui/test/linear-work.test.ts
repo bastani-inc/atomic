@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { ScrollView } from "../src/components/scroll-view.ts";
+import { SelectList } from "../src/components/select-list.ts";
+import { fuzzyFilter, fuzzyMatch } from "../src/fuzzy.ts";
 import type { Terminal } from "../src/terminal.ts";
 import { type Component, compositeTuiLine } from "../src/tui.ts";
 import { TuiAltScreen } from "../src/tui-alt-screen.ts";
@@ -35,6 +37,21 @@ const FRAME_READS_PER_LINE = 8;
  * markers and images, reset, normalized and, when it changed, written.
  */
 const FRAME_WORK_PER_CHARACTER = 16;
+
+/**
+ * String work per character of a fuzzy match of a query a tenth as long as its text. The greedy alignment scans the text
+ * once, and each contiguous occurrence scored is found by comparing the query once. An occurrence more than 100
+ * characters after the first cannot score better than it, so at most 101 are compared: with the query a tenth of the
+ * text, about 10 characters per character of input.
+ */
+const REPEATED_QUERY_WORK_PER_CHARACTER = 16;
+/**
+ * String work per character of item text and query token when filtering: each item's text is lowercased, then scanned
+ * by the greedy alignment and the contiguous occurrence search, once per token.
+ */
+const FILTER_WORK_PER_CHARACTER_PER_TOKEN = 8;
+/** String work per character of a select list's items and filter: each value is lowercased once, the filter once. */
+const SELECT_FILTER_WORK_PER_CHARACTER = 2;
 
 let inputSalt = 0;
 
@@ -134,6 +151,53 @@ describe("text measurement does work linear in its input", () => {
 			const third = Math.floor(width / 3);
 			return measureStringWork(() => compositeTuiLine(base, overlay, third, third, width)).work;
 		});
+	});
+});
+
+describe("selector filtering does work linear in its input", () => {
+	it("fuzzyMatch scores a query that recurs throughout its text with work linear in the text", () => {
+		for (const length of SIZES) {
+			const text = "a".repeat(length);
+			const query = "a".repeat(length / 10);
+			const { value, work } = measureStringWork(() => fuzzyMatch(query, text));
+			assert.equal(value.matches, true);
+			const bound = REPEATED_QUERY_WORK_PER_CHARACTER * (text.length + query.length);
+			assert.ok(work <= bound, `${length} characters: ${work} string work, bound ${bound}`);
+		}
+	});
+
+	it("fuzzyFilter does work linear in the items' text for each query token", () => {
+		const query = "model 7 prev";
+		const tokens = query.split(" ").length;
+		for (const count of SIZES) {
+			const items = Array.from({ length: count }, (_, index) => `provider-${index}/model-${index}-preview`);
+			const { value, work } = measureStringWork(() => fuzzyFilter(items, query, (item) => item));
+			assert.ok(value.length > 0);
+			const bound = FILTER_WORK_PER_CHARACTER_PER_TOKEN * tokens * (characters(items) + query.length);
+			assert.ok(work <= bound, `${count} items: ${work} string work, bound ${bound}`);
+		}
+	});
+
+	it("SelectList filters its items with work linear in their values and the filter", () => {
+		const theme = {
+			selectedPrefix: (text: string) => text,
+			selectedText: (text: string) => text,
+			description: (text: string) => text,
+			scrollInfo: (text: string) => text,
+			noMatch: (text: string) => text,
+		};
+		for (const count of SIZES) {
+			const items = Array.from({ length: count }, (_, index) => ({
+				value: `command-${index}`,
+				label: `command ${index}`,
+			}));
+			const filter = "Command-".repeat(count / 8);
+			const list = new SelectList(items, 5, theme);
+			const { work } = measureStringWork(() => list.setFilter(filter));
+			const input = characters(items.map((item) => item.value)) + filter.length;
+			const bound = SELECT_FILTER_WORK_PER_CHARACTER * input;
+			assert.ok(work <= bound, `${count} items: ${work} string work, bound ${bound}`);
+		}
 	});
 });
 
