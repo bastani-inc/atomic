@@ -186,13 +186,18 @@ export class ScrollView extends Container {
 		}
 	}
 
-	updateLayout(contentHeight: number, viewportHeight: number, requestRender: () => void): void {
+	updateLayout(
+		contentHeight: number,
+		viewportHeight: number,
+		requestRender: () => void,
+		anchoredScrollTop?: number,
+	): void {
 		this.contentHeight = Math.max(0, Math.floor(contentHeight));
 		this.currentViewportHeight = Math.max(0, Math.floor(viewportHeight));
 		this.requestRenderCallback = requestRender;
 		const maxScrollTop = Math.max(0, this.contentHeight - this.currentViewportHeight);
 		if (this.followingEnd) this.currentScrollTop = maxScrollTop;
-		else this.currentScrollTop = Math.max(0, Math.min(this.currentScrollTop, maxScrollTop));
+		else this.currentScrollTop = Math.max(0, Math.min(anchoredScrollTop ?? this.currentScrollTop, maxScrollTop));
 		if (this.currentScrollTop < maxScrollTop) this.followSuppressedAtEnd = false;
 		if (this.followEnd && this.currentScrollTop === maxScrollTop && !this.followSuppressedAtEnd) {
 			this.followingEnd = true;

@@ -33,7 +33,13 @@ import {
 	type SortMode,
 } from "./session-selector-search.ts";
 import { buildSessionTree, type FlatSessionNode, flattenSessionTree } from "./session-selector-tree.ts";
-import { formatSessionDate, getSessionPathKey, shortenPath, truncatePathStart } from "./session-selector-utils.ts";
+import {
+	formatSessionDate,
+	getSessionPathKey,
+	isSessionPathKeyResolved,
+	shortenPath,
+	truncatePathStart,
+} from "./session-selector-utils.ts";
 
 export type SessionListVariant = "sessions" | "runs" | "mixed";
 
@@ -484,12 +490,12 @@ export class SessionList implements Component, Focusable {
 
 	private isCurrentSession(session: SessionInfo): boolean {
 		if (this.isWorkflowSession(session)) return false;
-		return (
-			this.currentSession !== undefined &&
-			session.id === this.currentSession.id &&
-			(this.currentSession.directory === undefined ||
-				getSessionPathKey(dirname(session.path)) === getSessionPathKey(this.currentSession.directory))
-		);
+		if (this.currentSession === undefined || session.id !== this.currentSession.id) return false;
+		const directory = this.currentSession.directory;
+		if (directory === undefined) return true;
+		const sessionDirectory = dirname(session.path);
+		if (!isSessionPathKeyResolved(sessionDirectory) || !isSessionPathKeyResolved(directory)) return true;
+		return getSessionPathKey(sessionDirectory) === getSessionPathKey(directory);
 	}
 
 	invalidate(): void {}

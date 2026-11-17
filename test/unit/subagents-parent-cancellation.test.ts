@@ -55,22 +55,22 @@ function sampleAgent(): AgentConfig {
 		filePath: "/tmp/analysis.md",
 	};
 }
-test("an untouched progress template is not treated as recoverable findings", () => {
+test("an untouched progress template is not treated as recoverable findings", async () => {
 	const root = makeTempDirectory("atomic-cancel-progress-empty-");
 	try {
 		const progressPath = join(root, "progress.md");
 		writeTextSync(progressPath, INITIAL_PROGRESS_CONTENT);
-		assert.equal(readModifiedProgress(progressPath), undefined);
+		assert.equal(await readModifiedProgress(progressPath), undefined);
 	} finally {
 		removeTempDirectory(root);
 	}
 });
-test("a modified progress.md is recovered as bounded labelled partial output", () => {
+test("a modified progress.md is recovered as bounded labelled partial output", async () => {
 	const root = makeTempDirectory("atomic-cancel-progress-");
 	try {
 		const progressPath = join(root, "progress.md");
 		writeTextSync(progressPath, "# Progress\n\n- Found auth middleware\n- Still unresolved: token refresh\n");
-		const recovered = recoverCancelledChildOutput({
+		const recovered = await recoverCancelledChildOutput({
 			progressPath,
 			assistantText: "later unused assistant text",
 			toolCount: 70,
@@ -92,7 +92,7 @@ test("a modified progress.md is recovered as bounded labelled partial output", (
 		removeTempDirectory(root);
 	}
 });
-test("oversized ephemeral progress truncates without citing the deleted path", () => {
+test("oversized ephemeral progress truncates without citing the deleted path", async () => {
 	const root = makeTempDirectory("atomic-cancel-progress-truncate-");
 	try {
 		const progressPath = join(root, "progress.md");
@@ -100,7 +100,7 @@ test("oversized ephemeral progress truncates without citing the deleted path", (
 			progressPath,
 			`${Array.from({ length: 201 }, (_, index) => `- finding ${index + 1}`).join("\n")}\n`,
 		);
-		const recovered = recoverCancelledChildOutput({
+		const recovered = await recoverCancelledChildOutput({
 			progressPath,
 			toolCount: 70,
 		});
@@ -114,7 +114,7 @@ test("oversized ephemeral progress truncates without citing the deleted path", (
 		removeTempDirectory(root);
 	}
 });
-test("oversized persisted progress cites the artifact path in the truncation marker", () => {
+test("oversized persisted progress cites the artifact path in the truncation marker", async () => {
 	const root = makeTempDirectory("atomic-cancel-progress-truncate-kept-");
 	try {
 		const progressPath = join(root, "progress.md");
@@ -125,7 +125,7 @@ test("oversized persisted progress cites the artifact path in the truncation mar
 		);
 		makeDirectorySync(join(root, "kept"), { recursive: true });
 		writeTextSync(progressArtifactPath, "kept\n");
-		const recovered = recoverCancelledChildOutput({
+		const recovered = await recoverCancelledChildOutput({
 			progressPath,
 			progressArtifactPath,
 			toolCount: 4,
@@ -138,8 +138,8 @@ test("oversized persisted progress cites the artifact path in the truncation mar
 		removeTempDirectory(root);
 	}
 });
-test("without progress updates, recovery uses the last non-empty assistant text", () => {
-	const recovered = recoverCancelledChildOutput({
+test("without progress updates, recovery uses the last non-empty assistant text", async () => {
+	const recovered = await recoverCancelledChildOutput({
 		assistantText: "Verified the login redirect.",
 		toolCount: 23,
 		sessionPath: join(makeTempDirectory("atomic-cancel-assistant-"), "session.jsonl"),
@@ -150,8 +150,8 @@ test("without progress updates, recovery uses the last non-empty assistant text"
 	assert.match(recovered.text, /incomplete and has not been validated/);
 });
 
-test("without recoverable content, recovery returns a cancellation notice and artifact refs", () => {
-	const recovered = recoverCancelledChildOutput({
+test("without recoverable content, recovery returns a cancellation notice and artifact refs", async () => {
+	const recovered = await recoverCancelledChildOutput({
 		toolCount: 0,
 		sessionPath: join(makeTempDirectory("atomic-cancel-empty-"), "session.jsonl"),
 		outputArtifactPath: join(makeTempDirectory("atomic-cancel-empty-"), "out.md"),
@@ -169,7 +169,7 @@ test("without recoverable content, recovery returns a cancellation notice and ar
 	assert.equal(isParentCancellation("interrupt"), false);
 });
 
-test("cancelled envelopes cite each artifact path only when that file exists", () => {
+test("cancelled envelopes cite each artifact path only when that file exists", async () => {
 	const root = makeTempDirectory("atomic-cancel-refs-");
 	try {
 		const rows = [
@@ -178,9 +178,9 @@ test("cancelled envelopes cite each artifact path only when that file exists", (
 			["Output", "outputArtifactPath", join(root, "out.md")],
 		] as const;
 		for (const [label, key, pathValue] of rows) {
-			assert.doesNotMatch(recoverCancelledChildOutput({ [key]: pathValue }).text, new RegExp(`${label}: `));
+			assert.doesNotMatch((await recoverCancelledChildOutput({ [key]: pathValue })).text, new RegExp(`${label}: `));
 			writeTextSync(pathValue, "kept\n");
-			const present = recoverCancelledChildOutput({
+			const present = await recoverCancelledChildOutput({
 				[key]: pathValue,
 				...(key === "progressArtifactPath" ? { progressPath: pathValue } : {}),
 			});

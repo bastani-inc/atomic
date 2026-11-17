@@ -1,6 +1,7 @@
 import { type ChildProcess, execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { createModuleRequire } from "../utils/module-require.js";
 
 /**
@@ -23,10 +24,14 @@ export function processStartToken(pid: number): string | undefined {
 }
 
 export async function readProcessStartToken(pid: number): Promise<string | undefined> {
-	if (process.platform !== "win32") return procStartToken(pid);
+	if (process.platform !== "win32") return procStartTokenAsync(pid);
 	const native = nativeCreationTime();
 	if (native !== null) return windowsStartToken(nativeCreation(native, pid));
 	return windowsStartToken(await readFallbackCreation(pid));
+}
+
+export async function processStartTokenAsync(pid: number): Promise<string | undefined> {
+	return readProcessStartToken(pid);
 }
 
 export function processStartTokenForSynchronousTakeover(pid: number): string | undefined {
@@ -56,15 +61,38 @@ export function processStartTokenForSynchronousTakeover(pid: number): string | u
 
 function procStartToken(pid: number): string | undefined {
 	try {
-		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-		// Fields after the command name, which may hold spaces and parentheses: the start time is the 22nd field.
-		const started = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
-		const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-		if (started === undefined || !/^\d+$/.test(started) || boot === "") return undefined;
-		return sha12(`${boot}\n${started}`);
+		return linuxStartToken(readFileSync(`/proc/${pid}/stat`, "utf8"), readFileSync(BOOT_ID, "utf8"));
 	} catch {
 		return undefined;
 	}
+}
+
+async function procStartTokenAsync(pid: number): Promise<string | undefined> {
+	try {
+		return linuxStartToken(await readFile(`/proc/${pid}/stat`, "utf8"), await readFile(BOOT_ID, "utf8"));
+	} catch {
+		return undefined;
+	}
+}
+
+const BOOT_ID = "/proc/sys/kernel/random/boot_id";
+const OWN_PROC_START = process.platform === "win32" ? undefined : procStartToken(process.pid);
+
+export function ownProcessStartToken(): string | undefined {
+	if (process.platform !== "win32") return OWN_PROC_START;
+	const native = nativeCreationTime();
+	if (native !== null) return windowsStartToken(nativeCreation(native, process.pid));
+	const known = knownFallbackCreation(process.pid);
+	if (known === undefined) void readFallbackCreation(process.pid);
+	return windowsStartToken(known?.created);
+}
+
+function linuxStartToken(stat: string, bootId: string): string | undefined {
+	// Fields after the command name, which may hold spaces and parentheses: the start time is the 22nd field.
+	const started = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+	const boot = bootId.trim();
+	if (started === undefined || !/^\d+$/.test(started) || boot === "") return undefined;
+	return sha12(`${boot}\n${started}`);
 }
 
 function windowsStartToken(created: string | undefined): string | undefined {

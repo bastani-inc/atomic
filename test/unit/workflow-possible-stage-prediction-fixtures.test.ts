@@ -73,7 +73,7 @@ describe("predicted stage names match the stages custom workflows materialize (#
 	for (const [name, recorded] of Object.entries(RECORDED)) {
 		test(name, async () => {
 			const entry = join(FIXTURES, name, "workflow.mjs");
-			const scan = scanPossibleStagesFromSource(entry);
+			const scan = await scanPossibleStagesFromSource(entry);
 			const known = scan.stages.filter((stage) => !stage.includes("*"));
 			const module = (await import(entry)) as { default: (factory: typeof workflow) => WorkflowDefinition };
 			const definition = module.default(workflow);
@@ -86,7 +86,7 @@ describe("predicted stage names match the stages custom workflows materialize (#
 					registry: createRegistry([definition]),
 					store,
 					adapters: { prompt: { prompt: async () => "ok" } },
-					resolvePossibleStageEntry: () => entry,
+					resolvePossibleStageEntry: async () => entry,
 					decisions: recordedPort(recorded),
 					stagePredictor: predictor,
 				},

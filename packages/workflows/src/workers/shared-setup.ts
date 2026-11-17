@@ -6,9 +6,9 @@ import {
 	StorageAdapterLoadError,
 	StorageConfigError,
 	type StorageSelection,
-	secretFilePath,
+	secretFilePathAsync,
 } from "@bastani/atomic/storage";
-import { type RunJournalOption, selectRunJournal } from "../durable/journal/resolution.js";
+import { type RunJournalOption, selectRunJournalAsync } from "../durable/journal/resolution.js";
 import type { RunJournal } from "../durable/journal/types.js";
 import {
 	SharedPoolSetupError,
@@ -23,19 +23,16 @@ import { processContainmentAvailable } from "./public-pool.js";
  * The journal `journal` selects, as a shared pool's setup reads it before anything opens it (#4310). An invalid
  * selection is refused as the `journal` option.
  */
-export function sharedJournalSelection(
+export async function sharedJournalSelection(
 	journal: RunJournalOption | undefined,
 	options: { readonly agentDir: string; readonly cwd?: string },
-): StorageSelection | RunJournal {
+): Promise<StorageSelection | RunJournal> {
 	try {
-		return selectRunJournal({
-			agentDir: options.agentDir,
-			journal,
-			settings:
-				journal === undefined
-					? SettingsManager.create(options.cwd ?? process.cwd(), options.agentDir).getSettings()
-					: undefined,
-		});
+		const settings =
+			journal === undefined
+				? (await SettingsManager.createAsync(options.cwd ?? process.cwd(), options.agentDir)).getSettings()
+				: undefined;
+		return await selectRunJournalAsync({ agentDir: options.agentDir, journal, settings });
 	} catch (error) {
 		if (!(error instanceof StorageConfigError)) throw error;
 		throw new WorkerPlacementConfigError("sdk", "journal", "invalid-option", error.reason, { cause: error });
@@ -63,7 +60,7 @@ export async function sharedSelectionProblems(
 	for (const [secret, ref] of Object.entries(selection.secrets ?? {})) {
 		if ("env" in ref) {
 			if (process.env[ref.env] === undefined) problems.push(sharedPoolProblems.secretUnavailable(secret, ref));
-		} else if ("file" in ref && !(await readable(secretFilePath(ref.file, agentDir))))
+		} else if ("file" in ref && !(await readable(await secretFilePathAsync(ref.file, agentDir))))
 			problems.push(sharedPoolProblems.secretUnavailable(secret, ref));
 	}
 	return problems;
@@ -80,7 +77,7 @@ export async function checkSharedPlacementSetup(
 ): Promise<void> {
 	const agentDir = options.agentDir ?? getAgentDir();
 	const problems = await sharedSelectionProblems(
-		sharedJournalSelection(journal, { agentDir, ...(options.cwd === undefined ? {} : { cwd: options.cwd }) }),
+		await sharedJournalSelection(journal, { agentDir, ...(options.cwd === undefined ? {} : { cwd: options.cwd }) }),
 		agentDir,
 	);
 	if (!(await processContainmentAvailable())) problems.push(sharedPoolProblems.processContainmentUnavailable());

@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { setTimeout as realSleep } from "node:timers/promises";
 import { describe, test } from "vitest";
 import { testRunId } from "../helpers/run-id.js";
 import type { ChatSurfacePayload, ExtensionAPI, PiCommandContext, PiCommandOptions } from "./slash-dispatch-utils.js";
@@ -23,6 +24,8 @@ import {
 
 installSlashDispatchTestHooks();
 const MISSING_RUN_ID = testRunId("definitely-missing");
+/** Bound, in real milliseconds, on the wait for a session's background workflow discovery. */
+const WARMUP_TURNS = 2_000;
 
 describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", () => {
 	async function registerWorkflowCommand(): Promise<{
@@ -165,10 +168,13 @@ export default workflow({
 				"session_start should not evaluate package workflow modules synchronously",
 			);
 			const { ctx } = commandCtx(false);
+			// The session's own discovery warms up in the background, apart from the one /workflow list runs.
+			for (let turn = 0; turn < WARMUP_TURNS && globalThis[marker] === 0; turn++) await realSleep(1);
+			assert.equal(globalThis[marker], 1, "the session's background discovery evaluates the module once");
 
 			await handler("list", ctx);
 
-			assert.equal(globalThis[marker], 1, "/workflow list should await lazy workflow discovery");
+			assert.equal(globalThis[marker], 2, "/workflow list should await lazy workflow discovery");
 			const listMessage = sent.find((message) => chatSurfacePayload(message)?.kind === "list");
 			assert.match(listMessage?.content ?? "", /lazy-package-workflow/);
 		} finally {

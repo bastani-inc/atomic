@@ -22,7 +22,7 @@ import {
 	renderToolSample,
 	toCodemodeIdentifier,
 } from "@bastani/atomic-codemode";
-import { ENV_CODEMODE_MAX_WORKERS, getCodemodeWorkerUrl, getEnvValue, getQuickJSWasmPath } from "../../config.js";
+import { ENV_CODEMODE_MAX_WORKERS, getCodemodeWorkerUrlAsync, getEnvValue, getQuickJSWasmPath } from "../../config.js";
 import type { ExtensionToolContext } from "../../core/extensions/context-types.ts";
 import type { ToolNamespace } from "../../core/extensions/tool-types.ts";
 import type { SessionEntry } from "../../core/session-manager.ts";
@@ -686,6 +686,7 @@ export async function executeCodemode(
 	let sandbox: CodemodeSandbox | undefined;
 	let result: CodemodeResult;
 	try {
+		const workerUrl = await getCodemodeWorkerUrlAsync();
 		sandbox = new CodemodeSandbox({
 			tools: callable.map((tool) => ({
 				name: tool.name,
@@ -737,7 +738,7 @@ export async function executeCodemode(
 			timeoutMs: Math.max(1, Math.round(deadline - waitedMs)),
 			memoryLimitBytes: 256 * 1024 * 1024,
 			wasm: loadQuickJSWasm(getQuickJSWasmPath()),
-			workerUrl: getCodemodeWorkerUrl(),
+			workerUrl,
 			acquireWorker: () => {
 				if (!reserved) throw new Error("The script already settled");
 				// From here the sandbox releases the slot when the worker actually exits.

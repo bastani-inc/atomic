@@ -8,17 +8,18 @@ import { afterEach, beforeEach, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import psFixtures from "./fixtures/ps-lstart.json" with { type: "json" };
 
-vi.mock("node:fs", async (original) => {
-	const actual = await original<typeof fs>();
-	return { ...actual, readlinkSync: vi.fn(actual.readlinkSync), readFileSync: vi.fn(actual.readFileSync) };
-});
 vi.mock("node:child_process", async (original) => {
 	const actual = await original<typeof childProcess>();
 	return { ...actual, execFile: vi.fn(actual.execFile) };
 });
 vi.mock("node:fs/promises", async (original) => {
 	const actual = await original<typeof fsPromises>();
-	return { ...actual, copyFile: vi.fn(actual.copyFile) };
+	return {
+		...actual,
+		copyFile: vi.fn(actual.copyFile),
+		readFile: vi.fn(actual.readFile),
+		readlink: vi.fn(actual.readlink),
+	};
 });
 vi.mock("node:os", async (original) => {
 	const actual = await original<typeof os>();
@@ -41,9 +42,9 @@ afterEach(() => {
 
 async function owner(namespace: string, boot = "boot-a") {
 	vi.resetModules();
-	vi.mocked(fs.readlinkSync).mockReturnValue(`pid:[${namespace}]`);
+	vi.mocked(fsPromises.readlink).mockResolvedValue(`pid:[${namespace}]`);
 	const actual = await vi.importActual<typeof fs>("node:fs");
-	vi.mocked(fs.readFileSync).mockImplementation((...args: Parameters<typeof fs.readFileSync>) =>
+	vi.mocked(fsPromises.readFile).mockImplementation(async (...args: Parameters<typeof fs.readFileSync>) =>
 		String(args[0]) === "/proc/sys/kernel/random/boot_id" ? boot : actual.readFileSync(...args),
 	);
 	return import("../src/core/storage/session/released-history-files.js");
@@ -90,7 +91,7 @@ test.skipIf(process.platform !== "linux").each(["known", "unknown"])(
 	async (identity) => {
 		const first = await owner("100");
 		if (identity === "unknown")
-			vi.mocked(fs.readlinkSync).mockImplementation(() => {
+			vi.mocked(fsPromises.readlink).mockImplementation(async () => {
 				throw Object.assign(new Error("unknown namespace"), { code: "EACCES" });
 			});
 		const a = await first.releasedHistoryFiles(root).createDirectory();
@@ -100,7 +101,7 @@ test.skipIf(process.platform !== "linux").each(["known", "unknown"])(
 		assert.ok(exit);
 		const second = await owner("100");
 		if (identity === "unknown")
-			vi.mocked(fs.readlinkSync).mockImplementation(() => {
+			vi.mocked(fsPromises.readlink).mockImplementation(async () => {
 				throw Object.assign(new Error("unknown namespace"), { code: "EACCES" });
 			});
 		const b = await second.releasedHistoryFiles(root).createDirectory();
@@ -234,7 +235,7 @@ test.skipIf(process.platform !== "linux")(
 	"an unreadable PID namespace disables sweeping rather than guessing",
 	async () => {
 		const module = await owner("300");
-		vi.mocked(fs.readlinkSync).mockImplementation(() => {
+		vi.mocked(fsPromises.readlink).mockImplementation(async () => {
 			throw Object.assign(new Error("denied"), { code: "EACCES" });
 		});
 		const directory = await module.releasedHistoryFiles(root).createDirectory();
@@ -319,7 +320,7 @@ test.skipIf(process.platform !== "linux")(
 				throw Object.assign(new Error("kill failed"), { code: pid === 404 ? "ESRCH" : "EPERM" });
 			return true;
 		});
-		vi.mocked(fs.readFileSync).mockImplementation((...args: Parameters<typeof fs.readFileSync>) => {
+		vi.mocked(fsPromises.readFile).mockImplementation(async (...args: Parameters<typeof fs.readFileSync>) => {
 			const path = String(args[0]);
 			if (path === "/proc/sys/kernel/random/boot_id") return "boot-a";
 			if ([401, 402, 405].some((pid) => path === `/proc/${pid}/stat`))
@@ -350,7 +351,7 @@ test
 		const caseRoot = join(root, `proc-mismatch-${status.replace(/[^0-9]/g, "") || "unknown"}`);
 		const module = await owner("500");
 		const actual = await vi.importActual<typeof fs>("node:fs");
-		vi.mocked(fs.readFileSync).mockImplementation((...args: Parameters<typeof fs.readFileSync>) => {
+		vi.mocked(fsPromises.readFile).mockImplementation(async (...args: Parameters<typeof fs.readFileSync>) => {
 			const path = String(args[0]);
 			if (path === "/proc/self/status") return status;
 			if (path === "/proc/sys/kernel/random/boot_id") return "boot-a";
@@ -363,7 +364,10 @@ test
 		await module.sweepReleasedHistory(caseRoot);
 		assert.ok(fs.existsSync(gone));
 		assert.ok(directory.path.includes(`${process.pid}-unknown`));
-		assert.equal(vi.mocked(fs.readFileSync).mock.calls.filter(([path]) => String(path).endsWith("/stat")).length, 0);
+		assert.equal(
+			vi.mocked(fsPromises.readFile).mock.calls.filter(([path]) => String(path).endsWith("/stat")).length,
+			0,
+		);
 		await directory.remove();
 	},
 );
@@ -389,8 +393,8 @@ test.each(
 		const platform = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
 		Object.defineProperty(process, "platform", { value });
 		const actual = await vi.importActual<typeof fs>("node:fs");
-		vi.mocked(fs.readlinkSync).mockReturnValue(namespace ?? "pid:[123]");
-		vi.mocked(fs.readFileSync).mockImplementation((...args: Parameters<typeof fs.readFileSync>) =>
+		vi.mocked(fsPromises.readlink).mockResolvedValue(namespace ?? "pid:[123]");
+		vi.mocked(fsPromises.readFile).mockImplementation(async (...args: Parameters<typeof fs.readFileSync>) =>
 			String(args[0]) === "/proc/sys/kernel/random/boot_id" ? stdout : actual.readFileSync(...args),
 		);
 		vi.spyOn(process, "kill").mockImplementation(() => {

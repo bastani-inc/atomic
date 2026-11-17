@@ -89,7 +89,7 @@ const THIS_HOST = createHash("sha256").update(hostname()).digest("hex").slice(0,
 /** Settles other processes' builds of `roots` as a resume does, and lets them go at once: the warnings for the user. */
 async function settle(roots: readonly string[], options?: Parameters<typeof settleOtherBuilds>[2]): Promise<string[]> {
 	const settled = await settleOtherBuilds(dir, roots, options);
-	settled.release();
+	await settled.release();
 	return settled.warnings;
 }
 

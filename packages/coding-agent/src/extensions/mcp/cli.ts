@@ -15,12 +15,12 @@ import { ProjectTrustStore } from "../../core/trust-manager.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { questionTerminal } from "../../utils/terminal-question.js";
 import {
-	addMcpServerConfig,
+	addMcpServerConfigAsync,
 	getMcpToolExposure,
 	type LoadedMcpConfig,
-	loadMcpConfig,
+	loadMcpConfigAsync,
 	type McpServerEntry,
-	removeMcpServerConfig,
+	removeMcpServerConfigAsync,
 } from "./config.ts";
 import {
 	createDefaultTransport,
@@ -128,6 +128,7 @@ function createConnection(
 	options: McpCommandOptions,
 	credentials: McpOAuthCredentialStore,
 	providerToken: (provider: string) => Promise<string | undefined>,
+	serverLog: McpServerLog,
 ) {
 	return new McpServerConnection({
 		entry,
@@ -135,7 +136,7 @@ function createConnection(
 		createTransport: createDefaultTransport,
 		credentials,
 		providerToken,
-		log: new McpServerLog(join(options.agentDir, "mcp.log")),
+		log: serverLog,
 		onTools: () => {},
 	});
 }
@@ -145,9 +146,11 @@ function createConnection(
  * session does. The model runtime is created on the first request, so servers without `auth.provider`
  * do not load it.
  */
-function createProviderTokenReader(agentDir: string): (provider: string) => Promise<string | undefined> {
+function createProviderTokenReader(
+	agentDir: string,
+	log: McpServerLog,
+): (provider: string) => Promise<string | undefined> {
 	let runtime: Promise<ModelRuntime> | undefined;
-	const log = new McpServerLog(join(agentDir, "mcp.log"));
 	return async (provider) => {
 		runtime ??= ModelRuntime.create({
 			authPath: join(agentDir, "auth.json"),
@@ -241,14 +244,45 @@ export async function runMcpCommand(args: string[], options: McpCommandOptions):
 			: remove(rest, projectConfig, options, log, error);
 	}
 	const projectTrusted = new ProjectTrustStore(options.agentDir).get(options.cwd) === true;
-	const loaded = loadMcpConfig({ agentDir: options.agentDir, cwd: options.cwd, projectTrusted });
+	const loaded = await loadMcpConfigAsync({ agentDir: options.agentDir, cwd: options.cwd, projectTrusted });
 	const untrustedNote =
 		!projectTrusted && existsSync(projectConfig)
 			? `${projectConfig} is ignored because the project is not trusted. Start ${APP_NAME} in the project to trust it.`
 			: undefined;
 	const credentials = options.credentials ?? new McpOAuthCredentialStore();
-	const providerToken = options.providerToken ?? createProviderTokenReader(options.agentDir);
+	const serverLog = new McpServerLog(join(options.agentDir, "mcp.log"));
+	const providerToken = options.providerToken ?? createProviderTokenReader(options.agentDir, serverLog);
+	try {
+		return await runServerCommand(command, rest, {
+			loaded,
+			untrustedNote,
+			options,
+			credentials,
+			providerToken,
+			serverLog,
+			log,
+			error,
+		});
+	} finally {
+		await serverLog.flush();
+	}
+}
 
+async function runServerCommand(
+	command: string,
+	rest: string[],
+	context: {
+		loaded: LoadedMcpConfig;
+		untrustedNote: string | undefined;
+		options: McpCommandOptions;
+		credentials: McpOAuthCredentialStore;
+		providerToken: (provider: string) => Promise<string | undefined>;
+		serverLog: McpServerLog;
+		log: (line: string) => void;
+		error: (line: string) => void;
+	},
+): Promise<number> {
+	const { loaded, untrustedNote, options, credentials, providerToken, serverLog, log, error } = context;
 	switch (command) {
 		case "list": {
 			const parsed = parseOptions(rest, { json: "flag" }, error);
@@ -257,7 +291,16 @@ export async function runMcpCommand(args: string[], options: McpCommandOptions):
 				error(`Usage: ${APP_NAME} mcp list [--json]\n${HELP_HINT}`);
 				return 1;
 			}
-			return list(loaded, parsed.values.has("json"), untrustedNote, options, credentials, providerToken, log);
+			return list(
+				loaded,
+				parsed.values.has("json"),
+				untrustedNote,
+				options,
+				credentials,
+				providerToken,
+				serverLog,
+				log,
+			);
 		}
 		case "login":
 		case "logout": {
@@ -292,7 +335,7 @@ export async function runMcpCommand(args: string[], options: McpCommandOptions):
 				);
 				return 1;
 			}
-			const connection = createConnection(entry, options, credentials, providerToken);
+			const connection = createConnection(entry, options, credentials, providerToken, serverLog);
 			const url = connection.oauthUrl;
 			if (!url) {
 				error(`MCP server "${name}" does not use OAuth. Only HTTP servers without an Authorization header do.`);
@@ -348,13 +391,13 @@ function parsePairs(option: string, pairs: string[] | undefined, error: (line: s
 	return record;
 }
 
-function add(
+async function add(
 	args: string[],
 	projectConfig: string,
 	options: McpCommandOptions,
 	log: (line: string) => void,
 	error: (line: string) => void,
-): number {
+): Promise<number> {
 	const usage = `Usage: ${APP_NAME} mcp add <server> [options] (--url <url> | -- <command> [args...])\n${HELP_HINT}`;
 	const parsed = parseOptions(
 		args,
@@ -448,7 +491,7 @@ function add(
 	const scope = project ? "project" : "global";
 	let replaced: boolean;
 	try {
-		replaced = addMcpServerConfig(path, name, validated);
+		replaced = await addMcpServerConfigAsync(path, name, validated);
 	} catch (addError) {
 		error(`Could not update ${path}: ${errorMessage(addError)}`);
 		return 1;
@@ -467,13 +510,13 @@ function add(
 	return 0;
 }
 
-function remove(
+async function remove(
 	args: string[],
 	projectConfig: string,
 	options: McpCommandOptions,
 	log: (line: string) => void,
 	error: (line: string) => void,
-): number {
+): Promise<number> {
 	const parsed = parseOptions(args, { local: "flag" }, error);
 	if (!parsed) return 1;
 	const [name, ...extra] = parsed.positional;
@@ -487,7 +530,7 @@ function remove(
 	const scope = project ? "project" : "global";
 	let removed: boolean;
 	try {
-		removed = removeMcpServerConfig(path, name);
+		removed = await removeMcpServerConfigAsync(path, name);
 	} catch (removeError) {
 		error(`Could not update ${path}: ${errorMessage(removeError)}`);
 		return 1;
@@ -496,9 +539,9 @@ function remove(
 		log(`Removed ${scope} MCP server "${name}" from ${path}.`);
 		return 0;
 	}
-	const other = loadMcpConfig({ agentDir: options.agentDir, cwd: options.cwd, projectTrusted: true }).servers.find(
-		(server) => server.name === name && server.scope !== scope,
-	);
+	const other = (
+		await loadMcpConfigAsync({ agentDir: options.agentDir, cwd: options.cwd, projectTrusted: true })
+	).servers.find((server) => server.name === name && server.scope !== scope);
 	error(
 		`No ${scope} MCP server named "${name}" in ${path}.${other ? ` It is defined in ${other.source}${other.scope === "project" ? "; use --local" : "; omit --local"}.` : ""}`,
 	);
@@ -512,6 +555,7 @@ async function list(
 	options: McpCommandOptions,
 	credentials: McpOAuthCredentialStore,
 	providerToken: (provider: string) => Promise<string | undefined>,
+	serverLog: McpServerLog,
 	log: (line: string) => void,
 ): Promise<number> {
 	const reports = await Promise.all(
@@ -530,7 +574,7 @@ async function list(
 				tools: [],
 			};
 			if (!report.enabled) return report;
-			const connection = createConnection(entry, options, credentials, providerToken);
+			const connection = createConnection(entry, options, credentials, providerToken, serverLog);
 			try {
 				await connection.getClient();
 			} catch {
@@ -627,7 +671,7 @@ async function login(
 		await signInMcpServer({
 			serverUrl: url,
 			store: credentials.forServer(name, url),
-			settings: connection.oauthSettings(),
+			settings: await connection.oauthSettings(),
 			challenge: connection.challenge,
 			prompt: {
 				showAuthorizationUrl: (authorizationUrl) => {

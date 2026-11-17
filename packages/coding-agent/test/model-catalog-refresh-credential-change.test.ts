@@ -64,7 +64,9 @@ describe("model catalog refresh across a credential change", () => {
 		expect(afterRegistration).toBeGreaterThan(afterLogout);
 
 		runtime.unregisterProvider("registered");
-		expect(runtime.getCatalogInputsGeneration()).toBeGreaterThan(afterRegistration);
+		const afterUnregister = runtime.getCatalogInputsGeneration();
+		expect(afterUnregister).toBeGreaterThan(afterRegistration);
+		expect(await runtime.getCatalogInputsGenerationAsync()).toBe(afterUnregister);
 	});
 
 	it("holds the generation still when nothing changed", async () => {
@@ -76,6 +78,7 @@ describe("model catalog refresh across a credential change", () => {
 		// A refresh reads the inputs; it does not change them. If it bumped, no two
 		// callers could ever share a pass.
 		expect(runtime.getCatalogInputsGeneration()).toBe(generation);
+		expect(await runtime.getCatalogInputsGenerationAsync()).toBe(generation);
 	});
 
 	it("does not answer a post-login selector with the pass that was running during login", async () => {

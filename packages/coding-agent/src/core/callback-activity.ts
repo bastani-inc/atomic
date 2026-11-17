@@ -21,7 +21,7 @@ export interface CallbackActivity {
 }
 
 export interface CallbackActivityReporter {
-	started(activity: CallbackActivity): void;
+	started(activity: CallbackActivity): void | Promise<void>;
 	finished(activityId: string): void;
 }
 
@@ -36,6 +36,7 @@ export interface CallbackActivityDescriptor {
 
 let reporter: CallbackActivityReporter | undefined;
 let nextActivityId = 0;
+let pendingCallbackStart: Promise<void> | undefined;
 
 export function setCallbackActivityReporter(next: CallbackActivityReporter | undefined): void {
 	reporter = next;
@@ -45,6 +46,7 @@ function beginActivity(descriptor: CallbackActivityDescriptor):
 	| {
 			activity: CallbackActivity;
 			reporter: CallbackActivityReporter;
+			written: Promise<void> | undefined;
 	  }
 	| undefined {
 	const activeReporter = reporter;
@@ -54,8 +56,9 @@ function beginActivity(descriptor: CallbackActivityDescriptor):
 		id: `callback_${++nextActivityId}`,
 		startedAt: performance.now(),
 	};
-	activeReporter.started(activity);
-	return { activity, reporter: activeReporter };
+	const started = activeReporter.started(activity);
+	const written = started === undefined ? undefined : started.catch(() => {});
+	return { activity, reporter: activeReporter, written };
 }
 
 export function runSynchronousCallback<T>(descriptor: CallbackActivityDescriptor, callback: () => T): T {
@@ -77,10 +80,22 @@ export async function runCallback<T>(
 	// immediately before it can run. Announcing before this yield lets later
 	// callbacks overtake the attribution while an earlier callback blocks.
 	await yieldToEventLoop();
+	while (pendingCallbackStart !== undefined) await pendingCallbackStart;
 	const active = beginActivity(descriptor);
 	if (!active) return callback();
 	try {
-		return await callback();
+		if (active.written === undefined) return await callback();
+		const starting = Promise.withResolvers<void>();
+		pendingCallbackStart = starting.promise;
+		let result: T | Promise<T>;
+		try {
+			await active.written;
+			result = callback();
+		} finally {
+			pendingCallbackStart = undefined;
+			starting.resolve();
+		}
+		return await result;
 	} finally {
 		active.reporter.finished(active.activity.id);
 	}

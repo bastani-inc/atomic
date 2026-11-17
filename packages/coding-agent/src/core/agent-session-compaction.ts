@@ -30,7 +30,7 @@ import {
 	type VerbatimCompactionResult,
 	type VerbatimCompactionStats,
 } from "./compaction/index.ts";
-import { reportDebug } from "./debug.ts";
+import { reportDebugAsync as reportDebug } from "./debug.ts";
 import type {
 	SessionBeforeCompactEvent,
 	SessionBeforeCompactResult,

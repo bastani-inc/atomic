@@ -1,6 +1,6 @@
-import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import type { ExtensionContext } from "../extensions/types.ts";
+import { pathExists } from "./path-utils.ts";
 import { withTodoLock } from "./todos-locks.ts";
 import { displayTodoId, isTodoClosed, validateTodoId } from "./todos-model.ts";
 import { getTodoPath } from "./todos-paths.ts";
@@ -19,7 +19,7 @@ export async function claimTodoAssignment(
 	}
 	const normalizedId = validated.id;
 	const filePath = getTodoPath(todosDir, normalizedId);
-	if (!existsSync(filePath)) {
+	if (!(await pathExists(filePath))) {
 		return { error: `Todo ${displayTodoId(id)} not found` };
 	}
 	const sessionId = ctx.sessionManager.getSessionId();
@@ -55,7 +55,7 @@ export async function releaseTodoAssignment(
 	}
 	const normalizedId = validated.id;
 	const filePath = getTodoPath(todosDir, normalizedId);
-	if (!existsSync(filePath)) {
+	if (!(await pathExists(filePath))) {
 		return { error: `Todo ${displayTodoId(id)} not found` };
 	}
 	const sessionId = ctx.sessionManager.getSessionId();
@@ -88,7 +88,7 @@ export async function deleteTodo(
 	}
 	const normalizedId = validated.id;
 	const filePath = getTodoPath(todosDir, normalizedId);
-	if (!existsSync(filePath)) {
+	if (!(await pathExists(filePath))) {
 		return { error: `Todo ${displayTodoId(id)} not found` };
 	}
 

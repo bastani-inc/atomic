@@ -1,5 +1,5 @@
 import { asyncScope } from "../async-scope.ts";
-import { failureDebugFields, reportDebug } from "../debug.ts";
+import { failureDebugFields, reportDebugAsync as reportDebug } from "../debug.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { BlueprintSection } from "./blueprint/errors.ts";
 

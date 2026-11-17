@@ -4,6 +4,7 @@
 
 import type { AgentSessionEvent, SessionManager, SessionWorkflowMetadata } from "@bastani/atomic";
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
+import type { CwdVerdict } from "./launch-cwd.js";
 import type { CandidateModelResolver } from "./model-resolution.js";
 
 /** The queueing surface of a stub test session: queued messages are read after the current prompt, steering first. */
@@ -106,6 +107,7 @@ export interface RunSyncOptions {
 	getChildSessionOptions?: import("@bastani/atomic").ExtensionContext["getChildSessionOptions"];
 	resourceLoaderInheritanceSnapshot?: import("@bastani/atomic").DefaultResourceLoaderInheritanceSnapshot;
 	cwd?: string;
+	cwdVerdict?: CwdVerdict;
 	signal?: AbortSignal;
 	interruptSignal?: AbortSignal;
 	allowIntercomDetach?: boolean;

@@ -408,19 +408,19 @@ function shippingOf(option: RecordedWorkerPlacement["checkpointShipping"]): {
  * How a root's pool runs with shared placement on this host: its local state, host id, claim window and binding, and
  * the binding's `worktree` on this host when it has one.
  */
-export function sharedPoolPlacement(
+export async function sharedPoolPlacement(
 	shared: PoolDurableJournal,
 	placement: RecordedWorkerPlacement,
 	worktree?: string,
-): {
+): Promise<{
 	readonly shared: SharedPoolCoordination;
 	readonly workspace?: WorkspaceBinding;
 	readonly workspaceWorktree?: string;
-} {
+}> {
 	return {
 		shared: {
 			stateDirectory: poolStateDirectory(shared.agentDir),
-			host: poolHostId(shared.agentDir),
+			host: await poolHostId(shared.agentDir),
 			claimWindowMs: placement.claimWindowMs ?? DEFAULT_PLACEMENT_CLAIM_WINDOW_MS,
 			...shippingOf(placement.checkpointShipping),
 			...(placement.rateLimits === undefined ? {} : { rateLimits: placement.rateLimits }),
@@ -519,13 +519,14 @@ export async function activatePublicPool(
 		);
 	const paths = (options.localWorkers?.definitions ?? []).map((source) => resolve(cwd, source.path));
 	const digests = new Map(await Promise.all(paths.map(async (path) => [path, await definitionDigest(path)] as const)));
+	const coordinator =
+		shared !== undefined || durable === undefined || !options.localWorkers
+			? undefined
+			: { host: await poolHostId(durable.agentDir), database: coordinationDatabase(durable) };
 	const resources = workerResources(options, {
 		userDatabase: () => (durable === undefined ? undefined : resolve(poolPath)),
 		digestOf: (path) => digests.get(path)!,
-		coordinator:
-			shared !== undefined || durable === undefined || !options.localWorkers
-				? undefined
-				: { host: poolHostId(durable.agentDir), database: coordinationDatabase(durable) },
+		coordinator,
 		...(recorded === undefined ? {} : { workers: recorded.placement }),
 	});
 	const localWorkers = resources.localWorkers;
@@ -596,7 +597,7 @@ export async function activatePublicPool(
 		...(shared === undefined || recorded === undefined
 			? {}
 			: {
-					...sharedPoolPlacement(shared, recorded.placement, recorded.worktree),
+					...(await sharedPoolPlacement(shared, recorded.placement, recorded.worktree)),
 					snapshots: options.snapshots,
 					...(placement?.provisioner === undefined ? {} : { fleet: placement.provisioner }),
 				}),

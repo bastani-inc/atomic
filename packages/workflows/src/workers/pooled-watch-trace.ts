@@ -1,5 +1,10 @@
 import { dirname, join, resolve } from "node:path";
-import { appendDebugRecord, type DebugFields, isDebugEnabled, reportDebug } from "@bastani/atomic";
+import {
+	appendDebugRecordAsync as appendDebugRecord,
+	type DebugFields,
+	isDebugEnabled,
+	reportDebugAsync as reportDebug,
+} from "@bastani/atomic";
 
 /**
  * Diagnostic trace of the pooled stage watch path (#3996), off by default.

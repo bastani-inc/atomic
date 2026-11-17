@@ -1,5 +1,5 @@
 import * as crypto from "node:crypto";
-import * as fs from "node:fs";
+import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { TUI } from "@bastani/atomic-tui";
@@ -37,20 +37,18 @@ function appTempPrefix(kind: string): string {
 
 function scheduleTempFileCleanup(filePath: string, delayMs: number): void {
 	const timer = setTimeout(() => {
-		try {
-			fs.unlinkSync(filePath);
-		} catch {
+		fs.unlink(filePath).catch(() => {
 			// Ignore best-effort cleanup failures.
-		}
+		});
 	}, delayMs);
 	timer.unref?.();
 }
 
-export function cleanupStaleClipboardFiles(now = Date.now()): void {
+export async function cleanupStaleClipboardFiles(now = Date.now()): Promise<void> {
 	const prefix = appTempPrefix("clipboard");
 	let entries: string[];
 	try {
-		entries = fs.readdirSync(os.tmpdir());
+		entries = await fs.readdir(os.tmpdir());
 	} catch {
 		return;
 	}
@@ -58,8 +56,8 @@ export function cleanupStaleClipboardFiles(now = Date.now()): void {
 		if (!entry.startsWith(prefix)) continue;
 		const filePath = path.join(os.tmpdir(), entry);
 		try {
-			const stat = fs.statSync(filePath);
-			if (stat.isFile() && now - stat.mtimeMs >= CLIPBOARD_STALE_AGE_MS) fs.unlinkSync(filePath);
+			const stat = await fs.stat(filePath);
+			if (stat.isFile() && now - stat.mtimeMs >= CLIPBOARD_STALE_AGE_MS) await fs.unlink(filePath);
 		} catch {
 			// Ignore best-effort cleanup failures.
 		}
@@ -134,7 +132,7 @@ export async function pasteClipboardImageToEditor(
 	options: ClipboardImageEditorOptions = {},
 ): Promise<boolean> {
 	try {
-		cleanupStaleClipboardFiles();
+		void cleanupStaleClipboardFiles();
 		// Finder copies also carry the file icon as an image; the paths are what the user copied.
 		const filePaths = await readClipboardFilePaths();
 		if (filePaths) {
@@ -155,7 +153,7 @@ export async function pasteClipboardImageToEditor(
 		const ext = extensionForImageMimeType(image.mimeType) ?? "png";
 		const fileName = `${appTempPrefix("clipboard")}${crypto.randomUUID()}.${ext}`;
 		const filePath = path.join(os.tmpdir(), fileName);
-		fs.writeFileSync(filePath, Buffer.from(image.bytes), { flag: "wx", mode: 0o600 });
+		await fs.writeFile(filePath, Buffer.from(image.bytes), { flag: "wx", mode: 0o600 });
 		scheduleTempFileCleanup(filePath, options.cleanupDelayMs ?? CLIPBOARD_CLEANUP_DELAY_MS);
 
 		return insertIntoEditor(editor, filePath, requestRender);

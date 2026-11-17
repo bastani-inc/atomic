@@ -23,9 +23,13 @@
 import { join } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@bastani/atomic";
 import * as bundledManifest from "../../builtin/index.js";
-import { resolveBuiltinDefinitionSource, scanPossibleStagesFromSource } from "../shared/possible-stages.js";
+import {
+	type PossibleStagesScanResult,
+	resolveBuiltinDefinitionSource,
+	scanPossibleStagesFromSource,
+} from "../shared/possible-stages.js";
 import type { WorkflowDefinition } from "../shared/types.js";
-import { recordWorkflowSource, workflowSource } from "../shared/workflow-source.js";
+import { recordedWorkflowDefinitionSource, recordWorkflowSource, workflowSource } from "../shared/workflow-source.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import { createRegistry } from "../workflows/registry.js";
 import { loadFromDir, loadFromPaths, type WorkflowModuleCandidateRecord } from "./discovery-loaders.js";
@@ -204,15 +208,15 @@ function validateConfig(config: unknown): string | null {
  * another tracked node call logs a warning. Scan failures never surface here
  * (the scan reports its own warnings and never blocks).
  */
-function zeroStageLintDiagnostic(
+async function zeroStageLintDiagnostic(
 	def: WorkflowDefinition,
 	filePath: string | undefined,
-): DiscoveryDiagnostic | undefined {
-	const entryPath = filePath ?? resolveBuiltinDefinitionSource(def.normalizedName);
+): Promise<DiscoveryDiagnostic | undefined> {
+	const entryPath = filePath ?? (await resolveBuiltinDefinitionSource(def.normalizedName));
 	if (entryPath === undefined) return undefined;
-	let scan: ReturnType<typeof scanPossibleStagesFromSource>;
+	let scan: PossibleStagesScanResult;
 	try {
-		scan = scanPossibleStagesFromSource(entryPath);
+		scan = await scanPossibleStagesFromSource(entryPath);
 	} catch {
 		return undefined;
 	}
@@ -259,6 +263,7 @@ async function applyBatch(
 
 		if (filePath !== undefined && workflowSource(def) === undefined) {
 			recordWorkflowSource(def, filePath);
+			await recordedWorkflowDefinitionSource(def);
 		}
 		registry = registry.register(def);
 		sources.push({
@@ -268,7 +273,7 @@ async function applyBatch(
 			...(filePath !== undefined ? { filePath } : {}),
 			...(configuredName !== undefined ? { configuredName } : {}),
 		});
-		const lint = zeroStageLintDiagnostic(def, filePath);
+		const lint = await zeroStageLintDiagnostic(def, filePath);
 		if (lint !== undefined) diagnostics.push(lint);
 	}
 	return registry;

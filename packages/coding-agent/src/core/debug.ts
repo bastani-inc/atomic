@@ -4,6 +4,7 @@ import { ENV_DEBUG, getDebugLogPath, getEnvNames } from "../config.js";
 import { redactCredentialShapes } from "../utils/credential-redaction.js";
 import { DebugLogUnwritableError } from "./debug-errors.ts";
 import { isDebugSettingOn } from "./debug-setting.ts";
+import { DiagnosticWriter } from "./diagnostic-writer.ts";
 
 /** A diagnostic area. Each is on in debug mode, or while its own environment variable is set. */
 export type DebugArea = "workflow" | "decision" | "pooled-watch" | "pool" | "storage" | "engine";
@@ -65,28 +66,47 @@ function safeFields(fields: DebugFields): Record<string, DebugValue> {
 	return Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, safeValue(value)]));
 }
 
-function appendLine(path: string, line: string): void {
+const writer = new DiagnosticWriter(recordFailure, true);
+let exitFlushRegistered = false;
+
+function appendLine(path: string, line: string): Promise<void> {
+	if (!exitFlushRegistered) {
+		exitFlushRegistered = true;
+		process.once("exit", () => writer.flushSync());
+	}
+	return writer.append(path, `${line}\n`);
+}
+
+function appendLineSync(path: string, line: string): void {
+	writer.flushSync();
 	try {
 		mkdirSync(dirname(path), { recursive: true });
 		appendFileSync(path, `${line}\n`);
 	} catch (error) {
-		if (debugLogFailure !== undefined) return;
-		debugLogFailure = new DebugLogUnwritableError(path, { cause: error });
-		console.warn(debugLogFailure.message);
+		recordFailure(path, error);
 	}
 }
 
-/**
- * Appends `record` to the debug output file `path` as one JSON line, with credentials redacted. A failure is recorded
- * once (see {@link getDebugLogFailure}), never thrown.
- */
-export function appendDebugRecord(path: string, record: DebugFields): void {
-	appendLine(path, JSON.stringify(safeFields(record)));
+function recordFailure(path: string, error: unknown): void {
+	if (debugLogFailure !== undefined) return;
+	debugLogFailure = new DebugLogUnwritableError(path, { cause: error });
+	console.warn(debugLogFailure.message);
 }
 
-function appendDebugLog(area: DebugArea, event: string, fields: DebugFields): void {
-	const record = { at: new Date().toISOString(), pid: process.pid, area, event, data: safeFields(fields) };
-	appendLine(getDebugLogPath(), JSON.stringify(record));
+export async function flushDebugLog(): Promise<void> {
+	await writer.written();
+}
+
+export function appendDebugRecord(path: string, record: DebugFields): void {
+	appendLineSync(path, JSON.stringify(safeFields(record)));
+}
+
+export function appendDebugRecordAsync(path: string, record: DebugFields): Promise<void> {
+	return appendLine(path, JSON.stringify(safeFields(record)));
+}
+
+function debugLogLine(area: DebugArea, event: string, fields: DebugFields): string {
+	return JSON.stringify({ at: new Date().toISOString(), pid: process.pid, area, event, data: safeFields(fields) });
 }
 
 /**
@@ -101,9 +121,24 @@ export function reportDebug(
 	ownOutput?: (variable: string) => void,
 	env: NodeJS.ProcessEnv = process.env,
 ): void {
-	if (isDebugModeOn(env)) appendDebugLog(area, event, fields);
+	if (isDebugModeOn(env)) appendLineSync(getDebugLogPath(), debugLogLine(area, event, fields));
 	const own = areaVariableValue(area, env);
 	if (ownOutput !== undefined && own !== undefined) ownOutput(own);
+}
+
+export function reportDebugAsync(
+	area: DebugArea,
+	event: string,
+	fields: DebugFields,
+	ownOutput?: (variable: string) => void,
+	env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+	const written = isDebugModeOn(env)
+		? appendLine(getDebugLogPath(), debugLogLine(area, event, fields))
+		: Promise.resolve();
+	const own = areaVariableValue(area, env);
+	if (ownOutput !== undefined && own !== undefined) ownOutput(own);
+	return written;
 }
 
 /** The first failure to write a debug log file in this process, if any. Later records are still attempted. */

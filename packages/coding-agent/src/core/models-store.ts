@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ModelsStore, ModelsStoreEntry } from "@bastani/atomic-ai";
 import { getAgentDir } from "../config.js";
@@ -51,7 +51,7 @@ export class FileModelsStore implements ModelsStore {
 	 * changed. Provider ids are canonicalized as a locked read of the file canonicalizes them.
 	 */
 	async read(providerId: string): Promise<ModelsStoreEntry | undefined> {
-		const text = readTextIfPresent(this.path);
+		const text = await readTextIfPresent(this.path);
 		if (!this.parsed || this.parsed.text !== text) {
 			this.parsed = { text, models: text ? normalizeProviderKeys(this.parse(text)) : {} };
 		}
@@ -75,9 +75,9 @@ export class FileModelsStore implements ModelsStore {
 	}
 }
 
-function readTextIfPresent(path: string): string | undefined {
+async function readTextIfPresent(path: string): Promise<string | undefined> {
 	try {
-		return readFileSync(path, "utf-8");
+		return await readFile(path, "utf-8");
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
 		throw error;

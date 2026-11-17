@@ -19,24 +19,24 @@ function bundledDefinitions(): readonly Pick<WorkflowDefinition, "normalizedName
 	return Object.values(bundledManifest);
 }
 
-function assertScanFindsStages(path: string): void {
-	const scan = scanPossibleStagesFromSource(path);
+async function assertScanFindsStages(path: string): Promise<void> {
+	const scan = await scanPossibleStagesFromSource(path);
 	assert.ok(scan.hasTrackedNodes || scan.stages.length > 0, `the static scan finds no stage in ${path}`);
 }
 
 // Startup registers the bundled workflows without the zero-stage lint, which would read and tokenize every bundled
 // source on every start. It is skipped only because it can never fire for them: this is that guarantee.
-test("the static scan finds stages in every bundled workflow source, so the startup lint has nothing to report", () => {
+test("the static scan finds stages in every bundled workflow source, so the startup lint has nothing to report", async () => {
 	const definitions = bundledDefinitions();
 	assert.ok(definitions.length > 0);
 	for (const definition of definitions) {
-		const source = resolveBuiltinDefinitionSource(definition.normalizedName);
+		const source = await resolveBuiltinDefinitionSource(definition.normalizedName);
 		assert.ok(source, `bundled workflow ${definition.normalizedName} has no source the lint could scan`);
-		assertScanFindsStages(source);
+		await assertScanFindsStages(source);
 	}
 });
 
-test("the static scan finds stages in every shipped bundled workflow chunk", (context) => {
+test("the static scan finds stages in every shipped bundled workflow chunk", async (context) => {
 	if (!existsSync(shippedBuiltinDir)) {
 		context.skip("packages/coding-agent is not built");
 		return;
@@ -44,7 +44,7 @@ test("the static scan finds stages in every shipped bundled workflow chunk", (co
 	for (const definition of bundledDefinitions()) {
 		const chunk = join(shippedBuiltinDir, `${definition.normalizedName}.js`);
 		assert.ok(existsSync(chunk), `the build ships no ${definition.normalizedName}.js`);
-		assertScanFindsStages(chunk);
+		await assertScanFindsStages(chunk);
 	}
 });
 

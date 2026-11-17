@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { APP_NAME } from "../../config.js";
@@ -87,10 +87,10 @@ export function resolveExternalEditorCommand(
 }
 
 export async function editInExternalEditor(request: ExternalEditorRequest): Promise<ExternalEditorResult> {
-	const directory = mkdtempSync(join(tmpdir(), `${APP_NAME}-editor-`));
+	const directory = await mkdtemp(join(tmpdir(), `${APP_NAME}-editor-`));
 	const filePath = join(directory, "prompt.md");
 	try {
-		writeFileSync(filePath, request.content, {
+		await writeFile(filePath, request.content, {
 			encoding: "utf-8",
 			flag: "wx",
 			mode: 0o600,
@@ -133,13 +133,11 @@ export async function editInExternalEditor(request: ExternalEditorRequest): Prom
 		}
 		return {
 			status: "complete",
-			content: stripBom(readFileSync(filePath, "utf-8")).replace(/\n$/, ""),
+			content: stripBom(await readFile(filePath, "utf-8")).replace(/\n$/, ""),
 		};
 	} finally {
-		try {
-			rmSync(directory, { recursive: true, force: true });
-		} catch {
+		await rm(directory, { recursive: true, force: true }).catch(() => {
 			// Cleanup is best effort.
-		}
+		});
 	}
 }

@@ -9,6 +9,7 @@
 import { join } from "node:path";
 import type { Agent, AgentMessage, AgentTool, ThinkingLevel } from "@bastani/atomic-agent-core";
 import type { Api, AssistantMessage, Model } from "@bastani/atomic-ai/compat";
+import { isPowerShellAvailable } from "../utils/shell.ts";
 import { installAgentSessionAccessors } from "./agent-session-accessors.ts";
 import { agentSessionAutoCompactionMethods } from "./agent-session-auto-compaction.ts";
 import { agentSessionBashMethods } from "./agent-session-bash.ts";
@@ -67,7 +68,7 @@ import { applyToolModifiers } from "./settings-merge.js";
 import type { NormalizedBuildSystemPromptOptions } from "./system-prompt.ts";
 import { ChildTaskWaits } from "./tasks/child-command-owner.js";
 import { createToolNameMatcher } from "./tool-selection.ts";
-import { getDefaultToolNames } from "./tools/index.js";
+import { defaultToolNamesFor } from "./tools/index.js";
 import { scheduleSessionTempCleanup } from "./tools/session-temp-cleanup.ts";
 import { acquireProtectedPaths, type ProtectedPathLease, setActiveSessionTempId } from "./tools/session-temp-dir.ts";
 import { ToolExecutionScheduler } from "./tools/tool-concurrency.ts";
@@ -365,10 +366,12 @@ class AgentSessionBase {
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._usesDefaultTools = config.usesDefaultTools ?? false;
 		this._defaultToolModifiers = config.defaultToolModifiers ?? [];
+		const powerShellAvailable = config.powerShellAvailable ?? isPowerShellAvailable();
+		const builtinDefaultTools = defaultToolNamesFor(powerShellAvailable);
 		this._appliedDefaultTools = new Set(
 			this._usesDefaultTools
 				? applyToolModifiers(
-						this.settingsManager.getDefaultTools() ?? getDefaultToolNames(),
+						this.settingsManager.getDefaultToolsWith(builtinDefaultTools) ?? builtinDefaultTools,
 						this._defaultToolModifiers,
 					)
 				: [],
@@ -495,6 +498,7 @@ class AgentSessionBase {
 			internals._buildRuntime({
 				activeToolNames: this._initialActiveToolNames,
 				includeAllExtensionTools: true,
+				powerShellAvailable,
 			});
 			internals._restoreToolsFromTranscript({ startup: true });
 			if (this._workflowStageAdmission?.hasAgentTaskHost() && !isSubagentChildSession(internals))

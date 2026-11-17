@@ -1,4 +1,3 @@
-import { statSync } from "node:fs";
 import { stat as fsStat } from "node:fs/promises";
 import path, { type PlatformPath } from "node:path";
 import type { AgentTool } from "@bastani/atomic-agent-core";
@@ -16,7 +15,7 @@ import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "
 import { withBuiltinToolBlockRenderers } from "./builtin-renderers.js";
 import { FileToolAbortedError } from "./file-tool-errors.ts";
 import { literalPathLike, normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
-import { pathExists, resolveToCwd } from "./path-utils.ts";
+import { pathExists, resolveToCwdAsync } from "./path-utils.ts";
 import { getTextOutput } from "./render-utils.ts";
 import { type InternalResourceContext, isInternalUrl, resolveInternalSelector } from "./resource-selectors.ts";
 import { loadNativeSearchBinding } from "./search-native.ts";
@@ -93,9 +92,18 @@ function formatTimeoutSeconds(timeoutMs: number): string {
 	return Number.isInteger(seconds) ? String(seconds) : seconds.toFixed(1);
 }
 const VIRTUAL_INTERNAL_SCHEMES = ["history", "conflict", "tool-output"] as const;
-function isExistingFile(candidate: string): boolean {
+async function isDirectoryEntry(candidate: string): Promise<boolean> {
 	try {
-		return statSync(candidate).isFile();
+		return (await fsStat(candidate)).isDirectory();
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" || code === "ENOTDIR") return false;
+		throw error;
+	}
+}
+async function isExistingFile(candidate: string): Promise<boolean> {
+	try {
+		return (await fsStat(candidate)).isFile();
 	} catch {
 		return false;
 	}
@@ -106,9 +114,9 @@ async function resolveFindInternal(input: string, cwd: string, ctx?: InternalRes
 		throw new Error(`find cannot list ${virtual}:// URLs because they have no filesystem path; use read or search.`);
 	const parsed = splitPathLikeGlob(input);
 	if (!isInternalUrl(parsed.basePath)) return input;
-	const attach = (resolved: string): string => {
+	const attach = async (resolved: string): Promise<string> => {
 		// A glob needs a directory, but a bare skill:// name resolves to the skill's SKILL.md.
-		const base = parsed.glob && isExistingFile(resolved) ? path.dirname(resolved) : resolved;
+		const base = parsed.glob && (await isExistingFile(resolved)) ? path.dirname(resolved) : resolved;
 		return parsed.glob ? `${base}/${parsed.glob}` : base;
 	};
 	for (const resolve of [
@@ -119,15 +127,15 @@ async function resolveFindInternal(input: string, cwd: string, ctx?: InternalRes
 		const resolved = await resolve?.(parsed.basePath);
 		if (typeof resolved === "string") return attach(resolved);
 	}
-	const fallback = resolveInternalSelector(parsed.basePath, cwd);
+	const fallback = await resolveInternalSelector(parsed.basePath, cwd);
 	if (fallback) return attach(fallback);
 	return input;
 }
 function isWindowsAbsolutePath(value: string): boolean {
 	return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("\\\\");
 }
-function resolveFindBackendPath(input: string, cwd: string, customBackend: boolean): string {
-	if (!customBackend) return resolveToCwd(input, cwd);
+async function resolveFindBackendPath(input: string, cwd: string, customBackend: boolean): Promise<string> {
+	if (!customBackend) return resolveToCwdAsync(input, cwd);
 	if (input === "." || input === "") return cwd;
 	if (input.startsWith("/") || isWindowsAbsolutePath(input)) return input;
 	if (cwd.includes("\\") || isWindowsAbsolutePath(cwd)) return path.resolve(cwd, input);
@@ -143,7 +151,7 @@ async function delimiterInExistingGlobRoot(
 	return (
 		!!parsed.glob &&
 		/[;,\s]/.test(parsed.basePath) &&
-		(await ops.exists(resolveFindBackendPath(parsed.basePath, cwd, customBackend)))
+		(await ops.exists(await resolveFindBackendPath(parsed.basePath, cwd, customBackend)))
 	);
 }
 async function expandDelimitedFindPaths(
@@ -161,9 +169,9 @@ async function expandDelimitedFindPaths(
 		const resolvedRaw = await resolveFindInternal(raw, cwd, ctx);
 		const rawParsed = splitPathLikeGlob(resolvedRaw);
 		if (
-			(await ops.exists(resolveFindBackendPath(resolvedRaw, cwd, customBackend))) ||
+			(await ops.exists(await resolveFindBackendPath(resolvedRaw, cwd, customBackend))) ||
 			(rawParsed.glob === undefined &&
-				(await ops.exists(resolveFindBackendPath(rawParsed.basePath, cwd, customBackend)))) ||
+				(await ops.exists(await resolveFindBackendPath(rawParsed.basePath, cwd, customBackend)))) ||
 			(await delimiterInExistingGlobRoot(resolvedRaw, cwd, ops, customBackend))
 		) {
 			expanded.push(resolvedRaw);
@@ -179,15 +187,15 @@ async function expandDelimitedFindPaths(
 		const delimiterCanSplit = /[;,]/.test(raw)
 			? (
 					await Promise.all(
-						parts.map((part) =>
-							ops.exists(resolveFindBackendPath(splitPathLikeGlob(part).basePath, cwd, customBackend)),
+						parts.map(async (part) =>
+							ops.exists(await resolveFindBackendPath(splitPathLikeGlob(part).basePath, cwd, customBackend)),
 						),
 					)
 				).some(Boolean)
 			: (
 					await Promise.all(
-						parts.map((part) =>
-							ops.exists(resolveFindBackendPath(splitPathLikeGlob(part).basePath, cwd, customBackend)),
+						parts.map(async (part) =>
+							ops.exists(await resolveFindBackendPath(splitPathLikeGlob(part).basePath, cwd, customBackend)),
 						),
 					)
 				).every(Boolean);
@@ -204,19 +212,21 @@ async function normalizeFindTargets(
 ): Promise<FindTarget[]> {
 	if (!pathsValue || pathsValue.length === 0) throw new Error("find.paths must include at least one path or glob.");
 	const literal = await Promise.all(
-		pathsValue.map((searchPath) => ops.exists(resolveFindBackendPath(searchPath, cwd, customBackend))),
+		pathsValue.map(async (searchPath) => ops.exists(await resolveFindBackendPath(searchPath, cwd, customBackend))),
 	);
-	return pathsValue.map((searchPath, index) => {
-		// An existing path is used exactly, so `app/[id]/page.tsx` is that file, not the pattern `app/[id]` (#5177).
-		const parsed = literal[index] ? literalPathLike(searchPath) : splitPathLikeGlob(searchPath);
-		const target = {
-			searchPath: resolveFindBackendPath(parsed.basePath, cwd, customBackend),
-			pattern: parsed.glob ?? "**/*",
-			exactPathInput: parsed.glob === undefined,
-			inputPath: searchPath,
-		};
-		return target;
-	});
+	return Promise.all(
+		pathsValue.map(async (searchPath, index) => {
+			// An existing path is used exactly, so `app/[id]/page.tsx` is that file, not the pattern `app/[id]` (#5177).
+			const parsed = literal[index] ? literalPathLike(searchPath) : splitPathLikeGlob(searchPath);
+			const target = {
+				searchPath: await resolveFindBackendPath(parsed.basePath, cwd, customBackend),
+				pattern: parsed.glob ?? "**/*",
+				exactPathInput: parsed.glob === undefined,
+				inputPath: searchPath,
+			};
+			return target;
+		}),
+	);
 }
 /** Relativize a find result against the search root and normalize it to POSIX separators. */
 export function relativizeFindResultPath(
@@ -648,22 +658,22 @@ export function createFindToolDefinition(
 										signal,
 									});
 									matches.push(
-										...result.matches.map((match) => {
-											const fileType = match.fileType ?? (match as { file_type?: number }).file_type;
-											const isDir =
-												(fileType === 2 ||
-													fileType === "Dir" ||
-													(fileType === undefined &&
-														statSync(path.resolve(target.searchPath, match.path), {
-															throwIfNoEntry: false,
-														})?.isDirectory())) &&
-												!match.path.endsWith("/");
-											const matchPath = isDir ? `${match.path}/` : match.path;
-											return {
-												path: formatFoundPath(matchPath, target.searchPath, searchPaths, executionCwd),
-												mtime: match.mtime ?? 0,
-											};
-										}),
+										...(await Promise.all(
+											result.matches.map(async (match) => {
+												const fileType = match.fileType ?? (match as { file_type?: number }).file_type;
+												const isDir =
+													(fileType === 2 ||
+														fileType === "Dir" ||
+														(fileType === undefined &&
+															(await isDirectoryEntry(path.resolve(target.searchPath, match.path))))) &&
+													!match.path.endsWith("/");
+												const matchPath = isDir ? `${match.path}/` : match.path;
+												return {
+													path: formatFoundPath(matchPath, target.searchPath, searchPaths, executionCwd),
+													mtime: match.mtime ?? 0,
+												};
+											}),
+										)),
 									);
 									emitUpdate(matches.map((match) => match.path));
 								} catch (error) {
@@ -747,14 +757,14 @@ export function createFindToolDefinition(
 								return false;
 							}
 							if (signal?.aborted) return false;
-							return await new Promise<boolean>((resolveTarget, rejectTarget) => {
+							const lines: string[] = [];
+							const limitReached = await new Promise<boolean>((resolveTarget, rejectTarget) => {
 								const child = spawnHostProcess(fdPath, args, {
 									env: createChildProcessEnvironment(),
 									stdio: ["ignore", "pipe", "pipe"],
 								});
 								let detachLines = () => {};
 								let stderr = "";
-								const lines: string[] = [];
 								stopChild = () => {
 									if (!child.killed) child.kill();
 								};
@@ -794,22 +804,25 @@ export function createFindToolDefinition(
 										rejectTarget(new Error(stderr.trim() || `fd exited with code ${code}`));
 										return;
 									}
-									for (const rawLine of lines.slice(0, remaining)) {
-										const line = cleanFdLine(rawLine);
-										if (line) {
-											const found =
-												statSync(path.resolve(target.searchPath, line), {
-													throwIfNoEntry: false,
-												})?.isDirectory() && !line.endsWith("/")
-													? `${line}/`
-													: line;
-											relativized.push(formatFoundPath(found, target.searchPath, searchPaths, executionCwd));
-										}
-									}
-									emitUpdate(relativized);
 									resolveTarget(lines.length > Math.max(0, remaining));
 								});
 							});
+							const found = await Promise.all(
+								lines
+									.slice(0, remaining)
+									.map(cleanFdLine)
+									.filter(Boolean)
+									.map(async (line) =>
+										(await isDirectoryEntry(path.resolve(target.searchPath, line))) && !line.endsWith("/")
+											? `${line}/`
+											: line,
+									),
+							);
+							relativized.push(
+								...found.map((line) => formatFoundPath(line, target.searchPath, searchPaths, executionCwd)),
+							);
+							emitUpdate(relativized);
+							return limitReached;
 						};
 						let resultLimitReached = false;
 						for (const target of searchableTargets) {

@@ -336,6 +336,22 @@ pub fn try_advisory_lock(path: String, wait_ms: u32) -> napi::Result<Option<Advi
 	Ok(file.map(|file| AdvisoryLock { file: Some(file) }))
 }
 
+/// Asynchronous form of {@link tryAdvisoryLock}: acquires the exclusive advisory lock on a worker thread without
+/// blocking the JavaScript event loop.
+#[napi(js_name = "tryAdvisoryLockAsync")]
+pub async fn try_advisory_lock_async(
+	path: String,
+	wait_ms: u32,
+) -> napi::Result<Option<AdvisoryLock>> {
+	let file = napi::tokio::task::spawn_blocking(move || {
+		try_lock_file(Path::new(&path), Duration::from_millis(u64::from(wait_ms)))
+	})
+	.await
+	.map_err(|error| napi::Error::new(napi::Status::GenericFailure, error.to_string()))?
+	.map_err(napi_error)?;
+	Ok(file.map(|file| AdvisoryLock { file: Some(file) }))
+}
+
 /// Takes a shared advisory lock on the file at `path` (#5317): `flock` on Unix, `LockFileEx` on Windows. The file is
 /// created when missing, reopened if unlinked while acquiring the lock, and never truncated or removed. Tried at once,
 /// then again until `waitMs` has passed; `null` while an exclusive holder keeps it, a delete-pending file remains at
@@ -352,6 +368,16 @@ pub fn try_shared_advisory_lock(path: String, wait_ms: u32) -> napi::Result<Opti
 #[napi(js_name = "renameNoReplace")]
 pub fn rename_no_replace_napi(from: String, to: String) -> napi::Result<bool> {
 	rename_no_replace(Path::new(&from), Path::new(&to)).map_err(napi_error)
+}
+
+/// Asynchronous form of {@link renameNoReplace}: renames `from` to `to` without replacing an existing destination on a
+/// worker thread without blocking the JavaScript event loop.
+#[napi(js_name = "renameNoReplaceAsync")]
+pub async fn rename_no_replace_async(from: String, to: String) -> napi::Result<bool> {
+	napi::tokio::task::spawn_blocking(move || rename_no_replace(Path::new(&from), Path::new(&to)))
+		.await
+		.map_err(|error| napi::Error::new(napi::Status::GenericFailure, error.to_string()))?
+		.map_err(napi_error)
 }
 
 #[cfg(test)]

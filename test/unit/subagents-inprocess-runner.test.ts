@@ -75,7 +75,7 @@ test("configured running capacity admits that many concurrent child turns and de
 			assert.ok(control);
 			const tokens: number[] = [];
 			for (let index = 0; index <= (capacity ?? DEFAULT_RUNNING_CAPACITY); index++) {
-				const admitted = control.admitChildSession(sampleSpec(root));
+				const admitted = await control.admitChildSession(sampleSpec(root));
 				assert.ok(admitted.admitted);
 				const attempt: ReturnType<NativeSubagentControl["beginChildAttempt"]> = control.native.beginChildAttempt(
 					admitted.admitted.identity.path,
@@ -308,12 +308,12 @@ test(
 	LIVE_CHILD_RESOURCE_RELOAD_TIMEOUT_MS,
 );
 
-test("admission resolves restricted child management and explicit fanout policy", () => {
+test("admission resolves restricted child management and explicit fanout policy", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-policy-"));
 	try {
 		const control = new SubagentControlRuntime({ path: "parent", depth: 0 }, root);
 		control.registerAgents([sampleAgent()]);
-		const result = control.admitChildSession(
+		const result = await control.admitChildSession(
 			{ ...sampleSpec(root), tools: ["subagent"] },
 			{ path: "parent", depth: 0 },
 		);
@@ -321,7 +321,7 @@ test("admission resolves restricted child management and explicit fanout policy"
 		assert.equal(result.admitted.policy.managementActions, "restricted");
 		assert.equal(result.admitted.policy.depth, 1);
 		assert.equal(result.admitted.policy.fanoutAuthorized, true);
-		const noFanout = control.admitChildSession(sampleSpec(root), { path: "parent", depth: 0 });
+		const noFanout = await control.admitChildSession(sampleSpec(root), { path: "parent", depth: 0 });
 		assert.ok(noFanout.admitted);
 		assert.equal(noFanout.admitted.policy.managementActions, "restricted");
 		assert.equal(noFanout.admitted.policy.fanoutAuthorized, false);
@@ -330,16 +330,16 @@ test("admission resolves restricted child management and explicit fanout policy"
 	}
 });
 
-test("admission refuses a child whose parent already sits at the single permitted level", () => {
+test("admission refuses a child whose parent already sits at the single permitted level", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-depth-"));
 	try {
 		const control = new SubagentControlRuntime({ path: "parent", depth: 0 }, root);
 		control.registerAgents([sampleAgent()]);
-		const admitted = control.admitChildSession(sampleSpec(root), { path: "parent", depth: 0 });
+		const admitted = await control.admitChildSession(sampleSpec(root), { path: "parent", depth: 0 });
 		assert.ok(admitted.admitted);
 		assert.equal(admitted.admitted.policy.depth, 1);
 
-		const result = control.admitChildSession(sampleSpec(root), { path: "parent", depth: 1 });
+		const result = await control.admitChildSession(sampleSpec(root), { path: "parent", depth: 1 });
 		assert.equal(result.admitted, undefined);
 		assert.equal(result.refusal?.kind, "depthExceeded");
 		assert.equal(result.refusal?.maxDepth, 1);
@@ -378,9 +378,11 @@ test("interrupt during async session construction does not dispatch the child pr
 	try {
 		const control = new SubagentControlRuntime({ path: "startup-parent", depth: 0 }, join(root, "sessions"));
 		control.registerAgents([sampleAgent()]);
-		const admitted = control.admitChildSession(
-			{ ...sampleSpec(root), testSession: { output: "not dispatched", promptLogPath } },
-			{ path: "startup-parent", depth: 0 },
+		const admitted = (
+			await control.admitChildSession(
+				{ ...sampleSpec(root), testSession: { output: "not dispatched", promptLogPath } },
+				{ path: "startup-parent", depth: 0 },
+			)
 		).admitted;
 		assert.ok(admitted);
 		const interrupt = new AbortController();
@@ -406,16 +408,18 @@ test("launch metadata preserves the canonical fast model ID and effective thinki
 	try {
 		const control = new SubagentControlRuntime({ path: "thinking-parent", depth: 0 }, join(root, "sessions"));
 		control.registerAgents([sampleAgent()]);
-		const admitted = control.admitChildSession(
-			{
-				...sampleSpec(root),
-				testSession: {
-					promptGate: gate.promise,
-					sessionModel: "openai-codex/gpt-5.6-sol-fast",
-					sessionThinkingLevel: "off",
+		const admitted = (
+			await control.admitChildSession(
+				{
+					...sampleSpec(root),
+					testSession: {
+						promptGate: gate.promise,
+						sessionModel: "openai-codex/gpt-5.6-sol-fast",
+						sessionThinkingLevel: "off",
+					},
 				},
-			},
-			{ path: "thinking-parent", depth: 0 },
+				{ path: "thinking-parent", depth: 0 },
+			)
 		).admitted;
 		assert.ok(admitted);
 		const neverAbort = new AbortController().signal;
@@ -446,9 +450,11 @@ test("launch metadata does not invent a default thinking level", async () => {
 	try {
 		const control = new SubagentControlRuntime({ path: "thinking-default-parent", depth: 0 }, join(root, "sessions"));
 		control.registerAgents([sampleAgent()]);
-		const admitted = control.admitChildSession(
-			{ ...sampleSpec(root), testSession: { promptGate: gate.promise } },
-			{ path: "thinking-default-parent", depth: 0 },
+		const admitted = (
+			await control.admitChildSession(
+				{ ...sampleSpec(root), testSession: { promptGate: gate.promise } },
+				{ path: "thinking-default-parent", depth: 0 },
+			)
 		).admitted;
 		assert.ok(admitted);
 		const neverAbort = new AbortController().signal;
@@ -474,13 +480,15 @@ test("launch metadata preserves configured thinking without a model", async () =
 	try {
 		const control = new SubagentControlRuntime({ path: "thinking-config-parent", depth: 0 }, join(root, "sessions"));
 		control.registerAgents([sampleAgent()]);
-		const admitted = control.admitChildSession(
-			{
-				...sampleSpec(root),
-				agent: { ...sampleAgent(), thinking: "high" },
-				testSession: { promptGate: gate.promise },
-			},
-			{ path: "thinking-config-parent", depth: 0 },
+		const admitted = (
+			await control.admitChildSession(
+				{
+					...sampleSpec(root),
+					agent: { ...sampleAgent(), thinking: "high" },
+					testSession: { promptGate: gate.promise },
+				},
+				{ path: "thinking-config-parent", depth: 0 },
+			)
 		).admitted;
 		assert.ok(admitted);
 		const neverAbort = new AbortController().signal;
@@ -873,7 +881,7 @@ test("in-process subagent launch and transcript binding tolerate a SessionManage
 				join(root, "sessions", "control"),
 			);
 			control.registerAgents([sampleAgent()]);
-			const admitted = control.admitChildSession(
+			const admitted = await control.admitChildSession(
 				{
 					...sampleSpec(root),
 					sessionManager: branchedSdk,
@@ -933,7 +941,7 @@ test("in-process subagent launch and transcript binding tolerate a SessionManage
 			join(root, "sessions", "sdk-control"),
 		);
 		sdkControl.registerAgents([sampleAgent()]);
-		const sdkAdmitted = sdkControl.admitChildSession(
+		const sdkAdmitted = await sdkControl.admitChildSession(
 			{
 				...sampleSpec(root),
 				sessionManager: sdkManager,

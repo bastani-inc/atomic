@@ -1,25 +1,14 @@
-import { existsSync, readFileSync } from "node:fs";
-import { findReadableConfigPath } from "./config-paths.ts";
-import { createOwnerState } from "./owner-state.js";
+import { createAsyncOwnerState, readWebSearchConfigFile } from "./gemini-web-config.ts";
 
 export const API_BASE = "https://generativelanguage.googleapis.com/v1beta";
-const CONFIG_PATH = findReadableConfigPath();
 export const DEFAULT_MODEL = "gemini-3-flash-preview";
 
 interface GeminiApiConfig {
 	geminiApiKey?: unknown;
 }
 
-const loadConfig = createOwnerState<GeminiApiConfig>(() => {
-	if (!existsSync(CONFIG_PATH)) return {};
-
-	const raw = readFileSync(CONFIG_PATH, "utf-8");
-	try {
-		return JSON.parse(raw) as GeminiApiConfig;
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		throw new Error(`Failed to parse ${CONFIG_PATH}: ${message}`);
-	}
+const loadConfig = createAsyncOwnerState<GeminiApiConfig>(async () => {
+	return (await readWebSearchConfigFile<GeminiApiConfig>()) ?? {};
 });
 
 function withTimeout(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
@@ -33,12 +22,12 @@ function normalizeApiKey(value: unknown): string | null {
 	return normalized.length > 0 ? normalized : null;
 }
 
-export function getApiKey(): string | null {
-	return normalizeApiKey(process.env.GEMINI_API_KEY) ?? normalizeApiKey(loadConfig().geminiApiKey);
+export async function getApiKey(): Promise<string | null> {
+	return normalizeApiKey(process.env.GEMINI_API_KEY) ?? normalizeApiKey((await loadConfig()).geminiApiKey);
 }
 
-export function isGeminiApiAvailable(): boolean {
-	return getApiKey() !== null;
+export async function isGeminiApiAvailable(): Promise<boolean> {
+	return (await getApiKey()) !== null;
 }
 
 export interface GeminiApiOptions {
@@ -53,7 +42,7 @@ export async function queryGeminiApiWithVideo(
 	videoUri: string,
 	options: GeminiApiOptions = {},
 ): Promise<string> {
-	const apiKey = getApiKey();
+	const apiKey = await getApiKey();
 	if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
 
 	const model = options.model ?? DEFAULT_MODEL;

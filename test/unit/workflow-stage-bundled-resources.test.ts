@@ -229,7 +229,7 @@ function assertCredentialRequest(request: CapturedRequest | undefined): void {
 }
 
 describe("workflow stage bundled resources", () => {
-	test("discovers bundled subagent definitions from the packaged repo", () => {
+	test("discovers bundled subagent definitions from the packaged repo", async () => {
 		const snapshot = snapshotEnv();
 		const cwd = tempDir("atomic-workflow-stage-agents-cwd-");
 		const agentDir = join(cwd, "agent");
@@ -238,7 +238,7 @@ describe("workflow stage bundled resources", () => {
 			process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
 			delete process.env.PI_CODING_AGENT_DIR;
 
-			const builtinAgents = discoverAgentsAll(cwd, { projectTrusted: true }).builtin;
+			const builtinAgents = (await discoverAgentsAll(cwd, { projectTrusted: true })).builtin;
 			const builtinNames = new Set(builtinAgents.map((agent) => agent.name));
 			for (const name of [
 				"code-simplifier",

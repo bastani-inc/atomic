@@ -1,6 +1,6 @@
 import type { ThinkingLevel } from "@bastani/atomic-agent-core";
 import { type Api, type Model, modelsAreEqual } from "@bastani/atomic-ai/compat";
-import { failureDebugFields, reportDebug } from "../../core/debug.ts";
+import { failureDebugFields, reportDebugAsync as reportDebug } from "../../core/debug.ts";
 import { DEFAULT_THINKING_LEVEL } from "../../core/defaults.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
 import { deduplicateDiagnostics } from "../../core/settings-diagnostics.ts";
@@ -11,6 +11,8 @@ import {
 	type Container,
 	findInitialModel,
 	formatNoModelsAvailableMessage,
+	getChangelogPath,
+	preloadChangelog,
 	recordTimeSinceReset,
 	resolveModelScopeWithDiagnostics,
 	resolveRestoredModelReference,
@@ -104,6 +106,7 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 		});
 		// Keep the subscription warning after the RESOURCES disclosure.
 		void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
+		await preloadChangelog(getChangelogPath());
 		this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
 		const modelsJsonError = this.session.modelRuntime.getError();
 		if (modelsJsonError) {

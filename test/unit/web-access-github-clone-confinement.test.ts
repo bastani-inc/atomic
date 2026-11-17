@@ -22,12 +22,14 @@ const boundary = vi.hoisted(() => ({
 	/** Links the fake clone creates: name inside the clone to target (relative targets are kept as written). */
 	links: {} as Record<string, { target: string; type: "file" | "dir" | "junction" }>,
 	failClone: false,
+	cloneScript: "",
 	/** `gh api` output keyed by `<endpoint> <jq filter>`; any other request fails. */
 	api: {} as Record<string, string>,
 }));
 
-vi.mock("node:child_process", () => ({
-	execFile: (_command: string, args: string[], _options: object, callback: Callback) => {
+vi.mock("node:child_process", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:child_process")>();
+	const execFile = (_command: string, args: string[], _options: object, callback: Callback) => {
 		boundary.calls.push(args);
 		queueMicrotask(() => {
 			if (args[0] === "--version") return callback(null, "gh version 2");
@@ -48,8 +50,21 @@ vi.mock("node:child_process", () => ({
 			return output === undefined ? callback(new Error("offline"), "") : callback(null, output);
 		});
 		return Object.assign(new EventEmitter(), { kill: () => true });
-	},
-}));
+	};
+	const spawn = (command: string, args: string[] = [], options: object = {}) => {
+		if (args[0] === "repo" && args[1] === "clone" && boundary.cloneScript) {
+			boundary.calls.push(args);
+			return actual.spawn(process.execPath, ["-e", boundary.cloneScript], options);
+		}
+		const child = Object.assign(new EventEmitter(), { kill: () => true });
+		execFile(command, args, options, (err) => {
+			child.emit("exit", err ? 1 : 0, null);
+			child.emit("close", err ? 1 : 0, null);
+		});
+		return child;
+	};
+	return { ...actual, execFile, spawn };
+});
 vi.mock("../../packages/web-access/config-paths.ts", () => ({ findReadableConfigPath: () => boundary.configPath }));
 
 // The config path is read once at import, so it must point into a temp directory before the import.
@@ -88,15 +103,16 @@ beforeEach(async () => {
 	boundary.files = { "README.md": "Repository readme", "src/a.ts": "export const a = 1;\n" };
 	boundary.links = {};
 	boundary.failClone = false;
+	boundary.cloneScript = "";
 	boundary.api = {};
 	writeFileSync(boundary.configPath, JSON.stringify({ githubClone: { clonePath } }));
-	clearCloneCache();
+	await clearCloneCache();
 	// Never run against the default clone directory.
 	assert.equal((await loadGitHubConfig()).clonePath, clonePath);
 });
 
-afterEach(() => {
-	clearCloneCache();
+afterEach(async () => {
+	await clearCloneCache();
 	removeTempDirectory(sandbox);
 });
 
@@ -240,9 +256,22 @@ test("normal tree and blob URLs, including refs with slashes, clone inside the c
 		new RegExp(`Repository cloned to: ${cloneTargets()[0]!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
 	);
 
-	clearCloneCache();
+	await clearCloneCache();
 	for (const target of cloneTargets()) assert.equal(existsSync(target), false);
 	assert.equal(existsSync(clonePath), true);
+});
+
+test("clearing a clone cache yields for deletion and a new clone waits for that deletion", async () => {
+	await extractGitHub("https://github.com/octo/widgets", undefined, true);
+	const [target] = cloneTargets();
+	const clearing = clearCloneCache();
+	assert.equal(existsSync(target!), true, "clearing does not delete the checkout on the caller's turn");
+	boundary.files = { "README.md": "Fresh checkout after clearing" };
+	const replacing = extractGitHub("https://github.com/octo/widgets", undefined, true);
+	await clearing;
+	const result = await replacing;
+	assert.match(result!.content, /Fresh checkout after clearing/);
+	assert.equal(await fileExists(join(target!, "README.md")), true);
 });
 
 test("a clone left by an earlier run is replaced", async () => {
@@ -252,7 +281,7 @@ test("a clone left by an earlier run is replaced", async () => {
 	const leftover = join(sandbox, "leftover");
 	writeFileSync(join(first!, "stale.txt"), "stale");
 	cpSync(directory, leftover, { recursive: true });
-	clearCloneCache();
+	await clearCloneCache();
 	assert.equal(existsSync(first!), false);
 	cpSync(leftover, directory, { recursive: true });
 	boundary.calls = [];
@@ -265,14 +294,14 @@ test("a clone left by an earlier run is replaced", async () => {
 test("a directory the tool did not create is never removed", async () => {
 	await extractGitHub("https://github.com/octo/widgets", undefined, true);
 	const [target] = cloneTargets();
-	clearCloneCache();
+	await clearCloneCache();
 	assert.equal(existsSync(target!), false);
 
 	mkdirSync(target!, { recursive: true });
 	writeFileSync(join(target!, "keep.txt"), "user data");
 	boundary.calls = [];
 	await extractGitHub("https://github.com/octo/widgets", undefined, true);
-	clearCloneCache();
+	await clearCloneCache();
 	assert.equal(await readText(join(target!, "keep.txt")), "user data");
 	assert.deepEqual(cloneTargets(), []);
 });
@@ -283,7 +312,7 @@ test("a symlinked clone directory that escapes the clone directory is refused", 
 	symlinkSync(victim, join(clonePath, "octo"), LINK_TYPE);
 
 	await extractGitHub("https://github.com/octo/widgets", undefined, true);
-	clearCloneCache();
+	await clearCloneCache();
 	assert.equal(await readText(join(victim, "widgets", "keep.txt")), "keep");
 	assert.equal(await readText(join(victim, "keep.txt")), "keep");
 	assert.deepEqual(cloneTargets(), []);
@@ -296,12 +325,12 @@ test("a clone directory symlinked outside the clone directory is refused", async
 	// A real clone directory, moved outside the clone directory and linked back in.
 	const outside = join(sandbox, "outside-clone");
 	cpSync(directory, outside, { recursive: true });
-	clearCloneCache();
+	await clearCloneCache();
 	assert.equal(existsSync(directory), false);
 	symlinkSync(outside, directory, LINK_TYPE);
 	boundary.calls = [];
 	await extractGitHub("https://github.com/octo/widgets", undefined, true);
-	clearCloneCache();
+	await clearCloneCache();
 	assert.equal(await readText(join(outside, relative(directory, target!), "README.md")), "Repository readme");
 	assert.deepEqual(cloneTargets(), []);
 });
@@ -413,7 +442,7 @@ test("clearing the cache leaves a clone moved outside the clone directory alone"
 	const outside = join(sandbox, "outside-owner");
 	renameSync(join(clonePath, "octo"), outside);
 	symlinkSync(outside, join(clonePath, "octo"), LINK_TYPE);
-	clearCloneCache();
+	await clearCloneCache();
 	assert.equal(
 		await readText(join(outside, relative(join(clonePath, "octo"), target!), "README.md")),
 		"Repository readme",
@@ -473,7 +502,7 @@ test("a dangling link that points outside the clone is not followed", async () =
 	assert.match(tree!.content, /Path `docs\/sub` not found in clone/);
 
 	// A clone directory reached through a dangling link outside the clone directory is refused.
-	clearCloneCache();
+	await clearCloneCache();
 	boundary.calls = [];
 	symlinkSync(join(victim, "elsewhere"), join(clonePath, "other"), LINK_TYPE);
 	await extractGitHub("https://github.com/other/widgets", undefined, true);
@@ -517,4 +546,57 @@ test("invalid GitHub URLs name the part that was rejected", () => {
 		() => parseGitHubUrl("https://github.com/o/r/blob/main/a%2F..%2Fb"),
 		/^Error: Invalid GitHub URL: unsupported path "a\/..\/b"$/,
 	);
+});
+
+test("aborting or clearing a clone with a background grandchild holding stdio settles promptly (#5377)", async () => {
+	const pidFile = join(sandbox, "grandchild.pid");
+	boundary.cloneScript = `const { spawn } = require('node:child_process'); const { writeFileSync } = require('node:fs'); process.on('SIGTERM', () => {}); const g = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setTimeout(() => {}, 2500);"], { stdio: 'inherit' }); writeFileSync(${JSON.stringify(pidFile)}, String(g.pid)); setTimeout(() => {}, 2500);`;
+	const within = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			return await Promise.race([
+				promise,
+				new Promise<never>((_, reject) => {
+					timer = setTimeout(() => reject(new Error("clone hung on grandchild pipe")), ms);
+				}),
+			]);
+		} finally {
+			if (timer !== undefined) clearTimeout(timer);
+		}
+	};
+	const waitForPidFile = async (): Promise<number> => {
+		for (let i = 0; i < 40; i++) {
+			if (existsSync(pidFile)) {
+				const pid = Number((await readText(pidFile)).trim());
+				if (Number.isInteger(pid) && pid > 0) return pid;
+			}
+			await new Promise<void>((resolve) => setTimeout(resolve, 10));
+		}
+		throw new Error("grandchild pid file not written");
+	};
+	const waitForProcessExit = async (pid: number): Promise<void> => {
+		if (process.platform === "win32") return;
+		for (let i = 0; i < 50; i++) {
+			try {
+				process.kill(pid, 0);
+			} catch {
+				return;
+			}
+			await new Promise<void>((resolve) => setTimeout(resolve, 10));
+		}
+		assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+	};
+	const controller = new AbortController();
+	const abortClone = extractGitHub("https://github.com/octo/widgets", controller.signal, true);
+	const firstGrandchildPid = await waitForPidFile();
+	controller.abort();
+	assert.equal(await within(abortClone, 800), null);
+	await waitForProcessExit(firstGrandchildPid);
+
+	writeFileSync(pidFile, "");
+	const pendingClone = extractGitHub("https://github.com/octo/widgets", undefined, true);
+	const secondGrandchildPid = await waitForPidFile();
+	await within(clearCloneCache(), 800);
+	assert.equal(await within(pendingClone, 800), null);
+	await waitForProcessExit(secondGrandchildPid);
 });

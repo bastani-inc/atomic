@@ -738,7 +738,7 @@ test.skipIf(process.platform === "win32")(
 		const f = await fixture();
 		const group = 2_147_000_001;
 		const signals: [number, NodeJS.Signals][] = [];
-		const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("alive");
+		const probe = vi.spyOn(admissionHost, "processGroupState").mockResolvedValue("alive");
 		const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation((target, name) => {
 			signals.push([target, name]);
 		});
@@ -779,7 +779,7 @@ test.skipIf(process.platform === "win32")(
 	"a reaped group holding only zombies releases its permit without waiting (#3986)",
 	async () => {
 		const f = await fixture();
-		const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("zombie");
+		const probe = vi.spyOn(admissionHost, "processGroupState").mockResolvedValue("zombie");
 		const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
 		const pause = vi.spyOn(admissionHost, "reapPause");
 		try {
@@ -817,7 +817,7 @@ function liveGroup() {
 
 const scanOf =
 	(...scans: admissionHost.ProcessGroupScan[]): admissionHost.ProcessGroupScanner =>
-	() =>
+	async () =>
 		scans.shift() ?? { members: new Map(), complete: false };
 
 test.skipIf(process.platform === "win32")(
@@ -842,10 +842,10 @@ test.skipIf(process.platform === "win32")(
 				["two stable all-zombie scans", scanOf(zombies, zombies), "zombie"],
 			];
 			for (const [name, scan, expected] of cases)
-				assert.equal(admissionHost.processGroupState(live.group, scan), expected, name);
+				assert.equal(await admissionHost.processGroupState(live.group, scan), expected, name);
 			await live.kill();
 			assert.equal(
-				admissionHost.processGroupState(live.group, scanOf()),
+				await admissionHost.processGroupState(live.group, scanOf()),
 				"gone",
 				"the kernel alone reports a group gone",
 			);
@@ -864,7 +864,7 @@ test.skipIf(process.platform === "win32")(
 		// The kernel still reports the group, but every scan of the process table comes back empty.
 		const probe = vi
 			.spyOn(admissionHost, "processGroupState")
-			.mockImplementation((group) => scanProbe(group, () => ({ members: new Map(), complete: true })));
+			.mockImplementation((group) => scanProbe(group, async () => ({ members: new Map(), complete: true })));
 		const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
 		const pause = vi.spyOn(admissionHost, "reapPause").mockResolvedValue();
 		try {
@@ -890,7 +890,7 @@ test.skipIf(process.platform === "win32")(
 	async () => {
 		const f = await fixture();
 		const live = liveGroup();
-		const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("alive");
+		const probe = vi.spyOn(admissionHost, "processGroupState").mockResolvedValue("alive");
 		const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
 		const pause = vi.spyOn(admissionHost, "reapPause").mockResolvedValue();
 		const limits = { process: 1 };
