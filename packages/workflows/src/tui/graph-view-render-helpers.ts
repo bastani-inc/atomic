@@ -2,6 +2,7 @@ import { type NavKey, type NavKeybindings, type NavKeyStyle, navEntryKeys, slice
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { sanitizeToolTitleText } from "../shared/tool-payload-bounds.js";
 import { BOLD, DEFAULT_BG, fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
+import { inertDisplayLine } from "./display-text.js";
 import type { GraphCanvas } from "./graph-canvas.js";
 import { MODE_PILL_LABEL } from "./graph-view-constants.js";
 import { GraphViewState } from "./graph-view-state.js";
@@ -26,6 +27,7 @@ const GRAPH_STOP_PRIORITY_KEYS = new Set([
 	"g",
 	"/",
 	"f",
+	"o",
 ]);
 
 function displayedBinding(key: string): string {
@@ -34,7 +36,7 @@ function displayedBinding(key: string): string {
 
 function noticeDisplayText(value: string, width: number): string {
 	const head = sliceHead(value, Math.max(0, width + 1));
-	return sanitizeToolTitleText(head) + (head.length < value.length ? "…" : "");
+	return inertDisplayLine(sanitizeToolTitleText(head)) + (head.length < value.length ? "…" : "");
 }
 
 function ellipsizeQuitName(name: string, budget: number): string {
@@ -203,6 +205,30 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 				help,
 			];
 		}
+		if (this.runDetail !== null) {
+			const blockers = this.runDetail.logs ? 0 : this._runDetailBlockers().length;
+			const keybindings = this._navKeybindings();
+			const helpKeys = new Set((keybindings?.getKeys?.(APP_ACTION.keysHelp) ?? []).map(displayedBinding));
+			const available = (key: string) =>
+				!helpKeys.has(displayedBinding(key)) && keybindings?.matches(key, APP_ACTION.keysHelp) !== true;
+			const arrows = ["up", "down"].filter(available).map(displayedBinding).join("");
+			const open = ["right", "enter"]
+				.filter(available)
+				.map((key) => (key === "enter" ? "\u21b5" : displayedBinding(key)))
+				.join("/");
+			const pages = ["pageUp", "pageDown"].filter(available).map(displayedBinding).join("/");
+			const scroll = [blockers > 1 ? "" : arrows, pages].filter(Boolean).join(" ");
+			return [
+				...(available("escape")
+					? [{ keys: "esc", label: keyOnly ? "" : mode === "full" ? "back to graph" : "back" }]
+					: []),
+				...(blockers > 1 && arrows ? [{ keys: arrows, label: keyOnly ? "" : "select" }] : []),
+				...(blockers > 0 && open ? [{ keys: open, label: keyOnly ? "" : "open" }] : []),
+				...(available("l") ? [{ keys: "l", label: keyOnly ? "" : this.runDetail.logs ? "summary" : "logs" }] : []),
+				...(scroll ? [{ keys: scroll, label: keyOnly ? "" : "scroll" }] : []),
+				help,
+			];
+		}
 		const run = frameContext !== undefined ? frameContext.run : this._getCurrentRun();
 		if (run === null) {
 			return [
@@ -288,6 +314,7 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 			...filter,
 			help,
 			...hide,
+			...(!this._navKeybindings()?.matches("o", APP_ACTION.keysHelp) ? [{ keys: "o", label: "run details" }] : []),
 		];
 	}
 
@@ -372,11 +399,17 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 						focused: this.cachedLayout[this.focusedIndex]?.stage,
 					}
 				: undefined;
-		const renderEntries = (entries: readonly NavKey[], sepText: string, sepStyled: string) => {
+		const renderEntries = (
+			entries: readonly NavKey[],
+			sepText: string,
+			sepStyled: string,
+			includeRunDetails = false,
+		) => {
 			const taken = new Set<string>();
 			const plainParts: string[] = [];
 			const styledParts: string[] = [];
 			for (const entry of entries) {
+				if (entry.keys === "o" && entry.label === "run details" && !includeRunDetails) continue;
 				const keys = navEntryKeys(keybindings, entry, taken);
 				if (!keys) continue;
 				plainParts.push(entry.label.length > 0 ? `${keys} ${entry.label}` : keys);
@@ -391,8 +424,8 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 				styled: styledParts.join(sepStyled),
 			};
 		};
-		const buildRendered = (mode: GraphKeyTier, sepText: string, sepStyled: string) =>
-			renderEntries(this._graphKeys(mode, frameContext), sepText, sepStyled);
+		const buildRendered = (mode: GraphKeyTier, sepText: string, sepStyled: string, includeRunDetails = false) =>
+			renderEntries(this._graphKeys(mode, frameContext), sepText, sepStyled, includeRunDetails);
 		const candidates: ReadonlyArray<readonly [GraphKeyTier, string, string]> = [
 			["full", "  \u00b7  ", wideSep],
 			["full", " \u00b7 ", tightSep],
@@ -415,6 +448,8 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 			const candidate = buildRendered(mode, sepText, sepStyled);
 			chosen = candidate;
 			if (candidate.width <= hintsBudget && keepsExits(mode)) {
+				const withRunDetails = buildRendered(mode, sepText, sepStyled, true);
+				if (mode === "full" && withRunDetails.width <= hintsBudget) chosen = withRunDetails;
 				break;
 			}
 			chosen = { width: Number.POSITIVE_INFINITY, styled: candidate.styled };

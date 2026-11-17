@@ -4,6 +4,8 @@ import { getDocsPath, keyHintIfBound, ToolBlock, ToolBlockMarkdown } from "@bast
 import { stripTerminalSequences, Text } from "@bastani/atomic-tui";
 import { summarizeFailureText } from "../tui/display-text.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
+import { invalidDefinitionsFromDiagnostics } from "../tui/workflows-listing.js";
+import type { DiscoveryDiagnostic } from "./discovery.js";
 import type { ExtensionAPI, PiCommandContext } from "./public-types.js";
 import { completeToken, runIdItems } from "./workflow-command-completions.js";
 import {
@@ -24,6 +26,8 @@ export const REMOVED_WORKFLOW_COMMAND_NOTICE =
 export interface WorkflowSlashCommandDeps {
 	overlay: GraphOverlayPort;
 	owner?: WorkflowOwnerResources;
+	ensureWorkflowResourcesLoaded?: () => Promise<void>;
+	discoveryDiagnostics?: () => readonly DiscoveryDiagnostic[];
 }
 
 function authoringHeaderTitle(): string {
@@ -124,9 +128,16 @@ export function registerWorkflowSlashCommand(
 			description: WORKFLOWS_COMMAND_DESCRIPTION,
 			handler: async (args, ctx) => {
 				const reporter = createWorkflowCommandReporter(ctx, workflowPolicyFromContext(ctx), pi);
+				try {
+					if (owner.store.runs().length === 0) await deps.ensureWorkflowResourcesLoaded?.();
+				} catch (error) {
+					reporter.error(`Could not load workflow definitions: ${safeErrorReason(error)}`);
+					return;
+				}
 				await handleWorkflowsCommand(args, ctx, reporter, {
 					overlay,
 					store: owner.store,
+					invalidDefinitions: () => invalidDefinitionsFromDiagnostics(deps.discoveryDiagnostics?.() ?? []),
 				});
 			},
 			getArgumentCompletions: (partial) =>

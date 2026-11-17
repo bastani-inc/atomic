@@ -24,6 +24,7 @@
 import { stageDisplayStatus } from "../shared/stage-display-status.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { BOLD, fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
+import { inertDisplayLine } from "./display-text.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { type RunStateIndicator, runStateColor, runStateIndicator } from "./run-state-indicator.js";
 import { statusColor, statusIcon } from "./status-helpers.js";
@@ -241,11 +242,12 @@ export function renderHeader(run: RunSnapshot, opts: HeaderOpts): string[] {
 	if (counts.pending > 0) badges.push({ text: `○ ${counts.pending}`, fg: theme.dim });
 	if (counts.skipped > 0) badges.push({ text: `⊘ ${counts.skipped}`, fg: theme.dim });
 	if (counts.failed > 0) badges.push({ text: `✗ ${counts.failed}`, fg: theme.error });
-	if (runState !== undefined) badges.unshift(runStateBadge(runState, run.name, pill.label, badges, width, theme));
+	const runName = inertDisplayLine(run.name);
+	if (runState !== undefined) badges.unshift(runStateBadge(runState, runName, pill.label, badges, width, theme));
 
 	return renderBandHeader({
 		label: pill.label,
-		subtitle: run.name,
+		subtitle: runName,
 		badges,
 		accent: pill.border,
 		width,

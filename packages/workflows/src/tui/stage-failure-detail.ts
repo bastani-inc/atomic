@@ -13,6 +13,7 @@ import {
 	TOOL_PAYLOAD_VALUE_LIMIT,
 } from "../shared/tool-payload-bounds.js";
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
+import { inertDisplayLine } from "./display-text.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { fmtDuration } from "./status-helpers.js";
 import { truncateToWidth, visibleWidth, wrapPlainText } from "./text-helpers.js";
@@ -194,12 +195,15 @@ export function stageFailureLogLines(
 	const lines = [...messageLines];
 	if (detailLines.length > 0) lines.push("", ...detailLines);
 	if (lines.length === 0) lines.push("No log was recorded for this stage.");
-	return lines;
+	return lines.map((line) => inertDisplayLine(sanitizeToolTitleText(line)));
 }
 
 function wrapLogLine(part: string, room: number, partLimit: number): string[] {
 	if (part.length === 0) return [""];
-	const sanitized = boundedToolText(sanitizeToolDisplayText(boundedToolText(part, partLimit)), partLimit);
+	const sanitized = boundedToolText(
+		inertDisplayLine(sanitizeToolDisplayText(boundedToolText(part, partLimit))),
+		partLimit,
+	);
 	const trimmed = trimLeadingWhitespace(sanitized);
 	if (trimmed.length === 0) return [""];
 	let leadingSpaces = 0;
@@ -274,7 +278,7 @@ export function renderStageFailureDetailLines(stage: StageSnapshot, opts: StageF
 	const tokens = stageTokensText(stage);
 	const indent = "  ";
 	const room = Math.max(1, width - indent.length);
-	const title = `${indent}${statusTone}${BOLD}${statusGlyph} ${boundedToolTitleText(stage.name, width * 4)}${RESET}${muted} · ${statusWord}${after}${tokens}${RESET}`;
+	const title = `${indent}${statusTone}${BOLD}${statusGlyph} ${inertDisplayLine(boundedToolTitleText(stage.name, width * 4))}${RESET}${muted} · ${statusWord}${after}${tokens}${RESET}`;
 	if (opts.logs) {
 		const partLimit = Math.min(TOOL_PAYLOAD_VALUE_LIMIT, room * MAX_FAILURE_LOG_ROWS);
 		const markerRow = truncateToWidth(TOOL_PAYLOAD_TRUNCATION_MARKER, room, "…");
@@ -319,7 +323,7 @@ export function renderStageFailureDetailLines(stage: StageSnapshot, opts: StageF
 	const firstLine = isCompleted ? stageCompletedSummary(stage) : stageFailureReason(stage);
 	if (firstLine === undefined) return [truncateToWidth(title, width)];
 	const slicedReason = sliceHead(firstLine, room * 3);
-	const wrappedReason = wrapPlainText(sanitizeToolTitleText(slicedReason), reasonRoom);
+	const wrappedReason = wrapPlainText(inertDisplayLine(sanitizeToolTitleText(slicedReason)), reasonRoom);
 	const truncatedReason = slicedReason.length < firstLine.length || wrappedReason.length > MAX_FAILURE_REASON_ROWS;
 	const reason = wrappedReason.slice(0, MAX_FAILURE_REASON_ROWS);
 	if (truncatedReason && reason.length > 0) {
