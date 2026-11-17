@@ -82,7 +82,7 @@ test("ChatSessionHost renders the lifecycle-origin one-cell Atomic identity in o
 		const lines = host.renderWorkingStatus(64);
 		assert.equal(lines.length, 2);
 		assert.equal(lines[0], "");
-		assert.equal(stripAnsi(lines[1] ?? "").trimEnd(), " ∀ Working...");
+		assert.equal(stripAnsi(lines[1] ?? "").trimEnd(), " ∀ Working…");
 		assert.deepEqual(stripAnsi(lines[1] ?? "").match(/∀/g), ["∀"]);
 	} finally {
 		host.dispose();
@@ -98,7 +98,7 @@ test("ChatSessionHost keeps the Atomic identity static without a workflow animat
 		host.applyAgentEvent({ type: "agent_start" } as never);
 		assert.equal(host.hasAnimationTick(), false);
 		const lines = host.renderWorkingStatus(64);
-		assert.equal(stripAnsi(lines[1] ?? "").trimEnd(), " ∀ Working...");
+		assert.equal(stripAnsi(lines[1] ?? "").trimEnd(), " ∀ Working…");
 	} finally {
 		host.dispose();
 		if (previousReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
@@ -127,7 +127,7 @@ test("ChatSessionHost gives factual retry, fallback, error, cancellation, and co
 			(body.match(new RegExp(String(factual).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) ?? []).length,
 			1,
 		);
-		assert.doesNotMatch(body, /Working\.\.\.|Schlepping\.\.\./);
+		assert.doesNotMatch(body, /Working…|Schlepping…/);
 		host.dispose();
 	}
 
@@ -135,7 +135,7 @@ test("ChatSessionHost gives factual retry, fallback, error, cancellation, and co
 	compacting.applyAgentEvent({ type: "compaction_start", reason: "manual" } as never);
 	const compactStatus = compacting.renderWorkingStatus(80).join("\n");
 	assert.equal((compactStatus.match(/Compacting context\.\.\./g) ?? []).length, 1);
-	assert.doesNotMatch(compactStatus, /Working\.\.\.|Schlepping\.\.\./);
+	assert.doesNotMatch(compactStatus, /Working…|Schlepping…/);
 	compacting.dispose();
 });
 

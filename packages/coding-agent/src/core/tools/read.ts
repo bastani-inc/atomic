@@ -12,6 +12,7 @@ import { processImage } from "../../utils/image-process.ts";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import { withBuiltinToolBlockRenderers } from "./builtin-renderers.js";
 import { parseConflictBytes, registerConflictBlocks } from "./conflict-registry.ts";
 import {
 	buildDirectoryTree,
@@ -364,7 +365,7 @@ export function createReadToolDefinition(
 	const autoResizeImages = options?.autoResizeImages ?? true;
 	const fallbackResizeOptions = options?.resizeOptions;
 	const ops = options?.operations ?? defaultReadOperations;
-	return {
+	return withBuiltinToolBlockRenderers<ToolDefinition<typeof readSchema, ReadToolDetails | undefined>>({
 		name: "read",
 		label: "read",
 		description:
@@ -937,7 +938,7 @@ export function createReadToolDefinition(
 			);
 			return text;
 		},
-	};
+	});
 }
 export function createReadTool(cwd: string, options?: ReadToolOptions): AgentTool<typeof readSchema> {
 	return wrapToolDefinition(createReadToolDefinition(cwd, options));

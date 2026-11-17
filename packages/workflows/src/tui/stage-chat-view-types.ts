@@ -152,6 +152,8 @@ export interface StageChatViewContext {
 	promptScrollOffset: number;
 	promptMaxScroll: number;
 	promptVisibleRows: number;
+	helpOpen: boolean;
+	interruptedByEscape: boolean;
 	localPaused: boolean;
 	lastObservedStageStatus: StageStatus | undefined;
 	lastObservedRunStatus: RunStatus | undefined;

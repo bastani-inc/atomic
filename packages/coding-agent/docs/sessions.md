@@ -76,7 +76,7 @@ For the JSONL file format and SessionManager API, see [Session Format](/session-
 
 | Command | Description |
 |---------|-------------|
-| `/resume` | Browse and select previous sessions |
+| `/resume [id]` | Browse previous sessions and resumable workflow runs, or resume one by id |
 | `/new` | Start a new session |
 | `/name <name>` | Set the current session display name |
 | `/session` | Show session info |
@@ -89,7 +89,11 @@ For the JSONL file format and SessionManager API, see [Session Format](/session-
 
 ## Resuming and Deleting Sessions
 
-`/resume` opens an interactive session picker for the current project. `atomic -r` opens the same picker at startup.
+`/resume` opens an interactive picker titled **Resume**. It shows the current folder's sessions under **Sessions**, then, when at least one workflow run can be resumed, the saved workflow runs under **Workflow runs**, including runs left by an earlier session or interrupted by a restart. Each group shows its count and lists its newest entries first. ↑ and ↓ move across both groups, and typing filters both. The hint reads `space preview · enter resume · type to search · esc cancel`, followed by as many of the selected row's other keys as fit, such as `tab scope`, `ctrl+r rename` and `ctrl+d delete`. When some keys do not fit, the line ends with `? keys`, and `?` lists every key that works. While you type a search, `?` is part of the search, so the line shows `f1 keys` and F1 opens the list instead. Tab and Ctrl+N work whichever row is selected; they change only the Sessions list, so the workflow runs stay listed. `atomic -r` opens the same picker at startup with sessions only.
+
+`/resume <id>` resumes a session or workflow run directly. It accepts an exact session or run id, or a unique 8-character hexadecimal prefix of either; an ambiguous prefix resumes nothing. If the workflow list cannot be read, an exact saved session id still works, and prefixes are refused. Neither form takes flags.
+
+A run's row shows its name and what it is about, then its state, stage progress, age, elapsed time, cost and branch, leaving out what is not known. A run whose process stopped without ending it shows as `crashed`. Enter on a workflow run resumes it; a completed run opens read-only. When the run's workflow definition file, or the entry module of one of its local worker definitions, changed since it started, `/resume` and `/resume <id>` first ask `Workflow definition changed since this run started · enter resume with the new definition · esc cancel`. Enter resumes with the new definition, and Esc cancels. A run that started in another directory asks whether to fork the run into the current directory. Ctrl+D deletes a paused, failed, blocked, cancelled or completed run after the same confirmation as a session. It is not offered for a run that is still running or paused in this session, or for a `crashed` run; resume that run instead.
 
 Text typed before a startup picker or question appears waits in the prompt as a draft. If you were typing an unfinished line, its Enter does not pick a session or submit an empty startup input. Press ↑ or ↓ to choose in the picker, or type into its search field, before confirming. In a startup text input, type your answer and press Enter. An answer left in a cancelled or timed-out text input joins your draft. At the "Fork this session into current directory? [y/N]" question, answer `y` or `n` explicitly if you were typing a prompt or an earlier line was kept as a draft. After startup, review the draft and press Enter to send it.
 
@@ -147,22 +151,31 @@ If Atomic exits while work is in flight, for example while background subagents 
 
 Non-interactive runs such as `atomic -p` do not recover interrupted work. It stays pending until the session is next resumed interactively.
 
+### Picker keys
+
+Each session is a two-line row: its name or first message, then its age, message count, folder (when listing all folders) and summary. The line at the bottom of the picker lists the keys that work at that moment, as described in [Resuming and Deleting Sessions](#resuming-and-deleting-sessions).
+
 In the picker you can:
 
-- search by typing
+- resume the selected session with Enter, or with → while the search is empty
+- search by typing; the best match is selected as you type. Esc clears the search and keeps the selected session selected, and a second Esc closes the picker
+- preview the selected session with Space (on an empty search), and close the preview with Space or Esc. A search that matches nothing closes the preview
+- switch between this folder and all folders with Tab
 - toggle path display with CTRL+P
 - toggle sort mode with CTRL+S
 - filter to named sessions with CTRL+N
 - rename with CTRL+R
-- delete with CTRL+D, then confirm
+- delete with CTRL+D, then confirm with Enter (Esc keeps the session)
 
-JSONL stores use the `trash` CLI when available. Database stores delete the selected session record, not the database.
+Ctrl+C closes the picker from any of these states, including the delete confirmation and rename.
+
+JSONL stores use the `trash` CLI when available. Database stores delete the selected session record, not the database. The active session cannot be deleted. While a confirmed deletion runs, its row shows `Deleting…` and cannot be resumed or renamed. You can still resume another row or close the picker. Closing the picker does not undo a confirmed deletion.
 
 ### Session summaries
 
-Each row shows a short generated description of what the session was about in its own column, beside the session name or first message, so you can recognize a conversation without opening it. Atomic writes one after the agent goes idle, using the model the session is already configured with, and saves it as a `session_summary` entry in the selected store.
+When a summary is available and there is room, the picker's second line shows it after the age and message count. Press Space with an empty search to read more in the preview. Atomic writes this short description after the agent goes idle, using the model the session is already configured with, and saves it as a `session_summary` entry in the selected store.
 
-A summary describes the conversation up to a specific message and remains visible as newer messages arrive. A later branch summary retires it. "No summary available." means no summary has been generated for the current branch, generation failed, or it is still in flight. The session name and first message are never displaced by a summary, and the column only appears once at least one listed session has a summary. Summaries are also searchable along with the rest of the session text.
+A summary describes the conversation up to a specific message and remains visible as newer messages arrive. A later branch summary retires it. If no summary appears, generation may not have run for the current branch, may have failed, or may still be in flight. Rows without summaries show their usual metadata without a placeholder. Summaries never displace the session name or first message and are searchable along with the rest of the session text.
 
 Generation is best-effort and never blocks a turn or quitting. Opening or resuming a session in interactive or RPC mode also schedules generation if its summary is missing or stale. Atomic generates summaries only for saved sessions, so `--no-session` sessions never send a summary request. It also skips very short sessions, workflow stage sessions, and `--print` and JSON modes. The summary request's tokens and cost count toward the footer usage and `/session` as soon as the summary is saved. It cancels generation when you send the next message, switch sessions, or quit; failures are silent. Set `sessionSummary.enabled` to `false` to disable it.
 
@@ -170,7 +183,7 @@ You can search, navigate, or cancel while the picker loads sessions. Closing it 
 
 ### Internal (workflow) sessions
 
-Sessions created by workflow stage execution are marked as **internal** and are excluded from the standard `/resume`, `atomic -r`, and `--continue` history by default. Use `/workflow resume <runId>` or the workflow tool's resume/status actions to inspect and continue a workflow run and its stages. A workflow stage session can also be opened directly by passing its session ID to `--session`. A stage's own transcript is recalled with `history://sessions/<id>` like any other session.
+Sessions created by workflow stage execution are marked as **internal** and are excluded from the standard `/resume`, `atomic -r`, and `--continue` history by default. Use `/resume` with the run's id, `/workflows`, or the workflow tool's resume and status actions to inspect and continue a workflow run and its stages. A workflow stage session can also be opened directly by passing its session ID to `--session`. A stage's own transcript is recalled with `history://sessions/<id>` like any other session.
 
 ## Recalling earlier work
 
@@ -276,6 +289,8 @@ The chat, the tree's current marker, `/session`, and the context indicator switc
 | Summary | Optional branch summary | None | None |
 
 Use `/tree` when you want to keep alternatives together. Use `/fork` or `/clone` when you want a separate session.
+
+`/fork` opens **Fork from message** with the newest user message selected. Type to filter the messages by their text, use ↑ and ↓ to choose, and press Enter to copy the conversation up to that message into a new session. Esc clears the search, then closes the picker.
 
 ## Branch Summaries
 

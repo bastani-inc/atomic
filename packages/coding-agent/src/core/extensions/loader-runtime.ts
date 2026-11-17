@@ -1,3 +1,4 @@
+import { AgentPanelSourceHub } from "../tasks/agent-panel-source.ts";
 import { extensionWorkOpen, trackExtensionWork } from "./extension-work.ts";
 import { hostInputError } from "./host-input.js";
 import { McpServerRegistry } from "./mcp-server-registry.ts";
@@ -65,6 +66,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 			extensionWorkOpen(runtime) ? trackExtensionWork(runtime, operation) : Promise.resolve(),
 		),
 		workflowRunControlHub: new WorkflowRunControlHub(),
+		agentPanelSourceHub: new AgentPanelSourceHub(),
 		mcpServerRegistry: new McpServerRegistry(),
 		sendMessages: notInitialized,
 		sendUserMessage: notInitialized,
@@ -246,6 +248,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 				failures.push(error);
 			}
 			runtime.workflowRunControlHub.dispose();
+			runtime.agentPanelSourceHub.dispose();
 			for (const unsubscribe of eventBusUnsubscribers) {
 				try {
 					unsubscribe();

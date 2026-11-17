@@ -57,7 +57,7 @@ describe("built-in edit previews", () => {
 	it("render a notebook edit without a false no-match preview, then show the result's diff", async () => {
 		const args = { path: "n.ipynb", edits: [{ oldText: "x = 1\nprint(x)", newText: "x = 2\nprint(x)" }] };
 		const { dir, preview, final } = await runBuiltInEdit("n.ipynb", notebook, args);
-		assert.ok(preview.includes("edit"));
+		assert.ok(preview.includes("∀ Edit(n.ipynb)"));
 		assert.ok(preview.includes("n.ipynb"));
 		assert.ok(!preview.includes("Could not find"));
 		assert.ok(!preview.includes("x = 2"));
@@ -110,7 +110,7 @@ describe("built-in edit previews", () => {
 				definition.renderCall!(undefined as never, theme as never, context as never)
 					.render(80)
 					.join("\n"),
-			).includes("edit"),
+			).includes("Edit("),
 		);
 		const result = definition.renderResult!(
 			{ content: [{ type: "text", text: "boom" }], details: undefined },
@@ -121,9 +121,11 @@ describe("built-in edit previews", () => {
 		assert.ok(stripAnsi(result.render(80).join("\n")).includes("boom"));
 	});
 
-	it("keep the diff preview for other files", async () => {
+	it("shows ordinary-file changes only after execution settles (#5350)", async () => {
 		const args = { path: "a.py", edits: [{ oldText: "x = 1", newText: "x = 2" }] };
-		const { preview } = await runBuiltInEdit("a.py", "x = 1\nprint(x)\n", args);
-		assert.ok(preview.includes("x = 2"));
+		const { preview, final } = await runBuiltInEdit("a.py", "x = 1\nprint(x)\n", args);
+		assert.match(preview, /∀ Edit\(a\.py\)/);
+		assert.ok(!preview.includes("x = 2"));
+		assert.ok(final.includes("x = 2"));
 	});
 });

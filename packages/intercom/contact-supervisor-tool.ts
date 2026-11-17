@@ -1,22 +1,20 @@
 import type { ExtensionAPI } from "@bastani/atomic";
 import { randomUUID } from "crypto";
 import { Type } from "typebox";
-import { Text } from "@bastani/atomic-tui";
 import type { IntercomClient } from "./broker/client.js";
 import { ReleasedReplyHandoff, type ReplyWait, type ReplyWaitAdmission } from "./reply-waiter.ts";
 import { prepareReleasedReplyWait, releasedReplyHandoffResult } from "./released-reply-wait.js";
 import { appendEntryUnlessReleased, contactSupervisorCallMayDetach } from "./detachable-calls.js";
 import { requestParentAskHandoff } from "./parent-ask-handoff.js";
-import { renderContactSupervisorResult } from "./result-renderers.js";
+import { renderContactSupervisorCall, renderContactSupervisorResult } from "./result-renderers.js";
 import {
   type ChildOrchestratorMetadata,
   type ContactSupervisorReason,
-  formatChildOrchestratorMessage,
-  formatSupervisorInterviewRequest,
+  formatChildOrchestratorMessagePayload,
+  formatSupervisorInterviewPayload,
   formatAttachments,
   getErrorMessage,
   parseStructuredSupervisorReply,
-  previewText,
   toError,
   validateSupervisorInterviewRequest,
 } from "./intercom-utils.js";
@@ -229,8 +227,10 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
         if (reason === "progress_update") {
           const message = params.message as string;
           try {
+            const payload = formatChildOrchestratorMessagePayload("update", metadata, message);
             const result = await sendToSupervisor(sendTo, {
-              text: formatChildOrchestratorMessage("update", metadata, message),
+              text: payload.text,
+              displayRanges: payload.displayRanges,
             });
             // #4639: a supervisor that is a workflow stage without a live session gets it when its stage reopens.
             const queued = result.queued === true;
@@ -280,12 +280,14 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
 			};
           }
           wait = admission.wait;
-          const requestText = reason === "interview_request"
-            ? formatChildOrchestratorMessage("interview", metadata, formatSupervisorInterviewRequest(supervisorInterview!, typeof params.message === "string" ? params.message : undefined))
-            : formatChildOrchestratorMessage("ask", metadata, typeof params.message === "string" ? params.message : "");
+          const payload = reason === "interview_request"
+            ? formatSupervisorInterviewPayload(metadata, supervisorInterview!, typeof params.message === "string" ? params.message : undefined)
+            : formatChildOrchestratorMessagePayload("ask", metadata, typeof params.message === "string" ? params.message : "");
+          const requestText = payload.text;
           const sendResult = await sendToSupervisor(sendTo, {
             messageId: questionId,
             text: requestText,
+            displayRanges: payload.displayRanges,
             expectsReply: true,
           });
           // #4639: a question queued for a supervisor stage without a live session is asked when the stage reopens; its
@@ -355,20 +357,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
 			if (blockingSupervisorWait && !supervisorHandoffClaimed) supervisorWaitActive = false;
 		}
       },
-      renderCall(args, theme) {
-        const reason = typeof args.reason === "string" ? args.reason : "contact";
-        const messagePreview = previewText(args.message, 96);
-        const interview = args.interview && typeof args.interview === "object" ? args.interview as { title?: unknown } : undefined;
-        let text = theme.fg("toolTitle", theme.bold("contact_supervisor "));
-        text += theme.fg(reason === "need_decision" ? "warning" : reason === "progress_update" ? "muted" : "accent", reason);
-        if (typeof interview?.title === "string" && interview.title.trim()) {
-          text += " " + theme.fg("accent", interview.title.trim());
-        }
-        if (messagePreview) {
-          text += "\n  " + theme.fg("dim", messagePreview);
-        }
-        return new Text(text, 0, 0);
-      },
+      renderCall: renderContactSupervisorCall,
       renderResult: renderContactSupervisorResult,
     });
   }

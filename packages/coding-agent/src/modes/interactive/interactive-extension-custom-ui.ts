@@ -43,7 +43,10 @@ InteractiveModeBase.prototype.showExtensionNotify = function (
 	if (type === "error") {
 		this.showError(message);
 	} else if (type === "warning") {
-		this.showWarning(message);
+		this.showWarning(
+			message,
+			this.deferredStartupPending || this.initialStartupBinding ? this.startupNoticesContainer : this.chatContainer,
+		);
 	} else {
 		this.showStatus(message);
 	}
@@ -382,7 +385,7 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 				} else {
 					inlineMount = component;
 					const deferFocus = this.shouldDeferInlineCustomUiFocus();
-					this.pushExtensionDialog(component, options?.blocked, !deferFocus);
+					this.pushExtensionDialog(component, options?.blocked, !deferFocus, releaseHostCustomUi);
 					if (deferFocus) {
 						this.pendingInlineCustomUiFocus = component;
 						this.notifyHostCustomUiStateListeners();

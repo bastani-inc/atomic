@@ -36,7 +36,19 @@ import {
 	type QuestionParams,
 	registerExtensionContextRetirementEffect,
 } from "../src/index.js";
+import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.ts";
 import { startOAuthMcpServer } from "./mcp-client/native-oauth-server.js";
+
+/**
+ * A fresh test root whose `agent` directory links to the run's shared extension transpile cache. The tests that call
+ * it load the shipped builtin packages; without the link, each of those loads compiled the packages' whole TypeScript
+ * graph into an empty cache first.
+ */
+function builtinTestRoot(prefix: string): string {
+	const cwd = mkdtempSync(join(tmpdir(), prefix));
+	linkSharedTranspileCache(join(cwd, "agent"));
+	return cwd;
+}
 
 function packageExtensionCount(loader: ResourceLoader): number {
 	return loader.getExtensions().extensions.filter((extension) => !extension.path.startsWith(BUILTIN_PATH_PREFIX))
@@ -45,7 +57,7 @@ function packageExtensionCount(loader: ResourceLoader): number {
 
 // #3105: the ordinary SDK factory, not CLI setup, supplies Atomic's shipped capabilities.
 test("default SDK creation returns an Atomic AgentSession with builtin tools and resources", async () => {
-	const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-parity-"));
+	const cwd = builtinTestRoot("atomic-sdk-parity-");
 	try {
 		const { session, extensionsResult } = await createAgentSession({
 			cwd,
@@ -81,7 +93,7 @@ test.each([
 ] as const)(
 	"SDK registers inline builtin tools for a $loader loader (defaultTools: $defaultTools)",
 	async ({ loader, defaultTools, codemodeActive }) => {
-		const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-inline-builtins-"));
+		const cwd = builtinTestRoot("atomic-sdk-inline-builtins-");
 		const agentDir = join(cwd, "agent");
 		const settingsManager = SettingsManager.inMemory(
 			defaultTools === undefined ? {} : { defaultTools: [...defaultTools] },
@@ -120,7 +132,7 @@ const REAL_BUILTIN_RELOAD_TEST_TIMEOUT_MS = 120_000;
 test(
 	"custom loaders retain their resources and factories while startup runs once",
 	async () => {
-		const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-custom-"));
+		const cwd = builtinTestRoot("atomic-sdk-custom-");
 		let starts = 0;
 		const reasons: string[] = [];
 		const settingsManager = SettingsManager.inMemory();
@@ -187,7 +199,7 @@ test(
 
 // #3105: CLI services and the direct SDK share default composition.
 test("CLI service creation supplies the same default builtin families", async () => {
-	const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-services-"));
+	const cwd = builtinTestRoot("atomic-sdk-services-");
 	try {
 		const services = await createAgentSessionServices({ cwd, agentDir: join(cwd, "agent") });
 		const { session } = await createAgentSessionFromServices({
@@ -237,7 +249,7 @@ test("missing shipped builtin assets reject with the package identity", async ()
 
 // #3105: failing startup must await every acquired extension's shutdown before rejection.
 test("failed startup awaits rollback and never returns a partially started session", async () => {
-	const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-rollback-"));
+	const cwd = builtinTestRoot("atomic-sdk-rollback-");
 	const events: string[] = [];
 	const modelRuntime = await ModelRuntime.create({ authPath: join(cwd, "auth.json"), modelsPath: null });
 	const loader = new DefaultResourceLoader({
@@ -295,7 +307,7 @@ test("failed startup awaits rollback and never returns a partially started sessi
 
 // #3105: repeated references to shipped identities do not install duplicate factories.
 test("repeated shipped roots and loader identities compose once without rewriting caller arrays", async () => {
-	const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-dedup-"));
+	const cwd = builtinTestRoot("atomic-sdk-dedup-");
 	const roots = getBuiltinPackagePaths();
 	const builtinPackagePaths = [...roots, ...roots];
 	const originalPaths = [...builtinPackagePaths];
@@ -338,7 +350,7 @@ test("repeated shipped roots and loader identities compose once without rewritin
 // #3105: the internal CLI construction cycle mounts the real host before the same once-only startup.
 for (const fail of [false, true]) {
 	test(`deferred CLI first binding ${fail ? "awaits failure rollback" : "starts with the mounted host once"}`, async () => {
-		const cwd = mkdtempSync(join(tmpdir(), "atomic-cli-start-"));
+		const cwd = builtinTestRoot("atomic-cli-start-");
 		const events: string[] = [];
 		try {
 			const services = await createAgentSessionServices({
@@ -388,7 +400,7 @@ for (const fail of [false, true]) {
 
 // #3105: the public services factory retains eager startup and forwards host bindings.
 test("services factory forwards bindings before startup", async () => {
-	const cwd = mkdtempSync(join(tmpdir(), "atomic-services-bind-"));
+	const cwd = builtinTestRoot("atomic-services-bind-");
 	const modes: string[] = [];
 	try {
 		const services = await createAgentSessionServices({
@@ -421,7 +433,7 @@ test("services factory forwards bindings before startup", async () => {
 
 // #3105: resource discovery is not the end of fallible creation finalization.
 test.each([false, true])("prompt finalization failure rolls back once (deferred=%s)", async (deferred) => {
-	const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-finalization-"));
+	const cwd = builtinTestRoot("atomic-sdk-finalization-");
 	const events: string[] = [];
 	let discovered = false;
 	const settingsManager = SettingsManager.inMemory();
@@ -475,7 +487,7 @@ test.each([false, true])("prompt finalization failure rolls back once (deferred=
 
 // #3105: constructor failures restore borrowed provider state before rejecting.
 test("constructor failure restores new and replaced providers without starting a session", async () => {
-	const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-constructor-"));
+	const cwd = builtinTestRoot("atomic-sdk-constructor-");
 	const modelRuntime = await ModelRuntime.create({ authPath: join(cwd, "auth.json"), modelsPath: null });
 	const original = {
 		apiKey: "original",
@@ -527,28 +539,32 @@ test("constructor failure restores new and replaced providers without starting a
 });
 
 // #3105: explicit suppression applies equally to coding and extension tools after reload.
-test("noTools all suppresses Intercom and remains empty after reload", async () => {
-	const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-selection-"));
-	try {
-		const { session } = await createAgentSession({
-			cwd,
-			agentDir: join(cwd, "agent"),
-			settingsManager: SettingsManager.inMemory(),
-			sessionManager: SessionManager.inMemory(cwd),
-			noTools: "all",
-			tools: ["read", "intercom"],
-		});
+test(
+	"noTools all suppresses Intercom and remains empty after reload",
+	async () => {
+		const cwd = builtinTestRoot("atomic-sdk-selection-");
 		try {
-			assert.deepEqual(session.getActiveToolNames(), []);
-			await session.reload();
-			assert.deepEqual(session.getActiveToolNames(), []);
+			const { session } = await createAgentSession({
+				cwd,
+				agentDir: join(cwd, "agent"),
+				settingsManager: SettingsManager.inMemory(),
+				sessionManager: SessionManager.inMemory(cwd),
+				noTools: "all",
+				tools: ["read", "intercom"],
+			});
+			try {
+				assert.deepEqual(session.getActiveToolNames(), []);
+				await session.reload();
+				assert.deepEqual(session.getActiveToolNames(), []);
+			} finally {
+				await session.dispose();
+			}
 		} finally {
-			await session.dispose();
+			rmSync(cwd, { recursive: true, force: true });
 		}
-	} finally {
-		rmSync(cwd, { recursive: true, force: true });
-	}
-});
+	},
+	REAL_BUILTIN_RELOAD_TEST_TIMEOUT_MS,
+);
 
 // #3105: flag lookup must not require own enumerable properties, including after reload.
 test.each(["inherited getter", "nonenumerable"])("builtin %s false flags survive reload", async (shape) => {
@@ -600,7 +616,7 @@ test.each(["inherited getter", "nonenumerable"])("builtin %s false flags survive
 test.each(["preferred", "dist"])(
 	"disabled builtins stay absent with %s custom discovery and reload",
 	async (layout) => {
-		const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-disabled-"));
+		const cwd = builtinTestRoot("atomic-sdk-disabled-");
 		// #3111: package tests run without an Atomic build. Own the alternate
 		// layout instead of depending on a developer's existing dist/builtin.
 		const packageDir = config.getPackageDir();
@@ -725,45 +741,49 @@ test.each<{
 		options: { tools: ["intercom", "read"], excludedTools: ["unknown"] },
 		expected: ["intercom", "read"],
 	},
-])("tool selection: $name", async ({ options, defaults, expected }) => {
-	const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-matrix-"));
-	const snapshot = structuredClone(options);
-	if (options.tools) Object.freeze(options.tools);
-	if (options.excludedTools) Object.freeze(options.excludedTools);
-	Object.freeze(options);
-	try {
-		const { session } = await createAgentSession({
-			...options,
-			cwd,
-			agentDir: join(cwd, "agent"),
-			settingsManager: SettingsManager.inMemory(defaults === undefined ? {} : { defaultTools: defaults }),
-			sessionManager: SessionManager.inMemory(cwd),
-			customTools: [
-				{
-					name: "custom_probe",
-					label: "Probe",
-					description: "Custom selection probe",
-					parameters: Type.Object({}),
-					execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
-				},
-			],
-		});
+])(
+	"tool selection: $name",
+	async ({ options, defaults, expected }) => {
+		const cwd = builtinTestRoot("atomic-sdk-matrix-");
+		const snapshot = structuredClone(options);
+		if (options.tools) Object.freeze(options.tools);
+		if (options.excludedTools) Object.freeze(options.excludedTools);
+		Object.freeze(options);
 		try {
-			assert.deepEqual([...session.getActiveToolNames()].sort(), [...expected].sort());
-			if (options.tools && options.noTools !== "all") assert.deepEqual(session.getActiveToolNames(), expected);
-			assert.ok(session.resourceLoader.getExtensions().extensions.length >= 5);
-			await session.reload();
-			assert.deepEqual([...session.getActiveToolNames()].sort(), [...expected].sort());
-			for (const excluded of options.excludedTools ?? [])
-				assert.equal(session.getToolDefinition(excluded), undefined);
-			assert.deepEqual(options, snapshot);
+			const { session } = await createAgentSession({
+				...options,
+				cwd,
+				agentDir: join(cwd, "agent"),
+				settingsManager: SettingsManager.inMemory(defaults === undefined ? {} : { defaultTools: defaults }),
+				sessionManager: SessionManager.inMemory(cwd),
+				customTools: [
+					{
+						name: "custom_probe",
+						label: "Probe",
+						description: "Custom selection probe",
+						parameters: Type.Object({}),
+						execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+					},
+				],
+			});
+			try {
+				assert.deepEqual([...session.getActiveToolNames()].sort(), [...expected].sort());
+				if (options.tools && options.noTools !== "all") assert.deepEqual(session.getActiveToolNames(), expected);
+				assert.ok(session.resourceLoader.getExtensions().extensions.length >= 5);
+				await session.reload();
+				assert.deepEqual([...session.getActiveToolNames()].sort(), [...expected].sort());
+				for (const excluded of options.excludedTools ?? [])
+					assert.equal(session.getToolDefinition(excluded), undefined);
+				assert.deepEqual(options, snapshot);
+			} finally {
+				await session.dispose();
+			}
 		} finally {
-			await session.dispose();
+			rmSync(cwd, { recursive: true, force: true });
 		}
-	} finally {
-		rmSync(cwd, { recursive: true, force: true });
-	}
-});
+	},
+	REAL_BUILTIN_RELOAD_TEST_TIMEOUT_MS,
+);
 
 // #3105: omitted keys, empty selection and explicit true all retain shipped descriptor order.
 test.each<Partial<Record<AtomicBuiltin, boolean>>>([
@@ -774,37 +794,41 @@ test.each<Partial<Record<AtomicBuiltin, boolean>>>([
 	{ mcp: false },
 	{ "web-access": false },
 	{ intercom: false },
-])("builtin selection %j preserves enabled families after reload", async (builtins) => {
-	const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-builtins-"));
-	Object.freeze(builtins);
-	try {
-		const { session } = await createAgentSession({
-			cwd,
-			agentDir: join(cwd, "agent"),
-			builtins,
-			settingsManager: SettingsManager.inMemory(),
-			sessionManager: SessionManager.inMemory(cwd),
-		});
+])(
+	"builtin selection %j preserves enabled families after reload",
+	async (builtins) => {
+		const cwd = builtinTestRoot("atomic-sdk-builtins-");
+		Object.freeze(builtins);
 		try {
-			for (let generation = 0; generation < 2; generation++) {
-				for (const [family, tool] of [
-					["workflows", "workflow"],
-					["subagents", "subagent"],
-					["web-access", "web_search"],
-					["intercom", "intercom"],
-				] as const) {
-					assert.equal(session.getActiveToolNames().includes(tool), builtins[family] !== false, family);
+			const { session } = await createAgentSession({
+				cwd,
+				agentDir: join(cwd, "agent"),
+				builtins,
+				settingsManager: SettingsManager.inMemory(),
+				sessionManager: SessionManager.inMemory(cwd),
+			});
+			try {
+				for (let generation = 0; generation < 2; generation++) {
+					for (const [family, tool] of [
+						["workflows", "workflow"],
+						["subagents", "subagent"],
+						["web-access", "web_search"],
+						["intercom", "intercom"],
+					] as const) {
+						assert.equal(session.getActiveToolNames().includes(tool), builtins[family] !== false, family);
+					}
+					assert.equal(Boolean(session.extensionRunner?.getCommand("mcp")), builtins.mcp !== false, "mcp");
+					if (generation === 0) await session.reload();
 				}
-				assert.equal(Boolean(session.extensionRunner?.getCommand("mcp")), builtins.mcp !== false, "mcp");
-				if (generation === 0) await session.reload();
+			} finally {
+				await session.dispose();
 			}
 		} finally {
-			await session.dispose();
+			rmSync(cwd, { recursive: true, force: true });
 		}
-	} finally {
-		rmSync(cwd, { recursive: true, force: true });
-	}
-});
+	},
+	REAL_BUILTIN_RELOAD_TEST_TIMEOUT_MS,
+);
 
 // #3105: a Node callback, without a terminal, answers the existing questionnaire tool.
 test("SDK host callback answers a questionnaire without rendering", async () => {

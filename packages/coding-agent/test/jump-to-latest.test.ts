@@ -3,6 +3,7 @@ import { stripTerminalSequences } from "@bastani/atomic-tui";
 import { beforeAll, describe, test } from "vitest";
 import {
 	jumpToLatestLabel,
+	jumpToLatestPill,
 	NewMessageCounter,
 	pinnedPromptLine,
 } from "../src/modes/interactive/components/jump-to-latest.ts";
@@ -19,6 +20,25 @@ describe("jump to latest (#5224)", () => {
 		assert.equal(jumpToLatestLabel(1, "ctrl+end"), "↓ 1 new message · ctrl+end");
 		assert.equal(jumpToLatestLabel(3, "ctrl+end"), "↓ 3 new messages · ctrl+end");
 		assert.equal(jumpToLatestLabel(3, ""), "↓ 3 new messages");
+	});
+
+	test("the pill is one rounded line, the same in the main chat and in stage chats and subagent views (#5224)", () => {
+		const main = stripTerminalSequences(jumpToLatestPill(3, "ctrl+end"));
+		assert.equal(main, "╭─ ↓ 3 new messages · ctrl+end ─╮");
+		const indicator = new TranscriptFollowIndicator({
+			isFollowing: () => false,
+			keyLabel: () => "ctrl+end",
+			newCount: () => 3,
+		});
+		for (const width of [160, 80]) {
+			const [row] = indicator.render(width).map((line) => stripTerminalSequences(line));
+			assert.equal(row?.trim(), main);
+			assert.equal(row?.indexOf("╭"), Math.floor((width - main.length) / 2), `centred at ${width}`);
+		}
+		const narrow = indicator.render(20).map((line) => stripTerminalSequences(line));
+		assert.equal(narrow.length, 1);
+		assert.ok(!narrow[0]?.includes("╭"), "a viewport too narrow for the frame shows the label alone");
+		assert.ok((narrow[0]?.length ?? 0) <= 20);
 	});
 
 	test("the counter counts only what arrived after the reader stopped following", () => {

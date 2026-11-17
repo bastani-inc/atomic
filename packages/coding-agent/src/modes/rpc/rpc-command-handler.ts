@@ -10,7 +10,15 @@ import { KeybindingsManager } from "../../core/keybindings.ts";
 import { SessionManager } from "../../core/session-manager.ts";
 import { settingsWriteOwner } from "../../core/settings-write-ownership.ts";
 import { getSkillCatalog } from "../../core/skill-catalog.ts";
+import { sourceError } from "../../core/tasks/agent-panel-source.ts";
 import { stopAllBackgroundWork } from "../../core/tasks/stop-all.ts";
+import {
+	deleteWorkflowFromPicker,
+	listWorkflowResumeEntries,
+	resumeWorkflowFromPicker,
+} from "../../core/workflow-resume.ts";
+import { STOP_ALL_STATUS_KEY } from "../interactive/interactive-stop-all.ts";
+import { showAgentPanel } from "./agent-panel-bridge.ts";
 import { RpcBashRequestOwners } from "./rpc-bash-request-owners.ts";
 import { outputExtensionLoadErrors } from "./rpc-extension-load-errors.ts";
 import type { RpcExtensionUICapabilities, RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
@@ -154,8 +162,21 @@ export function createRpcCommandHandler({
 					return createRpcErrorResponse(id, command.type, "Task inspection requires an interactive host");
 				const ui = session.extensionRunner.getUIContext();
 				void showEngineTaskInspector(session, engineTaskInspectorUi(ui, taskInspectorUi), command.taskId).catch(
-					(error: Error) => ui.notify(error.message, "error"),
+					(error: unknown) => ui.notify(sourceError(error).message, "error"),
 				);
+				return createRpcSuccessResponse(id, command.type);
+			}
+			case "open_agent_panel": {
+				if (!keybindings || !taskInspectorUi)
+					return createRpcErrorResponse(id, command.type, "The agent panel requires an interactive host");
+				const ui = session.extensionRunner.getUIContext();
+				void showAgentPanel(session, engineTaskInspectorUi(ui, taskInspectorUi)).catch((error: unknown) =>
+					ui.notify(sourceError(error).message, "error"),
+				);
+				return createRpcSuccessResponse(id, command.type);
+			}
+			case "set_stop_all_notice": {
+				session.extensionRunner.getUIContext().setStatus(STOP_ALL_STATUS_KEY, command.text);
 				return createRpcSuccessResponse(id, command.type);
 			}
 			case "stop_all_background": {
@@ -260,6 +281,32 @@ export function createRpcCommandHandler({
 				});
 			case "get_workflow_run_summary":
 				return createRpcSuccessResponse(id, command.type, await session.workflows.getRun(command.runId));
+			case "get_workflow_resume_entries": {
+				try {
+					return createRpcSuccessResponse(id, command.type, {
+						entries: await listWorkflowResumeEntries(session, command.target),
+					});
+				} catch (error: unknown) {
+					return createRpcErrorResponse(id, command.type, formatRpcErrorMessage(error), error);
+				}
+			}
+			case "resume_workflow_from_picker": {
+				try {
+					return createRpcSuccessResponse(id, command.type, {
+						handled: await resumeWorkflowFromPicker(session, command.target),
+					});
+				} catch (error: unknown) {
+					return createRpcErrorResponse(id, command.type, formatRpcErrorMessage(error), error);
+				}
+			}
+			case "delete_workflow_from_picker": {
+				try {
+					await deleteWorkflowFromPicker(session, command.runId);
+					return createRpcSuccessResponse(id, command.type);
+				} catch (error: unknown) {
+					return createRpcErrorResponse(id, command.type, formatRpcErrorMessage(error), error);
+				}
+			}
 
 			case "get_state": {
 				const extensionResult = session.resourceLoader.getExtensions();

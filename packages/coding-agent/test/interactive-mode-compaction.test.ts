@@ -963,7 +963,7 @@ describe("InteractiveMode compaction events", () => {
 			) => Promise<void>;
 			const send = async (event: object): Promise<void> => handleEvent.call(mode, event);
 			await send({ type: "turn_start" });
-			expect(mode.workingMessage).toBe("Schlepping...");
+			expect(mode.workingMessage).toBe("Schlepping…");
 			await send({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: undefined });
 			await send({
 				type: "tool_execution_start",
@@ -985,7 +985,7 @@ describe("InteractiveMode compaction events", () => {
 				result: { content: [] },
 				isError: false,
 			});
-			expect(mode.workingMessage).toBe("Schlepping...");
+			expect(mode.workingMessage).toBe("Schlepping…");
 			await send({ type: "turn_end" });
 			expect(mode.workingMessage).toBeUndefined();
 		} finally {

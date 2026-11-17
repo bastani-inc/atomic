@@ -361,7 +361,7 @@ test("a replacement session that detaches its presentation does not fall back to
 	assert.equal(heldPrompts().current(replacement.sessionManager.getSessionId()), undefined);
 });
 
-test("task detail Open question opens the subagent transcript, and ← preserves caret and form state across input, editor, and questionnaire forms", async () => {
+test("space or enter on a Needs input task opens the subagent transcript, and ← preserves caret and form state across input, editor, and questionnaire forms", async () => {
 	initTheme("dark");
 	const previousKeys = getKeybindings();
 	const keys = new KeybindingsManager();
@@ -369,7 +369,16 @@ test("task detail Open question opens the subagent transcript, and ← preserves
 	cleanups.push(() => setKeybindings(previousKeys));
 
 	const controller = new AbortController();
-	cleanups.push(() => controller.abort());
+	const waiters: Promise<unknown>[] = [];
+	const track = <T>(promise: Promise<T>): Promise<T> => {
+		const settled = promise.catch(() => undefined);
+		waiters.push(settled);
+		return promise;
+	};
+	cleanups.push(async () => {
+		controller.abort();
+		await Promise.allSettled(waiters);
+	});
 	const sessionId = "subagent-form-nav";
 	const taskId = "task-nav-1" as TaskId;
 	const childTranscript = SessionManager.inMemory();
@@ -474,90 +483,86 @@ test("task detail Open question opens the subagent transcript, and ← preserves
 			.map((line) => stripVTControlCharacters(line).trimEnd())
 			.join("\n");
 
-	// 1. Hold an input prompt and open it via the task detail page's "Open question" action.
-	const inputPromise = heldPromptInput.input("Enter branch name", "feature/x", {
-		signal: controller.signal,
-		requestId: "input-1",
-		sessionId,
-	});
-	void inputPromise.catch(() => undefined);
-	inspector.handleInput(" "); // Peek detail page
-	inspector.handleInput("\x1b[B"); // Cancel task…
-	inspector.handleInput("\x1b[B"); // Open question
-	assert.match(plain(), /› Open question/);
-	inspector.handleInput("\r"); // Activate Open question -> opens transcript
+	const inputPromise = track(
+		heldPromptInput.input("Enter branch name", "feature/x", {
+			signal: controller.signal,
+			requestId: "input-1",
+			sessionId,
+		}),
+	);
+	assert.match(plain(), /Needs input/);
+	assert.match(plain(), /Enter branch name/);
+	inspector.handleInput(" ");
 	assert.match(plain(), /^Transcript/);
 	assert.match(plain(), /Enter branch name/);
 	assert.doesNotMatch(plain(), /esc interrupt/);
 	assert.doesNotMatch(plain(), /\? keys/);
 	assert.match(plain(), /← task/);
 
-	// Type "ab" (caret at 2). Left moves caret to 1, then 0, staying in transcript; Left at 0 leaves to detail.
 	inspector.handleInput("a");
 	inspector.handleInput("b");
 	assert.doesNotMatch(plain().split("\n").at(-1) ?? "", /← task/);
-	inspector.handleInput("\x1b[D"); // caret 2 -> 1
+	inspector.handleInput("\x1b[D");
 	assert.match(plain(), /^Transcript/, "← with caret at 1 moves caret, does not leave");
-	inspector.handleInput("\x1b[D"); // caret 1 -> 0
+	inspector.handleInput("\x1b[D");
 	assert.match(plain(), /^Transcript/, "← moving caret to 0 stays in transcript");
-	inspector.handleInput("\x1b[D"); // caret at 0 -> leaves transcript to detail page!
-	assert.match(plain(), /› Open question/, "← at caret 0 leaves transcript without cancelling");
+	inspector.handleInput("\x1b[D");
+	assert.match(plain(), /Needs input/, "← at caret 0 leaves transcript without cancelling");
 	assert.equal(heldPrompts().current(sessionId)?.promptId, "input-1", "input prompt remains held");
 
-	// Reopen transcript, verify draft "ab" and caret at 0 are preserved: typing "X" inserts at start ("Xab").
 	inspector.handleInput("\r");
 	assert.match(plain(), /^Transcript/);
-	// PageUp scrolls the transcript above the form while the form stays open.
 	assert.match(plain(), /LINE-29/);
-	inspector.handleInput("\x1b[5~"); // PageUp
+	inspector.handleInput("\x1b[5~");
 	assert.doesNotMatch(plain(), /LINE-29/, "PageUp scrolls transcript while held form is open");
 	inspector.handleInput("X");
 	inspector.handleInput("\r");
 	assert.equal(await inputPromise, "Xab");
 	assert.match(plain(), /esc interrupt/);
 
-	// 2. Hold an editor prompt with prefill "hi" (caret at col 2).
-	const editorPromise = heldPromptInput.editor("Edit commit message", "hi", {
-		signal: controller.signal,
-		requestId: "editor-1",
-		sessionId,
-	});
-	inspector.handleInput("\x1b[D"); // caret col 2 -> 1
+	const editorPromise = track(
+		heldPromptInput.editor("Edit commit message", "hi", {
+			signal: controller.signal,
+			requestId: "editor-1",
+			sessionId,
+		}),
+	);
+	inspector.handleInput("\x1b[D");
 	assert.match(plain(), /^Transcript/);
-	inspector.handleInput("\x1b[D"); // caret col 1 -> 0
+	inspector.handleInput("\x1b[D");
 	assert.match(plain(), /^Transcript/);
-	inspector.handleInput("\x1b[D"); // caret at (0,0) -> leaves transcript!
-	assert.match(plain(), /› Open question/);
+	inspector.handleInput("\x1b[D");
+	assert.match(plain(), /Needs input/);
 	assert.equal(heldPrompts().current(sessionId)?.promptId, "editor-1");
-	inspector.handleInput("\r"); // reopen transcript
+	inspector.handleInput("\r");
 	inspector.handleInput("!");
 	inspector.handleInput("\r");
 	assert.equal(await editorPromise, "!hi");
 
-	// 3. Hold a single-question questionnaire: highlighting "Type something." at caret 0 still allows ← to leave.
-	const qPromise = heldPromptInput.questionnaire(QUESTION, {
-		signal: controller.signal,
-		requestId: "q-nav-1",
-		sessionId,
-	});
-	inspector.handleInput("\x1b[B"); // "right"
-	inspector.handleInput("\x1b[B"); // "Type something." (inputMode = true, caret = 0)
-	inspector.handleInput("\x1b[D"); // caret is 0 -> leaves transcript!
-	assert.match(plain(), /› Open question/, "← on empty Type something. leaves transcript");
-	inspector.handleInput("\r"); // reopen transcript
-	inspector.handleInput("z"); // caret 0 -> 1
-	inspector.handleInput("\x1b[D"); // caret 1 -> 0 (stays in transcript)
+	const qPromise = track(
+		heldPromptInput.questionnaire(QUESTION, {
+			signal: controller.signal,
+			requestId: "q-nav-1",
+			sessionId,
+		}),
+	);
+	inspector.handleInput("\x1b[B");
+	inspector.handleInput("\x1b[B");
+	inspector.handleInput("\x1b[D");
+	assert.match(plain(), /Needs input/, "← on empty Type something. leaves transcript");
+	inspector.handleInput("\r");
+	inspector.handleInput("z");
+	inspector.handleInput("\x1b[D");
 	assert.match(plain(), /^Transcript/);
-	inspector.handleInput("\x1b[D"); // caret at 0 -> leaves transcript!
-	assert.match(plain(), /› Open question/);
-	inspector.handleInput("\r"); // reopen transcript, draft "z" with caret at 0 preserved
-	inspector.handleInput("a"); // inserts before "z" -> "az"
+	inspector.handleInput("\x1b[D");
+	assert.match(plain(), /Needs input/);
+	inspector.handleInput("\r");
+	inspector.handleInput("a");
 	inspector.handleInput("\r");
 	const qResult = await qPromise;
 	assert.equal(qResult.cancelled, false);
 	assert.equal(qResult.answers[0]?.answer, "az");
 
-	// 4. Calling heldPromptForm for an already-settled prompt does not retain a dead form.
 	const stalePrompt: HeldPrompt = {
 		sessionId,
 		promptId: "already-settled",
@@ -570,12 +575,13 @@ test("task detail Open question opens the subagent transcript, and ← preserves
 	const secondStale = heldPromptForm(stalePrompt, { requestRender: () => {} });
 	assert.notEqual(firstStale, secondStale, "settled prompts are not cached in the live forms map");
 	keys.setUserBindings({ "app.nav.back": ["escape", "left"] });
-	const cancelled = heldPromptInput.confirm("Cancel this question?", "Do not approve", {
-		signal: controller.signal,
-		requestId: "escape-remap",
-		sessionId,
-	});
-	void cancelled.catch(() => {});
+	const cancelled = track(
+		heldPromptInput.confirm("Cancel this question?", "Do not approve", {
+			signal: controller.signal,
+			requestId: "escape-remap",
+			sessionId,
+		}),
+	);
 	assert.doesNotMatch(plain(), /esc\/← task/);
 	inspector.handleInput("\x1b");
 	assert.equal(heldPrompts().current(sessionId), undefined);

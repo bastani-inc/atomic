@@ -97,6 +97,7 @@ export interface StageControlHandle {
 	 * on a local worker). Handles with a session expose it through the session instead.
 	 */
 	streamingMessage?(): NonNullable<NonNullable<AgentSession["agent"]>["state"]["streamingMessage"]> | undefined;
+	inFlightAttemptUsage?(): import("../../shared/types.js").WorkflowModelUsage | undefined;
 	/** Set when the stage's session runs in another process. */
 	readonly placement?: StagePlacement;
 	/**

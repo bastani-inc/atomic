@@ -335,9 +335,14 @@ export default function webAccess(pi: ExtensionAPI) {
 		execute: (...args) => executeHeavyTool(loadHeavy, "web_search", args),
 		renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "web_search", args),
 		renderCall(args, theme) {
-			const input = args as { query?: string; queries?: string[] };
-			const label = input.queries?.length ? `${input.queries.length} queries` : input.query ?? "(no query)";
-			return new Text(theme.fg("toolTitle", theme.bold("web_search ")) + theme.fg("accent", label), 0, 0);
+			const input = args as { query?: string; queries?: string[] } | undefined;
+			const list = Array.isArray(input?.queries)
+				? input.queries.map((q) => String(q ?? "").trim()).filter(Boolean)
+				: typeof input?.query === "string" && input.query.trim()
+					? [input.query.trim()]
+					: [];
+			const label = list.join(" · ");
+			return new Text(`${theme.fg("toolTitle", theme.bold("WebSearch"))}${theme.fg("text", `(${label})`)}`, 0, 0);
 		},
 	});
 
@@ -380,6 +385,19 @@ export default function webAccess(pi: ExtensionAPI) {
 		}, { additionalProperties: false }),
 		execute: (...args) => executeHeavyTool(loadHeavy, "fetch_content", args),
 		renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "fetch_content", args),
+		renderCall(args, theme) {
+			const input = args as { url?: string; urls?: string[] } | undefined;
+			const urlList = Array.isArray(input?.urls)
+				? input.urls
+				: typeof input?.url === "string"
+					? [input.url]
+					: [];
+			const label = urlList
+				.map((u) => String(u ?? "").trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, ""))
+				.filter(Boolean)
+				.join(", ");
+			return new Text(`${theme.fg("toolTitle", theme.bold("Fetch"))}${theme.fg("text", `(${label})`)}`, 0, 0);
+		},
 	});
 
 	pi.registerTool({

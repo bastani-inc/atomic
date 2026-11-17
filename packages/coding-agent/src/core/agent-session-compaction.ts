@@ -203,13 +203,8 @@ async function runCompactor(
 			stop: stop.signal,
 		});
 		if (output.usage) session._emit({ type: "compaction_usage", reason, usage: output.usage });
-		const model = session.model;
-		const trigger = model
-			? model.contextWindow - session.settingsManager.getCompactionSettings(model).reserveTokens
-			: 0;
-		const cap = compactedOutputTokenCap(trigger);
-		const tokens = estimateTextTokens(output.text);
-		if (tokens > cap) return { fallbackReason: `output too long (${tokens} > ${cap} tokens)` };
+		const oversized = oversizedCompactedText(session, output.text);
+		if (oversized !== undefined) return { fallbackReason: oversized };
 		return {
 			compacted: { text: output.text, backend: "compactor", model: selection.fullId },
 			...(output.usage ? { usage: output.usage } : {}),
@@ -222,6 +217,24 @@ async function runCompactor(
 	} finally {
 		if (session._compactorAbortController === stop) session._compactorAbortController = undefined;
 	}
+}
+
+function oversizedCompactedText(session: AgentSession, text: string): string | undefined {
+	const model = session.model;
+	const trigger = model ? model.contextWindow - session.settingsManager.getCompactionSettings(model).reserveTokens : 0;
+	const cap = compactedOutputTokenCap(trigger);
+	const tokens = estimateTextTokens(text);
+	return tokens > cap ? `output too long (${tokens} > ${cap} tokens)` : undefined;
+}
+
+function overflowingBoundary(
+	session: AgentSession,
+	planned: Pick<PlannedVerbatimCompaction, "tokensBefore" | "access" | "systemTokens" | "instructions" | "compacted">,
+): string | undefined {
+	const after = contextAfterBoundary(session, planned);
+	return after.trigger !== undefined && after.tokens >= after.trigger
+		? `output too long for the context (${after.tokens} > ${after.trigger} tokens)`
+		: undefined;
 }
 
 /**
@@ -325,8 +338,13 @@ export async function planVerbatimCompaction(
 		}
 		// Empty or whitespace text is no override: the configured form runs instead (#4977).
 		if (hookResult?.compactedText !== undefined && hookResult.compactedText.trim().length > 0) {
+			const compacted: CompactedReplacement = { text: hookResult.compactedText, backend: "extension" };
+			const oversized =
+				oversizedCompactedText(this, compacted.text) ?? overflowingBoundary(this, { ...base, compacted });
+			if (oversized !== undefined)
+				return { ...base, fallbackReason: `extension failed: ${oversized}`, fromExtension: false };
 			options.onCompactionSource?.(true);
-			return { ...base, compacted: { text: hookResult.compactedText, backend: "extension" }, fromExtension: true };
+			return { ...base, compacted, fromExtension: true };
 		}
 	}
 
@@ -350,11 +368,11 @@ export async function planVerbatimCompaction(
 		return { ...base, fallbackReason: `${selection.fullId} failed: ${outcome.fallbackReason}`, fromExtension: false };
 	}
 	// The whole replacement, system prompt and recovery instructions included, must leave room below the trigger.
-	const after = contextAfterBoundary(this, { ...base, compacted: outcome.compacted });
-	if (after.trigger !== undefined && after.tokens >= after.trigger) {
+	const overflow = overflowingBoundary(this, { ...base, compacted: outcome.compacted });
+	if (overflow !== undefined) {
 		return {
 			...base,
-			fallbackReason: `${selection.fullId} failed: output too long for the context (${after.tokens} > ${after.trigger} tokens)`,
+			fallbackReason: `${selection.fullId} failed: ${overflow}`,
 			...(outcome.usage ? { usage: outcome.usage } : {}),
 			fromExtension: false,
 		};

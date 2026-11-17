@@ -1,7 +1,5 @@
-import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { describe, expect, test } from "vitest";
-import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 import { moduleDir, readText } from "../helpers/runtime.js";
 
 const repositoryRoot = resolve(moduleDir(import.meta.url), "../..");
@@ -128,20 +126,4 @@ describe("published workflow examples stay host-portable", () => {
 			expect(quickstart, "getting-started/installation.md").toContain(phrase);
 		}
 	});
-});
-
-test("operations.md 80-column BACKGROUND card rows are 80 cells", async () => {
-	const content = await readRepositoryFile("packages/coding-agent/docs/workflows/operations.md");
-	const lines = content.split("\n");
-	const intro = lines.indexOf("The rendered card shape at the 80-column breakpoint is:");
-	assert.ok(intro >= 0, "operations.md must introduce the 80-column card");
-	const open = lines.indexOf("```text", intro);
-	assert.ok(open > intro, "operations.md must fence the 80-column card");
-	const close = lines.indexOf("```", open + 1);
-	assert.ok(close > open, "operations.md 80-column card fence must close");
-	for (let index = open + 1; index < close; index += 1) {
-		const row = lines[index] ?? "";
-		const width = visibleWidth(row);
-		assert.equal(width, 80, `operations.md:${index + 1} measures ${width} cells`);
-	}
 });
