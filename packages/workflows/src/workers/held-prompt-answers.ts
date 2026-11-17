@@ -101,9 +101,12 @@ export class HeldPromptAnswers {
 	 * Whether a publication of attempt `generation` must not route the stage's prompt again: an
 	 * outcome is held for a later attempt's prompt, and this attempt's view of it is out of date.
 	 */
-	awaitsLaterAttempt(runId: string, stageId: string, generation: number): boolean {
+	awaitsLaterAttempt(runId: string, stageId: string, promptId: string, generation: number): boolean {
 		const held = this.held.get(JSON.stringify([runId, stageId]));
-		return held !== undefined && generation <= held.generation;
+		return (
+			held !== undefined &&
+			(generation < held.generation || (generation === held.generation && promptId === held.promptId))
+		);
 	}
 
 	/** The held outcome for `prompt`, asked again by attempt `generation`; it is handed out once. */
