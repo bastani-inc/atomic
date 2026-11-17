@@ -46,6 +46,7 @@ import {
   isIntercomBrokerStopTimeoutError,
   processSharedStorageSelection,
   takeTakeoverMutex,
+  takeTakeoverMutexAsync,
 } from "@bastani/atomic";
 import { isBrokerStatusReport } from "./broker-status.js";
 import { BROKER_UPGRADE_STOP_TIMEOUT_MS, requestBrokerShutdown, waitForBrokerExit } from "./broker-stop.js";
@@ -825,12 +826,12 @@ function underSpawnLockMutex<T>(lockPath: string, busy: T, act: () => T): T {
 }
 
 async function underSpawnLockMutexAsync<T>(lockPath: string, busy: T, act: () => Promise<T>): Promise<T> {
-  const mutex = takeTakeoverMutex(lockPath, SPAWN_LOCK_MUTEX_WAIT_MS);
+  const mutex = await takeTakeoverMutexAsync(lockPath, SPAWN_LOCK_MUTEX_WAIT_MS);
   if (mutex === undefined) return busy;
   try {
-    return mutex.owned() ? await act() : busy;
+    return (await mutex.owned()) ? await act() : busy;
   } finally {
-    mutex.release();
+    await mutex.release();
   }
 }
 
@@ -1035,7 +1036,7 @@ export async function replaceStaleSpawnLockAsync(
     lockPath,
     inspected,
     (current) => isSpawnLockReplaceableAsync(current, lockPath),
-    () => takeTakeoverMutex(lockPath),
+    () => takeTakeoverMutexAsync(lockPath),
   );
 }
 

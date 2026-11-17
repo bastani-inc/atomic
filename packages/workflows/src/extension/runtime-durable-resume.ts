@@ -1,4 +1,4 @@
-import { getAgentDir, hasTrustRequiringProjectResources, ProjectTrustStore } from "@bastani/atomic";
+import { getAgentDir, hasTrustRequiringProjectResourcesAsync, ProjectTrustStore } from "@bastani/atomic";
 import type { DurableWorkflowBackend, DurableWorkflowCatalogEntries } from "../durable/backend.js";
 import { listOpenableCompletedWorkflows } from "../durable/completed-catalog.js";
 import {
@@ -177,9 +177,11 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 		const discoveryCwd = cwd ?? deps.runtimeCwd;
 		if (canonicalDirectory(discoveryCwd) === canonicalDirectory(deps.runtimeCwd))
 			return discover(name, discoveryCwd, deps.isProjectTrusted?.());
-		if (new ProjectTrustStore(getAgentDir()).get(discoveryCwd) === true) return discover(name, discoveryCwd, true);
+		if ((await new ProjectTrustStore(getAgentDir()).getAsync(discoveryCwd)) === true)
+			return discover(name, discoveryCwd, true);
 		const outsideProject = await discover(name, discoveryCwd, false);
-		if (outsideProject !== undefined || !hasTrustRequiringProjectResources(discoveryCwd)) return outsideProject;
+		if (outsideProject !== undefined || !(await hasTrustRequiringProjectResourcesAsync(discoveryCwd)))
+			return outsideProject;
 		if (await confirmProjectTrust?.(discoveryCwd)) return discover(name, discoveryCwd, true);
 		throw new WorkflowProjectNotTrustedError(name, discoveryCwd);
 	};

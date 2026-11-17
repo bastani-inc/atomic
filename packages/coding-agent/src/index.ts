@@ -1023,7 +1023,9 @@ export {
 export {
 	getProjectTrustOptions,
 	hasProjectTrustInputs,
+	hasProjectTrustInputsAsync,
 	hasTrustRequiringProjectResources,
+	hasTrustRequiringProjectResourcesAsync,
 	type ProjectTrustDecision,
 	type ProjectTrustOption,
 	ProjectTrustStore,

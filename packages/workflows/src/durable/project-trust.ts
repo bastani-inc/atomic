@@ -38,7 +38,7 @@ export function projectTrustPrompt(
 		);
 		const selected = options.find((option) => option.label === answer);
 		if (selected === undefined) return false;
-		if (selected.updates.length > 0) new ProjectTrustStore(getAgentDir()).setMany(selected.updates);
+		if (selected.updates.length > 0) await new ProjectTrustStore(getAgentDir()).setManyAsync(selected.updates);
 		return selected.trusted;
 	};
 }
