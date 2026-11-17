@@ -69,7 +69,7 @@ InteractiveModeBase.prototype.beginHostInlineCustomUi = function (
 		this.navigationInlineCustomUiDepth = (this.navigationInlineCustomUiDepth ?? 0) + 1;
 		if (
 			this.blockingInlineCustomUiDepth <= this.navigationInlineCustomUiDepth &&
-			!this.session?.isStreaming &&
+			!this.runtimeHost?.session?.isStreaming &&
 			this.workingRunMeter?.snapshot() === undefined
 		) {
 			this.promptTurnWorkingLoaderActive = false;
@@ -86,7 +86,7 @@ InteractiveModeBase.prototype.beginHostInlineCustomUi = function (
 			this.navigationInlineCustomUiDepth = Math.max(0, this.navigationInlineCustomUiDepth - 1);
 			if (
 				this.navigationInlineCustomUiDepth === 0 &&
-				(Boolean(this.session?.isStreaming) || this.workingRunMeter?.snapshot() !== undefined) &&
+				(Boolean(this.runtimeHost?.session?.isStreaming) || this.workingRunMeter?.snapshot() !== undefined) &&
 				this.workingVisible &&
 				!this.loadingAnimation &&
 				!this.compactionActive
