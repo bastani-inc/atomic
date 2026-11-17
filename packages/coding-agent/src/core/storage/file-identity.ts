@@ -1167,7 +1167,8 @@ export function storagePathBaseDir(path: string, agentDir: string, settings?: St
 		rejected !== undefined &&
 		!rejected.legacyTargets.some(
 			(legacy) =>
-				pathsEqual(resolve(agentPath, legacy), ownTarget) && existsSync(resolve(dirname(agentPath), target)),
+				pathsEqual(resolve(agentPath, legacy), ownTarget) &&
+				existsSync(resolve(dirname(canonicalPath(agentPath)), target)),
 		) &&
 		!pathsEqual(ownTarget, agentPath) &&
 		containsPath(canonicalPath(agentPath), canonicalPath(ownTarget)) &&
