@@ -8,6 +8,8 @@
 
 ### Changed
 
+- On Linux, starting a shell or one of Atomic's own processes (worktree snapshot Git, `pi.exec`, the search tools' `rg` and `fd`, worktree setup) no longer pauses Atomic for a time that grows with its memory. Each start copied the whole process with `fork()`, which took about 65 ms per GB it held. A session holding 8 GB that started five processes a second kept its main thread busy 99.9% of the time, so subagents took minutes to start and the screen and Intercom lagged; it now stays under 2% at any size. `ATOMIC_HOST_SPAWN=child-process` restores Node's `child_process` for Atomic's own processes.
+- Hosts running many agents stay responsive while they record worktree snapshots. A turn whose checkout did not change now starts 9 Git processes instead of 14, a changed one 17 instead of 21, and sessions that capture the same checkout at the same time compute its tree at most twice instead of once each. Each snapshot still records the checkout as it was after its turn.
 - Clarified in `codemode`'s description, system-prompt guidance, and `searchTools()`/`describeTool()` hints that `subagent`, `workflow`, and other model-only tools (plus `intercom`'s model-only actions) cannot be called from inside a `codemode` script, and should be called directly as separate top-level tools when available in the session
 
 ### Fixed

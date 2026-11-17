@@ -241,7 +241,7 @@ export interface MultiNodeRouterOptions {
 	 * #5252: when a process of this host started, in ms since the epoch; `undefined` when that cannot be read, `null` where
 	 * this host does not read it (`processStartedAt`).
 	 */
-	readonly processStartedAt?: (pid: number) => number | null | undefined;
+	readonly processStartedAt?: (pid: number) => number | null | undefined | Promise<number | null | undefined>;
 	/** #5154: how long a recipient whose end was lost stays gone before its asks fail; `lostRecipientBounds()`. */
 	readonly lostRecipientBounds?: LostRecipientBounds;
 }
@@ -487,7 +487,7 @@ export class MultiNodeRouter {
 	private readonly instanceKey: string;
 	private readonly pid: number;
 	private readonly isProcessAlive: (pid: number) => boolean;
-	private readonly processStartedAt: (pid: number) => number | null | undefined;
+	private readonly processStartedAt: (pid: number) => number | null | undefined | Promise<number | null | undefined>;
 	private readonly lostBounds: LostRecipientBounds;
 	private membership: Lease | undefined;
 	private subscription: WakeUpSubscription | undefined;
@@ -507,7 +507,7 @@ export class MultiNodeRouter {
 	private closed = false;
 	private lastError: string | undefined;
 
-	private constructor(options: MultiNodeRouterOptions) {
+	private constructor(options: MultiNodeRouterOptions, hostIdentity: string | null | undefined) {
 		this.state = options.state;
 		this.bus = options.bus;
 		this.host = options.host;
@@ -516,7 +516,6 @@ export class MultiNodeRouter {
 		this.home = options.home;
 		this.host.pendingQuestions.onAnswered((question) => this.answeredHere(question));
 		// Without a key of its own, no earlier broker can be this one.
-		const hostIdentity = options.hostIdentity === undefined ? brokerHostIdentity() : options.hostIdentity;
 		this.instanceKey =
 			hostIdentity == null || options.instanceKey === undefined
 				? `${this.nodeId}:${this.brokerId}`
@@ -529,7 +528,10 @@ export class MultiNodeRouter {
 
 	/** Take the membership lease, subscribe to wake-ups and adopt the sessions already connected. */
 	static async start(options: MultiNodeRouterOptions): Promise<MultiNodeRouter> {
-		const router = new MultiNodeRouter(options);
+		const router = new MultiNodeRouter(
+			options,
+			options.hostIdentity === undefined ? await brokerHostIdentity() : options.hostIdentity,
+		);
 		await router.retirePreviousInstances();
 		const acquired = await router.state.leases.acquire(
 			router.membershipSubject(),
@@ -2805,10 +2807,10 @@ export class MultiNodeRouter {
 	 * whose start cannot be read is unknown, never taken for that instance (a short-lived later process is often gone
 	 * before its start is read).
 	 */
-	private stillRuns(pid: number, recordedStartedAt: number | undefined): boolean {
+	private async stillRuns(pid: number, recordedStartedAt: number | undefined): Promise<boolean> {
 		if (!this.isProcessAlive(pid)) return false;
 		if (recordedStartedAt === undefined) return true;
-		const startedAt = this.processStartedAt(pid);
+		const startedAt = await this.processStartedAt(pid);
 		if (startedAt === null) return true;
 		return startedAt !== undefined && startedAt <= recordedStartedAt;
 	}
@@ -2818,7 +2820,7 @@ export class MultiNodeRouter {
 		// still held, and its recipients count as lost only once it is retired here.
 		for (const lease of await this.state.leases.listLive("broker", Number.MAX_SAFE_INTEGER)) {
 			const { instanceKey, pid, startedAt } = lease.subject as Partial<BrokerMembershipSubject>;
-			if (instanceKey !== this.instanceKey || pid === undefined || this.stillRuns(pid, startedAt)) continue;
+			if (instanceKey !== this.instanceKey || pid === undefined || (await this.stillRuns(pid, startedAt))) continue;
 			// #5154: the sessions it had present may have ended with it unrecorded: they are lost until they register again.
 			const present = (await this.state.leases.listLive("presence", Number.MAX_SAFE_INTEGER)).filter(
 				(presence) => presence.holderId === lease.holderId,
