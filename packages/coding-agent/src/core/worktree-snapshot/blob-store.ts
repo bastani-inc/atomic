@@ -910,7 +910,10 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			...Object.values(t).map((table) => dialect.tableExists(table)),
 			dialect.columnExists(t.blobs, "created_at"),
 			dialect.columnExists(t.blobs, "chunks"),
-			dialect.schemaObjects([`${t.blobs}_chunks_delete_all`]),
+			dialect.schemaObjects([
+				`${t.blobs}_chunks_delete_all`,
+				...(database.readOnly ? [`${t.blobs}_chunks_delete`] : []),
+			]),
 			...SESSION_REF_COLUMNS.map((column) => dialect.columnExists(t.sessionRefs, column)),
 		];
 		const found = await Promise.all(probes.map((probe) => database.get(probe.sql, ...probe.params)));
@@ -1345,7 +1348,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	/**
 	 * Moves an in-row legacy blob to chunks regardless of age. Reads its bytes without the writer and writes at most
 	 * {@link SNAPSHOT_LEGACY_STAMP_BYTES} per transaction while readers retain the in-row value. Publishing stamps
-	 * its age and frees the old value under the writer, with time proportional to the freed size. It also marks the
+	 * only an unknown age and frees the old value under the writer, with time proportional to the freed size. It marks the
 	 * journal as requiring chunk support, as {@link putBlobs} does. A stopped move leaves chunks the next move reuses.
 	 */
 	private async moveLegacyBlobToChunks(hash: string, options: SnapshotIndexOptions): Promise<void> {
@@ -1385,7 +1388,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		await this.write(options.pace, async (transaction) => {
 			if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
 			const { changes } = await transaction.run(
-				`UPDATE ${t.blobs} SET data = ?, chunks = ?, created_at = ${this.dialect.nowSeconds} WHERE ${unmoved} AND (SELECT count(*) FROM ${t.blobChunks} WHERE hash = ?) = ?`,
+				`UPDATE ${t.blobs} SET data = ?, chunks = ?, created_at = CASE WHEN created_at = 0 THEN ${this.dialect.nowSeconds} ELSE created_at END WHERE ${unmoved} AND (SELECT count(*) FROM ${t.blobChunks} WHERE hash = ?) = ?`,
 				new Uint8Array(),
 				chunks,
 				hash,

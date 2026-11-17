@@ -170,6 +170,29 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 			},
 		);
 
+		test("collection adds the inline-size index when an older store has only its age index (#5327)", async () => {
+			const database = await openDatabase();
+			await database.exec(`CREATE TABLE snapshot_blobs (
+				hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL,
+				created_at INTEGER NOT NULL DEFAULT 0, chunks INTEGER NOT NULL DEFAULT 0) STRICT;
+				CREATE INDEX snapshot_blobs_age ON snapshot_blobs (created_at, hash)`);
+			const blob = textBlob("legacy-age-index-only");
+			await database.run(
+				"INSERT INTO snapshot_blobs (hash, bytes, data) VALUES (?, ?, ?)",
+				blob.hash,
+				blob.data.length,
+				blob.data,
+			);
+			const store = await SqlSnapshotBlobStore.open(database);
+			assert.equal(
+				await database.get("SELECT name FROM sqlite_schema WHERE name = 'snapshot_blobs_inline_size'"),
+				undefined,
+			);
+			assert.deepEqual((await collectSnapshotGarbage(store)).deleted, []);
+			assert.ok(await database.get("SELECT name FROM sqlite_schema WHERE name = 'snapshot_blobs_inline_size'"));
+			assert.deepEqual(await store.getBlob(blob.hash), blob.data);
+		});
+
 		test("upgrades an old blob table even when every reference-index table already exists (#4532)", async () => {
 			const database = await openDatabase();
 			await SqlSnapshotBlobStore.open(database);

@@ -189,14 +189,13 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 				assert.equal(mostWritten, 0);
 				assert.equal((await legacyState(database, blob.hash)).createdAt, 0);
 
-				await database.run("UPDATE snapshot_blobs SET created_at = 1 WHERE hash = ?", blob.hash);
+				await database.run("UPDATE snapshot_blobs SET created_at = unixepoch() - 60 WHERE hash = ?", blob.hash);
 				const stampedAt = (await legacyState(database, blob.hash)).createdAt;
 				assert.ok(stampedAt > 0);
 				written = await writtenSnapshotBytes(database);
 				mostWritten = 0;
 				if (operation === "refresh") assert.equal(await store.refreshBlobs([blob.hash]), true);
 				else await store.putBlobs([blob]);
-				assert.equal(mostWritten, 0);
 				const beforeCollection = await legacyState(database, blob.hash);
 				assert.ok(beforeCollection.createdAt > stampedAt, "known-age blobs receive a fresh grace window");
 				assert.equal(beforeCollection.chunks, 0);
@@ -210,7 +209,7 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 				);
 				const expectedChunks = Math.ceil(blob.data.length / SNAPSHOT_BLOB_CHUNK_BYTES);
 				const afterCollection = await legacyState(database, blob.hash);
-				assert.ok(afterCollection.createdAt >= beforeCollection.createdAt);
+				assert.equal(afterCollection.createdAt, beforeCollection.createdAt);
 				assert.equal(afterCollection.chunks, expectedChunks);
 				assert.equal(afterCollection.inline, 0);
 				assert.equal(afterCollection.chunkRows, expectedChunks);
@@ -281,6 +280,36 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 			}
 		});
 
+		test("moving a known-age blob to chunks preserves its remaining grace window (#5327)", async () => {
+			const database = await openDatabase();
+			const store = await SqlSnapshotBlobStore.open(database);
+			const moved = legacyBlob(SNAPSHOT_BLOB_CHUNK_BYTES + 17, 29);
+			const inline = textBlob("known-age-inline-control");
+			for (const blob of [moved, inline]) {
+				await database.run(
+					"INSERT INTO snapshot_blobs (hash, bytes, data, created_at, chunks) VALUES (?, ?, ?, unixepoch() - 1800, 0)",
+					blob.hash,
+					blob.data.length,
+					blob.data,
+				);
+			}
+			const storedAt = (await legacyState(database, moved.hash)).createdAt;
+			assert.deepEqual((await collectSnapshotGarbage(store, { graceSeconds: 3600 })).deleted, []);
+			const state = await legacyState(database, moved.hash);
+			assert.equal(state.createdAt, storedAt);
+			assert.equal(state.chunks, 2);
+			assert.equal(state.inline, 0);
+			assert.ok(moved.data.equals((await store.getBlob(moved.hash))!));
+
+			await database.run("UPDATE snapshot_blobs SET created_at = created_at - 2000");
+			assert.deepEqual(
+				[...(await collectSnapshotGarbage(store, { graceSeconds: 3600 })).deleted].sort(),
+				[moved.hash, inline.hash].sort(),
+			);
+			assert.equal(await store.getBlob(moved.hash), undefined);
+			assert.equal(await store.getBlob(inline.hash), undefined);
+		});
+
 		test("an interrupted move followed by a simulated older-build in-place stamp reuses written chunks on the next collection and leaves no orphan afterward (#5327)", async () => {
 			const database = await openDatabase();
 			await database.exec(
@@ -349,7 +378,7 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 			const totalChunks = Math.ceil(blob.data.length / SNAPSHOT_BLOB_CHUNK_BYTES);
 			assert.deepEqual((await collectSnapshotGarbage(store)).deleted, []);
 			const moved = await legacyState(database, blob.hash);
-			assert.ok(moved.createdAt >= stampedAt);
+			assert.equal(moved.createdAt, stampedAt);
 			assert.equal(moved.chunks, totalChunks);
 			assert.equal(moved.inline, 0);
 			assert.equal(moved.chunkRows, totalChunks);

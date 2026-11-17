@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, test } from "vitest";
 import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/core/storage/database.ts";
 import { sqliteDialect } from "../../packages/coding-agent/src/core/storage/dialect.ts";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
+import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.ts";
 import {
 	SNAPSHOT_BLOB_CHUNK_BYTES,
 	SNAPSHOT_LEGACY_STAMP_BYTES,
@@ -18,6 +19,7 @@ import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 
 interface Release0987BlobStore {
 	collectGarbage(options: { readonly graceSeconds: number }): Promise<readonly string[]>;
+	putBlobs(blobs: readonly { readonly hash: string; readonly data: Uint8Array }[]): Promise<void>;
 }
 
 const release0987 = (await import(
@@ -97,6 +99,37 @@ async function installLegacyConditionalTrigger(database: SqliteDatabase, prefix 
 	);
 }
 
+test.each(["", "custom_"])(
+	"opens a session store read-only with the previous conditional delete trigger under prefix '%s' (#5327)",
+	async (prefix) => {
+		const path = join(directory, "readonly.sqlite");
+		const writable = await openNodeSqliteDatabase(path);
+		closers.push(() => writable.close());
+		const original = await SqlSessionStore.open(writable, { prefix });
+		const blob = legacyBlob(17);
+		await original.snapshotBlobs.putBlobs([blob]);
+		await installLegacyConditionalTrigger(writable, prefix);
+		await original.close();
+		await writable.close();
+
+		const readonly = await openNodeSqliteDatabase(path, { readOnly: true });
+		closers.push(() => readonly.close());
+		const store = await SqlSessionStore.open(readonly, { prefix });
+		closers.push(() => store.close());
+		assert.ok(blob.data.equals((await store.snapshotBlobs.getBlob(blob.hash))!));
+		assert.ok(
+			await readonly.get("SELECT name FROM sqlite_schema WHERE name = ?", `${prefix}snapshot_blobs_chunks_delete`),
+		);
+		assert.equal(
+			await readonly.get(
+				"SELECT name FROM sqlite_schema WHERE name = ?",
+				`${prefix}snapshot_blobs_chunks_delete_all`,
+			),
+			undefined,
+		);
+	},
+);
+
 for (const adapter of ["node-sqlite", "libsql"] as const) {
 	describe(adapter, () => {
 		async function openDatabase(name = "journal.sqlite"): Promise<SqliteDatabase> {
@@ -166,6 +199,47 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 				assert.ok(otherChunked.data.equals((await store.getBlob(otherChunked.hash))!));
 			},
 		);
+
+		test("an older client deleting and re-storing an inline blob between chunk batches cannot publish incomplete chunks (#5327)", async () => {
+			const database = await openDatabase("recreated.sqlite");
+			await SqlSnapshotBlobStore.open(database);
+			const older = await release0987.SqlSnapshotBlobStore.open(database);
+			const blob = legacyBlob(2 * SNAPSHOT_LEGACY_STAMP_BYTES + 17, 37);
+			await database.run(
+				"INSERT INTO snapshot_blobs (hash, bytes, data, created_at, chunks) VALUES (?, ?, ?, 0, 0)",
+				blob.hash,
+				blob.data.length,
+				blob.data,
+			);
+			let recreated = false;
+			const store = await SqlSnapshotBlobStore.open(
+				afterEachTransaction(database, async () => {
+					if (recreated || (await blobState(database, "", blob.hash)).chunkRows === 0) return;
+					recreated = true;
+					await database.run("UPDATE snapshot_blobs SET created_at = 1 WHERE hash = ?", blob.hash);
+					assert.deepEqual(await older.collectGarbage({ graceSeconds: 0 }), [blob.hash]);
+					assert.equal((await blobState(database, "", blob.hash)).chunkRows, 0);
+					await older.putBlobs([blob]);
+				}),
+			);
+
+			assert.deepEqual((await collectSnapshotGarbage(store)).deleted, []);
+			assert.equal(recreated, true);
+			const readable = await store.getBlob(blob.hash);
+			assert.ok(readable !== undefined && blob.data.equals(readable), "the re-stored blob remains readable");
+			const kept = await blobState(database, "", blob.hash);
+			assert.equal(kept.inline, blob.data.length);
+			assert.equal(kept.chunks, 0);
+			assert.equal(kept.chunkRows, 0);
+
+			assert.deepEqual((await collectSnapshotGarbage(store)).deleted, []);
+			const moved = await blobState(database, "", blob.hash);
+			const expectedChunks = Math.ceil(blob.data.length / SNAPSHOT_BLOB_CHUNK_BYTES);
+			assert.equal(moved.inline, 0);
+			assert.equal(moved.chunks, expectedChunks);
+			assert.equal(moved.chunkRows, expectedChunks);
+			assert.ok(blob.data.equals((await store.getBlob(blob.hash))!));
+		});
 
 		test("initialize replaces an already-installed conditional delete trigger so direct row deletion while chunks=0 removes partial chunks (#5327)", async () => {
 			const database = await openDatabase("initialize.sqlite");
