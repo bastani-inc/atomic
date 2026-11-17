@@ -256,6 +256,48 @@ describe("blueprint build locks (#4748)", () => {
 		POWERSHELL_READS_TIMEOUT_MS,
 	);
 
+	test.skipIf(process.platform !== "win32")(
+		"without the native module, a step's start read after its build settled never writes the build's lock again (#5315)",
+		async () => {
+			setNativeProcessCreationTimeForTesting(null);
+			setProcessCreationTimeQueryForTesting({
+				file: process.execPath,
+				args: () => ["-e", `setTimeout(() => console.log("132000000000000000"), ${SLOW_QUERY_MS})`],
+			});
+			const log = join(dir, "step.log");
+			const fd = openSync(log, "a");
+			const gate = join(dir, "gate");
+			const lock = buildLockPath(dir, root());
+			let run: Promise<unknown> | undefined;
+			await withBuildLocks(dir, [root()], async () => {
+				const waiting = {
+					command: process.execPath,
+					args: [
+						"-e",
+						'const fs=require("fs");const t=setInterval(()=>{if(fs.existsSync(process.argv[1]))clearInterval(t)},20)',
+						gate,
+					],
+					cwd: dir,
+					env: process.env,
+				};
+				run = runLoggedProcess(waiting, { fd, path: log }, { timeoutMs: 30_000 });
+				const deadline = Date.now() + 30_000;
+				while (!existsSync(lock) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+				assert.equal(existsSync(lock), true, "the running step is recorded");
+			});
+			try {
+				assert.equal(existsSync(lock), false, "the settled build removed its lock");
+				await new Promise((resolve) => setTimeout(resolve, 2 * SLOW_QUERY_MS));
+				assert.equal(existsSync(lock), false, "the step's start, read since, wrote nothing");
+			} finally {
+				writeFileSync(gate, "");
+				await run;
+				closeSync(fd);
+			}
+		},
+		POWERSHELL_READS_TIMEOUT_MS,
+	);
+
 	test("a process that only has a recorded step's id, with no start to prove it is that step, is never stopped", async () => {
 		const unrelated = sleeper();
 		writeLock({ ...(await deadProcess()), steps: [{ pid: unrelated.pid }] });
