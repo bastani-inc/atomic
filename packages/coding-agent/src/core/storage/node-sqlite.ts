@@ -188,7 +188,7 @@ class SqliteWriteQueue {
 	private readonly degraded: (reason: StorageWriterQueueDegradedReason, cause: unknown) => void;
 	/** Now on the database's clock, in milliseconds. */
 	readonly now: () => number;
-	private judgedOffLoopAt: number | undefined;
+	private observedAt: number | undefined;
 
 	/** `degraded` records what the queue had to give up on without failing the transaction that met it. */
 	constructor(
@@ -202,6 +202,23 @@ class SqliteWriteQueue {
 		this.now = now;
 	}
 
+	/** Marks this process as running now: time from here until its next look at the queue is time it was seen to run. */
+	observe(): void {
+		this.observedAt = performance.now();
+	}
+
+	/**
+	 * Time since this process last looked at the queue beyond a waiting writer's refresh, which a stall of the whole
+	 * host takes from every owner alike and so is not held against their tickets; marks this look as the latest.
+	 */
+	private unobservedMs(): number {
+		const lookedAt = performance.now();
+		const unobserved =
+			this.observedAt === undefined ? 0 : Math.max(0, lookedAt - this.observedAt - TICKET_REFRESH_MS);
+		this.observedAt = lookedAt;
+		return unobserved;
+	}
+
 	/** Whether the queue directory exists: an uncontended writer finds none and reads nothing more. */
 	contended(): boolean {
 		return existsSync(this.directory);
@@ -209,6 +226,7 @@ class SqliteWriteQueue {
 
 	/** Takes a ticket behind `live`, writing it and its notice off the event loop. */
 	async join(live: readonly string[]): Promise<SqliteWriteTicket> {
+		this.observe();
 		const name = ticketName(live);
 		const ticket = new SqliteWriteTicket(this, name, join(this.directory, name), join(this.noticeDirectory, name));
 		await this.create(ticket, "wx");
@@ -292,7 +310,9 @@ class SqliteWriteQueue {
 	}
 
 	/**
-	 * Live tickets, oldest first; stale ones long abandoned are removed on the way. A queue directory or a ticket that
+	 * Live tickets, oldest first; stale ones long abandoned are removed on the way. Time this process was not seen to
+	 * run since its last look (see `unobservedMs`) is not held against any ticket, so a stall of the whole host neither
+	 * passes over nor removes the tickets of writers it stopped too. A queue directory or a ticket that
 	 * vanishes while it is read counts as absent; any other failure to read the queue is thrown, so no caller takes a
 	 * queue it cannot read for an empty one. Removing an abandoned ticket is housekeeping: it is ignored whether or not
 	 * it goes, so a failure other than the ticket having vanished (another user's ticket in a shared directory, say)
@@ -320,16 +340,15 @@ class SqliteWriteQueue {
 				if (!isVanishedTicket(error)) throw error;
 			}
 		}
-		const { live, abandoned } = judgeEntries(entries, now);
+		const { live, abandoned } = judgeEntries(entries, now, this.unobservedMs());
 		for (const name of abandoned) this.removeEntry(name);
 		return live;
 	}
 
 	/**
 	 * Live tickets other than `except`, for a writer waiting in the queue: read off the event loop and judged like
-	 * `liveTicketEntries`, in no particular order, except that time this process went without a look for longer than
-	 * a waiting writer's refresh is not counted against the tickets. Entries are read together; the first failure in
-	 * listing order that is not a vanished entry is thrown.
+	 * `liveTicketEntries`, in no particular order. Entries are read together; the first failure in listing order that
+	 * is not a vanished entry is thrown.
 	 */
 	async liveTicketsOffLoop(except?: string): Promise<string[]> {
 		let names: string[];
@@ -353,11 +372,7 @@ class SqliteWriteQueue {
 			if (!("error" in entry)) entries.push(entry);
 			else if (!isVanishedTicket(entry.error)) throw entry.error;
 		}
-		const judgedAt = performance.now();
-		const unobservedMs =
-			this.judgedOffLoopAt === undefined ? 0 : Math.max(0, judgedAt - this.judgedOffLoopAt - TICKET_REFRESH_MS);
-		this.judgedOffLoopAt = judgedAt;
-		const { live, abandoned } = judgeEntries(entries, this.now(), unobservedMs);
+		const { live, abandoned } = judgeEntries(entries, this.now(), this.unobservedMs());
 		for (const name of abandoned) await this.removeEntryOffLoop(name);
 		return live.map((entry) => entry.name);
 	}
@@ -1140,6 +1155,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		try {
 			// Writers already waiting in other processes go first.
 			const queue = this.writeQueue;
+			queue?.observe();
 			if (queue?.contended()) {
 				// Read on the event loop, once, before the writer asks for the lock: its place in line has to be prompt.
 				const waiting = this.queueOp(() => queue.liveTickets());

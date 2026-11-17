@@ -74,7 +74,7 @@
 
 ### Fixed
 
-- SQLite writers queued for the write lock keep their order when the whole host stalls for longer than a queue ticket's 2 s lifetime: a writer that was itself not running no longer counts that time against the tickets ahead of it, so the first writer to continue no longer passes over the writer at the head of the queue.
+- SQLite writers queued for the write lock keep their order and their places when the whole host stalls: a writer no longer counts time it was not running, since it last looked at the queue or joined it, against other writers' tickets. The first writer to continue after a stall longer than a ticket's 2 s lifetime no longer passes over the writer at the head of the queue, and a writer that commits after a stall longer than 20 s no longer removes the tickets of the writers stalled with it.
 - A workflow or task notice sent as a turn ends now joins the next request of that run however long saving its card takes, instead of depending on the save finishing within a few internal steps and otherwise costing an extra request. Notices whose save is still pending from earlier in the turn do not hold up the next request
 - A subagent's shells no longer leave a record per shell in the parent's task owner for as long as the parent runs: the record is released once the shell has finished and its completion notice is acknowledged, and the subagent can still wait on and read a finished shell while its result is kept
 - Read results keep image-capability warnings visible and use the chat's theme, including custom renderer hosts ([#5224](https://github.com/bastani-inc/atomic/issues/5224))

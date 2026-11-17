@@ -32,6 +32,7 @@ const HOLDER = fileURLToPath(new URL("../fixtures/sqlite-stalling-holder.mjs", i
 /** Child processes, jiti-loaded adapters, and waits of a few ticket lifetimes (2 s each). */
 const CHAOS_TEST_TIMEOUT_MS = 120_000;
 const STALL_PAST_TICKET_MS = 3_000;
+const STALL_PAST_REMOVAL_MS = 21_000;
 const RESUME_GAP_MS = 50;
 
 interface WriterOptions {
@@ -145,6 +146,13 @@ async function startHolder(path: string) {
 
 function ticketsOf(writers: string, pid: number): string[] {
 	return existsSync(writers) ? readdirSync(writers).filter((name) => name.split("-")[1] === String(pid)) : [];
+}
+
+/** Waits until the process has refreshed its ticket at least once: it is past its first look at the queue. */
+async function untilWaiting(writers: string, pid: number): Promise<void> {
+	const ticket = await untilQueued(writers, pid);
+	const queuedAt = statSync(join(writers, ticket)).mtimeMs;
+	while (statSync(join(writers, ticket)).mtimeMs === queuedAt) await sleep(5);
 }
 
 /** Waits until the process has a ticket in the writers' queue: it is waiting for the lock. */
@@ -331,22 +339,62 @@ test.skipIf(process.platform === "win32")(
 	CHAOS_TEST_TIMEOUT_MS,
 );
 
+for (const settled of ["as soon as they queue", "once they wait"] as const)
+	test.skipIf(process.platform === "win32")(
+		`writers stalled together past a ticket's lifetime ${settled} keep their order when they continue`,
+		async () => {
+			const { path, writers } = database("queue-chaos-stalled-together-");
+			const holder = await startHolder(path);
+			const first = await startWriter(path, { label: "first" });
+			const second = await startWriter(path, { label: "second" });
+			for (const writer of [first, second]) {
+				writer.go();
+				if (settled === "once they wait") await untilWaiting(writers, writer.pid);
+				else await untilQueued(writers, writer.pid);
+			}
+			first.child.kill("SIGSTOP");
+			second.child.kill("SIGSTOP");
+			await sleep(STALL_PAST_TICKET_MS);
+			holder.child.kill("SIGKILL");
+			await holder.child.exited;
+			second.child.kill("SIGCONT");
+			await sleep(RESUME_GAP_MS);
+			first.child.kill("SIGCONT");
+			const reports = await Promise.all([first.report(), second.report()]);
+			assert.deepEqual(
+				reports.map((report) => report.committed),
+				[1, 1],
+			);
+			assert.deepEqual(
+				rows(path).map((row) => row.writer),
+				["first", "second"],
+			);
+			assertIntact(path);
+		},
+		CHAOS_TEST_TIMEOUT_MS,
+	);
+
 test.skipIf(process.platform === "win32")(
-	"writers stalled together past a ticket's lifetime keep their order when they continue",
+	"a holder stalled with its waiters past the removal age keeps their tickets when it commits",
 	async () => {
-		const { path, writers } = database("queue-chaos-stalled-together-");
+		const { path, writers } = database("queue-chaos-stalled-holder-removal-");
 		const holder = await startHolder(path);
 		const first = await startWriter(path, { label: "first" });
 		const second = await startWriter(path, { label: "second" });
-		first.go();
-		await untilQueued(writers, first.pid);
-		second.go();
-		await untilQueued(writers, second.pid);
-		first.child.kill("SIGSTOP");
-		second.child.kill("SIGSTOP");
-		await sleep(STALL_PAST_TICKET_MS);
-		holder.child.kill("SIGKILL");
-		await holder.child.exited;
+		for (const writer of [first, second]) {
+			writer.go();
+			await untilWaiting(writers, writer.pid);
+		}
+		const tickets = [first, second].map((writer) => ticketsOf(writers, writer.pid));
+		for (const child of [holder.child, first.child, second.child]) child.kill("SIGSTOP");
+		await sleep(STALL_PAST_REMOVAL_MS);
+		holder.child.kill("SIGCONT");
+		await holder.commit();
+		assert.deepEqual(
+			[first, second].map((writer) => ticketsOf(writers, writer.pid)),
+			tickets,
+			"the holder's release removed no ticket of a writer stalled with it",
+		);
 		second.child.kill("SIGCONT");
 		await sleep(RESUME_GAP_MS);
 		first.child.kill("SIGCONT");
