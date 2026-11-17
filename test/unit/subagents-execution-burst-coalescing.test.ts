@@ -1103,21 +1103,25 @@ test("routes later-first aggregate live data to each sibling without leakage", a
 			state: {},
 			invalidate: () => {},
 		} as Parameters<typeof renderSubagentToolCall>[2];
-		const ownerWidget = [
-			...renderSubagentToolCall({ agent: "echo", task: "slow-first" }, theme, ownerContext).render(120),
-			...renderSubagentToolResult(outputs[0]!, { expanded: false, isPartial: false }, theme, ownerContext).render(
-				120,
-			),
-		].join("\n");
+		renderSubagentToolCall({ agent: "echo", task: "slow-first" }, theme, ownerContext);
+		const ownerWidget = renderSubagentToolResult(
+			outputs[0]!,
+			{ expanded: false, isPartial: false },
+			theme,
+			ownerContext,
+		)
+			.render(120)
+			.join("\n")
+			.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
 		const siblingWidget = [
 			...renderSubagentToolCall({ agent: "echo", task: "fast-second" }, theme, siblingContext).render(120),
 			...renderSubagentToolResult(outputs[1]!, { expanded: false, isPartial: false }, theme, siblingContext).render(
 				120,
 			),
 		].join("\n");
-		assert.match(ownerWidget, /subagent parallel \(2\)/);
-		assert.match(ownerWidget, /parallel · 2\/2/);
-		assert.doesNotMatch(ownerWidget, /parallel · 1\/1/);
+		assert.match(ownerWidget, /Agent\(echo · slow-first\)/);
+		assert.match(ownerWidget, /Agent\(echo · fast-second\)/);
+		assert.equal((ownerWidget.match(/● Agent\(/g) ?? []).length, 2);
 		assert.equal(siblingWidget, "", "the sibling tool slot must redraw into the aggregate owner widget");
 	} finally {
 		allowFirstUpdate.resolve();

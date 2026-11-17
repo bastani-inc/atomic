@@ -1,12 +1,39 @@
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
-import { Box, type Component, Container, getCapabilities, Image, Spacer, Text, type TUI } from "@bastani/atomic-tui";
+import {
+	type Component,
+	Container,
+	getCapabilities,
+	Image,
+	Spacer,
+	sliceByColumn,
+	stripTerminalSequences,
+	Text,
+	type TUI,
+	truncateToWidth,
+	visibleWidth,
+} from "@bastani/atomic-tui";
 import type { TSchema } from "typebox";
 import type { ToolDefinition, ToolRenderContext, ToolRenderers } from "../../../core/extensions/types.ts";
+import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
+import { isBuiltinToolCallRenderer, isBuiltinToolResultRenderer } from "../../../core/tools/builtin-renderers.js";
 import { createAllToolDefinitions, type ToolName } from "../../../core/tools/index.js";
-import { formatToolCallWithArgs, getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
+import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
 import { ensurePngTranscoder } from "../../../utils/image-convert.ts";
-import { theme } from "../theme/theme.js";
-import { keyHint, keyText, parenthesizedKeyHint } from "./keybinding-hints.js";
+import { terminalDisplayText } from "../../../utils/terminal-text.ts";
+import { CodeHighlighter, theme } from "../theme/theme.js";
+import { watchAtomicWorkingClock } from "./atomic-working-status.ts";
+import { keyHint, keyText } from "./keybinding-hints.js";
+import { disposeRenderer, runRendererCleanup } from "./renderer-disposal.js";
+import {
+	collapseToolBlockLines,
+	componentNeedsWorkingClock,
+	isToolBlock,
+	ToolBlock,
+	ToolBlockRecords,
+	type ToolBlockStatus,
+	type ToolGroupRole,
+} from "./tool-block.ts";
+import { builtinToolBlockPresentation, formatToolBlockElapsed } from "./tool-block-families.ts";
 
 /** Extension tools without a renderer show this many output lines before collapsing. */
 const FALLBACK_PREVIEW_LINES = 10;
@@ -15,6 +42,8 @@ export interface ToolExecutionOptions {
 	showImages?: boolean;
 	imageWidthCells?: number;
 	outputPad?: number;
+	getTaskRecord?: (taskId: TaskId) => TaskRecord | undefined;
+	getToolDefinition?: (toolName: string) => ToolRenderers | undefined;
 }
 
 type RenderableToolResult = Omit<AgentToolResult<unknown>, "details"> & {
@@ -23,7 +52,6 @@ type RenderableToolResult = Omit<AgentToolResult<unknown>, "details"> & {
 	durationMs?: number;
 };
 type RenderableImageContent = Extract<RenderableToolResult["content"][number], { type: "image" }>;
-type DisposableRendererComponent = Component & { dispose?: () => void };
 /** Keep isolated-engine image components stable so pi-tui can reuse Kitty uploads. */
 interface RenderedImageSpec {
 	data: string;
@@ -35,9 +63,14 @@ const SUBAGENT_RESULT_ANIMATION_TIMER_KEY = "subagentResultAnimationTimer";
 const SUBAGENT_RESULT_ANIMATION_CLEANUP_KEY = "subagentResultAnimationCleanup";
 
 export class ToolExecutionComponent extends Container {
-	private contentBox: Box;
-	private contentText: Text;
-	private selfRenderContainer: Container;
+	private contentContainer: Container;
+	private readonly codeHighlighter = new CodeHighlighter();
+	private readonly taskRecordReader: ToolExecutionOptions["getTaskRecord"];
+	private readonly toolRendererReader: ToolExecutionOptions["getToolDefinition"];
+	private stopWorkingClock: (() => void) | undefined;
+	private disposed = false;
+	private executionStartedAt: number | undefined;
+	private elapsedMs: number | undefined;
 	private callRendererComponent?: Component;
 	private resultRendererComponent?: Component;
 	private rendererState: Record<string, unknown> = {};
@@ -47,6 +80,7 @@ export class ToolExecutionComponent extends Container {
 	private toolCallId: string;
 	private args: unknown;
 	private expanded = false;
+	private groupRole: ToolGroupRole = { kind: "standalone" };
 	private showImages: boolean;
 	private imageWidthCells: number;
 	private outputPad: number;
@@ -81,23 +115,15 @@ export class ToolExecutionComponent extends Container {
 		this.showImages = options.showImages ?? true;
 		this.imageWidthCells = options.imageWidthCells ?? 60;
 		this.outputPad = options.outputPad ?? 1;
+		this.taskRecordReader = options.getTaskRecord;
+		this.toolRendererReader = options.getToolDefinition;
 		this.ui = ui;
 		this.cwd = cwd;
 
 		this.addChild(new Spacer(1));
 
-		// Always create all shell variants. contentBox is used for default renderer-based composition.
-		// selfRenderContainer is used when the tool renders its own framing.
-		// contentText is reserved for generic fallback rendering when no tool definition exists.
-		this.contentBox = new Box(1, 1, (text: string) => theme.bg("toolPendingBg", text));
-		this.contentText = new Text("", 1, 1, (text: string) => theme.bg("toolPendingBg", text));
-		this.selfRenderContainer = new Container();
-
-		if (this.hasRendererDefinition()) {
-			this.addChild(this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox);
-		} else {
-			this.addChild(this.contentText);
-		}
+		this.contentContainer = new Container();
+		this.addChild(this.contentContainer);
 
 		this.updateDisplay();
 	}
@@ -141,6 +167,7 @@ export class ToolExecutionComponent extends Container {
 			args: this.args,
 			toolCallId: this.toolCallId,
 			invalidate: () => {
+				if (this.disposed) return;
 				this.invalidate();
 				this.ui.requestRender();
 			},
@@ -153,15 +180,33 @@ export class ToolExecutionComponent extends Container {
 			expanded: this.expanded,
 			showImages: this.showImages,
 			isError: this.result?.isError ?? false,
-			durationMs: this.isPartial ? undefined : this.result?.durationMs,
+			durationMs: this.isPartial ? undefined : (this.result?.durationMs ?? this.elapsedMs),
 			outputPad: this.outputPad,
+			getTaskRecord: this.taskRecordReader,
+			getElapsedMs: () => this.currentElapsedMs(),
+			getToolDefinition: this.toolRendererReader,
 			keyText,
 			keyHint,
 		};
 	}
 
 	private createCallFallback(): Component {
-		return new Text(formatToolCallWithArgs(this.toolName, this.args, theme, this.expanded), 0, 0);
+		const label = this.toolDefinition?.label?.trim() || this.builtInToolDefinition?.label || this.toolName;
+		const args =
+			typeof this.args === "object" && this.args !== null && !Array.isArray(this.args)
+				? Object.entries(this.args)
+						.map(([key, value]) => {
+							const raw = typeof value === "string" ? value : (JSON.stringify(value) ?? "");
+							const text = terminalDisplayText(raw).replace(/[\r\n\t]/g, " ");
+							return `${terminalDisplayText(key)}=${truncateToWidth(text, 64, "…")}`;
+						})
+						.join(" · ")
+				: String(this.args ?? "");
+		return new Text(
+			`${theme.fg("toolTitle", theme.bold(label))}${theme.fg("text", `(${terminalDisplayText(args).replace(/[\r\n\t]/g, " ")})`)}`,
+			0,
+			0,
+		);
 	}
 
 	private createResultFallback(): Component | undefined {
@@ -170,15 +215,13 @@ export class ToolExecutionComponent extends Container {
 			return undefined;
 		}
 
-		const lines = output.split("\n");
-		const displayLines = this.expanded ? lines : lines.slice(0, FALLBACK_PREVIEW_LINES);
-		const remaining = lines.length - displayLines.length;
-		let text = displayLines.map((line) => theme.fg("toolOutput", line)).join("\n");
-		if (remaining > 0) {
-			text +=
-				theme.fg("muted", "\n... ") + parenthesizedKeyHint("app.tools.expand", "Expand", `${remaining} more lines`);
-		}
-		return new Text(text, 0, 0);
+		const lines = terminalDisplayText(output).split("\n");
+		const displayLines = collapseToolBlockLines(lines, FALLBACK_PREVIEW_LINES, this.expanded);
+		return new Text(
+			displayLines.map((line) => theme.fg(this.result?.isError ? "error" : "toolOutput", line)).join("\n"),
+			0,
+			0,
+		);
 	}
 
 	/**
@@ -186,6 +229,7 @@ export class ToolExecutionComponent extends Container {
 	 * frames runs its renderer once per frame, not once per delta (earendil-works/pi#9265).
 	 */
 	updateArgs(args: unknown): void {
+		if (this.disposed) return;
 		this.args = args;
 		this.argsPending = true;
 		this.ui.requestRender();
@@ -196,14 +240,17 @@ export class ToolExecutionComponent extends Container {
 	// remote-renderer bridge (EngineRenderService) turns every repeated
 	// engine_tool_render into a fresh invalidate → render ping-pong (TUI
 	// flicker while a workflow stage streams).
-	markExecutionStarted(): void {
-		if (this.executionStarted) return;
+	markExecutionStarted(startedAt?: number): void {
+		if (this.disposed || this.executionStarted) return;
 		this.executionStarted = true;
+		const now = Date.now();
+		this.executionStartedAt = startedAt !== undefined && Number.isFinite(startedAt) ? Math.min(startedAt, now) : now;
 		this.updateDisplay();
 		this.ui.requestRender();
 	}
 
 	setArgsComplete(): void {
+		if (this.disposed) return;
 		if (this.argsComplete) return;
 		this.argsComplete = true;
 		this.updateDisplay();
@@ -211,29 +258,55 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	updateResult(result: RenderableToolResult, isPartial = false): void {
+		if (this.disposed) return;
 		this.result = result;
 		this.isPartial = isPartial;
+		if (!isPartial)
+			this.elapsedMs =
+				result.durationMs ??
+				(this.executionStartedAt === undefined ? undefined : Math.max(0, Date.now() - this.executionStartedAt));
 		this.updateDisplay();
 	}
 
 	setExpanded(expanded: boolean): void {
+		if (this.disposed) return;
 		if (this.expanded === expanded) return;
 		this.expanded = expanded;
 		this.updateDisplay();
 	}
 
+	setGroupRole(role: ToolGroupRole): void {
+		if (this.disposed) return;
+		if (
+			this.groupRole.kind === role.kind &&
+			(role.kind !== "head" ||
+				(this.groupRole.kind === "head" &&
+					this.groupRole.clauses.length === role.clauses.length &&
+					this.groupRole.clauses.every(
+						(clause, index) =>
+							clause.family === role.clauses[index]?.family && clause.count === role.clauses[index]?.count,
+					)))
+		)
+			return;
+		this.groupRole = role;
+		this.ui.requestRender();
+	}
+
 	setOutputPad(outputPad: number): void {
+		if (this.disposed) return;
 		this.outputPad = outputPad;
 		this.updateDisplay();
 	}
 
 	setShowImages(show: boolean): void {
+		if (this.disposed) return;
 		if (this.showImages === show) return;
 		this.showImages = show;
 		this.updateDisplay();
 	}
 
 	setImageWidthCells(width: number): void {
+		if (this.disposed) return;
 		const nextWidth = Math.max(1, Math.floor(width));
 		if (this.imageWidthCells === nextWidth) return;
 		this.imageWidthCells = nextWidth;
@@ -241,130 +314,271 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	override invalidate(): void {
+		if (this.disposed) return;
 		super.invalidate();
 		this.updateDisplay();
 	}
 
 	dispose(): void {
+		if (this.disposed) return;
+		this.disposed = true;
+		this.stopWorkingClock?.();
+		this.stopWorkingClock = undefined;
 		this.disposeRendererComponent(this.callRendererComponent);
 		this.disposeRendererComponent(this.resultRendererComponent);
 		this.callRendererComponent = undefined;
 		this.resultRendererComponent = undefined;
 		this.clearRendererStateTimer(SUBAGENT_RESULT_ANIMATION_TIMER_KEY, SUBAGENT_RESULT_ANIMATION_CLEANUP_KEY);
 		this.clearRendererStateTimer("interval");
+		this.rendererState = {};
+		this.contentContainer.clear();
+		this.imageComponents = [];
+		this.imageSpacers = [];
+		this.renderedImageSpecs = [];
+		this.args = undefined;
+		this.result = undefined;
+		this.clear();
 	}
 
 	override render(width: number): string[] {
+		if (this.disposed) return [];
 		if (this.argsPending) this.updateDisplay();
-		if (this.hideComponent) {
-			return [];
+		this.syncWorkingClock();
+		if (this.hideComponent || width < 1 || (!this.expanded && this.groupRole.kind === "hidden")) return [];
+		if (!this.expanded && this.groupRole.kind === "head") return this.renderGroupSummary(width, this.groupRole);
+		const content = this.contentContainer.render(width);
+		if (content.length === 0 && this.imageComponents.length === 0) return [];
+		const rows = content.length > 0 ? ["", ...content] : [];
+		for (let index = 0; index < this.imageComponents.length; index += 1) {
+			const spacer = this.imageSpacers[index];
+			if (spacer) rows.push(...spacer.render(width));
+			const image = this.imageComponents[index];
+			if (image) rows.push(...image.render(width));
 		}
+		return rows;
+	}
 
-		if (this.hasRendererDefinition() && this.getRenderShell() === "self") {
-			const contentLines = this.selfRenderContainer.render(width);
-			if (contentLines.length === 0 && this.imageComponents.length === 0) {
-				return [];
-			}
+	private renderGroupSummary(width: number, role: Extract<ToolGroupRole, { kind: "head" }>): string[] {
+		const wording = {
+			read: ["read", "file", "files"],
+			search: ["searched", "pattern", "patterns"],
+			find: ["searched", "file pattern", "file patterns"],
+			list: ["listed", "directory", "directories"],
+			bash: ["ran", "shell command", "shell commands"],
+		} as const;
+		const clauses = role.clauses.map(({ family, count }, index) => {
+			const [verb, singular, plural] = wording[family];
+			const start = index === 0 ? `${verb.charAt(0).toUpperCase()}${verb.slice(1)}` : verb;
+			return `${start} ${theme.bold(String(count))} ${count === 1 ? singular : plural}`;
+		});
+		const keys = keyText("app.tools.expand");
+		const summary = clauses.join(", ");
+		const title: Component = {
+			invalidate() {},
+			render(available) {
+				if (available < 1) return [];
+				const full = keys ? theme.fg("dim", `  (${keys} to expand)`) : "";
+				const compact = keys ? theme.fg("dim", ` (${keys})`) : "";
+				const suffix = visibleWidth(full) < available ? full : visibleWidth(compact) < available ? compact : "";
+				return [`${truncateToWidth(summary, available - visibleWidth(suffix), "…")}${suffix}`];
+			},
+		};
+		return ["", ...new ToolBlock({ status: "success", title, outputPad: this.outputPad }).render(width)];
+	}
 
-			const lines: string[] = [];
-			if (contentLines.length > 0) {
-				lines.push("");
-				for (const line of contentLines) lines.push(line);
-			}
-			for (let i = 0; i < this.imageComponents.length; i++) {
-				const spacer = this.imageSpacers[i];
-				if (spacer) {
-					lines.push(...spacer.render(width));
+	private blockStatus(): ToolBlockStatus {
+		return this.isPartial ? "running" : this.result?.isError ? "failure" : "success";
+	}
+
+	private currentElapsedMs(): number | undefined {
+		return (
+			this.elapsedMs ??
+			(this.executionStartedAt === undefined ? undefined : Math.max(0, Date.now() - this.executionStartedAt))
+		);
+	}
+
+	private blockMetadata(): readonly string[] | undefined {
+		const duration = formatToolBlockElapsed(this.currentElapsedMs(), {
+			isRunning: this.isPartial,
+			subTenDecimal: this.toolName === "bash" || this.toolName === "fetch_content",
+		});
+		return duration ? [duration] : undefined;
+	}
+
+	private needsWorkingClock(): boolean {
+		if (this.disposed) return false;
+		if (this.isPartial) return true;
+		if (this.result)
+			return (
+				componentNeedsWorkingClock(this.resultRendererComponent) ||
+				(this.getRenderShell() === "self" && componentNeedsWorkingClock(this.callRendererComponent))
+			);
+		if (this.callRendererComponent && isToolBlock(this.callRendererComponent))
+			return componentNeedsWorkingClock(this.callRendererComponent);
+		return (
+			componentNeedsWorkingClock(this.callRendererComponent) ||
+			componentNeedsWorkingClock(this.resultRendererComponent)
+		);
+	}
+
+	private syncWorkingClock(): void {
+		if (this.needsWorkingClock()) {
+			this.stopWorkingClock ??= watchAtomicWorkingClock(() => {
+				if (this.disposed) return;
+				if (!this.needsWorkingClock()) {
+					this.stopWorkingClock?.();
+					this.stopWorkingClock = undefined;
 				}
-				const imageComponent = this.imageComponents[i];
-				if (imageComponent) {
-					lines.push(...imageComponent.render(width));
-				}
-			}
-			return lines;
+				this.ui.requestRender();
+			});
+		} else {
+			this.stopWorkingClock?.();
+			this.stopWorkingClock = undefined;
 		}
+	}
 
-		return super.render(width);
+	private canonicalCallTitle(call: Component): Component {
+		return {
+			invalidate: () => call.invalidate(),
+			render: (width) => {
+				const line = call.render(width).find((row) => stripTerminalSequences(row).trim().length > 0);
+				if (line === undefined) return [terminalDisplayText(this.toolDefinition?.label ?? this.toolName)];
+				const prefix = /^ *[∀●✗◼!⏸›] /u.exec(stripTerminalSequences(line))?.[0];
+				return prefix
+					? [sliceByColumn(line, visibleWidth(prefix), width)]
+					: [terminalDisplayText(this.toolDefinition?.label ?? this.toolName)];
+			},
+		};
 	}
 
 	private updateDisplay(): void {
+		if (this.disposed) return;
 		this.argsPending = false;
-		const bgFn = this.isPartial
-			? (text: string) => theme.bg("toolPendingBg", text)
-			: this.result?.isError
-				? (text: string) => theme.bg("toolErrorBg", text)
-				: (text: string) => theme.bg("toolSuccessBg", text);
-
-		let hasContent = false;
 		this.hideComponent = false;
-		if (this.hasRendererDefinition()) {
-			const renderContainer = this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox;
-			if (renderContainer instanceof Box) {
-				renderContainer.setBgFn(bgFn);
-				renderContainer.setPaddingX(this.outputPad);
+		this.contentContainer.clear();
+		const callRenderer = this.getCallRenderer();
+		const resultRenderer = this.getResultRenderer();
+		const presentation = builtinToolBlockPresentation({
+			toolName: this.toolName,
+			args: this.args,
+			result: this.result,
+			expanded: this.expanded,
+			isPartial: this.isPartial,
+			cwd: this.cwd,
+			executionStarted: this.executionStarted,
+			argsComplete: this.argsComplete,
+			elapsedMs: this.currentElapsedMs(),
+			highlighter: this.codeHighlighter,
+			canManageTask: (taskId) => this.taskRecordReader?.(taskId as TaskId) !== undefined,
+		});
+		const canonicalCall = presentation !== undefined && (!callRenderer || isBuiltinToolCallRenderer(callRenderer));
+		const canonicalResult =
+			presentation !== undefined && (!resultRenderer || isBuiltinToolResultRenderer(resultRenderer));
+		let call: Component;
+		if (canonicalCall && presentation) {
+			call = new Text(presentation.title, 0, 0);
+			this.callRendererComponent = undefined;
+		} else if (callRenderer) {
+			try {
+				call = callRenderer(this.args, theme, this.getRenderContext(this.callRendererComponent));
+				this.callRendererComponent = call;
+			} catch {
+				this.callRendererComponent = undefined;
+				call = new Text(theme.fg("toolTitle", theme.bold(this.toolName)), 0, 0);
 			}
-			renderContainer.clear();
-
-			const callRenderer = this.getCallRenderer();
-			if (!callRenderer) {
-				renderContainer.addChild(this.createCallFallback());
-				hasContent = true;
-			} else {
+		} else call = this.createCallFallback();
+		let details: Component | undefined;
+		if (canonicalResult && presentation) {
+			details = presentation.details;
+			this.resultRendererComponent = details;
+		} else if (this.result) {
+			if (resultRenderer) {
 				try {
-					const component = callRenderer(this.args, theme, this.getRenderContext(this.callRendererComponent));
-					this.callRendererComponent = component;
-					renderContainer.addChild(component);
-					hasContent = true;
+					details = resultRenderer(
+						{ content: this.result.content, details: this.result.details, terminate: this.result.terminate },
+						{ expanded: this.expanded, isPartial: this.isPartial },
+						theme,
+						this.getRenderContext(this.resultRendererComponent),
+					);
+					this.resultRendererComponent = details;
 				} catch {
-					this.callRendererComponent = undefined;
-					// A custom renderer may intentionally omit private arguments.
-					// Do not disclose them if that renderer fails.
-					renderContainer.addChild(new Text(theme.fg("toolTitle", theme.bold(this.toolName)), 0, 0));
-					hasContent = true;
+					this.resultRendererComponent = undefined;
+					details = new Text(theme.fg("warning", "Result renderer failed"), 0, 0);
 				}
-			}
-
-			if (this.result) {
-				const resultRenderer = this.getResultRenderer();
-				if (!resultRenderer) {
-					const component = this.createResultFallback();
-					if (component) {
-						renderContainer.addChild(component);
-						hasContent = true;
-					}
-				} else {
-					try {
-						const component = resultRenderer(
-							{ content: this.result.content, details: this.result.details, terminate: this.result.terminate },
-							{ expanded: this.expanded, isPartial: this.isPartial },
-							theme,
-							this.getRenderContext(this.resultRendererComponent),
-						);
-						this.resultRendererComponent = component;
-						renderContainer.addChild(component);
-						hasContent = true;
-					} catch {
-						this.resultRendererComponent = undefined;
-						const component = this.createResultFallback();
-						if (component) {
-							renderContainer.addChild(component);
-							hasContent = true;
-						}
-					}
-				}
+			} else details = this.createResultFallback();
+		}
+		if (
+			this.expanded &&
+			!callRenderer &&
+			typeof this.args === "object" &&
+			this.args !== null &&
+			Object.keys(this.args).length > 0
+		) {
+			const argumentLines = Object.entries(this.args)
+				.map(
+					([key, value]) =>
+						`${key}: ${typeof value === "string" ? value : (JSON.stringify(value, null, 2) ?? "")}`,
+				)
+				.join("\n");
+			const argumentsComponent = new Text(terminalDisplayText(argumentLines), 0, 0);
+			details = new ToolBlockRecords([argumentsComponent, ...(details ? [details] : [])]);
+		}
+		const selfRendered =
+			this.hasRendererDefinition() && this.getRenderShell() === "self" && !(canonicalCall && canonicalResult);
+		const staticElapsed = formatToolBlockElapsed(this.currentElapsedMs(), { isRunning: true, subTenDecimal: false });
+		const staticMeta = presentation?.meta?.filter((part) => part !== staticElapsed) ?? [];
+		const connectedDetails =
+			details &&
+			!canonicalResult &&
+			!isToolBlock(details) &&
+			!("toolBlockKind" in details && details.toolBlockKind === "records")
+				? new ToolBlockRecords([details], { preserveConnectors: true })
+				: details;
+		if (details && isToolBlock(details)) this.contentContainer.addChild(details);
+		else if (selfRendered) {
+			this.contentContainer.addChild(call);
+			if (details) this.contentContainer.addChild(details);
+		} else if (isToolBlock(call)) {
+			if (this.result === undefined) this.contentContainer.addChild(call);
+			else {
+				const title = this.canonicalCallTitle(call);
+				this.contentContainer.addChild({
+					invalidate: () => title.invalidate(),
+					render: (width) =>
+						new ToolBlock({
+							status: this.blockStatus(),
+							title,
+							details: connectedDetails,
+							outputPad: this.outputPad,
+						}).render(width),
+				});
 			}
 		} else {
-			this.contentText.setCustomBgFn(bgFn);
-			this.contentText.setPaddingX(this.outputPad);
-			this.contentText.setText(this.formatToolExecution());
-			hasContent = true;
+			this.contentContainer.addChild({
+				invalidate() {
+					call.invalidate();
+					details?.invalidate();
+				},
+				render: (width) => {
+					const meta =
+						canonicalResult && presentation
+							? this.isPartial && presentation.status === "running"
+								? [...(this.blockMetadata() ?? []), ...staticMeta]
+								: presentation.meta
+							: this.blockMetadata();
+					return new ToolBlock({
+						status: canonicalResult ? (presentation?.status ?? this.blockStatus()) : this.blockStatus(),
+						title: canonicalCall && presentation ? presentation.title : call,
+						args: canonicalCall ? presentation?.args : undefined,
+						meta,
+						details: connectedDetails,
+						outputPad: this.outputPad,
+					}).render(width);
+				},
+			});
 		}
-
 		this.syncImageComponents();
-
-		if (this.hasRendererDefinition() && !hasContent && this.imageComponents.length === 0) {
-			this.hideComponent = true;
-		}
+		this.syncWorkingClock();
 	}
 
 	private syncImageComponents(): void {
@@ -382,6 +596,7 @@ export class ToolExecutionComponent extends Container {
 				});
 				if (image.mimeType !== "image/png") {
 					ensurePngTranscoder(() => {
+						if (this.disposed) return;
 						this.invalidate();
 						this.ui.requestRender();
 					});
@@ -427,32 +642,16 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private disposeRendererComponent(component: Component | undefined): void {
-		(component as DisposableRendererComponent | undefined)?.dispose?.();
+		disposeRenderer(component);
 	}
 
 	private clearRendererStateTimer(timerKey: string, cleanupKey?: string): void {
 		const cleanup = cleanupKey ? this.rendererState[cleanupKey] : undefined;
-		if (typeof cleanup === "function") {
-			cleanup();
-			return;
-		}
+		if (typeof cleanup === "function") runRendererCleanup(() => cleanup());
 		const timer = this.rendererState[timerKey];
 		if (timer === undefined) return;
 		clearInterval(timer as ReturnType<typeof setInterval>);
 		this.rendererState[timerKey] = undefined;
 		if (cleanupKey) this.rendererState[cleanupKey] = undefined;
-	}
-
-	private formatToolExecution(): string {
-		let text = theme.fg("toolTitle", theme.bold(this.toolName));
-		const content = JSON.stringify(this.args, null, 2);
-		if (content) {
-			text += `\n\n${content}`;
-		}
-		const output = this.getTextOutput();
-		if (output) {
-			text += `\n${output}`;
-		}
-		return text;
 	}
 }

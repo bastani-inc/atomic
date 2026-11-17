@@ -26,15 +26,12 @@ const RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS = [
 	"tui.editor.deleteToLineEnd",
 ] as const;
 
-// These actions are dispatched by the workflow extension, not by the editor.
-const WORKFLOW_SCROLL_ACTIONS = ["app.workflows.scrollUp", "app.workflows.scrollDown"];
-
 type BuiltInKeyBindings = Partial<Record<KeyId, { keybinding: string; restrictOverride: boolean }>>;
 
 const buildBuiltinKeybindings = (resolvedKeybindings: KeybindingsConfig): BuiltInKeyBindings => {
 	const builtinKeybindings = {} as BuiltInKeyBindings;
 	for (const [keybinding, keys] of Object.entries(resolvedKeybindings)) {
-		if (keys === undefined || WORKFLOW_SCROLL_ACTIONS.includes(keybinding)) continue;
+		if (keys === undefined) continue;
 		const keyList = Array.isArray(keys) ? keys : [keys];
 		const restrictOverride = (RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS as readonly string[]).includes(keybinding);
 		for (const key of keyList) {
@@ -59,7 +56,6 @@ function editorKeysForShortcut(shortcut: ExtensionShortcut, bindings: Keybinding
 		if (
 			keys === undefined ||
 			action === shortcut.keybinding ||
-			WORKFLOW_SCROLL_ACTIONS.includes(action) ||
 			!(
 				shortcut.preferEditor ||
 				(RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS as readonly string[]).includes(action)

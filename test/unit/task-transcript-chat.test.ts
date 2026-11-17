@@ -108,6 +108,7 @@ async function openTranscript(transcript: TaskTranscriptSource, options: OpenTra
 	await fixture.start("Inspect the shared stack");
 	fixture.runners[0].context.bindTranscript(transcript);
 	inspector.handleInput(" ");
+	inspector.handleInput("\r");
 	await flush();
 	inspector.handleInput("\r");
 	await flush();
@@ -628,7 +629,7 @@ test("Esc interrupts a running subagent's turn from its chat and never leaves; �
 	});
 	const host = await openTranscript(transcript);
 	try {
-		assert.match(host.text(), /← task · esc interrupt · pgup\/pgdn scroll · ctrl\+o expand · \? keys/);
+		assert.match(host.text(), /← task · esc interrupt · pgup\/pgdn scroll · \? keys/);
 		host.inspector.handleInput("\x1b");
 		await flush();
 		assert.equal(interrupts, 1, "Esc interrupted the subagent's current turn");
@@ -686,7 +687,7 @@ test("a subagent's view shows a finished task's notice with the main chat's noti
 			"the subagent's view shows the notice line",
 		);
 		const main = new TaskCompletionMessage(notice, false).render(80).map((row) => stripVTControlCharacters(row));
-		assert.deepEqual(main, [line], "the main chat renders the same line");
+		assert.deepEqual(main, [` ${line}`], "the main chat renders the same line");
 	} finally {
 		await host.dispose();
 	}

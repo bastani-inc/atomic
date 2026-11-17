@@ -73,14 +73,14 @@ describe("regression #7979: fallback extension tool output collapses", () => {
 
 		expect(rendered).toContain(`line ${PREVIEW_LINES}`);
 		expect(rendered).not.toContain(`line ${PREVIEW_LINES + 1}`);
-		expect(rendered).toContain(`(${OUTPUT_LINES - PREVIEW_LINES} more lines, ctrl+r Expand)`);
+		expect(rendered).toContain(`… +${OUTPUT_LINES - PREVIEW_LINES} lines (ctrl+r to expand)`);
 	});
 
 	it("keeps the hidden-line count when the expand action is unbound", () => {
 		setKeybindings(new KeybindingsManager({ "app.tools.expand": [] }));
 		const rendered = renderFallback(false);
 
-		expect(rendered).toContain(`(${OUTPUT_LINES - PREVIEW_LINES} more lines)`);
+		expect(rendered).toContain(`… +${OUTPUT_LINES - PREVIEW_LINES} lines`);
 		expect(rendered).not.toMatch(/\b(?:Expand|Collapse)\b/);
 	});
 

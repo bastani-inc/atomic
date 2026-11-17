@@ -9,7 +9,7 @@ import type { ContextUsage } from "../../../core/extensions/types.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { formatModelLabel } from "../../../core/model-label.ts";
 import type { TaskRecord } from "../../../core/tasks/contracts.js";
-import { getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
+import type { TaskElapsedClocks } from "../../../core/tasks/live-elapsed.js";
 import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
 import {
 	addHistoryUsageToTotals,
@@ -278,6 +278,7 @@ export class FooterComponent implements Component {
 	private readonly navigationActive: () => boolean;
 	private readonly backgroundTasks: (() => readonly TaskRecord[]) | undefined;
 	private readonly hintSegments: (() => readonly string[]) | undefined;
+	private readonly backgroundTaskClocks: (() => TaskElapsedClocks | undefined) | undefined;
 	private branchCwd: string | undefined;
 	private releaseBranch: (() => void) | undefined;
 	private disposed = false;
@@ -290,6 +291,7 @@ export class FooterComponent implements Component {
 		navigationActive: () => boolean = () => false,
 		backgroundTasks?: () => readonly TaskRecord[],
 		hintSegments?: () => readonly string[],
+		backgroundTaskClocks?: () => TaskElapsedClocks | undefined,
 	) {
 		this.session = session;
 		this.footerData = footerData;
@@ -297,6 +299,7 @@ export class FooterComponent implements Component {
 		this.navigationActive = navigationActive;
 		this.backgroundTasks = backgroundTasks;
 		this.hintSegments = hintSegments;
+		this.backgroundTaskClocks = backgroundTaskClocks;
 	}
 
 	setSession(session: ChatBoxSession): void {
@@ -377,26 +380,56 @@ export class FooterComponent implements Component {
 			if (isDebugEnabled()) {
 				statusText += `${statusText ? " " : ""}${this.renderStyle.warning("debug")}`;
 			}
-			const hintItems = (this.hintSegments?.() ?? []).map((segment) => this.renderStyle.muted(segment));
+			const hintItems = (this.navigationActive() ? [] : (this.hintSegments?.() ?? [])).map((segment) =>
+				this.renderStyle.muted(segment),
+			);
 			const hintSeparator = this.renderStyle.dim(" · ");
-			const hints = hintItems.length > 0 ? `${statusText ? hintSeparator : ""}${hintItems.join(hintSeparator)}` : "";
-			if (statusText && hints) {
-				const hintWidth = visibleWidth(hints);
-				const room = width - hintWidth;
-				lines.push(
-					room >= 12
-						? `${truncateToWidth(statusText, room, this.renderStyle.dim("..."))}${hints}`
-						: truncateToWidth(statusText + hints, width, this.renderStyle.dim("...")),
-				);
-			} else if (statusText || hints) {
-				lines.push(truncateToWidth(statusText || hints, width, this.renderStyle.dim("...")));
+			if (statusText && hintItems.length > 0) {
+				const keptHints = [...hintItems];
+				const joinHints = (withLead: boolean) =>
+					keptHints.length > 0 ? `${withLead ? hintSeparator : ""}${keptHints.join(hintSeparator)}` : "";
+				const dropHintIndex = () => (keptHints.length > 2 ? 1 : 0);
+				if (working) {
+					while (keptHints.length > 2 && visibleWidth(statusText + joinHints(true)) > width) {
+						keptHints.splice(dropHintIndex(), 1);
+					}
+					const full = statusText + joinHints(true);
+					if (visibleWidth(full) <= width) {
+						lines.push(full);
+					} else {
+						while (keptHints.length > 1 && visibleWidth(joinHints(false)) > width) {
+							keptHints.splice(dropHintIndex(), 1);
+						}
+						lines.push(truncateToWidth(joinHints(false), width, this.renderStyle.dim("...")));
+					}
+				} else {
+					while (keptHints.length > 2 && width - visibleWidth(joinHints(true)) < 12) {
+						keptHints.splice(dropHintIndex(), 1);
+					}
+					const hintsWithLead = joinHints(true);
+					const room = width - visibleWidth(hintsWithLead);
+					if (room >= 12) {
+						lines.push(`${truncateToWidth(statusText, room, this.renderStyle.dim("..."))}${hintsWithLead}`);
+					} else {
+						while (keptHints.length > 1 && visibleWidth(joinHints(false)) > width) {
+							keptHints.splice(dropHintIndex(), 1);
+						}
+						lines.push(truncateToWidth(joinHints(false), width, this.renderStyle.dim("...")));
+					}
+				}
+			} else if (statusText || hintItems.length > 0) {
+				const keptHints = [...hintItems];
+				while (keptHints.length > 1 && visibleWidth(keptHints.join(hintSeparator)) > width) {
+					keptHints.splice(keptHints.length > 2 ? 1 : 0, 1);
+				}
+				const only = statusText || keptHints.join(hintSeparator);
+				lines.push(truncateToWidth(only, width, this.renderStyle.dim("...")));
 			}
 		}
 		const statusRow = renderExtensionStatusRow(this.footerData.getExtensionStatuses(), width, this.renderStyle);
 		if (statusRow !== undefined) lines.push(statusRow);
-		lines.push(
-			...renderTaskFooter(this.backgroundTasks?.() ?? getOwnerTaskStore(this.session)?.backgroundTasks ?? [], width),
-		);
+		const tasks = this.backgroundTasks?.();
+		if (tasks !== undefined) lines.push(...renderTaskFooter(tasks, width, this.backgroundTaskClocks?.()));
 		return lines;
 	}
 }

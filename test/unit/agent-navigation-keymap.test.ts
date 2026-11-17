@@ -19,7 +19,10 @@ import {
 	TwoPressConfirm,
 } from "../../packages/coding-agent/src/modes/interactive/components/nav-keys.js";
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
-import { createStopAllChord } from "../../packages/coding-agent/src/modes/interactive/interactive-stop-all.js";
+import {
+	createStopAllChord,
+	createStopAllNotices,
+} from "../../packages/coding-agent/src/modes/interactive/interactive-stop-all.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskFixture } from "../helpers/task-projection.js";
 
@@ -74,7 +77,7 @@ test("one dim hint line names exactly the screen's keys and fits 80 and 160 colu
 	}
 	// Narrow terminals drop whole entries from the end instead of cutting one mid-word.
 	const narrow = renderNavHintLine(KEYS, 37, plainStyle, keys);
-	assert.equal(narrow, "  ↑↓ select · enter/→ open · x stop");
+	assert.equal(narrow, "  esc back to prompt · ? keys");
 	assert.ok(visibleWidth(renderNavHintLine(KEYS, 8, plainStyle, keys)) <= 8);
 });
 
@@ -153,9 +156,7 @@ test("Ctrl+X Ctrl+K stops all background work only after a second press within t
 	assert.equal(listener(CTRL_X), undefined, "Ctrl+X starts the chord and still reaches whatever has the keyboard");
 	assert.deepEqual(listener(CTRL_K), { consume: true }, "Ctrl+K right after it belongs to the chord");
 	assert.equal(h.stops(), 0);
-	assert.deepEqual(h.statuses, [
-		"Press ctrl+x ctrl+k again within 3s to stop all background subagents, shells and workflow runs",
-	]);
+	assert.deepEqual(h.statuses, ["Press ctrl+x ctrl+k again within 3s to stop all"]);
 	now += 2000;
 	listener(CTRL_X);
 	listener(CTRL_K);
@@ -212,6 +213,62 @@ test("Ctrl+X pressed twice restarts the chord, so Ctrl+X Ctrl+K after a stray Ct
 	listener(CTRL_X);
 	assert.deepEqual(listener(CTRL_K), { consume: true });
 	assert.match(h.statuses.at(-1) ?? "", /again within 3s/);
+});
+
+test("stop-all chord never consumes physical Escape even when remapped, and disarms pending confirmation when chordAllowed becomes false (#5224)", async () => {
+	let now = 0;
+	let allowed = true;
+	const statuses: string[] = [];
+	let stops = 0;
+	const remapped = new KeybindingsManager({
+		"app.agents.chord": ["escape", "ctrl+x"],
+		"app.agents.stopAll": ["escape", "ctrl+k"],
+	});
+	const listener = createStopAllChord(
+		{
+			keybindings: remapped,
+			chordAllowed: () => allowed,
+			stopAll: async () => {
+				stops += 1;
+				return { agents: 1, shells: 0, workflowRuns: 0, failures: [] };
+			},
+			showStatus: (msg) => statuses.push(msg),
+			showWarning: (msg) => statuses.push(msg),
+			clearStatus: () => statuses.push("<cleared>"),
+		},
+		() => now,
+	);
+
+	// 1. Escape after Ctrl+X cancels the chord and passes through without arming stop-all
+	assert.equal(listener(CTRL_X), undefined);
+	assert.equal(listener("\x1b"), undefined, "Escape after Ctrl+X must cancel the chord and pass through");
+	assert.equal(statuses.length, 0);
+
+	// 2. Escape alone never opens the chord even when app.agents.chord includes escape
+	assert.equal(listener("\x1b"), undefined);
+	assert.equal(listener(CTRL_K), undefined, "Ctrl+K after Escape must not arm stop-all");
+	assert.equal(statuses.length, 0);
+
+	// 3. Arm confirmation with Ctrl+X Ctrl+K, then Escape cancels the pending confirmation
+	listener(CTRL_X);
+	assert.deepEqual(listener(CTRL_K), { consume: true });
+	assert.match(statuses.at(-1) ?? "", /Press ctrl\+x ctrl\+k again within 3s/);
+	assert.equal(listener("\x1b"), undefined);
+	assert.equal(statuses.at(-1), "<cleared>");
+
+	// 4. Arm confirmation again, then a key pressed while chordAllowed is false disarms confirmation
+	now += 500;
+	listener(CTRL_X);
+	assert.deepEqual(listener(CTRL_K), { consume: true });
+	allowed = false;
+	assert.equal(listener("a"), undefined);
+	assert.equal(statuses.at(-1), "<cleared>", "blocked dialog key disarms pending stop-all confirmation");
+	allowed = true;
+	now += 500;
+	listener(CTRL_X);
+	assert.deepEqual(listener(CTRL_K), { consume: true });
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(stops, 0, "chord after blocked dialog arms afresh instead of confirming stop-all");
 });
 
 test("a stop-all that cannot stop everything says what is left (#5224)", () => {
@@ -292,7 +349,7 @@ test("? opens the task list's key overlay and Esc closes it, keeping the list op
 		assert.equal(fixture.store.tasks[0]?.execution.kind, "running", "keys wait while the overlay is open");
 		inspector.handleInput("\x1b");
 		assert.doesNotMatch(frame(), /keys · tasks/);
-		assert.match(frame(), /Background tasks/);
+		assert.match(frame(), /^ Tasks\b/m);
 		assert.equal(closed, 0);
 	} finally {
 		inspector.dispose();
@@ -314,11 +371,56 @@ test("an empty task list offers only the keys that do something (#5224)", () => 
 	try {
 		for (const width of [160, 80]) {
 			const lines = inspector.renderViewport(width, 12).map((line) => stripVTControlCharacters(line));
-			assert.equal(lines.at(-1), "  esc/← back · ? keys");
+			assert.equal(lines.at(-1), "  / filter · esc/← close · ? keys");
 		}
 	} finally {
 		inspector.dispose();
 		void fixture.dispose();
 		setKeybindings(previous);
 	}
+});
+
+test("stop-all notices show in the current view for one window and never in a transcript (#5224)", () => {
+	const calls: string[] = [];
+	let fire: (() => void) | undefined;
+	const timers = {
+		setTimeout: ((handler: () => void) => {
+			fire = handler;
+			return { unref() {} };
+		}) as unknown as typeof setTimeout,
+		clearTimeout: (() => {}) as typeof clearTimeout,
+	};
+	const isolated = createStopAllNotices(
+		{
+			setEngineNotice: (text) => calls.push(`engine:${text ?? "-"}`),
+			hasOverlay: () => true,
+			requestRender: () => {},
+		},
+		timers,
+	);
+	isolated.show("Press ctrl+x ctrl+k again");
+	assert.deepEqual(calls, ["engine:-", "engine:Press ctrl+x ctrl+k again"], "the isolated engine's views show it");
+	fire?.();
+	assert.equal(calls.at(-1), "engine:-", "it clears when its window closes");
+	calls.length = 0;
+	let overlay = false;
+	const local = createStopAllNotices(
+		{
+			setFooterStatus: (text) => calls.push(`footer:${text ?? "-"}`),
+			showToast: (text) => {
+				calls.push(`toast:${text}`);
+				return () => calls.push("toast:hidden");
+			},
+			hasOverlay: () => overlay,
+			requestRender: () => {},
+		},
+		timers,
+	);
+	local.show("Stopped 1 subagent.");
+	assert.deepEqual(calls, ["footer:-", "footer:Stopped 1 subagent."], "over the chat: the footer status only");
+	overlay = true;
+	local.show("Press again");
+	assert.ok(calls.includes("toast:Press again"), "over a fullscreen view: a floating line too");
+	local.clear();
+	assert.ok(calls.includes("toast:hidden"));
 });

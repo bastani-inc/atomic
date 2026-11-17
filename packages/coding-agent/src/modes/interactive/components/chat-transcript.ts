@@ -12,6 +12,7 @@ import {
 	type WheelScrollLines,
 } from "@bastani/atomic-tui";
 import { isUserPromptRow } from "./jump-to-latest.ts";
+import { disposeRenderer as disposeComponent } from "./renderer-disposal.js";
 import { WheelScrollAccelerator } from "./wheel-scroll-accelerator.ts";
 
 /**
@@ -47,8 +48,6 @@ interface CachedChatTranscriptBlock<TEntry extends ChatTranscriptEntryLike> {
 	readonly lines: readonly string[];
 	readonly promptRows: readonly number[];
 }
-
-type DisposableComponent = Component & { dispose?: () => void };
 
 /**
  * A run of rows inside a windowed component, tagged with the identity of the
@@ -107,10 +106,14 @@ interface StaticComponentRows {
 type ComponentRows = WindowedComponentRows | StaticComponentRows;
 
 export function addChatTranscriptEntry(container: Container, component: Component, role: ChatTranscriptRole): void {
-	if (needsLeadingSpacer(role) && container.children.length > 0) {
+	if (needsLeadingSpacer(role) && container.children.length > 0 && !ownsLeadingSpacer(component)) {
 		container.addChild(new Spacer(1));
 	}
 	container.addChild(component);
+}
+
+function ownsLeadingSpacer(component: Component): boolean {
+	return "ownsLeadingSpacer" in component && component.ownsLeadingSpacer === true;
 }
 
 function needsLeadingSpacer(role: ChatTranscriptRole): boolean {
@@ -133,6 +136,8 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 	private readonly cacheKey: ChatTranscriptCacheKey<TEntry> | undefined;
 	private blockCache: Array<CachedChatTranscriptBlock<TEntry> | undefined> = [];
 	private measuredRows: MeasuredRowWindow | undefined;
+	private dirtyEntries = new WeakSet<TEntry>();
+	private staticComponents: readonly Component[] = [];
 	/** Per-entry heights recorded by the most recent `renderAllRows`. */
 	private staticSegments: readonly RowWindowSegment[] = [];
 	/** Width those heights were measured at; they mean nothing at another width. */
@@ -223,9 +228,17 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		return this.measuredRows;
 	}
 
+	requestEntryRender(entry: TEntry): void {
+		this.dirtyEntries.add(entry);
+		this.measuredRows = undefined;
+	}
+
 	invalidate(): void {
 		for (const block of this.blockCache) disposeComponent(block?.component);
+		for (const component of new Set(this.staticComponents)) disposeComponent(component);
 		this.blockCache = [];
+		this.staticComponents = [];
+		this.dirtyEntries = new WeakSet<TEntry>();
 		this.measuredRows = undefined;
 	}
 
@@ -242,11 +255,12 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 			if (entry === undefined) continue;
 			const key = this.cacheKey?.(entry, index) ?? `${index}:${entry.role}`;
 			const cached = this.blockCache[index];
-			if (cached !== undefined && cached.entry === entry && cached.key === key && cached.width === width) {
-				continue;
-			}
-			disposeComponent(cached?.component);
-			const component = this.renderEntry(entry);
+			const reusable =
+				cached !== undefined && cached.entry === entry && cached.key === key && cached.width === width;
+			if (reusable && !this.dirtyEntries.has(entry)) continue;
+			this.dirtyEntries.delete(entry);
+			const component = reusable ? cached.component : this.renderEntry(entry);
+			if (!reusable && cached?.component !== component) disposeComponent(cached?.component);
 			const lines = this.renderEntryBlock(component, entry, index, width);
 			const promptRows: number[] = [];
 			for (let row = 0; row < lines.length; row++) {
@@ -269,12 +283,23 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 	private renderAllRows(width: number): string[] {
 		const lines: string[] = [];
 		const segments: RowWindowSegment[] = [];
-		for (let index = 0; index < this.entries.length; index += 1) {
-			const entry = this.entries[index];
-			if (entry === undefined) continue;
-			const block = this.renderEntryBlock(this.renderEntry(entry), entry, index, width);
-			segments.push({ id: entry, rows: block.length });
-			lines.push(...block);
+		const nextComponents: Component[] = [];
+		try {
+			for (let index = 0; index < this.entries.length; index += 1) {
+				const entry = this.entries[index];
+				if (entry === undefined) continue;
+				const component = this.renderEntry(entry);
+				nextComponents.push(component);
+				const block = this.renderEntryBlock(component, entry, index, width);
+				segments.push({ id: entry, rows: block.length });
+				for (const line of block) lines.push(line);
+			}
+		} finally {
+			const retained = new Set(nextComponents);
+			for (const component of new Set(this.staticComponents)) {
+				if (!retained.has(component)) disposeComponent(component);
+			}
+			this.staticComponents = nextComponents;
 		}
 		this.staticSegments = segments;
 		this.staticSegmentsWidth = width;
@@ -282,9 +307,11 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 	}
 
 	private renderEntryBlock(component: Component, entry: TEntry, index: number, width: number): string[] {
+		const rendered = component.render(width);
+		if (rendered.length === 0) return [];
 		const lines: string[] = [];
-		if (index > 0 && needsLeadingSpacer(entry.role)) lines.push("");
-		lines.push(...component.render(width));
+		if (index > 0 && needsLeadingSpacer(entry.role) && !ownsLeadingSpacer(component)) lines.push("");
+		for (const line of rendered) lines.push(line);
 		return lines;
 	}
 }
@@ -298,10 +325,6 @@ function indexAtOrBefore(sorted: readonly number[], target: number): number {
 		else high = middle;
 	}
 	return low - 1;
-}
-
-function disposeComponent(component: Component | undefined): void {
-	(component as DisposableComponent | undefined)?.dispose?.();
 }
 
 /** Alt+wheel moves this many wheel steps at once, as the main transcript does. */

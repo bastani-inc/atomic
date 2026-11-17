@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { stripTerminalSequences, type Terminal, TuiMainScreen, visibleWidth } from "@bastani/atomic-tui";
-import { afterEach, beforeAll, describe, test } from "vitest";
+import { afterEach, beforeAll, describe, test, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { AtomicWorkingLoader } from "../src/modes/interactive/components/atomic-working-status.ts";
 import { CustomEditor } from "../src/modes/interactive/components/custom-editor.ts";
@@ -44,6 +44,7 @@ beforeAll(() => {
 
 afterEach(() => {
 	for (const loader of activeLoaders.splice(0)) loader.stop();
+	vi.useRealTimers();
 });
 
 test("the default editor keeps the working indicator out of its border", () => {
@@ -77,13 +78,14 @@ test("the embedded indicator collapses to Atomic's one-cell spinner at narrow wi
 });
 
 test("the embedded Atomic spinner preserves its animated frame styling", () => {
+	vi.useFakeTimers();
 	const tui = new TuiMainScreen(new FakeTerminal());
 	const editor = new CustomEditor(tui, getEditorTheme(), new KeybindingsManager(), { embedWorkingStatus: true });
 	const loader = createLoader(tui);
 	editor.setWorkingStatusIndicator(loader);
 
 	const borders = Array.from({ length: 10 }, (_, frame) => {
-		Reflect.set(loader, "frame", frame);
+		if (frame > 0) vi.advanceTimersByTime(88);
 		return editor.render(40)[0] ?? "";
 	});
 

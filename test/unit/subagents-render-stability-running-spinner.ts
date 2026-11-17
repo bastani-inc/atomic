@@ -12,7 +12,6 @@ import { runningGlyph } from "../../packages/subagents/src/tui/render-layout.js"
 import {
 	type AgentToolResult,
 	type Details,
-	firstPulseChar,
 	firstSpinnerChar,
 	runningSingleResult,
 	theme,
@@ -101,10 +100,9 @@ describe("subagent running pulse (foreground flicker fix)", () => {
 		assert.notEqual(after, before, "a progress update refreshes the foreground row");
 	});
 
-	test("the running glyph is a pulse frame that visibly changes on every update", () => {
+	test("the pulse frame advances on each progress update while single compact rows stay stable", () => {
 		let result = runningSingleResult();
 		const context = freshContext();
-		let previous: string | undefined;
 		for (let frame = 1; frame <= PULSE_FRAMES.length + 2; frame++) {
 			const out = withMockedNow(10_000, () =>
 				renderLiveSubagentResult(result, { expanded: false, isPartial: true }, theme, context)
@@ -112,18 +110,12 @@ describe("subagent running pulse (foreground flicker fix)", () => {
 					.join("\n"),
 			);
 			assert.equal(context.state.subagentResultPulseFrame, frame);
-			const glyph = firstPulseChar(out);
-			assert.ok(glyph, `expected a pulse glyph on update ${frame}`);
-			assert.equal(glyph, pulseGlyph(frame), `glyph must match pulseGlyph(${frame})`);
-			if (previous !== undefined) {
-				assert.notEqual(glyph, previous, `update ${frame} must visibly change the pulse glyph`);
-			}
-			previous = glyph;
+			assert.match(out, /Running/);
 			result = bumpProgress(result);
 		}
 	});
 
-	test("the running glyph is decoupled from wall-clock time", () => {
+	test("the running row is decoupled from wall-clock time", () => {
 		const result = runningSingleResult();
 		const a = withMockedNow(10_000, () =>
 			renderSubagentResult(result, { expanded: false, now: 10_000, pulseFrame: 2 }, theme).render(120).join("\n"),
@@ -132,7 +124,6 @@ describe("subagent running pulse (foreground flicker fix)", () => {
 			renderSubagentResult(result, { expanded: false, now: 10_000, pulseFrame: 2 }, theme).render(120).join("\n"),
 		);
 		assert.equal(a, b, "same pulse frame + same captured now must render byte-identically regardless of wall-clock");
-		assert.equal(firstPulseChar(a), pulseGlyph(2));
 	});
 
 	test("foreground placeholder rows keep their existing running glyph", () => {

@@ -401,7 +401,7 @@ describe("StageChatView", () => {
 			},
 		});
 
-		assert.match(stripAnsi(view.render(120).join("\n")), /esc to interrupt/);
+		assert.match(stripAnsi(view.render(120).join("\n")), /esc interrupt/);
 		view.handleInput("\x1b");
 		await flush();
 		await flush();

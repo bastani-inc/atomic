@@ -57,22 +57,35 @@ describe("CodeHighlighter", () => {
 		assert.equal(highlight.mock.calls.length, 1);
 	});
 
-	it("write highlights unchanged first lines and a complete file only once", () => {
+	it("write defers highlighting until its result expands and reuses the full file across redraws (#5350)", () => {
 		const content = Array.from({ length: 60 }, (_, i) => `const v${i} = ${i};`).join("\n");
-		const row = new ToolExecutionComponent("write", "w", { path: "a.js", content }, {}, writeRenderers, tui, "/");
-		row.updateArgs({ path: "a.js", content: `${content} //` });
-		row.render(80);
 		const highlight = vi.spyOn(syntaxHighlight, "highlight");
-		// Only the changed last line is highlighted again.
-		row.updateArgs({ path: "a.js", content: `${content} // more` });
-		row.render(80);
-		assert.equal(highlight.mock.calls.length, 1);
-
-		row.setArgsComplete();
-		row.setExpanded(true);
-		row.setExpanded(false);
-		row.render(80);
-		assert.equal(highlight.mock.calls.length, 2);
+		const row = new ToolExecutionComponent("write", "w", { path: "a.js", content }, {}, writeRenderers, tui, "/");
+		try {
+			row.updateArgs({ path: "a.js", content: `${content} //` });
+			row.render(80);
+			row.updateArgs({ path: "a.js", content: `${content} // more` });
+			row.setArgsComplete();
+			row.render(80);
+			assert.equal(highlight.mock.calls.length, 0);
+			row.updateResult({ content: [], isError: false });
+			row.render(80);
+			assert.equal(highlight.mock.calls.length, 0);
+			row.setExpanded(true);
+			assert.match(row.render(80).join("\n"), /v59/);
+			assert.equal(highlight.mock.calls.length, 1);
+			row.setExpanded(false);
+			row.setExpanded(true);
+			row.invalidate();
+			row.render(160);
+			assert.equal(highlight.mock.calls.length, 1);
+			initTheme("light");
+			row.invalidate();
+			row.render(80);
+			assert.equal(highlight.mock.calls.length, 2);
+		} finally {
+			row.dispose();
+		}
 	});
 });
 

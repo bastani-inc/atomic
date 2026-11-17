@@ -4,8 +4,9 @@ import {
 	type AtomicWorkingPalette,
 	AtomicWorkingStatusComponent,
 	atomicWorkingFrame,
+	DEFAULT_WORKING_MESSAGE,
 } from "./atomic-working-status.ts";
-import type { WorkingRunSnapshot } from "./working-run-meter.ts";
+import { normalizeWorkingRunSnapshot, type WorkingRunMetaInput } from "./working-run-meter.ts";
 
 export interface WorkingStatusComponentOptions {
 	/** Explicit caller-owned indicator frame; omitted uses Atomic's one-cell identity. */
@@ -16,7 +17,7 @@ export interface WorkingStatusComponentOptions {
 	spinnerBoldColor?: (text: string) => string;
 	palette?: AtomicWorkingPalette | (() => AtomicWorkingPalette);
 	messageColor?: (text: string) => string;
-	meta?: WorkingRunSnapshot;
+	meta?: WorkingRunMetaInput;
 	logo?: boolean;
 }
 
@@ -28,7 +29,7 @@ export class WorkingStatusComponent implements Component {
 	}
 
 	render(width: number): string[] {
-		const message = this.options.message ?? "Working...";
+		const message = this.options.message ?? DEFAULT_WORKING_MESSAGE;
 		const spinnerColor = this.options.spinnerColor ?? ((text: string) => theme.fg("accent", text));
 		const messageColor = this.options.messageColor ?? ((text: string) => theme.fg("muted", text));
 		if (this.options.spinner !== undefined) {
@@ -42,7 +43,7 @@ export class WorkingStatusComponent implements Component {
 			spinnerBoldColor: this.options.spinnerBoldColor,
 			palette: this.options.palette,
 			messageColor,
-			meta: this.options.meta,
+			meta: this.options.meta ? normalizeWorkingRunSnapshot(this.options.meta) : undefined,
 			logo: this.options.logo,
 		}).render(width);
 	}
