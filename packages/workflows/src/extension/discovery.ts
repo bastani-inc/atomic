@@ -270,7 +270,12 @@ async function applyBatch(
 	return registry;
 }
 
-/** Merge bundled startup candidates with shape-only validation to keep startup seeding synchronous. */
+/**
+ * Merge bundled startup candidates with shape-only validation to keep startup seeding synchronous. Bundled definitions
+ * skip the zero-stage lint: they ship with this build, and `workflow-bundled-discovery.test.ts` checks that the static
+ * scan finds stages in every one of them, so scanning their sources on every start (synchronously, before the first
+ * request) could only ever report nothing.
+ */
 function applyBatchShapeOnly(
 	candidates: WorkflowModuleCandidateRecord[],
 	registry: WorkflowRegistry,
@@ -310,8 +315,6 @@ function applyBatchShapeOnly(
 			...(filePath !== undefined ? { filePath } : {}),
 			...(configuredName !== undefined ? { configuredName } : {}),
 		});
-		const lint = zeroStageLintDiagnostic(def, filePath);
-		if (lint !== undefined) diagnostics.push(lint);
 	}
 	return registry;
 }

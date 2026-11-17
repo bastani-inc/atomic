@@ -2,14 +2,25 @@
 
 ## [Unreleased]
 
+### Added
+
+- `ATOMIC_STARTUP_TRACE` names a file to which Atomic appends each startup milestone (process start, first paint, engine ready, first provider request) with its wall-clock time; an interactive session's engine writes to the same file
+
 ### Changed
 
 - On Linux, starting a shell or one of Atomic's own processes (worktree snapshot Git, `pi.exec`, the search tools' `rg` and `fd`, worktree setup) no longer pauses Atomic for a time that grows with its memory. Each start copied the whole process with `fork()`, which took about 65 ms per GB it held. A session holding 8 GB that started five processes a second kept its main thread busy 99.9% of the time, so subagents took minutes to start and the screen and Intercom lagged; it now stays under 2% at any size. `ATOMIC_HOST_SPAWN=child-process` restores Node's `child_process` for Atomic's own processes.
 - Hosts running many agents stay responsive while they record worktree snapshots. A turn whose checkout did not change now starts 9 Git processes instead of 14, a changed one 17 instead of 21, and sessions that capture the same checkout at the same time compute its tree at most twice instead of once each. Each snapshot still records the checkout as it was after its turn.
+- Interactive startup no longer waits for its engine: the first frame, with an editor that takes input, appears while the engine still loads, and a host on a terminal starts the engine as it starts itself, so a prompt typed at launch goes out sooner. The standalone binary paints its first frame in about 270 ms instead of 940 ms on Linux and in about 450 ms instead of 1,290 ms on Windows; the npm package in about 940 ms instead of 1,570 ms on Linux and 2.3 s instead of 4.3 s on Windows
+- The standalone binary for the build's own platform (Linux x64, Windows x64) ships a bytecode cache of its application bundle, so every process it starts, including `-p`, `--mode rpc`, subagents and workflow workers, loads in about 150 ms instead of 360 ms
+- On Windows, finding PowerShell on `PATH` no longer starts `where` and waits for it, which cost every start about 25–40 ms before its first frame
 - Clarified in `codemode`'s description, system-prompt guidance, and `searchTools()`/`describeTool()` hints that `subagent`, `workflow`, and other model-only tools (plus `intercom`'s model-only actions) cannot be called from inside a `codemode` script, and should be called directly as separate top-level tools when available in the session
 
 ### Fixed
 
+- A prompt typed while Atomic starts is no longer sent twice on Windows: a stray cursor report reached the startup input as F3, left a "C" in the editor and sent it with the next prompt. F1–F5 and Page Up/Down sent as `ESC [ [ …` no longer type a letter into the startup input
+- Keys typed while Atomic started are no longer lost when a startup dialog (project trust, dirty checkout, first-run setup) takes the terminal: they are captured as the draft, and keys typed once the dialog holds the terminal reach the dialog
+- Restoring saved model catalogs at startup no longer fails while another Atomic process saves its catalog, and no longer takes the save lock once per provider, which cost about 180 ms before the first frame on Windows
+- On Windows, saving credentials or a refreshed model catalog no longer fails with `EPERM`, losing the save, when another Atomic process is reading `auth.json` or `models-store.json` at that moment: the save waits for the read to finish
 - A fast foreground shell command no longer delivers a stray `Background shell completed` notice after its own result when the command exits before Atomic has finished starting it. The model was shown the command's result a second time, as a background shell's, in chats and workflow stages alike ([#5333](https://github.com/bastani-inc/atomic/pull/5333))
 - Fixed a session that ended staying in memory for as long as a timer, connection or other long-lived resource that an extension started while the session was in use, as a service started once and shared by later sessions does.
 - Fixed each `/reload` keeping the extensions it replaced in memory for as long as the session ran: every new generation of the session's extensions kept the one before it, so each reload added about 10 MB that was never released.
