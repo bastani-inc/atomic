@@ -188,8 +188,13 @@ async function prepareProtectedAdmission(
 	if (session.agent.state.pendingToolCalls.size > 0) await session._agentEventQueue;
 	const owner = resolveWorkflowStageDeliveryTarget(session);
 	const prepared = [];
+	const keys = new Set<string>();
 	for (const message of messages) {
-		const { card, intentEntryId } = await appendDurableDisplayCard(owner, message, delivery);
+		const { stageAdmissionKey } = message as StageAdmittedCustomMessage;
+		const repeated = stageAdmissionKey !== undefined && keys.has(stageAdmissionKey);
+		if (stageAdmissionKey !== undefined) keys.add(stageAdmissionKey);
+		const unique = repeated ? { ...message, stageAdmissionKey: undefined } : message;
+		const { card, intentEntryId } = await appendDurableDisplayCard(owner, unique, delivery);
 		prepared.push({ card, reconciliation: createProtectedReconciliation(message, intentEntryId) });
 	}
 	const cards = prepared.map((entry) => entry.card);

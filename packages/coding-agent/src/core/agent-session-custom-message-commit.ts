@@ -1,4 +1,5 @@
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
+import { holdsTurnsForDetachedResults } from "./agent-session-detached-tools.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import {
 	admitProtectedStreamingCustomMessage,
@@ -143,7 +144,7 @@ export async function commitAdmittedCustomMessage<T>(
 	) {
 		if (options?.triggerTurn === true) {
 			const delivery = options.deliverAs === "followUp" ? "followUp" : "steer";
-			if (useProtectedReconciliation) {
+			if (useProtectedReconciliation || holdsTurnsForDetachedResults(self)) {
 				await queueProtectedStreamingCustomMessage(self, appMessage, delivery);
 				startTurnIfPauseReleasedDuringAdmission(self, appMessage);
 			} else {
@@ -257,7 +258,7 @@ export async function commitAdmittedCustomMessages<T>(
 		(self._subagentPolicy?.executionEnded !== undefined && options?.triggerTurn)
 	) {
 		if (options?.triggerTurn === true) {
-			if (useProtectedReconciliation) {
+			if (useProtectedReconciliation || holdsTurnsForDetachedResults(self)) {
 				await queueProtectedStreamingCustomMessages(self, appMessages, delivery);
 				startTurnIfPauseReleasedDuringAdmission(self, appMessages[0]!);
 			} else {

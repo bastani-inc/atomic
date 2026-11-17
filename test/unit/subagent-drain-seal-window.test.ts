@@ -450,7 +450,42 @@ test.each(promptSenders)(
 	LIVE_CHILD_SWEEP_TIMEOUT_MS,
 );
 
-test.each(senders.filter(({ id }) => id === "intercom" || id === "user-message" || id === "steer"))(
+const BATCH_SECOND_TEXT = "the other message in the released batch";
+const releaseSenders: Array<Sender & { readonly cardType?: string; readonly texts?: readonly string[] }> = [
+	...senders
+		.filter(({ id }) => id === "intercom" || id === "extension" || id === "user-message" || id === "steer")
+		.map((sender) => ({
+			...sender,
+			cardType: sender.id === "intercom" || sender.id === "extension" ? card.customType : undefined,
+		})),
+	{
+		id: "subagent-notify",
+		name: "a background grandchild's completion notice",
+		cardType: "subagent-notify",
+		send: ({ pi }, key) =>
+			Promise.resolve(
+				pi.sendMessage(
+					{ ...card, customType: "subagent-notify" },
+					{ triggerTurn: true, stageAdmissionKey: `subagent:${key}` },
+				),
+			),
+	},
+	{
+		id: "extension-batch",
+		name: "an extension's batch of messages",
+		cardType: card.customType,
+		texts: [LATE_TEXT, BATCH_SECOND_TEXT],
+		send: ({ pi }, key) =>
+			Promise.resolve(
+				pi.sendMessages([card, { ...card, content: BATCH_SECOND_TEXT }], {
+					triggerTurn: true,
+					stageAdmissionKey: `batch:${key}`,
+				}),
+			),
+	},
+];
+
+test.each(releaseSenders)(
 	"$name sent while a subagent is being released is kept and answered on wake (#5318)",
 	async (sender) => {
 		const env = await liveChildEnvironment(cleanups);
@@ -497,21 +532,23 @@ test.each(senders.filter(({ id }) => id === "intercom" || id === "user-message" 
 			);
 			assert.equal(outcome, "accepted", "a releasing child is not terminal");
 			const saved = await SessionManager.open(store, childSession.getSessionId());
-			if (sender.id === "intercom") {
-				assert.equal(
-					saved
-						.getEntries()
-						.filter(
-							(entry) =>
-								entry.type === "custom_message" &&
-								entry.customType === "intercom_message" &&
-								entry.display &&
-								entry.content === LATE_TEXT,
-						).length,
-					1,
-					"the Intercom card is saved once before release",
-				);
-			} else assert.deepEqual(released.pendingMessages, [LATE_TEXT], "input is kept for the wake");
+			const expectedTexts = sender.texts ?? [LATE_TEXT];
+			if (sender.cardType !== undefined) {
+				for (const text of expectedTexts)
+					assert.equal(
+						saved
+							.getEntries()
+							.filter(
+								(entry) =>
+									entry.type === "custom_message" &&
+									entry.customType === sender.cardType &&
+									entry.display &&
+									entry.content === text,
+							).length,
+						1,
+						`the message's card is saved once before release: ${text}`,
+					);
+			} else assert.deepEqual(released.pendingMessages, expectedTexts, "input is kept for the wake");
 
 			env.faux.setResponses(Array.from({ length: 4 }, () => answerPendingInput()));
 			let wokenSession: AgentSession | undefined;
@@ -535,11 +572,29 @@ test.each(senders.filter(({ id }) => id === "intercom" || id === "user-message" 
 				}),
 			});
 			assert.equal(woken.status ?? "ok", "ok");
-			assert.equal(
-				assistantTexts(wokenSession!).filter((text) => text.includes(LATE_TEXT)).length,
-				1,
-				"the woken child answers the message once",
-			);
+			for (const text of expectedTexts)
+				assert.equal(
+					assistantTexts(wokenSession!).join("\n").split(text).length - 1,
+					1,
+					`the woken child answers the message once: ${text}`,
+				);
+			if (sender.cardType !== undefined) {
+				const afterWake = await SessionManager.open(store, childSession.getSessionId());
+				for (const text of expectedTexts)
+					assert.equal(
+						afterWake
+							.getEntries()
+							.filter(
+								(entry) =>
+									entry.type === "custom_message" &&
+									entry.customType === sender.cardType &&
+									entry.display &&
+									entry.content === text,
+							).length,
+						1,
+						`the wake never duplicates the saved card: ${text}`,
+					);
+			}
 		} finally {
 			env.answers[0]?.({ content: [{ type: "text", text: "green" }], details: undefined });
 		}
