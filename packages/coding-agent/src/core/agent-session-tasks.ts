@@ -3,11 +3,12 @@ import { hasToolDetachment, waitsOnDetachedResults } from "./agent-session-detac
 import { pendingCustomMessageSaved } from "./agent-session-message-queue.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { hasUnreadProtectedCustomMessage } from "./agent-session-persistent-custom-messages.ts";
+import { deliverTaskNotice, type TaskNoticeSend } from "./agent-session-task-notices.ts";
 import { getExtensionRuntimeEventBus } from "./extensions/loader-core.js";
 import { sessionGenerationClosing } from "./session-lifecycle-work.ts";
 import { AgentTaskHost } from "./tasks/agent-adapter.js";
 import { type ChildTaskCompletionRoute, deliverToLaunchingSession } from "./tasks/child-command-owner.js";
-import { type TaskCompletionEnvelope, TaskCompletionOutbox } from "./tasks/completion.js";
+import { type TaskCompletionEnvelope, TaskCompletionOutbox, taskNoticeCompletionIds } from "./tasks/completion.js";
 import { commandOutputExcerpt, taskCompletionMessage } from "./tasks/completion-message.js";
 import { flushTaskCompletionMessages } from "./tasks/completion-ordering.js";
 import type * as C from "./tasks/contracts.js";
@@ -121,29 +122,38 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 					envelope.completionId,
 				);
 			}
-			// A notice reaches this session or waits for it: a closed stage keeps it rather than sending it on to the chat
-			// that launched the workflow.
-			const deliver = () =>
-				this.sendCustomMessage(
-					message,
-					restored || !task
-						? { triggerTurn: false, stageAdmissionKey: envelope.completionId, stayInSession: true }
-						: {
-								triggerTurn: true,
-								persistWhenStreaming: true,
-								stageAdmissionKey: envelope.completionId,
-								stayInSession: true,
-							},
-				);
-			if (stageAdmission) await deliver();
-			else {
-				await admission.admit(envelope.completionId, deliver, () => {
+			// Notices that finish together, or while this session works, reach it as one message once it is idle, and that
+			// message starts one turn. A notice reaches this session or waits for it: a closed stage keeps it rather than
+			// sending it on to the chat that launched the workflow. It is acknowledged once saved (#5047).
+			const send: TaskNoticeSend = (joined, { triggerTurn, stageAdmissionKey, busy }) => {
+				const deliver = () =>
+					this.sendCustomMessage(joined, {
+						triggerTurn,
+						stageAdmissionKey,
+						stayInSession: true,
+						// Admitted while a turn runs after all, it waits durably for that turn's next safe boundary.
+						...(triggerTurn && busy ? { persistWhenStreaming: true } : {}),
+					});
+				if (stageAdmission) return deliver();
+				return admission.admit(stageAdmissionKey, deliver, () => {
 					throw new Error("Task owner is closed");
 				}).completion;
+			};
+			// A restored notice, or one whose task is gone, joins the transcript at once without starting a turn; mid-turn
+			// it waits in memory for the turn to end, and is acknowledged once saved (#5047).
+			if (restored || task === undefined) {
+				await send(message, { triggerTurn: false, stageAdmissionKey: envelope.completionId, busy: false });
+				const saved = pendingCustomMessageSaved(this, envelope.completionId);
+				return saved === undefined ? undefined : { saved };
 			}
-			// A restored notice admitted mid-turn waits in memory for the turn to end; it is acknowledged once saved (#5047).
-			const saved = restored || !task ? pendingCustomMessageSaved(this, envelope.completionId) : undefined;
-			return saved === undefined ? undefined : { saved };
+			return {
+				saved: deliverTaskNotice(this, message, {
+					completionId: envelope.completionId,
+					triggerTurn: true,
+					send,
+					afterTurn: true,
+				}),
+			};
 		},
 		// Each notice holds its task's record until it is delivered, so a burst of finishes cannot evict what the
 		// notice is built from (#4385).
@@ -259,11 +269,20 @@ export function _getCommandTaskOwner(this: AgentSession): SupervisedCommandOwner
 	if (!this._parentCommandTaskOwner || this._disposed) return undefined;
 	const route: ChildTaskCompletionRoute = {
 		isOpen: () => !this._disposed && this._subagentPolicy?.messageAdmission?.isOpen() === true,
-		deliver: async (message) => {
-			const admission = this._subagentPolicy?.messageAdmission;
-			if (!admission) throw new Error("Subagent execution cannot accept messages");
-			await admission.run(() => this.sendCustomMessage(message, { triggerTurn: true, persistWhenStreaming: true }));
-		},
+		// A running subagent reads its shells' notices within its turn, those that finish together as one message.
+		deliver: (message) =>
+			deliverTaskNotice(this, message, {
+				completionId: taskNoticeCompletionIds(message.details)[0],
+				triggerTurn: true,
+				afterTurn: false,
+				send: async (joined) => {
+					const admission = this._subagentPolicy?.messageAdmission;
+					if (!admission) throw new Error("Subagent execution cannot accept messages");
+					await admission.run(() =>
+						this.sendCustomMessage(joined, { triggerTurn: true, persistWhenStreaming: true }),
+					);
+				},
+			}),
 	};
 	return waitingUntilSettled(
 		this._parentCommandTaskOwner.bind(this.sessionManager.getSessionId(), route, this._childTaskWaits),

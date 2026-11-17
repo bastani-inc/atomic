@@ -347,7 +347,12 @@ export class TaskCompletionOutbox {
 		if (this.session.getSessionRecoveryState?.().admissionKeys.includes(completionId)) return true;
 		return this.session
 			.getEntries()
-			.some((entry) => entry.type === "custom_message" && entry.stageAdmissionKey === completionId);
+			.some(
+				(entry) =>
+					entry.type === "custom_message" &&
+					(entry.stageAdmissionKey === completionId ||
+						taskNoticeCompletionIds(entry.details).includes(completionId)),
+			);
 	}
 
 	private async acknowledge(envelope: TaskCompletionEnvelope, restored: boolean): Promise<void> {
@@ -357,6 +362,15 @@ export class TaskCompletionOutbox {
 		if (restored) this.restoredDelivered(envelope);
 		else this.delivered(envelope);
 	}
+}
+
+/** The completion ids a saved notice carries: its own, or those of every notice it joined. */
+export function taskNoticeCompletionIds(details: unknown): string[] {
+	if (details === null || typeof details !== "object") return [];
+	const joined = (details as { notices?: unknown }).notices;
+	if (Array.isArray(joined)) return joined.flatMap((notice) => taskNoticeCompletionIds(notice));
+	const id = (details as { completionId?: unknown }).completionId;
+	return typeof id === "string" ? [id] : [];
 }
 
 /** Completion intents recorded in this session history without an acknowledgement. */
