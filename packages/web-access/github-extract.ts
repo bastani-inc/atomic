@@ -25,6 +25,7 @@ interface ClonePaths {
 
 interface CachedClone {
 	paths: ClonePaths;
+	abort: () => void;
 	clonePromise: Promise<string | null>;
 }
 
@@ -122,18 +123,55 @@ async function prepareCloneDirectory(paths: ClonePaths): Promise<boolean> {
 
 function execClone(args: string[], paths: ClonePaths, timeoutMs: number, signal?: AbortSignal): Promise<string | null> {
 	return new Promise((resolve, reject) => {
-		const child = execFile(args[0], args.slice(1), { timeout: timeoutMs, env: createChildProcessEnvironment() }, (err) => {
-			if (err) {
+		let settled = false;
+		let exited = false;
+		let stopped = false;
+		const finish = (failed: boolean) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			if (signal) signal.removeEventListener("abort", onAbort);
+			child.stdin?.destroy();
+			child.stdout?.destroy();
+			child.stderr?.destroy();
+			if (failed) {
 				void removeOwnedClone(paths).then(() => resolve(null), reject);
 				return;
 			}
 			resolve(paths.checkout);
+		};
+		const stop = () => {
+			stopped = true;
+			child.stdin?.destroy();
+			child.stdout?.destroy();
+			child.stderr?.destroy();
+			if (process.platform !== "win32" && child.pid !== undefined && child.pid !== process.pid) {
+				try {
+					process.kill(-child.pid, "SIGTERM");
+				} catch {}
+			}
+			child.kill();
+			if (exited || child.pid === undefined) finish(true);
+		};
+		const onAbort = () => stop();
+		const child = execFile(
+			args[0],
+			args.slice(1),
+			{ timeout: timeoutMs, env: createChildProcessEnvironment() },
+			(err) => {
+				finish(stopped || Boolean(err) || Boolean(signal?.aborted));
+			},
+		);
+		const timer = setTimeout(stop, timeoutMs);
+		child.on("error", () => finish(true));
+		child.on("exit", (code, exitSignal) => {
+			exited = true;
+			if (code !== 0 || exitSignal !== null || signal?.aborted) stop();
+			finish(stopped || code !== 0 || exitSignal !== null || Boolean(signal?.aborted));
 		});
-
 		if (signal) {
-			const onAbort = () => child.kill();
-			signal.addEventListener("abort", onAbort, { once: true });
-			child.on("exit", () => signal.removeEventListener("abort", onAbort));
+			if (signal.aborted) stop();
+			else signal.addEventListener("abort", onAbort, { once: true });
 		}
 	});
 }
@@ -539,10 +577,17 @@ export async function extractGitHub(
 	}
 
 	const paths = clonePaths(config, owner, repo, info.ref);
-	const clonePromise = state.cleanup.then(() =>
-		signal?.aborted ? null : cloneRepo(owner, repo, info.ref, paths, config, signal),
-	);
-	cloneCache.set(key, { paths, clonePromise });
+	const controller = new AbortController();
+	const onAbort = () => controller.abort();
+	signal?.addEventListener("abort", onAbort, { once: true });
+	const clonePromise = state.cleanup
+		.then(() =>
+			signal?.aborted || controller.signal.aborted
+				? null
+				: cloneRepo(owner, repo, info.ref, paths, config, controller.signal),
+		)
+		.finally(() => signal?.removeEventListener("abort", onAbort));
+	cloneCache.set(key, { paths, abort: () => controller.abort(), clonePromise });
 
 	const result = await clonePromise;
 	if (signal?.aborted) {
@@ -580,6 +625,7 @@ export function clearCloneCache(): Promise<void> {
 	const entries = [...state.cache.values()];
 	state.cache.clear();
 	resetGitHubConfig();
+	for (const entry of entries) entry.abort();
 	// Invalidated clones finish before they are removed, and new clones wait until their old directory is gone.
 	const cleanup = state.cleanup.then(async () => {
 		for (const entry of entries) {

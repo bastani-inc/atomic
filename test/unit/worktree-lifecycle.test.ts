@@ -437,3 +437,49 @@ printf '{}'
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+unixTest("worktree setup hooks settle on timeout when a background grandchild holds stdio (#5377)", async () => {
+	const { root, repo } = await createRepository();
+	const hook = join(root, "grandchild-hook.sh");
+	writeFileSync(hook, "#!/bin/sh\n(sleep 30) &\nsleep 30\n");
+	chmodSync(hook, 0o755);
+	const within = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			return await Promise.race([
+				promise,
+				new Promise<never>((_, reject) => {
+					timer = setTimeout(() => reject(new Error("setup hook hung on grandchild pipe")), ms);
+				}),
+			]);
+		} finally {
+			if (timer !== undefined) clearTimeout(timer);
+		}
+	};
+	try {
+		await assert.rejects(
+			() =>
+				within(
+					createWorktrees(repo, "timeout/workflow-hook", 1, {
+						baseBranch: "main",
+						setupHook: { hookPath: hook, timeoutMs: 150 },
+						symlinkDirectories: [],
+					}),
+					2_000,
+				),
+			/worktree setup hook timed out after 150ms/,
+		);
+		await assert.rejects(
+			() =>
+				within(
+					createSubagentWorktrees(repo, "timeout/subagent-hook", 1, {
+						setupHook: { hookPath: hook, timeoutMs: 150 },
+					}),
+					2_000,
+				),
+			/worktree setup hook timed out after 150ms/,
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});

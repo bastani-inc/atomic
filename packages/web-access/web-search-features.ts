@@ -52,10 +52,11 @@ export function registerWebSearchFeatures(pi: ExtensionAPI, initConfig: WebSearc
 	async function handleSessionChange(ctx: ExtensionContext): Promise<void> {
 		abortPendingFetches();
 		closeCurator();
-		await clearCloneCache();
+		const clearing = clearCloneCache();
 		runtimeState.sessionActive = true;
 		restoreFromSession(ctx);
 		refreshActivityForSession(activityState, ctx);
+		await clearing;
 	}
 
 	const curateKey = initConfig.shortcuts?.curate || DEFAULT_SHORTCUTS.curate;
@@ -158,9 +159,10 @@ export function registerWebSearchFeatures(pi: ExtensionAPI, initConfig: WebSearc
 		runtimeState.sessionActive = false;
 		abortPendingFetches();
 		closeCurator();
-		await clearCloneCache();
+		const clearing = clearCloneCache();
 		clearResults();
 		shutdownActivityWidget(activityState);
+		await clearing;
 	});
 
 	registerWebSearchTool(pi, {

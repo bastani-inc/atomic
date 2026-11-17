@@ -122,6 +122,7 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 			...(options.shell !== undefined ? { shell: options.shell } : {}),
 			...(options.timeout !== undefined ? { timeout: options.timeout } : {}),
 			stdio: [options.input !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
+			detached: process.platform !== "win32",
 			windowsHide: true,
 		});
 		const stdoutChunks: Buffer[] = [];
@@ -129,8 +130,11 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 		let stdoutBytes = 0;
 		let stderrBytes = 0;
 		let spawnError: (Error & { code?: string }) | undefined;
+		let inputError: (Error & { code?: string }) | undefined;
 		let timedOut = false;
 		let settled = false;
+		let exited = false;
+		let stopped = false;
 		const finish = (status: number | null) => {
 			if (settled) return;
 			settled = true;
@@ -144,19 +148,33 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 				timedOut = true;
 				spawnError = Object.assign(new Error(`spawn ${command} ETIMEDOUT`), { code: "ETIMEDOUT" });
 			}
+			const reported = spawnError ?? inputError;
 			resolve({
 				stdout: Buffer.concat(stdoutChunks).toString("utf-8"),
 				stderr: Buffer.concat(stderrChunks).toString("utf-8"),
 				status: timedOut ? null : status,
-				...(spawnError ? { error: spawnError } : {}),
+				...(reported ? { error: reported } : {}),
 			});
+		};
+		const stop = (error: Error & { code?: string }, isTimeout = false) => {
+			stopped = true;
+			if (isTimeout) timedOut = true;
+			spawnError ??= error;
+			child.stdin?.destroy();
+			child.stdout?.destroy();
+			child.stderr?.destroy();
+			if (process.platform !== "win32" && child.pid !== undefined && child.pid !== process.pid) {
+				try {
+					process.kill(-child.pid, "SIGTERM");
+				} catch {}
+			}
+			child.kill("SIGTERM");
+			if (exited || child.pid === undefined) finish(null);
 		};
 		const timer =
 			options.timeout !== undefined
 				? setTimeout(() => {
-						timedOut = true;
-						spawnError = Object.assign(new Error(`spawn ${command} ETIMEDOUT`), { code: "ETIMEDOUT" });
-						child.kill();
+						stop(Object.assign(new Error(`spawn ${command} ETIMEDOUT`), { code: "ETIMEDOUT" }), true);
 					}, options.timeout)
 				: undefined;
 		child.stdout?.on("data", (chunk: Buffer | string) => {
@@ -165,8 +183,7 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 			if (stdoutBytes <= options.maxBuffer) {
 				stdoutChunks.push(buf);
 			} else if (!spawnError) {
-				spawnError = Object.assign(new Error(`spawn ${command} ENOBUFS`), { code: "ENOBUFS" });
-				child.kill();
+				stop(Object.assign(new Error(`spawn ${command} ENOBUFS`), { code: "ENOBUFS" }));
 			}
 		});
 		child.stderr?.on("data", (chunk: Buffer | string) => {
@@ -175,8 +192,7 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 			if (stderrBytes <= options.maxBuffer) {
 				stderrChunks.push(buf);
 			} else if (!spawnError) {
-				spawnError = Object.assign(new Error(`spawn ${command} ENOBUFS`), { code: "ENOBUFS" });
-				child.kill();
+				stop(Object.assign(new Error(`spawn ${command} ENOBUFS`), { code: "ENOBUFS" }));
 			}
 		});
 		child.on("error", (error: Error & { code?: string }) => {
@@ -185,10 +201,22 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 		});
 		if (options.input !== undefined && child.stdin && !child.stdin.destroyed) {
 			child.stdin.on("error", (error: Error & { code?: string }) => {
-				spawnError ??= error;
+				inputError ??= error;
 			});
 			child.stdin.end(options.input);
 		}
+		child.on("exit", (code, signal) => {
+			exited = true;
+			if (
+				!spawnError &&
+				signal !== null &&
+				options.timeout !== undefined &&
+				Date.now() - startedAt >= options.timeout
+			) {
+				stop(Object.assign(new Error(`spawn ${command} ETIMEDOUT`), { code: "ETIMEDOUT" }), true);
+			}
+			if (stopped) finish(code);
+		});
 		child.on("close", (code) => {
 			finish(code);
 		});

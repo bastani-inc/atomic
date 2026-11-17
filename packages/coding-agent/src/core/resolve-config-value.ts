@@ -307,15 +307,43 @@ function runCommand(
 		const chunks: Buffer[] = [];
 		let size = 0;
 		let error: NodeJS.ErrnoException | undefined;
+		let settled = false;
+		let exited = false;
+		let stopped = false;
+		const finish = (status: number | null) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			resolve({ error, status, stdout: Buffer.concat(chunks).toString("utf-8") });
+		};
+		const stop = (failure: NodeJS.ErrnoException) => {
+			stopped = true;
+			error ??= failure;
+			child.stdin?.destroy();
+			child.stdout?.destroy();
+			if (process.platform !== "win32" && child.pid !== undefined && child.pid !== process.pid) {
+				try {
+					process.kill(-child.pid, "SIGTERM");
+				} catch {}
+			}
+			child.kill("SIGTERM");
+			if (exited || child.pid === undefined) finish(null);
+		};
 		const child = spawn(file, args, {
 			stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "ignore"],
 			timeout: COMMAND_TIMEOUT_MS,
 			shell: options.shell,
 			windowsHide: options.windowsHide,
+			detached: process.platform !== "win32",
 			env: createChildProcessEnvironment(),
 		});
+		const timer = setTimeout(
+			() => stop(Object.assign(new Error(`spawn ${file} ETIMEDOUT`), { code: "ETIMEDOUT" })),
+			COMMAND_TIMEOUT_MS,
+		);
 		child.on("error", (failure: NodeJS.ErrnoException) => {
 			error ??= failure;
+			if (child.pid === undefined) finish(null);
 		});
 		child.stdout?.on("data", (chunk: Buffer) => {
 			size += chunk.length;
@@ -323,10 +351,16 @@ function runCommand(
 				chunks.push(chunk);
 				return;
 			}
-			error ??= Object.assign(new Error("stdout maxBuffer length exceeded"), { code: "ENOBUFS" });
-			child.kill();
+			stop(Object.assign(new Error("stdout maxBuffer length exceeded"), { code: "ENOBUFS" }));
 		});
-		child.on("close", (status) => resolve({ error, status, stdout: Buffer.concat(chunks).toString("utf-8") }));
+		child.on("exit", (status, signal) => {
+			exited = true;
+			if (stopped || error !== undefined || signal !== null) {
+				stop(Object.assign(new Error(`spawn ${file} ETIMEDOUT`), { code: "ETIMEDOUT" }));
+				finish(status);
+			}
+		});
+		child.on("close", (status) => finish(status));
 		if (options.input !== undefined) {
 			// A command that exits without reading its input closes the pipe; that is its own outcome.
 			child.stdin?.on("error", () => {});

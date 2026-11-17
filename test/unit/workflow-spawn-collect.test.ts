@@ -63,3 +63,47 @@ test("reports a command that cannot start by its spawn error, with no status", a
 	assert.equal(errorCode(result.error), "ENOENT");
 	assert.equal(result.status, null);
 });
+
+test("settles promptly on timeout and maxBuffer when a background grandchild holds stdio (#5377)", async () => {
+	const within = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			return await Promise.race([
+				promise,
+				new Promise<never>((_, reject) => {
+					timer = setTimeout(() => reject(new Error("spawnCollect hung on grandchild pipe")), ms);
+				}),
+			]);
+		} finally {
+			if (timer !== undefined) clearTimeout(timer);
+		}
+	};
+	const timedOut = await within(
+		spawnCollect(
+			node,
+			[
+				"-e",
+				"const { spawn } = require('node:child_process'); spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'inherit' }); setTimeout(() => {}, 30000);",
+			],
+			{ cwd: process.cwd(), env: process.env, timeout: 150, maxBuffer: 1024 },
+		),
+		1_500,
+	);
+	assert.equal(errorCode(timedOut.error), "ETIMEDOUT");
+	assert.equal(timedOut.status, null);
+	assert.equal(timedOut.signal, "SIGTERM");
+
+	const overflow = await within(
+		spawnCollect(
+			node,
+			[
+				"-e",
+				"const { spawn } = require('node:child_process'); spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'inherit' }); process.stdout.write('x'.repeat(4096)); setTimeout(() => {}, 30000);",
+			],
+			{ cwd: process.cwd(), env: process.env, timeout: GENEROUS_TIMEOUT_MS, maxBuffer: 1024 },
+		),
+		1_500,
+	);
+	assert.equal(errorCode(overflow.error), "ENOBUFS");
+	assert.equal(overflow.stdout.length, 1024);
+});

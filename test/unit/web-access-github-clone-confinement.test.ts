@@ -22,34 +22,42 @@ const boundary = vi.hoisted(() => ({
 	/** Links the fake clone creates: name inside the clone to target (relative targets are kept as written). */
 	links: {} as Record<string, { target: string; type: "file" | "dir" | "junction" }>,
 	failClone: false,
+	cloneScript: "",
 	/** `gh api` output keyed by `<endpoint> <jq filter>`; any other request fails. */
 	api: {} as Record<string, string>,
 }));
 
-vi.mock("node:child_process", () => ({
-	execFile: (_command: string, args: string[], _options: object, callback: Callback) => {
-		boundary.calls.push(args);
-		queueMicrotask(() => {
-			if (args[0] === "--version") return callback(null, "gh version 2");
-			if (args[0] === "repo" && args[1] === "clone") {
-				const target = args[3]!;
-				if (!target.startsWith(`${boundary.sandbox}${sep}`)) return callback(new Error("outside sandbox"));
-				for (const [name, content] of Object.entries(boundary.files)) {
-					mkdirSync(dirname(join(target, name)), { recursive: true });
-					writeFileSync(join(target, name), content);
-				}
-				for (const [name, link] of Object.entries(boundary.links)) {
-					mkdirSync(dirname(join(target, name)), { recursive: true });
-					symlinkSync(link.target, join(target, name), link.type);
-				}
-				return callback(boundary.failClone ? new Error("clone failed") : null, "");
+vi.mock("node:child_process", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:child_process")>();
+	return {
+		...actual,
+		execFile: (_command: string, args: string[], options: object, callback: Callback) => {
+			boundary.calls.push(args);
+			if (args[0] === "repo" && args[1] === "clone" && boundary.cloneScript) {
+				return actual.execFile(process.execPath, ["-e", boundary.cloneScript], options, callback);
 			}
-			const output = boundary.api[`${args[1]} ${args[3]}`];
-			return output === undefined ? callback(new Error("offline"), "") : callback(null, output);
-		});
-		return Object.assign(new EventEmitter(), { kill: () => true });
-	},
-}));
+			queueMicrotask(() => {
+				if (args[0] === "--version") return callback(null, "gh version 2");
+				if (args[0] === "repo" && args[1] === "clone") {
+					const target = args[3]!;
+					if (!target.startsWith(`${boundary.sandbox}${sep}`)) return callback(new Error("outside sandbox"));
+					for (const [name, content] of Object.entries(boundary.files)) {
+						mkdirSync(dirname(join(target, name)), { recursive: true });
+						writeFileSync(join(target, name), content);
+					}
+					for (const [name, link] of Object.entries(boundary.links)) {
+						mkdirSync(dirname(join(target, name)), { recursive: true });
+						symlinkSync(link.target, join(target, name), link.type);
+					}
+					return callback(boundary.failClone ? new Error("clone failed") : null, "");
+				}
+				const output = boundary.api[`${args[1]} ${args[3]}`];
+				return output === undefined ? callback(new Error("offline"), "") : callback(null, output);
+			});
+			return Object.assign(new EventEmitter(), { kill: () => true });
+		},
+	};
+});
 vi.mock("../../packages/web-access/config-paths.ts", () => ({ findReadableConfigPath: () => boundary.configPath }));
 
 // The config path is read once at import, so it must point into a temp directory before the import.
@@ -88,6 +96,7 @@ beforeEach(async () => {
 	boundary.files = { "README.md": "Repository readme", "src/a.ts": "export const a = 1;\n" };
 	boundary.links = {};
 	boundary.failClone = false;
+	boundary.cloneScript = "";
 	boundary.api = {};
 	writeFileSync(boundary.configPath, JSON.stringify({ githubClone: { clonePath } }));
 	await clearCloneCache();
@@ -530,4 +539,34 @@ test("invalid GitHub URLs name the part that was rejected", () => {
 		() => parseGitHubUrl("https://github.com/o/r/blob/main/a%2F..%2Fb"),
 		/^Error: Invalid GitHub URL: unsupported path "a\/..\/b"$/,
 	);
+});
+
+test("aborting or clearing a clone with a background grandchild holding stdio settles promptly (#5377)", async () => {
+	boundary.cloneScript =
+		"const { spawn } = require('node:child_process'); spawn(process.execPath, ['-e', 'setTimeout(() => {}, 2500)'], { stdio: 'inherit' }); setTimeout(() => {}, 2500);";
+	const within = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			return await Promise.race([
+				promise,
+				new Promise<never>((_, reject) => {
+					timer = setTimeout(() => reject(new Error("clone hung on grandchild pipe")), ms);
+				}),
+			]);
+		} finally {
+			if (timer !== undefined) clearTimeout(timer);
+		}
+	};
+	const controller = new AbortController();
+	const abortTimer = setTimeout(() => controller.abort(), 80);
+	try {
+		assert.equal(await within(extractGitHub("https://github.com/octo/widgets", controller.signal, true), 800), null);
+	} finally {
+		clearTimeout(abortTimer);
+	}
+
+	const pendingClone = extractGitHub("https://github.com/octo/widgets", undefined, true);
+	await new Promise<void>((resolve) => setTimeout(resolve, 80));
+	await within(clearCloneCache(), 800);
+	assert.equal(await within(pendingClone, 800), null);
 });

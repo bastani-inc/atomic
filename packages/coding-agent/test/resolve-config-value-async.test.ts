@@ -53,6 +53,36 @@ describe("resolveConfigValueAsync", () => {
 		},
 	);
 
+	test("settles promptly on timeout and maxBuffer when a background grandchild holds stdout (#5377)", async () => {
+		if (process.platform === "win32") return;
+		const within = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			try {
+				return await Promise.race([
+					promise,
+					new Promise<never>((_, reject) => {
+						timer = setTimeout(() => reject(new Error("timed out waiting for command")), ms);
+					}),
+				]);
+			} finally {
+				if (timer !== undefined) clearTimeout(timer);
+			}
+		};
+		expect(
+			await within(
+				resolveConfigValueUncachedAsync(
+					"!sh -c '(sleep 30) & dd if=/dev/zero bs=1024 count=1100 2>/dev/null; sleep 30'",
+				),
+				1_500,
+			),
+		).toBeUndefined();
+
+		const realSetTimeout = globalThis.setTimeout;
+		vi.spyOn(globalThis, "setTimeout").mockImplementation(((fn: TimerHandler, ms?: number, ...rest: unknown[]) =>
+			realSetTimeout(fn, ms === 10_000 ? 100 : ms, ...rest)) as typeof setTimeout);
+		expect(await within(resolveConfigValueUncachedAsync("!sh -c '(sleep 30) & sleep 30'"), 1_500)).toBeUndefined();
+	});
+
 	test("runs a command once for concurrent resolutions, and shares the cache with the synchronous one", async () => {
 		const { command, runs } = countingCommand("concurrent");
 		const values = await Promise.all([

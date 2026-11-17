@@ -41,6 +41,8 @@ export function spawnCollect(
 		let error: Error | undefined;
 		let inputError: Error | undefined;
 		let settled = false;
+		let exited = false;
+		let stopped = false;
 		let child: ChildProcess;
 		const startedAt = Date.now();
 		const finish = (status: number | null, signal: NodeJS.Signals | null) => {
@@ -60,8 +62,18 @@ export function spawnCollect(
 			});
 		};
 		const stop = (reason: Error) => {
+			stopped = true;
 			error ??= reason;
+			child.stdin?.destroy();
+			child.stdout?.destroy();
+			child.stderr?.destroy();
+			if (process.platform !== "win32" && child.pid !== undefined && child.pid !== process.pid) {
+				try {
+					process.kill(-child.pid, "SIGTERM");
+				} catch {}
+			}
 			child.kill("SIGTERM");
+			if (exited || child.pid === undefined) finish(null, "SIGTERM");
 		};
 		try {
 			child = spawn(command, [...args], {
@@ -69,6 +81,8 @@ export function spawnCollect(
 				env: options.env,
 				shell: false,
 				timeout: options.timeout,
+				detached: process.platform !== "win32",
+				windowsHide: true,
 				stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
 			});
 		} catch (spawnError) {
@@ -100,6 +114,13 @@ export function spawnCollect(
 		child.on("error", (spawnError) => {
 			error ??= spawnError;
 			if (child.pid === undefined) finish(null, null);
+		});
+		child.on("exit", (status, signal) => {
+			exited = true;
+			if (error === undefined && signal !== null && Date.now() - startedAt >= options.timeout) {
+				stop(codedError(command, "ETIMEDOUT"));
+			}
+			if (stopped) finish(status, signal);
 		});
 		child.on("close", (status, signal) => finish(status, signal));
 		if (options.input !== undefined && child.stdin !== null) {
