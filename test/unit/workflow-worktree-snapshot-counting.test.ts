@@ -16,6 +16,14 @@ import { openSqlSnapshotJournal, type SqlSnapshotJournal } from "../helpers/work
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
 const BASE_SIZE = 128 * 1024;
+/**
+ * The most one real git process may take on a loaded CI host. Windows starts one in about 90 ms when idle, several times
+ * that beside other suites.
+ */
+const GIT_PROCESS_BUDGET_MS = 300;
+/** The git processes eight restores of one base may start between them: about 25 each, after one fetch of the base. */
+const EIGHT_RESTORES_GIT_PROCESSES = 210;
+const EIGHT_RESTORES_BUDGET_MS = EIGHT_RESTORES_GIT_PROCESSES * GIT_PROCESS_BUDGET_MS;
 
 interface RecordedRun {
 	readonly status: string;
@@ -108,34 +116,42 @@ describe("eight workflow boundaries on one base (#4245)", () => {
 		assert.ok(totalBytes < BASE_SIZE, `delta bytes ${totalBytes} should be smaller than one ${BASE_SIZE}-byte base`);
 	});
 
-	test("restore all eight with one fetch of the base", async () => {
-		await track(
-			(async () => {
-				const { journal, boundaries } = recorded;
-				const trace = sandbox.path("git-trace.jsonl");
-				setWorktreeSnapshotGit(async () => ({
-					...sandbox.executable,
-					env: { ...sandbox.executable.env, GIT_TRACE2_EVENT: trace },
-				}));
-				for (const [index, boundary] of boundaries.entries()) {
-					const restored = await restoreWorktreeSnapshot(boundary.snapshot, {
-						blobs: journal.snapshotBlobs,
-						storeDir: sandbox.path("host"),
-					});
-					assert.equal(readFileSync(join(restored, "small.txt"), "utf8"), `change ${index}\n`);
-				}
-				const started = readFileSync(trace, "utf8")
-					.split("\n")
-					.filter(Boolean)
-					.map((line) => JSON.parse(line) as { event: string; argv?: string[] })
-					.filter((event) => event.event === "start");
-				assert.equal(started.filter((event) => event.argv?.includes("fetch")).length, 1);
-				assert.equal(
-					started.filter((event) => event.argv?.includes("apply")).length,
-					boundaries.length,
-					"each restore applies only the deltas after the newest tree the store already holds",
-				);
-			})(),
-		);
-	});
+	test(
+		"restore all eight with one fetch of the base",
+		async () => {
+			await track(
+				(async () => {
+					const { journal, boundaries } = recorded;
+					const trace = sandbox.path("git-trace.jsonl");
+					setWorktreeSnapshotGit(async () => ({
+						...sandbox.executable,
+						env: { ...sandbox.executable.env, GIT_TRACE2_EVENT: trace },
+					}));
+					for (const [index, boundary] of boundaries.entries()) {
+						const restored = await restoreWorktreeSnapshot(boundary.snapshot, {
+							blobs: journal.snapshotBlobs,
+							storeDir: sandbox.path("host"),
+						});
+						assert.equal(readFileSync(join(restored, "small.txt"), "utf8"), `change ${index}\n`);
+					}
+					const started = readFileSync(trace, "utf8")
+						.split("\n")
+						.filter(Boolean)
+						.map((line) => JSON.parse(line) as { event: string; argv?: string[] })
+						.filter((event) => event.event === "start");
+					assert.equal(started.filter((event) => event.argv?.includes("fetch")).length, 1);
+					assert.equal(
+						started.filter((event) => event.argv?.includes("apply")).length,
+						boundaries.length,
+						"each restore applies only the deltas after the newest tree the store already holds",
+					);
+					assert.ok(
+						started.length <= EIGHT_RESTORES_GIT_PROCESSES,
+						`${started.length} git processes, more than the ${EIGHT_RESTORES_GIT_PROCESSES} this test's budget allows for`,
+					);
+				})(),
+			);
+		},
+		EIGHT_RESTORES_BUDGET_MS,
+	);
 });
