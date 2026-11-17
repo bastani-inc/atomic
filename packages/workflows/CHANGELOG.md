@@ -21,7 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Workflow discovery checks the bundled workflows once per process. Startup checked them twice, and `/workflow reload` and every `/workflow resume` of a durable run checked them again, each time reading and scanning their sources: about 180 ms on Windows and 120 ms on Linux ([#5319](https://github.com/bastani-inc/atomic/issues/5319))
 - When another process on Windows holds `.atomic/workflows/status.json` open for a long read, the status writer now waits out the reader across its retry backoff instead of recording a `status file write failed` warning notice on each attempt, and writes the latest status as soon as the workflow changes after the reader closes the file. A hold that lasts beyond the retry backoff (about 21 seconds) still records one warning. At shutdown, Atomic retries a held status file for about one second and records a warning if it still cannot replace it ([#5322](https://github.com/bastani-inc/atomic/issues/5322))
 - Design workflows no longer pause other tools while Windows verifies temporary artifact storage ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
-- Fixed an idle local worker being killed while shutting down after its root released its lease. Late IPC replies no longer interrupt an expected clean exit or start a replacement worker ([#3979](https://github.com/bastani-inc/atomic/issues/3979))
+- Fixed an idle local worker receiving SIGKILL instead of exiting cleanly when a late IPC reply failed after its root released its lease ([#3979](https://github.com/bastani-inc/atomic/issues/3979))
 
 ## [0.9.88] - 2026-11-16
 

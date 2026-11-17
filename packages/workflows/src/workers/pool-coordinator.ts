@@ -1594,7 +1594,6 @@ export class PoolCoordinator {
 						if (this.queue && (await this.rootRenewal(this.queue).catch(() => false))) return;
 						if (this.satellite !== undefined) {
 							this.rootLeaseLost = true;
-							this.idleClaims.wakeAll();
 							this.detach(error);
 						}
 						return;
@@ -3070,7 +3069,6 @@ export class PoolCoordinator {
 						if (isStaleLeaseError(error)) {
 							this.rootLeaseLost = true;
 							slot.leaving = true;
-							this.idleClaims.wakeAll();
 							this.detach(error);
 						}
 						if (!child.connected && workerEndsCleanly(slot)) return;

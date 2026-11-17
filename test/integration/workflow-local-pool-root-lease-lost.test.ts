@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, vi } from "vitest";
@@ -162,6 +162,176 @@ test.skipIf(process.platform === "win32")(
 				);
 			}
 			assert.equal(spawns, spawnedBefore, "no replacement was spawned for a worker that ended on a released lease");
+			await pool.close();
+		} finally {
+			vi.restoreAllMocks();
+			await pool.close().catch(() => {});
+			await backend.close();
+			await journal.close();
+			await database.close();
+			removeTempDirectory(directory);
+		}
+	},
+	BUDGET.timeoutMs,
+);
+
+test.skipIf(process.platform === "win32")(
+	"recycled and retired workers end cleanly when reply or control sends fail after disconnect (#3979, #4768)",
+	async () => {
+		const directory = makeTempDirectory("pool-worker-clean-exit-");
+		const path = join(directory, "journal.sqlite");
+		const donePath = join(directory, "done");
+		const exportName = "resumedChild";
+		const child = await loadWorkerDefinition({
+			path: childPath,
+			exportName,
+			digest: await definitionDigest(childPath),
+		});
+		const parent = workflow({
+			name: "pool-worker-clean-exit-root",
+			description: "Root keeping its lease while a recycled worker and a retired worker exit",
+			inputs: {},
+			outputs: {},
+			async run(ctx) {
+				const result = await ctx.workflow(child, { inputs: { directory, index: 0 } });
+				assert.equal(result.status, "completed");
+				await ctx.tool("hold-root-lease", {}, async (toolContext) => {
+					while (!existsSync(donePath)) {
+						toolContext?.signal?.throwIfAborted();
+						await sleep(20);
+					}
+					return {};
+				});
+				return {};
+			},
+		});
+		const database = await openNodeSqliteDatabase(path);
+		const journal = await SqlRunJournal.open(database);
+		const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
+		const pool = new LocalWorkerPool(backend, {
+			journalPath: path,
+			workers: 1,
+			maxWorkerRssBytes: 1,
+			definitions: [{ definition: child, path: childPath, exportName }],
+			coordinator: "in-process",
+		});
+		const spawned: ChildProcess[] = [];
+		const exits: {
+			readonly pid: number | undefined;
+			readonly code: number | null;
+			readonly signal: NodeJS.Signals | null;
+		}[] = [];
+		const recycleRequestIds = new Map<number, Set<number>>();
+		const recycleSendErrors = new Set<number>();
+		const retireSendErrors = new Set<number>();
+		const controlSendErrors = new Set<number>();
+		const emit = ChildProcess.prototype.emit as (
+			this: ChildProcess,
+			event: string | symbol,
+			...args: unknown[]
+		) => boolean;
+		vi.spyOn(ChildProcess.prototype, "emit").mockImplementation(function (
+			this: ChildProcess,
+			event: string | symbol,
+			...args: unknown[]
+		) {
+			if (event === "spawn") {
+				spawned.push(this);
+				const send = this.send.bind(this) as (message: object, ...rest: unknown[]) => boolean;
+				const pid = this.pid;
+				this.send = ((message: object, ...rest: unknown[]) => {
+					const callback =
+						typeof rest.at(-1) === "function" ? (rest.at(-1) as (error: Error | null) => void) : undefined;
+					if (pid !== undefined && callback !== undefined) {
+						const kind = (message as { readonly kind?: string }).kind;
+						const control = (message as { readonly control?: { readonly revision?: number } }).control;
+						if (kind === "pool-control" && (control?.revision ?? 0) >= 2 && !controlSendErrors.has(pid)) {
+							this.once("disconnect", () => {
+								controlSendErrors.add(pid);
+								callback(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+							});
+							return send(message);
+						}
+						const replyId = (message as { readonly id?: number }).id;
+						if (replyId !== undefined && recycleRequestIds.get(pid)?.has(replyId)) {
+							this.once("disconnect", () => {
+								recycleSendErrors.add(pid);
+								callback(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+							});
+							return send(message);
+						}
+						if ((message as { readonly retire?: boolean }).retire === true) {
+							this.once("disconnect", () => {
+								retireSendErrors.add(pid);
+								callback(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+							});
+							return send(message);
+						}
+					}
+					return send(message, ...rest);
+				}) as typeof this.send;
+			}
+			if (event === "message" && this.pid !== undefined) {
+				const request = args[0] as { readonly id?: number; readonly kind?: string } | undefined;
+				if (request?.kind === "recycle" && typeof request.id === "number") {
+					let ids = recycleRequestIds.get(this.pid);
+					if (!ids) {
+						ids = new Set();
+						recycleRequestIds.set(this.pid, ids);
+					}
+					ids.add(request.id);
+				}
+			}
+			if (event === "exit")
+				exits.push({
+					pid: this.pid,
+					code: args[0] as number | null,
+					signal: (args[1] as NodeJS.Signals | null) ?? null,
+				});
+			return emit.call(this, event, ...args);
+		});
+		const budget = AbortSignal.timeout(BUDGET.waitMs);
+		try {
+			const running = run(
+				parent,
+				{},
+				{
+					runId: randomUUID(),
+					cwd: directory,
+					store: createStore(),
+					durableBackend: backend,
+					signal: budget,
+				},
+			);
+			await waitUntil(() => startedChildren(directory) === 1, "the child to start", budget);
+			const firstWorker = spawned[0];
+			assert.ok(firstWorker?.pid !== undefined, "the first worker is running");
+			await pool.control("paused");
+			await pool.control("running");
+			firstWorker.emit("message", { id: 999_999, kind: "place", op: "release" });
+			await waitUntil(() => pool.workerPids.length === 2, "the waiting reserve worker to start", budget);
+			await writeFileEnsuringDir(join(directory, "release"), "");
+			await waitUntil(
+				() =>
+					recycleSendErrors.size >= 1 &&
+					controlSendErrors.size >= 1 &&
+					retireSendErrors.size >= 1 &&
+					[...recycleSendErrors, ...retireSendErrors].every((pid) => exits.some((exit) => exit.pid === pid)),
+				"both the recycled worker and the retired worker to exit after late send errors",
+				budget,
+			);
+			for (const pid of [...recycleSendErrors, ...controlSendErrors, ...retireSendErrors]) {
+				const exit = exits.find((candidate) => candidate.pid === pid);
+				assert.equal(
+					exit?.code,
+					0,
+					`worker ${pid} did not exit cleanly (code=${exit?.code ?? "null"}, signal=${exit?.signal ?? "none"})`,
+				);
+				assert.equal(exit?.signal, null, `worker ${pid} was killed by signal ${exit?.signal}`);
+			}
+			await writeFileEnsuringDir(donePath, "");
+			const result = await running;
+			assert.equal(result.status, "completed", JSON.stringify(result));
 			await pool.close();
 		} finally {
 			vi.restoreAllMocks();
