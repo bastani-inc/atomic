@@ -439,10 +439,21 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				} catch {}
 			};
 			process.on("exit", restoreOnExit);
-			this.stopOutput = this.writeTranscriptInSlices(++this.exitWrites).finally(() => {
-				process.off("exit", restoreOnExit);
-				restoreCapabilities();
-			});
+			this.stopOutput = this.writeTranscriptInSlices(++this.exitWrites).then(
+				() => {
+					process.off("exit", restoreOnExit);
+					restoreCapabilities();
+				},
+				async (error: unknown) => {
+					restoreCapabilities();
+					try {
+						this.terminal.write(EXIT_TRANSCRIPT_RESTORE);
+						await this.terminal.flush?.();
+						process.off("exit", restoreOnExit);
+					} catch {}
+					throw error;
+				},
+			);
 			return;
 		} else {
 			const width = Math.max(1, this.terminal.columns);

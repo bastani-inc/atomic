@@ -21,6 +21,7 @@ class RecordingTerminal implements Terminal {
 	readonly writes: Array<{ data: string; turn: number }> = [];
 	readonly exitRestores: string[] = [];
 	turn = 0;
+	flush?: () => Promise<void>;
 	start(_onInput: (data: string) => void, _onResize: () => void): void {}
 	stop(): void {}
 	async drainInput(_maxMs?: number, _idleMs?: number): Promise<void> {}
@@ -140,6 +141,51 @@ describe("quitting the fullscreen renderer", () => {
 		assert.ok(restored.includes("\x1b[?7h"), "autowrap stayed disabled");
 		assert.ok(restored.includes("\x1b[?2026l"), "synchronized output stayed open");
 		await tui.whenStopped();
+		assert.deepEqual(
+			process.listeners("exit").filter((listener) => !before.has(listener)),
+			[],
+		);
+	});
+
+	it("restores autowrap and ends synchronized output when the sliced write fails, also if the process exits after", async () => {
+		const terminal = new RecordingTerminal();
+		const tui = new TuiAltScreen(terminal, false, undefined, { mouse: false });
+		tui.setLayoutRoot(new ScrollView(new Transcript(), { follow: "end", primary: true }));
+		tui.start();
+		tui.renderNow();
+		const from = terminal.writes.length;
+		const before = new Set(process.listeners("exit"));
+		terminal.flush = () => Promise.reject(new Error("the terminal went away"));
+		tui.stop({ writeInSlices: true });
+		await assert.rejects(tui.whenStopped(), /the terminal went away/);
+		for (const listener of process.listeners("exit").filter((listener) => !before.has(listener))) listener(1);
+		const output = terminal.writes
+			.slice(from)
+			.map((write) => write.data)
+			.concat(terminal.exitRestores)
+			.join("");
+		assert.ok(output.includes("\x1b[?7l"), "the sliced write never disabled autowrap");
+		assert.ok(output.lastIndexOf("\x1b[?7h") > output.lastIndexOf("\x1b[?7l"), "autowrap stayed disabled");
+		assert.ok(
+			output.lastIndexOf("\x1b[?2026l") > output.lastIndexOf("\x1b[?2026h"),
+			"synchronized output stayed open",
+		);
+		for (const listener of process.listeners("exit").filter((listener) => !before.has(listener)))
+			process.off("exit", listener);
+	});
+
+	it("leaves no exit handler once the restore after a failed sliced write reaches the terminal", async () => {
+		const terminal = new RecordingTerminal();
+		const tui = new TuiAltScreen(terminal, false, undefined, { mouse: false });
+		tui.setLayoutRoot(new ScrollView(new Transcript(), { follow: "end", primary: true }));
+		tui.start();
+		tui.renderNow();
+		const before = new Set(process.listeners("exit"));
+		let failures = 1;
+		terminal.flush = () => (failures-- > 0 ? Promise.reject(new Error("one write failed")) : Promise.resolve());
+		tui.stop({ writeInSlices: true });
+		await assert.rejects(tui.whenStopped(), /one write failed/);
+		assert.ok(terminal.writes.at(-1)?.data.includes("\x1b[?7h"), "the failed write was not followed by a restore");
 		assert.deepEqual(
 			process.listeners("exit").filter((listener) => !before.has(listener)),
 			[],
