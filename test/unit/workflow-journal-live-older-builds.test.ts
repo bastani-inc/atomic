@@ -12,6 +12,7 @@ import {
 	RUN_EVENT_TYPES,
 	type RunEvent,
 } from "../../packages/workflows/src/durable/journal/types.js";
+import type { DurableCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -191,6 +192,72 @@ test("pool inputs and results stay whole while an older build is live, and an up
 	await assert.rejects(queue.result("root", attempt!.id), JournalSchemaVersionError);
 	// Back at this build's version, so the backend's own writes as it closes go through.
 	sql("UPDATE wf_meta SET schema_version = 2");
+});
+
+test("a pooled stage checkpoint past the overview size stays whole while an older build is live, and gets its overview stub once none is (#5256)", async () => {
+	const journal = await openSqlRunJournal(path);
+	closers.push(() => journal.close());
+	const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
+	closers.push(() => backend.close());
+	await backend.commitWorkflowRegistration({
+		workflowId: "root",
+		name: "root",
+		inputs: {},
+		createdAt: 0,
+		status: "running",
+	});
+	const acquired = await journal.acquire("root", backend.holderId);
+	if (acquired.status !== "acquired") assert.fail("no root lease");
+	await journal.createRun({ runId: "older", name: "older", cwd: "/repo", createdAt: 1, status: "running" });
+	sql(
+		"INSERT INTO wf_leases(run_id, holder_id, epoch, renewed_at) VALUES ('older', 'older-build', 1, CAST(unixepoch('subsec') * 1000 AS INTEGER))",
+	);
+	const { work, boundary } = poolWorkFixture();
+	const queue = await openSqlPoolQueue(journal);
+	await queue.initialize(acquired.lease, 60_000);
+	await queue.enqueue(acquired.lease, work, boundary);
+	const attempt = await queue.claim(acquired.lease, "worker", [work], 60_000);
+	assert.ok(attempt);
+	const stage = (id: string, sourceOrder: number): DurableCheckpoint =>
+		({
+			kind: "stage",
+			workflowId: "root",
+			checkpointId: `${work.scope}:session:${id}`,
+			name: id,
+			replayKey: `${work.scope}:${id}`,
+			completedAt: 1,
+			output: `${id.toUpperCase()}_OUTPUT_${"o".repeat(16_384)}`,
+			topology: {
+				version: 1,
+				stageId: id,
+				parentIds: [],
+				sourceOrder,
+				run: { ...boundary.topology!.boundary!.child },
+				status: "completed",
+			},
+		}) as unknown as DurableCheckpoint;
+	const row = (id: string) => {
+		const [found] = sql(
+			"SELECT payload, chunks FROM wf_events WHERE run_id = 'root' AND key LIKE ?",
+			`%session:${id}%`,
+		);
+		return { payload: String(found?.payload), chunks: Number(found?.chunks) };
+	};
+
+	await queue.commit(acquired.lease, attempt, "while-older", {
+		kind: "checkpoint",
+		checkpoint: stage("while-older", 0),
+	});
+	assert.equal(row("while-older").chunks, 0, "stored whole, as the older build reads it");
+	assert.ok(row("while-older").payload.includes("WHILE-OLDER_OUTPUT_"));
+
+	sql("UPDATE wf_leases SET renewed_at = renewed_at - 600000 WHERE run_id = 'older'");
+	await queue.commit(acquired.lease, attempt, "after-older", {
+		kind: "checkpoint",
+		checkpoint: stage("after-older", 1),
+	});
+	assert.ok(row("after-older").chunks > 0, "stored in chunks");
+	assert.equal(row("after-older").payload.includes("AFTER-OLDER_OUTPUT_"), false, "its row holds the overview stub");
 });
 
 test("a database with only the journal meta, as a snapshot blob write leaves it, opens as a full journal (#4965)", async () => {

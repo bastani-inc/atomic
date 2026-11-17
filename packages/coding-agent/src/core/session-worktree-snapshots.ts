@@ -60,6 +60,7 @@ import {
 	recordPooledWorktreeState,
 	releaseRestoredWorktree,
 	type WorktreeLease,
+	worktreeSetAside,
 } from "./worktree-snapshot/pool.ts";
 import {
 	defaultWorktreeSnapshotStoreDir,
@@ -412,6 +413,7 @@ export async function pooledWorktreeOwnedElsewhere(
 	root: string,
 	sessionId: string,
 ): Promise<boolean> {
+	if (await worktreeSetAside(storeDir, root)) return true;
 	const holder = await pooledWorktreeHolder(storeDir, root);
 	if (holder === "unpooled") return false;
 	return holder.owner?.kind !== "session" || holder.owner.id !== sessionId || forfeited(sessionId, root);
@@ -1162,7 +1164,10 @@ export async function resumeSessionWorktree(
 		}
 		const continuing = mapRestoredPath(cwd, mappings);
 		const recordedHere = selected !== undefined && left.some((checkout) => checkout.root === selected!.root);
-		const launch = recordedHere && !existsSync(continuing) && options.fallbackCwd !== undefined;
+		const launch =
+			recordedHere &&
+			options.fallbackCwd !== undefined &&
+			(!existsSync(continuing) || (await pooledWorktreeOwnedElsewhere(storeDir, selected!.root, owner.id)));
 		continuedIn = launch ? resolve(options.fallbackCwd!) : continuing;
 		for (const checkout of left) {
 			const record = unrestoredRecord(

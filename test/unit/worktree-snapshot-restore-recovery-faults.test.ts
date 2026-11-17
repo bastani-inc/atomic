@@ -595,6 +595,38 @@ describe("publishing the verified worktree", () => {
 	test("the same holds when Git numbered the moved worktree's admin name after another worktree of that name", () =>
 		stoppedAfterMove(true));
 
+	test("a restore stopped once it holds the store's lock to publish never asks Git to move its worktree", async () => {
+		const { snapshot, blobs, storeDir, store } = await warmHost();
+		const into = sandbox.path("final");
+		const id = uuid();
+		faults.uuids.push(id);
+		const staging = siblingStaging(into, id);
+		const reason = new Error("stop before the move");
+		const controller = new AbortController();
+		let verified = false;
+		faults.spawnHook = (args, cwd) => {
+			if (is(args, "write-tree") && cwd === staging) verified = true;
+			return undefined;
+		};
+		faults.lock = async (file, options, real) => {
+			const release = await real(file, options);
+			if (verified && file === store && !controller.signal.aborted) controller.abort(reason);
+			return release;
+		};
+
+		const { error, warnings } = await restoreInto(snapshot, blobs, storeDir, into, controller.signal);
+
+		assert.equal(error, reason);
+		assert.equal(
+			faults.spawns.some((spawned) => is(spawned.args, "worktree", "move")),
+			false,
+		);
+		assert.equal(existsSync(into), false);
+		assert.equal(existsSync(staging), false);
+		assert.deepEqual(retainedWarnings(warnings), []);
+		assert.deepEqual(readdirSync(join(storeDir, "restores")), []);
+	});
+
 	test("when the moved worktree cannot be removed after the stop, the warning names the target that keeps it", async () => {
 		const { snapshot, blobs, storeDir } = await warmHost();
 		const into = sandbox.path("final");

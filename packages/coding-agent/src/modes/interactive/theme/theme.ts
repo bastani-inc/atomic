@@ -50,4 +50,5 @@ export {
 	getSelectListTheme,
 	getSettingsListTheme,
 	highlightCode,
+	renderAutocompleteHint,
 } from "./tui-theme.ts";

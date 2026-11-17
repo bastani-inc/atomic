@@ -1,15 +1,18 @@
 import {
 	CURSOR_MARKER,
 	Editor,
+	type EditorAutocompleteHintEntry,
 	type EditorOptions,
 	type EditorTheme,
 	isKeyRepeat,
+	type KeyId,
 	matchesKey,
 	renderFakeCursor,
 	type TUI,
 	truncateToWidth,
 	visibleWidth,
 } from "@bastani/atomic-tui";
+import { keybindingIdentity } from "../../../core/keybinding-identity.js";
 import type { AppKeybinding, KeybindingsManager } from "../../../core/keybindings.ts";
 import { isPhysicalEscape } from "../interactive-key-identity.ts";
 import { theme } from "../theme/theme.js";
@@ -131,12 +134,68 @@ export class CustomEditor extends Editor {
 	public onExtensionShortcut?: (data: string) => boolean;
 
 	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, options?: CustomEditorOptions) {
-		super(tui, theme, options);
+		const editorTheme = { ...theme };
+		super(tui, editorTheme, options);
 		this.keybindings = keybindings;
+		const renderHint = theme.autocompleteHint;
+		if (renderHint) {
+			editorTheme.autocompleteHint = (entries, width) => renderHint(this.autocompleteHintEntries(entries), width);
+		}
 		this.promptPrefix = options?.promptPrefix ?? "❯ ";
 		this.placeholder = options?.placeholder;
 		this.topRuleLabel = options?.topRuleLabel;
 		this.embedWorkingStatus = options?.embedWorkingStatus ?? false;
+	}
+
+	private autocompleteHintEntries(entries: readonly EditorAutocompleteHintEntry[]): EditorAutocompleteHintEntry[] {
+		const taken = new Set<string>();
+		for (const action of this.actionHandlers.keys()) {
+			if (action === "app.interrupt" || action === "app.exit" || action === "app.keys.help") continue;
+			for (const key of this.keybindings.getKeys(action)) taken.add(keybindingIdentity(key));
+		}
+		for (const action of ["tui.editor.historyPrevious", "tui.editor.historyNext"] as const) {
+			for (const key of this.keybindings.getKeys(action)) taken.delete(keybindingIdentity(key));
+		}
+		if (this.getText().length === 0) {
+			for (const key of this.keybindings.getKeys("app.exit")) taken.add(keybindingIdentity(key));
+		}
+		for (const key of this.keybindings.getKeys("app.interrupt")) taken.delete(keybindingIdentity(key));
+		taken.delete("escape");
+		for (const key of this.keybindings.getKeys("app.clipboard.pasteImage")) taken.add(keybindingIdentity(key));
+		if (process.platform === "darwin") taken.add(keybindingIdentity("super+v"));
+		for (const action of ["tui.select.pageUp", "tui.select.pageDown"] as const) {
+			for (const key of this.keybindings.getKeys(action)) taken.delete(keybindingIdentity(key));
+		}
+		for (const action of ["tui.input.copy", "tui.editor.undo"] as const) {
+			for (const key of this.keybindings.getKeys(action)) taken.add(keybindingIdentity(key));
+		}
+		const available = new Map<string, readonly string[]>();
+		for (const action of [
+			"tui.select.cancel",
+			"tui.select.up",
+			"tui.select.down",
+			"tui.select.pageUp",
+			"tui.select.pageDown",
+			"tui.input.tab",
+			"tui.select.confirm",
+		] as const) {
+			const keys = this.keybindings.getKeys(action);
+			available.set(
+				action,
+				keys.filter((key) => !taken.has(keybindingIdentity(key))),
+			);
+			for (const key of keys) taken.add(keybindingIdentity(key));
+		}
+		return entries.map((entry) => ({
+			...entry,
+			resolvedKeys: entry.actions.flatMap((action) => {
+				const allowed = entry.resolvedKeys?.map((key) => keybindingIdentity(key as KeyId));
+				const key = available
+					.get(action)
+					?.find((candidate) => allowed === undefined || allowed.includes(keybindingIdentity(candidate as KeyId)));
+				return key === undefined ? [] : [key];
+			}),
+		}));
 	}
 
 	setTopRuleLabel(label: (() => string | undefined) | undefined): void {

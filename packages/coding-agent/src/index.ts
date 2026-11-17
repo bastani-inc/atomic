@@ -198,6 +198,7 @@ export {
 	type NavKeybindings,
 	type NavKeyStyle,
 	navEntryKeys,
+	renderAutocompleteHintLine,
 	renderNavHintLine,
 	renderNavKeyOverlay,
 	TwoPressConfirm,

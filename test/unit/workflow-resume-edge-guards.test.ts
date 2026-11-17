@@ -99,20 +99,10 @@ describe("workflow resume confirmation and definition source guards (#5256)", ()
 			ui: {
 				notify: () => undefined,
 				custom: async (factory) => {
-					const baseKb = new KeybindingsManager();
-					const customKb = {
-						matches: (data: string, action: string) => {
-							const matched = baseKb.matches(data, action as never);
-							if (matched && action === "tui.select.confirm") {
-								generationActive = false;
-							}
-							return matched;
-						},
-						getKeys: (action: string) => baseKb.getKeys(action as never),
-					};
-					const component = await factory({} as never, {} as never, customKb as never, (val) => {
+					const component = await factory({} as never, {} as never, new KeybindingsManager() as never, (val) => {
 						settledByOnSelect = val === true;
 					});
+					generationActive = false;
 					component.handleInput?.("\r");
 					return settledByOnSelect;
 				},

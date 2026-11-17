@@ -41,6 +41,7 @@ const APP_KEYBINDINGS = {
 		description: "Cycle to previous model",
 	},
 	"app.model.select": { defaultKeys: "ctrl+l", description: "Open model selector" },
+	"app.history.search": { defaultKeys: "ctrl+r", description: "Search past prompts" },
 	"app.tools.expand": { defaultKeys: "ctrl+o", description: "Toggle tool output" },
 	"app.tasks.open": { defaultKeys: [], description: "Open task list" },
 	"app.tasks.input": { defaultKeys: [], description: "Input to selected task" },

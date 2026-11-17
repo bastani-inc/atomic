@@ -277,6 +277,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			},
 			...(env.footerData === undefined ? {} : { footerData: withoutExtensionStatuses(env.footerData) }),
 			getChatBoxSession: () => this.followed?.chatSession,
+			getPromptEntries: () =>
+				(this.followed ?? this.source.followTaskTranscript(this.taskId)?.session)?.getEntries(),
 			requestRender,
 			taskRowsInChat: false,
 			echoedInitialPrompt: () => (this.cursor === undefined ? this.echoedPrompt : undefined),
@@ -394,6 +396,11 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			return true;
 		}
 		const keybindings = keybindingsOf(this.env.keybindings);
+		if (!this.chat.hasTaskInspector && this.chat.hasTransientModal) {
+			const handled = this.chat.handleInput(data);
+			this.requestRender();
+			return handled;
+		}
 		if (!this.chat.hasTaskInspector && keybindings.matches(data, "app.agents.focus") && !this.hasDraft()) {
 			return this.hasTasks() ? this.chat.openTasks() : true;
 		}
@@ -546,7 +553,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	}
 
 	handlesBack(): boolean {
-		return this.chat.hasTaskInspector;
+		return this.chat.hasTaskInspector || this.chat.hasTransientModal;
 	}
 
 	takesEscape(): boolean {
