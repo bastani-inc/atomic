@@ -43,6 +43,8 @@ sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
+	"Wdk_Foundation",
+	"Wdk_Storage_FileSystem",
 	"Win32_Foundation",
 	"Win32_Globalization",
 	"Win32_Security",
@@ -56,6 +58,7 @@ windows-sys = { version = "0.61", features = [
 	"Win32_System_Pipes",
 	"Win32_System_SystemInformation",
 	"Win32_System_Threading",
+	"Win32_System_WindowsProgramming",
 ] }
 
 [target.'cfg(windows)'.dev-dependencies]

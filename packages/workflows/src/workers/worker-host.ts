@@ -41,13 +41,14 @@ import {
 	WorkerPlacementError,
 } from "./placement-errors.js";
 import { PoolCoordinator } from "./pool-coordinator.js";
-import { poolDurableJournal, poolHostId, poolStateDirectory } from "./pool-journal.js";
+import { durableJournalIdentity, poolDurableJournal, poolHostId, poolStateDirectory } from "./pool-journal.js";
 import { openPoolSessions } from "./pool-session-store.js";
 import { hostWakeUps } from "./pool-wake-ups.js";
 import { processContainmentAvailable } from "./public-pool.js";
 import { SqlResourceAdmission } from "./resource-admission.js";
 import { RestoreBackoff } from "./restore-backoff.js";
 import { sharedJournalSelection, sharedSelectionProblems } from "./shared-setup.js";
+import { retireEndedShipShards, shipJournalDirectory } from "./ship-shard.js";
 import { snapshotRestore } from "./snapshot-restore.js";
 import type {
 	SharedJournalSelection,
@@ -769,6 +770,10 @@ export async function startWorkflowWorkerHost(options: WorkflowWorkerHostOptions
 		const durable = poolDurableJournal(journal);
 		const queue = await openSqlPoolQueue(journal);
 		const shared = await SqlSharedPool.open(journal, queue);
+		await retireEndedShipShards(
+			shipJournalDirectory(poolStateDirectory(durable.agentDir), durableJournalIdentity(durable)),
+			(roots, works, unidentified) => queue.endedShipRoots(roots, works, unidentified),
+		).catch(() => {});
 		return new WorkerHost(
 			options.hostId ?? (await poolHostId(durable.agentDir)),
 			journal,

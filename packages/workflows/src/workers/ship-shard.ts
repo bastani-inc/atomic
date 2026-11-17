@@ -1,8 +1,11 @@
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, realpath, rm, rmdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { mkdir, readdir, readlink, realpath, rm, rmdir, stat } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
+import { promisify } from "node:util";
 import { openNodeSqliteDatabase } from "@bastani/atomic";
-import type { SqliteDatabase, SqliteRow } from "@bastani/atomic/storage";
+import { type SqliteDatabase, type SqliteRow, sqliteFilePath } from "@bastani/atomic/storage";
 import type { AdvisoryLock } from "@bastani/atomic-natives";
 import type { AttemptLease } from "../durable/journal/sql-shared-pool.js";
 import { StaleWorkLeaseError } from "../shared/worker-pool-errors.js";
@@ -14,10 +17,21 @@ async function tryRootLock(path: string): Promise<AdvisoryLock | null> {
 	return tryAdvisoryLockAsync(`${path}.lock`, 0);
 }
 
+async function tryOpenLock(location: string): Promise<AdvisoryLock | null> {
+	const { tryAdvisoryLock } = await import("@bastani/atomic-natives");
+	return tryAdvisoryLock(`${location}-open.lock`, 0);
+}
+
+export function shipJournalDirectory(stateDirectory: string, journalIdentity: string): string {
+	return join(stateDirectory, "ship", createHash("sha256").update(journalIdentity).digest("hex").slice(0, 24));
+}
+
+function shipRootFile(root: string): string {
+	return `${createHash("sha256").update(root).digest("hex").slice(0, 32)}.sqlite`;
+}
+
 export function shipShardPath(stateDirectory: string, journalIdentity: string, root: string): string {
-	const journal = createHash("sha256").update(journalIdentity).digest("hex").slice(0, 24);
-	const file = createHash("sha256").update(root).digest("hex").slice(0, 32);
-	return join(stateDirectory, "ship", journal, `${file}.sqlite`);
+	return join(shipJournalDirectory(stateDirectory, journalIdentity), shipRootFile(root));
 }
 
 /**
@@ -154,6 +168,7 @@ CREATE TABLE IF NOT EXISTS ship_cursor(
 CREATE TABLE IF NOT EXISTS ship_lease(
 	work TEXT PRIMARY KEY, generation INTEGER NOT NULL, worker TEXT NOT NULL, epoch INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS ship_root(root TEXT PRIMARY KEY, opens INTEGER NOT NULL);
 `;
 
 export function shipDigest(payload: string): string {
@@ -214,7 +229,8 @@ export class ShipShard {
 	) {}
 
 	static open(path: string, root: string, now?: () => number): Promise<ShipShard> {
-		return underJournalLock(path, () => ShipShard.openUnlocked(path, root, now));
+		if (path === ":memory:") return ShipShard.openUnlocked(path, root, now);
+		return underJournalLock(dirname(path), () => ShipShard.openUnlocked(path, root, now));
 	}
 
 	private static async openUnlocked(path: string, root: string, now?: () => number): Promise<ShipShard> {
@@ -247,6 +263,10 @@ export class ShipShard {
 			);
 			await database.run(
 				`DELETE FROM ship_sessions WHERE NOT EXISTS (SELECT 1 FROM ship_lease l WHERE l.work = ship_sessions.work AND l.generation = ship_sessions.generation)`,
+			);
+			await database.run(
+				`INSERT INTO ship_root(root, opens) VALUES (?, 1) ON CONFLICT(root) DO UPDATE SET opens = ship_root.opens + 1`,
+				root,
 			);
 			return new ShipShard(database, root, lock, path, now);
 		} catch (error) {
@@ -615,7 +635,7 @@ export class ShipShard {
 		this.leases.clear();
 		try {
 			if (options.retire === true && this.path !== ":memory:")
-				await underJournalLock(this.path, () => this.retire());
+				await underJournalLock(dirname(this.path), () => this.retire());
 		} finally {
 			try {
 				await this.database.close();
@@ -626,30 +646,9 @@ export class ShipShard {
 	}
 
 	private async retire(): Promise<void> {
-		const unused = (await this.onlyConnection()) && (await this.holdsNothing());
-		const location = unused ? await realpath(this.path).catch(() => undefined) : undefined;
+		if (!(await holdsNothing(this.database))) return;
 		await this.database.close();
-		if (location === undefined) return;
-		this.lock?.release();
-		await removeShardFiles(location, this.path);
-	}
-
-	private async onlyConnection(): Promise<boolean> {
-		try {
-			await this.database.exec("PRAGMA busy_timeout=0");
-			const mode = await this.database.get<SqliteRow & { journal_mode: string }>("PRAGMA journal_mode=DELETE");
-			return mode?.journal_mode === "delete";
-		} catch {
-			return false;
-		}
-	}
-
-	private async holdsNothing(): Promise<boolean> {
-		try {
-			return (await this.database.get(`SELECT 1 AS present FROM ship_rows LIMIT 1`)) === undefined;
-		} catch {
-			return false;
-		}
+		await removeConfirmedShard(this.path, this.lock, holdsNothingSync);
 	}
 
 	private staleError(
@@ -692,9 +691,34 @@ export class ShipShard {
 	}
 }
 
-async function underJournalLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
-	if (path === ":memory:") return operation();
-	const lock = await openNodeSqliteDatabase(`${dirname(path)}.lock`);
+async function holdsNothing(database: SqliteDatabase): Promise<boolean> {
+	try {
+		return (await database.get(`SELECT 1 AS present FROM ship_rows LIMIT 1`)) === undefined;
+	} catch {
+		return false;
+	}
+}
+
+function holdsNothingSync(connection: DatabaseSync): boolean {
+	try {
+		return connection.prepare(`SELECT 1 AS present FROM ship_rows LIMIT 1`).get() === undefined;
+	} catch {
+		return false;
+	}
+}
+
+function onlyConnectionSync(connection: DatabaseSync): boolean {
+	try {
+		connection.exec("PRAGMA busy_timeout=0");
+		const mode = connection.prepare("PRAGMA journal_mode=DELETE").get() as { journal_mode?: string } | undefined;
+		return mode?.journal_mode === "delete";
+	} catch {
+		return false;
+	}
+}
+
+async function underJournalLock<T>(directory: string, operation: () => Promise<T>): Promise<T> {
+	const lock = await openNodeSqliteDatabase(`${directory}.lock`);
 	try {
 		return await lock.transaction(() => operation());
 	} finally {
@@ -702,11 +726,278 @@ async function underJournalLock<T>(path: string, operation: () => Promise<T>): P
 	}
 }
 
-async function removeShardFiles(location: string, path: string): Promise<void> {
-	for (const suffix of ["", "-journal", "-wal", "-shm"])
-		await rm(`${location}${suffix}`, { force: true }).catch(() => {});
+export interface EndedShipRoots {
+	readonly roots: ReadonlySet<string>;
+	readonly works: ReadonlySet<string>;
+	readonly liveRoots?: ReadonlySet<string>;
+}
+
+export type FindEndedShipRoots = (
+	roots: readonly string[],
+	works: readonly string[],
+	includeUnidentified: boolean,
+) => Promise<EndedShipRoots>;
+
+interface ShardOwner {
+	readonly root: string | undefined;
+	readonly opens: number;
+	readonly work: string | undefined;
+}
+
+interface IdleShard extends ShardOwner {
+	readonly path: string;
+	readonly file: string;
+}
+
+async function fileIdentity(path: string): Promise<string> {
+	const stats = await stat(path, { bigint: true });
+	return `${stats.ino}:${stats.birthtimeNs}`;
+}
+
+async function shardOwner(database: SqliteDatabase): Promise<ShardOwner> {
+	const tables = new Set(
+		(await database.all<SqliteRow & { name: string }>(`SELECT name FROM sqlite_master WHERE type = 'table'`)).map(
+			(row) => row.name,
+		),
+	);
+	const owner = tables.has("ship_root")
+		? await database.get<SqliteRow & { root: string; opens: number }>(`SELECT root, opens FROM ship_root LIMIT 1`)
+		: undefined;
+	if (owner !== undefined) return { root: owner.root, opens: Number(owner.opens), work: undefined };
+	const held = ["ship_lease", "ship_rows", "ship_events"].filter((table) => tables.has(table));
+	const attempt =
+		held.length === 0
+			? undefined
+			: await database.get<SqliteRow & { work: string }>(
+					`${held.map((table) => `SELECT work FROM ${table}`).join(" UNION ALL ")} LIMIT 1`,
+				);
+	return { root: undefined, opens: 0, work: attempt?.work };
+}
+
+function shardOwnerSync(connection: DatabaseSync): ShardOwner {
+	const tables = new Set(
+		(connection.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as { name: string }[]).map(
+			(row) => row.name,
+		),
+	);
+	const owner = tables.has("ship_root")
+		? (connection.prepare(`SELECT root, opens FROM ship_root LIMIT 1`).get() as
+				| { root: string; opens: number }
+				| undefined)
+		: undefined;
+	if (owner !== undefined) return { root: owner.root, opens: Number(owner.opens), work: undefined };
+	const held = ["ship_lease", "ship_rows", "ship_events"].filter((table) => tables.has(table));
+	const attempt =
+		held.length === 0
+			? undefined
+			: (connection
+					.prepare(`${held.map((table) => `SELECT work FROM ${table}`).join(" UNION ALL ")} LIMIT 1`)
+					.get() as { work: string } | undefined);
+	return { root: undefined, opens: 0, work: attempt?.work };
+}
+
+function sameOwner(a: ShardOwner, b: ShardOwner): boolean {
+	return a.root === b.root && a.opens === b.opens && a.work === b.work;
+}
+
+const PROC_SCAN_CONCURRENCY = 8;
+const PROC_FD_BATCH_SIZE = 32;
+const OPEN_FILE_SCAN_TIMEOUT_MS = 5_000;
+const execFileAsync = promisify(execFile);
+
+async function scanProcFdDir(fdDir: string, targets: ReadonlySet<string>, found: Set<string>): Promise<void> {
+	const fds = await readdir(fdDir).catch(() => []);
+	for (let offset = 0; offset < fds.length && found.size < targets.size; offset += PROC_FD_BATCH_SIZE) {
+		await Promise.all(
+			fds.slice(offset, offset + PROC_FD_BATCH_SIZE).map(async (fd) => {
+				const link = await readlink(`${fdDir}/${fd}`).catch(() => undefined);
+				if (link !== undefined && targets.has(link)) found.add(link);
+			}),
+		);
+	}
+}
+
+async function selfHasOpenFile(location: string): Promise<boolean> {
+	if (process.platform !== "linux") return false;
+	const targets = new Set([location, `${location}-wal`, `${location}-shm`]);
+	const found = new Set<string>();
+	await scanProcFdDir("/proc/self/fd", targets, found);
+	return found.size > 0;
+}
+
+async function otherProcessesOpenFiles(locations: readonly string[]): Promise<ReadonlySet<string>> {
+	if (locations.length === 0) return new Set();
+	const byTarget = new Map<string, string>();
+	for (const location of locations) {
+		for (const suffix of ["", "-wal", "-shm"]) byTarget.set(`${location}${suffix}`, location);
+	}
+	const targets = new Set(byTarget.keys());
+	const matchedTargets = new Set<string>();
+	if (process.platform === "linux") {
+		const selfPid = String(process.pid);
+		const entries = await readdir("/proc").catch(() => undefined);
+		if (entries === undefined) return new Set(locations);
+		const pids = entries.filter((entry) => entry !== selfPid && /^\d+$/.test(entry));
+		let next = 0;
+		await Promise.all(
+			Array.from({ length: Math.min(PROC_SCAN_CONCURRENCY, pids.length) }, async () => {
+				while (matchedTargets.size < targets.size) {
+					const pid = pids[next++];
+					if (pid === undefined) return;
+					await scanProcFdDir(`/proc/${pid}/fd`, targets, matchedTargets);
+				}
+			}),
+		);
+	} else if (process.platform === "darwin") {
+		let output: string;
+		try {
+			({ stdout: output } = await execFileAsync("lsof", ["-F", "n", "--", ...targets], {
+				encoding: "utf8",
+				timeout: OPEN_FILE_SCAN_TIMEOUT_MS,
+			}));
+		} catch (error) {
+			const failure = error as { code?: string | number; stdout?: string };
+			if (failure.code !== 1 || typeof failure.stdout !== "string") return new Set(locations);
+			output = failure.stdout;
+		}
+		for (const line of output.split("\n")) {
+			if (line.startsWith("n") && targets.has(line.slice(1))) matchedTargets.add(line.slice(1));
+		}
+	}
+	const openLocations = new Set<string>();
+	for (const target of matchedTargets) {
+		const owner = byTarget.get(target);
+		if (owner !== undefined) openLocations.add(owner);
+	}
+	return openLocations;
+}
+
+async function inspectShard(path: string): Promise<IdleShard> {
+	const file = await fileIdentity(path);
+	const database = await openNodeSqliteDatabase(path, { readOnly: true, busyTimeoutMs: 0, lockWaitMs: 0 });
+	try {
+		return { path, file, ...(await shardOwner(database)) };
+	} finally {
+		await database.close();
+	}
+}
+
+async function idleShard(path: string): Promise<IdleShard | undefined> {
+	if ((await fileIdentity(path).catch(() => undefined)) === undefined) return undefined;
+	const lock = await tryRootLock(path).catch(() => null);
+	if (lock === null) return undefined;
+	try {
+		return await inspectShard(path).catch(() => undefined);
+	} finally {
+		lock.release();
+	}
+}
+
+async function removeConfirmedShard(
+	path: string,
+	rootLock: AdvisoryLock | undefined,
+	confirm: (connection: DatabaseSync) => boolean | Promise<boolean>,
+	openInOtherProcesses?: (location: string) => Promise<boolean>,
+): Promise<void> {
+	let openLock: AdvisoryLock | null = null;
+	let location: string | undefined;
+	let removed = false;
+	try {
+		location = await realpath(path).catch(() => undefined);
+		if (location === undefined) return;
+		openLock = await tryOpenLock(location).catch(() => null);
+		if (openLock === null) return;
+		if (await selfHasOpenFile(location)) return;
+		if (await openInOtherProcesses?.(location)) return;
+		const { DatabaseSync } = await import("node:sqlite");
+		const connection = new DatabaseSync(sqliteFilePath(location));
+		let confirmed = false;
+		try {
+			confirmed = Boolean(await confirm(connection)) && onlyConnectionSync(connection);
+		} finally {
+			connection.close();
+		}
+		if (!confirmed || (await selfHasOpenFile(location))) return;
+		removed = await removeShardFiles(location, path);
+	} catch {
+		return;
+	} finally {
+		openLock?.release();
+		rootLock?.release();
+	}
+	if (removed && location !== undefined) await rmdir(dirname(location)).catch(() => {});
+}
+
+async function removeUnchanged(
+	shard: IdleShard,
+	openInOtherProcesses: (location: string) => Promise<boolean>,
+): Promise<void> {
+	if ((await fileIdentity(shard.path).catch(() => undefined)) !== shard.file) return;
+	const lock = await tryRootLock(shard.path).catch(() => null);
+	if (lock === null) return;
+	if ((await fileIdentity(shard.path).catch(() => undefined)) !== shard.file) {
+		lock.release();
+		return;
+	}
+	await removeConfirmedShard(
+		shard.path,
+		lock,
+		async (connection) =>
+			(await fileIdentity(shard.path).catch(() => undefined)) === shard.file &&
+			sameOwner(shardOwnerSync(connection), shard),
+		openInOtherProcesses,
+	);
+}
+
+export async function retireEndedShipShards(directory: string, findEnded: FindEndedShipRoots): Promise<void> {
+	const names = await readdir(directory).catch(() => []);
+	const paths = names.filter((name) => name.endsWith(".sqlite")).map((name) => join(directory, name));
+	if (paths.length === 0) return;
+	const idle = await underJournalLock(directory, async () => {
+		const found: IdleShard[] = [];
+		for (const path of paths) {
+			const shard = await idleShard(path);
+			if (shard !== undefined) found.push(shard);
+		}
+		return found;
+	});
+	if (idle.length === 0) return;
+	const roots = idle.flatMap((shard) => (shard.root === undefined ? [] : [shard.root]));
+	const works = idle.flatMap((shard) => (shard.root === undefined && shard.work !== undefined ? [shard.work] : []));
+	const unidentified = idle.some((shard) => shard.root === undefined && shard.work === undefined);
+	const ended = await findEnded(roots, works, unidentified);
+	const liveFiles = ended.liveRoots === undefined ? undefined : new Set([...ended.liveRoots].map(shipRootFile));
+	const retired = idle.filter((shard) => {
+		if (shard.root !== undefined) return ended.roots.has(shard.root);
+		if (shard.work !== undefined) return ended.works.has(shard.work);
+		return liveFiles !== undefined && !liveFiles.has(basename(shard.path));
+	});
+	if (retired.length === 0) return;
+	await underJournalLock(directory, async () => {
+		let otherOpen: Promise<ReadonlySet<string>> | undefined;
+		const resolvedLocations: string[] = [];
+		for (const shard of retired) {
+			const location = await realpath(shard.path).catch(() => undefined);
+			if (location !== undefined) resolvedLocations.push(location);
+		}
+		const openInOtherProcesses = async (location: string): Promise<boolean> => {
+			otherOpen ??= otherProcessesOpenFiles(resolvedLocations);
+			return (await otherOpen).has(location);
+		};
+		for (const shard of retired) await removeUnchanged(shard, openInOtherProcesses);
+	});
+}
+
+async function removeShardFiles(location: string, path: string): Promise<boolean> {
+	const removed = await rm(location, { force: true }).then(
+		() => true,
+		() => false,
+	);
+	if (!removed) return false;
+	for (const suffix of ["-journal", "-wal", "-shm"]) await rm(`${location}${suffix}`, { force: true }).catch(() => {});
 	for (const suffix of ["-holders", "-writers", "-wakes"])
 		await rm(`${location}${suffix}`, { recursive: true, force: true }).catch(() => {});
-	for (const lock of new Set([`${location}.lock`, `${path}.lock`])) await rm(lock, { force: true }).catch(() => {});
-	await rmdir(dirname(location)).catch(() => {});
+	for (const lock of new Set([`${location}-open.lock`, `${location}.lock`, `${path}.lock`]))
+		await rm(lock, { force: true }).catch(() => {});
+	return true;
 }
