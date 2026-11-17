@@ -1,6 +1,6 @@
 import type { ForkError, ForkErrorCode } from "../durable/fork-errors.js";
 import { isForkError } from "../durable/fork-errors.js";
-import { validateForkOptions } from "../durable/fork-run.js";
+import { validateForkOptionsWithoutCwd } from "../durable/fork-run.js";
 import type { DurableWorkflowHandle } from "../durable/types.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
 import type { WorkflowToolArgs } from "./public-types.js";
@@ -44,7 +44,7 @@ export async function workflowForkAction(
 ): Promise<ForkResult> {
 	const sourceRunId = args.runId?.trim() ?? "";
 	try {
-		validateForkOptions(deps.source, sourceRunId, {
+		validateForkOptionsWithoutCwd(deps.source, sourceRunId, {
 			fromStage: args.fromStage,
 			inputs: args.inputs,
 			carryMessages: args.carryMessages,

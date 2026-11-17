@@ -5,7 +5,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { statSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import {
 	assertSessionBlobStore,
@@ -177,26 +177,66 @@ function forkJournal(backend: DurableWorkflowBackend): JournalDurableBackend & {
 	};
 }
 
+interface ForkOptionsToValidate {
+	readonly fromStage?: unknown;
+	readonly inputs?: unknown;
+	readonly cwd?: unknown;
+	readonly carryMessages?: unknown;
+	readonly definition?: unknown;
+	readonly signal?: unknown;
+	/** Process-bound run options passed together with `localWorkers`, which a worker pool refuses. */
+	readonly processBound?: readonly string[];
+}
+
+/** Whether a fork's `cwd` names an existing directory, and why it could not be read when it could not. */
+interface ForkCwdCheck {
+	readonly directory: boolean;
+	readonly cause?: Error;
+}
+
+async function checkForkCwd(cwd: unknown): Promise<ForkCwdCheck> {
+	if (typeof cwd !== "string" || cwd.length === 0) return { directory: false };
+	try {
+		return { directory: (await stat(resolve(cwd))).isDirectory() };
+	} catch (error) {
+		return { directory: false, cause: error as Error };
+	}
+}
+
 /**
  * Checks `forkRun` options in one pass before any journal or session I/O, reporting every invalid
  * option together. The run id is resolved against the journal afterwards.
  */
-export function validateForkOptions(
+export async function validateForkOptions(
 	source: ForkConfigSource,
 	runId: unknown,
-	options: {
-		readonly fromStage?: unknown;
-		readonly inputs?: unknown;
-		readonly cwd?: unknown;
-		readonly carryMessages?: unknown;
-		readonly definition?: unknown;
-		readonly signal?: unknown;
-		/** Process-bound run options passed together with `localWorkers`, which a worker pool refuses. */
-		readonly processBound?: readonly string[];
-	},
+	options: ForkOptionsToValidate,
+): Promise<void> {
+	throwForkOptionIssues(
+		source,
+		runId,
+		options,
+		options.cwd === undefined ? undefined : await checkForkCwd(options.cwd),
+	);
+}
+
+/** {@link validateForkOptions} for options without a `cwd`, which need no file system. */
+export function validateForkOptionsWithoutCwd(
+	source: ForkConfigSource,
+	runId: unknown,
+	options: Omit<ForkOptionsToValidate, "cwd">,
+): void {
+	throwForkOptionIssues(source, runId, options, undefined);
+}
+
+function throwForkOptionIssues(
+	source: ForkConfigSource,
+	runId: unknown,
+	options: ForkOptionsToValidate,
+	cwd: ForkCwdCheck | undefined,
 ): void {
 	const issues: ForkConfigIssue[] = [];
-	let cause: Error | undefined;
+	const cause = cwd?.cause;
 	if (typeof runId !== "string" || runId.trim().length === 0)
 		issues.push({ field: "runId", expected: "a run id or 8-character prefix" });
 	if (options.fromStage !== undefined && (typeof options.fromStage !== "string" || options.fromStage.length === 0))
@@ -206,17 +246,7 @@ export function validateForkOptions(
 		(typeof options.inputs !== "object" || options.inputs === null || Array.isArray(options.inputs))
 	)
 		issues.push({ field: "inputs", expected: "an object of workflow inputs" });
-	if (options.cwd !== undefined) {
-		let directory = false;
-		if (typeof options.cwd === "string" && options.cwd.length > 0) {
-			try {
-				directory = statSync(resolve(options.cwd)).isDirectory();
-			} catch (error) {
-				cause = error as Error;
-			}
-		}
-		if (!directory) issues.push({ field: "cwd", expected: "an existing directory" });
-	}
+	if (cwd !== undefined && !cwd.directory) issues.push({ field: "cwd", expected: "an existing directory" });
 	if (options.carryMessages !== undefined && options.carryMessages !== "before" && options.carryMessages !== "all")
 		issues.push({ field: "carryMessages", expected: `"before" or "all"` });
 	if (options.definition !== undefined && !isWorkflowDefinition(options.definition))
@@ -1347,7 +1377,7 @@ export async function forkDurableRun<
 	typedRequest: DurableForkRequest<WorkflowDefinition<TInputs, TOutputs, TRunInputs>>,
 ): Promise<DurableForkResult> {
 	const forkRequest = typedRequest as never as DurableForkRequest;
-	validateForkOptions(forkRequest.source, forkRequest.runId, { ...forkRequest, cwd: undefined });
+	validateForkOptionsWithoutCwd(forkRequest.source, forkRequest.runId, forkRequest);
 	if (forkRequest.cwd !== undefined && (typeof forkRequest.cwd !== "string" || forkRequest.cwd.length === 0))
 		throw new ForkConfigError({ source: forkRequest.source, field: "cwd", expected: "a directory path" });
 	let request = forkRequest as ResolvedForkRequest;

@@ -88,7 +88,7 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 			// the files the prompt names are checked only when the task starts.
 			const resumed = resolvedTaskOptions.resumeFromSessionId !== undefined;
 			const promptText = applyTaskContext(
-				`${taskReadInstruction(resolvedTaskOptions, !resumed)}${taskPrompt(resolvedTaskOptions)}`,
+				`${await taskReadInstruction(resolvedTaskOptions, !resumed)}${taskPrompt(resolvedTaskOptions)}`,
 				taskPrevious(resolvedTaskOptions),
 			);
 			const rawOutput = await stage.prompt(promptText, taskPromptOptions(resolvedTaskOptions));

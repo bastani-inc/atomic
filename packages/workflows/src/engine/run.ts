@@ -311,7 +311,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			const allMappings = [...mappings, ...restored];
 			const recordedCwd = previous.invocationCwd ?? opts.cwd;
 			const continuing = recordedCwd === undefined ? undefined : mapWorkflowWorktreePath(recordedCwd, allMappings);
-			const outcomes = runWorktreeRestoreOutcomes({
+			const outcomes = await runWorktreeRestoreOutcomes({
 				restored,
 				unrestored,
 				snapshots: restoreSnapshots,
