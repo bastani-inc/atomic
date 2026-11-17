@@ -134,6 +134,7 @@ export interface CallGraphStats {
 	resolvedExternal: number;
 	unresolved: number;
 	resolvedThroughType: number;
+	resolvedThroughFlow: number;
 	objectMembersTyped: number;
 	dispatchTargets: number;
 }
@@ -160,13 +161,21 @@ interface PendingReference {
 	readonly name: string;
 }
 
+/** What an expression may evaluate to, as far as functions go: closures it creates and references it makes. */
+interface ValueSources {
+	readonly functions: readonly number[];
+	readonly references: readonly number[];
+}
+
 interface PendingCall {
 	readonly container: number;
 	readonly callee: number;
 	readonly line: number;
 	readonly argumentFunctions: readonly number[];
 	readonly argumentReferences: readonly number[];
+	readonly arguments: readonly ValueSources[];
 	readonly firstArgument: string | undefined;
+	readonly detached: boolean;
 }
 
 interface ClassInfo {
@@ -182,6 +191,8 @@ interface ClassInfo {
 interface InterfaceInfo {
 	readonly key: string;
 	readonly heritage: Node[];
+	/** Declaration keys of the interface's own members, by name. */
+	readonly members: Map<string, string[]>;
 }
 
 interface WalkContext {
@@ -238,6 +249,16 @@ const VALUE_OPERATORS = new Set<SyntaxKind>([
 ]);
 
 const RESOLVE_BATCH = 8_000;
+
+/** Declarations that hold a value a function can flow into: parameters, variables and properties. */
+const VALUE_LOCATIONS = new Set<SyntaxKind>([
+	SyntaxKind.Parameter,
+	SyntaxKind.VariableDeclaration,
+	SyntaxKind.BindingElement,
+	SyntaxKind.PropertyDeclaration,
+	SyntaxKind.PropertySignature,
+	SyntaxKind.PropertyAssignment,
+]);
 
 /** Handler properties (`onSubmit`, `onData`): assigning a function to one registers it for an event. */
 const HANDLER_PROPERTY = /^on[A-Z]/;
@@ -379,10 +400,17 @@ export class CallGraphBuilder {
 	/** The function each function was created in, or -1 for module and class-level nodes. */
 	private readonly lexicalParents: number[] = [];
 	/** Functions assigned to a property or variable after its declaration: `x.onData = (d) => …`. */
-	private readonly pendingAssignments: Array<{
-		readonly target: Node;
-		readonly functions: readonly number[];
-	}> = [];
+	private readonly pendingAssignments: Array<{ readonly target: Node } & ValueSources> = [];
+	/** Each function's parameter declarations, in order; the index of a rest parameter, if any. */
+	private readonly functionParameters = new Map<number, { readonly keys: readonly string[]; readonly rest: number }>();
+	/** Object literal properties whose value is a reference: `{ onData: handler }`. */
+	private readonly pendingObjectValues: Array<{ readonly literal: Node; readonly name: string } & ValueSources> = [];
+	/** Declaration keys of the parameters, variables and properties each reference resolved to. */
+	private readonly referenceLocations: Array<readonly string[] | undefined> = [];
+	/** Assignments resolved to the declarations they write. */
+	private readonly assignmentFlows: Array<{ readonly into: readonly string[] } & ValueSources> = [];
+	private readonly detachedFunctions = new Set<number>();
+	private readonly objectValueFlows: Array<{ readonly into: readonly string[] } & ValueSources> = [];
 	private readonly assignedFunctions = new Map<string, number[]>();
 	private readonly pendingObjectMembers: Array<{
 		readonly container: number;
@@ -419,6 +447,7 @@ export class CallGraphBuilder {
 	}> = [];
 	private readonly targetCache = new Map<string, readonly number[]>();
 	private readonly externalCache = new Map<number, BlockingApi | null>();
+	private readonly locationCache = new Map<string, readonly string[]>();
 	private readonly aliasCache = new Map<number, TsSymbol>();
 	private readonly subtypes = new Map<string, Set<string>>();
 	private readonly stats: CallGraphStats = {
@@ -429,6 +458,7 @@ export class CallGraphBuilder {
 		resolvedExternal: 0,
 		unresolved: 0,
 		resolvedThroughType: 0,
+		resolvedThroughFlow: 0,
 		objectMembersTyped: 0,
 		dispatchTargets: 0,
 	};
@@ -479,6 +509,9 @@ export class CallGraphBuilder {
 				if (key === undefined) return [];
 				const into = new Set<number>();
 				this.addImplementations(key, member, into);
+				for (const memberKey of this.interfaces.get(key)?.members.get(member) ?? []) {
+					for (const id of this.assignedFunctions.get(memberKey) ?? []) into.add(id);
+				}
 				return [...into];
 			},
 			sinkRegistrations: this.sinkRegistrations,
@@ -540,8 +573,9 @@ export class CallGraphBuilder {
 		if (own !== undefined) return own;
 		if (parent === undefined) return "<anonymous>";
 		switch (parent.kind) {
-			case SyntaxKind.VariableDeclaration:
 			case SyntaxKind.PropertyAssignment:
+				return `${this.objectOwnerName(parent.parent as Node | undefined)}.${memberName(parent) ?? "<anonymous>"}`;
+			case SyntaxKind.VariableDeclaration:
 			case SyntaxKind.PropertyDeclaration:
 				return memberName(parent) ?? "<anonymous>";
 			case SyntaxKind.BinaryExpression:
@@ -584,7 +618,7 @@ export class CallGraphBuilder {
 				return;
 			case SyntaxKind.NewExpression:
 				this.visitNew(node, context);
-				break;
+				return;
 			case SyntaxKind.TaggedTemplateExpression:
 				this.addReference(context, (node as Node & { readonly tag: Node }).tag, "call");
 				break;
@@ -595,10 +629,10 @@ export class CallGraphBuilder {
 				this.visitPropertyAccess(node, context);
 				break;
 			case SyntaxKind.BinaryExpression:
-				if (this.visitHandlerAssignment(node, context)) return;
+				if (this.visitAssignment(node, context)) return;
 				break;
 			case SyntaxKind.PropertyAssignment:
-				if (this.visitHandlerProperty(node, context)) return;
+				if (this.visitObjectProperty(node, context)) return;
 				break;
 			case SyntaxKind.ShorthandPropertyAssignment:
 				this.shorthandValues.push({ container: context.container, node, line: this.lineOf(context.file, node) });
@@ -654,6 +688,12 @@ export class CallGraphBuilder {
 			isAsync !== 0,
 		);
 		this.functionByDeclaration.set(declarationKey(context.file.path, node), id);
+		const parameters = node.parameters ?? [];
+		this.functionParameters.set(id, {
+			keys: parameters.map((parameter) => declarationKey(context.file.path, parameter)),
+			rest: parameters.findIndex((parameter) => parameter.dotDotDotToken !== undefined),
+		});
+		if (this.isDetachedCallback(node)) this.detachedFunctions.add(id);
 
 		if (kind === "getter" || kind === "setter") {
 			const accessor = memberName(node);
@@ -727,6 +767,7 @@ export class CallGraphBuilder {
 	 * declared member, of a literal that is not simply stored, gets a closure edge from its creator instead.
 	 */
 	private resolveObjectMembers(): void {
+		this.resolveObjectValues();
 		const byLiteral = new Map<Node, Array<(typeof this.pendingObjectMembers)[number]>>();
 		for (const member of this.pendingObjectMembers) {
 			const list = byLiteral.get(member.literal) ?? [];
@@ -765,6 +806,40 @@ export class CallGraphBuilder {
 				}
 				if (!attached && !member.stored && !member.detached) this.addEdge(member.container, member.id, "closure");
 			}
+		}
+	}
+
+	/** `{ name: reference }`: the reference flows into the property the literal is checked against. */
+	private resolveObjectValues(): void {
+		const checker = this.project.checker;
+		const types = new Map<Node, ReturnType<typeof checker.getContextualType>>();
+		for (const value of this.pendingObjectValues) {
+			if (!types.has(value.literal)) {
+				try {
+					types.set(
+						value.literal,
+						checker.getContextualType(value.literal as Parameters<typeof checker.getContextualType>[0]),
+					);
+				} catch {
+					types.set(value.literal, undefined);
+				}
+			}
+			const type = types.get(value.literal);
+			if (type === undefined) continue;
+			let property: TsSymbol | undefined;
+			try {
+				property = checker.getPropertyOfType(type, value.name);
+			} catch {
+				property = undefined;
+			}
+			const into: string[] = [];
+			for (const handle of property?.declarations ?? []) {
+				if (!this.modulePaths.has(handle.path)) continue;
+				const declaration = this.resolveHandle(handle);
+				if (declaration !== undefined) into.push(declarationKey(handle.path, declaration));
+			}
+			if (into.length > 0)
+				this.objectValueFlows.push({ into, functions: value.functions, references: value.references });
 		}
 	}
 
@@ -816,10 +891,6 @@ export class CallGraphBuilder {
 					if (parent.right !== child) return false;
 					const target = unwrapExpression(parent.left);
 					if (!isIdentifier(target) && !isPropertyAccessExpression(target)) return false;
-					this.pendingAssignments.push({
-						target: isPropertyAccessExpression(target) ? target.name : target,
-						functions: [id],
-					});
 					return !passedToCall;
 				}
 				if (!VALUE_OPERATORS.has(operator)) return false;
@@ -846,10 +917,15 @@ export class CallGraphBuilder {
 	private isDetachedCallback(node: Node): boolean {
 		let parent = node.parent as Node | undefined;
 		while (parent !== undefined && EXPRESSION_WRAPPERS.has(parent.kind)) parent = parent.parent as Node | undefined;
-		if (parent === undefined || !isCallExpression(parent)) return false;
-		const callee = dottedText(parent.expression);
+		return parent !== undefined && isCallExpression(parent) && this.isDetachedCall(parent);
+	}
+
+	/** A call whose callbacks only run as the process exits, such as `process.on("exit", …)`. */
+	private isDetachedCall(call: Node): boolean {
+		if (!isCallExpression(call)) return false;
+		const callee = dottedText(call.expression);
 		if (callee === undefined) return false;
-		const event = stringArgument(parent.arguments[0]);
+		const event = stringArgument(call.arguments[0]);
 		return this.options.detachedCallbacks.some((spec) => {
 			const method = callee.slice(callee.lastIndexOf(".") + 1);
 			const owner = callee.includes(".") ? callee.slice(0, callee.lastIndexOf(".")) : undefined;
@@ -929,7 +1005,15 @@ export class CallGraphBuilder {
 		for (const clause of node.heritageClauses ?? []) {
 			for (const type of clause.types) heritage.push(type.expression);
 		}
-		this.interfaces.set(key, { key, heritage });
+		const members = new Map<string, string[]>();
+		for (const member of node.members) {
+			const name = memberName(member);
+			if (name === undefined) continue;
+			const list = members.get(name) ?? [];
+			list.push(declarationKey(context.file.path, member));
+			members.set(name, list);
+		}
+		this.interfaces.set(key, { key, heritage, members });
 		const name = nameText(node.name);
 		if (name !== undefined) this.typeKeysByName.set(`${context.file.relative}#${name}`, key);
 	}
@@ -994,26 +1078,27 @@ export class CallGraphBuilder {
 		} else {
 			this.visit(callee, context);
 		}
-		const firstReference = this.references.length;
-		const firstFunction = this.functions.length;
-		for (const argument of node.arguments) this.visit(argument, context);
-		if (calleeReference === undefined) return;
-		const argumentFunctions: number[] = [];
-		for (let id = firstFunction; id < this.functions.length; id++) {
-			if (this.lexicalParents[id] === context.container) argumentFunctions.push(id);
-		}
-		const argumentReferences: number[] = [];
-		for (let index = firstReference; index < this.references.length; index++) {
-			const reference = this.references[index];
-			if (reference.role === "value" && reference.container === context.container) argumentReferences.push(index);
-		}
+		this.recordCall(node, calleeReference, context);
+	}
+
+	private recordCall(
+		node: Node & { readonly arguments?: readonly Node[] },
+		callee: number | undefined,
+		context: WalkContext,
+	): void {
+		const sources = (node.arguments ?? []).map((argument) =>
+			this.captureCreated(context, () => this.visit(argument, context)),
+		);
+		if (callee === undefined) return;
 		this.calls.push({
 			container: context.container,
-			callee: calleeReference,
+			callee,
 			line: this.lineOf(context.file, node),
-			argumentFunctions,
-			argumentReferences,
-			firstArgument: stringArgument(node.arguments[0]),
+			argumentFunctions: sources.flatMap((source) => source.functions),
+			argumentReferences: sources.flatMap((source) => source.references),
+			arguments: sources,
+			firstArgument: stringArgument(node.arguments?.[0]),
+			detached: this.isDetachedCall(node),
 		});
 	}
 
@@ -1034,31 +1119,43 @@ export class CallGraphBuilder {
 		return { functions, references };
 	}
 
-	/** `x.onSubmit = handler`: the handler runs when `x` reports the event. */
-	private visitHandlerAssignment(node: Node, context: WalkContext): boolean {
+	/**
+	 * `x.handler = value` and `variable = value`: functions the value may be flow into the declaration written, and a
+	 * function assigned to a handler property (`x.onSubmit = …`) is registered to run when `x` reports the event.
+	 */
+	private visitAssignment(node: Node, context: WalkContext): boolean {
 		if (!isBinaryExpression(node) || node.operatorToken.kind !== SyntaxKind.EqualsToken) return false;
 		const left = unwrapExpression(node.left);
-		if (!isPropertyAccessExpression(left)) return false;
-		const property = nameText(left.name);
-		if (property === undefined || !HANDLER_PROPERTY.test(property)) return false;
-		this.visit(node.left, context);
+		if (!isPropertyAccessExpression(left) && !isIdentifier(left)) return false;
+		if (isPropertyAccessExpression(left)) this.visit(left.expression, context);
 		const created = this.captureCreated(context, () => this.visit(node.right, context));
-		this.assignedHandlers.push({
-			container: context.container,
-			sink: `.${property} =`,
-			line: this.lineOf(context.file, node),
-			...created,
-		});
+		this.pendingAssignments.push({ target: isPropertyAccessExpression(left) ? left.name : left, ...created });
+		const property = isPropertyAccessExpression(left) ? nameText(left.name) : undefined;
+		if (property !== undefined && HANDLER_PROPERTY.test(property)) {
+			this.assignedHandlers.push({
+				container: context.container,
+				sink: `.${property} =`,
+				line: this.lineOf(context.file, node),
+				...created,
+			});
+		}
 		return true;
 	}
 
-	/** `{ onSubmit: handler }`: an options object whose handler the receiver calls on an event. */
-	private visitHandlerProperty(node: Node, context: WalkContext): boolean {
+	/**
+	 * `{ name: value }`: a referenced function flows into the property the literal is checked against, and an options
+	 * object's handler (`{ onSubmit: handler }`) is registered to run when the receiver reports the event.
+	 */
+	private visitObjectProperty(node: Node, context: WalkContext): boolean {
 		const property = memberName(node);
-		if (property === undefined || !HANDLER_PROPERTY.test(property)) return false;
 		const initializer = (node as Node & { readonly initializer?: Node }).initializer;
-		if (initializer === undefined) return false;
+		const literal = node.parent as Node | undefined;
+		if (property === undefined || initializer === undefined) return false;
 		const created = this.captureCreated(context, () => this.visit(initializer, context));
+		if (literal?.kind === SyntaxKind.ObjectLiteralExpression && created.references.length > 0) {
+			this.pendingObjectValues.push({ literal, name: property, functions: [], references: created.references });
+		}
+		if (!HANDLER_PROPERTY.test(property)) return true;
 		this.assignedHandlers.push({
 			container: context.container,
 			sink: `{ ${property} }`,
@@ -1069,13 +1166,19 @@ export class CallGraphBuilder {
 	}
 
 	private visitNew(node: Node, context: WalkContext): void {
-		const callee = unwrapExpression((node as Node & { readonly expression: Node }).expression);
+		const expression = (node as Node & { readonly expression: Node }).expression;
+		const callee = unwrapExpression(expression);
+		let reference: number | undefined;
 		if (isIdentifier(callee)) {
 			if (callee.text === "RegExp") this.recordRegexConstructor(node as CallExpression, context);
-			this.addReference(context, callee, "new");
+			reference = this.addReference(context, callee, "new");
 		} else if (isPropertyAccessExpression(callee)) {
-			this.addReference(context, callee.name, "new");
+			reference = this.addReference(context, callee.name, "new");
+			this.visit(callee.expression, context);
+		} else {
+			this.visit(expression, context);
 		}
+		this.recordCall(node as Node & { readonly arguments?: readonly Node[] }, reference, context);
 	}
 
 	private visitPropertyAccess(node: Node, context: WalkContext): void {
@@ -1211,15 +1314,17 @@ export class CallGraphBuilder {
 	private resolveSymbol(
 		symbol: TsSymbol,
 		role: ReferenceRole,
-	): { functions: readonly number[]; blocking: BlockingApi | undefined } {
+	): { functions: readonly number[]; blocking: BlockingApi | undefined; locations: readonly string[] } {
 		const target = this.aliased(symbol);
 		const cacheKey = `${target.id}:${role}`;
 		const cachedFunctions = this.targetCache.get(cacheKey);
 		const cachedBlocking = this.externalCache.get(target.id);
-		if (cachedFunctions !== undefined && cachedBlocking !== undefined) {
-			return { functions: cachedFunctions, blocking: cachedBlocking ?? undefined };
+		const cachedLocations = this.locationCache.get(cacheKey);
+		if (cachedFunctions !== undefined && cachedBlocking !== undefined && cachedLocations !== undefined) {
+			return { functions: cachedFunctions, blocking: cachedBlocking ?? undefined, locations: cachedLocations };
 		}
 		const functions = new Set<number>();
+		const locations: string[] = [];
 		let blocking: BlockingApi | undefined;
 		for (const handle of target.declarations) {
 			const relative = this.modulePaths.has(handle.path) ? this.modulePaths.get(handle.path) : undefined;
@@ -1234,11 +1339,15 @@ export class CallGraphBuilder {
 				continue;
 			}
 			this.collectDeclarationTargets(handle.path, declaration, role, functions);
+			if (role !== "accessor" && VALUE_LOCATIONS.has(declaration.kind)) {
+				locations.push(declarationKey(handle.path, declaration));
+			}
 		}
 		const result = [...functions];
 		this.targetCache.set(cacheKey, result);
 		this.externalCache.set(target.id, blocking ?? null);
-		return { functions: result, blocking };
+		this.locationCache.set(cacheKey, locations);
+		return { functions: result, blocking, locations };
 	}
 
 	private collectDeclarationTargets(path: string, declaration: Node, role: ReferenceRole, into: Set<number>): void {
@@ -1379,14 +1488,21 @@ export class CallGraphBuilder {
 			batch.forEach((entry, index) => {
 				const symbol = symbols[index];
 				if (symbol === undefined) return;
+				const into: string[] = [];
 				for (const handle of this.aliased(symbol).declarations) {
 					if (!this.modulePaths.has(handle.path)) continue;
 					const declaration = this.resolveHandle(handle);
 					if (declaration === undefined) continue;
 					const key = declarationKey(handle.path, declaration);
-					const list = this.assignedFunctions.get(key) ?? [];
-					list.push(...entry.functions);
-					this.assignedFunctions.set(key, list);
+					into.push(key);
+					if (entry.functions.length > 0) {
+						const list = this.assignedFunctions.get(key) ?? [];
+						list.push(...entry.functions);
+						this.assignedFunctions.set(key, list);
+					}
+				}
+				if (into.length > 0 && entry.references.length > 0) {
+					this.assignmentFlows.push({ into, functions: [], references: entry.references });
 				}
 			});
 		}
@@ -1411,8 +1527,107 @@ export class CallGraphBuilder {
 			});
 		}
 		this.resolveThroughTypes(resolved);
+		this.propagateValues(resolved);
 		for (const call of this.calls) this.applySinks(call, resolved, symbolsByReference);
 		for (const assignment of this.assignedHandlers) this.applyAssignedHandler(assignment, resolved);
+	}
+
+	/**
+	 * Functions flow into parameters at call sites, into properties and variables through assignments, and into an
+	 * options type's properties through object literals; a call or reference through one of those reaches every
+	 * function that can flow there. Solved to a fixed point, then each such reference gains its edges and `resolved`
+	 * its functions (so sinks see a registered parameter's functions).
+	 */
+	private propagateValues(resolved: Array<readonly number[]>): void {
+		type Flow = {
+			readonly into: readonly string[];
+			readonly functions: readonly number[];
+			readonly from: readonly string[];
+		};
+		const flows: Flow[] = [];
+		const sourcesOf = (sources: ValueSources) => {
+			const functions = [...sources.functions];
+			const from: string[] = [];
+			for (const index of sources.references) {
+				functions.push(...(resolved[index] ?? []));
+				from.push(...(this.referenceLocations[index] ?? []));
+			}
+			return { functions, from };
+		};
+		for (const call of this.calls) {
+			for (const target of resolved[call.callee] ?? []) {
+				const parameters = this.functionParameters.get(target);
+				if (parameters === undefined || parameters.keys.length === 0) continue;
+				call.arguments.forEach((argument, index) => {
+					const position = parameters.rest !== -1 && index >= parameters.rest ? parameters.rest : index;
+					const key = parameters.keys[position];
+					if (key === undefined) return;
+					const { functions, from } = sourcesOf(argument);
+					if (functions.length > 0 || from.length > 0) flows.push({ into: [key], functions, from });
+				});
+			}
+		}
+		for (const assignment of this.assignmentFlows) {
+			const { functions, from } = sourcesOf(assignment);
+			flows.push({ into: assignment.into, functions, from });
+		}
+		for (const value of this.objectValueFlows) {
+			const { functions, from } = sourcesOf(value);
+			flows.push({ into: value.into, functions, from });
+		}
+		const values = new Map<string, Set<number>>();
+		const dependents = new Map<string, number[]>();
+		flows.forEach((flow, index) => {
+			for (const location of flow.from) {
+				const list = dependents.get(location) ?? [];
+				list.push(index);
+				dependents.set(location, list);
+			}
+		});
+		const queue = flows.map((_, index) => index);
+		const queued = new Set(queue);
+		while (queue.length > 0) {
+			const index = queue.shift() as number;
+			queued.delete(index);
+			const flow = flows[index];
+			const incoming = new Set(flow.functions);
+			for (const location of flow.from) for (const id of values.get(location) ?? []) incoming.add(id);
+			for (const location of flow.into) {
+				const set = values.get(location) ?? new Set<number>();
+				const before = set.size;
+				for (const id of incoming) set.add(id);
+				values.set(location, set);
+				if (set.size === before) continue;
+				for (const dependent of dependents.get(location) ?? []) {
+					if (!queued.has(dependent)) {
+						queued.add(dependent);
+						queue.push(dependent);
+					}
+				}
+			}
+		}
+		const parameterOwner = new Map<string, number>();
+		for (const [id, parameters] of this.functionParameters)
+			for (const key of parameters.keys) parameterOwner.set(key, id);
+		this.references.forEach((reference, index) => {
+			const locations = this.referenceLocations[index];
+			if (locations === undefined || reference.role === "accessor") return;
+			const reached = new Set<number>();
+			for (const location of locations) for (const id of values.get(location) ?? []) reached.add(id);
+			if (reached.size === 0) return;
+			const known = new Set(resolved[index] ?? []);
+			const added = [...reached].filter((id) => !known.has(id));
+			if (added.length === 0) return;
+			resolved[index] = [...known, ...added];
+			// A function calling or passing on its own parameter runs within its caller's call, and the caller already
+			// reaches what it passed. Only a parameter used from a closure that outlives the call, or a stored value,
+			// needs edges of its own.
+			const ownParameterOnly = locations.every((location) => parameterOwner.get(location) === reference.container);
+			if (ownParameterOnly) return;
+			this.stats.resolvedThroughFlow++;
+			for (const id of added)
+				this.addEdge(reference.container, id, reference.role === "value" ? "reference" : "call");
+		});
 	}
 
 	/**
@@ -1458,7 +1673,8 @@ export class CallGraphBuilder {
 			if (reference.role === "call") this.recordUnresolvedBlocking(reference);
 			return [];
 		}
-		const { functions, blocking } = this.resolveSymbol(symbol, reference.role);
+		const { functions, blocking, locations } = this.resolveSymbol(symbol, reference.role);
+		if (locations.length > 0) this.referenceLocations[index] = locations;
 		if (functions.length === 0 && blocking === undefined && reference.role !== "accessor") {
 			const flags = this.aliased(symbol).flags;
 			const variableLike = (flags & (SymbolFlags.Variable | SymbolFlags.Property)) !== 0;
@@ -1499,7 +1715,7 @@ export class CallGraphBuilder {
 	): void {
 		const reference = this.references[call.callee];
 		const symbol = symbols[call.callee];
-		if (symbol === undefined) return;
+		if (symbol === undefined || call.detached) return;
 		const sink = this.matchSink(symbol, call);
 		if (sink === undefined) return;
 		const callbacks = new Set<number>(call.argumentFunctions);
@@ -1524,7 +1740,7 @@ export class CallGraphBuilder {
 					(call.firstArgument === undefined || !spec.events.includes(call.firstArgument))
 				)
 					continue;
-				return `${owner === undefined ? "" : `${owner}.`}${target.name}`;
+				return `${owner === undefined || owner === "global" ? "" : `${owner}.`}${target.name}`;
 			}
 		}
 		return undefined;

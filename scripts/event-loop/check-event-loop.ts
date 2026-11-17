@@ -10,19 +10,12 @@
  */
 import { type CallGraph, CallGraphBuilder, type GraphFunction } from "./call-graph.ts";
 import {
-	DETACHED_CALLBACKS,
+	type EventLoopPolicy,
 	type FunctionSelector,
-	INTERFACE_ROOTS,
-	isAnalyzedFile,
-	OTHER_MODES,
-	OWNED_ELSEWHERE,
-	PROCESS_ENTRIES,
+	INTERACTIVE_HOST_POLICY,
 	type ReviewedSelector,
-	SINKS,
-	STARTUP_MODULES,
-	STARTUP_ONLY,
 } from "./policy.ts";
-import { openProject, REPO_ROOT } from "./program.ts";
+import { ANALYSIS_TSCONFIG, openProject, REPO_ROOT } from "./program.ts";
 import { type Arrival, pathTo, type Reached, reach, registrationsByRegistrar } from "./reachability.ts";
 
 export interface Violation {
@@ -78,10 +71,10 @@ function describeArrival(graph: CallGraph, id: number, arrival: Arrival): string
 }
 
 /** The top-level nodes of the startup modules and of everything they import statically. */
-function startupModuleNodes(graph: CallGraph, policyErrors: string[]): Set<number> {
+function startupModuleNodes(graph: CallGraph, startupModules: readonly string[], policyErrors: string[]): Set<number> {
 	const files = new Set<string>();
 	const stack: string[] = [];
-	for (const file of STARTUP_MODULES) {
+	for (const file of startupModules) {
 		if (!graph.modules.has(file)) policyErrors.push(`STARTUP_MODULES: no module ${file}`);
 		else stack.push(file);
 	}
@@ -99,7 +92,7 @@ function startupModuleNodes(graph: CallGraph, policyErrors: string[]): Set<numbe
 	return nodes;
 }
 
-export function analyzeEventLoop(graph: CallGraph): EventLoopReport {
+export function analyzeEventLoop(graph: CallGraph, policy: EventLoopPolicy = INTERACTIVE_HOST_POLICY): EventLoopReport {
 	const byName = indexByName(graph);
 	const policyErrors: string[] = [];
 	const resolve = (selector: FunctionSelector, list: string): number | undefined => {
@@ -119,15 +112,15 @@ export function analyzeEventLoop(graph: CallGraph): EventLoopReport {
 
 	const registrations = registrationsByRegistrar(graph);
 	const entries = new Map<number, string>();
-	for (const selector of PROCESS_ENTRIES) {
+	for (const selector of policy.processEntries) {
 		const id = resolve(selector, "PROCESS_ENTRIES");
 		if (id !== undefined) entries.set(id, "process entry");
 	}
-	const otherModes = reviewed(OTHER_MODES, "OTHER_MODES");
+	const otherModes = reviewed(policy.otherModes, "OTHER_MODES");
 	const process = reach(graph, entries, { stopAt: otherModes, followRegistrations: true }, registrations);
 
 	const roots = new Map<number, string>();
-	for (const root of INTERFACE_ROOTS) {
+	for (const root of policy.interfaceRoots) {
 		for (const member of root.members) {
 			const implementations = graph.implementationsOf(root.file, root.type, member);
 			if (implementations.length === 0)
@@ -137,13 +130,19 @@ export function analyzeEventLoop(graph: CallGraph): EventLoopReport {
 	}
 	for (const registration of graph.sinkRegistrations) {
 		if (!process.arrivals.has(registration.registrar)) continue;
+		const registrar = graph.functions[registration.registrar];
 		for (const callback of registration.callbacks) {
-			if (!roots.has(callback)) roots.set(callback, `registered with ${registration.sink}`);
+			if (!roots.has(callback)) {
+				roots.set(
+					callback,
+					`registered with ${registration.sink} by ${registrar.name} at ${registrar.file}:${registration.line}`,
+				);
+			}
 		}
 	}
-	const startupOnly = reviewed(STARTUP_ONLY, "STARTUP_ONLY");
+	const startupOnly = reviewed(policy.startupOnly, "STARTUP_ONLY");
 	for (const id of otherModes.keys()) startupOnly.set(id, "other mode");
-	const loadedAtStartup = startupModuleNodes(graph, policyErrors);
+	const loadedAtStartup = startupModuleNodes(graph, policy.startupModules, policyErrors);
 	const interactive = reach(
 		graph,
 		roots,
@@ -155,7 +154,10 @@ export function analyzeEventLoop(graph: CallGraph): EventLoopReport {
 		registrations,
 	);
 	for (const [id] of startupOnly) {
-		if (!interactive.stoppedFrom.has(id) && STARTUP_ONLY.some((entry) => byName.get(selectorKey(entry)) === id)) {
+		if (
+			!interactive.stoppedFrom.has(id) &&
+			policy.startupOnly.some((entry) => byName.get(selectorKey(entry)) === id)
+		) {
 			policyErrors.push(
 				`STARTUP_ONLY: ${describe(graph.functions[id])} is no longer reached from an interactive root`,
 			);
@@ -163,7 +165,7 @@ export function analyzeEventLoop(graph: CallGraph): EventLoopReport {
 	}
 
 	const ownerOf = (file: string) =>
-		OWNED_ELSEWHERE.find((area) =>
+		policy.ownedElsewhere.find((area) =>
 			area.paths.some((path) => (path.endsWith("/") ? file.startsWith(path) : file === path)),
 		)?.owner;
 	const findings: Violation[] = [];
@@ -186,7 +188,7 @@ export function analyzeEventLoop(graph: CallGraph): EventLoopReport {
 	const violations = findings.filter((finding) => finding.ownedBy === undefined);
 	const deferred = findings.filter((finding) => finding.ownedBy !== undefined);
 	const warnings: string[] = [];
-	for (const area of OWNED_ELSEWHERE) {
+	for (const area of policy.ownedElsewhere) {
 		if (!deferred.some((finding) => finding.ownedBy === area.owner)) {
 			warnings.push(`OWNED_ELSEWHERE: nothing left for ${area.owner}; remove the entry`);
 		}
@@ -204,14 +206,18 @@ export function analyzeEventLoop(graph: CallGraph): EventLoopReport {
 	};
 }
 
-export function buildCallGraph(): { graph: CallGraph; close(): void } {
-	const opened = openProject();
+export function buildCallGraph(
+	policy: EventLoopPolicy = INTERACTIVE_HOST_POLICY,
+	tsconfig = ANALYSIS_TSCONFIG,
+	repoRoot = REPO_ROOT,
+): { graph: CallGraph; close(): void } {
+	const opened = openProject(tsconfig, repoRoot);
 	try {
 		const graph = new CallGraphBuilder(opened.project, {
-			repoRoot: REPO_ROOT,
-			isAnalyzedFile,
-			sinks: SINKS,
-			detachedCallbacks: DETACHED_CALLBACKS,
+			repoRoot,
+			isAnalyzedFile: policy.isAnalyzedFile,
+			sinks: policy.sinks,
+			detachedCallbacks: policy.detachedCallbacks,
 		}).build();
 		return { graph, close: () => opened.close() };
 	} catch (error) {

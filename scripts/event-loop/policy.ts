@@ -204,3 +204,28 @@ export const OWNED_ELSEWHERE: readonly OwnedArea[] = [
  * frame. The walk does not enter them. Each needs the reason it cannot run after the first frame.
  */
 export const STARTUP_ONLY: readonly ReviewedSelector[] = [];
+
+/** Everything the check needs to know about the program it walks. */
+export interface EventLoopPolicy {
+	readonly isAnalyzedFile: (path: string) => boolean;
+	readonly processEntries: readonly FunctionSelector[];
+	readonly startupModules: readonly string[];
+	readonly otherModes: readonly ReviewedSelector[];
+	readonly interfaceRoots: readonly InterfaceRoot[];
+	readonly sinks: readonly SinkSpec[];
+	readonly detachedCallbacks: readonly SinkSpec[];
+	readonly ownedElsewhere: readonly OwnedArea[];
+	readonly startupOnly: readonly ReviewedSelector[];
+}
+
+export const INTERACTIVE_HOST_POLICY: EventLoopPolicy = {
+	isAnalyzedFile,
+	processEntries: PROCESS_ENTRIES,
+	startupModules: STARTUP_MODULES,
+	otherModes: OTHER_MODES,
+	interfaceRoots: INTERFACE_ROOTS,
+	sinks: SINKS,
+	detachedCallbacks: DETACHED_CALLBACKS,
+	ownedElsewhere: OWNED_ELSEWHERE,
+	startupOnly: STARTUP_ONLY,
+};
