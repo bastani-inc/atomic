@@ -188,6 +188,36 @@ describe("callers reading starts without the native module (#5315)", () => {
 
 			assert.deepEqual(manager.drainErrors(), []);
 			assert.equal((JSON.parse(readFileSync(settingsPath, "utf8")) as { theme?: string }).theme, "dark");
+
+			const projectDir = join(agentDir, "project");
+			const projectSettingsPath = join(projectDir, ".atomic", "settings.json");
+			const projectLockPath = `${projectSettingsPath}.lock`;
+			mkdirSync(projectLockPath, { recursive: true });
+			writeFileSync(projectSettingsPath, "{}");
+			writeFileSync(
+				lockHolderPath(projectLockPath),
+				JSON.stringify({
+					host: hostname(),
+					pid: later.pid,
+					started: GONE_START,
+					lock: lockHolder(projectLockPath),
+				}),
+			);
+			setNativeProcessCreationTimeForTesting(null);
+
+			const projectManager = SettingsManager.fromStorage(new FileSettingsStorage(projectDir, agentDir));
+			projectManager.setProjectPackages(["npm:example"]);
+			await projectManager.flush();
+
+			assert.deepEqual(projectManager.drainErrors(), []);
+			assert.deepEqual((JSON.parse(readFileSync(projectSettingsPath, "utf8")) as { packages?: string[] }).packages, [
+				"npm:example",
+			]);
+
+			const inMemory = SettingsManager.inMemory();
+			inMemory.setTheme("light");
+			await inMemory.flush();
+			assert.deepEqual(inMemory.drainErrors(), []);
 		},
 		POWERSHELL_READS_TIMEOUT_MS,
 	);
