@@ -129,7 +129,10 @@ function failedStageName(run: RunSnapshot): string | undefined {
 	const stage =
 		(run.failedStageId === undefined ? undefined : stageWhere(run, (s) => s.id === run.failedStageId)) ??
 		stageWhere(run, (s) => s.status === "failed");
-	return stage === undefined ? undefined : displayLine(stage.name);
+	if (stage !== undefined) return displayLine(stage.name);
+	const tool =
+		run.failedToolNodeId === undefined ? undefined : run.toolNodes.find((node) => node.id === run.failedToolNodeId);
+	return tool === undefined ? undefined : displayLine(tool.name);
 }
 
 function stageProgress(run: { readonly stages: readonly StageSnapshot[] }): string | undefined {

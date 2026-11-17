@@ -169,6 +169,27 @@ describe("the workflow tool's result line (#5224)", () => {
 		assert.doesNotMatch(line, /x\.ts|at run/);
 	});
 
+	test("a run whose tool failed names the tool", () => {
+		const store = runningStore();
+		store.recordToolNodeStart(RUN_ID, {
+			kind: "tool",
+			id: "tool:review",
+			name: "review",
+			argsHash: "h",
+			ordinal: 0,
+			parentIds: [],
+			status: "running",
+			attachable: false,
+		});
+		store.recordRunEnd(RUN_ID, "failed", undefined, "tests failed: 3 of 12 checks did not pass", {
+			failedToolNodeId: "tool:review",
+		});
+		assert.match(
+			plain(block(store).render(160))[0]!,
+			/✗ Failed at review · tests failed: 3 of 12 checks did not pass/,
+		);
+	});
+
 	test("a paused run says where it paused", () => {
 		const store = runningStore();
 		store.recordRunPaused(RUN_ID, START + 2000);
