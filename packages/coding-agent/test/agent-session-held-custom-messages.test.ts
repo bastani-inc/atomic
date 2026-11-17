@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, test, vi } from "vitest";
+import { SessionManager } from "../src/core/session-manager.js";
+import { StorageTransientError } from "../src/core/storage/errors.js";
+import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
+import type { SessionStore } from "../src/core/storage/session/types.js";
 import { detachedResult, harnessPool, settlesWithin, waitForCiTurn, waitTool } from "./helpers/detached-tools.js";
 
 const pool = harnessPool();
@@ -106,4 +110,110 @@ test("an excluded shared-key batch keeps one display card per occurrence after f
 	harness.session.takeDetachedToolCalls();
 	await harness.session.resumeDetachedTurn([detachedResult("ci-1", "passed")]);
 	assert.equal((await harness.session.startPendingRecovery()).replayed, 0);
+});
+
+test("an excluded card with a lost write acknowledgement is displayed once when its batch is retried (#5318)", async () => {
+	const store = new MemorySessionStore();
+	const failure = new StorageTransientError(store.descriptor, {
+		code: "connection-lost",
+		outcome: "unknown",
+		attempts: 1,
+	});
+	const contents = [EXCLUDED_TEXT, EXCLUDED_SECOND_TEXT, "the uncertain excluded card"];
+	let armed = false;
+	let lostAcknowledgement = false;
+	let failReadBack = false;
+	const faulty: SessionStore = Object.assign(Object.create(store) as SessionStore, {
+		async append(...args: Parameters<SessionStore["append"]>) {
+			const result = await store.append(...args);
+			if (
+				armed &&
+				!lostAcknowledgement &&
+				args[1].some((entry) => entry.type === "custom_message" && entry.content === contents[2])
+			) {
+				lostAcknowledgement = true;
+				failReadBack = true;
+				throw failure;
+			}
+			return result;
+		},
+		async readRange(...args: Parameters<MemorySessionStore["readRange"]>) {
+			if (failReadBack) {
+				failReadBack = false;
+				throw failure;
+			}
+			return store.readRange(...args);
+		},
+	});
+	const manager = await SessionManager.create(faulty, process.cwd());
+	const harness = await pool.harnessWith([], manager);
+	harness.session.pauseQueuedMessages();
+	const batch = contents.map((content) => ({ ...excludedCard, content }));
+	const options = { triggerTurn: true, excludeFromContext: true, stageAdmissionKey: "uncertain-excluded-batch" };
+	armed = true;
+	await assert.rejects(harness.session.sendCustomMessages(batch, options), (error) => error === failure);
+	await harness.session.sendCustomMessages(batch, options);
+	await harness.session.sendCustomMessages(batch, options);
+	assert.deepEqual(
+		manager
+			.getEntries()
+			.flatMap((entry) =>
+				entry.type === "custom_message" && entry.customType === excludedCard.customType ? [entry.content] : [],
+			),
+		contents,
+	);
+	assert.deepEqual(
+		harness
+			.eventsOfType("message_end")
+			.flatMap((event) =>
+				event.message.role === "custom" && event.message.customType === excludedCard.customType
+					? [event.message.content]
+					: [],
+			),
+		contents,
+	);
+	assert.equal(await harness.session.resumeQueuedMessages(), false);
+});
+
+test("concurrent excluded retries sharing one write display its card once (#5318)", async () => {
+	const harness = await pool.harnessWith([]);
+	harness.session.pauseQueuedMessages();
+	const manager = harness.sessionManager;
+	const append = manager.appendCustomMessageEntry.bind(manager);
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	let writes = 0;
+	vi.spyOn(manager, "appendCustomMessageEntry").mockImplementation(async (...args) => {
+		if (args[0] === excludedCard.customType) {
+			writes++;
+			entered.resolve();
+			await release.promise;
+		}
+		return append(...args);
+	});
+	const options = { triggerTurn: true, excludeFromContext: true, stageAdmissionKey: "shared-excluded-write" };
+	const first = harness.session.sendCustomMessage(excludedCard, options);
+	await entered.promise;
+	const second = harness.session.sendCustomMessage(excludedCard, options);
+	try {
+		await new Promise<void>((resolve) => setImmediate(resolve));
+	} finally {
+		release.resolve();
+	}
+	await Promise.all([first, second]);
+	assert.equal(writes, 1, "both retries share the same pending append");
+	assert.equal(
+		manager
+			.getEntries()
+			.filter((entry) => entry.type === "custom_message" && entry.customType === excludedCard.customType).length,
+		1,
+	);
+	assert.equal(
+		harness
+			.eventsOfType("message_end")
+			.filter((event) => event.message.role === "custom" && event.message.customType === excludedCard.customType)
+			.length,
+		1,
+	);
+	assert.equal(await harness.session.resumeQueuedMessages(), false);
 });

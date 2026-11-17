@@ -332,7 +332,11 @@ export class SessionManager {
 		this.leafId = leafId;
 	}
 
-	async refreshFromStore(): Promise<boolean> {
+	refreshFromStore(): Promise<boolean> {
+		return this.runMutation(() => this.refreshStoredTail());
+	}
+
+	private async refreshStoredTail(): Promise<boolean> {
 		const { store, sessionId, lastSeq, historyEpoch, lastEntryId } = this;
 		const range = await readSessionRange(store, sessionId, Math.max(1, lastSeq), Number.MAX_SAFE_INTEGER);
 		if (this.sessionId !== sessionId || this.store !== store || this.lastSeq !== lastSeq) return false;

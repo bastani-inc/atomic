@@ -3,6 +3,7 @@ import { holdsTurnsForDetachedResults } from "./agent-session-detached-tools.ts"
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import {
 	admitProtectedStreamingCustomMessage,
+	customMessageOccurrences,
 	queueHeldCustomMessages,
 	queueProtectedStreamingCustomMessage,
 	queueProtectedStreamingCustomMessages,
@@ -10,7 +11,7 @@ import {
 } from "./agent-session-persistent-custom-messages.ts";
 import { deliverQueuedInputIfIdle } from "./agent-session-prompt.ts";
 import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.js";
-import type { CustomMessage } from "./messages.ts";
+import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
 import { TASK_COMPLETION_MESSAGE_TYPE } from "./tasks/completion.js";
 
 async function appendDurableStageAdmission<T>(session: AgentSession, message: CustomMessage<T>): Promise<void> {
@@ -242,12 +243,35 @@ export async function commitAdmittedCustomMessages<T>(
 	const owner = resolveWorkflowStageDeliveryTarget(session);
 	if (owner !== session) return commitAdmittedCustomMessages(owner, appMessages, options);
 	const self = session;
+	appMessages = customMessageOccurrences(appMessages);
+	const useProtectedReconciliation =
+		options?.persistWhenStreaming === true && options.triggerTurn === true && options.excludeFromContext !== true;
+	const holdsTurn =
+		self._queuedMessagesPaused ||
+		(self._subagentPolicy?.executionEnded !== undefined && options?.triggerTurn === true);
+	const usesHeldCards =
+		options?.triggerTurn === true &&
+		(holdsTurnsForDetachedResults(self) || (holdsTurn && options.excludeFromContext === true));
+	if (!useProtectedReconciliation && !usesHeldCards) {
+		const stored = new Set(
+			self.sessionManager
+				.getBranch()
+				.flatMap((entry) =>
+					entry.type === "custom_message" && entry.stageAdmissionKey !== undefined
+						? [entry.stageAdmissionKey]
+						: [],
+				),
+		);
+		appMessages = appMessages.filter((message) => {
+			const key = (message as StageAdmittedCustomMessage).stageAdmissionKey;
+			return key === undefined || !stored.has(key);
+		});
+	}
+	if (appMessages.length === 0) return;
 	if (appMessages.every((item) => holdsForFirstStagePrompt(self, item, options))) {
 		for (const item of appMessages) await appendDurableStageAdmission(self, item);
 		return;
 	}
-	const useProtectedReconciliation =
-		options?.persistWhenStreaming === true && options.triggerTurn === true && options.excludeFromContext !== true;
 	const delivery = options?.deliverAs === "followUp" ? "followUp" : "steer";
 	if (queuesBehindFirstStagePrompt(self, options)) {
 		if (useProtectedReconciliation) await queueProtectedStreamingCustomMessages(self, appMessages, delivery);
@@ -256,10 +280,7 @@ export async function commitAdmittedCustomMessages<T>(
 	}
 	if (options?.deliverAs === "nextTurn") {
 		self._pendingNextTurnMessages.push(...appMessages);
-	} else if (
-		self._queuedMessagesPaused ||
-		(self._subagentPolicy?.executionEnded !== undefined && options?.triggerTurn)
-	) {
+	} else if (holdsTurn) {
 		if (options?.triggerTurn === true) {
 			let queued = true;
 			if (useProtectedReconciliation || holdsTurnsForDetachedResults(self) || options.excludeFromContext === true) {

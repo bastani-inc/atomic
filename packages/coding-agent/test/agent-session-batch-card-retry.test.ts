@@ -331,3 +331,231 @@ test.each(["single", "batch"] as const)(
 		}
 	},
 );
+
+test.each(["held", "protected"] as const)(
+	"reopening a saved %s batch refuses an ordinary retry and gives the model each message once (#5318)",
+	async (mode) => {
+		const store = new MemorySessionStore();
+		const manager = await SessionManager.create(store, process.cwd());
+		const first = mode === "held" ? await childHarness(manager) : await createHarness({ sessionManager: manager });
+		if (mode === "protected") harnesses.push(first);
+		answerMessages(first);
+		const settled = Promise.withResolvers<void>();
+		const unsubscribe = first.session.subscribe((event) => {
+			if (event.type === "agent_settled") settled.resolve();
+		});
+		try {
+			await first.session.sendCustomMessages(messages, sharedOptions);
+			if (mode === "held") await first.session.prompt("answer the held batch");
+			await settled.promise;
+		} finally {
+			unsubscribe();
+		}
+		assertCardsSavedOnce(manager);
+		const reopened = await childHarness(await SessionManager.open(store, manager.getSessionId()));
+		const contexts: string[] = [];
+		reopened.setResponses([
+			(context) => {
+				contexts.push(JSON.stringify(context.messages));
+				return fauxAssistantMessage("checked the saved delivery");
+			},
+		]);
+		await reopened.session.sendCustomMessages(messages, {
+			triggerTurn: true,
+			stageAdmissionKey: sharedOptions.stageAdmissionKey,
+		});
+		await reopened.session.prompt("check the transcript");
+		assertCardsSavedOnce(reopened.sessionManager);
+		assert.equal(contexts.length, 1);
+		for (const content of CONTENTS) assert.equal(contexts[0]!.split(content).length - 1, 1);
+	},
+);
+
+test("an ordinary batch retry after reopening skips a saved prefix without losing its unsaved tail (#5318)", async () => {
+	const store = new MemorySessionStore();
+	const manager = await SessionManager.create(store, process.cwd());
+	const first = await childHarness(manager);
+	const failure = failThirdCardOnce(manager);
+	await assert.rejects(first.session.sendCustomMessages(messages, sharedOptions), (error) => error === failure);
+	const reopened = await childHarness(await SessionManager.open(store, manager.getSessionId()));
+	const contexts: string[] = [];
+	reopened.setResponses(
+		Array.from({ length: 3 }, () => (context) => {
+			contexts.push(JSON.stringify(context.messages));
+			return fauxAssistantMessage("answered admitted input");
+		}),
+	);
+	assert.equal((await reopened.session.startPendingRecovery()).replayed, 2);
+	await reopened.session.sendCustomMessages(messages, {
+		triggerTurn: true,
+		stageAdmissionKey: sharedOptions.stageAdmissionKey,
+	});
+	await reopened.session.prompt("answer the remaining batch input");
+	assertCardsSavedOnce(reopened.sessionManager);
+	const last = contexts.at(-1)!;
+	for (const content of CONTENTS) assert.equal(last.split(content).length - 1, 1);
+});
+
+test("a deleted child's store rejects one protected card then accepts later cards in memory (#5318)", async () => {
+	const store = new MemorySessionStore();
+	const manager = await SessionManager.create(store, process.cwd());
+	const harness = await childHarness(manager);
+	await store.delete(manager.getSessionId());
+	await assert.rejects(harness.session.sendCustomMessage(messages[0]!, sharedOptions), {
+		name: "SessionDeletedError",
+	});
+	await harness.session.sendCustomMessage(messages[1]!, { ...sharedOptions, stageAdmissionKey: "after-delete-1" });
+	await harness.session.sendCustomMessage(messages[2]!, { ...sharedOptions, stageAdmissionKey: "after-delete-2" });
+	assert.deepEqual(
+		manager
+			.getEntries()
+			.flatMap((entry) =>
+				entry.type === "custom_message" && entry.customType === CARD_TYPE ? [entry.content] : [],
+			),
+		CONTENTS.slice(1),
+	);
+});
+
+test("recovering a failed card write waits for an in-flight append acknowledgement and keeps one in-memory entry (#5318)", async () => {
+	const store = new MemorySessionStore();
+	const written = Promise.withResolvers<void>();
+	const acknowledgement = Promise.withResolvers<void>();
+	const delayed: SessionStore = Object.assign(Object.create(store) as SessionStore, {
+		async append(...args: Parameters<SessionStore["append"]>) {
+			const result = await store.append(...args);
+			if (args[1].some((entry) => entry.type === "custom" && entry.customType === "in-flight")) {
+				written.resolve();
+				await acknowledgement.promise;
+			}
+			return result;
+		},
+	});
+	const manager = await SessionManager.create(delayed, process.cwd());
+	const harness = await childHarness(manager);
+	const failure = new Error("card admission failed before append");
+	vi.spyOn(manager, "appendCustomMessageEntry").mockRejectedValueOnce(failure);
+	await assert.rejects(harness.session.sendCustomMessage(messages[0]!, sharedOptions), (error) => error === failure);
+	const pending = manager.appendCustomEntry("in-flight", { value: "committed before acknowledgement" });
+	await written.promise;
+	const retry = harness.session.sendCustomMessage(messages[0]!, sharedOptions);
+	try {
+		await new Promise<void>((resolve) => setImmediate(resolve));
+	} finally {
+		acknowledgement.resolve();
+	}
+	await Promise.all([pending, retry]);
+	const entries = manager.getEntries().filter((entry) => entry.type === "custom" && entry.customType === "in-flight");
+	assert.equal(entries.length, 1, "the acknowledged append is applied to memory once");
+	const reopened = await SessionManager.open(store, manager.getSessionId());
+	assert.equal(reopened.getEntries().filter((entry) => entry.id === entries[0]!.id).length, 1);
+});
+
+for (const mode of ["single", "batch"] as const) {
+	test.each(["paused session", "running child"] as const)(
+		`an excluded ${mode} received by a %s is saved immediately without queued model input (#5318)`,
+		async (state) => {
+			const harness =
+				state === "running child" ? await childHarness(SessionManager.inMemory()) : await createHarness();
+			if (state === "paused session") harnesses.push(harness);
+			const started = Promise.withResolvers<void>();
+			const finish = Promise.withResolvers<void>();
+			let requests = 0;
+			const contexts: string[] = [];
+			harness.setResponses(
+				Array.from({ length: 3 }, () => async (context) => {
+					requests++;
+					contexts.push(JSON.stringify(context.messages));
+					started.resolve();
+					await finish.promise;
+					return fauxAssistantMessage("completed the existing work");
+				}),
+			);
+			let task: Promise<void> | undefined;
+			if (state === "paused session") harness.session.pauseQueuedMessages();
+			else {
+				task = harness.session.prompt("perform the original task");
+				await started.promise;
+			}
+			try {
+				const options = { triggerTurn: true, excludeFromContext: true };
+				if (mode === "single") await harness.session.sendCustomMessage(messages[0]!, options);
+				else await harness.session.sendCustomMessages(messages, options);
+				assert.deepEqual(
+					harness.sessionManager
+						.getEntries()
+						.flatMap((entry) =>
+							entry.type === "custom_message" && entry.customType === CARD_TYPE ? [entry.content] : [],
+						),
+					mode === "single" ? CONTENTS.slice(0, 1) : CONTENTS,
+				);
+				assert.equal(harness.session.pendingMessageCount, 0, "display-only input never waits for a model turn");
+				if (state === "paused session") assert.equal(await harness.session.resumeQueuedMessages(), false);
+			} finally {
+				finish.resolve();
+				await task;
+			}
+			assert.equal(requests, state === "paused session" ? 0 : 1);
+			for (const context of contexts) for (const content of CONTENTS) assert.equal(context.includes(content), false);
+		},
+	);
+}
+
+test("an idle retry of a completed protected batch starts no second provider request (#5318)", async () => {
+	const harness = await createHarness();
+	harnesses.push(harness);
+	let requests = 0;
+	harness.setResponses(
+		Array.from({ length: 3 }, () => () => {
+			requests++;
+			return fauxAssistantMessage("completed the protected batch");
+		}),
+	);
+	const initialSettlement = Promise.withResolvers<void>();
+	const retrySettlement = Promise.withResolvers<void>();
+	let settlements = 0;
+	const unsubscribe = harness.session.subscribe((event) => {
+		if (event.type !== "agent_settled") return;
+		if (++settlements === 1) initialSettlement.resolve();
+		else retrySettlement.resolve();
+	});
+	try {
+		await harness.session.sendCustomMessages(messages, sharedOptions);
+		await initialSettlement.promise;
+		assert.equal(requests, 1);
+		await harness.session.sendCustomMessages(messages, sharedOptions);
+		if (harness.session.isStreaming) await retrySettlement.promise;
+		await harness.session.agent.waitForIdle();
+		assert.equal(requests, 1, "a completed batch has no input for another provider request");
+		assertCardsSavedOnce(harness.sessionManager);
+		assertConsumedOnce(harness);
+	} finally {
+		unsubscribe();
+	}
+});
+
+test("deletion after a failed card admission reports deletion once and releases later in-memory writes (#5318)", async () => {
+	const store = new MemorySessionStore();
+	const manager = await SessionManager.create(store, process.cwd());
+	const harness = await childHarness(manager);
+	const failure = new StorageTransientError(store.descriptor, {
+		code: "connection-lost",
+		outcome: "unknown",
+		attempts: 1,
+	});
+	vi.spyOn(manager, "appendCustomMessageEntry").mockRejectedValueOnce(failure);
+	await assert.rejects(harness.session.sendCustomMessage(messages[0]!, sharedOptions), (error) => error === failure);
+	await store.delete(manager.getSessionId());
+	await assert.rejects(harness.session.sendCustomMessage(messages[0]!, sharedOptions), {
+		name: "SessionDeletedError",
+	});
+	await harness.session.sendCustomMessage(messages[1]!, { ...sharedOptions, stageAdmissionKey: "later-memory-1" });
+	await harness.session.sendCustomMessage(messages[2]!, { ...sharedOptions, stageAdmissionKey: "later-memory-2" });
+	assert.deepEqual(
+		manager
+			.getEntries()
+			.flatMap((entry) =>
+				entry.type === "custom_message" && entry.customType === CARD_TYPE ? [entry.content] : [],
+			),
+		CONTENTS.slice(1),
+	);
+});
