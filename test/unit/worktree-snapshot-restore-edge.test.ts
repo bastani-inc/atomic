@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { startHostProcessesThroughChildProcess } from "../helpers/host-spawn.js";
 import type { SpawnRequest } from "../helpers/worktree-snapshot-faults.js";
 
 /** The `git lfs` commands a restore starts once a test calls {@link fakeLfs}, each answered with that exit status. */
@@ -35,6 +36,8 @@ import {
 } from "../../packages/coding-agent/src/index.ts";
 import { GitSandbox, gitConfigPath, lfsPointer, loseSnapshotBlobs } from "../helpers/worktree-snapshot.js";
 import { gitCommand } from "../helpers/worktree-snapshot-faults.js";
+
+startHostProcessesThroughChildProcess();
 
 let sandbox: GitSandbox;
 beforeEach(() => {

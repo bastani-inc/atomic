@@ -64,10 +64,10 @@ const reporter = setInterval(() => {
 			reporting = undefined;
 		});
 }, 250);
+// SHARED_POOL_DRAIN_ON_TERM=1 (#4768): SIGTERM drains the host, as `atomic worker start` does, instead of stopping it.
 process.once("SIGTERM", () => {
 	clearInterval(reporter);
-	void workerHost
-		.stop()
+	void (process.env.SHARED_POOL_DRAIN_ON_TERM === "1" ? workerHost.drain() : workerHost.stop())
 		.then(() => process.exit(0))
 		.catch((error) => {
 			process.stderr.write(`${error?.stack ?? error}\n`);
