@@ -617,7 +617,8 @@ test("each widget's repaint check runs when several widgets ask at once (#4333)"
 	}
 	engine.messages.length = 0;
 	for (const screen of screens) screen.requestRender();
-	await sleep(REPAINT_SETTLE_MS);
+	for (const id of ids)
+		await engine.waitFor((message) => message.type === "engine_custom_invalidate" && message.componentId === id);
 	const invalidated = new Set(
 		engine.messages.flatMap((message) => (message.type === "engine_custom_invalidate" ? [message.componentId] : [])),
 	);

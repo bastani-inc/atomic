@@ -474,6 +474,7 @@ test("SQL light listing reads 2,000 wide rows in bounded statements without coll
 		const store = await SqlSessionStore.open(database);
 		const sessions = 2_000;
 		const wideName = "w".repeat(20_000);
+		await database.exec("PRAGMA synchronous=OFF");
 		for (let index = 0; index < sessions; index++) {
 			const id = `s-${String(index).padStart(4, "0")}`;
 			await store.create({ ...header, id }, [
