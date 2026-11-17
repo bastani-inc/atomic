@@ -361,7 +361,7 @@ export async function runSingleInProcess(
 		: (THINKING_LEVELS.find((level) => level === requestedSuffix) ??
 			(launchModel ? options.resolveCandidateModel?.(launchModel)?.unknownEffort : undefined));
 	const orchestrationContext = workflowOrchestrationContext(options);
-	const outputSnapshot = captureSingleOutputSnapshot(options.outputPath);
+	const outputSnapshot = options.outputPath ? await captureSingleOutputSnapshot(options.outputPath) : undefined;
 
 	const parent: ParentContext = {
 		path: options.runId,
@@ -643,7 +643,7 @@ export async function runSingleInProcess(
 		result.finalOutput = deliveredOutput;
 	}
 	forgetIfReleased(control, outcome);
-	persistRequestedOutput(result, options, outputSnapshot);
+	await persistRequestedOutput(result, options, outputSnapshot);
 	const update: SubagentToolResult = {
 		content: [{ type: "text", text: result.finalOutput ?? "(no output)" }],
 		details: {
@@ -663,14 +663,14 @@ function forgetIfReleased(control: SubagentControlRuntime, outcome: AttemptOutco
 	if (control.holdsNothing()) unregisterSubagentControl(control);
 }
 
-function persistRequestedOutput(
+async function persistRequestedOutput(
 	result: SingleResult,
 	options: RunSyncOptions,
 	outputSnapshot: SingleOutputSnapshot | undefined,
-): void {
+): Promise<void> {
 	result.outputMode = options.outputMode ?? "inline";
 	if (!options.outputPath || result.status !== "ok") return;
-	const resolved = resolveSingleOutput(options.outputPath, result.finalOutput ?? "", outputSnapshot);
+	const resolved = await resolveSingleOutput(options.outputPath, result.finalOutput ?? "", outputSnapshot);
 	result.savedOutputPath = resolved.savedPath;
 	result.outputSaveError = resolved.saveError;
 	if (!resolved.savedPath) return;

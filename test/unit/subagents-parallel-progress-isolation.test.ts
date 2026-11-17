@@ -219,7 +219,7 @@ test("parallel cancellation recovers partial findings from run-scoped progress (
 		const repo = gitRepository(root);
 		const result = await executor(root, async (_cwd, _agents, agent, task, options) => {
 			if (options.progressPath) writeTextSync(options.progressPath, "# Progress\n\n- Run-scoped finding\n");
-			const recovered = recoverCancelledChildOutput({
+			const recovered = await recoverCancelledChildOutput({
 				progressPath: options.progressPath,
 				progressArtifactPath: options.progressArtifactPath,
 			});

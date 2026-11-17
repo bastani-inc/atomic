@@ -1264,20 +1264,22 @@ function assertStartModelAllowed(input: {
 	);
 }
 
-function cancelledEnvelope(
+async function cancelledEnvelope(
 	session: AgentSession | undefined,
 	spec: ChildSpec,
 	stats: AttemptStats,
 	ownMessages: readonly TranscriptMessage[],
-): string {
-	return recoverCancelledChildOutput({
-		progressPath: spec.progressPath,
-		assistantText: outputFor(ownMessages),
-		toolCount: stats.toolCalls,
-		sessionPath: session?.sessionFile ?? spec.sessionManager?.getSessionFile(),
-		...(spec.progressArtifactPath ? { progressArtifactPath: spec.progressArtifactPath } : {}),
-		...(spec.outputArtifactPath ? { outputArtifactPath: spec.outputArtifactPath } : {}),
-	}).text;
+): Promise<string> {
+	return (
+		await recoverCancelledChildOutput({
+			progressPath: spec.progressPath,
+			assistantText: outputFor(ownMessages),
+			toolCount: stats.toolCalls,
+			sessionPath: session?.sessionFile ?? spec.sessionManager?.getSessionFile(),
+			...(spec.progressArtifactPath ? { progressArtifactPath: spec.progressArtifactPath } : {}),
+			...(spec.outputArtifactPath ? { outputArtifactPath: spec.outputArtifactPath } : {}),
+		})
+	).text;
 }
 
 /** Text a resumed child receives as written: never expanded as a prompt template or run as a command. */
@@ -1726,7 +1728,7 @@ export class SubagentControlRuntime {
 						envelope: killed
 							? "Killed. This child cannot be resumed."
 							: waitResult === PARENT_CANCEL_CAUSE
-								? cancelledEnvelope(undefined, admitted.spec, stats, [])
+								? await cancelledEnvelope(undefined, admitted.spec, stats, [])
 								: INTERRUPTED_ENVELOPE,
 						...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
 						...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
@@ -2348,7 +2350,7 @@ export class SubagentControlRuntime {
 			this.native.finishChildAttempt(token, nativeStatus(status));
 			const envelope =
 				termination === PARENT_CANCEL_CAUSE
-					? cancelledEnvelope(session, admitted.spec, stats, producedMessages)
+					? await cancelledEnvelope(session, admitted.spec, stats, producedMessages)
 					: status === "interrupted"
 						? INTERRUPTED_ENVELOPE
 						: boundedEnvelope(output || noOutput || termination || "(no output)", undefined);
@@ -2420,7 +2422,7 @@ export class SubagentControlRuntime {
 					path: admitted.identity.path,
 					envelope:
 						termination === PARENT_CANCEL_CAUSE && !this.killedChildren.has(admitted.identity.path)
-							? cancelledEnvelope(session, admitted.spec, stats, ownMessages())
+							? await cancelledEnvelope(session, admitted.spec, stats, ownMessages())
 							: this.killedChildren.has(admitted.identity.path)
 								? "Killed. This child cannot be resumed."
 								: INTERRUPTED_ENVELOPE,
