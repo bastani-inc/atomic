@@ -801,7 +801,8 @@ function runSnapshotsFromCheckpoints(
 function stageSnapshotFromDraft(draft: StageDraft, id: string, parentIds: readonly string[]): StageSnapshot {
 	const status = stageStatusFromRecord(draft.topology?.status ?? "completed");
 	const startedAt = draft.startedAt ?? draft.firstCompletedAt;
-	const endedAt = draft.endedAt ?? (status === "running" ? undefined : draft.firstCompletedAt);
+	const endedAt =
+		draft.endedAt ?? (status === "running" || status === "awaiting_input" ? undefined : draft.firstCompletedAt);
 	const workflowChild = workflowChildFromDraft(draft);
 	const boundary = draft.topology?.boundary;
 	return {
@@ -813,6 +814,21 @@ function stageSnapshotFromDraft(draft: StageDraft, id: string, parentIds: readon
 		startedAt,
 		...(endedAt !== undefined ? { endedAt } : {}),
 		...(endedAt !== undefined ? { durationMs: draft.durationMs ?? Math.max(0, endedAt - startedAt) } : {}),
+		...(status === "awaiting_input" && draft.awaitingInputSince !== undefined
+			? { awaitingInputSince: draft.awaitingInputSince }
+			: {}),
+		...(status === "awaiting_input" && draft.pendingPrompt !== undefined
+			? { pendingPrompt: structuredClone(draft.pendingPrompt) }
+			: {}),
+		...(draft.promptFootprint !== undefined ? { promptFootprint: structuredClone(draft.promptFootprint) } : {}),
+		...(draft.promptAnswerState !== undefined
+			? {
+					promptAnswerState:
+						draft.promptFootprint?.source === "stage-dialog" && draft.promptAnswerState === "available"
+							? ("unavailable" as const)
+							: draft.promptAnswerState,
+				}
+			: {}),
 		...(stageResult(draft) !== undefined ? { result: stageResult(draft) } : {}),
 		replayKey: draft.replayKey,
 		toolEvents: [],

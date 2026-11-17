@@ -218,11 +218,12 @@ function mergeOrchestratorReturnHintIntoLine(
 		minimumPrefixWidth?: number;
 	} = {},
 ): string {
-	// An open choice or yes/no card: ← moves its selection, so its only way out is Esc, which closes the card.
-	const cardOpen = closableQuestionCardOpen(ctx);
+	const stackedDialog = stackedStageDialogOpen(ctx);
+	const cardOpen = stackedDialog || closableQuestionCardOpen(ctx);
 	const key = cardOpen ? "esc" : backToGraphKey(ctx);
-	const full = cardOpen ? " close" : " return to graph";
-	const compact = cardOpen ? " close" : " graph";
+	const action = stackedDialog ? " cancel" : " close";
+	const full = cardOpen ? action : " return to graph";
+	const compact = cardOpen ? action : " graph";
 	const fullHint = {
 		plain: `${key}${full}`,
 		styled: paint(key, ctx.theme.text, { bold: true }) + paint(full, ctx.theme.textMuted),
@@ -312,6 +313,19 @@ export function closableQuestionCardOpen(
 	const prompt = ctx.promptState?.prompt;
 	return (
 		prompt !== undefined && prompt.kind !== "input" && prompt.kind !== "editor" && prompt.id !== ctx.dismissedPromptId
+	);
+}
+
+function stackedStageDialogOpen(
+	ctx: Pick<StageChatViewContext, "promptState"> &
+		Partial<Pick<StageChatViewContext, "dismissedPromptId" | "mountedCustomUi">>,
+): boolean {
+	const prompt = ctx.promptState?.prompt;
+	return (
+		ctx.mountedCustomUi !== null &&
+		ctx.mountedCustomUi !== undefined &&
+		prompt?.source === "stage-dialog" &&
+		prompt.id !== ctx.dismissedPromptId
 	);
 }
 
