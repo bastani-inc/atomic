@@ -73,7 +73,7 @@ async function slowInserts(path: string): Promise<void> {
 		await side.exec(`
 			CREATE TABLE slow(n INTEGER);
 			WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < ${SLOW_ROWS}) INSERT INTO slow SELECT n FROM r;
-			CREATE TRIGGER slow_insert AFTER INSERT ON ship_events BEGIN SELECT count(*) FROM slow a, slow b; END;
+			CREATE TRIGGER slow_insert AFTER INSERT ON ship_rows BEGIN SELECT count(*) FROM slow a, slow b; END;
 		`);
 	} finally {
 		await side.close();
@@ -140,7 +140,7 @@ test("checkpoints accepted together commit in order, a conflicting one rolls bac
 	const reader = await openNodeSqliteDatabase(path);
 	opened.push(reader);
 	assert.deepEqual(
-		(await reader.all<{ event_key: string }>("SELECT event_key FROM ship_events ORDER BY local_seq")).map(
+		(await reader.all<{ event_key: string }>("SELECT event_key FROM ship_rows ORDER BY local_seq")).map(
 			(row) => row.event_key,
 		),
 		["taken", "a", "b", "c"],

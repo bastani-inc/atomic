@@ -71,9 +71,7 @@ test("a local checkpoint journal opened while another connection retires it is n
 			const reader = await openNodeSqliteDatabase(path);
 			try {
 				assert.deepEqual(
-					(await reader.all<{ event_key: string }>("SELECT event_key FROM ship_events")).map(
-						(row) => row.event_key,
-					),
+					(await reader.all<{ event_key: string }>("SELECT event_key FROM ship_rows")).map((row) => row.event_key),
 					["key-1"],
 					"the late opener's checkpoint is in the file at the journal's path",
 				);
