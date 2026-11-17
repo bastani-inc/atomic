@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters as stripAnsi } from "node:util";
 import { describe, it, vi } from "vitest";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import type {
 	GraphForkTargetResult,
@@ -494,7 +495,8 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 			armedSnap.runs[0].name = "ralph-very-long-workflow-name";
 			const row80 = hint(armedGraph, 80).split("\n")[1];
 			assert.match(row80, /q again to quit ralph/);
-			assert.match(row80, /\? keys {1,2}· {1,2}h\b/);
+			assert.match(row80, /│ GRAPH │\s*esc back · /);
+			assert.match(row80, /· \? keys\b/);
 		} finally {
 			armedGraph.dispose();
 		}
@@ -1169,6 +1171,28 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 			} finally {
 				graph.dispose();
 			}
+		}
+		const completedSnap = makeSnap([stage("A", "completed")]);
+		completedSnap.runs[0].name = "ralph";
+		completedSnap.runs[0].status = "completed";
+		completedSnap.runs[0].endedAt = 2_000;
+		const completedGraph = view([], {
+			store: makeStore(completedSnap),
+			piKeybindings: new KeybindingsManager({ "app.list.stop": "h" }),
+			onHide: () => {},
+			onStageAttach: () => {},
+			stageActions: actions,
+		});
+		try {
+			const row = hint(completedGraph, 40).split("\n")[1];
+			const segments = row
+				.replace(/^.*│ GRAPH │\s*/, "")
+				.trim()
+				.split(/\s+·\s+/);
+			assert.equal(segments[0], "esc back", `completed run with stop on h: ${row}`);
+			assert.ok(segments.includes("? keys"), `completed run with stop on h keeps ? keys: ${row}`);
+		} finally {
+			completedGraph.dispose();
 		}
 	});
 

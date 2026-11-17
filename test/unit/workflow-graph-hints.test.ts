@@ -218,16 +218,13 @@ describe("workflow graph, run-details, and stage-detail hints (#5224)", () => {
 		}
 	});
 
-	it("keeps complete run-detail hints and help at 40 columns with two blockers (#5255)", () => {
+	it("keeps complete run-detail hints and labeled exits at 40 through 80 columns with two blockers (#5255)", () => {
 		const graph = view(
 			[stage("bad0", "failed", { error: "first failure" }), stage("bad1", "failed", { error: "second failure" })],
 			{ status: "failed" },
 		);
 		try {
 			graph.handleInput("o");
-			const shown = hintLine(graph, 40);
-			assert.match(shown, /esc back/);
-			assert.match(shown, /\? keys/);
 			const complete = new Set([
 				"esc back",
 				"esc back to graph",
@@ -241,7 +238,12 @@ describe("workflow graph, run-details, and stage-detail hints (#5224)", () => {
 				"pgup/pgdn scroll",
 				"? keys",
 			]);
-			for (const token of shown.split(/\s+·\s+/)) assert.ok(complete.has(token), `incomplete hint: ${token}`);
+			for (let width = 40; width <= 80; width++) {
+				const shown = hintLine(graph, width);
+				assert.match(shown, /esc back/, `width ${width}: ${shown}`);
+				assert.match(shown, /\? keys/, `width ${width}: ${shown}`);
+				for (const token of shown.split(/\s+·\s+/)) assert.ok(complete.has(token), `incomplete hint: ${token}`);
+			}
 		} finally {
 			graph.dispose();
 		}
