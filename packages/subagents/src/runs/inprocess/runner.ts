@@ -639,9 +639,9 @@ export function inProcessChildResourceLoaderOptions(input: {
 }
 
 /**
- * Resolves once the session has no turn running or starting, no interrupt delivery pending and no admitted message left
- * to answer, sealing its message admission in that same check unless `waitsForNextTurn` says an interrupted turn still
- * waits for the next one, or once a stop fires.
+ * Resolves when the session can complete or release with no turn running or starting and no interrupt delivery pending,
+ * or once a stop fires. Normal completion seals message admission in the same synchronous check; interrupted turns
+ * waiting for input and children waiting on detached results keep it open.
  * `subscribeDrained` is told each time the session's count of running turns returns to zero.
  */
 export async function sessionDrained(
