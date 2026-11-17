@@ -62,6 +62,7 @@
 - Fixed an idle local worker receiving SIGKILL instead of exiting cleanly when a late IPC reply failed after its root released its lease ([#3979](https://github.com/bastani-inc/atomic/issues/3979))
 - Fixed follow-up agents failing to read workflow history with a retired-execution error after a workflow finished or its extensions reloaded ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Fixed `/resume` silently continuing edited workflow definitions. It now asks for inline confirmation for changes to a workflow's own source, not just worker entry modules, without flagging unchanged definitions restored in another directory ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- Fixed saved workflow rows in `/resume` showing missing stage progress, elapsed time and cost after a restart. Browsing them reads recorded summaries without resuming the workflows ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Removed
 
