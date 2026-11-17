@@ -349,6 +349,40 @@ async function physicalPath(path: string): Promise<string> {
 	}
 }
 
+function sameResolvedPath(a: string, b: string): boolean {
+	const left = resolve(a);
+	const right = resolve(b);
+	return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
+async function isMovedStagingWorktree(candidate: string, record: RestoreRecord): Promise<boolean> {
+	try {
+		const dotGitPath = join(candidate, ".git");
+		const dotGit = await lstat(dotGitPath);
+		if (!dotGit.isFile()) return false;
+		const content = await readFile(dotGitPath, "utf8");
+		const match = /^gitdir:\s*(.+?)\r?\n?$/m.exec(content);
+		if (!match?.[1]) return false;
+		const adminDir = resolve(candidate, match[1].trim());
+		if (!sameResolvedPath(dirname(adminDir), join(record.store, "worktrees"))) return false;
+		const rawBase = basename(record.staging);
+		const expectedAdminName = rawBase.replace(/^\./, "-");
+		const adminName = basename(adminDir);
+		const exactAdmin = adminName === rawBase || adminName === expectedAdminName;
+		if (!exactAdmin && !adminName.startsWith(rawBase) && !adminName.startsWith(expectedAdminName)) return false;
+		const backlinkPath = join(adminDir, "gitdir");
+		const backlinkStat = await lstat(backlinkPath);
+		if (!backlinkStat.isFile()) return false;
+		const backlinkRaw = (await readFile(backlinkPath, "utf8")).trim();
+		if (!backlinkRaw) return false;
+		const backlinkTarget = resolve(adminDir, backlinkRaw);
+		if (sameResolvedPath(backlinkTarget, join(record.staging, ".git"))) return true;
+		return exactAdmin && sameResolvedPath(backlinkTarget, dotGitPath);
+	} catch {
+		return false;
+	}
+}
+
 /** Remove a registered or partially initialized staging worktree, then restore a previously empty target if needed. */
 async function cleanRestoreRecord(record: RestoreRecord, signal?: AbortSignal): Promise<void> {
 	const git: GitRunOptions = { cwd: dirname(record.store), env: { GIT_DIR: record.store }, signal };
@@ -359,6 +393,15 @@ async function cleanRestoreRecord(record: RestoreRecord, signal?: AbortSignal): 
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw unreadablePathError(record.staging, error);
 	}
+	const nested = join(record.target, basename(record.staging));
+	const moved =
+		entry !== undefined
+			? undefined
+			: (await isMovedStagingWorktree(record.target, record))
+				? record.target
+				: (await isMovedStagingWorktree(nested, record))
+					? nested
+					: undefined;
 	if (entry) {
 		if (entry.isDirectory()) registeredPath = await physicalPath(record.staging);
 		if (!entry.isDirectory() || !includesPath(await registeredWorktrees(git), registeredPath)) {
@@ -382,6 +425,14 @@ async function cleanRestoreRecord(record: RestoreRecord, signal?: AbortSignal): 
 		});
 	}
 	await writing(record.staging, null, () => rm(record.staging, { recursive: true, force: true }));
+	if (moved !== undefined) {
+		registeredPath = await physicalPath(moved).catch(() => moved);
+		await runGit(["worktree", "remove", "--force", "--force", moved], {
+			...git,
+			allowExitCodes: [128],
+		});
+		await writing(moved, null, () => rm(moved, { recursive: true, force: true }));
+	}
 	if (!record.createdTarget && (await statIfPresent(record.target)) === undefined) {
 		await writing(record.target, null, () => mkdir(record.target, { recursive: true }));
 	}
@@ -600,7 +651,10 @@ export async function storeCheckoutHead(
 	const git: GitRunOptions = { cwd: checkout, signal, env: { GIT_DIR: store } };
 	await withRepositoryLock(store, null, signal, async () => {
 		await ensureObjectStore(store, signal);
-		if (!(await hasObject(git, `${head}^{commit}`))) await runFetch(git, checkout, [head], ["--update-shallow"]);
+		const ref = `refs/atomic/heads/${head}`;
+		if (!(await hasObject(git, `${ref}^{commit}`))) {
+			await runFetch(git, checkout, [`+${head}:${ref}`], ["--update-shallow"]);
+		}
 	});
 }
 
