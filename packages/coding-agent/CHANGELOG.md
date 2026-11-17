@@ -4,6 +4,8 @@
 
 ### Added
 
+- Extensions can use `ToolBlock`, `ToolBlockRecords`, `ToolBlockGroup` and `ToolBlockMarkdown` to render transcript items with shared state glyphs, indentation and safe Markdown ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+
 - `ATOMIC_STARTUP_TRACE` names a file to which Atomic appends each startup milestone (process start, first paint, engine ready, first provider request) with its wall-clock time; an interactive session's engine writes to the same file
 
 ### Changed

@@ -180,6 +180,20 @@ function styleLegacyFrame(frame: string, bold: boolean, options: AtomicWorkingSt
 	return options.spinnerBoldColor?.(frame) ?? theme.bold(regular);
 }
 
+export function atomicWorkingGlyph(frameOrOptions: number | AtomicWorkingStatusOptions = {}): string {
+	const options = typeof frameOrOptions === "number" ? { frame: frameOrOptions } : frameOrOptions;
+	const reducedMotion = process.env.ATOMIC_REDUCED_MOTION === "1";
+	const frameIndex = reducedMotion ? 3 : normalizedFrameIndex(options.frame ?? atomicWorkingFrame());
+	const frame = ATOMIC_WORKING_FRAMES[frameIndex];
+	const bold = !reducedMotion && ATOMIC_WORKING_BOLD_PHASES[frameIndex];
+	return options.logo
+		? (styleLegacyFrame("∀", true, options) ?? atomicLogoMark(options.palette))
+		: (styleLegacyFrame(frame, bold, options) ??
+				(bold
+					? emphasize(colorizePhase(frameIndex, frame, options.palette))
+					: colorizePhase(frameIndex, frame, options.palette)));
+}
+
 export class AtomicWorkingStatusComponent implements Component {
 	private readonly options: AtomicWorkingStatusOptions;
 
@@ -188,17 +202,8 @@ export class AtomicWorkingStatusComponent implements Component {
 	}
 
 	render(width: number): string[] {
-		const reducedMotion = process.env.ATOMIC_REDUCED_MOTION === "1";
-		const frameIndex = reducedMotion ? 3 : normalizedFrameIndex(this.options.frame ?? 0);
-		const frame = ATOMIC_WORKING_FRAMES[frameIndex];
 		const message = this.options.message ?? DEFAULT_WORKING_MESSAGE;
-		const bold = !reducedMotion && ATOMIC_WORKING_BOLD_PHASES[frameIndex];
-		const icon = this.options.logo
-			? (styleLegacyFrame("∀", true, this.options) ?? atomicLogoMark(this.options.palette))
-			: (styleLegacyFrame(frame, bold, this.options) ??
-				(bold
-					? emphasize(colorizePhase(frameIndex, frame, this.options.palette))
-					: colorizePhase(frameIndex, frame, this.options.palette)));
+		const icon = atomicWorkingGlyph({ ...this.options, frame: this.options.frame ?? 0 });
 		const styledMessage = noColorRequested()
 			? message
 			: (this.options.messageColor ?? ((text: string) => theme.fg("muted", text)))(message);

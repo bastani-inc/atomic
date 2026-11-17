@@ -6,6 +6,27 @@ description: Component and focusable interfaces, keyboard input, line width, inv
 
 # TUI API reference
 
+## Tool blocks
+
+Use `ToolBlock` from `@bastani/atomic` for a transcript item with a state glyph, one header row and connected result rows. It accepts `status`, `title`, optional `args`, `meta`, `details`, `body` and `outputPad` (default `1`). Supported states are `running`, `success`, `failure`, `stopped`, `warning`, `paused` and `info`.
+
+```typescript
+import { ToolBlock, ToolBlockRecords } from "@bastani/atomic";
+
+const item = new ToolBlock({
+  status: "success",
+  title: "Inspect",
+  args: "sample.ts",
+  details: new ToolBlockRecords(["Read 42 lines", "No errors found"]),
+});
+```
+
+A block does not add a leading blank line; its container controls spacing between items. `ToolBlockGroup` separates several blocks with one blank line. `ToolBlockMarkdown(text)` sanitizes terminal controls and renders Markdown with links shown as text and URLs, not clickable terminal links, and images shown as `[image]`.
+
+In ordinary tool renderers, return only the call title from `renderCall` and unframed result content from `renderResult`; Atomic supplies the state glyph and connectors. Return `ToolBlockRecords` when several results need separate connectors.
+
+The `Markdown` component from `@bastani/atomic-tui` also accepts per-instance `hyperlinks: false` and `images: false` in its sixth constructor argument. These options do not change other components or terminal capabilities.
+
 ## Component Interface
 
 All components implement:

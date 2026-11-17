@@ -178,6 +178,17 @@ export {
 export { renderTaskFooter, TaskList, taskListSections } from "./modes/interactive/components/task-list.js";
 export { TaskRow } from "./modes/interactive/components/task-row.js";
 export {
+	collapseToolBlockLines,
+	isToolBlock,
+	TOOL_BLOCK_LIMITS,
+	ToolBlock,
+	ToolBlockGroup,
+	ToolBlockMarkdown,
+	ToolBlockRecords,
+	type ToolBlockSpec,
+	type ToolBlockStatus,
+} from "./modes/interactive/components/tool-block.ts";
+export {
 	applyAssistantMessageDelta,
 	beginStreamingAssistantMessage,
 } from "./modes/interactive/streaming-assistant-message.ts";
