@@ -161,7 +161,7 @@ function getModuleAssetRoot(): string {
 		return __dirname;
 	}
 	const packageDir = getPackageDir();
-	return join(packageDir, existsSync(join(packageDir, "src")) ? "src" : "dist");
+	return packageAssetRoots.get(packageDir) ?? findPackageAssetRoot(packageDir);
 }
 
 /** {@link getModuleAssetRoot} without blocking the event loop. */
@@ -171,7 +171,26 @@ async function getModuleAssetRootAsync(): Promise<string> {
 		return __dirname;
 	}
 	const packageDir = getPackageDir();
-	return join(packageDir, (await pathExists(join(packageDir, "src"))) ? "src" : "dist");
+	const known = packageAssetRoots.get(packageDir);
+	if (known !== undefined) return known;
+	const root = join(packageDir, (await pathExists(join(packageDir, "src"))) ? "src" : "dist");
+	packageAssetRoots.set(packageDir, root);
+	return root;
+}
+
+/** The source-layout asset root of each package directory, found once for it: a package's layout does not change. */
+const packageAssetRoots = new Map<string, string>();
+
+/** Where `packageDir` keeps its source-layout assets: its `src` when it has one, else its `dist`. */
+function findPackageAssetRoot(packageDir: string): string {
+	const root = join(packageDir, existsSync(join(packageDir, "src")) ? "src" : "dist");
+	packageAssetRoots.set(packageDir, root);
+	return root;
+}
+
+// Found as the module loads for the package directory in effect, so later asset lookups never touch the disk.
+if (isBundledBuild || process.env.ATOMIC_PACKAGE_DIR || process.env.PI_PACKAGE_DIR) {
+	findPackageAssetRoot(getPackageDir());
 }
 
 async function pathExists(path: string): Promise<boolean> {

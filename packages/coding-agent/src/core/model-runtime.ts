@@ -86,7 +86,7 @@ import {
 	type ProviderConfigInput,
 	resolveCompatibilityRequestConfig,
 	resolveCompatibilityRequestConfigAsync,
-	resolveConfiguredModelHeaders,
+	resolveConfiguredModelHeadersAsync,
 	validateExtensionProvider,
 } from "./provider-composer.ts";
 import { withDiscoveredModels, withPersonalizedCatalog, withRemoteCatalog } from "./remote-catalog-provider.ts";
@@ -1156,8 +1156,12 @@ export class ModelRuntime implements Models {
 		return this.streaming.cancelDeferred(model, handle, options);
 	}
 
-	private operationHeaders(model: AnyModel, headers: ProviderHeaders, env?: Record<string, string>): ProviderHeaders {
-		const configured = resolveConfiguredModelHeaders(
+	private async operationHeaders(
+		model: AnyModel,
+		headers: ProviderHeaders,
+		env?: Record<string, string>,
+	): Promise<ProviderHeaders> {
+		const configured = await resolveConfiguredModelHeadersAsync(
 			model,
 			this.config.getProvider(model.provider),
 			this.extensionProviders.get(model.provider),
@@ -1174,7 +1178,7 @@ export class ModelRuntime implements Models {
 		return this.models.generateImages(model, context, {
 			...options,
 			transformHeaders: async (headers) => {
-				const prepared = this.operationHeaders(model, headers, options?.env);
+				const prepared = await this.operationHeaders(model, headers, options?.env);
 				return (await options?.transformHeaders?.(prepared)) ?? prepared;
 			},
 		} as ModelsImagesApiOptions<TApi>);
@@ -1188,7 +1192,7 @@ export class ModelRuntime implements Models {
 		return this.models.classify(model, context, {
 			...options,
 			transformHeaders: async (headers) => {
-				const prepared = this.operationHeaders(model, headers, options?.env);
+				const prepared = await this.operationHeaders(model, headers, options?.env);
 				return (await options?.transformHeaders?.(prepared)) ?? prepared;
 			},
 		});
