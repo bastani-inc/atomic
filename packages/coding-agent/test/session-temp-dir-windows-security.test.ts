@@ -33,6 +33,7 @@ import {
 import { executeBashWithOperations } from "../src/core/bash-executor.ts";
 import type { BashOperations } from "../src/core/tools/bash.ts";
 import {
+	assertPrivateDirectoryAsync,
 	ensurePrivateTempDir,
 	ensurePrivateTempDirAsync,
 	getSessionTempDir,
@@ -876,39 +877,37 @@ describe("asynchronous windows directory security reader (#5285)", () => {
 			mkdirSync(join(neutralDir, relativeTarget), { recursive: true });
 			const granted = spawnSyncCollect(["icacls", join(callerDir, relativeTarget), "/grant", "*S-1-1-0:(OI)(CI)F"]);
 			assert.equal(granted.exitCode, 0, granted.stderr.toString());
-			const tempModule = join(moduleDir(import.meta.url), "..", "src", "core", "tools", "session-temp-dir.ts");
+			await assert.rejects(assertPrivateDirectoryAsync(join(callerDir, relativeTarget)), TempDirRefusedError);
 			const probe = join(dir, "win-relative-probe.mjs");
 			writeFileSync(
 				probe,
 				[
-					`const { verifyWindowsDirectorySecurityAsync } = await import(${JSON.stringify(pathToFileURL(SECURITY_MODULE).href)});`,
-					`const { assertPrivateDirectoryAsync } = await import(${JSON.stringify(pathToFileURL(tempModule).href)});`,
+					`const { evaluateWindowsDirectorySecurity, readWindowsDirectorySecurityAsync, verifyWindowsDirectorySecurityAsync } = await import(${JSON.stringify(pathToFileURL(SECURITY_MODULE).href)});`,
 					`const target = process.argv[2];`,
 					`const refusal = await verifyWindowsDirectorySecurityAsync(target);`,
-					`let rejected = false;`,
-					`try { await assertPrivateDirectoryAsync(target); } catch { rejected = true; }`,
-					`process.stdout.write(JSON.stringify({ refusal, rejected }));`,
+					`const descriptor = await readWindowsDirectorySecurityAsync(target);`,
+					`const evaluated = descriptor ? evaluateWindowsDirectorySecurity(descriptor) : "unreadable";`,
+					`process.stdout.write(JSON.stringify({ refusal, evaluated }));`,
 				].join("\n"),
 			);
-			const child = spawnProcess(
-				[process.execPath, "--experimental-strip-types", "--no-warnings", probe, relativeTarget],
-				{
+			for (const runtime of [[bunExecutable()], [process.execPath, "--experimental-strip-types", "--no-warnings"]]) {
+				const child = spawnProcess([...runtime, probe, relativeTarget], {
 					cwd: callerDir,
 					env: { ...process.env, SystemRoot: neutralDir, windir: neutralDir },
 					stdout: "pipe",
 					stderr: "pipe",
-				},
-			);
-			const [exitCode, stdout, stderr] = await Promise.all([
-				child.exited,
-				readStreamText(child.stdout),
-				readStreamText(child.stderr),
-			]);
-			assert.equal(exitCode, 0, stderr);
-			assert.deepEqual(JSON.parse(stdout), {
-				refusal: "it grants access to another account",
-				rejected: true,
-			});
+				});
+				const [exitCode, stdout, stderr] = await Promise.all([
+					child.exited,
+					readStreamText(child.stdout),
+					readStreamText(child.stderr),
+				]);
+				assert.equal(exitCode, 0, `${runtime[0]}: ${stderr}`);
+				assert.deepEqual(JSON.parse(stdout), {
+					refusal: "it grants access to another account",
+					evaluated: "it grants access to another account",
+				});
+			}
 		},
 	);
 
