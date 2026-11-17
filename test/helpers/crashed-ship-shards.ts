@@ -4,7 +4,7 @@ import { existsSync, readdirSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { openNodeSqliteDatabase } from "@bastani/atomic";
+import { openNodeSqliteDatabase, wrapNodeSqliteDatabase } from "@bastani/atomic";
 import type { SqliteDatabase, SqliteRow } from "@bastani/atomic/storage";
 import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { type RunJournalOption, resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
@@ -88,10 +88,11 @@ export async function setRunStatus(journal: RunJournal, root: string, status: st
 }
 
 const ENDED_WHILE_DOWN = ["completed", "failed", "deleted"] as const;
-const LIVE_WHILE_DOWN = ["running", "paused"] as const;
+const LIVE_WHILE_DOWN = ["pending", "running", "paused"] as const;
 const IN_USE = [
 	"held",
 	"connected",
+	"wrapped",
 	"retiredReader",
 	"retiredWriter",
 	"legacyReader",
@@ -139,7 +140,10 @@ export interface CrashedHostScenario {
 	readonly restart: (journal: RunJournal) => Promise<() => Promise<void>>;
 }
 
-export function restartAsRoot(agentDir: string): (journal: RunJournal) => Promise<() => Promise<void>> {
+export function restartAsRoot(
+	agentDir: string,
+	options: { readonly sync?: boolean } = {},
+): (journal: RunJournal) => Promise<() => Promise<void>> {
 	return async (journal) => {
 		const root = `restarted-${randomUUID()}`;
 		await journal.createRun({ runId: root, name: root, cwd: agentDir, createdAt: 0, status: "running" });
@@ -156,7 +160,7 @@ export function restartAsRoot(agentDir: string): (journal: RunJournal) => Promis
 					stateDirectory: poolStateDirectory(agentDir),
 					host: "restarted-host",
 					claimWindowMs: 60_000,
-					checkpointShipping: CRASH_SHIPPING,
+					...(options.sync === true ? {} : { checkpointShipping: CRASH_SHIPPING }),
 				},
 				workers: 1,
 				leaseMs: 30_000,
@@ -198,6 +202,8 @@ export async function crashHostThenRestart(scenario: CrashedHostScenario): Promi
 	const journal = await resolveRunJournal({ agentDir: scenario.agentDir, journal: scenario.selection });
 	let holder: ShardHolder | undefined;
 	let connection: SqliteDatabase | undefined;
+	let rawWrapped: DatabaseSync | undefined;
+	let wrapped: SqliteDatabase | undefined;
 	let retiredReader: SqliteDatabase | undefined;
 	let retiredWriter: SqliteDatabase | undefined;
 	let legacyReader: SqliteDatabase | undefined;
@@ -269,9 +275,12 @@ export async function crashHostThenRestart(scenario: CrashedHostScenario): Promi
 		for (const name of [...ENDED_WHILE_DOWN, ...IN_USE, "lateOpened"] as const)
 			if (name === "deleted") await journal.deleteRun(shards.deleted.root);
 			else await setRunStatus(journal, shards[name].root, name === "failed" ? "failed" : "completed");
+		await setRunStatus(journal, shards.pending.root, "pending");
 		await setRunStatus(journal, shards.paused.root, "paused");
 		connection = await openNodeSqliteDatabase(shards.connected.path);
 		await connection.get(`SELECT COUNT(*) AS n FROM ship_events`);
+		rawWrapped = new DatabaseSync(shards.wrapped.path);
+		wrapped = wrapNodeSqliteDatabase(rawWrapped);
 		retiredReader = await openNodeSqliteDatabase(shards.retiredReader.path, { readOnly: true });
 		assert.equal(
 			Number((await retiredReader.get<SqliteRow & { n: number }>(`SELECT COUNT(*) AS n FROM ship_events`))?.n),
@@ -363,6 +372,7 @@ export async function crashHostThenRestart(scenario: CrashedHostScenario): Promi
 				);
 			}
 			for (const [label, writer, shard] of [
+				["wrapped", wrapped, shards.wrapped],
 				["retained", retiredWriter, shards.retiredWriter],
 				["0.9.88 rollback-mode", legacyWriter, shards.legacyWriter],
 				["file: URI", uriWriter, shards.uriWriter],
@@ -431,6 +441,10 @@ export async function crashHostThenRestart(scenario: CrashedHostScenario): Promi
 		holder = undefined;
 		await connection.close();
 		connection = undefined;
+		await wrapped.close();
+		wrapped = undefined;
+		rawWrapped.close();
+		rawWrapped = undefined;
 		await retiredReader.close();
 		retiredReader = undefined;
 		await retiredWriter.close();
@@ -464,6 +478,8 @@ export async function crashHostThenRestart(scenario: CrashedHostScenario): Promi
 		shardRemovals.before = undefined;
 		await holder?.kill();
 		await connection?.close();
+		await wrapped?.close();
+		rawWrapped?.close();
 		await retiredReader?.close();
 		await retiredWriter?.close();
 		await legacyReader?.close();

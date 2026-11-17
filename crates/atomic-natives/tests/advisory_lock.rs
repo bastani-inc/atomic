@@ -107,6 +107,134 @@ fn a_lock_in_a_missing_directory_is_an_error_not_contention_5193() {
 	fs::remove_dir_all(dir).unwrap();
 }
 
+#[cfg(windows)]
+#[test]
+fn denied_write_access_is_an_error_not_lock_contention_5317() {
+	let dir = scratch();
+	let path = dir.join("readonly.lock");
+	fs::write(&path, "").unwrap();
+	let mut permissions = fs::metadata(&path).unwrap().permissions();
+	permissions.set_readonly(true);
+	fs::set_permissions(&path, permissions.clone()).unwrap();
+	let exclusive = try_advisory_lock(path.to_string_lossy().into_owned(), 0);
+	let shared = try_shared_advisory_lock(path.to_string_lossy().into_owned(), 0);
+	permissions.set_readonly(false);
+	fs::set_permissions(&path, permissions).unwrap();
+	fs::remove_dir_all(dir).unwrap();
+	assert!(
+		exclusive.is_err(),
+		"the existing exclusive lock API must preserve a denied-write error"
+	);
+	assert!(shared.is_err(), "the shared lock API must preserve a denied-write error");
+}
+
+#[cfg(windows)]
+fn set_test_dacl(path: &std::path::Path, definition: &str) -> std::io::Result<()> {
+	use std::os::windows::ffi::OsStrExt;
+	use windows_sys::Win32::{
+		Foundation::LocalFree,
+		Security::{
+			Authorization::{
+				ConvertStringSecurityDescriptorToSecurityDescriptorW, SE_FILE_OBJECT,
+				SetNamedSecurityInfoW,
+			},
+			DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION,
+		},
+	};
+	let definition: Vec<u16> = definition.encode_utf16().chain(Some(0)).collect();
+	let mut descriptor = std::ptr::null_mut();
+	if unsafe {
+		ConvertStringSecurityDescriptorToSecurityDescriptorW(
+			definition.as_ptr(),
+			1,
+			&mut descriptor,
+			std::ptr::null_mut(),
+		)
+	} == 0
+	{
+		return Err(std::io::Error::last_os_error());
+	}
+	let result = (|| {
+		let mut present = 0;
+		let mut defaulted = 0;
+		let mut dacl = std::ptr::null_mut();
+		if unsafe { GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted) }
+			== 0
+		{
+			return Err(std::io::Error::last_os_error());
+		}
+		let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+		let error = unsafe {
+			SetNamedSecurityInfoW(
+				wide.as_ptr(),
+				SE_FILE_OBJECT,
+				DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+				std::ptr::null_mut(),
+				std::ptr::null_mut(),
+				dacl,
+				std::ptr::null(),
+			)
+		};
+		if error == 0 { Ok(()) } else { Err(std::io::Error::from_raw_os_error(error as i32)) }
+	})();
+	unsafe { LocalFree(descriptor) };
+	result
+}
+
+#[cfg(windows)]
+#[test]
+fn acl_denied_lock_path_is_an_error_not_contention_5317() {
+	struct RestoreDacl(PathBuf);
+	impl Drop for RestoreDacl {
+		fn drop(&mut self) {
+			let _ = set_test_dacl(&self.0, "D:P(A;;FA;;;WD)");
+		}
+	}
+	let dir = scratch();
+	let path = dir.join("denied.lock");
+	fs::write(&path, "").unwrap();
+	let restore = RestoreDacl(path.clone());
+	set_test_dacl(&path, "D:P(D;;0x1ff;;;WD)(A;;FA;;;WD)").unwrap();
+	let exclusive = try_advisory_lock(path.to_string_lossy().into_owned(), 0);
+	let shared = try_shared_advisory_lock(path.to_string_lossy().into_owned(), 0);
+	drop(restore);
+	fs::remove_dir_all(dir).unwrap();
+	assert!(exclusive.is_err(), "an ACL denial must remain an exclusive-lock error");
+	assert!(shared.is_err(), "an ACL denial must remain a shared-lock error");
+}
+
+#[cfg(windows)]
+#[test]
+fn delete_pending_is_contention_until_its_last_handle_closes_5317() {
+	use std::os::windows::ffi::OsStrExt;
+	use windows_sys::Win32::Storage::FileSystem::DeleteFileW;
+	let dir = scratch();
+	let path = dir.join("pending.lock");
+	let held = fs::File::create(&path).unwrap();
+	let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+	assert_ne!(unsafe { DeleteFileW(wide.as_ptr()) }, 0);
+	let exclusive = try_advisory_lock(path.to_string_lossy().into_owned(), 0);
+	let shared = try_shared_advisory_lock(path.to_string_lossy().into_owned(), 0);
+	let waiting_path = path.clone();
+	let (started, waiting) = std::sync::mpsc::channel();
+	let waiter = thread::spawn(move || {
+		started.send(()).unwrap();
+		try_lock_file_shared(&waiting_path, Duration::from_secs(10))
+	});
+	waiting.recv().unwrap();
+	thread::sleep(Duration::from_millis(20));
+	drop(held);
+	assert!(
+		exclusive.unwrap().is_none(),
+		"a pending deletion is not a permanent exclusive-lock error"
+	);
+	assert!(shared.unwrap().is_none(), "a pending deletion is not a permanent shared-lock error");
+	let acquired = waiter.join().unwrap().unwrap();
+	assert!(acquired.is_some(), "a pending opener recreates the path after the last handle closes");
+	drop(acquired);
+	fs::remove_dir_all(dir).unwrap();
+}
+
 /// Not a test of its own: the child process of the kill test, which holds the lock until it is killed.
 #[test]
 fn advisory_lock_holder_child() {

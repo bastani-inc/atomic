@@ -671,13 +671,28 @@ async function acquireOpenLock(
 	}
 }
 
+function isOpenLockPermissionError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	if (code === "EACCES" || code === "EPERM" || code === "EROFS") return true;
+	const message = error instanceof Error ? error.message : String(error);
+	return process.platform === "win32"
+		? /\(os error (?:5|19|65)\)/.test(message)
+		: /\(os error (?:1|13|30)\)/.test(message);
+}
+
 function acquireOpenLockSync(location: string): HeldOpenLock | undefined {
 	const locks = openLocks();
 	const filePath = sqliteTargetFilePath(location);
 	if (locks === null || filePath === undefined) return undefined;
 	const target = realpathSync(filePath);
 	const lockPath = sqliteFilePath(sqliteOpenLockPath(target));
-	const lock = locks.trySharedAdvisoryLock(lockPath, 50);
+	let lock: { release(): void } | null;
+	try {
+		lock = locks.trySharedAdvisoryLock(lockPath, 50);
+	} catch (error) {
+		if (isOpenLockPermissionError(error)) return undefined;
+		throw error;
+	}
 	if (lock === null)
 		throw Object.assign(new Error("database is locked"), {
 			code: "ERR_SQLITE_ERROR",

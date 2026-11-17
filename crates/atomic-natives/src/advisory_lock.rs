@@ -58,19 +58,83 @@ fn lock_matches_path(_file: &File, path: &Path) -> bool {
 }
 
 #[cfg(windows)]
-fn is_delete_pending(error: &io::Error) -> bool {
-	error.kind() == io::ErrorKind::PermissionDenied
+fn is_transient_delete_race(path: &Path, error: &io::Error) -> bool {
+	use std::os::windows::ffi::OsStrExt;
+	use windows_sys::{
+		Wdk::{
+			Foundation::OBJECT_ATTRIBUTES,
+			Storage::FileSystem::{FILE_BASIC_INFORMATION, RtlDosPathNameToNtPathName_U_WithStatus},
+		},
+		Win32::{
+			Foundation::{
+				NTSTATUS, OBJ_CASE_INSENSITIVE, STATUS_DELETE_PENDING, STATUS_OBJECT_NAME_NOT_FOUND,
+				STATUS_OBJECT_PATH_NOT_FOUND, UNICODE_STRING,
+			},
+			System::WindowsProgramming::RtlFreeUnicodeString,
+		},
+	};
+
+	#[cfg_attr(
+		target_arch = "x86",
+		link(
+			name = "ntdll.dll",
+			kind = "raw-dylib",
+			modifiers = "+verbatim",
+			import_name_type = "undecorated"
+		)
+	)]
+	#[cfg_attr(
+		not(target_arch = "x86"),
+		link(name = "ntdll.dll", kind = "raw-dylib", modifiers = "+verbatim")
+	)]
+	unsafe extern "system" {
+		#[link_name = "NtQueryAttributesFile"]
+		fn nt_query_attributes_file(
+			attributes: *const OBJECT_ATTRIBUTES,
+			information: *mut FILE_BASIC_INFORMATION,
+		) -> NTSTATUS;
+	}
+
+	if error.kind() != io::ErrorKind::PermissionDenied {
+		return false;
+	}
+	let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+	let mut name = UNICODE_STRING::default();
+	let converted = unsafe {
+		RtlDosPathNameToNtPathName_U_WithStatus(
+			wide.as_ptr(),
+			&mut name,
+			std::ptr::null_mut(),
+			std::ptr::null(),
+		)
+	};
+	if converted < 0 {
+		return false;
+	}
+	let attributes = OBJECT_ATTRIBUTES {
+		Length: std::mem::size_of::<OBJECT_ATTRIBUTES>() as u32,
+		ObjectName: &name,
+		Attributes: OBJ_CASE_INSENSITIVE,
+		..Default::default()
+	};
+	let mut information = FILE_BASIC_INFORMATION::default();
+	let status = unsafe { nt_query_attributes_file(&attributes, &mut information) };
+	unsafe { RtlFreeUnicodeString(&mut name) };
+	matches!(
+		status,
+		STATUS_DELETE_PENDING | STATUS_OBJECT_NAME_NOT_FOUND | STATUS_OBJECT_PATH_NOT_FOUND
+	)
 }
 
 #[cfg(not(windows))]
-fn is_delete_pending(_error: &io::Error) -> bool {
+fn is_transient_delete_race(_path: &Path, _error: &io::Error) -> bool {
 	false
 }
 
 fn try_lock_with(
 	path: &Path,
 	wait: Duration,
-	lock: fn(&File) -> Result<(), TryLockError>,
+	mut lock: impl FnMut(&File) -> Result<(), TryLockError>,
 ) -> io::Result<Option<File>> {
 	let mut options = OpenOptions::new();
 	options.read(true).write(true).create(true).truncate(false);
@@ -81,11 +145,12 @@ fn try_lock_with(
 	}
 	let deadline = Instant::now() + wait;
 	let mut file: Option<File> = None;
+	let mut retried_replaced_path = false;
 	loop {
 		if file.is_none() {
 			match options.open(path) {
 				Ok(opened) => file = Some(opened),
-				Err(error) if is_delete_pending(&error) => {},
+				Err(error) if is_transient_delete_race(path, &error) => {},
 				Err(error) => return Err(error),
 			}
 		}
@@ -94,6 +159,10 @@ fn try_lock_with(
 				Ok(()) if lock_matches_path(current, path) => return Ok(file),
 				Ok(()) => {
 					file = None;
+					if retried_replaced_path && Instant::now() >= deadline {
+						return Ok(None);
+					}
+					retried_replaced_path = true;
 					continue;
 				},
 				Err(TryLockError::WouldBlock) => {},
@@ -245,4 +314,33 @@ pub fn try_shared_advisory_lock(path: String, wait_ms: u32) -> napi::Result<Opti
 #[napi(js_name = "renameNoReplace")]
 pub fn rename_no_replace_napi(from: String, to: String) -> napi::Result<bool> {
 	rename_no_replace(Path::new(&from), Path::new(&to)).map_err(napi_error)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn replacement_retries_respect_the_deadline_5317() {
+		let stamp =
+			std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+		let directory =
+			std::env::temp_dir().join(format!("atomic-replaced-lock-{}-{stamp}", std::process::id()));
+		std::fs::create_dir_all(&directory).unwrap();
+		let path = directory.join("replaced.lock");
+		let mut replacements = 0;
+		let acquired = try_lock_with(&path, Duration::ZERO, |file| {
+			file.try_lock()?;
+			std::fs::remove_file(&path).unwrap();
+			replacements += 1;
+			if replacements > 3 {
+				return Err(TryLockError::Error(io::Error::other(
+					"replacement retries exceeded the deadline",
+				)));
+			}
+			Ok(())
+		});
+		std::fs::remove_dir_all(directory).unwrap();
+		assert!(acquired.unwrap().is_none(), "a repeatedly replaced path must exhaust its wait");
+	}
 }

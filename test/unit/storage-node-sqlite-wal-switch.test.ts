@@ -352,6 +352,28 @@ for (const [name, run] of [
 	});
 }
 
+test("wrapping a read-only connection still reads when its open-lock file is not writable (#5317)", async () => {
+	const path = databasePath();
+	const setup = new DatabaseSync(path);
+	setup.exec("PRAGMA journal_mode=WAL; CREATE TABLE items(v INTEGER); INSERT INTO items VALUES (42)");
+	setup.close();
+	const lockPath = sqliteOpenLockPath(path);
+	writeFileSync(lockPath, "");
+	chmodSync(lockPath, 0o444);
+	const connection = new DatabaseSync(path, { readOnly: true });
+	try {
+		const database = wrapNodeSqliteDatabase(connection);
+		try {
+			assert.deepEqual(await database.all("SELECT v FROM items"), [{ v: 42 }]);
+		} finally {
+			await database.close();
+		}
+	} finally {
+		connection.close();
+		if (existsSync(lockPath)) chmodSync(lockPath, 0o600);
+	}
+});
+
 test("connections hold a shared open lock while open, release it on close or kill, and create none for untouched read-only files (#5317)", async () => {
 	const directory = makeTempDirectory("atomic-open-lock-");
 	directories.push(directory);

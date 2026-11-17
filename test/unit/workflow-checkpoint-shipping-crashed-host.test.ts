@@ -193,6 +193,26 @@ async function crashedShardOfEndedRoot(directory: string) {
 }
 
 test(
+	"a host restarted with synchronous checkpoints removes an ended run's crashed local checkpoint journal (#5317)",
+	async () => {
+		const directory = makeTempDirectory("ship-crashed-sync-");
+		const { agentDir, journal, path } = await crashedShardOfEndedRoot(directory);
+		try {
+			const stop = await restartAsRoot(agentDir, { sync: true })(journal);
+			try {
+				assert.deepEqual(shardFiles(path), [], "synchronous checkpoints do not leave old journals behind");
+			} finally {
+				await stop();
+			}
+		} finally {
+			await journal.close();
+			removeTempDirectory(directory);
+		}
+	},
+	CRASHED_HOST_PROCESSES_TIMEOUT_MS,
+);
+
+test(
 	"a root resumed on the host while a restart reads that its run ended keeps the local checkpoint journal it opened (#5317)",
 	async () => {
 		const directory = makeTempDirectory("ship-crashed-resumed-");

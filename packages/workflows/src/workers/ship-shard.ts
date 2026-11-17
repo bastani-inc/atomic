@@ -1,9 +1,10 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readdirSync, readlinkSync } from "node:fs";
-import { readdir, realpath, rm, rmdir, stat } from "node:fs/promises";
+import { mkdirSync } from "node:fs";
+import { readdir, readlink, realpath, rm, rmdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { promisify } from "node:util";
 import { openNodeSqliteDatabase } from "@bastani/atomic";
 import type { SqliteDatabase, SqliteRow } from "@bastani/atomic/storage";
 import type { AdvisoryLock } from "@bastani/atomic-natives";
@@ -804,33 +805,32 @@ function sameOwner(a: ShardOwner, b: ShardOwner): boolean {
 	return a.root === b.root && a.opens === b.opens && a.work === b.work;
 }
 
-function scanProcFdDir(fdDir: string, targets: ReadonlySet<string>, found: Set<string>): void {
-	let fds: string[];
-	try {
-		fds = readdirSync(fdDir);
-	} catch {
-		return;
-	}
-	for (const fd of fds) {
-		try {
-			const link = readlinkSync(`${fdDir}/${fd}`);
-			if (targets.has(link)) {
-				found.add(link);
-				if (found.size === targets.size) return;
-			}
-		} catch {}
+const PROC_SCAN_CONCURRENCY = 8;
+const PROC_FD_BATCH_SIZE = 32;
+const OPEN_FILE_SCAN_TIMEOUT_MS = 5_000;
+const execFileAsync = promisify(execFile);
+
+async function scanProcFdDir(fdDir: string, targets: ReadonlySet<string>, found: Set<string>): Promise<void> {
+	const fds = await readdir(fdDir).catch(() => []);
+	for (let offset = 0; offset < fds.length && found.size < targets.size; offset += PROC_FD_BATCH_SIZE) {
+		await Promise.all(
+			fds.slice(offset, offset + PROC_FD_BATCH_SIZE).map(async (fd) => {
+				const link = await readlink(`${fdDir}/${fd}`).catch(() => undefined);
+				if (link !== undefined && targets.has(link)) found.add(link);
+			}),
+		);
 	}
 }
 
-function selfHasOpenFile(location: string): boolean {
+async function selfHasOpenFile(location: string): Promise<boolean> {
 	if (process.platform !== "linux") return false;
 	const targets = new Set([location, `${location}-wal`, `${location}-shm`]);
 	const found = new Set<string>();
-	scanProcFdDir("/proc/self/fd", targets, found);
+	await scanProcFdDir("/proc/self/fd", targets, found);
 	return found.size > 0;
 }
 
-function otherProcessesOpenFiles(locations: readonly string[]): ReadonlySet<string> {
+async function otherProcessesOpenFiles(locations: readonly string[]): Promise<ReadonlySet<string>> {
 	if (locations.length === 0) return new Set();
 	const byTarget = new Map<string, string>();
 	for (const location of locations) {
@@ -840,33 +840,33 @@ function otherProcessesOpenFiles(locations: readonly string[]): ReadonlySet<stri
 	const matchedTargets = new Set<string>();
 	if (process.platform === "linux") {
 		const selfPid = String(process.pid);
-		let entries: string[] = [];
-		try {
-			entries = readdirSync("/proc");
-		} catch {
-			return new Set();
-		}
-		for (const entry of entries) {
-			if (entry === selfPid || entry[0]! < "0" || entry[0]! > "9") continue;
-			scanProcFdDir(`/proc/${entry}/fd`, targets, matchedTargets);
-			if (matchedTargets.size === targets.size) break;
-		}
-	} else if (process.platform === "darwin") {
-		try {
-			const output = execFileSync("lsof", ["-F", "n", "--", ...targets], {
-				encoding: "utf8",
-				stdio: ["ignore", "pipe", "ignore"],
-			});
-			for (const line of output.split("\n")) {
-				if (line.startsWith("n") && targets.has(line.slice(1))) matchedTargets.add(line.slice(1));
-			}
-		} catch (error) {
-			const stdout = (error as { stdout?: unknown }).stdout;
-			if (typeof stdout === "string") {
-				for (const line of stdout.split("\n")) {
-					if (line.startsWith("n") && targets.has(line.slice(1))) matchedTargets.add(line.slice(1));
+		const entries = await readdir("/proc").catch(() => undefined);
+		if (entries === undefined) return new Set(locations);
+		const pids = entries.filter((entry) => entry !== selfPid && /^\d+$/.test(entry));
+		let next = 0;
+		await Promise.all(
+			Array.from({ length: Math.min(PROC_SCAN_CONCURRENCY, pids.length) }, async () => {
+				while (matchedTargets.size < targets.size) {
+					const pid = pids[next++];
+					if (pid === undefined) return;
+					await scanProcFdDir(`/proc/${pid}/fd`, targets, matchedTargets);
 				}
-			}
+			}),
+		);
+	} else if (process.platform === "darwin") {
+		let output: string;
+		try {
+			({ stdout: output } = await execFileAsync("lsof", ["-F", "n", "--", ...targets], {
+				encoding: "utf8",
+				timeout: OPEN_FILE_SCAN_TIMEOUT_MS,
+			}));
+		} catch (error) {
+			const failure = error as { code?: string | number; stdout?: string };
+			if (failure.code !== 1 || typeof failure.stdout !== "string") return new Set(locations);
+			output = failure.stdout;
+		}
+		for (const line of output.split("\n")) {
+			if (line.startsWith("n") && targets.has(line.slice(1))) matchedTargets.add(line.slice(1));
 		}
 	}
 	const openLocations = new Set<string>();
@@ -901,7 +901,7 @@ async function removeConfirmedShard(
 	path: string,
 	rootLock: AdvisoryLock | undefined,
 	confirm: (connection: DatabaseSync) => boolean | Promise<boolean>,
-	openInOtherProcesses?: (location: string) => boolean,
+	openInOtherProcesses?: (location: string) => Promise<boolean>,
 ): Promise<void> {
 	let openLock: AdvisoryLock | null = null;
 	let location: string | undefined;
@@ -911,11 +911,8 @@ async function removeConfirmedShard(
 		if (location === undefined) return;
 		openLock = await tryOpenLock(location).catch(() => null);
 		if (openLock === null) return;
-		if (
-			selfHasOpenFile(location) ||
-			(openInOtherProcesses ?? ((target) => otherProcessesOpenFiles([target]).has(target)))(location)
-		)
-			return;
+		if (await selfHasOpenFile(location)) return;
+		if (await openInOtherProcesses?.(location)) return;
 		const { DatabaseSync } = await import("node:sqlite");
 		const connection = new DatabaseSync(location);
 		let confirmed = false;
@@ -924,7 +921,7 @@ async function removeConfirmedShard(
 		} finally {
 			connection.close();
 		}
-		if (!confirmed || selfHasOpenFile(location)) return;
+		if (!confirmed || (await selfHasOpenFile(location))) return;
 		removed = await removeShardFiles(location, path);
 	} catch {
 		return;
@@ -935,7 +932,10 @@ async function removeConfirmedShard(
 	if (removed && location !== undefined) await rmdir(dirname(location)).catch(() => {});
 }
 
-async function removeUnchanged(shard: IdleShard, openInOtherProcesses: (location: string) => boolean): Promise<void> {
+async function removeUnchanged(
+	shard: IdleShard,
+	openInOtherProcesses: (location: string) => Promise<boolean>,
+): Promise<void> {
 	const lock = await tryRootLock(shard.path).catch(() => null);
 	if (lock === null) return;
 	if ((await fileIdentity(shard.path).catch(() => undefined)) !== shard.file) {
@@ -973,15 +973,15 @@ export async function retireEndedShipShards(directory: string, findEnded: FindEn
 	);
 	if (retired.length === 0) return;
 	await underJournalLock(directory, async () => {
-		let otherOpen: ReadonlySet<string> | undefined;
+		let otherOpen: Promise<ReadonlySet<string>> | undefined;
 		const resolvedLocations: string[] = [];
 		for (const shard of retired) {
 			const location = await realpath(shard.path).catch(() => undefined);
 			if (location !== undefined) resolvedLocations.push(location);
 		}
-		const openInOtherProcesses = (location: string): boolean => {
+		const openInOtherProcesses = async (location: string): Promise<boolean> => {
 			otherOpen ??= otherProcessesOpenFiles(resolvedLocations);
-			return otherOpen.has(location);
+			return (await otherOpen).has(location);
 		};
 		for (const shard of retired) await removeUnchanged(shard, openInOtherProcesses);
 	});
