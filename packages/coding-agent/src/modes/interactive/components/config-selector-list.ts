@@ -15,6 +15,7 @@ import { BUILTIN_PATH_PREFIX } from "../../../core/source-info.ts";
 import { shortenHomePath } from "../../../utils/paths.ts";
 import { theme } from "../theme/theme.js";
 import { toggleProjectResource } from "./config-selector-project-scope.ts";
+import { type NavKey, navActionText, renderNavHintLine } from "./nav-keys.ts";
 
 export type ResourceType = "extensions" | "skills" | "prompts" | "themes" | "workflows";
 
@@ -311,7 +312,41 @@ export class ResourceList implements Component, Focusable {
 	}
 	invalidate(): void {}
 	render(width: number): string[] {
-		return this.renderList(width).map((line) => (visibleWidth(line) > width ? truncateToWidth(line, width) : line));
+		return [...this.renderList(width), "", this.renderHint(width)].map((line) =>
+			visibleWidth(line) > width ? truncateToWidth(line, width) : line,
+		);
+	}
+	/** The one hint line: exactly the keys that do something now. */
+	hintEntries(): NavKey[] {
+		const kb = getKeybindings();
+		const items = this.filteredItems.filter((entry) => entry.type === "item").length;
+		const entries: NavKey[] = [];
+		const up = navActionText(kb, "tui.select.up");
+		const down = navActionText(kb, "tui.select.down");
+		if (items > 1 && up && down)
+			entries.push({ keys: up === "↑" && down === "↓" ? "↑↓" : `${up}/${down}`, label: "select" });
+		if (this.filteredItems[this.selectedIndex]?.type === "item") {
+			const confirm = navActionText(kb, "tui.select.confirm");
+			entries.push({ keys: confirm ? `space/${confirm}` : "space", label: "toggle" });
+		}
+		if (this.onSwitchMode) entries.push({ action: "tui.input.tab", label: "switch scope" });
+		entries.push({ keys: "type", label: "to search" });
+		const cancel = kb.getKeys("tui.select.cancel")[0];
+		entries.push({
+			keys: cancel === "escape" || !cancel ? "esc" : cancel,
+			label: this.searchInput.getValue() ? "clear" : "close",
+		});
+		return entries;
+	}
+	private renderHint(width: number): string {
+		const style = {
+			dim: (text: string) => theme.fg("dim", text),
+			text: (text: string) => theme.fg("text", text),
+			muted: (text: string) => theme.fg("muted", text),
+			border: (text: string) => theme.fg("borderMuted", text),
+			bold: (text: string) => theme.bold(text),
+		};
+		return renderNavHintLine(this.hintEntries(), width, style, getKeybindings());
 	}
 	private renderList(width: number): string[] {
 		const lines = [...this.renderSearch(width), ""];
