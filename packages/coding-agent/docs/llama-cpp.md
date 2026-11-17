@@ -67,7 +67,7 @@ If the server requires a key, start `llama serve` with the matching `--api-key`.
 Run `/llama` in interactive mode:
 
 - Select an unloaded model to load it, or a loaded model to unload it.
-- Select **Download model…**, search Hugging Face, then choose a repository and quantization. Exact `owner/repository[:quant]` values also work.
+- Select **Download model…**, search Hugging Face, then choose a repository and quantization. Exact `owner/repository[:quant]` values also work: type one and press Enter to download it as typed.
 - Press Escape during a load or download to confirm cancellation.
 
 Hugging Face search uses `HF_TOKEN` when set, then checks `$HF_TOKEN_PATH`, `$HF_HOME/token`, `$XDG_CACHE_HOME/huggingface/token`, and `~/.cache/huggingface/token`. Unauthenticated search has lower rate limits. Atomic warns before gated downloads and links to the access page. Because llama.cpp performs the download, its process must also have `HF_TOKEN` for gated repositories.

@@ -210,7 +210,7 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 		// Each notice holds its task's record until it is delivered, so a burst of finishes cannot evict what the
 		// notice is built from (#4385).
 		(envelope) => {
-			forgetChildDelivery(host, envelope.completionId);
+			forgetChildDelivery(host, envelope.completionId, envelope.taskId);
 			host.releaseTaskRecord(envelope.taskId);
 		},
 		() => !waitsOnDetachedResults(this),

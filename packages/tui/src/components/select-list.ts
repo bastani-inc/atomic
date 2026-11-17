@@ -97,11 +97,11 @@ export class SelectList implements Component {
 			lines.push(this.renderItem(item, isSelected, width, descriptionSingleLine, primaryColumnWidth));
 		}
 
-		// Add scroll indicators if needed
-		if (startIndex > 0 || endIndex < this.filteredItems.length) {
-			const scrollText = `  (${this.selectedIndex + 1}/${this.filteredItems.length})`;
-			// Truncate if too long for terminal
-			lines.push(this.theme.scrollInfo(truncateToWidth(scrollText, width - 2, "")));
+		const above = startIndex;
+		const below = this.filteredItems.length - endIndex;
+		if (above > 0 || below > 0) {
+			const parts = [above > 0 ? `↑ ${above} more` : "", below > 0 ? `↓ ${below} more` : ""].filter(Boolean);
+			lines.push(this.theme.scrollInfo(truncateToWidth(`  ${parts.join(" · ")}`, width - 2, "")));
 		}
 
 		return lines;
@@ -195,7 +195,7 @@ export class SelectList implements Component {
 		descriptionSingleLine: string | undefined,
 		primaryColumnWidth: number,
 	): string {
-		const prefix = isSelected ? "→ " : "  ";
+		const prefix = isSelected ? "❯ " : "  ";
 		const prefixWidth = visibleWidth(prefix);
 
 		if (descriptionSingleLine && width > 40) {

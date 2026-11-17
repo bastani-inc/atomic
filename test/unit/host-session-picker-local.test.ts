@@ -184,15 +184,292 @@ describe("in-process host session picker (non-isolated)", () => {
 		assert.equal(await handle.result, undefined);
 	});
 
-	test("delete without an onDelete callback reports it as unsupported", async () => {
+	test("keeps a deleted row unselectable until the owner removes it or reports failure (#5256)", async () => {
+		const mount = makeLocalUi();
+		const deletes: string[] = [];
+		const rows = [row("alpha"), row("beta", 900)];
+		let rejectDeletion!: () => void;
+		const handle = openLocalHostSessionPicker(mount.ui, {
+			sessions: rows,
+			onDelete: (path) => {
+				deletes.push(path);
+				if (deletes.length === 1) {
+					return new Promise<void>((_resolve, reject) => {
+						rejectDeletion = () => reject(new Error("Deletion refused"));
+					});
+				}
+			},
+		});
+		await flush();
+		try {
+			mount.component().handleInput(CTRL_D);
+			mount.component().handleInput(ENTER);
+			mount.component().handleInput(ENTER);
+			assert.equal(mount.resolved(), false);
+			await flush();
+			handle.update(rows);
+			await flush();
+			mount.component().handleInput("\x1b[C");
+			assert.equal(mount.resolved(), false, "stale row updates must not acknowledge deletion");
+			assert.deepEqual(deletes, ["local:alpha"]);
+			handle.error("Background load failed");
+			await flush();
+			mount.component().handleInput(ENTER);
+			assert.equal(mount.resolved(), false, "unrelated errors must not acknowledge deletion");
+			rejectDeletion();
+			await flush();
+			mount.component().handleInput(CTRL_D);
+			mount.component().handleInput(ENTER);
+			await flush();
+			assert.deepEqual(deletes, ["local:alpha", "local:alpha"], "failed deletion can be retried");
+			handle.update([row("beta", 900)]);
+			await flush();
+			mount.component().handleInput(ENTER);
+			assert.equal(await handle.result, "local:beta");
+		} finally {
+			handle.close();
+		}
+	});
+
+	test("errors reported by an asynchronous delete callback release its row (#5256)", async () => {
+		const mount = makeLocalUi();
+		let release!: () => void;
+		const deletion = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const handle = openLocalHostSessionPicker(mount.ui, {
+			sessions: [row("alpha")],
+			onDelete: async () => {
+				await deletion;
+				handle.error("Deletion denied");
+			},
+		});
+		await flush();
+		try {
+			mount.component().handleInput(CTRL_D);
+			mount.component().handleInput(ENTER);
+			await flush();
+			release();
+			await flush();
+			assert.match(renderText(mount), /enter resume/);
+			mount.component().handleInput(ENTER);
+			assert.equal(await handle.result, "local:alpha");
+		} finally {
+			release();
+			handle.close();
+		}
+	});
+
+	test("late rejection of an already-released delete attempt does not unlock a retried delete of the same row (#5256)", async () => {
+		const mount = makeLocalUi();
+		const deletes: string[] = [];
+		let rejectFirstAttempt!: (error: Error) => void;
+		let rejectSecondAttempt!: (error: Error) => void;
+		const handle = openLocalHostSessionPicker(mount.ui, {
+			sessions: [row("alpha")],
+			onDelete: (path) => {
+				deletes.push(path);
+				if (deletes.length === 1) {
+					handle.error("first refused");
+					return new Promise<void>((_resolve, reject) => {
+						rejectFirstAttempt = reject;
+					});
+				}
+				return new Promise<void>((_resolve, reject) => {
+					rejectSecondAttempt = reject;
+				});
+			},
+		});
+		await flush();
+		try {
+			mount.component().handleInput(CTRL_D);
+			mount.component().handleInput(ENTER);
+			await flush();
+			assert.deepEqual(deletes, ["local:alpha"], "attempt 1 started and reported error");
+
+			mount.component().handleInput(CTRL_D);
+			mount.component().handleInput(ENTER);
+			await flush();
+			assert.deepEqual(deletes, ["local:alpha", "local:alpha"], "attempt 2 is pending on the same path");
+
+			rejectFirstAttempt(new Error("late attempt 1 rejection"));
+			await flush();
+			mount.component().handleInput(ENTER);
+			mount.component().handleInput("\x1b[C");
+			assert.equal(mount.resolved(), false, "stale attempt 1 rejection must not unlock pending attempt 2");
+
+			rejectSecondAttempt(new Error("second refused"));
+			await flush();
+			mount.component().handleInput(ENTER);
+			assert.equal(await handle.result, "local:alpha");
+		} finally {
+			handle.close();
+		}
+	});
+
+	test("an error reported on another picker during an active delete callback does not unlock that other picker's pending deletion (#5256)", async () => {
+		const mountA = makeLocalUi();
+		const mountB = makeLocalUi();
+		const handleB = openLocalHostSessionPicker(mountB.ui, {
+			sessions: [row("alpha")],
+			onDelete: () => new Promise<void>(() => {}),
+		});
+		await flush();
+		mountB.component().handleInput(CTRL_D);
+		mountB.component().handleInput(ENTER);
+		await flush();
+
+		const handleA = openLocalHostSessionPicker(mountA.ui, {
+			sessions: [row("alpha")],
+			onDelete: async () => {
+				handleB.error("unrelated error on second picker");
+			},
+		});
+		await flush();
+		try {
+			mountA.component().handleInput(CTRL_D);
+			mountA.component().handleInput(ENTER);
+			await flush();
+
+			assert.ok(renderText(mountB).includes("unrelated error on second picker"));
+			mountB.component().handleInput(ENTER);
+			mountB.component().handleInput("\x1b[C");
+			assert.equal(mountB.resolved(), false, "other picker's delete context must not unlock mountB");
+		} finally {
+			handleA.close();
+			handleB.close();
+		}
+	});
+
+	test("runs picker keeps a pending-delete run locked across path reclassification until the run ID is removed or deletion fails (#5256)", async () => {
+		const mount = makeLocalUi();
+		const deletes: string[] = [];
+		let rejectDeletion!: () => void;
+		const durableRow: HostSessionPickerRow = { ...row("a"), path: "workflow-durable:a" };
+		const completedRow: HostSessionPickerRow = { ...row("a"), path: "workflow-completed:a" };
+		const otherRow: HostSessionPickerRow = { ...row("b", 900), path: "workflow-completed:b" };
+		const handle = openLocalHostSessionPicker(mount.ui, {
+			variant: "runs",
+			sessions: [durableRow, otherRow],
+			onDelete: (path) => {
+				deletes.push(path);
+				if (deletes.length === 1) {
+					return new Promise<void>((_resolve, reject) => {
+						rejectDeletion = () => reject(new Error("Run deletion refused"));
+					});
+				}
+			},
+		});
+		await flush();
+		try {
+			mount.component().handleInput(CTRL_D);
+			mount.component().handleInput(ENTER);
+			await flush();
+			assert.deepEqual(deletes, ["workflow-durable:a"]);
+
+			// Owner refresh reclassifies the same run ID to a completed path before deletion finishes.
+			handle.update([completedRow, otherRow]);
+			await flush();
+			mount.component().handleInput(ENTER);
+			mount.component().handleInput("\x1b[C");
+			assert.equal(
+				mount.resolved(),
+				false,
+				"path reclassification of the same run ID must not acknowledge deletion",
+			);
+
+			handle.error("Background run refresh failed");
+			await flush();
+			mount.component().handleInput(ENTER);
+			mount.component().handleInput("\x1b[C");
+			assert.equal(mount.resolved(), false, "generic error must not acknowledge run deletion");
+
+			// Matching deletion failure releases the run row; retrying and removing the run ID settles it.
+			rejectDeletion();
+			await flush();
+			mount.component().handleInput(CTRL_D);
+			mount.component().handleInput(ENTER);
+			await flush();
+			assert.deepEqual(deletes, ["workflow-durable:a", "workflow-completed:a"]);
+			handle.update([otherRow]);
+			await flush();
+			mount.component().handleInput(ENTER);
+			assert.equal(await handle.result, "workflow-completed:b");
+		} finally {
+			handle.close();
+		}
+
+		// Ordinary sessions with repeating project-local IDs across different folder paths retain path identity.
+		const sessionMount = makeLocalUi();
+		const sessionDeletes: string[] = [];
+		const firstProjectRow: HostSessionPickerRow = {
+			...row("shared"),
+			path: "local:first-project",
+			cwd: "first-project",
+		};
+		const secondProjectRow: HostSessionPickerRow = {
+			...row("shared", 900),
+			path: "local:second-project",
+			cwd: "second-project",
+		};
+		const sessionHandle = openLocalHostSessionPicker(sessionMount.ui, {
+			sessions: [firstProjectRow, secondProjectRow],
+			onDelete: (path) => {
+				sessionDeletes.push(path);
+				return new Promise<void>(() => {});
+			},
+		});
+		await flush();
+		try {
+			sessionMount.component().handleInput(CTRL_D);
+			sessionMount.component().handleInput(ENTER);
+			await flush();
+			assert.deepEqual(sessionDeletes, ["local:first-project"]);
+			// Removing local:first-project while keeping local:second-project (same id "shared") releases the delete lock.
+			sessionHandle.update([secondProjectRow]);
+			await flush();
+			sessionMount.component().handleInput(ENTER);
+			assert.equal(await sessionHandle.result, "local:second-project");
+		} finally {
+			sessionHandle.close();
+		}
+	});
+
+	test("other rows remain resumable while a row is being deleted (#5256)", async () => {
+		const mount = makeLocalUi();
+		const handle = openLocalHostSessionPicker(mount.ui, {
+			sessions: [row("alpha"), row("beta", 900)],
+			onDelete: () => {},
+		});
+		await flush();
+		mount.component().handleInput(CTRL_D);
+		mount.component().handleInput(ENTER);
+		mount.component().handleInput(DOWN);
+		mount.component().handleInput(ENTER);
+		assert.equal(await handle.result, "local:beta");
+	});
+
+	test.each([ESCAPE, "\x03"])("cancels while owner deletion remains pending (%j) (#5256)", async (key) => {
+		const mount = makeLocalUi();
+		const handle = openLocalHostSessionPicker(mount.ui, { sessions: [row("alpha")], onDelete: () => {} });
+		await flush();
+		mount.component().handleInput(CTRL_D);
+		mount.component().handleInput(ENTER);
+		await flush();
+		mount.component().handleInput(key);
+		assert.equal(await handle.result, undefined);
+		assert.equal(mount.resolved(), true);
+	});
+
+	test("a picker without an onDelete callback offers no delete: no hint, and ctrl+d does nothing (#5224)", async () => {
 		const mount = makeLocalUi();
 		const handle = openLocalHostSessionPicker(mount.ui, { sessions: [row("alpha")] });
 		await flush();
 
+		assert.ok(!renderText(mount).includes("delete"), "no delete hint");
 		mount.component().handleInput(CTRL_D);
-		mount.component().handleInput(ENTER);
 		await flush();
-		assert.ok(renderText(mount).includes("Deletion is not supported for this picker"));
+		assert.ok(!renderText(mount).includes("Delete this session?"), "no delete question");
 		assert.ok(renderText(mount).includes("alpha-message"), "row untouched");
 
 		handle.close();

@@ -24,12 +24,17 @@ knowledge:
       It needs Bun >= 1.4.4 on PATH. `npm run typecheck` runs the typecheck passes alone, and
       `npm run format` applies biome's formatting. If a direct Git commit cannot find `prek`,
       use `PATH="$PWD/node_modules/.bin:$PATH" git commit ...` so the installed hook finds the local binary.
+      Stage new API files, their tracked callers and their tests together: hooks hide unstaged tracked changes,
+      but the full typecheck still discovers untracked TypeScript files.
   - name: test
     contents: |
       Root suites run under vitest: `npm run test:unit`, `npm run test:integration`, or both with
       `npm run test:all`. The coding-agent suite is `npm run test --workspace=@bastani/atomic`, and the
       scripts/*.test.mjs tests run with `npm run test:scripts` (`node --test`). Build first: several
-      suites load the built packages. After changing SDK imports used by workflow graph views, run
+      suites load the built packages. Filter coding-agent tests with
+      `npm run test --workspace=@bastani/atomic -- test/history-bounded.test.ts` (the package script
+      already passes `--run`; run from its workspace, not the root with only `--config`).
+      After changing SDK imports used by workflow graph views, run
       `npx vitest run --project unit test/unit/overlay-adapter-autowrap.test.ts test/unit/overlay-adapter-hidden-render.test.ts`:
       these wrappers run Bun children with isolated module mocks, which must expose each imported SDK name.
       Focused TUI tests run with `node --test packages/tui/test/<name>.test.ts`;
@@ -51,6 +56,7 @@ knowledge:
       Localized named-worktree recovery fixtures write the translated marker while Git is paused, so they do not
       require installed locales or a Git build with gettext support. Verify both files without system locales with:
       `(umask 022; LOCPATH=/nonexistent npx vitest run --project unit test/unit/subagents-named-worktree-locks.test.ts test/unit/subagents-named-worktree-recovery.test.ts)`.
+      The TUI package uses `npm run test --workspace=@bastani/atomic-tui` (`node --test`), not Vitest.
       Before real CLI captures, run `npm run build`; `npm run check` does not refresh the compiled CLI's
       builtin assets. Exercise `/tasks` and stage chats too: direct component tests do not cover RPC-hosted
       widget renderer resolution.

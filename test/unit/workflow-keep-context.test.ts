@@ -33,7 +33,7 @@ describe("keepContext authoring primitive", () => {
 
 	test("the recovery instructions search for the tag the helper emits, first and verbatim", () => {
 		const recovery = buildBoundaryText(
-			{ sessionId: "session-1", tokensBefore: 100, linesBefore: 10, access: "read-search" },
+			{ sessionId: "session-1", tokensBefore: 100, entriesBefore: 10, access: "read-search" },
 			20,
 		);
 		const tag = keepContext("Research only.").split("\n")[0];

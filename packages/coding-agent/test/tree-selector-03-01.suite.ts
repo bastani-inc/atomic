@@ -127,7 +127,7 @@ function buildTree(entries: Array<SessionEntry>): SessionTreeNode[] {
 
 describe("TreeSelectorComponent", () => {
 	describe("help", () => {
-		test("renders semantic help rows without truncating narrow terminal controls", () => {
+		test("keeps one hint line that drops the least needed keys first on a narrow terminal (#5224)", () => {
 			const entries = [userMessage("user-1", null, "hello"), assistantMessage("asst-1", "user-1", "hi")];
 			const tree = buildTree(entries);
 			const selector = new TreeSelectorComponent(
@@ -138,14 +138,17 @@ describe("TreeSelectorComponent", () => {
 				() => {},
 			);
 
-			const plainLines = selector.render(30).map(stripVTControlCharacters);
-			const plain = plainLines.join("\n");
-			expect(plain).toContain("branch");
-			expect(plain).toContain("filters");
-			expect(plain).toContain("cycle");
-			expect(plain).toContain("label time");
-			expect(plain).not.toContain("...");
-			expect(plainLines.every((line) => visibleWidth(line) <= 30)).toBe(true);
+			const wide = selector.render(160).map(stripVTControlCharacters).join("\n");
+			for (const key of ["move", "go here", "page", "branch", "label time", "filters", "filter", "cancel"]) {
+				expect(wide).toContain(key);
+			}
+			const plainLines = selector.render(40).map(stripVTControlCharacters);
+			const hint = plainLines.at(-2) ?? "";
+			expect(hint).toContain("move");
+			expect(hint).toContain("go here");
+			expect(hint).toContain("cancel");
+			expect(hint).not.toContain("filters");
+			expect(plainLines.every((line) => visibleWidth(line) <= 40)).toBe(true);
 		});
 	});
 });
