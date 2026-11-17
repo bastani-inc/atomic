@@ -984,6 +984,31 @@ describe("mixed resume shortcut priority (#5256)", () => {
 		}
 	});
 
+	it("keeps the painted run selected when a refresh adds a newer run above it, without a key press (#5256)", async () => {
+		const runA = makeSession({ id: "run-a", resumeKind: "workflow", title: "Run A" });
+		const runB = makeSession({ id: "run-b", resumeKind: "workflow", title: "Run B" });
+		const runNew = makeSession({
+			id: "run-new",
+			resumeKind: "workflow",
+			title: "Run New",
+			modified: new Date(FIXTURE_NOW - HOUR),
+		});
+		for (const variant of ["mixed", "runs"] as const) {
+			const selected: string[] = [];
+			const picker = mount([runA, runB], { variant, onSelect: (row) => selected.push(row.id) });
+			try {
+				await new Promise<void>((resolve) => setImmediate(resolve));
+				assert.match(frame(picker).join("\n"), /❯ Run A/, variant);
+				picker.getSessionList().setSessions([runNew, runA, runB], false);
+				assert.match(frame(picker).join("\n"), /❯ Run A/, `${variant}: the run the reader saw stays selected`);
+				picker.handleInput("\r");
+				assert.deepEqual(selected, ["run-a"], variant);
+			} finally {
+				picker.dispose();
+			}
+		}
+	});
+
 	it("cancels a delete confirmation whose run vanishes in a refresh instead of resuming another run (#5256)", async () => {
 		const session = makeSession({ id: "session" });
 		const runA = makeSession({ id: "run-a", resumeKind: "workflow", title: "Run A" });

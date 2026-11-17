@@ -182,6 +182,8 @@ export class SessionList implements Component, Focusable {
 	private confirmingDeleteSession: SessionInfo | null = null;
 	private paintedSelection: SessionInfo | null | undefined;
 	private selectionUnpainted = false;
+	private listComplete = false;
+	private selectionSettled = false;
 	private deletingSessionPath?: string;
 	private deletingWorkflowId?: string;
 	private currentSession?: { id: string; directory?: string };
@@ -304,7 +306,9 @@ export class SessionList implements Component, Focusable {
 	}
 
 	setSessions(sessions: SessionInfo[], showCwd: boolean, partial = false): void {
+		if (showCwd !== this.showCwd) this.selectionSettled = false;
 		this.replaceSessions(sessions, showCwd, partial);
+		this.listComplete = !partial;
 		if (this.paintedSelection === undefined) return;
 		const selected = this.filteredSessions[this.selectedIndex]?.session;
 		const painted = this.paintedSelection;
@@ -314,9 +318,10 @@ export class SessionList implements Component, Focusable {
 
 	private replaceSessions(sessions: SessionInfo[], showCwd: boolean, partial: boolean): void {
 		const currentSelected = this.filteredSessions[this.selectedIndex]?.session;
-		const selectedPath = this.selectionTouched ? (this.pendingSelectedPath ?? currentSelected?.path) : undefined;
-		const selectedId = this.selectionTouched ? (this.pendingSelectedId ?? currentSelected?.id) : undefined;
-		const selectedWorkflow = this.selectionTouched
+		const keepSelected = this.selectionTouched || this.selectionSettled;
+		const selectedPath = keepSelected ? (this.pendingSelectedPath ?? currentSelected?.path) : undefined;
+		const selectedId = keepSelected ? (this.pendingSelectedId ?? currentSelected?.id) : undefined;
+		const selectedWorkflow = keepSelected
 			? (this.pendingSelectedWorkflow ?? (currentSelected ? this.isWorkflowSession(currentSelected) : undefined))
 			: undefined;
 		this.allSessions = sessions;
@@ -544,6 +549,7 @@ export class SessionList implements Component, Focusable {
 		}
 		this.paintedSelection = this.filteredSessions[this.selectedIndex]?.session ?? null;
 		this.selectionUnpainted = false;
+		if (this.listComplete) this.selectionSettled = true;
 		const lines: string[] = [];
 		lines.push(...this.renderSearch(width));
 		lines.push("");
