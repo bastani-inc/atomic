@@ -220,6 +220,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 				result = { ok: false, method: "store", error: error instanceof Error ? error.message : String(error) };
 			}
 
+			if (this.disposed) return;
 			if (result.ok) {
 				this.deletedSessions.add(this.deletedKey(session));
 				if (this.currentSessions) {
@@ -346,7 +347,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 
 		const onProgress: SessionListProgress = (loaded, total, partialSessions) => {
 			if (!isActive()) return;
-			if (partialSessions) {
+			if (partialSessions && reason !== "refresh") {
 				const sessions = this.filterLoadedSessions(partialSessions);
 				if (scope === "current") {
 					this.currentSessions = sessions;
@@ -428,6 +429,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	}
 
 	private async refreshSessionsAfterMutation(): Promise<void> {
+		if (this.disposed) return;
 		await this.loadScope(this.scope, "refresh");
 	}
 

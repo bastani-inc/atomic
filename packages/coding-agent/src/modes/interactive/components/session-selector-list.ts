@@ -4,11 +4,13 @@ import {
 	type Focusable,
 	getKeybindings,
 	Input,
+	type KeyId,
 	matchesKey,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@bastani/atomic-tui";
+import { keybindingIdentity } from "../../../core/keybinding-identity.ts";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { SessionInfo } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.js";
@@ -18,6 +20,7 @@ import {
 	type NavKeybindings,
 	type NavKeyStyle,
 	navActionText,
+	navKeyText,
 	renderNavHintLine,
 	renderNavKeyOverlay,
 } from "./nav-keys.ts";
@@ -697,6 +700,41 @@ export class SessionList implements Component, Focusable {
 		return ["", rule, ...body, end];
 	}
 
+	private availableHelpKeys(): readonly KeyId[] {
+		if (this.variant !== "mixed" || this.searchInput.getValue()) return [];
+		const kb = this.activeKeybindings();
+		const selected = this.filteredSessions[this.selectedIndex]?.session;
+		const isSession = selected !== undefined && !this.isWorkflowSession(selected);
+		const canUseSessionControls = selected === undefined || isSession;
+		const claimed = new Set([keybindingIdentity("ctrl+c")]);
+		const actionKeys = (action: string): readonly KeyId[] => (kb.getKeys?.(action) ?? []) as readonly KeyId[];
+		const claim = (action: string, enabled: boolean): void => {
+			if (enabled) for (const key of actionKeys(action)) claimed.add(keybindingIdentity(key));
+		};
+		claim("tui.select.cancel", true);
+		for (const action of ["tui.select.up", "tui.select.down", "tui.select.pageUp", "tui.select.pageDown"]) {
+			claim(action, this.filteredSessions.length > 1);
+		}
+		const canResume = selected !== undefined && !this.isDeleting(selected);
+		claim("tui.select.confirm", canResume);
+		claim("app.list.open", canResume);
+		if (selected) claimed.add(keybindingIdentity("space"));
+		claim("tui.input.tab", canUseSessionControls);
+		claim("app.session.rename", isSession && this.canRename && !this.isDeleting(selected!));
+		const canDelete =
+			selected !== undefined &&
+			this.canDelete &&
+			selected.canDelete !== false &&
+			!this.hasPendingDelete() &&
+			!this.isCurrentSession(selected);
+		claim("app.session.delete", canDelete);
+		claim("app.session.deleteNoninvasive", canDelete);
+		claim("app.session.toggleSort", this.filteredSessions.length > 1);
+		claim("app.session.toggleNamedFilter", canUseSessionControls);
+		claim("app.session.togglePath", isSession);
+		return actionKeys("app.keys.help").filter((key) => !claimed.has(keybindingIdentity(key)));
+	}
+
 	private mixedHintParts(): { core: NavKey[]; extras: NavKey[]; help?: NavKey } {
 		const kb = this.activeKeybindings();
 		const selected = this.filteredSessions[this.selectedIndex];
@@ -739,8 +777,8 @@ export class SessionList implements Component, Focusable {
 		if (selectedIsSession) {
 			extras.push({ action: "app.session.togglePath", label: this.showPath ? "hide path" : "path" });
 		}
-		const help =
-			!query && navActionText(kb, "app.keys.help") ? { action: "app.keys.help", label: "keys" } : undefined;
+		const helpKeys = this.availableHelpKeys();
+		const help = helpKeys.length > 0 ? { keys: helpKeys.map(navKeyText).join("/"), label: "keys" } : undefined;
 		return { core, extras, help };
 	}
 
@@ -878,7 +916,7 @@ export class SessionList implements Component, Focusable {
 			return true;
 		}
 
-		if (this.variant === "mixed" && !this.searchInput.getValue() && kb.matches(keyData, "app.keys.help")) {
+		if (this.availableHelpKeys().some((key) => matchesKey(keyData, keybindingIdentity(key) as KeyId))) {
 			this.showingHelp = true;
 			return true;
 		}

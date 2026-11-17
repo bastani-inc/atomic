@@ -161,6 +161,146 @@ test("a failed workflow catalog leaves ordinary sessions visible in the picker (
 	await vi.waitFor(() => assert.match(f.selector.render(160).join("\n"), /Workflow history is unavailable/));
 });
 
+test("mixed picker retains previous workflow rows and selection across slow, failed, and out-of-order refreshes while honoring empty catalogs and deletes (#5256)", async () => {
+	const f = await fixture();
+	const runId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+	let pollCallback: (() => void) | undefined;
+	const realSetInterval = globalThis.setInterval;
+	vi.spyOn(globalThis, "setInterval").mockImplementation(((handler: TimerHandler, timeout?: number) => {
+		if (timeout === 5_000 && typeof handler === "function") {
+			pollCallback = handler as () => void;
+		}
+		return realSetInterval(handler, timeout);
+	}) as typeof setInterval);
+
+	InteractiveModeBase.prototype.showSessionSelector.call(f.mode);
+	await vi.waitFor(() => assert.match(f.selector.render(160).join("\n"), /Workflow objective/));
+	assert.ok(pollCallback);
+
+	f.selector.handleInput("\x1b[B");
+	assert.equal(f.selector.getSessionList().getSelectedSessionId(), runId);
+
+	f.provider.listResumeEntries.mockRejectedValueOnce(new Error("Transient metadata failure"));
+	pollCallback();
+	await vi.waitFor(() => assert.match(f.selector.render(160).join("\n"), /Transient metadata failure/));
+	const afterError = f.selector.render(160).join("\n");
+	assert.match(afterError, /Sessions \(1\)/);
+	assert.match(afterError, /Workflow runs \(1\)/);
+	assert.match(afterError, /Workflow objective/);
+	assert.equal(f.selector.getSessionList().getSelectedSessionId(), runId);
+
+	let resolveSlowPoll!: (rows: HostSessionPickerRow[]) => void;
+	const slowPoll = new Promise<HostSessionPickerRow[]>((resolve) => {
+		resolveSlowPoll = resolve;
+	});
+	f.provider.listResumeEntries.mockImplementationOnce(() => slowPoll);
+	pollCallback();
+	await vi.waitFor(() => assert.equal(f.provider.listResumeEntries.mock.calls.length, 3));
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	const duringSlowRefresh = f.selector.render(160).join("\n");
+	assert.match(duringSlowRefresh, /Workflow runs \(1\)/);
+	assert.match(duringSlowRefresh, /Workflow objective/);
+	assert.equal(f.selector.getSessionList().getSelectedSessionId(), runId);
+
+	f.provider.deleteResumeEntry.mockRejectedValueOnce(new Error("Delete rejected"));
+	f.selector.handleInput("\x04");
+	f.selector.handleInput("\r");
+	await vi.waitFor(() => assert.match(f.selector.render(160).join("\n"), /Failed to delete: Delete rejected/));
+	assert.match(f.selector.render(160).join("\n"), /Workflow objective/);
+
+	const secondRunId = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+	f.setRows([
+		{
+			path: `workflow-durable:${runId}`,
+			id: runId,
+			cwd: "Durable",
+			createdAt: Date.now() - 10_000,
+			modifiedAt: Date.now() - 1_000,
+			messageCount: 2,
+			firstMessage: "Workflow objective",
+			allMessagesText: "Workflow objective",
+			title: "shipping · Workflow objective",
+			detail: "paused · stage 2/3 implement",
+		},
+		{
+			path: `workflow-durable:${secondRunId}`,
+			id: secondRunId,
+			cwd: "Durable",
+			createdAt: Date.now() - 5_000,
+			modifiedAt: Date.now(),
+			messageCount: 1,
+			firstMessage: "Fresh workflow objective",
+			allMessagesText: "Fresh workflow objective",
+			title: "deploy · Fresh workflow objective",
+			detail: "paused · stage 1/2 verify",
+		},
+	]);
+	f.selector.handleInput("\x04");
+	f.selector.handleInput("\r");
+	await vi.waitFor(() => assert.deepEqual(f.deletedRuns, [runId]));
+	await vi.waitFor(() => assert.match(f.selector.render(160).join("\n"), /Fresh workflow objective/));
+	assert.doesNotMatch(f.selector.render(160).join("\n"), /shipping · Workflow objective/);
+
+	resolveSlowPoll([
+		{
+			path: "workflow-durable:99999999-9999-4999-8999-999999999999",
+			id: "99999999-9999-4999-8999-999999999999",
+			cwd: "Durable",
+			createdAt: Date.now() - 20_000,
+			modifiedAt: Date.now(),
+			messageCount: 1,
+			firstMessage: "Stale out-of-order workflow",
+			allMessagesText: "Stale out-of-order workflow",
+			title: "stale · Out-of-order workflow",
+			detail: "paused · stage 1/1",
+		},
+	]);
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	assert.match(f.selector.render(160).join("\n"), /Fresh workflow objective/);
+	assert.doesNotMatch(f.selector.render(160).join("\n"), /Out-of-order workflow/);
+
+	f.setRows([]);
+	pollCallback();
+	await vi.waitFor(() => assert.doesNotMatch(f.selector.render(160).join("\n"), /Workflow runs/));
+	assert.match(f.selector.render(160).join("\n"), /Chat objective/);
+});
+
+test("mixed picker refresh progress retains the selected session when partial session pages omit it until the final list settles (#5256)", async () => {
+	const f = await fixture();
+	const sessionId = f.manager.getSessionId();
+	let pollCallback: (() => void) | undefined;
+	const realSetInterval = globalThis.setInterval;
+	vi.spyOn(globalThis, "setInterval").mockImplementation(((handler: TimerHandler, timeout?: number) => {
+		if (timeout === 5_000 && typeof handler === "function") {
+			pollCallback = handler as () => void;
+		}
+		return realSetInterval(handler, timeout);
+	}) as typeof setInterval);
+
+	InteractiveModeBase.prototype.showSessionSelector.call(f.mode);
+	await vi.waitFor(() => assert.match(f.selector.render(160).join("\n"), /Workflow objective/));
+	assert.ok(pollCallback);
+	assert.equal(f.selector.getSessionList().getSelectedSessionId(), sessionId);
+
+	let resolveSessions!: (rows: Awaited<ReturnType<typeof SessionManager.list>>) => void;
+	vi.spyOn(SessionManager, "list").mockImplementationOnce((_cwd, _store, onProgress) => {
+		onProgress?.(0, 1, []);
+		return new Promise((resolve) => {
+			resolveSessions = resolve;
+		});
+	});
+	pollCallback();
+	await vi.waitFor(() => assert.ok(resolveSessions));
+	const duringPartial = f.selector.render(160).join("\n");
+	assert.match(duringPartial, /Chat objective/);
+	assert.match(duringPartial, /Workflow objective/);
+	assert.equal(f.selector.getSessionList().getSelectedSessionId(), sessionId);
+
+	resolveSessions([]);
+	await vi.waitFor(() => assert.doesNotMatch(f.selector.render(160).join("\n"), /Chat objective/));
+	assert.equal(f.selector.getSessionList().getSelectedSessionId(), "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+});
+
 test("direct resume does not clear a draft restored by the selected session (#5256)", async () => {
 	let draft = "/resume aaaaaaaa";
 	const editor = {

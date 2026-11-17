@@ -245,14 +245,12 @@ describe("workflow resume provider for unified /resume (#5256)", () => {
 			context: () => ({ hasUI: true, cwd: process.cwd(), ui: { notify: () => undefined } }),
 		});
 
-		// Default picker catalog (no target) omits failed runs whose definition is not in the current project registry.
 		const defaultRows = await provider.listResumeEntries();
 		assert.equal(
 			defaultRows.some((row) => row.id === crossProjectId),
 			false,
 		);
 
-		// Targeted lookup (for /resume <id>) retains the cross-project run so the host routes it to resumeFromPicker.
 		const targetedRows = await provider.listResumeEntries(crossProjectId.slice(0, 8));
 		assert.equal(
 			targetedRows.some((row) => row.id === crossProjectId),
@@ -356,20 +354,16 @@ describe("workflow resume provider for unified /resume (#5256)", () => {
 		await provider.resumeFromPicker(`workflow-durable:${durableId}`);
 		assert.equal(resumeSpy.mock.calls.length, 2);
 
-		// Completed run opens read-only in the overlay without calling resumeDurableWorkflow.
 		await provider.resumeFromPicker(`workflow-completed:${completedId}`);
 		assert.equal(resumeSpy.mock.calls.length, 2);
 		assert.ok(openedRuns.includes(completedId));
 
-		// Flags are rejected on /resume.
 		await assert.rejects(provider.resumeFromPicker(`${durableId} --accept-entry-changes`), /does not accept flags/);
 
-		// Unknown run ID throws a meaningful not-found error.
 		resumeSpy.mockRestore();
 		const missingId = testRunId("missing-run");
 		await assert.rejects(provider.resumeFromPicker(missingId), new RegExp(`Workflow run not found: ${missingId}`));
 
-		// Stage-scoped resume on a live paused stage resumes only that stage.
 		const liveStageRunId = testRunId("live-stage-resume");
 		let resumedStageCalls = 0;
 		store.recordRunStart({
@@ -470,7 +464,6 @@ describe("workflow resume provider for unified /resume (#5256)", () => {
 		};
 		const provider = createWorkflowResumeProvider(deps);
 
-		// 1. Pressing Esc in the inline Selector cancels without calling resumeDurableWorkflow.
 		let renderedLines: string[] = [];
 		const escCtx: PiCommandContext = {
 			hasUI: true,
@@ -496,7 +489,6 @@ describe("workflow resume provider for unified /resume (#5256)", () => {
 		);
 		assert.equal(renderedLines.at(-1)?.trim(), "enter resume with the new definition · esc cancel");
 
-		// 2. Pressing Enter confirms and calls resumeDurableWorkflow with acceptEntryChanges: true.
 		const enterCtx: PiCommandContext = {
 			hasUI: true,
 			cwd: workDir,
@@ -517,7 +509,6 @@ describe("workflow resume provider for unified /resume (#5256)", () => {
 		assert.equal(resumeSpy.mock.calls[0]![0], editedRunId);
 		assert.equal(resumeSpy.mock.calls[0]![1]?.acceptEntryChanges, true);
 
-		// 3. Stale Enter after session abort or generation retirement never resumes.
 		const abortController = new AbortController();
 		const abortCtx: PiCommandContext = {
 			hasUI: true,
