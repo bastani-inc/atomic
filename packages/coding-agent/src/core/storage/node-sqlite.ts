@@ -625,8 +625,7 @@ function isMissingOpenLockDir(error: unknown): boolean {
 	return /No such file or directory|cannot find the path|os error [23]\b/i.test(message);
 }
 
-async function resolveOpenLockTarget(filePath: string | undefined, readOnly: boolean): Promise<string | undefined> {
-	if (filePath === undefined) return undefined;
+async function resolveOpenLockTarget(filePath: string, readOnly: boolean): Promise<string | undefined> {
 	try {
 		return await realpath(filePath);
 	} catch {
