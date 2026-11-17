@@ -148,6 +148,12 @@ export class QuestionnaireSession {
 		this.viewAdapter.apply(this.state);
 	}
 
+	capturesBack(): boolean {
+		if (this.state.notesVisible) return readInputCursor(this.notesInput) > 0;
+		if (this.state.inputMode) return readInputCursor(this.inlineInput) > 0;
+		return this.state.currentTab > 0;
+	}
+
 	dispatch(data: string): boolean {
 		const action = routeKey(data, this.state, this.runtime());
 		if (action.kind === "ignore") {

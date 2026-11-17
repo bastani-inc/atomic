@@ -38,6 +38,14 @@ import {
 	sealExtensionWork,
 } from "./extension-work.ts";
 import {
+	childPresentationInput,
+	hasTaskPromptHost,
+	heldPromptInput,
+	isHeldPromptInput,
+	isPresentationHostInput,
+	presentationHostInput,
+} from "./held-prompts.ts";
+import {
 	copyHostQuestionnaire,
 	type HostDiagnostic,
 	type HostInput,
@@ -198,6 +206,7 @@ export class ExtensionRunner {
 	private uiContext: ExtensionUIContext;
 	private presentationUI?: ExtensionUIContext;
 	private presentationInput?: HostInput;
+	private hadPresentation = false;
 	private humanInput?: HostInput | null;
 	private humanInputBindingRevision = 0;
 	private inputBridge = new HostInputBridge(
@@ -262,8 +271,17 @@ export class ExtensionRunner {
 		return this.runtime.workflowActivityHub.getSnapshotFrame();
 	}
 	getChildHostBindings(): import("../agent-session-types.js").ExtensionBindings {
+		const inherited =
+			(isHeldPromptInput(this.humanInput) || isPresentationHostInput(this.humanInput)) && this.hadPresentation
+				? undefined
+				: this.humanInput;
 		return {
-			humanInput: this.humanInput === undefined ? this.presentationInput : this.humanInput,
+			humanInput:
+				inherited !== undefined
+					? inherited
+					: hasTaskPromptHost(this.presentationUI)
+						? heldPromptInput
+						: (childPresentationInput(this.presentationUI) ?? this.presentationInput),
 			onDiagnostic: this.onDiagnostic,
 		};
 	}
@@ -503,13 +521,18 @@ export class ExtensionRunner {
 		this.refreshHostInput();
 	}
 
+	private resolvedHostInput(): HostInput | undefined {
+		const bound = this.humanInput;
+		if (bound === null) return undefined;
+		if (bound === undefined) return this.presentationInput;
+		if ((isHeldPromptInput(bound) || isPresentationHostInput(bound)) && this.hadPresentation)
+			return this.presentationInput;
+		return bound;
+	}
+
 	private refreshHostInput(): void {
 		const ui = this.presentationUI;
-		this.inputBridge.bind(
-			this.humanInput === undefined ? this.presentationInput : (this.humanInput ?? undefined),
-			this.humanInput,
-			this.humanInputBindingRevision,
-		);
+		this.inputBridge.bind(this.resolvedHostInput(), this.humanInput, this.humanInputBindingRevision);
 		const bridged = this.inputBridge.wrap(
 			ui ?? {
 				...noOpUIContext,
@@ -532,19 +555,20 @@ export class ExtensionRunner {
 
 	setUIContext(uiContext?: ExtensionUIContext, mode: ExtensionMode = "print", isPresentationOnly = false): void {
 		this.presentationOnly = isPresentationOnly;
+		if (uiContext !== undefined) this.hadPresentation = true;
 		if (uiContext !== this.presentationUI) {
 			this.endActiveUIPrompt();
 			++this.uiPromptBinding;
 			this.presentationUI = uiContext;
 			const ui = uiContext;
 			this.presentationInput = ui
-				? {
+				? presentationHostInput({
 						confirm: (title, message, options) => ui.confirm(title, message, options),
 						select: (title, choices, options) => ui.select(title, choices, options),
 						input: (title, placeholder, options) => ui.input(title, placeholder, options),
 						editor: (title, initial, options) => ui.editor(title, initial, options),
 						questionnaire: (params, options) => presentQuestionnaire(ui, params, options.signal),
-					}
+					})
 				: undefined;
 			this.refreshHostInput();
 		}

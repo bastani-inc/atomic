@@ -58,6 +58,7 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 	ctx.requestRender = opts.requestRender;
 	ctx.requestFocus = opts.requestFocus;
 	ctx.focusHoldTimer = undefined;
+	ctx.promptCountdownTimer = undefined;
 	ctx.piTui = opts.piTui;
 	ctx.piTheme = opts.piTheme;
 	ctx.piKeybindings = opts.piKeybindings;
@@ -473,6 +474,12 @@ export function promptCardShown(ctx: Pick<StageChatViewContext, "promptState" | 
 }
 
 export function syncPromptState(ctx: StageChatViewContext, prompt: PendingPrompt | undefined): boolean {
+	const changed = replacePromptState(ctx, prompt);
+	syncPromptCountdown(ctx);
+	return changed;
+}
+
+function replacePromptState(ctx: StageChatViewContext, prompt: PendingPrompt | undefined): boolean {
 	if (!prompt) {
 		const hadLivePrompt = ctx.promptState !== null || ctx.promptEditor !== null || ctx.promptEditorPromptId !== null;
 		if (!hadLivePrompt) return false;
@@ -489,6 +496,21 @@ export function syncPromptState(ctx: StageChatViewContext, prompt: PendingPrompt
 		return true;
 	}
 	return false;
+}
+
+function syncPromptCountdown(ctx: StageChatViewContext): void {
+	const counting = ctx.promptState?.prompt.expiresAt !== undefined;
+	if (counting && ctx.promptCountdownTimer === undefined) {
+		ctx.promptCountdownTimer = setInterval(() => ctx.requestRender?.(), 1000);
+	} else if (!counting) {
+		clearPromptCountdown(ctx);
+	}
+}
+
+function clearPromptCountdown(ctx: StageChatViewContext): void {
+	if (ctx.promptCountdownTimer === undefined) return;
+	clearInterval(ctx.promptCountdownTimer);
+	ctx.promptCountdownTimer = undefined;
 }
 
 function resetPromptScroll(ctx: StageChatViewContext): void {
@@ -570,11 +592,13 @@ export function resolvePromptResponse(
 		return;
 	}
 	ctx.promptState = null;
+	clearPromptCountdown(ctx);
 	disposePromptEditor(ctx);
 	resetPromptScroll(ctx);
 	const resolved = ctx.store.resolveStagePendingPrompt(ctx.runId, ctx.stageId, prompt.id, response);
 	ctx.requestRender?.();
-	if (resolved) ctx.onDetach("prompt-resolved", metadata);
+	if (resolved && ctx.mountedCustomUi === null && ctx.mountingRequestId === null)
+		ctx.onDetach("prompt-resolved", metadata);
 }
 
 export function viewLineCount(ctx: StageChatViewContext): number {
@@ -713,6 +737,7 @@ export function disposeStageChatView(ctx: StageChatViewContext): void {
 		clearInterval(ctx.focusHoldTimer);
 		ctx.focusHoldTimer = undefined;
 	}
+	clearPromptCountdown(ctx);
 	ctx._unsubscribeStore?.();
 	ctx._unsubscribeStore = null;
 	ctx._unsubscribeHandle?.();

@@ -137,8 +137,10 @@ export async function workflowAnswerAction(
 	}
 	const stageRunId = stage.runId ?? target.runId;
 	const snapshot = store.run(stageRunId)?.stages.find((item) => item.id === stage.stageId);
+	const requestedPromptId =
+		args.promptId ?? (snapshot?.pendingPrompt?.source === "stage-dialog" ? snapshot.pendingPrompt.id : undefined);
 	const brokerPrompt = stageUiBroker.peekStagePrompt(stageRunId, stage.stageId);
-	if (brokerPrompt !== undefined && (args.promptId === undefined || args.promptId === brokerPrompt.id)) {
+	if (brokerPrompt !== undefined && (requestedPromptId === undefined || requestedPromptId === brokerPrompt.id)) {
 		if (!hasPayloadProperty(args))
 			return answerResult(stageRunId, stage.stageId, "noop", "Answer requires text, response, or message.");
 		const ok = stageUiBroker.answerStagePrompt(stageRunId, stage.stageId, brokerAnswerFromArgs(args), {
@@ -153,7 +155,7 @@ export async function workflowAnswerAction(
 	}
 	// A stage on a local worker raises its question in its worker; the answer goes there (#3996).
 	const pooledInput = snapshot?.workerExecution !== undefined ? snapshot.inputRequest : undefined;
-	if (pooledInput !== undefined && (args.promptId === undefined || args.promptId === pooledInput.id)) {
+	if (pooledInput !== undefined && (requestedPromptId === undefined || requestedPromptId === pooledInput.id)) {
 		if (!hasPayloadProperty(args))
 			return answerResult(stageRunId, stage.stageId, "noop", "Answer requires text, response, or message.");
 		const result = await answerPooledStage(store, stageRunId, stage.stageId, {
@@ -174,7 +176,7 @@ export async function workflowAnswerAction(
 		snapshot?.status === "awaiting_input" && snapshot.promptFootprint?.kind === "custom"
 			? snapshot.promptFootprint
 			: undefined;
-	if (customPrompt !== undefined && (args.promptId === undefined || args.promptId === customPrompt.id)) {
+	if (customPrompt !== undefined && (requestedPromptId === undefined || requestedPromptId === customPrompt.id)) {
 		return answerResult(
 			stageRunId,
 			stage.stageId,
@@ -182,7 +184,7 @@ export async function workflowAnswerAction(
 			`Custom UI prompt ${customPrompt.id} requires the interactive workflow graph; arbitrary ctx.ui.custom<T> results cannot be answered through workflow answer.`,
 		);
 	}
-	const promptId = args.promptId ?? snapshot?.pendingPrompt?.id;
+	const promptId = requestedPromptId ?? snapshot?.pendingPrompt?.id;
 	if (promptId === undefined) {
 		return answerResult(stageRunId, stage.stageId, "noop", "No pending prompt to answer.");
 	}
