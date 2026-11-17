@@ -1384,6 +1384,22 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	/** Composite all overlays into content lines (sorted by focusOrder, higher = on top). */
+	/**
+	 * Whether the overlays composited in the last frame covered every cell of a `termWidth` x `termHeight` screen
+	 * and are still shown: content under them cannot show through until one of them changes.
+	 */
+	protected overlaysCoverScreen(termWidth: number, termHeight: number): boolean {
+		return this.renderedOverlayLayouts.some(
+			(layout) =>
+				layout.row === 0 &&
+				layout.col === 0 &&
+				layout.width >= termWidth &&
+				layout.height >= termHeight &&
+				this.overlayStack.includes(layout.entry) &&
+				this.isOverlayVisible(layout.entry),
+		);
+	}
+
 	protected compositeOverlays(lines: string[], termWidth: number, termHeight: number): string[] {
 		if (this.overlayStack.length === 0) {
 			this.renderedOverlayLayouts = [];
