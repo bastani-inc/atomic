@@ -41,6 +41,13 @@ const CLOSING_ANSWER_DELAY_MS = 1_500;
 
 type Answer = Omit<WorkerReply, "id"> | undefined;
 
+const CHANNEL_CLOSED_CODES: ReadonlySet<string> = new Set(["EPIPE", "ECONNRESET", "ERR_IPC_CHANNEL_CLOSED"]);
+
+function channelClosedByExit(error: Error): boolean {
+	const code = (error as NodeJS.ErrnoException).code;
+	return code !== undefined && CHANNEL_CLOSED_CODES.has(code);
+}
+
 interface WorkerScenario {
 	readonly child: "pool-heartbeat-child" | "pool-ticking-child";
 	readonly heartbeatMs: number;
@@ -141,11 +148,12 @@ async function realWorker(scenario: WorkerScenario, workerEntry: string, directo
 				: Promise.resolve(scenario.answer?.(message, requests));
 		void answered.then((answer) => {
 			if (!worker.connected) return;
-			// A worker this answer ends can exit while the answer is in flight; its channel then fails with EPIPE.
+			// A worker this answer ends can exit while the answer is in flight; its channel then fails with EPIPE, and on
+			// Windows `connected` can still read true when that failure is reported.
 			worker.send(
 				answer === undefined ? { id: message.id, value: plainAnswer(message) } : { id: message.id, ...answer },
 				(error) => {
-					if (error && worker.connected) throw error;
+					if (error && worker.connected && !channelClosedByExit(error)) throw error;
 				},
 			);
 		});
