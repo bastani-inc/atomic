@@ -517,14 +517,14 @@ test("the real host's identity is stable across independent reads (#5038, #5343)
 	}
 });
 
-test("default host identity reads share one promise and match an independent read (#5343)", async () => {
+test("default host identity reads share one promise and match an independent read (#5252, #5343)", async () => {
 	const first = brokerHostIdentity();
 	assert.equal(brokerHostIdentity(), first);
 	assert.equal(await first, await brokerHostIdentity(systemSources()));
 	assert.equal(brokerHostIdentity(), first);
 });
 
-test("host identity readers share pending and successful reads per config directory (#5343)", async () => {
+test("host identity readers share pending and successful reads per config directory (#5252, #5343)", async () => {
 	const host = fakeSources({
 		platform: "darwin",
 		commands: { [MAC_SESSION]: "session-a", [MAC_IOREG]: '"IOPlatformUUID" = "machine-a"' },
@@ -547,7 +547,7 @@ test("host identity readers share pending and successful reads per config direct
 	assert.equal(read(), first, "reading another directory does not evict this one");
 });
 
-test("an unsuccessful host identity read is evicted before the next broker retries (#5343)", async () => {
+test("an unsuccessful host identity read is evicted before the next broker retries (#5252, #5343)", async () => {
 	const commands: Record<string, string> = {};
 	const host = fakeSources({ platform: "darwin", commands });
 	const read = createBrokerHostIdentityReader(() => host);

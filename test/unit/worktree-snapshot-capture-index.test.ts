@@ -474,7 +474,6 @@ describe("capture cost with a persistent private index (#4748, #5343)", () => {
 		return clone;
 	}
 
-	/** How many worktree files Git reads to hash them during a capture of `clone`, counted by its clean filter. */
 	async function filesReadByCapture(clone: string): Promise<{ tree: string; read: number }> {
 		const counted = sandbox.path(`clean-${Date.now()}-${Math.random()}.txt`);
 		const executable = {
