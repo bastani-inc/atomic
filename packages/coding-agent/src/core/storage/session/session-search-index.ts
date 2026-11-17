@@ -1,6 +1,6 @@
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "../database.js";
 import { dialectOf, type StorageDialect, type StorageTrigger } from "../dialect.js";
-import { applyStorageMigrations } from "../migrations.js";
+import { applyStorageMigrations, withShortSchemaLockWaits } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable } from "../prefix.js";
 import type {
 	SessionSearchCoverage,
@@ -156,6 +156,7 @@ interface TrigramEngine {
 		sessionTables: SessionTables,
 	): Promise<void>;
 	forgetInTrigger(tables: SearchTables): string;
+	ready(database: SqliteDatabase, dialect: StorageDialect, tables: SearchTables): Promise<boolean>;
 	prepareWrites(
 		tx: SqliteExecutor,
 		dialect: StorageDialect,
@@ -217,8 +218,12 @@ function normalizeSets(anyOf: readonly (readonly string[])[]): string[][] {
 	return sets;
 }
 
+function withoutNul(text: string): string {
+	return text.replaceAll("\u0000", "\ufffd");
+}
+
 function foldForLike(text: string): string {
-	return text.replaceAll("\u0000", "\ufffd").replaceAll("\u017f", "s").replaceAll("\u212a", "k");
+	return withoutNul(text).replaceAll("\u017f", "s").replaceAll("\u212a", "k");
 }
 
 function likePattern(literal: string): string {
@@ -249,6 +254,9 @@ const sqliteFts: TrigramEngine = {
 	forgetInTrigger(tables) {
 		return `DELETE FROM ${tables.fts} WHERE rowid BETWEEN (SELECT sid << 40 FROM ${tables.state} WHERE session_id = OLD.session_id) AND (SELECT (sid << 40) + 1099511627775 FROM ${tables.state} WHERE session_id = OLD.session_id)`;
 	},
+	async ready() {
+		return true;
+	},
 	async prepareWrites(tx, dialect, tables, sessionTables) {
 		await tx.exec(dialect.renderTrigger(forgetTrigger(tables, sessionTables, sqliteFts)));
 		await tx.run(`INSERT INTO ${tables.fts} (${tables.fts}, rank) VALUES ('automerge', 0)`);
@@ -272,10 +280,11 @@ const sqliteFts: TrigramEngine = {
 				sid,
 				seq,
 				part,
-				text,
+				withoutNul(text),
 			);
 			if (index + 1 < docs.length) await yieldTurn();
 		}
+		signal?.throwIfAborted();
 	},
 	async forget(tx, tables, sessionId) {
 		await tx.run(
@@ -340,6 +349,34 @@ const sqliteFts: TrigramEngine = {
 	},
 };
 
+async function createTrigramIndex(tx: SqliteExecutor, dialect: StorageDialect, tables: SearchTables): Promise<void> {
+	await tx.exec("SAVEPOINT atomic_session_search_trgm");
+	try {
+		await tx.exec("CREATE EXTENSION IF NOT EXISTS pg_trgm");
+		const found = await tx.get<SqliteRow & { schema: string }>(
+			"SELECT n.nspname AS schema FROM pg_catalog.pg_extension e JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'pg_trgm'",
+		);
+		await tx.exec(
+			`CREATE INDEX IF NOT EXISTS ${tables.trigrams} ON ${tables.entries} USING gin (body ${dialect.identifier(String(found?.schema))}.gin_trgm_ops)`,
+		);
+		await tx.exec("RELEASE SAVEPOINT atomic_session_search_trgm");
+	} catch {
+		await tx.exec("ROLLBACK TO SAVEPOINT atomic_session_search_trgm");
+	}
+}
+
+async function trigramIndexExists(
+	database: SqliteDatabase,
+	dialect: StorageDialect,
+	tables: SearchTables,
+): Promise<boolean> {
+	const found = await database.get(
+		"SELECT indexname FROM pg_catalog.pg_indexes WHERE schemaname = current_schema() AND indexname = ?",
+		dialect.identifier(tables.trigrams),
+	);
+	return found !== undefined;
+}
+
 const postgresTrigrams: TrigramEngine = {
 	async create(tx, dialect, tables, sessionTables) {
 		const { int, text } = dialect.types;
@@ -347,22 +384,29 @@ const postgresTrigrams: TrigramEngine = {
 			`CREATE TABLE IF NOT EXISTS ${tables.entries} (sid ${int} NOT NULL, seq ${int} NOT NULL, part ${int} NOT NULL, body ${text} NOT NULL, PRIMARY KEY (sid, seq, part))`,
 		);
 		await tx.exec(dialect.renderTrigger(forgetTrigger(tables, sessionTables, postgresTrigrams)));
-		await tx.exec("SAVEPOINT atomic_session_search_trgm");
-		try {
-			await tx.exec("CREATE EXTENSION IF NOT EXISTS pg_trgm");
-			const found = await tx.get<SqliteRow & { schema: string }>(
-				"SELECT n.nspname AS schema FROM pg_catalog.pg_extension e JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'pg_trgm'",
-			);
-			await tx.exec(
-				`CREATE INDEX IF NOT EXISTS ${tables.trigrams} ON ${tables.entries} USING gin (body ${dialect.identifier(String(found?.schema))}.gin_trgm_ops)`,
-			);
-			await tx.exec("RELEASE SAVEPOINT atomic_session_search_trgm");
-		} catch {
-			await tx.exec("ROLLBACK TO SAVEPOINT atomic_session_search_trgm");
-		}
+		await createTrigramIndex(tx, dialect, tables);
 	},
 	forgetInTrigger(tables) {
 		return `DELETE FROM ${tables.entries} WHERE sid IN (SELECT sid FROM ${tables.state} WHERE session_id = OLD.session_id)`;
+	},
+	async ready(database, dialect, tables) {
+		if (await trigramIndexExists(database, dialect, tables)) return true;
+		const creatable = await database.get<SqliteRow & { creatable: boolean | number }>(
+			`SELECT ((EXISTS (SELECT 1 FROM pg_catalog.pg_extension WHERE extname = 'pg_trgm')
+				OR (EXISTS (SELECT 1 FROM pg_catalog.pg_available_extensions WHERE name = 'pg_trgm')
+					AND (has_database_privilege(current_user, current_database(), 'CREATE')
+						OR EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = current_user AND rolsuper))))
+				AND pg_catalog.pg_has_role(current_user, c.relowner, 'USAGE')) AS creatable
+			FROM pg_catalog.pg_class c
+			WHERE c.relnamespace = current_schema()::regnamespace AND c.relname = ?`,
+			dialect.identifier(tables.entries),
+		);
+		if (creatable?.creatable !== true && Number(creatable?.creatable) !== 1) return false;
+		await database.transaction(
+			(tx) => withShortSchemaLockWaits(tx, dialect, () => createTrigramIndex(tx, dialect, tables)),
+			{ retryTransientFailures: true },
+		);
+		return trigramIndexExists(database, dialect, tables);
 	},
 	async prepareWrites() {},
 	async merge() {
@@ -391,6 +435,7 @@ const postgresTrigrams: TrigramEngine = {
 	async candidates(database, tables, sid, anyOf, fromSeq, toSeq, limit) {
 		const sets = normalizeSets(anyOf);
 		if (sets.length === 0) return [];
+		const seqs: number[] = [];
 		if (sets.every((all) => all.length === 1)) {
 			const params: SqliteValue[] = [];
 			const where = sets
@@ -400,17 +445,21 @@ const postgresTrigrams: TrigramEngine = {
 					return `${likeColumn(literal)} ILIKE ? ESCAPE '\\'`;
 				})
 				.join(" OR ");
-			const rows = await database.all<SqliteRow & { seq: number | bigint }>(
-				`SELECT DISTINCT seq FROM ${tables.entries} WHERE sid = ? AND seq >= ? AND seq <= ? AND (${where}) ORDER BY seq LIMIT ?`,
-				sid,
-				fromSeq,
-				toSeq,
-				...params,
-				limit,
-			);
-			return rows.map((row) => Number(row.seq));
+			for (let from = fromSeq; from <= toSeq && seqs.length < limit; from += SEQ_WINDOW) {
+				const winTo = Math.min(toSeq, from + SEQ_WINDOW - 1);
+				const rows = await database.all<SqliteRow & { seq: number | bigint }>(
+					`SELECT DISTINCT seq FROM ${tables.entries} WHERE sid = ? AND seq >= ? AND seq <= ? AND (${where}) ORDER BY seq LIMIT ?`,
+					sid,
+					from,
+					winTo,
+					...params,
+					limit - seqs.length,
+				);
+				for (const row of rows) seqs.push(Number(row.seq));
+				if (winTo < toSeq && seqs.length < limit) await yieldTurn();
+			}
+			return seqs;
 		}
-		const seqs: number[] = [];
 		for (let from = fromSeq; from <= toSeq && seqs.length < limit; from += SEQ_WINDOW) {
 			const winTo = Math.min(toSeq, from + SEQ_WINDOW - 1);
 			const arms: string[] = [];
@@ -497,6 +546,7 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 				],
 				{ table: storageMigrationTable(prefix), acceptNewer: true },
 			);
+			if (!(await engine.ready(database, dialectOf(database), tables))) return undefined;
 		} catch {
 			return undefined;
 		}

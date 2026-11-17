@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { randomBytes, randomUUID } from "node:crypto";
+import pg from "pg";
 import { describe, it } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
 import { dialectOf } from "../../packages/coding-agent/src/core/storage/dialect.js";
@@ -7,6 +9,13 @@ import {
 	SESSION_FORMAT_VERSION,
 	type SessionRecordHeader,
 } from "../../packages/coding-agent/src/core/storage/session/types.js";
+import { createHistoryRouter } from "../../packages/coding-agent/src/core/tools/history-protocol.js";
+import {
+	openPostgresAdmin,
+	postgresSkipReason,
+	postgresTestPassword,
+	withPostgresDatabase,
+} from "../helpers/postgres-database.js";
 import { storageBackends } from "../helpers/storage-backends.js";
 
 const FORMAT = 1;
@@ -25,6 +34,12 @@ function message(id: string, text: string): SessionEntry {
 	};
 }
 
+const SCAN_ENTRIES = 300;
+const SCAN_NEEDLE = 240;
+const SCAN_ROWS = 50;
+const WINDOWED_ENTRIES = 5_000;
+const WINDOWED_PAGE = 256;
+const WINDOWED_NEEDLES = [1, 4_500, 4_999];
 const TEXTS = ["alpha needle", "plain", "Needle beta", 'a_b%c "q"', "axbyc \u017fong \u212Aelvin"];
 const entries = TEXTS.map((text, index) => message(`e${index + 1}`, text));
 const texts = TEXTS.map((text, index) => ({ seq: index + 1, text }));
@@ -127,6 +142,68 @@ for (const backend of storageBackends) {
 			}
 		});
 
+		run("indexes text that holds a NUL character (#5250)", async () => {
+			const scope = await backend.openScope();
+			try {
+				const store = await SqlSessionStore.open(await scope.connect(), { prefix: scope.prefix });
+				const index = store.searchIndex!;
+				const nulTexts = ["before\u0000after needle", "plain"];
+				await store.create(
+					header("nul"),
+					nulTexts.map((text, seq) => message(`e${seq + 1}`, text)),
+				);
+				assert.equal(
+					await index.extend(
+						"nul",
+						FORMAT,
+						0,
+						2,
+						nulTexts.map((text, seq) => ({ seq: seq + 1, text })),
+					),
+					true,
+				);
+				assert.deepEqual(await index.candidates("nul", [["after needle"]], 1, 2, 10), [1]);
+				assert.deepEqual(await index.candidates("nul", [["before"]], 1, 2, 10), [1]);
+				assert.deepEqual(await index.candidates("nul", [["plain"]], 1, 2, 10), [2]);
+			} finally {
+				await scope.close();
+			}
+		});
+
+		if (backend.name !== "libSQL server (sqld)")
+			run("finds candidates across sequence windows of a long session (#5250)", async () => {
+				const scope = await backend.openScope();
+				try {
+					const store = await SqlSessionStore.open(await scope.connect(), { prefix: scope.prefix });
+					const index = store.searchIndex!;
+					const windowed = Array.from({ length: WINDOWED_ENTRIES }, (_, position) => {
+						const seq = position + 1;
+						return WINDOWED_NEEDLES.includes(seq) ? `windowed needle ${seq}` : `filler ${seq}`;
+					});
+					await store.create(
+						header("windowed"),
+						windowed.map((text, position) => message(`e${position + 1}`, text)),
+					);
+					for (let from = 0; from < WINDOWED_ENTRIES; from += WINDOWED_PAGE) {
+						const through = Math.min(WINDOWED_ENTRIES, from + WINDOWED_PAGE);
+						const page = windowed
+							.slice(from, through)
+							.map((text, position) => ({ seq: from + position + 1, text }));
+						assert.equal(await index.extend("windowed", FORMAT, from, through, page), true);
+					}
+					assert.deepEqual(
+						await index.candidates("windowed", [["windowed needle"]], 1, WINDOWED_ENTRIES, 10),
+						WINDOWED_NEEDLES,
+					);
+					assert.deepEqual(await index.candidates("windowed", [["windowed needle"]], 2, WINDOWED_ENTRIES, 1), [
+						WINDOWED_NEEDLES[1],
+					]);
+					assert.deepEqual(await index.candidates("windowed", [["absent needle"]], 1, WINDOWED_ENTRIES, 1), []);
+				} finally {
+					await scope.close();
+				}
+			});
+
 		run("keeps reading entries by range without loading the session (#5250)", async () => {
 			const scope = await backend.openScope();
 			try {
@@ -167,3 +244,105 @@ for (const backend of storageBackends) {
 			});
 	});
 }
+
+describe("session search index on a PostgreSQL role that cannot install pg_trgm (#5250)", () => {
+	const run = postgresSkipReason === undefined ? it : it.skip;
+	run(
+		"opens without a search index and scans within its budget, then indexes once pg_trgm is installed (#5250)",
+		async () => {
+			const role = `atomic_notrgm_${randomBytes(4).toString("hex")}`;
+			const password = `pw-${randomUUID()}`;
+			const scanTexts = Array.from({ length: SCAN_ENTRIES }, (_, position) =>
+				position + 1 === SCAN_NEEDLE ? "scan needle" : `filler ${position + 1}`,
+			);
+			try {
+				await withPostgresDatabase(async (scope) => {
+					await scope.admin.exec(`CREATE ROLE ${role} LOGIN PASSWORD '${password}'`);
+					await scope.admin.exec(`GRANT CONNECT ON DATABASE ${scope.name} TO ${role}`);
+					const superuserUrl = new URL(scope.url);
+					superuserUrl.password = postgresTestPassword ?? "";
+					const superuser = new pg.Client({ connectionString: superuserUrl.href });
+					await superuser.connect();
+					try {
+						await superuser.query(`CREATE SCHEMA atomic AUTHORIZATION ${role}`);
+						const roleUrl = new URL(scope.url);
+						roleUrl.username = role;
+						const openAsRole = () => scope.open({ url: roleUrl.href, password });
+						const store = await SqlSessionStore.open(await openAsRole());
+						assert.equal(
+							store.searchIndex,
+							undefined,
+							"a store whose role cannot install pg_trgm exposes no search index",
+						);
+						assert.equal(
+							(await superuser.query("SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm'")).rowCount,
+							0,
+						);
+						await store.create(
+							header("scan"),
+							scanTexts.map((text, position) => message(`e${position + 1}`, text)),
+						);
+						const router = createHistoryRouter({
+							cwd: "/project",
+							sessionStore: () => store,
+							workflows: () => undefined,
+							budget: { rows: SCAN_ROWS },
+						});
+						const found: string[] = [];
+						let url: string | undefined = "history://sessions/scan";
+						let calls = 0;
+						for (; url !== undefined && calls < SCAN_ENTRIES; calls++) {
+							const out: string =
+								(await router.search?.(url, {
+									pattern: "scan needle",
+									ignoreCase: false,
+									literal: false,
+									contextBefore: 0,
+									contextAfter: 0,
+								})) ?? "";
+							found.push(
+								...out.split("\n").filter((line) => /^history:\/\/sessions\/scan:[1-9]\d*: /.test(line)),
+							);
+							url = /continue with (history:\/\/\S+?)\]?$/m.exec(out)?.[1];
+						}
+						assert.deepEqual(found, [`history://sessions/scan:${SCAN_NEEDLE}: scan needle`]);
+						assert.ok(
+							calls >= SCAN_ENTRIES / SCAN_ROWS,
+							`the scan took ${calls} calls of at most ${SCAN_ROWS} rows`,
+						);
+						await superuser.query("CREATE EXTENSION pg_trgm");
+						const reopened = await SqlSessionStore.open(await openAsRole());
+						const index = reopened.searchIndex;
+						assert.ok(index, "reopening after pg_trgm is installed adds the search index");
+						const trigramIndex = await superuser.query(
+							"SELECT indexdef FROM pg_indexes WHERE schemaname = 'atomic' AND indexname = 'session_search_trgm'",
+						);
+						assert.match(String(trigramIndex.rows[0]?.indexdef), /gin_trgm_ops/);
+						assert.equal(
+							await index.extend(
+								"scan",
+								FORMAT,
+								0,
+								SCAN_ENTRIES,
+								scanTexts.map((text, position) => ({ seq: position + 1, text })),
+							),
+							true,
+						);
+						assert.deepEqual(await index.candidates("scan", [["scan needle"]], 1, SCAN_ENTRIES, 10), [
+							SCAN_NEEDLE,
+						]);
+					} finally {
+						await superuser.end();
+					}
+				});
+			} finally {
+				const admin = await openPostgresAdmin();
+				try {
+					await admin.exec(`DROP ROLE IF EXISTS ${role}`);
+				} finally {
+					await admin.close();
+				}
+			}
+		},
+	);
+});
