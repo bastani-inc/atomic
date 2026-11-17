@@ -66,18 +66,22 @@ describe("model catalog refresh across a models.json change", () => {
 		const modelsPath = createModelsPath();
 		writeModels(modelsPath, "old-key", "old-model");
 		const runtime = await createRuntime(modelsPath);
-		const start = await runtime.getCatalogInputsGeneration();
+		const start = runtime.getCatalogInputsGeneration();
+		expect(typeof start).toBe("number");
 
 		// Nothing in the runtime writes this file, so the generation samples it. A
 		// same-length rewrite is the case an mtime or a size would miss.
-		expect(await runtime.getCatalogInputsGeneration()).toBe(start);
+		expect(runtime.getCatalogInputsGeneration()).toBe(start);
+		expect(await runtime.getCatalogInputsGenerationAsync()).toBe(start);
 		writeModels(modelsPath, "new-key", "new-model");
-		const afterEdit = await runtime.getCatalogInputsGeneration();
+		const afterEdit = runtime.getCatalogInputsGeneration();
 		expect(afterEdit).toBeGreaterThan(start);
+		expect(await runtime.getCatalogInputsGenerationAsync()).toBe(afterEdit);
 
 		// Rewriting the same content is not a change, so repeated reads keep sharing.
 		writeModels(modelsPath, "new-key", "new-model");
-		expect(await runtime.getCatalogInputsGeneration()).toBe(afterEdit);
+		expect(runtime.getCatalogInputsGeneration()).toBe(afterEdit);
+		expect(await runtime.getCatalogInputsGenerationAsync()).toBe(afterEdit);
 	});
 
 	it("gives requests in the same tick one key, and a request after an edit another", async () => {

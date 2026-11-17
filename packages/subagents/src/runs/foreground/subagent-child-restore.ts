@@ -16,7 +16,7 @@ import {
 	type SessionEntry,
 	type SessionManager,
 	SettingsManager,
-	savedProjectTrust,
+	savedProjectTrustAsync,
 	sessionResumeOptions,
 	type WorktreeRootMapping,
 	withWorktreeRootMappings,
@@ -452,7 +452,7 @@ async function continueChildWhereItWorked(
 			launchCwd,
 			agentDir,
 			settingsManager,
-			savedProjectTrust(agentDir, settingsManager),
+			savedProjectTrustAsync(agentDir, settingsManager),
 		),
 		onNotices: (notices) => {
 			for (const notice of notices) console.warn(`atomic-subagents: ${notice.message}`);

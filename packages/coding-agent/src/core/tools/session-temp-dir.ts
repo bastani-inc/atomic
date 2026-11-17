@@ -17,10 +17,20 @@
  */
 
 import { createHash } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, type Stats } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import {
+	chmodSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	realpath as realpathCallback,
+	realpathSync,
+	rmSync,
+	type Stats,
+} from "node:fs";
+import { chmod, lstat, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { promisify } from "node:util";
 import { APP_NAME, getAgentDir } from "../../config.js";
 import { getErrnoCode } from "./errno.ts";
 import {
@@ -790,6 +800,8 @@ export function resetSessionTempDirStateForTesting(): void {
 	resetWindowsDirectorySecurityStateForTesting();
 }
 
+const realpathAsync = promisify(realpathCallback);
+
 async function baseTempDirsAsync(): Promise<BaseTempDirs> {
 	const raw = tmpdir();
 	if (cachedBaseTempDirs?.raw === raw) {
@@ -797,7 +809,7 @@ async function baseTempDirsAsync(): Promise<BaseTempDirs> {
 	}
 	let canonical = raw;
 	try {
-		canonical = await realpath(raw);
+		canonical = await realpathAsync(raw);
 	} catch {
 		// An unresolvable temp directory is checked as given.
 	}

@@ -1,7 +1,18 @@
 import { createHash } from "node:crypto";
+import { promisify } from "node:util";
 import { type Credential, OAUTH_REFRESH_LOCK_HOLD_MS, OAUTH_REFRESH_TIMEOUT_MS } from "@bastani/atomic-ai";
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
-import { access, chmod, mkdir, readFile, realpath, rm, stat, writeFile } from "fs/promises";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	realpath as realpathCallback,
+	realpathSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "fs";
+import { access, chmod, mkdir, readFile, rm, stat, writeFile } from "fs/promises";
 import { basename, dirname, join } from "path";
 import lockfile, { type LockOptions } from "proper-lockfile";
 import { getAgentDir } from "../config.js";
@@ -87,11 +98,13 @@ function resolveExistingAuthPath(path: string): string {
 	}
 }
 
+const realpathAsync = promisify(realpathCallback);
+
 /** {@link resolveExistingAuthPath} without blocking the event loop. */
 async function resolveExistingAuthPathAsync(path: string): Promise<string> {
 	for (let attempt = 1; ; attempt++) {
 		try {
-			return await realpath(path);
+			return await realpathAsync(path);
 		} catch (error) {
 			const code = error instanceof Error && "code" in error ? error.code : undefined;
 			if (code !== "ENOENT" || attempt === REALPATH_ATTEMPTS || !(await pathExists(path))) throw error;

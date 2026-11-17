@@ -14,7 +14,7 @@ import {
 import { ResumePreconditionError, type ResumePreconditionProblem } from "./errors.ts";
 import { isInside } from "./path-mapping.ts";
 import { defaultResumePreflightIo, gitUnavailableProblem, type ResumePreflightIo } from "./preflight.ts";
-import { resumeStoreDir, savedProjectTrust } from "./session-resume.ts";
+import { resumeStoreDir, savedProjectTrustAsync } from "./session-resume.ts";
 
 /** A checkout a workflow run's resume restores, with the remotes its snapshot recorded. */
 export interface RunWorktreeTarget {
@@ -42,7 +42,7 @@ async function runBlueprintConfig(agentDir = getAgentDir()): Promise<BlueprintBu
 		agentDir,
 		storeDir: resumeStoreDir(agentDir),
 		setupCommand: settings.getResumeSetupCommand(),
-		trusted: savedProjectTrust(agentDir, settings),
+		trusted: savedProjectTrustAsync(agentDir, settings),
 	};
 }
 

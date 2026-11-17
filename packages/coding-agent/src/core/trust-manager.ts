@@ -1,7 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { access, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	realpath as realpathCallback,
+	realpathSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
+import { access, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { promisify } from "node:util";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAMES } from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
@@ -297,9 +307,11 @@ function writeTrustFile(path: string, data: TrustFile): void {
 	}
 }
 
+const realpathAsync = promisify(realpathCallback);
+
 /** {@link writeTrustFile} without blocking the event loop. */
 async function writeTrustFileAsync(path: string, data: TrustFile): Promise<void> {
-	const target = (await pathExists(path)) ? await realpath(path) : path;
+	const target = (await pathExists(path)) ? await realpathAsync(path) : path;
 	const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
 	try {
 		await writeFile(temporary, serializeTrustFile(data));

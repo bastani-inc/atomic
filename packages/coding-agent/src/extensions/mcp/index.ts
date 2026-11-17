@@ -48,11 +48,11 @@ import { TOOL_SEARCH_TOOL_NAME } from "../tool-search/tool.js";
 import {
 	getMcpToolExposure,
 	type LoadedMcpConfig,
-	loadMcpConfig,
+	loadMcpConfigAsync,
 	type McpExposure,
 	type McpServerConfigPatch,
 	type McpServerEntry,
-	updateMcpServerConfig,
+	updateMcpServerConfigAsync,
 } from "./config.ts";
 import type { McpOAuthCredentialStore, McpSignInPrompt } from "./oauth.ts";
 import {
@@ -322,7 +322,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		const updateConfig =
 			options.updateConfig ??
 			((entry, patch) =>
-				updateMcpServerConfig(entry.override ?? entry.source, entry.name, patch, {
+				updateMcpServerConfigAsync(entry.override ?? entry.source, entry.name, patch, {
 					override: entry.override !== undefined,
 				}));
 
@@ -1420,7 +1420,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 }
 
 function defaultLoadConfig(ctx: ExtensionContext): Promise<LoadedMcpConfig> {
-	return loadMcpConfig({ agentDir: getAgentDir(), cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
+	return loadMcpConfigAsync({ agentDir: getAgentDir(), cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
 }
 
 export default createMcpExtension();

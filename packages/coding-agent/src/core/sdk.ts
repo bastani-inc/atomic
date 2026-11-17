@@ -55,7 +55,7 @@ import { sanitizeOpenAIResponsesPayload } from "./openai-responses-payload-sanit
 import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
 import { currentResourceAdmission } from "./resource-admission-scope.ts";
 import { canCloneDefaultResourceDiscovery, DefaultResourceLoader } from "./resource-loader.ts";
-import { prepareSessionResume, savedProjectTrust, sessionResumeOptions } from "./resume/session-resume.ts";
+import { prepareSessionResume, savedProjectTrustAsync, sessionResumeOptions } from "./resume/session-resume.ts";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult, ResourceAdmission } from "./sdk-types.ts";
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
 import {
@@ -300,7 +300,7 @@ async function sessionResumedOnThisNode(
 			process.cwd(),
 			agentDir,
 			settings,
-			savedProjectTrust(agentDir, settings),
+			savedProjectTrustAsync(agentDir, settings),
 			false,
 		),
 		settings: resolveWorktreeSnapshotSettings(snapshots, "sdk", "snapshots", settings.getWorktreeSnapshotSettings()),

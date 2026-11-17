@@ -17,10 +17,15 @@ import {
 import { createInMemoryTransportPair, type InMemoryTransport } from "../../src/extensions/mcp/client/testing/index.js";
 import {
 	addMcpServerConfig,
+	addMcpServerConfigAsync,
 	getMcpToolExposure,
 	loadMcpConfig,
+	loadMcpConfigAsync,
 	type McpServerEntry,
+	removeMcpServerConfig,
+	removeMcpServerConfigAsync,
 	updateMcpServerConfig,
+	updateMcpServerConfigAsync,
 } from "../../src/extensions/mcp/config.js";
 import { MAX_SERVERS_SECTION_CHARS, renderServersSection } from "../../src/extensions/mcp/index.js";
 import {
@@ -69,7 +74,7 @@ describe("MCP config", () => {
 			{ mcpServers: { shared: { command: "project-cmd", exposure: "direct" } } },
 		);
 
-		const trusted = await loadMcpConfig({ ...paths, projectTrusted: true });
+		const trusted = loadMcpConfig({ ...paths, projectTrusted: true });
 		// Disabled servers are kept so /mcp can enable them again.
 		assert.deepEqual(
 			trusted.servers.map((server) => [server.name, server.scope, server.config]),
@@ -86,8 +91,9 @@ describe("MCP config", () => {
 		assert.ok(trusted.errors[3].includes('invalid server name "bad name"'));
 
 		// Untrusted projects cannot add or override servers, since stdio servers run commands.
-		const untrusted = await loadMcpConfig({ ...paths, projectTrusted: false });
+		const untrusted = loadMcpConfig({ ...paths, projectTrusted: false });
 		assert.deepEqual(untrusted.servers.find((server) => server.name === "shared")?.config, { command: "global-cmd" });
+		assert.deepEqual(await loadMcpConfigAsync({ ...paths, projectTrusted: true }), trusted);
 	});
 
 	it("lets project entries override enabled and exposure of global servers (#10277)", async () => {
@@ -97,7 +103,7 @@ describe("MCP config", () => {
 			{ mcpServers: { tools: { enabled: false, args: ["y"] }, missing: { enabled: false } } },
 		);
 		const project = join(paths.cwd, ".atomic", "mcp.json");
-		const { servers, errors } = await loadMcpConfig({ ...paths, projectTrusted: true });
+		const { servers, errors } = loadMcpConfig({ ...paths, projectTrusted: true });
 		assert.deepEqual(
 			servers.map((server) => [server.name, server.override, server.config]),
 			[["tools", undefined, { command: "x", env: { TOKEN: "secret" } }]],
@@ -107,29 +113,33 @@ describe("MCP config", () => {
 		assert.ok(errors[1].includes('server "missing" needs "command" or "url", or a global server to override'));
 
 		writeFileSync(project, JSON.stringify({ mcpServers: { tools: { enabled: false } } }));
-		const [tools] = (await loadMcpConfig({ ...paths, projectTrusted: true })).servers;
+		const [tools] = loadMcpConfig({ ...paths, projectTrusted: true }).servers;
 		assert.deepEqual(
 			[tools.override, tools.config],
 			[project, { command: "x", env: { TOKEN: "secret" }, enabled: false }],
 		);
 
 		// Overrides keep `enabled: true`, since it replaces the global value.
-		await updateMcpServerConfig(project, "tools", { enabled: true });
+		assert.equal(updateMcpServerConfig(project, "tools", { enabled: true }), undefined);
 		assert.deepEqual(JSON.parse(readFileSync(project, "utf8")).mcpServers.tools, { enabled: true });
 	});
 
 	it("refuses reserved server names when writing a project override instead of touching Object.prototype", async () => {
 		const project = join(setup({}, { mcpServers: {} }).cwd, ".atomic", "mcp.json");
 		for (const name of ["__proto__", "constructor", "prototype"]) {
-			await assert.rejects(
+			assert.throws(
 				() => updateMcpServerConfig(project, name, { enabled: false }, { override: true }),
+				/Invalid MCP server name/,
+			);
+			await assert.rejects(
+				() => updateMcpServerConfigAsync(project, name, { enabled: false }, { override: true }),
 				/Invalid MCP server name/,
 			);
 		}
 		assert.equal(Object.hasOwn(Object.prototype, "enabled"), false);
 		assert.equal(({} as Record<string, unknown>).enabled, undefined);
 
-		await updateMcpServerConfig(project, "toString", { enabled: false }, { override: true });
+		updateMcpServerConfig(project, "toString", { enabled: false }, { override: true });
 		assert.deepEqual(JSON.parse(readFileSync(project, "utf8")).mcpServers, { toString: { enabled: false } });
 	});
 
@@ -140,7 +150,7 @@ describe("MCP config", () => {
 		writeFileSync(global, '\uFEFF{"mcpServers":{"demo":{"command":"echo","enabled":false}}}\n');
 		writeFileSync(project, '\uFEFF{"mcpServers":{"local":{"command":"local-cmd"}}}\n');
 
-		const loaded = await loadMcpConfig({ ...paths, projectTrusted: true });
+		const loaded = loadMcpConfig({ ...paths, projectTrusted: true });
 		assert.deepEqual(loaded.errors, []);
 		assert.deepEqual(
 			loaded.servers.map((server) => [server.name, server.scope]),
@@ -150,17 +160,40 @@ describe("MCP config", () => {
 			],
 		);
 
-		assert.equal(await addMcpServerConfig(global, "other", { command: "other-cmd" }), false);
+		assert.equal(addMcpServerConfig(global, "other", { command: "other-cmd" }), false);
 		assert.deepEqual(JSON.parse(readFileSync(global, "utf8")).mcpServers, {
 			demo: { command: "echo", enabled: false },
 			other: { command: "other-cmd" },
 		});
+		assert.equal(removeMcpServerConfig(global, "other"), true);
+		assert.equal(removeMcpServerConfig(global, "other"), false);
+	});
+
+	it("serializes concurrent async mcp.json edits without losing entries", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-mcp-concurrent-"));
+		dirs.push(root);
+		const configPath = join(root, "nested", "mcp.json");
+
+		const outcomes = await Promise.all([
+			addMcpServerConfigAsync(configPath, "alpha", { command: "alpha-cmd" }),
+			addMcpServerConfigAsync(configPath, "beta", { command: "beta-cmd" }),
+			addMcpServerConfigAsync(configPath, "gamma", { command: "gamma-cmd" }),
+			updateMcpServerConfigAsync(configPath, "beta", { enabled: false, exposure: "direct" }),
+			removeMcpServerConfigAsync(configPath, "alpha"),
+			addMcpServerConfigAsync(configPath, "gamma", { command: "gamma-v2" }),
+		]);
+
+		assert.deepEqual(outcomes, [false, false, false, undefined, true, true]);
+		assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")).mcpServers, {
+			beta: { command: "beta-cmd", enabled: false, exposure: "direct" },
+			gamma: { command: "gamma-v2" },
+		});
 	});
 
 	// Regression: #10239.
-	it("rejects server names that differ only in - and _", async () => {
+	it("rejects server names that differ only in - and _", () => {
 		const paths = setup({ mcpServers: { "work-files": { command: "a" }, work_files: { command: "b" } } }, {});
-		const { servers, errors } = await loadMcpConfig({ ...paths, projectTrusted: false });
+		const { servers, errors } = loadMcpConfig({ ...paths, projectTrusted: false });
 		assert.deepEqual(
 			servers.map((server) => server.name),
 			["work-files"],
@@ -168,7 +201,7 @@ describe("MCP config", () => {
 		assert.match(errors[0], /server "work_files" conflicts with "work-files"/);
 	});
 
-	it("validates exposure and reads autoEnableCodemode with project precedence", async () => {
+	it("validates exposure and reads autoEnableCodemode with project precedence", () => {
 		const paths = setup(
 			{
 				autoEnableCodemode: false,
@@ -185,7 +218,7 @@ describe("MCP config", () => {
 			{ autoEnableCodemode: "yes", mcpServers: {} },
 		);
 
-		const untrusted = await loadMcpConfig({ ...paths, projectTrusted: false });
+		const untrusted = loadMcpConfig({ ...paths, projectTrusted: false });
 		assert.equal(untrusted.autoEnableCodemode, false);
 		assert.deepEqual(
 			untrusted.servers.map((server) => [server.name, server.config.exposure]),
@@ -201,12 +234,12 @@ describe("MCP config", () => {
 		assert.match(untrusted.errors[0], /server "wrong": exposure must be one of/);
 		assert.match(untrusted.errors[1], /server "badDescription": description must be a string/);
 
-		const trusted = await loadMcpConfig({ ...paths, projectTrusted: true });
+		const trusted = loadMcpConfig({ ...paths, projectTrusted: true });
 		assert.equal(trusted.autoEnableCodemode, false);
 		assert.ok(trusted.errors.some((error) => error.includes("autoEnableCodemode must be a boolean")));
 	});
 
-	it("validates the OAuth callback URL, scope, and client name", async () => {
+	it("validates the OAuth callback URL, scope, and client name", () => {
 		const paths = setup(
 			{
 				mcpServers: {
@@ -230,7 +263,7 @@ describe("MCP config", () => {
 			},
 			{},
 		);
-		const { servers, errors } = await loadMcpConfig({ ...paths, projectTrusted: false });
+		const { servers, errors } = loadMcpConfig({ ...paths, projectTrusted: false });
 		assert.deepEqual(
 			servers.map((server) => server.name),
 			["ok", "ipv6", "same", "named", "metadata"],
@@ -242,7 +275,7 @@ describe("MCP config", () => {
 		assert.match(errors[4], /server "plainMetadata": oauth\.authServerMetadataUrl must be an https URL/);
 	});
 
-	it("resolves per-tool exposure from exact names, then patterns in order", async () => {
+	it("resolves per-tool exposure from exact names, then patterns in order", () => {
 		const paths = setup(
 			{
 				mcpServers: {
@@ -256,7 +289,7 @@ describe("MCP config", () => {
 			},
 			{},
 		);
-		const { servers, errors } = await loadMcpConfig({ ...paths, projectTrusted: false });
+		const { servers, errors } = loadMcpConfig({ ...paths, projectTrusted: false });
 		assert.match(errors[0], /server "bad": toolExposure "a" must be one of/);
 		const config = servers[0].config;
 		assert.equal(getMcpToolExposure(config, "get_me"), "direct");
@@ -271,7 +304,7 @@ describe("MCP config", () => {
 		);
 	});
 
-	it("validates provider auth and accepts it only in the global mcp.json", async () => {
+	it("validates provider auth and accepts it only in the global mcp.json", () => {
 		const paths = setup(
 			{
 				mcpServers: {
@@ -283,7 +316,7 @@ describe("MCP config", () => {
 			},
 			{ mcpServers: { radius: { url: "https://evil.example/mcp", auth: { provider: "radius" } } } },
 		);
-		const { servers, errors } = await loadMcpConfig({ ...paths, projectTrusted: true });
+		const { servers, errors } = loadMcpConfig({ ...paths, projectTrusted: true });
 		// The project entry cannot replace the global one: it would send the credential to its own URL.
 		assert.deepEqual(
 			servers.map((server) => [server.name, server.scope, "url" in server.config && server.config.url]),

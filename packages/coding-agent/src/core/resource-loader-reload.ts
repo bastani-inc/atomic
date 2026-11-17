@@ -1,7 +1,7 @@
-import { access, realpath, stat } from "node:fs/promises";
+import { access, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
-import { isLocalPath, resolvePath } from "../utils/paths.ts";
+import { canonicalizePathAsync, isLocalPath, resolvePath } from "../utils/paths.ts";
 import { getAllBuiltinPackageLocations, getMandatoryBuiltinExtensionPaths } from "./builtin-packages.ts";
 import { filterSupersededHerdrIntegrationPaths } from "./extensions/herdr-file-integration.ts";
 import { clearExtensionCache, createExtensionRuntime } from "./extensions/loader.ts";
@@ -58,17 +58,16 @@ const exists = (path: string): Promise<boolean> =>
 
 async function filterDisabledBuiltinExtensionPaths(paths: string[], disabled: Set<string>): Promise<string[]> {
 	if (disabled.size === 0) return paths;
-	const canonical = (path: string): Promise<string> => realpath(path).catch(() => path);
 	const roots = await Promise.all(
 		getAllBuiltinPackageLocations()
 			.filter((location) => disabled.has(location.distDirName))
-			.map((location) => canonical(location.packageDir)),
+			.map((location) => canonicalizePathAsync(location.packageDir)),
 	);
 	const kept = await Promise.all(
 		paths.map(async (path) => {
 			if (path.startsWith(BUILTIN_PATH_PREFIX)) return !disabled.has(path.slice(BUILTIN_PATH_PREFIX.length));
 			if (roots.length === 0) return true;
-			const canonicalPath = await canonical(path);
+			const canonicalPath = await canonicalizePathAsync(path);
 			return !roots.some((root) => {
 				const child = relative(root, canonicalPath);
 				return child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child);

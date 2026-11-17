@@ -1,5 +1,7 @@
+import { join } from "node:path";
 import { type Component, Container, type Focusable, getKeybindings, Input, Spacer, Text } from "@bastani/atomic-tui";
-import type { KeybindingsManager } from "../../../core/keybindings.ts";
+import { getAgentDir } from "../../../config.js";
+import { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { SessionInfo, SessionListProgress } from "../../../core/session-manager.ts";
 import { assertSessionNotOpenElsewhere } from "../../../core/session-open-markers.ts";
 import { theme } from "../theme/theme.js";
@@ -94,12 +96,12 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		onCancel: () => void,
 		onExit: () => void,
 		requestRender: () => void,
-		options: {
+		options?: {
 			renameSession?: (session: SessionInfo, currentName: string | undefined) => Promise<void>;
 			deleteSession?: (sessionId: string) => Promise<void>;
 			showRenameHint?: boolean;
 			/** The keybindings in effect, loaded once by whoever shows the selector. */
-			keybindings: KeybindingsManager;
+			keybindings?: KeybindingsManager;
 			/**
 			 * Rows to display in the first rendered frame before the async loader
 			 * resolves (e.g. cheap in-memory live workflow runs). Seeding lets the
@@ -112,7 +114,14 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	) {
 		super();
 		this.currentDirectory = currentSession?.directory;
-		this.keybindings = options.keybindings;
+		if (options?.keybindings) {
+			this.keybindings = options.keybindings;
+		} else {
+			this.keybindings = new KeybindingsManager({}, join(getAgentDir(), "keybindings.json"));
+			void this.keybindings.reloadAsync().then(() => {
+				if (!this.disposed) this.requestRender();
+			});
+		}
 		this.currentSessionsLoader = currentSessionsLoader;
 		this.allSessionsLoader = allSessionsLoader;
 		this.onCancel = onCancel;

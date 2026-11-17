@@ -1135,6 +1135,7 @@ export {
 	type McpServerConfigPatch,
 	type McpServerEntry,
 	updateMcpServerConfig,
+	updateMcpServerConfigAsync,
 } from "./extensions/mcp/config.ts";
 export { createMcpExtension, type McpExtensionOptions } from "./extensions/mcp/index.js";
 export { McpOAuthCredentialStore } from "./extensions/mcp/oauth.ts";

@@ -11,6 +11,7 @@ import {
 	lapsedDegradedRestores,
 	latestRestoreTargets,
 	type MissingSnapshotRecord,
+	mapRestoredPath,
 	mapRestoredPathAsync,
 	missingSnapshotRecords,
 	openResumedSession,
@@ -175,17 +176,32 @@ export interface SessionSnapshotMatch {
 	readonly cwd: string;
 }
 
-/** The latest snapshot of the checkout the session works in, the same one #4245's resume verifies. */
-export async function latestSessionSnapshot(
-	sessionManager: Pick<SessionManager, "getCwd" | "getWorktreeRootMappings" | "getLatestWorktreeSnapshots">,
-	snapshots: ReadonlyMap<string, WorktreeSnapshot> = sessionManager.getLatestWorktreeSnapshots(),
-): Promise<SessionSnapshotMatch | undefined> {
-	const cwd = await mapRestoredPathAsync(sessionManager.getCwd(), sessionManager.getWorktreeRootMappings());
+function matchSessionSnapshot(
+	cwd: string,
+	snapshots: ReadonlyMap<string, WorktreeSnapshot>,
+): SessionSnapshotMatch | undefined {
 	let match: SessionSnapshotMatch | undefined;
 	for (const [root, snapshot] of snapshots) {
 		if (isInside(root, cwd) && (!match || root.length > match.root.length)) match = { root, snapshot, cwd };
 	}
 	return match;
+}
+
+/** The latest snapshot of the checkout the session works in, the same one #4245's resume verifies. */
+export function latestSessionSnapshot(
+	sessionManager: Pick<SessionManager, "getCwd" | "getWorktreeRootMappings" | "getLatestWorktreeSnapshots">,
+	snapshots: ReadonlyMap<string, WorktreeSnapshot> = sessionManager.getLatestWorktreeSnapshots(),
+): SessionSnapshotMatch | undefined {
+	const cwd = mapRestoredPath(sessionManager.getCwd(), sessionManager.getWorktreeRootMappings());
+	return matchSessionSnapshot(cwd, snapshots);
+}
+
+export async function latestSessionSnapshotAsync(
+	sessionManager: Pick<SessionManager, "getCwd" | "getWorktreeRootMappings" | "getLatestWorktreeSnapshots">,
+	snapshots: ReadonlyMap<string, WorktreeSnapshot> = sessionManager.getLatestWorktreeSnapshots(),
+): Promise<SessionSnapshotMatch | undefined> {
+	const cwd = await mapRestoredPathAsync(sessionManager.getCwd(), sessionManager.getWorktreeRootMappings());
+	return matchSessionSnapshot(cwd, snapshots);
 }
 
 /** Continue in the launch checkout, or stop because the user cancelled; undefined restores a fresh worktree. */
@@ -456,7 +472,7 @@ async function prepareResume(
 		return partialOnce;
 	};
 	// A checkout restored only partly is compared with the snapshot it lacks, which stays its restore target (#4922).
-	const match = await latestSessionSnapshot(sessionManager, await latestRestoreTargets(sessionManager));
+	const match = await latestSessionSnapshotAsync(sessionManager, await latestRestoreTargets(sessionManager));
 	let git: GitProbe | undefined;
 	let reused: WorktreeRootMapping | undefined;
 	let needsRestore: boolean;
@@ -1379,6 +1395,14 @@ function planRestores(
  * that path, else the default trust setting.
  */
 export function savedProjectTrust(
+	agentDir: string,
+	settings: Pick<SettingsManager, "getDefaultProjectTrust">,
+): (worktree: string) => boolean {
+	const trustStore = new ProjectTrustStore(agentDir);
+	return (worktree) => trustStore.get(worktree) ?? settings.getDefaultProjectTrust() === "always";
+}
+
+export function savedProjectTrustAsync(
 	agentDir: string,
 	settings: Pick<SettingsManager, "getDefaultProjectTrust">,
 ): (worktree: string) => Promise<boolean> {

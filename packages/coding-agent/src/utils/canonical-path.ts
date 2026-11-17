@@ -1,5 +1,7 @@
-import { realpathSync } from "node:fs";
-import { realpath } from "node:fs/promises";
+import { realpath, realpathSync } from "node:fs";
+import { promisify } from "node:util";
+
+const realpathAsync = promisify(realpath);
 
 /** Resolve symlinks, retaining the original spelling when the target cannot be resolved. */
 export function canonicalizePath(path: string): string {
@@ -13,7 +15,7 @@ export function canonicalizePath(path: string): string {
 /** Resolve symlinks asynchronously, retaining the original spelling when the target cannot be resolved. */
 export async function canonicalizePathAsync(path: string): Promise<string> {
 	try {
-		return await realpath(path);
+		return await realpathAsync(path);
 	} catch {
 		return path;
 	}

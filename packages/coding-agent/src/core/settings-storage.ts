@@ -1,3 +1,4 @@
+import { promisify } from "node:util";
 import { randomUUID } from "crypto";
 import {
 	chmodSync,
@@ -6,12 +7,13 @@ import {
 	mkdirSync,
 	readFileSync,
 	readlinkSync,
+	realpath as realpathCallback,
 	realpathSync,
 	rmSync,
 	statSync,
 	writeFileSync,
 } from "fs";
-import { access, chmod, lstat, mkdir, readFile, readlink, realpath, rm, stat, writeFile } from "fs/promises";
+import { access, chmod, lstat, mkdir, readFile, readlink, rm, stat, writeFile } from "fs/promises";
 import { dirname, isAbsolute, join, sep } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME } from "../config.js";
@@ -84,9 +86,11 @@ function settingsFileTarget(path: string): string {
 	throw tooManySymlinks(path);
 }
 
+const realpathAsync = promisify(realpathCallback);
+
 /** {@link settingsFileTarget} without blocking the event loop. */
 async function settingsFileTargetAsync(path: string): Promise<string> {
-	if (await pathExists(path)) return realpath(path);
+	if (await pathExists(path)) return realpathAsync(path);
 	let current = path;
 	for (let hop = 0; hop <= MAX_SYMLINK_HOPS; hop += 1) {
 		if (!(await lstatIfPresent(current))?.isSymbolicLink()) return current;

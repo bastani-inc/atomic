@@ -15,12 +15,12 @@ import { ProjectTrustStore } from "../../core/trust-manager.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { questionTerminal } from "../../utils/terminal-question.js";
 import {
-	addMcpServerConfig,
+	addMcpServerConfigAsync,
 	getMcpToolExposure,
 	type LoadedMcpConfig,
-	loadMcpConfig,
+	loadMcpConfigAsync,
 	type McpServerEntry,
-	removeMcpServerConfig,
+	removeMcpServerConfigAsync,
 } from "./config.ts";
 import {
 	createDefaultTransport,
@@ -244,7 +244,7 @@ export async function runMcpCommand(args: string[], options: McpCommandOptions):
 			: remove(rest, projectConfig, options, log, error);
 	}
 	const projectTrusted = new ProjectTrustStore(options.agentDir).get(options.cwd) === true;
-	const loaded = await loadMcpConfig({ agentDir: options.agentDir, cwd: options.cwd, projectTrusted });
+	const loaded = await loadMcpConfigAsync({ agentDir: options.agentDir, cwd: options.cwd, projectTrusted });
 	const untrustedNote =
 		!projectTrusted && existsSync(projectConfig)
 			? `${projectConfig} is ignored because the project is not trusted. Start ${APP_NAME} in the project to trust it.`
@@ -492,7 +492,7 @@ async function add(
 	const scope = project ? "project" : "global";
 	let replaced: boolean;
 	try {
-		replaced = await addMcpServerConfig(path, name, validated);
+		replaced = await addMcpServerConfigAsync(path, name, validated);
 	} catch (addError) {
 		error(`Could not update ${path}: ${errorMessage(addError)}`);
 		return 1;
@@ -531,7 +531,7 @@ async function remove(
 	const scope = project ? "project" : "global";
 	let removed: boolean;
 	try {
-		removed = await removeMcpServerConfig(path, name);
+		removed = await removeMcpServerConfigAsync(path, name);
 	} catch (removeError) {
 		error(`Could not update ${path}: ${errorMessage(removeError)}`);
 		return 1;
@@ -541,7 +541,7 @@ async function remove(
 		return 0;
 	}
 	const other = (
-		await loadMcpConfig({ agentDir: options.agentDir, cwd: options.cwd, projectTrusted: true })
+		await loadMcpConfigAsync({ agentDir: options.agentDir, cwd: options.cwd, projectTrusted: true })
 	).servers.find((server) => server.name === name && server.scope !== scope);
 	error(
 		`No ${scope} MCP server named "${name}" in ${path}.${other ? ` It is defined in ${other.source}${other.scope === "project" ? "; use --local" : "; omit --local"}.` : ""}`,

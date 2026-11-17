@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -855,7 +856,12 @@ export class ModelRuntime implements Models {
 	 * rewrite inside one filesystem timestamp tick — an edited key, a renamed
 	 * model — is exactly the change a shared pass must not hide.
 	 */
-	async getCatalogInputsGeneration(): Promise<number> {
+	getCatalogInputsGeneration(): number {
+		this.observeModelsFileSync();
+		return this.catalogInputsGeneration;
+	}
+
+	async getCatalogInputsGenerationAsync(): Promise<number> {
 		await this.observeModelsFile();
 		return this.catalogInputsGeneration;
 	}
@@ -882,25 +888,44 @@ export class ModelRuntime implements Models {
 		this.ownCatalogInputsGeneration += 1;
 	}
 
+	private applyObservedModelsFileToken(token: string): string {
+		if (this.observedModelsFileToken !== token) {
+			const first = this.observedModelsFileToken === undefined;
+			this.observedModelsFileToken = token;
+			// The first observation is a baseline, not a change: no pass can predate it.
+			if (!first) this.catalogInputsGeneration += 1;
+		}
+		return token;
+	}
+
+	private observeModelsFileSync(): string {
+		return this.applyObservedModelsFileToken(this.readModelsFileTokenSync());
+	}
+
 	/** Read models.json and bump the generation when it changed since the last read; resolves to its hash. */
 	private observeModelsFile(): Promise<string> {
 		if (this.sameTickModelsFileObservation) return this.sameTickModelsFileObservation;
-		const observation = this.modelsFileObservations.then(async () => {
-			const token = await this.readModelsFileToken();
-			if (this.observedModelsFileToken !== token) {
-				const first = this.observedModelsFileToken === undefined;
-				this.observedModelsFileToken = token;
-				// The first observation is a baseline, not a change: no pass can predate it.
-				if (!first) this.catalogInputsGeneration += 1;
-			}
-			return token;
-		});
+		const observation = this.modelsFileObservations.then(async () =>
+			this.applyObservedModelsFileToken(await this.readModelsFileToken()),
+		);
 		this.modelsFileObservations = observation.then(() => undefined);
 		this.sameTickModelsFileObservation = observation;
 		queueMicrotask(() => {
 			if (this.sameTickModelsFileObservation === observation) this.sameTickModelsFileObservation = undefined;
 		});
 		return observation;
+	}
+
+	private readModelsFileTokenSync(): string {
+		if (!this.modelsPath) return "none";
+		try {
+			return createHash("sha1")
+				.update(readFileSync(normalizePath(this.modelsPath)))
+				.digest("hex");
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			return code === "ENOENT" ? "missing" : `unreadable:${code ?? "unknown"}`;
+		}
 	}
 
 	private async readModelsFileToken(): Promise<string> {

@@ -675,7 +675,8 @@ describe("prepareSessionResume matches a launch checkout by repository, not by r
 
 describe("prepareSessionResume details (#4329)", () => {
 	test("latestSessionSnapshot picks the innermost recorded root that contains the mapped cwd", async () => {
-		const { latestSessionSnapshot } = await import("../src/core/resume/session-resume.ts");
+		const { latestSessionSnapshot, latestSessionSnapshotAsync, savedProjectTrust, savedProjectTrustAsync } =
+			await import("../src/core/resume/session-resume.ts");
 		const outer = { id: "outer" } as WorktreeSnapshot;
 		const inner = { id: "inner" } as WorktreeSnapshot;
 		const source = (cwd: string, mappings: WorktreeRootMapping[] = []) => ({
@@ -687,7 +688,8 @@ describe("prepareSessionResume details (#4329)", () => {
 					["/repo/vendor/lib", inner],
 				]),
 		});
-		assert.equal((await latestSessionSnapshot(source("/repo/vendor/lib/src")))?.snapshot.id, "inner");
+		assert.equal(latestSessionSnapshot(source("/repo/vendor/lib/src"))?.snapshot.id, "inner");
+		assert.equal((await latestSessionSnapshotAsync(source("/repo/vendor/lib/src")))?.snapshot.id, "inner");
 		const reversed = {
 			...source("/repo/vendor/lib/src"),
 			getLatestWorktreeSnapshots: () =>
@@ -696,15 +698,23 @@ describe("prepareSessionResume details (#4329)", () => {
 					["/repo", outer],
 				]),
 		};
-		assert.equal((await latestSessionSnapshot(reversed))?.snapshot.id, "inner");
-		assert.equal((await latestSessionSnapshot(source("/repo/src")))?.snapshot.id, "outer");
-		assert.equal(await latestSessionSnapshot(source("/elsewhere")), undefined);
-		const moved = await latestSessionSnapshot(
+		assert.equal(latestSessionSnapshot(reversed)?.snapshot.id, "inner");
+		assert.equal(latestSessionSnapshot(source("/repo/src"))?.snapshot.id, "outer");
+		assert.equal(latestSessionSnapshot(source("/elsewhere")), undefined);
+		const moved = latestSessionSnapshot(
 			source("/node-a/repo/src", [
 				{ from: "/node-a/repo", to: "/repo", snapshotId: "s", tree: "t", restoredAt: "x" },
 			]),
 		);
 		assert.deepEqual([moved?.root, moved?.cwd], ["/repo", resolve("/repo/src")]);
+		const agentDir = sandbox.path("trust-agent");
+		const worktree = sandbox.path("trust-worktree");
+		const syncTrust = savedProjectTrust(agentDir, { getDefaultProjectTrust: () => "ask" });
+		const asyncTrust = savedProjectTrustAsync(agentDir, { getDefaultProjectTrust: () => "ask" });
+		const untrustedResult = syncTrust(worktree);
+		assert.equal(typeof untrustedResult, "boolean");
+		assert.equal(untrustedResult, false);
+		assert.equal(await asyncTrust(worktree), false);
 	});
 
 	test("notices name the 12-character snapshot id and the checkouts", async () => {

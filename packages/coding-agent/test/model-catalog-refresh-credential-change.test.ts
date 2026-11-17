@@ -37,18 +37,18 @@ describe("model catalog refresh across a credential change", () => {
 	it("counts a login, a logout, and a runtime key as catalog-input changes", async () => {
 		const credentials = AuthStorage.inMemory();
 		const runtime = await createOfflineRuntime(credentials);
-		const start = await runtime.getCatalogInputsGeneration();
+		const start = runtime.getCatalogInputsGeneration();
 
 		await loginWithApiKey(runtime, "anthropic", "sk-login-key");
-		const afterLogin = await runtime.getCatalogInputsGeneration();
+		const afterLogin = runtime.getCatalogInputsGeneration();
 		expect(afterLogin).toBeGreaterThan(start);
 
 		await runtime.setRuntimeApiKey("openai", "sk-runtime-key", {});
-		const afterRuntimeKey = await runtime.getCatalogInputsGeneration();
+		const afterRuntimeKey = runtime.getCatalogInputsGeneration();
 		expect(afterRuntimeKey).toBeGreaterThan(afterLogin);
 
 		await runtime.logout("anthropic");
-		const afterLogout = await runtime.getCatalogInputsGeneration();
+		const afterLogout = runtime.getCatalogInputsGeneration();
 		expect(afterLogout).toBeGreaterThan(afterRuntimeKey);
 
 		// A registration replaces a provider every later pass composes from, so it
@@ -60,22 +60,25 @@ describe("model catalog refresh across a credential change", () => {
 			apiKey: "sk-registered",
 			models: [{ id: "registered-model" }],
 		});
-		const afterRegistration = await runtime.getCatalogInputsGeneration();
+		const afterRegistration = runtime.getCatalogInputsGeneration();
 		expect(afterRegistration).toBeGreaterThan(afterLogout);
 
 		runtime.unregisterProvider("registered");
-		expect(await runtime.getCatalogInputsGeneration()).toBeGreaterThan(afterRegistration);
+		const afterUnregister = runtime.getCatalogInputsGeneration();
+		expect(afterUnregister).toBeGreaterThan(afterRegistration);
+		expect(await runtime.getCatalogInputsGenerationAsync()).toBe(afterUnregister);
 	});
 
 	it("holds the generation still when nothing changed", async () => {
 		const runtime = await createOfflineRuntime(AuthStorage.inMemory());
-		const generation = await runtime.getCatalogInputsGeneration();
+		const generation = runtime.getCatalogInputsGeneration();
 
 		await runtime.refresh({ allowNetwork: false });
 
 		// A refresh reads the inputs; it does not change them. If it bumped, no two
 		// callers could ever share a pass.
-		expect(await runtime.getCatalogInputsGeneration()).toBe(generation);
+		expect(runtime.getCatalogInputsGeneration()).toBe(generation);
+		expect(await runtime.getCatalogInputsGenerationAsync()).toBe(generation);
 	});
 
 	it("does not answer a post-login selector with the pass that was running during login", async () => {

@@ -28,9 +28,18 @@ test("the selected-store picker protects its active SQLite session from delete c
 		() => {},
 		() => {},
 		() => {},
-		{ initialSessions: rows, keybindings: new KeybindingsManager(), deleteSession: (id) => store.delete(id) },
+		{ initialSessions: rows, deleteSession: (id) => store.delete(id) },
 		{ id: manager.getSessionId(), directory: manager.getSessionDir() },
 	);
+	const bareSelector = new SessionSelectorComponent(
+		async () => rows,
+		async () => rows,
+		() => {},
+		() => {},
+		() => {},
+		() => {},
+	);
+	bareSelector.dispose();
 	try {
 		selector.handleInput("\x04");
 		assert.match(selector.render(120).join("\n"), /Cannot delete the currently active session/);
@@ -83,7 +92,6 @@ test("confirmed deletion uses the selected ID rather than its display location a
 		() => {},
 		{
 			initialSessions: rows,
-			keybindings: new KeybindingsManager(),
 			deleteSession: (id) => (deletion = displayedStore.delete(id)),
 		},
 	);

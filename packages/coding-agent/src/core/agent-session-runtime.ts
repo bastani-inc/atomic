@@ -27,7 +27,7 @@ import {
 	type PrepareSessionResumeOptions,
 	prepareSessionResume,
 	type ResumeNotice,
-	savedProjectTrust,
+	savedProjectTrustAsync,
 	sessionResumeOptions,
 } from "./resume/session-resume.ts";
 import type { CreateAgentSessionResult } from "./sdk.ts";
@@ -664,7 +664,7 @@ export class AgentSessionRuntime {
 				this.cwd,
 				this.services.agentDir,
 				settings,
-				savedProjectTrust(this.services.agentDir, settings),
+				savedProjectTrustAsync(this.services.agentDir, settings),
 				this.interactive,
 			),
 			blueprints: this.resumeBlueprints,
