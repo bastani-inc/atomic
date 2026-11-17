@@ -39,7 +39,7 @@ import {
 } from "./git.ts";
 import {
 	assertRestorePathBudget,
-	canonicalizeWorktreePath,
+	canonicalizeWorktreePathAsync,
 	defaultWorktreeSnapshotStoreDir,
 	stagingWorktreeName,
 } from "./paths.ts";
@@ -564,7 +564,7 @@ export function objectStorePath(storeDir: string, remotes: readonly string[], ro
 }
 
 /** {@link objectStorePath} without blocking the event loop on its existence checks. */
-export async function objectStorePathAsync(
+async function objectStorePathAsync(
 	storeDir: string,
 	remotes: readonly string[],
 	root?: string,
@@ -1635,7 +1635,10 @@ export async function pooledWorktreeStore(
 	const store = resolve(
 		await gitText(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: worktree, signal }),
 	);
-	if (canonicalizeWorktreePath(dirname(store)) !== canonicalizeWorktreePath(join(storeDir, "repositories"))) {
+	if (
+		(await canonicalizeWorktreePathAsync(dirname(store))) !==
+		(await canonicalizeWorktreePathAsync(join(storeDir, "repositories")))
+	) {
 		throw new WorkspaceRestoreError("unsafe-target", { snapshotId: null, target: worktree, reason: "not-restored" });
 	}
 	return store;

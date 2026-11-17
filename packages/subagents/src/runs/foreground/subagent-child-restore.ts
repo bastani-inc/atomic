@@ -12,7 +12,7 @@ import {
 	getAgentDir,
 	isRetryableStorageError,
 	isStaleExtensionContextError,
-	mapRestoredPath,
+	mapRestoredPathAsync,
 	type SessionEntry,
 	type SessionManager,
 	SettingsManager,
@@ -551,7 +551,7 @@ async function relaunchChild(
 	// Where the child worked, after the restores of the session it belongs to: on another machine its own directory may
 	// be gone, and the worktree that was restored for that directory is where it continues.
 	const scope = currentWorktreeRootMappings();
-	let cwd = mapRestoredPath(record.cwd, scope);
+	let cwd = await mapRestoredPathAsync(record.cwd, scope);
 	let cwdVerdict: CwdVerdict;
 	let sessionManager: SessionManager | undefined;
 	if (fresh) {
@@ -575,7 +575,7 @@ async function relaunchChild(
 		const reopened = await reopenChildSession(ctx, { ...record, cwd });
 		if ("reason" in reopened) return unrestorable(reopened.reason);
 		sessionManager = await continueChildWhereItWorked(ctx, cwd, reopened.sessionManager);
-		cwd = mapRestoredPath(sessionManager.getCwd(), scope);
+		cwd = await mapRestoredPathAsync(sessionManager.getCwd(), scope);
 		cwdVerdict = await checkLaunchCwd(cwd);
 		if (cwdVerdict.state === "missing") return unrestorable(`its working directory no longer exists: ${cwd}`);
 		const previousIntercomId = readPreviousIntercomId(sessionManager);

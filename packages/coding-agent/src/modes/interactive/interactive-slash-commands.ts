@@ -417,7 +417,7 @@ InteractiveModeBase.prototype.handleToolsCommand = async function (this: Interac
 };
 
 InteractiveModeBase.prototype.handleSessionSnapshotCommand = async function (this: InteractiveModeBase): Promise<void> {
-	const latest = currentWorktreeSnapshots(this.sessionManager);
+	const latest = await currentWorktreeSnapshots(this.sessionManager);
 	if (latest.size === 0) {
 		this.showStatus("No worktree snapshots recorded in this session");
 		return;
@@ -428,7 +428,7 @@ InteractiveModeBase.prototype.handleSessionSnapshotCommand = async function (thi
 		lines.push(...describeWorktreeSnapshot(root, snapshot));
 		const restoreStatus = describeWorktreeRestoreStatus(this.sessionManager, root);
 		if (restoreStatus) lines.push(theme.fg("warning", `  ${restoreStatus}`));
-		const capture = describeLastCapture(this.sessionManager, root);
+		const capture = await describeLastCapture(this.sessionManager, root);
 		if (capture) lines.push(theme.fg("dim", `  ${capture}`));
 		const comparison = await compareWorktreeSnapshot(snapshot, root, settings);
 		if (comparison.status === "match")

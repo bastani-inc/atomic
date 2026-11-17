@@ -681,6 +681,20 @@ describe("tool path mapping for restored worktrees (#4329)", () => {
 			assert.equal(resolveToCwd(join(dirname(worktree), "marker"), worktree), join(root, "marker"));
 		});
 	});
+
+	test("a tool row's label leaves a path under a restore to its asynchronous resolution, which maps it", async () => {
+		const { resolveToCwdAsync, resolveReadPathAsync, resolveToCwdIfUnambiguous } = await import(
+			"../src/core/tools/path-utils.ts"
+		);
+		const worktree = join(root, "wt");
+		assert.equal(resolveToCwdIfUnambiguous("a.txt", worktree), join(worktree, "a.txt"));
+		await withWorktreeRootMappings([mapping("/nodeA/repo", worktree)], async () => {
+			// Mapping a path reads its symbolic links from the disk, which a row's synchronous label never does.
+			assert.equal(resolveToCwdIfUnambiguous("/nodeA/repo/a.txt", worktree), undefined);
+			assert.equal(await resolveToCwdAsync("/nodeA/repo/a.txt", worktree), join(worktree, "a.txt"));
+			assert.equal(await resolveReadPathAsync("/nodeA/repo/a.txt", worktree), join(worktree, "a.txt"));
+		});
+	});
 });
 
 describe("resume error family edge cases (#4329)", () => {

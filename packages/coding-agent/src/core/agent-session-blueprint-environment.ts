@@ -3,7 +3,7 @@ import { sessionEnvironmentPrefix } from "./resume/blueprint/envrc.ts";
 import { restoredWorktreeOf } from "./resume/blueprint/resume.ts";
 import { currentWorktreeRootMappings } from "./resume/path-mapping.ts";
 import { resumeStoreDir } from "./resume/session-resume.ts";
-import { mapRestoredPath } from "./session-worktree-snapshots.ts";
+import { mapRestoredPathAsync } from "./session-worktree-snapshots.ts";
 
 /**
  * The bash prefix that gives the session's shell the variables the blueprint builds of its restored worktrees wrote to
@@ -16,7 +16,7 @@ export async function blueprintEnvironmentPrefix(session: AgentSession): Promise
 	const storeDir = resumeStoreDir(agentDir);
 	const mappings = [...session.sessionManager.getWorktreeRootMappings(), ...currentWorktreeRootMappings()];
 	const roots = mappings.map((mapping) => mapping.to);
-	const own = restoredWorktreeOf(storeDir, mapRestoredPath(session.sessionManager.getCwd(), mappings));
+	const own = restoredWorktreeOf(storeDir, await mapRestoredPathAsync(session.sessionManager.getCwd(), mappings));
 	return sessionEnvironmentPrefix(storeDir, own === undefined ? roots : [...roots, own]);
 }
 

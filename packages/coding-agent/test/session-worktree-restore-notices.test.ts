@@ -246,7 +246,7 @@ describe("restore notices in the TUI (#4245)", () => {
 });
 
 describe("restore warnings recorded with their restore (#4245)", () => {
-	test("a checkout whose latest snapshot record is missing is left out of the current snapshots", () => {
+	test("a checkout whose latest snapshot record is missing is left out of the current snapshots", async () => {
 		const entry = (root: string, snapshotId: string) => ({
 			type: "worktree_snapshot" as const,
 			id: `${root}-${snapshotId}`,
@@ -256,7 +256,7 @@ describe("restore warnings recorded with their restore (#4245)", () => {
 			snapshotId,
 		});
 		const recorded = { id: "kept" } as WorktreeSnapshot;
-		const current = currentWorktreeSnapshots({
+		const current = await currentWorktreeSnapshots({
 			getBranch: () => [entry("/work/a", "kept"), entry("/work/b", "ghost")],
 			getWorktreeRootMappings: () => [],
 			getWorktreeSnapshotRecords: () => new Map([["kept", recorded]]),

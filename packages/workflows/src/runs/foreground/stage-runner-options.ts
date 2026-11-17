@@ -3,7 +3,7 @@ import {
 	type CreateAgentSessionOptions,
 	currentWorktreeRootMappings,
 	getAgentDir,
-	mapRestoredPath,
+	mapRestoredPathAsync,
 	recordRestoredWorktreeContext,
 	resolveWorkspace,
 	resumeStoreDir,
@@ -149,7 +149,7 @@ export async function stripWorkflowOnlyOptions(
 		const notKept = await recordRestoredWorktreeContext(
 			manager,
 			resumeStoreDir(sessionOptions.agentDir ?? getAgentDir()),
-			mapRestoredPath(cwd, mappings),
+			await mapRestoredPathAsync(cwd, mappings),
 		);
 		if (notKept !== undefined) console.warn(`atomic-workflows: ${notKept.message}`);
 	}
