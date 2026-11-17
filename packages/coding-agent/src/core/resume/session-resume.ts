@@ -1097,7 +1097,7 @@ async function setUpCheckoutBlueprints(
 				warnings: [
 					`Could not check for an earlier blueprint build of these worktrees (${error instanceof Error ? describeFailure(error) : String(error)}); building them anyway.`,
 				],
-				release: () => {},
+				release: async () => {},
 			};
 		});
 		// No other process builds them until this build settled, and then the ledger says whether they still need it.
@@ -1118,7 +1118,7 @@ async function setUpCheckoutBlueprints(
 					}),
 			);
 		} finally {
-			settled.release();
+			await settled.release();
 		}
 		// The warnings of LFS downloads that end after their restores were recorded come with the build's (#5099).
 		const downloads = await lfs.notices([...restoredHere, ...earlier].map((checkout) => checkout.root));

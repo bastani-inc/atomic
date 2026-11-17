@@ -12,13 +12,13 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { constants, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { access, mkdir, readFile, rm } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { killProcessTree } from "../../../utils/shell.ts";
-import { type TakeoverMutex, takeTakeoverMutex } from "../../lock-takeover.ts";
-import { processStartTokenAsync } from "../../process-start-token.ts";
+import { type AsyncTakeoverMutex, takeTakeoverMutexAsync } from "../../lock-takeover.ts";
+import { processStartToken, processStartTokenAsync } from "../../process-start-token.ts";
 import { rootKey } from "./ledger.ts";
 import { stepProcessWatcher } from "./process.ts";
 
@@ -95,11 +95,34 @@ async function removeLock(file: string): Promise<void> {
 	} catch {}
 }
 
-async function writeLock(file: string, lock: BuildLock): Promise<void> {
-	await mkdir(dirname(file), { recursive: true });
-	const temporary = `${file}.${process.pid}.tmp`;
-	await writeFile(temporary, JSON.stringify(lock), { mode: 0o600 });
-	await rename(temporary, file);
+/**
+ * Records in the locks at `files` that step process `pid` of this build started (`running`) or ended, synchronously
+ * (#4748). A step's start must be on disk before control returns to what spawned it: a host killed while the step runs
+ * then leaves a lock that names it, which the next build needs to stop it, and only a synchronous write guarantees
+ * that. Its end is written the same way, so the writes keep their order. These are a build lock's only synchronous
+ * calls, a deliberate exception to never blocking the event loop: reading the step's start and one small write per
+ * lock, at each start and end of a step process.
+ */
+function recordStepProcessDurably(
+	files: readonly string[],
+	holder: LockedProcess,
+	steps: Map<number, LockedProcess>,
+	pid: number,
+	running: boolean,
+): void {
+	if (running) {
+		const start = processStartToken(pid);
+		steps.set(pid, { ...(start === undefined ? { pid } : { pid, start }), at: Date.now() });
+	} else steps.delete(pid);
+	const lock: BuildLock = { host: HOST, ...holder, steps: [...steps.values()] };
+	for (const file of files) {
+		try {
+			mkdirSync(dirname(file), { recursive: true });
+			const temporary = `${file}.${process.pid}.tmp`;
+			writeFileSync(temporary, JSON.stringify(lock), { mode: 0o600 });
+			renameSync(temporary, file);
+		} catch {}
+	}
 }
 
 /**
@@ -248,7 +271,7 @@ async function settleOtherBuild(file: string, root: string, options: SettleOther
 			mutex,
 		};
 	} catch (error) {
-		mutex?.release();
+		await mutex?.release();
 		throw error;
 	}
 }
@@ -313,11 +336,11 @@ async function settleLock(
 interface SettledBuild {
 	readonly warnings: string[];
 	/** Undefined when another process kept it past the wait, and this one builds anyway. */
-	readonly mutex: TakeoverMutex | undefined;
+	readonly mutex: AsyncTakeoverMutex | undefined;
 }
 
 /** Holds nothing: where the lock's directory cannot be made or written to, there is nothing to lock either. */
-const UNLOCKABLE: TakeoverMutex = { owned: () => true, release: () => {} };
+const UNLOCKABLE: AsyncTakeoverMutex = { owned: async () => true, release: async () => {} };
 
 /**
  * Takes the takeover mutex of the build lock at `file` without waiting (#5193), held from before another process's
@@ -325,22 +348,22 @@ const UNLOCKABLE: TakeoverMutex = { owned: () => true, release: () => {} };
  * directory cannot be made or written to could not be written either, and a lock that cannot be written never stops a
  * build.
  */
-async function takeBuildMutex(file: string): Promise<TakeoverMutex | undefined> {
+async function takeBuildMutex(file: string): Promise<AsyncTakeoverMutex | undefined> {
 	try {
 		await mkdir(dirname(file), { recursive: true });
 		await access(dirname(file), constants.W_OK);
 	} catch {
 		return UNLOCKABLE;
 	}
-	return takeTakeoverMutex(file, 0);
+	return takeTakeoverMutexAsync(file, 0);
 }
 
 /** Other processes' builds of a set of worktrees, settled ({@link settleOtherBuilds}). */
 export interface SettledBuilds {
 	/** The warnings for the user: a wait timed out, a step may still run, or a lock could not be read. */
 	readonly warnings: string[];
-	/** Lets other processes build the worktrees again: called once this process's build of them settled. */
-	release(): void;
+	/** Lets other processes build the worktrees again: called once this process's build of them settled. Never rejects. */
+	release(): Promise<void>;
 }
 
 /**
@@ -356,9 +379,9 @@ export async function settleOtherBuilds(
 	options: SettleOtherBuildsOptions = {},
 ): Promise<SettledBuilds> {
 	const warnings: string[] = [];
-	const held: TakeoverMutex[] = [];
-	const release = () => {
-		for (const mutex of held.splice(0)) mutex.release();
+	const held: AsyncTakeoverMutex[] = [];
+	const release = async () => {
+		for (const mutex of held.splice(0)) await mutex.release().catch(() => {});
 	};
 	const files = new Map<string, string>();
 	for (const root of roots) {
@@ -373,7 +396,7 @@ export async function settleOtherBuilds(
 			warnings.push(...settled.warnings);
 		}
 	} catch (error) {
-		release();
+		await release();
 		throw error;
 	}
 	return { warnings, release };
@@ -392,29 +415,12 @@ export async function withBuildLocks<T>(
 ): Promise<T> {
 	const files = [...new Set(roots.map((root) => buildLockPath(storeDir, root)))];
 	const steps = new Map<number, LockedProcess>();
-	// Each start and end of a step process is recorded, and the lock written, one at a time in the order they happened,
-	// as when they were recorded synchronously.
-	let writing = Promise.resolve();
-	const holder = locked(process.pid);
+	const holder = await locked(process.pid);
 	// Written once a step starts a process, so a build that runs nothing, as for an untrusted worktree, writes nothing.
-	const watch = (pid: number, running: boolean): Promise<void> => {
-		const at = Date.now();
-		writing = writing.then(async () => {
-			if (running) steps.set(pid, { ...(await locked(pid)), at });
-			else steps.delete(pid);
-			const lock: BuildLock = { host: HOST, ...(await holder), steps: [...steps.values()] };
-			for (const file of files) {
-				try {
-					await writeLock(file, lock);
-				} catch {}
-			}
-		});
-		return writing;
-	};
+	const watch = (pid: number, running: boolean) => recordStepProcessDurably(files, holder, steps, pid, running);
 	try {
 		return await stepProcessWatcher.run(watch, build);
 	} finally {
-		await writing;
 		for (const file of files) if ((await readLock(file))?.pid === process.pid) await removeLock(file);
 	}
 }

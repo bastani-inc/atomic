@@ -40,10 +40,9 @@ export interface LoggedProcessOptions {
 
 /**
  * Told of each process a step starts (`running` true) and of its end, for the build that runs the step: a build records
- * them so a later process can stop them when this one dies without stopping them (#4748). A step's process is reported
- * ended once what the watcher did with its end settled.
+ * them so a later process can stop them when this one dies without stopping them (#4748).
  */
-export const stepProcessWatcher = new AsyncLocalStorage<(pid: number, running: boolean) => Promise<void>>();
+export const stepProcessWatcher = new AsyncLocalStorage<(pid: number, running: boolean) => void>();
 
 const STOPPED_PROCESS_TREE_WAIT_MS = 10_000;
 
@@ -135,9 +134,8 @@ export async function runLoggedProcess(
 				});
 			}
 		}
-		let watched: Promise<void> | undefined;
 		const settle = () => {
-			if (child.pid !== undefined) watched = watch?.(child.pid, false);
+			if (child.pid !== undefined) watch?.(child.pid, false);
 			clearTimeout(timer);
 			options.signal?.removeEventListener("abort", onAbort);
 		};
@@ -163,7 +161,6 @@ export async function runLoggedProcess(
 			await settleTree(tree, stopped);
 			await copying;
 			settle();
-			await watched;
 			if (options.signal?.aborted) {
 				reject(options.signal.reason);
 				return;
