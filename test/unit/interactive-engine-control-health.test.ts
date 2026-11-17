@@ -9,6 +9,7 @@ import {
 } from "../../packages/coding-agent/src/core/agent-session-runtime.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { routeGlobalClearInput } from "../../packages/coding-agent/src/modes/interactive/interactive-global-clear.js";
 import { ENGINE_UNRESPONSIVE_MS } from "../../packages/coding-agent/src/modes/interactive-engine/activity-watchdog.js";
 import { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.js";
@@ -68,6 +69,7 @@ async function createHost(client: RpcClient): Promise<IsolatedInteractiveRuntime
 	const session = Object.assign({} as AgentSession, {
 		modelRuntime: await ModelRuntime.create({ modelsPath: null }),
 		sessionManager: SessionManager.inMemory(process.cwd()),
+		settingsManager: SettingsManager.inMemory(),
 		scopedModels: [],
 		sessionFile: undefined,
 		agent: {

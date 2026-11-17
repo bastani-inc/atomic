@@ -73,10 +73,15 @@ export class OAuthSelectorComponent extends FramedSelector<AuthSelectorProvider>
 		const authStatus = getAuthStatus ?? ((providerId: string) => modelRuntime.getProviderAuthStatus(providerId));
 		const animationStart = performance.now();
 		const animation = { live: false };
+		const authTypesByProvider = new Map<string, AuthSelectorProvider["authType"]>();
+		const multiMethodProviderIds = new Set<string>();
+		for (const provider of providers) {
+			const seen = authTypesByProvider.get(provider.id);
+			if (seen === undefined) authTypesByProvider.set(provider.id, provider.authType);
+			else if (seen !== provider.authType) multiMethodProviderIds.add(provider.id);
+		}
 		const items = providers.map((provider, index): SelectorItem<AuthSelectorProvider> => {
-			const hasMultipleMethods = providers.some(
-				(other) => other.id === provider.id && other.authType !== provider.authType,
-			);
+			const hasMultipleMethods = multiMethodProviderIds.has(provider.id);
 			const methodSuffix = hasMultipleMethods
 				? ` · ${formatAuthSelectorProviderType(provider.authType, provider.subscription)}`
 				: "";
@@ -90,7 +95,8 @@ export class OAuthSelectorComponent extends FramedSelector<AuthSelectorProvider>
 				label,
 				tag: status.text,
 				tagTone: status.tone,
-				searchText: `${provider.id} ${provider.authType}`,
+				searchText: `${provider.name} ${provider.id}`,
+				searchTextMode: "replace",
 				labelStyle: (text, selected) => {
 					const color = selected ? "accent" : "text";
 					if (text !== label) return theme.fg(color, text);

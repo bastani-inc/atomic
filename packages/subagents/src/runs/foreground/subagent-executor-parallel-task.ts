@@ -186,6 +186,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			task.group ?? input.setIntercomGroup,
 			inheritedIntercomGroup(input.ctx),
 			input.sharedAutoIntercomGroup,
+			input.ctx.intercomPolicy,
 		);
 		// Sends to the child wait for it to register, before its first turn, instead of finding no session.
 		const startHold = await holdStartingChild({
