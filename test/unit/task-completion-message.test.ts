@@ -368,6 +368,29 @@ test("a subagent's completion notice shows its result's headline and keeps the r
 	assert.match(shellExpanded, /fourth line/);
 });
 
+test.each([20, 80, 160])("expanded agent notices show every retained result line at width %i (#5342)", (width) => {
+	initTheme("dark");
+	const output = Array.from({ length: 100 }, (_, index) => `finding ${index + 1}`).join("\n");
+	const notice = taskCompletionNotice(envelope, { kind: "agent", title: "review" }, output);
+	assert.equal(notice.preview, output);
+	const rows = new TaskCompletionMessage(notice, true).render(width);
+	const expanded = rows.map((row) => stripVTControlCharacters(row)).join("\n");
+	for (let index = 1; index <= 100; index++) assert.match(expanded, new RegExp(`finding ${index}(?:\\n|$)`));
+	assert.ok(rows.every((row) => visibleWidth(row) <= width));
+});
+
+test("expanded agent results also retain text beyond 40 soft wraps (#5342)", () => {
+	initTheme("dark");
+	const output = `${"z".repeat(7900)} final-result`;
+	const notice = taskCompletionNotice(envelope, { kind: "agent", title: "review" }, output);
+	const rows = new TaskCompletionMessage(notice, true).render(20).map(stripVTControlCharacters);
+	const result = rows
+		.slice(1)
+		.map((row) => row.slice(5))
+		.join("");
+	assert.equal(result.replace(/\s/g, ""), output.replace(/\s/g, ""));
+});
+
 test("completion notices distinguish agents without model metadata from shell output tails (#5243)", () => {
 	initTheme("dark");
 	const preview = Array.from({ length: 10 }, (_, index) => `line${index + 1}`).join("\n");
