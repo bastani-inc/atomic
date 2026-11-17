@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { test, vi } from "vitest";
+import { keptExitedPid } from "../helpers/exited-process.js";
 import { createProcessSuspender } from "../helpers/process-suspension.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
@@ -118,13 +119,31 @@ test.each([true, false])(
 test(
 	"suspending a process that does not exist rejects (#4313)",
 	async () => {
+		const unassignedPid = process.platform === "win32" ? 0xffff_fffc : 0x7fff_ffff;
 		const suspender = await createProcessSuspender();
 		try {
-			const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
-			const pid = child.pid;
-			assert.ok(pid !== undefined);
-			await new Promise((resolve) => child.once("exit", resolve));
-			await assert.rejects(suspender.suspend(pid));
+			await assert.rejects(
+				suspender.suspend(unassignedPid),
+				process.platform === "win32" ? /OpenProcess failed/ : { code: "ESRCH" },
+			);
+		} finally {
+			await suspender.close();
+		}
+	},
+	CONTROLLER_AND_CHILD_TIMEOUT_MS,
+);
+
+test(
+	"suspending an exited process whose pid cannot be reused rejects (#4313)",
+	async () => {
+		const suspender = await createProcessSuspender();
+		try {
+			const exited = await keptExitedPid();
+			try {
+				await assert.rejects(suspender.suspend(exited.pid));
+			} finally {
+				await exited.release();
+			}
 		} finally {
 			await suspender.close();
 		}
