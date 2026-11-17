@@ -48,13 +48,13 @@ export async function requestBrokerShutdown(
 export async function waitForBrokerExit(
 	pid: number,
 	timeoutMs: number = BROKER_STOP_TIMEOUT_MS,
-	onPoll?: () => void,
+	onPoll?: () => void | Promise<void>,
 ): Promise<void> {
 	const startedAt = Date.now();
 	while (isProcessAlive(pid)) {
 		const elapsedMs = Date.now() - startedAt;
 		if (elapsedMs >= timeoutMs) throw new IntercomBrokerStopTimeoutError({ pid, timeoutMs, elapsedMs });
-		onPoll?.();
+		await onPoll?.();
 		await sleep(EXIT_POLL_INTERVAL_MS);
 	}
 }
