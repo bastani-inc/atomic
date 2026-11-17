@@ -2034,7 +2034,6 @@ mod tests {
 		unsafe { libc::kill(-pid, libc::SIGCONT) };
 		actor.shutdown();
 	}
-	#[cfg(unix)]
 	/// Memory the host holds while it starts commands: a fork copies the page tables of all of it first, about 65 ms
 	/// per GiB on Linux.
 	#[cfg(target_os = "linux")]
@@ -2088,6 +2087,7 @@ mod tests {
 		actor.shutdown();
 	}
 
+	#[cfg(unix)]
 	#[test]
 	fn started_command_exposes_its_process_group_for_identity_only() {
 		let (actor, owner) = command_owner();
