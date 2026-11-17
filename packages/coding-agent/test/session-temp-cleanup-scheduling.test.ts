@@ -5,12 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
 
-const spawned = vi.hoisted(() => ({ spawnSync: vi.fn() }));
+const spawned = vi.hoisted(() => ({ spawn: vi.fn(), spawnSync: vi.fn() }));
 
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
+	spawned.spawn.mockImplementation(actual.spawn);
 	spawned.spawnSync.mockImplementation(actual.spawnSync);
-	return { ...actual, spawnSync: spawned.spawnSync };
+	return { ...actual, spawn: spawned.spawn, spawnSync: spawned.spawnSync };
 });
 
 const {
@@ -58,6 +59,7 @@ test.skipIf(process.platform !== "win32")(
 		resetSessionTempDirStateForTesting();
 		const root = getTempRootDir();
 		mkdirSync(root);
+		spawned.spawn.mockClear();
 		spawned.spawnSync.mockClear();
 
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -67,11 +69,11 @@ test.skipIf(process.platform !== "win32")(
 
 		assert.ok(existsSync(join(root, CLEANUP_MARKER_FILE)), "the sweep verified the temp root and ran");
 		assert.deepEqual(
-			spawned.spawnSync.mock.calls
+			[...spawned.spawn.mock.calls, ...spawned.spawnSync.mock.calls]
 				.map(([command]) => String(command))
 				.filter((command) => /powershell|pwsh/i.test(command)),
 			[],
-			"no PowerShell process held the main thread",
+			"the native reader needed no PowerShell process",
 		);
 	},
 );

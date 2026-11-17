@@ -11,12 +11,13 @@ import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/
 import { getArtifactsDir } from "../../packages/subagents/src/shared/artifacts.js";
 import type { RunSyncOptions, SingleResult } from "../../packages/subagents/src/shared/types.js";
 
-const spawned = vi.hoisted(() => ({ spawnSync: vi.fn() }));
+const spawned = vi.hoisted(() => ({ spawn: vi.fn(), spawnSync: vi.fn() }));
 
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
+	spawned.spawn.mockImplementation(actual.spawn);
 	spawned.spawnSync.mockImplementation(actual.spawnSync);
-	return { ...actual, spawnSync: spawned.spawnSync };
+	return { ...actual, spawn: spawned.spawn, spawnSync: spawned.spawnSync };
 });
 
 const envKeys = ["TMPDIR", "TEMP", "TMP", "XDG_RUNTIME_DIR", "ATOMIC_CODING_AGENT_DIR"] as const;
@@ -97,6 +98,7 @@ test("registering the subagent extension leaves the session-less artifact direct
 test.skipIf(process.platform !== "win32")(
 	"a subagent launched from an in-memory session verifies its artifact directory without starting PowerShell on the main thread (#5324)",
 	async () => {
+		spawned.spawn.mockClear();
 		spawned.spawnSync.mockClear();
 		const cwd = join(dirname(agentDir), "project");
 		mkdirSync(cwd, { recursive: true });
@@ -176,11 +178,11 @@ test.skipIf(process.platform !== "win32")(
 
 		assert.notEqual(result.isError, true, JSON.stringify(result.content));
 		assert.deepEqual(
-			spawned.spawnSync.mock.calls
+			[...spawned.spawn.mock.calls, ...spawned.spawnSync.mock.calls]
 				.map(([command]) => String(command))
 				.filter((command) => /powershell|pwsh/i.test(command)),
 			[],
-			"no PowerShell process held the main thread",
+			"the native reader needed no PowerShell process",
 		);
 		assert.deepEqual(
 			launchedArtifactDirs,
