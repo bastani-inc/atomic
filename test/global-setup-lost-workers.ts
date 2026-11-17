@@ -42,6 +42,7 @@ const EXIT_CODE_MEANINGS = new Map<number, string>([
 	[0xc0000409, "fail-fast (V8 CHECK or native abort)"],
 	[0xc0000374, "heap corruption"],
 	[0xc0000017, "out of memory"],
+	[0xc000013a, "Ctrl+C or console close"],
 	[134, "abort"],
 ]);
 
@@ -51,19 +52,26 @@ const SIGNAL_MEANINGS: Readonly<Record<string, string>> = {
 	SIGABRT: "abort",
 };
 
-function decodeExit(code: number | null, signal: NodeJS.Signals | null): string {
+const OWN_EXIT_WITH_STATUS_1 =
+	"the worker's own exit with status 1 (process.exit(1), process.reallyExit(1), an uncaught exception, or Vitest's exit after its IPC channel to the main process broke)";
+
+export function decodeExit(
+	code: number | null,
+	signal: NodeJS.Signals | null,
+	platform: NodeJS.Platform = process.platform,
+): string {
 	if (code !== null) {
 		const unsigned = code >>> 0;
 		const known = EXIT_CODE_MEANINGS.get(unsigned);
 		if (known) return known;
-		if (process.platform === "win32" && unsigned === 1 && signal === null) {
-			return "terminated (TerminateProcess: process.kill or taskkill)";
+		if (unsigned === 1 && signal === null) {
+			return platform === "win32"
+				? `exit status 1, cause ambiguous: TerminateProcess (process.kill or taskkill), or ${OWN_EXIT_WITH_STATUS_1}`
+				: `exit status 1, cause ambiguous: ${OWN_EXIT_WITH_STATUS_1}`;
 		}
+		return `exit status ${code}`;
 	}
-	if (signal !== null) {
-		const known = SIGNAL_MEANINGS[signal];
-		if (known) return known;
-	}
+	if (signal !== null) return SIGNAL_MEANINGS[signal] ?? `signal ${signal}`;
 	return "unexpected exit";
 }
 

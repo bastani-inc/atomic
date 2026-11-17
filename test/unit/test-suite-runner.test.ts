@@ -437,7 +437,7 @@ const LOST_WORKER_CONFIG = [
 
 function expectedLostWorkerKillStatus(): RegExp {
 	return process.platform === "win32"
-		? /exited with code 1 \(0x1 terminated \(TerminateProcess: process\.kill or taskkill\)\) signal null after \d+ ms/
+		? /exited with code 1 \(0x1 exit status 1, cause ambiguous: TerminateProcess[^\n]*\) signal null after \d+ ms/
 		: /exited with code null \(killed \(out-of-memory killer or external kill\)\) signal SIGKILL after \d+ ms/;
 }
 
@@ -475,6 +475,30 @@ test(
 		);
 		assert.equal(result.code, 0, result.output);
 		assert.doesNotMatch(result.output, /Lost test worker/);
+	},
+	REAL_VITEST_SUITE_TIMEOUT_MS,
+);
+
+test(
+	"a test worker that exits with status 1 on its own is reported with its raw status, without claiming a kill (#5325)",
+	async () => {
+		const result = await realVitestSuite(
+			{
+				"vitest.config.ts": LOST_WORKER_CONFIG,
+				"suite.test.ts": [
+					'import { test } from "vitest";',
+					'test("exits its own worker", () => { process.reallyExit(1); });',
+				].join("\n"),
+			},
+			[process.execPath, join(root, "node_modules", "vitest", "vitest.mjs"), "--run", "--project", "unit"],
+		);
+		assert.notEqual(result.code, 0);
+		assert.match(
+			result.output,
+			/Lost test worker: suite\.test\.ts exited with code 1 \(0x1 exit status 1, cause ambiguous: [^\n]*process\.exit\(1\)[^\n]*\) signal null after \d+ ms/,
+		);
+		assert.doesNotMatch(result.output, /Lost test worker: [^\n]*killed/);
+		if (process.platform !== "win32") assert.doesNotMatch(result.output, /Lost test worker: [^\n]*TerminateProcess/);
 	},
 	REAL_VITEST_SUITE_TIMEOUT_MS,
 );
