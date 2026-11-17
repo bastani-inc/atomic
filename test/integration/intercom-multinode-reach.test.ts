@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import net from "node:net";
 import { afterAll, beforeAll, beforeEach, test, vi } from "vitest";
+import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
+import type { BrokerMessage } from "../../packages/intercom/types.js";
 import { TWO_BROKER_STORAGE_PREFIX, TwoBrokerHarness } from "../helpers/intercom-two-broker-harness.js";
 
 const REAL_BROKERS_HOOK_TIMEOUT_MS = 60_000;
@@ -121,7 +124,7 @@ test(
 		const wildcardChildName = `subagent-worker-${unique("wildcard")}-1`;
 		const wildcardAuth = await supervisorA.client.authorizeSupervisorChild(wildcardChildName);
 		await supervisorA.client.reserveRestoringRecipient(wildcardAuth.capability, {
-			group: `${homeA.replace("%", "X").replace("_", "Y")}/team`,
+			group: `${homeA.replaceAll("%", "X").replaceAll("_", "Y")}/team`,
 		});
 
 		const fromPlain = await plain.client.send(startingName, { text: "plain has no subgroup reach" });
@@ -167,6 +170,151 @@ test(
 					),
 				ARRIVAL_WAIT,
 			);
+		}
+	},
+	REAL_BROKERS_HOOK_TIMEOUT_MS,
+);
+
+async function wireSender(home: string, reachable: string[]) {
+	const socket = net.connect(harness.socketPath("a"));
+	const frames: BrokerMessage[] = [];
+	const errors: Error[] = [];
+	socket.on("error", (error) => errors.push(error));
+	socket.on(
+		"data",
+		createMessageReader(
+			(frame) => frames.push(frame as unknown as BrokerMessage),
+			(error) => errors.push(error),
+		),
+	);
+	const next = async (matches: (frame: BrokerMessage) => boolean): Promise<BrokerMessage> => {
+		let found: BrokerMessage | undefined;
+		await vi.waitFor(() => {
+			assert.deepEqual(errors, []);
+			found = frames.find(matches);
+			assert.ok(found, "the broker answered the request");
+		}, ARRIVAL_WAIT);
+		return found!;
+	};
+	await new Promise<void>((resolveConnect, rejectConnect) => {
+		socket.once("connect", resolveConnect);
+		socket.once("error", rejectConnect);
+	});
+	const now = Date.now();
+	writeMessage(socket, {
+		type: "register",
+		session: {
+			name: unique("wire-sender"),
+			cwd: harness.root,
+			model: "test-model",
+			pid: process.pid,
+			startedAt: now,
+			lastActivity: now,
+			group: home,
+			groups: [home],
+		},
+		protocol: { min: 4, max: 4 },
+		reach: { home, reachable },
+	});
+	try {
+		await next((frame) => frame.type === "registered");
+	} catch (error) {
+		socket.destroy();
+		throw error;
+	}
+	return {
+		socket,
+		next,
+		sendThenReach(to: string, messageId: string, groups: string[]) {
+			const requestId = randomUUID();
+			socket.cork();
+			writeMessage(socket, {
+				type: "send",
+				to,
+				message: { id: messageId, timestamp: Date.now(), content: { text: messageId } },
+				awaitRestoringRecipient: true,
+			});
+			writeMessage(socket, { type: "set_reach", requestId, reachable: groups });
+			socket.uncork();
+			return next((frame) => frame.type === "reach_ack" && frame.requestId === requestId);
+		},
+	};
+}
+
+for (const node of ["a", "b"] as const)
+	for (const initiallyReachable of [true, false])
+		test(
+			`a send to broker ${node} uses the reach read before a same-tick ${initiallyReachable ? "narrowing" : "widening"} (#5352)`,
+			async () => {
+				const [home, other] = [unique("receipt-home"), unique("receipt-other")];
+				const recipient = await harness.connect(node, unique("recipient"), { group: other, reachable: [] });
+				const sender = await wireSender(home, initiallyReachable ? [other] : []);
+				try {
+					const messageId = randomUUID();
+					await sender.sendThenReach(recipient.sessionId, messageId, initiallyReachable ? [] : [other]);
+					const outcome = await sender.next(
+						(frame) =>
+							(frame.type === "delivered" || frame.type === "delivery_failed") && frame.messageId === messageId,
+					);
+					assert.equal(
+						outcome.type,
+						initiallyReachable ? "delivered" : "delivery_failed",
+						JSON.stringify(outcome),
+					);
+					if (initiallyReachable) {
+						assert.equal(recipient.messagesWithId(messageId).length, 1);
+						const laterId = randomUUID();
+						writeMessage(sender.socket, {
+							type: "send",
+							to: recipient.sessionId,
+							message: { id: laterId, timestamp: Date.now(), content: { text: "after narrowing" } },
+						});
+						await sender.next((frame) => frame.type === "delivery_failed" && frame.messageId === laterId);
+					} else {
+						assert.equal(
+							outcome.type === "delivery_failed" && /outside this session's Intercom reach/.test(outcome.reason),
+							true,
+						);
+					}
+					await new Promise((resolveSettle) => setTimeout(resolveSettle, SETTLE_MS));
+					assert.equal(recipient.received.length, initiallyReachable ? 1 : 0);
+				} finally {
+					sender.socket.destroy();
+				}
+			},
+			REAL_BROKERS_HOOK_TIMEOUT_MS,
+		);
+
+test(
+	"a send held across brokers keeps its receipt-time reach after a same-tick narrowing (#5352)",
+	async () => {
+		const [home, other] = [unique("held-receipt-home"), unique("held-receipt-other")];
+		const owner = await harness.connect("b", unique("held-owner"), {
+			group: other,
+			supervisorOwnerToken: randomUUID(),
+		});
+		const childName = `subagent-worker-${unique("held-child")}-1`;
+		const auth = await owner.client.authorizeSupervisorChild(childName);
+		await owner.client.reserveRestoringRecipient(auth.capability, { group: other, holdMs: 60_000 });
+		const sender = await wireSender(home, [other]);
+		try {
+			const messageId = randomUUID();
+			await sender.sendThenReach(childName, messageId, []);
+			await sender
+				.next(
+					(frame) =>
+						(frame.type === "send_held" || frame.type === "delivery_failed") && frame.messageId === messageId,
+				)
+				.then((frame) => assert.equal(frame.type, "send_held", JSON.stringify(frame)));
+			const child = await harness.connect("b", childName, { group: other, reachable: [], supervisor: auth });
+			const outcome = await sender.next(
+				(frame) =>
+					(frame.type === "delivered" || frame.type === "delivery_failed") && frame.messageId === messageId,
+			);
+			assert.equal(outcome.type, "delivered", JSON.stringify(outcome));
+			assert.equal(child.messagesWithId(messageId).length, 1);
+		} finally {
+			sender.socket.destroy();
 		}
 	},
 	REAL_BROKERS_HOOK_TIMEOUT_MS,

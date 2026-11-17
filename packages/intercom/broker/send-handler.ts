@@ -171,6 +171,7 @@ export interface RemoteSendRequest {
 
 /** Local sends the multi-node router has already checked against the shared outbox. */
 const checkedAgainstSharedOutbox = new WeakSet<SendClientMessage>();
+const sendersAtReceipt = new WeakMap<SendClientMessage, BrokerConnectedSession>();
 
 export type RemoteSendRouter = (request: RemoteSendRequest) => void;
 function wireMessageId(value: unknown): string {
@@ -274,10 +275,19 @@ export function handleBrokerSend(
   }
 
 
-  const fromSession = currentId ? sessions.get(currentId) : undefined;
-  if (!fromSession) {
+  const liveSender = currentId ? sessions.get(currentId) : undefined;
+  if (!liveSender) {
     write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Sender session not found" });
     return;
+  }
+  let fromSession = sendersAtReceipt.get(clientMessage);
+  if (fromSession === undefined) {
+    fromSession = liveSender.reach === undefined ? liveSender : {
+      ...liveSender,
+      info: { ...liveSender.info, groups: liveSender.info.groups?.slice() },
+      reach: { home: liveSender.reach.home, reachable: [...liveSender.reach.reachable] },
+    };
+    sendersAtReceipt.set(clientMessage, fromSession);
   }
 	const senderIdentity = fromSession.registrationReturnAddress ?? fromSession.info.id;
 	const logicalTarget = typeof clientMessage.logicalTarget === "string" ? clientMessage.logicalTarget : clientMessage.to;
