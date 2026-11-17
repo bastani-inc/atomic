@@ -1,6 +1,6 @@
 import type { Component } from "@bastani/atomic-tui";
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
-import type { Theme } from "@bastani/atomic";
+import { Markdown, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
+import { getMarkdownTheme, type Theme } from "@bastani/atomic";
 import type { SessionInfo, Message } from "../types.js";
 import { terminalSafeLabel, terminalSafeText } from "./terminal-text.js";
 
@@ -41,7 +41,9 @@ export class InlineMessageComponent implements Component {
     const headerPadding = Math.max(0, bodyWidth - visibleWidth(headerText));
     lines.push(this.theme.fg("accent", `╭${headerText}${borderChar.repeat(headerPadding)}╮`));
 
-    const contentLines = wrapTextWithAnsi(terminalSafeText(this.bodyText || this.message.content.text), bodyWidth);
+    const contentLines = new Markdown(
+      terminalSafeText(this.bodyText ?? this.message.content.text), 0, 0, getMarkdownTheme(),
+    ).render(bodyWidth);
     for (const line of contentLines) {
       const text = truncateToWidth(line, bodyWidth, "");
       const padding = Math.max(0, bodyWidth - visibleWidth(text));

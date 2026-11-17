@@ -1,10 +1,22 @@
 import assert from "node:assert/strict";
-import { test } from "vitest";
+import { getKeybindings, setKeybindings, stripTerminalSequences, visibleWidth } from "@bastani/atomic-tui";
+import { afterEach, beforeEach, test } from "vitest";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import type { Details } from "../../packages/subagents/src/shared/types.js";
 import { renderSingleCompact } from "../../packages/subagents/src/tui/render-result-compact.js";
 import { theme } from "./subagents-render-stability-helpers.js";
 
 type Result = Details["results"][number];
+
+const originalKeybindings = getKeybindings();
+
+beforeEach(() => {
+	initTheme("dark", false);
+	setKeybindings(new KeybindingsManager());
+});
+
+afterEach(() => setKeybindings(originalKeybindings));
 
 function details(result: Result): Details {
 	return { mode: "single", results: [result] } as Details;
@@ -50,7 +62,11 @@ function runningSteps(completed: number, currentArgs?: string): Result {
 	};
 }
 
-const text = (component: { render(width: number): string[] }) => component.render(160).join("\n");
+const text = (component: { render(width: number): string[] }, width = 160) =>
+	component
+		.render(width)
+		.map((line) => stripTerminalSequences(line).trimEnd())
+		.join("\n");
 
 test("a running child shows its last three tool calls and one running line under its call heading (#5224)", () => {
 	const out = text(renderSingleCompact(details(running(9, 5)), running(9, 5), theme, 0, 0));
@@ -59,7 +75,34 @@ test("a running child shows its last three tool calls and one running line under
 	assert.match(out, /step 3/);
 	assert.match(out, /step 5/);
 	assert.doesNotMatch(out, /step 2/);
-	assert.match(out, /⎿ {2}\S+ Running · 18m · ↓ 87k tokens/);
+	assert.match(out, /^ {2}⎿ {2}Running · 18m · ↓ 87\.4k tokens · ↓ to manage$/m);
+});
+
+test("a running child's line names no model and counts output even without tool calls (#5224)", () => {
+	const child = { ...running(0, 0), model: "anthropic/claude-haiku", thinking: "low" } as Result;
+	const out = text(renderSingleCompact(details(child), child, theme, 0, 0));
+	assert.match(out, /⎿ {2}Running · 18m · ↓ 87\.4k tokens/);
+	assert.doesNotMatch(out, /claude-haiku/);
+});
+
+test("a running card keeps each tool on one line at narrow and wide widths (#5224)", () => {
+	const child = running(3, 3);
+	child.progress!.recentTools = child.progress!.recentTools.map((tool) => ({ ...tool, args: "x".repeat(180) }));
+	for (const width of [20, 80, 160]) {
+		const lines = renderSingleCompact(details(child), child, theme, 0, 0).render(width);
+		assert.equal(lines.length, 5, `three tools, activity and status at ${width} columns`);
+		assert.ok(lines.every((line) => visibleWidth(line) <= width));
+	}
+});
+
+test("a running card's management hint follows rebound and disabled live keys (#5224)", () => {
+	const child = running(0, 0);
+	setKeybindings(new KeybindingsManager({ "app.agents.focus": "ctrl+g" }));
+	assert.match(text(renderSingleCompact(details(child), child, theme, 0, 0)), /ctrl\+g to manage/);
+	setKeybindings(new KeybindingsManager({ "app.agents.focus": [], "app.tools.expand": "ctrl+e" }));
+	assert.match(text(renderSingleCompact(details(child), child, theme, 0, 0)), /ctrl\+e for live detail/);
+	setKeybindings(new KeybindingsManager({ "app.agents.focus": [], "app.tools.expand": [] }));
+	assert.doesNotMatch(text(renderSingleCompact(details(child), child, theme, 0, 0)), /to manage|for live detail/);
 });
 
 test("a running child with few tool calls folds nothing (#5224)", () => {
@@ -82,7 +125,8 @@ test("a finished child is one outcome line plus the result's headline (#5224)", 
 		],
 	} as unknown as Result;
 	const out = text(renderSingleCompact(details(result), result, theme, 0, 0));
-	assert.match(out, /debugger.* finished/);
+	assert.match(out, /^⏺ debugger finished · 1h 31m$/m);
+	assert.doesNotMatch(out, /tool uses|tokens|⟳/);
 	assert.match(out, /⎿ {2}PR #5221 open: atomic lock creation/);
 	assert.doesNotMatch(out, /second line stays hidden/);
 	assert.doesNotMatch(out, /session:/);
@@ -126,7 +170,8 @@ test("a running child accounts for all nine tool calls while active and settled 
 		],
 	} as unknown as Result;
 	const settledOut = text(renderSingleCompact(details(settled), settled, theme, 0, 0));
-	assert.match(settledOut, /debugger.* finished .*9 tool uses/);
+	assert.match(settledOut, /^⏺ debugger finished · 18m$/m);
+	assert.doesNotMatch(settledOut, /tool uses/);
 	assert.match(settledOut, /⎿ {2}All nine steps verified/);
 	assert.doesNotMatch(settledOut, /… \+|bash: step|Running|details behind expand/);
 });

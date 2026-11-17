@@ -6,7 +6,7 @@ import {
 	type AgentSession,
 	type AgentSessionEvent,
 	type AgentSessionEventListener,
-	agentTokenTotal,
+	AgentTokenMeter,
 	applyAssistantMessageDelta,
 	beginStreamingAssistantMessage,
 	buildSkillCatalog,
@@ -2058,7 +2058,7 @@ export class SubagentControlRuntime {
 			};
 			// Snapshot at the public session-event boundary, never ahead of its queued events.
 			let observedStreamingMessage: AssistantMessage | undefined;
-			const settledAssistantMessages: AssistantMessage[] = [];
+			const tokenMeter = new AgentTokenMeter(session.messages);
 			taskHooks?.bindTranscript?.({
 				getSessionId: () => sessionManager.getSessionId(),
 				getEntries: () => sessionManager.getEntries(),
@@ -2099,7 +2099,7 @@ export class SubagentControlRuntime {
 				recentTools: [],
 				recentOutput: [],
 				toolCount: 0,
-				tokens: 0,
+				tokens: tokenMeter.total(),
 				durationMs: 0,
 				lastActivityAt: Date.now(),
 			};
@@ -2110,8 +2110,6 @@ export class SubagentControlRuntime {
 				const onProgress = admitted.spec.onProgress;
 				if (!onProgress && !taskHooks) return;
 				const now = Date.now();
-				if (!force && now - lastProgressEmit < 400) return;
-				lastProgressEmit = now;
 				progressState.durationMs = now - attemptStartedAt;
 				progressState.lastActivityAt = now;
 				taskHooks?.reportActivity({
@@ -2123,6 +2121,8 @@ export class SubagentControlRuntime {
 						tokenCount: progressState.tokens,
 					},
 				});
+				if (!force && now - lastProgressEmit < 400) return;
+				lastProgressEmit = now;
 				onProgress?.({ ...progressState, recentTools: [...progressState.recentTools] });
 			};
 			let activitySequence = 0;
@@ -2150,9 +2150,9 @@ export class SubagentControlRuntime {
 					applyAssistantMessageDelta(observedStreamingMessage, event.assistantMessageEvent);
 				else if (event.type === "message_end" && event.message.role === "assistant") {
 					observedStreamingMessage = undefined;
-					settledAssistantMessages.push(event.message);
+					tokenMeter.settled(event.message);
+					progressState.tokens = tokenMeter.total();
 				}
-				progressState.tokens = agentTokenTotal(settledAssistantMessages, observedStreamingMessage);
 				const emission = progressEmissionFor(event.type);
 				if (event.type === "tool_execution_start") {
 					taskHooks?.reportActivity({

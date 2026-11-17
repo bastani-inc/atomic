@@ -13,7 +13,7 @@ import type { ChatSessionHostEntry } from "./chat-session-host-types.ts";
 import { cacheKey, isChatMessageEntry, stripAnsi, tailStreamingText } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import { FooterComponent, UsageMeterComponent } from "./footer.ts";
-import { agentTokenTotal, compactionMeta, type WorkingRunSnapshot } from "./working-run-meter.ts";
+import { AgentTokenMeter, agentTokenTotal, compactionMeta, type WorkingRunSnapshot } from "./working-run-meter.ts";
 import { WorkingStatusComponent } from "./working-status.ts";
 
 export function renderChatSessionBody<TExtraEntry extends ChatTranscriptEntryLike>(
@@ -64,19 +64,66 @@ export function renderChatSessionPendingMessages<TExtraEntry extends ChatTranscr
 	return lines;
 }
 
+interface TranscriptTokenCache {
+	firstEntry: ChatTranscriptEntryLike | undefined;
+	lastSettledEntry: ChatTranscriptEntryLike | undefined;
+	settledCount: number;
+	meter: AgentTokenMeter;
+}
+
+const transcriptTokenCaches = new WeakMap<object, TranscriptTokenCache>();
+
+function readTranscriptTokens<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): { readonly settledTokens: number; readonly streamingTokens: number } {
+	let cache = transcriptTokenCaches.get(state);
+	if (
+		!cache ||
+		state.transcript.length < cache.settledCount ||
+		state.transcript[0] !== cache.firstEntry ||
+		(cache.settledCount > 0 && state.transcript[cache.settledCount - 1] !== cache.lastSettledEntry)
+	) {
+		cache = {
+			firstEntry: state.transcript[0],
+			lastSettledEntry: undefined,
+			settledCount: 0,
+			meter: new AgentTokenMeter(),
+		};
+		transcriptTokenCaches.set(state, cache);
+	}
+	let streaming: AssistantMessage | undefined;
+	let sawStreaming = false;
+	for (let index = cache.settledCount; index < state.transcript.length; index += 1) {
+		const entry = state.transcript[index]!;
+		if (isChatMessageEntry(entry) && entry.kind === "assistant") {
+			if (state.liveChat.isStreamingAssistantEntry(entry)) {
+				streaming = entry.message;
+				sawStreaming = true;
+				continue;
+			}
+			if (!sawStreaming) {
+				cache.meter.settled(entry.message);
+			}
+		}
+		if (!sawStreaming) {
+			if (cache.settledCount === 0) cache.firstEntry = state.transcript[0];
+			cache.settledCount = index + 1;
+			cache.lastSettledEntry = entry;
+		}
+	}
+	return {
+		settledTokens: cache.meter.total(),
+		streamingTokens: streaming === undefined ? 0 : agentTokenTotal([], streaming),
+	};
+}
+
 export function chatSessionTokenCount<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 ): number {
+	const { settledTokens, streamingTokens } = readTranscriptTokens(state);
 	const counted = state.workingTokenCount?.();
-	if (counted !== undefined) return counted;
-	const settled: AssistantMessage[] = [];
-	let streaming: AssistantMessage | undefined;
-	for (const entry of state.transcript) {
-		if (!isChatMessageEntry(entry) || entry.kind !== "assistant") continue;
-		if (state.liveChat.isStreamingAssistantEntry(entry)) streaming = entry.message;
-		else settled.push(entry.message);
-	}
-	return agentTokenTotal(settled, streaming);
+	if (counted !== undefined && counted > 0) return counted + streamingTokens;
+	return settledTokens + streamingTokens;
 }
 
 export function chatSessionWorkingMeta<TExtraEntry extends ChatTranscriptEntryLike>(

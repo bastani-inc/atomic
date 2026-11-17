@@ -323,3 +323,62 @@ test("non-reduced in-flight host construction first renders the regular pulse ph
 		else process.env.ATOMIC_REDUCED_MOTION = previousReducedMotion;
 	}
 });
+
+test("delta-only message_update and thinking_delta events flip the token arrow down and count streaming tokens, and shrinking input after compaction updates the total (#5224)", () => {
+	const previousRandom = Math.random;
+	const timers = installLifecycleFakeClock();
+	Math.random = () => 0;
+	const host = makeLifecycleHost();
+	try {
+		host.applyAgentEvent({ type: "agent_start" } as never);
+		host.applyAgentEvent({ type: "turn_start" } as never);
+		host.applyAgentEvent({
+			type: "message_start",
+			message: { role: "assistant", content: [] },
+		} as never);
+		host.applyAgentEvent({
+			type: "message_update",
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "a".repeat(400) },
+		} as never);
+		assert.equal(workingLine(host), " ∀ Schlepping... (0s · ↓ 100 tokens)");
+
+		host.applyAgentEvent({
+			type: "message_end",
+			message: {
+				role: "assistant",
+				content: [{ type: "text", text: "a".repeat(400) }],
+				usage: { input: 500, output: 100, cacheRead: 0, cacheWrite: 0 },
+				stopReason: "toolUse",
+			},
+		} as never);
+		host.applyAgentEvent({ type: "turn_end" } as never);
+		host.applyAgentEvent({ type: "turn_start" } as never);
+		assert.equal(workingLine(host), " ∀ Schlepping... (0s · ↑ 600 tokens)");
+
+		host.applyAgentEvent({
+			type: "message_start",
+			message: { role: "assistant", content: [] },
+		} as never);
+		host.applyAgentEvent({
+			type: "thinking_delta",
+			delta: "b".repeat(80),
+		} as never);
+		assert.equal(workingLine(host), " ∀ Schlepping... (0s · ↓ 620 tokens)");
+
+		host.applyAgentEvent({
+			type: "message_end",
+			message: {
+				role: "assistant",
+				content: [{ type: "thinking", thinking: "b".repeat(80) }],
+				usage: { input: 200, output: 20, cacheRead: 0, cacheWrite: 0 },
+				stopReason: "stop",
+			},
+		} as never);
+		host.applyAgentEvent({ type: "agent_end", messages: [] } as never);
+		assert.equal(host.renderWorkingStatus(64).map(stripAnsi)[1]?.trim(), "∀ Schlepped for 0s · ↓ 320 tokens");
+	} finally {
+		host.dispose();
+		timers.restore();
+		Math.random = previousRandom;
+	}
+});

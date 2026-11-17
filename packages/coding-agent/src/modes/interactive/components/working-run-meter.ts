@@ -72,18 +72,31 @@ function hasContent(message: MeteredMessage | undefined): boolean {
 	});
 }
 
-export function agentTokenTotal(messages: readonly MeteredMessage[], streaming?: MeteredMessage): number {
-	let output = 0;
-	let latestInput = 0;
-	for (const message of messages) {
-		if (message.role !== "assistant") continue;
-		output += meteredOutputTokens(message);
-		const usage = message.usage;
-		const input = (usage?.input ?? 0) + (usage?.cacheRead ?? 0) + (usage?.cacheWrite ?? 0);
-		if (input > 0) latestInput = input;
+export class AgentTokenMeter {
+	private outputTokens = 0;
+	private latestInputTokens = 0;
+
+	constructor(messages: readonly MeteredMessage[] = []) {
+		for (const message of messages) this.settled(message);
 	}
-	const live = streaming?.role === "assistant" ? meteredOutputTokens(streaming, true) : 0;
-	return latestInput + output + live;
+
+	settled(message: MeteredMessage): void {
+		if (message.role !== "assistant") return;
+		this.outputTokens += meteredOutputTokens(message);
+		const usage = message.usage;
+		if (usage && (usage.input !== undefined || usage.cacheRead !== undefined || usage.cacheWrite !== undefined)) {
+			this.latestInputTokens = (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+		}
+	}
+
+	total(streaming?: MeteredMessage): number {
+		const live = streaming?.role === "assistant" ? meteredOutputTokens(streaming, true) : 0;
+		return this.latestInputTokens + this.outputTokens + live;
+	}
+}
+
+export function agentTokenTotal(messages: readonly MeteredMessage[], streaming?: MeteredMessage): number {
+	return new AgentTokenMeter(messages).total(streaming);
 }
 
 const serializedArgumentLengths = new WeakMap<object, number>();

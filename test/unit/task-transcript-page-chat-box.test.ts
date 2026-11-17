@@ -490,18 +490,50 @@ describe("a live subagent's chat box (#4640)", () => {
 	});
 
 	test("a running subagent's working line counts the same tokens as its task row (#5224)", async () => {
-		const tasks = tree().map((task) =>
-			task.ref.taskId === "child" ? { ...task, metrics: { tokenCount: 87_400 } } : task,
-		);
+		let tokenCount = 87_400;
 		const live = { ...session("child", "subagent-worker-aabcf28b-1"), isRunning: () => true };
+		const baseSource = treeSource(tree(), new Map([["child", live]]));
+		const source = {
+			...baseSource,
+			get tasks() {
+				return tree().map((task) => (task.ref.taskId === "child" ? { ...task, metrics: { tokenCount } } : task));
+			},
+		};
 		const page = subagentPage(
-			treeSource(tasks, new Map([["child", live]])),
+			source,
 			"child",
 			environment({ footerData, createChat: (opts) => new ChatSessionHost(opts) }),
 		);
 		await page.load();
-		const working = plain(page.render(100, 20)).find((row) => WORKING_LINE.test(row)) ?? "";
-		assert.match(working.trimEnd(), / · [↑↓] 87\.4k tokens\)$/);
+		const working = () => plain(page.render(100, 20)).find((row) => WORKING_LINE.test(row)) ?? "";
+		assert.match(working().trimEnd(), / · [↑↓] 87\.4k tokens\)$/);
+
+		for (const listener of live.listeners) {
+			listener({ type: "turn_start" } as AgentSessionEvent);
+			listener({
+				type: "message_start",
+				message: { role: "assistant", content: [] },
+			} as unknown as AgentSessionEvent);
+			listener({
+				type: "message_update",
+				assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "x".repeat(800) },
+			} as unknown as AgentSessionEvent);
+		}
+		assert.match(working().trimEnd(), / · ↓ 87\.6k tokens\)$/);
+
+		tokenCount = 12_000;
+		for (const listener of live.listeners) {
+			listener({
+				type: "message_end",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "x".repeat(800) }],
+					usage: { input: 10_000, output: 2_000, cacheRead: 0, cacheWrite: 0 },
+					stopReason: "stop",
+				},
+			} as unknown as AgentSessionEvent);
+		}
+		assert.match(working().trimEnd(), / · ↓ 12\.0k tokens\)$/);
 		page.dispose();
 	});
 

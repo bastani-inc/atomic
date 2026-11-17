@@ -1145,6 +1145,7 @@ export {
 } from "./modes/index.ts";
 // UI components for extensions
 export {
+	AgentTokenMeter,
 	ArminComponent,
 	AssistantMessageComponent,
 	agentTokenTotal,
