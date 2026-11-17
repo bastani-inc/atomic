@@ -22,7 +22,7 @@ import {
 	BlueprintUsesUnsupportedError,
 	type BlueprintUsesUnsupportedReason,
 } from "./errors.ts";
-import { BASH_START_GATE, type ProcessExit, runLoggedProcess, type StepLog } from "./process.ts";
+import { BASH_START_GATE, NODE_START_GATE, type ProcessExit, runLoggedProcess, type StepLog } from "./process.ts";
 
 /** The environment variable that replaces `https://github.com` as the place actions are fetched from. */
 export const ACTIONS_GITHUB_BASE_URL_ENV = "ATOMIC_BLUEPRINT_GITHUB_BASE_URL";
@@ -352,6 +352,8 @@ interface ProcessRequest {
 	readonly stdin?: string;
 	/** Whether the process waits for its host to record it before it does anything ({@link ShellInvocation.gated}). */
 	readonly gated?: boolean;
+	/** Whether the process is a node that loads {@link NODE_START_GATE} first, and so waits as a gated process does. */
+	readonly nodeGated?: boolean;
 	readonly env: Readonly<Record<string, string>>;
 }
 
@@ -799,10 +801,12 @@ async function runProcess(
 	const files = await createFileCommands(context.runnerTemp);
 	try {
 		log(context, `=== ${request.title} ===\n$ ${request.shown}`);
+		const gate = request.nodeGated === true ? join(files.directory, "start-gate.cjs") : undefined;
+		if (gate !== undefined) await writeFile(gate, NODE_START_GATE, { mode: 0o600 });
 		const exit = await runLoggedProcess(
 			{
 				command: request.executable,
-				args: request.args,
+				args: gate === undefined ? request.args : ["--require", gate, ...request.args],
 				cwd: request.cwd,
 				env: {
 					...context.env,
@@ -814,7 +818,7 @@ async function runProcess(
 					GITHUB_STEP_SUMMARY: files.summary,
 				},
 				...(request.stdin === undefined ? {} : { stdin: request.stdin }),
-				...(request.gated === true ? { gated: true } : {}),
+				...(request.gated === true || gate !== undefined ? { gated: true } : {}),
 			},
 			context.options.log,
 			{ timeoutMs: remaining, signal: context.options.signal },
@@ -859,6 +863,8 @@ async function runNodeAction(
 			shown: `node ${phase.script}`,
 			executable: node,
 			args: [phase.path],
+			// On Windows the action's process is in a job object that ends with its host, recorded or not.
+			nodeGated: process.platform !== "win32",
 			cwd: context.options.cwd,
 			env: {
 				...frame.env,

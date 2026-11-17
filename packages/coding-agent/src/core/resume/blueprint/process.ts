@@ -36,6 +36,34 @@ export interface LoggedProcess {
  */
 export const BASH_START_GATE = "read -r _ || exit 1\nexec </dev/null\n";
 
+/**
+ * The module a gated Node.js process loads with `--require` before its script (#4748), as {@link BASH_START_GATE} does
+ * for bash: it waits for the line its host sends once it has recorded the process, and ends the process, before its
+ * script loads, when the host died first. It takes itself out of `process.execArgv`, so a process the script forks
+ * does not wait for a line of its own. The script then finds its stdin at end of input.
+ */
+export const NODE_START_GATE = [
+	'"use strict";',
+	'const { readSync, realpathSync } = require("node:fs");',
+	"const own = (path) => { try { return realpathSync(path) === __filename; } catch { return false; } };",
+	"for (let at = process.execArgv.length - 2; at >= 0; at--) {",
+	'\tif (process.execArgv[at] === "--require" && own(process.execArgv[at + 1])) process.execArgv.splice(at, 2);',
+	"}",
+	"const line = Buffer.alloc(1);",
+	"let read = 0;",
+	"for (;;) {",
+	"\ttry {",
+	"\t\tread = readSync(0, line, 0, 1, null);",
+	"\t\tbreak;",
+	"\t} catch (error) {",
+	'\t\tif (error.code !== "EAGAIN") break;',
+	"\t\tAtomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);",
+	"\t}",
+	"}",
+	"if (read !== 1) process.exit(1);",
+	"",
+].join("\n");
+
 export interface ProcessExit {
 	readonly exitStatus: number | null;
 	readonly signal: string | null;

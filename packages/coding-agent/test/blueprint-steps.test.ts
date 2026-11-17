@@ -479,10 +479,16 @@ describe("a host that dies while it starts a step (#4748)", () => {
 		'      run: echo ran >> "$MARKERS"',
 		"",
 	].join("\n");
+	const nodeAction = {
+		"action.yml": ["name: Fixture", "runs:", "  using: node20", "  main: main.js", ""].join("\n"),
+		"main.js": 'require("node:fs").appendFileSync(process.env.MARKERS, "ran\\n");\n',
+	};
 
 	for (const [kind, step, files] of [
 		["a run step", run('echo ran >> "$MARKERS"'), {}],
 		["a bash step of a composite action", uses("github.com/acme/compose@v1"), { "action.yml": composite }],
+		// On Windows a Node.js action is not gated: its process is in a job object that ends with its host.
+		["a Node.js action", uses("github.com/acme/node@v1"), nodeAction],
 	] as const) {
 		test(`${kind} runs nothing until its host has recorded its process, so a host killed in between leaves nothing running (#4748)`, async () => {
 			const recorded = await hostKilledAfterRecording(step, files);
@@ -490,6 +496,25 @@ describe("a host that dies while it starts a step (#4748)", () => {
 			assert.deepEqual(lines(markers()), [], "the step ran nothing");
 		});
 	}
+
+	test("a process a Node.js action forks runs at once, without waiting to be let go as the action was (#4748)", async () => {
+		const main = [
+			'const { fork } = require("node:child_process");',
+			'const fs = require("node:fs");',
+			'if (process.argv[2] === "child") fs.appendFileSync(process.env.MARKERS, "forked\\n");',
+			'else fork(__filename, ["child"]).on("exit", (code) => {',
+			'\tfs.appendFileSync(process.env.MARKERS, "ran after its fork exited " + code + "\\n");',
+			"});",
+			"",
+		].join("\n");
+		const files = { ...nodeAction, "main.js": main };
+		const fetchAction: ActionFetcher = async ({ destination }) => {
+			for (const [name, content] of Object.entries(files)) writeFileSync(join(destination, name), content);
+		};
+		const result = await runSection("maintenance", [uses("github.com/acme/node@v1")], context({ fetchAction }));
+		assert.deepEqual(result, { completed: 1 });
+		assert.deepEqual(lines(markers()), ["forked", "ran after its fork exited 0"]);
+	});
 });
 
 describe("step timings (#4748)", () => {
