@@ -313,7 +313,7 @@ function runCommand(
 			child.stdin?.destroy();
 			child.stdout?.destroy();
 			if (!tree?.terminate()) {
-				if (child.pid !== undefined && child.pid !== process.pid) {
+				if (child.pid !== undefined && child.pid !== process.pid && (process.platform !== "win32" || !exited)) {
 					killProcessTree(child.pid);
 				}
 				if (process.platform !== "win32" || child.pid === undefined) {

@@ -4,6 +4,7 @@ import { test, vi } from "vitest";
 const containment = vi.hoisted(() => ({
 	events: [] as string[],
 	enabled: false,
+	unavailable: false,
 	terminateResult: true,
 	onTerminate: undefined as (() => void) | undefined,
 }));
@@ -12,7 +13,14 @@ vi.mock("@bastani/atomic", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("@bastani/atomic")>();
 	return {
 		...actual,
+		killProcessTree: (pid: number) => {
+			if (containment.enabled || containment.unavailable) {
+				containment.events.push(`killProcessTree:${pid > 0}`);
+			}
+			return actual.killProcessTree(pid);
+		},
 		containProcessTree: (pid: number) => {
+			if (containment.unavailable) return undefined;
 			if (!containment.enabled) {
 				const fn = (actual as { containProcessTree?: (p: number) => unknown }).containProcessTree;
 				return fn?.(pid);
@@ -209,8 +217,36 @@ test("uses process-tree containment to terminate descendants when root already e
 		}
 		assert.equal(errorCode(rootExitedTimeout.error), "ETIMEDOUT");
 		assert.deepEqual(containment.events, ["contain:true", "terminate", "close"]);
+
+		containment.enabled = false;
+		containment.unavailable = true;
+		containment.events = [];
+		const originalPlatform = process.platform;
+		Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+		try {
+			const winNoJobExited = await spawnCollect(
+				node,
+				[
+					"-e",
+					"const { spawn } = require('node:child_process'); const g = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 2000)'], { stdio: 'inherit', detached: true }); process.stdout.write(String(g.pid)); process.exit(0);",
+				],
+				{ cwd: process.cwd(), env: process.env, timeout: 150, maxBuffer: 1024 },
+			);
+			const orphanPid = Number(winNoJobExited.stdout.trim());
+			if (orphanPid > 0 && originalPlatform !== "win32") {
+				try {
+					process.kill(orphanPid, "SIGKILL");
+				} catch {}
+			}
+			assert.equal(errorCode(winNoJobExited.error), "ETIMEDOUT");
+			assert.deepEqual(containment.events, []);
+		} finally {
+			Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+			containment.unavailable = false;
+		}
 	} finally {
 		containment.enabled = false;
+		containment.unavailable = false;
 		containment.onTerminate = undefined;
 	}
 });

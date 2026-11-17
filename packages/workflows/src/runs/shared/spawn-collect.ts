@@ -42,7 +42,7 @@ export function spawnCollect(
 		const startedAt = Date.now();
 		const killTree = () => {
 			if (tree?.terminate()) return;
-			if (child.pid !== undefined && child.pid !== process.pid) {
+			if (child.pid !== undefined && child.pid !== process.pid && (process.platform !== "win32" || !exited)) {
 				killProcessTree(child.pid);
 			}
 			if (process.platform !== "win32" || child.pid === undefined) {
@@ -82,9 +82,9 @@ export function spawnCollect(
 					process.kill(-child.pid, "SIGTERM");
 				} catch {}
 				child.kill("SIGTERM");
-			} else if (child.pid !== undefined && child.pid !== process.pid) {
+			} else if (child.pid !== undefined && child.pid !== process.pid && !exited) {
 				killProcessTree(child.pid);
-			} else {
+			} else if (child.pid === undefined) {
 				child.kill("SIGTERM");
 			}
 			if (exited || child.pid === undefined) {
