@@ -10,6 +10,7 @@
 
 - Interactive startup no longer waits for its engine: the first frame, with an editor that takes input, appears while the engine still loads, and a host on a terminal starts the engine as it starts itself, so a prompt typed at launch goes out sooner. The standalone binary paints its first frame in about 270 ms instead of 940 ms on Linux and in about 450 ms instead of 1,290 ms on Windows; the npm package in about 940 ms instead of 1,570 ms on Linux and 2.3 s instead of 4.3 s on Windows
 - The standalone binary for the build's own platform (Linux x64, Windows x64) ships a bytecode cache of its application bundle, so every process it starts, including `-p`, `--mode rpc`, subagents and workflow workers, loads in about 150 ms instead of 360 ms
+- On Windows, finding PowerShell on `PATH` no longer starts `where` and waits for it, which cost every start about 25–40 ms before its first frame
 - Clarified in `codemode`'s description, system-prompt guidance, and `searchTools()`/`describeTool()` hints that `subagent`, `workflow`, and other model-only tools (plus `intercom`'s model-only actions) cannot be called from inside a `codemode` script, and should be called directly as separate top-level tools when available in the session
 
 ### Fixed
@@ -17,6 +18,7 @@
 - A prompt typed while Atomic starts is no longer sent twice on Windows: a stray cursor report reached the startup input as F3, left a "C" in the editor and sent it with the next prompt. F1–F5 and Page Up/Down sent as `ESC [ [ …` no longer type a letter into the startup input
 - Keys typed while Atomic started are no longer lost when a startup dialog (project trust, dirty checkout, first-run setup) takes the terminal: they are captured as the draft, and keys typed once the dialog holds the terminal reach the dialog
 - Restoring saved model catalogs at startup no longer fails while another Atomic process saves its catalog, and no longer takes the save lock once per provider, which cost about 180 ms before the first frame on Windows
+- On Windows, saving credentials or a refreshed model catalog no longer fails with `EPERM`, losing the save, when another Atomic process is reading `auth.json` or `models-store.json` at that moment: the save waits for the read to finish
 - A fast foreground shell command no longer delivers a stray `Background shell completed` notice after its own result when the command exits before Atomic has finished starting it. The model was shown the command's result a second time, as a background shell's, in chats and workflow stages alike ([#5333](https://github.com/bastani-inc/atomic/pull/5333))
 
 ## [0.9.88] - 2026-11-16
