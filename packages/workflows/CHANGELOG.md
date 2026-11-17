@@ -6,26 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `o` in the workflow graph opens the run's details: its state, a one-line failure reason, the blockers that keep it from finishing (each opens with Enter), its declared outputs, the artifacts its stages collected and its events in order. `l` shows the full log; the summary never shows a stack trace. Esc goes back to the graph; ← does nothing in the run details. A run that returned a blocked or failed status reads that way there, with its own words as the reason ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- A completed run's notice in main chat lists its declared outputs and artifacts, and a failed or blocked run's notice shows the error's first line instead of the whole error, with the `/workflows <run id>` command that opens its details. The workflow tool's error card leaves out stack frames; the model still reads the full error ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- `/workflows` lists a workflow file that failed to load with the other definitions, marked `✗` with its error's first line. Enter on it explains what failed instead of starting it ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+
 ### Changed
 
 - An attached stage chat's composer has heavy accent rules naming `stage · <name> · <state>` and a `Message <stage>…` placeholder (`Answer <stage>…` while it waits on a question), matching a subagent's chat ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - `/workflows` lists the session's runs and the registered workflow definitions in one sheet, unless the session has exactly one run, which opens straight into its graph. Runs show their status, stage, elapsed time and cost, or a failed run's short reason; definitions show their description and how many inputs they take. Rows update while the sheet is open and keep your search and selected run. If the rows change while you are moving through them, Enter is ignored until the new rows are shown; press it again. Type to search; Esc clears the search, and Esc with an empty search closes the sheet. Enter opens a run's graph, and Esc at the graph's top returns to the sheet; Enter on a definition starts it, asking for its inputs first. With no runs and no definitions it says "No workflows in this session." ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - The workflow inputs form never fills in an answer for you: a select or boolean input without a `default` starts unchosen, instead of on its first choice or off, so a required one must be answered and an optional one is left out. Each field shows `✓` for a ready value, `?` when a runtime refinement or an uncopyable input defers validation until the run starts, or `✗` with the reason (`choose one`, `must be a whole number`, …), from the start, and a fractional integer or an unrecognised boolean is refused in the form, instead of a fractional integer failing the run afterwards or an unrecognised boolean being read as off. Array, object, record, nullable and constant inputs read JSON and keep other text as written, so `5` fills a `Type.Literal(5)` input, and they show `✓` only for a value the run accepts ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
-- `o` in the workflow graph opens the run's details: its state, a one-line failure reason, the blockers that keep it from finishing (each opens with Enter), its declared outputs, the artifacts its stages collected and its events in order. `l` shows the full log; the summary never shows a stack trace. Esc goes back to the graph; ← does nothing in the run details. A run that returned a blocked or failed status reads that way there, with its own words as the reason ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
-- A completed run's notice in main chat lists its declared outputs and artifacts, and a failed or blocked run's notice shows the error's first line instead of the whole error, with the `/workflows <run id>` command that opens its details. The workflow tool's error card leaves out stack frames; the model still reads the full error ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
-- `/workflows` lists a workflow file that failed to load with the other definitions, marked `✗` with its error's first line. Enter on it explains what failed instead of starting it ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
-
 ### Fixed
 
+- Workflow rows in the agent panel now count expanded nested, dynamic and fan-out stages, omit empty progress bars on tools-only runs, and show the choices for a pending single-select question. Run and stage names display terminal controls as inert text, and unchanged stage progress is reused between refreshes ([#5239](https://github.com/bastani-inc/atomic/pull/5239))
 - Fixed escaped `\"` and `\\` inside double-quoted `/workflow` arguments being parsed incorrectly ([#5245](https://github.com/bastani-inc/atomic/pull/5245))
 - Fixed workflow input inspection and forms crashing on defaults that cannot be JSON encoded. Those defaults are omitted from input metadata and left blank in the picker, with validation deferred to the run ([#5245](https://github.com/bastani-inc/atomic/pull/5245))
 - Fixed `/workflows` never finishing when the host closed its picker without showing it ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Fixed boolean workflow inputs such as `1` and `TRUE` displaying or toggling inconsistently with their submitted value in the picker and inline form ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Fixed whitespace-only optional workflow inputs overriding defaults instead of being left out, and JSON-looking text inputs being submitted as objects or arrays instead of literal strings ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Fixed workflow input forms interpreting terminal commands embedded in field names, descriptions, choices or prefilled values instead of displaying them as text ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
-
-- Workflow notices, error cards, run details and the `/workflows` sheet show run and stage names, outputs, failure messages, artifact paths and discovery errors as text: an escape sequence, such as a clipboard write or a screen clear, or a bidirectional control in them is displayed instead of being sent to the terminal ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- Fixed workflow notices, error cards, run details and the `/workflows` sheet interpreting run and stage names, outputs, failure messages, artifact paths and discovery errors as terminal commands. Escape sequences are removed and bidirectional controls are shown as text ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Removed
 

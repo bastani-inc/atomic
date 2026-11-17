@@ -1,7 +1,8 @@
 import { getKeybindings, type KeybindingsManager, matchesKey, Text } from "@bastani/atomic-tui";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
+import { shortTaskTitle } from "../../../core/tasks/agent-panel-source.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import { liveElapsedMs } from "../../../core/tasks/live-elapsed.ts";
+import { isRunningTaskClock, liveElapsedMs } from "../../../core/tasks/live-elapsed.js";
 import { TaskMessageError } from "../../../core/tasks/message-error.js";
 import type { TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
 import {
@@ -323,13 +324,19 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 							: taskState(task)
 						: task.metrics?.elapsedMs === undefined
 							? "running"
-							: // The clock the agent panel and /tasks share, so all three agree.
-								formatPanelElapsed(
-									liveElapsedMs(task.ref.taskId, task.metrics.elapsedMs, task.execution.kind === "running") ??
+							: formatPanelElapsed(
+									liveElapsedMs(
+										task.ref.taskId,
 										task.metrics.elapsedMs,
+										isRunningTaskClock(task.execution.kind),
+									) ?? task.metrics.elapsedMs,
 								);
 		const stopped = this.source.taskStopped?.(this.taskId) === true;
-		const label = [name, task?.title ? taskDisplayText(task.title) : "", stopped ? "stopped" : (state ?? "")]
+		const label = [
+			name,
+			task?.title ? taskDisplayText(shortTaskTitle(task.title)) : "",
+			stopped ? "stopped" : (state ?? ""),
+		]
 			.filter(Boolean)
 			.join(" · ");
 		// A stopped subagent resumes only with a message the reader sends: its prompt says so.

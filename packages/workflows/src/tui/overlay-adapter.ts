@@ -163,8 +163,13 @@ export function buildGraphOverlayAdapter(
 	let currentHandle: PiOverlayHandle | null = null;
 	let mounted = false;
 
-	let pendingReturn: (() => void) | undefined;
-	const goBack = (): void => hideMounted();
+	let returnTo: (() => void) | undefined;
+	const goBack = (): void => {
+		const back = returnTo;
+		returnTo = undefined;
+		hideMounted();
+		back?.();
+	};
 	let finishMounted: (() => void) | null = null;
 	// Repaints the mounted overlay through its factory TUI. Needed on the
 	// hidden→visible flip: store updates while hidden intentionally skip
@@ -257,10 +262,6 @@ export function buildGraphOverlayAdapter(
 	 */
 	function hideMounted(): void {
 		observedUi?.setStatus?.(MAIN_CHAT_INPUT_STATUS_KEY, undefined);
-		// One level back: to the view that opened the graph, once it is out of the way.
-		const onReturn = pendingReturn;
-		pendingReturn = undefined;
-		if (onReturn) queueMicrotask(onReturn);
 		if (currentHandle) {
 			currentView?.setVisible(false);
 			currentHandle.setHidden(true);
@@ -333,7 +334,7 @@ export function buildGraphOverlayAdapter(
 		stageRunId?: string,
 		openOptions?: GraphOverlayOpenOptions,
 	): void {
-		pendingReturn = openOptions?.onReturn;
+		returnTo = openOptions?.onReturn;
 		const ui = surface?.ui ?? pi.ui;
 		observeHostCustomUi(ui);
 
@@ -380,8 +381,6 @@ export function buildGraphOverlayAdapter(
 			const finish = (): void => {
 				if (settled) return;
 				settled = true;
-				// Closing the workflow view (Ctrl+C) returns to the main chat, not to the view that opened it.
-				pendingReturn = undefined;
 				observedUi?.setStatus?.(MAIN_CHAT_INPUT_STATUS_KEY, undefined);
 				currentView?.dispose();
 				currentView = null;

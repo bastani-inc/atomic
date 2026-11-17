@@ -9,8 +9,10 @@ import {
 	visibleWidth,
 } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
-import { renderAgentPanelRows } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
-import { PLAIN_SELECTOR_STYLE } from "../../packages/coding-agent/src/modes/interactive/components/selector.js";
+import {
+	type AgentPanelStyle,
+	renderAgentPanelRows,
+} from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
 import { inspectRun } from "../../packages/workflows/src/runs/background/run-inspect.js";
 import { MAX_CAUSE_DEPTH } from "../../packages/workflows/src/shared/error-cause-chain.js";
 import { type SerializedError, serializeError } from "../../packages/workflows/src/shared/error-codec.js";
@@ -35,8 +37,13 @@ import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import { defaultTheme, makeSnap, makeStage, makeStore } from "./overlay-graph-helpers.js";
 
 const { boundedToolPayloadText, TOOL_PAYLOAD_TRUNCATION_MARKER } = toolPayloadBounds;
-const panelStyle = {
-	...PLAIN_SELECTOR_STYLE,
+const panelStyle: AgentPanelStyle = {
+	dim: (text) => text,
+	text: (text) => text,
+	muted: (text) => text,
+	border: (text) => text,
+	bold: (text) => text,
+	accent: (text) => text,
 	success: (text: string) => text,
 	error: (text: string) => text,
 	warning: (text: string) => text,
@@ -174,7 +181,13 @@ test.each(["card", "detail", "listing", "panel"])(
 			assertSafeRows(rows.flatMap((row) => [row.label, row.description ?? ""]));
 			assert.ok(rows[0]?.description?.includes("model"));
 		} else {
-			assertSafeRows(renderAgentPanelRows(panelItemsFromSnapshot(snap.runs, 2), 200, panelStyle, {}));
+			assertSafeRows(
+				renderAgentPanelRows(
+					panelItemsFromSnapshot({ ...snap, runs: [{ ...snap.runs[0]!, toolNodes: [{ ...node, status: "running" }] }] }, 2),
+					200,
+					panelStyle,
+				),
+			);
 		}
 		assert.equal(JSON.stringify(snap), before);
 	},
@@ -834,7 +847,7 @@ test.each([
 		assertSafeRows(listingRows);
 		assert.ok(listingRows.join("\n").includes("active-"), "the listing renders the active stage name");
 		assertSafeRows(renderNodeCard(pendingStage, { theme: defaultTheme, width: 80 }));
-		const panelRows = renderAgentPanelRows(panelItemsFromSnapshot(snap.runs, 2_000), 200, panelStyle, {});
+		const panelRows = renderAgentPanelRows(panelItemsFromSnapshot(snap, 2_000), 200, panelStyle);
 		assertSafeRows(panelRows);
 		assert.ok(panelRows.join("\n").includes("active-"), "panel current stage name is rendered");
 		for (const item of workflowsListingItems(snap.runs, [], 2_000)) {

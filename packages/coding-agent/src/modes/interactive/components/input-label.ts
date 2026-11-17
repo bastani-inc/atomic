@@ -127,20 +127,40 @@ export interface AttachedComposerStyle {
 const HEAVY_RULE = "━";
 const PROMPT_GLYPH = "❯";
 
-function stripApplicationCommands(line: string): string {
-	const parts: string[] = [];
-	let copiedUntil = 0;
-	let start = line.indexOf("\x1b_");
+function stripApc(text: string): string {
+	let start = text.indexOf("\x1b_");
+	if (start === -1) return text;
+	let out = "";
+	let cursor = 0;
 	while (start !== -1) {
-		const end = line.indexOf("\x07", start + 2);
+		const end = text.indexOf("\x07", start + 2);
 		if (end === -1) break;
-		parts.push(line.slice(copiedUntil, start));
-		copiedUntil = end + 1;
-		start = line.indexOf("\x1b_", copiedUntil);
+		out += text.slice(cursor, start);
+		cursor = end + 1;
+		start = text.indexOf("\x1b_", cursor);
 	}
-	if (copiedUntil === 0) return line;
-	parts.push(line.slice(copiedUntil));
-	return parts.join("");
+	return cursor === 0 ? text : out + text.slice(cursor);
+}
+
+function trimTrailingSpaces(line: string): string {
+	let sgrStart = line.length;
+	while (sgrStart >= 3 && line.charCodeAt(sgrStart - 1) === 0x6d) {
+		let index = sgrStart - 2;
+		while (index >= 0) {
+			const code = line.charCodeAt(index);
+			if ((code >= 0x30 && code <= 0x39) || code === 0x3b) index--;
+			else break;
+		}
+		if (index >= 1 && line.charCodeAt(index) === 0x5b && line.charCodeAt(index - 1) === 0x1b) {
+			sgrStart = index - 1;
+		} else {
+			break;
+		}
+	}
+	let spaceStart = sgrStart;
+	while (spaceStart > 0 && line.charCodeAt(spaceStart - 1) === 0x20) spaceStart--;
+	if (spaceStart === sgrStart) return line;
+	return line.slice(0, spaceStart) + line.slice(sgrStart);
 }
 
 /**
@@ -203,12 +223,11 @@ export function applyAttachedComposer(
 	if (isRule(bottom)) lines[bottomIndex] = style.accent(HEAVY_RULE.repeat(visibleWidth(stripAnsi(bottom))));
 	if (placeholder !== undefined && bottomIndex === 2) {
 		const line = lines[1]!;
-		// The cursor and focus markers are application commands, not text.
-		const plain = stripAnsi(stripApplicationCommands(line)).trimEnd();
+		const plain = stripAnsi(stripApc(line)).trimEnd();
 		if (plain === PROMPT_GLYPH || plain === `${PROMPT_GLYPH} `) {
 			const room = Math.max(0, width - visibleWidth(stripAnsi(line).trimEnd()) - 2);
 			const text = truncateToWidth(placeholder, room, "…");
-			const trimmed = line.replace(/(?<! ) +(\x1b\[[0-9;]*m)*$/, "$1");
+			const trimmed = trimTrailingSpaces(line);
 			lines[1] = `${trimmed} ${style.dim(text)}`;
 		}
 	}
