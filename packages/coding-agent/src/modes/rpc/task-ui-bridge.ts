@@ -1,15 +1,26 @@
 import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
+import {
+	type AgentPanelSession,
+	agentPanelExtensionItems,
+	agentPanelTaskId,
+	answerAgentPanelItem,
+	dismissedAgentPanelItems,
+	openAgentPanelItem,
+	stopAgentPanelItem,
+	subscribeAgentPanelExtensions,
+} from "../../core/tasks/agent-panel-source.ts";
 import type { TaskId } from "../../core/tasks/contracts.js";
-import { getOwnerTaskStore, type OwnerTaskStore, watchOwnerTaskStoreBinding } from "../../core/tasks/owner-store.js";
+import { getOwnerTaskStore, type OwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { ChatSessionHost } from "../interactive/components/chat-session-host.ts";
-import { TaskInspector } from "../interactive/components/task-inspector.js";
-import { isActiveBackgroundTask, renderTaskFooter } from "../interactive/components/task-list.js";
+import { type TaskBoardSource, TaskInspector } from "../interactive/components/task-inspector.js";
+import { taskDisplayText } from "../interactive/components/task-row.js";
 import { type TaskTranscriptEnvironment, themedChatHostStyle } from "../interactive/components/task-transcript-page.ts";
 import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
 import { getEditorTheme } from "../interactive/theme/theme.js";
 import type { EngineHostRenderSettings } from "../interactive-engine/protocol.ts";
+import { setAgentPanelVisible } from "./agent-panel-bridge.ts";
 
 /** The UI a task inspector mounts in: its custom UI, and the chat render settings its transcripts inherit. */
 export type TaskInspectorUi = Pick<ExtensionUIContext, "custom"> &
@@ -48,62 +59,21 @@ export function engineTaskInspectorUi(
 	};
 }
 
-const widgetVisibility = new WeakMap<AgentSession, (visible: boolean) => void>();
+const boardSessions = new WeakMap<TaskBoardSource, object>();
 
-/** Render against the engine's owner. Native capabilities never cross the UI bridge. */
-export function bindEngineTaskWidget(session: AgentSession, ui: ExtensionUIContext): () => void {
-	const key = "atomic.background-tasks";
-	let unsubscribe = () => {};
-	let disposed = false;
-	let mounted = false;
-	let visible = true;
-	const connect = () => {
-		unsubscribe();
-		if (mounted) ui.setWidget(key, undefined);
-		mounted = false;
-		const store = getOwnerTaskStore(session);
-		const update = () => {
-			if (disposed) return;
-			if (!visible || !store?.backgroundTasks.some(isActiveBackgroundTask)) {
-				if (mounted) ui.setWidget(key, undefined);
-				mounted = false;
-				return;
-			}
-			if (!mounted) {
-				mounted = true;
-				ui.setWidget(
-					key,
-					() => ({
-						invalidate() {},
-						render(width: number) {
-							return renderTaskFooter(store?.backgroundTasks ?? [], width);
-						},
-					}),
-					{ placement: "belowEditor" },
-				);
-			}
-			ui.requestRender();
-		};
-		unsubscribe = store?.subscribe(update) ?? (() => {});
-		update();
+export function agentPanelBoardSource(session: AgentPanelSession & object): TaskBoardSource {
+	const board: TaskBoardSource = {
+		items: () => agentPanelExtensionItems(session).filter((item) => agentPanelTaskId(item.id) === undefined),
+		subscribe: (listener) => subscribeAgentPanelExtensions(session, listener),
+		open: (id, options) => openAgentPanelItem(session, id, options),
+		stop: (id) => stopAgentPanelItem(session, id),
+		answer: (id, text, options) => answerAgentPanelItem(session, id, text, options),
+		dismiss: (id) => {
+			dismissedAgentPanelItems(session).add(id);
+		},
 	};
-	const unwatch = watchOwnerTaskStoreBinding(session, connect);
-	const unwatchWidget = ui.onWidgetRelease?.(key, () => {
-		mounted = false;
-	});
-	widgetVisibility.set(session, (value) => {
-		visible = value;
-		connect();
-	});
-	connect();
-	return () => {
-		disposed = true;
-		widgetVisibility.delete(session);
-		unwatch();
-		unwatchWidget?.();
-		unsubscribe();
-		if (mounted) ui.setWidget(key, undefined);
-	};
+	boardSessions.set(board, session);
+	return board;
 }
 
 export async function showEngineTaskInspector(
@@ -114,21 +84,22 @@ export async function showEngineTaskInspector(
 	session.getAgentTaskHost();
 	const store = getOwnerTaskStore(session);
 	if (!store) throw new Error("Task owner is unavailable");
-	try {
-		widgetVisibility.get(session)?.(false);
-		await showTaskInspector(ui, store, taskId);
-	} finally {
-		widgetVisibility.get(session)?.(true);
-	}
+	await showTaskInspector(ui, store, taskId, { board: agentPanelBoardSource(session) });
 }
 
 /** Main CLI mount, shared by the local host and its isolated engine. */
-export async function showTaskInspector(ui: TaskInspectorUi, store: OwnerTaskStore, taskId?: string): Promise<void> {
+export async function showTaskInspector(
+	ui: TaskInspectorUi,
+	store: OwnerTaskStore,
+	taskId?: string,
+	options: { readonly chat?: boolean; readonly backLabel?: string; readonly board?: TaskBoardSource } = {},
+): Promise<"back" | "closed"> {
 	let requestRender = () => {};
 	let finishView = () => {};
 	let closed = false;
 	let fullscreen = false;
 	let environment: TaskTranscriptEnvironment | undefined;
+	let pendingChat: TaskId | undefined;
 	const inspector = new TaskInspector(
 		store,
 		() => {
@@ -142,10 +113,26 @@ export async function showTaskInspector(ui: TaskInspectorUi, store: OwnerTaskSto
 		undefined,
 		() => environment,
 	);
-	inspector.open(taskId as TaskId | undefined);
+	if (options.board) {
+		inspector.setBoardSource(options.board);
+
+		const reopenOptions = { board: options.board };
+		inspector.setReopen((id) => {
+			void showTaskInspector(ui, store, id, reopenOptions).catch((error: unknown) => {
+				try {
+					ui.notify?.(taskDisplayText(error instanceof Error ? error.message : String(error)), "error");
+				} catch {}
+			});
+		});
+	}
+	if (options.chat && taskId !== undefined) {
+		pendingChat = taskId as TaskId;
+	} else inspector.open(taskId as TaskId | undefined);
+	const panelTarget = (options.board ? boardSessions.get(options.board) : undefined) ?? store;
+	setAgentPanelVisible(panelTarget, false);
 	try {
 		while (!closed) {
-			fullscreen = inspector.fullscreen;
+			fullscreen = inspector.fullscreen || pendingChat !== undefined;
 			await ui.custom<void>(
 				(tui, _theme, keybindings, done) => {
 					requestRender = () => tui.requestRender();
@@ -164,6 +151,16 @@ export async function showTaskInspector(ui: TaskInspectorUi, store: OwnerTaskSto
 						...(ui.getFooterDataProvider ? { footerData: ui.getFooterDataProvider() } : {}),
 						...(ui.notify ? { notify: (message: string) => ui.notify?.(message, "warning") } : {}),
 					};
+					if (pendingChat !== undefined) {
+						const chat = pendingChat;
+						pendingChat = undefined;
+						inspector.openChat(chat, options.backLabel);
+
+						if (!inspector.fullscreen) {
+							closed = true;
+							queueMicrotask(() => done());
+						}
+					}
 					// Elapsed times and the stop notice's window advance while the view is shown.
 					const tick = setInterval(() => tui.requestRender(), 1000);
 					tick.unref?.();
@@ -211,5 +208,7 @@ export async function showTaskInspector(ui: TaskInspectorUi, store: OwnerTaskSto
 		}
 	} finally {
 		inspector?.dispose();
+		setAgentPanelVisible(panelTarget, true);
 	}
+	return inspector?.closedByBack === true ? "back" : "closed";
 }

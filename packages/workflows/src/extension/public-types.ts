@@ -1,7 +1,10 @@
 import type {
+	AgentPanelSource,
+	AgentPanelSourceRegistration,
 	CreateAgentSessionOptions,
 	DefaultResourceLoaderInheritanceSnapshot,
 	ModelRegistry,
+	ReactiveWidgetFactory,
 	ToolDefinition,
 	WorkflowActivityPublisher,
 	WorkflowRunControl,
@@ -14,7 +17,9 @@ import type { LegacyWaitingStatus } from "../shared/legacy-waiting-status.js";
 import type { SessionManager as PersistenceSessionManager } from "../shared/persistence-restore.js";
 import type { RunStatus, StageStatus } from "../shared/store-types.js";
 import type { WorkflowBudget, WorkflowInputValues } from "../shared/types.js";
-import type { WidgetFactory } from "../tui/store-widget-installer.js";
+
+type WidgetFactory = ReactiveWidgetFactory<unknown>;
+
 import type { RenderResultOpts, WorkflowRegisteredToolResult } from "./render-result.js";
 import type { PiUISurface } from "./wiring.js";
 
@@ -193,6 +198,7 @@ export interface ExtensionAPI {
 	readonly lifecycleScope?: object;
 	registerWorkflowActivityPublisher?: () => WorkflowActivityPublisher;
 	registerWorkflowRunControl?: (control: WorkflowRunControl) => WorkflowRunControlRegistration;
+	registerAgentPanelSource?: (source: AgentPanelSource) => AgentPanelSourceRegistration;
 	/** Present only when this extension instance belongs to an admitted in-process subagent child. */
 	readonly subagentPolicy?: CreateAgentSessionOptions["subagentPolicy"];
 	registerTool?: <TArgs, TResult>(opts: PiToolOpts<TArgs, TResult>) => void;
@@ -212,7 +218,6 @@ export interface ExtensionAPI {
 		key: string,
 		opts: {
 			description: string;
-			keybinding?: "app.workflows.scrollUp" | "app.workflows.scrollDown";
 			preferEditor?: boolean;
 			handler: (ctx?: PiCommandContext) => void | Promise<void>;
 		},

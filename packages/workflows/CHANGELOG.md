@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - Stage chats use the main chat's working line, elapsed tool timers and tool blocks, including when opened mid-run. Finished shell calls can join compact call summaries in stage chats; expanding reveals every member ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- An attached stage chat's composer has heavy accent rules naming `stage · <name> · <state>` and a `Message <stage>…` placeholder (`Answer <stage>…` while it waits on a question), matching a subagent's chat ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - The `workflow` tool's row in the chat now looks like every other tool's, instead of drawing its own rounded panels. A run reads `Workflow(<name> · <what it was asked>)` and the other actions `workflow <action> <target>`, each with one result line. A run's line follows the run until it ends (`∀ Running · 1/3 stages · ↓ 22.4k tokens`, `! Waiting for input at review`, `✓ Completed in 4s · 3 stages · 32.4k tokens`, `✗ Failed at review · <reason>`), and Ctrl+O expands the row to the run's inputs, stages and outputs ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Workflow lifecycle notices are one line, like the notices for finished background tasks and agents (`● Workflow "<name>" completed · 4.0s`, `✗ Workflow "<name>" failed · at review`). Ctrl+O shows the notice's card with the run id, stage, error and outputs ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Starting Atomic no longer reads and scans every bundled workflow's source twice before the first request; bundled workflows are registered without the zero-stage check, which can never fire for them
@@ -20,6 +21,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - File-backed local checkpoint journals (`workers.checkpointShipping` set to an object) now run SQLite work on a worker thread, so syncing a checkpoint no longer blocks the coordinator's heartbeats or claims. A checkpoint is still on disk before its step returns, and checkpoints keep their arrival order. In-memory journals are unchanged ([#5321](https://github.com/bastani-inc/atomic/issues/5321))
 
 ### Fixed
+
+- Workflow rows in the agent panel count expanded nested, dynamic and fan-out stages, include in-flight attempt tokens once, omit full stage bars while tool work continues, and retain the last step when stopped. Numbered replies preserve the original option even when display labels look alike. Run and stage names display terminal controls as inert text, and unchanged progress is reused between refreshes ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- Bounded workflow previews no longer keep their builders and omitted source inputs in memory after the source is released ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- A reply sent from a workflow's `/tasks` card is refused if the pending question changed after typing began. SDK replies must include the captured prompt identity, so identical question text cannot direct an old reply to a replacement question ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 - Fixed a session that ended for good, such as an SDK session that ran workflows and was disposed, staying in memory through the workflow hand-off kept for a session that might replace it.
 - Fixed each `/reload` keeping the previous copy of the workflows extension, and the extensions and session it reaches, in memory for as long as the session ran.
@@ -30,6 +35,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed checkpoint shipping leaving a root's local checkpoint journal on a host that was down when the root's run ended, for example after a crash: it stayed on disk until that root resumed on the host again. The host now removes it the next time a worker host starts or a shared pool opens on the same shared journal, with any checkpoints it never shipped, which the ended run no longer accepts. It keeps the local journals of runs that are still running or paused, and any local journal a pool or a SQLite connection opened through Atomic on the host has open, including one opened while the journal is being removed. A pool that closes after its run ended no longer removes its local journal while such a connection has it open, and retiring a local journal with unshipped checkpoints keeps it in write-ahead log mode. Cleanup also handles long Windows paths and symlinked agent directories, and concurrent cleanups leave no per-root lock files behind. Detection of connections opened directly by other programs or earlier Atomic releases is best effort ([#5317](https://github.com/bastani-inc/atomic/issues/5317))
 - Design workflows no longer pause other tools while Windows verifies temporary artifact storage ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
 - Fixed an idle local worker receiving SIGKILL instead of exiting cleanly when a late IPC reply failed after its root released its lease ([#3979](https://github.com/bastani-inc/atomic/issues/3979))
+
+### Removed
+
+- The below-editor `BACKGROUND` workflow list and its Alt+K/J scrolling. Each run now has a row in the main chat's agent panel with its stage progress, current stage and any waiting input; Enter on it opens the graph ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ## [0.9.88] - 2026-11-16
 

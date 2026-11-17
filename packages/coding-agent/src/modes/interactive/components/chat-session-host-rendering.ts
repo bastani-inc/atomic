@@ -1,6 +1,7 @@
 import type { AssistantMessage } from "@bastani/atomic-ai";
 import { type Component, Spacer, Text, type TUI, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { TaskId } from "../../../core/tasks/contracts.js";
+import { taskClocksFor } from "../../../core/tasks/live-elapsed.ts";
 import { getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import { loadTaskOwnTranscriptHistory, taskTranscriptSource } from "../../../core/tasks/supervisor.js";
 import { getToolExecutionStartedAt } from "../../../core/tool-execution-timing.ts";
@@ -17,6 +18,7 @@ import type { ChatSessionHostEntry } from "./chat-session-host-types.ts";
 import { cacheKey, isChatMessageEntry, stripAnsi, tailStreamingText } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import { FooterComponent, UsageMeterComponent } from "./footer.ts";
+import { taskDisplayText } from "./task-row.js";
 import { toolGroupRoleKey } from "./tool-group-tracker.ts";
 import { AgentTokenMeter, agentTokenTotal, compactionMeta, type WorkingRunSnapshot } from "./working-run-meter.ts";
 import { WorkingStatusComponent } from "./working-status.ts";
@@ -246,6 +248,14 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 	const session = agentSession ?? state.getChatBoxSession?.();
 	state.footerNavigationActive = navigationActive || agentSession === undefined;
 	if (session && state.footerData) {
+		const taskSource = () => {
+			const currentAgent = state.getAgentSession?.();
+			const currentSession = currentAgent ?? state.getChatBoxSession?.();
+			return (
+				(currentAgent === undefined ? state.getTaskSource?.() : undefined) ??
+				(currentSession ? getOwnerTaskStore(currentSession) : undefined)
+			);
+		};
 		state.footer ??= new FooterComponent(
 			session,
 			state.footerData,
@@ -255,8 +265,12 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 				warning: (text) => state.style.accent(text),
 			},
 			() => state.footerNavigationActive,
-			// A task's session has no task store of its own: its footer counts the tasks the host shows for it.
-			agentSession === undefined ? () => state.getTaskSource?.()?.backgroundTasks ?? [] : undefined,
+			() => taskSource()?.backgroundTasks ?? [],
+			undefined,
+			() => {
+				const source = taskSource();
+				return source === undefined ? undefined : taskClocksFor(source);
+			},
 		);
 		state.footer.setSession(session);
 		return state.footer.render(width);
@@ -264,6 +278,42 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 	state.footer?.dispose();
 	state.footer = undefined;
 	return [];
+}
+
+const HEADER_PROMPT_ECHO_PREFIX_CELLS = 4;
+
+function resolveEchoedInitialPrompt<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): string | undefined {
+	const raw =
+		typeof state.echoedInitialPrompt === "function" ? state.echoedInitialPrompt() : state.echoedInitialPrompt;
+	return raw !== undefined && raw.length > 0 ? raw : undefined;
+}
+
+export function fitsSingleLineHeaderEcho(prompt: string, width: number): boolean {
+	if (width <= HEADER_PROMPT_ECHO_PREFIX_CELLS) return false;
+	if (/[\r\n\u2028\u2029]/u.test(prompt)) return false;
+	const displayed = taskDisplayText(prompt);
+	if (displayed.length === 0) return false;
+	return HEADER_PROMPT_ECHO_PREFIX_CELLS + visibleWidth(displayed) <= width;
+}
+
+class EchoedInitialPromptComponent implements Component {
+	private readonly inner: Component;
+	private readonly prompt: string;
+
+	constructor(inner: Component, prompt: string) {
+		this.inner = inner;
+		this.prompt = prompt;
+	}
+
+	render(width: number): string[] {
+		return fitsSingleLineHeaderEcho(this.prompt, width) ? [] : this.inner.render(width);
+	}
+
+	invalidate(): void {
+		this.inner.invalidate();
+	}
 }
 
 export function renderChatSessionEntry<TExtraEntry extends ChatTranscriptEntryLike>(
@@ -276,10 +326,20 @@ export function renderChatSessionEntry<TExtraEntry extends ChatTranscriptEntryLi
 	if (isChatMessageEntry(entry)) {
 		const isStreaming = isChatSessionStreaming(state) && state.liveChat.isStreamingAssistantEntry(entry);
 		const options = chatMessageRenderOptions(state, isStreaming);
-		return renderChatMessageEntry(
+		const component = renderChatMessageEntry(
 			streamingWindowedEntry(state, entry, isStreaming),
 			entry.kind === "tool" || entry.kind === "custom" ? { ...options, ui: entryTui(state, entry) } : options,
 		);
+		const echoed = resolveEchoedInitialPrompt(state);
+		if (
+			entry.kind === "user" &&
+			state.firstUserEntry === entry &&
+			echoed !== undefined &&
+			state.firstUserEntryExactText === echoed
+		) {
+			return new EchoedInitialPromptComponent(component, echoed);
+		}
+		return component;
 	}
 	if (!state.renderExtraEntry) {
 		return new Text("", 0, 0);
@@ -392,6 +452,8 @@ function chatRenderSettingsCacheKey<TExtraEntry extends ChatTranscriptEntryLike>
 		state.getCwd?.() ?? state.getAgentSession?.()?.sessionManager.getCwd() ?? process.cwd(),
 		state.bodyViewport.getScrollFromBottom() === 0,
 		isChatSessionStreaming(state),
+		resolveEchoedInitialPrompt(state) ?? "",
+		state.firstUserEntryExactText ?? "",
 	]);
 }
 
@@ -429,7 +491,13 @@ function entryContentCacheKey<TExtraEntry extends ChatTranscriptEntryLike>(
 				entry.message.fullOutputPath ?? null,
 			]);
 		case "user":
-			return cacheKey(["user", entry.text]);
+			return cacheKey([
+				"user",
+				entry.text,
+				state.firstUserEntry === entry &&
+					state.firstUserEntryExactText !== undefined &&
+					resolveEchoedInitialPrompt(state) === state.firstUserEntryExactText,
+			]);
 		case "custom":
 			return cacheKey(["custom", renderIdentityKey(state, entry.message)]);
 		case "branchSummary":

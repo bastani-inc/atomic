@@ -47,6 +47,8 @@ export { FirstTimeSetupComponent, type FirstTimeSetupOptions, type FirstTimeSetu
 export { FooterComponent, UsageMeterComponent } from "./footer.ts";
 export { IdleStatus } from "./idle-status.ts";
 export {
+	type AttachedComposerStyle,
+	applyAttachedComposer,
 	applyInputLabelToEditorTopRule,
 	buildInputLabel,
 	INPUT_LABEL_MIN_COLUMNS,
@@ -78,6 +80,10 @@ export { SessionSelectorComponent } from "./session-selector.ts";
 export { type SettingsCallbacks, type SettingsConfig, SettingsSelectorComponent } from "./settings-selector.ts";
 export { ShowImagesSelectorComponent } from "./show-images-selector.ts";
 export { SkillInvocationMessageComponent } from "./skill-invocation-message.ts";
+export {
+	TASK_CHAT_OVERLAY_KEYS,
+	taskChatKeys,
+} from "./task-inspector.js";
 export { ThemeSelectorComponent } from "./theme-selector.ts";
 export { ThinkingSelectorComponent } from "./thinking-selector.ts";
 export { formatTokenCount, formatTokenSegment, type TokenSegmentMode } from "./token-segment.ts";

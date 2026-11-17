@@ -33,6 +33,7 @@ import {
 	renderFooterWithOrchestratorReturnHint,
 	renderHeader,
 	renderReadOnlyArchiveFooter,
+	renderStageChatKeyOverlay,
 	sepRule,
 } from "./stage-chat-view-footer-status.js";
 import { handleStageChatInput } from "./stage-chat-view-input.js";
@@ -99,6 +100,8 @@ export class StageChatView implements Component, Focusable {
 	private promptScrollOffset!: StageChatViewContext["promptScrollOffset"];
 	private promptMaxScroll!: StageChatViewContext["promptMaxScroll"];
 	private promptVisibleRows!: StageChatViewContext["promptVisibleRows"];
+	private helpOpen!: StageChatViewContext["helpOpen"];
+	private interruptedByEscape!: StageChatViewContext["interruptedByEscape"];
 	private localPaused!: StageChatViewContext["localPaused"];
 	private seenNoticeIds!: StageChatViewContext["seenNoticeIds"];
 	private _unsubscribeStore!: StageChatViewContext["_unsubscribeStore"];
@@ -135,6 +138,14 @@ export class StageChatView implements Component, Focusable {
 		this.chatHost.focused = this.focused;
 		const headerLines = renderHeader(ctx, w, stage);
 		const sepLines = [sepRule(ctx, w)];
+		if (this.helpOpen) {
+			const totalRows = viewLineCount(ctx);
+			return fitStageChatFrame(
+				[...headerLines, ...sepLines, ...renderStageChatKeyOverlay(ctx, w)],
+				totalRows,
+				blankLine(w),
+			);
+		}
 
 		const customUiLines = customUiActive ? renderCustomUi(ctx, w) : [];
 		// A question closed with Esc waits above the chat's prompt until Enter reopens it.
@@ -152,14 +163,19 @@ export class StageChatView implements Component, Focusable {
 		const usageLines = chatChromeHidden ? [] : this.chatHost.renderUsage(w);
 		const editorLines = chatChromeHidden
 			? []
-			: injectStageLabelIntoEditorTopRule(ctx, currentStage(ctx)?.name, this.chatHost.renderEditor(w));
+			: injectStageLabelIntoEditorTopRule(
+					ctx,
+					currentStage(ctx)?.name,
+					this.chatHost.renderEditor(w),
+					currentStage(ctx),
+				);
 		const footerLines = customUiActive
 			? []
 			: promptActive
 				? this.chatHost.renderTaskFooter(w)
 				: readOnlyArchive
 					? renderReadOnlyArchiveFooter(ctx, w)
-					: renderFooterWithOrchestratorReturnHint(ctx, w, this.chatHost.renderFooter(w));
+					: renderFooterWithOrchestratorReturnHint(ctx, w, this.chatHost.renderFooter(w, true));
 
 		const totalRows = viewLineCount(ctx);
 		const plan = planStageChatFrame({
@@ -190,7 +206,7 @@ export class StageChatView implements Component, Focusable {
 			bodyLines = renderPromptBody(ctx, w, bodyBudget);
 		} else if (blocked) {
 			bodyLines = renderBlockedBody(ctx, w, bodyBudget, stage);
-		} else if (!readOnlyArchive && isPaused(ctx, stage)) {
+		} else if (!readOnlyArchive && isPaused(ctx, stage) && !this.interruptedByEscape) {
 			bodyLines = renderPausedBody(ctx, w, bodyBudget, renderTranscript);
 		} else if (waitingNotice !== undefined) {
 			bodyLines = renderStartingBody(ctx, w, bodyBudget, waitingNotice, renderTranscript);
@@ -257,6 +273,8 @@ export class StageChatView implements Component, Focusable {
 		void this.promptScrollOffset;
 		void this.promptMaxScroll;
 		void this.promptVisibleRows;
+		void this.helpOpen;
+		void this.interruptedByEscape;
 		void this.seenNoticeIds;
 		void this._unsubscribeStore;
 		void this._unsubscribeHandle;

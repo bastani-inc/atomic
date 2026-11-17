@@ -19,12 +19,15 @@ export function stageChatRenderSettings(
 	opts: StageChatViewOpts,
 ): StageChatRenderSettings | undefined {
 	const inherited = opts.getChatRenderSettings?.();
+	const toolOutputExpanded = ctx.getToolsExpanded?.() ?? inherited?.toolOutputExpanded;
 	const stageSession = ctx.handle?.isDisposed === true ? undefined : ctx.handle?.agentSession;
-	if (!stageSession) return inherited;
+	if (!stageSession) {
+		return toolOutputExpanded === undefined ? inherited : { ...inherited, toolOutputExpanded };
+	}
 	const rendererHost = stageSession as MessageRendererHost;
 	return {
 		...inherited,
-		toolOutputExpanded: ctx.getToolsExpanded?.() ?? inherited?.toolOutputExpanded,
+		toolOutputExpanded,
 		getToolDefinition: (toolName) =>
 			stageSession.getToolDefinition(toolName) ?? inherited?.getToolDefinition?.(toolName),
 		getCustomMessageRenderer: (customType) =>

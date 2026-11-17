@@ -71,8 +71,9 @@ test("both chats retain the same task through tool end, agent end, background ac
 		stripAnsi(text)
 			.split("\n")
 			.map((line) => line.trim())
-			.filter((line) => line.startsWith("Tasks "))
-			.map((line) => line.slice(0, line.indexOf("/tasks") + 6));
+			// Each chat lists its active tasks as agent-panel rows below its prompt (#5224).
+			.filter((line) => /^∀ \S+ {2}/.test(line))
+			.map((line) => line.replace(/ {2,}/g, "  "));
 	const assertParity = () => {
 		assert.deepEqual(taskLines(main.renderFooter(80).join("\n")), taskLines(stage.render(80).join("\n")));
 		assert.equal(main.entries().filter((entry) => entry.kind === "task").length, 0);
@@ -83,7 +84,7 @@ test("both chats retain the same task through tool end, agent end, background ac
 		assertParity();
 		const screen = stripAnsi(stage.render(80).join("\n"));
 		assert.ok(
-			screen.indexOf("Workflow draft") >= 0 && screen.indexOf("Workflow draft") < screen.indexOf("Tasks  "),
+			screen.indexOf("Workflow draft") >= 0 && screen.indexOf("Workflow draft") < screen.indexOf("∀ worker  "),
 			"workflow background count stays below the composer",
 		);
 		for (const event of [
@@ -308,11 +309,11 @@ test("six task anchors stay complete behind a bounded viewport and mounted promp
 		emit(event);
 		main.scrollToBottom();
 		assert.doesNotMatch(main.renderBody(80, 5).join("\n"), /worker:/);
-		assert.match(main.renderFooter(80).join("\n"), /Tasks {2}6 local agents running/);
+		assert.match(main.renderFooter(80).join("\n"), /\+2 more/);
 		const mounted = stage.render(80);
 		assert.equal(mounted.length, 24);
 		assert.doesNotMatch(mounted.join("\n"), /worker:/);
-		assert.match(stripAnsi(mounted.join("\n")), /Tasks {2}6 local agents running/);
+		assert.match(stripAnsi(mounted.join("\n")), /\+2 more/);
 		assert.equal(
 			store.recordStagePendingPrompt(
 				"run-1",
@@ -324,7 +325,7 @@ test("six task anchors stay complete behind a bounded viewport and mounted promp
 		const prompt = stage.render(80);
 		assert.equal(prompt.length, 24);
 		assert.match(stripAnsi(prompt.join("\n")), /Answer this stage question/);
-		assert.match(stripAnsi(prompt.join("\n")), /Tasks {2}6 local agents running/);
+		assert.match(stripAnsi(prompt.join("\n")), /\+2 more/);
 	} finally {
 		main.dispose();
 		stage.dispose();

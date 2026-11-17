@@ -4,6 +4,7 @@ import { repairOrphanToolResults } from "../../../core/messages.ts";
 import { SessionManager } from "../../../core/session-manager.ts";
 import type { SessionStore } from "../../../core/storage/session/types.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
+import { taskClocksFor } from "../../../core/tasks/live-elapsed.ts";
 import { getOwnerTaskStore, type OwnerTaskStore, watchOwnerTaskStoreBinding } from "../../../core/tasks/owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { pickWhimsicalWorkingMessage } from "../whimsical-messages.ts";
@@ -39,6 +40,7 @@ import {
 	reassertChatSessionExternalPromptLifecycle,
 	settleChatSessionPromptLifecycle,
 	startChatSessionExternalPromptLifecycle,
+	startChatSessionWorkingLifecycle,
 	stopChatSessionWorkingLifecycle,
 	syncChatSessionAnimationTick,
 } from "./chat-session-host-runtime.ts";
@@ -49,6 +51,7 @@ import type {
 	ChatSessionHostOpts,
 	ChatSessionSubmitMode,
 } from "./chat-session-host-types.ts";
+import { firstRawUserExactText, syncFirstUserEntry } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import { TaskInspector } from "./task-inspector.js";
 import { renderTaskFooter } from "./task-list.js";
@@ -150,13 +153,32 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		return this.taskInspector?.handleInput(data) === true;
 	}
 	appendMessages(messages: readonly AgentSnapshotMessage[]): void {
+		const hadFirstUser = this.state.seenFirstRawUser;
+		if (!hadFirstUser && messages.length > 0) {
+			const firstUser = firstRawUserExactText(messages);
+			if (firstUser.seenUser) {
+				this.state.seenFirstRawUser = true;
+				this.state.firstUserEntryExactText = firstUser.exactText;
+			}
+		}
 		this.state.liveChat.appendMessages(messages);
+		if (!hadFirstUser && this.state.seenFirstRawUser) {
+			syncFirstUserEntry(this.state);
+		}
 	}
 
 	/** Earlier history, shown above every entry while a reader scrolled away from the end keeps their place. */
 	prependMessages(messages: readonly AgentSnapshotMessage[]): void {
+		const firstUser = firstRawUserExactText(messages);
+		if (firstUser.seenUser) {
+			this.state.seenFirstRawUser = true;
+			this.state.firstUserEntryExactText = firstUser.exactText;
+		}
 		const previousCount = countableTranscriptLength(this.state);
 		this.state.liveChat.prependMessages(messages);
+		if (firstUser.seenUser || this.state.firstUserEntry === undefined) {
+			syncFirstUserEntry(this.state);
+		}
 		this.state.newMessages.historyPrepended(countableTranscriptLength(this.state) - previousCount);
 		this.state.requestRender?.();
 	}
@@ -166,7 +188,11 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		if (options.preserveUnread && this.state.bodyViewport.getScrollFromBottom() > 0) {
 			this.state.newMessages.observe(false, countableTranscriptLength(this.state));
 		}
+		const firstUser = firstRawUserExactText(messages);
+		this.state.seenFirstRawUser = firstUser.seenUser;
+		this.state.firstUserEntryExactText = firstUser.exactText;
 		this.state.liveChat.replaceMessages(messages, this.state.extraEntries);
+		syncFirstUserEntry(this.state);
 		if (options.preserveUnread) this.state.newMessages.replaced(countableTranscriptLength(this.state));
 		else this.state.newMessages.reset();
 		this.state.requestRender?.();
@@ -181,6 +207,9 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.workingMessage = undefined;
 		this.state.lastWorkingMessage = undefined;
 		this.state.workedRun = undefined;
+		this.state.seenFirstRawUser = false;
+		this.state.firstUserEntryExactText = undefined;
+		this.state.firstUserEntry = undefined;
 		if (this.state.statusMessage !== this.state.lastWarningMessage) this.state.statusMessage = "";
 		this.state.pendingSteeringMessages = [];
 		this.state.pendingFollowUpMessages = [];
@@ -231,10 +260,14 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		if (this.state.disposed) return false;
 		if (this.historyHydrated || this.state.transcript.length > this.state.extraEntries.length) return true;
 		this.historyHydrated = true;
+		const firstUser = firstRawUserExactText(messages);
+		this.state.seenFirstRawUser = firstUser.seenUser;
+		this.state.firstUserEntryExactText = firstUser.exactText;
 		const previousCount = countableTranscriptLength(this.state);
 		const extras = this.state.transcript.splice(0);
 		this.state.liveChat.appendMessages(messages);
 		this.state.transcript.push(...extras);
+		syncFirstUserEntry(this.state);
 		this.state.newMessages.historyPrepended(countableTranscriptLength(this.state) - previousCount);
 		this.state.requestRender?.();
 		return true;
@@ -274,6 +307,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.transcriptComponent.invalidate();
 		this.state.requestRender?.();
 		if (!source) return;
+		taskClocksFor(source);
 		const update = () => {
 			// Without task rows the transcript shows nothing of the tasks; only the footer repaints.
 			if (this.taskRowsInChat) {
@@ -400,12 +434,21 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		return renderChatSessionEditor(this.state, width, this.focused);
 	}
 
-	renderTaskFooter(width: number): string[] {
-		return renderTaskFooter(this.taskSource?.backgroundTasks ?? [], width);
+	hasBackgroundTasks(): boolean {
+		return (this.taskSource?.backgroundTasks.length ?? 0) > 0;
 	}
-	renderFooter(width: number): string[] {
-		const footer = renderChatSessionFooter(this.state, width, this.hasTaskInspector && !this.taskInspectorFullscreen);
-		return footer.length ? footer : renderTaskFooter(this.taskSource?.backgroundTasks ?? [], width);
+
+	renderTaskFooter(width: number): string[] {
+		if (this.taskSource === undefined) return [];
+		return renderTaskFooter(this.taskSource.backgroundTasks, width, taskClocksFor(this.taskSource));
+	}
+	renderFooter(width: number, navigationActive = false): string[] {
+		const footer = renderChatSessionFooter(
+			this.state,
+			width,
+			navigationActive || (this.hasTaskInspector && !this.taskInspectorFullscreen),
+		);
+		return footer.length ? footer : this.renderTaskFooter(width);
 	}
 
 	handleScrollInput(data: string): boolean {
@@ -516,6 +559,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	 */
 	hydrateRunningTurn(messages: readonly MeteredRunMessage[], streaming?: MeteredRunMessage): void {
 		if (this.state.disposed) return;
+		if (!this.state.workingLifecycleActive) startChatSessionWorkingLifecycle(this.state);
 		if (this.state.workingRunMeter.snapshot() === undefined) {
 			const run = runInProgress(messages, streaming);
 			this.state.workingRunMeter.resume(run.startedAt, run.settledTokens, run.requesting);
@@ -525,6 +569,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 			this.state.workingMessage = pickWhimsicalWorkingMessage();
 			this.state.lastWorkingMessage = this.state.workingMessage;
 		}
+		syncChatSessionAnimationTick(this.state);
 		this.state.requestRender?.();
 	}
 

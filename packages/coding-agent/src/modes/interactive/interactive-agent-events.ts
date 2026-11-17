@@ -13,6 +13,7 @@ import { observeLocalWorkflowActivity } from "../interactive-engine/extension-ui
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
+import { bindAgentPanel } from "../rpc/agent-panel-bridge.ts";
 import { interruptedNotice } from "./components/assistant-message.ts";
 import { AtomicWorkedStatusComponent, AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
@@ -108,9 +109,14 @@ InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveMode
 	const disposeWorkflowActivity = observeLocalWorkflowActivity(this.runtimeHost, session, (frame) => {
 		if (this.session === session) this.programStatus.handleWorkflowActivity(frame);
 	});
+	const disposeAgentPanel =
+		this.runtimeHost instanceof IsolatedInteractiveRuntime
+			? () => {}
+			: bindAgentPanel(session, this.createExtensionUIContext());
 	this.unsubscribe = () => {
 		unsubscribe();
 		disposeWorkflowActivity();
+		disposeAgentPanel();
 		disposeInteractiveTasks(this);
 	};
 };
@@ -402,6 +408,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 		case "agent_end": {
 			const workedSnapshot = this.workingRunMeter.snapshot();
 			this.workingRunMeter.stop();
+			this.workingMessage = undefined;
 			const compactionInProgress = this.compactionActive;
 			if (!compactionInProgress && this.settingsManager.getShowTerminalProgress()) {
 				this.ui.terminal.setProgress(false);

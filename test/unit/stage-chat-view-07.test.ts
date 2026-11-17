@@ -10,12 +10,10 @@ import {
 	assistantTextMessage,
 	createStore,
 	deriveGraphTheme,
-	expectRightAlignedReturnHint,
 	fakeFooterAgentSession,
 	flush,
 	makeFakeKeybindings,
 	makeHandle,
-	RETURN_HINT_TEXT,
 	StageChatView,
 	type StageControlHandle,
 	StageUiBroker,
@@ -85,11 +83,12 @@ describe("StageChatView", () => {
 		assert.doesNotMatch(rendered, /type a message to start this stage/i);
 		assert.match(rendered, /❯/);
 		assert.match(rendered, /\x1b\[7m \x1b\[0m/);
-		const hintIndex = expectRightAlignedReturnHint(visibleLines, 96);
+		const hintIndex = visibleLines.findIndex((line) => line.includes("← graph"));
 		assert.ok(
 			hintIndex > visibleLines.findIndex((line) => line.includes("❯")),
 			"expected orchestrator hint below the chat box",
 		);
+		assert.equal(visibleLines[hintIndex], "  ← graph · pgup/pgdn scroll · ctrl+o expand · ? keys");
 		view.dispose();
 	});
 
@@ -293,15 +292,15 @@ describe("StageChatView", () => {
 		const workingIndex = lines.findIndex((line) => WORKING_LINE.test(line));
 		const usageIndex = lines.findIndex((line) => line.includes("$0.123"));
 		const promptIndex = lines.findIndex((line) => line.includes("❯"));
-		const hintIndex = expectRightAlignedReturnHint(lines, 120);
-		const identityIndex = lines.findIndex((line) => line.includes("esc to interrupt"));
+		const hintIndex = lines.findIndex((line) => line.includes("← graph"));
+		const identityIndex = lines.findIndex((line) => line.includes("esc interrupt"));
 		const commandsIndex = lines.findIndex((line) => line.includes("esc pause"));
 		assert.ok(workingIndex >= 0, "expected working spinner line");
 		assert.ok(usageIndex > workingIndex, "expected usage below working line");
 		assert.ok(promptIndex > usageIndex, "expected composer below usage line");
 		assert.ok(hintIndex > promptIndex, "expected orchestrator hint below the chat box");
 		assert.equal(identityIndex, hintIndex);
-		assert.notEqual(lines[hintIndex]?.trim(), RETURN_HINT_TEXT);
+		assert.equal(lines[hintIndex], "  ← graph · esc interrupt · pgup/pgdn scroll · ctrl+o expand · ? keys");
 		assert.equal(commandsIndex, -1);
 		assert.doesNotMatch(lines[identityIndex] ?? "", /steer|follow-up/);
 		assert.doesNotMatch(rendered, /pageup\/pagedown|follow-up|steer/);
@@ -447,9 +446,11 @@ describe("StageChatView", () => {
 		});
 
 		const lines = view.render(120).map(stripAnsi);
-		const hintIndex = expectRightAlignedReturnHint(lines, 120);
-		assert.match(lines[hintIndex] ?? "", /openai-codex\/gpt-5\.5 {2}high .*← return to graph/);
-		assert.notEqual(lines[hintIndex]?.trim(), RETURN_HINT_TEXT);
+		const modelIndex = lines.findIndex((line) => line.includes("openai-codex/gpt-5.5  high"));
+		const hintIndex = lines.findIndex((line) => line.includes("← graph"));
+		assert.ok(modelIndex >= 0, "expected model context line");
+		assert.equal(hintIndex, modelIndex + 1);
+		assert.equal(lines[hintIndex], "  ← graph · pgup/pgdn scroll · ctrl+o expand · ? keys");
 		view.dispose();
 	});
 
@@ -479,13 +480,14 @@ describe("StageChatView", () => {
 			onClose: () => {},
 		});
 
-		const footer = view
-			.render(40)
-			.map(stripAnsi)
-			.find((line) => line.includes("← return to graph"));
-		assert.match(footer ?? "", /\s← return to graph$/);
-		assert.equal(footer?.length, 40);
-		assert.doesNotMatch(footer ?? "", /cla←/);
+		const renderedLines = view.render(40).map(stripAnsi);
+		const modelLine = renderedLines.find((line) => line.includes("claude-sonnet-4"));
+		const hintLine = renderedLines.find((line) => line.includes("← graph"));
+		assert.ok(modelLine, "expected 40-column model context line");
+		assert.ok((modelLine?.length ?? 0) <= 40);
+		assert.ok(hintLine, "expected 40-column navigation hint line");
+		assert.ok((hintLine?.length ?? 0) <= 40);
+		assert.doesNotMatch(modelLine ?? "", /←/);
 		view.dispose();
 	});
 

@@ -103,6 +103,7 @@ export interface ExtensionRuntimeState {
 	workflowActivityHub: WorkflowActivityHub;
 	/** Holds the session-scoped run-control implementation registered by the workflows extension. */
 	workflowRunControlHub: WorkflowRunControlHub;
+	agentPanelSourceHub: import("../tasks/agent-panel-source.ts").AgentPanelSourceHub;
 	/** Package-manifest and `registerMcpServer()` MCP servers visible to every extension of this generation. */
 	mcpServerRegistry: McpServerRegistry;
 	flagValues: Map<string, boolean | string>;

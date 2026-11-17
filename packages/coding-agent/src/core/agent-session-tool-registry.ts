@@ -11,6 +11,7 @@ import { isSelectedNativeMcpTool } from "./mcp-child-policy.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { withWorktreeRootMappings } from "./resume/path-mapping.ts";
 import { createSyntheticSourceInfo } from "./source-info.ts";
+import { notifyAgentPanelSourceHubRebound } from "./tasks/agent-panel-source.ts";
 import { isRegisteredToolAllowed, activatesOnRegistration as toolActivatesOnRegistration } from "./tool-selection.ts";
 import { createLocalBashOperations } from "./tools/bash.js";
 import { createAllToolDefinitions, getDefaultToolNames } from "./tools/index.js";
@@ -266,6 +267,7 @@ export function _buildRuntime(
 		this._bindExtensionCore(this._extensionRunner);
 		this._applyExtensionBindings(this._extensionRunner);
 		this._workflows?.rebindObservers();
+		notifyAgentPanelSourceHubRebound(this);
 	}
 
 	const defaultActiveToolNames = this._baseToolsOverride

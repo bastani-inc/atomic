@@ -12,6 +12,7 @@ import type { EngineSessionPickerService } from "../interactive-engine/engine-se
 import { forwardWorkflowActivity } from "../interactive-engine/engine-workflow-activity.ts";
 import { serializeInteractiveEngineMessage } from "../interactive-engine/protocol.ts";
 import { toJsonEvent } from "../json-event.ts";
+import { bindAgentPanel } from "./agent-panel-bridge.ts";
 import { outputExtensionLoadErrors } from "./rpc-extension-load-errors.ts";
 import {
 	createRpcExtensionUIContext,
@@ -20,7 +21,6 @@ import {
 } from "./rpc-extension-ui.ts";
 import type { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
 import type { RpcOutput } from "./rpc-responses.ts";
-import { bindEngineTaskWidget } from "./task-ui-bridge.js";
 
 interface RpcSessionBindingOptions {
 	runtimeHost: AgentSessionRuntime;
@@ -219,7 +219,11 @@ export class RpcSessionBinding {
 			return;
 		}
 
-		if (this.customUi) this.unsubscribeTasks = bindEngineTaskWidget(session, session.extensionRunner.getUIContext());
+		if (this.customUi) {
+			this.unsubscribeTasks = bindAgentPanel(session, session.extensionRunner.getUIContext(), (counts) => {
+				this.writeEngineLine?.(serializeInteractiveEngineMessage({ type: "engine_agent_panel_state", ...counts }));
+			});
+		}
 		if (this.writeEngineLine) {
 			this.unsubscribeWorkflowActivity = forwardWorkflowActivity(session, this.writeEngineLine);
 		}

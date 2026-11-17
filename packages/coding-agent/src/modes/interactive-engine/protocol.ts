@@ -83,6 +83,7 @@ export type InteractiveEngineMessage =
 	| { type: "engine_activity_finished"; activityId: string }
 	/** Workflow activity the host reports as terminal program status. Roots carry no graph. */
 	| { type: "engine_workflow_activity"; frame: WorkflowActivityFrame }
+	| { type: "engine_agent_panel_state"; total: number; needsInput: number }
 	| { type: "engine_ui_prompt"; event: UIPromptStartEvent | UIPromptEndEvent }
 	/**
 	 * The child took ownership of a correlated RPC request: it has parsed the
@@ -586,6 +587,16 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				},
 			};
 		}
+		case "engine_agent_panel_state":
+			return typeof value.total === "number" &&
+				Number.isSafeInteger(value.total) &&
+				value.total >= 0 &&
+				typeof value.needsInput === "number" &&
+				Number.isSafeInteger(value.needsInput) &&
+				value.needsInput >= 0 &&
+				value.needsInput <= value.total
+				? { type: value.type, total: value.total, needsInput: value.needsInput }
+				: undefined;
 		case "engine_workflow_activity": {
 			const frame = parseWorkflowActivityFrame(value.frame);
 			return frame ? { type: value.type, frame } : undefined;

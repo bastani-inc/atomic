@@ -6,6 +6,7 @@ import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.t
 import { activeToolExecutionStarts, type ToolExecutionStart } from "../tool-execution-timing.ts";
 import { taskOutputText } from "./command-output.js";
 import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
+import { bindTaskClockSource } from "./live-elapsed.ts";
 import { TaskMessageError, TaskMessageTimeoutError } from "./message-error.js";
 import type { OwnerTaskStore, TaskActivity } from "./owner-store.js";
 import {
@@ -80,6 +81,8 @@ export interface TaskViewSource {
 	readonly ownerTasks?: readonly TaskRecord[];
 	readonly ownerBackgroundTasks?: readonly TaskRecord[];
 	readonly settlementOrder: ReadonlyMap<TaskId, bigint>;
+	panelRevision?(): number | undefined;
+	taskRecord?(id: TaskId): TaskRecord | undefined;
 	recentActivity(id: TaskId): TaskActivity[];
 	activityOmitted(id: TaskId): boolean;
 	subscribe(listener: () => void): () => void;
@@ -158,6 +161,13 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 		get settlementOrder() {
 			return root.settlementOrder;
 		},
+		panelRevision: () => root.panelRevision?.(),
+		taskRecord(id) {
+			const task = root.taskRecord
+				? root.taskRecord(id)
+				: root.tasks.find((candidate) => candidate.ref.taskId === id);
+			return task?.parentTaskId === launcher ? task : undefined;
+		},
 		recentActivity: (id) => root.recentActivity(id),
 		activityOmitted: (id) => root.activityOmitted(id),
 		subscribe: (listener) => root.subscribe(listener),
@@ -183,6 +193,7 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 	};
 	views.set(launcher, view);
 	launchedViewRoots.set(view, root);
+	bindTaskClockSource(view, root);
 	return view;
 }
 
@@ -217,6 +228,8 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 		get settlementOrder() {
 			return store.settlementOrder;
 		},
+		panelRevision: () => store.panelRevision,
+		taskRecord: (id) => store.taskRecord(id),
 		recentActivity: (id) => store.recentActivity(id),
 		activityOmitted: (id) => store.activityOmitted(id),
 		subscribe: (listener) => store.subscribe(listener),
@@ -393,6 +406,7 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 		},
 	};
 	sources.set(store, source);
+	bindTaskClockSource(source, store);
 	return source;
 }
 

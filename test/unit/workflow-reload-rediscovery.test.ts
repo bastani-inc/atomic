@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import type { AgentPanelSource } from "@bastani/atomic";
 import { afterEach, describe, test, vi } from "vitest";
 import { getWorkflowHostModules } from "../../packages/coding-agent/src/core/extensions/loader-host-modules.js";
 import { createWorkflowExtensionRuntimeState } from "../../packages/workflows/src/extension/extension-runtime-state.js";
@@ -190,10 +191,11 @@ async function makeIsolatedRoots(label: string): Promise<{ root: string; project
 }
 
 describe("workflow reload rediscovery matrix", () => {
-	test.sequential("resource reload keeps a live zero-stage tool-only BACKGROUND widget mounted", async () => {
-		await makeIsolatedRoots("workflow-reload-live-widget");
+	test.sequential("resource reload keeps a live zero-stage tool-only run in the agent panel source (#5224)", async () => {
+		await makeIsolatedRoots("workflow-reload-live-panel");
+		const runId = testRunId("resource-reload-tool-only");
 		store.recordRunStart({
-			id: testRunId("resource-reload-tool-only"),
+			id: runId,
 			name: "publish-release",
 			inputs: {},
 			status: "running",
@@ -213,24 +215,23 @@ describe("workflow reload rediscovery matrix", () => {
 			],
 			startedAt: Date.now(),
 		});
-		type CapturedWidgetFactory = (tui: unknown, theme: unknown) => { render(width: number): string[] };
-		const widgetFactories: CapturedWidgetFactory[] = [];
-		const ui = {
-			setWidget: (_key: string, factory: unknown): void => {
-				if (typeof factory === "function") widgetFactories.push(factory as CapturedWidgetFactory);
+		const sources: AgentPanelSource[] = [];
+		const harness = createHarness({
+			registerAgentPanelSource: (source) => {
+				sources.push(source);
+				return { dispose: () => undefined };
 			},
-			requestRender: (): void => undefined,
-		} as unknown as NonNullable<ExtensionAPI["ui"]>;
-		const harness = createHarness({ ui });
-		assert.equal(widgetFactories.length, 1);
-		const mounted = widgetFactories[0]!;
-		assert.match(mounted(undefined, undefined).render(120).join("\n"), /publish-watcher · running/);
+		});
+		assert.equal(sources.length, 1);
+		const listed = () => sources[0]!.items().find((item) => item.id === `run:${runId}`);
+		assert.equal(listed()?.state, "running");
 
 		const reload = reloadResult(await harness.execute({ action: "reload" }));
 		assert.equal(reload.status, "ok");
 		assert.equal(reload.outcome, "applied");
-		assert.equal(widgetFactories.length, 1, "resource reload must update in place rather than remount");
-		assert.match(mounted(undefined, undefined).render(120).join("\n"), /publish-watcher · running/);
+		assert.equal(sources.length, 1, "resource reload keeps the one source rather than registering again");
+		assert.equal(listed()?.state, "running", "the run is still listed");
+		store.removeRun(runId);
 	});
 
 	test.sequential("reload refreshes all discovery scopes and public list/get/inputs/help/completion/invocation surfaces", async () => {

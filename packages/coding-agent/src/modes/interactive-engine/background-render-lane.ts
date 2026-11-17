@@ -54,7 +54,9 @@ export class BackgroundRenderLane {
 				if (next.done === true) return;
 				const [key, job] = next.value;
 				this.pending.delete(key);
-				job();
+				try {
+					job();
+				} catch {}
 			}
 		} finally {
 			this.draining = false;
@@ -73,11 +75,18 @@ export class BackgroundRenderLane {
 export class BackgroundRenderTui extends TuiMainScreen {
 	private readonly lane: BackgroundRenderLane;
 	private readonly laneKey: string;
+	private readonly onRenderError: ((error: unknown) => void) | undefined;
 
-	constructor(terminal: Terminal, lane: BackgroundRenderLane, laneKey: string) {
+	constructor(
+		terminal: Terminal,
+		lane: BackgroundRenderLane,
+		laneKey: string,
+		onRenderError?: (error: unknown) => void,
+	) {
 		super(terminal, undefined, getAgentDir());
 		this.lane = lane;
 		this.laneKey = laneKey;
+		this.onRenderError = onRenderError;
 	}
 
 	override stop(options?: TuiStopOptions): void {
@@ -86,6 +95,12 @@ export class BackgroundRenderTui extends TuiMainScreen {
 	}
 
 	protected override doRender(): void {
-		this.lane.schedule(this.laneKey, () => super.doRender());
+		this.lane.schedule(this.laneKey, () => {
+			try {
+				super.doRender();
+			} catch (error) {
+				this.onRenderError?.(error);
+			}
+		});
 	}
 }

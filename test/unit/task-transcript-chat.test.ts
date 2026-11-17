@@ -108,6 +108,7 @@ async function openTranscript(transcript: TaskTranscriptSource, options: OpenTra
 	await fixture.start("Inspect the shared stack");
 	fixture.runners[0].context.bindTranscript(transcript);
 	inspector.handleInput(" ");
+	inspector.handleInput("\r");
 	await flush();
 	inspector.handleInput("\r");
 	await flush();
@@ -628,7 +629,7 @@ test("Esc interrupts a running subagent's turn from its chat and never leaves; �
 	});
 	const host = await openTranscript(transcript);
 	try {
-		assert.match(host.text(), /← task · esc interrupt · pgup\/pgdn scroll · ctrl\+o expand · \? keys/);
+		assert.match(host.text(), /← task · esc interrupt · pgup\/pgdn scroll · \? keys/);
 		host.inspector.handleInput("\x1b");
 		await flush();
 		assert.equal(interrupts, 1, "Esc interrupted the subagent's current turn");

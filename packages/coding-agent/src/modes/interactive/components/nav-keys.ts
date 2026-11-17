@@ -86,16 +86,23 @@ export function renderNavHintLine(
 	style: NavKeyStyle,
 	keybindings: NavKeybindings | undefined,
 	indent = 2,
+	options: { readonly compact?: boolean } = {},
 ): string {
 	const taken = new Set<string>();
 	const parts = entries.flatMap((entry) => {
 		const keys = navEntryKeys(keybindings, entry, taken);
 		return keys ? [`${keys} ${entry.label}`] : [];
 	});
-	const room = Math.max(1, width - indent);
-	while (parts.length > 1 && visibleWidth(parts.join(" · ")) > room) parts.pop();
-	const line = truncateToWidth(parts.join(" · "), room);
-	return style.dim(" ".repeat(Math.min(indent, Math.max(0, width - visibleWidth(line)))) + line);
+	let padding = indent;
+	let separator = " · ";
+	if (options.compact && visibleWidth(parts.join(separator)) > width - padding) {
+		padding = 0;
+		if (visibleWidth(parts.join(separator)) > width) separator = "·";
+	}
+	const room = Math.max(1, width - padding);
+	while (parts.length > 1 && visibleWidth(parts.join(separator)) > room) parts.pop();
+	const line = truncateToWidth(parts.join(separator), room);
+	return style.dim(" ".repeat(Math.min(padding, Math.max(0, width - visibleWidth(line)))) + line);
 }
 
 /**
