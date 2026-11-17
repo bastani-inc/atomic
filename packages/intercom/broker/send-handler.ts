@@ -53,6 +53,8 @@ export interface BrokerConnectedSession {
   /** #4642: the session id of the connection hosting this session, whose `socket` it shares. */
   readonly hostedBy?: string;
   reach?: IntercomReachPolicy;
+  /** Set when the session ended for good: a receipt that arrives later for what it sent opens no return path to it. */
+  endedForGood?: true;
 }
 
 /** A message frame for `recipient`; the connection hosting a hosted recipient learns which of its sessions it is for. */
@@ -1070,7 +1072,8 @@ export function handleBrokerSend(
       if (message.replyTo !== undefined)
         pendingQuestions.releaseHeldFailures(message.replyTo, fromSession.info.id, recipient.registrationReturnAddress);
       if (supervisorSend) supervisorCache.record(message.id, fromSession.info.id, recipient.info.id);
-      returnPaths?.delivered(recipient, returnPathParty(fromSession), fromSession.info, message.id);
+      if (fromSession.endedForGood !== true)
+        returnPaths?.delivered(recipient, returnPathParty(fromSession), fromSession.info, message.id);
       notify({ type: "delivered", messageId: message.id, attemptId: senderAttemptId });
     };
     const senderWaiting: ReceiptSender = { socket, ...(attemptId === undefined ? {} : { attemptId }) };

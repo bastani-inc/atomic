@@ -119,11 +119,13 @@ async function register(
 	name: string,
 	group: string,
 	returnAddress = `host:${name}`,
+	acknowledgesReceipt = false,
 ): Promise<string> {
 	await client.connected();
 	client.send({
 		type: "register",
 		returnAddress,
+		...(acknowledgesReceipt ? { acknowledgesReceipt: true as const } : {}),
 		session: { name, group, cwd: "/repo", model: "test", pid: 1, startedAt: 1, lastActivity: 1 },
 	});
 	return (await client.next("registered")).sessionId;
@@ -148,7 +150,13 @@ interface Run {
  * A workflow run whose launcher, registered outside the run's group, holds the launcher claim (#4006). With `subgroup`,
  * its stages are declared in an isolated subgroup of the invocation.
  */
-async function launchedRun(label: string, runId: string, stageIds: readonly string[], subgroup = false): Promise<Run> {
+async function launchedRun(
+	label: string,
+	runId: string,
+	stageIds: readonly string[],
+	subgroup = false,
+	launcherAcknowledgesReceipt = false,
+): Promise<Run> {
 	const group = `workflow:${runId}`;
 	const routeCapability = `${label}-route-capability`;
 	const launcherCapability = `${label}-launcher-capability`;
@@ -156,7 +164,13 @@ async function launchedRun(label: string, runId: string, stageIds: readonly stri
 	const launcher = new WireClient();
 	await register(owner, `${label}-owner`, group);
 	const launcherName = `${label}-launcher`;
-	const launcherId = await register(launcher, launcherName, "default");
+	const launcherId = await register(
+		launcher,
+		launcherName,
+		"default",
+		`host:${launcherName}`,
+		launcherAcknowledgesReceipt,
+	);
 	owner.send({
 		type: "register_pending_stage_route",
 		runId,
@@ -603,41 +617,44 @@ test("a stage answers by name a launcher that came back under a new id after que
 	);
 });
 
-test("a stage whose receipt arrives after the launcher came back under a new id answers it by name", async () => {
-	const run = await launchedRun("receipt-reconnect", "5a1e0014-0000-4000-8000-000000000014", ["later"]);
+/** A live stage that confirms each message it saves only when the test says so, as a stage whose save is slow does. */
+async function startReceiptStage(run: Run, name: string): Promise<WireClient> {
 	const stage = new WireClient();
 	await stage.connected();
 	stage.send({
 		type: "register",
-		returnAddress: "host:receipt-stage",
+		returnAddress: `host:${name}`,
 		acknowledgesReceipt: true,
-		session: {
-			name: "receipt-stage",
-			group: run.group,
-			cwd: "/repo",
-			model: "test",
-			pid: 1,
-			startedAt: 1,
-			lastActivity: 1,
-		},
+		session: { name, group: run.group, cwd: "/repo", model: "test", pid: 1, startedAt: 1, lastActivity: 1 },
 	});
 	await stage.next("registered");
 	stage.send({
 		type: "register_live_workflow_stage_route",
-		requestId: "receipt-live",
+		requestId: `${name}-live`,
 		runId: run.runId,
 		stageKeys: ["later"],
 		capability: run.routeCapability,
 	});
 	await stage.next("live_workflow_stage_route_registered");
+	return stage;
+}
+
+/** The launcher's message reaches `stage`, which has not confirmed it yet. */
+async function launcherNoteReaches(run: Run, stage: WireClient, messageId: string): Promise<void> {
 	const forwarded = ownerAnswers(run, "forward");
 	run.launcher.send({
 		type: "send",
 		to: `${run.group}/later`,
-		message: { id: "receipt-note", timestamp: Date.now(), content: { text: "read me" } },
+		message: { id: messageId, timestamp: Date.now(), content: { text: "read me" } },
 	});
 	await forwarded;
-	await stage.next("message", (frame) => frame.message.id === "receipt-note");
+	await stage.next("message", (frame) => frame.message.id === messageId);
+}
+
+test("a stage whose receipt arrives after the launcher came back under a new id answers it by name", async () => {
+	const run = await launchedRun("receipt-reconnect", "5a1e0014-0000-4000-8000-000000000014", ["later"]);
+	const stage = await startReceiptStage(run, "receipt-stage");
+	await launcherNoteReaches(run, stage, "receipt-note");
 	const { backId } = await reconnectLauncher(run);
 	// The stage confirms it saved the message only now, after the launcher came back.
 	stage.send({ type: "received", messageId: "receipt-note" });
@@ -645,6 +662,74 @@ test("a stage whose receipt arrives after the launcher came back under a new id 
 	assert.equal((await stage.sendTo(backId, "receipt-by-id", "by id")).type, "delivered");
 	const byName = await stage.sendTo(run.launcherName, "receipt-by-name", "by name");
 	assert.equal(byName.type, "delivered", JSON.stringify(byName));
+});
+
+test("a stage whose receipt arrives after the launcher ended for good opens nothing a later registration inherits", async () => {
+	const run = await launchedRun("receipt-ended", "5a1e0016-0000-4000-8000-000000000016", ["later"]);
+	const stage = await startReceiptStage(run, "receipt-ended-stage");
+	await launcherNoteReaches(run, stage, "receipt-ended-note");
+	run.launcher.send({ type: "unregister" });
+	await new Promise<void>((done) => {
+		run.launcher.socket.once("close", () => done());
+		run.launcher.socket.end();
+	});
+	// The stage confirms it saved the message only after the launcher said goodbye.
+	stage.send({ type: "received", messageId: "receipt-ended-note" });
+	await listed(stage, "receipt-ended-processed");
+	// A new registration copies the ended launcher's return address, group and name.
+	const copy = new WireClient();
+	await register(copy, run.launcherName, "default");
+	const answer = await stage.sendTo(run.launcherName, "receipt-ended-answer", "only for the launcher that ended");
+	assert.equal(answer.type, "delivery_failed", JSON.stringify(answer));
+	await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+	assert.equal(
+		copy.received.some((frame) => frame.type === "message"),
+		false,
+	);
+});
+
+test("a launcher whose receipt for a stage's answer arrives after the stage ended for good opens no path back", async () => {
+	const run = await launchedRun("answer-ended", "5a1e0018-0000-4000-8000-000000000018", ["st"], false, true);
+	const stage = await startStage(run, "st");
+	const stageName = `${run.runId.slice(0, 8)}-st`;
+	const forwarded = ownerAnswers(run, "forward");
+	run.launcher.send({
+		type: "send",
+		to: `${run.group}/st`,
+		message: { id: "answer-ended-note", timestamp: Date.now(), content: { text: "read me" } },
+	});
+	await forwarded;
+	await stage.next("message", (frame) => frame.message.id === "answer-ended-note");
+	// The stage answers; the launcher confirms it saved the answer only after the stage said goodbye.
+	stage.send({
+		type: "send",
+		to: run.launcherName,
+		message: { id: "answer-ended-answer", timestamp: Date.now(), content: { text: "done" } },
+	});
+	await run.launcher.next("message", (frame) => frame.message.id === "answer-ended-answer");
+	stage.send({ type: "unregister" });
+	await new Promise<void>((done) => {
+		stage.socket.once("close", () => done());
+		stage.socket.end();
+	});
+	run.launcher.send({ type: "received", messageId: "answer-ended-answer" });
+	await listed(run.launcher, "answer-ended-processed");
+	// A new registration copies the ended stage's return address, group and name.
+	const copy = new WireClient();
+	await register(copy, stageName, run.group);
+	run.launcher.send({
+		type: "send",
+		to: stageName,
+		message: { id: "answer-ended-reply", timestamp: Date.now(), content: { text: "only for the stage that ended" } },
+	});
+	// The name stands for the run's stage again, which the run's host holds until the stage starts once more.
+	const held = await run.owner.next("pending_stage_message", (frame) => frame.message.id === "answer-ended-reply");
+	run.owner.send({ type: "pending_stage_message_result", requestId: held.requestId, outcome: "queued", position: 1 });
+	assert.equal((await run.launcher.settled("answer-ended-reply")).type, "queued");
+	assert.equal(
+		copy.received.some((frame) => frame.type === "message"),
+		false,
+	);
 });
 
 test("a name two live registrations of the launcher's identity share stays ambiguous", async () => {
@@ -673,4 +758,28 @@ test("a name two live registrations of the launcher's identity share stays ambig
 		run.launcher.received.some((frame) => frame.type === "message" && frame.message.id === "live-duplicate-answer"),
 		false,
 	);
+});
+
+test("a duplicate of the launcher's identity that ends for good leaves the live launcher's path open", async () => {
+	const run = await launchedRun("duplicate-ended", "5a1e0017-0000-4000-8000-000000000017", ["stage"]);
+	const stage = await startStage(run, "stage");
+	const forwarded = ownerAnswers(run, "forward");
+	run.launcher.send({
+		type: "send",
+		to: `${run.group}/stage`,
+		message: { id: "duplicate-ended-note", timestamp: Date.now(), content: { text: "hi" } },
+	});
+	await forwarded;
+	await stage.next("message", (frame) => frame.message.id === "duplicate-ended-note");
+	const duplicate = new WireClient();
+	await register(duplicate, run.launcherName, "default");
+	duplicate.send({ type: "unregister" });
+	await new Promise<void>((done) => {
+		duplicate.socket.once("close", () => done());
+		duplicate.socket.end();
+	});
+	const answer = await stage.sendTo(run.launcherName, "duplicate-ended-answer", "for the launcher");
+	assert.equal(answer.type, "delivered", JSON.stringify(answer));
+	const received = await run.launcher.next("message", (frame) => frame.message.id === "duplicate-ended-answer");
+	assert.equal(received.message.content.text, "for the launcher");
 });
