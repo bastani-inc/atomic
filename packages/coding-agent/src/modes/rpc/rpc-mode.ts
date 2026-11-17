@@ -1,3 +1,4 @@
+import { markEventLoopStartupComplete } from "../../core/event-loop-monitor.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 
 /**
@@ -137,6 +138,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 			try {
 				await sessionBinding.loadDeferredResources();
 				markLifecycleTiming("engine-resources-ready");
+				markEventLoopStartupComplete();
 				engineLiveness.resourcesReady();
 			} catch (error) {
 				const resourceError = error instanceof Error ? error : new Error(String(error));
@@ -322,6 +324,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		void loadDeferredResources().catch(() => {});
 	} else if (interactiveEngineChild) {
 		markLifecycleTiming("engine-resources-ready");
+		markEventLoopStartupComplete();
 		engineLiveness.resourcesReady();
 	}
 	inputReady = true;
