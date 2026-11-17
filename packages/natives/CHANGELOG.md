@@ -11,6 +11,7 @@
 
 ### Fixed
 
+- On Windows, `tryAdvisoryLock`, `tryAdvisoryLockAsync` and `trySharedAdvisoryLock` no longer throw `Access is denied` when another process removes the lock file while they open or lock it. A refusal that the removal explains is retried, a bounded number of times in a row, before it counts as a real permission error ([#5317](https://github.com/bastani-inc/atomic/issues/5317)).
 - On Windows, `TaskSupervisor` no longer reports a command that ran to completion as failed with `Windows stdin worker stop was not confirmed` when its input thread, on a loaded or briefly stalled machine, closed the command's stdin just after the cleanup grace or ended later than it. A stop the thread reported counts as confirmed; one it never reports still fails the cleanup ([#5340](https://github.com/bastani-inc/atomic/pull/5340))
 
 ## [0.9.88] - 2026-11-16

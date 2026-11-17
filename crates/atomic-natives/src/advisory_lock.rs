@@ -14,6 +14,11 @@ use napi_derive::napi;
 /// How long a waiting taker sleeps between tries of a lock another process holds.
 const RETRY_INTERVAL: Duration = Duration::from_millis(5);
 
+/// How many refusals in a row that a concurrent removal of the path explains are retried before a refusal counts as
+/// a real permission error. On Windows, opening a file while another process removes it is refused until the
+/// removal finishes, and the path may hold a new file or no file by the time the refusal is examined.
+const MAX_DELETE_RACE_RETRIES: u32 = 16;
+
 #[cfg(unix)]
 fn lock_matches_path(file: &File, path: &Path) -> bool {
 	use std::os::unix::fs::MetadataExt;
@@ -63,15 +68,11 @@ enum OpenFailure {
 	#[cfg(windows)]
 	WaitDeletePending,
 	#[cfg(windows)]
-	RetryMissingName,
+	RetryChangedPath,
 }
 
 #[cfg(windows)]
-fn classify_delete_race(
-	path: &Path,
-	error: &io::Error,
-	retried_missing_name: &mut bool,
-) -> OpenFailure {
+fn classify_delete_race(path: &Path, error: &io::Error, delete_races: &mut u32) -> OpenFailure {
 	use std::os::windows::ffi::OsStrExt;
 	use windows_sys::{
 		Wdk::{
@@ -81,7 +82,7 @@ fn classify_delete_race(
 		Win32::{
 			Foundation::{
 				NTSTATUS, OBJ_CASE_INSENSITIVE, STATUS_DELETE_PENDING, STATUS_OBJECT_NAME_NOT_FOUND,
-				UNICODE_STRING,
+				STATUS_SUCCESS, UNICODE_STRING,
 			},
 			System::WindowsProgramming::RtlFreeUnicodeString,
 		},
@@ -135,23 +136,19 @@ fn classify_delete_race(
 	unsafe { RtlFreeUnicodeString(&mut name) };
 	match status {
 		STATUS_DELETE_PENDING => {
-			*retried_missing_name = false;
+			*delete_races = 0;
 			OpenFailure::WaitDeletePending
 		},
-		STATUS_OBJECT_NAME_NOT_FOUND if !*retried_missing_name => {
-			*retried_missing_name = true;
-			OpenFailure::RetryMissingName
+		STATUS_OBJECT_NAME_NOT_FOUND | STATUS_SUCCESS if *delete_races < MAX_DELETE_RACE_RETRIES => {
+			*delete_races += 1;
+			OpenFailure::RetryChangedPath
 		},
 		_ => OpenFailure::Permanent,
 	}
 }
 
 #[cfg(not(windows))]
-fn classify_delete_race(
-	_path: &Path,
-	_error: &io::Error,
-	_retried_missing_name: &mut bool,
-) -> OpenFailure {
+fn classify_delete_race(_path: &Path, _error: &io::Error, _delete_races: &mut u32) -> OpenFailure {
 	OpenFailure::Permanent
 }
 
@@ -169,17 +166,17 @@ fn try_lock_with(
 	}
 	let deadline = Instant::now() + wait;
 	let mut file: Option<File> = None;
-	let mut retried_missing_name = false;
+	let mut delete_races = 0;
 	let mut retried_replaced_path = false;
 	loop {
 		if file.is_none() {
 			match options.open(path) {
 				Ok(opened) => file = Some(opened),
-				Err(error) => match classify_delete_race(path, &error, &mut retried_missing_name) {
+				Err(error) => match classify_delete_race(path, &error, &mut delete_races) {
 					#[cfg(windows)]
 					OpenFailure::WaitDeletePending => {},
 					#[cfg(windows)]
-					OpenFailure::RetryMissingName => continue,
+					OpenFailure::RetryChangedPath => continue,
 					OpenFailure::Permanent => return Err(error),
 				},
 			}
@@ -196,6 +193,15 @@ fn try_lock_with(
 					continue;
 				},
 				Err(TryLockError::WouldBlock) => {},
+				Err(TryLockError::Error(error))
+					if error.kind() == io::ErrorKind::PermissionDenied
+						&& delete_races < MAX_DELETE_RACE_RETRIES
+						&& !lock_matches_path(current, path) =>
+				{
+					delete_races += 1;
+					file = None;
+					continue;
+				},
 				Err(TryLockError::Error(error)) => return Err(error),
 			}
 		}
