@@ -492,7 +492,7 @@ function hranaCode(hrana, error) {
  * answer was lost may have run, so its failure is the caller's, as it is for a statement on a stream of its own.
  */
 class ReusedStream {
-	/** @type {import("@libsql/hrana-client").HttpStream | undefined} */
+	/** @type {import("@libsql/hrana-client").Stream | undefined} */
 	stream;
 	openedAt = 0;
 	usedAt = 0;
@@ -502,7 +502,7 @@ class ReusedStream {
 	/**
 	 * @param {typeof import("@libsql/hrana-client")} hrana
 	 * @param {typeof import("@libsql/core/api").LibsqlError} LibsqlError
-	 * @param {() => import("@libsql/hrana-client").HttpClient} client
+	 * @param {() => import("@libsql/hrana-client").Client} client
 	 */
 	constructor(hrana, LibsqlError, client) {
 		this.hrana = hrana;
@@ -589,6 +589,101 @@ class ReusedStream {
 		this.stream?.close();
 		this.stream = undefined;
 	}
+}
+
+/**
+ * @template T
+ * @param {Promise<T>} promise
+ * @returns {Promise<{ ok: true, value: T } | { ok: false, error: unknown }>}
+ */
+function settle(promise) {
+	return promise.then(
+		(value) => ({ ok: true, value }),
+		(error) => ({ ok: false, error }),
+	);
+}
+
+/**
+ * @param {typeof import("@libsql/hrana-client")} hrana
+ * @param {typeof import("@libsql/core/api")} api
+ * @param {import("@libsql/hrana-client").Client} client
+ * @param {readonly import("@bastani/atomic/storage").SqliteStatement[]} batched
+ * @returns {Promise<import("@bastani/atomic/storage").SqliteDriverResult[]>}
+ */
+async function writeBatch(hrana, api, client, batched) {
+	/** @param {unknown} error */
+	const mapped = (error) =>
+		error instanceof hrana.ClientError
+			? new api.LibsqlError(error.message, hranaCode(hrana, error), undefined, undefined, error)
+			: error;
+	const version = await client.getVersion();
+	const stream = client.openStream();
+	const { began, ran, committed, executed } = (() => {
+		try {
+			const batch = stream.batch(false);
+			const inTransaction = () => hrana.BatchCond.not(hrana.BatchCond.isAutocommit(batch));
+			const begin = batch.step();
+			const began = settle(begin.run("BEGIN IMMEDIATE"));
+			let last = begin;
+			const ran = batched.map(({ sql, params }) => {
+				const step = batch.step().condition(hrana.BatchCond.ok(last));
+				if (version >= 3) step.condition(inTransaction());
+				const statement = new hrana.Stmt(sql);
+				statement.bindIndexes(/** @type {import("@libsql/hrana-client").InValue[]} */ ([...params]));
+				last = step;
+				return settle(step.query(statement));
+			});
+			const commit = batch.step().condition(hrana.BatchCond.ok(last));
+			if (version >= 3) commit.condition(inTransaction());
+			const committed = settle(commit.run("COMMIT"));
+			void settle(batch.step().condition(hrana.BatchCond.not(hrana.BatchCond.ok(commit))).run("ROLLBACK"));
+			return { began, ran, committed, executed: batch.execute() };
+		} finally {
+			stream.closeGracefully();
+		}
+	})();
+	try {
+		await executed;
+	} catch (error) {
+		throw mapped(error);
+	}
+	const beginning = await began;
+	if (!beginning.ok) throw mapped(beginning.error);
+	/** @type {import("@bastani/atomic/storage").SqliteDriverResult[]} */
+	const results = [];
+	for (const [index, outcome] of (await Promise.all(ran)).entries()) {
+		if (!outcome.ok) {
+			const failure = mapped(outcome.error);
+			if (!(failure instanceof api.LibsqlError)) throw failure;
+			throw new api.LibsqlBatchError(
+				failure.message,
+				index,
+				failure.code,
+				failure.extendedCode,
+				failure.rawCode,
+				outcome.error instanceof Error ? outcome.error : undefined,
+			);
+		}
+		if (outcome.value === undefined)
+			throw new api.LibsqlBatchError(
+				"Statement in a batch was not executed, probably because the transaction has been rolled back",
+				index,
+				"TRANSACTION_CLOSED",
+			);
+		results.push({
+			columns: outcome.value.columnNames.map((name) => name ?? ""),
+			rows: /** @type {import("@bastani/atomic/storage").SqliteDriverResult["rows"]} */ (outcome.value.rows),
+			changes: outcome.value.affectedRowCount,
+		});
+	}
+	const commitment = await committed;
+	if (!commitment.ok) throw mapped(commitment.error);
+	if (commitment.value === undefined)
+		throw new api.LibsqlError(
+			"The batch did not execute its COMMIT; its transaction ended before completion could be confirmed",
+			"TRANSACTION_CLOSED",
+		);
+	return results;
 }
 
 /**
@@ -1019,18 +1114,19 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		});
 	// The Hrana client whose stream statements outside a transaction reuse, made on first use inside a driver call, as the
 	// client is, so the facade redacts credentials from a failure to read the URL.
-	/** @type {import("@libsql/hrana-client").HttpClient | undefined} */
+	/** @type {import("@libsql/hrana-client").Client | undefined} */
 	let hranaClient;
 	/** @type {ReusedStream | undefined} */
 	let reused;
 	/** The requests of the reused stream's client not yet answered, which a close waits for. @type {Set<Promise<Response>>} */
 	const streamRequests = new Set();
-	const shared = async () => {
-		if (protocol === undefined) return undefined;
-		const [hrana, { expandConfig }, { encodeBaseUrl }, { LibsqlError }] = protocol;
-		return (reused ??= new ReusedStream(hrana, LibsqlError, () => {
-			if (hranaClient === undefined) {
-				const config = expandConfig({ url, authToken }, true);
+	const remote = () => {
+		const [hrana, { expandConfig }, { encodeBaseUrl }] = /** @type {NonNullable<typeof protocol>} */ (protocol);
+		if (hranaClient === undefined || hranaClient.closed) {
+			const config = expandConfig({ url, authToken }, true);
+			const base = encodeBaseUrl(config.scheme, config.authority, config.path);
+			if (config.scheme === "ws" || config.scheme === "wss") hranaClient = hrana.openWs(base, config.authToken);
+			else {
 				const send = fetchWith(added, abandoned);
 				/** @type {(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>} */
 				const tracked = (input, init) => {
@@ -1039,11 +1135,16 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 					void sent.finally(() => streamRequests.delete(sent)).catch(() => {});
 					return sent;
 				};
-				hranaClient = hrana.openHttp(encodeBaseUrl(config.scheme, config.authority, config.path), config.authToken, tracked);
-				hranaClient.intMode = "bigint";
+				hranaClient = hrana.openHttp(base, config.authToken, tracked);
 			}
-			return hranaClient;
-		}));
+			hranaClient.intMode = "bigint";
+		}
+		return hranaClient;
+	};
+	const shared = async () => {
+		if (protocol === undefined) return undefined;
+		const [hrana, , , { LibsqlError }] = protocol;
+		return (reused ??= new ReusedStream(hrana, LibsqlError, remote));
 	};
 	// A local statement that fails part way, as a write does when another process holds the lock past the busy timeout,
 	// stays active on its connection: the driver resets and finalizes a statement only when it is garbage collected.
@@ -1121,6 +1222,7 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		// server's batch counts against this process's writes in flight to that server, unless it has priority.
 		batch: (batched, options) => {
 			const send = async () => {
+				if (protocol !== undefined) return writeBatch(protocol[0], protocol[3], remote(), batched);
 				const results = await (await connection()).batch(
 					batched.map(({ sql, params }) => ({ sql, args: [...params] })),
 					"write",
