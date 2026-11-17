@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.ts";
+import {
+	getExtensionContextOwner,
+	retireExtensionContextEffects,
+} from "../../packages/coding-agent/src/core/extensions/runner-context.js";
 import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
 import type { DurableWorkflowHandle } from "../../packages/workflows/src/durable/types.js";
 import { registerWorkflowLifecycleHandlers } from "../../packages/workflows/src/extension/extension-lifecycle.js";
@@ -45,6 +49,11 @@ const FIRST_RELEASED_RUN = "11111111-1111-4111-8111-111111111111";
 const SECOND_RELEASED_RUN = "22222222-2222-4222-8222-222222222222";
 /** Long enough for a successor that does not wait for the earlier announcement to finish its own. */
 const SUCCESSOR_SETTLE_MS = 50;
+/** Far past the time a session start waits for one adoptability check, and far below the test timeout. */
+const START_DEADLINE_MS = 15_000;
+/** A session start's wait for a hung adoptability check, then the rest of its start, with headroom. */
+const HUNG_CHECK_TEST_TIMEOUT_MS = 60_000;
+const THIRD_RELEASED_RUN = "33333333-3333-4333-8333-333333333333";
 
 beforeEach(() => {
 	const scope = createEventBus();
@@ -106,22 +115,56 @@ function registerPausedOwnedRun(backend: DurableWorkflowBackend, runId: string, 
 	});
 }
 
-function startSession(
-	scope: object,
-	sessionId: string,
-	reason: string,
-	notices: string[],
-): { handlers: Map<string, SessionEventHandler>; started: Promise<unknown> } {
+interface StartedSession {
+	readonly handlers: Map<string, SessionEventHandler>;
+	readonly started: Promise<unknown>;
+	/** Retires this session's context the way the host does when another session replaces it. */
+	retire(): void;
+}
+
+function startSession(scope: object, sessionId: string, reason: string, notices: string[]): StartedSession {
 	const handlers = captureHandlers(scope);
-	const started = handlers.get("session_start")!(
-		{ reason },
-		{
-			sessionManager: { getSessionId: () => sessionId },
-			cwd: process.cwd(),
-			ui: { notify: (message: string) => notices.push(message), setWidget() {}, requestRender() {} },
+	let retired = false;
+	const live = () => {
+		if (retired) throw new Error("This extension context is no longer active");
+	};
+	const context = {
+		sessionManager: { getSessionId: () => sessionId },
+		get cwd() {
+			live();
+			return process.cwd();
 		},
-	);
-	return { handlers, started };
+		ui: {
+			notify: (message: string) => {
+				live();
+				notices.push(message);
+			},
+			setWidget() {},
+			requestRender() {},
+		},
+	};
+	const started = handlers.get("session_start")!({ reason }, context);
+	return {
+		handlers,
+		started,
+		retire() {
+			retireExtensionContextEffects(getExtensionContextOwner(context));
+			retired = true;
+		},
+	};
+}
+
+/** Settles with whether `started` settled within {@link START_DEADLINE_MS}. */
+async function settlesInTime(started: Promise<unknown>): Promise<boolean> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const late = new Promise<false>((resolve) => {
+		timer = setTimeout(() => resolve(false), START_DEADLINE_MS);
+	});
+	try {
+		return await Promise.race([started.then(() => true), late]);
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 test("a switch while the previous session still checks its released runs announces every released run (#5377)", async () => {
@@ -194,4 +237,78 @@ test("a reload while the switched-to session still checks its released runs anno
 	const reloadedAgain: string[] = [];
 	await startSession(scope, "session-b", "reload", reloadedAgain).started;
 	assert.deepEqual(reloadedAgain, [], "a second reload does not repeat the notice");
+});
+
+test(
+	"a hung adoption check holds no later session start, and the newest start announces every run it could check (#5377)",
+	async () => {
+		const backend = await createMemoryTestBackend();
+		setDurableBackend(backend);
+		await registerPausedOwnedRun(backend, FIRST_RELEASED_RUN, "session-a");
+		await registerPausedOwnedRun(backend, SECOND_RELEASED_RUN, "session-b");
+		const scope = {};
+
+		const first = startSession(scope, "session-a", "startup", []);
+		await first.started;
+		await first.handlers.get("session_shutdown")!({ reason: "new" });
+
+		heldAdoptabilityChecks.runs.add(FIRST_RELEASED_RUN);
+		const second = startSession(scope, "session-b", "new", []);
+		await vi.waitFor(() => assert.ok(heldAdoptabilityChecks.entered.has(FIRST_RELEASED_RUN)));
+
+		const thirdNotices: string[] = [];
+		const third = startSession(scope, "session-c", "new", thirdNotices);
+		assert.equal(await settlesInTime(third.started), true, "a later start finishes while the check hangs");
+		assert.equal(thirdNotices.length, 1, thirdNotices.join("\n---\n"));
+		assert.match(thirdNotices[0]!, new RegExp(`/resume ${SECOND_RELEASED_RUN}\\b`));
+		assert.doesNotMatch(thirdNotices[0]!, new RegExp(FIRST_RELEASED_RUN), "a run whose check hangs stays pending");
+
+		const reloaded = startSession(scope, "session-c", "reload", []);
+		assert.equal(await settlesInTime(reloaded.started), true, "a reload finishes while the check hangs");
+		assert.equal(await settlesInTime(second.started), true, "the start that began the check finishes too");
+
+		heldAdoptabilityChecks.runs.clear();
+		heldAdoptabilityChecks.release.resolve();
+		await reloaded.handlers.get("session_shutdown")!({ reason: "new" });
+		const fourthNotices: string[] = [];
+		await startSession(scope, "session-d", "new", fourthNotices).started;
+		assert.equal(fourthNotices.length, 1, "the next successor is told about every unadopted run");
+		assert.match(fourthNotices[0]!, new RegExp(`/resume ${FIRST_RELEASED_RUN}\\b`));
+		assert.match(fourthNotices[0]!, new RegExp(`/resume ${SECOND_RELEASED_RUN}\\b`));
+	},
+	HUNG_CHECK_TEST_TIMEOUT_MS,
+);
+
+test("a start that a later switch replaced while it waited keeps every pending run for the newest start (#5377)", async () => {
+	const backend = await createMemoryTestBackend();
+	setDurableBackend(backend);
+	await registerPausedOwnedRun(backend, FIRST_RELEASED_RUN, "session-a");
+	await registerPausedOwnedRun(backend, SECOND_RELEASED_RUN, "session-b");
+	await registerPausedOwnedRun(backend, THIRD_RELEASED_RUN, "session-c");
+	const scope = {};
+
+	const first = startSession(scope, "session-a", "startup", []);
+	await first.started;
+	await first.handlers.get("session_shutdown")!({ reason: "new" });
+
+	heldAdoptabilityChecks.runs.add(FIRST_RELEASED_RUN);
+	const secondNotices: string[] = [];
+	const second = startSession(scope, "session-b", "new", secondNotices);
+	await vi.waitFor(() => assert.ok(heldAdoptabilityChecks.entered.has(FIRST_RELEASED_RUN)));
+	const thirdNotices: string[] = [];
+	const third = startSession(scope, "session-c", "new", thirdNotices);
+	await vi.waitFor(() => assert.equal(backend.getWorkflow(SECOND_RELEASED_RUN)?.releasedModelOwner, "session-b"));
+
+	third.retire();
+	const fourthNotices: string[] = [];
+	const fourth = startSession(scope, "session-d", "new", fourthNotices);
+	await vi.waitFor(() => assert.equal(backend.getWorkflow(THIRD_RELEASED_RUN)?.releasedModelOwner, "session-c"));
+	heldAdoptabilityChecks.runs.clear();
+	heldAdoptabilityChecks.release.resolve();
+	await Promise.all([second.started, third.started, fourth.started]);
+
+	assert.equal(fourthNotices.length, 1, fourthNotices.join("\n---\n"));
+	for (const runId of [FIRST_RELEASED_RUN, SECOND_RELEASED_RUN, THIRD_RELEASED_RUN])
+		assert.match(fourthNotices[0]!, new RegExp(`/resume ${runId}\\b`));
+	assert.deepEqual([...secondNotices, ...thirdNotices], [], "replaced sessions are not told");
 });
