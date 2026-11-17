@@ -1,7 +1,7 @@
 import { type CustomEntry, type ExtensionContext, type SessionEntry, sliceHead } from "@bastani/atomic";
 import { isReleasedChildError, ReleasedChildError } from "./released-child-errors.js";
 import type { SubagentChildRecord } from "./subagent-child-records.js";
-import { reopenChildSession } from "./subagent-child-session.js";
+import { reopenChildSession, type SessionStoreSource } from "./subagent-child-session.js";
 
 /** Session entry type that durably records each background child a session launched (#3760). */
 export const SUBAGENT_CHILD_RECORD_TYPE = "subagent-child";
@@ -89,7 +89,11 @@ interface TranscriptCache {
 /** Each card's transcripts, by child id: they are dropped with the card. */
 const transcripts = new WeakMap<object, Map<string, TranscriptCache>>();
 const loadedOwners = new Set<string>();
-let source: Pick<ExtensionContext, "sessionManager"> | undefined;
+/**
+ * The session store cards read owners' records and children's transcripts from: the latest bound session's, never that
+ * session itself, which ends while the process and its cards go on.
+ */
+let source: SessionStoreSource | undefined;
 
 interface WatchedCard {
 	readonly key: string;
@@ -325,7 +329,8 @@ function observeEntries(sessionEntries: readonly SessionEntry[], sessionId: stri
 
 /** Read the child records of the session a card is shown in, and keep its store for records and transcripts. */
 export function bindSubagentChildCards(ctx: Pick<ExtensionContext, "sessionManager">): void {
-	source = ctx;
+	const store = ctx.sessionManager.getSessionStore();
+	source = { sessionManager: { getSessionStore: () => store } };
 	registerSubagentChildRecordReader(ctx.sessionManager, true);
 	loadedOwners.add(ctx.sessionManager.getSessionId());
 	observeEntries(ctx.sessionManager.getEntries(), ctx.sessionManager.getSessionId());

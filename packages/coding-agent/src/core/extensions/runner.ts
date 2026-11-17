@@ -465,9 +465,13 @@ export class ExtensionRunner {
 		this.onDiagnostic = onDiagnostic;
 		// Internal builtin bridge: no new extension API and no interception of console.
 		const scope = lifecycleScopeForOwner(this.runtime);
+		// The reporter is the store of every async context a builtin service runs in, so any resource started there
+		// outlives this runner holding it: it reaches the runner only while the session keeps the runner alive.
+		const runner = new WeakRef<ExtensionRunner>(this);
 		const report = (diagnostic: Omit<HostDiagnostic, "sessionId">) => {
+			const live = runner.deref();
 			try {
-				this.onDiagnostic?.({ ...diagnostic, sessionId: this.sessionManager.getSessionId() });
+				live?.onDiagnostic?.({ ...diagnostic, sessionId: live.sessionManager.getSessionId() });
 			} catch {
 				// Observers cannot replace the primary service failure.
 			}

@@ -17,28 +17,42 @@ export interface ChildTaskCompletionRoute {
 }
 
 /**
- * Parent-issued capability that lets an in-process subagent child run shell tasks
- * in the parent's task owner, so they appear in the parent's `/tasks` and outlive
- * the child. It never authorizes agent launches.
+ * Parent-issued capability that lets an in-process subagent child run shell tasks in the parent's task owner, so they
+ * outlive the child. Each shell names the child's session as the one that launched it: its completion notice goes to
+ * that child only, never to the parent or the owner's chat, and only the child's `/tasks` lists it. It never authorizes
+ * agent launches.
  */
 export interface ChildCommandTaskOwner {
+	/** The child's session takes notices through `route` while it runs, including those kept for it meanwhile. */
 	bind(childId: string, route: ChildTaskCompletionRoute, waits: ChildTaskWaits): SupervisedCommandOwner;
 	/** The child's session closed: forget its route, which holds the whole session, so a released child holds nothing. */
 	unbind(childId: string): void;
 	/**
-	 * The child was released while shell tasks it launched still run: their completions reach it through `route` until
-	 * the last of them has completed, and the route is then forgotten. Returns false, binding nothing, when none runs.
+	 * The child was released while shell tasks it launched still run, or with notices kept for it: they reach it through
+	 * `route`, and the route is forgotten once none runs or waits. Returns false, binding nothing, when there is none.
 	 */
 	routeReleased(childId: string, route: ChildTaskCompletionRoute): boolean;
+	/** Whether notices of shells the child launched wait for it, in an owner its parent already holds. */
+	hasKeptNotices(childId: string): boolean;
+}
+
+/** A completion notice kept for a child that could not take it, until it is bound again or released. */
+interface KeptNotice {
+	readonly message: TaskCompletionMessage;
+	readonly taken: () => void;
 }
 
 class ChildCommandTaskRoutes {
 	private readonly launchedBy = new Map<TaskId, string>();
 	private readonly routes = new Map<string, ChildTaskCompletionRoute>();
+	private readonly releasedRoutes = new WeakSet<ChildTaskCompletionRoute>();
 	private readonly running = new Map<string, Set<TaskId>>();
+	private readonly kept = new Map<string, KeptNotice[]>();
+	private readonly flushes = new Map<string, { again: boolean }>();
 
 	bind(childId: string, route: ChildTaskCompletionRoute): void {
 		this.routes.set(childId, route);
+		this.flushKept(childId);
 	}
 
 	unbind(childId: string): void {
@@ -50,6 +64,11 @@ class ChildCommandTaskRoutes {
 		return this.routes.size;
 	}
 
+	/** Notices kept for children that could not take them yet; counted by tests. */
+	keptCount(childId: string): number {
+		return this.kept.get(childId)?.length ?? 0;
+	}
+
 	recordLaunch(taskId: TaskId, childId: string): void {
 		this.launchedBy.set(taskId, childId);
 		const running = this.running.get(childId);
@@ -58,18 +77,11 @@ class ChildCommandTaskRoutes {
 	}
 
 	routeReleased(childId: string, route: ChildTaskCompletionRoute): boolean {
-		if (!this.running.has(childId)) return false;
-		const released: ChildTaskCompletionRoute = {
-			isOpen: () => true,
-			deliver: async (message) => {
-				try {
-					await route.deliver(message);
-				} finally {
-					if (!this.running.has(childId) && this.routes.get(childId) === released) this.routes.delete(childId);
-				}
-			},
-		};
+		if (!this.running.has(childId) && !this.kept.has(childId)) return false;
+		const released: ChildTaskCompletionRoute = { isOpen: () => true, deliver: (message) => route.deliver(message) };
+		this.releasedRoutes.add(released);
 		this.routes.set(childId, released);
+		this.flushKept(childId);
 		return true;
 	}
 
@@ -77,14 +89,71 @@ class ChildCommandTaskRoutes {
 		return this.launchedBy.get(taskId) === childId;
 	}
 
-	completionRoute(taskId: TaskId): ChildTaskCompletionRoute | undefined {
-		const childId = this.launchedBy.get(taskId);
-		if (childId === undefined) return undefined;
+	/**
+	 * The task completed: hand its notice to the child that launched it, now if its session takes it, or once it is bound
+	 * again or released. Resolves when the child took it; nothing else ever receives it.
+	 */
+	deliver(childId: string, taskIds: readonly TaskId[], message: TaskCompletionMessage): Promise<void> {
 		const running = this.running.get(childId);
-		running?.delete(taskId);
+		for (const taskId of taskIds) running?.delete(taskId);
 		if (running?.size === 0) this.running.delete(childId);
-		const route = this.routes.get(childId);
-		return route?.isOpen() ? route : undefined;
+		return new Promise<void>((taken) => {
+			const kept = this.kept.get(childId);
+			if (kept === undefined) this.kept.set(childId, [{ message, taken }]);
+			else kept.push({ message, taken });
+			this.flushKept(childId);
+		});
+	}
+
+	/** Deliver the notices kept for a child, in order, while its route takes them. */
+	private flushKept(childId: string): void {
+		const running = this.flushes.get(childId);
+		if (running !== undefined) {
+			running.again = true;
+			return;
+		}
+		if (!this.kept.has(childId)) return;
+		const flush = { again: false };
+		this.flushes.set(childId, flush);
+		void (async () => {
+			try {
+				// A bind or release while this flush runs asks for another pass, even after one the route refused.
+				do {
+					flush.again = false;
+					await this.deliverKept(childId);
+				} while (flush.again);
+			} finally {
+				this.flushes.delete(childId);
+			}
+		})();
+	}
+
+	/** Whether every kept notice was delivered; false when the child's route is gone or refused one, which stays kept. */
+	private async deliverKept(childId: string): Promise<boolean> {
+		for (;;) {
+			const kept = this.kept.get(childId);
+			const next = kept?.[0];
+			if (kept === undefined || next === undefined) return true;
+			const route = this.routes.get(childId);
+			if (route === undefined || !route.isOpen()) return false;
+			try {
+				await route.deliver(next.message);
+			} catch {
+				// The child ended before it took the notice: it stays kept for the child's next run.
+				return false;
+			}
+			kept.shift();
+			if (kept.length === 0) this.kept.delete(childId);
+			next.taken();
+			// A released child keeps its route only while a shell it launched runs or a notice waits for it.
+			if (
+				this.releasedRoutes.has(route) &&
+				!this.running.has(childId) &&
+				!this.kept.has(childId) &&
+				this.routes.get(childId) === route
+			)
+				this.routes.delete(childId);
+		}
 	}
 }
 
@@ -100,16 +169,26 @@ function routesFor(host: AgentTaskHost): ChildCommandTaskRoutes {
 }
 
 /**
- * The task completed: the route to the child that launched it in this owner, only while that child accepts messages.
- * The task no longer counts as running for its child.
+ * Deliver the completion notice of tasks the child session `childId` launched in `host`'s owner to that child only:
+ * now while it takes messages, or once it runs again or is released. Resolves when the child took it.
  */
-export function childTaskCompletionRoute(host: AgentTaskHost, taskId: TaskId): ChildTaskCompletionRoute | undefined {
-	return routesByHost.get(host)?.completionRoute(taskId);
+export function deliverToLaunchingSession(
+	host: AgentTaskHost,
+	childId: string,
+	taskIds: TaskId | readonly TaskId[],
+	message: TaskCompletionMessage,
+): Promise<void> {
+	return routesFor(host).deliver(childId, typeof taskIds === "string" ? [taskIds] : taskIds, message);
 }
 
 /** How many children have a completion route in this host's owner. */
 export function childCommandRouteCount(host: AgentTaskHost): number {
 	return routesByHost.get(host)?.routeCount ?? 0;
+}
+
+/** How many completion notices wait in this host's owner for the child `childId` to take them. */
+export function keptChildNoticeCount(host: AgentTaskHost, childId: string): number {
+	return routesByHost.get(host)?.keptCount(childId) ?? 0;
 }
 
 /**
@@ -130,7 +209,11 @@ function runningSubagentTask(host: AgentTaskHost, childId: string): TaskId | und
  * route is dropped from the owner it was bound to, which stays known while the child is bound: unbinding needs no
  * live parent, so a child closing after its parent closed or was retired still leaves nothing behind.
  */
-export function createChildCommandTaskOwner(resolveHost: () => AgentTaskHost): ChildCommandTaskOwner {
+export function createChildCommandTaskOwner(
+	resolveHost: () => AgentTaskHost,
+	/** The parent's owner when it already holds one, without opening it. */
+	peekHost: () => AgentTaskHost | undefined = () => undefined,
+): ChildCommandTaskOwner {
 	const boundHosts = new Map<string, AgentTaskHost>();
 	const dropRoute = (childId: string): void => {
 		const host = boundHosts.get(childId);
@@ -140,6 +223,10 @@ export function createChildCommandTaskOwner(resolveHost: () => AgentTaskHost): C
 	return {
 		unbind: dropRoute,
 		routeReleased: (childId, route) => routesFor(resolveHost()).routeReleased(childId, route),
+		hasKeptNotices(childId) {
+			const host = peekHost();
+			return host !== undefined && (routesByHost.get(host)?.keptCount(childId) ?? 0) > 0;
+		},
 		bind(childId, route, waits) {
 			const host = resolveHost();
 			if (boundHosts.get(childId) !== host) dropRoute(childId);
@@ -155,6 +242,8 @@ export function createChildCommandTaskOwner(resolveHost: () => AgentTaskHost): C
 				ownsTask: (taskId) => routes.launchedByChild(taskId, childId),
 				onCommandStarted: (taskId) => routes.recordLaunch(taskId, childId),
 				launchOrigin: "subagent-child",
+				// The child's session, not the owner's, takes their notices and lists them.
+				launchedBy: childId,
 				waitForTask: (taskId, budgetMs, onRegistered) =>
 					supervisor.waitForTaskId(owner, taskId, budgetMs, (wait) => {
 						waits.track(supervisor, wait);

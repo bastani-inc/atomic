@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/atomic-ai";
@@ -13,6 +13,14 @@ export const ROUNDS_FOLLOW_UP = "rounds-follow-up";
 export const ROUNDS_RELEASE_FILE = "release";
 /** With `foreground`, the first round's tool call itself runs until the test creates this file. */
 export const ROUNDS_TOOL_RELEASE_FILE = "release-tool";
+
+/**
+ * The file a worker process creates in the child's cwd once its agent holds mid-turn: its first round is done and
+ * the model call for the next has begun, so a steer it takes from now on joins the turn after that call.
+ */
+export function roundsHoldingFile(pid: number): string {
+	return `holding-${pid}`;
+}
 
 type Message = { readonly role: string; readonly content?: unknown };
 
@@ -103,6 +111,8 @@ export const child = workflow({
 					stream.push({ type: "start", partial: { ...message, content: [] } });
 					// After its first round the agent thinks until released: a kill lands mid-turn, after a
 					// finished tool call, as it does in a long agent turn.
+					if (toolUse && rounds >= 1 && !existsSync(release))
+						writeFileSync(join(ctx.inputs.cwd, roundsHoldingFile(process.pid)), "");
 					while (toolUse && rounds >= 1 && !existsSync(release)) {
 						if (streamOptions?.signal?.aborted) {
 							stream.push({ type: "error", reason: "aborted", error: { ...message, content: [], stopReason: "aborted" } });

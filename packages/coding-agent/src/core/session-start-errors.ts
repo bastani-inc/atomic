@@ -13,6 +13,7 @@ export type SessionStartStep =
 	| "loading-resources"
 	| "creating-session"
 	| "awaiting-admission"
+	| "registering-intercom"
 	| "dispatching-task";
 
 /** How long one step of a session start ran, in the order the steps ran. */
@@ -107,6 +108,7 @@ const SESSION_START_STEPS: ReadonlySet<string> = new Set<SessionStartStep>([
 	"loading-resources",
 	"creating-session",
 	"awaiting-admission",
+	"registering-intercom",
 	"dispatching-task",
 ]);
 const SESSION_START_CONFIG_SOURCES: ReadonlySet<string> = new Set<SessionStartConfigSource>([
@@ -160,8 +162,14 @@ const STEP_TEXT: Readonly<Record<SessionStartStep, string>> = {
 	"loading-resources": "loading its resources",
 	"creating-session": "creating its agent session",
 	"awaiting-admission": "waiting for a resource-admission permit",
+	"registering-intercom": "registering on Intercom",
 	"dispatching-task": "dispatching its task",
 };
+
+/** What a start in `step` is doing, as a phrase: "creating its agent session". */
+export function sessionStartStepText(step: SessionStartStep): string {
+	return STEP_TEXT[step];
+}
 
 function formatBudget(ms: number): string {
 	if (ms % 60_000 === 0) return `${ms / 60_000} min`;
