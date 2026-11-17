@@ -48,4 +48,24 @@ describe("openai provider GPT-6.1 Sol auth-aware limits", () => {
 		assert.equal(stale.contextWindow, 272_000);
 		assert.ok(stale.cost.tiers);
 	});
+
+	it("gives GPT-6.2 Sol the 500K Codex context on a ChatGPT subscription and keeps its long-context pricing", () => {
+		const provider = openaiProvider();
+		const models = provider.getModels();
+		const apiSol = provider.filterModels?.(models, apiKey)?.find((model) => model.id === "gpt-6.2-sol");
+		assert.equal(apiSol?.contextWindow, 272_000);
+		assert.ok(apiSol?.cost.tiers);
+
+		const available = provider.filterModels?.(models, oauth) ?? [];
+		const sol = available.find((model) => model.id === "gpt-6.2-sol");
+		assert.equal(sol?.contextWindow, 500_000);
+		assert.deepEqual(sol?.cost, apiSol?.cost);
+		assert.deepEqual(sol?.serviceTiers, apiSol?.serviceTiers);
+		assert.equal(available.find((model) => model.id === "gpt-6.2-astra")?.contextWindow, 272_000);
+
+		const codexSol = openaiCodexProvider().getModels().find((model) => model.id === "gpt-6.2-sol");
+		assert.ok(codexSol);
+		const [refreshed] = openaiCodexProvider().filterModels?.([{ ...codexSol, contextWindow: 272_000 }], oauth) ?? [];
+		assert.equal(refreshed?.contextWindow, 500_000);
+	});
 });

@@ -95,17 +95,23 @@ describe("getSupportedThinkingLevels", () => {
 		}
 	});
 
-	it("supports GPT-6.1 Sol efforts without sending none", () => {
+	// OpenAI and Codex reject reasoning.effort "none" for GPT-6.1 Sol and GPT-6.2. Codex keeps its `minimal` UI alias,
+	// which sends `low`, for GPT-6.1 Sol only; GPT-6.2, like GPT-6 Astra, offers exactly `low` through `max`.
+	it.each([
+		["gpt-6.1-sol", 0.1, true],
+		["gpt-6.2-astra", 0.4, false],
+		["gpt-6.2-sol", 0.1, false],
+	] as const)("supports %s efforts without sending none", (modelId, cacheRead, codexMinimalAlias) => {
 		for (const provider of ["openai", "azure", "openai-codex"] as const) {
-			const model = getModel(provider, "gpt-6.1-sol");
+			const model = getModel(provider, modelId);
 			expect(model).toBeDefined();
 			expect(getSupportedThinkingLevels(model!)).toEqual(
-				provider === "openai-codex"
+				provider === "openai-codex" && codexMinimalAlias
 					? ["minimal", "low", "medium", "high", "xhigh", "max"]
 					: ["low", "medium", "high", "xhigh", "max"],
 			);
 			expect(model!.thinkingLevelMap?.off).toBeNull();
-			expect(model!.cost.cacheRead).toBe(0.1);
+			expect(model!.cost.cacheRead).toBe(cacheRead);
 		}
 	});
 
@@ -167,7 +173,7 @@ describe("getSupportedThinkingLevels", () => {
 		}
 	});
 
-	it.each(["gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "gpt-6.1-terra"] as const)(
+	it.each(["gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6.2-astra", "gpt-6.2-sol"] as const)(
 		"uses the Azure Foundry 1.05M context window for %s",
 		(modelId) => {
 			expect(getModel("azure", modelId)?.contextWindow).toBe(1050000);
@@ -189,6 +195,8 @@ describe("getSupportedThinkingLevels", () => {
 		"gpt-6-sol",
 		"gpt-6-luna",
 		"gpt-6.1-terra",
+		"gpt-6.2-astra",
+		"gpt-6.2-sol",
 	] as const)("includes xhigh for openai-codex %s models", (modelId) => {
 		const model = getModel("openai-codex", modelId);
 		expect(model).toBeDefined();
@@ -268,6 +276,9 @@ describe("getSupportedThinkingLevels", () => {
 		["gpt-6-luna", { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 }, 272000],
 		// Codex serves GPT-6.1 Terra with a 500K default context window.
 		["gpt-6.1-terra", { input: 1, output: 5, cacheRead: 0.05, cacheWrite: 1.25 }, 500000],
+		// Codex serves GPT-6.2 Astra with its 272K default and GPT-6.2 Sol with 500K.
+		["gpt-6.2-astra", { input: 8, output: 40, cacheRead: 0.4, cacheWrite: 10 }, 272000],
+		["gpt-6.2-sol", { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 }, 500000],
 	] as const)("includes official metadata for OpenAI and Codex %s", (modelId, cost, codexContextWindow) => {
 		for (const provider of ["openai", "openai-codex"] as const) {
 			const model = getModel(provider, modelId);

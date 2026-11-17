@@ -80,9 +80,10 @@ const copilotSelectableBaseModel: Model<"openai-completions"> = {
 
 describe("default model selection", () => {
 	test("openai defaults track current models", () => {
-		assert.equal(defaultModelPerProvider.openai, "gpt-6.1-sol");
-		assert.equal(defaultModelPerProvider["openai-api"], "gpt-6.1-sol");
-		assert.equal(defaultModelPerProvider["openai-codex"], "gpt-6.1-sol");
+		assert.equal(defaultModelPerProvider.openai, "gpt-6.2-sol");
+		assert.equal(defaultModelPerProvider["openai-api"], "gpt-6.2-sol");
+		assert.equal(defaultModelPerProvider.azure, "gpt-6.2-sol");
+		assert.equal(defaultModelPerProvider["openai-codex"], "gpt-6.2-sol");
 	});
 	test("zai, minimax, cerebras, and ant-ling defaults track current models", () => {
 		expect(defaultModelPerProvider.zai).toBe("glm-5.3");
