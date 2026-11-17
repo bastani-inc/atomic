@@ -303,7 +303,8 @@ export async function _appendCustomMessage<T>(this: AgentSession, message: Custo
 	const stageAdmissionMessage = message as StageAdmittedCustomMessage;
 	const manager = this.sessionManager;
 	const key = stageAdmissionMessage.stageAdmissionKey;
-	await refreshFailedCustomMessageWrites(this);
+	const refresh = refreshFailedCustomMessageWrites(this);
+	if (refresh !== undefined) await refresh;
 	let entryId =
 		key === undefined || !hasUncertainCustomMessageWrite(manager, key)
 			? undefined
