@@ -80,6 +80,7 @@ export function admittedSessionAdapter(
 			return created;
 		},
 	};
+	if (adapter.autoModel !== undefined) wrapped.autoModel = (options, needs) => adapter.autoModel!(options, needs);
 	const cwd = agentSessionAdapterDefaultCwd(adapter);
 	if (cwd !== undefined) setAgentSessionAdapterDefaultCwd(wrapped, cwd);
 	return wrapped;

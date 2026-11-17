@@ -87,7 +87,6 @@ describe("a settled stage's model and session metadata (#4642)", () => {
 			{ model: "m2" },
 			{ model: "m2", thinkingLevel: "high" },
 			{ model: "m2", thinkingLevel: "high", rateLimits: [] },
-			{ model: "m2", thinkingLevel: "high", routerSelection: { model: "m2" } as never },
 			{ model: "m2", thinkingLevel: "high", warnings: [] },
 			{ model: "m2", thinkingLevel: "high", warnings: ["new"] },
 		])
@@ -104,7 +103,6 @@ describe("a settled stage's model and session metadata (#4642)", () => {
 			attemptedModels: ["m"],
 			modelAttempts: [],
 			rateLimits: [],
-			routerSelection: { model: "m" } as never,
 		});
 		const before = { ...kept };
 		assert.equal(applyModelFallbackMetaToStage(kept, { thinkingLevel: "low" }), false);

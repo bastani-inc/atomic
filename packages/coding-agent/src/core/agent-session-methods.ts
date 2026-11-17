@@ -311,6 +311,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	abort(options?: SessionAbortOptions): Promise<void>;
 	/** Ends the current turn without closing the session to further messages, as Esc does in a subagent's chat. */
 	interruptTurn(): Promise<void>;
+	_sealMessageAdmissionIfDrained(): boolean;
 	setSteeringMode(mode: "all" | "one-at-a-time"): void;
 	setFollowUpMode(mode: "all" | "one-at-a-time"): void;
 
@@ -426,6 +427,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_isSafetyRefusal(message: AssistantMessage): boolean;
 	_handleRetryableError(message: AssistantMessage): Promise<boolean>;
 	_trySwitchToFallbackModel(message: AssistantMessage): Promise<boolean>;
+	_selectModelWithCredentials(): Promise<void>;
 	_beginFallbackModelScope(): void;
 	_clearFallbackModelScope(): void;
 	_settleFallbackModelScope(): Promise<boolean>;
@@ -535,6 +537,7 @@ export interface AgentSessionPublicSurface
 		| "steer"
 		| "followUp"
 		| "sendCustomMessage"
+		| "sendCustomMessages"
 		| "sendUserMessage"
 		| "clearQueue"
 		| "getSteeringMessages"
@@ -598,6 +601,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_isFallbackModelAllowed?: (model: Model<Api>, effort: string | undefined) => boolean;
 	_fallbackAttemptedKeys: Set<string>;
 	_fallbackBlockedModels: Array<Model<Api>>;
+	_fallbackBlockedProviders: Set<string>;
 	_fallbackOriginModel: Model<Api> | undefined;
 	_fallbackOriginThinkingLevel: ThinkingLevel | undefined;
 	_fallbackScopeGeneration: number;

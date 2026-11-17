@@ -143,6 +143,19 @@ test("candidates without configured auth are skipped", async () => {
 	assert.equal((await borrow(new Set(), authFor))?.model.id, "planner-c");
 });
 
+test("borrowing skips every model on a provider whose credentials were rejected this turn", async () => {
+	const { seen, resolveAuth } = trackedAuth();
+	const rejected = testModel({ provider: secondary.provider, id: "rejected-model" });
+	const borrow = borrower({
+		blockedModels: [rejected],
+		blockedProviders: new Set([rejected.provider]),
+	});
+
+	assert.equal((await borrow(new Set(), resolveAuth))?.model.id, tertiary.id);
+	assert.equal(await borrow(new Set(), resolveAuth), undefined);
+	assert.deepEqual(seen, [tertiary.id]);
+});
+
 test("resolveAuth is called once per inspected candidate with that candidate's model", async () => {
 	const seen: string[] = [];
 	const found = await borrower()(new Set(), async (model) => {

@@ -149,7 +149,7 @@ import {
 } from "./resource-admission.js";
 import { RestoreBackoff } from "./restore-backoff.js";
 import { RunChangesEncoder } from "./run-changes.js";
-import { ShipShard, shipShardPath } from "./ship-shard.js";
+import { retireEndedShipShards, ShipShard, shipJournalDirectory, shipShardPath } from "./ship-shard.js";
 import {
 	earlierSessionReceipt,
 	endedIntercomReason,
@@ -539,6 +539,10 @@ function holding(slot: WorkerSlot): boolean {
 	return slot.work !== undefined || slot.claiming === true;
 }
 
+function workerEndsCleanly(slot: WorkerSlot): boolean {
+	return slot.leaving === true || slot.recycled === true || slot.retired === true;
+}
+
 interface WorkerSlot {
 	readonly worker: string;
 	readonly child: ChildProcess;
@@ -562,6 +566,7 @@ interface WorkerSlot {
 	worktree?: string;
 	/** The pool had more workers than its waiting attempts needed: this idle worker ends, and nothing replaces it. */
 	retired?: boolean;
+	leaving?: boolean;
 	readonly idle: IdleClaimBackoff;
 }
 
@@ -725,6 +730,7 @@ export class PoolCoordinator {
 	private usageChanged = false;
 	private budgetBlocked = false;
 	private shipping: CheckpointShipping | undefined;
+	private readonly progress = new Map<string, { readonly generation: number; at: number; checkpoints: number }>();
 	private openingShipping?: Promise<CheckpointShipping | undefined>;
 	private desiredControl?: PoolControl["state"];
 	private root?: string;
@@ -1196,9 +1202,9 @@ export class PoolCoordinator {
 		this.idleClaims.wakeAll();
 		const message: WorkerPoolControl = { kind: "pool-control", control };
 		for (const slot of this.slots)
-			if (this.readyWorkers.has(slot.worker) && slot.child.connected)
+			if (this.readyWorkers.has(slot.worker) && slot.child.connected && !workerEndsCleanly(slot))
 				slot.child.send(message, (error) => {
-					if (error) slot.child.kill("SIGKILL");
+					if (error && !workerEndsCleanly(slot)) slot.child.kill("SIGKILL");
 				});
 	}
 
@@ -1274,7 +1280,14 @@ export class PoolCoordinator {
 		shared: SharedPoolCoordination,
 		queue: SqlPoolQueue,
 	): Promise<CheckpointShipping | undefined> {
-		if (this.closed || shared.checkpointShipping === undefined || durable === undefined) return undefined;
+		if (this.closed || durable === undefined) return undefined;
+		const identity = durableJournalIdentity(durable);
+		if (this.remote === undefined)
+			await retireEndedShipShards(
+				shipJournalDirectory(shared.stateDirectory, identity),
+				(roots, works, unidentified) => queue.endedShipRoots(roots, works, unidentified),
+			).catch(() => {});
+		if (this.closed || shared.checkpointShipping === undefined) return undefined;
 		if (this.remote !== undefined)
 			throw new WorkerPlacementConfigError(
 				"sdk",
@@ -1284,10 +1297,7 @@ export class PoolCoordinator {
 			);
 		let shard: ShipShard;
 		try {
-			shard = await ShipShard.open(
-				shipShardPath(shared.stateDirectory, durableJournalIdentity(durable), root),
-				root,
-			);
+			shard = await ShipShard.open(shipShardPath(shared.stateDirectory, identity, root), root);
 		} catch (error) {
 			if (!this.closed)
 				this.port.send({
@@ -1515,6 +1525,54 @@ export class PoolCoordinator {
 	/** The work this coordinator's workers hold now. */
 	heldWork(): readonly PoolWork[] {
 		return [...this.slots].flatMap((slot) => (slot.work === undefined ? [] : [slot.work]));
+	}
+
+	shippingStatus():
+		| { readonly lagMs: number; readonly pending: number; readonly lagging: boolean; readonly error?: Error }
+		| undefined {
+		const shipping = this.shipping;
+		if (shipping === undefined) return undefined;
+		return { ...shipping.status(), lagging: shipping.lagging() };
+	}
+
+	childProgress(
+		now = performance.now(),
+	): { readonly work: string; readonly agoMs: number; readonly checkpoints: number }[] {
+		const held = new Map(this.heldWork().map((work) => [work.id, work.generation]));
+		const progress: { readonly work: string; readonly agoMs: number; readonly checkpoints: number }[] = [];
+		for (const [work, entry] of this.progress) {
+			if (held.get(work) !== entry.generation) {
+				this.progress.delete(work);
+				continue;
+			}
+			progress.push({ work, agoMs: Math.max(0, Math.round(now - entry.at)), checkpoints: entry.checkpoints });
+		}
+		return progress;
+	}
+
+	private noteProgress(slot: WorkerSlot, work: PoolWork, checkpoint: boolean): void {
+		if (!this.slots.has(slot) || slot.work?.id !== work.id || slot.work.generation !== work.generation) return;
+		const entry = this.progress.get(work.id);
+		const current = entry?.generation === work.generation ? entry : undefined;
+		this.progress.set(work.id, {
+			generation: work.generation,
+			at: performance.now(),
+			checkpoints: (current?.checkpoints ?? 0) + (checkpoint ? 1 : 0),
+		});
+	}
+
+	private forgetProgress(work: PoolWork): void {
+		if (this.progress.get(work.id)?.generation === work.generation) this.progress.delete(work.id);
+	}
+
+	private attemptEnded(slot: WorkerSlot, work: PoolWork | undefined): void {
+		this.fleetRates?.releaseWorker(slot.worker);
+		if (work !== undefined) this.forgetProgress(work);
+		slot.work = undefined;
+		slot.worktree = undefined;
+		this.places.end(slot);
+		this.gateOpened();
+		this.retireWaiting();
 	}
 
 	/** The work a worker host's workers claimed since the last call, however briefly they held it (#4768). */
@@ -2511,7 +2569,7 @@ export class PoolCoordinator {
 			child.kill("SIGKILL");
 		};
 		const replied = (error: Error | null) => {
-			if (error) terminate();
+			if (error && !workerEndsCleanly(slot)) terminate();
 		};
 		return new Promise((resolve, reject) => {
 			const startup = setTimeout(() => {
@@ -2552,13 +2610,17 @@ export class PoolCoordinator {
 				this.lastHeard.delete(worker);
 				this.awaiting.delete(worker);
 				this.slots.delete(slot);
+				this.fleetRates?.releaseWorker(slot.worker);
 				this.places.end(slot);
 				this.gateOpened();
 				this.retireWaiting();
 				this.endStageWatches((watch) => watch.slot === slot, "worker_exited");
 				for (const settle of slot.stageCommands.values()) settle(undefined);
 				slot.stageCommands.clear();
-				if (slot.work) this.fence(slot.work);
+				if (slot.work) {
+					this.forgetProgress(slot.work);
+					this.fence(slot.work);
+				}
 				const lost = new WorkerLostError({
 					phase: "delivery",
 					pid: child.pid,
@@ -2758,7 +2820,13 @@ export class PoolCoordinator {
 					if (message.kind === "rate-acquire")
 						return this.fleetRates === undefined
 							? 0
-							: this.fleetRates.acquire(message.provider, message.model).catch(() => 0);
+							: this.fleetRates
+									.acquire(message.provider, message.model, slot.worker, message.request)
+									.catch(() => 0);
+					if (message.kind === "rate-release") {
+						this.fleetRates?.releaseRequest(slot.worker, message.request);
+						return 0;
+					}
 					if (message.kind === "fenced") {
 						const fenced = slot.work;
 						// The slot keeps the attempt until its release below is recorded: a store that refuses it leaves the
@@ -2767,11 +2835,7 @@ export class PoolCoordinator {
 						const end = () => {
 							if (slot.work !== fenced) return;
 							if (fenced !== undefined) void this.shipping?.release(fenced);
-							slot.work = undefined;
-							slot.worktree = undefined;
-							this.places.end(slot);
-							this.gateOpened();
-							this.retireWaiting();
+							this.attemptEnded(slot, fenced);
 						};
 						// Its current owner keeps superseded work. Work still leased to this attempt was refused by the root,
 						// or its run failed on a fault of the pool: it is released for replay and counts as a failed attempt,
@@ -3002,6 +3066,7 @@ export class PoolCoordinator {
 										renewAttempt: () => this.whileRootLate(queue, renewAttempt),
 									}),
 						);
+						this.noteProgress(slot, work, message.mutation.kind !== "session-append");
 						// A checkpoint that bills usage is shipped by the time the host acknowledges it from its local journal.
 						if (
 							message.mutation.kind === "checkpoint"
@@ -3023,11 +3088,7 @@ export class PoolCoordinator {
 					await shipping?.release(work);
 					this.endStageWatches((watch) => watch.slot === slot, "stage_finished");
 					this.replacements = 0;
-					slot.work = undefined;
-					slot.worktree = undefined;
-					this.places.end(slot);
-					this.gateOpened();
-					this.retireWaiting();
+					this.attemptEnded(slot, work);
 					await this.sendResult(work.id);
 				};
 				const handled = this.counters.within(message.kind, () =>
@@ -3048,7 +3109,8 @@ export class PoolCoordinator {
 					void handled.then(answered, answered);
 				}
 				void response.then(
-					(value) =>
+					(value) => {
+						if (!child.connected && workerEndsCleanly(slot)) return;
 						child.send(
 							{
 								id: message.id,
@@ -3056,13 +3118,16 @@ export class PoolCoordinator {
 								...(slot.retired === true ? { retire: true } : {}),
 							},
 							replied,
-						),
+						);
+					},
 					(error: unknown) => {
 						// The root's lease is gone (a late one was waited out above): workers end without counting as crashes.
 						if (isStaleLeaseError(error)) {
 							this.rootLeaseLost = true;
+							slot.leaving = true;
 							this.detach(error);
 						}
+						if (!child.connected && workerEndsCleanly(slot)) return;
 						child.send({ id: message.id, error: serializeError(error) }, replied);
 					},
 				);

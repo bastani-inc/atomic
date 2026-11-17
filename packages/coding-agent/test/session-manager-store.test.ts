@@ -284,7 +284,7 @@ test("CLI and TUI session defaults stay persistent for create, resume, and fork"
 		assert.equal(initial.isPersisted(), true);
 		assert.deepEqual(initial.getSessionStore().descriptor, {
 			adapter: "node-sqlite",
-			location: join(directory, "workflows", "journal.sqlite"),
+			location: join(directory, "agent", "workflows", "journal.sqlite"),
 		});
 		assert.equal((await initial.getSessionStore().load(initial.getSessionId())).header.version, 4);
 		await initial.appendMessage(message("default session"));

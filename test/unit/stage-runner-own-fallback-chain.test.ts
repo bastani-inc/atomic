@@ -113,10 +113,6 @@ async function runStageAgainstConfiguredChains(
 		retry: { enabled: false },
 		fallbackModels: settingsChain,
 		decisionModel: `${SOURCE}-7/${MODEL_ID}`,
-		modelRouting: {
-			allowedProviders: ["openai-codex", "anthropic", "xai"],
-			excludedProviders: [ACCOUNTS.stagePrimary, ACCOUNTS.stageFallback],
-		},
 	});
 	assert.deepEqual(settingsManager.getFallbackModels(), settingsChain);
 	const host: CreateAgentSessionOptions = {

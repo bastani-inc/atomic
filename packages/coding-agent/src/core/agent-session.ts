@@ -110,6 +110,7 @@ class AgentSessionBase {
 	protected _fallbackAttemptedKeys: Set<string> = new Set();
 	/** Models condemned for this turn by a failure retrying them cannot repair. */
 	protected _fallbackBlockedModels: Array<Model<Api>> = [];
+	protected _fallbackBlockedProviders: Set<string> = new Set();
 	protected _fallbackOriginModel: Model<Api> | undefined;
 	protected _fallbackOriginThinkingLevel: ThinkingLevel | undefined;
 	protected _fallbackScopeGeneration = 0;
@@ -540,7 +541,9 @@ function stageMessageAdmission(boundary: WorkflowStageAdmissionBoundary): StageM
 	return { boundary, extensionState: new Map(), isOpen: () => boundary.isOpen() };
 }
 
-export interface AgentSession extends AgentSessionBase, AgentSessionPublicSurface {}
+export interface AgentSession extends AgentSessionBase, AgentSessionPublicSurface {
+	_sealMessageAdmissionIfDrained(): boolean;
+}
 
 export const AgentSession = AgentSessionBase as unknown as {
 	new (config: AgentSessionConfig): AgentSession;

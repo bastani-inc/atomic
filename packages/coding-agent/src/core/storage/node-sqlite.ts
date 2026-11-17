@@ -5,6 +5,8 @@ import {
 	open,
 	readdirSync,
 	readFileSync,
+	realpathSync,
+	rmSync,
 	statSync,
 	unlinkSync,
 	utimesSync,
@@ -12,9 +14,11 @@ import {
 	writeSync,
 } from "node:fs";
 import { mkdir, readdir, realpath, stat, unlink, utimes, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { platform } from "node:os";
-import { dirname, join, win32 } from "node:path";
+import { basename, dirname, join, resolve, win32 } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type {
 	SqliteDatabase,
@@ -378,7 +382,7 @@ class SqliteWriteTicket {
 			await utimes(this.path, now, now);
 			return false;
 		} catch (error) {
-			if (!isMissingFile(error)) throw error;
+			if (!isVanishedTicket(error)) throw error;
 			await this.queue.create(this, "w");
 			return true;
 		}
@@ -547,6 +551,176 @@ class SqliteHolderRecord {
 
 function holderDirectory(databasePath: string): string {
 	return `${databasePath}-holders`;
+}
+
+export function sqliteOpenLockPath(databasePath: string): string {
+	return `${databasePath}-open.lock`;
+}
+
+interface NativeOpenLocks {
+	tryAdvisoryLock(path: string, waitMs: number): { release(): void } | null;
+	trySharedAdvisoryLock(path: string, waitMs: number): { release(): void } | null;
+}
+
+interface HeldOpenLock {
+	readonly lock: { release(): void };
+	readonly path: string;
+	readonly target: string;
+}
+
+let nativeOpenLocks: NativeOpenLocks | null | undefined;
+
+function openLocks(): NativeOpenLocks | null {
+	if (nativeOpenLocks === undefined) {
+		try {
+			let binding: Partial<NativeOpenLocks>;
+			try {
+				binding = createRequire(import.meta.url)("@bastani/atomic-natives") as Partial<NativeOpenLocks>;
+			} catch {
+				binding = createRequire(pathToFileURL(process.execPath).href)(
+					"@bastani/atomic-natives",
+				) as Partial<NativeOpenLocks>;
+			}
+			nativeOpenLocks =
+				typeof binding.tryAdvisoryLock === "function" && typeof binding.trySharedAdvisoryLock === "function"
+					? (binding as NativeOpenLocks)
+					: null;
+		} catch {
+			nativeOpenLocks = null;
+		}
+	}
+	return nativeOpenLocks;
+}
+
+function sqliteTargetFilePath(spec: string): string | undefined {
+	if (spec === "" || spec === ":memory:") return undefined;
+	if (!spec.startsWith("file:")) return spec;
+	const hashIndex = spec.indexOf("#");
+	const withoutHash = hashIndex === -1 ? spec : spec.slice(0, hashIndex);
+	const queryIndex = withoutHash.indexOf("?");
+	const uriPart = queryIndex === -1 ? withoutHash : withoutHash.slice(0, queryIndex);
+	const queryPart = queryIndex === -1 ? "" : withoutHash.slice(queryIndex + 1);
+	if (new URLSearchParams(queryPart).get("mode") === "memory") return undefined;
+	const body = uriPart.slice("file:".length);
+	if (body === "" || body === ":memory:") return undefined;
+	if (uriPart.startsWith("file://")) {
+		try {
+			return fileURLToPath(uriPart);
+		} catch {
+			return undefined;
+		}
+	}
+	try {
+		const decoded = decodeURIComponent(body);
+		if (process.platform === "win32" && /^\/[a-zA-Z]:/.test(decoded)) return decoded.slice(1);
+		return resolve(decoded);
+	} catch {
+		return undefined;
+	}
+}
+
+function isMissingOpenLockDir(error: unknown): boolean {
+	if (isMissingFile(error)) return true;
+	const message = error instanceof Error ? error.message : String(error);
+	return /No such file or directory|cannot find the path|os error [23]\b/i.test(message);
+}
+
+async function resolveOpenLockTarget(filePath: string, readOnly: boolean): Promise<string | undefined> {
+	try {
+		return await realpath(filePath);
+	} catch {
+		if (readOnly) return undefined;
+		await mkdir(dirname(filePath), { recursive: true });
+		return join(await realpath(dirname(filePath)), basename(filePath));
+	}
+}
+
+async function acquireOpenLock(
+	filePath: string | undefined,
+	readOnly: boolean,
+	busyTimeoutMs: number,
+): Promise<HeldOpenLock | undefined> {
+	const locks = openLocks();
+	if (locks === null || filePath === undefined) return undefined;
+	const started = performance.now();
+	let delay = 5;
+	for (;;) {
+		const target = await resolveOpenLockTarget(filePath, readOnly);
+		if (target === undefined) return undefined;
+		const lockPath = sqliteOpenLockPath(target);
+		if (readOnly && !existsSync(holderDirectory(target)) && !existsSync(lockPath) && !existsSync(`${target}.lock`))
+			return undefined;
+		let lock: { release(): void } | null = null;
+		try {
+			lock = locks.trySharedAdvisoryLock(sqliteFilePath(lockPath), 0);
+		} catch (error) {
+			if (readOnly) return undefined;
+			if (!isMissingOpenLockDir(error)) throw error;
+		}
+		if (lock !== null) {
+			const held: HeldOpenLock = { lock, path: sqliteFilePath(lockPath), target };
+			if (readOnly && !existsSync(target)) {
+				releaseOpenLock(held);
+				return undefined;
+			}
+			return held;
+		}
+		const remaining = started + busyTimeoutMs - performance.now();
+		if (remaining <= 0)
+			throw Object.assign(new Error("database is locked"), {
+				code: "ERR_SQLITE_ERROR",
+				errcode: 5,
+				errstr: "database is locked",
+			});
+		await new Promise((resolve) => setTimeout(resolve, Math.min(delay, remaining)));
+		delay = Math.min(delay * 2, 50);
+	}
+}
+
+function isOpenLockPermissionError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	if (code === "EACCES" || code === "EPERM" || code === "EROFS") return true;
+	const message = error instanceof Error ? error.message : String(error);
+	return process.platform === "win32"
+		? /\(os error (?:5|19|65)\)/.test(message)
+		: /\(os error (?:1|13|30)\)/.test(message);
+}
+
+function acquireOpenLockSync(location: string): HeldOpenLock | undefined {
+	const locks = openLocks();
+	const filePath = sqliteTargetFilePath(location);
+	if (locks === null || filePath === undefined) return undefined;
+	const target = realpathSync(filePath);
+	const lockPath = sqliteFilePath(sqliteOpenLockPath(target));
+	let lock: { release(): void } | null;
+	try {
+		lock = locks.trySharedAdvisoryLock(lockPath, 50);
+	} catch (error) {
+		if (isOpenLockPermissionError(error)) return undefined;
+		throw error;
+	}
+	if (lock === null)
+		throw Object.assign(new Error("database is locked"), {
+			code: "ERR_SQLITE_ERROR",
+			errcode: 5,
+			errstr: "database is locked",
+		});
+	return { lock, path: lockPath, target };
+}
+
+function releaseOpenLock(openLock: HeldOpenLock | undefined): void {
+	if (openLock === undefined) return;
+	openLock.lock.release();
+	try {
+		const exclusive = openLocks()?.tryAdvisoryLock(openLock.path, 0) ?? null;
+		if (exclusive !== null) {
+			try {
+				rmSync(openLock.path, { force: true });
+			} finally {
+				exclusive.release();
+			}
+		}
+	} catch {}
 }
 
 const openFile = promisify(open);
@@ -854,6 +1028,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	private readonly writeQueue?: SqliteWriteQueue;
 	/** This connection's record of when it holds the write lock, named in the error of a writer that gives up. */
 	private readonly holderRecord?: SqliteHolderRecord;
+	private readonly openLock?: HeldOpenLock;
 	private readonly lockUse = new WriteLockUse();
 	/** What the writers' queue gave up on, once per reason, in the order it first happened. */
 	private readonly degradations = new Map<StorageWriterQueueDegradedReason, StorageWriterQueueDegradedError>();
@@ -865,6 +1040,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		transactionIdentity: string | DatabaseSync = connection,
 		lockWaitMs = DEFAULT_NODE_SQLITE_LOCK_WAIT_MS,
 		groupCommitHoldMs = DEFAULT_GROUP_COMMIT_HOLD_MS,
+		openLock?: HeldOpenLock,
 	) {
 		this.lockWaitMs = lockWaitMs;
 		this.groupCommitHoldMs = groupCommitHoldMs;
@@ -872,6 +1048,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		this.ownsConnection = ownsConnection;
 		this.connection = connection;
 		this.descriptor = descriptor;
+		this.openLock = openLock;
 		this.executor = this.createExecutor(() => true);
 		if (typeof transactionIdentity === "string") {
 			this.writeQueue = new SqliteWriteQueue(
@@ -1375,9 +1552,13 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			this.closing = true;
 			this.closePromise = this.tail.then(() =>
 				this.driver(() => {
-					this.holderRecord?.close();
-					if (this.ownsConnection) this.connection.close();
-					finalizeReleasedStatements();
+					try {
+						this.holderRecord?.close();
+						if (this.ownsConnection) this.connection.close();
+						finalizeReleasedStatements();
+					} finally {
+						releaseOpenLock(this.openLock);
+					}
 				}),
 			);
 		}
@@ -1466,9 +1647,12 @@ export async function openNodeSqliteDatabase(
 	} catch (cause) {
 		throw new StorageAdapterLoadError("node:sqlite", cause as StorageFailureCause);
 	}
+	const targetFile = sqliteTargetFilePath(path);
+	let heldOpenLock: HeldOpenLock | undefined;
 	let connection: DatabaseSync | undefined;
 	try {
-		if (!readOnly && path !== ":memory:") await mkdir(dirname(path), { recursive: true });
+		if (!readOnly && targetFile !== undefined) await mkdir(dirname(targetFile), { recursive: true });
+		heldOpenLock = await acquireOpenLock(targetFile, readOnly, busyTimeoutMs);
 		connection = openConnection(Database, path, readOnly);
 		connection.exec(`PRAGMA busy_timeout=${busyTimeoutMs}`);
 		if (!readOnly) {
@@ -1478,8 +1662,17 @@ export async function openNodeSqliteDatabase(
 			writable.exec("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
 		}
 		const location = connection.location();
-		const identity = location === null ? connection : await realpath(location);
-		const database = new NodeSqliteDatabase(connection, descriptor, true, identity, lockWaitMs, holdMs);
+		const identity =
+			location === null
+				? connection
+				: heldOpenLock?.target !== undefined && location === targetFile
+					? heldOpenLock.target
+					: await realpath(location);
+		if (typeof identity === "string" && heldOpenLock !== undefined && heldOpenLock.target !== identity) {
+			releaseOpenLock(heldOpenLock);
+			heldOpenLock = await acquireOpenLock(identity, readOnly, busyTimeoutMs);
+		}
+		const database = new NodeSqliteDatabase(connection, descriptor, true, identity, lockWaitMs, holdMs, heldOpenLock);
 		Object.defineProperty(database, "readOnly", { value: readOnly });
 		if (!readOnly) await database.openHolderRecord();
 		return database;
@@ -1488,6 +1681,8 @@ export async function openNodeSqliteDatabase(
 			connection?.close();
 		} catch {
 			// Preserve the opening failure if cleanup also fails.
+		} finally {
+			releaseOpenLock(heldOpenLock);
 		}
 		throw unavailable(descriptor, cause);
 	}
@@ -1498,14 +1693,17 @@ const WRAPPED_BUSY_TIMEOUT_MS = 5000;
 
 export function wrapNodeSqliteDatabase(connection: DatabaseSync): SqliteDatabase {
 	const descriptor = { adapter: "node-sqlite", location: ":memory:" };
+	let heldOpenLock: HeldOpenLock | undefined;
 	try {
 		descriptor.location = ordinarySqlitePath(connection.location()) || ":memory:";
+		heldOpenLock = acquireOpenLockSync(descriptor.location);
 		connection.exec(`PRAGMA busy_timeout=${WRAPPED_BUSY_TIMEOUT_MS}`);
 		// SQLite does not wait for another process's lock while it changes the mode; the switch waits itself.
 		switchToWriteAheadLogSync((sql) => connection.exec(sql), WRAPPED_BUSY_TIMEOUT_MS);
 		connection.exec("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
-		return new NodeSqliteDatabase(connection, descriptor, false);
+		return new NodeSqliteDatabase(connection, descriptor, false, connection, undefined, undefined, heldOpenLock);
 	} catch (cause) {
+		releaseOpenLock(heldOpenLock);
 		throw unavailable(descriptor, cause);
 	}
 }
