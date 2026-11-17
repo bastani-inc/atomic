@@ -5,7 +5,7 @@ import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 import type { DefaultProjectTrust } from "./settings-manager.ts";
 import {
 	getProjectTrustOptions,
-	hasProjectTrustInputs,
+	hasProjectTrustInputsAsync,
 	type ProjectTrustOption,
 	type ProjectTrustStore,
 } from "./trust-manager.ts";
@@ -54,9 +54,9 @@ async function selectProjectTrustOption(
 	return options.find((option) => option.label === selected);
 }
 
-function saveProjectTrustPromptResult(trustStore: ProjectTrustStore, result: ProjectTrustOption): void {
+async function saveProjectTrustPromptResult(trustStore: ProjectTrustStore, result: ProjectTrustOption): Promise<void> {
 	if (result.updates.length > 0) {
-		trustStore.setMany(result.updates);
+		await trustStore.setManyAsync(result.updates);
 	}
 }
 
@@ -64,9 +64,9 @@ export async function resolveProjectTrusted(options: ResolveProjectTrustedOption
 	if (options.trustOverride !== undefined) {
 		return options.trustOverride;
 	}
-	if (!hasProjectTrustInputs(options.cwd)) {
+	if (!(await hasProjectTrustInputsAsync(options.cwd))) {
 		// Nothing to gate, but a saved "Do not trust" still applies (upstream #10947).
-		return options.trustStore.get(options.cwd) ?? true;
+		return (await options.trustStore.getAsync(options.cwd)) ?? true;
 	}
 
 	if (options.extensionsResult) {
@@ -81,13 +81,13 @@ export async function resolveProjectTrusted(options: ResolveProjectTrustedOption
 		if (result) {
 			const trusted = result.trusted === "yes";
 			if (result.remember === true) {
-				options.trustStore.set(options.cwd, trusted);
+				await options.trustStore.setAsync(options.cwd, trusted);
 			}
 			return trusted;
 		}
 	}
 
-	const decision = options.trustStore.get(options.cwd);
+	const decision = await options.trustStore.getAsync(options.cwd);
 	if (decision !== null) {
 		return decision;
 	}
@@ -107,7 +107,7 @@ export async function resolveProjectTrusted(options: ResolveProjectTrustedOption
 
 	const selected = await selectProjectTrustOption(options.cwd, options.projectTrustContext, options.promptMessage);
 	if (selected !== undefined) {
-		saveProjectTrustPromptResult(options.trustStore, selected);
+		await saveProjectTrustPromptResult(options.trustStore, selected);
 		return selected.trusted;
 	}
 	return false;
