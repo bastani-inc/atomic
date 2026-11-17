@@ -540,12 +540,12 @@ class SqliteHolderRecord {
 		}
 	}
 
-	held(): void {
-		this.write(`held ${String(Date.now()).padStart(15, "0")}\n`);
+	held(): Promise<void> {
+		return this.write(`held ${String(Date.now()).padStart(15, "0")}\n`);
 	}
 
-	free(): void {
-		this.write(`free ${"0".repeat(15)}\n`);
+	free(): Promise<void> {
+		return this.write(`free ${"0".repeat(15)}\n`);
 	}
 
 	/** The process, this one or another, whose record says it took the write lock most recently. */
@@ -574,7 +574,7 @@ class SqliteHolderRecord {
 	 * Every record has the same length and is written in place, so a reader never sees a shorter, stale tail. A
 	 * connection without a record, read-only or unable to create one, writes nothing.
 	 */
-	private write(record: string): void {
+	private write(record: string): Promise<void> {
 		this.writes = this.writes.then(async () => {
 			const descriptor = this.descriptor;
 			if (descriptor === undefined) return;
@@ -585,6 +585,7 @@ class SqliteHolderRecord {
 				this.unavailable(cause);
 			}
 		});
+		return this.writes;
 	}
 }
 
@@ -1198,7 +1199,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 				if (!behind) {
 					const refused = this.attemptBegin();
 					if (refused === undefined) {
-						this.acquired(waitStarted);
+						await this.acquired(waitStarted);
 						return;
 					}
 					lastCause = refused;
@@ -1219,7 +1220,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 				const stalledMs = performance.now() - stalledSince;
 				if (stalledMs >= lockWaitMs) throw await this.lockWaitTimeout(lockWaitMs, stalledMs, behind, lastCause);
 				if (!behind && committed && (await this.attemptThroughRelease())) {
-					this.acquired(waitStarted);
+					await this.acquired(waitStarted);
 					return;
 				}
 				const recheckMs =
@@ -1297,9 +1298,9 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		);
 	}
 
-	private acquired(waitStarted: number): void {
-		this.holderRecord?.held();
+	private async acquired(waitStarted: number): Promise<void> {
 		this.lockUse.acquired(waitStarted);
+		await this.holderRecord?.held();
 	}
 
 	/**
@@ -1309,12 +1310,13 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 */
 	private async released(committed: boolean): Promise<void> {
 		this.lockUse.released(committed);
-		this.holderRecord?.free();
+		const recorded = this.holderRecord?.free();
 		try {
 			await this.writeQueue?.wakeNext();
 		} catch (cause) {
 			this.degraded("wake-failed", cause);
 		}
+		await recorded;
 	}
 
 	/**
