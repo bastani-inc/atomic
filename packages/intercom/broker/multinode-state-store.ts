@@ -41,10 +41,6 @@ export const OUTBOX_EXPIRED_REASON = `The recipient did not return within the kn
 
 /** The exact frame a broker writes to a recipient's socket; a cross-node delivery writes the same frame. */
 export type IntercomDeliveryFrame = Extract<BrokerMessage, { type: "message" }> & {
-	/**
-	 * #5352: the sender's reach policy when it has one, so the recipient's broker checks the delivery against it. Kept
-	 * between brokers only: the frame written to the recipient is rebuilt without it.
-	 */
 	readonly senderReach?: ReachPolicyFrame;
 };
 

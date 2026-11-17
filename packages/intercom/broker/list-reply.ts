@@ -16,7 +16,6 @@ export interface SessionsReply {
 export interface ListReplyRequest {
 	readonly requestId: string;
 	readonly requesterInfo: SessionInfo;
-	/** #5352: the requester's reach policy, which decides the sessions it sees. */
 	readonly requesterReach?: IntercomReachPolicy;
 	readonly selectedGroup: string | undefined;
 	readonly localSessions: () => SessionDirectoryView;

@@ -236,7 +236,7 @@ export interface ExtensionContext {
 	/** Typed capability policy for an in-process subagent child, when this session is one. */
 	readonly subagentPolicy?: SubagentChildPolicy;
 	/**
-	 * #5352: the session's Intercom home group and reach, when its host set one with `createAgentSession({ intercom })`
+	 * the session's Intercom home group and reach, when its host set one with `createAgentSession({ intercom })`
 	 * or it is a workflow stage or subagent of such a session.
 	 */
 	readonly intercomPolicy?: import("../intercom-policy.ts").IntercomPolicyView;

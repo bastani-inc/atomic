@@ -169,10 +169,6 @@ function removeUnownedModelHeaders(
  * });
  * ```
  */
-/**
- * #5352: a child of a session with an Intercom policy gets its own: its stage or subagent group, else its parent's
- * home, and nothing reachable. A top-level session gets the one its host set, if any.
- */
 function sessionIntercomPolicyFor(options: CreateAgentSessionOptions): SessionIntercomPolicy | undefined {
 	const parent = options.parentIntercomPolicy;
 	if (parent !== undefined) {

@@ -50,10 +50,6 @@ export interface BrokerConnectedSession {
   readonly acknowledgesReceipt?: true;
   /** #4642: the session id of the connection hosting this session, whose `socket` it shares. */
   readonly hostedBy?: string;
-  /**
-   * #5352: the reach policy the session registered with. Its home never changes; `set_reach` replaces its reachable
-   * groups. Every list, peek, groups, join, leave, presence, send and ask of the session is held to it.
-   */
   reach?: IntercomReachPolicy;
 }
 
@@ -128,7 +124,6 @@ export type RestoringRecipientHold = (send: {
   readonly target: string;
   readonly messageId: string;
   readonly attemptId?: string;
-  /** #5352: the send is a reply to an ask the sender received. */
   readonly answersAsk?: true;
 }) => boolean;
 
@@ -1059,7 +1054,6 @@ export function handleBrokerSend(
     message.replyTo === undefined && workflowTarget === undefined && canPeekGroup !== undefined
       ? liveInPeekableGroupReason(sessions, fromSession, trimmedTo, canPeekGroup)
       : undefined;
-  // #5352: a sender with a reach policy learns that sessions outside its reach are not found by it.
   const targetFailure = sessionTargetFailureReason(clientMessage.to, resolution);
   write(socket, {
     type: "delivery_failed",

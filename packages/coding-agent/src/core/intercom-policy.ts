@@ -1,8 +1,3 @@
-/**
- * #5352: a session's Intercom home group and reach, set by its host with `createAgentSession({ intercom })`.
- * The Intercom builtin registers the policy with the broker, which enforces it; this module owns the host's copy.
- */
-
 /** `createAgentSession({ intercom })`: the session's home Intercom group and the other groups it may reach. */
 export interface IntercomSessionOptions {
 	/** The session's home group. It replaces the group from the environment, Intercom `config.json` and the project. */
@@ -60,7 +55,7 @@ export const MAX_INTERCOM_REACHABLE_GROUPS = 1_000;
 const MAX_GROUP_LENGTH = 1_024;
 const RESERVED_GROUP_NAMES = ["true", "auto"];
 
-function groupError(value: unknown, field: string): string | undefined {
+function groupError(value: IntercomSessionOptions["group"], field: string): string | undefined {
 	if (typeof value !== "string" || value.trim().length === 0) return `${field} must be a non-empty group name`;
 	const group = value.trim();
 	if (group.length > MAX_GROUP_LENGTH) return `${field} is longer than ${MAX_GROUP_LENGTH} characters`;
@@ -69,7 +64,7 @@ function groupError(value: unknown, field: string): string | undefined {
 	return undefined;
 }
 
-function reachableError(reachable: unknown): string | undefined {
+function reachableError(reachable: IntercomSessionOptions["reachable"]): string | undefined {
 	if (reachable === undefined) return undefined;
 	if (!Array.isArray(reachable)) return "intercom.reachable must be an array of group names";
 	if (reachable.length > MAX_INTERCOM_REACHABLE_GROUPS)
@@ -106,14 +101,12 @@ export function confinedIntercomChildGroup(parentHome: string, requested: string
 	return `${parentHome}/${group}`;
 }
 
-/** Validate the `intercom` option; throws `IntercomPolicyError` with the reason. */
 export function validateIntercomSessionOptions(options: IntercomSessionOptions): void {
 	if (typeof options !== "object" || options === null) throw new IntercomPolicyError("intercom must be an object");
 	const error = groupError(options.group, "intercom.group") ?? reachableError(options.reachable);
 	if (error !== undefined) throw new IntercomPolicyError(error);
 }
 
-/** The host's copy of a session's Intercom policy. */
 export class SessionIntercomPolicy implements IntercomPolicyView {
 	readonly home: string;
 	readonly child: boolean;
@@ -126,16 +119,11 @@ export class SessionIntercomPolicy implements IntercomPolicyView {
 		this.reachableGroups = normalizedReachable(home, reachable);
 	}
 
-	/** The policy of a top-level session created with the `intercom` option. */
 	static fromOptions(options: IntercomSessionOptions): SessionIntercomPolicy {
 		validateIntercomSessionOptions(options);
 		return new SessionIntercomPolicy(options.group.trim(), options.reachable ?? [], false);
 	}
 
-	/**
-	 * The policy of a workflow stage or subagent of a session with one: its own group, reaching nothing else. Its group
-	 * may not be, or hold as a subgroup, one of the parent's reachable groups: a child never gains its parent's reach.
-	 */
 	static forChild(home: string, parent: IntercomPolicyView): SessionIntercomPolicy {
 		const group = home.trim();
 		const inherited = parent.reachable.find((reachable) => reachable === group || isSubgroupOf(group, reachable));
@@ -161,7 +149,6 @@ export class SessionIntercomPolicy implements IntercomPolicyView {
 		};
 	}
 
-	/** Replace the reachable groups; every registered applier runs with the new set before the promise settles. */
 	async setReachable(groups: readonly string[]): Promise<void> {
 		if (this.child) throw new IntercomPolicyError("A workflow stage or subagent reaches only its own group");
 		const error = reachableError(groups);
@@ -172,7 +159,6 @@ export class SessionIntercomPolicy implements IntercomPolicyView {
 	}
 }
 
-/** The `session.intercom` facade of a session with or without a policy. */
 export function sessionIntercomFacade(policy: SessionIntercomPolicy | undefined): SessionIntercom {
 	return {
 		get group() {

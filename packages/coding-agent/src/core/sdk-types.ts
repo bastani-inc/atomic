@@ -137,10 +137,6 @@ export interface CreateAgentSessionOptions {
 	 * `reachable` later with `session.intercom.setReachable(groups)`. Invalid values throw `IntercomPolicyError`.
 	 */
 	intercom?: import("./intercom-policy.ts").IntercomSessionOptions;
-	/**
-	 * Internal: the Intercom policy of the session that starts this child, from its child session options. The child
-	 * gets its own group as its home and reaches nothing else; it never inherits the parent's reachable groups.
-	 */
 	parentIntercomPolicy?: import("./intercom-policy.ts").IntercomPolicyView;
 	/**
 	 * Internal: parent-issued shell task owner for an in-process subagent child. Supplied by the

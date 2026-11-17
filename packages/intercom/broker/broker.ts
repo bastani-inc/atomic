@@ -311,7 +311,6 @@ interface SessionRegistrationRequest {
   readonly supervisorOwnerToken?: unknown;
   readonly acknowledgesReceipt?: unknown;
   readonly supervisor?: unknown;
-  /** #5352: the validated reach policy, held for the connection. */
   readonly reachPolicy?: IntercomReachPolicy;
 }
 
@@ -328,11 +327,9 @@ function isRestoringRecipientAliasList(value: unknown): value is string[] {
   return Array.isArray(value) && value.length <= RESTORING_RECIPIENT_ALIASES_MAX && value.every((alias) => typeof alias === "string");
 }
 
-/** #5352: what a session hosted by one with a reach policy is told when it sends anything but a reply. */
 const HOSTED_REPLY_ONLY_REFUSAL =
 	"A session hosted by a session with an Intercom reach policy can only reply to an ask it received";
 
-/** #5352: a reply that must answer an ask its sender received. */
 function isPendingReply(clientMessage: SendClientMessage): boolean {
 	const message = clientMessage.message;
 	return (
@@ -344,7 +341,6 @@ function isPendingReply(clientMessage: SendClientMessage): boolean {
 	);
 }
 
-/** #5352: whether a host with a reach policy may host this session: each of its groups is reached or a workflow's. */
 function hostedWithinReach(reach: IntercomReachPolicy, item: ParsedHostedSession): boolean {
 	for (const group of normalizeGroups(item.session.groups, item.session.group)) {
 		if (!isReachable(reach, group) && !group.startsWith("workflow:")) return false;
@@ -352,7 +348,6 @@ function hostedWithinReach(reach: IntercomReachPolicy, item: ParsedHostedSession
 	return true;
 }
 
-/** #5352: the reach policy a registration carries, or why the broker refuses it. */
 function readRegistrationReach(
 	frame: JsonWireValue | undefined,
 	session: Omit<SessionInfo, "id">,
@@ -361,7 +356,9 @@ function readRegistrationReach(
 	if (frame === undefined) return {};
 	if (typeof frame !== "object" || frame === null || Array.isArray(frame)) throw new Error("Invalid reach policy");
 	const error = reachPolicyError(frame.home, frame.reachable);
-	if (error !== undefined || !Array.isArray(frame.reachable)) throw new Error(`Invalid reach policy: ${error ?? "reachable"}`);
+	if (error !== undefined || typeof frame.home !== "string" || !Array.isArray(frame.reachable)
+    || !frame.reachable.every((group): group is string => typeof group === "string"))
+    throw new Error(`Invalid reach policy: ${error ?? "reachable"}`);
 	const reach = createReachPolicy(frame.home, frame.reachable);
 	const groups = [...normalizeGroups(session.groups, session.group)];
 	if (registrationGroup !== undefined && normalizeGroup(registrationGroup) !== reach.home)
@@ -373,7 +370,6 @@ function readRegistrationReach(
 	return { reach };
 }
 
-/** #5352: a send's sender as the holds for subagents with no live session see it. */
 function holdSenderOf(from: ConnectedSession, answersAsk?: true): HoldSender {
 	return {
 		id: from.info.id,
@@ -995,7 +991,6 @@ class IntercomBroker {
 			if (!roster.stages.some((stage) => stage.group === selected && invocationOwnsGroup(roster.group, selected))) continue;
 			return groups.has(selected) || this.canControlWorkflowInvocation(requester, roster.group);
 		}
-		// #5352: a session with a reach policy peeks only at groups it reaches.
 		return requester.reach === undefined || canPeek(requester.reach, selected);
 	}
 
@@ -1173,7 +1168,6 @@ class IntercomBroker {
     const initialGroups = normalizeGroups(item.session.groups, item.session.group);
     const legacyGroup = normalizeGroup(item.session.group ?? initialGroups.values().next().value);
     const info: SessionInfo = { ...item.session, id };
-    // #5352: a session hosted by one with a reach policy holds its own group and reaches nothing else.
     setSessionGroups(info, confined ? new Set([legacyGroup]) : initialGroups, legacyGroup);
     const name = info.name?.trim();
     const hosted: ConnectedSession = {
@@ -2519,7 +2513,6 @@ class IntercomBroker {
           writeMessageIfOpen(socket, { type: "hosted_sessions_ack", requestId, refusal: validation.refusal });
           break;
         }
-        // #5352: a host with a reach policy hosts only sessions in groups it reaches or in workflow invocations.
         const hostReach = host.reach;
         const outsideReach =
           hostReach === undefined ? undefined : validation.sessions.find((item) => !hostedWithinReach(hostReach, item));
@@ -2967,7 +2960,6 @@ class IntercomBroker {
 				this.refuseHostedSender(socket, clientMessage, hostedSender);
 				break;
 			}
-			// #5352: a session hosted by one with a reach policy only answers the asks it received.
 			if (this.sessions.get(currentId)?.reach !== undefined && !isPendingReply(clientMessage)) {
 				const message = clientMessage.message;
 				writeMessageIfOpen(socket, {
@@ -3048,7 +3040,8 @@ class IntercomBroker {
           break;
         }
         const error = reachPolicyError(session.reach.home, clientMessage.reachable);
-        if (error !== undefined || !Array.isArray(clientMessage.reachable)) {
+        if (error !== undefined || !Array.isArray(clientMessage.reachable)
+          || !clientMessage.reachable.every((group): group is string => typeof group === "string")) {
           writeMessageIfOpen(socket, { type: "reach_failed", requestId, reason: error ?? "Intercom reachable must be an array" });
           break;
         }
@@ -3945,10 +3938,6 @@ class IntercomBroker {
 	if (isAgentRecipient(departed.info)) this.broadcastToMemberships({ type: "session_left", sessionId }, sessionGroups(departed.info), sessionId);
 	for (const send of unreserved) this.dispatchSend(send.socket, send.clientMessage, send.senderId);
 	}
-  /**
-   * #5352: apply a session's new reach. Its peers learn what they now see of it, and it learns which sessions it now
-   * reaches: `session_joined` for each one newly in reach and `session_left` for each one out of it.
-   */
   private replaceReach(session: ConnectedSession, reach: IntercomReachPolicy): void {
     const reachedBefore = this.reachedSessionIds(session);
     replaceSessionReach(
@@ -3970,7 +3959,6 @@ class IntercomBroker {
     this.multiNode?.sessionUpdated(session);
   }
 
-  /** The agent sessions `session` reaches, other than itself. */
   private reachedSessionIds(session: ConnectedSession): Set<string> {
     const reached = new Set<string>();
     for (const [id, peer] of this.sessions) {
@@ -3984,7 +3972,6 @@ class IntercomBroker {
     for (const [id, session] of this.sessions) {
       // #4642: a hosted session shares its host's socket and needs no copy of its own.
       if (session.hostedBy !== undefined) continue;
-      // #5352: a session is told about sessions it reaches, which a reach policy makes one way.
       if (id !== exclude && reachesGroups(session, groups)) {
         writeMessageIfOpen(session.socket, msg);
       }

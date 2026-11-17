@@ -119,7 +119,6 @@ export interface GroupSummary {
 	member: boolean;
 }
 
-/** #5352: the reach policy a session registers with: its home group and the other groups it may reach. */
 export interface ReachPolicyFrame {
 	home: string;
 	reachable: string[];
@@ -308,10 +307,6 @@ export interface RegisterRequest {
 			acknowledgesReceipt?: true;
 			/** #4538: the wire protocol versions this client speaks; absent from a client of protocol 1 (0.9.71 and earlier). */
 			protocol?: { min: number; max: number };
-			/**
-			 * #5352: the session's reach policy. The broker holds it for the connection and refuses every list, peek, groups,
-			 * join, leave, presence, send and ask outside it; only `set_reach` changes the reachable groups.
-			 */
 			reach?: ReachPolicyFrame;
 }
 
@@ -461,7 +456,6 @@ export type ClientMessage =
       group?: string;
       requestId?: string;
     }
-	/** #5352: replace the reachable groups of a session registered with a reach policy; its home group never changes. */
 	| { type: "set_reach"; requestId: string; reachable: string[] }
 	/** Allowed before `register`: the broker's own status. */
 	| { type: "broker_status"; requestId: string }
@@ -495,7 +489,6 @@ export type BrokerMessage =
 			multiNodeRouting?: BrokerMultiNodeStatus["status"];
 			/** #4538: the wire protocol versions this broker accepts; absent on brokers of protocol 1. */
 			protocol?: { min: number; max: number };
-			/** #5352: this broker holds and enforces the reach policy the session registered with; absent on older brokers. */
 			enforcesReach?: true;
 	  }
 	| { type: "workflow_invocation_claimed"; requestId: string; claimed: boolean }
@@ -509,7 +502,6 @@ export type BrokerMessage =
  | { type: "sessions"; requestId: string; sessions: SessionInfo[]; workflowStages?: WorkflowStageRosterEntry[]; workflowFutureStages?: WorkflowFutureStageRosterEntry[]; restricted?: true }
 	| { type: "groups"; requestId: string; groups: GroupSummary[] }
 	| { type: "membership_ack"; requestId: string; groups: string[] }
-	/** #5352: a `set_reach` took effect; `groups` are the memberships the session holds under the new reach. */
 	| { type: "reach_ack"; requestId: string; reachable: string[]; groups: string[] }
 	| { type: "reach_failed"; requestId: string; reason: string }
   | { type: "supervisor_authorized"; requestId: string; capability: string; supervisorSessionId: string; childName: string }

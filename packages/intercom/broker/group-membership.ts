@@ -4,7 +4,6 @@ import type { BrokerConnectedSession } from "./send-handler.js";
 import { isAgentRecipient } from "../recipient-purpose.js";
 import { type IntercomReachPolicy, reachesAnyGroup, reachGroups } from "../reach-policy.js";
 
-/** A session as the broker's reach rule sees it: its memberships, and the reach policy it registered with, if any. */
 export interface ReachSubject {
 	readonly info: SessionInfo;
 	readonly reach?: IntercomReachPolicy;
@@ -31,10 +30,6 @@ export function sessionsShareGroup(a: SessionInfo, b: SessionInfo): boolean {
 	return [...sessionGroups(a)].some((group) => bGroups.has(group));
 }
 
-/**
- * #5352: whether `sender` reaches a session that holds `groups`. A session with a reach policy reaches its home and
- * reachable groups and the subgroups under its home, one way; one without reaches the sessions it shares a group with.
- */
 export function reachesGroups(sender: ReachSubject, groups: Iterable<string>): boolean {
 	if (sender.reach !== undefined) return reachesAnyGroup(sender.reach, groups);
 	const own = sessionGroups(sender.info);
@@ -44,25 +39,20 @@ export function reachesGroups(sender: ReachSubject, groups: Iterable<string>): b
 	return false;
 }
 
-/** A send's sender as a hold for a subagent with no live session sees it (#3760, #4639). */
 export interface HoldSender extends ReachSubject {
 	readonly id: string;
-	/** #5352: the send answers an ask the sender received; a sender with a reach policy may always answer one. */
 	readonly answersAsk?: true;
 }
 
-/** Whether a send from `sender` may be held for, or told about, a subagent in `group`. */
 export function holdAdmitsSender(sender: HoldSender, group: string): boolean {
 	if (sender.answersAsk === true && sender.reach !== undefined) return true;
 	return reachesGroups(sender, [group]);
 }
 
-/** #5352: whether `sender` reaches `target`; see {@link reachesGroups}. */
 export function reachesSession(sender: ReachSubject, target: SessionInfo): boolean {
 	return reachesGroups(sender, sessionGroups(target));
 }
 
-/** Return each session the requester reaches: through a shared membership, or through its reach policy (#5352). */
 export function sessionsVisibleTo(
 	sessions: ReadonlyMap<string, Pick<BrokerConnectedSession, "info">>,
 	requester: SessionInfo,
@@ -80,10 +70,6 @@ export function sessionsInGroup(
 	return [...sessions.values()].map(({ info }) => info).filter((info) => isAgentRecipient(info) && hasGroup(sessionGroups(info), group));
 }
 
-/**
- * Summarize every group currently represented by a connected session. #5352: a requester with a reach policy sees only
- * its home and reachable groups, each listed even when no session is in it.
- */
 export function knownGroupSummaries(
 	sessions: ReadonlyMap<string, BrokerConnectedSession>,
 	requester: SessionInfo,

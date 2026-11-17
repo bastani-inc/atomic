@@ -83,7 +83,7 @@ export interface CreateAgentSessionFromServicesOptions {
 	customTools?: ToolDefinition[];
 	extensionBindings?: CreateAgentSessionOptions["extensionBindings"];
 	releaseWhenIdle?: CreateAgentSessionOptions["releaseWhenIdle"];
-	/** The session's Intercom home group and reachable groups, as for `createAgentSession` (#5352). */
+	/** The session's Intercom home group and reachable groups, as for `createAgentSession`. */
 	intercom?: CreateAgentSessionOptions["intercom"];
 }
 

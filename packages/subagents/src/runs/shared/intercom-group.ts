@@ -13,7 +13,6 @@ function runtimeIntercomGroup(sessionId: string | undefined): string | undefined
 	return readRuntimeIntercomGroup(sessionId);
 }
 
-/** #5352: the Intercom policy of a session whose host set one, or of a workflow stage or subagent of such a session. */
 interface ChildGroupPolicy {
 	readonly home: string;
 	childGroup(requested: string | undefined): string;
@@ -32,7 +31,6 @@ interface OrchestrationCarrier {
  * carries only the current group so children launched after `join` follow their parent.
  */
 export function inheritedIntercomGroup(ctx: OrchestrationCarrier | undefined): string | undefined {
-	// #5352: a session with a policy starts its children in its home group, never in a group it joined from its reach.
 	const policy = ctx?.intercomPolicy;
 	if (policy !== undefined) return policy.home;
 	const runtimeGroup = runtimeIntercomGroup(ctx?.sessionManager?.getSessionId());
@@ -43,14 +41,6 @@ export function inheritedIntercomGroup(ctx: OrchestrationCarrier | undefined): s
 	return typeof group === "string" && group.trim().length > 0 ? group.trim() : undefined;
 }
 
-/**
- * Resolve the intercom group for a spawned subagent child. Explicit task group
- * takes precedence over the inherited current-session group.
- * `true` resolves to `sharedAutoGroup` (a single UUID minted once per parallel
- * set) so every child in the set shares one isolated group. Returns undefined
- * when nothing applies, so the child inherits env/config/default itself.
- * #5352: with a parent `policy`, the group is placed under the parent's home group.
- */
 export function resolveChildIntercomGroup(
 	explicit: string | true | undefined,
 	inherited: string | undefined,

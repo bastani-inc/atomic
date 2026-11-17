@@ -36,7 +36,6 @@ function broadcastMembershipChange(
 	for (const [id, peer] of sessions) {
 		// #4642: a hosted session shares its host's socket and needs no copy of its own.
 		if (id === session.info.id || peer.hostedBy !== undefined) continue;
-		// #5352: what a peer is told follows what it reaches, which a reach policy makes one way.
 		const sharedBefore = reachesSession(peer, previousInfo);
 		const sharedAfter = reachesSession(peer, session.info);
 		if (!sharedBefore && sharedAfter) {
@@ -50,10 +49,6 @@ function broadcastMembershipChange(
 	}
 }
 
-/**
- * #5352: replace a session's reach policy. Memberships the new policy does not admit are dropped, its home kept, and
- * each peer is told what it now sees of the session.
- */
 export function replaceSessionReach(
 	sessions: Map<string, BrokerConnectedSession>,
 	write: WriteMessage,
@@ -75,7 +70,6 @@ export function replaceSessionReach(
 	);
 }
 
-/** #5352: why a session with a reach policy may not make this membership change, or undefined when it may. */
 function membershipReachRefusal(
 	reach: IntercomReachPolicy,
 	clientMessage: PresenceClientMessage,

@@ -12,6 +12,7 @@ import { join, resolve } from "node:path";
 import { afterAll, beforeAll, test, vi } from "vitest";
 import { SessionIntercomPolicy } from "../../packages/coding-agent/src/core/intercom-policy.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
+import type { IntercomReachPolicy } from "../../packages/intercom/reach-policy.js";
 import type { Message } from "../../packages/intercom/types.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 import { IntercomWireProxy, type WireFrame } from "../helpers/intercom-wire-proxy.js";
@@ -145,62 +146,127 @@ function run(params: object): Promise<ToolResult> {
 
 const isRegistration = (first: WireFrame) => first.type === "register" || first.type === "register_verified";
 
-test(
-	"a send whose refusal was lost is not delivered after the reach widens and the session reconnects (#5352)",
-	async () => {
-		const recipient = new IntercomClient("lost-outcome-recipient", { brokerSocketPath });
-		recipient.on("error", () => {});
-		const received: Message[] = [];
-		recipient.on("message", (_from: object, message: Message) => received.push(message));
-		const now = Date.now();
-		await recipient.connect({
-			name: "lost-outcome-recipient",
-			model: "test-model",
-			cwd: repoRoot,
-			pid: process.pid,
-			startedAt: now,
-			lastActivity: now,
-			group: OTHER,
-			groups: [OTHER],
-		});
-		try {
-			const status = await run({ action: "status" });
-			assert.equal(status.isError, false, status.content[0]?.text);
+for (const reconnect of [false, true])
+	test(
+		`a reach narrowed during ${reconnect ? "reconnect" : "connect"} registers only memberships still in reach (#5352)`,
+		async () => {
+			let reach: IntercomReachPolicy = { home: HOME, reachable: [OTHER] };
+			const client = new IntercomClient("narrowing-connect", { brokerSocketPath, reach: () => reach });
+			client.on("error", () => {});
+			const session = {
+				name: "narrowing-connect",
+				cwd: repoRoot,
+				model: "test-model",
+				pid: process.pid,
+				startedAt: Date.now(),
+				lastActivity: Date.now(),
+				group: OTHER,
+				groups: [HOME, OTHER],
+			};
+			try {
+				if (reconnect) {
+					await client.connect(session);
+					assert.deepEqual(client.groups, [HOME, OTHER]);
+					await client.disconnect();
+				}
+				const connecting = client.connect(session);
+				reach = { home: HOME, reachable: [] };
+				await connecting;
+				assert.deepEqual(client.groups, [HOME]);
+				const self = (await client.listSessions()).find((peer) => peer.id === client.sessionId);
+				assert.ok(self);
+				assert.deepEqual(self.groups, [HOME]);
+				assert.equal(self.group, HOME);
+			} finally {
+				await client.disconnect();
+			}
+		},
+		REAL_BROKER_TEST_TIMEOUT_MS,
+	);
 
-			// The broker refuses the send; its refusal is lost with the connection, and the host widens the reach.
-			let armed = true;
-			proxy.transformBrokerFrames((frame) => {
-				if (!armed || frame.type !== "delivery_failed") return frame;
-				armed = false;
-				void policy.setReachable([OTHER]);
-				setImmediate(() => proxy.disconnect(isRegistration));
-				return undefined;
-			});
-			const result = await run({ action: "send", to: recipient.sessionId!, message: "written while out of reach" });
-			proxy.transformBrokerFrames(undefined);
-
-			assert.equal(armed, false, "the broker refused the send");
-			assert.equal(result.isError, true, result.content[0]?.text);
-			assert.match(result.content[0]?.text ?? "", /reach changed while this message's outcome was unknown/);
-			await new Promise((resolveDelay) => setTimeout(resolveDelay, SETTLE_MS));
-			assert.equal(received.length, 0, "the refused message was never delivered");
-			assert.equal(
-				proxy.toBroker.filter(({ frame }) => frame.type === "send").length,
-				1,
-				"the message went to the broker once",
-			);
-
-			const after = await run({ action: "send", to: recipient.sessionId!, message: "written in reach" });
-			assert.equal(after.isError, false, after.content[0]?.text);
-			await vi.waitFor(() =>
-				assert.deepEqual(
-					received.map((message) => message.content.text),
-					["written in reach"],
-				),
-			);
-		} finally {
-			await recipient.disconnect();
-		}
+for (const scenario of [
+	{ name: "the reach widens before reconnect", narrowBeforeWrite: false, widenDuringReconnect: false },
+	{ name: "the reach widens during reconnect", narrowBeforeWrite: false, widenDuringReconnect: true },
+	{
+		name: "the first write uses a narrower reach than the tool call started with",
+		narrowBeforeWrite: true,
+		widenDuringReconnect: false,
 	},
-	REAL_BROKER_TEST_TIMEOUT_MS,
-);
+])
+	test(
+		`a send whose refusal was lost is not delivered when ${scenario.name} (#5352)`,
+		async () => {
+			await policy.setReachable(scenario.narrowBeforeWrite ? [OTHER] : []);
+			const sendsBefore = proxy.countToBroker("send");
+			const recipient = new IntercomClient("lost-outcome-recipient", { brokerSocketPath });
+			recipient.on("error", () => {});
+			const received: Message[] = [];
+			recipient.on("message", (_from: object, message: Message) => received.push(message));
+			const now = Date.now();
+			await recipient.connect({
+				name: "lost-outcome-recipient",
+				model: "test-model",
+				cwd: repoRoot,
+				pid: process.pid,
+				startedAt: now,
+				lastActivity: now,
+				group: OTHER,
+				groups: [OTHER],
+			});
+			try {
+				const status = await run({ action: "status" });
+				assert.equal(status.isError, false, status.content[0]?.text);
+
+				let reconnectStarted = () => {};
+				const reconnecting = new Promise<void>((resolveReconnect) => {
+					reconnectStarted = resolveReconnect;
+				});
+				let armed = true;
+				proxy.transformBrokerFrames((frame) => {
+					if (!armed || frame.type !== "delivery_failed") return frame;
+					armed = false;
+					if (scenario.widenDuringReconnect) {
+						proxy.hold((first) => {
+							if (!isRegistration(first)) return false;
+							reconnectStarted();
+							return true;
+						});
+					} else {
+						void policy.setReachable([OTHER]);
+					}
+					setImmediate(() => proxy.disconnect(isRegistration));
+					return undefined;
+				});
+				const sending = run({ action: "send", to: recipient.sessionId!, message: "written while out of reach" });
+				if (scenario.narrowBeforeWrite) void policy.setReachable([]);
+				if (scenario.widenDuringReconnect) {
+					await reconnecting;
+					await policy.setReachable([OTHER]);
+					proxy.release();
+				}
+				const result = await sending;
+				proxy.transformBrokerFrames(undefined);
+
+				assert.equal(armed, false, "the broker refused the send");
+				assert.equal(result.isError, true, result.content[0]?.text);
+				assert.match(result.content[0]?.text ?? "", /reach changed while this message's outcome was unknown/);
+				await new Promise((resolveDelay) => setTimeout(resolveDelay, SETTLE_MS));
+				assert.equal(received.length, 0, "the refused message was never delivered");
+				assert.equal(proxy.countToBroker("send") - sendsBefore, 1, "the message went to the broker once");
+
+				const after = await run({ action: "send", to: recipient.sessionId!, message: "written in reach" });
+				assert.equal(after.isError, false, after.content[0]?.text);
+				await vi.waitFor(() =>
+					assert.deepEqual(
+						received.map((message) => message.content.text),
+						["written in reach"],
+					),
+				);
+			} finally {
+				proxy.release();
+				proxy.transformBrokerFrames(undefined);
+				await recipient.disconnect();
+			}
+		},
+		REAL_BROKER_TEST_TIMEOUT_MS,
+	);

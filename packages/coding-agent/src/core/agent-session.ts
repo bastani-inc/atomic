@@ -251,7 +251,7 @@ class AgentSessionBase {
 	protected _subagentPolicy?: SubagentChildPolicy;
 	protected _intercomPolicy?: import("./intercom-policy.ts").SessionIntercomPolicy;
 	/**
-	 * #5352: the session's Intercom home group and reach. A host that created the session with the `intercom` option
+	 * the session's Intercom home group and reach. A host that created the session with the `intercom` option
 	 * changes the reachable groups with `setReachable`, effective from the session's next Intercom call.
 	 */
 	readonly intercom: import("./intercom-policy.ts").SessionIntercom;

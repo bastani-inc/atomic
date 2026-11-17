@@ -314,7 +314,6 @@ interface IntercomToolDeps {
   syncPresenceIdentity(sessionId: string): void;
   resolveSessionTarget?(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
   homeGroup(): string;
-  /** #5352: the session's reach policy, when its host set one; the broker enforces it, the tool explains it first. */
   reachPolicy?(): IntercomReachPolicy | undefined;
   /** Whether the broker routes across machines, so `default` is shared with every teammate's sessions. */
   multiNodeRouting?(): boolean;
@@ -337,14 +336,21 @@ interface IntercomToolDeps {
   retryIdentityMaxEntries?: number;
 }
 
-/** #5352: a send or ask with an unknown outcome is not sent again under a different reach. */
-const REACH_CHANGED_RETRY_TEXT =
-	"This session's Intercom reach changed while this message's outcome was unknown, so it was not sent again. Check whether it arrived before sending it again.";
+class ReachChangedRetryError extends Error {
+  constructor() {
+    super("This session's Intercom reach changed while this message's outcome was unknown, so it was not sent again. Check whether it arrived before sending it again.");
+    this.name = "ReachChangedRetryError";
+  }
+}
 
-/**
- * #5352: why a session with a reach policy may not run this group action, or undefined when it may. The broker refuses
- * the same requests; this explains the refusal before the call reaches it.
- */
+function reachChangedRetryResult(error: ReachChangedRetryError): IntercomAttemptResult {
+  return {
+    content: [{ type: "text", text: error.message }],
+    isError: true,
+    details: { error: true, outcome: "unknown" },
+  };
+}
+
 function toolReachRefusal(reach: IntercomReachPolicy, action: string, group: string | undefined): string | undefined {
 	const requested = typeof group === "string" && group.trim().length > 0 ? group.trim() : undefined;
 	if (requested === undefined) return undefined;
@@ -599,9 +605,13 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
           return { content: [{ type: "text", text: sizeError }], isError: true, details: { error: true } };
         }
       }
-      // #5352: the reach this call was made under. A send or ask whose outcome a lost connection left unknown is not sent
-      // again once the reach changed: its first attempt may have been refused, and a refused send never delivers later.
-      const issuedReach = deps.reachPolicy?.();
+      const writtenReach = new Map<string, IntercomReachPolicy | undefined>();
+      const guardWrite = (messageId: string) => (reach: IntercomReachPolicy | undefined): void => {
+        if (writtenReach.has(messageId) && !sameReachPolicy(writtenReach.get(messageId), reach)) {
+          throw new ReachChangedRetryError();
+        }
+        writtenReach.set(messageId, reach === undefined ? undefined : { home: reach.home, reachable: [...reach.reachable] });
+      };
       // A pattern send (#4752) runs this once per recipient, as a direct send to `fanOut.recipient`, which its lookup
       // already resolved to `fanOut.sendTo`.
       const executeAttempt = async (
@@ -620,13 +630,6 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             content: [{ type: "text", text: getErrorMessage(error) }],
             isError: true,
             details: { error: true },
-          };
-        }
-        if ((action === "send" || action === "ask") && !sameReachPolicy(issuedReach, deps.reachPolicy?.())) {
-          return {
-            content: [{ type: "text", text: REACH_CHANGED_RETRY_TEXT }],
-            isError: true,
-            details: { error: true, outcome: "unknown" },
           };
         }
         try {
@@ -967,6 +970,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             // disconnect retry identity; the owning receiver suppresses late ingress.
             const result = await connectedClient.send(sendTo, {
               messageId: retryIdentity.messageId,
+              beforeWrite: guardWrite(retryIdentity.messageId),
               logicalTarget: to,
               text: message,
               attachments,
@@ -1049,6 +1053,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 retryIdentities.release(retryIdentity);
               }
             }
+            if (failure instanceof ReachChangedRetryError) return reachChangedRetryResult(failure);
             if (failure === error && sendOutcomeUnknown(error)) {
               return {
                 content: [{
@@ -1256,6 +1261,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
 			}
             const sendResult = await connectedClient.send(sendTo, {
               messageId: questionId,
+              beforeWrite: guardWrite(questionId),
               logicalTarget: to,
               text: question,
               attachments,
@@ -1417,6 +1423,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 retryIdentities.release(retryIdentity);
               }
             }
+            if (failure instanceof ReachChangedRetryError) return reachChangedRetryResult(failure);
             return {
               content: [{
                 type: "text",

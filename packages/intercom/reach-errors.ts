@@ -1,8 +1,3 @@
-/**
- * #5352: the broker a session with a reach policy found does not enforce reach policies (it is older than this
- * version, and replacing it failed), so the session does not register with it. Run `atomic intercom restart` to
- * replace the broker.
- */
 export class IntercomReachUnsupportedError extends Error {
 	readonly code = "reach_policy_unsupported";
 	constructor() {
@@ -13,7 +8,6 @@ export class IntercomReachUnsupportedError extends Error {
 	}
 }
 
-/** Whether `error` is an {@link IntercomReachUnsupportedError}. */
-export function isIntercomReachUnsupportedError(error: unknown): error is IntercomReachUnsupportedError {
+export function isIntercomReachUnsupportedError(error: Error): error is IntercomReachUnsupportedError {
 	return error instanceof IntercomReachUnsupportedError;
 }

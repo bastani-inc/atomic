@@ -88,7 +88,6 @@ export const PROTOCOL_3_FRAME_TYPES: ReadonlySet<BrokerOutboundFrame["type"]> = 
 	"hosted_sessions_ack",
 ]);
 
-/** #5352: frames of protocol 4, written only to a client that registered speaking it. */
 export const PROTOCOL_4_FRAME_TYPES: ReadonlySet<BrokerOutboundFrame["type"]> = new Set<BrokerOutboundFrame["type"]>([
 	"reach_ack",
 	"reach_failed",
@@ -98,7 +97,6 @@ export const PROTOCOL_4_FRAME_TYPES: ReadonlySet<BrokerOutboundFrame["type"]> = 
 const protocol1Clients = new WeakSet<net.Socket>();
 /** #4642: sockets whose client registered speaking protocol 3 or later. */
 const hostingClients = new WeakSet<net.Socket>();
-/** #5352: sockets whose client registered speaking protocol 4 or later. */
 const reachClients = new WeakSet<net.Socket>();
 
 /** Record the protocol range the client on `socket` registered with, before anything is written to it. */

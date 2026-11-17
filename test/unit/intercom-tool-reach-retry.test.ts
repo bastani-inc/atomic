@@ -63,6 +63,7 @@ function fixture(reach: { current: IntercomReachPolicy }) {
 			return [peer];
 		},
 		async send(_target: string, options: SendOptions): Promise<SendResult> {
+			options.beforeWrite?.(reach.current);
 			sent.push(options);
 			if (sent.length === 1) throw new IntercomClientDisconnectedError();
 			return { id: options.messageId ?? "missing", delivered: true };
