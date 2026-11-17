@@ -35,7 +35,7 @@ export function processStartTokenForSynchronousTakeover(pid: number): string | u
 	if (native !== null) return windowsStartToken(nativeCreation(native, pid));
 	const known = knownFallbackCreation(pid);
 	if (known !== undefined) return windowsStartToken(known.created);
-	let answer = UNREAD;
+	let answer: FallbackAnswer;
 	try {
 		const output = execFileSync(fallbackQuery.file, fallbackQuery.args(pid), {
 			cwd: process.env.SystemRoot || process.env.windir || "C:\\Windows",
