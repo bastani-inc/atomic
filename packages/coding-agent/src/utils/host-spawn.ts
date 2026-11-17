@@ -1,0 +1,298 @@
+/**
+ * Starts the child processes the host runs for its own work, such as the Git commands of worktree snapshots, without
+ * stalling its event loop in proportion to its memory.
+ *
+ * Node's `child_process` forks on Linux, and a fork copies the parent's page tables before the child can exec: about
+ * 50 ms per gigabyte, all on the JavaScript thread. A host of several gigabytes running many agents starts a few
+ * processes a second, which left it busy in the kernel most of the time. On Linux, {@link spawnHostProcess} starts the
+ * process through the native module, which does not copy the address space and moves the process's input and output
+ * on a thread of its own. Everywhere else (macOS's `child_process` already uses `posix_spawn`, and Windows never
+ * forks), without the native module, or with `ATOMIC_HOST_SPAWN=child-process`, it is `child_process.spawn` itself.
+ * Both return the same subset of `ChildProcess`.
+ */
+
+import { spawn as nodeSpawn } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { constants as osConstants } from "node:os";
+import { Readable, Writable } from "node:stream";
+import type * as native from "@bastani/atomic-natives";
+import { createModuleRequire } from "./module-require.ts";
+
+/** Which stream a child process gets: a pipe to the host, or nothing (`/dev/null`). */
+export type HostStdio = "pipe" | "ignore";
+
+export interface HostSpawnOptions {
+	readonly cwd?: string;
+	/** The child's complete environment; this process's when absent. */
+	readonly env?: NodeJS.ProcessEnv;
+	/** Standard input, output and error, or one choice for all three. Pipes by default. */
+	readonly stdio?: HostStdio | readonly [HostStdio, HostStdio, HostStdio];
+	/** Starts the child in a session (and process group) of its own on POSIX, as `child_process`'s `detached`. */
+	readonly detached?: boolean;
+	readonly windowsHide?: boolean;
+}
+
+/** The part of `ChildProcess` both ways of starting a host process provide. */
+export interface HostChildProcess {
+	readonly pid?: number | undefined;
+	readonly stdin: Writable | null;
+	readonly stdout: Readable | null;
+	readonly stderr: Readable | null;
+	readonly exitCode: number | null;
+	readonly signalCode: NodeJS.Signals | null;
+	readonly killed: boolean;
+	kill(signal?: NodeJS.Signals | number): boolean;
+	ref(): void;
+	unref(): void;
+	on(event: "close", listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
+	on(event: "error", listener: (error: Error) => void): this;
+	on(event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
+	on(event: "spawn", listener: () => void): this;
+	once(event: "close", listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
+	once(event: "error", listener: (error: Error) => void): this;
+	once(event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
+	once(event: "spawn", listener: () => void): this;
+	removeListener(event: "close", listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
+	removeListener(event: "error", listener: (error: Error) => void): this;
+	removeListener(event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
+}
+
+/** Where a host process starts. */
+export type HostSpawnBackend = "native" | "child-process";
+
+/** The environment variable that sends every host process through `child_process`, as a way out. */
+export const HOST_SPAWN_ENV = "ATOMIC_HOST_SPAWN";
+
+/**
+ * Where a host process starts: through the native module on Linux when it provides the native start and
+ * {@link HOST_SPAWN_ENV} is not `child-process`, and through `child_process` in every other case.
+ */
+export function chooseHostSpawnBackend(choice: {
+	readonly platform: NodeJS.Platform;
+	readonly nativeAvailable: boolean;
+	readonly override: string | undefined;
+}): HostSpawnBackend {
+	if (choice.override === "child-process") return "child-process";
+	return choice.platform === "linux" && choice.nativeAvailable ? "native" : "child-process";
+}
+
+type StartHostProcess = typeof native.startHostProcess;
+
+let nativeStart: StartHostProcess | null | undefined;
+
+/** The native start, or null when the native module cannot be loaded or predates it. */
+function loadNativeStart(): StartHostProcess | null {
+	if (nativeStart === undefined) {
+		try {
+			const binding = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as Partial<typeof native>;
+			nativeStart = binding.startHostProcess ?? null;
+		} catch {
+			nativeStart = null;
+		}
+	}
+	return nativeStart;
+}
+
+/** Where host processes of this process start now. */
+export function hostSpawnBackend(): HostSpawnBackend {
+	const override = process.env[HOST_SPAWN_ENV];
+	// The native module is only loaded where it would be used.
+	if (override === "child-process" || process.platform !== "linux") {
+		return chooseHostSpawnBackend({ platform: process.platform, nativeAvailable: false, override });
+	}
+	return chooseHostSpawnBackend({ platform: process.platform, nativeAvailable: loadNativeStart() !== null, override });
+}
+
+function stdioOf(options: HostSpawnOptions): readonly [HostStdio, HostStdio, HostStdio] {
+	const stdio = options.stdio ?? "pipe";
+	return typeof stdio === "string" ? [stdio, stdio, stdio] : stdio;
+}
+
+/**
+ * Starts `file` with `args`, as `child_process.spawn(file, args, options)` would, through the native module where
+ * {@link hostSpawnBackend} says so.
+ */
+export function spawnHostProcess(
+	file: string,
+	args: readonly string[],
+	options: HostSpawnOptions = {},
+): HostChildProcess {
+	const start = hostSpawnBackend() === "native" ? loadNativeStart() : null;
+	if (start === null) {
+		return nodeSpawn(file, [...args], {
+			cwd: options.cwd,
+			env: options.env,
+			stdio: [...stdioOf(options)],
+			detached: options.detached,
+			windowsHide: options.windowsHide,
+		});
+	}
+	return new NativeChildProcess(start, file, args, options);
+}
+
+/** Start failures `child_process` reports through an `error` event rather than by throwing, as libuv sorts them. */
+const ASYNC_SPAWN_ERRORS: ReadonlySet<string> = new Set(["EACCES", "EAGAIN", "EMFILE", "ENFILE", "ENOENT"]);
+
+const SIGNAL_NAMES = new Map<number, NodeJS.Signals>(
+	Object.entries(osConstants.signals).map(([name, number]) => [number, name as NodeJS.Signals]),
+);
+
+function signalNumber(signal: NodeJS.Signals | number | undefined): number {
+	if (typeof signal === "number") return signal;
+	const number = osConstants.signals[signal ?? "SIGTERM"];
+	if (number === undefined) {
+		const error: NodeJS.ErrnoException = new TypeError(`Unknown signal: ${String(signal)}`);
+		error.code = "ERR_UNKNOWN_SIGNAL";
+		throw error;
+	}
+	return number;
+}
+
+/** The error `child_process` gives for a failed start, with the same code, message and fields. */
+function spawnError(code: string, file: string, args: readonly string[]): NodeJS.ErrnoException {
+	const errno = osConstants.errno[code as keyof typeof osConstants.errno];
+	const error: NodeJS.ErrnoException & { spawnargs?: string[] } = new Error(`spawn ${file} ${code}`);
+	error.errno = errno === undefined ? undefined : -errno;
+	error.code = code;
+	error.syscall = `spawn ${file}`;
+	error.path = file;
+	error.spawnargs = [...args];
+	return error;
+}
+
+function environmentOf(env: NodeJS.ProcessEnv | undefined): Record<string, string> {
+	const complete: Record<string, string> = {};
+	for (const [key, value] of Object.entries(env ?? process.env)) if (value !== undefined) complete[key] = value;
+	return complete;
+}
+
+/** A process started through the native module, with the events and streams `child_process` gives one. */
+class NativeChildProcess extends EventEmitter implements HostChildProcess {
+	pid: number | undefined;
+	readonly stdin: Writable | null;
+	readonly stdout: Readable | null;
+	readonly stderr: Readable | null;
+	exitCode: number | null = null;
+	signalCode: NodeJS.Signals | null = null;
+	killed = false;
+	#process: native.HostProcess | undefined;
+	#exited = false;
+	#openOutputs = 0;
+	#closed = false;
+
+	constructor(start: StartHostProcess, file: string, args: readonly string[], options: HostSpawnOptions) {
+		super();
+		const [input, output, error] = stdioOf(options);
+		this.stdout = output === "pipe" ? this.#output() : null;
+		this.stderr = error === "pipe" ? this.#output() : null;
+		this.stdin =
+			input === "pipe"
+				? new Writable({
+						write: (chunk: Buffer, _encoding, done) => {
+							done(this.#process?.write(chunk) === false ? spawnError("EPIPE", file, args) : null);
+						},
+						final: (done) => {
+							this.#process?.end();
+							done();
+						},
+						destroy: (cause, done) => {
+							this.#process?.end();
+							done(cause);
+						},
+					})
+				: null;
+		try {
+			this.#process = start(
+				{
+					file,
+					args: [...args],
+					cwd: options.cwd,
+					env: environmentOf(options.env),
+					pipeStdin: input === "pipe",
+					pipeStdout: output === "pipe",
+					pipeStderr: error === "pipe",
+					detached: options.detached === true,
+				},
+				(event) => this.#event(event),
+			);
+		} catch (failure) {
+			const code = (failure as NodeJS.ErrnoException).code ?? "EIO";
+			const error = spawnError(code, file, args);
+			if (!ASYNC_SPAWN_ERRORS.has(code)) throw error;
+			this.exitCode = error.errno ?? -1;
+			process.nextTick(() => this.#failedStart(error));
+			return;
+		}
+		this.pid = this.#process.pid;
+		process.nextTick(() => this.emit("spawn"));
+	}
+
+	#output(): Readable {
+		this.#openOutputs++;
+		const stream = new Readable({ read() {} });
+		stream.once("close", () => {
+			this.#openOutputs--;
+			this.#maybeClose();
+		});
+		return stream;
+	}
+
+	/** As `child_process` reports a failed start: `error`, then `close` once the streams closed. */
+	#failedStart(error: NodeJS.ErrnoException): void {
+		this.#exited = true;
+		this.emit("error", error);
+		this.stdin?.destroy();
+		for (const stream of [this.stdout, this.stderr]) stream?.push(null);
+		for (const stream of [this.stdout, this.stderr]) stream?.resume();
+		this.#maybeClose();
+	}
+
+	#event(event: native.HostProcessEvent): void {
+		switch (event.kind) {
+			case "stdout":
+				this.stdout?.push(event.data);
+				return;
+			case "stderr":
+				this.stderr?.push(event.data);
+				return;
+			case "stdout-end":
+				this.stdout?.push(null);
+				return;
+			case "stderr-end":
+				this.stderr?.push(null);
+				return;
+			case "stdin-error":
+				this.stdin?.destroy(spawnError(event.errno ?? "EPIPE", "write", []));
+				return;
+			case "exit":
+				this.#exited = true;
+				this.exitCode = event.code ?? null;
+				this.signalCode = event.signal === undefined ? null : (SIGNAL_NAMES.get(event.signal) ?? null);
+				this.emit("exit", this.exitCode, this.signalCode);
+				this.#maybeClose();
+				return;
+		}
+	}
+
+	#maybeClose(): void {
+		if (this.#closed || !this.#exited || this.#openOutputs > 0) return;
+		this.#closed = true;
+		process.nextTick(() => this.emit("close", this.exitCode, this.signalCode));
+	}
+
+	kill(signal?: NodeJS.Signals | number): boolean {
+		const number = signalNumber(signal);
+		if (this.#process === undefined || this.#exited) return false;
+		const sent = this.#process.kill(number, false);
+		if (sent) this.killed = true;
+		return sent;
+	}
+
+	ref(): void {
+		this.#process?.ref();
+	}
+
+	unref(): void {
+		this.#process?.unref();
+	}
+}

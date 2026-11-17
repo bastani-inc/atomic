@@ -31,6 +31,19 @@ useTemporaryAgentDir();
  */
 const UNCHANGED_TURN_GIT_PROCESSES = 9;
 
+/**
+ * The `diff-index` that gives changed files the executable or link mode their recorded tree holds, which a capture
+ * runs only where Git does not trust the file system's modes (`core.filemode` or `core.symlinks` false), as on
+ * Windows (#4932).
+ */
+const MODE_CARRY_GIT_PROCESSES = 1;
+
+/** Whether Git trusts the file system's executable bits and symbolic links in the checkout at `root`. */
+async function trustsFileModes(root: string): Promise<boolean> {
+	const setting = (key: string) => sandbox.git(root, "config", "--type=bool", "--default", "true", "--get", key);
+	return (await setting("core.filemode")) === "true" && (await setting("core.symlinks")) === "true";
+}
+
 /** Git processes that locate a checkout: the one `rev-parse` above. */
 const LOCATE_GIT_PROCESSES = 1;
 
@@ -100,14 +113,15 @@ describe("the Git processes a turn's snapshot starts", () => {
 		const recorded = manager.getEntries().filter((entry) => entry.type === "worktree_snapshot");
 		assert.equal(recorded.length, 1, "the first turn records a snapshot");
 
+		const budget = UNCHANGED_TURN_GIT_PROCESSES + ((await trustsFileModes(clone)) ? 0 : MODE_CARRY_GIT_PROCESSES);
 		const processes = countGitProcesses();
 		await recorder.recordTurn(bashTurn());
 		const entries = manager.getEntries().filter((entry) => entry.type === "worktree_snapshot");
 		assert.equal(entries.length, 2, "the unchanged turn records a reference to the same snapshot");
 		assert.equal(entries[1]!.type === "worktree_snapshot" && entries[1]!.snapshot, undefined);
 		assert.ok(
-			processes.count() <= UNCHANGED_TURN_GIT_PROCESSES,
-			`an unchanged turn started ${processes.count()} Git processes, over ${UNCHANGED_TURN_GIT_PROCESSES}`,
+			processes.count() <= budget,
+			`an unchanged turn started ${processes.count()} Git processes, over ${budget}`,
 		);
 	});
 });

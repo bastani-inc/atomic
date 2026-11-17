@@ -18,6 +18,28 @@ export declare class AdvisoryLock {
   release(): void
 }
 
+/** A process the host started with [`start_host_process`]. */
+export declare class HostProcess {
+  get pid(): number
+  /**
+   * Queues `chunk` for the process's standard input. False once input can no longer be written: it was ended, or
+   * the process's output thread finished.
+   */
+  write(chunk: Buffer): boolean
+  /** Closes standard input once everything queued was written. */
+  end(): void
+  /**
+   * Sends `signal` to the process, or to its process group when `group` is true. False once the process was
+   * reaped, after its output ended and its exit was reported, as its ID may name another process by then, or when
+   * the signal could not be sent.
+   */
+  kill(signal: number, group: boolean): boolean
+  /** Keeps the host's event loop alive until the process has ended, which is the default. */
+  ref(): void
+  /** Lets the host's event loop end while the process runs. */
+  unref(): void
+}
+
 export declare class HostSession {}
 
 export declare class OwnerLease {}
@@ -506,6 +528,31 @@ export type HostObservation =
   | { kind: 'background'; reason: string }
   | { kind: 'none'; reason: string }
 
+export interface HostProcessEvent {
+  kind: HostProcessEventKind
+  data?: Buffer
+  code?: number
+  signal?: number
+  errno?: string
+}
+
+export type HostProcessEventKind = 'stdout' | 'stdout-end' | 'stderr' | 'stderr-end' | 'exit' | 'stdin-error'
+
+export interface HostProcessOptions {
+  /** The program: a path, or a name looked up on the `PATH` of `env`. */
+  file: string
+  args: Array<string>
+  cwd?: string
+  /** The complete environment of the process. */
+  env: Record<string, string>
+  /** Which of standard input, output and error are pipes; the others are `/dev/null`. */
+  pipeStdin: boolean
+  pipeStdout: boolean
+  pipeStderr: boolean
+  /** Starts the process in a session of its own, as Node's `detached` does. */
+  detached: boolean
+}
+
 export type InputData =
   | { kind: 'bytes'; bytes: Buffer }
   | { kind: 'eof' }
@@ -773,6 +820,13 @@ export interface SettlementReceipt {
   result: TaskResult
   completionId: string
 }
+
+/**
+ * Starts `options.file`, delivering its output, its end and its exit to `on_event` in the order they happened. A
+ * failure to start it throws with the errno name (`ENOENT`, `EACCES`, ...) as the error's code. Off Linux it always
+ * refuses with `ENOSYS`.
+ */
+export declare function startHostProcess(options: HostProcessOptions, onEvent: (event: HostProcessEvent) => void): HostProcess
 
 export interface SubscriptionDrain {
   reset: boolean
