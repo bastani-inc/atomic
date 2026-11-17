@@ -1133,7 +1133,7 @@ describe("prebuild and seed edge cases (#4748)", () => {
 				label: `after ${delayMs} ms`,
 				arm: (controller: AbortController) => {
 					const timer = setTimeout(() => controller.abort(new Error("stop")), delayMs);
-					return () => clearTimeout(timer);
+					return (_outcome: string) => clearTimeout(timer);
 				},
 			});
 			const atMove = {
@@ -1156,30 +1156,34 @@ describe("prebuild and seed edge cases (#4748)", () => {
 						controller.abort(new Error("stop"));
 						writeFileSync(release, "");
 					}, 5);
-					return () => {
+					return (outcome: string) => {
 						clearInterval(poll);
 						spawning.hook = undefined;
 						restoreSpawn();
 						assert.ok(
 							existsSync(marker),
-							`the prebuild was interrupted while Git moved the worktree${existsSync(`${marker}.error`) ? `; the move failed: ${readFileSync(`${marker}.error`, "utf8")}` : ""}`,
+							`the prebuild was interrupted while Git moved the worktree; ${outcome}${existsSync(`${marker}.error`) ? `; the move failed: ${readFileSync(`${marker}.error`, "utf8")}` : ""}`,
 						);
 					};
 				},
 			};
-			for (const { label, arm } of [...INTERRUPT_DELAYS_MS.map(atDelay), atMove]) {
+			for (const { label, arm } of [atMove, ...INTERRUPT_DELAYS_MS.map(atDelay)]) {
 				const controller = new AbortController();
 				const disarm = arm(controller);
+				let outcome = "it did not settle";
 				try {
-					await prebuildRepository(clone, {
+					outcome = await prebuildRepository(clone, {
 						agentDir: agentDir(),
 						storeDir: storeDir(),
 						settings,
 						maxIdlePerRepository: 8,
 						signal: controller.signal,
-					}).catch(() => undefined);
+					}).then(
+						() => "it completed",
+						(error: unknown) => `it failed: ${String(error)}`,
+					);
 				} finally {
-					disarm();
+					disarm(outcome);
 				}
 				// Checked at once: a Git or build process the interrupt left running would hold these directories.
 				assert.deepEqual(processesInside(clone), [], `interrupted ${label}`);

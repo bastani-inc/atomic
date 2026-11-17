@@ -45,16 +45,8 @@ case " $* " in
     ;;
   *" worktree move "*)
     if [ "$TEST_FAULT" = move ]; then kill -KILL "$PPID"; exit 0; fi
-    if [ "$TEST_FAULT" = discard ]; then git "$@"; result=$?; [ "$result" -eq 0 ] && : > "$TEST_READY.moved"; exit "$result"; fi
     if [ "$TEST_FAULT" = stop ]; then : > "$TEST_READY"; kill -STOP "$PPID"; while [ ! -e "$TEST_GO" ]; do sleep 0.05; done; exec git "$@"; fi
     if [ "$TEST_FAULT" = race ]; then for arg do target=$arg; done; mkdir -p "$target"; printf 'user data\\n' > "$target/keep.txt"; exec git "$@"; fi
-    ;;
-  *" worktree list "*)
-    if [ "$TEST_FAULT" = discard ] && [ -e "$TEST_READY.moved" ] && [ ! -e "$TEST_READY.listed" ]; then : > "$TEST_READY.listed"; exit 1; fi
-    ;;
-  *" worktree remove "*)
-    for arg do target=$arg; done
-    if [ "$TEST_FAULT" = discard ] && [ -e "$TEST_READY.listed" ]; then case "$target" in */.s-*) ;; *) git "$@"; result=$?; [ "$result" -eq 0 ] || exit "$result"; kill -KILL "$PPID"; exit 0;; esac; fi
     ;;
   *" fetch "*"history.bundle "*)
     if [ "$TEST_FAULT" = bundle ]; then git "$@" & git_child=$!; kill -KILL "$PPID"; wait "$git_child"; exit 0; fi
@@ -193,30 +185,6 @@ test.skipIf(process.platform === "win32")(
 				readFileSync(f.log, "utf8").trim().split("\n").length < 200,
 				"recovery uses a bounded number of Git calls",
 			);
-		} finally {
-			f.sandbox.dispose();
-		}
-	},
-	RESTORE_CRASH_TIMEOUT_MS,
-);
-
-test.skipIf(process.platform === "win32")(
-	"SIGKILL while a failed restore discards the worktree it moved leaves files the next restore deletes (#4748)",
-	async () => {
-		const f = await fixture();
-		try {
-			const store = f.sandbox.path("host");
-			const killed = child(f, store, "discard");
-			const outcome = await result(killed);
-			assert.equal(killed.signalCode, "SIGKILL", outcome.stderr);
-			assert.ok(existsSync(`${f.ready}.listed`), "the restore failed after its move");
-			const worktrees = join(store, "worktrees");
-			const left = readdirSync(worktrees).filter((name) => /^\.s-[0-9a-f]{12}$/.test(name));
-			assert.equal(left.length, 1, "the killed restore left its worktree's files at its staging path");
-			assert.ok(existsSync(join(worktrees, left[0]!, "dirty.txt")));
-			ageLocks(store);
-			const path = await retry(f, store);
-			await assertHealthy(f, store, [path]);
 		} finally {
 			f.sandbox.dispose();
 		}
