@@ -202,9 +202,9 @@ function countingDatabase(database: SqliteDatabase): { database: SqliteDatabase;
 	return { database: counted, entryRows: () => entryRows };
 }
 
-function busyFor(ms: number): void {
-	const until = performance.now() + ms;
-	while (performance.now() < until) Math.sqrt(until);
+function busyFor(ms: number, now: () => number = () => performance.now()): void {
+	const start = now();
+	while (now() - start < ms) Math.sqrt(ms);
 }
 
 function withSlowIndexQueries(store: SessionStore): { readonly store: SessionStore; readonly queries: () => number } {
@@ -2389,7 +2389,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		let turns: number[];
 		try {
 			for (let index = 0; index < 500; index++) {
-				busyFor(blocked.has(index) ? 25 : 0.2);
+				busyFor(blocked.has(index) ? 25 : 0.2, blocked.has(index) ? cpuMs : undefined);
 				await new Promise((resolve) => setImmediate(resolve));
 			}
 		} finally {
@@ -2400,6 +2400,22 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			() => assertFewStalls(turns, TURN_LIMIT_MS, "the blocking work"),
 			/the blocking work held the event loop for more than 10 ms ([4-9]|\d{2,}) times/,
 		);
+	});
+
+	it("spends the requested CPU time in a blocking busyFor burst even when wall time jumps (#5250)", () => {
+		let wall = 0;
+		const now = vi.spyOn(performance, "now").mockImplementation(() => {
+			wall += 50;
+			return wall;
+		});
+		try {
+			const start = cpuMs();
+			busyFor(25, cpuMs);
+			const elapsed = cpuMs() - start;
+			assert.ok(elapsed >= 25, `busyFor(25, cpuMs) used ${elapsed} ms of CPU time`);
+		} finally {
+			now.mockRestore();
+		}
 	});
 
 	it("restores the process priority after watching the event loop, also when the watched work throws (#5250)", async () => {

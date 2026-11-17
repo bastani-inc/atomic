@@ -309,7 +309,9 @@ describe("history:// continuations resume where a call stopped (#5250)", () => {
 	it("a multi-session search that stops inside a session resumes there when listing sessions takes more than one call (#5250)", async () => {
 		const gates = new Gates();
 		const store = await storeWith(4, (n) =>
-			Array.from({ length: 6 }, (_, index) => message(`e${n}-${index}`, `needle s${n} e${index + 1}`, BASE + n)),
+			Array.from({ length: 6 }, (_, index) =>
+				message(`e${n}-${index}`, `needle s${n} e${index + 1} ${"x".repeat(40)}`, BASE + n),
+			),
 		);
 		const listed = listingWaitsAfterFirst(store, gates);
 		const router = createHistoryRouter({

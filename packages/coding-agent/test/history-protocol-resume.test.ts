@@ -582,6 +582,312 @@ describe("history:// continuations keep whole records and positions (#5250)", ()
 		assert.deepEqual(failures, []);
 	});
 
+	it("a session search continued from a long pinned session id stays within the byte budget that returned the continuation (#5250)", async () => {
+		const store = new MemorySessionStore();
+		for (const x of ["a", "b", "c", "d"]) {
+			const id = `${x}.dot.${"ü😀.".repeat(6)}`;
+			await store.create(
+				{ id, version: SESSION_FORMAT_VERSION, createdAt: new Date(BASE).toISOString(), cwd: PROJECT },
+				Array.from({ length: 3 }, (_, index) => message(`${id}-${index}`, `needle ${x} ${index + 1}`, BASE)),
+			);
+		}
+		const failures: string[] = [];
+		for (const bytes of [700, 701, 720, 750, 800, 1100]) {
+			const router = createHistoryRouter({
+				cwd: PROJECT,
+				sessionStore: () => store,
+				workflows: () => undefined,
+				budget: { bytes },
+			});
+			const chain = await follow(
+				async (url) => (await router.search!(url, { ...request("needle"), literal: true })) ?? "",
+				"history://sessions",
+				40,
+			);
+			const oversize = chain.outputs.filter(
+				(output) => Buffer.byteLength(output) > bytes || output.startsWith("[History response cannot fit"),
+			);
+			const rows = found(chain.outputs, /: (needle \w \d)$/gm);
+			const wholePage = rows.length === 12 && Buffer.byteLength(chain.outputs.join("\n")) <= bytes;
+			if (
+				!chain.finished ||
+				oversize.length > 0 ||
+				rows.length !== 12 ||
+				new Set(rows).size !== 12 ||
+				(bytes >= 1_100 && !wholePage)
+			)
+				failures.push(
+					`${bytes} bytes: ${rows.length} rows, ${oversize.length} oversize; urls:\n${chain.urls.join("\n")}`,
+				);
+		}
+		assert.deepEqual(failures, []);
+	});
+
+	it("a multi-line session search that notes its match window stays within each byte budget (#5250)", async () => {
+		const store = new MemorySessionStore();
+		for (let n = 1; n <= 6; n++)
+			await addSession(store, `s${n}`, BASE + n * 60_000, [
+				`needle ${n}a`,
+				"x".repeat(17_000),
+				`needle ${n}b`,
+				"x".repeat(17_000),
+				`needle ${n}c`,
+			]);
+		const failures: string[] = [];
+		for (let bytes = 600; bytes <= 1_000; bytes += 7) {
+			const router = createHistoryRouter({
+				cwd: PROJECT,
+				sessionStore: () => store,
+				workflows: () => undefined,
+				budget: { bytes },
+			});
+			const chain = await follow(
+				async (url) => (await router.search!(url, request("(?s)needle \\d."))) ?? "",
+				"history://sessions",
+				40,
+			);
+			const oversize = chain.outputs.filter(
+				(output) => Buffer.byteLength(output) > bytes || output.startsWith("[History response cannot fit"),
+			);
+			const rows = found(chain.outputs, /: (needle \d\w)$/gm);
+			if (!chain.finished || oversize.length > 0 || rows.length !== 18 || new Set(rows).size !== 18)
+				failures.push(
+					`${bytes} bytes: ${rows.length} rows, ${oversize.length} oversize; urls:\n${chain.urls.join("\n")}`,
+				);
+		}
+		assert.deepEqual(failures, []);
+	});
+
+	it("a session search that cannot fit a whole match row cuts only its text, never the session label (#5250)", async () => {
+		const store = new MemorySessionStore();
+		const id = `long.${"ü😀.".repeat(20)}`;
+		await addSession(store, id, BASE, [`needle one ${"y".repeat(600)}`, "needle two"]);
+		await addSession(store, "s-other", BASE - 60_000, ["needle other"]);
+		const label = `history://sessions/${id}:`;
+		const failures: string[] = [];
+		let cut = 0;
+		for (let bytes = 300; bytes <= 1_400; bytes += 10) {
+			const router = createHistoryRouter({
+				cwd: PROJECT,
+				sessionStore: () => store,
+				workflows: () => undefined,
+				budget: { bytes },
+			});
+			const output = (await router.search!("history://sessions", request("needle"))) ?? "";
+			if (output.startsWith("[History response cannot fit")) continue;
+			const rows = output
+				.split("\n")
+				.filter((line) => line.startsWith("history://sessions/") && !line.includes(":0: ["));
+			for (const row of rows)
+				if (!row.startsWith("history://sessions/s-other:") && !/^:\d+: \S/.test(row.slice(label.length - 1)))
+					failures.push(`${bytes} bytes: ${row}`);
+			if (rows.some((row) => row.startsWith(`${label}1: needle one`) && !row.endsWith("y"))) cut++;
+			if (Buffer.byteLength(output) > bytes) failures.push(`${bytes} bytes: ${Buffer.byteLength(output)} returned`);
+		}
+		assert.deepEqual(failures, []);
+		assert.ok(cut > 0, "some budget should show the long first row cut");
+	});
+
+	it("a history:// search fits its session rows beside the workflow lines and continues both (#5250)", async () => {
+		const store = new MemorySessionStore();
+		for (let n = 1; n <= 3; n++)
+			await addSession(
+				store,
+				`s${n}`,
+				BASE + n * 60_000,
+				Array.from({ length: 6 }, (_, index) => `needle s${n} e${index + 1} ${"x".repeat(30)}`),
+			);
+		const runs = [summary("run-a", BASE)];
+		const workflows: WorkflowRunHistory = {
+			listRuns: async () => runs,
+			listProjectRuns: async () => runs,
+			getRun: async (runId) =>
+				detail(runId, BASE, Array.from({ length: 6 }, (_, i) => `needle run ${i + 1}`).join("\n")),
+		};
+		const failures: string[] = [];
+		for (const bytes of [700, 900, 1_200]) {
+			const router = createHistoryRouter({
+				cwd: PROJECT,
+				sessionStore: () => store,
+				workflows: () => workflows,
+				budget: { bytes },
+			});
+			const output = (await router.search!("history://", request("needle"))) ?? "";
+			if (Buffer.byteLength(output) > bytes || output.startsWith("[History response cannot fit")) {
+				failures.push(`${bytes} bytes: ${Buffer.byteLength(output)}\n${output}`);
+				continue;
+			}
+			const seen = [...output.matchAll(/: (needle s\d e\d)/g)].map((m) => m[1]!);
+			const runSeen = [...output.matchAll(/: summary: (needle run \d)$|: (needle run \d)$/gm)].map(
+				(m) => m[1] ?? m[2]!,
+			);
+			for (const domain of ["sessions", "workflows"]) {
+				const next = new RegExp(
+					`^history://${domain}[^\\n]*continue with (history://${domain}\\S*?)\\]$`,
+					"m",
+				).exec(output)?.[1];
+				const chain = await follow(
+					async (url) => (await router.search!(url, request("needle"))) ?? "",
+					next ?? "",
+					40,
+				);
+				if (next !== undefined) {
+					for (const page of chain.outputs) {
+						if (Buffer.byteLength(page) > bytes) failures.push(`${bytes} bytes: ${domain} page too large`);
+						seen.push(...[...page.matchAll(/: (needle s\d e\d)/g)].map((m) => m[1]!));
+						runSeen.push(
+							...[...page.matchAll(/: summary: (needle run \d)$|: (needle run \d)$/gm)].map(
+								(m) => m[1] ?? m[2]!,
+							),
+						);
+					}
+					if (!chain.finished) failures.push(`${bytes} bytes: ${domain} chain did not finish`);
+				}
+			}
+			const expected = Array.from({ length: 18 }, (_, i) => `needle s${Math.floor(i / 6) + 1} e${(i % 6) + 1}`);
+			if (JSON.stringify([...seen].sort()) !== JSON.stringify([...expected].sort()))
+				failures.push(`${bytes} bytes: sessions ${seen.length}/${new Set(seen).size}`);
+			if (
+				JSON.stringify([...runSeen].sort()) !==
+				JSON.stringify(Array.from({ length: 6 }, (_, i) => `needle run ${i + 1}`))
+			)
+				failures.push(`${bytes} bytes: runs ${runSeen.join(",")}`);
+		}
+		assert.deepEqual(failures, []);
+	});
+
+	it("a history:// search keeps whole session rows and its workflow rows when sessions finish first (#5250)", async () => {
+		const failures: string[] = [];
+		for (const texts of [
+			[`needle last ${"z".repeat(400)}`],
+			Array.from({ length: 3 }, (_, i) => `needle ${i} ${"z".repeat(290)}`),
+		]) {
+			const store = new MemorySessionStore();
+			await addSession(store, "s1", BASE, texts);
+			let sessionsDone = () => {};
+			const sessionsFinished = new Promise<void>((resolve) => {
+				sessionsDone = resolve;
+			});
+			const watched = new Proxy(store, {
+				get(target, key) {
+					if (key === "readEntryRange")
+						return async (...args: Parameters<MemorySessionStore["readEntryRange"]>) => {
+							const page = await target.readEntryRange(...args);
+							if (page.entries.length > 0) setTimeout(sessionsDone, 50);
+							return page;
+						};
+					const value = Reflect.get(target, key, target);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+			const runs = [summary("run-a", BASE)];
+			const workflows: WorkflowRunHistory = {
+				listRuns: async () => runs,
+				listProjectRuns: async () => runs,
+				getRun: async (runId) => {
+					await sessionsFinished;
+					return detail(runId, BASE, "needle run summary");
+				},
+			};
+			const rows = texts.map((text, index) => `history://sessions/s1:${index + 1}: ${text}`);
+			const router = createHistoryRouter({
+				cwd: PROJECT,
+				sessionStore: () => watched,
+				workflows: () => workflows,
+				budget: { bytes: 700 },
+			});
+			const output = (await router.search!("history://", request("needle"))) ?? "";
+			const next = /^history:\/\/sessions[^\n]*continue with (history:\/\/sessions\S*?)\]$/m.exec(output)?.[1];
+			const chain =
+				next === undefined
+					? { outputs: [], finished: true }
+					: await follow(async (url) => (await router.search!(url, request("needle"))) ?? "", next, 10);
+			const shown = [output, ...chain.outputs].flatMap((page) => page.split("\n"));
+			const trail = `${texts.length} rows:\n${[output, ...chain.outputs].join("\n---\n").replaceAll(/z{20,}/g, "z…")}`;
+			if (
+				[output, ...chain.outputs].some((page) => Buffer.byteLength(page) > 700) ||
+				!output.split("\n").some((line) => line.endsWith(": summary: needle run summary")) ||
+				rows.some((row) => shown.filter((line) => line === row).length !== 1) ||
+				!chain.finished ||
+				(texts.length === 1 && next !== undefined)
+			)
+				failures.push(trail);
+		}
+		assert.deepEqual(failures, []);
+	});
+
+	it("a history:// search with a one- or zero-entry budget does not read more entries than it allows (#5250)", async () => {
+		const store = new MemorySessionStore();
+		await addSession(store, "s1", BASE, ["needle in session"]);
+		const failures: string[] = [];
+		for (const rows of [0, 1]) {
+			const calls: string[] = [];
+			const counted = new Proxy(store, {
+				get(target, key) {
+					if (key === "list" || key === "readEntryRange" || key === "readHeader")
+						return (...args: unknown[]) => {
+							calls.push(`sessions.${String(key)}`);
+							return Reflect.apply(Reflect.get(target, key, target), target, args);
+						};
+					const value = Reflect.get(target, key, target);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+			const runs = [summary("run-a", BASE)];
+			const workflows: WorkflowRunHistory = {
+				listRuns: async () => {
+					calls.push("workflows.listRuns");
+					return runs;
+				},
+				listProjectRuns: async () => {
+					calls.push("workflows.listProjectRuns");
+					return runs;
+				},
+				getRun: async (runId) => {
+					calls.push("workflows.getRun");
+					return detail(runId, BASE, "needle in run");
+				},
+			};
+			const router = createHistoryRouter({
+				cwd: PROJECT,
+				sessionStore: () => counted,
+				workflows: () => workflows,
+				budget: { rows },
+			});
+			const output = (await router.search!("history://", request("needle"))) ?? "";
+			const sessionCalls = calls.filter((call) => call.startsWith("sessions.")).length;
+			const workflowCalls = calls.filter((call) => call.startsWith("workflows.")).length;
+			const workflowsSkipped =
+				/^history:\/\/workflows:0: \[workflow runs not searched: the row budget ran out; continue with history:\/\/workflows\]$/m.test(
+					output,
+				);
+			const sessionsSkipped =
+				/^history:\/\/sessions:0: \[sessions not searched: the row budget ran out; continue with history:\/\/sessions\]$/m.test(
+					output,
+				);
+			if (workflowCalls > 0 || !workflowsSkipped || (rows === 0 && (sessionCalls > 0 || !sessionsSkipped)))
+				failures.push(`rows ${rows}: ${calls.join(", ")}\n${output}`);
+			const sessionsNext = /^history:\/\/sessions[^\n]*continue with (history:\/\/sessions\S*?)\]$/m.exec(
+				output,
+			)?.[1];
+			const sessionChain =
+				sessionsNext === undefined
+					? undefined
+					: await follow(async (url) => (await router.search!(url, request("needle"))) ?? "", sessionsNext, 10);
+			if (
+				!/^history:\/\/sessions\/s1:1: needle in session$/m.test(
+					[output, ...(sessionChain?.outputs ?? [])].join("\n"),
+				) ||
+				(rows === 1 && sessionCalls === 0)
+			)
+				failures.push(`rows ${rows}: the session match is not reached\n${output}`);
+			const resumed = (await router.search!("history://workflows", request("needle"))) ?? "";
+			if (!/: summary: needle in run$/m.test(resumed))
+				failures.push(`rows ${rows}: workflows continuation\n${resumed}`);
+		}
+		assert.deepEqual(failures, []);
+	});
+
 	it("a workflow search pinned to a run that is no longer listed says so and searches the runs at its offset from their start (#5250)", async () => {
 		const runs = [summary("run-b", BASE + 2000), summary("run-c", BASE + 1000)];
 		const workflows: WorkflowRunHistory = {

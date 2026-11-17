@@ -48,9 +48,11 @@ import {
 	rangeText,
 	readSessionRanges,
 	readWholeOrOutline,
+	type SearchResume,
 	type SeqCursor,
 	type SeqRange,
 	type SessionPlace,
+	type SessionSearchResult,
 	searchSession,
 	selectRegexEngine,
 	stopText,
@@ -308,12 +310,22 @@ function pageUrl(
 	return `history://${domain}${query ? `?${query}` : ""}${ranges && ranges.length > 0 ? `:${rangeText(ranges)}` : ""}`;
 }
 
-function sessionPinBytes(id: string, target: HistoryTarget): number {
-	const widest = Number.MAX_SAFE_INTEGER;
-	return (
-		lineBytes(` at entry ${widest} of ${widest} in ${sessionUrl(id, target)}`) +
-		lineBytes(`&${new URLSearchParams({ session: id, after: `-${widest}.-${widest}` })}`)
-	);
+function skippedClauses(seq: number | undefined, where = ""): readonly string[] {
+	return seq === undefined
+		? [""]
+		: [
+				`; entry ${seq}${where} not searched: the pattern ran past the time budget on it`,
+				`; entry ${seq}${where} not searched`,
+			];
+}
+
+function linesBytes(lines: readonly string[]): number {
+	return lines.reduce((sum, line) => sum + lineBytes(line), 0);
+}
+
+function fittingLine(make: (clause: string) => string, clauses: readonly string[], room: number): string {
+	const lines = clauses.map(make);
+	return lines.find((line) => lineBytes(line) <= room) ?? lines[0]!;
 }
 
 function runPinBytes(runId: string): number {
@@ -1548,6 +1560,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		budget: HistoryCallBudget,
 		store = requireStore(id),
 		emittedBefore = false,
+		deferCut = false,
 	) {
 		const place = placeOf(id, store, target);
 		return searchSession({
@@ -1561,6 +1574,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			ranges: request.ranges,
 			budget,
 			emittedBefore,
+			deferCut,
 		});
 	}
 
@@ -1569,7 +1583,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		request: InternalSearchRequest,
 		prefilter: LiteralQuery | undefined,
 		budget: HistoryCallBudget,
-	): Promise<string[]> {
+	): Promise<(room: number) => string[]> {
 		if (target.id !== undefined) {
 			const fromSeq = Math.max(1, target.cursor?.first ?? 1);
 			const fromMatchIndex = target.cursor?.second ?? 0;
@@ -1586,12 +1600,13 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 						...(fromLineOffset > 0 ? { lineOffset: fromLineOffset } : {}),
 					});
 					const label = sessionUrl(rawId, target);
-					return [
+					const lines = [
 						charged(
 							budget,
 							`${label}:0: [the time budget ran out waiting for the store; continue with ${sessionUrl(rawId, target, target.cursor ? cursor : undefined, request.ranges)}]`,
 						),
 					];
+					return () => lines;
 				}
 				throw error;
 			}
@@ -1607,7 +1622,10 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			);
 			const label = sessionUrl(id, target);
 			const windowNote = result.windowCut ? [charged(budget, `${label}:0: [${MULTILINE_WINDOW_NOTE}]`)] : [];
-			if (!result.stopped) return [...windowNote, ...result.lines];
+			if (!result.stopped) {
+				const lines = [...windowNote, ...result.lines];
+				return () => lines;
+			}
 			const resume = result.stopped.resume;
 			const coveredEnd = Math.max(
 				result.coveredFromSeq,
@@ -1630,10 +1648,13 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 							.filter((range) => range.start <= range.end);
 			const cursor = formatSearchCursor(resume);
 			const totalText = Number.isFinite(result.lastSeq) && result.lastSeq > 0 ? ` of ${result.lastSeq}` : "";
-			return [
-				charged(
-					budget,
-					`${label}:0: [searched entries ${result.coveredFromSeq}-${coveredEnd}${totalText}; ${stopText(result.stopped.reason)}; continue with ${sessionUrl(id, target, cursor, remainingRanges)}]`,
+			const reason = stopText(result.stopped.reason);
+			return (room) => [
+				fittingLine(
+					(clause) =>
+						`${label}:0: [searched entries ${result.coveredFromSeq}-${coveredEnd}${totalText}; ${reason}${clause}; continue with ${sessionUrl(id, target, cursor, remainingRanges)}]`,
+					skippedClauses(result.skipped),
+					room - linesBytes([...windowNote, ...result.lines]),
 				),
 				...windowNote,
 				...result.lines,
@@ -1651,12 +1672,13 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				pin,
 				target.after,
 			);
-			return [
+			const lines = [
 				charged(
 					budget,
 					`${pageUrl("sessions", target, target.offset)}:0: [searched sessions 0 of ${discovered.stopped.scanned}+; ${stopText(discovered.stopped.reason)} after scanning ${discovered.stopped.scanned} sessions; continue with ${contUrl}]`,
 				),
 			];
+			return () => lines;
 		}
 		const store = requireStore();
 		const candidateKeys: SessionKey[] = [];
@@ -1688,67 +1710,105 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const window = pinned === undefined ? rest : [pinned, ...rest];
 		const positionOf = (index: number): SessionKey | undefined =>
 			index === 0 && pinned !== undefined ? (after ?? candidateKeys[restFrom - 1]) : sessionKey(window[index]!);
-		const requestPins =
-			(target.session === undefined ? 0 : lineBytes(sessionUrl(target.session, target))) +
-			lineBytes(
-				`&${new URLSearchParams({
-					...(target.session === undefined ? {} : { session: target.session }),
-					...(target.after === undefined ? {} : { after: sessionKeyText(target.after, target.session) }),
-				})}`,
-			);
-		budget.spend(
-			Math.max(0, Math.max(0, ...window.map((summary) => sessionPinBytes(summary.id, target))) - requestPins),
-		);
 		const out: string[] = [];
 		const notes: string[] = pinnedGone
 			? [
-					charged(
-						budget,
-						`${pageUrl("sessions", scope, scope.offset)}:0: [session ${target.session} is no longer listed, so the search could not resume in it; it continued with the sessions after it]`,
-					),
+					`${pageUrl("sessions", scope, scope.offset)}:0: [session ${target.session} is no longer listed, so the search could not resume in it; it continued with the sessions after it]`,
 				]
 			: [];
+		for (const note of notes) budget.spend(lineBytes(note));
+		budget.releaseReserve();
 		let windowCut = false;
 		let unreadable = 0;
-		const finished = (lines: readonly string[]) => [
-			...lines,
-			...notes,
-			...(windowCut
-				? [charged(budget, `${pageUrl("sessions", scope, scope.offset)}:0: [${MULTILINE_WINDOW_NOTE}]`)]
-				: []),
-			...out,
-		];
-		for (const [index, summary] of window.entries()) {
-			const spent = budget.spent();
-			if (spent && index > 0)
-				return finished([
-					charged(
-						budget,
+		const searched: {
+			readonly index: number;
+			readonly summary: SessionSummary;
+			readonly start: number;
+			readonly unreadable: number;
+			readonly result?: SessionSearchResult;
+			readonly complete: boolean;
+		}[] = [];
+		const totalText = (lastSeq: number) => (Number.isFinite(lastSeq) && lastSeq > 0 ? ` of ${lastSeq}` : "");
+		const stopFooter = (
+			index: number,
+			id: string,
+			next: SearchResume,
+			lastSeq: number,
+			reason: BudgetStop,
+			unreadableBefore: number,
+			clause = "",
+		) =>
+			stoppedCoverage(
+				"sessions",
+				"sessions",
+				scope,
+				candidates.length,
+				index + 1,
+				unreadableBefore,
+				reason,
+				pageUrl(
+					"sessions",
+					scope,
+					scope.offset + index,
+					formatSearchCursor(next),
+					request.ranges,
+					id,
+					positionOf(index),
+				),
+				` at entry ${next.seq}${totalText(lastSeq)} in ${sessionUrl(id, target)}${clause}`,
+			);
+		const afterFooter = (index: number, reason: BudgetStop, unreadableAfter: number): string[] =>
+			index + 1 >= window.length
+				? coverage(
+						"sessions",
+						scope,
+						candidates.length,
+						window.length,
+						unreadableAfter,
+						request.ranges,
+						undefined,
+						window.length === 0 ? after : positionOf(window.length - 1),
+					)
+				: [
 						stoppedCoverage(
 							"sessions",
 							"sessions",
 							scope,
 							candidates.length,
-							index,
-							unreadable,
-							spent,
+							index + 1,
+							unreadableAfter,
+							reason,
 							pageUrl(
 								"sessions",
 								scope,
-								scope.offset + index,
+								scope.offset + index + 1,
 								undefined,
 								request.ranges,
 								undefined,
-								positionOf(index - 1),
+								positionOf(index),
 							),
 							"",
 						),
-					),
-				]);
+					];
+		const pastEnd = (next: SearchResume, lastSeq: number) =>
+			(next.lineOffset ?? 0) === 0 &&
+			next.matchIndex === 0 &&
+			(next.seq > lastSeq ||
+				(request.ranges !== undefined && !mergeSeqRanges(request.ranges).some((range) => range.end >= next.seq)));
+		let ending: (room: number) => string[] = () => afterFooter(window.length - 1, "byte", unreadable);
+		for (const [index, summary] of window.entries()) {
+			const spent = budget.spent();
+			if (spent && index > 0) {
+				const unreadableBefore = unreadable;
+				ending = () => afterFooter(index - 1, spent, unreadableBefore);
+				break;
+			}
 			const resumesHere = index === 0 && resuming && !pinnedGone;
 			const fromSeq = resumesHere ? target.cursor!.first : 1;
 			const fromMatchIndex = resumesHere ? target.cursor!.second : 0;
 			const fromLineOffset = resumesHere ? target.cursor!.third : 0;
+			const start = out.length;
+			const unreadableBefore = unreadable;
 			try {
 				const result = await searchOneSession(
 					summary.id,
@@ -1761,36 +1821,35 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					budget,
 					store,
 					out.length > 0,
+					true,
 				);
 				out.push(...result.lines);
 				windowCut ||= result.windowCut;
-				if (result.stopped) {
-					const cursor = formatSearchCursor(result.stopped.resume);
-					const totalText = Number.isFinite(result.lastSeq) && result.lastSeq > 0 ? ` of ${result.lastSeq}` : "";
-					return finished([
-						charged(
-							budget,
-							stoppedCoverage(
-								"sessions",
-								"sessions",
-								scope,
-								candidates.length,
-								index + 1,
-								unreadable,
-								result.stopped.reason,
-								pageUrl(
-									"sessions",
-									scope,
-									scope.offset + index,
-									cursor,
-									request.ranges,
+				const stopped = result.stopped;
+				const complete =
+					stopped === undefined ||
+					(result.skipped === undefined &&
+						result.checkpoints.at(-1)?.lines === result.lines.length &&
+						pastEnd(stopped.resume, result.lastSeq));
+				searched.push({ index, summary, start, unreadable: unreadableBefore, result, complete });
+				if (stopped && !complete) {
+					ending = (room) => [
+						fittingLine(
+							(clause) =>
+								stopFooter(
+									index,
 									summary.id,
-									positionOf(index),
+									stopped.resume,
+									result.lastSeq,
+									stopped.reason,
+									unreadableBefore,
+									clause,
 								),
-								` at entry ${result.stopped.resume.seq}${totalText} in ${sessionUrl(summary.id, target)}`,
-							),
+							skippedClauses(result.skipped),
+							room - linesBytes(fixedLines()) - linesBytes(out),
 						),
-					]);
+					];
+					break;
 				}
 			} catch (error) {
 				if (isHistoryDeadlineError(error)) {
@@ -1799,47 +1858,83 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 						matchIndex: fromMatchIndex,
 						...(fromLineOffset > 0 ? { lineOffset: fromLineOffset } : {}),
 					});
-					return finished([
-						charged(
-							budget,
-							stoppedCoverage(
-								"sessions",
+					ending = () => [
+						stoppedCoverage(
+							"sessions",
+							"sessions",
+							scope,
+							candidates.length,
+							index + 1,
+							unreadableBefore,
+							"time",
+							pageUrl(
 								"sessions",
 								scope,
-								candidates.length,
-								index + 1,
-								unreadable,
-								"time",
-								pageUrl(
-									"sessions",
-									scope,
-									scope.offset + index,
-									cursor,
-									request.ranges,
-									summary.id,
-									positionOf(index),
-								),
-								` in ${sessionUrl(summary.id, target)}`,
+								scope.offset + index,
+								cursor,
+								request.ranges,
+								summary.id,
+								positionOf(index),
 							),
+							` in ${sessionUrl(summary.id, target)}`,
 						),
-					]);
+					];
+					break;
 				}
 				if (budget.signal?.aborted) throw error;
 				unreadable++;
+				searched.push({ index, summary, start, unreadable: unreadableBefore, complete: true });
 			}
+			ending = () => afterFooter(window.length - 1, "byte", unreadable);
 		}
-		return finished(
-			coverage(
-				"sessions",
-				scope,
-				candidates.length,
-				window.length,
-				unreadable,
-				request.ranges,
-				undefined,
-				window.length === 0 ? after : positionOf(window.length - 1),
-			).map((line) => charged(budget, line)),
-		);
+		function fixedLines(): string[] {
+			return [...notes, ...(windowCut ? [windowNoteLine] : [])];
+		}
+		const windowNoteLine = `${pageUrl("sessions", scope, scope.offset)}:0: [${MULTILINE_WINDOW_NOTE}]`;
+		return (room: number): string[] => {
+			const page = (footer: readonly string[], rows: readonly string[]) => [...footer, ...fixedLines(), ...rows];
+			const fits = (lines: readonly string[]) => linesBytes(lines) - 1 <= room;
+			const natural = page(ending(room), out);
+			if (fits(natural)) return natural;
+			for (const session of [...searched].reverse()) {
+				const result = session.result;
+				const unreadableAfter = session.unreadable + (result === undefined ? 1 : 0);
+				if (session.complete) {
+					const complete = page(
+						afterFooter(session.index, "byte", unreadableAfter),
+						out.slice(0, session.start + (result?.lines.length ?? 0)),
+					);
+					if (fits(complete)) return complete;
+				}
+				for (const checkpoint of [...(result?.checkpoints ?? [])].reverse()) {
+					const trimmed = page(
+						[
+							stopFooter(
+								session.index,
+								session.summary.id,
+								checkpoint.next,
+								result!.lastSeq,
+								"byte",
+								session.unreadable,
+							),
+						],
+						out.slice(0, session.start + checkpoint.lines),
+					);
+					if (fits(trimmed)) return trimmed;
+				}
+			}
+			const first = searched.find((session) => (session.result?.checkpoints.length ?? 0) > 0);
+			const checkpoint = first?.result?.checkpoints[0];
+			if (first === undefined || checkpoint === undefined) return natural;
+			const footer = [
+				stopFooter(first.index, first.summary.id, checkpoint.next, first.result!.lastSeq, "byte", first.unreadable),
+			];
+			const row = out[first.start + checkpoint.match]!;
+			const textStart = row.indexOf(": ", sessionUrl(first.summary.id, target).length) + 2;
+			const roomForRow = room - linesBytes([...footer, ...fixedLines()]);
+			if (textStart < 2 || Buffer.byteLength(row.slice(0, textStart + 1), "utf8") > roomForRow) return natural;
+			return page(footer, [cutTextToUtf8Bytes(row, roomForRow)]);
+		};
 	}
 
 	/**
@@ -1859,7 +1954,11 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 	): Promise<{
 		readonly lines: string[];
 		readonly unreadable: number;
-		readonly stopped?: { readonly reason: BudgetStop; readonly cursor: string };
+		readonly stopped?: {
+			readonly reason: BudgetStop;
+			readonly cursor: string;
+			readonly skipped?: readonly string[];
+		};
 	}> {
 		if (firstRecord) budget.holdProgressFloor();
 		const detail = await budget.race(requireWorkflows().getRun(runId));
@@ -1929,7 +2028,11 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					return {
 						lines: withNote(lines),
 						unreadable,
-						stopped: { reason: result.stopped.reason, cursor },
+						stopped: {
+							reason: result.stopped.reason,
+							cursor,
+							skipped: skippedClauses(result.skipped, ` in history://sessions/${stage.sessionId}`),
+						},
 					};
 				}
 			} catch (error) {
@@ -1965,20 +2068,24 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		if (target.id !== undefined) {
 			const runId = await authorizedRunId(target.id, budget);
 			const { lines, unreadable, stopped } = await searchRun(runId, request, prefilter, start, budget);
-			return [
-				...(unreadable > 0
+			const unreadableNotes =
+				unreadable > 0
 					? [charged(budget, `history://workflows/${runId}:0: [${unreadable} stage transcripts unreadable]`)]
-					: []),
-				...(stopped
-					? [
-							charged(
-								budget,
-								`history://workflows/${runId}:0: [${stopText(stopped.reason)}; continue with history://workflows/${runId}?cursor=${stopped.cursor}${request.ranges ? `:${rangeText(request.ranges)}` : ""}]`,
+					: [];
+			const stopLines = stopped
+				? [
+						charged(
+							budget,
+							fittingLine(
+								(clause) =>
+									`history://workflows/${runId}:0: [${stopText(stopped.reason)}${clause}; continue with history://workflows/${runId}?cursor=${stopped.cursor}${request.ranges ? `:${rangeText(request.ranges)}` : ""}]`,
+								stopped.skipped ?? [""],
+								limits.bytes - linesBytes([...unreadableNotes, ...lines]),
 							),
-						]
-					: []),
-				...lines,
-			];
+						),
+					]
+				: [];
+			return [...unreadableNotes, ...stopLines, ...lines];
 		}
 		const runs = await recentRuns(budget);
 		const pinnedAt = target.run === undefined ? -1 : runs.findIndex((run) => run.runId === target.run);
@@ -2005,21 +2112,27 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			reason: BudgetStop,
 			inRun: boolean,
 			cursor?: string,
+			skipped: readonly string[] = [""],
 		): string[] => {
 			const run = window[index]!;
 			return [
 				charged(
 					budget,
-					stoppedCoverage(
-						"workflows",
-						"workflow runs",
-						scope,
-						runs.length,
-						searched,
-						unreadable,
-						reason,
-						pageUrl("workflows", scope, scope.offset + index, cursor, request.ranges, run.runId),
-						inRun ? ` in history://workflows/${run.runId}` : "",
+					fittingLine(
+						(clause) =>
+							stoppedCoverage(
+								"workflows",
+								"workflow runs",
+								scope,
+								runs.length,
+								searched,
+								unreadable,
+								reason,
+								pageUrl("workflows", scope, scope.offset + index, cursor, request.ranges, run.runId),
+								`${inRun ? ` in history://workflows/${run.runId}` : ""}${clause}`,
+							),
+						skipped,
+						limits.bytes - linesBytes([...notes, ...out]),
 					),
 				),
 				...notes,
@@ -2041,7 +2154,15 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				);
 				out.push(...found.lines);
 				unreadable += found.unreadable;
-				if (found.stopped) return stoppedAt(index, index + 1, found.stopped.reason, true, found.stopped.cursor);
+				if (found.stopped)
+					return stoppedAt(
+						index,
+						index + 1,
+						found.stopped.reason,
+						true,
+						found.stopped.cursor,
+						found.stopped.skipped,
+					);
 			} catch (error) {
 				if (budget.signal?.aborted) throw error;
 				if (isHistoryDeadlineError(error))
@@ -2113,7 +2234,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			const prefilter = multiline ? undefined : indexLiterals(request.pattern, request.ignoreCase, request.literal);
 			try {
 				if (target.domain === "sessions")
-					return bounded((await searchSessions(target, request, prefilter, budget)).join("\n"));
+					return bounded((await searchSessions(target, request, prefilter, budget))(limits.bytes).join("\n"));
 				if (target.domain === "workflows")
 					return bounded((await searchWorkflows(target, request, prefilter, budget)).join("\n"));
 			} catch (error) {
@@ -2126,11 +2247,40 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				}
 				throw error;
 			}
+			const domainNoteBytes = noteBytes(url, target, request.ranges, 2, multiline);
+			const sessionRows = Math.ceil(limits.rows / 2);
+			const workflowRows = limits.rows - sessionRows;
+			const workflowBytes = workflowRows > 0 ? Math.floor(limits.bytes / 2) : 0;
+			const notSearched = (domain: Domain, label: string): string[] => [
+				`history://${domain}:0: [${label} not searched: ${stopText("row")}; continue with ${pageUrl(domain, target, target.offset, target.cursor === undefined ? undefined : cursorText(target.cursor), request.ranges)}]`,
+			];
 			const [sessions, workflows] = await Promise.allSettled([
-				searchSessions(target, request, prefilter, budget),
-				searchWorkflows(target, request, prefilter, budget),
+				sessionRows > 0
+					? searchSessions(
+							target,
+							request,
+							prefilter,
+							new HistoryCallBudget(
+								{ ...limits, bytes: limits.bytes - workflowBytes, rows: sessionRows },
+								request.signal,
+								domainNoteBytes,
+							),
+						)
+					: Promise.resolve(() => notSearched("sessions", "sessions")),
+				workflowRows > 0
+					? searchWorkflows(
+							target,
+							request,
+							prefilter,
+							new HistoryCallBudget(
+								{ ...limits, bytes: workflowBytes, rows: workflowRows },
+								request.signal,
+								domainNoteBytes,
+							),
+						)
+					: Promise.resolve(notSearched("workflows", "workflow runs")),
 			]);
-			budget.signal?.throwIfAborted();
+			request.signal?.throwIfAborted();
 			if (
 				sessions.status === "rejected" &&
 				workflows.status === "rejected" &&
@@ -2139,23 +2289,25 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			)
 				throw sessions.reason;
 			// Line 0 carries notes about the search itself, so a source that failed is named even beside matches.
-			const results = (domain: Domain, label: string, settled: PromiseSettledResult<string[]>): string[] => {
-				if (settled.status === "fulfilled") return settled.value;
-				if (isHistoryDeadlineError(settled.reason)) {
+			const results = (domain: Domain, label: string, settled: PromiseSettledResult<unknown>): string[] => {
+				if (isHistoryDeadlineError(settled.status === "rejected" ? settled.reason : undefined)) {
 					const cursor = target.cursor === undefined ? undefined : cursorText(target.cursor);
 					return [
 						`history://${domain}:0: [${label} not searched: ${stopText("time")} waiting for the store; continue with ${pageUrl(domain, target, target.offset, cursor, request.ranges)}]`,
 					];
 				}
+				const reason = settled.status === "rejected" ? settled.reason : undefined;
 				return [
-					`history://${domain}:0: [${label} not searched: ${settled.reason instanceof Error ? settled.reason.message : String(settled.reason)}]`,
+					`history://${domain}:0: [${label} not searched: ${reason instanceof Error ? reason.message : String(reason)}]`,
 				];
 			};
-			return bounded(
-				[...results("sessions", "sessions", sessions), ...results("workflows", "workflow runs", workflows)].join(
-					"\n",
-				),
-			);
+			const workflowLines =
+				workflows.status === "fulfilled" ? workflows.value : results("workflows", "workflow runs", workflows);
+			const sessionLines =
+				sessions.status === "fulfilled"
+					? sessions.value(limits.bytes - linesBytes(workflowLines))
+					: results("sessions", "sessions", sessions);
+			return bounded([...sessionLines, ...workflowLines].join("\n"));
 		},
 	};
 }

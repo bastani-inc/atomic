@@ -79,6 +79,7 @@ export function yieldTurn(): Promise<void> {
 
 export class HistoryCallBudget {
 	readonly signal: AbortSignal | undefined;
+	private reservedBytes: number;
 	private readonly callSignal: AbortSignal;
 	private readonly timeMs: number;
 	private readonly deadline: number;
@@ -97,6 +98,7 @@ export class HistoryCallBudget {
 			budget.bytes < NOTE_RESERVE_BYTES ? Math.min(noteBytes, Math.floor(budget.bytes / 2)) : 0,
 		);
 		this.bytesLeft = Math.max(1, budget.bytes - reserve);
+		this.reservedBytes = budget.bytes - this.bytesLeft;
 		this.rowsLeft = budget.rows;
 		signal?.throwIfAborted();
 	}
@@ -182,6 +184,11 @@ export class HistoryCallBudget {
 
 	takeRows(rows: number): void {
 		this.rowsLeft -= rows;
+	}
+
+	releaseReserve(): void {
+		this.bytesLeft += this.reservedBytes;
+		this.reservedBytes = 0;
 	}
 
 	bytesAvailable(): number {
@@ -1266,12 +1273,20 @@ export function matchMultilineNative(
 	return spans;
 }
 
+export interface SearchCheckpoint {
+	readonly lines: number;
+	readonly match: number;
+	readonly next: SearchResume;
+}
+
 export interface SessionSearchResult {
 	readonly lines: string[];
+	readonly checkpoints: readonly SearchCheckpoint[];
 	readonly lastSeq: number;
 	readonly coveredFromSeq: number;
 	readonly coveredThroughSeq: number;
 	readonly windowCut: boolean;
+	readonly skipped?: number;
 	readonly stopped?: { readonly reason: BudgetStop; readonly resume: SearchResume };
 }
 
@@ -1286,6 +1301,7 @@ export interface SessionSearchRequest {
 	readonly ranges: readonly SeqRange[] | undefined;
 	readonly budget: HistoryCallBudget;
 	readonly emittedBefore?: boolean;
+	readonly deferCut?: boolean;
 }
 
 interface EntryMatchUnit {
@@ -1328,6 +1344,8 @@ class SessionSearcher {
 	private coveredThroughSeq = 0;
 	private lastEmitted = { seq: 0, line: -1 };
 	private emittedAny: boolean;
+	private skipped: number | undefined;
+	private readonly checkpoints: SearchCheckpoint[] = [];
 	private windowCut = false;
 	private windowRowsLeft = WINDOW_MAX_SEQS + 2 * CONTEXT_SPAN_SEQS;
 
@@ -1572,9 +1590,7 @@ class SessionSearcher {
 
 	private timeoutOnEntry(seq: number, completedMatches = 0): SearchStep {
 		if (!this.emittedAny && seq === this.coveredFromSeq) {
-			this.lines.push(
-				`${this.search.label}-0- [entry ${seq} not searched: the pattern ran past the time budget on it]`,
-			);
+			this.skipped = seq;
 			this.emittedAny = true;
 			this.coveredThroughSeq = seq;
 			return { stop: { reason: "time", resume: { seq: seq + 1, matchIndex: 0 } } };
@@ -2049,6 +2065,12 @@ class SessionSearcher {
 			matchIndex: unitIndex,
 			...lineOffsetPart,
 		});
+		const afterUnit = (unitIndex: number): SearchResume =>
+			unitIndex + 1 < units.length
+				? resumeAtUnit(unitIndex + 1)
+				: sliceContext?.nextSliceStart !== undefined
+					? { seq, matchIndex: 0, lineOffset: sliceContext.nextSliceStart }
+					: { seq: seq + 1, matchIndex: 0 };
 		const matchStartLinesInEntry = new Set(units.slice(skipUnits).map((u) => u.startLine));
 
 		for (let unitIdx = skipUnits; unitIdx < units.length; unitIdx++) {
@@ -2069,11 +2091,13 @@ class SessionSearcher {
 			const totalBytes = allRows.reduce((sum, r) => sum + lineBytes(r.text), 0);
 
 			if (budget.fits(totalBytes + noteReserve)) {
+				const match = this.lines.length + beforeRows.length;
 				for (const r of allRows) {
 					this.lines.push(r.text);
 					budget.spend(lineBytes(r.text));
 					this.advanceWatermark(r.seq, r.line);
 				}
+				this.checkpoints.push({ lines: this.lines.length, match, next: afterUnit(unitIdx) });
 				this.shown++;
 				this.emittedAny = true;
 				continue;
@@ -2081,6 +2105,7 @@ class SessionSearcher {
 
 			const matchBytes = lineBytes(matchRow);
 			if (budget.fits(matchBytes + noteReserve)) {
+				const match = this.lines.length;
 				this.lines.push(matchRow);
 				budget.spend(matchBytes);
 				this.advanceWatermark(seq, unit.startLine);
@@ -2090,24 +2115,24 @@ class SessionSearcher {
 					budget.spend(lineBytes(r.text));
 					this.advanceWatermark(r.seq, r.line);
 				}
+				this.checkpoints.push({ lines: this.lines.length, match, next: afterUnit(unitIdx) });
 				this.shown++;
 				this.emittedAny = true;
 				continue;
 			}
 
 			if (!this.emittedAny) {
-				const cut = cutTextToUtf8Bytes(matchRow, Math.max(32, budget.bytesAvailable()));
+				const cut = this.search.deferCut
+					? matchRow
+					: cutTextToUtf8Bytes(matchRow, Math.max(32, budget.bytesAvailable()));
+				const match = this.lines.length;
 				this.lines.push(cut);
 				budget.spend(lineBytes(cut));
 				this.advanceWatermark(seq, unit.startLine);
+				const nextResume = afterUnit(unitIdx);
+				this.checkpoints.push({ lines: this.lines.length, match, next: nextResume });
 				this.shown++;
 				this.emittedAny = true;
-				const nextResume: SearchResume =
-					unitIdx + 1 < units.length
-						? resumeAtUnit(unitIdx + 1)
-						: sliceContext?.nextSliceStart !== undefined
-							? { seq, matchIndex: 0, lineOffset: sliceContext.nextSliceStart }
-							: { seq: seq + 1, matchIndex: 0 };
 				return { reason: "byte", resume: nextResume };
 			}
 
@@ -2257,10 +2282,12 @@ class SessionSearcher {
 		}
 		return {
 			lines: this.lines,
+			checkpoints: this.checkpoints,
 			lastSeq: this.lastSeq,
 			coveredFromSeq: this.coveredFromSeq,
 			coveredThroughSeq: Math.max(this.coveredFromSeq, this.coveredThroughSeq),
 			windowCut: this.windowCut,
+			...(this.skipped === undefined ? {} : { skipped: this.skipped }),
 			...(stopped ? { stopped } : {}),
 		};
 	}
