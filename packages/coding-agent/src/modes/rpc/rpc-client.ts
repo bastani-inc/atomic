@@ -103,6 +103,8 @@ export class RpcClient extends RpcClientApi {
 	private stderr = "";
 	private exitError: Error | null = null;
 	private engineMonitor: InteractiveEngineMonitor | undefined;
+	/** The monitor of a start still writing its bootstrap, so a wait begun as it starts waits for its engine. */
+	private startingMonitor: Promise<InteractiveEngineMonitor | undefined> | undefined;
 	private eventBuffer: RpcEventBuffer | undefined;
 	private stdinWriter: QueuedWriter | undefined;
 	private generation = 0;
@@ -143,19 +145,31 @@ export class RpcClient extends RpcClientApi {
 		}
 
 		const startRevision = restartPermit ?? this.restartRevision;
-		const preparedBootstrap = this.options.interactiveEngine
-			? await prepareRpcClientBootstrap(this.options.interactiveEngine.apiKey)
-			: undefined;
-		if (this.stopPromise) {
-			await this.stopPromise.catch(() => {});
-		}
-		if (this.restartRevision !== startRevision) {
-			await removeOwnedInteractiveEngineBootstrapAsync(preparedBootstrap?.bootstrap);
-			throw rpcTransportError(restartPermit !== undefined ? RESTART_CANCELLED_MESSAGE : "Agent process stopped");
-		}
-		if (this.process) {
-			await removeOwnedInteractiveEngineBootstrapAsync(preparedBootstrap?.bootstrap);
-			throw new Error("Client already started");
+		const monitorReady = Promise.withResolvers<InteractiveEngineMonitor | undefined>();
+		this.startingMonitor = monitorReady.promise;
+		const settleStartingMonitor = (monitor: InteractiveEngineMonitor | undefined): void => {
+			monitorReady.resolve(monitor);
+			if (this.startingMonitor === monitorReady.promise) this.startingMonitor = undefined;
+		};
+		let preparedBootstrap: Awaited<ReturnType<typeof prepareRpcClientBootstrap>> | undefined;
+		try {
+			preparedBootstrap = this.options.interactiveEngine
+				? await prepareRpcClientBootstrap(this.options.interactiveEngine.apiKey)
+				: undefined;
+			if (this.stopPromise) {
+				await this.stopPromise.catch(() => {});
+			}
+			if (this.restartRevision !== startRevision) {
+				await removeOwnedInteractiveEngineBootstrapAsync(preparedBootstrap?.bootstrap);
+				throw rpcTransportError(restartPermit !== undefined ? RESTART_CANCELLED_MESSAGE : "Agent process stopped");
+			}
+			if (this.process) {
+				await removeOwnedInteractiveEngineBootstrapAsync(preparedBootstrap?.bootstrap);
+				throw new Error("Client already started");
+			}
+		} catch (error) {
+			settleStartingMonitor(undefined);
+			throw error;
 		}
 
 		const generation = ++this.generation;
@@ -169,6 +183,7 @@ export class RpcClient extends RpcClientApi {
 				)
 			: undefined;
 		this.eventBuffer = this.engineMonitor ? new RpcEventBuffer((event) => this.emitEvent(event)) : undefined;
+		settleStartingMonitor(this.engineMonitor);
 		const childProcess = spawnRpcClientProcess({
 			cliPath,
 			cliArgs: args,
@@ -423,13 +438,20 @@ export class RpcClient extends RpcClientApi {
 		this.bestEffort(writer.write(frame), `engine command ${command.type}`);
 	}
 	waitForInteractiveEngineBound(): Promise<void> {
-		return this.engineMonitor?.waitUntilBound() ?? Promise.resolve();
+		return this.whenEngineMonitor((monitor) => monitor.waitUntilBound());
 	}
 	waitForInteractiveEngineProjectTrust(): Promise<void> {
-		return this.engineMonitor?.waitUntilProjectTrustSettled() ?? Promise.resolve();
+		return this.whenEngineMonitor((monitor) => monitor.waitUntilProjectTrustSettled());
 	}
 	waitForInteractiveEngineResources(): Promise<void> {
-		return this.engineMonitor?.waitUntilResourcesReady() ?? Promise.resolve();
+		return this.whenEngineMonitor((monitor) => monitor.waitUntilResourcesReady());
+	}
+	/** Waits on the engine of a start in progress, or else of the running engine; resolves when there is none. */
+	private whenEngineMonitor(wait: (monitor: InteractiveEngineMonitor) => Promise<void>): Promise<void> {
+		const starting = this.startingMonitor;
+		if (starting !== undefined)
+			return starting.then((monitor) => (monitor === undefined ? undefined : wait(monitor)));
+		return this.engineMonitor === undefined ? Promise.resolve() : wait(this.engineMonitor);
 	}
 	getEnginePid(): number | undefined {
 		return this.enginePid;
