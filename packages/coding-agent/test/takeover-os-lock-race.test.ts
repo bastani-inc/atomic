@@ -414,7 +414,7 @@ describe("takeovers under an OS advisory lock (#5193)", () => {
 			assert.equal(existsSync(violations) ? readFileSync(violations, "utf8") : "", "", "never two holders at once");
 			const entered = existsSync(entries) ? readFileSync(entries, "utf8").length : 0;
 			assert.ok(entered >= 20, `the mutex changed hands ${entered} times across ${kills} kills`);
-			const { takeTakeoverMutex } = await import("../src/core/lock-takeover.ts");
+			const { takeTakeoverMutex } = await import("../src/core/lock-takeover.js");
 			const mutex = takeTakeoverMutex(lockPath, 5_000);
 			assert.ok(mutex, "no killed holder keeps the mutex");
 			mutex.release();

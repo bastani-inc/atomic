@@ -1,5 +1,6 @@
 import * as crypto from "node:crypto";
 import type { Component, TUI } from "@bastani/atomic-tui";
+import { taskPromptHost } from "../../core/extensions/held-prompts.ts";
 import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
@@ -116,7 +117,7 @@ export function createRpcExtensionUIContext({
 			notifyType: "warning",
 		});
 	};
-	return {
+	const ui: ExtensionUIContext = {
 		select: (title, options, opts) =>
 			createDialogPromise({
 				output,
@@ -388,4 +389,5 @@ export function createRpcExtensionUIContext({
 			};
 		},
 	};
+	return customUi ? taskPromptHost(ui) : ui;
 }
