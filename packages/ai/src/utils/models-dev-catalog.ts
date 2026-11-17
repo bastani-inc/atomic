@@ -701,6 +701,8 @@ export function isOpenAiGpt6ModelId(modelId: string): boolean {
 	);
 }
 
+const OPENAI_GPT62_MODEL_IDS = new Set(["gpt-6.2-astra", "gpt-6.2-sol"]);
+
 // GPT-6 models whose API rejects reasoning.effort "none", so `off` is unavailable.
 // https://developers.openai.com/api/docs/models/gpt-6.2-sol
 const OPENAI_GPT6_NO_NONE_EFFORT_MODEL_IDS = new Set(["gpt-6.1-sol", "gpt-6.2-astra", "gpt-6.2-sol"]);
@@ -1431,7 +1433,13 @@ export function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.provider === "groq" && model.id === "qwen/qwen3.6-27b") {
 		mergeThinkingLevelMap(model, { minimal: null, low: null, medium: null, high: "default" });
 	}
-	if (model.provider === "openai-codex" && supportsOpenAiXhigh(model.id) && !isOpenAiGpt6AstraModelId(model.id)) {
+	// Codex's `minimal` UI alias sends `low`. GPT-6 Astra and GPT-6.2 list exactly `low` through `max` in Codex's catalog.
+	if (
+		model.provider === "openai-codex" &&
+		supportsOpenAiXhigh(model.id) &&
+		!isOpenAiGpt6AstraModelId(model.id) &&
+		!OPENAI_GPT62_MODEL_IDS.has(model.id)
+	) {
 		mergeThinkingLevelMap(model, { minimal: "low" });
 	}
 	if (

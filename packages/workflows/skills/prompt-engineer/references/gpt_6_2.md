@@ -84,7 +84,7 @@ If the interface needs a particular look, name the imagery and typography, inclu
 Starting with GPT-6.2, the API drops reasoning items when it detects changes to earlier conversation history, a model downgrade, or a change of end user or organization. Without them, quality can decline and the model may repeat earlier work. Edits to the prefix also cut prompt-cache reuse from the changed point onward.
 
 - Append new or changed instructions as a new message instead of editing an earlier system or developer message.
-- Keep tool definitions and their order stable; add tools by appending rather than replacing the list.
+- Leave the request's `tools` parameter and the order of its definitions unchanged. To add tools mid-conversation, append an `additional_tools` input item with the `developer` role and a `tools` array, and replay it at its original position on later requests; to narrow which tools a turn may call, use `tool_choice` with `allowed_tools`. Changing the `tools` list itself is a prefix change. See OpenAI's [keep the prefix unchanged](https://developers.openai.com/api/docs/guides/keep-prefix-unchanged) table.
 - Change reasoning effort or output format mid-conversation through the API's configuration updates, not by editing the original request.
 - Shorten long tool output before it first reaches the model rather than truncating it afterwards.
 

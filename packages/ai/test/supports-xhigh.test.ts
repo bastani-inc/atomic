@@ -95,17 +95,18 @@ describe("getSupportedThinkingLevels", () => {
 		}
 	});
 
-	// OpenAI and Codex reject reasoning.effort "none" for GPT-6.1 Sol and GPT-6.2.
+	// OpenAI and Codex reject reasoning.effort "none" for GPT-6.1 Sol and GPT-6.2. Codex keeps its `minimal` UI alias,
+	// which sends `low`, for GPT-6.1 Sol only; GPT-6.2, like GPT-6 Astra, offers exactly `low` through `max`.
 	it.each([
-		["gpt-6.1-sol", 0.1],
-		["gpt-6.2-astra", 0.4],
-		["gpt-6.2-sol", 0.1],
-	] as const)("supports %s efforts without sending none", (modelId, cacheRead) => {
+		["gpt-6.1-sol", 0.1, true],
+		["gpt-6.2-astra", 0.4, false],
+		["gpt-6.2-sol", 0.1, false],
+	] as const)("supports %s efforts without sending none", (modelId, cacheRead, codexMinimalAlias) => {
 		for (const provider of ["openai", "azure", "openai-codex"] as const) {
 			const model = getModel(provider, modelId);
 			expect(model).toBeDefined();
 			expect(getSupportedThinkingLevels(model!)).toEqual(
-				provider === "openai-codex"
+				provider === "openai-codex" && codexMinimalAlias
 					? ["minimal", "low", "medium", "high", "xhigh", "max"]
 					: ["low", "medium", "high", "xhigh", "max"],
 			);

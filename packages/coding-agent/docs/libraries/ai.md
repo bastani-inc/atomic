@@ -1079,7 +1079,7 @@ for (const block of response.content) {
 
 | Model | Providers | Levels | `off` | `minimal` |
 | --- | --- | --- | --- | --- |
-| GPT-6.2 Astra, GPT-6.2 Sol | OpenAI, Azure and Codex Responses | `low`, `medium`, `high`, `xhigh`, `max` | No | Codex UI alias that sends `low` |
+| GPT-6.2 Astra, GPT-6.2 Sol | OpenAI, Azure and Codex Responses | `low`, `medium`, `high`, `xhigh`, `max` | No | No |
 | GPT-6.1 Sol | OpenAI, Azure and Codex Responses | `low`, `medium`, `high`, `xhigh`, `max` | No | Codex UI alias that sends `low` |
 | GPT-6.1 Terra | OpenAI, Azure and Codex Responses | `off`, `low`, `medium`, `high`, `xhigh`, `max` | Sends reasoning effort `none` | Codex UI alias that sends `low` |
 
