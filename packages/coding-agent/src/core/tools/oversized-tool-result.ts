@@ -9,7 +9,7 @@ import type { ImageContent, TextContent } from "@bastani/atomic-ai/compat";
 import { getErrnoCode } from "./errno.ts";
 import { capPersistedText } from "./persisted-output-file.ts";
 import {
-	ensureTempDir,
+	ensureTempDirAsync,
 	resolveSessionTempDirPath,
 	SESSION_TEMP_DIR_MODE,
 	SESSION_TEMP_FILE_MODE,
@@ -168,7 +168,7 @@ function buildPersistedOutputMessage(input: {
  *
  * Without one, the result falls back to the owner- and session-scoped temp tree,
  * so the sweeper can reap it once the session is gone — and that path goes through
- * {@link ensureTempDir}, which validates every component below the system temp
+ * {@link ensureTempDirAsync}, which validates every component below the system temp
  * directory instead of letting `mkdir -p` follow a planted link.
  */
 async function ensureToolResultsDir(input: { sessionDir?: string; sessionId: string }): Promise<string> {
@@ -180,7 +180,7 @@ async function ensureToolResultsDir(input: { sessionDir?: string; sessionId: str
 		}
 		return durable;
 	}
-	return ensureTempDir(join(resolveSessionTempDirPath(input.sessionId), TOOL_RESULTS_SUBDIR));
+	return ensureTempDirAsync(join(resolveSessionTempDirPath(input.sessionId), TOOL_RESULTS_SUBDIR));
 }
 
 function isOwnedByCurrentUser(uid: number | bigint): boolean {

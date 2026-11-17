@@ -85,27 +85,27 @@ function expireCleanupMarker(tempRoot: string): void {
 	utimesSync(marker, seconds, seconds);
 }
 
-function sweepTempRoot(tempRoot: string, phase: "initial" | "again" = "initial"): void {
+async function sweepTempRoot(tempRoot: string, phase: "initial" | "again" = "initial"): Promise<void> {
 	if (phase === "again") expireCleanupMarker(tempRoot);
-	runSessionTempCleanup({ now: NOW, tempRoot, sessionsRoots: [], controlRoot });
+	await runSessionTempCleanup({ now: NOW, tempRoot, sessionsRoots: [], controlRoot });
 }
 
 describe("protected-path leases", () => {
-	it("keeps a tree while the lease is held and releases it afterwards", () => {
+	it("keeps a tree while the lease is held and releases it afterwards", async () => {
 		const tempRoot = join(sandbox, "temp-root");
 		mkdirSync(tempRoot, { recursive: true });
 		const tree = makeAgedTree(tempRoot, "old-session", 60);
 
 		const lease = acquireProtectedPaths([tree]);
-		sweepTempRoot(tempRoot);
+		await sweepTempRoot(tempRoot);
 		assert.equal(existsSync(tree), true, "a held lease keeps the tree");
 
 		lease.release();
-		sweepTempRoot(tempRoot, "again");
+		await sweepTempRoot(tempRoot, "again");
 		assert.equal(existsSync(tree), false, "a released tree becomes reapable");
 	});
 
-	it("refcounts duplicate claims so one release cannot unprotect a tree in use", () => {
+	it("refcounts duplicate claims so one release cannot unprotect a tree in use", async () => {
 		const tempRoot = join(sandbox, "temp-root");
 		mkdirSync(tempRoot, { recursive: true });
 		const tree = makeAgedTree(tempRoot, "shared-session", 60);
@@ -114,15 +114,15 @@ describe("protected-path leases", () => {
 		const second = acquireProtectedPaths([tree]);
 
 		first.release();
-		sweepTempRoot(tempRoot);
+		await sweepTempRoot(tempRoot);
 		assert.equal(existsSync(tree), true, "the second holder still needs it");
 
 		second.release();
-		sweepTempRoot(tempRoot, "again");
+		await sweepTempRoot(tempRoot, "again");
 		assert.equal(existsSync(tree), false);
 	});
 
-	it("ignores a double release", () => {
+	it("ignores a double release", async () => {
 		const tree = join(sandbox, "double-release");
 		const lease = acquireProtectedPaths([tree]);
 		const other = acquireProtectedPaths([tree]);
