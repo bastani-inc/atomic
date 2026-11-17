@@ -452,24 +452,30 @@ const BACKGROUND_EXIT_BOUND_MS = 8_000;
 const SECURITY_MODULE = join(moduleDir(import.meta.url), "..", "src", "core", "tools", "windows-directory-security.ts");
 const FAKE_READ_SECONDS = 0.3;
 
-type FakePowerShellMode = "answer" | "hang" | "garbage" | "fail";
+type FakePowerShellMode = "answer" | "hang" | "garbage" | "fail" | "ownerAtStart";
 
 interface FakePowerShell {
+	readonly logPath: string;
 	launches(): Array<{ pid: number; host: string; path: string }>;
 	argumentsOf(host: string): string[];
 	restore(): void;
 }
 
 function fakeHostScript(host: string, mode: FakePowerShellMode, bin: string): string {
-	const descriptor = `printf '%s\\n%s\\n%s\\n%s' '${CURRENT_SID}' '${CURRENT_SID}' 'D:(A;OICI;FA;;;${CURRENT_SID})' 'Allow;${CURRENT_SID}'`;
+	const descriptor = (owner: string) =>
+		`printf '%s\\n%s\\n%s\\n%s' '${CURRENT_SID}' ${owner} 'D:(A;OICI;FA;;;${CURRENT_SID})' 'Allow;${CURRENT_SID}'`;
 	const body: Record<FakePowerShellMode, string[]> = {
-		answer: [`sleep ${FAKE_READ_SECONDS}`, descriptor],
+		answer: [`sleep ${FAKE_READ_SECONDS}`, descriptor(`'${CURRENT_SID}'`)],
 		hang: ["exec sleep 60"],
 		garbage: ["printf 'not a descriptor'"],
-		fail: [descriptor, "exit 1"],
+		fail: [descriptor(`'${CURRENT_SID}'`), "exit 1"],
+		ownerAtStart: [`sleep ${FAKE_READ_SECONDS}`, descriptor('"$owner"')],
 	};
 	return [
 		"#!/bin/sh",
+		...(mode === "ownerAtStart"
+			? [`owner=$(cat "$ATOMIC_SECURITY_QUERY_PATH/.owner-sid" 2>/dev/null || printf '%s' '${CURRENT_SID}')`]
+			: []),
 		`echo "$$ ${host} $ATOMIC_SECURITY_QUERY_PATH" >> '${join(bin, "launches.log")}'`,
 		`printf '%s\\n' "$@" > '${join(bin, `${host}.args`)}'`,
 		...body[mode],
@@ -478,7 +484,8 @@ function fakeHostScript(host: string, mode: FakePowerShellMode, bin: string): st
 
 function installFakePowerShell(mode: FakePowerShellMode, pwshMode: FakePowerShellMode = mode): FakePowerShell {
 	const bin = mkdtempSync(join(tmpdir(), "atomic-fake-pwsh-"));
-	writeFileSync(join(bin, "launches.log"), "");
+	const logPath = join(bin, "launches.log");
+	writeFileSync(logPath, "");
 	for (const [host, hostMode] of [
 		["powershell.exe", mode],
 		["pwsh.exe", pwshMode],
@@ -488,8 +495,9 @@ function installFakePowerShell(mode: FakePowerShellMode, pwshMode: FakePowerShel
 	const savedPath = process.env.PATH;
 	process.env.PATH = `${bin}${delimiter}${savedPath ?? ""}`;
 	return {
+		logPath,
 		launches: () =>
-			readFileSync(join(bin, "launches.log"), "utf8")
+			readFileSync(logPath, "utf8")
 				.split("\n")
 				.filter((line) => line.length > 0)
 				.map((line) => {
@@ -610,7 +618,8 @@ describe("asynchronous windows directory security reader (#5285)", () => {
 		fake = installFakePowerShell("hang");
 		const startedAt = performance.now();
 		assert.equal(await readWindowsDirectorySecurityAsync(dir, { timeoutMs: 300 }), undefined);
-		assert.ok(performance.now() - startedAt < 5_000, "the timeout bounds the read");
+		const elapsedMs = performance.now() - startedAt;
+		assert.ok(elapsedMs >= 250 && elapsedMs < 5_000, `the timeout bounds the read (${elapsedMs} ms)`);
 		const [{ pid }] = fake.launches();
 		await waitFor(() => !processIsAlive(pid));
 	});
@@ -619,10 +628,12 @@ describe("asynchronous windows directory security reader (#5285)", () => {
 		fake = installFakePowerShell("answer");
 		const controller = new AbortController();
 		const abandoned = readWindowsDirectorySecurityAsync(dir, { signal: controller.signal });
+		const timedOut = readWindowsDirectorySecurityAsync(dir, { timeoutMs: 50 });
 		const kept = readWindowsDirectorySecurityAsync(dir);
 		controller.abort();
 
 		assert.equal(await abandoned, undefined);
+		assert.equal(await timedOut, undefined);
 		assert.equal((await kept)?.ownerSid, CURRENT_SID);
 		assert.equal(fake.launches().length, 1);
 	});
@@ -742,6 +753,73 @@ describe("asynchronous windows directory security reader (#5285)", () => {
 			} catch {}
 		}
 	});
+
+	it.skipIf(isWindows)(
+		"a caller that finds a replaced directory never joins the read of the directory it replaced (#5285)",
+		async () => {
+			fake = installFakePowerShell("ownerAtStart");
+			const first = verifyWindowsDirectorySecurityAsync(dir);
+			await waitFor(() => fake?.launches().length === 1);
+			renameSync(dir, `${dir}-replaced`);
+			mkdirSync(dir);
+			writeFileSync(join(dir, ".owner-sid"), FOREIGN_SID);
+			const second = verifyWindowsDirectorySecurityAsync(dir);
+
+			try {
+				assert.equal(await first, "its ownership could not be verified");
+				assert.equal(await second, "it is owned by another account");
+				assert.equal(
+					verifyWindowsDirectorySecurity(dir, { startVerification: false }),
+					"its ownership is still being verified",
+				);
+				assert.equal(fake.launches().length, 2, "the replacement directory gets its own read");
+			} finally {
+				rmSync(`${dir}-replaced`, { recursive: true, force: true });
+			}
+
+			const probe = join(dir, "swap-probe.mjs");
+			writeFileSync(
+				probe,
+				[
+					`import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";`,
+					`import { join } from "node:path";`,
+					`const { verifyWindowsDirectorySecurity, verifyWindowsDirectorySecurityAsync } = await import(${JSON.stringify(pathToFileURL(SECURITY_MODULE).href)});`,
+					`const target = process.argv[2];`,
+					`const first = verifyWindowsDirectorySecurityAsync(target);`,
+					`while (!readFileSync(${JSON.stringify(fake.logPath)}, "utf8").includes(target)) {`,
+					`	await new Promise((resolve) => setTimeout(resolve, 10));`,
+					`}`,
+					`renameSync(target, \`\${target}-old\`);`,
+					`mkdirSync(target);`,
+					`writeFileSync(join(target, ".owner-sid"), ${JSON.stringify(FOREIGN_SID)});`,
+					`const second = verifyWindowsDirectorySecurityAsync(target);`,
+					`const results = await Promise.all([first, second]);`,
+					`const cached = verifyWindowsDirectorySecurity(target, { startVerification: false });`,
+					`rmSync(\`\${target}-old\`, { recursive: true, force: true });`,
+					`process.stdout.write(JSON.stringify([...results, cached]));`,
+				].join("\n"),
+			);
+			for (const [index, runtime] of [
+				[bunExecutable()],
+				[process.execPath, "--experimental-strip-types", "--no-warnings"],
+			].entries()) {
+				const target = join(dir, `runtime-${index}`);
+				mkdirSync(target);
+				const child = spawnProcess([...runtime, probe, target], { stdout: "pipe", stderr: "pipe" });
+				const [exitCode, stdout, stderr] = await Promise.all([
+					child.exited,
+					readStreamText(child.stdout),
+					readStreamText(child.stderr),
+				]);
+				assert.equal(exitCode, 0, `${runtime[0]}: ${stderr}`);
+				assert.deepEqual(JSON.parse(stdout), [
+					"its ownership could not be verified",
+					"it is owned by another account",
+					"its ownership is still being verified",
+				]);
+			}
+		},
+	);
 
 	it("does not cache a directory replaced while it was read (#5285)", async () => {
 		const reads: string[] = [];
