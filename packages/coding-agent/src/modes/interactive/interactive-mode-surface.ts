@@ -400,7 +400,7 @@ declare module "./interactive-mode-base.ts" {
 		handleSessionCommand(): void | Promise<void>;
 		handleSessionSnapshotCommand(): Promise<void>;
 		handleToolsCommand(): Promise<void>;
-		handleChangelogCommand(): void;
+		handleChangelogCommand(): Promise<void>;
 		getAppKeyDisplay(action: AppKeybinding): string;
 		getEditorKeyDisplay(action: Keybinding): string;
 		jumpToTranscriptEnd(): void;

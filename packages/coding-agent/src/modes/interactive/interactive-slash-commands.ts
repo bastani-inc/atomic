@@ -30,7 +30,7 @@ import {
 	MissingSessionCwdError,
 	normalizeChangelogLinks,
 	os,
-	parseChangelog,
+	parseChangelogAsync,
 	path,
 	SessionImportFileNotFoundError,
 	Spacer,
@@ -534,9 +534,9 @@ function showSessionInfo(this: InteractiveModeBase): void {
 	this.ui.requestRender();
 }
 
-InteractiveModeBase.prototype.handleChangelogCommand = function (this: InteractiveModeBase): void {
+InteractiveModeBase.prototype.handleChangelogCommand = async function (this: InteractiveModeBase): Promise<void> {
 	const changelogPath = getChangelogPath();
-	const allEntries = parseChangelog(changelogPath);
+	const allEntries = await parseChangelogAsync(changelogPath);
 
 	const changelogMarkdown =
 		allEntries.length > 0
