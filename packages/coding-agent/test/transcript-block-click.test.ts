@@ -426,6 +426,34 @@ describe("clicking transcript blocks in the main chat", () => {
 		}
 	});
 
+	test("an overlay drawn over the pinned prompt row still takes clicks there", async () => {
+		const chat = await mountChat(100, 12);
+		try {
+			const headerRow = chat.transcriptText().findIndex((line) => /Bash\(second-command\)/.test(line));
+			chat.transcript.scrollTo(headerRow, { disableFollow: true });
+			chat.tui.renderNow();
+			const top = getLayoutFrame(chat.tui).root.children[0]!.rect.y;
+			assert.match(chat.screen()[top] ?? "", /↑ first question/);
+			const clicks: number[] = [];
+			chat.tui.showOverlay(
+				{
+					render: (width: number) => Array.from({ length: 12 }, () => " ".repeat(width)),
+					invalidate: () => {},
+					handleMouse: (event) => {
+						if (event.type === "click") clicks.push(event.y);
+						return event.type === "click" ? { handled: true } : undefined;
+					},
+				},
+				{ row: 0, col: 0, width: "100%", nonCapturing: true },
+			);
+			chat.tui.renderNow();
+			chat.click(4, top);
+			assert.deepEqual(clicks, [top]);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
 	test("a press and release that a repaint split toggles nothing: rows moved under the pointer", async () => {
 		const chat = await mountChat(100, 60);
 		try {
