@@ -10,7 +10,8 @@
  *
  * Every `--sample-every` finished stages the lanes stop starting stages until every stage in flight has finished; the
  * process is then collected and sampled: heap in use, RSS, and how many finished stage sessions are still reachable.
- * The report fits the heap retained per finished stage between the first and the last sample.
+ * The report fits the heap retained per finished stage between the first and the last sample. With
+ * `SOAK_SNAPSHOT_DIR` set, a heap snapshot is written at every sample, to diff by retainer.
  *
  * It runs on the built package, as an npm install does: `npm run build` first.
  *
@@ -55,6 +56,8 @@ mkdirSync(join(cwd, ".atomic", "agents"), { recursive: true });
 mkdirSync(agentDir, { recursive: true });
 process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
 process.env.ATOMIC_OFFLINE = "1";
+// The scripted provider would otherwise keep every session's last prompt as its simulated prompt cache.
+process.env.PI_CACHE_RETENTION = "none";
 writeFileSync(
 	join(cwd, "big.ts"),
 	Array.from(
@@ -158,12 +161,17 @@ async function sample() {
 	const point = {
 		stages: finished,
 		heapUsedMB: +(memory.heapUsed / 2 ** 20).toFixed(1),
+		heapTotalMB: +(memory.heapTotal / 2 ** 20).toFixed(1),
 		rssMB: +(memory.rss / 2 ** 20).toFixed(1),
 		externalMB: +(memory.external / 2 ** 20).toFixed(1),
 		reachableStageSessions: created - collected,
 	};
 	samples.push(point);
 	console.error(JSON.stringify(point));
+	if (process.env.SOAK_SNAPSHOT_DIR)
+		(await import("node:v8")).writeHeapSnapshot(
+			join(process.env.SOAK_SNAPSHOT_DIR, `stages-${finished}.heapsnapshot`),
+		);
 }
 
 /** Holds a lane before its next stage while a sample is due, and samples once no stage is in flight. */
@@ -225,7 +233,6 @@ const result = await run(
 	},
 );
 await sample();
-if (process.env.SOAK_HEAP_SNAPSHOT) (await import("node:v8")).writeHeapSnapshot(process.env.SOAK_HEAP_SNAPSHOT);
 const first = samples[0];
 const last = samples.at(-1);
 const report = {
