@@ -162,9 +162,9 @@ Workflow invocations receive a stable, non-`default` Intercom group automaticall
 
 ## Where running subagents show up
 
-Background agents appear in the compact count below the prompt in main and workflow-stage chat. Run `/tasks` to open the grouped inspector; updates never open it automatically. Parallel receipts identify individual siblings. Completion produces a shaded notification card with outcome and available response preview, without depending on a model reply. `/agents` browses definitions, while `subagent({ action: "list" })` shows the catalog with the configured expand-key hint.
+Background agents appear in the compact count below the prompt in main and workflow-stage chat. Run `/tasks` to open the grouped inspector; updates never open it automatically. Parallel receipts identify individual siblings. Completion produces one unshaded notice line with an outcome glyph and task title, followed by the first result line. Ctrl+O expands the full retained result. The notice does not depend on a model reply. `/agents` browses definitions, while `subagent({ action: "list" })` shows the catalog with the configured expand-key hint.
 
-To stop a task, select it in `/tasks`, press `x`, and confirm with `y`. Once termination is confirmed, the owning chat receives a stopped notification and the parent model receives the stop context, even when the child has no final response. Repeated stop requests do not duplicate the notice or change an already-settled result. Closing the owner still suppresses late notifications.
+To stop a task, select it in `/tasks` and press `x` twice within 3 seconds. A stopped subagent stays resumable. Once termination is confirmed, the owning chat receives a `quit · awaiting resume` notice line and the parent model receives the quit context, even when the child has no final response. Repeated stop requests do not duplicate the notice or change an already-settled result. Closing the owner still suppresses late notifications.
 
 You can ask naturally:
 
@@ -703,7 +703,7 @@ Metadata records timing, usage, typed status, termination cause, final model, at
 
 Session files are stored under a per-run session directory. With `context: "fork"`, each child starts from the parent’s current leaf through the session manager; this is a real session fork, not an injected summary.
 
-Owner-bound completions notify the originating session while its admission boundary remains open. Closing a workflow stage cancels its running children and suppresses late completion delivery; unrelated stages remain live. Visible completion cards use the shared chat background, a status glyph, agent/task title, and bounded response or error preview. The expand hint appears when more preview content is available, and `/tasks` opens retained inspection. Receipt identities persist in session history for retry without duplicate delivery or execution. Integrations without a task owner retain their existing result and Intercom paths.
+Owner-bound completions notify the originating session while its admission boundary remains open. Closing a workflow stage cancels its running children and suppresses late completion delivery; unrelated stages remain live. Visible completions use an unshaded notice line with a status glyph and the agent's task title, followed by the first line of its retained result or error. Ctrl+O expands the full retained result, up to 8,000 characters, and `/tasks` opens retained inspection. Completion notices keep model and reasoning metadata in their saved details without displaying a model line. Receipt identities persist in session history for retry without duplicate delivery or execution. Integrations without a task owner retain their existing result and Intercom paths.
 
 Foreground runs persist their session and user-facing artifacts beside the parent session:
 

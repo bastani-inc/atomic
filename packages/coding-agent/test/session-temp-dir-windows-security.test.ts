@@ -16,12 +16,12 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { delimiter, join, sep } from "node:path";
-import { monitorEventLoopDelay } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, it } from "vitest";
-import { LAG_RESOLUTION_MS } from "../../../test/helpers/event-loop-lag.ts";
+import { longestMainThreadBlockMs } from "../../../test/helpers/main-thread-work.ts";
 import {
 	bunExecutable,
 	moduleDir,
@@ -36,6 +36,7 @@ import {
 	assertPrivateDirectoryAsync,
 	ensurePrivateTempDir,
 	ensurePrivateTempDirAsync,
+	ensureSessionTempDirAsync,
 	getSessionTempDir,
 	getSessionTempDirAsync,
 	getTempRootDir,
@@ -54,9 +55,22 @@ import {
 	verifyWindowsDirectorySecurity,
 	verifyWindowsDirectorySecurityAsync,
 	type WindowsDirectorySecurity,
+	waitForWindowsDirectorySecurityReadsForTesting,
 } from "../src/core/tools/windows-directory-security.ts";
 
 const isWindows = process.platform === "win32";
+const RESOLVE_TS_SOURCES = `import { registerHooks } from "node:module";
+registerHooks({ resolve(specifier, context, nextResolve) {
+	try { return nextResolve(specifier, context); }
+	catch (error) { if (/^\\.\\.?\\//.test(specifier) && specifier.endsWith(".js")) return nextResolve(specifier.slice(0, -3) + ".ts", context); throw error; }
+} });`;
+const NODE_SOURCE_RUNTIME = [
+	process.execPath,
+	"--experimental-strip-types",
+	"--import",
+	`data:text/javascript,${encodeURIComponent(RESOLVE_TS_SOURCES)}`,
+	"--no-warnings",
+];
 /** New session temp directories created one after another, as a busy process's sessions and subagents create them. */
 const SESSION_BURST = 20;
 
@@ -281,6 +295,85 @@ describe("windows session temp root verification", () => {
 	const savedEnv = new Map<string, string | undefined>();
 	let sandbox: string;
 
+	function readSecurityWithPowerShell(path: string): WindowsDirectorySecurity {
+		const result = spawnSyncCollect(
+			[
+				"powershell.exe",
+				"-NoProfile",
+				"-NonInteractive",
+				"-Command",
+				[
+					"$ErrorActionPreference = 'Stop'",
+					"$acl = Get-Acl -LiteralPath $env:ATOMIC_TEST_SECURITY_PATH",
+					"$rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object { @{ allow = ($_.AccessControlType -eq 'Allow'); sid = $_.IdentityReference.Value } })",
+					"@{ currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; ownerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value; dacl = $acl.GetSecurityDescriptorSddlForm('Access'); accessRules = $rules } | ConvertTo-Json -Depth 4 -Compress",
+				].join("; "),
+			],
+			{ env: { ...process.env, ATOMIC_TEST_SECURITY_PATH: path }, timeout: 30_000 },
+		);
+		assert.equal(result.exitCode, 0, result.stderr.toString());
+		return JSON.parse(result.stdout.toString()) as WindowsDirectorySecurity;
+	}
+
+	function withNativeDacl(sddl: string | null, inspect: (descriptor: WindowsDirectorySecurity) => void): void {
+		const dir = mkdtempSync(join(sandbox, "native-dacl-"));
+		const backup = `${dir}.acl`;
+		const saved = spawnSyncCollect(["icacls", dir, "/save", backup]);
+		assert.equal(saved.exitCode, 0, saved.stderr.toString());
+		try {
+			const applied = spawnSyncCollect(
+				[
+					"powershell.exe",
+					"-NoProfile",
+					"-NonInteractive",
+					"-Command",
+					`
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class AtomicDaclFixture {
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern uint SetNamedSecurityInfoW(string path, int type, uint information, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+    public static uint SetDacl(string path, IntPtr dacl) {
+        return SetNamedSecurityInfoW(path, 1, 0x80000004, IntPtr.Zero, IntPtr.Zero, dacl, IntPtr.Zero);
+    }
+}
+'@
+$pointer = [IntPtr]::Zero
+try {
+    if ($env:ATOMIC_TEST_DACL_SDDL) {
+        $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        $sddl = $env:ATOMIC_TEST_DACL_SDDL.Replace('{currentSid}', $sid)
+        $descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new($sddl)
+        $acl = $descriptor.DiscretionaryAcl
+        $bytes = [byte[]]::new($acl.BinaryLength)
+        $acl.GetBinaryForm($bytes, 0)
+        $pointer = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bytes.Length)
+        [System.Runtime.InteropServices.Marshal]::Copy($bytes, 0, $pointer, $bytes.Length)
+    }
+    $status = [AtomicDaclFixture]::SetDacl($env:ATOMIC_TEST_DACL_PATH, $pointer)
+    if ($status -ne 0) { throw "SetNamedSecurityInfoW failed: $status" }
+} finally {
+    if ($pointer -ne [IntPtr]::Zero) { [System.Runtime.InteropServices.Marshal]::FreeHGlobal($pointer) }
+}
+`,
+				],
+				{ env: { ...process.env, ATOMIC_TEST_DACL_PATH: dir, ATOMIC_TEST_DACL_SDDL: sddl ?? "" } },
+			);
+			assert.equal(applied.exitCode, 0, applied.stderr.toString());
+			const binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+				windowsDirectorySecurity: (path: string) => WindowsDirectorySecurity | null;
+			};
+			const descriptor = binding.windowsDirectorySecurity(dir);
+			assert.ok(descriptor, "the native module reads the fixture's descriptor");
+			inspect(descriptor);
+		} finally {
+			const restored = spawnSyncCollect(["icacls", sandbox, "/restore", backup]);
+			assert.equal(restored.exitCode, 0, restored.stderr.toString());
+		}
+	}
+
 	beforeAll(() => {
 		sandbox = realpathSync(mkdtempSync(join(tmpdir(), "atomic-win-acl-")));
 		for (const key of envKeys) {
@@ -324,6 +417,61 @@ describe("windows session temp root verification", () => {
 		assert.match(descriptor.currentSid, /^S-1-/);
 		assert.match(descriptor.ownerSid, /^S-1-/);
 		assert.equal(evaluateWindowsDirectorySecurity(descriptor), undefined);
+	});
+
+	it.skipIf(!isWindows)(
+		"the native module reads the owner, user, rules and verdict PowerShell's Get-Acl reads (#5324)",
+		async () => {
+			const binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+				windowsDirectorySecurity: (path: string) => WindowsDirectorySecurity | null;
+			};
+			const own = await getSessionTempDirAsync("native-parity");
+			const shared = join(sandbox, "shared-parity");
+			mkdirSync(shared);
+			const granted = spawnSyncCollect(["icacls", shared, "/grant", "*S-1-1-0:(OI)(CI)F"]);
+			assert.equal(granted.exitCode, 0, granted.stderr.toString());
+			const rules = (security: WindowsDirectorySecurity) =>
+				new Set(security.accessRules.map((rule) => `${rule.allow ? "allow" : "deny"} ${rule.sid}`));
+
+			for (const [path, verdict] of [
+				[own, undefined],
+				[shared, "it grants access to another account"],
+			] as const) {
+				const native = binding.windowsDirectorySecurity(path);
+				const powershell = readSecurityWithPowerShell(path);
+				assert.ok(native, `the native module reads ${path}`);
+				assert.ok(powershell, `PowerShell reads ${path}: ${getLastWindowsSecurityReadFailureForTesting()}`);
+				assert.equal(native.currentSid, powershell.currentSid);
+				assert.equal(native.ownerSid, powershell.ownerSid);
+				assert.deepEqual(rules(native), rules(powershell));
+				assert.equal(evaluateWindowsDirectorySecurity(native), verdict);
+				assert.equal(evaluateWindowsDirectorySecurity(powershell), verdict);
+			}
+			assert.equal(binding.windowsDirectorySecurity(join(sandbox, "missing")), null);
+		},
+	);
+
+	it.skipIf(!isWindows)("the native module distinguishes a null DACL from an empty DACL (#5324)", () => {
+		withNativeDacl(null, (descriptor) => {
+			assert.equal(descriptor.dacl, "");
+			assert.deepEqual(descriptor.accessRules, []);
+			assert.equal(evaluateWindowsDirectorySecurity(descriptor), "it has no access control list");
+		});
+		withNativeDacl("D:P", (descriptor) => {
+			assert.match(descriptor.dacl, /^D:[A-Z]*$/);
+			assert.deepEqual(descriptor.accessRules, []);
+			assert.equal(evaluateWindowsDirectorySecurity(descriptor), undefined);
+		});
+	});
+
+	it.skipIf(!isWindows)("the native module preserves deny ACEs and their SIDs (#5324)", () => {
+		withNativeDacl("D:P(D;;0x2;;;WD)(A;;FA;;;{currentSid})", (descriptor) => {
+			assert.deepEqual(descriptor.accessRules, [
+				{ allow: false, sid: "S-1-1-0" },
+				{ allow: true, sid: descriptor.currentSid },
+			]);
+			assert.equal(evaluateWindowsDirectorySecurity(descriptor), undefined);
+		});
 	});
 
 	it.skipIf(!isWindows)("refuses a pre-created root whose DACL grants Everyone access", async () => {
@@ -451,6 +599,7 @@ describe("windows session temp root verification", () => {
 const MAIN_THREAD_BLOCK_LIMIT_MS = 50;
 const BACKGROUND_EXIT_BOUND_MS = 8_000;
 const SECURITY_MODULE = join(moduleDir(import.meta.url), "..", "src", "core", "tools", "windows-directory-security.ts");
+const SESSION_TEMP_DIR_MODULE = join(moduleDir(import.meta.url), "..", "src", "core", "tools", "session-temp-dir.ts");
 const FAKE_READ_SECONDS = 0.3;
 
 type FakePowerShellMode = "answer" | "hang" | "garbage" | "fail" | "ownerAtStart";
@@ -514,19 +663,6 @@ function installFakePowerShell(mode: FakePowerShellMode, pwshMode: FakePowerShel
 			rmSync(bin, { recursive: true, force: true });
 		},
 	};
-}
-
-async function longestMainThreadBlockMs(work: () => Promise<void>): Promise<number> {
-	const histogram = monitorEventLoopDelay({ resolution: LAG_RESOLUTION_MS });
-	histogram.enable();
-	try {
-		await sleep(LAG_RESOLUTION_MS * 4);
-		await work();
-		await sleep(LAG_RESOLUTION_MS * 4);
-	} finally {
-		histogram.disable();
-	}
-	return Math.max(0, histogram.max / 1e6 - LAG_RESOLUTION_MS);
 }
 
 function processIsAlive(pid: number): boolean {
@@ -711,7 +847,7 @@ describe("asynchronous windows directory security reader (#5285)", () => {
 				`readWindowsDirectorySecurityAsync(${JSON.stringify(dir)}).then((security) => process.stdout.write(String(security?.ownerSid)));`,
 			].join("\n"),
 		);
-		for (const runtime of [[bunExecutable()], [process.execPath, "--experimental-strip-types", "--no-warnings"]]) {
+		for (const runtime of [[bunExecutable()], NODE_SOURCE_RUNTIME]) {
 			const child = spawnProcess([...runtime, probe], { stdout: "pipe", stderr: "pipe" });
 			const [exitCode, stdout, stderr] = await Promise.all([
 				child.exited,
@@ -733,7 +869,7 @@ describe("asynchronous windows directory security reader (#5285)", () => {
 				`process.stdout.write(String(verifyWindowsDirectorySecurity(${JSON.stringify(dir)})));`,
 			].join("\n"),
 		);
-		for (const runtime of [[bunExecutable()], [process.execPath, "--experimental-strip-types", "--no-warnings"]]) {
+		for (const runtime of [[bunExecutable()], NODE_SOURCE_RUNTIME]) {
 			const child = spawnProcess([...runtime, probe], { stdout: "pipe", stderr: "pipe" });
 			const output = Promise.all([readStreamText(child.stdout), readStreamText(child.stderr)]);
 			const exitedInTime = await Promise.race([
@@ -800,10 +936,7 @@ describe("asynchronous windows directory security reader (#5285)", () => {
 					`process.stdout.write(JSON.stringify([...results, cached]));`,
 				].join("\n"),
 			);
-			for (const [index, runtime] of [
-				[bunExecutable()],
-				[process.execPath, "--experimental-strip-types", "--no-warnings"],
-			].entries()) {
+			for (const [index, runtime] of [[bunExecutable()], NODE_SOURCE_RUNTIME].entries()) {
 				const target = join(dir, `runtime-${index}`);
 				mkdirSync(target);
 				const child = spawnProcess([...runtime, probe, target], { stdout: "pipe", stderr: "pipe" });
@@ -843,7 +976,7 @@ describe("asynchronous windows directory security reader (#5285)", () => {
 					`process.stdout.write(JSON.stringify({ refusal, ownerSid: descriptor?.ownerSid }));`,
 				].join("\n"),
 			);
-			for (const runtime of [[bunExecutable()], [process.execPath, "--experimental-strip-types", "--no-warnings"]]) {
+			for (const runtime of [[bunExecutable()], NODE_SOURCE_RUNTIME]) {
 				const child = spawnProcess([...runtime, probe, relativeTarget], {
 					cwd: callerDir,
 					env: { ...process.env, SystemRoot: neutralDir, windir: neutralDir },
@@ -890,7 +1023,7 @@ describe("asynchronous windows directory security reader (#5285)", () => {
 					`process.stdout.write(JSON.stringify({ refusal, evaluated }));`,
 				].join("\n"),
 			);
-			for (const runtime of [[bunExecutable()], [process.execPath, "--experimental-strip-types", "--no-warnings"]]) {
+			for (const runtime of [[bunExecutable()], NODE_SOURCE_RUNTIME]) {
 				const child = spawnProcess([...runtime, probe, relativeTarget], {
 					cwd: callerDir,
 					env: { ...process.env, SystemRoot: neutralDir, windir: neutralDir },
@@ -913,10 +1046,15 @@ describe("asynchronous windows directory security reader (#5285)", () => {
 
 	it("does not evict a replacement directory's verified entry when the old directory's read later refuses (#5285)", async () => {
 		let finishOld: (security: WindowsDirectorySecurity) => void = () => {};
+		let markStarted!: () => void;
+		const started = new Promise<void>((resolve) => {
+			markStarted = resolve;
+		});
 		let reads = 0;
 		setWindowsDirectorySecurityReaderForTesting(() => {
 			reads += 1;
 			if (reads === 1) {
+				markStarted();
 				return new Promise<WindowsDirectorySecurity>((resolve) => {
 					finishOld = resolve;
 				});
@@ -924,6 +1062,7 @@ describe("asynchronous windows directory security reader (#5285)", () => {
 			return security();
 		});
 		const oldRead = verifyWindowsDirectorySecurityAsync(dir);
+		await started;
 		renameSync(dir, `${dir}-old`);
 		mkdirSync(dir);
 		try {
@@ -960,11 +1099,17 @@ describe("asynchronous windows directory security reader (#5285)", () => {
 		const released = new Promise<void>((resolve) => {
 			release = resolve;
 		});
+		let markStarted!: () => void;
+		const started = new Promise<void>((resolve) => {
+			markStarted = resolve;
+		});
 		setWindowsDirectorySecurityReaderForTesting(async () => {
+			markStarted();
 			await released;
 			return security();
 		});
 		const overtaken = verifyWindowsDirectorySecurityAsync(dir);
+		await started;
 		resetWindowsDirectorySecurityStateForTesting();
 		let reads = 0;
 		setWindowsDirectorySecurityReaderForTesting(() => {
@@ -1094,39 +1239,106 @@ describe("windows temp directories verified off the main thread (#5285)", () => 
 		},
 	);
 
-	it("session start verifies the private roots in the background, so a later synchronous caller finds them verified (#5285)", async () => {
-		const reads: string[] = [];
-		setWindowsDirectorySecurityReaderForTesting(async (path) => {
-			reads.push(path);
-			return security();
-		});
+	it("each asynchronous Windows temp-directory creation gives other queued work a turn (#5324)", async () => {
 		if (!isWindows) simulateWindows();
+		setWindowsDirectorySecurityReaderForTesting(() => security());
+		await getSessionTempDirAsync("prewarmed-root");
+		for (let session = 0; session < SESSION_BURST; session++) {
+			let yielded = false;
+			const turn = new Promise<void>((resolve) =>
+				setImmediate(() => {
+					yielded = true;
+					resolve();
+				}),
+			);
+			await getSessionTempDirAsync(`yielding-${session}`);
+			const yieldedBeforeCompletion = yielded;
+			await turn;
+			assert.equal(yieldedBeforeCompletion, true);
+		}
+	});
+
+	it("session start verifies the private roots in the background, so a later synchronous caller finds them verified (#5285)", async () => {
+		const reads: Array<{ path: string; background: boolean | undefined }> = [];
 		const agentDir = process.env.ATOMIC_CODING_AGENT_DIR ?? "";
 		const ownerRoot = getTempRootDir();
 		const cacheRoot = join(agentDir, "cache", "tmp");
+		setWindowsDirectorySecurityReaderForTesting(async (path, options) => {
+			reads.push({ path, background: options.background });
+			if (path === cacheRoot) await sleep(20);
+			return security();
+		});
+		if (!isWindows) simulateWindows();
 
 		setActiveSessionTempId("first-session");
-		await waitFor(() => reads.includes(ownerRoot));
+		await waitForWindowsDirectorySecurityReadsForTesting();
 		assert.equal(existsSync(agentDir), false, "session start never creates the agent directory's cache");
 
 		mkdirSync(cacheRoot, { recursive: true });
 		setActiveSessionTempId("prewarmed-session");
-		await waitFor(() => reads.includes(cacheRoot));
-		await waitFor(() => {
-			try {
-				getSessionTempDir("prewarmed-session");
-				return ensurePrivateTempDir("extensions").startsWith(`${cacheRoot}${sep}`);
-			} catch {
-				return false;
-			}
-		});
+		await waitForWindowsDirectorySecurityReadsForTesting();
 
 		const settledReads = reads.length;
 		assert.ok(getSessionTempDir("prewarmed-session").startsWith(`${ownerRoot}${sep}`));
 		assert.ok(ensurePrivateTempDir("extensions").startsWith(`${cacheRoot}${sep}`));
-		assert.deepEqual(reads.slice(0, 2).sort(), [cacheRoot, ownerRoot].sort());
+		assert.deepEqual(
+			reads.slice(0, 2).sort((left, right) => left.path.localeCompare(right.path)),
+			[
+				{ path: cacheRoot, background: true },
+				{ path: ownerRoot, background: true },
+			].sort((left, right) => left.path.localeCompare(right.path)),
+		);
 		assert.equal(reads.length, settledReads, "nothing is read again once the roots are verified");
+
+		const explicitDir = join(sandbox, "explicit-private");
+		mkdirSync(explicitDir);
+		await assertPrivateDirectoryAsync(explicitDir);
+		const callerDir = join(sandbox, "caller-temp", "leaf");
+		await ensureSessionTempDirAsync(callerDir);
+		assert.deepEqual(reads.slice(settledReads), [
+			{ path: explicitDir, background: undefined },
+			{ path: callerDir, background: undefined },
+		]);
 	});
+
+	it.skipIf(isWindows)(
+		"session-start private root verification does not keep a finished process alive (#5324)",
+		async () => {
+			fake = installFakePowerShell("hang");
+			const cacheRoot = join(process.env.ATOMIC_CODING_AGENT_DIR ?? "", "cache", "tmp");
+			mkdirSync(cacheRoot, { recursive: true });
+			const probe = join(sandbox, "session-start-probe.mjs");
+			writeFileSync(
+				probe,
+				[
+					`Object.defineProperty(process, "platform", { value: "win32", configurable: true });`,
+					`const { setActiveSessionTempId } = await import(${JSON.stringify(pathToFileURL(SESSION_TEMP_DIR_MODULE).href)});`,
+					`process.stdout.write(setActiveSessionTempId("short-lived-session"));`,
+				].join("\n"),
+			);
+			const child = spawnProcess([...NODE_SOURCE_RUNTIME, probe], { stdout: "pipe", stderr: "pipe" });
+			try {
+				const output = Promise.all([readStreamText(child.stdout), readStreamText(child.stderr)]);
+				const exitedInTime = await Promise.race([
+					child.exited.then(() => true),
+					sleep(BACKGROUND_EXIT_BOUND_MS).then(() => false),
+				]);
+				if (!exitedInTime) child.kill();
+				const [stdout, stderr] = await output;
+
+				assert.ok(exitedInTime, "session-start verification kept the process alive");
+				assert.equal(child.exitCode, 0, stderr);
+				assert.ok(stdout.endsWith(`${sep}short-lived-session`));
+				await waitFor(() => (fake?.launches().length ?? 0) >= 1);
+			} finally {
+				for (const { pid } of fake.launches()) {
+					try {
+						process.kill(pid);
+					} catch {}
+				}
+			}
+		},
+	);
 
 	it.skipIf(isWindows)("session start creates and reads nothing on POSIX (#5285)", () => {
 		let reads = 0;

@@ -59,6 +59,7 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRuntime } from "./model-runtime.js";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { currentWorktreeRestoreNotices, currentWorktreeRootMappings } from "./resume/path-mapping.ts";
+import { abortSessionWork, registerSessionWorkOwner, sessionLifetime } from "./session-lifecycle-work.ts";
 import type { SessionManager } from "./session-manager.ts";
 import { SessionWorktreeSnapshotRecorder } from "./session-worktree-snapshots.ts";
 import type { SettingsManager } from "./settings-manager.ts";
@@ -71,6 +72,7 @@ import { scheduleSessionTempCleanup } from "./tools/session-temp-cleanup.ts";
 import { acquireProtectedPaths, type ProtectedPathLease, setActiveSessionTempId } from "./tools/session-temp-dir.ts";
 import { ToolExecutionScheduler } from "./tools/tool-concurrency.ts";
 import { TOOL_RESULTS_SUBDIR } from "./tools/tool-limits.js";
+import { withWindowsDirectorySecurityOwner } from "./tools/windows-directory-security.ts";
 import { WorkflowStageAdmissionBoundary } from "./workflow-stage-admission.ts";
 import { serializeWorkspaceError } from "./worktree-snapshot/errors.ts";
 
@@ -328,6 +330,7 @@ class AgentSessionBase {
 	}
 
 	constructor(config: AgentSessionConfig) {
+		registerSessionWorkOwner(this);
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
 		this.settingsManager = config.settingsManager;
@@ -468,7 +471,7 @@ class AgentSessionBase {
 				const sessionId = this.sessionManager.getSessionId();
 				const sessionDir = this.sessionManager.getSessionDir() || undefined;
 				this._tempStorageLease = acquireProtectedPaths([
-					setActiveSessionTempId(sessionId),
+					withWindowsDirectorySecurityOwner(sessionLifetime(this), () => setActiveSessionTempId(sessionId)),
 					// A disk-backed session's results are read back by path, and a replayed
 					// result reuses an old file without touching its mtime, so age alone
 					// cannot keep it alive.
@@ -500,6 +503,7 @@ class AgentSessionBase {
 			// No session escapes a failed constructor to release these acquisitions later.
 			const failures: unknown[] = [];
 			for (const release of [
+				() => abortSessionWork(this, true),
 				() => removeExecutionEndedListener?.(),
 				() => this._unsubscribeAgent?.(),
 				() => this._tempStorageLease?.release(),

@@ -6,7 +6,7 @@ import { type TaskSupervisor, taskTranscriptSource, type WaitLease } from "./sup
 export type TaskCompletionMessage = {
 	customType: string;
 	content: string;
-	details: object;
+	details: { completionId: string; [key: string]: unknown };
 	display: true;
 };
 
@@ -32,8 +32,7 @@ export interface ChildCommandTaskOwner {
 	 * `route`, and the route is forgotten once none runs or waits. Returns false, binding nothing, when there is none.
 	 */
 	routeReleased(childId: string, route: ChildTaskCompletionRoute): boolean;
-	/** Whether notices of shells the child launched wait for it, in an owner its parent already holds. */
-	hasKeptNotices(childId: string): boolean;
+	hasOpenHost(): boolean;
 }
 
 /** A completion notice kept for a child that could not take it, until it is bound again or released. */
@@ -48,6 +47,7 @@ class ChildCommandTaskRoutes {
 	private readonly releasedRoutes = new WeakSet<ChildTaskCompletionRoute>();
 	private readonly running = new Map<string, Set<TaskId>>();
 	private readonly kept = new Map<string, KeptNotice[]>();
+	private readonly deliveries = new Map<string, Promise<void>>();
 	private readonly flushes = new Map<string, { again: boolean }>();
 
 	bind(childId: string, route: ChildTaskCompletionRoute): void {
@@ -62,6 +62,14 @@ class ChildCommandTaskRoutes {
 	/** Routes held now; counted by tests. */
 	get routeCount(): number {
 		return this.routes.size;
+	}
+
+	get deliveryCount(): number {
+		return this.deliveries.size;
+	}
+
+	forgetDelivery(completionId: string): void {
+		this.deliveries.delete(completionId);
 	}
 
 	/** Notices kept for children that could not take them yet; counted by tests. */
@@ -94,15 +102,19 @@ class ChildCommandTaskRoutes {
 	 * again or released. Resolves when the child took it; nothing else ever receives it.
 	 */
 	deliver(childId: string, taskIds: readonly TaskId[], message: TaskCompletionMessage): Promise<void> {
+		const existing = this.deliveries.get(message.details.completionId);
+		if (existing !== undefined) return existing;
+		const delivery = Promise.withResolvers<void>();
+		this.deliveries.set(message.details.completionId, delivery.promise);
 		const running = this.running.get(childId);
 		for (const taskId of taskIds) running?.delete(taskId);
 		if (running?.size === 0) this.running.delete(childId);
-		return new Promise<void>((taken) => {
-			const kept = this.kept.get(childId);
-			if (kept === undefined) this.kept.set(childId, [{ message, taken }]);
-			else kept.push({ message, taken });
-			this.flushKept(childId);
-		});
+		const notice = { message, taken: delivery.resolve };
+		const kept = this.kept.get(childId);
+		if (kept === undefined) this.kept.set(childId, [notice]);
+		else kept.push(notice);
+		this.flushKept(childId);
+		return delivery.promise;
 	}
 
 	/** Deliver the notices kept for a child, in order, while its route takes them. */
@@ -186,6 +198,14 @@ export function childCommandRouteCount(host: AgentTaskHost): number {
 	return routesByHost.get(host)?.routeCount ?? 0;
 }
 
+export function childDeliveryCount(host: AgentTaskHost): number {
+	return routesByHost.get(host)?.deliveryCount ?? 0;
+}
+
+export function forgetChildDelivery(host: AgentTaskHost, completionId: string): void {
+	routesByHost.get(host)?.forgetDelivery(completionId);
+}
+
 /** How many completion notices wait in this host's owner for the child `childId` to take them. */
 export function keptChildNoticeCount(host: AgentTaskHost, childId: string): number {
 	return routesByHost.get(host)?.keptCount(childId) ?? 0;
@@ -223,10 +243,7 @@ export function createChildCommandTaskOwner(
 	return {
 		unbind: dropRoute,
 		routeReleased: (childId, route) => routesFor(resolveHost()).routeReleased(childId, route),
-		hasKeptNotices(childId) {
-			const host = peekHost();
-			return host !== undefined && (routesByHost.get(host)?.keptCount(childId) ?? 0) > 0;
-		},
+		hasOpenHost: () => peekHost() !== undefined,
 		bind(childId, route, waits) {
 			const host = resolveHost();
 			if (boundHosts.get(childId) !== host) dropRoute(childId);

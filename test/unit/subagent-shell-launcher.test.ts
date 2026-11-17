@@ -40,7 +40,8 @@ const route = { isOpen: () => true, deliver: async () => {} };
 function ownerHost(): AgentTaskHost {
 	const host = new AgentTaskHost({ scope: { kind: "session", sessionId: randomUUID() }, authorizeLaunch() {} });
 	cleanups.push(async () => {
-		assert.ok((await host.close("session-close")).ok);
+		const closed = await host.close("session-close");
+		assert.ok(closed.ok, closed.ok ? undefined : host.closeError("session-close", closed.error).message);
 	});
 	return host;
 }
@@ -130,9 +131,11 @@ describe("a subagent's shells name the subagent that launched them (#4640)", () 
 			false,
 		);
 		const shell = ownerTasks(host).find((task) => task.kind === "command");
-		assert.equal(shell?.parentTaskId, child.taskId);
+		assert.ok(shell);
+		assert.equal(shell.parentTaskId, child.taskId);
 		const agent = ownerTasks(host).find((task) => task.ref.taskId === child.taskId);
 		assert.equal(agent?.parentTaskId, undefined);
+		await settled(host, shell.ref.taskId);
 	});
 
 	test("a shell launched without a subagent carries no parent task (#4640)", async () => {
@@ -210,6 +213,7 @@ test(
 			shells.map((task) => task.parentTaskId),
 			[subagent],
 		);
+		for (const shell of shells) await settled(host, shell.ref.taskId);
 	},
 	LIVE_CHILD_TIMEOUT_MS,
 );

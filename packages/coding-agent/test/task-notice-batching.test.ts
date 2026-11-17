@@ -118,6 +118,52 @@ test("tasks that finish together reach an idle chat in one request and start one
 	assert.deepEqual(seen, [ids], "the request carried every notice");
 });
 
+test("a partial batch write still delivers every saved notice to the model (#5342)", async () => {
+	const harness = await chat();
+	const seen = new Set<string>();
+	harness.setResponses(
+		Array.from({ length: 4 }, () => (context: { messages: readonly { role: string; content?: unknown }[] }) => {
+			for (const id of requestNotices(context.messages)) seen.add(id);
+			return fauxAssistantMessage("Noted.");
+		}),
+	);
+	const host = harness.session.getAgentTaskHost();
+	const gates: PromiseWithResolvers<TaskResult>[] = [];
+	const ids: TaskId[] = [];
+	const start = async (name: string) => {
+		const gate = Promise.withResolvers<TaskResult>();
+		gates.push(gate);
+		const started = await host.startAgentTask(
+			{ kind: "agent", agent: "worker", task: name },
+			`batch-${name}` as OperationId,
+			() => ({ result: gate.promise, cleanup: Promise.resolve({ kind: "reaped" as const }) }),
+		);
+		assert.ok(started.ok);
+		ids.push(started.value.taskId);
+		await host.observeAgentLaunch(started.value.taskId, { kind: "background" });
+	};
+	for (const name of ["a", "b", "c"]) await start(name);
+	const manager = harness.sessionManager;
+	const append = manager.appendCustomMessageEntry.bind(manager);
+	let noticeWrites = 0;
+	vi.spyOn(manager, "appendCustomMessageEntry").mockImplementation(async (...args) => {
+		if (args[0] === TASK_COMPLETION_MESSAGE_TYPE && ++noticeWrites === 2)
+			throw new Error("SQLITE_BUSY: database is locked");
+		return append(...args);
+	});
+
+	for (const gate of gates) gate.resolve({ kind: "failed", code: "fixture", message: "done" });
+	await vi.waitFor(() => assert.ok(noticeWrites >= 2), { timeout: 15000 });
+	await harness.session.agent.waitForIdle();
+	await start("d");
+	gates.at(-1)!.resolve({ kind: "failed", code: "fixture", message: "done" });
+	await vi.waitFor(() => assert.equal(acknowledged(harness), 4), { timeout: 15000 });
+	await harness.session.agent.waitForIdle();
+
+	assert.equal(noticeEntries(harness).length, 4);
+	assert.deepEqual([...seen].sort(), [...ids].sort(), "the model reads every acknowledged notice");
+});
+
 test("notices that arrive while the chat works are read within its turn, with no turn of their own", async () => {
 	const harness = await chat();
 	const ids = [await startBackground(harness.session), await startBackground(harness.session)];
