@@ -308,6 +308,46 @@ describe("compaction clears the context window without calling a model", () => {
 		assert.ok(textOf(context[0]).startsWith("Context cleared."));
 		assert.doesNotThrow(() => assertToolPairingInvariant(convertToLlm(harness!.session.messages)));
 	});
+
+	it("aborting a streamed tool call and then compacting clears the context", async () => {
+		harness = await createHarness({
+			models: [{ id: "big", contextWindow: WINDOW, maxTokens: 32_000 }],
+			settings: { compaction: { enabled: true, reserveTokens: RESERVE }, retry: { enabled: false } },
+			fauxProvider: { tokensPerSecond: 20 },
+		});
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("read", { path: "a/".repeat(400) }, { id: "aborted-call" })], {
+				stopReason: "toolUse",
+			}),
+		]);
+		let aborting: Promise<void> | undefined;
+		harness.session.subscribe((event) => {
+			if (
+				aborting === undefined &&
+				event.type === "message_update" &&
+				event.message.role === "assistant" &&
+				event.message.content.some((block) => block.type === "toolCall")
+			) {
+				aborting = harness!.session.abort();
+			}
+		});
+		const prompting = harness.session.prompt("go");
+		await vi.waitFor(() => assert.ok(aborting !== undefined));
+		await Promise.allSettled([prompting, aborting!]);
+
+		const result = await harness.session.compact();
+		assert.equal(result.form, "cleared");
+		const branch = harness.sessionManager.getBranch();
+		const boundaries = branch.flatMap((entry, index) => (entry.type === "compaction" ? [index] : []));
+		assert.equal(boundaries.length, 1);
+		const aborted = branch
+			.slice(0, boundaries[0])
+			.findLast((entry) => entry.type === "message" && entry.message.role === "assistant");
+		assert.ok(aborted?.type === "message" && aborted.message.role === "assistant");
+		assert.equal(aborted.message.stopReason, "aborted");
+		assert.ok(aborted.message.content.some((block) => block.type === "toolCall"));
+		assert.doesNotThrow(() => assertToolPairingInvariant(convertToLlm(harness!.session.messages)));
+	});
 });
 
 describe("which tool calls still wait for a result", () => {
@@ -342,9 +382,11 @@ describe("which tool calls still wait for a result", () => {
 		assert.equal(findUnansweredToolCall([user(), call("error")]), undefined);
 	});
 
-	it("a call from a completed tool-use turn waits until its result arrives", () => {
+	it("a call from a completed tool-use turn waits until its result arrives, including when detached behind a later entry", () => {
 		assert.equal(findUnansweredToolCall([user(), call("toolUse")]), 1);
 		assert.equal(findUnansweredToolCall([user(), call("toolUse"), result()]), undefined);
 		assert.equal(findUnansweredToolCall([user(), call("length")]), 1);
+		const detached = call("toolUse");
+		assert.equal(findUnansweredToolCall([user(), detached, user()], detached.id), 1);
 	});
 });
