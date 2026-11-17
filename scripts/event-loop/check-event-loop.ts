@@ -159,6 +159,8 @@ export function analyzeEventLoop(graph: CallGraph, policy: EventLoopPolicy = INT
 	for (const [id, reason] of exitOnly) startupOnly.set(id, reason);
 	const loaderHooks = reviewed(policy.synchronousLoaderHooks, "SYNCHRONOUS_LOADER_HOOKS");
 	for (const [id, reason] of loaderHooks) startupOnly.set(id, reason);
+	const durableRecords = reviewed(policy.durableRecords, "DURABLE_RECORDS");
+	for (const [id, reason] of durableRecords) startupOnly.set(id, reason);
 	for (const id of otherModes.keys()) startupOnly.set(id, "other mode");
 	const loadedAtStartup = startupModuleNodes(graph, policy.startupModules, policyErrors);
 	const interactive = reach(
@@ -175,6 +177,7 @@ export function analyzeEventLoop(graph: CallGraph, policy: EventLoopPolicy = INT
 		["STARTUP_ONLY", policy.startupOnly],
 		["EXIT_ONLY", policy.exitOnly],
 		["SYNCHRONOUS_LOADER_HOOKS", policy.synchronousLoaderHooks],
+		["DURABLE_RECORDS", policy.durableRecords],
 	] as const) {
 		for (const entry of entries) {
 			const id = byName.get(selectorKey(entry));

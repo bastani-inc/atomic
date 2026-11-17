@@ -60,8 +60,9 @@ A synchronous path that a renderer or key handler needs must read from memory.
 
 Only when a function genuinely runs before the first frame, or only in a non-interactive command, add it to
 `STARTUP_ONLY` or `OTHER_MODES` in `policy.ts` with the reason it cannot run later. `EXIT_ONLY` is for writes that
-must land as the process exits or fails, and `SYNCHRONOUS_LOADER_HOOKS` for the extension loader's hooks that a
-synchronous module loader calls. The walk does not enter those functions. An entry that no longer names a function,
+must land as the process exits or fails, `DURABLE_RECORDS` for a small write whose landing before the next step is
+a crash-consistency contract, and `SYNCHRONOUS_LOADER_HOOKS` for the extension loader's hooks that a synchronous
+module loader calls. The walk does not enter those functions. An entry that no longer names a function,
 or one that is no longer reached, fails the check, so the lists cannot go stale. `REVIEWED_REGEXES` accepts a
 backtracking pattern whose input is always short, with the reason.
 

@@ -290,10 +290,35 @@ export const SYNCHRONOUS_LOADER_HOOKS: readonly ReviewedSelector[] = [
 ];
 
 /**
+ * Reviewed exceptions: a small synchronous write whose ordering before the next side effect is a crash-consistency
+ * contract: if the process is killed right after it, the record must already be on disk. The walk does not enter them.
+ */
+export const DURABLE_RECORDS: readonly ReviewedSelector[] = [
+	{
+		file: "packages/coding-agent/src/core/resume/blueprint/build-lock.ts",
+		name: "recordStepProcessDurably",
+		reason:
+			"names a blueprint step's process in its build lock as the step starts and ends, so a host killed mid-step always leaves a lock that lets the next resume stop the step's leftovers (#4748)",
+	},
+];
+
+/**
  * Reviewed exceptions: functions that only run as the process exits or after an error that ends the session, when a
  * blocking write is the only way the record lands. The walk does not enter them.
  */
 export const EXIT_ONLY: readonly ReviewedSelector[] = [
+	{
+		file: "packages/coding-agent/src/core/tasks/supervisor.ts",
+		name: "killSupervisedProcessTrees",
+		reason:
+			"only the interactive mode's emergency terminal exit and uncaught-crash handler call it, immediately before process.exit, so supervised process trees die with the process",
+	},
+	{
+		file: "packages/coding-agent/src/core/event-loop-monitor.ts",
+		name: "EventLoopMonitor.writeAtQuit",
+		reason:
+			"the opt-in event-loop diagnostic's last records, written once the quit has begun or at exit; Windows ends the engine as soon as its host quits, before an asynchronous write could land",
+	},
 	{
 		file: "packages/tui/src/tui-main-screen.ts",
 		name: "writeRenderCrashLog",
@@ -328,6 +353,7 @@ export interface EventLoopPolicy {
 	readonly startupOnly: readonly ReviewedSelector[];
 	readonly exitOnly: readonly ReviewedSelector[];
 	readonly synchronousLoaderHooks: readonly ReviewedSelector[];
+	readonly durableRecords: readonly ReviewedSelector[];
 	readonly reviewedRegexes: readonly ReviewedRegex[];
 }
 
@@ -343,5 +369,6 @@ export const INTERACTIVE_HOST_POLICY: EventLoopPolicy = {
 	startupOnly: STARTUP_ONLY,
 	exitOnly: EXIT_ONLY,
 	synchronousLoaderHooks: SYNCHRONOUS_LOADER_HOOKS,
+	durableRecords: DURABLE_RECORDS,
 	reviewedRegexes: REVIEWED_REGEXES,
 };
