@@ -34,11 +34,13 @@ import {
 	Container,
 	CustomMessageComponent,
 	chatEntriesFromAgentMessages,
+	getChangelogPath,
 	hasTrustRequiringProjectResourcesAsync,
 	Markdown,
 	type Message,
 	type PersistedMessageMeta,
 	parseSkillBlock,
+	preloadChangelog,
 	recordTimeSinceReset,
 	renderChatMessageEntry,
 	type SessionContext,
@@ -873,12 +875,14 @@ InteractiveModeBase.prototype.getUserInput = async function (
 				markLifecycleTiming("interactive-input-handler-ready");
 				void (async () => {
 					await yieldToEventLoop();
+					this.footerDataProvider.startGitWatcher();
 					// pi parity: the changelog/first-run notices need nothing from
 					// extensions — render them right after the input handler is ready
 					// instead of gating them behind the deferred extension reload (or,
 					// when the user types immediately, behind the whole agent turn).
+					// Deferred startup gets here before it has read the changelog.
+					await preloadChangelog(getChangelogPath());
 					this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
-					this.footerDataProvider.startGitWatcher();
 					if (this.deferredStartupPending) {
 						await this.ensureDeferredStartupComplete();
 					}
