@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { statSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, test } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, onTestFinished, test } from "vitest";
 import { isSocketAnswering } from "../../packages/intercom/broker/socket-liveness.js";
 import { acquireSocketReplacementLock } from "../../packages/intercom/broker/socket-replacement-lock.js";
 import * as staleLockFile from "../../packages/intercom/broker/stale-lock-file.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
 import { type BrokerProcessControl, createBrokerProcessControl } from "../helpers/broker-process-control.js";
+import { keepProcessPid, keptExitedPid } from "../helpers/exited-process.js";
 import {
 	type ByteStream,
 	decodeStream,
@@ -531,10 +534,9 @@ describe("spawn lock staleness (#3505)", () => {
 	}
 
 	async function deadPid(): Promise<number> {
-		const child = spawnProcess([process.execPath, "-e", ""], { stdout: "ignore" });
-		await child.exited;
-		assert.ok(child.pid !== undefined);
-		return child.pid;
+		const exited = await keptExitedPid();
+		onTestFinished(() => exited.release());
+		return exited.pid;
 	}
 
 	test("without a recorded broker the lock lasts as long as its spawner", async () => {
@@ -588,10 +590,9 @@ describe("socket replacement lock (#3505)", () => {
 	const lockPath = () => join(agentDir, `replace-lock-${lockCount++}`);
 
 	async function deadPid(): Promise<number> {
-		const child = spawnProcess([process.execPath, "-e", ""], { stdout: "ignore" });
-		await child.exited;
-		assert.ok(child.pid !== undefined);
-		return child.pid;
+		const exited = await keptExitedPid();
+		onTestFinished(() => exited.release());
+		return exited.pid;
 	}
 
 	test("a live holder's lock is never taken, however long it is held", async () => {
@@ -618,17 +619,31 @@ describe("socket replacement lock (#3505)", () => {
 
 	test("a lock still unreadable only briefly is waited on, not taken over (#5132)", async () => {
 		const path = lockPath();
-		const writer = spawnProcess(
+		const publish = `${path}.publish`;
+		const writer = spawn(
+			process.execPath,
 			[
-				process.execPath,
 				"-e",
-				`const { openSync, writeSync, closeSync } = require("node:fs");
+				`const { existsSync, openSync, writeSync, closeSync } = require("node:fs");
 				const fd = openSync(${JSON.stringify(path)}, "wx");
-				setTimeout(() => { writeSync(fd, process.pid + "\\n"); closeSync(fd); }, ${STILL_WRITING_MS});
+				const publishing = setInterval(() => {
+					if (!existsSync(${JSON.stringify(publish)})) return;
+					clearInterval(publishing);
+					writeSync(fd, process.pid + "\\n");
+					closeSync(fd);
+				}, ${POLL_INTERVAL_MS});
 				setInterval(() => {}, 1000);`,
 			],
-			{ stdout: "ignore" },
+			{ stdio: "ignore", windowsHide: true },
 		);
+		const writerExited = once(writer, "exit");
+		onTestFinished(async () => {
+			writer.kill();
+			await writerExited;
+		});
+		await once(writer, "spawn");
+		assert.ok(writer.pid !== undefined);
+		onTestFinished(await keepProcessPid(writer));
 		while (!fileExistsSync(path)) await sleep(POLL_INTERVAL_MS);
 		let waits = 0;
 		let noticed!: () => void;
@@ -645,11 +660,12 @@ describe("socket replacement lock (#3505)", () => {
 		await sleep(LIVE_HOLDER_OBSERVATION_MS);
 		assert.equal(waits, 1, "the wait is announced once");
 		assert.equal(readTextSync(path, "utf8"), "", "the lock still being written is left in place");
+		writeTextSync(publish, "");
 		while (readTextSync(path, "utf8") === "") await sleep(POLL_INTERVAL_MS);
 		assert.equal(Number.parseInt(readTextSync(path, "utf8"), 10), writer.pid, "the writer's lock is left in place");
 
 		writer.kill();
-		await writer.exited;
+		await writerExited;
 		const release = await acquiring;
 		assert.equal(Number.parseInt(readTextSync(path, "utf8"), 10), process.pid, "once the writer is gone it is taken");
 		release();
@@ -746,8 +762,8 @@ describe("socket replacement lock (#3505)", () => {
 				`const { existsSync, writeFileSync, rmSync } = require("node:fs");
 				writeFileSync(${JSON.stringify(liveReady)}, "");
 				const clear = () => {
-					rmSync(${JSON.stringify(liveToken)}, { force: true });
 					rmSync(${JSON.stringify(liveLock)}, { force: true });
+					rmSync(${JSON.stringify(liveToken)}, { force: true });
 					process.exit(0);
 				};
 				let fallback;

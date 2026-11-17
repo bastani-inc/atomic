@@ -5,7 +5,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
-import { afterAll, beforeAll, describe, test, vi } from "vitest";
+import { afterAll, beforeAll, describe, onTestFinished, test, vi } from "vitest";
 import {
 	expectedBrokerStorage,
 	queryIntercomBroker,
@@ -19,6 +19,7 @@ import { registerIntercomTool } from "../../packages/intercom/intercom-tool.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import { ReplyWaiterRegistry } from "../../packages/intercom/reply-waiter.js";
 import type { BrokerMultiNodeStatus } from "../../packages/intercom/types.js";
+import { keepProcessPid, keptExitedPid } from "../helpers/exited-process.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 
 /**
@@ -292,6 +293,8 @@ test(
 	async () => {
 		const fixture = fixtureFor(agentDirectory("idle"));
 		const broker = await startBroker(fixture);
+		assert.ok(broker.pid !== undefined);
+		onTestFinished(await keepProcessPid(broker));
 		const outcome = await restartIntercomBroker(fixture.agentDir);
 		assert.deepEqual(outcome, { status: "stopped", previous: { pid: broker.pid, sessions: 0 } });
 		await exited(broker);
@@ -307,6 +310,8 @@ test(
 	async () => {
 		const fixture = fixtureFor(agentDirectory("restart"));
 		const before = await startBroker(fixture);
+		assert.ok(before.pid !== undefined);
+		onTestFinished(await keepProcessPid(before));
 		const session = await connectSession(fixture.agentDir, "reconnecting");
 		// A real session reconnects through `spawnBrokerIfNeeded` once its broker is gone; this one starts the broker itself.
 		let after: Promise<ChildProcess> | undefined;
@@ -330,9 +335,9 @@ test(
 
 test("a stale legacy endpoint with a dead PID is stopped, not a restarted broker (#3857)", async () => {
 	const agentDir = agentDirectory("stale-legacy");
-	const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
-	await exited(child);
-	writeFileSync(getBrokerPidPath(agentDir), String(child.pid));
+	const dead = await keptExitedPid();
+	onTestFinished(() => dead.release());
+	writeFileSync(getBrokerPidPath(agentDir), String(dead.pid));
 	const server = net.createServer((socket) => socket.on("data", () => socket.destroy()));
 	await new Promise<void>((resolveListening) =>
 		server.listen(getBrokerSocketPath(process.platform, agentDir), resolveListening),
@@ -366,6 +371,8 @@ test(
 		);
 		const fixture = fixtureFor(agentDir);
 		fixture.trackBroker(legacy);
+		assert.ok(legacy.pid !== undefined);
+		onTestFinished(await keepProcessPid(legacy));
 		await vi.waitFor(
 			async () => {
 				fixture.assertRunning();
