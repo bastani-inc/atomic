@@ -6,6 +6,7 @@
 
 - Set `ATOMIC_EVENT_LOOP_BLOCK_MS` to a number of milliseconds to log every stall of the interactive UI or its engine at least that long, with the functions that were running and each process's event-loop delay for startup, the session and shutdown, to `event-loop-blocks.jsonl` in the agent directory or the file `ATOMIC_EVENT_LOOP_BLOCK_LOG` names. Nothing starts while it is unset. See [Finding what freezes the UI](/development#finding-what-freezes-the-ui)
 - SDK: `BashToolOptions.commandPrefix` accepts a promise, awaited for each command, and asynchronous forms of helpers that used to block: `resolveInstalledGit`, `processSharedStorageSelectionAsync` and `processStorageEnvironmentAsync`
+- SDK: `getProjectTrustOptionsAsync`, `buildSkillCatalogAsync` and `emptySkillCatalog`
 
 ### Changed
 
@@ -19,6 +20,8 @@
 - The session picker no longer resolves each listed session's path on the disk every time it draws or filters; it resolves symlinks once, off the event loop
 - Sessions with many background tasks or queued messages stay responsive: task rows, the task list and queued-message confirmation take time proportional to the number of tasks or messages, not its square
 - On Windows, the isolated engine no longer freezes while the terminal is busy drawing, for example a long resumed session, and RPC mode no longer stalls while its client reads stdout slowly: records are written to stdout off the event loop
+- The fullscreen interface no longer freezes for up to seconds while resuming, paging through or quitting a long session (10,000+ entries): frames render only what is on screen, the session's end appears at once while its history fills in behind it, and the exit transcript is written without stalling input
+
 
 ## [0.9.88] - 2026-11-16
 

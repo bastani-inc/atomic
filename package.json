@@ -29,7 +29,7 @@
     "test:mcp-conformance": "bun run packages/coding-agent/test/mcp-conformance/run.ts",
     "typecheck": "npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build && npm --workspace=@bastani/atomic-ai run build && npm --workspace=@bastani/atomic-ai run typecheck && npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build && node scripts/bun-typecheck.mjs && npm --workspace=@bastani/atomic run typecheck",
     "format": "biome format --write .",
-    "check": "biome check --error-on-warnings . && npm run typecheck && npm run check:shrinkwrap",
+    "check": "biome check --error-on-warnings . && npm run typecheck && npm run check:shrinkwrap && npm run check:event-loop",
     "lint": "npm run check",
     "check:shrinkwrap": "node scripts/generate-coding-agent-shrinkwrap.mjs --check",
     "check:event-loop": "node scripts/event-loop/check-event-loop.ts",

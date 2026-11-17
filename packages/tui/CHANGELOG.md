@@ -4,6 +4,15 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+### Added
+
+- `WindowedContainer`, a vertical list a fullscreen `ScrollView` lays out by its visible window: frames render only the children on screen and one viewport around them, the rest render in bounded background slices, and the view stays in place while content above it changes height
+- `TuiStopOptions.writeInSlices` and `TUI.whenStopped()`, so stopping the fullscreen renderer can write the transcript to the main screen in bounded slices across event-loop turns; terminals may implement the optional `Terminal.flush()`
+
+### Changed
+
+- `turnPromptAbove` accepts any `WindowRows` (arrays still work), and `ScrollLayoutState` adds `isFollowingEnd` and an optional anchored scroll position for `updateLayout`
+
 ### Fixed
 
 - Fuzzy matching stays fast when a long query recurs throughout an item's text, with the same scores, and select lists lowercase their filter once instead of once per item

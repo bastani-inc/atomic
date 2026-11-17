@@ -359,6 +359,21 @@ export interface ReviewedEdge {
  */
 export const GUARDED_CALLS: readonly ReviewedEdge[] = [
 	{
+		from: { file: "packages/coding-agent/src/core/skill-catalog.ts", name: "getSkillCatalog" },
+		to: { file: "packages/coding-agent/src/core/skill-catalog.ts", name: "buildSkillCatalog" },
+		reason:
+			"builds a catalog only for a resource loader without getSkillCatalog; the default, builtin and mandatory loaders all have one, and createAgentSession wraps any caller's loader in one of them, so only SDK hosts that construct an AgentSession with their own loader take this call",
+	},
+	{
+		from: {
+			file: "packages/coding-agent/src/core/mandatory-resource-loader.ts",
+			name: "MandatoryResourceLoader.getSkillCatalog",
+		},
+		to: { file: "packages/coding-agent/src/core/skill-catalog.ts", name: "buildSkillCatalog" },
+		reason:
+			"the fallback for a delegate without getSkillCatalog; the mandatory loader's delegate is always the default or builtin loader, which have one",
+	},
+	{
 		from: {
 			file: "packages/coding-agent/src/core/resource-loader-core.ts",
 			name: "DefaultResourceLoader.constructor",
