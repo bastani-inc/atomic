@@ -145,6 +145,7 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 		throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
 	const owner = resolveWorkflowStageDeliveryTarget(this);
 	if (owner !== this) return owner.prompt(text, options);
+	if (subagentExecutionEnded(this)) throw subagentExecutionEndedError();
 	if (this._isEmittingAgentSettled && !queuesDuringAgentSettled(this, options)) {
 		// A run started by an agent_settled handler waits until every settled handler completes.
 		deferSettledAction(this, async () => await this.prompt(text, options));
@@ -874,7 +875,26 @@ async function settleSubagentMessages(session: AgentSession, keepMessageAdmissio
 	}
 	// A turn that settles before the child's execution gave it its task, such as one an extension's interrupt started
 	// while the task was still being sent, leaves admission open for that task.
-	if (!keepMessageAdmissionOpen && session._subagentPolicy?.taskPending?.() !== true) admission.seal();
+	if (
+		!keepMessageAdmissionOpen &&
+		session._subagentPolicy?.taskPending?.() !== true &&
+		(session._deferredSettledActions?.length ?? 0) === 0
+	)
+		admission.seal();
+}
+
+function subagentExecutionEnded(session: AgentSession): boolean {
+	const admission = session._subagentMessageAdmission;
+	return (
+		admission !== undefined &&
+		!admission.isOpen() &&
+		!session._queuedMessagesPaused &&
+		!session._agentRunAbortRequested
+	);
+}
+
+function subagentExecutionEndedError(): Error {
+	return new Error("Subagent execution is terminal and cannot accept messages");
 }
 
 function awaitsSubagentAnswer(
@@ -894,7 +914,7 @@ function awaitsSubagentAnswer(
 	return admission.hasPendingDeliveries() || session._priorityInterruptPending || session.agent.hasQueuedMessages();
 }
 
-export function sealMessageAdmissionIfDrained(this: AgentSession): boolean {
+export function _sealMessageAdmissionIfDrained(this: AgentSession): boolean {
 	if (this.isStreaming || this._activePromptCount > 0 || this._pendingInterruptDeliveries > 0) return false;
 	const admission = this._subagentMessageAdmission;
 	if (admission === undefined || !admission.isOpen()) return true;
@@ -1133,9 +1153,23 @@ async function queueUserInput(
 	assertSessionOpen(session);
 	const owner = resolveWorkflowStageDeliveryTarget(session);
 	if (owner !== session) return queueUserInput(owner, text, images, behavior, source, expandPromptTemplates);
-	return trackSessionWork(session, () =>
-		admittedQueueUserInput(session, text, images, behavior, source, expandPromptTemplates),
-	);
+	const queue = () =>
+		trackSessionWork(session, () =>
+			admittedQueueUserInput(session, text, images, behavior, source, expandPromptTemplates),
+		);
+	const boundary = session._subagentMessageAdmission;
+	if (boundary === undefined || session._queuedMessagesPaused) return queue();
+	let disposition: QueuedInputDisposition = "queued";
+	await boundary.admit(
+		undefined,
+		async () => {
+			disposition = await queue();
+		},
+		() => {
+			throw subagentExecutionEndedError();
+		},
+	).completion;
+	return disposition;
 }
 
 async function admittedQueueUserInput(
@@ -1361,7 +1395,7 @@ export const agentSessionPromptMethods = {
 	_runAgentContinue,
 	_runAgentContinuation,
 	_continueQueuedAgentMessages,
-	sealMessageAdmissionIfDrained,
+	_sealMessageAdmissionIfDrained,
 	_tryExecuteExtensionCommand,
 	_expandSkillCommand,
 	steer,

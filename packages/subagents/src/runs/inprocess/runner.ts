@@ -584,7 +584,7 @@ export async function sessionDrained(
 		| "isStreaming"
 		| "_activePromptCount"
 		| "_pendingInterruptDeliveries"
-		| "sealMessageAdmissionIfDrained"
+		| "_sealMessageAdmissionIfDrained"
 	>,
 	stops: readonly AbortSignal[],
 	subscribeDrained: (listener: () => void) => () => void,
@@ -595,7 +595,7 @@ export async function sessionDrained(
 		(session._activePromptCount ?? 0) === 0 &&
 		(session._pendingInterruptDeliveries ?? 0) === 0 &&
 		!session.isStreaming &&
-		(waitsForNextTurn() || (session.sealMessageAdmissionIfDrained?.() ?? true));
+		(waitsForNextTurn() || (session._sealMessageAdmissionIfDrained?.() ?? true));
 	while (!drained() && !stops.some((stop) => stop.aborted)) {
 		await new Promise<void>((resolve) => {
 			const unsubscribeDrained = subscribeDrained(() => done());
@@ -2272,10 +2272,10 @@ export class SubagentControlRuntime {
 						taskPending = false;
 						startBudget.end();
 					} else {
-						const prompting = session.prompt(
-							admitted.spec.task,
-							admitted.spec.resumeTaskLiteral ? LITERAL_TEXT : undefined,
-						);
+						const prompting = session.prompt(admitted.spec.task, {
+							streamingBehavior: "steer",
+							...(admitted.spec.resumeTaskLiteral ? LITERAL_TEXT : {}),
+						});
 						// Its task is dispatched once its agent starts; a prompt that settles first, refused or handled by an
 						// extension, ends dispatch too.
 						void prompting.then(markTaskDispatched, markTaskDispatched);
