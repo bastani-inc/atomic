@@ -102,6 +102,7 @@ export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike
 	getTaskSource?: () => TaskViewSource | undefined;
 	/** Custom hosts may retain live task rows; interactive stage chat uses footer-only status. */
 	taskRowsInChat?: boolean;
+	echoedInitialPrompt?: string | (() => string | undefined);
 	isStreaming?: () => boolean;
 	workingTokenCount?: () => number | undefined;
 	isPaused?: () => boolean;

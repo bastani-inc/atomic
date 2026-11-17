@@ -796,7 +796,7 @@ export async function showAgentPanel(
 							if (focus.helpOpen)
 								return renderNavKeyOverlay(
 									"keys · agents",
-									agentPanelKeys(focus.selected()).concat([
+									agentPanelKeys(focus.selected(), keys).concat([
 										{ keys: "↑ on main", label: "back to prompt" },
 										{ action: "app.agents.chord", label: "then the stop-all key: stop all background work" },
 									]),

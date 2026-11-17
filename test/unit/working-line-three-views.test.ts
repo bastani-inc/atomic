@@ -236,4 +236,37 @@ describe("one working line in the main chat, a stage chat and a subagent view (#
 			for (const view of views) view.dispose();
 		}
 	});
+
+	test("hydrating a running turn with only closed old history starts the clock at now instead of the old history timestamp (#5224)", () => {
+		vi.setSystemTime(10_000_000);
+		const sub = subagentView();
+		try {
+			const closedOldHistory = [
+				{ role: "user", content: "earlier turn", timestamp: 1_000 },
+				{
+					...assistant("finished hours ago", 409),
+					stopReason: "stop",
+					timestamp: 2_000,
+					usage: {
+						input: 100,
+						output: 409,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 509,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+				},
+			];
+			sub.host.replaceMessages(closedOldHistory as never);
+			sub.host.beginExternalPromptLifecycle();
+			sub.host.hydrateRunningTurn(closedOldHistory as never);
+
+			assert.equal(sub.line(), "∀ Brewing... (0s · ↓ 509 tokens)");
+
+			vi.setSystemTime(10_003_000);
+			assert.equal(sub.line(), "∀ Brewing... (3s · ↓ 509 tokens)");
+		} finally {
+			sub.dispose();
+		}
+	});
 });

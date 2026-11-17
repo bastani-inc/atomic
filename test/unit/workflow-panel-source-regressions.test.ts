@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { test, vi } from "vitest";
 import { captureWorkflowOwnerResources } from "../../packages/workflows/src/extension/workflow-owner-resources.js";
 import { workflowPanelSource } from "../../packages/workflows/src/extension/workflow-panel-source.js";
+import { createStageControlHandle } from "../../packages/workflows/src/runs/foreground/executor-stage-control.js";
+import {
+	createStageControlRegistry,
+	type StageControlHandle,
+} from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { WorkflowModelUsage } from "../../packages/workflows/src/shared/types.js";
 import { buildGraphOverlayAdapter } from "../../packages/workflows/src/tui/overlay-adapter.js";
 import { viewedWorkflowRuns } from "../../packages/workflows/src/tui/panel-runs.js";
 
@@ -245,4 +251,157 @@ test("an earlier prompt identity cannot answer a replacement with identical ques
 	const answered = store.awaitPendingPrompt("live", "second");
 	assert.deepEqual(await source.answer!("run:live", second.choices![0]!, second), { ok: true });
 	assert.equal(await answered, "2", "a raw numeric label selects itself, not another option index");
+});
+
+test("workflowPanelSource adds in-flight attempt usage to recorded stage attempts across retries and close handoff, coalesces handle events, and unsubscribes when stages finish or listeners leave (#5224)", async () => {
+	const store = createStore();
+	const stageControlRegistry = createStageControlRegistry();
+	store.recordRunStart({
+		id: "review",
+		name: "review",
+		inputs: {},
+		status: "running",
+		startedAt: 1_000,
+		toolNodes: [],
+		stages: [
+			{
+				id: "plan",
+				name: "plan",
+				status: "completed",
+				parentIds: [],
+				toolEvents: [],
+				modelAttempts: [{ model: "mock/model", success: true, usage: { input: 80, output: 42 } }],
+			},
+			{
+				id: "inspect",
+				name: "inspect",
+				status: "running",
+				parentIds: ["plan"],
+				toolEvents: [],
+			},
+		],
+	});
+
+	let inFlightUsage: WorkflowModelUsage | undefined = { input: 80, output: 120 };
+	const handleListeners = new Set<(event: unknown) => void>();
+	const makeHandle = (stageId: string): StageControlHandle =>
+		({
+			runId: "review",
+			stageId,
+			stageName: stageId,
+			status: "running",
+			sessionId: `session-${stageId}`,
+			sessionFile: undefined,
+			isStreaming: true,
+			messages: [],
+			inFlightAttemptUsage: () => inFlightUsage,
+			ensureAttached: async () => {},
+			prompt: async () => {},
+			steer: async () => {},
+			followUp: async () => {},
+			pause: async () => {},
+			resume: async () => undefined,
+			subscribe(listener) {
+				handleListeners.add(listener as (event: unknown) => void);
+				return () => {
+					handleListeners.delete(listener as (event: unknown) => void);
+				};
+			},
+		}) as StageControlHandle;
+
+	stageControlRegistry.register(makeHandle("inspect"));
+	const source = workflowPanelSource(
+		{ ...captureWorkflowOwnerResources(), store, stageControlRegistry },
+		{
+			open: () => true,
+			quit: async () => {
+				throw new Error("not used");
+			},
+		},
+	);
+
+	assert.equal(handleListeners.size, 0, "no handle subscription before source has subscribers");
+	assert.equal(source.items()[0]?.tokens, 322, "completed plan (122) + in-flight inspect (80 + 120 = 200)");
+
+	let notifications = 0;
+	const unsubscribe = source.subscribe(() => {
+		notifications++;
+	});
+	try {
+		assert.equal(handleListeners.size, 1, "subscribes to active stage handle while source is observed");
+
+		// Simulate 1st attempt failing (60 tokens recorded) and 2nd attempt in flight (200 tokens pending).
+		const run = store.run("review")!;
+		run.stages[1]!.modelAttempts = [{ model: "mock/primary", success: false, usage: { input: 50, output: 10 } }];
+		inFlightUsage = { input: 80, output: 120 };
+		for (const listener of [...handleListeners]) {
+			listener({ type: "message_end" });
+			listener({ type: "message_end" });
+			listener({ type: "message_end" });
+		}
+		assert.equal(notifications, 0, "handle events coalesce before microtask flush");
+		await Promise.resolve();
+		assert.equal(notifications, 1, "burst of handle events emits one coalesced notification");
+		assert.equal(
+			source.items()[0]?.tokens,
+			382,
+			"completed plan (122) + inspect 1st recorded attempt (60) + inspect 2nd in-flight attempt (200)",
+		);
+
+		// Close handoff: takeAttemptUsage closes the window (undefined) and records the 2nd attempt in modelAttempts.
+		inFlightUsage = undefined;
+		store.recordStageEnd("review", {
+			id: "inspect",
+			name: "inspect",
+			status: "completed",
+			parentIds: ["plan"],
+			toolEvents: [],
+			modelAttempts: [
+				{ model: "mock/primary", success: false, usage: { input: 50, output: 10 } },
+				{ model: "mock/fallback", success: true, usage: { input: 80, output: 120 } },
+			],
+		});
+		source.items();
+		assert.equal(handleListeners.size, 0, "completed stage handle is immediately unsubscribed");
+		assert.equal(source.items()[0]?.tokens, 382, "close handoff preserves exact 382 total without double counting");
+
+		store.recordStageStart("review", {
+			id: "verify",
+			name: "verify",
+			status: "running",
+			parentIds: ["inspect"],
+			toolEvents: [],
+		});
+		inFlightUsage = { input: 10, output: 8 };
+		stageControlRegistry.register(makeHandle("verify"));
+		assert.equal(source.items()[0]?.tokens, 400);
+		assert.equal(handleListeners.size, 1, "subscribes to newly started running stage handle");
+	} finally {
+		unsubscribe();
+	}
+	assert.equal(handleListeners.size, 0, "unsubscribing the source releases all handle subscriptions");
+
+	const runtimeHandle = createStageControlHandle({
+		runId: "review",
+		stageId: "verify",
+		name: "verify",
+		stageSnapshot: { id: "verify", name: "verify", status: "running", parentIds: [], toolEvents: [] },
+		state: {
+			liveHandleReleased: false,
+			stageFinalized: false,
+			sessionCheckpointed: false,
+			stageClosedByWorkflowExit: false,
+			latestUserMessage: undefined,
+			userMessageSeq: 0,
+		},
+		activeStore: store,
+		innerCtx: {
+			isStreaming: true,
+			__sessionMeta: () => ({}),
+			__inFlightAttemptUsage: () => ({ input: 80, output: 120 }),
+			__isReleased: () => false,
+			subscribe: () => () => {},
+		},
+	} as never);
+	assert.deepEqual(runtimeHandle.inFlightAttemptUsage?.(), { input: 80, output: 120 });
 });

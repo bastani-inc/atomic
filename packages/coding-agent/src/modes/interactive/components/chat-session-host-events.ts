@@ -23,10 +23,13 @@ import {
 } from "./chat-session-host-runtime.ts";
 import { type ChatSessionHostState, countableTranscriptLength } from "./chat-session-host-state.ts";
 import {
+	exactTextOnlyUserPrompt,
 	extractMessageText,
+	firstRawUserExactText,
 	isChatMessageEntry,
 	isMessageLike,
 	isUserMessageLike,
+	syncFirstUserEntry,
 	userMessageSignature,
 } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
@@ -137,7 +140,11 @@ function refreshCompactedTranscript<TExtraEntry extends ChatTranscriptEntryLike>
 		if (state.bodyViewport.getScrollFromBottom() > 0) {
 			state.newMessages.observe(false, countableTranscriptLength(state));
 		}
+		const firstUser = firstRawUserExactText(compactedMessages);
+		state.seenFirstRawUser = firstUser.seenUser;
+		state.firstUserEntryExactText = firstUser.exactText;
 		state.liveChat.replaceMessages(compactedMessages, state.extraEntries);
+		syncFirstUserEntry(state);
 		state.newMessages.compactionRefreshed(countableTranscriptLength(state));
 		return;
 	}
@@ -148,7 +155,11 @@ function refreshCompactedTranscript<TExtraEntry extends ChatTranscriptEntryLike>
 		if (state.bodyViewport.getScrollFromBottom() > 0) {
 			state.newMessages.observe(false, countableTranscriptLength(state));
 		}
+		const firstUser = firstRawUserExactText(remoteMessages);
+		state.seenFirstRawUser = firstUser.seenUser;
+		state.firstUserEntryExactText = firstUser.exactText;
 		state.liveChat.replaceMessages(remoteMessages, state.extraEntries);
+		syncFirstUserEntry(state);
 		state.newMessages.compactionRefreshed(countableTranscriptLength(state));
 		return;
 	}
@@ -166,6 +177,10 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 	if (type === "message_start") {
 		const message = (event as { message?: unknown }).message;
 		if (isUserMessageLike(message)) {
+			if (!state.seenFirstRawUser) {
+				state.seenFirstRawUser = true;
+				state.firstUserEntryExactText = exactTextOnlyUserPrompt(message);
+			}
 			const signature = userMessageSignature(extractMessageText(message.content));
 			const count = state.optimisticUserSignatureCounts.get(signature) ?? 0;
 			if (count > 0) {
@@ -175,7 +190,6 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 		}
 	}
 	if (type === "message_end") {
-		state.hydratedOutputOnly = false;
 		const message = (event as { message?: unknown }).message;
 		if (typeof message === "object" && message !== null && "role" in message) {
 			state.workingRunMeter.settled(message as { role: string });
@@ -183,8 +197,10 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 	}
 	if (isSharedLiveChatEvent(type)) {
 		const changed = state.liveChat.applyEvent(event);
+		if (type === "message_start" && state.firstUserEntry === undefined && state.seenFirstRawUser) {
+			syncFirstUserEntry(state);
+		}
 		if (type === "message_update") {
-			state.hydratedOutputOnly = false;
 			const hasDelta = (event as { assistantMessageEvent?: unknown }).assistantMessageEvent !== undefined;
 			meterStreamingAssistant(state, (event as { message?: unknown }).message, !hasDelta);
 		}
@@ -196,7 +212,6 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 	let changed = false;
 	switch (type) {
 		case "agent_start":
-			state.hydratedOutputOnly = false;
 			state.workingRunMeter.start();
 			state.sdkBusy = true;
 			state.workingMessage = undefined;

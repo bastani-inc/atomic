@@ -603,7 +603,7 @@ test("/tasks renders single-line rows, updated close hint, and compact Space pee
 		assert.match(peeked, /╭─ worker ─/);
 		assert.match(peeked, /gpt-6-astra.*bash git status/);
 		assert.match(peeked, /│ ❯/);
-		assert.match(peeked.split("\n").at(-1) ?? "", /enter send · esc close/);
+		assert.equal(peeked.split("\n").at(-1)?.trim(), "↑↓ select · enter/→ open · esc/← close");
 
 		for (const ch of "check lockfile") inspector.handleInput(ch);
 		inspector.handleInput(ENTER);
@@ -636,6 +636,75 @@ test("a shell peek names its command and status instead of showing an isolated e
 		assert.match(frame, /╭─ shell ─[\s\S]*│ sleep 600/);
 		assert.match(frame, /│ Running · 18s/);
 		assert.equal(inspector.fullscreen, false);
+	} finally {
+		inspector.dispose();
+		await fixture.dispose();
+	}
+});
+
+test("inline reply hints follow selection, editable digits and the sending lock (#5224)", async () => {
+	const fixture = taskFixture();
+	let finish = () => {};
+	const held = new Promise<{ ok: false; reason: string }>((resolve) => {
+		finish = () => resolve({ ok: false, reason: "offline" });
+	});
+	const inspector = new TaskInspector(
+		viewOf(fixture.store),
+		() => {},
+		() => {},
+	);
+	inspector.setBoardSource({
+		items: () => [waitingItem("run:keys", "p", "Continue?", ["Yes", "No"])],
+		subscribe: () => () => {},
+		answer: () => held,
+	});
+	const paint = () => plain(inspector.renderViewport(120, 24));
+	const hint = () => paint().split("\n").at(-1)?.trim();
+	try {
+		paint();
+		inspector.handleInput(SPACE);
+		assert.equal(hint(), "↑↓ select · 1-2 choose · enter send · esc/← close");
+		inspector.handleInput("1");
+		assert.equal(hint(), "↑↓ select · enter send · esc close");
+		inspector.handleInput("2");
+		assert.match(paint(), /❯ Yes2/);
+		inspector.handleInput(ENTER);
+		assert.match(paint(), /Sending…/);
+		assert.equal(hint(), "");
+		inspector.handleInput(ESC);
+		assert.match(paint(), /Sending…/);
+		finish();
+		await flush();
+		assert.equal(hint(), "↑↓ select · enter send · esc close");
+	} finally {
+		finish();
+		await flush();
+		inspector.dispose();
+		await fixture.dispose();
+	}
+});
+
+test("an empty native message card advertises its open action and filter arrows stay live (#5224)", async () => {
+	const fixture = taskFixture();
+	await fixture.start("Review cleanup");
+	const inspector = new TaskInspector(
+		viewOf(fixture.store),
+		() => {},
+		() => {},
+	);
+	const paint = () => plain(inspector.renderViewport(120, 24));
+	try {
+		paint();
+		inspector.handleInput(SPACE);
+		assert.equal(paint().split("\n").at(-1)?.trim(), "↑↓ select · enter/→ open · esc/← close");
+		inspector.handleInput("\x1b[C");
+		assert.equal(inspector.fullscreen, true);
+		inspector.handleInput(ESC);
+		paint();
+		inspector.handleInput("/");
+		assert.equal(paint().split("\n").at(-1)?.trim(), "↑↓ select · type filter · enter done · esc clear");
+		inspector.handleInput(DOWN);
+		assert.doesNotMatch(paint(), /⌕/);
 	} finally {
 		inspector.dispose();
 		await fixture.dispose();
