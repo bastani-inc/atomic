@@ -7,11 +7,16 @@ import {
 
 const SESSION_ID_ENV = "ATOMIC_INTERCOM_SESSION_ID";
 
-test("prefers the connected Intercom session id over a duplicate-prone display name", () => {
+test("prefers the session's own connected Intercom id over a duplicate-prone display name", () => {
 	const previous = process.env[SESSION_ID_ENV];
-	process.env[SESSION_ID_ENV] = "broker-session-id";
+	// Another session in this process connected last: its id is never this session's.
+	process.env[SESSION_ID_ENV] = "another-session-id";
 	try {
-		assert.equal(resolveIntercomSessionTarget("shared-name", "atomic-session-id"), "broker-session-id");
+		assert.equal(
+			resolveIntercomSessionTarget("shared-name", "atomic-session-id", "broker-session-id"),
+			"broker-session-id",
+		);
+		assert.equal(resolveIntercomSessionTarget("shared-name", "atomic-session-id"), "shared-name");
 	} finally {
 		if (previous === undefined) delete process.env[SESSION_ID_ENV];
 		else process.env[SESSION_ID_ENV] = previous;

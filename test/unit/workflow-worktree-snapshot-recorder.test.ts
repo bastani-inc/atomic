@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
+import { startHostProcessesThroughChildProcess } from "../helpers/host-spawn.js";
 import type { FilesystemFault, SpawnFault, SpawnRequest } from "../helpers/worktree-snapshot-faults.js";
 
 /**
@@ -55,6 +56,8 @@ import {
 } from "../helpers/workflow-snapshot-journal.js";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 import { failingCommand, gitCommand } from "../helpers/worktree-snapshot-faults.js";
+
+startHostProcessesThroughChildProcess();
 
 let sandbox: GitSandbox;
 let journals: SqlSnapshotJournal[];

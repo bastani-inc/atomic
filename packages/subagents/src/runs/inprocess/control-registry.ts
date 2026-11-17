@@ -9,8 +9,27 @@ import { createSubagentControl, type ParentContext, type SubagentControlRuntime 
  */
 const controls = new Map<string, SubagentControlRuntime>();
 
+/**
+ * Finished runs whose controls the process keeps, so `status` and run control can still name their children: the
+ * latest ones, as a task owner keeps its latest 256 finished tasks. A run with a child still pending, running or
+ * continued is never dropped. A dropped run's children keep their records and session files, so they still resume.
+ */
+export const FINISHED_RUN_CONTROL_RETENTION = 256;
+
+function dropOldestFinishedControls(): void {
+	let finished = 0;
+	for (const control of controls.values()) if (control.isFinished()) finished += 1;
+	for (const [path, control] of controls) {
+		if (finished <= FINISHED_RUN_CONTROL_RETENTION) return;
+		if (!control.isFinished()) continue;
+		controls.delete(path);
+		finished -= 1;
+	}
+}
+
 export function registerSubagentControl(control: SubagentControlRuntime): void {
 	controls.set(control.parent.path, control);
+	dropOldestFinishedControls();
 }
 
 export function getOrCreateSubagentControl(
@@ -24,7 +43,7 @@ export function getOrCreateSubagentControl(
 	// allocation across fresh native registries.
 	if (existing) return existing;
 	const control = createSubagentControl(parent, sessionRoot, runningCapacity);
-	controls.set(parent.path, control);
+	registerSubagentControl(control);
 	return control;
 }
 

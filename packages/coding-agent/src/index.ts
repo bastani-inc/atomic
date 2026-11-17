@@ -824,6 +824,7 @@ export {
 	type SessionStartTimeoutDetails,
 	SessionStartTimeoutError,
 	serializeSessionStartError,
+	sessionStartStepText,
 } from "./core/session-start-errors.ts";
 export {
 	DEGRADED_RESTORE_RETENTION_DAYS,
@@ -1184,6 +1185,8 @@ export {
 	ExtensionInputComponent,
 	ExtensionSelectorComponent,
 	FooterComponent,
+	formatTokenCount,
+	formatTokenSegment,
 	INPUT_LABEL_MIN_COLUMNS,
 	type InputLabel,
 	type InputLabelKind,
@@ -1221,6 +1224,7 @@ export {
 	selectorHintEntries,
 	ThemeSelectorComponent,
 	ThinkingSelectorComponent,
+	type TokenSegmentMode,
 	ToolExecutionComponent,
 	type ToolExecutionOptions,
 	TRANSCRIPT_JUMP_TO_END_URL,
