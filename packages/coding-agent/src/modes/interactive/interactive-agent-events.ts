@@ -92,7 +92,6 @@ InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveMode
 	const disposeWorkflowActivity = observeLocalWorkflowActivity(this.runtimeHost, session, (frame) => {
 		if (this.session === session) this.programStatus.handleWorkflowActivity(frame);
 	});
-	// An isolated engine mounts the agent panel itself; an in-process session mounts it here.
 	const disposeAgentPanel =
 		this.runtimeHost instanceof IsolatedInteractiveRuntime
 			? () => {}

@@ -1,5 +1,6 @@
-import type { AgentPanelOpenOptions, AgentPanelSource, WorkflowRunControlOutcome } from "@bastani/atomic";
+import type { AgentPanelItem, AgentPanelSource, WorkflowRunControlOutcome } from "@bastani/atomic";
 import { readGraphStoreSnapshot } from "../shared/store-observation.js";
+import { elapsedRunMs } from "../shared/timing.js";
 import {
 	answerPanelRun,
 	markWorkflowRunViewed,
@@ -10,20 +11,47 @@ import {
 import type { WorkflowOwnerResources } from "./workflow-owner-resources.js";
 
 export interface WorkflowPanelSourceDeps {
-	open(runId: string, options?: AgentPanelOpenOptions): void;
+	open: NonNullable<AgentPanelSource["open"]>;
 	quit(runId: string): Promise<WorkflowRunControlOutcome>;
 }
 
 export function workflowPanelSource(owner: WorkflowOwnerResources, deps: WorkflowPanelSourceDeps): AgentPanelSource {
 	const viewedRuns = viewedWorkflowRuns(owner.store);
+	let sampledAt = 0;
+	let cachedSnapshot: ReturnType<typeof readGraphStoreSnapshot> | undefined;
+	let cachedViewedRuns = new Set<string>();
+	let cachedItems: AgentPanelItem[] = [];
 	return {
-		items: () => panelItemsFromSnapshot(readGraphStoreSnapshot(owner.store), Date.now(), viewedRuns),
+		items: () => {
+			sampledAt = Date.now();
+			const snapshot = readGraphStoreSnapshot(owner.store);
+			const viewedChanged =
+				viewedRuns.size !== cachedViewedRuns.size || [...viewedRuns].some((id) => !cachedViewedRuns.has(id));
+			if (snapshot !== cachedSnapshot || viewedChanged) {
+				const runs = new Map(snapshot.runs.map((run) => [run.id, run]));
+				cachedItems = panelItemsFromSnapshot(snapshot, sampledAt, viewedRuns).map((item) => {
+					if (item.state !== "running" && item.state !== "input" && item.state !== "stopping") return item;
+					const id = panelRunId(item.id);
+					const run = id === undefined ? undefined : runs.get(id);
+					if (run === undefined) return item;
+					return {
+						...item,
+						get elapsedMs() {
+							return elapsedRunMs(run, item.endedAt ?? sampledAt);
+						},
+					};
+				});
+				cachedSnapshot = snapshot;
+				cachedViewedRuns = new Set(viewedRuns);
+			}
+			return cachedItems;
+		},
 		subscribe: (listener) => owner.store.subscribeInvalidation(listener),
 		open: (id, options) => {
 			const runId = panelRunId(id);
 			if (runId === undefined) return false;
+			if (deps.open(runId, options) === false) return false;
 			markWorkflowRunViewed(runId, owner.store);
-			deps.open(runId, options);
 			return true;
 		},
 		stop: async (id) => {

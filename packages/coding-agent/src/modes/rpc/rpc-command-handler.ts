@@ -141,7 +141,6 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, command.type);
 			}
 			case "set_stop_all_notice": {
-				// The host's Ctrl+X Ctrl+K notice, shown as an engine status so engine views (the workflow graph) show it.
 				session.extensionRunner.getUIContext().setStatus(STOP_ALL_STATUS_KEY, command.text);
 				return createRpcSuccessResponse(id, command.type);
 			}

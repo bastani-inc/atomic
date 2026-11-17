@@ -9,7 +9,11 @@ import {
 	visibleWidth,
 } from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
-import { type AgentPanelAnswerOptions, promptAnswerOptionsOf } from "../../../core/tasks/agent-panel-source.ts";
+import {
+	type AgentPanelAnswerOptions,
+	agentPanelItemReadAt,
+	promptAnswerOptionsOf,
+} from "../../../core/tasks/agent-panel-source.ts";
 import type { PromptRoute, TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import {
 	type TaskElapsedClocks,
@@ -203,8 +207,12 @@ export class TaskInspector implements Component {
 	private readonly replyDrafts = new Map<string, string>();
 	private readonly paintedPrompts = new Map<string, AgentPanelAnswerOptions>();
 	private readonly replyTargets = new Map<string, AgentPanelAnswerOptions>();
-	private readonly pickedChoices = new Map<string, { readonly text: string; readonly raw: string }>();
+	private readonly pickedChoices = new Map<
+		string,
+		{ readonly text: string; readonly raw: string; readonly index: number }
+	>();
 	private readonly paintedItemFinished = new Map<string, boolean>();
+	private readonly workflowReadAt = new WeakMap<TaskBoardItem, number>();
 
 	private sending = false;
 
@@ -925,7 +933,10 @@ export class TaskInspector implements Component {
 		const row = this.selectedRow();
 		if (this.peekId !== undefined && row?.id === this.peekId) {
 			const replying = this.peekReplies(row);
-			if (matchesKey(data, "escape")) {
+			if (
+				matchesKey(data, "escape") ||
+				(!replying && keys.matches(data, "app.nav.back") && !this.configuredTaskKey(data))
+			) {
 				this.closePeek();
 				return true;
 			}
@@ -963,7 +974,7 @@ export class TaskInspector implements Component {
 						for (const char of taskDisplayText(choice)) this.handleReplyInput(row.id, char);
 						const filled = this.reply.getValue();
 						if (filled !== "" && this.replyTargets.has(row.id)) {
-							this.pickedChoices.set(row.id, { text: filled, raw: choice });
+							this.pickedChoices.set(row.id, { text: filled, raw: choice, index: index - 1 });
 						}
 						return true;
 					}
@@ -1154,6 +1165,7 @@ export class TaskInspector implements Component {
 			const painted = this.paintedPrompts.get(rowId);
 			if (painted !== undefined) {
 				this.replyTargets.set(rowId, painted);
+				this.pickedChoices.delete(rowId);
 				this.reportLate(
 					"Could not send the answer: The pending prompt changed before the answer was sent. (enter to send or clear)",
 					environment,
@@ -1171,7 +1183,9 @@ export class TaskInspector implements Component {
 		this.sending = true;
 		this.requestRender();
 		try {
-			const result = await this.boardSource.answer(id, answerText, expected);
+			const answerOptions =
+				picked !== undefined && picked.text === typed ? { ...expected, choiceIndex: picked.index } : expected;
+			const result = await this.boardSource.answer(id, answerText, answerOptions);
 			if (result.ok) {
 				this.sentAt = Date.now();
 				this.replyDrafts.delete(rowId);
@@ -1184,6 +1198,7 @@ export class TaskInspector implements Component {
 				const painted = this.paintedPrompts.get(rowId);
 				if (painted !== undefined && !samePromptOptions(painted, expected)) {
 					this.replyTargets.set(rowId, painted);
+					this.pickedChoices.delete(rowId);
 					this.reportLate(
 						`Could not send the answer: ${taskDisplayText(result.reason)} (enter to send or clear)`,
 						environment,
@@ -1286,7 +1301,18 @@ export class TaskInspector implements Component {
 	}
 	private withBoardElapsed(row: TaskBoardRow): TaskBoardRow {
 		if (row.kind === "task") return { ...row, task: this.withLiveElapsed(row.task) };
-		if (row.item.kind === "workflow" || row.item.state === "queued") return row;
+		if (row.item.state === "queued") return row;
+		if (row.item.kind === "workflow") {
+			if (!taskClockRunning(row.item.state) || row.item.elapsedMs === undefined) return row;
+			const now = Date.now();
+			let since = agentPanelItemReadAt(row.item) ?? this.workflowReadAt.get(row.item);
+			if (since === undefined) {
+				since = now;
+				this.workflowReadAt.set(row.item, since);
+			}
+			const elapsedMs = row.item.elapsedMs + Math.max(0, now - since);
+			return elapsedMs === row.item.elapsedMs ? row : { ...row, item: { ...row.item, elapsedMs } };
+		}
 		const clocks = taskClockOf(row.item);
 		if (clocks === undefined) return row;
 		const elapsedMs = clocks.elapsedMs(row.item.id, row.item.elapsedMs, taskClockRunning(row.item.state));
@@ -1320,6 +1346,7 @@ export class TaskInspector implements Component {
 		return this.renderViewport(width, Math.max(3, (process.stdout.rows || 24) - 5));
 	}
 	private renderTranscriptPage(width: number, budget: number, transcript: TaskTranscriptPage): string[] {
+		if (transcript.handlesBack()) return transcript.render(width, budget);
 		const task = this.selected();
 		const fitWidth = (line: string) => truncateToWidth(line, Math.max(1, width));
 
@@ -1341,13 +1368,17 @@ export class TaskInspector implements Component {
 		const style = themedNavKeyStyle();
 		const interruptible = transcript.interruptible();
 		const hasTasks = transcript.hasTasks?.() === true;
+		const expandable = transcript.expandable?.() === true;
 		if (this.helpOpen)
 			return [
 				...(attachedAgentChat ? [] : header),
 				...renderNavKeyOverlay(
 					"keys · task chat",
 					TASK_CHAT_OVERLAY_KEYS.flatMap((entry) => {
+						if (entry.keys === "enter" && transcript.canSend?.() !== true) return [];
+						if (entry.action === "app.thinking.toggle" && task?.kind !== "agent") return [];
 						if (entry.keys === "esc" && !interruptible) return [];
+						if (entry.action === "app.tools.expand" && !expandable) return [];
 						if (entry.action === "app.nav.back" && hasTasks)
 							return [entry, { action: "app.agents.focus", label: "agents, on an empty prompt" }];
 						return [entry];
@@ -1358,7 +1389,7 @@ export class TaskInspector implements Component {
 				),
 			].slice(0, Math.max(1, budget));
 		const back = this.chatFrom === "caller" ? this.callerLabel : this.chatFrom === "list" ? "tasks" : "task";
-		const chatKeys = taskChatKeys(back, interruptible, hasTasks);
+		const chatKeys = taskChatKeys(back, interruptible, hasTasks, expandable);
 		const hint = renderNavHintLine(chatKeys, width, style, getKeybindings());
 		const footer = [...(notes ? [fitWidth(theme.fg("dim", notes))] : []), hint];
 		const failure = this.failureNotice ? [fitWidth(theme.fg("warning", this.failureNotice))] : [];
@@ -1582,7 +1613,7 @@ export class TaskInspector implements Component {
 								selected !== undefined ||
 								key.keys?.startsWith("esc") === true ||
 								key.action === "app.keys.help" ||
-								(key.action === "app.list.filter" && this.filter !== ""),
+								key.action === "app.list.filter",
 						)
 						.map((key) =>
 							key.action === "app.list.stop"
@@ -1595,7 +1626,27 @@ export class TaskInspector implements Component {
 			if (row.kind === "item") {
 				this.paintedItemFinished.set(row.id, rowFinished(row));
 				const prompt = promptAnswerOptionsOf(row.item);
-				if (prompt !== undefined) this.paintedPrompts.set(row.id, prompt);
+				if (prompt !== undefined) {
+					const question = taskDisplayText(prompt.question ?? "").trim();
+					const questionLine = body[selectedLine + 2];
+					const shownCardLine =
+						typeof questionLine === "string" ? stripVTControlCharacters(clip(questionLine)) : "";
+					const cardPrefix = "   │ ";
+					const shownQuestion = shownCardLine.startsWith(cardPrefix)
+						? shownCardLine.slice(cardPrefix.length).trimStart()
+						: "";
+					const questionPrefix = truncateToWidth(question, 2, "");
+					const questionInCard =
+						peekOpen &&
+						row.id === selected?.id &&
+						selectedLine + 2 >= start &&
+						selectedLine + 2 < start + room &&
+						questionPrefix !== "" &&
+						shownQuestion.startsWith(questionPrefix);
+					const shownRow = stripVTControlCharacters(renderBoardRow(row, row.id === selected?.id, width - 1));
+					if (questionInCard || (question !== "" && shownRow.includes(question)))
+						this.paintedPrompts.set(row.id, prompt);
+				}
 			} else {
 				drawnTasks.push(row.task);
 				if (this.peekReplies(row)) {

@@ -3,6 +3,7 @@ import {
 	applyAttachedComposer,
 	type NavKeybindings,
 	type NavKeyStyle,
+	navEntryKeys,
 	renderNavHintLine,
 	renderNavKeyOverlay,
 	TASK_CHAT_OVERLAY_KEYS,
@@ -13,7 +14,7 @@ import { isTerminalStageStatus } from "../shared/store-internal.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 import { elapsedStageMs } from "../shared/timing.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
-import { APP_ACTION, isKeybindingsLike, navKeyLabel } from "./keybindings-adapter.js";
+import { APP_ACTION, isKeybindingsLike } from "./keybindings-adapter.js";
 import { wrapIdentifierLines } from "./run-identity-rows.js";
 import {
 	bgFn,
@@ -176,12 +177,19 @@ export function stageNavKeyStyle(ctx: StageChatViewContext): NavKeyStyle {
 
 function stageNavKeybindings(ctx: Pick<StageChatViewContext, "piKeybindings">): NavKeybindings {
 	const candidate = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
-	if (candidate && typeof candidate.getKeys === "function") return candidate as NavKeybindings;
 	const fallback = getKeybindings();
-	if (!candidate) return fallback;
 	return {
-		matches: (data, action) => candidate.matches(data, action),
-		getKeys: (action) => fallback.getKeys(action as Parameters<typeof fallback.getKeys>[0]),
+		matches: (data, action) =>
+			candidate
+				? candidate.matches(data, action)
+				: fallback.matches(data, action as Parameters<typeof fallback.matches>[1]),
+		getKeys: (action) => {
+			const keys =
+				candidate && typeof candidate.getKeys === "function"
+					? candidate.getKeys(action)
+					: fallback.getKeys(action as Parameters<typeof fallback.getKeys>[0]);
+			return action === APP_ACTION.navBack ? keys.filter((key) => key !== "esc" && key !== "escape") : keys;
+		},
 	};
 }
 
@@ -292,11 +300,12 @@ function mergeOrchestratorReturnHintIntoLine(
 		minimumPrefixWidth?: number;
 	} = {},
 ): string {
-	// An open choice or yes/no card: ← moves its selection, so its only way out is Esc, which closes the card.
 	const cardOpen = closableQuestionCardOpen(ctx);
-	const key = cardOpen ? "esc" : backToGraphKey(ctx);
-	const full = cardOpen ? " close" : " return to graph";
-	const compact = cardOpen ? " close" : " graph";
+	const backKey = backToGraphKey(ctx);
+	if (!cardOpen && !backKey) return line;
+	const key = backKey || "esc";
+	const full = cardOpen ? (backKey ? " graph · esc close" : " close") : " return to graph";
+	const compact = cardOpen ? full : " graph";
 	const fullHint = {
 		plain: `${key}${full}`,
 		styled: paint(key, ctx.theme.text, { bold: true }) + paint(full, ctx.theme.textMuted),
@@ -391,6 +400,5 @@ export function closableQuestionCardOpen(
 
 /** The key that returns from a stage chat to its graph, as its hints name it. */
 export function backToGraphKey(ctx: Pick<StageChatViewContext, "piKeybindings">): string {
-	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
-	return navKeyLabel(keybindings, APP_ACTION.navBack, "←") || "←";
+	return navEntryKeys(stageNavKeybindings(ctx), { action: APP_ACTION.navBack, label: "graph" });
 }

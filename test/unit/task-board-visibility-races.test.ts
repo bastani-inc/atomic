@@ -103,8 +103,8 @@ test("an open or peek key for a vanished row never acts on its replacement (#522
 	}
 });
 
-test("a dismissed paused run returns when the same id resumes (#5224)", async () => {
-	const h = harness([item("release", "paused")]);
+test("a dismissed stopped run returns when the same id resumes (#5224)", async () => {
+	const h = harness([item("release", "stopped")]);
 	try {
 		h.paint();
 		h.inspector.handleInput("x");
@@ -137,6 +137,55 @@ test("a finished row keeps its dismissal and help keys at 80 columns (#5224)", a
 	try {
 		const line = stripVTControlCharacters(h.inspector.renderViewport(80, 24).at(-1)!).trim();
 		assert.equal(line, "↑↓ select·space peek·enter/→ open·x dismiss·/ filter·esc/← close·? keys");
+	} finally {
+		await h.dispose();
+	}
+});
+
+test("typeahead cannot answer a question clipped out of a narrow row before its peek paints (#5224)", async () => {
+	const h = harness([{ ...item("release", "input"), question: "Delete the old releases?", promptId: "delete" }]);
+	try {
+		const narrow = stripVTControlCharacters(h.inspector.renderViewport(10, 12).join("\n"));
+		assert.doesNotMatch(narrow, /Delete/);
+		h.inspector.handleInput(" ");
+		for (const key of "yes") h.inspector.handleInput(key);
+		h.inspector.handleInput("\r");
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.deepEqual(h.answers, []);
+		h.inspector.renderViewport(5, 12);
+		for (const key of "yes") h.inspector.handleInput(key);
+		h.inspector.handleInput("\r");
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.deepEqual(h.answers, [], "a fully clipped peek question is not painted either");
+	} finally {
+		await h.dispose();
+	}
+});
+
+test("an empty task sheet advertises its live filter key (#5224)", async () => {
+	const h = harness([]);
+	try {
+		assert.match(h.paint().split("\n").at(-1)!, /\/ filter · esc\/← close · \? keys/);
+		h.inspector.handleInput("/");
+		assert.match(h.paint(), /⌕/);
+	} finally {
+		await h.dispose();
+	}
+});
+
+test("a paused workflow remains unfinished and needs confirmation to stop (#5224)", async () => {
+	const h = harness([item("release", "paused")]);
+	try {
+		const frame = h.paint();
+		assert.match(frame, /Tasks {2}1 working/);
+		assert.doesNotMatch(frame, /1 done| {3}Done/);
+		h.inspector.handleInput("x");
+		assert.deepEqual(h.dismissed, []);
+		assert.deepEqual(h.stopped, []);
+		h.inspector.handleInput("x");
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.deepEqual(h.stopped, ["run:release"]);
+		assert.deepEqual(h.dismissed, []);
 	} finally {
 		await h.dispose();
 	}

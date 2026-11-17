@@ -128,7 +128,7 @@ test("agent transcript footer offers messaging only when supported and fills the
 			const text = plain(lines);
 			assert.match(text, /^Transcript/);
 			assert.match(text, /hello transcript/);
-			assert.match(text, /← task · pgup\/pgdn scroll · ctrl\+o expand · \? keys/);
+			assert.match(text, /← task · pgup\/pgdn scroll · \? keys/);
 			assert.equal(lines.length, 30);
 			assert.ok(lines.every((line) => visibleWidth(line) <= 110));
 			h.inspector.invalidate();

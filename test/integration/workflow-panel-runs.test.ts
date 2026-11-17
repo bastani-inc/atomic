@@ -9,6 +9,7 @@ import {
 	agentPanelItems,
 	answerAgentPanelItem,
 	openAgentPanelItem,
+	promptAnswerOptionsOf,
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import factory from "../../packages/workflows/src/extension/extension-factory.js";
 import type { ExtensionAPI } from "../../packages/workflows/src/extension/public-types.js";
@@ -142,7 +143,10 @@ test("the panel answers a waiting run end to end through its source (#5224)", as
 	const item = agentPanelItems(session).find((candidate) => candidate.id === `run:${runId}`);
 	assert.equal(item?.state, "input");
 	assert.equal(item?.question, "Ship it?");
-	assert.deepEqual(await answerAgentPanelItem(session, `run:${runId}`, "yes"), { ok: true });
+	assert.ok(item);
+	assert.deepEqual(await answerAgentPanelItem(session, `run:${runId}`, "yes", promptAnswerOptionsOf(item)), {
+		ok: true,
+	});
 	assert.equal(store.runs().find((run) => run.id === runId)?.stages[0]?.pendingPrompt, undefined);
 	assert.equal(agentPanelItems(session).find((candidate) => candidate.id === `run:${runId}`)?.question, undefined);
 	assert.equal(openAgentPanelItem(session, `run:${runId}`), true);
@@ -237,7 +241,10 @@ test("a single-select brokered prompt projects choices and answers by option ind
 	assert.equal(item?.state, "input");
 	assert.equal(item?.question, "Which release channel?");
 	assert.deepEqual(item?.choices, ["stable", "canary"]);
-	assert.deepEqual(await answerAgentPanelItem(session, `run:${runId}`, "2"), { ok: true });
+	assert.ok(item);
+	assert.deepEqual(await answerAgentPanelItem(session, `run:${runId}`, "2", promptAnswerOptionsOf(item)), {
+		ok: true,
+	});
 	const resolved = (await customUiPromise) as {
 		answers: Array<{ kind: string; answer: string | null }>;
 		cancelled: boolean;
@@ -583,4 +590,52 @@ test("opening a finished run via source.open, overlay.open or F2 marks it viewed
 	);
 	assert.ok(lines[0]?.includes("5m"), `expected 5m in composer rule, got: ${lines[0]}`);
 	assert.ok(!lines[0]?.includes("20m"), `expected paused time excluded, got: ${lines[0]}`);
+});
+
+test("reading workflow panel rows never authorizes an answer without the caller's captured prompt identity (#5224)", async () => {
+	const hub = new AgentPanelSourceHub();
+	hub.register(
+		workflowPanelSource(captureWorkflowOwnerResources(), {
+			open: () => false,
+			quit: async () => {
+				throw new Error("not used");
+			},
+		}),
+	);
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	const runId = makeRun("panel-read-is-not-authority", "release", [stage("ask", "running")]);
+	const prompt = prompt2("must-capture-identity", "Ship it?");
+	assert.equal(store.recordStagePendingPrompt(runId, "ask", prompt), true);
+	assert.equal(agentPanelItems(session).find((item) => item.id === `run:${runId}`)?.state, "input");
+	const result = await answerAgentPanelItem(session, `run:${runId}`, "yes");
+	assert.equal(result.ok, false);
+	assert.equal(store.runs().find((run) => run.id === runId)?.stages[0]?.pendingPrompt?.id, prompt.id);
+});
+
+test("a numbered choice keeps its original value when two labels sanitize to the same text (#5224)", async () => {
+	const hub = new AgentPanelSourceHub();
+	hub.register(
+		workflowPanelSource(captureWorkflowOwnerResources(), {
+			open: () => false,
+			quit: async () => {
+				throw new Error("not used");
+			},
+		}),
+	);
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	const runId = makeRun("panel-duplicate-display-choice", "release", [stage("ask", "running")]);
+	const original = "\u202eyes\x1b]0;hidden\x07";
+	const prompt = {
+		...prompt2("duplicate-display-choice", "Ship it?"),
+		kind: "select" as const,
+		choices: [original, "yes"],
+	};
+	assert.equal(store.recordStagePendingPrompt(runId, "ask", prompt), true);
+	const answer = store.awaitStagePendingPrompt(runId, "ask", prompt.id);
+	const item = agentPanelItems(session).find((candidate) => candidate.id === `run:${runId}`);
+	assert.ok(item);
+	assert.deepEqual(item.choices, ["yes", "yes"]);
+	const selected = { ...promptAnswerOptionsOf(item), choiceIndex: 0 };
+	assert.deepEqual(await answerAgentPanelItem(session, item.id, "yes", selected), { ok: true });
+	assert.equal(await answer, original);
 });

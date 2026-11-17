@@ -410,7 +410,6 @@ export function atomicWorkingFrame(now = Date.now()): number {
 	return Math.floor(now / ATOMIC_WORKING_FRAME_MS) % ATOMIC_WORKING_FRAMES.length;
 }
 
-/** The working ∀ alone at `frame`, coloured as the working line colours it, for rows that show a running item. */
 export function atomicWorkingGlyph(frame = atomicWorkingFrame()): string {
 	const reducedMotion = process.env.ATOMIC_REDUCED_MOTION === "1";
 	const frameIndex = reducedMotion ? 3 : normalizedFrameIndex(frame);

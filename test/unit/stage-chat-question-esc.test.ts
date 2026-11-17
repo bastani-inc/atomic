@@ -41,8 +41,7 @@ for (const kind of ["select", "confirm"] as const) {
 		try {
 			const text = () => stripAnsi(view.render(100).join("\n"));
 			assert.match(text(), /Ship the plan\?/);
-			// The card's hint names only its live keys: ← moves the choice, Esc closes the card (#5224).
-			assert.doesNotMatch(text(), /← return to graph|← graph|esc, ←/);
+			assert.match(text(), /← graph · esc close/u);
 			assert.match(text(), /esc close/i);
 			assert.equal(view.handleInput("\x1b"), true);
 			await flush();

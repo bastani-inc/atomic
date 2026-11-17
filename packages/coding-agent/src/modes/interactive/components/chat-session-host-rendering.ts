@@ -261,8 +261,6 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 				warning: (text) => state.style.accent(text),
 			},
 			() => state.footerNavigationActive,
-			// A stage or subagent chat lists its own active tasks below its prompt; the main chat has its agent panel.
-			// A task's session has no task store of its own: its footer lists the tasks the host shows for it.
 			() => taskSource()?.backgroundTasks ?? [],
 			undefined,
 			() => {
