@@ -1,6 +1,11 @@
+import { write as writeFileDescriptor } from "node:fs";
+
+type RawWriteCallback = (error?: Error | null) => void;
+type RawWrite = (chunk: string, callback?: RawWriteCallback) => boolean;
+
 interface StdoutTakeoverState {
-	rawStdoutWrite: (chunk: string, callback?: (error?: Error | null) => void) => boolean;
-	rawStderrWrite: (chunk: string, callback?: (error?: Error | null) => void) => boolean;
+	rawStdoutWrite: RawWrite;
+	rawStderrWrite: RawWrite;
 	originalStdoutWrite: typeof process.stdout.write;
 	originalConsole: {
 		log: typeof console.log;
@@ -16,6 +21,60 @@ const RAW_STDOUT_RETRY_DELAY_MS = 10;
 
 let rawStdoutWriteTail: Promise<void> = Promise.resolve();
 
+function isRetryableWriteError(error: Error): boolean {
+	const code = (error as Error & { code?: unknown }).code;
+	return code === "ENOBUFS" || code === "EAGAIN" || code === "EWOULDBLOCK";
+}
+
+interface DescriptorWrite {
+	readonly bytes: Buffer;
+	readonly callback: RawWriteCallback;
+}
+
+/**
+ * Writes stdout through its file descriptor on the runtime's thread pool, so the thread that waits for a slow reader
+ * is never the event loop's. One write is in flight at a time and writes leave in the order they were made, so records
+ * never interleave.
+ */
+class StdoutDescriptorWriter {
+	private readonly queue: DescriptorWrite[] = [];
+	private writing = false;
+
+	readonly write: RawWrite = (chunk, callback = () => {}) => {
+		this.queue.push({ bytes: Buffer.from(chunk, "utf8"), callback });
+		if (!this.writing) this.writeNext();
+		return true;
+	};
+
+	private writeNext(): void {
+		const next = this.queue.shift();
+		this.writing = next !== undefined;
+		if (next) this.writeFrom(next, 0);
+	}
+
+	/** A write may take part of the bytes; the rest follows, after a pause when the pipe took none. */
+	private writeFrom(entry: DescriptorWrite, offset: number): void {
+		if (offset === entry.bytes.length) {
+			this.writeNext();
+			entry.callback();
+			return;
+		}
+		writeFileDescriptor(1, entry.bytes, offset, entry.bytes.length - offset, null, (error, written) => {
+			if (error && !isRetryableWriteError(error)) {
+				this.writeNext();
+				entry.callback(error);
+				return;
+			}
+			const next = offset + (error ? 0 : written);
+			if (next > offset) this.writeFrom(entry, next);
+			else setTimeout(() => this.writeFrom(entry, next), RAW_STDOUT_RETRY_DELAY_MS);
+		});
+	}
+}
+
+/** Set for the life of the process once chosen: switching back while a write is in flight could reorder records. */
+let stdoutDescriptorWriter: StdoutDescriptorWriter | undefined;
+
 function getRawStdoutWrite(): StdoutTakeoverState["rawStdoutWrite"] {
 	if (stdoutTakeoverState) {
 		return stdoutTakeoverState.rawStdoutWrite;
@@ -23,12 +82,17 @@ function getRawStdoutWrite(): StdoutTakeoverState["rawStdoutWrite"] {
 	return process.stdout.write.bind(process.stdout) as StdoutTakeoverState["rawStdoutWrite"];
 }
 
+/** Where records go: the descriptor writer once a protocol chose it, otherwise the stdout stream. */
+function getRawStdoutRecordWrite(): RawWrite {
+	return stdoutDescriptorWriter?.write ?? getRawStdoutWrite();
+}
+
 async function writeRawStdoutChunk(text: string): Promise<void> {
 	while (true) {
 		try {
 			await new Promise<void>((resolve, reject) => {
 				try {
-					getRawStdoutWrite()(text, (error) => {
+					getRawStdoutRecordWrite()(text, (error) => {
 						if (error) reject(error);
 						else resolve();
 					});
@@ -39,8 +103,7 @@ async function writeRawStdoutChunk(text: string): Promise<void> {
 			return;
 		} catch (error) {
 			const writeError = error instanceof Error ? error : new Error(String(error));
-			const code = (writeError as Error & { code?: unknown }).code;
-			if (code !== "ENOBUFS" && code !== "EAGAIN" && code !== "EWOULDBLOCK") {
+			if (!isRetryableWriteError(writeError)) {
 				throw writeError;
 			}
 			await new Promise<void>((resolve) => setTimeout(resolve, RAW_STDOUT_RETRY_DELAY_MS));
@@ -48,7 +111,20 @@ async function writeRawStdoutChunk(text: string): Promise<void> {
 	}
 }
 
-export function takeOverStdout(): void {
+export interface StdoutTakeoverOptions {
+	/**
+	 * Never let the reader of a stdout pipe hold this process's event loop. On Windows, Node and Bun write to a pipe
+	 * synchronously: a write that does not fit the pipe's buffer blocks the thread until the reader has taken the rest,
+	 * however long the reader is busy. With this set, records go to the file descriptor through the thread pool there
+	 * instead. Elsewhere pipe writes are already asynchronous, and a terminal keeps its stream.
+	 */
+	nonBlockingPipe?: boolean;
+}
+
+export function takeOverStdout(options: StdoutTakeoverOptions = {}): void {
+	if (options.nonBlockingPipe && process.platform === "win32" && process.stdout.isTTY !== true) {
+		stdoutDescriptorWriter ??= new StdoutDescriptorWriter();
+	}
 	if (stdoutTakeoverState) {
 		return;
 	}
@@ -118,11 +194,14 @@ export function isStdoutTakenOver(): boolean {
 	return stdoutTakeoverState !== undefined;
 }
 
-/** Hand a small control frame directly to the OS pipe before synchronous user code begins. */
+/**
+ * Hand a small control frame to stdout at once, ahead of records still waiting in `writeRawStdout`'s queue, so it
+ * leaves before synchronous user code begins. Behind a write already in flight it waits its turn.
+ */
 export function writeRawStdoutControl(text: string): void {
 	if (text.length === 0) return;
 	try {
-		getRawStdoutWrite()(text, (error) => {
+		getRawStdoutRecordWrite()(text, (error) => {
 			if (error) process.exit(1);
 		});
 	} catch {

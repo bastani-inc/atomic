@@ -526,7 +526,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	const shouldTakeOverStdout = appMode !== "interactive";
 	const shouldRestoreStdoutForMetadata = isPlainRuntimeMetadataCommand(parsed);
 	if (shouldTakeOverStdout) {
-		takeOverStdout();
+		takeOverStdout({ nonBlockingPipe: appMode === "rpc" });
 	}
 	const engineLiveness = engineEnv.child === "1" ? startInteractiveEngineLiveness(writeRawStdout) : undefined;
 	engineLiveness?.ready();

@@ -62,7 +62,7 @@ export interface RpcModeOptions {
  * Listens for JSON commands on stdin, outputs events and responses on stdout.
  */
 export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcModeOptions = {}): Promise<never> {
-	takeOverStdout();
+	takeOverStdout({ nonBlockingPipe: true });
 
 	const interactiveEngineChild = isInteractiveEngineChild();
 	const deferInteractiveEngineResources = interactiveEngineChild && options.deferInteractiveEngineResources === true;
