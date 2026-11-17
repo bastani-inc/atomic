@@ -288,12 +288,12 @@ export function buildGraphOverlayAdapter(
 		requestMountedRender = () => tui.requestRender?.();
 		let pendingStoreFrame: ReturnType<typeof setTimeout> | null = null;
 		const onStoreUpdate = (): void => {
-			// Always invalidate retained view state so a later reopen renders the
+			// Always mark retained view state stale so a later reopen renders the
 			// current snapshot — but while the overlay is hidden, never ask the
 			// host to render (#1856): each hidden-overlay render request became
 			// terminal writes that flickered main chat and could snap native
 			// scrollback to the bottom.
-			view.invalidate();
+			view.storeChanged();
 			if (currentHandle?.isHidden() === true) return;
 			if (currentHandle !== null && !currentHandle.isFocused()) {
 				refocusVisibleOverlayForAwaitingInput(readGraphStoreSnapshot(store));
