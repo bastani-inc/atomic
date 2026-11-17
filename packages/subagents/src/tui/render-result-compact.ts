@@ -39,7 +39,7 @@ export function renderSingleCompact(
 }
 
 function renderSingleCompactAtWidth(
-	d: Details,
+	_d: Details,
 	r: Details["results"][number],
 	theme: Theme,
 	width: number,
@@ -49,7 +49,6 @@ function renderSingleCompactAtWidth(
 	const output = r.truncation?.text || getSingleResultOutput(r);
 	const progress = r.progress || r.progressSummary;
 	const isRunning = r.progress?.status === "running";
-	const contextBadge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
 	const c = new Container();
 	const glyph = resultGlyph(r, output, theme, isRunning, pulseFrame);
 
@@ -96,11 +95,11 @@ function renderSingleCompactAtWidth(
 	const outcome = finished ? "finished" : resultStatusLine(r, output).toLowerCase();
 	const durationMs = progress ? displayProgressDurationMs(progress, now) : 0;
 	const stats = durationMs > 0 ? theme.fg("dim", formatDuration(durationMs)) : "";
-	const outcomeGlyph = finished ? theme.fg("dim", "⏺") : glyph;
+	const outcomeGlyph = finished ? theme.fg("success", "●") : glyph;
 	c.addChild(
 		new Text(
 			truncLine(
-				`${outcomeGlyph} ${theme.fg("toolTitle", themeBold(theme, r.agent))}${contextBadge} ${theme.fg("dim", outcome)}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`,
+				`${outcomeGlyph} ${theme.fg("toolTitle", themeBold(theme, r.agent))} ${theme.fg("dim", outcome)}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`,
 				width,
 			),
 			0,
@@ -173,15 +172,14 @@ export function renderMultiCompact(d: Details, theme: Theme, now?: number, pulse
 		: failed
 			? theme.fg("error", "✗")
 			: hasKilled || interruptedOrDetached
-				? theme.fg("warning", "■")
-				: theme.fg("success", "✓");
-	const contextBadge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
+				? theme.fg("muted", "◼")
+				: theme.fg("success", "●");
 	const c = new Container();
 	const width = getTermWidth() - 4;
 	c.addChild(
 		new Text(
 			truncLine(
-				`${glyph} ${theme.fg("toolTitle", theme.bold(d.mode))}${contextBadge}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`,
+				`${glyph} ${theme.fg("toolTitle", theme.bold(d.mode))}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`,
 				width,
 			),
 			0,

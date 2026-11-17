@@ -94,6 +94,7 @@ export {
 	type ToolBlockSpec,
 	type ToolBlockStatus,
 } from "./tool-block.ts";
+export { formatToolActionSummary } from "./tool-block-summary.ts";
 export { ToolExecutionComponent, type ToolExecutionOptions } from "./tool-execution.ts";
 export { TRANSCRIPT_JUMP_TO_END_URL, TranscriptFollowIndicator } from "./transcript-follow-indicator.ts";
 export { TreeSelectorComponent } from "./tree-selector.ts";

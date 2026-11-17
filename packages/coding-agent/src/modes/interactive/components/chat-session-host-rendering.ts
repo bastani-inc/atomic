@@ -1,6 +1,9 @@
 import type { AssistantMessage } from "@bastani/atomic-ai";
 import { type Component, Spacer, Text, type TUI, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import type { TaskId } from "../../../core/tasks/contracts.js";
 import { getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
+import { loadTaskOwnTranscriptHistory, taskTranscriptSource } from "../../../core/tasks/supervisor.js";
+import { getToolExecutionStartedAt } from "../../../core/tool-execution-timing.ts";
 import { AtomicWorkedStatusComponent, DEFAULT_WORKING_MESSAGE } from "./atomic-working-status.ts";
 import {
 	type ChatMessageEntry,
@@ -14,6 +17,7 @@ import type { ChatSessionHostEntry } from "./chat-session-host-types.ts";
 import { cacheKey, isChatMessageEntry, stripAnsi, tailStreamingText } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import { FooterComponent, UsageMeterComponent } from "./footer.ts";
+import { toolGroupRoleKey } from "./tool-group-tracker.ts";
 import { AgentTokenMeter, agentTokenTotal, compactionMeta, type WorkingRunSnapshot } from "./working-run-meter.ts";
 import { WorkingStatusComponent } from "./working-status.ts";
 
@@ -23,6 +27,8 @@ export function renderChatSessionBody<TExtraEntry extends ChatTranscriptEntryLik
 	budget: number,
 ): string[] {
 	const components: Component[] = [];
+	state.liveChat.setGroupBash(state.getChatRenderSettings?.()?.groupBash ?? true);
+	hydrateToolExecutionStarts(state);
 	state.transcriptRenderSettingsKey = chatRenderSettingsCacheKey(state);
 	if (state.transcript.length > 0) {
 		components.push(state.transcriptComponent);
@@ -34,6 +40,17 @@ export function renderChatSessionBody<TExtraEntry extends ChatTranscriptEntryLik
 	state.bodyViewport.setVisibleRows(budget);
 	state.bodyViewport.setComponents(components);
 	return state.bodyViewport.render(width);
+}
+
+function hydrateToolExecutionStarts<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): void {
+	const session = state.getAgentSession?.() ?? state.getChatBoxSession?.();
+	if (session === undefined) return;
+	for (const toolCallId of state.liveChat.pendingToolIds()) {
+		const startedAt = getToolExecutionStartedAt(session, toolCallId);
+		if (startedAt !== undefined) state.liveChat.markToolExecutionStarted(toolCallId, startedAt);
+	}
 }
 
 export function renderChatSessionPendingMessages<TExtraEntry extends ChatTranscriptEntryLike>(
@@ -265,7 +282,7 @@ export function renderChatSessionEntry<TExtraEntry extends ChatTranscriptEntryLi
 		const options = chatMessageRenderOptions(state, isStreaming);
 		return renderChatMessageEntry(
 			streamingWindowedEntry(state, entry, isStreaming),
-			entry.kind === "tool" ? { ...options, ui: entryTui(state, entry) } : options,
+			entry.kind === "tool" || entry.kind === "custom" ? { ...options, ui: entryTui(state, entry) } : options,
 		);
 	}
 	if (!state.renderExtraEntry) {
@@ -318,6 +335,26 @@ function chatMessageRenderOptions<TExtraEntry extends ChatTranscriptEntryLike>(
 		markdownTheme: inherited?.markdownTheme ?? state.getMarkdownTheme?.(),
 		isStreaming,
 		showImages: inherited?.showImages ?? true,
+		groupBash: inherited?.groupBash ?? true,
+		getTaskRecord: (taskId: TaskId) => {
+			const session = state.getAgentSession?.() ?? state.getChatBoxSession?.();
+			const store = session === undefined ? undefined : getOwnerTaskStore(session);
+			return store?.getTask(taskId) ?? inherited?.getTaskRecord?.(taskId);
+		},
+		hasTaskTranscript: (taskId: TaskId) => {
+			const session = state.getAgentSession?.() ?? state.getChatBoxSession?.();
+			const store = session === undefined ? undefined : getOwnerTaskStore(session);
+			const lease = store?.resolveTask(taskId);
+			if (lease?.ok && taskTranscriptSource(lease.value).ok) return true;
+			return inherited?.hasTaskTranscript?.(taskId) ?? false;
+		},
+		loadTaskTranscript: async (taskId: TaskId) => {
+			const session = state.getAgentSession?.() ?? state.getChatBoxSession?.();
+			const store = session === undefined ? undefined : getOwnerTaskStore(session);
+			const lease = store?.resolveTask(taskId);
+			if (lease?.ok) return loadTaskOwnTranscriptHistory(lease.value);
+			return inherited?.loadTaskTranscript?.(taskId);
+		},
 	};
 }
 
@@ -327,7 +364,7 @@ function entryTui<TExtraEntry extends ChatTranscriptEntryLike>(
 ): Pick<TUI, "requestRender"> {
 	return {
 		requestRender: () => {
-			state.entryRevisions.set(entry, (state.entryRevisions.get(entry) ?? 0) + 1);
+			state.transcriptComponent.requestEntryRender(entry);
 			state.requestRender?.();
 		},
 	};
@@ -354,6 +391,7 @@ function chatRenderSettingsCacheKey<TExtraEntry extends ChatTranscriptEntryLike>
 		inherited?.imageWidthCells ?? null,
 		inherited?.outputPad ?? null,
 		inherited?.renderLatex !== false,
+		inherited?.groupBash ?? true,
 		markdownTransformersKey,
 		state.getCwd?.() ?? state.getAgentSession?.()?.sessionManager.getCwd() ?? process.cwd(),
 		state.bodyViewport.getScrollFromBottom() === 0,
@@ -378,6 +416,10 @@ function entryContentCacheKey<TExtraEntry extends ChatTranscriptEntryLike>(
 				entry.toolName,
 				entry.isPartial === true,
 				entry.result === undefined ? null : renderIdentityKey(state, entry.result),
+				entry.argsComplete === true,
+				entry.executionStarted === true,
+				entry.startedAt ?? null,
+				toolGroupRoleKey(entry.groupRole),
 			]);
 		case "bashExecution":
 			return cacheKey([

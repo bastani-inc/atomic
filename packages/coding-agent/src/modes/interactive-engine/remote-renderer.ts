@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import type { Component } from "@bastani/atomic-tui";
 import type { CustomMessage } from "../../core/messages.ts";
+import type { ToolGroupRole } from "../interactive/components/tool-block.ts";
 import type { ToolExecutionComponent } from "../interactive/components/tool-execution.ts";
+import { sameToolGroupRole, toolGroupRoleKey } from "../interactive/components/tool-group-tracker.ts";
 import type { IsolatedInteractiveRuntime } from "./isolated-runtime.js";
 import type { InteractiveEngineCommand, InteractiveEngineMessage, JsonObject, JsonValue } from "./protocol.ts";
 import { RemoteFrameWidthClamp } from "./remote-frame-clamp.ts";
@@ -155,7 +157,9 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 	private args: unknown;
 	private result: RenderableToolResult | undefined;
 	private executionStarted = false;
+	private executionStartedAt: number | undefined;
 	private argsComplete = false;
+	private groupRole: ToolGroupRole = { kind: "standalone" };
 	private isPartial = true;
 	private expanded = false;
 	private showImages: boolean;
@@ -187,13 +191,25 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 		this.args = args;
 		this.changed();
 	}
-	markExecutionStarted(): void {
+	markExecutionStarted(startedAt?: number): void {
+		if (this.executionStarted) return;
 		this.executionStarted = true;
+		this.executionStartedAt = startedAt ?? Date.now();
 		this.changed();
 	}
 	setArgsComplete(): void {
+		if (this.argsComplete) return;
 		this.argsComplete = true;
 		this.changed();
+	}
+	setGroupRole(role: ToolGroupRole): void {
+		if (sameToolGroupRole(this.groupRole, role)) return;
+		this.groupRole = role;
+		this.changed();
+	}
+	override render(width: number): string[] {
+		if (!this.expanded && this.groupRole.kind === "hidden") return [];
+		return super.render(width);
 	}
 	updateResult(result: RenderableToolResult, isPartial = false): void {
 		this.result = result;
@@ -224,17 +240,19 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 			args: jsonValue(this.args),
 			result: this.result ? (jsonValue(this.result) as JsonObject) : undefined,
 			executionStarted: this.executionStarted,
+			...(this.executionStartedAt === undefined ? {} : { executionStartedAt: this.executionStartedAt }),
 			argsComplete: this.argsComplete,
 			isPartial: this.isPartial,
 			expanded: this.expanded,
 			showImages: this.showImages,
 			imageWidthCells: this.imageWidthCells,
 			outputPad: this.outputPad,
+			...(this.groupRole.kind === "standalone" ? {} : { groupRole: this.groupRole }),
 		};
 	}
 
 	protected frameIdentity(): string {
-		return JSON.stringify(["tool", this.toolName, this.toolCallId, this.expanded]);
+		return JSON.stringify(["tool", this.toolName, this.toolCallId, this.expanded, toolGroupRoleKey(this.groupRole)]);
 	}
 }
 

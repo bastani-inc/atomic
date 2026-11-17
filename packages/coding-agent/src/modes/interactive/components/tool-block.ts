@@ -13,6 +13,14 @@ import { keyHintIfBound } from "./keybinding-hints.js";
 import { DETAIL_FIRST_PREFIX, DETAIL_PREFIX, type NoticeStatus, STATUS_MARKERS } from "./notice-line.ts";
 
 export type ToolBlockStatus = NoticeStatus;
+export type ToolGroupFamily = "read" | "search" | "find" | "list" | "bash";
+export type ToolGroupRole =
+	| { readonly kind: "standalone" }
+	| { readonly kind: "hidden" }
+	| {
+			readonly kind: "head";
+			readonly clauses: readonly { readonly family: ToolGroupFamily; readonly count: number }[];
+	  };
 export interface ToolBlockSpec {
 	readonly status: ToolBlockStatus;
 	readonly title: string | Component;
@@ -78,9 +86,21 @@ export function collapseToolBlockLines(
 	return tail ? [note, ...lines.slice(lines.length - count)] : [...lines.slice(0, count), note];
 }
 
+export function componentNeedsWorkingClock(component: Component | undefined): boolean {
+	return (
+		component !== undefined &&
+		"isWorking" in component &&
+		typeof component.isWorking === "function" &&
+		component.isWorking() === true
+	);
+}
+
 export class ToolBlockRecords implements Component {
 	readonly toolBlockKind = "records";
 	private readonly records: readonly (string | Component)[];
+	isWorking(): boolean {
+		return this.records.some((record) => typeof record !== "string" && componentNeedsWorkingClock(record));
+	}
 	constructor(records: readonly (string | Component)[]) {
 		this.records = records;
 	}
@@ -103,6 +123,13 @@ export class ToolBlockRecords implements Component {
 export class ToolBlock implements Component {
 	readonly toolBlockKind = "block";
 	private readonly spec: ToolBlockSpec;
+	isWorking(): boolean {
+		return (
+			this.spec.status === "running" ||
+			componentNeedsWorkingClock(this.spec.details) ||
+			componentNeedsWorkingClock(this.spec.body)
+		);
+	}
 	constructor(spec: ToolBlockSpec) {
 		this.spec = spec;
 	}
@@ -144,18 +171,16 @@ export class ToolBlock implements Component {
 		const rows = [header];
 		if (this.spec.body) {
 			const bodyWidth = Math.max(1, contentWidth - 2);
-			rows.push(
-				...this.spec.body
-					.render(bodyWidth)
-					.map((line) => truncateToWidth(`  ${line.trimEnd()}`, contentWidth, "…")),
-			);
+			for (const line of this.spec.body.render(bodyWidth)) {
+				rows.push(truncateToWidth(`  ${line.trimEnd()}`, contentWidth, "…"));
+			}
 		}
 		if (this.spec.details) {
 			const records =
-				this.spec.details instanceof ToolBlockRecords
+				"toolBlockKind" in this.spec.details && this.spec.details.toolBlockKind === "records"
 					? this.spec.details
 					: new ToolBlockRecords([this.spec.details]);
-			rows.push(...records.render(contentWidth));
+			for (const line of records.render(contentWidth)) rows.push(line);
 		}
 		return rows.map((line) => {
 			const result = `${" ".repeat(pad)}${line}`;
@@ -167,6 +192,9 @@ export class ToolBlock implements Component {
 export class ToolBlockGroup implements Component {
 	readonly toolBlockKind = "group";
 	private readonly blocks: readonly ToolBlock[];
+	isWorking(): boolean {
+		return this.blocks.some((block) => block.isWorking());
+	}
 	constructor(blocks: readonly ToolBlock[]) {
 		this.blocks = blocks;
 	}
@@ -179,7 +207,7 @@ export class ToolBlockGroup implements Component {
 			const rendered = block.render(width);
 			if (rendered.length === 0) continue;
 			if (rows.length > 0) rows.push("");
-			rows.push(...rendered);
+			for (const line of rendered) rows.push(line);
 		}
 		return rows;
 	}

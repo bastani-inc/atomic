@@ -9,7 +9,11 @@ import { stripTerminalControls } from "../../../utils/ansi.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
 import { createMarkdownTransform } from "./markdown-transform.ts";
-import { completionNoticeFromDetails, TaskCompletionMessage } from "./task-completion-message.js";
+import {
+	completionNoticeFromDetails,
+	TaskCompletionMessage,
+	type TaskCompletionMessageOptions,
+} from "./task-completion-message.js";
 import { heartbeatDetailsFrom, TaskHeartbeatMessage } from "./task-heartbeat-message.js";
 
 /**
@@ -40,6 +44,7 @@ export class CustomMessageComponent extends Container {
 	private markdownTransformers: readonly MarkdownTransformer[];
 	private messageId?: string;
 	private timestamp?: string;
+	private completionOptions?: TaskCompletionMessageOptions;
 
 	constructor(
 		message: CustomMessage<unknown>,
@@ -50,6 +55,7 @@ export class CustomMessageComponent extends Container {
 		markdownTransformers: readonly MarkdownTransformer[] = [],
 		messageId?: string,
 		timestamp?: string,
+		completionOptions?: TaskCompletionMessageOptions,
 	) {
 		super();
 		this.message = message;
@@ -60,6 +66,7 @@ export class CustomMessageComponent extends Container {
 		this.markdownTransformers = markdownTransformers;
 		this.messageId = messageId;
 		this.timestamp = timestamp;
+		this.completionOptions = completionOptions;
 
 		// Create box with purple background (used for default rendering)
 		this.box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
@@ -72,8 +79,17 @@ export class CustomMessageComponent extends Container {
 	setExpanded(expanded: boolean): void {
 		if (this._expanded !== expanded) {
 			this._expanded = expanded;
+			if (this.customComponent instanceof TaskCompletionMessage) {
+				this.customComponent.setExpanded(expanded);
+				return;
+			}
 			this.rebuild();
 		}
+	}
+
+	dispose(): void {
+		(this.customComponent as { dispose?: () => void } | undefined)?.dispose?.();
+		this.customComponent = undefined;
 	}
 
 	setOutputPad(outputPad: number): void {
@@ -90,6 +106,7 @@ export class CustomMessageComponent extends Container {
 	private rebuild(): void {
 		// Remove previously mounted content (spacer + content) before rebuilding.
 		if (this.customComponent) {
+			(this.customComponent as { dispose?: () => void }).dispose?.();
 			this.removeChild(this.customComponent);
 			this.customComponent = undefined;
 		}
@@ -102,7 +119,7 @@ export class CustomMessageComponent extends Container {
 			const notice = completionNoticeFromDetails(this.message.details);
 			if (notice) {
 				this.spacer = new Spacer(1);
-				this.customComponent = new TaskCompletionMessage(notice, this._expanded);
+				this.customComponent = new TaskCompletionMessage(notice, this._expanded, this.completionOptions);
 				this.addChild(this.spacer);
 				this.addChild(this.customComponent);
 				return;
