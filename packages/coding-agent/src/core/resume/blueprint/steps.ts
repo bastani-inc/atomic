@@ -13,7 +13,8 @@ import {
 	BlueprintStepTimedOutError,
 } from "./errors.ts";
 import {
-	BASH_START_GATE,
+	gatedBash,
+	gatesSteps,
 	type LoggedProcess,
 	logTail,
 	openStepLog,
@@ -97,20 +98,27 @@ export function powerShellProcess(
 }
 
 /**
- * The bash process of a `run` step: its script is the last argument, or on stdin for a bash that cannot take it there.
- * Given as an argument, the script starts with {@link BASH_START_GATE}, so the step runs nothing before the build that
- * starts it has recorded its process (#4748); on stdin, the script itself comes only after that.
+ * The bash process of a `run` step on `platform`: its script is the last argument, or on stdin for a bash that cannot
+ * take it there. Given as an argument where steps are gated, the process is {@link gatedBash}: the step runs nothing,
+ * its startup files included, before the build that starts it has recorded its process (#4748). On stdin, the script
+ * itself comes only after that.
  */
-export function bashProcess(step: RunStep, context: StepContext, bash: ShellConfig): LoggedProcess {
+export function bashProcess(
+	step: RunStep,
+	context: StepContext,
+	bash: ShellConfig,
+	platform: NodeJS.Platform = process.platform,
+): LoggedProcess {
 	const script = bashScript(step);
 	const byStdin = bash.commandTransport === "stdin";
-	return {
+	const run: LoggedProcess = {
 		command: bash.shell,
-		args: byStdin ? bash.args : [...bash.args, `${BASH_START_GATE}${script}`],
+		args: byStdin ? bash.args : [...bash.args, script],
 		cwd: context.cwd,
 		env: { ...context.environment, ...step.env, ENVRC: bashPath(context.envrcPath) },
-		...(byStdin ? { stdin: script } : { gated: true }),
+		...(byStdin ? { stdin: script } : {}),
 	};
+	return byStdin || !gatesSteps(platform) ? run : gatedBash(run);
 }
 
 function append(log: StepLog, text: string): void {

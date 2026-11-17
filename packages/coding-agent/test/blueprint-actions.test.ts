@@ -50,12 +50,7 @@ import {
 	type BlueprintUsesUnsupportedReason,
 	isBlueprintUsesUnsupportedError,
 } from "../src/core/resume/blueprint/errors.ts";
-import {
-	BASH_START_GATE,
-	openStepLog,
-	type ProcessExit,
-	runLoggedProcess,
-} from "../src/core/resume/blueprint/process.ts";
+import { openStepLog, type ProcessExit, runLoggedProcess } from "../src/core/resume/blueprint/process.ts";
 import { isWorkspaceGitError } from "../src/core/workspace/errors.ts";
 import { setWorktreeSnapshotGit } from "../src/core/worktree-snapshot/git.ts";
 import { createGitEnvironment } from "../src/utils/git-env.ts";
@@ -2793,32 +2788,32 @@ describe("steps that name a shell", () => {
 		}
 	});
 
-	test("builds the command line of each kind of shell, a bash script given as an argument behind the start gate (#4588, #4748)", () => {
+	test("builds the command line of each kind of shell, a bash script given as an argument starting once recorded (#4588, #4748)", () => {
 		const script = "echo hi";
 		const argv: ShellConfig = { shell: "/usr/bin/bash", args: ["-c"] };
 
 		assert.deepEqual(bashInvocation(argv, "bash", script), {
 			executable: "/usr/bin/bash",
-			args: ["-c", `${BASH_START_GATE}set -eo pipefail\necho hi`],
-			gated: true,
+			args: ["-c", "set -eo pipefail\necho hi"],
+			gate: "bash",
 		});
 		assert.deepEqual(bashInvocation(argv, "sh", script), {
 			executable: "/usr/bin/bash",
-			args: ["-c", `${BASH_START_GATE}set -e\necho hi`],
-			gated: true,
+			args: ["-c", "set -e\necho hi"],
+			gate: "bash",
 		});
 		assert.deepEqual(bashInvocation({ shell: "/usr/bin/BASH.EXE", args: ["-c"] }, "bash", script).args, [
 			"-c",
-			`${BASH_START_GATE}set -eo pipefail\necho hi`,
+			"set -eo pipefail\necho hi",
 		]);
 		assert.deepEqual(bashInvocation({ shell: "/usr/bin/mybash", args: ["-c"] }, "bash", script).args, [
 			"-c",
-			`${BASH_START_GATE}set -e\necho hi`,
+			"set -e\necho hi",
 		]);
 		assert.deepEqual(bashInvocation({ shell: "sh", args: ["-c"] }, "bash", script), {
 			executable: "sh",
-			args: ["-c", `${BASH_START_GATE}set -e\necho hi`],
-			gated: true,
+			args: ["-c", "set -e\necho hi"],
+			gate: "bash",
 		});
 		assert.deepEqual(
 			bashInvocation({ shell: "/bin/bash", args: ["-s"], commandTransport: "stdin" }, "bash", script),

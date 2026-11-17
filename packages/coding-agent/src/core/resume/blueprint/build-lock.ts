@@ -2,9 +2,10 @@
  * Build locks (#4748): a process that builds the blueprints of a restored worktree records itself and the processes
  * its steps start in `<storeDir>/blueprint-builds/locks/<root key>.json`. A later build of the same worktree in another
  * process waits while that process runs, and stops the step processes a process that died without stopping them (a
- * SIGKILL) left behind, so two builds never run in one worktree at once. A step waits until its process is recorded
- * (`BASH_START_GATE`, `NODE_START_GATE`), so a process killed between starting a step and recording it leaves nothing
- * running; on Windows, a step's job object ends it with that process.
+ * SIGKILL) left behind, so two builds never run in one worktree at once. A step's process starts only once it is
+ * recorded (`LoggedProcess.gated`), so a process killed between starting a step and recording it leaves nothing running;
+ * on Windows, where steps are not gated, the job object Atomic puts a step's process in right after starting it ends it
+ * with that process. A lock that cannot be written records nothing, and the step starts anyway.
  *
  * One process at a time settles and builds a worktree: it holds the lock's takeover mutex, an advisory lock the kernel
  * releases when its holder dies (#5193), from before it looks at the lock until its build settled. A process that

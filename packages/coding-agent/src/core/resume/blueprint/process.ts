@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { writeSync } from "node:fs";
 import { mkdir, open, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import type { Writable } from "node:stream";
 import { waitForChildProcess } from "../../../utils/child-process.ts";
 import { killProcessTree } from "../../../utils/shell.ts";
 import { containProcessTree, type ProcessTreeContainment, processTreeEnded } from "../../process-tree-containment.ts";
@@ -22,47 +23,91 @@ export interface LoggedProcess {
 	/** Written to the process's stdin, for shells that take the command that way; otherwise stdin is closed. */
 	readonly stdin?: string;
 	/**
-	 * Whether the process waits for one line on its stdin before it does anything, as a bash script that starts with
-	 * {@link BASH_START_GATE} does (#4748). It gets that line, ahead of `stdin`, only once {@link stepProcessWatcher} has
-	 * recorded it, so a host that dies before recording it leaves nothing of it running.
+	 * Whether the process waits for one line on file descriptor {@link START_GATE_FD} before it does anything (#4748), as
+	 * one made by {@link gatedBash} or preloading {@link nodeStartGate} does. It gets that line only once
+	 * {@link stepProcessWatcher} has recorded it, so a host that dies before recording it leaves nothing of it running.
 	 */
 	readonly gated?: boolean;
 }
 
 /**
- * The start of a bash script whose process is {@link LoggedProcess.gated} (#4748): the shell waits for the line its
- * host sends once it has recorded the process, and ends at once, having run nothing, when the host died first. The
- * script then runs with the null device as its stdin, as an ungated process does.
+ * The file descriptor a gated process's start line comes on (#4748): not stdin, which stays as it was, since bash runs
+ * `~/.bashrc` instead of `BASH_ENV` when its stdin is a socket, as a pipe from Node.js or Bun is.
  */
-export const BASH_START_GATE = "read -r _ || exit 1\nexec </dev/null\n";
+export const START_GATE_FD = 3;
 
 /**
- * The module a gated Node.js process loads with `--require` before its script (#4748), as {@link BASH_START_GATE} does
- * for bash: it waits for the line its host sends once it has recorded the process, and ends the process, before its
- * script loads, when the host died first. It takes itself out of `process.execArgv`, so a process the script forks
- * does not wait for a line of its own. The script then finds its stdin at end of input.
+ * Whether steps on `platform` are gated (#4748). On Windows they are not: Atomic puts each step's process in a job
+ * object right after starting it, which ends it when Atomic ends, and Git Bash takes no file descriptor past stderr
+ * from its host.
  */
-export const NODE_START_GATE = [
-	'"use strict";',
-	'const { readSync, realpathSync } = require("node:fs");',
-	"const own = (path) => { try { return realpathSync(path) === __filename; } catch { return false; } };",
-	"for (let at = process.execArgv.length - 2; at >= 0; at--) {",
-	'\tif (process.execArgv[at] === "--require" && own(process.execArgv[at + 1])) process.execArgv.splice(at, 2);',
-	"}",
-	"const line = Buffer.alloc(1);",
-	"let read = 0;",
-	"for (;;) {",
-	"\ttry {",
-	"\t\tread = readSync(0, line, 0, 1, null);",
-	"\t\tbreak;",
-	"\t} catch (error) {",
-	'\t\tif (error.code !== "EAGAIN") break;',
-	"\t\tAtomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);",
-	"\t}",
-	"}",
-	"if (read !== 1) process.exit(1);",
-	"",
+export function gatesSteps(platform: NodeJS.Platform): boolean {
+	return platform !== "win32";
+}
+
+/** Where {@link gatedBash} keeps the process's `BASH_ENV` until the gate has let it go. */
+const HELD_BASH_ENV = "ATOMIC_BLUEPRINT_HELD_BASH_ENV";
+
+/**
+ * What the bash of {@link gatedBash} runs, with the gated command as `$0` and its arguments as `$@`: it waits for the
+ * line, ends at once, having run nothing, when its host died first, closes the descriptor so nothing the command
+ * starts inherits it, puts `BASH_ENV` back, and becomes the command.
+ */
+const BASH_START_GATE = [
+	`IFS= read -r _ <&${START_GATE_FD} || exit 1`,
+	`exec ${START_GATE_FD}<&-`,
+	`if [ -n "\${${HELD_BASH_ENV}+x}" ]; then BASH_ENV=$${HELD_BASH_ENV}; export BASH_ENV; unset ${HELD_BASH_ENV}; fi`,
+	'exec "$0" "$@"',
 ].join("\n");
+
+/**
+ * `run`, a bash process, gated (#4748): a bash that runs nothing of its own, not even `BASH_ENV`, which it holds back,
+ * waits for the start line, and then replaces itself with `run`, which keeps its id, arguments and environment and
+ * reads its startup files as before.
+ */
+export function gatedBash(run: LoggedProcess): LoggedProcess {
+	const { BASH_ENV: bashEnv, [HELD_BASH_ENV]: _held, ...env } = run.env;
+	return {
+		...run,
+		args: ["-c", BASH_START_GATE, run.command, ...run.args],
+		env: bashEnv === undefined ? env : { ...env, [HELD_BASH_ENV]: bashEnv },
+		gated: true,
+	};
+}
+
+/**
+ * The module a gated Node.js process preloads first, with `--require` at the start of its `NODE_OPTIONS` (#4748): it
+ * waits for the start line, and ends the process, before anything else loads, when the host died first. It first
+ * puts back `nodeOptions`, the `NODE_OPTIONS` the process was meant to have (none when undefined), so the processes it
+ * starts do not wait for a line of their own; its worker threads, which preload it too, go on at once. It closes the
+ * file descriptor it read.
+ */
+export function nodeStartGate(nodeOptions: string | undefined): string {
+	return [
+		'"use strict";',
+		"let mainThread = true;",
+		'try { mainThread = require("worker_threads").isMainThread; } catch {}',
+		"if (!mainThread) return;",
+		`const nodeOptions = ${JSON.stringify(nodeOptions ?? null)};`,
+		"if (nodeOptions === null) delete process.env.NODE_OPTIONS;",
+		"else process.env.NODE_OPTIONS = nodeOptions;",
+		'const { closeSync, readSync } = require("fs");',
+		"const line = Buffer.alloc(1);",
+		"let read = 0;",
+		"for (;;) {",
+		"\ttry {",
+		`\t\tread = readSync(${START_GATE_FD}, line, 0, 1, null);`,
+		"\t\tbreak;",
+		"\t} catch (error) {",
+		'\t\tif (error.code !== "EAGAIN") break;',
+		"\t\tAtomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);",
+		"\t}",
+		"}",
+		"if (read !== 1) process.exit(1);",
+		`closeSync(${START_GATE_FD});`,
+		"",
+	].join("\n");
+}
 
 export interface ProcessExit {
 	readonly exitStatus: number | null;
@@ -118,6 +163,7 @@ export async function runLoggedProcess(
 	options.signal?.throwIfAborted();
 	const startedAt = Date.now();
 	const copiesOutput = copiesOutputToLog(process.platform);
+	const gated = run.gated === true;
 	return new Promise<ProcessExit>((resolveExit, reject) => {
 		const child = spawn(run.command, [...run.args], {
 			cwd: run.cwd,
@@ -125,9 +171,10 @@ export async function runLoggedProcess(
 			detached: startsProcessGroup(process.platform),
 			windowsHide: true,
 			stdio: [
-				run.stdin === undefined && run.gated !== true ? "ignore" : "pipe",
+				run.stdin === undefined ? "ignore" : "pipe",
 				copiesOutput ? "pipe" : log.fd,
 				copiesOutput ? "pipe" : log.fd,
+				...(gated ? ["pipe" as const] : []),
 			],
 		});
 		const tree = child.pid === undefined ? undefined : containProcessTree(child.pid);
@@ -211,12 +258,12 @@ export async function runLoggedProcess(
 			child.once("error", onSpawnError);
 			child.once("close", ended);
 		}
+		if (run.stdin !== undefined) child.stdin?.end(run.stdin);
 		// Only now, after the watcher above recorded the process: a gated process starts its work on this line (#4748). A
 		// process that ended before reading it, as one stopped at once, never needs it, so failing to write it is no error.
-		if (run.stdin !== undefined || run.gated === true) {
-			child.stdin?.on("error", () => {});
-			child.stdin?.end(`${run.gated === true ? "\n" : ""}${run.stdin ?? ""}`);
-		}
+		const release = gated ? (child.stdio[START_GATE_FD] as Writable | null | undefined) : undefined;
+		release?.on("error", () => {});
+		release?.end("\n");
 	});
 }
 
