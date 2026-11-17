@@ -64,6 +64,11 @@ test.each(cases)(
 	STDIN_HANDOFF_TIMEOUT_MS,
 );
 
+/** `cmd /s /c` drops the first and last quote of its command, so a line of quoted arguments is quoted once more. */
+function windowsShellLine(line: string): string {
+	return process.platform === "win32" ? `"${line}"` : line;
+}
+
 const terminalCases = (["bun", "node"] as const).flatMap((runtime) =>
 	(["hello", "hello\r"] as const).map((input) => ({ runtime, input })),
 );
@@ -75,7 +80,9 @@ test.each(terminalCases)(
 		const command = runtime === "node" ? [process.execPath, await bundledNodeFixture()] : [bunExecutable(), FIXTURE];
 		let screen = "";
 		const child = startPty({
-			command: [...command, dir, "terminal", String(input.length)].map((part) => `"${part}"`).join(" "),
+			command: windowsShellLine(
+				[...command, dir, "terminal", String(input.length)].map((part) => `"${part}"`).join(" "),
+			),
 			cwd: dir,
 			env: { ...process.env } as Record<string, string>,
 			timeoutMs: STDIN_HANDOFF_TIMEOUT_MS / 2,
