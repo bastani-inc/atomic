@@ -462,9 +462,7 @@ function byCompletedAt(left: DurableCheckpoint, right: DurableCheckpoint): numbe
 
 const JOURNAL_DURABLE_BACKEND = Symbol.for("@bastani/workflows/journal-durable-backend");
 
-export function isJournalDurableBackend<Journal extends RunJournal = RunJournal>(
-	backend: unknown,
-): backend is JournalDurableBackend<Journal> {
+export function isJournalDurableBackend(backend: unknown): backend is JournalDurableBackend {
 	return (
 		typeof backend === "object" &&
 		backend !== null &&
