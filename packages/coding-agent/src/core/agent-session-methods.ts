@@ -710,6 +710,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_orchestrationContext?: OrchestrationContext;
 	_workspace?: import("./workspace/resolve.ts").BoundWorkspace;
 	_subagentPolicy?: import("./extensions/index.js").SubagentChildPolicy;
+	_intercomPolicy?: import("./intercom-policy.ts").SessionIntercomPolicy;
 	_subagentMessageAdmission?: import("./workflow-stage-admission.ts").WorkflowStageAdmissionBoundary;
 	_extensionUIContext?: ExtensionUIContext;
 	_extensionHumanInput?: import("./extensions/host-input.js").HostInput | null;

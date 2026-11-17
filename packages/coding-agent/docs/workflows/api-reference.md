@@ -1780,6 +1780,8 @@ Every workspace error extends `WorkspaceError` and has a stable `code`, an optio
 | `WorkspaceSandboxError` | `write-denied` | A read-only session called `write`, `edit` or `todo` while one was active, which the tool exclusion normally prevents; reported to the model as the tool result | `tool`, `worktree`, `sandbox` | Report the change instead of making it |
 | `GitUnavailableError` | `not-installed`, `unsupported-platform`, `offline`, `checksum-mismatch`, `download-failed`, `install-failed` | Git provisioning's error, the cause of a `git-unavailable` binding error: no git could be started, found or downloaded | `platform`, `arch`, `installDir`, `installCommand?`, `systemGit?` | Follow `hint`: install git with `installCommand`, or let Atomic download one |
 
+For Git commands, `WorkspaceTimeoutError.elapsedMs` is the elapsed monotonic duration at the timeout, rounded up to whole milliseconds. Clock adjustments do not change it. The call can take longer than `timeoutMs` while it stops Git and its child processes.
+
 A malformed workspace, a conflicting input or a missing git fails before anything is written: no clone, worktree, boundary or session is left behind. An unresolvable base fails before any branch or worktree is created.
 
 ## Programmatic usage
