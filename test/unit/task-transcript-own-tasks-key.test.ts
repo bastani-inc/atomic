@@ -52,6 +52,8 @@ test("Down in an attached subagent's empty prompt opens its own tasks without le
 		...ownerTaskViewSource(fixture.store),
 		tasks: [parent, child],
 		backgroundTasks: [parent, child],
+		ownerTasks: [parent, child],
+		ownerBackgroundTasks: [parent, child],
 		readTaskTranscript: () => ({ ok: true as const, value: { messages: [] } }),
 		followTaskTranscript: () => undefined,
 	};
@@ -73,6 +75,13 @@ test("Down in an attached subagent's empty prompt opens its own tasks without le
 		inspector.handleInput("\x1b[B");
 		assert.equal(closed, 0);
 		assert.match(paint(), /Tasks[\s\S]*Own background shell/);
+		assert.equal(
+			paint()
+				.split("\n")
+				.filter((line) => /↑↓ select|pgup\/pgdn scroll/.test(line)).length,
+			1,
+			"the nested sheet owns the only live-key hint",
+		);
 		inspector.handleInput("\x1b[D");
 		assert.equal(closed, 0);
 		assert.doesNotMatch(paint(), /Tasks {2}1 working/);

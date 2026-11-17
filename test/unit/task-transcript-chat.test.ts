@@ -10,6 +10,11 @@ import {
 } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import {
+	TASK_COMPLETION_MESSAGE_TYPE,
+	type TaskCompletionEnvelope,
+	taskCompletionNotice,
+} from "../../packages/coding-agent/src/core/tasks/completion.js";
 import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { TaskMessageError } from "../../packages/coding-agent/src/core/tasks/message-error.js";
 import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
@@ -17,6 +22,7 @@ import {
 	ownerTaskViewSource,
 	type TaskViewSource,
 } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
+import { TaskCompletionMessage } from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.js";
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import type { TaskTranscriptEnvironment } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
@@ -644,6 +650,44 @@ test("Esc interrupts a running subagent's turn from its chat and never leaves; �
 		host.inspector.handleInput("\x15");
 		host.inspector.handleInput("\x1b[D");
 		assert.match(host.text(), /Inspect transcript/, "← on an empty prompt goes back one level");
+	} finally {
+		await host.dispose();
+	}
+});
+
+test("a subagent's view shows a finished task's notice with the main chat's notice line", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({ role: "user", content: "Run the build in the background", timestamp: 1 });
+	const envelope: TaskCompletionEnvelope = {
+		completionId: "subagent-view-notice",
+		ownerId: "owner-1-0" as TaskCompletionEnvelope["ownerId"],
+		taskId: "task-1-0-7" as TaskId,
+		terminalSequence: "3" as TaskCompletionEnvelope["terminalSequence"],
+		result: { kind: "completed", output: undefined as never, exitCode: 0 },
+		display: false,
+	};
+	const notice = taskCompletionNotice(envelope, {
+		kind: "command",
+		title: "npm run build",
+		agentName: undefined,
+		model: undefined,
+		thinking: undefined,
+		metrics: { elapsedMs: 42_000 },
+	});
+	await session.appendCustomMessageEntry(TASK_COMPLETION_MESSAGE_TYPE, "Background shell completed.", true, {
+		...envelope,
+		notification: notice,
+	});
+	const host = await openTranscript(session);
+	try {
+		const line = '● Background command "npm run build" completed (exit code 0) · 42s';
+		assert.equal(
+			host.frame().filter((row) => row.trim() === line).length,
+			1,
+			"the subagent's view shows the notice line",
+		);
+		const main = new TaskCompletionMessage(notice, false).render(80).map((row) => stripVTControlCharacters(row));
+		assert.deepEqual(main, [line], "the main chat renders the same line");
 	} finally {
 		await host.dispose();
 	}

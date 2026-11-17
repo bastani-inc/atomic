@@ -141,8 +141,12 @@ async function realWorker(scenario: WorkerScenario, workerEntry: string, directo
 				: Promise.resolve(scenario.answer?.(message, requests));
 		void answered.then((answer) => {
 			if (!worker.connected) return;
+			// A worker this answer ends can exit while the answer is in flight; its channel then fails with EPIPE.
 			worker.send(
 				answer === undefined ? { id: message.id, value: plainAnswer(message) } : { id: message.id, ...answer },
+				(error) => {
+					if (error && worker.connected) throw error;
+				},
 			);
 		});
 	});

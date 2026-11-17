@@ -1338,6 +1338,7 @@ export class TaskInspector implements Component {
 		return this.renderViewport(width, Math.max(3, (process.stdout.rows || 24) - 5));
 	}
 	private renderTranscriptPage(width: number, budget: number, transcript: TaskTranscriptPage): string[] {
+		if (transcript.handlesBack()) return transcript.render(width, budget);
 		const task = this.selected();
 		const fitWidth = (line: string) => truncateToWidth(line, Math.max(1, width));
 
@@ -1598,7 +1599,7 @@ export class TaskInspector implements Component {
 								selected !== undefined ||
 								key.keys?.startsWith("esc") === true ||
 								key.action === "app.keys.help" ||
-								(key.action === "app.list.filter" && this.filter !== ""),
+								key.action === "app.list.filter",
 						)
 						.map((key) =>
 							key.action === "app.list.stop"
@@ -1611,7 +1612,14 @@ export class TaskInspector implements Component {
 			if (row.kind === "item") {
 				this.paintedItemFinished.set(row.id, rowFinished(row));
 				const prompt = promptAnswerOptionsOf(row.item);
-				if (prompt !== undefined) this.paintedPrompts.set(row.id, prompt);
+				if (prompt !== undefined) {
+					const question = taskDisplayText(prompt.question ?? "").trim();
+					const questionInCard =
+						peekOpen && row.id === selected?.id && selectedLine + 2 >= start && selectedLine + 2 < start + room;
+					const shownRow = stripVTControlCharacters(renderBoardRow(row, row.id === selected?.id, width - 1));
+					if (questionInCard || (question !== "" && shownRow.includes(question)))
+						this.paintedPrompts.set(row.id, prompt);
+				}
 			} else {
 				drawnTasks.push(row.task);
 				if (this.peekReplies(row)) {

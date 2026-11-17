@@ -124,6 +124,12 @@ import { RouteRetryWaiters, scheduledRetryFailure } from "./route-retry-waiters.
 import { createConcurrencyGate, ROUTE_CLIENT_CONNECT_CONCURRENCY } from "./route-connect-gate.js";
 import { isReleasedStageAnnouncement, RELEASED_STAGE_EVENT, ReleasedStagePeers } from "./released-stage-peers.js";
 import { SupervisorAuthorizationRegistry } from "./supervisor-authorization-registry.js";
+import {
+  isSupervisorAuthorizationRefusal,
+  pauseUnlessAborted,
+  SUPERVISOR_REFUSAL_RETRY_MS,
+  supervisorRefusalRetryDelayMs,
+} from "./supervisor-refusal.js";
 if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL === "1") {
   process.env.ATOMIC_INTERCOM_HEAVY_IMPORTED = "1";
 }
@@ -132,6 +138,29 @@ if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL_FILE) {
 }
 
 const INTERCOM_SESSION_ID_ENV = `${APP_NAME.toUpperCase()}_INTERCOM_SESSION_ID`;
+/**
+ * The longest a starting subagent's first turn waits, after it registered, for the messages held for it to be saved
+ * and written as that turn's context. They are written to its connection right after its registration.
+ */
+const STARTUP_ARRIVALS_WAIT_MS = 5_000;
+
+/** Wait for `work`, at most `timeoutMs`. */
+function settledWithin(work: Promise<unknown>, timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    timer.unref?.();
+    void work.then(
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+    );
+  });
+}
 const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
 const PENDING_STAGE_MESSAGE_EVENT = "atomic:workflow-pending-stage-message";
 const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
@@ -237,10 +266,24 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   const config: IntercomConfig = loadConfig();
   const legacyChildOrchestratorMetadata = readChildOrchestratorMetadata();
   let runtimeContext: ExtensionContext | null = null;
+  /**
+   * Why the broker refused the supervisor capability this child registered with, after it kept refusing it for
+   * {@link SUPERVISOR_REFUSAL_RETRY_MS}: the child then registers without it, so its start never fails on it, and
+   * reaches its supervisor by its orchestrator target with ordinary sends. A refusal is often a race: after a broker
+   * restart a child can register before its supervisor has reconnected and restored the capability. So the next
+   * connection tries the capability again.
+   */
+  let supervisorRefusal: string | undefined;
+  /** When the broker first refused the capability in the current run of refusals. */
+  let supervisorRefusedSince: number | undefined;
+  let supervisorRefusalAttempts = 0;
   function currentChildOrchestratorMetadata() {
-    return runtimeContext?.subagentPolicy !== undefined
+    const metadata = runtimeContext?.subagentPolicy !== undefined
       ? readChildOrchestratorMetadata(runtimeContext.subagentPolicy)
       : legacyChildOrchestratorMetadata;
+    if (metadata === null || supervisorRefusal === undefined || metadata.supervisor === undefined) return metadata;
+    const { supervisor: _refused, ...unverified } = metadata;
+    return { ...unverified, supervisorRefusal };
   }
   let currentSessionId: string | null = null;
   let currentModel = "unknown";
@@ -317,6 +360,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     appendHandled: (messageId) => pi.appendEntry(INTERCOM_INBOX_HANDLED_ENTRY, { messageId }),
   });
   const inboundDeliveries = new InboundMessageAdmission();
+  /** Messages a starting subagent is writing as context for its first turn; its start waits for them. */
+  const startupDeliveries = new Set<Promise<void>>();
+  /** Messages that arrived and are not yet saved and handed over. */
+  const arrivalsInFlight = new Set<Promise<void>>();
   const broadcastCopies = new BroadcastCopies();
   // #4751: the asks this session sent; their replies arrive as messages on this session's own thread.
   const outboundAsks = new OutboundAsks({
@@ -725,6 +772,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     // #3983: a save that waits (a pooled stage's journal commit behind other writers) keeps its sender waiting.
     const saving = setInterval(() => receiver.reportSaving(message.id), RECIPIENT_SAVING_REPORT_INTERVAL_MS);
     saving.unref?.();
+    // Until it is saved and handed over, the arrival is in flight: a starting subagent's first turn waits for it.
+    const arrived = Promise.withResolvers<void>();
+    arrivalsInFlight.add(arrived.promise);
+    void arrived.promise.finally(() => arrivalsInFlight.delete(arrived.promise));
     // #4907: a message too large for the context is saved and shown bounded; unconfirmed, the broker sends it again.
     inArrivalOrder(message, (bounded) => {
       const saved = durableInbox.receive(from, bounded, channel, () => {
@@ -732,17 +783,23 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         receiver.acknowledgeReceived(message.id);
       });
       void saved.finally(() => clearInterval(saving)).catch(() => {});
-      void saved.then((arrival) => {
-        if (arrival !== "fresh") return;
-        // A copy of a broadcast that a released stage this session hosts relayed first is saved and confirmed, not shown.
-        if (!shown) {
-          void durableInbox.handledWithoutCard(message.id);
-          return;
-        }
-        const liveContext = getLiveContext(runtimeContext, generation);
-        if (liveContext) void handleIncomingMessage(liveContext, from, bounded, channel);
-      });
-    }, () => clearInterval(saving));
+      void saved
+        .then(async (arrival) => {
+          if (arrival !== "fresh") return;
+          // A copy of a broadcast that a released stage this session hosts relayed first is saved and confirmed, not shown.
+          if (!shown) {
+            void durableInbox.handledWithoutCard(message.id);
+            return;
+          }
+          const liveContext = getLiveContext(runtimeContext, generation);
+          if (liveContext) await handleIncomingMessage(liveContext, from, bounded, channel);
+        })
+        .catch(() => {})
+        .finally(() => arrived.resolve());
+    }, () => {
+      clearInterval(saving);
+      arrived.resolve();
+    });
   }
   /**
    * #3761: decide about the saved messages a resumed session never showed with #3760's interrupted-card decision.
@@ -835,6 +892,30 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const entry = receivedBeforeStageStart ? framePreStartPendingStageMessage(framedEntry) : framedEntry;
     if (receivedBeforeStageStart) {
       return sendIncomingMessage(entry, "prelude", messageGeneration, false);
+    }
+    // A subagent that has not started its first turn, as one whose held sends the broker hands over as it registers,
+    // takes a message as context for that turn: written before it, without a turn of its own.
+    if (
+      !recoveredAfterStageStart &&
+      message.replyTo === undefined &&
+      liveContext.subagentPolicy?.startup?.firstTurnPending() === true
+    ) {
+      const admission = inboundDeliveries.admit(from, message);
+      if (admission.kind !== "reserved") return;
+      const reservation = admission.reservation;
+      replyTracker.recordIncomingMessage(from, message);
+      const delivered = sendIncomingMessage(
+        framePreStartPendingStageMessage({ ...entry, receivedBeforeStart: true }),
+        "prelude",
+        messageGeneration,
+        false,
+      ).then(
+        () => inboundDeliveries.commit(reservation),
+        (error: unknown) => inboundDeliveries.release(reservation, toError(error)),
+      );
+      startupDeliveries.add(delivered);
+      void delivered.finally(() => startupDeliveries.delete(delivered));
+      return delivered;
     }
     const stageAdmission = liveContext.orchestrationContext?.kind === "workflow-stage"
       ? liveContext.orchestrationContext.messageAdmission
@@ -1208,6 +1289,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       rejectReplyWaiter(new Error(`Disconnected while waiting for reply: ${error.message}`, { cause: error }));
       client = null;
       clientRegistrationGroup = null;
+      // A child that registered without its refused capability offers it again on its next connection: its
+      // supervisor may be back by then, as after a broker restart.
+      supervisorRefusal = undefined;
+      supervisorRefusedSince = undefined;
+      supervisorRefusalAttempts = 0;
       if (process.env[INTERCOM_SESSION_ID_ENV] === nextClient.sessionId) restoreIntercomSessionIdEnv();
       if (!shuttingDown && !disposed) {
         clearReconnectTimer();
@@ -1620,11 +1706,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 		});
           client = nextClient;
           attachClientHandlers(nextClient);
+          let childMetadata: ReturnType<typeof currentChildOrchestratorMetadata> = null;
           try {
             await testOverrides.beforeConnectAttempt?.(reason);
             await startBrokerIfNeeded(signal);
             const expectedRouting = await settleBrokerRouting(contextAtStart, generationAtStart, signal);
-            const childMetadata = currentChildOrchestratorMetadata();
+            childMetadata = currentChildOrchestratorMetadata();
             // Snapshot after startup awaits: execution may have ended while disconnected.
             // connect writes registration synchronously, so no abort can interleave before that write.
             await nextClient.connect(
@@ -1679,6 +1766,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
               process.env[INTERCOM_SESSION_ID_ENV] = nextClient.sessionId;
             }
             reconnectAttempt = 0;
+            // Registered with the capability: a later refusal starts a new run of retries.
+            if (childMetadata?.supervisor !== undefined) {
+              supervisorRefusedSince = undefined;
+              supervisorRefusalAttempts = 0;
+            }
             if (nextClient.sessionId && nextClient.sessionId !== preferredSessionId) {
               await recordIntercomSessionIdentity(sessionIdAtStart, nextClient.sessionId);
             }
@@ -1702,6 +1794,25 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
             // ordering `ensurePendingStageRouteClient` already uses. `connectFailed` is set before the
             // `finally` runs, so it reschedules however this disconnect behaves.
             try { await nextClient.disconnect(); } catch {}
+            // A supervisor capability the broker refuses never ends the child's start. The refusal may be a race (its
+            // supervisor has not reconnected and restored it yet, as after a broker restart), so the child keeps
+            // offering it for a while; a capability still refused after that, such as one whose supervisor has
+            // released or gone, or a forged one, is dropped and the child registers without it.
+            if (
+              isSupervisorAuthorizationRefusal(error) &&
+              supervisorRefusal === undefined &&
+              childMetadata?.supervisor !== undefined &&
+              getLiveContext(contextAtStart, generationAtStart)
+            ) {
+              supervisorRefusedSince ??= Date.now();
+              if (Date.now() - supervisorRefusedSince < SUPERVISOR_REFUSAL_RETRY_MS) {
+                await pauseUnlessAborted(supervisorRefusalRetryDelayMs(supervisorRefusalAttempts++), signal);
+                if (!signal.aborted && getLiveContext(contextAtStart, generationAtStart)) continue;
+              } else {
+                supervisorRefusal = error instanceof Error ? error.message : String(error);
+                continue;
+              }
+            }
             // #3904: the run's owner registers its route on its own connection, which can still be
             // connecting, backing off or re-registering after a reconnect when the stage starts. The
             // stage waits for that owner on a fresh connection instead of failing every Intercom call.
@@ -1893,6 +2004,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         ...(request.group === undefined ? {} : { group: request.group }),
         aliases: request.aliases,
         ...(request.dormant === true ? { dormant: true } : {}),
+        ...(request.holdMs === undefined ? {} : { holdMs: request.holdMs }),
       }),
     );
   });
@@ -2036,7 +2148,35 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     if (pendingStageDelivery === undefined) {
       // An admitted child registers at startup so its supervisor and peers can
       // list and steer it before it uses Intercom itself.
-      if (ctx.subagentPolicy?.intercom !== undefined) await ensureConnected("startup");
+      if (ctx.subagentPolicy?.intercom !== undefined) {
+        // A start given up already never registers: its session is disposed unused.
+        const startup = ctx.subagentPolicy.startup;
+        if (startup?.signal.aborted === true) return;
+        const registered = await ensureConnected("startup");
+        // A start given up before its first turn leaves Intercom at once, before its session is disposed: later sends
+        // wait for the retry instead of reaching a session that will never run a turn.
+        startup?.signal.addEventListener(
+          "abort",
+          () => {
+            // The signal aborts only when the start runs out of its budget, before the child's first turn.
+            shuttingDown = true;
+            clearReconnectTimer();
+            const leaving = client;
+            client = null;
+            void leaving?.disconnect().catch(() => undefined);
+          },
+          { once: true },
+        );
+        // The sends the broker held for it follow its registration on the same connection: one round trip later
+        // they have all arrived, and its first turn waits until they are written as its context.
+        if (startup?.firstTurnPending() === true) {
+          await registered.listSessions().catch(() => undefined);
+          await settledWithin(
+            Promise.allSettled([...arrivalsInFlight, ...startupDeliveries]),
+            STARTUP_ARRIVALS_WAIT_MS,
+          );
+        }
+      }
       return;
     }
     const generation = runtimeGeneration;
@@ -2099,8 +2239,24 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   });
 
   const replyWaits = replyWaitGates(() => client);
+  /**
+   * A child registered without the supervisor capability the broker kept refusing registers again with it, once: its
+   * supervisor may be back. Refused again, it registers without it at once, as before.
+   */
+  async function retrySupervisorAuthorization(): Promise<void> {
+    if (supervisorRefusal === undefined || disposed || shuttingDown) return;
+    const current = client;
+    supervisorRefusal = undefined;
+    // One attempt: a refusal now drops the capability again without the wait a start gives it.
+    supervisorRefusedSince = Date.now() - SUPERVISOR_REFUSAL_RETRY_MS;
+    client = null;
+    clientRegistrationGroup = null;
+    await current?.disconnect().catch(() => undefined);
+    await ensureConnected("tool");
+  }
   registerContactSupervisorTool(pi, {
     childOrchestratorMetadata: currentChildOrchestratorMetadata,
+    retrySupervisorAuthorization,
     ensureConnected,
     syncPresenceIdentity,
     resolveSessionTarget: resolveSessionTargetId,

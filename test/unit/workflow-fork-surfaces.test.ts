@@ -173,8 +173,8 @@ test("fork and resume claims on one backend are told apart, and a forked run is 
 });
 
 test("the fork action renders its call, result and failure code (#4321)", () => {
-	assert.equal(renderCall({ action: "fork", runId: "abc" }), 'workflow: fork run "abc"');
-	assert.equal(renderCall({ action: "fork" }), "workflow: fork run");
+	assert.equal(renderCall({ action: "fork", runId: "abc" }), "workflow fork abc");
+	assert.equal(renderCall({ action: "fork" }), "workflow fork");
 	const ok = renderResult({
 		action: "fork",
 		runId: "fork-id",

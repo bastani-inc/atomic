@@ -162,6 +162,32 @@ test("Left on a non-editable peek closes only the card before closing the task s
 	}
 });
 
+test("typeahead cannot answer a question clipped out of a narrow row before its peek paints (#5224)", async () => {
+	const h = harness([{ ...item("release", "input"), question: "Delete the old releases?", promptId: "delete" }]);
+	try {
+		const narrow = stripVTControlCharacters(h.inspector.renderViewport(10, 12).join("\n"));
+		assert.doesNotMatch(narrow, /Delete/);
+		h.inspector.handleInput(" ");
+		for (const key of "yes") h.inspector.handleInput(key);
+		h.inspector.handleInput("\r");
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.deepEqual(h.answers, []);
+	} finally {
+		await h.dispose();
+	}
+});
+
+test("an empty task sheet advertises its live filter key (#5224)", async () => {
+	const h = harness([]);
+	try {
+		assert.match(h.paint().split("\n").at(-1)!, /\/ filter · esc\/← close · \? keys/);
+		h.inspector.handleInput("/");
+		assert.match(h.paint(), /⌕/);
+	} finally {
+		await h.dispose();
+	}
+});
+
 test("a digit for a clipped choice remains editable reply text (#5224)", async () => {
 	const h = harness([
 		{

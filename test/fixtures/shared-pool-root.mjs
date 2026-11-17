@@ -58,6 +58,7 @@ const exportName =
 		remote: "remoteStageChild",
 		scale: "scaleChild",
 		sequential: "distributedChild",
+		sessions: "sessionChild",
 	}[scenario] ??
 	"sharedChild";
 // A journal whose server needs a token reads it from a file every host has (SHARED_POOL_TOKEN_FILE), as the adapter's
@@ -107,6 +108,8 @@ const parent = workflow({
 						? {}
 						: scenario === "remote"
 							? { directory }
+							: scenario === "sessions"
+								? { directory, index }
 							: scenario === "distributed" || scenario === "sequential"
 								? { index, workMs: Number(process.env.SHARED_POOL_WORK_MS ?? "5000") }
 								: scenario === "scale"

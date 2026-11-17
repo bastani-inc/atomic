@@ -4,6 +4,7 @@ import { afterEach, test, vi } from "vitest";
 import { ATOMIC_AI_AGENT } from "../../packages/coding-agent/src/utils/agent-attribution.js";
 import { GIT_LOCAL_ENV_VARS } from "../../packages/coding-agent/src/utils/git-env.js";
 import { GitUnavailableError } from "../../packages/coding-agent/src/utils/git-errors.js";
+import { startHostProcessesThroughChildProcess } from "../helpers/host-spawn.js";
 
 const fixture = vi.hoisted(() => ({
 	resolve:
@@ -28,6 +29,8 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 import { runGit } from "../../packages/coding-agent/src/core/worktree-snapshot/git.js";
+
+startHostProcessesThroughChildProcess();
 
 afterEach(() => {
 	fixture.resolve.mockReset();
