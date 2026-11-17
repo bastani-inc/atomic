@@ -1,25 +1,22 @@
 /**
- * Offline custom compaction: extensions may replace the prepared region string
- * before Atomic resolves model credentials. The runtime keeps the boundary and
- * persists this text verbatim.
+ * Offline custom compaction: an extension can replace the context with its own text, without a model call or provider
+ * credentials. The model then sees the text in a `Context compacted` boundary message, followed by instructions for
+ * recovering the rest of the conversation from session history.
  */
 import type { ExtensionAPI } from "@bastani/atomic";
 
 export default function customCompaction(pi: ExtensionAPI): void {
 	pi.on("session_before_compact", async (event) => {
-		const lines = event.preparation.region.lines;
-		if (lines.length === 0) return;
-		const kept = lines.filter(
-			(line, index) =>
-				index === 0 || /^\[(User|Assistant|Assistant thinking|Assistant tool calls|Tool result)\]: /.test(line),
-		);
-		if (kept.length === lines.length) return;
-		return { compactedText: kept.join("\n") };
+		// Keep the first line of each user request; the agent recovers everything else from history.
+		const requests = event.preparation.region.lines.filter((line) => line.startsWith("[User]: "));
+		if (requests.length === 0) return;
+		return { compactedText: ["Requests so far:", ...requests].join("\n") };
 	});
 
 	pi.on("session_compact", async (event) => {
+		const { form, backend, stats } = event.result;
 		console.log(
-			`Compacted ${event.result.stats.linesBefore} to ${event.result.stats.linesKept} lines (${event.result.rung})`,
+			`Context ${form}${backend ? ` by ${backend}` : ""}: ${stats.tokensBefore} → ${stats.tokensAfter} tokens`,
 		);
 	});
 }

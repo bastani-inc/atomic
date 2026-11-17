@@ -288,11 +288,18 @@ for (const wiring of ["local", "isolated"] as const) {
 	describe(`${wiring} host during automatic compaction at the end of a turn`, () => {
 		test("sends held messages in typing order while the turn's run is still open (#4251)", async () => {
 			const invocations: string[] = [];
-			// Every reply crosses the compaction threshold, so compaction starts as the first turn ends.
 			const rig = await createCompactingRig(wiring, invocations, {
 				models: [{ id: "small-window", contextWindow: 1000 }],
 				settings: { compaction: { enabled: true, reserveTokens: 990 } },
 			});
+			// The first reply is a provider overflow, so compaction starts as the turn ends, before its retry.
+			rig.engine.setResponses([
+				fauxAssistantMessage("", {
+					stopReason: "error",
+					errorMessage: "prompt is too long: 1500 tokens > 1000 maximum",
+				}),
+				...Array.from({ length: 5 }, () => fauxAssistantMessage("done")),
+			]);
 			const releaseCompaction = holdCompaction(rig);
 			const submit = (text: string) => rig.host.defaultEditor.onSubmit?.(text);
 			await submit("start a turn");

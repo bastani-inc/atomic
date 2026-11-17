@@ -18,8 +18,6 @@ export type TreeFilterMode = "default" | "no-tools" | "user-only" | "labeled-onl
 
 export interface SettingsConfig {
 	autoCompact: boolean;
-	backgroundCompaction: boolean;
-	backgroundCompactionThresholdPercent: number;
 	showImages: boolean;
 	imageWidthCells: number;
 	autoResizeImages: boolean;
@@ -73,8 +71,6 @@ export interface SettingsConfig {
 
 export interface SettingsCallbacks {
 	onAutoCompactChange: (enabled: boolean) => void;
-	onBackgroundCompactionChange: (enabled: boolean) => void;
-	onBackgroundCompactionThresholdChange: (percent: number) => void;
 	onShowImagesChange: (enabled: boolean) => void;
 	onImageWidthCellsChange: (width: number) => void;
 	onAutoResizeImagesChange: (enabled: boolean) => void;

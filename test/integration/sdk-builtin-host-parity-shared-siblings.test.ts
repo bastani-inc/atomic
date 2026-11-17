@@ -32,7 +32,7 @@ test.each(["owner", "steer", "followUp"])(
 );
 
 // #3105: release admitted callbacks while disposal is pending, then require real cleanup and natural exit.
-test.each(["prompt", "reload", "compact", "compact-provider"] as const)(
+test.each(["prompt", "reload", "compact"] as const)(
 	"built Node drains suspended %s admission before completing disposal",
 	(scenario) => {
 		const result = runBuiltNodeFixture("sdk-host-admission-drain.mjs", [scenario]);
@@ -40,7 +40,7 @@ test.each(["prompt", "reload", "compact", "compact-provider"] as const)(
 		assert.deepEqual(JSON.parse(result.stdout.toString().trim()), {
 			scenario,
 			drained: true,
-			providerCalls: scenario === "compact-provider" ? 1 : 0,
+			providerCalls: 0,
 			active: 0,
 		});
 	},

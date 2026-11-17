@@ -1,7 +1,7 @@
 import type { AgentSession, AgentSessionEvent } from "../../../core/agent-session.js";
 import type { CompactionReason } from "../../../core/agent-session-types.js";
 import {
-	type CompactionRung,
+	type CompactionForm,
 	VERBATIM_COMPACTION_PROMPT_VERSION,
 	VERBATIM_COMPACTION_STRATEGY,
 	type VerbatimCompactionDetails,
@@ -53,16 +53,10 @@ function hasVerbatimCompactionMessage(messages: AgentSession["messages"]): boole
 	return messages.some((message) => message.role === "custom" && isVerbatimCompactionMessage(message));
 }
 
-/**
- * Every durable rung, derived from the union so a new member cannot be silently
- * rejected here. The event-only path (no session snapshot) is the one place a
- * `fresh` boundary would otherwise be dropped.
- */
-const COMPACTION_RUNGS: ReadonlySet<CompactionRung> = new Set([
-	"planned",
-	"extension",
-	"fresh",
-] as const satisfies readonly CompactionRung[]);
+const COMPACTION_FORMS: ReadonlySet<CompactionForm> = new Set([
+	"cleared",
+	"compacted",
+] as const satisfies readonly CompactionForm[]);
 
 function isCompleteCompactionResult(result: VerbatimCompactionResult): boolean {
 	return (
@@ -71,7 +65,7 @@ function isCompleteCompactionResult(result: VerbatimCompactionResult): boolean {
 		result.stats !== undefined &&
 		result.parameters !== undefined &&
 		result.promptVersion === VERBATIM_COMPACTION_PROMPT_VERSION &&
-		COMPACTION_RUNGS.has(result.rung)
+		COMPACTION_FORMS.has(result.form)
 	);
 }
 
@@ -84,11 +78,11 @@ function boundaryMessageFromResult(
 		promptVersion: result.promptVersion,
 		parameters: result.parameters,
 		stats: result.stats,
-		rung: result.rung,
-		// Preserve the borrowed-planner identity; the event-only path is otherwise
-		// the one place it is lost.
-		...(result.plannerModel === undefined ? {} : { plannerModel: result.plannerModel }),
-		...(result.releasedRanges === undefined ? {} : { releasedRanges: result.releasedRanges }),
+		form: result.form,
+		...(result.backend === undefined ? {} : { backend: result.backend }),
+		...(result.model === undefined ? {} : { model: result.model }),
+		...(result.fallbackReason === undefined ? {} : { fallbackReason: result.fallbackReason }),
+		...(result.history === undefined ? {} : { history: result.history }),
 		...(result.backupPath === undefined ? {} : { backupPath: result.backupPath }),
 	} satisfies VerbatimCompactionDetails;
 	return createVerbatimCompactionMessage(
@@ -123,10 +117,7 @@ function transcriptHasBoundaryForResult(
 		) {
 			return false;
 		}
-		// The rung is part of the identity, not decoration. A planned and a fresh
-		// boundary can carry identical text, and treating them as the same result
-		// silently swallows the fresh event — the one the user is meant to see.
-		if (candidate.message?.details?.rung !== result.rung) return false;
+		if (candidate.message?.details?.form !== result.form) return false;
 		return customMessageText(candidate.message).endsWith(result.compactedText);
 	});
 }

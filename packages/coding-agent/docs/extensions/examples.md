@@ -43,8 +43,8 @@ All examples in [examples/extensions/](https://github.com/bastani-inc/atomic/tre
 | `prompt-customizer.ts` | Add context-aware tool guidance using `systemPromptOptions` | `on("before_agent_start")`, `BuildSystemPromptOptions` |
 | `file-trigger.ts` | File watcher triggers messages | `sendMessage` |
 | **Compaction & Sessions** |||
-| `custom-compaction.ts` | Offline compacted-text override | `on("session_before_compact")` |
-| `trigger-compact.ts` | Trigger compaction manually | `compact()` |
+| `custom-compaction.ts` | Replace the context with your own text, without a model call | `on("session_before_compact")`, `on("session_compact")` |
+| `trigger-compact.ts` | Trigger compaction at a token threshold or with `/trigger-compact [instructions]` | `compact()` |
 | `git-checkpoint.ts` | Git stash on turns | `on("turn_start")`, `on("session_before_fork")`, `exec` |
 | `auto-commit-on-exit.ts` | Commit on shutdown | `on("session_shutdown")`, `exec` |
 | **UI Components** |||

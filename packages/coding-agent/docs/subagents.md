@@ -100,7 +100,7 @@ Durable `ctx.tool` callbacks wait for tasks admitted inside their callback befor
 
 ## Supervisor coordination
 
-Every builtin specialist includes `intercom` for live coordination, including read-only researchers and locators. `debugger` and `worker` also declare `contact_supervisor`; prefer it for supervisor requests when available. Explicit parent tool allowlists, exclusions, `noTools`, and disabled Intercom still apply—builtin declarations do not override caller restrictions.
+Every builtin specialist includes `intercom` for live coordination, including read-only researchers and locators. `debugger` and `worker` also declare `contact_supervisor`; prefer it for supervisor requests when available. Explicit parent tool allowlists, exclusions, `noTools`, and disabled Intercom still apply—builtin declarations do not override caller restrictions. A child whose tools leave out `read` or `search` gets one read-only tool, `session_history`, after compaction first clears its context, so it can recover from its own session's history and nothing else; see [Agents without read or search](/compaction#agents-without-read-or-search).
 
 In a parallel run, `intercom.ask`, `contact_supervisor({ reason: "need_decision" })`, and `interview_request` wait only in the requesting child. The supervisor answers with ordinary `intercom({ action: "reply", message: "..." })`; use `pending` and `replyTo` to select the exact question when several asks are pending. The correlated reply returns to the same child execution, with its context and run identity intact. Do not relaunch the requester or its siblings to deliver an answer.
 
