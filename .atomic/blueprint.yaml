@@ -32,6 +32,10 @@ knowledge:
       suites load the built packages. Filter coding-agent tests with
       `npm run test --workspace=@bastani/atomic -- test/history-bounded.test.ts` (the package script
       already passes `--run`; run from its workspace, not the root with only `--config`).
+      For focused root tests use `npm run test:unit -- test/unit/<file>.test.ts`;
+      the test-suite-runner fixtures need npm's node_modules/.bin on PATH for their nested Vitest commands.
+      `test/unit/storage-libsql-close-once.test.ts` runs native-driver close regressions in child processes
+      with glibc freed-memory poisoning on Linux, and checks file release directly on Windows.
       Validate named-worktree permissions with a private default umask:
       `(umask 0022; npx --no-install vitest --run --project unit test/unit/subagents-named-worktree-locks.test.ts)`.
       Localized named-worktree recovery fixtures write the translated marker while Git is paused, so they do not
