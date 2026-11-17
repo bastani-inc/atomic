@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	closeSync,
@@ -20,16 +20,16 @@ import { buildLockPath, settleOtherBuilds, withBuildLocks } from "../src/core/re
 import { runLoggedProcess } from "../src/core/resume/blueprint/process.ts";
 import { processStartToken } from "../src/core/worktree-snapshot/pool.ts";
 
-// Process creation is real; spawnSync is only watched, to tell when a build lock lists this host's processes.
+// Process creation is real; execFile is only watched, to tell when a build lock lists this host's processes.
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
-	return { ...actual, spawnSync: vi.fn(actual.spawnSync) };
+	return { ...actual, execFile: vi.fn(actual.execFile) };
 });
 
 /** How many times this host's processes were listed to find the orphans of a dead build's steps. */
 const processScans = () =>
 	vi
-		.mocked(spawnSync)
+		.mocked(execFile)
 		.mock.calls.filter(([, args]) => Array.isArray(args) && args.some((arg) => String(arg).includes("Win32_Process")))
 		.length;
 
