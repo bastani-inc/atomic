@@ -227,16 +227,14 @@ test("a child that registered without its refused supervisor capability offers i
 		const starting = child.emit({ type: "session_start", reason: "startup" }).finally(() => {
 			settled = true;
 		});
-		for (let waited = 0; !settled && waited < SUPERVISOR_REFUSAL_RETRY_MS + 10_000; waited += 1_000)
-			await vi.advanceTimersByTimeAsync(1_000);
+		await advanceUntil(child, () => settled, SUPERVISOR_REFUSAL_RETRY_MS + 10_000, 1_000);
 		assert.deepEqual(await starting, []);
 		assert.equal(child.registrations.at(-1)?.supervisor, undefined);
 
 		const before = child.registrations.length;
 		child.restoreSupervisor();
 		child.disconnect();
-		for (let waited = 0; child.registrations.length === before && waited < 60_000; waited += 500)
-			await vi.advanceTimersByTimeAsync(500);
+		await advanceUntil(child, () => child.registrations.length > before, 60_000, 500);
 		assert.ok(child.registrations.length > before);
 		assert.deepEqual(child.registrations[before]?.supervisor, policy.intercom?.supervisor);
 	} finally {
