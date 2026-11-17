@@ -259,7 +259,7 @@ An entry is active only when `details.strategy` is exactly `"verbatim-lines"`:
 
 The rebuilt context contains one visible `custom` message with `customType: "compaction"` holding the durable `summary`. Post-boundary messages remain ordinary messages, and resume needs no new request.
 
-`details.form` is `"cleared"` or `"compacted"`. A compacted entry also has `details.backend` (`"compactor"` or `"extension"`) and, for a compactor, `details.model`. `details.fallbackReason` says why a configured compactor was not used. `details.history` gives the boundary's place in `history://sessions/<sessionId>`: `linesBefore`, `boundaryLine` and `totalLines`. `details.backupPath` is optional. See [Compaction reference](/compaction/reference#persistence-and-resume) for every field.
+`details.form` is `"cleared"` or `"compacted"`. A compacted entry also has `details.backend` (`"compactor"` or `"extension"`) and, for a compactor, `details.model`. `details.fallbackReason` says why a configured compactor was not used. `details.history` gives the boundary's place in `history://sessions/<sessionId>`: `linesBefore`, `boundaryLine` and `totalLines`. `details.historyAccess` is `"read-search"` or `"session-history-tool"`, how the boundary told the agent to reach its history. `details.backupPath` is optional. See [Compaction reference](/compaction/reference#persistence-and-resume) for every field.
 
 Atomic no longer writes a boundary while a tool call is still waiting for its result. A boundary from an earlier version written at such a point has `coveredThroughEntryId`, the last entry it covers; the waiting call's turn, from the entry after it to the boundary, replays unchanged after the compaction message.
 

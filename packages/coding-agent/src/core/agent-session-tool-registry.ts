@@ -24,14 +24,10 @@ import { resolveSessionTempDirPath } from "./tools/session-temp-dir.ts";
 import { scheduleToolExecution } from "./tools/tool-concurrency.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 
-/** A resumed session without `read` or `search` that already crossed a clear-and-recover boundary keeps its history tool. */
-function resumedRestrictedAfterBoundary(
-	session: AgentSession,
-	registry: ReadonlyMap<string, ToolDefinitionEntry>,
-): boolean {
-	if (registry.has("read") && registry.has("search")) return false;
+/** A resumed session whose latest boundary told the agent to use the history tool keeps that tool. */
+function latestBoundaryPromisedHistoryTool(session: AgentSession): boolean {
 	const boundary = getLatestCompactionBoundaryEntry(session.sessionManager.getBranch());
-	return boundary?.details?.form !== undefined;
+	return boundary?.details?.historyAccess === "session-history-tool";
 }
 
 export function _refreshToolRegistry(
@@ -81,7 +77,7 @@ export function _refreshToolRegistry(
 	// After a compaction boundary, an agent without `read` or `search` reads its own session's history through this
 	// one tool, whatever its allowlist says; it reaches nothing else.
 	const historyTool =
-		(this._sessionHistoryToolEnabled || resumedRestrictedAfterBoundary(this, definitionRegistry)) &&
+		(this._sessionHistoryToolEnabled || latestBoundaryPromisedHistoryTool(this)) &&
 		!definitionRegistry.has(SESSION_HISTORY_TOOL_NAME)
 			? {
 					definition: createSessionHistoryToolDefinition(SESSION_HISTORY_TOOL_NAME, {

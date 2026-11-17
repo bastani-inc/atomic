@@ -12,6 +12,7 @@ import {
 	createAgentSession,
 	DefaultResourceLoader,
 	ModelRuntime,
+	SESSION_HISTORY_TOOL_NAME,
 	SessionManager,
 	SettingsManager,
 } from "../src/index.ts";
@@ -30,6 +31,8 @@ interface Opened {
 	readonly sessionManager: SessionManager;
 	readonly faux: ReturnType<typeof registerFauxProvider>;
 	readonly requests: string[][];
+	/** Dispose the session, open its saved file again and start a new session on it with the same settings. */
+	reopen(): Promise<AgentSession>;
 }
 
 describe("compaction through the public SDK entry points", () => {
@@ -39,7 +42,13 @@ describe("compaction through the public SDK entry points", () => {
 	});
 
 	async function open(
-		options: { compactionModel?: string; extension?: Factory; replies?: string[] } = {},
+		options: {
+			compactionModel?: string;
+			extension?: Factory;
+			replies?: string[];
+			defaultTools?: string[];
+			persisted?: boolean;
+		} = {},
 	): Promise<Opened> {
 		const dir = mkdtempSync(join(tmpdir(), "atomic-compaction-sdk-"));
 		const agentDir = join(dir, "agent");
@@ -79,6 +88,7 @@ describe("compaction through the public SDK entry points", () => {
 			retry: { enabled: false },
 			compaction: { enabled: true, reserveTokens: RESERVE_TOKENS },
 			...(options.compactionModel ? { compactionModel: options.compactionModel } : {}),
+			...(options.defaultTools ? { defaultTools: options.defaultTools } : {}),
 		});
 		const resourceLoader = new DefaultResourceLoader({
 			cwd: dir,
@@ -87,21 +97,33 @@ describe("compaction through the public SDK entry points", () => {
 			...(options.extension ? { extensionFactories: [options.extension] } : {}),
 		});
 		await resourceLoader.reload();
-		const sessionManager = SessionManager.inMemory(dir);
-		const { session } = await createAgentSession({
-			cwd: dir,
-			agentDir,
-			model,
-			modelRuntime,
-			settingsManager,
-			sessionManager,
-			resourceLoader,
-			builtins: NO_BUILTINS,
-		});
+		const sessionManager = options.persisted
+			? await SessionManager.create(dir, join(dir, "sessions"))
+			: SessionManager.inMemory(dir);
+		const start = async (manager: SessionManager): Promise<AgentSession> => {
+			const { session } = await createAgentSession({
+				cwd: dir,
+				agentDir,
+				model,
+				modelRuntime,
+				settingsManager,
+				sessionManager: manager,
+				resourceLoader,
+				builtins: NO_BUILTINS,
+			});
+			cleanups.push(() => session.dispose());
+			return session;
+		};
 		cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 		cleanups.push(() => faux.unregister());
-		cleanups.push(() => session.dispose());
-		return { session, sessionManager, faux, requests };
+		const session = await start(sessionManager);
+		const reopen = async (): Promise<AgentSession> => {
+			const file = sessionManager.getSessionFile();
+			assert.ok(file, "the session is saved to a file");
+			session.dispose();
+			return start(await SessionManager.open(file));
+		};
+		return { session, sessionManager, faux, requests, reopen };
 	}
 
 	function compactionEntries(opened: Opened) {
@@ -183,5 +205,30 @@ describe("compaction through the public SDK entry points", () => {
 		assert.equal(result.form, "compacted");
 		assert.ok(result.compactedText.includes("notes from the extension"));
 		assert.equal(compactionEntries(opened).length, 1);
+	});
+
+	it("a restricted agent keeps its history tool when its session is resumed after a clear", async () => {
+		const opened = await open({ defaultTools: [], persisted: true });
+		assert.ok(!opened.session.getActiveToolNames().includes("read"));
+		await opened.session.prompt("do the task");
+		await opened.session.compact();
+		assert.ok(opened.session.getActiveToolNames().includes(SESSION_HISTORY_TOOL_NAME));
+
+		const resumed = await opened.reopen();
+
+		assert.ok(resumed.getActiveToolNames().includes(SESSION_HISTORY_TOOL_NAME));
+		assert.ok(resumed.getToolDefinition(SESSION_HISTORY_TOOL_NAME));
+	});
+
+	it("an agent with read and search resumes without the history tool", async () => {
+		const opened = await open({ persisted: true });
+		await opened.session.prompt("do the task");
+		await opened.session.compact();
+		assert.ok(!opened.session.getActiveToolNames().includes(SESSION_HISTORY_TOOL_NAME));
+
+		const resumed = await opened.reopen();
+
+		assert.ok(resumed.getActiveToolNames().includes("read"));
+		assert.ok(!resumed.getActiveToolNames().includes(SESSION_HISTORY_TOOL_NAME));
 	});
 });

@@ -155,6 +155,7 @@ export function buildPlannedBoundary(
 			...(planned.compacted?.model ? { model: planned.compacted.model } : {}),
 			...(planned.fallbackReason ? { fallbackReason: planned.fallbackReason } : {}),
 			history,
+			historyAccess: planned.access,
 		},
 	};
 }

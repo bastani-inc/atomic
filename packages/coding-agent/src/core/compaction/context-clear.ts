@@ -1,11 +1,10 @@
 import { textLines } from "../tools/history-transcript.ts";
-import type { CompactionHistoryLocation } from "./compaction-types.js";
+import type { CompactionHistoryLocation, HistoryAccess } from "./compaction-types.js";
 
 /** The tool a restricted agent gets after a clear to search and read its own session's history. */
 export const SESSION_HISTORY_TOOL_NAME = "session_history";
 
-/** How the agent reaches its history: its own `read` and `search` tools, or the restricted history tool. */
-export type HistoryAccess = "read-search" | "session-history-tool";
+export type { HistoryAccess } from "./compaction-types.js";
 
 export interface BoundaryTextInput {
 	readonly sessionId: string;

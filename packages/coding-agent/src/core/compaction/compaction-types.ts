@@ -64,6 +64,9 @@ export interface CompactionHistoryLocation {
 	totalLines: number;
 }
 
+/** How the agent reaches its history after a boundary: its own `read` and `search` tools, or the restricted history tool. */
+export type HistoryAccess = "read-search" | "session-history-tool";
+
 export interface VerbatimCompactionDetails {
 	strategy: typeof VERBATIM_COMPACTION_STRATEGY;
 	promptVersion: typeof VERBATIM_COMPACTION_PROMPT_VERSION;
@@ -76,6 +79,8 @@ export interface VerbatimCompactionDetails {
 	/** Why the configured compactor was not used and the context was cleared instead. */
 	fallbackReason?: string;
 	history?: CompactionHistoryLocation;
+	/** How the boundary told the agent to reach its history; a resumed session restores the history tool from it. */
+	historyAccess?: HistoryAccess;
 	/**
 	 * Authoritative whole-context count, projected for display only. Populated by
 	 * `createVerbatimCompactionMessage` on the rendered message; it is not

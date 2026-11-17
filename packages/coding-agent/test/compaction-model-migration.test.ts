@@ -6,6 +6,7 @@ import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { migrateCompactionModelSettings, resolveCompactionModel } from "../src/core/compaction/model-resolver.ts";
+import type { ExtensionFactory } from "../src/core/extensions/index.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -56,11 +57,15 @@ describe("compaction settings after the clear-and-recover change", () => {
 		return (JSON.parse(readFileSync(path, "utf8")) as { compactionModel?: string }).compactionModel;
 	}
 
-	async function openSession() {
-		const settingsManager = SettingsManager.create(tempDir, agentDir);
+	async function openSession(extensionFactories: ExtensionFactory[] = [], projectTrusted?: boolean) {
+		const settingsManager = SettingsManager.create(
+			tempDir,
+			agentDir,
+			projectTrusted === undefined ? {} : { projectTrusted },
+		);
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
-		const resourceLoader = new DefaultResourceLoader({ cwd: tempDir, agentDir, settingsManager });
+		const resourceLoader = new DefaultResourceLoader({ cwd: tempDir, agentDir, settingsManager, extensionFactories });
 		await resourceLoader.reload();
 		const { session } = await createAgentSession({
 			cwd: tempDir,
@@ -73,7 +78,7 @@ describe("compaction settings after the clear-and-recover change", () => {
 			builtins: NO_BUILTINS,
 		});
 		await settingsManager.flush();
-		return { session, settingsManager };
+		return { session, settingsManager, resourceLoader };
 	}
 
 	it("settings holding every removed compaction key load without an error", async () => {
@@ -115,6 +120,70 @@ describe("compaction settings after the clear-and-recover change", () => {
 		try {
 			assert.equal(savedCompactionModel("global"), COMPACTOR);
 			assert.equal(savedCompactionModel("project"), UNKNOWN);
+		} finally {
+			session.dispose();
+		}
+	});
+
+	/** An extension that registers one chat model under the `review-custom` provider. */
+	function customProvider(id: string): ExtensionFactory {
+		return (pi) => {
+			pi.registerProvider("review-custom", {
+				baseUrl: "http://127.0.0.1:9/v1",
+				apiKey: "review-custom-key",
+				api: "openai-completions",
+				models: [
+					{
+						id,
+						name: id,
+						reasoning: false,
+						input: ["text"],
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						contextWindow: 128_000,
+						maxTokens: 4_096,
+					},
+				],
+			});
+		};
+	}
+
+	it("a saved chat model that an extension registers is reset to auto once the extension has loaded", async () => {
+		writeSettings({ compactionModel: "review-custom/chat" });
+		const { session, settingsManager } = await openSession([customProvider("chat")]);
+		try {
+			await settingsManager.flush();
+			assert.equal(settingsManager.getCompactionModel(), "auto");
+			assert.equal(savedCompactionModel("global"), "auto");
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("a project selection is migrated once the project is trusted", async () => {
+		writeSettings({}, { compactionModel: CHAT });
+		const settingsManager = SettingsManager.create(tempDir, agentDir, { projectTrusted: false });
+		const models = [{ ...getModel("anthropic", "claude-sonnet-4-5")! }] as Parameters<
+			typeof migrateCompactionModelSettings
+		>[1];
+		assert.deepEqual(migrateCompactionModelSettings(settingsManager, models), []);
+
+		settingsManager.setProjectTrusted(true);
+		assert.deepEqual(migrateCompactionModelSettings(settingsManager, models), [{ scope: "project", from: CHAT }]);
+		await settingsManager.flush();
+		assert.equal(savedCompactionModel("project"), "auto");
+	});
+
+	it("a project selection is migrated when startup completes after the project is trusted", async () => {
+		writeSettings({}, { compactionModel: CHAT });
+		const { session, settingsManager, resourceLoader } = await openSession([], false);
+		try {
+			assert.equal(savedCompactionModel("project"), CHAT);
+
+			settingsManager.setProjectTrusted(true);
+			await session.completeStartupResources(resourceLoader);
+			await settingsManager.flush();
+
+			assert.equal(savedCompactionModel("project"), "auto");
 		} finally {
 			session.dispose();
 		}

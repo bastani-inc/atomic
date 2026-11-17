@@ -73,7 +73,7 @@ See [Recalling earlier work](/sessions#recalling-earlier-work) for how `history:
 
 ### Agents without read or search
 
-Some agents cannot read their history with their own tools, such as a subagent or workflow stage whose tool allowlist leaves out `read` or `search`. After its first clear, such an agent gets one read-only tool, `session_history`. `{"pattern": "<regex>"}` searches its own session's history and `{"lines": "N-M"}` reads a range of it. The tool reaches no other session, workflow run, file or project, and the agent's other tools stay as they were.
+Some agents cannot read their history with their own tools, such as a subagent or workflow stage whose tool allowlist leaves out `read` or `search`. After its first clear, such an agent gets one read-only tool, `session_history`, and keeps it when its session is resumed. `{"pattern": "<regex>"}` searches its own session's history and `{"lines": "N-M"}` reads a range of it. The tool reaches no other session, workflow run, file or project, and the agent's other tools stay as they were.
 
 ## Context compacted
 
@@ -103,7 +103,7 @@ Use `/settings` → **Compaction model** to choose **Auto (clear and recover)** 
 
 A compactor receives the conversation in context and uses its own credentials. Choose one only if its provider may receive your conversation. Changing `compactionModel` does not affect branch summaries. SDK and extension code can choose for one run with `session.compact({ compactionModel })` or `ctx.compact({ compactionModel })`, which leaves the setting unchanged.
 
-Compaction no longer calls chat models or classifiers. When a session starts, a saved `compactionModel`, global or in a trusted project, that names a chat or classifier model is reset to `auto` and saved. A compactor ID is kept, and so is an ID that names no registered model; compaction then clears the context with a notice that the model is not available. A per-run `compactionModel` that names a chat, classifier or unknown model also clears the context with a notice instead of failing.
+Compaction no longer calls chat models or classifiers. When a session starts, a saved `compactionModel`, global or in a trusted project, that names a chat or classifier model is reset to `auto` and saved. The check runs again once extensions have loaded, so a chat model an extension registers is reset too, and when a project is trusted during startup. A compactor ID is kept, and so is an ID that names no registered model; compaction then clears the context with a notice that the model is not available. A per-run `compactionModel` that names a chat, classifier or unknown model also clears the context with a notice instead of failing.
 
 ## `keepContext` tags
 

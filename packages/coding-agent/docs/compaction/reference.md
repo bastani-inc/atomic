@@ -62,6 +62,7 @@ A successful run appends a `type:"compaction"` entry:
 | `details.model` | The compactor as `provider/model`, when one produced the text |
 | `details.fallbackReason` | Why the configured compactor was not used and the context was cleared instead |
 | `details.history` | Where the boundary sits in `history://sessions/<sessionId>`: `linesBefore` is the last line of the earlier conversation, `boundaryLine` the boundary's first line, and `totalLines` the history's length right after the boundary was written |
+| `details.historyAccess` | How the boundary told the agent to reach its history: `read-search` (its own `read` and `search` tools) or `session-history-tool`. A resumed session whose latest boundary says `session-history-tool` gets the `session_history` tool back |
 | `details.stats` | Heuristic estimates. `tokensAfter` counts the system prompt and the boundary message. `linesBefore` counts the serialized lines of the replaced context and `linesKept` the lines of compacted text, `0` on a clear. `rangeCount` is always `0` |
 | `details.backupPath` | The pre-compaction backup, when it could be written |
 
