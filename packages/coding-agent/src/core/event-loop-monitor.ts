@@ -8,9 +8,10 @@
  * - `block`: the event loop turned that many milliseconds or more after it was due, with the stacks of the code that
  *   held it;
  * - `delay`: the process's event-loop delay (p50, p99, max) over each phase of its life: its startup, written once it
- *   is ready for input; its session, written once it starts to quit; and its shutdown, written as it exits. A process
- *   that never becomes ready, or is ended before it can quit (as Windows ends the engine), writes the phase it was in
- *   as far as it got.
+ *   is ready for input (the host once it starts drawing its first frame, when its editor takes keys; the engine once
+ *   its session and extensions are loaded); its session, written once it starts to quit; and its shutdown, written as
+ *   it exits. A process that never becomes ready, or is ended before it can quit (as Windows ends the engine), writes
+ *   the phase it was in as far as it got.
  *
  * Unset, nothing here runs: no timer, worker, profiler or histogram.
  *
@@ -603,7 +604,10 @@ export function startEventLoopMonitor(role: EventLoopProcessRole, env: NodeJS.Pr
 	return true;
 }
 
-/** Ends the startup phase of the event-loop delay record: the process is ready for input. */
+/**
+ * Ends the startup phase of the event-loop delay record: the process is ready for input. The interactive host calls it
+ * as it starts its terminal and first frame, before its deferred startup; the engine once its resources are loaded.
+ */
 export function markEventLoopStartupComplete(): void {
 	monitor?.enter("session");
 }

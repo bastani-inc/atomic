@@ -269,12 +269,13 @@ async function runScenario(
 }
 
 /**
- * Fails naming every budget a scenario broke, with the blocks of that process and phase and their stacks. Quitting is
- * a one-time transition like the engine's startup: its phase is reported in the failure message but not budgeted.
- * Startup, up to the host's first frame and the engine's binding, is held by the startup work in progress elsewhere
- * (#5339) and is reported, not budgeted, here. A broken max whose every block over the budget ran in code another open
- * change is making non-blocking (the static check's OWNED_ELSEWHERE) is printed as theirs instead of failing; a broken
- * p99, or any block of this code's own, fails.
+ * Fails naming every budget a scenario broke, with the blocks of that process and phase and their stacks. The host is
+ * held to its budgets from its first frame on, when its editor takes keys, its deferred startup included; only what
+ * comes before that frame is its startup. The engine's startup, until its session and extensions are loaded, is a
+ * one-time load the user does not wait on: the host's editor already takes keys, and a prompt sent meanwhile waits for
+ * the engine to be ready. Like quitting, it is reported in the failure message but not budgeted. A broken max whose
+ * every block over the budget ran in code another open change is making non-blocking (the static check's
+ * OWNED_ELSEWHERE) is printed as theirs instead of failing; a broken p99, or any block of this code's own, fails.
  */
 function assertWithinBudgets(result: ScenarioResult): void {
 	const violations: string[] = [];
