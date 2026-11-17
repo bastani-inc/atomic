@@ -561,9 +561,10 @@ export function bindAgentPanel(
 		}
 		const { rows, total, needsInput, shells, main, expiresAt } = idleRows();
 		if (rows.length === 0) {
+			// Counts go out before the panel closes; the hint line still counts running shells.
+			const changed = publishCounts(0, 0, shells);
 			unmount(false);
-			// The hint line counts running shells even when the panel lists nothing.
-			if (publishCounts(0, 0, shells)) ui.requestRender();
+			if (changed) ui.requestRender();
 			return;
 		}
 		publishCounts(total, needsInput, shells);

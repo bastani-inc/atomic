@@ -131,7 +131,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private pendingEnabledModelsSync: { patterns: string[] | null } | undefined;
 	private streaming = false;
 	private panelCounts: AgentPanelCounts = { total: 0, needsInput: 0, shells: 0 };
-	private panelCountsListeners: Set<() => void> | undefined;
 	private compacting = false;
 	/** Whether the engine's session waits out an automatic retry's backoff; the engine's state snapshot omits it. */
 	private retrying = false;
@@ -256,7 +255,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.client.onGenerationEnded((event) => {
 			this.retiredResourceGenerations.add(event.generation);
 			if (event.generation === this.client.getGeneration()) {
-				this.setPanelCounts({ total: 0, needsInput: 0, shells: 0 });
+				this.panelCounts = { total: 0, needsInput: 0, shells: 0 };
 				this.updateResources({});
 			}
 			// A first child that never became ready failed startup; initialStart reports it instead of a restart.
@@ -272,11 +271,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		// surfaces.
 		this.client.onInteractiveEngineMessage?.((message) => {
 			if (message.type === "engine_agent_panel_state") {
-				this.setPanelCounts({ total: message.total, needsInput: message.needsInput, shells: message.shells ?? 0 });
+				this.panelCounts = { total: message.total, needsInput: message.needsInput, shells: message.shells ?? 0 };
 				return;
 			}
 			if (message.type === "engine_extension_ui_reset") {
-				this.setPanelCounts({ total: 0, needsInput: 0, shells: 0 });
+				this.panelCounts = { total: 0, needsInput: 0, shells: 0 };
 				this.hostExtensionUIReset?.();
 				return;
 			}
@@ -300,33 +299,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 
 	get agentPanelCounts(): Readonly<AgentPanelCounts> {
 		return this.panelCounts;
-	}
-
-	/**
-	 * Follows the engine's agent panel counts, which the host footer paints. A count can change with no
-	 * panel widget mounted (only shells running), so the host repaints on this rather than on widget frames.
-	 */
-	onAgentPanelCountsChanged(listener: () => void): () => void {
-		this.panelCountsListeners ??= new Set();
-		const listeners = this.panelCountsListeners;
-		listeners.add(listener);
-		return () => listeners.delete(listener);
-	}
-
-	private setPanelCounts(counts: AgentPanelCounts): void {
-		const current = this.panelCounts;
-		this.panelCounts = counts;
-		if (
-			current.total === counts.total &&
-			current.needsInput === counts.needsInput &&
-			(current.shells ?? 0) === (counts.shells ?? 0)
-		)
-			return;
-		for (const listener of [...(this.panelCountsListeners ?? [])]) {
-			try {
-				listener();
-			} catch {}
-		}
 	}
 
 	override get session(): AgentSession {

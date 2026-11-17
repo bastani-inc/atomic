@@ -1,15 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
+import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.ts";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import type { TaskRecord } from "../../packages/coding-agent/src/core/tasks/contracts.ts";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.ts";
 import { mainComposerHintSegments } from "../../packages/coding-agent/src/modes/interactive/components/main-composer-keys.ts";
-import { registerStartupInputListeners } from "../../packages/coding-agent/src/modes/interactive/interactive-input-handling.ts";
-import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
-import type { InteractiveEngineGenerationEnded } from "../../packages/coding-agent/src/modes/interactive-engine/engine-generation.ts";
+import { attachInteractiveEngineHost } from "../../packages/coding-agent/src/modes/interactive-engine/extension-ui-bridge.ts";
 import { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
 import {
 	type InteractiveEngineMessage,
@@ -18,16 +17,14 @@ import {
 } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
 import { bindAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.ts";
 import { createRpcExtensionUIContext } from "../../packages/coding-agent/src/modes/rpc/rpc-extension-ui.ts";
-import type { RpcEvent } from "../../packages/coding-agent/src/modes/rpc/rpc-types.ts";
 import { createHarness } from "../../packages/coding-agent/test/suite/harness.ts";
 import { taskRecord } from "../helpers/task-record.js";
 
 initTheme("dark");
 
 /** An owner task store whose records change and notify, enough for the panel's ranking pass. */
-function shellStore(session: object) {
-	const shell: TaskRecord = { ...taskRecord("sh1", "command"), title: "sleep 300" };
-	let tasks: TaskRecord[] = [shell];
+function changingStore(session: object, initial: TaskRecord[]) {
+	let tasks = initial;
 	let revision = 1;
 	const listeners = new Set<() => void>();
 	const store = {
@@ -57,133 +54,157 @@ function shellStore(session: object) {
 	};
 	bindOwnerTaskStore(session, store as never);
 	return {
-		finishShell() {
-			tasks = [{ ...shell, execution: { kind: "settled", result: { kind: "completed", output: shell.output } } }];
+		replace(next: TaskRecord[]) {
+			tasks = next;
 			revision++;
 			for (const listener of listeners) listener();
 		},
 	};
 }
 
-function engineClient() {
-	let engineMessageListener: ((message: InteractiveEngineMessage) => void) | undefined;
+const runningShell: TaskRecord = { ...taskRecord("sh1", "command"), title: "sleep 300" };
+const finishedShell: TaskRecord = {
+	...runningShell,
+	execution: { kind: "settled", result: { kind: "completed", output: runningShell.output } },
+};
+const runningAgent: TaskRecord = { ...taskRecord("a1"), agentName: "worker", title: "fix shipping batches" };
+
+const settle = async () => {
+	await Promise.resolve();
+	await new Promise<void>((resolve) => setImmediate(resolve));
+};
+
+/**
+ * The real path in isolated mode: the engine's panel bridge and RPC UI context with its custom UI service,
+ * the engine's stdout lines, and the host runtime with its engine host attachment.
+ */
+async function isolatedHost(initial: TaskRecord[]) {
+	const harness = await createHarness();
+	const keybindings = new KeybindingsManager();
+	const engineListeners: Array<(message: InteractiveEngineMessage) => void> = [];
 	const client = {
 		onInteractiveEngineMessage(listener: (message: InteractiveEngineMessage) => void) {
-			engineMessageListener = listener;
-			return () => {};
+			engineListeners.push(listener);
+			return () => {
+				const index = engineListeners.indexOf(listener);
+				if (index !== -1) engineListeners.splice(index, 1);
+			};
 		},
-		onEvent(_listener: (event: RpcEvent) => void) {
-			return () => {};
-		},
-		onGenerationEnded(_listener: (event: InteractiveEngineGenerationEnded) => void) {
-			return () => {};
-		},
+		onInteractiveEngineKeybindingState: () => () => {},
+		onExtensionUIRequest: () => () => {},
+		onEvent: () => () => {},
+		onGenerationEnded: () => () => {},
 		getGeneration: () => 1,
 		getState: async () => ({ resourceExtensions: [] }),
 		requestInternal: <T>() => Promise.resolve(undefined as T),
 		stop: async () => {},
 		restart: async () => {},
 	};
-	/** One line the engine writes on its stdout, as the host's client delivers it. */
 	const deliver = (line: string) => {
 		const message = parseInteractiveEngineMessage(line);
-		if (message) engineMessageListener?.(message);
+		if (message) for (const listener of [...engineListeners]) listener(message);
 	};
-	return { client, deliver };
-}
+	const localRuntime = new AgentSessionRuntime(
+		harness.session,
+		{
+			cwd: harness.tempDir,
+			agentDir: harness.tempDir,
+			modelRuntime: harness.session.modelRuntime,
+			settingsManager: harness.settingsManager,
+			resourceLoader: harness.session.resourceLoader,
+			diagnostics: [],
+		},
+		async () => {
+			throw new Error("unused runtime factory");
+		},
+	);
+	const runtime = new IsolatedInteractiveRuntime(
+		localRuntime,
+		async () => {
+			throw new Error("unused isolated runtime factory");
+		},
+		client as never,
+	);
+	const footer = () => mainComposerHintSegments(keybindings, () => runtime.agentPanelCounts);
+	/** What the host footer reads each time the host repaints. */
+	const painted: string[][] = [];
+	const hostUi = {
+		setWidget: () => {},
+		requestRender: () => painted.push(footer()),
+		custom: async () => undefined,
+		notify: () => {},
+	} as unknown as ExtensionUIContext;
+	const detachHost = attachInteractiveEngineHost(runtime as never, hostUi, () => {}, {
+		isFullscreen: () => false,
+		onRendererReplaced: () => () => {},
+	});
 
-function hostMode(runtimeHost: object, keybindings: KeybindingsManager) {
-	const mode = Object.create(InteractiveModeBase.prototype) as InteractiveModeBase;
-	let renders = 0;
-	mode.keybindings = keybindings;
-	mode.addTuiInputListener = () => () => {};
-	mode.ui = { requestRender: () => renders++, hasOverlay: () => false } as never;
-	mode.runtimeHost = runtimeHost as never;
-	registerStartupInputListeners(mode);
-	return { renders: () => renders };
+	const engineSession = {};
+	const store = changingStore(engineSession, initial);
+	const customUi = new EngineCustomUiService(deliver, keybindings);
+	const engineUi = createRpcExtensionUIContext({ output: () => {}, pendingExtensionRequests: new Map(), customUi });
+	const unbind = bindAgentPanel(engineSession as never, engineUi, (counts) => {
+		deliver(serializeInteractiveEngineMessage({ type: "engine_agent_panel_state", ...counts }));
+	});
+	await settle();
+	return {
+		store,
+		footer,
+		painted,
+		async dispose() {
+			unbind();
+			detachHost();
+			await runtime.dispose();
+			await harness.cleanup();
+		},
+	};
 }
 
 test("in the isolated engine, a shell finishing with no panel rows repaints the host footer", async () => {
-	const harness = await createHarness();
+	const host = await isolatedHost([runningShell]);
 	try {
-		const keybindings = new KeybindingsManager();
-		const { client, deliver } = engineClient();
-		const localRuntime = new AgentSessionRuntime(
-			harness.session,
-			{
-				cwd: harness.tempDir,
-				agentDir: harness.tempDir,
-				modelRuntime: harness.session.modelRuntime,
-				settingsManager: harness.settingsManager,
-				resourceLoader: harness.session.resourceLoader,
-				diagnostics: [],
-			},
-			async () => {
-				throw new Error("unused runtime factory");
-			},
-		);
-		const runtime = new IsolatedInteractiveRuntime(
-			localRuntime,
-			async () => {
-				throw new Error("unused isolated runtime factory");
-			},
-			client as never,
-		);
-		const host = hostMode(runtime, keybindings);
-
-		// The engine side, wired as its RPC session binding wires it.
-		const engineSession = {};
-		const shells = shellStore(engineSession);
-		const customUi = new EngineCustomUiService(deliver, keybindings);
-		const engineUi = createRpcExtensionUIContext({
-			output: () => {},
-			pendingExtensionRequests: new Map(),
-			customUi,
-		});
-		const unbind = bindAgentPanel(engineSession as never, engineUi, (counts) => {
-			deliver(serializeInteractiveEngineMessage({ type: "engine_agent_panel_state", ...counts }));
-		});
-		try {
-			assert.deepEqual(mainComposerHintSegments(keybindings), ["1 shell", "/tasks to manage", "? keys"]);
-			const before = host.renders();
-			shells.finishShell();
-			await Promise.resolve();
-			await new Promise<void>((resolve) => setImmediate(resolve));
-			assert.deepEqual(mainComposerHintSegments(keybindings), ["? keys"]);
-			assert.ok(host.renders() > before, "the host repaints its footer without a mounted panel widget");
-		} finally {
-			unbind();
-			await runtime.dispose();
-		}
+		assert.deepEqual(host.footer(), ["1 shell", "/tasks to manage", "? keys"]);
+		host.store.replace([finishedShell]);
+		await settle();
+		assert.deepEqual(host.painted.at(-1), ["? keys"], "the host repaints after the counts change");
 	} finally {
-		await harness.cleanup();
+		await host.dispose();
+	}
+});
+
+test("in the isolated engine, the last subagent leaving the panel repaints the host footer", async () => {
+	const host = await isolatedHost([runningAgent]);
+	try {
+		assert.deepEqual(host.footer(), ["↓ 1 agent", "? keys"]);
+		host.store.replace([]);
+		await settle();
+		assert.deepEqual(host.painted.at(-1), ["? keys"], "the host repaints after the counts change");
+	} finally {
+		await host.dispose();
 	}
 });
 
 test("in process, a shell finishing with no panel rows repaints the footer", async () => {
 	const session = {};
-	const shells = shellStore(session);
-	let renders = 0;
+	const store = changingStore(session, [runningShell]);
+	const keybindings = new KeybindingsManager();
+	const painted: string[][] = [];
 	const unbind = bindAgentPanel(
 		session as never,
 		{
 			setWidget() {},
-			requestRender: () => renders++,
+			requestRender: () => painted.push(mainComposerHintSegments(keybindings, session as never)),
 		} as never,
 	);
 	try {
-		const keybindings = new KeybindingsManager();
 		assert.deepEqual(mainComposerHintSegments(keybindings, session as never), [
 			"1 shell",
 			"/tasks to manage",
 			"? keys",
 		]);
-		const before = renders;
-		shells.finishShell();
-		await Promise.resolve();
-		await new Promise<void>((resolve) => setImmediate(resolve));
-		assert.deepEqual(mainComposerHintSegments(keybindings, session as never), ["? keys"]);
-		assert.ok(renders > before, "the footer repaints without a mounted panel widget");
+		store.replace([finishedShell]);
+		await settle();
+		assert.deepEqual(painted.at(-1), ["? keys"], "the footer repaints without a mounted panel widget");
 	} finally {
 		unbind();
 	}
