@@ -332,4 +332,19 @@ describe("session claims (#5135)", () => {
 		release();
 		assert.equal(JSON.parse(readFileSync(claimFile(sessionId), "utf8")).pid, pid);
 	});
+
+	test("a claim taken again while the session's earlier release is still reading keeps its file (#5377)", async () => {
+		const sessionId = newSessionId();
+		claim(sessionId);
+		const detach = attachSessionClaim(sessionId);
+		assert.ok(detach);
+
+		// The session closes, and a resume claims it again before the release has read the claim it removes.
+		const releasing = detach();
+		claim(sessionId);
+		await releasing;
+
+		assert.equal(existsSync(claimFile(sessionId)), true, "the new claim stays in place");
+		assert.equal(JSON.parse(readFileSync(claimFile(sessionId), "utf8")).pid, process.pid);
+	});
 });

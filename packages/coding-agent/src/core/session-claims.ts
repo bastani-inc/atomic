@@ -213,7 +213,10 @@ function dropClaim(sessionId: string, claim: HeldClaim): void {
 async function dropClaimAsync(sessionId: string, claim: HeldClaim): Promise<void> {
 	if (!forgetClaim(sessionId, claim)) return;
 	try {
-		if ((await readClaimAsync(claim.path))?.record?.token === PROCESS_TOKEN) await rm(claim.path);
+		const current = await readClaimAsync(claim.path);
+		// Claimed again while this release read the file: the claim there, with this process's token, is the new one.
+		if (held.has(sessionId)) return;
+		if (current?.record?.token === PROCESS_TOKEN) await rm(claim.path);
 	} catch {}
 }
 
