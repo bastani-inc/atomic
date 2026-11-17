@@ -383,17 +383,6 @@ function streamingWindowedEntry<TExtraEntry extends ChatTranscriptEntryLike>(
 	return { ...entry, message: { ...entry.message, content } };
 }
 
-function resolveRendererHostSession<TExtraEntry extends ChatTranscriptEntryLike>(
-	state: ChatSessionHostState<TExtraEntry>,
-): ChatBoxSession | undefined {
-	const live = state.getAgentSession?.() ?? state.getChatBoxSession?.();
-	if (live !== undefined) {
-		state.lastRendererSession = new WeakRef(live);
-		return live;
-	}
-	return state.lastRendererSession?.deref();
-}
-
 function chatMessageRenderOptions<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	isStreaming: boolean,
@@ -404,28 +393,23 @@ function chatMessageRenderOptions<TExtraEntry extends ChatTranscriptEntryLike>(
 		ui: toolTui(state),
 		cwd:
 			state.getCwd?.() ??
-			state.getAgentSession?.()?.sessionManager.getCwd() ??
-			state.getChatBoxSession?.()?.sessionManager.getCwd() ??
+			state.getAgentSession?.()?.sessionManager?.getCwd() ??
+			state.getChatBoxSession?.()?.sessionManager?.getCwd() ??
 			process.cwd(),
 		markdownTheme: inherited?.markdownTheme ?? state.getMarkdownTheme?.(),
 		isStreaming,
 		showImages: inherited?.showImages ?? true,
 		groupBash: inherited?.groupBash ?? true,
 		getToolDefinition: (toolName: string) => {
-			const session = resolveRendererHostSession(state);
-			const taskSource = state.getTaskSource?.();
-			const owner =
-				taskSource === undefined ? undefined : (getOwnerTaskSession(taskSource) as ChatBoxSession | undefined);
+			const session = state.getAgentSession?.() ?? state.getChatBoxSession?.();
 			return (
 				session?.extensionRunner?.resolveToolRenderers?.(toolName, () => session.getToolDefinition?.(toolName)) ??
 				session?.getToolDefinition?.(toolName) ??
-				inherited?.getToolDefinition?.(toolName) ??
-				owner?.extensionRunner?.resolveToolRenderers?.(toolName, () => owner.getToolDefinition?.(toolName)) ??
-				owner?.getToolDefinition?.(toolName)
+				inherited?.getToolDefinition?.(toolName)
 			);
 		},
 		getCustomMessageRenderer: (customType: string) => {
-			const session = resolveRendererHostSession(state);
+			const session = state.getAgentSession?.() ?? state.getChatBoxSession?.();
 			const taskSource = state.getTaskSource?.();
 			const owner =
 				taskSource === undefined ? undefined : (getOwnerTaskSession(taskSource) as ChatBoxSession | undefined);
@@ -481,6 +465,8 @@ function chatRenderSettingsCacheKey<TExtraEntry extends ChatTranscriptEntryLike>
 	const inherited = state.getChatRenderSettings?.();
 	const markdownTransformersKey =
 		inherited?.markdownTransformers?.map((transformer) => renderIdentityKey(state, transformer)).join(",") ?? "";
+	const taskSource = state.getTaskSource?.();
+	const owner = taskSource === undefined ? undefined : (getOwnerTaskSession(taskSource) as ChatBoxSession | undefined);
 	return cacheKey([
 		"settings",
 		inherited?.hideThinkingBlock === true,
@@ -492,7 +478,8 @@ function chatRenderSettingsCacheKey<TExtraEntry extends ChatTranscriptEntryLike>
 		inherited?.renderLatex !== false,
 		inherited?.groupBash ?? true,
 		markdownTransformersKey,
-		state.getCwd?.() ?? state.getAgentSession?.()?.sessionManager.getCwd() ?? process.cwd(),
+		state.getCwd?.() ?? state.getAgentSession?.()?.sessionManager?.getCwd() ?? process.cwd(),
+		owner?.sessionManager?.getSessionId?.() ?? "",
 		state.bodyViewport.getScrollFromBottom() === 0,
 		isChatSessionStreaming(state),
 		resolveEchoedInitialPrompt(state) ?? "",

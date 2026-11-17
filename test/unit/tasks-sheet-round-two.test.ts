@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
+import { getKeybindings, setKeybindings, stripTerminalSequences } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import {
@@ -438,6 +438,23 @@ test("a shell's input page is a /tasks bottom sheet, not a full-screen frame (#5
 		assert.match(lines[1] ?? "", /^ Input to azure-ci run 5222/);
 		assert.doesNotMatch(page, /Background tasks|╭─|active · /);
 		assert.match(lines.at(-1) ?? "", /^ {2}enter send · ← back to list$/);
+		for (const char of "hello shell") inspector.handleInput(char);
+		inspector.handleInput(ENTER);
+		for (const char of " extra") inspector.handleInput(char);
+		await flush();
+		const acknowledged = plain(inspector.renderPicker(100, 24));
+		assert.match(acknowledged, /Sent 11 bytes/);
+		assert.match(acknowledged, /hello shell extra/, "acknowledging the earlier send keeps a newer draft");
+		inspector.handleInput("\x1b[H");
+		inspector.handleInput("\x1b[D");
+		assert.equal(inspector.navigation.focus.kind, "tasks");
+		assert.doesNotMatch(plain(inspector.renderPicker(100, 24)), /Sent 11 bytes/);
+		await inspector.navigation.activate("input");
+		assert.match(
+			stripTerminalSequences(plain(inspector.renderPicker(100, 24))),
+			/hello shell extra/,
+			"returning restores the unsent draft",
+		);
 	} finally {
 		inspector.dispose();
 		await fixture.dispose();

@@ -314,14 +314,16 @@ export function bindOwnerTaskStore(session: object, store: OwnerTaskStore): void
 	sessionStores.set(session, store);
 	const weakSession = new WeakRef(session);
 	storeSessions.set(store, weakSession);
-	storeSessions.set(taskClocksFor(store), weakSession);
+	const clocks = taskClockOf(store);
+	if (clocks !== undefined) storeSessions.set(clocks, weakSession);
 	for (const listener of bindingListeners.get(session) ?? []) listener();
 }
 export function getOwnerTaskStore(session: object): OwnerTaskStore | undefined {
 	return sessionStores.get(session);
 }
 export function getOwnerTaskSession(target: object): object | undefined {
-	return (storeSessions.get(target) ?? storeSessions.get(taskClocksFor(target)))?.deref();
+	const clocks = taskClockOf(target);
+	return (storeSessions.get(target) ?? (clocks === undefined ? undefined : storeSessions.get(clocks)))?.deref();
 }
 export function isTaskTurnInterrupted(task: TaskRecord): boolean {
 	if (task.kind !== "agent" || task.execution.kind !== "running") return false;

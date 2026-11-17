@@ -13,6 +13,7 @@ import { createAgentSession } from "../../../src/core/sdk.ts";
 import { SessionManager } from "../../../src/core/session-manager.ts";
 import { SettingsManager } from "../../../src/core/settings-manager.ts";
 import { getDefaultToolNames } from "../../../src/core/tools/index.ts";
+import { linkSharedTranspileCache } from "../../helpers/shared-transpile-cache.ts";
 
 describe("noTools builtin mode keeps extension tools enabled", () => {
 	let tempDir: string;
@@ -22,6 +23,7 @@ describe("noTools builtin mode keeps extension tools enabled", () => {
 		tempDir = join(tmpdir(), `pi-no-builtin-tools-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		agentDir = join(tempDir, "agent");
 		mkdirSync(agentDir, { recursive: true });
+		linkSharedTranspileCache(agentDir);
 	});
 
 	afterEach(() => {

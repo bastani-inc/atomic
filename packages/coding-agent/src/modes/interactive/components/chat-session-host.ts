@@ -201,7 +201,18 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.requestRender?.();
 	}
 
-	resetFollowedSession(): void {
+	resetFollowedSession(options?: { readonly preserveWorkedRun?: boolean }): void {
+		if (options?.preserveWorkedRun) {
+			if (this.state.workedRun === undefined) {
+				const snapshot = chatSessionWorkingMeta(this.state);
+				if (snapshot !== undefined && !this.state.manualCompactionTakeoverPending) {
+					this.state.workedRun = { message: this.state.lastWorkingMessage, snapshot };
+				}
+			}
+		} else {
+			this.state.workedRun = undefined;
+			this.state.interruptedTurnSnapshot = undefined;
+		}
 		this.state.workingRunMeter.stop();
 		this.state.manualCompactionTakeoverPending = false;
 		this.state.compacting = false;
@@ -209,8 +220,6 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.sdkBusy = false;
 		this.state.workingMessage = undefined;
 		this.state.lastWorkingMessage = undefined;
-		this.state.workedRun = undefined;
-		this.state.interruptedTurnSnapshot = undefined;
 		this.state.seenFirstRawUser = false;
 		this.state.firstUserEntryExactText = undefined;
 		this.state.firstUserEntry = undefined;
