@@ -876,6 +876,37 @@ export function registerRestoringReservationStoreConformance(
 			assert.ok(Number.isSafeInteger(read.ageMs) && read.ageMs >= 0, `ageMs ${read.ageMs}`);
 			read.reservation.targets.length = 0;
 			assert.deepEqual(await a.lookup("intercom-old-7", TEAMMATE, LIVE_MS), { status: "reserved", reservation });
+
+			const subKey = reservationKeyFor("capability-home-sub");
+			const subReserved = await reserve(b, {
+				reservationKey: subKey,
+				childTarget: "sub-worker",
+				aliases: [],
+				group: "team/sub",
+			});
+			const subReservation = expected(subReserved.lease.fencingToken, {
+				reservationKey: subKey,
+				childTarget: "sub-worker",
+				targets: ["sub-worker"],
+				group: "team/sub",
+			});
+			assert.deepEqual(await a.lookup("sub-worker", TEAMMATE, LIVE_MS), { status: "none" });
+			assert.deepEqual(
+				await a.lookup(
+					"sub-worker",
+					{ sessionId: "policy-sender", groups: ["other", "team"], home: "other" },
+					LIVE_MS,
+				),
+				{ status: "none" },
+			);
+			assert.deepEqual(
+				await a.lookup(
+					"sub-worker",
+					{ sessionId: "policy-sender", groups: ["team", "other"], home: "team" },
+					LIVE_MS,
+				),
+				{ status: "reserved", reservation: subReservation },
+			);
 		},
 	);
 
