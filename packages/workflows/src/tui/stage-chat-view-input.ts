@@ -34,6 +34,9 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	if (data === TRANSCRIPT_JUMP_TO_END_URL) return handleStageChatJumpToBottom(ctx, data);
 	if (isHostThinkingToggle(ctx, data)) return false;
 	const stage = currentStage(ctx);
+	if (ctx.mountedCustomUi && stage?.pendingPrompt?.source !== "stage-dialog") {
+		return handleMountedCustomUiInput(ctx, data);
+	}
 	syncPromptState(ctx, stage?.pendingPrompt);
 	const readOnlyArchive = isReadOnlyArchive(ctx, stage);
 	const readOnlyPromptArchive = readOnlyArchive && isWorkflowPromptStage(stage);

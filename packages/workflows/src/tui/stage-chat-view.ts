@@ -128,7 +128,8 @@ export class StageChatView implements Component, Focusable {
 		const blocked = isBlocked(ctx);
 
 		syncPromptState(ctx, stage?.pendingPrompt);
-		const promptActive = promptCardShown(ctx);
+		const promptActive =
+			promptCardShown(ctx) && (this.mountedCustomUi === null || this.promptState?.prompt.source === "stage-dialog");
 		const customUiActive = this.mountedCustomUi !== null && !promptActive;
 		if (this.mountedCustomUi) setComponentFocused(this.mountedCustomUi.component, this.focused && customUiActive);
 		const readOnlyArchive = isReadOnlyArchive(ctx, stage);
