@@ -1,7 +1,8 @@
 import type net from "node:net";
 import { addGroup, normalizeGroups, removeGroup, validateRuntimeGroup } from "../group.js";
 import type { BrokerMessage } from "../types.js";
-import { sessionGroups, sessionsShareGroup, setSessionGroups } from "./group-membership.js";
+import { reachesSession, sessionGroups, setSessionGroups } from "./group-membership.js";
+import { admitsMemberships, canJoin, canLeave, type IntercomReachPolicy, narrowMemberships } from "../reach-policy.js";
 import type { BrokerConnectedSession } from "./send-handler.js";
 import { isAgentRecipient } from "../recipient-purpose.js";
 import type { PendingQuestionIndex } from "./pending-question-index.js";
@@ -35,8 +36,8 @@ function broadcastMembershipChange(
 	for (const [id, peer] of sessions) {
 		// #4642: a hosted session shares its host's socket and needs no copy of its own.
 		if (id === session.info.id || peer.hostedBy !== undefined) continue;
-		const sharedBefore = sessionsShareGroup(previousInfo, peer.info);
-		const sharedAfter = sessionsShareGroup(session.info, peer.info);
+		const sharedBefore = reachesSession(peer, previousInfo);
+		const sharedAfter = reachesSession(peer, session.info);
 		if (!sharedBefore && sharedAfter) {
 			write(peer.socket, { type: "session_joined", session: session.info });
 		} else if (sharedBefore && !sharedAfter) {
@@ -46,6 +47,44 @@ function broadcastMembershipChange(
 			else queuePresence(peer, session);
 		}
 	}
+}
+
+export function replaceSessionReach(
+	sessions: Map<string, BrokerConnectedSession>,
+	write: WriteMessage,
+	session: BrokerConnectedSession,
+	reach: IntercomReachPolicy,
+	queuePresence?: QueuePresence,
+): void {
+	const previousGroups = sessionGroups(session.info);
+	const presenceBefore = visiblePresence(session.info);
+	session.reach = reach;
+	setSessionGroups(session.info, new Set(narrowMemberships(reach, [...previousGroups])), reach.home);
+	broadcastMembershipChange(
+		sessions,
+		write,
+		session,
+		previousGroups,
+		visiblePresence(session.info) !== presenceBefore,
+		queuePresence,
+	);
+}
+
+function membershipReachRefusal(
+	reach: IntercomReachPolicy,
+	clientMessage: PresenceClientMessage,
+	nextGroups: ReadonlySet<string>,
+): string | undefined {
+	const scope = `home group ${reach.home}; reachable groups: ${reach.reachable.join(", ") || "none"}`;
+	if (clientMessage.type === "join_group") {
+		const group = [...nextGroups].find((candidate) => !canJoin(reach, candidate));
+		return group === undefined ? undefined : `Group ${group} is outside this session's Intercom reach (${scope})`;
+	}
+	if (clientMessage.type === "leave_group" && typeof clientMessage.group === "string" && !canLeave(reach, clientMessage.group.trim()))
+		return `This session's home group ${reach.home} can't be left`;
+	if (!admitsMemberships(reach, [...nextGroups]))
+		return `Intercom memberships ${[...nextGroups].join(", ")} are outside this session's reach (${scope})`;
+	return undefined;
 }
 
 /** Apply one presence or membership update and notify every affected group member. */
@@ -109,6 +148,8 @@ export function handleBrokerPresence(
 		const reason = error instanceof Error ? error.message : String(error);
 		return void fail(`Invalid presence group: ${reason}`);
 	}
+	const reachRefusal = session.reach === undefined ? undefined : membershipReachRefusal(session.reach, clientMessage, nextGroups);
+	if (reachRefusal !== undefined) return void fail(reachRefusal);
 
 	const name = clientMessage.name;
 	if (name !== undefined && typeof name !== "string") return void fail("Invalid presence name");

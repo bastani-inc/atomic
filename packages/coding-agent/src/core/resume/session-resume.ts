@@ -372,7 +372,7 @@ export async function prepareSessionResume(
 	const storeDir = resolveStoreDir(options);
 	// The session holds the pooled worktrees it owns before anything is restored, so evicting idle slots never removes
 	// one it continues in, and until it closes (#4748).
-	await holdSessionWorktrees(sessionManager, sessionManager, storeDir);
+	await holdSessionWorktrees(sessionManager, sessionManager, storeDir, options.signal);
 	// `atomic --session` counts from the launch of the process, which is 0 on the clock the recorder uses.
 	const timings = new ResumeTimingsRecorder(options.entryPoint === "cli" ? 0 : undefined);
 	let firstRecorded!: (recorded: ResumeTimings | undefined) => void;
@@ -393,6 +393,7 @@ export async function prepareSessionResume(
 	};
 	let prepared: PreparedSessionResume;
 	try {
+		options.signal?.throwIfAborted();
 		prepared = await timings.run(() => prepareResume(sessionManager, options, buildSettled));
 	} catch (error) {
 		await releaseSessionWorktrees(sessionManager);
@@ -1209,8 +1210,9 @@ export async function continueSessionWhereItWorked(
 	const storeDir = resolveStoreDir(options);
 	// The session holds the pooled worktrees it owns before anything else, so no eviction removes one while its
 	// blueprints are set up again, and until it closes (#4748).
-	await holdSessionWorktrees(opened, opened, storeDir);
+	await holdSessionWorktrees(opened, opened, storeDir, options.signal);
 	try {
+		options.signal?.throwIfAborted();
 		const cwd = mapRestoredPath(opened.getCwd(), opened.getWorktreeRootMappings());
 		const checkouts = currentWorktreeSnapshots(opened);
 		const own = await checkoutsWorkedHere(
