@@ -330,7 +330,7 @@ async function bindChildWorkspace(
 			});
 			binding = recorded;
 		} catch (error) {
-			const worktree = mapWorkflowWorktreePath(recorded.worktree, restored);
+			const worktree = await mapWorkflowWorktreePath(recorded.worktree, restored);
 			if (!isWorkspaceRestoreError(error) || worktree === recorded.worktree || (await pathExists(recorded.worktree)))
 				throw error;
 			binding = { ...recorded, worktree };

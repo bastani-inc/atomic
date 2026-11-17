@@ -35,13 +35,12 @@ export interface FilesystemFault {
 }
 
 const SYSCALLS: Readonly<Record<string, string>> = {
-	accessSync: "access",
 	lstat: "lstat",
 	readFile: "open",
 	stat: "stat",
 };
 
-/** A filesystem function that takes the path first: `accessSync` returns nothing, the promise functions a promise. */
+/** A filesystem function that takes the path first: a synchronous one may return nothing, a promise one a promise. */
 type PathFunction = (path: PathLike, ...rest: never[]) => Promise<object | string> | undefined;
 
 /**

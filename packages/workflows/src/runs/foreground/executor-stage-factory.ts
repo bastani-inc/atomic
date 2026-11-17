@@ -74,6 +74,20 @@ import type { StageWaitHooks } from "./stage-runner-types.js";
 import { createStageSessionHeartbeat } from "./stage-session-heartbeat.js";
 import { type StageWakeDispatcher, stageWakeKey } from "./stage-wake-dispatcher.js";
 
+/** Maps a stage's or task's paths to where a run's restores put them, once it starts. */
+export type StageOptionsMapper = <T extends StageOptions>(options: T) => Promise<T>;
+
+/** Whether `mapRestoredOptions` has paths of `options` to map. */
+export function restoresStagePaths(
+	mapRestoredOptions: StageOptionsMapper | undefined,
+	options: StageOptions | undefined,
+): mapRestoredOptions is StageOptionsMapper {
+	return (
+		mapRestoredOptions !== undefined &&
+		(typeof options?.cwd === "string" || typeof options?.gitWorktreeDir === "string")
+	);
+}
+
 export function agentStageReplayKey(name: string, options: StageOptions | undefined): string {
 	return options?.durableReplayKey ?? `stage:${name}`;
 }
@@ -92,6 +106,8 @@ export function createWorkflowStageFactory(input: {
 	readonly inputRuntimeDefaults: Partial<StageOptions>;
 	readonly workflowInvocationCwd: string;
 	readonly gitWorktreeSetupCache: GitWorktreeSetupCache;
+	/** Set for a run resumed with restores: a stage maps its working directory and worktree as it starts. */
+	readonly mapRestoredOptions?: StageOptionsMapper | undefined;
 	readonly stageRegistry: StageControlRegistry;
 	readonly stageUiBroker: StageUiBroker;
 	readonly exit: WorkflowExitManager;
@@ -153,12 +169,17 @@ export function createWorkflowStageFactory(input: {
 		let liveOptions: Promise<StageOptions | undefined> | undefined;
 		if (!shouldReplay) {
 			input.assertLiveWorkAllowed?.();
+			// In a run resumed with restores, the stage's directory and worktree are mapped as it starts; live options
+			// that prepare themselves map their own.
+			const mapRestored = input.mapRestoredOptions;
+			const mapsPaths = prepareLiveOptions === undefined && restoresStagePaths(mapRestored, options);
 			if (prepareLiveOptions !== undefined || typeof options?.gitWorktreeDir === "string") {
 				assertStageGitWorktreeOptions(options);
 				const spawnOptions = options;
 				liveOptions = (async () =>
 					stageOptionsWithGitWorktree(
-						(await prepareLiveOptions?.()) ?? spawnOptions,
+						(await prepareLiveOptions?.()) ??
+							(mapsPaths && spawnOptions !== undefined ? await mapRestored(spawnOptions) : spawnOptions),
 						input.workflowInvocationCwd,
 						input.gitWorktreeSetupCache,
 					))();
@@ -166,6 +187,8 @@ export function createWorkflowStageFactory(input: {
 					spawnOptions === undefined
 						? undefined
 						: { ...spawnOptions, gitWorktreeDir: undefined, baseBranch: undefined };
+			} else if (mapsPaths && options !== undefined) {
+				liveOptions = mapRestored(options);
 			}
 		}
 		const replayOptionsOf = (stageOptions: StageOptions | undefined): StageOptions | undefined =>
@@ -230,6 +253,12 @@ export function createWorkflowStageFactory(input: {
 		});
 
 		if (shouldReplay) {
+			// A replayed stage starts nothing: it works where the run's restores put its directory as soon as that is known.
+			if (options !== undefined && restoresStagePaths(input.mapRestoredOptions, options))
+				void input.mapRestoredOptions(options).then(
+					(mapped) => setStageWorkingDirectory(stageSnapshot, mapped.cwd),
+					() => {},
+				);
 			return createReplayStageContext({
 				runId: input.runId,
 				name,
@@ -242,9 +271,9 @@ export function createWorkflowStageFactory(input: {
 				registerWorkflowExitCleanup: input.exit.registerWorkflowExitCleanup,
 				workflowExitSkippedReason: input.exit.workflowExitSkippedReason,
 				throwIfWorkflowExitSelected: input.exit.throwIfWorkflowExitSelected,
-				readStoredMessages: (sessionId) =>
+				readStoredMessages: async (sessionId) =>
 					readReplayedStageMessages(
-						options ?? {},
+						(await input.mapRestoredOptions?.(options ?? {})) ?? options ?? {},
 						{
 							adapters: input.adapters,
 							defaultSessionDir: input.opts.defaultSessionDir,

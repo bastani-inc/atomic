@@ -687,7 +687,7 @@ describe("prepareSessionResume details (#4329)", () => {
 					["/repo/vendor/lib", inner],
 				]),
 		});
-		assert.equal(latestSessionSnapshot(source("/repo/vendor/lib/src"))?.snapshot.id, "inner");
+		assert.equal((await latestSessionSnapshot(source("/repo/vendor/lib/src")))?.snapshot.id, "inner");
 		const reversed = {
 			...source("/repo/vendor/lib/src"),
 			getLatestWorktreeSnapshots: () =>
@@ -696,10 +696,10 @@ describe("prepareSessionResume details (#4329)", () => {
 					["/repo", outer],
 				]),
 		};
-		assert.equal(latestSessionSnapshot(reversed)?.snapshot.id, "inner");
-		assert.equal(latestSessionSnapshot(source("/repo/src"))?.snapshot.id, "outer");
-		assert.equal(latestSessionSnapshot(source("/elsewhere")), undefined);
-		const moved = latestSessionSnapshot(
+		assert.equal((await latestSessionSnapshot(reversed))?.snapshot.id, "inner");
+		assert.equal((await latestSessionSnapshot(source("/repo/src")))?.snapshot.id, "outer");
+		assert.equal(await latestSessionSnapshot(source("/elsewhere")), undefined);
+		const moved = await latestSessionSnapshot(
 			source("/node-a/repo/src", [
 				{ from: "/node-a/repo", to: "/repo", snapshotId: "s", tree: "t", restoredAt: "x" },
 			]),

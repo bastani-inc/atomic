@@ -1,5 +1,4 @@
-import { existsSync } from "node:fs";
-import { stat } from "node:fs/promises";
+import { access, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { failureDebugFields, reportDebug } from "./debug.ts";
@@ -45,7 +44,13 @@ import {
 import { scheduleSnapshotCollection } from "./worktree-snapshot/garbage.ts";
 import { gitText, runGit } from "./worktree-snapshot/git.ts";
 import { isHeadOnlyAdvance } from "./worktree-snapshot/head-advance.ts";
-import { canonicalizeWorktreePath } from "./worktree-snapshot/paths.ts";
+import {
+	type CanonicalSteps,
+	canonicalizeWorktreePathAsync,
+	canonicalPaths,
+	runCanonicalSteps,
+	runCanonicalStepsAsync,
+} from "./worktree-snapshot/paths.ts";
 import { loadSnapshotPathPolicy } from "./worktree-snapshot/policy.ts";
 import {
 	admitPooledWorktree,
@@ -104,8 +109,8 @@ export interface TurnSnapshotDependencies {
 	readonly onUnavailable: (reason: WorktreeSnapshotUnavailable) => void;
 }
 
-function isInside(parent: string, child: string): boolean {
-	const path = relative(canonicalizeWorktreePath(parent), canonicalizeWorktreePath(child));
+function* isInside(parent: string, child: string): CanonicalSteps<boolean> {
+	const path = relative(yield parent, yield child);
 	return path === "" || (!path.startsWith(`..${sep}`) && path !== ".." && !isAbsolute(path));
 }
 
@@ -187,7 +192,7 @@ export class SessionWorktreeSnapshotRecorder {
 			const previous = this.deps.sessionManager.getLatestWorktreeSnapshots().get(root);
 			// A capture in a partly restored worktree records it as derived from the snapshot it lacks (#4922); one of a
 			// full restore that carried work over records the merged worktree, or keeps naming the work it kept (#5009).
-			const pin = degradedRestorePin(this.deps.sessionManager, root);
+			const pin = await degradedRestorePinAsync(this.deps.sessionManager, root);
 			try {
 				let captureMs = 0;
 				// The first capture uses the lookup above; one that a collection makes run again looks the checkout up anew.
@@ -360,22 +365,23 @@ function holdFor(sessionManager: SessionManager, lease: WorktreeLease): void {
  */
 const forfeitedWorktrees = new Map<string, Set<string>>();
 
-function worktreeKey(root: string): string {
+async function worktreeKey(root: string): Promise<string> {
 	try {
-		return canonicalizeWorktreePath(root);
+		return await canonicalizeWorktreePathAsync(root);
 	} catch {
 		return resolve(root);
 	}
 }
 
-function forfeit(sessionId: string, root: string): void {
+async function forfeit(sessionId: string, root: string): Promise<void> {
+	const key = await worktreeKey(root);
 	const roots = forfeitedWorktrees.get(sessionId) ?? new Set();
-	roots.add(worktreeKey(root));
+	roots.add(key);
 	forfeitedWorktrees.set(sessionId, roots);
 }
 
-function forfeited(sessionId: string, root: string): boolean {
-	return forfeitedWorktrees.get(sessionId)?.has(worktreeKey(root)) === true;
+async function forfeited(sessionId: string, root: string): Promise<boolean> {
+	return forfeitedWorktrees.get(sessionId)?.has(await worktreeKey(root)) === true;
 }
 
 /**
@@ -386,7 +392,7 @@ async function keepsLease(sessionManager: SessionManager, lease: WorktreeLease):
 	if (await confirmPooledWorktreeLease(lease)) return true;
 	const leases = sessionLeases.get(sessionManager) ?? [];
 	leases.splice(leases.indexOf(lease), 1);
-	forfeit(sessionManager.getSessionId(), lease.path);
+	await forfeit(sessionManager.getSessionId(), lease.path);
 	reportDebug("storage", "worktree-pool-lease-lost", { path: lease.path });
 	return false;
 }
@@ -396,9 +402,11 @@ async function keepsLease(sessionManager: SessionManager, lease: WorktreeLease):
  * lost to another holder, or could not take, checked against the slot's record. True for any other checkout.
  */
 async function holdsSessionWorktree(sessionManager: SessionManager, root: string): Promise<boolean> {
-	if (forfeited(sessionManager.getSessionId(), root)) return false;
-	const key = worktreeKey(root);
-	const lease = (sessionLeases.get(sessionManager) ?? []).find((held) => worktreeKey(held.path) === key);
+	if (await forfeited(sessionManager.getSessionId(), root)) return false;
+	const key = await worktreeKey(root);
+	const held = sessionLeases.get(sessionManager) ?? [];
+	const keys = await Promise.all(held.map((lease) => worktreeKey(lease.path)));
+	const lease = held.find((_, index) => keys[index] === key);
 	return lease === undefined || (await keepsLease(sessionManager, lease));
 }
 
@@ -414,7 +422,7 @@ export async function pooledWorktreeOwnedElsewhere(
 ): Promise<boolean> {
 	const holder = await pooledWorktreeHolder(storeDir, root);
 	if (holder === "unpooled") return false;
-	return holder.owner?.kind !== "session" || holder.owner.id !== sessionId || forfeited(sessionId, root);
+	return holder.owner?.kind !== "session" || holder.owner.id !== sessionId || (await forfeited(sessionId, root));
 }
 
 /**
@@ -435,17 +443,18 @@ export async function holdSessionWorktrees(
 		for (const lease of [...(sessionLeases.get(to) ?? [])]) {
 			if (await keepsLease(to, lease)) held.add(lease.path);
 		}
-		for (const root of currentWorktreeSnapshots(to).keys()) {
+		for (const root of (await currentWorktreeSnapshots(to)).keys()) {
 			if (held.has(root)) continue;
 			try {
 				const lease = await holdRestoredWorktree(storeDir, root, owner);
 				if (lease !== undefined) {
 					holdFor(to, lease);
-					forfeitedWorktrees.get(owner.id)?.delete(worktreeKey(root));
+					const key = await worktreeKey(root);
+					forfeitedWorktrees.get(owner.id)?.delete(key);
 				}
 			} catch (error) {
 				reportDebug("storage", "worktree-pool-hold-failed", { root, ...failureDebugFields(error) });
-				forfeit(owner.id, root);
+				await forfeit(owner.id, root);
 			}
 		}
 	} catch (error) {
@@ -462,8 +471,14 @@ export async function releaseSessionWorktrees(sessionManager: SessionManager): P
 	const latest = [...sessionManager.getLatestWorktreeSnapshots()];
 	for (const lease of leases) {
 		try {
-			const path = canonicalizeWorktreePath(lease.path);
-			const snapshot = latest.find(([root]) => canonicalizeWorktreePath(root) === path)?.[1];
+			const canonical = canonicalPaths();
+			const path = await canonical(lease.path);
+			let snapshot: WorktreeSnapshot | undefined;
+			for (const [root, candidate] of latest) {
+				if ((await canonical(root)) !== path) continue;
+				snapshot = candidate;
+				break;
+			}
 			await releaseRestoredWorktree(
 				lease,
 				snapshot && { snapshotId: snapshot.id, head: snapshot.head, tree: snapshot.tree },
@@ -476,14 +491,23 @@ export async function releaseSessionWorktrees(sessionManager: SessionManager): P
 
 /** `path` rewritten through each restore in order: a path under `from` moves to the same place under `to`. */
 export function mapRestoredPath(path: string, mappings: readonly WorktreeRootMapping[]): string {
+	return runCanonicalSteps(restoredPath(path, mappings));
+}
+
+/** {@link mapRestoredPath} without blocking the event loop. */
+export function mapRestoredPathAsync(path: string, mappings: readonly WorktreeRootMapping[]): Promise<string> {
+	return runCanonicalStepsAsync(restoredPath(path, mappings));
+}
+
+function* restoredPath(path: string, mappings: readonly WorktreeRootMapping[]): CanonicalSteps<string> {
 	let mapped = resolve(path);
 	let next = 0;
 	while (next < mappings.length) {
-		const current = canonicalizeWorktreePath(mapped);
+		const current = yield mapped;
 		let best: { index: number; source: string } | undefined;
 		for (let index = next; index < mappings.length; index++) {
-			const source = canonicalizeWorktreePath(mappings[index]!.from);
-			if (isInside(source, current) && (best === undefined || source.length > best.source.length)) {
+			const source = yield mappings[index]!.from;
+			if ((yield* isInside(source, current)) && (best === undefined || source.length > best.source.length)) {
 				best = { index, source };
 			}
 		}
@@ -495,11 +519,11 @@ export function mapRestoredPath(path: string, mappings: readonly WorktreeRootMap
 }
 
 /** Recover the original root of a sequence of restores, so a restored root supersedes its earlier location. */
-function originalRoot(root: string, mappings: readonly WorktreeRootMapping[]): string {
-	let current = canonicalizeWorktreePath(root);
+function* originalRoot(root: string, mappings: readonly WorktreeRootMapping[]): CanonicalSteps<string> {
+	let current = yield root;
 	for (let index = mappings.length - 1; index >= 0; index--) {
 		const mapping = mappings[index]!;
-		if (canonicalizeWorktreePath(mapping.to) === current) current = canonicalizeWorktreePath(mapping.from);
+		if ((yield mapping.to) === current) current = yield mapping.from;
 	}
 	return current;
 }
@@ -551,16 +575,16 @@ function isLapsed(since: string, now: number): boolean {
  * than its snapshot pins the snapshot (#4922); entries naming it in `degradedFrom` keep the pin, and any other entry
  * of the checkout ends it.
  */
-function checkoutRecords(
+function* checkoutRecords(
 	sessionManager: Pick<SessionManager, "getBranch">,
 	mappings: readonly WorktreeRootMapping[],
 	now = Date.now(),
-): Map<string, CheckoutRecord> {
+): CanonicalSteps<Map<string, CheckoutRecord>> {
 	const checkouts = new Map<string, CheckoutRecord>();
 	const originals = new Map<string, string>();
 	for (const entry of sessionManager.getBranch()) {
 		if (entry.type !== "worktree_snapshot") continue;
-		const original = originals.get(entry.root) ?? originalRoot(entry.root, mappings);
+		const original = originals.get(entry.root) ?? (yield* originalRoot(entry.root, mappings));
 		originals.set(entry.root, original);
 		const previous = checkouts.get(original)?.pin;
 		let pin: DegradedRestorePin | undefined;
@@ -627,10 +651,10 @@ export async function recordPendingCarriedWork(
 ): Promise<void> {
 	const mappings = sessionManager.getWorktreeRootMappings();
 	const records = sessionManager.getWorktreeSnapshotRecords();
-	for (const [original, checkout] of checkoutRecords(sessionManager, mappings)) {
+	for (const [original, checkout] of await runCanonicalStepsAsync(checkoutRecords(sessionManager, mappings))) {
 		const pin = checkout.pin;
 		if (pin?.work === undefined || pin.kept || pin.lapsed) continue;
-		const root = mapRestoredPath(original, mappings);
+		const root = await mapRestoredPathAsync(original, mappings);
 		if (await pooledWorktreeOwnedElsewhere(options.storeDir, root, sessionManager.getSessionId())) continue;
 		await recordCarriedWork(sessionManager, root, records.get(pin.snapshotId)?.head, options);
 	}
@@ -644,8 +668,24 @@ export function degradedRestorePin(
 	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeRootMappings">,
 	root: string,
 ): DegradedRestorePin | undefined {
+	return runCanonicalSteps(pinOf(sessionManager, root));
+}
+
+/** {@link degradedRestorePin} without blocking the event loop. */
+function degradedRestorePinAsync(
+	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeRootMappings">,
+	root: string,
+): Promise<DegradedRestorePin | undefined> {
+	return runCanonicalStepsAsync(pinOf(sessionManager, root));
+}
+
+function* pinOf(
+	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeRootMappings">,
+	root: string,
+): CanonicalSteps<DegradedRestorePin | undefined> {
 	const mappings = sessionManager.getWorktreeRootMappings();
-	const pin = checkoutRecords(sessionManager, mappings).get(originalRoot(root, mappings))?.pin;
+	const checkouts = yield* checkoutRecords(sessionManager, mappings);
+	const pin = checkouts.get(yield* originalRoot(root, mappings))?.pin;
 	return pin !== undefined && !pin.lapsed ? pin : undefined;
 }
 
@@ -653,12 +693,12 @@ export function degradedRestorePin(
  * The id of the snapshot a resume restores for each checkout on the active branch, keyed by the root it was first
  * recorded under: its latest, or the snapshot a resume restored only partly while that pin stands (#4922).
  */
-function latestSnapshotIdsByCheckout(
+function* latestSnapshotIdsByCheckout(
 	sessionManager: Pick<SessionManager, "getBranch">,
 	mappings: readonly WorktreeRootMapping[],
-): Map<string, string> {
+): CanonicalSteps<Map<string, string>> {
 	const latestIds = new Map<string, string>();
-	for (const [original, checkout] of checkoutRecords(sessionManager, mappings)) {
+	for (const [original, checkout] of yield* checkoutRecords(sessionManager, mappings)) {
 		latestIds.set(original, restoreTargetId(checkout));
 	}
 	return latestIds;
@@ -674,13 +714,22 @@ export function latestRestoreTargets(
 		SessionManager,
 		"getBranch" | "getWorktreeRootMappings" | "getWorktreeSnapshotRecords" | "getLatestWorktreeSnapshots"
 	>,
-): Map<string, WorktreeSnapshot> {
+): Promise<Map<string, WorktreeSnapshot>> {
+	return runCanonicalStepsAsync(restoreTargets(sessionManager));
+}
+
+function* restoreTargets(
+	sessionManager: Pick<
+		SessionManager,
+		"getBranch" | "getWorktreeRootMappings" | "getWorktreeSnapshotRecords" | "getLatestWorktreeSnapshots"
+	>,
+): CanonicalSteps<Map<string, WorktreeSnapshot>> {
 	const mappings = sessionManager.getWorktreeRootMappings();
 	const records = sessionManager.getWorktreeSnapshotRecords();
-	const checkouts = checkoutRecords(sessionManager, mappings);
+	const checkouts = yield* checkoutRecords(sessionManager, mappings);
 	const targets = new Map<string, WorktreeSnapshot>();
 	for (const [root, snapshot] of sessionManager.getLatestWorktreeSnapshots()) {
-		const checkout = checkouts.get(originalRoot(root, mappings));
+		const checkout = checkouts.get(yield* originalRoot(root, mappings));
 		const target = checkout === undefined ? undefined : records.get(restoreTargetId(checkout));
 		targets.set(root, target ?? snapshot);
 	}
@@ -707,10 +756,13 @@ export async function discardDegradedRestore(
 ): Promise<string[]> {
 	const mappings = sessionManager.getWorktreeRootMappings();
 	const released: string[] = [];
-	for (const [original, checkout] of checkoutRecords(sessionManager, mappings)) {
+	for (const [original, checkout] of await runCanonicalStepsAsync(checkoutRecords(sessionManager, mappings))) {
 		if (checkout.pin === undefined) continue;
-		const root = mapRestoredPath(original, mappings);
-		if (options.root !== undefined && canonicalizeWorktreePath(root) !== canonicalizeWorktreePath(options.root))
+		const root = await mapRestoredPathAsync(original, mappings);
+		if (
+			options.root !== undefined &&
+			(await canonicalizeWorktreePathAsync(root)) !== (await canonicalizeWorktreePathAsync(options.root))
+		)
 			continue;
 		const store = sessionManager.getSessionStore();
 		if (store.snapshotBlobs === undefined)
@@ -744,24 +796,37 @@ export async function discardDegradedRestore(
  */
 export function lapsedDegradedRestores(
 	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeRootMappings">,
-): { readonly root: string; readonly pin: DegradedRestorePin; readonly latest: string }[] {
+): Promise<{ readonly root: string; readonly pin: DegradedRestorePin; readonly latest: string }[]> {
+	return runCanonicalStepsAsync(lapsedRestores(sessionManager));
+}
+
+function* lapsedRestores(
+	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeRootMappings">,
+): CanonicalSteps<{ readonly root: string; readonly pin: DegradedRestorePin; readonly latest: string }[]> {
 	const mappings = sessionManager.getWorktreeRootMappings();
-	return [...checkoutRecords(sessionManager, mappings)].flatMap(([original, checkout]) =>
-		checkout.pin?.lapsed && checkout.pin.work === undefined && checkout.pin.snapshotId !== checkout.latest
-			? [{ root: mapRestoredPath(original, mappings), pin: checkout.pin, latest: checkout.latest }]
-			: [],
-	);
+	const lapsed: { readonly root: string; readonly pin: DegradedRestorePin; readonly latest: string }[] = [];
+	for (const [original, checkout] of yield* checkoutRecords(sessionManager, mappings)) {
+		if (checkout.pin?.lapsed && checkout.pin.work === undefined && checkout.pin.snapshotId !== checkout.latest)
+			lapsed.push({ root: yield* restoredPath(original, mappings), pin: checkout.pin, latest: checkout.latest });
+	}
+	return lapsed;
 }
 
 /** The checkouts on the active branch whose latest snapshot the session holds no record of, where they are now (#4733). */
 export function missingSnapshotRecords(
 	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeRootMappings" | "getWorktreeSnapshotRecords">,
-): MissingSnapshotRecord[] {
+): Promise<MissingSnapshotRecord[]> {
+	return runCanonicalStepsAsync(missingRecordsOf(sessionManager));
+}
+
+function* missingRecordsOf(
+	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeRootMappings" | "getWorktreeSnapshotRecords">,
+): CanonicalSteps<MissingSnapshotRecord[]> {
 	const mappings = sessionManager.getWorktreeRootMappings();
 	const records = sessionManager.getWorktreeSnapshotRecords();
 	const missing: MissingSnapshotRecord[] = [];
-	for (const [original, snapshotId] of latestSnapshotIdsByCheckout(sessionManager, mappings)) {
-		if (!records.has(snapshotId)) missing.push({ root: mapRestoredPath(original, mappings), snapshotId });
+	for (const [original, snapshotId] of yield* latestSnapshotIdsByCheckout(sessionManager, mappings)) {
+		if (!records.has(snapshotId)) missing.push({ root: yield* restoredPath(original, mappings), snapshotId });
 	}
 	return missing;
 }
@@ -772,13 +837,19 @@ export function missingSnapshotRecords(
  */
 export function currentWorktreeSnapshots(
 	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeRootMappings" | "getWorktreeSnapshotRecords">,
-): Map<string, WorktreeSnapshot> {
+): Promise<Map<string, WorktreeSnapshot>> {
+	return runCanonicalStepsAsync(currentSnapshots(sessionManager));
+}
+
+function* currentSnapshots(
+	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeRootMappings" | "getWorktreeSnapshotRecords">,
+): CanonicalSteps<Map<string, WorktreeSnapshot>> {
 	const mappings = sessionManager.getWorktreeRootMappings();
 	const records = sessionManager.getWorktreeSnapshotRecords();
 	const current = new Map<string, WorktreeSnapshot>();
-	for (const [original, snapshotId] of latestSnapshotIdsByCheckout(sessionManager, mappings)) {
+	for (const [original, snapshotId] of yield* latestSnapshotIdsByCheckout(sessionManager, mappings)) {
 		const snapshot = records.get(snapshotId);
-		if (snapshot) current.set(mapRestoredPath(original, mappings), snapshot);
+		if (snapshot) current.set(yield* restoredPath(original, mappings), snapshot);
 	}
 	return current;
 }
@@ -872,16 +943,16 @@ export interface ResumeSessionWorktreeOptions {
  * The commits of every earlier snapshot of the checkout on the branch, newest first and each once, to restore when its
  * own is out of reach (#4744). The restore stops at the first it holds or fetches, so a nearer one costs no more.
  */
-function earlierSnapshotHeads(
+function* earlierSnapshotHeads(
 	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeSnapshotRecords">,
 	original: string,
 	mappings: readonly WorktreeRootMapping[],
 	snapshot: WorktreeSnapshot,
-): string[] {
+): CanonicalSteps<string[]> {
 	const records = sessionManager.getWorktreeSnapshotRecords();
 	const heads: string[] = [];
 	for (const entry of [...sessionManager.getBranch()].reverse()) {
-		if (entry.type !== "worktree_snapshot" || originalRoot(entry.root, mappings) !== original) continue;
+		if (entry.type !== "worktree_snapshot" || (yield* originalRoot(entry.root, mappings)) !== original) continue;
 		const head = records.get(entry.snapshotId)?.head;
 		if (head !== undefined && head !== snapshot.head) heads.push(head);
 	}
@@ -904,8 +975,8 @@ export async function resumeSessionWorktree(
 	const pending = options.pendingMappings ?? [];
 	const existing = [...sessionManager.getWorktreeRootMappings(), ...pending];
 	const records = sessionManager.getWorktreeSnapshotRecords();
-	const checkouts = checkoutRecords(sessionManager, existing);
-	const latestIds = latestSnapshotIdsByCheckout(sessionManager, existing);
+	const checkouts = await runCanonicalStepsAsync(checkoutRecords(sessionManager, existing));
+	const latestIds = await runCanonicalStepsAsync(latestSnapshotIdsByCheckout(sessionManager, existing));
 	const latest = new Map<string, WorktreeSnapshot>();
 	// The work done in a partly restored worktree of the pinned snapshot `snapshot`, which this resume restores when
 	// `snapshot` cannot be, and puts on top of it when it can (#4922).
@@ -923,14 +994,14 @@ export async function resumeSessionWorktree(
 	for (const [root, snapshotId] of latestIds) {
 		const snapshot = records.get(snapshotId);
 		if (!snapshot && options.skipMissingRecords) {
-			missingRecords.push({ root: mapRestoredPath(root, existing), snapshotId });
+			missingRecords.push({ root: await mapRestoredPathAsync(root, existing), snapshotId });
 			continue;
 		}
 		if (!snapshot) throw new WorkspaceRestoreError("snapshot-not-found", { snapshotId, target: root });
 		latest.set(root, snapshot);
 	}
 	if (latest.size === 0) return missingRecords.length === 0 ? { status: "none" } : { status: "none", missingRecords };
-	const cwd = mapRestoredPath(sessionManager.getCwd(), existing);
+	const cwd = await mapRestoredPathAsync(sessionManager.getCwd(), existing);
 	const mappings: WorktreeRootMapping[] = [];
 	const warnings: WorktreeRestoreWarning[] = [];
 	const hostWarnings = new Map<WorktreeRootMapping, WorktreeRestoreHostWarning[]>();
@@ -946,8 +1017,9 @@ export async function resumeSessionWorktree(
 	try {
 		for (const [original, snapshot] of latest) {
 			options.signal?.throwIfAborted();
-			const root = mapRestoredPath(original, existing);
-			if (isInside(root, cwd) && (!selected || root.length > selected.root.length)) selected = { root, snapshot };
+			const root = await mapRestoredPathAsync(original, existing);
+			if ((await runCanonicalStepsAsync(isInside(root, cwd))) && (!selected || root.length > selected.root.length))
+				selected = { root, snapshot };
 			if (options.keepInPlace?.has(root)) continue;
 			const pinned = pinnedWork(original, snapshot);
 			// Conflicting work a full restore kept apart stays kept, whatever the checkout is restored from (#5009).
@@ -1017,12 +1089,14 @@ export async function resumeSessionWorktree(
 			// The snapshot the worktree holds: the one restored, or the work done since its partial restore (#4922).
 			let restoredFrom = snapshot;
 			// The exact state, else the best this host can restore, else continue without the checkout.
-			const restoreFresh = (slot: WorktreeLease | undefined) => {
+			const restoreFresh = async (slot: WorktreeLease | undefined) => {
 				const ladder: RestoreBestWorktreeOptions = {
 					blobs,
 					storeDir: options.storeDir,
 					signal: options.signal,
-					candidates: earlierSnapshotHeads(sessionManager, original, existing, snapshot),
+					candidates: await runCanonicalStepsAsync(
+						earlierSnapshotHeads(sessionManager, original, existing, snapshot),
+					),
 					// Carrying work over writes into the worktree, so a pinned restore downloads first.
 					...(pinned === undefined ? { deferLfs: options.deferLfs } : {}),
 					...(slot === undefined
@@ -1156,9 +1230,15 @@ export async function resumeSessionWorktree(
 				await recordCarriedWork(sessionManager, mapping.to, records.get(mapping.snapshotId)!.head, options);
 			}
 		}
-		const continuing = mapRestoredPath(cwd, mappings);
+		const continuing = await mapRestoredPathAsync(cwd, mappings);
 		const recordedHere = selected !== undefined && left.some((checkout) => checkout.root === selected!.root);
-		const launch = recordedHere && !existsSync(continuing) && options.fallbackCwd !== undefined;
+		const launch =
+			recordedHere &&
+			options.fallbackCwd !== undefined &&
+			!(await access(continuing).then(
+				() => true,
+				() => false,
+			));
 		continuedIn = launch ? resolve(options.fallbackCwd!) : continuing;
 		for (const checkout of left) {
 			const record = unrestoredRecord(
@@ -1783,10 +1863,10 @@ export function describeWorktreeSnapshot(root: string, snapshot: WorktreeSnapsho
  * How long the latest turn's capture of the checkout now at `root` took, as a line, also when that capture was of the
  * checkout before a restore moved it to `root`; undefined when no capture recorded it.
  */
-export function describeLastCapture(
+export async function describeLastCapture(
 	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeRootMappings">,
 	root: string,
-): string | undefined {
+): Promise<string | undefined> {
 	const branch = sessionManager.getBranch();
 	const mappings = sessionManager.getWorktreeRootMappings();
 	for (let index = branch.length - 1; index >= 0; index--) {
@@ -1794,7 +1874,7 @@ export function describeLastCapture(
 		if (
 			entry.type === "worktree_snapshot" &&
 			typeof entry.captureMs === "number" &&
-			mapRestoredPath(entry.root, mappings) === resolve(root)
+			(await mapRestoredPathAsync(entry.root, mappings)) === resolve(root)
 		) {
 			return `last capture took ${(entry.captureMs / 1000).toFixed(1)} s`;
 		}
@@ -1871,7 +1951,7 @@ export async function openResumedSession(
  */
 export async function sessionContinuesIn(store: SessionStore, sessionId: string, cwd: string): Promise<boolean> {
 	const stored = await storedSnapshotEntries(store, sessionId);
-	return snapshotsContinueIn(stored.header.cwd, stored.entries, cwd);
+	return runCanonicalStepsAsync(snapshotsContinueIn(stored.header.cwd, stored.entries, cwd));
 }
 
 export function sessionManagerContinuesIn(
@@ -1879,16 +1959,20 @@ export function sessionManagerContinuesIn(
 	cwd: string,
 ): boolean {
 	const header = sessionManager.getHeader();
-	return header !== null && snapshotsContinueIn(header.cwd, sessionManager.getEntries(), cwd);
+	return header !== null && runCanonicalSteps(snapshotsContinueIn(header.cwd, sessionManager.getEntries(), cwd));
 }
 
-function snapshotsContinueIn(recordedCwd: string, entries: readonly SessionEntry[], cwd: string): boolean {
+function* snapshotsContinueIn(
+	recordedCwd: string,
+	entries: readonly SessionEntry[],
+	cwd: string,
+): CanonicalSteps<boolean> {
 	const mappings = entries.flatMap((entry) =>
 		entry.type === "worktree_snapshot" && entry.restore ? [entry.restore] : [],
 	);
 	if (mappings.length === 0) return false;
-	const mapped = mapRestoredPath(recordedCwd, mappings);
-	return canonicalizeWorktreePath(mapped) === canonicalizeWorktreePath(cwd);
+	const mapped = yield* restoredPath(recordedCwd, mappings);
+	return (yield mapped) === (yield cwd);
 }
 
 async function storedSnapshotEntries(
@@ -1913,16 +1997,16 @@ function restoreMappings(branch: readonly SessionEntry[]): WorktreeRootMapping[]
 	return branch.flatMap((entry) => (entry.type === "worktree_snapshot" && entry.restore ? [entry.restore] : []));
 }
 
-function storedBranchSnapshots(
+function* storedBranchSnapshots(
 	entries: readonly SessionEntry[],
 	branch: readonly SessionEntry[],
-): { readonly mappings: WorktreeRootMapping[]; readonly current: Map<string, WorktreeSnapshot> } {
+): CanonicalSteps<{ readonly mappings: WorktreeRootMapping[]; readonly current: Map<string, WorktreeSnapshot> }> {
 	const records = new Map<string, WorktreeSnapshot>();
 	for (const entry of entries) {
 		if (entry.type === "worktree_snapshot" && entry.snapshot) records.set(entry.snapshotId, entry.snapshot);
 	}
 	const mappings = restoreMappings(branch);
-	const current = currentWorktreeSnapshots({
+	const current = yield* currentSnapshots({
 		getBranch: () => [...branch],
 		getWorktreeRootMappings: () => mappings,
 		getWorktreeSnapshotRecords: () => records,
@@ -1938,7 +2022,7 @@ function storedBranchSnapshots(
  */
 export async function sessionRunsInRecordedCheckout(store: SessionStore, sessionId: string): Promise<boolean> {
 	const { header, entries, branch } = await storedSnapshotEntries(store, sessionId);
-	return snapshotsRunInRecordedCheckout(header.cwd, entries, branch);
+	return runCanonicalStepsAsync(snapshotsRunInRecordedCheckout(header.cwd, entries, branch));
 }
 
 export function sessionManagerRunsInRecordedCheckout(
@@ -1947,16 +2031,19 @@ export function sessionManagerRunsInRecordedCheckout(
 	const header = sessionManager.getHeader();
 	return (
 		header !== null &&
-		snapshotsRunInRecordedCheckout(header.cwd, sessionManager.getEntries(), sessionManager.getBranch())
+		runCanonicalSteps(
+			snapshotsRunInRecordedCheckout(header.cwd, sessionManager.getEntries(), sessionManager.getBranch()),
+		)
 	);
 }
 
-function snapshotsRunInRecordedCheckout(
+function* snapshotsRunInRecordedCheckout(
 	recordedCwd: string,
 	entries: readonly SessionEntry[],
 	branch: readonly SessionEntry[],
-): boolean {
-	const { mappings, current } = storedBranchSnapshots(entries, branch);
-	const cwd = mapRestoredPath(recordedCwd, mappings);
-	return [...current.keys()].some((root) => isInside(root, cwd));
+): CanonicalSteps<boolean> {
+	const { mappings, current } = yield* storedBranchSnapshots(entries, branch);
+	const cwd = yield* restoredPath(recordedCwd, mappings);
+	for (const root of current.keys()) if (yield* isInside(root, cwd)) return true;
+	return false;
 }

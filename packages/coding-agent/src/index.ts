@@ -849,6 +849,7 @@ export {
 	isRecoverableRestoreFailure,
 	type MissingSnapshotRecord,
 	mapRestoredPath,
+	mapRestoredPathAsync,
 	openSessionInWorktree,
 	type ResumeSessionWorktreeOptions,
 	resumeSessionWorktree,

@@ -10,7 +10,11 @@ import {
 } from "../runs/foreground/executor-direct-helpers.js";
 import type { WorkflowExitManager } from "../runs/foreground/executor-exit-manager.js";
 import type { StageScheduler } from "../runs/foreground/executor-scheduler.js";
-import { agentStageReplayKey, createWorkflowStageFactory } from "../runs/foreground/executor-stage-factory.js";
+import {
+	agentStageReplayKey,
+	createWorkflowStageFactory,
+	type StageOptionsMapper,
+} from "../runs/foreground/executor-stage-factory.js";
 import type { LiveStageRuntime, StageContextWithMeta, StageMcpScope } from "../runs/foreground/executor-stage-types.js";
 import type { ParallelFailFastScope } from "../runs/foreground/executor-types.js";
 import type { RunStageResidency } from "../runs/foreground/run-residency.js";
@@ -46,6 +50,8 @@ export interface EngineRuntimeInput {
 	readonly workflowInvocationCwd: string;
 	readonly gitWorktreeSetupCache: GitWorktreeSetupCache;
 	readonly worktreeSymlinkDirectories?: readonly string[];
+	/** Set for a run resumed with restores: maps a stage's or task's paths as it starts. */
+	readonly mapRestoredOptions?: StageOptionsMapper | undefined;
 	readonly stageRegistry: StageControlRegistry;
 	readonly stageUiBroker: StageUiBroker;
 	readonly exit: WorkflowExitManager;
@@ -105,6 +111,7 @@ export class EngineRuntime {
 	readonly rootBudget: RunBudgetController;
 	readonly gitWorktreeSetupCache: GitWorktreeSetupCache;
 	readonly worktreeSymlinkDirectories?: readonly string[];
+	readonly mapRestoredOptions: StageOptionsMapper | undefined;
 	readonly assertLiveWorkAllowed?: () => void;
 	private readonly replayIndex: ContinuationReplayIndex;
 	/** The run's one owner of waiting stages. */
@@ -140,6 +147,7 @@ export class EngineRuntime {
 		this.rootBudget = input.rootBudget;
 		this.gitWorktreeSetupCache = input.gitWorktreeSetupCache;
 		this.worktreeSymlinkDirectories = input.worktreeSymlinkDirectories;
+		this.mapRestoredOptions = input.mapRestoredOptions;
 		this.assertLiveWorkAllowed = input.assertLiveWorkAllowed;
 		this.replayIndex = input.replayIndex;
 		this.wakeDispatcher = new StageWakeDispatcher(input.runId, input.signal, {}, input.resumedWaits);
@@ -160,6 +168,7 @@ export class EngineRuntime {
 			inputRuntimeDefaults: input.inputRuntimeDefaults,
 			workflowInvocationCwd: input.workflowInvocationCwd,
 			gitWorktreeSetupCache: input.gitWorktreeSetupCache,
+			mapRestoredOptions: input.mapRestoredOptions,
 			stageRegistry: input.stageRegistry,
 			stageUiBroker: input.stageUiBroker,
 			budget: input.budget,

@@ -2,7 +2,7 @@ import { accessSync, constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { dirname } from "node:path";
 import { normalizePath, resolvePath } from "../../utils/paths.ts";
-import { mapPathForCwd } from "../resume/path-mapping.ts";
+import { currentWorktreeRootMappings, mapPathForCwd, mapPathForCwdAsync } from "../resume/path-mapping.ts";
 
 const NARROW_NO_BREAK_SPACE = "\u202F";
 
@@ -50,6 +50,18 @@ function resolveLiteralAndNormalized(filePath: string, cwd: string): { literal: 
 	};
 }
 
+/** {@link resolveLiteralAndNormalized} without blocking the event loop on mapping restored checkouts. */
+async function resolveLiteralAndNormalizedAsync(
+	filePath: string,
+	cwd: string,
+): Promise<{ literal: string; normalized: string }> {
+	const [literal, normalized] = await Promise.all([
+		mapPathForCwdAsync(resolvePath(filePath, cwd), cwd),
+		mapPathForCwdAsync(resolvePath(filePath, cwd, { normalizeUnicodeSpaces: true, stripAtPrefix: true }), cwd),
+	]);
+	return { literal, normalized };
+}
+
 /**
  * Resolve a path relative to the given cwd.
  * Handles ~ expansion and absolute paths. A path under a checkout root that was restored on this host into the
@@ -69,16 +81,20 @@ export function resolveToCwd(filePath: string, cwd: string): string {
 
 /**
  * {@link resolveToCwd} where no existence check can change its answer: when the literal and normalised spellings are
- * the same path. Undefined when they differ.
+ * the same path. Undefined when they differ, and while the current work has restored checkouts, whose mapping reads the
+ * disk: {@link resolveToCwdAsync} answers then.
  */
 export function resolveToCwdIfUnambiguous(filePath: string, cwd: string): string | undefined {
-	const { literal, normalized } = resolveLiteralAndNormalized(filePath, cwd);
+	if (currentWorktreeRootMappings().length > 0) return undefined;
+	// Without restored checkouts, no path is mapped.
+	const literal = resolvePath(filePath, cwd);
+	const normalized = resolvePath(filePath, cwd, { normalizeUnicodeSpaces: true, stripAtPrefix: true });
 	return literal === normalized ? literal : undefined;
 }
 
 /** {@link resolveToCwd} without blocking the event loop on its existence checks. */
 export async function resolveToCwdAsync(filePath: string, cwd: string): Promise<string> {
-	const { literal, normalized } = resolveLiteralAndNormalized(filePath, cwd);
+	const { literal, normalized } = await resolveLiteralAndNormalizedAsync(filePath, cwd);
 	if (await pathExists(literal)) return literal;
 	if (await pathExists(normalized)) return normalized;
 	if (await pathExists(dirname(literal))) return literal;
@@ -86,8 +102,7 @@ export async function resolveToCwdAsync(filePath: string, cwd: string): Promise<
 }
 
 /** macOS filename variants of the literal and normalised spellings, in the order they are tried. */
-function readPathVariants(filePath: string, cwd: string): string[] {
-	const { literal, normalized } = resolveLiteralAndNormalized(filePath, cwd);
+function readPathVariants({ literal, normalized }: { literal: string; normalized: string }): string[] {
 	const variants: string[] = [];
 	for (const base of new Set([literal, normalized])) {
 		// macOS AM/PM variant (narrow no-break space before AM/PM)
@@ -106,7 +121,7 @@ function readPathVariants(filePath: string, cwd: string): string[] {
 export function resolveReadPath(filePath: string, cwd: string): string {
 	const resolved = resolveToCwd(filePath, cwd);
 	if (fileExists(resolved)) return resolved;
-	for (const variant of readPathVariants(filePath, cwd)) {
+	for (const variant of readPathVariants(resolveLiteralAndNormalized(filePath, cwd))) {
 		if (fileExists(variant)) return variant;
 	}
 	return resolved;
@@ -115,7 +130,7 @@ export function resolveReadPath(filePath: string, cwd: string): string {
 export async function resolveReadPathAsync(filePath: string, cwd: string): Promise<string> {
 	const resolved = await resolveToCwdAsync(filePath, cwd);
 	if (await pathExists(resolved)) return resolved;
-	for (const variant of readPathVariants(filePath, cwd)) {
+	for (const variant of readPathVariants(await resolveLiteralAndNormalizedAsync(filePath, cwd))) {
 		if (await pathExists(variant)) return variant;
 	}
 	return resolved;

@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, type Stats } from "node:fs";
-import { lstat, mkdir, open, readdir, readFile, realpath, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, open, readdir, readFile, realpath, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { releaseLock } from "../lock-release.ts";
-import { takeTakeoverMutex } from "../lock-takeover.ts";
+import { takeTakeoverMutexAsync } from "../lock-takeover.ts";
 import { renameWithRetry } from "../rename-retry.ts";
 import { deferRestorePhase, noteRestoreFetch, timeRestorePhase } from "../resume/timings.ts";
 import {
@@ -39,12 +39,12 @@ import {
 } from "./git.ts";
 import {
 	assertRestorePathBudget,
-	canonicalizeWorktreePath,
+	canonicalizeWorktreePathAsync,
 	defaultWorktreeSnapshotStoreDir,
 	stagingWorktreeName,
 } from "./paths.ts";
 import { loadSnapshotPathPolicy } from "./policy.ts";
-import { holderRuns, type ProcessHolder, thisProcess } from "./process-holder.ts";
+import { HOST, holderRuns, type ProcessHolder, thisProcess } from "./process-holder.ts";
 import { assertUsableBundlePrerequisites, assertUsableSnapshotRecord, isAllowedRemote } from "./records.ts";
 import { checkoutStoreIdOf, sameRemote, sharedRepositoryIdsOf } from "./repository-identity.ts";
 import {
@@ -563,17 +563,32 @@ export function objectStorePath(storeDir: string, remotes: readonly string[], ro
 	return existsSync(named(current)) || !existsSync(named(legacy)) ? named(current) : named(legacy);
 }
 
+/** {@link objectStorePath} without blocking the event loop on its existence checks. */
+async function objectStorePathAsync(
+	storeDir: string,
+	remotes: readonly string[],
+	root?: string,
+): Promise<string | undefined> {
+	const [current, legacy] = sharedRepositoryIdsOf(remotes, root);
+	const named = (repository: string) => join(storeDir, "repositories", `${repository}.git`);
+	if (current === undefined) {
+		return root === undefined || !isAbsolute(root) ? undefined : named(checkoutStoreIdOf(root));
+	}
+	if (legacy === undefined) return named(current);
+	return (await pathExists(named(current))) || !(await pathExists(named(legacy))) ? named(current) : named(legacy);
+}
+
 /**
  * {@link objectStorePath} of the checkout a restore of `target` restores, its snapshot's when known; rejects with
  * `commits-unavailable` when it has none, as for a binding of a checkout without remotes and no snapshot: no store can
  * be its repository's (#4989).
  */
-function restoreStorePath(
+async function restoreStorePath(
 	storeDir: string,
 	target: { readonly remotes: readonly string[]; readonly head: string },
 	checkout: { readonly id: string | null; readonly root: string | undefined },
-): string {
-	const store = objectStorePath(storeDir, target.remotes, checkout.root);
+): Promise<string> {
+	const store = await objectStorePathAsync(storeDir, target.remotes, checkout.root);
 	if (store !== undefined) return store;
 	throw new WorkspaceRestoreError("commits-unavailable", {
 		snapshotId: checkout.id,
@@ -596,7 +611,7 @@ export async function storeCheckoutHead(
 	head: string,
 	signal?: AbortSignal,
 ): Promise<void> {
-	const store = restoreStorePath(resolve(storeDir), { remotes, head }, { id: null, root: checkout });
+	const store = await restoreStorePath(resolve(storeDir), { remotes, head }, { id: null, root: checkout });
 	const git: GitRunOptions = { cwd: checkout, signal, env: { GIT_DIR: store } };
 	await withRepositoryLock(store, null, signal, async () => {
 		await ensureObjectStore(store, signal);
@@ -1139,7 +1154,7 @@ async function pullPendingLfs(worktree: GitRunOptions, pending: PendingLfs): Pro
 	const waiting: PendingLfs = { head: pending.head, tree: pending.tree, remotes: pending.remotes };
 	pullingHere.add(marker);
 	try {
-		await rewritePendingMark(marker, { ...waiting, holder: thisProcess() });
+		await rewritePendingMark(marker, { ...waiting, holder: await thisProcess() });
 		const pointers = await pullLfsObjects(worktree, pending.head, pending.tree, pending.remotes);
 		if (pointers.length === 0) await rm(marker, { force: true });
 		else await rewritePendingMark(marker, waiting);
@@ -1158,10 +1173,10 @@ async function lfsHolderRuns(marker: string, pending: PendingLfs): Promise<boole
 	const holder = pending.holder;
 	if (holder === undefined) return false;
 	// This process, when it is not downloading into the worktree, stopped the download that names it.
-	if (holder.host === thisProcess().host && holder.pid === process.pid) return false;
+	if (holder.host === HOST && holder.pid === process.pid) return false;
 	try {
 		const age = Date.now() - (await stat(marker)).mtimeMs;
-		return holderRuns(holder, age, UNSTARTED_LFS_HOLDER_LIMIT_MS);
+		return await holderRuns(holder, age, UNSTARTED_LFS_HOLDER_LIMIT_MS);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
 		throw error;
@@ -1254,24 +1269,24 @@ type LfsClaim =
  */
 async function claimPendingLfs(git: GitRunOptions, marker: string): Promise<LfsClaim> {
 	const locks = await Promise.all(["HEAD.lock", "index.lock"].map((name) => worktreeGitPath(git, name)));
-	const mutex = takeTakeoverMutex(marker, 0);
+	const mutex = await takeTakeoverMutexAsync(marker, 0);
 	if (mutex === undefined) return { kind: "running" };
 	try {
 		const text = await readPendingMark(marker);
 		if (text === undefined) return { kind: "finished" };
 		const pending = parsePendingLfs(text);
-		if ((pending !== undefined && (await lfsHolderRuns(marker, pending))) || !mutex.owned())
+		if ((pending !== undefined && (await lfsHolderRuns(marker, pending))) || !(await mutex.owned()))
 			return { kind: "running" };
 		// A download killed during its Git steps leaves their locks; nothing else takes them in a worktree with a mark.
 		if (pending?.holder !== undefined) for (const lock of locks) await rm(lock, { force: true });
 		if (pending !== undefined) {
 			const { head, tree, remotes } = pending;
-			await rewritePendingMark(marker, { head, tree, remotes, holder: thisProcess() });
+			await rewritePendingMark(marker, { head, tree, remotes, holder: await thisProcess() });
 			pullingHere.add(marker);
 		}
 		return { kind: "claimed", pending };
 	} finally {
-		mutex.release();
+		await mutex.release();
 	}
 }
 
@@ -1409,7 +1424,7 @@ async function restoreValidated(
 		warnings.push(warning);
 		options.onWarning?.(warning);
 	};
-	checkPathBudget(
+	await checkPathBudget(
 		storeDir,
 		() => restoreStorePath(storeDir, target, snapshot ?? { id: null, root }),
 		path,
@@ -1418,7 +1433,7 @@ async function restoreValidated(
 	);
 	await sweepRestoreRecords(storeDir, warn, signal);
 	return withScratchDirectory(async (scratch) => {
-		const store = restoreStorePath(storeDir, target, snapshot ?? { id: null, root });
+		const store = await restoreStorePath(storeDir, target, snapshot ?? { id: null, root });
 		const git: GitRunOptions = { cwd: scratch, signal, env: { GIT_DIR: store } };
 		await storeSnapshotObjects(git, store, target, snapshot, patches, options.blobs, scratch);
 		await publishWorktree({
@@ -1531,7 +1546,7 @@ export async function storeSnapshotTree(
 	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
 	const patches = await snapshotPatches(snapshot, options.blobs);
 	return withScratchDirectory(async (scratch) => {
-		const store = restoreStorePath(storeDir, snapshot, snapshot);
+		const store = await restoreStorePath(storeDir, snapshot, snapshot);
 		const git: GitRunOptions = { cwd: scratch, signal: options.signal, env: { GIT_DIR: store } };
 		await storeSnapshotObjects(git, store, binding, snapshot, patches, options.blobs, scratch);
 		return store;
@@ -1620,7 +1635,10 @@ export async function pooledWorktreeStore(
 	const store = resolve(
 		await gitText(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: worktree, signal }),
 	);
-	if (canonicalizeWorktreePath(dirname(store)) !== canonicalizeWorktreePath(join(storeDir, "repositories"))) {
+	if (
+		(await canonicalizeWorktreePathAsync(dirname(store))) !==
+		(await canonicalizeWorktreePathAsync(join(storeDir, "repositories")))
+	) {
 		throw new WorkspaceRestoreError("unsafe-target", { snapshotId: null, target: worktree, reason: "not-restored" });
 	}
 	return store;
@@ -1704,10 +1722,10 @@ async function restoreDegradedValidated(
 		warnings.push(warning);
 		options.onWarning?.(warning);
 	};
-	checkPathBudget(storeDir, () => restoreStorePath(storeDir, snapshot, snapshot), path, undefined, snapshot.id);
+	await checkPathBudget(storeDir, () => restoreStorePath(storeDir, snapshot, snapshot), path, undefined, snapshot.id);
 	await sweepRestoreRecords(storeDir, warn, signal);
 	return withScratchDirectory(async (scratch) => {
-		const store = restoreStorePath(storeDir, snapshot, snapshot);
+		const store = await restoreStorePath(storeDir, snapshot, snapshot);
 		const git: GitRunOptions = { cwd: scratch, signal, env: { GIT_DIR: store } };
 		const cause = {
 			cause: failure.code,
@@ -2029,15 +2047,22 @@ function stagingPath(storeDir: string, path: string, into: string | undefined, i
  * On Windows, fails a restore into `path` over the object store `store` names before it writes anything when a path it
  * would create is longer than Git for Windows accepts (#5139). Staging names have one length, whatever the id.
  */
-function checkPathBudget(
+async function checkPathBudget(
 	storeDir: string,
-	store: () => string,
+	store: () => Promise<string>,
 	path: string,
 	into: string | undefined,
 	snapshotId: string | null,
-): void {
+): Promise<void> {
+	if (process.platform !== "win32") return;
+	// A failure to name the store skips the check, as it does in the check itself.
+	const named = await store().then(
+		(value) => ({ value }),
+		() => undefined,
+	);
+	if (named === undefined) return;
 	const staging = stagingPath(storeDir, path, into, "0".repeat(12));
-	assertRestorePathBudget({ storeDir, store, staging, target: path, snapshotId });
+	assertRestorePathBudget({ storeDir, store: () => named.value, staging, target: path, snapshotId });
 }
 
 /**
@@ -2158,6 +2183,14 @@ async function moveIntoPlace(
 		}
 		throw error;
 	}
+}
+
+/** Whether anything is at `path`, as `existsSync` answers: any failure to reach it is no. */
+function pathExists(path: string): Promise<boolean> {
+	return access(path).then(
+		() => true,
+		() => false,
+	);
 }
 
 /** The entry at `path`, or undefined when there is none. */
