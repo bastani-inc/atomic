@@ -176,25 +176,6 @@ export interface OwnedArea {
  */
 export const OWNED_ELSEWHERE: readonly OwnedArea[] = [
 	{
-		owner: "#5345 (snapshot Git and host spawn)",
-		paths: [
-			"packages/coding-agent/src/core/worktree-snapshot/",
-			"packages/coding-agent/src/core/session-worktree-snapshots.ts",
-		],
-	},
-	{
-		owner: "#5339 (startup before the first frame)",
-		paths: [
-			"packages/coding-agent/src/utils/interactive-engine-bootstrap.ts",
-			"packages/coding-agent/src/utils/compile-cache.ts",
-			"packages/coding-agent/src/utils/heap-relaunch.ts",
-			"packages/coding-agent/src/main-early-input.ts",
-			"packages/coding-agent/src/core/models-store.ts",
-			"packages/coding-agent/src/utils/shell.ts",
-			"packages/coding-agent/src/main.ts",
-		],
-	},
-	{
 		owner: "checkpoint shard writes off the main thread (the node:sqlite driver)",
 		paths: [
 			"packages/workflows/src/workers/ship-shard.ts",
