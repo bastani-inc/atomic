@@ -26,7 +26,7 @@ This page covers the concepts and normal use of compaction and branch summarizat
 
 ## When compaction runs
 
-- **Automatic threshold:** when estimated context usage exceeds the model's context window minus `compaction.reserveTokens`. Atomic checks after tool results are added, before the follow-up request, and before every new request. A response that ends over the threshold stays the session's last answer, so `prompt()` callers, RPC `get_last_assistant_text`, `/copy` and workflow stages read it; the context is cleared just before the next request: a new prompt, queued input, or the continuation after a tool's result. When a provider reports all-zero usage, Atomic estimates the visible message size instead of skipping the check.
+- **Automatic threshold:** when estimated context usage exceeds the model's context window minus `compaction.reserveTokens`. Atomic checks after tool results are added, before the follow-up request, and before every new request. A response that ends over the threshold stays the session's last answer, so `prompt()` callers, RPC `get_last_assistant_text`, `/copy` and workflow stages read it; the context is cleared just before the next request: a new prompt, queued input, an extension's interrupt message, or the continuation after a tool's result. When a provider reports all-zero usage, Atomic estimates the visible message size instead of skipping the check.
 - **Overflow:** a provider context-overflow error compacts and then retries the interrupted turn, once per turn.
 - **Truncated response:** a `length` stop before the model's requested output cap gets one compact-and-retry. If there is nothing to compact, Atomic makes at most one direct continuation instead.
 - **Manual:** `/compact [instructions]`, `ctx.compact()`, `session.compact()`, or RPC `{ "type": "compact" }`.
@@ -77,7 +77,7 @@ Some agents cannot read their history with their own tools, such as a subagent o
 
 ## Context compacted
 
-When `compactionModel` names a registered compactor model, today `morph/morph-compactor`, compaction sends the whole current context to that compactor once. It sends the previous compacted text first, then each message labelled by kind: user messages, assistant text, tool calls with their arguments, tool results (marked when they are errors), shell commands with their exit code, and extension messages. Images are replaced by an omission marker, thinking is left out, and very long lines are wrapped.
+When `compactionModel` names a registered compactor model, today `morph/morph-compactor`, compaction sends the whole current context to that compactor once. It sends the previous compacted text first, then each message labelled by kind: user messages, assistant text, tool calls with their arguments, tool results (marked when they are errors), shell commands with their exit code, and extension messages. Images are replaced by an omission marker, thinking is left out, and very long lines are wrapped. Messages kept out of the model's context, such as `!!` shell commands and extension messages sent with `excludeFromContext`, are not sent.
 
 The request uses your `/compact` instructions as its query, or else your latest request. It asks the compactor to keep about half of the conversation, a fixed ratio that is not a setting, and waits at most 120 seconds.
 

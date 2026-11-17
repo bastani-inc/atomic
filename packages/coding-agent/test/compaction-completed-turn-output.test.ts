@@ -118,11 +118,79 @@ describe("a completed turn keeps its answer for its readers", () => {
 		assert.equal(harness.faux.state.callCount, 2, "the clear made no model call");
 	});
 
+	it("an interrupt delivery after a threshold-crossing answer goes out after a clear", async () => {
+		harness = await largeTurn();
+		const contexts: string[][] = [];
+		harness.setResponses([
+			fauxAssistantMessage(ANSWER),
+			(context) => {
+				contexts.push(roles(context));
+				return fauxAssistantMessage("woken answer");
+			},
+		]);
+		await harness.session.prompt(LARGE_PROMPT);
+
+		await harness.session.sendCustomMessage(
+			{ customType: "intercom", content: "wake", display: true },
+			{ deliverAs: "interrupt", triggerTurn: true },
+		);
+		await vi.waitFor(() => assert.equal(harness?.session.getLastAssistantText(), "woken answer"));
+
+		const branch = harness.sessionManager.getBranch();
+		const boundary = branch.findIndex((entry) => entry.type === "compaction");
+		const wake = branch.findIndex((entry) => entry.type === "custom_message" && entry.customType === "intercom");
+		assert.ok(boundary >= 0 && boundary < wake, "the boundary precedes the interrupt message");
+		assert.deepEqual(contexts, [["system", "user", "user"]]);
+		assert.equal(harness.faux.state.callCount, 2, "the clear made no model call");
+	});
+
 	it("the last answer is still readable after a manual compaction", async () => {
 		harness = await createHarness({ settings: { retry: { enabled: false } } });
 		harness.setResponses([fauxAssistantMessage(ANSWER)]);
 		await harness.session.prompt("task");
 		await harness.session.compact();
 		assert.equal(harness.session.getLastAssistantText(), ANSWER);
+	});
+
+	function assistantEntryIds(opened: Harness): string[] {
+		return opened.sessionManager
+			.getBranch()
+			.flatMap((entry) => (entry.type === "message" && entry.message.role === "assistant" ? [entry.id] : []));
+	}
+
+	async function applyContextEdit(
+		opened: Harness,
+		targetId: string,
+		replacement: { content: string } | null,
+	): Promise<void> {
+		await opened.sessionManager.appendContextEdit(targetId, replacement);
+		opened.session.agent.state.messages = opened.sessionManager.buildSessionContext().messages;
+	}
+
+	it("the last answer after a compaction is the edited answer the model saw", async () => {
+		harness = await createHarness({ settings: { retry: { enabled: false } } });
+		harness.setResponses([fauxAssistantMessage("CURRENT-ANSWER-2")]);
+		await harness.session.prompt("task");
+		const [answer] = assistantEntryIds(harness);
+		await applyContextEdit(harness, answer, { content: "EDITED-ANSWER" });
+		assert.equal(harness.session.getLastAssistantText(), "EDITED-ANSWER");
+
+		await harness.session.compact();
+
+		assert.equal(harness.session.getLastAssistantText(), "EDITED-ANSWER");
+	});
+
+	it("the last answer after a compaction skips an answer omitted from context", async () => {
+		harness = await createHarness({ settings: { retry: { enabled: false } } });
+		harness.setResponses([fauxAssistantMessage("FIRST-ANSWER"), fauxAssistantMessage("SECOND-ANSWER")]);
+		await harness.session.prompt("first");
+		await harness.session.prompt("second");
+		const [, second] = assistantEntryIds(harness);
+		await applyContextEdit(harness, second, null);
+		assert.equal(harness.session.getLastAssistantText(), "FIRST-ANSWER");
+
+		await harness.session.compact();
+
+		assert.equal(harness.session.getLastAssistantText(), "FIRST-ANSWER");
 	});
 });

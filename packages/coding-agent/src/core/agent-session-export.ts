@@ -22,6 +22,7 @@ import { calculateContextTokens, estimateProjectedContextTokens } from "./compac
 import type { ToolHtmlRenderer } from "./export-html/index.ts";
 import type { ContextUsage, ReplacedSessionContext } from "./extensions/index.js";
 import { CURRENT_SESSION_VERSION, getLatestCompactionBoundaryEntry, type SessionHeader } from "./session-manager.ts";
+import { applyContextEdit, collectContextEdits } from "./session-manager-history.ts";
 import { inlineToolOutput, withoutInlineToolOutput } from "./session-tool-output.ts";
 import { inlineSnapshotBlobs, sessionSnapshotBlobs } from "./session-worktree-snapshots.ts";
 import { attachCleanupCause } from "./storage/cleanup.js";
@@ -286,9 +287,15 @@ function writeLine(file: number, text: string): void {
 export function getLastAssistantText(this: AgentSession): string | undefined {
 	const inContext = lastAssistantText(this.messages);
 	if (inContext.found) return inContext.text;
-	// A compaction boundary leaves no earlier answer in context; the session's branch still holds it.
-	const branch = this.sessionManager.getBranch().flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
-	return lastAssistantText(branch).text;
+	// A compaction boundary leaves no earlier answer in context; the session's branch still holds it, as the model saw it.
+	const branch = this.sessionManager.getBranch();
+	const edits = collectContextEdits(branch);
+	const messages = branch.flatMap((entry) => {
+		if (entry.type !== "message") return [];
+		const edit = edits.get(entry.id);
+		return edit ? applyContextEdit([entry.message], edit) : [entry.message];
+	});
+	return lastAssistantText(messages).text;
 }
 
 /** The text of the last assistant reply in `messages`, and whether one was found. */

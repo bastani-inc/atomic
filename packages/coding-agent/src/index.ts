@@ -332,7 +332,6 @@ export {
 } from "./core/auth-storage-backends.ts";
 export { type BashResult, executeBashWithOperations } from "./core/bash-executor.ts";
 export { getBuiltinPackagePaths } from "./core/builtin-packages.ts";
-export type { CompactionCacheMiss } from "./core/cache-stats.ts";
 export {
 	type CallbackActivityDescriptor,
 	type CallbackActivityKind,

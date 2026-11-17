@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { Usage } from "@bastani/atomic-ai/compat";
 import { redactCredentialShapes } from "../../utils/credential-redaction.js";
+import { messageIsLlmVisible } from "../messages.js";
 
 /** Share of the conversation the compactor keeps. A constant, not a setting. */
 export const COMPACTOR_COMPRESSION_RATIO = 0.5;
@@ -106,7 +107,6 @@ function compactorMessage(message: AgentMessage, isBoundary: IsBoundaryMessage):
 				contentText(message.content as readonly TextLikeBlock[]),
 			);
 		case "bashExecution": {
-			if (message.excludeFromContext) return undefined;
 			const exit = typeof message.exitCode === "number" ? `\nExit code: ${message.exitCode}` : "";
 			return framed("user", "[Shell execution]", `$ ${message.command}\n${message.output}${exit}`);
 		}
@@ -134,7 +134,9 @@ export function buildCompactorMessages(
 ): CompactorMessage[] {
 	const boundaries = messages.filter((message) => message.role === "custom" && isBoundary(message));
 	const rest = messages.filter((message) => !(message.role === "custom" && isBoundary(message)));
-	return [...boundaries, ...rest].flatMap((message) => compactorMessage(message, isBoundary) ?? []);
+	return [...boundaries, ...rest].flatMap((message) =>
+		messageIsLlmVisible(message) ? (compactorMessage(message, isBoundary) ?? []) : [],
+	);
 }
 
 /** Largest compacted text, in estimated tokens, for a model whose automatic trigger fires above `triggerTokens`. */

@@ -142,6 +142,32 @@ describe("compactor request framing", () => {
 		);
 	});
 
+	it("sends only what the model sees: messages kept out of context are not framed", () => {
+		const hidden = createCustomMessage(
+			"workflow-heartbeat",
+			"UI-ONLY",
+			true,
+			undefined,
+			new Date(0).toISOString(),
+			true,
+		);
+		const hiddenShell: AgentMessage = {
+			role: "bashExecution",
+			command: "echo HIDDEN-SHELL",
+			output: "HIDDEN-SHELL",
+			exitCode: 0,
+			cancelled: false,
+			truncated: false,
+			timestamp: 2,
+			excludeFromContext: true,
+		};
+		const messages = buildCompactorMessages([...conversation(), hidden, hiddenShell], () => false);
+		const all = messages.map((message) => message.content).join("\n");
+		assert.ok(!all.includes("UI-ONLY"), all);
+		assert.ok(!all.includes("HIDDEN-SHELL"), all);
+		assert.ok(all.includes("[Extension context: intercom]"), "visible custom messages are still sent");
+	});
+
 	it("wraps very long lines without losing characters", () => {
 		const line = "x".repeat(4_500);
 		const wrapped = wrapLongLines(line, 2_000).split("\n");
@@ -320,6 +346,23 @@ describe("compaction with a configured compactor model", () => {
 			assert.ok(!history.includes(API_KEY), "the key reached the session history");
 		});
 	}
+
+	it("a message kept out of the model's context is not sent to the compactor", async () => {
+		const fake = endpoint(() => json({ output: "compacted notes" }));
+		vi.stubGlobal("fetch", fake.fetch);
+		harness = await compactorHarness(true);
+		await harness.session.sendCustomMessage(
+			{ customType: "workflow-heartbeat", content: "UI-ONLY", display: true },
+			{ excludeFromContext: true },
+		);
+
+		const result = await harness.session.compact();
+
+		assert.equal(result.form, "compacted");
+		assert.equal(fake.requests.length, 1);
+		assert.ok(!JSON.stringify(fake.requests[0].body).includes("UI-ONLY"));
+		assert.ok(!JSON.stringify(convertToLlm(harness.session.messages)).includes("UI-ONLY"));
+	});
 
 	const fallbacks: Array<[string, () => Response | Promise<Response>, RegExp, boolean]> = [
 		["no credentials", () => json({ output: "unused" }), /failed: no credentials/u, false],
