@@ -83,7 +83,7 @@ export function selectStorage(
 	value: StorageInputSelection,
 	source: "sdk" | "settings" | "env" | "cli",
 	field: string,
-	defaultPath: string,
+	defaultPath: string | (() => string),
 ): StorageSelection {
 	const invalid = (reason: string): never => {
 		throw new StorageConfigError(source, field, reason);
@@ -157,9 +157,10 @@ export function selectStorage(
 	if (value.options !== undefined || value.secrets !== undefined) return invalid("adapter-required");
 	if (value.path && value.memory === true) return invalid("path-and-memory");
 	if (value.memory === true) return { kind: "memory" };
+	const resolvedDefault = (): string => (typeof defaultPath === "function" ? defaultPath() : defaultPath);
 	return {
 		kind: "sqlite",
-		path: source === "sdk" && value.path !== undefined ? value.path : value.path || defaultPath,
+		path: source === "sdk" && value.path !== undefined ? value.path : value.path || resolvedDefault(),
 		...(value.prefix === undefined ? {} : { prefix: value.prefix }),
 	};
 }

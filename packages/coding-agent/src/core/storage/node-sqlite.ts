@@ -382,7 +382,7 @@ class SqliteWriteTicket {
 			await utimes(this.path, now, now);
 			return false;
 		} catch (error) {
-			if (!isMissingFile(error)) throw error;
+			if (!isVanishedTicket(error)) throw error;
 			await this.queue.create(this, "w");
 			return true;
 		}

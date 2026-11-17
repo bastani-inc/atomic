@@ -146,7 +146,8 @@ test("shared placement on a journal other hosts cannot open fails at once, touch
 		assert.deepEqual([error.code, error.operation], ["shared-journal-required", "shared-placement"]);
 		assert.deepEqual(error.problems[0]?.fields, { selection: "a database journal" });
 		assert.ok(error.hint?.includes(SHARED_STORAGE_JOIN_HINT));
-		assert.equal(existsSync(join(directory, "workflows", "pool")), false, "no pool state was created");
+		assert.equal(existsSync(poolStateDirectory(join(directory, "agent"))), false, "no pool state was created");
+		assert.equal(existsSync(join(directory, "workflows", "pool")), false, "no legacy pool state was created");
 
 		const memory = await JournalDurableBackend.open(new MemoryRunJournal());
 		const objectJournal = await refused<SharedPoolSetupError>(

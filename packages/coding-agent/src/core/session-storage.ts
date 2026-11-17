@@ -1,4 +1,5 @@
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { mkdir } from "node:fs/promises";
+import { isAbsolute, join, resolve } from "node:path";
 import { Value } from "typebox/value";
 import { getAgentDir } from "../config.js";
 import { resolvePath } from "../utils/paths.ts";
@@ -6,6 +7,12 @@ import { SettingsManager } from "./settings-manager.ts";
 import { SessionStorageSelectionSchema } from "./settings-schema.ts";
 import type { Settings } from "./settings-types.ts";
 import { StorageConfigError } from "./storage/errors.js";
+import {
+	defaultSessionDatabasePath,
+	defaultSharedStoragePath,
+	type StorageHomeSettings,
+	storagePathBaseDir,
+} from "./storage/file-identity.js";
 import { selectProcessStorage } from "./storage/process-selection.js";
 import { StorageProvider, type StorageSelection } from "./storage/provider.js";
 import { selectStorage } from "./storage/selection.js";
@@ -155,7 +162,7 @@ function selectSessionStorageBeforeSettings(
 		sources.set(selection, { source: "cli", field: "--session-dir" });
 		return selection;
 	}
-	const processChoice = selectProcessStorage("sessions", agentDir, cwd);
+	const processChoice = selectProcessStorage("sessions", agentDir, cwd, options.settings);
 	if (processChoice !== undefined) {
 		sources.set(processChoice.selection, { source: processChoice.source, field: processChoice.field });
 		return processChoice.selection;
@@ -163,9 +170,7 @@ function selectSessionStorageBeforeSettings(
 	return undefined;
 }
 
-/** The session storage `settings` select, when neither the caller nor the process environment chose one. */
 function selectSessionStorageFromSettings(settings: Settings, agentDir: string): StorageSelection {
-	const defaultPath = join(dirname(agentDir), "workflows", "journal.sqlite");
 	if (
 		settings.sessions !== undefined &&
 		(settings.sessions === null || typeof settings.sessions !== "object" || Array.isArray(settings.sessions))
@@ -173,9 +178,9 @@ function selectSessionStorageFromSettings(settings: Settings, agentDir: string):
 		throw new StorageConfigError("settings", "sessions", "selection-object-required");
 	}
 	const value = settings.sessions?.storage !== undefined ? settings.sessions.storage : settings.storage;
-	if (value === undefined) return { kind: "sqlite", path: defaultPath };
+	if (value === undefined) return { kind: "sqlite", path: defaultSessionDatabasePath(agentDir, settings) };
 	const field = settings.sessions?.storage !== undefined ? "sessions.storage" : "storage";
-	const selection = selectSessionSetting(value, field, agentDir);
+	const selection = selectSessionSetting(value, field, agentDir, settings);
 	sources.set(selection, { source: "settings", field });
 	return selection;
 }
@@ -189,21 +194,38 @@ export function selectSessionSetting(
 	value: NonNullable<NonNullable<Settings["sessions"]>["storage"]>,
 	field: "sessions.storage" | "storage",
 	agentDir: string,
+	settings?: StorageHomeSettings,
 ): StorageSelection {
 	if (!Value.Check(SessionStorageSelectionSchema, value) || (field === "storage" && "dir" in value)) {
 		throw new StorageConfigError("settings", field, "invalid-selection");
 	}
+	const effectiveSettings: StorageHomeSettings =
+		settings ?? (field === "storage" ? { storage: value } : { sessions: { storage: value } });
 	if ("dir" in value)
-		return { kind: "jsonl", dir: resolveStoragePath(value.dir, dirname(agentDir), "settings", field) };
-	const defaultPath = join(dirname(agentDir), "workflows", "journal.sqlite");
-	const selection = selectStorage(
-		value,
-		"settings",
-		field,
-		field === "storage" ? join(dirname(agentDir), "storage.sqlite") : defaultPath,
+		return {
+			kind: "jsonl",
+			dir: resolveStoragePath(
+				value.dir,
+				storagePathBaseDir(value.dir, agentDir, effectiveSettings),
+				"settings",
+				field,
+			),
+		};
+	const selection = selectStorage(value, "settings", field, () =>
+		field === "storage"
+			? defaultSharedStoragePath(agentDir, effectiveSettings)
+			: defaultSessionDatabasePath(agentDir, effectiveSettings),
 	);
 	if (selection.kind === "sqlite" && !isAbsolute(selection.path)) {
-		return { ...selection, path: resolveStoragePath(selection.path, dirname(agentDir), "settings", field) };
+		return {
+			...selection,
+			path: resolveStoragePath(
+				selection.path,
+				storagePathBaseDir(selection.path, agentDir, effectiveSettings),
+				"settings",
+				field,
+			),
+		};
 	}
 	return selection;
 }
@@ -221,19 +243,25 @@ function isDefaultDatabase(
 		!selection.prefix &&
 		selection.path !== "" &&
 		selection.path !== ":memory:" &&
-		resolve(selection.path) === resolve(join(dirname(agentDir), "workflows", "journal.sqlite"))
+		resolve(selection.path) === resolve(defaultSessionDatabasePath(agentDir))
 	);
 }
 
 export async function resolveSessionStore(cwd: string, options: SessionStorageOptions = {}): Promise<SessionStore> {
 	const agentDir = options.agentDir ?? getAgentDir();
-	const selection =
-		selectSessionStorageBeforeSettings(cwd, options, agentDir) ??
-		selectSessionStorageFromSettings(
-			options.settings ?? (await SettingsManager.createAsync(cwd, agentDir)).getSettings(),
-			agentDir,
-		);
+	const settings = options.settings ?? (await SettingsManager.createAsync(cwd, agentDir)).getSettings();
+	const select = () => selectSessionStorageWithSettings(cwd, { ...options, settings });
+	let selection = select();
 	if (selection !== null && typeof selection === "object" && "load" in selection) return selection;
+	if (
+		(selection.kind === "sqlite" || selection.kind === "jsonl") &&
+		options.sessionStore === undefined &&
+		options.sessionStorePath === undefined &&
+		options.sessionDir === undefined
+	) {
+		await mkdir(agentDir, { recursive: true });
+		selection = select() as StorageSelection;
+	}
 	// Released sessions' history that a killed process left in this agent directory goes, once per process (#4502).
 	void import("./storage/session/released-history-files.js").then(
 		({ sweepReleasedHistoryOnce }) => sweepReleasedHistoryOnce(agentDir),

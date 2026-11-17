@@ -188,7 +188,7 @@ export async function runPooledRoot(
 
 		// The pool's tables live in this machine's coordination database, never in the journal's.
 		const pool = coordinationPath(poolDurableJournal(journal));
-		assert.ok(pool.startsWith(join(directory, "home", "workflows", "pool")), pool);
+		assert.ok(pool.startsWith(join(directory, "home", "agent", "workflows", "pool")), pool);
 		assert.ok(existsSync(pool), "the coordination database exists");
 		await assertNoPoolTables(selected);
 		const poolDatabase = sqlite(pool);

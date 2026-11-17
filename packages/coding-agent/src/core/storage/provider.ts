@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Jiti, JitiResolveOptions } from "jiti";
 import { createSessionCwdMatcherAsync } from "../../utils/canonical-path.ts";
@@ -14,6 +14,7 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+import { storageHomeDir } from "./file-identity.js";
 import { legacyDefaultJournalPath } from "./journal-adoption.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { validateStoragePrefix } from "./prefix.js";
@@ -28,9 +29,51 @@ import type { SessionStore } from "./session/types.js";
  */
 export type SecretRef = { readonly env: string } | { readonly file: string } | InMemorySecretRef;
 
+interface RelativeSecretPaths {
+	readonly home: string;
+	readonly agentDir: string;
+	readonly cwd: string | undefined;
+	readonly file: string;
+	readonly primary: string;
+	readonly legacy: string;
+	readonly managedLegacyToken: boolean;
+}
+
+let lastRelativeSecretPaths: RelativeSecretPaths | undefined;
+
 /** Where a `secrets` `{ file }` reference points: an absolute path, or a path relative to Atomic home. */
 export function secretFilePath(file: string, agentDir: string): string {
-	return isAbsolute(file) ? file : join(dirname(agentDir), file);
+	if (isAbsolute(file)) return file;
+	const home = storageHomeDir(agentDir);
+	const cwd = isAbsolute(agentDir) ? undefined : process.cwd();
+	let paths = lastRelativeSecretPaths;
+	if (
+		paths === undefined ||
+		paths.home !== home ||
+		paths.agentDir !== agentDir ||
+		paths.cwd !== cwd ||
+		paths.file !== file
+	) {
+		const resolvedAgentDir = resolve(agentDir);
+		const legacy = join(dirname(resolvedAgentDir), file);
+		const sameDir =
+			process.platform === "win32"
+				? resolve(dirname(legacy)).toLowerCase() === resolvedAgentDir.toLowerCase()
+				: resolve(dirname(legacy)) === resolvedAgentDir;
+		paths = {
+			home,
+			agentDir,
+			cwd,
+			file,
+			primary: join(home, file),
+			legacy,
+			managedLegacyToken: sameDir && basename(legacy).startsWith("storage-token."),
+		};
+		lastRelativeSecretPaths = paths;
+	}
+	if (paths.primary === paths.legacy) return paths.primary;
+	if (!existsSync(paths.legacy) && !paths.managedLegacyToken) return paths.primary;
+	return existsSync(paths.primary) ? paths.primary : paths.legacy;
 }
 export type AdapterOptions = Readonly<Record<string, SqliteValue | boolean>>;
 export type RunJournalOption =

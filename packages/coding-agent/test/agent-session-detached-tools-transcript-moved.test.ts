@@ -333,8 +333,8 @@ describe("input that would start a turn while a call is detached (#4580)", () =>
 		assert.equal(cards.length, 2, "each message of the batch kept its own durable card");
 		assert.deepEqual(
 			cards.map((card) => (card.type === "custom_message" ? card.stageAdmissionKey : "not a card")),
-			["subagent:child-1", undefined],
-			"only the first card of the batch keeps the admission key",
+			["subagent:child-1#0", "subagent:child-1"],
+			"each occurrence keeps a stable key and only the final card completes batch admission",
 		);
 		harness.session.takeDetachedToolCalls();
 		await harness.session.resumeDetachedTurn([detachedResult("ci-1", "passed")]);

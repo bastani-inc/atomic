@@ -413,6 +413,54 @@ test("a waiting writer that cannot refresh its own ticket fails the transaction 
 	assert.equal((error.cause as NodeJS.ErrnoException).code, "EACCES");
 });
 
+test.each(["win32", "linux"] as const)(
+	"a waiting writer recovers a vanished ticket's refresh EPERM only on Windows (%s) (#4316)",
+	async (system) => {
+		const { database, holder, warnings, writers } = await fixture();
+		platform.mockReturnValue(system);
+		holder.exec("BEGIN IMMEDIATE");
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+		const write = database
+			.transaction((tx) => tx.run("INSERT INTO items VALUES ('recovered')"))
+			.then(
+				() => undefined,
+				(error: Error) => error,
+			);
+		await untilWaiting();
+		let vanished = false;
+		let announceVanished = () => {};
+		const ticketVanished = new Promise<void>((resolve) => {
+			announceVanished = resolve;
+		});
+		utimes.mockImplementation(async (path, atime, mtime) => {
+			if (!vanished && dirname(String(path)) === writers) {
+				vanished = true;
+				await actualPromises.unlink(path);
+				announceVanished();
+				throw failure("EPERM");
+			}
+			await actualPromises.utimes(path, atime, mtime);
+		});
+		await vi.advanceTimersByTimeAsync(250);
+		await untilWaiting();
+		await vi.advanceTimersByTimeAsync(250);
+		await ticketVanished;
+		holder.exec("COMMIT");
+		await releaseWaiters(writers);
+		await vi.advanceTimersByTimeAsync(250);
+		const error = await write;
+		if (system === "win32") {
+			assert.equal(error, undefined);
+			assert.deepEqual(await database.all("SELECT value FROM items"), [{ value: "recovered" }]);
+			assert.deepEqual(warnings, []);
+		} else {
+			assert.ok(isStorageWriterQueueUnusableError(error), String(error));
+			assert.equal(error.errno, "EPERM");
+			assert.deepEqual(await database.all("SELECT value FROM items"), []);
+		}
+	},
+);
+
 test("a release that cannot list the queue still commits and reports one wake-failed fallback (#4316)", async () => {
 	const { database, warnings, writers } = await fixture();
 	for (const value of ["first", "second"]) {

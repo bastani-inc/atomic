@@ -157,6 +157,7 @@ test.skipIf(process.platform === "win32")(
 				undefined,
 				"no coordination database, so no machine to record",
 			);
+			assert.equal(existsSync(join(directory, "home", "agent", "workflows", "pool")), false);
 			assert.equal(existsSync(join(directory, "home", "workflows", "pool")), false);
 		} finally {
 			await backend.close();
