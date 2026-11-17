@@ -1,18 +1,18 @@
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { Message, TextContent } from "@bastani/atomic-ai/compat";
-import { existsSync, type Stats } from "fs";
-import { readdir, readFile, stat } from "fs/promises";
+import type { Stats } from "fs";
+import { access, readdir, readFile, stat } from "fs/promises";
 import { basename, join } from "path";
 import { getSessionsDir } from "../config.js";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
-import { createSessionCwdMatcher, normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
+import { createSessionCwdMatcherAsync, normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import { classifiedWorkflowMetadata } from "./session-manager-classification.ts";
 import { getLatestSessionSummary } from "./session-manager-entries.ts";
-import { getDefaultSessionDir, getDefaultSessionDirPath } from "./session-manager-paths.ts";
+import { getDefaultSessionDirAsync, getDefaultSessionDirPath } from "./session-manager-paths.ts";
 import {
 	isInternalHeader,
 	parseStoredSessionEntries,
-	readSessionHeader,
+	readSessionHeaderAsync,
 	upgradeStoredSessionEntries,
 } from "./session-manager-storage.ts";
 import type {
@@ -146,6 +146,7 @@ async function mapSessionFilesCooperatively(
 	includeInternal: boolean,
 	onFileDone: (info: SessionInfo | null, index: number) => void,
 	signal?: AbortSignal,
+	inspect?: (info: SessionInfo) => Promise<void>,
 ): Promise<(SessionInfo | null)[]> {
 	return mapWithConcurrency(
 		files,
@@ -153,9 +154,10 @@ async function mapSessionFilesCooperatively(
 		async (file, index) => {
 			// Hidden sessions never enter partial results or the expensive transcript parser.
 			const info =
-				!includeInternal && isInternalHeader(readSessionHeader(file.path))
+				!includeInternal && isInternalHeader(await readSessionHeaderAsync(file.path))
 					? null
 					: await buildSessionInfo(file.path, signal, file.stats);
+			if (info && inspect) await inspect(info);
 			signal?.throwIfAborted();
 			onFileDone(info, index);
 			return info;
@@ -267,14 +269,26 @@ export function resolveParentSessionPaths(sessions: SessionInfo[]): SessionInfo[
 	});
 }
 
+/** Whether `path` exists, as `existsSync` answers: any error means it does not. */
+async function exists(path: string): Promise<boolean> {
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** `inspect` runs on each session before it is reported, so `onProgress` can filter on what it learned. */
 export async function listSessionsFromDir(
 	dir: string,
 	onProgress?: SessionListProgress,
 	includeInternal = false,
 	signal?: AbortSignal,
+	inspect?: (info: SessionInfo) => Promise<void>,
 ): Promise<SessionInfo[]> {
 	signal?.throwIfAborted();
-	if (!existsSync(dir)) return [];
+	if (!(await exists(dir))) return [];
 	try {
 		const files = (await readdir(dir))
 			.filter((file) => file.endsWith(".jsonl"))
@@ -297,6 +311,7 @@ export async function listSessionsFromDir(
 				);
 			},
 			signal,
+			inspect,
 		);
 		return resolveParentSessionPaths(
 			results.filter((info): info is SessionInfo => info !== null && (includeInternal || !info.internal)),
@@ -314,14 +329,23 @@ export async function listProjectSessions(
 	includeInternal = false,
 	signal?: AbortSignal,
 ): Promise<SessionInfo[]> {
-	const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
+	const dir = sessionDir ? normalizePath(sessionDir) : await getDefaultSessionDirAsync(cwd);
 	const filterCwd = sessionDir !== undefined && !pathsEqual(dir, getDefaultSessionDirPath(cwd));
-	const matchesCwd = createSessionCwdMatcher(resolvePath(cwd));
-	const include = (session: SessionInfo) => !filterCwd || matchesCwd(resolvePath(session.cwd));
+	const matchesCwd = createSessionCwdMatcherAsync(resolvePath(cwd));
+	// Session files whose project is `cwd`, learned as each one is read so progress can filter synchronously.
+	const matching = new Set<string>();
+	const inspect = filterCwd
+		? async (session: SessionInfo) => {
+				if (await matchesCwd(resolvePath(session.cwd))) matching.add(session.path);
+			}
+		: undefined;
+	const include = (session: SessionInfo) => !filterCwd || matching.has(session.path);
 	const progress: SessionListProgress | undefined = onProgress
 		? (loaded, total, partial) => onProgress(loaded, total, partial?.filter(include))
 		: undefined;
-	return sortSessionInfos((await listSessionsFromDir(dir, progress, includeInternal, signal)).filter(include));
+	return sortSessionInfos(
+		(await listSessionsFromDir(dir, progress, includeInternal, signal, inspect)).filter(include),
+	);
 }
 
 export async function listAllSessions(
@@ -343,7 +367,7 @@ export async function listAllSessions(
 	const sessionsDir = getSessionsDir();
 
 	try {
-		if (!existsSync(sessionsDir)) {
+		if (!(await exists(sessionsDir))) {
 			return [];
 		}
 		const entries = await readdir(sessionsDir, { withFileTypes: true });

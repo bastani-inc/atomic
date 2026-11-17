@@ -214,7 +214,7 @@ describe("session claims (#5135)", () => {
 		);
 	});
 
-	test("a held claim's heartbeat keeps it fresh until its last claim is released (#5135)", () => {
+	test("a held claim's heartbeat keeps it fresh until its last claim is released (#5135)", async () => {
 		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
 		const sessionId = newSessionId();
 		const release = claim(sessionId);
@@ -225,6 +225,9 @@ describe("session claims (#5135)", () => {
 		const old = new Date(Date.now() - 50_000);
 		utimesSync(claimFile(sessionId), old, old);
 		vi.advanceTimersByTime(15_000);
+		// The heartbeat refreshes the claim without waiting for the file system.
+		for (let attempt = 0; attempt < 200 && Date.now() - statSync(claimFile(sessionId)).mtimeMs >= 10_000; attempt++)
+			await new Promise((resolve) => setTimeout(resolve, 5));
 		assert.ok(Date.now() - statSync(claimFile(sessionId)).mtimeMs < 10_000, "the heartbeat refreshed the claim");
 		release();
 		assert.equal(vi.getTimerCount(), 0, "no heartbeat runs without claims");
@@ -319,14 +322,14 @@ describe("session claims (#5135)", () => {
 		assert.equal(existsSync(claimFile(sessionId)), false, "closing the session releases the claim");
 	});
 
-	test("only a held claim is handed to an open marker, and only once (#5135)", () => {
+	test("only a held claim is handed to an open marker, and only once (#5135)", async () => {
 		const sessionId = newSessionId();
 		assert.equal(attachSessionClaim(sessionId), undefined);
 		claim(sessionId);
 		const detach = attachSessionClaim(sessionId);
 		assert.ok(detach);
 		assert.equal(attachSessionClaim(sessionId), undefined);
-		detach();
+		await detach();
 		assert.equal(existsSync(claimFile(sessionId)), false);
 	});
 

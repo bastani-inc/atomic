@@ -1,5 +1,4 @@
-import { existsSync } from "node:fs";
-import { mkdir, open } from "node:fs/promises";
+import { access, mkdir, open } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { attachCleanupCause } from "./cleanup.js";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "./database.js";
@@ -11,7 +10,7 @@ import {
 	JournalStoreError,
 	type StorageFailureCause,
 } from "./errors.js";
-import { fileIdentity } from "./file-identity.js";
+import { fileIdentityAsync } from "./file-identity.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 
 /** The catalog's file in a journal store directory. */
@@ -32,6 +31,16 @@ export const JOURNAL_BUSY_STATUSES = ["running"] as const;
 export const JOURNAL_FINISHED_STATUSES = ["completed", "failed", "cancelled"] as const;
 
 const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
+
+/** Whether `path` exists, as `existsSync` answers: any error means it does not. */
+async function exists(path: string): Promise<boolean> {
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
+}
 
 export type JournalShardKind = "native" | "adopted";
 
@@ -389,7 +398,7 @@ export class JournalCatalog {
 			"SELECT * FROM catalog_shards WHERE accepts_new_roots = 1 ORDER BY id",
 		)) {
 			const shard = this.shardRecord(row);
-			if (existsSync(shard.path)) accepting.push(shard);
+			if (await exists(shard.path)) accepting.push(shard);
 			else await tx.run("UPDATE catalog_shards SET accepts_new_roots = 0 WHERE id = ?", shard.id);
 		}
 		return accepting;
@@ -583,10 +592,18 @@ export class JournalCatalog {
 		absolute: string,
 		runs: readonly JournalCatalogRunHeader[],
 	): Promise<JournalShardRegistration> {
-		const identity = fileIdentity(absolute);
-		const registered = (await tx.all<ShardRow>("SELECT * FROM catalog_shards"))
-			.map((row) => this.shardRecord(row))
-			.find((shard) => shard.path === absolute || (identity !== undefined && fileIdentity(shard.path) === identity));
+		const identity = await fileIdentityAsync(absolute);
+		let registered: JournalShardRecord | undefined;
+		for (const row of await tx.all<ShardRow>("SELECT * FROM catalog_shards")) {
+			const shard = this.shardRecord(row);
+			if (
+				shard.path === absolute ||
+				(identity !== undefined && (await fileIdentityAsync(shard.path)) === identity)
+			) {
+				registered = shard;
+				break;
+			}
+		}
 		if (registered !== undefined) return { shard: registered, status: "already-registered" };
 		for (const run of runs) {
 			const existing = await tx.get<RunRow & { shard_path: string }>(
