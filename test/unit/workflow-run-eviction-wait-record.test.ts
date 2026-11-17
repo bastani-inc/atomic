@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, vi } from "vitest";
+import { untilRunRegistered } from "../helpers/fake-timer-io.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { assert, test, workflow } from "./executor-shared.js";
@@ -53,6 +54,7 @@ describe("a run whose waiting stage could not record its wait is not evicted (#4
 			{ durableBackend: backend, detachWhen: watching },
 		);
 
+		await untilRunRegistered(started.store, backend);
 		await vi.advanceTimersByTimeAsync(10_000);
 		assert.equal(started.service.dispatches, 2);
 		assert.deepEqual(entriesOf(started.runId), [], "evicted with a wait no replay can find");
