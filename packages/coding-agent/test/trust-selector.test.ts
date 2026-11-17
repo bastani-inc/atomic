@@ -65,8 +65,26 @@ describe("TrustSelectorComponent", () => {
 			],
 		});
 		selector.handleInput("3");
-		expect(onSelect).toHaveBeenLastCalledWith({ trusted: false, updates: [{ path: projectPath, decision: false }] });
 		selector.handleInput("\x1b");
+		expect(onSelect).toHaveBeenCalledOnce();
+		expect(onCancel).not.toHaveBeenCalled();
+		const numbered = new TrustSelectorComponent({
+			cwd: projectPath,
+			savedDecision: null,
+			projectTrusted: false,
+			onSelect,
+			onCancel,
+		});
+		numbered.handleInput("3");
+		expect(onSelect).toHaveBeenLastCalledWith({ trusted: false, updates: [{ path: projectPath, decision: false }] });
+		const cancelled = new TrustSelectorComponent({
+			cwd: projectPath,
+			savedDecision: null,
+			projectTrusted: false,
+			onSelect,
+			onCancel,
+		});
+		cancelled.handleInput("\x1b");
 		expect(onCancel).toHaveBeenCalledOnce();
 		for (const width of [40, 80, 160]) {
 			for (const line of selector.render(width)) expect(stripAnsi(line).length).toBeLessThanOrEqual(width);
