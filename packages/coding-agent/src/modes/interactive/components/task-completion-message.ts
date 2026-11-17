@@ -1,13 +1,6 @@
 import { stripVTControlCharacters } from "node:util";
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
-import {
-	type Component,
-	stripTerminalSequences,
-	Text,
-	truncateToWidth,
-	visibleWidth,
-	wrapTextWithAnsi,
-} from "@bastani/atomic-tui";
+import { type Component, stripTerminalSequences, Text, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { ToolRenderContext, ToolRenderers } from "../../../core/extensions/types.ts";
 import type { TaskCompletionNotice, TaskNoticeLine } from "../../../core/tasks/completion.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
@@ -16,7 +9,14 @@ import { isBuiltinToolCallRenderer, isBuiltinToolResultRenderer } from "../../..
 import { theme } from "../theme/theme.js";
 import { keyHint, keyHintIfBound, keyText } from "./keybinding-hints.js";
 import { NoticeLine, type NoticeLineSpec } from "./notice-line.ts";
-import { isToolBlock, ToolBlock, ToolBlockMarkdown, ToolBlockRecords, type ToolBlockStatus } from "./tool-block.ts";
+import {
+	isToolBlock,
+	markdownPreviewRows,
+	ToolBlock,
+	ToolBlockMarkdown,
+	ToolBlockRecords,
+	type ToolBlockStatus,
+} from "./tool-block.ts";
 import { type BuiltinToolBlockContentPart, builtinToolBlockPresentation } from "./tool-block-families.ts";
 
 function previewRow(row: string): string {
@@ -548,6 +548,8 @@ export class TaskCompletionMessage implements Component {
 	private generation = 0;
 	private readonly loadedByTask = new Map<TaskId, ExtractedNoticeTranscript | null>();
 	private readonly pendingByTask = new Map<TaskId, Promise<void>>();
+	private readonly previewRows = new Map<TaskCompletionNotice, readonly string[]>();
+	private readonly expandedPreviews = new Map<TaskCompletionNotice, ToolBlockMarkdown>();
 
 	constructor(
 		notices: TaskCompletionNotice | readonly TaskCompletionNotice[],
@@ -608,7 +610,10 @@ export class TaskCompletionMessage implements Component {
 		}
 	}
 
-	invalidate(): void {}
+	invalidate(): void {
+		this.previewRows.clear();
+		this.expandedPreviews.clear();
+	}
 
 	render(width: number): string[] {
 		if (width < 1) return [];
@@ -699,34 +704,47 @@ export class TaskCompletionMessage implements Component {
 				];
 			}
 			if (!preview) return line === undefined ? [] : [line];
-			const result = wrapTextWithAnsi(preview, contentWidth);
+			let markdown = this.expandedPreviews.get(notice);
+			if (!markdown) {
+				markdown = new ToolBlockMarkdown(preview, { color: (text) => theme.fg("muted", text) });
+				this.expandedPreviews.set(notice, markdown);
+			}
 			return [
 				...(line === undefined ? [] : [line]),
-				...result.map((text, index) =>
-					previewRow(
-						truncateToWidth(theme.fg("muted", `${index === 0 ? "   ⎿  " : "      "}${text}`), width, "…"),
+				...markdown
+					.render(contentWidth)
+					.map((text, index) =>
+						previewRow(
+							truncateToWidth(
+								`${theme.fg("muted", index === 0 ? "   ⎿  " : "      ")}${text.trimEnd()}`,
+								width,
+								"…",
+							),
+						),
 					),
-				),
 			];
 		}
 		const canLoadTranscript =
 			this.loadedByTask.get(taskId) !== null &&
 			(this.options?.hasTranscript ? this.options.hasTranscript(taskId) : Boolean(this.options?.loadTranscript));
 		if (!preview && !canLoadTranscript) return line === undefined ? [] : [line];
-		const lines = preview ? preview.split("\n") : [];
-		const firstLine = (lines.find((item) => item.trim().length > 0) ?? lines[0] ?? "").trim();
-		const cutFirst = firstLine ? truncateToWidth(firstLine, contentWidth, "…") : "";
-		const hasMore = canLoadTranscript || lines.length > 1 || visibleWidth(firstLine) > contentWidth;
+		let rows = this.previewRows.get(notice);
+		if (!rows) {
+			rows = preview ? markdownPreviewRows(preview, (text) => theme.fg("muted", text)) : [];
+			this.previewRows.set(notice, rows);
+		}
+		const firstRow = rows[0] ?? "";
+		const hasMore = canLoadTranscript || rows.length > 1 || visibleWidth(firstRow) > contentWidth;
 		const hintLabel = canLoadTranscript ? "for prompt, tool calls and full result" : "for the full result";
 		const hint = hasMore ? keyHintIfBound("app.tools.expand", hintLabel) : "";
 		return [
 			...(line === undefined ? [] : [line]),
-			...(cutFirst ? [previewRow(truncateToWidth(theme.fg("muted", `   ⎿  ${cutFirst}`), width, "…"))] : []),
+			...(firstRow ? [previewRow(truncateToWidth(`${theme.fg("muted", "   ⎿  ")}${firstRow}`, width, "…"))] : []),
 			...(hint
 				? [
 						previewRow(
 							truncateToWidth(
-								`${cutFirst ? "      " : "   ⎿  "}${theme.fg("dim", "(")}${hint}${theme.fg("dim", ")")}`,
+								`${firstRow ? "      " : "   ⎿  "}${theme.fg("dim", "(")}${hint}${theme.fg("dim", ")")}`,
 								width,
 								"…",
 							),
