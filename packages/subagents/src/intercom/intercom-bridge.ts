@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { APP_NAME, createChildProcessEnvironment, getEnvValue, getProjectConfigDirs } from "@bastani/atomic";
+import { createChildProcessEnvironment, getProjectConfigDirs } from "@bastani/atomic";
 import type { AgentConfig } from "../agents/agents.js";
 import type { ExtensionConfig, IntercomBridgeConfig, IntercomBridgeMode } from "../shared/types.js";
 import { getAgentDir } from "../shared/utils.js";
@@ -13,7 +13,6 @@ const PI_INTERCOM_PACKAGE_NAME = "pi-intercom";
 function defaultAgentDir(): string {
 	return getAgentDir();
 }
-const INTERCOM_SESSION_ID_ENV = `${APP_NAME.toUpperCase()}_INTERCOM_SESSION_ID`;
 
 function defaultIntercomExtensionDir(agentDir = defaultAgentDir()): string {
 	return path.join(agentDir, "extensions", PI_INTERCOM_PACKAGE_NAME);
@@ -62,9 +61,18 @@ interface ResolveIntercomBridgeInput {
 	globalNpmRoot?: string | null;
 }
 
-export function resolveIntercomSessionTarget(sessionName: string | undefined, sessionId: string): string {
-	const connectedIntercomSessionId = getEnvValue(INTERCOM_SESSION_ID_ENV)?.trim();
-	if (connectedIntercomSessionId) return connectedIntercomSessionId;
+/**
+ * The Intercom target a session's children name as their supervisor: the Intercom id the session itself registered
+ * under, or else its name. Never the process's `ATOMIC_INTERCOM_SESSION_ID`: every session in the process (its
+ * workflow stages, its other subagents) writes that variable when it connects, so it names whichever connected last.
+ */
+export function resolveIntercomSessionTarget(
+	sessionName: string | undefined,
+	sessionId: string,
+	ownIntercomSessionId?: string,
+): string {
+	const ownId = ownIntercomSessionId?.trim();
+	if (ownId) return ownId;
 	const trimmedName = sessionName?.trim();
 	if (trimmedName) return trimmedName;
 	const normalizedSessionId = sessionId.startsWith("session-") ? sessionId.slice("session-".length) : sessionId;

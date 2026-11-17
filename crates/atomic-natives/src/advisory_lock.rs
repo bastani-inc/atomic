@@ -129,17 +129,17 @@ pub fn rename_no_replace(from: &Path, to: &Path) -> io::Result<bool> {
 }
 
 fn is_exists_error(error: &io::Error) -> bool {
-	if error.kind() == io::ErrorKind::AlreadyExists {
-		return true;
-	}
-	#[cfg(unix)]
-	{
-		error.raw_os_error() == Some(libc::ENOTEMPTY)
-	}
-	#[cfg(not(unix))]
-	{
-		false
-	}
+	error.kind() == io::ErrorKind::AlreadyExists || is_directory_not_empty(error)
+}
+
+#[cfg(unix)]
+fn is_directory_not_empty(error: &io::Error) -> bool {
+	error.raw_os_error() == Some(libc::ENOTEMPTY)
+}
+
+#[cfg(not(unix))]
+fn is_directory_not_empty(_error: &io::Error) -> bool {
+	false
 }
 
 #[cfg(unix)]
