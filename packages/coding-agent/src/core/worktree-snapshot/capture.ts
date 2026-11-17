@@ -98,14 +98,34 @@ export function bindingOf(snapshot: WorktreeSnapshot): WorkspaceBinding {
 	return { remotes: [...snapshot.remotes], head: snapshot.head, tree: snapshot.tree, envHash: snapshot.envHash };
 }
 
-interface Checkout {
+export interface Checkout {
 	readonly root: string;
 	readonly head: string;
+	/** The checkout's absolute Git directory as Git prints it, when the lookup that found the checkout read it. */
+	readonly gitDir?: string;
+	/** The absolute path of the checkout's own index file, read with {@link gitDir}. */
+	readonly userIndex?: string;
 }
 
 /**
+ * One `rev-parse` that prints the checkout's top level, its Git directory and index file, then its HEAD commit, which
+ * an unborn HEAD leaves out with exit code 1.
+ */
+const LOCATE_CHECKOUT = [
+	"rev-parse",
+	"--show-toplevel",
+	"--absolute-git-dir",
+	"--git-path",
+	"index",
+	"--verify",
+	"-q",
+	"HEAD^{commit}",
+];
+
+/**
  * The checkout containing `dir` and its HEAD commit, or the reason it has none: Git is missing, `dir` is outside a
- * work tree, or the repository has no commits.
+ * work tree, or the repository has no commits. One Git process reads all of it; output it cannot split into its lines,
+ * such as a path with a line break, is read again one question at a time.
  */
 export async function locateCheckout(
 	dir: string,
@@ -120,20 +140,39 @@ export async function locateCheckout(
 		throw unreadablePathError(dir, error);
 	}
 	try {
-		const top = await runGit(["rev-parse", "--show-toplevel"], { cwd: dir, signal, allowExitCodes: [128] });
-		if (top.exitCode !== 0) return new WorkspaceSnapshotError("not-a-repository", dir);
-		const root = canonicalizeWorktreePath(top.stdout.toString("utf8").replace(/\n$/, ""));
-		const head = await runGit(["rev-parse", "-q", "--verify", "HEAD^{commit}"], {
-			cwd: root,
-			signal,
-			allowExitCodes: [1, 128],
-		});
-		if (head.exitCode !== 0) return new WorkspaceSnapshotError("unborn-head", root);
-		return { root, head: head.stdout.toString("utf8").trim() };
+		const located = await runGit(LOCATE_CHECKOUT, { cwd: dir, signal, allowExitCodes: [1, 128] });
+		const output = located.stdout.toString("utf8");
+		// Nothing printed: no work tree contains `dir`, which `--show-toplevel`, the first question, reports at once.
+		if (located.exitCode === 128 && output === "") return new WorkspaceSnapshotError("not-a-repository", dir);
+		const lines = output.replace(/\n$/, "").split("\n");
+		if (located.exitCode !== 128 && lines.length === (located.exitCode === 0 ? 4 : 3)) {
+			const [top = "", gitDir = "", index = "", head] = lines;
+			const root = canonicalizeWorktreePath(top);
+			if (head === undefined) return new WorkspaceSnapshotError("unborn-head", root);
+			return { root, head, gitDir, userIndex: isAbsolute(index) ? index : resolve(dir, index) };
+		}
+		return await locateCheckoutStepwise(dir, signal);
 	} catch (error) {
 		if (isGitUnavailableError(error)) return error;
 		throw error;
 	}
+}
+
+/** {@link locateCheckout} one question at a time, for output the single lookup cannot be split by. */
+async function locateCheckoutStepwise(
+	dir: string,
+	signal?: AbortSignal,
+): Promise<Checkout | WorktreeSnapshotUnavailableReason> {
+	const top = await runGit(["rev-parse", "--show-toplevel"], { cwd: dir, signal, allowExitCodes: [128] });
+	if (top.exitCode !== 0) return new WorkspaceSnapshotError("not-a-repository", dir);
+	const root = canonicalizeWorktreePath(top.stdout.toString("utf8").replace(/\n$/, ""));
+	const head = await runGit(["rev-parse", "-q", "--verify", "HEAD^{commit}"], {
+		cwd: root,
+		signal,
+		allowExitCodes: [1, 128],
+	});
+	if (head.exitCode !== 0) return new WorkspaceSnapshotError("unborn-head", root);
+	return { root, head: head.stdout.toString("utf8").trim() };
 }
 
 /** Runs `action` with a private directory that is removed afterwards; a removal failure never hides `action`'s. */
@@ -189,9 +228,10 @@ async function restoredTreeOf(gitDir: string): Promise<string | undefined> {
 	}
 }
 
-async function userIndexPathOf(root: string, signal?: AbortSignal): Promise<string> {
-	const userIndex = await gitText(["rev-parse", "--git-path", "index"], { cwd: root, signal });
-	return isAbsolute(userIndex) ? userIndex : resolve(root, userIndex);
+async function userIndexPathOf(checkout: Checkout, signal?: AbortSignal): Promise<string> {
+	if (checkout.userIndex !== undefined) return checkout.userIndex;
+	const userIndex = await gitText(["rev-parse", "--git-path", "index"], { cwd: checkout.root, signal });
+	return isAbsolute(userIndex) ? userIndex : resolve(checkout.root, userIndex);
 }
 
 /**
@@ -224,7 +264,7 @@ export async function writeWorkingTree(
 	options: WorkingTreeOptions,
 ): Promise<WorkingTreeState> {
 	const index = join(scratch, "index");
-	await seedFromUserIndex(await userIndexPathOf(checkout.root, options.signal), index);
+	await seedFromUserIndex(await userIndexPathOf(checkout, options.signal), index);
 	return writeTreeThrough(index, checkout, settings, policy, options, {
 		refresh: options.seedTree !== undefined,
 		forceAdded: (git) => ignoredStagedOutsideSeed(checkout.root, git, options),
@@ -303,62 +343,135 @@ async function inTurn<T>(key: string, action: () => Promise<T>): Promise<T> {
 	}
 }
 
+/** Where captures of a checkout keep their private index, with the checkout's Git directory and own index file. */
+interface CaptureIndex {
+	readonly gitDir: string;
+	readonly userIndexPath: string;
+	readonly index: string;
+}
+
+async function captureIndexOf(checkout: Checkout, storeDir: string, signal?: AbortSignal): Promise<CaptureIndex> {
+	const { root } = checkout;
+	if (checkout.gitDir !== undefined && checkout.userIndex !== undefined) {
+		return {
+			gitDir: checkout.gitDir,
+			userIndexPath: checkout.userIndex,
+			index: captureIndexPath(storeDir, checkout.gitDir, root),
+		};
+	}
+	const [gitDir = "", userIndex = ""] = (
+		await gitText(["rev-parse", "--absolute-git-dir", "--git-path", "index"], { cwd: root, signal })
+	).split("\n");
+	return {
+		gitDir,
+		userIndexPath: isAbsolute(userIndex) ? userIndex : resolve(root, userIndex),
+		index: captureIndexPath(storeDir, gitDir, root),
+	};
+}
+
 /**
- * {@link writeWorkingTree} for a capture, through a private index kept between captures under `storeDir`. Its entries
+ * {@link writeWorkingTree} for a capture, through the private index `capture.index` kept between captures. Its entries
  * keep the file times of the last capture's refresh, so unchanged files are not read again; it is reseeded from the
  * user's index whenever that changed. Any failure with it, such as a corrupt or truncated file, removes it and
- * captures as {@link writeWorkingTree} does: the tree is always computed from the working files.
+ * captures as {@link writeWorkingTree} does: the tree is always computed from the working files. Runs in the index's
+ * turn ({@link inTurn}).
  */
 async function writeCapturedTree(
 	checkout: Checkout,
 	settings: WorktreeSnapshotSettings,
 	policy: SnapshotPathPolicy,
 	scratch: string,
-	storeDir: string,
-	previousTree: string | undefined,
+	capture: CaptureIndex,
+	modeTree: string | undefined,
 	signal?: AbortSignal,
 ): Promise<WorkingTreeState> {
 	const { root } = checkout;
-	const [gitDir = "", userIndex = ""] = (
-		await gitText(["rev-parse", "--absolute-git-dir", "--git-path", "index"], { cwd: root, signal })
-	).split("\n");
-	const userIndexPath = isAbsolute(userIndex) ? userIndex : resolve(root, userIndex);
-	const index = captureIndexPath(storeDir, gitDir, root);
-	const options: WorkingTreeOptions = { signal, modeTree: previousTree ?? (await restoredTreeOf(gitDir)) };
+	const { index, userIndexPath } = capture;
+	const options: WorkingTreeOptions = { signal, modeTree };
 	if (!usableOutside(root, index)) return writeWorkingTree(checkout, settings, policy, scratch, options);
-	return inTurn(index, async () => {
-		const working = `${index}.${process.pid}.tmp`;
-		try {
-			const seed = await indexSeedOf(userIndexPath);
-			await mkdir(dirname(index), { recursive: true });
-			const record = await recordOf(index);
-			const reseed =
-				record === undefined || !sameSeed(seed, record.seed) || !(await copyRecorded(index, record.index, working));
-			if (reseed) {
-				await rm(working, { force: true });
-				await seedFromUserIndex(userIndexPath, working);
-			}
-			const state = await writeTreeThrough(working, checkout, settings, policy, options, {
-				refresh: true,
-				forceAdded: () => ignoredAdditionsToHead(checkout, signal),
-			});
-			const written: IndexRecord = {
-				version: CAPTURE_INDEX_VERSION,
-				seed,
-				index: sha256Hex(await readFile(working)),
-			};
-			await renameWithRetry(working, index, { signal });
-			await writeAtomically(`${index}.json`, JSON.stringify(written));
-			return state;
-		} catch {
-			const remove = (files: readonly string[]) =>
-				Promise.all(files.map((file) => rm(file, { force: true }))).catch(() => undefined);
-			await remove([working, `${working}.lock`]);
-			signal?.throwIfAborted();
-			await remove([index, `${index}.json`]);
-			return writeWorkingTree(checkout, settings, policy, scratch, options);
+	const working = `${index}.${process.pid}.tmp`;
+	try {
+		const seed = await indexSeedOf(userIndexPath);
+		await mkdir(dirname(index), { recursive: true });
+		const record = await recordOf(index);
+		const reseed =
+			record === undefined || !sameSeed(seed, record.seed) || !(await copyRecorded(index, record.index, working));
+		if (reseed) {
+			await rm(working, { force: true });
+			await seedFromUserIndex(userIndexPath, working);
 		}
+		const state = await writeTreeThrough(working, checkout, settings, policy, options, {
+			refresh: true,
+			forceAdded: () => ignoredAdditionsToHead(checkout, signal),
+		});
+		const written: IndexRecord = {
+			version: CAPTURE_INDEX_VERSION,
+			seed,
+			index: sha256Hex(await readFile(working)),
+		};
+		await renameWithRetry(working, index, { signal });
+		await writeAtomically(`${index}.json`, JSON.stringify(written));
+		return state;
+	} catch {
+		const remove = (files: readonly string[]) =>
+			Promise.all(files.map((file) => rm(file, { force: true }))).catch(() => undefined);
+		await remove([working, `${working}.lock`]);
+		signal?.throwIfAborted();
+		await remove([index, `${index}.json`]);
+		return writeWorkingTree(checkout, settings, policy, scratch, options);
+	}
+}
+
+/** What a capture reads from a checkout's working files: its tree, and the paths the snapshot leaves out. */
+interface WorkingFiles {
+	readonly state: WorkingTreeState;
+	readonly omitted: readonly WorktreeSnapshotOmission[];
+}
+
+/**
+ * The computations of a checkout's working files that have not started reading them, by everything they compute
+ * from: the checkout, its HEAD, its private index, the settings, and the tree whose modes unchanged files keep.
+ */
+const pendingWorkingFiles = new Map<string, Promise<WorkingFiles>>();
+
+/**
+ * Reads the working files of `checkout` in its private index's turn. A capture without an abort signal joins the
+ * computation another one requested for the same inputs when that has not started yet, instead of starting its own:
+ * the computation reads the files after the joining capture was requested, so that capture records exactly what one
+ * of its own starting at the same moment would. A started computation is never joined, as it may have read a file
+ * before a later request, and several sessions capturing one checkout at once compute its tree at most twice.
+ */
+function readWorkingFiles(
+	checkout: Checkout,
+	settings: WorktreeSnapshotSettings,
+	capture: CaptureIndex,
+	modeTree: string | undefined,
+	signal?: AbortSignal,
+): Promise<WorkingFiles> {
+	const compute = () =>
+		withScratchDirectory(async (scratch): Promise<WorkingFiles> => {
+			const policy = await loadSnapshotPathPolicy(checkout.root);
+			const state = await writeCapturedTree(checkout, settings, policy, scratch, capture, modeTree, signal);
+			return { state, omitted: [...state.omitted, ...(await submoduleOmissions(checkout.root, signal))] };
+		});
+	if (signal !== undefined) return inTurn(capture.index, compute);
+	const key = JSON.stringify([
+		checkout.root,
+		checkout.head,
+		capture.gitDir,
+		capture.userIndexPath,
+		capture.index,
+		settings,
+		modeTree ?? null,
+	]);
+	const pending = pendingWorkingFiles.get(key);
+	if (pending !== undefined) return pending;
+	const computation: Promise<WorkingFiles> = inTurn(capture.index, () => {
+		if (pendingWorkingFiles.get(key) === computation) pendingWorkingFiles.delete(key);
+		return compute();
 	});
+	pendingWorkingFiles.set(key, computation);
+	return computation;
 }
 
 /**
@@ -877,7 +990,24 @@ export async function captureWorktreeSnapshot(
 	const settings = resolveWorktreeSnapshotSettings(options.settings, "sdk", "settings");
 	if (!settings.enabled) return { status: "disabled" };
 	try {
-		return await captureCheckout(dir, settings, options);
+		return await captureCheckout(() => locateCheckout(dir, options.signal), settings, options);
+	} catch (error) {
+		if (isWorkspaceSnapshotError(error)) return { status: "unavailable", reason: error };
+		throw error;
+	}
+}
+
+/**
+ * {@link captureWorktreeSnapshot} of the checkout that {@link locateCheckout} returned, which is not looked up again.
+ */
+export async function captureLocatedCheckout(
+	checkout: Checkout,
+	options: CaptureWorktreeSnapshotOptions = {},
+): Promise<WorktreeSnapshotCapture> {
+	const settings = resolveWorktreeSnapshotSettings(options.settings, "sdk", "settings");
+	if (!settings.enabled) return { status: "disabled" };
+	try {
+		return await captureCheckout(async () => checkout, settings, options);
 	} catch (error) {
 		if (isWorkspaceSnapshotError(error)) return { status: "unavailable", reason: error };
 		throw error;
@@ -919,14 +1049,14 @@ export function isBlobsCollectedError(error: unknown): error is WorkspaceSnapsho
 }
 
 async function captureCheckout(
-	dir: string,
+	locate: () => Promise<Checkout | WorktreeSnapshotUnavailableReason>,
 	settings: WorktreeSnapshotSettings,
 	options: CaptureWorktreeSnapshotOptions,
 ): Promise<WorktreeSnapshotCapture> {
 	const { signal } = options;
 	const gitUnavailable = await installedGitUnavailable();
 	if (gitUnavailable !== undefined) return { status: "unavailable", reason: gitUnavailable };
-	const checkout = await locateCheckout(dir, signal);
+	const checkout = await locate();
 	if (checkout instanceof Error) return { status: "unavailable", reason: checkout };
 	const { root, head } = checkout;
 	const candidate = options.previous?.root === root ? options.previous : undefined;
@@ -936,27 +1066,19 @@ async function captureCheckout(
 		!(await options.blobs.refreshBlobs(snapshotBlobHashes(candidate)))
 			? undefined
 			: candidate;
+	const capture = await captureIndexOf(checkout, resolve(defaultWorktreeSnapshotStoreDir()), signal);
+	const modeTree = previous?.tree ?? (await restoredTreeOf(capture.gitDir));
+	const { state, omitted: pathOmissions } = await readWorkingFiles(checkout, settings, capture, modeTree, signal);
+	const omissions = pathOmissionKeys(pathOmissions);
+	if (
+		previous &&
+		previous.head === head &&
+		previous.tree === state.tree &&
+		JSON.stringify(pathOmissionKeys(previous.omitted)) === JSON.stringify(omissions)
+	) {
+		return { status: "unchanged", snapshot: previous, binding: bindingOf(previous) };
+	}
 	return withScratchDirectory(async (scratch) => {
-		const policy = await loadSnapshotPathPolicy(root);
-		const state = await writeCapturedTree(
-			checkout,
-			settings,
-			policy,
-			scratch,
-			resolve(defaultWorktreeSnapshotStoreDir()),
-			previous?.tree,
-			signal,
-		);
-		const pathOmissions = [...state.omitted, ...(await submoduleOmissions(root, signal))];
-		const omissions = pathOmissionKeys(pathOmissions);
-		if (
-			previous &&
-			previous.head === head &&
-			previous.tree === state.tree &&
-			JSON.stringify(pathOmissionKeys(previous.omitted)) === JSON.stringify(omissions)
-		) {
-			return { status: "unchanged", snapshot: previous, binding: bindingOf(previous) };
-		}
 		const config = await readRepositoryConfig(root, signal);
 		const branch = await runGit(["symbolic-ref", "-q", "--short", "HEAD"], {
 			cwd: root,

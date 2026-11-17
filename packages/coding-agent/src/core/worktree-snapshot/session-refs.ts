@@ -18,23 +18,44 @@ function sessionSnapshotRef(sessionId: string, root: string): string {
 }
 
 /**
- * Points the session's ref for the checkout at `root` to `commit`. Changes nothing when the repository no longer
- * holds `commit`, as for the snapshot of an unchanged capture that `git gc` pruned, or Git rejects the session id
- * as a ref name.
+ * What this process last made of each session ref, by checkout and ref: the commit it wrote, or null once it deleted
+ * the ref. Only captures of the session in that checkout write the ref and only this session's process holds it, so
+ * the turns of a checkout that did not change, which keep the same commit, write nothing.
  */
-export async function keepSessionSnapshotCommit(sessionId: string, root: string, commit: string): Promise<void> {
-	await runGit(["update-ref", sessionSnapshotRef(sessionId, root), commit], { cwd: root, allowExitCodes: [128] });
+const writtenRefs = new Map<string, string | null>();
+
+function writtenRefKey(root: string, ref: string): string {
+	return `${canonicalizeWorktreePath(root)}\0${ref}`;
 }
 
 /**
- * Deletes the ref that keeps session `sessionId`'s snapshot commit of each of `roots` in that checkout's repository.
- * A root that is gone or not a repository, or Git that cannot run, is skipped, with the reason in the debug log.
- * Never throws.
+ * Points the session's ref for the checkout at `root` to `commit`. Changes nothing when the repository no longer
+ * holds `commit`, as for the snapshot of an unchanged capture that `git gc` pruned, or Git rejects the session id
+ * as a ref name, and runs no Git when this process already pointed the ref to `commit`.
+ */
+export async function keepSessionSnapshotCommit(sessionId: string, root: string, commit: string): Promise<void> {
+	const ref = sessionSnapshotRef(sessionId, root);
+	const key = writtenRefKey(root, ref);
+	if (writtenRefs.get(key) === commit) return;
+	writtenRefs.delete(key);
+	const { exitCode } = await runGit(["update-ref", ref, commit], { cwd: root, allowExitCodes: [128] });
+	if (exitCode === 0) writtenRefs.set(key, commit);
+}
+
+/**
+ * Deletes the ref that keeps session `sessionId`'s snapshot commit of each of `roots` in that checkout's repository,
+ * unless this process already deleted it since it last wrote it. A root that is gone or not a repository, or Git that
+ * cannot run, is skipped, with the reason in the debug log. Never throws.
  */
 export async function releaseSessionSnapshotRefs(sessionId: string, roots: Iterable<string>): Promise<void> {
 	for (const root of roots) {
 		try {
-			await runGit(["update-ref", "-d", sessionSnapshotRef(sessionId, root)], { cwd: root });
+			const ref = sessionSnapshotRef(sessionId, root);
+			const key = writtenRefKey(root, ref);
+			if (writtenRefs.get(key) === null) continue;
+			writtenRefs.delete(key);
+			await runGit(["update-ref", "-d", ref], { cwd: root });
+			writtenRefs.set(key, null);
 		} catch (error) {
 			reportDebug("storage", "snapshot-ref-release-failed", { root, ...failureDebugFields(error) });
 		}
