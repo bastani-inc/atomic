@@ -460,9 +460,11 @@ export function handleBrokerSend(
       : undefined;
   if (stageTarget !== undefined) {
     const { requirePendingReply: _pending, expectedRecipientId: _expected, ...plainSend } = clientMessage;
+    const stageSend = { ...(awayStageAsker ? plainSend : clientMessage), type: "send", to: stageTarget, logicalTarget: stageTarget };
+    sendersAtReceipt.set(stageSend, fromSession);
     handleBrokerSend(
       socket,
-      { ...(awayStageAsker ? plainSend : clientMessage), type: "send", to: stageTarget, logicalTarget: stageTarget },
+      stageSend,
       currentId,
       sessions,
       deliveredMessages,

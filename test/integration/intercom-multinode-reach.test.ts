@@ -271,10 +271,8 @@ for (const node of ["a", "b"] as const)
 						});
 						await sender.next((frame) => frame.type === "delivery_failed" && frame.messageId === laterId);
 					} else {
-						assert.equal(
-							outcome.type === "delivery_failed" && /outside this session's Intercom reach/.test(outcome.reason),
-							true,
-						);
+						assert.ok(outcome.type === "delivery_failed");
+						assert.match(outcome.reason, /outside this session's Intercom reach/);
 					}
 					await new Promise((resolveSettle) => setTimeout(resolveSettle, SETTLE_MS));
 					assert.equal(recipient.received.length, initiallyReachable ? 1 : 0);
@@ -300,12 +298,11 @@ test(
 		try {
 			const messageId = randomUUID();
 			await sender.sendThenReach(childName, messageId, []);
-			await sender
-				.next(
-					(frame) =>
-						(frame.type === "send_held" || frame.type === "delivery_failed") && frame.messageId === messageId,
-				)
-				.then((frame) => assert.equal(frame.type, "send_held", JSON.stringify(frame)));
+			const held = await sender.next(
+				(frame) =>
+					(frame.type === "send_held" || frame.type === "delivery_failed") && frame.messageId === messageId,
+			);
+			assert.equal(held.type, "send_held", JSON.stringify(held));
 			const child = await harness.connect("b", childName, { group: other, reachable: [], supervisor: auth });
 			const outcome = await sender.next(
 				(frame) =>
