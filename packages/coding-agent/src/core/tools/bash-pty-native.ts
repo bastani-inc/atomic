@@ -345,8 +345,10 @@ export async function executeNativePty(
 	if (options.taskOwner) return executeSupervisedCommand(command, cwd, options, true);
 	const loaded = loadNativePtyBinding();
 	if (!loaded.ok) throw loaded.error;
-	if (options.signal?.aborted) throw new Error("aborted");
 	const shellConfig = options.shellConfig ?? (await getShellConfigAsync(options.shellPath));
+	const shellEnv = await getShellEnvAsync();
+	// Checked after the shell lookups, so a command cancelled during them never starts.
+	if (options.signal?.aborted) throw new Error("aborted");
 	const session = new loaded.binding.PtySession();
 	const onAbort = () => {
 		try {
@@ -361,10 +363,7 @@ export async function executeNativePty(
 				cwd,
 				env: Object.fromEntries(
 					Object.entries(
-						createChildProcessEnvironment(
-							{ TERM: "xterm-256color" },
-							{ ...(await getShellEnvAsync()), ...(options.env ?? {}) },
-						),
+						createChildProcessEnvironment({ TERM: "xterm-256color" }, { ...shellEnv, ...(options.env ?? {}) }),
 					).filter((entry): entry is [string, string] => entry[1] !== undefined),
 				),
 				timeoutMs: options.timeout !== undefined ? Math.max(1, Math.floor(options.timeout * 1000)) : undefined,
