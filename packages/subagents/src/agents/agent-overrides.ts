@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { warnRemovedRoutingOption } from "../shared/removed-routing-warning.js";
 import { getProjectAgentSettingsPath, getUserAgentSettingsPath } from "./agent-paths.js";
 import {
 	type AgentConfig,
@@ -137,6 +138,9 @@ function parseOverrideStringArrayOrFalse(
 	return items;
 }
 
+/** Override fields of the removed automatic model routing: ignored, and named once so a saved restriction is not lost unseen. */
+const REMOVED_ROUTING_OVERRIDE_FIELDS = ["modelConstraints", "taskNeeds"] as const;
+
 function parseBuiltinOverrideEntry(
 	name: string,
 	value: unknown,
@@ -148,6 +152,7 @@ function parseBuiltinOverrideEntry(
 
 	const input = value as Record<string, unknown>;
 	const override: BuiltinAgentOverrideConfig = {};
+	for (const field of REMOVED_ROUTING_OVERRIDE_FIELDS) if (field in input) warnRemovedRoutingOption(field);
 
 	if ("model" in input) {
 		if (typeof input.model === "string" || input.model === false) override.model = input.model;

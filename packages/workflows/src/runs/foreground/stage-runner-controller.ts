@@ -733,13 +733,17 @@ export class StageSessionController {
 		if (this.autoModel !== undefined) return this.autoModel;
 		const cwd = options.cwd ?? this.opts.defaultCwd;
 		const modelRuntime = options.modelRuntime ?? this.sharedModelRuntime;
-		const selected = await this.opts.adapters.agentSession?.autoModel?.({
-			...(cwd === undefined ? {} : { cwd }),
-			...(options.agentDir === undefined ? {} : { agentDir: options.agentDir }),
-			...(options.settingsManager === undefined ? {} : { settingsManager: options.settingsManager }),
-			...(modelRuntime === undefined ? {} : { modelRuntime }),
-		});
-		if (options.autoNeedsImageInput === true && selected !== undefined && !acceptsImageInput(selected.model))
+		const needsImageInput = options.autoNeedsImageInput === true;
+		const selected = await this.opts.adapters.agentSession?.autoModel?.(
+			{
+				...(cwd === undefined ? {} : { cwd }),
+				...(options.agentDir === undefined ? {} : { agentDir: options.agentDir }),
+				...(options.settingsManager === undefined ? {} : { settingsManager: options.settingsManager }),
+				...(modelRuntime === undefined ? {} : { modelRuntime }),
+			},
+			...(needsImageInput ? [{ imageInput: true }] : []),
+		);
+		if (needsImageInput && selected !== undefined && !acceptsImageInput(selected.model))
 			throw new Error(imageInputError(selected.model));
 		const resolved = autoModelReference(selected);
 		if (resolved !== undefined && this.meta.stageOptions?.model === "auto")
@@ -2648,14 +2652,22 @@ export class StageSessionController {
 
 	private modelCandidates(): Promise<WorkflowResolvedModelCandidate[]> {
 		// `auto` keeps the current model as its last fallback; a model the author named runs only its own chain.
-		this.candidatesPromise ??= this.primaryModel().then((primaryModel) =>
-			buildModelCandidatesFromCatalog({
-				primaryModel,
-				fallbackModels: this.effectiveStageOptions?.fallbackModels ?? [],
-				catalog: this.modelCatalog,
-				includeCurrentModel: this.autoModel !== undefined,
-			}),
-		);
+		this.candidatesPromise ??= this.primaryModel()
+			.then((primaryModel) =>
+				buildModelCandidatesFromCatalog({
+					primaryModel,
+					fallbackModels: this.effectiveStageOptions?.fallbackModels ?? [],
+					catalog: this.modelCatalog,
+					includeCurrentModel: this.autoModel !== undefined,
+				}),
+			)
+			// An `auto` task that reads images falls back only to models that see them, the appended session model
+			// included; its first candidate already does.
+			.then((candidates) =>
+				this.effectiveStageOptions?.model === "auto" && this.effectiveStageOptions.autoNeedsImageInput === true
+					? candidates.filter((candidate, index) => index === 0 || acceptsImageInput(candidate.value))
+					: candidates,
+			);
 		return this.candidatesPromise;
 	}
 

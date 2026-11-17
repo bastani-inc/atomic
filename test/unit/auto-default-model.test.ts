@@ -28,9 +28,13 @@ import {
 } from "@bastani/atomic-ai/compat";
 import { Compile } from "typebox/compile";
 import { afterEach, test, vi } from "vitest";
-import { clearDeprecationWarningsForTests } from "../../packages/coding-agent/src/utils/deprecation.js";
+import {
+	clearDeprecationWarningsForTests,
+	setDeprecationWarningSink,
+} from "../../packages/coding-agent/src/utils/deprecation.js";
 import { loadAgentsFromDirWithDiagnostics } from "../../packages/subagents/src/agents/agent-loaders.js";
 import { applyAgentConfig } from "../../packages/subagents/src/agents/agent-management-helpers.js";
+import { readMergedSubagentSettings } from "../../packages/subagents/src/agents/agent-overrides.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
 import { prepareSubagentArguments, SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.js";
@@ -46,8 +50,10 @@ import {
 	createDurableStagePrimitive,
 	recordStageSessionCheckpoint,
 } from "../../packages/workflows/src/durable/stage-primitive.js";
+import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { workflowModelCatalogFromContext } from "../../packages/workflows/src/extension/workflow-model-catalog.js";
 import { loadWorkflowModule } from "../../packages/workflows/src/extension/workflow-module-loader.js";
+import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import type { AgentSessionAdapter } from "../../packages/workflows/src/runs/foreground/stage-runner-types.js";
 import { createAgentSessionAdapter, run as sdkRun } from "../../packages/workflows/src/sdk-surface.js";
 import { admittedSessionAdapter } from "../../packages/workflows/src/workers/admission-binding.js";
@@ -760,6 +766,178 @@ for (const textOnly of [[DEFAULT_ID], [DEFAULT_ID, SESSION_ID], []] as const) {
 	});
 }
 
+test("through the SDK session adapter, an auto task that reads images runs on the session's model when the default cannot see them", async () => {
+	for (const textOnly of [[DEFAULT_ID], [DEFAULT_ID, SESSION_ID]] as const) {
+		const f = await stageFixture(WITH_DEFAULT, { textOnly });
+		const sdk = createAgentSessionAdapter({
+			modelRuntime: f.runtime,
+			settingsManager: SettingsManager.inMemory(WITH_DEFAULT),
+			model: f.sessionModel,
+		});
+		const image = join(tempDir("atomic-auto-default-sdk-image-"), "reference.png");
+		writeFileSync(image, "png");
+		const def = workflow({
+			name: "sdk-auto-reads-images",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.task("design", { prompt: "Match the reference.", model: "auto", reads: [image] });
+				return {};
+			},
+		});
+		const result = await run(
+			def,
+			{},
+			{
+				adapters: { agentSession: { ...f.adapters.agentSession, autoModel: sdk.autoModel } },
+				store: f.store,
+			},
+		);
+		if (textOnly.length === 1) {
+			assert.equal(result.status, "completed", result.error);
+			assert.equal(f.admissions[0]?.model, SESSION_ID);
+		} else {
+			assert.equal(result.status, "failed");
+			assert.match(result.error ?? "", /does not accept image input/);
+			assert.deepEqual(f.admissions, []);
+		}
+	}
+});
+
+test("an auto task that reads images never falls back to a model that cannot see them", async () => {
+	const f = await stageFixture(WITH_DEFAULT, { textOnly: [SESSION_ID] });
+	const image = join(tempDir("atomic-auto-default-image-fallback-"), "reference.png");
+	writeFileSync(image, "png");
+	const create = f.adapters.agentSession.create;
+	const attempts: string[] = [];
+	const def = workflow({
+		name: "auto-image-fallback",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.task("design", { prompt: "Match the reference.", model: "auto", reads: [image] });
+			return {};
+		},
+	});
+	const result = await run(
+		def,
+		{},
+		{
+			models: f.models,
+			store: f.store,
+			adapters: {
+				agentSession: {
+					async create(options: import("./stage-runner-helpers.js").StageSessionCreateOptions) {
+						const id =
+							typeof options.model === "string"
+								? options.model
+								: `${options.model?.provider}/${options.model?.id}`;
+						attempts.push(id);
+						if (id === DEFAULT_ID) throw new Error("404 model_not_found: unknown model");
+						return create(options);
+					},
+				},
+			},
+		},
+	);
+	assert.notEqual(result.status, "completed");
+	assert.equal(
+		attempts.includes(SESSION_ID),
+		false,
+		`a text-only session model is never tried: ${attempts.join(", ")}`,
+	);
+	assert.deepEqual(f.admissions, []);
+});
+
+test(
+	"a run whose host has no model blocks recoverably and resumes as the same run once a model is configured",
+	async () => {
+		const cwd = tempDir("atomic-auto-default-no-model-");
+		const settings = SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } });
+		const modelRuntime = await ModelRuntime.create({
+			credentials: AuthStorage.inMemory(),
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
+		assert.equal((await modelRuntime.getAvailable()).length, 0);
+		const adapter = createAgentSessionAdapter({
+			cwd,
+			modelRuntime,
+			settingsManager: settings,
+			builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+			tools: ["read"],
+		});
+		const def = workflow({
+			name: "auto-no-model",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.stage("work", { model: "auto" }).prompt("Reply done.");
+				return {};
+			},
+		});
+		const store = createStore();
+		const jobs = createJobTracker();
+		const runtime = createExtensionRuntime({
+			definitions: [def],
+			adapters: { agentSession: adapter },
+			store,
+			jobs,
+			cwd,
+		});
+		const launch = await runtime.dispatch({ action: "run", workflow: def.name, inputs: {} });
+		assert.ok("runId" in launch && launch.runId);
+		await jobs.get(launch.runId)?.promise;
+		const blocked = store.run(launch.runId);
+		assert.equal(blocked?.status, "running");
+		assert.notEqual(blocked?.blockedAt, undefined);
+		assert.equal(blocked?.resumable, true);
+		assert.equal(blocked?.failureCode, "missing_api_key");
+		const base = {
+			...getModel("anthropic", "claude-sonnet-4-5")!,
+			provider: HOME,
+			id: "default-model",
+			name: "default-model",
+		};
+		modelRuntime.registerProvider(HOME, {
+			api: base.api,
+			baseUrl: base.baseUrl,
+			apiKey: "home-key",
+			models: [base],
+			streamSimple: () => {
+				const stream = createAssistantMessageEventStream();
+				const message: AssistantMessage = {
+					role: "assistant",
+					content: [{ type: "text", text: "done" }],
+					api: base.api,
+					provider: HOME,
+					model: base.id,
+					usage: usage(),
+					stopReason: "stop",
+					timestamp: Date.now(),
+				};
+				stream.push({ type: "done", reason: "stop", message });
+				stream.end(message);
+				return stream;
+			},
+		});
+		cleanups.push(() => modelRuntime.unregisterProvider(HOME));
+		settings.applyOverrides(WITH_DEFAULT);
+		const resumed = await runtime.resumeFailedRun(launch.runId);
+		assert.equal(resumed.ok, true, JSON.stringify(resumed));
+		if (!resumed.ok) return;
+		assert.equal(resumed.runId, launch.runId, "the resumed run keeps its id");
+		await jobs.get(resumed.runId)?.promise;
+		const after = store.run(resumed.runId);
+		assert.equal(after?.status, "completed", JSON.stringify(after?.error));
+		assert.equal(after?.stages[0]?.model, DEFAULT_ID);
+	},
+	REAL_SESSION_TIMEOUT_MS,
+);
+
 test("a live auto stage that is paused and resumed keeps its session and model", async () => {
 	setDurableBackend(await createMemoryTestBackend());
 	const settings: Settings = { ...WITH_DEFAULT };
@@ -1100,14 +1278,19 @@ test(
 
 test("the admission and worker session adapters resolve auto through the adapter they wrap", async () => {
 	const resolved = { model: DEFAULT_ID, thinkingLevel: "high" as const };
-	const autoModel = vi.fn(async () => resolved);
+	const autoModel = vi.fn(async (_options: object, _needs?: object) => resolved);
 	const base: AgentSessionAdapter = { create: async () => Promise.reject(new Error("not created")), autoModel };
 	const wrappers = [
 		admittedSessionAdapter(base, {} as Parameters<typeof admittedSessionAdapter>[1]),
 		workerStageAdapter({ base } as Parameters<typeof workerStageAdapter>[0]),
 	];
-	for (const wrapped of wrappers) assert.deepEqual(await wrapped.autoModel?.({ cwd: "/stage" }), resolved);
-	assert.deepEqual(autoModel.mock.calls, [[{ cwd: "/stage" }], [{ cwd: "/stage" }]]);
+	for (const wrapped of wrappers)
+		assert.deepEqual(await wrapped.autoModel?.({ cwd: "/stage" }, { imageInput: true }), resolved);
+	// What the stage's model must support reaches the wrapped adapter too.
+	assert.deepEqual(autoModel.mock.calls, [
+		[{ cwd: "/stage" }, { imageInput: true }],
+		[{ cwd: "/stage" }, { imageInput: true }],
+	]);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1158,6 +1341,61 @@ test("a modelRouting setting is dropped with one warning that its restrictions n
 	assert.match(warnings[0]!, /no longer limit/);
 	SettingsManager.inMemory({ theme: "dark" });
 	assert.equal(routingWarnings(warn).length, 1, "settings without the key do not warn");
+});
+
+test("saved builtin agent overrides that still set modelConstraints warn once that it is ignored", () => {
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	const file = join(tempDir("atomic-auto-default-override-"), "settings.json");
+	writeFileSync(
+		file,
+		JSON.stringify({
+			subagents: {
+				agentOverrides: { worker: { model: "auto", modelConstraints: { excludedProviders: ["anthropic"] } } },
+			},
+		}),
+	);
+	const first = readMergedSubagentSettings([file]);
+	readMergedSubagentSettings([file]);
+	assert.equal(first.settings.overrides.worker?.model, "auto");
+	assert.equal(Object.hasOwn(first.settings.overrides.worker!, "modelConstraints"), false);
+	const warnings = routingWarnings(warn);
+	assert.equal(warnings.length, 1, warnings.join("\n"));
+	assert.match(warnings[0]!, /"modelConstraints"/);
+});
+
+test("while a UI owns the terminal, removed-option warnings go to it instead of being written over the screen", async () => {
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	const shown: string[] = [];
+	const restore = setDeprecationWarningSink((message) => shown.push(message));
+	try {
+		SettingsManager.inMemory({ modelRouting: { excludedProviders: ["x"] } } as Settings);
+		prepareSubagentArguments({ agent: "worker", task: "Task", taskNeeds: { work: "coding" } });
+		const f = await stageFixture(WITH_DEFAULT);
+		const def = workflow({
+			name: "sink-warning",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				const options = { model: "auto", parallelSlot: { index: 0, count: 1 } } as Parameters<typeof ctx.stage>[1];
+				await ctx.stage("stage", options).prompt("Task");
+				return {};
+			},
+		});
+		assert.equal(
+			(await run(def, {}, { models: f.models, adapters: f.adapters, store: f.store })).status,
+			"completed",
+		);
+	} finally {
+		restore();
+	}
+	assert.deepEqual(routingWarnings(warn), [], "nothing is written to the terminal");
+	assert.equal(shown.length, 3, shown.join("\n"));
+	for (const option of ["modelRouting", "taskNeeds", "parallelSlot"])
+		assert.ok(
+			shown.some((message) => message.includes(`"${option}"`)),
+			option,
+		);
 });
 
 test("SDK settings and overrides carrying modelRouting load and drop it", async () => {

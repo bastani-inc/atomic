@@ -9,7 +9,7 @@ import type {
 	SessionStore,
 	SettingsManager,
 } from "@bastani/atomic";
-import type { StageWaitSnapshot } from "../../shared/authoring-contract-stage.js";
+import type { StageWaitSnapshot, WorkflowAutoModelNeeds } from "../../shared/authoring-contract-stage.js";
 import type { WorkflowPendingStageRouteReadiness } from "../../shared/pending-stage-route-readiness.js";
 import type { StageReleasePolicy } from "../../shared/stage-wait.js";
 import type { StageReleaseError } from "../../shared/stage-wait-errors.js";
@@ -202,7 +202,10 @@ export interface AgentSessionAdapter {
 	 * What `model: "auto"` stands for in the sessions this adapter creates, for a run whose `models` catalog does not
 	 * resolve it: the user's default model, else the adapter's own model. No model request.
 	 */
-	autoModel?(options: StageSessionCreateOptions): Promise<WorkflowAutoModel | undefined>;
+	autoModel?(
+		options: StageSessionCreateOptions,
+		needs?: WorkflowAutoModelNeeds,
+	): Promise<WorkflowAutoModel | undefined>;
 }
 
 export interface StageModelFallbackMeta {

@@ -4,6 +4,7 @@ import { formatModelLabel } from "../../core/model-label.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
 import { consumeStartupInput } from "../../main-early-input.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
+import { setDeprecationWarningSink } from "../../utils/deprecation.js";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { setMarkitDiagnosticSink } from "../../utils/markit.js";
 import { shortenHomePath } from "../../utils/paths.ts";
@@ -298,6 +299,9 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		this.ui.requestRender();
 	});
 	this.disposeMarkitDiagnosticSink = setMarkitDiagnosticSink((message) => renderDiagnosticStatus(message, this));
+	// A deprecation found once the UI owns the terminal (a settings reload after trust, a tool call) is shown as a
+	// warning in the chat instead of being written over the screen.
+	this.disposeDeprecationWarningSink = setDeprecationWarningSink((message) => this.showWarning(message));
 	this.footerDataProvider.onBranchChange(() => {
 		this.ui.requestRender();
 	});

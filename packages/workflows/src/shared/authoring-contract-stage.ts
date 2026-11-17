@@ -460,9 +460,19 @@ export interface AgentSessionAdapter {
 	): Promise<StageSessionRuntime | StageSessionCreateResult>;
 	/**
 	 * What `model: "auto"` stands for in the sessions this adapter creates, for a run whose `models` catalog does not
-	 * resolve it: the user's default model, else the adapter's own model. No model request.
+	 * resolve it: the user's default model, else the adapter's own model. No model request. With `needs.imageInput`
+	 * (a task that reads images) the adapter's own model stands in when the default model does not accept images.
 	 */
-	autoModel?(options: StageSessionCreateOptions): Promise<WorkflowAutoModel | undefined>;
+	autoModel?(
+		options: StageSessionCreateOptions,
+		needs?: WorkflowAutoModelNeeds,
+	): Promise<WorkflowAutoModel | undefined>;
+}
+
+/** What the model `auto` stands for must support. */
+export interface WorkflowAutoModelNeeds {
+	/** The task reads image files, so its model must accept image input. */
+	readonly imageInput?: boolean;
 }
 
 export interface PromptAdapter {

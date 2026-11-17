@@ -232,9 +232,32 @@ async function createPiSdkAgentSession(
 
 async function createTestAgentSession(_options?: CreateAgentSessionOptions): Promise<StageSessionCreateResult> {
 	let lastAssistantText: string | undefined;
+	const messages = [] as unknown as StageSessionRuntime["messages"];
 	const session: StageSessionRuntime = {
 		async prompt(text: string): Promise<string> {
 			lastAssistantText = `stub:sdk:${text.slice(0, 120)}`;
+			// A turn ends on an assistant message, as a real session's does: the stage reads its reply from there.
+			const now = Date.now();
+			(messages as unknown as object[]).push(
+				{ role: "user", content: [{ type: "text", text }], timestamp: now },
+				{
+					role: "assistant",
+					content: [{ type: "text", text: lastAssistantText }],
+					api: "stub",
+					provider: "stub",
+					model: "stub",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "stop",
+					timestamp: now,
+				},
+			);
 			return lastAssistantText;
 		},
 		async steer(_text: string): Promise<void> {},
@@ -255,7 +278,7 @@ async function createTestAgentSession(_options?: CreateAgentSessionOptions): Pro
 		agent: Object.create(null) as StageSessionRuntime["agent"],
 		model: undefined,
 		thinkingLevel: "off",
-		messages: [] as StageSessionRuntime["messages"],
+		messages,
 		isStreaming: false as StageSessionRuntime["isStreaming"],
 		async navigateTree(): ReturnType<StageSessionRuntime["navigateTree"]> {
 			return { cancelled: true };
@@ -724,7 +747,7 @@ export function createAgentSessionAdapter(
 		},
 	);
 	// `auto` follows the settings and credentials these sessions start with; the adapter's own model is the session's.
-	agentSession!.autoModel = async (stageOptions) => {
+	agentSession!.autoModel = async (stageOptions, needs) => {
 		const options = withBaseOptions(stageOptions);
 		const settingsManager =
 			options.settingsManager ??
@@ -735,15 +758,24 @@ export function createAgentSessionAdapter(
 				authPath: options.agentDir ? join(options.agentDir, "auth.json") : undefined,
 				modelsPath: options.agentDir ? join(options.agentDir, "models.json") : undefined,
 			}));
+		const availableModels = await runtime.getAvailable();
 		const selected = resolveAutoModel({
 			settings: settingsManager.getSettings(),
-			availableModels: await runtime.getAvailable(),
+			availableModels,
 			...(baseOptions.model === undefined ? {} : { sessionModel: baseOptions.model }),
 			...(baseOptions.thinkingLevel === undefined ? {} : { sessionThinkingLevel: baseOptions.thinkingLevel }),
 		});
-		return (
-			selected && { model: `${selected.model.provider}/${selected.model.id}`, thinkingLevel: selected.thinkingLevel }
-		);
+		if (selected === undefined) return undefined;
+		// The model record, not only its ID, so the stage can check what it accepts.
+		if (needs?.imageInput === true && !selected.model.input.includes("image")) {
+			const sessionModel = baseOptions.model;
+			if (sessionModel?.input.includes("image"))
+				return {
+					model: sessionModel,
+					...(baseOptions.thinkingLevel === undefined ? {} : { thinkingLevel: baseOptions.thinkingLevel }),
+				};
+		}
+		return { model: selected.model, thinkingLevel: selected.thinkingLevel };
 	};
 	// Session managers are created before this adapter sees a stage, so the runner applies the cwd first.
 	if (baseOptions.cwd !== undefined) setAgentSessionAdapterDefaultCwd(agentSession!, baseOptions.cwd);
