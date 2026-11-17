@@ -307,6 +307,40 @@ describe("in-process host session picker (non-isolated)", () => {
 		}
 	});
 
+	test("an error reported on another picker during an active delete callback does not unlock that other picker's pending deletion (#5256)", async () => {
+		const mountA = makeLocalUi();
+		const mountB = makeLocalUi();
+		const handleB = openLocalHostSessionPicker(mountB.ui, {
+			sessions: [row("alpha")],
+			onDelete: () => new Promise<void>(() => {}),
+		});
+		await flush();
+		mountB.component().handleInput(CTRL_D);
+		mountB.component().handleInput(ENTER);
+		await flush();
+
+		const handleA = openLocalHostSessionPicker(mountA.ui, {
+			sessions: [row("alpha")],
+			onDelete: async () => {
+				handleB.error("unrelated error on second picker");
+			},
+		});
+		await flush();
+		try {
+			mountA.component().handleInput(CTRL_D);
+			mountA.component().handleInput(ENTER);
+			await flush();
+
+			assert.ok(renderText(mountB).includes("unrelated error on second picker"));
+			mountB.component().handleInput(ENTER);
+			mountB.component().handleInput("\x1b[C");
+			assert.equal(mountB.resolved(), false, "other picker's delete context must not unlock mountB");
+		} finally {
+			handleA.close();
+			handleB.close();
+		}
+	});
+
 	test("runs picker keeps a pending-delete run locked across path reclassification until the run ID is removed or deletion fails (#5256)", async () => {
 		const mount = makeLocalUi();
 		const deletes: string[] = [];

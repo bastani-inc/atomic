@@ -118,7 +118,6 @@ export function applyInputLabelToEditorTopRule(
 	return lines;
 }
 
-/** Colours of an attached composer: its rules in the accent, its label bold, its placeholder dim. */
 export interface AttachedComposerStyle {
 	accent(text: string): string;
 	text(text: string): string;
@@ -164,13 +163,6 @@ function trimTrailingSpaces(line: string): string {
 	return line.slice(0, spaceStart) + line.slice(sgrStart);
 }
 
-/**
- * The composer of a chat attached to a subagent or a workflow stage, so it never reads as the main chat's: heavy accent
- * rules above and below the prompt, the top one ending in `label` (`debugger · #5220 spawn lock · 18m`), and, while
- * nothing is typed, `placeholder` (`Message debugger…`) after the cursor. Call it on the editor's rendered lines. A
- * plain or scrolled rule is replaced; any other first or last line is left as it is. Terminals narrower than
- * {@link INPUT_LABEL_MIN_COLUMNS} keep the heavy rules without the label.
- */
 export function applyAttachedComposer(
 	style: AttachedComposerStyle,
 	label: string | undefined,
@@ -185,14 +177,12 @@ export function applyAttachedComposer(
 		const plain = stripAnsi(line);
 		return /^─+$/.test(plain) || EDITOR_OVERFLOW_RE.test(plain);
 	};
-	// The editor may render rows below its bottom rule (an autocomplete list); the bottom rule is the last rule.
 	let bottomIndex = lines.length - 1;
 	while (bottomIndex > 0 && !isRule(lines[bottomIndex]!)) bottomIndex--;
 	if (top === undefined || bottomIndex < 1) return lines;
 	const width = visibleWidth(stripAnsi(top));
 	const overflowNote = isRule(top) ? EDITOR_OVERFLOW_RE.exec(stripAnsi(top))?.[2] : undefined;
 	if (isRule(top) && overflowNote === undefined) {
-		// The shared composer rule, in its attached form: heavy, accent, the label bold (#5224).
 		lines[0] = renderComposerRule(width, {
 			...(cleanLabel === undefined
 				? {}
@@ -228,10 +218,11 @@ export function applyAttachedComposer(
 		const line = lines[1]!;
 		const plain = stripAnsi(stripApc(line)).trimEnd();
 		if (plain === PROMPT_GLYPH || plain === `${PROMPT_GLYPH} `) {
-			const room = Math.max(0, width - visibleWidth(stripAnsi(line).trimEnd()) - 2);
-			const text = truncateToWidth(cleanPlaceholder, room, "…");
 			const trimmed = trimTrailingSpaces(line);
-			lines[1] = `${trimmed} ${style.dim(text)}`;
+			const separator = trimmed.includes("\x1b_pi:fc\x07") ? "" : " ";
+			const room = Math.max(0, width - visibleWidth(stripAnsi(line).trimEnd()) - separator.length - 1);
+			const text = truncateToWidth(cleanPlaceholder, room, "…");
+			lines[1] = `${trimmed}${separator}${style.dim(text)}`;
 		}
 	}
 	return lines;

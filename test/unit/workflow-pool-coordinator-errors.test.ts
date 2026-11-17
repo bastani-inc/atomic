@@ -101,6 +101,135 @@ function assertWorkerLog(f: Fixture, logPath: string | undefined): void {
 	assert.equal(dirname(logPath), workerLogDirectory(f.path, "root"));
 }
 
+for (const ending of ["active", "recycle", "retire"] as const) {
+	test(`a late reply failure ${ending === "active" ? "still stops an active worker" : `does not kill a worker ending for ${ending}`} (#4768)`, async () => {
+		const f = await fixture({ workers: 1 });
+		try {
+			let worker = f.workers[0]!;
+			if (ending === "retire") {
+				assert.ok((await worker.request({ kind: "claim" })).value);
+				await worker.request({ kind: "place", op: "release" });
+				const extra = await readyReplacement(1);
+				await worker.request({ kind: "place", op: "reacquire" });
+				worker = extra;
+			}
+			const send = worker.send.bind(worker);
+			let completed: ((error: Error | null) => void) | undefined;
+			vi.spyOn(worker, "send").mockImplementation((message, callback) => {
+				if (!("kind" in message)) {
+					completed = callback;
+					return send(message);
+				}
+				return send(message, callback);
+			});
+			const reply =
+				ending === "recycle"
+					? await worker.request({ kind: "recycle", attempts: 2, rssBytes: 1 })
+					: await worker.request({ kind: ending === "retire" ? "claim" : "control" });
+			assert.equal(reply.error, undefined);
+			if (ending === "retire") assert.equal(reply.retire, true);
+			assert.ok(completed);
+			if (ending !== "active") worker.disconnect();
+			completed(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+			assert.equal(worker.killedWith, ending === "active" ? "SIGKILL" : undefined);
+			if (ending !== "active") worker.exit(0);
+			assert.equal(worker.exitCode, ending === "active" ? null : 0);
+			assert.equal(worker.signalCode, ending === "active" ? "SIGKILL" : null);
+		} finally {
+			await f.close();
+		}
+	});
+}
+
+test("a late control-push failure does not kill a worker that began recycling after the push (#4768)", async () => {
+	const f = await fixture({ workers: 1 });
+	try {
+		const worker = f.workers[0]!;
+		const send = worker.send.bind(worker);
+		let completed: ((error: Error | null) => void) | undefined;
+		let revision = 0;
+		vi.spyOn(worker, "send").mockImplementation((message, callback) => {
+			if ("kind" in message && message.kind === "pool-control") {
+				revision = message.control.revision;
+				completed = callback;
+				return send(message);
+			}
+			return send(message, callback);
+		});
+		const changing = f.command({ kind: "control", state: "paused" });
+		while (completed === undefined) await delay(5);
+		await worker.request({ kind: "recycle", attempts: 2, rssBytes: 1 });
+		await worker.request({ kind: "controlled", revision });
+		await changing;
+		worker.disconnect();
+		completed(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+		assert.equal(worker.killedWith, undefined);
+		worker.exit(0);
+		assert.equal(worker.exitCode, 0);
+		assert.equal(worker.signalCode, null);
+	} finally {
+		await f.close();
+	}
+});
+
+test("control pushes skip a recycling worker but still reach an active worker (#4768)", async () => {
+	const f = await fixture({ workers: 2 });
+	try {
+		const [ending, active] = f.workers as [FakeWorker, FakeWorker];
+		await ending.request({ kind: "recycle", attempts: 2, rssBytes: 1 });
+		const send = ending.send.bind(ending);
+		let attempts = 0;
+		vi.spyOn(ending, "send").mockImplementation((message, callback) => {
+			if ("kind" in message && message.kind === "pool-control") {
+				attempts++;
+				callback?.(new Error("channel closed"));
+				return false;
+			}
+			return send(message, callback);
+		});
+		const changing = f.command({ kind: "control", state: "paused" });
+		let revision: number | undefined;
+		while (revision === undefined) {
+			const pushed = active.pushed.find(
+				(message) => message.kind === "pool-control" && message.control.state === "paused",
+			);
+			if (pushed?.kind === "pool-control") revision = pushed.control.revision;
+			else await delay(5);
+		}
+		await active.request({ kind: "controlled", revision });
+		if (ending.connected) await ending.request({ kind: "controlled", revision });
+		await changing;
+		assert.equal(attempts, 0);
+		assert.equal(ending.killedWith, undefined);
+		ending.exit(0);
+		assert.equal(ending.exitCode, 0);
+		assert.equal(ending.signalCode, null);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a reply that settles after a recycling worker disconnects is not sent to its closed channel (#4768)", async () => {
+	const f = await fixture({ workers: 1 });
+	try {
+		const worker = f.workers[0]!;
+		await worker.request({ kind: "recycle", attempts: 2, rssBytes: 1 });
+		const send = worker.send.bind(worker);
+		let replies = 0;
+		vi.spyOn(worker, "send").mockImplementation((message, callback) => {
+			if (!("kind" in message)) replies++;
+			return send(message, callback);
+		});
+		worker.ask({ kind: "control" });
+		worker.ask({ kind: "heartbeat", reports: [] });
+		worker.disconnect();
+		await f.stop();
+		assert.equal(replies, 0);
+	} finally {
+		await f.close();
+	}
+});
+
 test("a child whose last attempt was fenced on a pool fault fails alone, with that fault as its retry limit's cause (#4327)", async () => {
 	const f = await fixture({ workers: 1 });
 	try {

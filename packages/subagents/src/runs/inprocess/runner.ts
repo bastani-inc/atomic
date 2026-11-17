@@ -6,6 +6,7 @@ import {
 	type AgentSession,
 	type AgentSessionEvent,
 	type AgentSessionEventListener,
+	AgentTokenMeter,
 	applyAssistantMessageDelta,
 	beginStreamingAssistantMessage,
 	buildSkillCatalog,
@@ -30,6 +31,7 @@ import {
 	type Skill,
 	type SubagentIntercomIdentity,
 	sliceHead,
+	watchHeldPromptAttention,
 } from "@bastani/atomic";
 import {
 	type Api,
@@ -639,19 +641,30 @@ export function inProcessChildResourceLoaderOptions(input: {
 }
 
 /**
- * Resolves once the session has no turn running or starting and no interrupt delivery pending, or a stop fires.
+ * Resolves when the session can complete or release with no turn running or starting and no interrupt delivery pending,
+ * or once a stop fires. Normal completion seals message admission in the same synchronous check; interrupted turns
+ * waiting for input and children waiting on detached results keep it open.
  * `subscribeDrained` is told each time the session's count of running turns returns to zero.
  */
 export async function sessionDrained(
-	session: Pick<AgentSession, "subscribe" | "isStreaming" | "_activePromptCount" | "_pendingInterruptDeliveries">,
+	session: Pick<
+		AgentSession,
+		| "subscribe"
+		| "isStreaming"
+		| "_activePromptCount"
+		| "_pendingInterruptDeliveries"
+		| "_sealMessageAdmissionIfDrained"
+	>,
 	stops: readonly AbortSignal[],
 	subscribeDrained: (listener: () => void) => () => void,
+	waitsForNextTurn: () => boolean = () => false,
 ): Promise<void> {
 	// A session that does not count its turns has none running here.
 	const drained = () =>
 		(session._activePromptCount ?? 0) === 0 &&
 		(session._pendingInterruptDeliveries ?? 0) === 0 &&
-		!session.isStreaming;
+		!session.isStreaming &&
+		(waitsForNextTurn() || (session._sealMessageAdmissionIfDrained?.() ?? true));
 	while (!drained() && !stops.some((stop) => stop.aborted)) {
 		await new Promise<void>((resolve) => {
 			const unsubscribeDrained = subscribeDrained(() => done());
@@ -1066,12 +1079,11 @@ function settledTranscript(
 	manager: SessionManager,
 	commands: TranscriptCommands | undefined,
 	inherited: string | null,
-	unsavedAnswer: AssistantMessage | undefined,
+	unsaved: SessionEntry | undefined,
 ): TranscriptSource {
 	const sessionId = manager.getSessionId();
 	const sessionFile = manager.getSessionFile();
 	// #5210: a final answer its session could not save is still shown, after what it saved, unless the session holds it.
-	const unsaved = unsavedAnswer === undefined ? undefined : unsavedAnswerEntry(manager, unsavedAnswer);
 	const kept = withUnsavedAnswer(promptAndAnswer(manager, inherited), unsaved);
 	// A child's own session file is read through a store opened for the read, so a finished child keeps no store of its
 	// own in memory; a session in a shared store, as a forked or resumed child's, is read from that store.
@@ -1300,7 +1312,7 @@ function namedModelId(spec: ChildSpec): string {
 
 /** Why no other model ran in place of a named model, as its failures say. */
 const NAMED_MODEL_RULE =
-	"No other model was used: a subagent launched on a named model runs only that model and its agent's fallbackModels that its modelConstraints allow.";
+	"No other model was used: a subagent launched on a named model runs only that model and its agent's fallbackModels.";
 
 /**
  * Why a child launched on a named model failed when that model, and every fallback it opted into, failed: the models
@@ -1356,7 +1368,7 @@ function assertStartModelAllowed(input: {
 	if (named?.provider === model.provider && named.id === model.id) return;
 	if (gate(model, effort)) return;
 	throw new Error(
-		`Model ${model.provider}/${model.id}${effort ? ` at ${effort} effort` : ""} would run${spec.namedModel ? ` in place of ${spec.namedModel}` : ""}, but the launch's modelConstraints do not allow it. No other model was used.`,
+		`Model ${model.provider}/${model.id}${effort ? ` at ${effort} effort` : ""} would run${spec.namedModel ? ` in place of ${spec.namedModel}` : ""}, but the session's fallback policy does not allow it. No other model was used.`,
 	);
 }
 
@@ -1788,9 +1800,10 @@ export class SubagentControlRuntime {
 
 		let openedThroughId: string | null = null;
 		let releasedAttempt = false;
-		let unsavedAnswer: AssistantMessage | undefined;
+		let unsavedAnswer: SessionEntry | undefined;
 		// Open while this attempt's session lives: a status a disposed session writes late is not the task's.
 		let statusesOpen = true;
+		let stopHeldPromptAttention: (() => void) | undefined;
 		let attemptedModels: string[] = candidateModelId ? [candidateModelId] : [];
 		// Background receipts can precede capacity acquisition and session loading. Publish
 		// only the concrete selection handed to createAgentSession, not a requested ID
@@ -2082,6 +2095,10 @@ export class SubagentControlRuntime {
 			};
 			taskHooks?.bindChildSession?.(childSession);
 			admitted.spec.onChildSession?.(childSession);
+			if (taskHooks !== undefined)
+				stopHeldPromptAttention = watchHeldPromptAttention(childSession.sessionId, (report) =>
+					taskHooks.reportActivity(report),
+				);
 			if (workflow) await beforeStartDeadline(sessionManager.markSessionInternal(workflow));
 			const launchLeafId = sessionManager.getLeafId();
 			ownMessages = () => messagesSinceLaunch(sessionManager, launchLeafId);
@@ -2188,11 +2205,19 @@ export class SubagentControlRuntime {
 				);
 				await transcriptSession.interruptTurn();
 			};
+			const settleInterruptedTurns = async (): Promise<void> => {
+				while (interruptedTurnSettlement !== undefined && termination === undefined) {
+					const settlement = interruptedTurnSettlement;
+					interruptedTurnSettlement = undefined;
+					await settlement;
+				}
+			};
 			// Snapshot at the public session-event boundary, never ahead of its queued events.
 			let observedStreamingMessage: AssistantMessage | undefined;
+			const tokenMeter = new AgentTokenMeter(session.messages);
 			taskHooks?.bindTranscript?.({
 				getSessionId: () => sessionManager.getSessionId(),
-				getEntries: () => sessionManager.getEntries(),
+				getEntries: () => withUnsavedAnswer(sessionManager.getEntries(), unsavedAnswer),
 				...(typeof sessionManager.loadFullHistory === "function"
 					? { loadFullHistory: () => sessionManager.loadFullHistory() }
 					: {}),
@@ -2240,7 +2265,7 @@ export class SubagentControlRuntime {
 				recentTools: [],
 				recentOutput: [],
 				toolCount: 0,
-				tokens: 0,
+				tokens: tokenMeter.total(),
 				durationMs: 0,
 				lastActivityAt: Date.now(),
 			};
@@ -2251,8 +2276,6 @@ export class SubagentControlRuntime {
 				const onProgress = admitted.spec.onProgress;
 				if (!onProgress && !taskHooks) return;
 				const now = Date.now();
-				if (!force && now - lastProgressEmit < 400) return;
-				lastProgressEmit = now;
 				progressState.durationMs = now - attemptStartedAt;
 				progressState.lastActivityAt = now;
 				taskHooks?.reportActivity({
@@ -2264,6 +2287,8 @@ export class SubagentControlRuntime {
 						tokenCount: progressState.tokens,
 					},
 				});
+				if (!force && now - lastProgressEmit < 400) return;
+				lastProgressEmit = now;
 				onProgress?.({ ...progressState, recentTools: [...progressState.recentTools] });
 			};
 			let activitySequence = 0;
@@ -2289,8 +2314,11 @@ export class SubagentControlRuntime {
 					observedStreamingMessage = beginStreamingAssistantMessage(event.message);
 				else if (event.type === "message_update" && observedStreamingMessage)
 					applyAssistantMessageDelta(observedStreamingMessage, event.assistantMessageEvent);
-				else if (event.type === "message_end" && event.message.role === "assistant")
+				else if (event.type === "message_end" && event.message.role === "assistant") {
 					observedStreamingMessage = undefined;
+					tokenMeter.settled(event.message);
+					progressState.tokens = tokenMeter.total();
+				}
 				const emission = progressEmissionFor(event.type);
 				if (event.type === "tool_execution_start") {
 					taskHooks?.reportActivity({
@@ -2319,13 +2347,7 @@ export class SubagentControlRuntime {
 					progressState.currentToolArgs = undefined;
 					progressState.currentToolStartedAt = undefined;
 				} else if (event.type === "message_end") {
-					const message = (event as { message?: { role?: string; usage?: { input?: number; output?: number } } })
-						.message;
-					if (message?.role === "assistant") {
-						progressState.turnCount = (progressState.turnCount ?? 0) + 1;
-						const usage = message.usage;
-						if (usage) progressState.tokens += (usage.input ?? 0) + (usage.output ?? 0);
-					}
+					if (event.message.role === "assistant") progressState.turnCount = (progressState.turnCount ?? 0) + 1;
 				}
 				if (emission !== "none") emitProgress(emission === "force");
 				if (event.type === "model_fallback_start" && !signals.abort.aborted) {
@@ -2350,7 +2372,10 @@ export class SubagentControlRuntime {
 				if (termination) break;
 				await session.sendCustomMessage(message);
 			}
-			if (!termination && admitted.spec.resumeSession) await recoverChildSession(session, admitted.spec);
+			if (!termination && admitted.spec.resumeSession) {
+				await recoverChildSession(session, admitted.spec);
+				await settleInterruptedTurns();
+			}
 			const redispatched =
 				!termination && admitted.spec.redispatchDetachedCalls ? session.redispatchDetachedToolCalls() : undefined;
 			if (redispatched !== undefined) {
@@ -2399,10 +2424,10 @@ export class SubagentControlRuntime {
 						taskPending = false;
 						startBudget.end();
 					} else {
-						const prompting = session.prompt(
-							admitted.spec.task,
-							admitted.spec.resumeTaskLiteral ? LITERAL_TEXT : undefined,
-						);
+						const prompting = session.prompt(admitted.spec.task, {
+							streamingBehavior: "steer",
+							...(admitted.spec.resumeTaskLiteral ? LITERAL_TEXT : {}),
+						});
 						// Its task is dispatched once its agent starts; a prompt that settles first, refused or handled by an
 						// extension, ends dispatch too.
 						void prompting.then(markTaskDispatched, markTaskDispatched);
@@ -2417,18 +2442,19 @@ export class SubagentControlRuntime {
 				}
 			}
 			do {
-				while (interruptedTurnSettlement !== undefined && termination === undefined) {
-					const settlement = interruptedTurnSettlement;
-					interruptedTurnSettlement = undefined;
-					await settlement;
-				}
+				await settleInterruptedTurns();
 				// A turn that settled while the task was pending left message admission open: what it admitted since is
 				// answered before the execution ends and seals it.
 				if (prepared !== undefined && redispatched === undefined && termination === undefined)
-					await sessionDrained(session, [signals.abort, signals.interrupt], (listener) => {
-						turnDrainedListeners.add(listener);
-						return () => turnDrainedListeners.delete(listener);
-					});
+					await sessionDrained(
+						session,
+						[signals.abort, signals.interrupt],
+						(listener) => {
+							turnDrainedListeners.add(listener);
+							return () => turnDrainedListeners.delete(listener);
+						},
+						() => interruptedTurnSettlement !== undefined,
+					);
 			} while (interruptedTurnSettlement !== undefined && termination === undefined);
 			await terminating;
 			const stats = statsFor(session, admitted.identity.path);
@@ -2471,18 +2497,19 @@ export class SubagentControlRuntime {
 			}
 			// #5210: what the session could not save it still holds in memory; the child's answer is among it.
 			const unsaved = termination === undefined ? session.getPersistenceFailure() : undefined;
-			unsavedAnswer = unsaved === undefined ? undefined : finalAnswerOf(unsaved.unsavedMessages);
-			if (unsavedAnswer !== undefined) unsavedAnswers.set(sessionManager.getSessionId(), unsavedAnswer);
+			const finalAnswer = unsaved === undefined ? undefined : finalAnswerOf(unsaved.unsavedMessages);
+			if (finalAnswer !== undefined) {
+				unsavedAnswer = unsavedAnswerEntry(sessionManager, finalAnswer);
+				unsavedAnswers.set(sessionManager.getSessionId(), finalAnswer);
+			}
 			const producedMessages = ownMessages();
-			const output = outputFor(
-				unsavedAnswer === undefined ? producedMessages : [...producedMessages, unsavedAnswer],
-			);
+			const output = outputFor(finalAnswer === undefined ? producedMessages : [...producedMessages, finalAnswer]);
 			// A child that settled without a stop failed when its last turn failed or it completed no successful turn of
 			// its own (#3987, #4188). A named model's failure says that no other model ran in its place.
 			const failure = termination === undefined ? failedChildCause(producedMessages) : undefined;
 			const noOutput =
 				unsaved !== undefined
-					? unsavedWorkCause(unsaved.error, unsavedAnswer !== undefined)
+					? unsavedWorkCause(unsaved.error, finalAnswer !== undefined)
 					: failure?.modelError !== undefined && admitted.spec.namedModel !== undefined
 						? namedModelFailureCause(
 								admitted.spec.namedModel,
@@ -2616,6 +2643,7 @@ export class SubagentControlRuntime {
 					: settledCommands(sessionCommands(session, transcriptManager.getCwd()));
 			const settleTranscript = (): void => {
 				statusesOpen = false;
+				stopHeldPromptAttention?.();
 				taskHooks?.clearExtensionStatuses?.();
 				if (transcriptManager === undefined) return;
 				taskHooks?.bindTranscript?.(

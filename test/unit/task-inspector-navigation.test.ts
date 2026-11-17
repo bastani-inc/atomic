@@ -143,7 +143,7 @@ test("every /tasks hint names exactly its live keys, ← included (#5224)", asyn
 		h.inspector.handleInput(ESC);
 		h.inspector.handleInput(ENTER);
 		await flush();
-		assert.equal(last(), "  ← tasks · pgup/pgdn scroll · ctrl+o expand · ? keys");
+		assert.equal(last(), "  ← tasks · pgup/pgdn scroll · ? keys");
 	} finally {
 		await h.dispose();
 	}
@@ -157,9 +157,13 @@ test("an armed stop whose task finishes is disarmed, the next x only acknowledge
 		assert.match(h.text(), /Press x again within 3s to stop Racing task/);
 		await h.fixture.settle();
 		h.fixture.store.drain();
-		assert.match(h.text(), /Racing task finished · x to dismiss/);
+		assert.match(h.text(), /Racing task finished · x to acknowledge/);
 		h.inspector.handleInput("x");
-		assert.match(h.text(), /Racing task/, "the press meant as the stop's second press keeps the row");
+		assert.match(
+			h.text(),
+			/Racing task finished · x to dismiss/,
+			"the press meant as the stop's second press keeps the row",
+		);
 		assert.equal(h.fixture.store.backgroundTasks.length, 1);
 		h.inspector.handleInput("x");
 		assert.doesNotMatch(h.text(), /Racing task/, "the finished row is dismissed");
@@ -326,7 +330,7 @@ test("an attached chat goes back only with ← while ↓ stays local to its own 
 			const id = h.fixture.store.tasks[0]!.ref.taskId;
 			h.inspector.openChat(id, "agents");
 			await flush();
-			assert.equal(h.text().split("\n").at(-1), "  ← agents · pgup/pgdn scroll · ctrl+o expand · ? keys");
+			assert.equal(h.text().split("\n").at(-1), "  ← agents · pgup/pgdn scroll · ? keys");
 			h.inspector.handleInput(key);
 			assert.equal(h.closed(), key === LEFT ? 1 : 0);
 			assert.equal(h.inspector.closedByBack, key === LEFT);

@@ -148,12 +148,13 @@ function createHarness(options: { working?: boolean; initialItems?: AgentPanelIt
 	const setWorking = (next: boolean) => {
 		working = next;
 	};
-	const pressDown = (): boolean => {
+	const pressKey = (key: string): boolean => {
 		for (const listener of listeners) {
-			if (listener(DOWN)?.consume) return true;
+			if (listener(key)?.consume) return true;
 		}
 		return false;
 	};
+	const pressDown = (): boolean => pressKey(DOWN);
 
 	const setNavigationActive = (active: boolean) => {
 		navigationActive = active;
@@ -168,6 +169,7 @@ function createHarness(options: { working?: boolean; initialItems?: AgentPanelIt
 		setItems,
 		setWorking,
 		setNavigationActive,
+		pressKey,
 		pressDown,
 	};
 }
@@ -223,6 +225,19 @@ describe("main composer agent panel hints and custom editor Down routing (#5239)
 
 			assert.equal(pressDown(), true);
 			assert.equal(customs.length, 2);
+
+			setItems([
+				{ id: "ext:t1", kind: "agent", state: "done", name: "debugger", task: "#5220 spawn lock" },
+				{ id: "ext:t2", kind: "agent", state: "done", name: "worker", task: "fix shipping batches" },
+				{
+					id: "run:r1",
+					kind: "workflow",
+					state: "stopped",
+					name: "ralph",
+					task: "stage implement",
+					progress: { done: 3, total: 5 },
+				},
+			]);
 
 			dismissedAgentPanelItems(session).add("ext:t1");
 			dismissedAgentPanelItems(session).add("ext:t2");
@@ -355,5 +370,39 @@ describe("main composer agent panel hints and custom editor Down routing (#5239)
 		assert.equal(mode.editor.getText(), "");
 		assert.equal(pressDown(), true);
 		assert.equal(customs.length, 1);
+	});
+
+	test("remapping app.agents.focus or app.keys.help to Escape never steals physical Escape or advertises dead esc hints (#5224)", async () => {
+		const { mode, footer, customs, pressKey } = createHarness({
+			working: false,
+			initialItems: [{ id: "ext:t1", kind: "agent", state: "running", name: "debugger", task: "#5220 spawn lock" }],
+		});
+		const remapped = new KeybindingsManager({
+			"app.agents.focus": ["escape"],
+			"app.keys.help": ["escape", "?"],
+		});
+		setKeybindings(remapped);
+		Object.assign(mode, { keybindings: remapped });
+		await mode.setupKeyHandlers();
+
+		assert.deepEqual(
+			mainComposerHintSegments(remapped),
+			["? keys"],
+			"bound WeakMap count lookup works on raw keybindings while filtering dead esc from focus/help hints",
+		);
+		const footerLine = stripTerminalSequences(footer.render(120)[0] ?? "");
+		assert.doesNotMatch(footerLine, /\besc 1 agent\b|\besc\/\? keys\b/u);
+
+		const overlay = new MainComposerKeyOverlay(
+			remapped,
+			() => ({ working: false }),
+			() => {},
+		);
+		const overlayText = overlay.render(100).map(stripTerminalSequences).join("\n");
+		assert.doesNotMatch(overlayText, /agents, on an empty prompt/u);
+		assert.doesNotMatch(overlayText, /esc\/\?\s+keys, on an empty prompt/u);
+
+		assert.equal(pressKey("\x1b"), false, "global focus listener must yield physical Escape");
+		assert.equal(customs.length, 0);
 	});
 });

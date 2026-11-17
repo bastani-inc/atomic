@@ -5,7 +5,10 @@ import { stripVTControlCharacters } from "node:util";
 import { Container, getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { afterAll, beforeAll, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
-import { AtomicWorkingLoader } from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.ts";
+import {
+	AtomicWorkingLoader,
+	DEFAULT_WORKING_MESSAGE,
+} from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.ts";
 import { WorkingRunMeter } from "../../packages/coding-agent/src/modes/interactive/components/working-run-meter.js";
 import "../../packages/coding-agent/src/modes/interactive/interactive-agent-events.ts";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
@@ -86,7 +89,8 @@ function makeHarness(): Harness {
 			getClearOnShrink: () => false,
 		},
 		session: { abortCompaction() {} },
-		createWorkingLoader: () => new AtomicWorkingLoader(ui, undefined, String, mode.workingMessage ?? "Working..."),
+		createWorkingLoader: () =>
+			new AtomicWorkingLoader(ui, undefined, String, mode.workingMessage ?? DEFAULT_WORKING_MESSAGE),
 		stopWorkingLoader: InteractiveModeBase.prototype.stopWorkingLoader,
 		showWorkingLoaderNow: InteractiveModeBase.prototype.showWorkingLoaderNow,
 		rebuildChatFromMessages: () => {},
@@ -133,14 +137,14 @@ test("post-tool compaction keeps its factual status across the interposed turn_s
 
 		assert.ok(harness.renders() > beforeStart, "compaction_start requests an immediate paint");
 		assert.match(harness.status(), /Auto-compacting\.\.\. \(\d+s · esc to cancel\)/);
-		assert.doesNotMatch(harness.status(), /Working\.\.\./);
+		assert.doesNotMatch(harness.status(), /Working…/);
 
 		// Agent-core opens the follow-up turn before the transform gate emits
 		// compaction_end, so the interposed turn_start must not take the surface.
 		await emit(harness.mode, { type: "turn_start" });
 
 		assert.match(harness.status(), /Auto-compacting\.\.\./, "compaction status survives turn_start");
-		assert.doesNotMatch(harness.status(), /Working\.\.\.|Schlepping\.\.\./);
+		assert.doesNotMatch(harness.status(), /Working…|Schlepping…/);
 		assert.equal(harness.mode.loadingAnimation, undefined, "generic Working must not claim the surface");
 		assert.notEqual(harness.mode.autoCompactionLoader, undefined);
 

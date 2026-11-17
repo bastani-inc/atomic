@@ -9,6 +9,7 @@ import {
 	agentPanelItems,
 	answerAgentPanelItem,
 	openAgentPanelItem,
+	promptAnswerOptionsOf,
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import factory from "../../packages/workflows/src/extension/extension-factory.js";
 import type { ExtensionAPI } from "../../packages/workflows/src/extension/public-types.js";
@@ -20,7 +21,7 @@ import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-brok
 import { createStore, store } from "../../packages/workflows/src/shared/store.js";
 import type { PendingPrompt, RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
-import { buildGraphOverlayAdapter } from "../../packages/workflows/src/tui/overlay-adapter.js";
+import { buildGraphOverlayAdapter, type OverlayPiSurface } from "../../packages/workflows/src/tui/overlay-adapter.js";
 import {
 	markWorkflowRunViewed,
 	panelItemsFromSnapshot,
@@ -29,10 +30,14 @@ import {
 import { injectStageLabelIntoEditorTopRule } from "../../packages/workflows/src/tui/stage-chat-view-footer-status.js";
 import type { StageChatViewContext } from "../../packages/workflows/src/tui/stage-chat-view-types.js";
 import { testRunId } from "../helpers/run-id.js";
+import { buildMockUi } from "./overlay-entrypoints-helpers.js";
 
 const runIds = new Set<string>();
+const graphCleanups = new Set<() => void>();
 
 afterEach(() => {
+	for (const close of graphCleanups) close();
+	graphCleanups.clear();
 	for (const runId of runIds) store.removeRun(runId);
 	runIds.clear();
 });
@@ -142,7 +147,10 @@ test("the panel answers a waiting run end to end through its source (#5224)", as
 	const item = agentPanelItems(session).find((candidate) => candidate.id === `run:${runId}`);
 	assert.equal(item?.state, "input");
 	assert.equal(item?.question, "Ship it?");
-	assert.deepEqual(await answerAgentPanelItem(session, `run:${runId}`, "yes"), { ok: true });
+	assert.ok(item);
+	assert.deepEqual(await answerAgentPanelItem(session, `run:${runId}`, "yes", promptAnswerOptionsOf(item)), {
+		ok: true,
+	});
 	assert.equal(store.runs().find((run) => run.id === runId)?.stages[0]?.pendingPrompt, undefined);
 	assert.equal(agentPanelItems(session).find((candidate) => candidate.id === `run:${runId}`)?.question, undefined);
 	assert.equal(openAgentPanelItem(session, `run:${runId}`), true);
@@ -237,7 +245,10 @@ test("a single-select brokered prompt projects choices and answers by option ind
 	assert.equal(item?.state, "input");
 	assert.equal(item?.question, "Which release channel?");
 	assert.deepEqual(item?.choices, ["stable", "canary"]);
-	assert.deepEqual(await answerAgentPanelItem(session, `run:${runId}`, "2"), { ok: true });
+	assert.ok(item);
+	assert.deepEqual(await answerAgentPanelItem(session, `run:${runId}`, "2", promptAnswerOptionsOf(item)), {
+		ok: true,
+	});
 	const resolved = (await customUiPromise) as {
 		answers: Array<{ kind: string; answer: string | null }>;
 		cancelled: boolean;
@@ -268,10 +279,11 @@ test("a hidden nested child's wait marks its top-level run as needing input (#52
 	assert.equal(items[0]?.state, "input");
 });
 
-function registeredWorkflowPanelSource() {
+function registeredWorkflowPanelSource(ui?: OverlayPiSurface["ui"]) {
 	let registered: Parameters<NonNullable<ExtensionAPI["registerAgentPanelSource"]>>[0] | undefined;
 	let f2Handler: (() => void) | undefined;
 	const pi = {
+		ui,
 		events: { on() {}, emit() {} },
 		on() {},
 		registerTool() {},
@@ -514,24 +526,32 @@ test("panel progress counts nested child workflow stages, and ended blocked runs
 });
 
 test("opening a finished run via source.open, overlay.open or F2 marks it viewed, and stage composer clock excludes paused time (#5224)", () => {
-	const { source, pressF2 } = registeredWorkflowPanelSource();
+	const { ui, calls } = buildMockUi();
+	graphCleanups.add(() => {
+		for (const call of calls) call.component.dispose?.();
+	});
+	const { source, pressF2 } = registeredWorkflowPanelSource(ui);
 	const doneA = makeRun("panel-viewed-a", "done-a", [stage("s1", "completed")]);
 	store.recordRunEnd(doneA, "completed");
 	const doneB = makeRun("panel-viewed-b", "done-b", [stage("s1", "completed")]);
 	store.recordRunEnd(doneB, "completed");
 
 	assert.equal(source.items().find((item) => item.id === `run:${doneA}`)?.viewed, undefined);
-	source.open!(`run:${doneA}`);
+	assert.equal(source.open!(`run:${doneA}`), true);
 	assert.equal(source.items().find((item) => item.id === `run:${doneA}`)?.viewed, true);
+	assert.equal(calls.length, 1);
+	calls[0]!.component.handleInput?.("\x03");
 
 	assert.equal(source.items().find((item) => item.id === `run:${doneB}`)?.viewed, undefined);
 	pressF2();
+	assert.equal(calls.length, 2, "F2 mounted a new graph after the first graph closed");
 	assert.equal(source.items().find((item) => item.id === `run:${doneB}`)?.viewed, true);
 
 	const doneC = makeRun("panel-viewed-c", "done-c", [stage("s1", "completed")]);
 	store.recordRunEnd(doneC, "completed");
-	const overlay = buildGraphOverlayAdapter({}, store);
-	overlay.open(doneC);
+	const overlay = buildGraphOverlayAdapter({ ui }, store);
+	graphCleanups.add(() => overlay.close());
+	assert.equal(overlay.open(doneC), true);
 	assert.equal(row(doneC)?.viewed, true);
 	assert.equal(viewedWorkflowRuns(store).has(doneC), true);
 	store.removeRun(doneC);
@@ -583,4 +603,52 @@ test("opening a finished run via source.open, overlay.open or F2 marks it viewed
 	);
 	assert.ok(lines[0]?.includes("5m"), `expected 5m in composer rule, got: ${lines[0]}`);
 	assert.ok(!lines[0]?.includes("20m"), `expected paused time excluded, got: ${lines[0]}`);
+});
+
+test("reading workflow panel rows never authorizes an answer without the caller's captured prompt identity (#5224)", async () => {
+	const hub = new AgentPanelSourceHub();
+	hub.register(
+		workflowPanelSource(captureWorkflowOwnerResources(), {
+			open: () => false,
+			quit: async () => {
+				throw new Error("not used");
+			},
+		}),
+	);
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	const runId = makeRun("panel-read-is-not-authority", "release", [stage("ask", "running")]);
+	const prompt = prompt2("must-capture-identity", "Ship it?");
+	assert.equal(store.recordStagePendingPrompt(runId, "ask", prompt), true);
+	assert.equal(agentPanelItems(session).find((item) => item.id === `run:${runId}`)?.state, "input");
+	const result = await answerAgentPanelItem(session, `run:${runId}`, "yes");
+	assert.equal(result.ok, false);
+	assert.equal(store.runs().find((run) => run.id === runId)?.stages[0]?.pendingPrompt?.id, prompt.id);
+});
+
+test("a numbered choice keeps its original value when two labels sanitize to the same text (#5224)", async () => {
+	const hub = new AgentPanelSourceHub();
+	hub.register(
+		workflowPanelSource(captureWorkflowOwnerResources(), {
+			open: () => false,
+			quit: async () => {
+				throw new Error("not used");
+			},
+		}),
+	);
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	const runId = makeRun("panel-duplicate-display-choice", "release", [stage("ask", "running")]);
+	const original = "\u202eyes\x1b]0;hidden\x07";
+	const prompt = {
+		...prompt2("duplicate-display-choice", "Ship it?"),
+		kind: "select" as const,
+		choices: [original, "yes"],
+	};
+	assert.equal(store.recordStagePendingPrompt(runId, "ask", prompt), true);
+	const answer = store.awaitStagePendingPrompt(runId, "ask", prompt.id);
+	const item = agentPanelItems(session).find((candidate) => candidate.id === `run:${runId}`);
+	assert.ok(item);
+	assert.deepEqual(item.choices, ["yes", "yes"]);
+	const selected = { ...promptAnswerOptionsOf(item), choiceIndex: 0 };
+	assert.deepEqual(await answerAgentPanelItem(session, item.id, "yes", selected), { ok: true });
+	assert.equal(await answer, original);
 });

@@ -116,12 +116,12 @@ test("rehydrates reason-specific labels for every compaction reason", () => {
 		if (reason === "branchSummary") {
 			assert.equal(host.statusText(), "");
 			assert.equal(host.isCompacting(), false);
-			assert.match(rendered, /Working\.\.\./);
+			assert.match(rendered, /Working…/);
 			assert.doesNotMatch(rendered, /summarizing branch…/);
 		} else {
 			assert.equal(host.statusText(), label);
 			assert.match(rendered, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-			assert.doesNotMatch(rendered, /Working\.\.\./);
+			assert.doesNotMatch(rendered, /Working…/);
 		}
 		host.dispose();
 	}
@@ -192,7 +192,7 @@ test("branch-summary hydration leaves the ordinary working spinner available", (
 	assert.equal(host.isCompacting(), false);
 	const rendered = host.renderWorkingStatus(100).join("\n");
 	assert.match(rendered, /∀/);
-	assert.match(rendered, /Working\.\.\./);
+	assert.match(rendered, /Working…/);
 	assert.doesNotMatch(rendered, /summarizing branch…/);
 	host.dispose();
 });

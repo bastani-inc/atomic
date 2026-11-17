@@ -119,6 +119,19 @@ describe("selector interaction and rendering regressions (#5237)", () => {
 		assert.deepEqual(cancelled, [3]);
 	});
 
+	test.each([true, false])("numbered picks respect closeOnSelect=%s (#5224)", (closeOnSelect) => {
+		const selected: string[] = [];
+		const picker = new Selector<string>({
+			items: makeItems(["Yes", "No"]),
+			numbered: true,
+			closeOnSelect,
+			style: PLAIN_SELECTOR_STYLE,
+			onSelect: (item) => selected.push(item.id),
+		});
+		for (const key of ["1", "1", "2"]) picker.handleInput(key);
+		assert.deepEqual(selected, closeOnSelect ? ["Yes"] : ["Yes", "Yes", "No"]);
+	});
+
 	test("keeps role-based confirm and cancel hints on narrow widths when extra keys use clear or custom labels (#5237)", () => {
 		const noop = () => {};
 		const scopedLike = new Selector<string>({
@@ -633,5 +646,21 @@ describe("selector interaction and rendering regressions (#5237)", () => {
 		customCancel.handleInput("\x1b[99;6u");
 		assert.equal(cancelled, false);
 		assert.equal(customCancel.state.getQuery(), "");
+
+		for (const ctrlC of ["\x03", "\x1b[99;5u", "\x1b[1089::99;5u", "\x1b[27;5;99~"]) {
+			let helpCancelled = 0;
+			const withHelp = new Selector<string>({
+				title: "Models",
+				items: rows,
+				style: PLAIN_SELECTOR_STYLE,
+				onCancel: () => {
+					helpCancelled++;
+				},
+			});
+			withHelp.handleInput("?");
+			assert.ok(withHelp.render(80).some((line) => plain(line).includes("close this help")));
+			withHelp.handleInput(ctrlC);
+			assert.equal(helpCancelled, 1);
+		}
 	});
 });

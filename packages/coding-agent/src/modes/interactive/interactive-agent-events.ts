@@ -1,20 +1,18 @@
 import { APP_NAME, detectInstallChange, VERSION } from "../../config.js";
-import {
-	createCacheMissModelSource,
-	detectCacheMiss,
-	formatCacheMissNotice,
-	formatCompactionCacheMissNotice,
-} from "../../core/cache-stats.ts";
+import { createCacheMissModelSource, detectCacheMiss, formatCacheMissNotice } from "../../core/cache-stats.ts";
 import { createCustomMessage } from "../../core/messages.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
+import type { TaskId } from "../../core/tasks/contracts.js";
+import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { observeLocalWorkflowActivity } from "../interactive-engine/extension-ui-bridge.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import { bindAgentPanel } from "../rpc/agent-panel-bridge.ts";
-import { interruptedNotice } from "./components/assistant-message.ts";
+import { hasAssistantVisibleContent, interruptedNotice } from "./components/assistant-message.ts";
 import { AtomicWorkedStatusComponent, AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
+import { toolResultGroupState } from "./components/tool-group-tracker.ts";
 import { compactionMeta } from "./components/working-run-meter.ts";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
@@ -33,12 +31,59 @@ import {
 } from "./interactive-mode-deps.ts";
 import { formatResumeCommand } from "./interactive-mode-helpers.ts";
 import { reconcileQueuedSubmissions } from "./interactive-queueing.ts";
+import {
+	breakMainToolGroup,
+	endMainAssistantMessage,
+	endMainToolTurn,
+	mainToolCallBreaks,
+	observeMainToolStart,
+	settleMainTool,
+	trackMainToolComponent,
+} from "./interactive-render-chat.ts";
 import { handleSummarizationRetryEvent } from "./interactive-summarization-retry-events.ts";
 import { disposeInteractiveTasks, refreshInteractiveTasks } from "./interactive-task-projection.js";
 import { applyAssistantMessageDelta, beginStreamingAssistantMessage } from "./streaming-assistant-message.ts";
 
 /** Reasons that mean there is nothing to snapshot, which keep the session exactly as it behaves without snapshots. */
 const WORKSPACE_ABSENCE_CODES: ReadonlySet<string> = new Set(["not-installed", "not-a-repository", "unborn-head"]);
+interface MainTurnToolBatch {
+	readonly pending: Map<string, string>;
+	aborted: string[];
+}
+const mainTurnToolBatches = new WeakMap<InteractiveModeBase, MainTurnToolBatch>();
+
+function getMainTurnToolBatch(mode: InteractiveModeBase): MainTurnToolBatch {
+	let batch = mainTurnToolBatches.get(mode);
+	if (!batch) {
+		batch = { pending: new Map(), aborted: [] };
+		mainTurnToolBatches.set(mode, batch);
+	}
+	return batch;
+}
+
+function recordMainPendingTool(mode: InteractiveModeBase, toolCallId: string, toolName: string): void {
+	const trimmed = toolName.trim();
+	if (!trimmed) return;
+	const batch = getMainTurnToolBatch(mode);
+	if (batch.pending.size === 0 && batch.aborted.length > 0) batch.aborted = [];
+	batch.pending.set(toolCallId, trimmed);
+}
+
+function settleMainTurnTool(mode: InteractiveModeBase, toolCallId: string, toolName: string, isError: boolean): void {
+	const batch = mainTurnToolBatches.get(mode);
+	const resolved = (batch?.pending.get(toolCallId) ?? toolName).trim();
+	batch?.pending.delete(toolCallId);
+	if (!isError || !resolved) return;
+	const target = batch ?? getMainTurnToolBatch(mode);
+	if (!target.aborted.includes(resolved)) target.aborted.push(resolved);
+}
+
+function currentInterruptedMainTools(mode: InteractiveModeBase): readonly string[] | undefined {
+	const batch = mainTurnToolBatches.get(mode);
+	if (!batch) return undefined;
+	if (batch.pending.size > 0) return [...new Set(batch.pending.values())];
+	return batch.aborted.length > 0 ? [...new Set(batch.aborted)] : undefined;
+}
 
 InteractiveModeBase.prototype.maybeShowInstallChangeWarning = function (this: InteractiveModeBase): boolean {
 	if (this.installChangeWarningShown) return true;
@@ -67,6 +112,7 @@ function createToolComponent(
 		imageWidthCells: mode.settingsManager.getImageWidthCells(),
 		outputPad: mode.outputPad,
 	};
+	const getTaskRecord = (taskId: TaskId) => getOwnerTaskStore(mode.session)?.getTask(taskId);
 	return mode.runtimeHost instanceof IsolatedInteractiveRuntime
 		? new RemoteToolExecutionComponent(toolName, toolCallId, args, options, mode.runtimeHost, () =>
 				mode.ui.requestRender(),
@@ -75,7 +121,11 @@ function createToolComponent(
 				toolName,
 				toolCallId,
 				args,
-				options,
+				{
+					...options,
+					getTaskRecord,
+					getToolDefinition: (name) => mode.getRegisteredToolDefinition(name),
+				},
 				mode.getRegisteredToolDefinition(toolName),
 				mode.ui,
 				mode.sessionManager.getCwd(),
@@ -92,7 +142,6 @@ InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveMode
 	const disposeWorkflowActivity = observeLocalWorkflowActivity(this.runtimeHost, session, (frame) => {
 		if (this.session === session) this.programStatus.handleWorkflowActivity(frame);
 	});
-	// An isolated engine mounts the agent panel itself; an in-process session mounts it here.
 	const disposeAgentPanel =
 		this.runtimeHost instanceof IsolatedInteractiveRuntime
 			? () => {}
@@ -122,6 +171,8 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			this.lastWorkingMessage = this.workingMessage;
 			this.workingRunMeter.start();
 			this.pendingTools.clear();
+			mainTurnToolBatches.delete(this);
+			endMainToolTurn(this);
 			if (this.settingsManager.getShowTerminalProgress()) {
 				this.ui.terminal.setProgress(true);
 			}
@@ -236,12 +287,15 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			break;
 
 		case "message_start":
+			if (event.message.role === "user" || (event.message.role === "custom" && event.message.display))
+				breakMainToolGroup(this);
 			if (event.message.role === "custom") {
 				appendNewChildrenBeforeAttachedChild(this.chatContainer, this.streamingComponent, () =>
 					this.addMessageToChat(event.message),
 				);
 				this.ui.requestRender();
 			} else if (event.message.role === "user") {
+				mainTurnToolBatches.delete(this);
 				this.showSessionUserMessage(event.message);
 				this.updatePendingMessagesDisplay();
 				this.ui.requestRender();
@@ -272,14 +326,17 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			}
 			if (this.streamingComponent && this.streamingMessage?.role === "assistant") {
 				this.streamingComponent.updateContent(this.streamingMessage, true);
+				const breaks = mainToolCallBreaks(this, this.streamingMessage);
 
 				for (const content of this.streamingMessage.content) {
 					if (content.type === "toolCall") {
+						recordMainPendingTool(this, content.id, content.name);
 						if (!this.pendingTools.has(content.id)) {
 							const component = createToolComponent(this, content.name, content.id, content.arguments);
 							component.setExpanded(this.toolOutputExpanded);
 							this.chatContainer.addChild(component);
 							this.pendingTools.set(content.id, component);
+							trackMainToolComponent(this, content.id, content.name, component, breaks.has(content.id));
 						} else {
 							const component = this.pendingTools.get(content.id);
 							if (component) {
@@ -307,7 +364,19 @@ InteractiveModeBase.prototype.handleEvent = async function (
 					errorMessage = existingAbortMessage ?? "Interrupted by user";
 					this.streamingMessage.errorMessage = errorMessage;
 				}
-				this.streamingComponent.updateContent(this.streamingMessage, false);
+				const interruptedActivity =
+					this.streamingMessage.stopReason === "aborted" &&
+					!hasAssistantVisibleContent(this.streamingMessage.content)
+						? currentInterruptedMainTools(this)
+						: undefined;
+				this.streamingComponent.updateContent(this.streamingMessage, false, interruptedActivity);
+				if (this.streamingMessage.stopReason === "aborted" || this.streamingMessage.stopReason === "error") {
+					mainTurnToolBatches.delete(this);
+				} else {
+					const batch = mainTurnToolBatches.get(this);
+					if (batch) batch.aborted = [];
+				}
+				endMainAssistantMessage(this, this.streamingMessage);
 
 				if (this.streamingMessage.stopReason === "aborted" || this.streamingMessage.stopReason === "error") {
 					if (
@@ -318,11 +387,12 @@ InteractiveModeBase.prototype.handleEvent = async function (
 					if (!errorMessage) {
 						errorMessage = this.streamingMessage.errorMessage || "Error";
 					}
-					for (const [, component] of this.pendingTools.entries()) {
+					for (const [toolCallId, component] of this.pendingTools.entries()) {
 						component.updateResult({
 							content: [{ type: "text", text: errorMessage }],
 							isError: true,
 						});
+						settleMainTool(this, toolCallId, "failed");
 					}
 					this.pendingTools.clear();
 				} else {
@@ -348,14 +418,16 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			break;
 
 		case "tool_execution_start": {
+			recordMainPendingTool(this, event.toolCallId, event.toolName);
 			let component = this.pendingTools.get(event.toolCallId);
 			if (!component) {
 				component = createToolComponent(this, event.toolName, event.toolCallId, event.args);
 				component.setExpanded(this.toolOutputExpanded);
 				this.chatContainer.addChild(component);
 				this.pendingTools.set(event.toolCallId, component);
+				trackMainToolComponent(this, event.toolCallId, event.toolName, component);
 			}
-			component.markExecutionStarted();
+			component.markExecutionStarted(observeMainToolStart(this, event.toolCallId));
 			this.ui.requestRender();
 			break;
 		}
@@ -370,11 +442,13 @@ InteractiveModeBase.prototype.handleEvent = async function (
 		}
 
 		case "tool_execution_end": {
+			settleMainTurnTool(this, event.toolCallId, event.toolName, event.isError);
 			if (event.isError) this.maybeShowInstallChangeWarning();
 			const component = this.pendingTools.get(event.toolCallId);
 			if (component) {
 				component.updateResult({ ...event.result, isError: event.isError, durationMs: event.durationMs });
 				this.pendingTools.delete(event.toolCallId);
+				settleMainTool(this, event.toolCallId, toolResultGroupState(event.result, event.isError));
 				this.ui.requestRender();
 			}
 			break;
@@ -409,6 +483,8 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				this.streamingMessage = undefined;
 			}
 			this.pendingTools.clear();
+			mainTurnToolBatches.delete(this);
+			endMainToolTurn(this);
 			if (this.compactionQueuedMessages.length > 0 && !compactionInProgress) {
 				void this.session.agent.waitForIdle().then(() => this.flushCompactionQueue({ willRetry: false }));
 			}
@@ -492,16 +568,11 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				}
 			} else {
 				// `result` and `errorMessage` are independent: a committed boundary stays visible when a
-				// later step failed, such as foreground compaction after a background result (#4977).
+				// later step failed, such as the post-tool hard-limit check (#4977).
 				if (event.result) {
 					this.rebuildChatFromMessages({ suppressCompactionBoundary: event.result });
 					this.addCompactionBoundaryToChat(event.result);
 					if (event.result.usage) this.addCompactionCostNotice("compaction", event.result.usage);
-					if (event.cacheMiss && this.settingsManager.getShowCacheMissNotices()) {
-						this.chatContainer.addChild(
-							new Text(theme.fg("warning", formatCompactionCacheMissNotice(event.cacheMiss)), 1, 0),
-						);
-					}
 					this.footer.invalidate();
 				}
 				if (event.errorMessage && !manualTakeoverPending) {

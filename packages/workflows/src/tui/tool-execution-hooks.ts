@@ -1,12 +1,7 @@
-/**
- * Tool execution hooks: record a workflow stage's live tool calls on its graph node from the host's tool events.
- */
-
 import type { Store } from "../shared/store.js";
 import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { StoreSnapshot } from "../shared/store-types.js";
 
-/** The parts of the extension API the hooks subscribe through. */
 export interface LiveWidgetAPI {
 	on?: (event: string, handler: (payload: unknown, context?: unknown) => void) => void;
 	events?: {
@@ -99,7 +94,6 @@ export function installToolExecutionHooks(pi: LiveWidgetAPI, storeInstance: Stor
 		return call ? { key, call } : null;
 	}
 
-	// Pruning an empty set needs no snapshot; reading one per store change cost a projection (#4009).
 	subscribeStoreInvalidation(storeInstance, () => {
 		if (activeToolCalls.size > 0) pruneActiveToolCalls(readGraphStoreSnapshot(storeInstance));
 	});
@@ -133,7 +127,6 @@ export function installToolExecutionHooks(pi: LiveWidgetAPI, storeInstance: Stor
 		pruneActiveToolCalls(readGraphStoreSnapshot(storeInstance));
 
 		if (!activeToolCallForPayload(payload)) return;
-		// Updates are attach-only until the store has an explicit update API.
 	}
 
 	function recordToolEnd(payload: unknown): void {
@@ -180,9 +173,7 @@ function safelyHandle(handler: (payload: unknown) => void): (payload: unknown) =
 	return (payload: unknown): void => {
 		try {
 			handler(payload);
-		} catch {
-			// Event hooks must not crash pi runtime when optional event payloads vary.
-		}
+		} catch {}
 	};
 }
 

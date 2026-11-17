@@ -20,7 +20,6 @@ export function defaultInheritSkills(): boolean {
 
 export interface BuiltinAgentOverrideBase {
 	model?: string;
-	modelConstraints?: import("../shared/model-constraints.js").ModelConstraints;
 	fallbackModels?: string[];
 	fallbackThinkingLevels?: string[];
 	thinking?: string;
@@ -37,7 +36,6 @@ export interface BuiltinAgentOverrideBase {
 
 export interface BuiltinAgentOverrideConfig {
 	model?: string | false;
-	modelConstraints?: import("../shared/model-constraints.js").ModelConstraints;
 	fallbackModels?: string[] | false;
 	fallbackThinkingLevels?: string[] | false;
 	thinking?: string | false;
@@ -65,7 +63,6 @@ export interface AgentConfig {
 	tools?: string[];
 	mcpDirectTools?: string[];
 	model?: string;
-	modelConstraints?: import("../shared/model-constraints.js").ModelConstraints;
 	fallbackModels?: string[];
 	fallbackThinkingLevels?: string[];
 	thinking?: string;

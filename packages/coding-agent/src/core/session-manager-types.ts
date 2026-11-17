@@ -79,6 +79,7 @@ export interface ModelFallbackRecord {
 	from: string;
 	/** The failure that moved the session on. */
 	reason: string;
+	skipped?: { model: string; provider: string; reason: "no-credentials" | "auth-failed" }[];
 }
 
 export interface ModelChangeEntry extends SessionEntryBase {
@@ -106,9 +107,9 @@ export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	firstKeptEntryId: string | null;
 	tokensBefore: number;
 	/**
-	 * Last entry the boundary covers, when a background compaction committed it after more entries were
-	 * appended. Entries after it and before the boundary replay unchanged. Absent: the boundary covers
-	 * every entry before it.
+	 * Last entry the boundary covers, when it was placed before a turn that still waited on a tool result (or, in an
+	 * older session, when a background compaction committed it after more entries were appended). Entries after it
+	 * and before the boundary replay unchanged. Absent: the boundary covers every entry before it.
 	 */
 	coveredThroughEntryId?: string;
 	details?: T;

@@ -52,7 +52,7 @@ test("stopping a task keeps the elapsed clock monotone across the panel and task
 		);
 		fixture.store.drain();
 		now += 60_000;
-		assert.match(text(inspector), /1m 0s|1m 2s/);
+		assert.match(text(inspector), /A long task +1m\b/);
 		taskValue(await fixture.supervisor.cancelTask(task, "user"));
 		fixture.store.drain();
 		assert.equal(fixture.store.tasks[0].execution.kind, "cancelling");
@@ -61,7 +61,7 @@ test("stopping a task keeps the elapsed clock monotone across the panel and task
 		fixture.runners[0].result.resolve({ kind: "cancelled", cause: "user" });
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		fixture.store.drain();
-		assert.match(text(inspector), /stopped · 1m (0|2)s/);
+		assert.match(text(inspector), /stopped · 1m\b/);
 		assert.ok((rows[0]?.elapsedMs ?? 0) >= 60_000, `panel elapsed ${rows[0]?.elapsedMs}`);
 	} finally {
 		inspector.dispose();
@@ -139,7 +139,7 @@ test("unrelated root and pooled worker tasks with the same id keep independent c
 		const sharedId = fixture.store.tasks[0]!.ref.taskId;
 		text(rootInspector);
 		now += 600_000;
-		assert.match(text(rootInspector), /10m 0s/);
+		assert.match(text(rootInspector), /Root task +10m\b/);
 		const workerTask = {
 			...taskRecord(sharedId),
 			title: "Worker task",
@@ -216,7 +216,7 @@ test("a second task store settling first does not reset the session store's cloc
 		fixture.store.drain();
 		const settledRows = model.rows(taskPanelItems(source, new Set()));
 		assert.ok((settledRows[0]?.elapsedMs ?? 0) >= 60_000, `settled panel elapsed: ${settledRows[0]?.elapsedMs}`);
-		assert.match(text(inspector), /done · 1m (0|2)s/);
+		assert.match(text(inspector), /done · 1m\b/);
 	} finally {
 		inspector.dispose();
 		herdrStore.dispose();
@@ -279,16 +279,16 @@ test("renderTaskFooter ranks input-needed tasks first and shares the live task c
 		);
 		fixture.store.drain();
 		now += 60_000;
-		assert.match(text(inspector), /waiting 1m (0|2)s/);
+		assert.match(text(inspector), /waiting 1m\b/);
 		const clocks = taskClocksFor(ownerTaskViewSource(fixture.store));
 		const footer1 = stripVTControlCharacters(renderTaskFooter(fixture.store.backgroundTasks, 100, clocks).join("\n"));
 		assert.match(footer1.split("\n")[0] ?? "", /◆.*Needs answer.*needs input · 1m/);
 		now += 60_000;
 		const footer2 = stripVTControlCharacters(renderTaskFooter(fixture.store.backgroundTasks, 100, clocks).join("\n"));
 		assert.match(footer2.split("\n")[0] ?? "", /◆.*Needs answer.*needs input · 2m/);
-		assert.match(text(inspector), /waiting 2m (0|2)s/);
+		assert.match(text(inspector), /waiting 2m\b/);
 		assert.deepEqual(renderTaskFooter([], 100, clocks), []);
-		assert.match(text(inspector), /waiting 2m (0|2)s/);
+		assert.match(text(inspector), /waiting 2m\b/);
 	} finally {
 		inspector.dispose();
 		await fixture.dispose();

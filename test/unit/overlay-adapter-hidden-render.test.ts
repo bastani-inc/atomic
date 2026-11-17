@@ -6,14 +6,14 @@ import type { PiCustomOverlayFactoryTui, PiOverlayHandle } from "../../packages/
 import type { Store } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import type { GraphOverlayPort, OverlayPiSurface } from "../../packages/workflows/src/tui/overlay-adapter.js";
-import { bunExecutable, sleep } from "../helpers/runtime.js";
+import { bunExecutable } from "../helpers/runtime.js";
 
 const ISOLATED_PROCESS_ENV = "ATOMIC_OVERLAY_HIDDEN_RENDER_ISOLATED";
 
 async function registerIsolatedTests(): Promise<void> {
 	// Only ever reached inside the `bun test` child spawned below, where
 	// `bun:test`'s module registry is the real one. vitest has no equivalent.
-	const { mock, spyOn } = await import("bun:test");
+	const { jest, mock, spyOn } = await import("bun:test");
 	const { replaceControlCharacters, stripTerminalSequences } = await import("@bastani/atomic-tui/dist/utils.js");
 	class TestComponent {}
 	const [{ ScrollView }, { VStack }, { Input }] = await Promise.all([
@@ -67,9 +67,13 @@ async function registerIsolatedTests(): Promise<void> {
 	const { sliceHead } = await import("../../packages/coding-agent/src/core/tools/truncate.js");
 
 	const navKeys = await import("../../packages/coding-agent/src/modes/interactive/components/nav-keys.js");
+	const { terminalDisplayText } = await import("../../packages/coding-agent/src/utils/terminal-text.ts");
 	mock.module("@bastani/atomic", () => ({
 		...navKeys,
 		sliceHead,
+		terminalDisplayText,
+		TASK_CHAT_OVERLAY_KEYS: [],
+		taskChatKeys: () => assert.fail("graph checks must not render stage-chat hints"),
 		ChatSessionHost: TestComponent,
 		formatModelLabel,
 		MODEL_LABEL_SEPARATOR,
@@ -99,10 +103,10 @@ async function registerIsolatedTests(): Promise<void> {
 		adapter: GraphOverlayPort;
 		store: Store;
 		handle: PiOverlayHandle;
-		renderRequests: { count: number; onRender?: () => void };
+		renderRequests: { count: number };
 	}
 
-	const STORE_FRAME_POLL_MS = 16;
+	const STORE_RENDER_FRAME_MS = 16;
 
 	function makeRun(id: string): RunSnapshot {
 		return {
@@ -144,7 +148,6 @@ async function registerIsolatedTests(): Promise<void> {
 					const tui: PiCustomOverlayFactoryTui = {
 						requestRender: () => {
 							renderRequests.count++;
-							renderRequests.onRender?.();
 						},
 						terminal: { rows: 24, columns: 80 },
 					};
@@ -168,30 +171,35 @@ async function registerIsolatedTests(): Promise<void> {
 	}
 
 	describe("workflow overlay hidden render gating (#1856)", () => {
-		test("visible overlay coalesces a status burst into one frame (#5234)", async () => {
-			const { adapter, store, renderRequests } = buildHarness();
-			adapter.open(null);
-			const snapshotSpies = [
-				spyOn(store, "graphSnapshot"),
-				spyOn(store, "snapshot"),
-				spyOn(store, "inspectionSnapshot"),
-			];
-			const readsAtFrames: number[] = [];
-			renderRequests.onRender = () =>
-				readsAtFrames.push(snapshotSpies.reduce((reads, snapshotSpy) => reads + snapshotSpy.mock.calls.length, 0));
+		test("visible overlay coalesces a status burst into one snapshot-free frame (#5234, #5252, #5343)", async () => {
+			jest.useFakeTimers();
 			try {
-				const before = renderRequests.count;
-				for (let update = 0; update < 50; update++) store.recordRunStart(makeRun(`r${update}`));
-				for (const snapshotSpy of snapshotSpies) {
-					assert.equal(snapshotSpy.mock.calls.length, 0, "focused burst performs zero snapshot reads");
+				const { adapter, store, renderRequests } = buildHarness();
+				adapter.open(null);
+				const snapshotSpies = [
+					spyOn(store, "graphSnapshot"),
+					spyOn(store, "snapshot"),
+					spyOn(store, "inspectionSnapshot"),
+				];
+				const snapshotReads = () =>
+					snapshotSpies.reduce((reads, snapshotSpy) => reads + snapshotSpy.mock.calls.length, 0);
+				try {
+					const before = renderRequests.count;
+					for (let update = 0; update < 50; update++) store.recordRunStart(makeRun(`r${update}`));
+					assert.equal(snapshotReads(), 0, "focused burst performs zero snapshot reads");
+					assert.equal(renderRequests.count, before, "status events schedule a frame without painting inline");
+					for (let elapsed = 0; elapsed < 2 * STORE_RENDER_FRAME_MS; elapsed++) {
+						jest.advanceTimersByTime(1);
+						for (let turn = 0; turn < 10; turn++) await new Promise<void>((resolve) => setImmediate(resolve));
+					}
+					assert.equal(renderRequests.count, before + 1, "one frame paints the entire burst");
+					assert.equal(snapshotReads(), 0, "the frame and its deferred work perform zero snapshot reads");
+				} finally {
+					for (const snapshotSpy of snapshotSpies) snapshotSpy.mockRestore();
+					adapter.close();
 				}
-				assert.equal(renderRequests.count, before, "status events schedule a frame without painting inline");
-				while (readsAtFrames.length === 0) await sleep(STORE_FRAME_POLL_MS);
-				await sleep(2 * STORE_FRAME_POLL_MS);
-				assert.deepEqual(readsAtFrames, [0], "one frame paints the entire burst, with zero snapshot reads");
 			} finally {
-				for (const snapshotSpy of snapshotSpies) snapshotSpy.mockRestore();
-				adapter.close();
+				jest.useRealTimers();
 			}
 		});
 

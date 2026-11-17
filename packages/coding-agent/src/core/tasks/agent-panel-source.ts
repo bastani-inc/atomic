@@ -1,47 +1,28 @@
-/**
- * What the agent panel below the main chat's prompt and `/tasks` list: one item per running or recent background
- * subagent, shell and workflow run of a session. The session's own tasks are built in; extensions add their own
- * items, as the workflows extension adds runs, with `pi.registerAgentPanelSource()`.
- */
-
-import { types } from "node:util";
+import { inspect, types } from "node:util";
 import { sanitizeTerminalText } from "../../utils/terminal-text.ts";
 import type { ExtensionError } from "../extensions/runtime-types.ts";
 import type { TaskId, TaskRecord } from "./contracts.js";
-import { bindTaskClock, TaskElapsedClocks, taskClockOf, taskClockRunning } from "./live-elapsed.ts";
-import { getOwnerTaskStore, watchOwnerTaskStoreBinding } from "./owner-store.js";
+import { bindTaskClock, TaskElapsedClocks, taskClockOf, taskClockRunning } from "./live-elapsed.js";
+import { getOwnerTaskStore, isTaskTurnInterrupted, watchOwnerTaskStoreBinding } from "./owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "./task-view-source.js";
 
-/** What an item's glyph and state word say about it. */
 export type AgentPanelState = "running" | "queued" | "input" | "paused" | "stopping" | "done" | "failed" | "stopped";
 
-/** One row of the agent panel and `/tasks`. */
 export interface AgentPanelItem {
-	/** Unique among the session's items: `task:<taskId>` for its tasks, `<source>:<id>` for an extension's. */
 	readonly id: string;
 	readonly kind: "agent" | "shell" | "workflow";
 	readonly state: AgentPanelState;
-	/** Agent name, `shell`, or the workflow's name. */
 	readonly name: string;
-	/** What it works on: a task's title, a shell's command, a run's current stage (`stage <name>`). */
 	readonly task: string;
 	readonly elapsedMs?: number;
 	readonly tokens?: number;
-	/** Stages finished and in total, for a workflow run. */
 	readonly progress?: { readonly done: number; readonly total: number };
-	/** The exact question a waiting item asks. */
 	readonly question?: string;
-	/** Its numbered choices, when it asks to pick one. */
 	readonly choices?: readonly string[];
-	/** Identifies the question it asks, so an answer typed for an earlier question is refused. */
 	readonly promptId?: string;
-	/** A failed item's one-line reason. */
 	readonly reason?: string;
-	/** Messages typed to it that it has not taken yet. */
 	readonly queued?: number;
-	/** When it finished, for finished items. */
 	readonly endedAt?: number;
-	/** Whether its view was already opened, so a finished item can leave the panel. */
 	readonly viewed?: boolean;
 }
 
@@ -49,34 +30,25 @@ export interface AgentPanelOpenOptions {
 	readonly onReturn?: () => void;
 }
 
-/** The question an answer was typed for, so a source can refuse an answer to a question it no longer asks. */
 export interface AgentPanelAnswerOptions {
 	readonly promptId?: string;
 	readonly question?: string;
 	readonly choices?: readonly string[];
+	readonly choiceIndex?: number;
 }
 
 export type AgentPanelActionResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };
 
-/** A provider of panel items, registered by an extension with `pi.registerAgentPanelSource()`. */
 export interface AgentPanelSource {
 	items(): readonly AgentPanelItem[];
-	/** Calls `listener` whenever {@link items} may have changed; returns the unsubscribe. */
 	subscribe(listener: () => void): () => void;
-	/**
-	 * Opens an item in the interactive UI, as Enter on its row does (a workflow run's graph). `onReturn` is called when
-	 * the opened view goes back one level, so the view it was opened from (the agent panel, `/tasks`) shows again.
-	 */
 	open?:
 		| ((id: string, options?: AgentPanelOpenOptions) => boolean)
 		| ((id: string, options?: AgentPanelOpenOptions) => void);
-	/** Stops a running item, after the second `x`. */
 	stop?(id: string): Promise<AgentPanelActionResult>;
-	/** Answers a waiting item's question with `text`; `options` names the question it was typed for. */
 	answer?(id: string, text: string, options?: AgentPanelAnswerOptions): Promise<AgentPanelActionResult>;
 }
 
-/** The registration `pi.registerAgentPanelSource()` returns; disposed with its extension generation. */
 export interface AgentPanelSourceRegistration {
 	dispose(): void;
 }
@@ -103,10 +75,6 @@ function notifyHubWatchers(notifiedHub?: AgentPanelSourceHub): void {
 
 let sourcesGeneration = 0;
 
-/**
- * Changes whenever any source's items may have changed, or a source registers or leaves: a view that ranked the
- * panel's items for one generation can reuse that ranking, without reading the items again, until it changes.
- */
 export function agentPanelSourcesGeneration(): number {
 	return sourcesGeneration;
 }
@@ -199,14 +167,9 @@ export class AgentPanelSourceHub {
 	all(): readonly AgentPanelSource[] {
 		return [...this.sources.keys()];
 	}
-	/** The sources whose subscription failed, which are not registered, with why. */
 	failures(): readonly (readonly [AgentPanelSource, Error])[] {
 		return [...this.failedSources];
 	}
-	/**
-	 * Calls `listener` when a source registers, leaves or reports a change, and `onError` once for each source whose
-	 * subscription failed, including one that failed before this call.
-	 */
 	subscribe(listener: () => void, onError?: (source: AgentPanelSource, error: Error) => void): () => void {
 		this.listeners.add(listener);
 		if (onError !== undefined) {
@@ -245,7 +208,6 @@ export class AgentPanelSourceHub {
 	}
 }
 
-/** What the panel reads of a session: its task store (by identity) and its extensions' sources. */
 export interface AgentPanelSession {
 	readonly extensionRunner?: {
 		getAgentPanelSourceHub?(): AgentPanelSourceHub | undefined;
@@ -253,7 +215,6 @@ export interface AgentPanelSession {
 	};
 }
 
-/** The session's source hub, or undefined when it has none or reading it fails. */
 export function agentPanelSourceHubOf(session: AgentPanelSession): AgentPanelSourceHub | undefined {
 	return hubOf(session);
 }
@@ -271,7 +232,6 @@ function hubOf(session: AgentPanelSession): AgentPanelSourceHub | undefined {
 
 const taskPrefix = "task:";
 
-/** What a task's glyph and state word say about it. */
 export function taskPanelState(task: TaskRecord): AgentPanelState {
 	switch (task.execution.kind) {
 		case "queued":
@@ -279,7 +239,8 @@ export function taskPanelState(task: TaskRecord): AgentPanelState {
 		case "cancelling":
 			return "stopping";
 		case "running":
-			return task.attention.kind === "none" ? "running" : "input";
+			if (task.attention.kind !== "none") return "input";
+			return isTaskTurnInterrupted(task) ? "stopped" : "running";
 		case "settled": {
 			const result = task.execution.result;
 			if (result.kind === "completed") return "done";
@@ -292,10 +253,6 @@ export function taskPanelState(task: TaskRecord): AgentPanelState {
 
 const SHORT_TITLE_CHARS = 60;
 
-/**
- * What a row says a task works on: a subagent's whole prompt is too long for one, so its first line, cut at its first
- * sentence when that ends early enough, else at a word near {@link SHORT_TITLE_CHARS}.
- */
 export function shortTaskTitle(title: string): string {
 	const line =
 		title
@@ -312,25 +269,42 @@ export function shortTaskTitle(title: string): string {
 
 const cachedTaskItems = new WeakMap<
 	TaskRecord,
-	{ readonly taskId: string; readonly clocks: TaskElapsedClocks | undefined; readonly item: AgentPanelItem }
+	{
+		readonly taskId: string;
+		readonly clocks: TaskElapsedClocks | undefined;
+		readonly interrupted: boolean;
+		readonly item: AgentPanelItem;
+	}
 >();
 const lazyTaskItems = new WeakMap<
 	TaskRecord,
-	{ readonly state: AgentPanelState; readonly clocks: TaskElapsedClocks | undefined; readonly item: AgentPanelItem }
+	{
+		readonly state: AgentPanelState;
+		readonly clocks: TaskElapsedClocks | undefined;
+		readonly interrupted: boolean;
+		readonly item: AgentPanelItem;
+	}
 >();
 const lazyTaskRecords = new WeakMap<
 	AgentPanelItem,
 	{ readonly task: TaskRecord; readonly clocks: TaskElapsedClocks | undefined }
 >();
+const interruptedTaskItems = new WeakSet<object>();
 
-/**
- * A task's panel item, bound to the clocks of the source it was read from so every view of it shows the same elapsed
- * time. The same item is returned while nothing it shows has changed.
- */
+export function markInterruptedPanelTask<T extends object>(item: T): T {
+	interruptedTaskItems.add(item);
+	return item;
+}
+
+export function isInterruptedPanelTask(item: object): boolean {
+	return interruptedTaskItems.has(item);
+}
+
 export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks): AgentPanelItem {
 	const clocks = sourceClocks ?? taskClockOf(task);
 	const cached = cachedTaskItems.get(task);
 	const state = taskPanelState(task);
+	const interrupted = task.execution.kind !== "settled" && state === "stopped";
 	const question = task.attention.kind === "input-needed" ? task.attention.prompt || undefined : undefined;
 	const kind = task.kind === "agent" ? "agent" : "shell";
 	const name = task.kind === "agent" ? (task.agentName ?? "agent") : "shell";
@@ -342,6 +316,7 @@ export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks
 	if (
 		cached !== undefined &&
 		cached.clocks === clocks &&
+		cached.interrupted === interrupted &&
 		cached.taskId === task.ref.taskId &&
 		cached.item.kind === kind &&
 		cached.item.state === state &&
@@ -364,16 +339,22 @@ export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks
 		...(question ? { question } : {}),
 		...(reason === undefined ? {} : { reason }),
 	};
+	if (interrupted) markInterruptedPanelTask(item);
 	if (clocks !== undefined) bindTaskClock(item, clocks);
-	cachedTaskItems.set(task, { taskId: task.ref.taskId, clocks, item });
+	cachedTaskItems.set(task, { taskId: task.ref.taskId, clocks, interrupted, item });
 	return item;
 }
 
-/** A task's item that builds its name and title only when a view reads them. */
 export function lazyTaskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks): AgentPanelItem {
 	const state = taskPanelState(task);
+	const interrupted = task.execution.kind !== "settled" && state === "stopped";
 	const cached = lazyTaskItems.get(task);
-	if (cached !== undefined && cached.state === state && cached.clocks === sourceClocks) {
+	if (
+		cached !== undefined &&
+		cached.state === state &&
+		cached.clocks === sourceClocks &&
+		cached.interrupted === interrupted
+	) {
 		return cached.item;
 	}
 	const item: AgentPanelItem = {
@@ -387,21 +368,17 @@ export function lazyTaskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedCl
 			return taskPanelItem(task, sourceClocks).task;
 		},
 	};
-	lazyTaskItems.set(task, { state, clocks: sourceClocks, item });
+	if (interrupted) markInterruptedPanelTask(item);
+	lazyTaskItems.set(task, { state, clocks: sourceClocks, interrupted, item });
 	lazyTaskRecords.set(item, { task, clocks: sourceClocks });
 	return item;
 }
 
-/** The whole item a lazy item stands for; any other item as it is. */
 export function materializePanelItem(item: AgentPanelItem): AgentPanelItem {
 	const entry = lazyTaskRecords.get(item);
 	return entry === undefined ? item : taskPanelItem(entry.task, entry.clocks);
 }
 
-/**
- * One panel item per background task of `source` that is not in `dismissed`, in admission order. The main chat's panel
- * lists only top-level tasks; a subagent's chat lists the tasks of that subagent, which all have a parent.
- */
 export function taskPanelItems(
 	source: Pick<TaskViewSource, "backgroundTasks">,
 	dismissed: ReadonlySet<TaskId>,
@@ -409,10 +386,15 @@ export function taskPanelItems(
 ): AgentPanelItem[] {
 	const topLevelOnly = options.topLevelOnly ?? true;
 	const hasDismissed = dismissed.size > 0;
+	const mutableDismissed = dismissed instanceof Set ? dismissed : undefined;
 	const sourceClocks = taskClockOf(source);
 	const items: AgentPanelItem[] = [];
 	for (const task of source.backgroundTasks) {
-		if ((topLevelOnly && task.parentTaskId !== undefined) || (hasDismissed && dismissed.has(task.ref.taskId))) {
+		if (topLevelOnly && task.parentTaskId !== undefined) continue;
+		const finishedState = task.execution.kind === "settled";
+		if (!finishedState) {
+			mutableDismissed?.delete(task.ref.taskId);
+		} else if (hasDismissed && dismissed.has(task.ref.taskId)) {
 			continue;
 		}
 		items.push(taskPanelItem(task, sourceClocks));
@@ -422,7 +404,6 @@ export function taskPanelItems(
 
 const reportedSources = new WeakSet<AgentPanelSource>();
 
-/** `text` with terminal controls and invisible characters removed, so a source's reason cannot restyle the screen. */
 function cleanReasonText(text: string): string {
 	if (!/[\x00-\x1f\x7f-\x9f\p{Default_Ignorable_Code_Point}\u2028\u2029]/u.test(text)) return text;
 	return sanitizeTerminalText(text)
@@ -460,15 +441,62 @@ const drainQueue: Array<{ readonly value: unknown; readonly seen?: Set<object> }
 let draining = false;
 const unattachablePromises = new WeakSet<Promise<unknown>>();
 let unattachableGuardInstalled = false;
+const UNHANDLED_REJECTION_OWNER = Symbol.for("atomic.unhandled-rejection-owner");
+
+function hasUnhandledRejectionOwner(
+	self: (reason: unknown, rejected: Promise<unknown>) => void,
+	rejected: Promise<unknown>,
+	reason: unknown,
+): boolean {
+	for (const candidate of process.listeners("unhandledRejection")) {
+		if (candidate === self) continue;
+		const owns = (
+			candidate as {
+				readonly [UNHANDLED_REJECTION_OWNER]?: (
+					promise: Promise<unknown> | undefined,
+					rejectionReason?: unknown,
+				) => boolean;
+			}
+		)[UNHANDLED_REJECTION_OWNER];
+		if (typeof owns !== "function" || owns(rejected, reason)) return true;
+	}
+	return false;
+}
+
+function shouldThrowUnhandledRejection(reason: unknown): boolean {
+	const args = [...(process.env.NODE_OPTIONS ?? "").split(/\s+/), ...process.execArgv];
+	let mode = "throw";
+	for (let index = 0; index < args.length; index += 1) {
+		const arg = args[index] ?? "";
+		if (arg.startsWith("--unhandled-rejections=")) mode = arg.slice("--unhandled-rejections=".length);
+		else if (arg === "--unhandled-rejections" && args[index + 1] !== undefined) mode = args[index + 1] ?? mode;
+	}
+	if (mode === "none" || mode === "warn") return false;
+	if (mode === "warn-with-error-code") {
+		process.emitWarning(
+			inspect(reason, { customInspect: false, getters: false }),
+			"UnhandledPromiseRejectionWarning",
+		);
+		process.exitCode = 1;
+		return false;
+	}
+	return true;
+}
 
 function markUnattachable(promise: Promise<unknown>): void {
 	unattachablePromises.add(promise);
 	if (unattachableGuardInstalled) return;
 	unattachableGuardInstalled = true;
-	process.on("unhandledRejection", (reason, rejected) => {
+	const onUnattachableRejection = (reason: unknown, rejected: Promise<unknown>) => {
 		if (unattachablePromises.has(rejected)) return;
-		if (process.listenerCount("unhandledRejection") === 1) throw reason;
+		if (hasUnhandledRejectionOwner(onUnattachableRejection, rejected, reason)) return;
+		if (!shouldThrowUnhandledRejection(reason)) return;
+		throw reason;
+	};
+	Reflect.defineProperty(onUnattachableRejection, UNHANDLED_REJECTION_OWNER, {
+		value: (rejected: Promise<unknown> | undefined) => rejected !== undefined && unattachablePromises.has(rejected),
 	});
+	process.on("unhandledRejection", onUnattachableRejection);
 }
 
 function attachNativePromise(promise: Promise<unknown>, seen?: Set<object>): void {
@@ -516,11 +544,17 @@ function thenNativePromise(
 	onFulfilled: (value: unknown) => void,
 	onRejected: (error: unknown) => void,
 ): void {
-	if (Reflect.getPrototypeOf(promise) !== Promise.prototype || Object.hasOwn(promise, "constructor")) {
-		Reflect.defineProperty(promise, "constructor", { value: Promise, configurable: true, writable: true });
-	}
 	try {
-		Promise.prototype.then.call(promise, onFulfilled, onRejected);
+		try {
+			Promise.prototype.then.call(promise, onFulfilled, onRejected);
+			return;
+		} catch (firstError) {
+			drainCaught(firstError);
+			if (Reflect.getPrototypeOf(promise) !== Promise.prototype || Object.hasOwn(promise, "constructor")) {
+				Reflect.defineProperty(promise, "constructor", { value: Promise, configurable: true, writable: true });
+			}
+			Promise.prototype.then.call(promise, onFulfilled, onRejected);
+		}
 	} catch (error) {
 		markUnattachable(promise);
 		throw error;
@@ -864,7 +898,7 @@ function readSourceSnapshot(source: AgentPanelSource): SourceCacheEntry {
 			const before = seenIds.size;
 			seenIds.add(validated.id);
 			if (seenIds.size === before) {
-				validationError ??= new Error(`Duplicate agent panel item id "${validated.id}".`);
+				validationError ??= new Error(`Duplicate agent panel item id "${cleanReasonText(validated.id)}".`);
 				continue;
 			}
 			items.push(validated);
@@ -931,7 +965,6 @@ function dismissedTaskIds(session: object): ReadonlySet<TaskId> {
 const viewedBySession = new WeakMap<object, Set<string>>();
 const hubBindingListeners = new WeakMap<object, Set<() => void>>();
 
-/** The ids of the session's items whose view was opened, so a finished one can leave the panel. */
 export function viewedAgentPanelItems(session: object): Set<string> {
 	let viewed = viewedBySession.get(session);
 	if (viewed === undefined) {
@@ -941,12 +974,17 @@ export function viewedAgentPanelItems(session: object): Set<string> {
 	return viewed;
 }
 
-/** Tells the session's panel subscribers that its extension runner now serves a different source hub. */
 export function notifyAgentPanelSourceHubRebound(session: object): void {
 	for (const listener of [...(hubBindingListeners.get(session) ?? [])]) safelyCall(listener);
 }
 
-/** Calls `listener` whenever {@link notifyAgentPanelSourceHubRebound} reports a new hub for `session`. */
+export function notifyAgentPanelChanged(session: object): void {
+	if ((typeof session !== "object" && typeof session !== "function") || session === null) return;
+	sourcesGeneration++;
+	bumpHubSources(hubOf(session as AgentPanelSession));
+	notifyAgentPanelSourceHubRebound(session);
+}
+
 export function watchAgentPanelSourceHubBinding(session: object, listener: () => void): () => void {
 	let listeners = hubBindingListeners.get(session);
 	if (listeners === undefined) {
@@ -972,7 +1010,7 @@ function sourceErrorReporter(session: AgentPanelSession): ((error: Error) => voi
 	return (error: Error) =>
 		safelyCall(() =>
 			Reflect.apply(emit, session.extensionRunner, [
-				{ extensionPath: "agent panel source", event: "agent_panel", error: error.message },
+				{ extensionPath: "agent panel source", event: "agent_panel", error: cleanReasonText(error.message) },
 			]),
 		);
 }
@@ -988,7 +1026,6 @@ function sessionExtensionClocks(session: object): TaskElapsedClocks {
 	return clocks;
 }
 
-/** Reads every source of the session once, so a source's failure is reported even while nothing shows its items. */
 export function sampleAgentPanelSources(
 	session: AgentPanelSession & object,
 	onSourceError?: (error: Error) => void,
@@ -997,11 +1034,6 @@ export function sampleAgentPanelSources(
 	for (const source of hubOf(session)?.all() ?? []) sourceItems(source, report);
 }
 
-/**
- * The items the session's extensions list (workflow runs, an extension's agents and shells), without its own tasks and
- * dismissed items. An item's id is listed once, from the first source that has it; agent and shell items share one
- * clock per session, so every view shows the same elapsed time.
- */
 export function agentPanelExtensionItems(
 	session: AgentPanelSession & object,
 	onSourceError?: (error: Error) => void,
@@ -1011,16 +1043,27 @@ export function agentPanelExtensionItems(
 	const hasDismissed = dismissed.size > 0;
 	const hub = hubOf(session);
 	const sources = hub?.all() ?? [];
-	if (report !== undefined && hub !== undefined) {
-		for (const [source, error] of hub.failures()) reportSourceOnce(source, error, report);
+	const hubFailures = hub?.failures();
+	let hasSourceError = (hubFailures?.length ?? 0) > 0;
+	if (report !== undefined && hubFailures !== undefined) {
+		for (const [source, error] of hubFailures) reportSourceOnce(source, error, report);
 	}
 	const items: AgentPanelItem[] = [];
 	const seenIds = sources.length > 1 ? new Set<string>() : undefined;
 	for (const source of sources) {
-		for (const item of sourceItems(source, report)) {
+		const entry = readSourceCache(source);
+		if (entry.error !== undefined) {
+			hasSourceError = true;
+			reportSourceOnce(source, entry.error, report);
+		}
+		for (const item of entry.items) {
 			if (seenIds !== undefined) {
 				if (seenIds.has(item.id)) {
-					reportSourceOnce(source, new Error(`Duplicate agent panel item id "${item.id}".`), report);
+					reportSourceOnce(
+						source,
+						new Error(`Duplicate agent panel item id "${cleanReasonText(item.id)}".`),
+						report,
+					);
 					continue;
 				}
 				seenIds.add(item.id);
@@ -1048,14 +1091,39 @@ export function agentPanelExtensionItems(
 	if (clockIds !== undefined) extensionClocksBySession.get(session)?.prune(clockIds);
 	else clocks?.clear();
 	const viewed = viewedBySession.get(session);
-	if (viewed !== undefined && viewed.size > 0) {
-		const liveIds = new Set(items.map((item) => item.id));
+	const liveIds =
+		!hasSourceError && ((viewed !== undefined && viewed.size > 0) || (hasDismissed && sources.length > 0))
+			? new Set(items.map((item) => item.id))
+			: undefined;
+	if (viewed !== undefined && viewed.size > 0 && liveIds !== undefined) {
 		for (const id of [...viewed]) if (!liveIds.has(id)) viewed.delete(id);
 	}
-	return hasDismissed ? items.filter((item) => !dismissed.has(item.id)) : items;
+	if (hasDismissed) {
+		if (liveIds !== undefined) {
+			for (const id of [...dismissed]) {
+				if (agentPanelTaskId(id) === undefined && !liveIds.has(id)) dismissed.delete(id);
+			}
+		}
+		for (const item of items) {
+			if (dismissed.has(item.id) && item.state !== "done" && item.state !== "failed" && item.state !== "stopped") {
+				dismissed.delete(item.id);
+			}
+		}
+		const store = getOwnerTaskStore(session);
+		if (store !== undefined) {
+			for (const id of [...dismissed]) {
+				const taskId = agentPanelTaskId(id);
+				if (taskId === undefined) continue;
+				const task = store.taskRecord(taskId);
+				if (task !== undefined && task.execution.kind !== "settled") {
+					dismissed.delete(id);
+				}
+			}
+		}
+	}
+	return dismissed.size > 0 ? items.filter((item) => !dismissed.has(item.id)) : items;
 }
 
-/** The session's items: its extensions' first, then its own top-level background tasks. */
 export function agentPanelItems(
 	session: AgentPanelSession & object,
 	onSourceError?: (error: Error) => void,
@@ -1068,10 +1136,6 @@ export function agentPanelItems(
 	return tasks.length === 0 ? extensions : [...extensions, ...tasks];
 }
 
-/**
- * Calls `listener` when the session's extensions' items may have changed, including when its extension runner is
- * bound to a different hub; a failed source subscription is reported once through the session's extension errors.
- */
 export function subscribeAgentPanelExtensions(session: AgentPanelSession, listener: () => void): () => void {
 	const safeListener = () => {
 		safelyCall(listener);
@@ -1110,7 +1174,6 @@ export function subscribeAgentPanelExtensions(session: AgentPanelSession, listen
 	};
 }
 
-/** Calls `listener` when any of the session's items may have changed: its task store's or its extensions'. */
 export function subscribeAgentPanel(session: AgentPanelSession & object, listener: () => void): () => void {
 	const safeListener = () => {
 		safelyCall(listener);
@@ -1129,7 +1192,6 @@ export function subscribeAgentPanel(session: AgentPanelSession & object, listene
 	};
 }
 
-/** What an answer typed into a waiting item names: the question it asks, so a stale answer is refused. */
 export function promptAnswerOptionsOf(item: AgentPanelItem): AgentPanelAnswerOptions | undefined {
 	if (item.state !== "input" || !item.question) return undefined;
 	return {
@@ -1203,6 +1265,7 @@ export function openAgentPanelItem(
 			});
 		}
 		viewedAgentPanelItems(session).add(id);
+		notifyAgentPanelChanged(session);
 		return true;
 	} catch (error) {
 		drainCaught(error);

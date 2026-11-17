@@ -84,8 +84,6 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 				to: "quarantined",
 				meta: event.resources.map((entry) => `${event.taskId} ${entry.resource}: ${entry.message}`).join("; "),
 			});
-		if (event.type === "background_compaction")
-			runtime.activeStore.recordStageCompaction(runtime.runId, runtime.stageId, event.compaction);
 	});
 	const sessionSaved = (): boolean =>
 		runtime.stageSnapshot.status === "completed" &&
@@ -128,6 +126,9 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 		},
 		pendingToolExecutionEvents() {
 			return toolExecutions.replayEvents();
+		},
+		inFlightAttemptUsage() {
+			return runtime.innerCtx.__inFlightAttemptUsage?.();
 		},
 		queuedUserMessages() {
 			return queuedUserMessages.snapshot();

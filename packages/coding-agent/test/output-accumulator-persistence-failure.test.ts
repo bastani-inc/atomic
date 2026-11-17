@@ -85,7 +85,7 @@ describe("OutputAccumulator spill-file open failure", () => {
 		assert.equal(persistedFileMock.constructorCalls, 1, "later output must not retry a refused spill");
 	});
 
-	it("does not publish a writer that fails while replaying buffered output", () => {
+	it("does not publish a writer that fails while replaying buffered output", async () => {
 		persistedFileMock.mode = "write";
 		const accumulator = new OutputAccumulator({ maxBytes: 1024, maxLines: 1000, tempDir: sandbox });
 
@@ -93,7 +93,9 @@ describe("OutputAccumulator spill-file open failure", () => {
 		accumulator.append(Buffer.alloc(1024, 0x62));
 		accumulator.append(Buffer.alloc(1024, 0x63));
 		accumulator.finish();
-		const snapshot = accumulator.snapshot({ persistIfTruncated: true });
+		accumulator.snapshot({ persistIfTruncated: true });
+		await accumulator.closeTempFile();
+		const snapshot = accumulator.snapshot();
 
 		assert.equal(snapshot.truncation.truncated, true);
 		assert.equal(snapshot.fullOutputPath, undefined);

@@ -1,6 +1,7 @@
 import { isKeyRelease } from "@bastani/atomic-tui";
 import { type StopAllBackgroundOutcome, stopAllBackgroundMessage } from "../../core/tasks/stop-all.ts";
 import { NAV_CONFIRM_WINDOW_MS, type NavKeybindings, navActionText, TwoPressConfirm } from "./components/nav-keys.ts";
+import { isPhysicalEscape } from "./interactive-key-identity.ts";
 
 /** The footer status key the chord's notices show under, so they are seen over overlays too. */
 export const STOP_ALL_STATUS_KEY = "atomic.stop-all";
@@ -29,20 +30,25 @@ export function createStopAllChord(
 ): (data: string) => { consume: true } | undefined {
 	const confirm = new TwoPressConfirm(now);
 	let chordOpen = false;
+	const chordKeybindings: NavKeybindings = {
+		matches: (data, action) => host.keybindings.matches(data, action),
+		getKeys: (action) =>
+			(host.keybindings.getKeys?.(action) ?? []).filter((key) => key !== "esc" && key !== "escape"),
+	};
 	const chordText = () =>
-		`${navActionText(host.keybindings, "app.agents.chord")} ${navActionText(host.keybindings, "app.agents.stopAll")}`;
+		`${navActionText(chordKeybindings, "app.agents.chord")} ${navActionText(chordKeybindings, "app.agents.stopAll")}`;
 	return (data) => {
 		if (isKeyRelease(data)) return undefined;
-		if (!host.chordAllowed()) {
-			chordOpen = false;
-			return undefined;
-		}
-		// Any key other than the chord calls a waiting stop-all off, and its notice with it.
 		const cancelPending = () => {
 			if (confirm.pending() === undefined) return;
 			confirm.reset();
 			host.clearStatus();
 		};
+		if (!host.chordAllowed() || isPhysicalEscape(data)) {
+			chordOpen = false;
+			cancelPending();
+			return undefined;
+		}
 		if (chordOpen) {
 			chordOpen = false;
 			if (!host.keybindings.matches(data, "app.agents.stopAll")) {
@@ -52,9 +58,7 @@ export function createStopAllChord(
 				return undefined;
 			}
 			if (!confirm.press("stop-all")) {
-				host.showStatus(
-					`Press ${chordText()} again within 3s to stop all background subagents, shells and workflow runs`,
-				);
+				host.showStatus(`Press ${chordText()} again within 3s to stop all`);
 				return { consume: true };
 			}
 			void host.stopAll().then(
@@ -73,23 +77,14 @@ export function createStopAllChord(
 	};
 }
 
-/** Where a stop-all notice can show: never a chat transcript, only places that clear themselves. */
 export interface StopAllNoticeSurfaces {
-	/** The isolated engine's status line, which its views (the workflow graph, a subagent's chat) and the host footer show. */
 	setEngineNotice?(text: string | undefined): void;
-	/** The in-process footer's status line. */
 	setFooterStatus?(text: string | undefined): void;
-	/** A floating line over an in-process fullscreen view; returns its remover. */
 	showToast?(text: string): () => void;
 	hasOverlay(): boolean;
 	requestRender(): void;
 }
 
-/**
- * Shows the chord's notices (the "press again" prompt, the result, a failure) in the view the user is in, for one
- * confirm window, and never in a chat transcript: the isolated engine's status line, or in process the footer status
- * plus a floating line over a fullscreen view.
- */
 export function createStopAllNotices(
 	surfaces: StopAllNoticeSurfaces,
 	timers: { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout } = { setTimeout, clearTimeout },

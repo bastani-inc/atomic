@@ -4,6 +4,10 @@ This package is Atomic's fork of `@earendil-works/pi-agent-core`. Its history up
 
 ## [Unreleased]
 
+### Added
+
+- `Agent.promptQueuedMessages()` starts a turn from the queued steering or follow-up messages whatever the transcript ends with, as `continue()` does after an assistant reply, and resolves `false` when nothing is queued
+
 ## [0.9.88] - 2026-11-16
 
 ### Changed

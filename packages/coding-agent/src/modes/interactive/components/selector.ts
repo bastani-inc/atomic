@@ -155,6 +155,8 @@ const DEFAULT_MAX_VISIBLE = 10;
 const MIN_DESCRIPTION_WIDTH = 12;
 const MIN_DESCRIPTION_LABEL_WIDTH = 8;
 const DESCRIPTION_GAP = 2;
+const MAX_DESCRIPTION_LABEL_WIDTH = 54;
+const MIN_LABEL_WITH_DESCRIPTION_WIDTH = 24;
 
 /** Filtering, selection and checked state of a picker, without rendering. */
 export class SelectorState<T> {
@@ -275,11 +277,10 @@ export class SelectorState<T> {
 		this.scrollToSelected();
 	}
 
-	/** Move one enabled row in the direction of `delta`, wrapping at the ends and skipping disabled rows. */
 	move(delta: number, wrap = true): void {
 		if (!Number.isInteger(delta) || delta === 0) return;
 		const count = this.visible.length;
-		if (count === 0 || delta === 0) return;
+		if (count === 0) return;
 		this.revision++;
 		const step = Math.sign(delta) as -1 | 1;
 		if (!wrap) {
@@ -609,6 +610,20 @@ export class Selector<T> implements Component, Focusable {
 
 	/** Replace the rows, keeping the search and the selected row; see {@link SelectorState.setItems}. */
 	setItems(items: readonly SelectorItem<T>[], preferId?: string): void {
+		this.cachedRender = undefined;
+		const searchEnabled = Boolean(this.options.search);
+		if (Boolean(this.input) !== searchEnabled) {
+			if (searchEnabled) {
+				this.showingHelp = false;
+				this.input = this.createInput();
+			} else {
+				this.input = undefined;
+				this.state.setItems(items, preferId);
+				this.state.setQuery("");
+				this.notifySelectionChange();
+				return;
+			}
+		}
 		this.state.setItems(items, preferId);
 		this.notifySelectionChange();
 	}
@@ -809,7 +824,11 @@ export class Selector<T> implements Component, Focusable {
 		lines.push("");
 		lines.push(
 			renderNavHintLine(
-				fitHintEntries(selectorHintEntries(this.state, this.options), width - 2, keybindings),
+				fitHintEntries(
+					selectorHintEntries(this.state, { ...this.options, search: Boolean(this.input) }),
+					width - 2,
+					keybindings,
+				),
 				width,
 				this.style,
 				keybindings,
@@ -832,7 +851,9 @@ export class Selector<T> implements Component, Focusable {
 	}
 
 	private helpEntries(): NavKey[] {
-		const entries = selectorHintEntries(this.state, this.options).filter((entry) => entry.action !== "app.keys.help");
+		const entries = selectorHintEntries(this.state, { ...this.options, search: Boolean(this.input) }).filter(
+			(entry) => entry.action !== "app.keys.help",
+		);
 		return entries;
 	}
 
@@ -956,19 +977,34 @@ export class Selector<T> implements Component, Focusable {
 			const tag = tagText ? this.style.tone(item.tagTone ?? "muted", tagText) : "";
 			const tagWidth = tagText ? visibleWidth(tagText) + 2 : 0;
 			const room = Math.max(1, width - indent - tagWidth - 1);
-			let line = parts.lead + parts.label(label);
-			let used = indent + visibleWidth(label);
+			let effectiveLabel = label;
+			let line = parts.lead + parts.label(effectiveLabel);
+			let used = indent + visibleWidth(effectiveLabel);
 			if (item.description && !twoLine) {
-				const minWidth = minDesc ?? MIN_DESCRIPTION_WIDTH;
-				const maxColumn = minDesc !== undefined ? room - DESCRIPTION_GAP - minWidth : room - minWidth;
-				const column = Math.min(labelWidth, Math.max(visibleWidth(label), maxColumn));
-				const gap = column - visibleWidth(label) + DESCRIPTION_GAP;
-				const descRoom = width - used - gap - tagWidth - 1;
-				if (descRoom >= minWidth) {
-					const text = item.description.replace(/\s+/g, " ");
-					const description = visibleWidth(text) > descRoom ? truncateToWidth(text, descRoom) : text;
-					line += " ".repeat(gap) + this.style.muted(description);
-					used += gap + visibleWidth(description);
+				const text = item.description.replace(/\s+/g, " ").trim();
+				const descWidth = visibleWidth(text);
+				if (descWidth > 0) {
+					const minDescWidth = minDesc ?? Math.min(MIN_DESCRIPTION_WIDTH, descWidth);
+					const maxPrimary = Math.min(MAX_DESCRIPTION_LABEL_WIDTH, room - DESCRIPTION_GAP - minDescWidth);
+					const reserveDesc = Math.max(minDescWidth, Math.min(descWidth, room - DESCRIPTION_GAP - maxPrimary));
+					const descLabelRoom = room - DESCRIPTION_GAP - reserveDesc;
+					if (
+						!wrappedLabels &&
+						descLabelRoom >= MIN_LABEL_WITH_DESCRIPTION_WIDTH &&
+						visibleWidth(effectiveLabel) > descLabelRoom
+					) {
+						effectiveLabel = truncateToWidth(effectiveLabel, descLabelRoom);
+						line = parts.lead + parts.label(effectiveLabel);
+						used = indent + visibleWidth(effectiveLabel);
+					}
+					const column = Math.min(labelWidth, Math.max(visibleWidth(effectiveLabel), descLabelRoom));
+					const gap = column - visibleWidth(effectiveLabel) + DESCRIPTION_GAP;
+					const descRoom = width - used - gap - tagWidth - 1;
+					if (descRoom >= (minDesc ?? MIN_DESCRIPTION_WIDTH)) {
+						const description = descWidth > descRoom ? truncateToWidth(text, descRoom) : text;
+						line += " ".repeat(gap) + this.style.muted(description);
+						used += gap + visibleWidth(description);
+					}
 				}
 			}
 			if (tag) line += " ".repeat(Math.max(2, width - used - tagWidth + 1)) + tag;

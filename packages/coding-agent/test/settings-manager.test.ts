@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { InMemorySettingsStorage, SettingsManager, type SettingsScope } from "../src/core/settings-manager.js";
 
 describe("SettingsManager", () => {
 	const testDir = join(process.cwd(), "test-settings-tmp");
@@ -44,9 +44,6 @@ describe("SettingsManager", () => {
 			expect(defaults.getCompactionSettings()).toEqual({
 				enabled: true,
 				reserveTokens: 16384,
-				compression_ratio: 0.5,
-				preserve_recent: 2,
-				keepContextShare: 0.5,
 			});
 
 			const settingsPath = join(agentDir, "settings.json");
@@ -63,13 +60,10 @@ describe("SettingsManager", () => {
 				}),
 			);
 			const configured = SettingsManager.create(projectDir, agentDir);
+			// Removed compaction keys are ignored.
 			expect(configured.getCompactionSettings()).toEqual({
 				enabled: false,
 				reserveTokens: 8192,
-				compression_ratio: 0.3,
-				preserve_recent: 4,
-				query: "focus current migration",
-				keepContextShare: 0.5,
 			});
 		});
 	});
@@ -327,6 +321,52 @@ describe("SettingsManager", () => {
 
 			expect(manager.getProjectSettings()).toEqual({});
 			expect(JSON.parse(readFileSync(projectSettingsPath, "utf-8"))).toEqual({ packages: ["npm:existing"] });
+		});
+
+		it("refuses queued project writes when trust is revoked while preparing the write lock (#5315)", async () => {
+			let entered!: () => void;
+			let release!: () => void;
+			let prepareCalls = 0;
+			const preparing = new Promise<void>((resolve) => {
+				entered = resolve;
+			});
+			const pending = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			class DeferredStorage extends InMemorySettingsStorage {
+				async prepareWriteLock(scope: SettingsScope): Promise<void> {
+					if (scope === "project") {
+						prepareCalls += 1;
+						entered();
+						await pending;
+					}
+				}
+			}
+			const storage = new DeferredStorage();
+			const manager = SettingsManager.fromStorage(storage, { projectTrusted: true });
+
+			manager.updatePackages("project", () => ["npm:first"]);
+			manager.setProjectPackages(["npm:second"]);
+			await preparing;
+			manager.setProjectTrusted(false);
+			release();
+			await manager.flush();
+
+			let persisted: string | undefined;
+			storage.withLock("project", (current) => {
+				persisted = current;
+				return undefined;
+			});
+			assert.equal(manager.isProjectTrusted(), false);
+			assert.equal(prepareCalls, 1);
+			assert.equal(persisted, undefined);
+			assert.deepEqual(
+				manager.drainErrors().map(({ scope, error }) => ({ scope, message: error.message })),
+				[
+					{ scope: "project", message: "Project is not trusted; refusing to write project settings" },
+					{ scope: "project", message: "Project is not trusted; refusing to write project settings" },
+				],
+			);
 		});
 
 		it("should read default project trust from global settings only", () => {

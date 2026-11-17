@@ -162,6 +162,7 @@ export class ResourceList implements Component, Focusable {
 	private selectedIndex = 0;
 	private searchInput: Input;
 	private maxVisible = 15;
+	private compactSearch = false;
 	private settingsManager: SettingsManager;
 	private cwd: string;
 	private agentDir: string;
@@ -190,9 +191,16 @@ export class ResourceList implements Component, Focusable {
 		this.cwd = cwd;
 		this.agentDir = agentDir;
 		this.searchInput = this.createSearchInput();
-		this.maxVisible = Math.max(5, (terminalHeight ?? 24) - 8);
+		this.maxVisible = Math.max(3, (terminalHeight ?? 24) - 10);
 		this.buildFlatList();
 		this.filteredItems = [...this.flatItems];
+	}
+	setViewportHeight(height: number): void {
+		this.compactSearch = height < 8;
+		this.maxVisible = Math.max(1, height - (this.compactSearch ? 3 : 7));
+	}
+	getSearchQuery(): string {
+		return this.searchInput.getValue();
 	}
 	private createSearchInput(): Input {
 		const input = new Input({
@@ -203,7 +211,6 @@ export class ResourceList implements Component, Focusable {
 		input.focused = this._focused;
 		return input;
 	}
-	/** The rounded search box every picker shows. */
 	private renderSearch(width: number): string[] {
 		const boxWidth = Math.max(8, width - 2);
 		const field = Math.max(1, boxWidth - 4);
@@ -312,7 +319,8 @@ export class ResourceList implements Component, Focusable {
 	}
 	invalidate(): void {}
 	render(width: number): string[] {
-		return [...this.renderList(width), "", this.renderHint(width)].map((line) =>
+		const gap = this.compactSearch ? [] : [""];
+		return [...this.renderList(width), ...gap, this.renderHint(width)].map((line) =>
 			visibleWidth(line) > width ? truncateToWidth(line, width) : line,
 		);
 	}
@@ -349,7 +357,9 @@ export class ResourceList implements Component, Focusable {
 		return renderNavHintLine(this.hintEntries(), width, style, getKeybindings());
 	}
 	private renderList(width: number): string[] {
-		const lines = [...this.renderSearch(width), ""];
+		const lines = this.compactSearch
+			? this.searchInput.render(Math.max(1, width))
+			: [...this.renderSearch(width), ""];
 		if (this.filteredItems.length === 0) {
 			const query = this.searchInput.getValue().trim();
 			return [...lines, theme.fg("dim", query ? `  No matches for "${query}"` : "  No resources found")];
@@ -375,8 +385,14 @@ export class ResourceList implements Component, Focusable {
 				lines.push(truncateToWidth(`${cursor}    ${checkbox} ${name}`, width, "..."));
 			}
 		}
-		const above = startIndex;
-		const below = this.filteredItems.length - endIndex;
+		let above = 0;
+		for (let i = 0; i < startIndex; i++) {
+			if (this.filteredItems[i]?.type === "item") above++;
+		}
+		let below = 0;
+		for (let i = endIndex; i < this.filteredItems.length; i++) {
+			if (this.filteredItems[i]?.type === "item") below++;
+		}
 		if (above > 0 || below > 0) {
 			const parts = [above > 0 ? `↑ ${above} more` : "", below > 0 ? `↓ ${below} more` : ""].filter(Boolean);
 			lines.push(theme.fg("dim", `  ${parts.join(" · ")}`));
@@ -416,7 +432,6 @@ export class ResourceList implements Component, Focusable {
 			return true;
 		}
 		if (kb.matches(data, "tui.select.cancel")) {
-			// Esc clears a search first, then closes, as in every picker; ctrl+c always closes.
 			if (this.searchInput.getValue() && !matchesKey(data, "ctrl+c")) {
 				this.searchInput = this.createSearchInput();
 				this.filterItems("");

@@ -57,11 +57,15 @@ import {
 	hasCallingSessionWork,
 	ownedSessionPermits,
 	ownedSessionStores,
+	sessionLifetime,
 } from "./session-lifecycle-work.ts";
 import { assertSettingsWrites, ownedSettingsManagers } from "./settings-write-ownership.ts";
+import { observeToolExecutionTiming } from "./tool-execution-timing.ts";
+import { drainWindowsDirectorySecurityReads } from "./tools/windows-directory-security.ts";
 import { drainTerminalWorkflowSummaries } from "./workflow-summary-lifecycle.ts";
 
 export function _emit(this: AgentSession, event: AgentSessionEvent): void {
+	observeToolExecutionTiming(this, event);
 	for (const l of this._eventListeners) {
 		l(event);
 	}
@@ -282,6 +286,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 		this._recoverableLengthRecoveryAttempted = false;
 		this._fallbackAttemptedKeys.clear();
 		this._fallbackBlockedModels.length = 0;
+		this._fallbackBlockedProviders.clear();
 		if (consumedQueuedMessageEvents.delete(event)) this._emitQueueUpdate();
 		await normalizeQueuedMessageImages(this, event.message);
 	}
@@ -377,6 +382,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			if (!assistantFailed && assistantMsg.stopReason === "stop") {
 				this._fallbackAttemptedKeys.clear();
 				this._fallbackBlockedModels.length = 0;
+				this._fallbackBlockedProviders.clear();
 			}
 
 			// A non-truncated assistant response means the length-continuation loop
@@ -772,6 +778,7 @@ export function closeAgentSession(
 		await attempt("extensions", async () => {
 			await emitSessionShutdownEvent(session._extensionRunner, event);
 		});
+		await attempt("directory checks", () => drainWindowsDirectorySecurityReads(sessionLifetime(session)));
 		await attempt("messages", () => prepareProtectedStreamingCustomMessagesForDisposal(session));
 		await attempt("shell persistence", async () => await session._flushPendingBashMessages());
 		await attempt("settings", async () => {

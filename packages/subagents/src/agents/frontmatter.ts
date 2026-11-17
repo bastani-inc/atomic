@@ -1,5 +1,8 @@
 import { parseFrontmatter as parseYamlFrontmatter } from "@bastani/atomic";
-import { type ModelConstraints, parseModelConstraints } from "../shared/model-constraints.js";
+import { warnRemovedRoutingOption } from "../shared/removed-routing-warning.js";
+
+/** Fields of the removed automatic model routing; a file that still sets them is told once that they are ignored. */
+const REMOVED_ROUTING_FIELDS: ReadonlySet<string> = new Set(["modelConstraints", "taskNeeds"]);
 
 /**
  * A frontmatter value as a real YAML parser produces it (upstream pi #7598
@@ -36,7 +39,6 @@ function toFrontmatterValue(value: RawFrontmatterValue): FrontmatterValue | unde
 export interface ParsedAgentFrontmatter {
 	frontmatter: Frontmatter;
 	body: string;
-	modelConstraints?: ModelConstraints;
 	/**
 	 * The YAML parser's error message when the document does not parse.
 	 * The switch from a line reader to the real parser made previously
@@ -69,12 +71,9 @@ export function parseFrontmatter(content: string): ParsedAgentFrontmatter {
 	const raw = parsed.frontmatter;
 	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { frontmatter, body: parsed.body };
 	for (const [key, value] of Object.entries(raw)) {
+		if (REMOVED_ROUTING_FIELDS.has(key)) warnRemovedRoutingOption(key);
 		const narrowed = toFrontmatterValue(value);
 		if (narrowed !== undefined) frontmatter[key] = narrowed;
 	}
-	try {
-		return { frontmatter, body: parsed.body, modelConstraints: parseModelConstraints(raw.modelConstraints) };
-	} catch (error) {
-		return { frontmatter: {}, body: parsed.body, parseError: error instanceof Error ? error.message : String(error) };
-	}
+	return { frontmatter, body: parsed.body };
 }

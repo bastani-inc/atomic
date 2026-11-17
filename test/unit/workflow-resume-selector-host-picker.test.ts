@@ -353,17 +353,23 @@ describe("workflow resume selector host-picker path", () => {
 		await result;
 	});
 
-	test("delete flow: live rows protected, durable delete waits for the child update", async () => {
+	test("delete flow: in-flight live and crashed durable rows protected, terminal failed live and durable rows delete (#5256)", async () => {
 		const picker = makeFakeHostPicker();
 		const deleted: string[] = [];
+		const failedLive: RunSnapshot = {
+			...pausedLiveRun("live-failed", 400),
+			status: "failed",
+			endedAt: 400,
+			resumable: true,
+		};
 		const promise = openWorkflowResumeSelector(
 			{ hostSessionPicker: picker.hostSessionPicker },
-			[pausedLiveRun("live-a", 500)],
-			async () => ({ durable: [entry("durable-a", "paused")], completed: [] }),
+			[pausedLiveRun("live-a", 500), failedLive],
+			async () => ({ durable: [entry("durable-a", "paused"), entry("durable-crashed", "running")], completed: [] }),
 			{
 				deleteWorkflow: async (workflowId): Promise<DurableWorkflowDeleteOutcome> => {
 					deleted.push(workflowId);
-					return workflowId === "durable-a"
+					return workflowId === "durable-a" || workflowId === "live-failed"
 						? { ok: true, message: "deleted" }
 						: { ok: false, message: "delete refused" };
 				},
@@ -371,24 +377,63 @@ describe("workflow resume selector host-picker path", () => {
 		);
 		await flush();
 
-		// Live rows can never be deleted.
 		await picker.deleteRow("workflow-live:live-a");
 		assert.deepEqual(picker.errors, ["Cannot delete an in-flight workflow run"]);
 		assert.deepEqual(deleted, []);
 
-		// Durable rows delete through the callback and reply with an update.
+		await picker.deleteRow("workflow-durable:durable-crashed");
+		assert.equal(picker.errors.length, 2);
+		assert.deepEqual(deleted, []);
+
 		const updatesBefore = picker.updates.length;
 		await picker.deleteRow("workflow-durable:durable-a");
 		assert.deepEqual(deleted, ["durable-a"]);
 		assert.equal(picker.updates.length, updatesBefore + 1, "successful delete replies with an update");
 		assert.deepEqual(
 			picker.updates.at(-1)!.map((row) => row.id),
-			["live-a"],
+			["live-a", "live-failed", "durable-crashed"],
 			"deleted row removed from the update",
+		);
+
+		await picker.deleteRow("workflow-live:live-failed");
+		assert.deepEqual(deleted, ["durable-a", "live-failed"]);
+		assert.deepEqual(
+			picker.updates.at(-1)!.map((row) => row.id),
+			["live-a", "durable-crashed"],
+			"deleted terminal live row removed from the update",
 		);
 
 		picker.cancel();
 		await promise;
+	});
+
+	test("settling while deleteWorkflow is in flight suppresses late delete updates and errors (#5256)", async () => {
+		const picker = makeFakeHostPicker();
+		let resolveDelete!: (outcome: DurableWorkflowDeleteOutcome) => void;
+		const promise = openWorkflowResumeSelector(
+			{ hostSessionPicker: picker.hostSessionPicker },
+			[],
+			async () => ({ durable: [entry("durable-a", "paused")], completed: [] }),
+			{
+				deleteWorkflow: () =>
+					new Promise<DurableWorkflowDeleteOutcome>((resolve) => {
+						resolveDelete = resolve;
+					}),
+			},
+		);
+		await flush();
+		const updatesAfterHydrate = picker.updates.length;
+
+		const deleting = picker.deleteRow("workflow-durable:durable-a");
+		picker.cancel();
+		const outcome = await promise;
+		assert.deepEqual(outcome.result, { kind: "close" });
+
+		resolveDelete({ ok: true, message: "deleted" });
+		await deleting;
+		await flush();
+		assert.equal(picker.updates.length, updatesAfterHydrate, "late delete pushes no update after settle");
+		assert.deepEqual(picker.errors, [], "late delete pushes no error after settle");
 	});
 
 	test("delete errors surface without removing the row; no deleteWorkflow means unavailable", async () => {
@@ -463,6 +508,59 @@ describe("workflow resume selector host-picker path", () => {
 		resolveHydrate({ durable: [entry("late", "paused")], completed: [] });
 		await flush();
 		assert.equal(picker.updates.length, 0, "late hydration pushes no update after settle");
+	});
+
+	test("settling while refresh is in flight suppresses the late refresh update and keeps the settled catalog (#5256)", async () => {
+		const picker = makeFakeHostPicker();
+		let onChange: (() => void) | undefined;
+		let beginRefresh!: () => void;
+		let resolveRefresh!: (next: { liveRuns: readonly RunSnapshot[]; catalog: WorkflowResumeCatalogRows }) => void;
+		const refreshStarted = new Promise<void>((resolve) => {
+			beginRefresh = resolve;
+		});
+		const promise = openWorkflowResumeSelector(
+			{ hostSessionPicker: picker.hostSessionPicker },
+			[],
+			async () => ({ durable: [entry("durable-a", "paused")], completed: [] }),
+			{
+				refreshIntervalMs: 0,
+				watch: (change) => {
+					onChange = change;
+					return () => {};
+				},
+				refresh: () => {
+					beginRefresh();
+					return new Promise((resolve) => {
+						resolveRefresh = resolve;
+					});
+				},
+			},
+		);
+		await flush();
+		assert.ok(onChange);
+		const updatesAfterHydrate = picker.updates.length;
+
+		onChange();
+		await refreshStarted;
+
+		picker.cancel();
+		const outcome = await promise;
+		assert.deepEqual(outcome.result, { kind: "close" });
+		assert.deepEqual(
+			outcome.catalog.durable.map((row) => row.workflowId),
+			["durable-a"],
+		);
+
+		resolveRefresh({
+			liveRuns: [pausedLiveRun("late-live", 300)],
+			catalog: { durable: [entry("late-durable", "paused")], completed: [] },
+		});
+		await flush();
+		assert.equal(picker.updates.length, updatesAfterHydrate, "late refresh pushes no update after settle");
+		assert.deepEqual(
+			outcome.catalog.durable.map((row) => row.workflowId),
+			["durable-a"],
+		);
 	});
 });
 
@@ -638,17 +736,17 @@ describe("workflow resume selector host-picker end-to-end (real engine bridge)",
 				.component()
 				.render(width)
 				.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
-			// Two-line rows (#5224): the title names the workflow and the run's short id; the line under it its state.
-			const visible = ids.map((id) => rows.findIndex((line) => line.includes(id.slice(0, 8))));
+			const names = ["live-workflow", "paused-workflow", "completed-workflow"];
+			const visible = names.map((name) => rows.findIndex((line) => line.includes(name)));
 			assert.ok(
 				visible.every((index) => index >= 0),
 				`all three rows visible at ${width} columns:\n${rows.join("\n")}`,
 			);
-			assert.match(rows[visible[0]!]!, /live-workflow · 11111111/);
+			assert.match(rows[visible[0]!]!, /live-workflow/);
 			assert.match(rows[visible[0]! + 1]!, /^\s+paused · /);
-			assert.match(rows[visible[1]!]!, /paused-workflow · 22222222/);
+			assert.match(rows[visible[1]!]!, /paused-workflow/);
 			assert.match(rows[visible[1]! + 1]!, /^\s+paused · /);
-			assert.match(rows[visible[2]!]!, /completed-workflow · 33333333/);
+			assert.match(rows[visible[2]!]!, /completed-workflow/);
 			assert.match(rows[visible[2]! + 1]!, /^\s+✓ completed · /);
 		}
 		// The full id stays one key away: space previews the selected run.

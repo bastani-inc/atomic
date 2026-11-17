@@ -334,7 +334,11 @@ async function runWorker(start: WorkerStart): Promise<void> {
 	// #4768: a model call to a scope of the root's fleet-wide rate limits takes a token from the coordinator first.
 	if (start.rateScopes !== undefined && start.rateScopes.length > 0)
 		setProviderRequestGate(
-			fleetRateGate(start.rateScopes, (provider, model) => request({ kind: "rate-acquire", provider, model })),
+			fleetRateGate(
+				start.rateScopes,
+				(provider, model, rateRequest) => request({ kind: "rate-acquire", provider, model, request: rateRequest }),
+				(rateRequest) => request({ kind: "rate-release", request: rateRequest }),
+			),
 		);
 	const definitions = await Promise.all(start.definitions.map(loadWorkerDefinition));
 	const durableSelection = process.env[POOL_DURABLE_JOURNAL_ENV];
@@ -353,8 +357,8 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			// A SQL journal's key index: an attempt reads its own child's checkpoints from the root through it (#4197).
 			if (key === "readKeyRange")
 				return target instanceof SqlRunJournal
-					? (runId: string, fromKey: string, toKey: string) =>
-							SqlRunJournal.readKeyRange(target, runId, fromKey, toKey)
+					? (runId: string, fromKey: string, toKey: string, options?: { readonly overview?: boolean }) =>
+							SqlRunJournal.readKeyRange(target, runId, fromKey, toKey, options)
 					: undefined;
 			if (typeof key !== "string" || !journalReads.has(key))
 				return () => {

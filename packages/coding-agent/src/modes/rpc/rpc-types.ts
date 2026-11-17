@@ -24,8 +24,6 @@ import type {
 	SessionStats,
 } from "../../core/agent-session.js";
 import type { BashResult } from "../../core/bash-executor.ts";
-import type { SerializedBackgroundCompactionState } from "../../core/compaction/background-compaction.ts";
-import type { SerializedBackgroundCompactionError } from "../../core/compaction/background-compaction-errors.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { SerializedDebugError } from "../../core/debug-errors.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
@@ -162,10 +160,8 @@ export type RpcCommand =
 	| { id?: string; type: "set_follow_up_mode"; mode: "all" | "one-at-a-time" }
 
 	// Compaction
-	| { id?: string; type: "compact" }
+	| { id?: string; type: "compact"; instructions?: string }
 	| { id?: string; type: "set_auto_compaction"; enabled: boolean }
-	| { id?: string; type: "set_background_compaction"; enabled: boolean }
-	| { id?: string; type: "set_background_compaction_threshold"; percent: number }
 	| { id?: string; type: "abort_compaction" }
 	| { id?: string; type: "abort_branch_summary" }
 
@@ -270,10 +266,6 @@ export interface RpcSessionState {
 	sessionId: string;
 	sessionName?: string;
 	autoCompactionEnabled: boolean;
-	/** Background compaction state (#4330), the same shape workflow stage status carries. */
-	compaction: SerializedBackgroundCompactionState;
-	backgroundCompactionEnabled: boolean;
-	backgroundCompactionThresholdPercent: number;
 	messageCount: number;
 	pendingMessageCount: number;
 	queuedMessagesPaused: boolean;
@@ -460,8 +452,6 @@ export type RpcResponse =
 	// Compaction
 	| { id?: string; type: "response"; command: "compact"; success: true; data: VerbatimCompactionResult }
 	| { id?: string; type: "response"; command: "set_auto_compaction"; success: true }
-	| { id?: string; type: "response"; command: "set_background_compaction"; success: true }
-	| { id?: string; type: "response"; command: "set_background_compaction_threshold"; success: true }
 	| { id?: string; type: "response"; command: "abort_compaction"; success: true }
 	| { id?: string; type: "response"; command: "abort_branch_summary"; success: true }
 
@@ -593,8 +583,6 @@ export type RpcErrorDetails =
 			errorDetails: { providerId: string; operation: CredentialSynchronizationOperation };
 	  }
 	| { errorCode: "debug_error"; errorDetails: SerializedDebugError }
-	// A rejected background compaction command keeps its typed error (#4330)
-	| { errorCode: "background_compaction"; errorDetails: SerializedBackgroundCompactionError }
 	// A resume or import whose session's working directory is gone keeps its typed error, so the host can offer
 	// to continue or fork instead of reporting a failure
 	| { errorCode: "missing_session_cwd"; errorDetails: SerializedMissingSessionCwdError };

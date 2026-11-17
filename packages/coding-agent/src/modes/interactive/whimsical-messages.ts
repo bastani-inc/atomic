@@ -462,5 +462,8 @@ export const WHIMSICAL_WORKING_MESSAGES = [
 ] as const;
 
 export function pickWhimsicalWorkingMessage(): string {
-	return WHIMSICAL_WORKING_MESSAGES[Math.floor(Math.random() * WHIMSICAL_WORKING_MESSAGES.length)];
+	return WHIMSICAL_WORKING_MESSAGES[Math.floor(Math.random() * WHIMSICAL_WORKING_MESSAGES.length)].replace(
+		/\.{3}$/,
+		"…",
+	);
 }

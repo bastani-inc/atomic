@@ -28,10 +28,11 @@ export function decisionSettingScopes(project: Pick<Settings, "decisionModel" | 
  * a deleted subagent environment key.
  */
 const NO_DEFAULT_MODELS_VALUE = "__no-models__";
+const COMPACTION_AUTO_LABEL = "Auto (clear and recover)";
 
 /** Index just after the compaction items, where the image and UI toggles start. */
 function afterCompactionItems(items: SettingItem[]): number {
-	return items.findIndex((item) => item.id === "background-compaction-threshold") + 1;
+	return items.findIndex((item) => item.id === "autocompact") + 1;
 }
 
 function insertImageItems(items: SettingItem[], config: SettingsConfig): void {
@@ -52,16 +53,6 @@ function insertImageItems(items: SettingItem[], config: SettingsConfig): void {
 		currentValue: String(config.imageWidthCells),
 		values: ["60", "80", "120"],
 	});
-}
-
-/** Offered background compaction thresholds; a configured value outside the list stays selectable. */
-export const BACKGROUND_COMPACTION_THRESHOLD_CHOICES: readonly number[] = [50, 60, 70, 75, 80, 90];
-
-function backgroundThresholdChoices(current: number): string[] {
-	const choices = BACKGROUND_COMPACTION_THRESHOLD_CHOICES.includes(current)
-		? BACKGROUND_COMPACTION_THRESHOLD_CHOICES
-		: [...BACKGROUND_COMPACTION_THRESHOLD_CHOICES, current].sort((a, b) => a - b);
-	return choices.map(String);
 }
 
 function insertAfter(items: SettingItem[], afterId: string, item: SettingItem): void {
@@ -197,21 +188,6 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 			values: ["true", "false"],
 		},
 		{
-			id: "background-compaction",
-			label: "Background compaction",
-			description:
-				"Compact older context in the background while the agent keeps working; blocking compaction only on overflow",
-			currentValue: config.backgroundCompaction ? "true" : "false",
-			values: ["true", "false"],
-		},
-		{
-			id: "background-compaction-threshold",
-			label: "Background compaction threshold",
-			description: "Percentage of the context window at which background compaction starts",
-			currentValue: String(config.backgroundCompactionThresholdPercent),
-			values: backgroundThresholdChoices(config.backgroundCompactionThresholdPercent),
-		},
-		{
 			id: "steering-mode",
 			label: "Steering mode",
 			description:
@@ -330,7 +306,7 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 		{
 			id: "decision-model",
 			label: "Decision model",
-			description: `Saves to ${config.decisionModelScope ?? "global"} settings; decides model "auto" selection, structured output and readiness after a steer, not the chat model`,
+			description: `Saves to ${config.decisionModelScope ?? "global"} settings; decides structured output, stage predictions and readiness after a steer, not the chat model`,
 			currentValue: config.decisionModel && config.decisionModel !== "auto" ? config.decisionModel : "Automatic",
 			submenu: (_currentValue, done) => {
 				const current = config.decisionModel === "auto" ? "" : (config.decisionModel ?? "");
@@ -389,20 +365,20 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 		{
 			id: "compaction-model",
 			label: "Compaction model",
-			description: `Saves to ${config.compactionModelScope ?? "global"} settings; changes compaction, not the chat model`,
+			description: `Saves to ${config.compactionModelScope ?? "global"} settings; Auto clears the context and the agent recovers from session history`,
 			currentValue:
 				config.compactionModel && config.compactionModel !== "auto"
 					? config.compactionModel
-					: "Auto (current model)",
+					: COMPACTION_AUTO_LABEL,
 			submenu: (_currentValue, done) => {
 				const current = config.compactionModel === "auto" ? "" : (config.compactionModel ?? "");
-				const models = [
-					...(config.availableDefaultModels ?? []).filter((model) => isModelType(model, "chat")),
-					...(config.availableClassifierModels ?? []),
-					...(config.availableCompactorModels ?? []),
-				];
+				const models = config.availableCompactorModels ?? [];
 				const options = [
-					{ value: "", label: "Auto (current model)", description: "Use the current chat model" },
+					{
+						value: "",
+						label: COMPACTION_AUTO_LABEL,
+						description: "Clear the context; the agent recovers what it needs from session history",
+					},
 					...models.map((model) => ({
 						value: `${model.provider}/${model.id}`,
 						label: formatModelLabel(model),
@@ -421,7 +397,7 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 				}
 				return new SelectSubmenu(
 					"Compaction model",
-					`Saves to ${config.compactionModelScope ?? "global"} settings. Selected providers receive the compactable conversation.`,
+					`Saves to ${config.compactionModelScope ?? "global"} settings. A compactor model receives the conversation in context; its output replaces it.`,
 					options.map((option) => ({
 						...option,
 						label: `${option.value === current ? "✓ " : "  "}${option.label}`,
@@ -430,7 +406,7 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 					(value) => {
 						callbacks.onCompactionModelChange?.(value);
 						config.compactionModel = value;
-						done(value || "Auto (current model)");
+						done(value || COMPACTION_AUTO_LABEL);
 					},
 					() => done(),
 					undefined,

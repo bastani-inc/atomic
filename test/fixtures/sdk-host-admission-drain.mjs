@@ -4,14 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate as tick } from "node:timers/promises";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@bastani/atomic";
-import { createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
 
 // #3105: bounded observations of actual built preflight/reload drain, never timeout-as-success.
 assert.equal(process.versions.bun, undefined);
 assert.ok(import.meta.resolve("@bastani/atomic").endsWith("/dist/index.js"));
 const root = mkdtempSync(join(tmpdir(), "atomic-admission-drain-"));
 const scenario = process.argv[2];
-assert.ok(["prompt", "reload", "compact", "compact-provider"].includes(scenario));
+assert.ok(["prompt", "reload", "compact"].includes(scenario));
 const entered = Promise.withResolvers();
 const release = Promise.withResolvers();
 const settingsManager = SettingsManager.inMemory();
@@ -37,18 +36,13 @@ const { session } = await createAgentSession({
 	builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
 });
 let providerCalls = 0;
-modelRuntime.streamSimple = (model) => {
+modelRuntime.streamSimple = () => {
 	providerCalls++;
-	if (scenario !== "compact-provider") throw new Error("provider sentinel");
-	const stream = createAssistantMessageEventStream();
-	entered.resolve();
-	void release.promise.then(() => stream.end({ role: "assistant", content: [{ type: "text", text: "retained" }], api: model.api, provider: model.provider, model: model.id,
-		usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 0 }));
-	return stream;
+	throw new Error("provider sentinel");
 };
 await session.sessionManager.appendMessage({ role: "user", content: Array.from({ length: 100 }, (_, i) => `line ${i}`).join("\n"), timestamp: 0 });
 const before = session.sessionManager.getEntries().length;
-const operation = scenario.startsWith("compact") ? session.compact({ preserve_recent: 0 }) : scenario === "prompt" ? session.prompt("verbatim  ") : session.reload({
+const operation = scenario === "compact" ? session.compact() : scenario === "prompt" ? session.prompt("verbatim  ") : session.reload({
 	beforeSessionStart: async () => { entered.resolve(); await release.promise; },
 });
 const result = operation.then(() => undefined, (error) => error);
@@ -63,10 +57,9 @@ try {
 	release.resolve();
 	await closing;
 	const error = await result;
-	if (scenario === "compact-provider") assert.ok(error instanceof Error);
-	else assert.equal(error?.code, "SessionClosed");
-	assert.equal(providerCalls, scenario === "compact-provider" ? 1 : 0);
-	if (scenario.startsWith("compact")) {
+	assert.equal(error?.code, "SessionClosed");
+	assert.equal(providerCalls, 0);
+	if (scenario === "compact") {
 		assert.equal(session.sessionManager.getEntries().length, before);
 		await assert.rejects(session.compact(), { code: "SessionClosed" });
 	}

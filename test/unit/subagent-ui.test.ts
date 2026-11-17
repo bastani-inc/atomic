@@ -114,6 +114,17 @@ test("prefilled catalog search edits from the end", () => {
 	assert.match(stripVTControlCharacters(browser.render(80).join("\n")), /Search: worke/);
 });
 
+test("agent control calls use the shared display name without changing tool arguments (#5350)", () => {
+	initTheme("dark", false);
+	for (const action of ["status", "pause", "resume", "quit"] as const) {
+		const args = { action, id: "own:0" };
+		const before = JSON.stringify(args);
+		const call = renderSubagentToolCall(args, theme, { toolCallId: `control-${action}`, state: {}, invalidate() {} });
+		assert.equal(stripVTControlCharacters(call.render(80).join("\n")).trim(), `Agent(${action} · own:0)`);
+		assert.equal(JSON.stringify(args), before);
+	}
+});
+
 test("background receipt is readable without changing model-facing task identity", () => {
 	initTheme("dark");
 	const result = taskToolResult({
@@ -126,15 +137,13 @@ test("background receipt is readable without changing model-facing task identity
 		},
 	});
 	const original = JSON.stringify(result);
-	const view = renderSubagentToolResult(result, { expanded: false, isPartial: false }, theme, {
-		toolCallId: "ui-fixture",
-		state: {},
-		invalidate() {},
-	});
+	const context = { toolCallId: "ui-fixture", state: {}, invalidate() {} };
+	renderSubagentToolCall({ agent: "worker", task: "Inspect fixture" }, theme, context);
+	const view = renderSubagentToolResult(result, { expanded: false, isPartial: false }, theme, context);
 	const text = stripVTControlCharacters(view.render(80).join("\n"));
-	assert.match(text, /Launched in background/);
-	assert.match(text, /\/tasks/);
-	assert.doesNotMatch(text, /wait-fixture|"observation"/);
+	assert.match(text, /∀ Agent\(worker · Inspect fixture\)/);
+	assert.match(text, /⎿ {2}Running/);
+	assert.doesNotMatch(text, /wait-fixture|"observation"|\/tasks/);
 	assert.equal(JSON.stringify(result), original);
 });
 
@@ -150,6 +159,10 @@ test("parallel receipts identify each sibling and preserve errors at narrow widt
 		},
 		theme,
 		context,
+	);
+	assert.match(
+		stripVTControlCharacters(header.render(80).join("\n")),
+		/∀ Agent\(reader · Read\)[\s\S]*∀ Agent\(checker · Check\)/,
 	);
 	const response: ModelParallelResponse = {
 		kind: "parallel",
@@ -187,15 +200,10 @@ test("parallel receipts identify each sibling and preserve errors at narrow widt
 		stripVTControlCharacters(
 			renderSubagentToolResult(result, { expanded, isPartial: false }, theme, context).render(80).join("\n"),
 		);
-	assert.match(text(false), /├─.*reader/);
-	assert.equal(
-		stripVTControlCharacters(header.render(80).join("\n")).trimEnd(),
-		"subagent parallel (2) · 1 running · 1 failed",
-	);
-	assert.match(text(false), /└─.*checker/);
-	assert.match(text(false), /Check failed/);
-	assert.doesNotMatch(text(false), /task-a/);
-	assert.match(text(true), /task-a/);
+	assert.match(text(false), /∀ Agent\(reader · Read\)\n {3}⎿ {2}Running/);
+	assert.match(text(false), /✗ Agent\(checker · Check\)\n {3}⎿ {2}Failed · Check failed/);
+	assert.doesNotMatch(text(false), /task-a|Prompt/);
+	assert.match(text(true), /Prompt[\s\S]*Tool calls[\s\S]*Result/);
 	for (const width of [12, 48, 100])
 		assert.ok(
 			renderSubagentToolResult(result, { expanded: true, isPartial: false }, theme, context)
@@ -261,11 +269,14 @@ test("background bash results show observation status rather than finished timin
 	try {
 		component.updateResult(result);
 		const compact = stripVTControlCharacters(component.render(80).join("\n"));
-		assert.match(compact, /Continued in background/);
+		assert.match(compact, /Running in background/);
 		assert.match(compact, /first output/);
 		assert.doesNotMatch(compact, /Command is still running|execution timeout|shell-id|Took/);
 		component.setExpanded(true);
-		assert.match(stripVTControlCharacters(component.render(80).join("\n")), /shell-id/);
+		assert.match(
+			stripVTControlCharacters(component.render(80).join("\n")),
+			/Running in background[\s\S]*first output/,
+		);
 		assert.equal(JSON.stringify(result), original);
 	} finally {
 		component.dispose();

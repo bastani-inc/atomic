@@ -89,5 +89,6 @@ test("code_search host row keeps repository visible through pending, completion 
 		isError: true,
 	});
 	assert.ok(render().includes("Owner/Repo"));
-	assert.ok(render().includes("Error: Unavailable"));
+	assert.ok(render().includes("✗"));
+	assert.ok(render().includes("Unavailable"));
 });

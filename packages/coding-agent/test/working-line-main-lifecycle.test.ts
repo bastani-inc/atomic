@@ -25,7 +25,7 @@ function mainChat() {
 		workingVisible: true,
 		workingMessage: undefined,
 		lastWorkingMessage: undefined,
-		defaultWorkingMessage: "Working...",
+		defaultWorkingMessage: "Working…",
 		workingIndicatorOptions: undefined,
 		loadingAnimation: undefined,
 		compactionActive: false,

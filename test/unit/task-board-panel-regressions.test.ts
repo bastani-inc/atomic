@@ -310,12 +310,18 @@ test("/tasks keeps a started reply bound to its original prompt, ignores unbound
 		for (const char of "ye") inspector.handleInput(char);
 		item = { ...item, promptId: "p2", question: "Delete production?" };
 		changed();
-		assert.match(paint(), /Delete production\?/);
 		inspector.handleInput("s");
 		inspector.handleInput("\r");
 		await flushMicrotasks();
 		assert.equal(answers.length, 1);
 		assert.equal(answers[0]!.options?.promptId, "p1");
+		const changedFrame = paint();
+		assert.match(changedFrame, /Delete production\?/);
+		assert.doesNotMatch(changedFrame, /❯ yes/, "a reply started for the first question is cleared");
+		answers.length = 0;
+		inspector.handleInput("\r");
+		await flushMicrotasks();
+		assert.deepEqual(answers, [], "nothing typed for the first question reaches the second");
 
 		answers.length = 0;
 		inspector.setBoardSource(makeSource());

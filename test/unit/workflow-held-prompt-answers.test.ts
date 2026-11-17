@@ -106,6 +106,18 @@ test("#4022: a form host failure refused before the replacement asked goes once 
 	const ended = holdingFailure();
 	ended.settle("run", stage(2, { status: "completed" }), 2);
 	assert.equal(ended.takeQuestion("run", "stage", question, 2), undefined, "an ended stage drops it");
+
+	const dialogFirst = holdingFailure();
+	const dialog: PendingPrompt = { ...asked, id: "dialog-replacement", source: "stage-dialog" };
+	dialogFirst.settle("run", stage(2, { pendingPrompt: dialog }), 2);
+	dialogFirst.settle(
+		"run",
+		stage(2, { pendingPrompt: dialog, inputRequest: { id: question.promptId } as StageSnapshot["inputRequest"] }),
+		2,
+	);
+	const afterDialog = dialogFirst.takeQuestion("run", "stage", question, 2);
+	assert.ok(afterDialog !== undefined && "error" in afterDialog, "a dialog-first replacement keeps the held question");
+	assert.equal(afterDialog.error, formHostFailure);
 });
 
 function holdingDelivered(): HeldPromptAnswers {
@@ -132,6 +144,27 @@ test("an answer the attempt took stays held through that attempt's own publicati
 	assert.deepEqual(held.takePrompt("run", "stage", again, 2), { response: "taken-answer" });
 	assert.equal(held.takePrompt("run", "stage", again, 2), undefined, "handed out once");
 });
+
+test.each(["delivered", "refused", "failed"] as const)(
+	"a %s stage dialog outcome cannot settle an identical new dialog after replacement (#5354)",
+	(outcome) => {
+		const held = new HeldPromptAnswers();
+		const first: PendingPrompt = { ...asked, source: "stage-dialog" };
+		held.hold("run", "stage", {
+			kind: "prompt",
+			generation: 1,
+			promptId: first.id,
+			identity: promptIdentity(first),
+			...(outcome === "failed" ? { error: new Error("host failed") } : { response: true }),
+			...(outcome === "delivered" ? { delivered: true as const } : {}),
+		});
+		const next: PendingPrompt = { ...first, id: "dialog-next" };
+		if (outcome === "delivered") held.settle("run", stage(1, { pendingPrompt: next }), 1);
+		const replacement: PendingPrompt = { ...next, id: "dialog-replacement" };
+		held.settle("run", stage(2, { pendingPrompt: replacement }), 2);
+		assert.equal(held.takePrompt("run", "stage", replacement, 2), undefined);
+	},
+);
 
 test("an answer the attempt took is discarded once a later attempt shows the stage settled (#4941)", () => {
 	const held = holdingDelivered();

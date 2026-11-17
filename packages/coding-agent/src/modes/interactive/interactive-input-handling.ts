@@ -79,7 +79,6 @@ export function registerStartupInputListeners(mode: InteractiveModeBase): void {
 
 InteractiveModeBase.prototype.setupKeyHandlers = async function (this: InteractiveModeBase): Promise<void> {
 	registerStartupInputListeners(this);
-	// The chord's notices show in the view the user is in and clear themselves; none is written to a transcript.
 	const isolated = this.runtimeHost instanceof IsolatedInteractiveRuntime ? this.runtimeHost : undefined;
 	const notices = createStopAllNotices({
 		...(isolated === undefined
@@ -118,7 +117,8 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 	);
 	let agentPanelRequested = false;
 	this.addTuiInputListener((data) => {
-		if (isKeyRelease(data) || !this.keybindings.matches(data, "app.agents.focus")) return undefined;
+		if (isKeyRelease(data) || isPhysicalEscape(data) || !this.keybindings.matches(data, "app.agents.focus"))
+			return undefined;
 		if (this.ui.hasOverlay() || !this.editorContainer.children.includes(this.editor)) return undefined;
 		if (this.editor.capturesViewportInput) return undefined;
 		if (this.editor !== this.defaultEditor || this.editor.getText() !== "" || this.isBashMode) return undefined;
@@ -471,10 +471,6 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 			}
 			if (command === "compact") {
 				this.editor.setText("");
-				if (args !== "") {
-					this.showWarning("Usage: /compact");
-					return;
-				}
 				// A manual request can take over automatic compaction, but a second manual
 				// compaction or branch summary still has no safe independent owner.
 				const automaticCompaction =
@@ -483,7 +479,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 					this.showWarning(COMPACTION_ALREADY_IN_PROGRESS_WARNING);
 					return;
 				}
-				await this.handleCompactCommand();
+				await this.handleCompactCommand(args);
 				return;
 			}
 			if (bare("reload")) {

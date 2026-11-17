@@ -5,6 +5,15 @@ export function taskClockRunning(state: Execution["kind"] | AgentPanelState): bo
 	return state === "running" || state === "cancelling" || state === "stopping" || state === "input";
 }
 
+export function liveElapsedFromRead(
+	reportedMs: number | undefined,
+	readAt: number,
+	running: boolean,
+	now = Date.now(),
+): number | undefined {
+	return reportedMs === undefined || !running ? reportedMs : reportedMs + Math.max(0, now - readAt);
+}
+
 type ElapsedClock = { since: number; displayed: number; frozen?: number; settled?: boolean; ended?: boolean };
 type ClockReference = {
 	readonly table: Map<string, WeakRef<ElapsedClock>>;
@@ -45,10 +54,6 @@ function readClock(
 	return { elapsedMs: entry.displayed, clock: entry };
 }
 
-/**
- * A task's elapsed time on the clock shared by every view without a source of its own. A clock stopped while paused
- * continues from the time it showed when the task runs again; one stopped because the task `ended` starts afresh.
- */
 export function liveElapsedMs(
 	taskId: string,
 	reportedMs: number | undefined,
@@ -76,7 +81,6 @@ export class TaskElapsedClocks {
 		return this.retained.size > 0 || this.table.size > 0;
 	}
 
-	/** As {@link liveElapsedMs}, on this owner's clocks. */
 	elapsedMs(
 		taskId: string,
 		reportedMs: number | undefined,

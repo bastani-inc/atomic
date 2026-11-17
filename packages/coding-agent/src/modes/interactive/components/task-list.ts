@@ -1,7 +1,7 @@
 import type { Component } from "@bastani/atomic-tui";
 import { agentPanelTaskId, taskPanelItems } from "../../../core/tasks/agent-panel-source.ts";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
-import { type TaskElapsedClocks, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.ts";
+import { type TaskElapsedClocks, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
 import { theme } from "../theme/theme.js";
 import { AGENT_PANEL_IDLE_ROWS, renderAgentPanelRows } from "./agent-panel.ts";
 import { TaskRow, taskLabel, taskTitle } from "./task-row.js";
@@ -62,10 +62,6 @@ export function isActiveBackgroundTask(task: TaskRecord): boolean {
 	return task.observation.kind === "background" && task.execution.kind !== "settled";
 }
 
-/**
- * The rows of a chat's active background agents and shells, as the agent panel draws them: a stage or subagent chat
- * shows its own tasks this way below its prompt. Finished tasks leave at once; `/tasks` keeps them.
- */
 export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, clocks?: TaskElapsedClocks): string[] {
 	const input: TaskRecord[] = [];
 	const running: TaskRecord[] = [];

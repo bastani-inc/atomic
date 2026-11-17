@@ -7,7 +7,14 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { closeSnapshotJournals, openSqlSnapshotJournalBackend } from "../helpers/workflow-snapshot-journal.js";
-import { GitSandbox } from "../helpers/worktree-snapshot.js";
+import { GIT_PROCESS_BUDGET_MS, GitSandbox, startedGitProcesses } from "../helpers/worktree-snapshot.js";
+
+/**
+ * The git processes the two-worktree test may start: two remotes with their clones, a run that captures both checkouts,
+ * and a resume that restores both. Git 2.5x starts about 151 on Linux and a few more on Windows, which starts each one
+ * several times slower; beside other git-heavy suites a Windows gate took the test past the default 30 s budget.
+ */
+const TWO_RESTORES_GIT_PROCESSES = 175;
 
 let sandbox: GitSandbox;
 let priorAgentDir: string | undefined;
@@ -23,45 +30,55 @@ afterEach(async () => {
 	sandbox.dispose();
 });
 
-test("two worktrees restored in one resume that raise the same warning each get their own notice (#4245)", async () => {
-	const first = await sandbox.remoteWithClone("one");
-	const second = await sandbox.remoteWithClone("two");
-	const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));
-	let attempt = 0;
-	const definition = workflow({
-		name: "two-roots",
-		description: "",
-		inputs: {},
-		outputs: {},
-		run: async (ctx) => {
-			await ctx.tool("write", {}, async () => {
-				sandbox.write(join(first.clone, "result.txt"), "first\n");
-				sandbox.write(join(first.clone, ".env.local"), "secret\n");
-				sandbox.write(join(second.clone, "result.txt"), "second\n");
-				sandbox.write(join(second.clone, ".env.local"), "secret\n");
-				return "done";
-			});
-			await ctx.stage("other", { cwd: second.clone }).prompt("p");
-			if (attempt++ === 0) throw new Error("interrupted");
-			return {};
-		},
-	});
-	const adapters = { prompt: { prompt: async () => "done" } };
-	const options = { durableBackend: fixture.backend, adapters };
-	const initial = await run(definition, {}, { ...options, cwd: first.clone, store: createStore() });
-	assert.equal(initial.status, "failed");
-	sandbox.write(join(first.clone, "result.txt"), "drift\n");
-	sandbox.write(join(second.clone, "result.txt"), "drift\n");
-	const store = createStore();
-	const resumed = await run(definition, {}, { ...options, runId: initial.runId, cwd: first.clone, store });
-	assert.equal(resumed.status, "completed", resumed.error);
-	const mappings = fixture.backend.getWorkflow(initial.runId)!.worktreeRootMappings!;
-	assert.equal(mappings.length, 2);
-	const warnings = store.notices().filter((notice) => notice.level === "warning");
-	assert.equal(warnings.length, 2);
-	assert.equal(new Set(warnings.map((notice) => notice.id)).size, 2);
-	await fixture.close();
-});
+test(
+	"two worktrees restored in one resume that raise the same warning each get their own notice (#4245)",
+	async () => {
+		const trace = sandbox.traceGitProcesses();
+		const first = await sandbox.remoteWithClone("one");
+		const second = await sandbox.remoteWithClone("two");
+		const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));
+		let attempt = 0;
+		const definition = workflow({
+			name: "two-roots",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.tool("write", {}, async () => {
+					sandbox.write(join(first.clone, "result.txt"), "first\n");
+					sandbox.write(join(first.clone, ".env.local"), "secret\n");
+					sandbox.write(join(second.clone, "result.txt"), "second\n");
+					sandbox.write(join(second.clone, ".env.local"), "secret\n");
+					return "done";
+				});
+				await ctx.stage("other", { cwd: second.clone }).prompt("p");
+				if (attempt++ === 0) throw new Error("interrupted");
+				return {};
+			},
+		});
+		const adapters = { prompt: { prompt: async () => "done" } };
+		const options = { durableBackend: fixture.backend, adapters };
+		const initial = await run(definition, {}, { ...options, cwd: first.clone, store: createStore() });
+		assert.equal(initial.status, "failed");
+		sandbox.write(join(first.clone, "result.txt"), "drift\n");
+		sandbox.write(join(second.clone, "result.txt"), "drift\n");
+		const store = createStore();
+		const resumed = await run(definition, {}, { ...options, runId: initial.runId, cwd: first.clone, store });
+		assert.equal(resumed.status, "completed", resumed.error);
+		const mappings = fixture.backend.getWorkflow(initial.runId)!.worktreeRootMappings!;
+		assert.equal(mappings.length, 2);
+		const warnings = store.notices().filter((notice) => notice.level === "warning");
+		assert.equal(warnings.length, 2);
+		assert.equal(new Set(warnings.map((notice) => notice.id)).size, 2);
+		const started = startedGitProcesses(trace).length;
+		assert.ok(
+			started <= TWO_RESTORES_GIT_PROCESSES,
+			`${started} git processes, more than the ${TWO_RESTORES_GIT_PROCESSES} this test's budget allows for`,
+		);
+		await fixture.close();
+	},
+	TWO_RESTORES_GIT_PROCESSES * GIT_PROCESS_BUDGET_MS,
+);
 
 test("each warning of a restore and each later restore of the same snapshot is its own notice (#4245)", async () => {
 	const { clone } = await sandbox.remoteWithClone("one");

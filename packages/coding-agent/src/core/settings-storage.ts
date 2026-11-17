@@ -17,7 +17,7 @@ import { CONFIG_DIR_NAME } from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { normalizeAzureSettings } from "./azure-provider-compat.js";
-import { clearLockHolder, recordLockHolder, takeOverDeadHolder } from "./lock-holder.ts";
+import { clearLockHolder, prepareLockTakeover, recordLockHolder, takeOverDeadHolder } from "./lock-holder.js";
 import { releaseLockSync } from "./lock-release.ts";
 import { waitForLockSync } from "./lock-wait.ts";
 import { renameReplacing } from "./rename-retry.ts";
@@ -236,6 +236,11 @@ export class FileSettingsStorage implements SettingsStorage {
 		} finally {
 			releaseLockSync(release, path);
 		}
+	}
+
+	async prepareWriteLock(scope: SettingsScope): Promise<void> {
+		const path = scope === "global" ? this.globalSettingsPath : this.projectSettingsPath;
+		await prepareLockTakeover(`${path}.lock`);
 	}
 
 	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void {

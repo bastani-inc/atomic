@@ -2,34 +2,42 @@ import assert from "node:assert/strict";
 import type * as Fs from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const accessSync = vi.hoisted(() => vi.fn());
+const { accessSync, existing, spawnSync } = vi.hoisted(() => {
+	const existing = new Set<string>();
+	return {
+		existing,
+		spawnSync: vi.fn(),
+		accessSync: vi.fn((path: string) => {
+			if (!existing.has(path)) throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
+		}),
+	};
+});
 
 vi.mock("node:fs", async (importOriginal) => ({
 	...(await importOriginal<typeof Fs>()),
 	accessSync,
 }));
 
+vi.mock("child_process", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:child_process")>();
+	return { ...actual, spawnSync };
+});
+
 const { getPowerShellConfig } = await import("../src/utils/shell.ts");
 
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 const originalPath = process.env.PATH;
 
-function notFound(): never {
-	throw Object.assign(new Error("not found"), { code: "ENOENT" });
-}
-
-/** Lets only `found` exist; counts the checks of every other candidate as lookups. */
-function onlyExists(found: string | undefined): void {
-	accessSync.mockImplementation((path: string) => {
-		if (path !== found) notFound();
-	});
+function lookupsIn(directory: string): number {
+	return accessSync.mock.calls.filter(([path]) => String(path).startsWith(`${directory}\\`)).length;
 }
 
 describe("PowerShell executable lookup", () => {
 	beforeEach(() => {
 		Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
-		accessSync.mockReset();
-		// Hide the installation-directory fallbacks so only PATH can supply PowerShell.
+		spawnSync.mockReset();
+		accessSync.mockClear();
+		existing.clear();
 		vi.stubEnv("ProgramFiles", undefined);
 		vi.stubEnv("SystemRoot", undefined);
 	});
@@ -42,36 +50,59 @@ describe("PowerShell executable lookup", () => {
 	});
 
 	it("resolves PowerShell with one PATH lookup per PATH value", () => {
-		process.env.PATH = "C:\\first-lookup-path";
-		onlyExists("C:\\first-lookup-path\\pwsh.exe");
+		process.env.PATH = "C:\\first-empty;C:\\first-lookup-path";
+		existing.add("C:\\first-lookup-path\\pwsh.exe");
 		expect(getPowerShellConfig().shell).toBe("C:\\first-lookup-path\\pwsh.exe");
 		const lookups = accessSync.mock.calls.length;
 		expect(getPowerShellConfig().shell).toBe("C:\\first-lookup-path\\pwsh.exe");
 		expect(getPowerShellConfig().shell).toBe("C:\\first-lookup-path\\pwsh.exe");
-		// A remembered path is only checked to still exist.
 		expect(accessSync.mock.calls.length).toBe(lookups + 2);
+		expect(lookupsIn("C:\\first-empty")).toBe(1);
 	});
 
 	it("looks PowerShell up again after PATH changes", () => {
-		process.env.PATH = "C:\\second-lookup-path";
-		onlyExists("C:\\second-lookup-path\\pwsh.exe");
+		existing.add("C:\\second-lookup-path\\pwsh.exe");
+		process.env.PATH = "C:\\second-empty;C:\\second-lookup-path";
 		getPowerShellConfig();
-		process.env.PATH = "C:\\third-lookup-path";
-		onlyExists("C:\\third-lookup-path\\pwsh.exe");
+		process.env.PATH = "C:\\second-empty;C:\\third-lookup-path";
+		existing.add("C:\\third-lookup-path\\pwsh.exe");
 		expect(getPowerShellConfig().shell).toBe("C:\\third-lookup-path\\pwsh.exe");
+		expect(lookupsIn("C:\\second-empty")).toBe(2);
+	});
+
+	it("resolves a relative PATH again when the working directory changes (#5324)", () => {
+		process.env.PATH = "relative-bin";
+		existing.add("C:\\first-project\\relative-bin\\pwsh.exe");
+		existing.add("C:\\second-project\\relative-bin\\pwsh.exe");
+		const cwd = vi.spyOn(process, "cwd").mockReturnValue("C:\\first-project");
+		try {
+			assert.equal(getPowerShellConfig().shell, "C:\\first-project\\relative-bin\\pwsh.exe");
+			cwd.mockReturnValue("C:\\second-project");
+			assert.equal(getPowerShellConfig().shell, "C:\\second-project\\relative-bin\\pwsh.exe");
+		} finally {
+			cwd.mockRestore();
+		}
 	});
 
 	it("finds PowerShell installed after a missed lookup without a PATH change", () => {
 		vi.useFakeTimers();
 		process.env.PATH = "C:\\install-later-path";
-		onlyExists(undefined);
 		assert.throws(() => getPowerShellConfig(), /No PowerShell executable found/);
 		const missedLookups = accessSync.mock.calls.length;
 		assert.throws(() => getPowerShellConfig(), /No PowerShell executable found/);
 		assert.equal(accessSync.mock.calls.length, missedLookups);
 
-		onlyExists("C:\\install-later-path\\pwsh.exe");
+		existing.add("C:\\install-later-path\\pwsh.exe");
 		vi.advanceTimersByTime(30_000);
 		assert.equal(getPowerShellConfig().shell, "C:\\install-later-path\\pwsh.exe");
+	});
+
+	it("resolves PowerShell on PATH without starting a process, so a loaded host cannot hold the main thread on it (#5324)", () => {
+		process.env.PATH = '"C:\\quoted path";C:\\no-pwsh;C:\\windows-powershell';
+		existing.add("C:\\windows-powershell\\powershell.exe");
+
+		assert.equal(getPowerShellConfig().shell, "C:\\windows-powershell\\powershell.exe");
+		assert.ok(lookupsIn("C:\\quoted path") >= 1, "a quoted PATH entry is searched without its quotes");
+		assert.equal(spawnSync.mock.calls.length, 0, "no process was started");
 	});
 });

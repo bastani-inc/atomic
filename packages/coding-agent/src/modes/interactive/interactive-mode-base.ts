@@ -327,6 +327,7 @@ export class InteractiveModeBase {
 
 	disposeInteractiveEngineHost: () => void = () => {};
 	disposeMarkitDiagnosticSink: () => void = () => {};
+	disposeDeprecationWarningSink: () => void = () => {};
 
 	version: string;
 
@@ -491,7 +492,11 @@ export class InteractiveModeBase {
 	// Extension UI state
 	// Extension dialogs shown in the editor slot (select, confirm, input, editor, inline custom).
 	// The last entry is visible; see pushExtensionDialog().
-	extensionDialogs: Array<{ component: ExtensionDialogComponent; blocked: BlockedStatus | undefined }> = [];
+	extensionDialogs: Array<{
+		component: ExtensionDialogComponent;
+		blocked: BlockedStatus | undefined;
+		release?: () => void;
+	}> = [];
 	/** Numbers the program status sources of blocking overlays, so closing one keeps the others. */
 	nextBlockingOverlayId = 0;
 	/**
@@ -586,9 +591,14 @@ export class InteractiveModeBase {
 	 * the previous one again. Every dialog stays answerable, so no dialog promise is left pending,
 	 * and dialogs opened from inside another dialog (for example a confirm from a custom component) work.
 	 */
-	pushExtensionDialog(component: ExtensionDialogComponent, blocked?: BlockedStatus, focus = true): void {
+	pushExtensionDialog(
+		component: ExtensionDialogComponent,
+		blocked?: BlockedStatus,
+		focus = true,
+		release?: () => void,
+	): void {
 		this.disposeActiveSelector();
-		this.extensionDialogs.push({ component, blocked });
+		this.extensionDialogs.push({ component, blocked, release });
 		this.showTopExtensionDialog(focus);
 	}
 
@@ -683,6 +693,7 @@ export class InteractiveModeBase {
 		// shell contents reappear and shutdown prints only the resume line.
 		this.ui.stop({ preserveScreen: isFullscreen && fullscreenExitOutput === "resume-hint" });
 		this.disposeMarkitDiagnosticSink();
+		this.disposeDeprecationWarningSink();
 	}
 
 	declare options: InteractiveModeOptions;

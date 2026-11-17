@@ -73,6 +73,8 @@ export function createPromptStoreMethods(context: StoreContext): PromptStoreMeth
 			if (!stage) return false;
 			if (isTerminalStageStatus(stage.status)) return false;
 			if (stage.pendingPrompt !== undefined) return false;
+			state.stagePromptAnswers.delete(context.stagePromptAnswerKey(runId, stageId));
+			if (stage.promptAnswerState === "available") delete stage.promptAnswerState;
 			stage.pendingPrompt = { ...prompt };
 			stage.promptFootprint = { ...prompt };
 			stage.status = "awaiting_input";
@@ -118,7 +120,7 @@ export function createPromptStoreMethods(context: StoreContext): PromptStoreMeth
 				status: options.recordAnswer === false ? "cancelled" : "answered",
 			});
 			stage.pendingPrompt = undefined;
-			if (stage.status === "awaiting_input") {
+			if (stage.status === "awaiting_input" && stage.inputRequest === undefined) {
 				stage.status = "running";
 				delete stage.awaitingInputSince;
 			}

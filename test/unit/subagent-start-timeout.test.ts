@@ -87,7 +87,7 @@ const ADMISSION_DELAY_MS = 300;
 const STARVED_TURN_MS = 300;
 
 type StallPoint = "session_start" | "input" | "before_agent_start" | "session_recovery_restore" | "session_shutdown";
-type StallHook = (point: StallPoint) => Promise<void> | undefined;
+type StallHook = (point: StallPoint, signal?: AbortSignal) => Promise<void> | undefined;
 const STALL_HOOK = "__atomicIssue4319Stall";
 const STARTUP_HOOK = "__atomicSubagentStartupHooks";
 type StartupHook = (at: string, startup: SubagentStartupHooks | undefined) => void;
@@ -153,33 +153,36 @@ const NEVER_MS = 2 ** 31 - 1;
  * is armed for its whole budget once the child reaches its stall instead. However long a loaded host takes to bring the
  * child there, its budget then runs out while the stall holds it; a budget that ends before is never armed.
  */
-function holdStartBudget(budgetMs: number, reached: Promise<void>): void {
+function holdStartBudget(budgetMs: number, reached: Promise<void> | (() => Promise<void> | undefined)): void {
 	const realSetTimeout = globalThis.setTimeout;
 	const realClearTimeout = globalThis.clearTimeout;
 	type HeldDeadline = { readonly standIn: NodeJS.Timeout; armed?: NodeJS.Timeout; ended: boolean };
-	let deadline: HeldDeadline | undefined;
-	const end = () => {
-		if (deadline === undefined) return;
-		deadline.ended = true;
-		realClearTimeout(deadline.armed);
+	const deadlines: HeldDeadline[] = [];
+	const nextReached = typeof reached === "function" ? reached : () => (deadlines.length === 0 ? reached : undefined);
+	const end = (held: HeldDeadline) => {
+		held.ended = true;
+		realClearTimeout(held.armed);
 	};
 	globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
-		if (deadline !== undefined || args[1] !== budgetMs) return realSetTimeout(...args);
+		if (args[1] !== budgetMs) return realSetTimeout(...args);
+		const target = nextReached();
+		if (target === undefined) return realSetTimeout(...args);
 		const held: HeldDeadline = { standIn: realSetTimeout(() => undefined, NEVER_MS).unref(), ended: false };
-		deadline = held;
-		void reached.then(() => {
+		deadlines.push(held);
+		void target.then(() => {
 			if (!held.ended) held.armed = realSetTimeout(...args);
 		});
 		return held.standIn;
 	}) as typeof setTimeout;
 	globalThis.clearTimeout = ((timer?: NodeJS.Timeout) => {
-		if (timer !== undefined && timer === deadline?.standIn) end();
+		const held = timer === undefined ? undefined : deadlines.find((entry) => entry.standIn === timer);
+		if (held !== undefined) end(held);
 		realClearTimeout(timer);
 	}) as typeof clearTimeout;
 	cleanups.push(() => {
 		globalThis.setTimeout = realSetTimeout;
 		globalThis.clearTimeout = realClearTimeout;
-		end();
+		for (const held of deadlines) end(held);
 	});
 }
 
@@ -281,7 +284,7 @@ async function startFixture(options: { readonly parentAdmission?: ResourceAdmiss
 		});
 	};
 	/** Settles once the child reaches the point an armed stall holds. */
-	let stalled: Promise<void> | undefined;
+	let stalled: Promise<void> | (() => Promise<void> | undefined) | undefined;
 	/** A child-only extension, written after the parent loaded its own, that holds `point` until released. */
 	const stallChildAt = (
 		point: StallPoint,
@@ -301,7 +304,7 @@ async function startFixture(options: { readonly parentAdmission?: ResourceAdmiss
 		});
 		let release: () => void = () => undefined;
 		const held = new Promise<void>((resolve) => {
-			release = () => resolve();
+			release = resolve;
 		});
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		globals[STALL_HOOK] = (at) => {
@@ -357,15 +360,42 @@ async function startFixture(options: { readonly parentAdmission?: ResourceAdmiss
 		);
 		return seen;
 	};
-	/** A child-only extension that holds every start of the child in `session_start` for `ms`, then lets it go. */
-	const stallEveryStartFor = (ms: number): { readonly starts: () => number } => {
+	const stallEveryStartUntilAbort = (): { readonly starts: () => number } => {
 		let starts = 0;
-		globals[STALL_HOOK] = (at) => {
-			if (at !== "session_start") return undefined;
-			starts++;
-			return sleep(ms);
+		const reached: PromiseWithResolvers<void>[] = [];
+		const shutdowns: PromiseWithResolvers<void>[] = [];
+		let shutdownsSeen = 0;
+		stalled = () => {
+			const entry = Promise.withResolvers<void>();
+			reached.push(entry);
+			return entry.promise;
 		};
-		cleanups.push(() => {
+		const releases = new Set<() => void>();
+		globals[STALL_HOOK] = (at, signal) => {
+			if (at === "session_shutdown") {
+				shutdowns[shutdownsSeen++]?.resolve();
+				return undefined;
+			}
+			if (at !== "session_start") return undefined;
+			const attempt = starts++;
+			shutdowns.push(Promise.withResolvers<void>());
+			reached[attempt]?.resolve();
+			return new Promise<void>((resolve) => {
+				const done = () => {
+					releases.delete(done);
+					resolve();
+				};
+				if (signal?.aborted) {
+					done();
+					return;
+				}
+				releases.add(done);
+				signal?.addEventListener("abort", done, { once: true });
+			});
+		};
+		cleanups.push(async () => {
+			for (const release of [...releases]) release();
+			await Promise.all(shutdowns.map((entry) => entry.promise));
 			delete globals[STALL_HOOK];
 		});
 		mkdirSync(join(agentDir, "extensions"), { recursive: true });
@@ -373,7 +403,8 @@ async function startFixture(options: { readonly parentAdmission?: ResourceAdmiss
 			join(agentDir, "extensions", "stall.ts"),
 			[
 				"export default function (pi) {",
-				`\tpi.on("session_start", () => globalThis.${STALL_HOOK}?.("session_start"));`,
+				`\tpi.on("session_start", (_event, ctx) => globalThis.${STALL_HOOK}?.("session_start", ctx.subagentPolicy?.startup?.signal));`,
+				`\tpi.on("session_shutdown", () => globalThis.${STALL_HOOK}?.("session_shutdown"));`,
 				"}",
 			].join("\n"),
 		);
@@ -384,7 +415,7 @@ async function startFixture(options: { readonly parentAdmission?: ResourceAdmiss
 		launch,
 		requests,
 		stallChildAt,
-		stallEveryStartFor,
+		stallEveryStartUntilAbort,
 		recordStartupHooks,
 		onFirstRequest: (listener: () => void) => {
 			onRequest = () => {
@@ -503,8 +534,6 @@ test(
 	REAL_CHILD_SESSION_TIMEOUT_MS,
 );
 
-const TIMEOUT_REPORT_GRACE_MS = 2_000;
-
 const nextMacrotask = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 for (const point of ["input", "before_agent_start"] as const) {
@@ -514,15 +543,10 @@ for (const point of ["input", "before_agent_start"] as const) {
 			const fixture = await startFixture();
 			const stall = fixture.stallChildAt(point);
 			const launched = fixture.launch(`start-never-settles-${point}`, STALL_START_BUDGET_MS);
-			// Its budget runs from the stall, so the launch has that long and the grace to settle from there.
 			await Promise.race([stall.held, launched]);
-			const outcome = await Promise.race([
-				launched,
-				sleep(STALL_START_BUDGET_MS + TIMEOUT_REPORT_GRACE_MS).then(() => "hung" as const),
-			]);
+			const outcome = await launched;
 
 			assert.ok(stall.reached(), `the child's ${point} handling was held`);
-			assert.ok(outcome !== "hung", "the launch settled while its handler was still held");
 			const error = startTimeoutOf(outcome);
 			assertMeasuredPhase(error, "dispatch");
 			assert.equal(error.step, "dispatching-task");
@@ -1033,15 +1057,12 @@ test("a setup failure before session construction has no agent session to dispos
 	assert.deepEqual(await cleanup, { kind: "reaped" });
 });
 
-/** A budget a real child start on a loaded host reaches its extensions' start within. */
-const RETRY_START_BUDGET_MS = 6_000;
-
 test(
-	"a child whose start stalls is reported stalled with its step, retried once, then failed naming both stalls",
+	"a child whose start stalls renews its hold once before retrying and names both stalls (#5341)",
 	async () => {
 		const fixture = await startFixture();
 		// Each start is held past its budget, then lets go of its session, so its retry may open it again.
-		const stall = fixture.stallEveryStartFor(RETRY_START_BUDGET_MS + 500);
+		const stall = fixture.stallEveryStartUntilAbort();
 		const reports: Array<SubagentStartProgress | undefined> = [];
 		const taskExecution: TaskExecutionHooks = {
 			signal: new AbortController().signal,
@@ -1051,8 +1072,26 @@ test(
 			yieldTaskWait() {},
 			isParentObserving: () => false,
 		};
-		const result = await fixture.launch("start-stalls-twice", RETRY_START_BUDGET_MS, { taskExecution });
+		const reload = DefaultResourceLoader.prototype.reload;
+		DefaultResourceLoader.prototype.reload = async function (this: DefaultResourceLoader) {
+			DefaultResourceLoader.prototype.reload = reload;
+			await sleep(STALL_START_BUDGET_MS);
+			return reload.call(this);
+		};
+		const retries: number[] = [];
+		let result: SingleResult;
+		try {
+			result = await fixture.launch("start-stalls-twice", STALL_START_BUDGET_MS, {
+				taskExecution,
+				onStartRetry: async () => {
+					retries.push(stall.starts());
+				},
+			});
+		} finally {
+			DefaultResourceLoader.prototype.reload = reload;
+		}
 
+		assert.deepEqual(retries, [1], "the hold is renewed once, after the first start releases and before the retry");
 		assert.equal(stall.starts(), 2, "the stalled start was retried once, and only once");
 		const shown = reports.flatMap((report) => (report === undefined ? [] : [describeSubagentStart(report)]));
 		assert.ok(shown.length > 0, "its start was reported");
@@ -1097,6 +1136,61 @@ test(
 			{ at: "session_start", startup: true, pending: true },
 			{ at: "before_agent_start", startup: true, pending: false },
 		]);
+	},
+	REAL_CHILD_SESSION_TIMEOUT_MS,
+);
+
+test(
+	"a late session's disposal must finish before its stalled start can be retried (#5341)",
+	async () => {
+		const fixture = await startFixture();
+		const firstStart = fixture.stallChildAt("session_start");
+		const originalHook = globals[STALL_HOOK]!;
+		const releaseDisposal = Promise.withResolvers<void>();
+		const disposals: Promise<void>[] = [];
+		const dispose = AgentSession.prototype.dispose;
+		const disposeSpy = vi.spyOn(AgentSession.prototype, "dispose").mockImplementation(function (this: AgentSession) {
+			const pending = dispose.call(this);
+			disposals.push(pending);
+			return pending;
+		});
+		let disposing = false;
+		let starts = 0;
+		globals[STALL_HOOK] = (point) => {
+			if (point === "session_start") starts += 1;
+			if (point !== "session_shutdown") return originalHook(point);
+			disposing = true;
+			return releaseDisposal.promise;
+		};
+		try {
+			const result = await fixture.launch("late-session-disposal", STALL_START_BUDGET_MS, {
+				taskExecution: {
+					signal: new AbortController().signal,
+					reportActivity() {},
+					reportStart(progress) {
+						if (progress?.awaitingRelease) firstStart.release();
+					},
+					onExecution() {},
+					yieldTaskWait() {},
+					isParentObserving: () => false,
+				},
+			});
+			assert.equal(disposing, true, "the abandoned session reached its held shutdown");
+			assert.equal(starts, 1, "no second session starts while the abandoned session still owns resources");
+			assert.match(
+				result.error ?? "",
+				/It was not retried: the stalled start did not let go of its session in time/,
+			);
+			assert.deepEqual(fixture.requests, []);
+		} finally {
+			firstStart.release();
+			releaseDisposal.resolve();
+			try {
+				await Promise.all(disposals);
+			} finally {
+				disposeSpy.mockRestore();
+			}
+		}
 	},
 	REAL_CHILD_SESSION_TIMEOUT_MS,
 );

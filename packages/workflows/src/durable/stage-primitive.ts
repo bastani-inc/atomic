@@ -105,9 +105,10 @@ export async function recordStageSessionCheckpoint(
 	options?: { readonly force?: boolean },
 ): Promise<boolean> {
 	const replayKey = deps.replayKeyForCompletedStage?.(stage) ?? stage.replayKey ?? deps.nextReplayKey(stage.name);
-	if (stage.sessionId === undefined) return false;
-	const checkpointNow = deps.now?.() ?? Date.now();
-	const durationMs = elapsedStageMs(stage, checkpointNow) ?? 0;
+	const stageDialog = stage.promptFootprint?.source === "stage-dialog";
+	if (stage.sessionId === undefined && (options?.force !== true || !stageDialog)) return false;
+	const now = deps.now?.() ?? Date.now();
+	const durationMs = elapsedStageMs(stage, now) ?? 0;
 	const current = deps.backend.getStageSession(deps.workflowId, replayKey);
 	if (
 		options?.force !== true &&
@@ -119,6 +120,10 @@ export async function recordStageSessionCheckpoint(
 		(current.attempt ?? 0) === (durableWorkflowAttempt(deps.backend, deps.workflowId) ?? 0)
 	)
 		return false;
+	const checkpointNow =
+		options?.force === true && stageDialog
+			? Math.max(now, latestStageRecordAt(deps.backend, deps.workflowId, replayKey))
+			: now;
 	const checkpoint: DurableStageCheckpoint = {
 		kind: "stage",
 		workflowId: deps.workflowId,
@@ -348,7 +353,6 @@ export function createDurableStagePrimitive(input: {
 						resumeFromSessionId: resumeSessionId,
 						...(session?.sessionFile !== undefined ? { resumeFromLegacySessionFile: session.sessionFile } : {}),
 						resumeInsideCall: released === undefined,
-						routerSelection: session?.routerSelection,
 						durableAccumulatedDurationMs: session?.durationMs ?? 0,
 					}
 				: {}),
@@ -533,7 +537,6 @@ export function createDurableTaskPrimitive(input: {
 						resumeFromSessionId: session.sessionId,
 						...(session.sessionFile !== undefined ? { resumeFromLegacySessionFile: session.sessionFile } : {}),
 						resumeInsideCall: true,
-						routerSelection: session.routerSelection,
 						durableAccumulatedDurationMs: session.durationMs ?? 0,
 					}
 				: {}),
@@ -696,9 +699,6 @@ function completeTaskResult(
 			: {}),
 		...(base.rateLimits !== undefined || checkpoint.rateLimits !== undefined
 			? { rateLimits: [...(base.rateLimits ?? checkpoint.rateLimits ?? [])] }
-			: {}),
-		...((base.routerSelection ?? checkpoint.routerSelection) !== undefined
-			? { routerSelection: base.routerSelection ?? checkpoint.routerSelection }
 			: {}),
 		...(base.warnings !== undefined || checkpoint.warnings !== undefined
 			? { warnings: [...(base.warnings ?? checkpoint.warnings ?? [])] }
@@ -879,7 +879,6 @@ function taskCheckpointMetadata(result: WorkflowTaskResult): Partial<DurableStag
 		...(result.attemptedModels !== undefined ? { attemptedModels: [...result.attemptedModels] } : {}),
 		...(result.modelAttempts !== undefined ? { modelAttempts: [...result.modelAttempts] } : {}),
 		...(result.rateLimits !== undefined ? { rateLimits: [...result.rateLimits] } : {}),
-		...(result.routerSelection !== undefined ? { routerSelection: result.routerSelection } : {}),
 		...(result.structured !== undefined ? { structured: result.structured } : {}),
 		...(result.artifacts !== undefined ? { artifacts: [...result.artifacts] } : {}),
 		...(result.warnings !== undefined ? { warnings: [...result.warnings] } : {}),
@@ -930,7 +929,6 @@ function mergeCheckpointHydrationMetadata(
 		...(replayValueCheckpoint.attemptedModels === undefined ? metadataValue(checkpoints, "attemptedModels") : {}),
 		...(replayValueCheckpoint.modelAttempts === undefined ? metadataValue(checkpoints, "modelAttempts") : {}),
 		...(replayValueCheckpoint.rateLimits === undefined ? metadataValue(checkpoints, "rateLimits") : {}),
-		...(replayValueCheckpoint.routerSelection === undefined ? metadataValue(checkpoints, "routerSelection") : {}),
 		...(replayValueCheckpoint.structured === undefined ? metadataValue(checkpoints, "structured") : {}),
 		...(replayValueCheckpoint.artifacts === undefined ? metadataValue(checkpoints, "artifacts") : {}),
 		...(replayValueCheckpoint.warnings === undefined ? metadataValue(checkpoints, "warnings") : {}),
@@ -1022,6 +1020,18 @@ function stageSessionCheckpointId(
 		durationMs,
 		...(stage.wait === undefined ? {} : { wait: stage.wait }),
 		...(stage.waitResults === undefined ? {} : { waitResults: stage.waitResults }),
+		...(stage.promptFootprint?.source !== "stage-dialog"
+			? {}
+			: stage.pendingPrompt === undefined
+				? {
+						promptFootprintId: stage.promptFootprint.id,
+						promptStatus: stage.status,
+						promptAnswerState: stage.promptAnswerState ?? null,
+					}
+				: {
+						pendingPromptId: stage.pendingPrompt.id,
+						promptStatus: stage.status,
+					}),
 		...(forcedAt === undefined ? {} : { forcedAt }),
 		...(attempt === undefined ? {} : { attempt }),
 	})}`;
@@ -1080,7 +1090,6 @@ export function recordCachedStageIntoStore(
 		...(checkpoint?.attemptedModels !== undefined ? { attemptedModels: checkpoint.attemptedModels } : {}),
 		...(checkpoint?.modelAttempts !== undefined ? { modelAttempts: checkpoint.modelAttempts } : {}),
 		...(checkpoint?.rateLimits !== undefined ? { rateLimits: checkpoint.rateLimits } : {}),
-		...(checkpoint?.routerSelection !== undefined ? { routerSelection: checkpoint.routerSelection } : {}),
 		...(checkpoint?.structured !== undefined ? { structured: checkpoint.structured } : {}),
 		...(checkpoint?.artifacts !== undefined ? { artifacts: checkpoint.artifacts } : {}),
 		...(checkpoint?.warnings !== undefined ? { warnings: checkpoint.warnings } : {}),

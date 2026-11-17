@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { matchesKey, visibleWidth } from "@bastani/atomic-tui";
+import { matchesKey, stripTerminalSequences, visibleWidth } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import {
@@ -19,6 +19,7 @@ import {
 	AgentPanelModel,
 	type AgentPanelRow,
 	type AgentPanelStyle,
+	agentPanelKeys,
 	formatPanelElapsed,
 	formatPanelTokens,
 	panelProgressBar,
@@ -26,15 +27,22 @@ import {
 	renderAgentPanelRows,
 } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
 import { atomicWorkingGlyph } from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.js";
+import { CustomEditor } from "../../packages/coding-agent/src/modes/interactive/components/custom-editor.js";
 import { applyAttachedComposer } from "../../packages/coding-agent/src/modes/interactive/components/input-label.js";
 import { getGlobalTheme } from "../../packages/coding-agent/src/modes/interactive/theme/global-theme.js";
-import { initTheme, setThemeInstance, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import {
+	getEditorTheme,
+	initTheme,
+	setThemeInstance,
+	theme,
+} from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import {
 	agentPanelRows,
 	bindAgentPanel,
 	themedAgentPanelStyle,
 } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import { taskFixture } from "../helpers/task-projection.js";
+import { makeTestTui } from "../support/fake-tui.js";
 
 const plain: AgentPanelStyle = {
 	dim: (text) => text,
@@ -291,6 +299,7 @@ function focusFixture(now: () => number = () => 0) {
 	);
 	focus.update(ROWS);
 	focus.enter();
+	focus.notePainted(ROWS);
 	const press = (data: string) => focus.handleInput(data, (input, key) => matchesKey(input, key as "up"));
 	return { focus, calls, press };
 }
@@ -351,6 +360,160 @@ test("x stops a running row only on a second press within three seconds and dism
 	assert.equal(calls.at(-1), "dismiss task:c", "keys wait while the overlay is open");
 	press("\x1b");
 	assert.equal(focus.helpOpen, false);
+});
+
+test("focused panel disarms pending stop when opening or closing ? help, closes on physical Escape/Left even when app.keys.help is remapped, and filters dead esc from help hints (#5224)", () => {
+	let now = 0;
+	const { focus, calls, press } = focusFixture(() => now);
+
+	// 1. x arms stop, ? opens help and disarms stopConfirm, Esc closes help, next x within 3s re-arms instead of stopping
+	press("x");
+	assert.equal(focus.pendingStop()?.id, "task:a");
+	now += 500;
+	press("?");
+	assert.equal(focus.helpOpen, true);
+	assert.equal(focus.pendingStop(), undefined, "opening ? help disarms a waiting stop confirmation");
+	now += 500;
+	press("\x1b");
+	assert.equal(focus.helpOpen, false);
+	assert.deepEqual(calls, [], "Esc while helpOpen closes only help without closing the panel or stopping");
+	now += 500;
+	press("x");
+	assert.deepEqual(calls, [], "first x after closing help arms afresh instead of stopping");
+	assert.equal(focus.pendingStop()?.id, "task:a");
+	now += 500;
+	press("x");
+	assert.deepEqual(calls, ["stop task:a"]);
+
+	// 2. Remapping app.keys.help to escape/left never steals physical Escape or Left from closing the panel, and omits dead esc from hints
+	const remapped = new KeybindingsManager({
+		"app.keys.help": ["escape", "?"],
+	});
+	const remappedCalls: string[] = [];
+	const remappedFocus = new AgentPanelFocus(
+		remapped,
+		{
+			open: (row) => remappedCalls.push(`open ${row.id}`),
+			stop: (row) => remappedCalls.push(`stop ${row.id}`),
+			dismiss: (row) => remappedCalls.push(`dismiss ${row.id}`),
+			close: () => remappedCalls.push("close"),
+		},
+		() => now,
+	);
+	remappedFocus.update(ROWS);
+	remappedFocus.enter();
+	const remappedPress = (data: string) =>
+		remappedFocus.handleInput(data, (input, key) => matchesKey(input, key as "up"));
+
+	assert.equal(
+		stripVTControlCharacters(renderAgentPanelHint(remappedFocus, 160, plain, remapped)),
+		"  ↑↓ select · enter/→ to open · x stop · esc/← back to prompt · ? keys",
+	);
+	const escapeOnlyHelp = new KeybindingsManager({ "app.keys.help": ["escape"] });
+	assert.equal(
+		stripVTControlCharacters(renderAgentPanelHint(remappedFocus, 160, plain, escapeOnlyHelp)),
+		"  ↑↓ select · enter/→ to open · x stop · esc/← back to prompt",
+	);
+	assert.equal(
+		agentPanelKeys(remappedFocus.selected(), escapeOnlyHelp).some((entry) => entry.label === "keys"),
+		false,
+	);
+
+	remappedPress("\x1b");
+	assert.equal(remappedFocus.helpOpen, false, "physical Escape closes the panel instead of opening remapped help");
+	assert.deepEqual(remappedCalls, ["close"]);
+});
+
+test("focused panel hints omit open and stop aliases shadowed by help or open, and open-shadowed stop keys disarm pending confirmation (#5224)", () => {
+	let now = 0;
+
+	// 1. app.keys.help = "x" shadows default stop "x": x opens help, and hint shows x keys without dead x stop
+	const helpOnX = new KeybindingsManager({ "app.keys.help": "x" });
+	const helpOnXCalls: string[] = [];
+	const focusHelpX = new AgentPanelFocus(
+		helpOnX,
+		{
+			open: (row) => helpOnXCalls.push(`open ${row.id}`),
+			stop: (row) => helpOnXCalls.push(`stop ${row.id}`),
+			dismiss: (row) => helpOnXCalls.push(`dismiss ${row.id}`),
+			close: () => helpOnXCalls.push("close"),
+		},
+		() => now,
+	);
+	focusHelpX.update(ROWS);
+	focusHelpX.enter();
+	assert.equal(
+		stripVTControlCharacters(renderAgentPanelHint(focusHelpX, 160, plain, helpOnX)),
+		"  ↑↓ select · enter/→ to open · esc/← back to prompt · x keys",
+	);
+	focusHelpX.handleInput("x", (input, key) => matchesKey(input, key as "up"));
+	assert.equal(focusHelpX.helpOpen, true);
+	assert.deepEqual(helpOnXCalls, []);
+
+	// 2. app.keys.help = "enter" shadows "enter" on open but keeps "→": enter opens help, → opens row, hint shows → to open and enter keys
+	const helpOnEnter = new KeybindingsManager({ "app.keys.help": "enter" });
+	const helpOnEnterCalls: string[] = [];
+	const focusHelpEnter = new AgentPanelFocus(
+		helpOnEnter,
+		{
+			open: (row) => helpOnEnterCalls.push(`open ${row.id}`),
+			stop: (row) => helpOnEnterCalls.push(`stop ${row.id}`),
+			dismiss: (row) => helpOnEnterCalls.push(`dismiss ${row.id}`),
+			close: () => helpOnEnterCalls.push("close"),
+		},
+		() => now,
+	);
+	focusHelpEnter.update(ROWS);
+	focusHelpEnter.enter();
+	assert.equal(
+		stripVTControlCharacters(renderAgentPanelHint(focusHelpEnter, 160, plain, helpOnEnter)),
+		"  ↑↓ select · → to open · x stop · esc/← back to prompt · enter keys",
+	);
+	focusHelpEnter.handleInput("\r", (input, key) => matchesKey(input, key as "up"));
+	assert.equal(focusHelpEnter.helpOpen, true);
+	assert.deepEqual(helpOnEnterCalls, []);
+	focusHelpEnter.handleInput("\x1b", (input, key) => matchesKey(input, key as "up"));
+	assert.equal(focusHelpEnter.helpOpen, false);
+	focusHelpEnter.handleInput("\x1b[C", (input, key) => matchesKey(input, key as "up"));
+	assert.deepEqual(helpOnEnterCalls, ["open task:a"]);
+
+	// 3. app.list.open = "x" and app.list.stop = ["ctrl+k", "x"]: ctrl+k arms stop, x opens row and disarms pending stop, next ctrl+k arms afresh
+	const openShadowsStop = new KeybindingsManager({
+		"app.list.open": "x",
+		"app.list.stop": ["ctrl+k", "x"],
+	});
+	const shadowCalls: string[] = [];
+	const focusShadow = new AgentPanelFocus(
+		openShadowsStop,
+		{
+			open: (row) => shadowCalls.push(`open ${row.id}`),
+			stop: (row) => shadowCalls.push(`stop ${row.id}`),
+			dismiss: (row) => shadowCalls.push(`dismiss ${row.id}`),
+			close: () => shadowCalls.push("close"),
+		},
+		() => now,
+	);
+	focusShadow.update(ROWS);
+	focusShadow.enter();
+	assert.equal(
+		stripVTControlCharacters(renderAgentPanelHint(focusShadow, 160, plain, openShadowsStop)),
+		"  ↑↓ select · x to open · ctrl+k stop · esc/← back to prompt · ? keys",
+	);
+	const pressShadow = (data: string) => focusShadow.handleInput(data, (input, key) => matchesKey(input, key as "up"));
+	pressShadow("\x0b");
+	assert.equal(focusShadow.pendingStop()?.id, "task:a");
+	assert.equal(
+		stripVTControlCharacters(renderAgentPanelHint(focusShadow, 160, plain, openShadowsStop)),
+		"  Press ctrl+k again within 3s to stop worker",
+	);
+	now += 400;
+	pressShadow("x");
+	assert.deepEqual(shadowCalls, ["open task:a"], "x opens the row rather than confirming stop");
+	assert.equal(focusShadow.pendingStop(), undefined, "open-shadowed x disarms the pending stop confirmation");
+	now += 400;
+	pressShadow("\x0b");
+	assert.deepEqual(shadowCalls, ["open task:a"], "next ctrl+k arms afresh instead of stopping");
+	assert.equal(focusShadow.pendingStop()?.id, "task:a");
 });
 
 test("a stop confirmation keeps terminal controls in a source's name inert (#5224, #5239)", () => {
@@ -474,7 +637,7 @@ test("the panel lists a session's extension items and background tasks together,
 		await fixture.start("first task");
 		await fixture.start("second task");
 		const hub = new AgentPanelSourceHub();
-		const run: AgentPanelItem = {
+		let run: AgentPanelItem = {
 			id: "run:r1",
 			kind: "workflow",
 			state: "running",
@@ -492,6 +655,7 @@ test("the panel lists a session's extension items and background tasks together,
 		);
 		assert.equal(openAgentPanelItem(session, "run:r1"), true);
 		assert.deepEqual(opened, ["run:r1"]);
+		run = { ...run, state: "done" };
 		dismissedAgentPanelItems(session).add("run:r1");
 		assert.deepEqual(
 			agentPanelRows(session).map((row) => row.name),
@@ -505,15 +669,21 @@ test("the panel lists a session's extension items and background tasks together,
 
 test("an attached composer has accent rules naming its target and a placeholder (#5224)", () => {
 	const style = { accent: (text: string) => text, text: (text: string) => text, dim: (text: string) => text };
-	const editor = ["─".repeat(80), `❯ ${" ".repeat(78)}`, "─".repeat(80)];
-	const lines = applyAttachedComposer(style, "debugger · #5220 spawn lock · 18m", "Message debugger…", editor).map(
-		(line) => stripVTControlCharacters(line),
+	const realEditor = new CustomEditor(makeTestTui(24), getEditorTheme(), new KeybindingsManager(), { paddingX: 0 });
+	realEditor.focused = true;
+	const raw = applyAttachedComposer(
+		style,
+		"debugger · #5220 spawn lock · 18m",
+		"Message debugger…",
+		realEditor.render(80),
 	);
+	assert.equal(raw[1], "❯ \x1b_pi:c\x07\x1b_pi:fc\x07 \x1b_pi:/fc\x07Message debugger…");
+	const lines = raw.map((line) => stripTerminalSequences(line));
 	assert.equal(
 		lines[0],
 		`${"━".repeat(80 - " debugger · #5220 spawn lock · 18m ".length - 1)} debugger · #5220 spawn lock · 18m ━`,
 	);
-	assert.equal(lines[1], "❯ Message debugger…");
+	assert.equal(lines[1], "❯  Message debugger…");
 	assert.equal(lines[2], "━".repeat(80));
 	const typed = applyAttachedComposer(style, "x", "Message debugger…", ["─".repeat(80), "❯ hi", "─".repeat(80)]);
 	assert.equal(typed[1], "❯ hi", "typed text replaces the placeholder");
@@ -532,8 +702,8 @@ test("← also leaves the focused panel, and coming back selects the row that wa
 	focus.selectedId = AGENT_PANEL_MAIN_ID;
 	assert.equal(
 		stripVTControlCharacters(renderAgentPanelHint(focus, 160, plain, new KeybindingsManager())),
-		"  ↑↓ select · esc/← back to prompt · ? keys",
-		"the main row offers neither open nor stop",
+		"  ↑↓ select · enter/→ to open · esc/← back to prompt · ? keys",
+		"the main row offers open but no stop",
 	);
 });
 
@@ -631,7 +801,7 @@ test("the focused panel scrolls to keep the selection in view and keeps every ro
 	);
 	focus.selectedId = "task:5";
 	focus.update(many.filter((row) => row.id !== "task:5"));
-	assert.equal(focus.selectedId, "task:0", "a row that leaves moves the selection to the first row");
+	assert.equal(focus.selectedId, "task:6", "a row that leaves moves the selection to the next row");
 });
 
 test("duplicate row ids do not trap focused keyboard navigation (#5224, #5239)", () => {
@@ -722,10 +892,11 @@ test("a row that finishes between the two x presses is not dismissed by the seco
 	assert.equal(focus.pendingStop(), undefined, "the stop is called off");
 	assert.equal(
 		stripVTControlCharacters(renderAgentPanelHint(focus, 80, plain, new KeybindingsManager())),
-		"  worker finished · x to dismiss",
+		"  worker finished · x to acknowledge",
 	);
 	press("x");
 	assert.deepEqual(calls, [], "the press meant as the second one only acknowledges the notice");
+	focus.notePainted([{ ...ROWS[0]!, state: "done" }, ...ROWS.slice(1)]);
 	press("x");
 	assert.deepEqual(calls, ["dismiss task:a"], "a later press dismisses it");
 });

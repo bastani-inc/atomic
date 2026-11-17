@@ -71,14 +71,14 @@ afterEach(restoreSuppression);
 test("a set NO_COLOR is what strips caller styling and the palette ramp from the working status", () => {
 	process.env[ANSI_SUPPRESSION_ENV_VAR] = "1";
 
-	assert.equal(workingStatusLine(accentStyle).trimEnd(), " ∀ Working...");
+	assert.equal(workingStatusLine(accentStyle).trimEnd(), " ∀ Working…");
 	assert.doesNotMatch(workingStatusLine(palettedStyle), /\u001b\[38;2;/);
 });
 
 test("an empty NO_COLOR suppresses exactly as a set one does", () => {
 	process.env[ANSI_SUPPRESSION_ENV_VAR] = "";
 
-	assert.equal(workingStatusLine(accentStyle).trimEnd(), " ∀ Working...");
+	assert.equal(workingStatusLine(accentStyle).trimEnd(), " ∀ Working…");
 });
 
 test("clearing the suppression restores the caller accent and the palette ramp", () => {
@@ -86,7 +86,7 @@ test("clearing the suppression restores the caller accent and the palette ramp",
 	const restore = clearAnsiSuppression();
 	try {
 		assert.equal(process.env[ANSI_SUPPRESSION_ENV_VAR], undefined);
-		assert.equal(workingStatusLine(accentStyle).trimEnd(), " <accent>∀</accent> Working...");
+		assert.equal(workingStatusLine(accentStyle).trimEnd(), " <accent>∀</accent> Working…");
 		assert.match(workingStatusLine(palettedStyle), /\u001b\[38;2;16;16;16m∀/);
 	} finally {
 		restore();

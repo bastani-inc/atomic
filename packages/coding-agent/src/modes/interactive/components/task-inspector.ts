@@ -1,23 +1,20 @@
 import { stripVTControlCharacters } from "node:util";
-import {
-	type Component,
-	getKeybindings,
-	Input,
-	matchesKey,
-	Text,
-	truncateToWidth,
-	visibleWidth,
-} from "@bastani/atomic-tui";
+import { type Component, getKeybindings, Input, matchesKey, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
-import { type AgentPanelAnswerOptions, promptAnswerOptionsOf } from "../../../core/tasks/agent-panel-source.ts";
+import {
+	type AgentPanelAnswerOptions,
+	agentPanelItemReadAt,
+	promptAnswerOptionsOf,
+} from "../../../core/tasks/agent-panel-source.ts";
 import type { PromptRoute, TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import {
+	liveElapsedFromRead,
 	type TaskElapsedClocks,
 	taskClockOf,
 	taskClockRunning,
 	taskClocksFor,
-} from "../../../core/tasks/live-elapsed.ts";
-import { OwnerTaskStore } from "../../../core/tasks/owner-store.js";
+} from "../../../core/tasks/live-elapsed.js";
+import { isTaskTurnInterrupted, OwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { theme } from "../theme/theme.js";
 import { parseWheelReport } from "./chat-transcript.js";
@@ -27,6 +24,7 @@ import {
 	NAV_CONFIRM_WINDOW_MS,
 	type NavKey,
 	navActionText,
+	navKeyText,
 	renderNavHintLine,
 	renderNavKeyOverlay,
 } from "./nav-keys.ts";
@@ -61,6 +59,7 @@ import {
 	type TaskTranscriptEnvironment,
 	type TaskTranscriptPage,
 } from "./task-transcript-page.ts";
+import { formatToolActionSummary } from "./tool-block-summary.ts";
 
 const DETAIL_WHEEL_ROWS = 4;
 
@@ -75,6 +74,20 @@ function samePromptChoices(a: readonly string[] | undefined, b: readonly string[
 
 function samePromptOptions(a: AgentPanelAnswerOptions, b: AgentPanelAnswerOptions): boolean {
 	return a.promptId === b.promptId && a.question === b.question && samePromptChoices(a.choices, b.choices);
+}
+
+function taskReplyPrompt(task: TaskRecord): AgentPanelAnswerOptions {
+	return task.attention.kind === "input-needed"
+		? { promptId: task.attention.requestId, question: task.attention.prompt }
+		: { question: task.title || taskLabel(task) };
+}
+
+function toolCallHeader(action: { readonly tool: string; readonly text: string }): string {
+	try {
+		return formatToolActionSummary(action);
+	} catch {
+		return `${taskDisplayText(action.tool)}(…)`;
+	}
 }
 
 /** Theme colors of a hint line and the `?` key overlay. */
@@ -174,6 +187,7 @@ export class TaskInspector implements Component {
 	private callerLabel = "back";
 	/** Typed shell input per task, kept when the reader leaves the input and restored when they return. */
 	private readonly inputDrafts = new Map<TaskId, string>();
+	private inputTask?: TaskRecord;
 	/** The open transcript of the selected task, on the shared chat stack. */
 	private transcript?: TaskTranscriptPage;
 	private status = "";
@@ -203,8 +217,12 @@ export class TaskInspector implements Component {
 	private readonly replyDrafts = new Map<string, string>();
 	private readonly paintedPrompts = new Map<string, AgentPanelAnswerOptions>();
 	private readonly replyTargets = new Map<string, AgentPanelAnswerOptions>();
-	private readonly pickedChoices = new Map<string, { readonly text: string; readonly raw: string }>();
+	private readonly pickedChoices = new Map<
+		string,
+		{ readonly text: string; readonly raw: string; readonly index: number }
+	>();
 	private readonly paintedItemFinished = new Map<string, boolean>();
+	private readonly workflowReadAt = new WeakMap<TaskBoardItem, number>();
 
 	private sending = false;
 
@@ -304,13 +322,18 @@ export class TaskInspector implements Component {
 			},
 			stdinAvailable: (task) => this.store.stdinAvailable(task.ref.taskId),
 			input: (task) => {
+				this.inputTask = task;
 				this.input.setValue(this.inputDrafts.get(task.ref.taskId) ?? "");
 			},
 			openQuestion: (route) => {
 				if (openQuestion) {
 					this.close();
 					openQuestion(route);
-				} else this.status = "Question is available in its owning session.";
+					return;
+				}
+				this.chatFrom = "detail";
+				this.detailGeneration++;
+				this.openTranscript();
 			},
 			currentTask: (taskId) => {
 				if (!this.boardStale) return this.tasksById.get(taskId);
@@ -549,7 +572,7 @@ export class TaskInspector implements Component {
 							this.elapsedClocks.elapsedMs(
 								task.ref.taskId,
 								task.metrics?.elapsedMs,
-								taskClockRunning(task.execution.kind),
+								taskClockRunning(task.execution.kind) && !isTaskTurnInterrupted(task),
 							);
 					}
 					return task;
@@ -571,7 +594,7 @@ export class TaskInspector implements Component {
 					this.elapsedClocks.elapsedMs(
 						task.ref.taskId,
 						task.metrics?.elapsedMs,
-						taskClockRunning(task.execution.kind),
+						taskClockRunning(task.execution.kind) && !isTaskTurnInterrupted(task),
 					);
 			this.taskSections = taskListSections(tasks, this.store.settlementOrder);
 			this.sortedSections = this.taskSections;
@@ -603,14 +626,38 @@ export class TaskInspector implements Component {
 		if (!task || task.execution.kind === "settled") return false;
 		return this.store.stdinAvailable(task.ref.taskId);
 	}
+	private inputTaskForSheet(): TaskRecord | undefined {
+		const focus = this.navigation.focus;
+		const taskId = focus.kind === "stdin" ? focus.taskId : this.navigation.selectedTaskId;
+		if (taskId === undefined) return this.inputTask;
+		const live =
+			this.store.taskRecord?.(taskId) ??
+			(!this.boardStale ? this.tasksById.get(taskId) : undefined) ??
+			this.store.backgroundTasks.find((task) => task.ref.taskId === taskId);
+		if (live !== undefined) {
+			this.inputTask = live;
+			return live;
+		}
+		return this.inputTask?.ref.taskId === taskId ? this.inputTask : undefined;
+	}
 	private async sendInput(text: string): Promise<void> {
-		const task = this.selected();
+		const task = this.navigation.focus.kind === "stdin" ? this.inputTaskForSheet() : this.selected();
 		if (!task) return;
+		const environment = this.transcriptEnvironment();
 		const result = await this.store.writeTaskInput(task.ref.taskId, text);
-		this.status = result.ok ? `Sent ${result.value.acceptedBytes} bytes` : taskDisplayText(result.error.message);
+		const focus = this.navigation.focus;
+		const showingInput = focus.kind === "stdin" && focus.taskId === task.ref.taskId;
+		if (!result.ok) {
+			const message = taskDisplayText(result.error.message);
+			if (this.disposed || focus.kind === "composer")
+				this.reportLate(`Could not send input: ${message}`, environment);
+			else this.status = message;
+		} else if (showingInput) {
+			this.status = `Sent ${result.value.acceptedBytes} bytes`;
+		}
 		if (result.ok) {
-			this.input.setValue("");
-			this.inputDrafts.delete(task.ref.taskId);
+			if (showingInput && this.input.getValue() === text) this.input.setValue("");
+			if (this.inputDrafts.get(task.ref.taskId) === text) this.inputDrafts.delete(task.ref.taskId);
 		}
 		this.requestRender();
 	}
@@ -650,7 +697,7 @@ export class TaskInspector implements Component {
 				BigInt(this.store.tasks.find((candidate) => candidate.ref.taskId === taskId)?.output.byteCount ?? "0");
 			this.transcript = new TaskCommandOutputPage(this.store, taskId, byteCount, environment, this.requestRender);
 		} else if (environment === undefined) {
-			this.status = "Transcript inspection is unavailable in this host.";
+			this.failureNotice = "Transcript inspection is unavailable in this host.";
 			this.requestRender();
 			return;
 		} else
@@ -767,7 +814,13 @@ export class TaskInspector implements Component {
 		return this.route(data) || !isHostThinkingToggle(data);
 	}
 	private route(data: string): boolean {
-		if (this.sending && this.navigation.focus.kind === "tasks") return true;
+		if (this.sending && this.navigation.focus.kind === "tasks") {
+			if (matchesKey(data, "escape") || getKeybindings().matches(data, "app.nav.back")) {
+				this.navigation.focus = { kind: "composer" };
+				this.close();
+			}
+			return true;
+		}
 		this.failureNotice = "";
 		// The finished-while-armed notice stays through the stop key's presses and leaves with any other key.
 		if (!getKeybindings().matches(data, "app.list.stop")) {
@@ -811,6 +864,7 @@ export class TaskInspector implements Component {
 			// ← on an empty input, or at its start (the draft is kept for the return), goes back to the list.
 			if (getKeybindings().matches(data, "app.nav.back") && this.input.getCursor() === 0) {
 				this.navigation.focus = { kind: "tasks" };
+				this.status = "";
 				this.requestRender();
 				return true;
 			}
@@ -869,9 +923,15 @@ export class TaskInspector implements Component {
 	 */
 	private handleTranscriptInput(data: string, transcript: TaskTranscriptPage): boolean {
 		if (transcript.handlesBack()) return transcript.handleInput(data);
+		if (matchesKey(data, "escape")) {
+			if (transcript.takesEscape?.() === true) return transcript.handleInput(data);
+			if (transcript.interruptible()) void this.interruptTranscript(transcript);
+			this.requestRender();
+			return true;
+		}
 		const keys = getKeybindings();
 		// ← on an empty prompt, or at the start of a typed one (kept for the return), goes back one level.
-		if (keys.matches(data, "app.nav.back") && transcript.cursorAtStart()) {
+		if (!matchesKey(data, "escape") && keys.matches(data, "app.nav.back") && transcript.cursorAtStart()) {
 			if (this.chatFrom === "caller") {
 				this.closedByBack = true;
 				this.close();
@@ -887,11 +947,6 @@ export class TaskInspector implements Component {
 		}
 		if (isNavHelpKey(keys, data) && !transcript.hasDraft()) {
 			this.helpOpen = true;
-			this.requestRender();
-			return true;
-		}
-		if (matchesKey(data, "escape")) {
-			if (transcript.interruptible()) void this.interruptTranscript(transcript);
 			this.requestRender();
 			return true;
 		}
@@ -925,7 +980,10 @@ export class TaskInspector implements Component {
 		const row = this.selectedRow();
 		if (this.peekId !== undefined && row?.id === this.peekId) {
 			const replying = this.peekReplies(row);
-			if (matchesKey(data, "escape")) {
+			if (
+				matchesKey(data, "escape") ||
+				(!replying && keys.matches(data, "app.nav.back") && !this.configuredTaskKey(data))
+			) {
 				this.closePeek();
 				return true;
 			}
@@ -963,7 +1021,7 @@ export class TaskInspector implements Component {
 						for (const char of taskDisplayText(choice)) this.handleReplyInput(row.id, char);
 						const filled = this.reply.getValue();
 						if (filled !== "" && this.replyTargets.has(row.id)) {
-							this.pickedChoices.set(row.id, { text: filled, raw: choice });
+							this.pickedChoices.set(row.id, { text: filled, raw: choice, index: index - 1 });
 						}
 						return true;
 					}
@@ -976,6 +1034,7 @@ export class TaskInspector implements Component {
 			if (matchesKey(data, "up") || matchesKey(data, "down")) this.closePeek();
 			else if (row.kind === "task" && (matchesKey(data, "enter") || keys.matches(data, "app.list.open"))) {
 				this.closePeek();
+				if (row.task.attention.kind === "input-needed") return false;
 				this.openTaskDetail();
 				return true;
 			}
@@ -1069,8 +1128,8 @@ export class TaskInspector implements Component {
 			this.pickedChoices.delete(rowId);
 		} else if (empty && target !== undefined) this.replyTargets.set(rowId, target);
 	}
-	private peeksInCard(_row: TaskBoardRow): boolean {
-		return true;
+	private peeksInCard(row: TaskBoardRow): boolean {
+		return row.kind !== "task" || row.task.attention.kind !== "input-needed";
 	}
 	private peekReplies(row: TaskBoardRow): boolean {
 		if (row.kind === "task") {
@@ -1082,6 +1141,27 @@ export class TaskInspector implements Component {
 			);
 		}
 		return rowState(row) === "input" && Boolean(row.item.question) && this.boardSource?.answer !== undefined;
+	}
+	private currentPrompt(row: TaskBoardRow): AgentPanelAnswerOptions | undefined {
+		if (row.kind === "item") return promptAnswerOptionsOf(row.item);
+		const taskId = row.task.ref.taskId;
+		const live =
+			this.store.taskRecord?.(taskId) ?? this.store.tasks.find((task) => task.ref.taskId === taskId) ?? row.task;
+		return taskReplyPrompt(live);
+	}
+	private clearReply(rowId: string): void {
+		if (this.peekId === rowId) this.reply.setValue("");
+		this.replyTargets.delete(rowId);
+		this.replyDrafts.delete(rowId);
+		this.pickedChoices.delete(rowId);
+	}
+	private dropStaleReply(row: TaskBoardRow): void {
+		const target = this.replyTargets.get(row.id);
+		if (target === undefined || this.sending) return;
+		const current = this.currentPrompt(row);
+		if (current === undefined || samePromptOptions(target, current)) return;
+		this.clearReply(row.id);
+		this.failureNotice = "The question changed; your reply was cleared.";
 	}
 	private boardRoom(
 		budget = this.boardBudget,
@@ -1126,7 +1206,12 @@ export class TaskInspector implements Component {
 		if (row.kind === "task") {
 			if (!this.store.sendTaskMessage) return;
 			const expected = this.replyTargets.get(rowId);
-			if (expected === undefined) return;
+			const current = this.currentPrompt(row);
+			if (expected === undefined || current === undefined || !samePromptOptions(expected, current)) {
+				this.clearReply(rowId);
+				this.reportLate("The question changed before the answer was sent; your reply was cleared.", environment);
+				return;
+			}
 			this.sending = true;
 			this.requestRender();
 			try {
@@ -1151,19 +1236,8 @@ export class TaskInspector implements Component {
 		const id = row.id;
 		const expected = this.replyTargets.get(rowId);
 		if (expected === undefined) {
-			const painted = this.paintedPrompts.get(rowId);
-			if (painted !== undefined) {
-				this.replyTargets.set(rowId, painted);
-				this.reportLate(
-					"Could not send the answer: The pending prompt changed before the answer was sent. (enter to send or clear)",
-					environment,
-				);
-			} else {
-				this.reportLate(
-					"Could not send the answer: The pending prompt changed before the answer was sent. (reopen or clear)",
-					environment,
-				);
-			}
+			this.clearReply(rowId);
+			this.reportLate("The question changed before the answer was sent; your reply was cleared.", environment);
 			return;
 		}
 		const picked = this.pickedChoices.get(rowId);
@@ -1171,7 +1245,9 @@ export class TaskInspector implements Component {
 		this.sending = true;
 		this.requestRender();
 		try {
-			const result = await this.boardSource.answer(id, answerText, expected);
+			const answerOptions =
+				picked !== undefined && picked.text === typed ? { ...expected, choiceIndex: picked.index } : expected;
+			const result = await this.boardSource.answer(id, answerText, answerOptions);
 			if (result.ok) {
 				this.sentAt = Date.now();
 				this.replyDrafts.delete(rowId);
@@ -1180,15 +1256,15 @@ export class TaskInspector implements Component {
 				if (this.peekId === rowId) this.closePeek(true);
 				this.status = `Sent to ${rowName(row)}`;
 			} else {
-				if (this.peekId !== rowId) this.replyDrafts.set(rowId, typed);
 				const painted = this.paintedPrompts.get(rowId);
 				if (painted !== undefined && !samePromptOptions(painted, expected)) {
-					this.replyTargets.set(rowId, painted);
+					this.clearReply(rowId);
 					this.reportLate(
-						`Could not send the answer: ${taskDisplayText(result.reason)} (enter to send or clear)`,
+						`Could not send the answer: ${taskDisplayText(result.reason)} Your reply was cleared.`,
 						environment,
 					);
 				} else {
+					if (this.peekId !== rowId) this.replyDrafts.set(rowId, typed);
 					this.reportLate(`Could not send the answer: ${taskDisplayText(result.reason)}`, environment);
 				}
 			}
@@ -1249,10 +1325,7 @@ export class TaskInspector implements Component {
 			};
 		}
 		const model = taskModelText(task);
-		const action =
-			task.execution.kind !== "settled" && task.currentAction
-				? `${task.currentAction.tool} ${task.currentAction.text}`
-				: "";
+		const action = task.execution.kind !== "settled" && task.currentAction ? toolCallHeader(task.currentAction) : "";
 		const summary = [model, action].filter(Boolean).join(" · ");
 		const metrics = taskMetricsText(task);
 		const lines = [...(summary ? [summary] : []), ...(metrics ? [metrics] : [])];
@@ -1270,12 +1343,12 @@ export class TaskInspector implements Component {
 			getKeybindings().matches(data, key),
 		);
 	}
-	/** Only the task picker stays inline; drill-down owns the screen. */
 	get fullscreen(): boolean {
-		return this.navigation.focus.kind === "detail" || this.navigation.focus.kind === "stdin";
+		return this.navigation.focus.kind === "detail";
 	}
 
 	private withLiveElapsed(task: TaskRecord): TaskRecord {
+		if (isTaskTurnInterrupted(task)) return task;
 		const elapsedMs = this.elapsedClocks.elapsedMs(
 			task.ref.taskId,
 			task.metrics?.elapsedMs,
@@ -1286,23 +1359,34 @@ export class TaskInspector implements Component {
 	}
 	private withBoardElapsed(row: TaskBoardRow): TaskBoardRow {
 		if (row.kind === "task") return { ...row, task: this.withLiveElapsed(row.task) };
-		if (row.item.kind === "workflow" || row.item.state === "queued") return row;
+		if (row.item.state === "queued") return row;
+		if (row.item.kind === "workflow") {
+			if (!taskClockRunning(row.item.state) || row.item.elapsedMs === undefined) return row;
+			let since = agentPanelItemReadAt(row.item) ?? this.workflowReadAt.get(row.item);
+			if (since === undefined) {
+				since = Date.now();
+				this.workflowReadAt.set(row.item, since);
+			}
+			const elapsedMs = liveElapsedFromRead(row.item.elapsedMs, since, true) ?? row.item.elapsedMs;
+			return elapsedMs === row.item.elapsedMs ? row : { ...row, item: { ...row.item, elapsedMs } };
+		}
 		const clocks = taskClockOf(row.item);
 		if (clocks === undefined) return row;
 		const elapsedMs = clocks.elapsedMs(row.item.id, row.item.elapsedMs, taskClockRunning(row.item.state));
 		if (elapsedMs === undefined || elapsedMs === row.item.elapsedMs) return row;
 		return { ...row, item: { ...row.item, elapsedMs } };
 	}
-	/** The waiting first press of `x`, as the line under the list shows it. */
 	private stopNotice(): string {
 		if (this.itemFinishedWhileArmed !== undefined) {
 			const key = getKeybindings().getKeys("app.list.stop")[0] ?? "x";
-			return `${this.itemFinishedWhileArmed.name} finished · ${key} to dismiss`;
+			const action = this.itemFinishedAcknowledged ? "dismiss" : "acknowledge";
+			return `${this.itemFinishedWhileArmed.name} finished · ${key} to ${action}`;
 		}
 		const finished = this.navigation.finishedWhileArmed;
 		if (finished !== undefined) {
 			const key = getKeybindings().getKeys("app.list.stop")[0] ?? "x";
-			return `${taskDisplayText(finished.title || taskLabel(finished))} finished · ${key} to dismiss`;
+			const action = this.navigation.finishedAcknowledged ? "dismiss" : "acknowledge";
+			return `${taskDisplayText(finished.title || taskLabel(finished))} finished · ${key} to ${action}`;
 		}
 		const pending = this.navigation.stopConfirm.pending();
 		if (pending === undefined) return "";
@@ -1320,6 +1404,7 @@ export class TaskInspector implements Component {
 		return this.renderViewport(width, Math.max(3, (process.stdout.rows || 24) - 5));
 	}
 	private renderTranscriptPage(width: number, budget: number, transcript: TaskTranscriptPage): string[] {
+		if (transcript.handlesBack()) return transcript.render(width, budget);
 		const task = this.selected();
 		const fitWidth = (line: string) => truncateToWidth(line, Math.max(1, width));
 
@@ -1327,9 +1412,9 @@ export class TaskInspector implements Component {
 		const promptEcho = attachedAgentChat ? taskDisplayText(task.title || taskLabel(task)) : "";
 		const header = attachedAgentChat
 			? [
-					`  ${theme.fg("dim", "› from main")}`,
+					` ${theme.fg("dim", "› from main")}`,
 					...(promptEcho
-						? [`  ${theme.fg("accent", theme.bold("❯"))} ${theme.fg("userMessageText", promptEcho)}`]
+						? [` ${theme.fg("accent", theme.bold("❯"))} ${theme.fg("userMessageText", promptEcho)}`]
 						: []),
 				].map(fitWidth)
 			: [
@@ -1339,27 +1424,60 @@ export class TaskInspector implements Component {
 				].map(fitWidth);
 		const notes = [transcript.status, this.status].filter(Boolean).join(" · ");
 		const style = themedNavKeyStyle();
-		const interruptible = transcript.interruptible();
-		const hasTasks = transcript.hasTasks?.() === true;
+		const questionActive = transcript.takesEscape?.() === true;
+		const interruptible = !questionActive && transcript.interruptible();
+		const hasTasks = !questionActive && transcript.hasTasks?.() === true;
+		const expandable = transcript.expandable?.() === true;
+		const baseKeys = getKeybindings();
+		const backKeys = baseKeys
+			.getKeys("app.nav.back")
+			.filter((key) => !matchesKey("\x1b", key))
+			.map(navKeyText)
+			.join("/");
+		const chatKeybindings = {
+			matches: (data: string, action: string) =>
+				baseKeys.matches(data, action as Parameters<typeof baseKeys.matches>[1]),
+			getKeys: (action: string) => {
+				const resolved = baseKeys.getKeys(action as Parameters<typeof baseKeys.getKeys>[0]);
+				return action === "app.interrupt"
+					? resolved
+					: resolved.filter((key) => key !== "esc" && key !== "escape" && !matchesKey("\x1b", key));
+			},
+		};
 		if (this.helpOpen)
 			return [
 				...(attachedAgentChat ? [] : header),
 				...renderNavKeyOverlay(
 					"keys · task chat",
 					TASK_CHAT_OVERLAY_KEYS.flatMap((entry) => {
+						if (entry.keys === "enter" && transcript.canSend?.() !== true) return [];
+						if (entry.action === "app.thinking.toggle" && task?.kind !== "agent") return [];
 						if (entry.keys === "esc" && !interruptible) return [];
+						if (entry.action === "app.tools.expand" && !expandable) return [];
+						const mapped = entry.action === "app.nav.back" ? { keys: backKeys, label: entry.label } : entry;
 						if (entry.action === "app.nav.back" && hasTasks)
-							return [entry, { action: "app.agents.focus", label: "agents, on an empty prompt" }];
-						return [entry];
+							return [mapped, { action: "app.agents.focus", label: "agents, on an empty prompt" }];
+						return [mapped];
 					}),
 					width,
 					style,
-					getKeybindings(),
+					chatKeybindings,
 				),
 			].slice(0, Math.max(1, budget));
 		const back = this.chatFrom === "caller" ? this.callerLabel : this.chatFrom === "list" ? "tasks" : "task";
-		const chatKeys = taskChatKeys(back, interruptible, hasTasks);
-		const hint = renderNavHintLine(chatKeys, width, style, getKeybindings());
+		const chatKeys = taskChatKeys(back, interruptible, hasTasks, expandable).flatMap((entry) => {
+			if (entry.action === "app.nav.back") {
+				return !questionActive || transcript.cursorAtStart()
+					? [questionActive ? { keys: backKeys, label: back } : entry]
+					: [];
+			}
+			if (entry.keys === "pgup/pgdn" && transcript.capturesPageScroll?.() === true) {
+				return [{ keys: "pgup/pgdn", label: "page" }];
+			}
+			if (questionActive && entry.action === "app.keys.help") return [];
+			return [entry];
+		});
+		const hint = renderNavHintLine(chatKeys, width, style, chatKeybindings);
 		const footer = [
 			...(notes ? [fitWidth(theme.fg("dim", notes))] : []),
 			...(transcript.handlesBack() ? [] : [hint]),
@@ -1391,45 +1509,34 @@ export class TaskInspector implements Component {
 				getKeybindings(),
 			).slice(-Math.max(1, budget));
 		}
-		if (this.navigation.focus.kind === "tasks") return this.renderBoard(width, budget);
+		if (this.navigation.focus.kind === "stdin") return this.renderInputSheet(width, budget);
+		if (this.navigation.focus.kind !== "detail") return this.renderBoard(width, budget);
 		const framed = width >= 20 && budget >= 7;
 		const inner = Math.max(1, width - (framed ? 4 : 0));
 		const current = this.selected();
-		const detail = this.navigation.focus.kind === "detail";
 		this.navigation.paint(current ? [current] : []);
-		const selectingAction = current && detail && !this.transcript;
-		const actions = selectingAction
-			? taskDetailActions(current.execution, current.attention, this.stdinAvailable())
-			: [];
+		const actions =
+			current && !this.transcript
+				? taskDetailActions(current.execution, current.attention, this.stdinAvailable())
+				: [];
 		this.actionIndex = Math.max(0, Math.min(this.actionIndex, actions.length - 1));
 		const action = actions[this.actionIndex];
 		const actionRow = action ? [theme.fg("accent", `› ${taskDetailLabels[action]}`)] : [];
 		const rows = this.renderAll(inner);
-		const compactSummary = !framed && detail && current && budget >= 4 ? [taskDetailSummary(current)] : [];
+		const compactSummary = !framed && current && budget >= 4 ? [taskDetailSummary(current)] : [];
 		const statusRows = this.taskStatusRows(width);
 		const height = Math.max(
 			0,
 			budget - (framed ? 4 : 1) - actionRow.length - compactSummary.length - statusRows.length,
 		);
-		const selected = detail ? -1 : rows.findIndex((row) => stripVTControlCharacters(row).startsWith("›"));
 		this.scroll = Math.min(this.scroll, Math.max(0, rows.length - height));
-		const selectionRows = Math.min(height, current?.kind === "agent" ? 3 : 2);
-		const offset = detail ? this.scroll : Math.max(0, selected + selectionRows - height);
-		const view = rows.slice(offset, offset + height);
+		const view = rows.slice(this.scroll, this.scroll + height);
 		const stopLabel = current?.execution.kind === "settled" ? "dismiss" : "stop";
-		const keys =
-			this.navigation.focus.kind === "stdin"
-				? [
-						{ keys: "enter", label: "send" },
-						{ action: "app.nav.back", label: "back to list" },
-					]
-				: (detail ? detailKeys() : listKeys())
-						// An empty list has nothing to select, open or stop.
-						.filter(
-							(key) =>
-								current !== undefined || key.keys?.startsWith("esc") === true || key.action === "app.keys.help",
-						)
-						.map((key) => (key.action === "app.list.stop" ? { ...key, label: stopLabel } : key));
+		const keys = detailKeys()
+			.filter(
+				(key) => current !== undefined || key.keys?.startsWith("esc") === true || key.action === "app.keys.help",
+			)
+			.map((key) => (key.action === "app.list.stop" ? { ...key, label: stopLabel } : key));
 		const footer = renderNavHintLine(keys, width, style, getKeybindings());
 		const notice = this.failureNotice || this.stopNotice();
 		const failure = notice ? [theme.fg("warning", truncateToWidth(notice, width))] : [];
@@ -1437,11 +1544,7 @@ export class TaskInspector implements Component {
 			return [...compactSummary, ...view, ...actionRow, footer, ...failure, ...statusRows]
 				.map((line) => truncateToWidth(line, width))
 				.slice(-Math.max(1, budget));
-		const live = this.store.backgroundTasks.filter((task) => task.execution.kind !== "settled").length;
-		const title =
-			detail && current
-				? `${taskDisplayText(taskLabel(current))} › ${taskDisplayText(current.title)}`
-				: "Background tasks";
+		const title = current ? `${taskDisplayText(taskLabel(current))} › ${taskDisplayText(current.title)}` : "Tasks";
 		const heading = ` ${truncateToWidth(title, Math.max(1, width - 5))} `;
 		const border = (text: string) => theme.fg("borderMuted", text);
 		const frameRow = (line: string) => {
@@ -1450,11 +1553,7 @@ export class TaskInspector implements Component {
 		};
 		return [
 			border("╭─") + theme.bold(heading) + border(`${"─".repeat(Math.max(0, width - visibleWidth(heading) - 3))}╮`),
-			frameRow(
-				detail && current
-					? taskDetailSummary(current)
-					: theme.fg("muted", `${live} active · ${this.store.backgroundTasks.length} total`),
-			),
+			frameRow(current ? taskDetailSummary(current) : ""),
 			...view.map(frameRow),
 			...actionRow.map(frameRow),
 			border(`╰${"─".repeat(Math.max(0, width - 2))}╯`),
@@ -1462,6 +1561,40 @@ export class TaskInspector implements Component {
 			...failure,
 			...statusRows,
 		].map((line) => truncateToWidth(line, width));
+	}
+
+	private renderInputSheet(width: number, budget: number): string[] {
+		const clip = (line: string) => truncateToWidth(line, Math.max(1, width));
+		const task = this.inputTaskForSheet();
+		const name = task
+			? taskDisplayText(task.title || taskLabel(task))
+			: this.navigation.focus.kind === "stdin"
+				? taskDisplayText(this.navigation.focus.taskId)
+				: "";
+		const summary = task ? `  ${taskDetailSummary(task)}` : "";
+		const entry = (this.input.render(Math.max(1, width - 4))[0] ?? "").replace(/^> /, "");
+		const notes = [
+			...(this.status ? [theme.fg("muted", taskDisplayText(this.status))] : []),
+			...(this.failureNotice ? [theme.fg("warning", taskDisplayText(this.failureNotice))] : []),
+		];
+		const hint = renderNavHintLine(
+			[
+				{ keys: "enter", label: "send" },
+				{ action: "app.nav.back", label: "back to list" },
+			],
+			width,
+			themedNavKeyStyle(),
+			getKeybindings(),
+		);
+		return [
+			theme.fg("borderMuted", "▔".repeat(Math.max(1, width))),
+			` ${theme.bold(`Input to ${name}`)}${summary}`,
+			` ${theme.fg("accent", "❯")} ${entry}`,
+			...notes,
+			hint,
+		]
+			.map(clip)
+			.slice(-Math.max(1, budget));
 	}
 
 	private renderBoard(width: number, budget: number): string[] {
@@ -1483,8 +1616,9 @@ export class TaskInspector implements Component {
 			groups = this.lastBoardGroups?.rows === rows ? this.lastBoardGroups.groups : taskBoardGroups(rows);
 			this.preparedBoard = undefined;
 		}
-		const notice = this.failureNotice || this.stopNotice() || this.status;
 		const selected = this.selectedRow();
+		if (selected !== undefined && this.peekId === selected.id) this.dropStaleReply(selected);
+		const notice = this.failureNotice || this.stopNotice() || this.status;
 		const counts = taskBoardCounts(all);
 		const edge = theme.fg("borderMuted", "▔".repeat(Math.max(1, width)));
 		const header = ` ${theme.bold("Tasks")}${counts ? `  ${theme.fg("muted", counts)}` : ""}`;
@@ -1567,42 +1701,87 @@ export class TaskInspector implements Component {
 				? cardChoices.slice(0, Math.max(0, start + room - firstChoiceLine))
 				: [];
 		this.drawnChoices = replying ? visibleChoices : undefined;
-		const keys: NavKey[] = this.filtering
-			? [
-					{ keys: "type", label: "filter" },
-					{ keys: "enter", label: "done" },
-					{ keys: "esc", label: "clear" },
-				]
-			: replying
+		const replyValue = this.reply.getValue();
+		const openNativeDetail = replying && selected?.kind === "task" && replyValue.trim() === "";
+		const openNativeKeys = [
+			...new Set(["enter", ...(getKeybindings().getKeys?.("app.list.open") ?? []).map(navKeyText)]),
+		].join("/");
+		const keys: NavKey[] = this.sending
+			? [{ keys: escAndBack(), label: "close" }]
+			: this.filtering
 				? [
-						...(visibleChoices.length ? [{ keys: `1-${visibleChoices.length}`, label: "choose" }] : []),
-						{ keys: "enter", label: "send" },
-						{ keys: "esc", label: "close" },
+						{ keys: "↑↓", label: "select" },
+						{ keys: "type", label: "filter" },
+						{ keys: "enter", label: "done" },
+						{ keys: "esc", label: "clear" },
 					]
-				: listKeys()
-						.filter(
-							(key) =>
-								selected !== undefined ||
-								key.keys?.startsWith("esc") === true ||
-								key.action === "app.keys.help" ||
-								(key.action === "app.list.filter" && this.filter !== ""),
-						)
-						.map((key) =>
-							key.action === "app.list.stop"
-								? { ...key, label: selected && rowFinished(selected) ? "dismiss" : "stop" }
-								: key,
-						);
+				: replying
+					? [
+							{ keys: "↑↓", label: "select" },
+							...(replyValue === "" && visibleChoices.length
+								? [{ keys: `1-${visibleChoices.length}`, label: "choose" }]
+								: []),
+							{ keys: openNativeDetail ? openNativeKeys : "enter", label: openNativeDetail ? "open" : "send" },
+							{ keys: this.reply.getCursor() === 0 ? escAndBack() : "esc", label: "close" },
+						]
+					: listKeys()
+							.filter(
+								(key) =>
+									selected !== undefined ||
+									key.keys?.startsWith("esc") === true ||
+									key.action === "app.keys.help" ||
+									key.action === "app.list.filter",
+							)
+							.flatMap((key) => {
+								if (key.action === "app.list.stop")
+									return [{ ...key, label: selected && rowFinished(selected) ? "dismiss" : "stop" }];
+								const asking =
+									!peekOpen && selected?.kind === "task" && selected.task.attention.kind === "input-needed";
+								if (asking && key.action === "app.list.peek") return [];
+								if (asking && key.action === "app.list.open") {
+									const openKeys = [
+										navActionText(getKeybindings(), "app.list.peek"),
+										navActionText(getKeybindings(), "app.list.open"),
+									];
+									return [{ keys: openKeys.filter(Boolean).join("/"), label: "answer" }];
+								}
+								if (!peekOpen) return [key];
+								if (key.action === "app.list.peek") return [];
+								if (key.keys?.startsWith("esc") !== true) return [key];
+								const peekKey = navActionText(getKeybindings(), "app.list.peek");
+								return [{ ...key, keys: peekKey ? `${peekKey}/${key.keys}` : key.keys }];
+							});
 		const hint = renderNavHintLine(keys, width, style, getKeybindings(), 2, { compact: true });
 		const footer = [...(notice ? [theme.fg("warning", clip(taskDisplayText(notice)))] : []), hint];
 		const recordPaintedRow = (row: TaskBoardRow, drawnTasks: TaskRecord[]) => {
 			if (row.kind === "item") {
 				this.paintedItemFinished.set(row.id, rowFinished(row));
 				const prompt = promptAnswerOptionsOf(row.item);
-				if (prompt !== undefined) this.paintedPrompts.set(row.id, prompt);
+				if (prompt !== undefined) {
+					const question = taskDisplayText(prompt.question ?? "").trim();
+					const questionLine = body[selectedLine + 2];
+					const shownCardLine =
+						typeof questionLine === "string" ? stripVTControlCharacters(clip(questionLine)) : "";
+					const cardPrefix = "   │ ";
+					const shownQuestion = shownCardLine.startsWith(cardPrefix)
+						? shownCardLine.slice(cardPrefix.length).trimStart()
+						: "";
+					const questionPrefix = truncateToWidth(question, 2, "");
+					const questionInCard =
+						peekOpen &&
+						row.id === selected?.id &&
+						selectedLine + 2 >= start &&
+						selectedLine + 2 < start + room &&
+						questionPrefix !== "" &&
+						shownQuestion.startsWith(questionPrefix);
+					const shownRow = stripVTControlCharacters(renderBoardRow(row, row.id === selected?.id, width - 1));
+					if (questionInCard || (question !== "" && shownRow.includes(question)))
+						this.paintedPrompts.set(row.id, prompt);
+				}
 			} else {
 				drawnTasks.push(row.task);
 				if (this.peekReplies(row)) {
-					this.paintedPrompts.set(row.id, { question: row.task.title || taskLabel(row.task) });
+					this.paintedPrompts.set(row.id, taskReplyPrompt(row.task));
 				}
 			}
 		};
@@ -1646,51 +1825,15 @@ export class TaskInspector implements Component {
 	}
 	private renderAll(width: number): string[] {
 		const task = this.selected();
-		if (this.navigation.focus.kind === "stdin")
-			return [
-				`Input to ${taskDisplayText(task?.title ?? "")}`,
-				...this.input.render(width),
-				taskDisplayText(this.status),
-			];
-		if (task && this.navigation.focus.kind === "detail") {
-			return [
-				...new TaskDetail(task, {
-					...this.detailContent,
-					stdinAvailable: this.stdinAvailable(),
-					activity: this.store.recentActivity(task.ref.taskId),
-					activityOmitted: this.store.activityOmitted(task.ref.taskId),
-				}).renderContent(width),
-				taskDisplayText(this.status),
-			];
-		}
-		const sections = this.orderedSections();
-		if (!sections.length)
-			return new Text("No background tasks.\nBackground agents and shells will appear here.", 0, 0).render(width);
-		return sections.flatMap((section) => [
-			"",
-			theme.fg("muted", theme.bold(`${section.title} (${section.tasks.length})`)),
-			...section.tasks.flatMap((item) => {
-				const selected = item.ref.taskId === this.navigation.selectedTaskId;
-				const { label: state, color, icon } = taskStatusAppearance(item);
-				const status = width < 32 ? ` ${icon}` : ` ${icon} ${state}`;
-				const name = taskDisplayText(item.title || taskLabel(item));
-				const marker = selected ? "› " : "  ";
-				const title = marker + truncateToWidth(name, Math.max(1, width - visibleWidth(status) - 3));
-				const row = `${selected ? theme.fg("accent", theme.bold(title)) : title}${" ".repeat(Math.max(1, width - visibleWidth(title) - visibleWidth(status)))}${theme.fg(color, status)}`;
-				const metadata = [
-					...(width < 32 ? [state] : []),
-					taskLabel(item),
-					taskMetricsText(this.withLiveElapsed(item)),
-					item.currentAction ? `${item.currentAction.tool} ${item.currentAction.text}` : "",
-				]
-					.filter(Boolean)
-					.join(" · ");
-				return [
-					truncateToWidth(row, width),
-					...(item.kind === "agent" ? [theme.fg("dim", truncateToWidth(`  ${taskModelText(item)}`, width))] : []),
-					...(selected ? [theme.fg("dim", truncateToWidth(`  ${taskDisplayText(metadata)}`, width))] : []),
-				];
-			}),
-		]);
+		if (!task) return [];
+		return [
+			...new TaskDetail(task, {
+				...this.detailContent,
+				stdinAvailable: this.stdinAvailable(),
+				activity: this.store.recentActivity(task.ref.taskId),
+				activityOmitted: this.store.activityOmitted(task.ref.taskId),
+			}).renderContent(width),
+			taskDisplayText(this.status),
+		];
 	}
 }

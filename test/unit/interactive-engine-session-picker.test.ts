@@ -58,15 +58,18 @@ interface Bridge {
 	emitEngineReady(pid: number): void;
 }
 
-function makeBridge(): Bridge {
+function makeBridge(options?: {
+	transformMessage?: (message: InteractiveEngineMessage) => InteractiveEngineMessage;
+}): Bridge {
 	const engineListeners: Array<(message: InteractiveEngineMessage) => void> = [];
 	const childCommands: InteractiveEngineCommand[] = [];
 	const hostMessages: InteractiveEngineMessage[] = [];
 	const mounts: HostMount[] = [];
 
 	const child = new EngineSessionPickerService((line) => {
-		const message = parseInteractiveEngineMessage(line);
-		if (!message) return;
+		const parsed = parseInteractiveEngineMessage(line);
+		if (!parsed) return;
+		const message = options?.transformMessage ? options.transformMessage(parsed) : parsed;
 		hostMessages.push(message);
 		for (const listener of [...engineListeners]) listener(message);
 	});
@@ -226,6 +229,40 @@ describe("engine_session_picker protocol", () => {
 			undefined,
 		);
 		assert.equal(parseInteractiveEngineCommand(JSON.stringify({ type: "engine_session_picker_cancel" })), undefined);
+		for (const invalidDeleteRequestId of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "3"]) {
+			assert.deepEqual(
+				parseInteractiveEngineCommand(
+					JSON.stringify({
+						type: "engine_session_picker_delete",
+						componentId: "p1",
+						path: "workflow-durable:a",
+						deleteRequestId: invalidDeleteRequestId,
+					}),
+				),
+				{
+					type: "engine_session_picker_delete",
+					componentId: "p1",
+					path: "workflow-durable:a",
+				},
+			);
+			assert.deepEqual(
+				parseInteractiveEngineMessage(
+					JSON.stringify({
+						type: "engine_session_picker_error",
+						componentId: "p1",
+						message: "delete failed",
+						deletePath: "workflow-durable:a",
+						deleteRequestId: invalidDeleteRequestId,
+					}),
+				),
+				{
+					type: "engine_session_picker_error",
+					componentId: "p1",
+					message: "delete failed",
+					deletePath: "workflow-durable:a",
+				},
+			);
+		}
 	});
 });
 
@@ -273,6 +310,46 @@ describe("host-native session picker (source-path)", () => {
 		assert.ok(!lines.some((line) => line.includes("delete")), "no delete without the child's onDelete");
 		assert.ok(!lines.some((line) => line.includes("tab all")), "no folder scope for runs");
 		bridge.controller.dispose();
+	});
+
+	test("defaults canDelete to true when omitted by an older child and unlocks the row when unsupported deletion is rejected (#5256)", async () => {
+		const bridge = makeBridge({
+			transformMessage: (message) => {
+				if (message.type !== "engine_session_picker_open") return message;
+				const { canDelete: _omitted, ...olderOpen } = message;
+				return olderOpen;
+			},
+		});
+		const handle = bridge.child.open({ sessions: [row("alpha")] });
+		await flush();
+		try {
+			assert.ok(renderText(bridge).includes("delete"), "omitted canDelete defaults to true on the host");
+			const picker = bridge.mounts[0]!.component;
+			picker.handleInput(CTRL_D);
+			picker.handleInput(ENTER);
+			await flush();
+
+			assert.deepEqual(
+				bridge.hostMessages.filter((message) => message.type === "engine_session_picker_error"),
+				[
+					{
+						type: "engine_session_picker_error",
+						componentId: "session_picker_1",
+						message: "Deletion is not supported for this picker",
+						deletePath: "workflow-durable:alpha",
+						deleteRequestId: 1,
+					},
+				],
+			);
+			assert.ok(renderText(bridge).includes("Deletion is not supported for this picker"));
+			picker.handleInput(ENTER);
+			await flush();
+			assert.equal(bridge.mounts[0]!.resolved, true, "unsupported delete error must unlock the row");
+			assert.equal(await handle.result, "workflow-durable:alpha");
+		} finally {
+			bridge.controller.dispose();
+			bridge.child.dispose();
+		}
 	});
 
 	test("arrow-key navigation and search are zero-IPC: no child-bound traffic", async () => {
@@ -398,6 +475,52 @@ describe("host-native session picker (source-path)", () => {
 			}
 		},
 	);
+
+	test("an error reported on another engine picker during an active delete callback does not attach delete ids to that other picker (#5256)", async () => {
+		const bridge = makeBridge();
+		const handleB = bridge.child.open({
+			sessions: [row("alpha")],
+			onDelete: () => new Promise<void>(() => {}),
+		});
+		const handleA = bridge.child.open({
+			sessions: [row("alpha")],
+			onDelete: async () => {
+				handleB.error("unrelated error on second engine picker");
+			},
+		});
+		await flush();
+		try {
+			const pickerB = bridge.mounts[0]!.component;
+			const pickerA = bridge.mounts[1]!.component;
+			pickerB.handleInput(CTRL_D);
+			pickerB.handleInput(ENTER);
+			await flush();
+
+			pickerA.handleInput(CTRL_D);
+			pickerA.handleInput(ENTER);
+			await flush();
+
+			assert.deepEqual(
+				bridge.hostMessages.filter((message) => message.type === "engine_session_picker_error"),
+				[
+					{
+						type: "engine_session_picker_error",
+						componentId: "session_picker_1",
+						message: "unrelated error on second engine picker",
+					},
+				],
+			);
+			pickerB.handleInput(ENTER);
+			pickerB.handleInput(RIGHT);
+			await flush();
+			assert.equal(bridge.mounts[0]!.resolved, false, "other picker's delete context must not unlock pickerB");
+		} finally {
+			handleA.close();
+			handleB.close();
+			bridge.controller.dispose();
+			bridge.child.dispose();
+		}
+	});
 
 	test("late rejection from a released delete attempt does not unlock a retried delete of the same row (#5256)", async () => {
 		const bridge = makeBridge();

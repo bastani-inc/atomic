@@ -50,7 +50,7 @@ import { join } from "node:path";
 import { getAgentConfigPaths } from "../../config.js";
 import { getErrnoCode } from "./errno.ts";
 import {
-	ensureTempDir,
+	ensureTempDirAsync,
 	getProtectedSessionTempDirs,
 	getTempRootDir,
 	SESSION_TEMP_FILE_MODE,
@@ -410,6 +410,11 @@ interface CleanupGate {
 	protectedPaths: ReadonlySet<string>;
 }
 
+interface ScannedRoot {
+	path: string;
+	identity: FileIdentity;
+}
+
 /**
  * Run `scan` under the marker/lock protocol for one target.
  *
@@ -417,16 +422,30 @@ interface CleanupGate {
  * scanned directory itself (temp root) or a coding-agent-owned directory outside
  * it (session storage).
  */
-function withCleanupGate(controlDir: string, options: SweepOptions, scan: (gate: CleanupGate) => void): SweepOutcome {
+async function withCleanupGate(
+	controlDir: string,
+	scanRoot: ScannedRoot,
+	options: SweepOptions,
+	scan: (gate: CleanupGate) => void,
+): Promise<SweepOutcome> {
 	const now = options.now ?? Date.now();
 	const throttleMs = options.throttleMs ?? SESSION_TEMP_CLEANUP_INTERVAL_MS;
+	let controlReady = false;
 	try {
 		// The control root lives under the owner temp root, so create it through the
 		// same validated, non-recursive path the spill directories use.
-		ensureTempDir(controlDir);
+		await ensureTempDirAsync(controlDir, { preserveExistingLeaf: controlDir === scanRoot.path });
+		controlReady = true;
 	} catch {
 		// Without a control directory there is nowhere to record the throttle;
 		// skip rather than sweep unthrottled and unlocked.
+		controlReady = false;
+	}
+	const currentRootIdentity = realDirectoryIdentity(scanRoot.path);
+	if (currentRootIdentity === undefined || !sameFileIdentity(scanRoot.identity, currentRootIdentity)) {
+		return "missing";
+	}
+	if (!controlReady) {
 		return "locked";
 	}
 	const markerPath = join(controlDir, CLEANUP_MARKER_FILE);
@@ -452,7 +471,7 @@ function withCleanupGate(controlDir: string, options: SweepOptions, scan: (gate:
 				return false;
 			},
 			cutoff: now - (options.retentionMs ?? SESSION_TEMP_RETENTION_MS),
-			protectedPaths: new Set(options.protectedPaths ?? []),
+			protectedPaths: new Set(options.protectedPaths ?? getProtectedSessionTempDirs()),
 		});
 		if (!aborted && ownsCleanupLock(lockPath, token)) {
 			// Failing to publish the marker only means the sweep repeats sooner.
@@ -481,15 +500,15 @@ function isCleanupArtifact(name: string): boolean {
  * retention cutoff, and never when it belongs to a session this process
  * registered as live. A symlinked root is refused outright.
  */
-export function sweepSessionTempRoot(root: string = getTempRootDir(), options: SweepOptions = {}): SweepOutcome {
-	if (!isRealDirectory(root)) {
+export async function sweepSessionTempRoot(
+	root: string = getTempRootDir(),
+	options: SweepOptions = {},
+): Promise<SweepOutcome> {
+	const rootIdentity = realDirectoryIdentity(root);
+	if (rootIdentity === undefined) {
 		return "missing";
 	}
-	const gateOptions: SweepOptions = {
-		...options,
-		protectedPaths: options.protectedPaths ?? getProtectedSessionTempDirs(),
-	};
-	return withCleanupGate(root, gateOptions, (gate) => {
+	return withCleanupGate(root, { path: root, identity: rootIdentity }, options, (gate) => {
 		let entries: string[];
 		try {
 			entries = readdirSync(root);
@@ -562,36 +581,38 @@ function reapToolResultsDir(parent: string, cutoff: number, protectedPaths: Read
  * Only `<sessionsRoot>/<project>/tool-results` is touched — never the sibling
  * `.jsonl` transcripts.
  */
-export function sweepToolResultsRoot(sessionsRoot: string, options: SweepOptions = {}): SweepOutcome {
-	if (!isRealDirectory(sessionsRoot)) {
+export async function sweepToolResultsRoot(sessionsRoot: string, options: SweepOptions = {}): Promise<SweepOutcome> {
+	const rootIdentity = realDirectoryIdentity(sessionsRoot);
+	if (rootIdentity === undefined) {
 		return "missing";
 	}
-	const gateOptions: SweepOptions = {
-		...options,
-		protectedPaths: options.protectedPaths ?? getProtectedSessionTempDirs(),
-	};
-	return withCleanupGate(getCleanupControlDir(sessionsRoot, options.controlRoot), gateOptions, (gate) => {
-		let entries: string[];
-		try {
-			entries = readdirSync(sessionsRoot);
-		} catch {
-			return;
-		}
-		for (const entry of entries) {
-			const projectDir = join(sessionsRoot, entry);
-			if (!isRealDirectory(projectDir) || gate.protectedPaths.has(projectDir)) {
-				continue;
-			}
-			if (!gate.ownsLock()) {
+	return withCleanupGate(
+		getCleanupControlDir(sessionsRoot, options.controlRoot),
+		{ path: sessionsRoot, identity: rootIdentity },
+		options,
+		(gate) => {
+			let entries: string[];
+			try {
+				entries = readdirSync(sessionsRoot);
+			} catch {
 				return;
 			}
-			try {
-				reapToolResultsDir(projectDir, gate.cutoff, gate.protectedPaths);
-			} catch {
-				// Keep going so one unreadable project directory does not block the rest.
+			for (const entry of entries) {
+				const projectDir = join(sessionsRoot, entry);
+				if (!isRealDirectory(projectDir) || gate.protectedPaths.has(projectDir)) {
+					continue;
+				}
+				if (!gate.ownsLock()) {
+					return;
+				}
+				try {
+					reapToolResultsDir(projectDir, gate.cutoff, gate.protectedPaths);
+				} catch {
+					// Keep going so one unreadable project directory does not block the rest.
+				}
 			}
-		}
-	});
+		},
+	);
 }
 
 /**
@@ -601,24 +622,29 @@ export function sweepToolResultsRoot(sessionsRoot: string, options: SweepOptions
  * directory itself, so only its own `tool-results` child is in scope and its
  * siblings — including transcripts — are never touched.
  */
-export function sweepSessionDirToolResults(sessionDir: string, options: SweepOptions = {}): SweepOutcome {
-	if (!isRealDirectory(sessionDir)) {
+export async function sweepSessionDirToolResults(
+	sessionDir: string,
+	options: SweepOptions = {},
+): Promise<SweepOutcome> {
+	const rootIdentity = realDirectoryIdentity(sessionDir);
+	if (rootIdentity === undefined) {
 		return "missing";
 	}
-	const gateOptions: SweepOptions = {
-		...options,
-		protectedPaths: options.protectedPaths ?? getProtectedSessionTempDirs(),
-	};
-	return withCleanupGate(getCleanupControlDir(sessionDir, options.controlRoot), gateOptions, (gate) => {
-		if (!gate.ownsLock()) {
-			return;
-		}
-		try {
-			reapToolResultsDir(sessionDir, gate.cutoff, gate.protectedPaths);
-		} catch {
-			// Best effort.
-		}
-	});
+	return withCleanupGate(
+		getCleanupControlDir(sessionDir, options.controlRoot),
+		{ path: sessionDir, identity: rootIdentity },
+		options,
+		(gate) => {
+			if (!gate.ownsLock()) {
+				return;
+			}
+			try {
+				reapToolResultsDir(sessionDir, gate.cutoff, gate.protectedPaths);
+			} catch {
+				// Best effort.
+			}
+		},
+	);
 }
 
 export interface SessionTempCleanupOptions extends SweepOptions {
@@ -639,10 +665,10 @@ function safeSessionsRoots(): readonly string[] {
 }
 
 /** Run every sweep once. Each failure is swallowed: cleanup is housekeeping. */
-export function runSessionTempCleanup(options: SessionTempCleanupOptions = {}): void {
+export async function runSessionTempCleanup(options: SessionTempCleanupOptions = {}): Promise<void> {
 	const { tempRoot, sessionsRoots, sessionDirs, ...sweepOptions } = options;
 	try {
-		sweepSessionTempRoot(tempRoot ?? getTempRootDir(), sweepOptions);
+		await sweepSessionTempRoot(tempRoot ?? getTempRootDir(), sweepOptions);
 	} catch {
 		// Best effort.
 	}
@@ -652,14 +678,14 @@ export function runSessionTempCleanup(options: SessionTempCleanupOptions = {}): 
 	// an advertised path alive.
 	for (const root of sessionsRoots ?? safeSessionsRoots()) {
 		try {
-			sweepToolResultsRoot(root, sweepOptions);
+			await sweepToolResultsRoot(root, sweepOptions);
 		} catch {
 			// Best effort.
 		}
 	}
 	for (const dir of sessionDirs ?? []) {
 		try {
-			sweepSessionDirToolResults(dir, sweepOptions);
+			await sweepSessionDirToolResults(dir, sweepOptions);
 		} catch {
 			// Best effort.
 		}
@@ -668,6 +694,7 @@ export function runSessionTempCleanup(options: SessionTempCleanupOptions = {}): 
 
 let cleanupScheduled = false;
 let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+let cleanupRunning: Promise<void> | undefined;
 const scheduledSessionsRoots = new Set<string>();
 const scheduledSessionDirs = new Set<string>();
 
@@ -685,19 +712,24 @@ function armSessionTempCleanup(options: SessionTempCleanupOptions): void {
 		const sessionDirs = [...scheduledSessionDirs];
 		scheduledSessionsRoots.clear();
 		scheduledSessionDirs.clear();
-		try {
-			runSessionTempCleanup({
-				...options,
-				sessionsRoots: sessionsRoots.length > 0 ? sessionsRoots : options.sessionsRoots,
-				sessionDirs,
+		cleanupTimer = undefined;
+		const run: Promise<void> = runSessionTempCleanup({
+			...options,
+			sessionsRoots: sessionsRoots.length > 0 ? sessionsRoots : options.sessionsRoots,
+			sessionDirs,
+		})
+			.catch(() => undefined)
+			.finally(() => {
+				if (cleanupRunning !== run) {
+					return;
+				}
+				cleanupRunning = undefined;
+				cleanupScheduled = false;
+				if (scheduledSessionsRoots.size > 0 || scheduledSessionDirs.size > 0) {
+					armSessionTempCleanup(options);
+				}
 			});
-		} finally {
-			cleanupTimer = undefined;
-			cleanupScheduled = false;
-			if (scheduledSessionsRoots.size > 0 || scheduledSessionDirs.size > 0) {
-				armSessionTempCleanup(options);
-			}
-		}
+		cleanupRunning = run;
 	}, SESSION_TEMP_CLEANUP_DELAY_MS);
 	cleanupTimer.unref?.();
 }
@@ -723,12 +755,17 @@ export function scheduleSessionTempCleanup(options: SessionTempCleanupOptions = 
 	outsideAnySession(armSessionTempCleanup, options);
 }
 
+export async function waitForSessionTempCleanupForTesting(): Promise<void> {
+	await cleanupRunning;
+}
+
 /** Test seam: cancel pending work and forget scheduler state. */
 export function resetSessionTempCleanupScheduleForTesting(): void {
 	if (cleanupTimer !== undefined) {
 		clearTimeout(cleanupTimer);
 	}
 	cleanupTimer = undefined;
+	cleanupRunning = undefined;
 	cleanupScheduled = false;
 	scheduledSessionsRoots.clear();
 	scheduledSessionDirs.clear();

@@ -494,7 +494,7 @@ describe("installWorkflowLifecycleNotifications", () => {
 		assert.notEqual(rendered, null);
 		assert.deepEqual(
 			(rendered as CardComponent).render(80).map((line) => stripVTControlCharacters(line)),
-			['● Workflow "cards" completed'],
+			[' ● Workflow "cards" completed'],
 			"collapsed, the notice is the one notice line every finished task uses (#5224)",
 		);
 		const expanded = registered[0]?.renderer(
@@ -512,7 +512,7 @@ describe("installWorkflowLifecycleNotifications", () => {
 		);
 		const lines = (expanded as CardComponent).render(80);
 		const text = lines.join("\n");
-		assert.match(stripVTControlCharacters(lines[0]!), /^● Workflow "cards" completed$/);
+		assert.match(stripVTControlCharacters(lines[0]!), /^ ● Workflow "cards" completed$/);
 		assert.match(text, /╭ WORKFLOW COMPLETE/);
 		assert.match(text, /✓ Workflow "cards" completed/);
 		assert.match(text, /workflow\s+cards/);

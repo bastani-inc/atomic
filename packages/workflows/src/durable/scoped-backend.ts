@@ -209,7 +209,6 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 				sessionFile?: string;
 				startedAt?: number;
 				durationMs?: number;
-				routerSelection?: import("@bastani/atomic").ModelRouterOutput;
 				/** The attempt the session record was written in (#4874). */
 				attempt?: number;
 		  }

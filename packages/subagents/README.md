@@ -125,7 +125,7 @@ There is no generic `reviewer` or `planner` agent; pick the specialist whose ang
 
 ## Changing a builtin agent's model
 
-Every builtin agent defaults to `model: "auto"`, with no pinned fallback chain. The router chooses from your available model/effort pairs before launch. To pin a role, set an override instead of copying the bundled file. See [automatic model selection](../coding-agent/docs/subagents/reference.md#automatic-model-selection) for router settings, effort constraints and troubleshooting.
+Every builtin agent defaults to `model: "auto"`, with no pinned fallback chain. `auto` runs your configured default model (the one you last chose with `/model`) at its default thinking level, or the launching session's model when no default model is configured. To pin a role, set an override instead of copying the bundled file. See [automatic model selection](../coding-agent/docs/subagents/reference.md#automatic-model-selection).
 
 For one run, pass `model` on the `subagent` call:
 
@@ -156,15 +156,15 @@ Use `~/.atomic/agent/settings.json` for a user override or `.atomic/settings.jso
 
 Any parent chat or workflow stage that orchestrates subagents should omit the explicit `model` argument when the named agent already declares a model or fallback policy. Override it only for the user's exact model request or a documented task-specific need, and record the reason before launch; diversity alone does not justify an ad hoc model.
 
-When an agent declares no model or fallback policy, consult `packages/coding-agent/docs/models/model-selection.md` for general role and effort guidance and `packages/coding-agent/docs/models/evals.md` for factual per-evaluation benchmark records, then call `workflow({ action: "models" })` when available. Use only a catalog-returned `fullId` and only a thinking level listed for that entry. If the catalog tool is unavailable, returns no models, or no catalog model matches the documented evidence and role constraints, leave the child unpinned and report the limitation instead of inventing a model or inspecting credentials.
+When a task needs a specific model, call `workflow({ action: "models" })` when available. Use only a catalog-returned `fullId` and only a thinking level listed for that entry. If the catalog tool is unavailable, returns no models, or no catalog model fits, leave the child unpinned and report the limitation instead of inventing a model or inspecting credentials.
 
 Workflow invocations receive a stable, non-`default` Intercom group automatically. Their stages and delegated children inherit it across single, parallel, and follow-up calls, so omit `group` unless you intend to create a different coordination subgroup. Outside a workflow, children inherit the launching session's group. `contact_supervisor` remains available across group boundaries.
 
 ## Where running subagents show up
 
-Background agents appear in the compact count below the prompt in main and workflow-stage chat. Run `/tasks` to open the grouped inspector; updates never open it automatically. Parallel receipts identify individual siblings. Completion produces a shaded notification card with outcome and available response preview, without depending on a model reply. `/agents` browses definitions, while `subagent({ action: "list" })` shows the catalog with the configured expand-key hint.
+Background agents appear in the compact count below the prompt in main and workflow-stage chat. Run `/tasks` to open the grouped inspector; updates never open it automatically. Parallel receipts identify individual siblings. Completion produces one unshaded notice line with an outcome glyph and task title, followed by the first result line. Ctrl+O expands the full retained result. The notice does not depend on a model reply. `/agents` browses definitions, while `subagent({ action: "list" })` shows the catalog with the configured expand-key hint.
 
-To stop a task, select it in `/tasks`, press `x`, and confirm with `y`. Once termination is confirmed, the owning chat receives a stopped notification and the parent model receives the stop context, even when the child has no final response. Repeated stop requests do not duplicate the notice or change an already-settled result. Closing the owner still suppresses late notifications.
+To stop a task, select it in `/tasks` and press `x` twice within 3 seconds. A stopped subagent stays resumable. Once termination is confirmed, the owning chat receives a `quit · awaiting resume` notice line and the parent model receives the quit context, even when the child has no final response. Repeated stop requests do not duplicate the notice or change an already-settled result. Closing the owner still suppresses late notifications.
 
 You can ask naturally:
 
@@ -355,7 +355,7 @@ Important fields:
 | `tools` | Builtin tool allowlist, comma-separated (`tools: read, bash`) or YAML array-form (`tools: [read, bash]`, or a `tools:` block list) — both spellings produce the same tool set. `mcp:` entries select direct MCP tools when `pi-mcp-adapter` is installed. |
 | `extensions` | Omitted means normal extensions; empty means no optional extensions; comma-separated values allowlist specific optional extensions. Atomic still loads mandatory ordinary Intercom. |
 | `model` | Default model. Bare ids prefer the current provider when possible, then unique registry matches. When omitted — with no `fallbackModels` and no per-call model override — the subagent inherits the dispatching session's active model and thinking level; a declared `thinking` still takes precedence over the inherited level. |
-| `fallbackModels` | Ordered backup models for provider/model failures such as quota, auth, timeout, or unavailable model. A child that runs a concrete model, this agent's `model` or a call's `model`, falls back only to these entries that its `modelConstraints` allow. Otherwise the current user-selected model is appended as the last fallback and de-duplicated. Ordinary task failures do not trigger fallback. |
+| `fallbackModels` | Ordered backup models for provider/model failures such as quota, auth, timeout, or unavailable model. A child that runs a concrete model, this agent's `model` or a call's `model`, falls back only to these entries. Otherwise the current user-selected model is appended as the last fallback and de-duplicated. Ordinary task failures do not trigger fallback. |
 | `thinking` | Appended as a `:level` suffix at runtime unless a suffix is already present. |
 | `systemPromptMode` | `replace` by default; `append` keeps Pi’s base prompt. |
 | `inheritProjectContext` | Keeps or strips inherited project instruction blocks. |
@@ -703,7 +703,7 @@ Metadata records timing, usage, typed status, termination cause, final model, at
 
 Session files are stored under a per-run session directory. With `context: "fork"`, each child starts from the parent’s current leaf through the session manager; this is a real session fork, not an injected summary.
 
-Owner-bound completions notify the originating session while its admission boundary remains open. Closing a workflow stage cancels its running children and suppresses late completion delivery; unrelated stages remain live. Visible completion cards use the shared chat background, a status glyph, agent/task title, and bounded response or error preview. The expand hint appears when more preview content is available, and `/tasks` opens retained inspection. Receipt identities persist in session history for retry without duplicate delivery or execution. Integrations without a task owner retain their existing result and Intercom paths.
+Owner-bound completions notify the originating session while its admission boundary remains open. Closing a workflow stage cancels its running children and suppresses late completion delivery; unrelated stages remain live. Visible completions use an unshaded notice line with a status glyph and the agent's task title, followed by the first line of its retained result or error. Ctrl+O expands the full retained result, up to 8,000 characters, and `/tasks` opens retained inspection. Completion notices keep model and reasoning metadata in their saved details without displaying a model line. Receipt identities persist in session history for retry without duplicate delivery or execution. Integrations without a task owner retain their existing result and Intercom paths.
 
 Foreground runs persist their session and user-facing artifacts beside the parent session:
 

@@ -15,10 +15,11 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { getAgentConfigPaths, getAgentDir, getProjectConfigPaths } from "../../config.js";
 import { parseJsonFileContent } from "../../utils/json.ts";
 import type { IntercomBrokerControl, RestartOutcome } from "../intercom-broker-control.js";
+import { prepareLockTakeover } from "../lock-holder.js";
 import { resolvePackageStorageAdapter } from "../package-manager-storage-adapters.js";
 import { selectSessionSetting, selectSessionStorage } from "../session-storage.js";
 import { SettingsManager } from "../settings-manager.ts";
@@ -34,10 +35,12 @@ import {
 	TeamProfileError,
 	TeamProfileTimeoutError,
 } from "./errors.js";
+import { defaultSessionDatabasePath, storageHomeDir } from "./file-identity.js";
 import { defaultJournalStoreDirectory } from "./journal-adoption.js";
 import { processSharedStorageSelection } from "./process-selection.js";
 import {
 	loadStorageAdapter,
+	secretFilePath as resolveProviderSecretFilePath,
 	type SecretRef,
 	type StorageAdapterModule,
 	type StorageSelection,
@@ -331,7 +334,7 @@ async function checkConnectionWithin(target: JoinTarget, agentDir: string, timeo
 /** The token file a `{ file }` reference names, resolved like the storage provider resolves it. */
 function secretFilePath(ref: SecretRef | undefined, agentDir: string): string | undefined {
 	if (ref === undefined || !("file" in ref)) return undefined;
-	return resolve(isAbsolute(ref.file) ? ref.file : join(dirname(agentDir), ref.file));
+	return resolve(resolveProviderSecretFilePath(ref.file, agentDir));
 }
 
 /** Whether a path is a token file that a join created in this agent directory. */
@@ -490,6 +493,7 @@ export async function joinSharedDatabase(
 	await checkConnectionWithin(target, agentDir, connectionTimeoutMs);
 
 	const unchanged = "Nothing was changed: the previous selection and its token are kept.";
+	await prepareLockTakeover(`${settingsPath}.lock`);
 	const published = withGlobalSettings(agentDir, unchanged, (settings) => {
 		const previous = settings.storage;
 		// Without a token there is nothing to compare, so no token file is read.
@@ -510,7 +514,7 @@ export async function joinSharedDatabase(
 			}
 		}
 		const file =
-			tokenPath === undefined ? plan.reference : relative(dirname(agentDir), tokenPath).split(sep).join("/");
+			tokenPath === undefined ? plan.reference : relative(storageHomeDir(agentDir), tokenPath).split(sep).join("/");
 		const storage: StorageSettingsSelection = {
 			adapter: target.adapter,
 			options: target.options,
@@ -785,6 +789,10 @@ export async function leaveTeamWith(
 	const empty: TeamLeaveResult = { settingsPath, removed: [], kept: [], deletedTokenFiles: [], keptTokenFiles: [] };
 	if (!existsSync(settingsPath)) return empty;
 	const trusted = projectTrust(cwd, agentDir);
+	await Promise.all([
+		prepareLockTakeover(`${settingsPath}.lock`),
+		prepareLockTakeover(`${projectSettingsPathOf(cwd)}.lock`),
+	]);
 	const outcome = withGlobalSettings(agentDir, unchanged, (global) => {
 		const project = isSameFile(settingsPath, projectSettingsPathOf(cwd))
 			? readIndependentProjectSettings(cwd, settingsPath)
@@ -868,12 +876,13 @@ export function leaveTeam(options: LeaveTeamOptions = {}): Promise<TeamLeaveResu
 	return leaveTeamWith(options);
 }
 
-function isLocalDefault(selection: StorageSelection, agentDir: string): boolean {
-	if (selection.kind === "sharded") return resolve(selection.dir) === resolve(defaultJournalStoreDirectory(agentDir));
+function isLocalDefault(selection: StorageSelection, agentDir: string, settings?: Settings): boolean {
+	if (selection.kind === "sharded")
+		return resolve(selection.dir) === resolve(defaultJournalStoreDirectory(agentDir, settings));
 	return (
 		selection.kind === "sqlite" &&
 		!selection.prefix &&
-		resolve(selection.path) === resolve(join(dirname(agentDir), "workflows", "journal.sqlite"))
+		resolve(selection.path) === resolve(defaultSessionDatabasePath(agentDir, settings))
 	);
 }
 
@@ -903,9 +912,9 @@ export function selectTeamProfile(options: TeamProfileOptions = {}): TeamProfile
 	const shared = intercom?.kind === "adapter" ? storageSelectionKey(intercom, agentDir) : undefined;
 	const sharesJournal = shared !== undefined && storageSelectionKey(journal, agentDir) === shared;
 	const profile: TeamProfileName =
-		isLocalDefault(sessions, agentDir) && isLocalDefault(journal, agentDir) && intercom === undefined
+		isLocalDefault(sessions, agentDir, merged) && isLocalDefault(journal, agentDir, merged) && intercom === undefined
 			? "individual"
-			: sharesJournal && isLocalDefault(sessions, agentDir)
+			: sharesJournal && isLocalDefault(sessions, agentDir, merged)
 				? "team"
 				: sharesJournal && storageSelectionKey(sessions, agentDir) === shared
 					? "ci"

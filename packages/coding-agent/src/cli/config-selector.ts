@@ -27,29 +27,26 @@ export async function selectConfig(options: ConfigSelectorOptions): Promise<void
 	return new Promise((resolve) => {
 		const ui = new TuiMainScreen(new ProcessTerminal(), undefined, options.agentDir);
 		let resolved = false;
+		const close = () => {
+			if (resolved) return;
+			resolved = true;
+			ui.stop();
+			stopThemeWatcher();
+			resolve();
+		};
 
 		const selector = new ConfigSelectorComponent(
 			options.resolvedPaths,
 			options.settingsManager,
 			options.cwd,
 			options.agentDir,
-			() => {
-				if (!resolved) {
-					resolved = true;
-					ui.stop();
-					stopThemeWatcher();
-					resolve();
-				}
-			},
-			() => {
-				ui.stop();
-				stopThemeWatcher();
-				process.exit(0);
-			},
+			close,
+			close,
 			() => ui.requestRender(),
 			ui.terminal.rows,
 			options.writeScope,
 			options.projectModeAvailable,
+			() => ui.terminal.rows,
 		);
 
 		ui.addChild(selector);

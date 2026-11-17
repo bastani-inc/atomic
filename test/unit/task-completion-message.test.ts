@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { setKeybindings, visibleWidth } from "@bastani/atomic-tui";
+import { setKeybindings, Text, visibleWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
+import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import { cancelReasonText } from "../../packages/coding-agent/src/core/tasks/cancel-reason.js";
 import {
 	formatTaskCompletion,
@@ -14,14 +17,26 @@ import {
 import type {
 	CancelCause,
 	Generation,
+	OperationId,
 	Sequence,
 	SettlementReceipt,
+	TaskId,
 } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import {
+	loadTaskOwnTranscriptEntries,
+	loadTaskOwnTranscriptHistory,
+} from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import {
 	completionNoticeFromDetails,
 	TaskCompletionMessage,
 } from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import {
+	renderContactSupervisorCall,
+	renderContactSupervisorResult,
+	renderIntercomCall,
+	renderIntercomResult,
+} from "../../packages/intercom/result-renderers.js";
 import { taskRecord } from "../helpers/task-record.js";
 
 setKeybindings(new KeybindingsManager());
@@ -277,8 +292,8 @@ test("a finished task's notice is one unshaded notice line at 80 and 160 columns
 			"tick 1\ntick 2\ntick 3\ntick 4",
 		);
 		for (const [width, text] of [
-			[160, '● Background command "Print six ticks spaced 30 seconds apart" completed (exit code 0) · 3m 2s'],
-			[80, '● Background command "Print six ticks spaced 3…" completed (exit code 0) · 3m 2s'],
+			[160, ' ● Background command "Print six ticks spaced 30 seconds apart" completed (exit code 0) · 3m 2s'],
+			[80, ' ● Background command "Print six ticks spaced …" completed (exit code 0) · 3m 2s'],
 		] as const) {
 			const rows = new TaskCompletionMessage(shell, false).render(width);
 			assert.deepEqual(
@@ -287,26 +302,26 @@ test("a finished task's notice is one unshaded notice line at 80 and 160 columns
 			);
 			assert.ok(rows.every((row) => visibleWidth(row) <= width));
 			assert.ok(!rows[0]!.includes(theme.getBgAnsi("customMessageBg")), "no card shading");
-			assert.ok(rows[0]!.startsWith(theme.fg("success", "●")));
+			assert.ok(rows[0]!.startsWith(` ${theme.fg("success", "●")}`));
 		}
 		const expanded = new TaskCompletionMessage(shell, true).render(80).map((row) => stripVTControlCharacters(row));
-		assert.deepEqual(expanded.slice(1), ["  ⎿  tick 1", "     tick 2", "     tick 3", "     tick 4"]);
+		assert.deepEqual(expanded.slice(1), ["   ⎿  tick 1", "      tick 2", "      tick 3", "      tick 4"]);
 	}
 });
 
 test.each([
 	{
 		result: { kind: "failed", code: "exit", message: "exit 1", exitCode: 1 },
-		line: /^✗ Background command "npm test" failed \(exit code 1\)/,
+		line: /^ ✗ Background command "npm test" failed \(exit code 1\)/,
 	},
-	{ result: { kind: "cancelled", cause: "user" }, line: /^◼ Task "npm test" was stopped by the user$/ },
+	{ result: { kind: "cancelled", cause: "user" }, line: /^ ◼ Task "npm test" was stopped by the user$/ },
 	{
 		result: { kind: "cancelled", cause: "execution-timeout", executionTimeoutMs: 300_000 },
-		line: /^! Background command "npm test" timed out after 300 seconds$/,
+		line: /^ ! Background command "npm test" timed out after 300 seconds$/,
 	},
 	{
 		result: { kind: "cancelled", cause: "owner-close", ownerClose: "stage-close" },
-		line: /^◼ Background command "npm test" was stopped \(workflow stage closed\)$/,
+		line: /^ ◼ Background command "npm test" was stopped \(workflow stage closed\)$/,
 	},
 ] as const)("a shell notice reads how it ended: $line", ({ result, line }) => {
 	initTheme("dark");
@@ -338,9 +353,9 @@ test("notices joined in one message show one line each", () => {
 		.render(100)
 		.map((row) => stripVTControlCharacters(row));
 	assert.deepEqual(rows, [
-		'● Background command "build" completed (exit code 0)',
+		' ● Background command "build" completed (exit code 0)',
 		"",
-		'◼ Task "sleep 300" was stopped by the user',
+		' ◼ Task "sleep 300" was stopped by the user',
 	]);
 });
 
@@ -354,8 +369,9 @@ test("a subagent's completion notice shows its result's headline and keeps the r
 		model: "anthropic/claude-haiku-4-5",
 	};
 	const collapsed = stripVTControlCharacters(new TaskCompletionMessage(notice, false).render(100).join("\n"));
+	assert.match(collapsed, /^ ● worker finished$/m);
 	assert.match(collapsed, /⎿ {2}PR #5221 open: atomic lock creation/);
-	assert.doesNotMatch(collapsed, /second line/);
+	assert.doesNotMatch(collapsed, /second line|inspect the sandbox/);
 	assert.match(collapsed, /\(ctrl\+o for the full result\)/);
 	assert.doesNotMatch(collapsed, /\/tasks to inspect|claude-haiku/, "no model line or /tasks hint (#5224 mockup)");
 	const expanded = stripVTControlCharacters(new TaskCompletionMessage(notice, true).render(100).join("\n"));
@@ -366,6 +382,109 @@ test("a subagent's completion notice shows its result's headline and keeps the r
 	assert.doesNotMatch(shellText, /fourth line|PR #5221/, "a shell's notice is one line until expanded");
 	const shellExpanded = stripVTControlCharacters(new TaskCompletionMessage(shell, true).render(100).join("\n"));
 	assert.match(shellExpanded, /fourth line/);
+});
+
+test("agent completion notices render agent-name finished/failed/stopped with elapsed time and first plain result row (#5350)", () => {
+	initTheme("dark");
+	setKeybindings(new KeybindingsManager());
+	const finished = taskCompletionNotice(
+		envelope,
+		{
+			kind: "agent",
+			title: "#5220 spawn lock",
+			agentName: "debugger",
+			model: "anthropic/claude-haiku-4-5",
+			thinking: "low",
+			metrics: { elapsedMs: 5_460_000 },
+		},
+		"PR #5221 open: atomic lock creation, 4 race tests red-first\ndetailed body line 2",
+	);
+	const failed = taskCompletionNotice(
+		{ ...envelope, result: { kind: "failed", code: "AgentFailed", message: "Lock contention reproduced" } },
+		{
+			kind: "agent",
+			title: "#5220 spawn lock",
+			agentName: "debugger",
+			model: undefined,
+			thinking: undefined,
+			metrics: { elapsedMs: 120_000 },
+		},
+		"",
+	);
+	const stopped = taskCompletionNotice(
+		{ ...envelope, result: { kind: "cancelled", cause: "user" } },
+		{
+			kind: "agent",
+			title: "#5220 spawn lock",
+			agentName: "debugger",
+			model: undefined,
+			thinking: undefined,
+			metrics: { elapsedMs: 12_000 },
+		},
+		"",
+	);
+
+	for (const width of [80, 160]) {
+		const finishedRows = new TaskCompletionMessage(finished, false).render(width);
+		assert.deepEqual(
+			finishedRows.map((row) => stripVTControlCharacters(row)),
+			[
+				" ● debugger finished · 1h 31m",
+				"   ⎿  PR #5221 open: atomic lock creation, 4 race tests red-first",
+				"      (ctrl+o for the full result)",
+			],
+		);
+		assert.ok(finishedRows.every((row) => visibleWidth(row) <= width));
+		assert.ok(!finishedRows.join("").includes("\u001b[48;"));
+	}
+
+	const narrowFinished = new TaskCompletionMessage(finished, false).render(24);
+	assert.ok(narrowFinished.every((row) => visibleWidth(row) <= 24));
+	assert.match(stripVTControlCharacters(narrowFinished[1]!), /^ {3}⎿ {2}PR #5221.*…$/);
+
+	assert.deepEqual(
+		new TaskCompletionMessage(failed, false).render(80).map((row) => stripVTControlCharacters(row)),
+		[" ✗ debugger failed · 2m 0s", "   ⎿  Lock contention reproduced"],
+	);
+	assert.deepEqual(
+		new TaskCompletionMessage(stopped, false).render(80).map((row) => stripVTControlCharacters(row)),
+		[" ◼ debugger stopped · 12s"],
+	);
+
+	setKeybindings(new KeybindingsManager({ "app.tools.expand": "ctrl+e" }));
+	assert.match(
+		stripVTControlCharacters(new TaskCompletionMessage(finished, false).render(80).join("\n")),
+		/\(ctrl\+e for the full result\)/,
+	);
+	setKeybindings(new KeybindingsManager({ "app.tools.expand": [] }));
+	assert.doesNotMatch(
+		stripVTControlCharacters(new TaskCompletionMessage(finished, false).render(80).join("\n")),
+		/for the full result/,
+	);
+	setKeybindings(new KeybindingsManager());
+});
+
+test.each([20, 80, 160])("expanded agent notices show every retained result line at width %i (#5342)", (width) => {
+	initTheme("dark");
+	const output = Array.from({ length: 100 }, (_, index) => `finding ${index + 1}`).join("\n");
+	const notice = taskCompletionNotice(envelope, { kind: "agent", title: "review" }, output);
+	assert.equal(notice.preview, output);
+	const rows = new TaskCompletionMessage(notice, true).render(width);
+	const expanded = rows.map((row) => stripVTControlCharacters(row)).join("\n");
+	for (let index = 1; index <= 100; index++) assert.match(expanded, new RegExp(`finding ${index}(?:\\n|$)`));
+	assert.ok(rows.every((row) => visibleWidth(row) <= width));
+});
+
+test("expanded agent results also retain text beyond 40 soft wraps (#5342)", () => {
+	initTheme("dark");
+	const output = `${"z".repeat(7900)} final-result`;
+	const notice = taskCompletionNotice(envelope, { kind: "agent", title: "review" }, output);
+	const rows = new TaskCompletionMessage(notice, true).render(20).map(stripVTControlCharacters);
+	const result = rows
+		.slice(1)
+		.map((row) => row.slice(6))
+		.join("");
+	assert.equal(result.replace(/\s/g, ""), output.replace(/\s/g, ""));
 });
 
 test("completion notices distinguish agents without model metadata from shell output tails (#5243)", () => {
@@ -394,4 +513,404 @@ test("completion notices distinguish agents without model metadata from shell ou
 	);
 	assert.ok(longShell.preview.length <= 8_000);
 	assert.match(stripVTControlCharacters(new TaskCompletionMessage(longShell, true).render(100).join("\n")), /line10/);
+});
+
+test("agent completion notice with settled getEntries()=>[] loads Prompt, Tool calls, and Result asynchronously via loadHistory and releases cache on collapse (#5350)", async () => {
+	initTheme("dark");
+	setKeybindings(new KeybindingsManager());
+	const store = new MemorySessionStore();
+	const childSession = await SessionManager.create(store, process.cwd());
+	const usage = {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+	await childSession.appendMessage({ role: "user", content: "Inherited fork message", timestamp: 1 });
+	await childSession.appendMessage({
+		role: "assistant",
+		content: [{ type: "toolCall", id: "inherited-call", name: "edit", arguments: { path: "inherited.ts" } }],
+		api: "test",
+		provider: "test",
+		model: "test",
+		usage,
+		stopReason: "toolUse",
+		timestamp: 2,
+	});
+	const inheritedSnapshot = [...childSession.getEntries()];
+	let loadCount = 0;
+	const host = new AgentTaskHost({ scope: { kind: "session", sessionId: "notice-tx-session" }, authorizeLaunch() {} });
+	try {
+		const started = await host.startAgentTask(
+			{ kind: "agent", agent: "debugger", task: "#5220 spawn lock", cwd: process.cwd() },
+			"op-notice-tx" as OperationId,
+			(context) => {
+				context.bindTranscript({
+					getSessionId: () => childSession.getSessionId(),
+					getEntries: () => inheritedSnapshot,
+				});
+				return {
+					result: (async () => {
+						await childSession.appendMessage({
+							role: "user",
+							content: "Fix **#5220** spawn lock",
+							timestamp: 3,
+						});
+						await childSession.appendMessage({
+							role: "assistant",
+							content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "src/lock.ts" } }],
+							api: "test",
+							provider: "test",
+							model: "test",
+							usage,
+							stopReason: "toolUse",
+							timestamp: 4,
+						});
+						await childSession.appendMessage({
+							role: "toolResult",
+							toolCallId: "call-1",
+							toolName: "read",
+							content: [{ type: "text", text: "export const lock = 1;\n" }],
+							isError: false,
+							timestamp: 5,
+						});
+						const fullEntries = [...childSession.getEntries()];
+						context.bindTranscript({
+							getSessionId: () => childSession.getSessionId(),
+							getEntries: () => [],
+							loadHistory: async () => {
+								loadCount += 1;
+								return { entries: fullEntries };
+							},
+						});
+						return {
+							kind: "completed" as const,
+							output: {
+								ownerId: context.ref.ownerId,
+								taskId: context.ref.taskId,
+								artifactId: `output:${context.ref.taskId}`,
+								byteCount: "10",
+								omittedRanges: [],
+							},
+						};
+					})(),
+					cleanup: Promise.resolve({ kind: "reaped" as const }),
+				};
+			},
+		);
+		assert.equal(started.ok, true);
+		if (!started.ok) return;
+		await host.waitForTask(started.value.taskId);
+		const notice = taskCompletionNotice(
+			{
+				...envelope,
+				ownerId: host.taskRecords(new Set([started.value.taskId]))[0]!.ref.ownerId,
+				taskId: started.value.taskId,
+			},
+			{
+				kind: "agent",
+				title: "#5220 spawn lock",
+				agentName: "debugger",
+				model: undefined,
+				thinking: undefined,
+				metrics: { elapsedMs: 5_460_000 },
+			},
+			"PR #5221 open: atomic lock creation, 4 race tests red-first",
+		);
+		let renderRequests = 0;
+		const options = {
+			loadTranscript: async (taskId: TaskId) => {
+				const lease = host.resolveTask(taskId);
+				return lease.ok ? loadTaskOwnTranscriptEntries(lease.value) : undefined;
+			},
+			requestRender: () => {
+				renderRequests += 1;
+			},
+		};
+		const component = new TaskCompletionMessage(notice, false, options);
+		const collapsed = component.render(100).map((r) => stripVTControlCharacters(r));
+		assert.deepEqual(collapsed, [
+			" ● debugger finished · 1h 31m",
+			"   ⎿  PR #5221 open: atomic lock creation, 4 race tests red-first",
+			"      (ctrl+o for prompt, tool calls and full result)",
+		]);
+		assert.equal(loadCount, 0, "collapsed notice never loads full transcript history");
+
+		component.setExpanded(true);
+		component.render(100);
+		for (let i = 0; i < 20 && renderRequests === 0; i++) {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		assert.equal(loadCount, 1);
+		assert.equal(renderRequests, 1);
+		const expanded = component
+			.render(100)
+			.map((r) => stripVTControlCharacters(r).trimEnd())
+			.join("\n");
+		assert.match(expanded, /⎿ {2}Prompt[\s\S]*Fix #5220 spawn lock/);
+		assert.match(expanded, /⎿ {2}Tool calls[\s\S]*^ {6}● Read\(src\/lock\.ts\)$/m);
+		assert.match(expanded, /⎿ {2}Result[\s\S]*PR #5221 open: atomic lock creation/);
+		assert.doesNotMatch(expanded, /Inherited fork message|inherited\.ts/);
+
+		component.render(80);
+		assert.equal(loadCount, 1, "re-rendering while expanded reuses the loaded transcript");
+
+		component.setExpanded(false);
+		component.render(100);
+		component.setExpanded(true);
+		component.render(100);
+		for (let i = 0; i < 20 && loadCount < 2; i++) {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		assert.equal(loadCount, 2, "collapsing releases the cached transcript so re-expanding loads afresh");
+
+		let lateRender = 0;
+		const deferred = Promise.withResolvers<undefined>();
+		const disposable = new TaskCompletionMessage(notice, true, {
+			loadTranscript: () => deferred.promise,
+			requestRender: () => {
+				lateRender += 1;
+			},
+		});
+		disposable.render(100);
+		disposable.dispose();
+		deferred.resolve(undefined);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.equal(lateRender, 0, "disposed notice never triggers requestRender from a late load");
+
+		const brokenForkStarted = await host.startAgentTask(
+			{ kind: "agent", agent: "debugger", task: "Broken fork task", cwd: process.cwd() },
+			"op-broken-fork-tx" as OperationId,
+			(context) => {
+				context.bindTranscript({
+					getSessionId: () => childSession.getSessionId(),
+					getEntries: () => [
+						{
+							id: "missing-inherited-anchor",
+							type: "message",
+							parentId: null,
+							timestamp: "0",
+							message: { role: "user", content: "Anchor" },
+						} as never,
+					],
+				});
+				context.bindTranscript({
+					getSessionId: () => childSession.getSessionId(),
+					getEntries: () => [],
+					loadHistory: async () => ({ entries: inheritedSnapshot }),
+				});
+				return {
+					result: Promise.resolve({
+						kind: "completed" as const,
+						output: {
+							ownerId: context.ref.ownerId,
+							taskId: context.ref.taskId,
+							artifactId: `output:${context.ref.taskId}`,
+							byteCount: "10",
+							omittedRanges: [],
+						},
+					}),
+					cleanup: Promise.resolve({ kind: "reaped" as const }),
+				};
+			},
+		);
+		assert.equal(brokenForkStarted.ok, true);
+		if (brokenForkStarted.ok) {
+			await host.waitForTask(brokenForkStarted.value.taskId);
+			const brokenLease = host.resolveTask(brokenForkStarted.value.taskId);
+			assert.equal(brokenLease.ok, true);
+			if (brokenLease.ok) {
+				const ownEntries = await loadTaskOwnTranscriptEntries(brokenLease.value);
+				assert.deepEqual(
+					ownEntries,
+					[],
+					"missing inherited anchor fails closed instead of returning inherited entries",
+				);
+			}
+		}
+
+		const unavailStarted = await host.startAgentTask(
+			{ kind: "agent", agent: "debugger", task: "Unavailable history task", cwd: process.cwd() },
+			"op-unavail-tx" as OperationId,
+			(context) => {
+				context.bindTranscript({
+					getSessionId: () => "missing-session",
+					getEntries: () => [],
+					loadHistory: async () => ({
+						entries: [
+							{
+								id: "kept-prompt",
+								type: "message",
+								parentId: null,
+								timestamp: "1",
+								message: { role: "user", content: "Inspect unavailable session" },
+							} as never,
+						],
+						unavailable: "History unavailable: missing session file",
+					}),
+				});
+				return {
+					result: Promise.resolve({
+						kind: "completed" as const,
+						output: {
+							ownerId: context.ref.ownerId,
+							taskId: context.ref.taskId,
+							artifactId: `output:${context.ref.taskId}`,
+							byteCount: "10",
+							omittedRanges: [],
+						},
+					}),
+					cleanup: Promise.resolve({ kind: "reaped" as const }),
+				};
+			},
+		);
+		assert.equal(unavailStarted.ok, true);
+		if (unavailStarted.ok) {
+			await host.waitForTask(unavailStarted.value.taskId);
+			const unavailNotice = taskCompletionNotice(
+				{
+					...envelope,
+					ownerId: host.taskRecords(new Set([unavailStarted.value.taskId]))[0]!.ref.ownerId,
+					taskId: unavailStarted.value.taskId,
+				},
+				{
+					kind: "agent",
+					title: "Unavailable history task",
+					agentName: "debugger",
+					model: undefined,
+					thinking: undefined,
+					metrics: { elapsedMs: 10_000, toolCount: 4 },
+				},
+				"Retained final preview line",
+			);
+			let unavailRenders = 0;
+			const unavailComp = new TaskCompletionMessage(unavailNotice, true, {
+				loadTranscript: async (taskId: TaskId) => {
+					const lease = host.resolveTask(taskId);
+					return lease.ok ? loadTaskOwnTranscriptHistory(lease.value) : undefined;
+				},
+				requestRender: () => {
+					unavailRenders += 1;
+				},
+			});
+			unavailComp.render(100);
+			for (let i = 0; i < 20 && unavailRenders === 0; i++) {
+				await new Promise((resolve) => setTimeout(resolve, 5));
+			}
+			const unavailExpanded = unavailComp
+				.render(100)
+				.map((r) => stripVTControlCharacters(r).trimEnd())
+				.join("\n");
+			assert.match(unavailExpanded, /⎿ {2}Prompt[\s\S]*Inspect unavailable session/);
+			assert.match(unavailExpanded, /⎿ {2}Tool calls[\s\S]*Transcript unavailable/);
+			assert.doesNotMatch(unavailExpanded, /Tool calls\n {6}\(none\)/);
+			assert.match(unavailExpanded, /⎿ {2}Result[\s\S]*Retained final preview line/);
+		}
+
+		const extSession = await SessionManager.create(store, process.cwd());
+		await extSession.appendMessage({ role: "user", content: "Coordinate with peer", timestamp: 1 });
+		await extSession.appendMessage({
+			role: "assistant",
+			content: [
+				{
+					type: "toolCall",
+					id: "ic-ask-1",
+					name: "intercom",
+					arguments: { action: "ask", to: "worker-2", message: "status?" },
+				},
+				{
+					type: "toolCall",
+					id: "sup-1",
+					name: "contact_supervisor",
+					arguments: { reason: "progress_update", message: "UPDATE: halfway" },
+				},
+				{
+					type: "toolCall",
+					id: "vault-1",
+					name: "secret_vault",
+					arguments: { apiKey: "super-secret-key-999" },
+				},
+			],
+			api: "test",
+			provider: "test",
+			model: "test",
+			usage,
+			stopReason: "toolUse",
+			timestamp: 2,
+		});
+		await extSession.appendMessage({
+			role: "toolResult",
+			toolCallId: "ic-ask-1",
+			toolName: "intercom",
+			content: [
+				{
+					type: "text",
+					text: 'Ask 12345678-1234-1234-1234-123456789abc delivered to worker-2 (busy). The ask stays pending: its reply will arrive later as a message. Cancel it with intercom({ action: "cancel", askId: "12345678-1234-1234-1234-123456789abc" }).',
+				},
+			],
+			details: { action: "ask", to: "worker-2", pending: true, askId: "12345678-1234-1234-1234-123456789abc" },
+			isError: false,
+			timestamp: 3,
+		});
+		await extSession.appendMessage({
+			role: "toolResult",
+			toolCallId: "sup-1",
+			toolName: "contact_supervisor",
+			content: [{ type: "text", text: "Progress update delivered to supervisor." }],
+			details: { reason: "progress_update", delivered: true },
+			isError: false,
+			timestamp: 4,
+		});
+		await extSession.appendMessage({
+			role: "toolResult",
+			toolCallId: "vault-1",
+			toolName: "secret_vault",
+			content: [{ type: "text", text: "ok" }],
+			isError: false,
+			timestamp: 5,
+		});
+		const extEntries = [...extSession.getEntries()];
+		const extNotice = taskCompletionNotice(
+			{ ...envelope, taskId: "task-ext-notice" as TaskId },
+			{ kind: "agent", title: "Coordinate", agentName: "debugger", model: undefined, thinking: undefined },
+			"Coordination complete",
+		);
+		let extRenders = 0;
+		const extComp = new TaskCompletionMessage(extNotice, true, {
+			loadTranscript: async () => ({ entries: extEntries }),
+			getToolDefinition: (name: string) => {
+				if (name === "intercom") return { renderCall: renderIntercomCall, renderResult: renderIntercomResult };
+				if (name === "contact_supervisor")
+					return { renderCall: renderContactSupervisorCall, renderResult: renderContactSupervisorResult };
+				if (name === "secret_vault")
+					return {
+						renderCall: () => new Text("SecretVault(redacted)", 0, 0),
+						renderResult: () => new Text("Stored", 0, 0),
+					};
+				return undefined;
+			},
+			requestRender: () => {
+				extRenders += 1;
+			},
+		});
+		extComp.render(100);
+		for (let i = 0; i < 20 && extRenders === 0; i++) {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		const extExpanded = extComp
+			.render(100)
+			.map((r) => stripVTControlCharacters(r).trimEnd())
+			.join("\n");
+		assert.match(extExpanded, /● Intercom\(ask → worker-2\)/);
+		assert.match(extExpanded, /⎿ {2}Asked · reply will arrive as a message/);
+		assert.doesNotMatch(extExpanded, /12345678-1234|action: "cancel"/);
+		assert.match(extExpanded, /● Supervisor\(progress update\)/);
+		assert.match(extExpanded, /● SecretVault\(redacted\)/);
+		assert.doesNotMatch(extExpanded, /super-secret-key-999/);
+	} finally {
+		await host.close("session-close");
+		await store.close();
+	}
 });

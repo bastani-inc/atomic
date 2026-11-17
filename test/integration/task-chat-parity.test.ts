@@ -189,12 +189,12 @@ test("both chats retain the same task through tool end, agent end, background ac
 			emit({ type, message: visible.message });
 		}
 		const noticeRows = (rows: readonly string[]) => {
-			const start = rows.findIndex((row) => stripAnsi(row).includes("● Agent "));
+			const start = rows.findIndex((row) => stripAnsi(row).includes("● worker finished"));
 			assert.ok(start >= 0, "the notice line is shown");
 			return rows.slice(start, start + 3);
 		};
 		for (const output of [main.renderBody(80, 100).join("\n"), stage.render(80).join("\n")]) {
-			assert.equal((stripAnsi(output).match(/● Agent ".*" finished/g) ?? []).length, 1);
+			assert.equal((stripAnsi(output).match(/● worker finished/g) ?? []).length, 1);
 			assert.match(stripAnsi(output), /Review finished successfully/);
 			assert.doesNotMatch(output, /Internal model context|"completionId"/);
 		}
@@ -339,6 +339,8 @@ test("main lifecycle handler filters the full completion envelope before compone
 	const fixture = taskFixture();
 	const mode = {
 		session: harness.session,
+		sessionManager: harness.session.sessionManager,
+		getRegisteredToolDefinition: (toolName: string) => harness.session.getToolDefinition(toolName),
 		chatContainer: new Container(),
 		workingRunMeter: new WorkingRunMeter(),
 		toolOutputExpanded: false,

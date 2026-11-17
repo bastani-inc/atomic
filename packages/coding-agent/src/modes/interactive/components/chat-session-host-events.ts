@@ -1,7 +1,7 @@
 import type { AgentSession, AgentSessionEvent } from "../../../core/agent-session.js";
 import type { CompactionReason } from "../../../core/agent-session-types.js";
 import {
-	type CompactionRung,
+	type CompactionForm,
 	VERBATIM_COMPACTION_PROMPT_VERSION,
 	VERBATIM_COMPACTION_STRATEGY,
 	type VerbatimCompactionDetails,
@@ -23,10 +23,13 @@ import {
 } from "./chat-session-host-runtime.ts";
 import { type ChatSessionHostState, countableTranscriptLength } from "./chat-session-host-state.ts";
 import {
+	exactTextOnlyUserPrompt,
 	extractMessageText,
+	firstRawUserExactText,
 	isChatMessageEntry,
 	isMessageLike,
 	isUserMessageLike,
+	syncFirstUserEntry,
 	userMessageSignature,
 } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
@@ -50,16 +53,10 @@ function hasVerbatimCompactionMessage(messages: AgentSession["messages"]): boole
 	return messages.some((message) => message.role === "custom" && isVerbatimCompactionMessage(message));
 }
 
-/**
- * Every durable rung, derived from the union so a new member cannot be silently
- * rejected here. The event-only path (no session snapshot) is the one place a
- * `fresh` boundary would otherwise be dropped.
- */
-const COMPACTION_RUNGS: ReadonlySet<CompactionRung> = new Set([
-	"planned",
-	"extension",
-	"fresh",
-] as const satisfies readonly CompactionRung[]);
+const COMPACTION_FORMS: ReadonlySet<CompactionForm> = new Set([
+	"cleared",
+	"compacted",
+] as const satisfies readonly CompactionForm[]);
 
 function isCompleteCompactionResult(result: VerbatimCompactionResult): boolean {
 	return (
@@ -68,7 +65,7 @@ function isCompleteCompactionResult(result: VerbatimCompactionResult): boolean {
 		result.stats !== undefined &&
 		result.parameters !== undefined &&
 		result.promptVersion === VERBATIM_COMPACTION_PROMPT_VERSION &&
-		COMPACTION_RUNGS.has(result.rung)
+		COMPACTION_FORMS.has(result.form)
 	);
 }
 
@@ -81,11 +78,11 @@ function boundaryMessageFromResult(
 		promptVersion: result.promptVersion,
 		parameters: result.parameters,
 		stats: result.stats,
-		rung: result.rung,
-		// Preserve the borrowed-planner identity; the event-only path is otherwise
-		// the one place it is lost.
-		...(result.plannerModel === undefined ? {} : { plannerModel: result.plannerModel }),
-		...(result.releasedRanges === undefined ? {} : { releasedRanges: result.releasedRanges }),
+		form: result.form,
+		...(result.backend === undefined ? {} : { backend: result.backend }),
+		...(result.model === undefined ? {} : { model: result.model }),
+		...(result.fallbackReason === undefined ? {} : { fallbackReason: result.fallbackReason }),
+		...(result.history === undefined ? {} : { history: result.history }),
 		...(result.backupPath === undefined ? {} : { backupPath: result.backupPath }),
 	} satisfies VerbatimCompactionDetails;
 	return createVerbatimCompactionMessage(
@@ -120,10 +117,7 @@ function transcriptHasBoundaryForResult(
 		) {
 			return false;
 		}
-		// The rung is part of the identity, not decoration. A planned and a fresh
-		// boundary can carry identical text, and treating them as the same result
-		// silently swallows the fresh event — the one the user is meant to see.
-		if (candidate.message?.details?.rung !== result.rung) return false;
+		if (candidate.message?.details?.form !== result.form) return false;
 		return customMessageText(candidate.message).endsWith(result.compactedText);
 	});
 }
@@ -137,7 +131,11 @@ function refreshCompactedTranscript<TExtraEntry extends ChatTranscriptEntryLike>
 		if (state.bodyViewport.getScrollFromBottom() > 0) {
 			state.newMessages.observe(false, countableTranscriptLength(state));
 		}
+		const firstUser = firstRawUserExactText(compactedMessages);
+		state.seenFirstRawUser = firstUser.seenUser;
+		state.firstUserEntryExactText = firstUser.exactText;
 		state.liveChat.replaceMessages(compactedMessages, state.extraEntries);
+		syncFirstUserEntry(state);
 		state.newMessages.compactionRefreshed(countableTranscriptLength(state));
 		return;
 	}
@@ -148,7 +146,11 @@ function refreshCompactedTranscript<TExtraEntry extends ChatTranscriptEntryLike>
 		if (state.bodyViewport.getScrollFromBottom() > 0) {
 			state.newMessages.observe(false, countableTranscriptLength(state));
 		}
+		const firstUser = firstRawUserExactText(remoteMessages);
+		state.seenFirstRawUser = firstUser.seenUser;
+		state.firstUserEntryExactText = firstUser.exactText;
 		state.liveChat.replaceMessages(remoteMessages, state.extraEntries);
+		syncFirstUserEntry(state);
 		state.newMessages.compactionRefreshed(countableTranscriptLength(state));
 		return;
 	}
@@ -166,6 +168,10 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 	if (type === "message_start") {
 		const message = (event as { message?: unknown }).message;
 		if (isUserMessageLike(message)) {
+			if (!state.seenFirstRawUser) {
+				state.seenFirstRawUser = true;
+				state.firstUserEntryExactText = exactTextOnlyUserPrompt(message);
+			}
 			const signature = userMessageSignature(extractMessageText(message.content));
 			const count = state.optimisticUserSignatureCounts.get(signature) ?? 0;
 			if (count > 0) {
@@ -175,7 +181,6 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 		}
 	}
 	if (type === "message_end") {
-		state.hydratedOutputOnly = false;
 		const message = (event as { message?: unknown }).message;
 		if (typeof message === "object" && message !== null && "role" in message) {
 			state.workingRunMeter.settled(message as { role: string });
@@ -183,8 +188,10 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 	}
 	if (isSharedLiveChatEvent(type)) {
 		const changed = state.liveChat.applyEvent(event);
+		if (type === "message_start" && state.firstUserEntry === undefined && state.seenFirstRawUser) {
+			syncFirstUserEntry(state);
+		}
 		if (type === "message_update") {
-			state.hydratedOutputOnly = false;
 			const hasDelta = (event as { assistantMessageEvent?: unknown }).assistantMessageEvent !== undefined;
 			meterStreamingAssistant(state, (event as { message?: unknown }).message, !hasDelta);
 		}
@@ -196,11 +203,11 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 	let changed = false;
 	switch (type) {
 		case "agent_start":
-			state.hydratedOutputOnly = false;
 			state.workingRunMeter.start();
 			state.sdkBusy = true;
 			state.workingMessage = undefined;
 			state.lastWorkingMessage = undefined;
+			state.interruptedTurnSnapshot = undefined;
 			startChatSessionWorkingLifecycle(state);
 			state.liveChat.clearPendingTools();
 			state.statusMessage = "";
@@ -209,9 +216,26 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			break;
 		case "agent_end": {
 			const manualTakeoverPending = state.manualCompactionTakeoverPending;
+			const interrupted = state.interruptedTurnSnapshot;
+			if (interrupted?.startedAt !== undefined && state.workingRunMeter.snapshot() === undefined) {
+				state.workingRunMeter.resume(interrupted.startedAt, interrupted.settledTokens, false);
+				if (state.lastWorkingMessage === undefined) {
+					state.lastWorkingMessage = interrupted.lastWorkingMessage;
+				}
+			}
 			const snapshot = chatSessionWorkingMeta(state);
-			if (snapshot !== undefined && !manualTakeoverPending)
+			if (snapshot !== undefined && !manualTakeoverPending) {
 				state.workedRun = { message: state.lastWorkingMessage, snapshot };
+			} else if (interrupted?.workedRun !== undefined && !manualTakeoverPending) {
+				state.workedRun = interrupted.workedRun;
+			}
+			if (interrupted !== undefined) {
+				state.interruptedTurnSnapshot = {
+					...interrupted,
+					startedAt: undefined,
+					workedRun: state.workedRun ?? interrupted.workedRun,
+				};
+			}
 			state.workingRunMeter.stop();
 			state.sdkBusy = manualTakeoverPending;
 			state.compacting = manualTakeoverPending;
@@ -438,7 +462,7 @@ function isSharedLiveChatEvent(type: string): boolean {
 
 function assistantToolCallEvent(event: AgentSessionEvent):
 	| {
-			type: "tool_execution_start";
+			type: "tool_call_args";
 			toolCallId: string;
 			toolName: string;
 			args: unknown;
@@ -469,7 +493,7 @@ function assistantToolCallEvent(event: AgentSessionEvent):
 
 function toolCallPayload(value: unknown):
 	| {
-			type: "tool_execution_start";
+			type: "tool_call_args";
 			toolCallId: string;
 			toolName: string;
 			args: unknown;
@@ -480,7 +504,7 @@ function toolCallPayload(value: unknown):
 	if (candidate.type !== "toolCall") return undefined;
 	if (typeof candidate.id !== "string" || typeof candidate.name !== "string") return undefined;
 	return {
-		type: "tool_execution_start",
+		type: "tool_call_args",
 		toolCallId: candidate.id,
 		toolName: candidate.name,
 		args: candidate.arguments ?? {},

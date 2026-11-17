@@ -62,6 +62,24 @@ test("/compact in the chat of a stage on a local worker compacts that stage's se
 	}
 });
 
+test("/compact instructions reach the session of a stage on a local worker, with no warning", async () => {
+	const requests: Array<string | undefined> = [];
+	const { view, state } = workerStageChat({
+		async compact(instructions?: string) {
+			requests.push(instructions);
+		},
+	});
+	try {
+		submitStageChatText(view, "/compact keep the API notes");
+		await vi.waitFor(() => assert.deepEqual(requests, ["keep the API notes"]));
+		await flush();
+		assert.doesNotMatch(view._statusMessage ?? "", /instructions/);
+		assert.deepEqual(state.promptCalls, [], "the command is not model input");
+	} finally {
+		view.dispose();
+	}
+});
+
 test("a ! command in the chat of a stage on a local worker runs on that stage's session and shows its output (#3996)", async () => {
 	const runs: { command: string; excludeFromContext: boolean | undefined }[] = [];
 	const { view, state } = workerStageChat({
@@ -110,7 +128,7 @@ test("/tasks in the chat of a stage on a local worker lists that stage's tasks f
 	try {
 		assert.match(
 			stripAnsi(view.render(120).join("\n")),
-			/∀ shell {2}npm run build/,
+			/⧗ shell {2}npm run build/,
 			"the footer lists the worker's tasks",
 		);
 		submitStageChatText(view, "/tasks");

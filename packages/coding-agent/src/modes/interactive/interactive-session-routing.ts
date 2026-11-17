@@ -9,7 +9,7 @@ import {
 } from "../../core/workflow-resume.ts";
 import { canonicalizePath } from "../../utils/paths.ts";
 import { withHostProjectTrustPrompt } from "../interactive-engine/extension-ui-bridge.ts";
-import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.ts";
+import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { mountIdleStatus } from "./components/idle-status.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -279,36 +279,58 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 		let closed = false;
 		let refreshTimer: ReturnType<typeof setInterval> | undefined;
 		let workflowCatalog: Promise<SessionInfo[]> | undefined;
+		let lastWorkflowRows: SessionInfo[] = [];
+		let workflowEpoch = 0;
+		const invalidateWorkflowCatalog = () => {
+			workflowEpoch += 1;
+			workflowCatalog = undefined;
+		};
 		const close = () => {
 			closed = true;
+			invalidateWorkflowCatalog();
 			clearInterval(refreshTimer);
 			selector.dispose();
 			done();
 		};
 		const workflows = () => {
-			workflowCatalog ??= getResumeWorkflows(this).catch((error) => {
-				if (!closed) selector.getSessionList().onError?.(error instanceof Error ? error.message : String(error));
-				return [];
-			});
+			if (!workflowCatalog) {
+				const requestEpoch = ++workflowEpoch;
+				workflowCatalog = getResumeWorkflows(this).then(
+					(rows) => {
+						if (!closed && requestEpoch === workflowEpoch) {
+							lastWorkflowRows = rows;
+						}
+						return lastWorkflowRows;
+					},
+					(error) => {
+						if (!closed && requestEpoch === workflowEpoch) {
+							workflowCatalog = undefined;
+							selector.getSessionList().onError?.(error instanceof Error ? error.message : String(error));
+						}
+						return lastWorkflowRows;
+					},
+				);
+			}
 			return workflowCatalog;
 		};
 		const load = async (all: boolean, onProgress?: SessionListProgress): Promise<SessionInfo[]> => {
 			let partial: readonly SessionInfo[] = [];
-			let runRows: SessionInfo[] = [];
 			const report = (loaded: number, total: number, sessions?: readonly SessionInfo[]) => {
 				if (sessions) partial = sessions;
-				onProgress?.(loaded + runRows.length, total + runRows.length, [...partial, ...runRows]);
+				onProgress?.(loaded + lastWorkflowRows.length, total + lastWorkflowRows.length, [
+					...partial,
+					...lastWorkflowRows,
+				]);
 			};
-			const runs = workflows().then((rows) => {
-				runRows = rows;
+			const runs = workflows().then(() => {
 				report(partial.length, partial.length);
-				return rows;
 			});
+			const progress = this.runtimeHost ? report : onProgress;
 			const sessions = all
-				? SessionManager.listAll(this.sessionManager.getSessionStore(), report)
-				: SessionManager.list(this.sessionManager.getCwd(), this.sessionManager.getSessionStore(), report);
-			const [sessionRows, workflowRows] = await Promise.all([sessions, runs]);
-			return [...sessionRows, ...workflowRows];
+				? SessionManager.listAll(this.sessionManager.getSessionStore(), progress)
+				: SessionManager.list(this.sessionManager.getCwd(), this.sessionManager.getSessionStore(), progress);
+			const [sessionRows] = await Promise.all([sessions, runs]);
+			return [...sessionRows, ...lastWorkflowRows];
 		};
 		const selector = new SessionSelectorComponent(
 			(onProgress) => load(false, onProgress),
@@ -333,7 +355,12 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 					if (this.runtimeHost instanceof IsolatedInteractiveRuntime)
 						await this.runtimeHost.deleteWorkflowFromPicker(runId);
 					else await deleteWorkflowFromPicker(this.session, runId);
-					workflowCatalog = undefined;
+					if (closed) return;
+					invalidateWorkflowCatalog();
+					lastWorkflowRows = lastWorkflowRows.filter((row) => row.id !== runId);
+					void workflows().then((rows) => {
+						if (!closed) selector.updateWorkflowSessions(rows);
+					});
 				},
 				deleteSession:
 					this.sessionManager.getSessionStore().descriptor.adapter === "jsonl"
@@ -372,9 +399,11 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 			refreshTimer = setInterval(() => {
 				if (closed || refreshing) return;
 				refreshing = true;
-				workflowCatalog = undefined;
-				void selector
-					.refreshSessions()
+				invalidateWorkflowCatalog();
+				void workflows()
+					.then((rows) => {
+						if (!closed) selector.updateWorkflowSessions(rows);
+					})
 					.catch((error) => {
 						if (!closed)
 							selector.getSessionList().onError?.(error instanceof Error ? error.message : String(error));
@@ -390,6 +419,7 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 			focus: selector,
 			dispose: () => {
 				closed = true;
+				invalidateWorkflowCatalog();
 				clearInterval(refreshTimer);
 				selector.dispose();
 			},
@@ -458,9 +488,7 @@ InteractiveModeBase.prototype.handleResumeTarget = async function (
 			);
 		} else {
 			this.showError(
-				resolution.kind === "invalid"
-					? "Use a full session or workflow id, or a unique 8-character prefix. Workflow resume does not accept flags."
-					: `No session or resumable workflow matches "${target}".`,
+				`No session or resumable workflow matches "${target}". Use /resume to choose an entry, or provide a full id or unique 8-character hexadecimal prefix.`,
 			);
 		}
 	} catch (error) {

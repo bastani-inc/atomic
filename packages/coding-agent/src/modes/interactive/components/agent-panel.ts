@@ -1,35 +1,39 @@
+import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import {
 	type AgentPanelItem,
 	type AgentPanelState,
 	agentPanelItemReadAt,
 	agentPanelTaskId,
+	isInterruptedPanelTask,
+	markInterruptedPanelTask,
 } from "../../../core/tasks/agent-panel-source.ts";
-import { bindTaskClock, TaskElapsedClocks, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.ts";
-/**
- * The agent panel below the main chat's prompt: one row per running or recent subagent, workflow run and background
- * shell. Unfocused it is a quiet status block; ↓ on an empty prompt focuses it, and then it is a list like every other
- * list: ↑↓ select, Enter or → open, `x` stops (twice) or dismisses, Esc returns to the prompt.
- */
-
-import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { TaskId } from "../../../core/tasks/contracts.js";
+import {
+	bindTaskClock,
+	liveElapsedFromRead,
+	TaskElapsedClocks,
+	taskClockOf,
+	taskClockRunning,
+} from "../../../core/tasks/live-elapsed.js";
 import { getGlobalTheme } from "../theme/global-theme.ts";
 import { ATOMIC_WORKING_FRAMES, atomicWorkingGlyph } from "./atomic-working-status.ts";
-import { type NavKey, type NavKeybindings, type NavKeyStyle, renderNavHintLine, TwoPressConfirm } from "./nav-keys.ts";
+import {
+	type NavKey,
+	type NavKeybindings,
+	type NavKeyStyle,
+	navActionText,
+	renderNavHintLine,
+	TwoPressConfirm,
+} from "./nav-keys.ts";
 import { taskDisplayText } from "./task-row.js";
 
-/** A panel row: one item of the session's agent panel. */
 export type AgentPanelRow = AgentPanelItem;
 export type { AgentPanelState };
 
-/** A finished row reads dim after this long, and leaves the panel after {@link AGENT_PANEL_DROP_MS}. */
 export const AGENT_PANEL_FADE_MS = 30_000;
 export const AGENT_PANEL_DROP_MS = 180_000;
-/** Rows the unfocused panel shows before it folds the rest into `+N more`. */
 export const AGENT_PANEL_IDLE_ROWS = 4;
-/** Rows the focused panel shows at once; the selection scrolls through the rest. */
 export const AGENT_PANEL_FOCUSED_ROWS = 8;
-/** The id of the `● main` row the focused panel starts with. */
 export const AGENT_PANEL_MAIN_ID = "main";
 
 export interface AgentPanelStyle extends NavKeyStyle {
@@ -73,10 +77,9 @@ function cachedWorkingGlyph(frame: number): string {
 }
 
 export function isFinishedPanelRow(row: Pick<AgentPanelRow, "state">): boolean {
-	return FINISHED.has(row.state);
+	return FINISHED.has(row.state) && !isInterruptedPanelTask(row);
 }
 
-/** One safe display line: no terminal controls, unpaired surrogates, or invisible and bidi-override characters. */
 function panelText(text: string): string {
 	if (!NON_PRINTABLE_ASCII.test(text)) return text;
 	return taskDisplayText(text)
@@ -120,7 +123,6 @@ function clampLine(line: string, maxWidth: number): string {
 	return visibleWidth(clamped) <= maxWidth ? clamped : "";
 }
 
-/** `41m`, `1h 31m`, `9s`: elapsed time as the panel shows it. */
 export function formatPanelElapsed(ms: number): string {
 	const seconds = Math.max(0, Math.floor(ms / 1000));
 	if (seconds < 60) return `${seconds}s`;
@@ -129,7 +131,6 @@ export function formatPanelElapsed(ms: number): string {
 	return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
-/** `96.1k`, `1.2M`, `812`: a token count as the panel shows it. */
 export function formatPanelTokens(tokens: number): string {
 	if (!Number.isFinite(tokens) || tokens < 0) return "0";
 	const rounded = Math.round(tokens);
@@ -144,7 +145,6 @@ export function formatPanelTokens(tokens: number): string {
 	return `${amount.toFixed(1)}${units[unit]}`;
 }
 
-/** A run's stage progress as a 16-cell bar: `▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱`. */
 export function panelProgressBar(done: number, total: number, cells = 16): string {
 	const ratio = Number.isFinite(done) && Number.isFinite(total) && total > 0 ? done / total : 0;
 	const clamped = Math.max(0, Math.min(1, ratio));
@@ -154,11 +154,6 @@ export function panelProgressBar(done: number, total: number, cells = 16): strin
 	return "▰".repeat(filled) + "▱".repeat(size - filled);
 }
 
-/**
- * Orders rows (needing input, running, queued and stopping, then finished, each newest first as given) and applies the
- * finished-row lifetime: a row finished for {@link AGENT_PANEL_DROP_MS} leaves, unless `keep` holds it (a workflow run
- * that has not been viewed yet).
- */
 export class AgentPanelModel {
 	private readonly finishedAt = new Map<string, { since: number; pass: number }>();
 	private readonly finishedTaskAt = new Map<string, { since: number; pass: number }>();
@@ -173,20 +168,16 @@ export class AgentPanelModel {
 	constructor(now: () => number = Date.now) {
 		this.now = now;
 	}
-	/** Changes whenever a row starts or stops being tracked as finished, so a cached ranking can tell it is stale. */
 	get finishedRevision(): number {
 		return this.finishedGeneration;
 	}
-	/** When the row was first seen finished, if it is; `native` reads a session task by its task id. */
 	finishedSince(id: string, native = false): number | undefined {
 		return (native ? this.finishedTaskAt : this.finishedAt).get(id)?.since;
 	}
-	/** Starts one ranking pass; finished rows not seen again before {@link endPass} stop being tracked. */
 	beginPass(): { readonly now: number; readonly pass: number } {
 		this.passMatchedFinished = 0;
 		return { now: this.now(), pass: ++this.pass };
 	}
-	/** Whether a finished row is still listed: kept, or finished less than {@link AGENT_PANEL_DROP_MS} ago. */
 	keepFinished(id: string, keep: boolean, now: number, pass: number, native = false): boolean {
 		const table = native ? this.finishedTaskAt : this.finishedAt;
 		let entry = table.get(id);
@@ -212,12 +203,8 @@ export class AgentPanelModel {
 			}
 		}
 	}
-	/**
-	 * The row with its elapsed time now. A task or agent row reads the clock of the source it came from (the panel's
-	 * own clock for a row read from none), so every view of it agrees; a workflow run's row advances from when it was
-	 * read while it runs.
-	 */
 	withElapsed(row: AgentPanelRow, now = this.now(), state: AgentPanelState = row.state): AgentPanelRow {
+		row = this.baseOf(row);
 		if (state === "queued") return row;
 		const running = taskClockRunning(state);
 		if (row.kind === "workflow") {
@@ -227,7 +214,7 @@ export class AgentPanelModel {
 				since = now;
 				this.readAt.set(row, since);
 			}
-			const elapsedMs = row.elapsedMs + Math.max(0, now - since);
+			const elapsedMs = liveElapsedFromRead(row.elapsedMs, since, running, now);
 			return elapsedMs === row.elapsedMs ? row : this.copyOf(row, { ...row, elapsedMs });
 		}
 		const taskId = agentPanelTaskId(row.id) ?? row.id;
@@ -238,13 +225,13 @@ export class AgentPanelModel {
 			row.elapsedMs,
 			running,
 			now,
-			FINISHED.has(state),
+			isFinishedPanelRow(row),
 		);
 		if (elapsedMs === undefined || elapsedMs === row.elapsedMs) return row;
 		const copy = { ...row, elapsedMs };
+		if (isInterruptedPanelTask(row)) markInterruptedPanelTask(copy);
 		return this.copyOf(row, sourceClocks === undefined ? copy : bindTaskClock(copy, sourceClocks));
 	}
-	/** The row a {@link withElapsed} copy was made from; any other row itself. */
 	baseOf(row: AgentPanelRow): AgentPanelRow {
 		return this.bases.get(row) ?? row;
 	}
@@ -252,10 +239,6 @@ export class AgentPanelModel {
 		this.bases.set(copy, base);
 		return copy;
 	}
-	/**
-	 * `rows` in panel order (waiting for input, running, others, finished), without finished rows that aged out unless
-	 * `keep` keeps them. Rows in `window` (the first {@link AGENT_PANEL_IDLE_ROWS} by default) carry their elapsed time.
-	 */
 	rows(
 		rows: readonly AgentPanelRow[],
 		keep: (row: AgentPanelRow) => boolean = () => false,
@@ -270,7 +253,7 @@ export class AgentPanelModel {
 		for (const row of rows) {
 			const state = row.state;
 			states.set(row, state);
-			if (FINISHED.has(state)) {
+			if (isFinishedPanelRow(row)) {
 				if (!this.keepFinished(row.id, keep(row), now, pass)) continue;
 				finishedRows.push(row);
 			} else if (state === "input") inputRows.push(row);
@@ -300,7 +283,6 @@ export class AgentPanelModel {
 		}
 		return ordered;
 	}
-	/** Whether a finished row has been finished long enough to read dim. */
 	faded(row: Pick<AgentPanelRow, "id">): boolean {
 		const taskId = agentPanelTaskId(row.id);
 		const since =
@@ -353,7 +335,6 @@ function stateWord(row: AgentPanelRow): string {
 	}
 }
 
-/** The right-hand column: `18m · ↓ 87.4k tokens`, `done · 6m`, `needs input · 3m`. Narrow panels drop tokens. */
 function rightColumn(row: AgentPanelRow, width: number): string {
 	const elapsed = row.elapsedMs === undefined ? "" : formatPanelElapsed(row.elapsedMs);
 	if (row.state === "running") {
@@ -365,7 +346,6 @@ function rightColumn(row: AgentPanelRow, width: number): string {
 	return elapsed.length > 0 ? `${word} · ${elapsed}` : word;
 }
 
-/** The middle column: the task, or a workflow run's stage bar and `n/m stages`. */
 function taskColumn(row: AgentPanelRow, cleanTask: string, width: number): string {
 	if (row.kind === "workflow" && row.progress !== undefined && width >= 60) {
 		return `${panelProgressBar(row.progress.done, row.progress.total)}  ${row.progress.done}/${row.progress.total} stages`;
@@ -374,22 +354,14 @@ function taskColumn(row: AgentPanelRow, cleanTask: string, width: number): strin
 }
 
 export interface AgentPanelRenderOptions {
-	/** The selected row's id when the panel is focused; absent renders the quiet unfocused panel. */
 	readonly selectedId?: string;
-	/** Spinner frame for running rows; absent draws a still accent ∀. */
 	readonly frame?: number;
 	readonly faded?: (row: AgentPanelRow) => boolean;
-	/** First row to show when focused, so the selection stays in view. */
 	readonly scroll?: number;
-	/** For rows the caller already cut to the shown window: how many are above and below it. */
 	readonly hiddenAbove?: number;
 	readonly hiddenBelow?: number;
 }
 
-/**
- * The panel's rows at `width`: `  ● main` first when focused, then one row per item. A row is
- * `<cursor><glyph> <name>  <task><pad><right>` with the right column flush to the edge.
- */
 export function renderAgentPanelRows(
 	rows: readonly AgentPanelRow[],
 	width: number,
@@ -453,7 +425,7 @@ export function renderAgentPanelRows(
 		}
 		const rightWidth = cellWidth(shownQueued === undefined ? shownRight : shownRight + shownQueued);
 		const taskRoom = Math.max(0, width - fixed - rightWidth - 2);
-		const fittedTask = taskRoom >= 4 && task.length > 0 ? fitToWidth(task, taskRoom) : { text: "", width: 0 };
+		const fittedTask = taskRoom >= 8 && task.length > 0 ? fitToWidth(task, taskRoom) : { text: "", width: 0 };
 		const pad = Math.max(1, width - fixed - fittedTask.width - rightWidth);
 		const nameText = selected ? style.bold(style.text(head)) : paint(head);
 		const rightText = paint(shownRight) + (shownQueued === undefined ? "" : style.warning(shownQueued));
@@ -489,34 +461,59 @@ export function renderAgentPanelRows(
 	return lines;
 }
 
-/** What a focused panel does with its selection. */
 export interface AgentPanelActions {
-	/** Open the row: a subagent's or shell's chat, or a workflow run's graph. */
 	open(row: AgentPanelRow): void;
-	/** Stop a running row, after the second `x`. */
 	stop(row: AgentPanelRow): void;
-	/** Clear a finished row from the panel. */
 	dismiss(row: AgentPanelRow): void;
-	/** Give the keyboard back to the prompt. */
 	close(): void;
 }
 
-/** The focused panel's keys, in hint order. */
-export function agentPanelKeys(selected: AgentPanelRow | undefined): NavKey[] {
+const LITERAL_PANEL_KEYS: ReadonlySet<string> = new Set(["esc", "escape", "left", "up", "down", "home", "end"]);
+
+function focusedPanelKeybindings(
+	keybindings: NavKeybindings | undefined,
+	rowSelected = true,
+): NavKeybindings | undefined {
+	if (!keybindings) return undefined;
+	const liveKeys = (action: string): string[] =>
+		(keybindings.getKeys?.(action) ?? []).filter((key) => !LITERAL_PANEL_KEYS.has(key));
+	return {
+		matches: (data, action) => keybindings.matches(data, action),
+		getKeys: (action) => {
+			const keys = liveKeys(action);
+			if (action === "app.keys.help") return keys;
+			const helpKeys = new Set(liveKeys("app.keys.help"));
+			if (action === "app.list.open") return keys.filter((key) => !helpKeys.has(key));
+			if (action === "app.list.stop") {
+				const openKeys = rowSelected
+					? new Set(liveKeys("app.list.open").filter((key) => !helpKeys.has(key)))
+					: undefined;
+				return keys.filter((key) => !helpKeys.has(key) && !openKeys?.has(key));
+			}
+			return keys;
+		},
+	};
+}
+
+export function agentPanelKeys(selected: AgentPanelRow | undefined, keybindings?: NavKeybindings): NavKey[] {
+	const filtered = focusedPanelKeybindings(keybindings, selected !== undefined);
+	const actionEntry = (action: string, label: string): NavKey[] => {
+		if (!filtered) return [{ action, label }];
+		const text = navActionText(filtered, action);
+		return text ? [{ keys: text, label }] : [];
+	};
+	const includeHelp = filtered === undefined || (filtered.getKeys?.("app.keys.help")?.length ?? 0) > 0;
 	return [
 		{ keys: "↑↓", label: "select" },
+		...actionEntry("app.list.open", "to open"),
 		...(selected === undefined
 			? []
-			: [
-					{ action: "app.list.open", label: "to open" },
-					{ action: "app.list.stop", label: isFinishedPanelRow(selected) ? "dismiss" : "stop" },
-				]),
+			: actionEntry("app.list.stop", isFinishedPanelRow(selected) ? "dismiss" : "stop")),
 		{ keys: "esc/←", label: "back to prompt" },
-		{ action: "app.keys.help", label: "keys" },
+		...(includeHelp ? [{ action: "app.keys.help", label: "keys" }] : []),
 	];
 }
 
-/** Selection, the two-press stop and key handling of the focused panel; rendering stays with the caller. */
 export class AgentPanelFocus {
 	selectedId: string = AGENT_PANEL_MAIN_ID;
 	scroll = 0;
@@ -530,23 +527,17 @@ export class AgentPanelFocus {
 		this.actions = actions;
 		this.stopConfirm = new TwoPressConfirm(now);
 	}
-	/**
-	 * A row that finished while its stop waited for the second `x`: the wait ends, and the next `x` on it only
-	 * acknowledges this, so a row is never dismissed by a press aimed at a running item.
-	 */
 	finishedWhileArmed?: AgentPanelRow;
 	private finishedAcknowledged = false;
-	/** Whether each row was last drawn finished, so `x` acts on what the reader saw, not on a change not yet drawn. */
 	private readonly paintedFinished = new Map<string, boolean>();
-	/** Set when a refresh, not the reader, moved the selection, until it is drawn: `x` and open then act on nothing. */
 	private selectionMovedUnseen = false;
-	/** Records the rows as drawn; the renderer calls it with the rows it painted. */
 	notePainted(rows: readonly AgentPanelRow[]): void {
 		this.paintedFinished.clear();
 		for (const row of rows) this.paintedFinished.set(row.id, isFinishedPanelRow(row));
 		this.selectionMovedUnseen = false;
 	}
 	update(rows: readonly AgentPanelRow[]): void {
+		const selectedIndex = this.rows.findIndex((row) => row.id === this.selectedId);
 		const ids = new Set([AGENT_PANEL_MAIN_ID]);
 		this.rows = rows.filter((row) => {
 			if (ids.has(row.id)) return false;
@@ -566,12 +557,12 @@ export class AgentPanelFocus {
 			this.finishedWhileArmed = undefined;
 		}
 		if (this.selectedId !== AGENT_PANEL_MAIN_ID && !rows.some((row) => row.id === this.selectedId)) {
-			this.selectedId = rows[0]?.id ?? AGENT_PANEL_MAIN_ID;
+			this.selectedId =
+				this.rows[Math.max(0, Math.min(selectedIndex, this.rows.length - 1))]?.id ?? AGENT_PANEL_MAIN_ID;
 			this.selectionMovedUnseen = true;
 		}
 		this.keepInView();
 	}
-	/** Focus starts on the first row below `main`, as ↓ from the prompt moves one step. */
 	enter(selectId?: string): void {
 		this.selectedId = this.rows.some((row) => row.id === selectId)
 			? (selectId as string)
@@ -581,7 +572,9 @@ export class AgentPanelFocus {
 	selected(): AgentPanelRow | undefined {
 		return this.rows.find((row) => row.id === this.selectedId);
 	}
-	/** The row waiting for its second `x`, while the window is open. */
+	finishedAction(): "dismiss" | "acknowledge" {
+		return this.finishedAcknowledged ? "dismiss" : "acknowledge";
+	}
 	pendingStop(): AgentPanelRow | undefined {
 		const id = this.stopConfirm.pending();
 		return id === undefined ? undefined : this.rows.find((row) => row.id === id);
@@ -605,22 +598,27 @@ export class AgentPanelFocus {
 		this.selectedId = ids[Math.max(0, Math.min(ids.length - 1, index + delta))] ?? AGENT_PANEL_MAIN_ID;
 		this.keepInView();
 	}
-	/** Every key belongs to the focused panel; returns whether it changed anything worth a repaint. */
 	handleInput(data: string, is: (data: string, key: string) => boolean): boolean {
 		if (this.helpOpen) {
+			this.stopConfirm.reset();
+			this.finishedWhileArmed = undefined;
 			if (is(data, "escape") || this.keys.matches(data, "app.keys.help")) this.helpOpen = false;
 			return true;
 		}
-		if (this.keys.matches(data, "app.keys.help")) {
-			this.helpOpen = true;
-			return true;
-		}
-		const stopKey = this.keys.matches(data, "app.list.stop");
+		const literalNav =
+			is(data, "escape") ||
+			is(data, "left") ||
+			is(data, "up") ||
+			is(data, "down") ||
+			is(data, "home") ||
+			is(data, "end");
+		const helpKey = !literalNav && this.keys.matches(data, "app.keys.help");
+		const openKey = !literalNav && !helpKey && this.keys.matches(data, "app.list.open");
+		const stopKey = !literalNav && !helpKey && !openKey && this.keys.matches(data, "app.list.stop");
 		if (!stopKey) {
 			this.stopConfirm.reset();
 			this.finishedWhileArmed = undefined;
 		}
-		// Esc and ← go back one level, to the prompt the panel was focused from.
 		if (is(data, "escape") || is(data, "left")) {
 			this.actions.close();
 			return true;
@@ -648,12 +646,16 @@ export class AgentPanelFocus {
 			this.keepInView();
 			return true;
 		}
+		if (helpKey) {
+			this.helpOpen = true;
+			return true;
+		}
 		const row = this.selected();
-		if (this.selectionMovedUnseen && (stopKey || this.keys.matches(data, "app.list.open"))) {
+		if (this.selectionMovedUnseen && (stopKey || openKey)) {
 			this.stopConfirm.reset();
 			return true;
 		}
-		if (this.keys.matches(data, "app.list.open")) {
+		if (openKey) {
 			if (row === undefined) this.actions.close();
 			else this.actions.open(row);
 			return true;
@@ -665,7 +667,7 @@ export class AgentPanelFocus {
 				this.stopConfirm.reset();
 				return true;
 			}
-			if (isFinishedPanelRow(row) && this.paintedFinished.get(row.id) === false) {
+			if (isFinishedPanelRow(row) && this.paintedFinished.get(row.id) !== true) {
 				this.stopConfirm.reset();
 				this.finishedWhileArmed = row;
 				this.finishedAcknowledged = true;
@@ -685,27 +687,29 @@ export class AgentPanelFocus {
 	}
 }
 
-/** The focused panel's hint line, or the waiting second `x`. */
 export function renderAgentPanelHint(
 	focus: AgentPanelFocus,
 	width: number,
 	style: AgentPanelStyle,
 	keybindings: NavKeybindings | undefined,
 ): string {
+	const selected = focus.selected();
+	const filtered = focusedPanelKeybindings(keybindings, selected !== undefined);
 	const finished = focus.finishedWhileArmed;
 	if (finished !== undefined) {
-		const key = keybindings?.getKeys?.("app.list.stop")?.[0] ?? "x";
-		return style.warning(truncateToWidth(`  ${panelText(finished.name)} finished · ${key} to dismiss`, width));
+		const key = filtered?.getKeys?.("app.list.stop")?.[0] ?? "x";
+		return style.warning(
+			truncateToWidth(`  ${panelText(finished.name)} finished · ${key} to ${focus.finishedAction()}`, width),
+		);
 	}
 	const pending = focus.pendingStop();
 	if (pending !== undefined) {
-		const key = keybindings?.getKeys?.("app.list.stop")?.[0] ?? "x";
+		const key = filtered?.getKeys?.("app.list.stop")?.[0] ?? "x";
 		return style.warning(truncateToWidth(`  Press ${key} again within 3s to stop ${panelText(pending.name)}`, width));
 	}
-	return renderNavHintLine(agentPanelKeys(focus.selected()), width, style, keybindings);
+	return renderNavHintLine(agentPanelKeys(selected, keybindings), width, style, filtered);
 }
 
-/** Task ids a panel's rows name, for a caller that acts on tasks. */
 export function panelTaskId(row: Pick<AgentPanelRow, "id">): TaskId | undefined {
 	return row.id.startsWith("task:") ? (row.id.slice(5) as TaskId) : undefined;
 }

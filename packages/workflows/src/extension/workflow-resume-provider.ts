@@ -1,9 +1,11 @@
 import type { ExtensionCommandContext } from "@bastani/atomic";
+import type { DurableWorkflowBackend } from "../durable/backend.js";
 import {
 	availableStoreDurableBackend,
 	DurableBackendNotInitializedError,
 	requireStoreDurableBackend,
 } from "../durable/store-backend.js";
+import type { DurableCheckpoint, ResumableWorkflowEntry } from "../durable/types.js";
 import { toWorkflowPickerRow, workflowResumeSelectorItems } from "../tui/workflow-resume-selector.js";
 import type { PiCommandContext, PiEventContext } from "./public-types.js";
 import type { PiHostSessionPickerRow } from "./wiring.js";
@@ -68,13 +70,19 @@ function mergeCommandContext(
 function sanitizePickerGuidance(message: string): string {
 	return message
 		.replace(/\/workflow\s+resume\s+([^\s,.;)`"]+)\s+--accept-entry-changes/g, "/resume $1")
-		.replace(/--accept-entry-changes/g, "")
+		.replace(/\s*--accept-entry-changes\b/g, "")
 		.replace(/\/workflow\s+resume\b/g, "/resume")
-		.replace(/\/workflow\s+(?:connect|attach)\b/g, "/workflows");
+		.replace(/\/workflow\s+reload\b/g, "/reload")
+		.replace(/\/workflow\s+fork(?:\s+[\w-]+)?(?:\s+--from\s+[^\s,.;)`"]+)?/g, "/workflows")
+		.replace(/\/workflow\s+quit(?:\s+[\w-]+)?/g, "/workflows")
+		.replace(/\/workflow\s+(?:status|pause)(?:\s+[\w-]+)?/g, "/workflows")
+		.replace(/\/workflow\s+(?:connect|attach)(?:\s+[\w-]+)?/g, "/workflows");
 }
 
 function formatPickerResumeError(targetId: string, message: string): string {
-	const sanitized = sanitizePickerGuidance(message);
+	const sanitized = sanitizePickerGuidance(
+		message.replace(/\.\s*An edited entry module can also be accepted:[\s\S]*$/i, "."),
+	);
 	const firstLine = sanitized.split("\n")[0]?.trim() ?? sanitized.trim();
 	if (
 		/^Run not found:/i.test(firstLine) ||
@@ -89,13 +97,62 @@ function formatPickerResumeError(targetId: string, message: string): string {
 	return sanitized;
 }
 
+const OVERVIEW_READS_AWAITED = 24;
+const OVERVIEW_READ_CONCURRENCY = 24;
+const overviewDrains = new WeakMap<DurableWorkflowBackend, Promise<void>>();
+
+async function savedRunOverviews(
+	backend: DurableWorkflowBackend | undefined,
+	entries: readonly ResumableWorkflowEntry[],
+	target: string | undefined,
+): Promise<ReadonlyMap<string, readonly DurableCheckpoint[]>> {
+	const overviews = new Map<string, readonly DurableCheckpoint[]>();
+	const read = backend?.readRunOverviewCheckpoints?.bind(backend);
+	const peek = backend?.peekRunOverviewCheckpoints?.bind(backend);
+	if (backend === undefined || read === undefined || peek === undefined) return overviews;
+	const unread: ResumableWorkflowEntry[] = [];
+	for (const entry of entries) {
+		if (entry.completedCheckpoints === 0 || backend.listCheckpoints(entry.workflowId).length > 0) continue;
+		const known = peek(entry.workflowId);
+		if (known !== undefined) overviews.set(entry.workflowId, known);
+		else unread.push(entry);
+	}
+	const asked = (entry: ResumableWorkflowEntry) =>
+		target !== undefined && entry.workflowId.startsWith(target) ? 1 : 0;
+	unread.sort((left, right) => asked(right) - asked(left) || right.updatedAt - left.updatedAt);
+	const readInto = async (entry: ResumableWorkflowEntry): Promise<void> => {
+		try {
+			overviews.set(entry.workflowId, await read(entry.workflowId));
+		} catch {}
+	};
+	await Promise.all(unread.slice(0, OVERVIEW_READS_AWAITED).map(readInto));
+	const rest = unread.slice(OVERVIEW_READS_AWAITED);
+	if (rest.length > 0 && !overviewDrains.has(backend)) {
+		const drain = Promise.all(
+			Array.from({ length: Math.min(OVERVIEW_READ_CONCURRENCY, rest.length) }, async () => {
+				for (let entry = rest.shift(); entry !== undefined; entry = rest.shift())
+					await read(entry.workflowId).catch(() => undefined);
+			}),
+		).then(() => {
+			overviewDrains.delete(backend);
+		});
+		overviewDrains.set(backend, drain);
+	}
+	return overviews;
+}
+
 export function createWorkflowResumeProvider(deps: WorkflowResumeProviderDeps): WorkflowResumeProvider {
 	const resolveOwner = () => deps.owner ?? captureWorkflowOwnerResources();
+	const reportedResourceWarnings = new Set<string>();
 	const ensureResourcesLoaded = async (ctx: PiCommandContext | undefined): Promise<void> => {
 		try {
 			await deps.ensureWorkflowResourcesLoaded();
 		} catch (error) {
-			ctx?.ui?.notify?.(formatWorkflowResourceLoadWarning(error), "warning");
+			const warning = sanitizePickerGuidance(formatWorkflowResourceLoadWarning(error));
+			if (typeof ctx?.ui?.notify === "function" && !reportedResourceWarnings.has(warning)) {
+				reportedResourceWarnings.add(warning);
+				ctx.ui.notify(warning, "warning");
+			}
 		}
 	};
 
@@ -119,14 +176,32 @@ export function createWorkflowResumeProvider(deps: WorkflowResumeProviderDeps): 
 			};
 			const live = collectResumePickerLiveRuns(owner.store, shadowDeps);
 			const resumable = catalog.resumable.filter((entry) => !live.suppressedLiveIds.has(entry.workflowId));
-			const items = workflowResumeSelectorItems(
-				live.liveRuns,
-				resumable,
-				catalog.completed,
-				owner.store.runs(),
+			const formatItems = (overviewCheckpoints?: ReadonlyMap<string, readonly DurableCheckpoint[]>) =>
+				workflowResumeSelectorItems(
+					live.liveRuns,
+					resumable,
+					catalog.completed,
+					owner.store.runs(),
+					backend,
+					undefined,
+					{
+						overviewCheckpoints,
+						includeCompletedWithoutResumable: cleanTarget !== undefined,
+						resolveDescription: (name, cwd) =>
+							cwd === undefined || cwd === (activeCtx?.cwd ?? process.cwd())
+								? runtime.registry.get(name)?.description
+								: undefined,
+					},
+				);
+			const visible = formatItems();
+			if (visible.length === 0) return [];
+			const visibleIds = new Set(visible.map((item) => item.session.id));
+			const overviewCheckpoints = await savedRunOverviews(
 				backend,
+				[...resumable, ...catalog.completed].filter((entry) => visibleIds.has(entry.workflowId)),
+				cleanTarget,
 			);
-			return items.map(toWorkflowPickerRow);
+			return formatItems(overviewCheckpoints).map(toWorkflowPickerRow);
 		},
 
 		async resumeFromPicker(target: string, rawCtx?: WorkflowResumeCommandContext): Promise<void> {

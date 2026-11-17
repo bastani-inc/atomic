@@ -69,7 +69,7 @@ function waitingItem(id: string, promptId: string, question: string, choices?: r
 	};
 }
 
-test("a stale peek-card reply rebinds to the newly painted prompt after a refusal and explains how to recover (#5224)", async () => {
+test("a peek-card reply is cleared when its question changes, and only a reply typed for the new question reaches it (#5224)", async () => {
 	for (const mode of ["enter-retry", "esc-space-retry"] as const) {
 		const fixture = taskFixture();
 		let current: AgentPanelItem = waitingItem("run:deploy", "p1", "Release name?");
@@ -108,24 +108,26 @@ test("a stale peek-card reply rebinds to the newly painted prompt after a refusa
 
 			current = waitingItem("run:deploy", "p2", "Release notes?");
 			for (const listener of listeners) listener();
-			assert.match(paint(), /│ Release notes\?[\s\S]*❯ v2/);
+			const changedFrame = paint();
+			assert.match(changedFrame, /│ Release notes\?/);
+			assert.doesNotMatch(changedFrame, /❯ v2/);
+			assert.match(changedFrame, /The question changed; your reply was cleared\./);
 
 			inspector.handleInput(ENTER);
 			await flush();
-			const refusedFrame = paint();
-			assert.equal(rejected.length, 1);
-			assert.equal(rejected[0]?.promptId, "p1");
-			assert.match(refusedFrame, /enter to send or clear/);
+			assert.deepEqual(rejected, []);
+			assert.deepEqual(answered, []);
 
 			if (mode === "esc-space-retry") {
 				inspector.handleInput(ESC);
 				paint();
 				inspector.handleInput(SPACE);
-				assert.match(paint(), /❯ v2/);
+				assert.doesNotMatch(paint(), /❯ v2/);
 			}
+			for (const ch of "notes") inspector.handleInput(ch);
 			inspector.handleInput(ENTER);
 			await flush();
-			assert.deepEqual(answered, [{ id: "run:deploy", text: "v2", promptId: "p2" }]);
+			assert.deepEqual(answered, [{ id: "run:deploy", text: "notes", promptId: "p2" }]);
 		} finally {
 			inspector.dispose();
 			await fixture.dispose();
@@ -176,6 +178,54 @@ test("peek-card digit shortcuts resolve exact raw choices when display labels sa
 			inspector.dispose();
 			await fixture.dispose();
 		}
+	}
+});
+
+test("a digit carries its exact choice index, and a reply refused for a changed prompt is cleared rather than retargeted (#5224)", async () => {
+	const fixture = taskFixture();
+	let current = waitingItem("run:choice", "p1", "Choose the action", ["Keep", "Drop"]);
+	let changed = () => {};
+	const calls: { text: string; promptId: string | undefined; choiceIndex: number | undefined }[] = [];
+	const inspector = new TaskInspector(
+		viewOf(fixture.store),
+		() => {},
+		() => {},
+	);
+	inspector.setBoardSource({
+		items: () => [current],
+		subscribe(listener) {
+			changed = listener;
+			return () => {};
+		},
+		answer: async (_id, text, options) => {
+			calls.push({ text, promptId: options?.promptId, choiceIndex: options?.choiceIndex });
+			return options?.promptId === current.promptId
+				? { ok: true }
+				: { ok: false, reason: "The pending prompt changed before the answer was sent." };
+		},
+	});
+	const paint = () => plain(inspector.renderViewport(120, 24));
+	try {
+		paint();
+		inspector.handleInput(SPACE);
+		paint();
+		inspector.handleInput("1");
+		current = waitingItem("run:choice", "p2", "Choose the new action", ["Drop", "Keep"]);
+		changed();
+		inspector.handleInput(ENTER);
+		await flush();
+		assert.deepEqual(calls, [{ text: "Keep", promptId: "p1", choiceIndex: 0 }]);
+		assert.doesNotMatch(paint(), /❯ Keep/);
+		inspector.handleInput(ENTER);
+		await flush();
+		assert.equal(calls.length, 1, "the refused reply is not sent again to the new prompt");
+		inspector.handleInput("2");
+		inspector.handleInput(ENTER);
+		await flush();
+		assert.deepEqual(calls[1], { text: "Keep", promptId: "p2", choiceIndex: 1 });
+	} finally {
+		inspector.dispose();
+		await fixture.dispose();
 	}
 });
 
@@ -300,13 +350,12 @@ test("typeahead and 2-row short viewports cannot bind or answer a question or ch
 			const afterChange = frame();
 			assert.match(afterChange, /Delete the production database\?/);
 			assert.doesNotMatch(afterChange, /1-3 choose/);
+			assert.match(plain(inspector.renderViewport(80, 24)), /The question changed; your reply was cleared\./);
 			inspector.handleInput(ENTER);
 			await flush();
-			assert.deepEqual(seenAnswers, []);
-			assert.match(plain(inspector.renderViewport(80, 24)), /pending prompt changed/);
 			inspector.handleInput(ENTER);
 			await flush();
-			assert.deepEqual(seenAnswers, [["yes", "p2", "Delete the production database?"]]);
+			assert.deepEqual(seenAnswers, [], "a reply typed before the question changed never reaches the new one");
 		} finally {
 			inspector.dispose();
 			await fixture.dispose();
@@ -550,15 +599,15 @@ test("/tasks renders single-line rows, updated close hint, and compact Space pee
 			assert.equal(lines.at(-1)?.trim(), expectedHint);
 			const selectedIdx = lines.findIndex((line) => line.startsWith(" ❯ "));
 			assert.ok(selectedIdx > 0);
-			assert.doesNotMatch(lines[selectedIdx + 1] ?? "", /gpt-6-astra|bash git status/);
+			assert.doesNotMatch(lines[selectedIdx + 1] ?? "", /gpt-6-astra|git status/);
 		}
 
 		inspector.handleInput(SPACE);
 		const peeked = plain(inspector.renderViewport(120, 24));
 		assert.match(peeked, /╭─ worker ─/);
-		assert.match(peeked, /gpt-6-astra.*bash git status/);
+		assert.match(peeked, /gpt-6-astra.*Bash\(git status\)/);
 		assert.match(peeked, /│ ❯/);
-		assert.match(peeked.split("\n").at(-1) ?? "", /enter send · esc close/);
+		assert.equal(peeked.split("\n").at(-1)?.trim(), "↑↓ select · enter/→ open · esc/← close");
 
 		for (const ch of "check lockfile") inspector.handleInput(ch);
 		inspector.handleInput(ENTER);
@@ -591,6 +640,76 @@ test("a shell peek names its command and status instead of showing an isolated e
 		assert.match(frame, /╭─ shell ─[\s\S]*│ sleep 600/);
 		assert.match(frame, /│ Running · 18s/);
 		assert.equal(inspector.fullscreen, false);
+	} finally {
+		inspector.dispose();
+		await fixture.dispose();
+	}
+});
+
+test("inline reply hints follow selection, editable digits and the sending lock (#5224)", async () => {
+	const fixture = taskFixture();
+	let finish = () => {};
+	const held = new Promise<{ ok: false; reason: string }>((resolve) => {
+		finish = () => resolve({ ok: false, reason: "offline" });
+	});
+	const inspector = new TaskInspector(
+		viewOf(fixture.store),
+		() => {},
+		() => {},
+	);
+	inspector.setBoardSource({
+		items: () => [waitingItem("run:keys", "p", "Continue?", ["Yes", "No"])],
+		subscribe: () => () => {},
+		answer: () => held,
+	});
+	const paint = () => plain(inspector.renderViewport(120, 24));
+	const hint = () => paint().split("\n").at(-1)?.trim();
+	try {
+		paint();
+		inspector.handleInput(SPACE);
+		assert.equal(hint(), "↑↓ select · 1-2 choose · enter send · esc/← close");
+		inspector.handleInput("1");
+		assert.equal(hint(), "↑↓ select · enter send · esc close");
+		inspector.handleInput("2");
+		assert.match(paint(), /❯ Yes2/);
+		inspector.handleInput(ENTER);
+		assert.match(paint(), /Sending…/);
+		assert.equal(hint(), "esc/← close");
+		inspector.handleInput(DOWN);
+		inspector.handleInput("x");
+		assert.match(paint(), /Sending…/);
+		finish();
+		await flush();
+		assert.equal(hint(), "↑↓ select · enter send · esc close");
+	} finally {
+		finish();
+		await flush();
+		inspector.dispose();
+		await fixture.dispose();
+	}
+});
+
+test("an empty native message card advertises its open action and filter arrows stay live (#5224)", async () => {
+	const fixture = taskFixture();
+	await fixture.start("Review cleanup");
+	const inspector = new TaskInspector(
+		viewOf(fixture.store),
+		() => {},
+		() => {},
+	);
+	const paint = () => plain(inspector.renderViewport(120, 24));
+	try {
+		paint();
+		inspector.handleInput(SPACE);
+		assert.equal(paint().split("\n").at(-1)?.trim(), "↑↓ select · enter/→ open · esc/← close");
+		inspector.handleInput("\x1b[C");
+		assert.equal(inspector.fullscreen, true);
+		inspector.handleInput(ESC);
+		paint();
+		inspector.handleInput("/");
+		assert.equal(paint().split("\n").at(-1)?.trim(), "↑↓ select · type filter · enter done · esc clear");
+		inspector.handleInput(DOWN);
+		assert.doesNotMatch(paint(), /⌕/);
 	} finally {
 		inspector.dispose();
 		await fixture.dispose();

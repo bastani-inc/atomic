@@ -1,154 +1,1102 @@
-import { keyHintIfBound } from "@bastani/atomic";
-import type { AgentToolResult } from "@bastani/atomic-agent-core";
-import { type Component, Container, Text, truncateToWidth } from "@bastani/atomic-tui";
 import {
-	type SubagentChildIndexEntry,
+	builtinToolBlockPresentation,
+	formatTokenSegment,
+	initTheme,
+	isTaskTurnInterrupted,
+	isToolBlock,
+	keyHint,
+	keyHintIfBound,
+	keyText,
+	navEntryKeys,
+	type TaskId,
+	type TaskRecord,
+	ToolBlock,
+	ToolBlockGroup,
+	ToolBlockMarkdown,
+	ToolBlockRecords,
+	type ToolBlockStatus,
+	type ToolRenderContext,
+	type ToolRenderers,
+} from "@bastani/atomic";
+import type { AgentToolResult } from "@bastani/atomic-agent-core";
+import type { Message } from "@bastani/atomic-ai/compat";
+import { type Component, getKeybindings, Text, truncateToWidth } from "@bastani/atomic-tui";
+import type { WaitOutcome } from "../../../coding-agent/src/core/tasks/contracts.js";
+import {
+	clearSubagentChildTranscriptCache,
+	type SubagentChildToolCallEntry,
 	subagentChildCardRecord,
-	subagentChildTranscript,
+	subagentChildCardTask,
+	subagentChildTranscriptDetails,
 	watchSubagentChildCard,
 } from "../runs/foreground/subagent-child-card-state.js";
 import {
 	SUBAGENT_CHILD_GONE_STATUS,
+	SUBAGENT_CHILD_RELEASED_STATUS,
 	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
 	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 } from "../runs/foreground/subagent-child-records.js";
 import { getBurstDisplay } from "../runs/foreground/subagent-executor-burst-display.js";
 import type { SubagentParamsLike } from "../runs/foreground/subagent-executor-types.js";
 import { subagentTaskResultLabel } from "../runs/foreground/task-execution.js";
-import { formatModelThinking } from "../shared/formatters.js";
-import type { Details } from "../shared/types.js";
+import { retainedTaskOutput } from "../runs/foreground/task-output-retention.js";
+import { formatDuration, formatModelThinking } from "../shared/formatters.js";
+import type { AgentProgress, Details, SingleResult, ToolCallSummary } from "../shared/types.js";
+import { getSingleResultOutput } from "../shared/utils.js";
 import { renderLiveSubagentResult } from "../tui/render.js";
+import { displayProgressDurationMs, firstOutputLine, statJoin } from "../tui/render-status-progress.js";
 
 type Theme = Parameters<typeof renderLiveSubagentResult>[2];
 type RenderContext = Parameters<typeof renderLiveSubagentResult>[3] & {
 	toolCallId: string;
 	invalidate: () => void;
 	isError?: boolean;
+	outputPad?: number;
+	args?: unknown;
+	cwd?: string;
+	getTaskRecord?: ToolRenderContext["getTaskRecord"];
+	getElapsedMs?: () => number | undefined;
+	getToolDefinition?: (toolName: string) => ToolRenderers | undefined;
 };
-type ThemeColor = Parameters<Theme["fg"]>[0];
+
+const SHORT_TITLE_CHARS = 60;
+
+const TOOL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
+	read: "Read",
+	bash: "Bash",
+	edit: "Edit",
+	write: "Write",
+	search: "Search",
+	find: "Find",
+	ls: "List",
+	todo: "Todo",
+	web_search: "WebSearch",
+	fetch_content: "Fetch",
+	subagent: "Agent",
+	workflow: "Workflow",
+	intercom: "Intercom",
+	contact_supervisor: "Supervisor",
+};
 
 const renderRequests = new WeakMap<object, SubagentParamsLike>();
-/** The settled per-child counts a parallel result reported, shown on its call header (#4697). */
-const parallelSummaries = new WeakMap<object, string>();
+const GLOBAL_THEME_KEY = Symbol.for("@bastani/atomic:theme");
 
-/** Outcome categories, in the order the header lists them. */
-const OUTCOME_CATEGORIES = [
-	{ key: "running", color: "accent" },
-	{ key: "done", color: "success" },
-	{ key: "failed", color: "error" },
-	{ key: "stopped", color: "warning" },
-	{ key: "skipped", color: "dim" },
-] as const satisfies ReadonlyArray<{ key: string; color: ThemeColor }>;
-type OutcomeCategory = (typeof OUTCOME_CATEGORIES)[number]["key"];
-
-function outcomeCategory(color: ThemeColor): OutcomeCategory {
-	if (color === "accent") return "running";
-	if (color === "success") return "done";
-	if (color === "error") return "failed";
-	return "stopped";
+interface TaskElapsedBaseline {
+	readonly reportedMs: number | undefined;
+	readonly baseMs: number;
+	readonly sampledAt: number;
 }
 
-function parallelSummary(categories: readonly OutcomeCategory[], theme: Theme): string {
-	return OUTCOME_CATEGORIES.flatMap(({ key, color }) => {
-		const count = categories.filter((category) => category === key).length;
-		return count ? [`${theme.fg("dim", " · ")}${theme.fg(color, `${count} ${key}`)}`] : [];
-	}).join("");
+interface CachedExpandedSections {
+	readonly key: string;
+	readonly hydratedRef: unknown;
+	readonly sections: readonly Component[];
 }
 
-/** One line cut to the width it is drawn at, ending in `…` when cut. */
+const taskElapsedBaselines = new WeakMap<object, Map<string, TaskElapsedBaseline>>();
+const expandedSectionCaches = new WeakMap<object, Map<string, CachedExpandedSections>>();
+
+function resolveLiveTaskElapsedMs(
+	state: object,
+	taskId: string,
+	task: TaskRecord | undefined,
+	running: boolean,
+	fallbackElapsedMs?: number,
+): number {
+	const reportedMs = task?.metrics?.elapsedMs;
+	if (!running) {
+		taskElapsedBaselines.get(state)?.delete(taskId);
+		return reportedMs ?? fallbackElapsedMs ?? 0;
+	}
+	if (reportedMs === undefined && fallbackElapsedMs === undefined && task === undefined) {
+		return 0;
+	}
+	const now = Date.now();
+	let map = taskElapsedBaselines.get(state);
+	if (!map) {
+		map = new Map();
+		taskElapsedBaselines.set(state, map);
+	}
+	const existing = map.get(taskId);
+	if (!existing || existing.reportedMs !== reportedMs) {
+		const baseMs = reportedMs ?? fallbackElapsedMs ?? 0;
+		map.set(taskId, { reportedMs, baseMs, sampledAt: now });
+		return Math.max(baseMs, fallbackElapsedMs ?? 0);
+	}
+	return Math.max(existing.baseMs + Math.max(0, now - existing.sampledAt), fallbackElapsedMs ?? 0);
+}
+
+class DynamicToolBlock implements Component {
+	readonly toolBlockKind = "block" as const;
+	constructor(private readonly evaluate: () => { readonly block: ToolBlock; readonly working: boolean }) {}
+	isWorking(): boolean {
+		return this.evaluate().working;
+	}
+	invalidate(): void {}
+	render(width: number): string[] {
+		return this.evaluate().block.render(width);
+	}
+}
+
+class DynamicToolBlockGroup implements Component {
+	readonly toolBlockKind = "group" as const;
+	constructor(private readonly blocks: readonly DynamicToolBlock[]) {}
+	isWorking(): boolean {
+		return this.blocks.some((block) => block.isWorking());
+	}
+	invalidate(): void {
+		for (const block of this.blocks) block.invalidate();
+	}
+	render(width: number): string[] {
+		const rows: string[] = [];
+		for (const block of this.blocks) {
+			const rendered = block.render(width);
+			if (rendered.length === 0) continue;
+			if (rows.length > 0) rows.push("");
+			rows.push(...rendered);
+		}
+		return rows;
+	}
+}
+
+function ensureGlobalTheme(): void {
+	if (!(globalThis as Record<symbol, unknown>)[GLOBAL_THEME_KEY]) {
+		initTheme("dark", false);
+	}
+}
+
 class OneLine implements Component {
 	constructor(private readonly text: string) {}
 	invalidate(): void {}
 	render(width: number): string[] {
-		return [truncateToWidth(this.text, width, "…")];
+		return width < 1 ? [] : [truncateToWidth(this.text, width, "…")];
 	}
 }
 
-/** A parallel call header that reads its result's counts when drawn, after the result renderer recorded them. */
-class ParallelCallHeader implements Component {
-	constructor(
-		private readonly heading: string,
-		private readonly state: object,
-	) {}
-	invalidate(): void {}
-	render(width: number): string[] {
-		return new Text(`${this.heading}${parallelSummaries.get(this.state) ?? ""}`, 0, 0).render(width);
-	}
-}
 const displayText = (text: string) =>
 	text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
 
-function effectiveParallelTaskCount(tasks: Array<{ count?: unknown }> | undefined): number {
-	if (!tasks || tasks.length === 0) return 0;
-	return tasks.reduce((total, task) => {
-		const count = typeof task.count === "number" && Number.isInteger(task.count) && task.count >= 1 ? task.count : 1;
-		return total + count;
-	}, 0);
+const firstDisplayLine = (text: string) => displayText(firstOutputLine(text)).trim();
+
+export function unwrapSubagentPrompt(task: string): string {
+	let text = task;
+	const forkMarker = "\n\nTask:\n";
+	const forkIndex = text.indexOf(forkMarker);
+	if (forkIndex >= 0 && text.startsWith("You are continuing from")) {
+		text = text.slice(forkIndex + forkMarker.length);
+	}
+	text = text.replace(
+		/\n\n---\n(?:Create and maintain progress at:|Update progress at:|Write your findings to:)\s*[^\n]+$/g,
+		"",
+	);
+	text = text.replace(/\n\n\[Write to:\s*[^\]\n]+\]\s*$/i, "");
+	return text.trim();
 }
 
-const SETTLED_VIEWS: Readonly<Record<string, { icon: string; label: string; color: ThemeColor }>> = {
-	ok: { icon: "✓", label: "Completed", color: "success" },
-	error: { icon: "✗", label: "Failed", color: "error" },
-	paused: { icon: "‖", label: "Paused · awaiting resume", color: "warning" },
-	quit: { icon: "‖", label: "Quit · paused · awaiting resume", color: "warning" },
-	interrupted: { icon: "○", label: "Interrupted (resumable)", color: "warning" },
-	[SUBAGENT_CHILD_STAGE_PAUSED_STATUS]: {
-		icon: "‖",
-		label: "Paused with its workflow stage · awaiting resume",
-		color: "warning",
-	},
-	killed: { icon: "✗", label: "Terminal · killed", color: "error" },
-	[SUBAGENT_CHILD_GONE_STATUS]: { icon: "✗", label: "Terminal · gone after a restart", color: "error" },
-	[SUBAGENT_CHILD_STAGE_CLOSED_STATUS]: { icon: "✗", label: "Terminal · its workflow stage ended", color: "error" },
-};
+export function shortSubagentTaskTitle(title: string): string {
+	const unwrapped = unwrapSubagentPrompt(title);
+	const rawLine = unwrapped.split("\n").find((part) => displayText(part).trim().length > 0) ?? "";
+	const line = displayText(rawLine).trim();
+	const sentence = /^(.{12,}?[.!?])(\s|$)/.exec(line)?.[1];
+	if (sentence !== undefined && sentence.length <= SHORT_TITLE_CHARS) return sentence;
+	if (line.length <= SHORT_TITLE_CHARS) return line;
+	const cut = line.slice(0, SHORT_TITLE_CHARS);
+	const space = cut.lastIndexOf(" ");
+	return `${(space > SHORT_TITLE_CHARS / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
 
-/** What a launch card shows for its child's latest record, rather than the snapshot taken at launch. */
-function childStateView(record: SubagentChildIndexEntry): { icon: string; label: string; color: ThemeColor } {
-	if (record.state === "running") return { icon: "∀", label: "Running in background", color: "accent" };
-	return (
-		SETTLED_VIEWS[record.terminalStatus ?? ""] ?? {
-			icon: "○",
-			label: `Stopped (${record.terminalStatus ?? "settled"})`,
-			color: "warning",
+export function formatAgentBlockArgs(agent: string | undefined, task: string | undefined): string {
+	const cleanAgent = displayText(agent || "?").trim() || "?";
+	const shortTitle = shortSubagentTaskTitle(task ?? "");
+	return shortTitle && shortTitle !== cleanAgent ? `${cleanAgent} · ${shortTitle}` : cleanAgent;
+}
+
+function expandParallelTasks(
+	args: SubagentParamsLike | undefined,
+	burstCount?: number,
+): Array<{ agent: string; task: string }> {
+	if (!args) {
+		return Array.from({ length: Math.max(1, burstCount ?? 1) }, () => ({ agent: "agent", task: "" }));
+	}
+	if ((args.tasks?.length ?? 0) > 0) {
+		return (args.tasks ?? []).flatMap((task) => {
+			const count =
+				typeof task.count === "number" && Number.isInteger(task.count) && task.count >= 1 ? task.count : 1;
+			return Array.from({ length: count }, () => ({ agent: task.agent || "agent", task: task.task ?? "" }));
+		});
+	}
+	if (burstCount !== undefined && burstCount > 1) {
+		return Array.from({ length: burstCount }, (_, index) =>
+			index === 0
+				? { agent: args.agent || "agent", task: args.task ?? "" }
+				: { agent: args.agent || "agent", task: "" },
+		);
+	}
+	if (args.agent) return [{ agent: args.agent, task: args.task ?? "" }];
+	return [];
+}
+
+function hasPanelRow(task: TaskRecord | undefined, observation?: WaitOutcome): boolean {
+	if (task !== undefined) {
+		if (task.execution.kind === "settled") return false;
+		if (task.wasBackground === true) return true;
+		return task.observation.kind === "background" && task.observation.reason !== "not-observed";
+	}
+	return observation === undefined || observation.kind === "yielded";
+}
+
+function toolDisplayName(name: string): string {
+	return TOOL_DISPLAY_NAMES[name] ?? name;
+}
+
+function summarizeToolArgs(name: string, args: Record<string, unknown>): string {
+	if (name === "bash" && typeof args.command === "string") {
+		const lines = args.command.split("\n");
+		return lines.length > 1 ? `${lines[0] ?? ""}…` : (lines[0] ?? "");
+	}
+	if ((name === "read" || name === "write" || name === "edit") && typeof (args.path ?? args.file_path) === "string") {
+		const target = String(args.path ?? args.file_path);
+		const offset = typeof args.offset === "number" ? args.offset : undefined;
+		const limit = typeof args.limit === "number" ? args.limit : undefined;
+		if (name === "read" && offset !== undefined && limit !== undefined) {
+			return `${target}:${offset}-${offset + limit - 1}`;
 		}
+		return target;
+	}
+	if (name === "search" && typeof args.pattern === "string") {
+		const paths = typeof args.paths === "string" ? args.paths : undefined;
+		return paths ? `/${args.pattern}/ in ${paths}` : `/${args.pattern}/`;
+	}
+	if ((name === "find" || name === "ls") && typeof (args.path ?? args.paths) === "string") {
+		return String(args.path ?? args.paths);
+	}
+	for (const value of Object.values(args)) {
+		if (typeof value === "string" && value.trim()) return value.trim().split("\n")[0] ?? "";
+	}
+	return "";
+}
+
+class ComponentList implements Component {
+	constructor(private readonly items: readonly Component[]) {}
+	invalidate(): void {
+		for (const item of this.items) item.invalidate();
+	}
+	render(width: number): string[] {
+		const rows: string[] = [];
+		for (const item of this.items) {
+			const rendered = item.render(width);
+			if (rendered.length === 0) continue;
+			if (rows.length > 0) rows.push("");
+			rows.push(...rendered);
+		}
+		return rows;
+	}
+}
+
+class UnpaddedBlockComponent implements Component {
+	constructor(private readonly inner: Component) {}
+	invalidate(): void {
+		this.inner.invalidate();
+	}
+	render(width: number): string[] {
+		if (width < 1) return [];
+		const lines = this.inner.render(width + 1);
+		if (lines.length > 0 && lines.every((line) => line.startsWith(" "))) {
+			return lines.map((line) => truncateToWidth(line.slice(1), width, "…"));
+		}
+		return this.inner.render(width);
+	}
+}
+
+function innerToolBlockFromEntry(
+	entry: SubagentChildToolCallEntry,
+	parentRunning: boolean,
+	theme: Theme,
+	context?: Pick<RenderContext, "cwd" | "getToolDefinition">,
+): Component {
+	const isPartial = !entry.completed && parentRunning;
+	const isError = entry.isError === true;
+	const status: ToolBlockStatus = entry.completed
+		? entry.isError
+			? "failure"
+			: "success"
+		: parentRunning
+			? "running"
+			: "stopped";
+	const meta =
+		entry.durationMs !== undefined && entry.durationMs >= 1000 ? [formatDuration(entry.durationMs)] : undefined;
+	const cwd = context?.cwd ?? process.cwd();
+	const resultContent =
+		entry.resultContent ?? (entry.resultText !== undefined ? [{ type: "text", text: entry.resultText }] : []);
+	const presentation = builtinToolBlockPresentation({
+		toolName: entry.name,
+		args: entry.args,
+		result: entry.completed
+			? {
+					content: resultContent,
+					details: entry.resultDetails,
+					isError,
+					durationMs: entry.durationMs,
+				}
+			: undefined,
+		expanded: false,
+		isPartial,
+		cwd,
+		executionStarted: true,
+		argsComplete: true,
+		elapsedMs: entry.durationMs,
+	});
+	const toolDef = context?.getToolDefinition?.(entry.name);
+	if (presentation !== undefined && !toolDef?.renderCall && !toolDef?.renderResult) {
+		return new ToolBlock({
+			status: presentation.status ?? status,
+			title: presentation.title,
+			args: presentation.args,
+			meta: presentation.meta,
+			details: presentation.details,
+			outputPad: 0,
+		});
+	}
+	if (toolDef?.renderCall || toolDef?.renderResult) {
+		const innerContext: ToolRenderContext = {
+			args: entry.args,
+			toolCallId: entry.id || entry.name,
+			invalidate: () => {},
+			lastComponent: undefined,
+			state: {},
+			cwd,
+			executionStarted: true,
+			argsComplete: true,
+			isPartial,
+			expanded: false,
+			showImages: false,
+			isError,
+			durationMs: isPartial ? undefined : entry.durationMs,
+			outputPad: 0,
+			getToolDefinition: context?.getToolDefinition,
+			keyText,
+			keyHint,
+		};
+		let callComp: Component | undefined;
+		if (toolDef.renderCall) {
+			try {
+				callComp = toolDef.renderCall(entry.args, theme, innerContext);
+			} catch {
+				callComp = new Text(theme.fg("toolTitle", theme.bold(entry.name)), 0, 0);
+			}
+		}
+		let resultComp: Component | undefined;
+		if (entry.completed && toolDef.renderResult) {
+			try {
+				resultComp = toolDef.renderResult(
+					{
+						content: resultContent as AgentToolResult<unknown>["content"],
+						details: entry.resultDetails,
+					},
+					{ expanded: false, isPartial },
+					theme,
+					innerContext,
+				);
+			} catch {
+				const firstResult = entry.resultText ? firstDisplayLine(entry.resultText) : "";
+				if (firstResult) {
+					resultComp = new Text(theme.fg(isError ? "error" : "toolOutput", firstResult), 0, 0);
+				}
+			}
+		} else if (presentation?.details) {
+			resultComp = presentation.details;
+		} else if (entry.resultText) {
+			const firstResult = firstDisplayLine(entry.resultText);
+			if (firstResult) {
+				resultComp = new Text(theme.fg(isError ? "error" : "toolOutput", firstResult), 0, 0);
+			}
+		}
+		if (resultComp && isToolBlock(resultComp)) return new UnpaddedBlockComponent(resultComp);
+		if (callComp && isToolBlock(callComp)) return new UnpaddedBlockComponent(callComp);
+		return new ToolBlock({
+			status,
+			title: callComp ?? (presentation ? presentation.title : toolDisplayName(entry.name)),
+			args: callComp ? undefined : presentation ? presentation.args : summarizeToolArgs(entry.name, entry.args),
+			...(presentation?.meta ? { meta: presentation.meta } : meta ? { meta } : {}),
+			...(resultComp ? { details: resultComp } : {}),
+			outputPad: 0,
+		});
+	}
+	if (presentation !== undefined) {
+		return new ToolBlock({
+			status: presentation.status ?? status,
+			title: presentation.title,
+			args: presentation.args,
+			meta: presentation.meta,
+			details: presentation.details,
+			outputPad: 0,
+		});
+	}
+	const firstResult = entry.resultText ? firstDisplayLine(entry.resultText) : "";
+	return new ToolBlock({
+		status,
+		title: toolDisplayName(entry.name),
+		args: summarizeToolArgs(entry.name, entry.args),
+		...(meta ? { meta } : {}),
+		...(firstResult
+			? { details: new Text(theme.fg(entry.isError ? "error" : "toolOutput", firstResult), 0, 0) }
+			: {}),
+		outputPad: 0,
+	});
+}
+
+function toolEntriesFromMessages(messages: readonly Message[] | undefined): SubagentChildToolCallEntry[] {
+	if (!messages || messages.length === 0) return [];
+	const resultsById = new Map<
+		string,
+		{
+			content: readonly { type: string; text?: string; data?: string; mimeType?: string }[];
+			details?: unknown;
+			text: string;
+			isError: boolean;
+		}
+	>();
+	for (const msg of messages) {
+		if (msg.role !== "toolResult") continue;
+		const id = "toolCallId" in msg && typeof msg.toolCallId === "string" ? msg.toolCallId : "";
+		if (!id) continue;
+		const content = Array.isArray(msg.content)
+			? (msg.content as readonly { type: string; text?: string; data?: string; mimeType?: string }[])
+			: [];
+		const text = content
+			.filter(
+				(part): part is { type: "text"; text: string } => part.type === "text" && typeof part.text === "string",
+			)
+			.map((part) => part.text)
+			.join("\n");
+		resultsById.set(id, {
+			content,
+			...("details" in msg && msg.details !== undefined ? { details: msg.details } : {}),
+			text,
+			isError: msg.isError === true,
+		});
+	}
+	const entries: SubagentChildToolCallEntry[] = [];
+	for (const msg of messages) {
+		if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
+		for (const part of msg.content) {
+			if (part.type !== "toolCall") continue;
+			const id = typeof part.id === "string" ? part.id : "";
+			const args =
+				typeof part.arguments === "object" && part.arguments !== null && !Array.isArray(part.arguments)
+					? (part.arguments as Record<string, unknown>)
+					: {};
+			const matched = id ? resultsById.get(id) : undefined;
+			entries.push({
+				id,
+				name: part.name,
+				args,
+				...(matched
+					? {
+							resultContent: matched.content,
+							...(matched.details !== undefined ? { resultDetails: matched.details } : {}),
+							resultText: matched.text,
+							isError: matched.isError,
+							completed: true,
+						}
+					: { completed: false }),
+			});
+		}
+	}
+	return entries;
+}
+
+function toolBlocksFromSummaries(
+	summaries: readonly ToolCallSummary[] | undefined,
+	progress: AgentProgress | undefined,
+): ToolBlock[] {
+	if (summaries && summaries.length > 0) {
+		return summaries.map((summary) => {
+			const raw = displayText(summary.expandedText || summary.text).trim();
+			if (raw.startsWith("$ ")) {
+				return new ToolBlock({
+					status: "success",
+					title: "Bash",
+					args: raw.slice(2).trim(),
+					outputPad: 0,
+				});
+			}
+			const space = raw.indexOf(" ");
+			const name = space > 0 ? raw.slice(0, space) : raw;
+			const argText = space > 0 ? raw.slice(space + 1).trim() : "";
+			return new ToolBlock({
+				status: "success",
+				title: toolDisplayName(name),
+				args: argText,
+				outputPad: 0,
+			});
+		});
+	}
+	if (!progress) return [];
+	const blocks = progress.recentTools.map(
+		(tool) =>
+			new ToolBlock({
+				status: "success",
+				title: toolDisplayName(tool.tool),
+				args: displayText(tool.args),
+				outputPad: 0,
+			}),
 	);
+	if (progress.currentTool) {
+		blocks.push(
+			new ToolBlock({
+				status: progress.status === "running" ? "running" : "stopped",
+				title: toolDisplayName(progress.currentTool),
+				args: displayText(progress.currentToolArgs ?? ""),
+				outputPad: 0,
+			}),
+		);
+	}
+	return blocks;
+}
+
+class SectionRecord implements Component {
+	constructor(
+		private readonly heading: string,
+		private readonly content: Component,
+	) {}
+	invalidate(): void {
+		this.content.invalidate();
+	}
+	render(width: number): string[] {
+		return [this.heading, ...this.content.render(width)];
+	}
+}
+
+function extractInlineSettledOutput(
+	result: AgentToolResult<Details>,
+	taskId: string,
+	ownerId?: string,
+): string | undefined {
+	if (ownerId) {
+		const kept = retainedTaskOutput(ownerId, taskId);
+		if (kept?.head?.trim()) return kept.head.trim();
+	}
+	const textPart = result.content.find((part) => part.type === "text");
+	if (textPart?.type !== "text") return undefined;
+	const prefix = `Output of ${taskId} (`;
+	const start = textPart.text.indexOf(prefix);
+	if (start < 0) return undefined;
+	const afterStart = textPart.text.slice(start);
+	const nextOutput = afterStart.indexOf("\n\nOutput of ", prefix.length);
+	const section = nextOutput >= 0 ? afterStart.slice(0, nextOutput) : afterStart;
+	const lines = section.split("\n").slice(1);
+	while (
+		lines.length > 0 &&
+		/^(?:Model: ran on |Requested output: |Output file error: |Full output: )/.test(lines[0] ?? "")
+	) {
+		lines.shift();
+	}
+	const body = lines.join("\n").trim();
+	return body || undefined;
+}
+
+function buildExpandedDetails(input: {
+	readonly state?: object;
+	readonly cacheId?: string;
+	readonly hydratedRef?: unknown;
+	readonly statusLine: string;
+	readonly status: ToolBlockStatus;
+	readonly promptText: string;
+	readonly buildToolBlocks: () => readonly Component[];
+	readonly toolCallsUnavailable?: string;
+	readonly resultText?: string;
+	readonly failureText?: string;
+	readonly theme: Theme;
+}): ToolBlockRecords {
+	const {
+		state,
+		cacheId,
+		hydratedRef,
+		statusLine,
+		status,
+		promptText,
+		buildToolBlocks,
+		toolCallsUnavailable,
+		resultText,
+		failureText,
+		theme,
+	} = input;
+	const cleanPrompt = unwrapSubagentPrompt(promptText);
+	const runningKey = status === "running" ? "1" : "0";
+	const key = `${runningKey}\u0000${cleanPrompt}\u0000${toolCallsUnavailable ?? ""}\u0000${resultText ?? ""}\u0000${failureText ?? ""}`;
+	if (state && cacheId) {
+		let cache = expandedSectionCaches.get(state);
+		if (!cache) {
+			cache = new Map();
+			expandedSectionCaches.set(state, cache);
+		}
+		const existing = cache.get(cacheId);
+		if (existing && existing.key === key && existing.hydratedRef === hydratedRef) {
+			return new ToolBlockRecords([new OneLine(statusLine), ...existing.sections]);
+		}
+		const toolBlocks = buildToolBlocks();
+		const sections: readonly Component[] = [
+			new SectionRecord(
+				theme.bold("Prompt"),
+				cleanPrompt ? new ToolBlockMarkdown(cleanPrompt) : new Text(theme.fg("dim", "(none)"), 0, 0),
+			),
+			new SectionRecord(
+				theme.bold("Tool calls"),
+				toolBlocks.length > 0
+					? new ComponentList(toolBlocks)
+					: new Text(theme.fg("dim", toolCallsUnavailable || "(none)"), 0, 0),
+			),
+			new SectionRecord(
+				theme.bold("Result"),
+				resultText
+					? new ToolBlockMarkdown(resultText)
+					: failureText
+						? new Text(theme.fg("error", displayText(failureText)), 0, 0)
+						: new Text(theme.fg("dim", status === "running" ? "Running…" : "(no output)"), 0, 0),
+			),
+		];
+		cache.set(cacheId, { key, hydratedRef, sections });
+		return new ToolBlockRecords([new OneLine(statusLine), ...sections]);
+	}
+	const toolBlocks = buildToolBlocks();
+	return new ToolBlockRecords([
+		new OneLine(statusLine),
+		new SectionRecord(
+			theme.bold("Prompt"),
+			cleanPrompt ? new ToolBlockMarkdown(cleanPrompt) : new Text(theme.fg("dim", "(none)"), 0, 0),
+		),
+		new SectionRecord(
+			theme.bold("Tool calls"),
+			toolBlocks.length > 0
+				? new ComponentList(toolBlocks)
+				: new Text(theme.fg("dim", toolCallsUnavailable || "(none)"), 0, 0),
+		),
+		new SectionRecord(
+			theme.bold("Result"),
+			resultText
+				? new ToolBlockMarkdown(resultText)
+				: failureText
+					? new Text(theme.fg("error", displayText(failureText)), 0, 0)
+					: new Text(theme.fg("dim", status === "running" ? "Running…" : "(no output)"), 0, 0),
+		),
+	]);
+}
+
+function buildOutcomeToolBlock(input: {
+	readonly outcome:
+		| Extract<NonNullable<Details["taskResponse"]>, { kind: "admitted" | "unstarted" }>
+		| NonNullable<Extract<NonNullable<Details["taskResponse"]>, { kind: "parallel" }>["slots"][number]["outcome"]>;
+	readonly identity?: { readonly agent: string; readonly task: string };
+	readonly result: AgentToolResult<Details>;
+	readonly expanded: boolean;
+	readonly theme: Theme;
+	readonly context: RenderContext;
+}): DynamicToolBlock {
+	const { outcome, identity, result, expanded, theme, context } = input;
+	if (outcome.kind === "unstarted") {
+		const agentName = identity?.agent || "agent";
+		const promptText = identity?.task || "";
+		const args = formatAgentBlockArgs(agentName, promptText);
+		if (outcome.reason.kind === "rejected") {
+			const reason = firstDisplayLine(outcome.reason.error.message || "Not started");
+			const statusLine = theme.fg("error", ["Failed", reason].filter(Boolean).join(" · "));
+			const block = new ToolBlock({
+				status: "failure",
+				title: "Agent",
+				args,
+				details: expanded
+					? buildExpandedDetails({
+							statusLine,
+							status: "failure",
+							promptText,
+							buildToolBlocks: () => [],
+							failureText: outcome.reason.error.message,
+							theme,
+						})
+					: new OneLine(statusLine),
+				outputPad: context.outputPad,
+			});
+			return new DynamicToolBlock(() => ({ block, working: false }));
+		}
+		const statusLine = statJoin(theme, ["Stopped"]);
+		const block = new ToolBlock({
+			status: "stopped",
+			title: "Agent",
+			args,
+			details: expanded
+				? buildExpandedDetails({
+						statusLine,
+						status: "stopped",
+						promptText,
+						buildToolBlocks: () => [],
+						theme,
+					})
+				: new OneLine(statusLine),
+			outputPad: context.outputPad,
+		});
+		return new DynamicToolBlock(() => ({ block, working: false }));
+	}
+
+	const observation = outcome.observation;
+	const savedTask = result.details?.taskRecords?.find((item) => item.ref.taskId === observation.taskId);
+	const childId = savedTask?.launchOperationId;
+	const initialRecord = subagentChildCardRecord(childId, observation.taskId);
+	watchSubagentChildCard(
+		context.state,
+		context.invalidate,
+		initialRecord?.childId ?? childId ?? observation.taskId,
+		result.details?.ownerSessionId,
+	);
+
+	const evaluate = (): { readonly block: ToolBlock; readonly working: boolean } => {
+		const record = subagentChildCardRecord(childId, observation.taskId);
+		const activeTaskId = record?.taskId ?? observation.taskId;
+		const freshTask =
+			context.getTaskRecord?.(activeTaskId as TaskId) ??
+			(activeTaskId !== observation.taskId ? context.getTaskRecord?.(observation.taskId) : undefined);
+		const task = freshTask ?? savedTask;
+		const hydrated = expanded && record ? subagentChildTranscriptDetails(context.state, record) : undefined;
+		const recordTask = record ? subagentChildCardTask(record) : undefined;
+		const agentName = identity?.agent || task?.agentName || record?.agent || "agent";
+		const headerTask = task?.title || recordTask || identity?.task || hydrated?.prompt || "";
+		const promptText = hydrated?.prompt || identity?.task || recordTask || task?.title || "";
+		const args = formatAgentBlockArgs(agentName, headerTask);
+		const taskSettled = task?.execution.kind === "settled" ? task.execution.result : undefined;
+		const failure =
+			taskSettled?.kind === "failed"
+				? taskSettled.message
+				: observation.kind === "settled" && observation.result.kind === "failed"
+					? observation.result.message
+					: undefined;
+
+		const turnInterrupted = task !== undefined && isTaskTurnInterrupted(task);
+		const isRunningNow =
+			task?.attention.kind === "input-needed" || turnInterrupted
+				? false
+				: taskSettled !== undefined
+					? false
+					: record
+						? record.state === "running"
+						: observation.kind === "yielded" ||
+							task?.execution.kind === "running" ||
+							task?.execution.kind === "queued";
+
+		const elapsedMs = resolveLiveTaskElapsedMs(
+			context.state,
+			activeTaskId,
+			task,
+			isRunningNow,
+			context.getElapsedMs?.(),
+		);
+		const tokens = task?.metrics?.tokenCount ?? 0;
+		const elapsedText = elapsedMs > 0 ? formatDuration(elapsedMs) : "";
+		const runningElapsedText = elapsedMs >= 1000 ? formatDuration(elapsedMs) : "";
+		const tokenText = formatTokenSegment({ mode: "receiving", count: tokens });
+
+		let status: ToolBlockStatus;
+		let statusLine: string;
+
+		if (task?.attention.kind === "input-needed") {
+			status = "warning";
+			const questionFirstLine = firstDisplayLine(task.attention.prompt || "");
+			const answerKey = navEntryKeys(getKeybindings(), { action: "app.agents.focus", label: "to answer" });
+			statusLine = statJoin(theme, ["Needs input", questionFirstLine, answerKey ? `${answerKey} to answer` : ""]);
+		} else if (turnInterrupted) {
+			status = "stopped";
+			statusLine = statJoin(theme, ["Stopped", elapsedText]);
+		} else if (taskSettled !== undefined && (!record || record.state === "running")) {
+			if (taskSettled.kind === "completed") {
+				status = "success";
+				statusLine = statJoin(theme, ["Done", elapsedText, tokenText]);
+			} else if (taskSettled.kind === "failed") {
+				status = "failure";
+				const reason = firstDisplayLine(taskSettled.message || "");
+				statusLine = theme.fg("error", ["Failed", elapsedText, reason].filter(Boolean).join(" · "));
+			} else if (taskSettled.released) {
+				status = "paused";
+				statusLine = statJoin(theme, ["Released · waiting", elapsedText]);
+			} else if (subagentTaskResultLabel(taskSettled) === "paused · awaiting resume") {
+				status = "paused";
+				statusLine = statJoin(theme, ["Paused · awaiting resume", elapsedText]);
+			} else {
+				status = "stopped";
+				statusLine = statJoin(theme, ["Stopped", elapsedText]);
+			}
+		} else if (record) {
+			if (record.state === "running") {
+				status = "running";
+				const manageKey = hasPanelRow(task, observation)
+					? navEntryKeys(getKeybindings(), { action: "app.agents.focus", label: "to manage" })
+					: "";
+				statusLine = statJoin(theme, [
+					"Running",
+					runningElapsedText,
+					tokenText,
+					manageKey ? `${manageKey} to manage` : "",
+				]);
+			} else {
+				const terminal = record.terminalStatus ?? "";
+				if (terminal === "ok") {
+					status = "success";
+					statusLine = statJoin(theme, ["Done", elapsedText, tokenText]);
+				} else if (
+					terminal === "error" ||
+					terminal === SUBAGENT_CHILD_GONE_STATUS ||
+					terminal === SUBAGENT_CHILD_STAGE_CLOSED_STATUS
+				) {
+					status = "failure";
+					const reason = firstDisplayLine(
+						failure ??
+							(terminal === SUBAGENT_CHILD_GONE_STATUS
+								? "gone after a restart"
+								: terminal === SUBAGENT_CHILD_STAGE_CLOSED_STATUS
+									? "its workflow stage ended"
+									: ""),
+					);
+					statusLine = theme.fg("error", ["Failed", elapsedText, reason].filter(Boolean).join(" · "));
+				} else if (
+					terminal === "paused" ||
+					terminal === "quit" ||
+					terminal === SUBAGENT_CHILD_STAGE_PAUSED_STATUS
+				) {
+					status = "paused";
+					const label =
+						terminal === "quit"
+							? "Quit · paused · awaiting resume"
+							: terminal === SUBAGENT_CHILD_STAGE_PAUSED_STATUS
+								? "Paused with its workflow stage · awaiting resume"
+								: "Paused · awaiting resume";
+					statusLine = statJoin(theme, [label, elapsedText]);
+				} else if (terminal === SUBAGENT_CHILD_RELEASED_STATUS) {
+					status = "paused";
+					statusLine = statJoin(theme, ["Released · waiting", elapsedText]);
+				} else {
+					status = "stopped";
+					statusLine = statJoin(theme, ["Stopped", elapsedText]);
+				}
+			}
+		} else if (observation.kind === "yielded") {
+			status = "running";
+			const manageKey = hasPanelRow(task, observation)
+				? navEntryKeys(getKeybindings(), { action: "app.agents.focus", label: "to manage" })
+				: "";
+			statusLine = statJoin(theme, [
+				"Running",
+				runningElapsedText,
+				tokenText,
+				manageKey ? `${manageKey} to manage` : "",
+			]);
+		} else if (observation.result.kind === "completed") {
+			status = "success";
+			statusLine = statJoin(theme, ["Done", elapsedText, tokenText]);
+		} else if (observation.result.kind === "failed") {
+			status = "failure";
+			const reason = firstDisplayLine(observation.result.message || "");
+			statusLine = theme.fg("error", ["Failed", elapsedText, reason].filter(Boolean).join(" · "));
+		} else if (observation.result.released) {
+			status = "paused";
+			statusLine = statJoin(theme, ["Released · waiting", elapsedText]);
+		} else if (subagentTaskResultLabel(observation.result) === "paused · awaiting resume") {
+			status = "paused";
+			statusLine = statJoin(theme, ["Paused · awaiting resume", elapsedText]);
+		} else {
+			status = "stopped";
+			statusLine = statJoin(theme, ["Stopped", elapsedText]);
+		}
+
+		const working = status === "running";
+
+		if (!expanded) {
+			return {
+				block: new ToolBlock({
+					status,
+					title: "Agent",
+					args,
+					details: new OneLine(statusLine),
+					outputPad: context.outputPad,
+				}),
+				working,
+			};
+		}
+
+		const ownerId =
+			task?.ref.ownerId ?? (observation.kind === "settled" ? observation.result.output?.ownerId : undefined);
+		const resultText = hydrated?.result ?? extractInlineSettledOutput(result, activeTaskId, ownerId);
+		const toolCallsUnavailable =
+			hydrated?.unavailable ??
+			((task?.metrics?.toolCount ?? 0) > 0 && (!hydrated || hydrated.toolCalls.length === 0)
+				? "Transcript unavailable"
+				: undefined);
+
+		return {
+			block: new ToolBlock({
+				status,
+				title: "Agent",
+				args,
+				details: buildExpandedDetails({
+					state: context.state,
+					cacheId: activeTaskId,
+					hydratedRef: hydrated?.toolCalls,
+					statusLine,
+					status,
+					promptText,
+					buildToolBlocks: () =>
+						(hydrated?.toolCalls ?? []).map((entry) =>
+							innerToolBlockFromEntry(entry, status === "running", theme, context),
+						),
+					toolCallsUnavailable,
+					resultText,
+					failureText: failure,
+					theme,
+				}),
+				outputPad: context.outputPad,
+			}),
+			working,
+		};
+	};
+
+	return new DynamicToolBlock(evaluate);
+}
+
+function buildForegroundChildToolBlock(input: {
+	readonly child: SingleResult | undefined;
+	readonly progress: AgentProgress | undefined;
+	readonly identity?: { readonly agent: string; readonly task: string };
+	readonly taskRecord?: TaskRecord;
+	readonly expanded: boolean;
+	readonly now?: number;
+	readonly theme: Theme;
+	readonly outputPad?: number;
+	readonly context?: Pick<RenderContext, "cwd" | "getToolDefinition">;
+}): ToolBlock {
+	const { child, progress, identity, taskRecord, expanded, now, theme, outputPad, context } = input;
+	const activeProgress = child?.progress ?? progress;
+	const summary = activeProgress ?? child?.progressSummary;
+	const turnInterrupted = taskRecord !== undefined && isTaskTurnInterrupted(taskRecord);
+	const isRunning =
+		!turnInterrupted && (activeProgress?.status === "running" || (!child && activeProgress?.status === "pending"));
+	const agentName = child?.agent || activeProgress?.agent || identity?.agent || taskRecord?.agentName || "agent";
+	const headerTask = taskRecord?.title || activeProgress?.task || child?.task || identity?.task || "";
+	const rawTask = identity?.task || child?.task || activeProgress?.task || taskRecord?.title || "";
+	const args = formatAgentBlockArgs(agentName, headerTask);
+	const elapsedMs = summary ? displayProgressDurationMs(summary, now) : (taskRecord?.metrics?.elapsedMs ?? 0);
+	const tokens = summary?.tokens ?? taskRecord?.metrics?.tokenCount ?? 0;
+	const elapsedText = elapsedMs > 0 ? formatDuration(elapsedMs) : "";
+	const runningElapsedText = elapsedMs >= 1000 ? formatDuration(elapsedMs) : "";
+	const tokenText = formatTokenSegment({ mode: "receiving", count: tokens });
+	const output = child ? child.truncation?.text || getSingleResultOutput(child) : "";
+
+	let status: ToolBlockStatus;
+	let statusLine: string;
+
+	if (taskRecord?.attention.kind === "input-needed") {
+		status = "warning";
+		const questionFirstLine = firstDisplayLine(taskRecord.attention.prompt || "");
+		const answerKey = navEntryKeys(getKeybindings(), { action: "app.agents.focus", label: "to answer" });
+		statusLine = statJoin(theme, ["Needs input", questionFirstLine, answerKey ? `${answerKey} to answer` : ""]);
+	} else if (turnInterrupted) {
+		status = "stopped";
+		statusLine = statJoin(theme, ["Stopped", elapsedText]);
+	} else if (isRunning) {
+		status = "running";
+		const manageKey = hasPanelRow(taskRecord)
+			? navEntryKeys(getKeybindings(), { action: "app.agents.focus", label: "to manage" })
+			: "";
+		statusLine = statJoin(theme, [
+			"Running",
+			runningElapsedText,
+			tokenText,
+			manageKey ? `${manageKey} to manage` : "",
+		]);
+	} else if (!child) {
+		status = "stopped";
+		statusLine = statJoin(theme, ["Stopped", elapsedText]);
+	} else if (child.status === "error") {
+		status = "failure";
+		const reason = firstDisplayLine(child.error ?? (firstOutputLine(output) || "failed"));
+		statusLine = theme.fg("error", ["Failed", elapsedText, reason].filter(Boolean).join(" · "));
+	} else if (
+		child.detached ||
+		child.interrupted ||
+		child.status === "killed" ||
+		child.status === "interrupted" ||
+		child.status === "skipped" ||
+		child.status === "continued"
+	) {
+		status = "stopped";
+		statusLine = statJoin(theme, ["Stopped", elapsedText]);
+	} else {
+		status = "success";
+		statusLine = statJoin(theme, ["Done", elapsedText, tokenText]);
+	}
+
+	if (!expanded) {
+		return new ToolBlock({
+			status,
+			title: "Agent",
+			args,
+			details: new OneLine(statusLine),
+			outputPad,
+		});
+	}
+
+	const messageEntries = toolEntriesFromMessages(child?.messages);
+	const toolBlocks: readonly Component[] =
+		messageEntries.length > 0
+			? messageEntries.map((entry) => innerToolBlockFromEntry(entry, status === "running", theme, context))
+			: toolBlocksFromSummaries(child?.toolCalls, activeProgress);
+
+	return new ToolBlock({
+		status,
+		title: "Agent",
+		args,
+		details: buildExpandedDetails({
+			statusLine,
+			status,
+			promptText: rawTask,
+			buildToolBlocks: () => toolBlocks,
+			resultText: output || undefined,
+			failureText: child?.status === "error" ? child.error : undefined,
+			theme,
+		}),
+		outputPad,
+	});
 }
 
 export function renderSubagentToolCall(args: SubagentParamsLike, theme: Theme, context: RenderContext): Component {
+	ensureGlobalTheme();
 	renderRequests.set(context.state, args);
 	const burst = getBurstDisplay(context.toolCallId);
-	if (burst && !burst.owner) return new Container();
+	if (burst && !burst.owner) return new ToolBlockGroup([]);
 	if (args.action) {
 		const target = args.agent || args.id || args.runId || (args.all ? "all" : "");
 		return new Text(
-			`${theme.fg("toolTitle", theme.bold("subagent "))}${args.action}${target ? ` ${theme.fg(args.action === "status" ? "dim" : "accent", displayText(target))}` : ""}`,
+			`${theme.fg("toolTitle", theme.bold("Agent"))}${theme.fg("text", `(${firstDisplayLine(args.action)}${target ? ` · ${firstDisplayLine(target)}` : ""})`)}`,
 			0,
 			0,
 		);
 	}
-	if (burst) {
-		return new ParallelCallHeader(
-			`${theme.fg("toolTitle", theme.bold("subagent "))}parallel (${burst.taskCount})`,
-			context.state,
+	const tasks = expandParallelTasks(args, burst?.taskCount);
+	if (tasks.length > 1 || (args.tasks?.length ?? 0) > 0 || burst) {
+		return new ToolBlockGroup(
+			tasks.map(
+				(task) =>
+					new ToolBlock({
+						status: "running",
+						title: "Agent",
+						args: formatAgentBlockArgs(task.agent, task.task),
+						outputPad: context.outputPad,
+					}),
+			),
 		);
 	}
-	if ((args.tasks?.length ?? 0) > 0) {
-		const parallelCount = effectiveParallelTaskCount(args.tasks as Array<{ count?: unknown }> | undefined);
-		return new ParallelCallHeader(
-			`${theme.fg("toolTitle", theme.bold("subagent "))}parallel (${parallelCount})`,
-			context.state,
-		);
-	}
-	const firstLine =
-		displayText(args.task ?? "")
-			.split("\n")
-			.find((line) => line.trim())
-			?.trim() ?? "";
-	return new Text(
-		`${theme.fg("toolTitle", theme.bold("Agent"))}(${theme.fg("accent", displayText(args.agent || "?"))}${firstLine ? theme.fg("muted", ` · ${displayText(truncateToWidth(firstLine, 100))}`) : ""})`,
-		0,
-		0,
-	);
+	return new ToolBlock({
+		status: "running",
+		title: "Agent",
+		args: formatAgentBlockArgs(args.agent, args.task),
+		outputPad: context.outputPad,
+	});
 }
 
 export function renderSubagentToolResult(
@@ -157,11 +1105,28 @@ export function renderSubagentToolResult(
 	theme: Theme,
 	context: RenderContext,
 ): Component {
+	ensureGlobalTheme();
+	if (!options.expanded) {
+		clearSubagentChildTranscriptCache(context.state);
+		expandedSectionCaches.delete(context.state);
+	}
 	const burst = getBurstDisplay(context.toolCallId);
-	if (burst && !burst.owner) return new Container();
+	if (burst && !burst.owner) return new ToolBlockGroup([]);
 	result = burst?.result ?? result;
-	if (result.details?.taskError)
-		return new Text(theme.fg("error", `✗ ${displayText(result.details.taskError)}`), 0, 0);
+	const request = renderRequests.get(context.state) ?? (context.args as SubagentParamsLike | undefined);
+	if (result.details?.taskError) {
+		if (request?.action || result.details?.mode === "management") {
+			return new Text(theme.fg("error", `✗ ${displayText(result.details.taskError)}`), 0, 0);
+		}
+		const reason = firstDisplayLine(result.details.taskError);
+		return new ToolBlock({
+			status: "failure",
+			title: "Agent",
+			args: formatAgentBlockArgs(request?.agent, request?.task),
+			details: new OneLine(theme.fg("error", ["Failed", reason].filter(Boolean).join(" · "))),
+			outputPad: context.outputPad,
+		});
+	}
 	const runControl = result.details?.runControl;
 	if (runControl) {
 		const text = result.content.find((part) => part.type === "text");
@@ -178,10 +1143,10 @@ export function renderSubagentToolResult(
 		const lines = runControl.children.map((child) => {
 			const state =
 				child.state === "running"
-					? theme.fg("success", `▶ Resumed · ${displayText(child.agent)}`)
+					? theme.fg("success", `✓ Resumed · ${displayText(child.agent)}`)
 					: theme.fg(
-							"warning",
-							`${child.state === "paused" ? "‖ Paused" : "■ Quit (resumable)"} · ${displayText(child.agent)}`,
+							"muted",
+							`${child.state === "paused" ? "⏸ Paused" : "◼ Quit (resumable)"} · ${displayText(child.agent)}`,
 						);
 			const identity = theme.fg(
 				"dim",
@@ -213,97 +1178,20 @@ export function renderSubagentToolResult(
 					: []),
 			];
 		});
-		return new Text([...lines, theme.fg("dim", "/tasks to inspect output and manage tasks")].join("\n"), 0, 0);
+		return new Text(lines.join("\n"), 0, 0);
 	}
 	const response = result.details?.taskResponse;
-	const request = renderRequests.get(context.state);
 	if (response) {
-		const outcomes = response.kind === "parallel" ? response.slots.map((slot) => slot.outcome) : [response];
-		const labels =
-			request && !burst
-				? [
-						...(request.agent ? [{ agent: request.agent, task: request.task ?? "" }] : []),
-						...(request.tasks ?? []).flatMap((task) =>
-							Array.from({ length: Math.max(1, task.count ?? 1) }, () => task),
-						),
-					]
-				: [];
-		const rows = outcomes.map((outcome, index): { line: string; error?: string; category: OutcomeCategory } => {
-			const identity = labels[index];
-			const name = outcomes.length > 1 ? `${index + 1}. ${identity ? displayText(identity.agent) : "Agent"} · ` : "";
-			if (outcome.kind === "unstarted")
-				// #4697: a child that failed to start keeps its own row; its siblings report theirs.
-				return outcome.reason.kind === "rejected"
-					? {
-							line: theme.fg("error", `✗ ${name}Not started`),
-							error: outcome.reason.error.message,
-							category: "failed",
-						}
-					: { line: theme.fg("dim", `○ ${name}Skipped`), category: "skipped" };
-			const failure =
-				outcome.observation.kind === "settled" && outcome.observation.result.kind === "failed"
-					? outcome.observation.result.message
-					: undefined;
-			const observation = outcome.observation;
-			const task = result.details?.taskRecords?.find((task) => task.ref.taskId === observation.taskId);
-			const childId = task?.launchOperationId;
-			const record = subagentChildCardRecord(childId, observation.taskId);
-			watchSubagentChildCard(
-				context.state,
-				context.invalidate,
-				record?.childId ?? childId ?? observation.taskId,
-				result.details?.ownerSessionId,
-			);
-			if (record) {
-				const view = childStateView(record);
-				const resumed = record.taskId !== undefined && record.taskId !== observation.taskId ? " · resumed" : "";
-				const transcript = options.expanded ? subagentChildTranscript(context.state, record) : undefined;
-				const line = [
-					theme.fg(view.color, `${view.icon} ${name}${view.label}${resumed}`),
-					theme.fg(
-						"dim",
-						`\n   ${displayText(formatModelThinking(task?.model, task?.thinking) || "model / thinking unavailable")}`,
-					),
-					options.expanded
-						? theme.fg(
-								"dim",
-								`\n   ${record.taskId ?? observation.taskId}${identity?.task ? ` · ${displayText(identity.task)}` : ""}`,
-							)
-						: "",
-					transcript?.length
-						? transcript.map((line) => `\n   ${theme.fg("muted", `│ ${displayText(line)}`)}`).join("")
-						: "",
-				].join("");
-				return {
-					line,
-					...(view.color === "error" && failure ? { error: failure } : {}),
-					category: outcomeCategory(view.color),
-				};
-			}
+		if (request?.action === "wait" && response.kind !== "parallel" && response.kind === "admitted") {
+			const observation = response.observation;
 			const state =
 				observation.kind === "yielded"
-					? request?.action === "wait"
-						? "Still running in background"
-						: "Launched in background"
+					? "Still running in background"
 					: observation.result.kind === "completed"
 						? "Completed"
 						: observation.result.kind === "failed"
-							? "Failed"
-							: subagentTaskResultLabel(observation.result) === "killed (non-resumable)"
-								? "Killed (non-resumable)"
-								: subagentTaskResultLabel(observation.result) === "paused · awaiting resume"
-									? "Paused · awaiting resume"
-									: observation.result.released
-										? "Released · waiting"
-										: "Stopped";
-			const icon =
-				observation.kind === "yielded"
-					? "∀"
-					: observation.result.kind === "completed"
-						? "✓"
-						: observation.result.kind === "failed"
-							? "✗"
-							: "○";
+							? `Failed · ${firstDisplayLine(observation.result.message)}`
+							: subagentTaskResultLabel(observation.result);
 			const color =
 				observation.kind === "yielded"
 					? "accent"
@@ -312,39 +1200,21 @@ export function renderSubagentToolResult(
 						: observation.result.kind === "completed"
 							? "success"
 							: "warning";
-			const summary = theme.fg(color, `${icon} ${name}${state}`);
-			const model = theme.fg(
-				"dim",
-				`\n   ${displayText(formatModelThinking(task?.model, task?.thinking) || "model / thinking unavailable")}`,
-			);
-			const metadata = options.expanded
-				? theme.fg("dim", `\n   ${observation.taskId}${identity?.task ? ` · ${displayText(identity.task)}` : ""}`)
-				: "";
-			return {
-				line: summary + model + metadata,
-				...(failure ? { error: failure } : {}),
-				category: outcomeCategory(color),
-			};
-		});
-		if (outcomes.length > 1)
-			parallelSummaries.set(
-				context.state,
-				parallelSummary(
-					rows.map((row) => row.category),
-					theme,
-				),
-			);
-		const view = new Container();
-		for (const [index, row] of rows.entries()) {
-			const branch = outcomes.length > 1 ? `${index === rows.length - 1 ? "└─" : "├─"} ` : "";
-			view.addChild(new Text(`${branch}${row.line}`, 0, 0));
-			if (row.error === undefined) continue;
-			// Collapsed, an error is one truncated line; expanded shows all of it.
-			const error = `   ${theme.fg("error", displayText(row.error))}`;
-			view.addChild(options.expanded ? new Text(error, 0, 0) : new OneLine(error));
+			return new Text(theme.fg(color, state), 0, 0);
 		}
-		view.addChild(new Text(theme.fg("dim", "/tasks to inspect output and manage tasks"), 0, 0));
-		return view;
+		const outcomes = response.kind === "parallel" ? response.slots.map((slot) => slot.outcome) : [response];
+		const labels = request && !burst ? expandParallelTasks(request) : [];
+		const blocks = outcomes.map((outcome, index) =>
+			buildOutcomeToolBlock({
+				outcome,
+				identity: labels[index],
+				result,
+				expanded: options.expanded,
+				theme,
+				context,
+			}),
+		);
+		return blocks.length === 1 ? blocks[0]! : new DynamicToolBlockGroup(blocks);
 	}
 	const text = result.content.find((part) => part.type === "text");
 	if (text?.type === "text" && text.text.startsWith("Executable agents:")) {
@@ -362,6 +1232,45 @@ export function renderSubagentToolResult(
 			0,
 			0,
 		);
+	}
+	const d = result.details;
+	if (!request?.action && (d?.mode === "single" || d?.mode === "parallel") && !d.statusGroups) {
+		const labels = request && !burst ? expandParallelTasks(request) : [];
+		const count = Math.max(
+			d.results.length,
+			d.progress?.length ? Math.max(...d.progress.map((p) => p.index + 1)) : 0,
+			d.mode === "parallel" ? (d.totalSteps ?? labels.length) : 0,
+		);
+		if (count > 0) {
+			const blocks = Array.from({ length: count }, (_, index) => {
+				const child = d.results[index];
+				const progress =
+					d.progress?.find((p) => p.index === index) ??
+					(child ? d.progress?.find((p) => p.agent === child.agent && p.status === "running") : undefined);
+				return buildForegroundChildToolBlock({
+					child,
+					progress,
+					identity: labels[index],
+					taskRecord: d.taskRecords?.[index],
+					expanded: options.expanded,
+					now: context.state.subagentResultSnapshotNow,
+					theme,
+					outputPad: context.outputPad,
+					context,
+				});
+			});
+			return blocks.length === 1 ? blocks[0]! : new ToolBlockGroup(blocks);
+		}
+		if (context.isError || (result as { isError?: boolean }).isError) {
+			const reason = firstDisplayLine(text?.type === "text" ? text.text : "failed");
+			return new ToolBlock({
+				status: "failure",
+				title: "Agent",
+				args: formatAgentBlockArgs(request?.agent, request?.task),
+				details: new OneLine(theme.fg("error", ["Failed", reason].filter(Boolean).join(" · "))),
+				outputPad: context.outputPad,
+			});
+		}
 	}
 	if (
 		context.isError &&

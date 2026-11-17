@@ -103,7 +103,6 @@ export interface ExtensionRuntimeState {
 	workflowActivityHub: WorkflowActivityHub;
 	/** Holds the session-scoped run-control implementation registered by the workflows extension. */
 	workflowRunControlHub: WorkflowRunControlHub;
-	/** Agent-panel sources the extensions of this generation registered (#5224). */
 	agentPanelSourceHub: import("../tasks/agent-panel-source.ts").AgentPanelSourceHub;
 	/** Package-manifest and `registerMcpServer()` MCP servers visible to every extension of this generation. */
 	mcpServerRegistry: McpServerRegistry;
@@ -219,7 +218,6 @@ export interface ExtensionContextActions {
 	getSkillCatalog?: () => SkillCatalog;
 	getSystemPromptOptions?: () => BuildSystemPromptOptions;
 	getDecisionModel?: () => string;
-	getModelRouting?: () => import("../settings-types.ts").ModelRoutingSettings;
 	getHttpIdleTimeoutMs?: () => number;
 	executeTool?: (
 		callerId: string,

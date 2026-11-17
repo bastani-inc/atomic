@@ -6,6 +6,31 @@ description: Component and focusable interfaces, keyboard input, line width, inv
 
 # TUI API reference
 
+## Tool blocks
+
+Use `ToolBlock` from `@bastani/atomic` for a transcript item with a state glyph, one header row and connected result rows. It accepts `status`, `title`, optional `args`, `meta`, `details`, `body` and `outputPad` (default `1`). Supported states are `running`, `success`, `failure`, `stopped`, `warning`, `paused` and `info`.
+
+```typescript
+import { ToolBlock, ToolBlockRecords } from "@bastani/atomic";
+
+const item = new ToolBlock({
+  status: "success",
+  title: "Inspect",
+  args: "sample.ts",
+  details: new ToolBlockRecords(["Read 42 lines", "No errors found"]),
+});
+```
+
+A block does not add a leading blank line; its container controls spacing between items. `ToolBlockGroup` separates several blocks with one blank line. `ToolBlockMarkdown(text)` sanitizes terminal controls and renders Markdown with links shown as text and URLs, not clickable terminal links, and images shown as `[image]`.
+
+In ordinary tool renderers, return only the call title from `renderCall` and unframed result content from `renderResult`; Atomic supplies the state glyph and connectors. Return `ToolBlockRecords` when several results need separate connectors.
+
+When embedding `ChatSessionHost`, forward the complete `ctx.ui.getChatRenderSettings()` result. Its optional component factories preserve remote tool renderers and the attached chat's repaint and expansion settings. Do not copy only `getToolDefinition`. Custom message renderers can use `options.cwd` for the receiving chat's working directory instead of assuming `process.cwd()` matches it.
+
+`host.replaceMessages(messages)` starts a fresh unread baseline. Use `host.replaceMessages(messages, { preserveUnread: true })` for a new snapshot of the same conversation; arrivals that have not painted yet remain unread.
+
+The `Markdown` component from `@bastani/atomic-tui` also accepts per-instance `hyperlinks: false` and `images: false` in its sixth constructor argument. These options do not change other components or terminal capabilities.
+
 ## Component Interface
 
 All components implement:
@@ -332,7 +357,9 @@ picker.update(await loadMoreRows()); // merge late rows into the open picker
 const path = await picker.result;    // selected row's path, or undefined on cancel
 ```
 
-`/workflow resume` uses this picker.
+Each row is two lines: by default its `name` or `firstMessage`, then its age, message count and summary. Set `title` to replace the first line and `detail` to replace the second, for rows that are not sessions, such as jobs or runs. Search matches `title` and `detail` along with the row's other text fields. The request's `title` sets the picker's heading (default `Resume session`). `variant: "runs"` marks the rows as something other than sessions: the picker's default heading becomes `Resume workflow run`, and the folder scope, named-only filter and path keys are left out of the picker and its hint. The default is `variant: "sessions"`.
+
+Rows can set `canDelete: false` to hide and disable deletion, even when `onDelete` is present. Leave the field unset to use the request's deletion behavior. Keep the row until deletion finishes, then remove it with `update()`, or report failure with `error()` from that `onDelete` callback. The row cannot be selected while deletion is pending. The exported `SessionInfo` type also carries optional `title`, `detail`, `canDelete`, and `resumeKind` (`"workflow"` for workflow-run rows in `/resume`) fields for synthetic selector rows.
 
 ### Host-native input form
 

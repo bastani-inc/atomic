@@ -129,7 +129,7 @@ function runSource(
 	};
 }
 
-test("Esc, arrows, wheel and ? while a reply is sending are ignored, and the sent reply never returns as a draft (#5224)", async () => {
+test("arrows, wheel and ? while a reply is sending are ignored, and the sent reply never returns as a draft (#5224)", async () => {
 	let release!: () => void;
 	const gate = new Promise<void>((resolve) => {
 		release = resolve;
@@ -154,7 +154,6 @@ test("Esc, arrows, wheel and ? while a reply is sending are ignored, and the sen
 		inspector.renderViewport(100, 24);
 		inspector.handleInput("1");
 		inspector.handleInput(ENTER);
-		inspector.handleInput(ESC);
 		inspector.handleInput(DOWN);
 		inspector.handleInput(WHEEL_DOWN);
 		inspector.handleInput("?");
@@ -340,7 +339,8 @@ test("inline /tasks picker pins the reply line, Sending… and bottom border wit
 		assert.equal(picker.length, 12);
 		assert.ok(picker.some((line) => /│ ❯ typed/.test(line)));
 		assert.ok(picker.some((line) => /╰─+╯$/.test(line)));
-		assert.ok(picker.some((line) => /1-4 choose/.test(line)));
+		assert.doesNotMatch(picker.join("\n"), /1-4 choose/);
+		assert.equal(picker.at(-1)?.trim(), "↑↓ select · enter send · esc close");
 		assert.ok(!picker.some((line) => /5 E/.test(line)));
 
 		for (let i = 0; i < 5; i++) inspector.handleInput("\x7f");
@@ -376,7 +376,8 @@ test("inline /tasks picker pins the reply line, Sending… and bottom border wit
 		assert.ok(filteredWithNotice.some((line) => /Could not send the answer: offline/.test(line)));
 		assert.ok(filteredWithNotice.some((line) => /│ ❯ B\b/.test(line)));
 		assert.ok(filteredWithNotice.some((line) => /╰─+╯$/.test(line)));
-		assert.ok(filteredWithNotice.some((line) => /1-2 choose/.test(line)));
+		assert.doesNotMatch(filteredWithNotice.join("\n"), /1-2 choose/);
+		assert.equal(filteredWithNotice.at(-1)?.trim(), "↑↓ select · enter send · esc close");
 
 		const shortReply = inspector.renderViewport(100, 6).map((line) => stripVTControlCharacters(line).trimEnd());
 		assert.ok(shortReply.some((line) => /│ ❯ B\b/.test(line)));

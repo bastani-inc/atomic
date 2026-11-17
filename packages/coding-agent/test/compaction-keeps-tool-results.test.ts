@@ -4,7 +4,6 @@ import { test } from "vitest";
 import { generateBranchSummary } from "../src/core/compaction/branch-summarization.js";
 import { DEFAULT_COMPACTION_SETTINGS } from "../src/core/compaction/compaction.js";
 import { prepareCompactionBoundary } from "../src/core/compaction/compaction-boundary.js";
-import { preparePiSummaryCompaction, runVerbatimCompaction } from "../src/core/compaction/index.js";
 import { generateSessionSummary } from "../src/core/compaction/session-summarization.js";
 import { convertToLlm, toolBatchCutStart } from "../src/core/messages.js";
 import { buildSessionContext, type SessionEntry, sessionEntryToContextMessages } from "../src/core/session-manager.js";
@@ -141,7 +140,7 @@ function assertBothResults(text: string, where: string): void {
 	assert.doesNotMatch(text, INTERRUPTED, `${where} invents no interrupted result`);
 }
 
-test("a verbatim cut right after a parallel batch keeps both results in the request (#5062)", () => {
+test("a clear right after a parallel batch hands both calls and both results to the region (#5062)", () => {
 	const path = session([
 		...olderTurns(),
 		["user", "check both files"],
@@ -151,10 +150,11 @@ test("a verbatim cut right after a parallel batch keeps both results in the requ
 	]);
 	const preparation = prepareCompactionBoundary(path, DEFAULT_COMPACTION_SETTINGS);
 	assert.ok(preparation);
-	assert.equal(preparation.firstKeptEntryId, path.at(-3)?.id, "the tail starts at the assistant that made the calls");
-	assert.equal(preparation.keptTailMessageCount, 3);
-	assert.ok(!preparation.region.lines.join("\n").includes("reading both files"), "the calls are not compacted");
-	assertBothResults(requestText(compactedAt(path, preparation.firstKeptEntryId)), "the request");
+	assert.equal(preparation.firstKeptEntryId, null, "a clear keeps no tail");
+	assert.equal(preparation.keptTailMessageCount, 0);
+	const region = preparation.region.lines.join("\n");
+	assert.ok(region.includes("reading both files"), "the calls are in the region");
+	assertBothResults(region, "the region");
 });
 
 test("an Intercom message admitted mid-batch leaves every real result in the kept tail (#5062)", () => {
@@ -168,18 +168,10 @@ test("an Intercom message admitted mid-batch leaves every real result in the com
 	const path = session([...olderTurns(), ...MID_BATCH, ["user", "latest"], ["assistant", "ok"]]);
 	const preparation = prepareCompactionBoundary(path, DEFAULT_COMPACTION_SETTINGS);
 	assert.ok(preparation);
-	assert.equal(preparation.firstKeptEntryId, path.at(-2)?.id);
+	assert.equal(preparation.firstKeptEntryId, null);
 	const region = preparation.region.lines.join("\n");
 	assertBothResults(region, "the region");
 	assert.ok(region.indexOf("CONTENT_OF_B") < region.indexOf("message from peer"), "the message follows the batch");
-});
-
-test("a verbatim cut at a message admitted mid-batch keeps the whole batch in the tail (#5062)", () => {
-	const path = session([...olderTurns(), ...MID_BATCH]);
-	const preparation = prepareCompactionBoundary(path, DEFAULT_COMPACTION_SETTINGS);
-	assert.ok(preparation);
-	assert.equal(preparation.firstKeptEntryId, path.at(-4)?.id, "the tail starts at the assistant that made the calls");
-	assertBothResults(requestText(compactedAt(path, preparation.firstKeptEntryId)), "the request");
 });
 
 test("an Intercom message admitted mid-batch leaves every real result in a branch summary (#5062)", async () => {
@@ -204,36 +196,6 @@ test("an Intercom message admitted mid-batch leaves every real result in a sessi
 		retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 },
 	});
 	assertBothResults(JSON.stringify((state.contexts as Context[])[0].messages), "the session summary prompt");
-});
-
-test("the summary fallback never cuts at a message admitted mid-batch (#5062)", () => {
-	const path = session([...olderTurns(), ...MID_BATCH]);
-	const settings = { reserveTokens: 16384, keepRecentTokens: 20000 };
-	const planned = preparePiSummaryCompaction(path, settings, undefined, { firstKeptEntryId: path.at(-2)?.id ?? null });
-	assert.equal(planned?.firstKeptEntryId, path.at(-4)?.id, "a planned cut moves back to the calls");
-	const byTokens = preparePiSummaryCompaction(path, { reserveTokens: 16384, keepRecentTokens: 1 });
-	assert.equal(byTokens?.firstKeptEntryId, path.at(-4)?.id, "pi's own cut moves back to the calls");
-});
-
-test("an Intercom message admitted mid-batch leaves every real result in the summary fallback (#5062)", async () => {
-	const path = session([...olderTurns(), ...MID_BATCH, ["user", "latest"], ["assistant", "ok"]]);
-	const preparation = prepareCompactionBoundary(path, DEFAULT_COMPACTION_SETTINGS);
-	assert.ok(preparation);
-	const { streamFn, state } = createFauxStreamFn([
-		{ stopReason: "error", error: "The model refused to complete the request", usage: { output: 0 } },
-		"## Goal\nsummary",
-		"## Goal\nsummary",
-	]);
-	const result = await runVerbatimCompaction(preparation, fauxModel, {
-		streamFn,
-		summaryEntries: path,
-		resolveAuth: async () => ({ apiKey: "key" }),
-		thinkingLevel: "off",
-		urgency: "recoverable",
-		retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 },
-	});
-	assert.equal(result.backend, "summary");
-	assertBothResults(JSON.stringify((state.contexts as Context[])[1].messages), "the summary fallback prompt");
 });
 
 /** Where a cut at entry `cut` of `turns` lands after the batch rule, as an entry index. */

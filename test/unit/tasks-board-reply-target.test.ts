@@ -167,7 +167,7 @@ test.each(["before first paint", "between paints"])(
 	},
 );
 
-test("clearing a draft releases its target while closing and restoring a nonempty draft preserves it (#5224)", async () => {
+test("clearing a draft releases its target while closing, and a kept draft whose question changed is cleared rather than retargeted (#5224)", async () => {
 	const board = await replyBoard();
 	try {
 		board.paint();
@@ -177,9 +177,9 @@ test("clearing a draft releases its target while closing and restoring a nonempt
 		board.update({ promptId: "p2", question: "Delete the production database?" });
 		board.paint();
 		board.type(" ");
-		board.paint();
+		assert.doesNotMatch(board.paint(), /❯ no/);
 		board.type("\r");
-		assert.equal(board.answers[0]?.options?.promptId, "p1");
+		assert.deepEqual(board.answers, []);
 	} finally {
 		await board.dispose();
 	}
