@@ -107,7 +107,7 @@ export class WorkflowStageAdmissionBoundary {
 	private readonly stageAttemptId = randomUUID();
 	private taskScope: Extract<OwnerScope, { kind: "workflow-stage" }> | undefined;
 	private taskHost: AgentTaskHost | undefined;
-	private readonly messageDeliveryContext = new AsyncLocalStorage<boolean>();
+	private readonly messageDeliveryContext = new AsyncLocalStorage<{ active: boolean }>();
 	private readonly messageAdmissionContext = new AsyncLocalStorage<{ active: boolean }>();
 	private readonly messageDeliveries = new Set<Promise<void>>();
 	private messageDeliveryTail: Promise<void> | undefined;
@@ -244,16 +244,27 @@ export class WorkflowStageAdmissionBoundary {
 	/** Reentrant SDK commits stay inside their producer's FIFO position. */
 	serializeMessageDelivery(deliver: () => void | Promise<void>): Promise<void> {
 		if (this.messageDeliveryContext.getStore()) return this.invoke(deliver);
-		const invoke = () => this.messageDeliveryContext.run(true, () => this.invoke(deliver));
+		const scope = { active: true };
+		const invoke = () => this.messageDeliveryContext.run(scope, () => this.invoke(deliver));
 		const delivery = this.messageDeliveryTail ? this.messageDeliveryTail.then(invoke) : invoke();
 		const settled = delivery.catch(() => undefined);
 		this.messageDeliveryTail = settled;
 		this.messageDeliveries.add(settled);
 		void settled.then(() => {
+			scope.active = false;
 			this.messageDeliveries.delete(settled);
 			if (this.messageDeliveryTail === settled) this.messageDeliveryTail = undefined;
 		});
 		return delivery;
+	}
+
+	/**
+	 * True while the caller runs inside a message delivery that has not settled yet. Every other registered delivery
+	 * is then queued behind it, so a turn that delivery starts and awaits must not wait for them. A turn that outlives
+	 * its delivery waits as any other.
+	 */
+	isInsideActiveMessageDelivery(): boolean {
+		return this.messageDeliveryContext.getStore()?.active === true;
 	}
 
 	/** Excludes tracked model turns: joining those from a native poll would deadlock. */

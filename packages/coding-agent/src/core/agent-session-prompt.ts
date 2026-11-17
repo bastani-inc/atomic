@@ -1013,8 +1013,9 @@ function preparePriorityContinuation(session: AgentSession): Promise<void> | und
 		session._abortPreparedRunAtStart = false;
 		session._restoreAndClearActiveInterruptQueueHold();
 	};
-	// Keep the idle prompt start synchronous unless a producer commit is still in flight.
-	if (!boundary?.hasMessageDeliveries()) {
+	// Keep the idle prompt start synchronous unless a producer commit is still in flight. A turn its own delivery
+	// started and awaits skips the wait: every other delivery is queued behind that one and cannot settle first.
+	if (!boundary?.hasMessageDeliveries() || boundary.isInsideActiveMessageDelivery()) {
 		restore();
 		return undefined;
 	}

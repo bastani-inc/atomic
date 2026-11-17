@@ -274,11 +274,6 @@ async function commitCustomMessage<T>(
 			resolveAdmission = resolve;
 		});
 		const turn = self._runAgentPrompt(promptMessage, resolveAdmission);
-		if (self._workflowStageAdmission) {
-			self._workflowStageAdmission.trackAdmittedWork(turn);
-			void turn.catch(() => {});
-			return;
-		}
 		try {
 			await Promise.race([admission, turn]);
 		} catch (error) {
