@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { markLifecycleTiming } from "../core/lifecycle-timings.ts";
+import { installLifecycleTraceFromEnv, markLifecycleTiming } from "../core/lifecycle-timings.ts";
 import { ATOMIC_AI_AGENT } from "../utils/agent-attribution.ts";
 import { stripBom } from "../utils/text.ts";
 import {
@@ -11,6 +11,7 @@ import {
 } from "./internal-intercom-broker.js";
 import { INTERNAL_WORKFLOW_WORKER_ARG, importInternalWorkflowWorker } from "./internal-workflow-worker.js";
 
+installLifecycleTraceFromEnv();
 markLifecycleTiming("process-entry");
 
 const APP_NAME = "atomic";

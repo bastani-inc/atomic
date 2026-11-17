@@ -203,6 +203,7 @@ async function admittedCustomMessage<T>(
 	if (boundary === undefined) return deliver();
 	await boundary.admit(options?.stageAdmissionKey, deliver, () => {
 		if (this._subagentMessageAdmission) throw new Error("Subagent execution is terminal and cannot accept messages");
+		if (options?.stayInSession) throw new Error("Workflow stage closed; the message waits for this session");
 		const router = this._orchestrationContext?.lateMessageRouter;
 		if (router === undefined) throw new Error("Workflow stage closed without a late-message router");
 		return router.routeMessage(message, options);
@@ -228,19 +229,19 @@ async function admittedCustomMessages<T>(
 ): Promise<void> {
 	const lifetime = sessionLifetime(this);
 	const timestamp = Date.now();
-	const appMessages = messages.map(
-		(message) =>
-			({
-				role: "custom" as const,
-				customType: message.customType,
-				content: message.content ?? [],
-				display: message.display,
-				details: message.details,
-				timestamp,
-				...(options?.excludeFromContext === true ? { excludeFromContext: true } : {}),
-				...(options?.stageAdmissionKey === undefined ? {} : { stageAdmissionKey: options.stageAdmissionKey }),
-			}) satisfies CustomMessage<T> & { stageAdmissionKey?: string },
-	);
+	const appMessages = messages.map((message, index) => {
+		const stageAdmissionKey = options?.stageAdmissionKeys?.[index] ?? options?.stageAdmissionKey;
+		return {
+			role: "custom" as const,
+			customType: message.customType,
+			content: message.content ?? [],
+			display: message.display,
+			details: message.details,
+			timestamp,
+			...(options?.excludeFromContext === true ? { excludeFromContext: true } : {}),
+			...(stageAdmissionKey === undefined ? {} : { stageAdmissionKey }),
+		} satisfies CustomMessage<T> & { stageAdmissionKey?: string };
+	});
 	if (appMessages.length === 0) return;
 	const boundary = this._subagentMessageAdmission ?? this._workflowStageAdmission;
 	const commit = async (): Promise<void> => {
@@ -254,6 +255,7 @@ async function admittedCustomMessages<T>(
 	if (boundary === undefined) return deliver();
 	await boundary.admit(options?.stageAdmissionKey, deliver, () => {
 		if (this._subagentMessageAdmission) throw new Error("Subagent execution is terminal and cannot accept messages");
+		if (options?.stayInSession) throw new Error("Workflow stage closed; the messages wait for this session");
 		const router = this._orchestrationContext?.lateMessageRouter;
 		if (router === undefined) throw new Error("Workflow stage closed without a late-message router");
 		return router.routeMessages(messages, options);
