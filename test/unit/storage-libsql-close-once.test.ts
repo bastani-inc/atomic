@@ -33,7 +33,7 @@ async function runPoisoned(script: string): Promise<void> {
 }
 
 test(
-	"closing two libSQL file databases a process opens over one file closes each connection once",
+	"closing two libSQL file databases a process opens over one file closes each connection once (#4824)",
 	async () => {
 		await runPoisoned(fixture);
 	},
