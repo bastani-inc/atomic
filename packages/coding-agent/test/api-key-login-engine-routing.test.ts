@@ -6,6 +6,7 @@ import { AuthStorage, InMemoryAuthStorageBackend } from "../src/core/auth-storag
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { loginIsolatedApiKeyProvider } from "../src/modes/interactive-engine/isolated-auth.ts";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
+import { RemoteModelCatalog } from "../src/modes/interactive-engine/remote-model-catalog.ts";
 import { RpcProviderAuth } from "../src/modes/rpc/rpc-provider-auth.ts";
 import type { RpcModelCatalog } from "../src/modes/rpc/rpc-types.ts";
 import { createHarness } from "./suite/harness.ts";
@@ -59,12 +60,13 @@ describe("API-key login routing", () => {
 				options: Parameters<RpcProviderAuth["save"]>[3],
 			) => providerAuth.save(engineSession, savedProvider, credential, options),
 		);
-		const catalog = { apply: vi.fn() };
+		const catalog = new RemoteModelCatalog({ saveProviderCredential } as never);
+		const apply = vi.spyOn(catalog, "apply");
 
 		const result = await loginIsolatedApiKeyProvider(
 			asSession(frontendRuntime),
 			{ saveProviderCredential } as never,
-			catalog as never,
+			catalog,
 			provider,
 			interaction("offline-catalog-key"),
 		);
@@ -74,7 +76,7 @@ describe("API-key login routing", () => {
 		assert.equal((await engineRuntime.getAuth(provider))?.auth.apiKey, "offline-catalog-key");
 		assert.equal(engineRuntime.getProviderAuthStatus(provider).configured, true);
 		assert.equal(frontendRuntime.hasConfiguredAuth(provider), true);
-		assert.equal(catalog.apply.mock.calls.length, 1);
+		assert.equal(apply.mock.calls.length, 1);
 	});
 
 	it("routes IsolatedInteractiveRuntime.loginApiKeyProvider through the engine save RPC (#3193)", async () => {
