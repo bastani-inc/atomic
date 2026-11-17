@@ -80,7 +80,6 @@ for (const background of [false, true]) {
 						state: {},
 						invalidate() {},
 					});
-					// A launch block and a finished agent's notice name no model (#5350); its row, status and detail do.
 					for (const component of [receipt, new TaskCompletionMessage(restored, expanded)]) {
 						assert.doesNotMatch(stripVTControlCharacters(component.render(100).join("\n")), /provider\//);
 					}
@@ -109,11 +108,18 @@ for (const background of [false, true]) {
 						() => {},
 						() => {},
 					);
-					assert.match(
-						stripVTControlCharacters(inspector.renderPicker(100, 24).join("\n")),
-						/provider\/fallback {2}off/,
-					);
-					inspector.dispose();
+					try {
+						assert.doesNotMatch(
+							stripVTControlCharacters(inspector.renderViewport(100, 24).join("\n")),
+							/provider\//,
+						);
+						assert.equal(inspector.handleInput(" "), true);
+						const peek = stripVTControlCharacters(inspector.renderViewport(100, 24).join("\n"));
+						assert.match(peek, /provider\/fallback {2}off/);
+						assert.doesNotMatch(peek, /provider\/first/);
+					} finally {
+						inspector.dispose();
+					}
 				}
 			}
 		} finally {
