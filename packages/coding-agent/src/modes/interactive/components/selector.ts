@@ -90,16 +90,11 @@ export interface SelectorOptions<T> {
 	readonly initialId?: string;
 	/** Rows checked first in a multi-select. */
 	readonly initialChecked?: readonly string[];
-	/**
-	 * Hint label for enter. Default `choose` (single) or `confirm` (multi). A function names it for the selected row;
-	 * `undefined` leaves enter out of the hint for that row.
-	 */
+	/** Hint label for enter. Default `choose` (single) or `confirm` (multi). */
 	readonly confirmLabel?: string | ((item: SelectorItem<T>) => string | undefined);
-	/** Space chooses the selected row like enter while the search is empty, and the hint shows `enter/space`. */
 	readonly spaceConfirms?: boolean;
 	readonly rightConfirms?: boolean;
 	readonly minDescriptionWidth?: number;
-	/** Dim text about the selected row, wrapped under the list. */
 	readonly selectedDetail?: (item: SelectorItem<T>) => string | undefined;
 	/** Hint label for esc when the search is empty. Default `cancel`. */
 	readonly cancelLabel?: string;

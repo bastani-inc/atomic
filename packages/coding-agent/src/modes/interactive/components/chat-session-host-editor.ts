@@ -156,7 +156,6 @@ function promptEntriesForChatSession<TExtraEntry extends ChatTranscriptEntryLike
 	);
 }
 
-/** Open the prompt search (ctrl+r) in place of the editor, as the main chat does. */
 export function openChatSessionPromptSearch<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 ): void {

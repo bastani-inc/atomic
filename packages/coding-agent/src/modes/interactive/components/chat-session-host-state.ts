@@ -64,7 +64,6 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	footer: FooterComponent | undefined;
 	footerNavigationActive = false;
 	inputBuffer = "";
-	/** The prompt search (ctrl+r), shown in place of the editor while open. */
 	promptSearch: (Component & { handleInput(data: string): void }) | undefined;
 	transcript: ChatSessionHostEntry<TExtraEntry>[] = [];
 	extraEntries: TExtraEntry[] = [];

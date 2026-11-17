@@ -203,9 +203,6 @@ export function getSelectListTheme(): SelectListTheme {
 	};
 }
 
-/**
- * The one hint line under the editor's @ and / menus, in Atomic's theme; see {@link renderAutocompleteHintLine}.
- */
 export function renderAutocompleteHint(
 	entries: readonly EditorAutocompleteHintEntry[],
 	width: number,

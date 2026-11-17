@@ -212,11 +212,6 @@ export function isNavHelpKey(keybindings: NavKeybindings | undefined, data: stri
 	return keybindings?.matches(data, "app.keys.help") === true;
 }
 
-/**
- * The one hint line under an editor's @ and / menus: the keys that work for the open menu, named as the user's
- * keybindings name them. A narrow line gives up the select keys before complete, run and close. The main chat, stage
- * chats and subagent views all draw it with this function, each in its own colours.
- */
 export function renderAutocompleteHintLine(
 	entries: readonly EditorAutocompleteHintEntry[],
 	width: number,

@@ -324,7 +324,6 @@ export class ResourceList implements Component, Focusable {
 			visibleWidth(line) > width ? truncateToWidth(line, width) : line,
 		);
 	}
-	/** The one hint line: exactly the keys that do something now. */
 	hintEntries(): NavKey[] {
 		const kb = getKeybindings();
 		const items = this.filteredItems.filter((entry) => entry.type === "item").length;

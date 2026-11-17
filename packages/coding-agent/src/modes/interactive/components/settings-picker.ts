@@ -2,20 +2,12 @@ import type { Component, Focusable, SettingItem, TuiMouseEvent, TuiMouseEventRes
 import { Selector, type SelectorItem } from "./selector.ts";
 
 export interface SettingsPickerOptions {
-	/** Title over the search box; no title when absent. */
 	readonly title?: string;
-	/** Dim lines under the title. */
 	readonly subtitle?: string;
-	/** A search box filters the settings by label. */
 	readonly search?: boolean;
 	readonly maxVisible?: number;
 }
 
-/**
- * The settings list on the shared picker: a value column beside each label (`›` after a value that opens its own
- * picker), the selected setting's description under the list, and one hint line. Enter or space changes the selected
- * setting: it steps an enumerated value in place or opens its picker, which replaces the list until it is done.
- */
 export class SettingsPicker implements Component, Focusable {
 	readonly capturesViewportInput = true;
 	private readonly items: SettingItem[];
@@ -62,7 +54,6 @@ export class SettingsPicker implements Component, Focusable {
 		if (this.submenu && "focused" in this.submenu) (this.submenu as Component & Focusable).focused = value;
 	}
 
-	/** Update an item's shown value, as after a change made elsewhere. */
 	updateValue(id: string, newValue: string): void {
 		const item = this.items.find((entry) => entry.id === id);
 		if (!item) return;
@@ -70,7 +61,6 @@ export class SettingsPicker implements Component, Focusable {
 		this.refresh();
 	}
 
-	/** Move the selection to the setting with this id; a search that hides it is cleared first. */
 	selectItem(id: string): void {
 		const find = () => this.selector.state.getVisible().findIndex((item) => item.id === id);
 		let index = find();

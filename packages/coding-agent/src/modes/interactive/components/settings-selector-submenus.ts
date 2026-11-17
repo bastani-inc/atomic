@@ -62,11 +62,6 @@ export class WarningSettingsSubmenu extends Container {
 	}
 }
 
-/**
- * A settings value picker on the shared picker: the current value marked `●`, others `○`, dim descriptions beside
- * them, and a search box when the list is long. A leading `✓ ` on an option's label marks it current (and `  ` marks
- * another option), as the callers build them.
- */
 export class SelectSubmenu implements Component, Focusable {
 	readonly capturesViewportInput = true;
 	private readonly selector: Selector<string>;

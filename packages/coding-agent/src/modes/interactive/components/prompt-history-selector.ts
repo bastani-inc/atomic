@@ -1,13 +1,10 @@
 import { FramedSelector, type SelectorItem } from "./selector.ts";
 
-/** A past prompt the history search lists. */
 export interface PromptHistoryEntry {
 	readonly text: string;
-	/** When the prompt was sent, in ms since the epoch, when the session recorded it. */
 	readonly sentAt?: number;
 }
 
-/** A prompt of the current session as its history records it. */
 export interface SessionPrompt {
 	readonly text: string;
 	readonly expandedText?: string;
@@ -32,7 +29,6 @@ function promptText(content: unknown): string {
 		.join("");
 }
 
-/** A session's prompts from the history already in memory, with when each was sent. */
 export function sessionPromptsFromEntries(entries: readonly PromptEntryLike[]): SessionPrompt[] {
 	const prompts: SessionPrompt[] = [];
 	for (const entry of entries) {
@@ -51,11 +47,6 @@ export function sessionPromptsFromEntries(entries: readonly PromptEntryLike[]): 
 	return prompts;
 }
 
-/**
- * The prompts history search lists, newest first and each once: the prompts ↑ walks through (this run's and the
- * resumed session's), then older prompts of the current session that ↑ no longer reaches. A prompt the session
- * recorded shows when it was sent.
- */
 export function promptHistoryEntries(
 	history: readonly string[],
 	sessionPrompts: readonly SessionPrompt[],
@@ -90,16 +81,11 @@ export function promptHistoryEntries(
 }
 
 export interface PromptHistorySelectorOptions {
-	/** Puts the chosen prompt in the composer; nothing is sent. */
 	readonly onSelect: (text: string) => void;
 	readonly onCancel: () => void;
 	readonly now?: () => number;
 }
 
-/**
- * The prompt history search (ctrl+r): past prompts newest first with how long ago each was sent, type-to-search,
- * and enter puts the chosen prompt in the composer to edit or send.
- */
 export class PromptHistorySelectorComponent extends FramedSelector<string> {
 	constructor(entries: readonly PromptHistoryEntry[], options: PromptHistorySelectorOptions) {
 		const now = options.now ?? Date.now;
@@ -126,7 +112,6 @@ export class PromptHistorySelectorComponent extends FramedSelector<string> {
 	}
 }
 
-/** How long ago a prompt was sent: `just now`, `5m ago`, `3h ago`, `2d ago`, `3w ago`, `4mo ago`, `1y ago`. */
 export function promptAge(elapsedMs: number): string {
 	const minutes = Math.floor(Math.max(0, elapsedMs) / 60_000);
 	if (minutes < 1) return "just now";
