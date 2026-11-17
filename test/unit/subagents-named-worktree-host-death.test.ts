@@ -220,7 +220,7 @@ setTimeout(() => {
 
 		rmSync(refHookPath, { force: true });
 		const secondOutcome = await collectHostOutcome(startHostProcess(repo, { branch: "feat/pre-admin" }));
-		assert.equal(isPidAlive(preAdminPid), false);
+		// The helper's exit was confirmed above; by now its pid can name another process the second launch started.
 		assert.equal(existsSync(preAdminLateMarker), false, "killed pre-admin git worktree add must not continue");
 		assert.equal(secondOutcome.ok, true, secondOutcome.message);
 		assert.equal(secondOutcome.path, join(repo, ".atomic", "worktrees", "feat+pre-admin"));
@@ -270,7 +270,7 @@ setTimeout(() => {
 
 		rmSync(hookPath, { force: true });
 		const secondOutcome = await collectHostOutcome(startHostProcess(repo, { branch: "feat/hook-sigkill" }));
-		assert.equal(isPidAlive(hookPid), false);
+		// The helper's exit was confirmed above; by now its pid can name another process the second launch started.
 		assert.equal(existsSync(hookLateMarker), false, "killed post-checkout hook must not finish in the background");
 		assert.equal(secondOutcome.ok, true, secondOutcome.message);
 		assert.equal(secondOutcome.path, join(repo, ".atomic", "worktrees", "feat+hook-sigkill"));

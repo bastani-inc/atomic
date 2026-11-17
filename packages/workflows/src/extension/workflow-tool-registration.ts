@@ -1,18 +1,29 @@
 import { WorkflowRequestTimeoutError } from "../shared/workflow-request-timeout.js";
 import type { ExtensionAPI, PiExecuteContext, PiToolOpts, WorkflowToolArgs } from "./public-types.js";
-import { renderCall } from "./render-call.js";
-import { dynamicTextRenderComponent } from "./render-component.js";
+import { workflowCallLabel } from "./render-call.js";
 import type { WorkflowRegisteredToolResult, WorkflowTimeoutResult, WorkflowToolResult } from "./render-result.js";
-import { renderResult } from "./render-result.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import { DEFAULT_PROMPT_GUIDANCE, WORKFLOW_TOOL_DESCRIPTION } from "./workflow-prompts.js";
 import { raceWorkflowRequestAbort } from "./workflow-request-abort.js";
 import { WorkflowParametersSchema } from "./workflow-schema.js";
+import {
+	callComponent,
+	styledCallLine,
+	type WorkflowRunSource,
+	WorkflowToolResultBlock,
+	workflowBlockTheme,
+} from "./workflow-tool-block.js";
 import { renderWorkflowToolContent } from "./workflow-tool-content.js";
 
 interface WorkflowToolRegistrationOptions {
 	/** Internal fixture seam; production registrations always use the fixed default. */
 	readonly requestTimeoutMs?: number;
+	/** The runs a started run's row follows until the run ends. */
+	readonly runs?: WorkflowRunSource;
+}
+
+function hostHasAgentPanel(pi: WorkflowToolRegistrar): boolean {
+	return typeof (pi as { registerAgentPanelSource?: unknown }).registerAgentPanelSource === "function";
 }
 
 export type WorkflowToolRegistrar = Pick<ExtensionAPI, "registerTool">;
@@ -109,7 +120,6 @@ export function registerWorkflowTool(
 		description: WORKFLOW_TOOL_DESCRIPTION,
 		parameters: WorkflowParametersSchema,
 		promptGuidelines: DEFAULT_PROMPT_GUIDANCE,
-		renderShell: "self",
 		execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
 			const policy = workflowPolicyFromContext(ctx);
 			const details = await executeWithWorkflowToolDeadline(
@@ -129,21 +139,27 @@ export function registerWorkflowTool(
 				details,
 			};
 		},
-		renderCall: (args, _theme, _context) => dynamicTextRenderComponent((width) => renderCall(args, { width })),
-		renderResult: (result, opts, _theme, context) => {
-			const capturedNow = Date.now();
-			return dynamicTextRenderComponent((width) =>
-				renderResult(result.details, {
-					...opts,
-					errorText:
-						(context.isError ?? result.isError)
-							? result.content.flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n")
-							: undefined,
-					width,
-					now: capturedNow,
-					runInputs: (context as { args?: WorkflowToolArgs }).args?.inputs,
-				}),
-			);
+		renderCall: (args, theme) => callComponent(styledCallLine(workflowCallLabel(args), workflowBlockTheme(theme))),
+		renderResult: (result, opts, theme, context) => {
+			const isError = context.isError ?? result.isError ?? false;
+			const block =
+				context.lastComponent instanceof WorkflowToolResultBlock
+					? context.lastComponent
+					: new WorkflowToolResultBlock(options.runs, workflowBlockTheme(theme), {
+							agentPanel: hostHasAgentPanel(pi),
+						});
+			return block.update(result.details, {
+				expanded: opts.expanded === true,
+				partial: opts.isPartial === true,
+				isError,
+				...(isError
+					? {
+							errorText: result.content.flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n"),
+						}
+					: {}),
+				...(context.args === undefined ? {} : { args: context.args as WorkflowToolArgs }),
+				...(context.invalidate === undefined ? {} : { invalidate: context.invalidate }),
+			});
 		},
 	};
 	pi.registerTool(tool);

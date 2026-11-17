@@ -168,6 +168,12 @@ export {
 	renderNavKeyOverlay,
 	TwoPressConfirm,
 } from "./modes/interactive/components/nav-keys.ts";
+export {
+	NoticeLine,
+	type NoticeLineSpec,
+	type NoticeStatus,
+	noticeLineText,
+} from "./modes/interactive/components/notice-line.ts";
 export { renderTaskFooter, TaskList, taskListSections } from "./modes/interactive/components/task-list.js";
 export { TaskRow } from "./modes/interactive/components/task-row.js";
 export {
@@ -1186,6 +1192,8 @@ export {
 	ExtensionInputComponent,
 	ExtensionSelectorComponent,
 	FooterComponent,
+	formatTokenCount,
+	formatTokenSegment,
 	INPUT_LABEL_MIN_COLUMNS,
 	type InputLabel,
 	type InputLabelKind,
@@ -1223,6 +1231,7 @@ export {
 	selectorHintEntries,
 	ThemeSelectorComponent,
 	ThinkingSelectorComponent,
+	type TokenSegmentMode,
 	ToolExecutionComponent,
 	type ToolExecutionOptions,
 	TRANSCRIPT_JUMP_TO_END_URL,
