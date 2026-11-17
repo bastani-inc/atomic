@@ -7,6 +7,7 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 ### Added
 
 - `getEnvApiKeyAsync()` checks environment-provided credentials without synchronous file access. `getEnvApiKey()` remains synchronous and recognizes a passed credentials file on its first call. The compatibility entry point also exports `getDirectEnvApiKey()` for environment-only lookups that never inspect a file
+- Added GPT-6.2 Astra and GPT-6.2 Sol to the OpenAI (`openai`, `openai-api`), Azure OpenAI Responses and OpenAI Codex catalogs with OpenAI's published prices (Astra: $8 input, $0.40 cached input, $10 cache writes, $40 output per million tokens; Sol: $2, $0.10, $2.50, $10), the request-wide tier above 272K input tokens, Fast at 2x Standard, Ultrafast at 3x Standard (OpenAI's rate until March 1, 2027), tool search, additional tools, and mid-conversation effort changes. Both reject reasoning effort `none` and `minimal`, so `off` is unavailable. Azure serves them with a 1.05M context window; Codex and a ChatGPT sign-in on `openai` serve GPT-6.2 Sol with 500K and GPT-6.2 Astra with 272K (upstream [e56d35c](https://github.com/earendil-works/pi/commit/e56d35ce5eceedfa16eaf13a5f01a1f7b7271253), [cead615](https://github.com/earendil-works/pi/commit/cead615b48b80d1c61eecab2f0b576d16eeaf4c5))
 
 ## [0.9.88] - 2026-11-16
 

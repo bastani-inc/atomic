@@ -984,6 +984,65 @@ describe("mixed resume shortcut priority (#5256)", () => {
 		}
 	});
 
+	it("keeps the painted run selected when a refresh adds a newer run above it, without a key press (#5256)", async () => {
+		const runA = makeSession({ id: "run-a", resumeKind: "workflow", title: "Run A" });
+		const runB = makeSession({ id: "run-b", resumeKind: "workflow", title: "Run B" });
+		const runNew = makeSession({
+			id: "run-new",
+			resumeKind: "workflow",
+			title: "Run New",
+			modified: new Date(FIXTURE_NOW - HOUR),
+		});
+		for (const variant of ["mixed", "runs"] as const) {
+			const selected: string[] = [];
+			const picker = mount([runA, runB], { variant, onSelect: (row) => selected.push(row.id) });
+			try {
+				await new Promise<void>((resolve) => setImmediate(resolve));
+				assert.match(frame(picker).join("\n"), /❯ Run A/, variant);
+				picker.getSessionList().setSessions([runNew, runA, runB], false);
+				assert.match(frame(picker).join("\n"), /❯ Run A/, `${variant}: the run the reader saw stays selected`);
+				picker.handleInput("\r");
+				assert.deepEqual(selected, ["run-a"], variant);
+			} finally {
+				picker.dispose();
+			}
+		}
+	});
+
+	it("keeps the painted run selected in the other scope after a refresh replaced the folder list's selection (#5256)", async () => {
+		const run = (id: string, title: string, hoursAgo: number) =>
+			makeSession({ id, resumeKind: "workflow", title, modified: new Date(FIXTURE_NOW - hoursAgo * HOUR) });
+		const runA = run("run-a", "Run A", 2);
+		const runB = run("run-b", "Run B", 2);
+		const runC = run("run-c", "Run C", 2);
+		const runD = run("run-d", "Run D", 1);
+		const pendingRefresh = Promise.withResolvers<SessionInfo[]>();
+		let currentLoads = 0;
+		const picker = new SessionSelectorComponent(
+			async () => (++currentLoads === 1 ? [runA] : pendingRefresh.promise),
+			async () => [runC],
+			() => {},
+			() => {},
+			() => {},
+			() => {},
+			{ keybindings: new KeybindingsManager(), initialSessions: [runA], variant: "mixed" },
+		);
+		try {
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.match(frame(picker).join("\n"), /❯ Run A/);
+			void picker.refreshSessions();
+			picker.updateWorkflowSessions([runB]);
+			picker.handleInput("\t");
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.match(frame(picker).join("\n"), /❯ Run C/);
+			picker.updateWorkflowSessions([runD, runC]);
+			assert.match(frame(picker).join("\n"), /❯ Run C/, "the run the reader saw stays selected");
+		} finally {
+			pendingRefresh.resolve([runA]);
+			picker.dispose();
+		}
+	});
+
 	it("cancels a delete confirmation whose run vanishes in a refresh instead of resuming another run (#5256)", async () => {
 		const session = makeSession({ id: "session" });
 		const runA = makeSession({ id: "run-a", resumeKind: "workflow", title: "Run A" });

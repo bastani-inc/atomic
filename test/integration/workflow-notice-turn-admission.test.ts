@@ -34,8 +34,13 @@ import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 /** Structural, not a slow test: a real chat session, a workflow run that opens its SQL admission, and a shell. */
 const REAL_RUN_TIMEOUT_MS = 90_000;
-/** How long the woken chat's one `echo` gets to finish; a command waiting for a permit it never receives does not. */
+/**
+ * How long the `echo` of the turn the completion notice woke gets to finish; a command waiting for a permit it never
+ * receives does not.
+ */
 const WOKEN_COMMAND_BUDGET_MS = 30_000;
+/** How long the run gets to record its completed status once the chat was shown its completion. */
+const RUN_SETTLED_BUDGET_MS = 15_000;
 /** How long the chat gets to settle having read every card it was shown; a card it is never given a turn for is not. */
 const READ_BUDGET_MS = 30_000;
 const PERMIT_POLL_MS = 50;
@@ -154,9 +159,11 @@ test.skipIf(process.platform === "win32")(
 			settingsManager,
 			sessionManager: SessionManager.inMemory(directory),
 			resourceLoader,
+			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
 			tools: ["bash"],
 		});
-		const commandOutput = Promise.withResolvers<string>();
+		const completionCommandOutput = Promise.withResolvers<string>();
+		const commandsAfterCompletion = new Set<string>();
 		// The chat is torn down only once it was shown the run's completion and has read every card it was shown: a notice
 		// still queued for its next turn keeps the session from being disposed, by design.
 		const readEverything = Promise.withResolvers<void>();
@@ -164,7 +171,10 @@ test.skipIf(process.platform === "win32")(
 		let read = 0;
 		let completionShown = false;
 		parent.subscribe((event) => {
-			if (event.type === "tool_execution_end") commandOutput.resolve(JSON.stringify(event.result));
+			if (event.type === "tool_execution_start" && completionShown) commandsAfterCompletion.add(event.toolCallId);
+			if (event.type === "tool_execution_end" && commandsAfterCompletion.has(event.toolCallId)) {
+				completionCommandOutput.resolve(JSON.stringify(event.result));
+			}
 			if (event.type === "message_start" && event.message.role === "custom") {
 				if (event.message.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE) read++;
 				else if (READ_CARD_TYPES.has(event.message.customType)) shown.push(event.message.customType);
@@ -213,6 +223,8 @@ test.skipIf(process.platform === "win32")(
 					admission: { host: { minFreeMemoryBytes: Number.MAX_SAFE_INTEGER } },
 				},
 			);
+			const runOutcome = jobs.get(runId)?.outcome;
+			assert.ok(runOutcome, "the detached run is tracked until it settles");
 			const askedTheWorkflow = (async () => {
 				while (polling) {
 					const rows = await processPermits(permits);
@@ -222,13 +234,18 @@ test.skipIf(process.platform === "win32")(
 				return [];
 			})();
 			const outcome = await Promise.race([
-				commandOutput.promise.then((output) => ({ kind: "ran" as const, output })),
+				completionCommandOutput.promise.then((output) => ({ kind: "ran" as const, output })),
 				askedTheWorkflow.then((rows) => ({ kind: "asked the workflow" as const, rows })),
 				new Promise<{ kind: "stuck" }>((resolve) =>
 					setTimeout(() => resolve({ kind: "stuck" }), WOKEN_COMMAND_BUDGET_MS),
 				),
 			]);
 
+			const runSettled = await Promise.race([
+				runOutcome.then(() => true),
+				new Promise<false>((resolve) => setTimeout(() => resolve(false), RUN_SETTLED_BUDGET_MS)),
+			]);
+			assert.ok(runSettled, "the run settles once the chat was shown its completion");
 			assert.equal(backend.getWorkflow(runId)?.status, "completed");
 			assert.deepEqual(
 				outcome.kind === "ran" ? { kind: outcome.kind, ran: outcome.output.includes(ECHOED) } : outcome,
@@ -242,6 +259,11 @@ test.skipIf(process.platform === "win32")(
 			assert.ok(
 				readAll,
 				`the chat settles having read every card it was shown; shown ${shown.join(", ")}, read ${read}, run completion shown ${completionShown}`,
+			);
+			assert.deepEqual(
+				await processPermits(permits),
+				[],
+				"no command of any turn a notice woke asked the workflow for a process permit",
 			);
 		} finally {
 			polling = false;

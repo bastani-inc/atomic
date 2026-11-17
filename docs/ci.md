@@ -5,7 +5,7 @@ Atomic publishes `@bastani/atomic` from `packages/coding-agent`, `@bastani/atomi
 ## Workflow overview
 
 ```text
-Pull request / selected branch push
+Pull request ready for review / selected branch push (a draft runs no work job)
 └─ test.yml (six concurrent work jobs + one result gate)
    ├─ unit-tests (Linux, Windows; five shards each): build package -> one unit shard
    ├─ integration-tests (Linux, Windows; four shards each): build package -> one integration shard
@@ -14,6 +14,10 @@ Pull request / selected branch push
    ├─ release-archive (Linux, Windows): build package -> binaries -> smoke
    ├─ static-checks (Linux): typecheck, docs, installer container smoke, contracts
    └─ test (3 legs): result gate carrying the required contexts
+
+Pull request closed (merged or not)
+└─ cancel-closed-pr-runs.yml
+   └─ cancel: cancel the pull request's queued and running test.yml runs
 
 Release tag push (`0.9.10` or `0.9.10-alpha.1`)
 └─ publish.yml
@@ -90,6 +94,7 @@ Validate workflow changes with YAML parsing, actionlint, maintainer review, and 
 | `test.yml` unit-tests, integration-tests and agent-suite (Linux legs); storage-conformance | `blacksmith-4vcpu-ubuntu-2404` | `namespace-profile-atomic-ci-linux-amd64-8x16` | 8 vCPU, 16 GB (upsized; see [Sizing](#sizing)) |
 | `test.yml` unit-tests, integration-tests and agent-suite (Windows legs) | `blacksmith-4vcpu-windows-2025` | `namespace-profile-atomic-ci-windows-amd64-8x16` | 8 vCPU, 16 GB (upsized; see [Sizing](#sizing)) |
 | `test.yml` release-archive (Linux leg); `static-checks`; `test` result gate | `blacksmith-4vcpu-ubuntu-2404` | `namespace-profile-atomic-ci-linux-amd64-4x16` | 4 vCPU, 16 GB |
+| `cancel-closed-pr-runs.yml` cancel | (new) | `namespace-profile-atomic-ci-linux-amd64-4x16` | 4 vCPU, 16 GB |
 | `test.yml` release-archive (Windows leg) | `blacksmith-4vcpu-windows-2025` | `namespace-profile-atomic-ci-windows-amd64-4x16` | 4 vCPU, 16 GB |
 | `codeql.yml` analyze | `blacksmith-4vcpu-ubuntu-2404` | `namespace-profile-atomic-ci-linux-amd64-4x16` | 4 vCPU, 16 GB |
 | `publish.yml` integrity, linux-binary-smoke, build, stage-github-release, publish-github-release; native `linux-x64-gnu`, `linux-x64-musl`, `win32-x64-msvc` and `win32-arm64-msvc` (cross-compiled); alpine x64 | `blacksmith-4vcpu-ubuntu-2404` | `nscloud-ubuntu-24.04-amd64-4x16` | 4 vCPU, 16 GB |
@@ -110,7 +115,7 @@ Validate workflow changes with YAML parsing, actionlint, maintainer review, and 
 | Profile tag | OS | Arch | Shape | Builder mode | Access Level | Created with | Jobs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `atomic-ci-linux-amd64-8x16` | Ubuntu 24.04 | amd64 | 8x16 | No remote builder | Restricted | `nsc` (below), then dashboard | `test.yml` unit-tests, integration-tests, agent-suite (Linux legs), storage-conformance |
-| `atomic-ci-linux-amd64-4x16` | Ubuntu 24.04 | amd64 | 4x16 | No remote builder | Restricted | `nsc` (below), then dashboard | `test.yml` release-archive (Linux leg), static-checks, `test` result gate; `codeql.yml` analyze |
+| `atomic-ci-linux-amd64-4x16` | Ubuntu 24.04 | amd64 | 4x16 | No remote builder | Restricted | `nsc` (below), then dashboard | `test.yml` release-archive (Linux leg), static-checks, `test` result gate; `codeql.yml` analyze; `cancel-closed-pr-runs.yml` cancel |
 | `atomic-ci-windows-amd64-8x16` | Windows Server 2022 | amd64 | 8x16 | No remote builder | Restricted | Dashboard only | `test.yml` unit-tests, integration-tests, agent-suite (Windows legs) |
 | `atomic-ci-windows-amd64-4x16` | Windows Server 2022 | amd64 | 4x16 | No remote builder | Restricted | Dashboard only | `test.yml` release-archive (Windows leg) |
 
@@ -270,8 +275,9 @@ These are recorded here and deliberately not performed by the migration:
 
 ## Tests (`test.yml`)
 
-The workflow runs on pushes to `main` and every pull request. Release branches
-reach CI through their PRs, without duplicate push runs.
+The workflow runs on pushes to `main` and on pull requests when they open, get a new push, reopen, are marked ready
+for review, or go back to draft. Release branches reach CI through their PRs, without duplicate push runs. A draft pull request runs no work
+job; see [Draft pull requests](#draft-pull-requests).
 
 Runs share a `concurrency:` group per pull request (`pr-<number>`) and one per pushed ref (`refs/heads/main`), using
 GitHub's documented [concurrency groups](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency):
@@ -291,6 +297,55 @@ serial dependencies between suites. The unit, integration and agent suites are s
 by file across five, five and three jobs on Linux and seven, five and five on Windows
 (see [Sharded suites](#sharded-suites)); no test is removed.
 
+
+### Draft pull requests
+
+A draft pull request runs none of the work jobs. Each work job has `if: ${{ !github.event.pull_request.draft }}`, so a
+push to a draft finishes at once and holds no runner. The Windows legs are the scarce ones: each full run needs eighteen
+Windows jobs, and on a busy day hundreds of them queued behind work-in-progress pushes that nobody was going to merge.
+
+A draft run never reports a passing `test (all platforms)`. GitHub counts a skipped job as a successful check, so
+skipping the result gate under its required name would let a draft run mark its head commit as passed. The gate's name
+is therefore an expression that yields `test (all platforms)` only outside a draft. GitHub doesn't evaluate a skipped
+job's `name`, so in a draft the skipped gate appears under the expression's text (as do the skipped matrix jobs, under
+their templates), and the draft run reports no `test (all platforms)` context at all. A commit that never had a full run
+therefore shows the required check as expected, and the pull request stays blocked. If GitHub ever evaluated the name
+of a skipped job, the draft branch, `test (draft, runs when marked ready)`, still differs from the required name. Do
+not replace the expression with a plain `test (all platforms)` while the gate skips itself in drafts.
+
+A result from an earlier full run stays on its commit. If a ready pull request whose full run passed is converted back
+to draft without a new push, its head commit keeps that passing `test (all platforms)`. What keeps the draft from being
+merged then is GitHub's own rule that a draft pull request can't be merged, not this workflow.
+
+Marking the pull request ready for review (`gh pr ready <number>`) starts a full run on its head commit, and the gate
+reports `test (all platforms)` as usual. Converting a ready pull request back to draft (`converted_to_draft`) starts a
+draft run, which cancels a full run still in progress through the pull request's concurrency group; the cancelled
+run's gate fails closed.
+
+Open a pull request as a draft while it is still changing (`gh pr create --draft`) and mark it ready once it is done.
+
+### Runs of a closed pull request
+
+`cancel-closed-pr-runs.yml` runs when a pull request closes, merged or not, and cancels its `test.yml` runs that are
+still queued or running. A closed pull request's run can no longer gate anything, and before this workflow such runs
+stayed queued for hours, holding Windows capacity that open pull requests were waiting for.
+
+- It triggers on `pull_request_target`, not `pull_request`, so it runs the copy of the workflow committed on the base
+  branch, with a token that can cancel runs of fork pull requests too, and it also runs for a pull request that closed
+  with merge conflicts, which gets no `pull_request` run. It never checks out or runs pull-request code; it reads only
+  the event payload.
+- Its job has `actions: write` and `pull-requests: read`, nothing else. It lists `test.yml` runs with event
+  `pull_request` and the pull request's head branch in each unfinished status, keeps those whose head repository and
+  branch match the pull request, and cancels them. A run's `pull_requests` field lists only open pull requests, so a run
+  that still names another open pull request from the same branch is left alone. A run that finished in the meantime is
+  skipped.
+- It first reads the pull request again and does nothing if it is open by then: a pull request closed and reopened
+  before the job ran keeps the run its reopening started. It also cancels only runs created no later than the close,
+  so a run started by a reopening that lands while the job is working is left alone too.
+- The `push` run that a merge starts on `main` is never touched.
+- It runs on the `atomic-ci-linux-amd64-4x16` profile with its own cache tag, `bastani-inc.atomic.ci.run-cleanup.linux-amd64`.
+  A `pull_request_target` run carries the base branch's ref, so the profile's main-only cache rule lets it commit that
+  volume; the job writes nothing to it, and the separate tag keeps it away from every other job's cache.
 
 ### Why steps are grouped this way
 
@@ -338,7 +393,11 @@ The Windows agent suite needed `resume-session.test.ts` (344 s on Windows, 26 s 
 worktrees, which Windows runs about ten times slower) split by topic into `resume-session.test.ts`,
 `resume-session-setup.test.ts` and `resume-session-other-checkouts.test.ts`, with their fixture in
 `packages/coding-agent/test/helpers/resume-session-fixture.ts`. A further shard does not help a job whose slowest file
-already sets its floor; split that file instead.
+already sets its floor; split that file instead. The two files that bound the table's Windows rows are split the same
+way: `sdk-builtin-host-parity-host-routing.test.ts` into `-prompt-nodes`, `-stage-questionnaire`, `-across-hosts` and
+`-children` (about 114, 87, 83 and 40 s of cases on Windows), and `worktree-pool-claim.test.ts` into itself,
+`-candidates` and `-edges` (about 81, 71 and 77 s), with their fixture in
+`packages/coding-agent/test/helpers/worktree-pool-claim-fixture.ts`.
 
 A whole-suite job's wall time was set by its longest files and by its total. Pooled-worker integration files ran for four to eight minutes each, and the unit suite alone took 7–10 minutes on one runner. Sharding spreads each suite over several 8-vCPU runners, and long files are split so that none outlasts its shard's share.
 
@@ -372,6 +431,7 @@ The gate exists to fail closed:
 - Moving work into new jobs without a gate would silently un-protect every step that left `test`. The contexts would still exist and still go green.
 - `if: always()` is mandatory. A job whose `needs` failed is *skipped*, and GitHub counts a skipped required check as satisfied, which would turn a red suite green.
 - The gate fails on `failure`, `cancelled`, and `skipped`. Because `needs.<job>.result` collapses a matrix to one value, the gate asserts every platform's work jobs.
+- In a draft pull request the gate is skipped under another name, so the required context is never reported rather than reported as skipped; see [Draft pull requests](#draft-pull-requests).
 
 The work jobs are named by platform, for example `unit-tests (linux-x64)` and `unit-tests (windows-x64)`, and integration jobs also by shard, for example `integration-tests (linux-x64, 2/4)`. Their `runner` matrix key holds the Namespace runner profile label. No ruleset or contract depends on the work-job names. Because the gate needs `integration-tests` as a whole, any failed, cancelled or skipped shard fails it.
 
@@ -856,13 +916,14 @@ After the GitHub Release is public, `register-published-version` requests a GitH
 
 ## Permissions and time limits
 
-Repository-wide workflow permissions are read-only. Only draft staging and undrafting receive `contents: write`. npm publication and published-version registration receive `id-token: write`; neither receives repository write permission. Registration has no GitHub environment. Failure of registration does not republish npm packages or mutate the GitHub Release. Every job has an explicit timeout.
+Repository-wide workflow permissions are read-only. Only draft staging and undrafting receive `contents: write`, and only `cancel-closed-pr-runs.yml` receives `actions: write`, to cancel runs. npm publication and published-version registration receive `id-token: write`; neither receives repository write permission. Registration has no GitHub environment. Failure of registration does not republish npm packages or mutate the GitHub Release. Every job has an explicit timeout.
 
 ## Workflow files
 
 | File | Trigger | Purpose |
 | --- | --- | --- |
-| `.github/workflows/test.yml` | pushes to `main`; every pull request | workspace tests and cross-platform release smoke |
+| `.github/workflows/test.yml` | pushes to `main`; pull requests opened, pushed, reopened, marked ready or converted to draft (work jobs skip in drafts) | workspace tests and cross-platform release smoke |
+| `.github/workflows/cancel-closed-pr-runs.yml` | a pull request closing, merged or not (`pull_request_target`) | cancel that pull request's queued and running `test.yml` runs |
 | `.github/workflows/publish.yml` | release tag push; manual recovery dispatch | verify, build, stage draft, publish npm, undraft, register the published version |
 | `.github/workflows/warm-toolchain-cache.yml` | pushes to `main`; manual dispatch on `main` | persist verified Zig tarballs and commit the Linux/Windows npm download caches and the MSVC CRT/Windows SDK cache to their Namespace release cache volumes, from `main` only |
 
