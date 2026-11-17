@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { PerformanceObserver } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, it } from "vitest";
+import { afterEach, beforeEach, describe, it, vi } from "vitest";
 import type { WorkflowRunDetail } from "../src/core/extensions/workflow-run-control.js";
 import type { SessionEntry } from "../src/core/session-manager-types.js";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "../src/core/storage/database.js";
@@ -342,6 +342,38 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			assert.equal(raw.split("\n").slice(1).join("\n"), "entry-1001 body");
 		} finally {
 			await close();
+		}
+	});
+
+	it("expires an idle session discovery and closes its iterator without another history call (#5250)", async () => {
+		const store = new MemorySessionStore();
+		let closed = 0;
+		await store.create(header("first"), [message("e1", "user", "first", BASE)]);
+		await store.create(header("second"), [message("e2", "user", "second", BASE)]);
+		const tracked = new Proxy(store, {
+			get(target, key) {
+				if (key === "list")
+					return async function* (query: Parameters<SessionStore["list"]>[0]) {
+						try {
+							yield* target.list(query);
+						} finally {
+							closed++;
+						}
+					};
+				const value = Reflect.get(target, key, target);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const { router } = historyOver(tracked, { rows: 1 });
+			assert.match(await router.read!("history://sessions"), /continue with history:\/\/sessions\?cursor=0\.1/);
+			assert.equal(closed, 0);
+			await vi.advanceTimersByTimeAsync(60_001);
+			assert.equal(closed, 1, "expiry closes the abandoned listing even when history is never called again");
+		} finally {
+			vi.useRealTimers();
+			await store.close();
 		}
 	});
 

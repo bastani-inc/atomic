@@ -104,6 +104,7 @@ const MAX_LIMIT = 200;
 const LABEL_LIMIT = 120;
 const WHOLE_SESSION_ENTRY_LIMIT = 2_000;
 const DISCOVERY_TTL_MS = 60_000;
+const MAX_PARKED_DISCOVERIES = 16;
 const QUERY_KEYS: Readonly<Record<"sessions" | "workflows" | "root", readonly string[]>> = {
 	sessions: ["limit", "offset", "project", "cursor", "session"],
 	workflows: ["limit", "offset", "cursor"],
@@ -130,9 +131,16 @@ interface HistoryTarget {
 
 interface ParkedDiscovery {
 	readonly iterator: AsyncIterator<SessionSummary>;
+	readonly controller: AbortController;
 	readonly items: { readonly summary: SessionSummary; readonly modifiedMs: number }[];
 	pending?: Promise<IteratorResult<SessionSummary>>;
-	updatedAt: number;
+	timer?: ReturnType<typeof setTimeout>;
+}
+
+function closeDiscovery(discovery: ParkedDiscovery): void {
+	clearTimeout(discovery.timer);
+	discovery.controller.abort();
+	void (async () => discovery.iterator.return?.())().catch(() => {});
 }
 
 const parkedDiscoveries = new WeakMap<SessionStore, Map<string, ParkedDiscovery>>();
@@ -1101,31 +1109,45 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			byScope = new Map<string, ParkedDiscovery>();
 			parkedDiscoveries.set(store, byScope);
 		}
-		const now = Date.now();
-		for (const [key, entry] of byScope) {
-			if (now - entry.updatedAt > DISCOVERY_TTL_MS) {
-				void entry.iterator.return?.();
-				byScope.delete(key);
-			}
-		}
 		const isContinuation = target.cursor !== undefined && target.cursor.first === 0;
 		let parked = isContinuation ? byScope.get(scopeKey) : undefined;
-		if (!parked) {
-			const existing = byScope.get(scopeKey);
-			if (existing) {
-				void existing.iterator.return?.();
-				byScope.delete(scopeKey);
-			}
-			const iterable = store.list({ ...scope, withoutSearchText: true });
-			parked = { iterator: iterable[Symbol.asyncIterator](), items: [], updatedAt: now };
+		const previous = byScope.get(scopeKey);
+		if (previous) {
+			clearTimeout(previous.timer);
+			byScope.delete(scopeKey);
+			if (previous !== parked) closeDiscovery(previous);
 		}
+		if (!parked) {
+			const controller = new AbortController();
+			const iterable = store.list({ ...scope, withoutSearchText: true, signal: controller.signal });
+			parked = { iterator: iterable[Symbol.asyncIterator](), controller, items: [] };
+		}
+		const active = parked;
+		const park = () => {
+			const replaced = byScope.get(scopeKey);
+			if (replaced && replaced !== active) closeDiscovery(replaced);
+			byScope.delete(scopeKey);
+			while (byScope.size >= MAX_PARKED_DISCOVERIES) {
+				const oldestKey = byScope.keys().next().value;
+				if (oldestKey === undefined) break;
+				const oldest = byScope.get(oldestKey)!;
+				byScope.delete(oldestKey);
+				closeDiscovery(oldest);
+			}
+			active.timer = setTimeout(() => {
+				if (byScope.get(scopeKey) !== active) return;
+				byScope.delete(scopeKey);
+				closeDiscovery(active);
+			}, DISCOVERY_TTL_MS);
+			active.timer.unref?.();
+			byScope.set(scopeKey, active);
+		};
 		let progressed = false;
 		try {
 			for (;;) {
 				const reason = budget.spent();
 				if (reason && progressed) {
-					parked.updatedAt = Date.now();
-					byScope.set(scopeKey, parked);
+					park();
 					return { stopped: { reason, scanned: parked.items.length } };
 				}
 				parked.pending ??= parked.iterator.next();
@@ -1141,15 +1163,12 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			}
 		} catch (error) {
 			if (isHistoryDeadlineError(error)) {
-				parked.updatedAt = Date.now();
-				byScope.set(scopeKey, parked);
+				park();
 				return { stopped: { reason: "time", scanned: parked.items.length } };
 			}
-			void parked.iterator.return?.();
-			byScope.delete(scopeKey);
+			closeDiscovery(parked);
 			throw error;
 		}
-		byScope.delete(scopeKey);
 		await budget.pace();
 		parked.items.sort(
 			(a, b) => b.modifiedMs - a.modifiedMs || b.summary.createdAt.localeCompare(a.summary.createdAt),
