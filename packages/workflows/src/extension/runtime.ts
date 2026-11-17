@@ -112,7 +112,7 @@ export interface ExtensionRuntimeOpts {
 	 * scan at launch (discovery filePath, else the builtin source probe).
 	 * When absent, launch skips the scan and the run simply has no set.
 	 */
-	resolvePossibleStageEntry?: (normalizedName: string) => string | undefined;
+	resolvePossibleStageEntry?: (normalizedName: string) => Promise<string | undefined>;
 	/** The owning session's stage-name predictor, forwarded to dispatch. */
 	stagePredictor?: StagePredictor;
 	/** Seed lifecycle state before historical completed snapshots are restored. */
