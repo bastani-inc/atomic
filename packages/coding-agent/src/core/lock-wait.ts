@@ -1,5 +1,5 @@
 import type * as nodeFs from "node:fs";
-import { guardLockRemoval, lockHolder } from "./lock-takeover.ts";
+import { guardLockRemoval, guardLockRemovalSync, lockHolder, lockHolderAsync } from "./lock-takeover.ts";
 
 export { lockHolder };
 
@@ -36,6 +36,11 @@ export interface LockWait {
 	readonly contended: (error: unknown, waitedMs: number) => Error;
 }
 
+/** {@link LockWait} for {@link waitForLock}, whose takeover runs without blocking the event loop. */
+export interface AsyncLockWait extends Omit<LockWait, "takeOver"> {
+	readonly takeOver?: () => Promise<boolean>;
+}
+
 /**
  * The wait for one lock. Contention alone never fails it: the holder's allowance starts over whenever the lock changes
  * hands, so a waiter fails only when one holder keeps the lock too long, or after the overall contention bound.
@@ -45,21 +50,22 @@ class LockWaiter {
 	private holder: string | undefined;
 	private holderDeadline: number;
 	private pollMs: number;
-	private readonly wait: LockWait;
+	private readonly wait: Omit<LockWait, "takeOver">;
 
-	constructor(wait: LockWait) {
+	/** `holder` is the lock directory in place before the first attempt. */
+	constructor(wait: Omit<LockWait, "takeOver">, holder: string | undefined) {
 		this.wait = wait;
-		this.holder = lockHolder(wait.lockPath);
+		this.holder = holder;
 		this.holderDeadline = this.startedAt + wait.holderWaitMs;
 		this.pollMs = wait.pollMinMs;
 	}
 
-	/** How long to sleep before the next attempt after `error`; throws when the wait is over. */
-	next(error: unknown): number {
-		if (!this.wait.retryable(error)) throw error;
-		if (this.wait.takeOver?.()) return 0;
+	/**
+	 * How long to sleep before the next attempt after `error`, now that `holder` is the lock directory in place; throws
+	 * when the wait is over.
+	 */
+	next(error: unknown, holder: string | undefined): number {
 		const now = Date.now();
-		const holder = lockHolder(this.wait.lockPath);
 		if (holder !== this.holder) {
 			this.holder = holder;
 			this.holderDeadline = now + this.wait.holderWaitMs;
@@ -104,14 +110,16 @@ export type LockFileSystem = typeof nodeFs;
  * `acquire` passes the file system it is given to proper-lockfile as its `fs` option.
  */
 export function waitForLockSync<T>(acquire: (fs: LockFileSystem) => T, wait: LockWait): T {
-	const waiter = new LockWaiter(wait);
-	const guard = guardLockRemoval(wait.lockPath, wait.staleMs);
+	const waiter = new LockWaiter(wait, lockHolder(wait.lockPath));
+	const guard = guardLockRemovalSync(wait.lockPath, wait.staleMs);
 	try {
 		for (;;) {
 			try {
 				return acquire(guard.fs);
 			} catch (error) {
-				Atomics.wait(sleeper, 0, 0, waiter.next(error));
+				if (!wait.retryable(error)) throw error;
+				if (wait.takeOver?.()) continue;
+				Atomics.wait(sleeper, 0, 0, waiter.next(error, lockHolder(wait.lockPath)));
 			}
 		}
 	} finally {
@@ -119,13 +127,16 @@ export function waitForLockSync<T>(acquire: (fs: LockFileSystem) => T, wait: Loc
 	}
 }
 
-/** {@link waitForLockSync} for an asynchronous `acquire`; `signal` stops the wait. */
+/**
+ * {@link waitForLockSync} for an asynchronous `acquire`, which never blocks the event loop: the takeover, the holder
+ * checks and the waits between attempts are asynchronous. `signal` stops the wait.
+ */
 export async function waitForLock<T>(
 	acquire: (fs: LockFileSystem) => Promise<T>,
-	wait: LockWait,
+	wait: AsyncLockWait,
 	signal?: AbortSignal,
 ): Promise<T> {
-	const waiter = new LockWaiter(wait);
+	const waiter = new LockWaiter(wait, await lockHolderAsync(wait.lockPath));
 	const guard = guardLockRemoval(wait.lockPath, wait.staleMs);
 	try {
 		for (;;) {
@@ -133,10 +144,37 @@ export async function waitForLock<T>(
 			try {
 				return await acquire(guard.fs);
 			} catch (error) {
-				await delay(waiter.next(error), signal);
+				if (!wait.retryable(error)) throw error;
+				if (await wait.takeOver?.()) continue;
+				await delay(waiter.next(error, await lockHolderAsync(wait.lockPath)), signal);
 			}
 		}
 	} finally {
 		guard.done();
+	}
+}
+
+/** The last turn queued for each lock in this process, by the path of the file it guards. */
+const lockTurns = new Map<string, Promise<void>>();
+
+/**
+ * Runs `fn` once every earlier turn of this process for the lock of `path` has ended. Synchronous saves never overlapped
+ * in one process; queued this way, asynchronous ones take the lock one after another too, in the order they were made,
+ * rather than contending for it as other processes do and failing after a holder wait meant for another process.
+ */
+export async function inLockTurn<T>(path: string, fn: () => Promise<T>): Promise<T> {
+	const previous = lockTurns.get(path) ?? Promise.resolve();
+	let end!: () => void;
+	const ended = new Promise<void>((resolve) => {
+		end = resolve;
+	});
+	const turn = previous.then(() => ended);
+	lockTurns.set(path, turn);
+	await previous;
+	try {
+		return await fn();
+	} finally {
+		end();
+		if (lockTurns.get(path) === turn) lockTurns.delete(path);
 	}
 }

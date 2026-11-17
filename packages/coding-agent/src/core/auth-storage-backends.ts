@@ -290,7 +290,12 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 	}
 
 	/** How a save waits for the lock of the resolved auth file `path`; `retryEperm` decides whether a Windows EPERM is retried. */
-	private authFileLockWait(path: string, holderWaitMs: number, staleMs: number, retryEperm: () => boolean): LockWait {
+	private authFileLockWait(
+		path: string,
+		holderWaitMs: number,
+		staleMs: number,
+		retryEperm: () => boolean,
+	): Omit<LockWait, "takeOver"> {
 		return {
 			lockPath: `${path}.lock`,
 			staleMs,
