@@ -20,6 +20,7 @@ import {
 	WorkflowRunOwnershipError,
 	type WorkflowRunSummary,
 } from "../src/index.js";
+import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.js";
 
 const REAL_SDK_WORKFLOW_RUN_CONTROL_TIMEOUT_MS = 180_000;
 const UNKNOWN_RUN_PREFIX_SETTLE_TIMEOUT_MS = 15_000;
@@ -60,7 +61,6 @@ while (!existsSync(${gate})) await delay(25);`;
 import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
-import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.js";
 export default workflow({ name: ${JSON.stringify(workflowName(scenario))}, description: "Holds until released", inputs: {}, outputs: {}, run: async (ctx) => {
 await ctx.tool("prepare", {}, async () => "ready");
 ${hold}

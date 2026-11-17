@@ -13,6 +13,7 @@ import type { ResourceLoader } from "../src/core/resource-loader-types.js";
 import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.js";
 
 const REAL_SDK_WORKFLOW_RELOAD_TIMEOUT_MS = 120_000;
 
@@ -57,7 +58,6 @@ function writeWorkflow(path: string, name: string, resultPath?: string): void {
 		path,
 		`import { workflow } from "@bastani/atomic/workflows";
 import { writeFile } from "node:fs/promises";
-import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.js";
 export default workflow({ name: ${JSON.stringify(name)}, description: "SDK package workflow", inputs: {}, outputs: {}, run: async (ctx) => {
 await ctx.tool("write-fixture-result", {}, async () => {
 ${resultPath ? `await writeFile(${JSON.stringify(resultPath)}, "tracked SDK workflow result");` : ""}
