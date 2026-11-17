@@ -53,7 +53,6 @@ import {
 import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.js";
 import { resumeAwaitingSubagentChildren } from "../runs/foreground/subagent-run-control.js";
 import { bindSubagentTaskResumer } from "../runs/foreground/subagent-task-resumer.ts";
-import { getArtifactsDir } from "../shared/artifacts.js";
 import { formatDuration, shortenPath } from "../shared/formatters.js";
 import { resolveCurrentSessionId } from "../shared/session-identity.js";
 import { subagentSessionRoot } from "../shared/session-root.js";
@@ -310,11 +309,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			pi,
 			state,
 			config,
-			// Resolved on use: choosing it creates and verifies a private directory,
-			// which registration (every session start) should not pay for.
-			get tempArtifactsDir() {
-				return getArtifactsDir(null);
-			},
 			getSubagentSessionRoot: subagentSessionRoot,
 			expandTilde,
 			discoverAgents,

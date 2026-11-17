@@ -12,7 +12,8 @@ import { APP_NAME } from "../config.js";
 import { TerminalTextSanitizer } from "../utils/terminal-text.ts";
 import type { BashOperations, BashOutputChannel } from "./tools/bash.js";
 import { PersistedOutputFile } from "./tools/persisted-output-file.ts";
-import { ensureSessionTempDir } from "./tools/session-temp-dir.ts";
+import { ensureSessionTempDirAsync } from "./tools/session-temp-dir.ts";
+import { MAX_PERSISTED_OUTPUT_BYTES } from "./tools/tool-limits.js";
 import { DEFAULT_MAX_BYTES, truncateTail } from "./tools/truncate.ts";
 
 // ============================================================================
@@ -70,30 +71,49 @@ export async function executeBashWithOperations(
 
 	let tempFilePath: string | undefined;
 	let tempFile: PersistedOutputFile | undefined;
+	let tempFileOpening: Promise<void> | undefined;
+	let heldForTempFile: string[] = [];
+	let heldForTempFileLength = 0;
 	let totalBytes = 0;
 
 	let tempFileUnavailable = false;
 
-	const ensureTempFile = () => {
-		if (tempFilePath || tempFileUnavailable) {
+	const holdForTempFile = (text: string) => {
+		if (heldForTempFileLength > MAX_PERSISTED_OUTPUT_BYTES) {
 			return;
 		}
+		heldForTempFile.push(text);
+		heldForTempFileLength += text.length;
+	};
+
+	const openTempFile = async () => {
 		try {
-			const dir = ensureSessionTempDir(options?.sessionTempDir);
+			const dir = await ensureSessionTempDirAsync(options?.sessionTempDir);
 			const id = randomBytes(8).toString("hex");
-			tempFilePath = join(dir, `${APP_NAME}-bash-${id}.log`);
-			tempFile = new PersistedOutputFile(tempFilePath);
+			const path = join(dir, `${APP_NAME}-bash-${id}.log`);
+			tempFile = new PersistedOutputFile(path);
+			tempFilePath = path;
 		} catch {
 			// The session temp directory was refused (see ensureTempDir). Run without
 			// an overflow log rather than advertising a path outside the owned tree.
 			tempFileUnavailable = true;
 			tempFilePath = undefined;
 			tempFile = undefined;
+		}
+		for (const chunk of heldForTempFile) {
+			tempFile?.write(chunk);
+		}
+		heldForTempFile = [];
+	};
+
+	const ensureTempFile = () => {
+		if (tempFileOpening || tempFileUnavailable) {
 			return;
 		}
 		for (const chunk of outputChunks) {
-			tempFile.write(chunk);
+			holdForTempFile(chunk);
 		}
+		tempFileOpening = openTempFile();
 	};
 
 	/**
@@ -102,6 +122,7 @@ export async function executeBashWithOperations(
 	 * `Full output:` contract never points at a file that is not there.
 	 */
 	const finishTempFile = async () => {
+		await tempFileOpening;
 		const file = tempFile;
 		if (!file) {
 			return;
@@ -134,6 +155,8 @@ export async function executeBashWithOperations(
 
 		if (tempFile) {
 			tempFile.write(text);
+		} else if (tempFileOpening && !tempFileUnavailable) {
+			holdForTempFile(text);
 		}
 
 		// Keep rolling buffer
