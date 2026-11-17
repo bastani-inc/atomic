@@ -238,8 +238,12 @@ const currentReadOwner = new AsyncLocalStorage<AbortSignal>();
 const ownedReads = new WeakMap<AbortSignal, Set<Promise<WindowsDirectorySecurity | undefined>>>();
 const closingReads = new Set<SharedSecurityRead>();
 
-export function withWindowsDirectorySecurityOwner<T>(signal: AbortSignal, operation: () => T): T {
-	return currentReadOwner.run(signal, operation);
+export function withWindowsDirectorySecurityOwner<T>(
+	signal: AbortSignal,
+	operation: () => T,
+	options: { inherit?: boolean } = {},
+): T {
+	return currentReadOwner.run(options.inherit ? (currentReadOwner.getStore() ?? signal) : signal, operation);
 }
 
 export async function drainWindowsDirectorySecurityReads(signal: AbortSignal): Promise<void> {

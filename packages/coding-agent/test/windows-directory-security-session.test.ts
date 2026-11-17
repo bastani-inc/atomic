@@ -92,7 +92,7 @@ function pendingChild() {
 	});
 }
 
-test.each(["session", "runtime"] as const)(
+test.each(["session", "runtime", "nested session", "nested runtime"] as const)(
 	"host disposal cancels an owned %s ACL fallback and waits for its child to close (#5324)",
 	async (owner) => {
 		const child = pendingChild();
@@ -100,8 +100,12 @@ test.each(["session", "runtime"] as const)(
 		const { harness, runtime } = await host();
 		const path = directory();
 		try {
-			await trackSessionWork(owner === "session" ? harness.session : runtime, async () => {
-				verifyWindowsDirectorySecurity(path);
+			await trackSessionWork(owner.endsWith("session") ? harness.session : runtime, async () => {
+				const start = async () => {
+					verifyWindowsDirectorySecurity(path);
+				};
+				if (owner.startsWith("nested")) await trackSessionWork({}, start);
+				else await start();
 			});
 			await setImmediate();
 			assert.ok(spawn.mock.calls.length > 0);

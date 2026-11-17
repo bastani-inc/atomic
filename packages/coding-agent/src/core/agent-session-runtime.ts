@@ -41,6 +41,7 @@ import {
 	ownedSessionManagerStores,
 	ownedSessionStores,
 	registerSessionRetirement,
+	registerSessionWorkOwner,
 	sessionLifetime,
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
@@ -264,6 +265,7 @@ export class AgentSessionRuntime {
 		_modelFallbackReason?: ModelFallbackReason,
 		interactive = false,
 	) {
+		registerSessionWorkOwner(this);
 		this.interactive = interactive;
 		this._session = _session;
 		this.retainSessionStore(_session);

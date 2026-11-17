@@ -64,7 +64,7 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRuntime } from "./model-runtime.js";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { currentWorktreeRestoreNotices, currentWorktreeRootMappings } from "./resume/path-mapping.ts";
-import { abortSessionWork, sessionLifetime } from "./session-lifecycle-work.ts";
+import { abortSessionWork, registerSessionWorkOwner, sessionLifetime } from "./session-lifecycle-work.ts";
 import type { SessionManager } from "./session-manager.ts";
 import { SessionWorktreeSnapshotRecorder } from "./session-worktree-snapshots.ts";
 import type { SettingsManager } from "./settings-manager.ts";
@@ -333,6 +333,7 @@ class AgentSessionBase {
 	}
 
 	constructor(config: AgentSessionConfig) {
+		registerSessionWorkOwner(this);
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
 		this.settingsManager = config.settingsManager;
