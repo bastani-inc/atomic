@@ -4,12 +4,12 @@
 
 ### Changed
 
-- A background shell a subagent starts now belongs to that subagent. Its completion notice reaches only the subagent: while it runs, through its wake while it is released, and otherwise when it next runs. It is never sent to the chat or workflow stage that launched the subagent. The shell is listed in the subagent's own `/tasks`, not the launcher's, though it still runs in the launcher's task owner, so it outlives the subagent and Ctrl+X Ctrl+K still stops it ([#5338](https://github.com/bastani-inc/atomic/pull/5338))
-- Finished-task notices that arrive together, or while a chat or workflow stage is working, are joined into one message that starts one turn once the chat is idle, instead of one message and one turn each ([#5338](https://github.com/bastani-inc/atomic/pull/5338))
+- A background shell a subagent starts now belongs to that subagent. Its completion notice reaches only the subagent: while it runs, through its wake while it is released, and otherwise when it next runs. It is never sent to the chat or workflow stage that launched the subagent. The shell is listed in the subagent's own `/tasks`, not the launcher's, though it still runs in the launcher's task owner, so it outlives the subagent and Ctrl+X Ctrl+K still stops it ([#5342](https://github.com/bastani-inc/atomic/pull/5342))
+- Finished-task notices that arrive together, or while a chat or workflow stage is working, are joined into one message that starts one turn once the chat is idle, instead of one message and one turn each ([#5342](https://github.com/bastani-inc/atomic/pull/5342))
 
 ### Fixed
 
-- The main chat no longer receives the completion notices of shells it never started. A subagent's shell that finished after the subagent ended, was stopped or could not take the notice reported to the main chat, and so did a workflow stage's shell whose notice was still being written when the stage closed, each starting its own turn there. The main chat's `/tasks` also listed every subagent's shells ([#5338](https://github.com/bastani-inc/atomic/pull/5338))
+- The main chat no longer receives the completion notices of shells it never started. A subagent's shell that finished after the subagent ended, was stopped or could not take the notice reported to the main chat, and so did a workflow stage's shell whose notice was still being written when the stage closed, each starting its own turn there. The main chat's `/tasks` also listed every subagent's shells ([#5342](https://github.com/bastani-inc/atomic/pull/5342))
 
 - A fast foreground shell command no longer delivers a stray `Background shell completed` notice after its own result when the command exits before Atomic has finished starting it. The model was shown the command's result a second time, as a background shell's, in chats and workflow stages alike ([#5333](https://github.com/bastani-inc/atomic/pull/5333))
 
