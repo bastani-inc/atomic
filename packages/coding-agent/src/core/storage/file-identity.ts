@@ -1075,9 +1075,7 @@ function preferredTargetOwner(agentPath: string, parent: string, target: string)
 	if (parentOwner !== undefined && !sameDirectory(parentOwner, agentPath)) {
 		if (containsPath(canonicalPath(parentOwner), physical)) return parentOwner;
 		const decision = readStorageHomeDecision(storageHomeDecisionFile(parentOwner));
-		const ownerHome = decision?.defaultHome
-			? (defaultHomeForAgent(parentOwner, defaultHome) ?? parent)
-			: (decision?.home ?? parent);
+		const ownerHome = decision?.defaultHome ? parent : (decision?.home ?? parent);
 		if (
 			containsPath(canonicalPath(join(ownerHome, "workflows")), physical) ||
 			pathsEqual(canonicalPath(join(ownerHome, "storage.sqlite")), physical)

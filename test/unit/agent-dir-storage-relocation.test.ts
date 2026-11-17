@@ -102,44 +102,48 @@ test("default relative selections follow the current home when the agent directo
 	assert.equal(storagePathBaseDir("history.sqlite", currentAgent, settings), join(current, ".atomic"));
 });
 
-test("settling a shared default agent under another HOME cannot transfer the host's relative history to a custom profile (#5242)", async () => {
-	const host = join(root, "host-home");
-	const other = join(root, "other-home");
-	const atomic = join(host, ".atomic");
-	const agent = join(atomic, "agent");
-	const alias = join(other, ".atomic", "agent");
-	const custom = join(atomic, "custom");
-	const settings = { sessions: { storage: { path: "team.sqlite" } } };
-	mkdirSync(agent, { recursive: true });
-	mkdirSync(custom);
-	writeFileSync(join(agent, "settings.json"), JSON.stringify(settings));
-	const sessionId = "33333333-3333-4333-8333-333333333333";
-	const seeded = await resolveSessionStore(root, {
-		agentDir: agent,
-		sessionStore: { kind: "sqlite", path: join(atomic, "team.sqlite") },
-	});
-	await seeded.create({ id: sessionId, version: 4, createdAt: "2026-11-16T00:00:00.000Z", cwd: root }, []);
-	await seeded.close();
-	mkdirSync(join(other, ".atomic"), { recursive: true });
-	symlinkSync(agent, alias, "junction");
-	useHome(other);
-	assert.equal(defaultSessionDatabasePath(alias, settings), join(other, ".atomic", "workflows", "journal.sqlite"));
-	useHome(host);
-	assert.deepEqual(selectSessionStorage(root, { agentDir: custom, settings }), {
-		kind: "sqlite",
-		path: join(custom, "team.sqlite"),
-	});
-	assert.deepEqual(selectSessionStorage(root, { agentDir: agent, settings }), {
-		kind: "sqlite",
-		path: join(atomic, "team.sqlite"),
-	});
-	const restored = await resolveSessionStore(root, { agentDir: agent, settings });
-	try {
-		assert.equal((await restored.readHeader(sessionId))?.id, sessionId);
-	} finally {
-		await restored.close();
-	}
-});
+test.each(["host", "other"])(
+	"settling a shared default agent under another HOME cannot transfer the host's relative history to a custom profile using the %s HOME (#5242)",
+	async (activeHome) => {
+		const host = join(root, "host-home");
+		const other = join(root, "other-home");
+		const atomic = join(host, ".atomic");
+		const agent = join(atomic, "agent");
+		const alias = join(other, ".atomic", "agent");
+		const custom = join(atomic, "custom");
+		const settings = { sessions: { storage: { path: "team.sqlite" } } };
+		mkdirSync(agent, { recursive: true });
+		mkdirSync(custom);
+		writeFileSync(join(agent, "settings.json"), JSON.stringify(settings));
+		const sessionId = "33333333-3333-4333-8333-333333333333";
+		const seeded = await resolveSessionStore(root, {
+			agentDir: agent,
+			sessionStore: { kind: "sqlite", path: join(atomic, "team.sqlite") },
+		});
+		await seeded.create({ id: sessionId, version: 4, createdAt: "2026-11-16T00:00:00.000Z", cwd: root }, []);
+		await seeded.close();
+		mkdirSync(join(other, ".atomic"), { recursive: true });
+		symlinkSync(agent, alias, "junction");
+		useHome(other);
+		assert.equal(defaultSessionDatabasePath(alias, settings), join(other, ".atomic", "workflows", "journal.sqlite"));
+		useHome(activeHome === "host" ? host : other);
+		assert.deepEqual(selectSessionStorage(root, { agentDir: custom, settings }), {
+			kind: "sqlite",
+			path: join(custom, "team.sqlite"),
+		});
+		useHome(host);
+		assert.deepEqual(selectSessionStorage(root, { agentDir: agent, settings }), {
+			kind: "sqlite",
+			path: join(atomic, "team.sqlite"),
+		});
+		const restored = await resolveSessionStore(root, { agentDir: agent, settings });
+		try {
+			assert.equal((await restored.readHeader(sessionId))?.id, sessionId);
+		} finally {
+			await restored.close();
+		}
+	},
+);
 
 test.each(["owner-first", "sibling-first"])(
 	"moving an adopted parent keeps history and sibling isolation with %s resolution (#5242)",
