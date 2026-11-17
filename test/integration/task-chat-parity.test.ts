@@ -339,6 +339,8 @@ test("main lifecycle handler filters the full completion envelope before compone
 	const fixture = taskFixture();
 	const mode = {
 		session: harness.session,
+		sessionManager: harness.session.sessionManager,
+		getRegisteredToolDefinition: (toolName: string) => harness.session.getToolDefinition(toolName),
 		chatContainer: new Container(),
 		workingRunMeter: new WorkingRunMeter(),
 		toolOutputExpanded: false,
