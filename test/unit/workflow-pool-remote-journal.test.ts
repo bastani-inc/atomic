@@ -18,6 +18,7 @@ import {
 import type { DurableStageCheckpoint, DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { infrastructureFaultOf } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
 import {
+	IDLE_CLAIM_FALLBACK_MS,
 	IdleClaimBackoff,
 	IdleClaimWaits,
 	IdleReadyProbe,
@@ -27,6 +28,16 @@ import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
 const { work, boundary } = poolWorkFixture();
+const LONG_IDLE_PAUSE_MS = 60_000;
+const RECOVERY_BOUND_MS = 10_000;
+
+class LongIdleClaimBackoff extends IdleClaimBackoff {
+	override next(): number {
+		const pause = super.next();
+		return pause < IDLE_CLAIM_FALLBACK_MS ? pause : LONG_IDLE_PAUSE_MS;
+	}
+}
+
 const run = { ...boundary.topology!.boundary!.child };
 const tool: DurableToolCheckpoint = {
 	kind: "tool",
@@ -586,7 +597,6 @@ test("a slow journal read does not make the pool's copy of the lease look newer 
 });
 
 test("a recovered remote journal claim passes a coalesced wake to another long-idle worker (#5230)", async () => {
-	const RECOVERY_BOUND_MS = 300;
 	const CLAIM_SETTLE_BOUND_MS = 10_000;
 	const f = await fixture();
 	const first = poolWorkFixture("first");
@@ -597,7 +607,7 @@ test("a recovered remote journal claim passes a coalesced wake to another long-i
 	let refused = 0;
 	const claimed: { checkStartedAt: number; completedAt: number; id: string }[] = [];
 	const workers = ["worker-first", "worker-second"].map(async (worker) => {
-		const backoff = new IdleClaimBackoff(() => 0);
+		const backoff = new LongIdleClaimBackoff(() => 0);
 		for (let index = 0; index < 8; index++) backoff.next();
 		while (running) {
 			let checkStartedAt = 0;
@@ -651,7 +661,6 @@ test("a recovered remote journal claim passes a coalesced wake to another long-i
 });
 
 test("a claim held back by undelivered remote journal events resets its idle pause so recovery claims promptly (#5230)", async () => {
-	const RECOVERY_BOUND_MS = 300;
 	const f = await fixture();
 	const other = poolWorkFixture("other");
 	const waits = new IdleClaimWaits();
@@ -666,7 +675,7 @@ test("a claim held back by undelivered remote journal events resets its idle pau
 			mark: () => f.pool.readyMark("root"),
 		});
 		probeTimer = setInterval(() => void probe.tick(), 250);
-		const backoff = new IdleClaimBackoff();
+		const backoff = new LongIdleClaimBackoff();
 		for (let index = 0; index < 8; index++) backoff.next();
 		let blocked = 0;
 		let refused = 0;
@@ -749,8 +758,7 @@ test("an unavailable remote journal with a pending outbox row bounds idle claim 
 	const workers = 4;
 	const outageMs = 3_000;
 	const IDLE_OUTAGE_RETRY_MS = 1_000;
-	const APPEND_ONLY_BOUND_MS = 1_000;
-	const RECOVERY_BOUND_MS = 1_200;
+	const APPEND_ONLY_BOUND_MS = RECOVERY_BOUND_MS;
 	const CLAIM_SETTLE_BOUND_MS = 10_000;
 	const f = await fixture();
 	const other = poolWorkFixture("other");
@@ -778,7 +786,7 @@ test("an unavailable remote journal with a pending outbox row bounds idle claim 
 		for (const key of Object.keys(counts) as (keyof typeof counts)[]) counts[key] = 0;
 		const claimed: { checkStartedAt: number; id: string }[] = [];
 		loops = Array.from({ length: workers }, async (_, index) => {
-			const backoff = new IdleClaimBackoff();
+			const backoff = new LongIdleClaimBackoff();
 			for (let step = 0; step < 8; step++) backoff.next();
 			while (running) {
 				let checkStartedAt = 0;

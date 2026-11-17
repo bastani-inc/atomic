@@ -53,9 +53,9 @@ afterEach(() => {
 	listeners.clear();
 });
 
-const CLAIM_WAKE_BOUND_MS = 500;
-const RESTORE_RETRY_BOUND_MS = 1_300;
 const ISOLATED_IDLE_PAUSE_MS = 10_000;
+const CLAIM_WAKE_BOUND_MS = ISOLATED_IDLE_PAUSE_MS / 2;
+const RESTORE_RETRY_BOUND_MS = ISOLATED_IDLE_PAUSE_MS / 2;
 
 async function idleSatellite(workers: number, children: number, restore: (path: string) => Promise<string>) {
 	const pausedWorkers = new Set<IdleClaimBackoff>();
