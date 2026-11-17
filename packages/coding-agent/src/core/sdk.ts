@@ -11,6 +11,7 @@ import {
 import { getAtomicEnvValue } from "@bastani/atomic-ai/utils/provider-env";
 import { getAgentDir } from "../config.js";
 import { resolvePath } from "../utils/paths.ts";
+import { isPowerShellAvailableAsync } from "../utils/shell.ts";
 import { AgentSession } from "./agent-session.js";
 import type { AgentSessionInternalSurface } from "./agent-session-methods.ts";
 import { markRuntimeStreamFunction } from "./agent-session-models.ts";
@@ -859,11 +860,13 @@ async function constructAgentSession(
 				type: "child_session_usage",
 				usage,
 			});
+		const powerShellAvailable = await isPowerShellAvailableAsync();
 		session = new AgentSession({
 			agent,
 			sessionManager,
 			settingsManager,
 			cwd,
+			powerShellAvailable,
 			workflowJournal: options.journal ?? options.storage,
 			storageAgentDir: agentDir,
 			worktreeSnapshots:

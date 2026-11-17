@@ -425,6 +425,8 @@ export class CallGraphBuilder {
 	}> = [];
 	private readonly functionByDeclaration = new Map<string, number>();
 	private readonly initializerFunctions = new Map<string, number[]>();
+	/** Alias declarations being followed, so a cycle of renames ends. */
+	private readonly followingAliases = new Set<string>();
 	private readonly classes = new Map<string, ClassInfo>();
 	private readonly classByFieldsFunction = new Map<number, string>();
 	private readonly interfaces = new Map<string, InterfaceInfo>();
@@ -1462,6 +1464,8 @@ export class CallGraphBuilder {
 				if (constructed !== undefined && role !== "accessor") this.addConstruction(constructed, into);
 			}
 		}
+		if ((role === "new" || role === "call") && declaration.kind === SyntaxKind.VariableDeclaration)
+			this.collectAliasedTargets(key, declaration, role, into);
 		const parent = declaration.parent as Node | undefined;
 		const member = memberName(declaration);
 		if (declaration.kind === SyntaxKind.ClassDeclaration || declaration.kind === SyntaxKind.ClassExpression) {
@@ -1484,6 +1488,25 @@ export class CallGraphBuilder {
 			(parent.kind === SyntaxKind.ClassDeclaration || parent.kind === SyntaxKind.ClassExpression)
 		) {
 			this.addImplementations(declarationKey(path, parent), member, into);
+		}
+	}
+
+	/**
+	 * A constant that renames a class or function, however its type is cast (`const Session = SessionBase as unknown as
+	 * SessionConstructor`), constructs or calls what it names.
+	 */
+	private collectAliasedTargets(key: string, declaration: Node, role: ReferenceRole, into: Set<number>): void {
+		const initializer = (declaration as Node & { readonly initializer?: Node }).initializer;
+		if (initializer === undefined || this.followingAliases.has(key)) return;
+		const named = unwrapExpression(initializer);
+		if (!isIdentifier(named) && !isPropertyAccessExpression(named)) return;
+		const symbol = this.symbolAt(isPropertyAccessExpression(named) ? named.name : named);
+		if (symbol === undefined) return;
+		this.followingAliases.add(key);
+		try {
+			for (const id of this.resolveSymbol(symbol, role).functions) into.add(id);
+		} finally {
+			this.followingAliases.delete(key);
 		}
 	}
 

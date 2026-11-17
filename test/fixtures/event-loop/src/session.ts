@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 
 interface SessionMethods {
 	exportText(): string;
@@ -7,6 +7,11 @@ interface SessionMethods {
 
 class SessionBase {
 	readonly id: string = "session";
+	readonly shellFound: boolean;
+
+	constructor() {
+		this.shellFound = statSync("shell", { throwIfNoEntry: false }) !== undefined;
+	}
 }
 
 export interface Session extends SessionBase, SessionMethods {}

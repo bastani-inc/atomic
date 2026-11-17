@@ -245,6 +245,11 @@ export interface AgentSessionConfig {
 	workflowJournal?: import("./storage/provider.js").RunJournalOption;
 	/** The agent directory the session store resolved its storage against; the workflow journal uses the same base. */
 	storageAgentDir?: string;
+	/**
+	 * Whether PowerShell is available for the `powershell` tool, as `isPowerShellAvailableAsync()` reports. When omitted
+	 * the session looks for it on `PATH` synchronously while it is constructed; `createAgentSession` passes it.
+	 */
+	powerShellAvailable?: boolean;
 	initialActiveToolNames?: string[];
 	usesDefaultTools?: boolean;
 	defaultToolModifiers?: string[];

@@ -74,6 +74,7 @@ describe("event-loop check", () => {
 			"src/host.ts readLazily fs.readFileSync",
 			"src/host.ts sleepWithAtomics Atomics.wait",
 			"src/host.ts spin loop polling a clock",
+			"src/session.ts SessionBase.constructor fs.statSync",
 			"src/session.ts exportText fs.writeFileSync",
 			"src/session.ts installSessionAccessors/title.get fs.readFileSync",
 			"src/startup.ts afterImmediate fs.readdirSync",
@@ -188,12 +189,16 @@ describe("event-loop check", () => {
 		);
 	});
 
-	test("follows methods and accessors installed on a class's prototype to the calls made through its instances", () => {
+	test("follows methods and accessors installed on a class's prototype, and its constructor behind a cast, to the calls made through its instances", () => {
 		const session = report.violations
 			.filter((v) => v.file === "src/session.ts")
 			.map((v) => `${v.function} ${v.api}`)
 			.sort();
-		assert.deepEqual(session, ["exportText fs.writeFileSync", "installSessionAccessors/title.get fs.readFileSync"]);
+		assert.deepEqual(session, [
+			"SessionBase.constructor fs.statSync",
+			"exportText fs.writeFileSync",
+			"installSessionAccessors/title.get fs.readFileSync",
+		]);
 	});
 
 	test("checks module-scope and static regular expressions where a reachable function uses them", () => {

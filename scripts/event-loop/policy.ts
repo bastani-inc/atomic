@@ -271,6 +271,12 @@ export interface ReviewedEdge {
 
 export const GUARDED_CALLS: readonly ReviewedEdge[] = [
 	{
+		from: { file: "packages/coding-agent/src/core/agent-session.ts", name: "AgentSessionBase.constructor" },
+		to: { file: "packages/coding-agent/src/utils/shell.ts", name: "isPowerShellAvailable" },
+		reason:
+			"looks for PowerShell only when the config omits powerShellAvailable; createAgentSession resolves it off the event loop and passes it, so only SDK code that constructs an AgentSession itself takes this call",
+	},
+	{
 		from: { file: "packages/workflows/src/shared/stage-question-form.ts", name: "stageQuestionTool" },
 		to: {
 			file: "packages/coding-agent/src/core/tools/ask-user-question/ask-user-question.ts",
