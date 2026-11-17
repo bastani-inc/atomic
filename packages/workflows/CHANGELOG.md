@@ -34,8 +34,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Design workflows no longer pause other tools while Windows verifies temporary artifact storage ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
 - Fixed an idle local worker receiving SIGKILL instead of exiting cleanly when a late IPC reply failed after its root released its lease ([#3979](https://github.com/bastani-inc/atomic/issues/3979))
 
-- Fixed an idle local worker receiving SIGKILL instead of exiting cleanly when a late IPC reply failed after its root released its lease ([#3979](https://github.com/bastani-inc/atomic/issues/3979))
-
 ## [0.9.88] - 2026-11-16
 
 ### Breaking Changes

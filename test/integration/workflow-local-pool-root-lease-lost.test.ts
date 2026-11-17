@@ -35,7 +35,7 @@ async function waitUntil(predicate: () => boolean, what: string, budget: AbortSi
 }
 
 test.skipIf(process.platform === "win32")(
-	"idle workers that meet the root's released lease end cleanly despite late IPC errors (#3979, #4768)",
+	"idle workers that meet the root's released lease end cleanly instead of crashing (#3979)",
 	async () => {
 		const directory = makeTempDirectory("pool-root-lease-lost-");
 		const path = join(directory, "journal.sqlite");
