@@ -1160,9 +1160,16 @@ export abstract class TuiBase extends Container implements TUI {
 			if (isKeyRelease(data) && !this.focusedComponent.wantsKeyRelease) {
 				return;
 			}
-			this.focusedComponent.handleInput(data);
+			const answer: unknown = this.focusedComponent.handleInput(data);
 			// Keyboard input is latency-sensitive. Avoid the throttled timer path,
 			// where even setTimeout(0) can take a full 16 ms tick on Windows.
+			// A component that answers asynchronously, such as a view another process draws, shows the key only once
+			// its answer arrives: painting before then would repaint the frame the key has not reached yet.
+			if (answer instanceof Promise) {
+				const repaint = (): void => this.requestImmediateRender();
+				void answer.then(repaint, repaint);
+				return;
+			}
 			this.requestImmediateRender();
 		}
 	}
