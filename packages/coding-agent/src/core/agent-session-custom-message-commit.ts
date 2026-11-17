@@ -252,7 +252,8 @@ export async function commitAdmittedCustomMessages<T>(
 	const usesHeldCards =
 		options?.triggerTurn === true &&
 		(holdsTurnsForDetachedResults(self) || (holdsTurn && options.excludeFromContext === true));
-	if (!useProtectedReconciliation && !usesHeldCards) {
+	const holdsStartupCards = appMessages.every((item) => holdsForFirstStagePrompt(self, item, options));
+	if (holdsStartupCards || (!useProtectedReconciliation && !usesHeldCards)) {
 		const stored = new Set(
 			self.sessionManager
 				.getBranch()
@@ -268,7 +269,7 @@ export async function commitAdmittedCustomMessages<T>(
 		});
 	}
 	if (appMessages.length === 0) return;
-	if (appMessages.every((item) => holdsForFirstStagePrompt(self, item, options))) {
+	if (holdsStartupCards) {
 		for (const item of appMessages) await appendDurableStageAdmission(self, item);
 		return;
 	}

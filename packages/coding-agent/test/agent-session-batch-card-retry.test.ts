@@ -559,3 +559,32 @@ test("deletion after a failed card admission reports deletion once and releases 
 		CONTENTS.slice(1),
 	);
 });
+
+test("a persistent batch retried before a stage's first prompt skips its saved prefix (#5318)", async () => {
+	const manager = await SessionManager.create(new MemorySessionStore(), process.cwd());
+	const harness = await createHarness({
+		sessionManager: manager,
+		orchestrationContext: {
+			kind: "workflow-stage",
+			workflowRunId: crypto.randomUUID(),
+			workflowStageId: "batch-startup",
+			workflowStageName: "Batch startup",
+			constraints: { disableWorkflowTool: true },
+		},
+	});
+	harnesses.push(harness);
+	const failure = failThirdCardOnce(manager);
+	await assert.rejects(harness.session.sendCustomMessages(messages, sharedOptions), (error) => error === failure);
+	await harness.session.sendCustomMessages(messages, sharedOptions);
+	assertCardsSavedOnce(manager);
+	const contexts: string[] = [];
+	harness.setResponses([
+		(context) => {
+			contexts.push(JSON.stringify(context.messages));
+			return fauxAssistantMessage("completed the stage task");
+		},
+	]);
+	await harness.session.prompt("perform the stage task with startup input");
+	assert.equal(contexts.length, 1);
+	for (const content of CONTENTS) assert.equal(contexts[0]!.split(content).length - 1, 1);
+});
