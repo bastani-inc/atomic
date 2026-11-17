@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { applyPatch } from "diff";
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, constants, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { access } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -307,11 +307,22 @@ describe("Coding Agent Tools", () => {
 		it("should include EACCES in diff preview for unreadable files", async () => {
 			const unreadableFile = join(testDir, "unreadable-preview.txt");
 			writeFileSync(unreadableFile, "hello\n");
-			vi.mocked(access).mockRejectedValueOnce(Object.assign(new Error("permission denied"), { code: "EACCES" }));
+			// Only the read-permission check fails: the file still exists, as an unreadable file does.
+			const realAccess = vi.mocked(access).getMockImplementation();
+			vi.mocked(access).mockImplementation(async (path, mode) => {
+				if (path === unreadableFile && mode === constants.R_OK) {
+					throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+				}
+				return realAccess?.(path, mode);
+			});
 
-			const result = await computeEditsDiff(unreadableFile, [{ oldText: "hello", newText: "world" }], testDir);
+			try {
+				const result = await computeEditsDiff(unreadableFile, [{ oldText: "hello", newText: "world" }], testDir);
 
-			assert.deepEqual(result, { error: `Could not edit file: ${unreadableFile}. Error code: EACCES.` });
+				assert.deepEqual(result, { error: `Could not edit file: ${unreadableFile}. Error code: EACCES.` });
+			} finally {
+				if (realAccess) vi.mocked(access).mockImplementation(realAccess);
+			}
 		});
 	});
 });
