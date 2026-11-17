@@ -50,10 +50,12 @@ test("Down in an attached subagent's empty prompt opens its own tasks without le
 	let closed = 0;
 	const source = {
 		...ownerTaskViewSource(fixture.store),
-		tasks: [parent, child],
-		backgroundTasks: [parent, child],
+		tasks: [parent],
+		backgroundTasks: [parent],
 		ownerTasks: [parent, child],
 		ownerBackgroundTasks: [parent, child],
+		taskRecord: (id: typeof parent.ref.taskId) => [parent, child].find((task) => task.ref.taskId === id),
+		taskReadOnlyReason: () => undefined,
 		readTaskTranscript: () => ({ ok: true as const, value: { messages: [] } }),
 		followTaskTranscript: () => undefined,
 	};

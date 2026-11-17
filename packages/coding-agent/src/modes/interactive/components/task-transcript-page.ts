@@ -383,7 +383,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	}
 
 	hasTasks(): boolean {
-		return this.source.backgroundTasks.some((task) => task.parentTaskId === this.taskId);
+		return launchedTaskViewSource(this.source, this.taskId).backgroundTasks.length > 0;
 	}
 
 	expandable(): boolean {
