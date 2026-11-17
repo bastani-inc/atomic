@@ -79,28 +79,6 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 		handlePromptInput(ctx, data);
 		return true;
 	}
-	if (ctx.promptState && !promptCardShown(ctx) && matchesKey(data, Key.enter) && !ctx.chatHost.hasInputText()) {
-		ctx.dismissedPromptId = null;
-		return true;
-	}
-	if (ctx.mountedCustomUi) {
-		return handleMountedCustomUiInput(ctx, data);
-	}
-	if (matchesKey(data, Key.escape)) {
-		if (ctx.chatHost.isCompacting() || ctx.chatHost.isBashRunning() || ctx.chatHost.isEditingBashCommand()) {
-			return ctx.chatHost.handleInput(data);
-		}
-		if (isAbortableStreamingSession(ctx)) {
-			recordStageEscapeInterrupt(ctx);
-		}
-		return true;
-	}
-	if (handleToolsExpandInput(ctx, data)) return true;
-	if (readOnlyPromptArchive && handlePromptScrollInput(ctx, data, true)) {
-		return true;
-	}
-	if (handleStageChatJumpToBottom(ctx, data)) return true;
-	if (ctx.chatHost.handleScrollInput(data)) return true;
 	if (ctx.promptState && !promptCardShown(ctx) && matchesKey(data, Key.enter)) {
 		if (!ctx.chatHost.hasInputText()) {
 			ctx.dismissedPromptId = null;
@@ -131,6 +109,24 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 		resolvePromptResponse(ctx, prompt.id, trimmed, { suppressNextGraphSubmit: true });
 		return true;
 	}
+	if (ctx.mountedCustomUi) {
+		return handleMountedCustomUiInput(ctx, data);
+	}
+	if (matchesKey(data, Key.escape)) {
+		if (ctx.chatHost.isCompacting() || ctx.chatHost.isBashRunning() || ctx.chatHost.isEditingBashCommand()) {
+			return ctx.chatHost.handleInput(data);
+		}
+		if (isAbortableStreamingSession(ctx)) {
+			recordStageEscapeInterrupt(ctx);
+		}
+		return true;
+	}
+	if (handleToolsExpandInput(ctx, data)) return true;
+	if (readOnlyPromptArchive && handlePromptScrollInput(ctx, data, true)) {
+		return true;
+	}
+	if (handleStageChatJumpToBottom(ctx, data)) return true;
+	if (ctx.chatHost.handleScrollInput(data)) return true;
 	if (isBackToGraphInput(ctx, data)) {
 		recordCurrentPromptDraft(ctx);
 		ctx.onDetach();

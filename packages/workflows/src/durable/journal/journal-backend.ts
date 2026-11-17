@@ -30,6 +30,7 @@ import type {
 	DurableWorkflowStatus,
 } from "../types.js";
 import {
+	type JournalKeyRangeReadOptions,
 	journalKeyRangeRead,
 	type NON_SNAPSHOT_EVENT_TYPES,
 	type RunJournalVersions,
@@ -387,7 +388,12 @@ export interface UnavailableShardsReader {
  * journal does (`SqlRunJournal.readKeyRange`), and a SQL journal registers it for itself (`registerJournalKeyRangeRead`).
  */
 export interface KeyRangeJournal {
-	readKeyRange(runId: string, fromKey: string, toKey: string): AsyncIterable<JournalEntry>;
+	readKeyRange(
+		runId: string,
+		fromKey: string,
+		toKey: string,
+		options?: JournalKeyRangeReadOptions,
+	): AsyncIterable<JournalEntry>;
 }
 
 const CHECKPOINT_KINDS: readonly DurableCheckpoint["kind"][] = ["tool", "ui", "stage"];
@@ -1690,7 +1696,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 				}
 			} else {
 				for (const [from, to] of OVERVIEW_KEY_RANGES)
-					for await (const entry of ranged.readKeyRange(runId, from, to)) keep(entry);
+					for await (const entry of ranged.readKeyRange(runId, from, to, { overview: true })) keep(entry);
 			}
 			return [...selected.values()].sort((left, right) => left.seq - right.seq);
 		});

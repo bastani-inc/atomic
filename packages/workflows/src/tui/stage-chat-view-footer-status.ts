@@ -364,8 +364,9 @@ function mergeOrchestratorReturnHintIntoLine(
 	const cardOpen = stackedDialog || closableQuestionCardOpen(ctx);
 	const backKey = backToGraphKey(ctx);
 	if (!cardOpen && !backKey) return line;
-	const key = stackedDialog ? "esc" : backKey || "esc";
-	const full = stackedDialog ? " cancel" : cardOpen ? (backKey ? " graph · esc close" : " close") : " return to graph";
+	const key = backKey || "esc";
+	const action = stackedDialog ? " cancel" : " close";
+	const full = cardOpen ? (backKey ? ` graph · esc${action}` : action) : " return to graph";
 	const compact = cardOpen ? full : " graph";
 	const fullHint = {
 		plain: `${key}${full}`,

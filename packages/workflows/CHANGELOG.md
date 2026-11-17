@@ -36,6 +36,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Opening stored workflow runs reads compact stage overviews instead of loading large stage results. Full history and resumed work still retain the original results ([#5256](https://github.com/bastani-inc/atomic/pull/5256))
 - Workflow rows in the agent panel count expanded nested, dynamic and fan-out stages, include in-flight attempt tokens once, omit full stage bars while tool work continues, and retain the last step when stopped. Numbered replies preserve the original option even when display labels look alike. Run and stage names display terminal controls as inert text, and unchanged progress is reused between refreshes ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Opening a finished workflow from any workflow view now lets its agent-panel row expire without waiting for another run update, and re-entering a stage interrupted by Esc keeps the shared interrupted state instead of restoring the old paused banner. Stage composer labels, rules and hints follow the selected dark or light theme ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Bounded workflow previews no longer keep their builders and omitted source inputs in memory after the source is released ([#5224](https://github.com/bastani-inc/atomic/issues/5224))

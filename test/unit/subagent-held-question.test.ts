@@ -227,7 +227,16 @@ test("held forms preserve drafts when left, show paging keys, and count down tim
 	cleanups.push(() => setKeybindings(previousKeys));
 
 	const controller = new AbortController();
-	cleanups.push(() => controller.abort());
+	const waiters: Promise<unknown>[] = [];
+	const track = <T>(promise: Promise<T>): Promise<T> => {
+		const settled = promise.catch(() => undefined);
+		waiters.push(settled);
+		return promise;
+	};
+	cleanups.push(async () => {
+		controller.abort();
+		await Promise.allSettled(waiters);
+	});
 	const sessionId = "subagent-ui-fixes";
 	const taskId = "task-ui-fixes" as TaskId;
 	const ownerId = "owner-ui-fixes" as OwnerId;
@@ -334,34 +343,34 @@ test("held forms preserve drafts when left, show paging keys, and count down tim
 			.map((line) => stripVTControlCharacters(line).trimEnd())
 			.join("\n");
 
-	const multiPromise = heldPromptInput.questionnaire(
-		{
-			questions: [
-				{
-					question: "First question?",
-					header: "Q1",
-					options: [
-						{ label: "a1", description: "opt a1", preview: "preview a1" },
-						{ label: "a2", description: "opt a2", preview: "preview a2" },
-					],
-				},
-				{
-					question: "Second question?",
-					header: "Q2",
-					options: [
-						{ label: "b1", description: "opt b1" },
-						{ label: "b2", description: "opt b2" },
-					],
-				},
-			],
-		},
-		{ signal: controller.signal, requestId: "multi-q", sessionId },
+	const multiPromise = track(
+		heldPromptInput.questionnaire(
+			{
+				questions: [
+					{
+						question: "First question?",
+						header: "Q1",
+						options: [
+							{ label: "a1", description: "opt a1", preview: "preview a1" },
+							{ label: "a2", description: "opt a2", preview: "preview a2" },
+						],
+					},
+					{
+						question: "Second question?",
+						header: "Q2",
+						options: [
+							{ label: "b1", description: "opt b1" },
+							{ label: "b2", description: "opt b2" },
+						],
+					},
+				],
+			},
+			{ signal: controller.signal, requestId: "multi-q", sessionId },
+		),
 	);
+	assert.match(plain(), /Needs input/);
+	assert.match(plain(), /First question\?/);
 	inspector.handleInput(" ");
-	inspector.handleInput("\x1b[B");
-	inspector.handleInput("\x1b[B");
-	assert.match(plain(), /› Open question/);
-	inspector.handleInput("\r");
 	assert.match(plain(80), /^Transcript/);
 	assert.match(plain(80), /First question\?/);
 	assert.match(plain(80).split("\n").at(-1) ?? "", /← task/, "tab 0 shows ← task in the footer");
@@ -383,7 +392,7 @@ test("held forms preserve drafts when left, show paging keys, and count down tim
 	assert.match(plain(), /First question\?/);
 	assert.match(plain().split("\n").at(-1) ?? "", /← task/, "back on tab 0 shows ← task");
 	inspector.handleInput("\x1b[D");
-	assert.match(plain(), /› Open question/, "← on tab 0 leaves transcript without cancelling");
+	assert.match(plain(), /Needs input/, "← on tab 0 leaves transcript without cancelling");
 	assert.equal(heldPrompts().current(sessionId)?.promptId, "multi-q");
 
 	inspector.handleInput("\r");
@@ -400,11 +409,13 @@ test("held forms preserve drafts when left, show paging keys, and count down tim
 	);
 
 	const choices = Array.from({ length: 12 }, (_, idx) => `choice-${idx + 1}`);
-	const selectPromise = heldPromptInput.select("Pick one of twelve", choices, {
-		signal: controller.signal,
-		requestId: "select-12",
-		sessionId,
-	});
+	const selectPromise = track(
+		heldPromptInput.select("Pick one of twelve", choices, {
+			signal: controller.signal,
+			requestId: "select-12",
+			sessionId,
+		}),
+	);
 	assert.match(plain().split("\n").at(-1) ?? "", /pgup\/pgdn page/);
 	assert.doesNotMatch(plain().split("\n").at(-1) ?? "", /pgup\/pgdn scroll/);
 	assert.match(plain(), /MSG-24/);
@@ -420,48 +431,56 @@ test("held forms preserve drafts when left, show paging keys, and count down tim
 		vi.useRealTimers();
 	});
 
-	const timedConfirm = heldPromptInput.confirm("Approve deploy?", "production", {
-		signal: controller.signal,
-		requestId: "timed-confirm",
-		sessionId,
-		timeout: 5_000,
-	});
+	const timedConfirm = track(
+		heldPromptInput.confirm("Approve deploy?", "production", {
+			signal: controller.signal,
+			requestId: "timed-confirm",
+			sessionId,
+			timeout: 5_000,
+		}),
+	);
 	assert.match(plain(), /Approve deploy\? \(5s\)/);
 	vi.advanceTimersByTime(1_000);
 	assert.match(plain(), /Approve deploy\? \(4s\)/);
 	assert.equal(heldPrompts().cancel({ sessionId, promptId: "timed-confirm" }), true);
 	assert.equal(await timedConfirm, false);
 
-	const timedSelect = heldPromptInput.select("Timed target", ["staging", "prod"], {
-		signal: controller.signal,
-		requestId: "timed-select",
-		sessionId,
-		timeout: 5_000,
-	});
+	const timedSelect = track(
+		heldPromptInput.select("Timed target", ["staging", "prod"], {
+			signal: controller.signal,
+			requestId: "timed-select",
+			sessionId,
+			timeout: 5_000,
+		}),
+	);
 	assert.match(plain(), /Timed target \(5s\)/);
 	vi.advanceTimersByTime(1_000);
 	assert.match(plain(), /Timed target \(4s\)/);
 	assert.equal(heldPrompts().cancel({ sessionId, promptId: "timed-select" }), true);
 	assert.equal(await timedSelect, undefined);
 
-	const timedInput = heldPromptInput.input("Timed branch", undefined, {
-		signal: controller.signal,
-		requestId: "timed-input",
-		sessionId,
-		timeout: 5_000,
-	});
+	const timedInput = track(
+		heldPromptInput.input("Timed branch", undefined, {
+			signal: controller.signal,
+			requestId: "timed-input",
+			sessionId,
+			timeout: 5_000,
+		}),
+	);
 	assert.match(plain(), /Timed branch \(5s\)/);
 	vi.advanceTimersByTime(1_000);
 	assert.match(plain(), /Timed branch \(4s\)/);
 	assert.equal(heldPrompts().cancel({ sessionId, promptId: "timed-input" }), true);
 	assert.equal(await timedInput, undefined);
 
-	const timedEditor = heldPromptInput.editor("Timed notes", "initial", {
-		signal: controller.signal,
-		requestId: "timed-editor",
-		sessionId,
-		timeout: 5_000,
-	});
+	const timedEditor = track(
+		heldPromptInput.editor("Timed notes", "initial", {
+			signal: controller.signal,
+			requestId: "timed-editor",
+			sessionId,
+			timeout: 5_000,
+		}),
+	);
 	assert.match(plain(), /Timed notes \(5s\)/);
 	vi.advanceTimersByTime(1_000);
 	assert.match(plain(), /Timed notes \(4s\)/);

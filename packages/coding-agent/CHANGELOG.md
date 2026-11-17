@@ -119,10 +119,10 @@
 - In the interactive CLI, questions and extension dialogs stay with the session that asked them. A subagent's question waits in its own task view, and a workflow stage's question in its stage chat, instead of opening in and blocking the launching chat. Forms keep their drafts when left and show countdowns for timed dialogs. SDK input adapters receive the asking session's identity; plain RPC clients and SDK hosts without a task inspector keep receiving child dialogs through their existing presentation ([#5354](https://github.com/bastani-inc/atomic/pull/5354))
 - On Windows, a queued SQLite writer no longer fails with `writer-queue-unusable` when another process deletes its stale ticket while it is being refreshed. The writer recreates the ticket in its existing queue position and continues waiting. Other permission failures still report an error ([#4316](https://github.com/bastani-inc/atomic/issues/4316))
 
+
 ### Removed
 
 - The `app.workflows.scrollUp` and `app.workflows.scrollDown` keybindings (Alt+K/J, Alt+PageUp/PageDown), with the workflow list they scrolled; the agent panel replaces it ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
-
 ## [0.9.88] - 2026-11-16
 
 Atomic runs on its own libraries, workflows scale out to worker fleets on libSQL or PostgreSQL, and every screen shares one set of keys.

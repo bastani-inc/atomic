@@ -327,11 +327,11 @@ export class TaskInspector implements Component {
 				if (openQuestion) {
 					this.close();
 					openQuestion(route);
-				} else if (this.transcriptEnvironment() !== undefined) {
-					this.chatFrom = "detail";
-					this.detailGeneration++;
-					this.openTranscript();
-				} else this.status = "Question is available in its owning session.";
+					return;
+				}
+				this.chatFrom = "detail";
+				this.detailGeneration++;
+				this.openTranscript();
 			},
 			currentTask: (taskId) => {
 				if (!this.boardStale) return this.tasksById.get(taskId);
@@ -914,6 +914,7 @@ export class TaskInspector implements Component {
 			return true;
 		}
 		const keys = getKeybindings();
+		// ← on an empty prompt, or at the start of a typed one (kept for the return), goes back one level.
 		if (!matchesKey(data, "escape") && keys.matches(data, "app.nav.back") && transcript.cursorAtStart()) {
 			if (this.chatFrom === "caller") {
 				this.closedByBack = true;
@@ -1412,6 +1413,11 @@ export class TaskInspector implements Component {
 		const hasTasks = !questionActive && transcript.hasTasks?.() === true;
 		const expandable = transcript.expandable?.() === true;
 		const baseKeys = getKeybindings();
+		const backKeys = baseKeys
+			.getKeys("app.nav.back")
+			.filter((key) => !matchesKey("\x1b", key))
+			.map(navKeyText)
+			.join("/");
 		const chatKeybindings = {
 			matches: (data: string, action: string) =>
 				baseKeys.matches(data, action as Parameters<typeof baseKeys.matches>[1]),
@@ -1432,9 +1438,10 @@ export class TaskInspector implements Component {
 						if (entry.action === "app.thinking.toggle" && task?.kind !== "agent") return [];
 						if (entry.keys === "esc" && !interruptible) return [];
 						if (entry.action === "app.tools.expand" && !expandable) return [];
+						const mapped = entry.action === "app.nav.back" ? { keys: backKeys, label: entry.label } : entry;
 						if (entry.action === "app.nav.back" && hasTasks)
-							return [entry, { action: "app.agents.focus", label: "agents, on an empty prompt" }];
-						return [entry];
+							return [mapped, { action: "app.agents.focus", label: "agents, on an empty prompt" }];
+						return [mapped];
 					}),
 					width,
 					style,
@@ -1444,7 +1451,9 @@ export class TaskInspector implements Component {
 		const back = this.chatFrom === "caller" ? this.callerLabel : this.chatFrom === "list" ? "tasks" : "task";
 		const chatKeys = taskChatKeys(back, interruptible, hasTasks, expandable).flatMap((entry) => {
 			if (entry.action === "app.nav.back") {
-				return !questionActive || transcript.cursorAtStart() ? [entry] : [];
+				return !questionActive || transcript.cursorAtStart()
+					? [questionActive ? { keys: backKeys, label: back } : entry]
+					: [];
 			}
 			if (entry.keys === "pgup/pgdn" && transcript.capturesPageScroll?.() === true) {
 				return [{ keys: "pgup/pgdn", label: "page" }];
