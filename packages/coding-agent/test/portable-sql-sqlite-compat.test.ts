@@ -387,6 +387,7 @@ test("a store with a migration ledger records each step of the session and blob 
 		{ domain: "snapshot-blobs", version: 2 },
 		{ domain: "snapshot-blobs", version: 3 },
 		{ domain: "snapshot-blobs", version: 4 },
+		{ domain: "snapshot-blobs", version: 5 },
 	]);
 	await store.create(header("a"), [message("a1", null), message("a2", "a1")]);
 	// Open-session markers stay under their prefix too (#4971).
@@ -402,6 +403,6 @@ test("a store with a migration ledger records each step of the session and blob 
 	const [listed] = await Array.fromAsync(store.list({}));
 	assert.equal(listed?.searchText, "a1 a2");
 	// A newer schema keeps every table this build knows, and is still refused.
-	await database.run("INSERT INTO team_atomic_migrations VALUES ('snapshot-blobs', 5, 0)");
+	await database.run("INSERT INTO team_atomic_migrations VALUES ('snapshot-blobs', 6, 0)");
 	await assert.rejects(SqlSessionStore.open(database, { prefix: "team_" }), StorageSchemaVersionError);
 });
