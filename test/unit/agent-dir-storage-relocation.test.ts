@@ -144,6 +144,61 @@ test("a profile adopted at its junction's directory keeps reading the parent ses
 	}
 });
 
+test("a copy that used its own session directory keeps it after the adopting original is removed (#5242)", async () => {
+	const parent = join(root, "P");
+	const original = join(parent, "a1");
+	const clone = join(parent, "a2");
+	const settings = { sessions: { storage: { dir: "sessions" } } };
+	mkdirSync(original, { recursive: true });
+	writeFileSync(join(original, "settings.json"), JSON.stringify(settings));
+	const localId = "00000000-0000-4000-8000-000000000000";
+	const parentId = "11111111-1111-4111-8111-111111111111";
+	const copyId = "22222222-2222-4222-8222-222222222222";
+	const create = async (agentDir: string, dir: string, id: string): Promise<void> => {
+		const store = await resolveSessionStore(root, { agentDir, sessionStore: { kind: "jsonl", dir } });
+		try {
+			await store.create({ id, version: 4, createdAt: "2026-11-16T00:00:00.000Z", cwd: root }, []);
+		} finally {
+			await store.close();
+		}
+	};
+	await create(original, join(original, "sessions"), localId);
+	await create(original, join(parent, "sessions"), parentId);
+	mkdirSync(join(parent, "workflows"));
+	writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
+	resetStorageHomeCacheForTests();
+	assert.deepEqual(selectSessionStorage(root, { agentDir: original, settings }), {
+		kind: "jsonl",
+		dir: join(parent, "sessions"),
+	});
+	cpSync(original, clone, { recursive: true });
+	resetStorageHomeCacheForTests();
+	assert.deepEqual(selectSessionStorage(root, { agentDir: clone, settings }), {
+		kind: "jsonl",
+		dir: join(clone, "sessions"),
+	});
+	const own = await resolveSessionStore(root, { agentDir: clone, settings });
+	try {
+		await own.create({ id: copyId, version: 4, createdAt: "2026-11-16T00:00:00.000Z", cwd: root }, []);
+	} finally {
+		await own.close();
+	}
+	rmSync(original, { recursive: true });
+	for (let start = 0; start < 2; start++) {
+		resetStorageHomeCacheForTests();
+		assert.deepEqual(selectSessionStorage(root, { agentDir: clone, settings }), {
+			kind: "jsonl",
+			dir: join(clone, "sessions"),
+		});
+		const reopened = await resolveSessionStore(root, { agentDir: clone, settings });
+		try {
+			assert.equal((await reopened.readHeader(copyId))?.id, copyId);
+		} finally {
+			await reopened.close();
+		}
+	}
+});
+
 test.each([
 	"backup-copy",
 	"backup-copy-via-junction",

@@ -621,6 +621,30 @@ function storageHomeDecisionFile(agentPath: string): string {
 	return join(agentPath, HOME_DECISION_FILE);
 }
 
+function storageTargetDecisionFile(agentPath: string, target: string): string {
+	const key = createHash("sha256")
+		.update(getPathComparisonKey(resolve(canonicalPath(agentPath), target)))
+		.digest("hex");
+	return `${storageHomeDecisionFile(agentPath)}.target-${key}`;
+}
+
+/** Whether this directory settled `target` to another directory's store, so the local counterpart is its own. */
+function recordsForeignTargetOwner(agentPath: string, target: string): boolean {
+	const raw = readClaimFile(storageTargetDecisionFile(agentPath, target));
+	if (raw === undefined) return false;
+	let decision: StorageHomeDecision;
+	try {
+		decision = JSON.parse(raw) as StorageHomeDecision;
+	} catch {
+		return false;
+	}
+	if (typeof decision?.parentOwner !== "string") return false;
+	const owner = decision.relativePaths
+		? resolve(canonicalPath(agentPath), decision.parentOwner)
+		: decision.parentOwner;
+	return !sameDirectory(owner, agentPath);
+}
+
 function isDefaultStorageHome(home: string, configuredHome: string): boolean {
 	if (sameDirectory(home, configuredHome)) return true;
 	const agent = join(home, "agent");
@@ -857,7 +881,8 @@ function currentStorageOwnerPath(
 				(target) =>
 					containsPath(physicalCandidate, canonicalPath(resolve(candidate, target))) &&
 					(claimedTarget === undefined ||
-						!pathsEqual(resolve(candidate, target), resolve(candidate, claimedTarget))),
+						!pathsEqual(resolve(candidate, target), resolve(candidate, claimedTarget)) ||
+						recordsForeignTargetOwner(candidate, claimedTarget)),
 			);
 			const legacyTargets = owner.legacyTargets;
 			const unownedTargets =
@@ -1184,10 +1209,7 @@ export function storagePathBaseDir(path: string, agentDir: string, settings?: St
 		return applyStorageTargetDecision({ agentPath, target, decision: { home: agentPath, parentOwner: agentPath } });
 	const parent = dirname(agentPath);
 	const claimDir = sameDirectory(home, agentPath) ? dirname(canonicalPath(agentPath)) : canonicalPath(home);
-	const key = createHash("sha256")
-		.update(getPathComparisonKey(resolve(canonicalPath(agentPath), target)))
-		.digest("hex");
-	const decisionFile = `${storageHomeDecisionFile(agentPath)}.target-${key}`;
+	const decisionFile = storageTargetDecisionFile(agentPath, target);
 	let decision = readStorageHomeDecision(decisionFile);
 	if (decision === undefined) {
 		const parentCandidates = sameDirectory(home, agentPath) ? [claimDir, parent] : [home, parent];
