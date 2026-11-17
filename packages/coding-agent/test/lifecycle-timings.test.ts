@@ -47,7 +47,9 @@ describe("lifecycle timing seams", () => {
 	it("appends the process start and each mark to the ATOMIC_STARTUP_TRACE file in wall-clock time", () => {
 		const directory = mkdtempSync(join(tmpdir(), "atomic-startup-trace-"));
 		const file = join(directory, "trace.jsonl");
-		const before = Date.now();
+		// The trace's clock: wall-clock time at process start plus monotonic time since. Date.now() is a separate clock
+		// that drifts from it by milliseconds on Windows, so the bounds below use this one.
+		const before = performance.timeOrigin + performance.now();
 		const restore = installLifecycleTraceFromEnv({ ATOMIC_STARTUP_TRACE: file });
 		try {
 			expect(isLifecycleTimingEnabled()).toBe(true);
