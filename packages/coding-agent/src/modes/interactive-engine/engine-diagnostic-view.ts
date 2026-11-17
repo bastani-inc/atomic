@@ -1,4 +1,4 @@
-import { reportDebug } from "../../core/debug.ts";
+import { reportDebugAsync as reportDebug } from "../../core/debug.ts";
 import { stripAnsi } from "../../utils/ansi.js";
 import { type ActivityWatchdogDiagnostic, shouldRenderEngineDiagnosticAsChatError } from "./activity-watchdog.ts";
 

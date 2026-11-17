@@ -1,7 +1,9 @@
-import * as fs from "node:fs";
+import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
 import { CONFIG_DIR_NAME } from "@bastani/atomic";
+import { errorCode } from "../shared/exclusive-file-publication.js";
+import { pathExists } from "../shared/path-exists.js";
 import type { SubagentToolResult } from "../shared/types.js";
 import {
 	allAgents,
@@ -52,13 +54,13 @@ function isMutableDefinition<T extends { source: AgentSource }>(value: T): value
 	return value.source === "user" || value.source === "project";
 }
 
-function resolveTarget<T extends { source: AgentSource; filePath: string; name: string }>(
+async function resolveTarget<T extends { source: AgentSource; filePath: string; name: string }>(
 	name: string,
 	matches: T[],
 	cwd: string,
 	discovery: AgentDiscoveryOptions,
 	scopeHint?: string,
-): MutableDefinition<T> | SubagentToolResult {
+): Promise<MutableDefinition<T> | SubagentToolResult> {
 	const mutable = matches.filter(isMutableDefinition);
 	if (mutable.length === 0) {
 		if (matches.length > 0)
@@ -66,7 +68,7 @@ function resolveTarget<T extends { source: AgentSource; filePath: string; name: 
 				`Agent '${name}' is builtin and cannot be modified. Create a same-named agent in user or project scope to override it.`,
 				true,
 			);
-		const available = availableNames(cwd, discovery);
+		const available = await availableNames(cwd, discovery);
 		return result(`Agent '${name}' not found. Available: ${available.join(", ") || "none"}.`, true);
 	}
 	if (mutable.length === 1) return mutable[0]!;
@@ -85,21 +87,21 @@ function resolveTarget<T extends { source: AgentSource; filePath: string; name: 
 	return scoped[0]!;
 }
 
-function renamePath(
+async function renamePath(
 	currentPath: string,
 	newName: string,
 	scope: ManagementScope,
 	cwd: string,
 	discovery: AgentDiscoveryOptions,
-): { filePath?: string; error?: string } {
-	if (nameExistsInScope(cwd, discovery, scope, newName, currentPath))
+): Promise<{ filePath?: string; error?: string }> {
+	if (await nameExistsInScope(cwd, discovery, scope, newName, currentPath))
 		return { error: `Name '${newName}' already exists in ${scope} scope.` };
 	const filePath = path.join(path.dirname(currentPath), `${newName}.md`);
-	if (fs.existsSync(filePath) && filePath !== currentPath)
+	if ((await pathExists(filePath)) && filePath !== currentPath)
 		return {
 			error: `File already exists at ${filePath} but is not a valid agent definition. Remove or rename it first.`,
 		};
-	fs.renameSync(currentPath, filePath);
+	await rename(currentPath, filePath);
 	return { filePath };
 }
 
@@ -133,9 +135,9 @@ function formatAgentDetail(agent: AgentConfig): string {
 	return lines.join("\n");
 }
 
-export function handleList(params: ManagementParams, ctx: ManagementContext): SubagentToolResult {
+export async function handleList(params: ManagementParams, ctx: ManagementContext): Promise<SubagentToolResult> {
 	const scope = normalizeListScope(params.agentScope) ?? "both";
-	const d = discoverAgentsAll(ctx.cwd, contextAgentDiscoveryOptions(ctx));
+	const d = await discoverAgentsAll(ctx.cwd, contextAgentDiscoveryOptions(ctx));
 	const agents = allAgents(d)
 		.filter((agent) => !agent.disabled && (scope === "both" || agent.source === "builtin" || agent.source === scope))
 		.sort((a, b) => a.name.localeCompare(b.name));
@@ -151,18 +153,18 @@ export function handleList(params: ManagementParams, ctx: ManagementContext): Su
 	return result(lines.join("\n"));
 }
 
-function handleGet(params: ManagementParams, ctx: ManagementContext): SubagentToolResult {
+async function handleGet(params: ManagementParams, ctx: ManagementContext): Promise<SubagentToolResult> {
 	if (!params.agent) return result("Specify 'agent' for get.", true);
-	const matches = findAgents(params.agent, ctx.cwd, contextAgentDiscoveryOptions(ctx), "both");
+	const matches = await findAgents(params.agent, ctx.cwd, contextAgentDiscoveryOptions(ctx), "both");
 	if (!matches.length)
 		return result(
-			`Agent '${params.agent}' not found. Available: ${availableNames(ctx.cwd, contextAgentDiscoveryOptions(ctx)).join(", ") || "none"}.`,
+			`Agent '${params.agent}' not found. Available: ${(await availableNames(ctx.cwd, contextAgentDiscoveryOptions(ctx))).join(", ") || "none"}.`,
 			true,
 		);
 	return result(matches.map(formatAgentDetail).join("\n\n"));
 }
 
-export function handleCreate(params: ManagementParams, ctx: ManagementContext): SubagentToolResult {
+export async function handleCreate(params: ManagementParams, ctx: ManagementContext): Promise<SubagentToolResult> {
 	const parsedConfig = configObject(params.config);
 	if (parsedConfig.error) return result(parsedConfig.error, true);
 	const cfg = parsedConfig.value;
@@ -180,13 +182,14 @@ export function handleCreate(params: ManagementParams, ctx: ManagementContext): 
 	const scopeRaw = cfg.scope ?? "user";
 	if (scopeRaw !== "user" && scopeRaw !== "project") return result("config.scope must be 'user' or 'project'.", true);
 	const scope = scopeRaw as ManagementScope;
-	const d = discoverAgentsAll(ctx.cwd, contextAgentDiscoveryOptions(ctx));
+	const d = await discoverAgentsAll(ctx.cwd, contextAgentDiscoveryOptions(ctx));
 	const targetDir = scope === "user" ? d.userDir : (d.projectDir ?? path.join(ctx.cwd, CONFIG_DIR_NAME, "agents"));
-	fs.mkdirSync(targetDir, { recursive: true });
-	if (nameExistsInScope(ctx.cwd, contextAgentDiscoveryOptions(ctx), scope, runtimeName))
-		return result(`Name '${runtimeName}' already exists in ${scope} scope. Use update instead.`, true);
+	await mkdir(targetDir, { recursive: true });
 	const targetPath = path.join(targetDir, `${runtimeName}.md`);
-	if (fs.existsSync(targetPath))
+	const hadTargetPath = await pathExists(targetPath);
+	if (await nameExistsInScope(ctx.cwd, contextAgentDiscoveryOptions(ctx), scope, runtimeName))
+		return result(`Name '${runtimeName}' already exists in ${scope} scope. Use update instead.`, true);
+	if (hadTargetPath)
 		return result(
 			`File already exists at ${targetPath} but is not a valid agent definition. Remove or rename it first.`,
 			true,
@@ -212,13 +215,19 @@ export function handleCreate(params: ManagementParams, ctx: ManagementContext): 
 	if (mw) warnings.push(mw);
 	const fmw = fallbackModelsWarning(ctx, agent.fallbackModels);
 	if (fmw) warnings.push(fmw);
-	const sw = skillsWarning(ctx.cwd, agent.skills, ctx.getSkillCatalog?.());
+	const sw = await skillsWarning(ctx.cwd, agent.skills, ctx.getSkillCatalog?.());
 	if (sw) warnings.push(sw);
-	fs.writeFileSync(targetPath, serializeAgent(agent), "utf-8");
+	try {
+		await writeFile(targetPath, serializeAgent(agent), { encoding: "utf-8", flag: "wx" });
+	} catch (error) {
+		if (errorCode(error) === "EEXIST")
+			return result(`Name '${runtimeName}' already exists in ${scope} scope. Use update instead.`, true);
+		throw error;
+	}
 	return result([`Created agent '${runtimeName}' at ${targetPath}.`, ...warnings].join("\n"));
 }
 
-export function handleUpdate(params: ManagementParams, ctx: ManagementContext): SubagentToolResult {
+export async function handleUpdate(params: ManagementParams, ctx: ManagementContext): Promise<SubagentToolResult> {
 	if (!params.agent) return result("Specify 'agent' for update.", true);
 	const parsedConfig = configObject(params.config);
 	if (parsedConfig.error) return result(parsedConfig.error, true);
@@ -226,9 +235,9 @@ export function handleUpdate(params: ManagementParams, ctx: ManagementContext): 
 	if (!cfg) return result("config required for update.", true);
 	const warnings: string[] = [];
 	const scopeHint = asDisambiguationScope(params.agentScope);
-	const targetOrError = resolveTarget(
+	const targetOrError = await resolveTarget(
 		params.agent,
-		findAgents(params.agent, ctx.cwd, contextAgentDiscoveryOptions(ctx), scopeHint ?? "both"),
+		await findAgents(params.agent, ctx.cwd, contextAgentDiscoveryOptions(ctx), scopeHint ?? "both"),
 		ctx.cwd,
 		contextAgentDiscoveryOptions(ctx),
 		params.agentScope,
@@ -267,11 +276,11 @@ export function handleUpdate(params: ManagementParams, ctx: ManagementContext): 
 		if (warning) warnings.push(warning);
 	}
 	if (hasKey(cfg, "skills")) {
-		const warning = skillsWarning(ctx.cwd, updated.skills, ctx.getSkillCatalog?.());
+		const warning = await skillsWarning(ctx.cwd, updated.skills, ctx.getSkillCatalog?.());
 		if (warning) warnings.push(warning);
 	}
 	if (updated.name !== oldName) {
-		const renamed = renamePath(
+		const renamed = await renamePath(
 			target.filePath,
 			updated.name,
 			target.source,
@@ -281,7 +290,7 @@ export function handleUpdate(params: ManagementParams, ctx: ManagementContext): 
 		if (renamed.error) return result(renamed.error, true);
 		updated.filePath = renamed.filePath!;
 	}
-	fs.writeFileSync(updated.filePath, serializeAgent(updated), "utf-8");
+	await writeFile(updated.filePath, serializeAgent(updated), "utf-8");
 	const headline =
 		updated.name === oldName
 			? `Updated agent '${updated.name}' at ${updated.filePath}.`
@@ -289,27 +298,27 @@ export function handleUpdate(params: ManagementParams, ctx: ManagementContext): 
 	return result([headline, ...warnings].join("\n"));
 }
 
-function handleDelete(params: ManagementParams, ctx: ManagementContext): SubagentToolResult {
+async function handleDelete(params: ManagementParams, ctx: ManagementContext): Promise<SubagentToolResult> {
 	if (!params.agent) return result("Specify 'agent' for delete.", true);
 	const scopeHint = asDisambiguationScope(params.agentScope);
-	const targetOrError = resolveTarget(
+	const targetOrError = await resolveTarget(
 		params.agent,
-		findAgents(params.agent, ctx.cwd, contextAgentDiscoveryOptions(ctx), scopeHint ?? "both"),
+		await findAgents(params.agent, ctx.cwd, contextAgentDiscoveryOptions(ctx), scopeHint ?? "both"),
 		ctx.cwd,
 		contextAgentDiscoveryOptions(ctx),
 		params.agentScope,
 	);
 	if ("content" in targetOrError) return targetOrError;
 	const target = targetOrError;
-	fs.unlinkSync(target.filePath);
+	await unlink(target.filePath);
 	return result(`Deleted agent '${target.name}' at ${target.filePath}.`);
 }
 
-export function handleManagementAction(
+export async function handleManagementAction(
 	action: string,
 	params: ManagementParams,
 	ctx: ManagementContext,
-): SubagentToolResult {
+): Promise<SubagentToolResult> {
 	switch (action as ManagementAction) {
 		case "list":
 			return handleList(params, ctx);

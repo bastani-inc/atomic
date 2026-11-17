@@ -1,18 +1,17 @@
 import { reportOwnedWebDiagnostic } from "./diagnostics.js";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DIR_NAME } from "@bastani/atomic";
-import { EXA_USAGE_PATH, findReadableConfigPath } from "./config-paths.ts";
+import { EXA_USAGE_PATH } from "./config-paths.ts";
 import { activityMonitor } from "./activity.js";
 import { searchWithExaMcp, callExaMcp } from "./exa-mcp.js";
 import type { ExtractedContent } from "./extract.js";
+import { createAsyncOwnerState, readWebSearchConfigFile } from "./gemini-web-config.ts";
 import type { SearchOptions, SearchResponse } from "./perplexity.js";
-import { createOwnerState } from "./owner-state.js";
 
 const EXA_ANSWER_URL = "https://api.exa.ai/answer";
 const EXA_SEARCH_URL = "https://api.exa.ai/search";
-const CONFIG_PATH = findReadableConfigPath();
 const USAGE_PATH = EXA_USAGE_PATH;
 
 const MONTHLY_LIMIT = 1000;
@@ -52,16 +51,8 @@ export interface ExaSearchOptions extends SearchOptions {
 
 let warnedMonth: string | null = null;
 
-const loadConfig = createOwnerState<WebSearchConfig>(() => {
-	if (!existsSync(CONFIG_PATH)) return {};
-
-	const raw = readFileSync(CONFIG_PATH, "utf-8");
-	try {
-		return JSON.parse(raw) as WebSearchConfig;
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		throw new Error(`Failed to parse ${CONFIG_PATH}: ${message}`);
-	}
+const loadConfig = createAsyncOwnerState<WebSearchConfig>(async () => {
+	return (await readWebSearchConfigFile<WebSearchConfig>()) ?? {};
 });
 
 function normalizeApiKey(value: unknown): string | null {
@@ -70,8 +61,8 @@ function normalizeApiKey(value: unknown): string | null {
 	return normalized.length > 0 ? normalized : null;
 }
 
-function getApiKey(): string | null {
-	return normalizeApiKey(process.env.EXA_API_KEY) ?? normalizeApiKey(loadConfig().exaApiKey);
+async function getApiKey(): Promise<string | null> {
+	return normalizeApiKey(process.env.EXA_API_KEY) ?? normalizeApiKey((await loadConfig()).exaApiKey);
 }
 
 function getCurrentMonth(): string {
@@ -88,9 +79,17 @@ function normalizeUsage(raw: unknown): ExaUsage {
 	return { month: parsedMonth, count: Math.max(0, Math.floor(parsedCount)) };
 }
 
-function readUsage(): ExaUsage {
-	if (!existsSync(USAGE_PATH)) return { month: getCurrentMonth(), count: 0 };
-	const raw = readFileSync(USAGE_PATH, "utf-8");
+async function readUsage(): Promise<ExaUsage> {
+	if (!USAGE_PATH) return { month: getCurrentMonth(), count: 0 };
+	let raw: string;
+	try {
+		raw = await readFile(USAGE_PATH, "utf-8");
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+			return { month: getCurrentMonth(), count: 0 };
+		}
+		throw err;
+	}
 	try {
 		return normalizeUsage(JSON.parse(raw));
 	} catch (err) {
@@ -99,27 +98,37 @@ function readUsage(): ExaUsage {
 	}
 }
 
-function writeUsage(usage: ExaUsage): void {
+async function writeUsage(usage: ExaUsage): Promise<void> {
 	const dir = join(homedir(), CONFIG_DIR_NAME);
-	if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-	writeFileSync(USAGE_PATH, JSON.stringify(usage, null, 2) + "\n");
+	await mkdir(dir, { recursive: true });
+	await writeFile(USAGE_PATH, JSON.stringify(usage, null, 2) + "\n");
 }
 
-function reserveRequestBudget(): { exhausted: true } | null {
-	const usage = readUsage();
+let usageBudgetQueue: Promise<unknown> = Promise.resolve();
 
-	if (usage.count >= MONTHLY_LIMIT) {
-		return { exhausted: true };
-	}
+function reserveRequestBudget(): Promise<{ exhausted: true } | null> {
+	const run = async (): Promise<{ exhausted: true } | null> => {
+		const usage = await readUsage();
 
-	const nextCount = usage.count + 1;
-	if (nextCount >= WARNING_THRESHOLD && warnedMonth !== usage.month) {
-		warnedMonth = usage.month;
-		if (!reportOwnedWebDiagnostic("warning")) console.error(`Exa usage warning: ${nextCount}/${MONTHLY_LIMIT} monthly requests used.`);
-	}
+		if (usage.count >= MONTHLY_LIMIT) {
+			return { exhausted: true };
+		}
 
-	writeUsage({ month: usage.month, count: nextCount });
-	return null;
+		const nextCount = usage.count + 1;
+		if (nextCount >= WARNING_THRESHOLD && warnedMonth !== usage.month) {
+			warnedMonth = usage.month;
+			if (!reportOwnedWebDiagnostic("warning")) console.error(`Exa usage warning: ${nextCount}/${MONTHLY_LIMIT} monthly requests used.`);
+		}
+
+		await writeUsage({ month: usage.month, count: nextCount });
+		return null;
+	};
+	const next = usageBudgetQueue.then(run, run);
+	usageBudgetQueue = next.then(
+		() => undefined,
+		() => undefined,
+	);
+	return next;
 }
 
 function requestSignal(signal?: AbortSignal): AbortSignal {
@@ -206,25 +215,25 @@ function mapInlineContent(results: ExaSearchResponse["results"]): ExtractedConte
 
 export { callExaMcp };
 
-export function isExaAvailable(): boolean {
-	if (getApiKey()) {
-		const usage = readUsage();
+export async function isExaAvailable(): Promise<boolean> {
+	if (await getApiKey()) {
+		const usage = await readUsage();
 		return usage.count < MONTHLY_LIMIT;
 	}
 	return true;
 }
 
-export function hasExaApiKey(): boolean {
-	return !!getApiKey();
+export async function hasExaApiKey(): Promise<boolean> {
+	return !!(await getApiKey());
 }
 
 export async function searchWithExa(query: string, options: ExaSearchOptions = {}): Promise<ExaSearchResult> {
-	const apiKey = getApiKey();
+	const apiKey = await getApiKey();
 	if (!apiKey) {
 		return searchWithExaMcp(query, options);
 	}
 
-	const budget = reserveRequestBudget();
+	const budget = await reserveRequestBudget();
 	if (budget) return budget;
 
 	const useSearch = options.includeContent

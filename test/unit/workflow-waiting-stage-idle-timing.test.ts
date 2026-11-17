@@ -3,6 +3,7 @@ import { createStageControlRegistry } from "../../packages/workflows/src/runs/fo
 import type { StageAdapters } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner-types.js";
 import type { StageLifecycleEvent } from "../../packages/workflows/src/shared/authoring-contract-stage.js";
+import { advanceFakeStep } from "../helpers/fake-timer-io.js";
 import { assert, createStore, mockSession, run, test, workflow } from "./executor-shared.js";
 import { counters, detachingAdapters, FakeCiService } from "./waiting-stage-helpers.js";
 
@@ -37,10 +38,9 @@ function slowPrompts(base: StageAdapters, slow: (stageName: string) => boolean =
 	};
 }
 
-/** Advance fake time in steps until `settled` holds or `limitMs` of fake time passed. */
+/** Advance fake time in steps until `settled` holds or `limitMs` of fake time passed; real file I/O lands between steps. */
 async function advanceUntil(settled: () => boolean, limitMs: number): Promise<void> {
-	for (let elapsed = 0; elapsed < limitMs && !settled(); elapsed += STEP_MS)
-		await vi.advanceTimersByTimeAsync(STEP_MS);
+	for (let elapsed = 0; elapsed < limitMs && !settled(); elapsed += STEP_MS) await advanceFakeStep(STEP_MS);
 }
 
 describe("the run's idle scan watches a stage from the end of its call (#4309)", () => {

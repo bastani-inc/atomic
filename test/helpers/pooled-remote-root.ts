@@ -239,7 +239,7 @@ export async function runPooledRoot(
 		);
 		assert.equal(starts.length, 2);
 		assert.deepEqual(backend.getWorkflow(rootId)?.resources?.coordinator, {
-			host: poolHostId(agentDir),
+			host: await poolHostId(agentDir),
 			database: coordinationDatabase(poolDurableJournal(journal)),
 		});
 

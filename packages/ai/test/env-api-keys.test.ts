@@ -1,5 +1,8 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { findEnvKeys, getEnvApiKey } from "../src/env-api-keys.ts";
+import { findEnvKeys, getEnvApiKey, getEnvApiKeyAsync } from "../src/env-api-keys.ts";
 
 const originalCopilotGitHubToken = process.env.COPILOT_GITHUB_TOKEN;
 const originalGhToken = process.env.GH_TOKEN;
@@ -112,5 +115,28 @@ describe("environment API keys", () => {
 		process.env.ANTHROPIC_API_KEY = "api-key";
 
 		expect(getEnvApiKey("anthropic")).toBe("api-key");
+	});
+
+	it("resolves google-vertex credentials from a passed GOOGLE_APPLICATION_CREDENTIALS file on the first call", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "vertex-adc-"));
+		const credentialsFile = join(dir, "adc.json");
+		writeFileSync(credentialsFile, "{}");
+		try {
+			const env = {
+				GOOGLE_APPLICATION_CREDENTIALS: credentialsFile,
+				GOOGLE_CLOUD_PROJECT: "vertex-project",
+				GOOGLE_CLOUD_LOCATION: "us-central1",
+			};
+			expect(getEnvApiKey("google-vertex", env)).toBe("<authenticated>");
+			expect(await getEnvApiKeyAsync("google-vertex", env)).toBe("<authenticated>");
+			const missingEnv = {
+				...env,
+				GOOGLE_APPLICATION_CREDENTIALS: join(dir, "missing.json"),
+			};
+			expect(getEnvApiKey("google-vertex", missingEnv)).toBeUndefined();
+			expect(await getEnvApiKeyAsync("google-vertex", missingEnv)).toBeUndefined();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

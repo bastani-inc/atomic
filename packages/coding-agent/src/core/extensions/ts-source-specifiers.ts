@@ -127,14 +127,13 @@ function readCached(file: string): string | undefined {
 }
 
 /** Writes only into an existing cache directory, so a removed agent directory is never recreated (#4728). */
-function writeCached(file: string, code: string): void {
+function writeCached(file: string, code: string): Promise<void> {
 	const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
-	try {
-		fs.writeFileSync(temporary, code, "utf8");
-		fs.renameSync(temporary, file);
-	} catch {
-		fs.rmSync(temporary, { force: true });
-	}
+	return fs.promises
+		.writeFile(temporary, code, "utf8")
+		.then(() => fs.promises.rename(temporary, file))
+		.catch(() => fs.promises.rm(temporary, { force: true }))
+		.catch(() => {});
 }
 
 type BabelHost = ReturnType<CreateJiti>;
@@ -165,9 +164,10 @@ export function createTypeScriptSourceSpecifierTransform(
 	createJitiImpl: CreateJiti,
 	id: string,
 	cacheDir: () => string | undefined,
-): JitiTransform {
+): JitiTransform & { flush: () => Promise<void> } {
 	const babelHost = babelHostFor(createJitiImpl, id);
-	return (options: JitiTransformOptions) => {
+	const writes = new Set<Promise<void>>();
+	const transform: JitiTransform = (options: JitiTransformOptions) => {
 		if (!options.filename) return { code: babelHost.transform(options) };
 		const rewrites = planRewrites(options.source, options.filename);
 		const directory = cacheDir();
@@ -181,7 +181,16 @@ export function createTypeScriptSourceSpecifierTransform(
 			...options,
 			babel: { ...options.babel, plugins: [...plugins, [typeScriptSourceSpecifierPlugin, { rewrites }]] },
 		});
-		if (cached && !code.includes("__JITI_ERROR__")) writeCached(cached, code);
+		if (cached && !code.includes("__JITI_ERROR__")) {
+			const write = writeCached(cached, code);
+			writes.add(write);
+			void write.then(() => writes.delete(write));
+		}
 		return { code };
 	};
+	return Object.assign(transform, {
+		async flush(): Promise<void> {
+			while (writes.size > 0) await Promise.all(writes);
+		},
+	});
 }

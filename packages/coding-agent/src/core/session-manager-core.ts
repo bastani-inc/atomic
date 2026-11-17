@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { getCurrentSystemMessage } from "@bastani/atomic-ai";
 import type { ImageContent, Message, TextContent, Usage } from "@bastani/atomic-ai/compat";
 import { getAgentDir } from "../config.js";
-import { createSessionCwdMatcher, normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
+import { createSessionCwdMatcherAsync, normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { SessionHistoryIndex } from "./session-history-index.ts";
@@ -1489,7 +1489,7 @@ export class SessionManager {
 
 	static inMemory(cwd: string = process.cwd(), options?: NewSessionOptions, entries?: FileEntry[]): SessionManager {
 		const manager = new SessionManager(
-			markPrivateMemorySessionStore(new MemorySessionStore(createSessionCwdMatcher)),
+			markPrivateMemorySessionStore(new MemorySessionStore(createSessionCwdMatcherAsync)),
 			cwd,
 			"",
 			options,
@@ -1554,7 +1554,7 @@ export class SessionManager {
 			if (
 				!header ||
 				classifiedWorkflowMetadata(header) ||
-				!createSessionCwdMatcher(resolvePath(cwd))(resolvePath(header.cwd))
+				!(await createSessionCwdMatcherAsync(resolvePath(cwd))(resolvePath(header.cwd)))
 			)
 				return undefined;
 			return store instanceof JsonlSessionStore ? await store.findFile(id) : id;

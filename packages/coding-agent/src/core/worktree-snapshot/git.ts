@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { type ChildProcess, spawn } from "node:child_process";
-import { accessSync, constants, existsSync, statSync } from "node:fs";
+import { constants } from "node:fs";
+import { access, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { getBinDir } from "../../config.js";
@@ -8,6 +9,7 @@ import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createGitEnvironment } from "../../utils/git-env.ts";
 import { isGitProvisionError } from "../../utils/git-errors.ts";
 import { type HostChildProcess, spawnHostProcess } from "../../utils/host-spawn.ts";
+import { pathExists } from "../../utils/path-exists.ts";
 import { redactUrlCredentials } from "../error-contract.ts";
 import { containProcessTree, type ProcessTreeContainment } from "../process-tree-containment.ts";
 import {
@@ -18,7 +20,7 @@ import {
 	WorkspaceSnapshotError,
 } from "./errors.ts";
 import { worktreeSnapshotExcludedRoots } from "./excluded-roots.ts";
-import { canonicalizeWorktreePath } from "./paths.ts";
+import { canonicalizeWorktreePathAsync } from "./paths.ts";
 
 /** The Git executable snapshot operations run, with the environment it needs (a provisioned Git may need some). */
 export interface GitExecutable {
@@ -55,9 +57,9 @@ export function withWorktreeSnapshotGit<T>(
  */
 export async function installedGitUnavailable(): Promise<GitUnavailableError | undefined> {
 	if (resolveExecutable !== provisionedGit) return undefined;
-	const { resolveGitSync } = await import("../../utils/tools-manager.ts");
+	const { resolveInstalledGit } = await import("../../utils/tools-manager.ts");
 	try {
-		resolveGitSync();
+		await resolveInstalledGit();
 		return undefined;
 	} catch (error) {
 		if (isGitUnavailableError(error)) return error;
@@ -268,30 +270,30 @@ async function endTree(tree: ProcessTreeContainment | undefined): Promise<void> 
  * The `unreadable-path` error for a working directory the process cannot list or enter. Spawning in one fails with the
  * same `ENOENT` or `EACCES` as a missing or non-executable Git, so only the directory itself tells them apart.
  */
-function unreadableDirectory(directory: string): WorkspaceSnapshotError | undefined {
+async function unreadableDirectory(directory: string): Promise<WorkspaceSnapshotError | undefined> {
 	try {
-		accessSync(directory, constants.R_OK | constants.X_OK);
+		await access(directory, constants.R_OK | constants.X_OK);
 		return undefined;
 	} catch (error) {
 		return new WorkspaceSnapshotError("unreadable-path", directory, error as Error);
 	}
 }
 
-function isDirectory(path: string): boolean {
+async function isDirectory(path: string): Promise<boolean> {
 	try {
-		return statSync(path).isDirectory();
+		return (await stat(path)).isDirectory();
 	} catch {
 		return false;
 	}
 }
 
 /** The `not-a-repository` refusal for a working directory in a root excluded from snapshots, if it is in one. */
-function excludedDirectory(cwd: string): WorkspaceSnapshotError | undefined {
+async function excludedDirectory(cwd: string): Promise<WorkspaceSnapshotError | undefined> {
 	const roots = worktreeSnapshotExcludedRoots();
 	if (roots.length === 0) return undefined;
-	const directory = canonicalizeWorktreePath(cwd);
+	const directory = await canonicalizeWorktreePathAsync(cwd);
 	for (const root of roots) {
-		const path = relative(canonicalizeWorktreePath(root), directory);
+		const path = relative(await canonicalizeWorktreePathAsync(root), directory);
 		if (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path)) {
 			return new WorkspaceSnapshotError("not-a-repository", cwd);
 		}
@@ -305,7 +307,7 @@ function excludedDirectory(cwd: string): WorkspaceSnapshotError | undefined {
  */
 export async function runGit(args: readonly string[], options: GitRunOptions): Promise<GitRunResult> {
 	options.signal?.throwIfAborted();
-	const excluded = excludedDirectory(options.cwd);
+	const excluded = await excludedDirectory(options.cwd);
 	if (excluded !== undefined) throw excluded;
 	const executable = scopedExecutable.getStore() ?? (await resolveExecutable(options.signal));
 	options.signal?.throwIfAborted();
@@ -320,9 +322,9 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 	// A new session has no controlling terminal. Windows has no such thing, and `detached` there opens a console.
 	const detached = options.nonInteractive === true && process.platform !== "win32";
 	const argv = [...BASE_CONFIG, ...(options.neutral ? NEUTRAL_CONVERSION_CONFIG : []), ...args];
-	const spawnFailure = (error: NodeJS.ErrnoException): Error =>
-		(error.code === "ENOENT" || error.code === "EACCES") && isDirectory(options.cwd)
-			? (unreadableDirectory(options.cwd) ??
+	const spawnFailure = async (error: NodeJS.ErrnoException): Promise<Error> =>
+		(error.code === "ENOENT" || error.code === "EACCES") && (await isDirectory(options.cwd))
+			? ((await unreadableDirectory(options.cwd)) ??
 				new GitUnavailableError(
 					{
 						code: "not-installed",
@@ -339,7 +341,9 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 						operation: gitOperation(args),
 						cwd: options.cwd,
 						exitCode: null,
-						detail: existsSync(options.cwd) ? firstLine(error.message) : "the working directory does not exist",
+						detail: (await pathExists(options.cwd))
+							? firstLine(error.message)
+							: "the working directory does not exist",
 					},
 					error,
 				);
@@ -350,7 +354,7 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 			child = spawnHostProcess(executable.path, argv, { cwd: options.cwd, env, stdio: "pipe", detached });
 		} catch (error) {
 			// Node throws instead of emitting `error` for some failures, such as a path component that is a file.
-			reject(spawnFailure(error as NodeJS.ErrnoException));
+			void spawnFailure(error as NodeJS.ErrnoException).then(reject, reject);
 			return;
 		}
 		const tree = child.pid === undefined ? undefined : containProcessTree(child.pid);
@@ -375,7 +379,7 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 		child.on("error", (error: NodeJS.ErrnoException) =>
 			finish(() => {
 				tree?.close();
-				reject(spawnFailure(error));
+				void spawnFailure(error).then(reject, reject);
 			}),
 		);
 		child.stdin?.on("error", exitStatusReportsClosedInput);

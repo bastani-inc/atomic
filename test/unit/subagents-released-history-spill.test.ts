@@ -163,20 +163,24 @@ async function ownerOf(store: SessionStore, closeStore: () => Promise<void>) {
 	const ended = async () => {
 		await until((record) => record.terminalStatus !== SUBAGENT_CHILD_RELEASED_STATUS && record.state === "terminal");
 		await dispatcher.whenIdle();
-		await until(() => taskCleanups().every((kind) => kind !== "active"));
+		await taskCleanups();
 	};
 	/** Answer the child's call, which wakes it, and wait until its woken run has ended. */
 	const wake = async () => {
 		answer();
 		await ended();
 	};
-	/** The cleanup each of the owner's tasks ended with: `"reaped"` once its session closed cleanly. */
-	const taskCleanups = () => {
-		const watched = host.watchOwnerTasks();
-		assert.ok(watched.ok);
-		const kinds = watched.value.snapshot.tasks.map((task) => task.cleanup.kind);
-		watched.value.dispose();
-		return kinds;
+	const taskCleanups = async () => {
+		const kinds = () => {
+			const watched = host.watchOwnerTasks();
+			assert.ok(watched.ok);
+			const cleanups = watched.value.snapshot.tasks.map((task) => task.cleanup.kind);
+			watched.value.dispose();
+			return cleanups;
+		};
+		for (let turn = 0; turn < 4000 && kinds().includes("active"); turn++)
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		return kinds();
 	};
 	return { owner, launch, answer, ended, wake, until, latest, close, taskCleanups, dispatcher, faux: env.faux };
 }
@@ -212,7 +216,7 @@ test(
 			["toolResult", "assistant"],
 		);
 		assert.equal(h.latest()?.terminalStatus, "ok");
-		assert.deepEqual(h.taskCleanups(), ["reaped", "reaped"]);
+		assert.deepEqual(await h.taskCleanups(), ["reaped", "reaped"]);
 		assert.equal(
 			store.historyBytes().onDisk,
 			entryBytes(history),
@@ -249,7 +253,7 @@ test(
 
 		assert.deepEqual((await store.load(childSessionId)).entries.slice(0, history.length), history);
 		assert.equal(h.latest()?.terminalStatus, "ok");
-		assert.deepEqual(h.taskCleanups(), ["reaped", "reaped"], "releasing the child closed its session cleanly");
+		assert.deepEqual(await h.taskCleanups(), ["reaped", "reaped"], "releasing the child closed its session cleanly");
 		await h.close();
 	},
 	CHILD_TIMEOUT_MS,

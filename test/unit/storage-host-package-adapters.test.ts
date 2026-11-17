@@ -107,6 +107,31 @@ test("storage.adapter names an adapter from a package the host loaded through th
 	}
 });
 
+test("a package name registered by the first of two loaders created together keeps that loader's adapter (#4678)", async () => {
+	const home = makeTempDirectory("storage-host-package-order-");
+	const agentDir = join(home, "agent");
+	try {
+		await writeFileEnsuringDir(join(agentDir, "settings.json"), JSON.stringify({ packages: [] }));
+		await writePackage(join(home, "first"), "@atomic-test/registered-first", { "./adapter.ts": "first" });
+		await writePackage(join(home, "second"), "@atomic-test/registered-first", { "./adapter.ts": "second" });
+		await writeFileEnsuringDir(
+			join(home, "first", "package.json"),
+			`${JSON.stringify({ name: "@atomic-test/registered-first", atomic: { storageAdapters: ["./adapter.ts"] } })}${" ".repeat(4_000_000)}`,
+		);
+
+		new DefaultResourceLoader({ cwd: home, agentDir, additionalExtensionPaths: ["./first"] });
+		new DefaultResourceLoader({ cwd: home, agentDir, additionalExtensionPaths: ["./second"] });
+
+		const adapter = (await loadStorageAdapter("@atomic-test/registered-first", {
+			agentDir,
+			domain: "sessions",
+		})) as Awaited<ReturnType<typeof loadStorageAdapter>> & { readonly name: string };
+		assert.equal(adapter.name, "first");
+	} finally {
+		removeTempDirectory(home);
+	}
+});
+
 test("a process started with its own adapter map, or none, keeps that choice over the host's adapters (#4678)", () => {
 	addHostStorageAdapter("@example/child-env-4678", "/opt/host/adapter.js");
 	const hostMap = (env: NodeJS.ProcessEnv) =>

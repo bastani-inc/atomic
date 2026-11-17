@@ -2670,7 +2670,7 @@ describe("finding node for an action", () => {
 
 	test.skipIf(process.platform === "win32")(
 		"takes the first executable file called node on the search path (#4588)",
-		() => {
+		async () => {
 			const real = programIn(join(fixture.root, "bin-real"), "node");
 			const brokenDirectory = join(fixture.root, "bin-broken");
 			mkdirSync(join(brokenDirectory, "node"), { recursive: true });
@@ -2679,17 +2679,20 @@ describe("finding node for an action", () => {
 			writeFileSync(join(plain, "node"), "not a program", { mode: 0o644 });
 			const path = [brokenDirectory, plain, "", join(fixture.root, "bin-real")].join(delimiter);
 
-			assert.equal(nodeExecutableFor({ PATH: path }, true, "linux"), real);
-			assert.equal(findOnPath("node", { PATH: path }, "linux"), real);
-			assert.equal(findOnPath("absent", { PATH: path }, "linux"), undefined);
-			assert.throws(
-				() => findOnPath("bad\0name", { PATH: path }, "linux"),
+			assert.equal(await nodeExecutableFor({ PATH: path }, true, "linux"), real);
+			assert.equal(await findOnPath("node", { PATH: path }, "linux"), real);
+			assert.equal(await findOnPath("absent", { PATH: path }, "linux"), undefined);
+			await assert.rejects(
+				findOnPath("bad\0name", { PATH: path }, "linux"),
 				(error: unknown) => (error as NodeJS.ErrnoException).code === "ERR_INVALID_ARG_VALUE",
 			);
-			assert.equal(nodeExecutableFor({ PATH: [brokenDirectory, plain].join(delimiter) }, true, "linux"), undefined);
-			assert.equal(nodeExecutableFor({}, true, "linux"), undefined);
 			assert.equal(
-				nodeExecutableFor({ pAtH: path }, true, "linux"),
+				await nodeExecutableFor({ PATH: [brokenDirectory, plain].join(delimiter) }, true, "linux"),
+				undefined,
+			);
+			assert.equal(await nodeExecutableFor({}, true, "linux"), undefined);
+			assert.equal(
+				await nodeExecutableFor({ pAtH: path }, true, "linux"),
 				undefined,
 				"a PATH of another case is not PATH",
 			);
@@ -2698,20 +2701,20 @@ describe("finding node for an action", () => {
 
 	test.skipIf(process.platform === "win32")(
 		"looks for node.exe on a Path variable of any case on Windows (#4588)",
-		() => {
+		async () => {
 			const real = programIn(join(fixture.root, "bin-windows"), "node.exe");
 			programIn(join(fixture.root, "bin-posix"), "node");
 
-			assert.equal(nodeExecutableFor({ pAtH: join(fixture.root, "bin-windows") }, true, "win32"), real);
-			assert.equal(nodeExecutableFor({ PATH: join(fixture.root, "bin-windows") }, true, "win32"), real);
-			assert.equal(nodeExecutableFor({ pAtH: join(fixture.root, "bin-posix") }, true, "win32"), undefined);
-			assert.equal(nodeExecutableFor({ pAtH: join(fixture.root, "bin-windows") }, true, "linux"), undefined);
+			assert.equal(await nodeExecutableFor({ pAtH: join(fixture.root, "bin-windows") }, true, "win32"), real);
+			assert.equal(await nodeExecutableFor({ PATH: join(fixture.root, "bin-windows") }, true, "win32"), real);
+			assert.equal(await nodeExecutableFor({ pAtH: join(fixture.root, "bin-posix") }, true, "win32"), undefined);
+			assert.equal(await nodeExecutableFor({ pAtH: join(fixture.root, "bin-windows") }, true, "linux"), undefined);
 		},
 	);
 
-	test("runs under the node that runs Atomic unless Bun hosts it (#4588)", () => {
-		assert.equal(nodeExecutableFor({}, false, "linux"), process.execPath);
-		assert.equal(nodeExecutableFor({}, false, "win32"), process.execPath);
+	test("runs under the node that runs Atomic unless Bun hosts it (#4588)", async () => {
+		assert.equal(await nodeExecutableFor({}, false, "linux"), process.execPath);
+		assert.equal(await nodeExecutableFor({}, false, "win32"), process.execPath);
 	});
 
 	test("runs a Node.js action under the node that runs Atomic, whatever the action's PATH holds (#4588)", async () => {

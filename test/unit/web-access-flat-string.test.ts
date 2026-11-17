@@ -77,8 +77,8 @@ function readBareReadmeInFrame(localPath: string): string {
 	return content.length > README_LIMIT ? content.slice(0, README_LIMIT) + README_SUFFIX : content;
 }
 
-function readReadmeInFrame(localPath: string): string {
-	const readme = readReadme(localPath);
+async function readReadmeInFrame(localPath: string): Promise<string> {
+	const readme = await readReadme(localPath);
 	if (readme === null) throw new Error("expected readReadme to find README.md");
 	return readme;
 }
@@ -97,12 +97,14 @@ function totalMemoryAfterCollection(): number {
 	return process.memoryUsage().heapUsed + v8.getHeapStatistics().external_memory;
 }
 
-function retainedReadme(read: (localPath: string) => string): { retained: number; summary: string } {
+async function retainedReadme(
+	read: (localPath: string) => string | Promise<string>,
+): Promise<{ retained: number; summary: string }> {
 	const localPath = mkdtempSync(join(tmpdir(), "web-access-flat-string-"));
 	try {
 		writeLargeReadme(localPath);
 		const baseline = totalMemoryAfterCollection();
-		const summary = read(localPath);
+		const summary = await read(localPath);
 		const retained = totalMemoryAfterCollection() - baseline;
 		// Read the summary after measuring so it is not collected early.
 		assert.equal(summary.length, README_LIMIT + README_SUFFIX.length);
@@ -136,8 +138,8 @@ describe("web-access flattenTruncatedString", () => {
 		}
 	});
 
-	test("a bare file-backed slice keeps its parent alive — the external probe can observe retention", () => {
-		const { retained, summary } = retainedReadme(readBareReadmeInFrame);
+	test("a bare file-backed slice keeps its parent alive — the external probe can observe retention", async () => {
+		const { retained, summary } = await retainedReadme(readBareReadmeInFrame);
 		assert.equal(summary, "r".repeat(README_LIMIT) + README_SUFFIX);
 		assert.ok(
 			retained > RETAINED_PARENT_BYTES,
@@ -145,8 +147,8 @@ describe("web-access flattenTruncatedString", () => {
 		);
 	});
 
-	test("readReadme returns exact text and releases the README source", () => {
-		const { retained, summary } = retainedReadme(readReadmeInFrame);
+	test("readReadme returns exact text and releases the README source", async () => {
+		const { retained, summary } = await retainedReadme(readReadmeInFrame);
 		assert.equal(summary, "r".repeat(README_LIMIT) + README_SUFFIX);
 		// A release can make the signed delta negative when external memory is reclaimed during the measurement.
 		assert.ok(

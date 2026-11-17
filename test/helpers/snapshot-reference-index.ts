@@ -225,7 +225,7 @@ export async function fullScanRetainedHashes(journal: RunJournal, sessions: Sess
 		}
 		for (const leaf of entries.filter((entry) => !parents.has(entry.id))) {
 			const branch = getBranchPath(leaf.id, byId);
-			const current = currentWorktreeSnapshots({
+			const current = await currentWorktreeSnapshots({
 				getBranch: () => branch,
 				getWorktreeRootMappings: () =>
 					branch.flatMap((entry) => (entry.type === "worktree_snapshot" && entry.restore ? [entry.restore] : [])),

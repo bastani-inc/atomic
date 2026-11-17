@@ -1,4 +1,4 @@
-import { registerExtensionContextRetirementEffect, reportDebug } from "@bastani/atomic";
+import { registerExtensionContextRetirementEffect, reportDebugAsync as reportDebug } from "@bastani/atomic";
 import { outsideWorkflowExecutions } from "../durable/execution-context-boundary.js";
 import { requireStoreDurableBackend } from "../durable/store-backend.js";
 import {
@@ -369,9 +369,9 @@ export function createWorkflowExtensionRuntimeState(
 	 * D1/D10: resolve a workflow definition's source path (discovery filePath,
 	 * else the builtin source probe) for the possible-stage scan at launch.
 	 */
-	const resolvePossibleStageEntry = (normalizedName: string): string | undefined =>
+	const resolvePossibleStageEntry = async (normalizedName: string): Promise<string | undefined> =>
 		discoveryRef.current?.sources.find((source) => source.id === normalizedName)?.filePath ??
-		resolveBuiltinDefinitionSource(normalizedName);
+		(await resolveBuiltinDefinitionSource(normalizedName));
 	const startupDiscovery = discoverStartupWorkflowsSync();
 	const runtimeRef: { current: ExtensionRuntime } = {
 		current: createExtensionRuntime({

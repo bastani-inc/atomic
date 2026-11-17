@@ -6,6 +6,7 @@ import {
 	isStageReleasedError,
 	type StageReleasedError,
 } from "../../packages/workflows/src/shared/stage-wait-errors.js";
+import { advanceFakeStep } from "../helpers/fake-timer-io.js";
 import { assert, createStore, run, test, workflow } from "./executor-shared.js";
 import { counters, detachingAdapters, FakeCiService } from "./waiting-stage-helpers.js";
 
@@ -123,7 +124,7 @@ describe("a stage the run's idle scan released, read by its workflow (#4309)", (
 				finished = true;
 			});
 			for (let elapsed = 0; elapsed < FAKE_TIME_LIMIT_MS && !finished; elapsed += STEP_MS)
-				await vi.advanceTimersByTimeAsync(STEP_MS);
+				await advanceFakeStep(STEP_MS);
 			const result = await running;
 
 			assert.equal(result.status, "completed", result.error);

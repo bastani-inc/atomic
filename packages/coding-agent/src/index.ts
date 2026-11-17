@@ -46,7 +46,12 @@ export type {
 	ToolRenderers,
 	ToolScriptAccess,
 } from "./core/extensions/tool-types.ts";
-export { type TakeoverMutex, takeTakeoverMutex } from "./core/lock-takeover.js";
+export {
+	type AsyncTakeoverMutex,
+	type TakeoverMutex,
+	takeTakeoverMutex,
+	takeTakeoverMutexAsync,
+} from "./core/lock-takeover.js";
 export { resolveRestoredModelReference } from "./core/model-resolver-initial.ts";
 export * from "./core/resume/index.ts";
 export type { UsageEntry } from "./core/session-manager.ts";
@@ -68,9 +73,12 @@ export * from "./core/storage/index.js";
 export {
 	type ProcessStorageChoice,
 	processSharedStorageSelection,
+	processSharedStorageSelectionAsync,
 	processStorageEnvironment,
+	processStorageEnvironmentAsync,
 	type StorageDomain,
 	selectProcessStorage,
+	selectProcessStorageAsync,
 } from "./core/storage/process-selection.js";
 export { JsonlSessionStore } from "./core/storage/session/jsonl-session-store.js";
 // Internal trusted-host task integration (not model authority).
@@ -448,13 +456,16 @@ export {
 } from "./core/compaction/index.ts";
 export {
 	appendDebugRecord,
+	appendDebugRecordAsync,
 	DEBUG_AREA_VARIABLES,
 	type DebugArea,
 	type DebugFields,
 	type DebugValue,
+	flushDebugLog,
 	getDebugLogFailure,
 	isDebugEnabled,
 	reportDebug,
+	reportDebugAsync,
 } from "./core/debug.ts";
 export {
 	DebugConfigError,
@@ -656,6 +667,12 @@ export type {
 	ResolvedResource,
 } from "./core/package-manager.ts";
 export { DefaultPackageManager } from "./core/package-manager.ts";
+// Shell utilities
+export {
+	containProcessTree,
+	type ProcessTreeContainment,
+	processTreeEnded,
+} from "./core/process-tree-containment.ts";
 export { formatProjectTrustPrompt } from "./core/project-trust.ts";
 export {
 	applyProviderRateLimitObservation,
@@ -688,7 +705,9 @@ export type {
 } from "./core/resource-loader.ts";
 export {
 	buildSkillCatalog,
+	buildSkillCatalogAsync,
 	DefaultResourceLoader,
+	emptySkillCatalog,
 	getSkillCatalog,
 	loadProjectContextFiles,
 } from "./core/resource-loader.ts";
@@ -849,6 +868,7 @@ export {
 	isRecoverableRestoreFailure,
 	type MissingSnapshotRecord,
 	mapRestoredPath,
+	mapRestoredPathAsync,
 	openSessionInWorktree,
 	type ResumeSessionWorktreeOptions,
 	resumeSessionWorktree,
@@ -1034,8 +1054,11 @@ export {
 } from "./core/tools/shell-task-status.ts";
 export {
 	getProjectTrustOptions,
+	getProjectTrustOptionsAsync,
 	hasProjectTrustInputs,
+	hasProjectTrustInputsAsync,
 	hasTrustRequiringProjectResources,
+	hasTrustRequiringProjectResourcesAsync,
 	type ProjectTrustDecision,
 	type ProjectTrustOption,
 	ProjectTrustStore,
@@ -1111,6 +1134,7 @@ export {
 	workspace,
 	workspaceChangeSet,
 	workspaceSessionCwd,
+	workspaceSessionCwdAsync,
 } from "./core/workspace/index.ts";
 export {
 	findLlamaServerError,
@@ -1129,6 +1153,7 @@ export {
 	type McpServerConfigPatch,
 	type McpServerEntry,
 	updateMcpServerConfig,
+	updateMcpServerConfigAsync,
 } from "./extensions/mcp/config.ts";
 export { createMcpExtension, type McpExtensionOptions } from "./extensions/mcp/index.js";
 export { McpOAuthCredentialStore } from "./extensions/mcp/oauth.ts";
@@ -1341,18 +1366,27 @@ export {
 } from "./utils/managed-tool-errors.ts";
 export { detectSupportedImageMimeTypeFromFile } from "./utils/mime.ts";
 export { isPathInside, type PathInsideApi } from "./utils/path-inside.ts";
-// Shell utilities
-export { getPowerShellConfig, getShellConfig } from "./utils/shell.ts";
+export {
+	getPowerShellConfig,
+	getShellConfig,
+	killChildProcessTree,
+	killProcessTree,
+	markDetachedChildExited,
+	trackDetachedChildPid,
+	untrackDetachedChildPid,
+} from "./utils/shell.ts";
 // Terminal-safe display text
 export { terminalDisplayText } from "./utils/terminal-text.ts";
 export {
 	type GitToolStatus,
 	type GitUpdateStatus,
 	getGitStatus,
+	getGitStatusAsync,
 	type ResolvedGit,
 	type ResolvedGitSource,
 	type ResolveGitOptions,
 	resolveGit,
 	resolveGitSync,
+	resolveInstalledGit,
 	type ToolStatus as ManagedToolStatus,
 } from "./utils/tools-manager.ts";

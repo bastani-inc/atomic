@@ -54,7 +54,7 @@ export function registerWebSearchTool(pi: ExtensionAPI, deps: RegisterWebSearchT
 				? params.queries
 				: (params.query !== undefined ? [params.query] : []);
 			const queryList = normalizeQueryList(rawQueryList);
-			const configWorkflow = loadConfigForExtensionInit().workflow;
+			const configWorkflow = (await loadConfigForExtensionInit()).workflow;
 			// The curator needs a person at a browser. A session that renders UI but has no human input
 			// (a subagent or workflow stage) can never complete it, so it gets raw results instead.
 			const canCurate = ctx?.hasUI !== false && ctx?.hasHumanInput !== false;
@@ -239,7 +239,7 @@ export function registerWebSearchTool(pi: ExtensionAPI, deps: RegisterWebSearchT
 			const searchResults: QueryResultData[] = [];
 			const allUrls: string[] = [];
 			const allInlineContent: ExtractedContent[] = [];
-			const resolvedProvider = normalizeProviderInput(params.provider ?? loadConfig().provider);
+			const resolvedProvider = normalizeProviderInput(params.provider ?? (await loadConfig()).provider);
 
 			for (let i = 0; i < queryList.length; i++) {
 				const query = queryList[i];

@@ -5,7 +5,14 @@ import { createRequire, syncBuiltinESMExports } from "node:module";
 import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, describe, test } from "vitest";
-import { acquireSpawnLock, releaseSpawnLock, replaceStaleSpawnLock } from "../../packages/intercom/broker/spawn.js";
+import {
+	acquireSpawnLock,
+	acquireSpawnLockAsync,
+	releaseSpawnLock,
+	releaseSpawnLockAsync,
+	replaceStaleSpawnLock,
+	replaceStaleSpawnLockAsync,
+} from "../../packages/intercom/broker/spawn.js";
 import {
 	isAbandoned,
 	PARKED_FILE_MAX_AGE_MS,
@@ -72,7 +79,7 @@ describe("stale spawn lock replacement (#5132)", () => {
 		assert.equal(fileExistsSync(path), false);
 	});
 
-	test("a stale lock is replaced while it is still the one inspected (#5132)", () => {
+	test("a stale lock is replaced while it is still the one inspected (#5132)", async () => {
 		const { path, content } = staleLock();
 		replaceStaleSpawnLock(content, path);
 		assert.equal(fileExistsSync(path), false);
@@ -80,6 +87,15 @@ describe("stale spawn lock replacement (#5132)", () => {
 		const owner = acquireSpawnLock(path);
 		assert.ok(owner !== undefined);
 		releaseSpawnLock(owner, path);
+
+		const asyncStale = staleLock();
+		await replaceStaleSpawnLockAsync(asyncStale.content, asyncStale.path);
+		assert.equal(fileExistsSync(asyncStale.path), false);
+		const asyncOwner = await acquireSpawnLockAsync(asyncStale.path);
+		assert.ok(asyncOwner !== undefined);
+		assert.equal(await acquireSpawnLockAsync(asyncStale.path), undefined);
+		await releaseSpawnLockAsync(asyncOwner, asyncStale.path);
+		assert.equal(fileExistsSync(asyncStale.path), false);
 	});
 
 	test(

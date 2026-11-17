@@ -13,7 +13,7 @@ import {
   parseSubagentIntercomPayload,
   parseSubagentResultBarrier,
 } from "./intercom-utils.js";
-import { DeliveredMessageCache } from "./broker/delivered-message-cache.js";
+import { InMemoryDeliveredMessageCache } from "./broker/delivered-message-cache.js";
 import { buildSendSignature } from "./broker/send-signature.js";
 import { emitGlobalTerminalOrderingBarrier } from "./terminal-ordering-barrier.js";
 
@@ -30,7 +30,7 @@ interface SubagentRelayDeps {
   resolveSessionTarget(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
   homeGroup?(): string;
   /** Internal test seam for exercising authority pressure and storage failure. */
-  localDeliveryAuthority?: DeliveredMessageCache;
+  localDeliveryAuthority?: Pick<InMemoryDeliveredMessageCache, "reserve" | "accept" | "forget">;
 }
 
 async function dispatchRelayFallback(
@@ -55,7 +55,7 @@ async function dispatchRelayFallback(
 
 export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps): void {
   const { getLiveContext, currentSessionTargetMatches, sendIncomingMessage, ensureConnected, resolveSessionTarget } = deps;
-  const localDeliveries = deps.localDeliveryAuthority ?? new DeliveredMessageCache();
+  const localDeliveries = deps.localDeliveryAuthority ?? new InMemoryDeliveredMessageCache();
   function deliverLocalSubagentRelayMessage(
     sender: "subagent-control" | "subagent-result",
     status: string,

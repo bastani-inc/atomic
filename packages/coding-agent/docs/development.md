@@ -40,6 +40,26 @@ Extensions and SDK code can check and write debug output with the [debug output 
 
 Unlike debug mode, each snapshot includes conversation content, and every `/debug` adds another one. Atomic never trims or rotates the file, so it keeps every earlier snapshot and debug line until you delete it. Delete the file before reproducing a problem you want to share, and review it before sharing.
 
+### Finding what freezes the UI
+
+If the interactive UI stalls, with keystrokes or streamed text showing up late, set `ATOMIC_EVENT_LOOP_BLOCK_MS` to the shortest stall you want to catch, reproduce the problem, and quit:
+
+```bash
+ATOMIC_EVENT_LOOP_BLOCK_MS=100 atomic
+```
+
+The process that draws the UI (`host`) and the engine that runs the agent and extensions (`engine`) each append JSON lines to `~/.atomic/agent/event-loop-blocks.jsonl`, or to the file `ATOMIC_EVENT_LOOP_BLOCK_LOG` names. Without an isolated engine, everything runs in the `host`.
+
+| `type` | Written | Fields |
+|--------|---------|--------|
+| `start` | When the process starts watching | `role`, `pid`, `runtime`, `thresholdMs`, and how stacks are taken |
+| `block` | After each stall of at least the threshold | `at` (when the UI was due to respond), `durationMs`, the number of stack `samples`, `hotFrames` (the functions most samples were in, most specific first) and the most common full `stacks` |
+| `delay` | Once the process is ready for input (the `host` as it draws its first frame, the `engine` once it has loaded its session and extensions), once it starts to quit, and as it exits | `phase` (`startup`, `session` or `shutdown`), and how late the process responded: `p50Ms`, `p99Ms`, `maxMs` over `ticks` checks. A stall counts in the phase it started in |
+
+Records hold function names and file paths, never prompts or message text. Atomic never trims the file, so delete it before reproducing a problem.
+
+While the variable is set, each process checks itself every few milliseconds. The npm package (Node) attaches a debugger to a stalled process to read its stacks, which lengthens that stall, typically by tens of milliseconds. The standalone binary instead keeps a sampling profile, which costs a few percent of CPU while code runs. Unset, it costs nothing.
+
 ## PDF and engine diagnostics
 
 PDF conversion and engine diagnostics appear as status messages in interactive sessions

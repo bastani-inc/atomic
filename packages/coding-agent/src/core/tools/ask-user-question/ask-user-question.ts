@@ -5,7 +5,7 @@ import { experimentalToolSamplingProperty } from "../../experimental.ts";
 import { getHostQuestionnaire } from "../../extensions/host-input.js";
 import type { ToolDefinition } from "../../extensions/types.ts";
 import type { ExtensionUIContext } from "../../extensions/ui-types.js";
-import { loadConfig, validateGuidanceFields } from "./config.ts";
+import { type AskUserQuestionConfig, loadConfig, loadedConfig, validateGuidanceFields } from "./config.ts";
 import { QuestionnaireSession } from "./state/questionnaire-session.ts";
 import { ROW_INTENT_META, sentinelsToAppend } from "./state/row-intent.ts";
 import { formatAnswerScalar } from "./tool/format-answer.ts";
@@ -79,7 +79,20 @@ export const askUserQuestionToolSystemPromptContribution = Object.freeze({
 export function createAskUserQuestionToolDefinition(options?: {
 	readonly chatAsOption?: boolean;
 }): ToolDefinition<typeof QuestionParamsSchema, unknown> {
-	const guidance = validateGuidanceFields(loadConfig().guidance);
+	return defineAskUserQuestionTool(loadConfig(), options);
+}
+
+export function createLoadedAskUserQuestionToolDefinition(options?: {
+	readonly chatAsOption?: boolean;
+}): ToolDefinition<typeof QuestionParamsSchema, unknown> {
+	return defineAskUserQuestionTool(loadedConfig(), options);
+}
+
+function defineAskUserQuestionTool(
+	config: AskUserQuestionConfig,
+	options: { readonly chatAsOption?: boolean } | undefined,
+): ToolDefinition<typeof QuestionParamsSchema, unknown> {
+	const guidance = validateGuidanceFields(config.guidance);
 	return {
 		name: "ask_user_question",
 		exposure: "model-only",

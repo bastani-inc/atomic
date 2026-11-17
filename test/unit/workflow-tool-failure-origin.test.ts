@@ -158,6 +158,8 @@ describe("ctx.tool failure origin", () => {
 			},
 			setLabel(_entryId: string, _label: string): void {},
 		};
+		const firstEntered = Promise.withResolvers<void>();
+		const secondEntered = Promise.withResolvers<void>();
 		const firstRelease = Promise.withResolvers<void>();
 		const secondRelease = Promise.withResolvers<void>();
 		const pending = run(
@@ -168,10 +170,12 @@ describe("ctx.tool failure origin", () => {
 				outputs: {},
 				run: async (ctx) => {
 					void ctx.tool("first-admitted", {}, async () => {
+						firstEntered.resolve();
 						await firstRelease.promise;
 						throw new Error("FIRST_ERROR");
 					});
 					void ctx.tool("second-admitted", {}, async () => {
+						secondEntered.resolve();
 						await secondRelease.promise;
 						throw new Error("SECOND_ERROR");
 					});
@@ -182,6 +186,7 @@ describe("ctx.tool failure origin", () => {
 			{ store, persistence },
 		);
 
+		await Promise.all([firstEntered.promise, secondEntered.promise]);
 		secondRelease.resolve();
 		await sleep(0);
 		firstRelease.resolve();

@@ -6,7 +6,7 @@ import { isDeepStrictEqual } from "node:util";
 import { afterEach, describe, it, vi } from "vitest";
 import type { ExtensionToolContext } from "../src/core/extensions/types.js";
 import { createToolDefinition } from "../src/core/tools/index.js";
-import type { InternalResourceContext } from "../src/core/tools/resource-selectors.js";
+import { type InternalResourceContext, readZipEntries } from "../src/core/tools/resource-selectors.js";
 import { invalidateNativeSearchCache } from "../src/core/tools/search-native.js";
 import { createWriteToolDefinition } from "../src/core/tools/write.js";
 import { TestSqliteDatabase } from "./helpers/sqlite.js";
@@ -123,6 +123,22 @@ describe("other selector targets", () => {
 		const result = await write(dir, "bundle.zip:notes.txt", "hello");
 		assert.deepEqual(result.content, [{ type: "text", text: "Successfully wrote to bundle.zip:notes.txt" }]);
 		assert.deepEqual(result.details, { resolvedPath: join(dir, "bundle.zip") });
+	});
+
+	it("keeps every member, in call order, when writes to one archive run concurrently", async () => {
+		const dir = await tempDir();
+		await Promise.all([
+			write(dir, "bundle.zip:a.txt", "a"),
+			write(dir, "bundle.zip:b.txt", "b"),
+			write(dir, "bundle.zip:a.txt", "a again"),
+			write(dir, "bundle.zip:c.txt", "c"),
+		]);
+		const entries = await readZipEntries(join(dir, "bundle.zip"));
+		assert.deepEqual([...entries].map(([name, data]) => [name, data.toString("utf8")]).sort(), [
+			["a.txt", "a again"],
+			["b.txt", "b"],
+			["c.txt", "c"],
+		]);
 	});
 
 	it("routes internal URLs through the session router", async () => {

@@ -21,7 +21,7 @@ import {
 } from "./tool-selection.ts";
 import { createLocalBashOperations } from "./tools/bash.js";
 import { createHistoryRouter } from "./tools/history-protocol.ts";
-import { createAllToolDefinitions, getDefaultToolNames } from "./tools/index.js";
+import { createToolDefinitionsFor, defaultToolNamesFor } from "./tools/index.js";
 import { rejectMalformedToolArguments } from "./tools/malformed-tool-arguments.ts";
 import { createLocalPowerShellOperations } from "./tools/powershell.ts";
 import { createSessionHistoryToolDefinition } from "./tools/session-history.ts";
@@ -269,6 +269,7 @@ export function _buildRuntime(
 		flagValues?: Map<string, boolean | string>;
 		includeAllExtensionTools?: boolean;
 		preserveRunner?: boolean;
+		powerShellAvailable: boolean;
 	},
 ): void {
 	const autoResizeImages = this.settingsManager.getImageAutoResize();
@@ -286,41 +287,45 @@ export function _buildRuntime(
 					createToolDefinitionFromAgentTool(tool),
 				]),
 			)
-		: createAllToolDefinitions(this._cwd, {
-				read: { autoResizeImages },
-				bash: {
-					get commandPrefix() {
-						return shellCommandPrefix();
+		: createToolDefinitionsFor(
+				this._cwd,
+				{
+					read: { autoResizeImages },
+					bash: {
+						get commandPrefix() {
+							return shellCommandPrefix();
+						},
+						shellPath,
+						get taskOwner() {
+							return getTaskOwner();
+						},
+						operations: {
+							exec: (command, cwd, options) =>
+								createLocalBashOperations({ shellPath, taskOwner: getTaskOwner() }).exec(command, cwd, options),
+						},
+						// Resolved per execution so bash spill files follow the live
+						// transcript session across fork/branch/resume.
+						sessionTempDir: () => resolveSessionTempDirPath(this.sessionManager.getSessionId()),
 					},
-					shellPath,
-					get taskOwner() {
-						return getTaskOwner();
+					powershell: {
+						get taskOwner() {
+							return getTaskOwner();
+						},
+						operations: {
+							exec: (command, cwd, options) =>
+								createLocalPowerShellOperations({ taskOwner: getTaskOwner() }).exec(command, cwd, options),
+						},
 					},
-					operations: {
-						exec: (command, cwd, options) =>
-							createLocalBashOperations({ shellPath, taskOwner: getTaskOwner() }).exec(command, cwd, options),
+					kill: {
+						taskOwner: getTaskOwner,
 					},
-					// Resolved per execution so bash spill files follow the live
-					// transcript session across fork/branch/resume.
-					sessionTempDir: () => resolveSessionTempDirPath(this.sessionManager.getSessionId()),
+					search: {
+						contextBefore: this.settingsManager.getSearchContextBefore(),
+						contextAfter: this.settingsManager.getSearchContextAfter(),
+					},
 				},
-				powershell: {
-					get taskOwner() {
-						return getTaskOwner();
-					},
-					operations: {
-						exec: (command, cwd, options) =>
-							createLocalPowerShellOperations({ taskOwner: getTaskOwner() }).exec(command, cwd, options),
-					},
-				},
-				kill: {
-					taskOwner: getTaskOwner,
-				},
-				search: {
-					contextBefore: this.settingsManager.getSearchContextBefore(),
-					contextAfter: this.settingsManager.getSearchContextAfter(),
-				},
-			});
+				options.powerShellAvailable,
+			);
 
 	this._baseToolDefinitions = new Map(
 		Object.entries(baseToolDefinitions).map(([name, tool]) => [name, tool as ToolDefinition]),
@@ -357,7 +362,7 @@ export function _buildRuntime(
 
 	const defaultActiveToolNames = this._baseToolsOverride
 		? Object.keys(this._baseToolsOverride)
-		: [...getDefaultToolNames()];
+		: [...defaultToolNamesFor(options.powerShellAvailable)];
 	const baseActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
 	this._refreshToolRegistry({
 		activeToolNames: baseActiveToolNames,

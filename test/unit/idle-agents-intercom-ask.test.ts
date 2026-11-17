@@ -29,6 +29,8 @@ import { liveChildEnvironment } from "../helpers/live-child-environment.js";
 import { agent } from "../helpers/released-task-launch.js";
 import { trackSessions } from "../helpers/track-sessions.js";
 
+const TRANSIENT_RESOURCES_SETTLE_MS = 5_000;
+
 const CHILD_LOAD_TIMEOUT_MS = 120_000;
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -180,12 +182,14 @@ test(
 			}),
 		);
 		assert.deepEqual(grown, { records: 1 });
-		const live = liveAsyncResources();
-		assert.deepEqual(
-			Object.fromEntries(Object.entries(live).filter(([type, count]) => count > (resources[type] ?? 0))),
-			{},
-			"no timer, socket or process grows with the released children",
-		);
+		const grownResources = () =>
+			Object.fromEntries(
+				Object.entries(liveAsyncResources()).filter(([type, count]) => count > (resources[type] ?? 0)),
+			);
+		const settleBy = Date.now() + TRANSIENT_RESOURCES_SETTLE_MS;
+		while (Object.keys(grownResources()).length > 0 && Date.now() < settleBy)
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.deepEqual(grownResources(), {}, "no timer, socket or process grows with the released children");
 		assert.deepEqual(
 			{ scheduled: dispatcher.stats().scheduled, timers: dispatcher.stats().timers },
 			{ scheduled: 4, timers: 1 },

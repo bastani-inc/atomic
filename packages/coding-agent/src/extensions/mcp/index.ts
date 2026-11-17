@@ -48,11 +48,11 @@ import { TOOL_SEARCH_TOOL_NAME } from "../tool-search/tool.js";
 import {
 	getMcpToolExposure,
 	type LoadedMcpConfig,
-	loadMcpConfig,
+	loadMcpConfigAsync,
 	type McpExposure,
 	type McpServerConfigPatch,
 	type McpServerEntry,
-	updateMcpServerConfig,
+	updateMcpServerConfigAsync,
 } from "./config.ts";
 import type { McpOAuthCredentialStore, McpSignInPrompt } from "./oauth.ts";
 import {
@@ -79,7 +79,7 @@ export type { McpTransportFactory } from "./runtime.ts";
 
 export interface McpExtensionOptions {
 	/** Defaults to reading `mcp.json` from the agent directory and the trusted project. */
-	loadConfig?: (ctx: ExtensionContext) => LoadedMcpConfig;
+	loadConfig?: (ctx: ExtensionContext) => LoadedMcpConfig | Promise<LoadedMcpConfig>;
 	/** Defaults to stdio and streamable HTTP transports built from the server config. */
 	createTransport?: McpTransportFactory;
 	/** Defaults to `mcp-auth.json` in the agent directory. */
@@ -92,7 +92,7 @@ export interface McpExtensionOptions {
 	 * Saves `/mcp` changes to the server's config file: its project `override` when set, else its
 	 * `source`. Defaults to editing that `mcp.json`.
 	 */
-	updateConfig?: (entry: McpServerEntry, patch: McpServerConfigPatch) => void;
+	updateConfig?: (entry: McpServerEntry, patch: McpServerConfigPatch) => void | Promise<void>;
 	/**
 	 * How long the first prompt waits for servers with `direct` tools that are still connecting at
 	 * startup, in milliseconds. Their tools become available when they connect. Other servers are
@@ -322,7 +322,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		const updateConfig =
 			options.updateConfig ??
 			((entry, patch) =>
-				updateMcpServerConfig(entry.override ?? entry.source, entry.name, patch, {
+				updateMcpServerConfigAsync(entry.override ?? entry.source, entry.name, patch, {
 					override: entry.override !== undefined,
 				}));
 
@@ -598,22 +598,37 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		 * Stored tokens of servers waiting for a sign-in, as they were when the sign-in was needed.
 		 * `pi mcp login` in another process (for example run by the agent) changes them.
 		 */
-		const tokensAtSignIn = new Map<McpServerConnection, string>();
-		const storedTokens = (connection: McpServerConnection): string => {
+		const tokensAtSignIn = new Map<McpServerConnection, Promise<string>>();
+		const storedTokens = async (connection: McpServerConnection): Promise<string> => {
 			const url = connection.oauthUrl;
-			return url && credentials ? JSON.stringify(credentials.tokens(connection.name, url) ?? null) : "null";
+			return url && credentials
+				? JSON.stringify((await credentials.tokensAsync(connection.name, url)) ?? null)
+				: "null";
 		};
 		const onConnectionChange = (connection: McpServerConnection) => {
 			if (connection.state !== "needs-auth") tokensAtSignIn.delete(connection);
-			else if (!tokensAtSignIn.has(connection)) tokensAtSignIn.set(connection, storedTokens(connection));
+			else if (!tokensAtSignIn.has(connection)) {
+				const tokens = storedTokens(connection);
+				tokens.catch(() => {});
+				tokensAtSignIn.set(connection, tokens);
+			}
 			emitChange();
 		};
 		/** Reconnect servers that need a sign-in when their credentials were stored since. */
 		const reconnectSignedIn = async (ctx: ExtensionContext) => {
-			const signedIn = [...tokensAtSignIn].filter(([connection, tokens]) => storedTokens(connection) !== tokens);
+			const compared = await Promise.all(
+				[...tokensAtSignIn].map(async ([connection, tokens]) => ({
+					connection,
+					tokens,
+					changed: (await storedTokens(connection)) !== (await tokens),
+				})),
+			);
+			const signedIn = compared.filter(({ changed }) => changed);
 			if (signedIn.length === 0) return;
-			for (const [connection] of signedIn) tokensAtSignIn.delete(connection);
-			await Promise.allSettled(signedIn.map(([connection]) => connection.reconnect()));
+			for (const { connection, tokens } of signedIn) {
+				if (tokensAtSignIn.get(connection) === tokens) tokensAtSignIn.delete(connection);
+			}
+			await Promise.allSettled(signedIn.map(({ connection }) => connection.reconnect()));
 			ensureDiscoveryActive(ctx);
 		};
 
@@ -712,12 +727,16 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		 * Save a config change; returns an error message when the file could not be updated. Changes to
 		 * registered servers only apply to the current session. `inProject` adds a project override.
 		 */
-		const saveConfig = (server: McpServer, patch: McpServerConfigPatch, inProject = false): string | undefined => {
+		const saveConfig = async (
+			server: McpServer,
+			patch: McpServerConfigPatch,
+			inProject = false,
+		): Promise<string | undefined> => {
 			const override = inProject ? projectConfig : server.entry.override;
 			const entry = override ? { ...server.entry, override } : server.entry;
 			if (entry.scope !== "extension") {
 				try {
-					updateConfig(entry, patch);
+					await updateConfig(entry, patch);
 				} catch (error) {
 					return `Could not update ${entry.override ?? entry.source}: ${errorMessage(error)}`;
 				}
@@ -742,7 +761,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 					runtime.signInMcpServer({
 						serverUrl: url,
 						store: getCredentials(runtime).forServer(server.entry.name, url),
-						settings: connection.oauthSettings(),
+						settings: await connection.oauthSettings(),
 						challenge: connection.challenge,
 						prompt,
 						signal,
@@ -794,7 +813,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			enabled: boolean,
 			inProject = false,
 		): Promise<string | undefined> => {
-			const failed = saveConfig(server, { enabled }, inProject);
+			const failed = await saveConfig(server, { enabled }, inProject);
 			if (failed) return failed;
 			if (!enabled) {
 				const connection = server.connection;
@@ -817,8 +836,8 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			return undefined;
 		};
 
-		const setExposure = (server: McpServer, exposure: McpExposure): string | undefined => {
-			const failed = saveConfig(server, { exposure });
+		const setExposure = async (server: McpServer, exposure: McpExposure): Promise<string | undefined> => {
+			const failed = await saveConfig(server, { exposure });
 			if (failed) return failed;
 			if (server.connection?.state === "connected") registerTools(server.connection);
 			syncResourceTools();
@@ -1163,10 +1182,10 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			ctx.ui.notify(`Signed in to MCP server "${name}" (${server.connection?.tools.length ?? 0} tools).`, "info");
 		};
 
-		pi.on("session_start", (_event, ctx) => {
+		pi.on("session_start", async (_event, ctx) => {
+			const loaded = await (options.loadConfig ?? defaultLoadConfig)(ctx);
 			latestContext = ctx;
 			subagentMcpDirectTools = ctx.subagentPolicy?.mcpDirectTools;
-			const loaded = (options.loadConfig ?? defaultLoadConfig)(ctx);
 			configErrors = loaded.errors;
 			projectConfig = loaded.projectConfig;
 			autoEnableCodemode = (ctx.subagentPolicy ? false : loaded.autoEnableCodemode) ?? true;
@@ -1313,6 +1332,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			latestContext = undefined;
 			subagentMcpDirectTools = undefined;
 			await Promise.all([...backgroundActions, ...closing.map((connection) => connection.close())]);
+			await serverLog?.flush();
 		});
 
 		pi.registerCommand("mcp", {
@@ -1398,8 +1418,8 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 	};
 }
 
-function defaultLoadConfig(ctx: ExtensionContext): LoadedMcpConfig {
-	return loadMcpConfig({ agentDir: getAgentDir(), cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
+function defaultLoadConfig(ctx: ExtensionContext): Promise<LoadedMcpConfig> {
+	return loadMcpConfigAsync({ agentDir: getAgentDir(), cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
 }
 
 export default createMcpExtension();

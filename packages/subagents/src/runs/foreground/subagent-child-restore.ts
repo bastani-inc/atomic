@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync } from "node:fs";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -12,11 +12,11 @@ import {
 	getAgentDir,
 	isRetryableStorageError,
 	isStaleExtensionContextError,
-	mapRestoredPath,
+	mapRestoredPathAsync,
 	type SessionEntry,
 	type SessionManager,
 	SettingsManager,
-	savedProjectTrust,
+	savedProjectTrustAsync,
 	sessionResumeOptions,
 	type WorktreeRootMapping,
 	withWorktreeRootMappings,
@@ -32,6 +32,7 @@ import {
 } from "../../intercom/intercom-bridge.js";
 import { ownIntercomSessionId } from "../../intercom/own-intercom-session.js";
 import { childAllowsIntercom } from "../../intercom/supervisor-authorization.js";
+import { type CwdVerdict, checkLaunchCwd } from "../../shared/launch-cwd.js";
 import { collectKnownModelProviders, toModelInfo } from "../../shared/model-info.js";
 import { createCandidateModelResolver } from "../../shared/model-resolution.js";
 import {
@@ -391,18 +392,17 @@ function freshPrompts(
  * The agent definition the child was launched with, looked up again by name. With the source its launch resolved,
  * the definition from that source, wherever the default scope would shadow it with another of the same name.
  */
-function rediscoverAgent(
+async function rediscoverAgent(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
 	cwd: string,
 	name: string,
 	source: AgentSource | undefined,
-): AgentConfig | undefined {
+): Promise<AgentConfig | undefined> {
 	const scopes: readonly AgentScope[] = source ? ["both", "user", "project"] : [resolveExecutionAgentScope(undefined)];
 	for (const scope of scopes) {
-		const agent = deps
-			.discoverAgents(cwd, scope, contextAgentDiscoveryOptions(ctx))
-			.agents.find((candidate) => candidate.name === name && (!source || candidate.source === source));
+		const { agents } = await deps.discoverAgents(cwd, scope, contextAgentDiscoveryOptions(ctx));
+		const agent = agents.find((candidate) => candidate.name === name && (!source || candidate.source === source));
 		if (agent) return agent;
 	}
 	return undefined;
@@ -445,14 +445,14 @@ async function continueChildWhereItWorked(
 ): Promise<SessionManager> {
 	const inherited = ctx.getChildSessionOptions?.({});
 	const agentDir = inherited?.agentDir ?? getAgentDir();
-	const settingsManager = inherited?.settingsManager ?? SettingsManager.create(launchCwd, agentDir);
+	const settingsManager = inherited?.settingsManager ?? (await SettingsManager.createAsync(launchCwd, agentDir));
 	return continueSessionWhereItWorked(opened, {
 		...sessionResumeOptions(
 			"rehydrate",
 			launchCwd,
 			agentDir,
 			settingsManager,
-			savedProjectTrust(agentDir, settingsManager),
+			savedProjectTrustAsync(agentDir, settingsManager),
 		),
 		onNotices: (notices) => {
 			for (const notice of notices) console.warn(`atomic-subagents: ${notice.message}`);
@@ -551,10 +551,12 @@ async function relaunchChild(
 	// Where the child worked, after the restores of the session it belongs to: on another machine its own directory may
 	// be gone, and the worktree that was restored for that directory is where it continues.
 	const scope = currentWorktreeRootMappings();
-	let cwd = mapRestoredPath(record.cwd, scope);
+	let cwd = await mapRestoredPathAsync(record.cwd, scope);
+	let cwdVerdict: CwdVerdict;
 	let sessionManager: SessionManager | undefined;
 	if (fresh) {
-		if (!existsSync(cwd)) return unrestorable(`its working directory no longer exists: ${cwd}`);
+		cwdVerdict = await checkLaunchCwd(cwd);
+		if (cwdVerdict.state === "missing") return unrestorable(`its working directory no longer exists: ${cwd}`);
 		// A forked launch starts on the branch it prepared from its owner's conversation, never on a fresh context.
 		if (fresh.forkSession) {
 			const branch = await reopenChildSession(ctx, {
@@ -573,19 +575,20 @@ async function relaunchChild(
 		const reopened = await reopenChildSession(ctx, { ...record, cwd });
 		if ("reason" in reopened) return unrestorable(reopened.reason);
 		sessionManager = await continueChildWhereItWorked(ctx, cwd, reopened.sessionManager);
-		cwd = mapRestoredPath(sessionManager.getCwd(), scope);
-		if (!existsSync(cwd)) return unrestorable(`its working directory no longer exists: ${cwd}`);
+		cwd = await mapRestoredPathAsync(sessionManager.getCwd(), scope);
+		cwdVerdict = await checkLaunchCwd(cwd);
+		if (cwdVerdict.state === "missing") return unrestorable(`its working directory no longer exists: ${cwd}`);
 		const previousIntercomId = readPreviousIntercomId(sessionManager);
 		onReopened(previousIntercomId);
 		if (previousIntercomId) await hold?.add(previousIntercomId);
 	}
-	const discovered = rediscoverAgent(deps, ctx, cwd, record.agent, record.agentSource);
+	const discovered = await rediscoverAgent(deps, ctx, cwd, record.agent, record.agentSource);
 	if (!discovered)
 		return unrestorable(
 			`agent "${record.agent}"${record.agentSource ? ` (${record.agentSource})` : ""} is no longer defined`,
 		);
 	const bridge = record.orchestratorTarget
-		? resolveIntercomBridge({
+		? await resolveIntercomBridge({
 				config: deps.config.intercomBridge,
 				context: record.forked ? "fork" : "fresh",
 				orchestratorTarget: resolveIntercomSessionTarget(
@@ -703,11 +706,12 @@ async function relaunchChild(
 		getChildSessionOptions: ctx.getChildSessionOptionsResolver?.() ?? ctx.getChildSessionOptions,
 		resourceLoaderInheritanceSnapshot: deps.pi.getResourceLoaderInheritanceSnapshot?.(),
 		cwd: cwd,
+		cwdVerdict,
 		runId: record.runId,
 		index: record.index,
 		sessionDir:
 			(fresh ? fresh.sessionDir : sessionManager?.getSessionDir()) ||
-			mkdtempSync(join(tmpdir(), "atomic-subagent-restore-")),
+			(await mkdtemp(join(tmpdir(), "atomic-subagent-restore-"))),
 		...(sessionManager ? { sessionManager, ...(fresh ? {} : { resumeSession: true }) } : {}),
 		...(fresh?.skills ? { skills: [...fresh.skills] } : {}),
 		...(fresh?.outputPath ? { outputPath: fresh.outputPath } : {}),

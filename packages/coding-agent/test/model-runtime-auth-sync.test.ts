@@ -227,6 +227,7 @@ describe("extension OAuth credentials stay in sync with auth.json", () => {
 		assert.equal(runtime.hasConfiguredAuth("github-copilot"), true);
 		assert.deepEqual(copilotAvailable(runtime), ["claude-opus-4.8"]);
 		assert.equal(runtime.getCatalogInputsGeneration(), generation);
+		assert.equal(await runtime.getCatalogInputsGenerationAsync(), generation);
 	});
 
 	test("reports a login saved by another process after an authoritative engine logout (#3620)", async () => {

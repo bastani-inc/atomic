@@ -20,7 +20,7 @@ import {
 import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "../durable/backend.js";
 import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
-import { initializeDurableBackend } from "../durable/factory.js";
+import { initializeDurableBackendReadingSettings } from "../durable/factory.js";
 import { JournalDurableBackend, JournalOwnershipError } from "../durable/journal/journal-backend.js";
 import { isDurableWorkflowResumable } from "../durable/resume-eligibility.js";
 import { availableRunDurableBackend, bindRunDurableBackend } from "../durable/run-owner-backend.js";
@@ -104,6 +104,7 @@ import {
 import { buildPromptNodeUiAdapter } from "../runs/foreground/executor-prompt-nodes.js";
 import { createRunFinalizers } from "../runs/foreground/executor-run-finalizers.js";
 import { createStageScheduler } from "../runs/foreground/executor-scheduler.js";
+import type { StageOptionsMapper } from "../runs/foreground/executor-stage-factory.js";
 import type { ResolvedInputs, RunOpts, RunResult } from "../runs/foreground/executor-types.js";
 import {
 	admitEvictedRun,
@@ -237,7 +238,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	// A root with shared placement has its setup checked before its journal opens, every missing piece at once (#4310).
 	if (preset === undefined && opts.parentRun === undefined && opts.workers?.placement === "shared")
 		await checkSharedPlacementSetup(opts.journal, opts.cwd === undefined ? {} : { cwd: opts.cwd });
-	const backend = preset ?? (await initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd }));
+	const backend = preset ?? (await initializeDurableBackendReadingSettings({ journal: opts.journal, cwd: opts.cwd }));
 	if (evictionPolicy !== undefined && !(backend instanceof JournalDurableBackend))
 		throw evictionRefused(opts.evictWhenWaiting, runId, "backend");
 	const waitingStages = opts.parentRun === undefined ? durableWaitingStages(backend, runId) : [];
@@ -311,8 +312,9 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			}
 			const allMappings = [...mappings, ...restored];
 			const recordedCwd = previous.invocationCwd ?? opts.cwd;
-			const continuing = recordedCwd === undefined ? undefined : mapWorkflowWorktreePath(recordedCwd, allMappings);
-			const outcomes = runWorktreeRestoreOutcomes({
+			const continuing =
+				recordedCwd === undefined ? undefined : await mapWorkflowWorktreePath(recordedCwd, allMappings);
+			const outcomes = await runWorktreeRestoreOutcomes({
 				restored,
 				unrestored,
 				snapshots: restoreSnapshots,
@@ -464,13 +466,24 @@ async function executeUntilSettled(
 }
 
 /** The input-bound worktree of a run resumed on this node, at the worktree its restore mapped it to. */
-function mapInputWorktree(
+async function mapInputWorktree(
 	defaults: Partial<StageOptions>,
 	mappings: readonly WorktreeRootMapping[],
-): Partial<StageOptions> {
+): Promise<Partial<StageOptions>> {
 	return defaults.gitWorktreeDir === undefined
 		? defaults
-		: { ...defaults, gitWorktreeDir: mapWorkflowWorktreePath(defaults.gitWorktreeDir, mappings) };
+		: { ...defaults, gitWorktreeDir: await mapWorkflowWorktreePath(defaults.gitWorktreeDir, mappings) };
+}
+
+function restoredStageOptionsMapper(mappings: readonly WorktreeRootMapping[]): StageOptionsMapper | undefined {
+	if (mappings.length === 0) return undefined;
+	return async (options) => ({
+		...options,
+		...(options.cwd === undefined ? {} : { cwd: await mapWorkflowWorktreePath(options.cwd, mappings) }),
+		...(options.gitWorktreeDir === undefined
+			? {}
+			: { gitWorktreeDir: await mapWorkflowWorktreePath(options.gitWorktreeDir, mappings) }),
+	});
 }
 
 async function executeRun(
@@ -599,11 +612,9 @@ async function executeRun(
 	const copiedByFork = forkCopiedNodes(rootBackend, runId);
 	const existingRootHandle = opts.parentRun === undefined ? durableBackend.getWorkflow(runId) : undefined;
 	const isFreshLaunch = existingRootHandle === undefined && opts.continuation === undefined;
-	const initialBranch =
-		opts.workspace?.branch ??
-		opts.continuation?.source.branch ??
-		existingRootHandle?.branch ??
-		(isFreshLaunch ? resolveInvocationGitBranch(opts.cwd ?? process.cwd()) : undefined);
+	const initialBranch = opts.workspace?.branch ?? opts.continuation?.source.branch ?? existingRootHandle?.branch;
+	const freshLaunchBranch =
+		initialBranch === undefined && isFreshLaunch ? resolveInvocationGitBranch(opts.cwd ?? process.cwd()) : undefined;
 	const keepsCopiedParent = (parentId: string): boolean => keepsForkCopiedParent(copiedByFork, runSnapshot, parentId);
 	const runSnapshot: RunSnapshot = {
 		id: runId,
@@ -701,17 +712,31 @@ async function executeRun(
 	const ownsCancellationRegistration = opts.signal === undefined && opts.cancellation !== undefined;
 	const tracker = new GraphFrontierTracker();
 	const inputConcurrency = resolveInputConcurrency(def.inputs, resolvedInputs);
-	const inputRuntimeDefaults = mapInputWorktree(
-			resolveInputRuntimeDefaults(def, resolvedInputs, opts.workspace),
-			opts.worktreeRootMappings ?? [],
-		),
-		gitWorktreeSetupCacheOwner = createGitWorktreeSetupCacheOwner(opts.gitWorktreeSetupCache, runId);
+	const inputDefaults = resolveInputRuntimeDefaults(def, resolvedInputs, opts.workspace);
+	const inputRuntimeDefaults =
+		(opts.worktreeRootMappings ?? []).length === 0
+			? inputDefaults
+			: await mapInputWorktree(inputDefaults, opts.worktreeRootMappings ?? []);
+	const gitWorktreeSetupCacheOwner = createGitWorktreeSetupCacheOwner(opts.gitWorktreeSetupCache, runId);
 	const gitWorktreeSetupCache = gitWorktreeSetupCacheOwner.cache;
 	const workflowInvocationCwd = opts.cwd ?? process.cwd();
-	let workflowCwd: string | undefined;
+	let workflowCwd: { readonly cwd: string } | { readonly failure: Error } | undefined;
+	const prepareWorkflowCwd = async (): Promise<void> => {
+		try {
+			workflowCwd = {
+				cwd: await workflowCwdWithInputWorktree(inputRuntimeDefaults, workflowInvocationCwd, gitWorktreeSetupCache),
+			};
+		} catch (error) {
+			workflowCwd = { failure: error instanceof Error ? error : new Error(String(error)) };
+		}
+	};
 	const resolveWorkflowCwd = (): string => {
-		workflowCwd ??= workflowCwdWithInputWorktree(inputRuntimeDefaults, workflowInvocationCwd, gitWorktreeSetupCache);
-		return workflowCwd;
+		if (workflowCwd === undefined) {
+			if (!inputsSelectGitWorktree(inputRuntimeDefaults)) return workflowInvocationCwd;
+			throw new Error(`atomic-workflows: run ${runId} read its directory before its input worktree was set up`);
+		}
+		if ("failure" in workflowCwd) throw workflowCwd.failure;
+		return workflowCwd.cwd;
 	};
 	const recordLiveCheckpoint = createWorkflowSnapshotRecorder({
 		backend: durableBackend,
@@ -721,15 +746,7 @@ async function executeRun(
 		settings: opts.snapshots,
 		run: runSnapshot,
 	});
-	const mapStageOptions = <T extends StageOptions>(options: T): T => ({
-		...options,
-		...(options.cwd === undefined
-			? {}
-			: { cwd: mapWorkflowWorktreePath(options.cwd, opts.worktreeRootMappings ?? []) }),
-		...(options.gitWorktreeDir === undefined
-			? {}
-			: { gitWorktreeDir: mapWorkflowWorktreePath(options.gitWorktreeDir, opts.worktreeRootMappings ?? []) }),
-	});
+	const mapRestoredOptions = restoredStageOptionsMapper(opts.worktreeRootMappings ?? []);
 	const limiter = createRunLimiter(inputConcurrency ?? opts.config?.defaultConcurrency);
 	const stageRegistry = opts.stageControlRegistry ?? defaultStageControlRegistry;
 	const stageUiBroker = opts.stageUiBroker ?? currentStageUiBroker();
@@ -1017,6 +1034,7 @@ async function executeRun(
 		stageUiBroker,
 		gitWorktreeSetupCache,
 		worktreeSymlinkDirectories: opts.config?.worktree?.symlinkDirectories,
+		mapRestoredOptions,
 		exit,
 		classifyExecutorFailure,
 		assertLiveWorkAllowed: () => assertFrontierConsumed(),
@@ -1244,7 +1262,19 @@ async function executeRun(
 		task: taskRunners.task,
 		recordCachedTask: recordCachedStage,
 		beforeCheckpoint: drainBeforeCheckpoint,
-		recordLiveCheckpoint,
+		recordLiveCheckpoint:
+			mapRestoredOptions === undefined
+				? recordLiveCheckpoint
+				: async (checkpoint, signal, directories = []) =>
+						recordLiveCheckpoint(
+							checkpoint,
+							signal,
+							await Promise.all(
+								directories.map((directory) =>
+									mapWorkflowWorktreePath(directory, opts.worktreeRootMappings ?? []),
+								),
+							),
+						),
 		signal: ownController.signal,
 		registerTailControl: (registration) => {
 			registration.controller.signal.addEventListener(
@@ -1287,9 +1317,9 @@ async function executeRun(
 		beforeCall: beforeLiveCall,
 		beforeCheckpoint: drainBeforeCheckpoint,
 		recordCachedStage,
-		readStoredMessages: (options, sessionId) =>
+		readStoredMessages: async (options, sessionId) =>
 			readReplayedStageMessages(
-				mapStageOptions(options),
+				(await mapRestoredOptions?.(options)) ?? options,
 				{
 					adapters: opts.adapters,
 					defaultSessionDir: opts.defaultSessionDir,
@@ -1298,16 +1328,13 @@ async function executeRun(
 				sessionId,
 			),
 		stage: (name, options, replayKey) => {
-			const stage = runtime.stage(name, mapStageOptions(options));
+			const stage = runtime.stage(name, options);
 			const stageId = activeStore.run(runId)?.stages.at(-1)?.id;
 			if (stageId !== undefined) completedStageReplayKeys.set(stageId, replayKey);
 			return stage;
 		},
 	});
-	const gatedTask: typeof durableTask = (...args) => {
-		args[1] = mapStageOptions(args[1]);
-		return whenRunning(() => durableTask(...args));
-	};
+	const gatedTask: typeof durableTask = (...args) => whenRunning(() => durableTask(...args));
 	const chain = createChainPrimitive({ runtime, task: gatedTask });
 	const parallel = createParallelPrimitive({ runtime, task: gatedTask });
 	const ui = buildExitGatedUiContext({
@@ -1616,6 +1643,12 @@ async function executeRun(
 	try {
 		workflowObservationRuntime(activeStore).startRun(runId);
 		activeStore.recordRunStart(runSnapshot);
+		void freshLaunchBranch?.then(
+			(branch) => {
+				if (branch !== undefined && runSnapshot.branch === undefined) runSnapshot.branch = branch;
+			},
+			() => {},
+		);
 		if (callerSignal?.aborted) onCallerAbort();
 		else callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
 		if (ownsCancellationRegistration) opts.cancellation?.register(runId, ownController);
@@ -1662,6 +1695,7 @@ async function executeRun(
 					}
 				: undefined,
 		);
+		await prepareWorkflowCwd();
 		if (opts.parentRun === undefined) {
 			const claim = opts[resumeClaim];
 			let taken = true;
@@ -1672,7 +1706,7 @@ async function executeRun(
 					existingDefinitionSource !== undefined && opts.acceptEntryChanges !== true
 						? existingDefinitionSource
 						: await resolveWorkflowDefinitionSource(def, existingDefinitionSource);
-				const invocationMetadata = workflowInvocationMetadata(
+				const invocationMetadata = await workflowInvocationMetadata(
 					inputRuntimeDefaults,
 					workflowInvocationCwd,
 					gitWorktreeSetupCache,
@@ -1987,7 +2021,7 @@ async function executeRun(
 			}
 		} finally {
 			try {
-				gitWorktreeSetupCacheOwner.release(() => {
+				await gitWorktreeSetupCacheOwner.release(() => {
 					if (ownsCancellationRegistration) opts.cancellation?.unregister(runId, ownController);
 				});
 			} finally {

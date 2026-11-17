@@ -1,7 +1,5 @@
 import type { ProviderEnv } from "../types.ts";
 
-let procEnvCache: Map<string, string> | null = null;
-
 /**
  * Fallback for https://github.com/oven-sh/bun/issues/27802.
  * Bun compiled binaries can expose an empty process.env inside Linux sandboxes
@@ -12,30 +10,34 @@ let procEnvCache: Map<string, string> | null = null;
  * used directly, without going through that entrypoint, so provider env lookup
  * must not depend on process.env having been patched.
  */
-function getBunSandboxEnvValue(name: string): string | undefined {
-	if (typeof process === "undefined" || !process.versions?.bun || Object.keys(process.env).length > 0) {
-		return undefined;
-	}
+const procEnv: ReadonlyMap<string, string> | undefined = readBunSandboxEnv();
 
-	if (procEnvCache === null) {
-		procEnvCache = new Map();
-		try {
-			const { readFileSync } = require("node:fs") as {
-				readFileSync(path: string, encoding: BufferEncoding): string;
-			};
-			const data = readFileSync("/proc/self/environ", "utf-8");
-			for (const entry of data.split("\0")) {
-				const idx = entry.indexOf("=");
-				if (idx > 0) {
-					procEnvCache.set(entry.slice(0, idx), entry.slice(idx + 1));
-				}
+function readBunSandboxEnv(): ReadonlyMap<string, string> | undefined {
+	if (!emptyBunEnv()) return undefined;
+	const entries = new Map<string, string>();
+	try {
+		const { readFileSync } = require("node:fs") as {
+			readFileSync(path: string, encoding: BufferEncoding): string;
+		};
+		const data = readFileSync("/proc/self/environ", "utf-8");
+		for (const entry of data.split("\0")) {
+			const idx = entry.indexOf("=");
+			if (idx > 0) {
+				entries.set(entry.slice(0, idx), entry.slice(idx + 1));
 			}
-		} catch {
-			// /proc/self/environ may not exist or may not be readable.
 		}
+	} catch {
+		// /proc/self/environ may not exist or may not be readable.
 	}
+	return entries;
+}
 
-	return procEnvCache.get(name);
+function emptyBunEnv(): boolean {
+	return typeof process !== "undefined" && !!process.versions?.bun && Object.keys(process.env).length === 0;
+}
+
+function getBunSandboxEnvValue(name: string): string | undefined {
+	return emptyBunEnv() ? procEnv?.get(name) : undefined;
 }
 
 /**

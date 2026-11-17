@@ -52,8 +52,8 @@ afterEach(() => {
 });
 
 describe("subagent skill resolution", () => {
-	test("resolves builtin tdd and agent-browser skills from the repo root", () => {
-		const result = resolveSkills(["tdd", "agent-browser"], repoRoot);
+	test("resolves builtin tdd and agent-browser skills from the repo root", async () => {
+		const result = await resolveSkills(["tdd", "agent-browser"], repoRoot);
 
 		const resolvedByName = new Map(result.resolved.map((skill) => [skill.name, skill]));
 
@@ -68,8 +68,8 @@ describe("subagent skill resolution", () => {
 		);
 	});
 
-	test("resolves builtin herdr beside tmux and preserves its upstream safety contract", () => {
-		const result = resolveSkills(["herdr", "tmux"], repoRoot);
+	test("resolves builtin herdr beside tmux and preserves its upstream safety contract", async () => {
+		const result = await resolveSkills(["herdr", "tmux"], repoRoot);
 		assert.deepEqual(result.missing, []);
 		const herdr = result.resolved.find((skill) => skill.name === "herdr");
 		assert.equal(herdr?.source, "builtin");
@@ -80,8 +80,8 @@ describe("subagent skill resolution", () => {
 		assert.match(buildSkillInjection(result.resolved), /<skill name="herdr">/);
 	});
 
-	test("builds skill injection for builtin skills without YAML frontmatter", () => {
-		const result = resolveSkills(["tdd", "agent-browser"], repoRoot);
+	test("builds skill injection for builtin skills without YAML frontmatter", async () => {
+		const result = await resolveSkills(["tdd", "agent-browser"], repoRoot);
 		const injection = buildSkillInjection(result.resolved);
 
 		assert.equal(result.missing.length, 0);
@@ -91,7 +91,7 @@ describe("subagent skill resolution", () => {
 		assert.doesNotMatch(injection, /<skill name="agent-browser">\n---\nname: agent-browser/);
 	});
 
-	test("prefers a project tdd skill over the builtin tdd skill", () => {
+	test("prefers a project tdd skill over the builtin tdd skill", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagents-skills-project-"));
 		cleanupPaths.add(cwd);
 		const projectTddDir = join(cwd, ".agents", "skills", "tdd");
@@ -103,7 +103,7 @@ describe("subagent skill resolution", () => {
 			"utf-8",
 		);
 
-		const result = resolveSkills(["tdd"], cwd);
+		const result = await resolveSkills(["tdd"], cwd);
 
 		assert.deepEqual(result.missing, []);
 		assert.equal(result.resolved[0]?.path, projectTddPath);
@@ -111,7 +111,7 @@ describe("subagent skill resolution", () => {
 		assert.match(result.resolved[0]?.content ?? "", /# Project TDD/);
 	});
 
-	test("resolves qualified selectors through the live loader catalog without bare-name fallback", () => {
+	test("resolves qualified selectors through the live loader catalog without bare-name fallback", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagents-skills-catalog-"));
 		cleanupPaths.add(cwd);
 		const userPath = join(cwd, "user", "SKILL.md");
@@ -136,8 +136,8 @@ describe("subagent skill resolution", () => {
 		const builtin = makeSkill(builtinPath, true);
 		const catalog = buildSkillCatalog([user, builtin], [user]);
 
-		const exact = resolveSkillsFromCatalog(["tdd@builtin"], catalog, cwd);
-		const unknown = resolveSkillsFromCatalog(["tdd@missing"], catalog, cwd);
+		const exact = await resolveSkillsFromCatalog(["tdd@builtin"], catalog, cwd);
+		const unknown = await resolveSkillsFromCatalog(["tdd@missing"], catalog, cwd);
 
 		assert.deepEqual(exact.missing, []);
 		assert.equal(exact.resolved[0]?.name, "tdd@builtin");
@@ -145,18 +145,18 @@ describe("subagent skill resolution", () => {
 		assert.match(exact.resolved[0]?.content ?? "", /Builtin body/);
 		assert.deepEqual(unknown.resolved, []);
 		assert.deepEqual(unknown.missing, ["tdd@missing"]);
-		assert.equal(skillsWarning(cwd, ["tdd@builtin"], catalog), undefined);
-		assert.equal(skillsWarning(cwd, ["tdd@missing"], catalog), "Warning: skills not found: tdd@missing.");
+		assert.equal(await skillsWarning(cwd, ["tdd@builtin"], catalog), undefined);
+		assert.equal(await skillsWarning(cwd, ["tdd@missing"], catalog), "Warning: skills not found: tdd@missing.");
 	});
 
-	test("does not resolve the builtin subagent orchestration skill for child injection", () => {
-		const result = resolveSkills(["subagent"], repoRoot);
+	test("does not resolve the builtin subagent orchestration skill for child injection", async () => {
+		const result = await resolveSkills(["subagent"], repoRoot);
 
 		assert.deepEqual(result.resolved, []);
 		assert.deepEqual(result.missing, ["subagent"]);
 	});
 
-	test("does not inject qualified subagent orchestration selectors through the catalog", () => {
+	test("does not inject qualified subagent orchestration selectors through the catalog", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagents-skills-orchestration-"));
 		cleanupPaths.add(cwd);
 		const userPath = join(cwd, "user", "SKILL.md");
@@ -186,15 +186,18 @@ describe("subagent skill resolution", () => {
 			[makeSkill(userPath, false)],
 		);
 
-		const qualified = resolveSkillsFromCatalog(["subagent@builtin"], catalog, cwd);
-		const filesystemQualified = resolveSkills(["subagent@builtin"], cwd);
+		const qualified = await resolveSkillsFromCatalog(["subagent@builtin"], catalog, cwd);
+		const filesystemQualified = await resolveSkills(["subagent@builtin"], cwd);
 
 		assert.deepEqual(qualified.resolved, []);
 		assert.deepEqual(qualified.missing, ["subagent@builtin"]);
 		assert.equal(catalog.resolve("subagent@builtin").ok, true);
 		assert.deepEqual(filesystemQualified.resolved, []);
 		assert.deepEqual(filesystemQualified.missing, ["subagent@builtin"]);
-		assert.equal(skillsWarning(cwd, ["subagent@builtin"], catalog), "Warning: skills not found: subagent@builtin.");
+		assert.equal(
+			await skillsWarning(cwd, ["subagent@builtin"], catalog),
+			"Warning: skills not found: subagent@builtin.",
+		);
 	});
 
 	test("documents debugger capabilities and points to current model configuration", () => {

@@ -44,9 +44,9 @@ describe("a stage's session that waits on a detached call's result (#4580)", () 
 			assert.deepEqual(names(rig.log, "prompt:"), []);
 			assert.deepEqual(names(rig.log, "steer#"), [], "the stage's own prompt is not steered in either");
 			assert.ok(rig.log.includes("resume#2:c1"));
-			const [record, ...rest] = log
-				.records()
-				.filter((entry) => entry.event === "stage-input-held-for-detached-results");
+			const [record, ...rest] = (await log.records()).filter(
+				(entry) => entry.event === "stage-input-held-for-detached-results",
+			);
 			assert.equal(rest.length, 0);
 			assert.equal(record?.area, "workflow");
 			assert.equal(record?.data.held, "prompt");
@@ -113,9 +113,9 @@ describe("a stage's session that waits on a detached call's result (#4580)", () 
 
 			assert.deepEqual(names(rig.log, "prompt:"), ["prompt:go"]);
 			assert.ok(rig.log.includes("resume#2:c1"));
-			const [record, ...rest] = log
-				.records()
-				.filter((entry) => entry.event === "stage-input-held-for-detached-results");
+			const [record, ...rest] = (await log.records()).filter(
+				(entry) => entry.event === "stage-input-held-for-detached-results",
+			);
 			assert.equal(rest.length, 0);
 			assert.equal(record?.data.held, "retry");
 			assert.equal(record?.data.errorName, "WorkflowPromptEmptyCompletionFailure");

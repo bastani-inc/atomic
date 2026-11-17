@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { type CookieMap, getGoogleCookies } from "./chrome-cookies.js";
 import { getChromeProfileFromConfig, isBrowserCookieAccessAllowed, normalizeChromeProfile } from "./gemini-web-config.ts";
@@ -32,10 +32,10 @@ export interface GeminiWebOptions {
 }
 
 export async function isGeminiWebAvailable(chromeProfile?: string): Promise<CookieMap | null> {
-	if (!isBrowserCookieAccessAllowed()) return null;
+	if (!(await isBrowserCookieAccessAllowed())) return null;
 
 	const result = await getGoogleCookies({
-		profile: normalizeChromeProfile(chromeProfile) ?? getChromeProfileFromConfig(),
+		profile: normalizeChromeProfile(chromeProfile) ?? (await getChromeProfileFromConfig()),
 		requiredCookies: REQUIRED_COOKIES,
 	});
 	if (!result) return null;
@@ -278,7 +278,7 @@ async function uploadFile(
 	cookieHeader: string,
 	signal: AbortSignal,
 ): Promise<{ id: string; name: string }> {
-	const data = readFileSync(filePath);
+	const data = await readFile(filePath);
 	const fileName = basename(filePath);
 	const boundary = "----FormBoundary" + Math.random().toString(36).slice(2);
 	const header = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${fileName}"\r\nContent-Type: application/octet-stream\r\n\r\n`;

@@ -33,9 +33,9 @@ import {
   type ReleasedChildWakeNotice,
   waitForIntercomPeer,
 } from "./session-recovery.js";
-import { APP_NAME, createGitEnvironment, type ExtensionAPI, IntercomRoutingMismatchError, IntercomRoutingUnavailableError, isIntercomBrokerStopTimeoutError, isIntercomBrokerUpgradeError, isIntercomRoutingChangedError, isIntercomRoutingMismatchError, isIntercomRoutingUnavailableError, isProjectGroupError, type ExtensionContext, type IntercomPolicyView, processStorageEnvironment, reportDebug, type SessionEntry, sessionScopedExtensionState } from "@bastani/atomic";
+import { APP_NAME, createGitEnvironment, type ExtensionAPI, IntercomRoutingMismatchError, IntercomRoutingUnavailableError, isIntercomBrokerStopTimeoutError, isIntercomBrokerUpgradeError, isIntercomRoutingChangedError, isIntercomRoutingMismatchError, isIntercomRoutingUnavailableError, isProjectGroupError, type ExtensionContext, processStorageEnvironmentAsync, reportDebugAsync as reportDebug, type SessionEntry, sessionScopedExtensionState, type IntercomPolicyView } from "@bastani/atomic";
 import { randomUUID } from "node:crypto";
-import { appendFileSync } from "node:fs";
+import { appendFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
@@ -62,7 +62,7 @@ import { localOnlyBrokerWarning, warnLocalOnlyBrokerWithoutUi } from "./local-on
 import { RECIPIENT_SAVING_REPORT_INTERVAL_MS } from "./retry-policy.js";
 import { IntercomRuntimeInactiveError } from "./runtime-inactive-error.js";
 import { renderIntercomCustomMessage } from "./ui/inline-message.js";
-import { loadConfig, type IntercomConfig } from "./config.js";
+import { defaultConfig, loadConfigAsync, type IntercomConfig } from "./config.js";
 import type { SessionInfo, Message, WorkflowStageRosterAnnouncement, WorkflowPossibleStageAnnouncement, WorkflowRunParentAnnouncement } from "./types.js";
 import { ReplyTracker, restorePendingInboundAsks } from "./reply-tracker.js";
 import { DEFAULT_REPLY_TIMEOUT_MS, ReplyWaiterRegistry } from "./reply-waiter.ts";
@@ -113,7 +113,13 @@ import { createWorkflowStageDeliveryFailureHandler } from "./workflow-stage-deli
 import { DEFAULT_GROUP, explicitHomeGroup, normalizeGroup, normalizeGroups, resolveHomeGroup } from "./group.js";
 import { getIntercomDirPath } from "./broker/paths.js";
 import { type BrokerRouting, queryBrokerRouting } from "./broker/broker-routing.js";
-import { DEFAULT_GROUP_WARNING, multiNodeSelected, projectGroup, warnDefaultGroupWithoutUi } from "./project-group.js";
+import {
+  cachedProjectGroup,
+  DEFAULT_GROUP_WARNING,
+  multiNodeSelectedAsync,
+  projectGroupAsync,
+  warnDefaultGroupWithoutUi,
+} from "./project-group.js";
 import { clearRuntimeIntercomGroup, setRuntimeIntercomGroup } from "./runtime-group.js";
 import {
   BROKER_RETIRING_RETRY_WINDOW_MS,
@@ -138,7 +144,7 @@ if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL === "1") {
   process.env.ATOMIC_INTERCOM_HEAVY_IMPORTED = "1";
 }
 if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL_FILE) {
-  appendFileSync(process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL_FILE, "intercom\n");
+  void appendFile(process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL_FILE, "intercom\n");
 }
 
 const INTERCOM_SESSION_ID_ENV = `${APP_NAME.toUpperCase()}_INTERCOM_SESSION_ID`;
@@ -275,7 +281,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   let client: IntercomClient | null = null;
   let clientRegistrationGroup: string | null = null;
   const replyCapability = registerSubagentReplyCapability(pi, () => client);
-  const config: IntercomConfig = loadConfig();
+  const config: IntercomConfig = defaultConfig();
   const legacyChildOrchestratorMetadata = readChildOrchestratorMetadata();
   let runtimeContext: ExtensionContext | null = null;
   /**
@@ -322,9 +328,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     return start;
   }
   function startBrokerIfNeeded(signal: AbortSignal): Promise<void> {
-    return trackBrokerStart(() =>
-      spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs, undefined, signal),
-    );
+    return trackBrokerStart(async () => {
+      await configReady;
+      await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs, undefined, signal);
+    });
   }
   let shuttingDown = false;
   let disposed = true;
@@ -333,6 +340,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   let agentRunning = false;
   let sessionHomeGroup: string | null = null;
   let brokerRouting: boolean | null = null;
+  let selectedSharedStorage = false;
   let homeRoutedAcrossMachines: boolean | null = null;
   let defaultGroupWarned = false;
   /** #4538: this session already warned that it uses a broker it cannot verify on this machine only. */
@@ -349,6 +357,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   const activeTools = new Map<string, string>();
   let replyTracker = new ReplyTracker();
   const replyWaiters = new ReplyWaiterRegistry(DEFAULT_REPLY_TIMEOUT_MS, config.maxPendingAsks);
+  const configReady = loadConfigAsync().then((loaded) => {
+    Object.assign(config, loaded);
+    replyWaiters.setMaxPending(loaded.maxPendingAsks);
+  });
   const foregroundDetachHandoff = new ForegroundDetachHandoff(pi);
   function sessionBranch(): SessionEntry[] {
     try {
@@ -481,11 +493,16 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   }
   /** Whether this session's broker routes across machines: what the broker reported, else the storage selection it would start with. */
   function multiNodeRouting(): boolean {
-    return brokerRouting ?? multiNodeSelected(dirname(getIntercomDirPath()), processStorageEnvironment());
+    return brokerRouting ?? selectedSharedStorage;
   }
   /** The project group a session in this context joins by default while multi-node routing is on. */
   function projectGroupOf(ctx: ExtensionContext | null): () => string | undefined {
-    return () => (multiNodeRouting() ? projectGroup(ctx?.cwd ?? process.cwd(), createGitEnvironment()) : undefined);
+    return () => (multiNodeRouting() ? cachedProjectGroup(ctx?.cwd ?? process.cwd()) : undefined);
+  }
+  async function warmProjectGroup(ctx: ExtensionContext | null): Promise<void> {
+    await configReady;
+    if (explicitHomeGroup(config, ctx) !== undefined || !multiNodeRouting()) return;
+    await projectGroupAsync(ctx?.cwd ?? process.cwd(), createGitEnvironment());
   }
   /** Called only for a context `settleBrokerRouting` just found live. */
   function warnLocalOnly(ctx: ExtensionContext, reason: IntercomRoutingUnavailableError): void {
@@ -504,8 +521,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   ): Promise<{ routing: BrokerRouting; upgradeFailure: Error | undefined }> {
     let upgradeFailure: Error | undefined;
     try {
-      await trackBrokerStart(() =>
-        upgradeBroker(
+      await trackBrokerStart(async () => {
+        await configReady;
+        return upgradeBroker(
           config.brokerCommand,
           config.brokerArgs,
           config.brokerStartupTimeoutMs,
@@ -513,8 +531,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
           undefined,
           undefined,
           signal,
-        ),
-      );
+        );
+      });
     } catch (error) {
       if (!isIntercomBrokerUpgradeError(error)) throw error;
       // An older broker that shut down but is still exiting serves no session, so this attempt fails and the reconnect
@@ -536,8 +554,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     generation: number,
     signal: AbortSignal,
   ): Promise<ExpectedRouting> {
+    await configReady;
     const agentDir = dirname(getIntercomDirPath());
-    const selectedShared = multiNodeSelected(agentDir, processStorageEnvironment());
+    const selectedShared = await multiNodeSelectedAsync(agentDir, await processStorageEnvironmentAsync());
+    selectedSharedStorage = selectedShared;
     let routing: BrokerRouting | undefined;
     let unverified: IntercomRoutingUnavailableError | undefined;
     try {
@@ -565,6 +585,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       brokerRouting = actual;
       const brokerLacksSelectedStorage = !routing.hasSharedStorage && selectedShared;
       if (brokerLacksSelectedStorage || (strictSharedProfile && !actual)) {
+        if (sessionHomeGroup === null) await warmProjectGroup(ctx);
         throw new IntercomRoutingMismatchError("shared-storage-not-on-broker", resolveSessionHomeGroup());
       }
     }
@@ -576,6 +597,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     if (homeRoutedAcrossMachines === null) {
       homeRoutedAcrossMachines = actual;
       const previousHome = sessionHomeGroup;
+      await warmProjectGroup(ctx);
       sessionHomeGroup = resolveHomeGroup(config, ctx, projectGroupOf(ctx));
       if (sessionHomeGroup !== previousHome) clearJoinedGroups();
       if (joinedGroups === null) {
@@ -583,6 +605,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         if (restored) setJoinedGroups(restored);
       }
     } else if (actual && !homeRoutedAcrossMachines && explicit === undefined) {
+      if (sessionHomeGroup === null) await warmProjectGroup(ctx);
       throw new IntercomRoutingMismatchError("implicit-default-on-remote-broker", resolveSessionHomeGroup());
     }
     if (actual && explicit === DEFAULT_GROUP) warnExplicitDefaultGroup(ctx);
@@ -2248,7 +2271,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       connectAbort.abort(new IntercomRuntimeInactiveError());
       await Promise.all(brokerStarts);
     },
-    setRuntimeContext: (value) => {
+    setRuntimeContext: async (value) => {
       if (value !== null && connectAbort.signal.aborted) connectAbort = new AbortController();
       stopApplyingReach?.();
       stopApplyingReach = undefined;
@@ -2258,21 +2281,25 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       homeRoutedAcrossMachines = null;
       defaultGroupWarned = false;
       terminalHomeGroupError = null;
+      runtimeContext = value;
       if (value === null) {
+        selectedSharedStorage = false;
         releaseJoinedGroups();
         sessionHomeGroup = null;
-      } else {
-        try {
-          sessionHomeGroup = resolveHomeGroup(config, value, projectGroupOf(value));
-        } catch (error) {
-          // Git could not name the project group. The session still starts; its first connection resolves the home
-          // group again after it verifies the broker's routing and reports this typed error before any registration.
-          if (!isProjectGroupError(error)) throw error;
-          sessionHomeGroup = null;
-        }
-        inboundDeliveries.restore(value.sessionManager.getBranch(),value.sessionManager.getSessionRecoveryState?.().admissionKeys.filter(key=>key.startsWith("intercom:")).map(key=>key.slice("intercom:".length)));
+        return;
       }
-      runtimeContext = value;
+      inboundDeliveries.restore(value.sessionManager.getBranch(),value.sessionManager.getSessionRecoveryState?.().admissionKeys.filter(key=>key.startsWith("intercom:")).map(key=>key.slice("intercom:".length)));
+      await configReady;
+      selectedSharedStorage = await multiNodeSelectedAsync(dirname(getIntercomDirPath()), await processStorageEnvironmentAsync());
+      try {
+        await warmProjectGroup(value);
+        sessionHomeGroup = resolveHomeGroup(config, value, projectGroupOf(value));
+      } catch (error) {
+        // Git could not name the project group. The session still starts; its first connection resolves the home
+        // group again after it verifies the broker's routing and reports this typed error before any registration.
+        if (!isProjectGroupError(error)) throw error;
+        sessionHomeGroup = null;
+      }
     },
     setCurrentSessionId: (value) => { currentSessionId = value; },
     setCurrentModel: (value) => { currentModel = value; },
@@ -2433,7 +2460,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     syncPresenceIdentity,
     beginReplyWait: (from, replyTo, signal, timeoutMs) => replyWaiters.begin(from, replyTo, signal, timeoutMs),
     ...replyWaits,
-    confirmSend: config.confirmSend,
+    get confirmSend() {
+      return config.confirmSend;
+    },
     homeGroup: resolveSessionHomeGroup,
     reachPolicy: currentReachPolicy,
     multiNodeRouting,
@@ -2456,4 +2485,5 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     ensureConnected,
     syncPresenceIdentity,
   });
+  return configReady;
 }

@@ -58,7 +58,7 @@ test("a log whose directory cannot be made is reported once and its process's st
 		const stderr = new PassThrough();
 		const failures: string[] = [];
 		const log = appendProcessLog(stderr, join(directory, "logs", "worker.log"), (failure) => failures.push(failure));
-		assert.equal(failures.length, 1);
+		await vi.waitFor(() => assert.equal(failures.length, 1), { timeout: LOG_SETTLE_TIMEOUT_MS });
 		assert.match(failures[0] ?? "", POSIX ? /^(ENOTDIR|EEXIST)$/ : /^E[A-Z]+$/);
 		assert.equal(stderr.readableFlowing, true, "stderr is drained instead of blocking its process");
 		stderr.emit("error", Object.assign(new Error("pipe broke"), { code: "EPIPE" }));

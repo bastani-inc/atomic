@@ -1,18 +1,18 @@
-import { failureDebugFields, reportDebug } from "../../core/debug.ts";
+import { failureDebugFields, reportDebugAsync as reportDebug } from "../../core/debug.ts";
 import type { ToolStatusReport } from "../../core/tool-status.js";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import type { InteractiveModeBase } from "./interactive-mode-base.ts";
 
 export interface UnavailableToolsNoticeMode {
 	readonly runtimeHost?: InteractiveModeBase["runtimeHost"];
-	readonly session: Pick<InteractiveModeBase["session"], "getToolStatus">;
+	readonly session: Pick<InteractiveModeBase["session"], "getToolStatusAsync">;
 	readonly startupNoticesContainer: InteractiveModeBase["startupNoticesContainer"];
 	showWarning(message: string, targetContainer?: InteractiveModeBase["startupNoticesContainer"]): void;
 }
 
 async function readStartupToolStatus(mode: UnavailableToolsNoticeMode): Promise<ToolStatusReport> {
 	const host = mode.runtimeHost;
-	if (!(host instanceof IsolatedInteractiveRuntime)) return mode.session.getToolStatus();
+	if (!(host instanceof IsolatedInteractiveRuntime)) return mode.session.getToolStatusAsync();
 	// The runtime reports a failed resource load as its own diagnostic; the tools that failure left missing are
 	// reported from the status read after it.
 	await host.waitUntilResourcesReady().catch(() => undefined);

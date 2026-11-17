@@ -267,7 +267,7 @@ declare module "./interactive-mode-base.ts" {
 		addCompactionBoundaryToChat(result: VerbatimCompactionResult): void;
 		addCompactionCostNotice(kind: "compaction" | "branch_summary", usage: Usage): void;
 		maybeShowAssistantDiagnostics(message: AssistantMessage): void;
-		maybeShowInstallChangeWarning(): boolean;
+		maybeShowInstallChangeWarning(): Promise<boolean>;
 		addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void;
 		addCustomEntryToChat(entry: CustomEntry): void;
 		renderSessionContext(
@@ -342,7 +342,7 @@ declare module "./interactive-mode-base.ts" {
 		showSelector(
 			create: (done: () => void) => { component: Component; focus: Component; dispose?: () => void },
 		): void;
-		showSettingsSelector(): void;
+		showSettingsSelector(): Promise<void>;
 		handleModelCommand(searchTerm?: string): Promise<void>;
 		handleThinkingCommand(searchTerm?: string): Promise<void>;
 		selectThinkingLevel(level: ThinkingLevel): Promise<void>;
@@ -359,8 +359,8 @@ declare module "./interactive-mode-base.ts" {
 		showUserMessageSelector(): Promise<void>;
 		showPromptHistorySearch(): void;
 		handleCloneCommand(): Promise<void>;
-		maybeSaveImplicitProjectTrustAfterReload(): boolean;
-		showTrustSelector(): void;
+		maybeSaveImplicitProjectTrustAfterReload(): Promise<boolean>;
+		showTrustSelector(): Promise<void>;
 		showTreeSelector(initialSelectedId?: string): Promise<void>;
 		showSessionSelector(): void;
 		handleResumeTarget(target: string): Promise<void>;
@@ -402,16 +402,16 @@ declare module "./interactive-mode-base.ts" {
 		handleSessionCommand(): void | Promise<void>;
 		handleSessionSnapshotCommand(): Promise<void>;
 		handleToolsCommand(): Promise<void>;
-		handleChangelogCommand(): void;
+		handleChangelogCommand(): Promise<void>;
 		getAppKeyDisplay(action: AppKeybinding): string;
 		getEditorKeyDisplay(action: Keybinding): string;
 		jumpToTranscriptEnd(): void;
 		setFullscreenCopyOnSelect(enabled: boolean): void;
 		handleHotkeysCommand(): void;
 		handleClearCommand(): Promise<void>;
-		handleDebugCommand(): void;
+		handleDebugCommand(): Promise<void>;
 		handleArminSaysHi(): void;
-		handleDementedDelves(): void;
+		handleDementedDelves(): Promise<void>;
 		handleBashCommand(command: string, excludeFromContext?: boolean): Promise<void>;
 		handleCompactCommand(instructions?: string): Promise<void>;
 		stop(fullscreenExitOutput?: FullscreenExitOutput): void;

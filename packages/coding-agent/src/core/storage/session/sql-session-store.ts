@@ -1044,7 +1044,7 @@ export class SqlSessionStore implements SessionStore {
 			if (upto === null || upto === undefined) break;
 			const listed = rows.filter((row) => row.ord !== null);
 			for (const row of listed) {
-				if (!seen.has(row.id) && scope.inScope(row)) {
+				if (!seen.has(row.id) && (await scope.inScope(row))) {
 					seen.add(row.id);
 					yield summaryFromRow({ ...row, search_texts_json: "[]" });
 				}
@@ -1090,7 +1090,11 @@ export class SqlSessionStore implements SessionStore {
 		query: SessionListQuery,
 		paced: boolean,
 	): Promise<
-		| { readonly where: string; readonly params: SqliteValue[]; readonly inScope: (row: ListingRow) => boolean }
+		| {
+				readonly where: string;
+				readonly params: SqliteValue[];
+				readonly inScope: (row: ListingRow) => Promise<boolean> | boolean;
+		  }
 		| undefined
 	> {
 		const matchesCwd =
@@ -1099,7 +1103,9 @@ export class SqlSessionStore implements SessionStore {
 				: (this.cwdMatcher?.(query.cwd) ?? ((candidate: string | undefined) => candidate === query.cwd));
 		let projectCwds: string[] | undefined;
 		if (matchesCwd) {
-			projectCwds = (await this.distinctCwds(paced, query)).filter(matchesCwd);
+			const distinct = await this.distinctCwds(paced, query);
+			const matched = await Promise.all(distinct.map(async (cwd) => ((await matchesCwd(cwd)) ? cwd : undefined)));
+			projectCwds = matched.filter((cwd): cwd is string => cwd !== undefined);
 			this.assertListing(query);
 			if (projectCwds.length === 0) return undefined;
 		}
@@ -1120,8 +1126,12 @@ export class SqlSessionStore implements SessionStore {
 		const resolved = await this.scopeOf(query, false);
 		if (resolved === undefined) return [];
 		const { where: scope, params, inScope } = resolved;
+		const filterInScope = async (rows: readonly ListingRow[]): Promise<ListingRow[]> => {
+			const kept = await Promise.all(rows.map(async (row) => ((await inScope(row)) ? row : undefined)));
+			return kept.filter((row): row is ListingRow => row !== undefined);
+		};
 		if (listedBefore) {
-			const rows = (await this.readListingRows(scope, params)).filter(inScope);
+			const rows = await filterInScope(await this.readListingRows(scope, params));
 			this.assertListing(query);
 			const stale = rows.filter((row) => this.summaries.get(row.id)?.version !== listingVersion(row));
 			// A few changed sessions are read by id; when most changed, one scan of the scope is cheaper.
@@ -1138,7 +1148,7 @@ export class SqlSessionStore implements SessionStore {
 				return rows.flatMap((row) => (this.summaries.has(row.id) ? [row.id] : []));
 			}
 		}
-		const rows = (await this.readSummaries(scope, params)).filter(inScope);
+		const rows = await filterInScope(await this.readSummaries(scope, params));
 		this.assertListing(query);
 		return rows.map((row) => row.id);
 	}

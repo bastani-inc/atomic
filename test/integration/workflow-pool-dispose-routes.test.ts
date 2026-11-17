@@ -19,6 +19,28 @@ vi.mock("../../packages/workflows/src/runs/foreground/sdk-intercom.js", () => ({
 	acquireStandaloneIntercom: async () => releaseRoutes,
 }));
 
+/** Journals opened by path or selection, and those whose close has finished. */
+const journals = vi.hoisted(() => ({ opened: 0, closed: 0 }));
+vi.mock("../../packages/workflows/src/durable/journal/resolution.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../packages/workflows/src/durable/journal/resolution.js")>();
+	return {
+		...actual,
+		async resolveRunJournal(...args: Parameters<typeof actual.resolveRunJournal>) {
+			const journal = await actual.resolveRunJournal(...args);
+			journals.opened++;
+			const close = journal.close.bind(journal);
+			journal.close = async () => {
+				try {
+					await close();
+				} finally {
+					journals.closed++;
+				}
+			};
+			return journal;
+		},
+	};
+});
+
 afterEach(() => {
 	vi.restoreAllMocks();
 	releaseRoutes.mockClear();
@@ -70,6 +92,11 @@ test("a failed worker cleanup still releases the root's Intercom routes and repo
 			return true;
 		});
 		assert.equal(releaseRoutes.mock.calls.length, 1);
+		assert.equal(
+			journals.opened - journals.closed,
+			1,
+			"the coordinator closed its journal though the cleanup failed",
+		);
 	} finally {
 		vi.restoreAllMocks();
 		await pool.close().catch(() => {});

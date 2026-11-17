@@ -24,7 +24,7 @@ function writeProjectSettings(): void {
 	writeFileSync(join(projectDir, ".atomic", "settings.json"), JSON.stringify({ defaultTools: ["+codemode"] }));
 }
 
-function renderInitialChat(projectTrusted: boolean): string {
+async function renderInitialChat(projectTrusted: boolean): Promise<string> {
 	const chatContainer = new Container();
 	const mode = {
 		chatContainer,
@@ -41,24 +41,29 @@ function renderInitialChat(projectTrusted: boolean): string {
 		settingsManager: { isProjectTrusted: () => projectTrusted },
 	};
 	InteractiveModeBase.prototype.renderInitialMessages.call(mode as never);
+	await vi.waitFor(() =>
+		expect(chatContainer.children.some((child) => child instanceof Container && child.children.length === 0)).toBe(
+			false,
+		),
+	);
 	return stripTerminalSequences(chatContainer.render(200).join("\n"));
 }
 
-test("warns that untrusted project settings are ignored", () => {
+test("warns that untrusted project settings are ignored", async () => {
 	writeProjectSettings();
 
-	const chat = renderInitialChat(false);
+	const chat = await renderInitialChat(false);
 
 	expect(chat).toContain(TRUST_WARNING);
 	expect(chat).toContain("Project .atomic resources and packages are ignored. Use /trust");
 });
 
-test("does not warn once the project is trusted", () => {
+test("does not warn once the project is trusted", async () => {
 	writeProjectSettings();
 
-	expect(renderInitialChat(true)).not.toContain(TRUST_WARNING);
+	expect(await renderInitialChat(true)).not.toContain(TRUST_WARNING);
 });
 
-test("does not warn for a project without trust-gated resources", () => {
-	expect(renderInitialChat(false)).not.toContain(TRUST_WARNING);
+test("does not warn for a project without trust-gated resources", async () => {
+	expect(await renderInitialChat(false)).not.toContain(TRUST_WARNING);
 });

@@ -17,7 +17,7 @@
  * which URL continues it.
  */
 
-import { createSessionCwdMatcher } from "../../utils/canonical-path.ts";
+import { createSessionCwdMatcherAsync } from "../../utils/canonical-path.ts";
 import { resolvePath } from "../../utils/paths.ts";
 import type {
 	WorkflowRunControl,
@@ -1381,7 +1381,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		if (!header) throw new Error(`Session not found: ${id}`);
 		if (id === sources.currentSessionId) return { id, header };
 		const { cwd } = projectScope(target);
-		if (cwd === undefined || createSessionCwdMatcher(cwd)(header.cwd)) return { id, header };
+		if (cwd === undefined || (await createSessionCwdMatcherAsync(cwd)(header.cwd))) return { id, header };
 		// A stage session can run in its own directory or worktree; the project's run vouches for it.
 		if (target.project === undefined && header.workflow && (await belongsToProjectRun(header.workflow.runId, budget)))
 			return { id, header };

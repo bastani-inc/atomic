@@ -618,7 +618,12 @@ describe("workflow resume selector host-picker end-to-end (real engine bridge)",
 				) => SessionSelectorComponent,
 			) =>
 				new Promise((resolve) => {
-					component = factory({ terminal: { rows: 40, columns: 120 }, requestRender: () => {} }, {}, {}, resolve);
+					component = factory(
+						{ terminal: { rows: 40, columns: 120 }, requestRender: () => {} },
+						{},
+						new KeybindingsManager(),
+						resolve,
+					);
 				}),
 		} as unknown as ExtensionUIContext;
 

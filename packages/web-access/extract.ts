@@ -124,9 +124,9 @@ function abortedResult(url: string): ExtractedContent {
 	return { url, title: "", content: "", error: "Aborted" };
 }
 
-function safeVideoInfo(url: string): { info: ReturnType<typeof isVideoFile>; error?: string } {
+async function safeVideoInfo(url: string): Promise<{ info: Awaited<ReturnType<typeof isVideoFile>>; error?: string }> {
 	try {
-		return { info: isVideoFile(url) };
+		return { info: await isVideoFile(url) };
 	} catch (err) {
 		return { info: null, error: errorMessage(err) };
 	}
@@ -237,7 +237,7 @@ export async function extractContent(
 		return { url, title: "", content: "", error: "Aborted" };
 	}
 
-	const localVideo = safeVideoInfo(url);
+	const localVideo = await safeVideoInfo(url);
 	if (localVideo.error) {
 		return { url, title: "", content: "", error: localVideo.error };
 	}
@@ -282,7 +282,7 @@ export async function extractContent(
 	const ytInfo = isYouTubeURL(url);
 	let youtubeEnabled = false;
 	try {
-		youtubeEnabled = isYouTubeEnabled();
+		youtubeEnabled = await isYouTubeEnabled();
 	} catch (err) {
 		return { url, title: "", content: "", error: errorMessage(err) };
 	}

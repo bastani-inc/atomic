@@ -126,7 +126,7 @@ function createMode(options: {
 		disposeActiveSelector: vi.fn(),
 		programStatus: { report: vi.fn(), setBlocked: vi.fn() },
 		runtimeHost: {},
-		session: { getToolStatus: () => ({ missing: [] }) },
+		session: { getToolStatusAsync: () => ({ missing: [] }) },
 		keybindings,
 		isInitialized: false,
 		isShuttingDown: false,
@@ -315,11 +315,20 @@ test("restores the interactive keybindings after a standalone startup dialog", a
 
 test("omits the untrusted warning once the startup trust prompt is accepted", async () => {
 	const { mode, chatContainer, trust } = createMode({ holdTuiForStartupTrust: true });
+	const notices = (mode as unknown as { startupNoticesContainer: Container }).startupNoticesContainer;
 	startup.trustSettled.mockImplementation(async () => {
 		trust.granted = true;
 	});
 
 	await mode.init();
+	await vi.waitFor(() =>
+		assert.equal(
+			chatContainer.children.some(
+				(child) => child !== notices && child instanceof Container && child.children.length === 0,
+			),
+			false,
+		),
+	);
 
 	assert.equal(transcript(chatContainer).includes(TRUST_WARNING), false);
 });
@@ -329,7 +338,7 @@ test("keeps the untrusted warning when the startup trust prompt is declined", as
 
 	await mode.init();
 
-	assert.equal(transcript(chatContainer).includes(TRUST_WARNING), true);
+	await vi.waitFor(() => assert.equal(transcript(chatContainer).includes(TRUST_WARNING), true));
 });
 
 test("input typed before the startup trust prompt waits in the editor as a draft, with a notice", async () => {

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
 import { Value } from "typebox/value";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
@@ -416,7 +416,9 @@ test("foreground detached child retains artifacts-disabled progress storage unti
 		assert.equal(existsSync(progressPath), true, "detached child may still write progress");
 		assert.ok(reportDetachedExit);
 		reportDetachedExit(makeResult("implement"));
-		assert.equal(existsSync(progressPath), false, "progress storage is transient after detached child exit");
+		await vi.waitFor(() =>
+			assert.equal(existsSync(progressPath), false, "progress storage is transient after detached child exit"),
+		);
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}

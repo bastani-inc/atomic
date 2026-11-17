@@ -54,7 +54,7 @@ function agentFile(frontmatterTools: string, extra = ""): string {
 }
 
 describe("array-form tools frontmatter parity", () => {
-	test("every legal YAML array spelling produces the same tool set as the comma form", () => {
+	test("every legal YAML array spelling produces the same tool set as the comma form", async () => {
 		const dir = writeAgents({
 			"comma.md": agentFile("tools: read, bash\n"),
 			"flow.md": agentFile("tools: [read, bash]\n"),
@@ -67,7 +67,7 @@ describe("array-form tools frontmatter parity", () => {
 			"indented-block.md": agentFile("tools:\n  - read\n  - bash\n"),
 		});
 
-		const agents = loadAgentsFromDir(dir, "user");
+		const agents = await loadAgentsFromDir(dir, "user");
 		assert.equal(agents.length, 5);
 
 		const toolSets = agents.map((agent) => agent.tools);
@@ -81,63 +81,63 @@ describe("array-form tools frontmatter parity", () => {
 		);
 	});
 
-	test("array-form tools split mcp: entries exactly like the comma form", () => {
+	test("array-form tools split mcp: entries exactly like the comma form", async () => {
 		const dir = writeAgents({
 			"comma.md": agentFile("tools: read, mcp:chrome-devtools\n"),
 			"flow.md": agentFile("tools: [read, mcp:chrome-devtools]\n"),
 			"block.md": agentFile("tools:\n  - read\n  - mcp:chrome-devtools\n"),
 		});
 
-		for (const agent of loadAgentsFromDir(dir, "user")) {
+		for (const agent of await loadAgentsFromDir(dir, "user")) {
 			assert.deepEqual(agent.tools, ["read"]);
 			assert.deepEqual(agent.mcpDirectTools, ["chrome-devtools"]);
 		}
 	});
 
-	test("an empty flow sequence means no tool narrowing, like an omitted or empty list", () => {
+	test("an empty flow sequence means no tool narrowing, like an omitted or empty list", async () => {
 		const dir = writeAgents({
 			"empty-flow.md": agentFile("tools: []\n"),
 			"empty-comma.md": agentFile("tools:\n"),
 		});
 
-		for (const agent of loadAgentsFromDir(dir, "user")) {
+		for (const agent of await loadAgentsFromDir(dir, "user")) {
 			assert.equal(agent.tools, undefined);
 			assert.equal(agent.mcpDirectTools, undefined);
 		}
 	});
 
-	test("quoted flow items lose their quotes like quoted scalars do", () => {
+	test("quoted flow items lose their quotes like quoted scalars do", async () => {
 		const dir = writeAgents({
 			"quoted.md": agentFile("tools: [\"read\", 'bash']\n"),
 		});
 
-		const [agent] = loadAgentsFromDir(dir, "user");
+		const [agent] = await loadAgentsFromDir(dir, "user");
 		assert.deepEqual(agent?.tools, ["read", "bash"]);
 	});
 
-	test("a sequence where a scalar belongs is ignored, never stringified", () => {
+	test("a sequence where a scalar belongs is ignored, never stringified", async () => {
 		const dir = writeAgents({
 			"array-model.md": agentFile("", "model: [anthropic/claude-fable-5]\n"),
 		});
 
-		const [agent] = loadAgentsFromDir(dir, "user");
+		const [agent] = await loadAgentsFromDir(dir, "user");
 		assert.equal(agent?.model, undefined);
 	});
 
-	test("a file whose name is a sequence is skipped whole", () => {
+	test("a file whose name is a sequence is skipped whole", async () => {
 		const dir = writeAgents({
 			"bad-name.md": agentFile("", "").replace("name: probe\n", "name:\n  - probe\n"),
 			"good.md": agentFile("tools: read\n"),
 		});
 
-		const agents = loadAgentsFromDir(dir, "user");
+		const agents = await loadAgentsFromDir(dir, "user");
 		assert.deepEqual(
 			agents.map((agent) => agent.name),
 			["probe"],
 		);
 	});
 
-	test("unquoted YAML booleans and numbers load, matching serializeAgent's own spellings", () => {
+	test("unquoted YAML booleans and numbers load, matching serializeAgent's own spellings", async () => {
 		const dir = writeAgents({
 			"scalar-types.md": agentFile(
 				"",
@@ -145,24 +145,24 @@ describe("array-form tools frontmatter parity", () => {
 			),
 		});
 
-		const [agent] = loadAgentsFromDir(dir, "user");
+		const [agent] = await loadAgentsFromDir(dir, "user");
 		assert.equal(agent?.interactive, true);
 		assert.equal(agent?.inheritProjectContext, false);
 		assert.equal(agent?.inheritSkills, true);
 		assert.equal(agent?.defaultProgress, true);
 	});
 
-	test("quoted boolean and number strings from the line-reader era stay accepted", () => {
+	test("quoted boolean and number strings from the line-reader era stay accepted", async () => {
 		const dir = writeAgents({
 			"legacy-strings.md": agentFile("", 'interactive: "true"\ninheritProjectContext: "false"\n'),
 		});
 
-		const [agent] = loadAgentsFromDir(dir, "user");
+		const [agent] = await loadAgentsFromDir(dir, "user");
 		assert.equal(agent?.interactive, true);
 		assert.equal(agent?.inheritProjectContext, false);
 	});
 
-	test("one file with invalid YAML frontmatter does not take down the directory", () => {
+	test("one file with invalid YAML frontmatter does not take down the directory", async () => {
 		const dir = writeAgents({
 			// A colon-space inside a plain scalar is invalid YAML; the real
 			// parser throws, and the file must read as frontmatter-less
@@ -171,19 +171,19 @@ describe("array-form tools frontmatter parity", () => {
 			"good.md": agentFile("tools: read\n"),
 		});
 
-		const agents = loadAgentsFromDir(dir, "user");
+		const agents = await loadAgentsFromDir(dir, "user");
 		assert.deepEqual(
 			agents.map((agent) => agent.name),
 			["probe"],
 		);
 	});
 
-	test("a sequence-valued custom field survives an agent update round-trip", () => {
+	test("a sequence-valued custom field survives an agent update round-trip", async () => {
 		const dir = writeAgents({
 			"custom.md": agentFile("", "custom: [a, b]\n"),
 		});
 
-		const [loaded] = loadAgentsFromDir(dir, "user");
+		const [loaded] = await loadAgentsFromDir(dir, "user");
 		assert.deepEqual(loaded?.extraFields?.custom, ["a", "b"]);
 
 		// agent-management rewrites the file from the loaded config via
@@ -194,11 +194,11 @@ describe("array-form tools frontmatter parity", () => {
 		assert.match(rewritten, /^custom:\n {2}- a\n {2}- b$/m);
 
 		const roundTripDir = writeAgents({ "custom.md": rewritten });
-		const [reloaded] = loadAgentsFromDir(roundTripDir, "user");
+		const [reloaded] = await loadAgentsFromDir(roundTripDir, "user");
 		assert.deepEqual(reloaded?.extraFields?.custom, ["a", "b"]);
 	});
 
-	test("a removed frontmatter key is stripped on load and never re-emitted", () => {
+	test("a removed frontmatter key is stripped on load and never re-emitted", async () => {
 		// Spelled with a splice for the same reason `REMOVED_AGENT_FRONTMATTER_FIELDS`
 		// is: the removed identifier must not appear as contiguous text anywhere under
 		// `packages/` or `test/`.
@@ -208,7 +208,7 @@ describe("array-form tools frontmatter parity", () => {
 			"legacy-depth.md": agentFile("", `${removedDelegationDepthField}: 4\ncustomThing: keep-me\n`),
 		});
 
-		const [loaded] = loadAgentsFromDir(dir, "user");
+		const [loaded] = await loadAgentsFromDir(dir, "user");
 		assert.equal(loaded?.extraFields?.[removedDelegationDepthField], undefined);
 		assert.equal(loaded?.extraFields?.customThing, "keep-me");
 

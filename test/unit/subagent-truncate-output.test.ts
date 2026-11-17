@@ -101,16 +101,16 @@ test("truncateOutput keeps the longest whole-character prefix within both budget
 	}
 });
 
-test("the retained inline output head never splits a multibyte character (#4938)", () => {
+test("the retained inline output head never splits a multibyte character (#4938)", async () => {
 	const owner = `owner-utf8-head-${process.pid}`;
 	const text = `${"a".repeat(INLINE_TASK_OUTPUT_MAX_BYTES - 1)}😀 and more`;
-	retainTaskOutput(child, text, { ownerId: owner, taskId: "emoji" });
+	await retainTaskOutput(child, text, { ownerId: owner, taskId: "emoji" });
 	const head = retainedTaskOutput(owner, "emoji")?.head ?? "";
 	assertValidPrefix(head, text, INLINE_TASK_OUTPUT_MAX_BYTES);
 	assert.equal(head, "a".repeat(INLINE_TASK_OUTPUT_MAX_BYTES - 1));
 
 	const cjk = "字".repeat(INLINE_TASK_OUTPUT_MAX_BYTES);
-	retainTaskOutput(child, cjk, { ownerId: owner, taskId: "cjk" });
+	await retainTaskOutput(child, cjk, { ownerId: owner, taskId: "cjk" });
 	const cjkHead = retainedTaskOutput(owner, "cjk")?.head ?? "";
 	assertValidPrefix(cjkHead, cjk, INLINE_TASK_OUTPUT_MAX_BYTES);
 	assert.equal(cjkHead.length, Math.floor(INLINE_TASK_OUTPUT_MAX_BYTES / 3));

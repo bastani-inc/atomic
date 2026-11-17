@@ -130,7 +130,7 @@ export async function loadSummaryModelChoices(
 		addModel(summaryContext.model.provider, summaryContext.model.id);
 	}
 
-	const config = loadConfig();
+	const config = await loadConfig();
 	const configuredSummaryModel = typeof config.summaryModel === "string" ? config.summaryModel.trim() : "";
 	const preferredDefaults = ["anthropic/claude-haiku-4-5", "openai-codex/gpt-6.1-sol"];
 

@@ -263,7 +263,7 @@ export class OutputAccumulator {
 		try {
 			const dir = await ensureSessionTempDirAsync(this.tempDir);
 			const path = join(dir, `${this.tempFilePrefix}-${randomBytes(8).toString("hex")}.log`);
-			file = new PersistedOutputFile(path);
+			file = await PersistedOutputFile.create(path);
 			for (const chunk of this.rawChunks) {
 				file.write(chunk);
 			}

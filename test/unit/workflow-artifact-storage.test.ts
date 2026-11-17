@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, stat, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { isWorkflowRunResumable } from "../../packages/workflows/src/durable/resume-eligibility.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 import {
 	createWorkflowArtifactDirectory,
 	ENV_WORKFLOW_ARTIFACT_DIR,
 	pruneWorkflowArtifactRuns,
+	refreshWorkflowArtifactPresence,
 	resolveWorkflowArtifactRunState,
 	WORKFLOW_ARTIFACT_RETENTION_MS,
 	workflowArtifactRunsRoot,
@@ -488,13 +489,16 @@ test("continuations check their origin artifact owner instead of assuming their 
 				stages: [],
 			};
 			assert.equal(workflowRunHasArtifactReference(continuation), true);
+			await refreshWorkflowArtifactPresence([continuation]);
 			assert.equal(workflowRunArtifactsIntact(continuation), false);
 			await mkdir(join(root, "runs", originId), { recursive: true });
+			await refreshWorkflowArtifactPresence([continuation]);
 			assert.equal(workflowRunArtifactsIntact(continuation), true);
 			continuation.result = {
 				receipt: join(root, "runs", originId, "artifact-1", "receipt.md"),
 				foreign: join(root, "runs", "other-owner", "artifact-2", "review.json"),
 			};
+			await refreshWorkflowArtifactPresence([continuation]);
 			assert.equal(workflowRunArtifactsIntact(continuation), true);
 		});
 	} finally {
@@ -534,13 +538,40 @@ test("multi-hop continuations detect and check their original artifact owner", a
 				stages: [],
 			};
 			assert.equal(workflowRunHasArtifactReference(continuation), true);
+			await refreshWorkflowArtifactPresence([continuation]);
 			assert.equal(workflowRunArtifactsIntact(continuation), false);
 			await mkdir(join(root, "runs", originId), { recursive: true });
+			await refreshWorkflowArtifactPresence([continuation]);
 			assert.equal(workflowRunArtifactsIntact(continuation), true);
 		});
 	} finally {
 		store.removeRun(originId);
 		store.removeRun(middleId);
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+const PRESENCE_READ_TIMEOUT_MS = 10_000;
+
+test("an artifact directory not read yet counts as intact, and each answer reads it again for the next", async () => {
+	const root = await mkdtemp(join(tmpdir(), "workflow-artifact-presence-"));
+	try {
+		await withEnv({ [ENV_WORKFLOW_ARTIFACT_DIR]: root }, async () => {
+			const run = {
+				id: "presence-owner",
+				result: { receipt: join(root, "runs", "presence-owner", "artifact-1", "receipt.md") },
+				stages: [],
+			};
+			assert.equal(workflowRunArtifactsIntact(run), true, "never read: not proven missing");
+			await vi.waitFor(
+				() => assert.equal(workflowRunArtifactsIntact(run), false, "the earlier answer read the missing directory"),
+				{ timeout: PRESENCE_READ_TIMEOUT_MS },
+			);
+			await mkdir(join(root, "runs", "presence-owner"), { recursive: true });
+			await refreshWorkflowArtifactPresence([run]);
+			assert.equal(workflowRunArtifactsIntact(run), true);
+		});
+	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
 });

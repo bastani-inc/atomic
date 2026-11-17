@@ -2,7 +2,7 @@ import type { ModelsRefreshOptions, ModelsRefreshResult } from "@bastani/atomic-
 import type { ModelRuntime } from "../../core/model-runtime.js";
 import { raceWithAbortSignal } from "../../utils/abort.js";
 
-type ModelCatalogRuntime = Pick<ModelRuntime, "refresh" | "isNetworkRefreshEnabled" | "getCatalogInputsGeneration">;
+type ModelCatalogRuntime = Pick<ModelRuntime, "refresh" | "isNetworkRefreshEnabled" | "readCatalogInputsKey">;
 
 /**
  * The whole-catalog options interactive refreshes vary. `providers` and `force`
@@ -23,28 +23,29 @@ interface ActiveModelCatalogRefresh {
 }
 
 /**
- * A key names WHICH work a caller is asking for, plus WHEN the inputs that work
- * reads last changed. Both halves are needed and neither grows a third term.
+ * A key names WHICH work a caller is asking for, plus WHICH inputs that work
+ * reads. Both halves are needed and neither grows a third term.
  *
- * Which: the policy the runtime will actually apply, not how the caller spelled
+ * Which work: the policy the runtime will actually apply, not how the caller spelled
  * it. Startup asks for `allowNetwork: true` while the `/model` selector omits the
  * option and lets the runtime decide; on an online runtime those are one pass, and
  * keying the spelling started two. An explicit value that disagrees with the
  * runtime's own policy is still different work and still keys apart.
  *
- * When: `ModelRuntime.getCatalogInputsGeneration()` — one monotonic counter over
- * every input a pass reads (credential writes, provider registrations, and
- * models.json content; see its doc comment). A pass publishes one snapshot built
- * from the inputs it started under, so joining across a bump serves the joiner
- * models and credentials the user already replaced and then overwrites the newer
- * state with them. Keying on the generation makes a request that arrives after
- * any such change start its own pass, and it is deliberately ONE number: this
- * coordinator previously keyed input by input — first the network policy, then
- * credentials, then models.json — and each round left the next input unkeyed.
+ * Which inputs: `ModelRuntime.readCatalogInputsKey()` — the generation of the
+ * runtime's own writes (credentials, provider registrations) captured when the
+ * request is made, plus the hash of models.json read after it is made (see its doc
+ * comment). A pass publishes one snapshot built from the inputs it started under,
+ * so joining across a change serves the joiner models and credentials the user
+ * already replaced and then overwrites the newer state with them. A request issued
+ * after any such change, an external models.json edit included, never gets the key
+ * of a pass started before it, so it starts its own. It is deliberately ONE key:
+ * this coordinator previously keyed input by input — first the network policy,
+ * then credentials, then models.json — and each round left the next input unkeyed.
  */
-function refreshKey(modelRuntime: ModelCatalogRuntime, options: ModelCatalogRefreshOptions): string {
+function refreshKey(modelRuntime: ModelCatalogRuntime, options: ModelCatalogRefreshOptions): Promise<string> {
 	const policy = (options.allowNetwork ?? modelRuntime.isNetworkRefreshEnabled()) ? "network" : "cache";
-	return `${policy}:${modelRuntime.getCatalogInputsGeneration()}`;
+	return modelRuntime.readCatalogInputsKey().then((inputs) => `${policy}:${inputs}`);
 }
 
 class ModelCatalogRefreshCoordinator {
@@ -53,14 +54,24 @@ class ModelCatalogRefreshCoordinator {
 	refresh(modelRuntime: ModelCatalogRuntime, request: ModelCatalogRefreshRequest): Promise<ModelsRefreshResult> {
 		const { signal, ...options } = request;
 		signal.throwIfAborted();
+		return refreshKey(modelRuntime, options).then((key) => {
+			signal.throwIfAborted();
+			return this.join(modelRuntime, key, options, signal);
+		});
+	}
 
+	private join(
+		modelRuntime: ModelCatalogRuntime,
+		key: string,
+		options: ModelCatalogRefreshOptions,
+		signal: AbortSignal,
+	): Promise<ModelsRefreshResult> {
 		let byKey = this.activeByRuntime.get(modelRuntime);
 		if (!byKey) {
 			byKey = new Map<string, ActiveModelCatalogRefresh>();
 			this.activeByRuntime.set(modelRuntime, byKey);
 		}
 		const active = byKey;
-		const key = refreshKey(modelRuntime, options);
 
 		let shared = active.get(key);
 		if (!shared) {

@@ -112,6 +112,7 @@ export interface RuntimeBuildOptions {
 	flagValues?: Map<string, boolean | string>;
 	includeAllExtensionTools?: boolean;
 	preserveRunner?: boolean;
+	powerShellAvailable: boolean;
 }
 
 export interface AgentSessionQueuePauseControl {
@@ -216,6 +217,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	getToolDefinition(name: string): ToolDefinition | undefined;
 	/** Explain which tools are active, which are not (and why), and which selected names nothing registered. */
 	getToolStatus(): ToolStatusReport;
+	getToolStatusAsync(): Promise<ToolStatusReport>;
 	setActiveToolsByName(toolNames: string[]): void;
 	_setActiveTools(toolNames: string[]): void;
 	setScopedModels(scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>): void;
@@ -243,7 +245,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_runAgentContinuation(beforeContinue: () => Promise<void>, mode?: "continue" | "recovery" | "settle"): Promise<void>;
 	_continueQueuedAgentMessages(): Promise<void>;
 	_tryExecuteExtensionCommand(text: string): Promise<boolean>;
-	_expandSkillCommand(text: string): string;
+	_expandSkillCommand(text: string): Promise<string>;
 	steer(
 		text: string,
 		images?: ImageContent[],
@@ -496,6 +498,7 @@ export interface AgentSessionPublicSurface
 		| "getAllTools"
 		| "getToolDefinition"
 		| "getToolStatus"
+		| "getToolStatusAsync"
 		| "setActiveToolsByName"
 		| "setScopedModels"
 		| "prompt"

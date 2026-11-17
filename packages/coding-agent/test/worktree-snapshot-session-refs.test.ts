@@ -176,7 +176,7 @@ describe("snapshot commits survive git gc (#4923)", () => {
 			await (await SessionManager.create(store, sandbox.root)).deleteSession(manager.getSessionId());
 
 			assert.equal(await store.readHeader(manager.getSessionId()), undefined);
-			const failures = log.records().filter((record) => record.event === "snapshot-ref-release-failed");
+			const failures = (await log.records()).filter((record) => record.event === "snapshot-ref-release-failed");
 			assert.deepEqual(
 				failures.map((record) => [record.area, record.data.root]),
 				[["storage", clone]],

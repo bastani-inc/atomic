@@ -3,7 +3,7 @@ import net from "net";
 import { randomUUID } from "crypto";
 import { writeMessage, createMessageReader, type JsonWireValue } from "./framing.js";
 import { isBrokerStatusReport } from "./broker-status.js";
-import { getAgentDir, getBrokerSocketPath } from "./paths.js";
+import { directBrokerSocketPath, getAgentDir, getBrokerSocketPathAsync } from "./paths.js";
 import type {
 	SessionInfo,
 	Message,
@@ -592,8 +592,12 @@ export class IntercomClient extends EventEmitter {
 		this.reachSource = options.reach;
 	}
 
-  private get brokerSocketPath(): string {
-    return this.explicitBrokerSocketPath ?? getBrokerSocketPath(process.platform, this.brokerAgentDir);
+  private resolveBrokerSocketPath(): string | Promise<string> {
+    if (this.explicitBrokerSocketPath !== undefined) return this.explicitBrokerSocketPath;
+    return (
+      directBrokerSocketPath(process.platform, this.brokerAgentDir) ??
+      getBrokerSocketPathAsync(process.platform, this.brokerAgentDir)
+    );
   }
 
   private failPending(error: Error): void {
@@ -689,14 +693,26 @@ export class IntercomClient extends EventEmitter {
     try {
       for (let retry = 0; ; retry++) {
         if (attempt.signal.aborted) throw connectAborted();
+        const resolvedSocketPath = this.resolveBrokerSocketPath();
+        const socketPath = typeof resolvedSocketPath === "string" ? resolvedSocketPath : await resolvedSocketPath;
+        if (attempt.signal.aborted) throw connectAborted();
         try {
-          await this.connectOnce(attempt.signal, session, supervisor, supervisorOwnerToken, messageSource, registrationGroup, expectedRouting);
+          await this.connectOnce(
+            socketPath,
+            attempt.signal,
+            session,
+            supervisor,
+            supervisorOwnerToken,
+            messageSource,
+            registrationGroup,
+            expectedRouting,
+          );
           return;
         } catch (error) {
           if (attempt.signal.aborted) throw connectAborted();
           if (!(error instanceof Error)) throw error;
           if (!isBacklogRefusal(error) || retry >= BROKER_BACKLOG_RETRIES) {
-            const classified = await classifyRegistrationFailure(error, this.brokerSocketPath);
+            const classified = await classifyRegistrationFailure(error, socketPath);
             if (attempt.signal.aborted) throw connectAborted();
             if (expectedRouting?.verify === true && classified instanceof ConnectionClosedBeforeRegistrationError) {
               throw new IntercomRoutingUnavailableError("unsupported", "register");
@@ -713,6 +729,7 @@ export class IntercomClient extends EventEmitter {
   }
 
   private connectOnce(
+    socketPath: string,
     signal: AbortSignal,
     session: Omit<SessionInfo, "id">,
     supervisor?: SupervisorRegistration,
@@ -729,7 +746,7 @@ export class IntercomClient extends EventEmitter {
     this.registrationExpectedRouting = expectedRouting;
 
     return new Promise((resolve, reject) => {
-      const socket = net.connect(this.brokerSocketPath);
+      const socket = net.connect(socketPath);
       this.socket = socket;
       this.disconnectError = null;
       let settled = false;

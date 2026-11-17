@@ -1,8 +1,7 @@
-import { existsSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
 	type BestWorktreeRestore,
-	canonicalizeWorktreePath,
+	canonicalizeWorktreePathAsync,
 	formatDegradedRestoreNotice,
 	formatUnrestoredNotice,
 	isGitUnavailableError,
@@ -20,6 +19,7 @@ import {
 	type WorktreeSnapshot,
 	type WorktreeSnapshotSettingsInput,
 } from "@bastani/atomic";
+import { pathExists } from "../shared/path-exists.js";
 import type { StageWorktreeSnapshot, WorkflowWorktreeRestoreOutcome } from "../shared/store-types.js";
 import type { WorkflowSnapshotBoundary } from "../shared/worktree-snapshot-contract.js";
 
@@ -82,15 +82,21 @@ export function workflowSnapshotFrontier(
  * top levels, so the path and both ends of every mapping are compared with their symbolic links resolved: a working
  * directory reached through a link maps like the directory it points at. The result lies under the mapping's `to`.
  */
-export function mapWorkflowWorktreePath(path: string, mappings: readonly WorktreeRootMapping[]): string {
+export async function mapWorkflowWorktreePath(path: string, mappings: readonly WorktreeRootMapping[]): Promise<string> {
 	if (!isAbsolute(path) || mappings.length === 0) return path;
-	const physical = canonicalizeWorktreePath(path);
+	const canonical = canonicalLookup();
+	const physical = await canonical(path);
 	let selected: { readonly source: string; readonly target: string } | undefined;
 	for (const mapping of mappings) {
-		const root = originalRoot(mapping.from, mappings);
+		const root = await originalRoot(mapping.from, mappings, canonical);
 		const target =
-			mappings.findLast((candidate) => originalRoot(candidate.from, mappings) === root)?.to ?? mapping.to;
-		for (const source of [mapping.from, mapping.to].map(canonicalizeWorktreePath)) {
+			(
+				await findLastMapping(
+					mappings,
+					async (candidate) => (await originalRoot(candidate.from, mappings, canonical)) === root,
+				)
+			)?.to ?? mapping.to;
+		for (const source of [await canonical(mapping.from), await canonical(mapping.to)]) {
 			const suffix = relative(source, physical);
 			if (suffix === ".." || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)) continue;
 			if (selected === undefined || source.length >= selected.source.length) selected = { source, target };
@@ -100,16 +106,44 @@ export function mapWorkflowWorktreePath(path: string, mappings: readonly Worktre
 }
 
 /** The root a restored root descends from, comparing physical paths so a link in a recorded spelling cannot break the chain. */
-function originalRoot(root: string, mappings: readonly WorktreeRootMapping[]): string {
+async function originalRoot(
+	root: string,
+	mappings: readonly WorktreeRootMapping[],
+	canonical: CanonicalLookup = canonicalLookup(),
+): Promise<string> {
 	const seen = new Set<string>();
 	while (!seen.has(root)) {
 		seen.add(root);
-		const physical = canonicalizeWorktreePath(root);
-		const prior = mappings.findLast((mapping) => canonicalizeWorktreePath(mapping.to) === physical);
+		const physical = await canonical(root);
+		const prior = await findLastMapping(mappings, async (mapping) => (await canonical(mapping.to)) === physical);
 		if (prior === undefined) break;
 		root = prior.from;
 	}
 	return root;
+}
+
+type CanonicalLookup = (path: string) => Promise<string>;
+
+function canonicalLookup(): CanonicalLookup {
+	const read = new Map<string, Promise<string>>();
+	return (path) => {
+		let canonical = read.get(path);
+		if (canonical === undefined) {
+			canonical = canonicalizeWorktreePathAsync(path);
+			read.set(path, canonical);
+		}
+		return canonical;
+	};
+}
+
+async function findLastMapping(
+	mappings: readonly WorktreeRootMapping[],
+	matches: (mapping: WorktreeRootMapping) => Promise<boolean>,
+): Promise<WorktreeRootMapping | undefined> {
+	for (let index = mappings.length - 1; index >= 0; index--) {
+		if (await matches(mappings[index]!)) return mappings[index];
+	}
+	return undefined;
 }
 
 /** A checkout a run's resume continued without, because nothing of its snapshot could be restored here (#4738). */
@@ -124,15 +158,16 @@ export interface WorkflowUnrestoredCheckout {
 }
 
 /** The commits of `root`'s earlier snapshots, newest first, to restore when `snapshot`'s own is out of reach (#4738). */
-function earlierBoundaryHeads(
+async function earlierBoundaryHeads(
 	boundaries: readonly WorkflowSnapshotBoundary[],
 	root: string,
 	mappings: readonly WorktreeRootMapping[],
 	snapshot: WorktreeSnapshot,
-): string[] {
+): Promise<string[]> {
+	const canonical = canonicalLookup();
 	const heads: string[] = [];
 	for (const boundary of [...boundaries].reverse()) {
-		if (originalRoot(boundary.root, mappings) !== root) continue;
+		if ((await originalRoot(boundary.root, mappings, canonical)) !== root) continue;
 		const head = boundary.snapshot.head;
 		if (head !== snapshot.head && !heads.includes(head)) heads.push(head);
 	}
@@ -164,8 +199,9 @@ export async function resolveWorkflowSnapshotFrontier(
 	const mappings = options.mappings ?? [];
 	const boundaries = await listWorkflowSnapshotBoundaries(journal, runId);
 	const latest = new Map<string, WorkflowSnapshotBoundary>();
+	const canonical = canonicalLookup();
 	for (const boundary of boundaries) {
-		latest.set(originalRoot(boundary.root, mappings), boundary);
+		latest.set(await originalRoot(boundary.root, mappings, canonical), boundary);
 	}
 	const restored: WorktreeRootMapping[] = [];
 	const unrestored: WorkflowUnrestoredCheckout[] = [];
@@ -173,7 +209,9 @@ export async function resolveWorkflowSnapshotFrontier(
 	try {
 		for (const [root, { snapshot }] of latest) {
 			options.signal?.throwIfAborted();
-			const mapped = mappings.findLast((mapping) => originalRoot(mapping.from, mappings) === root)?.to ?? root;
+			const mapped =
+				(await findLastMapping(mappings, async (mapping) => (await originalRoot(mapping.from, mappings)) === root))
+					?.to ?? root;
 			let drift: WorkspaceDriftError;
 			try {
 				await verifyWorktree(snapshot, mapped, { settings: options.settings, signal: options.signal });
@@ -207,7 +245,7 @@ export async function resolveWorkflowSnapshotFrontier(
 					blobs: journal.snapshotBlobs,
 					storeDir: options.storeDir,
 					signal: options.signal,
-					candidates: earlierBoundaryHeads(boundaries, root, mappings, snapshot),
+					candidates: await earlierBoundaryHeads(boundaries, root, mappings, snapshot),
 				});
 				if (best.status === "unrestored") {
 					unrestored.push({ root, here: mapped, snapshot, reason: best.reason });
@@ -280,7 +318,7 @@ function within(root: string, path: string): boolean {
  * checkout the run's directory `continuing` is in was not restored and that directory is not on this node; otherwise
  * the run continues in `continuing` and `continuedIn` is undefined.
  */
-export function runWorktreeRestoreOutcomes(input: {
+export async function runWorktreeRestoreOutcomes(input: {
 	readonly restored: readonly WorktreeRootMapping[];
 	readonly unrestored: readonly WorkflowUnrestoredCheckout[];
 	readonly snapshots: ReadonlyMap<string, WorktreeSnapshot>;
@@ -290,12 +328,12 @@ export function runWorktreeRestoreOutcomes(input: {
 	readonly previous: readonly WorkflowWorktreeRestoreOutcome[];
 	/** Every restore of the run, this resume's included, oldest first. */
 	readonly mappings: readonly WorktreeRootMapping[];
-}): {
+}): Promise<{
 	readonly list: WorkflowWorktreeRestoreOutcome[];
 	/** The outcomes of this resume, each to be announced once. */
 	readonly fresh: readonly WorkflowWorktreeRestoreOutcome[];
 	readonly continuedIn?: string;
-} {
+}> {
 	const list: WorkflowWorktreeRestoreOutcome[] = [];
 	for (const mapping of input.restored) {
 		if (mapping.degraded === undefined) continue;
@@ -308,13 +346,17 @@ export function runWorktreeRestoreOutcomes(input: {
 		});
 	}
 	const { continuing, launchCwd } = input;
-	const leftHere =
-		continuing !== undefined &&
-		input.unrestored.some((checkout) =>
+	let leftHere = false;
+	if (continuing !== undefined) {
+		for (const checkout of input.unrestored) {
 			// Roots are Git's physical top levels: a directory reached through a link compares as the one it points at.
-			within(canonicalizeWorktreePath(checkout.here), canonicalizeWorktreePath(continuing)),
-		);
-	const launch = leftHere && launchCwd !== undefined && !existsSync(continuing);
+			const here = await canonicalizeWorktreePathAsync(checkout.here);
+			if (!within(here, await canonicalizeWorktreePathAsync(continuing))) continue;
+			leftHere = true;
+			break;
+		}
+	}
+	const launch = leftHere && continuing !== undefined && launchCwd !== undefined && !(await pathExists(continuing));
 	const continuedIn = launch ? resolve(launchCwd) : undefined;
 	for (const checkout of input.unrestored) {
 		const record = unrestoredRecord(

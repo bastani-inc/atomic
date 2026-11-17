@@ -7,6 +7,7 @@ import type { DurableCheckpoint, DurableStageCheckpoint } from "../../packages/w
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStageSessionHeartbeat } from "../../packages/workflows/src/runs/foreground/stage-session-heartbeat.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { untilObserved, untilRunRegistered } from "../helpers/fake-timer-io.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
@@ -175,6 +176,7 @@ describe("active workflow stage session durability", () => {
 				adapters: { agentSession: { create: async () => session } },
 			},
 		);
+		await untilRunRegistered(store, backend);
 		await vi.advanceTimersByTimeAsync(0);
 
 		assert.deepEqual(observedStatuses, ["running"]);
@@ -246,26 +248,23 @@ describe("active workflow stage session durability", () => {
 				adapters: { agentSession: { create: async () => session } },
 			},
 		);
-		await vi.advanceTimersByTimeAsync(0);
-		const initial = backend
-			.listCheckpoints(rootId)
-			.filter(
-				(checkpoint): checkpoint is DurableStageCheckpoint =>
-					checkpoint.kind === "stage" && checkpoint.sessionFile === session.sessionFile,
-			);
+		const stageCheckpoints = () =>
+			backend
+				.listCheckpoints(rootId)
+				.filter(
+					(checkpoint): checkpoint is DurableStageCheckpoint =>
+						checkpoint.kind === "stage" && checkpoint.sessionFile === session.sessionFile,
+				);
+		await untilObserved(() => stageCheckpoints().length > 0);
+		const initial = stageCheckpoints();
 		assert.equal(initial.length, 1);
 		assert.notEqual(initial[0]?.topology?.run?.runId, rootId);
 		assert.equal(initial[0]?.workflowId, rootId);
 		const firstUpdatedAt = backend.getWorkflow(rootId)?.updatedAt;
 
 		await vi.advanceTimersByTimeAsync(HEARTBEAT_MS);
-		assert.equal(
-			backend
-				.listCheckpoints(rootId)
-				.filter((checkpoint) => checkpoint.kind === "stage" && checkpoint.sessionFile === session.sessionFile)
-				.length,
-			2,
-		);
+		await untilObserved(() => stageCheckpoints().length > 1);
+		assert.equal(stageCheckpoints().length, 2);
 		assert.ok((backend.getWorkflow(rootId)?.updatedAt ?? 0) > (firstUpdatedAt ?? 0));
 
 		release.resolve("done");
@@ -303,6 +302,7 @@ describe("active workflow stage session durability", () => {
 				adapters: { prompt: { prompt: async () => await release.promise } },
 			},
 		);
+		await untilRunRegistered(store, backend);
 		await vi.advanceTimersByTimeAsync(0);
 		assert.equal(priorRunElapsedMs(backend, runId), undefined);
 
@@ -407,13 +407,14 @@ describe("active workflow stage session durability", () => {
 				return {};
 			},
 		});
+		const backend = await createFailingIdentityBackend();
 		const execution = run(
 			definition,
 			{},
 			{
 				runId,
 				store,
-				durableBackend: await createFailingIdentityBackend(),
+				durableBackend: backend,
 				config: SERIAL_CONFIG,
 				adapters: {
 					agentSession: {
@@ -428,6 +429,7 @@ describe("active workflow stage session durability", () => {
 				},
 			},
 		);
+		await untilRunRegistered(store, backend);
 		await vi.runAllTimersAsync();
 		const result = await execution;
 
@@ -467,12 +469,13 @@ describe("active workflow stage session durability", () => {
 				return {};
 			},
 		});
+		const backend = await createMemoryTestBackend();
 		const execution = run(
 			definition,
 			{},
 			{
 				store,
-				durableBackend: await createMemoryTestBackend(),
+				durableBackend: backend,
 				config: SERIAL_CONFIG,
 				mcp: {
 					setScope() {
@@ -494,6 +497,7 @@ describe("active workflow stage session durability", () => {
 				},
 			},
 		);
+		await untilRunRegistered(store, backend);
 		await vi.runAllTimersAsync();
 		const result = await execution;
 
@@ -528,12 +532,13 @@ describe("active workflow stage session durability", () => {
 				return {};
 			},
 		});
+		const backend = await createMemoryTestBackend();
 		const execution = run(
 			definition,
 			{},
 			{
 				store,
-				durableBackend: await createMemoryTestBackend(),
+				durableBackend: backend,
 				config: SERIAL_CONFIG,
 				mcp: {
 					setScope() {},
@@ -551,6 +556,7 @@ describe("active workflow stage session durability", () => {
 				},
 			},
 		);
+		await untilRunRegistered(store, backend);
 		await vi.runAllTimersAsync();
 		const result = await execution;
 
@@ -671,6 +677,7 @@ describe("active workflow stage session durability", () => {
 				adapters: { agentSession: { create: async () => session } },
 			},
 		);
+		await untilRunRegistered(store, backend);
 		await vi.advanceTimersByTimeAsync(0);
 		await vi.advanceTimersByTimeAsync(HEARTBEAT_MS);
 		const result = await execution;
@@ -704,13 +711,14 @@ describe("active workflow stage session durability", () => {
 				return {};
 			},
 		});
+		const backend = await createMemoryTestBackend();
 		const execution = run(
 			definition,
 			{},
 			{
 				runId,
 				store,
-				durableBackend: await createMemoryTestBackend(),
+				durableBackend: backend,
 				config: SERIAL_CONFIG,
 				onStageSession(_stageRunId, snapshot, options) {
 					if (snapshot.name !== "first" || options?.awaitDurable !== true || !turnResolved) return;
@@ -735,6 +743,7 @@ describe("active workflow stage session durability", () => {
 				},
 			},
 		);
+		await untilRunRegistered(store, backend);
 		await vi.runAllTimersAsync();
 		const result = await execution;
 

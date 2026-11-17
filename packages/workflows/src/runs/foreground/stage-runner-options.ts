@@ -3,13 +3,13 @@ import {
 	type CreateAgentSessionOptions,
 	currentWorktreeRootMappings,
 	getAgentDir,
-	mapRestoredPath,
+	mapRestoredPathAsync,
 	recordRestoredWorktreeContext,
 	resolveWorkspace,
 	resumeStoreDir,
 	SessionManager,
 	type SessionStore,
-	workspaceSessionCwd,
+	workspaceSessionCwdAsync,
 } from "@bastani/atomic";
 import { resolveStageGroup, stageHasIntercomAccess } from "../../shared/intercom-group.js";
 import { warnRemovedRoutingOption } from "../../shared/removed-routing-warning.js";
@@ -136,7 +136,7 @@ export async function stripWorkflowOnlyOptions(
 						signal,
 					);
 		sessionOptions.workspace = binding;
-		sessionOptions.cwd = workspaceSessionCwd(binding, sessionOptions.cwd);
+		sessionOptions.cwd = await workspaceSessionCwdAsync(binding, sessionOptions.cwd);
 	}
 	const cwd = sessionOptions.cwd ?? process.cwd();
 	if (resumeStore !== undefined) {
@@ -169,7 +169,7 @@ export async function stripWorkflowOnlyOptions(
 		const notKept = await recordRestoredWorktreeContext(
 			manager,
 			resumeStoreDir(sessionOptions.agentDir ?? getAgentDir()),
-			mapRestoredPath(cwd, mappings),
+			await mapRestoredPathAsync(cwd, mappings),
 		);
 		if (notKept !== undefined) console.warn(`atomic-workflows: ${notKept.message}`);
 	}

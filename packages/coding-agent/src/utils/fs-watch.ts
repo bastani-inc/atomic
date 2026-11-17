@@ -1,4 +1,5 @@
 import { type FSWatcher, realpathSync, type WatchListener, watch } from "node:fs";
+import { realpath } from "node:fs/promises";
 
 export const FS_WATCH_RETRY_DELAY_MS = 5000;
 
@@ -28,6 +29,7 @@ export type NativeWatchPathResolution = NativeWatchPathResult | NativeWatchPathE
 export interface SafeFsWatchOptions {
 	platform?: NodeJS.Platform;
 	realpathSyncNative?: (path: string) => string;
+	realpathNative?: (path: string) => Promise<string>;
 	watch?: (path: string, listener: WatchListener<string>) => FSWatcher;
 }
 
@@ -87,17 +89,47 @@ export function resolveNativeWatchPath(path: string, options: SafeFsWatchOptions
 	try {
 		resolvedPath = resolvePath(path);
 	} catch (error) {
-		return {
-			error: createSafeFsWatchPathError(
-				SAFE_FS_WATCH_CANONICALIZATION_FAILED,
-				path,
-				`Cannot canonicalize Windows fs.watch path '${path}'.`,
-				undefined,
-				error instanceof Error ? error : undefined,
-			),
-		};
+		return canonicalizationFailed(path, error);
+	}
+	return checkedWindowsWatchPath(path, resolvedPath, platform);
+}
+
+export async function resolveNativeWatchPathAsync(
+	path: string,
+	options: SafeFsWatchOptions = {},
+): Promise<NativeWatchPathResolution> {
+	const platform = options.platform ?? process.platform;
+	if (platform !== "win32") {
+		return { path };
 	}
 
+	const resolvePath = options.realpathNative ?? realpath;
+	let resolvedPath: string;
+	try {
+		resolvedPath = await resolvePath(path);
+	} catch (error) {
+		return canonicalizationFailed(path, error);
+	}
+	return checkedWindowsWatchPath(path, resolvedPath, platform);
+}
+
+function canonicalizationFailed(path: string, error: unknown): NativeWatchPathErrorResult {
+	return {
+		error: createSafeFsWatchPathError(
+			SAFE_FS_WATCH_CANONICALIZATION_FAILED,
+			path,
+			`Cannot canonicalize Windows fs.watch path '${path}'.`,
+			undefined,
+			error instanceof Error ? error : undefined,
+		),
+	};
+}
+
+function checkedWindowsWatchPath(
+	path: string,
+	resolvedPath: string,
+	platform: NodeJS.Platform,
+): NativeWatchPathResolution {
 	if (isUnsafeWindowsShortPath(resolvedPath, platform)) {
 		return {
 			error: createSafeFsWatchPathError(
@@ -118,7 +150,28 @@ export function watchWithErrorHandler(
 	onError: (error: Error) => void,
 	options: SafeFsWatchOptions = {},
 ): FSWatcher | null {
-	const resolved = resolveNativeWatchPath(path, options);
+	return watchResolvedPath(resolveNativeWatchPath(path, options), listener, onError, options);
+}
+
+export function watchWithErrorHandlerAsync(
+	path: string,
+	listener: WatchListener<string>,
+	onError: (error: Error) => void,
+	options: SafeFsWatchOptions = {},
+): Promise<FSWatcher | null> {
+	if ((options.platform ?? process.platform) !== "win32")
+		return Promise.resolve(watchResolvedPath({ path }, listener, onError, options));
+	return resolveNativeWatchPathAsync(path, options).then((resolved) =>
+		watchResolvedPath(resolved, listener, onError, options),
+	);
+}
+
+function watchResolvedPath(
+	resolved: NativeWatchPathResolution,
+	listener: WatchListener<string>,
+	onError: (error: Error) => void,
+	options: SafeFsWatchOptions,
+): FSWatcher | null {
 	if ("error" in resolved) {
 		onError(resolved.error);
 		return null;

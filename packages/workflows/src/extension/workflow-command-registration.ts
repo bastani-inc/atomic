@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getDocsPath, keyHintIfBound, ToolBlock, ToolBlockMarkdown } from "@bastani/atomic";
 import { stripTerminalSequences, Text } from "@bastani/atomic-tui";
@@ -58,8 +58,8 @@ export function registerWorkflowAuthoringMessageRenderer(pi: ExtensionAPI): void
 	authoringRendererRegisteredHosts.add(pi);
 }
 
-function readWorkflowAuthoringReference(): string {
-	return readFileSync(join(getDocsPath(), "workflows", "authoring.md"), "utf8");
+function readWorkflowAuthoringReference(): Promise<string> {
+	return readFile(join(getDocsPath(), "workflows", "authoring.md"), "utf8");
 }
 
 function safeErrorReason(error: unknown): string {
@@ -79,7 +79,7 @@ async function handleWorkflowAuthoringCommand(args: string, ctx: PiCommandContex
 	}
 	let content: string;
 	try {
-		content = readWorkflowAuthoringReference();
+		content = await readWorkflowAuthoringReference();
 	} catch (error) {
 		reporter.error(`Could not load workflow authoring reference: ${safeErrorReason(error)}`);
 		return;

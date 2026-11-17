@@ -248,14 +248,8 @@ describe("workflow resume branch persistence and live row age (#5256)", () => {
 		assert.equal(backend.getWorkflow(nonGitRunId)?.branch, undefined);
 
 		writeFileSync(join(repoDir, ".git", "HEAD"), "ref: refs/heads/.invalid\n");
-		assert.equal(
-			resolveGitHeadBranch(repoDir, () => "feat/reftable"),
-			"feat/reftable",
-		);
-		assert.equal(
-			resolveGitHeadBranch(repoDir, () => undefined),
-			undefined,
-		);
+		assert.equal(await resolveGitHeadBranch(repoDir, () => "feat/reftable"), "feat/reftable");
+		assert.equal(await resolveGitHeadBranch(repoDir, () => undefined), undefined);
 	});
 
 	test("a fork keeps its source's branch in the source checkout and records the branch of any other destination", async () => {
@@ -299,13 +293,13 @@ describe("workflow resume branch persistence and live row age (#5256)", () => {
 		assert.equal(await forkBranch(nonGitDir), undefined);
 	});
 
-	test.skipIf(!gitSupportsReftable())("reads the branch of a reftable repository through git", () => {
+	test.skipIf(!gitSupportsReftable())("reads the branch of a reftable repository through git", async () => {
 		const repoDir = makeTempDirectory("resume-reftable-");
 		dirs.push(repoDir);
 		execFileSync("git", ["init", "-q", "--ref-format=reftable", "-b", "feat/reftable"], {
 			cwd: repoDir,
 			stdio: ["ignore", "pipe", "pipe"],
 		});
-		assert.equal(resolveInvocationGitBranch(repoDir), "feat/reftable");
+		assert.equal(await resolveInvocationGitBranch(repoDir), "feat/reftable");
 	});
 });
