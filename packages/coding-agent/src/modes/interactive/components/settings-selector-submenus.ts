@@ -1,29 +1,18 @@
-import type { Component, SelectItem, SelectListLayoutOptions, SettingItem } from "@bastani/atomic-tui";
-import {
-	Container,
-	fuzzyFilter,
-	getKeybindings,
-	Input,
-	SelectList,
-	SettingsList,
-	Spacer,
-	Text,
+import type {
+	Component,
+	Focusable,
+	SelectItem,
+	SettingItem,
+	TuiMouseEvent,
+	TuiMouseEventResult,
 } from "@bastani/atomic-tui";
+import { Container } from "@bastani/atomic-tui";
 import { SETTINGS_DEFAULTS } from "../../../core/settings-defaults.ts";
 import type { WarningSettings } from "../../../core/settings-manager.ts";
-import {
-	getSelectListTheme,
-	getSettingsListTheme,
-	parseAutoThemeSetting,
-	type TerminalTheme,
-	theme,
-} from "../theme/theme.js";
+import { parseAutoThemeSetting, type TerminalTheme } from "../theme/theme.js";
+import { Selector, type SelectorItem } from "./selector.ts";
+import { SettingsPicker } from "./settings-picker.ts";
 import type { SettingsCallbacks } from "./settings-selector-types.ts";
-
-const SETTINGS_SUBMENU_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
-	minPrimaryColumnWidth: 12,
-	maxPrimaryColumnWidth: 32,
-};
 
 const AUTOMATIC_THEME_VALUE = "/";
 
@@ -31,7 +20,7 @@ const AUTOMATIC_THEME_VALUE = "/";
  * A submenu component for selecting from a list of options.
  */
 export class WarningSettingsSubmenu extends Container {
-	private settingsList: SettingsList;
+	private settingsList: SettingsPicker;
 	private state: WarningSettings;
 
 	constructor(warnings: WarningSettings, onChange: (warnings: WarningSettings) => void, onCancel: () => void) {
@@ -50,10 +39,8 @@ export class WarningSettingsSubmenu extends Container {
 			},
 		];
 
-		this.settingsList = new SettingsList(
+		this.settingsList = new SettingsPicker(
 			items,
-			Math.min(items.length, 10),
-			getSettingsListTheme(),
 			(id, newValue) => {
 				switch (id) {
 					case "anthropic-extra-usage":
@@ -63,6 +50,7 @@ export class WarningSettingsSubmenu extends Container {
 				}
 			},
 			onCancel,
+			{ title: "Warnings" },
 		);
 
 		this.addChild(this.settingsList);
@@ -74,14 +62,9 @@ export class WarningSettingsSubmenu extends Container {
 	}
 }
 
-export class SelectSubmenu extends Container {
-	private selectList: SelectList;
-	private readonly allOptions: SelectItem[];
-	private readonly currentValue: string;
-	private readonly onSelectValue: (value: string) => void;
-	private readonly onCancelValue: () => void;
-	private searchInput?: Input;
-	private listChildIndex = 0;
+export class SelectSubmenu implements Component, Focusable {
+	readonly capturesViewportInput = true;
+	private readonly selector: Selector<string>;
 
 	constructor(
 		title: string,
@@ -93,94 +76,55 @@ export class SelectSubmenu extends Container {
 		onSelectionChange?: (value: string) => void,
 		searchable = false,
 	) {
-		super();
-		this.allOptions = options;
-		this.currentValue = currentValue;
-		this.onSelectValue = onSelect;
-		this.onCancelValue = onCancel;
-
-		this.addChild(new Text(theme.bold(theme.fg("accent", title)), 0, 0));
-
-		if (description) {
-			this.addChild(new Spacer(1));
-			this.addChild(new Text(theme.fg("muted", description), 0, 0));
-		}
-
-		if (searchable) {
-			this.addChild(new Spacer(1));
-			this.searchInput = new Input();
-			this.addChild(this.searchInput);
-		}
-
-		this.addChild(new Spacer(1));
-
-		this.selectList = new SelectList(
-			options,
-			Math.min(options.length, 10),
-			getSelectListTheme(),
-			SETTINGS_SUBMENU_SELECT_LIST_LAYOUT,
-		);
-
-		const currentIndex = options.findIndex((o) => o.value === currentValue);
-		if (currentIndex !== -1) {
-			this.selectList.setSelectedIndex(currentIndex);
-		}
-
-		this.selectList.onSelect = (item) => {
-			onSelect(item.value);
-		};
-
-		this.selectList.onCancel = onCancel;
-
-		if (onSelectionChange) {
-			this.selectList.onSelectionChange = (item) => {
-				onSelectionChange(item.value);
+		const items: SelectorItem<string>[] = options.map((option) => {
+			const marked = option.label.startsWith("✓ ");
+			const unmarked = !marked && option.label.startsWith("  ");
+			const label = marked || unmarked ? option.label.slice(2) : option.label;
+			return {
+				id: option.value,
+				value: option.value,
+				label,
+				...(option.description ? { description: option.description } : {}),
+				...(marked ? { mark: "on" as const } : unmarked ? { mark: "off" as const } : {}),
 			};
-		}
+		});
+		const current = items.some((item) => item.id === currentValue) ? currentValue : undefined;
+		this.selector = new Selector<string>({
+			title,
+			...(description ? { subtitle: description } : {}),
+			items,
+			search: searchable,
+			...(current === undefined ? {} : { initialId: current }),
+			cancelLabel: "back",
+			rightConfirms: false,
+			onSelect: (item) => onSelect(item.value),
+			onCancel,
+			...(onSelectionChange ? { onSelectionChange: (item) => item && onSelectionChange(item.value) } : {}),
+		});
+	}
 
-		this.listChildIndex = this.children.length;
-		this.addChild(this.selectList);
+	get focused(): boolean {
+		return this.selector.focused;
+	}
+	set focused(value: boolean) {
+		this.selector.focused = value;
+	}
 
-		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", "  enter select · esc back"), 0, 0));
+	render(width: number): string[] {
+		return this.selector.render(width);
 	}
 
 	handleInput(data: string): boolean {
-		if (!this.searchInput) {
-			this.selectList.handleInput(data);
-			return true;
-		}
-		const kb = getKeybindings();
-		if (
-			kb.matches(data, "tui.select.up") ||
-			kb.matches(data, "tui.select.down") ||
-			kb.matches(data, "tui.select.pageUp") ||
-			kb.matches(data, "tui.select.pageDown") ||
-			kb.matches(data, "tui.select.confirm") ||
-			kb.matches(data, "tui.select.cancel")
-		) {
-			this.selectList.handleInput(data);
-			return true;
-		}
-		this.searchInput.handleInput(data);
-		const query = this.searchInput.getValue();
-		const options = query
-			? fuzzyFilter(this.allOptions, query, (item) => `${item.label} ${item.description ?? ""}`)
-			: this.allOptions;
-		const list = new SelectList(
-			options,
-			Math.min(options.length, 10),
-			getSelectListTheme(),
-			SETTINGS_SUBMENU_SELECT_LIST_LAYOUT,
-		);
-		const currentIndex = options.findIndex((item) => item.value === this.currentValue);
-		// Searching should focus the best match, not a weaker match of the saved value.
-		if (!query && currentIndex !== -1) list.setSelectedIndex(currentIndex);
-		list.onSelect = (item) => this.onSelectValue(item.value);
-		list.onCancel = this.onCancelValue;
-		this.children[this.listChildIndex] = list;
-		this.selectList = list;
+		this.selector.handleInput(data);
 		return true;
+	}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		return this.selector.handleMouse(event);
+	}
+
+	invalidate(): void {
+		this.selector.invalidate();
 	}
 }
 
@@ -312,12 +256,6 @@ export class ThemeSubmenu extends Container {
 
 	private showAutomaticMenu(): void {
 		this.mode = "automatic";
-		const content = new Container();
-		content.addChild(new Text(theme.bold(theme.fg("accent", "Automatic Theme")), 0, 0));
-		content.addChild(new Spacer(1));
-		content.addChild(new Text(theme.fg("muted", "Choose themes for terminal light and dark appearance."), 0, 0));
-		content.addChild(new Text(theme.fg("muted", "Light/dark detection requires terminal support."), 0, 0));
-		content.addChild(new Spacer(1));
 
 		const items: SettingItem[] = [
 			{
@@ -372,10 +310,8 @@ export class ThemeSubmenu extends Container {
 			},
 		];
 
-		const settingsList = new SettingsList(
+		const settingsList = new SettingsPicker(
 			items,
-			Math.min(items.length, 10),
-			getSettingsListTheme(),
 			(id) => {
 				switch (id) {
 					case "single-mode":
@@ -390,9 +326,13 @@ export class ThemeSubmenu extends Container {
 				}
 			},
 			() => this.cancel(),
+			{
+				title: "Automatic theme",
+				subtitle:
+					"Choose themes for terminal light and dark appearance.\nLight/dark detection requires terminal support.",
+			},
 		);
-		content.addChild(settingsList);
-		this.setContent(content, settingsList);
+		this.setContent(settingsList);
 	}
 
 	private createThemeSelect(

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join, resolve, win32 } from "node:path";
 import { getShellConfig } from "../../../utils/shell.ts";
+import { buildProcessStarting } from "./process.ts";
 
 /** `value` as one single-quoted bash word. */
 export function shellQuote(value: string): string {
@@ -55,6 +56,7 @@ export async function evaluateEnvrc(envrcPath: string, base: NodeJS.ProcessEnv):
 			: "env -0",
 	].join("\n");
 	const byStdin = commandTransport === "stdin";
+	buildProcessStarting();
 	const child = spawn(
 		shell,
 		byStdin ? [...args, "--", bashPath(envrcPath)] : [...args, script, "atomic-blueprint-envrc", bashPath(envrcPath)],

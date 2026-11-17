@@ -118,10 +118,10 @@ const INTEGRATION = SHARDED_SUITES[1]!;
 const CODING_AGENT = SHARDED_SUITES[2]!;
 
 /**
- * Shard counts to split each suite into. CI runs three or four per suite today; every file must run exactly once for
- * any count, so the check does not follow the workflow's numbers.
+ * Shard counts to split each suite into. CI runs three to seven per suite and OS today; every file must run exactly
+ * once for any count, so the check does not follow the workflow's numbers.
  */
-const SHARD_COUNTS = [2, 3, 4, 5];
+const SHARD_COUNTS = [2, 3, 4, 5, 7];
 
 async function suiteSpecifications(suite: ShardedSuite, shard: string) {
 	const vitest = await createVitest("test", {

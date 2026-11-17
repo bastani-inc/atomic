@@ -15,6 +15,7 @@ import type {
 	ChatSessionSubmitMode,
 } from "./chat-session-host-types.ts";
 import {
+	type ChatTranscriptCacheKeyValue,
 	ChatTranscriptComponent,
 	type ChatTranscriptEntryLike,
 	ScrollableComponentViewport,
@@ -31,7 +32,7 @@ export interface ChatSessionHostStateCallbacks<TExtraEntry extends ChatTranscrip
 		state: ChatSessionHostState<TExtraEntry>,
 		entry: ChatSessionHostEntry<TExtraEntry>,
 		index: number,
-	) => string;
+	) => ChatTranscriptCacheKeyValue;
 }
 
 export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = never> {
@@ -41,6 +42,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly getAgentSession: (() => AgentSession | undefined) | undefined;
 	readonly getChatBoxSession: (() => ChatBoxSession | undefined) | undefined;
 	readonly getSessionMessages: (() => AgentSession["messages"] | undefined) | undefined;
+	readonly getPromptEntries: ChatSessionHostOpts<TExtraEntry>["getPromptEntries"];
 	readonly getTaskSource: (() => TaskViewSource | undefined) | undefined;
 	readonly echoedInitialPrompt: string | (() => string | undefined) | undefined;
 	readonly isStreamingOverride: (() => boolean) | undefined;
@@ -63,6 +65,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	footer: FooterComponent | undefined;
 	footerNavigationActive = false;
 	inputBuffer = "";
+	promptSearch: (Component & { handleInput(data: string): void }) | undefined;
 	transcript: ChatSessionHostEntry<TExtraEntry>[] = [];
 	extraEntries: TExtraEntry[] = [];
 	statusMessage = "";
@@ -91,7 +94,6 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly workingRunMeter = new WorkingRunMeter();
 	workingLifecycleActive: boolean;
 	workingLifecycleGeneration = 0;
-	immediateEventRenderPending = false;
 	disposed = false;
 	pendingSteeringMessages: readonly string[] = [];
 	pendingFollowUpMessages: readonly string[] = [];
@@ -108,13 +110,14 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	animationTimer: ReturnType<typeof setInterval> | undefined;
 	stopAnimationClock: (() => void) | undefined;
 	metaTimer: ReturnType<typeof setInterval> | undefined;
-	renderThrottleTimer: ReturnType<typeof setTimeout> | undefined;
 	bodyViewport: ScrollableComponentViewport;
 	transcriptComponent: ChatTranscriptComponent<ChatSessionHostEntry<TExtraEntry>>;
 	transcriptRenderSettingsKey = "";
 	renderIdentityIds = new WeakMap<object, number>();
 	/** Bumped when a rendered entry redraws itself (a tool renderer's `invalidate`), so its cached rows are rebuilt. */
 	entryRevisions = new WeakMap<object, number>();
+	/** The cache key shared by entries that change only by being replaced, per revision, under the current settings. */
+	readonly replacedEntryKeys = new Map<number, readonly unknown[]>();
 	nextRenderIdentityId = 1;
 	liveChat: LiveChatEntriesController;
 	editor: EditorComponent | undefined;
@@ -149,6 +152,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 		this.getAgentSession = opts.getAgentSession;
 		this.getChatBoxSession = opts.getChatBoxSession;
 		this.getSessionMessages = opts.getSessionMessages;
+		this.getPromptEntries = opts.getPromptEntries;
 		this.getTaskSource = opts.getTaskSource;
 		this.echoedInitialPrompt = opts.echoedInitialPrompt;
 		this.isStreamingOverride = opts.isStreaming;

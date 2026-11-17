@@ -6,8 +6,16 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ### Added
 
+- `EditorTheme.autocompleteHint` draws one hint line under the editor's open autocomplete menu from the entries the editor passes: select (when there is more than one row), complete, run or insert, and close. An entry's optional `resolvedKeys` names keys that reach the menu when an app handles shortcuts first. The `/` menu names `run` only for a confirm key that also submits the prompt. `Editor.getHistory()` returns the prompt history, newest first, and `SelectList.getItemCount()` the number of rows after its filter ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- `TUI.requestImmediateRender()` renders on the next tick, ahead of the frame pacing `requestRender()` applies, for a frame that answers the user's own keystroke.
 - Slash-command autocomplete suggestions can set `completeOnConfirm: false` to submit the typed input on Enter until the user navigates the suggestion list. Tab still accepts the highlighted completion ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - `Markdown` accepts per-instance `hyperlinks: false` to display links as text and URLs without OSC 8, and `images: false` to display image placeholders. Other Markdown instances keep their existing behavior ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+
+### Changed
+
+- A fuzzy `@` file suggestion no longer repeats its path as the description when the file's name already shows it; a nested file still names its folder ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- The fullscreen renderer no longer lays out the screen under an overlay that covers all of it, until the overlay stops covering it.
+- A focused component whose input handler returns a promise is repainted when the promise settles, rather than right after the key is routed.
 
 ### Fixed
 

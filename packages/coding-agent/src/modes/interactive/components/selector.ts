@@ -91,7 +91,11 @@ export interface SelectorOptions<T> {
 	/** Rows checked first in a multi-select. */
 	readonly initialChecked?: readonly string[];
 	/** Hint label for enter. Default `choose` (single) or `confirm` (multi). */
-	readonly confirmLabel?: string;
+	readonly confirmLabel?: string | ((item: SelectorItem<T>) => string | undefined);
+	readonly spaceConfirms?: boolean;
+	readonly rightConfirms?: boolean;
+	readonly minDescriptionWidth?: number;
+	readonly selectedDetail?: (item: SelectorItem<T>) => string | undefined;
 	/** Hint label for esc when the search is empty. Default `cancel`. */
 	readonly cancelLabel?: string;
 	/** Space opens a preview of the selected row; the hint shows `space <previewLabel>`. */
@@ -144,6 +148,7 @@ export const PLAIN_SELECTOR_STYLE: SelectorStyle = {
 
 const DEFAULT_MAX_VISIBLE = 10;
 const MIN_DESCRIPTION_WIDTH = 12;
+const MIN_DESCRIPTION_LABEL_WIDTH = 8;
 const DESCRIPTION_GAP = 2;
 const MAX_DESCRIPTION_LABEL_WIDTH = 54;
 const MIN_LABEL_WITH_DESCRIPTION_WIDTH = 24;
@@ -377,6 +382,7 @@ export function selectorHintEntries<T>(
 		| "search"
 		| "numbered"
 		| "confirmLabel"
+		| "spaceConfirms"
 		| "cancelLabel"
 		| "onPreview"
 		| "previewLabel"
@@ -398,12 +404,18 @@ export function selectorHintEntries<T>(
 	if (multi && selected) entries.push({ keys: "space", label: "toggle" });
 	if (!multi && selected && options.onPreview)
 		entries.push(tagHintEntry({ keys: "space", label: options.previewLabel ?? "preview" }, "preview"));
-	if (multi ? state.getChecked().length > 0 || selected !== undefined : selected) {
-		entries.push({
-			action: "tui.select.confirm",
-			label: options.confirmLabel ?? (multi ? "confirm" : "choose"),
-			role: "confirm",
-		});
+	const confirmLabel =
+		typeof options.confirmLabel === "function"
+			? selected && options.confirmLabel(selected)
+			: (options.confirmLabel ?? (multi ? "confirm" : "choose"));
+	if (confirmLabel && (multi ? state.getChecked().length > 0 || selected !== undefined : selected)) {
+		const spaceToo = options.spaceConfirms === true && !multi && !state.getQuery();
+		const enter = navActionText(keybindings, "tui.select.confirm");
+		entries.push(
+			spaceToo && enter
+				? { keys: `${enter}/space`, label: confirmLabel, role: "confirm" }
+				: { action: "tui.select.confirm", label: confirmLabel, role: "confirm" },
+		);
 	}
 	for (const extra of options.extraKeys ?? []) {
 		if (extra.enabled?.(selected) ?? true) entries.push({ ...extra.hint, role: "extra" });
@@ -674,7 +686,15 @@ export class Selector<T> implements Component, Focusable {
 			return;
 		} else if (
 			kb.matches(data, "tui.select.confirm") ||
-			(kb.matches(data, "app.list.open") && !this.state.getQuery())
+			(this.options.rightConfirms !== false && kb.matches(data, "app.list.open") && !this.state.getQuery())
+		) {
+			this.confirm();
+			return;
+		} else if (
+			data === " " &&
+			this.options.spaceConfirms === true &&
+			this.state.mode === "single" &&
+			!this.state.getQuery()
 		) {
 			this.confirm();
 			return;
@@ -800,6 +820,13 @@ export class Selector<T> implements Component, Focusable {
 		if (lines.length > 0) lines.push("");
 		this.rowLines = new Map();
 		lines.push(...this.renderRows(width, lines.length));
+		const selectedItem = this.state.getSelected();
+		const detail = selectedItem ? this.options.selectedDetail?.(selectedItem) : undefined;
+		if (detail) {
+			lines.push("");
+			for (const wrapped of wrapTextWithAnsi(detail, Math.max(1, inner - 2)))
+				lines.push(`  ${this.style.muted(wrapped)}`);
+		}
 		if (this.notice) {
 			lines.push("");
 			lines.push(`  ${this.style.tone(this.notice.tone, truncateToWidth(this.notice.text, inner))}`);
@@ -927,15 +954,28 @@ export class Selector<T> implements Component, Focusable {
 			const isSelected = index === this.state.getSelectedIndex() && !item.disabled;
 			const parts = this.rowParts(item, index, isSelected, numbered, numberWidth, hasMarks, multi);
 			const indent = visibleWidth(parts.lead);
-			const labelRoom = Math.max(1, width - indent - 1);
+			const requestedMinDesc = this.options.minDescriptionWidth;
+			const minDesc =
+				!twoLine && item.description && requestedMinDesc !== undefined && Number.isFinite(requestedMinDesc)
+					? Math.max(1, Math.floor(requestedMinDesc))
+					: undefined;
+			const reservedDesc =
+				minDesc !== undefined && width - indent - 1 - DESCRIPTION_GAP - minDesc >= MIN_DESCRIPTION_LABEL_WIDTH
+					? DESCRIPTION_GAP + minDesc
+					: 0;
+			const rawTagWidth = item.tag ? visibleWidth(item.tag) : 0;
+			const reservedTag =
+				reservedDesc > 0 && rawTagWidth > 0
+					? Math.min(rawTagWidth + 2, Math.max(0, width - indent - 1 - reservedDesc - MIN_DESCRIPTION_LABEL_WIDTH))
+					: 0;
+			const labelRoom = Math.max(1, width - indent - 1 - reservedDesc - reservedTag);
 			const wrappedLabels = this.options.wrap ? wrapTextWithAnsi(item.label, labelRoom) : undefined;
 			const label = wrappedLabels
 				? (wrappedLabels[0] ?? "")
 				: visibleWidth(item.label) > labelRoom
 					? truncateToWidth(item.label, labelRoom)
 					: item.label;
-			const tagRoom = Math.max(0, width - indent - visibleWidth(label) - 3);
-			const rawTagWidth = item.tag ? visibleWidth(item.tag) : 0;
+			const tagRoom = Math.max(0, width - indent - visibleWidth(label) - 3 - reservedDesc);
 			const tagText =
 				item.tag && rawTagWidth > 0
 					? rawTagWidth <= tagRoom
@@ -954,7 +994,7 @@ export class Selector<T> implements Component, Focusable {
 				const text = item.description.replace(/\s+/g, " ").trim();
 				const descWidth = visibleWidth(text);
 				if (descWidth > 0) {
-					const minDescWidth = Math.min(MIN_DESCRIPTION_WIDTH, descWidth);
+					const minDescWidth = minDesc ?? Math.min(MIN_DESCRIPTION_WIDTH, descWidth);
 					const maxPrimary = Math.min(MAX_DESCRIPTION_LABEL_WIDTH, room - DESCRIPTION_GAP - minDescWidth);
 					const reserveDesc = Math.max(minDescWidth, Math.min(descWidth, room - DESCRIPTION_GAP - maxPrimary));
 					const descLabelRoom = room - DESCRIPTION_GAP - reserveDesc;
@@ -970,7 +1010,7 @@ export class Selector<T> implements Component, Focusable {
 					const column = Math.min(labelWidth, Math.max(visibleWidth(effectiveLabel), descLabelRoom));
 					const gap = column - visibleWidth(effectiveLabel) + DESCRIPTION_GAP;
 					const descRoom = width - used - gap - tagWidth - 1;
-					if (descRoom >= MIN_DESCRIPTION_WIDTH) {
+					if (descRoom >= (minDesc ?? MIN_DESCRIPTION_WIDTH)) {
 						const description = descWidth > descRoom ? truncateToWidth(text, descRoom) : text;
 						line += " ".repeat(gap) + this.style.muted(description);
 						used += gap + visibleWidth(description);

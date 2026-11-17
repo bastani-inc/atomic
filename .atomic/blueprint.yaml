@@ -43,7 +43,8 @@ knowledge:
       with glibc freed-memory poisoning on Linux, and checks file release directly on Windows.
       Filter coding-agent tests with
       `npm run test --workspace=@bastani/atomic -- test/history-bounded.test.ts` (the package script
-      already passes `--run`; run from its workspace, not the root with only `--config`).
+      already passes `--run`; run from its workspace, not the root with only `--config`). The TUI autocomplete suite's @ cases need `fd`
+      on PATH; if the system provides `fdfind`, expose it as `fd` for that run so those cases do not skip.
       To select coding-agent files, run `cd packages/coding-agent && npx vitest run test/<name>.test.ts`;
       its config resolves `test/` from that working directory.
       For concurrent-session coverage, use

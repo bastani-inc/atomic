@@ -88,6 +88,8 @@ function context(cwd: string): ExtensionContext {
 			getSessionFile: () => join(cwd, "parent-session.jsonl"),
 			getSessionId: () => "parent-session",
 			getLeafId: () => null,
+			getLastSeq: () => 0,
+			hasFullHistory: () => true,
 			getEntries: () => [],
 		},
 		isIdle: () => true,

@@ -374,6 +374,7 @@ test("two messages that reached a stage give it one budget, counted from the lat
 
 /** Unregistering and registering ten thousand sessions is the structural cost of evicting every retired id binding. */
 const ID_CHURN_TEST_TIMEOUT_MS = 120_000;
+const ID_CHURN_BATCH = 500;
 
 test(
 	"a session that takes an ended sender's id and name after the broker forgot it inherits no return path",
@@ -410,8 +411,8 @@ test(
 					recipientPurpose: "control",
 				},
 			});
+			if (index % ID_CHURN_BATCH === 0) await listed(churn, `churn-${index}`);
 			churn.send({ type: "unregister" });
-			if (index % 500 === 0) await new Promise((done) => setTimeout(done, 0));
 		}
 		// The broker has handled every one of them before the next session registers.
 		churn.send({

@@ -94,6 +94,8 @@ function makeContext(cwd: string): ExtensionContext {
 			getSessionFile: () => undefined,
 			getSessionId: () => "parent-session",
 			getLeafId: () => null,
+			getLastSeq: () => 0,
+			hasFullHistory: () => true,
 			// `status` reads the session's subagent child records for paused and quit children.
 			getEntries: () => [],
 		},

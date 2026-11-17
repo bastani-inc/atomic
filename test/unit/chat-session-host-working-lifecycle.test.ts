@@ -183,12 +183,10 @@ test("ChatSessionHost ignores callbacks from replaced timers and after disposal"
 		replacedTick();
 		host.applyAgentEvent({ type: "auto_retry_start" } as never);
 		host.applyAgentEvent({ type: "queue_update", steering: ["queued"] } as never);
-		const staleEventRender = timers.capturedEventRenderCallbacks()[0]!;
-		assert.deepEqual(timers.timeoutDelays(), [80]);
+		assert.deepEqual(timers.timeoutDelays(), [], "content paints on the next frame, with no event timer");
 		host.applyAgentEvent({ type: "auto_retry_end", success: true } as never);
 		host.applyAgentEvent({ type: "turn_start" } as never);
 		const activeTick = timers.capturedAnimationCallbacks()[1]!;
-		timers.flushEventRender();
 		const baseline = renderRequests;
 		const activeLine = workingLine(host);
 
@@ -203,8 +201,8 @@ test("ChatSessionHost ignores callbacks from replaced timers and after disposal"
 		host.dispose();
 		const afterDispose = renderRequests;
 		activeTick();
-		staleEventRender();
 		host.applyAgentEvent({ type: "agent_start" } as never);
+		host.applyAgentEvent({ type: "queue_update", steering: ["after dispose"] } as never);
 		assert.equal(renderRequests, afterDispose);
 		assert.equal(timers.intervalCount(), 0);
 		assert.equal(workingLine(host), undefined);
@@ -294,19 +292,17 @@ test("ChatSessionHost reduced motion keeps each lifecycle static while metadata 
 			message: { role: "assistant", content: [] },
 		} as never);
 
-		assert.equal(host.entries().length, 1, "reduced-motion content updates before its throttled paint");
+		assert.equal(host.entries().length, 1);
+		assert.equal(renderRequests, beforeContentEvent + 1, "content paints on the next frame without animation");
 		assert.match(workingLine(host) ?? "", /^ ∀ /);
 		assert.equal(host.hasAnimationTick(), false);
 		assert.equal(timers.intervalCount(), 1);
 		assert.deepEqual(timers.activeIntervalDelays(), [1000]);
 		assert.ok(timers.intervalDelays().every((delay) => delay === 1000));
-		assert.deepEqual(timers.timeoutDelays(), [80]);
-		timers.advanceBy(79);
-		assert.equal(renderRequests, beforeContentEvent);
+		assert.deepEqual(timers.timeoutDelays(), []);
+		timers.advanceBy(999);
+		assert.equal(renderRequests, beforeContentEvent + 1);
 		timers.advanceBy(1);
-		assert.equal(renderRequests, beforeContentEvent + 1, "content repaints at 80ms without animation");
-		assert.match(workingLine(host) ?? "", /^ ∀ /);
-		timers.advanceBy(920);
 		assert.equal(renderRequests, beforeContentEvent + 2, "elapsed metadata repaints at one second");
 		assert.match(workingLine(host) ?? "", /^ ∀ /);
 

@@ -449,6 +449,7 @@ Multi-line text editor with autocomplete, file completion, paste handling, and v
 interface EditorTheme {
   borderColor: (str: string) => string;
   selectList: SelectListTheme;
+  autocompleteHint?: (entries: readonly EditorAutocompleteHintEntry[], width: number) => string;
 }
 
 interface EditorOptions {
@@ -463,7 +464,10 @@ editor.setAutocompleteProvider(provider);
 editor.borderColor = (s) => chalk.blue(s); // Change border dynamically
 editor.setPaddingX(1); // Update horizontal padding dynamically
 editor.getPaddingX();  // Get current padding
+editor.getHistory();
 ```
+
+`getHistory()` returns past prompts, newest first. `autocompleteHint` draws one line below an open completion menu. Its entries name the available actions and their labels, with `essential` marking actions to keep on narrow terminals. Resolve `actions` through the active keybindings. When `resolvedKeys` is present, use those keys instead, including an empty array: `CustomEditor` supplies only keys that reach the menu after app shortcuts. Without `autocompleteHint`, the editor draws no menu hint.
 
 **Features:**
 - Click-to-position cursor and clickable autocomplete rows in alternate-screen mode

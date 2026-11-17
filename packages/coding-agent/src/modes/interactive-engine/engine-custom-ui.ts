@@ -11,7 +11,7 @@ import {
 import { getAgentDir } from "../../config.js";
 import { runCallback, runSynchronousCallback } from "../../core/callback-activity.ts";
 import type { HostCustomUiState, HostCustomUiStateListener } from "../../core/extensions/index.js";
-import type { ScrollableWidgetComponent } from "../../core/extensions/ui-types.js";
+import type { ScrollableWidgetComponent, WidgetScrollRequest } from "../../core/extensions/ui-types.js";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
 import { sourceError } from "../../core/tasks/agent-panel-source.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
@@ -55,7 +55,6 @@ interface ActiveComponent {
 	terminal: RemoteTerminal;
 	tui: TUI;
 	widgetKey?: string;
-	lastRequestId?: number;
 	/** The host renderer's mode from this component's latest frame request, which its TUI reports as `mode`. */
 	hostMode?: TuiMode;
 	/**
@@ -65,6 +64,33 @@ interface ActiveComponent {
 	 * render work and terminal writes for frames the user cannot see.
 	 */
 	hidden?: boolean;
+	/** The latest frame request from the host; a custom component pushes its frames only once the host laid it out. */
+	lastRequestId?: number;
+	/** The frame the host holds, so a repaint that changed nothing sends nothing. */
+	lastFrame?: { readonly lines: readonly string[]; readonly scrollRequest: WidgetScrollRequest | undefined };
+	/** The next frame answers a host request and is sent even when it is unchanged. */
+	frameRequested?: boolean;
+	/** A hidden component changed and the host was told to ask for a frame once it shows it again. */
+	staleWhileHidden?: boolean;
+	handlingInput?: boolean;
+	paintAfterInput?: boolean;
+}
+
+/**
+ * The engine-side TUI of one custom component. Its paced renders paint the component once and push the frame to the
+ * host, instead of rendering it once here to detect a change and again when the host asks for the frame.
+ */
+class RemoteComponentTui extends TuiMainScreen {
+	private readonly paint: () => void;
+
+	constructor(terminal: Terminal, paint: () => void) {
+		super(terminal, undefined, getAgentDir());
+		this.paint = paint;
+	}
+
+	protected override doRender(): void {
+		if (!this.stopped) this.paint();
+	}
 }
 
 class RemoteTerminal implements Terminal {
@@ -141,6 +167,16 @@ function serializableOverlayOptions(
 	return { anchor, col, margin, maxHeight, minWidth, offsetX, offsetY, row, width };
 }
 
+function sameFrame(
+	frame: NonNullable<ActiveComponent["lastFrame"]>,
+	lines: readonly string[],
+	scrollRequest: WidgetScrollRequest | undefined,
+): boolean {
+	if (frame.lines.length !== lines.length) return false;
+	for (let index = 0; index < lines.length; index++) if (frame.lines[index] !== lines[index]) return false;
+	return JSON.stringify(frame.scrollRequest) === JSON.stringify(scrollRequest);
+}
+
 function jsonResult(value: object | boolean | null | number | string | undefined): JsonValue | undefined {
 	if (value === undefined) return undefined;
 	const encoded = JSON.stringify(value);
@@ -155,23 +191,6 @@ const GENERIC_SOURCE_FAILURE = sourceError(Object.create(null)).message;
 function renderError(error: unknown): Error {
 	const message = sourceError(error).message;
 	return new Error(message === GENERIC_SOURCE_FAILURE ? "Remote component render failed." : message);
-}
-
-class RemoteCustomTui extends TuiMainScreen {
-	private readonly onRenderError: (error: unknown) => void;
-
-	constructor(terminal: Terminal, onRenderError: (error: unknown) => void) {
-		super(terminal, undefined, getAgentDir());
-		this.onRenderError = onRenderError;
-	}
-
-	protected override doRender(): void {
-		try {
-			super.doRender();
-		} catch (error) {
-			this.onRenderError(error);
-		}
-	}
 }
 
 export class EngineCustomUiService {
@@ -286,7 +305,7 @@ export class EngineCustomUiService {
 			(control) => this.send({ type: "engine_custom_terminal", componentId, control }),
 			(requestId, text) => this.send({ type: "engine_custom_copy", componentId, requestId, text }),
 		);
-		const tui = new RemoteCustomTui(terminal, (error) => this.sendComponentRenderFailure(componentId, error));
+		const tui = new RemoteComponentTui(terminal, () => this.paintComponent(componentId));
 		this.followHostMode(tui, componentId);
 		ensurePngTranscoder(() => {
 			tui.invalidate();
@@ -361,7 +380,9 @@ export class EngineCustomUiService {
 	requestRender(): void {
 		for (const [componentId, record] of this.active) {
 			if (record.hidden === true) continue;
-			this.send({ type: "engine_custom_invalidate", componentId });
+			// A laid-out custom component paints its next frame itself; anything else asks the host for a frame.
+			if (record.widgetKey === undefined && record.lastRequestId !== undefined) record.tui.requestRender();
+			else this.send({ type: "engine_custom_invalidate", componentId });
 		}
 	}
 
@@ -403,36 +424,41 @@ export class EngineCustomUiService {
 					);
 					break;
 				}
-				void runCallback({ kind: "renderer", name: componentId }, () =>
-					record.component.render(record.terminal.columns),
-				)
-					.then((lines) => this.sendFrame(componentId, requestId, record, lines))
-					.catch((error: unknown) => this.sendRenderFailure(componentId, requestId, error));
+				// Answered at once, and through the component's TUI so a paint it already had scheduled is not repeated.
+				record.frameRequested = true;
+				record.staleWhileHidden = false;
+				record.tui.renderNow();
 				break;
 			}
-			case "engine_custom_input":
-				void runCallback({ kind: "renderer", name: command.componentId }, () => {
-					if (isKeyRelease(command.data) && record.component.wantsKeyRelease !== true) return false;
-					const handleInput = record.component.handleInput as ((data: string) => boolean | undefined) | undefined;
-					return handleInput?.call(record.component, command.data) === true;
-				})
-					.then((handled) =>
-						this.send({
-							type: "engine_custom_input_result",
-							componentId: command.componentId,
-							requestId: command.requestId,
-							handled,
-						}),
-					)
-					.catch(() =>
-						this.send({
-							type: "engine_custom_input_result",
-							componentId: command.componentId,
-							requestId: command.requestId,
-							handled: false,
-						}),
-					);
+			case "engine_custom_input": {
+				// Keys run as soon as they arrive: a yield here would queue the reader's keystroke behind agent work.
+				let handled = false;
+				record.handlingInput = true;
+				try {
+					handled = runSynchronousCallback({ kind: "renderer", name: command.componentId }, () => {
+						if (isKeyRelease(command.data) && record.component.wantsKeyRelease !== true) return false;
+						const handleInput = record.component.handleInput as
+							| ((data: string) => boolean | undefined)
+							| undefined;
+						return handleInput?.call(record.component, command.data) === true;
+					});
+				} catch {
+					handled = false;
+				} finally {
+					record.handlingInput = false;
+				}
+				this.send({
+					type: "engine_custom_input_result",
+					componentId: command.componentId,
+					requestId: command.requestId,
+					handled,
+				});
+				if (record.paintAfterInput === true) {
+					record.paintAfterInput = false;
+					this.paintComponent(command.componentId);
+				}
 				break;
+			}
 			case "engine_custom_copy_result":
 				record.terminal.resolveCopy(command.requestId, command.error);
 				break;
@@ -476,6 +502,59 @@ export class EngineCustomUiService {
 			if (notifyWidgetRelease) this.notifyWidgetRelease(record.widgetKey);
 		}
 		this.notifyState();
+	}
+
+	/**
+	 * Paints a custom component's frame and sends it to the host. A frame the host asked for is always sent; one the
+	 * component's own repaint produced is sent only when it changed what the host shows. A component the host has not
+	 * laid out, or has hidden, gets no frame: the host is asked once to request one when it can show it.
+	 */
+	private paintComponent(componentId: string): void {
+		const record = this.active.get(componentId);
+		if (!record) return;
+		if (record.handlingInput === true) {
+			record.paintAfterInput = true;
+			return;
+		}
+		const requestId = record.lastRequestId;
+		if (requestId === undefined || record.hidden === true) {
+			if (record.staleWhileHidden === true) return;
+			if (requestId === undefined && record.hidden !== true && !this.rendersWithoutFailure(componentId, record))
+				return;
+			record.staleWhileHidden = record.hidden === true;
+			this.send({ type: "engine_custom_invalidate", componentId });
+			return;
+		}
+		const requested = record.frameRequested === true;
+		record.frameRequested = false;
+		record.staleWhileHidden = false;
+		let lines: string[];
+		let scrollRequest: WidgetScrollRequest | undefined;
+		try {
+			lines = runSynchronousCallback({ kind: "renderer", name: componentId }, () =>
+				record.component.render(record.terminal.columns),
+			);
+			scrollRequest = (record.component as ScrollableWidgetComponent).getScrollRequest?.();
+		} catch (error) {
+			record.lastFrame = undefined;
+			this.sendRenderFailure(componentId, requestId, error);
+			return;
+		}
+		if (!requested && record.lastFrame !== undefined && sameFrame(record.lastFrame, lines, scrollRequest)) return;
+		record.lastFrame = { lines: [...lines], scrollRequest };
+		this.sendFrame(componentId, requestId, record, lines);
+	}
+
+	private rendersWithoutFailure(componentId: string, record: ActiveComponent): boolean {
+		try {
+			runSynchronousCallback({ kind: "renderer", name: componentId }, () =>
+				record.component.render(record.terminal.columns),
+			);
+			return true;
+		} catch (error) {
+			this.sendRenderFailure(componentId, 0, error);
+			return false;
+		}
 	}
 
 	/** Renders a widget frame on the background lane. A widget closed while the render waited gets none. */

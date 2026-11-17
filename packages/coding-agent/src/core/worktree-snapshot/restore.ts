@@ -2168,7 +2168,7 @@ async function moveIntoPlace(
 	snapshotId: string | null,
 	published: () => void,
 ): Promise<void> {
-	const { git, path, warn } = publish;
+	const { git, path, warn, signal } = publish;
 	if (createdTarget) {
 		if ((await statIfPresent(path)) !== undefined) {
 			throw new WorkspaceRestoreError("unsafe-target", { snapshotId, target: path, reason: "not-empty" });
@@ -2180,6 +2180,7 @@ async function moveIntoPlace(
 	// worktree its saving job built at this path (#4748); a directory at the path was refused above.
 	// The move and the check of where it went are never stopped midway (#4748): a Git killed mid-move leaves a worktree
 	// that neither the staging path nor `published` accounts for. Both are short; a stop is noticed right after them.
+	signal?.throwIfAborted();
 	await runGit(["worktree", "move", "-f", staging, path], { ...git, signal: undefined });
 	// Git moves *inside* an existing directory. If one appeared after our check, never return it as the
 	// verified worktree: remove only the nested worktree that Git registered and leave the user's files alone,
