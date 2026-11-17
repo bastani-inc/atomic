@@ -149,7 +149,7 @@ import {
 } from "./resource-admission.js";
 import { RestoreBackoff } from "./restore-backoff.js";
 import { RunChangesEncoder } from "./run-changes.js";
-import { ShipShard, shipShardPath } from "./ship-shard.js";
+import { retireEndedShipShards, ShipShard, shipJournalDirectory, shipShardPath } from "./ship-shard.js";
 import {
 	earlierSessionReceipt,
 	endedIntercomReason,
@@ -1279,7 +1279,14 @@ export class PoolCoordinator {
 		shared: SharedPoolCoordination,
 		queue: SqlPoolQueue,
 	): Promise<CheckpointShipping | undefined> {
-		if (this.closed || shared.checkpointShipping === undefined || durable === undefined) return undefined;
+		if (this.closed || durable === undefined) return undefined;
+		const identity = durableJournalIdentity(durable);
+		if (this.remote === undefined)
+			await retireEndedShipShards(
+				shipJournalDirectory(shared.stateDirectory, identity),
+				(roots, works, unidentified) => queue.endedShipRoots(roots, works, unidentified),
+			).catch(() => {});
+		if (this.closed || shared.checkpointShipping === undefined) return undefined;
 		if (this.remote !== undefined)
 			throw new WorkerPlacementConfigError(
 				"sdk",
@@ -1289,10 +1296,7 @@ export class PoolCoordinator {
 			);
 		let shard: ShipShard;
 		try {
-			shard = await ShipShard.open(
-				shipShardPath(shared.stateDirectory, durableJournalIdentity(durable), root),
-				root,
-			);
+			shard = await ShipShard.open(shipShardPath(shared.stateDirectory, identity, root), root);
 		} catch (error) {
 			if (!this.closed)
 				this.port.send({
