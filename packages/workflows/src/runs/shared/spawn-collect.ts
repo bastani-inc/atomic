@@ -1,5 +1,11 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { containProcessTree, killProcessTree, type ProcessTreeContainment } from "@bastani/atomic";
+import {
+	containProcessTree,
+	killProcessTree,
+	type ProcessTreeContainment,
+	trackDetachedChildPid,
+	untrackDetachedChildPid,
+} from "@bastani/atomic";
 
 const SIGKILL_ESCALATION_MS = 100;
 
@@ -39,6 +45,7 @@ export function spawnCollect(
 		let killTimer: ReturnType<typeof setTimeout> | undefined;
 		let child: ChildProcess;
 		let tree: ProcessTreeContainment | undefined;
+		let detachedPid: number | undefined;
 		const startedAt = Date.now();
 		const killTree = () => {
 			if (tree?.terminate()) return;
@@ -58,6 +65,7 @@ export function spawnCollect(
 				error = codedError(command, "ETIMEDOUT");
 			if (!stopped && error === undefined) tree?.release();
 			tree?.close();
+			if (detachedPid !== undefined) untrackDetachedChildPid(detachedPid);
 			const reported = error ?? inputError;
 			resolve({
 				stdout: Buffer.concat(stdout).toString("utf8"),
@@ -105,6 +113,11 @@ export function spawnCollect(
 				stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
 			});
 			tree = child.pid === undefined || child.pid === process.pid ? undefined : containProcessTree(child.pid);
+			// A child in its own process group misses the terminal's hangup: Atomic stops it on exit instead.
+			if (process.platform !== "win32" && child.pid !== undefined && child.pid !== process.pid) {
+				detachedPid = child.pid;
+				trackDetachedChildPid(detachedPid);
+			}
 		} catch (spawnError) {
 			resolve({
 				stdout: "",

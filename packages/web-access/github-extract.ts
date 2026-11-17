@@ -8,6 +8,8 @@ import {
 	containProcessTree,
 	createChildProcessEnvironment,
 	killProcessTree,
+	trackDetachedChildPid,
+	untrackDetachedChildPid,
 } from "@bastani/atomic";
 import { activityMonitor } from "./activity.js";
 import type { ExtractedContent } from "./extract.js";
@@ -132,6 +134,7 @@ function execClone(args: string[], paths: ClonePaths, timeoutMs: number, signal?
 			child.stderr?.destroy();
 			if (!failed && !stopped) tree?.release();
 			tree?.close();
+			if (detachedPid !== undefined) untrackDetachedChildPid(detachedPid);
 			if (failed) {
 				void removeOwnedClone(paths).then(() => resolve(null), reject);
 				return;
@@ -161,6 +164,10 @@ function execClone(args: string[], paths: ClonePaths, timeoutMs: number, signal?
 			env: createChildProcessEnvironment(),
 		});
 		const tree = child.pid === undefined || child.pid === process.pid ? undefined : containProcessTree(child.pid);
+		// A child in its own process group misses the terminal's hangup: Atomic stops it on exit instead.
+		const detachedPid =
+			process.platform !== "win32" && child.pid !== undefined && child.pid !== process.pid ? child.pid : undefined;
+		if (detachedPid !== undefined) trackDetachedChildPid(detachedPid);
 		const timer = setTimeout(stop, timeoutMs);
 		child.on("error", () => finish(true));
 		child.on("exit", (code, exitSignal) => {

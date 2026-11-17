@@ -45,6 +45,7 @@ vi.mock("@bastani/atomic", async (importOriginal) => {
 	};
 });
 
+import { killTrackedDetachedChildren } from "../../packages/coding-agent/src/utils/shell.js";
 import { spawnCollect } from "../../packages/workflows/src/runs/shared/spawn-collect.js";
 
 const node = process.execPath;
@@ -62,6 +63,23 @@ test("collects a process's output and exit status, as spawnSync reports them", a
 	);
 	assert.deepEqual(result, { stdout: "out", stderr: "err", status: 3, signal: null });
 });
+
+// A hangup reaches only the terminal's foreground process group: a command in its own group must be stopped by Atomic.
+test.skipIf(process.platform === "win32")(
+	"a command running in its own process group is stopped with Atomic's other detached children on hangup (#5377)",
+	async () => {
+		const running = spawnCollect(node, ["-e", "setTimeout(() => {}, 60_000)"], {
+			cwd: process.cwd(),
+			env: process.env,
+			timeout: 60_000,
+			maxBuffer: 1024,
+		});
+		killTrackedDetachedChildren();
+		const result = await running;
+		assert.equal(result.signal, "SIGKILL");
+	},
+	GENEROUS_TIMEOUT_MS,
+);
 
 test("hands the process its input on stdin", async () => {
 	const result = await spawnCollect(node, ["-e", "process.stdin.pipe(process.stdout)"], {

@@ -5,7 +5,13 @@
 
 import { execSync, spawn, spawnSync } from "child_process";
 import { createChildProcessEnvironment } from "../utils/child-process.ts";
-import { getShellConfig, getShellConfigAsync, killProcessTree } from "../utils/shell.ts";
+import {
+	getShellConfig,
+	getShellConfigAsync,
+	killProcessTree,
+	trackDetachedChildPid,
+	untrackDetachedChildPid,
+} from "../utils/shell.ts";
 import { containProcessTree } from "./process-tree-containment.ts";
 
 // Cache for shell command results (persists for process lifetime)
@@ -305,6 +311,7 @@ function runCommand(
 			clearTimeout(timer);
 			if (!stopped && error === undefined && status === 0) tree?.release();
 			tree?.close();
+			if (detachedPid !== undefined) untrackDetachedChildPid(detachedPid);
 			resolve({ error, status, stdout: Buffer.concat(chunks).toString("utf-8") });
 		};
 		const stop = (failure: NodeJS.ErrnoException) => {
@@ -331,6 +338,10 @@ function runCommand(
 			env: createChildProcessEnvironment(),
 		});
 		const tree = child.pid === undefined || child.pid === process.pid ? undefined : containProcessTree(child.pid);
+		// A child in its own process group misses the terminal's hangup: Atomic stops it on exit instead.
+		const detachedPid =
+			process.platform !== "win32" && child.pid !== undefined && child.pid !== process.pid ? child.pid : undefined;
+		if (detachedPid !== undefined) trackDetachedChildPid(detachedPid);
 		const timer = setTimeout(
 			() => stop(Object.assign(new Error(`spawn ${file} ETIMEDOUT`), { code: "ETIMEDOUT" })),
 			COMMAND_TIMEOUT_MS,

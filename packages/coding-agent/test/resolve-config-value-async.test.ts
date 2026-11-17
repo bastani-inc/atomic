@@ -8,6 +8,7 @@ import {
 	resolveConfigValueAsync,
 	resolveConfigValueUncachedAsync,
 } from "../src/core/resolve-config-value.js";
+import { killTrackedDetachedChildren } from "../src/utils/shell.js";
 
 describe("resolveConfigValueAsync", () => {
 	let tempDir: string;
@@ -53,57 +54,95 @@ describe("resolveConfigValueAsync", () => {
 		},
 	);
 
-	test("settles promptly on timeout and maxBuffer when a background grandchild holds stdout (#5377)", async () => {
-		if (process.platform === "win32") return;
-		const within = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
+	/** How long a stopped command may take to settle, far below the 10 s command timeout and the grandchild's 30 s. */
+	const SETTLE_WITHIN_MS = 1_500;
+	/** The command timeout the runner arms, shortened in the timeout case so the test does not wait for it. */
+	const COMMAND_TIMEOUT_MS = 10_000;
+	const SHORTENED_COMMAND_TIMEOUT_MS = 100;
+	/** Polls, 10 ms apart, for a stopped grandchild to be gone. */
+	const EXIT_POLLS = 50;
+	const EXIT_POLL_MS = 10;
+
+	test.skipIf(process.platform === "win32")(
+		"a command running in its own process group is stopped with Atomic's other detached children on hangup (#5377)",
+		async () => {
+			const started = join(tempDir, "started");
+			const resolving = resolveConfigValueUncachedAsync(`!sh -c 'touch "${started}"; exec sleep 30'`);
+			await vi.waitFor(() => expect(existsSync(started)).toBe(true));
+			killTrackedDetachedChildren();
 			let timer: ReturnType<typeof setTimeout> | undefined;
 			try {
-				return await Promise.race([
-					promise,
-					new Promise<never>((_, reject) => {
-						timer = setTimeout(() => reject(new Error("timed out waiting for command")), ms);
-					}),
-				]);
+				expect(
+					await Promise.race([
+						resolving,
+						new Promise<never>((_, reject) => {
+							timer = setTimeout(() => reject(new Error("the command kept running")), SETTLE_WITHIN_MS);
+						}),
+					]),
+				).toBeUndefined();
 			} finally {
-				if (timer !== undefined) clearTimeout(timer);
+				clearTimeout(timer);
 			}
-		};
-		const waitForProcessExit = async (pid: number): Promise<void> => {
-			for (let i = 0; i < 50; i++) {
-				try {
-					process.kill(pid, 0);
-				} catch {
-					return;
-				}
-				await new Promise<void>((resolve) => setTimeout(resolve, 10));
-			}
-			expect(() => process.kill(pid, 0)).toThrow();
-		};
-		const pidFile = join(tempDir, "grandchild.pid");
-		const escapedPidPath = pidFile.replace(/\\/g, "/").replace(/[\\"]/g, "\\$&");
-		expect(
-			await within(
-				resolveConfigValueUncachedAsync(
-					`!node -e 'const { spawn } = require("node:child_process"); const { writeFileSync } = require("node:fs"); process.on("SIGTERM", () => {}); const g = spawn(process.execPath, ["-e", "process.on(\\"SIGTERM\\", () => {}); setTimeout(() => {}, 30000);"], { stdio: "inherit" }); writeFileSync("${escapedPidPath}", String(g.pid)); process.stdout.write("x".repeat(1100000)); setTimeout(() => {}, 30000);'`,
-				),
-				1_500,
-			),
-		).toBeUndefined();
-		await waitForProcessExit(Number(readFileSync(pidFile, "utf-8").trim()));
+		},
+	);
 
-		const realSetTimeout = globalThis.setTimeout;
-		vi.spyOn(globalThis, "setTimeout").mockImplementation(((fn: TimerHandler, ms?: number, ...rest: unknown[]) =>
-			realSetTimeout(fn, ms === 10_000 ? 100 : ms, ...rest)) as typeof setTimeout);
-		expect(
-			await within(
-				resolveConfigValueUncachedAsync(
-					`!node -e 'const { spawn } = require("node:child_process"); const { writeFileSync } = require("node:fs"); process.on("SIGTERM", () => {}); const g = spawn(process.execPath, ["-e", "process.on(\\"SIGTERM\\", () => {}); setTimeout(() => {}, 30000);"], { stdio: "inherit" }); writeFileSync("${escapedPidPath}", String(g.pid)); setTimeout(() => {}, 30000);'`,
+	test.skipIf(process.platform === "win32")(
+		"settles promptly on timeout and maxBuffer when a background grandchild holds stdout (#5377)",
+		async () => {
+			const within = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				try {
+					return await Promise.race([
+						promise,
+						new Promise<never>((_, reject) => {
+							timer = setTimeout(() => reject(new Error("timed out waiting for command")), ms);
+						}),
+					]);
+				} finally {
+					if (timer !== undefined) clearTimeout(timer);
+				}
+			};
+			const waitForProcessExit = async (pid: number): Promise<void> => {
+				for (let i = 0; i < EXIT_POLLS; i++) {
+					try {
+						process.kill(pid, 0);
+					} catch {
+						return;
+					}
+					await new Promise<void>((resolve) => setTimeout(resolve, EXIT_POLL_MS));
+				}
+				expect(() => process.kill(pid, 0)).toThrow();
+			};
+			const pidFile = join(tempDir, "grandchild.pid");
+			const escapedPidPath = pidFile.replace(/\\/g, "/").replace(/[\\"]/g, "\\$&");
+			expect(
+				await within(
+					resolveConfigValueUncachedAsync(
+						`!node -e 'const { spawn } = require("node:child_process"); const { writeFileSync } = require("node:fs"); process.on("SIGTERM", () => {}); const g = spawn(process.execPath, ["-e", "process.on(\\"SIGTERM\\", () => {}); setTimeout(() => {}, 30000);"], { stdio: "inherit" }); writeFileSync("${escapedPidPath}", String(g.pid)); process.stdout.write("x".repeat(1100000)); setTimeout(() => {}, 30000);'`,
+					),
+					SETTLE_WITHIN_MS,
 				),
-				1_500,
-			),
-		).toBeUndefined();
-		await waitForProcessExit(Number(readFileSync(pidFile, "utf-8").trim()));
-	});
+			).toBeUndefined();
+			await waitForProcessExit(Number(readFileSync(pidFile, "utf-8").trim()));
+
+			const realSetTimeout = globalThis.setTimeout;
+			vi.spyOn(globalThis, "setTimeout").mockImplementation(((fn: TimerHandler, ms?: number, ...rest: unknown[]) =>
+				realSetTimeout(
+					fn,
+					ms === COMMAND_TIMEOUT_MS ? SHORTENED_COMMAND_TIMEOUT_MS : ms,
+					...rest,
+				)) as typeof setTimeout);
+			expect(
+				await within(
+					resolveConfigValueUncachedAsync(
+						`!node -e 'const { spawn } = require("node:child_process"); const { writeFileSync } = require("node:fs"); process.on("SIGTERM", () => {}); const g = spawn(process.execPath, ["-e", "process.on(\\"SIGTERM\\", () => {}); setTimeout(() => {}, 30000);"], { stdio: "inherit" }); writeFileSync("${escapedPidPath}", String(g.pid)); setTimeout(() => {}, 30000);'`,
+					),
+					SETTLE_WITHIN_MS,
+				),
+			).toBeUndefined();
+			await waitForProcessExit(Number(readFileSync(pidFile, "utf-8").trim()));
+		},
+	);
 
 	test("runs a command once for concurrent resolutions, and shares the cache with the synchronous one", async () => {
 		const { command, runs } = countingCommand("concurrent");

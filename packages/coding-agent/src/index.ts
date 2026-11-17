@@ -1320,7 +1320,13 @@ export {
 } from "./utils/managed-tool-errors.ts";
 export { detectSupportedImageMimeTypeFromFile } from "./utils/mime.ts";
 export { isPathInside, type PathInsideApi } from "./utils/path-inside.ts";
-export { getPowerShellConfig, getShellConfig, killProcessTree } from "./utils/shell.ts";
+export {
+	getPowerShellConfig,
+	getShellConfig,
+	killProcessTree,
+	trackDetachedChildPid,
+	untrackDetachedChildPid,
+} from "./utils/shell.ts";
 // Terminal-safe display text
 export { terminalDisplayText } from "./utils/terminal-text.ts";
 export {

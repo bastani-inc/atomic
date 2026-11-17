@@ -10,6 +10,8 @@ import {
 	createGitEnvironment,
 	isPathInside,
 	killProcessTree,
+	trackDetachedChildPid,
+	untrackDetachedChildPid,
 } from "@bastani/atomic";
 import { pathExists } from "../../shared/path-exists.js";
 import { performPostCreationSetup } from "./worktree-post-create.js";
@@ -124,6 +126,10 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 			windowsHide: true,
 		});
 		const tree = child.pid === undefined || child.pid === process.pid ? undefined : containProcessTree(child.pid);
+		// A child in its own process group misses the terminal's hangup: Atomic stops it on exit instead.
+		const detachedPid =
+			process.platform !== "win32" && child.pid !== undefined && child.pid !== process.pid ? child.pid : undefined;
+		if (detachedPid !== undefined) trackDetachedChildPid(detachedPid);
 		const stdoutChunks: Buffer[] = [];
 		const stderrChunks: Buffer[] = [];
 		let stdoutBytes = 0;
@@ -149,6 +155,7 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 			}
 			if (!stopped && !spawnError) tree?.release();
 			tree?.close();
+			if (detachedPid !== undefined) untrackDetachedChildPid(detachedPid);
 			const reported = spawnError ?? inputError;
 			resolve({
 				stdout: Buffer.concat(stdoutChunks).toString("utf-8"),
