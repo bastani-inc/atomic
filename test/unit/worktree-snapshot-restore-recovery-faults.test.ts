@@ -239,6 +239,7 @@ describe("a restore whose process lost its lock", () => {
 		let staging = "";
 		faults.lock = async (file, options, real) => {
 			const release = await real(file, options);
+			if (!file.endsWith(".json")) return release;
 			faults.spawnHook = (args) => {
 				if (is(args, "worktree", "add")) {
 					staging = stagingOf(args);

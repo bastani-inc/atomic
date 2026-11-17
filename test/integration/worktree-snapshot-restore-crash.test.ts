@@ -38,9 +38,9 @@ printf '%s\n' "$*" >> "$TEST_LOG"
 case " $* " in
   *" worktree add "*)
     if [ "$TEST_FAULT" = add ]; then git "$@"; result=$?; [ "$result" -eq 0 ] || exit "$result"; kill -KILL "$PPID"; exit 0; fi
-    if [ "$TEST_FAULT" = pause ]; then git "$@"; result=$?; [ "$result" -eq 0 ] || exit "$result"; : > "$TEST_READY"; while [ ! -e "$TEST_GO" ]; do sleep 0.05; done; exit 0; fi
     ;;
   *" read-tree --reset -u "*)
+    if [ "$TEST_FAULT" = pause ]; then git "$@"; result=$?; [ "$result" -eq 0 ] || exit "$result"; : > "$TEST_READY"; while [ ! -e "$TEST_GO" ]; do sleep 0.05; done; exit 0; fi
     if [ "$TEST_FAULT" = checkout ]; then git "$@"; result=$?; [ "$result" -eq 0 ] || exit "$result"; kill -KILL "$PPID"; exit 0; fi
     ;;
   *" worktree move "*)
