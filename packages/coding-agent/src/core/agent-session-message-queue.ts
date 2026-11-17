@@ -83,10 +83,11 @@ export async function _queueSteer(
 	text: string,
 	images?: ImageContent[],
 	typed?: string,
+	rawText?: string,
 ): Promise<void> {
 	assertSessionOpen(this);
 	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) return owner._queueSteer(text, images, typed);
+	if (owner !== this) return owner._queueSteer(text, images, typed, rawText);
 	this._steeringMessages.push(text);
 	rememberTypedQueuedText(this, "steer", text, typed);
 	this._emitQueueUpdate();
@@ -97,7 +98,7 @@ export async function _queueSteer(
 	const message: UserMessageWithRawText = {
 		role: "user",
 		content,
-		...(typed !== undefined && typed !== text ? { rawText: typed } : {}),
+		...(rawText !== undefined && rawText !== text ? { rawText } : {}),
 		timestamp: Date.now(),
 	};
 	if (images?.length) markQueuedMessageImages(message);
@@ -113,10 +114,11 @@ export async function _queueFollowUp(
 	text: string,
 	images?: ImageContent[],
 	typed?: string,
+	rawText?: string,
 ): Promise<void> {
 	assertSessionOpen(this);
 	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) return owner._queueFollowUp(text, images, typed);
+	if (owner !== this) return owner._queueFollowUp(text, images, typed, rawText);
 	this._followUpMessages.push(text);
 	rememberTypedQueuedText(this, "followUp", text, typed);
 	this._emitQueueUpdate();
@@ -127,7 +129,7 @@ export async function _queueFollowUp(
 	const message: UserMessageWithRawText = {
 		role: "user",
 		content,
-		...(typed !== undefined && typed !== text ? { rawText: typed } : {}),
+		...(rawText !== undefined && rawText !== text ? { rawText } : {}),
 		timestamp: Date.now(),
 	};
 	if (images?.length) markQueuedMessageImages(message);

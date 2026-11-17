@@ -222,7 +222,7 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 		assert.deepEqual(new KeybindingsManager().getKeys("app.history.search"), ["ctrl+r"]);
 	});
 
-	it("lists expanded prompt templates, skill commands and input-hook rewrites once as typed with their age, including queued prompts", async () => {
+	it("lists expanded prompt templates and skill commands once as typed and input-hook rewrites as recorded, with their age, including queued prompts", async () => {
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
 		const holdTool: AgentTool = {
@@ -354,7 +354,7 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 				[
 					"/fixbug login redirect",
 					"/skill:tdd edge cases",
-					"shorthand check",
+					"Run the full check suite.",
 					"/fixbug queued steer",
 					"/skill:tdd queued followup",
 					"check queued screenshot",
@@ -376,10 +376,24 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 					"shorthand check",
 					"/skill:tdd edge cases",
 					"/fixbug login redirect",
+					"Run the full check suite.",
 				],
 			);
-			assert.ok(entries.every((entry) => typeof entry.sentAt === "number" && Number.isFinite(entry.sentAt)));
-			assert.deepEqual(promptHistoryEntries([...modelPrompts].reverse(), sessionPrompts), entries);
+			assert.ok(
+				entries.every(
+					(entry) => entry.text === "shorthand check" || (typeof entry.sentAt === "number" && Number.isFinite(entry.sentAt)),
+				),
+			);
+			assert.deepEqual(
+				promptHistoryEntries([...modelPrompts].reverse(), sessionPrompts),
+				entries
+					.filter((entry) => entry.text !== "Run the full check suite.")
+					.map((entry) =>
+						entry.text === "shorthand check"
+							? { text: "Run the full check suite.", sentAt: entries.at(-1)?.sentAt }
+							: entry,
+					),
+			);
 
 			const selector = new PromptHistorySelectorComponent(entries, {
 				onSelect: () => {},
@@ -390,7 +404,94 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 			assert.ok(rendered.some((line) => line.includes("/skill:tdd edge cases") && line.endsWith("just now")));
 			assert.ok(!rendered.some((line) => line.includes("Please fix the bug")));
 			assert.ok(!rendered.some((line) => line.includes("<skill")));
-			assert.ok(!rendered.some((line) => line.includes("Run the full check suite")));
+		} finally {
+			release.resolve();
+			await harness.cleanup();
+		}
+	});
+
+	it("records the prompt an input hook redacted, never the text typed before it, including queued prompts (#5347)", async () => {
+		const secret = "synthetic-secret-123";
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const holdTool: AgentTool = {
+			name: "hold",
+			label: "Hold",
+			description: "Hold turn",
+			parameters: Type.Object({}),
+			execute: async () => {
+				entered.resolve();
+				await release.promise;
+				return { content: [{ type: "text", text: "held" }], details: {} };
+			},
+		};
+		const template: PromptTemplate = {
+			name: "fixbug",
+			description: "Fix a bug",
+			content: "Please fix the bug: $ARGUMENTS",
+			filePath: "/virtual/fixbug.md",
+			sourceInfo: createSyntheticSourceInfo("/virtual/fixbug.md", {
+				source: "local",
+				scope: "project",
+				origin: "top-level",
+			}),
+		};
+		const extensionsResult = await createTestExtensionsResult([
+			(pi) => {
+				pi.on("input", (event) =>
+					event.text.includes(secret)
+						? { action: "transform", text: event.text.replaceAll(secret, "[redacted]") }
+						: { action: "continue" },
+				);
+			},
+		]);
+		const baseLoader = createTestResourceLoader({ extensionsResult });
+		const harness = await createHarness({
+			tools: [holdTool],
+			resourceLoader: { ...baseLoader, getPrompts: () => ({ prompts: [template], diagnostics: [] }) },
+		});
+		try {
+			harness.setResponses([
+				fauxAssistantMessage("plain"),
+				fauxAssistantMessage("templated"),
+				fauxAssistantMessage([fauxToolCall("hold", {})], { stopReason: "toolUse" }),
+				fauxAssistantMessage("steered"),
+				fauxAssistantMessage("followed up"),
+				fauxAssistantMessage("queued template"),
+				fauxAssistantMessage("done"),
+			]);
+			await harness.session.prompt(`token ${secret}`);
+			await harness.session.prompt(`/fixbug token ${secret}`);
+			const turn = harness.session.prompt("hold the turn");
+			await entered.promise;
+			await harness.session.prompt(`steer token ${secret}`, { streamingBehavior: "steer" });
+			await harness.session.followUp(`follow token ${secret}`);
+			await harness.session.followUp(`/fixbug queued token ${secret}`);
+			release.resolve();
+			await turn;
+
+			const entries = harness.session.sessionManager.getEntries();
+			const userEntries = entries.filter((entry) => entry.type === "message" && entry.message.role === "user");
+			assert.equal(userEntries.length, 6);
+			for (const entry of userEntries) assert.ok(!JSON.stringify(entry).includes(secret), JSON.stringify(entry));
+
+			const sessionPrompts = sessionPromptsFromEntries(entries);
+			assert.deepEqual(
+				sessionPrompts.map((entry) => entry.text),
+				[
+					"token [redacted]",
+					"/fixbug token [redacted]",
+					"hold the turn",
+					"steer token [redacted]",
+					"follow token [redacted]",
+					"/fixbug queued token [redacted]",
+				],
+			);
+			const resumedHistory = [...getUserTexts(harness)].reverse();
+			const searchResults = promptHistoryEntries(resumedHistory, sessionPrompts);
+			assert.ok(!JSON.stringify(searchResults).includes(secret), JSON.stringify(searchResults));
+			const rendered = lines(new PromptHistorySelectorComponent(searchResults, { onSelect: () => {}, onCancel: () => {} }), 100);
+			assert.ok(!rendered.some((line) => line.includes(secret)), rendered.join("\n"));
 		} finally {
 			release.resolve();
 			await harness.cleanup();

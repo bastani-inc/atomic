@@ -331,11 +331,12 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 	// Input accepted while held must not vanish if a later check fails: it stays queued for the next turn.
 	let keptText = text;
 	let keptImages = options?.images;
+	let keptRawText: string | undefined;
 	const keepAcceptedInput = async (error: unknown): Promise<void> => {
 		if (!acceptedWhileHeld || held.cancelled || isSessionClosed(error)) return;
 		if (this._disposed || lifetime.aborted || sessionGenerationClosing.has(this)) return;
-		if (held.lane === "followUp") await this._queueFollowUp(keptText, keptImages, text);
-		else await this._queueSteer(keptText, keptImages, text);
+		if (held.lane === "followUp") await this._queueFollowUp(keptText, keptImages, text, keptRawText);
+		else await this._queueSteer(keptText, keptImages, text, keptRawText);
 	};
 
 	// Reserves the context through async input hooks and auth checks, so tree navigation cannot start
@@ -420,6 +421,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		}
 		keptText = expandedText;
 		keptImages = currentImages;
+		keptRawText = currentText;
 
 		const earlierAdmissions = admission.waitForTurn();
 		if (earlierAdmissions) await earlierAdmissions;
@@ -451,8 +453,8 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			// The queue may have been paused while the input waited. Keep it with the paused
 			// input instead of letting an abort that followed the pause drop it.
 			if (this._queuedMessagesPaused) {
-				if (held.lane === "followUp") await this._queueFollowUp(expandedText, currentImages, text);
-				else await this._queueSteer(expandedText, currentImages, text);
+				if (held.lane === "followUp") await this._queueFollowUp(expandedText, currentImages, text, currentText);
+				else await this._queueSteer(expandedText, currentImages, text, currentText);
 				workflowDelivery?.delivered?.(held.lane);
 				preflightResult?.(true, "queued");
 				return;
@@ -475,8 +477,8 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			}
 			const queued =
 				delivery.streamingBehavior === "followUp"
-					? this._queueFollowUp(expandedText, currentImages, text)
-					: this._queueSteer(expandedText, currentImages, text);
+					? this._queueFollowUp(expandedText, currentImages, text, currentText)
+					: this._queueSteer(expandedText, currentImages, text, currentText);
 			if (settling) deliverQueuedInputIfIdle(this, { userSubmission: true });
 			await queued;
 			workflowDelivery?.delivered?.(delivery.streamingBehavior);
@@ -568,7 +570,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		const userMessage: UserMessageWithRawText = {
 			role: "user",
 			content: userContent,
-			...(text !== userText ? { rawText: text } : {}),
+			...(currentText !== userText ? { rawText: currentText } : {}),
 			timestamp: Date.now(),
 		};
 		messages.push(userMessage);
@@ -1236,8 +1238,8 @@ async function admittedQueueUserInput(
 		if (earlierAdmissions) await earlierAdmissions;
 		assertSessionOpen(session);
 		if (lifetime.aborted) throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
-		if (behavior === "steer") await session._queueSteer(expandedText, images, typed);
-		else await session._queueFollowUp(expandedText, images, typed);
+		if (behavior === "steer") await session._queueSteer(expandedText, images, typed, text);
+		else await session._queueFollowUp(expandedText, images, typed, text);
 		if (!session.isStreaming) deliverQueuedInputIfIdle(session);
 		return "queued";
 	} finally {
