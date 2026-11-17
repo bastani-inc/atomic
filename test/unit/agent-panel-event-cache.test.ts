@@ -15,7 +15,7 @@ import {
 import { taskFixture, taskValue } from "../helpers/task-projection.js";
 
 test.each(["running", "missing"])(
-	"a focused pass that observes a finished extension row %s invalidates the has-rows cache (#5233)",
+	"a focused pass that observes a finished extension row %s invalidates the has-rows cache (#5224)",
 	(change) => {
 		let now = 10_000;
 		const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -28,15 +28,24 @@ test.each(["running", "missing"])(
 			state: "done",
 		};
 		let items = [finished];
-		hub.register({ items: () => items, subscribe: () => () => {} });
+		let changed = () => {};
+		hub.register({
+			items: () => items,
+			subscribe(listener) {
+				changed = listener;
+				return () => {};
+			},
+		});
 		const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
 		try {
 			assert.equal(agentPanelHasRows(session), true);
 			now += AGENT_PANEL_DROP_MS + 1;
 			assert.equal(agentPanelHasRows(session), false);
 			items = change === "running" ? [{ ...finished, state: "running" }] : [];
+			changed();
 			agentPanelRows(session);
 			items = [finished];
+			changed();
 			assert.deepEqual(
 				agentPanelRows(session).map((row) => row.id),
 				[finished.id],
@@ -47,12 +56,13 @@ test.each(["running", "missing"])(
 				"the idle panel and its focus key agree with the focused panel",
 			);
 		} finally {
+			hub.dispose();
 			clock.mockRestore();
 		}
 	},
 );
 
-test("unchanged focused panel reads reuse the ranked row collection rather than copying all tasks (#5233)", async () => {
+test("unchanged focused panel reads reuse the ranked row collection rather than copying all tasks (#5224)", async () => {
 	const fixture = taskFixture();
 	const session = {};
 	try {

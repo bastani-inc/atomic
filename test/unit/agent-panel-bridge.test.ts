@@ -109,7 +109,7 @@ function createPanelUi(
 	return ui;
 }
 
-test("a source that reopens the panel while listing rows cannot mount a second panel (#5224, #5239)", async () => {
+test("a source that reopens the panel while listing rows cannot mount a second panel (#5224)", async () => {
 	const hub = new AgentPanelSourceHub();
 	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
 	const ui = createPanelUi({ onMount: (_component, done) => done() });
@@ -130,7 +130,7 @@ test("a source that reopens the panel while listing rows cannot mount a second p
 	assert.equal(ui.mounts, 1);
 });
 
-test("showAgentPanel stop chain normalizes non-string reasons, strips terminal controls, and catches rejections (#5224, #5239)", async () => {
+test("showAgentPanel stop chain normalizes non-string reasons, strips terminal controls, and catches rejections (#5224)", async () => {
 	const reasons: Array<string | symbol | object> = [
 		Symbol("stop-symbol"),
 		Object.create(null) as object,
@@ -175,7 +175,7 @@ test("showAgentPanel stop chain normalizes non-string reasons, strips terminal c
 	}
 });
 
-test("unfocused and focused panel renders catch unexpected throws without per-frame projection, return empty lines, and report once (#5224, #5239)", async () => {
+test("unfocused and focused panel renders catch unexpected throws without per-frame projection, return empty lines, and report once (#5224)", async () => {
 	const hub = new AgentPanelSourceHub();
 	let reads = 0;
 	hub.register({
@@ -233,7 +233,7 @@ test("unfocused and focused panel renders catch unexpected throws without per-fr
 	}
 });
 
-test("update catch in bindAgentPanel remains total even when widget teardown throws (#5224, #5239)", async () => {
+test("update catch in bindAgentPanel remains total even when widget teardown throws (#5224)", async () => {
 	const hub = new AgentPanelSourceHub();
 	const listeners = new Set<() => void>();
 	let broken = false;
@@ -273,7 +273,7 @@ test("update catch in bindAgentPanel remains total even when widget teardown thr
 	}
 });
 
-test("focused panel coalesces notification bursts into one microtask and contains listener errors (#5224, #5239)", async () => {
+test("focused panel coalesces notification bursts into one microtask and contains listener errors (#5224)", async () => {
 	const fixture = taskFixture();
 	try {
 		await fixture.start("background worker");
@@ -351,7 +351,7 @@ test("focused panel coalesces notification bursts into one microtask and contain
 	}
 });
 
-test("focused panel contains malformed source items when a real OwnerTaskStore event fires (#5224, #5239)", async () => {
+test("focused panel contains malformed source items when a real OwnerTaskStore event fires (#5224)", async () => {
 	const fixture = taskFixture();
 	try {
 		await fixture.start("first worker");
@@ -399,7 +399,7 @@ test("focused panel contains malformed source items when a real OwnerTaskStore e
 	}
 });
 
-test("a source with one malformed row and a valid neighbour keeps the neighbour visible and reports without claiming the source is hidden (#5224, #5239)", () => {
+test("a source with one malformed row and a valid neighbour keeps the neighbour visible and reports without claiming the source is hidden (#5224)", () => {
 	const hub = new AgentPanelSourceHub();
 	hub.register({
 		items: () => [
@@ -430,7 +430,7 @@ test("a source with one malformed row and a valid neighbour keeps the neighbour 
 	}
 });
 
-test("unfocused panel skips row recomputation while hidden and reuses cached rendered lines across frames (#5224, #5239)", async () => {
+test("unfocused panel skips row recomputation while hidden and reuses cached rendered lines across frames (#5224)", async () => {
 	assert.equal(themedAgentPanelStyle(), themedAgentPanelStyle());
 	const nowSpy = vi.spyOn(Date, "now").mockReturnValue(10_000);
 	const hub = new AgentPanelSourceHub();
@@ -496,7 +496,7 @@ test("unfocused panel skips row recomputation while hidden and reuses cached ren
 	}
 });
 
-test("unfocused panel enforces a refresh budget across separate-turn notification bursts (#5224, #5239)", async () => {
+test("unfocused panel enforces a refresh budget across separate-turn notification bursts (#5224)", async () => {
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
 	let now = 1_000;
 	const perfSpy = vi.spyOn(performance, "now").mockImplementation(() => now);
@@ -541,7 +541,7 @@ test("unfocused panel enforces a refresh budget across separate-turn notificatio
 	}
 });
 
-test("a source that notifies its listener inside items() quiesces without starving timers in unfocused and focused panels (#5224, #5239)", async () => {
+test("a source that notifies its listener inside items() quiesces without starving timers in unfocused and focused panels (#5224)", async () => {
 	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
 	try {
 		for (const policy of ["always", "onChange"] as const) {
@@ -635,7 +635,7 @@ test("a source that notifies its listener inside items() quiesces without starvi
 	}
 });
 
-test("resetExtensionUI while the focused panel is open releases the single-flight guard, restores the unfocused widget, and allows reopening (#5224, #5239)", async () => {
+test("resetExtensionUI while the focused panel is open releases the single-flight guard, restores the unfocused widget, and allows reopening (#5224)", async () => {
 	const hub1 = new AgentPanelSourceHub();
 	hub1.register({
 		items: () => [{ ...healthyRow, id: "run:one", name: "first-wf" }],
@@ -738,7 +738,7 @@ test("resetExtensionUI while the focused panel is open releases the single-fligh
 	}
 });
 
-test("workflow onReturn catches and reports a rejecting back() navigation (#5224, #5239)", async () => {
+test("workflow onReturn catches and reports a rejecting back() navigation (#5224)", async () => {
 	const hub = new AgentPanelSourceHub();
 	let onReturnCallback: (() => void) | undefined;
 	let brokenOnReturn = false;
@@ -777,7 +777,7 @@ test("workflow onReturn catches and reports a rejecting back() navigation (#5224
 	}
 });
 
-test("showAgentPanel enforces single-flight per session and restores unfocused visibility on rejection (#5224, #5239)", async () => {
+test("showAgentPanel enforces single-flight per session and restores unfocused visibility on rejection (#5224)", async () => {
 	const hub = new AgentPanelSourceHub();
 	const listeners = new Set<() => void>();
 	hub.register({
@@ -829,7 +829,7 @@ test("showAgentPanel enforces single-flight per session and restores unfocused v
 	}
 });
 
-test("showAgentPanel restores unfocused widget visibility when hiding the unfocused widget throws (#5224, #5239)", async () => {
+test("showAgentPanel restores unfocused widget visibility when hiding the unfocused widget throws (#5224)", async () => {
 	const hub = new AgentPanelSourceHub();
 	hub.register({
 		items: () => [healthyRow],
@@ -867,7 +867,7 @@ test("showAgentPanel restores unfocused widget visibility when hiding the unfocu
 	}
 });
 
-test("in-process and RPC open_agent_panel catch handlers format null and hostile non-Error rejections into non-empty messages (#5224, #5239)", async () => {
+test("in-process and RPC open_agent_panel catch handlers format null and hostile non-Error rejections into non-empty messages (#5224)", async () => {
 	const unhandled: Error[] = [];
 	const onUnhandled = (reason: Error) => unhandled.push(reason);
 	process.on("unhandledRejection", onUnhandled);
@@ -979,7 +979,7 @@ test("in-process and RPC open_agent_panel catch handlers format null and hostile
 	}
 });
 
-test("warnings emitted during deferred startup survive rebuildChatFromMessages in startupNoticesContainer (#5224, #5239)", () => {
+test("warnings emitted during deferred startup survive rebuildChatFromMessages in startupNoticesContainer (#5224)", () => {
 	const chatContainer = new Container();
 	const resourceDisclosureContainer = new Container();
 	const startupNoticesContainer = new Container();

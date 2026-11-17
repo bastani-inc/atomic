@@ -1,4 +1,5 @@
 import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import { singleLineDisplayText } from "../../../utils/terminal-text.ts";
 import { stripAnsi } from "./chat-session-host-utils.ts";
 import { renderComposerRule } from "./composer-rule.ts";
 
@@ -24,7 +25,7 @@ const RESET = "\x1b[0m";
 const BOLD = "\x1b[1m";
 const NORMAL_INTENSITY = "\x1b[22m";
 const EDITOR_SUFFIX = "] ";
-const EDITOR_OVERFLOW_RE = /^(─*)( ↑ \d+ more )(─*)$/;
+const EDITOR_OVERFLOW_RE = /^(─*)( [↑↓] \d+ more )(─*)$/u;
 
 /** The text that opens a `kind` label, such as `[stage:`; a line containing it is labeled already. */
 export function inputLabelMarker(kind: InputLabelKind): string {
@@ -117,7 +118,6 @@ export function applyInputLabelToEditorTopRule(
 	return lines;
 }
 
-/** Colours of an attached composer: its rules in the accent, its label bold, its placeholder dim. */
 export interface AttachedComposerStyle {
 	accent(text: string): string;
 	text(text: string): string;
@@ -163,13 +163,6 @@ function trimTrailingSpaces(line: string): string {
 	return line.slice(0, spaceStart) + line.slice(sgrStart);
 }
 
-/**
- * The composer of a chat attached to a subagent or a workflow stage, so it never reads as the main chat's: heavy accent
- * rules above and below the prompt, the top one ending in `label` (`debugger · #5220 spawn lock · 18m`), and, while
- * nothing is typed, `placeholder` (`Message debugger…`) after the cursor. Call it on the editor's rendered lines. A
- * plain or scrolled rule is replaced; any other first or last line is left as it is. Terminals narrower than
- * {@link INPUT_LABEL_MIN_COLUMNS} keep the heavy rules without the label.
- */
 export function applyAttachedComposer(
 	style: AttachedComposerStyle,
 	label: string | undefined,
@@ -177,33 +170,34 @@ export function applyAttachedComposer(
 	editorLines: readonly string[],
 ): string[] {
 	const lines = [...editorLines];
+	const cleanLabel = label === undefined ? undefined : singleLineDisplayText(label).trim();
+	const cleanPlaceholder = placeholder === undefined ? undefined : singleLineDisplayText(placeholder).trim();
 	const top = lines[0];
 	const isRule = (line: string) => {
 		const plain = stripAnsi(line);
 		return /^─+$/.test(plain) || EDITOR_OVERFLOW_RE.test(plain);
 	};
-	// The editor may render rows below its bottom rule (an autocomplete list); the bottom rule is the last rule.
+
 	let bottomIndex = lines.length - 1;
 	while (bottomIndex > 0 && !isRule(lines[bottomIndex]!)) bottomIndex--;
 	if (top === undefined || bottomIndex < 1) return lines;
 	const width = visibleWidth(stripAnsi(top));
 	const overflowNote = isRule(top) ? EDITOR_OVERFLOW_RE.exec(stripAnsi(top))?.[2] : undefined;
 	if (isRule(top) && overflowNote === undefined) {
-		// The shared composer rule, in its attached form: heavy, accent, the label bold (#5224).
 		lines[0] = renderComposerRule(width, {
-			...(label === undefined
+			...(cleanLabel === undefined
 				? {}
-				: { label: { plain: label, styled: `${BOLD}${style.text(label)}${NORMAL_INTENSITY}` } }),
+				: { label: { plain: cleanLabel, styled: `${BOLD}${style.text(cleanLabel)}${NORMAL_INTENSITY}` } }),
 			color: style.accent,
 			heavy: true,
 		});
 	} else if (isRule(top)) {
 		const overflow = overflowNote;
 		const shown =
-			label === undefined || width < INPUT_LABEL_MIN_COLUMNS
+			cleanLabel === undefined || width < INPUT_LABEL_MIN_COLUMNS
 				? undefined
 				: truncateToWidth(
-						label,
+						cleanLabel,
 						Math.max(1, width - (overflow === undefined ? 0 : visibleWidth(overflow)) - 6),
 						"…",
 					);
@@ -220,13 +214,13 @@ export function applyAttachedComposer(
 			);
 	}
 	const bottom = lines[bottomIndex]!;
-	if (isRule(bottom)) lines[bottomIndex] = style.accent(HEAVY_RULE.repeat(visibleWidth(stripAnsi(bottom))));
-	if (placeholder !== undefined && bottomIndex === 2) {
+	if (isRule(bottom)) lines[bottomIndex] = style.accent(stripAnsi(bottom).replace(/─/gu, HEAVY_RULE));
+	if (cleanPlaceholder !== undefined && bottomIndex === 2) {
 		const line = lines[1]!;
 		const plain = stripAnsi(stripApc(line)).trimEnd();
 		if (plain === PROMPT_GLYPH || plain === `${PROMPT_GLYPH} `) {
 			const room = Math.max(0, width - visibleWidth(stripAnsi(line).trimEnd()) - 2);
-			const text = truncateToWidth(placeholder, room, "…");
+			const text = truncateToWidth(cleanPlaceholder, room, "…");
 			const trimmed = trimTrailingSpaces(line);
 			lines[1] = `${trimmed} ${style.dim(text)}`;
 		}

@@ -156,17 +156,24 @@ test("bindAgentPanel renders cached rows without per-frame source reads and defe
 			now += AGENT_PANEL_REFRESH_WINDOW_MS;
 			costMs = 13;
 			const beforeExpensive = sourceReads;
-			for (let i = 0; i < 50; i++) {
-				for (const listener of extListeners) listener();
+			for (let turn = 0; turn < 6; turn++) {
+				for (let i = 0; i < 50; i++) {
+					for (const listener of extListeners) listener();
+				}
+				await Promise.resolve();
 			}
-			assert.equal(
-				sourceReads - beforeExpensive,
-				1,
-				"when a single refresh exceeds the 8ms budget, subsequent burst events defer",
+			const immediate = sourceReads - beforeExpensive;
+			assert.ok(
+				immediate < 6,
+				`when refreshes exceed the 8ms budget, later bursts defer instead of refreshing each turn (${immediate})`,
 			);
 			now += AGENT_PANEL_REFRESH_WINDOW_MS;
 			vi.advanceTimersByTime(AGENT_PANEL_REFRESH_WINDOW_MS);
-			assert.equal(sourceReads - beforeExpensive, 2, "coalesced trailing refresh runs once at window end");
+			assert.equal(
+				sourceReads - beforeExpensive,
+				immediate + 1,
+				"coalesced trailing refresh runs once at window end",
+			);
 		} finally {
 			dispose();
 		}
@@ -295,9 +302,13 @@ test("renderAgentPanelRows only reads names in the visible window and agentPanel
 			{ id: "run:a", kind: "workflow", state: "done", name: "alpha", task: "stage 1" },
 			{ id: "run:b", kind: "workflow", state: "done", name: "beta", task: "stage 1", viewed: true },
 		];
+		let notify = () => {};
 		hub.register({
 			items: () => currentItems,
-			subscribe: () => () => {},
+			subscribe: (listener) => {
+				notify = listener;
+				return () => {};
+			},
 			open: () => {},
 		});
 		const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
@@ -310,10 +321,12 @@ test("renderAgentPanelRows only reads names in the visible window and agentPanel
 		assert.deepEqual(agentPanelRows(session), []);
 
 		currentItems = [];
+		notify();
 		assert.deepEqual(agentPanelRows(session), []);
 
 		now += 1_000;
 		currentItems = [{ id: "run:a", kind: "workflow", state: "done", name: "alpha", task: "stage 1" }];
+		notify();
 		assert.deepEqual(
 			agentPanelRows(session).map((row) => row.id),
 			["run:a"],

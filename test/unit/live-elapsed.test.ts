@@ -5,7 +5,12 @@ import {
 	type AgentPanelItem,
 	AgentPanelSourceHub,
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
-import { liveElapsedMs, observeTaskClocks } from "../../packages/coding-agent/src/core/tasks/live-elapsed.js";
+import {
+	bindTaskClock,
+	TaskElapsedClocks,
+	taskClockRunning,
+	taskClocksFor,
+} from "../../packages/coding-agent/src/core/tasks/live-elapsed.js";
 import { AgentPanelModel } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import { taskMetricsText } from "../../packages/coding-agent/src/modes/interactive/components/task-row.js";
@@ -22,35 +27,7 @@ import { taskTranscriptEnvironment, transcriptOnlySource } from "../helpers/task
 
 initTheme("dark");
 
-test("the agent panel and a later view share one clock for a running task (#5224)", () => {
-	let now = 100_000;
-	const model = new AgentPanelModel(() => now);
-	const row = {
-		id: "task:shared-clock",
-		kind: "agent" as const,
-		state: "running" as const,
-		name: "w",
-		task: "t",
-		elapsedMs: 2000,
-	};
-	assert.equal(model.rows([row])[0]?.elapsedMs, 2000);
-	now += 6000;
-	assert.equal(model.rows([row])[0]?.elapsedMs, 8000, "the panel's clock runs between reports");
-	assert.equal(
-		liveElapsedMs("shared-clock", 2000, true, now),
-		8000,
-		"a view opened later reads the same elapsed time",
-	);
-	now += 4000;
-	const finished = { ...row, state: "stopped" as const, elapsedMs: 2000 };
-	assert.equal(model.rows([finished])[0]?.elapsedMs, 12_000, "a finished row keeps the time it reached");
-	now += 60_000;
-	assert.equal(model.rows([finished])[0]?.elapsedMs, 12_000, "and stops counting");
-	assert.equal(liveElapsedMs("shared-clock", 20_000, false, now), 20_000, "a larger reported time wins");
-	assert.equal(liveElapsedMs("shared-clock", 1000, true, now), 20_000, "a resumed task keeps its elapsed time");
-});
-
-test("cancelling tasks keep one monotone elapsed time across the panel and task views (#5224, #5239)", () => {
+test("cancelling tasks keep one monotone elapsed time across the panel and task views (#5224)", () => {
 	let now = 0;
 	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
 	const panel = new AgentPanelModel(() => now);
@@ -60,7 +37,7 @@ test("cancelling tasks keep one monotone elapsed time across the panel and task 
 		title: "finish cleanup",
 		metrics: { elapsedMs: 5000 },
 	};
-	const row = {
+	const plainRow = {
 		id: "task:cancelling-clock",
 		kind: "agent" as const,
 		state: "running" as const,
@@ -77,6 +54,15 @@ test("cancelling tasks keep one monotone elapsed time across the panel and task 
 		readTaskTranscript: () => ({ ok: true, value: { messages: [] } }),
 		followTaskTranscript: () => undefined,
 	});
+	const clocks = taskClocksFor(source);
+	bindTaskClock(record, clocks);
+	const row = bindTaskClock({ ...plainRow }, clocks);
+	const observeTaskClocks = (records: readonly (typeof record)[], at: number) => {
+		for (const task of records) {
+			if (task.execution.kind === "settled") clocks.settle(task.ref.taskId, task.metrics?.elapsedMs, at);
+			else clocks.elapsedMs(task.ref.taskId, task.metrics?.elapsedMs, taskClockRunning(task.execution.kind), at);
+		}
+	};
 	const inspector = new TaskInspector(
 		source,
 		() => {},
@@ -106,7 +92,7 @@ test("cancelling tasks keep one monotone elapsed time across the panel and task 
 			assert.match(renderTranscript(), /worker · finish cleanup · 1m/);
 		}
 		now = 71_000;
-		assert.equal(panel.rows([{ ...row, state: "stopping" }])[0]?.elapsedMs, 76_000);
+		assert.equal(panel.rows([bindTaskClock({ ...row, state: "stopping" as const }, clocks)])[0]?.elapsedMs, 76_000);
 		assert.equal(taskMetricsText(record), "1m 16s");
 		assert.match(renderInspector(), /1m 16s/);
 		inspector.handleInput(" ");
@@ -114,15 +100,15 @@ test("cancelling tasks keep one monotone elapsed time across the panel and task 
 
 		now = 116_000;
 		assert.match(renderTranscript(), /worker · finish cleanup · 2m/);
-		assert.equal(panel.rows([{ ...row, state: "stopping" }])[0]?.elapsedMs, 121_000);
+		assert.equal(panel.rows([bindTaskClock({ ...row, state: "stopping" as const }, clocks)])[0]?.elapsedMs, 121_000);
 
 		now = 118_000;
 		record.execution = { kind: "settled", result: { kind: "cancelled", cause: "user" } };
 		observeTaskClocks([record], now);
-		assert.equal(panel.rows([{ ...row, state: "stopped" }])[0]?.elapsedMs, 123_000);
+		assert.equal(panel.rows([bindTaskClock({ ...row, state: "stopped" as const }, clocks)])[0]?.elapsedMs, 123_000);
 		assert.equal(taskMetricsText(record), "2m 3s");
 		now += 100_000;
-		assert.equal(panel.rows([{ ...row, state: "stopped" }])[0]?.elapsedMs, 123_000);
+		assert.equal(panel.rows([bindTaskClock({ ...row, state: "stopped" as const }, clocks)])[0]?.elapsedMs, 123_000);
 		assert.equal(taskMetricsText(record), "2m 3s");
 	} finally {
 		transcript.dispose();
@@ -131,7 +117,7 @@ test("cancelling tasks keep one monotone elapsed time across the panel and task 
 	}
 });
 
-test("cached workflow rows advance between source changes and stop while paused (#5224, #5239)", () => {
+test("cached workflow rows advance between source changes and stop while paused (#5224)", () => {
 	let now = 0;
 	const panel = new AgentPanelModel(() => now);
 	const row = {
@@ -156,7 +142,7 @@ test("cached workflow rows advance between source changes and stop while paused 
 	assert.equal(panel.rows([{ ...row, state: "done", elapsedMs: 16_000 }])[0]?.elapsedMs, 16_000);
 });
 
-test("workflow and extension rows that finish or pause while the panel is hidden show their reported elapsed time (#5224, #5239)", () => {
+test("workflow and extension rows that finish or pause while the panel is hidden show their reported elapsed time (#5224)", () => {
 	let now = 100_000;
 	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
 	const hub = new AgentPanelSourceHub();
@@ -252,7 +238,7 @@ test("workflow and extension rows that finish or pause while the panel is hidden
 	}
 });
 
-test("running extension rows published while the panel is hidden keep accurate elapsed time without over-counting read-time sources (#5224, #5239)", async () => {
+test("running extension rows published while the panel is hidden keep accurate elapsed time without over-counting read-time sources (#5224)", async () => {
 	let now = 0;
 	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
 	const hub = new AgentPanelSourceHub();
@@ -330,7 +316,7 @@ test("running extension rows published while the panel is hidden keep accurate e
 	}
 });
 
-test("dropping a running extension row does not retain its clock when the id is reused (#5224, #5239)", () => {
+test("dropping a running extension row does not retain its clock when the id is reused (#5224)", () => {
 	let now = 0;
 	const panel = new AgentPanelModel(() => now);
 	assert.equal(
@@ -348,28 +334,30 @@ test("dropping a running extension row does not retain its clock when the id is 
 	);
 });
 
-test("new task clocks never evict a still-running task's elapsed time (#5224, #5239)", () => {
-	assert.equal(liveElapsedMs("retained-running-clock", 0, true, 0), 0);
-	assert.equal(liveElapsedMs("retained-running-clock", 0, true, 100_000), 100_000);
-	for (let index = 0; index < 2050; index++) liveElapsedMs(`new-clock-${index}`, 0, true, 100_000);
-	assert.equal(liveElapsedMs("retained-running-clock", 0, true, 100_000), 100_000);
-	for (let index = 0; index < 2050; index++) liveElapsedMs(`new-clock-${index}`, 0, false, 100_000);
-	assert.equal(liveElapsedMs("retained-running-clock", 0, true, 101_000), 101_000);
+test("new task clocks never evict a still-running task's elapsed time (#5224)", () => {
+	const clocks = new TaskElapsedClocks();
+	assert.equal(clocks.elapsedMs("retained-running-clock", 0, true, 0), 0);
+	assert.equal(clocks.elapsedMs("retained-running-clock", 0, true, 100_000), 100_000);
+	for (let index = 0; index < 2050; index++) clocks.elapsedMs(`new-clock-${index}`, 0, true, 100_000);
+	assert.equal(clocks.elapsedMs("retained-running-clock", 0, true, 100_000), 100_000);
+	for (let index = 0; index < 2050; index++) clocks.elapsedMs(`new-clock-${index}`, 0, false, 100_000);
+	assert.equal(clocks.elapsedMs("retained-running-clock", 0, true, 101_000), 101_000);
 });
 
-test("the task store records settlement time even when no panel is visible (#5224, #5239)", async () => {
+test("the task store records settlement time even when no panel is visible (#5224)", async () => {
 	let now = 100_000;
 	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
 	const fixture = taskFixture();
 	try {
 		await fixture.start();
 		const task = fixture.store.tasks[0]!;
-		assert.equal(liveElapsedMs(task.ref.taskId, 0, true, now), 0);
+		const clocks = taskClocksFor(fixture.store);
+		assert.equal(clocks.elapsedMs(task.ref.taskId, 0, true, now), 0);
 		now += 60_000;
 		await fixture.settle();
 		assert.equal(fixture.store.tasks[0]?.execution.kind, "settled");
 		now += 600_000;
-		assert.equal(liveElapsedMs(task.ref.taskId, 0, false, now), 60_000);
+		assert.equal(clocks.elapsedMs(task.ref.taskId, 0, false, now), 60_000);
 	} finally {
 		await fixture.dispose();
 		clock.mockRestore();
@@ -377,15 +365,11 @@ test("the task store records settlement time even when no panel is visible (#522
 });
 
 test("a task's stop is recorded when it happens, so a view that first looks much later reads its real time (#5224)", () => {
-	const task = (kind: string) => ({
-		ref: { taskId: "observed-stop" },
-		execution: { kind },
-		metrics: { elapsedMs: 1000 },
-	});
-	observeTaskClocks([task("running")], 0);
-	observeTaskClocks([task("settled")], 60_000);
+	const clocks = new TaskElapsedClocks();
+	clocks.elapsedMs("observed-stop", 1000, true, 0);
+	clocks.settle("observed-stop", 1000, 60_000);
 	assert.equal(
-		liveElapsedMs("observed-stop", 1000, false, 660_000),
+		clocks.elapsedMs("observed-stop", 1000, false, 660_000),
 		61_000,
 		"not the 11 minutes until the view looked",
 	);

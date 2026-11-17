@@ -1,66 +1,67 @@
-/**
- * What the agent panel below the main chat's prompt and `/tasks` list: one item per running or recent background
- * subagent, shell and workflow run of a session. The session's own tasks are built in; extensions add their own
- * items, as the workflows extension adds runs, with `pi.registerAgentPanelSource()`.
- */
-
 import { types } from "node:util";
+import { sanitizeTerminalText } from "../../utils/terminal-text.ts";
+import type { ExtensionError } from "../extensions/runtime-types.ts";
 import type { TaskId, TaskRecord } from "./contracts.js";
+import { bindTaskClock, TaskElapsedClocks, taskClockOf, taskClockRunning } from "./live-elapsed.ts";
 import { getOwnerTaskStore, watchOwnerTaskStoreBinding } from "./owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "./task-view-source.js";
 
-/** What an item's glyph and state word say about it. */
 export type AgentPanelState = "running" | "queued" | "input" | "paused" | "stopping" | "done" | "failed" | "stopped";
 
-/** One row of the agent panel and `/tasks`. */
 export interface AgentPanelItem {
-	/** Unique among the session's items: `task:<taskId>` for its tasks, `<source>:<id>` for an extension's. */
 	readonly id: string;
 	readonly kind: "agent" | "shell" | "workflow";
 	readonly state: AgentPanelState;
-	/** Agent name, `shell`, or the workflow's name. */
+
 	readonly name: string;
-	/** What it works on: a task's title, a shell's command, a run's current stage (`stage <name>`). */
+
 	readonly task: string;
 	readonly elapsedMs?: number;
 	readonly tokens?: number;
-	/** Stages finished and in total, for a workflow run. */
+
 	readonly progress?: { readonly done: number; readonly total: number };
-	/** The exact question a waiting item asks. */
+
 	readonly question?: string;
-	/** Its numbered choices, when it asks to pick one. */
+
 	readonly choices?: readonly string[];
-	/** A failed item's one-line reason. */
+
+	readonly promptId?: string;
+
 	readonly reason?: string;
-	/** Messages typed to it that it has not taken yet. */
+
 	readonly queued?: number;
-	/** When it finished, for finished items. */
+
 	readonly endedAt?: number;
+
+	readonly viewed?: boolean;
 }
 
 export interface AgentPanelOpenOptions {
 	readonly onReturn?: () => void;
 }
 
-export type AgentPanelActionResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };
-
-/** A provider of panel items, registered by an extension with `pi.registerAgentPanelSource()`. */
-export interface AgentPanelSource {
-	items(): readonly AgentPanelItem[];
-	/** Calls `listener` whenever {@link items} may have changed; returns the unsubscribe. */
-	subscribe(listener: () => void): () => void;
-	/**
-	 * Opens an item in the interactive UI, as Enter on its row does (a workflow run's graph). `onReturn` is called when
-	 * the opened view goes back one level, so the view it was opened from (the agent panel, `/tasks`) shows again.
-	 */
-	open?(id: string, options?: AgentPanelOpenOptions): void;
-	/** Stops a running item, after the second `x`. */
-	stop?(id: string): Promise<AgentPanelActionResult>;
-	/** Answers a waiting item's question with `text`. */
-	answer?(id: string, text: string): Promise<AgentPanelActionResult>;
+export interface AgentPanelAnswerOptions {
+	readonly promptId?: string;
+	readonly question?: string;
+	readonly choices?: readonly string[];
 }
 
-/** The registration `pi.registerAgentPanelSource()` returns; disposed with its extension generation. */
+export type AgentPanelActionResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };
+
+export interface AgentPanelSource {
+	items(): readonly AgentPanelItem[];
+
+	subscribe(listener: () => void): () => void;
+
+	open?:
+		| ((id: string, options?: AgentPanelOpenOptions) => boolean)
+		| ((id: string, options?: AgentPanelOpenOptions) => void);
+
+	stop?(id: string): Promise<AgentPanelActionResult>;
+
+	answer?(id: string, text: string, options?: AgentPanelAnswerOptions): Promise<AgentPanelActionResult>;
+}
+
 export interface AgentPanelSourceRegistration {
 	dispose(): void;
 }
@@ -85,8 +86,15 @@ function notifyHubWatchers(notifiedHub?: AgentPanelSourceHub): void {
 	for (const watcher of [...hubWatchers]) safelyCall(() => watcher(notifiedHub));
 }
 
+let sourcesGeneration = 0;
+
+export function agentPanelSourcesGeneration(): number {
+	return sourcesGeneration;
+}
+
 function bumpSourceVersion(source: AgentPanelSource): void {
 	sourceVersion(source).current++;
+	sourcesGeneration++;
 }
 
 function bumpHubSources(hub: AgentPanelSourceHub | undefined): void {
@@ -98,8 +106,14 @@ export class AgentPanelSourceHub {
 	private readonly sources = new Map<AgentPanelSource, () => void>();
 	private readonly listeners = new Set<() => void>();
 	private readonly regIds = new Map<AgentPanelSource, number>();
+	private readonly errorReporters = new Set<(source: AgentPanelSource, error: Error) => void>();
+	private readonly failedSources = new Map<AgentPanelSource, Error>();
 	private nextRegId = 0;
 	private disposing = false;
+	private reportSubscribeFailure(source: AgentPanelSource, error: Error): void {
+		this.failedSources.set(source, error);
+		for (const report of [...this.errorReporters]) safelyCall(() => report(source, error));
+	}
 	register(source: AgentPanelSource): AgentPanelSourceRegistration {
 		if (this.disposing) return { dispose() {} };
 		const version = sourceVersion(source);
@@ -116,23 +130,27 @@ export class AgentPanelSourceHub {
 			const subscribe = readPanelField(source, "subscribe");
 			if (typeof subscribe !== "function") {
 				if (this.regIds.get(source) === regId) this.regIds.delete(source);
+				this.reportSubscribeFailure(source, new Error("Invalid agent panel source subscription."));
 				return { dispose() {} };
 			}
 			const result: unknown = Reflect.apply(subscribe, source, [
 				() => {
 					if (this.sources.get(source) !== cleanup) return;
 					version.current++;
+					sourcesGeneration++;
 					this.notify();
 				},
 			]);
 			if (drainThenable(result) || typeof result !== "function") {
 				if (this.regIds.get(source) === regId) this.regIds.delete(source);
+				this.reportSubscribeFailure(source, new Error("Invalid agent panel source subscription."));
 				return { dispose() {} };
 			}
 			unsubscribe = result as () => void;
 		} catch (error) {
 			drainCaught(error);
 			if (this.regIds.get(source) === regId) this.regIds.delete(source);
+			this.reportSubscribeFailure(source, sourceError(error));
 			return { dispose() {} };
 		}
 		if (this.regIds.get(source) !== regId) {
@@ -141,6 +159,7 @@ export class AgentPanelSourceHub {
 		}
 		const previous = this.sources.get(source);
 		this.sources.set(source, cleanup);
+		this.failedSources.delete(source);
 		reportedSources.delete(source);
 		bumpSourceVersion(source);
 		previous?.();
@@ -161,9 +180,21 @@ export class AgentPanelSourceHub {
 	all(): readonly AgentPanelSource[] {
 		return [...this.sources.keys()];
 	}
-	subscribe(listener: () => void): () => void {
+
+	failures(): readonly (readonly [AgentPanelSource, Error])[] {
+		return [...this.failedSources];
+	}
+
+	subscribe(listener: () => void, onError?: (source: AgentPanelSource, error: Error) => void): () => void {
 		this.listeners.add(listener);
-		return () => this.listeners.delete(listener);
+		if (onError !== undefined) {
+			this.errorReporters.add(onError);
+			for (const [source, error] of [...this.failedSources]) safelyCall(() => onError(source, error));
+		}
+		return () => {
+			this.listeners.delete(listener);
+			if (onError !== undefined) this.errorReporters.delete(onError);
+		};
 	}
 	dispose(): void {
 		this.disposing = true;
@@ -172,11 +203,13 @@ export class AgentPanelSourceHub {
 			const cleanups = [...this.sources.values()];
 			this.sources.clear();
 			this.regIds.clear();
+			this.failedSources.clear();
 			for (const source of sources) bumpSourceVersion(source);
 			for (const cleanup of cleanups) cleanup();
 			notifyHubWatchers(this);
 			this.notify();
 			this.listeners.clear();
+			this.errorReporters.clear();
 		} finally {
 			this.disposing = false;
 		}
@@ -191,7 +224,14 @@ export class AgentPanelSourceHub {
 }
 
 export interface AgentPanelSession {
-	readonly extensionRunner?: { getAgentPanelSourceHub?(): AgentPanelSourceHub | undefined };
+	readonly extensionRunner?: {
+		getAgentPanelSourceHub?(): AgentPanelSourceHub | undefined;
+		emitError?(error: ExtensionError): void;
+	};
+}
+
+export function agentPanelSourceHubOf(session: AgentPanelSession): AgentPanelSourceHub | undefined {
+	return hubOf(session);
 }
 
 function hubOf(session: AgentPanelSession): AgentPanelSourceHub | undefined {
@@ -207,7 +247,7 @@ function hubOf(session: AgentPanelSession): AgentPanelSourceHub | undefined {
 
 const taskPrefix = "task:";
 
-function taskState(task: TaskRecord): AgentPanelState {
+export function taskPanelState(task: TaskRecord): AgentPanelState {
 	switch (task.execution.kind) {
 		case "queued":
 			return "queued";
@@ -227,10 +267,6 @@ function taskState(task: TaskRecord): AgentPanelState {
 
 const SHORT_TITLE_CHARS = 60;
 
-/**
- * What a row says a task works on: a subagent's whole prompt is too long for one, so its first line, cut at its first
- * sentence when that ends early enough, else at a word near {@link SHORT_TITLE_CHARS}.
- */
 export function shortTaskTitle(title: string): string {
 	const line =
 		title
@@ -245,10 +281,88 @@ export function shortTaskTitle(title: string): string {
 	return `${(space > SHORT_TITLE_CHARS / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
 
-/**
- * One panel item per background task of `source` that is not in `dismissed`, in admission order. The main chat's panel
- * lists only top-level tasks; a subagent's chat lists the tasks of that subagent, which all have a parent.
- */
+const cachedTaskItems = new WeakMap<
+	TaskRecord,
+	{ readonly taskId: string; readonly clocks: TaskElapsedClocks | undefined; readonly item: AgentPanelItem }
+>();
+const lazyTaskItems = new WeakMap<
+	TaskRecord,
+	{ readonly state: AgentPanelState; readonly clocks: TaskElapsedClocks | undefined; readonly item: AgentPanelItem }
+>();
+const lazyTaskRecords = new WeakMap<
+	AgentPanelItem,
+	{ readonly task: TaskRecord; readonly clocks: TaskElapsedClocks | undefined }
+>();
+
+export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks): AgentPanelItem {
+	const clocks = sourceClocks ?? taskClockOf(task);
+	const cached = cachedTaskItems.get(task);
+	const state = taskPanelState(task);
+	const question = task.attention.kind === "input-needed" ? task.attention.prompt || undefined : undefined;
+	const kind = task.kind === "agent" ? "agent" : "shell";
+	const name = task.kind === "agent" ? (task.agentName ?? "agent") : "shell";
+	const title = shortTaskTitle(task.title || "");
+	const reason =
+		state === "failed" && task.execution.kind === "settled" && task.execution.result.kind === "failed"
+			? (task.execution.result.message.split("\n")[0] ?? "")
+			: undefined;
+	if (
+		cached !== undefined &&
+		cached.clocks === clocks &&
+		cached.taskId === task.ref.taskId &&
+		cached.item.kind === kind &&
+		cached.item.state === state &&
+		cached.item.name === name &&
+		cached.item.task === title &&
+		cached.item.elapsedMs === task.metrics?.elapsedMs &&
+		cached.item.tokens === task.metrics?.tokenCount &&
+		cached.item.question === question &&
+		cached.item.reason === reason
+	)
+		return cached.item;
+	const item: AgentPanelItem = {
+		id: `${taskPrefix}${task.ref.taskId}`,
+		kind,
+		state,
+		name,
+		task: title,
+		...(task.metrics?.elapsedMs === undefined ? {} : { elapsedMs: task.metrics.elapsedMs }),
+		...(task.metrics?.tokenCount === undefined ? {} : { tokens: task.metrics.tokenCount }),
+		...(question ? { question } : {}),
+		...(reason === undefined ? {} : { reason }),
+	};
+	if (clocks !== undefined) bindTaskClock(item, clocks);
+	cachedTaskItems.set(task, { taskId: task.ref.taskId, clocks, item });
+	return item;
+}
+
+export function lazyTaskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks): AgentPanelItem {
+	const state = taskPanelState(task);
+	const cached = lazyTaskItems.get(task);
+	if (cached !== undefined && cached.state === state && cached.clocks === sourceClocks) {
+		return cached.item;
+	}
+	const item: AgentPanelItem = {
+		id: `${taskPrefix}${task.ref.taskId}`,
+		kind: task.kind === "agent" ? "agent" : "shell",
+		state,
+		get name() {
+			return taskPanelItem(task, sourceClocks).name;
+		},
+		get task() {
+			return taskPanelItem(task, sourceClocks).task;
+		},
+	};
+	lazyTaskItems.set(task, { state, clocks: sourceClocks, item });
+	lazyTaskRecords.set(item, { task, clocks: sourceClocks });
+	return item;
+}
+
+export function materializePanelItem(item: AgentPanelItem): AgentPanelItem {
+	const entry = lazyTaskRecords.get(item);
+	return entry === undefined ? item : taskPanelItem(entry.task, entry.clocks);
+}
+
 export function taskPanelItems(
 	source: Pick<TaskViewSource, "backgroundTasks">,
 	dismissed: ReadonlySet<TaskId>,
@@ -256,47 +370,33 @@ export function taskPanelItems(
 ): AgentPanelItem[] {
 	const topLevelOnly = options.topLevelOnly ?? true;
 	const hasDismissed = dismissed.size > 0;
+	const sourceClocks = taskClockOf(source);
 	const items: AgentPanelItem[] = [];
 	for (const task of source.backgroundTasks) {
 		if ((topLevelOnly && task.parentTaskId !== undefined) || (hasDismissed && dismissed.has(task.ref.taskId))) {
 			continue;
 		}
-		const state = taskState(task);
-		const item: {
-			id: string;
-			kind: AgentPanelItem["kind"];
-			state: AgentPanelState;
-			name: string;
-			task: string;
-			elapsedMs?: number;
-			tokens?: number;
-			question?: string;
-			reason?: string;
-		} = {
-			id: `${taskPrefix}${task.ref.taskId}`,
-			kind: task.kind === "agent" ? "agent" : "shell",
-			state,
-			name: task.kind === "agent" ? (task.agentName ?? "agent") : "shell",
-			task: shortTaskTitle(task.title || ""),
-		};
-		const elapsedMs = task.metrics?.elapsedMs;
-		if (elapsedMs !== undefined) item.elapsedMs = elapsedMs;
-		const tokens = task.metrics?.tokenCount;
-		if (tokens !== undefined) item.tokens = tokens;
-		if (task.attention.kind === "input-needed" && task.attention.prompt) {
-			item.question = task.attention.prompt;
-		}
-		if (state === "failed" && task.execution.kind === "settled" && task.execution.result.kind === "failed") {
-			item.reason = task.execution.result.message.split("\n")[0] ?? "";
-		}
-		items.push(item);
+		items.push(taskPanelItem(task, sourceClocks));
 	}
 	return items;
 }
 
 const reportedSources = new WeakSet<AgentPanelSource>();
 
+function cleanReasonText(text: string): string {
+	if (!/[\x00-\x1f\x7f-\x9f\p{Default_Ignorable_Code_Point}\u2028\u2029]/u.test(text)) return text;
+	return sanitizeTerminalText(text)
+		.replace(/\p{Default_Ignorable_Code_Point}/gu, "")
+		.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, " ");
+}
+
 export function sourceError(error: unknown): Error {
+	const raw = rawSourceError(error);
+	const message = cleanReasonText(raw.message);
+	return message === raw.message ? raw : new Error(message);
+}
+
+function rawSourceError(error: unknown): Error {
 	if (typeof error === "string") return new Error(error || "Agent panel source failed.");
 	if ((typeof error === "object" && error !== null) || typeof error === "function") {
 		drainCaught(error);
@@ -314,25 +414,83 @@ export function sourceError(error: unknown): Error {
 }
 
 const drainedPromises = new WeakSet<Promise<unknown>>();
+const MAX_DRAIN_DEPTH = 32;
+const MAX_DRAIN_STEPS = 256;
+const drainQueue: Array<{ readonly value: unknown; readonly seen?: Set<object> }> = [];
+let draining = false;
+const unattachablePromises = new WeakSet<Promise<unknown>>();
+let unattachableGuardInstalled = false;
+
+function markUnattachable(promise: Promise<unknown>): void {
+	unattachablePromises.add(promise);
+	if (unattachableGuardInstalled) return;
+	unattachableGuardInstalled = true;
+	process.on("unhandledRejection", (reason, rejected) => {
+		if (unattachablePromises.has(rejected)) return;
+		if (process.listenerCount("unhandledRejection") === 1) throw reason;
+	});
+}
+
+function attachNativePromise(promise: Promise<unknown>, seen?: Set<object>): void {
+	if (drainedPromises.has(promise)) return;
+	drainedPromises.add(promise);
+	try {
+		thenNativePromise(
+			promise,
+			(result: unknown) => drainCaught(result),
+			(error: unknown) => drainCaught(error),
+		);
+	} catch (error) {
+		drainCaught(error, seen ?? new Set([promise]));
+	}
+}
 
 function drainCaught(value: unknown, seen?: Set<object>): void {
-	drainThenable(value, seen);
+	if ((typeof value !== "object" && typeof value !== "function") || value === null) return;
+	if (types.isPromise(value)) {
+		attachNativePromise(value, seen);
+		return;
+	}
+	if (drainQueue.length < MAX_DRAIN_STEPS) {
+		drainQueue.push({ value, seen });
+	}
+	if (draining) return;
+	draining = true;
+	let steps = 0;
+	try {
+		while (drainQueue.length > 0 && steps < MAX_DRAIN_STEPS) {
+			const next = drainQueue.shift()!;
+			steps++;
+			try {
+				drainThenable(next.value, next.seen);
+			} catch {}
+		}
+		drainQueue.length = 0;
+	} finally {
+		draining = false;
+	}
+}
+
+function thenNativePromise(
+	promise: Promise<unknown>,
+	onFulfilled: (value: unknown) => void,
+	onRejected: (error: unknown) => void,
+): void {
+	if (Reflect.getPrototypeOf(promise) !== Promise.prototype || Object.hasOwn(promise, "constructor")) {
+		Reflect.defineProperty(promise, "constructor", { value: Promise, configurable: true, writable: true });
+	}
+	try {
+		Promise.prototype.then.call(promise, onFulfilled, onRejected);
+	} catch (error) {
+		markUnattachable(promise);
+		throw error;
+	}
 }
 
 function drainThenable(value: unknown, seen?: Set<object>): boolean {
 	if ((typeof value !== "object" && typeof value !== "function") || value === null) return false;
 	if (types.isPromise(value)) {
-		if (drainedPromises.has(value)) return true;
-		drainedPromises.add(value);
-		try {
-			Promise.prototype.then.call(
-				value,
-				(result: unknown) => drainCaught(result),
-				(error: unknown) => drainCaught(error),
-			);
-		} catch (error) {
-			drainCaught(error, seen ?? new Set([value]));
-		}
+		attachNativePromise(value, seen);
 		return true;
 	}
 	if (seen?.has(value)) return true;
@@ -367,45 +525,66 @@ interface SettledSourceResult {
 function settleSourceResult(value: unknown): Promise<SettledSourceResult> {
 	return new Promise<SettledSourceResult>((resolve, reject) => {
 		const pending = new Set<object>();
-		const settle = (result: unknown): void => {
-			if ((typeof result !== "object" && typeof result !== "function") || result === null) {
-				resolve({ value: result });
-				return;
-			}
-			if (pending.has(result)) {
-				reject(new TypeError("Agent panel source returned a cyclic thenable."));
-				return;
-			}
-			pending.add(result);
-			let settled = false;
-			const accept = (next: unknown) => {
-				if (settled) {
-					drainCaught(next);
+		let depth = 0;
+		const settle = (initial: unknown): void => {
+			let current: unknown = initial;
+			while (true) {
+				if ((typeof current !== "object" && typeof current !== "function") || current === null) {
+					resolve({ value: current });
 					return;
 				}
-				settled = true;
-				settle(next);
-			};
-			const fail = (error: unknown) => {
-				drainCaught(error);
-				if (settled) return;
-				settled = true;
-				reject(error);
-			};
-			try {
-				if (types.isPromise(result)) {
-					Promise.prototype.then.call(result, accept, fail);
+				if (pending.has(current)) {
+					reject(new TypeError("Agent panel source returned a cyclic thenable."));
 					return;
 				}
-				const then = (result as { readonly then?: unknown }).then;
-				if (typeof then !== "function") {
-					drainCaught(then);
-					resolve({ value: result });
+				if (depth >= MAX_DRAIN_DEPTH) {
+					drainCaught(current);
+					reject(new RangeError("Agent panel source exceeded maximum thenable depth."));
 					return;
 				}
-				drainCaught(Reflect.apply(then, result, [accept, fail]));
-			} catch (error) {
-				fail(error);
+				pending.add(current);
+				depth++;
+				let settled = false;
+				let syncCall = true;
+				let syncNext: { readonly value: unknown } | undefined;
+				const accept = (next: unknown) => {
+					if (settled) {
+						drainCaught(next);
+						return;
+					}
+					settled = true;
+					if (syncCall) {
+						syncNext = { value: next };
+						return;
+					}
+					settle(next);
+				};
+				const fail = (error: unknown) => {
+					drainCaught(error);
+					if (settled) return;
+					settled = true;
+					reject(error);
+				};
+				try {
+					if (types.isPromise(current)) {
+						syncCall = false;
+						thenNativePromise(current, accept, fail);
+						return;
+					}
+					const then = (current as { readonly then?: unknown }).then;
+					if (typeof then !== "function") {
+						drainCaught(then);
+						resolve({ value: current });
+						return;
+					}
+					drainCaught(Reflect.apply(then, current, [accept, fail]));
+				} catch (error) {
+					fail(error);
+					if (syncNext === undefined) return;
+				}
+				syncCall = false;
+				if (syncNext === undefined) return;
+				current = syncNext.value;
 			}
 		};
 		settle(value);
@@ -499,8 +678,12 @@ function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined 
 	const rawChoices = row.choices;
 	drainThenable(rawChoices);
 	const choices = readPanelChoices(rawChoices);
+	const promptId = row.promptId;
+	drainThenable(promptId);
 	const reason = row.reason;
 	drainThenable(reason);
+	const viewed = row.viewed;
+	drainThenable(viewed);
 	const queued = row.queued;
 	drainThenable(queued);
 	const endedAt = row.endedAt;
@@ -527,7 +710,9 @@ function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined 
 		(queued !== undefined && !isNonNegativeInteger(queued)) ||
 		(endedAt !== undefined && !isFiniteNonNegative(endedAt)) ||
 		(question !== undefined && typeof question !== "string") ||
+		(promptId !== undefined && typeof promptId !== "string") ||
 		(reason !== undefined && typeof reason !== "string") ||
+		(viewed !== undefined && typeof viewed !== "boolean") ||
 		progress === false ||
 		choices === false
 	) {
@@ -546,9 +731,11 @@ function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined 
 	if (progress !== undefined) item.progress = progress;
 	if (question !== undefined) item.question = question;
 	if (choices !== undefined) item.choices = choices;
+	if (promptId !== undefined) item.promptId = promptId;
 	if (reason !== undefined) item.reason = reason;
 	if (queued !== undefined) item.queued = queued;
 	if (endedAt !== undefined) item.endedAt = endedAt;
+	if (viewed !== undefined) item.viewed = viewed;
 	if (elapsedMs !== undefined && (state === "running" || state === "input" || state === "stopping")) {
 		itemSampleTimes.set(item, readAt);
 	}
@@ -701,50 +888,172 @@ function dismissedTaskIds(session: object): ReadonlySet<TaskId> {
 	return ids;
 }
 
+const viewedBySession = new WeakMap<object, Set<string>>();
+const hubBindingListeners = new WeakMap<object, Set<() => void>>();
+
+export function viewedAgentPanelItems(session: object): Set<string> {
+	let viewed = viewedBySession.get(session);
+	if (viewed === undefined) {
+		viewed = new Set();
+		viewedBySession.set(session, viewed);
+	}
+	return viewed;
+}
+
+export function notifyAgentPanelSourceHubRebound(session: object): void {
+	for (const listener of [...(hubBindingListeners.get(session) ?? [])]) safelyCall(listener);
+}
+
+export function watchAgentPanelSourceHubBinding(session: object, listener: () => void): () => void {
+	let listeners = hubBindingListeners.get(session);
+	if (listeners === undefined) {
+		listeners = new Set();
+		hubBindingListeners.set(session, listeners);
+	}
+	listeners.add(listener);
+	return () => {
+		listeners.delete(listener);
+	};
+}
+
+function sourceErrorReporter(session: AgentPanelSession): ((error: Error) => void) | undefined {
+	let report: ((error: ExtensionError) => void) | undefined;
+	try {
+		report = session.extensionRunner?.emitError;
+	} catch (error) {
+		drainCaught(error);
+		return undefined;
+	}
+	if (typeof report !== "function") return undefined;
+	const emit = report;
+	return (error: Error) =>
+		safelyCall(() =>
+			Reflect.apply(emit, session.extensionRunner, [
+				{ extensionPath: "agent panel source", event: "agent_panel", error: error.message },
+			]),
+		);
+}
+
+const extensionClocksBySession = new WeakMap<object, TaskElapsedClocks>();
+
+function sessionExtensionClocks(session: object): TaskElapsedClocks {
+	let clocks = extensionClocksBySession.get(session);
+	if (clocks === undefined) {
+		clocks = new TaskElapsedClocks();
+		extensionClocksBySession.set(session, clocks);
+	}
+	return clocks;
+}
+
 export function sampleAgentPanelSources(
 	session: AgentPanelSession & object,
 	onSourceError?: (error: Error) => void,
 ): void {
-	for (const source of hubOf(session)?.all() ?? []) sourceItems(source, onSourceError);
+	const report = onSourceError ?? sourceErrorReporter(session);
+	for (const source of hubOf(session)?.all() ?? []) sourceItems(source, report);
+}
+
+export function agentPanelExtensionItems(
+	session: AgentPanelSession & object,
+	onSourceError?: (error: Error) => void,
+): AgentPanelItem[] {
+	const report = onSourceError ?? sourceErrorReporter(session);
+	const dismissed = dismissedAgentPanelItems(session);
+	const hasDismissed = dismissed.size > 0;
+	const hub = hubOf(session);
+	const sources = hub?.all() ?? [];
+	if (report !== undefined && hub !== undefined) {
+		for (const [source, error] of hub.failures()) reportSourceOnce(source, error, report);
+	}
+	const items: AgentPanelItem[] = [];
+	const seenIds = sources.length > 1 ? new Set<string>() : undefined;
+	for (const source of sources) {
+		for (const item of sourceItems(source, report)) {
+			if (seenIds !== undefined) {
+				if (seenIds.has(item.id)) {
+					reportSourceOnce(source, new Error(`Duplicate agent panel item id "${item.id}".`), report);
+					continue;
+				}
+				seenIds.add(item.id);
+			}
+			items.push(item);
+		}
+	}
+	const clocks = extensionClocksBySession.get(session);
+	let clockIds: Set<string> | undefined;
+	for (const item of items) {
+		if (item.kind === "workflow" || item.state === "queued") continue;
+		const owned = sessionExtensionClocks(session);
+		clockIds ??= new Set();
+		clockIds.add(item.id);
+		bindTaskClock(item, owned);
+		const state = item.state;
+		owned.elapsedMs(
+			item.id,
+			item.elapsedMs,
+			taskClockRunning(state),
+			agentPanelItemReadAt(item),
+			state === "done" || state === "failed" || state === "stopped",
+		);
+	}
+	if (clockIds !== undefined) extensionClocksBySession.get(session)?.prune(clockIds);
+	else clocks?.clear();
+	const viewed = viewedBySession.get(session);
+	if (viewed !== undefined && viewed.size > 0) {
+		const liveIds = new Set(items.map((item) => item.id));
+		for (const id of [...viewed]) if (!liveIds.has(id)) viewed.delete(id);
+	}
+	return hasDismissed ? items.filter((item) => !dismissed.has(item.id)) : items;
 }
 
 export function agentPanelItems(
 	session: AgentPanelSession & object,
 	onSourceError?: (error: Error) => void,
 ): AgentPanelItem[] {
-	const dismissed = dismissedAgentPanelItems(session);
-	const hasDismissed = dismissed.size > 0;
+	const extensions = agentPanelExtensionItems(session, onSourceError);
 	const store = getOwnerTaskStore(session);
-	const sources = hubOf(session)?.all() ?? [];
-	if (sources.length === 0) {
-		return store === undefined ? [] : taskPanelItems(ownerTaskViewSource(store), dismissedTaskIds(session));
-	}
-	if (sources.length === 1) {
-		const rawExtensions = sourceItems(sources[0]!, onSourceError);
-		const extensions = hasDismissed ? rawExtensions.filter((item) => !dismissed.has(item.id)) : rawExtensions;
-		if (store === undefined) {
-			return hasDismissed ? (extensions as AgentPanelItem[]) : extensions.slice();
-		}
-		const tasks = taskPanelItems(ownerTaskViewSource(store), dismissedTaskIds(session));
-		if (extensions.length === 0) return tasks;
-		if (tasks.length === 0) return hasDismissed ? (extensions as AgentPanelItem[]) : extensions.slice();
-		return [...extensions, ...tasks];
-	}
-	const seenIds = new Set<string>();
-	const extensions: AgentPanelItem[] = [];
-	for (const source of sources) {
-		for (const item of sourceItems(source, onSourceError)) {
-			if (seenIds.has(item.id)) {
-				reportSourceOnce(source, new Error(`Duplicate agent panel item id "${item.id}".`), onSourceError);
-				continue;
-			}
-			seenIds.add(item.id);
-			if (!hasDismissed || !dismissed.has(item.id)) extensions.push(item);
-		}
-	}
 	if (store === undefined) return extensions;
 	const tasks = taskPanelItems(ownerTaskViewSource(store), dismissedTaskIds(session));
+	if (extensions.length === 0) return tasks;
 	return tasks.length === 0 ? extensions : [...extensions, ...tasks];
+}
+
+export function subscribeAgentPanelExtensions(session: AgentPanelSession, listener: () => void): () => void {
+	const safeListener = () => {
+		safelyCall(listener);
+	};
+	let currentHub: AgentPanelSourceHub | undefined;
+	let unsubscribeHub = () => {};
+	const bind = (): boolean => {
+		const nextHub = hubOf(session);
+		if (nextHub === currentHub) return false;
+		unsubscribeHub();
+		currentHub = nextHub;
+		const onSourceError = sourceErrorReporter(session);
+		const onHubSourceError =
+			onSourceError === undefined
+				? undefined
+				: (source: AgentPanelSource, error: Error) => reportSourceOnce(source, error, onSourceError);
+		unsubscribeHub = currentHub?.subscribe(safeListener, onHubSourceError) ?? (() => {});
+		return true;
+	};
+	bind();
+	const syncHub = (notifiedHub?: AgentPanelSourceHub) => {
+		if (bind() && notifiedHub !== currentHub) safeListener();
+	};
+	hubWatchers.add(syncHub);
+	const unwatch =
+		typeof session === "object" && session !== null
+			? watchAgentPanelSourceHubBinding(session, () => {
+					bind();
+					safeListener();
+				})
+			: () => {};
+	return () => {
+		hubWatchers.delete(syncHub);
+		unwatch();
+		unsubscribeHub();
+	};
 }
 
 export function subscribeAgentPanel(session: AgentPanelSession & object, listener: () => void): () => void {
@@ -757,22 +1066,20 @@ export function subscribeAgentPanel(session: AgentPanelSession & object, listene
 		unsubscribeStore = getOwnerTaskStore(session)?.subscribe(safeListener) ?? (() => {});
 		safeListener();
 	});
-	let currentHub = hubOf(session);
-	let unsubscribeHub = currentHub?.subscribe(safeListener) ?? (() => {});
-	const syncHub = (notifiedHub?: AgentPanelSourceHub) => {
-		const nextHub = hubOf(session);
-		if (nextHub === currentHub) return;
-		unsubscribeHub();
-		currentHub = nextHub;
-		unsubscribeHub = currentHub?.subscribe(safeListener) ?? (() => {});
-		if (notifiedHub !== currentHub) safeListener();
-	};
-	hubWatchers.add(syncHub);
+	const unsubscribeHub = subscribeAgentPanelExtensions(session, safeListener);
 	return () => {
-		hubWatchers.delete(syncHub);
 		unwatch();
 		unsubscribeStore();
 		unsubscribeHub();
+	};
+}
+
+export function promptAnswerOptionsOf(item: AgentPanelItem): AgentPanelAnswerOptions | undefined {
+	if (item.state !== "input" || !item.question) return undefined;
+	return {
+		...(item.promptId === undefined ? {} : { promptId: item.promptId }),
+		question: item.question,
+		...(item.choices === undefined ? {} : { choices: [...item.choices] }),
 	};
 }
 
@@ -798,7 +1105,7 @@ function normalizeActionResult(result: unknown): AgentPanelActionResult {
 	drainThenable(reason);
 	return {
 		ok: false,
-		reason: typeof reason === "string" ? reason : sourceError(reason).message,
+		reason: typeof reason === "string" ? cleanReasonText(reason) : sourceError(reason).message,
 	};
 }
 
@@ -824,7 +1131,23 @@ export function openAgentPanelItem(
 						},
 					};
 		bumpSourceVersion(source);
-		return safelyCall(() => Reflect.apply(open, source, [id, wrappedOptions]));
+		const report = sourceErrorReporter(session);
+		let opened: unknown;
+		try {
+			opened = Reflect.apply(open, source, [id, wrappedOptions]);
+		} catch (error) {
+			drainCaught(error);
+			report?.(sourceError(error));
+			return false;
+		}
+		if (opened === false) return false;
+		if (drainThenable(opened)) {
+			settleSourceResult(opened).catch((error: unknown) => {
+				report?.(sourceError(error));
+			});
+		}
+		viewedAgentPanelItems(session).add(id);
+		return true;
 	} catch (error) {
 		drainCaught(error);
 		return false;
@@ -849,7 +1172,10 @@ export async function stopAgentPanelItem(
 			const message = result.error?.message;
 			return {
 				ok: false,
-				reason: typeof message === "string" && message.length > 0 ? message : sourceError(message).message,
+				reason:
+					typeof message === "string" && message.length > 0
+						? cleanReasonText(message)
+						: sourceError(message).message,
 			};
 		}
 		const stop = source === undefined ? undefined : readPanelField(source, "stop");
@@ -868,6 +1194,7 @@ export async function answerAgentPanelItem(
 	session: AgentPanelSession & object,
 	id: string,
 	text: string,
+	options?: AgentPanelAnswerOptions,
 ): Promise<AgentPanelActionResult> {
 	try {
 		if (typeof id !== "string" || id.length === 0 || typeof text !== "string") {
@@ -878,7 +1205,9 @@ export async function answerAgentPanelItem(
 		if (source === undefined || typeof answer !== "function") {
 			return { ok: false, reason: "This item cannot be answered from here." };
 		}
-		const result = await settleSourceResult(Reflect.apply(answer, source, [id, text]));
+		const result = await settleSourceResult(
+			Reflect.apply(answer, source, options === undefined ? [id, text] : [id, text, options]),
+		);
 		bumpSourceVersion(source);
 		return normalizeActionResult(result.value);
 	} catch (error) {

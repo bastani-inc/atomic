@@ -29,7 +29,9 @@ knowledge:
       Root suites run under vitest: `npm run test:unit`, `npm run test:integration`, or both with
       `npm run test:all`. The coding-agent suite is `npm run test --workspace=@bastani/atomic`, and the
       scripts/*.test.mjs tests run with `npm run test:scripts` (`node --test`). Build first: several
-      suites load the built packages.
+      suites load the built packages. Focus one root suite with
+      `npx vitest run --project unit test/unit/<name>.test.ts`.
+      Measure task-list key-to-paint latency with `bun run scripts/perf/tasks-board/benchmark.ts 100,1000,10000 30`.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run

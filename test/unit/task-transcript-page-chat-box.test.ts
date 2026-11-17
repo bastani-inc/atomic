@@ -566,7 +566,7 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 		assert.deepEqual(labelRows(rows), [], "the composer is hidden while the list is open");
 		assert.equal(taskRows(rows).length, 2);
 		assert.ok(
-			rows.some((row) => /esc\/← back/.test(row)),
+			rows.some((row) => /esc\/← close/.test(row)),
 			"the list's hint sits above the footer rows",
 		);
 		const [only, ...rest] = plain(page.render(80, 1));
@@ -592,6 +592,7 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 			const list = plain(page.render(80, 24));
 			assert.match(list.find((row) => row.includes(" ❯ ")) ?? "", new RegExp(` ❯ . \\S+ +${selected}\\b`));
 			page.handleInput(SPACE);
+			page.handleInput(ENTER);
 			await flush();
 			const detail = plain(page.render(80, 24));
 			assert.match(detail.join("\n"), new RegExp(`› ${selected}\\b`));
@@ -607,12 +608,14 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 		page.handleInput(ENTER);
 		await flush();
 		page.handleInput(SPACE);
+		page.handleInput(ENTER);
 		await flush();
 		assert.match(text(page.render(80, 24)), /title-child-shell|title-grandchild/);
 		assert.doesNotMatch(text(page.render(80, 24)), /^ Tasks\b/m, "a task's detail page replaced the list");
 		page.handleInput(LEFT);
 		assert.match(text(page.render(80, 24)), /^ Tasks\b/m);
 		page.handleInput(SPACE);
+		page.handleInput(ENTER);
 		page.handleInput(ESCAPE);
 		assert.match(text(page.render(80, 24)), /^ Tasks\b/m);
 		page.handleInput(ESCAPE);

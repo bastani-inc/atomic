@@ -1,0 +1,160 @@
+import assert from "node:assert/strict";
+import { test, vi } from "vitest";
+import { captureWorkflowOwnerResources } from "../../packages/workflows/src/extension/workflow-owner-resources.js";
+import { workflowPanelSource } from "../../packages/workflows/src/extension/workflow-panel-source.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { buildGraphOverlayAdapter } from "../../packages/workflows/src/tui/overlay-adapter.js";
+import { viewedWorkflowRuns } from "../../packages/workflows/src/tui/panel-runs.js";
+
+function completedStore() {
+	const store = createStore();
+	store.recordRunStart({
+		id: "run",
+		name: "release",
+		inputs: {},
+		status: "completed",
+		startedAt: 1_000,
+		endedAt: 2_000,
+		toolNodes: [],
+		stages: [],
+	});
+	return store;
+}
+
+test("a workflow graph unavailable in this host is not opened or marked viewed (#5224)", () => {
+	const store = completedStore();
+	const adapter = buildGraphOverlayAdapter({}, store);
+	const source = workflowPanelSource(
+		{ ...captureWorkflowOwnerResources(), store },
+		{
+			open: (runId, options) => adapter.open(runId, undefined, undefined, undefined, options),
+			quit: async () => {
+				throw new Error("not used");
+			},
+		},
+	);
+	assert.equal(source.open?.("run:run"), false);
+	assert.equal(viewedWorkflowRuns(store).has("run"), false);
+	assert.notEqual(source.items()[0]?.viewed, true);
+	assert.equal(adapter.open("run"), false);
+	assert.equal(viewedWorkflowRuns(store).has("run"), false);
+});
+
+test("idle workflow listings reuse projections and refresh when a run or its viewed state changes (#5224)", () => {
+	const store = completedStore();
+	const source = workflowPanelSource(
+		{ ...captureWorkflowOwnerResources(), store },
+		{
+			open: () => true,
+			quit: async () => {
+				throw new Error("not used");
+			},
+		},
+	);
+	const initial = source.items();
+	for (let frame = 0; frame < 20; frame++) assert.equal(source.items(), initial);
+	assert.equal(source.open?.("run:run"), true);
+	const viewed = source.items();
+	assert.equal(viewed[0]?.viewed, true);
+	assert.notEqual(viewed, initial);
+	assert.equal(source.items(), viewed);
+	store.removeRun("run");
+	assert.deepEqual(source.items(), []);
+	assert.equal(viewedWorkflowRuns(store).size, 0);
+	store.recordRunStart({
+		id: "live",
+		name: "live",
+		inputs: {},
+		status: "running",
+		startedAt: Date.now(),
+		toolNodes: [],
+		stages: [],
+	});
+	assert.equal(source.items()[0]?.state, "running");
+	store.recordRunEnd("live", "failed", undefined, "boom");
+	assert.equal(source.items()[0]?.state, "failed");
+});
+
+test("workflow elapsed advances without store events while paused and settled runs stay frozen (#5224)", () => {
+	let now = 10_000;
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+	try {
+		const store = completedStore();
+		for (const id of ["live", "paused"]) {
+			store.recordRunStart({
+				id,
+				name: id,
+				inputs: {},
+				status: id === "live" ? "running" : "paused",
+				startedAt: 1_000,
+				...(id === "paused" ? { pausedAt: 5_000 } : {}),
+				toolNodes: [],
+				stages: [],
+			});
+		}
+		const source = workflowPanelSource(
+			{ ...captureWorkflowOwnerResources(), store },
+			{
+				open: () => true,
+				quit: async () => {
+					throw new Error("not used");
+				},
+			},
+		);
+		const snapshot = store.graphSnapshot();
+		const initial = source.items();
+		const elapsed = (items: ReturnType<typeof source.items>, id: string) =>
+			items.find((item) => item.id === `run:${id}`)?.elapsedMs;
+		assert.equal(elapsed(initial, "live"), 9_000);
+		assert.equal(elapsed(initial, "paused"), 4_000);
+		assert.equal(elapsed(initial, "run"), 1_000);
+
+		now += 5_000;
+		assert.equal(store.graphSnapshot(), snapshot, "elapsed refresh needs no store invalidation");
+		const later = source.items();
+		assert.equal(elapsed(later, "live"), 14_000);
+		assert.equal(elapsed(later, "paused"), 4_000);
+		assert.equal(elapsed(later, "run"), 1_000);
+		now += 250;
+		assert.equal(source.items(), later, "reads in the same displayed second reuse the items");
+	} finally {
+		clock.mockRestore();
+	}
+});
+
+test("an earlier prompt identity cannot answer a replacement with identical question and choices (#5224)", async () => {
+	const store = createStore();
+	store.recordRunStart({
+		id: "live",
+		name: "live",
+		inputs: {},
+		status: "running",
+		startedAt: 1_000,
+		toolNodes: [],
+		stages: [],
+	});
+	const source = workflowPanelSource(
+		{ ...captureWorkflowOwnerResources(), store },
+		{
+			open: () => true,
+			quit: async () => {
+				throw new Error("not used");
+			},
+		},
+	);
+	const prompt = { id: "first", kind: "select" as const, message: "Pick?", choices: ["2", "1"], createdAt: 1_000 };
+	store.recordPendingPrompt("live", prompt);
+	const first = source.items()[0];
+	assert.ok(first?.promptId);
+	store.resolvePendingPrompt("live", "first", "2");
+	store.recordPendingPrompt("live", { ...prompt, id: "second" });
+	const second = source.items()[0];
+	assert.ok(second?.promptId);
+	assert.notEqual(first.promptId, second.promptId);
+	assert.equal((await source.answer!("run:live", "2", first)).ok, false);
+	assert.equal(store.run("live")?.pendingPrompt?.id, "second");
+	assert.equal((await source.answer!("run:live", "2")).ok, false);
+	const answered = store.awaitPendingPrompt("live", "second");
+	assert.deepEqual(await source.answer!("run:live", second.choices![0]!, second), { ok: true });
+	assert.equal(await answered, "2", "a raw numeric label selects itself, not another option index");
+});

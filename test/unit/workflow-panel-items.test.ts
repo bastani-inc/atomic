@@ -53,7 +53,7 @@ test("elapsed time reads seconds, minutes, then hours and minutes, and never goe
 	assert.equal(formatPanelElapsed(3_660_000), "1h 1m");
 });
 
-test("run states map to panel states: running, paused for blocked and quit, done, failed, stopped (#5224)", () => {
+test("run states map to panel states: running, paused for blocked, done, failed, stopped for quit (#5224)", () => {
 	const items = panelItemsFromSnapshot(
 		[
 			run("live", "running", [stage("a", "running")]),
@@ -78,7 +78,7 @@ test("run states map to panel states: running, paused for blocked and quit, done
 	assert.deepEqual(state, {
 		live: "running",
 		blocked: "paused",
-		quit: "paused",
+		quit: "stopped",
 		done: "done",
 		failed: "failed",
 		cancelled: "stopped",

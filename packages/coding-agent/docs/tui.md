@@ -438,7 +438,7 @@ const choice = await ctx.ui.custom<string | null>((tui, _theme, _kb, done) => {
 });
 ```
 
-Keys: ↑↓ select (wrapping), pgup/pgdn page, home/end jump to the ends when there is no search box, enter or → choose, esc clears the search before it cancels, and ctrl+c always cancels. With mouse reporting, a click chooses a row (toggles it in a multi-select) and the wheel moves the selection, stopping at the ends. Options worth knowing:
+Keys: ↑↓ select (wrapping), pgup/pgdn page, home/end jump to the ends when there is no search box, enter choose, → choose when the search is empty, esc clears the search before it cancels, and ctrl+c always cancels. With mouse reporting, a click chooses a row (toggles it in a multi-select) and the wheel moves the selection, stopping at the ends. Options worth knowing:
 
 | Option | Effect |
 | --- | --- |
@@ -874,7 +874,7 @@ export default function (pi: ExtensionAPI) {
 }
 ```
 
-It replaces only a plain or scrolled editor rule: a first or last line that is not a rule, such as one your editor draws itself, is left as it is. A long label is cut with `…` to fit. Below `INPUT_LABEL_MIN_COLUMNS` (40) columns, the rules stay heavy without the label. Pass `undefined` for `label` or `placeholder` to leave either out.
+It replaces only a plain editor rule or one that reads `↑ N more` or `↓ N more`: a first or last line that is not a rule, such as one your editor draws itself, is left as it is. A long label is cut with `…` to fit. Below `INPUT_LABEL_MIN_COLUMNS` (40) columns, the rules stay heavy without the label. Pass `undefined` for `label` or `placeholder` to leave either out.
 
 ## Key Rules
 

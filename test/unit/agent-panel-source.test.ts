@@ -470,7 +470,7 @@ for (const tokenPayload of [
 	{ label: "CSI escape", value: "\x1b[2J\x1b[H" },
 	{ label: "OSC escape", value: "\x1b]0;pwned\x07" },
 ] as const) {
-	test(`isolated ${tokenPayload.label} token payload is rejected and reported once (#5224, #5239)`, () => {
+	test(`isolated ${tokenPayload.label} token payload is rejected and reported once (#5224)`, () => {
 		const isolatedHub = new AgentPanelSourceHub();
 		const isolatedSession = { extensionRunner: { getAgentPanelSourceHub: () => isolatedHub } };
 		isolatedHub.register({
@@ -486,7 +486,7 @@ for (const tokenPayload of [
 	});
 }
 
-test("isolated newline queued payload is rejected and reported once (#5224, #5239)", () => {
+test("isolated newline queued payload is rejected and reported once (#5224)", () => {
 	const isolatedHub = new AgentPanelSourceHub();
 	const isolatedSession = { extensionRunner: { getAgentPanelSourceHub: () => isolatedHub } };
 	isolatedHub.register({
@@ -501,7 +501,7 @@ test("isolated newline queued payload is rejected and reported once (#5224, #523
 	assert.equal(queuedReports.length, 1);
 });
 
-test("non-integer token counts are rejected while integer token counts are kept (#5224, #5239)", () => {
+test("non-integer token counts are rejected while integer token counts are kept (#5224)", () => {
 	const tokenHub = new AgentPanelSourceHub();
 	const tokenSession = { extensionRunner: { getAgentPanelSourceHub: () => tokenHub } };
 	tokenHub.register({
@@ -520,7 +520,7 @@ test("non-integer token counts are rejected while integer token counts are kept 
 	assert.equal(tokenReports.length, 1);
 });
 
-test("a malformed or throwing item only hides that row while keeping valid neighbors and indexing array choices (#5224, #5239)", () => {
+test("a malformed or throwing item only hides that row while keeping valid neighbors and indexing array choices (#5224)", () => {
 	const hub = new AgentPanelSourceHub();
 	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
 	const arrayWithoutIterator = ["yes", "no"];
@@ -633,7 +633,7 @@ test("array sources read rows by index and keep valid neighbors around a throwin
 	hub.dispose();
 });
 
-test("extension items with task: ids are rejected and never routed to source actions (#5224, #5239)", async () => {
+test("extension items with task: ids are rejected and never routed to source actions (#5224)", async () => {
 	const hub = new AgentPanelSourceHub();
 	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
 	const calls: string[] = [];
@@ -668,7 +668,7 @@ test("extension items with task: ids are rejected and never routed to source act
 	assert.deepEqual(calls, []);
 });
 
-test("sources that notify synchronously inside items() or before throwing quiesce without microtask livelock (#5224, #5239)", async () => {
+test("sources that notify synchronously inside items() or before throwing quiesce without microtask livelock (#5224)", async () => {
 	const hub = new AgentPanelSourceHub();
 	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
 	let returningCalls = 0;
@@ -723,7 +723,7 @@ test("sources that notify synchronously inside items() or before throwing quiesc
 	}
 });
 
-test("source notifications do not poll hub watchers across subscribed sessions (#5224, #5239)", () => {
+test("source notifications do not poll hub watchers across subscribed sessions (#5224)", () => {
 	const hub = new AgentPanelSourceHub();
 	let hubLookups = 0;
 	const session = {
@@ -1023,7 +1023,14 @@ test("async items and subscribe callbacks that return rejected promises are drai
 			items.map((item) => item.id),
 			[healthyItem.id],
 		);
-		assert.equal(reports.length, 2);
+		assert.deepEqual(
+			reports.sort(),
+			[
+				"Agent panel source items must be an iterable object.",
+				"Invalid agent panel item.",
+				"Invalid agent panel source subscription.",
+			].sort(),
+		);
 		assert.deepEqual(unhandled, []);
 	} finally {
 		process.off("unhandledRejection", onUnhandled);
