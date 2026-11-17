@@ -22,6 +22,18 @@ import { testRunId } from "../helpers/run-id.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 
+function gitSupportsReftable(): boolean {
+	const probeDir = makeTempDirectory("resume-reftable-probe-");
+	try {
+		execFileSync("git", ["init", "-q", "--ref-format=reftable", probeDir], { stdio: ["ignore", "pipe", "pipe"] });
+		return true;
+	} catch {
+		return false;
+	} finally {
+		removeTempDirectory(probeDir);
+	}
+}
+
 const opened: JournalDurableBackend[] = [];
 const dirs: string[] = [];
 
@@ -287,7 +299,7 @@ describe("workflow resume branch persistence and live row age (#5256)", () => {
 		assert.equal(await forkBranch(nonGitDir), undefined);
 	});
 
-	test("reads the branch of a reftable repository through git", () => {
+	test.skipIf(!gitSupportsReftable())("reads the branch of a reftable repository through git", () => {
 		const repoDir = makeTempDirectory("resume-reftable-");
 		dirs.push(repoDir);
 		execFileSync("git", ["init", "-q", "--ref-format=reftable", "-b", "feat/reftable"], {
