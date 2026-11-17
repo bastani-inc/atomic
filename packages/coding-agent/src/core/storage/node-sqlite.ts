@@ -198,6 +198,11 @@ class SqliteWriteQueue {
 		return existsSync(this.directory);
 	}
 
+	/** `contended`, checked off the event loop. */
+	contendedOffLoop(): Promise<boolean> {
+		return pathExists(this.directory);
+	}
+
 	/** Takes a ticket behind `live`, writing it and its notice off the event loop. */
 	async join(live: readonly string[]): Promise<SqliteWriteTicket> {
 		const name = ticketName(live);
@@ -266,6 +271,8 @@ class SqliteWriteQueue {
 	 * meanwhile passes the turn to the next one.
 	 */
 	async wakeNext(): Promise<void> {
+		// An uncontended release finds no queue directory and lists nothing.
+		if (!(await this.contendedOffLoop())) return;
 		for (const ticket of await this.liveTicketsOffLoop()) {
 			try {
 				const now = new Date();
@@ -1152,7 +1159,8 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		try {
 			// Writers already waiting in other processes go first.
 			const queue = this.writeQueue;
-			if (queue !== undefined) {
+			// Uncontended writers find no directory; checking costs a third of a failed listing.
+			if (queue !== undefined && (await queue.contendedOffLoop())) {
 				const waiting = await this.queueFileOp(() => queue.liveTicketsOffLoop());
 				if (waiting.length > 0) ticket = await this.queueFileOp(() => queue.join(waiting));
 			}

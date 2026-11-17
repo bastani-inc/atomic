@@ -928,9 +928,14 @@ test("an uncontended transaction does not list a queue directory that does not e
 		if (String(path) === writers) listed.push(String(path));
 		return actual.readdirSync(path, options as never);
 	}) as typeof fs.readdirSync);
+	readdir.mockImplementation((async (path: fs.PathLike, options?: Parameters<typeof actualPromises.readdir>[1]) => {
+		if (String(path) === writers) listed.push(String(path));
+		return actualPromises.readdir(path, options as never);
+	}) as typeof fsPromises.readdir);
 	await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('alone')"));
+	await turn();
 	assert.equal(fs.existsSync(writers), false);
-	assert.deepEqual(listed, [], "no listing, not even a failed one");
+	assert.deepEqual(listed, [], "no listing, not even a failed one, on or off the event loop");
 });
 
 test("in debug mode each writers'-queue degradation reaches the debug log once, without its message (#4360)", async () => {
