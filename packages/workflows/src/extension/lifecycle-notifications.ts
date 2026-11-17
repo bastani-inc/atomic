@@ -1,4 +1,5 @@
 import { NoticeLine, type NoticeLineSpec, reportDebug, sliceHead } from "@bastani/atomic";
+import type { WorkflowArtifact } from "../shared/authoring-contract-stage.js";
 import type { BudgetDimension, BudgetReport } from "../shared/budget.js";
 import {
 	actionableReturnedStatusText,
@@ -21,18 +22,22 @@ import type {
 	StoreSnapshot,
 	WorkflowActor,
 } from "../shared/store-types.js";
-import { boundedToolPayloadText, boundedToolText } from "../shared/tool-payload-bounds.js";
-import type { WorkflowArtifact, WorkflowOutputValues } from "../shared/types.js";
-import { inertDisplayLine, inertDisplayText, summarizeFailureText } from "../tui/display-text.js";
+import {
+	boundedToolPayloadRecord,
+	boundedToolPayloadText,
+	boundedToolText,
+	type ToolPayloadValue,
+} from "../shared/tool-payload-bounds.js";
+import type { WorkflowOutputValues } from "../shared/types.js";
+import { inertDisplayLine, inertDisplayText } from "../tui/display-text.js";
 import { runFailureText } from "../tui/run-display-state.js";
+import { outputValueLine, summarizeFailureText } from "../tui/run-outcome.js";
 import { fmtDuration } from "../tui/status-helpers.js";
 import type { ExtensionAPI, PiMessageRenderComponent, PiMessageRenderer } from "./index.js";
 import { createLifecycleNoticeDelivery } from "./lifecycle-notification-delivery.js";
 
 export const LIFECYCLE_NOTICE_CUSTOM_TYPE = "workflows:lifecycle-notice";
 export const LIFECYCLE_NOTICE_SNIPPET_LIMIT = 240;
-const NOTICE_ARTIFACTS_SHOWN = 3;
-const NOTICE_DETAIL_CHARS = 4096;
 
 export type WorkflowLifecycleNoticeKind =
 	| "started"
@@ -108,6 +113,10 @@ export interface WorkflowLifecycleNoticeArtifact {
 	readonly path: string;
 	readonly detail?: string;
 }
+
+const NOTICE_ARTIFACTS_SHOWN = 3;
+const NOTICE_TEXT_LIMIT = 4096;
+const SNIPPET_SCAN_WINDOW = 4096;
 
 export interface WorkflowLifecycleNotificationState {
 	readonly deliveredTerminalRuns: Set<string>;
@@ -281,7 +290,7 @@ export function installWorkflowLifecycleNotifications(options: WorkflowLifecycle
 			state.retryableTerminalNotices.delete(key);
 			return;
 		}
-		delivery.deliver(key, makeTerminalNotice(run, kind));
+		delivery.deliver(key, makeTerminalNotice(run, kind, options.store.run(run.id)?.result ?? run.result));
 	};
 
 	const emitControlNoticesOnce = (run: RunSnapshot): void => {
@@ -383,7 +392,7 @@ export function registerLifecycleNoticeRenderer(
 }
 
 export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoticeDetails): string {
-	const workflowName = escapeQuotedText(details.workflowName);
+	const workflowName = escapeQuotedText(singleLineNoticeText(details.workflowName));
 	// "which you started" / "which the user started". Omitted entirely when the
 	// run carries no recorded origin, rather than guessing one.
 	const origin =
@@ -454,6 +463,7 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
 function makeTerminalNotice(
 	run: RunSnapshot,
 	kind: "completed" | "failed" | "blocked",
+	fullResult: WorkflowOutputValues | undefined = run.result,
 ): WorkflowLifecycleNoticeDetails {
 	const failedStage = run.failedStageId ? run.stages.find((stage) => stage.id === run.failedStageId) : undefined;
 	const failedToolNodeId = kind === "failed" && run.failedStageId === undefined ? run.failedToolNodeId : undefined;
@@ -472,15 +482,9 @@ function makeTerminalNotice(
 		: (run.error ??
 			returnedNoticeError(run, kind) ??
 			(kind === "blocked" || kind === "failed" ? run.exitReason : undefined));
-	const outputsPreview =
-		kind === "completed" && run.result !== undefined
-			? boundedToolPayloadText(run.result, LIFECYCLE_NOTICE_SNIPPET_LIMIT)
-			: undefined;
+	const outputsPreview = kind === "completed" ? formatCardOutputs(fullResult) : undefined;
 	const displayFailure = kind === "failed" || kind === "blocked" ? (runFailureText(run) ?? error) : undefined;
-	const reason =
-		displayFailure === undefined
-			? undefined
-			: boundedToolText(summarizeFailureText(displayFailure).reason, LIFECYCLE_NOTICE_SNIPPET_LIMIT);
+	const reason = displayFailure === undefined ? undefined : summarizeNoticeFailureReason(displayFailure);
 	const artifacts = kind === "completed" ? collectNoticeArtifacts(run) : undefined;
 	return {
 		kind,
@@ -488,9 +492,9 @@ function makeTerminalNotice(
 		runId: run.id,
 		workflowName: run.name,
 		status: effectiveRunStatus(run),
-		...(outputsPreview === undefined ? {} : { outputsPreview }),
-		...(reason === undefined ? {} : { reason }),
-		...(artifacts === undefined ? {} : { artifacts }),
+		...(outputsPreview !== undefined ? { outputsPreview } : {}),
+		...(reason !== undefined ? { reason } : {}),
+		...(artifacts !== undefined ? { artifacts } : {}),
 		...(activeBlocked ? { active: true } : {}),
 		...(run.exited === true && run.status === "failed" && run.resumable !== undefined
 			? { resumable: run.resumable }
@@ -701,9 +705,79 @@ function lifecycleToolOrigin(details: WorkflowLifecycleNoticeDetails): string | 
 	return details.toolName !== undefined && details.toolName.length > 0 ? details.toolName : details.toolNodeId;
 }
 function truncateSnippet(value: string): string {
+	if (value.length > SNIPPET_SCAN_WINDOW) {
+		const head = value.slice(0, SNIPPET_SCAN_WINDOW).replace(/\s+/g, " ").trimStart();
+		if (head.length > LIFECYCLE_NOTICE_SNIPPET_LIMIT + 2) {
+			return `${sliceHead(head, LIFECYCLE_NOTICE_SNIPPET_LIMIT - 1)}…`;
+		}
+	}
 	const normalized = value.replace(/\s+/g, " ").trim();
 	if (normalized.length <= LIFECYCLE_NOTICE_SNIPPET_LIMIT) return normalized;
 	return `${sliceHead(normalized, LIFECYCLE_NOTICE_SNIPPET_LIMIT - 1)}…`;
+}
+
+function summarizeNoticeFailureReason(error: string): string {
+	if (error.length > SNIPPET_SCAN_WINDOW) {
+		const head = error.slice(0, SNIPPET_SCAN_WINDOW);
+		const firstBreak = head.search(/[\r\n]/);
+		const candidate = firstBreak === -1 ? head : head.slice(0, firstBreak);
+		const summary = summarizeFailureText(candidate).reason;
+		if (firstBreak !== -1 && summary !== "No reason was recorded.") {
+			return truncateSnippet(summary);
+		}
+		if (summary.replace(/\s+/g, " ").trim().length > LIFECYCLE_NOTICE_SNIPPET_LIMIT + 2) {
+			return truncateSnippet(summary);
+		}
+	}
+	return truncateSnippet(summarizeFailureText(error).reason);
+}
+
+function noticeArtifactDetail(artifact: WorkflowArtifact): string | undefined {
+	if (artifact.captureError !== undefined)
+		return `not captured: ${boundedToolText(summarizeFailureText(artifact.captureError).reason, LIFECYCLE_NOTICE_SNIPPET_LIMIT)}`;
+	const size: string[] = [];
+	if (artifact.filesChanged !== undefined && Number.isFinite(artifact.filesChanged) && artifact.filesChanged >= 0) {
+		size.push(`${artifact.filesChanged} ${artifact.filesChanged === 1 ? "file" : "files"}`);
+	}
+	if (artifact.insertions !== undefined || artifact.deletions !== undefined) {
+		const insertions = Number.isFinite(artifact.insertions) ? Math.max(0, artifact.insertions ?? 0) : 0;
+		const deletions = Number.isFinite(artifact.deletions) ? Math.max(0, artifact.deletions ?? 0) : 0;
+		size.push(`+${insertions} \u2212${deletions}`);
+	}
+	if (size.length > 0) return size.join(" \u00b7 ");
+	return artifact.diffStat === undefined
+		? undefined
+		: boundedToolText(artifact.diffStat, LIFECYCLE_NOTICE_SNIPPET_LIMIT).split(/\r?\n/, 1)[0];
+}
+
+function collectNoticeArtifacts(run: RunSnapshot): WorkflowLifecycleNoticeDetails["artifacts"] {
+	let total = 0;
+	const shown: WorkflowLifecycleNoticeArtifact[] = [];
+	for (const stage of run.stages) {
+		const stageArtifacts = stage.artifacts;
+		if (stageArtifacts === undefined || stageArtifacts.length === 0) continue;
+		total += stageArtifacts.length;
+		const inspectionLimit = Math.min(stageArtifacts.length, NOTICE_ARTIFACTS_SHOWN - shown.length);
+		for (let i = 0; i < inspectionLimit; i++) {
+			const artifact = stageArtifacts[i];
+			if (artifact === undefined) continue;
+			const detail = noticeArtifactDetail(artifact);
+			shown.push({
+				kind: artifact.kind,
+				path: boundedNoticeLineText(artifact.path),
+				...(detail === undefined ? {} : { detail: boundedNoticeLineText(detail) }),
+			});
+		}
+	}
+	return total > 0 ? { total, shown } : undefined;
+}
+
+function singleLineNoticeText(value: string): string {
+	return inertDisplayLine(value.replace(/\r\n?/g, "\n"));
+}
+
+function boundedNoticeLineText(value: string): string {
+	return singleLineNoticeText(boundedToolText(value, NOTICE_TEXT_LIMIT));
 }
 
 function formatLifecycleOutputs(outputs: WorkflowOutputValues | undefined): string | undefined {
@@ -722,7 +796,7 @@ function makeNoticeComponent(details: WorkflowLifecycleNoticeDetails, expanded: 
 	let cachedLines: string[] | undefined;
 	return {
 		render(width: number): string[] {
-			if (!Number.isFinite(width) || width < 1) return [];
+			if (width < 1) return [];
 			const normalizedWidth = Math.floor(width);
 			if (cachedWidth !== normalizedWidth || cachedLines === undefined) {
 				cachedWidth = normalizedWidth;
@@ -740,11 +814,11 @@ function makeNoticeComponent(details: WorkflowLifecycleNoticeDetails, expanded: 
 
 export function lifecycleNoticeLine(details: WorkflowLifecycleNoticeDetails): NoticeLineSpec {
 	const stage = details.stageName ?? details.failedStageId ?? details.stageId;
-	const at = stage === undefined ? undefined : `at ${inertDisplayLine(boundedToolText(stage, NOTICE_DETAIL_CHARS))}`;
+	const at = stage === undefined ? undefined : `at ${boundedNoticeLineText(stage)}`;
 	const duration = formatDurationMs(details.durationMs);
 	const base = {
 		label: details.scope === "stage" ? "Stage of workflow" : "Workflow",
-		subject: inertDisplayLine(boundedToolText(details.workflowName, NOTICE_DETAIL_CHARS)),
+		subject: boundedNoticeLineText(details.workflowName),
 		detail: expandedNoticeDetails(details),
 	};
 	switch (details.kind) {
@@ -754,11 +828,7 @@ export function lifecycleNoticeLine(details: WorkflowLifecycleNoticeDetails): No
 			return { ...base, status: "success", outcome: "resumed", ...(at === undefined ? {} : { meta: [at] }) };
 		case "failed": {
 			const tool = stage === undefined ? lifecycleToolOrigin(details) : undefined;
-			const where =
-				at ??
-				(tool === undefined
-					? undefined
-					: `at tool ${inertDisplayLine(boundedToolText(tool, NOTICE_DETAIL_CHARS))}`);
+			const where = at ?? (tool === undefined ? undefined : `at tool ${boundedNoticeLineText(tool)}`);
 			return {
 				...base,
 				status: "failure",
@@ -782,7 +852,7 @@ export function lifecycleNoticeLine(details: WorkflowLifecycleNoticeDetails): No
 			return {
 				...base,
 				status: "warning",
-				outcome: `is approaching its ${details.budgetDimension ?? "duration"} budget`,
+				outcome: `is approaching its ${boundedNoticeLineText(details.budgetDimension ?? "duration")} budget`,
 			};
 		case "awaiting_input":
 			return { ...base, status: "warning", outcome: "needs input", ...(at === undefined ? {} : { meta: [at] }) };
@@ -805,80 +875,93 @@ export function lifecycleNoticeLine(details: WorkflowLifecycleNoticeDetails): No
 	}
 }
 
-function noticeArtifactDetail(artifact: WorkflowArtifact): string | undefined {
-	if (artifact.captureError !== undefined)
-		return `not captured: ${boundedToolText(summarizeFailureText(artifact.captureError).reason, LIFECYCLE_NOTICE_SNIPPET_LIMIT)}`;
-	const size: string[] = [];
-	if (artifact.filesChanged !== undefined && Number.isFinite(artifact.filesChanged) && artifact.filesChanged >= 0) {
-		size.push(`${artifact.filesChanged} ${artifact.filesChanged === 1 ? "file" : "files"}`);
-	}
-	if (artifact.insertions !== undefined || artifact.deletions !== undefined) {
-		const insertions = Number.isFinite(artifact.insertions) ? Math.max(0, artifact.insertions ?? 0) : 0;
-		const deletions = Number.isFinite(artifact.deletions) ? Math.max(0, artifact.deletions ?? 0) : 0;
-		size.push(`+${insertions} −${deletions}`);
-	}
-	if (size.length > 0) return size.join(" · ");
-	if (artifact.diffStat === undefined) return undefined;
-	return boundedToolText(artifact.diffStat, LIFECYCLE_NOTICE_SNIPPET_LIMIT).split(/\r?\n/, 1)[0];
-}
-
-function collectNoticeArtifacts(run: RunSnapshot): WorkflowLifecycleNoticeDetails["artifacts"] {
-	let total = 0;
-	const shown: WorkflowLifecycleNoticeArtifact[] = [];
-	for (const stage of run.stages) {
-		const artifacts = stage.artifacts;
-		if (artifacts === undefined) continue;
-		total += artifacts.length;
-		const inspectionLimit = Math.min(artifacts.length, NOTICE_ARTIFACTS_SHOWN - shown.length);
-		for (let index = 0; index < inspectionLimit; index++) {
-			const artifact = artifacts[index];
-			if (artifact === undefined) continue;
-			const detail = noticeArtifactDetail(artifact);
-			shown.push({
-				kind: artifact.kind,
-				path: inertDisplayLine(boundedToolText(artifact.path, NOTICE_DETAIL_CHARS)),
-				...(detail === undefined ? {} : { detail: inertDisplayLine(detail) }),
-			});
-		}
-	}
-	return total > 0 ? { total, shown } : undefined;
-}
-
 function expandedNoticeDetails(details: WorkflowLifecycleNoticeDetails): string {
 	const stage = details.stageName ?? details.failedStageId ?? details.stageId;
 	const tool = stage === undefined ? lifecycleToolOrigin(details) : undefined;
 	const reason =
-		details.kind === "completed"
-			? undefined
-			: (details.reason ?? (details.error === undefined ? undefined : summarizeFailureText(details.error).reason));
+		details.reason === undefined
+			? details.error === undefined
+				? undefined
+				: summarizeNoticeFailureReason(details.error)
+			: truncateSnippet(details.reason);
 	const fields: readonly (readonly [string, string | undefined])[] = [
 		["run", details.runId],
 		["stage", stage],
 		["tool", tool],
 		["actor", details.actor],
 		["launched", details.origin],
-		["prompt", details.promptMessage === undefined ? undefined : boundedToolText(details.promptMessage)],
-		["reason", reason === undefined ? undefined : boundedToolText(reason, LIFECYCLE_NOTICE_SNIPPET_LIMIT)],
+		["prompt", details.promptMessage],
+		["reason", reason],
 		["outputs", details.outputsPreview],
 		["partial outputs", details.outputs === undefined ? undefined : boundedToolPayloadText(details.outputs)],
-		["resumable", details.resumable === undefined ? undefined : details.resumable ? "yes" : "no"],
+		["resumable", resumableFieldValue(details)],
 	];
 	const lines = fields.flatMap(([label, value]) =>
-		value === undefined ? [] : [`${label} ${inertDisplayText(boundedToolText(value, NOTICE_DETAIL_CHARS))}`],
+		value === undefined ? [] : [`${label} ${inertDisplayText(boundedToolText(value, NOTICE_TEXT_LIMIT))}`],
 	);
 	if (details.artifacts !== undefined) {
 		for (const artifact of details.artifacts.shown.slice(0, NOTICE_ARTIFACTS_SHOWN)) {
 			lines.push(
-				inertDisplayLine(
+				boundedNoticeLineText(
 					`artifact ${artifact.kind} ${artifact.path}${artifact.detail ? ` · ${artifact.detail}` : ""}`,
 				),
 			);
 		}
 		const remaining = details.artifacts.total - Math.min(details.artifacts.shown.length, NOTICE_ARTIFACTS_SHOWN);
-		if (remaining > 0 && Number.isFinite(remaining)) lines.push(`… +${remaining} more artifacts`);
+		if (remaining > 0 && Number.isFinite(remaining))
+			lines.push(`… +${remaining} more ${remaining === 1 ? "artifact" : "artifacts"}`);
 	}
-	lines.push(`/workflows ${inertDisplayLine(boundedToolText(details.runId, NOTICE_DETAIL_CHARS))}`);
+	const hints = lifecycleOutcomeHints(details);
+	lines.push(
+		...(hints.length > 0 ? hints.map(boundedNoticeLineText) : [`/workflows ${boundedNoticeLineText(details.runId)}`]),
+	);
 	return lines.join("\n");
+}
+
+function lifecycleOutcomeHints(details: WorkflowLifecycleNoticeDetails): string[] {
+	if (details.scope !== "run") return [];
+	if (details.kind === "completed") return [`/workflows ${details.runId}, then o: run details`];
+	if (details.kind === "failed" || details.kind === "blocked")
+		return [`full log: /workflows ${details.runId}, then o and l`];
+	return [];
+}
+
+function cardOutputValueSlice(value: ToolPayloadValue): string {
+	if (typeof value === "string" && value.length > SNIPPET_SCAN_WINDOW) {
+		const head = value.slice(0, SNIPPET_SCAN_WINDOW);
+		const firstBreak = head.search(/[\r\n]/);
+		if (firstBreak !== -1) return inertDisplayLine(head.slice(0, firstBreak));
+		const preview = inertDisplayLine(head);
+		if (preview.replace(/\s+/g, " ").trim().length > LIFECYCLE_NOTICE_SNIPPET_LIMIT + 2) {
+			return preview;
+		}
+	}
+	return outputValueLine(value, LIFECYCLE_NOTICE_SNIPPET_LIMIT);
+}
+
+function formatCardOutputs(result: WorkflowOutputValues | undefined): string | undefined {
+	if (result === undefined) return undefined;
+	const entries = Object.entries(boundedToolPayloadRecord(result, LIFECYCLE_NOTICE_SNIPPET_LIMIT));
+	if (entries.length === 0) return undefined;
+	const parts: string[] = [];
+	let length = 0;
+	for (const [key, value] of entries) {
+		const part = `${key}: ${cardOutputValueSlice(value)}`;
+		parts.push(part);
+		length += part.trim().length;
+		if (
+			length > LIFECYCLE_NOTICE_SNIPPET_LIMIT * 2 &&
+			parts.join(" \u00b7 ").replace(/\s+/g, " ").trim().length > LIFECYCLE_NOTICE_SNIPPET_LIMIT + 2
+		) {
+			break;
+		}
+	}
+	return truncateSnippet(parts.join(" \u00b7 "));
+}
+
+function resumableFieldValue(details: WorkflowLifecycleNoticeDetails): string | undefined {
+	if (details.resumable === undefined) return undefined;
+	return details.resumable ? "yes" : "no";
 }
 
 function formatDurationMs(durationMs: number | undefined): string | undefined {

@@ -22,9 +22,9 @@ describe("jump to latest (#5224)", () => {
 		assert.equal(jumpToLatestLabel(3, ""), "↓ 3 new messages");
 	});
 
-	test("the pill is one rounded line, the same in the main chat and in stage chats and subagent views (#5224)", () => {
+	test("the pill is one highlighted line without corner marks, the same in the main chat and in stage chats and subagent views (#5224)", () => {
 		const main = stripTerminalSequences(jumpToLatestPill(3, "ctrl+end"));
-		assert.equal(main, "╭─ ↓ 3 new messages · ctrl+end ─╮");
+		assert.equal(main, " ↓ 3 new messages · ctrl+end ");
 		const indicator = new TranscriptFollowIndicator({
 			isFollowing: () => false,
 			keyLabel: () => "ctrl+end",
@@ -32,12 +32,12 @@ describe("jump to latest (#5224)", () => {
 		});
 		for (const width of [160, 80]) {
 			const [row] = indicator.render(width).map((line) => stripTerminalSequences(line));
-			assert.equal(row?.trim(), main);
-			assert.equal(row?.indexOf("╭"), Math.floor((width - main.length) / 2), `centred at ${width}`);
+			assert.equal(row?.trim(), main.trim());
+			assert.equal(row?.indexOf("↓"), Math.floor((width - main.length) / 2) + 1, `centred at ${width}`);
 		}
 		const narrow = indicator.render(20).map((line) => stripTerminalSequences(line));
 		assert.equal(narrow.length, 1);
-		assert.ok(!narrow[0]?.includes("╭"), "a viewport too narrow for the frame shows the label alone");
+		assert.ok(narrow[0]?.startsWith("↓"), "a viewport too narrow for the padding shows the label alone");
 		assert.ok((narrow[0]?.length ?? 0) <= 20);
 	});
 

@@ -18,6 +18,7 @@ import { ANIMATION_TICK_MS } from "./graph-view-constants.js";
 import type { GraphStageActions, GraphViewMode, GraphViewOpts } from "./graph-view-types.js";
 import { computeLayout, type LayoutNode, NODE_H, NODE_W } from "./layout.js";
 import { nodeCardHeight } from "./node-card.js";
+import { buildRunOutcome, type RunOutcome, type RunOutcomeBlocker } from "./run-outcome.js";
 import { isQuitRun } from "./run-state-indicator.js";
 import { stageFailureReason } from "./stage-failure-detail.js";
 import type { SwitcherState } from "./switcher.js";
@@ -56,6 +57,16 @@ export interface GraphStageDetail {
 	readonly status: "failed" | "completed";
 
 	logs: boolean;
+}
+
+export interface GraphRunDetail {
+	logs: boolean;
+	selected: number;
+	selectedKey?: string;
+}
+
+export function blockerKey(blocker: RunOutcomeBlocker): string {
+	return `${blocker.node}:${blocker.id}`;
 }
 
 export interface GraphStageCounts {
@@ -149,7 +160,16 @@ export abstract class GraphViewState {
 	protected toolDetailExpanded = false;
 
 	protected stageDetail: GraphStageDetail | null = null;
-
+	protected runDetail: GraphRunDetail | null = null;
+	protected runDetailReturn: GraphRunDetail | null = null;
+	protected runDetailRevealSelected = false;
+	protected paintedView: "tool" | "stage" | "run" | "graph" = "graph";
+	protected paintedBlockerKey: string | null = null;
+	private runOutcomeCache: {
+		readonly run: RunSnapshot;
+		readonly snapshot: StoreSnapshot | null;
+		readonly outcome: RunOutcome;
+	} | null = null;
 	protected statusFilter: GraphStatusFilter = "all";
 
 	protected keysHelpOpen = false;
@@ -288,14 +308,18 @@ export abstract class GraphViewState {
 			this.cachedRenderGeometry = { canvasWidth: 0, totalRows: 0, bands: [], edges: [], edgeIndex: { bands: [] } };
 			this.expandedGraph = { stages: [], renderStages: [], tools: [], nodes: [], targets: new Map() };
 			this.focusedIndex = 0;
+			this.switcherOpen = false;
+			this.switcherState = { query: "", selectedIndex: 0 };
+			this.keysHelpOpen = false;
 			this.graphScrollColOffset = 0;
 			this.graphNodeHitRects = [];
 			this.lastGraphViewport = null;
 			this.pendingEnsureFocusedVisible = true;
-			this.switcherOpen = false;
-			this.switcherState = { query: "", selectedIndex: 0 };
-			this.keysHelpOpen = false;
+			this.runDetail = null;
+			this.runDetailReturn = null;
+			this.runDetailRevealSelected = false;
 			this.toolDetail = null;
+			this.toolDetailExpanded = false;
 			this._clearQuitConfirmTarget();
 			this._closeStageDetail();
 			this.hasAnimatingStages = false;
@@ -566,6 +590,7 @@ export abstract class GraphViewState {
 		if (this.toolDetail === null) return false;
 		this.toolDetail = null;
 		this.toolDetailExpanded = false;
+		this._returnToRunDetail();
 		this.graphLayoutInvalidateForDetail();
 		return true;
 	}
@@ -577,7 +602,12 @@ export abstract class GraphViewState {
 		}
 		this._syncRetryWatch();
 		if (this.toolDetail === null) return;
-		this.toolDetail = this.expandedGraph.tools.find((tool) => tool.id === this.toolDetail?.id) ?? null;
+		const nextTool = this.expandedGraph.tools.find((tool) => tool.id === this.toolDetail?.id) ?? null;
+		if (nextTool === null) {
+			this._closeToolDetail();
+			return;
+		}
+		this.toolDetail = nextTool;
 	}
 
 	protected _focusedStageDetailsAvailable(
@@ -602,6 +632,98 @@ export abstract class GraphViewState {
 		};
 		this.graphLayoutInvalidateForDetail();
 		return true;
+	}
+
+	protected _runOutcomeFor(run: RunSnapshot): RunOutcome {
+		const snapshot = this.currentSnapshot;
+		const cached = this.runOutcomeCache;
+		if (cached !== null && cached.run === run && cached.snapshot === snapshot) return cached.outcome;
+		const fullResult = this.store.run(run.id)?.result;
+		const outcomeRun = fullResult === undefined || fullResult === run.result ? run : { ...run, result: fullResult };
+		const buildOutcome: (target: RunSnapshot, now?: number, runs?: readonly RunSnapshot[]) => RunOutcome =
+			buildRunOutcome;
+		const outcome = buildOutcome(outcomeRun, Date.now(), snapshot?.runs);
+		this.runOutcomeCache = { run, snapshot, outcome };
+		return outcome;
+	}
+
+	protected _runDetailBlockers(run: RunSnapshot | null = this._getCurrentRun()): readonly RunOutcomeBlocker[] {
+		return run === null ? [] : this._runOutcomeFor(run).blockers;
+	}
+
+	protected _resolveRunDetailSelection(blockers: readonly RunOutcomeBlocker[]): number {
+		const detail = this.runDetail;
+		if (detail === null || blockers.length === 0) return 0;
+		const kept =
+			detail.selectedKey === undefined
+				? -1
+				: blockers.findIndex((blocker) => blockerKey(blocker) === detail.selectedKey);
+		detail.selected = kept >= 0 ? kept : Math.max(0, Math.min(detail.selected, blockers.length - 1));
+		detail.selectedKey = blockerKey(blockers[detail.selected]!);
+		return detail.selected;
+	}
+
+	protected _moveRunDetailSelection(blockers: readonly RunOutcomeBlocker[], delta: number): void {
+		const detail = this.runDetail;
+		if (detail === null || blockers.length === 0) return;
+		const from = this._resolveRunDetailSelection(blockers);
+		detail.selected = Math.max(0, Math.min(blockers.length - 1, from + delta));
+		detail.selectedKey = blockerKey(blockers[detail.selected]!);
+	}
+
+	private _returnToRunDetail(): void {
+		if (this.runDetailReturn === null) return;
+		this.runDetail = this.runDetailReturn;
+		this.runDetailReturn = null;
+		this.runDetailRevealSelected = true;
+	}
+
+	protected _openRunDetail(): boolean {
+		if (this._getCurrentRun() === null) return false;
+		this.runDetail = { logs: false, selected: 0 };
+		this.graphLayoutInvalidateForDetail();
+		return true;
+	}
+
+	protected _closeRunDetail(): boolean {
+		if (this.runDetail === null) return false;
+		this.runDetail = null;
+		this.graphLayoutInvalidateForDetail();
+		return true;
+	}
+
+	protected _focusBlockerNode(node: "stage" | "tool", id: string): boolean {
+		const index = this.cachedLayout.findIndex((layoutNode) => {
+			if ((layoutNode.stage.nodeKind === "tool") !== (node === "tool")) return false;
+			return layoutNode.stage.id === id;
+		});
+		if (index < 0) return false;
+		this.runDetailReturn = this.runDetail;
+		this.runDetail = null;
+		this.focusedIndex = index;
+		this.pendingEnsureFocusedVisible = true;
+		this.graphLayoutInvalidateForDetail();
+		return true;
+	}
+
+	protected _currentViewKind(): "tool" | "stage" | "run" | "graph" {
+		if (this.toolDetail !== null) return "tool";
+		if (this.stageDetail !== null) return "stage";
+		if (this.runDetail !== null) return "run";
+		return "graph";
+	}
+
+	protected _recordPaintedState(): void {
+		this.paintedView = this._currentViewKind();
+		if (this.runDetail !== null && !this.runDetail.logs) {
+			const blockers = this._runDetailBlockers();
+			if (blockers.length > 0) {
+				const selected = this._resolveRunDetailSelection(blockers);
+				this.paintedBlockerKey = blockerKey(blockers[selected]!);
+				return;
+			}
+		}
+		this.paintedBlockerKey = null;
 	}
 
 	protected _runControlState(run: RunSnapshot): string {
@@ -658,6 +780,7 @@ export abstract class GraphViewState {
 			this.graphNotice = null;
 		}
 		this.stageDetail = null;
+		this._returnToRunDetail();
 		this.graphLayoutInvalidateForDetail();
 		return true;
 	}
@@ -669,7 +792,7 @@ export abstract class GraphViewState {
 	}
 
 	protected _detailOpen(): boolean {
-		return this.toolDetail !== null || this.stageDetail !== null;
+		return this.toolDetail !== null || this.stageDetail !== null || this.runDetail !== null;
 	}
 
 	private _syncRetryWatch(): void {
