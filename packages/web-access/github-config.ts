@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { access, readFile } from "node:fs/promises";
 import { ensurePrivateTempDirAsync } from "@bastani/atomic";
 import { findReadableConfigPath } from "./config-paths.ts";
 import { createOwnerState } from "./owner-state.js";
@@ -56,10 +56,13 @@ const configState = createOwnerState(() => ({
  * `ensurePrivateTempDirAsync`), never a fixed name in the shared temp directory.
  * Created on first use and kept for the life of the owner.
  */
-export async function defaultGitHubClonePath(): Promise<string> {
+export function defaultGitHubClonePath(): Promise<string> {
 	const state = configState();
-	if (state.defaultClonePath !== null) return state.defaultClonePath;
-	const generation = state.generation;
+	return defaultClonePathFor(state, state.generation);
+}
+
+async function defaultClonePathFor(state: ReturnType<typeof configState>, generation: number): Promise<string> {
+	if (state.generation === generation && state.defaultClonePath !== null) return state.defaultClonePath;
 	const clonePath = await ensurePrivateTempDirAsync(DEFAULT_GITHUB_CLONE_DIR);
 	if (state.generation !== generation) return clonePath;
 	return state.defaultClonePath ??= clonePath;
@@ -96,13 +99,19 @@ export async function loadGitHubConfig(): Promise<GitHubCloneConfig> {
 		cloneTimeoutSeconds: 30,
 	};
 
-	if (!existsSync(CONFIG_PATH)) {
-		const config = { ...defaults, clonePath: await defaultGitHubClonePath() };
+	let configExists = true;
+	try {
+		await access(CONFIG_PATH);
+	} catch {
+		configExists = false;
+	}
+	if (!configExists) {
+		const config = { ...defaults, clonePath: await defaultClonePathFor(state, generation) };
 		if (state.generation === generation) state.cachedConfig = config;
 		return config;
 	}
 
-	const rawText = readFileSync(CONFIG_PATH, "utf-8");
+	const rawText = await readFile(CONFIG_PATH, "utf-8");
 	let raw: { githubClone?: { enabled?: unknown; maxRepoSizeMB?: unknown; cloneTimeoutSeconds?: unknown; clonePath?: unknown } };
 	try {
 		raw = JSON.parse(rawText) as { githubClone?: { enabled?: unknown; maxRepoSizeMB?: unknown; cloneTimeoutSeconds?: unknown; clonePath?: unknown } };
@@ -112,7 +121,7 @@ export async function loadGitHubConfig(): Promise<GitHubCloneConfig> {
 	}
 
 	const gc = raw.githubClone ?? {};
-	const clonePath = await normalizeClonePath(gc.clonePath, defaultGitHubClonePath);
+	const clonePath = await normalizeClonePath(gc.clonePath, () => defaultClonePathFor(state, generation));
 	const config = {
 		enabled: normalizeEnabled(gc.enabled, defaults.enabled),
 		maxRepoSizeMB: normalizePositiveNumber(gc.maxRepoSizeMB, defaults.maxRepoSizeMB),

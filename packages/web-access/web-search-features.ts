@@ -49,10 +49,10 @@ export function registerWebSearchFeatures(pi: ExtensionAPI, initConfig: WebSearc
 		}
 	}
 
-	function handleSessionChange(ctx: ExtensionContext): void {
+	async function handleSessionChange(ctx: ExtensionContext): Promise<void> {
 		abortPendingFetches();
 		closeCurator();
-		clearCloneCache();
+		await clearCloneCache();
 		runtimeState.sessionActive = true;
 		restoreFromSession(ctx);
 		refreshActivityForSession(activityState, ctx);
@@ -154,11 +154,11 @@ export function registerWebSearchFeatures(pi: ExtensionAPI, initConfig: WebSearc
 	pi.on("session_start", async (_event, ctx) => handleSessionChange(ctx));
 	pi.on("session_tree", async (_event, ctx) => handleSessionChange(ctx));
 
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", async () => {
 		runtimeState.sessionActive = false;
 		abortPendingFetches();
 		closeCurator();
-		clearCloneCache();
+		await clearCloneCache();
 		clearResults();
 		shutdownActivityWidget(activityState);
 	});

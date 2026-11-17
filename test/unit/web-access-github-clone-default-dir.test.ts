@@ -58,7 +58,7 @@ afterAll(() => {
 	removeTempDirectory(suiteDirectory);
 });
 
-beforeEach(() => {
+beforeEach(async () => {
 	// Stand-ins for the shared temp directory and this account's agent directory; no runtime directory.
 	boundary.sandbox = realpathSync(mkdtempSync(join(suiteDirectory, "case-")));
 	const shared = join(boundary.sandbox, "tmp");
@@ -70,11 +70,11 @@ beforeEach(() => {
 	boundary.calls = [];
 	writeFileSync(boundary.configPath, JSON.stringify({ githubClone: {} }));
 	resetSessionTempDirStateForTesting();
-	clearCloneCache();
+	await clearCloneCache();
 });
 
-afterEach(() => {
-	clearCloneCache();
+afterEach(async () => {
+	await clearCloneCache();
 	resetSessionTempDirStateForTesting();
 });
 

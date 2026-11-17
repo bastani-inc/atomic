@@ -47,8 +47,8 @@ test("closing a clone owner preserves its sibling's same-repository files and ca
 		);
 		assert.equal(paths.length, 2);
 		assert.notEqual(paths[0], paths[1]);
-		context.run(second, clearCloneCache);
-		context.run(second, clearCloneCache);
+		await context.run(second, clearCloneCache);
+		await context.run(second, clearCloneCache);
 		assert.equal(await fileExists(join(paths[0]!, "README.md")), true);
 		assert.equal(await fileExists(join(paths[1]!, "README.md")), false);
 		assert.match(
@@ -57,8 +57,8 @@ test("closing a clone owner preserves its sibling's same-repository files and ca
 		);
 		assert.equal(paths.length, 2);
 	} finally {
-		context.run(first, clearCloneCache);
-		context.run(second, clearCloneCache);
+		await context.run(first, clearCloneCache);
+		await context.run(second, clearCloneCache);
 		host[key] = previous;
 		removeTempDirectory(directory);
 	}

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync, statSync, readdirSync, openSync, readSync, closeSync, realpathSync, lstatSync, mkdirSync, writeFileSync } from "node:fs";
+import { access, readFile, rm, stat, readdir, open, realpath, lstat, mkdir, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createOwnerState } from "./owner-state.js";
@@ -31,6 +31,7 @@ interface CachedClone {
 const cloneState = createOwnerState((owner) => ({
 	cache: new Map<string, CachedClone>(),
 	directory: owner ? randomUUID() : "",
+	cleanup: Promise.resolve(),
 }));
 
 function cacheKey(owner: string, repo: string, ref?: string): string {
@@ -51,28 +52,44 @@ function isInside(root: string, candidate: string): boolean {
 	return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
-function pathExists(path: string): boolean {
-	return lstatSync(path, { throwIfNoEntry: false }) !== undefined;
+async function pathExists(path: string): Promise<boolean> {
+	try {
+		await lstat(path);
+		return true;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" || code === "ENOTDIR") return false;
+		throw error;
+	}
+}
+
+async function targetExists(path: string): Promise<boolean> {
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /**
  * True when `path` is strictly inside the clone root after resolving every symlink along it.
  * The walk uses lstat, so it stops at a dangling symlink, which refuses the path.
  */
-function isConfined(root: string, path: string): boolean {
+async function isConfined(root: string, path: string): Promise<boolean> {
 	let existing = path;
-	while (!pathExists(existing)) existing = dirname(existing);
-	if (!existsSync(existing)) return false;
-	const realPath = join(realpathSync(existing), relative(existing, path));
-	return isInside(realpathSync(root), realPath);
+	while (!(await pathExists(existing))) existing = dirname(existing);
+	if (!(await targetExists(existing))) return false;
+	const realPath = join(await realpath(existing), relative(existing, path));
+	return isInside(await realpath(root), realPath);
 }
 
 /** Removes a clone directory only when it is confined and carries this tool's marker. */
-function removeOwnedClone(paths: ClonePaths): boolean {
+async function removeOwnedClone(paths: ClonePaths): Promise<boolean> {
 	const { root, directory } = paths;
-	if (!pathExists(directory)) return true;
-	if (!isConfined(root, directory) || !pathExists(join(directory, CLONE_MARKER))) return false;
-	rmSync(directory, { recursive: true, force: true });
+	if (!(await pathExists(directory))) return true;
+	if (!(await isConfined(root, directory)) || !(await pathExists(join(directory, CLONE_MARKER)))) return false;
+	await rm(directory, { recursive: true, force: true });
 	return true;
 }
 
@@ -86,10 +103,10 @@ async function prepareCloneDirectory(paths: ClonePaths): Promise<boolean> {
 		if (privateRoot && (root === privateRoot || dirname(root) === privateRoot)) {
 			await assertPrivateDirectoryAsync(privateRoot);
 		}
-		mkdirSync(root, { recursive: true });
-		if (!isConfined(root, directory) || !removeOwnedClone(paths)) return false;
-		mkdirSync(directory, { recursive: true });
-		writeFileSync(join(directory, CLONE_MARKER), "", { flag: "wx" });
+		await mkdir(root, { recursive: true });
+		if (!(await isConfined(root, directory)) || !(await removeOwnedClone(paths))) return false;
+		await mkdir(directory, { recursive: true });
+		await writeFile(join(directory, CLONE_MARKER), "", { flag: "wx" });
 		return true;
 	} catch {
 		return false;
@@ -97,11 +114,10 @@ async function prepareCloneDirectory(paths: ClonePaths): Promise<boolean> {
 }
 
 function execClone(args: string[], paths: ClonePaths, timeoutMs: number, signal?: AbortSignal): Promise<string | null> {
-	return new Promise((resolve) => {
+	return new Promise((resolve, reject) => {
 		const child = execFile(args[0], args.slice(1), { timeout: timeoutMs, env: createChildProcessEnvironment() }, (err) => {
 			if (err) {
-				removeOwnedClone(paths);
-				resolve(null);
+				void removeOwnedClone(paths).then(() => resolve(null), reject);
 				return;
 			}
 			resolve(paths.checkout);
@@ -144,26 +160,26 @@ async function cloneRepo(
 	return execClone(args, paths, timeoutMs, signal);
 }
 
-function isBinaryFile(filePath: string): boolean {
+async function isBinaryFile(filePath: string): Promise<boolean> {
 	const ext = extname(filePath).toLowerCase();
 	if (BINARY_EXTENSIONS.has(ext)) return true;
 
-	let fd: number;
+	let fd: Awaited<ReturnType<typeof open>>;
 	try {
-		fd = openSync(filePath, "r");
+		fd = await open(filePath, "r");
 	} catch {
 		return false;
 	}
 	try {
 		const buf = Buffer.alloc(512);
-		const bytesRead = readSync(fd, buf, 0, 512, 0);
+		const { bytesRead } = await fd.read(buf, 0, 512, 0);
 		for (let i = 0; i < bytesRead; i++) {
 			if (buf[i] === 0) return true;
 		}
 	} catch {
 		return false;
 	} finally {
-		closeSync(fd);
+		await fd.close();
 	}
 
 	return false;
@@ -175,7 +191,7 @@ function formatFileSize(bytes: number): string {
 	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function resolveWithinRepo(rootPath: string, relativePath: string): string | null {
+async function resolveWithinRepo(rootPath: string, relativePath: string): Promise<string | null> {
 	const normalizedRoot = resolvePath(rootPath);
 	const candidate = resolvePath(normalizedRoot, relativePath);
 	if (candidate !== normalizedRoot) {
@@ -183,11 +199,11 @@ function resolveWithinRepo(rootPath: string, relativePath: string): string | nul
 		if (!candidate.startsWith(rootPrefix)) return null;
 	}
 
-	if (!pathExists(candidate)) return isConfined(normalizedRoot, candidate) ? candidate : null;
+	if (!(await pathExists(candidate))) return (await isConfined(normalizedRoot, candidate)) ? candidate : null;
 
 	try {
-		const realRoot = realpathSync(normalizedRoot);
-		const realCandidate = realpathSync(candidate);
+		const realRoot = await realpath(normalizedRoot);
+		const realCandidate = await realpath(candidate);
 		if (realCandidate === realRoot) return candidate;
 		const realRootPrefix = realRoot.endsWith(pathSep) ? realRoot : realRoot + pathSep;
 		return realCandidate.startsWith(realRootPrefix) ? candidate : null;
@@ -196,23 +212,23 @@ function resolveWithinRepo(rootPath: string, relativePath: string): string | nul
 	}
 }
 
-function readTextFile(path: string): string | null {
+async function readTextFile(path: string): Promise<string | null> {
 	try {
-		return readFileSync(path, "utf-8");
+		return await readFile(path, "utf-8");
 	} catch {
 		return null;
 	}
 }
 
-function buildTree(rootPath: string): string {
+async function buildTree(rootPath: string): Promise<string> {
 	const entries: string[] = [];
 
-	function walk(dir: string, relPath: string): void {
+	async function walk(dir: string, relPath: string): Promise<void> {
 		if (entries.length >= MAX_TREE_ENTRIES) return;
 
 		let items: string[];
 		try {
-			items = readdirSync(dir).sort();
+			items = (await readdir(dir)).sort();
 		} catch {
 			return;
 		}
@@ -222,33 +238,33 @@ function buildTree(rootPath: string): string {
 			if (item === ".git") continue;
 
 			const rel = relPath ? `${relPath}/${item}` : item;
-			const safePath = resolveWithinRepo(rootPath, rel);
+			const safePath = await resolveWithinRepo(rootPath, rel);
 			if (!safePath) {
 				entries.push(`${rel}  [outside repo skipped]`);
 				continue;
 			}
 
-			let stat;
+			let entryStat;
 			try {
-				stat = statSync(safePath);
+				entryStat = await stat(safePath);
 			} catch {
 				continue;
 			}
 
-			if (stat.isDirectory()) {
+			if (entryStat.isDirectory()) {
 				if (NOISE_DIRS.has(item)) {
 					entries.push(`${rel}/  [skipped]`);
 					continue;
 				}
 				entries.push(`${rel}/`);
-				walk(safePath, rel);
+				await walk(safePath, rel);
 			} else {
 				entries.push(rel);
 			}
 		}
 	}
 
-	walk(rootPath, "");
+	await walk(rootPath, "");
 
 	if (entries.length >= MAX_TREE_ENTRIES) {
 		entries.push(`... (truncated at ${MAX_TREE_ENTRIES} entries)`);
@@ -257,14 +273,14 @@ function buildTree(rootPath: string): string {
 	return entries.join("\n");
 }
 
-function buildDirListing(rootPath: string, subPath: string): string {
-	const targetPath = resolveWithinRepo(rootPath, subPath);
+async function buildDirListing(rootPath: string, subPath: string): Promise<string> {
+	const targetPath = await resolveWithinRepo(rootPath, subPath);
 	if (!targetPath) return "(path escapes repository root)";
 	const lines: string[] = [];
 
 	let items: string[];
 	try {
-		items = readdirSync(targetPath).sort();
+		items = (await readdir(targetPath)).sort();
 	} catch {
 		return "(directory not readable)";
 	}
@@ -272,17 +288,17 @@ function buildDirListing(rootPath: string, subPath: string): string {
 	for (const item of items) {
 		if (item === ".git") continue;
 		const rel = subPath ? `${subPath}/${item}` : item;
-		const safePath = resolveWithinRepo(rootPath, rel);
+		const safePath = await resolveWithinRepo(rootPath, rel);
 		if (!safePath) {
 			lines.push(`  ${item}  (outside repo)`);
 			continue;
 		}
 		try {
-			const stat = statSync(safePath);
-			if (stat.isDirectory()) {
+			const entryStat = await stat(safePath);
+			if (entryStat.isDirectory()) {
 				lines.push(`  ${item}/`);
 			} else {
-				lines.push(`  ${item}  (${formatFileSize(stat.size)})`);
+				lines.push(`  ${item}  (${formatFileSize(entryStat.size)})`);
 			}
 		} catch {
 			lines.push(`  ${item}  (unreadable)`);
@@ -292,13 +308,13 @@ function buildDirListing(rootPath: string, subPath: string): string {
 	return lines.join("\n");
 }
 
-export function readReadme(localPath: string): string | null {
+export async function readReadme(localPath: string): Promise<string | null> {
 	const candidates = ["README.md", "readme.md", "README", "README.txt", "README.rst"];
 	for (const name of candidates) {
-		const readmePath = resolveWithinRepo(localPath, name);
-		if (readmePath && existsSync(readmePath)) {
+		const readmePath = await resolveWithinRepo(localPath, name);
+		if (readmePath && (await targetExists(readmePath))) {
 			try {
-				const content = readFileSync(readmePath, "utf-8");
+				const content = await readFile(readmePath, "utf-8");
 				return content.length > 8192 ? flattenTruncatedString(content.slice(0, 8192) + "\n\n[README truncated at 8K chars]") : content;
 			} catch {
 				continue;
@@ -308,17 +324,17 @@ export function readReadme(localPath: string): string | null {
 	return null;
 }
 
-function generateContent(localPath: string, info: GitHubUrlInfo): string {
+async function generateContent(localPath: string, info: GitHubUrlInfo): Promise<string> {
 	const lines: string[] = [];
 	lines.push(`Repository cloned to: ${localPath}`);
 	lines.push("");
 
 	if (info.type === "root") {
 		lines.push("## Structure");
-		lines.push(buildTree(localPath));
+		lines.push(await buildTree(localPath));
 		lines.push("");
 
-		const readme = readReadme(localPath);
+		const readme = await readReadme(localPath);
 		if (readme) {
 			lines.push("## README.md");
 			lines.push(readme);
@@ -331,16 +347,16 @@ function generateContent(localPath: string, info: GitHubUrlInfo): string {
 
 	if (info.type === "tree") {
 		const dirPath = info.path || "";
-		const fullDirPath = resolveWithinRepo(localPath, dirPath);
+		const fullDirPath = await resolveWithinRepo(localPath, dirPath);
 
-		if (!fullDirPath || !existsSync(fullDirPath)) {
+		if (!fullDirPath || !(await targetExists(fullDirPath))) {
 			lines.push(`Path \`${dirPath}\` not found in clone. Showing repository root instead.`);
 			lines.push("");
 			lines.push("## Structure");
-			lines.push(buildTree(localPath));
+			lines.push(await buildTree(localPath));
 		} else {
 			lines.push(`## ${dirPath || "/"}`);
-			lines.push(buildDirListing(localPath, dirPath));
+			lines.push(await buildDirListing(localPath, dirPath));
 		}
 
 		lines.push("");
@@ -350,21 +366,21 @@ function generateContent(localPath: string, info: GitHubUrlInfo): string {
 
 	if (info.type === "blob") {
 		const filePath = info.path || "";
-		const fullFilePath = resolveWithinRepo(localPath, filePath);
+		const fullFilePath = await resolveWithinRepo(localPath, filePath);
 
-		if (!fullFilePath || !existsSync(fullFilePath)) {
+		if (!fullFilePath || !(await targetExists(fullFilePath))) {
 			lines.push(`Path \`${filePath}\` not found in clone. Showing repository root instead.`);
 			lines.push("");
 			lines.push("## Structure");
-			lines.push(buildTree(localPath));
+			lines.push(await buildTree(localPath));
 			lines.push("");
 			lines.push("Use `read` and `bash` tools at the path above to explore further.");
 			return lines.join("\n");
 		}
 
-		let stat: ReturnType<typeof statSync>;
+		let fileStat: Awaited<ReturnType<typeof stat>>;
 		try {
-			stat = statSync(fullFilePath);
+			fileStat = await stat(fullFilePath);
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			lines.push(`Could not inspect \`${filePath}\`: ${message}`);
@@ -373,22 +389,22 @@ function generateContent(localPath: string, info: GitHubUrlInfo): string {
 			return lines.join("\n");
 		}
 
-		if (stat.isDirectory()) {
+		if (fileStat.isDirectory()) {
 			lines.push(`## ${filePath || "/"}`);
-			lines.push(buildDirListing(localPath, filePath));
+			lines.push(await buildDirListing(localPath, filePath));
 			lines.push("");
 			lines.push("Use `read` and `bash` tools at the path above to explore further.");
 			return lines.join("\n");
 		}
 
-		if (isBinaryFile(fullFilePath)) {
+		if (await isBinaryFile(fullFilePath)) {
 			const ext = extname(filePath).replace(".", "");
 			lines.push(`## ${filePath}`);
-			lines.push(`Binary file (${ext}, ${formatFileSize(stat.size)}). Use \`read\` or \`bash\` tools at the path above to inspect.`);
+			lines.push(`Binary file (${ext}, ${formatFileSize(fileStat.size)}). Use \`read\` or \`bash\` tools at the path above to inspect.`);
 			return lines.join("\n");
 		}
 
-		const content = readTextFile(fullFilePath);
+		const content = await readTextFile(fullFilePath);
 		if (content === null) {
 			lines.push(`Could not read \`${filePath}\` as UTF-8 text.`);
 			lines.push("");
@@ -425,7 +441,8 @@ async function awaitCachedClone(
 	const result = await cached.clonePromise;
 	if (signal?.aborted) return null;
 	if (result) {
-		const content = generateContent(result, info);
+		const content = await generateContent(result, info);
+		if (signal?.aborted) return null;
 		const title = info.path ? `${owner}/${repo} - ${info.path}` : `${owner}/${repo}`;
 		return { url, title, content, error: null };
 	}
@@ -515,7 +532,9 @@ export async function extractGitHub(
 	}
 
 	const paths = clonePaths(config, owner, repo, info.ref);
-	const clonePromise = cloneRepo(owner, repo, info.ref, paths, config, signal);
+	const clonePromise = state.cleanup.then(() =>
+		signal?.aborted ? null : cloneRepo(owner, repo, info.ref, paths, config, signal),
+	);
 	cloneCache.set(key, { paths, clonePromise });
 
 	const result = await clonePromise;
@@ -543,14 +562,24 @@ export async function extractGitHub(
 	}
 
 	activityMonitor.logComplete(activityId, 200);
-	const content = generateContent(result, info);
+	const content = await generateContent(result, info);
+	if (signal?.aborted) return null;
 	const title = info.path ? `${owner}/${repo} - ${info.path}` : `${owner}/${repo}`;
 	return { url, title, content, error: null };
 }
 
-export function clearCloneCache(): void {
-	const cloneCache = cloneState().cache;
-	for (const entry of cloneCache.values()) removeOwnedClone(entry.paths);
-	cloneCache.clear();
+export function clearCloneCache(): Promise<void> {
+	const state = cloneState();
+	const entries = [...state.cache.values()];
+	state.cache.clear();
 	resetGitHubConfig();
+	// Invalidated clones finish before they are removed, and new clones wait until their old directory is gone.
+	const cleanup = state.cleanup.then(async () => {
+		for (const entry of entries) {
+			await entry.clonePromise.catch(() => null);
+			await removeOwnedClone(entry.paths);
+		}
+	});
+	state.cleanup = cleanup.catch(() => undefined);
+	return cleanup;
 }
