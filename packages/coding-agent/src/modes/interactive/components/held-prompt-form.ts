@@ -73,7 +73,12 @@ export function heldPromptForm(prompt: HeldPrompt, env: HeldPromptFormEnv): Held
 		get terminal() {
 			return entry.env.tui?.terminal ?? { columns: 80, rows: 24 };
 		},
-		requestRender: () => entry.env.requestRender(),
+		start: () => entry.env.tui?.start?.(),
+		stop: () => entry.env.tui?.stop?.(),
+		requestRender: (force?: boolean) => {
+			entry.env.tui?.requestRender?.(force);
+			entry.env.requestRender();
+		},
 	} as unknown as TUI;
 	const answer = (value: boolean | string | QuestionnaireResult): void => {
 		heldPrompts().answer(route, { value });
@@ -107,24 +112,34 @@ export function heldPromptForm(prompt: HeldPrompt, env: HeldPromptFormEnv): Held
 		case "select":
 			form = new ExtensionSelectorComponent(prompt.title, [...(prompt.choices ?? [])], answer, cancel, { tui });
 			break;
-		case "input":
-			form = Object.assign(new ExtensionInputComponent(prompt.title, prompt.placeholder, answer, cancel, { tui }), {
-				capturesBack: () => true,
+		case "input": {
+			const input = new ExtensionInputComponent(prompt.title, prompt.placeholder, answer, cancel, { tui });
+			input.focused = true;
+			form = Object.assign(input, {
+				capturesBack: () => input.getCursor() > 0,
 			});
 			break;
-		case "editor":
-			form = new ExtensionEditorComponent(
-				env.tui ?? tui,
+		}
+		case "editor": {
+			const editor = new ExtensionEditorComponent(
+				tui,
 				(env.keybindings ?? getKeybindings()) as KeybindingsManager,
 				prompt.title,
 				prompt.initial,
 				answer,
 				cancel,
 			);
-			form = Object.assign(form, { capturesBack: () => true });
+			editor.focused = true;
+			form = Object.assign(editor, {
+				capturesBack: () => {
+					const cursor = editor.getCursor();
+					return cursor.line > 0 || cursor.col > 0;
+				},
+			});
 			break;
+		}
 	}
 	Object.assign(entry, { form });
-	forms.set(key, entry);
+	if (heldPrompts().isCurrent(route)) forms.set(key, entry);
 	return form;
 }

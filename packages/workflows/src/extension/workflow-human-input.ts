@@ -68,6 +68,7 @@ export function bindWorkflowHumanInput(
 			if (run.status !== "running" && run.status !== "paused") continue;
 			for (const stage of run.stages) {
 				if (stage.status !== "awaiting_input") continue;
+				if (stageUiBroker.hasStageDialog(run.id, stage.id)) continue;
 				const prompt = stage.pendingPrompt;
 				const questionnaire = stageUiBroker.peekStageQuestionnaire(run.id, stage.id);
 				if (!prompt && !questionnaire) continue;

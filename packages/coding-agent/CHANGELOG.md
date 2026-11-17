@@ -29,7 +29,7 @@
 - Fixed a session that ended staying in memory for as long as a timer, connection or other long-lived resource that an extension started while the session was in use, as a service started once and shared by later sessions does.
 - Fixed each `/reload` keeping the extensions it replaced in memory for as long as the session ran: every new generation of the session's extensions kept the one before it, so each reload added about 10 MB that was never released.
 - On a busy Windows machine, a shell command or a subagent's named-worktree checkout that finished is no longer reported as failed with `Windows stdin worker stop was not confirmed` ([#5340](https://github.com/bastani-inc/atomic/pull/5340))
-- A subagent's or workflow stage's question no longer opens in the main chat as if the main chat had asked it. Every child session was handed its parent chat's own dialogs as its input, so a subagent's `ask_user_question` and confirmations, a stage's permission and other extension prompts, and the questions of a stage's subagents opened in the parent's chat, blocked its prompt and were answered there. A child now keeps only an SDK host's `humanInput`, which is told which session asks, and never its parent's chat ([#5354](https://github.com/bastani-inc/atomic/pull/5354))
+- Questions and extension dialogs stay with the session that asked them. A subagent's question waits in its own task view, and a workflow stage's question in its stage chat, instead of opening in and blocking the launching chat. SDK hosts still receive the asking session's identity ([#5354](https://github.com/bastani-inc/atomic/pull/5354))
 
 ## [0.9.88] - 2026-11-16
 

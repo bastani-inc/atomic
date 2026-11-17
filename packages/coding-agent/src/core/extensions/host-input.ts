@@ -55,6 +55,19 @@ export function copyHostQuestionnaire(source: ExtensionUIContext, target: Extens
 // Private runner/builtin seam. Symbol identity survives the separately bundled
 // workflow extension; no request minting or host adapter is exposed publicly.
 const WORKFLOW_INPUT = Symbol.for("atomic-coding-agent/workflow-input@1");
+const STAGE_DIALOG = Symbol.for("atomic-coding-agent/stage-dialog@1");
+type StageDialogDescriptor = {
+	kind: "confirm" | "select" | "input" | "editor";
+	message: string;
+	choices?: readonly string[];
+	initial?: string;
+};
+type StageDialogAnswer = string | boolean | undefined;
+type StageDialogRoute = (
+	descriptor: StageDialogDescriptor,
+	identity: HostInputOptions,
+	answerWithHost?: () => Promise<StageDialogAnswer>,
+) => Promise<StageDialogAnswer>;
 type WorkflowIdentity = Pick<HostInputOptions, "workflowRunId" | "workflowStageId"> & { sessionId?: string };
 /** One runner owns request settlement; host promises cannot revive a retired request. */
 export class HostInputBridge {
@@ -113,42 +126,64 @@ export class HostInputBridge {
 			host === presentationHost && options?.timeout !== undefined
 				? { ...identity, timeout: options.timeout }
 				: identity;
+		const stageDialog = (ui as ExtensionUIContext & { [STAGE_DIALOG]?: StageDialogRoute })[STAGE_DIALOG];
+		const requestDialog = <T extends StageDialogAnswer>(
+			descriptor: StageDialogDescriptor,
+			invoke: (host: HostInput, identity: HostInputOptions) => Promise<T>,
+			valid: (value: T) => boolean,
+			options: ExtensionUIDialogOptions | undefined,
+			onCallerCancel: () => T,
+		): Promise<T> =>
+			this.request(
+				(host, identity) => {
+					if (!stageDialog) return invoke(host, identity);
+					const answerWithHost = async () => {
+						const value = await invoke(host, identity);
+						if (!valid(value)) throw hostInputError("InvalidHostInput");
+						return value;
+					};
+					return stageDialog(
+						descriptor,
+						identity,
+						host === presentationHost ? undefined : answerWithHost,
+					) as Promise<T>;
+				},
+				valid,
+				{ ...options, ...scope },
+				onCallerCancel,
+			);
 		const wrapped: ExtensionUIContext = {
 			...ui,
 			confirm: (title, message, options) =>
-				this.request(
+				requestDialog(
+					{ kind: "confirm", message: `${title}\n\n${message}` },
 					(host, identity) => host.confirm(title, message, hostOptions(host, identity, options)),
 					(value) => typeof value === "boolean",
-					{ ...options, ...scope, sessionId: scope.sessionId },
+					options,
 					() => false,
 				),
 			select: (title, choices, options) =>
-				this.request(
+				requestDialog(
+					{ kind: "select", message: title, choices },
 					(host, identity) => host.select(title, choices, hostOptions(host, identity, options)),
 					(value) => value === undefined || (typeof value === "string" && choices.includes(value)),
-					{ ...options, ...scope, sessionId: scope.sessionId },
+					options,
 					() => undefined,
 				),
 			input: (title, placeholder, options) =>
-				this.request(
+				requestDialog(
+					{ kind: "input", message: placeholder ? `${title}\n\n${placeholder}` : title },
 					(host, identity) => host.input(title, placeholder, hostOptions(host, identity, options)),
 					validText,
-					{
-						...options,
-						...scope,
-						sessionId: scope.sessionId,
-					},
+					options,
 					() => undefined,
 				),
 			editor: (title, initial, options) =>
-				this.request(
+				requestDialog(
+					{ kind: "editor", message: title, initial },
 					(host, identity) => host.editor(title, initial, hostOptions(host, identity, options)),
 					validText,
-					{
-						...options,
-						...scope,
-						sessionId: scope.sessionId,
-					},
+					options,
 					() => undefined,
 				),
 		};
@@ -264,7 +299,7 @@ function validText(value: string | undefined): boolean {
 	return value === undefined || typeof value === "string";
 }
 
-function validQuestionnaire(value: QuestionnaireResult, params: QuestionParams): boolean {
+export function validQuestionnaire(value: QuestionnaireResult, params: QuestionParams): boolean {
 	if (!value || typeof value !== "object" || typeof value.cancelled !== "boolean" || !Array.isArray(value.answers))
 		return false;
 	if (

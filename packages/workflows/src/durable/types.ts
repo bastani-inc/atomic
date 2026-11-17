@@ -303,6 +303,14 @@ export interface DurableStageCheckpoint {
 	readonly startedAt?: number;
 	/** Original stage end timestamp, when available. */
 	readonly endedAt?: number;
+	/** Timestamp when the stage entered `awaiting_input`, when the checkpoint is awaiting input. */
+	readonly awaitingInputSince?: number;
+	/** Pending primitive dialog or prompt when the checkpoint is awaiting input. */
+	readonly pendingPrompt?: import("../shared/store-types.js").PendingPrompt;
+	/** Snapshot-safe descriptor of the latest prompt/dialog shown by this stage; never contains the raw answer. */
+	readonly promptFootprint?: import("../shared/store-types.js").PendingPrompt;
+	/** Availability of the stage's prompt answer, without persisting the raw answer value. */
+	readonly promptAnswerState?: import("../shared/store-types.js").StageSnapshot["promptAnswerState"];
 	/** Original stage duration, when available. */
 	readonly durationMs?: number;
 	/** Display/result text recorded for the completed stage. */

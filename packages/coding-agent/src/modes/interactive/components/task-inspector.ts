@@ -191,6 +191,10 @@ export class TaskInspector implements Component {
 				if (openQuestion) {
 					this.close();
 					openQuestion(route);
+				} else if (this.transcriptEnvironment() !== undefined) {
+					this.chatFrom = "detail";
+					this.detailGeneration++;
+					this.openTranscript();
 				} else this.status = "Question is available in its owning session.";
 			},
 		});

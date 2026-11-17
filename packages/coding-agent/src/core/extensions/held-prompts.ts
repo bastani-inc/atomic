@@ -15,7 +15,7 @@
  */
 import type { ActivityReport, PromptRoute } from "../tasks/contracts.js";
 import type { QuestionnaireResult, QuestionParams } from "../tools/ask-user-question/tool/types.js";
-import type { HostInput, HostInputOptions } from "./host-input.js";
+import { type HostInput, type HostInputOptions, validQuestionnaire } from "./host-input.js";
 
 export type HeldPromptKind = "questionnaire" | "confirm" | "select" | "input" | "editor";
 
@@ -118,8 +118,7 @@ export class HeldPrompts {
 		const entry = this.bySession.get(route.sessionId)?.[0];
 		if (entry === undefined || !routeNamesPrompt(route, entry.prompt))
 			return { ok: false, reason: "This question was already answered or is no longer waiting." };
-		const value =
-			"value" in answer ? { ok: true as const, value: answer.value } : readReply(entry.prompt, answer.text);
+		const value = "value" in answer ? readValue(entry.prompt, answer.value) : readReply(entry.prompt, answer.text);
 		if (!value.ok) return value;
 		this.remove(entry.prompt);
 		entry.settle(value.value);
@@ -236,7 +235,7 @@ export const heldPromptInput: HostInput = Object.freeze({
 		return holdRequest(
 			{
 				kind: "questionnaire",
-				question: first?.question ?? "",
+				question: firstLine(first?.question ?? ""),
 				title: first?.header ?? "",
 				params,
 				...(params.questions.length === 1 && first !== undefined
@@ -311,14 +310,52 @@ type ReadReply =
 	| { readonly ok: true; readonly value: HeldPromptValue }
 	| { readonly ok: false; readonly reason: string };
 
-/** The choice `text` names: its number from 1, or its label. */
+/** The choice `text` names: its label, or its number from 1. */
 function choiceOf(choices: readonly string[], text: string): string | undefined {
 	const trimmed = text.trim();
-	if (/^\d+$/.test(trimmed)) return choices[Number(trimmed) - 1];
-	return (
+	const matched =
 		choices.find((choice) => choice === trimmed) ??
-		choices.find((choice) => choice.toLowerCase() === trimmed.toLowerCase())
-	);
+		choices.find((choice) => choice.toLowerCase() === trimmed.toLowerCase());
+	if (matched !== undefined) return matched;
+	if (/^[1-9]\d*$/.test(trimmed)) return choices[Number(trimmed) - 1];
+	return undefined;
+}
+
+function readValue(prompt: HeldPrompt, value: HeldPromptValue): ReadReply {
+	switch (prompt.kind) {
+		case "confirm":
+			return typeof value === "boolean" ? { ok: true, value } : { ok: false, reason: "Answer yes or no." };
+		case "select":
+			return typeof value === "string" && (prompt.choices ?? []).includes(value)
+				? { ok: true, value }
+				: {
+						ok: false,
+						reason: `Answer with one of the ${prompt.choices?.length ?? 0} choices, by number or name.`,
+					};
+		case "input":
+		case "editor":
+			return typeof value === "string" ? { ok: true, value } : { ok: false, reason: "Type an answer." };
+		case "questionnaire":
+			return validQuestionnaireAnswer(prompt.params, value)
+				? { ok: true, value }
+				: { ok: false, reason: "Invalid questionnaire answer." };
+	}
+}
+
+function validQuestionnaireAnswer(
+	params: QuestionParams | undefined,
+	value: HeldPromptValue,
+): value is QuestionnaireResult {
+	if (
+		!value ||
+		typeof value !== "object" ||
+		typeof value.cancelled !== "boolean" ||
+		value.cancelled ||
+		value.error !== undefined ||
+		!Array.isArray(value.answers)
+	)
+		return false;
+	return params === undefined || validQuestionnaire(value, params);
 }
 
 /** Reads a typed reply as the prompt's value. */

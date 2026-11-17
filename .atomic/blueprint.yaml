@@ -30,6 +30,8 @@ knowledge:
       `npm run test:all`. The coding-agent suite is `npm run test --workspace=@bastani/atomic`, and the
       scripts/*.test.mjs tests run with `npm run test:scripts` (`node --test`). Build first: several
       suites load the built packages.
+      For isolated CLI UI checks, set ATOMIC_CODING_AGENT_DIR to a fresh temporary profile and pass
+      --offline. ATOMIC_AGENT_DIR does not select the CLI profile.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run

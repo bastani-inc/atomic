@@ -332,7 +332,9 @@ Cancelling a subagent from `/tasks` stops it for good: its row shows **Killed (n
 
 The list opens as a compact inline widget, like the `/workflows` picker. Detail, transcript, input, and stop-confirmation pages are fullscreen; returning to the list preserves selection. Every agent row includes its resolved model and reasoning level when available, including completed background tasks.
 
-While `/tasks` or its fullscreen transcript/detail view is active, Escape closes the list or detail view, or interrupts the subagent in its chat; it does not cancel a pending `ask_user_question`. The questionnaire waits out of the way and returns with its selection intact after task navigation closes. With no task view active, Escape cancels the questionnaire normally.
+A subagent's `ask_user_question` and extension dialogs wait in that subagent's own chat. Its task shows that it needs input. Open the task's transcript to answer; the main chat and sibling sessions remain usable and cannot answer the question accidentally. Leaving the subagent's view keeps its question and form state pending. Escape in that question cancels it without approving anything.
+
+Opening `/tasks` while the main chat has a question does not answer or cancel that main-chat question. It returns with its selection intact when task navigation closes.
 
 In the default isolated CLI, background subagents continue running after their launch observation returns. The engine publishes a compact task-status indicator below the prompt box, without task rows or activity previews. Run `/tasks` to open the list and inspect individual tasks; task updates never open it automatically. Completed tasks leave the live indicator and remain available in completion cards and `/tasks`. Inspecting does not restart work or create a second task owner. Top-level model bash commands use this owner on POSIX and native Windows; native Windows PowerShell is also owner-bound. Commands inside subagent sessions retain their existing execution path. See [Background shells](/background-tasks#background-shells) for platform support and the separate execution timeout.
 

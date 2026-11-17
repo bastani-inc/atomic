@@ -1,4 +1,5 @@
 import { TRANSCRIPT_JUMP_TO_END_URL } from "@bastani/atomic";
+import { isWorkflowPromptStage } from "../shared/stage-prompt.js";
 
 import { APP_ACTION, isKeybindingsLike, matchesAction, matchesNavAction, TUI_ACTION } from "./keybindings-adapter.js";
 import { parseTerminalMouseInput, terminalMouseWheelDirection } from "./mouse-input.js";
@@ -38,7 +39,7 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	const stage = currentStage(ctx);
 	syncPromptState(ctx, stage?.pendingPrompt);
 	const readOnlyArchive = isReadOnlyArchive(ctx, stage);
-	const readOnlyPromptArchive = readOnlyArchive && stage?.promptFootprint !== undefined;
+	const readOnlyPromptArchive = readOnlyArchive && isWorkflowPromptStage(stage);
 
 	if (ctx.promptState && promptCardShown(ctx)) {
 		// Esc closes a choice or yes/no question back to the chat's prompt; the question stays pending (#5224).

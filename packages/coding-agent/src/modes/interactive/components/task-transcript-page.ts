@@ -155,6 +155,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	/** A history-only transcript changed while the reader was away from its end; it is read again when they return. */
 	private behind = false;
 	private disposed = false;
+	private shownPromptSessionId?: string;
 	private readonly unsubscribePrompts: () => void;
 
 	private readonly reportLate: (reason: string) => void;
@@ -205,19 +206,25 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.restoreUndelivered();
 		// The subagent's own question shows here, in its view, and nowhere in the chat that opened it.
 		this.unsubscribePrompts = heldPrompts().subscribe((sessionId) => {
-			if (sessionId === this.childSessionId()) this.requestRender();
+			if (sessionId === this.childSessionId() || sessionId === this.shownPromptSessionId) this.requestRender();
 		});
 	}
 
 	/** The subagent's session: the one its task's question names, else the session this page follows. */
 	private childSessionId(): string | undefined {
 		const task = this.source.tasks.find((candidate) => candidate.ref.taskId === this.taskId);
-		if (task?.attention.kind === "input-needed") return task.attention.route.sessionId;
-		return this.followed?.getSessionId() ?? this.source.followTaskTranscript(this.taskId)?.session?.getSessionId();
+		const sessionId =
+			task?.attention.kind === "input-needed"
+				? task.attention.route.sessionId
+				: (this.followed?.getSessionId() ?? this.source.followTaskTranscript(this.taskId)?.session?.getSessionId());
+		if (sessionId !== undefined) this.shownPromptSessionId = sessionId;
+		return sessionId;
 	}
 
 	/** The question the subagent waits on, held in its own session, if any. */
 	heldPrompt(): HeldPrompt | undefined {
+		const task = this.source.tasks.find((candidate) => candidate.ref.taskId === this.taskId);
+		if (task?.execution.kind === "settled") return undefined;
 		const sessionId = this.childSessionId();
 		return sessionId === undefined ? undefined : heldPrompts().current(sessionId);
 	}
@@ -306,6 +313,14 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		// The subagent's question is modal in its view while it waits: it takes every key, and Esc cancels it.
 		const form = this.chat.hasTaskInspector ? undefined : this.heldForm();
 		if (form !== undefined) {
+			const selectorPages =
+				this.heldPrompt()?.kind === "select" &&
+				(this.heldPrompt()?.choices?.length ?? 0) > 10 &&
+				(matchesKey(data, "pageUp") || matchesKey(data, "pageDown"));
+			if (!selectorPages && this.chat.handleScrollInput(data)) {
+				this.requestRender();
+				return true;
+			}
 			form.handleInput(data);
 			this.requestRender();
 			return true;

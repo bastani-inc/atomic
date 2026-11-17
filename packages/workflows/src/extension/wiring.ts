@@ -25,6 +25,7 @@ import { join } from "node:path";
 import {
 	type CreateAgentSessionOptions,
 	type DefaultResourceLoaderInheritanceSnapshot,
+	type HostInputOptions,
 	isHeldPromptInput,
 	isStaleExtensionContextError,
 	ModelRuntime,
@@ -56,7 +57,7 @@ export type {
 } from "./atomic-stage-session.js";
 export { prepareAtomicStageSessionOptions } from "./atomic-stage-session.js";
 
-import type { PiCustomOverlayFactory, PiCustomOverlayOptions, PiUISurface } from "./ui-surface.js";
+import type { PiCustomOverlayFactory, PiCustomOverlayOptions, PiUIDialogOptions, PiUISurface } from "./ui-surface.js";
 
 export type {
 	PiCustomComponent,
@@ -432,6 +433,15 @@ function shouldBindStageUiContext(pi: RuntimeWiringSurface, meta: StageExecution
 	return pi.ui !== undefined || meta !== undefined;
 }
 
+function mergeStageDialogSignal(
+	stageSignal: AbortSignal | undefined,
+	options: PiUIDialogOptions | undefined,
+): AbortSignal | undefined {
+	const signals = [stageSignal, options?.signal].filter((signal): signal is AbortSignal => signal !== undefined);
+	if (options?.timeout !== undefined) signals.push(AbortSignal.timeout(options.timeout));
+	return signals.length === 0 ? undefined : AbortSignal.any(signals);
+}
+
 function makeStageExtensionUiContext(
 	ui: PiUISurface,
 	meta: StageExecutionMeta | undefined,
@@ -442,6 +452,21 @@ function makeStageExtensionUiContext(
 	let questionnaireSessionId: string | undefined;
 	let questionnaireInput: StageQuestionnaireInput | undefined;
 	const stageUi: object = {
+		[Symbol.for("atomic-coding-agent/stage-dialog@1")]:
+			meta === undefined
+				? undefined
+				: (
+						descriptor: Parameters<StageUiBroker["requestDialog"]>[2],
+						identity: HostInputOptions,
+						answerWithHost?: Parameters<StageUiBroker["requestDialog"]>[4],
+					) =>
+						broker.requestDialog(
+							meta.runId,
+							meta.stageId,
+							descriptor,
+							mergeStageDialogSignal(meta.signal, identity),
+							answerWithHost,
+						),
 		[Symbol.for("atomic-coding-agent/stage-questionnaire@1")]:
 			meta === undefined
 				? undefined
@@ -456,9 +481,40 @@ function makeStageExtensionUiContext(
 						};
 						return stageUi;
 					},
-		select: ui.select ?? (async () => undefined),
-		confirm: ui.confirm ?? (async () => false),
-		input: ui.input ?? (async () => undefined),
+		select:
+			meta === undefined
+				? (ui.select ?? (async () => undefined))
+				: async (title: string, choices: string[], options?: PiUIDialogOptions) => {
+						const value = await broker.requestDialog(
+							meta.runId,
+							meta.stageId,
+							{ kind: "select", message: title, choices },
+							mergeStageDialogSignal(meta.signal, options),
+						);
+						return typeof value === "string" ? value : undefined;
+					},
+		confirm:
+			meta === undefined
+				? (ui.confirm ?? (async () => false))
+				: async (title: string, message: string, options?: PiUIDialogOptions) =>
+						(await broker.requestDialog(
+							meta.runId,
+							meta.stageId,
+							{ kind: "confirm", message: `${title}\n\n${message}` },
+							mergeStageDialogSignal(meta.signal, options),
+						)) === true,
+		input:
+			meta === undefined
+				? (ui.input ?? (async () => undefined))
+				: async (title: string, placeholder?: string, options?: PiUIDialogOptions) => {
+						const value = await broker.requestDialog(
+							meta.runId,
+							meta.stageId,
+							{ kind: "input", message: placeholder ? `${title}\n\n${placeholder}` : title },
+							mergeStageDialogSignal(meta.signal, options),
+						);
+						return typeof value === "string" ? value : undefined;
+					},
 		notify: ui.notify ?? (() => undefined),
 		requestRender: noOpUIContext.requestRender,
 		onTerminalInput: ui.onTerminalInput ?? (() => () => undefined),
@@ -500,7 +556,18 @@ function makeStageExtensionUiContext(
 		pasteToEditor: ui.pasteToEditor ?? (() => undefined),
 		setEditorText: ui.setEditorText ?? (() => undefined),
 		getEditorText: ui.getEditorText ?? (() => ""),
-		editor: ui.editor ?? (async () => undefined),
+		editor:
+			meta === undefined
+				? (ui.editor ?? (async () => undefined))
+				: async (title: string, initial?: string, options?: PiUIDialogOptions) => {
+						const value = await broker.requestDialog(
+							meta.runId,
+							meta.stageId,
+							{ kind: "editor", message: title, initial },
+							mergeStageDialogSignal(meta.signal, options),
+						);
+						return typeof value === "string" ? value : undefined;
+					},
 		addAutocompleteProvider: ui.addAutocompleteProvider ?? (() => undefined),
 		setEditorComponent: ui.setEditorComponent ?? (() => undefined),
 		getEditorComponent: ui.getEditorComponent ?? (() => undefined),

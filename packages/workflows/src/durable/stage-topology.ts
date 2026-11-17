@@ -1,3 +1,4 @@
+import { isWorkflowPromptStage } from "../shared/stage-prompt.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import {
@@ -66,12 +67,20 @@ export function durableStageCheckpointMetadata(
 			...(stage.intercomGroup !== undefined ? { intercomGroup: stage.intercomGroup } : {}),
 			...(stage.executionOrder !== undefined ? { order: stage.executionOrder } : {}),
 			...(sourceOrder !== undefined && sourceOrder >= 0 ? { sourceOrder } : {}),
-			...(stage.promptFootprint !== undefined ? { occurrenceKey: stage.id } : {}),
+			...(isWorkflowPromptStage(stage) ? { occurrenceKey: stage.id } : {}),
 			status: stage.status,
 			...(run !== undefined ? { run: { ...run } } : {}),
 		},
 		...(stage.startedAt !== undefined ? { startedAt: stage.startedAt } : {}),
 		...(stage.endedAt !== undefined ? { endedAt: stage.endedAt } : {}),
+		...(stage.status === "awaiting_input" && stage.awaitingInputSince !== undefined
+			? { awaitingInputSince: stage.awaitingInputSince }
+			: {}),
+		...(stage.status === "awaiting_input" && stage.pendingPrompt !== undefined
+			? { pendingPrompt: structuredClone(stage.pendingPrompt) }
+			: {}),
+		...(stage.promptFootprint !== undefined ? { promptFootprint: structuredClone(stage.promptFootprint) } : {}),
+		...(stage.promptAnswerState !== undefined ? { promptAnswerState: stage.promptAnswerState } : {}),
 		...(stage.result !== undefined ? { result: stage.result } : {}),
 		...(stage.sessionId !== undefined ? { sessionId: stage.sessionId } : {}),
 		...(stage.sessionFile !== undefined ? { sessionFile: stage.sessionFile } : {}),

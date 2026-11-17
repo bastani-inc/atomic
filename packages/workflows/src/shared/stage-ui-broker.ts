@@ -8,11 +8,12 @@ import type {
 	PiTheme,
 } from "../extension/wiring.js";
 import type { StageQuestionnaireInput } from "../extension/workflow-human-input.js";
+import { type PrimitivePromptAnswer, type PrimitivePromptKind, requirePrimitivePromptAnswer } from "./prompt-answer.js";
 import { createSessionScopedSingleton } from "./session-scoped-singleton.js";
 import type { StageInputAnswer, StagePromptAdapter } from "./stage-prompt.js";
 import type { StagePromptAnswerSource, Store } from "./store.js";
 import { currentWorkflowStore } from "./store-factory.js";
-import type { StageInputRequest } from "./store-types.js";
+import type { PendingPrompt, StageInputRequest } from "./store-types.js";
 
 export interface StageCustomUiRequest<T = unknown> {
 	readonly id: string;
@@ -63,6 +64,7 @@ function nextRequestId(): string {
 export class StageUiBroker {
 	private readonly store: Store;
 	private readonly pending = new Map<string, StageCustomUiRequest>();
+	private readonly dialogs = new Map<string, string>();
 	private readonly hosts = new Map<string, StageCustomUiHost>();
 	// Headless-answer adapters keyed by (runId, stageId). Populated by the
 	// executor's ask_user_question watcher and the readiness gate so a brokered
@@ -292,6 +294,59 @@ export class StageUiBroker {
 		};
 	}
 
+	hasStageDialog(runId: string, stageId: string): boolean {
+		return this.dialogs.has(key(runId, stageId));
+	}
+
+	async requestDialog(
+		runId: string,
+		stageId: string,
+		descriptor: Omit<PendingPrompt, "id" | "createdAt" | "kind"> & { readonly kind: PrimitivePromptKind },
+		signal?: AbortSignal,
+		answerWithHost?: () => Promise<PrimitivePromptAnswer | undefined>,
+	): Promise<PrimitivePromptAnswer | undefined> {
+		signal?.throwIfAborted();
+		const hostKey = key(runId, stageId);
+		if (this.dialogs.has(hostKey) || this.pending.has(hostKey)) {
+			throw new Error(`atomic-workflows: stage ${stageId} already has a pending dialog`);
+		}
+		const prompt = { ...descriptor, source: "stage-dialog" as const, id: nextRequestId(), createdAt: Date.now() };
+		this.dialogs.set(hostKey, prompt.id);
+		const onAbort = () => {
+			this.store.resolveStagePendingPrompt(runId, stageId, prompt.id, undefined, { recordAnswer: false });
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+		try {
+			if (!this.store.recordStagePendingPrompt(runId, stageId, prompt)) {
+				throw new Error(`atomic-workflows: stage ${stageId} cannot accept a dialog`);
+			}
+			const answered = this.store.getStagePromptAnswer(runId, stageId);
+			const waiter =
+				answered?.promptId === prompt.id
+					? Promise.resolve(answered.value)
+					: this.store.awaitStagePendingPrompt(runId, stageId, prompt.id);
+			if (signal?.aborted) onAbort();
+			const response = await new Promise<unknown>((resolve, reject) => {
+				waiter.then(resolve, reject);
+				if (!answerWithHost || signal?.aborted || answered?.promptId === prompt.id) return;
+				Promise.resolve()
+					.then(answerWithHost)
+					.then((value) => {
+						if (signal?.aborted) return;
+						this.store.resolveStagePendingPrompt(runId, stageId, prompt.id, value, {
+							recordAnswer: value !== undefined,
+						});
+					}, reject);
+			});
+			signal?.throwIfAborted();
+			return response === undefined ? undefined : requirePrimitivePromptAnswer(prompt, response);
+		} finally {
+			onAbort();
+			signal?.removeEventListener("abort", onAbort);
+			if (this.dialogs.get(hostKey) === prompt.id) this.dialogs.delete(hostKey);
+		}
+	}
+
 	requestCustomUi<T>(
 		runId: string,
 		stageId: string,
@@ -309,7 +364,7 @@ export class StageUiBroker {
 		}
 		const hostKey = key(runId, stageId);
 		const existing = this.pending.get(hostKey);
-		if (existing) {
+		if (existing || this.dialogs.has(hostKey)) {
 			return Promise.reject(new Error(`atomic-workflows: stage ${stageId} already has a pending custom UI request`));
 		}
 

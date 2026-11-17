@@ -974,6 +974,7 @@ export type CustomPromptIdentitySource = "caller" | "factory" | "callsite";
 export interface PendingPrompt extends WorkflowSerializableObject {
 	readonly id: string;
 	readonly kind: PromptKind;
+	readonly source?: "stage-dialog";
 	readonly message: string;
 	readonly choices?: readonly string[];
 	readonly initial?: string;

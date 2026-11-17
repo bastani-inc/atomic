@@ -38,6 +38,10 @@ export class ExtensionEditorComponent extends Container implements Focusable {
 		this.editor.focused = value;
 	}
 
+	getCursor(): { line: number; col: number } {
+		return this.editor.getCursor();
+	}
+
 	constructor(
 		tui: TUI,
 		keybindings: KeybindingsManager,

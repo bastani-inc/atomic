@@ -266,7 +266,7 @@ Await every `SessionManager` mutation before reading dependent state. Writes res
 
 Pass `extensionBindings.humanInput` to answer extension dialogs and `ask_user_question` in a Node host. `HostInput` requires all five methods: `confirm`, `select`, `input`, `editor` and `questionnaire`. `QuestionParams` and `QuestionnaireResult` are exported from `@bastani/atomic`; questionnaire answers retain their question indices, answer kinds, selections, previews and notes.
 
-Each callback receives a `HostInputOptions` argument with a runtime-generated `requestId`, the originating `sessionId`, and an `AbortSignal`. Stop presenting the question when the signal aborts.
+Each callback receives a `HostInputOptions` argument with a runtime-generated `requestId`, the originating `sessionId`, and an `AbortSignal`. Route the question to that session, not whichever chat is currently visible, and stop presenting it when the signal aborts. Child sessions inherit an explicitly supplied `humanInput` adapter, never their parent's chat dialogs. In the interactive CLI, subagent questions wait in their own task views and workflow stage questions wait in their stage chats.
 
 Return an actual boolean from `confirm`, a supplied choice or `undefined` from `select`, and a string or `undefined` from text dialogs. Atomic preserves empty strings, whitespace and choice order. Malformed replies reject with `InvalidHostInput`; false, cancellation and rejected callbacks never approve an action.
 

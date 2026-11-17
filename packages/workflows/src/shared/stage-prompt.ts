@@ -26,7 +26,11 @@
  */
 
 import type { QuestionParams } from "@bastani/atomic";
-import type { StageInputKind, StageInputQuestion, StageInputRequest } from "./store-types.js";
+import type { StageInputKind, StageInputQuestion, StageInputRequest, StageSnapshot } from "./store-types.js";
+
+export function isWorkflowPromptStage(stage: Pick<StageSnapshot, "promptFootprint"> | undefined): boolean {
+	return stage?.promptFootprint !== undefined && stage.promptFootprint.source !== "stage-dialog";
+}
 
 /**
  * A simple, transport-friendly answer to a brokered stage prompt. Exactly one

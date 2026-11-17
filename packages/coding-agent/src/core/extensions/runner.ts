@@ -199,6 +199,7 @@ export class ExtensionRunner {
 	private uiContext: ExtensionUIContext;
 	private presentationUI?: ExtensionUIContext;
 	private presentationInput?: HostInput;
+	private hadPresentation = false;
 	private humanInput?: HostInput | null;
 	private humanInputBindingRevision = 0;
 	private inputBridge = new HostInputBridge(
@@ -269,13 +270,10 @@ export class ExtensionRunner {
 	 * launcher's `/tasks`. This session's chat answers only its own prompts.
 	 */
 	getChildHostBindings(): import("../agent-session-types.js").ExtensionBindings {
+		const inherited = isHeldPromptInput(this.humanInput) && this.hadPresentation ? undefined : this.humanInput;
 		return {
 			humanInput:
-				this.humanInput !== undefined
-					? this.humanInput
-					: this.presentationInput !== undefined
-						? heldPromptInput
-						: undefined,
+				inherited !== undefined ? inherited : this.presentationInput !== undefined ? heldPromptInput : undefined,
 			onDiagnostic: this.onDiagnostic,
 		};
 	}
@@ -523,7 +521,7 @@ export class ExtensionRunner {
 		const bound = this.humanInput;
 		if (bound === null) return undefined;
 		if (bound === undefined) return this.presentationInput;
-		return isHeldPromptInput(bound) ? (this.presentationInput ?? bound) : bound;
+		return isHeldPromptInput(bound) ? (this.hadPresentation ? this.presentationInput : bound) : bound;
 	}
 
 	private refreshHostInput(): void {
@@ -551,6 +549,7 @@ export class ExtensionRunner {
 
 	setUIContext(uiContext?: ExtensionUIContext, mode: ExtensionMode = "print", isPresentationOnly = false): void {
 		this.presentationOnly = isPresentationOnly;
+		if (uiContext !== undefined) this.hadPresentation = true;
 		if (uiContext !== this.presentationUI) {
 			this.endActiveUIPrompt();
 			++this.uiPromptBinding;

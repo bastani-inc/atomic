@@ -150,7 +150,11 @@ export class QuestionnaireSession {
 
 	/** Whether ← moves within the form now: between question tabs, or in a typed answer or note. */
 	capturesBack(): boolean {
-		return this.isMulti || this.state.inputMode || this.state.notesVisible;
+		return (
+			this.isMulti ||
+			(this.state.inputMode && readInputCursor(this.inlineInput) > 0) ||
+			(this.state.notesVisible && readInputCursor(this.notesInput) > 0)
+		);
 	}
 
 	dispatch(data: string): boolean {

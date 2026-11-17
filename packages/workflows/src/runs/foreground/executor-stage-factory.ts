@@ -551,11 +551,51 @@ export function createWorkflowStageFactory(input: {
 				}
 			}),
 		);
+		let observedPendingPromptId: string | undefined;
+		let dialogCheckpointChain = Promise.resolve();
+		let dialogCheckpointFailure: unknown;
+		const unsubscribeStageDialogWatcher = input.activeStore.subscribeInvalidation((changes) => {
+			if (changes !== undefined && !changes.some((change) => change.runId === input.runId)) return;
+			const currentPromptId = stageSnapshot.pendingPrompt?.id;
+			if (currentPromptId === observedPendingPromptId) return;
+			observedPendingPromptId = currentPromptId;
+			if (state.stageFinalized) return;
+			const meta = innerCtx.__sessionMeta();
+			const snapshotCopy: StageSnapshot = {
+				...stageSnapshot,
+				...(meta.sessionId !== undefined ? { sessionId: meta.sessionId } : {}),
+				...(meta.sessionFile !== undefined ? { sessionFile: meta.sessionFile } : {}),
+				...(stageSnapshot.pendingPrompt !== undefined
+					? { pendingPrompt: structuredClone(stageSnapshot.pendingPrompt) }
+					: {}),
+				...(stageSnapshot.promptFootprint !== undefined
+					? { promptFootprint: structuredClone(stageSnapshot.promptFootprint) }
+					: {}),
+			};
+			dialogCheckpointChain = dialogCheckpointChain
+				.then(async () => {
+					await input.opts.onStageSession?.(input.runId, snapshotCopy, { forceDurable: true });
+				})
+				.catch((error: unknown) => {
+					dialogCheckpointFailure ??= error;
+					if (stageSnapshot.pendingPrompt !== undefined) {
+						input.activeStore.resolveStagePendingPrompt(
+							input.runId,
+							stageId,
+							stageSnapshot.pendingPrompt.id,
+							stageSnapshot.pendingPrompt.kind === "confirm" ? false : undefined,
+							{ recordAnswer: false },
+						);
+					}
+					void runtime.innerCtx.abort().catch(() => {});
+				});
+		});
 
 		const disposeInnerContext = async (): Promise<void> => {
 			idleReleaser.unwatch(stageId);
 			unsubscribeAskUserQuestionWatcher();
 			unsubscribeQueuedUserMessageWatcher();
+			unsubscribeStageDialogWatcher();
 			activeAskUserQuestionCalls.clear();
 			state.activeAskUserQuestionAnonymousCalls = 0;
 			input.activeStore.recordStageAwaitingInput(input.runId, stageId, false);
@@ -576,10 +616,15 @@ export function createWorkflowStageFactory(input: {
 			if (meta.sessionId !== undefined)
 				input.activeStore.recordStageSession(input.runId, stageId, { sessionId: meta.sessionId });
 			if (changed) announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
-			const pending = input.opts.onStageSession?.(input.runId, stageSnapshot, checkpointOptions);
 			announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
+			const pending = dialogCheckpointChain.then(() => {
+				if (dialogCheckpointFailure !== undefined) throw dialogCheckpointFailure;
+				return input.opts.onStageSession?.(input.runId, stageSnapshot, checkpointOptions);
+			});
 			if (checkpointOptions?.forceDurable === true || checkpointOptions?.awaitDurable === true) {
 				await pending;
+				await dialogCheckpointChain;
+				if (dialogCheckpointFailure !== undefined) throw dialogCheckpointFailure;
 				return;
 			}
 			void Promise.resolve(pending).catch(() => {});
@@ -628,6 +673,7 @@ export function createWorkflowStageFactory(input: {
 		};
 
 		const persistStageEnd = async (): Promise<void> => {
+			await dialogCheckpointChain;
 			if (input.opts.onStageEnd) {
 				await runCallback(
 					{ kind: "workflow.stage_adapter", name: `onStageEnd:${name}`, runId: input.runId, stageId },

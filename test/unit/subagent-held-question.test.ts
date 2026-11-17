@@ -96,6 +96,7 @@ async function launchAskingSubagent(env: Awaited<ReturnType<typeof liveChildEnvi
 		task: "ask which path",
 		options: {
 			...base,
+			releaseWhenWaiting: { afterMs: 0 },
 			// What the main chat gives a subagent it launches, as its own child options do.
 			getChildSessionOptions: (options) => ({
 				...base.getChildSessionOptions!(options),

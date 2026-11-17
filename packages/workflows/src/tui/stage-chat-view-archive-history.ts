@@ -1,4 +1,5 @@
 import { Box, Text } from "@bastani/atomic-tui";
+import { isWorkflowPromptStage } from "../shared/stage-prompt.js";
 import type { PendingPrompt, StageSnapshot } from "../shared/store-types.js";
 import { renderRoundedBoxLines } from "./chat-surface.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
@@ -50,7 +51,7 @@ export function renderReadOnlyArchiveBody(
 	stage: StageSnapshot | undefined,
 	renderTranscript: (rows: number) => string[] = (rows) => ctx.chatHost.renderBody(width, rows),
 ): string[] {
-	if (stage?.promptFootprint) {
+	if (stage?.promptFootprint && isWorkflowPromptStage(stage)) {
 		return renderReadOnlyPromptArchiveBody(ctx, width, budget, stage);
 	}
 
