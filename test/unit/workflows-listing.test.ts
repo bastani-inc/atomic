@@ -50,9 +50,13 @@ test("workflow failure summaries keep English at-prefixes and omit actual stack 
 
 const STAGE_NAMES = ["plan", "build", "implement", "review", "verify"];
 function stages(statuses: readonly StageSnapshot["status"][]): StageSnapshot[] {
-	return statuses.map(
-		(status, index) => ({ id: `s${index}`, name: STAGE_NAMES[index] ?? `s${index}`, status }) as StageSnapshot,
-	);
+	return statuses.map((status, index) => ({
+		id: `s${index}`,
+		name: STAGE_NAMES[index] ?? `s${index}`,
+		status,
+		parentIds: index === 0 ? [] : [`s${index - 1}`],
+		toolEvents: [],
+	}));
 }
 
 test("/workflows lists top-level runs newest first and excludes child runs (#5224)", () => {
@@ -257,7 +261,7 @@ test("/workflows sanitizes terminal control sequences in row text while preservi
 		run({
 			id: "stage-run",
 			status: "running",
-			stages: [{ id: "s0", name: `${payload}stage`, status: "running" } as StageSnapshot],
+			stages: [{ id: "s0", name: `${payload}stage`, status: "running", parentIds: [], toolEvents: [] }],
 		}),
 		run({ id: "error-run", status: "failed", endedAt: NOW, error: `${payload}failure` }),
 		run({
@@ -268,8 +272,10 @@ test("/workflows sanitizes terminal control sequences in row text while preservi
 					id: "s0",
 					name: "plan",
 					status: "running",
-					pendingPrompt: { kind: "select", message: `${payload}Approve?` },
-				} as unknown as StageSnapshot,
+					parentIds: [],
+					toolEvents: [],
+					pendingPrompt: { id: "approval", kind: "select", message: `${payload}Approve?`, createdAt: NOW },
+				},
 			],
 		}),
 	];
@@ -464,9 +470,11 @@ test("runs of one workflow are told apart by their first input, and a run waitin
 				id: "s0",
 				name: "plan",
 				status: "running",
-				pendingPrompt: { kind: "select", message: "Approve this plan?" },
+				parentIds: [],
+				toolEvents: [],
+				pendingPrompt: { id: "approval", kind: "select", message: "Approve this plan?", createdAt: NOW },
 			},
-		] as never,
+		],
 	});
 	const other = run({
 		id: "22222222-bbbb",

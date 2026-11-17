@@ -6,6 +6,15 @@ import type { SharedPoolStats } from "../durable/journal/sql-shared-pool.js";
 import type { WorkflowForkedFrom } from "../durable/types.js";
 import type { RunDetail } from "../runs/background/status.js";
 import { describeReadinessDecision } from "../runs/foreground/readiness-decision.js";
+import type {
+	PendingWorkflowRunStatusResolver,
+	WorkflowBoundarySegmentsResolver,
+} from "../shared/pending-stage-status.js";
+import {
+	pendingWorkflowStageStatus,
+	pendingWorkflowStageStatuses,
+	workflowBoundarySegments,
+} from "../shared/pending-stage-status.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type {
 	PendingPrompt,
@@ -16,9 +25,10 @@ import type {
 	StageStatus,
 } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
-import { boundedToolText, TOOL_PAYLOAD_VALUE_LIMIT } from "../shared/tool-payload-bounds.js";
+import { boundedToolText, boundedToolTitleText, TOOL_PAYLOAD_VALUE_LIMIT } from "../shared/tool-payload-bounds.js";
 import type { WorkflowDetails, WorkflowInputValues, WorkflowOutputValues } from "../shared/types.js";
 import { inertDisplayLine, inertDisplayText, withoutStackFrames } from "../tui/display-text.js";
+import { wrapIdentifierLines } from "../tui/run-identity-rows.js";
 import { fmtDuration, statusIcon } from "../tui/status-helpers.js";
 import { truncateToWidth, visibleWidth } from "../tui/text-helpers.js";
 import { type SharedPoolStatusUnavailable, sharedPoolStatusLines } from "../workers/shared-pool-status-lines.js";
@@ -255,7 +265,7 @@ function fitLines(lines: readonly string[], width?: number): string {
 	const budget = Math.max(1, Math.floor(width));
 	return lines
 		.flatMap((line) => {
-			if (line.length === 0) return [""];
+			if (line.length === 0 || visibleWidth(line) <= budget) return [line];
 			return wrapTextWithAnsi(line, budget).map((part) =>
 				visibleWidth(part) <= budget ? part : truncateToWidth(part, budget, "…"),
 			);
@@ -336,6 +346,124 @@ function renderListLines(items: readonly WorkflowListItem[], width?: number): st
 	return fitLines(lines, width);
 }
 
+const MAX_PENDING_STAGE_ROWS = 3;
+
+function pendingStageResolvers(allRuns: readonly RunSnapshot[] | undefined): {
+	owningRunStatus?: PendingWorkflowRunStatusResolver;
+	resolveBoundarySegments?: WorkflowBoundarySegmentsResolver;
+} {
+	if (allRuns === undefined) return {};
+	const statusByRunId = new Map(allRuns.map((run) => [run.id, run.status]));
+	return {
+		owningRunStatus: (owningRunId) => statusByRunId.get(owningRunId),
+		resolveBoundarySegments: (runId) => workflowBoundarySegments(allRuns, runId),
+	};
+}
+
+function pendingStageIdentityLines(
+	stage: { readonly name: string; readonly stageId: string },
+	width: number,
+	suffix = "",
+): string[] {
+	const safeName = inertDisplayLine(boundedToolTitleText(stage.name, Math.max(1, width * 4)));
+	const safeStageId = inertDisplayLine(stage.stageId);
+	const full = `   pending: ${safeName} (${safeStageId})${suffix}`;
+	if (visibleWidth(full) <= width) return [full];
+	const labelledPrefix = "   pending: ";
+	const prefix = visibleWidth(labelledPrefix) < width ? labelledPrefix : width > 3 ? "   " : "";
+	const continuation = width > 3 ? "   " : "";
+	const rows = wrapIdentifierLines(safeStageId, width, prefix, continuation).map(
+		({ prefix: rowPrefix, chunk }) => `${rowPrefix}${chunk}`,
+	);
+	if (suffix.length === 0) return rows;
+	const last = rows.at(-1)!;
+	if (visibleWidth(`${last}${suffix}`) <= width) rows[rows.length - 1] = `${last}${suffix}`;
+	else rows.push(fitLine(`${continuation}${suffix.trim()}`, width));
+	return rows;
+}
+
+function pendingStageStatusLines(
+	run: RunSnapshot,
+	width: number | undefined,
+	resolveOwningRunStatus?: PendingWorkflowRunStatusResolver,
+	resolveBoundarySegments?: WorkflowBoundarySegmentsResolver,
+): string[] {
+	const stages = pendingWorkflowStageStatuses(run, resolveOwningRunStatus, resolveBoundarySegments);
+	const budget = width !== undefined && width > 0 ? Math.max(1, Math.floor(width)) : undefined;
+	const limit = budget === undefined ? 240 : Math.max(1, budget * 4);
+	const visible = stages.slice(0, MAX_PENDING_STAGE_ROWS).flatMap((stage) => {
+		const safeName = inertDisplayLine(boundedToolTitleText(stage.name, limit));
+		const safeStageId = inertDisplayLine(stage.stageId);
+		const prefix = `   pending: ${safeName} (${safeStageId})`;
+		if (stage.target === undefined) {
+			const unavailable = `${prefix} · delivery unavailable`;
+			if (budget === undefined || visibleWidth(unavailable) <= budget) return [unavailable];
+			return [...pendingStageIdentityLines(stage, budget), fitLine("   delivery unavailable", budget)];
+		}
+		const safeTarget = inertDisplayLine(stage.target);
+		const inline = `${prefix} → ${safeTarget}`;
+		if (budget === undefined || visibleWidth(inline) <= budget) return [inline];
+		const labelRows = pendingStageIdentityLines(stage, budget, " →");
+		const targetPrefix = budget > 3 ? "   " : "";
+		const targetRows = wrapIdentifierLines(safeTarget, budget, targetPrefix, targetPrefix).map(
+			({ prefix: rowPrefix, chunk }) => `${rowPrefix}${chunk}`,
+		);
+		return [...labelRows, ...targetRows];
+	});
+	if (stages.length > MAX_PENDING_STAGE_ROWS) {
+		const omitted = stages.length - MAX_PENDING_STAGE_ROWS;
+		visible.push(fitLine(`   … ${omitted} more pending stage${omitted === 1 ? "" : "s"}`, budget));
+	}
+	return visible;
+}
+
+function pendingStageDetailLines(
+	detail: RunDetail,
+	stage: StageSnapshot,
+	width: number | undefined,
+	resolveOwningRunStatus?: PendingWorkflowRunStatusResolver,
+	resolveBoundarySegments?: WorkflowBoundarySegmentsResolver,
+): string[] {
+	const pending = pendingWorkflowStageStatus(
+		{
+			id: detail.runId,
+			...(detail.rootRunId === undefined ? {} : { rootRunId: detail.rootRunId }),
+			status: detail.status,
+		},
+		stage,
+		resolveOwningRunStatus,
+		resolveBoundarySegments,
+	);
+	if (pending === undefined) return [];
+	const label = pending.target === undefined ? "pending id".padEnd(16) : "pending target".padEnd(16);
+	const firstPrefix = `   ${label}`;
+	const continuationPrefix = " ".repeat(19);
+	const budget = width !== undefined && width > 0 ? Math.max(1, Math.floor(width)) : undefined;
+	if (pending.target !== undefined) {
+		const safeTarget = inertDisplayLine(pending.target);
+		const inline = `${firstPrefix}${safeTarget}`;
+		if (budget === undefined || visibleWidth(inline) <= budget) return [inline];
+		const rowFirstPrefix = visibleWidth(firstPrefix) < budget ? firstPrefix : budget > 3 ? "   " : "";
+		const rowContPrefix = visibleWidth(continuationPrefix) < budget ? continuationPrefix : budget > 3 ? "   " : "";
+		return wrapIdentifierLines(safeTarget, budget, rowFirstPrefix, rowContPrefix).map(
+			({ prefix, chunk }) => `${prefix}${chunk}`,
+		);
+	}
+	const safeStageId = inertDisplayLine(pending.stageId);
+	const suffix = " · delivery unavailable";
+	const inline = `${firstPrefix}${safeStageId}${suffix}`;
+	if (budget === undefined || visibleWidth(inline) <= budget) return [inline];
+	const rowFirstPrefix = visibleWidth(firstPrefix) < budget ? firstPrefix : budget > 3 ? "   " : "";
+	const rowContPrefix = visibleWidth(continuationPrefix) < budget ? continuationPrefix : budget > 3 ? "   " : "";
+	const rows = wrapIdentifierLines(safeStageId, budget, rowFirstPrefix, rowContPrefix).map(
+		({ prefix, chunk }) => `${prefix}${chunk}`,
+	);
+	const last = rows.at(-1)!;
+	if (visibleWidth(`${last}${suffix}`) <= budget) rows[rows.length - 1] = `${last}${suffix}`;
+	else rows.push(fitLine(`${rowContPrefix}delivery unavailable`, budget));
+	return rows;
+}
+
 function renderStatusLines(snapshots: readonly RunSnapshot[], opts?: RenderResultOpts): string {
 	const now = opts?.now ?? Date.now();
 	const lines: string[] = [`BACKGROUND · ${snapshots.length} ${snapshots.length === 1 ? "run" : "runs"}`];
@@ -343,11 +471,13 @@ function renderStatusLines(snapshots: readonly RunSnapshot[], opts?: RenderResul
 		lines.push("no workflow runs in current session");
 		return fitLines(lines, opts?.width);
 	}
+	const { owningRunStatus, resolveBoundarySegments } = pendingStageResolvers(opts?.allRuns ?? snapshots);
 	for (const run of snapshots) {
 		const status = effectiveRunStatus(run);
 		const icon = statusIcon(status);
 		const dur = fmtDuration(elapsedRunMs(run, now));
 		lines.push(`${icon} ${inertDisplayLine(run.id)}  ${inertDisplayLine(run.name)}  ${status}  ${dur}`);
+		lines.push(...pendingStageStatusLines(run, opts?.width, owningRunStatus, resolveBoundarySegments));
 	}
 	return fitLines(lines, opts?.width);
 }
@@ -358,6 +488,7 @@ function renderStatusDetailLines(
 ): string {
 	const now = opts?.now ?? Date.now();
 	const { detail } = r;
+	const { owningRunStatus, resolveBoundarySegments } = pendingStageResolvers(opts?.allRuns);
 	const lines: string[] = [
 		`RUN ${inertDisplayLine(detail.name)} · ${detail.status}`,
 		`run id ${inertDisplayLine(detail.runId)}`,
@@ -368,10 +499,13 @@ function renderStatusDetailLines(
 		lines.push(`error ${inertDisplayLine(first)}`);
 	}
 	for (const stage of detail.stages) {
-		lines.push(`  ${statusIcon(stage.status)} ${inertDisplayLine(stage.name)} (${stage.id}) ${stage.status}`);
+		lines.push(
+			`  ${statusIcon(stage.status)} ${inertDisplayLine(stage.name)} (${inertDisplayLine(stage.id)}) ${stage.status}`,
+		);
+		lines.push(...pendingStageDetailLines(detail, stage, opts?.width, owningRunStatus, resolveBoundarySegments));
 	}
 	for (const tool of detail.tools) {
-		lines.push(`  ${inertDisplayLine(tool.name)} (${tool.id}) ${tool.status}`);
+		lines.push(`  ${inertDisplayLine(tool.name)} (${inertDisplayLine(tool.id)}) ${tool.status}`);
 	}
 	const pool =
 		r.sharedPool !== undefined
@@ -380,7 +514,7 @@ function renderStatusDetailLines(
 				? { sharedPoolUnavailable: r.sharedPoolUnavailable }
 				: undefined;
 	if (pool !== undefined) {
-		lines.push(...sharedPoolStatusLines(pool).map((line) => inertDisplayLine(line)));
+		lines.push("SHARED POOL", ...sharedPoolStatusLines(pool).map((line) => inertDisplayLine(line)));
 	}
 	return fitLines(lines, opts?.width);
 }
@@ -485,7 +619,8 @@ function renderResultBody(result: WorkflowRegisteredToolResult | null | undefine
 				return renderNotice("WORKFLOW STATUS", `id=${r.runId}: ${r.error}`, opts);
 			}
 			const r = result as Extract<StatusDetailResult, { detail: RunDetail }>;
-			return renderStatusDetailLines(r, opts);
+			const allRuns = opts?.allRuns ?? getWorkflowStatusRenderRuns(r);
+			return renderStatusDetailLines(r, allRuns === undefined ? opts : { ...opts, allRuns });
 		}
 
 		case "inputs": {

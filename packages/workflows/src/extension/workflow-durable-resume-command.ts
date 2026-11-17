@@ -67,7 +67,7 @@ export function cleanEntryChangeReason(reason: string | undefined): string | und
 		.replace(/^(Error|[A-Z][A-Za-z]*Error):\s*/, "")
 		.replace(/\.\s*Its recorded steps and queued children depend on these[\s\S]*$/i, ".")
 		.replace(/\.\s*An edited entry module can also be accepted:[\s\S]*$/i, ".")
-		.replace(/\.\s*Resume the root with [\s\S]*$/i, ".")
+		.replace(/\.\s*Resume (?:the )?root [\s\S]*$/i, ".")
 		.replace(/\s+/g, " ")
 		.trim();
 	return withoutPrefix || undefined;

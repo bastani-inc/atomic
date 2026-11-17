@@ -68,9 +68,11 @@ function mergeCommandContext(
 function sanitizePickerGuidance(message: string): string {
 	return message
 		.replace(/\/workflow\s+resume\s+([^\s,.;)`"]+)\s+--accept-entry-changes/g, "/resume $1")
-		.replace(/--accept-entry-changes/g, "")
+		.replace(/\s*--accept-entry-changes\b/g, "")
+		.replace(/\s*--from(?:\s+[^\s,.;)`"]+)?/g, "")
 		.replace(/\/workflow\s+resume\b/g, "/resume")
-		.replace(/\/workflow\s+(?:connect|attach)\b/g, "/workflows");
+		.replace(/\/workflow\s+reload\b/g, "/reload")
+		.replace(/\/workflow\s+(?:status|pause|quit|fork|list|inputs|connect|attach)\b/g, "/workflows");
 }
 
 function formatPickerResumeError(targetId: string, message: string): string {

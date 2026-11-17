@@ -15,7 +15,6 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import { renderResult } from "../../packages/workflows/src/extension/render-result.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { chatWidth } from "../../packages/workflows/src/tui/chat-surface.js";
@@ -682,9 +681,7 @@ describe("renderStatusList — populated", () => {
 				makeStage("offline", "offline", "pending", { pendingStageDeliveryAvailable: false }),
 			],
 		});
-		const plain = stripAnsi(
-			renderResult({ action: "status", filter: "all", runs: [], snapshots: [run] }, { plain: true, width: 60, now }),
-		);
+		const plain = stripAnsi(renderStatusList([run], { width: 60, now }));
 
 		const compact = plain.replace(/[\s│]/gu, "");
 		assert.ok(compact.includes(`workflow:${runId}/review-a`));

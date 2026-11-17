@@ -37,7 +37,7 @@
 ### Fixed
 
 - Fixed `/workflows` never finishing when the host closed its picker without showing it ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
-- Fixed workflow lifecycle notices writing terminal control sequences from workflow names, run IDs and error text to the terminal. Those sequences are now inert, including in narrow layouts ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- Fixed workflow lifecycle notices writing terminal control sequences from workflow names, run IDs and error text to the terminal. Those sequences are now inert, including in narrow layouts, without deleting the ordinary text after them ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Fixed workflow input listings and tool results throwing on defaults that JSON cannot encode, such as BigInt values ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 - Fixed a session that ended for good, such as an SDK session that ran workflows and was disposed, staying in memory through the workflow hand-off kept for a session that might replace it.

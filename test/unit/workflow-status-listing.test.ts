@@ -15,6 +15,7 @@ import {
 } from "../../packages/workflows/src/shared/pending-stage-status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
+import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 import {
 	assert,
 	createExtensionRuntime,
@@ -580,6 +581,82 @@ describe("workflow tool status run listing", () => {
 
 		assert.deepEqual(advertisedTargets, []);
 		assert.deepEqual(missingUnavailableLabels, []);
+	});
+
+	test.sequential("renderResult wraps exact pending-stage targets at width 60 for status and statusDetail without partial target ellipses", async () => {
+		const rootRunId = "11111111-1111-4111-8111-111111111111";
+		const childRunId = "22222222-2222-4222-8222-222222222222";
+		const rootStageId = "review-a";
+		const childStageId = "child-review";
+		store.recordRunStart({
+			...makeInflightRun(rootRunId),
+			name: "release-docs",
+			stages: [
+				{
+					id: rootStageId,
+					name: "review",
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+					pendingStageDeliveryAvailable: true,
+				},
+				{
+					id: "offline",
+					name: "offline",
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+					pendingStageDeliveryAvailable: false,
+				},
+				{
+					id: "child-boundary",
+					name: "workflow:child",
+					status: "running",
+					parentIds: [],
+					toolEvents: [],
+					replayKey: "workflow:child:1",
+					workflowChildRun: { alias: "child", workflow: "child workflow", runId: childRunId },
+				},
+			],
+		});
+		store.recordRunStart({
+			...makeInflightRun(childRunId),
+			name: "child workflow",
+			parentRunId: rootRunId,
+			parentStageId: "child-boundary",
+			rootRunId,
+			stages: [
+				{
+					id: childStageId,
+					name: "review",
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+					pendingStageDeliveryAvailable: true,
+				},
+			],
+		});
+
+		const handler = makeToolHandler();
+		const listingResult = await handler({ action: "status" }, {} as never);
+		const detailResult = await handler({ action: "status", runId: rootRunId }, {} as never);
+		const listText = renderResult(listingResult, { plain: true, width: 60 });
+		const detailText = renderResult(detailResult, { plain: true, width: 60 });
+		const rootTarget = `workflow:${rootRunId}/${rootStageId}`;
+		const childTarget = `workflow:${rootRunId}/workflow:child/${childStageId}`;
+
+		for (const rendered of [listText, detailText]) {
+			const compact = rendered.replace(/\s+/gu, "");
+			assert.ok(compact.includes(rootTarget), rendered);
+			assert.ok(compact.includes(childTarget), rendered);
+			assert.doesNotMatch(rendered, /(?:→|pending target)[^\n]*…/u);
+			assert.doesNotMatch(rendered, /[╭│╰]/u);
+			for (const line of rendered.split("\n")) {
+				assert.ok(visibleWidth(line) <= 60, `line exceeds 60 cells: ${visibleWidth(line)} ${JSON.stringify(line)}`);
+			}
+		}
+		assert.match(listText, /pending: offline \(offline\) · delivery unavailable/);
+		assert.match(detailText, /pending id {6}offline · delivery unavailable/);
 	});
 
 	test.sequential("status text output reports an empty filtered listing", async () => {

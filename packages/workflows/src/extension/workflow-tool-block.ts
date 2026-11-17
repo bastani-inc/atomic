@@ -1,4 +1,3 @@
-import { stripVTControlCharacters } from "node:util";
 import type { ThemeColor } from "@bastani/atomic";
 import { keyHintIfBound, navEntryKeys, sliceHead, ToolBlock, ToolBlockRecords } from "@bastani/atomic";
 import { type Component, getKeybindings, visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
@@ -6,6 +5,7 @@ import { meter_run, type RunUsageTree } from "../shared/budget-meter.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { StoreInvalidationListener } from "../shared/store-public-types.js";
 import type { RunSnapshot, StageSnapshot, StageStatus } from "../shared/store-types.js";
+import { stripTerminalSequences } from "../shared/terminal-controls.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import { boundedToolText, TOOL_PAYLOAD_VALUE_LIMIT } from "../shared/tool-payload-bounds.js";
 import type { WorkflowOutputValues } from "../shared/types.js";
@@ -295,7 +295,7 @@ const DEFINITION_ERROR_RE =
 	/^(?:Uncaught\s+)?(?:Definition\s+error|DefinitionError)\s*:|Failed to import|ParseError|SyntaxError|TransformError|INVALID_DEFINITION|IMPORT_FAILED|__piWorkflow|workflow\(\{|workflow:\s+(?:description|run|outputs|inputs|name|normalized name|heartbeatIntervalMinutes|budget)\b/i;
 
 function sanitizePreservingIndent(line: string): string {
-	return inertDisplayLine(stripVTControlCharacters(line).replace(/\t/g, "  ")).trimEnd();
+	return inertDisplayLine(stripTerminalSequences(line, true).replace(/\t/g, "  ")).trimEnd();
 }
 
 export function parseDefinitionError(rawText: string | undefined): DefinitionErrorView | undefined {
@@ -304,7 +304,7 @@ export function parseDefinitionError(rawText: string | undefined): DefinitionErr
 	const { kept } = withoutStackFrames(bounded);
 	const nonEmptyLines = kept.filter((line) => displayLine(line).length > 0);
 	if (nonEmptyLines.length === 0) return undefined;
-	const hasCaret = nonEmptyLines.some((line) => CARET_LINE_RE.test(stripVTControlCharacters(line)));
+	const hasCaret = nonEmptyLines.some((line) => CARET_LINE_RE.test(stripTerminalSequences(line, true)));
 	if (!hasCaret && !DEFINITION_ERROR_RE.test(bounded)) return undefined;
 
 	const firstRaw = displayLine(nonEmptyLines[0]!);
@@ -318,7 +318,7 @@ export function parseDefinitionError(rawText: string | undefined): DefinitionErr
 	const message = strippedMessage.length > 0 ? strippedMessage : withoutImport;
 
 	const rest = nonEmptyLines.slice(1);
-	const caretIdx = rest.findIndex((line) => CARET_LINE_RE.test(stripVTControlCharacters(line)));
+	const caretIdx = rest.findIndex((line) => CARET_LINE_RE.test(stripTerminalSequences(line, true)));
 	let sourceLine: string | undefined;
 	let caretLine: string | undefined;
 	let guidance: string | undefined;
@@ -1025,7 +1025,7 @@ export function styledCallLine(label: WorkflowCallLabel, theme: WorkflowBlockThe
 
 function fitCallLineString(line: string, width: number): string {
 	if (visibleWidth(line) <= width) return line;
-	const plain = stripVTControlCharacters(line);
+	const plain = stripTerminalSequences(line, true);
 	if (plain.startsWith("Workflow(") && plain.endsWith(")") && width >= 11) {
 		const closingIndex = line.lastIndexOf(")");
 		if (closingIndex > 0) {

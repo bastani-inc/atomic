@@ -21,7 +21,11 @@ import { sessionSwitchQuitConfirmation } from "../../packages/workflows/src/exte
 import type { PiCommandContext, PiMessageRenderer } from "../../packages/workflows/src/extension/public-types.js";
 import { renderResult } from "../../packages/workflows/src/extension/render-result.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
-import { handleDurableResume } from "../../packages/workflows/src/extension/workflow-durable-resume-command.js";
+import {
+	cleanEntryChangeReason,
+	handleDurableResume,
+	WORKFLOW_DEFINITION_CHANGED_INLINE_PROMPT,
+} from "../../packages/workflows/src/extension/workflow-durable-resume-command.js";
 import {
 	formatWorkflowHeartbeatNoticeText,
 	registerWorkflowHeartbeatRenderer,
@@ -30,6 +34,7 @@ import {
 	DEFAULT_PROMPT_GUIDANCE,
 	WORKFLOW_TOOL_DESCRIPTION,
 } from "../../packages/workflows/src/extension/workflow-prompts.js";
+import { createWorkflowResumeProvider } from "../../packages/workflows/src/extension/workflow-resume-provider.js";
 import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
 import { workflowQuitAction } from "../../packages/workflows/src/extension/workflow-tool-control.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
@@ -44,6 +49,7 @@ import { StageRehydrationError, StageWaitError } from "../../packages/workflows/
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
 import { renderWorkflowList } from "../../packages/workflows/src/tui/workflow-list.js";
+import { WORKFLOW_RESUME_PICKER_UNAVAILABLE } from "../../packages/workflows/src/tui/workflow-resume-selector.js";
 import { sharedPoolProblems } from "../../packages/workflows/src/workers/placement-errors.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
@@ -485,5 +491,37 @@ describe("workflow slash source-copy migration (#5224)", () => {
 			assertNoLegacyWorkflowSlash(section);
 		}
 		assertNoLegacyWorkflowSlash(JSON.stringify(SettingsSchema));
+	});
+
+	test("merged resume selector fallback, entry-change reason cleaner, and resume provider omit legacy /workflow commands and flags (#5224)", async () => {
+		assertNoLegacyWorkflowSlash(WORKFLOW_RESUME_PICKER_UNAVAILABLE);
+		assertNoLegacyWorkflowSlash(WORKFLOW_DEFINITION_CHANGED_INLINE_PROMPT);
+		assert.match(WORKFLOW_RESUME_PICKER_UNAVAILABLE, /workflow\(\{ action: "resume"/);
+
+		const poolConflictError =
+			"Error: Pool boundary identity conflict: child child-1 was queued by an earlier run of root root-1 with the entry module of worker definition worker-a at sha256 111111111111, and the root now runs that module at sha256 222222222222. Resume root root-1 from /resume and confirm the edited module, or pass acceptEntryChanges: true in the SDK, to run the child with the edited module, or restore the module.";
+		const cleaned = cleanEntryChangeReason(poolConflictError);
+		assert.equal(
+			cleaned,
+			"Pool boundary identity conflict: child child-1 was queued by an earlier run of root root-1 with the entry module of worker definition worker-a at sha256 111111111111, and the root now runs that module at sha256 222222222222.",
+		);
+
+		const store = createStore();
+		const runtime = createExtensionRuntime({ definitions: [], store });
+		const provider = createWorkflowResumeProvider({
+			pi: {},
+			overlay: { open: () => undefined, toggle: () => undefined, close: () => undefined },
+			runtimeForContext: () => runtime,
+			ensureWorkflowResourcesLoaded: () => undefined,
+			context: () => ({ hasUI: true, cwd: process.cwd(), ui: { notify: () => undefined } }),
+		});
+		await assert.rejects(
+			() => provider.resumeFromPicker("11111111-1111-4111-8111-111111111111 --accept-entry-changes"),
+			(err: Error) => {
+				assertNoLegacyWorkflowSlash(err.message);
+				assert.match(err.message, /\/resume <id>/);
+				return true;
+			},
+		);
 	});
 });

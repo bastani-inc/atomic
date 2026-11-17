@@ -23,6 +23,7 @@ import { renderCall, workflowCallLabel } from "../../packages/workflows/src/exte
 import type { WorkflowRegisteredToolResult } from "../../packages/workflows/src/extension/render-result.js";
 import {
 	callComponent,
+	parseDefinitionError,
 	shortReason,
 	styledCallLine,
 	summarizeWorkflowResult,
@@ -342,6 +343,11 @@ describe("the workflow tool's result line (#5224)", () => {
 			"                             ^",
 			"     Fix the workflow definition and run /reload.",
 		]);
+	});
+
+	test("definition errors preserve text after terminal controls on supported Node versions (#5224)", () => {
+		const failure = parseDefinitionError("Definition error: bad\x1b[2Jthing\x07\u202e");
+		assert.equal(failure?.message, "badthing\\x07<U+202E>");
 	});
 
 	test("the line follows the run through blocked and resumable-failed states until permanent completion", () => {
