@@ -139,7 +139,7 @@ import {
 	unreadableTrustSettingsDiagnostics,
 } from "./main-stdio.ts";
 import type { MainOptions } from "./main-types.ts";
-import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
+import { removeSavedModelRoutingSetting, runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { isUnknownModel } from "./modes/interactive/interactive-mode-helpers.ts";
 import { shouldUseFullscreenTui } from "./modes/interactive/interactive-tui.ts";
@@ -891,6 +891,8 @@ export async function main(argv: string[], options?: MainOptions) {
 										projectTrustByCwd.set(cwd, trusted);
 										if (trusted && !initialProjectTrusted) {
 											migrateAfterTrust = true;
+											// Before the project's settings load, so its removed setting is not also reported as ignored.
+											removeSavedModelRoutingSetting(cwd, { projectTrusted: true });
 										}
 										// Print, JSON and RPC modes cannot ask, so say what an untrusted project loses (#4223).
 										const ignored = ignoredProjectSettingsWarning(cwd, {

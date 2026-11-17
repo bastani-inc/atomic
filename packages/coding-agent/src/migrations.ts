@@ -7,6 +7,8 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, w
 import { dirname, join } from "path";
 import { CONFIG_DIR_NAME, getAgentConfigPaths, getAgentDir, getBinDir } from "./config.js";
 import { migrateKeybindingsConfig } from "./core/keybindings.ts";
+import { FileSettingsStorage } from "./core/settings-storage.ts";
+import type { SettingsScope } from "./core/settings-types.ts";
 import {
 	applyEarlyInputChunk,
 	type EarlyInputState,
@@ -14,6 +16,8 @@ import {
 	withEarlyInputHeldForStartupDialog,
 } from "./main-early-input.ts";
 import { migrateAzureProvider } from "./migrations-azure.js";
+import { warnDeprecation } from "./utils/deprecation.js";
+import { parseJsonFileContent } from "./utils/json.ts";
 import { stripBom } from "./utils/text.ts";
 
 const EXTENSIONS_DOC_URL = "https://docs.bastani.ai/extensions";
@@ -340,6 +344,47 @@ async function waitForDeprecationKeypress(warnings: string[], stdin: KeypressInp
 	console.log();
 }
 
+function savesModelRouting(path: string): boolean {
+	try {
+		const settings = parseJsonFileContent(readFileSync(path, "utf-8"));
+		return typeof settings === "object" && settings !== null && Object.hasOwn(settings, "modelRouting");
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Delete the removed `modelRouting` setting from Atomic's global settings file and, when the project is trusted, from
+ * its project settings file, and say so once. The file is rewritten under its settings lock, so settings another
+ * process saves meanwhile are kept. A file that cannot be written keeps the key, which loading it reports as ignored.
+ */
+export function removeSavedModelRoutingSetting(cwd: string, options?: { projectTrusted?: boolean }): void {
+	const storage = new FileSettingsStorage(cwd, getAgentDir());
+	const files: [SettingsScope, string][] = [["global", join(getAgentDir(), "settings.json")]];
+	if (options?.projectTrusted === true) files.push(["project", join(cwd, CONFIG_DIR_NAME, "settings.json")]);
+	for (const [scope, path] of files) {
+		if (!savesModelRouting(path)) continue;
+		let removed = false;
+		try {
+			storage.withPrimaryWriteLock(scope, (current) => {
+				const settings = current === undefined ? undefined : parseJsonFileContent(current);
+				if (typeof settings !== "object" || settings === null || Array.isArray(settings)) return undefined;
+				if (!Object.hasOwn(settings, "modelRouting")) return undefined;
+				delete (settings as Record<string, unknown>).modelRouting;
+				removed = true;
+				return JSON.stringify(settings, null, 2);
+			});
+		} catch {
+			removed = false;
+		}
+		if (removed)
+			warnDeprecation(
+				`Removed the "modelRouting" setting from ${scope} settings: automatic model routing was removed, so "auto" runs your default model and its provider and model restrictions no longer limit "auto" or any fallback model.`,
+				{ showInUi: true },
+			);
+	}
+}
+
 /**
  * Run all migrations. Called once on startup.
  *
@@ -358,6 +403,7 @@ export function runMigrations(
 	migrateSessionsFromAgentRoot();
 	migrateToolsToBin();
 	migrateKeybindingsConfigFile();
+	removeSavedModelRoutingSetting(cwd, options);
 	const deprecationWarnings = migrateExtensionSystem(cwd, options);
 	return { migratedAuthProviders, deprecationWarnings };
 }
