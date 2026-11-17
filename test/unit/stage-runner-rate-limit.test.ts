@@ -13,6 +13,63 @@ import {
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
+test("an effort changed while a stage waits for its provider is checked before dispatch (#3326)", async () => {
+	let armed = false;
+	let waiting = false;
+	let requests = 0;
+	let thinkingLevel: StageSessionRuntime["thinkingLevel"] = "high";
+	const opts = makeOpts({
+		stageOptions: { model: "effort-dispatch/a", modelConstraints: { allowedEfforts: ["high"] } },
+		onModelFallbackMetaChange(meta) {
+			if (armed) {
+				armed = false;
+				recordProviderRateLimit("effort-dispatch", { status: 429, retryAfterMs: 2000 });
+			}
+			if (meta.rateLimits?.some((limit) => limit.waitingUntil !== undefined)) waiting = true;
+		},
+		adapters: {
+			agentSession: {
+				async create() {
+					const { session } = makeMockSession({
+						async prompt() {
+							requests++;
+							return "ok";
+						},
+						setThinkingLevel(level) {
+							thinkingLevel = level;
+						},
+					});
+					Object.defineProperty(session, "thinkingLevel", { get: () => thinkingLevel });
+					return session;
+				},
+			},
+		},
+	});
+	const ctx = createStageContext(opts);
+	await ctx.setThinkingLevel("high");
+	await ctx.__ensureSession();
+	armed = true;
+	const pending = ctx.prompt("run");
+	const outcome = pending.then(
+		() => undefined,
+		(error: Error) => error,
+	);
+	try {
+		await vi.advanceTimersByTimeAsync(0);
+		assert.equal(waiting, true);
+		await ctx.setThinkingLevel("low");
+		await vi.advanceTimersByTimeAsync(2000);
+		const failure = await outcome;
+		assert.ok(failure instanceof Error);
+		assert.match(failure.message, /modelConstraints/);
+		assert.equal(requests, 0);
+	} finally {
+		await ctx.abort();
+		await Promise.allSettled([pending, outcome]);
+		await ctx.__dispose();
+	}
+});
+
 test("honors Retry-After before retrying a workflow provider account (#3864)", async () => {
 	let calls = 0;
 	const agentSession: AgentSessionAdapter = {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { GitHubCopilotAuthenticationError } from "@bastani/atomic-ai";
+import { GitHubCopilotAuthenticationError, recordGitHubCopilotError } from "@bastani/atomic-ai";
 import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
@@ -46,7 +46,7 @@ const id = (account: (typeof ACCOUNTS)[number], index = 0) => `${account.provide
 async function runSession(
 	args: string[],
 	settings: Record<string, unknown> = {},
-	failures?: ReadonlyMap<string, string>,
+	failures?: ReadonlyMap<string, string | GitHubCopilotAuthenticationError>,
 ) {
 	const base = getModel("anthropic", "claude-sonnet-4-5")!;
 	const runtime = await ModelRuntime.create({
@@ -84,9 +84,10 @@ async function runSession(
 					model: requestModel.id,
 					usage: usage(),
 					stopReason: failed ? "error" : "stop",
-					...(failed ? { errorMessage: failure } : {}),
+					...(typeof failure === "string" ? { errorMessage: failure } : {}),
 					timestamp: Date.now(),
 				};
+				if (failure instanceof GitHubCopilotAuthenticationError) recordGitHubCopilotError(message, failure);
 				const stream = createAssistantMessageEventStream();
 				if (failed) stream.push({ type: "error", reason: "error", error: message });
 				else stream.push({ type: "done", reason: "stop", message });
@@ -198,6 +199,38 @@ describe("an auth failure takes its provider out of the chain", () => {
 		}
 	});
 
+	test("a streamed permission denial without a status keeps other models on its provider eligible (#3326)", async () => {
+		const failure = new GitHubCopilotAuthenticationError({
+			modelId: REVOKED.ids[0],
+			api: "anthropic-messages",
+			providerCode: "permission_error",
+			detail: "localized",
+		});
+		const { requests, last } = await runSession(
+			["--model", id(REVOKED), "--fallback-models", `${id(REVOKED, 1)},${id(WORKING)}`],
+			{},
+			new Map([[id(REVOKED), failure]]),
+		);
+		assert.deepEqual(requests, [id(REVOKED), id(REVOKED, 1)]);
+		assert.equal(last?.stopReason, "stop");
+	});
+
+	test("a streamed authentication rejection without a status excludes its provider (#3326)", async () => {
+		const failure = new GitHubCopilotAuthenticationError({
+			modelId: REVOKED.ids[0],
+			api: "anthropic-messages",
+			providerCode: "authentication_error",
+			detail: "localized",
+		});
+		assert.equal(isProviderCredentialRejection(failure), true);
+		const { requests } = await runSession(
+			["--model", id(REVOKED), "--fallback-models", `${id(REVOKED, 1)},${id(WORKING)}`],
+			{},
+			new Map([[id(REVOKED), failure]]),
+		);
+		assert.deepEqual(requests, [id(REVOKED), id(WORKING)]);
+	});
+
 	test("expired, leaked, and disabled API key codes block their provider even when the message is localized (#3326)", () => {
 		for (const code of ["API_KEY_INVALID", "API_KEY_EXPIRED", "API_KEY_DISABLED", "API_KEY_LEAKED"]) {
 			assert.equal(isProviderCredentialRejection({ status: 400, code, message: "localized" }), true, code);
@@ -212,6 +245,12 @@ describe("an auth failure takes its provider out of the chain", () => {
 			"UnrecognizedClientException",
 			"consumer_suspended",
 			"api_key_service_blocked",
+			"InvalidSignatureException",
+			"invalid_signature_exception",
+			"API_KEY_HTTP_REFERRER_BLOCKED",
+			"API_KEY_IP_ADDRESS_BLOCKED",
+			"API_KEY_ANDROID_APP_BLOCKED",
+			"API_KEY_IOS_APP_BLOCKED",
 		]) {
 			for (const failure of [
 				{ status: 403, code, message: "localized" },
@@ -243,7 +282,13 @@ describe("an auth failure takes its provider out of the chain", () => {
 		"403 The security token included in the request is invalid",
 		"400 The security token included in the request has expired",
 		'403 {"error":{"code":403,"details":[{"reason":"CONSUMER_SUSPENDED"}]}}',
+		'{"error":{"details":[{"reason":"CONSUMER_SUSPENDED"}]}}',
 		'403 {"error":{"code":403,"details":[{"reason":"API_KEY_SERVICE_BLOCKED"}]}}',
+		"403 InvalidSignatureException: The request signature we calculated does not match the signature you provided.",
+		'403 {"error":{"code":403,"details":[{"reason":"API_KEY_HTTP_REFERRER_BLOCKED"}]}}',
+		'403 {"error":{"code":403,"details":[{"reason":"API_KEY_IP_ADDRESS_BLOCKED"}]}}',
+		'403 {"error":{"code":403,"details":[{"reason":"API_KEY_ANDROID_APP_BLOCKED"}]}}',
+		'403 {"error":{"code":403,"details":[{"reason":"API_KEY_IOS_APP_BLOCKED"}]}}',
 	]) {
 		test(`a raw credential rejection blocks its provider (#3326): ${errorMessage}`, async () => {
 			const { requests } = await runSession(

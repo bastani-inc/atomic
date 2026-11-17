@@ -419,7 +419,7 @@ function splitStageContent(content: StageUserMessageContent): { text: string; im
 
 export class StageSessionController {
 	private session: StageSessionRuntime | undefined;
-	private hasHadSession = false;
+	private hasAdmittedSession = false;
 	private activeCreation: Promise<StageSessionRuntime> | undefined;
 	/** The creation promise a candidate walk still owns, if one is advancing. */
 	private ownedCreationPromise: Promise<StageSessionRuntime> | undefined;
@@ -693,7 +693,14 @@ export class StageSessionController {
 		if (this.session) await this.session.setThinkingLevel(level);
 		else this.requestedThinkingLevel = level;
 		this.pendingThinkingLevel = level;
-		if (!this.modelRoute && !this.hasHadSession) this.candidatesPromise = undefined;
+		if (
+			!this.modelRoute &&
+			!this.hasAdmittedSession &&
+			this.sessionPromise === undefined &&
+			this.activeCreation === undefined &&
+			this.ownedCreationPromise === undefined
+		)
+			this.candidatesPromise = undefined;
 	}
 
 	get awaitingAutoPrompt(): boolean {
@@ -783,6 +790,7 @@ export class StageSessionController {
 	private checkedSession(session: StageSessionRuntime): StageSessionRuntime {
 		if (this.modelRoute && (!session.model || !this.modelRoute.allowsModel(session.model, session.thinkingLevel)))
 			throw new Error("Workflow stage execution model no longer satisfies routing constraints.");
+		this.assertExplicitSessionConstraints(session);
 		return session;
 	}
 
@@ -1199,6 +1207,7 @@ export class StageSessionController {
 		};
 		for (;;) {
 			try {
+				this.checkedSession(session);
 				await resume.call(session, results);
 				break;
 			} catch (error) {
@@ -2491,6 +2500,7 @@ export class StageSessionController {
 		this.residency.thrownErrorRetryStates.add(state);
 		try {
 			await this.waitForProvider(this.currentModelValue());
+			this.checkedSession(continuationSession);
 			await continuationSession._runAgentContinue();
 		} catch (error) {
 			const resume = state.pauseResume ?? this.pauseControl.currentResume();
@@ -2822,6 +2832,26 @@ export class StageSessionController {
 				(constraint.allowedEfforts === undefined ||
 					(effort !== undefined && constraint.allowedEfforts.some((allowed) => allowed === effort))),
 		);
+	}
+
+	private assertExplicitSessionConstraints(
+		session: StageSessionRuntime,
+		candidate?: WorkflowResolvedModelCandidate,
+	): void {
+		if (this.modelRoute) return;
+		const constraints = this.explicitModelConstraints();
+		if (constraints.length === 0) return;
+		const value = session.model ?? candidate?.value ?? this.currentModelValue();
+		const id = workflowModelId(value);
+		if (
+			value === undefined ||
+			id === undefined ||
+			!this.candidateSatisfiesConstraints(
+				{ id, value, reasoningLevel: session.thinkingLevel ?? candidate?.reasoningLevel },
+				constraints,
+			)
+		)
+			throw new Error("No workflow stage model candidate satisfies the stage's modelConstraints.");
 	}
 
 	private candidateProvider(candidate: WorkflowResolvedModelCandidate | undefined): string | undefined {
@@ -3289,17 +3319,7 @@ export class StageSessionController {
 			await this.opts.onSessionReady?.();
 			if (this.disposed || this.opts.signal?.aborted || this.abortGeneration !== startGeneration)
 				throw this.staleCreationReason(startGeneration);
-			if (!this.modelRoute && candidate) {
-				const constraints = this.explicitModelConstraints();
-				const model = attachedSession.model ?? candidate.value;
-				const admitted: WorkflowResolvedModelCandidate = {
-					id: workflowModelId(model) ?? candidate.id,
-					value: model,
-					reasoningLevel: attachedSession.thinkingLevel ?? candidate.reasoningLevel,
-				};
-				if (constraints.length > 0 && !this.candidateSatisfiesConstraints(admitted, constraints))
-					throw new Error("No workflow stage model candidate satisfies the stage's modelConstraints.");
-			}
+			this.assertExplicitSessionConstraints(attachedSession, candidate);
 		} catch (reason) {
 			// Attachment is not readiness. The retained creation owns cleanup on
 			// both rejection and cancellation; never expose this identity for reuse.
@@ -3312,6 +3332,7 @@ export class StageSessionController {
 			}
 			throw reason;
 		}
+		this.hasAdmittedSession = true;
 		this.givenUp = undefined;
 		this.reopenFailure = undefined;
 		this.reportStartupPhase("ready");
@@ -3327,7 +3348,6 @@ export class StageSessionController {
 		if (this.generationSealed) result.session.sealWorkflowStageGeneration?.();
 		this.residency.replacement.adopt(result.session);
 		this.session = result.session;
-		this.hasHadSession = true;
 		this.applyToolDetachment(result.session);
 		this.sessionSettingsManager = result.settingsManager ?? result.session.settingsManager;
 		if (this.sharedModelRuntime === undefined) {
@@ -3454,8 +3474,8 @@ export class StageSessionController {
 			try {
 				this.reportStartupPhase("first-dispatch");
 				// A live resume loops here without returning through the outer retry guard.
-				this.checkedSession(activeSession);
 				await this.waitForProvider(this.currentModelValue());
+				this.checkedSession(activeSession);
 				const detachedResults = this.pendingDetachedResults;
 				this.pendingDetachedResults = undefined;
 				if (detachedResults !== undefined && activeSession.resumeDetachedTurn !== undefined) {

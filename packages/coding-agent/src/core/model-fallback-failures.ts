@@ -892,6 +892,7 @@ const AUTHENTICATION_FAILURE_CODES: ReadonlySet<string> = new Set([
 	"auth_required",
 	"authentication_required",
 	"authentication_failed",
+	"authentication_error",
 	"unauthorized",
 ]);
 
@@ -911,8 +912,14 @@ const CREDENTIAL_REJECTION_CODES: ReadonlySet<string> = new Set([
 	"expiredtokenexception",
 	"unrecognized_client_exception",
 	"unrecognizedclientexception",
+	"invalid_signature_exception",
+	"invalidsignatureexception",
 	"consumer_suspended",
 	"api_key_service_blocked",
+	"api_key_http_referrer_blocked",
+	"api_key_ip_address_blocked",
+	"api_key_android_app_blocked",
+	"api_key_ios_app_blocked",
 ]);
 
 const CREDENTIAL_REJECTION_CODE_PATTERN = new RegExp(`\\b(?:${[...CREDENTIAL_REJECTION_CODES].join("|")})\\b`, "i");
@@ -932,7 +939,8 @@ export function isProviderCredentialRejection(error: unknown): boolean {
 	if (status === 401 || integerFrom(signal.code) === 401) return true;
 	if (signal.kind !== "auth_on_candidate_provider") return false;
 	const typedFailure = findGitHubCopilotError(error);
-	const codes = [typedFailure?.providerCode ?? stringField(error, "providerCode"), signal.code, signal.name];
+	const providerCode = typedFailure?.providerCode ?? stringField(error, "providerCode");
+	const codes = providerCode === undefined ? [signal.code, signal.name] : [providerCode];
 	if (
 		codes.some((value) => {
 			const code = normalizeCode(value);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { type SessionManager, SettingsManager } from "@bastani/atomic";
-import type { Model } from "@bastani/atomic-ai";
+import { GitHubCopilotAuthenticationError, type Model } from "@bastani/atomic-ai";
 import { describe, test } from "vitest";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import type {
@@ -66,6 +66,7 @@ function stageOpts(
 					}
 					let thinkingLevel: StageSessionRuntime["thinkingLevel"] = options.thinkingLevel ?? "medium";
 					const { session } = makeMockSession({
+						...(typeof rawModel === "object" && rawModel !== null ? { model: rawModel } : {}),
 						...(manager === undefined ? {} : { sessionId: manager.getSessionId() }),
 						setThinkingLevel(level) {
 							thinkingLevel = level;
@@ -241,7 +242,13 @@ describe("a workflow stage's model chain and credentials", () => {
 		"403 The security token included in the request is invalid",
 		"400 The security token included in the request has expired",
 		'403 {"error":{"code":403,"details":[{"reason":"CONSUMER_SUSPENDED"}]}}',
+		'{"error":{"details":[{"reason":"CONSUMER_SUSPENDED"}]}}',
 		'403 {"error":{"code":403,"details":[{"reason":"API_KEY_SERVICE_BLOCKED"}]}}',
+		'403 {"error":{"code":403,"details":[{"reason":"API_KEY_HTTP_REFERRER_BLOCKED"}]}}',
+		'403 {"error":{"code":403,"details":[{"reason":"API_KEY_IP_ADDRESS_BLOCKED"}]}}',
+		'403 {"error":{"code":403,"details":[{"reason":"API_KEY_ANDROID_APP_BLOCKED"}]}}',
+		'403 {"error":{"code":403,"details":[{"reason":"API_KEY_IOS_APP_BLOCKED"}]}}',
+		"403 InvalidSignatureException: The request signature we calculated does not match the signature you provided. Check your AWS Secret Access Key and signing method.",
 	]) {
 		test(`initial and resumed stage prompts skip the provider after a credential rejection (#3326): ${message}`, async () => {
 			for (const resumed of [false, true]) {
@@ -289,6 +296,46 @@ describe("a workflow stage's model chain and credentials", () => {
 		try {
 			assert.equal(await resumedCtx.prompt("first"), "ok");
 			resumedFailures.set("scoped/a", MODEL_SCOPED_403);
+			assert.equal(await resumedCtx.prompt("second"), "ok");
+			assert.deepEqual(resumedCreated, ["scoped/a", "scoped/a", "scoped/b"]);
+		} finally {
+			await resumedCtx.__dispose();
+		}
+	});
+
+	test("a streamed permission denial without a status on initial or resumed stage prompts advances to another model on the same provider (#3326)", async () => {
+		const denial = new GitHubCopilotAuthenticationError({
+			modelId: "a",
+			api: "anthropic-messages",
+			providerCode: "permission_error",
+			detail: "localized",
+		});
+		const initialCreated: string[] = [];
+		const initialCtx = createStageContext(
+			stageOpts(
+				["scoped/a", "scoped/b", "working/a"],
+				new Set(["scoped", "working"]),
+				initialCreated,
+				new Map([["scoped/a", denial]]),
+			),
+		);
+		assert.equal(await initialCtx.prompt("run"), "ok");
+		await initialCtx.__dispose();
+		assert.deepEqual(initialCreated, ["scoped/a", "scoped/b"]);
+
+		const resumedCreated: string[] = [];
+		const resumedFailures = new Map<string, Error>();
+		const resumedCtx = createStageContext(
+			stageOpts(
+				["scoped/a", "scoped/b", "working/a"],
+				new Set(["scoped", "working"]),
+				resumedCreated,
+				resumedFailures,
+			),
+		);
+		try {
+			assert.equal(await resumedCtx.prompt("first"), "ok");
+			resumedFailures.set("scoped/a", denial);
 			assert.equal(await resumedCtx.prompt("second"), "ok");
 			assert.deepEqual(resumedCreated, ["scoped/a", "scoped/a", "scoped/b"]);
 		} finally {
@@ -359,7 +406,7 @@ describe("a workflow stage's model chain and credentials", () => {
 		}
 	});
 
-	test("explicit stage admission rechecks an effort changed while its session is being created (#3326)", async () => {
+	test("a stage rejected during admission recovers after a retry and an allowed effort change (#3326)", async () => {
 		const model: Model<"openai-completions"> = {
 			type: "chat",
 			provider: "p",
@@ -377,7 +424,7 @@ describe("a workflow stage's model chain and credentials", () => {
 		const finishCreation = Promise.withResolvers<void>();
 		let thinkingLevel: StageSessionRuntime["thinkingLevel"] = "high";
 		let requests = 0;
-		const opts = stageOpts(["p/a:high"], new Set(["p"]), [], new Map(), {
+		const opts = stageOpts(["p/a"], new Set(["p"]), [], new Map(), {
 			modelConstraints: { allowedModels: ["p/a"], allowedEfforts: ["high"] },
 		});
 		opts.models = {
@@ -404,17 +451,139 @@ describe("a workflow stage's model chain and credentials", () => {
 		};
 		const ctx = createStageContext(opts);
 		try {
+			await ctx.setThinkingLevel("high");
 			const prompting = ctx.prompt("run");
 			await started.promise;
 			await ctx.setThinkingLevel("low");
 			finishCreation.resolve();
 			await assert.rejects(prompting, /modelConstraints/);
+			await assert.rejects(ctx.prompt("retry"), /modelConstraints/);
 			assert.equal(requests, 0);
+			await ctx.setThinkingLevel("high");
+			assert.equal(await ctx.prompt("allowed"), "ok");
+			assert.equal(requests, 1);
 		} finally {
 			finishCreation.resolve();
 			await ctx.__dispose();
 		}
 	});
+
+	test("an admitted stage keeps its candidates when effort changes during creation (#3326)", async () => {
+		const model: Model<"openai-completions"> = {
+			type: "chat",
+			provider: "p",
+			id: "a",
+			name: "a",
+			api: "openai-completions",
+			baseUrl: "https://example.invalid",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 100_000,
+			maxTokens: 1_000,
+		};
+		const started = Promise.withResolvers<void>();
+		const finishCreation = Promise.withResolvers<void>();
+		let requests = 0;
+		let creations = 0;
+		const opts = stageOpts(["p/a"], new Set(["p"]), [], new Map(), {
+			modelConstraints: { allowedModels: ["p/a"], allowedEfforts: ["high"] },
+		});
+		opts.models = {
+			listModels: async () => [{ provider: "p", id: "a", fullId: "p/a", model }],
+			hasCredentials: () => true,
+		};
+		opts.adapters.agentSession = {
+			async create(options) {
+				creations++;
+				let thinkingLevel: StageSessionRuntime["thinkingLevel"] = options.thinkingLevel ?? "medium";
+				const { session } = makeMockSession({
+					model,
+					async prompt() {
+						requests++;
+						return "ok";
+					},
+					setThinkingLevel(level) {
+						thinkingLevel = level;
+					},
+				});
+				Object.defineProperty(session, "thinkingLevel", { get: () => thinkingLevel });
+				started.resolve();
+				await finishCreation.promise;
+				return session;
+			},
+		};
+		const ctx = createStageContext(opts);
+		try {
+			await ctx.setThinkingLevel("high");
+			const prompting = ctx.prompt("first");
+			await started.promise;
+			await ctx.setThinkingLevel("high");
+			finishCreation.resolve();
+			assert.equal(await prompting, "ok");
+			assert.equal(await ctx.prompt("second"), "ok");
+			assert.equal(ctx.thinkingLevel, "high");
+			assert.equal(requests, 2);
+			assert.equal(creations, 1);
+		} finally {
+			finishCreation.resolve();
+			await ctx.__dispose();
+		}
+	});
+
+	for (const release of [false, true]) {
+		test(`a ${release ? "released" : "live"} stage rejects an excluded effort before its next request and recovers at an allowed effort (#3326)`, async () => {
+			const created: string[] = [];
+			const store = new MemorySessionStore();
+			const dispatcher = new StageWakeDispatcher("run-credentials", undefined);
+			const wakeKey = stageWakeKey("run-credentials", "stage-credentials");
+			dispatcher.open({ runId: "run-credentials", stageId: "stage-credentials", wakeKey });
+			const opts = stageOpts(["p/a"], new Set(["p"]), created, new Map(), {
+				modelConstraints: { allowedModels: ["p/a"], allowedEfforts: ["high"] },
+				sessionStore: store,
+			});
+			opts.adapters.sessionStore = store;
+			opts.waiting = {
+				policy: { afterMs: 0 },
+				dispatcher,
+				wakeKey,
+				async enter() {},
+				async recordResults() {},
+				resultsInTranscript() {},
+				async leave() {},
+				async reopenFailed() {},
+				async rehydrated() {},
+				resident() {},
+			};
+			let requests = 0;
+			const create = opts.adapters.agentSession!.create;
+			opts.adapters.agentSession = {
+				async create(options, meta) {
+					const session = (await create(options, meta)) as StageSessionRuntime;
+					const prompt = session.prompt.bind(session);
+					session.prompt = (...args) => {
+						requests++;
+						return prompt(...args);
+					};
+					return session;
+				},
+			};
+			const ctx = createStageContext(opts);
+			try {
+				await ctx.setThinkingLevel("high");
+				assert.equal(await ctx.prompt("first"), "ok");
+				if (release) await ctx.release();
+				await ctx.setThinkingLevel("low");
+				await assert.rejects(ctx.prompt("excluded"), /modelConstraints/);
+				assert.equal(requests, 1);
+				await ctx.setThinkingLevel("high");
+				assert.equal(await ctx.prompt("allowed"), "ok");
+				assert.equal(requests, 2);
+			} finally {
+				await ctx.__dispose();
+			}
+		});
+	}
 
 	test("an explicit stage chain honors modelConstraints.allowedModels after a 503 and never creates disallowed fallbacks (#3326)", async () => {
 		const created: string[] = [];
