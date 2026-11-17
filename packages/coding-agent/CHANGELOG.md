@@ -2,9 +2,14 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- On Windows, `ensurePrivateTempDir()` and `assertPrivateDirectory()` no longer read a directory's owner and access list on the main thread. They accept a directory already checked in the process; otherwise they start the check in the background, and `assertPrivateDirectory()` throws `TempDirRefusedError` ("its ownership is still being verified") while `ensurePrivateTempDir()` returns another private directory. **Migration:** use `ensurePrivateTempDirAsync()` and `assertPrivateDirectoryAsync()` on Windows to wait for the check ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
+
 ### Added
 
 - `ATOMIC_STARTUP_TRACE` names a file to which Atomic appends each startup milestone (process start, first paint, engine ready, first provider request) with its wall-clock time; an interactive session's engine writes to the same file
+- `ensurePrivateTempDirAsync()` and `assertPrivateDirectoryAsync()` for extensions and SDK integrations: they create or check a directory private to the current account without blocking, waiting for the Windows owner and access-list check ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
 
 ### Changed
 
@@ -30,6 +35,8 @@
 - Fixed each `/reload` keeping the extensions it replaced in memory for as long as the session ran: every new generation of the session's extensions kept the one before it, so each reload added about 10 MB that was never released.
 - On a busy Windows machine, a shell command or a subagent's named-worktree checkout that finished is no longer reported as failed with `Windows stdin worker stop was not confirmed` ([#5340](https://github.com/bastani-inc/atomic/pull/5340))
 - Fixed the libSQL / Turso example in the storage guide crashing the process on Windows without an error message when it closed a local file database: the native `libsql` 0.5 driver closed the connection's SQLite handle twice. The example now holds a statement while each connection closes, and for a local file `close()` runs two garbage collections before it resolves, so the file is released when `close()` returns, as `@bastani/atomic-storage-libsql` does. See [Bring your own driver](docs/storage.md#bring-your-own-driver) ([#5325](https://github.com/bastani-inc/atomic/issues/5325))
+- On Windows, Atomic no longer freezes while it checks that a temp directory is private. The PowerShell read of each private root's owner and access list held the main thread, for a quarter to half a second on an idle machine and for seconds on a busy one, and timers, hooks and the interface stalled with it. The read now runs in the background and starts when a session starts. Bash spill files, saved tool results, temporary extension installs, subagent artifacts, the GitHub clone cache and design workflow artifacts wait for it without blocking. Every directory refused before is still refused ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
+- Private temporary storage is no longer reused through a directory link, a runtime directory opened to other accounts, or a replaced root, including a Windows replacement with the same creation time. Runtime directory paths with trailing separators or `..` cannot bypass the checks. Temporary installs and caches fall back to another private directory instead ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
 - Replacing a submission echo with a prompt rewritten by an `input` hook, or inserting a custom message ahead of a streaming reply, now touches only the tail of the chat container instead of scanning the whole transcript, keeping prompt swaps fast in long sessions ([#5323](https://github.com/bastani-inc/atomic/issues/5323))
 - Corrected new-message counts when a transcript insertion or removal is followed by another change that restores its earlier child count ([#5323](https://github.com/bastani-inc/atomic/issues/5323))
 
