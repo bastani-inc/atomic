@@ -29,10 +29,13 @@ function harness(initial: AgentPanelItem[]) {
 	const opened: string[] = [];
 	const dismissed: string[] = [];
 	const answers: string[] = [];
+	let closed = 0;
 	const inspector = new TaskInspector(
 		ownerTaskViewSource(fixture.store),
 		() => {},
-		() => {},
+		() => {
+			closed++;
+		},
 	);
 	inspector.setBoardSource({
 		items: () => items,
@@ -60,6 +63,7 @@ function harness(initial: AgentPanelItem[]) {
 		opened,
 		dismissed,
 		answers,
+		closed: () => closed,
 		paint: (height = 24) => stripVTControlCharacters(inspector.renderViewport(100, height).join("\n")),
 		replace(next: AgentPanelItem[]) {
 			items = next;
@@ -137,6 +141,22 @@ test("a finished row keeps its dismissal and help keys at 80 columns (#5224)", a
 	try {
 		const line = stripVTControlCharacters(h.inspector.renderViewport(80, 24).at(-1)!).trim();
 		assert.equal(line, "↑↓ select·space peek·enter/→ open·x dismiss·/ filter·esc/← close·? keys");
+	} finally {
+		await h.dispose();
+	}
+});
+
+test("Left on a non-editable peek closes only the card before closing the task sheet (#5224)", async () => {
+	const h = harness([item("release", "running")]);
+	try {
+		h.paint();
+		h.inspector.handleInput(" ");
+		assert.match(h.paint(), /╭─ release ─/);
+		h.inspector.handleInput("\x1b[D");
+		assert.equal(h.closed(), 0);
+		assert.doesNotMatch(h.paint(), /╭─ release ─/);
+		h.inspector.handleInput("\x1b[D");
+		assert.equal(h.closed(), 1);
 	} finally {
 		await h.dispose();
 	}
