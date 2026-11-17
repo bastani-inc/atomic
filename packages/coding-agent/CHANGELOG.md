@@ -2,7 +2,14 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `Selector` single-select pickers now stop accepting input after `onSelect` by default, including Esc and Ctrl+C. For persistent or multi-stage pickers that call `setItems()` after a choice, pass `closeOnSelect: false`. If saving a choice fails, call `retrySelection()` to accept input again. `onConfirm` and `onCancel` still stop the picker ([#5237](https://github.com/bastani-inc/atomic/pull/5237))
+- `SelectorState.items` is now read-only, and item-list snapshots are frozen. Replace `state.items = rows` and array mutations with `state.setItems(rows)`, or use `selector.setItems(rows)` for a rendered picker. Copy a snapshot before modifying it ([#5237](https://github.com/bastani-inc/atomic/pull/5237))
+
 ### Added
+
+- Added `Selector`'s `closeOnSelect` option for persistent single-select pickers, `retrySelection()` to reopen a picker after a failed choice, and item `searchTextMode: "replace"` to search only explicit `searchText` instead of displayed labels, descriptions and tags ([#5237](https://github.com/bastani-inc/atomic/pull/5237))
 
 - Added `AgentSession.setModel(model, { thinkingLevel })` to set a model and its reasoning level in one call. Unsupported levels clamp to a supported level, and `persist: true` saves both. RPC `set_model` also accepts `thinkingLevel` and rejects unrecognized values without switching the model. `RpcClient.setModel(provider, modelId, { thinkingLevel })` sends the option. Persisted `set_model` and `cycle_model` responses include `persistedDefaults` to distinguish saved startup preferences from session-only changes ([#5237](https://github.com/bastani-inc/atomic/pull/5237))
 - `AgentSession.interruptTurn()` ends the current turn without closing a subagent child to further messages, and `WorkflowRunControl` gains optional `panelRuns()`, `subscribePanelRuns()` and `openRun()` for the agent panel ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
@@ -15,6 +22,7 @@
 - The main chat's below-prompt task line is now the **agent panel**: one row per running or recent background subagent, workflow run and shell, with its status glyph, name, task, elapsed time and tokens (a workflow run shows its stage progress, current stage, waiting question or failure reason). ↓ on an empty prompt focuses it; Enter or → opens a subagent's or shell's chat, or a run's graph; `x` twice stops; finished rows fade and leave after a few minutes. A stage or subagent chat lists its own active tasks below its prompt in the same rows, and `renderTaskFooter` renders those rows ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - A subagent's chat has an attached composer: heavy accent rules naming the subagent, its task and its state (`debugger · #5220 spawn lock · 18m`), and a `Message debugger…` placeholder (`Answer debugger…` while it waits on a question). Opened from the agent panel, ← on its empty prompt returns to the main chat ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - `/tasks` lists workflow runs beside subagents and shells, grouped **Needs input**, **Working** and **Done** under a header with their counts. Space on a workflow run opens a peek card with its question and a reply box; Space on a subagent or shell opens its detail page. `/` filters the list, and Enter on a run opens its graph ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- Clarified in `codemode`'s description, system-prompt guidance, and `searchTools()`/`describeTool()` hints that `subagent`, `workflow`, and other model-only tools (plus `intercom`'s model-only actions) cannot be called from inside a `codemode` script, and should be called directly as separate top-level tools when available in the session
 
 ### Fixed
 
@@ -35,6 +43,8 @@
 - Fixed task elapsed time freezing while stopping in the task list, inspector and attached chat, and extension elapsed time drifting after updates while the panel was hidden. Panel sources keep updating after reload and after changes raised while listing rows. Also fixed stale panel scrolling after rows disappear, leading combining marks overflowing terminal rows, and rounded token counts such as `1000.0k` instead of `1.0M`. Panel updates reuse unchanged source data and rendered rows, avoid rebuilding task rows while hidden, and combine bursts of changes into one refresh to keep animations responsive ([#5239](https://github.com/bastani-inc/atomic/pull/5239))
 - Fixed slow navigation in `/tasks` when a session has many background tasks, including task detail and chat pages receiving streaming updates, while keeping task updates and elapsed times live. The agent panel and attached-chat task footers also stay responsive with large task lists ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - `/tasks` binds each workflow reply to the question shown when typing starts, refuses replies to changed or never-shown questions, and stops capturing reply text when the question disappears. It reports reply and stop failures even after the list closes and keeps elapsed times consistent with the agent panel and each chat's own task source, including extension rows first shown after other rows finish. Failed workflow opens no longer mark a run as viewed ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- Model searches initially select the best match, and effort arrows work with SS3 terminal key sequences. Provider searches no longer match sign-in status or method text. Long dialog titles and options wrap instead of losing text, and selector hints show only available actions ([#5237](https://github.com/bastani-inc/atomic/pull/5237))
+- Isolated `/scoped-models` changes update both model searches and Ctrl+P cycling. Scope saves run in order and report failures, and engine reconnection no longer overwrites a newer model or reasoning choice. RPC model responses report saved defaults only for `persist: true` ([#5237](https://github.com/bastani-inc/atomic/pull/5237))
 
 ### Removed
 

@@ -255,21 +255,43 @@ describe("scoped models selector", () => {
 		expect(stripAnsi(selector.render(120).join("\n"))).toContain("all enabled");
 	});
 
-	it("uses the shared selector: checkboxes, a count under the title, and a hint of exactly its keys (#5224)", async () => {
+	it("uses the shared selector: checkboxes, a count under the title, and a hint of exactly its keys (#5224, #5237)", async () => {
 		const models = [
 			{ id: "model-a", name: "Model A", enabled: true },
 			{ id: "model-b", name: "Model B", enabled: false },
 		];
 		const selector = await createSelector(models);
 		const lines = () => stripAnsi(selector.render(160).join("\n")).split("\n");
-		const reorder = useWindowsKeybindings() ? "alt+q/alt+↓" : "alt+↑/alt+↓";
+		const reorderUp = useWindowsKeybindings() ? "alt+q" : "alt+↑";
+		const reorderBoth = `${reorderUp}/alt+↓`;
 		expect(lines()[1]).toBe("  Scoped models");
 		expect(lines()[2]).toBe("  Changes are saved automatically · 1/2 enabled");
 		expect(lines().at(-2)?.trim()).toBe(
-			`↑↓ select · enter toggle · ctrl+a all · ctrl+x clear · ctrl+p provider · ${reorder} reorder · type to search · esc cancel`,
+			"↑↓ select · enter toggle · ctrl+a all · ctrl+x clear · ctrl+p provider · type to search · esc cancel",
 		);
 		selector.handleInput("\x1b[B");
 		expect(lines().at(-2)).not.toContain("reorder");
+
+		const threeEnabled = await createSelector([
+			{ id: "model-a", name: "Model A", enabled: true },
+			{ id: "model-b", name: "Model B", enabled: true },
+			{ id: "model-c", name: "Model C", enabled: true },
+			{ id: "model-d", name: "Model D", enabled: false },
+		]);
+		const threeLines = () => stripAnsi(threeEnabled.render(160).join("\n")).split("\n");
+		expect(threeLines().at(-2)?.trim()).toBe(
+			"↑↓ select · enter toggle · ctrl+a all · ctrl+x clear · ctrl+p provider · alt+↓ reorder · type to search · esc cancel",
+		);
+		threeEnabled.handleInput("\x1b[B");
+		expect(threeLines().at(-2)?.trim()).toBe(
+			`↑↓ select · enter toggle · ctrl+a all · ctrl+x clear · ctrl+p provider · ${reorderBoth} reorder · type to search · esc cancel`,
+		);
+		threeEnabled.handleInput("\x1b[B");
+		expect(threeLines().at(-2)?.trim()).toBe(
+			`↑↓ select · enter toggle · ctrl+a all · ctrl+x clear · ctrl+p provider · ${reorderUp} reorder · type to search · esc cancel`,
+		);
+		threeEnabled.handleInput("\x1b[B");
+		expect(threeLines().at(-2)).not.toContain("reorder");
 		for (const width of [40, 80, 160]) {
 			for (const line of selector.render(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 		}
@@ -488,6 +510,201 @@ describe("scoped models selector", () => {
 			const hint = stripAnsi(selector.render(width).at(-2) ?? "").trim();
 			assert.ok(hint.includes("enter toggle"), `missing enter toggle at width ${width}: ${hint}`);
 			assert.ok(hint.includes("esc clear"), `missing esc clear at width ${width}: ${hint}`);
+		}
+	});
+
+	it("hints only live all, clear, and boundary reorder keys and ignores no-op presses (#5237)", async () => {
+		harness = await createHarness({
+			models: [
+				{ id: "model-1", name: "Model 1" },
+				{ id: "model-2", name: "Model 2" },
+				{ id: "model-3", name: "Model 3" },
+			],
+		});
+		const provider = harness.models[0].provider;
+		const ids = harness.models.map((model) => `${provider}/${model.id}`);
+		const reorderUpKey = useWindowsKeybindings() ? "alt+q" : "alt+↑";
+		const hintOf = (selector: ScopedModelsSelectorComponent) => stripAnsi(selector.render(200).at(-2) ?? "").trim();
+
+		const allChanges: Array<string[] | null> = [];
+		const allEnabled = new ScopedModelsSelectorComponent(
+			{ allModels: harness.models, enabledModelIds: null },
+			{ onChange: (next) => void allChanges.push(next), onCancel: () => {} },
+		);
+		assert.ok(!hintOf(allEnabled).includes("ctrl+a all"), hintOf(allEnabled));
+		assert.ok(hintOf(allEnabled).includes("ctrl+x clear"), hintOf(allEnabled));
+		assert.ok(!hintOf(allEnabled).includes("reorder"), hintOf(allEnabled));
+		allEnabled.handleInput("\x01");
+		assert.equal(allChanges.length, 0);
+
+		const noneChanges: Array<string[] | null> = [];
+		const noneEnabled = new ScopedModelsSelectorComponent(
+			{ allModels: harness.models, enabledModelIds: [] },
+			{ onChange: (next) => void noneChanges.push(next), onCancel: () => {} },
+		);
+		assert.ok(hintOf(noneEnabled).includes("ctrl+a all"), hintOf(noneEnabled));
+		assert.ok(!hintOf(noneEnabled).includes("ctrl+x clear"), hintOf(noneEnabled));
+		assert.ok(!hintOf(noneEnabled).includes("reorder"), hintOf(noneEnabled));
+		noneEnabled.handleInput("\x18");
+		assert.equal(noneChanges.length, 0);
+
+		const unavailableChanges: Array<string[] | null> = [];
+		const allAvailablePlusUnavailable = new ScopedModelsSelectorComponent(
+			{ allModels: harness.models, enabledModelIds: [...ids, `${provider}/retired-model`] },
+			{ onChange: (next) => void unavailableChanges.push(next), onCancel: () => {} },
+		);
+		assert.ok(!hintOf(allAvailablePlusUnavailable).includes("ctrl+a all"), hintOf(allAvailablePlusUnavailable));
+		assert.ok(hintOf(allAvailablePlusUnavailable).includes("ctrl+x clear"), hintOf(allAvailablePlusUnavailable));
+		allAvailablePlusUnavailable.handleInput("\x01");
+		assert.equal(unavailableChanges.length, 0);
+
+		const oneChanges: Array<string[] | null> = [];
+		const oneEnabled = new ScopedModelsSelectorComponent(
+			{ allModels: harness.models, enabledModelIds: [ids[0]] },
+			{ onChange: (next) => void oneChanges.push(next), onCancel: () => {} },
+		);
+		assert.ok(!hintOf(oneEnabled).includes("reorder"), hintOf(oneEnabled));
+		oneEnabled.handleInput(REORDER_UP);
+		oneEnabled.handleInput(REORDER_DOWN);
+		assert.equal(oneChanges.length, 0);
+
+		oneEnabled.handleInput("model-1");
+		assert.ok(!hintOf(oneEnabled).includes("ctrl+a all"), hintOf(oneEnabled));
+		assert.ok(hintOf(oneEnabled).includes("ctrl+x clear"), hintOf(oneEnabled));
+		oneEnabled.handleInput("\x01");
+		assert.equal(oneChanges.length, 0);
+
+		oneEnabled.handleInput("\x1b");
+		oneEnabled.handleInput("model-2");
+		assert.ok(hintOf(oneEnabled).includes("ctrl+a all"), hintOf(oneEnabled));
+		assert.ok(!hintOf(oneEnabled).includes("ctrl+x clear"), hintOf(oneEnabled));
+		oneEnabled.handleInput("\x18");
+		assert.equal(oneChanges.length, 0);
+
+		const twoChanges: Array<string[] | null> = [];
+		const twoEnabled = new ScopedModelsSelectorComponent(
+			{ allModels: harness.models, enabledModelIds: [ids[0], ids[1]] },
+			{ onChange: (next) => void twoChanges.push(next), onCancel: () => {} },
+		);
+		assert.ok(hintOf(twoEnabled).includes("alt+↓ reorder"), hintOf(twoEnabled));
+		assert.ok(!hintOf(twoEnabled).includes(`${reorderUpKey}/alt+↓ reorder`), hintOf(twoEnabled));
+		twoEnabled.handleInput(REORDER_UP);
+		assert.equal(twoChanges.length, 0);
+
+		twoEnabled.handleInput("\x1b[B");
+		assert.ok(hintOf(twoEnabled).includes(`${reorderUpKey} reorder`), hintOf(twoEnabled));
+		assert.ok(!hintOf(twoEnabled).includes("alt+↓ reorder"), hintOf(twoEnabled));
+		twoEnabled.handleInput(REORDER_DOWN);
+		assert.equal(twoChanges.length, 0);
+	});
+
+	it("keeps all-enabled sentinel when ctrl+x is pressed on a no-match search (#5237)", async () => {
+		harness = await createHarness({
+			models: [
+				{ id: "model-a", name: "Model A" },
+				{ id: "model-b", name: "Model B" },
+			],
+		});
+		const provider = harness.models[0].provider;
+		const changes: Array<string[] | null> = [];
+		const selector = new ScopedModelsSelectorComponent(
+			{ allModels: [...harness.models], enabledModelIds: null },
+			{ onChange: (next) => void changes.push(next), onCancel: () => {} },
+		);
+
+		selector.handleInput("zzzz");
+		const hintDuringNoMatch = stripAnsi(selector.render(160).at(-2) ?? "").trim();
+		assert.ok(!hintDuringNoMatch.includes("ctrl+x clear"), hintDuringNoMatch);
+		assert.ok(!hintDuringNoMatch.includes("ctrl+a all"), hintDuringNoMatch);
+
+		selector.handleInput("\x18");
+		assert.equal(changes.length, 0);
+
+		selector.handleInput("\x1b");
+		const afterClearSearch = stripAnsi(selector.render(160).join("\n"));
+		assert.ok(afterClearSearch.includes("Changes are saved automatically · all enabled"), afterClearSearch);
+
+		const modelC = { ...harness.models[0], id: "model-c", name: "Model C" };
+		selector.updateModels([...harness.models, modelC]);
+		const afterUpdate = stripAnsi(selector.render(160).join("\n"));
+		assert.ok(afterUpdate.includes(`[✓] ${provider}/model-c`), afterUpdate);
+
+		selector.handleInput("\x1b[B");
+		selector.handleInput("\r");
+		assert.deepEqual(changes, [[`${provider}/model-a`, `${provider}/model-c`]]);
+	});
+
+	it("serializes async onChange calls and catches rejections with a notice (#5237)", async () => {
+		harness = await createHarness({
+			models: [
+				{ id: "model-a", name: "Model A" },
+				{ id: "model-b", name: "Model B" },
+			],
+		});
+		const provider = harness.models[0].provider;
+		const modelA = `${provider}/model-a`;
+		const modelB = `${provider}/model-b`;
+		const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+		let saved: string[] | null | "unset" = "unset";
+		const calls: Array<string[] | null> = [];
+		const selector = new ScopedModelsSelectorComponent(
+			{ allModels: [...harness.models], enabledModelIds: [modelA, modelB] },
+			{
+				onChange: async (ids) => {
+					calls.push(ids);
+					await sleep(calls.length === 1 ? 40 : 5);
+					saved = ids;
+				},
+				onCancel: () => {},
+			},
+		);
+
+		selector.handleInput("\r");
+		selector.handleInput("\x01");
+		await sleep(80);
+		assert.deepEqual(calls, [[modelB], null]);
+		assert.equal(saved, null);
+
+		const unhandled: unknown[] = [];
+		const onUnhandled = (reason: unknown) => void unhandled.push(reason);
+		process.on("unhandledRejection", onUnhandled);
+		try {
+			let attempt = 0;
+			const savedAfterFailure: Array<string[] | null> = [];
+			const failingSelector = new ScopedModelsSelectorComponent(
+				{
+					allModels: [...harness.models],
+					enabledModelIds: [modelA, modelB],
+					refreshStatus: "Model catalogs refreshed.",
+				},
+				{
+					onChange: async (ids) => {
+						attempt++;
+						if (attempt === 1) {
+							throw new Error("disk full");
+						}
+						savedAfterFailure.push(ids);
+					},
+					onCancel: () => {},
+				},
+			);
+
+			failingSelector.handleInput("\r");
+			await sleep(20);
+			assert.equal(unhandled.length, 0);
+			const errorScreen = stripAnsi(failingSelector.render(160).join("\n"));
+			assert.ok(errorScreen.includes("disk full"), errorScreen);
+
+			failingSelector.handleInput("\x01");
+			await sleep(20);
+			assert.equal(unhandled.length, 0);
+			assert.deepEqual(savedAfterFailure, [null]);
+			const recoveredScreen = stripAnsi(failingSelector.render(160).join("\n"));
+			assert.ok(!recoveredScreen.includes("disk full"), recoveredScreen);
+			assert.ok(recoveredScreen.includes("Model catalogs refreshed."), recoveredScreen);
+		} finally {
+			process.off("unhandledRejection", onUnhandled);
 		}
 	});
 });

@@ -9,6 +9,7 @@ import {
 import {
 	type Focusable,
 	getKeybindings,
+	matchesKey,
 	type TUI,
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
@@ -34,8 +35,12 @@ interface ScopedModelItem {
 type ModelScope = "all" | "scoped";
 
 const MAX_VISIBLE = 10;
-const LEFT = "\x1b[D";
-const RIGHT = "\x1b[C";
+
+function effortDirection(data: string): -1 | 1 | 0 {
+	if (matchesKey(data, "left")) return -1;
+	if (matchesKey(data, "right")) return 1;
+	return 0;
+}
 
 interface StaticModelTextMeta {
 	descriptionResolved: boolean;
@@ -85,21 +90,17 @@ function getModelMeta(model: Model<Api>): CachedModelMeta {
 	return created;
 }
 
-function getCachedDescription(meta: CachedModelMeta): string | undefined {
+function getCachedDescription(model: Model<Api>, meta: CachedModelMeta): string | undefined {
 	if (!meta.textMeta.descriptionResolved) {
-		meta.textMeta.descriptionValue = getDistinctModelName({ id: meta.id, name: meta.name });
+		meta.textMeta.descriptionValue = getDistinctModelName(model);
 		meta.textMeta.descriptionResolved = true;
 	}
 	return meta.textMeta.descriptionValue;
 }
 
-function getCachedSearchText(meta: CachedModelMeta, isDefault: boolean): string {
+function getCachedSearchText(model: Model<Api>, meta: CachedModelMeta, isDefault: boolean): string {
 	if (meta.textMeta.searchTextValue === undefined) {
-		meta.textMeta.searchTextValue = getModelSelectorSearchText({
-			id: meta.id,
-			provider: meta.provider,
-			name: meta.name,
-		});
+		meta.textMeta.searchTextValue = getModelSelectorSearchText(model);
 	}
 	return isDefault ? `${meta.textMeta.searchTextValue} default` : meta.textMeta.searchTextValue;
 }
@@ -151,11 +152,11 @@ class ModelSelectorRow implements SelectorItem<Model<Api>> {
 	}
 
 	get description(): string | undefined {
-		return getCachedDescription(this.meta);
+		return getCachedDescription(this.value, this.meta);
 	}
 
 	get searchText(): string {
-		return getCachedSearchText(this.meta, this.isDefault);
+		return getCachedSearchText(this.value, this.meta, this.isDefault);
 	}
 }
 
@@ -229,7 +230,7 @@ export class ModelSelectorComponent extends FramedSelector<Model<Api>> implement
 			extraKeys: [
 				{
 					hint: { keys: "←→", label: "effort" },
-					matches: (data) => data === LEFT || data === RIGHT,
+					matches: (data) => effortDirection(data) !== 0,
 					enabled: (item) => item !== undefined && (holder.self?.levelsFor(item.value).length ?? 0) > 1,
 					run: () => {},
 				},
@@ -266,9 +267,10 @@ export class ModelSelectorComponent extends FramedSelector<Model<Api>> implement
 
 	override handleInput(data: string): void {
 		if (this.closed) return;
-		if (data === LEFT || data === RIGHT) {
+		const direction = effortDirection(data);
+		if (direction !== 0) {
 			const item = this.selector.getSelected();
-			if (item) this.stepLevel(item.value, data === RIGHT ? 1 : -1);
+			if (item) this.stepLevel(item.value, direction);
 			return;
 		}
 		super.handleInput(data);
@@ -386,7 +388,7 @@ export class ModelSelectorComponent extends FramedSelector<Model<Api>> implement
 		this.reconcileChosenLevels();
 		const models = this.scope === "scoped" ? this.scopedModelList : this.allModels;
 		this.items = models.map((model) => this.buildItem(model));
-		this.selector.setItems(this.items, preferId);
+		this.selector.setItems(this.items, this.selector.state.getQuery() ? undefined : preferId);
 		if (this.scopedModelList.length > 0) {
 			this.selector.setSubtitle(`Scope: ${this.scope === "scoped" ? "scoped models" : "all models"}`);
 		}

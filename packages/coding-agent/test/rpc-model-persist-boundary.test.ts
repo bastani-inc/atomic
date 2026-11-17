@@ -592,6 +592,34 @@ describe("RPC persist boundary", () => {
 		}
 	});
 
+	it.each(["true", "false", 1])("reports no saved defaults for non-boolean persist %j (#5237)", async (persist) => {
+		const harness = await twoModelHarness();
+		const current = harness.getModel("faux-1")!;
+		const next = harness.getModel("faux-2")!;
+		const handle = persistHandler(harness);
+		const saved = await handle({
+			type: "set_model",
+			provider: current.provider,
+			modelId: current.id,
+			thinkingLevel: "low",
+			persist: true,
+		});
+		assertRpcSuccess(saved, "save defaults");
+		assert.ok(saved.data && "persistedDefaults" in saved.data);
+
+		for (const command of [
+			{ type: "set_model", provider: next.provider, modelId: next.id, thinkingLevel: "high", persist },
+			{ type: "cycle_model", direction: "backward", persist },
+		] as const) {
+			const response = await handle(command as never);
+			assertRpcSuccess(response, command.type);
+			assert.ok(response.data);
+			assert.equal("persistedDefaults" in response.data, false);
+			assert.equal(harness.settingsManager.getGlobalSettings().defaultModel, current.id);
+			assert.equal(harness.settingsManager.getGlobalSettings().defaultThinkingLevel, "low");
+		}
+	});
+
 	it("forwards thinkingLevel on set_model and rejects invalid thinkingLevel values (#5237)", async () => {
 		const client = new RecordingRpcClient();
 		await client.setModel("anthropic", "claude-sonnet-4-5", { persist: true, thinkingLevel: "high" });

@@ -445,6 +445,109 @@ describe("model selector", () => {
 		selector.dispose();
 	});
 
+	it("highlights the best search match instead of the current model when opened with an initial search term (#5237)", async () => {
+		harness = await createHarness({
+			models: [
+				{ id: "gpt-5", name: "GPT 5", reasoning: true },
+				{ id: "gpt-5-nano", name: "GPT 5 Nano", reasoning: true },
+				{ id: "gpt-4.1-nano", name: "GPT 4.1 Nano", reasoning: false },
+				{ id: "o3", name: "O3", reasoning: true },
+			],
+		});
+		const modelRuntime = harness.session.modelRuntime;
+		const baseSnapshot = modelRuntime.getAvailableSnapshot();
+		const models: Model<Api>[] = [
+			{ ...baseSnapshot[0]!, provider: "openai", id: "gpt-5", name: "gpt-5" },
+			{ ...baseSnapshot[1]!, provider: "azure", id: "gpt-5-nano", name: "gpt-5-nano" },
+			{ ...baseSnapshot[2]!, provider: "openai", id: "gpt-5-nano", name: "gpt-5-nano" },
+			{ ...baseSnapshot[3]!, provider: "openai", id: "o3", name: "o3" },
+		];
+		vi.spyOn(modelRuntime, "getAvailableSnapshot").mockReturnValue(models);
+		vi.spyOn(modelRuntime, "getModel").mockImplementation((provider, id) =>
+			models.find((model) => model.provider === provider && model.id === id),
+		);
+		const onSelect = vi.fn();
+		const selector = new ModelSelectorComponent(
+			createFakeTui(),
+			models[0],
+			harness.settingsManager,
+			modelRuntime,
+			[],
+			onSelect,
+			() => {},
+			"nano",
+			"medium",
+		);
+
+		assert.deepEqual(
+			selector.selector.state.getVisible().map((item) => item.id),
+			["azure/gpt-5-nano", "openai/gpt-5-nano", "openai/o3", "openai/gpt-5"],
+		);
+		assert.equal(selector.selector.getSelected()?.id, "azure/gpt-5-nano");
+
+		selector.handleInput("\r");
+		assert.equal(onSelect.mock.calls.length, 1);
+		assert.equal(`${onSelect.mock.calls[0]?.[0]?.provider}/${onSelect.mock.calls[0]?.[0]?.id}`, "azure/gpt-5-nano");
+		selector.dispose();
+	});
+
+	it("steps effort on SS3 and Kitty left/right arrows without selecting or closing (#5237)", async () => {
+		harness = await createHarness({
+			models: [
+				{ id: "current-model", name: "Current Model", reasoning: true },
+				{ id: "other-model", name: "Other Model", reasoning: true },
+				{ id: "plain-model", name: "Plain Model", reasoning: false },
+			],
+		});
+		const currentModel = harness.getModel("current-model")!;
+		const onSelect = vi.fn();
+		const selector = new ModelSelectorComponent(
+			createFakeTui(),
+			currentModel,
+			harness.settingsManager,
+			harness.session.modelRuntime,
+			[],
+			onSelect,
+			() => {},
+			undefined,
+			"medium",
+		);
+
+		selector.handleInput("\x1b[B");
+		selector.handleInput("\x1bOC");
+		assert.equal(onSelect.mock.calls.length, 0);
+		assert.ok(stripAnsi(selector.render(120).join("\n")).includes("other-model  high"));
+
+		selector.handleInput("\x1bOD");
+		assert.equal(onSelect.mock.calls.length, 0);
+		assert.ok(stripAnsi(selector.render(120).join("\n")).includes("other-model  medium"));
+
+		selector.handleInput("\x1bOD");
+		assert.equal(onSelect.mock.calls.length, 0);
+		assert.ok(stripAnsi(selector.render(120).join("\n")).includes("other-model  low"));
+
+		selector.handleInput("\x1b[1;1:1C");
+		assert.equal(onSelect.mock.calls.length, 0);
+		assert.ok(stripAnsi(selector.render(120).join("\n")).includes("other-model  medium"));
+
+		selector.handleInput("\x1b[1;1:1D");
+		assert.equal(onSelect.mock.calls.length, 0);
+		assert.ok(stripAnsi(selector.render(120).join("\n")).includes("other-model  low"));
+
+		selector.handleInput("\x1b[B");
+		selector.handleInput("\x1bOC");
+		selector.handleInput("\x1b[1;1:1C");
+		assert.equal(onSelect.mock.calls.length, 0);
+		assert.equal(selectedModelId(selector), "plain-model");
+
+		selector.handleInput("\x1b[A");
+		selector.handleInput("\r");
+		assert.equal(onSelect.mock.calls.length, 1);
+		assert.equal(onSelect.mock.calls[0]?.[0]?.id, "other-model");
+		assert.equal(onSelect.mock.calls[0]?.[1], "low");
+		selector.dispose();
+	});
+
 	it("hints ←→ effort only when the selected model supports more than one thinking level (#5237)", async () => {
 		harness = await createHarness({
 			models: [
@@ -583,6 +686,90 @@ describe("model selector", () => {
 		selector.dispose();
 	});
 
+	it("invalidates cached model metadata when same-object reasoning, name, id, or provider changes on refresh (#5237)", async () => {
+		harness = await createHarness({
+			models: [
+				{ id: "mutable-reasoning", name: "Reasoning Target", reasoning: false },
+				{ id: "mutable-name", name: "Before Label [alpha]", reasoning: false },
+				{ id: "mutable-id-before", name: "Id Target [beta]", reasoning: false },
+				{ id: "mutable-prov", name: "Prov Target [gamma]", reasoning: false },
+			],
+		});
+		const baseModels = harness.session.modelRuntime.getAvailableSnapshot();
+		const reasoningModel: Model<Api> = { ...baseModels[0]!, reasoning: false };
+		const nameModel: Model<Api> = { ...baseModels[1]!, name: "Before Label [alpha]" };
+		const idModel: Model<Api> = { ...baseModels[2]!, id: "mutable-id-before" };
+		const providerModel: Model<Api> = { ...baseModels[3]!, provider: "prov-before" };
+		const models = [reasoningModel, nameModel, idModel, providerModel];
+		const runtime = harness.session.modelRuntime;
+		const refresh = Promise.withResolvers<ModelsRefreshResult>();
+		vi.spyOn(runtime, "getAvailableSnapshot").mockReturnValue(models);
+		vi.spyOn(runtime, "getModel").mockImplementation((provider, id) =>
+			models.find((candidate) => candidate.provider === provider && candidate.id === id),
+		);
+		vi.spyOn(runtime, "refresh").mockReturnValue(refresh.promise);
+
+		const selector = new ModelSelectorComponent(
+			createFakeTui(),
+			reasoningModel,
+			harness.settingsManager,
+			runtime,
+			[],
+			() => {},
+			() => {},
+			undefined,
+			"high",
+		);
+
+		const initialRendered = stripAnsi(selector.render(120).join("\n"));
+		assert.equal(initialRendered.includes("mutable-reasoning  high"), false);
+		assert.ok(initialRendered.includes("Before Label [alpha]"));
+		assert.ok(initialRendered.includes("mutable-id-before"));
+		assert.ok(initialRendered.includes("prov-before/mutable-prov"));
+
+		for (const query of ["alpha", "mutable-id-before", "prov-before"]) {
+			selector.selector.setQuery(query);
+			assert.equal(selector.selector.state.getVisible().length, 1);
+		}
+		selector.selector.setQuery("");
+
+		(reasoningModel as { reasoning: boolean }).reasoning = true;
+		(nameModel as { name: string }).name = "After Label [qzvx]";
+		(idModel as { id: string }).id = "mutable-id-after";
+		(providerModel as { provider: string }).provider = "prov-after";
+
+		refresh.resolve({ aborted: false, errors: new Map() });
+		await vi.waitFor(() =>
+			assert.ok(stripAnsi(selector.render(120).join("\n")).includes("Model catalogs refreshed.")),
+		);
+
+		const refreshedRendered = stripAnsi(selector.render(120).join("\n"));
+		assert.ok(refreshedRendered.includes("mutable-reasoning  high"));
+		assert.ok(refreshedRendered.includes("After Label [qzvx]"));
+		assert.equal(refreshedRendered.includes("Before Label [alpha]"), false);
+		assert.ok(refreshedRendered.includes("mutable-id-after"));
+		assert.equal(refreshedRendered.includes("mutable-id-before"), false);
+		assert.ok(refreshedRendered.includes("prov-after/mutable-prov"));
+		assert.equal(refreshedRendered.includes("prov-before/mutable-prov"), false);
+
+		selector.selector.setQuery("qzvx");
+		assert.deepEqual(
+			selector.selector.state.getVisible().map((item) => item.value.id),
+			["mutable-name"],
+		);
+		selector.selector.setQuery("mutable-id-after");
+		assert.deepEqual(
+			selector.selector.state.getVisible().map((item) => item.value.id),
+			["mutable-id-after"],
+		);
+		selector.selector.setQuery("prov-after");
+		assert.deepEqual(
+			selector.selector.state.getVisible().map((item) => item.value.id),
+			["mutable-prov"],
+		);
+		selector.dispose();
+	});
+
 	it("rebuilds only the stepped row on ←→ and caches per-model metadata across rebuilds (#5237)", async () => {
 		harness = await createHarness({
 			models: Array.from({ length: 15 }, (_, index) => ({
@@ -591,11 +778,45 @@ describe("model selector", () => {
 				reasoning: true,
 			})),
 		});
+		let idReads = 0;
+		let providerReads = 0;
+		let nameReads = 0;
+		const baseModels = harness.session.modelRuntime.getAvailableSnapshot();
+		const firstBase = baseModels[0]!;
+		const trackedFirst: Model<Api> = { ...firstBase };
+		Object.defineProperties(trackedFirst, {
+			id: {
+				enumerable: true,
+				get() {
+					idReads++;
+					return firstBase.id;
+				},
+			},
+			provider: {
+				enumerable: true,
+				get() {
+					providerReads++;
+					return firstBase.provider;
+				},
+			},
+			name: {
+				enumerable: true,
+				get() {
+					nameReads++;
+					return firstBase.name;
+				},
+			},
+		});
+		const models = [trackedFirst, ...baseModels.slice(1)];
+		vi.spyOn(harness.session.modelRuntime, "getAvailableSnapshot").mockReturnValue(models);
+		vi.spyOn(harness.session.modelRuntime, "getModel").mockImplementation((provider, id) =>
+			models.find((model) => model.provider === provider && model.id === id),
+		);
 		const levelSpy = vi.spyOn(harness.settingsManager, "getModelThinkingLevel");
 		levelSpy.mockClear();
 		const selector = new ModelSelectorComponent(
 			createFakeTui(),
-			harness.getModel("alpha-00"),
+			trackedFirst,
 			harness.settingsManager,
 			harness.session.modelRuntime,
 			[],
@@ -609,6 +830,8 @@ describe("model selector", () => {
 			levelSpy.mock.calls.some(([, modelId]) => modelId === "alpha-14"),
 			false,
 		);
+		selector.selector.setQuery("custom");
+		selector.selector.setQuery("");
 
 		const beforeItems = [...selector.selector.state.getVisible()];
 		levelSpy.mockClear();
@@ -625,7 +848,58 @@ describe("model selector", () => {
 			levelSpy.mock.calls.every(([, modelId]) => modelId === "alpha-00"),
 			`expected getModelThinkingLevel only for alpha-00, got ${JSON.stringify(levelSpy.mock.calls)}`,
 		);
+
+		selector.handleInput("\x1b[D");
+		const steppedBackRow = selector.selector.state.getVisible()[0]!;
+		idReads = 0;
+		providerReads = 0;
+		nameReads = 0;
+		assert.ok(steppedBackRow.label.endsWith("  medium"));
+		assert.equal(steppedBackRow.description, "Alpha 0 [custom]");
+		assert.ok(steppedBackRow.searchText.includes("Alpha 0 [custom]"));
+		assert.equal(idReads, 0);
+		assert.equal(providerReads, 0);
+		assert.equal(nameReads, 0);
 		selector.dispose();
+	});
+
+	it("ignores mouse events and cancel callbacks after dispose (#5237)", async () => {
+		harness = await createHarness({
+			models: [
+				{ id: "alpha-1", name: "Alpha 1", reasoning: true },
+				{ id: "alpha-2", name: "Alpha 2", reasoning: true },
+			],
+		});
+		const onSelect = vi.fn();
+		const onCancel = vi.fn();
+		const selector = new ModelSelectorComponent(
+			createFakeTui(),
+			harness.getModel("alpha-1"),
+			harness.settingsManager,
+			harness.session.modelRuntime,
+			[],
+			onSelect,
+			onCancel,
+			undefined,
+			"medium",
+		);
+		selector.render(120);
+		selector.dispose();
+
+		const mouseResult = selector.handleMouse({
+			type: "wheel",
+			button: "none",
+			x: 4,
+			y: 4,
+			width: 120,
+			wheelDelta: 1,
+		});
+		assert.equal(mouseResult, undefined);
+		assert.equal(selectedModelId(selector), "alpha-1");
+
+		selector.selector.handleInput("\x1b");
+		assert.equal(onCancel.mock.calls.length, 0);
+		assert.equal(onSelect.mock.calls.length, 0);
 	});
 
 	it("reconciles chosen thinking levels in linear time across model list rebuilds (#5237)", async () => {
@@ -666,6 +940,10 @@ describe("model selector", () => {
 			() => {},
 			undefined,
 			"medium",
+		);
+		assert.ok(
+			idReads <= totalModels * 4,
+			`expected linear model id reads during initial sort and build, got ${idReads} reads for ${totalModels} models`,
 		);
 
 		selector.handleInput("\t");

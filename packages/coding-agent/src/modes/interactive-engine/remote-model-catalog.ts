@@ -29,13 +29,29 @@ export class RemoteModelCatalog {
 	private apiKeyLoginProviders: RpcModelCatalog["customAuthProviders"] = [];
 	private readonly providerAuthStatuses = new Map<string, AuthStatus>();
 	private refreshGeneration = 0;
+	private scopeEpoch = 0;
 
 	constructor(client: RpcClient) {
 		this.client = client;
 	}
 
-	apply(catalog: RpcModelCatalog): void {
-		this.applyModels(catalog);
+	getScopeEpoch(): number {
+		return this.scopeEpoch;
+	}
+
+	setScopedModels(
+		scopedModels: ReadonlyArray<{ model: Model<Api>; thinkingLevel?: AgentSession["thinkingLevel"] }>,
+	): number {
+		this.scopeEpoch += 1;
+		this.scopedModels = scopedModels.map((scoped) => ({
+			model: scoped.model,
+			...(scoped.thinkingLevel !== undefined ? { thinkingLevel: scoped.thinkingLevel } : {}),
+		}));
+		return this.scopeEpoch;
+	}
+
+	apply(catalog: RpcModelCatalog, scopeEpoch = this.scopeEpoch): void {
+		this.applyModels(catalog, scopeEpoch);
 		if (catalog.oauthProviders) this.oauthProviders = catalog.oauthProviders;
 		if (catalog.customAuthProviders) this.apiKeyLoginProviders = catalog.customAuthProviders;
 		if (catalog.providerAuthStatuses) {
@@ -45,9 +61,11 @@ export class RemoteModelCatalog {
 		}
 	}
 
-	applyModels(catalog: Pick<RpcModelCatalog, "models" | "scopedModels">): void {
+	applyModels(catalog: Pick<RpcModelCatalog, "models" | "scopedModels">, scopeEpoch = this.scopeEpoch): void {
 		this.models = catalog.models;
-		this.scopedModels = catalog.scopedModels;
+		if (scopeEpoch === this.scopeEpoch) {
+			this.scopedModels = catalog.scopedModels;
+		}
 	}
 
 	/** Record the engine's authoritative status for one provider, e.g. after a logout. */
@@ -119,6 +137,7 @@ export class RemoteModelCatalog {
 
 	private async refresh(options: RemoteModelRefreshOptions = {}): Promise<ModelsRefreshResult> {
 		const generation = ++this.refreshGeneration;
+		const scopeEpoch = this.scopeEpoch;
 		if (options.signal?.aborted) return { aborted: true, errors: new Map() };
 		const remoteRefresh = this.client.refreshModels({
 			// AbortSignal cannot cross the RPC boundary. Give the engine the same
@@ -130,7 +149,7 @@ export class RemoteModelCatalog {
 		});
 		const result = await this.waitForRefresh(remoteRefresh, options.signal);
 		if (!result || options.signal?.aborted) return { aborted: true, errors: new Map() };
-		if (generation === this.refreshGeneration) this.apply(result);
+		if (generation === this.refreshGeneration) this.apply(result, scopeEpoch);
 		return {
 			aborted: result.aborted,
 			errors: new Map(result.errors.map(({ provider, message }) => [provider, new Error(message)])),

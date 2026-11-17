@@ -129,6 +129,12 @@ export type RpcCommand =
 			thinkingLevel?: ThinkingLevel;
 	  }
 	| { id?: string; type: "cycle_model"; direction?: "forward" | "backward"; persist?: boolean }
+	| {
+			id?: string;
+			type: "set_scoped_models";
+			models: Array<{ provider: string; modelId: string; thinkingLevel?: ThinkingLevel }>;
+			enabledModels?: string[] | null;
+	  }
 	| { id?: string; type: "get_available_models"; allowPartialResources?: boolean }
 	| { id?: string; type: "login_provider"; provider: string; authType?: "api_key" | "oauth"; loginId?: string }
 	| {
@@ -359,6 +365,13 @@ export type RpcResponse =
 				isScoped: boolean;
 				persistedDefaults?: RpcPersistedModelDefaults;
 			} | null;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "set_scoped_models";
+			success: true;
+			data: RpcModelCatalog;
 	  }
 	| {
 			id?: string;

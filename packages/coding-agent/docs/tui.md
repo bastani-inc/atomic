@@ -443,6 +443,7 @@ Keys: ↑↓ select (wrapping), pgup/pgdn page, home/end jump to the ends when t
 | Option | Effect |
 | --- | --- |
 | `layout: "two-line"` | Each description goes on the line under its label, for rows like sessions or runs. |
+| `wrap: true` | Wrap long titles and option labels instead of truncating them. Extension `select` and `confirm` dialogs enable this automatically. |
 | `mode: "multi"` | Checkboxes: space toggles, enter calls `onConfirm` with the checked rows. Confirming always stops the picker, whatever `closeOnSelect` says. |
 | `closeOnSelect: false` | Single-select only. Choosing a row calls `onSelect` and leaves the picker live, so enter or a click can choose again, for a picker that applies each choice and stays open. Default `true`. |
 | `numbered: true` | Rows are numbered; without a search box, digits 1–9 choose a row directly, or toggle it with `mode: "multi"`. |
@@ -461,7 +462,9 @@ Without a search box, `?` shows the picker's keys and `j`/`k` move like ↓/↑.
 
 A picker stops taking keys and mouse input once it calls `onCancel`, once it calls `onConfirm`, and once it calls `onSelect` unless `closeOnSelect` is `false`. Repeated enter presses and clicks therefore reach your callback once, and a picker you keep on screen after that ignores every key, esc and ctrl+c included. If your callback can fail, for example while it saves the choice, call `selector.retrySelection()` when it does: the picker takes input again, so the user can choose again or press esc. Pair it with `setNotice()` to show the error.
 
-Use `setItems()` to replace row data. When external data used by a custom `style` or an extra key's `enabled` callback changes, call `selector.invalidate()` before requesting a render. A row's `labelStyle` still runs on each render, so animated labels can update without replacing the rows.
+Use `setItems()` to replace row data. `SelectorState.items` and its list snapshots are read-only and frozen; replace direct assignments and mutations with `state.setItems(rows)`. Copy a snapshot with `[...state.items]` before editing the array. For persistent or multi-stage single-select pickers that replace rows after `onSelect`, pass `closeOnSelect: false` so subsequent navigation and cancellation remain available.
+
+When external data used by a custom `style` or an extra key's `enabled` callback changes, call `selector.invalidate()` before requesting a render. A row's `labelStyle` still runs on each render, so animated labels can update without replacing the rows.
 
 `SelectorState` holds a picker's search, selection and checked rows without drawing anything, and `selectorHintEntries(state, options)` returns the keys its hint line lists, so you can test a picker's behaviour without rendering it. `themeSelectorStyle()` returns the active theme's picker colours; pass `style: PLAIN_SELECTOR_STYLE` for output without colour.
 
