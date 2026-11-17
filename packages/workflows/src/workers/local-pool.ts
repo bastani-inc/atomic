@@ -170,6 +170,7 @@ interface Coordinator {
 	readonly pid?: number;
 	/** Removes the coordinator process's stderr log; an in-process coordinator has none. */
 	readonly removeLog?: () => Promise<void>;
+	readonly closed?: () => Promise<void>;
 }
 
 /** The shipped worker module; it also runs the pool coordinator. */
@@ -264,6 +265,7 @@ function launchCoordinatorInProcess(): Coordinator {
 	const mainListeners: ((message: CoordinatorEvent) => void)[] = [];
 	const coordinatorListeners: ((message: CoordinatorInbound) => void)[] = [];
 	const copy = <T>(message: T): T => JSON.parse(JSON.stringify(message)) as T;
+	let shutdown: Promise<void> | undefined;
 	const coordinator = new PoolCoordinator({
 		send(message) {
 			const copied = copy(message);
@@ -291,9 +293,10 @@ function launchCoordinatorInProcess(): Coordinator {
 			},
 			onClose() {},
 			async close() {
-				void coordinator.shutdown();
+				shutdown ??= coordinator.shutdown();
 			},
 		},
+		closed: () => shutdown ?? Promise.resolve(),
 	};
 }
 
@@ -1922,7 +1925,7 @@ export class LocalWorkerPool {
 	close(): Promise<void> {
 		const closing = this.shutdown();
 		this.releaseBinding();
-		return closing;
+		return closing.then(() => this.coordinator?.closed?.());
 	}
 	/**
 	 * Stops the pool but keeps it bound to its root. A child the root starts afterwards then fails with the pool's
