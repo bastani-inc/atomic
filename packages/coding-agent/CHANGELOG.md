@@ -11,7 +11,7 @@
 ### Fixed
 
 - A fast foreground shell command no longer delivers a stray `Background shell completed` notice after its own result when the command exits before Atomic has finished starting it. The model was shown the command's result a second time, as a background shell's, in chats and workflow stages alike ([#5333](https://github.com/bastani-inc/atomic/pull/5333))
-- On a subagent's session, `steer()`, `followUp()`, `prompt()` and `sendUserMessage()` now go through the same message admission as custom messages. Input accepted before the child's execution ends is answered before it completes, and a call after that is refused with `Subagent execution is terminal and cannot accept messages` instead of resolving as queued or handled and never being answered ([#5318](https://github.com/bastani-inc/atomic/issues/5318))
+- A subagent's `steer()`, `followUp()`, `prompt()` and `sendUserMessage()` calls no longer accept input that the child never answers as it finishes. Calls after admission closes fail with `Subagent execution is terminal and cannot accept messages`. Asynchronous input hooks and several messages sent during settlement keep admission open until their input is answered, and a steering hook can await a nested user message without deadlocking ([#5318](https://github.com/bastani-inc/atomic/issues/5318))
 
 ## [0.9.88] - 2026-11-16
 

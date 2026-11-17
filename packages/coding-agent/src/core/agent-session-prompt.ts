@@ -47,6 +47,19 @@ import { ToolDetachmentError } from "./tool-detachment-errors.ts";
 
 const customPreparations = new WeakMap<AgentSession, Promise<void>>();
 const openRuns = new WeakMap<AgentSession, number>();
+const messageAdmissionHolds = new WeakMap<AgentSession, Set<object>>();
+
+function holdSubagentMessageAdmission(session: AgentSession): () => void {
+	if (session._subagentMessageAdmission === undefined) return () => {};
+	const holds = messageAdmissionHolds.get(session) ?? new Set<object>();
+	messageAdmissionHolds.set(session, holds);
+	const hold = {};
+	holds.add(hold);
+	return () => {
+		holds.delete(hold);
+		if (holds.size === 0) messageAdmissionHolds.delete(session);
+	};
+}
 
 function openRun(session: AgentSession): void {
 	openRuns.set(session, (openRuns.get(session) ?? 0) + 1);
@@ -331,6 +344,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		reservedPreflight = false;
 		this._promptPreflightCount--;
 	};
+	const releaseMessageAdmission = holdSubagentMessageAdmission(this);
 	try {
 		// Authorize workflow delivery before commands or input extensions can perform side effects.
 		// A later terminal transition cannot retroactively reject input accepted at this boundary.
@@ -583,6 +597,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 	} finally {
 		releasePreflight();
 		admission.release();
+		releaseMessageAdmission();
 		// A started run is now preparing, so held input admitted next queues behind it.
 		if (held) finishHeldInput(this, held);
 	}
@@ -818,9 +833,11 @@ async function finishAgentRun(session: AgentSession, keepMessageAdmissionOpen = 
 		// Runs deferred by agent_settled handlers start only after every settled handler completed.
 		// Guarded because prompt-handshake suites drive this function on a synthetic session.
 		const deferred = session._deferredSettledActions?.splice(0) ?? [];
+		const releaseMessageAdmission = deferred.length > 0 ? holdSubagentMessageAdmission(session) : () => {};
 		try {
 			for (const action of deferred) await action();
 		} finally {
+			releaseMessageAdmission();
 			if (session._activePromptCount === 0) session._subagentPolicy?.onTurnDrained?.();
 		}
 	}
@@ -878,7 +895,8 @@ async function settleSubagentMessages(session: AgentSession, keepMessageAdmissio
 	if (
 		!keepMessageAdmissionOpen &&
 		session._subagentPolicy?.taskPending?.() !== true &&
-		(session._deferredSettledActions?.length ?? 0) === 0
+		(session._deferredSettledActions?.length ?? 0) === 0 &&
+		!messageAdmissionHolds.has(session)
 	)
 		admission.seal();
 }
@@ -915,7 +933,13 @@ function awaitsSubagentAnswer(
 }
 
 export function _sealMessageAdmissionIfDrained(this: AgentSession): boolean {
-	if (this.isStreaming || this._activePromptCount > 0 || this._pendingInterruptDeliveries > 0) return false;
+	if (
+		this.isStreaming ||
+		this._activePromptCount > 0 ||
+		this._pendingInterruptDeliveries > 0 ||
+		messageAdmissionHolds.has(this)
+	)
+		return false;
 	const admission = this._subagentMessageAdmission;
 	if (admission === undefined || !admission.isOpen()) return true;
 	if (awaitsSubagentAnswer(this, admission)) {
@@ -1159,17 +1183,16 @@ async function queueUserInput(
 		);
 	const boundary = session._subagentMessageAdmission;
 	if (boundary === undefined || session._queuedMessagesPaused) return queue();
-	let disposition: QueuedInputDisposition = "queued";
-	await boundary.admit(
-		undefined,
-		async () => {
-			disposition = await queue();
-		},
-		() => {
-			throw subagentExecutionEndedError();
-		},
-	).completion;
-	return disposition;
+	if (!boundary.isOpen()) throw subagentExecutionEndedError();
+	const releaseMessageAdmission = holdSubagentMessageAdmission(session);
+	session._activePromptCount += 1;
+	try {
+		return await queue();
+	} finally {
+		releaseMessageAdmission();
+		session._activePromptCount -= 1;
+		if (session._activePromptCount === 0) session._subagentPolicy?.onTurnDrained?.();
+	}
 }
 
 async function admittedQueueUserInput(

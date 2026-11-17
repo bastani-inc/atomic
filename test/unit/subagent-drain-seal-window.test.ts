@@ -449,3 +449,258 @@ test("a subagent session refuses a prompt, user message, steering or follow-up m
 		await harness.cleanup();
 	}
 });
+
+function assistantTexts(session: AgentSession): string[] {
+	return session.messages
+		.filter((message) => message.role === "assistant")
+		.map((message) =>
+			(message.content as Array<{ type: string; text?: string }>)
+				.map((part) => part.text ?? `[${part.type}]`)
+				.join(""),
+		);
+}
+
+function childHooks(stop: AbortSignal, onSession: (session: AgentSession) => void) {
+	return {
+		signal: stop,
+		reportActivity() {},
+		bindTranscript(source: TaskTranscriptSource) {
+			const session = source.chatSession as AgentSession | undefined;
+			if (session !== undefined) onSession(session);
+		},
+		onExecution() {},
+		yieldTaskWait() {},
+		isParentObserving: () => false,
+	};
+}
+
+const outcomeOf = (work: Promise<unknown>) =>
+	work.then(
+		() => "accepted",
+		(error: unknown) => (error instanceof Error ? error.message : String(error)),
+	);
+
+test.each([
+	{
+		name: "a prompt queued as steering",
+		send: (session: AgentSession) => session.prompt("second", { streamingBehavior: "steer" }),
+	},
+	{
+		name: "a user message delivered as steering",
+		send: (session: AgentSession) => session.sendUserMessage("second", { deliverAs: "steer" }),
+	},
+])(
+	"$name still in an extension's input hook when a subagent's late turn settles is answered or refused, never dropped (#5318)",
+	async ({ send }) => {
+		const env = await liveChildEnvironment(cleanups);
+		const hookEntered = Promise.withResolvers<void>();
+		const hookRelease = Promise.withResolvers<void>();
+		const lateStarted = Promise.withResolvers<void>();
+		const lateRelease = Promise.withResolvers<void>();
+		env.faux.setResponses([
+			answerPendingInput(),
+			async (context, options, state, model) => {
+				lateStarted.resolve();
+				await lateRelease.promise;
+				return answerPendingInput()(context, options, state, model);
+			},
+			answerPendingInput(),
+			answerPendingInput(),
+		]);
+		const stop = new AbortController();
+		const opened = Promise.withResolvers<AgentSession>();
+		let late: Promise<string> | undefined;
+		let settledTurns = 0;
+		const run = runSingleInProcess(env.root, agent, "the task", {
+			...env.options("hook-as-late-turn-settles", {
+				signal: stop.signal,
+				resourceLoaderInheritanceSnapshot: {
+					extensionFactories: [
+						(api: ExtensionAPI) => {
+							api.on("input", async (event) => {
+								if (event.text !== "second") return;
+								hookEntered.resolve();
+								await hookRelease.promise;
+							});
+						},
+					],
+				},
+				taskExecution: childHooks(stop.signal, (session) => {
+					opened.resolve(session);
+					session.subscribe((event) => {
+						if (event.type !== "agent_settled" || ++settledTurns !== 1) return;
+						onceDrained(session, () => {
+							late = outcomeOf(session.sendUserMessage("first late"));
+						});
+					});
+				}),
+			}),
+		});
+		try {
+			const session = await within(opened.promise, "the child never opened its chat");
+			await within(lateStarted.promise, "the late message never started a turn");
+			const second = outcomeOf(send(session));
+			await within(hookEntered.promise, "the second message never reached its input hook");
+			lateRelease.resolve();
+			assert.equal(await within(late!, "the late message never settled"), "accepted");
+			hookRelease.resolve();
+			const result = await within(run, "the child never completed");
+			const outcome = await within(second, "the second message never settled");
+
+			assert.equal(result.status ?? "ok", "ok");
+			assert.ok(
+				(outcome === "accepted" && (result.finalOutput ?? "").includes("second")) || REFUSED.test(outcome),
+				`the second message was ${outcome}; final output ${JSON.stringify(result.finalOutput)}`,
+			);
+		} finally {
+			lateRelease.resolve();
+			hookRelease.resolve();
+			stop.abort("user");
+			await run.catch(() => undefined);
+		}
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
+test(
+	"a steering message whose input hook sends a user message as the subagent ends is answered after it, without waiting on itself (#5318)",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		env.faux.setResponses(Array.from({ length: 4 }, () => answerPendingInput()));
+		const stop = new AbortController();
+		let session: AgentSession | undefined;
+		let steering: Promise<string> | undefined;
+		let settledTurns = 0;
+		const run = runSingleInProcess(env.root, agent, "the task", {
+			...env.options("steer-hook-nested", {
+				signal: stop.signal,
+				resourceLoaderInheritanceSnapshot: {
+					extensionFactories: [
+						(api: ExtensionAPI) => {
+							api.on("input", async (event) => {
+								if (event.text === "outer steering") await session?.sendUserMessage("nested chat");
+							});
+						},
+					],
+				},
+				taskExecution: childHooks(stop.signal, (bound) => {
+					session ??= bound;
+					bound.subscribe((event) => {
+						if (event.type !== "agent_settled" || ++settledTurns !== 1) return;
+						onceDrained(bound, () => {
+							steering = outcomeOf(bound.steer("outer steering"));
+						});
+					});
+				}),
+			}),
+		});
+		try {
+			const result = await within(run, "the child never completed");
+			const outcome = await within(steering!, "the steering message never settled");
+
+			assert.equal(result.status ?? "ok", "ok");
+			assert.equal(outcome, "accepted");
+			const answered = assistantTexts(session!);
+			assert.ok(
+				answered.some((text) => text.includes("nested chat")),
+				`the nested user message is answered: ${answered.join(" / ")}`,
+			);
+			assert.match(result.finalOutput ?? "", /outer steering/);
+		} finally {
+			stop.abort("user");
+			await run.catch(() => undefined);
+		}
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
+test("a subagent session's steering message whose input hook sends a user message is queued, not left waiting on itself (#5318)", async () => {
+	const ended = new AbortController();
+	let session: AgentSession | undefined;
+	const harness = await createHarness({
+		subagentPolicy: {
+			managementActions: "restricted",
+			fanoutAuthorized: false,
+			inheritProjectContext: false,
+			inheritSkills: false,
+			depth: 1,
+			executionEnded: ended.signal,
+			taskPending: () => true,
+		},
+		extensionFactories: [
+			(pi) => {
+				pi.on("input", async (event) => {
+					if (event.text === "outer steering") await session?.sendUserMessage("nested chat");
+				});
+			},
+		],
+	});
+	session = harness.session;
+	try {
+		harness.setResponses(Array.from({ length: 3 }, () => answerPendingInput()));
+		const outcome = await within(
+			outcomeOf(harness.session.steer("outer steering")),
+			"the steering message waited on its own input hook",
+		);
+		assert.equal(outcome, "accepted");
+		assert.deepEqual(harness.session.getSteeringMessages(), ["outer steering"]);
+		assert.ok(assistantTexts(harness.session).some((text) => text.includes("nested chat")));
+	} finally {
+		harness.session.pauseQueuedMessages();
+		ended.abort();
+		await harness.cleanup();
+	}
+});
+
+test(
+	"every user message an extension sends as a subagent's late turn settles is answered, and the late turn still settles cleanly (#5318)",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		env.faux.setResponses(Array.from({ length: 5 }, () => answerPendingInput()));
+		const stop = new AbortController();
+		let pi: ExtensionAPI | undefined;
+		let session: AgentSession | undefined;
+		let late: Promise<string> | undefined;
+		let settledTurns = 0;
+		const run = runSingleInProcess(env.root, agent, "the task", {
+			...env.options("two-settling-prompts", {
+				signal: stop.signal,
+				resourceLoaderInheritanceSnapshot: {
+					extensionFactories: [
+						(api: ExtensionAPI) => {
+							pi = api;
+						},
+					],
+				},
+				taskExecution: childHooks(stop.signal, (bound) => {
+					session ??= bound;
+					bound.subscribe((event) => {
+						if (event.type !== "agent_settled") return;
+						settledTurns += 1;
+						if (settledTurns === 1)
+							onceDrained(bound, () => {
+								late = outcomeOf(bound.sendUserMessage("late"));
+							});
+						else if (settledTurns === 2) {
+							pi!.sendUserMessage("deferred one");
+							pi!.sendUserMessage("deferred two");
+						}
+					});
+				}),
+			}),
+		});
+		try {
+			const result = await within(run, "the child never completed");
+
+			assert.equal(result.status ?? "ok", "ok");
+			assert.equal(await within(late!, "the late message never settled"), "accepted");
+			const answered = assistantTexts(session!).join(" / ");
+			for (const text of ["late", "deferred one", "deferred two"])
+				assert.ok(answered.includes(`answered: ${text}`), `${text} is answered: ${answered}`);
+		} finally {
+			stop.abort("user");
+			await run.catch(() => undefined);
+		}
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
