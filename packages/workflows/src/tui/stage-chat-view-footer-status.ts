@@ -263,7 +263,7 @@ export function renderFooterWithOrchestratorReturnHint(
 	width: number,
 	footerLines: readonly string[],
 ): string[] {
-	if (closableQuestionCardOpen(ctx)) {
+	if (stackedStageDialogOpen(ctx) || closableQuestionCardOpen(ctx)) {
 		return [mergeOrchestratorReturnHintIntoLine(ctx, footerLines[0] ?? "", width)];
 	}
 	return [...footerLines, renderStageChatHintLine(ctx, width)];
@@ -299,7 +299,9 @@ export function embedCustomUiBackHint(
 	width: number,
 ): string[] {
 	const backKey = backToGraphKey(ctx);
-	if (!backKey || widgetLines.length < 2) return [...widgetLines];
+	if (!backKey || widgetLines.length < 2 || ctx.mountedCustomUi?.component.capturesBack?.() === true) {
+		return [...widgetLines];
+	}
 	let bottomBorderIndex = -1;
 	for (let index = widgetLines.length - 1; index >= 0; index -= 1) {
 		const plain = stripAnsi(widgetLines[index] ?? "").trim();
@@ -362,7 +364,7 @@ function mergeOrchestratorReturnHintIntoLine(
 ): string {
 	const stackedDialog = stackedStageDialogOpen(ctx);
 	const cardOpen = stackedDialog || closableQuestionCardOpen(ctx);
-	const backKey = backToGraphKey(ctx);
+	const backKey = stackedDialog ? "" : backToGraphKey(ctx);
 	if (!cardOpen && !backKey) return line;
 	const key = backKey || "esc";
 	const action = stackedDialog ? " cancel" : " close";
@@ -460,7 +462,7 @@ export function closableQuestionCardOpen(
 	);
 }
 
-function stackedStageDialogOpen(
+export function stackedStageDialogOpen(
 	ctx: Pick<StageChatViewContext, "promptState"> &
 		Partial<Pick<StageChatViewContext, "dismissedPromptId" | "mountedCustomUi">>,
 ): boolean {

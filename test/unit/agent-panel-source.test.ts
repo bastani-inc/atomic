@@ -13,7 +13,10 @@ import {
 	stopAgentPanelItem,
 	subscribeAgentPanel,
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
-import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
+import { bindOwnerTaskStore, setTaskTurnInterrupted } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
+import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
+import { dismissedTasks } from "../../packages/coding-agent/src/modes/interactive/components/task-dismissal.js";
+import { agentPanelCounts, agentPanelRows } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import { taskFixture } from "../helpers/task-projection.js";
 
 const healthyItem: AgentPanelItem = {
@@ -1488,4 +1491,90 @@ test("non-function subscribe is reported as a hub failure and replayed to late e
 	);
 	unsub();
 	assert.deepEqual(replayed, ["Invalid agent panel source subscription."]);
+});
+
+test("dismissed finished items stay dismissed across a failed source read (#5239)", () => {
+	const hub = new AgentPanelSourceHub();
+	let fail = false;
+	let notify = () => {};
+	const item: AgentPanelItem = {
+		id: "run:done1",
+		kind: "workflow",
+		state: "done",
+		name: "release",
+		task: "t",
+		elapsedMs: 5000,
+	};
+	hub.register({
+		items: () => {
+			if (fail) throw new Error("transient store read failure");
+			return [item];
+		},
+		subscribe: (listener) => {
+			notify = listener;
+			return () => {};
+		},
+	});
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	try {
+		assert.deepEqual(
+			agentPanelRows(session).map((row) => row.id),
+			["run:done1"],
+		);
+		dismissedAgentPanelItems(session).add("run:done1");
+		assert.deepEqual(agentPanelRows(session), []);
+		fail = true;
+		notify();
+		assert.deepEqual(agentPanelRows(session), []);
+		assert.deepEqual([...dismissedAgentPanelItems(session)], ["run:done1"]);
+		fail = false;
+		notify();
+		assert.deepEqual(agentPanelRows(session), []);
+		assert.deepEqual(agentPanelItems(session), []);
+	} finally {
+		hub.dispose();
+	}
+});
+
+test("dismissed native task ids are pruned when the task is seen in a non-finished state (#5239)", async () => {
+	const fixture = taskFixture();
+	try {
+		await fixture.start("worker one");
+		const session = {};
+		bindOwnerTaskStore(session, fixture.store);
+		const id = fixture.store.tasks[0]!.ref.taskId;
+		assert.deepEqual(
+			agentPanelRows(session).map((row) => [row.id, row.state]),
+			[[`task:${id}`, "running"]],
+		);
+		setTaskTurnInterrupted(fixture.store, id, true);
+		assert.deepEqual(
+			agentPanelRows(session).map((row) => [row.id, row.state]),
+			[[`task:${id}`, "stopped"]],
+		);
+		dismissedAgentPanelItems(session).add(`task:${id}`);
+		dismissedTasks(ownerTaskViewSource(fixture.store)).add(id);
+		assert.deepEqual(
+			agentPanelRows(session).map((row) => [row.id, row.state]),
+			[[`task:${id}`, "stopped"]],
+		);
+		assert.equal(dismissedAgentPanelItems(session).has(`task:${id}`), false);
+		assert.equal(dismissedTasks(ownerTaskViewSource(fixture.store)).has(id), false);
+		dismissedAgentPanelItems(session).add(`task:${id}`);
+		dismissedTasks(ownerTaskViewSource(fixture.store)).add(id);
+		setTaskTurnInterrupted(fixture.store, id, false);
+		assert.deepEqual(
+			agentPanelRows(session).map((row) => [row.id, row.state]),
+			[[`task:${id}`, "running"]],
+		);
+		assert.deepEqual(agentPanelCounts(session), { total: 1, needsInput: 0 });
+		assert.equal(dismissedAgentPanelItems(session).has(`task:${id}`), false);
+		assert.equal(dismissedTasks(ownerTaskViewSource(fixture.store)).has(id), false);
+		assert.deepEqual(
+			agentPanelItems(session).map((item) => [item.id, item.state]),
+			[[`task:${id}`, "running"]],
+		);
+	} finally {
+		await fixture.dispose();
+	}
 });

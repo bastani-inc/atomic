@@ -69,6 +69,7 @@ export interface QuestionnaireSessionComponent {
 	render(width: number): string[];
 	invalidate(): void;
 	handleInput(data: string): boolean;
+	capturesBack(): boolean;
 }
 
 function initialState(): QuestionnaireState {
@@ -143,6 +144,7 @@ export class QuestionnaireSession {
 			render: built.render,
 			invalidate: built.invalidate,
 			handleInput: (data) => this.dispatch(data),
+			capturesBack: () => this.capturesBack(),
 		};
 
 		this.viewAdapter.apply(this.state);

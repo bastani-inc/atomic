@@ -11,7 +11,7 @@ import { APP_ACTION, isKeybindingsLike, matchesAction, matchesNavAction, TUI_ACT
 import { parseTerminalMouseInput, terminalMouseWheelDirection } from "./mouse-input.js";
 import { defaultResponseFor, handlePromptCardInput, isPromptEscapeInput } from "./prompt-card.js";
 import { releaseMountedCustomUi } from "./stage-chat-view-custom-ui.js";
-import { hasStageChatTasks } from "./stage-chat-view-footer-status.js";
+import { hasStageChatTasks, stackedStageDialogOpen } from "./stage-chat-view-footer-status.js";
 import { setComponentFocused, setEditorFocused } from "./stage-chat-view-render-helpers.js";
 import {
 	canSubmitPrompt,
@@ -178,7 +178,7 @@ function isClosableQuestion(kind: string): boolean {
 
 function isPromptBackInput(ctx: StageChatViewContext, data: string): boolean {
 	const state = ctx.promptState;
-	if (!state || matchesKey(data, Key.escape)) return false;
+	if (!state || matchesKey(data, Key.escape) || stackedStageDialogOpen(ctx)) return false;
 	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
 	const isNavBack = matchesNavAction(keybindings, data, APP_ACTION.navBack) || matchesKey(data, Key.left);
 	const isBackspace = matchesKey(data, Key.backspace);
@@ -257,6 +257,11 @@ function handleMountedCustomUiInput(ctx: StageChatViewContext, data: string): bo
 
 	const component = mounted.component;
 	setComponentFocused(component, ctx.focused);
+	if (component.capturesBack !== undefined && isCustomUiBackInput(ctx, data) && component.capturesBack() !== true) {
+		recordCurrentPromptDraft(ctx);
+		ctx.onDetach();
+		return true;
+	}
 	const handled = component.handleInput?.(data) === true;
 	if (!handled && isCustomUiBackInput(ctx, data)) {
 		recordCurrentPromptDraft(ctx);
