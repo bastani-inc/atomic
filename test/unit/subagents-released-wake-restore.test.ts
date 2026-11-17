@@ -35,7 +35,10 @@ import {
 	SUBAGENT_STILL_RUNNING_RESULT,
 } from "../../packages/subagents/src/runs/foreground/released-children.js";
 import { registerRunWorktrees, runWorktreeRecord } from "../../packages/subagents/src/runs/foreground/run-worktrees.js";
-import { observeSubagentChildRecord } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
+import {
+	indexSubagentChildOwner,
+	observeSubagentChildRecord,
+} from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
 import {
 	createSubagentChildRecordSink,
 	holdInterruptedStillRunningCalls,
@@ -571,6 +574,23 @@ test("a child paused while running, with no release behind it, is resumed by its
 
 	assert.equal(run.resumeToolResults, undefined);
 	assert.equal(run.skipTaskPrompt, undefined);
+	assert.equal(run.task, "carry on");
+});
+
+test("a paused child whose latest record is in a copy of its owner's session no longer open is resumed from the owner's own session", async () => {
+	const h = harness();
+	h.original = "waits";
+	await h.admit("lost-copy-pause");
+	await h.waitForLatest("lost-copy-pause:0", (candidate) => candidate.launchLeafId !== undefined);
+	await h.call({ action: "pause", id: "lost-copy-pause:0" });
+	const record = await h.waitForLatest("lost-copy-pause:0", (candidate) => candidate.terminalStatus === "paused");
+	await endSessionOnPendingCall(record);
+	indexSubagentChildOwner(h.ctx);
+	// Since, its latest record was saved by a copy of the owner's session that is not open in this process any more.
+	observeSubagentChildRecord(record, false, { entryId: "entry-of-a-closed-copy", sessionId: record.owner.sessionId });
+
+	const run = await restored(h, record.childId, { prompt: "carry on" });
+
 	assert.equal(run.task, "carry on");
 });
 
